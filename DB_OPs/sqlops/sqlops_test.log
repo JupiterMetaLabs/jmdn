@@ -1,0 +1,347 @@
+2025/03/04 15:36:47.939291 sqlops_test.go:29: ===== DB Test Log Started =====
+2025/03/04 15:36:47.939352 sqlops_test.go:30: Test started at: 2025-03-04T15:36:47+05:30
+2025/03/04 15:36:47.939436 sqlops_test.go:81: Starting TestUnifiedDB
+2025/03/04 15:36:47.939461 sqlops_test.go:84: === Starting Test: Add and Retrieve Peer ===
+2025/03/04 15:36:47.939469 sqlops_test.go:41: Setting up test DB for TestUnifiedDB/Test_Add_and_Retrieve_Peer
+2025/03/04 15:36:47.939474 sqlops_test.go:43: Test DB path: test.db
+2025/03/04 15:36:47.939479 sqlops_test.go:50: Using tables: peers=peers, kv=key_value, merkle=merkle
+2025/03/04 15:36:47.981208 sqlops_test.go:58: Test DB setup successfully
+2025/03/04 15:36:47.981256 sqlops_test.go:69: Table peers exists
+2025/03/04 15:36:47.981270 sqlops_test.go:69: Table key_value exists
+2025/03/04 15:36:47.981280 sqlops_test.go:69: Table merkle exists
+2025/03/04 15:36:47.981282 sqlops_test.go:93: Adding peer: id=peer1, addr=192.168.1.1, conn=3, cap=[relay validator]
+2025/03/04 15:36:47.994816 sqlops_test.go:100: Peer added successfully
+2025/03/04 15:36:47.994824 sqlops_test.go:104: Retrieving peer: peer1
+2025/03/04 15:36:47.994859 sqlops_test.go:110: Peer retrieved: addr=192.168.1.1, conn=3, cap=[relay validator], lastSeen=1741082807
+2025/03/04 15:36:47.994871 sqlops_test.go:120: === Test Completed: Add and Retrieve Peer ===
+2025/03/04 15:36:47.994914 sqlops_test.go:124: === Starting Test: Update Peer Connections ===
+2025/03/04 15:36:47.994922 sqlops_test.go:41: Setting up test DB for TestUnifiedDB/Test_Update_Peer_Connections
+2025/03/04 15:36:47.994933 sqlops_test.go:43: Test DB path: test.db
+2025/03/04 15:36:47.994935 sqlops_test.go:50: Using tables: peers=peers, kv=key_value, merkle=merkle
+2025/03/04 15:36:47.995055 sqlops_test.go:58: Test DB setup successfully
+2025/03/04 15:36:47.995077 sqlops_test.go:69: Table peers exists
+2025/03/04 15:36:47.995089 sqlops_test.go:69: Table key_value exists
+2025/03/04 15:36:47.995098 sqlops_test.go:69: Table merkle exists
+2025/03/04 15:36:47.995100 sqlops_test.go:134: Adding peer: id=peer1, addr=192.168.1.1, conn=3, cap=[relay]
+2025/03/04 15:36:48.008626 sqlops_test.go:141: Peer added successfully
+2025/03/04 15:36:48.008635 sqlops_test.go:145: Updating peer connections: id=peer1, new conn=5
+2025/03/04 15:36:48.021692 sqlops_test.go:150: Connections updated successfully
+2025/03/04 15:36:48.021701 sqlops_test.go:154: Retrieving updated peer: peer1
+2025/03/04 15:36:48.021749 sqlops_test.go:159: Retrieved connections: 5
+2025/03/04 15:36:48.021756 sqlops_test.go:165: === Test Completed: Update Peer Connections ===
+2025/03/04 15:36:48.021792 sqlops_test.go:169: === Starting Test: Delete Peer ===
+2025/03/04 15:36:48.021797 sqlops_test.go:41: Setting up test DB for TestUnifiedDB/Test_Delete_Peer
+2025/03/04 15:36:48.021800 sqlops_test.go:43: Test DB path: test.db
+2025/03/04 15:36:48.021802 sqlops_test.go:50: Using tables: peers=peers, kv=key_value, merkle=merkle
+2025/03/04 15:36:48.022111 sqlops_test.go:58: Test DB setup successfully
+2025/03/04 15:36:48.022170 sqlops_test.go:69: Table peers exists
+2025/03/04 15:36:48.022201 sqlops_test.go:69: Table key_value exists
+2025/03/04 15:36:48.022225 sqlops_test.go:69: Table merkle exists
+2025/03/04 15:36:48.022230 sqlops_test.go:178: Adding peer: id=peer1, addr=192.168.1.1, conn=3, cap=[relay]
+2025/03/04 15:36:48.035680 sqlops_test.go:185: Peer added successfully
+2025/03/04 15:36:48.035691 sqlops_test.go:189: Deleting peer: peer1
+2025/03/04 15:36:48.049287 sqlops_test.go:194: Peer deleted successfully
+2025/03/04 15:36:48.049301 sqlops_test.go:198: Attempting to retrieve deleted peer: peer1
+2025/03/04 15:36:48.049358 sqlops_test.go:201: Expected error confirmed: sql: no rows in result set
+2025/03/04 15:36:48.049366 sqlops_test.go:207: === Test Completed: Delete Peer ===
+2025/03/04 15:36:48.049464 sqlops_test.go:211: === Starting Test: Store and Retrieve KeyValue ===
+2025/03/04 15:36:48.049474 sqlops_test.go:41: Setting up test DB for TestUnifiedDB/Test_Store_and_Retrieve_KeyValue
+2025/03/04 15:36:48.049478 sqlops_test.go:43: Test DB path: test.db
+2025/03/04 15:36:48.049500 sqlops_test.go:50: Using tables: peers=peers, kv=key_value, merkle=merkle
+2025/03/04 15:36:48.049690 sqlops_test.go:58: Test DB setup successfully
+2025/03/04 15:36:48.049729 sqlops_test.go:69: Table peers exists
+2025/03/04 15:36:48.049757 sqlops_test.go:69: Table key_value exists
+2025/03/04 15:36:48.049781 sqlops_test.go:69: Table merkle exists
+2025/03/04 15:36:48.049785 sqlops_test.go:218: Storing key-value: key=key1, value=value1
+2025/03/04 15:36:48.062720 sqlops_test.go:223: Key-value stored successfully
+2025/03/04 15:36:48.062731 sqlops_test.go:227: Retrieving value for key: key1
+2025/03/04 15:36:48.062775 sqlops_test.go:232: Retrieved value: value1
+2025/03/04 15:36:48.062785 sqlops_test.go:238: === Test Completed: Store and Retrieve KeyValue ===
+2025/03/04 15:36:48.062830 sqlops_test.go:242: === Starting Test: Delete KeyValue ===
+2025/03/04 15:36:48.062840 sqlops_test.go:41: Setting up test DB for TestUnifiedDB/Test_Delete_KeyValue
+2025/03/04 15:36:48.062843 sqlops_test.go:43: Test DB path: test.db
+2025/03/04 15:36:48.062847 sqlops_test.go:50: Using tables: peers=peers, kv=key_value, merkle=merkle
+2025/03/04 15:36:48.063048 sqlops_test.go:58: Test DB setup successfully
+2025/03/04 15:36:48.063094 sqlops_test.go:69: Table peers exists
+2025/03/04 15:36:48.063122 sqlops_test.go:69: Table key_value exists
+2025/03/04 15:36:48.063147 sqlops_test.go:69: Table merkle exists
+2025/03/04 15:36:48.063159 sqlops_test.go:249: Storing key-value: key=key1, value=value1
+2025/03/04 15:36:48.063205 sqlops_test.go:254: Key-value stored successfully
+2025/03/04 15:36:48.063211 sqlops_test.go:258: Deleting key-value: key1
+2025/03/04 15:36:48.076628 sqlops_test.go:263: Key-value deleted successfully
+2025/03/04 15:36:48.076643 sqlops_test.go:267: Attempting to retrieve deleted key: key1
+2025/03/04 15:36:48.076695 sqlops_test.go:270: Expected error confirmed: sql: no rows in result set
+2025/03/04 15:36:48.076701 sqlops_test.go:276: === Test Completed: Delete KeyValue ===
+2025/03/04 15:36:48.076768 sqlops_test.go:280: === Starting Test: Store and Retrieve Merkle Hashes ===
+2025/03/04 15:36:48.076779 sqlops_test.go:41: Setting up test DB for TestUnifiedDB/Test_Store_and_Retrieve_Merkle_Hashes
+2025/03/04 15:36:48.076784 sqlops_test.go:43: Test DB path: test.db
+2025/03/04 15:36:48.076787 sqlops_test.go:50: Using tables: peers=peers, kv=key_value, merkle=merkle
+2025/03/04 15:36:48.076988 sqlops_test.go:58: Test DB setup successfully
+2025/03/04 15:36:48.077032 sqlops_test.go:69: Table peers exists
+2025/03/04 15:36:48.077061 sqlops_test.go:69: Table key_value exists
+2025/03/04 15:36:48.077087 sqlops_test.go:69: Table merkle exists
+2025/03/04 15:36:48.077091 sqlops_test.go:287: Storing merkle hash: key=key2, hash=hash123
+2025/03/04 15:36:48.090193 sqlops_test.go:292: Merkle hash stored successfully
+2025/03/04 15:36:48.090205 sqlops_test.go:296: Retrieving all merkle hashes
+2025/03/04 15:36:48.090248 sqlops_test.go:301: Retrieved 1 merkle hashes
+2025/03/04 15:36:48.090255 sqlops_test.go:303:   key2: hash123
+2025/03/04 15:36:48.090263 sqlops_test.go:310: === Test Completed: Store and Retrieve Merkle Hashes ===
+2025/03/04 15:36:48.090306 sqlops_test.go:315: === Starting Test: Concurrent Operations ===
+2025/03/04 15:36:48.090317 sqlops_test.go:41: Setting up test DB for TestUnifiedDB/Test_Concurrent_Operations
+2025/03/04 15:36:48.090321 sqlops_test.go:43: Test DB path: test.db
+2025/03/04 15:36:48.090324 sqlops_test.go:50: Using tables: peers=peers, kv=key_value, merkle=merkle
+2025/03/04 15:36:48.090511 sqlops_test.go:58: Test DB setup successfully
+2025/03/04 15:36:48.090553 sqlops_test.go:69: Table peers exists
+2025/03/04 15:36:48.090581 sqlops_test.go:69: Table key_value exists
+2025/03/04 15:36:48.090606 sqlops_test.go:69: Table merkle exists
+2025/03/04 15:36:48.090610 sqlops_test.go:320: Adding initial test data
+2025/03/04 15:36:48.104168 sqlops_test.go:328: Added initial peer: concurrent_peer0
+2025/03/04 15:36:48.117222 sqlops_test.go:328: Added initial peer: concurrent_peer1
+2025/03/04 15:36:48.130792 sqlops_test.go:328: Added initial peer: concurrent_peer2
+2025/03/04 15:36:48.144288 sqlops_test.go:328: Added initial peer: concurrent_peer3
+2025/03/04 15:36:48.157935 sqlops_test.go:328: Added initial peer: concurrent_peer4
+2025/03/04 15:36:48.157950 sqlops_test.go:333: Starting concurrent operations
+2025/03/04 15:36:48.157990 sqlops_test.go:342: Reader goroutine 3 started
+2025/03/04 15:36:48.158066 sqlops_test.go:348: Reader 3, op 0: Got 5 peers
+2025/03/04 15:36:48.158101 sqlops_test.go:342: Reader goroutine 1 started
+2025/03/04 15:36:48.158127 sqlops_test.go:360: Writer goroutine 4 started
+2025/03/04 15:36:48.158145 sqlops_test.go:342: Reader goroutine 4 started
+2025/03/04 15:36:48.158150 sqlops_test.go:360: Writer goroutine 0 started
+2025/03/04 15:36:48.158153 sqlops_test.go:360: Writer goroutine 1 started
+2025/03/04 15:36:48.158156 sqlops_test.go:360: Writer goroutine 2 started
+2025/03/04 15:36:48.158159 sqlops_test.go:360: Writer goroutine 3 started
+2025/03/04 15:36:48.158166 sqlops_test.go:342: Reader goroutine 0 started
+2025/03/04 15:36:48.158170 sqlops_test.go:348: Reader 1, op 0: Got 5 peers
+2025/03/04 15:36:48.158169 sqlops_test.go:342: Reader goroutine 2 started
+2025/03/04 15:36:48.171272 sqlops_test.go:369: Writer 4, op 0: Added peer concurrent_write_peer4_0
+2025/03/04 15:36:48.171326 sqlops_test.go:348: Reader 4, op 0: Got 6 peers
+2025/03/04 15:36:48.171358 sqlops_test.go:348: Reader 0, op 0: Got 6 peers
+2025/03/04 15:36:48.171383 sqlops_test.go:348: Reader 2, op 0: Got 6 peers
+2025/03/04 15:36:48.171406 sqlops_test.go:348: Reader 1, op 1: Got 6 peers
+2025/03/04 15:36:48.171569 sqlops_test.go:348: Reader 3, op 1: Got 6 peers
+2025/03/04 15:36:48.171642 sqlops_test.go:379: Writer 4, op 0: Updated peer concurrent_peer0 connections to 0
+2025/03/04 15:36:48.185428 sqlops_test.go:348: Reader 3, op 2: Got 7 peers
+2025/03/04 15:36:48.185449 sqlops_test.go:348: Reader 1, op 2: Got 7 peers
+2025/03/04 15:36:48.185463 sqlops_test.go:348: Reader 4, op 1: Got 7 peers
+2025/03/04 15:36:48.185486 sqlops_test.go:348: Reader 0, op 1: Got 7 peers
+2025/03/04 15:36:48.185496 sqlops_test.go:348: Reader 2, op 1: Got 7 peers
+2025/03/04 15:36:48.185546 sqlops_test.go:369: Writer 0, op 0: Added peer concurrent_write_peer0_0
+2025/03/04 15:36:48.198772 sqlops_test.go:348: Reader 2, op 2: Got 8 peers
+2025/03/04 15:36:48.198791 sqlops_test.go:348: Reader 0, op 2: Got 8 peers
+2025/03/04 15:36:48.198794 sqlops_test.go:369: Writer 1, op 0: Added peer concurrent_write_peer1_0
+2025/03/04 15:36:48.198806 sqlops_test.go:348: Reader 3, op 3: Got 8 peers
+2025/03/04 15:36:48.198815 sqlops_test.go:348: Reader 1, op 3: Got 8 peers
+2025/03/04 15:36:48.198829 sqlops_test.go:348: Reader 4, op 2: Got 8 peers
+2025/03/04 15:36:48.212977 sqlops_test.go:348: Reader 1, op 4: Got 9 peers
+2025/03/04 15:36:48.213019 sqlops_test.go:348: Reader 2, op 3: Got 9 peers
+2025/03/04 15:36:48.213048 sqlops_test.go:348: Reader 0, op 3: Got 9 peers
+2025/03/04 15:36:48.213075 sqlops_test.go:348: Reader 3, op 4: Got 9 peers
+2025/03/04 15:36:48.213103 sqlops_test.go:348: Reader 4, op 3: Got 9 peers
+2025/03/04 15:36:48.213104 sqlops_test.go:369: Writer 2, op 0: Added peer concurrent_write_peer2_0
+2025/03/04 15:36:48.226622 sqlops_test.go:348: Reader 4, op 4: Got 10 peers
+2025/03/04 15:36:48.226665 sqlops_test.go:348: Reader 1, op 5: Got 10 peers
+2025/03/04 15:36:48.226694 sqlops_test.go:348: Reader 2, op 4: Got 10 peers
+2025/03/04 15:36:48.226721 sqlops_test.go:348: Reader 0, op 4: Got 10 peers
+2025/03/04 15:36:48.226724 sqlops_test.go:369: Writer 3, op 0: Added peer concurrent_write_peer3_0
+2025/03/04 15:36:48.226805 sqlops_test.go:348: Reader 3, op 5: Got 10 peers
+2025/03/04 15:36:48.241195 sqlops_test.go:348: Reader 3, op 6: Got 11 peers
+2025/03/04 15:36:48.241248 sqlops_test.go:348: Reader 0, op 5: Got 11 peers
+2025/03/04 15:36:48.241281 sqlops_test.go:369: Writer 4, op 1: Added peer concurrent_write_peer4_1
+2025/03/04 15:36:48.241286 sqlops_test.go:348: Reader 4, op 5: Got 11 peers
+2025/03/04 15:36:48.241303 sqlops_test.go:348: Reader 2, op 5: Got 11 peers
+2025/03/04 15:36:48.241346 sqlops_test.go:348: Reader 1, op 6: Got 11 peers
+2025/03/04 15:36:48.241420 sqlops_test.go:379: Writer 0, op 0: Updated peer concurrent_peer0 connections to 0
+2025/03/04 15:36:48.241451 sqlops_test.go:379: Writer 1, op 0: Updated peer concurrent_peer0 connections to 0
+2025/03/04 15:36:48.241475 sqlops_test.go:379: Writer 2, op 0: Updated peer concurrent_peer0 connections to 0
+2025/03/04 15:36:48.241492 sqlops_test.go:379: Writer 3, op 0: Updated peer concurrent_peer0 connections to 0
+2025/03/04 15:36:48.260076 sqlops_test.go:369: Writer 3, op 1: Added peer concurrent_write_peer3_1
+2025/03/04 15:36:48.260151 sqlops_test.go:348: Reader 2, op 6: Got 12 peers
+2025/03/04 15:36:48.260167 sqlops_test.go:348: Reader 4, op 6: Got 12 peers
+2025/03/04 15:36:48.260203 sqlops_test.go:348: Reader 0, op 6: Got 12 peers
+2025/03/04 15:36:48.260229 sqlops_test.go:348: Reader 1, op 7: Got 12 peers
+2025/03/04 15:36:48.260420 sqlops_test.go:348: Reader 3, op 7: Got 12 peers
+2025/03/04 15:36:48.273929 sqlops_test.go:369: Writer 2, op 1: Added peer concurrent_write_peer2_1
+2025/03/04 15:36:48.273987 sqlops_test.go:348: Reader 3, op 8: Got 13 peers
+2025/03/04 15:36:48.274020 sqlops_test.go:348: Reader 1, op 8: Got 13 peers
+2025/03/04 15:36:48.274049 sqlops_test.go:348: Reader 4, op 7: Got 13 peers
+2025/03/04 15:36:48.274075 sqlops_test.go:348: Reader 0, op 7: Got 13 peers
+2025/03/04 15:36:48.274103 sqlops_test.go:348: Reader 2, op 7: Got 13 peers
+2025/03/04 15:36:48.287250 sqlops_test.go:369: Writer 1, op 1: Added peer concurrent_write_peer1_1
+2025/03/04 15:36:48.287315 sqlops_test.go:348: Reader 2, op 8: Got 14 peers
+2025/03/04 15:36:48.287355 sqlops_test.go:348: Reader 3, op 9: Got 14 peers
+2025/03/04 15:36:48.287395 sqlops_test.go:348: Reader 1, op 9: Got 14 peers
+2025/03/04 15:36:48.287429 sqlops_test.go:348: Reader 0, op 8: Got 14 peers
+2025/03/04 15:36:48.287455 sqlops_test.go:348: Reader 4, op 8: Got 14 peers
+2025/03/04 15:36:48.301410 sqlops_test.go:369: Writer 4, op 2: Added peer concurrent_write_peer4_2
+2025/03/04 15:36:48.301483 sqlops_test.go:348: Reader 0, op 9: Got 15 peers
+2025/03/04 15:36:48.301507 sqlops_test.go:348: Reader 3, op 10: Got 15 peers
+2025/03/04 15:36:48.301531 sqlops_test.go:348: Reader 4, op 9: Got 15 peers
+2025/03/04 15:36:48.301610 sqlops_test.go:348: Reader 2, op 9: Got 15 peers
+2025/03/04 15:36:48.301699 sqlops_test.go:348: Reader 1, op 10: Got 15 peers
+2025/03/04 15:36:48.315123 sqlops_test.go:369: Writer 0, op 1: Added peer concurrent_write_peer0_1
+2025/03/04 15:36:48.315178 sqlops_test.go:348: Reader 2, op 10: Got 16 peers
+2025/03/04 15:36:48.315217 sqlops_test.go:348: Reader 1, op 11: Got 16 peers
+2025/03/04 15:36:48.315223 sqlops_test.go:348: Reader 0, op 10: Got 16 peers
+2025/03/04 15:36:48.315247 sqlops_test.go:348: Reader 3, op 11: Got 16 peers
+2025/03/04 15:36:48.315267 sqlops_test.go:348: Reader 4, op 10: Got 16 peers
+2025/03/04 15:36:48.329294 sqlops_test.go:369: Writer 3, op 2: Added peer concurrent_write_peer3_2
+2025/03/04 15:36:48.329412 sqlops_test.go:348: Reader 3, op 12: Got 17 peers
+2025/03/04 15:36:48.329422 sqlops_test.go:348: Reader 1, op 12: Got 17 peers
+2025/03/04 15:36:48.329449 sqlops_test.go:348: Reader 4, op 11: Got 17 peers
+2025/03/04 15:36:48.329462 sqlops_test.go:348: Reader 0, op 11: Got 17 peers
+2025/03/04 15:36:48.329570 sqlops_test.go:348: Reader 2, op 11: Got 17 peers
+2025/03/04 15:36:48.342841 sqlops_test.go:369: Writer 2, op 2: Added peer concurrent_write_peer2_2
+2025/03/04 15:36:48.342882 sqlops_test.go:348: Reader 0, op 12: Got 18 peers
+2025/03/04 15:36:48.342899 sqlops_test.go:348: Reader 1, op 13: Got 18 peers
+2025/03/04 15:36:48.342919 sqlops_test.go:348: Reader 2, op 12: Got 18 peers
+2025/03/04 15:36:48.342938 sqlops_test.go:348: Reader 4, op 12: Got 18 peers
+2025/03/04 15:36:48.342980 sqlops_test.go:348: Reader 3, op 13: Got 18 peers
+2025/03/04 15:36:48.357066 sqlops_test.go:369: Writer 1, op 2: Added peer concurrent_write_peer1_2
+2025/03/04 15:36:48.357125 sqlops_test.go:348: Reader 4, op 13: Got 19 peers
+2025/03/04 15:36:48.357170 sqlops_test.go:348: Reader 0, op 13: Got 19 peers
+2025/03/04 15:36:48.357210 sqlops_test.go:348: Reader 1, op 14: Got 19 peers
+2025/03/04 15:36:48.357241 sqlops_test.go:348: Reader 2, op 13: Got 19 peers
+2025/03/04 15:36:48.357243 sqlops_test.go:348: Reader 3, op 14: Got 19 peers
+2025/03/04 15:36:48.370972 sqlops_test.go:369: Writer 4, op 3: Added peer concurrent_write_peer4_3
+2025/03/04 15:36:48.371051 sqlops_test.go:348: Reader 3, op 15: Got 20 peers
+2025/03/04 15:36:48.371086 sqlops_test.go:348: Reader 4, op 14: Got 20 peers
+2025/03/04 15:36:48.371114 sqlops_test.go:348: Reader 1, op 15: Got 20 peers
+2025/03/04 15:36:48.371118 sqlops_test.go:348: Reader 0, op 14: Got 20 peers
+2025/03/04 15:36:48.371158 sqlops_test.go:348: Reader 2, op 14: Got 20 peers
+2025/03/04 15:36:48.385164 sqlops_test.go:369: Writer 0, op 2: Added peer concurrent_write_peer0_2
+2025/03/04 15:36:48.385229 sqlops_test.go:348: Reader 2, op 15: Got 21 peers
+2025/03/04 15:36:48.385265 sqlops_test.go:348: Reader 1, op 16: Got 21 peers
+2025/03/04 15:36:48.385285 sqlops_test.go:348: Reader 3, op 16: Got 21 peers
+2025/03/04 15:36:48.385311 sqlops_test.go:348: Reader 4, op 15: Got 21 peers
+2025/03/04 15:36:48.385330 sqlops_test.go:348: Reader 0, op 15: Got 21 peers
+2025/03/04 15:36:48.399174 sqlops_test.go:369: Writer 3, op 3: Added peer concurrent_write_peer3_3
+2025/03/04 15:36:48.399217 sqlops_test.go:348: Reader 4, op 16: Got 22 peers
+2025/03/04 15:36:48.399234 sqlops_test.go:348: Reader 2, op 16: Got 22 peers
+2025/03/04 15:36:48.399249 sqlops_test.go:348: Reader 1, op 17: Got 22 peers
+2025/03/04 15:36:48.399269 sqlops_test.go:348: Reader 0, op 16: Got 22 peers
+2025/03/04 15:36:48.399307 sqlops_test.go:348: Reader 3, op 17: Got 22 peers
+2025/03/04 15:36:48.413754 sqlops_test.go:369: Writer 2, op 3: Added peer concurrent_write_peer2_3
+2025/03/04 15:36:48.413815 sqlops_test.go:348: Reader 3, op 18: Got 23 peers
+2025/03/04 15:36:48.413851 sqlops_test.go:348: Reader 0, op 17: Got 23 peers
+2025/03/04 15:36:48.413884 sqlops_test.go:348: Reader 4, op 17: Got 23 peers
+2025/03/04 15:36:48.413924 sqlops_test.go:348: Reader 2, op 17: Got 23 peers
+2025/03/04 15:36:48.413936 sqlops_test.go:348: Reader 1, op 18: Got 23 peers
+2025/03/04 15:36:48.427568 sqlops_test.go:369: Writer 1, op 3: Added peer concurrent_write_peer1_3
+2025/03/04 15:36:48.427654 sqlops_test.go:348: Reader 1, op 19: Got 24 peers
+2025/03/04 15:36:48.427662 sqlops_test.go:348: Reader 3, op 19: Got 24 peers
+2025/03/04 15:36:48.427704 sqlops_test.go:348: Reader 0, op 18: Got 24 peers
+2025/03/04 15:36:48.427706 sqlops_test.go:348: Reader 2, op 18: Got 24 peers
+2025/03/04 15:36:48.427765 sqlops_test.go:348: Reader 4, op 18: Got 24 peers
+2025/03/04 15:36:48.438491 sqlops_test.go:352: Reader goroutine 1 completed
+2025/03/04 15:36:48.438591 sqlops_test.go:352: Reader goroutine 3 completed
+2025/03/04 15:36:48.441715 sqlops_test.go:369: Writer 4, op 4: Added peer concurrent_write_peer4_4
+2025/03/04 15:36:48.441780 sqlops_test.go:348: Reader 4, op 19: Got 25 peers
+2025/03/04 15:36:48.441820 sqlops_test.go:348: Reader 0, op 19: Got 25 peers
+2025/03/04 15:36:48.441859 sqlops_test.go:348: Reader 2, op 19: Got 25 peers
+2025/03/04 15:36:48.452493 sqlops_test.go:352: Reader goroutine 2 completed
+2025/03/04 15:36:48.452530 sqlops_test.go:352: Reader goroutine 4 completed
+2025/03/04 15:36:48.452537 sqlops_test.go:352: Reader goroutine 0 completed
+2025/03/04 15:36:48.454972 sqlops_test.go:369: Writer 0, op 3: Added peer concurrent_write_peer0_3
+2025/03/04 15:36:48.468301 sqlops_test.go:369: Writer 3, op 4: Added peer concurrent_write_peer3_4
+2025/03/04 15:36:48.481835 sqlops_test.go:369: Writer 2, op 4: Added peer concurrent_write_peer2_4
+2025/03/04 15:36:48.495354 sqlops_test.go:369: Writer 1, op 4: Added peer concurrent_write_peer1_4
+2025/03/04 15:36:48.508759 sqlops_test.go:369: Writer 4, op 5: Added peer concurrent_write_peer4_5
+2025/03/04 15:36:48.522297 sqlops_test.go:379: Writer 4, op 5: Updated peer concurrent_peer0 connections to 5
+2025/03/04 15:36:48.542309 sqlops_test.go:369: Writer 0, op 4: Added peer concurrent_write_peer0_4
+2025/03/04 15:36:48.556372 sqlops_test.go:369: Writer 3, op 5: Added peer concurrent_write_peer3_5
+2025/03/04 15:36:48.570510 sqlops_test.go:369: Writer 2, op 5: Added peer concurrent_write_peer2_5
+2025/03/04 15:36:48.584206 sqlops_test.go:369: Writer 1, op 5: Added peer concurrent_write_peer1_5
+2025/03/04 15:36:48.598082 sqlops_test.go:369: Writer 4, op 6: Added peer concurrent_write_peer4_6
+2025/03/04 15:36:48.611961 sqlops_test.go:369: Writer 0, op 5: Added peer concurrent_write_peer0_5
+2025/03/04 15:36:48.611974 sqlops_test.go:379: Writer 3, op 5: Updated peer concurrent_peer0 connections to 5
+2025/03/04 15:36:48.612004 sqlops_test.go:379: Writer 2, op 5: Updated peer concurrent_peer0 connections to 5
+2025/03/04 15:36:48.612097 sqlops_test.go:379: Writer 1, op 5: Updated peer concurrent_peer0 connections to 5
+2025/03/04 15:36:48.626138 sqlops_test.go:369: Writer 4, op 7: Added peer concurrent_write_peer4_7
+2025/03/04 15:36:48.626249 sqlops_test.go:379: Writer 0, op 5: Updated peer concurrent_peer0 connections to 5
+2025/03/04 15:36:48.640190 sqlops_test.go:369: Writer 2, op 6: Added peer concurrent_write_peer2_6
+2025/03/04 15:36:48.653694 sqlops_test.go:369: Writer 1, op 6: Added peer concurrent_write_peer1_6
+2025/03/04 15:36:48.667373 sqlops_test.go:369: Writer 3, op 6: Added peer concurrent_write_peer3_6
+2025/03/04 15:36:48.680703 sqlops_test.go:369: Writer 4, op 8: Added peer concurrent_write_peer4_8
+2025/03/04 15:36:48.693842 sqlops_test.go:369: Writer 0, op 6: Added peer concurrent_write_peer0_6
+2025/03/04 15:36:48.707372 sqlops_test.go:369: Writer 2, op 7: Added peer concurrent_write_peer2_7
+2025/03/04 15:36:48.720695 sqlops_test.go:369: Writer 1, op 7: Added peer concurrent_write_peer1_7
+2025/03/04 15:36:48.733986 sqlops_test.go:369: Writer 3, op 7: Added peer concurrent_write_peer3_7
+2025/03/04 15:36:48.753871 sqlops_test.go:369: Writer 4, op 9: Added peer concurrent_write_peer4_9
+2025/03/04 15:36:48.767413 sqlops_test.go:369: Writer 0, op 7: Added peer concurrent_write_peer0_7
+2025/03/04 15:36:48.781046 sqlops_test.go:369: Writer 2, op 8: Added peer concurrent_write_peer2_8
+2025/03/04 15:36:48.794442 sqlops_test.go:369: Writer 1, op 8: Added peer concurrent_write_peer1_8
+2025/03/04 15:36:48.807430 sqlops_test.go:369: Writer 3, op 8: Added peer concurrent_write_peer3_8
+2025/03/04 15:36:48.828647 sqlops_test.go:369: Writer 4, op 10: Added peer concurrent_write_peer4_10
+2025/03/04 15:36:48.841249 sqlops_test.go:369: Writer 0, op 8: Added peer concurrent_write_peer0_8
+2025/03/04 15:36:48.854318 sqlops_test.go:369: Writer 2, op 9: Added peer concurrent_write_peer2_9
+2025/03/04 15:36:48.867755 sqlops_test.go:369: Writer 1, op 9: Added peer concurrent_write_peer1_9
+2025/03/04 15:36:48.881801 sqlops_test.go:369: Writer 3, op 9: Added peer concurrent_write_peer3_9
+2025/03/04 15:36:48.895120 sqlops_test.go:379: Writer 4, op 10: Updated peer concurrent_peer0 connections to 10
+2025/03/04 15:36:48.909505 sqlops_test.go:369: Writer 0, op 9: Added peer concurrent_write_peer0_9
+2025/03/04 15:36:48.923135 sqlops_test.go:369: Writer 2, op 10: Added peer concurrent_write_peer2_10
+2025/03/04 15:36:48.937344 sqlops_test.go:369: Writer 1, op 10: Added peer concurrent_write_peer1_10
+2025/03/04 15:36:48.951074 sqlops_test.go:369: Writer 3, op 10: Added peer concurrent_write_peer3_10
+2025/03/04 15:36:48.964328 sqlops_test.go:369: Writer 4, op 11: Added peer concurrent_write_peer4_11
+2025/03/04 15:36:48.977914 sqlops_test.go:379: Writer 2, op 10: Updated peer concurrent_peer0 connections to 10
+2025/03/04 15:36:48.977936 sqlops_test.go:369: Writer 0, op 10: Added peer concurrent_write_peer0_10
+2025/03/04 15:36:48.977945 sqlops_test.go:379: Writer 1, op 10: Updated peer concurrent_peer0 connections to 10
+2025/03/04 15:36:48.977950 sqlops_test.go:379: Writer 3, op 10: Updated peer concurrent_peer0 connections to 10
+2025/03/04 15:36:48.991531 sqlops_test.go:369: Writer 4, op 12: Added peer concurrent_write_peer4_12
+2025/03/04 15:36:48.991599 sqlops_test.go:379: Writer 0, op 10: Updated peer concurrent_peer0 connections to 10
+2025/03/04 15:36:49.005152 sqlops_test.go:369: Writer 3, op 11: Added peer concurrent_write_peer3_11
+2025/03/04 15:36:49.018832 sqlops_test.go:369: Writer 2, op 11: Added peer concurrent_write_peer2_11
+2025/03/04 15:36:49.038899 sqlops_test.go:369: Writer 1, op 11: Added peer concurrent_write_peer1_11
+2025/03/04 15:36:49.058881 sqlops_test.go:369: Writer 0, op 11: Added peer concurrent_write_peer0_11
+2025/03/04 15:36:49.072675 sqlops_test.go:369: Writer 4, op 13: Added peer concurrent_write_peer4_13
+2025/03/04 15:36:49.086270 sqlops_test.go:369: Writer 3, op 12: Added peer concurrent_write_peer3_12
+2025/03/04 15:36:49.100055 sqlops_test.go:369: Writer 2, op 12: Added peer concurrent_write_peer2_12
+2025/03/04 15:36:49.114016 sqlops_test.go:369: Writer 1, op 12: Added peer concurrent_write_peer1_12
+2025/03/04 15:36:49.128368 sqlops_test.go:369: Writer 0, op 12: Added peer concurrent_write_peer0_12
+2025/03/04 15:36:49.142051 sqlops_test.go:369: Writer 4, op 14: Added peer concurrent_write_peer4_14
+2025/03/04 15:36:49.155963 sqlops_test.go:369: Writer 3, op 13: Added peer concurrent_write_peer3_13
+2025/03/04 15:36:49.169697 sqlops_test.go:369: Writer 2, op 13: Added peer concurrent_write_peer2_13
+2025/03/04 15:36:49.183286 sqlops_test.go:369: Writer 1, op 13: Added peer concurrent_write_peer1_13
+2025/03/04 15:36:49.196633 sqlops_test.go:369: Writer 0, op 13: Added peer concurrent_write_peer0_13
+2025/03/04 15:36:49.210043 sqlops_test.go:369: Writer 4, op 15: Added peer concurrent_write_peer4_15
+2025/03/04 15:36:49.223234 sqlops_test.go:379: Writer 4, op 15: Updated peer concurrent_peer0 connections to 15
+2025/03/04 15:36:49.236275 sqlops_test.go:369: Writer 3, op 14: Added peer concurrent_write_peer3_14
+2025/03/04 15:36:49.249299 sqlops_test.go:369: Writer 2, op 14: Added peer concurrent_write_peer2_14
+2025/03/04 15:36:49.262784 sqlops_test.go:369: Writer 1, op 14: Added peer concurrent_write_peer1_14
+2025/03/04 15:36:49.276183 sqlops_test.go:369: Writer 0, op 14: Added peer concurrent_write_peer0_14
+2025/03/04 15:36:49.289248 sqlops_test.go:369: Writer 4, op 16: Added peer concurrent_write_peer4_16
+2025/03/04 15:36:49.302749 sqlops_test.go:369: Writer 3, op 15: Added peer concurrent_write_peer3_15
+2025/03/04 15:36:49.316477 sqlops_test.go:369: Writer 2, op 15: Added peer concurrent_write_peer2_15
+2025/03/04 15:36:49.330267 sqlops_test.go:369: Writer 1, op 15: Added peer concurrent_write_peer1_15
+2025/03/04 15:36:49.344052 sqlops_test.go:369: Writer 0, op 15: Added peer concurrent_write_peer0_15
+2025/03/04 15:36:49.357570 sqlops_test.go:369: Writer 4, op 17: Added peer concurrent_write_peer4_17
+2025/03/04 15:36:49.357612 sqlops_test.go:379: Writer 3, op 15: Updated peer concurrent_peer0 connections to 15
+2025/03/04 15:36:49.357666 sqlops_test.go:379: Writer 2, op 15: Updated peer concurrent_peer0 connections to 15
+2025/03/04 15:36:49.357696 sqlops_test.go:379: Writer 1, op 15: Updated peer concurrent_peer0 connections to 15
+2025/03/04 15:36:49.357704 sqlops_test.go:379: Writer 0, op 15: Updated peer concurrent_peer0 connections to 15
+2025/03/04 15:36:49.376733 sqlops_test.go:369: Writer 0, op 16: Added peer concurrent_write_peer0_16
+2025/03/04 15:36:49.390825 sqlops_test.go:369: Writer 1, op 16: Added peer concurrent_write_peer1_16
+2025/03/04 15:36:49.404820 sqlops_test.go:369: Writer 3, op 16: Added peer concurrent_write_peer3_16
+2025/03/04 15:36:49.418918 sqlops_test.go:369: Writer 2, op 16: Added peer concurrent_write_peer2_16
+2025/03/04 15:36:49.433029 sqlops_test.go:369: Writer 4, op 18: Added peer concurrent_write_peer4_18
+2025/03/04 15:36:49.447176 sqlops_test.go:369: Writer 0, op 17: Added peer concurrent_write_peer0_17
+2025/03/04 15:36:49.461129 sqlops_test.go:369: Writer 1, op 17: Added peer concurrent_write_peer1_17
+2025/03/04 15:36:49.474586 sqlops_test.go:369: Writer 3, op 17: Added peer concurrent_write_peer3_17
+2025/03/04 15:36:49.488754 sqlops_test.go:369: Writer 2, op 17: Added peer concurrent_write_peer2_17
+2025/03/04 15:36:49.502981 sqlops_test.go:369: Writer 4, op 19: Added peer concurrent_write_peer4_19
+2025/03/04 15:36:49.508263 sqlops_test.go:385: Writer goroutine 4 completed
+2025/03/04 15:36:49.523628 sqlops_test.go:369: Writer 0, op 18: Added peer concurrent_write_peer0_18
+2025/03/04 15:36:49.543999 sqlops_test.go:369: Writer 1, op 18: Added peer concurrent_write_peer1_18
+2025/03/04 15:36:49.558413 sqlops_test.go:369: Writer 3, op 18: Added peer concurrent_write_peer3_18
+2025/03/04 15:36:49.572104 sqlops_test.go:369: Writer 2, op 18: Added peer concurrent_write_peer2_18
+2025/03/04 15:36:49.585249 sqlops_test.go:369: Writer 0, op 19: Added peer concurrent_write_peer0_19
+2025/03/04 15:36:49.590811 sqlops_test.go:385: Writer goroutine 0 completed
+2025/03/04 15:36:49.605667 sqlops_test.go:369: Writer 1, op 19: Added peer concurrent_write_peer1_19
+2025/03/04 15:36:49.611110 sqlops_test.go:385: Writer goroutine 1 completed
+2025/03/04 15:36:49.626998 sqlops_test.go:369: Writer 3, op 19: Added peer concurrent_write_peer3_19
+2025/03/04 15:36:49.632524 sqlops_test.go:385: Writer goroutine 3 completed
+2025/03/04 15:36:49.647978 sqlops_test.go:369: Writer 2, op 19: Added peer concurrent_write_peer2_19
+2025/03/04 15:36:49.653243 sqlops_test.go:385: Writer goroutine 2 completed
+2025/03/04 15:36:49.653488 sqlops_test.go:401: Final check: Found 105 peers after concurrent operations
+2025/03/04 15:36:49.653506 sqlops_test.go:404: === Test Completed: Concurrent Operations ===
+2025/03/04 15:36:49.653585 sqlops_test.go:407: All tests completed
+2025/03/04 15:36:49.653593 sqlops_test.go:35: ===== DB Test Log Ended =====
