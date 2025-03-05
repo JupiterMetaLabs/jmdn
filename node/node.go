@@ -25,7 +25,7 @@ type PeerConfig struct {
     PrivKeyB64 string `json:"priv_key"` // Base64 encoded private key
 }
 
-const peerFile = "peer.json"
+const peerFile = "config/peer.json"
 
 func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
     var config PeerConfig
