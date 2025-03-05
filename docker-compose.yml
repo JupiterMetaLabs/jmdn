@@ -63,7 +63,6 @@ services:
       - ./loki-config.yaml:/etc/loki/local-config.yaml
     networks:
       - monitoring
-
       
   promtail:
     image: grafana/promtail:latest
