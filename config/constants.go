@@ -38,6 +38,8 @@ const (
     MaxTrackedPeers = 1000       // Maximum number of peers to track
     PeerTTL         = 3600       // Time in seconds before a peer is considered stale
     AdvertiseInterval = 300      // How often seed nodes advertise themselves (seconds)
+    HeartbeatFailureThreshold = 3
+    HeartbeatRemovalThreshold = 9
 )
 
 // Node represents our libp2p service with network integration

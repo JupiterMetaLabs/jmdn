@@ -25,7 +25,7 @@ type PeerConfig struct {
     PrivKeyB64 string `json:"priv_key"` // Base64 encoded private key
 }
 
-const peerFile = "config/peer.json"
+const peerFile = "./config/peer.json"
 
 func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
     var config PeerConfig
@@ -150,8 +150,6 @@ func NewNode() (*config.Node, error) {
 	// Start peer discovery using mDNS (optional)
 	go StartDiscovery(h)
 
-	fmt.Printf("Node started with ID: %s\n", h.ID().String())
-	fmt.Printf("Addresses: %v\n", h.Addrs())
 	return &localNode, nil
 }
 

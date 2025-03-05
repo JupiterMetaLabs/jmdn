@@ -1,20 +1,21 @@
 package node
 
 import (
-    "context"
-    "database/sql"
-    "fmt"
-    "gossipnode/config"
-	"gossipnode/metrics"
+	"context"
+	"database/sql"
+	"fmt"
+	"gossipnode/DB_OPs/sqlops"
+	"gossipnode/config"
 	"gossipnode/logging"
-    "strings"
-    "sync"
-    "time"
+	"gossipnode/metrics"
+	"strings"
+	"sync"
+	"time"
 
-    "github.com/libp2p/go-libp2p/core/host"
-    "github.com/libp2p/go-libp2p/core/network"
-    "github.com/libp2p/go-libp2p/core/peer"
-    "github.com/multiformats/go-multiaddr"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 )
 
 var logger = logging.GetSubLogger("nodemanager")
@@ -106,6 +107,8 @@ func NewNodeManager(node *config.Node) (*NodeManager, error) {
         return nil, fmt.Errorf("failed to load managed peers: %w", err)
     }
 
+    // manager.DisplayDBPeers()
+
     // Set up heartbeat handler
 	logger.Info().Int("managed_peers", len(manager.trackedPeers)).Msg("Node Manager initialized")
     node.Host.SetStreamHandler(config.HeartbeatProtocol, manager.handleHeartbeat)
@@ -140,64 +143,94 @@ func (nm *NodeManager) initConnectedPeersTable() error {
 // loadManagedPeers loads connected peers from the database
 func (nm *NodeManager) loadManagedPeers() error {
     startTime := time.Now()
-    nm.mutex.Lock()
-    defer nm.mutex.Unlock()
-
-    query := fmt.Sprintf("SELECT peer_id, multiaddr, last_seen, heartbeat_fail, is_alive FROM %s", config.ConnectedPeers)
-    rows, err := nm.db.Query(query)
     
-    // Record database metrics
-    duration := time.Since(startTime).Seconds()
-    metrics.DatabaseLatency.WithLabelValues("select_peers").Observe(duration)
+    // Create UnifiedDB instance to access the function
+    udb := &sqlops.UnifiedDB{DB: nm.db}
+    
+    // Call the function to get peers
+    peers, err := udb.GetConnectedPeers()
     if err != nil {
+        logger.Error().
+            Err(err).
+            Msg("Failed to get connected peers")
         metrics.DatabaseOperations.WithLabelValues("select_peers", "failure").Inc()
-        return err
+        return fmt.Errorf("failed to get connected peers: %w", err)
     }
     metrics.DatabaseOperations.WithLabelValues("select_peers", "success").Inc()
     
-    defer rows.Close()
-
+    // Now update the in-memory tracked peers
+    nm.mutex.Lock()
+    defer nm.mutex.Unlock()
+    
     loadedCount := 0
     activeCount := 0
-    for rows.Next() {
-        var peerIDStr string
-        var managedPeer ManagedPeer
-        var isAlive int
-
-        if err := rows.Scan(&peerIDStr, &managedPeer.Multiaddr, &managedPeer.LastSeen, &managedPeer.HeartbeatFail, &isAlive); err != nil {
-            fmt.Printf("Error scanning peer row: %v\n", err)
-            continue
-        }
-
-        // Use the peer package's Decode function
-        peerID, err := peer.Decode(peerIDStr)
+    
+    for _, dbPeer := range peers {
+        // Use the peer package's Decode function to get a peer.ID
+        peerID, err := peer.Decode(dbPeer.PeerID)
         if err != nil {
-            fmt.Printf("Warning: Invalid peer ID in database: %s\n", peerIDStr)
+            logger.Warn().
+                Err(err).
+                Str("peer_id", dbPeer.PeerID).
+                Msg("Invalid peer ID in database")
             continue
         }
-
-        managedPeer.ID = peerID
-        managedPeer.IsAlive = isAlive == 1
-        nm.trackedPeers[peerID] = &managedPeer
+        
+        // Create a managed peer object
+        managedPeer := &ManagedPeer{
+            ID:            peerID,
+            Multiaddr:     dbPeer.Multiaddr,
+            LastSeen:      dbPeer.LastSeen,
+            HeartbeatFail: dbPeer.HeartbeatFail,
+            IsAlive:       dbPeer.IsAlive,
+        }
+        
+        // Store in tracked peers map
+        nm.trackedPeers[peerID] = managedPeer
         loadedCount++
         
-        if managedPeer.IsAlive {
+        if dbPeer.IsAlive {
             activeCount++
         }
     }
-
+    
     // Update metrics
     metrics.ManagedPeersGauge.Set(float64(loadedCount))
     metrics.ActivePeersGauge.Set(float64(activeCount))
-
-    fmt.Printf("Loaded %d managed peers from database\n", loadedCount)
+    
+    duration := time.Since(startTime).Seconds()
+    logger.Info().
+        Int("loaded", loadedCount).
+        Int("active", activeCount).
+        Float64("duration_seconds", duration).
+        Msg("Loaded managed peers from database")
+    
+    fmt.Printf("Loaded %d managed peers from database in %.2f seconds\n", loadedCount, duration)
+    
     return nil
+}
+
+func (nm *NodeManager) DisplayDBPeers() {
+    // Create UnifiedDB instance to access the function
+    udb := &sqlops.UnifiedDB{DB: nm.db}
+    
+    // Call the function
+    peers, err := udb.GetConnectedPeers()
+    if err != nil {
+        fmt.Printf("Error getting peers: %v\n", err)
+        return
+    }
+
+    fmt.Println("Connected Peers:")
+    for i, peer := range peers {
+        fmt.Printf("  %d. ID: %s, Multiaddr: %s, Last Seen: %s, Alive: %v\n", i+1, peer.PeerID, peer.Multiaddr, time.Unix(peer.LastSeen, 0), peer.IsAlive)
+    }
 }
 
 // StartHeartbeat starts the heartbeat process for managed peers
 func (nm *NodeManager) StartHeartbeat(intervalSeconds int) {
     if intervalSeconds <= 0 {
-        intervalSeconds = 300 // Default to 5 minutes
+        intervalSeconds = 300
     }
 
     interval := time.Duration(intervalSeconds) * time.Second
@@ -335,7 +368,7 @@ func (nm *NodeManager) RemovePeer(peerIDStr string) error {
 
 	fmt.Printf("Peer %s removed from management\n", peerID)
 	return nil
-	}
+}
 
 // ListManagedPeers returns the list of managed peers
 func (nm *NodeManager) ListManagedPeers() []*ManagedPeer {
@@ -397,181 +430,6 @@ func (nm *NodeManager) UpdatePeerStatus(peerID peer.ID, isAlive bool, failCount 
 
     return nil
 }
-
-// sendHeartbeat sends a heartbeat to a specific peer
-// func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
-//     nm.mutex.RLock()
-//     peers, exists := nm.trackedPeers[peerID]
-//     nm.mutex.RUnlock()
-
-//     if !exists {
-//         return false, fmt.Errorf("peer %s not found in managed peers", peerID)
-//     }
-
-// 	// Increase sent counter
-// 	metrics.HeartbeatSentCounter.Inc()
-// 	startTime := time.Now()
-
-//     // Parse multiaddress
-//     addr, err := multiaddr.NewMultiaddr(peers.Multiaddr)
-//     if err != nil {
-//         return false, fmt.Errorf("invalid stored multiaddress: %w", err)
-//     }
-
-//     // Extract peer info
-//     peerInfo, err := peer.AddrInfoFromP2pAddr(addr)
-//     if err != nil {
-//         return false, fmt.Errorf("invalid peer info: %w", err)
-//     }
-
-//     // Try to connect if not connected
-//     ctx, cancel := context.WithTimeout(nm.ctx, 5*time.Second)
-//     defer cancel()
-
-//     if err := nm.host.Connect(ctx, *peerInfo); err != nil {
-//         fmt.Printf("Failed to connect to peer %s: %v\n", peerID, err)
-//         return false, err
-//     }
-
-//     // Open a heartbeat stream
-//     stream, err := nm.host.NewStream(ctx, peerID, config.HeartbeatProtocol)
-//     if err != nil {
-//         metrics.HeartbeatFailedCounter.Inc()
-//         return false, fmt.Errorf("failed to open heartbeat stream: %w", err)
-//     }
-//     defer stream.Close()
-
-//     // Write a simple heartbeat message
-//     _, err = stream.Write([]byte("HEARTBEAT\n"))
-//     if err != nil {
-//         metrics.HeartbeatFailedCounter.Inc()
-//         return false, fmt.Errorf("failed to send heartbeat: %w", err)
-//     }
-
-//     // Wait for response with a timeout
-//     responseBytes := make([]byte, 16)
-//     stream.SetReadDeadline(time.Now().Add(5 * time.Second))
-
-//     n, err := stream.Read(responseBytes)
-//     if err != nil {
-//         metrics.HeartbeatFailedCounter.Inc()
-//         return false, fmt.Errorf("failed to read heartbeat response: %w", err)
-//     }
-
-//     // Record heartbeat latency
-//     duration := time.Since(startTime).Seconds()
-//     metrics.HeartbeatLatency.WithLabelValues(peerID.String()).Observe(duration)
-
-//     response := string(responseBytes[:n])
-//     if !strings.Contains(response, "OK") {
-//         metrics.HeartbeatFailedCounter.Inc()
-//         return false, fmt.Errorf("invalid heartbeat response: %s", response)
-//     }
-
-//     return true, nil
-// }
-
-// // handleHeartbeat processes incoming heartbeat requests
-// func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
-//     defer stream.Close()
-
-//     // Get the peer's info
-//     remotePeer := stream.Conn().RemotePeer()
-
-//     // Increment received counter
-//     metrics.HeartbeatReceivedCounter.Inc()
-
-//     // Read the heartbeat message (optional)
-//     buf := make([]byte, 64)
-//     _, err := stream.Read(buf)
-//     if err != nil {
-//         fmt.Printf("Error reading heartbeat from %s: %v\n", remotePeer, err)
-//         return
-//     }
-
-//     // Send heartbeat response
-//     _, err = stream.Write([]byte("OK\n"))
-//     if err != nil {
-//         fmt.Printf("Error sending heartbeat response to %s: %v\n", remotePeer, err)
-//         return
-//     }
-
-//     // Update the peer's status if it's one of our managed peers
-//     nm.mutex.RLock()
-//     if peer, exists := nm.trackedPeers[remotePeer]; exists {
-//         nm.mutex.RUnlock()
-//         peer.LastSeen = time.Now().Unix()
-//         peer.IsAlive = true
-//         peer.HeartbeatFail = 0
-
-//         // Update in DB
-//         query := fmt.Sprintf(`
-//         UPDATE %s 
-//         SET last_seen = ?, heartbeat_fail = ?, is_alive = ?
-//         WHERE peer_id = ?`, config.ConnectedPeers)
-
-//         _, err = nm.db.Exec(query, peer.LastSeen, 0, 1, remotePeer.String())
-//         if err != nil {
-//             fmt.Printf("Failed to update peer %s status: %v\n", remotePeer, err)
-//         }
-//     } else {
-//         nm.mutex.RUnlock()
-//     }
-
-//     fmt.Printf("Received heartbeat from peer: %s\n", remotePeer)
-// }
-
-// performHeartbeat sends heartbeats to all managed peers
-// func (nm *NodeManager) performHeartbeat() {
-//     fmt.Println("Starting heartbeat cycle to all managed peers...")
-
-//     metrics.ConnectedPeersGauge.Set(float64(len(nm.host.Network().Peers())))
-
-//     nm.mutex.RLock()
-//     peers := make([]peer.ID, 0, len(nm.trackedPeers))
-//     for id := range nm.trackedPeers {
-//         peers = append(peers, id)
-//     }
-//     nm.mutex.RUnlock()
-
-//     var wg sync.WaitGroup
-//     for _, peerID := range peers {
-//         wg.Add(1)
-//         go func(id peer.ID) {
-//             defer wg.Done()
-
-//             nm.mutex.RLock()
-//             peer := nm.trackedPeers[id]
-//             failCount := peer.HeartbeatFail
-//             nm.mutex.RUnlock()
-
-//             fmt.Printf("Sending heartbeat to %s...\n", id)
-//             success, err := nm.sendHeartbeat(id)
-
-//             if err != nil {
-//                 failCount++
-//                 fmt.Printf("Heartbeat to %s failed (%d consecutive failures): %v\n", id, failCount, err)
-//             } else {
-//                 fmt.Printf("Heartbeat to %s successful\n", id)
-//                 failCount = 0
-//             }
-
-//             // Update peer status
-//             err = nm.UpdatePeerStatus(id, success, failCount)
-//             if err != nil {
-//                 fmt.Printf("Failed to update status for peer %s: %v\n", id, err)
-//             }
-
-//             // If too many consecutive failures, mark as offline
-//             if failCount >= 3 {
-//                 fmt.Printf("Peer %s has failed %d consecutive heartbeats, marking as offline\n", id, failCount)
-//             }
-//         }(peerID)
-//     }
-
-//     wg.Wait()
-//     fmt.Println("Heartbeat cycle completed")
-// }
 
 func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
     defer stream.Close()
@@ -706,6 +564,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
     return true, nil
 }
 
+// Update the performHeartbeat function to include auto-removal logic
 func (nm *NodeManager) performHeartbeat() {
     logger.Info().
         Int("managed_peers", len(nm.trackedPeers)).
@@ -770,10 +629,31 @@ func (nm *NodeManager) performHeartbeat() {
             }
 
             // If too many consecutive failures, mark as offline
-            if failCount >= 3 {
-                peerLogger.Warn().
-                    Int("failures", failCount).
-                    Msg("Peer marked as offline due to consecutive heartbeat failures")
+			if failCount >= config.HeartbeatFailureThreshold {
+				peerLogger.Warn().
+					Int("failures", failCount).
+					Msg("Peer marked as offline due to consecutive heartbeat failures")
+			}
+			
+
+            // NEW CODE: Auto-remove peers with excessive failures (9+)
+			if failCount >= config.HeartbeatRemovalThreshold {
+				peerLogger.Warn().
+					Int("failures", failCount).
+					Msg("Removing peer due to excessive consecutive failures")
+				
+                // Remove the peer from management
+                if err := nm.RemovePeer(id.String()); err != nil {
+                    peerLogger.Error().
+                        Err(err).
+                        Msg("Failed to remove unreachable peer")
+                } else {
+                    peerLogger.Info().
+                        Msg("Peer removed from management after 9 consecutive failures")
+                    
+                    // Send custom metric for peer removal
+                    metrics.PeerRemovedCounter.WithLabelValues("excessive_failures").Inc()
+                }
             }
         }(peerID)
     }
@@ -813,4 +693,26 @@ func boolToInt(b bool) int {
         return 1
     }
     return 0
+}
+
+func (nm *NodeManager) CleanupOfflinePeers(minFailures int) (int, error) {
+    nm.mutex.Lock()
+    defer nm.mutex.Unlock()
+    
+    var removedCount int
+    var peersToRemove []peer.ID
+    
+    for id, peer := range nm.trackedPeers {
+        if peer.HeartbeatFail >= minFailures {
+            peersToRemove = append(peersToRemove, id)
+        }
+    }
+    
+    for _, id := range peersToRemove {
+        if err := nm.RemovePeer(id.String()); err == nil {
+            removedCount++
+        }
+    }
+    
+    return removedCount, nil
 }

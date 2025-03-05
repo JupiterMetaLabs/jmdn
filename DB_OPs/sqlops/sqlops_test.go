@@ -1,16 +1,19 @@
 package sqlops
 
 import (
-    "fmt"
-    "log"
-    "os"
-    "path/filepath"
-    "testing"
-    "time"
+	"database/sql"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
 
-    "gossipnode/config"
-    _ "github.com/mattn/go-sqlite3"
-    "github.com/stretchr/testify/assert"
+	"gossipnode/config"
+
+	_ "github.com/mattn/go-sqlite3"
+	"github.com/stretchr/testify/assert"
 )
 
 var logger *log.Logger
@@ -488,3 +491,106 @@ func TestUnifiedDB(t *testing.T) {
 //     assert.NoError(t, err)
 //     assert.Equal(t, "hash123", merkleHashes["key2"])
 // }
+func TestGetConnectedPeers(t *testing.T) {
+    // Path to the existing database
+    dbPath := "../../DB/gossipnode.db"
+
+    // Check if the database file exists
+    if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+        t.Fatalf("Database file %s does not exist", dbPath)
+    }
+
+    // Open the database
+    db, err := sql.Open("sqlite3", dbPath)
+    if err != nil {
+        t.Fatalf("Failed to open database: %v", err)
+    }
+    defer db.Close()
+
+    // Check connection
+    if err = db.Ping(); err != nil {
+        t.Fatalf("Failed to ping database: %v", err)
+    }
+
+    // Initialize UnifiedDB
+    unifiedDB := &UnifiedDB{
+        DB:    db,
+        mutex: sync.RWMutex{},
+    }
+
+    // First, check if the table exists
+    var tableExists bool
+    err = db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", config.ConnectedPeers).Scan(&tableExists)
+    if err != nil {
+        t.Errorf("Failed to check if table exists: %v", err)
+    }
+
+    if !tableExists {
+        t.Logf("Table %s does not exist in the database", config.ConnectedPeers)
+        // Create the table for testing
+        _, err = db.Exec(fmt.Sprintf(`
+            CREATE TABLE IF NOT EXISTS %s (
+                peer_id TEXT PRIMARY KEY,
+                multiaddr TEXT NOT NULL,
+                last_seen INTEGER NOT NULL,
+                heartbeat_fail INTEGER DEFAULT 0,
+                is_alive BOOLEAN DEFAULT 1
+            )`, config.ConnectedPeers))
+        if err != nil {
+            t.Fatalf("Failed to create table: %v", err)
+        }
+        t.Logf("Created table %s", config.ConnectedPeers)
+
+        // Add a test peer
+        now := time.Now().Unix()
+        _, err = db.Exec(fmt.Sprintf(
+            "INSERT INTO %s (peer_id, multiaddr, last_seen, heartbeat_fail, is_alive) VALUES (?, ?, ?, ?, ?)",
+            config.ConnectedPeers),
+            "12D3KooWTestPeerID123456789ABCDEF", 
+            "/ip6/2001:db8::1/tcp/15000/p2p/12D3KooWTestPeerID123456789ABCDEF",
+            now,
+            0,
+            1,
+        )
+        if err != nil {
+            t.Fatalf("Failed to insert test peer: %v", err)
+        }
+        t.Log("Added test peer to database")
+    }
+
+    // Get row count
+    var count int
+    err = db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", config.ConnectedPeers)).Scan(&count)
+    if err != nil {
+        t.Errorf("Failed to count rows: %v", err)
+    }
+    t.Logf("Table %s contains %d rows", config.ConnectedPeers, count)
+
+    // Call the function being tested
+    peers, err := unifiedDB.GetConnectedPeers()
+    if err != nil {
+        t.Fatalf("GetConnectedPeers failed: %v", err)
+    }
+
+    fmt.Println(peers)
+
+    // Print and verify results
+    t.Logf("Found %d peers in database", len(peers))
+    for i, peer := range peers {
+        t.Logf("Peer %d:", i+1)
+        t.Logf("  ID: %s", peer.PeerID)
+        t.Logf("  Multiaddr: %s", peer.Multiaddr)
+        t.Logf("  Last seen: %s", time.Unix(peer.LastSeen, 0).Format(time.RFC3339))
+        t.Logf("  Heartbeat fail: %d", peer.HeartbeatFail)
+        t.Logf("  Is alive: %v", peer.IsAlive)
+    }
+
+    // Basic validation
+    if count > 0 && len(peers) == 0 {
+        t.Errorf("Database reports %d rows but GetConnectedPeers returned empty result", count)
+    }
+
+    if count == 0 && len(peers) > 0 {
+        t.Errorf("Database reports 0 rows but GetConnectedPeers returned %d peers", len(peers))
+    }
+}

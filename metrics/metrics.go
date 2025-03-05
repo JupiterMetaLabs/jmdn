@@ -131,11 +131,18 @@ var (
     )
 )
 
+var PeerRemovedCounter = promauto.NewCounterVec(
+    prometheus.CounterOpts{
+        Name: "p2p_peers_removed_total",
+        Help: "Total number of peers removed by reason",
+    },
+    []string{"reason"},
+)
+
 // StartMetricsServer starts the HTTP server for Prometheus metrics
 func StartMetricsServer(addr string) {
     http.Handle("/metrics", promhttp.Handler())
     go func() {
-        fmt.Printf("Starting metrics server on %s\n", addr)
         if err := http.ListenAndServe(addr, nil); err != nil {
             fmt.Printf("Error starting metrics server: %v\n", err)
         }

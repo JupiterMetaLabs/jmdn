@@ -1,4 +1,4 @@
 gossipnode
-logs/*
+logs/*.log
 config/peer.json
-DB/*
+DB/*.db

@@ -55,7 +55,7 @@ func main() {
     // Start metrics server (just once)
     metricsAddr := ":" + *metricsPort
     metrics.StartMetricsServer(metricsAddr)
-    fmt.Printf("Metrics available at http://localhost%s/metrics\n", metricsAddr)
+    fmt.Printf("\nMetrics available at http://localhost%s/metrics\n", metricsAddr)
 
 
     // Initialize node manager
@@ -66,8 +66,6 @@ func main() {
     }
     nodeManager.StartHeartbeat(*heartbeatInterval)
     defer nodeManager.Shutdown()
-    fmt.Printf("Node manager started with %d second heartbeat interval\n", *heartbeatInterval)
-
 
     // Configure as seed node if requested
     if *isSeed {
@@ -197,6 +195,14 @@ func main() {
                     fmt.Printf("%d. ID: %s\n   Address: %s\n   Status: %s\n   Last seen: %s\n   Failures: %d\n",
                         i+1, p.ID, p.Multiaddr, status, lastSeen, p.HeartbeatFail)
                 }
+
+			case "cleanpeers":
+				cleaned, err := nodeManager.CleanupOfflinePeers(9) // Remove peers with 9+ failures
+				if err != nil {
+					fmt.Printf("Error cleaning up peers: %v\n", err)
+				} else {
+					fmt.Printf("Cleaned up %d offline peers\n", cleaned)
+				}
 
             default:
                 fmt.Println("Unknown command")
