@@ -6,6 +6,7 @@ import (
     "fmt"
     "gossipnode/config"
 	"gossipnode/metrics"
+	"gossipnode/logging"
     "strings"
     "sync"
     "time"
@@ -15,6 +16,8 @@ import (
     "github.com/libp2p/go-libp2p/core/peer"
     "github.com/multiformats/go-multiaddr"
 )
+
+var logger = logging.GetSubLogger("node_manager")
 
 // NodeManager manages connections to manually specified nodes
 type NodeManager struct {
@@ -392,100 +395,201 @@ func (nm *NodeManager) UpdatePeerStatus(peerID peer.ID, isAlive bool, failCount 
 }
 
 // sendHeartbeat sends a heartbeat to a specific peer
-func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
-    nm.mutex.RLock()
-    peers, exists := nm.trackedPeers[peerID]
-    nm.mutex.RUnlock()
+// func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
+//     nm.mutex.RLock()
+//     peers, exists := nm.trackedPeers[peerID]
+//     nm.mutex.RUnlock()
 
-    if !exists {
-        return false, fmt.Errorf("peer %s not found in managed peers", peerID)
-    }
+//     if !exists {
+//         return false, fmt.Errorf("peer %s not found in managed peers", peerID)
+//     }
 
-	// Increase sent counter
-	metrics.HeartbeatSentCounter.Inc()
-	startTime := time.Now()
+// 	// Increase sent counter
+// 	metrics.HeartbeatSentCounter.Inc()
+// 	startTime := time.Now()
 
-    // Parse multiaddress
-    addr, err := multiaddr.NewMultiaddr(peers.Multiaddr)
-    if err != nil {
-        return false, fmt.Errorf("invalid stored multiaddress: %w", err)
-    }
+//     // Parse multiaddress
+//     addr, err := multiaddr.NewMultiaddr(peers.Multiaddr)
+//     if err != nil {
+//         return false, fmt.Errorf("invalid stored multiaddress: %w", err)
+//     }
 
-    // Extract peer info
-    peerInfo, err := peer.AddrInfoFromP2pAddr(addr)
-    if err != nil {
-        return false, fmt.Errorf("invalid peer info: %w", err)
-    }
+//     // Extract peer info
+//     peerInfo, err := peer.AddrInfoFromP2pAddr(addr)
+//     if err != nil {
+//         return false, fmt.Errorf("invalid peer info: %w", err)
+//     }
 
-    // Try to connect if not connected
-    ctx, cancel := context.WithTimeout(nm.ctx, 5*time.Second)
-    defer cancel()
+//     // Try to connect if not connected
+//     ctx, cancel := context.WithTimeout(nm.ctx, 5*time.Second)
+//     defer cancel()
 
-    if err := nm.host.Connect(ctx, *peerInfo); err != nil {
-        fmt.Printf("Failed to connect to peer %s: %v\n", peerID, err)
-        return false, err
-    }
+//     if err := nm.host.Connect(ctx, *peerInfo); err != nil {
+//         fmt.Printf("Failed to connect to peer %s: %v\n", peerID, err)
+//         return false, err
+//     }
 
-    // Open a heartbeat stream
-    stream, err := nm.host.NewStream(ctx, peerID, config.HeartbeatProtocol)
-    if err != nil {
-        metrics.HeartbeatFailedCounter.Inc()
-        return false, fmt.Errorf("failed to open heartbeat stream: %w", err)
-    }
-    defer stream.Close()
+//     // Open a heartbeat stream
+//     stream, err := nm.host.NewStream(ctx, peerID, config.HeartbeatProtocol)
+//     if err != nil {
+//         metrics.HeartbeatFailedCounter.Inc()
+//         return false, fmt.Errorf("failed to open heartbeat stream: %w", err)
+//     }
+//     defer stream.Close()
 
-    // Write a simple heartbeat message
-    _, err = stream.Write([]byte("HEARTBEAT\n"))
-    if err != nil {
-        metrics.HeartbeatFailedCounter.Inc()
-        return false, fmt.Errorf("failed to send heartbeat: %w", err)
-    }
+//     // Write a simple heartbeat message
+//     _, err = stream.Write([]byte("HEARTBEAT\n"))
+//     if err != nil {
+//         metrics.HeartbeatFailedCounter.Inc()
+//         return false, fmt.Errorf("failed to send heartbeat: %w", err)
+//     }
 
-    // Wait for response with a timeout
-    responseBytes := make([]byte, 16)
-    stream.SetReadDeadline(time.Now().Add(5 * time.Second))
+//     // Wait for response with a timeout
+//     responseBytes := make([]byte, 16)
+//     stream.SetReadDeadline(time.Now().Add(5 * time.Second))
 
-    n, err := stream.Read(responseBytes)
-    if err != nil {
-        metrics.HeartbeatFailedCounter.Inc()
-        return false, fmt.Errorf("failed to read heartbeat response: %w", err)
-    }
+//     n, err := stream.Read(responseBytes)
+//     if err != nil {
+//         metrics.HeartbeatFailedCounter.Inc()
+//         return false, fmt.Errorf("failed to read heartbeat response: %w", err)
+//     }
 
-    // Record heartbeat latency
-    duration := time.Since(startTime).Seconds()
-    metrics.HeartbeatLatency.WithLabelValues(peerID.String()).Observe(duration)
+//     // Record heartbeat latency
+//     duration := time.Since(startTime).Seconds()
+//     metrics.HeartbeatLatency.WithLabelValues(peerID.String()).Observe(duration)
 
-    response := string(responseBytes[:n])
-    if !strings.Contains(response, "OK") {
-        metrics.HeartbeatFailedCounter.Inc()
-        return false, fmt.Errorf("invalid heartbeat response: %s", response)
-    }
+//     response := string(responseBytes[:n])
+//     if !strings.Contains(response, "OK") {
+//         metrics.HeartbeatFailedCounter.Inc()
+//         return false, fmt.Errorf("invalid heartbeat response: %s", response)
+//     }
 
-    return true, nil
-}
+//     return true, nil
+// }
 
-// handleHeartbeat processes incoming heartbeat requests
+// // handleHeartbeat processes incoming heartbeat requests
+// func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
+//     defer stream.Close()
+
+//     // Get the peer's info
+//     remotePeer := stream.Conn().RemotePeer()
+
+//     // Increment received counter
+//     metrics.HeartbeatReceivedCounter.Inc()
+
+//     // Read the heartbeat message (optional)
+//     buf := make([]byte, 64)
+//     _, err := stream.Read(buf)
+//     if err != nil {
+//         fmt.Printf("Error reading heartbeat from %s: %v\n", remotePeer, err)
+//         return
+//     }
+
+//     // Send heartbeat response
+//     _, err = stream.Write([]byte("OK\n"))
+//     if err != nil {
+//         fmt.Printf("Error sending heartbeat response to %s: %v\n", remotePeer, err)
+//         return
+//     }
+
+//     // Update the peer's status if it's one of our managed peers
+//     nm.mutex.RLock()
+//     if peer, exists := nm.trackedPeers[remotePeer]; exists {
+//         nm.mutex.RUnlock()
+//         peer.LastSeen = time.Now().Unix()
+//         peer.IsAlive = true
+//         peer.HeartbeatFail = 0
+
+//         // Update in DB
+//         query := fmt.Sprintf(`
+//         UPDATE %s 
+//         SET last_seen = ?, heartbeat_fail = ?, is_alive = ?
+//         WHERE peer_id = ?`, config.ConnectedPeers)
+
+//         _, err = nm.db.Exec(query, peer.LastSeen, 0, 1, remotePeer.String())
+//         if err != nil {
+//             fmt.Printf("Failed to update peer %s status: %v\n", remotePeer, err)
+//         }
+//     } else {
+//         nm.mutex.RUnlock()
+//     }
+
+//     fmt.Printf("Received heartbeat from peer: %s\n", remotePeer)
+// }
+
+// performHeartbeat sends heartbeats to all managed peers
+// func (nm *NodeManager) performHeartbeat() {
+//     fmt.Println("Starting heartbeat cycle to all managed peers...")
+
+//     metrics.ConnectedPeersGauge.Set(float64(len(nm.host.Network().Peers())))
+
+//     nm.mutex.RLock()
+//     peers := make([]peer.ID, 0, len(nm.trackedPeers))
+//     for id := range nm.trackedPeers {
+//         peers = append(peers, id)
+//     }
+//     nm.mutex.RUnlock()
+
+//     var wg sync.WaitGroup
+//     for _, peerID := range peers {
+//         wg.Add(1)
+//         go func(id peer.ID) {
+//             defer wg.Done()
+
+//             nm.mutex.RLock()
+//             peer := nm.trackedPeers[id]
+//             failCount := peer.HeartbeatFail
+//             nm.mutex.RUnlock()
+
+//             fmt.Printf("Sending heartbeat to %s...\n", id)
+//             success, err := nm.sendHeartbeat(id)
+
+//             if err != nil {
+//                 failCount++
+//                 fmt.Printf("Heartbeat to %s failed (%d consecutive failures): %v\n", id, failCount, err)
+//             } else {
+//                 fmt.Printf("Heartbeat to %s successful\n", id)
+//                 failCount = 0
+//             }
+
+//             // Update peer status
+//             err = nm.UpdatePeerStatus(id, success, failCount)
+//             if err != nil {
+//                 fmt.Printf("Failed to update status for peer %s: %v\n", id, err)
+//             }
+
+//             // If too many consecutive failures, mark as offline
+//             if failCount >= 3 {
+//                 fmt.Printf("Peer %s has failed %d consecutive heartbeats, marking as offline\n", id, failCount)
+//             }
+//         }(peerID)
+//     }
+
+//     wg.Wait()
+//     fmt.Println("Heartbeat cycle completed")
+// }
+
 func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
     defer stream.Close()
-
-    // Get the peer's info
+    
     remotePeer := stream.Conn().RemotePeer()
-
-    // Increment received counter
+    peerLogger := logger.With().Str("remote_peer", remotePeer.String()).Logger()
+    
+    peerLogger.Debug().Msg("Received heartbeat")
     metrics.HeartbeatReceivedCounter.Inc()
 
     // Read the heartbeat message (optional)
     buf := make([]byte, 64)
     _, err := stream.Read(buf)
     if err != nil {
-        fmt.Printf("Error reading heartbeat from %s: %v\n", remotePeer, err)
+        peerLogger.Error().Err(err).Msg("Error reading heartbeat")
         return
     }
 
     // Send heartbeat response
     _, err = stream.Write([]byte("OK\n"))
     if err != nil {
-        fmt.Printf("Error sending heartbeat response to %s: %v\n", remotePeer, err)
+        peerLogger.Error().Err(err).Msg("Error sending heartbeat response")
         return
     }
 
@@ -505,20 +609,90 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 
         _, err = nm.db.Exec(query, peer.LastSeen, 0, 1, remotePeer.String())
         if err != nil {
-            fmt.Printf("Failed to update peer %s status: %v\n", remotePeer, err)
+            peerLogger.Error().Err(err).Msg("Failed to update peer status in database")
+        } else {
+            peerLogger.Debug().Msg("Updated peer status in database")
         }
     } else {
         nm.mutex.RUnlock()
+        peerLogger.Debug().Msg("Heartbeat from non-managed peer")
     }
-
-    fmt.Printf("Received heartbeat from peer: %s\n", remotePeer)
 }
 
-// performHeartbeat sends heartbeats to all managed peers
-func (nm *NodeManager) performHeartbeat() {
-    fmt.Println("Starting heartbeat cycle to all managed peers...")
+func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
+    peerLogger := logger.With().Str("peer_id", peerID.String()).Logger()
+    metrics.HeartbeatSentCounter.Inc()
 
+    nm.mutex.RLock()
+    peers, exists := nm.trackedPeers[peerID]
+    nm.mutex.RUnlock()
+
+    if !exists {
+        return false, fmt.Errorf("peer %s not found in managed peers", peerID)
+    }
+
+    // Parse multiaddress
+    addr, err := multiaddr.NewMultiaddr(peers.Multiaddr)
+    if err != nil {
+        return false, fmt.Errorf("invalid stored multiaddress: %w", err)
+    }
+
+    // Extract peer info
+    peerInfo, err := peer.AddrInfoFromP2pAddr(addr)
+    if err != nil {
+        return false, fmt.Errorf("invalid peer info: %w", err)
+    }
+
+    // Try to connect if not connected
+    ctx, cancel := context.WithTimeout(nm.ctx, 5*time.Second)
+    defer cancel()
+
+    peerLogger.Debug().Msg("Attempting to connect")
+
+    if err := nm.host.Connect(ctx, *peerInfo); err != nil {
+        peerLogger.Debug().Err(err).Msg("Connection failed")
+        return false, err
+    }
+
+    // Open a heartbeat stream
+    stream, err := nm.host.NewStream(ctx, peerID, config.HeartbeatProtocol)
+    if err != nil {
+        return false, fmt.Errorf("failed to open heartbeat stream: %w", err)
+    }
+    defer stream.Close()
+
+    // Write a simple heartbeat message
+    _, err = stream.Write([]byte("HEARTBEAT\n"))
+    if err != nil {
+        return false, fmt.Errorf("failed to send heartbeat: %w", err)
+    }
+
+    // Wait for response with a timeout
+    responseBytes := make([]byte, 16)
+    stream.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+    n, err := stream.Read(responseBytes)
+    if err != nil {
+        return false, fmt.Errorf("failed to read heartbeat response: %w", err)
+    }
+
+    response := string(responseBytes[:n])
+    if !strings.Contains(response, "OK") {
+        return false, fmt.Errorf("invalid heartbeat response: %s", response)
+    }
+
+    return true, nil
+}
+
+func (nm *NodeManager) performHeartbeat() {
+    logger.Info().
+        Int("managed_peers", len(nm.trackedPeers)).
+        Int("connected_peers", len(nm.host.Network().Peers())).
+        Msg("Starting heartbeat cycle")
+
+    // Update metrics
     metrics.ConnectedPeersGauge.Set(float64(len(nm.host.Network().Peers())))
+    metrics.ManagedPeersGauge.Set(float64(len(nm.trackedPeers)))
 
     nm.mutex.RLock()
     peers := make([]peer.ID, 0, len(nm.trackedPeers))
@@ -533,37 +707,73 @@ func (nm *NodeManager) performHeartbeat() {
         go func(id peer.ID) {
             defer wg.Done()
 
+            peerLogger := logger.With().Str("peer_id", id.String()).Logger()
+
             nm.mutex.RLock()
             peer := nm.trackedPeers[id]
             failCount := peer.HeartbeatFail
             nm.mutex.RUnlock()
 
-            fmt.Printf("Sending heartbeat to %s...\n", id)
+            peerLogger.Debug().Msg("Sending heartbeat")
+
+            // Record start time for latency measurement
+            startTime := time.Now()
             success, err := nm.sendHeartbeat(id)
+            latency := time.Since(startTime).Seconds()
 
             if err != nil {
                 failCount++
-                fmt.Printf("Heartbeat to %s failed (%d consecutive failures): %v\n", id, failCount, err)
+                peerLogger.Warn().
+                    Int("failures", failCount).
+                    Err(err).
+                    Float64("latency_seconds", latency).
+                    Msg("Heartbeat failed")
+
+                metrics.HeartbeatFailedCounter.Inc()
             } else {
-                fmt.Printf("Heartbeat to %s successful\n", id)
+                peerLogger.Info().
+                    Float64("latency_seconds", latency).
+                    Msg("Heartbeat successful")
+                
                 failCount = 0
+                metrics.HeartbeatLatency.WithLabelValues(id.String()).Observe(latency)
             }
 
             // Update peer status
             err = nm.UpdatePeerStatus(id, success, failCount)
             if err != nil {
-                fmt.Printf("Failed to update status for peer %s: %v\n", id, err)
+                peerLogger.Error().
+                    Err(err).
+                    Msg("Failed to update peer status")
             }
 
             // If too many consecutive failures, mark as offline
             if failCount >= 3 {
-                fmt.Printf("Peer %s has failed %d consecutive heartbeats, marking as offline\n", id, failCount)
+                peerLogger.Warn().
+                    Int("failures", failCount).
+                    Msg("Peer marked as offline due to consecutive heartbeat failures")
             }
         }(peerID)
     }
 
     wg.Wait()
-    fmt.Println("Heartbeat cycle completed")
+    
+    // Count active peers
+    activeCount := 0
+    nm.mutex.RLock()
+    for _, peer := range nm.trackedPeers {
+        if peer.IsAlive {
+            activeCount++
+        }
+    }
+    nm.mutex.RUnlock()
+    
+    metrics.ActivePeersGauge.Set(float64(activeCount))
+    
+    logger.Info().
+        Int("active_peers", activeCount).
+        Int("total_peers", len(nm.trackedPeers)).
+        Msg("Heartbeat cycle completed")
 }
 
 // Shutdown closes all resources

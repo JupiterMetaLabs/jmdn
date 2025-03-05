@@ -80,6 +80,7 @@ import (
 
 	"gossipnode/metrics"
 	"gossipnode/node"
+	"gossipnode/logging"
 	"gossipnode/seed"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -93,7 +94,17 @@ func main() {
     connect := flag.String("connect", "", "Connect to a seed node (multiaddr)")
     heartbeatInterval := flag.Int("heartbeat", 300, "Heartbeat interval in seconds (default: 300)")
     metricsPort := flag.String("metrics", "8080", "Port for Prometheus metrics")
+    logDir := flag.String("logdir", "./logs", "Directory for log files")
+    logToConsole := flag.Bool("console", false, "Also log to console")
     flag.Parse()
+
+   // Initialize logger
+	logFileName := fmt.Sprintf("p2p-node-%s.log", time.Now().Format("2006-01-02"))
+	if err := logging.InitLogger(*logDir, logFileName, *logToConsole); err != nil {
+		fmt.Printf("Failed to initialize logger: %v\n", err)
+	   	return
+   	}
+	defer logging.Close()
 
     // Start the node
     n, err := node.NewNode()

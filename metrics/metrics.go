@@ -121,6 +121,14 @@ var (
         },
         []string{"operation"},
     )
+
+	LogEntries = promauto.NewCounterVec(
+        prometheus.CounterOpts{
+            Name: "p2p_log_entries_total",
+            Help: "Total number of log entries",
+        },
+        []string{"level", "component"},
+    )
 )
 
 // StartMetricsServer starts the HTTP server for Prometheus metrics
