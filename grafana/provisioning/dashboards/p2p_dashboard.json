@@ -3,17 +3,14 @@
       "list": [
         {
           "builtIn": 1,
-          "datasource": "-- Grafana --",
+          "datasource": {
+            "type": "grafana",
+            "uid": "-- Grafana --"
+          },
           "enable": true,
           "hide": true,
           "iconColor": "rgba(0, 211, 255, 1)",
           "name": "Annotations & Alerts",
-          "target": {
-            "limit": 100,
-            "matchAny": false,
-            "tags": [],
-            "type": "dashboard"
-          },
           "type": "dashboard"
         }
       ]
@@ -21,17 +18,36 @@
     "editable": true,
     "fiscalYearStartMonth": 0,
     "graphTooltip": 0,
+    "id": null,
     "links": [],
     "liveNow": false,
     "panels": [
       {
-        "datasource": "Prometheus",
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 0
+        },
+        "id": 10,
+        "panels": [],
+        "title": "Peer Connections",
+        "type": "row"
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "PBFA97CFB590B2093"
+        },
         "fieldConfig": {
           "defaults": {
             "color": {
               "mode": "palette-classic"
             },
             "custom": {
+              "axisCenteredZero": false,
+              "axisColorMode": "text",
               "axisLabel": "",
               "axisPlacement": "auto",
               "barAlignment": 0,
@@ -50,7 +66,206 @@
                 "type": "linear"
               },
               "showPoints": "never",
-              "spanNulls": true,
+              "spanNulls": false,
+              "stacking": {
+                "group": "A",
+                "mode": "normal"
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            },
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "red",
+                  "value": 80
+                }
+              ]
+            },
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 1
+        },
+        "id": 1,
+        "options": {
+          "legend": {
+            "calcs": [],
+            "displayMode": "list",
+            "placement": "bottom",
+            "showLegend": true
+          },
+          "tooltip": {
+            "mode": "single",
+            "sort": "none"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "PBFA97CFB590B2093"
+            },
+            "editorMode": "code",
+            "expr": "p2p_connected_peers_total",
+            "instant": false,
+            "legendFormat": "Connected",
+            "range": true,
+            "refId": "A"
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "PBFA97CFB590B2093"
+            },
+            "editorMode": "code",
+            "expr": "p2p_managed_peers_total",
+            "hide": false,
+            "instant": false,
+            "legendFormat": "Managed",
+            "range": true,
+            "refId": "B"
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "PBFA97CFB590B2093"
+            },
+            "editorMode": "code",
+            "expr": "p2p_active_peers_total",
+            "hide": false,
+            "instant": false,
+            "legendFormat": "Active",
+            "range": true,
+            "refId": "C"
+          }
+        ],
+        "title": "Peer Connections",
+        "type": "timeseries"
+      },
+      {
+        "datasource": {
+          "type": "loki",
+          "uid": "P8E80F9AEF21F6940"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "align": "auto",
+              "cellOptions": {
+                "type": "auto"
+              },
+              "inspect": false
+            },
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "red",
+                  "value": 80
+                }
+              ]
+            }
+          },
+          "overrides": []
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 1
+        },
+        "id": 6,
+        "options": {
+          "cellHeight": "sm",
+          "footer": {
+            "countRows": false,
+            "fields": "",
+            "reducer": [
+              "sum"
+            ],
+            "show": false
+          },
+          "showHeader": true
+        },
+        "pluginVersion": "9.5.6",
+        "targets": [
+          {
+            "datasource": {
+              "type": "loki",
+              "uid": "P8E80F9AEF21F6940"
+            },
+            "editorMode": "builder",
+            "expr": "{job=\"p2p_logs\", component=\"node_manager\"} |= \"Heartbeat\"",
+            "queryType": "range",
+            "refId": "A"
+          }
+        ],
+        "title": "Heartbeat Logs",
+        "type": "table"
+      },
+      {
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 9
+        },
+        "id": 9,
+        "panels": [],
+        "title": "Heartbeats",
+        "type": "row"
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "PBFA97CFB590B2093"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "axisCenteredZero": false,
+              "axisColorMode": "text",
+              "axisLabel": "",
+              "axisPlacement": "auto",
+              "barAlignment": 0,
+              "drawStyle": "line",
+              "fillOpacity": 10,
+              "gradientMode": "none",
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "viz": false
+              },
+              "lineInterpolation": "linear",
+              "lineWidth": 1,
+              "pointSize": 5,
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "showPoints": "never",
+              "spanNulls": false,
               "stacking": {
                 "group": "A",
                 "mode": "none"
@@ -66,10 +281,14 @@
                 {
                   "color": "green",
                   "value": null
+                },
+                {
+                  "color": "red",
+                  "value": 80
                 }
               ]
             },
-            "unit": "short"
+            "unit": "ops"
           },
           "overrides": []
         },
@@ -77,41 +296,77 @@
           "h": 8,
           "w": 12,
           "x": 0,
-          "y": 0
+          "y": 10
         },
         "id": 2,
         "options": {
           "legend": {
             "calcs": [],
             "displayMode": "list",
-            "placement": "bottom"
+            "placement": "bottom",
+            "showLegend": true
           },
           "tooltip": {
             "mode": "single",
             "sort": "none"
           }
         },
-        "pluginVersion": "8.4.3",
         "targets": [
           {
-            "datasource": "Prometheus",
-            "expr": "p2p_active_connections",
-            "interval": "",
-            "legendFormat": "{{peer_type}}",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "PBFA97CFB590B2093"
+            },
+            "editorMode": "code",
+            "expr": "rate(p2p_heartbeats_sent_total[1m])",
+            "instant": false,
+            "legendFormat": "Sent",
+            "range": true,
             "refId": "A"
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "PBFA97CFB590B2093"
+            },
+            "editorMode": "code",
+            "expr": "rate(p2p_heartbeats_received_total[1m])",
+            "hide": false,
+            "instant": false,
+            "legendFormat": "Received",
+            "range": true,
+            "refId": "B"
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "PBFA97CFB590B2093"
+            },
+            "editorMode": "code",
+            "expr": "rate(p2p_heartbeats_failed_total[1m])",
+            "hide": false,
+            "instant": false,
+            "legendFormat": "Failed",
+            "range": true,
+            "refId": "C"
           }
         ],
-        "title": "Active Connections",
+        "title": "Heartbeats (per second)",
         "type": "timeseries"
       },
       {
-        "datasource": "Prometheus",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "PBFA97CFB590B2093"
+        },
         "fieldConfig": {
           "defaults": {
             "color": {
               "mode": "palette-classic"
             },
             "custom": {
+              "axisCenteredZero": false,
+              "axisColorMode": "text",
               "axisLabel": "",
               "axisPlacement": "auto",
               "barAlignment": 0,
@@ -130,7 +385,7 @@
                 "type": "linear"
               },
               "showPoints": "never",
-              "spanNulls": true,
+              "spanNulls": false,
               "stacking": {
                 "group": "A",
                 "mode": "none"
@@ -146,10 +401,14 @@
                 {
                   "color": "green",
                   "value": null
+                },
+                {
+                  "color": "red",
+                  "value": 80
                 }
               ]
             },
-            "unit": "short"
+            "unit": "s"
           },
           "overrides": []
         },
@@ -157,48 +416,174 @@
           "h": 8,
           "w": 12,
           "x": 12,
-          "y": 0
+          "y": 10
+        },
+        "id": 3,
+        "options": {
+          "legend": {
+            "calcs": [
+              "mean",
+              "max"
+            ],
+            "displayMode": "list",
+            "placement": "bottom",
+            "showLegend": true
+          },
+          "tooltip": {
+            "mode": "single",
+            "sort": "none"
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "PBFA97CFB590B2093"
+            },
+            "editorMode": "code",
+            "expr": "histogram_quantile(0.95, sum(rate(p2p_heartbeat_latency_seconds_bucket[5m])) by (le, peer_id))",
+            "instant": false,
+            "legendFormat": "{{peer_id}}",
+            "range": true,
+            "refId": "A"
+          }
+        ],
+        "title": "Heartbeat Latency (95th percentile)",
+        "type": "timeseries"
+      },
+      {
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 18
+        },
+        "id": 8,
+        "panels": [],
+        "title": "Messages",
+        "type": "row"
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "PBFA97CFB590B2093"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "axisCenteredZero": false,
+              "axisColorMode": "text",
+              "axisLabel": "",
+              "axisPlacement": "auto",
+              "barAlignment": 0,
+              "drawStyle": "line",
+              "fillOpacity": 10,
+              "gradientMode": "none",
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "viz": false
+              },
+              "lineInterpolation": "linear",
+              "lineWidth": 1,
+              "pointSize": 5,
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "showPoints": "never",
+              "spanNulls": false,
+              "stacking": {
+                "group": "A",
+                "mode": "normal"
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            },
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "red",
+                  "value": 80
+                }
+              ]
+            },
+            "unit": "ops"
+          },
+          "overrides": []
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 19
         },
         "id": 4,
         "options": {
           "legend": {
             "calcs": [],
             "displayMode": "list",
-            "placement": "bottom"
+            "placement": "bottom",
+            "showLegend": true
           },
           "tooltip": {
             "mode": "single",
             "sort": "none"
           }
         },
-        "pluginVersion": "8.4.3",
         "targets": [
           {
-            "datasource": "Prometheus",
-            "expr": "rate(p2p_heartbeats_sent_total[5m])",
-            "interval": "",
-            "legendFormat": "Sent",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "PBFA97CFB590B2093"
+            },
+            "editorMode": "code",
+            "expr": "sum(rate(p2p_messages_sent_total[1m])) by (protocol)",
+            "instant": false,
+            "legendFormat": "Sent ({{protocol}})",
+            "range": true,
             "refId": "A"
           },
           {
-            "datasource": "Prometheus",
-            "expr": "rate(p2p_heartbeats_received_total[5m])",
-            "interval": "",
-            "legendFormat": "Received",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "PBFA97CFB590B2093"
+            },
+            "editorMode": "code",
+            "expr": "sum(rate(p2p_messages_received_total[1m])) by (protocol)",
+            "hide": false,
+            "instant": false,
+            "legendFormat": "Received ({{protocol}})",
+            "range": true,
             "refId": "B"
           }
         ],
-        "title": "Heartbeats (rate per second)",
+        "title": "Message Rate (per second)",
         "type": "timeseries"
       },
       {
-        "datasource": "Prometheus",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "PBFA97CFB590B2093"
+        },
         "fieldConfig": {
           "defaults": {
             "color": {
               "mode": "palette-classic"
             },
             "custom": {
+              "axisCenteredZero": false,
+              "axisColorMode": "text",
               "axisLabel": "",
               "axisPlacement": "auto",
               "barAlignment": 0,
@@ -217,10 +602,10 @@
                 "type": "linear"
               },
               "showPoints": "never",
-              "spanNulls": true,
+              "spanNulls": false,
               "stacking": {
                 "group": "A",
-                "mode": "none"
+                "mode": "normal"
               },
               "thresholdsStyle": {
                 "mode": "off"
@@ -233,93 +618,10 @@
                 {
                   "color": "green",
                   "value": null
-                }
-              ]
-            },
-            "unit": "short"
-          },
-          "overrides": []
-        },
-        "gridPos": {
-          "h": 8,
-          "w": 12,
-          "x": 0,
-          "y": 8
-        },
-        "id": 6,
-        "options": {
-          "legend": {
-            "calcs": [],
-            "displayMode": "list",
-            "placement": "bottom"
-          },
-          "tooltip": {
-            "mode": "single",
-            "sort": "none"
-          }
-        },
-        "pluginVersion": "8.4.3",
-        "targets": [
-          {
-            "datasource": "Prometheus",
-            "expr": "rate(p2p_messages_sent_total[5m])",
-            "interval": "",
-            "legendFormat": "Sent",
-            "refId": "A"
-          },
-          {
-            "datasource": "Prometheus",
-            "expr": "rate(p2p_messages_received_total[5m])",
-            "interval": "",
-            "legendFormat": "Received",
-            "refId": "B"
-          }
-        ],
-        "title": "Message Traffic (rate per second)",
-        "type": "timeseries"
-      },
-      {
-        "datasource": "Prometheus",
-        "fieldConfig": {
-          "defaults": {
-            "color": {
-              "mode": "palette-classic"
-            },
-            "custom": {
-              "axisLabel": "",
-              "axisPlacement": "auto",
-              "barAlignment": 0,
-              "drawStyle": "line",
-              "fillOpacity": 10,
-              "gradientMode": "none",
-              "hideFrom": {
-                "legend": false,
-                "tooltip": false,
-                "viz": false
-              },
-              "lineInterpolation": "linear",
-              "lineWidth": 1,
-              "pointSize": 5,
-              "scaleDistribution": {
-                "type": "linear"
-              },
-              "showPoints": "never",
-              "spanNulls": true,
-              "stacking": {
-                "group": "A",
-                "mode": "none"
-              },
-              "thresholdsStyle": {
-                "mode": "off"
-              }
-            },
-            "mappings": [],
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
+                },
                 {
-                  "color": "green",
-                  "value": null
+                  "color": "red",
+                  "value": 80
                 }
               ]
             },
@@ -331,205 +633,109 @@
           "h": 8,
           "w": 12,
           "x": 12,
-          "y": 8
+          "y": 19
         },
-        "id": 8,
+        "id": 5,
         "options": {
           "legend": {
             "calcs": [],
             "displayMode": "list",
-            "placement": "bottom"
+            "placement": "bottom",
+            "showLegend": true
           },
           "tooltip": {
             "mode": "single",
             "sort": "none"
           }
         },
-        "pluginVersion": "8.4.3",
         "targets": [
           {
-            "datasource": "Prometheus",
-            "expr": "rate(p2p_bytes_sent_total[5m])",
-            "interval": "",
-            "legendFormat": "Bytes Sent",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "PBFA97CFB590B2093"
+            },
+            "editorMode": "code",
+            "expr": "sum(rate(p2p_file_transfer_bytes_total{direction=\"outbound\"}[1m]))",
+            "instant": false,
+            "legendFormat": "Sent",
+            "range": true,
             "refId": "A"
           },
           {
-            "datasource": "Prometheus",
-            "expr": "rate(p2p_bytes_received_total[5m])",
-            "interval": "",
-            "legendFormat": "Bytes Received",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "PBFA97CFB590B2093"
+            },
+            "editorMode": "code",
+            "expr": "sum(rate(p2p_file_transfer_bytes_total{direction=\"inbound\"}[1m]))",
+            "hide": false,
+            "instant": false,
+            "legendFormat": "Received",
+            "range": true,
             "refId": "B"
           }
         ],
-        "title": "Traffic Volume",
+        "title": "Traffic Volume (bytes/sec)",
         "type": "timeseries"
       },
       {
-        "datasource": "Prometheus",
-        "fieldConfig": {
-          "defaults": {
-            "color": {
-              "mode": "palette-classic"
-            },
-            "custom": {
-              "axisLabel": "",
-              "axisPlacement": "auto",
-              "barAlignment": 0,
-              "drawStyle": "line",
-              "fillOpacity": 10,
-              "gradientMode": "none",
-              "hideFrom": {
-                "legend": false,
-                "tooltip": false,
-                "viz": false
-              },
-              "lineInterpolation": "linear",
-              "lineWidth": 1,
-              "pointSize": 5,
-              "scaleDistribution": {
-                "type": "linear"
-              },
-              "showPoints": "never",
-              "spanNulls": true,
-              "stacking": {
-                "group": "A",
-                "mode": "none"
-              },
-              "thresholdsStyle": {
-                "mode": "off"
-              }
-            },
-            "mappings": [],
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "color": "green",
-                  "value": null
-                }
-              ]
-            },
-            "unit": "percentunit"
-          },
-          "overrides": []
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 27
+        },
+        "id": 7,
+        "panels": [],
+        "title": "Logs",
+        "type": "row"
+      },
+      {
+        "datasource": {
+          "type": "loki",
+          "uid": "P8E80F9AEF21F6940"
         },
         "gridPos": {
           "h": 8,
           "w": 24,
           "x": 0,
-          "y": 16
+          "y": 28
         },
-        "id": 10,
+        "id": 11,
         "options": {
-          "legend": {
-            "calcs": [],
-            "displayMode": "list",
-            "placement": "bottom"
-          },
-          "tooltip": {
-            "mode": "single",
-            "sort": "none"
-          }
+          "dedupStrategy": "none",
+          "enableLogDetails": true,
+          "prettifyLogMessage": false,
+          "showCommonLabels": false,
+          "showLabels": false,
+          "showTime": false,
+          "sortOrder": "Descending",
+          "wrapLogMessage": false
         },
-        "pluginVersion": "8.4.3",
         "targets": [
           {
-            "datasource": "Prometheus",
-            "expr": "rate(process_cpu_seconds_total[1m])",
-            "interval": "",
-            "legendFormat": "CPU Usage",
+            "datasource": {
+              "type": "loki",
+              "uid": "P8E80F9AEF21F6940"
+            },
+            "editorMode": "builder",
+            "expr": "{job=\"p2p_logs\"} | json",
+            "queryType": "range",
             "refId": "A"
           }
         ],
-        "title": "CPU Usage",
-        "type": "timeseries"
-      },
-      {
-        "datasource": "Prometheus",
-        "fieldConfig": {
-          "defaults": {
-            "color": {
-              "mode": "palette-classic"
-            },
-            "custom": {
-              "axisLabel": "",
-              "axisPlacement": "auto",
-              "barAlignment": 0,
-              "drawStyle": "line",
-              "fillOpacity": 10,
-              "gradientMode": "none",
-              "hideFrom": {
-                "legend": false,
-                "tooltip": false,
-                "viz": false
-              },
-              "lineInterpolation": "linear",
-              "lineWidth": 1,
-              "pointSize": 5,
-              "scaleDistribution": {
-                "type": "linear"
-              },
-              "showPoints": "never",
-              "spanNulls": true,
-              "stacking": {
-                "group": "A",
-                "mode": "none"
-              },
-              "thresholdsStyle": {
-                "mode": "off"
-              }
-            },
-            "mappings": [],
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "color": "green",
-                  "value": null
-                }
-              ]
-            },
-            "unit": "bytes"
-          },
-          "overrides": []
-        },
-        "gridPos": {
-          "h": 8,
-          "w": 24,
-          "x": 0,
-          "y": 24
-        },
-        "id": 12,
-        "options": {
-          "legend": {
-            "calcs": [],
-            "displayMode": "list",
-            "placement": "bottom"
-          },
-          "tooltip": {
-            "mode": "single",
-            "sort": "none"
-          }
-        },
-        "pluginVersion": "8.4.3",
-        "targets": [
-          {
-            "datasource": "Prometheus",
-            "expr": "process_resident_memory_bytes",
-            "interval": "",
-            "legendFormat": "Memory Usage",
-            "refId": "A"
-          }
-        ],
-        "title": "Memory Usage",
-        "type": "timeseries"
+        "title": "P2P Logs",
+        "type": "logs"
       }
     ],
-    "refresh": "5s",
-    "schemaVersion": 35,
+    "refresh": "10s",
+    "schemaVersion": 38,
     "style": "dark",
-    "tags": ["p2p", "network"],
+    "tags": [
+      "p2p",
+      "networking"
+    ],
     "templating": {
       "list": []
     },
@@ -539,7 +745,8 @@
     },
     "timepicker": {},
     "timezone": "",
-    "title": "P2P Network Monitoring",
+    "title": "P2P Network Dashboard",
+    "uid": "p2p-network",
     "version": 1,
     "weekStart": ""
   }

@@ -17,7 +17,6 @@ const (
     RegisterProtocol protocol.ID = "/seednode/register/1.0.0" // For peer registration
 )
 
-
 // Increase buffer sizes
 const (
     BufferSize            = 1024 * 1024 * 8 // 8MB
