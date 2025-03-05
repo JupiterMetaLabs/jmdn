@@ -1,1 +1,4 @@
 gossipnode
+logs/*
+
+DB/*

@@ -17,7 +17,7 @@ import (
     "github.com/multiformats/go-multiaddr"
 )
 
-var logger = logging.GetSubLogger("node_manager")
+var logger = logging.GetSubLogger("nodemanager")
 
 // NodeManager manages connections to manually specified nodes
 type NodeManager struct {
@@ -78,6 +78,9 @@ func NewNodeManager(node *config.Node) (*NodeManager, error) {
     ctx, cancel := context.WithCancel(context.Background())
 
 	// Set initial metrics
+	logger = logging.GetSubLogger("node_manager")
+    logger.Info().Msg("Initializing Node Manager")
+    
     metrics.ManagedPeersGauge.Set(0)
     metrics.ActivePeersGauge.Set(0)
     metrics.ConnectedPeersGauge.Set(float64(len(node.Host.Network().Peers())))
@@ -104,6 +107,7 @@ func NewNodeManager(node *config.Node) (*NodeManager, error) {
     }
 
     // Set up heartbeat handler
+	logger.Info().Int("managed_peers", len(manager.trackedPeers)).Msg("Node Manager initialized")
     node.Host.SetStreamHandler(config.HeartbeatProtocol, manager.handleHeartbeat)
 
     return manager, nil
@@ -580,24 +584,32 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 
     // Read the heartbeat message (optional)
     buf := make([]byte, 64)
-    _, err := stream.Read(buf)
+    n, err := stream.Read(buf)
     if err != nil {
         peerLogger.Error().Err(err).Msg("Error reading heartbeat")
         return
     }
+    message := string(buf[:n])
+    
+    peerLogger.Debug().Str("message", message).Msg("Heartbeat message received")
 
     // Send heartbeat response
-    _, err = stream.Write([]byte("OK\n"))
+    response := "OK\n"
+    _, err = stream.Write([]byte(response))
     if err != nil {
         peerLogger.Error().Err(err).Msg("Error sending heartbeat response")
         return
     }
+    
+    peerLogger.Debug().Str("response", response).Msg("Sent heartbeat response")
 
     // Update the peer's status if it's one of our managed peers
     nm.mutex.RLock()
     if peer, exists := nm.trackedPeers[remotePeer]; exists {
         nm.mutex.RUnlock()
-        peer.LastSeen = time.Now().Unix()
+        
+        now := time.Now().Unix()
+        peer.LastSeen = now
         peer.IsAlive = true
         peer.HeartbeatFail = 0
 
@@ -607,11 +619,11 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
         SET last_seen = ?, heartbeat_fail = ?, is_alive = ?
         WHERE peer_id = ?`, config.ConnectedPeers)
 
-        _, err = nm.db.Exec(query, peer.LastSeen, 0, 1, remotePeer.String())
+        _, err = nm.db.Exec(query, now, 0, 1, remotePeer.String())
         if err != nil {
             peerLogger.Error().Err(err).Msg("Failed to update peer status in database")
         } else {
-            peerLogger.Debug().Msg("Updated peer status in database")
+            peerLogger.Debug().Int64("last_seen", now).Msg("Updated peer status in database")
         }
     } else {
         nm.mutex.RUnlock()
@@ -628,18 +640,21 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
     nm.mutex.RUnlock()
 
     if !exists {
+        peerLogger.Error().Msg("Peer not found in managed peers")
         return false, fmt.Errorf("peer %s not found in managed peers", peerID)
     }
 
     // Parse multiaddress
     addr, err := multiaddr.NewMultiaddr(peers.Multiaddr)
     if err != nil {
+        peerLogger.Error().Err(err).Str("multiaddr", peers.Multiaddr).Msg("Invalid stored multiaddress")
         return false, fmt.Errorf("invalid stored multiaddress: %w", err)
     }
 
     // Extract peer info
     peerInfo, err := peer.AddrInfoFromP2pAddr(addr)
     if err != nil {
+        peerLogger.Error().Err(err).Str("multiaddr", peers.Multiaddr).Msg("Invalid peer info")
         return false, fmt.Errorf("invalid peer info: %w", err)
     }
 
@@ -657,13 +672,16 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
     // Open a heartbeat stream
     stream, err := nm.host.NewStream(ctx, peerID, config.HeartbeatProtocol)
     if err != nil {
+        peerLogger.Error().Err(err).Str("protocol", string(config.HeartbeatProtocol)).Msg("Failed to open heartbeat stream")
         return false, fmt.Errorf("failed to open heartbeat stream: %w", err)
     }
     defer stream.Close()
 
     // Write a simple heartbeat message
+    peerLogger.Debug().Msg("Sending heartbeat message")
     _, err = stream.Write([]byte("HEARTBEAT\n"))
     if err != nil {
+        peerLogger.Error().Err(err).Msg("Failed to send heartbeat")
         return false, fmt.Errorf("failed to send heartbeat: %w", err)
     }
 
@@ -671,16 +689,20 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
     responseBytes := make([]byte, 16)
     stream.SetReadDeadline(time.Now().Add(5 * time.Second))
 
+    peerLogger.Debug().Msg("Waiting for heartbeat response")
     n, err := stream.Read(responseBytes)
     if err != nil {
+        peerLogger.Error().Err(err).Msg("Failed to read heartbeat response")
         return false, fmt.Errorf("failed to read heartbeat response: %w", err)
     }
 
     response := string(responseBytes[:n])
     if !strings.Contains(response, "OK") {
+        peerLogger.Error().Str("response", response).Msg("Invalid heartbeat response")
         return false, fmt.Errorf("invalid heartbeat response: %s", response)
     }
 
+    peerLogger.Debug().Str("response", response).Msg("Valid heartbeat response received")
     return true, nil
 }
 
