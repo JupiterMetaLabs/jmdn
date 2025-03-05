@@ -12,8 +12,9 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	
+
 	"gossipnode/config"
+	"gossipnode/metrics"
 )
 
 // HandleFileStream processes incoming files (QUIC)
@@ -53,6 +54,10 @@ func HandleFileStream(s network.Stream) {
     // Calculate and display transfer speed
     elapsedTime := time.Since(startTime).Seconds()
     mbps := float64(bytesRead) / 1024 / 1024 / elapsedTime
+
+    // Record file transfer metrics
+    metrics.FileTransferDuration.WithLabelValues("sent", s.Conn().RemotePeer().String()).Observe(elapsedTime)
+    metrics.FileTransferSpeedMBPS.WithLabelValues("sent", s.Conn().RemotePeer().String()).Observe(mbps)
     
     fmt.Printf("Received file (%d bytes) from %s saved as %s (%.2f MB/s)\n", 
         fileSize, s.Conn().RemotePeer().String(), file.Name(), mbps)
@@ -109,7 +114,12 @@ func SendFile(h host.Host, peerID peer.ID, filepath string) error {
     // Calculate and display transfer speed
     elapsedTime := time.Since(startTime).Seconds()
     mbps := float64(bytesWritten) / 1024 / 1024 / elapsedTime
-    
+
+    // Record file transfer metrics
+    metrics.FileTransferDuration.WithLabelValues("sent", peerID.String()).Observe(elapsedTime)
+    metrics.FileTransferSpeedMBPS.WithLabelValues("sent", peerID.String()).Observe(mbps)
+
+ 
     fmt.Printf("Sent file %s (%d bytes) to %s (%.2f MB/s)\n", 
         filepath, bytesWritten, peerID.String(), mbps)
     return nil

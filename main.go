@@ -65,30 +65,34 @@
 // 		}
 // 	}()
 
-// 	wg.Wait()
-// }
+//		wg.Wait()
+//	}
 package main
 
 import (
-    "bufio"
-    "flag"
-    "fmt"
-    "os"
-    "strings"
-    "sync"
-    "time"
+	"bufio"
+	"flag"
+	"fmt"
+	"os"
+	"strings"
+	"sync"
+	"time"
 
-    "gossipnode/node"
-    "gossipnode/seed"
+	"gossipnode/metrics"
+	"gossipnode/node"
+	"gossipnode/seed"
 
-    _ "github.com/mattn/go-sqlite3" // SQLite driver
+	_ "github.com/mattn/go-sqlite3"
 )
 
 func main() {
+	var nodeManager *node.NodeManager
+
     // Command-line flags for node configuration
     isSeed := flag.Bool("seed", false, "Run as a seed node")
     connect := flag.String("connect", "", "Connect to a seed node (multiaddr)")
     heartbeatInterval := flag.Int("heartbeat", 300, "Heartbeat interval in seconds (default: 300)")
+    metricsPort := flag.String("metrics", "8080", "Port for Prometheus metrics")
     flag.Parse()
 
     // Start the node
@@ -98,7 +102,7 @@ func main() {
         return
     }
     defer n.Host.Close()
-
+    
     // Display node identity
     fmt.Printf("Node ID: %s\n", n.Host.ID().String())
     fmt.Println("Addresses:")
@@ -106,7 +110,11 @@ func main() {
         fmt.Printf("  %s/p2p/%s\n", addr, n.Host.ID().String())
     }
 
-    var nodeManager *node.NodeManager
+    // Start metrics server (just once)
+    metricsAddr := ":" + *metricsPort
+    metrics.StartMetricsServer(metricsAddr)
+    fmt.Printf("Metrics available at http://localhost%s/metrics\n", metricsAddr)
+
 
     // Initialize node manager
     nodeManager, err = node.NewNodeManager(n)
@@ -117,6 +125,7 @@ func main() {
     nodeManager.StartHeartbeat(*heartbeatInterval)
     defer nodeManager.Shutdown()
     fmt.Printf("Node manager started with %d second heartbeat interval\n", *heartbeatInterval)
+
 
     // Configure as seed node if requested
     if *isSeed {

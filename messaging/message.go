@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"gossipnode/metrics"
 
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -20,7 +21,12 @@ func HandleMessageStream(s network.Stream) {
 		fmt.Println("Error reading message:", err)
 		return
 	}
-	fmt.Printf("Received message from %s: %s", s.Conn().RemotePeer().String(), msg)
+
+	remotePeer := s.Conn().RemotePeer().String()
+	metrics.MessagesReceivedCounter.WithLabelValues("message", remotePeer).Inc()
+	metrics.MessageSizeHistogram.WithLabelValues("message", "received").Observe(float64(len(msg)))
+
+	fmt.Printf("Received message from %s: %s", remotePeer, msg)
 }
 
 // SendMessage sends a message to a peer (uses TCP)
@@ -47,6 +53,10 @@ func SendMessage(n *config.Node, target string, message string) error {
 	}
 	defer s.Close()
 
+	// Record message metrics
+	metrics.MessagesSentCounter.WithLabelValues("message", peerInfo.ID.String()).Inc()
+	metrics.MessageSizeHistogram.WithLabelValues("message", "sent").Observe(float64(len(message)))
+	
 	// Send the message
 	_, err = fmt.Fprintf(s, "%s\n", message)
 	if err != nil {

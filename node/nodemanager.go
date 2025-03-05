@@ -5,6 +5,7 @@ import (
     "database/sql"
     "fmt"
     "gossipnode/config"
+	"gossipnode/metrics"
     "strings"
     "sync"
     "time"
@@ -73,6 +74,11 @@ func NewNodeManager(node *config.Node) (*NodeManager, error) {
 
     ctx, cancel := context.WithCancel(context.Background())
 
+	// Set initial metrics
+    metrics.ManagedPeersGauge.Set(0)
+    metrics.ActivePeersGauge.Set(0)
+    metrics.ConnectedPeersGauge.Set(float64(len(node.Host.Network().Peers())))
+
     manager := &NodeManager{
         host:         node.Host,
         db:           db,
@@ -102,6 +108,7 @@ func NewNodeManager(node *config.Node) (*NodeManager, error) {
 
 // initConnectedPeersTable creates the connected_peers table if it doesn't exist
 func (nm *NodeManager) initConnectedPeersTable() error {
+	startTime := time.Now()
     query := fmt.Sprintf(`
     CREATE TABLE IF NOT EXISTS %s (
         peer_id TEXT PRIMARY KEY,
@@ -112,22 +119,39 @@ func (nm *NodeManager) initConnectedPeersTable() error {
     )`, config.ConnectedPeers)
 
     _, err := nm.db.Exec(query)
-    return err
+	// Record database operation metrics
+	duration := time.Since(startTime).Seconds()
+	metrics.DatabaseLatency.WithLabelValues("create_table").Observe(duration)
+	if err != nil {
+		metrics.DatabaseOperations.WithLabelValues("create_table", "failure").Inc()
+		return err
+	}
+	metrics.DatabaseOperations.WithLabelValues("create_table", "success").Inc()
+	return nil
 }
 
 // loadManagedPeers loads connected peers from the database
 func (nm *NodeManager) loadManagedPeers() error {
+    startTime := time.Now()
     nm.mutex.Lock()
     defer nm.mutex.Unlock()
 
     query := fmt.Sprintf("SELECT peer_id, multiaddr, last_seen, heartbeat_fail, is_alive FROM %s", config.ConnectedPeers)
     rows, err := nm.db.Query(query)
+    
+    // Record database metrics
+    duration := time.Since(startTime).Seconds()
+    metrics.DatabaseLatency.WithLabelValues("select_peers").Observe(duration)
     if err != nil {
+        metrics.DatabaseOperations.WithLabelValues("select_peers", "failure").Inc()
         return err
     }
+    metrics.DatabaseOperations.WithLabelValues("select_peers", "success").Inc()
+    
     defer rows.Close()
 
     loadedCount := 0
+    activeCount := 0
     for rows.Next() {
         var peerIDStr string
         var managedPeer ManagedPeer
@@ -149,7 +173,15 @@ func (nm *NodeManager) loadManagedPeers() error {
         managedPeer.IsAlive = isAlive == 1
         nm.trackedPeers[peerID] = &managedPeer
         loadedCount++
+        
+        if managedPeer.IsAlive {
+            activeCount++
+        }
     }
+
+    // Update metrics
+    metrics.ManagedPeersGauge.Set(float64(loadedCount))
+    metrics.ActivePeersGauge.Set(float64(activeCount))
 
     fmt.Printf("Loaded %d managed peers from database\n", loadedCount)
     return nil
@@ -217,15 +249,28 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
     nm.trackedPeers[peerInfo.ID] = managedPeer
 
     // Add peer to database
+	startTime := time.Now()
+
     query := fmt.Sprintf(`
     INSERT INTO %s (peer_id, multiaddr, last_seen, heartbeat_fail, is_alive)
     VALUES (?, ?, ?, ?, ?)`, config.ConnectedPeers)
 
     _, err = nm.db.Exec(query, peerInfo.ID.String(), multiAddr, now, 0, 1)
+
+	duration := time.Since(startTime).Seconds()
+    metrics.DatabaseLatency.WithLabelValues("insert_peer").Observe(duration)
+
     if err != nil {
+        metrics.DatabaseOperations.WithLabelValues("insert_peer", "failure").Inc()
         delete(nm.trackedPeers, peerInfo.ID) // Remove from memory if DB insertion failed
         return fmt.Errorf("failed to store peer in database: %w", err)
     }
+
+	metrics.DatabaseOperations.WithLabelValues("insert_peer", "success").Inc()
+    
+    // Update metrics
+    metrics.ManagedPeersGauge.Set(float64(len(nm.trackedPeers)))
+    metrics.ActivePeersGauge.Inc() // New peer starts as active
 
     // Try to connect immediately
     ctx, cancel := context.WithTimeout(nm.ctx, 10*time.Second)
@@ -260,15 +305,30 @@ func (nm *NodeManager) RemovePeer(peerIDStr string) error {
     delete(nm.trackedPeers, peerID)
 
     // Remove from database
+	startTime := time.Now()
     query := fmt.Sprintf("DELETE FROM %s WHERE peer_id = ?", config.ConnectedPeers)
     _, err = nm.db.Exec(query, peerIDStr)
-    if err != nil {
-        return fmt.Errorf("failed to remove peer from database: %w", err)
-    }
 
-    fmt.Printf("Peer %s removed from management\n", peerID)
-    return nil
-}
+	// Record database metrics
+	duration := time.Since(startTime).Seconds()
+	metrics.DatabaseLatency.WithLabelValues("delete_peer").Observe(duration)
+	if err != nil {
+		metrics.DatabaseOperations.WithLabelValues("delete_peer", "failure").Inc()
+		return fmt.Errorf("failed to remove peer from database: %w", err)
+	}
+	metrics.DatabaseOperations.WithLabelValues("delete_peer", "success").Inc()
+	
+	// Update metrics
+	metrics.ManagedPeersGauge.Set(float64(len(nm.trackedPeers)))
+	
+	// If the peer was active, reduce active count
+	if peer, exists := nm.trackedPeers[peerID]; exists && peer.IsAlive {
+		metrics.ActivePeersGauge.Dec()
+	}
+
+	fmt.Printf("Peer %s removed from management\n", peerID)
+	return nil
+	}
 
 // ListManagedPeers returns the list of managed peers
 func (nm *NodeManager) ListManagedPeers() []*ManagedPeer {
@@ -293,22 +353,40 @@ func (nm *NodeManager) UpdatePeerStatus(peerID peer.ID, isAlive bool, failCount 
         return fmt.Errorf("peer %s not found", peerID)
     }
 
+	wasAlive := peer.IsAlive
+
     // Update peer status
     now := time.Now().Unix()
     peer.LastSeen = now
     peer.IsAlive = isAlive
     peer.HeartbeatFail = failCount
 
+	// Update metrics if status changed
+	if wasAlive != isAlive {
+		if isAlive {
+			metrics.ActivePeersGauge.Inc()
+		} else {
+			metrics.ActivePeersGauge.Dec()
+		}
+	}
+
     // Update in database
+    startTime := time.Now()
     query := fmt.Sprintf(`
     UPDATE %s 
     SET last_seen = ?, heartbeat_fail = ?, is_alive = ?
     WHERE peer_id = ?`, config.ConnectedPeers)
 
     _, err := nm.db.Exec(query, now, failCount, boolToInt(isAlive), peerID.String())
+    
+    // Record database metrics
+    duration := time.Since(startTime).Seconds()
+    metrics.DatabaseLatency.WithLabelValues("update_peer").Observe(duration)
     if err != nil {
+        metrics.DatabaseOperations.WithLabelValues("update_peer", "failure").Inc()
         return fmt.Errorf("failed to update peer status: %w", err)
     }
+    metrics.DatabaseOperations.WithLabelValues("update_peer", "success").Inc()
 
     return nil
 }
@@ -322,6 +400,10 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
     if !exists {
         return false, fmt.Errorf("peer %s not found in managed peers", peerID)
     }
+
+	// Increase sent counter
+	metrics.HeartbeatSentCounter.Inc()
+	startTime := time.Now()
 
     // Parse multiaddress
     addr, err := multiaddr.NewMultiaddr(peers.Multiaddr)
@@ -347,6 +429,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
     // Open a heartbeat stream
     stream, err := nm.host.NewStream(ctx, peerID, config.HeartbeatProtocol)
     if err != nil {
+        metrics.HeartbeatFailedCounter.Inc()
         return false, fmt.Errorf("failed to open heartbeat stream: %w", err)
     }
     defer stream.Close()
@@ -354,6 +437,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
     // Write a simple heartbeat message
     _, err = stream.Write([]byte("HEARTBEAT\n"))
     if err != nil {
+        metrics.HeartbeatFailedCounter.Inc()
         return false, fmt.Errorf("failed to send heartbeat: %w", err)
     }
 
@@ -363,11 +447,17 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 
     n, err := stream.Read(responseBytes)
     if err != nil {
+        metrics.HeartbeatFailedCounter.Inc()
         return false, fmt.Errorf("failed to read heartbeat response: %w", err)
     }
 
+    // Record heartbeat latency
+    duration := time.Since(startTime).Seconds()
+    metrics.HeartbeatLatency.WithLabelValues(peerID.String()).Observe(duration)
+
     response := string(responseBytes[:n])
     if !strings.Contains(response, "OK") {
+        metrics.HeartbeatFailedCounter.Inc()
         return false, fmt.Errorf("invalid heartbeat response: %s", response)
     }
 
@@ -380,6 +470,9 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 
     // Get the peer's info
     remotePeer := stream.Conn().RemotePeer()
+
+    // Increment received counter
+    metrics.HeartbeatReceivedCounter.Inc()
 
     // Read the heartbeat message (optional)
     buf := make([]byte, 64)
@@ -424,6 +517,8 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 // performHeartbeat sends heartbeats to all managed peers
 func (nm *NodeManager) performHeartbeat() {
     fmt.Println("Starting heartbeat cycle to all managed peers...")
+
+    metrics.ConnectedPeersGauge.Set(float64(len(nm.host.Network().Peers())))
 
     nm.mutex.RLock()
     peers := make([]peer.ID, 0, len(nm.trackedPeers))
