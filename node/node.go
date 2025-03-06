@@ -15,6 +15,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	quic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	tcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
+	"github.com/multiformats/go-multiaddr"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -155,7 +156,7 @@ func NewNode() (*config.Node, error) {
 
 // SendMessage sends a message to a peer (uses TCP)
 func SendMessage(n *config.Node, target string, message string) error {
-	peerInfo, err := getPeerInfo(target)
+	maddr, peerInfo, err := getPeerInfo(target)
 	if err != nil {
 		return err
 	}
@@ -165,12 +166,12 @@ func SendMessage(n *config.Node, target string, message string) error {
 		return fmt.Errorf("connection failed: %v", err)
 	}
 
-	return messaging.SendMessage(n , peerInfo.ID.String(), message)
+	return messaging.SendMessage(n , maddr.String(), message)
 }
 
 // SendFile sends a file to a peer (uses QUIC)
 func SendFile(n *config.Node,target string, filepath string) error {
-	peerInfo, err := getPeerInfo(target)
+	_, peerInfo, err := getPeerInfo(target)
 	if err != nil {
 		return err
 	}
@@ -184,16 +185,16 @@ func SendFile(n *config.Node,target string, filepath string) error {
 }
 
 // getPeerInfo extracts peer information from a multiaddress
-func getPeerInfo(target string) (*peer.AddrInfo, error) {
+func getPeerInfo(target string) (multiaddr.Multiaddr,*peer.AddrInfo, error) {
 	maddr, err := ma.NewMultiaddr(target)
 	if err != nil {
-		return nil, fmt.Errorf("invalid multiaddr: %v", err)
+		return nil, nil, fmt.Errorf("invalid multiaddr: %v", err)
 	}
 
 	peerInfo, err := peer.AddrInfoFromP2pAddr(maddr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid peer address: %v", err)
+		return nil, nil, fmt.Errorf("invalid peer address: %v", err)
 	}
 
-	return peerInfo, nil
+	return maddr, peerInfo, nil
 }
