@@ -12,6 +12,8 @@ import (
 
 	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	quic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	tcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
@@ -156,10 +158,12 @@ func NewNode() (*config.Node, error) {
 
 // SendMessage sends a message to a peer (uses TCP)
 func SendMessage(n *config.Node, target string, message string) error {
-	maddr, peerInfo, err := getPeerInfo(target)
+	maddr, peerInfo, isConnected, err := getPeerInfo(target, n.Host)
 	if err != nil {
 		return err
 	}
+
+	fmt.Println("Connected to peer:", isConnected)
 
 	// Connect to the peer
 	if err := n.Host.Connect(context.Background(), *peerInfo); err != nil {
@@ -171,7 +175,7 @@ func SendMessage(n *config.Node, target string, message string) error {
 
 // SendFile sends a file to a peer (uses QUIC)
 func SendFile(n *config.Node,target string, filepath string) error {
-	_, peerInfo, err := getPeerInfo(target)
+	_, peerInfo,_, err := getPeerInfo(target, n.Host)
 	if err != nil {
 		return err
 	}
@@ -185,16 +189,19 @@ func SendFile(n *config.Node,target string, filepath string) error {
 }
 
 // getPeerInfo extracts peer information from a multiaddress
-func getPeerInfo(target string) (multiaddr.Multiaddr,*peer.AddrInfo, error) {
-	maddr, err := ma.NewMultiaddr(target)
-	if err != nil {
-		return nil, nil, fmt.Errorf("invalid multiaddr: %v", err)
-	}
+func getPeerInfo(target string, host host.Host) (multiaddr.Multiaddr, *peer.AddrInfo, bool, error) {
+    maddr, err := ma.NewMultiaddr(target)
+    if err != nil {
+        return nil, nil, false, fmt.Errorf("invalid multiaddr: %v", err)
+    }
 
-	peerInfo, err := peer.AddrInfoFromP2pAddr(maddr)
-	if err != nil {
-		return nil, nil, fmt.Errorf("invalid peer address: %v", err)
-	}
+    peerInfo, err := peer.AddrInfoFromP2pAddr(maddr)
+    if err != nil {
+        return nil, nil, false, fmt.Errorf("invalid peer address: %v", err)
+    }
 
-	return maddr, peerInfo, nil
+    // Check if the peer is directly connected
+    isConnected := host.Network().Connectedness(peerInfo.ID) == network.Connected
+
+    return maddr, peerInfo, isConnected, nil
 }

@@ -9,13 +9,17 @@ import (
 	"sync"
 	"time"
 
+	"gossipnode/logging"
 	"gossipnode/metrics"
 	"gossipnode/node"
-	"gossipnode/logging"
 	"gossipnode/seed"
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+func printDashes(){
+	fmt.Println("\n", strings.Repeat("-", 50), "\n")
+}
 
 func main() {
 	var nodeManager *node.NodeManager
@@ -106,6 +110,8 @@ func main() {
     // Command-line input loop
     go func() {
         defer wg.Done()
+        defer fmt.Println("Exiting...")
+        fmt.Println()
         scanner := bufio.NewScanner(os.Stdin)
         for scanner.Scan() {
             input := strings.TrimSpace(scanner.Text())
@@ -132,6 +138,7 @@ func main() {
                 }
 
             case "file":
+                // defer printDashes()
                 if len(parts) != 3 {
                     fmt.Println("Usage: file <peer_multiaddr> <filepath>")
                     continue
@@ -144,6 +151,7 @@ func main() {
                 }
 
             case "peers":
+                // defer printDashes()
                 if *connect == "" {
                     fmt.Println("No seed node specified. Use -connect flag to specify a seed node.")
                     continue
@@ -195,6 +203,7 @@ func main() {
                     fmt.Printf("%d. ID: %s\n   Address: %s\n   Status: %s\n   Last seen: %s\n   Failures: %d\n",
                         i+1, p.ID, p.Multiaddr, status, lastSeen, p.HeartbeatFail)
                 }
+                printDashes()
 
 			case "cleanpeers":
 				cleaned, err := nodeManager.CleanupOfflinePeers(9) // Remove peers with 9+ failures

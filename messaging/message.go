@@ -5,13 +5,14 @@ import (
 	"context"
 	"fmt"
 	"gossipnode/metrics"
+	"time"
 
-	ma "github.com/multiformats/go-multiaddr"
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"	
 	"gossipnode/config"
-)
 
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
+)
 // HandleMessageStream processes incoming messages (TCP)
 func HandleMessageStream(s network.Stream) {
 	defer s.Close()
@@ -26,7 +27,13 @@ func HandleMessageStream(s network.Stream) {
 	metrics.MessagesReceivedCounter.WithLabelValues("message", remotePeer).Inc()
 	metrics.MessageSizeHistogram.WithLabelValues("message", "received").Observe(float64(len(msg)))
 
-	fmt.Printf("Received message from %s: %s", remotePeer, msg)
+	fmt.Printf("\n\033[1;42m                               \033[0m\n")
+    fmt.Printf("\033[1;42m  MESSAGE RECEIVED              \033[0m\n")
+    fmt.Printf("\033[1;42m                               \033[0m\n\n")
+    fmt.Printf("From: \033[1;36m%s\033[0m\n", remotePeer)
+    fmt.Printf("Time: \033[1;33m%s\033[0m\n", time.Now().Format(time.RFC3339))
+    fmt.Printf("\nContent:\n\033[1;37m%s\033[0m\n\n", msg)
+    
 }
 
 // SendMessage sends a message to a peer (uses TCP)
