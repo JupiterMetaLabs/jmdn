@@ -716,3 +716,4 @@ func (nm *NodeManager) CleanupOfflinePeers(minFailures int) (int, error) {
     
     return removedCount, nil
 }
+

@@ -1,28 +1,40 @@
-package main
+// package main
 
 import (
-	"bufio"
-	"flag"
-	"fmt"
-	"os"
-	"strings"
-	"sync"
-	"time"
+    "bufio"
+    "context"
+    "flag"
+    "fmt"
+    "os"
+    "os/signal"
+    "strings"
+    "sync"
+    "syscall"
+    "time"
 
-	"gossipnode/logging"
-	"gossipnode/metrics"
-	"gossipnode/node"
-	"gossipnode/seed"
+    "gossipnode/logging"
+    "gossipnode/messaging/directMSG"
+    "gossipnode/metrics"
+    "gossipnode/node"
+    "gossipnode/seed"
 
-	_ "github.com/mattn/go-sqlite3"
+    "github.com/rs/zerolog/log"
+    _ "github.com/mattn/go-sqlite3"
 )
 
 func printDashes(){
-	fmt.Println("\n", strings.Repeat("-", 50), "\n")
+    fmt.Println("\n", strings.Repeat("-", 50), "\n")
+}
+
+// initYggdrasilMessaging initializes the Yggdrasil messaging system
+func initYggdrasilMessaging(ctx context.Context) {
+    // Start the Yggdrasil listener
+    directMSG.StartYggdrasilListener(ctx)
+    fmt.Printf("Yggdrasil messaging service started on port %d\n", directMSG.YggdrasilPort)
 }
 
 func main() {
-	var nodeManager *node.NodeManager
+    var nodeManager *node.NodeManager
 
     // Command-line flags for node configuration
     isSeed := flag.Bool("seed", false, "Run as a seed node")
@@ -31,15 +43,32 @@ func main() {
     metricsPort := flag.String("metrics", "8080", "Port for Prometheus metrics")
     logDir := flag.String("logdir", "./logs", "Directory for log files")
     logToConsole := flag.Bool("console", false, "Also log to console")
+    enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
     flag.Parse()
 
-   // Initialize logger
-	logFileName := fmt.Sprintf("p2p-node-%s.log", time.Now().Format("2006-01-02"))
-	if err := logging.InitLogger(*logDir, logFileName, *logToConsole); err != nil {
-		fmt.Printf("Failed to initialize logger: %v\n", err)
-	   	return
-   	}
-	defer logging.Close()
+    // Initialize logger
+    logFileName := fmt.Sprintf("p2p-node-%s.log", time.Now().Format("2006-01-02"))
+    if err := logging.InitLogger(*logDir, logFileName, *logToConsole); err != nil {
+        fmt.Printf("Failed to initialize logger: %v\n", err)
+        return
+    }
+    defer logging.Close()
+
+    // Create a cancellable context for clean shutdown
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+
+    // Handle signals for graceful shutdown
+    sigCh := make(chan os.Signal, 1)
+    signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+    go func() {
+        <-sigCh
+        fmt.Println("\nShutdown signal received, closing connections...")
+        cancel() // Cancel the context
+        // Give some time for cleanup
+        time.Sleep(500 * time.Millisecond)
+        os.Exit(0)
+    }()
 
     // Start the node
     n, err := node.NewNode()
@@ -48,6 +77,12 @@ func main() {
         return
     }
     defer n.Host.Close()
+    
+    // Initialize Yggdrasil messaging if enabled
+    if *enableYggdrasil {
+        initYggdrasilMessaging(ctx)
+        log.Info().Msgf("Yggdrasil messaging enabled on port %d", directMSG.YggdrasilPort)
+    }
     
     // Display node identity
     fmt.Printf("Node ID: %s\n", n.Host.ID().String())
@@ -60,7 +95,6 @@ func main() {
     metricsAddr := ":" + *metricsPort
     metrics.StartMetricsServer(metricsAddr)
     fmt.Printf("\nMetrics available at http://localhost%s/metrics\n", metricsAddr)
-
 
     // Initialize node manager
     nodeManager, err = node.NewNodeManager(n)
@@ -96,12 +130,14 @@ func main() {
     }
 
     fmt.Println("\nCommands:")
-    fmt.Println("  msg <peer_multiaddr> <message>  - Send a message to a peer")
+    fmt.Println("  msg <peer_multiaddr> <message>  - Send a message to a peer via libp2p")
+    fmt.Println("  ygg <peer_multiaddr|ygg_ipv6> <message> - Send a message using Yggdrasil")
     fmt.Println("  file <peer_multiaddr> <filepath> - Send a file to a peer")
     fmt.Println("  addpeer <peer_multiaddr> - Add a peer to managed nodes")
     fmt.Println("  removepeer <peer_id> - Remove a peer from managed nodes")
     fmt.Println("  listpeers - Show all managed peers")
     fmt.Println("  peers - Request updated peer list from seed")
+    fmt.Println("  stats - Show messaging statistics")
     fmt.Println("  exit - Exit the program")
 
     var wg sync.WaitGroup
@@ -135,6 +171,20 @@ func main() {
                     fmt.Println("Error:", err)
                 } else {
                     fmt.Println("Message sent successfully")
+                }
+
+            case "ygg":
+                if !*enableYggdrasil {
+                    fmt.Println("Yggdrasil messaging is disabled. Start with -ygg flag to enable.")
+                    continue
+                }
+                if len(parts) != 3 {
+                    fmt.Println("Usage: ygg <peer_multiaddr|ygg_ipv6> <message>")
+                    continue
+                }
+                err := directMSG.SendYggdrasilMessage(parts[1], parts[2])
+                if err != nil {
+                    fmt.Println("Error sending via Yggdrasil:", err)
                 }
 
             case "file":
@@ -205,13 +255,25 @@ func main() {
                 }
                 printDashes()
 
-			case "cleanpeers":
-				cleaned, err := nodeManager.CleanupOfflinePeers(9) // Remove peers with 9+ failures
-				if err != nil {
-					fmt.Printf("Error cleaning up peers: %v\n", err)
-				} else {
-					fmt.Printf("Cleaned up %d offline peers\n", cleaned)
-				}
+            case "cleanpeers":
+                cleaned, err := nodeManager.CleanupOfflinePeers(9) // Remove peers with 9+ failures
+                if err != nil {
+                    fmt.Printf("Error cleaning up peers: %v\n", err)
+                } else {
+                    fmt.Printf("Cleaned up %d offline peers\n", cleaned)
+                }
+                
+            case "stats":
+                if *enableYggdrasil {
+                    stats := directMSG.GetMetrics()
+                    fmt.Println("Yggdrasil Messaging Statistics:")
+                    fmt.Printf("  Messages sent: %d\n", stats["messages_sent"])
+                    fmt.Printf("  Messages received: %d\n", stats["messages_received"])
+                    fmt.Printf("  Failed messages: %d\n", stats["messages_failed"])
+                    printDashes()
+                } else {
+                    fmt.Println("Yggdrasil messaging is disabled.")
+                }
 
             default:
                 fmt.Println("Unknown command")
