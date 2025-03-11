@@ -151,7 +151,8 @@ func NewNode() (*config.Node, error) {
 		Host:       h,
 		EnableQUIC: true,
 	}
-
+    
+    messaging.SetHostInstance(h)
 	// Set up stream handlers for messages (TCP) and files (QUIC)
 	h.SetStreamHandler(config.MessageProtocol, messaging.HandleMessageStream)
 	h.SetStreamHandler(config.FileProtocol, transfer.HandleFileStream)
