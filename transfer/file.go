@@ -1,131 +1,4 @@
-// package transfer
-
-// import (
-// 	"bufio"
-// 	"context"
-// 	"encoding/binary"
-// 	"fmt"
-// 	"io"
-// 	"os"
-// 	"time"
-
-// 	"github.com/libp2p/go-libp2p/core/host"
-// 	"github.com/libp2p/go-libp2p/core/network"
-// 	"github.com/libp2p/go-libp2p/core/peer"
-
-// 	"gossipnode/config"
-// 	"gossipnode/metrics"
-// )
-
-// // HandleFileStream processes incoming files (QUIC)
-// func HandleFileStream(s network.Stream) {
-//     defer s.Close()
-//     startTime := time.Now()
-    
-//     // Read file size
-//     header := make([]byte, 16)
-//     if _, err := io.ReadFull(s, header); err != nil {
-//         fmt.Println("Error reading header:", err)
-//         return
-//     }
-    
-//     fileSize := binary.LittleEndian.Uint64(header)
-    
-//     // Create output file
-//     outPath := fmt.Sprintf("received_%s", s.Conn().RemotePeer().String())
-//     file, err := os.Create(outPath)
-//     if err != nil {
-//         fmt.Println("Error creating file:", err)
-//         return
-//     }
-//     defer file.Close()
-    
-//     // Use buffered reader and larger buffer
-//     bufReader := bufio.NewReaderSize(s, config.BufferSize)
-//     buffer := make([]byte, config.BufferSize)
-    
-//     // Copy with large buffer
-//     bytesRead, err := io.CopyBuffer(file, bufReader, buffer)
-//     if err != nil {
-//         fmt.Println("Error receiving file:", err)
-//         return
-//     }
-    
-//     // Calculate and display transfer speed
-//     elapsedTime := time.Since(startTime).Seconds()
-//     mbps := float64(bytesRead) / 1024 / 1024 / elapsedTime
-
-//     // Record file transfer metrics
-//     metrics.FileTransferDuration.WithLabelValues("sent", s.Conn().RemotePeer().String()).Observe(elapsedTime)
-//     metrics.FileTransferSpeedMBPS.WithLabelValues("sent", s.Conn().RemotePeer().String()).Observe(mbps)
-    
-//     fmt.Printf("Received file (%d bytes) from %s saved as %s (%.2f MB/s)\n", 
-//         fileSize, s.Conn().RemotePeer().String(), file.Name(), mbps)
-// }
-
-// // SendFile sends a file to a peer (uses QUIC)
-// func SendFile(h host.Host, peerID peer.ID, filepath string) error {
-//     // Start timing
-//     startTime := time.Now()
-    
-//     // Get file info
-//     fileInfo, err := os.Stat(filepath)
-//     if err != nil {
-//         return fmt.Errorf("file stat failed: %v", err)
-//     }
-//     fileSize := fileInfo.Size()
-    
-//     // Open the file
-//     file, err := os.Open(filepath)
-//     if err != nil {
-//         return fmt.Errorf("file open failed: %v", err)
-//     }
-//     defer file.Close()
-    
-//     // Open a stream with FileProtocol (QUIC)
-//     s, err := h.NewStream(context.Background(), peerID, config.FileProtocol)
-//     if err != nil {
-//         return fmt.Errorf("stream failed: %v", err)
-//     }
-//     defer s.Close()
-    
-//     // Send file metadata (size)
-//     header := make([]byte, 16)
-//     binary.LittleEndian.PutUint64(header, uint64(fileSize))
-//     if _, err := s.Write(header); err != nil {
-//         return fmt.Errorf("header write failed: %v", err)
-//     }
-    
-//     // Use buffered writer
-//     bufWriter := bufio.NewWriterSize(s, config.BufferSize)
-    
-//     // Copy file with large buffer
-//     buffer := make([]byte, config.BufferSize)
-//     bytesWritten, err := io.CopyBuffer(bufWriter, file, buffer)
-//     if err != nil {
-//         return fmt.Errorf("send failed: %v", err)
-//     }
-    
-//     // Flush buffered writer
-//     if err := bufWriter.Flush(); err != nil {
-//         return fmt.Errorf("flush failed: %v", err)
-//     }
-    
-//     // Calculate and display transfer speed
-//     elapsedTime := time.Since(startTime).Seconds()
-//     mbps := float64(bytesWritten) / 1024 / 1024 / elapsedTime
-
-//     // Record file transfer metrics
-//     metrics.FileTransferDuration.WithLabelValues("sent", peerID.String()).Observe(elapsedTime)
-//     metrics.FileTransferSpeedMBPS.WithLabelValues("sent", peerID.String()).Observe(mbps)
-
- 
-//     fmt.Printf("Sent file %s (%d bytes) to %s (%.2f MB/s)\n", 
-//         filepath, bytesWritten, peerID.String(), mbps)
-//     return nil
-// }
 package transfer
-
 import (
     "bufio"
     "context"
@@ -399,8 +272,6 @@ func HandleFileStream(s network.Stream) {
     
     // Use buffered reader with initial buffer size
     bufferSize := initialBuffer
-    bufReader := bufio.NewReaderSize(s, bufferSize)
-    buffer := make([]byte, bufferSize)
     
     // Track performance for adaptation
     var bytesRead int64
@@ -408,6 +279,12 @@ func HandleFileStream(s network.Stream) {
     var bufferSizes []int
     checkTime := time.Now()
     lastBytes := int64(0)
+    
+    // Create initial buffer
+    buffer := make([]byte, bufferSize)
+    
+    // Create a reader that respects our buffer size
+    reader := bufio.NewReader(s)
     
     for bytesRead < int64(fileSize) {
         // Check if we should measure speed and adapt
@@ -434,9 +311,9 @@ func HandleFileStream(s network.Stream) {
                 // Adapt buffer size based on algorithm
                 bufferSize = adaptBufferSize(peerID, bufferSize, currentSpeed, trend)
                 
-                // If buffer size changed significantly, create new reader
+                // If buffer size changed significantly, create new buffer
                 if math.Abs(float64(bufferSize-oldBufferSize)) > float64(oldBufferSize)/5 {
-                    bufReader = bufio.NewReaderSize(s, bufferSize)
+                    // Create a new buffer with the new size
                     buffer = make([]byte, bufferSize)
                     fmt.Printf("Adjusted buffer size: %d KB (speed: %.2f MB/s, trend: %.2f)\n", 
                         bufferSize/1024, currentSpeed, trend)
@@ -448,9 +325,22 @@ func HandleFileStream(s network.Stream) {
             lastBytes = bytesRead
         }
         
-        // Read with current buffer
-        n, err := bufReader.Read(buffer[:bufferSize])
-        if err != nil && err != io.EOF {
+        // SAFER APPROACH: Read only up to buffer capacity
+        // This is the key fix - we limit our read to the actual buffer size
+        toRead := bufferSize
+        if remainingBytes := int64(fileSize) - bytesRead; remainingBytes < int64(toRead) {
+            toRead = int(remainingBytes)
+        }
+        
+        // Make sure our slice access is within bounds
+        if toRead > len(buffer) {
+            toRead = len(buffer)
+        }
+        
+        // Read safely within buffer limits
+        n, err := io.ReadFull(reader, buffer[:toRead])
+        
+        if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
             fmt.Println("Error receiving file:", err)
             return
         }
@@ -464,7 +354,7 @@ func HandleFileStream(s network.Stream) {
             bytesRead += int64(n)
         }
         
-        if err == io.EOF {
+        if bytesRead >= int64(fileSize) || err == io.EOF {
             break
         }
     }

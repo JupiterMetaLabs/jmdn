@@ -138,6 +138,7 @@ func main() {
 	fmt.Println("  listpeers - Show all managed peers")
 	fmt.Println("  peers - Request updated peer list from seed")
 	fmt.Println("  stats - Show messaging statistics")
+	fmt.Println("  broadcast <message> - Broadcast a message to all connected peers")
 	fmt.Println("  exit - Exit the program")
 
 	var wg sync.WaitGroup
@@ -274,6 +275,20 @@ func main() {
 					printDashes()
 				} else {
 					fmt.Println("Yggdrasil messaging is disabled.")
+				}
+			
+			case "broadcast":
+				if len(parts) < 2 {
+					fmt.Println("Usage: broadcast <message>")
+					continue
+				}
+				// Join all remaining parts as the message
+				message := strings.Join(parts[1:], " ")
+				err := node.BroadcastMessage(n, message)
+				if err != nil {
+					fmt.Printf("Broadcast failed: %v\n", err)
+				} else {
+					fmt.Println("Message broadcast initiated")
 				}
 
 			default:

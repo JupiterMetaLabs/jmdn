@@ -155,6 +155,8 @@ func NewNode() (*config.Node, error) {
 	// Set up stream handlers for messages (TCP) and files (QUIC)
 	h.SetStreamHandler(config.MessageProtocol, messaging.HandleMessageStream)
 	h.SetStreamHandler(config.FileProtocol, transfer.HandleFileStream)
+    h.SetStreamHandler(config.BroadcastProtocol, messaging.HandleBroadcastStream)
+
 
 	// Start peer discovery using mDNS (optional)
 	go StartDiscovery(h)
@@ -213,3 +215,7 @@ func getPeerInfo(target string, host host.Host) (multiaddr.Multiaddr, *peer.Addr
     return maddr, peerInfo, isConnected, nil
 }
 
+// BroadcastMessage broadcasts a message to all connected peers
+func BroadcastMessage(n *config.Node, message string) error {
+    return messaging.BroadcastMessage(n.Host, message)
+}
