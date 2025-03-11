@@ -9,6 +9,18 @@ import (
     "github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// DefaultRegistry is the default Prometheus registry used by the application
+var DefaultRegistry = prometheus.NewRegistry()
+
+// Create a factory that uses our DefaultRegistry
+var factory = promauto.With(prometheus.WrapRegistererWithPrefix("p2p_", DefaultRegistry))
+
+// GetLibp2pRegisterer returns a registerer suitable for libp2p metrics
+func GetLibp2pRegisterer() prometheus.Registerer {
+    // This creates a registerer that will add the "libp2p_" prefix to all metrics
+    return prometheus.WrapRegistererWithPrefix("libp2p_", DefaultRegistry)
+}
+
 var (
     // Node connection metrics
     ConnectedPeersGauge = promauto.NewGauge(prometheus.GaugeOpts{

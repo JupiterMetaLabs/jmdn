@@ -23,7 +23,7 @@ func HandleFileStream(s network.Stream) {
     startTime := time.Now()
     
     // Read file size
-    header := make([]byte, 8)
+    header := make([]byte, 16)
     if _, err := io.ReadFull(s, header); err != nil {
         fmt.Println("Error reading header:", err)
         return
@@ -90,7 +90,7 @@ func SendFile(h host.Host, peerID peer.ID, filepath string) error {
     defer s.Close()
     
     // Send file metadata (size)
-    header := make([]byte, 8)
+    header := make([]byte, 16)
     binary.LittleEndian.PutUint64(header, uint64(fileSize))
     if _, err := s.Write(header); err != nil {
         return fmt.Errorf("header write failed: %v", err)

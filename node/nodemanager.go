@@ -257,6 +257,76 @@ func (nm *NodeManager) StopHeartbeat() {
 }
 
 // AddPeer adds a peer to be managed
+// func (nm *NodeManager) AddPeer(multiAddr string) error {
+//     // Parse multiaddress
+//     addr, err := multiaddr.NewMultiaddr(multiAddr)
+//     if err != nil {
+//         return fmt.Errorf("invalid multiaddress: %w", err)
+//     }
+
+//     // Extract peer info from multiaddress
+//     peerInfo, err := peer.AddrInfoFromP2pAddr(addr)
+//     if err != nil {
+//         return fmt.Errorf("invalid peer address: %w", err)
+//     }
+
+//     nm.mutex.Lock()
+//     defer nm.mutex.Unlock()
+
+//     // Check if peer already exists
+//     if _, exists := nm.trackedPeers[peerInfo.ID]; exists {
+//         return fmt.Errorf("peer %s already exists in managed peers", peerInfo.ID)
+//     }
+
+//     // Add peer to memory
+//     now := time.Now().Unix()
+//     managedPeer := &ManagedPeer{
+//         ID:        peerInfo.ID,
+//         Multiaddr: multiAddr,
+//         LastSeen:  now,
+//         IsAlive:   true,
+//     }
+//     nm.trackedPeers[peerInfo.ID] = managedPeer
+
+//     // Add peer to database
+// 	startTime := time.Now()
+
+//     query := fmt.Sprintf(`
+//     INSERT INTO %s (peer_id, multiaddr, last_seen, heartbeat_fail, is_alive)
+//     VALUES (?, ?, ?, ?, ?)`, config.ConnectedPeers)
+
+//     _, err = nm.db.Exec(query, peerInfo.ID.String(), multiAddr, now, 0, 1)
+
+// 	duration := time.Since(startTime).Seconds()
+//     metrics.DatabaseLatency.WithLabelValues("insert_peer").Observe(duration)
+
+//     if err != nil {
+//         metrics.DatabaseOperations.WithLabelValues("insert_peer", "failure").Inc()
+//         delete(nm.trackedPeers, peerInfo.ID) // Remove from memory if DB insertion failed
+//         return fmt.Errorf("failed to store peer in database: %w", err)
+//     }
+
+// 	metrics.DatabaseOperations.WithLabelValues("insert_peer", "success").Inc()
+    
+//     // Update metrics
+//     metrics.ManagedPeersGauge.Set(float64(len(nm.trackedPeers)))
+//     metrics.ActivePeersGauge.Inc() // New peer starts as active
+
+//     // Try to connect immediately
+//     ctx, cancel := context.WithTimeout(nm.ctx, 10*time.Second)
+//     defer cancel()
+
+//     if err := nm.host.Connect(ctx, *peerInfo); err != nil {
+//         fmt.Printf("Warning: Initial connection to peer %s failed: %v\n", peerInfo.ID, err)
+//         // We still keep the peer in our list for future connection attempts
+//     } else {
+//         fmt.Printf("Successfully connected to peer: %s\n", peerInfo.ID)
+//     }
+
+//     return nil
+// }
+
+// AddPeer adds a peer to be managed or reconnects if already managed
 func (nm *NodeManager) AddPeer(multiAddr string) error {
     // Parse multiaddress
     addr, err := multiaddr.NewMultiaddr(multiAddr)
@@ -274,11 +344,56 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
     defer nm.mutex.Unlock()
 
     // Check if peer already exists
-    if _, exists := nm.trackedPeers[peerInfo.ID]; exists {
-        return fmt.Errorf("peer %s already exists in managed peers", peerInfo.ID)
+    existingPeer, exists := nm.trackedPeers[peerInfo.ID]
+    
+    // If peer exists
+    if exists {
+        // Check if already connected
+        isConnected := nm.host.Network().Connectedness(peerInfo.ID) == network.Connected
+        
+        if isConnected && existingPeer.IsAlive {
+            // Already connected and marked as alive - nothing to do
+            return fmt.Errorf("peer %s is already connected and managed", peerInfo.ID)
+        }
+        
+        // Peer exists but is not connected or marked offline - attempt to reconnect
+        fmt.Printf("Peer %s exists but appears offline. Attempting reconnection...\n", peerInfo.ID)
+        
+        // Try to connect immediately
+        ctx, cancel := context.WithTimeout(nm.ctx, 10*time.Second)
+        defer cancel()
+        
+        if err := nm.host.Connect(ctx, *peerInfo); err != nil {
+            // Connection attempt failed
+            fmt.Printf("Warning: Reconnection attempt to peer %s failed: %v\n", peerInfo.ID, err)
+            return fmt.Errorf("reconnection failed: %w", err)
+        }
+        
+        // Successfully reconnected - update peer status
+        now := time.Now().Unix()
+        existingPeer.LastSeen = now
+        existingPeer.IsAlive = true
+        existingPeer.HeartbeatFail = 0
+        
+        // Update in database
+        query := fmt.Sprintf(`
+        UPDATE %s 
+        SET last_seen = ?, heartbeat_fail = ?, is_alive = ?
+        WHERE peer_id = ?`, config.ConnectedPeers)
+        
+        _, err = nm.db.Exec(query, now, 0, 1, peerInfo.ID.String())
+        if err != nil {
+            // Database update failed, but connection was successful
+            logger.Error().Err(err).Str("peer_id", peerInfo.ID.String()).Msg("Failed to update reconnected peer status")
+        }
+        
+        metrics.ActivePeersGauge.Inc() // Increment if it was previously marked as inactive
+        
+        fmt.Printf("Successfully reconnected to peer: %s\n", peerInfo.ID)
+        return nil
     }
 
-    // Add peer to memory
+    // This is a new peer - add to memory
     now := time.Now().Unix()
     managedPeer := &ManagedPeer{
         ID:        peerInfo.ID,
@@ -289,7 +404,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
     nm.trackedPeers[peerInfo.ID] = managedPeer
 
     // Add peer to database
-	startTime := time.Now()
+    startTime := time.Now()
 
     query := fmt.Sprintf(`
     INSERT INTO %s (peer_id, multiaddr, last_seen, heartbeat_fail, is_alive)
@@ -297,7 +412,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 
     _, err = nm.db.Exec(query, peerInfo.ID.String(), multiAddr, now, 0, 1)
 
-	duration := time.Since(startTime).Seconds()
+    duration := time.Since(startTime).Seconds()
     metrics.DatabaseLatency.WithLabelValues("insert_peer").Observe(duration)
 
     if err != nil {
@@ -306,7 +421,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
         return fmt.Errorf("failed to store peer in database: %w", err)
     }
 
-	metrics.DatabaseOperations.WithLabelValues("insert_peer", "success").Inc()
+    metrics.DatabaseOperations.WithLabelValues("insert_peer", "success").Inc()
     
     // Update metrics
     metrics.ManagedPeersGauge.Set(float64(len(nm.trackedPeers)))

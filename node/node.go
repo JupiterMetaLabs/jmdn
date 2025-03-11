@@ -8,6 +8,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/messaging"
 	"gossipnode/transfer"
+    "gossipnode/metrics"
 	"os"
 
 	libp2p "github.com/libp2p/go-libp2p"
@@ -116,6 +117,8 @@ func NewNode() (*config.Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load/create Peer ID: %v", err)
 	}
+    
+    libp2pRegisterer := metrics.GetLibp2pRegisterer()
 
 	h, err := libp2p.New(
 		libp2p.Identity(privKey), // Peer ID
@@ -129,7 +132,10 @@ func NewNode() (*config.Node, error) {
 		libp2p.Transport(quic.NewTransport),        // QUIC transport
 		libp2p.NATPortMap(),                        // NAT traversal
 		libp2p.ForceReachabilityPublic(),           // Force public reachability
-	)
+        libp2p.Ping(true),                          // Enable ping
+        libp2p.EnableRelayService(),                // Enable relay
+        libp2p.PrometheusRegisterer(libp2pRegisterer),              // Enable metrics
+    )
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to start libp2p: %v", err)
@@ -175,11 +181,12 @@ func SendMessage(n *config.Node, target string, message string) error {
 
 // SendFile sends a file to a peer (uses QUIC)
 func SendFile(n *config.Node,target string, filepath string) error {
-	_, peerInfo,_, err := getPeerInfo(target, n.Host)
+	_, peerInfo, isConnected, err := getPeerInfo(target, n.Host)
 	if err != nil {
 		return err
 	}
 
+	fmt.Println("Connected to peer:", isConnected)
 	// Connect to the peer
 	if err := n.Host.Connect(context.Background(), *peerInfo); err != nil {
 		return fmt.Errorf("connection failed: %v", err)
@@ -205,3 +212,4 @@ func getPeerInfo(target string, host host.Host) (multiaddr.Multiaddr, *peer.Addr
 
     return maddr, peerInfo, isConnected, nil
 }
+
