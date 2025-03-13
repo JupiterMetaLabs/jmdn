@@ -141,6 +141,11 @@ func NewNode() (*config.Node, error) {
 		return nil, fmt.Errorf("failed to start libp2p: %v", err)
 	}
 
+    if err := messaging.InitBlockPropagation(); err != nil {
+        fmt.Errorf("failed to initialize block propagation: %v", err)
+        return nil, err
+    }
+
 	// Verify the host's peer ID matches what we expect
 	if peerID.String() != h.ID().String() {
 		return nil, fmt.Errorf("peer ID mismatch: expected %s, got %s", peerID, h.ID())
@@ -157,6 +162,7 @@ func NewNode() (*config.Node, error) {
 	h.SetStreamHandler(config.MessageProtocol, messaging.HandleMessageStream)
 	h.SetStreamHandler(config.FileProtocol, transfer.HandleFileStream)
     h.SetStreamHandler(config.BroadcastProtocol, messaging.HandleBroadcastStream)
+    h.SetStreamHandler(config.BlockPropagationProtocol, messaging.HandleBlockStream)
 
 
 	// Start peer discovery using mDNS (optional)

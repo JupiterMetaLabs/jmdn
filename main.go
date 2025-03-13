@@ -17,7 +17,7 @@ import (
 	"gossipnode/metrics"
 	"gossipnode/node"
 	"gossipnode/seed"
-
+	"gossipnode/SIM"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog/log"
 )
@@ -104,6 +104,8 @@ func main() {
 	}
 	nodeManager.StartHeartbeat(*heartbeatInterval)
 	defer nodeManager.Shutdown()
+
+    SIM.StartBlockSimulation(n.Host, 10*time.Second, 30*time.Second)
 
 	// Configure as seed node if requested
 	if *isSeed {

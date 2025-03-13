@@ -17,7 +17,8 @@ const (
 	PeerDiscoveryProtocol protocol.ID = "/custom/peer/discovery/1.0.0" // For finding peers
 	HeartbeatProtocol     protocol.ID = "/heartbeat/1.0.0"
 	RegisterProtocol      protocol.ID = "/seednode/register/1.0.0" // For peer registration
-	BroadcastProtocol                 = "/broadcast/1.0.0"
+	BroadcastProtocol     protocol.ID = "/broadcast/1.0.0"
+	BlockPropagationProtocol protocol.ID = "/broadcast/block/1.0.0"
 )
 
 // Increase buffer sizes
