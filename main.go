@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -12,12 +13,15 @@ import (
 	"syscall"
 	"time"
 
+	"gossipnode/SIM"
+	"gossipnode/explorer"
 	"gossipnode/logging"
+	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	"gossipnode/metrics"
 	"gossipnode/node"
 	"gossipnode/seed"
-	"gossipnode/SIM"
+
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog/log"
 )
@@ -26,9 +30,34 @@ func printDashes() {
 	fmt.Println("\n", strings.Repeat("-", 50), "\n")
 }
 
+func StartAPIServer(address string) error {
+    // Create ImmuDB API server
+    server, err := explorer.NewImmuDBServer()
+    if err != nil {
+        return fmt.Errorf("failed to create ImmuDB API server: %w", err)
+    }
+    
+    log.Info().Str("address", address).Msg("Starting ImmuDB API server")
+    return server.Start(address)
+}
+
+// StartExplorerServer starts the explorer server on the given address
+func StartExplorerServer(address string) error {
+    explorer, err := explorer.NewExplorer()
+    if err != nil {
+        return err
+    }
+	
+	messaging.SetExplorerRef(explorer)
+
+    r := explorer.SetupRoutes()
+
+    log.Info().Str("address", address).Msg("Starting ImmuDB Explorer server")
+    return http.ListenAndServe(address, r)
+}
+
 // initYggdrasilMessaging initializes the Yggdrasil messaging system
 func initYggdrasilMessaging(ctx context.Context) {
-	// Start the Yggdrasil listener
 	directMSG.StartYggdrasilListener(ctx)
 	fmt.Printf("Yggdrasil messaging service started on port %d\n", directMSG.YggdrasilPort)
 }
@@ -44,6 +73,9 @@ func main() {
 	logDir := flag.String("logdir", "./logs", "Directory for log files")
 	logToConsole := flag.Bool("console", false, "Also log to console")
 	enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
+	explorerPort := flag.Int("explorer", 0, "Run blockchain explorer on specified port (0 = disabled)")
+    apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
+
 	flag.Parse()
 
 	// Initialize logger
@@ -130,6 +162,32 @@ func main() {
 			}
 		}
 	}
+
+	if *explorerPort > 0 {
+		go func() {
+			log.Info().Msgf("Starting blockchain explorer on port %d", *explorerPort)
+			fmt.Printf("\nBlockchain explorer available at http://localhost:%d\n", *explorerPort)
+			
+			// Initialize explorer
+			explorerAddr := fmt.Sprintf(":%d", *explorerPort)
+			if err := StartExplorerServer(explorerAddr); err != nil {
+				log.Error().Err(err).Msg("Failed to start explorer server")
+			}
+		}()
+	}
+
+	if *apiPort > 0 {
+        go func() {
+            log.Info().Msgf("Starting ImmuDB API on port %d", *apiPort)
+            fmt.Printf("\nImmuDB API available at http://localhost:%d/api\n", *apiPort)
+            
+            // Initialize API server
+            apiAddr := fmt.Sprintf(":%d", *apiPort)
+            if err := StartAPIServer(apiAddr); err != nil {
+                log.Error().Err(err).Msg("Failed to start API server")
+            }
+        }()
+    }
 
 	fmt.Println("\nCommands:")
 	fmt.Println("  msg <peer_multiaddr> <message>  - Send a message to a peer via libp2p")

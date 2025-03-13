@@ -2,10 +2,13 @@ package DB_OPs
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"gossipnode/config"
+
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/client"
 	"google.golang.org/grpc/metadata"
@@ -293,4 +296,34 @@ func (ic *ImmuClient) GetHistory(key string, limit int) ([]*schema.Entry, error)
     }
 
     return historyResp.Entries, nil
+}
+
+
+type BlockHasher struct{}
+
+// NewBlockHasher creates a new BlockHasher
+func NewBlockHasher() *BlockHasher {
+    return &BlockHasher{}
+}
+
+// HashBlock generates a hash for a block using the nonce, sender, and timestamp
+func (h *BlockHasher) HashBlock(nonce, sender string, timestamp int64) string {
+    // Create a deterministic string from the block components
+    data := fmt.Sprintf("%s-%s-%d", nonce, sender, timestamp)
+    
+    // Hash the data
+    hash := sha256.Sum256([]byte(data))
+    
+    // Return hex-encoded hash, truncated for readability
+    return hex.EncodeToString(hash[:])[:16]
+}
+
+func (ic *ImmuClient) GetDatabaseState() (*schema.ImmutableState, error) {
+    // Get current state from server
+    state, err := ic.client.CurrentState(ic.ctx)
+    if err != nil {
+        return nil, fmt.Errorf("failed to get current state: %w", err)
+    }
+    
+    return state, nil
 }

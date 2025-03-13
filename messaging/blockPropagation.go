@@ -1,25 +1,26 @@
 package messaging
 
 import (
-    "bufio"
-    "context"
-    "crypto/sha256"
-    "encoding/base64"
-    "encoding/json"
-    "fmt"
-    "io"
-    "sync"
-    "time"
+	"bufio"
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"sync"
+	"time"
 
-    "github.com/libp2p/go-libp2p/core/host"
-    "github.com/libp2p/go-libp2p/core/network"
-    "github.com/libp2p/go-libp2p/core/peer"
-    "github.com/rs/zerolog/log"
-    "github.com/bits-and-blooms/bloom/v3"
+	"github.com/bits-and-blooms/bloom/v3"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/rs/zerolog/log"
 
-    "gossipnode/config"
-    "gossipnode/metrics"
-    "gossipnode/DB_OPs"
+	"gossipnode/DB_OPs"
+	"gossipnode/config"
+	"gossipnode/explorer"
+	"gossipnode/metrics"
 )
 
 // BlockMessage represents a message for block propagation
@@ -46,6 +47,39 @@ var (
     immuClient     *DB_OPs.ImmuClient
     immuClientOnce sync.Once
 )
+
+// Add this to messaging/blockPropagation.go
+var explorerRef *explorer.Explorer
+
+func SetExplorerRef(e *explorer.Explorer) {
+    explorerRef = e
+}
+
+func notifyExplorer(msg BlockMessage) {
+    // Skip if explorer reference isn't set
+    if explorerRef == nil {
+        log.Debug().Msg("Explorer reference not set")
+        return
+    }
+    
+    // Prepare notification message
+    notification := map[string]interface{}{
+        "type": "block",
+        "data": msg,
+    }
+    
+    // Marshal to JSON
+    data, err := json.Marshal(notification)
+    if err != nil {
+        log.Error().Err(err).Msg("Failed to marshal block notification")
+        return
+    }
+    
+    // Send to explorer for broadcasting
+    e := explorerRef
+    e.Broadcast <- data
+    log.Debug().Str("block_id", msg.ID).Msg("Block notification sent to explorer")
+}
 
 func init() {
     // Initialize a bloom filter with 10000 items and 0.01 false positive rate
@@ -234,7 +268,7 @@ func HandleBlockStream(stream network.Stream) {
     
     // Print the received block
     fmt.Printf("\n[BLOCK from %s] Nonce: %s\n>>> ", msg.Sender, msg.Nonce)
-    
+    notifyExplorer(msg)
     // Only rebroadcast if we haven't reached max hops
     if msg.Hops < config.MaxHops {
         // Forward to our peers
@@ -438,7 +472,7 @@ func PropagateBlock(h host.Host, data map[string]string) error {
         Int("success", successCount).
         Int("total", len(peers)).
         Msg("Block propagation complete")
-    
+	notifyExplorer(msg)
     return nil
 }
 
