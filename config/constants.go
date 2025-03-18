@@ -19,6 +19,7 @@ const (
 	RegisterProtocol      protocol.ID = "/seednode/register/1.0.0" // For peer registration
 	BroadcastProtocol     protocol.ID = "/broadcast/1.0.0"
 	BlockPropagationProtocol protocol.ID = "/broadcast/block/1.0.0"
+	SyncProtocol 		  protocol.ID = "/p2p/sync/1.0.0"
 )
 
 // Increase buffer sizes
@@ -39,7 +40,7 @@ const (
 	IP6TCP  = "/ip6/::/tcp/15000"
 	IP6QUIC = "/ip6/::/udp/15000/quic-v1"
 	IP4TCP  = "/ip4/0.0.0.0/tcp/15000"
-	IP4QUIC = "/ip4/0.0.0.0/udp/15000/quic-v1" // Updated to quic-v1 for consistency
+	IP4QUIC = "/ip4/0.0.0.0/udp/15000/quic-v1"
 )
 
 // SeedNodeConfig defines configuration for seed nodes
