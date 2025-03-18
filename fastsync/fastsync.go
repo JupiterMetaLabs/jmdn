@@ -68,8 +68,8 @@ type SyncMessage struct {
 
 // BatchData represents a batch of key-value entries
 type BatchData struct {
-    Entries []KeyValueEntry `json:"entries"`
-    CRDTs   []crdt.CRDT     `json:"crdts"`
+    Entries []KeyValueEntry    `json:"entries"`
+    CRDTs   []json.RawMessage  `json:"crdts"` // Change this from []crdt.CRDT to []json.RawMessage
 }
 
 // KeyValueEntry represents a key-value entry in ImmuDB
@@ -261,7 +261,7 @@ func (fs *FastSync) handleSyncRequest(peerID peer.ID, msg *SyncMessage) (*SyncMe
     ctx, cancel := context.WithTimeout(context.Background(), SyncTimeout)
     
     bloomFilter := bloom.NewWithEstimates(BloomFilterCapacity, 0.01) // 1% false positive rate    
-    
+
     // Create sync state
     syncState := &syncState{
         peer:            peerID,
@@ -486,9 +486,10 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
 }
 
 // getBatchData retrieves data for a batch based on Bloom filter comparison
-func (fs *FastSync) getBatchData(startTxID, endTxID uint64, remoteFilter *bloom.BloomFilter) ([]KeyValueEntry, []crdt.CRDT, error) {
+// Update the getBatchData method to properly serialize CRDTs
+func (fs *FastSync) getBatchData(startTxID, endTxID uint64, remoteFilter *bloom.BloomFilter) ([]KeyValueEntry, []json.RawMessage, error) {
     var entries []KeyValueEntry
-    var crdtEntries []crdt.CRDT
+    var crdtEntries []json.RawMessage
     
     // Get all keys in this TxID range with pagination
     const maxKeysPerBatch = 2000
@@ -518,7 +519,33 @@ func (fs *FastSync) getBatchData(startTxID, endTxID uint64, remoteFilter *bloom.
                 if fs.crdtEngine.IsCRDT(key) {
                     crdtValue, err := fs.crdtEngine.DeserializeCRDT(key, data, nil)
                     if err == nil {
-                        crdtEntries = append(crdtEntries, crdtValue)
+                        // Wrap the CRDT in a type envelope for proper serialization/deserialization
+                        crdtType := ""
+                        switch crdtValue.(type) {
+                        case *crdt.LWWSet:
+                            crdtType = "lww-set"
+                        case *crdt.Counter:
+                            crdtType = "counter"
+                        default:
+                            crdtType = "unknown"
+                        }
+                        
+                        // Create a wrapper with type information
+                        wrapper := map[string]interface{}{
+                            "type": crdtType,
+                            "data": crdtValue,
+                        }
+                        
+                        // Serialize to JSON
+                        crdtBytes, err := json.Marshal(wrapper)
+                        if err == nil {
+                            crdtEntries = append(crdtEntries, crdtBytes)
+                        } else {
+                            log.Error().
+                                Err(err).
+                                Str("key", key).
+                                Msg("Failed to serialize CRDT")
+                        }
                     } else {
                         log.Error().
                             Err(err).
@@ -572,23 +599,59 @@ func (fs *FastSync) handleBatchData(peerID peer.ID, msg *SyncMessage) (*SyncMess
         return nil, fmt.Errorf("failed to parse batch data: %w", err)
     }
     
-    // Process entries first
+    // Process entries first (no change)
     entries := make(map[string]interface{})
     for _, entry := range batchData.Entries {
         key := string(entry.Key)
         entries[key] = entry.Value
     }
     
-    // Batch create the entries if we have any
+    // Batch create the entries if we have any (no change)
     if len(entries) > 0 {
         if err := fs.db.BatchCreate(entries); err != nil {
             return nil, fmt.Errorf("failed to store batch entries: %w", err)
         }
     }
     
-    // Process CRDTs
+    // Process CRDTs with proper type handling
     if len(batchData.CRDTs) > 0 {
-        for _, crdtValue := range batchData.CRDTs {
+        for _, crdtBytes := range batchData.CRDTs {
+            // Parse the wrapper first
+            var wrapper map[string]json.RawMessage
+            if err := json.Unmarshal(crdtBytes, &wrapper); err != nil {
+                log.Error().Err(err).Msg("Failed to unmarshal CRDT wrapper")
+                continue
+            }
+            
+            // Get the type
+            var crdtType string
+            if err := json.Unmarshal(wrapper["type"], &crdtType); err != nil {
+                log.Error().Err(err).Msg("Failed to unmarshal CRDT type")
+                continue
+            }
+            
+            // Create the correct CRDT type based on the type string
+            var crdtValue crdt.CRDT
+            switch crdtType {
+            case "lww-set":
+                crdtValue = &crdt.LWWSet{}
+            case "counter":
+                crdtValue = &crdt.Counter{}
+            default:
+                log.Error().Str("type", crdtType).Msg("Unknown CRDT type")
+                continue
+            }
+            
+            // Unmarshal the data into the specific CRDT type
+            if err := json.Unmarshal(wrapper["data"], crdtValue); err != nil {
+                log.Error().
+                    Err(err).
+                    Str("type", crdtType).
+                    Msg("Failed to unmarshal CRDT data")
+                continue
+            }
+            
+            // Now you have a properly deserialized CRDT
             mergedCRDT, err := fs.crdtEngine.MergeCRDT(crdtValue)
             if err != nil {
                 log.Error().Err(err).
@@ -1123,7 +1186,43 @@ func (fs *FastSync) requestAndProcessBatch(writer *bufio.Writer, reader *bufio.R
     
     // Process CRDTs
     if len(batchData.CRDTs) > 0 {
-        for _, crdtValue := range batchData.CRDTs {
+        for _, crdtBytes := range batchData.CRDTs {
+            // Parse the wrapper first
+            var wrapper map[string]json.RawMessage
+            if err := json.Unmarshal(crdtBytes, &wrapper); err != nil {
+                log.Error().Err(err).Msg("Failed to unmarshal CRDT wrapper")
+                continue
+            }
+            
+            // Get the type
+            var crdtType string
+            if err := json.Unmarshal(wrapper["type"], &crdtType); err != nil {
+                log.Error().Err(err).Msg("Failed to unmarshal CRDT type")
+                continue
+            }
+            
+            // Create the correct CRDT type based on the type string
+            var crdtValue crdt.CRDT
+            switch crdtType {
+            case "lww-set":
+                crdtValue = &crdt.LWWSet{}
+            case "counter":
+                crdtValue = &crdt.Counter{}
+            default:
+                log.Error().Str("type", crdtType).Msg("Unknown CRDT type")
+                continue
+            }
+            
+            // Unmarshal the data into the specific CRDT type
+            if err := json.Unmarshal(wrapper["data"], crdtValue); err != nil {
+                log.Error().
+                    Err(err).
+                    Str("type", crdtType).
+                    Msg("Failed to unmarshal CRDT data")
+                continue
+            }
+            
+            // Now you have a properly deserialized CRDT
             mergedCRDT, err := fs.crdtEngine.MergeCRDT(crdtValue)
             if err != nil {
                 log.Error().Err(err).
