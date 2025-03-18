@@ -446,25 +446,47 @@ func main() {
                 fmt.Printf("New state: TxID=%d, Root=%x\n", newState.TxId, newState.TxHash)
                 printDashes()
 
-            case "dbstate":
-                state, err := immuClient.GetDatabaseState()
-                if err != nil {
-                    fmt.Printf("Failed to get database state: %v\n", err)
-                    continue
-                }
-                
-                fmt.Println("Current ImmuDB State:")
-                fmt.Printf("  Transaction ID: %d\n", state.TxId)
-                fmt.Printf("  Merkle Root: %x\n", state.TxHash)
-                
-                // Count entries in the database
-                keys, err := immuClient.GetKeys("", 10000)
-                if err != nil {
-                    fmt.Printf("Failed to count database entries: %v\n", err)
-                } else {
-                    fmt.Printf("  Total Keys: %d\n", len(keys))
-                }
-                printDashes()
+			case "dbstate":
+				state, err := immuClient.GetDatabaseState()
+				if err != nil {
+					fmt.Printf("Failed to get database state: %v\n", err)
+					continue
+				}
+				
+				fmt.Println("Current ImmuDB State:")
+				fmt.Printf("  Transaction ID: %d\n", state.TxId)
+				fmt.Printf("  Merkle Root: %x\n", state.TxHash)
+				
+				// Count entries in the database using pagination
+				const maxKeysPerBatch = 2000 // Staying well under the 2500 limit
+				var totalKeys int
+				var lastKey string
+				var hasMoreKeys = true
+				
+				for hasMoreKeys {
+					keys, err := immuClient.GetKeys(lastKey, maxKeysPerBatch)
+					if err != nil {
+						fmt.Printf("Failed to count database entries: %v\n", err)
+						hasMoreKeys = false
+						continue
+					}
+					
+					count := len(keys)
+					totalKeys += count
+					
+					// If we got fewer keys than our limit, we've reached the end
+					if count < maxKeysPerBatch {
+						hasMoreKeys = false
+					} else if count > 0 {
+						// Set the last key for the next batch
+						lastKey = keys[count-1]
+					} else {
+						hasMoreKeys = false
+					}
+				}
+				
+				fmt.Printf("  Total Keys: %d\n", totalKeys)
+				printDashes()
                 
             default:
                 fmt.Println("Unknown command")

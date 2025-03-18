@@ -393,13 +393,39 @@ func (fs *FastSync) handleBloomFilterExchange(peerID peer.ID, msg *SyncMessage) 
 
 // getKeysInRange retrieves keys between specified transaction IDs
 func (fs *FastSync) getKeysInRange(startTxID, endTxID uint64) ([]string, error) {
-    // Using a prefix-based approach since ImmuDB doesn't directly support TxID range queries
-    keys, err := fs.db.GetKeys("", 10000) // Get all keys, we'll filter by TxID later
-    if err != nil {
-        return nil, err
+    // The maximum allowed limit is 2500, so we use this as our batch size
+    const maxKeysPerBatch = 2000 // Using slightly less than max to be safe
+    var allKeys []string
+    var lastKey string
+    var count int
+    
+    // Get keys in batches to respect ImmuDB's limits
+    for {
+        keys, err := fs.db.GetKeys(lastKey, maxKeysPerBatch)
+        if err != nil {
+            return nil, fmt.Errorf("GetKeys failed: %w", err)
+        }
+        
+        // Add keys to our collection
+        allKeys = append(allKeys, keys...)
+        count = len(keys)
+        
+        // If we got fewer keys than our limit, we've reached the end
+        if count < maxKeysPerBatch {
+            break
+        }
+        
+        // Otherwise, set the last key for the next batch
+        lastKey = keys[count-1]
     }
     
-    return keys, nil
+    log.Info().
+        Int("total_keys", len(allKeys)).
+        Uint64("start_tx", startTxID).
+        Uint64("end_tx", endTxID).
+        Msg("Retrieved keys from database")
+    
+    return allKeys, nil
 }
 
 // handleBatchRequest processes a request for a specific batch of data
@@ -462,45 +488,60 @@ func (fs *FastSync) getBatchData(startTxID, endTxID uint64, remoteFilter *bloom.
     var entries []KeyValueEntry
     var crdtEntries []crdt.CRDT
     
-    // Get all keys in this TxID range
-    keys, err := fs.getKeysInRange(startTxID, endTxID)
-    if err != nil {
-        return nil, nil, err
-    }
+    // Get all keys in this TxID range with pagination
+    const maxKeysPerBatch = 2000
+    var lastKey string
+    var continueLoop = true
     
-    // Check each key against the remote bloom filter
-    for _, key := range keys {
-        // Only send keys that the remote node doesn't have
-        if !remoteFilter.Test([]byte(key)) {
-            // Get the key data
-            data, err := fs.db.Read(key)
-            if err != nil {
-                // Skip if key not found - might have been deleted
-                continue
-            }
-            
-            // Check if this is a CRDT
-            if fs.crdtEngine.IsCRDT(key) {
-                // Fix: Properly handle both return values from DeserializeCRDT
-                crdtValue, err := fs.crdtEngine.DeserializeCRDT(key, data, nil)
-                if err == nil {
-                    crdtEntries = append(crdtEntries, crdtValue)
-                } else {
-                    log.Error().
-                        Err(err).
-                        Str("key", key).
-                        Msg("Failed to deserialize CRDT")
+    for continueLoop {
+        keys, err := fs.db.GetKeys(lastKey, maxKeysPerBatch)
+        if err != nil {
+            return nil, nil, err
+        }
+        
+        count := len(keys)
+        
+        // Process this batch of keys
+        for _, key := range keys {
+            // Only send keys that the remote node doesn't have
+            if !remoteFilter.Test([]byte(key)) {
+                // Get the key data
+                data, err := fs.db.Read(key)
+                if err != nil {
+                    // Skip if key not found - might have been deleted
+                    continue
                 }
-            } else {
-                // Regular key-value entry
-                entries = append(entries, KeyValueEntry{
-                    Key:   []byte(key),
-                    Value: data,
-                    // Note: In a real implementation, we'd extract the actual timestamp and TxID
-                    Timestamp: time.Now(), 
-                    TxID:      0,
-                })
+                
+                // Check if this is a CRDT
+                if fs.crdtEngine.IsCRDT(key) {
+                    crdtValue, err := fs.crdtEngine.DeserializeCRDT(key, data, nil)
+                    if err == nil {
+                        crdtEntries = append(crdtEntries, crdtValue)
+                    } else {
+                        log.Error().
+                            Err(err).
+                            Str("key", key).
+                            Msg("Failed to deserialize CRDT")
+                    }
+                } else {
+                    // Regular key-value entry
+                    entries = append(entries, KeyValueEntry{
+                        Key:   []byte(key),
+                        Value: data,
+                        // Note: In a real implementation, we'd extract the actual timestamp and TxID
+                        Timestamp: time.Now(),
+                        TxID:      0,
+                    })
+                }
             }
+        }
+        
+        // If we got fewer keys than our limit, we've reached the end
+        if count < maxKeysPerBatch {
+            continueLoop = false
+        } else {
+            // Set the last key for the next batch
+            lastKey = keys[count-1]
         }
     }
     
