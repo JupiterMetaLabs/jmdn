@@ -1,33 +1,35 @@
 package fastsync
 
 import (
-    "bufio"
-    "context"
-    "bytes"
-    "encoding/json"
-    "fmt"
-    "io"
-    "sync"
-    "time"
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"io"
+	"sync"
+	"time"
 
-    "github.com/bits-and-blooms/bloom/v3"
-    "github.com/libp2p/go-libp2p/core/host"
-    "github.com/libp2p/go-libp2p/core/network"
-    "github.com/libp2p/go-libp2p/core/peer"
-    "github.com/rs/zerolog/log"
+	"github.com/bits-and-blooms/bloom/v3"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/rs/zerolog/log"
 
-    "gossipnode/DB_OPs"
-    "gossipnode/config"
-    "gossipnode/crdt"
+	"gossipnode/DB_OPs"
+	"gossipnode/config"
+	"gossipnode/crdt"
 )
 
 const (
     SyncProtocolID        = config.SyncProtocol
-    BloomFilterSize       = 100000 // Size of Bloom filter (larger = fewer false positives)
-    BloomFilterHashFuncs  = 5      // Number of hash functions for Bloom filter
-    SyncBatchSize         = 200    // Number of transactions to sync in each batch
-    MaxConcurrentBatches  = 8      // Maximum number of batches to process concurrently
-    RetriesBeforeAborting = 3      // Maximum number of retries for failed batches
+    BloomFilterSize       = 100000  // Keep this the same
+    BloomFilterHashFuncs  = 5       // Keep this the same
+    BloomFilterCapacity   = 100000  // Add this new constant for capacity estimation
+    SyncBatchSize         = 200     // Number of transactions to sync in each batch
+    MaxConcurrentBatches  = 8       // Maximum number of batches to process concurrently
+    RetriesBeforeAborting = 3       // Maximum number of retries for failed batches
     SyncTimeout           = 5 * time.Minute
     SyncRequestTimeout    = 30 * time.Second
     SyncResponseTimeout   = 2 * time.Minute
@@ -258,7 +260,7 @@ func (fs *FastSync) handleSyncRequest(peerID peer.ID, msg *SyncMessage) (*SyncMe
     // Create new sync state
     ctx, cancel := context.WithTimeout(context.Background(), SyncTimeout)
     
-    bloomFilter := bloom.NewWithEstimates(BloomFilterSize, BloomFilterHashFuncs)
+    bloomFilter := bloom.NewWithEstimates(BloomFilterCapacity, 0.01) // 1% false positive rate    
     
     // Create sync state
     syncState := &syncState{
@@ -271,7 +273,7 @@ func (fs *FastSync) handleSyncRequest(peerID peer.ID, msg *SyncMessage) (*SyncMe
         retries:         make(map[int]int),
         cancel:          cancel,
         sentKeys:        bloomFilter,
-        receivedKeys:    bloom.NewWithEstimates(BloomFilterSize, BloomFilterHashFuncs),
+        receivedKeys:    bloom.NewWithEstimates(BloomFilterSize, 0.01),
     }
     
     // Store sync state
@@ -359,8 +361,8 @@ func (fs *FastSync) handleBloomFilterExchange(peerID peer.ID, msg *SyncMessage) 
     syncState.receivedKeys = remoteFilter
     
     // Now we need to build our bloom filter of keys
-    ourFilter := bloom.NewWithEstimates(BloomFilterSize, BloomFilterHashFuncs)
-    
+    ourFilter := bloom.NewWithEstimates(BloomFilterCapacity, 0.01) // 1% false positive rate    
+
     // Get all keys from our database (or just the ones in the sync range)
     keys, err := fs.getKeysInRange(syncState.startTxID, syncState.endTxID)
     if err != nil {
@@ -369,7 +371,7 @@ func (fs *FastSync) handleBloomFilterExchange(peerID peer.ID, msg *SyncMessage) 
     
     // Add keys to our filter
     for _, key := range keys {
-        ourFilter.Add([]byte(key))
+        addSafelyToBloomFilter(ourFilter, key)
     }
     
     // Serialize our filter
@@ -866,7 +868,7 @@ func (fs *FastSync) processSyncResponse(peerID peer.ID, stream network.Stream, r
     }
 
     // First exchange bloom filters to optimize what we need to sync
-    bloomFilter := bloom.NewWithEstimates(BloomFilterSize, BloomFilterHashFuncs)
+    bloomFilter := bloom.NewWithEstimates(BloomFilterCapacity, 0.01) 
     
     // Get all our keys and add them to the filter
     ourKeys, err := fs.getKeysInRange(0, ourState.TxId)
@@ -875,9 +877,9 @@ func (fs *FastSync) processSyncResponse(peerID peer.ID, stream network.Stream, r
     }
     
     for _, key := range ourKeys {
-        bloomFilter.Add([]byte(key))
+        addSafelyToBloomFilter(bloomFilter, key)
     }
-    
+
     // Serialize our filter
     filterBytes, err := bloomFilter.MarshalBinary()
     if err != nil {
@@ -1216,4 +1218,20 @@ func (fs *FastSync) handleFinalVerification(reader *bufio.Reader, peerMerkleRoot
     completeBytes = append(completeBytes, '\n')
     
     return nil
+}
+
+// Helper function to add keys safely to bloom filter
+func addSafelyToBloomFilter(filter *bloom.BloomFilter, key string) {
+    // Skip empty keys
+    if len(key) == 0 {
+        return
+    }
+    
+    // Use a SHA-256 hash of the key for more uniform distribution
+    // This helps prevent certain problematic bit patterns that could cause issues
+    hasher := sha256.New()
+    hasher.Write([]byte(key))
+    hashBytes := hasher.Sum(nil)
+    
+    filter.Add(hashBytes)
 }
