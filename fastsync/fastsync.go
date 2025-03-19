@@ -182,7 +182,7 @@ func (fs *FastSync) handleSyncStream(stream network.Stream) {
                 Str("reason", msg.ErrorMessage).
                 Msg("Sync aborted by peer")
             fs.cleanupSync(peerID)
-            break
+            continue
         default:
             log.Warn().
                 Str("type", msg.Type).
@@ -530,10 +530,16 @@ func (fs *FastSync) getBatchData(startTxID, endTxID uint64, remoteFilter *bloom.
                             crdtType = "unknown"
                         }
                         
-                        // Create a wrapper with type information
-                        wrapper := map[string]interface{}{
-                            "type": crdtType,
-                            "data": crdtValue,
+                        crdtJSON, err := json.Marshal(crdtValue)
+                        if err != nil {
+                            log.Error().Err(err).Msg("Failed to marshal CRDT to JSON")
+                            continue
+                        }
+                        
+                        // Then create a wrapper with the raw JSON
+                        wrapper := map[string]json.RawMessage{
+                            "type": json.RawMessage(fmt.Sprintf("\"%s\"", crdtType)),
+                            "data": crdtJSON,
                         }
                         
                         // Serialize to JSON
@@ -1200,7 +1206,6 @@ func (fs *FastSync) requestAndProcessBatch(writer *bufio.Writer, reader *bufio.R
                 log.Error().Err(err).Msg("Failed to unmarshal CRDT type")
                 continue
             }
-            
             // Create the correct CRDT type based on the type string
             var crdtValue crdt.CRDT
             switch crdtType {

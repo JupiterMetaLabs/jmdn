@@ -1,11 +1,14 @@
 package crdt
 
 import (
-    "encoding/json"
-    "fmt"
-    // "time"
-    
-    "gossipnode/DB_OPs"
+	"encoding/json"
+	"fmt"
+
+	// "time"
+
+	"gossipnode/DB_OPs"
+
+	"github.com/rs/zerolog/log"
 )
 
 // CRDT is an interface for conflict-free replicated data types
@@ -379,7 +382,12 @@ func (e *Engine) DeserializeCRDT(key string, data []byte, target CRDT) (CRDT, er
 // MergeCRDT merges a CRDT with existing one in database
 func (e *Engine) MergeCRDT(incoming CRDT) (CRDT, error) {
     key := "crdt:" + incoming.GetKey()
-    
+
+    log.Debug().
+        Str("key", incoming.GetKey()).
+        Interface("incoming_type", fmt.Sprintf("%T", incoming)).
+        Msg("Attempting to merge CRDT") 
+
     // Try to load existing CRDT
     existing, err := e.LoadCRDT(key)
     if err != nil {
