@@ -429,12 +429,32 @@ func main() {
                 
                 // Start the sync process
                 startTime := time.Now()
-                err = fastSyncer.StartSync(addrInfo.ID)
-                if err != nil {
-                    fmt.Printf("Sync failed: %v\n", err)
-                    continue
+
+                // err = fastSyncer.StartSync(addrInfo.ID)
+                // if err != nil {
+                //     fmt.Printf("Sync failed: %v\n", err)
+                //     continue
+                // }
+                
+                maxRetries := 3
+                var syncErr error
+                
+                for retry := 0; retry < maxRetries; retry++ {
+                    if retry > 0 {
+                        fmt.Printf("Retry %d/%d after error: %v\n", retry+1, maxRetries, syncErr)
+                        time.Sleep(2 * time.Second)
+                    }
+                    
+                    syncErr = fastSyncer.StartSync(addrInfo.ID)
+                    if syncErr == nil {
+                        break
+                    }
                 }
                 
+                if syncErr != nil {
+                    fmt.Printf("Sync failed after %d attempts: %v\n", maxRetries, syncErr)
+                    continue
+                }
                 // Get post-sync state
                 newState, err := immuClient.GetDatabaseState()
                 if err != nil {
