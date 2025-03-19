@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"gossipnode/DB_OPs"
-	"gossipnode/SIM"
+	// "gossipnode/SIM"
 	"gossipnode/config"
 	"gossipnode/explorer"
 	fastsync "gossipnode/fastsync"
@@ -183,7 +183,7 @@ func main() {
     nodeManager.StartHeartbeat(*heartbeatInterval)
     defer nodeManager.Shutdown()
 
-    SIM.StartBlockSimulation(n.Host, 10*time.Second, 30*time.Second)
+    // SIM.StartBlockSimulation(n.Host, 10*time.Second, 30*time.Second)
 
     // Configure as seed node if requested
     if *isSeed {
@@ -435,7 +435,7 @@ func main() {
                 //     fmt.Printf("Sync failed: %v\n", err)
                 //     continue
                 // }
-                
+
                 maxRetries := 3
                 var syncErr error
                 

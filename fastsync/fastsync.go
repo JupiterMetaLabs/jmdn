@@ -915,6 +915,368 @@ func (fs *FastSync) StartSync(peerID peer.ID) error {
 }
 
 // processSyncResponse continues the sync process after receiving the initial response
+// func (fs *FastSync) processSyncResponse(peerID peer.ID, stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, response *SyncMessage) error {
+//     defer stream.Close() // Ensure stream is closed when we're done
+    
+//     // Set larger buffer size for writer
+//     writer = bufio.NewWriterSize(stream, 64*1024) // Increase buffer size to 64KB
+    
+//     // Set shorter timeouts to detect errors faster
+//     stream.SetReadDeadline(time.Now().Add(30 * time.Second))
+//     stream.SetWriteDeadline(time.Now().Add(30 * time.Second))
+    
+//     // Extract peer's state
+//     peerTxID := response.TxID
+//     peerMerkleRoot := response.MerkleRoot
+//     totalBatches := response.TotalBatches
+    
+//     log.Info().
+//         Str("peer", peerID.String()).
+//         Uint64("peer_tx_id", peerTxID).
+//         Int("total_batches", totalBatches).
+//         Str("merkle_root", fmt.Sprintf("%x", peerMerkleRoot)).
+//         Msg("Processing sync response")
+
+//     // Get our current state from ImmuDB
+//     ourState, err := fs.db.GetDatabaseState()
+//     if err != nil {
+//         return fmt.Errorf("failed to get our database state: %w", err)
+//     }
+
+//     // First exchange bloom filters to optimize what we need to sync
+//     bloomFilter := bloom.NewWithEstimates(BloomFilterCapacity, 0.01) 
+    
+//     // Get all our keys and add them to the filter
+//     ourKeys, err := fs.getKeysInRange(0, ourState.TxId)
+//     if err != nil {
+//         return fmt.Errorf("failed to get our keys: %w", err)
+//     }
+    
+//     for _, key := range ourKeys {
+//         addSafelyToBloomFilter(bloomFilter, key)
+//     }
+
+//     // Serialize our filter
+//     filterBytes, err := bloomFilter.MarshalBinary()
+//     if err != nil {
+//         return fmt.Errorf("failed to serialize bloom filter: %w", err)
+//     }
+    
+//     // Send our bloom filter
+//     bloomMsg := SyncMessage{
+//         Type:        TypeBloomFilterExchange,
+//         SenderID:    fs.host.ID().String(),
+//         BloomFilter: filterBytes,
+//         KeysCount:   len(ourKeys),
+//         Timestamp:   time.Now().Unix(),
+//     }
+    
+//     bloomBytes, err := json.Marshal(bloomMsg)
+//     if err != nil {
+//         return fmt.Errorf("failed to marshal bloom filter message: %w", err)
+//     }
+//     bloomBytes = append(bloomBytes, '\n')
+    
+//     if _, err := writer.Write(bloomBytes); err != nil {
+//         return fmt.Errorf("failed to send bloom filter: %w", err)
+//     }
+    
+//     if err := writer.Flush(); err != nil {
+//         return fmt.Errorf("failed to flush bloom filter: %w", err)
+//     }
+    
+//     // Wait for peer's bloom filter
+//     if err := stream.SetReadDeadline(time.Now().Add(SyncResponseTimeout)); err != nil {
+//         return fmt.Errorf("failed to set read deadline: %w", err)
+//     }
+    
+//     peerBloomBytes, err := reader.ReadBytes('\n')
+//     if err != nil {
+//         return fmt.Errorf("failed to read peer's bloom filter: %w", err)
+//     }
+    
+//     var peerBloomMsg SyncMessage
+//     if err := json.Unmarshal(peerBloomBytes, &peerBloomMsg); err != nil {
+//         return fmt.Errorf("failed to parse peer's bloom filter: %w", err)
+//     }
+    
+//     if peerBloomMsg.Type != TypeBloomFilterExchange {
+//         return fmt.Errorf("unexpected message type: %s", peerBloomMsg.Type)
+//     }
+    
+//     // Deserialize peer's bloom filter
+//     peerBloom := &bloom.BloomFilter{}
+//     if err := peerBloom.UnmarshalBinary(peerBloomMsg.BloomFilter); err != nil {
+//         return fmt.Errorf("failed to deserialize peer's bloom filter: %w", err)
+//     }
+    
+//     log.Info().
+//         Str("peer", peerID.String()).
+//         Int("peer_keys", peerBloomMsg.KeysCount).
+//         Int("our_keys", len(ourKeys)).
+//         Msg("Bloom filters exchanged")
+
+//     // Request batches concurrently
+//     var wg sync.WaitGroup
+//     batchErrors := make(chan error, totalBatches)
+//     batchResults := make(map[int]bool)
+//     batchSemaphore := make(chan struct{}, MaxConcurrentBatches)
+
+//     // Calculate batch ranges
+//     ourTxID := ourState.TxId
+//     txDiff := peerTxID - ourTxID
+    
+//     // If we're ahead, no need to pull data
+//     if txDiff <= 0 {
+//         log.Info().
+//             Str("peer", peerID.String()).
+//             Msg("We're already up to date with peer")
+            
+//         // Request final verification to confirm merkle roots match
+//         verifyMsg := SyncMessage{
+//             Type:      TypeVerificationRequest,
+//             SenderID:  fs.host.ID().String(),
+//             Timestamp: time.Now().Unix(),
+//         }
+        
+//         verifyBytes, _ := json.Marshal(verifyMsg)
+//         verifyBytes = append(verifyBytes, '\n')
+        
+//         if _, err := writer.Write(verifyBytes); err != nil {
+//             return fmt.Errorf("failed to send verification request: %w", err)
+//         }
+        
+//         if err := writer.Flush(); err != nil {
+//             return fmt.Errorf("failed to flush verification request: %w", err)
+//         }
+        
+//         return fs.handleFinalVerification(reader, ourState.TxHash)
+//     }
+    
+//     // Process batches concurrently
+//     for batchNum := 0; batchNum < totalBatches; batchNum++ {
+//         wg.Add(1)
+//         go func(batch int) {
+//             defer wg.Done()
+            
+//             // Acquire semaphore
+//             batchSemaphore <- struct{}{}
+//             defer func() { <-batchSemaphore }()
+            
+//             // Calculate batch range
+//             batchStart := ourTxID + uint64(batch*SyncBatchSize)
+//             batchEnd := batchStart + uint64(SyncBatchSize) - 1
+//             if batchEnd > peerTxID {
+//                 batchEnd = peerTxID
+//             }
+            
+//             // Request this batch
+//             err := fs.requestAndProcessBatch(writer, reader, batch, batchStart, batchEnd, peerBloom)
+//             if err != nil {
+//                 batchErrors <- fmt.Errorf("batch %d failed: %w", batch, err)
+//                 return
+//             }
+            
+//             // Mark batch as successful
+//             batchResults[batch] = true
+            
+//             log.Info().
+//                 Str("peer", peerID.String()).
+//                 Int("batch", batch).
+//                 Int("total", totalBatches).
+//                 Float64("progress", float64(batch+1)/float64(totalBatches)*100).
+//                 Msg("Batch processed successfully")
+//         }(batchNum)
+//     }
+    
+//     // Wait for all batches to complete
+//     wg.Wait()
+//     close(batchErrors)
+    
+//     // Check for errors
+//     var errs []error
+//     for err := range batchErrors {
+//         errs = append(errs, err)
+//     }
+    
+//     if len(errs) > 0 {
+//         return fmt.Errorf("failed to process %d batches: %v", len(errs), errs[0])
+//     }
+    
+//     // All batches succeeded, verify final state
+//     log.Info().
+//         Str("peer", peerID.String()).
+//         Int("batches_processed", len(batchResults)).
+//         Msg("All batches processed, verifying final state")
+        
+//     // Send verification request
+//     verifyMsg := SyncMessage{
+//         Type:      TypeVerificationRequest,
+//         SenderID:  fs.host.ID().String(),
+//         Timestamp: time.Now().Unix(),
+//     }
+    
+//     verifyBytes, _ := json.Marshal(verifyMsg)
+//     verifyBytes = append(verifyBytes, '\n')
+    
+//     if _, err := writer.Write(verifyBytes); err != nil {
+//         return fmt.Errorf("failed to send verification request: %w", err)
+//     }
+    
+//     if err := writer.Flush(); err != nil {
+//         return fmt.Errorf("failed to flush verification request: %w", err)
+//     }
+    
+//     // Handle verification response
+//     return fs.handleFinalVerification(reader, peerMerkleRoot)
+// }
+
+// // requestAndProcessBatch requests and processes a single batch of data
+// func (fs *FastSync) requestAndProcessBatch(writer *bufio.Writer, reader *bufio.Reader, 
+//     batchNum int, startTxID, endTxID uint64, peerBloom *bloom.BloomFilter) error {
+    
+//     // Create batch request
+//     batchReq := SyncMessage{
+//         Type:        TypeBatchRequest,
+//         SenderID:    fs.host.ID().String(),
+//         BatchNumber: batchNum,
+//         StartTxID:   startTxID,
+//         EndTxID:     endTxID,
+//         Timestamp:   time.Now().Unix(),
+//     }
+    
+//     // Send batch request
+//     reqBytes, err := json.Marshal(batchReq)
+//     if err != nil {
+//         return fmt.Errorf("failed to marshal batch request: %w", err)
+//     }
+//     reqBytes = append(reqBytes, '\n')
+    
+//     if _, err := writer.Write(reqBytes); err != nil {
+//         return fmt.Errorf("failed to send batch request: %w", err)
+//     }
+    
+//     if err := writer.Flush(); err != nil {
+//         return fmt.Errorf("failed to flush batch request: %w", err)
+//     }
+    
+//     // Wait for batch data
+//     respBytes, err := reader.ReadBytes('\n')
+//     if err != nil {
+//         return fmt.Errorf("failed to read batch data: %w", err)
+//     }
+    
+//     var batchResp SyncMessage
+//     if err := json.Unmarshal(respBytes, &batchResp); err != nil {
+//         return fmt.Errorf("failed to parse batch response: %w", err)
+//     }
+    
+//     // Check if this is the correct batch
+//     if batchResp.Type != TypeBatchData || batchResp.BatchNumber != batchNum {
+//         return fmt.Errorf("unexpected batch response: type=%s, batch=%d", 
+//             batchResp.Type, batchResp.BatchNumber)
+//     }
+    
+//     // Parse and process batch data
+//     var batchData BatchData
+//     if err := json.Unmarshal(batchResp.Data, &batchData); err != nil {
+//         return fmt.Errorf("failed to parse batch data: %w", err)
+//     }
+    
+//     // Process entries
+//     entries := make(map[string]interface{})
+//     for _, entry := range batchData.Entries {
+//         key := string(entry.Key)
+//         entries[key] = entry.Value
+//     }
+    
+//     // Batch create the entries if we have any
+//     if len(entries) > 0 {
+//         if err := fs.db.BatchCreate(entries); err != nil {
+//             return fmt.Errorf("failed to store batch entries: %w", err)
+//         }
+//     }
+    
+//     // Process CRDTs
+//     if len(batchData.CRDTs) > 0 {
+//         for _, crdtBytes := range batchData.CRDTs {
+//             // Parse the wrapper first
+//             var wrapper map[string]json.RawMessage
+//             if err := json.Unmarshal(crdtBytes, &wrapper); err != nil {
+//                 log.Error().Err(err).Msg("Failed to unmarshal CRDT wrapper")
+//                 continue
+//             }
+            
+//             // Get the type
+//             var crdtType string
+//             if err := json.Unmarshal(wrapper["type"], &crdtType); err != nil {
+//                 log.Error().Err(err).Msg("Failed to unmarshal CRDT type")
+//                 continue
+//             }
+//             // Create the correct CRDT type based on the type string
+//             var crdtValue crdt.CRDT
+//             switch crdtType {
+//             case "lww-set":
+//                 crdtValue = &crdt.LWWSet{}
+//             case "counter":
+//                 crdtValue = &crdt.Counter{}
+//             default:
+//                 log.Error().Str("type", crdtType).Msg("Unknown CRDT type")
+//                 continue
+//             }
+            
+//             // Unmarshal the data into the specific CRDT type
+//             if err := json.Unmarshal(wrapper["data"], crdtValue); err != nil {
+//                 log.Error().
+//                     Err(err).
+//                     Str("type", crdtType).
+//                     Msg("Failed to unmarshal CRDT data")
+//                 continue
+//             }
+            
+//             // Now you have a properly deserialized CRDT
+//             mergedCRDT, err := fs.crdtEngine.MergeCRDT(crdtValue)
+//             if err != nil {
+//                 log.Error().Err(err).
+//                     Str("key", crdtValue.GetKey()).
+//                     Msg("Failed to merge CRDT")
+//                 continue
+//             }
+            
+//             // Store the merged CRDT
+//             if err := fs.crdtEngine.StoreCRDT(mergedCRDT); err != nil {
+//                 log.Error().Err(err).
+//                     Str("key", crdtValue.GetKey()).
+//                     Msg("Failed to store merged CRDT")
+//                 continue
+//             }
+//         }
+//     }
+    
+//     // Send acknowledgement
+//     ackMsg := SyncMessage{
+//         Type:        TypeBatchData,
+//         SenderID:    fs.host.ID().String(),
+//         BatchNumber: batchNum,
+//         Success:     true,
+//         Timestamp:   time.Now().Unix(),
+//     }
+    
+//     ackBytes, _ := json.Marshal(ackMsg)
+//     ackBytes = append(ackBytes, '\n')
+    
+//     if _, err := writer.Write(ackBytes); err != nil {
+//         return fmt.Errorf("failed to send batch acknowledgement: %w", err)
+//     }
+    
+//     if err := writer.Flush(); err != nil {
+//         return fmt.Errorf("failed to flush batch acknowledgement: %w", err)
+//     }
+    
+//     return nil
+// }
+
+//// filepath: /home/neeraj/Codes/P2P-Communication/fastsync/fastsync.go
 func (fs *FastSync) processSyncResponse(peerID peer.ID, stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, response *SyncMessage) error {
     defer stream.Close() // Ensure stream is closed when we're done
     
@@ -1131,150 +1493,6 @@ func (fs *FastSync) processSyncResponse(peerID peer.ID, stream network.Stream, r
     return fs.handleFinalVerification(reader, peerMerkleRoot)
 }
 
-// // requestAndProcessBatch requests and processes a single batch of data
-// func (fs *FastSync) requestAndProcessBatch(writer *bufio.Writer, reader *bufio.Reader, 
-//     batchNum int, startTxID, endTxID uint64, peerBloom *bloom.BloomFilter) error {
-    
-//     // Create batch request
-//     batchReq := SyncMessage{
-//         Type:        TypeBatchRequest,
-//         SenderID:    fs.host.ID().String(),
-//         BatchNumber: batchNum,
-//         StartTxID:   startTxID,
-//         EndTxID:     endTxID,
-//         Timestamp:   time.Now().Unix(),
-//     }
-    
-//     // Send batch request
-//     reqBytes, err := json.Marshal(batchReq)
-//     if err != nil {
-//         return fmt.Errorf("failed to marshal batch request: %w", err)
-//     }
-//     reqBytes = append(reqBytes, '\n')
-    
-//     if _, err := writer.Write(reqBytes); err != nil {
-//         return fmt.Errorf("failed to send batch request: %w", err)
-//     }
-    
-//     if err := writer.Flush(); err != nil {
-//         return fmt.Errorf("failed to flush batch request: %w", err)
-//     }
-    
-//     // Wait for batch data
-//     respBytes, err := reader.ReadBytes('\n')
-//     if err != nil {
-//         return fmt.Errorf("failed to read batch data: %w", err)
-//     }
-    
-//     var batchResp SyncMessage
-//     if err := json.Unmarshal(respBytes, &batchResp); err != nil {
-//         return fmt.Errorf("failed to parse batch response: %w", err)
-//     }
-    
-//     // Check if this is the correct batch
-//     if batchResp.Type != TypeBatchData || batchResp.BatchNumber != batchNum {
-//         return fmt.Errorf("unexpected batch response: type=%s, batch=%d", 
-//             batchResp.Type, batchResp.BatchNumber)
-//     }
-    
-//     // Parse and process batch data
-//     var batchData BatchData
-//     if err := json.Unmarshal(batchResp.Data, &batchData); err != nil {
-//         return fmt.Errorf("failed to parse batch data: %w", err)
-//     }
-    
-//     // Process entries
-//     entries := make(map[string]interface{})
-//     for _, entry := range batchData.Entries {
-//         key := string(entry.Key)
-//         entries[key] = entry.Value
-//     }
-    
-//     // Batch create the entries if we have any
-//     if len(entries) > 0 {
-//         if err := fs.db.BatchCreate(entries); err != nil {
-//             return fmt.Errorf("failed to store batch entries: %w", err)
-//         }
-//     }
-    
-//     // Process CRDTs
-//     if len(batchData.CRDTs) > 0 {
-//         for _, crdtBytes := range batchData.CRDTs {
-//             // Parse the wrapper first
-//             var wrapper map[string]json.RawMessage
-//             if err := json.Unmarshal(crdtBytes, &wrapper); err != nil {
-//                 log.Error().Err(err).Msg("Failed to unmarshal CRDT wrapper")
-//                 continue
-//             }
-            
-//             // Get the type
-//             var crdtType string
-//             if err := json.Unmarshal(wrapper["type"], &crdtType); err != nil {
-//                 log.Error().Err(err).Msg("Failed to unmarshal CRDT type")
-//                 continue
-//             }
-//             // Create the correct CRDT type based on the type string
-//             var crdtValue crdt.CRDT
-//             switch crdtType {
-//             case "lww-set":
-//                 crdtValue = &crdt.LWWSet{}
-//             case "counter":
-//                 crdtValue = &crdt.Counter{}
-//             default:
-//                 log.Error().Str("type", crdtType).Msg("Unknown CRDT type")
-//                 continue
-//             }
-            
-//             // Unmarshal the data into the specific CRDT type
-//             if err := json.Unmarshal(wrapper["data"], crdtValue); err != nil {
-//                 log.Error().
-//                     Err(err).
-//                     Str("type", crdtType).
-//                     Msg("Failed to unmarshal CRDT data")
-//                 continue
-//             }
-            
-//             // Now you have a properly deserialized CRDT
-//             mergedCRDT, err := fs.crdtEngine.MergeCRDT(crdtValue)
-//             if err != nil {
-//                 log.Error().Err(err).
-//                     Str("key", crdtValue.GetKey()).
-//                     Msg("Failed to merge CRDT")
-//                 continue
-//             }
-            
-//             // Store the merged CRDT
-//             if err := fs.crdtEngine.StoreCRDT(mergedCRDT); err != nil {
-//                 log.Error().Err(err).
-//                     Str("key", crdtValue.GetKey()).
-//                     Msg("Failed to store merged CRDT")
-//                 continue
-//             }
-//         }
-//     }
-    
-//     // Send acknowledgement
-//     ackMsg := SyncMessage{
-//         Type:        TypeBatchData,
-//         SenderID:    fs.host.ID().String(),
-//         BatchNumber: batchNum,
-//         Success:     true,
-//         Timestamp:   time.Now().Unix(),
-//     }
-    
-//     ackBytes, _ := json.Marshal(ackMsg)
-//     ackBytes = append(ackBytes, '\n')
-    
-//     if _, err := writer.Write(ackBytes); err != nil {
-//         return fmt.Errorf("failed to send batch acknowledgement: %w", err)
-//     }
-    
-//     if err := writer.Flush(); err != nil {
-//         return fmt.Errorf("failed to flush batch acknowledgement: %w", err)
-//     }
-    
-//     return nil
-// }
 // requestAndProcessBatch requests and processes a single batch of data
 func (fs *FastSync) requestAndProcessBatch(writer *bufio.Writer, reader *bufio.Reader, 
     batchNum int, startTxID, endTxID uint64, peerBloom *bloom.BloomFilter) error {
