@@ -3,3 +3,4 @@ logs/*.log
 config/peer.json
 DB/*.db
 yggdrasil
+Account.json

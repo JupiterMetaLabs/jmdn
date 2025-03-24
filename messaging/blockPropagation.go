@@ -1,36 +1,40 @@
 package messaging
 
 import (
-	"bufio"
-	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"io"
-	"sync"
-	"time"
+    "bufio"
+    "context"
+    "crypto/sha256"
+    "encoding/base64"
+    "encoding/json"
+    "fmt"
+    "io"
+    "sync"
+    "time"
 
-	"github.com/bits-and-blooms/bloom/v3"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/rs/zerolog/log"
+    "github.com/bits-and-blooms/bloom/v3"
+    "github.com/libp2p/go-libp2p/core/host"
+    "github.com/libp2p/go-libp2p/core/network"
+    "github.com/libp2p/go-libp2p/core/peer"
+    "github.com/rs/zerolog/log"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-	"gossipnode/explorer"
-	"gossipnode/metrics"
+    "gossipnode/Block"
+    "gossipnode/DB_OPs"
+    "gossipnode/config"
+    "gossipnode/explorer"
+    "gossipnode/metrics"
 )
 
 // BlockMessage represents a message for block propagation
+// Enhanced to support both traditional map data and structured transaction objects
 type BlockMessage struct {
-    ID          string            `json:"id"`          // Unique message ID
-    Sender      string            `json:"sender"`      // Original sender's peer ID
-    Timestamp   int64             `json:"timestamp"`   // Unix timestamp when message was created
-    Nonce       string            `json:"nonce"`       // Unique nonce for CRDT
-    Data        map[string]string `json:"data"`        // Data payload for the CRDT
-    Hops        int               `json:"hops"`        // How many hops this message has made
+    ID          string              `json:"id"`                    // Unique message ID
+    Sender      string              `json:"sender"`                // Original sender's peer ID
+    Timestamp   int64               `json:"timestamp"`             // Unix timestamp when message was created
+    Nonce       string              `json:"nonce"`                 // Unique nonce for CRDT
+    Data        map[string]string   `json:"data,omitempty"`        // Data payload for generic messages
+    Transaction *Block.Transaction  `json:"transaction,omitempty"` // Structured transaction data
+    Type        string              `json:"type"`                  // "transaction", "block", "message", etc.
+    Hops        int                 `json:"hops"`                  // How many hops this message has made
 }
 
 // Store for peer timeouts
@@ -48,7 +52,7 @@ var (
     immuClientOnce sync.Once
 )
 
-// Add this to messaging/blockPropagation.go
+// Explorer reference
 var explorerRef *explorer.Explorer
 
 func SetExplorerRef(e *explorer.Explorer) {
@@ -64,7 +68,7 @@ func notifyExplorer(msg BlockMessage) {
     
     // Prepare notification message
     notification := map[string]interface{}{
-        "type": "block",
+        "type": msg.Type,
         "data": msg,
     }
     
@@ -162,30 +166,17 @@ func markNonceProcessed(nonce string) {
     nonceFilter.Add([]byte(nonce))
 }
 
-// storeNonceInImmuDB stores a nonce and its data in ImmuDB
-func storeNonceInImmuDB(nonce string, data map[string]string, sender string) {
-    // Create a CRDT update structure
-    update := struct {
-        Nonce     string            `json:"nonce"`
-        Data      map[string]string `json:"data"`
-        Sender    string            `json:"sender"`
-        Timestamp int64             `json:"timestamp"`
-    }{
-        Nonce:     nonce,
-        Data:      data,
-        Sender:    sender,
-        Timestamp: time.Now().UnixNano(),
-    }
-    
+// storeNonceInImmuDB stores a message in ImmuDB
+func storeNonceInImmuDB(nonce string, msg BlockMessage) {
     // Store in ImmuDB in a separate goroutine to prevent blocking
     go func() {
         // Create a key based on the nonce
         key := fmt.Sprintf("crdt:nonce:%s", nonce)
         
         // Store the update
-        err := immuClient.Create(key, update)
+        err := immuClient.Create(key, msg)
         if err != nil {
-            log.Error().Err(err).Str("nonce", nonce).Msg("Failed to store nonce in ImmuDB")
+            log.Error().Err(err).Str("nonce", nonce).Msg("Failed to store message in ImmuDB")
             return
         }
         
@@ -195,7 +186,7 @@ func storeNonceInImmuDB(nonce string, data map[string]string, sender string) {
             log.Error().Err(err).Str("nonce", nonce).Msg("Failed to update nonce set")
         }
         
-        log.Info().Str("nonce", nonce).Msg("Successfully stored nonce in ImmuDB")
+        log.Info().Str("nonce", nonce).Str("type", msg.Type).Msg("Successfully stored message in ImmuDB")
     }()
 }
 
@@ -228,7 +219,7 @@ func HandleBlockStream(stream network.Stream) {
     
     // Check if peer is timed out
     if isPeerTimedOut(remotePeer) {
-        log.Debug().Str("peer", remotePeer).Msg("Ignoring block from timed out peer")
+        log.Debug().Str("peer", remotePeer).Msg("Ignoring message from timed out peer")
         return
     }
     
@@ -241,7 +232,7 @@ func HandleBlockStream(stream network.Stream) {
     if err != nil {
         if err != io.EOF {
             log.Error().Err(err).Str("peer", remotePeer).
-                Msg("Error reading block message")
+                Msg("Error reading message")
         }
         return
     }
@@ -249,7 +240,7 @@ func HandleBlockStream(stream network.Stream) {
     // Parse the message
     var msg BlockMessage
     if err := json.Unmarshal(messageBytes, &msg); err != nil {
-        log.Error().Err(err).Msg("Failed to unmarshal block message")
+        log.Error().Err(err).Msg("Failed to unmarshal message")
         return
     }
     
@@ -264,11 +255,18 @@ func HandleBlockStream(stream network.Stream) {
     markNonceProcessed(msg.Nonce)
     
     // Process the message - update our CRDT state in ImmuDB
-    storeNonceInImmuDB(msg.Nonce, msg.Data, msg.Sender)
+    storeNonceInImmuDB(msg.Nonce, msg)
     
-    // Print the received block
-    fmt.Printf("\n[BLOCK from %s] Nonce: %s\n>>> ", msg.Sender, msg.Nonce)
+    // Log receipt based on message type
+    if msg.Type == "transaction" {
+        fmt.Printf("\n[TRANSACTION from %s] Nonce: %s\n>>> ", msg.Sender, msg.Nonce)
+    } else {
+        fmt.Printf("\n[BLOCK from %s] Nonce: %s\n>>> ", msg.Sender, msg.Nonce)
+    }
+    
+    // Notify explorer
     notifyExplorer(msg)
+    
     // Only rebroadcast if we haven't reached max hops
     if msg.Hops < config.MaxHops {
         // Forward to our peers
@@ -277,23 +275,25 @@ func HandleBlockStream(stream network.Stream) {
         log.Info().
             Str("msg_id", msg.ID).
             Str("nonce", msg.Nonce).
+            Str("type", msg.Type).
             Str("origin", msg.Sender).
             Str("via", localPeer).
             Int("hops", msg.Hops).
-            Msg("Propagating block")
+            Msg("Propagating message")
         
-        // Forward the block to other peers
+        // Forward the message to other peers
         if hostInstance := getHostInstance(); hostInstance != nil {
             go forwardBlock(hostInstance, msg)
         } else {
-            log.Error().Msg("Cannot access host instance for forwarding block")
+            log.Error().Msg("Cannot access host instance for forwarding message")
         }
     } else {
         log.Info().
             Str("msg_id", msg.ID).
             Str("nonce", msg.Nonce).
+            Str("type", msg.Type).
             Int("hops", msg.Hops).
-            Msg("Max hops reached, not propagating block")
+            Msg("Max hops reached, not propagating message")
     }
 }
 
@@ -305,7 +305,7 @@ func forwardBlock(h host.Host, msg BlockMessage) {
     // Convert message to JSON
     msgBytes, err := json.Marshal(msg)
     if err != nil {
-        log.Error().Err(err).Msg("Failed to marshal block message")
+        log.Error().Err(err).Msg("Failed to marshal message")
         return
     }
     msgBytes = append(msgBytes, '\n')
@@ -337,7 +337,7 @@ func forwardBlock(h host.Host, msg BlockMessage) {
             
             stream, err := h.NewStream(ctx, peer, config.BlockPropagationProtocol)
             if err != nil {
-                log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open block stream")
+                log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open stream")
                 return
             }
             defer stream.Close()
@@ -345,7 +345,7 @@ func forwardBlock(h host.Host, msg BlockMessage) {
             // Write the message
             _, err = stream.Write(msgBytes)
             if err != nil {
-                log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to write block message")
+                log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to write message")
                 return
             }
             
@@ -354,7 +354,7 @@ func forwardBlock(h host.Host, msg BlockMessage) {
             successMutex.Unlock()
             
             // Record metrics
-            metrics.MessagesSentCounter.WithLabelValues("block", peer.String()).Inc()
+            metrics.MessagesSentCounter.WithLabelValues(msg.Type, peer.String()).Inc()
         }(peerID)
     }
     
@@ -364,11 +364,12 @@ func forwardBlock(h host.Host, msg BlockMessage) {
     log.Info().
         Str("msg_id", msg.ID).
         Str("nonce", msg.Nonce).
+        Str("type", msg.Type).
         Int("peers", successCount).
-        Msg("Block propagated to peers")
+        Msg("Message propagated to peers")
 }
 
-// PropagateBlock creates and propagates a new block to the network
+// PropagateBlock creates and propagates a new generic block to the network
 func PropagateBlock(h host.Host, data map[string]string) error {
     // Generate a unique nonce
     nonceBytes := make([]byte, 16)
@@ -385,36 +386,76 @@ func PropagateBlock(h host.Host, data map[string]string) error {
         Timestamp: now,
         Nonce:     nonce,
         Data:      data,
+        Type:      "block",
         Hops:      0,
     }
     
     // Generate a unique ID based on nonce and timestamp
     msg.ID = generateBlockMessageID(msg.Sender, nonce, now)
     
+    return propagateMessage(h, msg)
+}
+
+// PropagateTransaction creates and propagates a new transaction to the network
+func PropagateTransaction(h host.Host, tx *Block.Transaction, txHash string) error {
+    // Generate a unique nonce
+    nonceBytes := make([]byte, 16)
+    for i := range nonceBytes {
+        nonceBytes[i] = byte(time.Now().UnixNano() & 0xff)
+        time.Sleep(1 * time.Nanosecond)
+    }
+    nonce := base64.URLEncoding.EncodeToString(nonceBytes)
+    
+    // Create transaction metadata as map for compatibility
+    data := map[string]string{
+        "transaction_hash": txHash,
+    }
+    
+    // Create a new message
+    now := time.Now().Unix()
+    msg := BlockMessage{
+        Sender:      h.ID().String(),
+        Timestamp:   now,
+        Nonce:       nonce,
+        Data:        data,
+        Transaction: tx,
+        Type:        "transaction",
+        Hops:        0,
+    }
+    
+    // Generate a unique ID based on nonce and timestamp
+    msg.ID = generateBlockMessageID(msg.Sender, nonce, now)
+    
+    return propagateMessage(h, msg)
+}
+
+// propagateMessage is a shared implementation for propagating any message type
+func propagateMessage(h host.Host, msg BlockMessage) error {
     // First, update our own CRDT state
-    storeNonceInImmuDB(nonce, data, msg.Sender)
+    storeNonceInImmuDB(msg.Nonce, msg)
     
     // Mark this nonce as processed by us
-    markNonceProcessed(nonce)
+    markNonceProcessed(msg.Nonce)
     
     // Convert to JSON
     msgBytes, err := json.Marshal(msg)
     if err != nil {
-        return fmt.Errorf("failed to marshal block message: %w", err)
+        return fmt.Errorf("failed to marshal message: %w", err)
     }
     msgBytes = append(msgBytes, '\n')
     
     // Get all connected peers
     peers := h.Network().Peers()
     if len(peers) == 0 {
-        return fmt.Errorf("no connected peers to propagate block to")
+        return fmt.Errorf("no connected peers to propagate to")
     }
     
     log.Info().
         Str("msg_id", msg.ID).
-        Str("nonce", nonce).
+        Str("nonce", msg.Nonce).
+        Str("type", msg.Type).
         Int("peers", len(peers)).
-        Msg("Starting block propagation to peers")
+        Msg("Starting propagation to peers")
     
     // Send message to all peers
     var wg sync.WaitGroup
@@ -437,7 +478,7 @@ func PropagateBlock(h host.Host, data map[string]string) error {
             
             stream, err := h.NewStream(ctx, peer, config.BlockPropagationProtocol)
             if err != nil {
-                log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open block stream")
+                log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open stream")
                 return
             }
             defer stream.Close()
@@ -445,7 +486,7 @@ func PropagateBlock(h host.Host, data map[string]string) error {
             // Send the message
             _, err = stream.Write(msgBytes)
             if err != nil {
-                log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to send block message")
+                log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to send message")
                 return
             }
             
@@ -455,7 +496,7 @@ func PropagateBlock(h host.Host, data map[string]string) error {
             successMutex.Unlock()
             
             // Record metrics
-            metrics.MessagesSentCounter.WithLabelValues("block", peer.String()).Inc()
+            metrics.MessagesSentCounter.WithLabelValues(msg.Type, peer.String()).Inc()
         }(peerID)
     }
     
@@ -463,16 +504,18 @@ func PropagateBlock(h host.Host, data map[string]string) error {
     wg.Wait()
     
     if successCount == 0 && len(peers) > 0 {
-        return fmt.Errorf("failed to propagate block to any peers")
+        return fmt.Errorf("failed to propagate to any peers")
     }
     
     log.Info().
         Str("msg_id", msg.ID).
-        Str("nonce", nonce).
+        Str("nonce", msg.Nonce).
+        Str("type", msg.Type).
         Int("success", successCount).
         Int("total", len(peers)).
-        Msg("Block propagation complete")
-	notifyExplorer(msg)
+        Msg("Propagation complete")
+    
+    notifyExplorer(msg)
     return nil
 }
 
@@ -497,18 +540,26 @@ func GetAllNonces() ([]string, error) {
     return nonces, nil
 }
 
-// GetNonceData retrieves the data for a specific nonce
-func GetNonceData(nonce string) (map[string]string, error) {
+// GetMessageForNonce retrieves the full message for a specific nonce
+func GetMessageForNonce(nonce string) (*BlockMessage, error) {
     key := fmt.Sprintf("crdt:nonce:%s", nonce)
     
-    var update struct {
-        Data map[string]string `json:"data"`
-    }
-    
-    err := immuClient.ReadJSON(key, &update)
+    var message BlockMessage
+    err := immuClient.ReadJSON(key, &message)
     if err != nil {
-        return nil, fmt.Errorf("failed to read nonce data: %w", err)
+        return nil, fmt.Errorf("failed to read message data: %w", err)
     }
     
-    return update.Data, nil
+    return &message, nil
+}
+
+// GetNonceData retrieves the data for a specific nonce (backward compatibility)
+func GetNonceData(nonce string) (map[string]string, error) {
+    message, err := GetMessageForNonce(nonce)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Return the data map
+    return message.Data, nil
 }

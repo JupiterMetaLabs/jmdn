@@ -14,7 +14,8 @@ import (
 	"time"
 
 	"gossipnode/DB_OPs"
-	// "gossipnode/SIM"
+	"gossipnode/SIM"
+
 	"gossipnode/config"
 	"gossipnode/explorer"
 	fastsync "gossipnode/fastsync"
@@ -183,7 +184,7 @@ func main() {
     nodeManager.StartHeartbeat(*heartbeatInterval)
     defer nodeManager.Shutdown()
 
-    // SIM.StartBlockSimulation(n.Host, 10*time.Second, 30*time.Second)
+    go SIM.StartEthSimulation(n.Host, 1, 5*time.Second, 15*time.Second)
 
     // Configure as seed node if requested
     if *isSeed {
