@@ -119,3 +119,4 @@ type Transaction struct {
     AccessList          AccessList // Now uses the locally defined type     // For EIP-2930 (Type 1) and EIP-1559 (Type 2)
     V, R, S             *big.Int   // Signature values
 }
+
