@@ -1,14 +1,14 @@
 package Block
 
 import (
-
+    "gossipnode/config"
     "github.com/ethereum/go-ethereum/core/types"
     "github.com/ethereum/go-ethereum/crypto"
     "github.com/ethereum/go-ethereum/rlp"
 )
 
 // Hash returns the Keccak256 hash of the transaction
-func Hash(tx *Transaction) (string, error) {
+func Hash(tx *config.Transaction) (string, error) {
     var ethTx *types.Transaction
     
     // Create the appropriate Ethereum transaction type

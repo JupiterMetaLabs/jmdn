@@ -4,11 +4,13 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
-	"os"
+	"gossipnode/config"
 	"math/big"
+	"os"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+
 	// "github.com/ethereum/go-ethereum/crypto"
 	hdwallet "github.com/miguelmota/go-ethereum-hdwallet"
 )
@@ -60,7 +62,7 @@ func LoadAccountInfo(filePath string) (*AccountInfo, error) {
 // GenerateLegacyTransaction creates a legacy (Type 0) transaction
 func GenerateLegacyTransaction(accountPath string, chainID *big.Int, to string, amount *big.Int, 
                              nonce uint64, gasLimit uint64, gasPrice *big.Int, 
-                             data []byte) (*Transaction, error) {
+                             data []byte) (*config.Transaction, error) {
     // Load account info
     accountInfo, err := LoadAccountInfo(accountPath)
     if err != nil {
@@ -75,7 +77,7 @@ func GenerateLegacyTransaction(accountPath string, chainID *big.Int, to string, 
 
     // Create transaction
     toAddr := common.HexToAddress(to)
-    tx := &Transaction{
+    tx := &config.Transaction{
         ChainID:  chainID,
         Nonce:    nonce,
         To:       &toAddr,
@@ -92,7 +94,7 @@ func GenerateLegacyTransaction(accountPath string, chainID *big.Int, to string, 
 // GenerateEIP2930Transaction creates an AccessList (Type 1) transaction
 func GenerateEIP2930Transaction(accountPath string, chainID *big.Int, to string, amount *big.Int, 
                               nonce uint64, gasLimit uint64, gasPrice *big.Int, 
-                              data []byte, accessList AccessList) (*Transaction, error) {
+                              data []byte, accessList config.AccessList) (*config.Transaction, error) {
     // Load account info
     accountInfo, err := LoadAccountInfo(accountPath)
     if err != nil {
@@ -107,7 +109,7 @@ func GenerateEIP2930Transaction(accountPath string, chainID *big.Int, to string,
 
     // Create transaction
     toAddr := common.HexToAddress(to)
-    tx := &Transaction{
+    tx := &config.Transaction{
         ChainID:    chainID,
         Nonce:      nonce,
         To:         &toAddr,
@@ -126,7 +128,7 @@ func GenerateEIP2930Transaction(accountPath string, chainID *big.Int, to string,
 func GenerateEIP1559Transaction(accountPath string, chainID *big.Int, to string, amount *big.Int, 
                               nonce uint64, gasLimit uint64, maxFeePerGas *big.Int, 
                               maxPriorityFeePerGas *big.Int, data []byte, 
-                              accessList AccessList) (*Transaction, error) {
+                              accessList config.AccessList) (*config.Transaction, error) {
     // Load account info
     accountInfo, err := LoadAccountInfo(accountPath)
     if err != nil {
@@ -141,7 +143,7 @@ func GenerateEIP1559Transaction(accountPath string, chainID *big.Int, to string,
 
     // Create transaction
     toAddr := common.HexToAddress(to)
-    tx := &Transaction{
+    tx := &config.Transaction{
         ChainID:             chainID,
         Nonce:               nonce,
         To:                  &toAddr,
@@ -158,7 +160,7 @@ func GenerateEIP1559Transaction(accountPath string, chainID *big.Int, to string,
 }
 
 // signTransaction signs a transaction with the provided private key
-func signTransaction(tx *Transaction, privateKey *ecdsa.PrivateKey, chainID *big.Int) (*Transaction, error) {
+func signTransaction(tx *config.Transaction, privateKey *ecdsa.PrivateKey, chainID *big.Int) (*config.Transaction, error) {
     var ethTx *types.Transaction
     
     // Convert our Transaction to go-ethereum's transaction types
@@ -222,7 +224,7 @@ func signTransaction(tx *Transaction, privateKey *ecdsa.PrivateKey, chainID *big
 }
 
 // Helper function to convert our AccessList type to go-ethereum's types.AccessList
-func convertAccessList(accessList AccessList) types.AccessList {
+func convertAccessList(accessList config.AccessList) types.AccessList {
     result := make(types.AccessList, len(accessList))
     for i, tuple := range accessList {
         result[i] = types.AccessTuple{

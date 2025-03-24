@@ -2,13 +2,15 @@ package Block
 
 import (
 	"fmt"
+	"gossipnode/messaging"
 	"log"
 	"math/big"
 	"net/http"
 	"sync"
-
+    "gossipnode/config"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
+	"github.com/libp2p/go-libp2p/core/host"
 )
 type APIAccessTuple struct {
     Address     string   `json:"address"`
@@ -63,19 +65,19 @@ type TransactionData struct {
 var accountMutex sync.Mutex
 
 // Convert API AccessTuple to Block.AccessList
-func toBlockAccessList(apiList []APIAccessTuple) AccessList {
+func toBlockAccessList(apiList []APIAccessTuple) config.AccessList {
     if len(apiList) == 0 {
-        return AccessList{}
+        return config.AccessList{}
     }
     
-    result := make(AccessList, len(apiList))
+    result := make(config.AccessList, len(apiList))
     for i, tuple := range apiList {
         storageKeys := make([]common.Hash, len(tuple.StorageKeys))
         for j, key := range tuple.StorageKeys {
             storageKeys[j] = common.HexToHash(key)
         }
         
-        result[i] = AccessTuple{
+        result[i] = config.AccessTuple{
             Address:     common.HexToAddress(tuple.Address),
             StorageKeys: storageKeys,
         }
@@ -84,7 +86,7 @@ func toBlockAccessList(apiList []APIAccessTuple) AccessList {
 }
 
 // Convert Block.Transaction to TransactionData
-func toTransactionData(tx *Transaction) *TransactionData {
+func toTransactionData(tx *config.Transaction) *TransactionData {
     result := &TransactionData{
         ChainID:  tx.ChainID.String(),
         Nonce:    tx.Nonce,
@@ -199,6 +201,14 @@ func generateTransactions(c *gin.Context) {
 				TransactionHash: legacyTxHash,
 			},
 		}
+        go func(){
+            err := messaging.PropagateTransaction(globalHost, legacyTx, legacyTxHash)
+            if err != nil {
+                log.Printf("Error propagating transaction to network: %v", err)
+            } else {
+                log.Printf("Transaction %s successfully propagated to network", legacyTxHash)
+            }
+        }()
 	}else{
 		// Generate EIP-1559 transaction if maxFee and maxPriorityFee are provided
 		if req.Txn.MaxFee != "" && req.Txn.MaxPriorityFee != "" {
@@ -246,14 +256,34 @@ func generateTransactions(c *gin.Context) {
 				Transaction:     toTransactionData(eip1559Tx),
 				TransactionHash: eip1559TxHash,
 			}
+
+            go func() {
+                err := messaging.PropagateTransaction(globalHost, eip1559Tx, eip1559TxHash)
+                if err != nil {
+                    log.Printf("Error propagating transaction to network: %v", err)
+                } else {
+                    log.Printf("Transaction %s successfully propagated to network", eip1559TxHash)
+                }
+            }()
+            
 		}
-	}
-    c.JSON(http.StatusOK, response)
+	}        
+        c.JSON(http.StatusOK, response)
 }
 
-func Startserver(port int) {
+// Global host variable to store the libp2p host instance for network operations
+var globalHost host.Host
+
+// SetHostInstance sets the global host instance for transaction propagation
+func SetHostInstance(h host.Host) {
+    globalHost = h
+}
+
+
+func Startserver(port int, h host.Host) {
+
     router := gin.Default()
-    
+    SetHostInstance(h)
     // Configure CORS if needed
     router.Use(func(c *gin.Context) {
         c.Writer.Header().Set("Access-Control-Allow-Origin", "*")

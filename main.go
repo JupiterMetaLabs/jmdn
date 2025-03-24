@@ -189,7 +189,7 @@ func main() {
             log.Info().Msgf("Starting block generator on port %d", *blockgen)
             fmt.Printf("\nBlock generator available at http://localhost:%d\n", *blockgen)
             // Start the block generator
-            Block.Startserver(*blockgen)
+            Block.Startserver(*blockgen, n.Host)
         }()
     }
     // Configure as seed node if requested

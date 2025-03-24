@@ -17,7 +17,7 @@ import (
     "github.com/libp2p/go-libp2p/core/peer"
     "github.com/rs/zerolog/log"
 
-    "gossipnode/Block"
+    // "gossipnode/Block"
     "gossipnode/DB_OPs"
     "gossipnode/config"
     "gossipnode/explorer"
@@ -32,7 +32,7 @@ type BlockMessage struct {
     Timestamp   int64               `json:"timestamp"`             // Unix timestamp when message was created
     Nonce       string              `json:"nonce"`                 // Unique nonce for CRDT
     Data        map[string]string   `json:"data,omitempty"`        // Data payload for generic messages
-    Transaction *Block.Transaction  `json:"transaction,omitempty"` // Structured transaction data
+    Transaction *config.Transaction  `json:"transaction,omitempty"` // Structured transaction data
     Type        string              `json:"type"`                  // "transaction", "block", "message", etc.
     Hops        int                 `json:"hops"`                  // How many hops this message has made
 }
@@ -436,7 +436,7 @@ func PropagateBlock(h host.Host, data map[string]string) error {
 }
 
 // PropagateTransaction creates and propagates a new transaction to the network
-func PropagateTransaction(h host.Host, tx *Block.Transaction, txHash string) error {
+func PropagateTransaction(h host.Host, tx *config.Transaction, txHash string) error {
     // Generate a unique nonce
     nonceBytes := make([]byte, 16)
     for i := range nonceBytes {
