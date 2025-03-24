@@ -4,11 +4,12 @@ import "time"
 
 const (
 	// Database connection settings
-	DBAddress       = "127.0.0.1"
+	DBAddress       = "0.0.0.0"
 	DBPort          = 3322
 	DBUsername      = "immudb"
 	DBPassword      = "immudb"
 	DBName          = "defaultdb"
+	Table		   = "BlockchainDB"
 	
 	// Operation settings
 	DefaultScanLimit = 100

@@ -226,7 +226,7 @@ func convertAccessList(accessList AccessList) types.AccessList {
     result := make(types.AccessList, len(accessList))
     for i, tuple := range accessList {
         result[i] = types.AccessTuple{
-            Address:     tuple.Address,
+            Address:    tuple.Address,
             StorageKeys: tuple.StorageKeys,
         }
     }

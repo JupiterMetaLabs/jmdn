@@ -43,8 +43,8 @@ var (
     peerTimeoutMutex sync.RWMutex
 )
 
-// Bloom filter for efficient nonce checking
-var nonceFilter *bloom.BloomFilter
+// Bloom filter for efficient message ID checking
+var messageFilter *bloom.BloomFilter
 
 // ImmuDB client instance
 var (
@@ -87,7 +87,7 @@ func notifyExplorer(msg BlockMessage) {
 
 func init() {
     // Initialize a bloom filter with 10000 items and 0.01 false positive rate
-    nonceFilter = bloom.NewWithEstimates(10000, 0.01)
+    messageFilter = bloom.NewWithEstimates(10000, 0.01)
     
     // Start the cleanup routine for peer timeouts
     go cleanupPeerTimeouts()
@@ -156,58 +156,90 @@ func timeoutPeer(peerID string, duration time.Duration) {
     log.Info().Str("peer", peerID).Dur("duration", duration).Msg("Peer timed out for sending duplicate block")
 }
 
-// isNonceProcessed checks if this nonce has already been processed
-func isNonceProcessed(nonce string) bool {
-    return nonceFilter.Test([]byte(nonce))
+// isMessageProcessed checks if this message has already been processed
+func isMessageProcessed(messageID string) bool {
+    return messageFilter.Test([]byte(messageID))
 }
 
-// markNonceProcessed marks a nonce as processed
-func markNonceProcessed(nonce string) {
-    nonceFilter.Add([]byte(nonce))
+// markMessageProcessed marks a message as processed
+func markMessageProcessed(messageID string) {
+    messageFilter.Add([]byte(messageID))
 }
 
-// storeNonceInImmuDB stores a message in ImmuDB
-func storeNonceInImmuDB(nonce string, msg BlockMessage) {
+// storeMessageInImmuDB stores a message in ImmuDB using the appropriate key
+func storeMessageInImmuDB(msg BlockMessage) {
     // Store in ImmuDB in a separate goroutine to prevent blocking
     go func() {
-        // Create a key based on the nonce
-        key := fmt.Sprintf("crdt:nonce:%s", nonce)
+        var key string
+        
+        // For transactions, use the transaction hash as the key
+        if msg.Type == "transaction" && msg.Data != nil {
+            if txHash, ok := msg.Data["transaction_hash"]; ok && txHash != "" {
+                key = fmt.Sprintf("tx:%s", txHash)
+                log.Debug().Str("tx_hash", txHash).Msg("Using transaction hash as key")
+            } else if txHash, ok := msg.Data["transaction_id"]; ok && txHash != "" {
+                key = fmt.Sprintf("tx:%s", txHash)
+                log.Debug().Str("tx_id", txHash).Msg("Using transaction ID as key")
+            } else {
+                // Fallback to nonce if no transaction hash
+                key = fmt.Sprintf("crdt:nonce:%s", msg.Nonce)
+                log.Debug().Str("nonce", msg.Nonce).Msg("Using nonce as key (no transaction hash found)")
+            }
+        } else {
+            // For other message types, use the nonce
+            key = fmt.Sprintf("crdt:nonce:%s", msg.Nonce)
+        }
         
         // Store the update
         err := immuClient.Create(key, msg)
         if err != nil {
-            log.Error().Err(err).Str("nonce", nonce).Msg("Failed to store message in ImmuDB")
+            log.Error().Err(err).Str("key", key).Msg("Failed to store message in ImmuDB")
             return
         }
         
-        // Also update a set of all nonces
-        err = updateNonceSet(nonce)
+        // Also update the message set
+        err = updateMessageSet(key)
         if err != nil {
-            log.Error().Err(err).Str("nonce", nonce).Msg("Failed to update nonce set")
+            log.Error().Err(err).Str("key", key).Msg("Failed to update message set")
         }
         
-        log.Info().Str("nonce", nonce).Str("type", msg.Type).Msg("Successfully stored message in ImmuDB")
+        log.Info().Str("key", key).Str("type", msg.Type).Msg("Successfully stored message in ImmuDB")
     }()
 }
 
-// updateNonceSet adds a nonce to the grow-only set in ImmuDB
-func updateNonceSet(nonce string) error {
-    const setKey = "crdt:nonce_set"
+// updateMessageSet adds a message key to the grow-only set in ImmuDB
+func updateMessageSet(key string) error {
+    const setKey = "crdt:message_set"
     
     // Try to get the current set
-    var nonceSet map[string]bool
-    err := immuClient.ReadJSON(setKey, &nonceSet)
+    var messageSet map[string]bool
+    err := immuClient.ReadJSON(setKey, &messageSet)
     
     // If not found or error, start with empty set
     if err != nil {
-        nonceSet = make(map[string]bool)
+        messageSet = make(map[string]bool)
     }
     
-    // Add the new nonce (idempotent operation)
-    nonceSet[nonce] = true
+    // Add the new key (idempotent operation)
+    messageSet[key] = true
     
     // Store the updated set
-    return immuClient.Create(setKey, nonceSet)
+    return immuClient.Create(setKey, messageSet)
+}
+
+// getMessageIDForBloomFilter gets the appropriate ID to use for duplication checking
+func getMessageIDForBloomFilter(msg BlockMessage) string {
+    // For transactions, use transaction hash if available
+    if msg.Type == "transaction" && msg.Data != nil {
+        if txHash, ok := msg.Data["transaction_hash"]; ok && txHash != "" {
+            return txHash
+        } else if txHash, ok := msg.Data["transaction_id"]; ok && txHash != "" {
+            return txHash
+        }
+    }
+    
+    // Otherwise use the nonce
+    return msg.Nonce
 }
 
 // HandleBlockStream processes incoming block propagation messages
@@ -244,22 +276,32 @@ func HandleBlockStream(stream network.Stream) {
         return
     }
     
-    // Check if we've already processed this nonce
-    if isNonceProcessed(msg.Nonce) {
-        log.Debug().Str("nonce", msg.Nonce).Msg("Duplicate nonce received, timing out peer")
+    // Get the appropriate ID for duplication checking
+    messageID := getMessageIDForBloomFilter(msg)
+    
+    // Check if we've already processed this message
+    if isMessageProcessed(messageID) {
+        log.Debug().Str("message_id", messageID).Msg("Duplicate message received, timing out peer")
         timeoutPeer(remotePeer, 20*time.Second)
         return
     }
     
-    // Mark nonce as processed
-    markNonceProcessed(msg.Nonce)
+    // Mark message as processed
+    markMessageProcessed(messageID)
     
     // Process the message - update our CRDT state in ImmuDB
-    storeNonceInImmuDB(msg.Nonce, msg)
+    storeMessageInImmuDB(msg)
     
     // Log receipt based on message type
     if msg.Type == "transaction" {
-        fmt.Printf("\n[TRANSACTION from %s] Nonce: %s\n>>> ", msg.Sender, msg.Nonce)
+        var txHash string
+        if msg.Data != nil {
+            txHash = msg.Data["transaction_hash"]
+            if txHash == "" {
+                txHash = msg.Data["transaction_id"]
+            }
+        }
+        fmt.Printf("\n[TRANSACTION from %s] Hash: %s\n>>> ", msg.Sender, txHash)
     } else {
         fmt.Printf("\n[BLOCK from %s] Nonce: %s\n>>> ", msg.Sender, msg.Nonce)
     }
@@ -274,7 +316,6 @@ func HandleBlockStream(stream network.Stream) {
         localPeer := stream.Conn().LocalPeer().String()
         log.Info().
             Str("msg_id", msg.ID).
-            Str("nonce", msg.Nonce).
             Str("type", msg.Type).
             Str("origin", msg.Sender).
             Str("via", localPeer).
@@ -290,7 +331,6 @@ func HandleBlockStream(stream network.Stream) {
     } else {
         log.Info().
             Str("msg_id", msg.ID).
-            Str("nonce", msg.Nonce).
             Str("type", msg.Type).
             Int("hops", msg.Hops).
             Msg("Max hops reached, not propagating message")
@@ -363,7 +403,6 @@ func forwardBlock(h host.Host, msg BlockMessage) {
     
     log.Info().
         Str("msg_id", msg.ID).
-        Str("nonce", msg.Nonce).
         Str("type", msg.Type).
         Int("peers", successCount).
         Msg("Message propagated to peers")
@@ -431,11 +470,14 @@ func PropagateTransaction(h host.Host, tx *Block.Transaction, txHash string) err
 
 // propagateMessage is a shared implementation for propagating any message type
 func propagateMessage(h host.Host, msg BlockMessage) error {
-    // First, update our own CRDT state
-    storeNonceInImmuDB(msg.Nonce, msg)
+    // Get the appropriate ID for duplication checking
+    messageID := getMessageIDForBloomFilter(msg)
     
-    // Mark this nonce as processed by us
-    markNonceProcessed(msg.Nonce)
+    // First, update our own CRDT state
+    storeMessageInImmuDB(msg)
+    
+    // Mark this message as processed by us
+    markMessageProcessed(messageID)
     
     // Convert to JSON
     msgBytes, err := json.Marshal(msg)
@@ -450,12 +492,29 @@ func propagateMessage(h host.Host, msg BlockMessage) error {
         return fmt.Errorf("no connected peers to propagate to")
     }
     
-    log.Info().
-        Str("msg_id", msg.ID).
-        Str("nonce", msg.Nonce).
-        Str("type", msg.Type).
-        Int("peers", len(peers)).
-        Msg("Starting propagation to peers")
+    // Log based on message type
+    if msg.Type == "transaction" {
+        var txHash string
+        if msg.Data != nil {
+            txHash = msg.Data["transaction_hash"]
+            if txHash == "" {
+                txHash = msg.Data["transaction_id"]
+            }
+        }
+        log.Info().
+            Str("msg_id", msg.ID).
+            Str("tx_hash", txHash).
+            Str("type", msg.Type).
+            Int("peers", len(peers)).
+            Msg("Starting propagation to peers")
+    } else {
+        log.Info().
+            Str("msg_id", msg.ID).
+            Str("nonce", msg.Nonce).
+            Str("type", msg.Type).
+            Int("peers", len(peers)).
+            Msg("Starting propagation to peers")
+    }
     
     // Send message to all peers
     var wg sync.WaitGroup
@@ -509,7 +568,6 @@ func propagateMessage(h host.Host, msg BlockMessage) error {
     
     log.Info().
         Str("msg_id", msg.ID).
-        Str("nonce", msg.Nonce).
         Str("type", msg.Type).
         Int("success", successCount).
         Int("total", len(peers)).
@@ -519,31 +577,29 @@ func propagateMessage(h host.Host, msg BlockMessage) error {
     return nil
 }
 
-// GetAllNonces retrieves all nonces from the CRDT set
-func GetAllNonces() ([]string, error) {
-    const setKey = "crdt:nonce_set"
+// GetAllMessages retrieves all message keys from ImmuDB
+func GetAllMessages() ([]string, error) {
+    const setKey = "crdt:message_set"
     
     // Try to get the current set
-    var nonceSet map[string]bool
-    err := immuClient.ReadJSON(setKey, &nonceSet)
+    var messageSet map[string]bool
+    err := immuClient.ReadJSON(setKey, &messageSet)
     
     if err != nil {
-        return nil, fmt.Errorf("failed to read nonce set: %w", err)
+        return nil, fmt.Errorf("failed to read message set: %w", err)
     }
     
     // Convert map keys to slice
-    nonces := make([]string, 0, len(nonceSet))
-    for nonce := range nonceSet {
-        nonces = append(nonces, nonce)
+    keys := make([]string, 0, len(messageSet))
+    for key := range messageSet {
+        keys = append(keys, key)
     }
     
-    return nonces, nil
+    return keys, nil
 }
 
-// GetMessageForNonce retrieves the full message for a specific nonce
-func GetMessageForNonce(nonce string) (*BlockMessage, error) {
-    key := fmt.Sprintf("crdt:nonce:%s", nonce)
-    
+// GetMessage retrieves a message by key
+func GetMessage(key string) (*BlockMessage, error) {
     var message BlockMessage
     err := immuClient.ReadJSON(key, &message)
     if err != nil {
@@ -553,9 +609,21 @@ func GetMessageForNonce(nonce string) (*BlockMessage, error) {
     return &message, nil
 }
 
+// GetTransactionByHash retrieves a transaction by hash
+func GetTransactionByHash(txHash string) (*BlockMessage, error) {
+    key := fmt.Sprintf("tx:%s", txHash)
+    return GetMessage(key)
+}
+
+// GetBlockByNonce retrieves a block by nonce
+func GetBlockByNonce(nonce string) (*BlockMessage, error) {
+    key := fmt.Sprintf("crdt:nonce:%s", nonce)
+    return GetMessage(key)
+}
+
 // GetNonceData retrieves the data for a specific nonce (backward compatibility)
 func GetNonceData(nonce string) (map[string]string, error) {
-    message, err := GetMessageForNonce(nonce)
+    message, err := GetBlockByNonce(nonce)
     if err != nil {
         return nil, err
     }

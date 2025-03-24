@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"gossipnode/DB_OPs"
-	"gossipnode/SIM"
 
 	"gossipnode/config"
 	"gossipnode/explorer"
@@ -24,6 +23,7 @@ import (
 	"gossipnode/messaging/directMSG"
 	"gossipnode/metrics"
 	"gossipnode/node"
+    "gossipnode/Block"
 	"gossipnode/seed"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -111,7 +111,7 @@ func main() {
     enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
     explorerPort := flag.Int("explorer", 0, "Run blockchain explorer on specified port (0 = disabled)")
     apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
-
+    blockgen := flag.Int("blockgen", 0, "Run Block creator API on specified port (0 = disabled)")
     flag.Parse()
 
     // Initialize logger
@@ -184,8 +184,14 @@ func main() {
     nodeManager.StartHeartbeat(*heartbeatInterval)
     defer nodeManager.Shutdown()
 
-    go SIM.StartEthSimulation(n.Host, 1, 5*time.Second, 15*time.Second)
-
+    if *blockgen > 0 {
+        go func() {
+            log.Info().Msgf("Starting block generator on port %d", *blockgen)
+            fmt.Printf("\nBlock generator available at http://localhost:%d\n", *blockgen)
+            // Start the block generator
+            Block.Startserver(*blockgen)
+        }()
+    }
     // Configure as seed node if requested
     if *isSeed {
         err = seed.RegisterAsSeed(n)
