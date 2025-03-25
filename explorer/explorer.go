@@ -503,7 +503,7 @@ func convertToExplorerBlock(msg config.BlockMessage) Block {
         
         // Set gas parameters
         if tx.GasLimit != 0 {
-            block.GasLimit = string(tx.GasLimit)
+            block.GasLimit = strconv.FormatUint(tx.GasLimit, 10)
         }
         
         if tx.GasPrice != nil {
@@ -562,7 +562,7 @@ func convertToTransaction(msg config.BlockMessage) Transaction {
         
         // Set gas parameters
         if msg.Transaction.GasLimit != 0 {
-            tx.GasLimit = string(msg.Transaction.GasLimit)
+            tx.GasLimit = strconv.FormatUint(msg.Transaction.GasLimit, 10)
         }
         
         if msg.Transaction.GasPrice != nil {
@@ -582,7 +582,7 @@ func convertToTransaction(msg config.BlockMessage) Transaction {
         }
         
         if msg.Transaction.Nonce != 0 {
-            tx.Nonce = string(msg.Transaction.Nonce)
+            tx.Nonce = strconv.FormatUint(msg.Transaction.Nonce, 10)
         }
         
         // Set data if available

@@ -539,7 +539,7 @@ func createTransactionResponse(msg BlockMessage) TransactionResponse {
         }
         
         if tx.Nonce != 0 {
-            response.Nonce = string(tx.Nonce)
+            response.Nonce = strconv.FormatUint(tx.Nonce, 10) 
         }
         
         if tx.GasLimit != 0 {
