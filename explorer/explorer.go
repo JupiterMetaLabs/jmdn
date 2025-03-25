@@ -1,636 +1,23 @@
-// package explorer
-
-// import (
-// 	"encoding/json"
-// 	"fmt"
-// 	"net/http"
-// 	"strconv"
-// 	"strings"
-
-// 	// "strings"
-// 	"sync"
-// 	"time"
-
-// 	"github.com/gorilla/mux"
-// 	"github.com/gorilla/websocket"
-// 	"github.com/rs/zerolog/log"
-
-// 	"gossipnode/DB_OPs"
-// 	"gossipnode/config"
-// )
-
-// // WebSocket upgrader
-// var upgrader = websocket.Upgrader{
-//     ReadBufferSize:  1024,
-//     WriteBufferSize: 1024,
-//     CheckOrigin: func(r *http.Request) bool {
-//         // In production, check the origin
-//         return true // Allow any origin for development
-//     },
-// }
-
-// // Block represents a block in the blockchain explorer
-// type Block struct {
-//     ID        string            `json:"id"`
-//     Nonce     string            `json:"nonce"`
-//     Timestamp int64             `json:"timestamp"`
-//     Sender    string            `json:"sender"`
-//     Data      map[string]string `json:"data"`
-//     TxID      uint64            `json:"txId"`
-// }
-
-// // Dashboard represents the summary data for the explorer dashboard
-// type Dashboard struct {
-//     BlockCount   int     `json:"blockCount"`
-//     NodeCount    int     `json:"nodeCount"`
-//     TotalAmount  float64 `json:"totalAmount"`
-//     LatestBlocks []Block `json:"latestBlocks"`
-//     LatestTxID   uint64  `json:"latestTxId"`
-// }
-
-// // Client represents a WebSocket client connection
-// type Client struct {
-//     ID       string
-//     Conn     *websocket.Conn
-//     Send     chan []byte
-//     Explorer *Explorer
-// }
-
-// // Explorer represents the block explorer with WebSocket functionality
-// type Explorer struct {
-//     ImmuClient       *DB_OPs.ImmuClient
-//     Clients          map[string]*Client
-//     Register         chan *Client
-//     Unregister       chan *Client
-//     Broadcast        chan []byte
-//     Dashboard        Dashboard
-//     mutex            sync.RWMutex
-//     LastCheckedTxID  uint64
-//     UpdateInterval   time.Duration
-//     hasher           *DB_OPs.BlockHasher
-//     processingBlocks map[string]bool
-//     blocksCache      []Block
-//     maxCacheSize     int
-// }
-
-// // NewExplorer creates a new Explorer instance
-// func NewExplorer() (*Explorer, error) {
-//     // Create ImmuDB client
-//     immuClient, err := DB_OPs.New()
-//     if err != nil {
-//         return nil, err
-//     }
-
-//     // Create explorer
-//     explorer := &Explorer{
-//         ImmuClient:       immuClient,
-//         Clients:          make(map[string]*Client),
-//         Register:         make(chan *Client),
-//         Unregister:       make(chan *Client),
-//         Broadcast:        make(chan []byte),
-//         UpdateInterval:   5 * time.Second,
-//         processingBlocks: make(map[string]bool),
-//         blocksCache:      make([]Block, 0, 100),
-//         maxCacheSize:     100,
-//         hasher:           DB_OPs.NewBlockHasher(),
-//     }
-
-//     // Initialize dashboard data
-//     err = explorer.updateDashboard()
-//     if err != nil {
-//         immuClient.Close()
-//         return nil, err
-//     }
-
-//     // Start processing loops
-//     go explorer.run()
-//     go explorer.monitorBlocks()
-
-//     return explorer, nil
-// }
-
-// // run processes WebSocket operations
-// func (e *Explorer) run() {
-//     for {
-//         select {
-//         case client := <-e.Register:
-//             e.Clients[client.ID] = client
-//             log.Info().Str("client_id", client.ID).Msg("Client connected to explorer")
-
-//             // Send initial dashboard data
-//             e.mutex.RLock()
-//             dashboardJSON, err := json.Marshal(e.Dashboard)
-//             e.mutex.RUnlock()
-
-//             if err == nil {
-//                 message := map[string]interface{}{
-//                     "type": "dashboard",
-//                     "data": json.RawMessage(dashboardJSON),
-//                 }
-//                 messageJSON, _ := json.Marshal(message)
-//                 client.Send <- messageJSON
-//             }
-
-//         case client := <-e.Unregister:
-//             if _, ok := e.Clients[client.ID]; ok {
-//                 delete(e.Clients, client.ID)
-//                 close(client.Send)
-//                 log.Info().Str("client_id", client.ID).Msg("Client disconnected from explorer")
-//             }
-
-//         case message := <-e.Broadcast:
-//             for id, client := range e.Clients {
-//                 select {
-//                 case client.Send <- message:
-//                 default:
-//                     close(client.Send)
-//                     delete(e.Clients, id)
-//                 }
-//             }
-//         }
-//     }
-// }
-
-// // monitorBlocks periodically checks for new blocks in ImmuDB
-// func (e *Explorer) monitorBlocks() {
-//     ticker := time.NewTicker(e.UpdateInterval)
-//     defer ticker.Stop()
-
-//     for {
-//         select {
-//         case <-ticker.C:
-//             err := e.checkForUpdates()
-//             if err != nil {
-//                 log.Error().Err(err).Msg("Failed to check for updates")
-//             }
-//         }
-//     }
-// }
-
-// // checkForUpdates looks for new blocks and updates the dashboard
-// func (e *Explorer) checkForUpdates() error {
-//     // Get current state from ImmuDB to check for new transactions
-//     state, err := e.ImmuClient.GetDatabaseState()
-//     if err != nil {
-//         return err
-//     }
-
-//     // If no new transactions, nothing to do
-//     if state.TxId <= e.LastCheckedTxID {
-//         return nil
-//     }
-
-//     // Update the dashboard with new data
-//     err = e.updateDashboard()
-//     if err != nil {
-//         return err
-//     }
-
-//     // Broadcast updated dashboard to all clients
-//     e.mutex.RLock()
-//     dashboardJSON, err := json.Marshal(e.Dashboard)
-//     e.mutex.RUnlock()
-
-//     if err != nil {
-//         return err
-//     }
-
-//     message := map[string]interface{}{
-//         "type": "dashboard",
-//         "data": json.RawMessage(dashboardJSON),
-//     }
-
-//     messageJSON, err := json.Marshal(message)
-//     if err != nil {
-//         return err
-//     }
-
-//     e.Broadcast <- messageJSON
-//     return nil
-// }
-
-// // updateDashboard refreshes the dashboard data from ImmuDB
-// func (e *Explorer) updateDashboard() error {
-//     e.mutex.Lock()
-//     defer e.mutex.Unlock()
-
-//     // Get all nonce keys with the CRDT prefix
-//     nonceKeys, err := e.ImmuClient.GetKeys("crdt:nonce:", config.DefaultScanLimit)
-//     if err != nil {
-//         return err
-//     }
-
-//     // Track found nodes and total amount
-//     nodes := make(map[string]bool)
-//     var totalAmount float64
-
-//     // Process each block
-//     latestBlocks := make([]Block, 0, 10)
-//     for _, key := range nonceKeys {
-//         // Skip if we're already processing this block
-//         nonce := key[len("crdt:nonce:"):]
-//         if e.processingBlocks[nonce] {
-//             continue
-//         }
-
-//         // Mark as processing
-//         e.processingBlocks[nonce] = true
-
-//         // Get block data
-//         var blockData struct {
-//             Nonce     string            `json:"nonce"`
-//             Data      map[string]string `json:"data"`
-//             Sender    string            `json:"sender"`
-//             Timestamp int64             `json:"timestamp"`
-//         }
-
-//         err = e.ImmuClient.ReadJSON(key, &blockData)
-//         if err != nil {
-//             log.Error().Err(err).Str("key", key).Msg("Failed to read block data")
-//             delete(e.processingBlocks, nonce)
-//             continue
-//         }
-
-//         // Create block for dashboard
-//         block := Block{
-//             ID:        e.hasher.HashBlock(blockData.Nonce, blockData.Sender, blockData.Timestamp),
-//             Nonce:     blockData.Nonce,
-//             Timestamp: blockData.Timestamp,
-//             Sender:    blockData.Sender,
-//             Data:      blockData.Data,
-//         }
-
-//         // Add to latest blocks if newer than what we have
-//         if len(latestBlocks) < 10 {
-//             latestBlocks = append(latestBlocks, block)
-//         }
-
-//         // Track unique nodes
-//         nodes[blockData.Sender] = true
-
-//         // Add to total amount if it's a payment
-//         if amount, ok := blockData.Data["amount"]; ok {
-//             if amountFloat, err := json.Number(amount).Float64(); err == nil {
-//                 totalAmount += amountFloat
-//             }
-//         }
-
-//         // Add to cache
-//         e.addToBlockCache(block)
-//     }
-
-//     // Update dashboard
-//     state, err := e.ImmuClient.GetDatabaseState()
-//     if err != nil {
-//         return err
-//     }
-
-//     e.Dashboard = Dashboard{
-//         BlockCount:   len(nonceKeys),
-//         NodeCount:    len(nodes),
-//         TotalAmount:  totalAmount,
-//         LatestBlocks: latestBlocks,
-//         LatestTxID:   state.TxId,
-//     }
-
-//     // Update last checked transaction ID
-//     e.LastCheckedTxID = state.TxId
-
-//     return nil
-// }
-
-// // addToBlockCache adds a block to the in-memory cache
-// func (e *Explorer) addToBlockCache(block Block) {
-//     // Check if already in cache
-//     for _, b := range e.blocksCache {
-//         if b.ID == block.ID {
-//             return
-//         }
-//     }
-
-//     // Add to front of cache
-//     e.blocksCache = append([]Block{block}, e.blocksCache...)
-
-//     // Trim if needed
-//     if len(e.blocksCache) > e.maxCacheSize {
-//         e.blocksCache = e.blocksCache[:e.maxCacheSize]
-//     }
-// }
-
-// // GetBlocks returns blocks from the cache with pagination
-// func (e *Explorer) GetBlocks(offset, limit int) []Block {
-//     e.mutex.RLock()
-//     defer e.mutex.RUnlock()
-
-//     if offset >= len(e.blocksCache) {
-//         return []Block{}
-//     }
-
-//     end := offset + limit
-//     if end > len(e.blocksCache) {
-//         end = len(e.blocksCache)
-//     }
-
-//     return e.blocksCache[offset:end]
-// }
-
-// // GetBlockByID returns a specific block by ID
-// func (e *Explorer) GetBlockByID(id string) (Block, bool) {
-//     e.mutex.RLock()
-//     defer e.mutex.RUnlock()
-
-//     for _, block := range e.blocksCache {
-//         if block.ID == id {
-//             return block, true
-//         }
-//     }
-
-//     return Block{}, false
-// }
-
-// // GetDashboard returns the current dashboard data
-// func (e *Explorer) GetDashboard() Dashboard {
-//     e.mutex.RLock()
-//     defer e.mutex.RUnlock()
-//     return e.Dashboard
-// }
-
-// // handleWebSocket handles WebSocket connections
-// func (e *Explorer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-//     conn, err := upgrader.Upgrade(w, r, nil)
-//     if err != nil {
-//         log.Error().Err(err).Msg("Failed to set up WebSocket connection")
-//         return
-//     }
-
-//     clientID := r.RemoteAddr + ":" + time.Now().String()
-//     client := &Client{
-//         ID:       clientID,
-//         Conn:     conn,
-//         Send:     make(chan []byte, 256),
-//         Explorer: e,
-//     }
-
-//     // Register the client
-//     e.Register <- client
-
-//     // Start goroutines for reading and writing
-//     go client.readPump()
-//     go client.writePump()
-// }
-
-// // readPump pumps messages from the WebSocket to the hub
-// func (c *Client) readPump() {
-//     defer func() {
-//         c.Explorer.Unregister <- c
-//         c.Conn.Close()
-//     }()
-
-//     c.Conn.SetReadLimit(1024)
-//     c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-//     c.Conn.SetPongHandler(func(string) error {
-//         c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-//         return nil
-//     })
-
-//     for {
-//         _, _, err := c.Conn.ReadMessage()
-//         if err != nil {
-//             if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-//                 log.Error().Err(err).Msg("WebSocket read error")
-//             }
-//             break
-//         }
-//         // We're not processing incoming messages for now
-//     }
-// }
-
-// // writePump pumps messages from the hub to the WebSocket connection
-// func (c *Client) writePump() {
-//     ticker := time.NewTicker(54 * time.Second)
-//     defer func() {
-//         ticker.Stop()
-//         c.Conn.Close()
-//     }()
-
-//     for {
-//         select {
-//         case message, ok := <-c.Send:
-//             c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-//             if !ok {
-//                 // The hub closed the channel
-//                 c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
-//                 return
-//             }
-
-//             w, err := c.Conn.NextWriter(websocket.TextMessage)
-//             if err != nil {
-//                 return
-//             }
-//             w.Write(message)
-
-//             if err := w.Close(); err != nil {
-//                 return
-//             }
-//         case <-ticker.C:
-//             c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-//             if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-//                 return
-//             }
-//         }
-//     }
-// }
-
-// // SetupRoutes sets up the HTTP routes for the explorer
-// func (e *Explorer) SetupRoutes() *mux.Router {
-//     r := mux.NewRouter()
-
-//     // WebSocket endpoint
-//     r.HandleFunc("/ws", e.handleWebSocket)
-
-//     // API endpoints
-//     api := r.PathPrefix("/api").Subrouter()
-//     api.HandleFunc("/dashboard", e.handleGetDashboard).Methods("GET")
-//     api.HandleFunc("/blocks", e.handleListBlocks).Methods("GET")
-//     api.HandleFunc("/blocks/{id}", e.handleGetBlock).Methods("GET")
-
-//     // Serve frontend
-//     r.PathPrefix("/").Handler(http.FileServer(http.Dir("./explorer/static")))
-
-//     return r
-// }
-
-// // handleGetDashboard returns the current dashboard data
-// func (e *Explorer) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
-//     dashboard := e.GetDashboard()
-//     respondJSON(w, http.StatusOK, dashboard)
-// }
-
-// // handleListBlocks returns paginated blocks
-// func (e *Explorer) handleListBlocks(w http.ResponseWriter, r *http.Request) {
-//     query := r.URL.Query()
-//     offset, _ := strconv.Atoi(query.Get("offset"))
-//     limit, _ := strconv.Atoi(query.Get("limit"))
-
-//     if limit == 0 {
-//         limit = 10 // default limit
-//     }
-
-//     blocks := e.GetBlocks(offset, limit)
-//     respondJSON(w, http.StatusOK, blocks)
-// }
-
-
-// // handleListBlocks returns paginated blocks
-// func (e *Explorer) handleGetBlock(w http.ResponseWriter, r *http.Request) {
-//     vars := mux.Vars(r)
-//     id := vars["id"]
-    
-//     log.Debug().
-//         Str("path", r.URL.Path).
-//         Str("id", id).
-//         Interface("vars", vars).
-//         Msg("Block details request received")
-    
-//     if id == "" {
-//         log.Warn().Msg("Missing block ID in request")
-//         respondJSON(w, http.StatusBadRequest, map[string]string{"error": "Missing block ID"})
-//         return
-//     }
-    
-//     // Try to find the block by multiple methods
-//     block, found, err := e.findBlockByAnyID(id)
-    
-//     if err != nil {
-//         log.Error().Err(err).Str("block_id", id).Msg("Error finding block")
-//         respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "Database error"})
-//         return
-//     }
-    
-//     if !found {
-//         log.Warn().Str("block_id", id).Msg("Block not found")
-//         respondJSON(w, http.StatusNotFound, map[string]string{"error": "Block not found"})
-//         return
-//     }
-    
-//     respondJSON(w, http.StatusOK, block)
-// }
-
-// /// Add this helper function to search for blocks by various ID formats
-// func (e *Explorer) findBlockByAnyID(id string) (Block, bool, error) {
-//     // 1. First check the in-memory cache
-//     e.mutex.RLock()
-//     for _, block := range e.blocksCache {
-//         if block.ID == id || block.Nonce == id {
-//             e.mutex.RUnlock()
-//             return block, true, nil
-//         }
-//     }
-//     e.mutex.RUnlock()
-    
-//     // 2. Connect to ImmuDB
-//     client, err := DB_OPs.New()
-//     if err != nil {
-//         return Block{}, false, err
-//     }
-//     defer client.Close()
-    
-//     // 3. Try direct lookup by nonce first
-//     key := fmt.Sprintf("crdt:nonce:%s", id)
-//     var blockData struct {
-//         Nonce     string            `json:"nonce"`
-//         Data      map[string]string `json:"data"`
-//         Sender    string            `json:"sender"`
-//         Timestamp int64             `json:"timestamp"`
-//     }
-    
-//     err = client.ReadJSON(key, &blockData)
-//     if err == nil {
-//         // Direct key lookup succeeded
-//         block := Block{
-//             ID:        e.hasher.HashBlock(blockData.Nonce, blockData.Sender, blockData.Timestamp),
-//             Nonce:     blockData.Nonce,
-//             Timestamp: blockData.Timestamp,
-//             Sender:    blockData.Sender,
-//             Data:      blockData.Data,
-//         }
-//         return block, true, nil
-//     }
-    
-//     // 4. If direct lookup fails, scan all blocks
-//     keys, err := client.GetKeys("crdt:nonce:", config.DefaultScanLimit)
-//     if err != nil {
-//         return Block{}, false, err
-//     }
-    
-//     // Check each block's ID, nonce, and other possible identifiers
-//     for _, k := range keys {
-//         var data struct {
-//             Nonce     string            `json:"nonce"`
-//             Data      map[string]string `json:"data"`
-//             Sender    string            `json:"sender"`
-//             Timestamp int64             `json:"timestamp"`
-//         }
-        
-//         if err := client.ReadJSON(k, &data); err != nil {
-//             continue
-//         }
-        
-//         // Generate block ID and check against multiple formats
-//         blockID := e.hasher.HashBlock(data.Nonce, data.Sender, data.Timestamp)
-        
-//         // Try matching against different formats
-//         if blockID == id || data.Nonce == id || 
-//            k[len("crdt:nonce:"):] == id || // Match against raw key
-//            strings.Contains(blockID, id) || // Try partial match for short IDs 
-//            (len(id) > 8 && strings.Contains(id, blockID)) { // Try reverse match
-            
-//             block := Block{
-//                 ID:        blockID,
-//                 Nonce:     data.Nonce,
-//                 Timestamp: data.Timestamp,
-//                 Sender:    data.Sender,
-//                 Data:      data.Data,
-//             }
-//             return block, true, nil
-//         }
-//     }
-    
-//     // Not found after trying all methods
-//     return Block{}, false, nil
-// }
-// // respondJSON is a helper function to send a JSON response
-// func respondJSON(w http.ResponseWriter, status int, payload interface{}) {
-//     response, err := json.Marshal(payload)
-//     if err != nil {
-//         w.WriteHeader(http.StatusInternalServerError)
-//         w.Write([]byte(err.Error()))
-//         return
-//     }
-//     w.Header().Set("Content-Type", "application/json")
-//     w.WriteHeader(status)
-//     w.Write(response)
-// }
-
 package explorer
 
 import (
-    "encoding/json"
-    "fmt"
-    "net/http"
-    "sort"
-    "strconv"
-    "strings"
-    "sync"
-    "time"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
-    "github.com/gorilla/mux"
-    "github.com/gorilla/websocket"
-    "github.com/rs/zerolog/log"
+	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
+	"github.com/rs/zerolog/log"
 
-    "gossipnode/DB_OPs"
-    "gossipnode/config"
-    "gossipnode/messaging"
+	"gossipnode/DB_OPs"
+	"gossipnode/config"
+	help "gossipnode/helper"
 )
 
 // WebSocket upgrader with CORS support
@@ -725,7 +112,7 @@ type Client struct {
 
 // Explorer represents the block explorer with WebSocket functionality
 type Explorer struct {
-    ImmuClient         *DB_OPs.ImmuClient
+    ImmuClient         *config.ImmuClient
     Clients            map[string]*Client
     Register           chan *Client
     Unregister         chan *Client
@@ -735,12 +122,17 @@ type Explorer struct {
     transactionMutex   sync.RWMutex
     LastCheckedTxID    uint64
     UpdateInterval     time.Duration
-    hasher             *DB_OPs.BlockHasher
+    hasher             *config.BlockHasher
     processingBlocks   map[string]bool
     blocksCache        []Block
     transactionsCache  []Transaction
     maxBlockCache      int
     maxTransactionCache int
+}
+
+// HandleBroadcast implements the helper.BroadcastHandler interface
+func (e *Explorer) HandleBroadcast(data []byte) {
+    e.Broadcast <- data
 }
 
 // NewExplorer creates a new Explorer instance
@@ -770,7 +162,7 @@ func NewExplorer() (*Explorer, error) {
     // Initialize dashboard data
     err = explorer.updateDashboard()
     if err != nil {
-        immuClient.Close()
+        DB_OPs.Close(immuClient)
         return nil, err
     }
 
@@ -779,7 +171,7 @@ func NewExplorer() (*Explorer, error) {
     go explorer.monitorBlocks()
 
     // Register with message propagation system
-    messaging.SetExplorerRef(explorer)
+    help.SetBroadcastHandler(explorer)
 
     return explorer, nil
 }
@@ -845,7 +237,7 @@ func (e *Explorer) monitorBlocks() {
 // checkForUpdates looks for new blocks and updates the dashboard
 func (e *Explorer) checkForUpdates() error {
     // Get current state from ImmuDB
-    state, err := e.ImmuClient.GetDatabaseState()
+    state, err := DB_OPs.GetDatabaseState(e.ImmuClient)
     if err != nil {
         return err
     }
@@ -926,19 +318,19 @@ func (e *Explorer) updateDashboard() error {
 // fetchBlockchainData fetches all necessary data from ImmuDB
 func (e *Explorer) fetchBlockchainData() (DashboardStats, []Block, []Transaction, error) {
     // Get current ImmuDB state
-    state, err := e.ImmuClient.GetDatabaseState()
+    state, err := DB_OPs.GetDatabaseState(e.ImmuClient)
     if err != nil {
         return DashboardStats{}, nil, nil, err
     }
 
     // Get all nonce keys with the CRDT prefix (blocks)
-    nonceKeys, err := e.ImmuClient.GetKeys("crdt:nonce:", config.DefaultScanLimit)
+    nonceKeys, err := DB_OPs.GetKeys(e.ImmuClient,"crdt:nonce:", config.DefaultScanLimit)
     if err != nil {
         return DashboardStats{}, nil, nil, err
     }
 
     // Get all transaction keys
-    txKeys, err := e.ImmuClient.GetKeys("tx:", config.DefaultScanLimit)
+    txKeys, err := DB_OPs.GetKeys(e.ImmuClient,"tx:", config.DefaultScanLimit)
     if err != nil {
         return DashboardStats{}, nil, nil, err
     }
@@ -961,8 +353,8 @@ func (e *Explorer) fetchBlockchainData() (DashboardStats, []Block, []Transaction
         e.processingBlocks[nonce] = true
 
         // Read block data 
-        var blockMsg messaging.BlockMessage
-        if err := e.ImmuClient.ReadJSON(key, &blockMsg); err != nil {
+        var blockMsg config.BlockMessage
+        if err := DB_OPs.ReadJSON(e.ImmuClient,key, &blockMsg); err != nil {
             log.Error().Err(err).Str("key", key).Msg("Failed to read block data")
             delete(e.processingBlocks, nonce)
             continue
@@ -1002,9 +394,8 @@ func (e *Explorer) fetchBlockchainData() (DashboardStats, []Block, []Transaction
     
     // Process direct transaction entries
     for _, key := range txKeys {
-        // Read transaction data
-        var txMsg messaging.BlockMessage
-        if err := e.ImmuClient.ReadJSON(key, &txMsg); err != nil {
+        var txMsg config.BlockMessage
+        if err := DB_OPs.ReadJSON(e.ImmuClient,key, &txMsg); err != nil {
             log.Error().Err(err).Str("key", key).Msg("Failed to read transaction data")
             continue
         }
@@ -1019,8 +410,8 @@ func (e *Explorer) fetchBlockchainData() (DashboardStats, []Block, []Transaction
 
     // Also check regular blocks for transaction types to ensure we catch all transactions
     for _, key := range nonceKeys {
-        var blockMsg messaging.BlockMessage
-        if err := e.ImmuClient.ReadJSON(key, &blockMsg); err != nil {
+        var blockMsg config.BlockMessage
+        if err := DB_OPs.ReadJSON(e.ImmuClient, key, &blockMsg); err != nil {
             continue
         }
 
@@ -1078,7 +469,7 @@ func (e *Explorer) fetchBlockchainData() (DashboardStats, []Block, []Transaction
 }
 
 // convertToExplorerBlock converts a BlockMessage to the explorer Block format
-func convertToExplorerBlock(msg messaging.BlockMessage) Block {
+func convertToExplorerBlock(msg config.BlockMessage) Block {
     block := Block{
         ID:        msg.ID,
         Nonce:     msg.Nonce,
@@ -1112,8 +503,8 @@ func convertToExplorerBlock(msg messaging.BlockMessage) Block {
         }
         
         // Set gas parameters
-        if tx.Gas != nil {
-            block.GasLimit = tx.Gas.String()
+        if tx.GasLimit != 0 {
+            block.GasLimit = string(tx.GasLimit)
         }
         
         if tx.GasPrice != nil {
@@ -1137,7 +528,7 @@ func convertToExplorerBlock(msg messaging.BlockMessage) Block {
 }
 
 // convertToTransaction converts a BlockMessage to the explorer Transaction format
-func convertToTransaction(msg messaging.BlockMessage) Transaction {
+func convertToTransaction(msg config.BlockMessage) Transaction {
     tx := Transaction{
         From:      msg.Sender,
         Timestamp: msg.Timestamp,
@@ -1171,8 +562,8 @@ func convertToTransaction(msg messaging.BlockMessage) Transaction {
         }
         
         // Set gas parameters
-        if msg.Transaction.Gas != nil {
-            tx.GasLimit = msg.Transaction.Gas.String()
+        if msg.Transaction.GasLimit != 0 {
+            tx.GasLimit = string(msg.Transaction.GasLimit)
         }
         
         if msg.Transaction.GasPrice != nil {
@@ -1191,8 +582,8 @@ func convertToTransaction(msg messaging.BlockMessage) Transaction {
             tx.ChainID = msg.Transaction.ChainID.String()
         }
         
-        if msg.Transaction.Nonce != nil {
-            tx.Nonce = msg.Transaction.Nonce.String()
+        if msg.Transaction.Nonce != 0 {
+            tx.Nonce = string(msg.Transaction.Nonce)
         }
         
         // Set data if available
@@ -1329,9 +720,9 @@ func (e *Explorer) GetTransactionByHash(hash string) (Transaction, bool) {
 func (e *Explorer) findBlockByAnyID(id string) (Block, bool, error) {
     // Try direct lookup by nonce first
     key := fmt.Sprintf("crdt:nonce:%s", id)
-    var blockMsg messaging.BlockMessage
+    var blockMsg config.BlockMessage
     
-    err := e.ImmuClient.ReadJSON(key, &blockMsg)
+    err := DB_OPs.ReadJSON(e.ImmuClient,key, &blockMsg)
     if err == nil {
         // Direct key lookup succeeded
         block := convertToExplorerBlock(blockMsg)
@@ -1345,16 +736,16 @@ func (e *Explorer) findBlockByAnyID(id string) (Block, bool, error) {
     }
     
     // If direct lookup fails, scan all blocks
-    keys, err := e.ImmuClient.GetKeys("crdt:nonce:", config.DefaultScanLimit)
+    keys, err := DB_OPs.GetKeys(e.ImmuClient,"crdt:nonce:", config.DefaultScanLimit)
     if err != nil {
         return Block{}, false, err
     }
     
     // Check each block's ID, nonce, and other possible identifiers
     for _, k := range keys {
-        var msg messaging.BlockMessage
+        var msg config.BlockMessage
         
-        if err := e.ImmuClient.ReadJSON(k, &msg); err != nil {
+        if err := DB_OPs.ReadJSON(e.ImmuClient, k, &msg); err != nil {
             continue
         }
         
@@ -1384,9 +775,9 @@ func (e *Explorer) findBlockByAnyID(id string) (Block, bool, error) {
 func (e *Explorer) findTransactionByHash(hash string) (Transaction, bool, error) {
     // Try direct lookup using tx: prefix
     key := fmt.Sprintf("tx:%s", hash)
-    var txMsg messaging.BlockMessage
+    var txMsg config.BlockMessage
     
-    err := e.ImmuClient.ReadJSON(key, &txMsg)
+    err := DB_OPs.ReadJSON(e.ImmuClient,key, &txMsg)
     if err == nil {
         // Direct key lookup succeeded
         tx := convertToTransaction(txMsg)
@@ -1400,16 +791,16 @@ func (e *Explorer) findTransactionByHash(hash string) (Transaction, bool, error)
     }
     
     // If direct lookup fails, scan all blocks
-    keys, err := e.ImmuClient.GetKeys("crdt:nonce:", config.DefaultScanLimit)
+    keys, err := DB_OPs.GetKeys(e.ImmuClient,"crdt:nonce:", config.DefaultScanLimit)
     if err != nil {
         return Transaction{}, false, err
     }
     
     // Check each block for the transaction hash
     for _, k := range keys {
-        var msg messaging.BlockMessage
+        var msg config.BlockMessage
         
-        if err := e.ImmuClient.ReadJSON(k, &msg); err != nil {
+        if err := DB_OPs.ReadJSON(e.ImmuClient,k, &msg); err != nil {
             continue
         }
         
@@ -1441,6 +832,10 @@ func (e *Explorer) GetDashboard() Dashboard {
 
 // handleWebSocket handles WebSocket connections
 func (e *Explorer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Access-Control-Allow-Origin", "*")
+    w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+    w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
     conn, err := upgrader.Upgrade(w, r, nil)
     if err != nil {
         log.Error().Err(err).Msg("Failed to set up WebSocket connection")
@@ -1599,6 +994,8 @@ func (e *Explorer) SetupRoutes() *mux.Router {
     api.HandleFunc("/health", e.handleHealthCheck).Methods("GET")
 
     // Serve frontend
+    r.PathPrefix("/js/").Handler(http.StripPrefix("/js/", http.FileServer(http.Dir("./explorer/static/js"))))
+    r.PathPrefix("/css/").Handler(http.StripPrefix("/css/", http.FileServer(http.Dir("./explorer/static/css"))))
     r.PathPrefix("/").Handler(http.FileServer(http.Dir("./explorer/static")))
 
     return r
@@ -1622,13 +1019,13 @@ func (e *Explorer) handleListBlocks(w http.ResponseWriter, r *http.Request) {
 
     blocks := e.GetBlocks(offset, limit)
     
-    respondJSON(w, http.StatusOK, gin.H{
+    respondJSON(w, http.StatusOK, helper.Map(map[string]interface{}{
         "blocks": blocks,
         "count":  len(blocks),
         "offset": offset,
         "limit":  limit,
         "total":  len(e.blocksCache),
-    })
+    }))
 }
 
 // handleGetBlock returns a specific block
@@ -1670,13 +1067,13 @@ func (e *Explorer) handleListTransactions(w http.ResponseWriter, r *http.Request
 
     transactions := e.GetTransactions(offset, limit)
     
-    respondJSON(w, http.StatusOK, gin.H{
+    respondJSON(w, http.StatusOK, helper.Map(map[string]interface{}{
         "transactions": transactions,
         "count":        len(transactions),
         "offset":       offset,
         "limit":        limit,
         "total":        len(e.transactionsCache),
-    })
+    }))
 }
 
 // handleGetTransaction returns a specific transaction
@@ -1721,7 +1118,7 @@ func (e *Explorer) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
     isHealthy := true
     
     // Get database state as a health check
-    _, err := e.ImmuClient.GetDatabaseState()
+    _, err := DB_OPs.GetDatabaseState(e.ImmuClient)
     if err != nil {
         isHealthy = false
     }
@@ -1731,11 +1128,11 @@ func (e *Explorer) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
         status = "error"
     }
     
-    respondJSON(w, http.StatusOK, gin.H{
+    respondJSON(w, http.StatusOK, helper.Map(map[string]interface{}{
         "status":    status,
         "service":   "blockchain-explorer",
         "timestamp": time.Now().UTC(),
-    })
+    }))
 }
 
 // respondJSON is a helper function to send a JSON response
@@ -1752,10 +1149,10 @@ func respondJSON(w http.ResponseWriter, status int, payload interface{}) {
 }
 
 // gin is just for the H type
-type gin struct{}
+type mapHelper struct{}
 
-func (g gin) H(data map[string]interface{}) map[string]interface{} {
+func (h mapHelper) Map(data map[string]interface{}) map[string]interface{} {
     return data
 }
 
-var gin = &gin{}
+var helper = &mapHelper{}

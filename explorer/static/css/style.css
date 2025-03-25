@@ -1,0 +1,205 @@
+:root {
+    --primary-color: #3498db;
+    --secondary-color: #2ecc71;
+    --dark-color: #2c3e50;
+    --light-color: #ecf0f1;
+    --danger-color: #e74c3c;
+    --warning-color: #f39c12;
+    --background-color: #f8f9fa;
+    --card-background: #ffffff;
+  }
+  
+  body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: var(--background-color);
+    color: var(--dark-color);
+    margin: 0;
+    padding: 0;
+  }
+  
+  .navbar {
+    background-color: var(--dark-color);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  }
+  
+  .navbar-brand {
+    font-weight: 700;
+    color: var(--light-color) !important;
+  }
+  
+  .nav-link {
+    color: var(--light-color) !important;
+    transition: opacity 0.3s;
+  }
+  
+  .nav-link:hover {
+    opacity: 0.8;
+  }
+  
+  .card {
+    border-radius: 10px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+    margin-bottom: 20px;
+    border: none;
+    background-color: var(--card-background);
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  
+  .card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+  }
+  
+  .card-header {
+    background-color: var(--card-background);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+    font-weight: 600;
+    padding: 15px 20px;
+  }
+  
+  .stat-card {
+    text-align: center;
+    padding: 1.5rem;
+  }
+  
+  .stat-card .stat-icon {
+    font-size: 2.5rem;
+    margin-bottom: 1rem;
+    color: var(--primary-color);
+  }
+  
+  .stat-card .stat-value {
+    font-size: 1.8rem;
+    font-weight: bold;
+    margin-bottom: 0.3rem;
+  }
+  
+  .stat-card .stat-label {
+    color: #6c757d;
+    font-size: 0.9rem;
+  }
+  
+  .transaction-table, .block-table {
+    width: 100%;
+  }
+  
+  .transaction-table thead, .block-table thead {
+    background-color: rgba(0, 0, 0, 0.02);
+  }
+  
+  .transaction-table th, .block-table th {
+    padding: 12px 15px;
+    font-weight: 600;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  }
+  
+  .transaction-table td, .block-table td {
+    padding: 12px 15px;
+    vertical-align: middle;
+  }
+  
+  .transaction-table tr, .block-table tr {
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+    cursor: pointer;
+    transition: background-color 0.2s;
+  }
+  
+  .transaction-table tr:hover, .block-table tr:hover {
+    background-color: rgba(0, 0, 0, 0.02);
+  }
+  
+  .transaction-hash, .block-id {
+    font-family: monospace;
+    color: var(--primary-color);
+  }
+  
+  .badge-transaction-type {
+    background-color: var(--primary-color);
+    color: white;
+    padding: 5px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  
+  .badge-transaction-type.eip1559 {
+    background-color: var(--secondary-color);
+  }
+  
+  .badge-transaction-type.legacy {
+    background-color: var(--warning-color);
+  }
+  
+  .address {
+    font-family: monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 150px;
+    display: inline-block;
+  }
+  
+  .detail-card {
+    margin-bottom: 30px;
+  }
+  
+  .detail-table {
+    width: 100%;
+  }
+  
+  .detail-table th {
+    width: 30%;
+    padding: 12px 15px;
+    font-weight: 600;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  }
+  
+  .detail-table td {
+    padding: 12px 15px;
+    vertical-align: middle;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  }
+  
+  .pagination {
+    margin-top: 20px;
+    justify-content: center;
+  }
+  
+  .page-item.active .page-link {
+    background-color: var(--primary-color);
+    border-color: var(--primary-color);
+  }
+  
+  .loader {
+    text-align: center;
+    padding: 30px;
+  }
+  
+  .new-transaction {
+    animation: highlight 2s;
+  }
+  
+  @keyframes highlight {
+    0% { background-color: rgba(46, 204, 113, 0.3); }
+    100% { background-color: transparent; }
+  }
+  
+  /* Responsive adjustments */
+  @media (max-width: 768px) {
+    .address {
+      max-width: 100px;
+    }
+    
+    .transaction-table td, .block-table td,
+    .transaction-table th, .block-table th {
+      padding: 10px 8px;
+      font-size: 0.9rem;
+    }
+    
+    .stat-card .stat-value {
+      font-size: 1.5rem;
+    }
+    
+    .stat-card .stat-icon {
+      font-size: 2rem;
+    }
+  }

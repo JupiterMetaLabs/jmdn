@@ -83,7 +83,7 @@ type KeyValueEntry struct {
 // FastSync manages the sync process between nodes
 type FastSync struct {
     host       host.Host
-    db         *DB_OPs.ImmuClient
+    db         *config.ImmuClient
     crdtEngine *crdt.Engine
     active     map[peer.ID]*syncState
     mutex      sync.RWMutex
@@ -106,7 +106,7 @@ type syncState struct {
 }
 
 // NewFastSync creates a new FastSync service
-func NewFastSync(h host.Host, db *DB_OPs.ImmuClient) *FastSync {
+func NewFastSync(h host.Host, db *config.ImmuClient) *FastSync {
     fs := &FastSync{
         host:       h,
         db:         db,
@@ -234,7 +234,7 @@ func (fs *FastSync) handleSyncStream(stream network.Stream) {
 // handleSyncRequest processes a sync request from a peer
 func (fs *FastSync) handleSyncRequest(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
     // Get current state from ImmuDB
-    state, err := fs.db.GetDatabaseState()
+    state, err := DB_OPs.GetDatabaseState(fs.db)
     if err != nil {
         return nil, fmt.Errorf("failed to get database state: %w", err)
     }
@@ -391,7 +391,7 @@ func (fs *FastSync) getKeysInRange(startTxID, endTxID uint64) ([]string, error) 
     
     // Get keys in batches to respect ImmuDB's limits
     for {
-        keys, err := fs.db.GetKeys(lastKey, maxKeysPerBatch)
+        keys, err := DB_OPs.GetKeys(fs.db,lastKey, maxKeysPerBatch)
         if err != nil {
             return nil, fmt.Errorf("GetKeys failed: %w", err)
         }
@@ -485,7 +485,7 @@ func (fs *FastSync) getBatchData(startTxID, endTxID uint64, remoteFilter *bloom.
     var continueLoop = true
     
     for continueLoop {
-        keys, err := fs.db.GetKeys(lastKey, maxKeysPerBatch)
+        keys, err := DB_OPs.GetKeys(fs.db, lastKey, maxKeysPerBatch)
         if err != nil {
             return nil, nil, err
         }
@@ -497,7 +497,7 @@ func (fs *FastSync) getBatchData(startTxID, endTxID uint64, remoteFilter *bloom.
             // Only send keys that the remote node doesn't have
             if !remoteFilter.Test([]byte(key)) {
                 // Get the key data
-                data, err := fs.db.Read(key)
+                data, err := DB_OPs.Read(fs.db, key)
                 if err != nil {
                     // Skip if key not found - might have been deleted
                     continue
@@ -601,7 +601,7 @@ func (fs *FastSync) handleBatchData(peerID peer.ID, msg *SyncMessage) (*SyncMess
     
     // Batch create the entries if we have any (no change)
     if len(entries) > 0 {
-        if err := fs.db.BatchCreate(entries); err != nil {
+        if err := DB_OPs.BatchCreate(fs.db, entries); err != nil {
             return nil, fmt.Errorf("failed to store batch entries: %w", err)
         }
     }
@@ -719,7 +719,7 @@ func (fs *FastSync) handleSyncComplete(peerID peer.ID, msg *SyncMessage) (*SyncM
     }
     
     // Get our current state
-    state, err := fs.db.GetDatabaseState()
+    state, err := DB_OPs.GetDatabaseState(fs.db)
     if err != nil {
         return nil, fmt.Errorf("failed to get database state: %w", err)
     }
@@ -753,7 +753,7 @@ func (fs *FastSync) handleSyncComplete(peerID peer.ID, msg *SyncMessage) (*SyncM
 // handleVerificationRequest processes a verification request from a peer
 func (fs *FastSync) handleVerificationRequest(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
     // Get current state from ImmuDB
-    state, err := fs.db.GetDatabaseState()
+    state, err := DB_OPs.GetDatabaseState(fs.db)
     if err != nil {
         return nil, fmt.Errorf("failed to get database state: %w", err)
     }
@@ -790,7 +790,7 @@ func (fs *FastSync) cleanupSync(peerID peer.ID) {
 // StartSync initiates a sync with a peer
 func (fs *FastSync) StartSync(peerID peer.ID) error {
     // Get current state from ImmuDB
-    state, err := fs.db.GetDatabaseState()
+    state, err := DB_OPs.GetDatabaseState(fs.db)
     if err != nil {
         return fmt.Errorf("failed to get current database state: %w", err)
     }
@@ -925,7 +925,7 @@ func (fs *FastSync) processSyncResponse(peerID peer.ID, stream network.Stream, r
         Msg("Processing sync response")
 
     // Get our current state from ImmuDB
-    ourState, err := fs.db.GetDatabaseState()
+    ourState, err := DB_OPs.GetDatabaseState(fs.db)
     if err != nil {
         return fmt.Errorf("failed to get our database state: %w", err)
     }
@@ -1188,7 +1188,7 @@ func (fs *FastSync) requestAndProcessBatchSequential(writer *bufio.Writer, reade
     
     // Batch create the entries if we have any
     if len(entries) > 0 {
-        if err := fs.db.BatchCreate(entries); err != nil {
+        if err := DB_OPs.BatchCreate(fs.db, entries); err != nil {
             return fmt.Errorf("failed to store batch entries: %w", err)
         }
     }
@@ -1519,7 +1519,7 @@ func (fs *FastSync) requestAndProcessBatch(writer *bufio.Writer, reader *bufio.R
     if len(entries) > 0 {
         // Retry batch creation up to 3 times
         err := retry(3, 500*time.Millisecond, func() error {
-            return fs.db.BatchCreate(entries)
+            return DB_OPs.BatchCreate(fs.db, entries)
         })
         
         if err != nil {
@@ -1676,7 +1676,7 @@ func (fs *FastSync) handleFinalVerification(reader *bufio.Reader, peerMerkleRoot
     }
     
     // Get our final state
-    ourState, err := fs.db.GetDatabaseState()
+    ourState, err := DB_OPs.GetDatabaseState(fs.db)
     if err != nil {
         return fmt.Errorf("failed to get final database state: %w", err)
     }

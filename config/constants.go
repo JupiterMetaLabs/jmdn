@@ -120,3 +120,14 @@ type Transaction struct {
     V, R, S             *big.Int   // Signature values
 }
 
+
+type BlockMessage struct {
+    ID          string              `json:"id"`                    // Unique message ID
+    Sender      string              `json:"sender"`                // Original sender's peer ID
+    Timestamp   int64               `json:"timestamp"`             // Unix timestamp when message was created
+    Nonce       string              `json:"nonce"`                 // Unique nonce for CRDT
+    Data        map[string]string   `json:"data,omitempty"`        // Data payload for generic messages
+    Transaction *Transaction  `json:"transaction,omitempty"` // Structured transaction data
+    Type        string              `json:"type"`                  // "transaction", "block", "message", etc.
+    Hops        int                 `json:"hops"`                  // How many hops this message has made
+}

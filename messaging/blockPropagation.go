@@ -17,26 +17,15 @@ import (
     "github.com/libp2p/go-libp2p/core/peer"
     "github.com/rs/zerolog/log"
 
-    // "gossipnode/Block"
+    // "gossipnode/"
     "gossipnode/DB_OPs"
     "gossipnode/config"
-    "gossipnode/explorer"
+    "gossipnode/helper"
     "gossipnode/metrics"
 )
 
 // BlockMessage represents a message for block propagation
 // Enhanced to support both traditional map data and structured transaction objects
-type BlockMessage struct {
-    ID          string              `json:"id"`                    // Unique message ID
-    Sender      string              `json:"sender"`                // Original sender's peer ID
-    Timestamp   int64               `json:"timestamp"`             // Unix timestamp when message was created
-    Nonce       string              `json:"nonce"`                 // Unique nonce for CRDT
-    Data        map[string]string   `json:"data,omitempty"`        // Data payload for generic messages
-    Transaction *config.Transaction  `json:"transaction,omitempty"` // Structured transaction data
-    Type        string              `json:"type"`                  // "transaction", "block", "message", etc.
-    Hops        int                 `json:"hops"`                  // How many hops this message has made
-}
-
 // Store for peer timeouts
 var (
     peerTimeouts     = make(map[string]time.Time)
@@ -48,42 +37,9 @@ var messageFilter *bloom.BloomFilter
 
 // ImmuDB client instance
 var (
-    immuClient     *DB_OPs.ImmuClient
+    immuClient     *config.ImmuClient
     immuClientOnce sync.Once
 )
-
-// Explorer reference
-var explorerRef *explorer.Explorer
-
-func SetExplorerRef(e *explorer.Explorer) {
-    explorerRef = e
-}
-
-func notifyExplorer(msg BlockMessage) {
-    // Skip if explorer reference isn't set
-    if explorerRef == nil {
-        log.Debug().Msg("Explorer reference not set")
-        return
-    }
-    
-    // Prepare notification message
-    notification := map[string]interface{}{
-        "type": msg.Type,
-        "data": msg,
-    }
-    
-    // Marshal to JSON
-    data, err := json.Marshal(notification)
-    if err != nil {
-        log.Error().Err(err).Msg("Failed to marshal block notification")
-        return
-    }
-    
-    // Send to explorer for broadcasting
-    e := explorerRef
-    e.Broadcast <- data
-    log.Debug().Str("block_id", msg.ID).Msg("Block notification sent to explorer")
-}
 
 func init() {
     // Initialize a bloom filter with 10000 items and 0.01 false positive rate
@@ -167,7 +123,7 @@ func markMessageProcessed(messageID string) {
 }
 
 // storeMessageInImmuDB stores a message in ImmuDB using the appropriate key
-func storeMessageInImmuDB(msg BlockMessage) {
+func storeMessageInImmuDB(msg config.BlockMessage) {
     // Store in ImmuDB in a separate goroutine to prevent blocking
     go func() {
         var key string
@@ -191,7 +147,7 @@ func storeMessageInImmuDB(msg BlockMessage) {
         }
         
         // Store the update
-        err := immuClient.Create(key, msg)
+        err := DB_OPs.Create(immuClient, key, msg)
         if err != nil {
             log.Error().Err(err).Str("key", key).Msg("Failed to store message in ImmuDB")
             return
@@ -213,7 +169,7 @@ func updateMessageSet(key string) error {
     
     // Try to get the current set
     var messageSet map[string]bool
-    err := immuClient.ReadJSON(setKey, &messageSet)
+    err := DB_OPs.ReadJSON(immuClient, setKey, &messageSet)
     
     // If not found or error, start with empty set
     if err != nil {
@@ -224,11 +180,11 @@ func updateMessageSet(key string) error {
     messageSet[key] = true
     
     // Store the updated set
-    return immuClient.Create(setKey, messageSet)
+    return DB_OPs.Create(immuClient, setKey, messageSet)
 }
 
 // getMessageIDForBloomFilter gets the appropriate ID to use for duplication checking
-func getMessageIDForBloomFilter(msg BlockMessage) string {
+func getMessageIDForBloomFilter(msg config.BlockMessage) string {
     // For transactions, use transaction hash if available
     if msg.Type == "transaction" && msg.Data != nil {
         if txHash, ok := msg.Data["transaction_hash"]; ok && txHash != "" {
@@ -270,7 +226,7 @@ func HandleBlockStream(stream network.Stream) {
     }
     
     // Parse the message
-    var msg BlockMessage
+    var msg config.BlockMessage
     if err := json.Unmarshal(messageBytes, &msg); err != nil {
         log.Error().Err(err).Msg("Failed to unmarshal message")
         return
@@ -307,7 +263,7 @@ func HandleBlockStream(stream network.Stream) {
     }
     
     // Notify explorer
-    notifyExplorer(msg)
+    helper.NotifyBroadcast(msg)
     
     // Only rebroadcast if we haven't reached max hops
     if msg.Hops < config.MaxHops {
@@ -338,7 +294,7 @@ func HandleBlockStream(stream network.Stream) {
 }
 
 // forwardBlock sends the block message to all connected peers
-func forwardBlock(h host.Host, msg BlockMessage) {
+func forwardBlock(h host.Host, msg config.BlockMessage) {
     // Get all connected peers
     peers := h.Network().Peers()
     
@@ -420,7 +376,7 @@ func PropagateBlock(h host.Host, data map[string]string) error {
     
     // Create a new block message
     now := time.Now().Unix()
-    msg := BlockMessage{
+    msg := config.BlockMessage{
         Sender:    h.ID().String(),
         Timestamp: now,
         Nonce:     nonce,
@@ -452,7 +408,7 @@ func PropagateTransaction(h host.Host, tx *config.Transaction, txHash string) er
     
     // Create a new message
     now := time.Now().Unix()
-    msg := BlockMessage{
+    msg := config.BlockMessage{
         Sender:      h.ID().String(),
         Timestamp:   now,
         Nonce:       nonce,
@@ -469,7 +425,7 @@ func PropagateTransaction(h host.Host, tx *config.Transaction, txHash string) er
 }
 
 // propagateMessage is a shared implementation for propagating any message type
-func propagateMessage(h host.Host, msg BlockMessage) error {
+func propagateMessage(h host.Host, msg config.BlockMessage) error {
     // Get the appropriate ID for duplication checking
     messageID := getMessageIDForBloomFilter(msg)
     
@@ -573,7 +529,7 @@ func propagateMessage(h host.Host, msg BlockMessage) error {
         Int("total", len(peers)).
         Msg("Propagation complete")
     
-    notifyExplorer(msg)
+    helper.NotifyBroadcast(msg)
     return nil
 }
 
@@ -583,7 +539,7 @@ func GetAllMessages() ([]string, error) {
     
     // Try to get the current set
     var messageSet map[string]bool
-    err := immuClient.ReadJSON(setKey, &messageSet)
+    err := DB_OPs.ReadJSON(immuClient,setKey, &messageSet)
     
     if err != nil {
         return nil, fmt.Errorf("failed to read message set: %w", err)
@@ -599,9 +555,9 @@ func GetAllMessages() ([]string, error) {
 }
 
 // GetMessage retrieves a message by key
-func GetMessage(key string) (*BlockMessage, error) {
-    var message BlockMessage
-    err := immuClient.ReadJSON(key, &message)
+func GetMessage(key string) (*config.BlockMessage, error) {
+    var message config.BlockMessage
+    err := DB_OPs.ReadJSON(immuClient,key, &message)
     if err != nil {
         return nil, fmt.Errorf("failed to read message data: %w", err)
     }
@@ -610,13 +566,13 @@ func GetMessage(key string) (*BlockMessage, error) {
 }
 
 // GetTransactionByHash retrieves a transaction by hash
-func GetTransactionByHash(txHash string) (*BlockMessage, error) {
+func GetTransactionByHash(txHash string) (*config.BlockMessage, error) {
     key := fmt.Sprintf("tx:%s", txHash)
     return GetMessage(key)
 }
 
 // GetBlockByNonce retrieves a block by nonce
-func GetBlockByNonce(nonce string) (*BlockMessage, error) {
+func GetBlockByNonce(nonce string) (*config.BlockMessage, error) {
     key := fmt.Sprintf("crdt:nonce:%s", nonce)
     return GetMessage(key)
 }

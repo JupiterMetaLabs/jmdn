@@ -17,7 +17,7 @@ import (
 
 // ImmuDBServer represents the ImmuDB API server
 type ImmuDBServer struct {
-    client     *DB_OPs.ImmuClient
+    client     *config.ImmuClient
     router     *gin.Engine
 }
 
@@ -128,7 +128,7 @@ func (s *ImmuDBServer) Start(addr string) error {
 // Close cleans up resources
 func (s *ImmuDBServer) Close() {
     if s.client != nil {
-        s.client.Close()
+        DB_OPs.Close(s.client)
     }
 }
 
@@ -159,7 +159,7 @@ func (s *ImmuDBServer) getKeyValue(c *gin.Context) {
     log.Debug().Str("key", key).Msg("Getting value for key")
 
     // Read raw value from ImmuDB
-    value, err := s.client.Read(key)
+    value, err := DB_OPs.Read(s.client,key)
     if err != nil {
         log.Error().Err(err).Str("key", key).Msg("Failed to read key")
         c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("Key not found: %v", err)})
@@ -168,7 +168,7 @@ func (s *ImmuDBServer) getKeyValue(c *gin.Context) {
 
     // Try to parse as JSON and return structured data if possible
     var jsonData interface{}
-    if err := s.client.ReadJSON(key, &jsonData); err == nil {
+    if err := DB_OPs.ReadJSON(s.client, key, &jsonData); err == nil {
         c.JSON(http.StatusOK, gin.H{
             "key": key,
             "data": jsonData,
@@ -199,7 +199,7 @@ func (s *ImmuDBServer) listKeys(c *gin.Context) {
     log.Debug().Str("prefix", prefix).Int("limit", limit).Msg("Listing keys")
 
     // Get keys from ImmuDB
-    keys, err := s.client.GetKeys(prefix, limit)
+    keys, err := DB_OPs.GetKeys(s.client,prefix, limit)
     if err != nil {
         log.Error().Err(err).Str("prefix", prefix).Msg("Failed to list keys")
         c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to list keys: %v", err)})
@@ -233,7 +233,7 @@ func (s *ImmuDBServer) getBlock(c *gin.Context) {
     var foundKey string
 
     for _, key := range keyFormats {
-        err := s.client.ReadJSON(key, &blockMsg)
+        err := DB_OPs.ReadJSON(s.client,key, &blockMsg)
         if err == nil {
             foundKey = key
             break
@@ -242,7 +242,7 @@ func (s *ImmuDBServer) getBlock(c *gin.Context) {
 
     if foundKey == "" {
         // If direct lookup failed, try listing all keys and searching
-        keys, err := s.client.GetKeys("crdt:nonce:", 1000)
+        keys, err := DB_OPs.GetKeys(s.client,"crdt:nonce:", 1000)
         if err != nil {
             log.Error().Err(err).Msg("Failed to list keys")
             c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to search for block"})
@@ -256,7 +256,7 @@ func (s *ImmuDBServer) getBlock(c *gin.Context) {
                 keyID := key[len("crdt:nonce:"):]
                 
                 if keyID == blockID {
-                    err := s.client.ReadJSON(key, &blockMsg)
+                    err := DB_OPs.ReadJSON(s.client,key, &blockMsg)
                     if err == nil {
                         foundKey = key
                         break
@@ -319,7 +319,7 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
     log.Debug().Int("limit", limit).Str("type", blockType).Msg("Listing blocks")
 
     // Get all nonce keys
-    keys, err := s.client.GetKeys("crdt:nonce:", limit)
+    keys, err := DB_OPs.GetKeys(s.client,"crdt:nonce:", limit)
     if err != nil {
         log.Error().Err(err).Msg("Failed to list block keys")
         c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to list blocks: %v", err)})
@@ -332,7 +332,7 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
         // Extract block ID from key        
         // Read block message
         var blockMsg BlockMessage
-        if err := s.client.ReadJSON(key, &blockMsg); err != nil {
+        if err := DB_OPs.ReadJSON(s.client,key, &blockMsg); err != nil {
             log.Debug().Err(err).Str("key", key).Msg("Failed to read block data")
             continue
         }
@@ -396,7 +396,7 @@ func (s *ImmuDBServer) getTransaction(c *gin.Context) {
     var foundKey string
 
     for _, key := range keyFormats {
-        err := s.client.ReadJSON(key, &txMsg)
+        err := DB_OPs.ReadJSON(s.client,key, &txMsg)
         if err == nil {
             foundKey = key
             break
@@ -405,7 +405,7 @@ func (s *ImmuDBServer) getTransaction(c *gin.Context) {
 
     if foundKey == "" {
         // If direct lookup failed, check in all blocks for transaction_hash field
-        keys, err := s.client.GetKeys("crdt:nonce:", 1000)
+        keys, err := DB_OPs.GetKeys(s.client,"crdt:nonce:", 1000)
         if err != nil {
             log.Error().Err(err).Msg("Failed to list keys")
             c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to search for transaction"})
@@ -415,7 +415,7 @@ func (s *ImmuDBServer) getTransaction(c *gin.Context) {
         // Search for transaction hash in block data
         for _, key := range keys {
             var blockMsg BlockMessage
-            if err := s.client.ReadJSON(key, &blockMsg); err != nil {
+            if err := DB_OPs.ReadJSON(s.client,key, &blockMsg); err != nil {
                 continue
             }
 
@@ -453,10 +453,10 @@ func (s *ImmuDBServer) listTransactions(c *gin.Context) {
     log.Debug().Int("limit", limit).Msg("Listing transactions")
 
     // Try first to get transaction-specific keys
-    txKeys, _ := s.client.GetKeys("tx:", limit)
+    txKeys, _ := DB_OPs.GetKeys(s.client,"tx:", limit)
     
     // Also check regular blocks for transaction types
-    blockKeys, err := s.client.GetKeys("crdt:nonce:", limit)
+    blockKeys, err := DB_OPs.GetKeys(s.client,"crdt:nonce:", limit)
     if err != nil {
         log.Error().Err(err).Msg("Failed to list block keys")
         c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to list transactions: %v", err)})
@@ -468,7 +468,7 @@ func (s *ImmuDBServer) listTransactions(c *gin.Context) {
     // First process dedicated transaction keys
     for _, key := range txKeys {
         var txMsg BlockMessage
-        if err := s.client.ReadJSON(key, &txMsg); err != nil {
+        if err := DB_OPs.ReadJSON(s.client,key, &txMsg); err != nil {
             continue
         }
 
@@ -485,7 +485,7 @@ func (s *ImmuDBServer) listTransactions(c *gin.Context) {
     if len(transactions) < limit {
         for _, key := range blockKeys {
             var blockMsg BlockMessage
-            if err := s.client.ReadJSON(key, &blockMsg); err != nil {
+            if err := DB_OPs.ReadJSON(s.client, key, &blockMsg); err != nil {
                 continue
             }
 
@@ -593,7 +593,7 @@ func createTransactionResponse(msg BlockMessage) TransactionResponse {
 // getStats handles requests for blockchain statistics
 func (s *ImmuDBServer) getStats(c *gin.Context) {
     // Get database state
-    dbState, err := s.client.GetDatabaseState()
+    dbState, err := DB_OPs.GetDatabaseState(s.client)
     if err != nil {
         log.Error().Err(err).Msg("Failed to get database state")
         c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get database state"})
@@ -631,7 +631,7 @@ func (s *ImmuDBServer) countKeysByPrefix(prefix string) (int, error) {
     hasMore := true
 
     for hasMore {
-        keys, err := s.client.GetKeys(lastKey, batchSize)
+        keys, err := DB_OPs.GetKeys(s.client, lastKey, batchSize)
         if err != nil {
             return totalCount, err
         }
@@ -665,7 +665,7 @@ func (s *ImmuDBServer) countAllKeys() (int, error) {
     hasMore := true
 
     for hasMore {
-        keys, err := s.client.GetKeys(lastKey, batchSize)
+        keys, err := DB_OPs.GetKeys(s.client, lastKey, batchSize)
         if err != nil {
             return totalCount, err
         }
@@ -687,7 +687,7 @@ func (s *ImmuDBServer) countAllKeys() (int, error) {
 
 // healthCheck handles health check requests
 func (s *ImmuDBServer) healthCheck(c *gin.Context) {
-    isHealthy := s.client.IsHealthy()
+    isHealthy := DB_OPs.IsHealthy(s.client)
     
     var status string
     var statusCode int

@@ -7,6 +7,7 @@ import (
 	// "time"
 
 	"gossipnode/DB_OPs"
+	"gossipnode/config"
 
 	"github.com/rs/zerolog/log"
 )
@@ -302,11 +303,11 @@ func (c *Counter) Merge(other CRDT) (CRDT, error) {
 
 // Engine manages CRDT operations and persistence
 type Engine struct {
-    db *DB_OPs.ImmuClient
+    db *config.ImmuClient
 }
 
 // NewEngine creates a new CRDT engine
-func NewEngine(db *DB_OPs.ImmuClient) *Engine {
+func NewEngine(db *config.ImmuClient) *Engine {
     return &Engine{
         db: db,
     }
@@ -328,7 +329,7 @@ func (e *Engine) StoreCRDT(crdt CRDT) error {
     
     // Store with CRDT prefix
     key := "crdt:" + crdt.GetKey()
-    return e.db.Create(key, data)
+    return DB_OPs.Create(e.db, key, data)
 }
 
 // LoadCRDT retrieves a CRDT from the database
@@ -339,7 +340,7 @@ func (e *Engine) LoadCRDT(key string) (CRDT, error) {
     }
     
     // Retrieve data
-    data, err := e.db.Read(key)
+    data, err := DB_OPs.Read(e.db,key)
     if err != nil {
         return nil, fmt.Errorf("failed to read CRDT: %w", err)
     }

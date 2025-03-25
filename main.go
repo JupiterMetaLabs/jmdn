@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"mime"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,15 +16,15 @@ import (
 
 	"gossipnode/DB_OPs"
 
+	"gossipnode/Block"
 	"gossipnode/config"
 	"gossipnode/explorer"
 	fastsync "gossipnode/fastsync"
+	"gossipnode/helper"
 	"gossipnode/logging"
-	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	"gossipnode/metrics"
 	"gossipnode/node"
-    "gossipnode/Block"
 	"gossipnode/seed"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -35,7 +36,7 @@ import (
 // Global variables for easier access
 var (
     fastSyncer *fastsync.FastSync
-    immuClient *DB_OPs.ImmuClient
+    immuClient *config.ImmuClient
 )
 
 func printDashes() {
@@ -60,7 +61,7 @@ func StartExplorerServer(address string) error {
         return err
     }
     
-    messaging.SetExplorerRef(explorer)
+    helper.SetBroadcastHandler(explorer)
 
     r := explorer.SetupRoutes()
 
@@ -75,7 +76,7 @@ func initYggdrasilMessaging(ctx context.Context) {
 }
 
 // initImmuClient initializes ImmuDB client
-func initImmuClient() (*DB_OPs.ImmuClient, error) {
+func initImmuClient() (*config.ImmuClient, error) {
     client, err := DB_OPs.New(DB_OPs.WithRetryLimit(3))
     if err != nil {
         return nil, fmt.Errorf("failed to initialize ImmuDB client: %w", err)
@@ -83,7 +84,7 @@ func initImmuClient() (*DB_OPs.ImmuClient, error) {
     
     // Test connection
     // The IsHealthy method appears to return a bool, not an error
-    healthy := client.IsHealthy()
+    healthy := DB_OPs.IsHealthy(client)
     if !healthy {
         return nil, fmt.Errorf("ImmuDB connection not healthy")
     }
@@ -93,7 +94,7 @@ func initImmuClient() (*DB_OPs.ImmuClient, error) {
 }
 
 // initFastSync initializes the FastSync service
-func initFastSync(n *config.Node, client *DB_OPs.ImmuClient) *fastsync.FastSync {
+func initFastSync(n *config.Node, client *config.ImmuClient) *fastsync.FastSync {
     fs := fastsync.NewFastSync(n.Host, client)
     log.Info().Msg("FastSync service initialized")
     return fs
@@ -152,7 +153,7 @@ func main() {
         fmt.Printf("Failed to initialize ImmuDB client: %v\n", err)
         return
     }
-    defer immuClient.Close()
+    defer DB_OPs.Close(immuClient)
 
     // Initialize FastSync service
     fastSyncer = initFastSync(n, immuClient)
@@ -217,6 +218,11 @@ func main() {
     }
 
     if *explorerPort > 0 {
+        mime.AddExtensionType(".css", "text/css")
+        mime.AddExtensionType(".js", "application/javascript")
+        mime.AddExtensionType(".html", "text/html")
+        mime.AddExtensionType(".svg", "image/svg+xml")
+        mime.AddExtensionType(".json", "application/json")
         go func() {
             log.Info().Msgf("Starting blockchain explorer on port %d", *explorerPort)
             fmt.Printf("\nBlockchain explorer available at http://localhost:%d\n", *explorerPort)
@@ -425,7 +431,7 @@ func main() {
                 }
                 
                 // Get our database state before sync
-                state, err := immuClient.GetDatabaseState()
+                state, err := DB_OPs.GetDatabaseState(immuClient)
                 if err != nil {
                     fmt.Printf("Failed to get database state: %v\n", err)
                     continue
@@ -463,7 +469,7 @@ func main() {
                     continue
                 }
                 // Get post-sync state
-                newState, err := immuClient.GetDatabaseState()
+                newState, err := DB_OPs.GetDatabaseState(immuClient)
                 if err != nil {
                     fmt.Printf("Failed to get database state after sync: %v\n", err)
                     continue
@@ -474,7 +480,7 @@ func main() {
                 printDashes()
 
 			case "dbstate":
-				state, err := immuClient.GetDatabaseState()
+				state, err := DB_OPs.GetDatabaseState(immuClient)
 				if err != nil {
 					fmt.Printf("Failed to get database state: %v\n", err)
 					continue
@@ -491,7 +497,7 @@ func main() {
 				var hasMoreKeys = true
 				
 				for hasMoreKeys {
-					keys, err := immuClient.GetKeys(lastKey, maxKeysPerBatch)
+					keys, err := DB_OPs.GetKeys(immuClient,lastKey, maxKeysPerBatch)
 					if err != nil {
 						fmt.Printf("Failed to count database entries: %v\n", err)
 						hasMoreKeys = false
@@ -499,7 +505,7 @@ func main() {
 					}
 					
 					count := len(keys)
-					totalKeys += count
+					totalKeys += count 
 					
 					// If we got fewer keys than our limit, we've reached the end
 					if count < maxKeysPerBatch {
