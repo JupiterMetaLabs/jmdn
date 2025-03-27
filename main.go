@@ -33,6 +33,12 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+
+// Simple helper to print the CLI prompt in color
+func printPrompt() {
+    fmt.Printf(config.ColorGreen + ">>> " + config.ColorReset)
+}
+
 // Global variables for easier access
 var (
     fastSyncer *fastsync.FastSync
@@ -72,7 +78,7 @@ func StartExplorerServer(address string) error {
 // initYggdrasilMessaging initializes the Yggdrasil messaging system
 func initYggdrasilMessaging(ctx context.Context) {
     directMSG.StartYggdrasilListener(ctx)
-    fmt.Printf("Yggdrasil messaging service started on port %d\n", directMSG.YggdrasilPort)
+    fmt.Println(config.ColorGreen+"Yggdrasil messaging service started on port:"+config.ColorReset, directMSG.YggdrasilPort)
 }
 
 // initImmuClient initializes ImmuDB client
@@ -165,7 +171,12 @@ func main() {
     }
 
     // Display node identity
-    fmt.Printf("Node ID: %s\n", n.Host.ID().String())
+    ipv6, err := helper.GetTun0GlobalIPv6()
+    if err != nil {
+        log.Printf("Error getting tun0 IPv6 address: %v", err)
+    }
+    fmt.Println(config.ColorGreen+"Yggdrasil Global IPv6 Address:"+config.ColorReset, ipv6)
+    fmt.Println(config.ColorGreen+"Node ID:"+config.ColorReset, n.Host.ID().String())
     fmt.Println("Addresses:")
     for _, addr := range n.Host.Addrs() {
         fmt.Printf("  %s/p2p/%s\n", addr, n.Host.ID().String())
@@ -174,7 +185,7 @@ func main() {
     // Start metrics server (just once)
     metricsAddr := ":" + *metricsPort
     metrics.StartMetricsServer(metricsAddr)
-    fmt.Printf("\nMetrics available at http://localhost%s/metrics\n", metricsAddr)
+    fmt.Printf(config.ColorGreen+"\nMetrics available at "+ config.ColorReset+ "http://localhost%s/metrics\n", metricsAddr)
 
     // Initialize node manager
     nodeManager, err = node.NewNodeManager(n)
@@ -248,19 +259,20 @@ func main() {
         }()
     }
 
-    fmt.Println("\nCommands:")
-    fmt.Println("  msg <peer_multiaddr> <message>  - Send a message to a peer via libp2p")
+    fmt.Println("\n" + config.ColorCyan + "Available Commands:" + config.ColorReset)
+    fmt.Println("  msg <peer_multiaddr> <message>   - Send a message to a peer via libp2p")
     fmt.Println("  ygg <peer_multiaddr|ygg_ipv6> <message> - Send a message using Yggdrasil")
     fmt.Println("  file <peer_multiaddr> <filepath> - Send a file to a peer")
-    fmt.Println("  addpeer <peer_multiaddr> - Add a peer to managed nodes")
-    fmt.Println("  removepeer <peer_id> - Remove a peer from managed nodes")
-    fmt.Println("  listpeers - Show all managed peers")
-    fmt.Println("  peers - Request updated peer list from seed")
-    fmt.Println("  stats - Show messaging statistics")
-    fmt.Println("  broadcast <message> - Broadcast a message to all connected peers")
-    fmt.Println("  fastsync <peer_multiaddr> - Fast sync blockchain data with a peer")
-    fmt.Println("  dbstate - Show current ImmuDB database state")
-    fmt.Println("  exit - Exit the program")
+    fmt.Println("  addpeer <peer_multiaddr>         - Add a peer to managed nodes")
+    fmt.Println("  removepeer <peer_id>             - Remove a peer from managed nodes")
+    fmt.Println("  listpeers                         - Show all managed peers")
+    fmt.Println("  peers                             - Request updated peer list from seed")
+    fmt.Println("  stats                             - Show messaging statistics")
+    fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
+    fmt.Println("  fastsync <peer_multiaddr>        - Fast sync blockchain data with a peer")
+    fmt.Println("  dbstate                           - Show current ImmuDB database state")
+    fmt.Println("  exit                              - Exit the program\n")
+
 
     var wg sync.WaitGroup
     wg.Add(1)
@@ -271,7 +283,7 @@ func main() {
         defer fmt.Println("Exiting...")
         fmt.Println()
         scanner := bufio.NewScanner(os.Stdin)
-        fmt.Print(">>> ")
+        printPrompt()
         for scanner.Scan() {
             input := strings.TrimSpace(scanner.Text())
             if input == "exit" {
@@ -525,7 +537,7 @@ func main() {
                 fmt.Println("Unknown command")
             }
 
-            fmt.Print(">>> ")
+            printPrompt()
         }
     }()
 

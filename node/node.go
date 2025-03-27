@@ -32,6 +32,9 @@ type PeerConfig struct {
 const peerFile = "./config/peer.json"
 
 func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
+    var colorgreen = config.ColorGreen
+    var colorreset = config.ColorReset
+
     var config PeerConfig
 
     // Check if peer.json exists
@@ -65,7 +68,7 @@ func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
                 return nil, "", fmt.Errorf("failed to derive peer ID: %v", err)
             }
             
-            fmt.Printf("Loaded existing peer ID: %s\n", peerID.String())
+            fmt.Println(colorgreen+"Loaded existing peer ID:"+colorreset, peerID.String())
             return privKey, peerID, nil
         }
     }

@@ -1,18 +1,19 @@
 package explorer
 
 import (
-    "encoding/json"
-    "fmt"
-    "net/http"
-    "strconv"
-    "strings"
-    "time"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 
-    "github.com/gin-gonic/gin"
-    "github.com/rs/zerolog/log"
+	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 
-    "gossipnode/DB_OPs"
-    "gossipnode/config"
+	"gossipnode/DB_OPs"
+	"gossipnode/config"
 )
 
 // ImmuDBServer represents the ImmuDB API server
@@ -87,6 +88,13 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 
 // setupRoutes configures the API routes
 func (s *ImmuDBServer) setupRoutes() {
+    f, err := os.OpenFile("logs/gin.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+    if err != nil {
+        log.Fatal().Err(err).Msg("Error opening log file")
+    }
+    gin.DefaultWriter = f
+    gin.DefaultErrorWriter = f
+
     // Add CORS middleware
     s.router.Use(cors())
 

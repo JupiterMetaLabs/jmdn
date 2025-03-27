@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"net/http"
 	"sync"
+    "os"
     "gossipnode/config"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
@@ -281,6 +282,16 @@ func SetHostInstance(h host.Host) {
 
 
 func Startserver(port int, h host.Host) {
+    // Open or create a log file in append mode
+    f, err := os.OpenFile("logs/transactions.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+    if err != nil {
+        log.Fatalf("Unable to open log file: %v", err)
+    }
+    defer f.Close()
+    
+    log.SetOutput(f)
+    gin.DefaultWriter = f
+    gin.DefaultErrorWriter = f
 
     router := gin.Default()
     SetHostInstance(h)

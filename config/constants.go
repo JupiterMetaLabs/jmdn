@@ -11,6 +11,15 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
+// Add ANSI color constants
+const (
+    ColorReset  = "\033[0m"
+    ColorGreen  = "\033[1;32m"
+    ColorCyan   = "\033[1;36m"
+    ColorYellow = "\033[1;33m"
+    ColorRed    = "\033[1;31m"
+)
+
 // Protocol IDs for message and file sharing
 const (
 	MessageProtocol       protocol.ID = "/custom/message/1.0.0"
