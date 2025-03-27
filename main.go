@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	
 	"strings"
 	"sync"
 	"syscall"
@@ -32,7 +33,6 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/rs/zerolog/log"
 )
-
 
 // Simple helper to print the CLI prompt in color
 func printPrompt() {
@@ -119,6 +119,8 @@ func main() {
     explorerPort := flag.Int("explorer", 0, "Run blockchain explorer on specified port (0 = disabled)")
     apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
     blockgen := flag.Int("blockgen", 0, "Run Block creator API on specified port (0 = disabled)")
+    mempoolgRPC := flag.String("mempool", "localhost:15051", "Mempool gRPC server address")
+
     flag.Parse()
 
     // Initialize logger
@@ -181,6 +183,16 @@ func main() {
     for _, addr := range n.Host.Addrs() {
         fmt.Printf("  %s/p2p/%s\n", addr, n.Host.ID().String())
     }
+
+    if mempoolgRPC == nil {
+        log.Printf("No mempool gRPC address provided; cannot proceed.")
+    }
+    
+    address := *mempoolgRPC
+    if err := Block.InitMempoolClient(address); err != nil {
+        log.Printf("Failed to connect to mempool: %v", err)
+    }
+    defer Block.CloseMempoolClient()
 
     // Start metrics server (just once)
     metricsAddr := ":" + *metricsPort

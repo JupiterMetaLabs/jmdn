@@ -205,7 +205,7 @@ func (nm *NodeManager) loadManagedPeers() error {
         Float64("duration_seconds", duration).
         Msg("Loaded managed peers from database")
     
-    fmt.Println("Loaded %d managed peers from database in %.2f seconds\n", loadedCount, duration)
+    fmt.Printf("Loaded %d managed peers from database in %.2f seconds\n", loadedCount, duration)
     
     return nil
 }

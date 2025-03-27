@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package proto;
+
+option go_package = "gossipnode/Mempool/proto";
+
+import "google/protobuf/empty.proto";
+
+// Mempool service definition
+service MempoolService {
+  // Submit a single transaction to the mempool
+  rpc SubmitTransaction(Transaction) returns (SubmitResponse);
+  
+  // Submit multiple transactions to the mempool
+  rpc SubmitTransactions(TransactionBatch) returns (BatchSubmitResponse);
+  
+  // Get a specific transaction by hash
+  rpc GetTransaction(GetTransactionRequest) returns (Transaction);
+  
+  // Get pending transactions with priority ordering
+  rpc GetPendingTransactions(GetPendingRequest) returns (TransactionBatch);
+  
+  // Get mempool stats
+  rpc GetMempoolStats(google.protobuf.Empty) returns (MempoolStats);
+}
+
+// Transaction represents a transaction in the mempool
+message Transaction {
+  string hash = 1;
+  string from = 2;
+  string to = 3;
+  string value = 4;
+  string type = 5;
+  string timestamp = 6;
+  string chain_id = 7;
+  string nonce = 8;
+  string gas_limit = 9;
+  string max_fee = 10;
+  string max_priority_fee = 11;
+  string data = 12;
+}
+
+// TransactionBatch represents a batch of transactions
+message TransactionBatch {
+  repeated Transaction transactions = 1;
+}
+
+// SubmitResponse is the response for submitting a transaction
+message SubmitResponse {
+  bool success = 1;
+  string hash = 2;
+  string error = 3;
+}
+
+// BatchSubmitResponse is the response for submitting multiple transactions
+message BatchSubmitResponse {
+  bool success = 1;
+  int32 count = 2;
+  repeated string hashes = 3;
+  string error = 4;
+}
+
+// GetTransactionRequest is used to request a specific transaction
+message GetTransactionRequest {
+  string hash = 1;
+}
+
+// GetPendingRequest is used to request pending transactions
+message GetPendingRequest {
+  int32 limit = 1;
+}
+
+// Update MempoolStats message in your proto file
+message MempoolStats {
+  int32 queue_count = 1;
+  int32 db_count = 2;
+  string merkle_root = 3;
+}

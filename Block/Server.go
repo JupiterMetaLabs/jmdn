@@ -2,7 +2,7 @@ package Block
 
 import (
 	"fmt"
-	"gossipnode/messaging"
+	// "gossipnode/messaging"
 	"log"
 	"math/big"
 	"net/http"
@@ -202,12 +202,21 @@ func generateTransactions(c *gin.Context) {
 				TransactionHash: legacyTxHash,
 			},
 		}
+        // go func(){
+        //     err := messaging.PropagateTransaction(globalHost, legacyTx, legacyTxHash)
+        //     if err != nil {
+        //         log.Printf("Error propagating transaction to network: %v", err)
+        //     } else {
+        //         log.Printf("Transaction %s successfully propagated to network", legacyTxHash)
+        //     }
+        // }()
+         // Submit the transaction to the mempool
         go func(){
-            err := messaging.PropagateTransaction(globalHost, legacyTx, legacyTxHash)
+            err := SubmitToMempool(legacyTx, legacyTxHash)
             if err != nil {
-                log.Printf("Error propagating transaction to network: %v", err)
+                log.Printf("Error submitting transaction to mempool: %v", err)
             } else {
-                log.Printf("Transaction %s successfully propagated to network", legacyTxHash)
+                log.Printf("Transaction %s successfully submitted to mempool", legacyTxHash)
             }
         }()
 	}else{
@@ -258,15 +267,22 @@ func generateTransactions(c *gin.Context) {
 				TransactionHash: eip1559TxHash,
 			}
 
+            // go func() {
+            //     err := messaging.PropagateTransaction(globalHost, eip1559Tx, eip1559TxHash)
+            //     if err != nil {
+            //         log.Printf("Error propagating transaction to network: %v", err)
+            //     } else {
+            //         log.Printf("Transaction %s successfully propagated to network", eip1559TxHash)
+            //     }
+            // }()
             go func() {
-                err := messaging.PropagateTransaction(globalHost, eip1559Tx, eip1559TxHash)
+                err := SubmitToMempool(eip1559Tx, eip1559TxHash)
                 if err != nil {
-                    log.Printf("Error propagating transaction to network: %v", err)
+                    log.Printf("Error submitting transaction to mempool: %v", err)
                 } else {
-                    log.Printf("Transaction %s successfully propagated to network", eip1559TxHash)
+                    log.Printf("Transaction %s successfully submitted to mempool", eip1559TxHash)
                 }
             }()
-            
 		}
 	}        
         c.JSON(http.StatusOK, response)
