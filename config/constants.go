@@ -46,6 +46,11 @@ const (
 	MaxHops           = 5
 )
 
+const (
+    DIDPropagationProtocol protocol.ID = "/gossipnode/did/1.0.0"
+    MaxDIDHops             = 7
+)
+
 // Network addresses
 const (
 	IP6TCP  = "/ip6/::/tcp/15000"

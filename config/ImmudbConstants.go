@@ -20,6 +20,9 @@ const (
 	DBPassword      = "immudb"
 	DBName          = "defaultdb"
 	Table		   = "BlockchainDB"
+
+	// Constants for the accounts database
+	AccountsDBName = "AccountsDB"
 	
 	// Operation settings
 	DefaultScanLimit = 100

@@ -460,7 +460,4 @@ func logMessageEvent(event MessageEvent) {
 func init() {
     // Initialize the logger
     log.Logger = log.Output(zerolog.ConsoleWriter{Out: io.Discard})
-    
-    // This would typically be in your main application to enable console output
-    // log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 }

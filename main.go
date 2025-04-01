@@ -9,14 +9,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"gossipnode/DB_OPs"
-
 	"gossipnode/Block"
 	"gossipnode/config"
 	"gossipnode/explorer"
@@ -24,6 +22,8 @@ import (
 	"gossipnode/helper"
 	"gossipnode/logging"
 	"gossipnode/messaging/directMSG"
+    "gossipnode/DID"
+    "gossipnode/messaging"
 	"gossipnode/metrics"
 	"gossipnode/node"
 	"gossipnode/seed"
@@ -120,6 +120,7 @@ func main() {
     apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
     blockgen := flag.Int("blockgen", 0, "Run Block creator API on specified port (0 = disabled)")
     mempoolgRPC := flag.String("mempool", "localhost:15051", "Mempool gRPC server address")
+    DIDgRPC := flag.String("did", "localhost:15052", "DID gRPC server address")
 
     flag.Parse()
 
@@ -207,6 +208,22 @@ func main() {
     }
     nodeManager.StartHeartbeat(*heartbeatInterval)
     defer nodeManager.Shutdown()
+
+    // fmt.Println(config.ColorGreen + "Node manager started" + config.ColorReset)
+    // Initialize DID propagation
+    if err := messaging.InitDIDPropagation(); err != nil {
+        fmt.Printf("Error initializing DID propagation: %v", err)
+    }
+    defer messaging.CloseAccountsClient()
+
+    n.Host.SetStreamHandler(config.DIDPropagationProtocol, messaging.HandleMessageStream)
+
+    go func(){
+        fmt.Printf("Starting DID gRPC server on %s", *DIDgRPC)
+        if err := DID.StartDIDServer(n.Host, *DIDgRPC); err != nil {
+            fmt.Printf("Failed to start DID gRPC server: %v", err)
+        }
+    }()
 
     if *blockgen > 0 {
         go func() {
