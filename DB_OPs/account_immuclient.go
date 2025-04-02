@@ -48,13 +48,14 @@ func NewAccountsClient() (*config.ImmuClient, error) {
 	if err := os.MkdirAll(config.State_Path_Hidden, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create ImmuDB state directory: %w", err)
 	}
-	
+
     // Connect to ImmuDB with a longer timeout for database operations
     opts := client.DefaultOptions().
         WithAddress(config.DBAddress).
         WithPort(config.DBPort).
 		WithDir(config.State_Path_Hidden).
-        WithMaxRecvMsgSize(1024 * 1024 * 20) // 20MB message size
+        WithMaxRecvMsgSize(1024 * 1024 * 20). // 20MB message sizeo
+		WithDisableIdentityCheck(true) // Add this line
 
     c, err := client.NewImmuClient(opts)
     if err != nil {
