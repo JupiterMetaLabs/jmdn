@@ -19,10 +19,10 @@ const (
 	DBUsername      = "immudb"
 	DBPassword      = "immudb"
 	DBName          = "defaultdb"
-	Table		   = "BlockchainDB"
+	State_Path_Hidden		   = "./.immudb_state"
 
 	// Constants for the accounts database
-	AccountsDBName = "AccountsDB"
+	AccountsDBName = "accountsdb"
 	
 	// Operation settings
 	DefaultScanLimit = 100
@@ -48,6 +48,7 @@ type ImmuClient struct {
 	RetryLimit  int
 	IsConnected bool
 	Logger      *AsyncLogger
+	Database  	string
 }
 
 // BlockHasher for generating block hashes

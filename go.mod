@@ -44,8 +44,6 @@ require (
 	github.com/holiman/uint256 v1.3.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
-	github.com/libp2p/go-nat v0.2.0 // indirect
-	github.com/libp2p/go-yamux/v4 v4.0.1 // indirect
 	github.com/libp2p/go-yamux/v5 v5.0.0 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect

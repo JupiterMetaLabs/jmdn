@@ -61,7 +61,11 @@ func NewAsyncLogger() (*config.AsyncLogger, error) {
 	return asyncLogger, nil
 }
 
-
+func WithDatabase(dbName string) ImmuClientOption {
+    return func(ic *config.ImmuClient) {
+        ic.Database = dbName
+    }
+}
 
 // ImmuClientOption defines functional options for ImmuClient configuration
 type ImmuClientOption func(*config.ImmuClient)
@@ -113,7 +117,13 @@ func New(options ...ImmuClientOption) (*config.ImmuClient, error) {
 
 // connect establishes a connection to ImmuDB
 func connect(ic *config.ImmuClient) error {
-    config.Info(ic.Logger, "Connecting to ImmuDB at %s:%d", config.DBAddress, config.DBPort)
+    // If database name is not set, use default
+    if ic.Database == "" {
+        ic.Database = config.DBName
+    }
+    
+    config.Info(ic.Logger, "Connecting to ImmuDB at %s:%d for database %s", 
+        config.DBAddress, config.DBPort, ic.Database)
     
     opts := client.DefaultOptions().
         WithAddress(config.DBAddress).
@@ -144,19 +154,26 @@ func connect(ic *config.ImmuClient) error {
     ctx = metadata.NewOutgoingContext(ctx, md)
     
     // Select database
-    config.Info(ic.Logger, "Selecting database: %s", config.DBName)
-    _, err = c.UseDatabase(ctx, &schema.Database{DatabaseName: config.DBName})
+    config.Info(ic.Logger, "Selecting database: %s", ic.Database)
+    dbResp, err := c.UseDatabase(ctx, &schema.Database{DatabaseName: ic.Database})
     if err != nil {
         cancel()
         c.Disconnect()
-        return fmt.Errorf("failed to use database %s: %w", config.DBName, err)
+        return fmt.Errorf("failed to use database %s: %w", ic.Database, err)
     }
+    
+    // Update token with database-specific token
+    ic.Token = dbResp.Token
+    
+    // Create new context with the updated token
+    md = metadata.Pairs("authorization", ic.Token)
+    ctx = metadata.NewOutgoingContext(ic.BaseCtx, md)
 
     ic.Client = c
     ic.Ctx = ctx
     ic.Cancel = cancel
     ic.IsConnected = true
-    config.Info(ic.Logger, "Successfully connected to ImmuDB")
+    config.Info(ic.Logger, "Successfully connected to ImmuDB database: %s", ic.Database)
 
     return nil
 }

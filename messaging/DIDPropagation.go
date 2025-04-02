@@ -46,25 +46,33 @@ var (
 )
 
 // InitDIDPropagation initializes the DID propagation system
-func InitDIDPropagation() error {
+func InitDIDPropagation(existingClient *config.ImmuClient) error {
+    fmt.Println("Initializing DID propagation system...")
     var initErr error
     
     didOnce.Do(func() {
         // Initialize the bloom filter for DID messages
         didFilter = bloom.NewWithEstimates(100000, 0.01)
         
-        // Create accounts database client
-        client, err := DB_OPs.NewAccountsClient()
-        if err != nil {
-            initErr = fmt.Errorf("failed to create accounts database client: %w", err)
-            return
+        if existingClient != nil {
+            // Use the provided client instead of creating a new one
+            accountsMutex.Lock()
+            accountsClient = existingClient
+            accountsMutex.Unlock()
+            log.Info().Msg("DID propagation system initialized with existing database client")
+        } else {
+            // Create accounts database client if none provided
+            client, err := DB_OPs.NewAccountsClient()
+            if err != nil {
+                initErr = fmt.Errorf("failed to create accounts database client: %w", err)
+                return
+            }
+            
+            accountsMutex.Lock()
+            accountsClient = client
+            accountsMutex.Unlock()
+            log.Info().Msg("DID propagation system initialized with new database client")
         }
-        
-        accountsMutex.Lock()
-        accountsClient = client
-        accountsMutex.Unlock()
-        
-        log.Info().Msg("DID propagation system initialized")
     })
     
     return initErr

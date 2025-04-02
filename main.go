@@ -14,20 +14,21 @@ import (
 	"syscall"
 	"time"
 
-	"gossipnode/DB_OPs"
 	"gossipnode/Block"
+	"gossipnode/DB_OPs"
+	"gossipnode/DID"
 	"gossipnode/config"
 	"gossipnode/explorer"
 	fastsync "gossipnode/fastsync"
 	"gossipnode/helper"
 	"gossipnode/logging"
+	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
-    "gossipnode/DID"
-    "gossipnode/messaging"
 	"gossipnode/metrics"
 	"gossipnode/node"
 	"gossipnode/seed"
 
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	_ "github.com/mattn/go-sqlite3"
 	ma "github.com/multiformats/go-multiaddr"
@@ -45,6 +46,11 @@ var (
     immuClient *config.ImmuClient
 )
 
+var (
+    mainDBClient *config.ImmuClient // For main database operations
+    didDBClient  *config.ImmuClient // For DID/accounts operations
+)
+
 func printDashes() {
     fmt.Println("\n", strings.Repeat("-", 50), "\n")
 }
@@ -58,6 +64,22 @@ func StartAPIServer(address string) error {
     
     log.Info().Str("address", address).Msg("Starting ImmuDB API server")
     return server.Start(address)
+}
+
+// Update this function:
+
+func startDIDServer(h host.Host, address string) error {
+    // First, initialize the DID propagation system with our didDBClient
+    err := messaging.InitDIDPropagation(didDBClient)
+    if err != nil {
+        log.Warn().Err(err).Msg("Failed to initialize DID propagation with ImmuDB. Starting in standalone mode.")
+        // We'll continue with a standalone server
+    } else {
+        log.Info().Msg("DID propagation initialized successfully")
+    }
+    
+    // Start the DID server with our existing client
+    return DID.StartDIDServer(h, address, didDBClient)
 }
 
 // StartExplorerServer starts the explorer server on the given address
@@ -81,21 +103,28 @@ func initYggdrasilMessaging(ctx context.Context) {
     fmt.Println(config.ColorGreen+"Yggdrasil messaging service started on port:"+config.ColorReset, directMSG.YggdrasilPort)
 }
 
-// initImmuClient initializes ImmuDB client
-func initImmuClient() (*config.ImmuClient, error) {
-    client, err := DB_OPs.New(DB_OPs.WithRetryLimit(3))
+// Initialize ImmuDB client for main DB
+func initMainDBClient() (*config.ImmuClient, error) {
+    client, err := DB_OPs.New(
+        DB_OPs.WithRetryLimit(3),
+        DB_OPs.WithDatabase(config.DBName),
+    )
     if err != nil {
-        return nil, fmt.Errorf("failed to initialize ImmuDB client: %w", err)
+        return nil, fmt.Errorf("failed to initialize main database client: %w", err)
     }
     
-    // Test connection
-    // The IsHealthy method appears to return a bool, not an error
-    healthy := DB_OPs.IsHealthy(client)
-    if !healthy {
-        return nil, fmt.Errorf("ImmuDB connection not healthy")
+    log.Info().Str("database", config.DBName).Msg("Main ImmuDB client initialized")
+    return client, nil
+}
+
+// Initialize ImmuDB client for accounts/DID
+func initDIDDBClient() (*config.ImmuClient, error) {
+    client, err := DB_OPs.NewAccountsClient()
+    if err != nil {
+        return nil, fmt.Errorf("failed to initialize accounts database client: %w", err)
     }
     
-    log.Info().Msg("ImmuDB client initialized successfully")
+    log.Info().Str("database", config.AccountsDBName).Msg("DID/Accounts ImmuDB client initialized")
     return client, nil
 }
 
@@ -156,13 +185,21 @@ func main() {
     }
     defer n.Host.Close()
 
-    // Initialize ImmuDB client
-    immuClient, err = initImmuClient()
+    // Initialize main database client
+    immuClient, err = initMainDBClient()
     if err != nil {
-        fmt.Printf("Failed to initialize ImmuDB client: %v\n", err)
-        return
+        log.Error().Err(err).Msg("Failed to initialize main database client")
+        // Handle error or continue with degraded functionality
     }
     defer DB_OPs.Close(immuClient)
+
+    // Initialize DID database client - can be done later if needed
+    didDBClient, err = initDIDDBClient()
+    if err != nil {
+        log.Error().Err(err).Msg("Failed to initialize DID database client")
+        // Handle error or continue with degraded functionality
+    }
+    defer DB_OPs.Close(didDBClient)
 
     // Initialize FastSync service
     fastSyncer = initFastSync(n, immuClient)
@@ -209,19 +246,15 @@ func main() {
     nodeManager.StartHeartbeat(*heartbeatInterval)
     defer nodeManager.Shutdown()
 
-    // fmt.Println(config.ColorGreen + "Node manager started" + config.ColorReset)
-    // Initialize DID propagation
-    if err := messaging.InitDIDPropagation(); err != nil {
-        fmt.Printf("Error initializing DID propagation: %v", err)
-    }
-    defer messaging.CloseAccountsClient()
+    // Initialize DID propagation handler
+    n.Host.SetStreamHandler(config.DIDPropagationProtocol, messaging.HandleDIDStream)
 
-    n.Host.SetStreamHandler(config.DIDPropagationProtocol, messaging.HandleMessageStream)
-
-    go func(){
-        fmt.Printf("Starting DID gRPC server on %s", *DIDgRPC)
-        if err := DID.StartDIDServer(n.Host, *DIDgRPC); err != nil {
-            fmt.Printf("Failed to start DID gRPC server: %v", err)
+    // We'll initialize the DID system in the DID server to avoid blocking main
+    go func() {
+        log.Info().Str("address", *DIDgRPC).Msg("Starting DID gRPC server")
+        if err := startDIDServer(n.Host, *DIDgRPC); err != nil {
+            fmt.Println("Failed to start DID gRPC server:", err)
+            log.Error().Err(err).Msg("Failed to start DID gRPC server")
         }
     }()
 
@@ -229,7 +262,6 @@ func main() {
         go func() {
             log.Info().Msgf("Starting block generator on port %d", *blockgen)
             fmt.Printf("\nBlock generator available at http://localhost:%d\n", *blockgen)
-            // Start the block generator
             Block.Startserver(*blockgen, n.Host)
         }()
     }
@@ -300,6 +332,8 @@ func main() {
     fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
     fmt.Println("  fastsync <peer_multiaddr>        - Fast sync blockchain data with a peer")
     fmt.Println("  dbstate                           - Show current ImmuDB database state")
+    fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
+    fmt.Println("  getDID <did>                      - Get a DID document from the network")
     fmt.Println("  exit                              - Exit the program\n")
 
 
@@ -519,6 +553,43 @@ func main() {
                 fmt.Printf("Sync completed in %v\n", time.Since(startTime))
                 fmt.Printf("New state: TxID=%d, Root=%x\n", newState.TxId, newState.TxHash)
                 printDashes()
+            
+            case "propagateDID":
+                if len(parts) != 3 {
+                    fmt.Println("Usage: propagateDID <did> <public_key>")
+                    continue
+                }
+                did := parts[1]
+                publicKey := parts[2]
+                
+                fmt.Printf("Propagating DID %s with public key %s to the network...\n", did, publicKey)
+                
+                err := messaging.PropagateDID(n.Host, did, publicKey)
+                if err != nil {
+                    fmt.Printf("Failed to propagate DID: %v\n", err)
+                } else {
+                    fmt.Println("DID propagated successfully to all connected peers")
+                }
+            
+            case "getDID":
+                if len(parts) != 2 {
+                    fmt.Println("Usage: getDID <did>")
+                    continue
+                }
+                did := parts[1]
+                
+                doc, err := messaging.GetDID(did)
+                if err != nil {
+                    fmt.Printf("Failed to retrieve DID %s: %v\n", did, err)
+                    continue
+                }
+                
+                fmt.Println("DID Document:")
+                fmt.Printf("  DID: %s\n", doc.DID)
+                fmt.Printf("  Public Key: %s\n", doc.PublicKey)
+                fmt.Printf("  Balance: %s\n", doc.Balance)
+                fmt.Printf("  Created: %s\n", time.Unix(doc.CreatedAt, 0).Format(time.RFC3339))
+                fmt.Printf("  Updated: %s\n", time.Unix(doc.UpdatedAt, 0).Format(time.RFC3339))
 
 			case "dbstate":
 				state, err := DB_OPs.GetDatabaseState(immuClient)
