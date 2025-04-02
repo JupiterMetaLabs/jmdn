@@ -4,4 +4,4 @@ config/peer.json
 DB/*.db
 yggdrasil
 Account.json
-.immudb-state/*
+.immudb_state/*
