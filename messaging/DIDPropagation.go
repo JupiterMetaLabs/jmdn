@@ -79,9 +79,9 @@ func InitDIDPropagation(existingClient *config.ImmuClient) error {
 }
 
 // generateDIDMessageID creates a unique ID for a DID message
-func generateDIDMessageID(sender, did string, timestamp int64) string {
+func generateDIDMessageID(sender, did string) string {
     hasher := sha256.New()
-    hasher.Write([]byte(fmt.Sprintf("%s-%s-%d", sender, did, timestamp)))
+    hasher.Write([]byte(fmt.Sprintf("%s-%s-%d", sender, did)))
     hash := base64.URLEncoding.EncodeToString(hasher.Sum(nil))
     return hash[:16] // Return first 16 chars for brevity
 }
@@ -319,7 +319,7 @@ func PropagateDID(h host.Host, did string, publicKey string) error {
     }
     
     // Generate a unique ID based on sender, DID and timestamp
-    msg.ID = generateDIDMessageID(msg.Sender, did, now)
+    msg.ID = generateDIDMessageID(msg.Sender, did)
     
     // First, add the DID to our own database
     storeDIDInDB(msg)
