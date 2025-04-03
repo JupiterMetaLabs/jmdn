@@ -782,3 +782,109 @@ func Ping(ic *config.ImmuClient) error {
 		return nil
 	})
 }
+
+
+// Add these functions to immuclient.go
+
+// StoreZKBlock stores a complete ZK block in the main database
+func StoreZKBlock(mainDBClient *config.ImmuClient, block *config.ZKBlock) error {
+    // Create a unique key for the block
+    blockKey := fmt.Sprintf("block:%d", block.BlockNumber)
+    
+    // Store the full block data
+    if err := SafeCreate(mainDBClient, blockKey, block); err != nil {
+        return fmt.Errorf("failed to store block %d: %w", block.BlockNumber, err)
+    }
+    
+    // Also store by hash for lookups
+    hashKey := fmt.Sprintf("block:hash:%s", block.BlockHash.Hex())
+    if err := Create(mainDBClient, hashKey, blockKey); err != nil {
+        return fmt.Errorf("failed to store block hash mapping: %w", err)
+    }
+    
+    // Store the latest block number for quick access
+    if err := Create(mainDBClient, "latest_block", block.BlockNumber); err != nil {
+        return fmt.Errorf("failed to update latest block: %w", err)
+    }
+    
+    // Store each transaction hash -> block number mapping for lookups
+    for _, tx := range block.Transactions {
+        txKey := fmt.Sprintf("tx:%s", tx.Hash)
+        if err := Create(mainDBClient, txKey, block.BlockNumber); err != nil {
+            return fmt.Errorf("failed to store tx mapping for %s: %w", tx.Hash, err)
+        }
+    }
+    
+    config.Info(mainDBClient.Logger, "Successfully stored block %d with hash %s and %d transactions", 
+        block.BlockNumber, block.BlockHash.Hex(), len(block.Transactions))
+    
+    return nil
+}
+
+// GetZKBlockByNumber retrieves a ZK block by its number
+func GetZKBlockByNumber(mainDBClient *config.ImmuClient, blockNumber uint64) (*config.ZKBlock, error) {
+    blockKey := fmt.Sprintf("block:%d", blockNumber)
+    
+    block := new(config.ZKBlock)
+    if err := SafeReadJSON(mainDBClient, blockKey, block); err != nil {
+        return nil, fmt.Errorf("failed to retrieve block %d: %w", blockNumber, err)
+    }
+    
+    return block, nil
+}
+
+// GetZKBlockByHash retrieves a ZK block by its hash
+func GetZKBlockByHash(mainDBClient *config.ImmuClient, blockHash string) (*config.ZKBlock, error) {
+    // First get the block number from the hash
+    hashKey := fmt.Sprintf("block:hash:%s", blockHash)
+    
+    blockKeyBytes, err := Read(mainDBClient, hashKey)
+    if err != nil {
+        return nil, fmt.Errorf("failed to find block with hash %s: %w", blockHash, err)
+    }
+    
+    // Then get the block using the block key
+    blockKey := string(blockKeyBytes)
+    
+    block := new(config.ZKBlock)
+    if err := SafeReadJSON(mainDBClient, blockKey, block); err != nil {
+        return nil, fmt.Errorf("failed to retrieve block by hash %s: %w", blockHash, err)
+    }
+    
+    return block, nil
+}
+
+// GetLatestBlockNumber returns the latest block number
+func GetLatestBlockNumber(mainDBClient *config.ImmuClient) (uint64, error) {
+    latestBytes, err := Read(mainDBClient, "latest_block")
+    if err != nil {
+        if err == ErrNotFound {
+            return 0, nil // No blocks yet
+        }
+        return 0, fmt.Errorf("failed to get latest block: %w", err)
+    }
+    
+    var blockNumber uint64
+    if err := json.Unmarshal(latestBytes, &blockNumber); err != nil {
+        return 0, fmt.Errorf("failed to parse latest block number: %w", err)
+    }
+    
+    return blockNumber, nil
+}
+
+// GetTransactionBlock returns the block containing a specific transaction
+func GetTransactionBlock(mainDBClient *config.ImmuClient, txHash string) (*config.ZKBlock, error) {
+    txKey := fmt.Sprintf("tx:%s", txHash)
+    
+    blockNumberBytes, err := Read(mainDBClient, txKey)
+    if err != nil {
+        return nil, fmt.Errorf("transaction %s not found: %w", txHash, err)
+    }
+    
+    var blockNumber uint64
+    if err := json.Unmarshal(blockNumberBytes, &blockNumber); err != nil {
+        return nil, fmt.Errorf("failed to parse block number for tx %s: %w", txHash, err)
+    }
+    
+    return GetZKBlockByNumber(mainDBClient, blockNumber)
+}

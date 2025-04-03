@@ -2,13 +2,16 @@ package Block
 
 import (
 	"fmt"
+	"strconv"
 	// "gossipnode/messaging"
+	"gossipnode/DB_OPs"
+	"gossipnode/config"
 	"log"
 	"math/big"
 	"net/http"
+	"os"
 	"sync"
-    "os"
-    "gossipnode/config"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -17,19 +20,22 @@ type APIAccessTuple struct {
     Address     string   `json:"address"`
     StorageKeys []string `json:"storage_keys"`
 }
+
 // Request and response models
 type TransactionRequest struct {
+    From              string   `json:"from" binding:"required"`       // Add this line
     RecipientAddress  string   `json:"recipient_address" binding:"required"`
-    Amount            string   `json:"amount" binding:"required"`         // String to preserve precision
+    Amount            string   `json:"amount" binding:"required"`     // String to preserve precision
     Nonce             uint64   `json:"nonce" binding:"required"`
     GasLimit          uint64   `json:"gas_limit" binding:"required"`
-    GasPrice          string   `json:"gas_price" binding:"required"`      // String to preserve precision
-    Data              string   `json:"data"`                              // Optional data
-    MaxPriorityFee    string   `json:"max_priority_fee"`                  // Optional for EIP-1559
-    MaxFee            string   `json:"max_fee"`                           // Optional for EIP-1559
+    GasPrice          string   `json:"gas_price" binding:"required"`  // String to preserve precision
+    Data              string   `json:"data"`                          // Optional data
+    MaxPriorityFee    string   `json:"max_priority_fee"`              // Optional for EIP-1559
+    MaxFee            string   `json:"max_fee"`                       // Optional for EIP-1559
     ChainID           int64    `json:"chain_id" binding:"required"`
-    AccessList        []APIAccessTuple `json:"access_list"`                  // Optional
+    AccessList        []APIAccessTuple `json:"access_list"`           // Optional
 }
+
 type TxnsType struct{
     TxnType string `json:"txn_type" binding:"required"`
     Txn TransactionRequest `json:"txn" binding:"required"`
@@ -47,6 +53,7 @@ type FullTxn struct {
 
 type TransactionData struct {
     ChainID             string        `json:"chain_id"`
+    From                string        `json:"from"` // Sender's address
     Nonce               uint64        `json:"nonce"`
     To                  string        `json:"to"`
     Value               string        `json:"value"`
@@ -90,6 +97,7 @@ func toBlockAccessList(apiList []APIAccessTuple) config.AccessList {
 func toTransactionData(tx *config.Transaction) *TransactionData {
     result := &TransactionData{
         ChainID:  tx.ChainID.String(),
+        From:     tx.From.Hex(),
         Nonce:    tx.Nonce,
         Value:    tx.Value.String(),
         Data:     string(tx.Data),
@@ -182,6 +190,7 @@ func generateTransactions(c *gin.Context) {
 			req.Txn.GasLimit,
 			gasPrice,
 			data,
+            req.Txn.From,
 		)
 		
 		if err != nil {
@@ -247,6 +256,7 @@ func generateTransactions(c *gin.Context) {
 				maxPriorityFee,
 				data,
 				accessList,
+                req.Txn.From,
 			)
 			
 			if err != nil {
@@ -325,6 +335,11 @@ func Startserver(port int, h host.Host) {
     
     // Transaction endpoints
     router.POST("/api/generate-tx", generateTransactions)
+    router.POST("/api/process-block", processZKBlock)
+    router.GET("/api/block/:number", getBlockByNumber)
+    router.GET("/api/block/hash/:hash", getBlockByHash)
+    router.GET("/api/tx/:hash", getTransactionInfo)
+    router.GET("/api/latest-block", getLatestBlock)
     
     // Add a health check endpoint
     router.GET("/health", func(c *gin.Context) {
@@ -338,4 +353,177 @@ func Startserver(port int, h host.Host) {
     if err := router.Run(portStr); err != nil {
         log.Fatalf("Failed to start server: %v", err)
     }
+}
+
+// processZKBlock handles the processing of a ZK block after ZKVM validation
+func processZKBlock(c *gin.Context) {
+    // Parse the block data from the request
+    var block config.ZKBlock
+    if err := c.ShouldBindJSON(&block); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid block data: %v", err)})
+        return
+    }
+    
+    // Validate block data
+    if len(block.Transactions) == 0 {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "block contains no transactions"})
+        return
+    }
+    
+    if block.Status != "verified" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "block has not been verified by ZKVM"})
+        return
+    }
+    
+    // Get clients for both databases
+    mainDBClient, err := DB_OPs.New()
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{
+            "error": fmt.Sprintf("failed to connect to main database: %v", err),
+        })
+        return
+    }
+    defer DB_OPs.Close(mainDBClient)
+    
+    accountsClient, err := DB_OPs.New(DB_OPs.WithDatabase(config.AccountsDBName))
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{
+            "error": fmt.Sprintf("failed to connect to accounts database: %v", err),
+        })
+        return
+    }
+    defer DB_OPs.Close(accountsClient)
+    
+    // Process and store the block
+    if err := ProcessAndStoreZKBlock(&block, mainDBClient, accountsClient); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{
+            "error": fmt.Sprintf("failed to process block: %v", err),
+            "partial_processing": true,
+        })
+        return
+    }
+    
+    // Return success
+    c.JSON(http.StatusOK, gin.H{
+        "status": "success",
+        "message": fmt.Sprintf("Block %d with %d transactions processed successfully", 
+            block.BlockNumber, len(block.Transactions)),
+        "block_hash": block.BlockHash.Hex(),
+        "block_number": block.BlockNumber,
+    })
+}
+
+// getBlockByNumber retrieves a block by its number
+func getBlockByNumber(c *gin.Context) {
+    blockNumberStr := c.Param("number")
+    blockNumber, err := strconv.ParseUint(blockNumberStr, 10, 64)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid block number"})
+        return
+    }
+    
+    mainDBClient, err := DB_OPs.New()
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
+        return
+    }
+    defer DB_OPs.Close(mainDBClient)
+    
+    block, err := DB_OPs.GetZKBlockByNumber(mainDBClient, blockNumber)
+    if err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("block not found: %v", err)})
+        return
+    }
+    
+    c.JSON(http.StatusOK, block)
+}
+
+// getBlockByHash retrieves a block by its hash
+func getBlockByHash(c *gin.Context) {
+    blockHash := c.Param("hash")
+    
+    mainDBClient, err := DB_OPs.New()
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
+        return
+    }
+    defer DB_OPs.Close(mainDBClient)
+    
+    block, err := DB_OPs.GetZKBlockByHash(mainDBClient, blockHash)
+    if err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("block not found: %v", err)})
+        return
+    }
+    
+    c.JSON(http.StatusOK, block)
+}
+
+// getTransactionInfo gets detailed information about a transaction
+func getTransactionInfo(c *gin.Context) {
+    txHash := c.Param("hash")
+    
+    mainDBClient, err := DB_OPs.New()
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
+        return
+    }
+    defer DB_OPs.Close(mainDBClient)
+    
+    block, err := DB_OPs.GetTransactionBlock(mainDBClient, txHash)
+    if err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("transaction not found: %v", err)})
+        return
+    }
+    
+    // Find the specific transaction
+    var foundTx *config.ZKBlockTransaction
+    for _, tx := range block.Transactions {
+        if tx.Hash == txHash {
+            foundTx = &tx
+            break
+        }
+    }
+    
+    if foundTx == nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "transaction found in block but details missing"})
+        return
+    }
+    
+    // Return transaction with block details
+    c.JSON(http.StatusOK, gin.H{
+        "transaction": foundTx,
+        "block_number": block.BlockNumber,
+        "block_hash": block.BlockHash.Hex(),
+        "timestamp": block.Timestamp,
+        "confirmed": true,
+    })
+}
+
+// getLatestBlock returns information about the latest block
+func getLatestBlock(c *gin.Context) {
+    mainDBClient, err := DB_OPs.New()
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
+        return
+    }
+    defer DB_OPs.Close(mainDBClient)
+    
+    latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(mainDBClient)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get latest block: %v", err)})
+        return
+    }
+    
+    if latestBlockNumber == 0 {
+        c.JSON(http.StatusOK, gin.H{"message": "no blocks in the chain yet"})
+        return
+    }
+    
+    block, err := DB_OPs.GetZKBlockByNumber(mainDBClient, latestBlockNumber)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get latest block data: %v", err)})
+        return
+    }
+    
+    c.JSON(http.StatusOK, block)
 }

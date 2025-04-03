@@ -87,6 +87,7 @@ func (m *MempoolClient) GetMempoolStats() (*pb.MempoolStats, error) {
 func convertToPbTransaction(tx *config.Transaction, txHash string) *pb.Transaction {
     pbTx := &pb.Transaction{
         Hash:      txHash,
+        From:     tx.From.Hex(),
         ChainId:   tx.ChainID.String(),
         Nonce:     strconv.FormatUint(tx.Nonce, 10),
         GasLimit:  strconv.FormatUint(tx.GasLimit, 10),

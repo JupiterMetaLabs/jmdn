@@ -62,7 +62,7 @@ func LoadAccountInfo(filePath string) (*AccountInfo, error) {
 // GenerateLegacyTransaction creates a legacy (Type 0) transaction
 func GenerateLegacyTransaction(accountPath string, chainID *big.Int, to string, amount *big.Int, 
                              nonce uint64, gasLimit uint64, gasPrice *big.Int, 
-                             data []byte) (*config.Transaction, error) {
+                             data []byte, from string) (*config.Transaction, error) {
     // Load account info
     accountInfo, err := LoadAccountInfo(accountPath)
     if err != nil {
@@ -74,7 +74,7 @@ func GenerateLegacyTransaction(accountPath string, chainID *big.Int, to string, 
     if err != nil {
         return nil, fmt.Errorf("failed to get private key: %w", err)
     }
-
+    fromAddress := common.HexToAddress(from)
     // Create transaction
     toAddr := common.HexToAddress(to)
     tx := &config.Transaction{
@@ -85,6 +85,7 @@ func GenerateLegacyTransaction(accountPath string, chainID *big.Int, to string, 
         GasLimit: gasLimit,
         GasPrice: gasPrice,
         Data:     data,
+        From:    &fromAddress,
     }
 
     // Sign the transaction
@@ -128,7 +129,7 @@ func GenerateEIP2930Transaction(accountPath string, chainID *big.Int, to string,
 func GenerateEIP1559Transaction(accountPath string, chainID *big.Int, to string, amount *big.Int, 
                               nonce uint64, gasLimit uint64, maxFeePerGas *big.Int, 
                               maxPriorityFeePerGas *big.Int, data []byte, 
-                              accessList config.AccessList) (*config.Transaction, error) {
+                              accessList config.AccessList, from string) (*config.Transaction, error) {
     // Load account info
     accountInfo, err := LoadAccountInfo(accountPath)
     if err != nil {
@@ -140,7 +141,7 @@ func GenerateEIP1559Transaction(accountPath string, chainID *big.Int, to string,
     if err != nil {
         return nil, fmt.Errorf("failed to get private key: %w", err)
     }
-
+    fromAddress := common.HexToAddress(from)
     // Create transaction
     toAddr := common.HexToAddress(to)
     tx := &config.Transaction{
@@ -153,6 +154,7 @@ func GenerateEIP1559Transaction(accountPath string, chainID *big.Int, to string,
         MaxPriorityFeePerGas: maxPriorityFeePerGas,
         AccessList:          accessList,
         Data:                data,
+        From:              &fromAddress,
     }
 
     // Sign the transaction

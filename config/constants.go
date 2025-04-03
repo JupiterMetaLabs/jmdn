@@ -121,6 +121,7 @@ type AccessTuple struct {
 type AccessList []AccessTuple
 
 type Transaction struct {
+	From 				*common.Address // Sender's address
     ChainID             *big.Int
     Nonce               uint64
     To                  *common.Address // nil for contract creation

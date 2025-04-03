@@ -5,3 +5,5 @@ DB/*.db
 yggdrasil
 Account.json
 .immudb_state/*
+.identity*
+.state*
