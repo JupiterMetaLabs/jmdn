@@ -3,9 +3,11 @@ package Block
 import (
 	"fmt"
 	"strconv"
+
 	// "gossipnode/messaging"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/messaging"
 	"log"
 	"math/big"
 	"net/http"
@@ -355,7 +357,6 @@ func Startserver(port int, h host.Host) {
     }
 }
 
-// processZKBlock handles the processing of a ZK block after ZKVM validation
 func processZKBlock(c *gin.Context) {
     // Parse the block data from the request
     var block config.ZKBlock
@@ -375,30 +376,10 @@ func processZKBlock(c *gin.Context) {
         return
     }
     
-    // Get clients for both databases
-    mainDBClient, err := DB_OPs.New()
-    if err != nil {
+
+    if err := messaging.PropagateZKBlock(globalHost, &block); err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{
-            "error": fmt.Sprintf("failed to connect to main database: %v", err),
-        })
-        return
-    }
-    defer DB_OPs.Close(mainDBClient)
-    
-    accountsClient, err := DB_OPs.New(DB_OPs.WithDatabase(config.AccountsDBName))
-    if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{
-            "error": fmt.Sprintf("failed to connect to accounts database: %v", err),
-        })
-        return
-    }
-    defer DB_OPs.Close(accountsClient)
-    
-    // Process and store the block
-    if err := ProcessAndStoreZKBlock(&block, mainDBClient, accountsClient); err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{
-            "error": fmt.Sprintf("failed to process block: %v", err),
-            "partial_processing": true,
+            "error": fmt.Sprintf("failed to process/propagate block: %v", err),
         })
         return
     }
@@ -406,7 +387,7 @@ func processZKBlock(c *gin.Context) {
     // Return success
     c.JSON(http.StatusOK, gin.H{
         "status": "success",
-        "message": fmt.Sprintf("Block %d with %d transactions processed successfully", 
+        "message": fmt.Sprintf("Block %d with %d transactions processed and propagated successfully", 
             block.BlockNumber, len(block.Transactions)),
         "block_hash": block.BlockHash.Hex(),
         "block_number": block.BlockNumber,

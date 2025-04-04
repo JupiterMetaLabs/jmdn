@@ -295,8 +295,12 @@ func forwardDID(h host.Host, msg DIDMessage) {
         Msg("DID message propagated to peers")
 }
 
-// PropagateDID creates and propagates a new DID message to the network
-func PropagateDID(h host.Host, did string, publicKey string) error {
+// PropagateDID creates and propagates a DID message to the network
+func PropagateDID(h host.Host, doc *DB_OPs.DIDDocument) error {
+    if doc == nil {
+        return fmt.Errorf("DID document cannot be nil")
+    }
+    
     // Generate a unique nonce
     nonceBytes := make([]byte, 16)
     for i := range nonceBytes {
@@ -305,23 +309,30 @@ func PropagateDID(h host.Host, did string, publicKey string) error {
     }
     nonce := base64.URLEncoding.EncodeToString(nonceBytes)
     
-    // Create a new DID message
+    // Determine message type based on document timestamps
+    msgType := "did_created"
+    if doc.UpdatedAt > doc.CreatedAt {
+        // If updated time is greater than created time, this is an update
+        msgType = "did_updated"
+    }
+    
+    // Create a DID message
     now := time.Now().Unix()
     msg := DIDMessage{
         Sender:    h.ID().String(),
         Timestamp: now,
         Nonce:     nonce,
-        DID:       did,
-        PublicKey: publicKey,
-        Balance:   "0", // Initial balance is 0
-        Type:      "did_created",
+        DID:       doc.DID,
+        PublicKey: doc.PublicKey,
+        Balance:   doc.Balance,
+        Type:      msgType,
         Hops:      0,
     }
     
     // Generate a unique ID based on sender, DID and timestamp
-    msg.ID = generateDIDMessageID(msg.Sender, did)
+    msg.ID = generateDIDMessageID(msg.Sender, doc.DID)
     
-    // First, add the DID to our own database
+    // First, add/update the DID in our own database
     storeDIDInDB(msg)
     
     // Mark this message as processed by us
@@ -337,14 +348,19 @@ func PropagateDID(h host.Host, did string, publicKey string) error {
     // Get all connected peers
     peers := h.Network().Peers()
     if len(peers) == 0 {
-        log.Warn().Str("did", did).Msg("No connected peers to propagate DID to")
+        log.Warn().
+            Str("did", doc.DID).
+            Str("type", msgType).
+            Msg("No connected peers to propagate DID to")
         return nil // Not an error, just no one to tell
     }
     
     log.Info().
         Str("msg_id", msg.ID).
-        Str("did", did).
-        Str("public_key", publicKey).
+        Str("did", doc.DID).
+        Str("public_key", doc.PublicKey).
+        Str("balance", doc.Balance).
+        Str("type", msgType).
         Int("peers", len(peers)).
         Msg("Starting DID propagation to peers")
     
@@ -391,7 +407,8 @@ func PropagateDID(h host.Host, did string, publicKey string) error {
     
     log.Info().
         Str("msg_id", msg.ID).
-        Str("did", did).
+        Str("did", doc.DID).
+        Str("type", msgType).
         Int("success", successCount).
         Int("total", len(peers)).
         Msg("DID propagation complete")

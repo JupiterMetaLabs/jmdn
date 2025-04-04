@@ -182,7 +182,7 @@ func (s *DIDServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequest)
     // If not in standalone mode, propagate the DID
     if !s.standalone && s.accountsClient != nil {
         // Try to propagate to network, but don't fail if it doesn't work
-        err = messaging.PropagateDID(s.host, req.Did, req.PublicKey)
+        err = messaging.PropagateDID(s.host, didDoc)
         if err != nil {
             log.Warn().Err(err).Str("did", req.Did).Msg("Failed to propagate DID to network")
         }
@@ -353,4 +353,104 @@ func StartDIDServer(h host.Host, address string, existingClient *config.ImmuClie
         Msg("Starting DID gRPC server")
     
     return grpcServer.Serve(lis)
+}
+
+// UpdateDID updates an existing DID document
+func (s *DIDServer) UpdateDID(ctx context.Context, req *pb.UpdateDIDRequest) (*pb.UpdateDIDResponse, error) {
+    if req.Did == "" {
+        return nil, status.Error(codes.InvalidArgument, "DID is required")
+    }
+
+    // Retrieve existing DID
+    existingDID, err := s.getDID(req.Did)
+    if err != nil {
+        return nil, status.Errorf(codes.NotFound, "DID not found: %v", err)
+    }
+
+    // Store original values for logging changes
+    originalBalance := existingDID.Balance
+    originalPublicKey := existingDID.PublicKey
+    changesApplied := false
+
+    // Update balance if specified
+    if req.Balance != "" {
+        // Check if balance is a valid number
+        _, ok := new(big.Int).SetString(req.Balance, 10)
+        if !ok {
+            return nil, status.Error(codes.InvalidArgument, "Invalid balance format")
+        }
+        if existingDID.Balance != req.Balance {
+            existingDID.Balance = req.Balance
+            changesApplied = true
+        }
+    }
+
+    // Update public key if specified
+    if req.PublicKey != "" && existingDID.PublicKey != req.PublicKey {
+        existingDID.PublicKey = req.PublicKey
+        changesApplied = true
+    }
+
+    // Only update if changes were made
+    if !changesApplied {
+        return &pb.UpdateDIDResponse{
+            Success: true,
+            Message: "No changes needed - DID already up to date",
+            DidInfo: &pb.DIDInfo{
+                Did:       existingDID.DID,
+                PublicKey: existingDID.PublicKey,
+                Balance:   existingDID.Balance,
+                CreatedAt: existingDID.CreatedAt,
+                UpdatedAt: existingDID.UpdatedAt,
+            },
+        }, nil
+    }
+
+    // Update timestamp
+    existingDID.UpdatedAt = time.Now().Unix()
+
+    // Store the updated DID
+    err = s.storeDID(existingDID)
+    if err != nil {
+        log.Error().Err(err).
+            Str("did", req.Did).
+            Str("original_balance", originalBalance).
+            Str("new_balance", existingDID.Balance).
+            Msg("Failed to update DID")
+        return nil, status.Errorf(codes.Internal, "Failed to update DID: %v", err)
+    }
+
+    // If not in standalone mode, propagate the DID update
+    if !s.standalone && s.accountsClient != nil {
+        err = messaging.PropagateDID(s.host, existingDID)
+        if err != nil {
+            log.Warn().
+                Err(err).
+                Str("did", req.Did).
+                Str("original_balance", originalBalance).
+                Str("new_balance", existingDID.Balance).
+                Bool("key_changed", originalPublicKey != existingDID.PublicKey).
+                Msg("Failed to propagate DID update to network")
+        } else {
+            log.Info().
+                Str("did", req.Did).
+                Str("original_balance", originalBalance).
+                Str("new_balance", existingDID.Balance).
+                Bool("key_changed", originalPublicKey != existingDID.PublicKey).
+                Msg("Successfully propagated DID update to network")
+        }
+    }
+
+    // Return response with updated DID
+    return &pb.UpdateDIDResponse{
+        Success: true,
+        Message: "DID updated successfully",
+        DidInfo: &pb.DIDInfo{
+            Did:       existingDID.DID,
+            PublicKey: existingDID.PublicKey,
+            Balance:   existingDID.Balance,
+            CreatedAt: existingDID.CreatedAt,
+            UpdatedAt: existingDID.UpdatedAt,
+        },
+    }, nil
 }

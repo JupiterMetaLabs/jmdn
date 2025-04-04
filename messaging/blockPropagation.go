@@ -8,6 +8,7 @@ import (
     "encoding/json"
     "fmt"
     "io"
+    "strconv"
     "sync"
     "time"
 
@@ -17,54 +18,46 @@ import (
     "github.com/libp2p/go-libp2p/core/peer"
     "github.com/rs/zerolog/log"
 
-    // "gossipnode/"
     "gossipnode/DB_OPs"
     "gossipnode/config"
     "gossipnode/helper"
+    "gossipnode/messaging/BlockProcessing"
     "gossipnode/metrics"
 )
 
-// BlockMessage represents a message for block propagation
-// Enhanced to support both traditional map data and structured transaction objects
-// Store for peer timeouts
+// Global variables for block propagation
 var (
     peerTimeouts     = make(map[string]time.Time)
     peerTimeoutMutex sync.RWMutex
-)
-
-// Bloom filter for efficient message ID checking
-var messageFilter *bloom.BloomFilter
-
-// ImmuDB client instance
-var (
-    immuClient     *config.ImmuClient
-    immuClientOnce sync.Once
+    messageFilter    *bloom.BloomFilter
+    immuClient       *config.ImmuClient
+    immuClientOnce   sync.Once
+    globalHost       host.Host // Add this line
 )
 
 func init() {
-    // Initialize a bloom filter with 10000 items and 0.01 false positive rate
     messageFilter = bloom.NewWithEstimates(10000, 0.01)
-    
-    // Start the cleanup routine for peer timeouts
     go cleanupPeerTimeouts()
 }
 
-// InitBlockPropagation initializes the block propagation system
-func InitBlockPropagation() error {
-    var initErr error
+// Initialize the host when starting the node
+func InitBlockPropagation(h host.Host) error {
+    globalHost = h  // Save the host reference
     
+    var initErr error
     immuClientOnce.Do(func() {
-        // Create ImmuDB client
+        // Initialize ImmuDB client for block propagation system
         client, err := DB_OPs.New()
         if err != nil {
-            initErr = fmt.Errorf("failed to create ImmuDB client: %w", err)
+            initErr = fmt.Errorf("failed to initialize ImmuDB client: %w", err)
             return
         }
         immuClient = client
+        log.Info().Msg("Block propagation system initialized")
     })
-    
     return initErr
 }
+
 
 // generateBlockMessageID creates a unique ID for a block message
 func generateBlockMessageID(sender, nonce string, timestamp int64) string {
@@ -77,13 +70,11 @@ func generateBlockMessageID(sender, nonce string, timestamp int64) string {
 // cleanupPeerTimeouts periodically removes expired peer timeouts
 func cleanupPeerTimeouts() {
     for {
-        time.Sleep(30 * time.Second)
-        
+        time.Sleep(10 * time.Second)
         peerTimeoutMutex.Lock()
-        now := time.Now()
-        for peer, timeout := range peerTimeouts {
-            if now.After(timeout) {
-                delete(peerTimeouts, peer)
+        for peerID, until := range peerTimeouts {
+            if time.Now().After(until) {
+                delete(peerTimeouts, peerID)
             }
         }
         peerTimeoutMutex.Unlock()
@@ -94,12 +85,10 @@ func cleanupPeerTimeouts() {
 func isPeerTimedOut(peerID string) bool {
     peerTimeoutMutex.RLock()
     defer peerTimeoutMutex.RUnlock()
-    
     timeout, exists := peerTimeouts[peerID]
     if !exists {
         return false
     }
-    
     return time.Now().Before(timeout)
 }
 
@@ -109,7 +98,10 @@ func timeoutPeer(peerID string, duration time.Duration) {
     defer peerTimeoutMutex.Unlock()
     
     peerTimeouts[peerID] = time.Now().Add(duration)
-    log.Info().Str("peer", peerID).Dur("duration", duration).Msg("Peer timed out for sending duplicate block")
+    log.Info().
+        Str("peer", peerID).
+        Dur("duration", duration).
+        Msg("Peer timed out for sending duplicate block")
 }
 
 // isMessageProcessed checks if this message has already been processed
@@ -123,225 +115,250 @@ func markMessageProcessed(messageID string) {
 }
 
 // storeMessageInImmuDB stores a message in ImmuDB using the appropriate key
-func storeMessageInImmuDB(msg config.BlockMessage) {
-    // Store in ImmuDB in a separate goroutine to prevent blocking
-    go func() {
-        var key string
-        
-        // For transactions, use the transaction hash as the key
-        if msg.Type == "transaction" && msg.Data != nil {
-            if txHash, ok := msg.Data["transaction_hash"]; ok && txHash != "" {
-                key = fmt.Sprintf("tx:%s", txHash)
-                log.Debug().Str("tx_hash", txHash).Msg("Using transaction hash as key")
-            } else if txHash, ok := msg.Data["transaction_id"]; ok && txHash != "" {
-                key = fmt.Sprintf("tx:%s", txHash)
-                log.Debug().Str("tx_id", txHash).Msg("Using transaction ID as key")
-            } else {
-                // Fallback to nonce if no transaction hash
-                key = fmt.Sprintf("crdt:nonce:%s", msg.Nonce)
-                log.Debug().Str("nonce", msg.Nonce).Msg("Using nonce as key (no transaction hash found)")
-            }
-        } else {
-            // For other message types, use the nonce
-            key = fmt.Sprintf("crdt:nonce:%s", msg.Nonce)
-        }
-        
-        // Store the update
-        err := DB_OPs.Create(immuClient, key, msg)
-        if err != nil {
-            log.Error().Err(err).Str("key", key).Msg("Failed to store message in ImmuDB")
-            return
-        }
-        
-        // Also update the message set
-        err = updateMessageSet(key)
-        if err != nil {
-            log.Error().Err(err).Str("key", key).Msg("Failed to update message set")
-        }
-        
-        log.Info().Str("key", key).Str("type", msg.Type).Msg("Successfully stored message in ImmuDB")
-    }()
+func storeMessageInImmuDB(msg config.BlockMessage) error {
+    // Determine the key - focus on ZK blocks
+    var key string
+    if msg.Type == "zkblock" && msg.ZKBlock != nil {
+        key = fmt.Sprintf("zkblock:%s", msg.ZKBlock.BlockHash.Hex())
+    } else if msg.Type == "transaction" && msg.Data != nil && msg.Data["transaction_hash"] != "" {
+        key = fmt.Sprintf("tx:%s", msg.Data["transaction_hash"])
+    } else {
+        key = fmt.Sprintf("crdt:nonce:%s", msg.Nonce)
+    }
+
+    // Store the message
+    if err := DB_OPs.Create(immuClient, key, msg); err != nil {
+        log.Error().Err(err).Str("key", key).Msg("Failed to store message in ImmuDB")
+        return err
+    }
+    
+    // Update message set
+    if err := updateMessageSet(key); err != nil {
+        log.Error().Err(err).Str("key", key).Msg("Failed to update message set")
+        return err
+    }
+    
+    log.Debug().Str("key", key).Str("type", msg.Type).Msg("Message stored in ImmuDB")
+    return nil
 }
 
 // updateMessageSet adds a message key to the grow-only set in ImmuDB
 func updateMessageSet(key string) error {
     const setKey = "crdt:message_set"
     
-    // Try to get the current set
     var messageSet map[string]bool
     err := DB_OPs.ReadJSON(immuClient, setKey, &messageSet)
-    
-    // If not found or error, start with empty set
     if err != nil {
         messageSet = make(map[string]bool)
     }
     
-    // Add the new key (idempotent operation)
     messageSet[key] = true
-    
-    // Store the updated set
     return DB_OPs.Create(immuClient, setKey, messageSet)
 }
 
 // getMessageIDForBloomFilter gets the appropriate ID to use for duplication checking
 func getMessageIDForBloomFilter(msg config.BlockMessage) string {
-    // For transactions, use transaction hash if available
-    if msg.Type == "transaction" && msg.Data != nil {
-        if txHash, ok := msg.Data["transaction_hash"]; ok && txHash != "" {
-            return txHash
-        } else if txHash, ok := msg.Data["transaction_id"]; ok && txHash != "" {
-            return txHash
-        }
+    // Special handling for ZK blocks to use hash for deduplication
+    if msg.Type == "zkblock" && msg.ZKBlock != nil {
+        return fmt.Sprintf("zkblock:%s", msg.ZKBlock.BlockHash.Hex())
     }
     
-    // Otherwise use the nonce
+    if msg.Type == "transaction" && msg.Data != nil && msg.Data["transaction_hash"] != "" {
+        return msg.Data["transaction_hash"]
+    }
+    
     return msg.Nonce
 }
 
 // HandleBlockStream processes incoming block propagation messages
+// HandleBlockStream processes incoming block propagation messages
+// Priority: FORWARD FIRST, then PROCESS/VALIDATE before STORING
 func HandleBlockStream(stream network.Stream) {
     defer stream.Close()
     
-    // Get the remote peer
     remotePeer := stream.Conn().RemotePeer().String()
-    
-    // Check if peer is timed out
     if isPeerTimedOut(remotePeer) {
-        log.Debug().Str("peer", remotePeer).Msg("Ignoring message from timed out peer")
+        log.Debug().Str("peer", remotePeer).Msg("Ignoring message from timed-out peer")
         return
     }
-    
-    // Record metrics
+
     metrics.MessagesReceivedCounter.WithLabelValues("block", remotePeer).Inc()
     
-    // Read the incoming message
+    // Read the message
     reader := bufio.NewReader(stream)
     messageBytes, err := reader.ReadBytes('\n')
-    if err != nil {
-        if err != io.EOF {
-            log.Error().Err(err).Str("peer", remotePeer).
-                Msg("Error reading message")
-        }
+    if err != nil && err != io.EOF {
+        log.Error().Err(err).Msg("Failed to read message bytes")
         return
     }
-    
+
     // Parse the message
     var msg config.BlockMessage
     if err := json.Unmarshal(messageBytes, &msg); err != nil {
-        log.Error().Err(err).Msg("Failed to unmarshal message")
+        log.Error().Err(err).Msg("Failed to unmarshal block message")
         return
     }
-    
-    // Get the appropriate ID for duplication checking
+
+    // Check for duplicates
     messageID := getMessageIDForBloomFilter(msg)
-    
-    // Check if we've already processed this message
     if isMessageProcessed(messageID) {
-        log.Debug().Str("message_id", messageID).Msg("Duplicate message received, timing out peer")
+        log.Debug().Str("message_id", messageID).Msg("Duplicate message received")
         timeoutPeer(remotePeer, 20*time.Second)
         return
     }
     
-    // Mark message as processed
+    // Mark as processed to prevent duplicate processing
     markMessageProcessed(messageID)
-    
-    // Process the message - update our CRDT state in ImmuDB
-    storeMessageInImmuDB(msg)
-    
-    // Log receipt based on message type
-    if msg.Type == "transaction" {
-        var txHash string
-        if msg.Data != nil {
-            txHash = msg.Data["transaction_hash"]
-            if txHash == "" {
-                txHash = msg.Data["transaction_id"]
+
+    // For ZK blocks, prioritize forwarding over processing
+    if msg.Type == "zkblock" && msg.ZKBlock != nil {
+        log.Info().
+            Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
+            Uint64("block_number", msg.ZKBlock.BlockNumber).
+            Int("txn_count", len(msg.ZKBlock.Transactions)).
+            Msg("Received ZK block from peer")
+
+        // STEP 1: FORWARD BLOCK FIRST - increment hops and forward to other peers
+        if msg.Hops < config.MaxHops {
+            msg.Hops++
+            if globalHost != nil {
+                log.Info().
+                    Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
+                    Uint64("block_number", msg.ZKBlock.BlockNumber).
+                    Int("hops", msg.Hops).
+                    Msg("Forwarding ZK block to peers")
+                    
+                // Don't wait for forwarding to complete
+                go forwardBlock(globalHost, msg)
+            } else {
+                log.Error().Msg("Cannot forward block: global host not initialized")
             }
         }
-        fmt.Printf("\n[TRANSACTION from %s] Hash: %s\n>>> ", msg.Sender, txHash)
-    } else {
-        fmt.Printf("\n[BLOCK from %s] Nonce: %s\n>>> ", msg.Sender, msg.Nonce)
-    }
-    
-    // Notify explorer
-    helper.NotifyBroadcast(msg)
-    
-    // Only rebroadcast if we haven't reached max hops
-    if msg.Hops < config.MaxHops {
-        // Forward to our peers
-        msg.Hops++
-        localPeer := stream.Conn().LocalPeer().String()
-        log.Info().
-            Str("msg_id", msg.ID).
-            Str("type", msg.Type).
-            Str("origin", msg.Sender).
-            Str("via", localPeer).
-            Int("hops", msg.Hops).
-            Msg("Propagating message")
+
+        // STEP 2: PROCESS AND VALIDATE BLOCK AFTERWARD
+        go func() {
+            // Create DB clients for processing
+            mainDBClient, err := DB_OPs.New()
+            if err != nil {
+                log.Error().Err(err).Msg("Failed to create main DB client")
+                return
+            }
+            defer DB_OPs.Close(mainDBClient)
+            
+            accountsClient, err := DB_OPs.New(DB_OPs.WithDatabase(config.AccountsDBName))
+            if err != nil {
+                log.Error().Err(err).Msg("Failed to create accounts DB client")
+                return
+            }
+            defer DB_OPs.Close(accountsClient)
+            
+            log.Info().
+                Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
+                Uint64("block_number", msg.ZKBlock.BlockNumber).
+                Msg("Processing block transactions")
+                
+            // Process all transactions (which includes validation)
+            var processingFailed bool
+            for i, tx := range msg.ZKBlock.Transactions {
+                if err := BlockProcessing.ProcessTransaction(tx, msg.ZKBlock.CoinbaseAddr, msg.ZKBlock.ZKVMAddr, accountsClient); err != nil {
+                    log.Error().
+                        Err(err).
+                        Str("tx_hash", tx.Hash).
+                        Int("tx_index", i).
+                        Msg("Transaction failed")
+                    processingFailed = true
+                    break
+                }
+            }
+            
+            // Only store the block if all transactions processed successfully
+            if processingFailed {
+                log.Error().
+                    Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
+                    Msg("Block processing failed - not storing block")
+                return
+            }
+            
+            log.Info().
+                Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
+                Msg("All transactions processed successfully - storing block")
+                
+            // Store the validated and processed block in main DB
+            if err := DB_OPs.StoreZKBlock(mainDBClient, msg.ZKBlock); err != nil {
+                log.Error().
+                    Err(err).
+                    Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
+                    Msg("Failed to store block in database")
+                return
+            }
+            
+            // Store block message metadata
+            if err := storeMessageInImmuDB(msg); err != nil {
+                log.Error().Err(err).Msg("Failed to store block message in ImmuDB")
+            }
+            
+            log.Info().
+                Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
+                Uint64("block_number", msg.ZKBlock.BlockNumber).
+                Msg("Block processed and stored successfully")
+        }()
         
-        // Forward the message to other peers
-        if hostInstance := getHostInstance(); hostInstance != nil {
-            go forwardBlock(hostInstance, msg)
-        } else {
-            log.Error().Msg("Cannot access host instance for forwarding message")
-        }
+        // Print to console
+        fmt.Printf("\n[ZKBLOCK from %s] Block #%d, Hash: %s, Txns: %d\n>>> ", 
+            msg.Sender, msg.ZKBlock.BlockNumber, msg.ZKBlock.BlockHash.Hex(), 
+            len(msg.ZKBlock.Transactions))
     } else {
-        log.Info().
-            Str("msg_id", msg.ID).
-            Str("type", msg.Type).
-            Int("hops", msg.Hops).
-            Msg("Max hops reached, not propagating message")
+        // Handle other message types (not our focus)
+        if msg.Hops < config.MaxHops {
+            msg.Hops++
+            go forwardBlock(globalHost, msg)
+        }
     }
+    
+    // Notify explorer or other UI components
+    helper.NotifyBroadcast(msg)
 }
 
 // forwardBlock sends the block message to all connected peers
 func forwardBlock(h host.Host, msg config.BlockMessage) {
-    // Get all connected peers
     peers := h.Network().Peers()
     
     // Convert message to JSON
     msgBytes, err := json.Marshal(msg)
     if err != nil {
-        log.Error().Err(err).Msg("Failed to marshal message")
+        log.Error().Err(err).Msg("Failed to marshal block message")
         return
     }
     msgBytes = append(msgBytes, '\n')
     
-    // Track how many peers we successfully broadcasted to
+    // Track forwarding metrics
     var successCount int
     var successMutex sync.Mutex
     var wg sync.WaitGroup
     
-    // Send to each peer (except original sender) concurrently
+    // Send to each peer concurrently
     for _, peerID := range peers {
         // Don't send back to the original sender
         if peerID.String() == msg.Sender {
             continue
         }
         
-        // Don't send to timed out peers
-        if isPeerTimedOut(peerID.String()) {
-            continue
-        }
-        
         wg.Add(1)
         go func(peer peer.ID) {
             defer wg.Done()
             
-            // Open a stream to the peer
             ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
             defer cancel()
             
             stream, err := h.NewStream(ctx, peer, config.BlockPropagationProtocol)
             if err != nil {
-                log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open stream")
+                log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to open stream")
                 return
             }
             defer stream.Close()
             
-            // Write the message
-            _, err = stream.Write(msgBytes)
-            if err != nil {
-                log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to write message")
+            if _, err := stream.Write(msgBytes); err != nil {
+                log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to write message")
                 return
             }
             
@@ -349,24 +366,54 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
             successCount++
             successMutex.Unlock()
             
-            // Record metrics
             metrics.MessagesSentCounter.WithLabelValues(msg.Type, peer.String()).Inc()
         }(peerID)
     }
     
-    // Wait for all sends to complete
     wg.Wait()
     
     log.Info().
-        Str("msg_id", msg.ID).
         Str("type", msg.Type).
-        Int("peers", successCount).
-        Msg("Message propagated to peers")
+        Int("success", successCount).
+        Int("total", len(peers) - 1).
+        Msg("Block forwarded to peers")
 }
 
-// PropagateBlock creates and propagates a new generic block to the network
-func PropagateBlock(h host.Host, data map[string]string) error {
-    // Generate a unique nonce
+// PropagateZKBlock creates and propagates a complete ZK block to the network
+// This function is called by Server.go when receiving a new block via API
+func PropagateZKBlock(h host.Host, block *config.ZKBlock) error {
+    // Step 1: Set up database connections
+    mainDBClient, err := DB_OPs.New()
+    if err != nil {
+        return fmt.Errorf("failed to create main DB client: %w", err)
+    }
+    defer DB_OPs.Close(mainDBClient)
+    
+    accountsClient, err := DB_OPs.New(DB_OPs.WithDatabase(config.AccountsDBName))
+    if err != nil {
+        return fmt.Errorf("failed to create accounts DB client: %w", err)
+    }
+    defer DB_OPs.Close(accountsClient)
+    
+    log.Info().
+        Str("block_hash", block.BlockHash.Hex()).
+        Uint64("block_number", block.BlockNumber).
+        Int("txn_count", len(block.Transactions)).
+        Msg("Starting ZK block propagation")
+    
+    // Step 2: Validate and process all transactions locally first
+    for i, tx := range block.Transactions {
+        if err := BlockProcessing.ProcessTransaction(tx, block.CoinbaseAddr, block.ZKVMAddr, accountsClient); err != nil {
+            return fmt.Errorf("transaction validation failed (index %d, hash %s): %w", i, tx.Hash, err)
+        }
+    }
+    
+    // Step 3: Store the block in main DB - all transactions are valid
+    if err := DB_OPs.StoreZKBlock(mainDBClient, block); err != nil {
+        return fmt.Errorf("failed to store block: %w", err)
+    }
+    
+    // Step 4: Generate a unique nonce for the block message
     nonceBytes := make([]byte, 16)
     for i := range nonceBytes {
         nonceBytes[i] = byte(time.Now().UnixNano() & 0xff)
@@ -374,162 +421,102 @@ func PropagateBlock(h host.Host, data map[string]string) error {
     }
     nonce := base64.URLEncoding.EncodeToString(nonceBytes)
     
-    // Create a new block message
+    // Step 5: Create summary metadata for logs and Bloom filter
+    metadata := map[string]string{
+        "block_hash":    block.BlockHash.Hex(),
+        "block_number":  strconv.FormatUint(block.BlockNumber, 10),
+        "txn_count":     strconv.Itoa(len(block.Transactions)),
+        "proof_hash":    block.ProofHash,
+        "status":        block.Status,
+        "timestamp":     strconv.FormatInt(block.Timestamp, 10),
+    }
+    
+    // Add sample transaction hashes
+    txLimit := min(5, len(block.Transactions))
+    for i := 0; i < txLimit; i++ {
+        metadata[fmt.Sprintf("tx_%d", i)] = block.Transactions[i].Hash
+    }
+    
+    // Step 6: Create block message with full ZK block data
     now := time.Now().Unix()
     msg := config.BlockMessage{
         Sender:    h.ID().String(),
         Timestamp: now,
         Nonce:     nonce,
-        Data:      data,
-        Type:      "block",
+        Data:      metadata,
+        ZKBlock:   block,      // Include full block
+        Type:      "zkblock",
         Hops:      0,
     }
     
-    // Generate a unique ID based on nonce and timestamp
+    // Generate message ID
     msg.ID = generateBlockMessageID(msg.Sender, nonce, now)
     
-    return propagateMessage(h, msg)
-}
-
-// PropagateTransaction creates and propagates a new transaction to the network
-func PropagateTransaction(h host.Host, tx *config.Transaction, txHash string) error {
-    // Generate a unique nonce
-    nonceBytes := make([]byte, 16)
-    for i := range nonceBytes {
-        nonceBytes[i] = byte(time.Now().UnixNano() & 0xff)
-        time.Sleep(1 * time.Nanosecond)
-    }
-    nonce := base64.URLEncoding.EncodeToString(nonceBytes)
+    // Mark as processed by us to avoid processing our own message
+    markMessageProcessed(getMessageIDForBloomFilter(msg))
     
-    // Create transaction metadata as map for compatibility
-    data := map[string]string{
-        "transaction_hash": txHash,
+    // Store block message metadata
+    if err := storeMessageInImmuDB(msg); err != nil {
+        log.Error().Err(err).Msg("Failed to store block message in ImmuDB")
+        // Continue even if metadata storage fails
     }
     
-    // Create a new message
-    now := time.Now().Unix()
-    msg := config.BlockMessage{
-        Sender:      h.ID().String(),
-        Timestamp:   now,
-        Nonce:       nonce,
-        Data:        data,
-        Transaction: tx,
-        Type:        "transaction",
-        Hops:        0,
-    }
-    
-    // Generate a unique ID based on nonce and timestamp
-    msg.ID = generateBlockMessageID(msg.Sender, nonce, now)
-    
-    return propagateMessage(h, msg)
-}
-
-// propagateMessage is a shared implementation for propagating any message type
-func propagateMessage(h host.Host, msg config.BlockMessage) error {
-    // Get the appropriate ID for duplication checking
-    messageID := getMessageIDForBloomFilter(msg)
-    
-    // First, update our own CRDT state
-    storeMessageInImmuDB(msg)
-    
-    // Mark this message as processed by us
-    markMessageProcessed(messageID)
-    
-    // Convert to JSON
+    // Step 7: Propagate to peers
     msgBytes, err := json.Marshal(msg)
     if err != nil {
-        return fmt.Errorf("failed to marshal message: %w", err)
+        return fmt.Errorf("failed to marshal block message: %w", err)
     }
     msgBytes = append(msgBytes, '\n')
     
-    // Get all connected peers
+    // Get connected peers
     peers := h.Network().Peers()
     if len(peers) == 0 {
-        return fmt.Errorf("no connected peers to propagate to")
+        log.Warn().Msg("No connected peers to propagate ZK block to")
+        return nil // Not an error, just no peers to propagate to
     }
     
-    // Log based on message type
-    if msg.Type == "transaction" {
-        var txHash string
-        if msg.Data != nil {
-            txHash = msg.Data["transaction_hash"]
-            if txHash == "" {
-                txHash = msg.Data["transaction_id"]
-            }
-        }
-        log.Info().
-            Str("msg_id", msg.ID).
-            Str("tx_hash", txHash).
-            Str("type", msg.Type).
-            Int("peers", len(peers)).
-            Msg("Starting propagation to peers")
-    } else {
-        log.Info().
-            Str("msg_id", msg.ID).
-            Str("nonce", msg.Nonce).
-            Str("type", msg.Type).
-            Int("peers", len(peers)).
-            Msg("Starting propagation to peers")
-    }
-    
-    // Send message to all peers
+    // Send to all peers concurrently
     var wg sync.WaitGroup
     var successCount int
     var successMutex sync.Mutex
     
     for _, peerID := range peers {
-        // Skip timed out peers
-        if isPeerTimedOut(peerID.String()) {
-            continue
-        }
-        
         wg.Add(1)
         go func(peer peer.ID) {
             defer wg.Done()
             
-            // Open stream to peer with timeout
             ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
             defer cancel()
             
+            // Use the correct protocol ID from constants
             stream, err := h.NewStream(ctx, peer, config.BlockPropagationProtocol)
             if err != nil {
-                log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open stream")
+                log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to open stream")
                 return
             }
             defer stream.Close()
             
-            // Send the message
-            _, err = stream.Write(msgBytes)
-            if err != nil {
-                log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to send message")
+            if _, err := stream.Write(msgBytes); err != nil {
+                log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to write message")
                 return
             }
             
-            // Record success
             successMutex.Lock()
             successCount++
             successMutex.Unlock()
             
-            // Record metrics
-            metrics.MessagesSentCounter.WithLabelValues(msg.Type, peer.String()).Inc()
+            metrics.MessagesSentCounter.WithLabelValues("zkblock", peer.String()).Inc()
         }(peerID)
     }
     
-    // Wait for all sends to complete
     wg.Wait()
     
-    if successCount == 0 && len(peers) > 0 {
-        return fmt.Errorf("failed to propagate to any peers")
-    }
-    
     log.Info().
-        Str("msg_id", msg.ID).
-        Str("type", msg.Type).
+        Str("block_hash", block.BlockHash.Hex()).
         Int("success", successCount).
         Int("total", len(peers)).
-        Msg("Propagation complete")
+        Msg("ZK block propagated successfully")
     
-    helper.NotifyBroadcast(msg)
     return nil
 }
 
@@ -537,15 +524,11 @@ func propagateMessage(h host.Host, msg config.BlockMessage) error {
 func GetAllMessages() ([]string, error) {
     const setKey = "crdt:message_set"
     
-    // Try to get the current set
     var messageSet map[string]bool
-    err := DB_OPs.ReadJSON(immuClient,setKey, &messageSet)
-    
-    if err != nil {
+    if err := DB_OPs.ReadJSON(immuClient, setKey, &messageSet); err != nil {
         return nil, fmt.Errorf("failed to read message set: %w", err)
     }
     
-    // Convert map keys to slice
     keys := make([]string, 0, len(messageSet))
     for key := range messageSet {
         keys = append(keys, key)
@@ -557,33 +540,33 @@ func GetAllMessages() ([]string, error) {
 // GetMessage retrieves a message by key
 func GetMessage(key string) (*config.BlockMessage, error) {
     var message config.BlockMessage
-    err := DB_OPs.ReadJSON(immuClient,key, &message)
-    if err != nil {
+    if err := DB_OPs.ReadJSON(immuClient, key, &message); err != nil {
         return nil, fmt.Errorf("failed to read message data: %w", err)
     }
     
     return &message, nil
 }
 
-// GetTransactionByHash retrieves a transaction by hash
-func GetTransactionByHash(txHash string) (*config.BlockMessage, error) {
-    key := fmt.Sprintf("tx:%s", txHash)
-    return GetMessage(key)
-}
-
-// GetBlockByNonce retrieves a block by nonce
-func GetBlockByNonce(nonce string) (*config.BlockMessage, error) {
-    key := fmt.Sprintf("crdt:nonce:%s", nonce)
-    return GetMessage(key)
-}
-
-// GetNonceData retrieves the data for a specific nonce (backward compatibility)
-func GetNonceData(nonce string) (map[string]string, error) {
-    message, err := GetBlockByNonce(nonce)
+// GetZKBlockByHash retrieves a ZK block by its hash
+func GetZKBlockByHash(blockHash string) (*config.ZKBlock, error) {
+    key := fmt.Sprintf("zkblock:%s", blockHash)
+    
+    msg, err := GetMessage(key)
     if err != nil {
-        return nil, err
+        return nil, fmt.Errorf("block not found: %w", err)
     }
     
-    // Return the data map
-    return message.Data, nil
+    if msg.ZKBlock == nil {
+        return nil, fmt.Errorf("message found but does not contain a ZK block")
+    }
+    
+    return msg.ZKBlock, nil
+}
+
+// Helper function for min value
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
 }

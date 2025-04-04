@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.3.0
 // - protoc             v3.12.4
-// source: DID/proto/DID.proto
+// source: DID.proto
 
 package proto
 
@@ -24,6 +24,7 @@ const (
 	DIDService_GetDID_FullMethodName      = "/proto.DIDService/GetDID"
 	DIDService_ListDIDs_FullMethodName    = "/proto.DIDService/ListDIDs"
 	DIDService_GetDIDStats_FullMethodName = "/proto.DIDService/GetDIDStats"
+	DIDService_UpdateDID_FullMethodName   = "/proto.DIDService/UpdateDID"
 )
 
 // DIDServiceClient is the client API for DIDService service.
@@ -38,6 +39,8 @@ type DIDServiceClient interface {
 	ListDIDs(ctx context.Context, in *ListDIDsRequest, opts ...grpc.CallOption) (*ListDIDsResponse, error)
 	// Get stats about the DID system
 	GetDIDStats(ctx context.Context, in *empty.Empty, opts ...grpc.CallOption) (*DIDStats, error)
+	// Update an existing DID
+	UpdateDID(ctx context.Context, in *UpdateDIDRequest, opts ...grpc.CallOption) (*UpdateDIDResponse, error)
 }
 
 type dIDServiceClient struct {
@@ -84,6 +87,15 @@ func (c *dIDServiceClient) GetDIDStats(ctx context.Context, in *empty.Empty, opt
 	return out, nil
 }
 
+func (c *dIDServiceClient) UpdateDID(ctx context.Context, in *UpdateDIDRequest, opts ...grpc.CallOption) (*UpdateDIDResponse, error) {
+	out := new(UpdateDIDResponse)
+	err := c.cc.Invoke(ctx, DIDService_UpdateDID_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DIDServiceServer is the server API for DIDService service.
 // All implementations must embed UnimplementedDIDServiceServer
 // for forward compatibility
@@ -96,6 +108,8 @@ type DIDServiceServer interface {
 	ListDIDs(context.Context, *ListDIDsRequest) (*ListDIDsResponse, error)
 	// Get stats about the DID system
 	GetDIDStats(context.Context, *empty.Empty) (*DIDStats, error)
+	// Update an existing DID
+	UpdateDID(context.Context, *UpdateDIDRequest) (*UpdateDIDResponse, error)
 	mustEmbedUnimplementedDIDServiceServer()
 }
 
@@ -114,6 +128,9 @@ func (UnimplementedDIDServiceServer) ListDIDs(context.Context, *ListDIDsRequest)
 }
 func (UnimplementedDIDServiceServer) GetDIDStats(context.Context, *empty.Empty) (*DIDStats, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetDIDStats not implemented")
+}
+func (UnimplementedDIDServiceServer) UpdateDID(context.Context, *UpdateDIDRequest) (*UpdateDIDResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateDID not implemented")
 }
 func (UnimplementedDIDServiceServer) mustEmbedUnimplementedDIDServiceServer() {}
 
@@ -200,6 +217,24 @@ func _DIDService_GetDIDStats_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DIDService_UpdateDID_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateDIDRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DIDServiceServer).UpdateDID(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DIDService_UpdateDID_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DIDServiceServer).UpdateDID(ctx, req.(*UpdateDIDRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DIDService_ServiceDesc is the grpc.ServiceDesc for DIDService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -223,7 +258,11 @@ var DIDService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "GetDIDStats",
 			Handler:    _DIDService_GetDIDStats_Handler,
 		},
+		{
+			MethodName: "UpdateDID",
+			Handler:    _DIDService_UpdateDID_Handler,
+		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "DID/proto/DID.proto",
+	Metadata: "DID.proto",
 }

@@ -144,7 +144,7 @@ func NewNode() (*config.Node, error) {
 		return nil, fmt.Errorf("failed to start libp2p: %v", err)
 	}
 
-    if err := messaging.InitBlockPropagation(); err != nil {
+    if err := messaging.InitBlockPropagation(h); err != nil {
         fmt.Errorf("failed to initialize block propagation: %v", err)
         return nil, err
     }

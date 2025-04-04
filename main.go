@@ -561,10 +561,15 @@ func main() {
                 }
                 did := parts[1]
                 publicKey := parts[2]
-                
+                balance := parts[3]
+                value := DB_OPs.DIDDocument{
+                    DID:       did,
+                    PublicKey: publicKey,
+                    Balance:  balance,
+                } 
                 fmt.Printf("Propagating DID %s with public key %s to the network...\n", did, publicKey)
                 
-                err := messaging.PropagateDID(n.Host, did, publicKey)
+                err := messaging.PropagateDID(n.Host, &value)
                 if err != nil {
                     fmt.Printf("Failed to propagate DID: %v\n", err)
                 } else {

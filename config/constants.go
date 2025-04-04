@@ -142,7 +142,8 @@ type BlockMessage struct {
     Timestamp   int64               `json:"timestamp"`             // Unix timestamp when message was created
     Nonce       string              `json:"nonce"`                 // Unique nonce for CRDT
     Data        map[string]string   `json:"data,omitempty"`        // Data payload for generic messages
-    Transaction *Transaction  `json:"transaction,omitempty"` // Structured transaction data
+    Transaction *Transaction        `json:"transaction,omitempty"` // Structured transaction data
+    ZKBlock     *ZKBlock            `json:"zkblock,omitempty"`     // ZK block data for block propagation
     Type        string              `json:"type"`                  // "transaction", "block", "message", etc.
     Hops        int                 `json:"hops"`                  // How many hops this message has made
 }
