@@ -257,23 +257,10 @@ func HandleBlockStream(stream network.Stream) {
                 Uint64("block_number", msg.ZKBlock.BlockNumber).
                 Msg("Processing block transactions")
                 
-            // Process all transactions (which includes validation)
-            var processingFailed bool
-            for i, tx := range msg.ZKBlock.Transactions {
-                if err := BlockProcessing.ProcessTransaction(tx, msg.ZKBlock.CoinbaseAddr, msg.ZKBlock.ZKVMAddr, accountsClient); err != nil {
-                    log.Error().
-                        Err(err).
-                        Str("tx_hash", tx.Hash).
-                        Int("tx_index", i).
-                        Msg("Transaction failed")
-                    processingFailed = true
-                    break
-                }
-            }
-            
-            // Only store the block if all transactions processed successfully
-            if processingFailed {
+            // Process all transactions in the block atomically with rollback capability
+            if err := BlockProcessing.ProcessBlockTransactions(msg.ZKBlock, accountsClient); err != nil {
                 log.Error().
+                    Err(err).
                     Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
                     Msg("Block processing failed - not storing block")
                 return
@@ -380,6 +367,7 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 }
 
 // PropagateZKBlock creates and propagates a complete ZK block to the network
+// PropagateZKBlock creates and propagates a complete ZK block to the network
 // This function is called by Server.go when receiving a new block via API
 func PropagateZKBlock(h host.Host, block *config.ZKBlock) error {
     // Step 1: Set up database connections
@@ -401,11 +389,9 @@ func PropagateZKBlock(h host.Host, block *config.ZKBlock) error {
         Int("txn_count", len(block.Transactions)).
         Msg("Starting ZK block propagation")
     
-    // Step 2: Validate and process all transactions locally first
-    for i, tx := range block.Transactions {
-        if err := BlockProcessing.ProcessTransaction(tx, block.CoinbaseAddr, block.ZKVMAddr, accountsClient); err != nil {
-            return fmt.Errorf("transaction validation failed (index %d, hash %s): %w", i, tx.Hash, err)
-        }
+    // Step 2: Process the entire block atomically with proper rollback capability
+    if err := BlockProcessing.ProcessBlockTransactions(block, accountsClient); err != nil {
+        return fmt.Errorf("block validation failed: %w", err)
     }
     
     // Step 3: Store the block in main DB - all transactions are valid
