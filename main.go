@@ -334,6 +334,7 @@ func main() {
     fmt.Println("  dbstate                           - Show current ImmuDB database state")
     fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
     fmt.Println("  getDID <did>                      - Get a DID document from the network")
+    fmt.Println("  syncinfo                          - Show FastSync configuration")
     fmt.Println("  exit                              - Exit the program\n")
 
 
@@ -593,7 +594,15 @@ func main() {
                 } else {
                     fmt.Println("DID propagated successfully to all connected peers")
             }
-            
+
+            case "syncinfo":
+                fmt.Println("FastSync Configuration:")
+                fmt.Printf("  Batch Size: %d\n", fastsync.SyncBatchSize)
+                fmt.Printf("  Bloom Filter Size: %d\n", fastsync.BloomFilterSize)
+                fmt.Printf("  Request Timeout: %v\n", fastsync.RequestTimeout)
+                fmt.Printf("  Response Timeout: %v\n", fastsync.ResponseTimeout)
+                printDashes()
+        
             case "getDID":
                 if len(parts) != 2 {
                     fmt.Println("Usage: getDID <did>")

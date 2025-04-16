@@ -1,25 +1,26 @@
 package fastsync
 
 import (
-    "bufio"
-    "bytes"
-    "context"
-    "crypto/sha256"
-    "encoding/json"
-    "fmt"
-    "io"
-    "sync"
-    "time"
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"io"
+	"strings"
+	"sync"
+	"time"
 
-    "github.com/bits-and-blooms/bloom/v3"
-    "github.com/libp2p/go-libp2p/core/host"
-    "github.com/libp2p/go-libp2p/core/network"
-    "github.com/libp2p/go-libp2p/core/peer"
-    "github.com/rs/zerolog/log"
+	"github.com/bits-and-blooms/bloom/v3"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/rs/zerolog/log"
 
-    "gossipnode/DB_OPs"
-    "gossipnode/config"
-    "gossipnode/crdt"
+	"gossipnode/DB_OPs"
+	"gossipnode/config"
+	"gossipnode/crdt"
 )
 
 // Constants for FastSync
@@ -155,14 +156,29 @@ func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, err
         return nil, fmt.Errorf("failed to set read deadline: %w", err)
     }
     
-    msgBytes, err := reader.ReadBytes('\n')
-    if err != nil {
-        return nil, fmt.Errorf("failed to read message: %w", err)
+    // Use a larger buffer for reading message data
+    var msgData []byte
+    
+    // Read until newline to get complete message
+    for {
+        chunk, isPrefix, err := reader.ReadLine()
+        if err != nil {
+            return nil, fmt.Errorf("failed to read message: %w", err)
+        }
+        
+        msgData = append(msgData, chunk...)
+        
+        if !isPrefix {
+            break
+        }
     }
     
+    // Add debugging to show message size
+    log.Debug().Int("bytes", len(msgData)).Msg("Read message data")
+    
     var msg SyncMessage
-    if err := json.Unmarshal(msgBytes, &msg); err != nil {
-        return nil, fmt.Errorf("failed to unmarshal message: %w", err)
+    if err := json.Unmarshal(msgData, &msg); err != nil {
+        return nil, fmt.Errorf("failed to unmarshal message (%d bytes): %w", len(msgData), err)
     }
     
     return &msg, nil
@@ -494,6 +510,26 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
     entries, crdts, err := fs.getBatchData(db, crdtEngine, filter)
     if err != nil {
         return nil, fmt.Errorf("failed to get batch data: %w", err)
+    }
+    
+    // Limit entries to avoid overly large responses
+    const maxEntriesPerBatch = 100
+    if len(entries) > maxEntriesPerBatch {
+        log.Warn().
+            Int("total_entries", len(entries)).
+            Int("limited_to", maxEntriesPerBatch).
+            Msg("Limiting batch size to avoid data truncation")
+        entries = entries[:maxEntriesPerBatch]
+    }
+    
+    // Limit CRDTs too
+    const maxCRDTsPerBatch = 50
+    if len(crdts) > maxCRDTsPerBatch {
+        log.Warn().
+            Int("total_crdts", len(crdts)).
+            Int("limited_to", maxCRDTsPerBatch).
+            Msg("Limiting CRDT batch size to avoid data truncation")
+        crdts = crdts[:maxCRDTsPerBatch]
     }
     
     // Create batch data
@@ -1108,9 +1144,11 @@ func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, wr
     // Read response
     batchResp, err := readMessage(reader, stream)
     if err != nil {
+        if strings.Contains(err.Error(), "unexpected end of JSON input") {
+            return fmt.Errorf("received truncated data - try reducing batch size: %w", err)
+        }
         return fmt.Errorf("failed to read batch data: %w", err)
     }
-    
     // Check for abort message
     if batchResp.Type == TypeSyncAbort {
         return fmt.Errorf("peer aborted sync: %s", batchResp.ErrorMessage)
