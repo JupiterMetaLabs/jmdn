@@ -1,40 +1,47 @@
 package fastsync
 
 import (
-	"bufio"
-	"bytes"
-	"context"
-	"crypto/sha256"
-	"encoding/json"
-	"fmt"
-	"io"
-	"sync"
-	"time"
+    "bufio"
+    "bytes"
+    "context"
+    "crypto/sha256"
+    "encoding/json"
+    "fmt"
+    "io"
+    "sync"
+    "time"
 
-	"github.com/bits-and-blooms/bloom/v3"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/rs/zerolog/log"
+    "github.com/bits-and-blooms/bloom/v3"
+    "github.com/libp2p/go-libp2p/core/host"
+    "github.com/libp2p/go-libp2p/core/network"
+    "github.com/libp2p/go-libp2p/core/peer"
+    "github.com/rs/zerolog/log"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-	"gossipnode/crdt"
+    "gossipnode/DB_OPs"
+    "gossipnode/config"
+    "gossipnode/crdt"
 )
+
+// Constants for FastSync
+const (
+    SyncProtocolID      = config.SyncProtocol
+    BloomFilterSize     = 100000
+    SyncBatchSize       = 200
+    MaxRetries          = 3
+    SyncTimeout         = 5 * time.Minute
+    RequestTimeout      = 30 * time.Second
+    ResponseTimeout     = 60 * time.Second
+    RetryDelay          = 500 * time.Millisecond
+)
+
+// DatabaseType specifies which database to operate on
+type DatabaseType int
 
 const (
-    SyncProtocolID        = config.SyncProtocol
-    BloomFilterSize       = 100000  // Keep this the same
-    BloomFilterHashFuncs  = 5       // Keep this the same
-    BloomFilterCapacity   = 100000  // Add this new constant for capacity estimation
-    SyncBatchSize         = 200     // Number of transactions to sync in each batch
-    MaxConcurrentBatches  = 8       // Maximum number of batches to process concurrently
-    RetriesBeforeAborting = 3       // Maximum number of retries for failed batches
-    SyncTimeout           = 5 * time.Minute
-    SyncRequestTimeout    = 30 * time.Second
-    SyncResponseTimeout   = 2 * time.Minute
+    MainDB DatabaseType = iota
+    AccountsDB
 )
-var DebugMode = false
+
 // Message types
 const (
     TypeSyncRequest         = "SYNC_REQ"
@@ -50,26 +57,35 @@ const (
 
 // SyncMessage represents a sync protocol message
 type SyncMessage struct {
-    Type          string          `json:"type"`
-    SenderID      string          `json:"sender_id"`
-    TxID          uint64          `json:"tx_id,omitempty"`
-    StartTxID     uint64          `json:"start_tx_id,omitempty"`
-    EndTxID       uint64          `json:"end_tx_id,omitempty"`
-    BatchNumber   int             `json:"batch_number,omitempty"`
-    TotalBatches  int             `json:"total_batches,omitempty"`
-    BloomFilter   []byte          `json:"bloom_filter,omitempty"`
-    MerkleRoot    []byte          `json:"merkle_root,omitempty"`
-    KeysCount     int             `json:"keys_count,omitempty"`
-    Data          json.RawMessage `json:"data,omitempty"`
-    Success       bool            `json:"success,omitempty"`
-    ErrorMessage  string          `json:"error_message,omitempty"`
-    Timestamp     int64           `json:"timestamp"`
+    Type         string          `json:"type"`
+    SenderID     string          `json:"sender_id"`
+    TxID         uint64          `json:"tx_id,omitempty"`
+    StartTxID    uint64          `json:"start_tx_id,omitempty"`
+    EndTxID      uint64          `json:"end_tx_id,omitempty"`
+    BatchNumber  int             `json:"batch_number,omitempty"`
+    TotalBatches int             `json:"total_batches,omitempty"`
+    BloomFilter  []byte          `json:"bloom_filter,omitempty"`
+    MerkleRoot   []byte          `json:"merkle_root,omitempty"`
+    KeysCount    int             `json:"keys_count,omitempty"`
+    Data         json.RawMessage `json:"data,omitempty"`
+    Success      bool            `json:"success,omitempty"`
+    ErrorMessage string          `json:"error_message,omitempty"`
+    Timestamp    int64           `json:"timestamp"`
+    DBType       DatabaseType    `json:"db_type,omitempty"`
+}
+
+// DBState contains the state of a database
+type DBState struct {
+    Type       DatabaseType `json:"type"`
+    TxID       uint64       `json:"tx_id"`
+    MerkleRoot []byte       `json:"merkle_root"`
 }
 
 // BatchData represents a batch of key-value entries
 type BatchData struct {
-    Entries []KeyValueEntry    `json:"entries"`
-    CRDTs   []json.RawMessage  `json:"crdts"` // Change this from []crdt.CRDT to []json.RawMessage
+    Entries []KeyValueEntry   `json:"entries"`
+    CRDTs   []json.RawMessage `json:"crdts"`
+    DBType  DatabaseType      `json:"db_type"`
 }
 
 // KeyValueEntry represents a key-value entry in ImmuDB
@@ -80,49 +96,127 @@ type KeyValueEntry struct {
     TxID      uint64    `json:"tx_id"`
 }
 
-// FastSync manages the sync process between nodes
-type FastSync struct {
-    host       host.Host
-    db         *config.ImmuClient
-    crdtEngine *crdt.Engine
-    active     map[peer.ID]*syncState
-    mutex      sync.RWMutex
-}
-
-// syncState tracks the state of an ongoing sync
+// syncState tracks an ongoing synchronization
 type syncState struct {
-    peer            peer.ID
-    startTime       time.Time
-    startTxID       uint64
-    endTxID         uint64
-    currentTxID     uint64
-    totalBatches    int
-    completedBatches int
-    batchResults    map[int]bool // Track success/fail by batch number
-    retries         map[int]int  // Track retry counts by batch number
-    cancel          context.CancelFunc
-    sentKeys        *bloom.BloomFilter
-    receivedKeys    *bloom.BloomFilter
+    peer           peer.ID
+    startTime      time.Time
+    mainStartTxID  uint64
+    mainEndTxID    uint64
+    acctsStartTxID uint64
+    acctsEndTxID   uint64
+    batches        int
+    completed      int
+    mainBloom      *bloom.BloomFilter
+    acctsBloom     *bloom.BloomFilter
+    currentDB      DatabaseType
+    cancel         context.CancelFunc
 }
 
-// NewFastSync creates a new FastSync service
-func NewFastSync(h host.Host, db *config.ImmuClient) *FastSync {
+// FastSync manages the synchronization process
+type FastSync struct {
+    host        host.Host
+    mainDB      *config.ImmuClient
+    accountsDB  *config.ImmuClient
+    mainCRDT    *crdt.Engine
+    acctsCRDT   *crdt.Engine
+    active      map[peer.ID]*syncState
+    mutex       sync.RWMutex
+}
+
+// NewFastSync creates a new FastSync instance
+func NewFastSync(h host.Host, mainDB, accountsDB *config.ImmuClient) *FastSync {
     fs := &FastSync{
         host:       h,
-        db:         db,
-        crdtEngine: crdt.NewEngine(db),
+        mainDB:     mainDB,
+        accountsDB: accountsDB,
+        mainCRDT:   crdt.NewEngine(mainDB),
+        acctsCRDT:  crdt.NewEngine(accountsDB),
         active:     make(map[peer.ID]*syncState),
     }
 
     // Register protocol handler
-    h.SetStreamHandler(SyncProtocolID, fs.handleSyncStream)
+    h.SetStreamHandler(SyncProtocolID, fs.handleStream)
     
-    log.Info().Msg("FastSync service initialized")
+    log.Info().Msg("FastSync initialized with multi-database support")
     return fs
 }
 
-// Fix the handleSyncStream function in fastsync.go
-func (fs *FastSync) handleSyncStream(stream network.Stream) {
+// getDB returns the appropriate database client and CRDT engine
+func (fs *FastSync) getDB(dbType DatabaseType) (*config.ImmuClient, *crdt.Engine) {
+    if dbType == AccountsDB {
+        return fs.accountsDB, fs.acctsCRDT
+    }
+    return fs.mainDB, fs.mainCRDT
+}
+
+// readMessage reads a message from a stream with timeout
+func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, error) {
+    if err := stream.SetReadDeadline(time.Now().Add(ResponseTimeout)); err != nil {
+        return nil, fmt.Errorf("failed to set read deadline: %w", err)
+    }
+    
+    msgBytes, err := reader.ReadBytes('\n')
+    if err != nil {
+        return nil, fmt.Errorf("failed to read message: %w", err)
+    }
+    
+    var msg SyncMessage
+    if err := json.Unmarshal(msgBytes, &msg); err != nil {
+        return nil, fmt.Errorf("failed to unmarshal message: %w", err)
+    }
+    
+    return &msg, nil
+}
+
+// writeMessage writes a message to a stream
+func writeMessage(writer *bufio.Writer, stream network.Stream, msg *SyncMessage) error {
+    msgBytes, err := json.Marshal(msg)
+    if err != nil {
+        return fmt.Errorf("failed to marshal message: %w", err)
+    }
+    msgBytes = append(msgBytes, '\n')
+    
+    if err := stream.SetWriteDeadline(time.Now().Add(ResponseTimeout)); err != nil {
+        return fmt.Errorf("failed to set write deadline: %w", err)
+    }
+    
+    if _, err := writer.Write(msgBytes); err != nil {
+        return fmt.Errorf("failed to write message: %w", err)
+    }
+    
+    if err := writer.Flush(); err != nil {
+        return fmt.Errorf("failed to flush message: %w", err)
+    }
+    
+    return nil
+}
+
+// retry attempts an operation with retries
+func retry(operation func() error) error {
+    var lastErr error
+    backoff := RetryDelay
+    
+    for attempt := 0; attempt < MaxRetries; attempt++ {
+        if attempt > 0 {
+            log.Debug().Int("attempt", attempt+1).Dur("delay", backoff).Msg("Retrying operation")
+            time.Sleep(backoff)
+            backoff *= 2 // Exponential backoff
+        }
+        
+        if err := operation(); err == nil {
+            return nil // Success
+        } else {
+            lastErr = err
+        }
+    }
+    
+    return fmt.Errorf("operation failed after %d attempts: %w", MaxRetries, lastErr)
+}
+
+// handleStream processes incoming sync protocol messages
+func (fs *FastSync) handleStream(stream network.Stream) {
+    defer stream.Close()
+    
     peerID := stream.Conn().RemotePeer()
     remote := stream.Conn().RemoteMultiaddr().String()
     
@@ -135,14 +229,7 @@ func (fs *FastSync) handleSyncStream(stream network.Stream) {
     writer := bufio.NewWriter(stream)
     
     for {
-        // Set read deadline
-        if err := stream.SetReadDeadline(time.Now().Add(SyncResponseTimeout)); err != nil {
-            log.Error().Err(err).Msg("Failed to set read deadline")
-            break
-        }
-        
-        // Read message
-        msgBytes, err := reader.ReadBytes('\n')
+        msg, err := readMessage(reader, stream)
         if err != nil {
             if err != io.EOF {
                 log.Debug().Err(err).Msg("Error reading from stream")
@@ -150,42 +237,34 @@ func (fs *FastSync) handleSyncStream(stream network.Stream) {
             break
         }
         
-        // Parse message
-        var msg SyncMessage
-        if err := json.Unmarshal(msgBytes, &msg); err != nil {
-            log.Error().Err(err).Msg("Failed to parse sync message")
-            break
-        }
-        
-        // Handle message based on type
         var response *SyncMessage
         var handleErr error
         
         switch msg.Type {
         case TypeSyncRequest:
-            response, handleErr = fs.handleSyncRequest(peerID, &msg)
+            response, handleErr = fs.handleSyncRequest(peerID, msg)
         case TypeBloomFilterExchange:
-            response, handleErr = fs.handleBloomFilterExchange(peerID, &msg)
+            response, handleErr = fs.handleBloomFilter(peerID, msg)
         case TypeBatchRequest:
-            response, handleErr = fs.handleBatchRequest(peerID, &msg)
+            response, handleErr = fs.handleBatchRequest(peerID, msg)
         case TypeBatchData:
-            response, handleErr = fs.handleBatchData(peerID, &msg)
-        case TypeSyncComplete:
-            response, handleErr = fs.handleSyncComplete(peerID, &msg)
+            response, handleErr = fs.handleBatchData(peerID, msg)
         case TypeVerificationRequest:
-            response, handleErr = fs.handleVerificationRequest(peerID, &msg)
+            response, handleErr = fs.handleVerification(peerID)
+        case TypeSyncComplete:
+            response, handleErr = fs.handleSyncComplete(peerID, msg)
         default:
-            log.Warn().Str("type", msg.Type).Msg("Unknown message type received")
+            log.Warn().Str("type", msg.Type).Msg("Unknown message type")
             continue
         }
         
-        // Handle errors
         if handleErr != nil {
             log.Error().Err(handleErr).
                 Str("msg_type", msg.Type).
                 Str("peer", peerID.String()).
-                Msg("Error handling sync message")
+                Msg("Error handling message")
             
+            // Send abort message
             abortMsg := &SyncMessage{
                 Type:         TypeSyncAbort,
                 SenderID:     fs.host.ID().String(),
@@ -193,250 +272,226 @@ func (fs *FastSync) handleSyncStream(stream network.Stream) {
                 Timestamp:    time.Now().Unix(),
             }
             
-            abortBytes, _ := json.Marshal(abortMsg)
-            abortBytes = append(abortBytes, '\n')
-            
-            if err := stream.SetWriteDeadline(time.Now().Add(5 * time.Second)); err == nil {
-                writer.Write(abortBytes)
-                writer.Flush()
-            }
-            
+            writeMessage(writer, stream, abortMsg)
             break
         }
         
-        // Send response if needed
         if response != nil {
-            respBytes, err := json.Marshal(response)
-            if err != nil {
-                log.Error().Err(err).Msg("Failed to marshal response")
-                break
-            }
-            respBytes = append(respBytes, '\n')
-            
-            if err := stream.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
-                log.Error().Err(err).Msg("Failed to set write deadline")
-                break
-            }
-            
-            if _, err := writer.Write(respBytes); err != nil {
-                log.Error().Err(err).Msg("Failed to write response")
-                break
-            }
-            
-            if err := writer.Flush(); err != nil {
-                log.Error().Err(err).Msg("Failed to flush response")
+            if err := writeMessage(writer, stream, response); err != nil {
+                log.Error().Err(err).Msg("Failed to send response")
                 break
             }
         }
     }
 }
 
-// handleSyncRequest processes a sync request from a peer
+// handleSyncRequest processes an initial sync request
 func (fs *FastSync) handleSyncRequest(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
-    // Get current state from ImmuDB
-    state, err := DB_OPs.GetDatabaseState(fs.db)
+    // Get database states
+    mainState, err := DB_OPs.GetDatabaseState(fs.mainDB)
     if err != nil {
-        return nil, fmt.Errorf("failed to get database state: %w", err)
+        return nil, fmt.Errorf("failed to get main database state: %w", err)
+    }
+    
+    accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB)
+    if err != nil {
+        return nil, fmt.Errorf("failed to get accounts database state: %w", err)
     }
     
     log.Info().
         Str("peer", peerID.String()).
         Uint64("peer_tx_id", msg.TxID).
-        Uint64("our_tx_id", state.TxId).
+        Uint64("main_tx_id", mainState.TxId).
+        Uint64("accounts_tx_id", accountsState.TxId).
         Msg("Received sync request")
     
-    // Create new sync state
+    // Create sync context
     ctx, cancel := context.WithTimeout(context.Background(), SyncTimeout)
     
-    bloomFilter := bloom.NewWithEstimates(BloomFilterCapacity, 0.01) // 1% false positive rate    
-
     // Create sync state
-    syncState := &syncState{
-        peer:            peerID,
-        startTime:       time.Now(),
-        startTxID:       msg.TxID, // The remote node's current TxID
-        endTxID:         state.TxId,
-        currentTxID:     msg.TxID,
-        batchResults:    make(map[int]bool),
-        retries:         make(map[int]int),
-        cancel:          cancel,
-        sentKeys:        bloomFilter,
-        receivedKeys:    bloom.NewWithEstimates(BloomFilterSize, 0.01),
+    state := &syncState{
+        peer:           peerID,
+        startTime:      time.Now(),
+        mainStartTxID:  msg.TxID,
+        mainEndTxID:    mainState.TxId,
+        acctsStartTxID: msg.TxID,
+        acctsEndTxID:   accountsState.TxId,
+        mainBloom:      bloom.NewWithEstimates(BloomFilterSize, 0.01),
+        acctsBloom:     bloom.NewWithEstimates(BloomFilterSize, 0.01),
+        currentDB:      MainDB,
+        cancel:         cancel,
     }
     
     // Store sync state
     fs.mutex.Lock()
-    fs.active[peerID] = syncState
+    fs.active[peerID] = state
     fs.mutex.Unlock()
     
-    // Calculate number of batches
-    txDiff := state.TxId - msg.TxID
-    totalBatches := int((txDiff + SyncBatchSize - 1) / SyncBatchSize)
-    if totalBatches == 0 {
-        totalBatches = 1 // At least one batch even if no actual diff
+    // Calculate total batches
+    mainBatchCount := calculateBatchCount(msg.TxID, mainState.TxId)
+    acctsBatchCount := calculateBatchCount(msg.TxID, accountsState.TxId)
+    totalBatches := mainBatchCount + acctsBatchCount
+    
+    state.batches = totalBatches
+    
+    // Create database states array for response
+    dbStates := []DBState{
+        {
+            Type:       MainDB,
+            TxID:       mainState.TxId,
+            MerkleRoot: mainState.TxHash,
+        },
+        {
+            Type:       AccountsDB,
+            TxID:       accountsState.TxId,
+            MerkleRoot: accountsState.TxHash,
+        },
     }
     
-    syncState.totalBatches = totalBatches
-    
-    // Prepare response with our state
-    response := &SyncMessage{
-        Type:         TypeSyncResponse,
-        SenderID:     fs.host.ID().String(),
-        TxID:         state.TxId,
-        MerkleRoot:   state.TxHash,
-        TotalBatches: totalBatches,
-        Timestamp:    time.Now().Unix(),
+    statesData, err := json.Marshal(dbStates)
+    if err != nil {
+        cancel()
+        return nil, fmt.Errorf("failed to marshal DB states: %w", err)
     }
     
-    // Start a goroutine to monitor sync progress and timeout
+    // Monitor timeout
     go func() {
         defer cancel()
-        
-        select {
-        case <-ctx.Done():
-            if ctx.Err() == context.DeadlineExceeded {
-                log.Warn().
-                    Str("peer", peerID.String()).
-                    Dur("elapsed", time.Since(syncState.startTime)).
-                    Msg("Sync timed out")
-                
-                fs.cleanupSync(peerID)
-            }
+        <-ctx.Done()
+        if ctx.Err() == context.DeadlineExceeded {
+            log.Warn().
+                Str("peer", peerID.String()).
+                Dur("elapsed", time.Since(state.startTime)).
+                Msg("Sync timed out")
+            
+            fs.cleanupSync(peerID)
         }
     }()
     
-    // If we're synced already, no need to exchange data
-    if msg.TxID >= state.TxId {
-        log.Info().
-            Str("peer", peerID.String()).
-            Msg("Peer is already in sync")
-            
-        // Send sync complete message instead
-        return &SyncMessage{
-            Type:       TypeSyncComplete,
-            SenderID:   fs.host.ID().String(),
-            Success:    true,
-            MerkleRoot: state.TxHash,
-            Timestamp:  time.Now().Unix(),
-        }, nil
-    }
-    
-    return response, nil
+    // Return sync response
+    return &SyncMessage{
+        Type:         TypeSyncResponse,
+        SenderID:     fs.host.ID().String(),
+        TxID:         mainState.TxId,
+        MerkleRoot:   mainState.TxHash,
+        TotalBatches: totalBatches,
+        Data:         statesData,
+        Timestamp:    time.Now().Unix(),
+    }, nil
 }
 
-// handleBloomFilterExchange processes a bloom filter from a peer
-func (fs *FastSync) handleBloomFilterExchange(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
+// Calculate number of batches needed
+func calculateBatchCount(startTxID, endTxID uint64) int {
+    if startTxID >= endTxID {
+        return 1 // At least one batch even if no diff
+    }
+    
+    txDiff := endTxID - startTxID
+    return int((txDiff + SyncBatchSize - 1) / SyncBatchSize)
+}
+
+// handleBloomFilter processes bloom filter exchange
+func (fs *FastSync) handleBloomFilter(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
     fs.mutex.RLock()
-    syncState, exists := fs.active[peerID]
+    state, exists := fs.active[peerID]
     fs.mutex.RUnlock()
     
     if !exists {
         return nil, fmt.Errorf("no active sync for peer %s", peerID)
     }
     
-    log.Info().
-        Str("peer", peerID.String()).
-        Int("filter_size_bytes", len(msg.BloomFilter)).
-        Msg("Received Bloom filter")
-        
-    // Deserialize the bloom filter
-    remoteFilter := &bloom.BloomFilter{}
-    if err := remoteFilter.UnmarshalBinary(msg.BloomFilter); err != nil {
+    // Deserialize peer's bloom filter
+    peerBloom := &bloom.BloomFilter{}
+    if err := peerBloom.UnmarshalBinary(msg.BloomFilter); err != nil {
         return nil, fmt.Errorf("failed to deserialize bloom filter: %w", err)
     }
     
-    // Store the received filter
-    syncState.receivedKeys = remoteFilter
+    // Store in the appropriate bloom filter
+    if msg.DBType == AccountsDB {
+        state.acctsBloom = peerBloom
+    } else {
+        state.mainBloom = peerBloom
+    }
     
-    // Now we need to build our bloom filter of keys
-    ourFilter := bloom.NewWithEstimates(BloomFilterCapacity, 0.01) // 1% false positive rate    
-
-    // Get all keys from our database (or just the ones in the sync range)
-    keys, err := fs.getKeysInRange(syncState.startTxID, syncState.endTxID)
+    // Get database for current type
+    db, _ := fs.getDB(msg.DBType)
+    
+    // Build our bloom filter
+    ourBloom := bloom.NewWithEstimates(BloomFilterSize, 0.01)
+    
+    // Get all keys from database
+    keys, err := fs.getAllKeys(db)
     if err != nil {
         return nil, fmt.Errorf("failed to get keys: %w", err)
     }
     
-    // Add keys to our filter
+    // Add keys to filter
     for _, key := range keys {
-        addSafelyToBloomFilter(ourFilter, key)
+        addToBloomFilter(ourBloom, key)
     }
     
-    // Serialize our filter
-    filterBytes, err := ourFilter.MarshalBinary()
+    // Serialize filter
+    filterBytes, err := ourBloom.MarshalBinary()
     if err != nil {
         return nil, fmt.Errorf("failed to serialize bloom filter: %w", err)
     }
     
-    // Store our filter in the sync state
-    syncState.sentKeys = ourFilter
-    
-    // Send our filter back
+    // Return our filter
     return &SyncMessage{
         Type:        TypeBloomFilterExchange,
         SenderID:    fs.host.ID().String(),
         BloomFilter: filterBytes,
         KeysCount:   len(keys),
+        DBType:      msg.DBType,
         Timestamp:   time.Now().Unix(),
     }, nil
 }
 
-// getKeysInRange retrieves keys between specified transaction IDs
-func (fs *FastSync) getKeysInRange(startTxID, endTxID uint64) ([]string, error) {
-    // The maximum allowed limit is 2500, so we use this as our batch size
-    const maxKeysPerBatch = 2000 // Using slightly less than max to be safe
+// getAllKeys retrieves all keys from a database
+func (fs *FastSync) getAllKeys(db *config.ImmuClient) ([]string, error) {
+    const maxKeysPerBatch = 2000
     var allKeys []string
     var lastKey string
-    var count int
     
-    // Get keys in batches to respect ImmuDB's limits
     for {
-        keys, err := DB_OPs.GetKeys(fs.db,lastKey, maxKeysPerBatch)
+        keys, err := DB_OPs.GetKeys(db, lastKey, maxKeysPerBatch)
         if err != nil {
-            return nil, fmt.Errorf("GetKeys failed: %w", err)
+            return nil, fmt.Errorf("failed to get keys: %w", err)
         }
         
-        // Add keys to our collection
         allKeys = append(allKeys, keys...)
-        count = len(keys)
         
-        // If we got fewer keys than our limit, we've reached the end
-        if count < maxKeysPerBatch {
+        // Check if we've reached the end
+        if len(keys) < maxKeysPerBatch {
             break
         }
         
-        // Otherwise, set the last key for the next batch
-        lastKey = keys[count-1]
+        // Set last key for next batch
+        lastKey = keys[len(keys)-1]
     }
-    
-    log.Info().
-        Int("total_keys", len(allKeys)).
-        Uint64("start_tx", startTxID).
-        Uint64("end_tx", endTxID).
-        Msg("Retrieved keys from database")
     
     return allKeys, nil
 }
 
-// handleBatchRequest processes a request for a specific batch of data
+// handleBatchRequest processes a batch request
 func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
     fs.mutex.RLock()
-    syncState, exists := fs.active[peerID]
+    state, exists := fs.active[peerID]
     fs.mutex.RUnlock()
     
     if !exists {
         return nil, fmt.Errorf("no active sync for peer %s", peerID)
     }
     
-    log.Info().
-        Str("peer", peerID.String()).
-        Uint64("start_tx", msg.StartTxID).
-        Uint64("end_tx", msg.EndTxID).
-        Int("batch", msg.BatchNumber).
-        Msg("Received batch request")
+    // Get database and bloom filter
+    db, crdtEngine := fs.getDB(msg.DBType)
+    filter := state.mainBloom
+    if msg.DBType == AccountsDB {
+        filter = state.acctsBloom
+    }
     
-    // Gather keys/values to send based on bloom filter comparison
-    entries, crdts, err := fs.getBatchData(msg.StartTxID, msg.EndTxID, syncState.receivedKeys)
+    // Get batch data
+    entries, crdts, err := fs.getBatchData(db, crdtEngine, filter)
     if err != nil {
         return nil, fmt.Errorf("failed to get batch data: %w", err)
     }
@@ -445,20 +500,21 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
     batchData := BatchData{
         Entries: entries,
         CRDTs:   crdts,
+        DBType:  msg.DBType,
     }
     
-    // Serialize batch data
+    // Serialize data
     dataBytes, err := json.Marshal(batchData)
     if err != nil {
         return nil, fmt.Errorf("failed to serialize batch data: %w", err)
     }
-
+    
     log.Info().
         Str("peer", peerID.String()).
+        Int("batch", msg.BatchNumber).
         Int("entries", len(entries)).
         Int("crdts", len(crdts)).
-        Int("bytes", len(dataBytes)).
-        Int("batch", msg.BatchNumber).
+        Str("db", dbTypeToString(msg.DBType)).
         Msg("Sending batch data")
     
     // Send batch data
@@ -466,125 +522,101 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
         Type:        TypeBatchData,
         SenderID:    fs.host.ID().String(),
         BatchNumber: msg.BatchNumber,
-        StartTxID:   msg.StartTxID,
-        EndTxID:     msg.EndTxID,
         Data:        dataBytes,
+        DBType:      msg.DBType,
         Timestamp:   time.Now().Unix(),
     }, nil
 }
 
-// getBatchData retrieves data for a batch based on Bloom filter comparison
-// Fix the getBatchData function in fastsync.go
-func (fs *FastSync) getBatchData(startTxID, endTxID uint64, remoteFilter *bloom.BloomFilter) ([]KeyValueEntry, []json.RawMessage, error) {
+// getBatchData retrieves data for a batch
+func (fs *FastSync) getBatchData(db *config.ImmuClient, crdtEngine *crdt.Engine, peerBloom *bloom.BloomFilter) ([]KeyValueEntry, []json.RawMessage, error) {
     var entries []KeyValueEntry
-    var crdtEntries []json.RawMessage
+    var crdts []json.RawMessage
     
-    // Get all keys in this TxID range with pagination
-    const maxKeysPerBatch = 2000
-    var lastKey string
-    var continueLoop = true
+    // Get all keys
+    keys, err := fs.getAllKeys(db)
+    if err != nil {
+        return nil, nil, err
+    }
     
-    for continueLoop {
-        keys, err := DB_OPs.GetKeys(fs.db, lastKey, maxKeysPerBatch)
+    // Process keys
+    for _, key := range keys {
+        // Skip if peer already has this key
+        if peerBloom != nil && peerBloom.Test([]byte(key)) {
+            continue
+        }
+        
+        // Get key data
+        data, err := DB_OPs.Read(db, key)
         if err != nil {
-            return nil, nil, err
+            // Skip if not found
+            continue
         }
         
-        count := len(keys)
-        
-        // Process this batch of keys
-        for _, key := range keys {
-            // Only send keys that the remote node doesn't have
-            if !remoteFilter.Test([]byte(key)) {
-                // Get the key data
-                data, err := DB_OPs.Read(fs.db, key)
-                if err != nil {
-                    // Skip if key not found - might have been deleted
-                    continue
-                }
-                
-                // Check if this is a CRDT
-                if fs.crdtEngine.IsCRDT(key) {
-                    crdtValue, err := fs.crdtEngine.DeserializeCRDT(key, data, nil)
-                    if err == nil {
-                        // Wrap the CRDT in a type envelope for proper serialization/deserialization
-                        crdtType := ""
-                        switch crdtValue.(type) {
-                        case *crdt.LWWSet:
-                            crdtType = "lww-set"
-                        case *crdt.Counter:
-                            crdtType = "counter"
-                        default:
-                            crdtType = "unknown"
-                        }
-                        
-                        crdtJSON, err := json.Marshal(crdtValue)
-                        if err != nil {
-                            log.Error().Err(err).Msg("Failed to marshal CRDT to JSON")
-                            continue
-                        }
-                        
-                        // Then create a wrapper with the raw JSON
-                        wrapper := map[string]json.RawMessage{
-                            "type": json.RawMessage(fmt.Sprintf("\"%s\"", crdtType)),
-                            "data": crdtJSON,
-                        }
-                        
-                        // Serialize to JSON
-                        crdtBytes, err := json.Marshal(wrapper)
-                        if err == nil {
-                            crdtEntries = append(crdtEntries, crdtBytes)
-                        } else {
-                            log.Error().
-                                Err(err).
-                                Str("key", key).
-                                Msg("Failed to serialize CRDT")
-                        }
-                    } else {
-                        log.Error().
-                            Err(err).
-                            Str("key", key).
-                            Msg("Failed to deserialize CRDT")
-                    }
-                } else {
-                    // Regular key-value entry
-                    entries = append(entries, KeyValueEntry{
-                        Key:   []byte(key),
-                        Value: data,
-                        // Note: In a real implementation, we'd extract the actual timestamp and TxID
-                        Timestamp: time.Now(),
-                        TxID:      0,
-                    })
-                }
+        // Check if CRDT
+        if crdtEngine.IsCRDT(key) {
+            crdtWrapper, err := fs.serializeCRDT(crdtEngine, key, data)
+            if err != nil {
+                log.Error().Err(err).Str("key", key).Msg("Failed to serialize CRDT")
+                continue
             }
-        }
-        
-        // If we got fewer keys than our limit, we've reached the end
-        if count < maxKeysPerBatch {
-            continueLoop = false
+            crdts = append(crdts, crdtWrapper)
         } else {
-            // Set the last key for the next batch
-            lastKey = keys[count-1]
+            // Regular key-value
+            entries = append(entries, KeyValueEntry{
+                Key:       []byte(key),
+                Value:     data,
+                Timestamp: time.Now(),
+                TxID:      0,
+            })
         }
     }
     
-    return entries, crdtEntries, nil
+    return entries, crdts, nil
 }
-// handleBatchData processes a batch of data from a peer
+
+// serializeCRDT prepares a CRDT for transmission
+func (fs *FastSync) serializeCRDT(crdtEngine *crdt.Engine, key string, data []byte) (json.RawMessage, error) {
+    // Deserialize the CRDT
+    crdtValue, err := crdtEngine.DeserializeCRDT(key, data, nil)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Determine CRDT type
+    crdtType := "unknown"
+    switch crdtValue.(type) {
+    case *crdt.LWWSet:
+        crdtType = "lww-set"
+    case *crdt.Counter:
+        crdtType = "counter"
+    }
+    
+    // Serialize CRDT
+    crdtJSON, err := json.Marshal(crdtValue)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Create wrapper with type
+    wrapper := map[string]json.RawMessage{
+        "type": json.RawMessage(fmt.Sprintf(`"%s"`, crdtType)),
+        "data": crdtJSON,
+    }
+    
+    // Serialize wrapper
+    return json.Marshal(wrapper)
+}
+
+// handleBatchData processes received batch data
 func (fs *FastSync) handleBatchData(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
     fs.mutex.RLock()
-    syncState, exists := fs.active[peerID]
+    state, exists := fs.active[peerID]
     fs.mutex.RUnlock()
     
     if !exists {
         return nil, fmt.Errorf("no active sync for peer %s", peerID)
     }
-    
-    log.Info().
-        Str("peer", peerID.String()).
-        Int("batch", msg.BatchNumber).
-        Int("data_bytes", len(msg.Data)).
-        Msg("Received batch data")
     
     // Parse batch data
     var batchData BatchData
@@ -592,115 +624,49 @@ func (fs *FastSync) handleBatchData(peerID peer.ID, msg *SyncMessage) (*SyncMess
         return nil, fmt.Errorf("failed to parse batch data: %w", err)
     }
     
-    // Process entries first (no change)
-    entries := make(map[string]interface{})
-    for _, entry := range batchData.Entries {
-        key := string(entry.Key)
-        entries[key] = entry.Value
+    // Get database and CRDT engine
+    db, crdtEngine := fs.getDB(batchData.DBType)
+    
+    // Process entries
+    if err := fs.storeEntries(db, batchData.Entries); err != nil {
+        return nil, fmt.Errorf("failed to store entries: %w", err)
     }
     
-    // Batch create the entries if we have any (no change)
-    if len(entries) > 0 {
-        if err := DB_OPs.BatchCreate(fs.db, entries); err != nil {
-            return nil, fmt.Errorf("failed to store batch entries: %w", err)
-        }
-    }
-    
-    // Process CRDTs with proper type handling
-    if len(batchData.CRDTs) > 0 {
-        for _, crdtBytes := range batchData.CRDTs {
-            // Parse the wrapper first
-            var wrapper map[string]json.RawMessage
-            if err := json.Unmarshal(crdtBytes, &wrapper); err != nil {
-                log.Error().Err(err).Msg("Failed to unmarshal CRDT wrapper")
-                continue
-            }
-            
-            // Get the type
-            var crdtType string
-            if err := json.Unmarshal(wrapper["type"], &crdtType); err != nil {
-                log.Error().Err(err).Msg("Failed to unmarshal CRDT type")
-                continue
-            }
-            
-            // Create the correct CRDT type based on the type string
-            var crdtValue crdt.CRDT
-            switch crdtType {
-            case "lww-set":
-                crdtValue = &crdt.LWWSet{}
-            case "counter":
-                crdtValue = &crdt.Counter{}
-            default:
-                log.Error().Str("type", crdtType).Msg("Unknown CRDT type")
-                continue
-            }
-            
-            // Unmarshal the data into the specific CRDT type
-            if err := json.Unmarshal(wrapper["data"], crdtValue); err != nil {
-                log.Error().
-                    Err(err).
-                    Str("type", crdtType).
-                    Msg("Failed to unmarshal CRDT data")
-                continue
-            }
-            
-            // Now you have a properly deserialized CRDT
-            mergedCRDT, err := fs.crdtEngine.MergeCRDT(crdtValue)
-            if err != nil {
-                log.Error().Err(err).
-                    Str("key", crdtValue.GetKey()).
-                    Msg("Failed to merge CRDT")
-                continue
-            }
-            
-            // Store the merged CRDT
-            if err := fs.crdtEngine.StoreCRDT(mergedCRDT); err != nil {
-                log.Error().Err(err).
-                    Str("key", crdtValue.GetKey()).
-                    Msg("Failed to store merged CRDT")
-                continue
-            }
-        }
+    // Process CRDTs
+    if err := fs.storeCRDTs(crdtEngine, batchData.CRDTs); err != nil {
+        return nil, fmt.Errorf("failed to store CRDTs: %w", err)
     }
     
     // Update sync state
     fs.mutex.Lock()
-    syncState.batchResults[msg.BatchNumber] = true
-    syncState.completedBatches++
-    
-    // Track progress
-    progress := float64(syncState.completedBatches) / float64(syncState.totalBatches) * 100
+    state.completed++
+    progress := float64(state.completed) / float64(state.batches) * 100
     fs.mutex.Unlock()
     
     log.Info().
         Str("peer", peerID.String()).
         Int("batch", msg.BatchNumber).
-        Int("completed", syncState.completedBatches).
-        Int("total", syncState.totalBatches).
+        Int("completed", state.completed).
+        Int("total", state.batches).
         Float64("progress", progress).
-        Msg("Batch processed")
+        Str("db", dbTypeToString(batchData.DBType)).
+        Msg("Processed batch data")
     
-    // If we've processed all batches, request verification
+    // Check if we've completed all batches
     var response *SyncMessage
-    if syncState.completedBatches >= syncState.totalBatches {
-        log.Info().
-            Str("peer", peerID.String()).
-            Int("total_batches", syncState.totalBatches).
-            Msg("All batches received, requesting verification")
-        
-        // Request verification
+    if state.completed >= state.batches {
         response = &SyncMessage{
-            Type:       TypeVerificationRequest,
-            SenderID:   fs.host.ID().String(),
-            Timestamp:  time.Now().Unix(),
+            Type:      TypeVerificationRequest,
+            SenderID:  fs.host.ID().String(),
+            Timestamp: time.Now().Unix(),
         }
     } else {
-        // Just acknowledge receipt
         response = &SyncMessage{
             Type:        TypeBatchData,
             SenderID:    fs.host.ID().String(),
             BatchNumber: msg.BatchNumber,
             Success:     true,
+            DBType:      batchData.DBType,
             Timestamp:   time.Now().Unix(),
         }
     }
@@ -708,68 +674,148 @@ func (fs *FastSync) handleBatchData(peerID peer.ID, msg *SyncMessage) (*SyncMess
     return response, nil
 }
 
-// handleSyncComplete processes a sync complete message from a peer
-func (fs *FastSync) handleSyncComplete(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
-    fs.mutex.RLock()
-    syncState, exists := fs.active[peerID]
-    fs.mutex.RUnlock()
-    
-    if !exists {
-        return nil, fmt.Errorf("no active sync for peer %s", peerID)
+// storeEntries stores key-value entries
+func (fs *FastSync) storeEntries(db *config.ImmuClient, entries []KeyValueEntry) error {
+    if len(entries) == 0 {
+        return nil
     }
     
-    // Get our current state
-    state, err := DB_OPs.GetDatabaseState(fs.db)
+    // Convert to map
+    entriesMap := make(map[string]interface{})
+    for _, entry := range entries {
+        entriesMap[string(entry.Key)] = entry.Value
+    }
+    
+    // Store with retry
+    return retry(func() error {
+        return DB_OPs.BatchCreate(db, entriesMap)
+    })
+}
+
+// storeCRDTs processes and stores CRDTs
+func (fs *FastSync) storeCRDTs(crdtEngine *crdt.Engine, crdtData []json.RawMessage) error {
+    if len(crdtData) == 0 {
+        return nil
+    }
+    
+    for _, crdtBytes := range crdtData {
+        // Parse wrapper
+        var wrapper map[string]json.RawMessage
+        if err := json.Unmarshal(crdtBytes, &wrapper); err != nil {
+            log.Error().Err(err).Msg("Failed to unmarshal CRDT wrapper")
+            continue
+        }
+        
+        // Get type
+        var crdtType string
+        if err := json.Unmarshal(wrapper["type"], &crdtType); err != nil {
+            log.Error().Err(err).Msg("Failed to unmarshal CRDT type")
+            continue
+        }
+        
+        // Create CRDT
+        var crdtValue crdt.CRDT
+        switch crdtType {
+        case "lww-set":
+            crdtValue = &crdt.LWWSet{}
+        case "counter":
+            crdtValue = &crdt.Counter{}
+        default:
+            log.Error().Str("type", crdtType).Msg("Unknown CRDT type")
+            continue
+        }
+        
+        // Unmarshal data
+        if err := json.Unmarshal(wrapper["data"], crdtValue); err != nil {
+            log.Error().Err(err).Str("type", crdtType).Msg("Failed to unmarshal CRDT data")
+            continue
+        }
+        
+        // Merge CRDT
+        mergedCRDT, err := crdtEngine.MergeCRDT(crdtValue)
+        if err != nil {
+            log.Error().Err(err).Str("key", crdtValue.GetKey()).Msg("Failed to merge CRDT")
+            continue
+        }
+        
+        // Store with retry
+        err = retry(func() error {
+            return crdtEngine.StoreCRDT(mergedCRDT)
+        })
+        
+        if err != nil {
+            log.Error().Err(err).Str("key", crdtValue.GetKey()).Msg("Failed to store CRDT")
+        }
+    }
+    
+    return nil
+}
+
+// handleVerification processes a verification request
+func (fs *FastSync) handleVerification(peerID peer.ID) (*SyncMessage, error) {
+    // Get database states
+    mainState, err := DB_OPs.GetDatabaseState(fs.mainDB)
     if err != nil {
-        return nil, fmt.Errorf("failed to get database state: %w", err)
+        return nil, fmt.Errorf("failed to get main database state: %w", err)
     }
     
-    // Check if Merkle roots match
-    rootsMatch := true
-    if len(msg.MerkleRoot) > 0 {
-        rootsMatch = bytes.Equal(state.TxHash, msg.MerkleRoot)
+    accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB)
+    if err != nil {
+        return nil, fmt.Errorf("failed to get accounts database state: %w", err)
+    }
+    
+    // Create database states array
+    dbStates := []DBState{
+        {
+            Type:       MainDB,
+            TxID:       mainState.TxId,
+            MerkleRoot: mainState.TxHash,
+        },
+        {
+            Type:       AccountsDB,
+            TxID:       accountsState.TxId,
+            MerkleRoot: accountsState.TxHash,
+        },
+    }
+    
+    statesData, err := json.Marshal(dbStates)
+    if err != nil {
+        return nil, fmt.Errorf("failed to marshal DB states: %w", err)
     }
     
     log.Info().
         Str("peer", peerID.String()).
-        Bool("success", msg.Success).
-        Bool("roots_match", rootsMatch).
-        Dur("duration", time.Since(syncState.startTime)).
-        Msg("Sync complete")
+        Uint64("main_tx_id", mainState.TxId).
+        Uint64("accounts_tx_id", accountsState.TxId).
+        Msg("Sending verification data")
     
-    // Cleanup sync state
-    fs.cleanupSync(peerID)
-    
-    // Send acknowledgement
     return &SyncMessage{
-        Type:       TypeSyncComplete,
+        Type:       TypeVerificationResult,
         SenderID:   fs.host.ID().String(),
-        Success:    rootsMatch,
-        MerkleRoot: state.TxHash,
+        TxID:       mainState.TxId,
+        MerkleRoot: mainState.TxHash,
+        Data:       statesData,
         Timestamp:  time.Now().Unix(),
     }, nil
 }
 
-// handleVerificationRequest processes a verification request from a peer
-func (fs *FastSync) handleVerificationRequest(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
-    // Get current state from ImmuDB
-    state, err := DB_OPs.GetDatabaseState(fs.db)
+// handleSyncComplete processes a sync complete message
+func (fs *FastSync) handleSyncComplete(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
+    // Cleanup sync state
+    fs.cleanupSync(peerID)
+    
+    // Get database states
+    mainState, err := DB_OPs.GetDatabaseState(fs.mainDB)
     if err != nil {
-        return nil, fmt.Errorf("failed to get database state: %w", err)
+        return nil, fmt.Errorf("failed to get main database state: %w", err)
     }
     
-    log.Info().
-        Str("peer", peerID.String()).
-        Str("merkle_root", fmt.Sprintf("%x", state.TxHash)).
-        Uint64("tx_id", state.TxId).
-        Msg("Received verification request")
-    
-    // Send verification result
+    // Create response
     return &SyncMessage{
-        Type:       TypeVerificationResult,
+        Type:       TypeSyncComplete,
         SenderID:   fs.host.ID().String(),
-        MerkleRoot: state.TxHash,
-        TxID:       state.TxId,
+        Success:    true,
+        MerkleRoot: mainState.TxHash,
         Timestamp:  time.Now().Unix(),
     }, nil
 }
@@ -787,29 +833,36 @@ func (fs *FastSync) cleanupSync(peerID peer.ID) {
     }
 }
 
-// StartSync initiates a sync with a peer
+// StartSync initiates synchronization with a peer
 func (fs *FastSync) StartSync(peerID peer.ID) error {
-    // Get current state from ImmuDB
-    state, err := DB_OPs.GetDatabaseState(fs.db)
+    // Get database states
+    mainState, err := DB_OPs.GetDatabaseState(fs.mainDB)
     if err != nil {
-        return fmt.Errorf("failed to get current database state: %w", err)
+        return fmt.Errorf("failed to get main database state: %w", err)
+    }
+    
+    accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB)
+    if err != nil {
+        return fmt.Errorf("failed to get accounts database state: %w", err)
     }
     
     log.Info().
         Str("peer", peerID.String()).
-        Uint64("our_tx_id", state.TxId).
-        Msg("Starting fast sync with peer")
+        Uint64("main_tx_id", mainState.TxId).
+        Uint64("accounts_tx_id", accountsState.TxId).
+        Msg("Starting sync with peer")
     
-    // Open stream to peer
-    ctx, cancel := context.WithTimeout(context.Background(), SyncRequestTimeout)
+    // Open stream
+    ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
     defer cancel()
     
     stream, err := fs.host.NewStream(ctx, peerID, SyncProtocolID)
     if err != nil {
         return fmt.Errorf("failed to open stream: %w", err)
     }
+    defer stream.Close()
     
-    // Set up buffered reader/writer
+    // Setup reader/writer
     reader := bufio.NewReader(stream)
     writer := bufio.NewWriter(stream)
     
@@ -817,437 +870,262 @@ func (fs *FastSync) StartSync(peerID peer.ID) error {
     syncReq := SyncMessage{
         Type:      TypeSyncRequest,
         SenderID:  fs.host.ID().String(),
-        TxID:      state.TxId,
+        TxID:      mainState.TxId,
         Timestamp: time.Now().Unix(),
     }
     
-    reqBytes, err := json.Marshal(syncReq)
-    if err != nil {
-        stream.Close()
-        return fmt.Errorf("failed to serialize sync request: %w", err)
-    }
-    reqBytes = append(reqBytes, '\n')
-    
-    if _, err := writer.Write(reqBytes); err != nil {
-        stream.Close()
+    if err := writeMessage(writer, stream, &syncReq); err != nil {
         return fmt.Errorf("failed to send sync request: %w", err)
     }
     
-    if err := writer.Flush(); err != nil {
-        stream.Close()
-        return fmt.Errorf("failed to flush sync request: %w", err)
-    }
-    
-    // Wait for response
-    if err := stream.SetReadDeadline(time.Now().Add(SyncResponseTimeout)); err != nil {
-        stream.Close()
-        return fmt.Errorf("failed to set read deadline: %w", err)
-    }
-    
-    respBytes, err := reader.ReadBytes('\n')
+    // Read response
+    response, err := readMessage(reader, stream)
     if err != nil {
-        stream.Close()
         return fmt.Errorf("failed to read sync response: %w", err)
     }
     
-    var response SyncMessage
-    if err := json.Unmarshal(respBytes, &response); err != nil {
-        stream.Close()
-        return fmt.Errorf("failed to parse sync response: %w", err)
-    }
-    
-    // Handle sync response
+    // Process response
     switch response.Type {
     case TypeSyncResponse:
-        // If we received a sync response, continue with sync process
-        err := fs.processSyncResponse(peerID, stream, reader, writer, &response)
-        if err != nil {
-            stream.Close()
-            return err
-        }
+        return fs.processSync(peerID, stream, reader, writer, response)
     case TypeSyncComplete:
-        // If peer says we're already in sync, verify Merkle roots
-        if response.Success {
-            rootsMatch := bytes.Equal(state.TxHash, response.MerkleRoot)
-            
-            log.Info().
-                Str("peer", peerID.String()).
-                Bool("roots_match", rootsMatch).
-                Msg("Peer reports we're already in sync")
-            
-            if rootsMatch {
-                log.Info().Msg("Fast sync completed successfully (no data transfer needed)")
-                stream.Close()
-                return nil
-            } else {
-                // Roots don't match - force full sync
-                log.Warn().
-                    Str("our_root", fmt.Sprintf("%x", state.TxHash)).
-                    Str("peer_root", fmt.Sprintf("%x", response.MerkleRoot)).
-                    Msg("Merkle roots don't match, forcing full sync")
-                
-                stream.Close()
-                return fmt.Errorf("merkle roots don't match")
-            }
-        }
-        stream.Close()
-        return fmt.Errorf("peer reported sync failure: %s", response.ErrorMessage)
+        log.Info().Msg("Peer reports we're already in sync")
+        return nil
     default:
-        stream.Close()
         return fmt.Errorf("unexpected response type: %s", response.Type)
     }
-    
-    // We'll keep the stream open for the processSyncResponse method
-    return nil
 }
 
-// processSyncResponse continues the sync process after receiving the initial response
-func (fs *FastSync) processSyncResponse(peerID peer.ID, stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, response *SyncMessage) error {
-    defer stream.Close() // Ensure stream is closed when we're done
-    
-    // Set larger buffer size for writer
-    writer = bufio.NewWriterSize(stream, 64*1024) // Increase buffer size to 64KB
-    
-    // Set shorter timeouts to detect errors faster
-    stream.SetReadDeadline(time.Now().Add(60 * time.Second))
-    stream.SetWriteDeadline(time.Now().Add(60 * time.Second))
-    
-    // Extract peer's state
-    peerTxID := response.TxID
-    peerMerkleRoot := response.MerkleRoot
-    totalBatches := response.TotalBatches
-    
-    log.Info().
-        Str("peer", peerID.String()).
-        Uint64("peer_tx_id", peerTxID).
-        Int("total_batches", totalBatches).
-        Str("merkle_root", fmt.Sprintf("%x", peerMerkleRoot)).
-        Msg("Processing sync response")
-
-    // Get our current state from ImmuDB
-    ourState, err := DB_OPs.GetDatabaseState(fs.db)
-    if err != nil {
-        return fmt.Errorf("failed to get our database state: %w", err)
-    }
-
-    // First exchange bloom filters to optimize what we need to sync
-    bloomFilter := bloom.NewWithEstimates(BloomFilterCapacity, 0.01) 
-    
-    // Get all our keys and add them to the filter
-    ourKeys, err := fs.getKeysInRange(0, ourState.TxId)
-    if err != nil {
-        return fmt.Errorf("failed to get our keys: %w", err)
+// processSync handles the sync process
+func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, response *SyncMessage) error {
+    // Parse database states
+    var dbStates []DBState
+    if err := json.Unmarshal(response.Data, &dbStates); err != nil {
+        return fmt.Errorf("failed to parse database states: %w", err)
     }
     
-    for _, key := range ourKeys {
-        addSafelyToBloomFilter(bloomFilter, key)
-    }
-
-    // Serialize our filter
-    filterBytes, err := bloomFilter.MarshalBinary()
-    if err != nil {
-        return fmt.Errorf("failed to serialize bloom filter: %w", err)
+    if len(dbStates) != 2 {
+        return fmt.Errorf("expected 2 database states, got %d", len(dbStates))
     }
     
-    // Send our bloom filter
-    bloomMsg := SyncMessage{
-        Type:        TypeBloomFilterExchange,
-        SenderID:    fs.host.ID().String(),
-        BloomFilter: filterBytes,
-        KeysCount:   len(ourKeys),
-        Timestamp:   time.Now().Unix(),
-    }
-    
-    bloomBytes, err := json.Marshal(bloomMsg)
-    if err != nil {
-        return fmt.Errorf("failed to marshal bloom filter message: %w", err)
-    }
-    bloomBytes = append(bloomBytes, '\n')
-    
-    if _, err := writer.Write(bloomBytes); err != nil {
-        return fmt.Errorf("failed to send bloom filter: %w", err)
-    }
-    
-    if err := writer.Flush(); err != nil {
-        return fmt.Errorf("failed to flush bloom filter: %w", err)
-    }
-    
-    // Wait for peer's bloom filter
-    if err := stream.SetReadDeadline(time.Now().Add(SyncResponseTimeout)); err != nil {
-        return fmt.Errorf("failed to set read deadline: %w", err)
-    }
-    
-    peerBloomBytes, err := reader.ReadBytes('\n')
-    if err != nil {
-        return fmt.Errorf("failed to read peer's bloom filter: %w", err)
-    }
-    
-    var peerBloomMsg SyncMessage
-    if err := json.Unmarshal(peerBloomBytes, &peerBloomMsg); err != nil {
-        return fmt.Errorf("failed to parse peer's bloom filter: %w", err)
-    }
-    
-    if peerBloomMsg.Type != TypeBloomFilterExchange {
-        return fmt.Errorf("unexpected message type: %s", peerBloomMsg.Type)
-    }
-    
-    // Deserialize peer's bloom filter
-    peerBloom := &bloom.BloomFilter{}
-    if err := peerBloom.UnmarshalBinary(peerBloomMsg.BloomFilter); err != nil {
-        return fmt.Errorf("failed to deserialize peer's bloom filter: %w", err)
-    }
-    
-    log.Info().
-        Str("peer", peerID.String()).
-        Int("peer_keys", peerBloomMsg.KeysCount).
-        Int("our_keys", len(ourKeys)).
-        Msg("Bloom filters exchanged")
-
-    // Calculate batch ranges
-    ourTxID := ourState.TxId
-    txDiff := peerTxID - ourTxID
-    
-    // If we're ahead, no need to pull data
-    if txDiff <= 0 {
-        log.Info().
-            Str("peer", peerID.String()).
-            Msg("We're already up to date with peer")
+    // Process each database
+    for _, dbState := range dbStates {
+        // Get our current state
+        db, _ := fs.getDB(dbState.Type)
+        ourState, err := DB_OPs.GetDatabaseState(db)
+        if err != nil {
+            return fmt.Errorf("failed to get our %s state: %w", dbTypeToString(dbState.Type), err)
+        }
+        
+        // Skip if we're already up to date
+        if ourState.TxId >= dbState.TxID {
+            log.Info().
+                Str("db", dbTypeToString(dbState.Type)).
+                Msg("Already up to date for this database")
+            continue
+        }
+        
+        // Exchange bloom filters
+        if err := fs.exchangeBloomFilters(stream, reader, writer, dbState.Type); err != nil {
+            return fmt.Errorf("failed to exchange bloom filters for %s: %w", dbTypeToString(dbState.Type), err)
+        }
+        
+        // Calculate batches
+        batchCount := calculateBatchCount(ourState.TxId, dbState.TxID)
+        
+        // Process batches
+        for i := 0; i < batchCount; i++ {
+            startTx := ourState.TxId + uint64(i*SyncBatchSize)
+            endTx := startTx + uint64(SyncBatchSize-1)
+            if endTx > dbState.TxID {
+                endTx = dbState.TxID
+            }
             
-        // Request final verification to confirm merkle roots match
-        verifyMsg := SyncMessage{
-            Type:      TypeVerificationRequest,
-            SenderID:  fs.host.ID().String(),
-            Timestamp: time.Now().Unix(),
+            // Request and process batch
+            if err := fs.requestBatch(stream, reader, writer, i, startTx, endTx, dbState.Type); err != nil {
+                return fmt.Errorf("failed to process batch %d for %s: %w", 
+                    i, dbTypeToString(dbState.Type), err)
+            }
+            
+            log.Info().
+                Int("batch", i+1).
+                Int("total", batchCount).
+                Str("db", dbTypeToString(dbState.Type)).
+                Float64("progress", float64(i+1)/float64(batchCount)*100).
+                Msg("Batch processed")
         }
-        
-        verifyBytes, _ := json.Marshal(verifyMsg)
-        verifyBytes = append(verifyBytes, '\n')
-        
-        if _, err := writer.Write(verifyBytes); err != nil {
-            return fmt.Errorf("failed to send verification request: %w", err)
-        }
-        
-        if err := writer.Flush(); err != nil {
-            return fmt.Errorf("failed to flush verification request: %w", err)
-        }
-        
-        return fs.handleFinalVerification(reader, ourState.TxHash)
     }
     
-    // SEQUENTIAL BATCH PROCESSING - This is the key change
-    var batchResults = make(map[int]bool)
-    for batchNum := 0; batchNum < totalBatches; batchNum++ {
-        batchStart := ourTxID + uint64(batchNum*SyncBatchSize)
-        batchEnd := batchStart + uint64(SyncBatchSize) - 1
-        if batchEnd > peerTxID {
-            batchEnd = peerTxID
-        }
-    
-        // Call the sequential method to avoid concurrent reads
-        if err := fs.requestAndProcessBatchSequential(writer, reader, batchNum, batchStart, batchEnd, peerBloom); err != nil {
-            return fmt.Errorf(
-                "failed to process %d batches: batch %d failed: %w",
-                batchNum, batchNum, err,
-            )
-        }
-    
-        batchResults[batchNum] = true
-
-        log.Info().
-            Str("peer", peerID.String()).
-            Int("batch", batchNum).
-            Int("total", totalBatches).
-            Float64("progress", float64(batchNum+1)/float64(totalBatches)*100).
-            Msg("Batch processed successfully")
-    }
-    
-    // All batches succeeded, verify final state
-    log.Info().
-        Str("peer", peerID.String()).
-        Int("batches_processed", len(batchResults)).
-        Msg("All batches processed, verifying final state")
-        
-    // Send verification request
-    verifyMsg := SyncMessage{
+    // Request verification
+    verifyReq := SyncMessage{
         Type:      TypeVerificationRequest,
         SenderID:  fs.host.ID().String(),
         Timestamp: time.Now().Unix(),
     }
     
-    verifyBytes, _ := json.Marshal(verifyMsg)
-    verifyBytes = append(verifyBytes, '\n')
-    
-    if _, err := writer.Write(verifyBytes); err != nil {
+    if err := writeMessage(writer, stream, &verifyReq); err != nil {
         return fmt.Errorf("failed to send verification request: %w", err)
     }
     
-    if err := writer.Flush(); err != nil {
-        return fmt.Errorf("failed to flush verification request: %w", err)
+    // Read verification result
+    verifyResp, err := readMessage(reader, stream)
+    if err != nil {
+        return fmt.Errorf("failed to read verification result: %w", err)
     }
     
-    // Handle verification response
-    return fs.handleFinalVerification(reader, peerMerkleRoot)
+    if verifyResp.Type != TypeVerificationResult {
+        return fmt.Errorf("unexpected message type: %s", verifyResp.Type)
+    }
+    
+    // Parse verification data
+    var verifyStates []DBState
+    if err := json.Unmarshal(verifyResp.Data, &verifyStates); err != nil {
+        return fmt.Errorf("failed to parse verification states: %w", err)
+    }
+    
+    // Verify states match
+    mainState, err := DB_OPs.GetDatabaseState(fs.mainDB)
+    if err != nil {
+        return fmt.Errorf("failed to get main database state: %w", err)
+    }
+    
+    accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB)
+    if err != nil {
+        return fmt.Errorf("failed to get accounts database state: %w", err)
+    }
+    
+    // Check if hashes match
+    mainMatch := bytes.Equal(mainState.TxHash, verifyStates[0].MerkleRoot)
+    accountsMatch := bytes.Equal(accountsState.TxHash, verifyStates[1].MerkleRoot)
+    
+    log.Info().
+        Bool("main_match", mainMatch).
+        Bool("accounts_match", accountsMatch).
+        Msg("Sync verification completed")
+    
+    // Send completion
+    completeMsg := SyncMessage{
+        Type:      TypeSyncComplete,
+        SenderID:  fs.host.ID().String(),
+        Success:   mainMatch && accountsMatch,
+        Timestamp: time.Now().Unix(),
+    }
+    
+    if err := writeMessage(writer, stream, &completeMsg); err != nil {
+        return fmt.Errorf("failed to send completion message: %w", err)
+    }
+    
+    if !mainMatch || !accountsMatch {
+        return fmt.Errorf("verification failed: database hashes don't match")
+    }
+    
+    log.Info().Msg("Sync completed successfully")
+    return nil
 }
 
-// Add a sequential version of requestAndProcessBatch
-func (fs *FastSync) requestAndProcessBatchSequential(writer *bufio.Writer, reader *bufio.Reader, 
-    batchNum int, startTxID, endTxID uint64, peerBloom *bloom.BloomFilter) error {
+// exchangeBloomFilters exchanges bloom filters for a database
+func (fs *FastSync) exchangeBloomFilters(stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, dbType DatabaseType) error {
+    // Create bloom filter
+    bloomFilter := bloom.NewWithEstimates(BloomFilterSize, 0.01)
     
-    // Create batch request
+    // Get database
+    db, _ := fs.getDB(dbType)
+    
+    // Get all our keys
+    keys, err := fs.getAllKeys(db)
+    if err != nil {
+        return fmt.Errorf("failed to get keys: %w", err)
+    }
+    
+    // Add to filter
+    for _, key := range keys {
+        addToBloomFilter(bloomFilter, key)
+    }
+    
+    // Serialize filter
+    filterBytes, err := bloomFilter.MarshalBinary()
+    if err != nil {
+        return fmt.Errorf("failed to serialize bloom filter: %w", err)
+    }
+    
+    // Send filter
+    bloomMsg := SyncMessage{
+        Type:        TypeBloomFilterExchange,
+        SenderID:    fs.host.ID().String(),
+        BloomFilter: filterBytes,
+        KeysCount:   len(keys),
+        DBType:      dbType,
+        Timestamp:   time.Now().Unix(),
+    }
+    
+    if err := writeMessage(writer, stream, &bloomMsg); err != nil {
+        return fmt.Errorf("failed to send bloom filter: %w", err)
+    }
+    
+    // Read peer's filter
+    peerBloomMsg, err := readMessage(reader, stream)
+    if err != nil {
+        return fmt.Errorf("failed to read peer's bloom filter: %w", err)
+    }
+    
+    if peerBloomMsg.Type != TypeBloomFilterExchange || peerBloomMsg.DBType != dbType {
+        return fmt.Errorf("unexpected message type or DB type for bloom filter")
+    }
+    
+    log.Info().
+        Str("db", dbTypeToString(dbType)).
+        Int("our_keys", len(keys)).
+        Int("peer_keys", peerBloomMsg.KeysCount).
+        Msg("Bloom filters exchanged")
+    
+    return nil
+}
+
+// requestBatch requests and processes a batch
+func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, batchNum int, startTx, endTx uint64, dbType DatabaseType) error {
+    // Create request
     batchReq := SyncMessage{
         Type:        TypeBatchRequest,
         SenderID:    fs.host.ID().String(),
         BatchNumber: batchNum,
-        StartTxID:   startTxID,
-        EndTxID:     endTxID,
+        StartTxID:   startTx,
+        EndTxID:     endTx,
+        DBType:      dbType,
         Timestamp:   time.Now().Unix(),
     }
     
-    // Serialize and send request
-    reqBytes, err := json.Marshal(batchReq)
+    // Send request
+    if err := writeMessage(writer, stream, &batchReq); err != nil {
+        return fmt.Errorf("failed to send batch request: %w", err)
+    }
+    
+    // Read response
+    batchResp, err := readMessage(reader, stream)
     if err != nil {
-        return fmt.Errorf("failed to marshal batch request: %w", err)
-    }
-    reqBytes = append(reqBytes, '\n')
-    
-    // Send with retries
-    maxRetries := 3
-    var sendErr error
-    
-    for attempt := 0; attempt < maxRetries; attempt++ {
-        if attempt > 0 {
-            log.Warn().
-                Int("batch", batchNum).
-                Int("attempt", attempt+1).
-                Msg("Retrying batch request send")
-            time.Sleep(1 * time.Second)
-        }
-        
-        if _, err := writer.Write(reqBytes); err != nil {
-            return fmt.Errorf("failed to send batch request: %w", err)
-        }
-        
-        if err := writer.Flush(); err != nil {
-            return fmt.Errorf("failed to flush batch request: %w", err)
-        }
-        
-        sendErr = nil
-        break
+        return fmt.Errorf("failed to read batch data: %w", err)
     }
     
-    if sendErr != nil {
-        return fmt.Errorf("failed after %d retries: %w", maxRetries, sendErr)
+    // Check response
+    if batchResp.Type != TypeBatchData {
+        return fmt.Errorf("unexpected response type: %s", batchResp.Type)
     }
     
-    // Read response with timeout
-    var readErr error
-    var respBytes []byte
-    
-    for attempt := 0; attempt < maxRetries; attempt++ {
-        if attempt > 0 {
-            log.Warn().
-                Int("batch", batchNum).
-                Int("attempt", attempt+1).
-                Msg("Retrying batch response read")
-            time.Sleep(1 * time.Second)
-        }
-        
-        respBytes, readErr = reader.ReadBytes('\n')
-        if readErr == nil {
-            break
-        }
-    }
-    
-    if readErr != nil {
-        return fmt.Errorf("failed to read batch response: %w", readErr)
-    }
-    
-    // Parse response
-    var batchResp SyncMessage
-    if err := json.Unmarshal(respBytes, &batchResp); err != nil {
-        return fmt.Errorf("failed to parse batch response: %w", err)
-    }
-    
-    // Check if this is the correct batch
-    if batchResp.Type == TypeSyncAbort {
-        return fmt.Errorf("peer aborted sync: %s", batchResp.ErrorMessage)
-    }
-
-    // Process batch data (rest of processing remains the same)
+    // Parse batch data
     var batchData BatchData
     if err := json.Unmarshal(batchResp.Data, &batchData); err != nil {
         return fmt.Errorf("failed to parse batch data: %w", err)
     }
     
-    // Process entries
-    entries := make(map[string]interface{})
-    for _, entry := range batchData.Entries {
-        key := string(entry.Key)
-        entries[key] = entry.Value
+    // Get database and CRDT engine
+    db, crdtEngine := fs.getDB(dbType)
+    
+    // Process data
+    if err := fs.storeEntries(db, batchData.Entries); err != nil {
+        return fmt.Errorf("failed to store entries: %w", err)
     }
     
-    // Batch create the entries if we have any
-    if len(entries) > 0 {
-        if err := DB_OPs.BatchCreate(fs.db, entries); err != nil {
-            return fmt.Errorf("failed to store batch entries: %w", err)
-        }
-    }
-    
-    // Process CRDTs
-    if len(batchData.CRDTs) > 0 {
-        for _, crdtBytes := range batchData.CRDTs {
-            // Parse the wrapper first
-            var wrapper map[string]json.RawMessage
-            if err := json.Unmarshal(crdtBytes, &wrapper); err != nil {
-                log.Error().Err(err).Msg("Failed to unmarshal CRDT wrapper")
-                continue
-            }
-            
-            // Get the type
-            var crdtType string
-            if err := json.Unmarshal(wrapper["type"], &crdtType); err != nil {
-                log.Error().Err(err).Msg("Failed to unmarshal CRDT type")
-                continue
-            }
-            
-            // Create the correct CRDT type based on the type string
-            var crdtValue crdt.CRDT
-            switch crdtType {
-            case "lww-set":
-                crdtValue = &crdt.LWWSet{}
-            case "counter":
-                crdtValue = &crdt.Counter{}
-            default:
-                log.Error().Str("type", crdtType).Msg("Unknown CRDT type")
-                continue
-            }
-            
-            // Unmarshal the data into the specific CRDT type
-            if err := json.Unmarshal(wrapper["data"], crdtValue); err != nil {
-                log.Error().
-                    Err(err).
-                    Str("type", crdtType).
-                    Msg("Failed to unmarshal CRDT data")
-                continue
-            }
-            
-            // Now you have a properly deserialized CRDT
-            mergedCRDT, err := fs.crdtEngine.MergeCRDT(crdtValue)
-            if err != nil {
-                log.Error().Err(err).
-                    Str("key", crdtValue.GetKey()).
-                    Msg("Failed to merge CRDT")
-                continue
-            }
-            
-            // Store the merged CRDT
-            if err := fs.crdtEngine.StoreCRDT(mergedCRDT); err != nil {
-                log.Error().Err(err).
-                    Str("key", crdtValue.GetKey()).
-                    Msg("Failed to store merged CRDT")
-                continue
-            }
-        }
+    if err := fs.storeCRDTs(crdtEngine, batchData.CRDTs); err != nil {
+        return fmt.Errorf("failed to store CRDTs: %w", err)
     }
     
     // Send acknowledgement
@@ -1256,481 +1134,39 @@ func (fs *FastSync) requestAndProcessBatchSequential(writer *bufio.Writer, reade
         SenderID:    fs.host.ID().String(),
         BatchNumber: batchNum,
         Success:     true,
+        DBType:      dbType,
         Timestamp:   time.Now().Unix(),
     }
     
-    ackBytes, _ := json.Marshal(ackMsg)
-    ackBytes = append(ackBytes, '\n')
-    
-    if _, err := writer.Write(ackBytes); err != nil {
+    if err := writeMessage(writer, stream, &ackMsg); err != nil {
         return fmt.Errorf("failed to send batch acknowledgement: %w", err)
     }
     
-    if err := writer.Flush(); err != nil {
-        return fmt.Errorf("failed to flush batch acknowledgement: %w", err)
-    }
-    
     return nil
 }
 
-// // requestAndProcessBatch requests and processes a single batch of data
-// func (fs *FastSync) requestAndProcessBatch(writer *bufio.Writer, reader *bufio.Reader, 
-//     batchNum int, startTxID, endTxID uint64, peerBloom *bloom.BloomFilter) error {
-    
-//     // Create batch request
-//     batchReq := SyncMessage{
-//         Type:        TypeBatchRequest,
-//         SenderID:    fs.host.ID().String(),
-//         BatchNumber: batchNum,
-//         StartTxID:   startTxID,
-//         EndTxID:     endTxID,
-//         Timestamp:   time.Now().Unix(),
-//     }
-    
-//     // Send batch request
-//     reqBytes, err := json.Marshal(batchReq)
-//     if err != nil {
-//         return fmt.Errorf("failed to marshal batch request: %w", err)
-//     }
-//     reqBytes = append(reqBytes, '\n')
-    
-//     if _, err := writer.Write(reqBytes); err != nil {
-//         return fmt.Errorf("failed to send batch request: %w", err)
-//     }
-    
-//     if err := writer.Flush(); err != nil {
-//         return fmt.Errorf("failed to flush batch request: %w", err)
-//     }
-    
-//     // Wait for batch data
-//     respBytes, err := reader.ReadBytes('\n')
-//     if err != nil {
-//         return fmt.Errorf("failed to read batch data: %w", err)
-//     }
-    
-//     var batchResp SyncMessage
-//     if err := json.Unmarshal(respBytes, &batchResp); err != nil {
-//         return fmt.Errorf("failed to parse batch response: %w", err)
-//     }
-    
-//     // Check if this is the correct batch
-//     if batchResp.Type != TypeBatchData || batchResp.BatchNumber != batchNum {
-//         return fmt.Errorf("unexpected batch response: type=%s, batch=%d", 
-//             batchResp.Type, batchResp.BatchNumber)
-//     }
-    
-//     // Parse and process batch data
-//     var batchData BatchData
-//     if err := json.Unmarshal(batchResp.Data, &batchData); err != nil {
-//         return fmt.Errorf("failed to parse batch data: %w", err)
-//     }
-    
-//     // Process entries
-//     entries := make(map[string]interface{})
-//     for _, entry := range batchData.Entries {
-//         key := string(entry.Key)
-//         entries[key] = entry.Value
-//     }
-    
-//     // Batch create the entries if we have any
-//     if len(entries) > 0 {
-//         if err := fs.db.BatchCreate(entries); err != nil {
-//             return fmt.Errorf("failed to store batch entries: %w", err)
-//         }
-//     }
-    
-//     // Process CRDTs
-//     if len(batchData.CRDTs) > 0 {
-//         for _, crdtBytes := range batchData.CRDTs {
-//             // Parse the wrapper first
-//             var wrapper map[string]json.RawMessage
-//             if err := json.Unmarshal(crdtBytes, &wrapper); err != nil {
-//                 log.Error().Err(err).Msg("Failed to unmarshal CRDT wrapper")
-//                 continue
-//             }
-            
-//             // Get the type
-//             var crdtType string
-//             if err := json.Unmarshal(wrapper["type"], &crdtType); err != nil {
-//                 log.Error().Err(err).Msg("Failed to unmarshal CRDT type")
-//                 continue
-//             }
-//             // Create the correct CRDT type based on the type string
-//             var crdtValue crdt.CRDT
-//             switch crdtType {
-//             case "lww-set":
-//                 crdtValue = &crdt.LWWSet{}
-//             case "counter":
-//                 crdtValue = &crdt.Counter{}
-//             default:
-//                 log.Error().Str("type", crdtType).Msg("Unknown CRDT type")
-//                 continue
-//             }
-            
-//             // Unmarshal the data into the specific CRDT type
-//             if err := json.Unmarshal(wrapper["data"], crdtValue); err != nil {
-//                 log.Error().
-//                     Err(err).
-//                     Str("type", crdtType).
-//                     Msg("Failed to unmarshal CRDT data")
-//                 continue
-//             }
-            
-//             // Now you have a properly deserialized CRDT
-//             mergedCRDT, err := fs.crdtEngine.MergeCRDT(crdtValue)
-//             if err != nil {
-//                 log.Error().Err(err).
-//                     Str("key", crdtValue.GetKey()).
-//                     Msg("Failed to merge CRDT")
-//                 continue
-//             }
-            
-//             // Store the merged CRDT
-//             if err := fs.crdtEngine.StoreCRDT(mergedCRDT); err != nil {
-//                 log.Error().Err(err).
-//                     Str("key", crdtValue.GetKey()).
-//                     Msg("Failed to store merged CRDT")
-//                 continue
-//             }
-//         }
-//     }
-    
-//     // Send acknowledgement
-//     ackMsg := SyncMessage{
-//         Type:        TypeBatchData,
-//         SenderID:    fs.host.ID().String(),
-//         BatchNumber: batchNum,
-//         Success:     true,
-//         Timestamp:   time.Now().Unix(),
-//     }
-    
-//     ackBytes, _ := json.Marshal(ackMsg)
-//     ackBytes = append(ackBytes, '\n')
-    
-//     if _, err := writer.Write(ackBytes); err != nil {
-//         return fmt.Errorf("failed to send batch acknowledgement: %w", err)
-//     }
-    
-//     if err := writer.Flush(); err != nil {
-//         return fmt.Errorf("failed to flush batch acknowledgement: %w", err)
-//     }
-    
-//     return nil
-// }
-// requestAndProcessBatch requests and processes a single batch of data
-func (fs *FastSync) requestAndProcessBatch(writer *bufio.Writer, reader *bufio.Reader, 
-    batchNum int, startTxID, endTxID uint64, peerBloom *bloom.BloomFilter) error {
-    
-    // Create batch request
-    batchReq := SyncMessage{
-        Type:        TypeBatchRequest,
-        SenderID:    fs.host.ID().String(),
-        BatchNumber: batchNum,
-        StartTxID:   startTxID,
-        EndTxID:     endTxID,
-        Timestamp:   time.Now().Unix(),
-    }
-    
-    // Send batch request with retry logic
-    reqBytes, err := json.Marshal(batchReq)
-    if err != nil {
-        return fmt.Errorf("failed to marshal batch request: %w", err)
-    }
-    reqBytes = append(reqBytes, '\n')
-    
-    // Use retry logic for sending
-    maxRetries := 3
-    for attempt := 0; attempt < maxRetries; attempt++ {
-        if attempt > 0 {
-            log.Warn().
-                Int("batch", batchNum).
-                Int("attempt", attempt+1).
-                Msg("Retrying batch request")
-            time.Sleep(500 * time.Millisecond)
-        }
-        
-        if _, err := writer.Write(reqBytes); err != nil {
-            if attempt == maxRetries-1 {
-                return fmt.Errorf("failed to send batch request after %d attempts: %w", maxRetries, err)
-            }
-            continue
-        }
-        
-        if err := writer.Flush(); err != nil {
-            if attempt == maxRetries-1 {
-                return fmt.Errorf("failed to flush batch request after %d attempts: %w", maxRetries, err)
-            }
-            continue
-        }
-        
-        // Successfully sent the request
-        break
-    }
-    
-    // Wait for batch data with timeout
-    respChan := make(chan []byte, 1)
-    errChan := make(chan error, 1)
-    
-    go func() {
-        bytes, err := reader.ReadBytes('\n')
-        if err != nil {
-            errChan <- fmt.Errorf("failed to read batch data: %w", err)
-            return
-        }
-        respChan <- bytes
-    }()
-    
-    // Wait for response with timeout
-    var respBytes []byte
-    select {
-    case respBytes = <-respChan:
-        // Continue processing
-    case err := <-errChan:
-        return err
-    case <-time.After(60 * time.Second):
-        return fmt.Errorf("timeout waiting for batch data")
-    }
-    
-    var batchResp SyncMessage
-    if err := json.Unmarshal(respBytes, &batchResp); err != nil {
-        return fmt.Errorf("failed to parse batch response: %w", err)
-    }
-    
-    // Check if this is the correct batch
-    if batchResp.Type != TypeBatchData || batchResp.BatchNumber != batchNum {
-        return fmt.Errorf("unexpected batch response: type=%s, batch=%d", 
-            batchResp.Type, batchResp.BatchNumber)
-    }
-    
-    // Parse and process batch data
-    var batchData BatchData
-    if err := json.Unmarshal(batchResp.Data, &batchData); err != nil {
-        return fmt.Errorf("failed to parse batch data: %w", err)
-    }
-    
-    // Process entries
-    entries := make(map[string]interface{})
-    for _, entry := range batchData.Entries {
-        key := string(entry.Key)
-        entries[key] = entry.Value
-    }
-    
-    // Batch create the entries if we have any
-    if len(entries) > 0 {
-        // Retry batch creation up to 3 times
-        err := retry(3, 500*time.Millisecond, func() error {
-            return DB_OPs.BatchCreate(fs.db, entries)
-        })
-        
-        if err != nil {
-            return fmt.Errorf("failed to store batch entries after retries: %w", err)
-        }
-    }
-    
-    // Process CRDTs
-    if len(batchData.CRDTs) > 0 {
-        for _, crdtBytes := range batchData.CRDTs {
-            // Parse the wrapper first
-            var wrapper map[string]json.RawMessage
-            if err := json.Unmarshal(crdtBytes, &wrapper); err != nil {
-                log.Error().Err(err).Msg("Failed to unmarshal CRDT wrapper")
-                continue
-            }
-            
-            // Get the type
-            var crdtType string
-            if err := json.Unmarshal(wrapper["type"], &crdtType); err != nil {
-                log.Error().Err(err).Msg("Failed to unmarshal CRDT type")
-                continue
-            }
-            
-            // Create the correct CRDT type based on the type string
-            var crdtValue crdt.CRDT
-            switch crdtType {
-            case "lww-set":
-                crdtValue = &crdt.LWWSet{}
-            case "counter":
-                crdtValue = &crdt.Counter{}
-            default:
-                log.Error().Str("type", crdtType).Msg("Unknown CRDT type")
-                continue
-            }
-            
-            // Unmarshal the data into the specific CRDT type
-            if err := json.Unmarshal(wrapper["data"], crdtValue); err != nil {
-                log.Error().
-                    Err(err).
-                    Str("type", crdtType).
-                    Msg("Failed to unmarshal CRDT data")
-                continue
-            }
-            
-            // Now you have a properly deserialized CRDT
-            mergedCRDT, err := fs.crdtEngine.MergeCRDT(crdtValue)
-            if err != nil {
-                log.Error().Err(err).
-                    Str("key", crdtValue.GetKey()).
-                    Msg("Failed to merge CRDT")
-                continue
-            }
-            
-            // Store the merged CRDT with retry
-            err = retry(3, 500*time.Millisecond, func() error {
-                return fs.crdtEngine.StoreCRDT(mergedCRDT)
-            })
-            
-            if err != nil {
-                log.Error().Err(err).
-                    Str("key", crdtValue.GetKey()).
-                    Msg("Failed to store merged CRDT after retries")
-                continue
-            } else {
-                log.Debug().
-                    Str("key", crdtValue.GetKey()).
-                    Str("type", crdtType).
-                    Msg("Successfully stored CRDT from remote peer")
-            }
-        }
-    }
-    
-    // Send acknowledgement with retry
-    ackMsg := SyncMessage{
-        Type:        TypeBatchData,
-        SenderID:    fs.host.ID().String(),
-        BatchNumber: batchNum,
-        Success:     true,
-        Timestamp:   time.Now().Unix(),
-    }
-    
-    ackBytes, _ := json.Marshal(ackMsg)
-    ackBytes = append(ackBytes, '\n')
-    
-    // Retry sending acknowledgement
-    for attempt := 0; attempt < maxRetries; attempt++ {
-        if attempt > 0 {
-            time.Sleep(500 * time.Millisecond)
-        }
-        
-        if _, err := writer.Write(ackBytes); err != nil {
-            if attempt == maxRetries-1 {
-                return fmt.Errorf("failed to send batch acknowledgement: %w", err)
-            }
-            continue
-        }
-        
-        if err := writer.Flush(); err != nil {
-            if attempt == maxRetries-1 {
-                return fmt.Errorf("failed to flush batch acknowledgement: %w", err)
-            }
-            continue
-        }
-        
-        // Successfully sent acknowledgement
-        break
-    }
-    
-    // Log successful batch processing
-    log.Info().
-        Int("batch", batchNum).
-        Uint64("start_tx", startTxID).
-        Uint64("end_tx", endTxID).
-        Int("entries", len(entries)).
-        Int("crdts", len(batchData.CRDTs)).
-        Msg("Batch processed successfully")
-    
-    return nil
-}
-
-// Helper function for retrying operations
-func retry(attempts int, sleep time.Duration, f func() error) error {
-    var err error
-    for i := 0; i < attempts; i++ {
-        if i > 0 {
-            time.Sleep(sleep)
-            sleep *= 2 // Exponential backoff
-        }
-        
-        err = f()
-        if err == nil {
-            return nil // Success
-        }
-    }
-    return err // Return the last error
-}
-
-// handleFinalVerification processes the verification phase to ensure consistency
-func (fs *FastSync) handleFinalVerification(reader *bufio.Reader, peerMerkleRoot []byte) error {
-    // Wait for verification result
-    respBytes, err := reader.ReadBytes('\n')
-    if err != nil {
-        return fmt.Errorf("failed to read verification result: %w", err)
-    }
-    
-    var verifyResp SyncMessage
-    if err := json.Unmarshal(respBytes, &verifyResp); err != nil {
-        return fmt.Errorf("failed to parse verification result: %w", err)
-    }
-    
-    if verifyResp.Type != TypeVerificationResult {
-        return fmt.Errorf("unexpected message type: %s", verifyResp.Type)
-    }
-    
-    // Get our final state
-    ourState, err := DB_OPs.GetDatabaseState(fs.db)
-    if err != nil {
-        return fmt.Errorf("failed to get final database state: %w", err)
-    }
-    
-    // Compare merkle roots
-    peerRoot := verifyResp.MerkleRoot
-    ourRoot := ourState.TxHash
-    rootsMatch := bytes.Equal(ourRoot, peerRoot)
-    
-    log.Info().
-        Str("peer_root", fmt.Sprintf("%x", peerRoot)).
-        Str("our_root", fmt.Sprintf("%x", ourRoot)).
-        Bool("match", rootsMatch).
-        Uint64("peer_tx_id", verifyResp.TxID).
-        Uint64("our_tx_id", ourState.TxId).
-        Msg("Sync verification completed")
-    
-    if !rootsMatch {
-        return fmt.Errorf("sync failed: merkle roots don't match after sync")
-    }
-    
-    // Send sync complete message
-    completeMsg := SyncMessage{
-        Type:       TypeSyncComplete,
-        SenderID:   fs.host.ID().String(),
-        Success:    true,
-        MerkleRoot: ourState.TxHash,
-        Timestamp:  time.Now().Unix(),
-    }
-    
-    completeBytes, _ := json.Marshal(completeMsg)
-    completeBytes = append(completeBytes, '\n')
-    
-    return nil
-}
-
-// Helper function to add keys safely to bloom filter
-func addSafelyToBloomFilter(filter *bloom.BloomFilter, key string) {
-    // Skip empty keys
+// addToBloomFilter adds a key to a bloom filter
+func addToBloomFilter(filter *bloom.BloomFilter, key string) {
     if len(key) == 0 {
         return
     }
     
-    // Use a SHA-256 hash of the key for more uniform distribution
-    // This helps prevent certain problematic bit patterns that could cause issues
+    // Hash the key for better distribution
     hasher := sha256.New()
     hasher.Write([]byte(key))
-    hashBytes := hasher.Sum(nil)
+    hash := hasher.Sum(nil)
     
-    filter.Add(hashBytes)
+    filter.Add(hash)
 }
 
-func debugLog(format string, args ...interface{}) {
-    if DebugMode {
-        log.Debug().Msgf(format, args...)
+// dbTypeToString converts a database type to a string
+func dbTypeToString(dbType DatabaseType) string {
+    switch dbType {
+    case MainDB:
+        return "Main"
+    case AccountsDB:
+        return "Accounts"
+    default:
+        return "Unknown"
     }
 }

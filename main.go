@@ -129,9 +129,9 @@ func initDIDDBClient() (*config.ImmuClient, error) {
 }
 
 // initFastSync initializes the FastSync service
-func initFastSync(n *config.Node, client *config.ImmuClient) *fastsync.FastSync {
-    fs := fastsync.NewFastSync(n.Host, client)
-    log.Info().Msg("FastSync service initialized")
+func initFastSync(n *config.Node, mainClient, accountsClient *config.ImmuClient) *fastsync.FastSync {
+    fs := fastsync.NewFastSync(n.Host, mainClient, accountsClient)
+    log.Info().Msg("FastSync service initialized with multi-database support")
     return fs
 }
 func main() {
@@ -202,7 +202,7 @@ func main() {
     defer DB_OPs.Close(didDBClient)
 
     // Initialize FastSync service
-    fastSyncer = initFastSync(n, immuClient)
+    fastSyncer = initFastSync(n, immuClient, didDBClient)
 
     // Initialize Yggdrasil messaging if enabled
     if *enableYggdrasil {
@@ -555,26 +555,33 @@ func main() {
                 printDashes()
             
             case "propagateDID":
-                if len(parts) != 3 {
-                    fmt.Println("Usage: propagateDID <did> <public_key>")
+                if len(parts) < 3 || len(parts) > 4 {
+                    fmt.Println("Usage: propagateDID <did> <public_key> [balance]")
                     continue
                 }
                 did := parts[1]
                 publicKey := parts[2]
-                balance := parts[3]
+                
+                // Default balance is "0" if not provided
+                balance := "0"
+                if len(parts) == 4 {
+                    balance = parts[3]
+                }
+                
                 value := DB_OPs.DIDDocument{
                     DID:       did,
                     PublicKey: publicKey,
-                    Balance:  balance,
+                    Balance:   balance,
                 } 
-                fmt.Printf("Propagating DID %s with public key %s to the network...\n", did, publicKey)
+                fmt.Printf("Propagating DID %s with public key %s and balance %s to the network...\n", 
+                    did, publicKey, balance)
                 
                 err := messaging.PropagateDID(n.Host, &value)
                 if err != nil {
                     fmt.Printf("Failed to propagate DID: %v\n", err)
                 } else {
                     fmt.Println("DID propagated successfully to all connected peers")
-                }
+            }
             
             case "getDID":
                 if len(parts) != 2 {
