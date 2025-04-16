@@ -1068,9 +1068,15 @@ func (fs *FastSync) exchangeBloomFilters(stream network.Stream, reader *bufio.Re
         return fmt.Errorf("failed to read peer's bloom filter: %w", err)
     }
     
+    // Check for abort message
+    if peerBloomMsg.Type == TypeSyncAbort {
+        return fmt.Errorf("peer aborted during bloom filter exchange: %s", peerBloomMsg.ErrorMessage)
+    }
+    
     if peerBloomMsg.Type != TypeBloomFilterExchange || peerBloomMsg.DBType != dbType {
         return fmt.Errorf("unexpected message type or DB type for bloom filter")
     }
+    
     
     log.Info().
         Str("db", dbTypeToString(dbType)).
@@ -1103,6 +1109,11 @@ func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, wr
     batchResp, err := readMessage(reader, stream)
     if err != nil {
         return fmt.Errorf("failed to read batch data: %w", err)
+    }
+    
+    // Check for abort message
+    if batchResp.Type == TypeSyncAbort {
+        return fmt.Errorf("peer aborted sync: %s", batchResp.ErrorMessage)
     }
     
     // Check response

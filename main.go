@@ -485,6 +485,8 @@ func main() {
                     fmt.Println("Message broadcast initiated")
                 }
 
+            // Update the fastsync case in your CLI command handler:
+
             case "fastsync":
                 if len(parts) != 2 {
                     fmt.Println("Usage: fastsync <peer_multiaddr>")
@@ -505,25 +507,26 @@ func main() {
                     continue
                 }
                 
-                // Get our database state before sync
-                state, err := DB_OPs.GetDatabaseState(immuClient)
+                // Get both database states before sync
+                mainState, err := DB_OPs.GetDatabaseState(immuClient)
                 if err != nil {
-                    fmt.Printf("Failed to get database state: %v\n", err)
+                    fmt.Printf("Failed to get main database state: %v\n", err)
+                    continue
+                }
+                
+                accountsState, err := DB_OPs.GetDatabaseState(didDBClient)
+                if err != nil {
+                    fmt.Printf("Failed to get accounts database state: %v\n", err)
                     continue
                 }
                 
                 fmt.Printf("Starting blockchain sync with peer %s\n", addrInfo.ID.String())
-                fmt.Printf("Our current state: TxID=%d, Root=%x\n", state.TxId, state.TxHash)
+                fmt.Printf("Our current main DB state: TxID=%d, Root=%x\n", mainState.TxId, mainState.TxHash)
+                fmt.Printf("Our current accounts DB state: TxID=%d, Root=%x\n", accountsState.TxId, accountsState.TxHash)
                 
                 // Start the sync process
                 startTime := time.Now()
-
-                // err = fastSyncer.StartSync(addrInfo.ID)
-                // if err != nil {
-                //     fmt.Printf("Sync failed: %v\n", err)
-                //     continue
-                // }
-
+                
                 maxRetries := 3
                 var syncErr error
                 
@@ -543,15 +546,23 @@ func main() {
                     fmt.Printf("Sync failed after %d attempts: %v\n", maxRetries, syncErr)
                     continue
                 }
-                // Get post-sync state
-                newState, err := DB_OPs.GetDatabaseState(immuClient)
+                
+                // Get post-sync states
+                newMainState, err := DB_OPs.GetDatabaseState(immuClient)
                 if err != nil {
-                    fmt.Printf("Failed to get database state after sync: %v\n", err)
+                    fmt.Printf("Failed to get main database state after sync: %v\n", err)
+                    continue
+                }
+                
+                newAccountsState, err := DB_OPs.GetDatabaseState(didDBClient)
+                if err != nil {
+                    fmt.Printf("Failed to get accounts database state after sync: %v\n", err)
                     continue
                 }
                 
                 fmt.Printf("Sync completed in %v\n", time.Since(startTime))
-                fmt.Printf("New state: TxID=%d, Root=%x\n", newState.TxId, newState.TxHash)
+                fmt.Printf("New main DB state: TxID=%d, Root=%x\n", newMainState.TxId, newMainState.TxHash)
+                fmt.Printf("New accounts DB state: TxID=%d, Root=%x\n", newAccountsState.TxId, newAccountsState.TxHash)
                 printDashes()
             
             case "propagateDID":
