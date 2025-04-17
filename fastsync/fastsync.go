@@ -1124,6 +1124,77 @@ func (fs *FastSync) exchangeBloomFilters(stream network.Stream, reader *bufio.Re
 }
 
 // requestBatch requests and processes a batch
+// func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, batchNum int, startTx, endTx uint64, dbType DatabaseType) error {
+//     // Create request
+//     batchReq := SyncMessage{
+//         Type:        TypeBatchRequest,
+//         SenderID:    fs.host.ID().String(),
+//         BatchNumber: batchNum,
+//         StartTxID:   startTx,
+//         EndTxID:     endTx,
+//         DBType:      dbType,
+//         Timestamp:   time.Now().Unix(),
+//     }
+    
+//     // Send request
+//     if err := writeMessage(writer, stream, &batchReq); err != nil {
+//         return fmt.Errorf("failed to send batch request: %w", err)
+//     }
+    
+//     // Read response
+//     batchResp, err := readMessage(reader, stream)
+//     if err != nil {
+//         if strings.Contains(err.Error(), "unexpected end of JSON input") {
+//             return fmt.Errorf("received truncated data - try reducing batch size: %w", err)
+//         }
+//         return fmt.Errorf("failed to read batch data: %w", err)
+//     }
+//     // Check for abort message
+//     if batchResp.Type == TypeSyncAbort {
+//         return fmt.Errorf("peer aborted sync: %s", batchResp.ErrorMessage)
+//     }
+    
+//     // Check response
+//     if batchResp.Type != TypeBatchData {
+//         return fmt.Errorf("unexpected response type: %s", batchResp.Type)
+//     }
+    
+//     // Parse batch data
+//     var batchData BatchData
+//     if err := json.Unmarshal(batchResp.Data, &batchData); err != nil {
+//         return fmt.Errorf("failed to parse batch data: %w", err)
+//     }
+    
+//     // Get database and CRDT engine
+//     db, crdtEngine := fs.getDB(dbType)
+    
+//     // Process data
+//     if err := fs.storeEntries(db, batchData.Entries); err != nil {
+//         return fmt.Errorf("failed to store entries: %w", err)
+//     }
+    
+//     if err := fs.storeCRDTs(crdtEngine, batchData.CRDTs); err != nil {
+//         return fmt.Errorf("failed to store CRDTs: %w", err)
+//     }
+    
+//     // Send acknowledgement
+//     ackMsg := SyncMessage{
+//         Type:        TypeBatchData,
+//         SenderID:    fs.host.ID().String(),
+//         BatchNumber: batchNum,
+//         Success:     true,
+//         DBType:      dbType,
+//         Timestamp:   time.Now().Unix(),
+//     }
+    
+//     if err := writeMessage(writer, stream, &ackMsg); err != nil {
+//         return fmt.Errorf("failed to send batch acknowledgement: %w", err)
+//     }
+    
+//     return nil
+// }
+
+// requestBatch requests and processes a batch
 func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, batchNum int, startTx, endTx uint64, dbType DatabaseType) error {
     // Create request
     batchReq := SyncMessage{
@@ -1149,20 +1220,54 @@ func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, wr
         }
         return fmt.Errorf("failed to read batch data: %w", err)
     }
+    
+    // Print raw response details to terminal
+    fmt.Printf("BATCH RECEIVED [%d]: Size=%d bytes, Type=%s, DB=%s\n", 
+        batchResp.BatchNumber,
+        len(batchResp.Data),
+        batchResp.Type,
+        dbTypeToString(dbType))
+    
     // Check for abort message
     if batchResp.Type == TypeSyncAbort {
+        fmt.Printf("BATCH ERROR: Peer aborted sync: %s\n", batchResp.ErrorMessage)
         return fmt.Errorf("peer aborted sync: %s", batchResp.ErrorMessage)
     }
     
     // Check response
     if batchResp.Type != TypeBatchData {
+        fmt.Printf("BATCH ERROR: Unexpected response type: %s\n", batchResp.Type)
         return fmt.Errorf("unexpected response type: %s", batchResp.Type)
     }
     
     // Parse batch data
     var batchData BatchData
     if err := json.Unmarshal(batchResp.Data, &batchData); err != nil {
+        // Print error details for debugging
+        if len(batchResp.Data) > 100 {
+            fmt.Printf("BATCH PARSE ERROR: %v\nData starts with: %s...\n", 
+                err, string(batchResp.Data[:100]))
+        } else {
+            fmt.Printf("BATCH PARSE ERROR: %v\nFull data: %s\n", 
+                err, string(batchResp.Data))
+        }
         return fmt.Errorf("failed to parse batch data: %w", err)
+    }
+    
+    // Print detailed batch contents to terminal
+    fmt.Printf("BATCH PARSED [%d]: %d entries, %d CRDTs, DB=%s\n",
+        batchResp.BatchNumber,
+        len(batchData.Entries),
+        len(batchData.CRDTs),
+        dbTypeToString(batchData.DBType))
+    
+    if len(batchData.Entries) > 0 {
+        // Print sample of first few keys
+        fmt.Printf("BATCH ENTRIES SAMPLE: ")
+        for i := 0; i < min(3, len(batchData.Entries)); i++ {
+            fmt.Printf("%s, ", string(batchData.Entries[i].Key))
+        }
+        fmt.Println("...")
     }
     
     // Get database and CRDT engine
@@ -1170,12 +1275,16 @@ func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, wr
     
     // Process data
     if err := fs.storeEntries(db, batchData.Entries); err != nil {
+        fmt.Printf("BATCH ERROR: Failed to store entries: %v\n", err)
         return fmt.Errorf("failed to store entries: %w", err)
     }
     
     if err := fs.storeCRDTs(crdtEngine, batchData.CRDTs); err != nil {
+        fmt.Printf("BATCH ERROR: Failed to store CRDTs: %v\n", err)
         return fmt.Errorf("failed to store CRDTs: %w", err)
     }
+    
+    fmt.Printf("BATCH PROCESSED [%d] successfully\n", batchResp.BatchNumber)
     
     // Send acknowledgement
     ackMsg := SyncMessage{
@@ -1192,6 +1301,14 @@ func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, wr
     }
     
     return nil
+}
+
+// Helper function for min value
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
 }
 
 // addToBloomFilter adds a key to a bloom filter
