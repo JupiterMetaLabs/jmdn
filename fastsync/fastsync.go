@@ -617,13 +617,21 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
         return nil, fmt.Errorf("failed to serialize batch data: %w", err)
     }
 
-    log.Info().
-        Str("peer", peerID.String()).
-        Int("batch", msg.BatchNumber).
-        Int("entries", len(entries)).
-        Int("crdts", len(crdts)).
-        Str("db", dbTypeToString(msg.DBType)).
-        Msg("Sending batch data")
+    // log.Info().
+    //     Str("peer", peerID.String()).
+    //     Int("batch", msg.BatchNumber).
+    //     Int("entries", len(entries)).
+    //     Int("crdts", len(crdts)).
+    //     Str("db", dbTypeToString(msg.DBType)).
+    //     Msg("Sending batch data")
+    fmt.Printf(
+        "Sending batch data → peer=%s batch=%d entries=%d crdts=%d db=%s\n",
+        peerID.String(),
+        msg.BatchNumber,
+        len(entries),
+        len(crdts),
+        dbTypeToString(msg.DBType),
+    )
 
     return &SyncMessage{
         Type:        TypeBatchData,
