@@ -579,13 +579,13 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
         filter = state.acctsBloom
     }
 
-    // New: pass msg.DBType into getBatchData
+    // Fetch only the desired prefixes
     entries, crdts, err := fs.getBatchData(db, crdtEngine, filter, msg.DBType)
     if err != nil {
         return nil, fmt.Errorf("failed to get batch data: %w", err)
     }
 
-    // cap entries/CRDTs as before…
+    // Cap entries & CRDTs
     const maxEntriesPerBatch = 100
     if len(entries) > maxEntriesPerBatch {
         entries = entries[:maxEntriesPerBatch]
@@ -595,7 +595,12 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
         crdts = crdts[:maxCRDTsPerBatch]
     }
 
-    // serialize
+    // Mark sent keys in the bloom filter so they aren't re-sent
+    for _, e := range entries {
+        addToBloomFilter(filter, string(e.Key))
+    }
+
+    // Serialize batch payload
     batchData := BatchData{Entries: entries, CRDTs: crdts, DBType: msg.DBType}
     dataBytes, err := json.Marshal(batchData)
     if err != nil {
