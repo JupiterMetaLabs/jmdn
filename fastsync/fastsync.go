@@ -490,62 +490,118 @@ func (fs *FastSync) getAllKeys(db *config.ImmuClient) ([]string, error) {
     return allKeys, nil
 }
 
-// handleBatchRequest processes a batch request
+// // handleBatchRequest processes a batch request
+// func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
+//     fs.mutex.RLock()
+//     state, exists := fs.active[peerID]
+//     fs.mutex.RUnlock()
+    
+//     if !exists {
+//         return nil, fmt.Errorf("no active sync for peer %s", peerID)
+//     }
+    
+//     // Get database and bloom filter
+//     db, crdtEngine := fs.getDB(msg.DBType)
+//     filter := state.mainBloom
+//     if msg.DBType == AccountsDB {
+//         filter = state.acctsBloom
+//     }
+    
+//     // Get batch data
+//     entries, crdts, err := fs.getBatchData(db, crdtEngine, filter)
+//     if err != nil {
+//         return nil, fmt.Errorf("failed to get batch data: %w", err)
+//     }
+    
+//     // Limit entries to avoid overly large responses
+//     const maxEntriesPerBatch = 100
+//     if len(entries) > maxEntriesPerBatch {
+//         log.Warn().
+//             Int("total_entries", len(entries)).
+//             Int("limited_to", maxEntriesPerBatch).
+//             Msg("Limiting batch size to avoid data truncation")
+//         entries = entries[:maxEntriesPerBatch]
+//     }
+    
+//     // Limit CRDTs too
+//     const maxCRDTsPerBatch = 50
+//     if len(crdts) > maxCRDTsPerBatch {
+//         log.Warn().
+//             Int("total_crdts", len(crdts)).
+//             Int("limited_to", maxCRDTsPerBatch).
+//             Msg("Limiting CRDT batch size to avoid data truncation")
+//         crdts = crdts[:maxCRDTsPerBatch]
+//     }
+    
+//     // Create batch data
+//     batchData := BatchData{
+//         Entries: entries,
+//         CRDTs:   crdts,
+//         DBType:  msg.DBType,
+//     }
+    
+//     // Serialize data
+//     dataBytes, err := json.Marshal(batchData)
+//     if err != nil {
+//         return nil, fmt.Errorf("failed to serialize batch data: %w", err)
+//     }
+    
+//     log.Info().
+//         Str("peer", peerID.String()).
+//         Int("batch", msg.BatchNumber).
+//         Int("entries", len(entries)).
+//         Int("crdts", len(crdts)).
+//         Str("db", dbTypeToString(msg.DBType)).
+//         Msg("Sending batch data")
+    
+//     // Send batch data
+//     return &SyncMessage{
+//         Type:        TypeBatchData,
+//         SenderID:    fs.host.ID().String(),
+//         BatchNumber: msg.BatchNumber,
+//         Data:        dataBytes,
+//         DBType:      msg.DBType,
+//         Timestamp:   time.Now().Unix(),
+//     }, nil
+// }
+
 func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
     fs.mutex.RLock()
     state, exists := fs.active[peerID]
     fs.mutex.RUnlock()
-    
     if !exists {
         return nil, fmt.Errorf("no active sync for peer %s", peerID)
     }
-    
-    // Get database and bloom filter
+
     db, crdtEngine := fs.getDB(msg.DBType)
     filter := state.mainBloom
     if msg.DBType == AccountsDB {
         filter = state.acctsBloom
     }
-    
-    // Get batch data
-    entries, crdts, err := fs.getBatchData(db, crdtEngine, filter)
+
+    // New: pass msg.DBType into getBatchData
+    entries, crdts, err := fs.getBatchData(db, crdtEngine, filter, msg.DBType)
     if err != nil {
         return nil, fmt.Errorf("failed to get batch data: %w", err)
     }
-    
-    // Limit entries to avoid overly large responses
+
+    // cap entries/CRDTs as before…
     const maxEntriesPerBatch = 100
     if len(entries) > maxEntriesPerBatch {
-        log.Warn().
-            Int("total_entries", len(entries)).
-            Int("limited_to", maxEntriesPerBatch).
-            Msg("Limiting batch size to avoid data truncation")
         entries = entries[:maxEntriesPerBatch]
     }
-    
-    // Limit CRDTs too
     const maxCRDTsPerBatch = 50
     if len(crdts) > maxCRDTsPerBatch {
-        log.Warn().
-            Int("total_crdts", len(crdts)).
-            Int("limited_to", maxCRDTsPerBatch).
-            Msg("Limiting CRDT batch size to avoid data truncation")
         crdts = crdts[:maxCRDTsPerBatch]
     }
-    
-    // Create batch data
-    batchData := BatchData{
-        Entries: entries,
-        CRDTs:   crdts,
-        DBType:  msg.DBType,
-    }
-    
-    // Serialize data
+
+    // serialize
+    batchData := BatchData{Entries: entries, CRDTs: crdts, DBType: msg.DBType}
     dataBytes, err := json.Marshal(batchData)
     if err != nil {
         return nil, fmt.Errorf("failed to serialize batch data: %w", err)
     }
-    
+
     log.Info().
         Str("peer", peerID.String()).
         Int("batch", msg.BatchNumber).
@@ -553,8 +609,7 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
         Int("crdts", len(crdts)).
         Str("db", dbTypeToString(msg.DBType)).
         Msg("Sending batch data")
-    
-    // Send batch data
+
     return &SyncMessage{
         Type:        TypeBatchData,
         SenderID:    fs.host.ID().String(),
@@ -566,38 +621,95 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
 }
 
 // getBatchData retrieves data for a batch
+// func (fs *FastSync) getBatchData(
+//     db *config.ImmuClient,
+//     crdtEngine *crdt.Engine,
+//     peerBloom *bloom.BloomFilter,
+// ) ([]KeyValueEntry, []json.RawMessage, error) {
+//     var entries []KeyValueEntry
+//     var crdts []json.RawMessage
+
+//     // Get all keys
+//     keys, err := fs.getAllKeys(db)
+//     if err != nil {
+//         return nil, nil, err
+//     }
+
+//     for _, key := range keys {
+//         // 1) Only consider "block:" or "did:" keys
+//         if !strings.HasPrefix(key, "block:") && !strings.HasPrefix(key, "did:") {
+//             continue
+//         }
+
+//         // 2) Skip if peer already has it
+//         if peerBloom != nil && peerBloom.Test([]byte(key)) {
+//             continue
+//         }
+
+//         // 3) Read value
+//         data, err := DB_OPs.Read(db, key)
+//         if err != nil {
+//             continue
+//         }
+
+//         // 4) CRDT vs. plain KV
+//         if crdtEngine.IsCRDT(key) {
+//             wrapper, err := fs.serializeCRDT(crdtEngine, key, data)
+//             if err != nil {
+//                 log.Error().Err(err).Str("key", key).Msg("Failed to serialize CRDT")
+//                 continue
+//             }
+//             crdts = append(crdts, wrapper)
+//         } else {
+//             entries = append(entries, KeyValueEntry{
+//                 Key:       []byte(key),
+//                 Value:     data,
+//                 Timestamp: time.Now(),
+//                 TxID:      0,
+//             })
+//         }
+//     }
+
+//     return entries, crdts, nil
+// }
+
 func (fs *FastSync) getBatchData(
     db *config.ImmuClient,
     crdtEngine *crdt.Engine,
     peerBloom *bloom.BloomFilter,
+    dbType DatabaseType,
 ) ([]KeyValueEntry, []json.RawMessage, error) {
     var entries []KeyValueEntry
     var crdts []json.RawMessage
 
-    // Get all keys
     keys, err := fs.getAllKeys(db)
     if err != nil {
         return nil, nil, err
     }
 
     for _, key := range keys {
-        // 1) Only consider "block:" or "did:" keys
-        if !strings.HasPrefix(key, "block:") && !strings.HasPrefix(key, "did:") {
-            continue
+        // pick the correct prefix
+        switch dbType {
+        case MainDB:
+            if !strings.HasPrefix(key, "block:") {
+                continue
+            }
+        case AccountsDB:
+            if !strings.HasPrefix(key, "did:") {
+                continue
+            }
         }
 
-        // 2) Skip if peer already has it
+        // skip keys peer already has
         if peerBloom != nil && peerBloom.Test([]byte(key)) {
             continue
         }
 
-        // 3) Read value
         data, err := DB_OPs.Read(db, key)
         if err != nil {
             continue
         }
 
-        // 4) CRDT vs. plain KV
         if crdtEngine.IsCRDT(key) {
             wrapper, err := fs.serializeCRDT(crdtEngine, key, data)
             if err != nil {
