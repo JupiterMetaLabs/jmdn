@@ -1295,7 +1295,7 @@ func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, wr
     
     // Send acknowledgement
     ackMsg := SyncMessage{
-        Type:        TypeBatchData,
+        Type:        TypeBatchAck,
         SenderID:    fs.host.ID().String(),
         BatchNumber: batchNum,
         Success:     true,
