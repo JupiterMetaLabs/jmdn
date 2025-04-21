@@ -54,6 +54,7 @@ const (
     TypeSyncAbort           = "SYNC_ABORT"
     TypeVerificationRequest = "VERIFY_REQ"
     TypeVerificationResult  = "VERIFY_RESP"
+    TypeBatchAck            = "BATCH_ACK"
 )
 
 // SyncMessage represents a sync protocol message
@@ -704,7 +705,7 @@ func (fs *FastSync) handleBatchData(peerID peer.ID, msg *SyncMessage) (*SyncMess
         }
     } else {
         response = &SyncMessage{
-            Type:        TypeBatchData,
+            Type:        TypeBatchAck,     
             SenderID:    fs.host.ID().String(),
             BatchNumber: msg.BatchNumber,
             Success:     true,
