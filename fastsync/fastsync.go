@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -597,17 +596,7 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
 
     // Mark sent keys in the bloom filter so they aren't re-sent
     for _, e := range entries {
-        key := string(e.Key)
-        switch msg.DBType {
-        case MainDB:
-            if strings.HasPrefix(key, "block:hash:") {
-                addToBloomFilter(filter, key)
-            }
-        case AccountsDB:
-            if strings.HasPrefix(key, "did:") {
-                addToBloomFilter(filter, key)
-            }
-        }
+        addToBloomFilter(filter, string(e.Key))
     }
 
     // Serialize batch payload
@@ -1460,11 +1449,7 @@ func addToBloomFilter(filter *bloom.BloomFilter, key string) {
     }
     
     // Hash the key for better distribution
-    hasher := sha256.New()
-    hasher.Write([]byte(key))
-    hash := hasher.Sum(nil)
-    
-    filter.Add(hash)
+    filter.Add([]byte(key))
 }
 
 // dbTypeToString converts a database type to a string
