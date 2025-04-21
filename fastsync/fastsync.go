@@ -565,40 +565,46 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
 }
 
 // getBatchData retrieves data for a batch
-func (fs *FastSync) getBatchData(db *config.ImmuClient, crdtEngine *crdt.Engine, peerBloom *bloom.BloomFilter) ([]KeyValueEntry, []json.RawMessage, error) {
+func (fs *FastSync) getBatchData(
+    db *config.ImmuClient,
+    crdtEngine *crdt.Engine,
+    peerBloom *bloom.BloomFilter,
+) ([]KeyValueEntry, []json.RawMessage, error) {
     var entries []KeyValueEntry
     var crdts []json.RawMessage
-    
+
     // Get all keys
     keys, err := fs.getAllKeys(db)
     if err != nil {
         return nil, nil, err
     }
-    
-    // Process keys
+
     for _, key := range keys {
-        // Skip if peer already has this key
+        // 1) Only consider "block:" or "did:" keys
+        if !strings.HasPrefix(key, "block:") && !strings.HasPrefix(key, "did:") {
+            continue
+        }
+
+        // 2) Skip if peer already has it
         if peerBloom != nil && peerBloom.Test([]byte(key)) {
             continue
         }
-        
-        // Get key data
+
+        // 3) Read value
         data, err := DB_OPs.Read(db, key)
         if err != nil {
-            // Skip if not found
             continue
         }
-        
-        // Check if CRDT
+
+        // 4) CRDT vs. plain KV
         if crdtEngine.IsCRDT(key) {
-            crdtWrapper, err := fs.serializeCRDT(crdtEngine, key, data)
+            wrapper, err := fs.serializeCRDT(crdtEngine, key, data)
             if err != nil {
                 log.Error().Err(err).Str("key", key).Msg("Failed to serialize CRDT")
                 continue
             }
-            crdts = append(crdts, crdtWrapper)
+            crdts = append(crdts, wrapper)
         } else {
-            // Regular key-value
             entries = append(entries, KeyValueEntry{
                 Key:       []byte(key),
                 Value:     data,
@@ -607,7 +613,7 @@ func (fs *FastSync) getBatchData(db *config.ImmuClient, crdtEngine *crdt.Engine,
             })
         }
     }
-    
+
     return entries, crdts, nil
 }
 
@@ -971,8 +977,8 @@ func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *b
         
         // Process batches
         for i := 0; i < batchCount; i++ {
-            startTx := ourState.TxId + uint64(i*SyncBatchSize)
-            endTx := startTx + uint64(SyncBatchSize-1)
+            startTx := ourState.TxId + 1 + uint64(i*SyncBatchSize)
+            endTx := startTx + uint64(SyncBatchSize) - 1
             if endTx > dbState.TxID {
                 endTx = dbState.TxID
             }
