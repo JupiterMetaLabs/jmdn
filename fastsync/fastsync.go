@@ -597,7 +597,17 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
 
     // Mark sent keys in the bloom filter so they aren't re-sent
     for _, e := range entries {
-        addToBloomFilter(filter, string(e.Key))
+        key := string(e.Key)
+        switch msg.DBType {
+        case MainDB:
+            if strings.HasPrefix(key, "block:hash:") {
+                addToBloomFilter(filter, key)
+            }
+        case AccountsDB:
+            if strings.HasPrefix(key, "did:") {
+                addToBloomFilter(filter, key)
+            }
+        }
     }
 
     // Serialize batch payload
