@@ -606,21 +606,22 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
         return nil, fmt.Errorf("failed to serialize batch data: %w", err)
     }
 
-    // log.Info().
-    //     Str("peer", peerID.String()).
-    //     Int("batch", msg.BatchNumber).
-    //     Int("entries", len(entries)).
-    //     Int("crdts", len(crdts)).
-    //     Str("db", dbTypeToString(msg.DBType)).
-    //     Msg("Sending batch data")
+    log.Info().
+        Str("peer", peerID.String()).
+        Int("batch", msg.BatchNumber).
+        Int("entries", len(entries)).
+        Int("crdts", len(crdts)).
+        Str("db", dbTypeToString(msg.DBType)).
+        Msg("Sending batch data")
+
     fmt.Printf(
-        "Sending batch data → peer=%s batch=%d entries=%d crdts=%d db=%s\n",
-        peerID.String(),
-        msg.BatchNumber,
-        len(entries),
-        len(crdts),
-        dbTypeToString(msg.DBType),
-    )
+            "Sending batch data → peer=%s batch=%d entries=%d crdts=%d db=%s\n",
+            peerID.String(),
+            msg.BatchNumber,
+            len(entries),
+            len(crdts),
+            dbTypeToString(msg.DBType),
+        )
 
     return &SyncMessage{
         Type:        TypeBatchData,
@@ -632,58 +633,6 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
     }, nil
 }
 
-// getBatchData retrieves data for a batch
-// func (fs *FastSync) getBatchData(
-//     db *config.ImmuClient,
-//     crdtEngine *crdt.Engine,
-//     peerBloom *bloom.BloomFilter,
-// ) ([]KeyValueEntry, []json.RawMessage, error) {
-//     var entries []KeyValueEntry
-//     var crdts []json.RawMessage
-
-//     // Get all keys
-//     keys, err := fs.getAllKeys(db)
-//     if err != nil {
-//         return nil, nil, err
-//     }
-
-//     for _, key := range keys {
-//         // 1) Only consider "block:" or "did:" keys
-//         if !strings.HasPrefix(key, "block:") && !strings.HasPrefix(key, "did:") {
-//             continue
-//         }
-
-//         // 2) Skip if peer already has it
-//         if peerBloom != nil && peerBloom.Test([]byte(key)) {
-//             continue
-//         }
-
-//         // 3) Read value
-//         data, err := DB_OPs.Read(db, key)
-//         if err != nil {
-//             continue
-//         }
-
-//         // 4) CRDT vs. plain KV
-//         if crdtEngine.IsCRDT(key) {
-//             wrapper, err := fs.serializeCRDT(crdtEngine, key, data)
-//             if err != nil {
-//                 log.Error().Err(err).Str("key", key).Msg("Failed to serialize CRDT")
-//                 continue
-//             }
-//             crdts = append(crdts, wrapper)
-//         } else {
-//             entries = append(entries, KeyValueEntry{
-//                 Key:       []byte(key),
-//                 Value:     data,
-//                 Timestamp: time.Now(),
-//                 TxID:      0,
-//             })
-//         }
-//     }
-
-//     return entries, crdts, nil
-// }
 
 func (fs *FastSync) getBatchData(
     db *config.ImmuClient,
@@ -1094,11 +1043,16 @@ func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *b
         
         // Exchange bloom filters
         if err := fs.exchangeBloomFilters(stream, reader, writer, dbState.Type); err != nil {
-            return fmt.Errorf("failed to exchange bloom filters for %s: %w", dbTypeToString(dbState.Type), err)
+            fmt.Printf("No new %s entries—skipping sync\n", dbTypeToString(dbState.Type))
+            continue
         }
         
         // Calculate batches
         batchCount := calculateBatchCount(ourState.TxId, dbState.TxID)
+        if batchCount == 0 {
+            fmt.Printf("No batches needed for %s\n", dbTypeToString(dbState.Type))
+            continue
+        }
         
         // Process batches
         for i := 0; i < batchCount; i++ {
@@ -1253,77 +1207,6 @@ func (fs *FastSync) exchangeBloomFilters(stream network.Stream, reader *bufio.Re
     
     return nil
 }
-
-// requestBatch requests and processes a batch
-// func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, batchNum int, startTx, endTx uint64, dbType DatabaseType) error {
-//     // Create request
-//     batchReq := SyncMessage{
-//         Type:        TypeBatchRequest,
-//         SenderID:    fs.host.ID().String(),
-//         BatchNumber: batchNum,
-//         StartTxID:   startTx,
-//         EndTxID:     endTx,
-//         DBType:      dbType,
-//         Timestamp:   time.Now().Unix(),
-//     }
-    
-//     // Send request
-//     if err := writeMessage(writer, stream, &batchReq); err != nil {
-//         return fmt.Errorf("failed to send batch request: %w", err)
-//     }
-    
-//     // Read response
-//     batchResp, err := readMessage(reader, stream)
-//     if err != nil {
-//         if strings.Contains(err.Error(), "unexpected end of JSON input") {
-//             return fmt.Errorf("received truncated data - try reducing batch size: %w", err)
-//         }
-//         return fmt.Errorf("failed to read batch data: %w", err)
-//     }
-//     // Check for abort message
-//     if batchResp.Type == TypeSyncAbort {
-//         return fmt.Errorf("peer aborted sync: %s", batchResp.ErrorMessage)
-//     }
-    
-//     // Check response
-//     if batchResp.Type != TypeBatchData {
-//         return fmt.Errorf("unexpected response type: %s", batchResp.Type)
-//     }
-    
-//     // Parse batch data
-//     var batchData BatchData
-//     if err := json.Unmarshal(batchResp.Data, &batchData); err != nil {
-//         return fmt.Errorf("failed to parse batch data: %w", err)
-//     }
-    
-//     // Get database and CRDT engine
-//     db, crdtEngine := fs.getDB(dbType)
-    
-//     // Process data
-//     if err := fs.storeEntries(db, batchData.Entries); err != nil {
-//         return fmt.Errorf("failed to store entries: %w", err)
-//     }
-    
-//     if err := fs.storeCRDTs(crdtEngine, batchData.CRDTs); err != nil {
-//         return fmt.Errorf("failed to store CRDTs: %w", err)
-//     }
-    
-//     // Send acknowledgement
-//     ackMsg := SyncMessage{
-//         Type:        TypeBatchData,
-//         SenderID:    fs.host.ID().String(),
-//         BatchNumber: batchNum,
-//         Success:     true,
-//         DBType:      dbType,
-//         Timestamp:   time.Now().Unix(),
-//     }
-    
-//     if err := writeMessage(writer, stream, &ackMsg); err != nil {
-//         return fmt.Errorf("failed to send batch acknowledgement: %w", err)
-//     }
-    
-//     return nil
-// }
 
 // requestBatch requests and processes a batch
 func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, batchNum int, startTx, endTx uint64, dbType DatabaseType) error {
