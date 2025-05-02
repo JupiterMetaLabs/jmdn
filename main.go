@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	// "bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -10,7 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
+	// "sync"
 	"syscall"
 	"time"
 
@@ -26,12 +26,13 @@ import (
 	"gossipnode/messaging/directMSG"
 	"gossipnode/metrics"
 	"gossipnode/node"
+    cli "gossipnode/CLI"
 	"gossipnode/seed"
 
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
+	// "github.com/libp2p/go-libp2p/core/peer"
 	_ "github.com/mattn/go-sqlite3"
-	ma "github.com/multiformats/go-multiaddr"
+	// ma "github.com/multiformats/go-multiaddr"
 	"github.com/rs/zerolog/log"
 )
 
@@ -134,6 +135,7 @@ func initFastSync(n *config.Node, mainClient, accountsClient *config.ImmuClient)
     log.Info().Msg("FastSync service initialized with multi-database support")
     return fs
 }
+
 func main() {
     var nodeManager *node.NodeManager
 
@@ -154,7 +156,7 @@ func main() {
     flag.Parse()
 
     // Initialize logger
-    logFileName := fmt.Sprintf("p2p-node-%s.log", time.Now().Format("2006-01-02"))
+    logFileName := fmt.Sprintf("p2p-node.log")
     if err := logging.InitLogger(*logDir, logFileName, *logToConsole); err != nil {
         fmt.Printf("Failed to initialize logger: %v\n", err)
         return
@@ -323,358 +325,31 @@ func main() {
         }()
     }
 
-    fmt.Println("\n" + config.ColorCyan + "Available Commands:" + config.ColorReset)
-    fmt.Println("  msg <peer_multiaddr> <message>   - Send a message to a peer via libp2p")
-    fmt.Println("  ygg <peer_multiaddr|ygg_ipv6> <message> - Send a message using Yggdrasil")
-    fmt.Println("  file <peer_multiaddr> <filepath> - Send a file to a peer")
-    fmt.Println("  addpeer <peer_multiaddr>         - Add a peer to managed nodes")
-    fmt.Println("  removepeer <peer_id>             - Remove a peer from managed nodes")
-    fmt.Println("  listpeers                         - Show all managed peers")
-    fmt.Println("  peers                             - Request updated peer list from seed")
-    fmt.Println("  stats                             - Show messaging statistics")
-    fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
-    fmt.Println("  fastsync <peer_multiaddr>        - Fast sync blockchain data with a peer")
-    fmt.Println("  dbstate                           - Show current ImmuDB database state")
-    fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
-    fmt.Println("  getDID <did>                      - Get a DID document from the network")
-    fmt.Println("  syncinfo                          - Show FastSync configuration")
-    fmt.Println("  exit                              - Exit the program\n")
-
-
-    var wg sync.WaitGroup
-    wg.Add(1)
-
-    // Command-line input loop
-    go func() {
-        defer wg.Done()
-        defer fmt.Println("Exiting...")
-        fmt.Println()
-        scanner := bufio.NewScanner(os.Stdin)
-        printPrompt()
-        for scanner.Scan() {
-            input := strings.TrimSpace(scanner.Text())
-            if input == "exit" {
-                return
-            }
-
-            parts := strings.SplitN(input, " ", 3)
-            if len(parts) == 0 {
-                continue
-            }
-
-            switch parts[0] {
-            case "msg":
-                if len(parts) != 3 {
-                    fmt.Println("Usage: msg <peer_multiaddr> <message>")
-                    continue
-                }
-                err := node.SendMessage(n, parts[1], parts[2])
-                if err != nil {
-                    fmt.Println("Error:", err)
-                } else {
-                    fmt.Println("Message sent successfully")
-                }
-
-            case "ygg":
-                if !*enableYggdrasil {
-                    fmt.Println("Yggdrasil messaging is disabled. Start with -ygg flag to enable.")
-                    continue
-                }
-                if len(parts) != 3 {
-                    fmt.Println("Usage: ygg <peer_multiaddr|ygg_ipv6> <message>")
-                    continue
-                }
-                err := directMSG.SendYggdrasilMessage(parts[1], parts[2])
-                if err != nil {
-                    fmt.Println("Error sending via Yggdrasil:", err)
-                }
-
-            case "file":
-                if len(parts) != 3 {
-                    fmt.Println("Usage: file <peer_multiaddr> <filepath>")
-                    continue
-                }
-                err := node.SendFile(n, parts[1], parts[2])
-                if err != nil {
-                    fmt.Println("Error:", err)
-                } else {
-                    fmt.Println("File sent successfully")
-                }
-
-            case "peers":
-                if *connect == "" {
-                    fmt.Println("No seed node specified. Use -connect flag to specify a seed node.")
-                    continue
-                }
-
-                peers, err := seed.RequestPeers(n.Host, *connect, 20, "")
-                if err != nil {
-                    fmt.Printf("Error connecting to seed: %v\n", err)
-                } else {
-                    fmt.Printf("Connected to seed. Discovered %d peers\n", len(peers))
-                    for i, p := range peers {
-                        fmt.Printf("  %d. ID: %s, Addresses: %v\n", i+1, p.ID, p.Addrs)
-                    }
-                }
-
-            case "addpeer":
-                if len(parts) != 2 {
-                    fmt.Println("Usage: addpeer <peer_multiaddr>")
-                    continue
-                }
-                err := nodeManager.AddPeer(parts[1])
-                if err != nil {
-                    fmt.Printf("Failed to add peer: %v\n", err)
-                } else {
-                    fmt.Println("Peer added successfully and will be included in heartbeat cycles")
-                }
-
-            case "removepeer":
-                if len(parts) != 2 {
-                    fmt.Println("Usage: removepeer <peer_id>")
-                    continue
-                }
-                err := nodeManager.RemovePeer(parts[1])
-                if err != nil {
-                    fmt.Printf("Failed to remove peer: %v\n", err)
-                } else {
-                    fmt.Println("Peer removed successfully from management")
-                }
-
-            case "listpeers":
-                peers := nodeManager.ListManagedPeers()
-                fmt.Printf("Managed peers (%d):\n", len(peers))
-                for i, p := range peers {
-                    status := "ONLINE"
-                    if !p.IsAlive {
-                        status = "OFFLINE"
-                    }
-                    lastSeen := time.Unix(p.LastSeen, 0).Format(time.RFC3339)
-                    fmt.Printf("%d. ID: %s\n   Address: %s\n   Status: %s\n   Last seen: %s\n   Failures: %d\n",
-                        i+1, p.ID, p.Multiaddr, status, lastSeen, p.HeartbeatFail)
-                }
-                printDashes()
-
-            case "cleanpeers":
-                cleaned, err := nodeManager.CleanupOfflinePeers(9) // Remove peers with 9+ failures
-                if err != nil {
-                    fmt.Printf("Error cleaning up peers: %v\n", err)
-                } else {
-                    fmt.Printf("Cleaned up %d offline peers\n", cleaned)
-                }
-
-            case "stats":
-                if *enableYggdrasil {
-                    stats := directMSG.GetMetrics()
-                    fmt.Println("Yggdrasil Messaging Statistics:")
-                    fmt.Printf("  Messages sent: %d\n", stats["messages_sent"])
-                    fmt.Printf("  Messages received: %d\n", stats["messages_received"])
-                    fmt.Printf("  Failed messages: %d\n", stats["messages_failed"])
-                    printDashes()
-                } else {
-                    fmt.Println("Yggdrasil messaging is disabled.")
-                }
-            
-            case "broadcast":
-                if len(parts) < 2 {
-                    fmt.Println("Usage: broadcast <message>")
-                    continue
-                }
-                // Join all remaining parts as the message
-                message := strings.Join(parts[1:], " ")
-                err := node.BroadcastMessage(n, message)
-                if err != nil {
-                    fmt.Printf("Broadcast failed: %v\n", err)
-                } else {
-                    fmt.Println("Message broadcast initiated")
-                }
-
-            // Update the fastsync case in your CLI command handler:
-
-            case "fastsync":
-                if len(parts) != 2 {
-                    fmt.Println("Usage: fastsync <peer_multiaddr>")
-                    continue
-                }
-                
-                // Parse the multiaddr
-                addr, err := ma.NewMultiaddr(parts[1])
-                if err != nil {
-                    fmt.Printf("Invalid multiaddress: %v\n", err)
-                    continue
-                }
-                
-                // Extract peer ID from multiaddr
-                addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
-                if err != nil {
-                    fmt.Printf("Failed to extract peer info: %v\n", err)
-                    continue
-                }
-                
-                // Get both database states before sync
-                mainState, err := DB_OPs.GetDatabaseState(immuClient)
-                if err != nil {
-                    fmt.Printf("Failed to get main database state: %v\n", err)
-                    continue
-                }
-                
-                accountsState, err := DB_OPs.GetDatabaseState(didDBClient)
-                if err != nil {
-                    fmt.Printf("Failed to get accounts database state: %v\n", err)
-                    continue
-                }
-                
-                fmt.Printf("Starting blockchain sync with peer %s\n", addrInfo.ID.String())
-                fmt.Printf("Our current main DB state: TxID=%d, Root=%x\n", mainState.TxId, mainState.TxHash)
-                fmt.Printf("Our current accounts DB state: TxID=%d, Root=%x\n", accountsState.TxId, accountsState.TxHash)
-                
-                // Start the sync process
-                startTime := time.Now()
-                
-                maxRetries := 3
-                var syncErr error
-                
-                for retry := 0; retry < maxRetries; retry++ {
-                    if retry > 0 {
-                        fmt.Printf("Retry %d/%d after error: %v\n", retry+1, maxRetries, syncErr)
-                        time.Sleep(2 * time.Second)
-                    }
-                    
-                    syncErr = fastSyncer.StartSync(addrInfo.ID)
-                    if syncErr == nil {
-                        break
-                    }
-                }
-                
-                if syncErr != nil {
-                    fmt.Printf("Sync failed after %d attempts: %v\n", maxRetries, syncErr)
-                    continue
-                }
-                
-                // Get post-sync states
-                newMainState, err := DB_OPs.GetDatabaseState(immuClient)
-                if err != nil {
-                    fmt.Printf("Failed to get main database state after sync: %v\n", err)
-                    continue
-                }
-                
-                newAccountsState, err := DB_OPs.GetDatabaseState(didDBClient)
-                if err != nil {
-                    fmt.Printf("Failed to get accounts database state after sync: %v\n", err)
-                    continue
-                }
-                
-                fmt.Printf("Sync completed in %v\n", time.Since(startTime))
-                fmt.Printf("New main DB state: TxID=%d, Root=%x\n", newMainState.TxId, newMainState.TxHash)
-                fmt.Printf("New accounts DB state: TxID=%d, Root=%x\n", newAccountsState.TxId, newAccountsState.TxHash)
-                printDashes()
-            
-            case "propagateDID":
-                if len(parts) < 3 || len(parts) > 4 {
-                    fmt.Println("Usage: propagateDID <did> <public_key> [balance]")
-                    continue
-                }
-                did := parts[1]
-                publicKey := parts[2]
-                
-                // Default balance is "0" if not provided
-                balance := "0"
-                if len(parts) == 4 {
-                    balance = parts[3]
-                }
-                
-                value := DB_OPs.DIDDocument{
-                    DID:       did,
-                    PublicKey: publicKey,
-                    Balance:   balance,
-                } 
-                fmt.Printf("Propagating DID %s with public key %s and balance %s to the network...\n", 
-                    did, publicKey, balance)
-                
-                err := messaging.PropagateDID(n.Host, &value)
-                if err != nil {
-                    fmt.Printf("Failed to propagate DID: %v\n", err)
-                } else {
-                    fmt.Println("DID propagated successfully to all connected peers")
-            }
-
-            case "syncinfo":
-                fmt.Println("FastSync Configuration:")
-                fmt.Printf("  Batch Size: %d\n", fastsync.SyncBatchSize)
-                fmt.Printf("  Bloom Filter Size: %d\n", fastsync.BloomFilterSize)
-                fmt.Printf("  Request Timeout: %v\n", fastsync.RequestTimeout)
-                fmt.Printf("  Response Timeout: %v\n", fastsync.ResponseTimeout)
-                printDashes()
-        
-            case "getDID":
-                if len(parts) != 2 {
-                    fmt.Println("Usage: getDID <did>")
-                    continue
-                }
-                did := parts[1]
-                
-                doc, err := messaging.GetDID(did)
-                if err != nil {
-                    fmt.Printf("Failed to retrieve DID %s: %v\n", did, err)
-                    continue
-                }
-                
-                fmt.Println("DID Document:")
-                fmt.Printf("  DID: %s\n", doc.DID)
-                fmt.Printf("  Public Key: %s\n", doc.PublicKey)
-                fmt.Printf("  Balance: %s\n", doc.Balance)
-                fmt.Printf("  Created: %s\n", time.Unix(doc.CreatedAt, 0).Format(time.RFC3339))
-                fmt.Printf("  Updated: %s\n", time.Unix(doc.UpdatedAt, 0).Format(time.RFC3339))
-
-			case "dbstate":
-				state, err := DB_OPs.GetDatabaseState(immuClient)
-				if err != nil {
-					fmt.Printf("Failed to get database state: %v\n", err)
-					continue
-				}
-				
-				fmt.Println("Current ImmuDB State:")
-				fmt.Printf("  Transaction ID: %d\n", state.TxId)
-				fmt.Printf("  Merkle Root: %x\n", state.TxHash)
-				
-				// Count entries in the database using pagination
-				const maxKeysPerBatch = 2000 // Staying well under the 2500 limit
-				var totalKeys int
-				var lastKey string
-				var hasMoreKeys = true
-				
-				for hasMoreKeys {
-					keys, err := DB_OPs.GetKeys(immuClient,lastKey, maxKeysPerBatch)
-					if err != nil {
-						fmt.Printf("Failed to count database entries: %v\n", err)
-						hasMoreKeys = false
-						continue
-					}
-					
-					count := len(keys)
-					totalKeys += count 
-					
-					// If we got fewer keys than our limit, we've reached the end
-					if count < maxKeysPerBatch {
-						hasMoreKeys = false
-					} else if count > 0 {
-						// Set the last key for the next batch
-						lastKey = keys[count-1]
-					} else {
-						hasMoreKeys = false
-					}
-				}
-				
-				fmt.Printf("  Total Keys: %d\n", totalKeys)
-				printDashes()
-                
-            default:
-                fmt.Println("Unknown command")
-            }
-
-            printPrompt()
-        }
-    }()
-
-    wg.Wait()
+    cmdHandler := &cli.CommandHandler{
+        Node:            n,
+        NodeManager:     nodeManager,
+        FastSyncer:      fastSyncer,
+        SeedNode:        *connect,
+        EnableYggdrasil: *enableYggdrasil,
+    }
+    
+    // Only set database clients if they're properly initialized
+    if immuClient != nil {
+        cmdHandler.MainClient = immuClient
+        fmt.Println(config.ColorGreen+"Main database client connected"+config.ColorReset)
+    } else {
+        fmt.Println(config.ColorYellow+"Warning: Main database client not available - some commands disabled"+config.ColorReset)
+    }
+    
+    if didDBClient != nil {
+        cmdHandler.DIDClient = didDBClient
+        fmt.Println(config.ColorGreen+"DID database client connected"+config.ColorReset)
+    } else {
+        fmt.Println(config.ColorYellow+"Warning: DID database client not available - some commands disabled"+config.ColorReset)
+    }
+    
+    if err := cmdHandler.StartCLI(); err != nil {
+        log.Error().Err(err).Msg("Failed to start CLI")
+    }
+    
 }

@@ -65,17 +65,29 @@ services:
       - monitoring
       
   promtail:
-    image: grafana/promtail:latest
+    image: grafana/promtail:2.8.4  # Use a specific recent version with multiline support
     container_name: promtail
     volumes:
-      - ./logs:/var/log/p2p
       - ./promtail-config.yaml:/etc/promtail/config.yaml
-    command: -config.file=/etc/promtail/config.yaml
+      - ./logs:/var/log/p2p
+    command:
+      - "-config.file=/etc/promtail/config.yaml"
     networks:
       - monitoring
+    restart: unless-stopped
     depends_on:
       - loki
-
+      
+#   immudb:
+#     image: codenotary/immudb:latest
+#     container_name: immudb
+#     ports:
+#       - "3322:3322"
+#       - "9247:9247"
+#       - "8009:8080"
+#     restart: unless-stopped
+#     networks:
+#       - monitoring
 networks:
   monitoring:
     driver: bridge

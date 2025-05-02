@@ -1,6 +1,5 @@
 server:
   http_listen_port: 9080
-  grpc_listen_port: 0
 
 positions:
   filename: /tmp/positions.yaml
@@ -16,15 +15,63 @@ scrape_configs:
         labels:
           job: p2p_logs
           __path__: /var/log/p2p/*.log
+
     pipeline_stages:
-      - json:
-          expressions:
-            level: level
-            ts: time
-            component: component
-            message: message
-            peer_id: peer_id
+      - regex:
+          expression: '(?P<timestamp>\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) (?P<level>[A-Z]+) (?P<component>\w+) (?P<message>.*)'
       - labels:
           level:
           component:
-          peer_id:
+      - timestamp:
+          format: 2006/01/02 15:04:05
+          source: timestamp
+
+  - job_name: gin_logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: gin_logs
+          __path__: /var/log/p2p/gin.log
+    pipeline_stages:
+      - regex:
+          expression: '\[GIN\] (?P<timestamp>\d{4}/\d{2}/\d{2} - \d{2}:\d{2}:\d{2}) \| (?P<status>\d{3}) \| (?P<latency>[0-9\.]+[µnm]s) \| (?P<client_ip>\S+) \| (?P<method>\w+) (?P<path>\S+)'
+      - labels:
+          status:
+          method:
+
+  - job_name: immudb_logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: immudb_logs
+          __path__: /var/log/p2p/immudb.log
+
+  - job_name: transaction_logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: transaction_logs
+          __path__: /var/log/p2p/transactions.log
+    pipeline_stages:
+      - json:
+          expressions:
+            timestamp: time
+            level: level
+            transaction_hash: transaction_hash
+            from: from
+            to: to
+            value: value
+            type: type
+            message: message
+      - labels:
+          level:
+          transaction_hash:
+          from:
+          to:
+          type:
+      - timestamp:
+          source: timestamp
+          format: RFC3339  

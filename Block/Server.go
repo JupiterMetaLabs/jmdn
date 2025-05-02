@@ -2,21 +2,25 @@ package Block
 
 import (
 	"fmt"
-	"strconv"
-
-	// "gossipnode/messaging"
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-	"gossipnode/messaging"
-	"log"
+	"io"
 	"math/big"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
+	"time"
+
+	"gossipnode/DB_OPs"
+	"gossipnode/config"
+	// "gossipnode/logging" // Add this
+	"gossipnode/messaging"
+	"gossipnode/metrics"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 type APIAccessTuple struct {
     Address     string   `json:"address"`
@@ -213,14 +217,14 @@ func generateTransactions(c *gin.Context) {
 				TransactionHash: legacyTxHash,
 			},
 		}
-        // go func(){
-        //     err := messaging.PropagateTransaction(globalHost, legacyTx, legacyTxHash)
-        //     if err != nil {
-        //         log.Printf("Error propagating transaction to network: %v", err)
-        //     } else {
-        //         log.Printf("Transaction %s successfully propagated to network", legacyTxHash)
-        //     }
-        // }()
+        LogTransaction(
+            legacyTxHash, 
+            legacyTx.From.Hex(), 
+            legacyTx.To.Hex(), 
+            legacyTx.Value.String(),
+            "legacy",
+        )
+
          // Submit the transaction to the mempool
         go func(){
             err := SubmitToMempool(legacyTx, legacyTxHash)
@@ -279,14 +283,14 @@ func generateTransactions(c *gin.Context) {
 				TransactionHash: eip1559TxHash,
 			}
 
-            // go func() {
-            //     err := messaging.PropagateTransaction(globalHost, eip1559Tx, eip1559TxHash)
-            //     if err != nil {
-            //         log.Printf("Error propagating transaction to network: %v", err)
-            //     } else {
-            //         log.Printf("Transaction %s successfully propagated to network", eip1559TxHash)
-            //     }
-            // }()
+            LogTransaction(
+                eip1559TxHash, 
+                eip1559Tx.From.Hex(), 
+                eip1559Tx.To.Hex(), 
+                eip1559Tx.Value.String(),
+                "eip1559",
+            )
+
             go func() {
                 err := SubmitToMempool(eip1559Tx, eip1559TxHash)
                 if err != nil {
@@ -310,29 +314,73 @@ func SetHostInstance(h host.Host) {
 
 
 func Startserver(port int, h host.Host) {
-    // Open or create a log file in append mode
-    f, err := os.OpenFile("logs/transactions.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-    if err != nil {
-        log.Fatalf("Unable to open log file: %v", err)
+    // Create logs directory if it doesn't exist
+    if err := os.MkdirAll("logs", 0755); err != nil {
+        log.Fatal().Err(err).Msg("Failed to create logs directory")
     }
-    defer f.Close()
     
-    log.SetOutput(f)
-    gin.DefaultWriter = f
-    gin.DefaultErrorWriter = f
-
+    // Set up transaction logger
+    txLogPath := "logs/transactions.log"
+    txLogFile, err := os.OpenFile(txLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+    if err != nil {
+        log.Fatal().Err(err).Str("path", txLogPath).Msg("Failed to open transaction log file")
+    }
+    
+    // Configure zerolog for transactions
+    txLogger := zerolog.New(txLogFile).With().
+        Timestamp().
+        Str("component", "transactions").
+        Logger()
+    
+    // Set up Gin to use our transaction logger
+    gin.DefaultWriter = io.MultiWriter(txLogFile, os.Stdout)
+    gin.DefaultErrorWriter = io.MultiWriter(txLogFile, os.Stderr)
+    
+    // Configure global logger
+    SetLogger(txLogger)
+    
+    // Configure metrics for Prometheus
+    metrics.DatabaseOperations.WithLabelValues("init", "success").Inc()
+    
     router := gin.Default()
     SetHostInstance(h)
-    // Configure CORS if needed
+    
+    // Add logging middleware
     router.Use(func(c *gin.Context) {
+        // CORS headers
         c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
         c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
         c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, Authorization")
+        
         if c.Request.Method == "OPTIONS" {
             c.AbortWithStatus(204)
             return
         }
+        
+        // Start timing
+        start := time.Now()
+        path := c.Request.URL.Path
+        
+        // Process request
         c.Next()
+        
+        // Log after request with structured data
+        latency := time.Since(start)
+        statusCode := c.Writer.Status()
+        clientIP := c.ClientIP()
+        method := c.Request.Method
+        
+        // Count requests for Prometheus
+        metrics.DatabaseOperations.WithLabelValues("api_request", fmt.Sprintf("%d", statusCode)).Inc()
+        
+        // Log request details with structured format for Loki/Grafana
+        txLogger.Info().
+            Str("client_ip", clientIP).
+            Str("method", method).
+            Str("path", path).
+            Int("status", statusCode).
+            Dur("latency", latency).
+            Msg("API Request")
     })
     
     // Transaction endpoints
@@ -348,12 +396,12 @@ func Startserver(port int, h host.Host) {
         c.JSON(http.StatusOK, gin.H{"status": "ok"})
     })
     
-
     // Start server
     portStr := fmt.Sprintf(":%d", port)
-    log.Println("Starting transaction generator API on", portStr)
+    txLogger.Info().Int("port", port).Msg("Starting transaction generator API")
+    
     if err := router.Run(portStr); err != nil {
-        log.Fatalf("Failed to start server: %v", err)
+        txLogger.Fatal().Err(err).Str("port", portStr).Msg("Failed to start server")
     }
 }
 
@@ -383,6 +431,22 @@ func processZKBlock(c *gin.Context) {
         })
         return
     }
+
+    for _, tx := range block.Transactions {
+        LogTransaction(
+            tx.Hash,
+            tx.From,
+            tx.To,
+            tx.Value,
+            tx.Type,
+        )
+    }
+
+    txLogger.Info().
+        Uint64("block_number", block.BlockNumber).
+        Str("block_hash", block.BlockHash.Hex()).
+        Int("tx_count", len(block.Transactions)).
+        Msg("Block processed")
     
     // Return success
     c.JSON(http.StatusOK, gin.H{
@@ -415,6 +479,11 @@ func getBlockByNumber(c *gin.Context) {
         c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("block not found: %v", err)})
         return
     }
+
+    txLogger.Info().
+    Uint64("block_number", blockNumber).
+    Msg("Block lookup by number")
+
     
     c.JSON(http.StatusOK, block)
 }
@@ -435,6 +504,10 @@ func getBlockByHash(c *gin.Context) {
         c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("block not found: %v", err)})
         return
     }
+
+    txLogger.Info().
+    Str("block_hash", blockHash).
+    Msg("Block lookup by hash")
     
     c.JSON(http.StatusOK, block)
 }
@@ -505,6 +578,10 @@ func getLatestBlock(c *gin.Context) {
         c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get latest block data: %v", err)})
         return
     }
+
+    txLogger.Info().
+    Uint64("latest_block", latestBlockNumber).
+    Msg("Latest block lookup")
     
     c.JSON(http.StatusOK, block)
 }
