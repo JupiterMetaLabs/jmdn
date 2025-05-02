@@ -12,7 +12,6 @@ import (
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
-	// "gossipnode/logging" // Add this
 	"gossipnode/messaging"
 	"gossipnode/metrics"
 
@@ -390,6 +389,11 @@ func Startserver(port int, h host.Host) {
     router.GET("/api/block/hash/:hash", getBlockByHash)
     router.GET("/api/tx/:hash", getTransactionInfo)
     router.GET("/api/latest-block", getLatestBlock)
+
+    router.POST("/api/contract/compile", compileContract)
+    router.POST("/api/contract/deploy", deployContract)
+    router.POST("/api/contract/execute", executeContract)
+
     
     // Add a health check endpoint
     router.GET("/health", func(c *gin.Context) {

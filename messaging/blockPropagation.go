@@ -366,8 +366,6 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
         Msg("Block forwarded to peers")
 }
 
-// PropagateZKBlock creates and propagates a complete ZK block to the network
-// PropagateZKBlock creates and propagates a complete ZK block to the network
 // This function is called by Server.go when receiving a new block via API
 func PropagateZKBlock(h host.Host, block *config.ZKBlock) error {
     // Step 1: Set up database connections

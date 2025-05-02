@@ -997,6 +997,10 @@ func (e *Explorer) SetupRoutes() *mux.Router {
     r.PathPrefix("/css/").Handler(http.StripPrefix("/css/", http.FileServer(http.Dir("./explorer/static/css"))))
     r.PathPrefix("/").Handler(http.FileServer(http.Dir("./explorer/static")))
 
+    // SmartContracts Execution Page
+    r.PathPrefix("/contracts").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        http.ServeFile(w, r, "explorer/static/contracts.html")
+    })
     return r
 }
 
