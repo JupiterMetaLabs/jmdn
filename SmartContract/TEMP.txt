@@ -1,0 +1,7 @@
+# Ubuntu/Debian
+sudo add-apt-repository ppa:ethereum/ethereum
+sudo apt-get update
+sudo apt-get install solc
+
+# Or using npm
+npm install -g solc

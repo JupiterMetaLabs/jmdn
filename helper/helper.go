@@ -1,9 +1,14 @@
 package helper
 
 import (
-    "encoding/json"
-    "github.com/rs/zerolog/log"
-    "gossipnode/config"
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"gossipnode/config"
+	"math/big"
+
+	"github.com/holiman/uint256"
+	"github.com/rs/zerolog/log"
 )
 
 // BroadcastHandler defines an interface for components that can broadcast messages
@@ -17,6 +22,31 @@ var broadcastHandler BroadcastHandler
 // SetBroadcastHandler sets the broadcast handler for notifications
 func SetBroadcastHandler(handler BroadcastHandler) {
     broadcastHandler = handler
+}
+
+func ConvertBigToUint256(b *big.Int) (*uint256.Int, bool) {
+    u, overflow := uint256.FromBig(b)
+    if overflow {
+        log.Error().Msg("Overflow occurred while converting big.Int to uint256")
+        return nil, true
+    }
+    return u, overflow
+}
+
+func BigIntToUint64Safe(b *big.Int) (uint64, error) {
+    if b.Sign() < 0 {
+        return 0, fmt.Errorf("cannot convert negative big.Int to uint64")
+    }
+    if b.BitLen() > 64 {
+        return 0, fmt.Errorf("big.Int too large for uint64")
+    }
+    return b.Uint64(), nil
+}
+
+func Uint64ToBytes(n uint64) []byte {
+    b := make([]byte, 8)
+    binary.BigEndian.PutUint64(b, n)
+    return b
 }
 
 // NotifyBroadcast sends a notification to the broadcast handler
