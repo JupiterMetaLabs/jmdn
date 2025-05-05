@@ -122,9 +122,15 @@ func deployContract(c *gin.Context) {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
+    // Type assert to access the Commit method
+    immuStateDB, ok := stateDB.(*SmartContract.ImmuStateDB)
+    if !ok {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to convert state DB"})
+        return
+    }
 
     // Commit state changes
-    stateRoot, err := stateDB.Commit()
+    stateRoot, err := immuStateDB.Commit()
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit state changes"})
         return
@@ -190,7 +196,7 @@ func executeContract(c *gin.Context) {
     defer DB_OPs.Close(mainDBClient)
 
     // Create state DB and EVM
-    stateDB := SmartContract.NewMemoryStateDB(mainDBClient)
+    stateDB := SmartContract.NewImmuStateDB(mainDBClient)
     executor := SmartContract.NewEVMExecutor()
 
     // Execute contract method
@@ -200,8 +206,14 @@ func executeContract(c *gin.Context) {
         return
     }
 
+    immuStateDB, ok := stateDB.(*SmartContract.ImmuStateDB)
+    if !ok {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to convert state DB"})
+        return
+    }
+
     // Commit state changes
-    stateRoot, err := stateDB.Commit()
+    stateRoot, err := immuStateDB.Commit()
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit state changes"})
         return
