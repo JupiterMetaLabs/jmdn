@@ -1,4 +1,6 @@
-gossipnode.*
+gossipnode.exe
+gossipnode
+gossipnode.exe.sig
 logs/*.log
 config/peer.json
 DB/*.db
