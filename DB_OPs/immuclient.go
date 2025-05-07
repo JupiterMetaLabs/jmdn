@@ -11,6 +11,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
+
 	// "sync"
 	"time"
 
@@ -858,7 +860,11 @@ func GetZKBlockByHash(mainDBClient *config.ImmuClient, blockHash string) (*confi
 func GetLatestBlockNumber(mainDBClient *config.ImmuClient) (uint64, error) {
     latestBytes, err := Read(mainDBClient, "latest_block")
     if err != nil {
-        if err == ErrNotFound {
+        // Check for both our custom ErrNotFound and the ImmuDB-specific errors
+        if err == ErrNotFound || 
+           strings.Contains(err.Error(), "key not found") || 
+           strings.Contains(err.Error(), "tbtree: key not found") {
+            config.Info(mainDBClient.Logger, "No blocks found in the database yet")
             return 0, nil // No blocks yet
         }
         return 0, fmt.Errorf("failed to get latest block: %w", err)

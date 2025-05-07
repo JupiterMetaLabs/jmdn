@@ -118,16 +118,44 @@ type dbOperation struct {
 }
 
 // NewImmuStateDB creates a new state database with ImmuDB persistence
-func NewImmuStateDB(client *config.ImmuClient) vm.StateDB {
-    var headerReader stateless.HeaderReader // Initialize appropriately
-    var block *types.Block // Initialize appropriately
+// func NewImmuStateDB(client *config.ImmuClient) vm.StateDB {
+//     var headerReader stateless.HeaderReader // Initialize appropriately
+//     var block *types.Block // Initialize appropriately
     
-    witness, err := stateless.NewWitness(headerReader, block)
-    if err != nil {
-        // Handle error - perhaps log it and use nil witness
-        log.Error().Err(err).Msg("Failed to create witness")
-        witness = nil
-    }
+//     witness, err := stateless.NewWitness(headerReader, block)
+//     if err != nil {
+//         // Handle error - perhaps log it and use nil witness
+//         log.Error().Err(err).Msg("Failed to create witness")
+//         witness = nil
+//     }
+    
+//     return &ImmuStateDB{
+//         dbClient:     client,
+//         accounts:     make(map[common.Address]*stateAccount),
+//         stateObjects: make(map[common.Address]*stateObject),
+//         stateObjectsDirty: make(map[common.Address]struct{}),
+//         logs:         make([]*types.Log, 0),
+//         snapshots:    make([]*stateSnapshot, 0),
+//         suicided:     make(map[common.Address]bool),
+//         txOps:        make([]*dbOperation, 0, dbBatchSize),
+//         accessList:   &accessList{
+//             addresses: make(map[common.Address]struct{}),
+//             slots:     make(map[common.Address]map[common.Hash]struct{}),
+//         },
+//         commit:     make(map[common.Hash]struct{}),
+//         transientStorage: make(map[common.Address]map[common.Hash]common.Hash),
+//         pointCache: utils.NewPointCache(4096),
+//         selfdestruct6780: make(map[common.Address]struct{}),
+//         hasselfdestruct: make(map[common.Address]bool),
+//         selfdestruct: make(map[common.Address]struct{}),
+//         witness: witness,
+//         witnessMutex: sync.RWMutex{},
+//     }
+// }
+func NewImmuStateDB(client *config.ImmuClient) vm.StateDB {
+    // Don't try to create a witness with uninitialized objects
+    // Just set it to nil for now
+    var witness *stateless.Witness = nil
     
     return &ImmuStateDB{
         dbClient:     client,
@@ -152,7 +180,6 @@ func NewImmuStateDB(client *config.ImmuClient) vm.StateDB {
         witnessMutex: sync.RWMutex{},
     }
 }
-
 // DB Access Helper Methods
 // =======================
 

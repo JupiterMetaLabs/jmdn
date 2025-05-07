@@ -74,3 +74,11 @@ func NotifyBroadcast(msg config.BlockMessage) {
     broadcastHandler.HandleBroadcast(data)
     log.Debug().Str("block_id", msg.ID).Msg("Block notification sent to broadcaster")
 }
+
+func ToJSON(v interface{}) []byte {
+    data, err := json.Marshal(v)
+    if err != nil {
+        return []byte("{}")
+    }
+    return data
+}

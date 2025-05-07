@@ -1,16 +1,17 @@
 package SmartContract
 
 import (
-    "encoding/json"
-    "fmt"
-    "io/ioutil"
-    "os"
-    "os/exec"
-    "path/filepath"
-    "strings"
+	"encoding/json"
+	"fmt"
+	"gossipnode/helper"
+	"io/ioutil"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 
-    "github.com/ethereum/go-ethereum/accounts/abi"
-    "github.com/rs/zerolog/log"
+	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/rs/zerolog/log"
 )
 
 // CompiledContract holds compilation results
@@ -33,12 +34,50 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
         return nil, fmt.Errorf("failed to create artifacts directory: %w", err)
     }
     
-    // Run solc compiler
-    cmd := exec.Command("solc", 
-        "--combined-json", "abi,bin,bin-runtime",
-        "--optimize", "--optimize-runs", "200",
-        sourcePath)
+    // Read the source code
+    sourceCode, err := ioutil.ReadFile(sourcePath)
+    if err != nil {
+        return nil, fmt.Errorf("failed to read source file: %w", err)
+    }
     
+    // Create a standard JSON input
+    sourceFileName := filepath.Base(sourcePath)
+    standardJSONInput := fmt.Sprintf(`{
+        "language": "Solidity",
+        "sources": {
+            "%s": {
+                "content": %s
+            }
+        },
+        "settings": {
+            "outputSelection": {
+                "*": {
+                    "*": ["abi", "evm.bytecode", "evm.deployedBytecode"]
+                }
+            },
+            "optimizer": {
+                "enabled": true,
+                "runs": 200
+            }
+        }
+    }`, sourceFileName, string(helper.ToJSON(string(sourceCode))))
+    
+    // Create a temporary file for the JSON input
+    inputFile, err := ioutil.TempFile("", "solc-input-*.json")
+    if err != nil {
+        return nil, fmt.Errorf("failed to create temp file: %w", err)
+    }
+    defer os.Remove(inputFile.Name())
+    
+    if _, err := inputFile.Write([]byte(standardJSONInput)); err != nil {
+        return nil, fmt.Errorf("failed to write to temp file: %w", err)
+    }
+    if err := inputFile.Close(); err != nil {
+        return nil, fmt.Errorf("failed to close temp file: %w", err)
+    }
+    
+    // Run solc compiler with standard JSON input
+    cmd := exec.Command("solc", "--standard-json", inputFile.Name())
     output, err := cmd.CombinedOutput()
     if err != nil {
         return nil, fmt.Errorf("solc compilation failed: %s - %w", output, err)
@@ -46,37 +85,58 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
     
     // Parse the JSON output
     var result struct {
-        Contracts map[string]struct {
-            Bin        string `json:"bin"`
-            BinRuntime string `json:"bin-runtime"`
-            ABI        string `json:"abi"`
+        Contracts map[string]map[string]struct {
+            ABI interface{} `json:"abi"`
+            EVM struct {
+                Bytecode struct {
+                    Object string `json:"object"`
+                } `json:"bytecode"`
+                DeployedBytecode struct {
+                    Object string `json:"object"`
+                } `json:"deployedBytecode"`
+            } `json:"evm"`
         } `json:"contracts"`
-        Version string `json:"version"`
+        Errors []struct {
+            Message string `json:"message"`
+        } `json:"errors"`
     }
     
     if err := json.Unmarshal(output, &result); err != nil {
         return nil, fmt.Errorf("failed to parse solc output: %w", err)
     }
     
+    // Check for errors
+    if len(result.Errors) > 0 {
+        var messages []string
+        for _, err := range result.Errors {
+            messages = append(messages, err.Message)
+        }
+        return nil, fmt.Errorf("compilation errors: %s", strings.Join(messages, "; "))
+    }
+    
     // Convert to our format
     contracts := make(map[string]*CompiledContract)
-    for path, contract := range result.Contracts {
-        parts := strings.Split(path, ":")
-        contractName := parts[len(parts)-1]
-        
-        contracts[contractName] = &CompiledContract{
-            Bytecode:        "0x" + contract.Bin,
-            ABI:             contract.ABI,
-            DeployedBytecode: "0x" + contract.BinRuntime,
-            Name:            contractName,
-            Path:            sourcePath,
-        }
-        
-        // Save artifact to disk
-        artifactPath := filepath.Join(artifactsDir, contractName+".json")
-        artifactData, _ := json.MarshalIndent(contracts[contractName], "", "  ")
-        if err := ioutil.WriteFile(artifactPath, artifactData, 0644); err != nil {
-            log.Error().Err(err).Str("path", artifactPath).Msg("Failed to write contract artifact")
+    for _, fileContracts := range result.Contracts {
+        for contractName, contract := range fileContracts {
+            abiJSON, err := json.Marshal(contract.ABI)
+            if err != nil {
+                continue
+            }
+            
+            contracts[contractName] = &CompiledContract{
+                Bytecode:        "0x" + contract.EVM.Bytecode.Object,
+                ABI:             string(abiJSON),
+                DeployedBytecode: "0x" + contract.EVM.DeployedBytecode.Object,
+                Name:            contractName,
+                Path:            sourcePath,
+            }
+            
+            // Save artifact to disk
+            artifactPath := filepath.Join(artifactsDir, contractName+".json")
+            artifactData, _ := json.MarshalIndent(contracts[contractName], "", "  ")
+            if err := ioutil.WriteFile(artifactPath, artifactData, 0644); err != nil {
+                log.Error().Err(err).Str("path", artifactPath).Msg("Failed to write contract artifact")
+            }
         }
     }
     
