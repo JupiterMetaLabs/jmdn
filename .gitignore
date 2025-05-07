@@ -1,4 +1,4 @@
-gossipnode
+gossipnode.*
 logs/*.log
 config/peer.json
 DB/*.db
