@@ -42,6 +42,25 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
     
     // Create a standard JSON input
     sourceFileName := filepath.Base(sourcePath)
+    // standardJSONInput := fmt.Sprintf(`{
+    //     "language": "Solidity",
+    //     "sources": {
+    //         "%s": {
+    //             "content": %s
+    //         }
+    //     },
+    //     "settings": {
+    //         "outputSelection": {
+    //             "*": {
+    //                 "*": ["abi", "evm.bytecode", "evm.deployedBytecode"]
+    //             }
+    //         },
+    //         "optimizer": {
+    //             "enabled": true,
+    //             "runs": 200
+    //         }
+    //     }
+    // }`, sourceFileName, string(helper.ToJSON(string(sourceCode))))
     standardJSONInput := fmt.Sprintf(`{
         "language": "Solidity",
         "sources": {
@@ -58,7 +77,8 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
             "optimizer": {
                 "enabled": true,
                 "runs": 200
-            }
+            },
+            "evmVersion": "london"
         }
     }`, sourceFileName, string(helper.ToJSON(string(sourceCode))))
     
