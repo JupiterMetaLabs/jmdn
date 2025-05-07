@@ -445,8 +445,7 @@ func (s *ImmuStateDB) Snapshot() int {
         suicided: suicidedCopy,
     }
     
-    s.snapshots = append(s.snapshots, snap)
-    
+    s.snapshots = append(s.snapshots, snap) 
     return id
 }
 
