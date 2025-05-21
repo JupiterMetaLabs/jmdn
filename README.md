@@ -13,7 +13,7 @@ The system is built on a modular architecture combining several advanced distrib
 - **FastSync Protocol**: Efficient blockchain state synchronization between nodes
 - **Gossip Protocol**: For reliable information dissemination across the network
 - **CRDT Engine**: Conflict-free replicated data types ensuring eventual consistency
-- **Bloom Filter Optimization**: Memory-efficient set membership testing to prevent redundant data transfers
+- **Bloom Filter Optimization**: Memory-efficient set membership testing to prevent redundant data transfers.
 
 ## Features
 
