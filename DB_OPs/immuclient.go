@@ -403,6 +403,68 @@ func GetKeys(ic *config.ImmuClient, prefix string, limit int) ([]string, error) 
 	
 	return keys, nil
 }
+func GetAllKeys(ic *config.ImmuClient, prefix string) ([]string, error) {
+    var allKeys []string
+    batchSize := 1000
+    var lastKey []byte
+    
+    for {
+        // Create a batch request
+        keys, err := getKeysBatch(ic, prefix, batchSize, lastKey)
+        if err != nil {
+            return nil, err
+        }
+        
+        // If no keys returned, we're done
+        if len(keys) == 0 {
+            break
+        }
+        
+        // Add keys to our result
+        allKeys = append(allKeys, keys...)
+        
+        // If we got fewer than batch size, we're done
+        if len(keys) < batchSize {
+            break
+        }
+        
+        // Set last key for next iteration
+        lastKey = []byte(keys[len(keys)-1])
+    }
+    
+    return allKeys, nil
+}
+
+// Helper function to get a batch of keys
+func getKeysBatch(ic *config.ImmuClient, prefix string, limit int, seekKey []byte) ([]string, error) {
+    var keys []string
+    
+    err := withRetry(ic, "GetKeysBatch", func() error {
+        scanReq := &schema.ScanRequest{
+            Prefix:  []byte(prefix),
+            Limit:   uint64(limit),
+            SeekKey: seekKey,
+        }
+        
+        scanResult, err := ic.Client.Scan(ic.Ctx, scanReq)
+        if err != nil {
+            return err
+        }
+        
+        keys = make([]string, len(scanResult.Entries))
+        for i, entry := range scanResult.Entries {
+            keys[i] = string(entry.Key)
+        }
+        
+        return nil
+    })
+    
+    if err != nil {
+        return nil, err
+    }
+    
+    return keys, nil
+}
 
 // BatchCreate stores multiple key-value pairs in a single transaction
 func BatchCreate(ic *config.ImmuClient, entries map[string]interface{}) error {
@@ -658,27 +720,41 @@ func HashBlock(h *config.BlockHasher, nonce, sender string, timestamp int64) str
 }
 
 // GetDatabaseState returns the current state of the database
+// In DB_OPs/immuclient.go
 func GetDatabaseState(ic *config.ImmuClient) (*schema.ImmutableState, error) {
-	var state *schema.ImmutableState
-	
-	err := withRetry(ic,"GetDatabaseState", func() error {
-		config.Info(ic.Logger,"Getting current database state")
-		// Get current state from server
-		dbState, err := ic.Client.CurrentState(ic.Ctx)
-		if err != nil {
-			return err
-		}
-		
-		state = dbState
-		config.Info(ic.Logger,"Database state retrieved: TxId=%d", state.TxId)
-		return nil
-	})
-	
-	if err != nil {
-		return nil, err
-	}
-	
-	return state, nil
+    var state *schema.ImmutableState
+    
+    err := withRetry(ic,"GetDatabaseState", func() error {
+        config.Info(ic.Logger,"Getting current database state")
+        // Get current state from server
+        dbState, err := ic.Client.CurrentState(ic.Ctx)
+        if err != nil {
+            // Check if this is a token expired error
+            if strings.Contains(err.Error(), "token has expired") {
+                // Re-authenticate to get a new token
+                if reconnErr := reconnect(ic); reconnErr != nil {
+                    return fmt.Errorf("failed to reconnect after token expiration: %w", reconnErr)
+                }
+                // Try again with new token
+                dbState, err = ic.Client.CurrentState(ic.Ctx)
+                if err != nil {
+                    return err
+                }
+            } else {
+                return err
+            }
+        }
+        
+        state = dbState
+        config.Info(ic.Logger,"Database state retrieved: TxId=%d", state.TxId)
+        return nil
+    })
+    
+    if err != nil {
+        return nil, err
+    }
+    
+    return state, nil
 }
 
 // Exists checks if a key exists in the database
