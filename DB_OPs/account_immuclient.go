@@ -222,7 +222,7 @@ func ListAllDIDs(ic *config.ImmuClient, limit int) ([]*DIDDocument, error) {
         return nil, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
     }
     
-    keys, err := GetKeys(ic, "did:", limit)
+    keys, err := GetAllKeys(ic, "did:")
     if err != nil {
         return nil, err
     }

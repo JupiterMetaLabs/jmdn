@@ -447,7 +447,7 @@ func (h *CommandHandler) handleDBState() {
     var hasMoreKeys = true
 
     for hasMoreKeys {
-        keys, err := DB_OPs.GetKeys(h.MainClient, lastKey, maxKeysPerBatch)
+        keys, err := DB_OPs.GetAllKeys(h.MainClient, lastKey)
         if err != nil {
             fmt.Printf("Failed to count database entries: %v\n", err)
             hasMoreKeys = false
