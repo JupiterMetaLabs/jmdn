@@ -96,7 +96,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: ./bin/**
-          tag_name: JMDT-Decentralised-Node-`${{ github.sha }}`
+          tag_name: JMDT-Decentralised-Node
           name: JMDT-Decentralised-Node-`${{ github.sha }}`
           body: |
             This is an automated release for commit `${{ github.sha }}`
