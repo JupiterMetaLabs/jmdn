@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+    "gossipnode/CA/ImmuDB_CA"
 	"gossipnode/Block"
 	"gossipnode/DB_OPs"
 	"gossipnode/DID"
@@ -124,6 +125,12 @@ func initDIDDBClient() (*config.ImmuClient, error) {
     if err != nil {
         return nil, fmt.Errorf("failed to initialize accounts database client: %w", err)
     }
+
+
+    err = DB_OPs.EnableAccountsConnectionPooling(DB_OPs.DefaultConnectionPoolConfig())
+    if err != nil {
+        fmt.Println("Failed to initialize accounts connection pool: %v", err)
+    }
     
     log.Info().Str("database", config.AccountsDBName).Msg("DID/Accounts ImmuDB client initialized")
     return client, nil
@@ -138,6 +145,11 @@ func initFastSync(n *config.Node, mainClient, accountsClient *config.ImmuClient)
 
 func main() {
     var nodeManager *node.NodeManager
+    if err := ImmuDB_CA.EnsureTLSAssets(".immudb_state"); err != nil {
+        fmt.Printf("Failed to ensure TLS assets: %v\n", err)
+        log.Fatal()
+    }
+    fmt.Println("ImmuDB TLS assets generated.")
 
     // Command-line flags for node configuration
     isSeed := flag.Bool("seed", false, "Run as a seed node")
@@ -191,6 +203,7 @@ func main() {
     immuClient, err = initMainDBClient()
     if err != nil {
         log.Error().Err(err).Msg("Failed to initialize main database client")
+        os.Exit(1)
         // Handle error or continue with degraded functionality
     }
     defer DB_OPs.Close(immuClient)
@@ -199,7 +212,7 @@ func main() {
     didDBClient, err = initDIDDBClient()
     if err != nil {
         log.Error().Err(err).Msg("Failed to initialize DID database client")
-        // Handle error or continue with degraded functionality
+        os.Exit(1) // Exit if DID client is critical
     }
     defer DB_OPs.Close(didDBClient)
 
@@ -340,7 +353,7 @@ func main() {
     } else {
         fmt.Println(config.ColorYellow+"Warning: Main database client not available - some commands disabled"+config.ColorReset)
     }
-    
+
     if didDBClient != nil {
         cmdHandler.DIDClient = didDBClient
         fmt.Println(config.ColorGreen+"DID database client connected"+config.ColorReset)

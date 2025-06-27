@@ -163,7 +163,6 @@ func (e *EVMExecutor) ExecuteContract(state vm.StateDB, caller common.Address, c
 }
 
 // CanTransfer checks if the account has enough balance to transfer the specified amount
-
 func CanTransfer(db vm.StateDB, addr common.Address, amount *big.Int) bool {
     balance := db.GetBalance(addr)
 
