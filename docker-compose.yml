@@ -78,16 +78,16 @@ services:
     depends_on:
       - loki
       
-#   immudb:
-#     image: codenotary/immudb:latest
-#     container_name: immudb
-#     ports:
-#       - "3322:3322"
-#       - "9247:9247"
-#       - "8009:8080"
-#     restart: unless-stopped
-#     networks:
-#       - monitoring
+  immudb:
+    image: codenotary/immudb:latest
+    container_name: immudb
+    ports:
+      - "3322:3322"
+      - "9247:9247"
+      - "8009:8080"
+    restart: unless-stopped
+    networks:
+      - monitoring
 networks:
   monitoring:
     driver: bridge
