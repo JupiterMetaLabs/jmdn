@@ -9,3 +9,4 @@ Account.json
 .immudb_state/*
 .identity*
 .state*
+.vscode
