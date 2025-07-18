@@ -344,8 +344,10 @@ func (fs *FastSync) StartSync(peerID peer.ID) error {
 		SenderID:            fs.host.ID().String(),
 		TxID:                mainState.TxId,
 		Timestamp:           time.Now().Unix(),
-		MainIBLT_Params:     MainIBLT_Params,
-		AccountsIBLT_Params: AccountsIBLT_Params,
+		IBLT_MetaData:       &IBLT_MetaData_Struct{
+			Main_IBLT_Params:     MainIBLT_Params,
+			Accounts_IBLT_Params: AccountsIBLT_Params,
+		},
 	}
 	if err := writeMessage(writer, stream, &syncReq); err != nil {
 		return fmt.Errorf("failed to send sync request: %w", err)
@@ -499,10 +501,16 @@ func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *b
 
 // Add processSyncWithIBLTParams as a stub for now
 func (fs *FastSync) processSyncWithIBLTParams(peerID peer.ID, stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, response *SyncMessage, mainMinM int, mainMinK int, accountsMinM int, accountsMinK int) error {
-	if response.MainIBLT_Params == nil {
-		response.MainIBLT_Params = &IBLT_Params{
-			M: max(mainMinM, response.MainIBLT_Params.M),
-			K: max(mainMinK, response.MainIBLT_Params.K),
+	if response.IBLT_MetaData == nil {
+		response.IBLT_MetaData = &IBLT_MetaData_Struct{
+			Main_IBLT_Params: &IBLT_Params{
+				M: max(mainMinM, response.IBLT_MetaData.Main_IBLT_Params.M),
+				K: max(mainMinK, response.IBLT_MetaData.Main_IBLT_Params.K),
+			},
+			Accounts_IBLT_Params: &IBLT_Params{
+				M: max(accountsMinM, response.IBLT_MetaData.Accounts_IBLT_Params.M),
+				K: max(accountsMinK, response.IBLT_MetaData.Accounts_IBLT_Params.K),
+			},
 		}
 	}
 	// TODO: Use these params for all IBLT operations in the sync process
