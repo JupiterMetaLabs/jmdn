@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -658,4 +660,66 @@ func dbTypeToString(dbType DatabaseType) string {
 // Helper to calculate optimal IBLT params
 func calcOptimalIBLTParams(keyCount int) (m, k int) {
 	return IBLT.OptimalIBLTParams(keyCount, 1.0, 2.0)
+}
+
+func computeCHECKSUM(iblt *IBLT.IBLT) (string, error) {
+	ComputerCHECKSUM := sha1.New()
+	ComputerCHECKSUM.Write([]byte(iblt.String()))
+	ComputerCHECKSUM_Value := ComputerCHECKSUM.Sum(nil)
+	ComputerCHECKSUM_Value_String := hex.EncodeToString(ComputerCHECKSUM_Value)
+	if ComputerCHECKSUM_Value_String == "" {
+		return "", fmt.Errorf("failed to compute checksum for IBLT")
+	}
+	return ComputerCHECKSUM_Value_String, nil
+}
+
+func isAbove20Percent(fs *FastSync) (bool,error) {
+	computeServerKeys, err := DB_OPs.GetKeys(fs.mainDB, "block:", 0)
+	if err != nil {
+		return false, err
+	}
+	computeServerKeyCount := len(computeServerKeys)
+	computeServerAccountsKeys, err := DB_OPs.GetKeys(fs.accountsDB, "did:", 0)
+	if err != nil {
+		return false, err
+	}
+	computeServerAccountsKeyCount := len(computeServerAccountsKeys)
+	
+	return fs.IBLT_MetaData.Main_DB_KeyCount > int(float64(computeServerKeyCount)*0.2) || fs.IBLT_MetaData.Accounts_DB_KeyCount > int(float64(computeServerAccountsKeyCount)*0.2), nil
+}
+
+func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) (*TypeIBLTExchangeSYNC_Struct, string, string, error) {
+	Phase2, err := fs.handleIBLTExchangeClient(peerID)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	Phase2.Type = TypeIBLTExchangeSYNC
+
+	if err := writeMessage(writer, stream, Phase2); err != nil {
+		return nil, "", "", err
+	}
+
+	Phase2_Response, err := readMessage(reader, stream)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	var data TypeIBLTExchangeSYNC_Struct
+	if err := json.Unmarshal(Phase2_Response.Data, &data); err != nil {
+		return nil, "", "", err
+	}
+
+	// Verify the metadata checksum
+	computeMainChecksum, err := computeCHECKSUM(data.IBLT_MAIN_SYNC)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to compute main IBLT checksum: %w", err)
+	}
+	
+	computeAccountCheksum, err := computeCHECKSUM(data.IBLT_Accounts_SYNC)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to compute accounts IBLT checksum: %w", err)
+	}
+
+	return &data, computeMainChecksum, computeAccountCheksum, nil
 }

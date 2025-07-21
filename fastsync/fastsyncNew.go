@@ -297,8 +297,8 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 			response, handleErr = fs.handleIBLTExchangeSYNC(peerID) //Server will send the SYNC IBLT to the client
 		case TypeIBLTExchangeClient:
 			response, handleErr = fs.handleIBLTExchangeClient(peerID) //Client will send the IBLT to the server
-			// case TypeTransferFile:
-			// 	response, handleErr = fs.handleTransferFile(peerID, msg)
+		case TypeTransferFile: // This will trigger for the file transfer
+			response, handleErr = fs.handleFileTransfer(peerID, msg)
 		default:
 			log.Warn().Str("type", msg.Type).Msg("Unknown message type")
 			continue
@@ -331,6 +331,33 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 	}
 }
 
+func (fs *FastSync) handleFileTransfer(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
+	log.Info().
+		
+	// Need to make the BAK File first, use DB_OPs.BackupFromIBLT
+	var data_config = DB_OPs.Config{
+		Address:    config.DBAddress,
+		Username: config.DBUsername,
+		Password: config.DBPassword,
+		Database: config.DBName,
+		OutputPath: BAK_FILE_PATH+ peerID.String() + ".bak",
+		IbltM: fs.IBLT_MetaData.Main_IBLT_Params.M,
+		IbltK: fs.IBLT_MetaData.Main_IBLT_Params.K,
+	}
+
+	var data_config_Accouunt = DB_Ops.Config{
+		Address:    config.DBAddress,
+		Username: config.DBUsername,
+		Password: config.DBPassword,
+		Database: config.AccountsDBName,
+		OutputPath: BAK_FILE_PATH+ peerID.String() + "_accounts.bak",
+		IbltM: fs.IBLT_MetaData.Accounts_IBLT_Params.M,
+		IbltK: fs.IBLT_MetaData.Accounts_IBLT_Params.K,
+	}
+
+	if 
+}
+
 func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID) (*SyncMessage, error) {
 	log.Info().
 		Str("peer", peerID.String()).
@@ -339,13 +366,16 @@ func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID) (*SyncMessage, error)
 	// compute if the client keys count is less than 20% of the server keys count
 	// -> if < 20% then set to stream the transactions
 	// -> if > 20% the set to make BAK file and send it to the client
-
-
-
-
-
-
-
+	isAbove20Percent, err := isAbove20Percent(fs)
+	if err == nil {
+		if !isAbove20Percent {
+			fs.IBLT_MetaData.isAbove20 = false
+		} else {
+			fs.IBLT_MetaData.isAbove20 = true
+		}
+	}else{
+		fs.IBLT_MetaData.isAbove20 = true
+	}
 
 	ServerIBLT_MAIN, err := fs.MakeIBLT_Default()
 	if err != nil {
@@ -365,15 +395,15 @@ func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID) (*SyncMessage, error)
 		return nil, err
 	}
 
-	ComputerCHECKSUM_MAIN := sha1.New()
-	ComputerCHECKSUM_MAIN.Write([]byte(computeIBLT_MAIN_SYNC.String()))
-	ComputerCHECKSUM_MAIN_Value := ComputerCHECKSUM_MAIN.Sum(nil)
-	ComputerCHECKSUM_MAIN_Value_String := hex.EncodeToString(ComputerCHECKSUM_MAIN_Value)
+	ComputerCHECKSUM_MAIN_Value_String, err := computeCHECKSUM(computeIBLT_MAIN_SYNC)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute main IBLT checksum: %w", err)
+	}
 
-	ComputerCHECKSUM_Accounts := sha1.New()
-	ComputerCHECKSUM_Accounts.Write([]byte(computeIBLT_Accounts_SYNC.String()))
-	ComputerCHECKSUM_Accounts_Value := ComputerCHECKSUM_Accounts.Sum(nil)
-	ComputerCHECKSUM_Accounts_Value_String := hex.EncodeToString(ComputerCHECKSUM_Accounts_Value)
+	ComputerCHECKSUM_Accounts_Value_String, err := computeCHECKSUM(computeIBLT_Accounts_SYNC)
+	if err != nil{
+		return nil, fmt.Errorf("failed to compute accounts IBLT checksum: %w", err)
+	}
 
 	IBLTExchangeClientStruct := TypeIBLTExchangeSYNC_Struct{
 		IBLT_MAIN_SYNC:     computeIBLT_MAIN_SYNC,
@@ -444,7 +474,7 @@ func (fs *FastSync) handleIBLTExchangeClient(peerID peer.ID) (*SyncMessage, erro
 
 	//Send the IBLT to the server to get the SYNC_IBLT
 	return &SyncMessage{
-		Type:      TypeIBLTExchangeSYNC,
+		Type:      TypeIBLTExchangeClient,
 		SenderID:  fs.host.ID().String(),
 		Timestamp: time.Now().Unix(),
 		Data:      data,
@@ -655,7 +685,7 @@ func (fs *FastSync) handleSync(peerID peer.ID, msg *SyncMessage) (*SyncMessage, 
 	reader := bufio.NewReader(stream)
 	writer := bufio.NewWriter(stream)
 
-	//phase1 : Should send the IBlT params to the server and get to the consesus of IBLT params
+	//phase1: Should send the IBlT params to the server and get to the consesus of IBLT params
 	Phase1, err := fs.SendIBLTNegotiationRequest(peerID)
 	if err != nil {
 		return nil, err
@@ -676,31 +706,55 @@ func (fs *FastSync) handleSync(peerID peer.ID, msg *SyncMessage) (*SyncMessage, 
 		return nil, err
 	}
 
-	//phase2 : Should compute the Client IBLT and send it to the server
+	//phase2: Should compute the Client IBLT and send it to the server
 	// -> Client will send the IBLT to the server to get the SYNC_IBLT
-	Phase2, err := fs.handleIBLTExchangeClient(peerID)
+	Phase2, MainChecksum, AccountChecksum, err := fs.Phase2_Sync(msg, peerID, stream, writer, reader)
 	if err != nil {
-		return nil, err
-	}
-	if err := writeMessage(writer, stream, Phase2); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed in Phase2_Sync: %w", err)
 	}
 
-	Phase2_Response, err := readMessage(reader, stream)
+	// Check if the metadata checksums match
+	// else retry to get the IBLT from the server
+	if (Phase2.MetaData.Main_SYNC_MetaData.Checksum != MainChecksum || 
+	Phase2.MetaData.Accounts_SYNC_MetaData.Checksum != AccountChecksum) || 
+	(Phase2.MetaData.Main_SYNC_MetaData.Algorithm != ALGORITHM || 
+	Phase2.MetaData.Accounts_SYNC_MetaData.Algorithm != ALGORITHM) {
+		// retry 3 times to get the valid IBLT from the server
+		log.Warn().
+			Str("peer", peerID.String()).
+			Msg("IBLT metadata checksum mismatch, retrying IBLT exchange")
+		for i := 0; i < 3; i++ {
+			log.Debug().
+				Str("peer", peerID.String()).
+				Int("attempt", i+1).
+				Msg("Retrying IBLT exchange")
+			Phase2, MainChecksum, AccountChecksum, err = fs.Phase2_Sync(msg, peerID, stream, writer, reader)
+			if err == nil && 
+			(Phase2.MetaData.Main_SYNC_MetaData.Checksum == MainChecksum && 
+			Phase2.MetaData.Accounts_SYNC_MetaData.Checksum == AccountChecksum) &&
+			(Phase2.MetaData.Main_SYNC_MetaData.Algorithm == ALGORITHM && 
+			Phase2.MetaData.Accounts_SYNC_MetaData.Algorithm == ALGORITHM) {
+				break
+			}
+		}
+	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get valid IBLT from server: %w", err)
 	}
 
-	var data TypeIBLTExchangeClient_Struct
-	if err := json.Unmarshal(Phase2_Response.Data, &data); err != nil {
-		return nil, err
-	}
-    // response from the server with SYNC_IBLT
-	fs.mainIBLT = data.Client_IBLT_MAIN
-	fs.accountsIBLT = data.Client_IBLT_Accounts
+	// Store the IBLT received from the server
+	// This is the SYNC_IBLT which is the IBLT that the client will
+	// use to sync the databases
+	fs.mainIBLT = Phase2.IBLT_MAIN_SYNC
+	fs.accountsIBLT = Phase2.IBLT_Accounts_SYNC
 
+	// phase2.1: send ACK to the server
+    
 
-	// phase3: 
+	// phase3: receive BAK File from the server
+	// -> Server will send the BAK file to the client
+	// -> Client will receive the BAK file and store it in the BAK_FILE_PATH
+	// -> Client will append the transactions in the BAK file 
 
 
 }

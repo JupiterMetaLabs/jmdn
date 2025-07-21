@@ -156,7 +156,6 @@ func (ib *IBLT) Subtract(other *IBLT) (*IBLT, error) {
 	return result, nil
 }
 
-// validateCompatibility checks if two IBLTs can be added or subtracted.
 func (ib *IBLT) validateCompatibility(other *IBLT) error {
 	if ib.m != other.m || ib.k != other.k {
 		return fmt.Errorf("iblt: cannot combine IBLTs with different parameters (m=%d/%d, k=%d/%d)", ib.m, other.m, ib.k, other.k)
@@ -207,6 +206,11 @@ func (ib *IBLT) String() string {
 
 // ListEntries attempts to peel the IBLT and returns the positive and negative keys.
 // If decoding fails (i.e., not all keys can be peeled), returns an error.
+// validateCompatibility checks if two IBLTs can be added or subtracted.
+
+// Client: After subtracting (your IBLT - peer's IBLT),
+// positive keys = items you need to send to the peer.
+// negative keys = items you are missing and need to request from the peer.
 func (ib *IBLT) ListEntries() (positiveKeys [][]byte, negativeKeys [][]byte, err error) {
 	// Make a copy of the table to avoid mutating the original
 	table := make([]cell, len(ib.table))
