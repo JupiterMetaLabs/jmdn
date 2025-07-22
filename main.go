@@ -176,7 +176,6 @@ func main() {
     }
 
     // Clean up any leftover temp files from a previous run
-    fastsync.CleanupTempFiles()
     defer logging.Close()
 
     // Create a cancellable context for clean shutdown
