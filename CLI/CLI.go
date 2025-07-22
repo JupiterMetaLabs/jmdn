@@ -389,7 +389,7 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
 func (h *CommandHandler) handleSyncInfo() {
     fmt.Println("FastSync Configuration:")
     fmt.Printf("  Batch Size: %d\n", fastsync.SyncBatchSize)
-    fmt.Printf("  Bloom Filter Size: %d\n", fastsync.BloomFilterSize)
+    // fmt.Printf("  Bloom Filter Size: %d\n", fastsync.BloomFilterSize)
     fmt.Printf("  Request Timeout: %v\n", fastsync.RequestTimeout)
     fmt.Printf("  Response Timeout: %v\n", fastsync.ResponseTimeout)
     printDashes()
