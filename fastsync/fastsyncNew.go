@@ -112,6 +112,7 @@ const (
 	TypeVerificationResult  = "VERIFY_RESP"
 	TypeBatchAck            = "BATCH_ACK"
 	TypeTransferFile        = "TRANSFER_FILE"
+	RequestFiletransfer     = "REQUEST_FILE_TRANSFER"
 )
 
 func (fs *FastSync) getDB(dbType DatabaseType) *config.ImmuClient {
@@ -297,8 +298,8 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 			response, handleErr = fs.handleIBLTExchangeSYNC(peerID) //Server will send the SYNC IBLT to the client
 		case TypeIBLTExchangeClient:
 			response, handleErr = fs.handleIBLTExchangeClient(peerID) //Client will send the IBLT to the server
-		case TypeTransferFile: // This will trigger for the file transfer
-			response, handleErr = fs.handleFileTransfer(peerID, msg)
+		case RequestFiletransfer: // This will trigger for the file transfer
+			response, handleErr = fs.MakeBAKFile_Transfer(peerID, msg)
 		default:
 			log.Warn().Str("type", msg.Type).Msg("Unknown message type")
 			continue
@@ -329,33 +330,6 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 			}
 		}
 	}
-}
-
-func (fs *FastSync) handleFileTransfer(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
-	log.Info().
-		
-	// Need to make the BAK File first, use DB_OPs.BackupFromIBLT
-	var data_config = DB_OPs.Config{
-		Address:    config.DBAddress,
-		Username: config.DBUsername,
-		Password: config.DBPassword,
-		Database: config.DBName,
-		OutputPath: BAK_FILE_PATH+ peerID.String() + ".bak",
-		IbltM: fs.IBLT_MetaData.Main_IBLT_Params.M,
-		IbltK: fs.IBLT_MetaData.Main_IBLT_Params.K,
-	}
-
-	var data_config_Accouunt = DB_Ops.Config{
-		Address:    config.DBAddress,
-		Username: config.DBUsername,
-		Password: config.DBPassword,
-		Database: config.AccountsDBName,
-		OutputPath: BAK_FILE_PATH+ peerID.String() + "_accounts.bak",
-		IbltM: fs.IBLT_MetaData.Accounts_IBLT_Params.M,
-		IbltK: fs.IBLT_MetaData.Accounts_IBLT_Params.K,
-	}
-
-	if 
 }
 
 func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID) (*SyncMessage, error) {
@@ -746,17 +720,42 @@ func (fs *FastSync) handleSync(peerID peer.ID, msg *SyncMessage) (*SyncMessage, 
 	// This is the SYNC_IBLT which is the IBLT that the client will
 	// use to sync the databases
 	fs.mainIBLT = Phase2.IBLT_MAIN_SYNC
-	fs.accountsIBLT = Phase2.IBLT_Accounts_SYNC
+	fs.accountsIBLT = Phase2.IBLT_Accounts_SYNC    
 
-	// phase2.1: send ACK to the server
-    
+	// Phase3: Request the BAK file from the server
+	// Server will send the BAK file to the client
 
-	// phase3: receive BAK File from the server
-	// -> Server will send the BAK file to the client
-	// -> Client will receive the BAK file and store it in the BAK_FILE_PATH
-	// -> Client will append the transactions in the BAK file 
+	err = fs.Phase3_FileRequest(msg, peerID, stream, writer, reader, MainChecksum, AccountChecksum)
+	if err != nil{
+		// Retry initiating the file transfer again
+		log.Warn().
+			Str("peer", peerID.String()).
+			Msg("Failed to transfer BAK file, retrying file transfer")
 
+		for i := 0; i < 3; i++{
+			log.Debug().
+				Str("peer", peerID.String()).
+				Int("attempt", i+1).
+				Msg("Retrying file transfer")
+			
+			err = fs.Phase3_FileRequest(msg, peerID, stream, writer, reader, MainChecksum, AccountChecksum)
+			if err == nil {
+				break
+			}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to transfer BAK file after retries: %w", err)
+		}
+	}
 
+	// Phase4: Need to implement this before implementation first test these 3 phases
+
+	return &SyncMessage{
+		Type:      TypeSyncComplete,
+		SenderID:  fs.host.ID().String(),
+		Timestamp: time.Now().Unix(),
+		Success:   true,
+	}, nil	
 }
 
 func calculateBatchCount(startTxID, endTxID uint64) int {
@@ -870,50 +869,80 @@ func (fs *FastSync) getBatchData(
 }
 
 func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
-	cfg := DB_OPs.Config{
+	// 1. Unmarshal the client's IBLT data from the message.
+	// This data tells the server which keys the client has, so the server can create
+	// a targeted backup containing only the missing data.
+	var clientIBLTs TypeIBLTExchangeSYNC_Struct
+	if err := json.Unmarshal(msg.Data, &clientIBLTs); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal client IBLT data for backup: %w", err)
+	}
+
+	if clientIBLTs.IBLT_MAIN_SYNC == nil || clientIBLTs.IBLT_Accounts_SYNC == nil {
+		return nil, fmt.Errorf("request is missing IBLT data for backup")
+	}
+
+	// 2. Ensure the temporary backup directory exists.
+	if err := os.MkdirAll(BAK_FILE_PATH, os.ModePerm); err != nil {
+		return nil, fmt.Errorf("failed to create backup directory: %w", err)
+	}
+
+	mainBakPath := BAK_FILE_PATH + "main.bak"
+	accountsBakPath := BAK_FILE_PATH + "accounts.bak"
+
+	// 3. Use defer to ensure backup files are cleaned up even if errors occur.
+	defer func() {
+		if err := os.Remove(mainBakPath); err != nil && !os.IsNotExist(err) {
+			log.Error().Err(err).Str("path", mainBakPath).Msg("Failed to remove temporary backup file")
+		}
+		if err := os.Remove(accountsBakPath); err != nil && !os.IsNotExist(err) {
+			log.Error().Err(err).Str("path", accountsBakPath).Msg("Failed to remove temporary backup file")
+		}
+	}()
+
+	// 4. Create targeted backups using the client's IBLTs.
+	mainCfg := DB_OPs.Config{
 		Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
 		Username:   config.DBUsername,
 		Password:   config.DBPassword,
 		Database:   config.DBName,
-		OutputPath: BAK_FILE_PATH + "main.bak",
-		IbltM:      msg.IBLT_MetaData.Main_IBLT_Params.M,
-		IbltK:      msg.IBLT_MetaData.Main_IBLT_Params.K,
+		OutputPath: mainBakPath,
 	}
 
-	err := DB_OPs.BackupFromIBLT(cfg, fs.mainIBLT)
+	log.Info().Str("peer", peerID.String()).Str("db", "main").Msg("Creating targeted backup from IBLT")
+	err := DB_OPs.BackupFromIBLT(mainCfg, clientIBLTs.IBLT_MAIN_SYNC)
 	if err != nil {
 		return nil, fmt.Errorf("failed to backup main database: %w", err)
 	}
 
-	cfg = DB_OPs.Config{
+	accountsCfg := DB_OPs.Config{
 		Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
 		Username:   config.DBUsername,
 		Password:   config.DBPassword,
 		Database:   config.AccountsDBName,
-		OutputPath: BAK_FILE_PATH + "accounts.bak",
-		IbltM:      msg.IBLT_MetaData.Accounts_IBLT_Params.M,
-		IbltK:      msg.IBLT_MetaData.Accounts_IBLT_Params.K,
+		OutputPath: accountsBakPath,
 	}
 
-	err = DB_OPs.BackupFromIBLT(cfg, fs.accountsIBLT)
+	log.Info().Str("peer", peerID.String()).Str("db", "accounts").Msg("Creating targeted backup from IBLT")
+	err = DB_OPs.BackupFromIBLT(accountsCfg, clientIBLTs.IBLT_Accounts_SYNC)
 	if err != nil {
 		return nil, fmt.Errorf("failed to backup accounts database: %w", err)
 	}
 
-	err = TransferBAKFile(fs.host, peerID, BAK_FILE_PATH+"main.bak")
+	// 5. Transfer the generated backup files to the client.
+	log.Info().Str("peer", peerID.String()).Str("file", mainBakPath).Msg("Transferring backup file")
+	err = TransferBAKFile(fs.host, peerID, mainBakPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to transfer main database: %w", err)
 	}
 
-	err = TransferBAKFile(fs.host, peerID, BAK_FILE_PATH+"accounts.bak")
+	log.Info().Str("peer", peerID.String()).Str("file", accountsBakPath).Msg("Transferring backup file")
+	err = TransferBAKFile(fs.host, peerID, accountsBakPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to transfer accounts database: %w", err)
 	}
 
-	// Delete the bak files
-	os.Remove(BAK_FILE_PATH + "main.bak")
-	os.Remove(BAK_FILE_PATH + "accounts.bak")
-
+	// 6. Send a completion message back on the control stream.
+	log.Info().Str("peer", peerID.String()).Msg("File transfers complete. Sending SyncComplete.")
 	return &SyncMessage{
 		Type:      TypeSyncComplete,
 		SenderID:  fs.host.ID().String(),

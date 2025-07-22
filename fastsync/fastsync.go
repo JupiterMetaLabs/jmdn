@@ -723,3 +723,56 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 
 	return &data, computeMainChecksum, computeAccountCheksum, nil
 }
+
+
+func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader, MainChecksum string, AccountChecksum string) error {
+	// phase3: receive BAK File from the server
+	// -> Server will send the BAK file to the client
+	// -> Client will receive the BAK file and store it in the BAK_FILE_PATH
+	// -> Client will append the transactions in the BAK file 
+	
+	// 1. Send the request to the server to send the BAK File. Change the msg type to RequestFiletransfer
+
+	msg.Type = RequestFiletransfer
+	IBLT_data := &TypeIBLTExchangeSYNC_Struct{
+		IBLT_MAIN_SYNC: fs.mainIBLT,
+		IBLT_Accounts_SYNC: fs.accountsIBLT,
+		MetaData: &IBLT_MetaData{
+			Main_SYNC_MetaData: &MetaData{
+			Algorithm: ALGORITHM,
+			Checksum: MainChecksum,
+			},
+			Accounts_SYNC_MetaData: &MetaData{
+			Algorithm: ALGORITHM,
+			Checksum: AccountChecksum,
+			},
+		},
+	}
+	
+	// 2. Convert the IBLT data to bytes to send in SyncMessagdata
+	data, err := json.Marshal(IBLT_data)
+	if err != nil{
+		return fmt.Errorf("failed to marshal IBLT data: %w", err)
+	}
+
+	// 3. Populate the message with the data and send it
+	msg.Data = data
+	if err := writeMessage(writer, stream, msg); err != nil {
+		return fmt.Errorf("failed to send file transfer request: %w", err)
+	}
+
+		// 4. Wait for the server's response. The server should send a SyncComplete message
+	// after successfully initiating the file transfers.
+	response, err := readMessage(reader, stream)
+	if err != nil {
+		return fmt.Errorf("failed to read response for file transfer request: %w", err)
+	}
+
+
+	if response.Type == TypeSyncComplete && response.Success {
+		log.Info().Str("peer", peerID.String()).Msg("Server confirmed file transfer initiation. Sync complete.")
+		return nil
+	}
+
+	return fmt.Errorf("unexpected response after file request: type=%s, success=%t, err=%s", response.Type, response.Success, response.ErrorMessage)
+}
