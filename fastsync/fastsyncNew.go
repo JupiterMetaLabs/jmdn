@@ -431,8 +431,8 @@ func (fs *FastSync) handleSyncRequest(peerID peer.ID, msg *SyncMessage) (*SyncMe
 		Msg("Received sync request")
 
 	// Calculate server key counts and optimal IBLT params
-	mainKeys, _ := DB_OPs.GetKeys(fs.mainDB, "block:", 0)
-	accountsKeys, _ := DB_OPs.GetKeys(fs.accountsDB, "did:", 0)
+	mainKeys, _ := DB_OPs.GetAllKeys(fs.mainDB, "block:")
+	accountsKeys, _ := DB_OPs.GetAllKeys(fs.accountsDB, "did:")
 	serverMainM, serverMainK := calcOptimalIBLTParams(len(mainKeys))
 	serverAccountsM, serverAccountsK := calcOptimalIBLTParams(len(accountsKeys))
 

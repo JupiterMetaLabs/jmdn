@@ -182,8 +182,8 @@ func calcOptimalIBLTParams(keyCount int) (m, k int) {
 
 func (fs *FastSync) clientPhase1_Negotiate(stream network.Stream, reader *bufio.Reader, writer *bufio.Writer) (*SyncMessage, error) {
 	// Calculate client's key counts and optimal IBLT params
-	mainKeys, _ := DB_OPs.GetKeys(fs.mainDB, "block:", 0)
-	accountsKeys, _ := DB_OPs.GetKeys(fs.accountsDB, "did:", 0)
+	mainKeys, _ := DB_OPs.GetAllKeys(fs.mainDB, "block:")
+	accountsKeys, _ := DB_OPs.GetAllKeys(fs.accountsDB, "did:")
 	mainM, mainK := calcOptimalIBLTParams(len(mainKeys))
 	accountsM, accountsK := calcOptimalIBLTParams(len(accountsKeys))
 
@@ -292,21 +292,6 @@ func computeCHECKSUM(iblt *IBLT.IBLT) (string, error) {
 		return "", fmt.Errorf("failed to compute checksum for IBLT")
 	}
 	return ComputerCHECKSUM_Value_String, nil
-}
-
-func isAbove20Percent(fs *FastSync) (bool,error) {
-	computeServerKeys, err := DB_OPs.GetKeys(fs.mainDB, "block:", 0)
-	if err != nil {
-		return false, err
-	}
-	computeServerKeyCount := len(computeServerKeys)
-	computeServerAccountsKeys, err := DB_OPs.GetKeys(fs.accountsDB, "did:", 0)
-	if err != nil {
-		return false, err
-	}
-	computeServerAccountsKeyCount := len(computeServerAccountsKeys)
-	
-	return fs.IBLT_MetaData.Main_DB_KeyCount > int(float64(computeServerKeyCount)*0.2) || fs.IBLT_MetaData.Accounts_DB_KeyCount > int(float64(computeServerAccountsKeyCount)*0.2), nil
 }
 
 func (fs *FastSync) clientPhase3_RequestData(peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader, mainChecksum string, accountChecksum string) error {
