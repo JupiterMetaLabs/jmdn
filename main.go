@@ -27,6 +27,7 @@ import (
 	"gossipnode/messaging/directMSG"
 	"gossipnode/metrics"
 	"gossipnode/node"
+	"gossipnode/transfer"
     cli "gossipnode/CLI"
 	"gossipnode/seed"
 
@@ -173,6 +174,9 @@ func main() {
         fmt.Printf("Failed to initialize logger: %v\n", err)
         return
     }
+
+    // Clean up any leftover temp files from a previous run
+    fastsync.CleanupTempFiles()
     defer logging.Close()
 
     // Create a cancellable context for clean shutdown
@@ -198,6 +202,10 @@ func main() {
         return
     }
     defer n.Host.Close()
+
+	// Set the stream handler for receiving files for fastsync. This is crucial
+	// for the final phase of the sync process.
+	n.Host.SetStreamHandler(config.FileProtocol, transfer.HandleFileStream)
 
     // Initialize main database client
     immuClient, err = initMainDBClient()
