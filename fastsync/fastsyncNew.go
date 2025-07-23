@@ -295,7 +295,7 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 		case TypeSyncComplete:
 			response, handleErr = fs.handleSyncComplete(peerID, msg)
 		case TypeIBLTExchangeSYNC:
-			response, handleErr = fs.handleIBLTExchangeSYNC(peerID) //Server will send the SYNC IBLT to the client
+			response, handleErr = fs.handleIBLTExchangeSYNC(peerID, msg) //Server will send the SYNC IBLT to the client
 		case TypeIBLTExchangeClient:
 			response, handleErr = fs.handleIBLTExchangeClient(peerID) //Client will send the IBLT to the server
 		case RequestFiletransfer: // This will trigger for the file transfer
@@ -332,24 +332,20 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 	}
 }
 
-func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID) (*SyncMessage, error) {
+func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
 	log.Info().
 		Str("peer", peerID.String()).
-		Msg("Received IBLT Exchange Client Request")
+		Msg("Received IBLT Exchange SYNC Request")
 
-	// compute if the client keys count is less than 20% of the server keys count
-	// -> if < 20% then set to stream the transactions
-	// -> if > 20% the set to make BAK file and send it to the client
-	isAbove20Percent, err := isAbove20Percent(fs)
-	if err == nil {
-		if !isAbove20Percent {
-			fs.IBLT_MetaData.isAbove20 = false
-		} else {
-			fs.IBLT_MetaData.isAbove20 = true
-		}
-	} else {
-		fs.IBLT_MetaData.isAbove20 = true
-	}
+	// Project the IBLT_MetaData_Struct from msg on to the fs.mainIBLT and fs.accountsIBLT
+	// Debugging print the IBLT_MetaData
+	fmt.Println("msg.IBLT_MetaData.Main_IBLT_Params", msg.IBLT_MetaData.Main_IBLT_Params)
+	fmt.Println("msg.IBLT_MetaData.Accounts_IBLT_Params", msg.IBLT_MetaData.Accounts_IBLT_Params)
+	fmt.Println("msg.IBLT_MetaData.Main_DB_KeyCount", msg.IBLT_MetaData.Main_DB_KeyCount)
+	fmt.Println("msg.IBLT_MetaData.Accounts_DB_KeyCount", msg.IBLT_MetaData.Accounts_DB_KeyCount)
+	fmt.Println("msg.IBLT_MetaData.Main_DB_KeyCount", msg.IBLT_MetaData.Main_DB_KeyCount)
+	fmt.Println("msg.IBLT_MetaData.Accounts_DB_KeyCount", msg.IBLT_MetaData.Accounts_DB_KeyCount)
+	fs.IBLT_MetaData = msg.IBLT_MetaData
 
 	ServerIBLT_MAIN, err := fs.MakeIBLT_Default()
 	if err != nil {
@@ -664,7 +660,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Print for debugging
 	fmt.Println("Phase1 IBLT_MetaData:", Phase1.IBLT_MetaData)
 	fmt.Println("Phase1 IBLT_MetaData Main_IBLT_Params:", Phase1.IBLT_MetaData.Main_IBLT_Params)
@@ -691,16 +687,16 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	}
 
 	fs.IBLT_MetaData.Main_IBLT_Params.M = Phase1.IBLT_MetaData.Main_IBLT_Params.M
-	fmt.Printf("Phase1 IBLT_MetaData Main_IBLT_Params M: %v", Phase1.IBLT_MetaData.Main_IBLT_Params.M)
+	fmt.Printf("Phase1 IBLT_MetaData Main_IBLT_Params M: %v \n", Phase1.IBLT_MetaData.Main_IBLT_Params.M)
 
 	fs.IBLT_MetaData.Main_IBLT_Params.K = Phase1.IBLT_MetaData.Main_IBLT_Params.K
-	fmt.Printf("Phase1 IBLT_MetaData Main_IBLT_Params K: %v", Phase1.IBLT_MetaData.Main_IBLT_Params.K)
+	fmt.Printf("Phase1 IBLT_MetaData Main_IBLT_Params K: %v \n", Phase1.IBLT_MetaData.Main_IBLT_Params.K)
 
 	fs.IBLT_MetaData.Accounts_IBLT_Params.M = Phase1.IBLT_MetaData.Accounts_IBLT_Params.M
-	fmt.Printf("Phase2 IBLT_Metadata Accounts_IBLT_Params M: %v", Phase1.IBLT_MetaData.Accounts_IBLT_Params.M)
+	fmt.Printf("Phase2 IBLT_Metadata Accounts_IBLT_Params M: %v \n", Phase1.IBLT_MetaData.Accounts_IBLT_Params.M)
 
 	fs.IBLT_MetaData.Accounts_IBLT_Params.K = Phase1.IBLT_MetaData.Accounts_IBLT_Params.K
-	fmt.Printf("Phase2 IBLT_Metadata Accounts_IBLT_Params K: %v", Phase1.IBLT_MetaData.Accounts_IBLT_Params.K)
+	fmt.Printf("Phase2 IBLT_Metadata Accounts_IBLT_Params K: %v \n", Phase1.IBLT_MetaData.Accounts_IBLT_Params.K)
 
 	fs.mainIBLT, err = fs.MakeIBLT_Default()
 	if err != nil {
@@ -714,7 +710,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 
 	//phase2: Should compute the Client IBLT and send it to the server
 	// -> Client will send the IBLT to the server to get the SYNC_IBLT
-	Phase2, MainChecksum, AccountChecksum, err := fs.Phase2_Sync(peerID, stream, writer, reader)
+	Phase2, MainChecksum, AccountChecksum, err := fs.Phase2_Sync(Phase1, peerID, stream, writer, reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed in Phase2_Sync: %w", err)
 	}
@@ -734,7 +730,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 				Str("peer", peerID.String()).
 				Int("attempt", i+1).
 				Msg("Retrying IBLT exchange")
-			Phase2, MainChecksum, AccountChecksum, err = fs.Phase2_Sync(peerID, stream, writer, reader)
+			Phase2, MainChecksum, AccountChecksum, err = fs.Phase2_Sync(Phase1, peerID, stream, writer, reader)
 			if err == nil &&
 				(Phase2.MetaData.Main_SYNC_MetaData.Checksum == MainChecksum &&
 					Phase2.MetaData.Accounts_SYNC_MetaData.Checksum == AccountChecksum) &&

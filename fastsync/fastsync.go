@@ -684,17 +684,24 @@ func isAbove20Percent(fs *FastSync) (bool,error) {
 		return false, err
 	}
 	computeServerAccountsKeyCount := len(computeServerAccountsKeys)
+
+	//debugging
+	fmt.Println("computeServerKeyCount", computeServerKeyCount)
+	fmt.Println("computeServerAccountsKeyCount", computeServerAccountsKeyCount)
+	fmt.Println("fs.IBLT_MetaData.Main_DB_KeyCount", fs.IBLT_MetaData.Main_DB_KeyCount)
+	fmt.Println("fs.IBLT_MetaData.Accounts_DB_KeyCount", fs.IBLT_MetaData.Accounts_DB_KeyCount)
 	
 	return fs.IBLT_MetaData.Main_DB_KeyCount > int(float64(computeServerKeyCount)*0.2) || fs.IBLT_MetaData.Accounts_DB_KeyCount > int(float64(computeServerAccountsKeyCount)*0.2), nil
 }
 
-func (fs *FastSync) Phase2_Sync(peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) (*TypeIBLTExchangeSYNC_Struct, string, string, error) {
+func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) (*TypeIBLTExchangeSYNC_Struct, string, string, error) {
 	Phase2, err := fs.handleIBLTExchangeClient(peerID)
 	if err != nil {
 		return nil, "", "", err
 	}
 
 	Phase2.Type = TypeIBLTExchangeSYNC
+	Phase2.IBLT_MetaData = msg.IBLT_MetaData
 
 	if err := writeMessage(writer, stream, Phase2); err != nil {
 		return nil, "", "", err
