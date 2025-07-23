@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	ALGORITHM       = "SHA128"
-	BAK_FILE_PATH   = "fastsync/.temp/"
+	ALGORITHM     = "SHA128"
+	BAK_FILE_PATH = "fastsync/.temp/"
 )
 
 type MerkleRoot struct {
@@ -52,13 +52,13 @@ type SyncMessage struct {
 }
 
 type FastSync struct {
-	host         host.Host
-	mainDB       *config.ImmuClient
-	accountsDB   *config.ImmuClient
-	mainIBLT     *IBLT.IBLT
-	accountsIBLT *IBLT.IBLT
-	active       map[peer.ID]*syncState
-	mutex        sync.RWMutex
+	host          host.Host
+	mainDB        *config.ImmuClient
+	accountsDB    *config.ImmuClient
+	mainIBLT      *IBLT.IBLT
+	accountsIBLT  *IBLT.IBLT
+	active        map[peer.ID]*syncState
+	mutex         sync.RWMutex
 	IBLT_MetaData *IBLT_MetaData_Struct
 }
 
@@ -96,7 +96,7 @@ type IBLT_MetaData_Struct struct {
 	Accounts_IBLT_Params *IBLT_Params
 	Main_DB_KeyCount     int
 	Accounts_DB_KeyCount int
-	isAbove20 			 bool
+	isAbove20            bool
 }
 
 const (
@@ -347,7 +347,7 @@ func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID) (*SyncMessage, error)
 		} else {
 			fs.IBLT_MetaData.isAbove20 = true
 		}
-	}else{
+	} else {
 		fs.IBLT_MetaData.isAbove20 = true
 	}
 
@@ -375,7 +375,7 @@ func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID) (*SyncMessage, error)
 	}
 
 	ComputerCHECKSUM_Accounts_Value_String, err := computeCHECKSUM(computeIBLT_Accounts_SYNC)
-	if err != nil{
+	if err != nil {
 		return nil, fmt.Errorf("failed to compute accounts IBLT checksum: %w", err)
 	}
 
@@ -589,7 +589,6 @@ func (fs *FastSync) handleSyncRequest(peerID peer.ID, msg *SyncMessage) (*SyncMe
 	}, nil
 }
 
-
 func returnStream(fs *FastSync, peerID peer.ID) (network.Stream, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 	defer cancel()
@@ -645,6 +644,7 @@ func (fs *FastSync) SendIBLTNegotiationRequest(peerID peer.ID) (*SyncMessage, er
 		return nil, err
 	}
 
+	fmt.Println("Received IBLT negotiation response:", resp)
 	return resp, nil
 }
 
@@ -664,11 +664,43 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	if err != nil {
 		return nil, err
 	}
+	
+	// Print for debugging
+	fmt.Println("Phase1 IBLT_MetaData:", Phase1.IBLT_MetaData)
+	fmt.Println("Phase1 IBLT_MetaData Main_IBLT_Params:", Phase1.IBLT_MetaData.Main_IBLT_Params)
+	fmt.Println("Phase1 IBLT_MetaData Accounts_IBLT_Params:", Phase1.IBLT_MetaData.Accounts_IBLT_Params)
+	fmt.Println("Phase1 IBLT_MetaData Main_DB_KeyCount:", Phase1.IBLT_MetaData.Main_DB_KeyCount)
+	fmt.Println("Phase1 IBLT_MetaData Accounts_DB_KeyCount:", Phase1.IBLT_MetaData.Accounts_DB_KeyCount)
+
+	// Ensure fs.IBLT_MetaData and its subfields are initialized
+	if fs.IBLT_MetaData == nil {
+		fs.IBLT_MetaData = &IBLT_MetaData_Struct{}
+	}
+	if fs.IBLT_MetaData.Main_IBLT_Params == nil {
+		fs.IBLT_MetaData.Main_IBLT_Params = &IBLT_Params{}
+	}
+	if fs.IBLT_MetaData.Accounts_IBLT_Params == nil {
+		fs.IBLT_MetaData.Accounts_IBLT_Params = &IBLT_Params{}
+	}
+
+	// Check that Phase1.IBLT_MetaData and its subfields are not nil
+	if Phase1.IBLT_MetaData == nil ||
+		Phase1.IBLT_MetaData.Main_IBLT_Params == nil ||
+		Phase1.IBLT_MetaData.Accounts_IBLT_Params == nil {
+		return nil, fmt.Errorf("Phase1 response missing IBLT_MetaData or its params")
+	}
 
 	fs.IBLT_MetaData.Main_IBLT_Params.M = Phase1.IBLT_MetaData.Main_IBLT_Params.M
+	fmt.Printf("Phase1 IBLT_MetaData Main_IBLT_Params M: %v", Phase1.IBLT_MetaData.Main_IBLT_Params.M)
+
 	fs.IBLT_MetaData.Main_IBLT_Params.K = Phase1.IBLT_MetaData.Main_IBLT_Params.K
+	fmt.Printf("Phase1 IBLT_MetaData Main_IBLT_Params K: %v", Phase1.IBLT_MetaData.Main_IBLT_Params.K)
+
 	fs.IBLT_MetaData.Accounts_IBLT_Params.M = Phase1.IBLT_MetaData.Accounts_IBLT_Params.M
+	fmt.Printf("Phase2 IBLT_Metadata Accounts_IBLT_Params M: %v", Phase1.IBLT_MetaData.Accounts_IBLT_Params.M)
+
 	fs.IBLT_MetaData.Accounts_IBLT_Params.K = Phase1.IBLT_MetaData.Accounts_IBLT_Params.K
+	fmt.Printf("Phase2 IBLT_Metadata Accounts_IBLT_Params K: %v", Phase1.IBLT_MetaData.Accounts_IBLT_Params.K)
 
 	fs.mainIBLT, err = fs.MakeIBLT_Default()
 	if err != nil {
@@ -689,10 +721,10 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 
 	// Check if the metadata checksums match
 	// else retry to get the IBLT from the server
-	if (Phase2.MetaData.Main_SYNC_MetaData.Checksum != MainChecksum || 
-	Phase2.MetaData.Accounts_SYNC_MetaData.Checksum != AccountChecksum) || 
-	(Phase2.MetaData.Main_SYNC_MetaData.Algorithm != ALGORITHM || 
-	Phase2.MetaData.Accounts_SYNC_MetaData.Algorithm != ALGORITHM) {
+	if (Phase2.MetaData.Main_SYNC_MetaData.Checksum != MainChecksum ||
+		Phase2.MetaData.Accounts_SYNC_MetaData.Checksum != AccountChecksum) ||
+		(Phase2.MetaData.Main_SYNC_MetaData.Algorithm != ALGORITHM ||
+			Phase2.MetaData.Accounts_SYNC_MetaData.Algorithm != ALGORITHM) {
 		// retry 3 times to get the valid IBLT from the server
 		log.Warn().
 			Str("peer", peerID.String()).
@@ -703,11 +735,11 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 				Int("attempt", i+1).
 				Msg("Retrying IBLT exchange")
 			Phase2, MainChecksum, AccountChecksum, err = fs.Phase2_Sync(peerID, stream, writer, reader)
-			if err == nil && 
-			(Phase2.MetaData.Main_SYNC_MetaData.Checksum == MainChecksum && 
-			Phase2.MetaData.Accounts_SYNC_MetaData.Checksum == AccountChecksum) &&
-			(Phase2.MetaData.Main_SYNC_MetaData.Algorithm == ALGORITHM && 
-			Phase2.MetaData.Accounts_SYNC_MetaData.Algorithm == ALGORITHM) {
+			if err == nil &&
+				(Phase2.MetaData.Main_SYNC_MetaData.Checksum == MainChecksum &&
+					Phase2.MetaData.Accounts_SYNC_MetaData.Checksum == AccountChecksum) &&
+				(Phase2.MetaData.Main_SYNC_MetaData.Algorithm == ALGORITHM &&
+					Phase2.MetaData.Accounts_SYNC_MetaData.Algorithm == ALGORITHM) {
 				break
 			}
 		}
@@ -720,24 +752,24 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	// This is the SYNC_IBLT which is the IBLT that the client will
 	// use to sync the databases
 	fs.mainIBLT = Phase2.IBLT_MAIN_SYNC
-	fs.accountsIBLT = Phase2.IBLT_Accounts_SYNC    
+	fs.accountsIBLT = Phase2.IBLT_Accounts_SYNC
 
 	// Phase3: Request the BAK file from the server
 	// Server will send the BAK file to the client
 
 	err = fs.Phase3_FileRequest(Phase1, peerID, stream, writer, reader, MainChecksum, AccountChecksum)
-	if err != nil{
+	if err != nil {
 		// Retry initiating the file transfer again
 		log.Warn().
 			Str("peer", peerID.String()).
 			Msg("Failed to transfer BAK file, retrying file transfer")
 
-		for i := 0; i < 3; i++{
+		for i := 0; i < 3; i++ {
 			log.Debug().
 				Str("peer", peerID.String()).
 				Int("attempt", i+1).
 				Msg("Retrying file transfer")
-			
+
 			err = fs.Phase3_FileRequest(Phase1, peerID, stream, writer, reader, MainChecksum, AccountChecksum)
 			if err == nil {
 				break
@@ -755,7 +787,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 		SenderID:  fs.host.ID().String(),
 		Timestamp: time.Now().Unix(),
 		Success:   true,
-	}, nil	
+	}, nil
 }
 
 func calculateBatchCount(startTxID, endTxID uint64) int {

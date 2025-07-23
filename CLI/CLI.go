@@ -326,7 +326,7 @@ func (h *CommandHandler) handleFastSync(parts []string) {
             time.Sleep(2 * time.Second)
         }
 
-        syncErr = h.FastSyncer.StartSync(addrInfo.ID)
+        _, syncErr = h.FastSyncer.HandleSync(addrInfo.ID)
         if syncErr == nil {
             break
         }
