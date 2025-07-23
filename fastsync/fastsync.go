@@ -713,8 +713,15 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		return nil, "", "", err
 	}
 
+	// Debugging
+	fmt.Println("Phase2_Response.Data", Phase2_Response.Data)
+	fmt.Println("Phase2_Response.Type", Phase2_Response.Type)
+	fmt.Println("Phase2_Response.IBLT_MetaData", Phase2_Response.IBLT_MetaData)
+	
 	var data TypeIBLTExchangeSYNC_Struct
 	if err := json.Unmarshal(Phase2_Response.Data, &data); err != nil {
+		fmt.Println("json.Unmarshal")
+		fmt.Println("Phase2_Response.Data", Phase2_Response.Data)
 		return nil, "", "", err
 	}
 

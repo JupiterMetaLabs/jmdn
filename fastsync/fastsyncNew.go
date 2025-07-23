@@ -350,9 +350,11 @@ func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID, msg *SyncMessage) (*S
 	// Get the Client IBLT
 	var tempClientIBLT TypeIBLTExchangeClient_Struct
 	if err := json.Unmarshal(msg.Data, &tempClientIBLT); err != nil {
+		fmt.Println("json.Unmarshal")
+		fmt.Println("msg.Data", msg.Data)
 		return nil, err
 	}
-	
+
 	// Compute the IBLT
 	ServerIBLT_MAIN, err := fs.MakeIBLT_Default()
 	if err != nil {
@@ -382,7 +384,7 @@ func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID, msg *SyncMessage) (*S
 		return nil, fmt.Errorf("failed to compute accounts IBLT checksum: %w", err)
 	}
 
-	IBLTExchangeClientStruct := TypeIBLTExchangeSYNC_Struct{
+	IBLTExchangeSYNCStruct := TypeIBLTExchangeSYNC_Struct{
 		IBLT_MAIN_SYNC:     computeIBLT_MAIN_SYNC,
 		IBLT_Accounts_SYNC: computeIBLT_Accounts_SYNC,
 		MetaData: &IBLT_MetaData{
@@ -397,7 +399,7 @@ func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID, msg *SyncMessage) (*S
 		},
 	}
 
-	data, err := json.Marshal(IBLTExchangeClientStruct)
+	data, err := json.Marshal(IBLTExchangeSYNCStruct)
 	if err != nil {
 		return nil, err
 	}
