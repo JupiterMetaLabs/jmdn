@@ -700,6 +700,7 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		return nil, "", "", err
 	}
 
+	// Send the IBLT to the server to get the SYNC_IBLT
 	Phase2.Type = TypeIBLTExchangeSYNC
 	Phase2.IBLT_MetaData = msg.IBLT_MetaData
 
