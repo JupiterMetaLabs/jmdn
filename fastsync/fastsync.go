@@ -694,7 +694,7 @@ func isAbove20Percent(fs *FastSync) (bool,error) {
 	return fs.IBLT_MetaData.Main_DB_KeyCount > int(float64(computeServerKeyCount)*0.2) || fs.IBLT_MetaData.Accounts_DB_KeyCount > int(float64(computeServerAccountsKeyCount)*0.2), nil
 }
 
-func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) (*TypeIBLTExchangeSYNC_Struct, string, string, error) {
+func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) (*TypeIBLTExchange_Struct, string, string, error) {
 	Phase2, err := fs.handleIBLTExchangeClient(peerID)
 	if err != nil {
 		return nil, "", "", err
@@ -703,6 +703,16 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 	// Send the IBLT to the server to get the SYNC_IBLT
 	Phase2.Type = TypeIBLTExchangeSYNC
 	Phase2.IBLT_MetaData = msg.IBLT_MetaData
+
+	
+	// Debugging
+	fmt.Println("Phase2.IBLT_MAIN_SYNC",Phase2.IBLT.IBLT_MAIN)
+	fmt.Println("Phase2.IBLT_Accounts_SYNC",Phase2.IBLT.IBLT_Accounts)
+	fmt.Println("Phase2.MetaData.Main_SYNC_MetaData.Checksum",Phase2.IBLT.MetaData.Main_SYNC_MetaData.Checksum)
+	fmt.Println("Phase2.MetaData.Accounts_SYNC_MetaData.Checksum",Phase2.IBLT.MetaData.Accounts_SYNC_MetaData.Checksum)
+	fmt.Println("Phase2.Type", Phase2.Type)
+	fmt.Println("Phase2.IBLT_MetaData", Phase2.IBLT_MetaData)
+
 
 	if err := writeMessage(writer, stream, Phase2); err != nil {
 		return nil, "", "", err
@@ -718,25 +728,19 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 	fmt.Println("Phase2_Response.Type", Phase2_Response.Type)
 	fmt.Println("Phase2_Response.IBLT_MetaData", Phase2_Response.IBLT_MetaData)
 	
-	var data TypeIBLTExchangeSYNC_Struct
-	if err := json.Unmarshal(Phase2_Response.Data, &data); err != nil {
-		fmt.Println("json.Unmarshal")
-		fmt.Println("Phase2_Response.Data", Phase2_Response.Data)
-		return nil, "", "", err
-	}
 
 	// Verify the metadata checksum
-	computeMainChecksum, err := computeCHECKSUM(data.IBLT_MAIN_SYNC)
+	computeMainChecksum, err := computeCHECKSUM(Phase2.IBLT.IBLT_MAIN)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("failed to compute main IBLT checksum: %w", err)
 	}
 	
-	computeAccountCheksum, err := computeCHECKSUM(data.IBLT_Accounts_SYNC)
+	computeAccountCheksum, err := computeCHECKSUM(Phase2.IBLT.IBLT_Accounts)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("failed to compute accounts IBLT checksum: %w", err)
 	}
 
-	return &data, computeMainChecksum, computeAccountCheksum, nil
+	return Phase2.IBLT, computeMainChecksum, computeAccountCheksum, nil
 }
 
 
@@ -749,9 +753,9 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 	// 1. Send the request to the server to send the BAK File. Change the msg type to RequestFiletransfer
 
 	msg.Type = RequestFiletransfer
-	IBLT_data := &TypeIBLTExchangeSYNC_Struct{
-		IBLT_MAIN_SYNC: fs.mainIBLT,
-		IBLT_Accounts_SYNC: fs.accountsIBLT,
+	IBLT_data := &TypeIBLTExchange_Struct{
+		IBLT_MAIN: fs.mainIBLT,
+		IBLT_Accounts: fs.accountsIBLT,
 		MetaData: &IBLT_MetaData{
 			Main_SYNC_MetaData: &MetaData{
 			Algorithm: ALGORITHM,

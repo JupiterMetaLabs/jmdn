@@ -48,6 +48,7 @@ type SyncMessage struct {
 	ErrorMessage  string                `json:"error_message,omitempty"`
 	Timestamp     int64                 `json:"timestamp"`
 	DBType        DatabaseType          `json:"db_type,omitempty"`
+	IBLT	 	  *TypeIBLTExchange_Struct `json:"iblt_sync,omitempty"`
 	IBLT_MetaData *IBLT_MetaData_Struct `json:"iblt_meta_data,omitempty"`
 }
 
@@ -72,16 +73,10 @@ type MetaData struct {
 	Checksum  string
 }
 
-type TypeIBLTExchangeSYNC_Struct struct {
-	IBLT_MAIN_SYNC     *IBLT.IBLT
-	IBLT_Accounts_SYNC *IBLT.IBLT
+type TypeIBLTExchange_Struct struct {
+	IBLT_MAIN     *IBLT.IBLT
+	IBLT_Accounts *IBLT.IBLT
 	MetaData           *IBLT_MetaData
-}
-
-type TypeIBLTExchangeClient_Struct struct {
-	Client_IBLT_MAIN     *IBLT.IBLT
-	Client_IBLT_Accounts *IBLT.IBLT
-	MetaData             *IBLT_MetaData
 }
 
 type IBLT_Params struct {
@@ -347,13 +342,9 @@ func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID, msg *SyncMessage) (*S
 	fmt.Println("msg.IBLT_MetaData.Accounts_DB_KeyCount", msg.IBLT_MetaData.Accounts_DB_KeyCount)
 	fs.IBLT_MetaData = msg.IBLT_MetaData
 
-	// Get the Client IBLT
-	var tempClientIBLT TypeIBLTExchangeClient_Struct
-	if err := json.Unmarshal(msg.Data, &tempClientIBLT); err != nil {
-		fmt.Println("json.Unmarshal")
-		fmt.Println("msg.Data", msg.Data)
-		return nil, err
-	}
+	// Debugging
+	fmt.Println("tempClientIBLT.Client_IBLT_MAIN", msg.IBLT.IBLT_MAIN)
+	fmt.Println("tempClientIBLT.Client_IBLT_Accounts", msg.IBLT.IBLT_Accounts)
 
 	// Compute the IBLT
 	ServerIBLT_MAIN, err := fs.MakeIBLT_Default()
@@ -365,11 +356,11 @@ func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID, msg *SyncMessage) (*S
 		return nil, err
 	}
 
-	computeIBLT_MAIN_SYNC, err := ServerIBLT_MAIN.Subtract(tempClientIBLT.Client_IBLT_MAIN)
+	computeIBLT_MAIN_SYNC, err := ServerIBLT_MAIN.Subtract(msg.IBLT.IBLT_MAIN)
 	if err != nil {
 		return nil, err
 	}
-	computeIBLT_Accounts_SYNC, err := ServerIBLT_Accounts.Subtract(tempClientIBLT.Client_IBLT_Accounts)
+	computeIBLT_Accounts_SYNC, err := ServerIBLT_Accounts.Subtract(msg.IBLT.IBLT_Accounts)
 	if err != nil {
 		return nil, err
 	}
@@ -384,9 +375,12 @@ func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID, msg *SyncMessage) (*S
 		return nil, fmt.Errorf("failed to compute accounts IBLT checksum: %w", err)
 	}
 
-	IBLTExchangeSYNCStruct := TypeIBLTExchangeSYNC_Struct{
-		IBLT_MAIN_SYNC:     computeIBLT_MAIN_SYNC,
-		IBLT_Accounts_SYNC: computeIBLT_Accounts_SYNC,
+	fmt.Println("IBLT of MAIN SYNC", computeIBLT_MAIN_SYNC)
+	fmt.Println("IBLT of Accounts SYNC", computeIBLT_Accounts_SYNC)
+
+	IBLTExchangeSYNCStruct := TypeIBLTExchange_Struct{
+		IBLT_MAIN:     computeIBLT_MAIN_SYNC,
+		IBLT_Accounts: computeIBLT_Accounts_SYNC,
 		MetaData: &IBLT_MetaData{
 			Main_SYNC_MetaData: &MetaData{
 				Algorithm: ALGORITHM,
@@ -399,16 +393,11 @@ func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID, msg *SyncMessage) (*S
 		},
 	}
 
-	data, err := json.Marshal(IBLTExchangeSYNCStruct)
-	if err != nil {
-		return nil, err
-	}
-
 	return &SyncMessage{
 		Type:      TypeIBLTExchangeSYNC,
 		SenderID:  fs.host.ID().String(),
 		Timestamp: time.Now().Unix(),
-		Data:      data,
+		IBLT: &IBLTExchangeSYNCStruct,
 	}, nil
 
 }
@@ -431,9 +420,9 @@ func (fs *FastSync) handleIBLTExchangeClient(peerID peer.ID) (*SyncMessage, erro
 	ComputerCHECKSUM_Accounts_Value_String := hex.EncodeToString(ComputerCHECKSUM_Accounts_Value)
 
 	//Send IBLT which was in the fs to the server
-	Client_data := TypeIBLTExchangeClient_Struct{
-		Client_IBLT_MAIN:     fs.mainIBLT,
-		Client_IBLT_Accounts: fs.accountsIBLT,
+	Client_data := TypeIBLTExchange_Struct{
+		IBLT_MAIN:     fs.mainIBLT,
+		IBLT_Accounts: fs.accountsIBLT,
 		MetaData: &IBLT_MetaData{
 			Main_SYNC_MetaData: &MetaData{
 				Algorithm: ALGORITHM,
@@ -446,17 +435,20 @@ func (fs *FastSync) handleIBLTExchangeClient(peerID peer.ID) (*SyncMessage, erro
 		},
 	}
 
-	data, err := json.Marshal(Client_data)
-	if err != nil {
-		return nil, err
-	}
+	// Debugging 	
+	fmt.Println("Client_data.Client_IBLT_MAIN", Client_data.IBLT_MAIN)
+	fmt.Println("Client_data.Client_IBLT_Accounts", Client_data.IBLT_Accounts)
+	fmt.Println("Client_data.MetaData.Main_SYNC_MetaData.Checksum", Client_data.MetaData.Main_SYNC_MetaData.Checksum)
+	fmt.Println("Client_data.MetaData.Accounts_SYNC_MetaData.Checksum", Client_data.MetaData.Accounts_SYNC_MetaData.Checksum)
+
+
 
 	//Send the IBLT to the server to get the SYNC_IBLT
 	return &SyncMessage{
 		Type:      TypeIBLTExchangeClient,
 		SenderID:  fs.host.ID().String(),
 		Timestamp: time.Now().Unix(),
-		Data:      data,
+		IBLT: &Client_data,
 	}, nil
 }
 
@@ -716,6 +708,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	if err != nil {
 		return nil, err
 	}
+	
 
 	//phase2: Should compute the Client IBLT and send it to the server
 	// -> Client will send the IBLT to the server to get the SYNC_IBLT
@@ -756,8 +749,8 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	// Store the IBLT received from the server
 	// This is the SYNC_IBLT which is the IBLT that the client will
 	// use to sync the databases
-	fs.mainIBLT = Phase2.IBLT_MAIN_SYNC
-	fs.accountsIBLT = Phase2.IBLT_Accounts_SYNC
+	fs.mainIBLT = Phase2.IBLT_MAIN
+	fs.accountsIBLT = Phase2.IBLT_Accounts
 
 	// Phase3: Request the BAK file from the server
 	// Server will send the BAK file to the client
@@ -909,12 +902,8 @@ func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Syn
 	// 1. Unmarshal the client's IBLT data from the message.
 	// This data tells the server which keys the client has, so the server can create
 	// a targeted backup containing only the missing data.
-	var clientIBLTs TypeIBLTExchangeSYNC_Struct
-	if err := json.Unmarshal(msg.Data, &clientIBLTs); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal client IBLT data for backup: %w", err)
-	}
 
-	if clientIBLTs.IBLT_MAIN_SYNC == nil || clientIBLTs.IBLT_Accounts_SYNC == nil {
+	if msg.IBLT.IBLT_MAIN == nil || msg.IBLT.IBLT_Accounts == nil {
 		return nil, fmt.Errorf("request is missing IBLT data for backup")
 	}
 
@@ -946,7 +935,7 @@ func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Syn
 	}
 
 	log.Info().Str("peer", peerID.String()).Str("db", "main").Msg("Creating targeted backup from IBLT")
-	err := DB_OPs.BackupFromIBLT(mainCfg, clientIBLTs.IBLT_MAIN_SYNC)
+	err := DB_OPs.BackupFromIBLT(mainCfg, msg.IBLT.IBLT_MAIN)
 	if err != nil {
 		return nil, fmt.Errorf("failed to backup main database: %w", err)
 	}
@@ -960,7 +949,7 @@ func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Syn
 	}
 
 	log.Info().Str("peer", peerID.String()).Str("db", "accounts").Msg("Creating targeted backup from IBLT")
-	err = DB_OPs.BackupFromIBLT(accountsCfg, clientIBLTs.IBLT_Accounts_SYNC)
+	err = DB_OPs.BackupFromIBLT(accountsCfg, msg.IBLT.IBLT_Accounts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to backup accounts database: %w", err)
 	}
