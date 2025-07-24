@@ -612,8 +612,8 @@ func returnStream(fs *FastSync, peerID peer.ID) (network.Stream, error) {
 // It sends the client's key counts and optimal IBLT params, and receives the server's negotiated response.
 func (fs *FastSync) SendIBLTNegotiationRequest(peerID peer.ID) (*SyncMessage, error) {
 	// Step 1: Count keys in both DBs
-	mainKeys, _ := DB_OPs.GetKeys(fs.mainDB, "block:", 0)
-	accountsKeys, _ := DB_OPs.GetKeys(fs.accountsDB, "did:", 0)
+	mainKeys, _ := DB_OPs.GetAllKeys(fs.mainDB, "block:")
+	accountsKeys, _ := DB_OPs.GetAllKeys(fs.accountsDB, "did:")
 
 	// Step 2: Compute optimal IBLT params for both DBs
 	mainM, mainK := calcOptimalIBLTParams(len(mainKeys))
