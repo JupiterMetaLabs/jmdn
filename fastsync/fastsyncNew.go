@@ -398,6 +398,18 @@ func (fs *FastSync) handleIBLTExchangeSYNC(peerID peer.ID, msg *SyncMessage) (*S
 		SenderID:  fs.host.ID().String(),
 		Timestamp: time.Now().Unix(),
 		IBLT: &IBLTExchangeSYNCStruct,
+		IBLT_MetaData: &IBLT_MetaData_Struct{
+			Main_IBLT_Params: &IBLT_Params{
+				M: fs.IBLT_MetaData.Main_IBLT_Params.M,
+				K: fs.IBLT_MetaData.Main_IBLT_Params.K,
+			},
+			Accounts_IBLT_Params: &IBLT_Params{
+				M: fs.IBLT_MetaData.Accounts_IBLT_Params.M,
+				K: fs.IBLT_MetaData.Accounts_IBLT_Params.K,
+			},
+			Main_DB_KeyCount: fs.IBLT_MetaData.Main_DB_KeyCount,
+			Accounts_DB_KeyCount: fs.IBLT_MetaData.Accounts_DB_KeyCount,
+		},
 	}, nil
 
 }
