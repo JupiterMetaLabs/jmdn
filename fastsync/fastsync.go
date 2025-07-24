@@ -694,7 +694,7 @@ func isAbove20Percent(fs *FastSync) (bool,error) {
 	return fs.IBLT_MetaData.Main_DB_KeyCount > int(float64(computeServerKeyCount)*0.2) || fs.IBLT_MetaData.Accounts_DB_KeyCount > int(float64(computeServerAccountsKeyCount)*0.2), nil
 }
 
-func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) (*TypeIBLTExchange_Struct, string, string, error) {
+func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) (*SyncMessage, string, string, error) {
 	Phase2, err := fs.handleIBLTExchangeClient(peerID)
 	if err != nil {
 		return nil, "", "", err
@@ -740,7 +740,7 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		return nil, "", "", fmt.Errorf("failed to compute accounts IBLT checksum: %w", err)
 	}
 
-	return Phase2.IBLT, computeMainChecksum, computeAccountCheksum, nil
+	return Phase2, computeMainChecksum, computeAccountCheksum, nil
 }
 
 
@@ -753,29 +753,7 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 	// 1. Send the request to the server to send the BAK File. Change the msg type to RequestFiletransfer
 
 	msg.Type = RequestFiletransfer
-	IBLT_data := &TypeIBLTExchange_Struct{
-		IBLT_MAIN: fs.mainIBLT,
-		IBLT_Accounts: fs.accountsIBLT,
-		MetaData: &IBLT_MetaData{
-			Main_SYNC_MetaData: &MetaData{
-			Algorithm: ALGORITHM,
-			Checksum: MainChecksum,
-			},
-			Accounts_SYNC_MetaData: &MetaData{
-			Algorithm: ALGORITHM,
-			Checksum: AccountChecksum,
-			},
-		},
-	}
 	
-	// 2. Convert the IBLT data to bytes to send in SyncMessagdata
-	data, err := json.Marshal(IBLT_data)
-	if err != nil{
-		return fmt.Errorf("failed to marshal IBLT data: %w", err)
-	}
-
-	// 3. Populate the message with the data and send it
-	msg.Data = data
 	if err := writeMessage(writer, stream, msg); err != nil {
 		return fmt.Errorf("failed to send file transfer request: %w", err)
 	}

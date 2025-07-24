@@ -731,25 +731,25 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 
 	// Check if the metadata checksums match
 	// else retry to get the IBLT from the server
-	if (Phase2.MetaData.Main_SYNC_MetaData.Checksum != MainChecksum ||
-		Phase2.MetaData.Accounts_SYNC_MetaData.Checksum != AccountChecksum) ||
-		(Phase2.MetaData.Main_SYNC_MetaData.Algorithm != ALGORITHM ||
-			Phase2.MetaData.Accounts_SYNC_MetaData.Algorithm != ALGORITHM) {
+	if (Phase2.IBLT.MetaData.Main_SYNC_MetaData.Checksum != MainChecksum ||
+		Phase2.IBLT.MetaData.Accounts_SYNC_MetaData.Checksum != AccountChecksum) ||
+		(Phase2.IBLT.MetaData.Main_SYNC_MetaData.Algorithm != ALGORITHM ||
+			Phase2.IBLT.MetaData.Accounts_SYNC_MetaData.Algorithm != ALGORITHM) {
 		// retry 3 times to get the valid IBLT from the server
 		log.Warn().
 			Str("peer", peerID.String()).
 			Msg("IBLT metadata checksum mismatch, retrying IBLT exchange")
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			log.Debug().
 				Str("peer", peerID.String()).
 				Int("attempt", i+1).
 				Msg("Retrying IBLT exchange")
 			Phase2, MainChecksum, AccountChecksum, err = fs.Phase2_Sync(Phase1, peerID, stream, writer, reader)
 			if err == nil &&
-				(Phase2.MetaData.Main_SYNC_MetaData.Checksum == MainChecksum &&
-					Phase2.MetaData.Accounts_SYNC_MetaData.Checksum == AccountChecksum) &&
-				(Phase2.MetaData.Main_SYNC_MetaData.Algorithm == ALGORITHM &&
-					Phase2.MetaData.Accounts_SYNC_MetaData.Algorithm == ALGORITHM) {
+				(Phase2.IBLT.MetaData.Main_SYNC_MetaData.Checksum == MainChecksum &&
+					Phase2.IBLT.MetaData.Accounts_SYNC_MetaData.Checksum == AccountChecksum) &&
+				(Phase2.IBLT.MetaData.Main_SYNC_MetaData.Algorithm == ALGORITHM &&
+					Phase2.IBLT.MetaData.Accounts_SYNC_MetaData.Algorithm == ALGORITHM) {
 				break
 			}
 		}
@@ -761,13 +761,13 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	// Store the IBLT received from the server
 	// This is the SYNC_IBLT which is the IBLT that the client will
 	// use to sync the databases
-	fs.mainIBLT = Phase2.IBLT_MAIN
-	fs.accountsIBLT = Phase2.IBLT_Accounts
+	fs.mainIBLT = Phase2.IBLT.IBLT_MAIN
+	fs.accountsIBLT = Phase2.IBLT.IBLT_Accounts
 
 	// Phase3: Request the BAK file from the server
 	// Server will send the BAK file to the client
 
-	err = fs.Phase3_FileRequest(Phase1, peerID, stream, writer, reader, MainChecksum, AccountChecksum)
+	err = fs.Phase3_FileRequest(Phase2, peerID, stream, writer, reader, MainChecksum, AccountChecksum)
 	if err != nil {
 		// Retry initiating the file transfer again
 		log.Warn().
