@@ -347,6 +347,10 @@ func (fs *FastSync) handleHashMapExchangeSYNC(peerID peer.ID, msg *SyncMessage) 
 		SYNC_HashMap_Accounts.Insert(key)
 	}
 
+	// Debugging
+	fmt.Println("SYNC_HashMap_MAIN: ", SYNC_HashMap_MAIN.Size())
+	fmt.Println("SYNC_HashMap_Accounts: ", SYNC_HashMap_Accounts.Size())
+
 	return &SyncMessage{
 		Type: TypeHashMapExchangeSYNC,
 		SenderID: fs.host.ID().String(),
@@ -639,14 +643,14 @@ func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Syn
 	accountsBakPath := BAK_FILE_PATH + "accounts.bak"
 
 	// 3. Use defer to ensure backup files are cleaned up even if errors occur.
-	defer func() {
-		if err := os.Remove(mainBakPath); err != nil && !os.IsNotExist(err) {
-			log.Error().Err(err).Str("path", mainBakPath).Msg("Failed to remove temporary backup file")
-		}
-		if err := os.Remove(accountsBakPath); err != nil && !os.IsNotExist(err) {
-			log.Error().Err(err).Str("path", accountsBakPath).Msg("Failed to remove temporary backup file")
-		}
-	}()
+	// defer func() {
+	// 	if err := os.Remove(mainBakPath); err != nil && !os.IsNotExist(err) {
+	// 		log.Error().Err(err).Str("path", mainBakPath).Msg("Failed to remove temporary backup file")
+	// 	}
+	// 	if err := os.Remove(accountsBakPath); err != nil && !os.IsNotExist(err) {
+	// 		log.Error().Err(err).Str("path", accountsBakPath).Msg("Failed to remove temporary backup file")
+	// 	}
+	// }()
 
 	// 4. Create targeted backups using the client's IBLTs.
 	mainCfg := DB_OPs.Config{
