@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"gossipnode/crdt/hashmap"
+	hashmap "gossipnode/crdt/Hashmap"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"google.golang.org/grpc"
