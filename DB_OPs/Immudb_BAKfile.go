@@ -7,8 +7,9 @@ import (
 	"log"
 	"os"
 	"time"
-	
+
 	"gossipnode/crdt/hashmap"
+
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
