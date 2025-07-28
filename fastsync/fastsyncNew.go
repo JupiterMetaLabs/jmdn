@@ -479,6 +479,13 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 		return nil, fmt.Errorf("failed to get valid HashMap from server: %w", err)
 	}
 
+	// Debugging
+	fmt.Println("HashMap metadata checksums match")
+	fmt.Println("Main HashMap size: ", Phase2.HashMap.MAIN_HashMap.Size())
+	fmt.Println("Accounts HashMap size: ", Phase2.HashMap.Accounts_HashMap.Size())
+	fmt.Println("Main HashMap metadata: ", Phase2.HashMap_MetaData.Main_HashMap_MetaData)
+	fmt.Println("Accounts HashMap metadata: ", Phase2.HashMap_MetaData.Accounts_HashMap_MetaData)
+	
 	// Phase3: Request the BAK file from the server
 	// Server will send the BAK file to the client
 
