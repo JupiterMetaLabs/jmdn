@@ -33,30 +33,30 @@ type MerkleRoot struct {
 // Need to change from IBLT to HashMap
 
 type SyncMessage struct {
-	Type          string                `json:"type"`
-	SenderID      string                `json:"sender_id"`
-	TxID          uint64                `json:"tx_id,omitempty"`
-	StartTxID     uint64                `json:"start_tx_id,omitempty"`
-	EndTxID       uint64                `json:"end_tx_id,omitempty"`
-	BatchNumber   int                   `json:"batch_number,omitempty"`
-	TotalBatches  int                   `json:"total_batches,omitempty"`
-	MerkleRoot    MerkleRoot            `json:"merkle_root,omitempty"`
-	KeysCount     int                   `json:"keys_count,omitempty"`
-	Data          json.RawMessage       `json:"data,omitempty"`
-	Success       bool                  `json:"success,omitempty"`
-	ErrorMessage  string                `json:"error_message,omitempty"`
-	Timestamp     int64                 `json:"timestamp"`
-	DBType        DatabaseType          `json:"db_type,omitempty"`
-	HashMap	 	  *TypeHashMapExchange_Struct `json:"hashmap_sync,omitempty"`
-	HashMap_MetaData *HashMap_MetaData `json:"hashmap_meta_data,omitempty"`
+	Type             string                      `json:"type"`
+	SenderID         string                      `json:"sender_id"`
+	TxID             uint64                      `json:"tx_id,omitempty"`
+	StartTxID        uint64                      `json:"start_tx_id,omitempty"`
+	EndTxID          uint64                      `json:"end_tx_id,omitempty"`
+	BatchNumber      int                         `json:"batch_number,omitempty"`
+	TotalBatches     int                         `json:"total_batches,omitempty"`
+	MerkleRoot       MerkleRoot                  `json:"merkle_root,omitempty"`
+	KeysCount        int                         `json:"keys_count,omitempty"`
+	Data             json.RawMessage             `json:"data,omitempty"`
+	Success          bool                        `json:"success,omitempty"`
+	ErrorMessage     string                      `json:"error_message,omitempty"`
+	Timestamp        int64                       `json:"timestamp"`
+	DBType           DatabaseType                `json:"db_type,omitempty"`
+	HashMap          *TypeHashMapExchange_Struct `json:"hashmap_sync,omitempty"`
+	HashMap_MetaData *HashMap_MetaData           `json:"hashmap_meta_data,omitempty"`
 }
 
 type FastSync struct {
-	host          host.Host
-	mainDB        *config.ImmuClient
-	accountsDB    *config.ImmuClient
-	active        map[peer.ID]*syncState
-	mutex         sync.RWMutex
+	host             host.Host
+	mainDB           *config.ImmuClient
+	accountsDB       *config.ImmuClient
+	active           map[peer.ID]*syncState
+	mutex            sync.RWMutex
 	HashMap_MetaData *HashMap_MetaData
 }
 
@@ -76,19 +76,19 @@ type TypeHashMapExchange_Struct struct {
 }
 
 const (
-	TypeSyncRequest         = "SYNC_REQ"
-	TypeSyncResponse        = "SYNC_RESP"
-	TypeHashMapExchangeClient  = "HASHMAP_EXCHANGE_CLIENT"
-	TypeHashMapExchangeSYNC    = "HASHMAP_EXCHANGE_SYNC"
-	TypeBatchRequest        = "BATCH_REQ"
-	TypeBatchData           = "BATCH_DATA"
-	TypeSyncComplete        = "SYNC_COMPLETE"
-	TypeSyncAbort           = "SYNC_ABORT"
-	TypeVerificationRequest = "VERIFY_REQ"
-	TypeVerificationResult  = "VERIFY_RESP"
-	TypeBatchAck            = "BATCH_ACK"
-	TypeTransferFile        = "TRANSFER_FILE"
-	RequestFiletransfer     = "REQUEST_FILE_TRANSFER"
+	TypeSyncRequest           = "SYNC_REQ"
+	TypeSyncResponse          = "SYNC_RESP"
+	TypeHashMapExchangeClient = "HASHMAP_EXCHANGE_CLIENT"
+	TypeHashMapExchangeSYNC   = "HASHMAP_EXCHANGE_SYNC"
+	TypeBatchRequest          = "BATCH_REQ"
+	TypeBatchData             = "BATCH_DATA"
+	TypeSyncComplete          = "SYNC_COMPLETE"
+	TypeSyncAbort             = "SYNC_ABORT"
+	TypeVerificationRequest   = "VERIFY_REQ"
+	TypeVerificationResult    = "VERIFY_RESP"
+	TypeBatchAck              = "BATCH_ACK"
+	TypeTransferFile          = "TRANSFER_FILE"
+	RequestFiletransfer       = "REQUEST_FILE_TRANSFER"
 )
 
 func (fs *FastSync) getDB(dbType DatabaseType) *config.ImmuClient {
@@ -352,22 +352,22 @@ func (fs *FastSync) handleHashMapExchangeSYNC(peerID peer.ID, msg *SyncMessage) 
 	fmt.Println("SYNC_HashMap_Accounts: ", SYNC_HashMap_Accounts.Size())
 
 	return &SyncMessage{
-		Type: TypeHashMapExchangeSYNC,
-		SenderID: fs.host.ID().String(),
+		Type:      TypeHashMapExchangeSYNC,
+		SenderID:  fs.host.ID().String(),
 		Timestamp: time.Now().Unix(),
-		Data : json.RawMessage([]byte(`"Message From Server"`)),
+		Data:      json.RawMessage([]byte(`"Message From Server"`)),
 		HashMap: &TypeHashMapExchange_Struct{
-			MAIN_HashMap: SYNC_HashMap_MAIN,
+			MAIN_HashMap:     SYNC_HashMap_MAIN,
 			Accounts_HashMap: SYNC_HashMap_Accounts,
 		},
 		HashMap_MetaData: &HashMap_MetaData{
 			Main_HashMap_MetaData: &MetaData{
 				KeysCount: SYNC_HashMap_MAIN.Size(),
-				Checksum: SYNC_HashMap_MAIN.Fingerprint(),
+				Checksum:  SYNC_HashMap_MAIN.Fingerprint(),
 			},
 			Accounts_HashMap_MetaData: &MetaData{
 				KeysCount: SYNC_HashMap_Accounts.Size(),
-				Checksum: SYNC_HashMap_Accounts.Fingerprint(),
+				Checksum:  SYNC_HashMap_Accounts.Fingerprint(),
 			},
 		},
 	}, nil
@@ -384,7 +384,7 @@ func returnStream(fs *FastSync, peerID peer.ID) (network.Stream, error) {
 }
 
 func (fs *FastSync) Phase1_SYNC(peerID peer.ID) (*SyncMessage, error) {
-	
+
 	// First make hashmap of Main DB
 	MAIN_HashMap, err := fs.MakeHashMap_Default()
 	if err != nil {
@@ -398,31 +398,31 @@ func (fs *FastSync) Phase1_SYNC(peerID peer.ID) (*SyncMessage, error) {
 	}
 
 	// Compute the Metadata for the both Maps
-	
+
 	ComputeCHECKSUM_MAIN_Value := MAIN_HashMap.Fingerprint()
 	ComputeCHECKSUM_ACCOUNTS_Value := ACCOUNTS_HashMap.Fingerprint()
 
 	MAIN_HashMap_Metadata := &MetaData{
 		KeysCount: MAIN_HashMap.Size(),
-		Checksum: ComputeCHECKSUM_MAIN_Value,
+		Checksum:  ComputeCHECKSUM_MAIN_Value,
 	}
 	ACCOUNTS_HashMap_Metadata := &MetaData{
 		KeysCount: ACCOUNTS_HashMap.Size(),
-		Checksum: ComputeCHECKSUM_ACCOUNTS_Value,
+		Checksum:  ComputeCHECKSUM_ACCOUNTS_Value,
 	}
 
 	return &SyncMessage{
-		Type: TypeSyncRequest,
-		SenderID: fs.host.ID().String(),
-		TxID: 0,
+		Type:      TypeSyncRequest,
+		SenderID:  fs.host.ID().String(),
+		TxID:      0,
 		Timestamp: time.Now().Unix(),
-        Data : json.RawMessage([]byte(`"Message From Client"`)),
+		Data:      json.RawMessage([]byte(`"Message From Client"`)),
 		HashMap: &TypeHashMapExchange_Struct{
-			MAIN_HashMap: MAIN_HashMap,
+			MAIN_HashMap:     MAIN_HashMap,
 			Accounts_HashMap: ACCOUNTS_HashMap,
 		},
 		HashMap_MetaData: &HashMap_MetaData{
-			Main_HashMap_MetaData: MAIN_HashMap_Metadata,
+			Main_HashMap_MetaData:     MAIN_HashMap_Metadata,
 			Accounts_HashMap_MetaData: ACCOUNTS_HashMap_Metadata,
 		},
 	}, nil
@@ -452,12 +452,10 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 		return nil, fmt.Errorf("failed in Phase2_Sync: %w", err)
 	}
 
-
-
 	// Check if the metadata checksums match
 	// else retry to get the HashMap from the server
-	if (Phase2.HashMap.MAIN_HashMap.Fingerprint() != MainChecksum ||
-		Phase2.HashMap.Accounts_HashMap.Fingerprint() != AccountChecksum) {
+	if Phase2.HashMap.MAIN_HashMap.Fingerprint() != MainChecksum ||
+		Phase2.HashMap.Accounts_HashMap.Fingerprint() != AccountChecksum {
 		// retry 3 times to get the valid HashMap from the server
 		log.Warn().
 			Str("peer", peerID.String()).
@@ -485,7 +483,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	fmt.Println("Accounts HashMap size: ", Phase2.HashMap.Accounts_HashMap.Size())
 	fmt.Println("Main HashMap metadata: ", Phase2.HashMap_MetaData.Main_HashMap_MetaData)
 	fmt.Println("Accounts HashMap metadata: ", Phase2.HashMap_MetaData.Accounts_HashMap_MetaData)
-	
+
 	// Phase3: Request the BAK file from the server
 	// Server will send the BAK file to the client
 
@@ -633,12 +631,13 @@ func (fs *FastSync) getBatchData(
 }
 
 func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
-	// 1. Unmarshal the client's IBLT data from the message.
-	// This data tells the server which keys the client has, so the server can create
-	// a targeted backup containing only the missing data.
+	// 1. Check if the message contains valid HashMap data
+	if msg.HashMap == nil {
+		return nil, fmt.Errorf("message is missing HashMap data")
+	}
 
-	if msg.HashMap_MetaData.Main_HashMap_MetaData.KeysCount == 0 || msg.HashMap_MetaData.Accounts_HashMap_MetaData.KeysCount == 0 {
-		return nil, fmt.Errorf("request is missing HashMap data for backup")
+	if msg.HashMap_MetaData == nil || msg.HashMap_MetaData.Main_HashMap_MetaData == nil || msg.HashMap_MetaData.Accounts_HashMap_MetaData == nil {
+		return nil, fmt.Errorf("message is missing HashMap metadata")
 	}
 
 	// 2. Ensure the temporary backup directory exists.
@@ -649,59 +648,73 @@ func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Syn
 	mainBakPath := BAK_FILE_PATH + "main.bak"
 	accountsBakPath := BAK_FILE_PATH + "accounts.bak"
 
-	// 3. Use defer to ensure backup files are cleaned up even if errors occur.
-	// defer func() {
-	// 	if err := os.Remove(mainBakPath); err != nil && !os.IsNotExist(err) {
-	// 		log.Error().Err(err).Str("path", mainBakPath).Msg("Failed to remove temporary backup file")
-	// 	}
-	// 	if err := os.Remove(accountsBakPath); err != nil && !os.IsNotExist(err) {
-	// 		log.Error().Err(err).Str("path", accountsBakPath).Msg("Failed to remove temporary backup file")
-	// 	}
-	// }()
+	// 2. Use defer to ensure backup files are cleaned up even if errors occur.
+	defer func() {
+		if err := os.Remove(mainBakPath); err != nil && !os.IsNotExist(err) {
+			log.Error().Err(err).Str("path", mainBakPath).Msg("Failed to remove temporary backup file")
+		}
+		if err := os.Remove(accountsBakPath); err != nil && !os.IsNotExist(err) {
+			log.Error().Err(err).Str("path", accountsBakPath).Msg("Failed to remove temporary backup file")
+		}
+	}()
 
-	// 4. Create targeted backups using the client's IBLTs.
+	// 3. Create targeted backups using the client's HashMap.
 	mainCfg := DB_OPs.Config{
 		Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
 		Username:   config.DBUsername,
 		Password:   config.DBPassword,
 		Database:   config.DBName,
 		OutputPath: mainBakPath,
-	}
+		}
 
-	log.Info().Str("peer", peerID.String()).Str("db", "main").Msg("Creating targeted backup from IBLT")
-	err := DB_OPs.BackupFromHashMap(mainCfg, msg.HashMap.MAIN_HashMap)
-	if err != nil {
-		return nil, fmt.Errorf("failed to backup main database: %w", err)
-	}
+		log.Info().
+			Str("peer", peerID.String()).
+			Int("keys", msg.HashMap.MAIN_HashMap.Size()).
+			Msg("Creating targeted backup from MAIN HashMap")
 
-	accountsCfg := DB_OPs.Config{
-		Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
-		Username:   config.DBUsername,
-		Password:   config.DBPassword,
-		Database:   config.AccountsDBName,
-		OutputPath: accountsBakPath,
-	}
+		err := DB_OPs.BackupFromHashMap(mainCfg, msg.HashMap.MAIN_HashMap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to backup main database: %w", err)
+		}
 
-	log.Info().Str("peer", peerID.String()).Str("db", "accounts").Msg("Creating targeted backup from HashMap")
-	err = DB_OPs.BackupFromHashMap(accountsCfg, msg.HashMap.Accounts_HashMap)
-	if err != nil {
-		return nil, fmt.Errorf("failed to backup accounts database: %w", err)
-	}
+		// Transfer the main DB backup file
+		log.Info().Str("peer", peerID.String()).Str("file", mainBakPath).Msg("Transferring main DB backup file")
+		err = TransferBAKFile(fs.host, peerID, mainBakPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to transfer main database: %w", err)
+		}
 
-	// 5. Transfer the generated backup files to the client.
-	log.Info().Str("peer", peerID.String()).Str("file", mainBakPath).Msg("Transferring backup file")
-	err = TransferBAKFile(fs.host, peerID, mainBakPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to transfer main database: %w", err)
-	}
+	// Process accounts DB if it has entries
+	if msg.HashMap.Accounts_HashMap != nil && msg.HashMap.Accounts_HashMap.Size() > 0 {
+		accountsCfg := DB_OPs.Config{
+			Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
+			Username:   config.DBUsername,
+			Password:   config.DBPassword,
+			Database:   config.AccountsDBName,
+			OutputPath: accountsBakPath,
+		}
 
-	log.Info().Str("peer", peerID.String()).Str("file", accountsBakPath).Msg("Transferring backup file")
-	err = TransferBAKFile(fs.host, peerID, accountsBakPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to transfer accounts database: %w", err)
+		log.Info().
+			Str("peer", peerID.String()).
+			Int("keys", msg.HashMap.Accounts_HashMap.Size()).
+			Msg("Creating targeted backup from Accounts HashMap")
+
+		err := DB_OPs.BackupFromHashMap(accountsCfg, msg.HashMap.Accounts_HashMap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to backup accounts database: %w", err)
+		}
+
+		// Transfer the accounts DB backup file
+		log.Info().Str("peer", peerID.String()).Str("file", accountsBakPath).Msg("Transferring accounts DB backup file")
+		err = TransferBAKFile(fs.host, peerID, accountsBakPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to transfer accounts database: %w", err)
+		}
 	}
 
 	// 6. Send a completion message back on the control stream.
+	// Debugging
+	fmt.Println("File transfers complete. Sending SyncComplete.")
 	log.Info().Str("peer", peerID.String()).Msg("File transfers complete. Sending SyncComplete.")
 	return &SyncMessage{
 		Type:      TypeSyncComplete,
