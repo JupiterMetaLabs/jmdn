@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -18,7 +16,6 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/crdt"
-	"gossipnode/crdt/IBLT"
 )
 
 // Constants for FastSync
@@ -305,76 +302,6 @@ func (fs *FastSync) cleanupSync(peerID peer.ID) {
 		delete(fs.active, peerID)
 	}
 }
-
-// StartSync initiates synchronization with a peer
-func (fs *FastSync) StartSync(peerID peer.ID) error {
-	// Get database states
-	mainState, err := DB_OPs.GetDatabaseState(fs.mainDB)
-	if err != nil {
-		return fmt.Errorf("failed to get main database state: %w", err)
-	}
-	accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB)
-	if err != nil {
-		return fmt.Errorf("failed to get accounts database state: %w", err)
-	}
-	// Calculate key counts (could be cached)
-	mainKeys, _ := DB_OPs.GetKeys(fs.mainDB, "block:", 0)
-	accountsKeys, _ := DB_OPs.GetKeys(fs.accountsDB, "did:", 0)
-	mainM, mainK := calcOptimalIBLTParams(len(mainKeys))
-	accountsM, accountsK := calcOptimalIBLTParams(len(accountsKeys))
-	log.Info().Str("peer", peerID.String()).Uint64("main_tx_id", mainState.TxId).Uint64("accounts_tx_id", accountsState.TxId).Msg("Starting sync with peer")
-	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
-	defer cancel()
-	MainIBLT_Params := &IBLT_Params{
-		M: mainM,
-		K: mainK,
-	}
-	AccountsIBLT_Params := &IBLT_Params{
-		M: accountsM,
-		K: accountsK,
-	}
-	stream, err := fs.host.NewStream(ctx, peerID, SyncProtocolID)
-	if err != nil {
-		return fmt.Errorf("failed to open stream: %w", err)
-	}
-	defer stream.Close()
-	reader := bufio.NewReader(stream)
-	writer := bufio.NewWriter(stream)
-	// Send sync request with IBLT params
-	syncReq := SyncMessage{
-		Type:                TypeSyncRequest,
-		SenderID:            fs.host.ID().String(),
-		TxID:                mainState.TxId,
-		Timestamp:           time.Now().Unix(),
-		IBLT_MetaData:       &IBLT_MetaData_Struct{
-			Main_IBLT_Params:     MainIBLT_Params,
-			Accounts_IBLT_Params: AccountsIBLT_Params,
-		},
-	}
-	if err := writeMessage(writer, stream, &syncReq); err != nil {
-		return fmt.Errorf("failed to send sync request: %w", err)
-	}
-	// Read response
-	response, err := readMessage(reader, stream)
-	if err != nil {
-		return fmt.Errorf("failed to read sync response: %w", err)
-	}
-	// Process response
-	switch response.Type {
-	case TypeSyncResponse:
-		// Use agreed IBLT params from server
-
-		log.Info().Int("mainM", mainM).Int("mainK", mainK).Int("accountsM", accountsM).Int("accountsK", accountsK).Msg("Agreed IBLT params for sync")
-		// TODO: Use these params for all IBLT operations
-		return fs.processSyncWithIBLTParams(peerID, stream, reader, writer, response, MainIBLT_Params.M, MainIBLT_Params.K, AccountsIBLT_Params.M, AccountsIBLT_Params.K)
-	case TypeSyncComplete:
-		log.Info().Msg("Peer reports we're already in sync")
-		return nil
-	default:
-		return fmt.Errorf("unexpected response type: %s", response.Type)
-	}
-}
-
 // processSync handles the sync process
 func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, response *SyncMessage) error {
 	// Parse database states
@@ -501,24 +428,6 @@ func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *b
 	return nil
 }
 
-// Add processSyncWithIBLTParams as a stub for now
-func (fs *FastSync) processSyncWithIBLTParams(peerID peer.ID, stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, response *SyncMessage, mainMinM int, mainMinK int, accountsMinM int, accountsMinK int) error {
-	if response.IBLT_MetaData == nil {
-		response.IBLT_MetaData = &IBLT_MetaData_Struct{
-			Main_IBLT_Params: &IBLT_Params{
-				M: max(mainMinM, response.IBLT_MetaData.Main_IBLT_Params.M),
-				K: max(mainMinK, response.IBLT_MetaData.Main_IBLT_Params.K),
-			},
-			Accounts_IBLT_Params: &IBLT_Params{
-				M: max(accountsMinM, response.IBLT_MetaData.Accounts_IBLT_Params.M),
-				K: max(accountsMinK, response.IBLT_MetaData.Accounts_IBLT_Params.K),
-			},
-		}
-	}
-	// TODO: Use these params for all IBLT operations in the sync process
-	return fs.processSync(peerID, stream, reader, writer, response)
-}
-
 // requestBatch requests and processes a batch
 func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, batchNum int, startTx, endTx uint64, dbType DatabaseType) error {
 	// Create request
@@ -628,22 +537,6 @@ func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, wr
 	return nil
 }
 
-// Helper function for min value
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// Helper for max
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 // dbTypeToString converts a database type to a string
 func dbTypeToString(dbType DatabaseType) string {
 	switch dbType {
@@ -656,65 +549,13 @@ func dbTypeToString(dbType DatabaseType) string {
 	}
 }
 
-// --- IBLT parameter negotiation logic ---
-// Helper to calculate optimal IBLT params
-func calcOptimalIBLTParams(keyCount int) (m, k int) {
-	return IBLT.OptimalIBLTParams(keyCount, 1.0, 2.0)
-}
-
-func computeCHECKSUM(iblt *IBLT.IBLT) (string, error) {
-	ComputerCHECKSUM := sha1.New()
-	ComputerCHECKSUM.Write([]byte(iblt.String()))
-	ComputerCHECKSUM_Value := ComputerCHECKSUM.Sum(nil)
-	ComputerCHECKSUM_Value_String := hex.EncodeToString(ComputerCHECKSUM_Value)
-	if ComputerCHECKSUM_Value_String == "" {
-		return "", fmt.Errorf("failed to compute checksum for IBLT")
-	}
-	return ComputerCHECKSUM_Value_String, nil
-}
-
-func isAbove20Percent(fs *FastSync) (bool,error) {
-	computeServerKeys, err := DB_OPs.GetKeys(fs.mainDB, "block:", 0)
-	if err != nil {
-		return false, err
-	}
-	computeServerKeyCount := len(computeServerKeys)
-	computeServerAccountsKeys, err := DB_OPs.GetKeys(fs.accountsDB, "did:", 0)
-	if err != nil {
-		return false, err
-	}
-	computeServerAccountsKeyCount := len(computeServerAccountsKeys)
-
-	//debugging
-	fmt.Println("computeServerKeyCount", computeServerKeyCount)
-	fmt.Println("computeServerAccountsKeyCount", computeServerAccountsKeyCount)
-	fmt.Println("fs.IBLT_MetaData.Main_DB_KeyCount", fs.IBLT_MetaData.Main_DB_KeyCount)
-	fmt.Println("fs.IBLT_MetaData.Accounts_DB_KeyCount", fs.IBLT_MetaData.Accounts_DB_KeyCount)
-	
-	return fs.IBLT_MetaData.Main_DB_KeyCount > int(float64(computeServerKeyCount)*0.2) || fs.IBLT_MetaData.Accounts_DB_KeyCount > int(float64(computeServerAccountsKeyCount)*0.2), nil
-}
 
 func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) (*SyncMessage, string, string, error) {
-	Phase2, err := fs.handleIBLTExchangeClient(peerID)
-	if err != nil {
-		return nil, "", "", err
-	}
+	// Got all the data in - msg *SyncMessage
+	// Send the Client_HashMap to the server to get the SYNC_HashMap
+	msg.Type = TypeHashMapExchangeSYNC
 
-	// Send the IBLT to the server to get the SYNC_IBLT
-	Phase2.Type = TypeIBLTExchangeSYNC
-	Phase2.IBLT_MetaData = msg.IBLT_MetaData
-
-	
-	// Debugging
-	fmt.Println("Phase2.IBLT_MAIN_SYNC",Phase2.IBLT.IBLT_MAIN)
-	fmt.Println("Phase2.IBLT_Accounts_SYNC",Phase2.IBLT.IBLT_Accounts)
-	fmt.Println("Phase2.MetaData.Main_SYNC_MetaData.Checksum",Phase2.IBLT.MetaData.Main_SYNC_MetaData.Checksum)
-	fmt.Println("Phase2.MetaData.Accounts_SYNC_MetaData.Checksum",Phase2.IBLT.MetaData.Accounts_SYNC_MetaData.Checksum)
-	fmt.Println("Phase2.Type", Phase2.Type)
-	fmt.Println("Phase2.IBLT_MetaData", Phase2.IBLT_MetaData)
-
-
-	if err := writeMessage(writer, stream, Phase2); err != nil {
+	if err := writeMessage(writer, stream, msg); err != nil {
 		return nil, "", "", err
 	}
 
@@ -723,28 +564,15 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		return nil, "", "", err
 	}
 
-	// Debugging
-	fmt.Println("Phase2_Response.Data", Phase2_Response.Data)
-	fmt.Println("Phase2_Response.Type", Phase2_Response.Type)
-	fmt.Println("Phase2_Response.IBLT_MetaData", Phase2_Response.IBLT_MetaData)
-	
-
-	// Verify the metadata checksum
-	computeMainChecksum, err := computeCHECKSUM(Phase2.IBLT.IBLT_MAIN)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("failed to compute main IBLT checksum: %w", err)
-	}
-	
-	computeAccountCheksum, err := computeCHECKSUM(Phase2.IBLT.IBLT_Accounts)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("failed to compute accounts IBLT checksum: %w", err)
+	if !bytes.Equal(Phase2_Response.Data, json.RawMessage([]byte(`"Message From Server"`))) {
+		return nil, "", "", fmt.Errorf("unexpected response data: %s", Phase2_Response.Data)
 	}
 
-	return Phase2, computeMainChecksum, computeAccountCheksum, nil
+	return Phase2_Response, Phase2_Response.HashMap_MetaData.Main_HashMap_MetaData.Checksum, Phase2_Response.HashMap_MetaData.Accounts_HashMap_MetaData.Checksum, nil
 }
 
 
-func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader, MainChecksum string, AccountChecksum string) error {
+func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) error {
 	// Phase 3: receive BAK File from the server
 	// -> Server will send the BAK file to the client
 	// -> Client will receive the BAK file and store it in the BAK_FILE_PATH

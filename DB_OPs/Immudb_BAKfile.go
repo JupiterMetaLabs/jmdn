@@ -7,15 +7,13 @@ import (
 	"log"
 	"os"
 	"time"
-
-	"gossipnode/crdt/IBLT"
-
+	
+	"gossipnode/crdt/hashmap"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // Config holds the configuration for the backup process.
@@ -25,11 +23,9 @@ type Config struct {
 	Password   string
 	Database   string
 	OutputPath string
-	IbltM      int
-	IbltK      int
 }
 
-func BackupFromIBLT(cfg Config, iblt *IBLT.IBLT) error {
+func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 	// 1. Establish gRPC connection
 	dialOptions := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -80,59 +76,15 @@ func BackupFromIBLT(cfg Config, iblt *IBLT.IBLT) error {
 	}
 	defer file.Close()
 
-	// 5. Try to peel the IBLT
-	positiveKeys, _, peelErr := iblt.ListEntries()
-	if peelErr != nil {
-		log.Printf("[WARN] IBLT decode failed: %v. Falling back to O(n) scan.", peelErr)
-		// Fallback: scan all transactions and match keys
-		state, err := client.CurrentState(apiCtx, &emptypb.Empty{})
-		if err != nil {
-			return fmt.Errorf("failed to get current database state: %w", err)
-		}
-		lastTxID := state.GetTxId()
-		if lastTxID == 0 {
-			log.Println("Database is empty. No transactions to back up.")
-			return nil
-		}
-		log.Printf("[Fallback] Exporting %d transactions and filtering by IBLT...", lastTxID)
-		for txID := uint64(1); txID <= lastTxID; txID++ {
-			tx, err := client.TxById(apiCtx, &schema.TxRequest{Tx: txID})
-			if err != nil {
-				return fmt.Errorf("failed to retrieve transaction %d by ID: %w", txID, err)
-			}
-			// Check if any key in this transaction is in the IBLT
-			found := false
-			for _, entry := range tx.Entries {
-				if iblt.Exists(entry.Key) {
-					found = true
-					break
-				}
-			}
-			if found {
-				txData, err := proto.Marshal(tx)
-				if err != nil {
-					return fmt.Errorf("failed to marshal transaction %d: %w", txID, err)
-				}
-				if err := binary.Write(file, binary.BigEndian, uint64(len(txData))); err != nil {
-					return fmt.Errorf("failed to write length for transaction %d: %w", txID, err)
-				}
-				if _, err := file.Write(txData); err != nil {
-					return fmt.Errorf("failed to write data for transaction %d: %w", txID, err)
-				}
-			}
-			if txID%10 == 0 || txID == lastTxID {
-				log.Printf("  ... processed up to transaction ID %d", txID)
-			}
-		}
-		return nil
-	}
+	// 5. Try to peel the HashMap - use Keys() to get all the keys
+	positiveKeys := MAP.Keys()
 
-	log.Printf("Peeling IBLT succeeded. Exporting %d keys...", len(positiveKeys))
+	log.Printf("Peeling HashMap succeeded. Exporting %d keys...", len(positiveKeys))
 	// 6. For each key, try to get its transaction ID and fetch the transaction
 	seenTxIDs := make(map[uint64]struct{})
 	for _, keyBytes := range positiveKeys {
 		// Try to get the entry (Get returns value and Tx)
-		getResp, err := client.Get(apiCtx, &schema.KeyRequest{Key: keyBytes})
+		getResp, err := client.Get(apiCtx, &schema.KeyRequest{Key: []byte(keyBytes)})
 		if err != nil {
 			log.Printf("[WARN] Failed to get key %x: %v", keyBytes, err)
 			continue
@@ -165,6 +117,6 @@ func BackupFromIBLT(cfg Config, iblt *IBLT.IBLT) error {
 		}
 		seenTxIDs[txID] = struct{}{}
 	}
-	log.Printf("Exported %d unique transactions from IBLT keys.", len(seenTxIDs))
+	log.Printf("Exported %d unique transactions from HashMap keys.", len(seenTxIDs))
 	return nil
 }
