@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
-	hashmap "gossipnode/crdt/Hashmap"
+	hashmap "gossipnode/crdt/HashMap"
 	"io"
 	"os"
 	"strconv"

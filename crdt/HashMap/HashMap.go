@@ -1,4 +1,4 @@
-package Hashmap
+package HashMap
 
 import (
 	"crypto/sha256"
