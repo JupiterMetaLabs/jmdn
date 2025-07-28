@@ -118,6 +118,7 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 		}
 		seenTxIDs[txID] = struct{}{}
 	}
+	fmt.Println("Exported", len(seenTxIDs), "unique transactions from HashMap keys.")
 	log.Printf("Exported %d unique transactions from HashMap keys.", len(seenTxIDs))
 	return nil
 }

@@ -36,13 +36,20 @@ func printPrompt() {
     fmt.Printf(config.ColorGreen + ">>> " + config.ColorReset)
 }
 
+func printAddrs(n *config.Node) {
+    for _, addr := range n.Host.Addrs() {
+        fmt.Printf("  %s/p2p/%s\n", addr, n.Host.ID().String())
+    }
+}
+
 func printDashes() {
     fmt.Println("\n", strings.Repeat("-", 50), "\n")
 }
 
-// StartCLI starts the interactive CLI
-func (h *CommandHandler) StartCLI() error {
+func PrintFuncs() {
     fmt.Println("\n" + config.ColorCyan + "Available Commands:" + config.ColorReset)
+    fmt.Println("  help                             - Show this help message")
+    fmt.Println("  Addrs                            - Current Peer Addresses")
     fmt.Println("  msg <peer_multiaddr> <message>   - Send a message to a peer via libp2p")
     fmt.Println("  ygg <peer_multiaddr|ygg_ipv6> <message> - Send a message using Yggdrasil")
     fmt.Println("  file <peer_multiaddr> <filepath> - Send a file to a peer")
@@ -58,6 +65,12 @@ func (h *CommandHandler) StartCLI() error {
     fmt.Println("  getDID <did>                      - Get a DID document from the network")
     fmt.Println("  syncinfo                          - Show FastSync configuration")
     fmt.Println("  exit                              - Exit the program\n")
+    printDashes()
+}
+
+// StartCLI starts the interactive CLI
+func (h *CommandHandler) StartCLI() error {
+    PrintFuncs()
 
     var wg sync.WaitGroup
     wg.Add(1)
@@ -92,6 +105,10 @@ func (h *CommandHandler) StartCLI() error {
 // handleCommand processes a single command
 func (h *CommandHandler) handleCommand(parts []string) {
     switch parts[0] {
+    case "addrs":
+        printAddrs(h.Node)
+    case "help":
+        PrintFuncs()
     case "msg":
         h.handleSendMessage(parts)
     case "ygg":
