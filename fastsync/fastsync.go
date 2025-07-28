@@ -33,10 +33,9 @@ const (
 type DatabaseType int
 
 const (
-	MainDB DatabaseType = 0
+	MainDB     DatabaseType = 0
 	AccountsDB DatabaseType = 1
 )
-
 
 // DBState contains the state of a database
 type DBState struct {
@@ -275,7 +274,7 @@ func (fs *FastSync) handleSyncComplete(peerID peer.ID, msg *SyncMessage) (*SyncM
 		return nil, fmt.Errorf("failed to get main database state: %w", err)
 	}
 
-    accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB)
+	accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get accounts database state: %w", err)
 	}
@@ -302,6 +301,7 @@ func (fs *FastSync) cleanupSync(peerID peer.ID) {
 		delete(fs.active, peerID)
 	}
 }
+
 // processSync handles the sync process
 func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, response *SyncMessage) error {
 	// Parse database states
@@ -549,7 +549,6 @@ func dbTypeToString(dbType DatabaseType) string {
 	}
 }
 
-
 func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) (*SyncMessage, string, string, error) {
 	// Got all the data in - msg *SyncMessage
 	// Send the Client_HashMap to the server to get the SYNC_HashMap
@@ -571,33 +570,81 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 	return Phase2_Response, Phase2_Response.HashMap_MetaData.Main_HashMap_MetaData.Checksum, Phase2_Response.HashMap_MetaData.Accounts_HashMap_MetaData.Checksum, nil
 }
 
-
 func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) error {
-	// Phase 3: receive BAK File from the server
-	// -> Server will send the BAK file to the client
-	// -> Client will receive the BAK file and store it in the BAK_FILE_PATH
-	// -> Client will append the transactions in the BAK file 
-	
-	// 1. Send the request to the server to send the BAK File. Change the msg type to RequestFiletransfer
+	const maxRetries = 3
+	var lastErr error
 
-	msg.Type = RequestFiletransfer
-	
-	if err := writeMessage(writer, stream, msg); err != nil {
-		return fmt.Errorf("failed to send file transfer request: %w", err)
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Log the attempt
+		log.Info().
+			Str("peer", peerID.String()).
+			Int("attempt", attempt+1).
+			Msg("Initiating BAK file transfer request")
+
+		// 1. Create a new message for the request
+		requestMsg := &SyncMessage{
+			Type:      RequestFiletransfer,
+			SenderID:  fs.host.ID().String(),
+			Timestamp: time.Now().Unix(),
+		}
+
+		// 2. Send the request to the server
+		if err := writeMessage(writer, stream, requestMsg); err != nil {
+			lastErr = fmt.Errorf("failed to send file transfer request (attempt %d/%d): %w",
+				attempt+1, maxRetries, err)
+			log.Error().Err(lastErr).Msg("File transfer request failed")
+
+			// If we can't write to the stream, we need to create a new one
+			if attempt < maxRetries-1 {
+				time.Sleep(time.Second * time.Duration(attempt+1))
+
+				// Try to create a new stream
+				newStream, err := fs.host.NewStream(context.Background(), peerID, stream.Protocol())
+				if err != nil {
+					log.Error().Err(err).Msg("Failed to create new stream for retry")
+					continue
+				}
+				defer newStream.Close()
+
+				// Update the stream and its reader/writer
+				stream = newStream
+				reader = bufio.NewReader(stream)
+				writer = bufio.NewWriter(stream)
+			}
+			continue
+		}
+
+		// 3. Wait for the server's response
+		response, err := readMessage(reader, stream)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response (attempt %d/%d): %w",
+				attempt+1, maxRetries, err)
+			log.Error().Err(lastErr).Msg("Failed to read file transfer response")
+
+			if attempt < maxRetries-1 {
+				time.Sleep(time.Second * time.Duration(attempt+1))
+			}
+			continue
+		}
+
+		// 4. Check the response
+		if response.Type == TypeSyncComplete && response.Success {
+			log.Info().
+				Str("peer", peerID.String()).
+				Msg("Server successfully initiated file transfers. Sync complete.")
+			return nil
+		}
+
+		// If we get here, the server responded but with an error or unexpected message
+		lastErr = fmt.Errorf("unexpected response after file request (attempt %d/%d): type=%s, success=%t, err=%s",
+			attempt+1, maxRetries, response.Type, response.Success, response.ErrorMessage)
+		log.Error().Err(lastErr).Msg("Unexpected response from server")
+
+		if attempt < maxRetries-1 {
+			time.Sleep(time.Second * time.Duration(attempt+1))
+		}
 	}
 
-		// 4. Wait for the server's response. The server should send a SyncComplete message
-	// after successfully initiating the file transfers.
-	response, err := readMessage(reader, stream)
-	if err != nil {
-		return fmt.Errorf("failed to read response for file transfer request: %w", err)
-	}
-
-
-	if response.Type == TypeSyncComplete && response.Success {
-		log.Info().Str("peer", peerID.String()).Msg("Server confirmed file transfer initiation. Sync complete.")
-		return nil
-	}
-
-	return fmt.Errorf("unexpected response after file request: type=%s, success=%t, err=%s", response.Type, response.Success, response.ErrorMessage)
+	// If we've exhausted all retries, return the last error
+	return fmt.Errorf("failed to complete file transfer after %d attempts: %w", maxRetries, lastErr)
 }
