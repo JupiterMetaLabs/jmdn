@@ -3,6 +3,7 @@ package DB_OPs
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -85,11 +86,14 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 	seenTxIDs := make(map[uint64]struct{})
 	for _, keyBytes := range positiveKeys {
 
-		// Debugging
-		fmt.Println("Processing key:", keyBytes)
-		
+		key, err := hex.DecodeString(string(keyBytes))
+		if err != nil {
+			log.Printf("[WARN] Failed to decode key %s: %v", keyBytes, err)
+			continue
+		}
+
 		// Try to get the entry (Get returns value and Tx)
-		getResp, err := client.Get(apiCtx, &schema.KeyRequest{Key: []byte(keyBytes)})
+		getResp, err := client.Get(apiCtx, &schema.KeyRequest{Key: key})
 		if err != nil {
 			log.Printf("[WARN] Failed to get key %x: %v", keyBytes, err)
 			continue

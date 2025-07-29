@@ -1087,7 +1087,6 @@ func GetAllKeys(ic *config.ImmuClient, prefix string) ([]string, error) {
 		fmt.Println("Found", len(allKeys), "keys with prefix:", prefix)
 		fmt.Println("Last Key:", allKeys[:20])
 	}
-	
     return allKeys, nil
 }
 
