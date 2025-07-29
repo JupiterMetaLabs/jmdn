@@ -80,13 +80,22 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 
 	// 5. Try to peel the HashMap - use Keys() to get all the keys
 	positiveKeys := MAP.Keys()
+	
+	// Debugging
+	if len(positiveKeys) <= 20{
+		fmt.Println("Less than 20 keys found:", len(positiveKeys))
+		fmt.Println("Keys:", positiveKeys)
+	}else{
+		fmt.Println("Found", len(positiveKeys), "keys")
+		fmt.Println("Last Key:", positiveKeys[:20])
+	}
 
 	log.Printf("Peeling HashMap succeeded. Exporting %d keys...", len(positiveKeys))
 	// 6. For each key, try to get its transaction ID and fetch the transaction
 	seenTxIDs := make(map[uint64]struct{})
 	for _, keyBytes := range positiveKeys {
 
-		key, err := hex.DecodeString(string(keyBytes))
+		key, err := hex.DecodeString(keyBytes)
 		if err != nil {
 			log.Printf("[WARN] Failed to decode key %s: %v", keyBytes, err)
 			continue
