@@ -52,7 +52,7 @@ func PrintFuncs() {
     fmt.Println("  Addrs                            - Current Peer Addresses")
     fmt.Println("  msg <peer_multiaddr> <message>   - Send a message to a peer via libp2p")
     fmt.Println("  ygg <peer_multiaddr|ygg_ipv6> <message> - Send a message using Yggdrasil")
-    fmt.Println("  file <peer_multiaddr> <filepath> - Send a file to a peer")
+    fmt.Println("  file <peer_multiaddr> <filepath> <remote-filename> - Send a file to a peer")
     fmt.Println("  addpeer <peer_multiaddr>         - Add a peer to managed nodes")
     fmt.Println("  removepeer <peer_id>             - Remove a peer from managed nodes")
     fmt.Println("  listpeers                         - Show all managed peers")
@@ -88,7 +88,7 @@ func (h *CommandHandler) StartCLI() error {
                 return
             }
 
-            parts := strings.SplitN(input, " ", 3)
+            parts := strings.SplitN(input, " ", 4)
             if len(parts) == 0 {
                 continue
             }
@@ -174,11 +174,11 @@ func (h *CommandHandler) handleYggdrasilMessage(parts []string) {
 }
 
 func (h *CommandHandler) handleSendFile(parts []string) {
-    if len(parts) != 3 {
+    if len(parts) != 4 {
         fmt.Println("Usage: file <peer_multiaddr> <filepath>")
         return
     }
-    err := node.SendFile(h.Node, parts[1], parts[2])
+    err := node.SendFile(h.Node, parts[1], parts[2], parts[3])
     if err != nil {
         fmt.Println("Error:", err)
     } else {

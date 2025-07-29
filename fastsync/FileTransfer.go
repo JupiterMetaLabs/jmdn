@@ -10,11 +10,11 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-func TransferBAKFile(h host.Host, peerID peer.ID, filepath string) error {
+func TransferBAKFile(h host.Host, peerID peer.ID, filepath string, remoteFilename string) error {
 	// Debugging
 	fmt.Println("Transferring BAK file to peer:", peerID.String())
 	fmt.Println("Filepath:", filepath)
-	fmt.Println("File size:", filepath)	
+	fmt.Println("File name:", remoteFilename)	
 	
 	// Check if file exists and has content
 	fileInfo, err := os.Stat(filepath)
@@ -38,7 +38,7 @@ func TransferBAKFile(h host.Host, peerID peer.ID, filepath string) error {
 		Int64("size_bytes", fileInfo.Size()).
 		Msg("Initiating file transfer")
 
-	err = transfer.SendFile(h, peerID, filepath)
+	err = transfer.SendFile(h, peerID, filepath, remoteFilename)
 	if err != nil {
 		return fmt.Errorf("failed to send file: %w", err)
 	}

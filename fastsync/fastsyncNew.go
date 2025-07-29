@@ -486,9 +486,9 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	// Server will send the BAK file to the client
 
 	// Debugging
-	if Phase2.HashMap.Accounts_HashMap.Size() < 10{
+	if Phase2.HashMap.Accounts_HashMap.Size() < 10 {
 		fmt.Println("Less than 10 keys found in Accounts HashMap", Phase2.HashMap.Accounts_HashMap)
-	}else{
+	} else {
 		fmt.Println("More than 10 keys found in Accounts HashMap", Phase2.HashMap.Accounts_HashMap.Keys()[0:10])
 	}
 
@@ -670,24 +670,24 @@ func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Syn
 		Password:   config.DBPassword,
 		Database:   config.DBName,
 		OutputPath: mainBakPath,
-		}
+	}
 
-		log.Info().
-			Str("peer", peerID.String()).
-			Int("keys", msg.HashMap.MAIN_HashMap.Size()).
-			Msg("Creating targeted backup from MAIN HashMap")
+	log.Info().
+		Str("peer", peerID.String()).
+		Int("keys", msg.HashMap.MAIN_HashMap.Size()).
+		Msg("Creating targeted backup from MAIN HashMap")
 
-		err := DB_OPs.BackupFromHashMap(mainCfg, msg.HashMap.MAIN_HashMap)
-		if err != nil {
-			return nil, fmt.Errorf("failed to backup main database: %w", err)
-		}
+	err := DB_OPs.BackupFromHashMap(mainCfg, msg.HashMap.MAIN_HashMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to backup main database: %w", err)
+	}
 
-		// Transfer the main DB backup file
-		log.Info().Str("peer", peerID.String()).Str("file", mainBakPath).Msg("Transferring main DB backup file")
-		err = TransferBAKFile(fs.host, peerID, mainBakPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to transfer main database: %w", err)
-		}
+	// Transfer the main DB backup file
+	log.Info().Str("peer", peerID.String()).Str("file", mainBakPath).Msg("Transferring main DB backup file")
+	err = TransferBAKFile(fs.host, peerID, mainBakPath, "fastsync/.temp/main.bak")
+	if err != nil {
+		return nil, fmt.Errorf("failed to transfer main database: %w", err)
+	}
 
 	// Process accounts DB if it has entries
 	if msg.HashMap.Accounts_HashMap != nil && msg.HashMap.Accounts_HashMap.Size() > 0 {
@@ -711,7 +711,7 @@ func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Syn
 
 		// Transfer the accounts DB backup file
 		log.Info().Str("peer", peerID.String()).Str("file", accountsBakPath).Msg("Transferring accounts DB backup file")
-		err = TransferBAKFile(fs.host, peerID, accountsBakPath)
+		err = TransferBAKFile(fs.host, peerID, accountsBakPath, "fastsync/.temp/accounts.bak")
 		if err != nil {
 			return nil, fmt.Errorf("failed to transfer accounts database: %w", err)
 		}

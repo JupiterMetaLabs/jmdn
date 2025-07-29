@@ -12,6 +12,7 @@ require (
 	github.com/gin-gonic/gin v1.9.1
 	github.com/holiman/uint256 v1.3.2
 	github.com/libp2p/go-libp2p v0.41.0
+	github.com/libp2p/go-libp2p-core v0.20.1
 	github.com/mattn/go-sqlite3 v1.14.24
 	github.com/miguelmota/go-ethereum-hdwallet v0.1.2
 	github.com/multiformats/go-multiaddr v0.15.0
@@ -88,7 +89,6 @@ require (
 	github.com/pion/webrtc/v4 v4.0.10 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
-	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/supranational/blst v0.3.14 // indirect
 	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
