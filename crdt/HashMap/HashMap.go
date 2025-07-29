@@ -42,6 +42,7 @@ func (hm *HashMap) Subtract(other *HashMap) []string {
 			diff = append(diff, key)
 		}
 	}
+	fmt.Println("Compute - Diff: ", diff)
 	return diff
 }
 

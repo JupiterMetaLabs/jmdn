@@ -107,15 +107,11 @@ func GetDBData_Default(db *config.ImmuClient, prefix string) ([]string, error) {
 }
 
 func GetDBData_Accounts(db *config.ImmuClient, prefix string) ([]string, error) {
-	keys := make([]string, 0)
-	DIDs, err := DB_OPs.ListAllDIDs(db, 1000)
+	DIDs, err := DB_OPs.GetAllKeys(db, prefix)
 	if err != nil {
 		return nil, err
 	}
-	for _, DID := range DIDs {
-		keys = append(keys, DID.PublicKey)
-	}
-	return keys, nil
+	return DIDs, nil
 }
 
 func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
@@ -127,6 +123,8 @@ func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
 	for _, key := range keys {
 		MAP.Insert(key)
 	}
+	// Debugging
+	fmt.Println("Default HashMap: ", MAP)
 	return MAP, nil
 }
 
@@ -139,6 +137,8 @@ func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
 	for _, key := range keys {
 		MAP.Insert(key)
 	}
+	// Debugging
+	fmt.Println("Accounts HashMap: ", MAP)
 	return MAP, nil
 }
 
@@ -486,6 +486,13 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 
 	// Phase3: Request the BAK file from the server
 	// Server will send the BAK file to the client
+
+	// Debugging
+	if Phase2.HashMap.Accounts_HashMap.Size() < 10{
+		fmt.Println("Less than 10 keys found in Accounts HashMap", Phase2.HashMap.Accounts_HashMap)
+	}else{
+		fmt.Println("More than 10 keys found in Accounts HashMap", Phase2.HashMap.Accounts_HashMap.Keys()[0:10])
+	}
 
 	err = fs.Phase3_FileRequest(Phase2, peerID, stream, writer, reader)
 	if err != nil {
