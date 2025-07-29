@@ -517,16 +517,26 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 
 	// Phase4: Push the Transactions from BAK file to the DB
 
-	// 1. Push the Main DB Transactions from BAK file to the DB
-	err = fs.PushDataToDB(Phase2, MainDB, "fastsync/.temp/main.bak")
-	if err != nil {
-		return nil, fmt.Errorf("failed to push Main DB transactions: %w", err)
+	// 1. Push the Main DB Transactions from BAK file to the DB - if no maindb then skip
+	if Phase2.HashMap.MAIN_HashMap != nil && Phase2.HashMap.MAIN_HashMap.Size() > 0 {
+		if err := fs.PushDataToDB(Phase2, MainDB, "fastsync/.temp/main.bak"); err != nil {
+			log.Error().Err(err).Msg("Failed to push Main DB transactions")
+			return nil, fmt.Errorf("failed to push Main DB transactions: %w", err)
+		}
+		log.Info().Msg("Successfully pushed Main DB transactions")
+	} else {
+		log.Info().Msg("Skipping Main DB push - no data to push")
 	}
 
-	// 2. Push the Accounts DB Transactions from BAK file to the DB
-	err = fs.PushDataToDB(Phase2, AccountsDB, "fastsync/.temp/accounts.bak")
-	if err != nil {
-		return nil, fmt.Errorf("failed to push Accounts DB transactions: %w", err)
+	// 2. Push the Accounts DB Transactions from BAK file to the DB - if no accountsdb then skip
+	if Phase2.HashMap.Accounts_HashMap != nil && Phase2.HashMap.Accounts_HashMap.Size() > 0 {
+		if err := fs.PushDataToDB(Phase2, AccountsDB, "fastsync/.temp/accounts.bak"); err != nil {
+			log.Error().Err(err).Msg("Failed to push Accounts DB transactions")
+			return nil, fmt.Errorf("failed to push Accounts DB transactions: %w", err)
+		}
+		log.Info().Msg("Successfully pushed Accounts DB transactions")
+	} else {
+		log.Info().Msg("Skipping Accounts DB push - no data to push")
 	}
 
 	return &SyncMessage{

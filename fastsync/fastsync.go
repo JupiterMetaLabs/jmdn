@@ -661,11 +661,21 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath string) error {
 	// Get the appropriate database client
 	var db *config.ImmuClient
-	if dbType == MainDB {
-		db = fs.mainDB
-	} else if dbType == AccountsDB {
-		db = fs.accountsDB
-	} else {
+	var err error
+	switch dbType {
+	case MainDB:
+		db, err = DB_OPs.New()
+		if err != nil {
+			return fmt.Errorf("failed to create main client: %w", err)
+		}
+		defer db.Client.Disconnect()
+	case AccountsDB:
+		db, err = DB_OPs.NewAccountsClient()
+		if err != nil {
+			return fmt.Errorf("failed to create accounts client: %w", err)
+		}
+		defer db.Client.Disconnect()
+	default:
 		return fmt.Errorf("invalid database type: %v", dbType)
 	}
 
@@ -697,6 +707,10 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		Str("file", filepath.Base(dbPath)).
 		Msg("Starting database restore from backup")
 
+	// For AccountsDB, use SetAll for better performance
+	var kvs []*schema.KeyValue
+	batchSize := 1000 // Process in batches of 1000 entries
+
 	// Read transactions from the backup file
 	for {
 		// Read the length prefix (8 bytes, big-endian)
@@ -723,30 +737,36 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		}
 
 		// Convert TxEntry to KeyValue
-		kvs := make([]*schema.KeyValue, 0, len(tx.Entries))
 		for _, entry := range tx.Entries {
 			kvs = append(kvs, &schema.KeyValue{
 				Key:   entry.Key,
 				Value: entry.Value,
 			})
-		}
 
-		_, err = db.Client.SetAll(ctx, &schema.SetRequest{
-			KVs: kvs,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to apply transaction %d: %w", tx.Header.Id, err)
-		}
+			// Process batch if we've reached the batch size
+			if len(kvs) >= batchSize {
+				if _, err := db.Client.SetAll(ctx, &schema.SetRequest{KVs: kvs}); err != nil {
+					return fmt.Errorf("failed to apply batch transaction: %w", err)
+				}
+				txCount += len(kvs)
+				kvs = kvs[:0] // Reset the slice while keeping the underlying array
 
-		txCount++
-
-		// Log progress every 1000 transactions
-		if txCount%1000 == 0 {
-			log.Info().
-				Int("transactions", txCount).
-				Dur("elapsed", time.Since(startTime)).
-				Msg("Restore in progress")
+				// Log progress
+				log.Info().
+					Int("transactions", txCount).
+					Dur("elapsed", time.Since(startTime)).
+					Str("db", dbTypeToString(dbType)).
+					Msg("Restore in progress")
+			}
 		}
+	}
+
+	// Process any remaining entries in the last batch
+	if len(kvs) > 0 {
+		if _, err := db.Client.SetAll(ctx, &schema.SetRequest{KVs: kvs}); err != nil {
+			return fmt.Errorf("failed to apply final batch transaction: %w", err)
+		}
+		txCount += len(kvs)
 	}
 
 	log.Info().
