@@ -1078,6 +1078,16 @@ func GetAllKeys(ic *config.ImmuClient, prefix string) ([]string, error) {
         // Set last key for next iteration
         lastKey = []byte(keys[len(keys)-1])
     }
+
+	// Debugging
+	if len(allKeys) <= 20{
+		fmt.Println("Less than 20 keys found with prefix:", prefix)
+		fmt.Println("Keys:", allKeys)
+	}else{
+		fmt.Println("Found", len(allKeys), "keys with prefix:", prefix)
+		fmt.Println("Last Key:", allKeys[:20])
+	}
+	
     return allKeys, nil
 }
 

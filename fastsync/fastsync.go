@@ -586,6 +586,9 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 			Type:      RequestFiletransfer,
 			SenderID:  fs.host.ID().String(),
 			Timestamp: time.Now().Unix(),
+			HashMap: msg.HashMap,
+			HashMap_MetaData: msg.HashMap_MetaData,
+			Data: json.RawMessage([]byte(`"Message From Client - For BAK File Transfer"`)),
 		}
 
 		// 2. Send the request to the server
