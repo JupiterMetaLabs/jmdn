@@ -123,8 +123,7 @@ func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
 	for _, key := range keys {
 		MAP.Insert(key)
 	}
-	// Debugging
-	fmt.Println("Default HashMap: ", MAP)
+
 	return MAP, nil
 }
 
@@ -137,8 +136,7 @@ func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
 	for _, key := range keys {
 		MAP.Insert(key)
 	}
-	// Debugging
-	fmt.Println("Accounts HashMap: ", MAP)
+
 	return MAP, nil
 }
 

@@ -3,7 +3,6 @@ package DB_OPs
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -94,15 +93,8 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 	// 6. For each key, try to get its transaction ID and fetch the transaction
 	seenTxIDs := make(map[uint64]struct{})
 	for _, keyBytes := range positiveKeys {
-
-		key, err := hex.DecodeString(keyBytes)
-		if err != nil {
-			log.Printf("[WARN] Failed to decode key %s: %v", keyBytes, err)
-			continue
-		}
-
 		// Try to get the entry (Get returns value and Tx)
-		getResp, err := client.Get(apiCtx, &schema.KeyRequest{Key: key})
+		getResp, err := client.Get(apiCtx, &schema.KeyRequest{Key: []byte(keyBytes)})
 		if err != nil {
 			log.Printf("[WARN] Failed to get key %x: %v", keyBytes, err)
 			continue
