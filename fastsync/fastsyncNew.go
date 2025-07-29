@@ -515,7 +515,19 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 		}
 	}
 
-	// Phase4: Need to implement this before implementation first test these 3 phases
+	// Phase4: Push the Transactions from BAK file to the DB
+
+	// 1. Push the Main DB Transactions from BAK file to the DB
+	err = fs.PushDataToDB(Phase2, MainDB, "fastsync/.temp/main.bak")
+	if err != nil {
+		return nil, fmt.Errorf("failed to push Main DB transactions: %w", err)
+	}
+
+	// 2. Push the Accounts DB Transactions from BAK file to the DB
+	err = fs.PushDataToDB(Phase2, AccountsDB, "fastsync/.temp/accounts.bak")
+	if err != nil {
+		return nil, fmt.Errorf("failed to push Accounts DB transactions: %w", err)
+	}
 
 	return &SyncMessage{
 		Type:      TypeSyncComplete,

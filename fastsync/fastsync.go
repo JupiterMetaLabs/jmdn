@@ -4,14 +4,20 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog/log"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/proto"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
@@ -583,12 +589,12 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 
 		// 1. Create a new message for the request
 		requestMsg := &SyncMessage{
-			Type:      RequestFiletransfer,
-			SenderID:  fs.host.ID().String(),
-			Timestamp: time.Now().Unix(),
-			HashMap: msg.HashMap,
+			Type:             RequestFiletransfer,
+			SenderID:         fs.host.ID().String(),
+			Timestamp:        time.Now().Unix(),
+			HashMap:          msg.HashMap,
 			HashMap_MetaData: msg.HashMap_MetaData,
-			Data: json.RawMessage([]byte(`"Message From Client - For BAK File Transfer"`)),
+			Data:             json.RawMessage([]byte(`"Message From Client - For BAK File Transfer"`)),
 		}
 
 		// 2. Send the request to the server
@@ -650,4 +656,104 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 
 	// If we've exhausted all retries, return the last error
 	return fmt.Errorf("failed to complete file transfer after %d attempts: %w", maxRetries, lastErr)
+}
+
+func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath string) error {
+	// Get the appropriate database client
+	var db *config.ImmuClient
+	if dbType == MainDB {
+		db = fs.mainDB
+	} else if dbType == AccountsDB {
+		db = fs.accountsDB
+	} else {
+		return fmt.Errorf("invalid database type: %v", dbType)
+	}
+
+	// Ensure the backup file exists
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return fmt.Errorf("backup file does not exist: %s", dbPath)
+	}
+
+	// Open the backup file
+	file, err := os.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to open backup file: %w", err)
+	}
+	defer file.Close()
+
+	// Get a context with authentication
+	ctx := context.Background()
+	if db.Token != "" {
+		ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "Bearer "+db.Token))
+	}
+
+	// Create a buffered reader for efficient reading
+	reader := bufio.NewReader(file)
+	txCount := 0
+	startTime := time.Now()
+
+	log.Info().
+		Str("db", dbTypeToString(dbType)).
+		Str("file", filepath.Base(dbPath)).
+		Msg("Starting database restore from backup")
+
+	// Read transactions from the backup file
+	for {
+		// Read the length prefix (8 bytes, big-endian)
+		var length uint64
+		err := binary.Read(reader, binary.BigEndian, &length)
+		if err != nil {
+			if err.Error() == "EOF" {
+				break // End of file
+			}
+			return fmt.Errorf("failed to read transaction length: %w", err)
+		}
+
+		// Read the transaction data
+		txData := make([]byte, length)
+		_, err = reader.Read(txData)
+		if err != nil {
+			return fmt.Errorf("failed to read transaction data: %w", err)
+		}
+
+		// Unmarshal the transaction
+		tx := &schema.Tx{}
+		if err := proto.Unmarshal(txData, tx); err != nil {
+			return fmt.Errorf("failed to unmarshal transaction: %w", err)
+		}
+
+		// Convert TxEntry to KeyValue
+		kvs := make([]*schema.KeyValue, 0, len(tx.Entries))
+		for _, entry := range tx.Entries {
+			kvs = append(kvs, &schema.KeyValue{
+				Key:   entry.Key,
+				Value: entry.Value,
+			})
+		}
+
+		_, err = db.Client.SetAll(ctx, &schema.SetRequest{
+			KVs: kvs,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to apply transaction %d: %w", tx.Header.Id, err)
+		}
+
+		txCount++
+
+		// Log progress every 1000 transactions
+		if txCount%1000 == 0 {
+			log.Info().
+				Int("transactions", txCount).
+				Dur("elapsed", time.Since(startTime)).
+				Msg("Restore in progress")
+		}
+	}
+
+	log.Info().
+		Int("total_transactions", txCount).
+		Dur("total_time", time.Since(startTime)).
+		Str("db", dbTypeToString(dbType)).
+		Msg("Database restore completed successfully")
+
+	return nil
 }
