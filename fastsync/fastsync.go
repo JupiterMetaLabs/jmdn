@@ -655,6 +655,68 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 	return fmt.Errorf("failed to complete file transfer after %d attempts: %w", maxRetries, lastErr)
 }
 
+func (fs *FastSync) batchCreateWithRetry(entriesMap map[string]interface{}, dbType DatabaseType) error {
+	const maxRetries = 3
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Get the current client for this attempt
+		var dbClient *config.ImmuClient
+		switch dbType {
+		case MainDB:
+			dbClient = fs.mainDB
+		case AccountsDB:
+			dbClient = fs.accountsDB
+		default:
+			return fmt.Errorf("invalid database type: %v", dbType)
+		}
+		if dbClient == nil {
+			return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
+		}
+
+		err := DB_OPs.BatchCreate(dbClient, entriesMap)
+		if err == nil {
+			return nil // Success
+		}
+		lastErr = err
+
+		// Check for the specific "invalid token" error from immudb
+		if strings.Contains(err.Error(), "invalid token") {
+			log.Warn().
+				Str("db", dbTypeToString(dbType)).
+				Int("attempt", attempt+1).
+				Msg("Authentication token expired. Re-authenticating and retrying.")
+
+			var newClient *config.ImmuClient
+			var clientErr error
+
+			if dbType == MainDB {
+				newClient, clientErr = DB_OPs.New(DB_OPs.WithRetryLimit(3), DB_OPs.WithDatabase(config.DBName))
+				if clientErr == nil {
+					DB_OPs.Close(fs.mainDB) // Close the old, invalid client
+					fs.mainDB = newClient   // Replace with the new, valid client
+				}
+			} else if dbType == AccountsDB {
+				newClient, clientErr = DB_OPs.NewAccountsClient()
+				if clientErr == nil {
+					DB_OPs.Close(fs.accountsDB)
+					fs.accountsDB = newClient
+				}
+			}
+
+			if clientErr != nil {
+				return fmt.Errorf("failed to re-authenticate after token error: %w", clientErr)
+			}
+			continue // Retry the operation with the new client
+		}
+
+		// For other transient errors, perform a simple retry with backoff
+		time.Sleep(RetryDelay * time.Duration(attempt+1))
+	}
+
+	return fmt.Errorf("failed to apply batch transaction after %d attempts: %w", maxRetries, lastErr)
+}
+
 func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath string) error {
 	// Get the appropriate database client
 	var dbClient *config.ImmuClient
@@ -732,8 +794,8 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		entriesMap[key] = []byte(value)
 
 		if len(entriesMap) >= batchSize {
-			if err := DB_OPs.BatchCreate(dbClient, entriesMap); err != nil {
-				return fmt.Errorf("failed to apply batch transaction: %w", err)
+			if err := fs.batchCreateWithRetry(entriesMap, dbType); err != nil {
+				return fmt.Errorf("failed to push batch to DB: %w", err)
 			}
 			totalEntries += len(entriesMap)
 			entriesMap = make(map[string]interface{}) // reset map
@@ -749,8 +811,8 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 
 	// Process any remaining entries in the last batch
 	if len(entriesMap) > 0 {
-		if err := DB_OPs.BatchCreate(dbClient, entriesMap); err != nil {
-			return fmt.Errorf("failed to apply final batch transaction: %w", err)
+		if err := fs.batchCreateWithRetry(entriesMap, dbType); err != nil {
+			return fmt.Errorf("failed to push final batch to DB: %w", err)
 		}
 		totalEntries += len(entriesMap)
 	}
