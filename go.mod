@@ -12,6 +12,7 @@ require (
 	github.com/gin-gonic/gin v1.9.1
 	github.com/holiman/uint256 v1.3.2
 	github.com/libp2p/go-libp2p v0.41.0
+	github.com/linkedin/goavro/v2 v2.14.0
 	github.com/mattn/go-sqlite3 v1.14.24
 	github.com/miguelmota/go-ethereum-hdwallet v0.1.2
 	github.com/multiformats/go-multiaddr v0.15.0

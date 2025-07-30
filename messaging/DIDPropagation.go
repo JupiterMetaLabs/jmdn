@@ -128,10 +128,10 @@ func storeDIDInDB(msg DIDMessage) {
         log.Info().Str("did", msg.DID).Msg("Successfully stored DID in database")
         
         // Also update the DID set (CRDT)
-        err = updateDIDSet(client, msg.DID)
-        if err != nil {
-            log.Error().Err(err).Str("did", msg.DID).Msg("Failed to update DID set")
-        }
+        // err = updateDIDSet(client, msg.DID)
+        // if err != nil {
+        //     log.Error().Err(err).Str("did", msg.DID).Msg("Failed to update DID set")
+        // }
     }()
 }
 

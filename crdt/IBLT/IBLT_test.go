@@ -1,6 +1,7 @@
 package IBLT
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -61,4 +62,41 @@ func TestIBLT_PanicOnBadParams(t *testing.T) {
 		}
 	}()
 	_ = New(0, 0)
+}
+
+func TestIBLT(t *testing.T) {
+    // Configuration must be identical
+    m, k := 50, 4
+
+    // --- Node A's data ---
+    nodeA := New(m, k)
+    nodeA.Insert([]byte("apple"))
+    nodeA.Insert([]byte("banana"))
+    nodeA.Insert([]byte("cherry"))
+
+    // --- Node B's data (missing 'banana', has extra 'date') ---
+    nodeB := New(m, k)
+    nodeB.Insert([]byte("apple"))
+    nodeB.Insert([]byte("cherry"))
+    nodeB.Insert([]byte("date"))
+
+    // Calculate the difference (A - B)
+    diff, err := nodeB.Subtract(nodeA)
+    if err != nil {
+        t.Fatal(err)
+    }
+
+    fmt.Printf("Difference IBLT created: %s\n", diff)
+	fmt.Println("Difference Exists 'banana'?", diff.Exists([]byte("banana"))) // false
+	fmt.Println("Difference Exists 'date'?", diff.Exists([]byte("date"))) // true
+
+    // Calculate the union (A + B)
+    union, err := nodeA.Add(nodeB)
+    if err != nil {
+        t.Fatal(err)
+    }
+
+    fmt.Printf("Union IBLT created: %s\n", union)
+    fmt.Println("Union Exists 'banana'?", union.Exists([]byte("banana"))) // true
+    fmt.Println("Union Exists 'date'?", union.Exists([]byte("date")))     // true
 }
