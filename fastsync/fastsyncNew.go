@@ -345,9 +345,6 @@ func (fs *FastSync) handleHashMapExchangeSYNC(peerID peer.ID, msg *SyncMessage) 
 		SYNC_HashMap_Accounts.Insert(key)
 	}
 
-	// Debugging
-	fmt.Println("SYNC_HashMap_MAIN: ", SYNC_HashMap_MAIN.Size())
-	fmt.Println("SYNC_HashMap_Accounts: ", SYNC_HashMap_Accounts.Size())
 
 	return &SyncMessage{
 		Type:      TypeHashMapExchangeSYNC,
@@ -475,22 +472,10 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 		return nil, fmt.Errorf("failed to get valid HashMap from server: %w", err)
 	}
 
-	// Debugging
-	fmt.Println("HashMap metadata checksums match")
-	fmt.Println("Main HashMap size: ", Phase2.HashMap.MAIN_HashMap.Size())
-	fmt.Println("Accounts HashMap size: ", Phase2.HashMap.Accounts_HashMap.Size())
-	fmt.Println("Main HashMap metadata: ", Phase2.HashMap_MetaData.Main_HashMap_MetaData)
-	fmt.Println("Accounts HashMap metadata: ", Phase2.HashMap_MetaData.Accounts_HashMap_MetaData)
 
 	// Phase3: Request the AVRO file from the server
 	// Server will send the AVRO file to the client
 
-	// Debugging
-	if Phase2.HashMap.Accounts_HashMap.Size() < 10 {
-		fmt.Println("Less than 10 keys found in Accounts HashMap", Phase2.HashMap.Accounts_HashMap)
-	} else {
-		fmt.Println("More than 10 keys found in Accounts HashMap", Phase2.HashMap.Accounts_HashMap.Keys()[0:10])
-	}
 
 	err = fs.Phase3_FileRequest(Phase2, peerID, stream, writer, reader)
 	if err != nil {
@@ -740,8 +725,6 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 	}
 
 	// 6. Send a completion message back on the control stream.
-	// Debugging
-	fmt.Println("File transfers complete. Sending SyncComplete.")
 	log.Info().Str("peer", peerID.String()).Msg("File transfers complete. Sending SyncComplete.")
 	return &SyncMessage{
 		Type:      TypeSyncComplete,
