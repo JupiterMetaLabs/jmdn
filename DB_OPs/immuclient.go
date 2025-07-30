@@ -821,7 +821,7 @@ func withRetry(ic *config.ImmuClient,operation string, fn func() error) error {
 		if isConnectionError(err) {
 			config.Warning(ic.Logger,"%s operation failed due to connection issue (attempt %d/%d): %v", 
 				operation, attempt+1, ic.RetryLimit+1, err)
-			ic.IsConnected = false
+			ic.IsConnected = false // Force reconnect on next attempt
 			if attempt < ic.RetryLimit {
 				time.Sleep(time.Second * time.Duration(attempt+1))
 				continue

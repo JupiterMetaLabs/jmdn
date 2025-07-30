@@ -9,7 +9,7 @@ import (
 	"gossipnode/config"
 	hashmap "gossipnode/crdt/HashMap"
 	"io"
-	"os"
+		"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	BAK_FILE_PATH = "fastsync/.temp/"
+	AVRO_FILE_PATH = "fastsync/.temp/"
 )
 
 type MerkleRoot struct {
@@ -269,7 +269,7 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 		case TypeHashMapExchangeSYNC:
 			response, handleErr = fs.handleHashMapExchangeSYNC(peerID, msg) //Server will send the SYNC HashMap to the client
 		case RequestFiletransfer: // This will trigger for the file transfer
-			response, handleErr = fs.MakeBAKFile_Transfer(peerID, msg)
+			response, handleErr = fs.MakeAVROFile_Transfer(peerID, msg)
 		default:
 			log.Warn().Str("type", msg.Type).Msg("Unknown message type")
 			continue
@@ -482,8 +482,8 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	fmt.Println("Main HashMap metadata: ", Phase2.HashMap_MetaData.Main_HashMap_MetaData)
 	fmt.Println("Accounts HashMap metadata: ", Phase2.HashMap_MetaData.Accounts_HashMap_MetaData)
 
-	// Phase3: Request the BAK file from the server
-	// Server will send the BAK file to the client
+	// Phase3: Request the AVRO file from the server
+	// Server will send the AVRO file to the client
 
 	// Debugging
 	if Phase2.HashMap.Accounts_HashMap.Size() < 10 {
@@ -497,7 +497,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 		// Retry initiating the file transfer again
 		log.Warn().
 			Str("peer", peerID.String()).
-			Msg("Failed to transfer BAK file, retrying file transfer")
+			Msg("Failed to transfer AVRO file, retrying file transfer")
 
 		for i := range 3 {
 			log.Debug().
@@ -511,15 +511,15 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 			}
 		}
 		if err != nil {
-			return nil, fmt.Errorf("failed to transfer BAK file after retries: %w", err)
+			return nil, fmt.Errorf("failed to transfer AVRO file after retries: %w", err)
 		}
 	}
 
-	// Phase4: Push the Transactions from BAK file to the DB
+	// Phase4: Push the Transactions from AVRO file to the DB
 
-	// 1. Push the Main DB Transactions from BAK file to the DB - if no maindb then skip
+	// 1. Push the Main DB Transactions from AVRO file to the DB - if no maindb then skip
 	if Phase2.HashMap.MAIN_HashMap != nil && Phase2.HashMap.MAIN_HashMap.Size() > 0 {
-		if err := fs.PushDataToDB(Phase2, MainDB, "fastsync/.temp/main.bak"); err != nil {
+		if err := fs.PushDataToDB(Phase2, MainDB, "fastsync/.temp/main.avro"); err != nil {
 			log.Error().Err(err).Msg("Failed to push Main DB transactions")
 			return nil, fmt.Errorf("failed to push Main DB transactions: %w", err)
 		}
@@ -528,9 +528,9 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 		log.Info().Msg("Skipping Main DB push - no data to push")
 	}
 
-	// 2. Push the Accounts DB Transactions from BAK file to the DB - if no accountsdb then skip
+	// 2. Push the Accounts DB Transactions from AVRO file to the DB - if no accountsdb then skip
 	if Phase2.HashMap.Accounts_HashMap != nil && Phase2.HashMap.Accounts_HashMap.Size() > 0 {
-		if err := fs.PushDataToDB(Phase2, AccountsDB, "fastsync/.temp/accounts.bak"); err != nil {
+		if err := fs.PushDataToDB(Phase2, AccountsDB, "fastsync/.temp/accounts.avro"); err != nil {
 			log.Error().Err(err).Msg("Failed to push Accounts DB transactions")
 			return nil, fmt.Errorf("failed to push Accounts DB transactions: %w", err)
 		}
@@ -657,7 +657,7 @@ func (fs *FastSync) getBatchData(
 	return entries, crdts, nil
 }
 
-func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
+func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
 	// 1. Check if the message contains valid HashMap data
 	if msg.HashMap == nil {
 		return nil, fmt.Errorf("message is missing HashMap data")
@@ -668,20 +668,20 @@ func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Syn
 	}
 
 	// 2. Ensure the temporary backup directory exists.
-	if err := os.MkdirAll(BAK_FILE_PATH, os.ModePerm); err != nil {
+	if err := os.MkdirAll(AVRO_FILE_PATH, os.ModePerm); err != nil {
 		return nil, fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
-	mainBakPath := BAK_FILE_PATH + "main.bak"
-	accountsBakPath := BAK_FILE_PATH + "accounts.bak"
+	mainAVROpath := AVRO_FILE_PATH + "main.arvo"
+	accountsAVROpath := AVRO_FILE_PATH + "accounts.avro"
 
 	// 2. Use defer to ensure backup files are cleaned up even if errors occur.
 	defer func() {
-		if err := os.Remove(mainBakPath); err != nil && !os.IsNotExist(err) {
-			log.Error().Err(err).Str("path", mainBakPath).Msg("Failed to remove temporary backup file")
+		if err := os.Remove(mainAVROpath); err != nil && !os.IsNotExist(err) {
+			log.Error().Err(err).Str("path", mainAVROpath).Msg("Failed to remove temporary backup file")
 		}
-		if err := os.Remove(accountsBakPath); err != nil && !os.IsNotExist(err) {
-			log.Error().Err(err).Str("path", accountsBakPath).Msg("Failed to remove temporary backup file")
+		if err := os.Remove(accountsAVROpath); err != nil && !os.IsNotExist(err) {
+			log.Error().Err(err).Str("path", accountsAVROpath).Msg("Failed to remove temporary backup file")
 		}
 	}()
 
@@ -691,7 +691,7 @@ func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Syn
 		Username:   config.DBUsername,
 		Password:   config.DBPassword,
 		Database:   config.DBName,
-		OutputPath: mainBakPath,
+		OutputPath: mainAVROpath,
 	}
 
 	log.Info().
@@ -705,8 +705,8 @@ func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Syn
 	}
 
 	// Transfer the main DB backup file
-	log.Info().Str("peer", peerID.String()).Str("file", mainBakPath).Msg("Transferring main DB backup file")
-	err = TransferBAKFile(fs.host, peerID, mainBakPath, "fastsync/.temp/main.bak")
+	log.Info().Str("peer", peerID.String()).Str("file", mainAVROpath).Msg("Transferring main DB backup file")
+	err = TransferAVROFile(fs.host, peerID, mainAVROpath, "fastsync/.temp/main.avro")
 	if err != nil {
 		return nil, fmt.Errorf("failed to transfer main database: %w", err)
 	}
@@ -718,7 +718,7 @@ func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Syn
 			Username:   config.DBUsername,
 			Password:   config.DBPassword,
 			Database:   config.AccountsDBName,
-			OutputPath: accountsBakPath,
+			OutputPath: accountsAVROpath,
 		}
 
 		log.Info().
@@ -732,8 +732,8 @@ func (fs *FastSync) MakeBAKFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Syn
 		}
 
 		// Transfer the accounts DB backup file
-		log.Info().Str("peer", peerID.String()).Str("file", accountsBakPath).Msg("Transferring accounts DB backup file")
-		err = TransferBAKFile(fs.host, peerID, accountsBakPath, "fastsync/.temp/accounts.bak")
+		log.Info().Str("peer", peerID.String()).Str("file", accountsAVROpath).Msg("Transferring accounts DB backup file")
+		err = TransferAVROFile(fs.host, peerID, accountsAVROpath, "fastsync/.temp/accounts.avro")
 		if err != nil {
 			return nil, fmt.Errorf("failed to transfer accounts database: %w", err)
 		}

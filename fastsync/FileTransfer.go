@@ -10,9 +10,9 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-func TransferBAKFile(h host.Host, peerID peer.ID, filepath string, remoteFilename string) error {
+func TransferAVROFile(h host.Host, peerID peer.ID, filepath string, remoteFilename string) error {
 	// Debugging
-	fmt.Println("Transferring BAK file to peer:", peerID.String())
+	fmt.Println("Transferring AVRO file to peer:", peerID.String())
 	fmt.Println("Filepath:", filepath)
 	fmt.Println("File name:", remoteFilename)	
 	

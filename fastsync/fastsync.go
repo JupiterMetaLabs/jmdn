@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,12 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codenotary/immudb/pkg/api/schema"
+	"github.com/linkedin/goavro/v2"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog/log"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/protobuf/proto"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
@@ -585,7 +582,7 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 		log.Info().
 			Str("peer", peerID.String()).
 			Int("attempt", attempt+1).
-			Msg("Initiating BAK file transfer request")
+			Msg("Initiating AVRO file transfer request")
 
 		// 1. Create a new message for the request
 		requestMsg := &SyncMessage{
@@ -594,7 +591,7 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 			Timestamp:        time.Now().Unix(),
 			HashMap:          msg.HashMap,
 			HashMap_MetaData: msg.HashMap_MetaData,
-			Data:             json.RawMessage([]byte(`"Message From Client - For BAK File Transfer"`)),
+			Data:             json.RawMessage([]byte(`"Message From Client - For AVRO File Transfer"`)),
 		}
 
 		// 2. Send the request to the server
@@ -660,120 +657,109 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 
 func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath string) error {
 	// Get the appropriate database client
-	var db *config.ImmuClient
-	var err error
+	var dbClient *config.ImmuClient
 	switch dbType {
 	case MainDB:
-		db, err = DB_OPs.New()
-		if err != nil {
-			return fmt.Errorf("failed to create main client: %w", err)
-		}
-		defer db.Client.Disconnect()
+		dbClient = fs.mainDB
 	case AccountsDB:
-		db, err = DB_OPs.NewAccountsClient()
-		if err != nil {
-			return fmt.Errorf("failed to create accounts client: %w", err)
-		}
-		defer db.Client.Disconnect()
+		dbClient = fs.accountsDB
 	default:
 		return fmt.Errorf("invalid database type: %v", dbType)
 	}
+	if dbClient == nil {
+		return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
+	}
 
 	// Ensure the backup file exists
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return fmt.Errorf("backup file does not exist: %s", dbPath)
+	fileInfo, err := os.Stat(dbPath)
+	if os.IsNotExist(err) {
+		log.Info().Str("path", dbPath).Msg("AVRO file does not exist, skipping restore.")
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to stat avro file %s: %w", dbPath, err)
+	}
+	if fileInfo.Size() == 0 {
+		log.Info().Str("path", dbPath).Msg("AVRO file is empty, skipping restore.")
+		return nil
 	}
 
 	// Open the backup file
 	file, err := os.Open(dbPath)
 	if err != nil {
-		return fmt.Errorf("failed to open backup file: %w", err)
+		return fmt.Errorf("failed to open avro file: %w", err)
 	}
 	defer file.Close()
 
-	// Get a context with authentication
-	ctx := context.Background()
-	if db.Token != "" {
-		ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "Bearer "+db.Token))
-	}
-
-	// Create a buffered reader for efficient reading
-	reader := bufio.NewReader(file)
-	txCount := 0
 	startTime := time.Now()
-
 	log.Info().
 		Str("db", dbTypeToString(dbType)).
 		Str("file", filepath.Base(dbPath)).
-		Msg("Starting database restore from backup")
+		Msg("Starting database restore from AVRO backup")
 
-	// For AccountsDB, use SetAll for better performance
-	var kvs []*schema.KeyValue
+	// Create an OCF reader for the Avro file
+	ocfReader, err := goavro.NewOCFReader(file)
+	if err != nil {
+		return fmt.Errorf("failed to create avro ocf reader for %s: %w", dbPath, err)
+	}
+
+	entriesMap := make(map[string]interface{})
 	batchSize := 1000 // Process in batches of 1000 entries
+	totalEntries := 0
 
-	// Read transactions from the backup file
-	for {
-		// Read the length prefix (8 bytes, big-endian)
-		var length uint64
-		err := binary.Read(reader, binary.BigEndian, &length)
+	// Read records from the Avro file
+	for ocfReader.Scan() {
+		record, err := ocfReader.Read()
 		if err != nil {
-			if err.Error() == "EOF" {
-				break // End of file
+			log.Warn().Err(err).Msg("failed to read avro record")
+			continue
+		}
+
+		recordMap, ok := record.(map[string]interface{})
+		if !ok {
+			log.Warn().Msgf("unexpected avro record type: %T", record)
+			continue
+		}
+
+		key, keyOk := recordMap["Key"].(string)
+		value, valueOk := recordMap["Value"].(string)
+
+		if !keyOk || !valueOk {
+			log.Warn().Msg("avro record has missing or invalid Key/Value fields")
+			continue
+		}
+
+		entriesMap[key] = []byte(value)
+
+		if len(entriesMap) >= batchSize {
+			if err := DB_OPs.BatchCreate(dbClient, entriesMap); err != nil {
+				return fmt.Errorf("failed to apply batch transaction: %w", err)
 			}
-			return fmt.Errorf("failed to read transaction length: %w", err)
-		}
+			totalEntries += len(entriesMap)
+			entriesMap = make(map[string]interface{}) // reset map
 
-		// Read the transaction data
-		txData := make([]byte, length)
-		_, err = reader.Read(txData)
-		if err != nil {
-			return fmt.Errorf("failed to read transaction data: %w", err)
-		}
-
-		// Unmarshal the transaction
-		tx := &schema.Tx{}
-		if err := proto.Unmarshal(txData, tx); err != nil {
-			return fmt.Errorf("failed to unmarshal transaction: %w", err)
-		}
-
-		// Convert TxEntry to KeyValue
-		for _, entry := range tx.Entries {
-			kvs = append(kvs, &schema.KeyValue{
-				Key:   entry.Key,
-				Value: entry.Value,
-			})
-
-			// Process batch if we've reached the batch size
-			if len(kvs) >= batchSize {
-				if _, err := db.Client.SetAll(ctx, &schema.SetRequest{KVs: kvs}); err != nil {
-					return fmt.Errorf("failed to apply batch transaction: %w", err)
-				}
-				txCount += len(kvs)
-				kvs = kvs[:0] // Reset the slice while keeping the underlying array
-
-				// Log progress
-				log.Info().
-					Int("transactions", txCount).
-					Dur("elapsed", time.Since(startTime)).
-					Str("db", dbTypeToString(dbType)).
-					Msg("Restore in progress")
-			}
+			// Log progress
+			log.Info().
+				Int("entries_processed", totalEntries).
+				Dur("elapsed", time.Since(startTime)).
+				Str("db", dbTypeToString(dbType)).
+				Msg("Restore in progress")
 		}
 	}
 
 	// Process any remaining entries in the last batch
-	if len(kvs) > 0 {
-		if _, err := db.Client.SetAll(ctx, &schema.SetRequest{KVs: kvs}); err != nil {
+	if len(entriesMap) > 0 {
+		if err := DB_OPs.BatchCreate(dbClient, entriesMap); err != nil {
 			return fmt.Errorf("failed to apply final batch transaction: %w", err)
 		}
-		txCount += len(kvs)
+		totalEntries += len(entriesMap)
 	}
 
 	log.Info().
-		Int("total_transactions", txCount).
+		Int("total_entries", totalEntries).
 		Dur("total_time", time.Since(startTime)).
 		Str("db", dbTypeToString(dbType)).
-		Msg("Database restore completed successfully")
+		Msg("Database restore from AVRO completed successfully")
 
 	return nil
 }
