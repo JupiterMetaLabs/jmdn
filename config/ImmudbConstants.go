@@ -19,7 +19,7 @@ const (
 	DBUsername      = "immudb"
 	DBPassword      = "immudb"
 	DBName          = "defaultdb"
-	State_Path_Hidden		   = "./.immudb_state"
+	State_Path_Hidden = "./.immudb_state"
 
 	// Constants for the accounts database
 	AccountsDBName = "accountsdb"

@@ -171,7 +171,6 @@ func getMessageIDForBloomFilter(msg config.BlockMessage) string {
 }
 
 // HandleBlockStream processes incoming block propagation messages
-// HandleBlockStream processes incoming block propagation messages
 // Priority: FORWARD FIRST, then PROCESS/VALIDATE before STORING
 func HandleBlockStream(stream network.Stream) {
     defer stream.Close()

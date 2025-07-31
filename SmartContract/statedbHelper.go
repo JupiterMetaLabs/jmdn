@@ -19,7 +19,6 @@ import (
 )
 
 // Add these methods to the ImmuStateDB struct
-
 // AccessList tracking for EIP-2930
 type accessList struct {
     addresses map[common.Address]struct{}
