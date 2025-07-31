@@ -312,12 +312,20 @@ func (fs *FastSync) handleHashMapExchangeSYNC(peerID peer.ID, msg *SyncMessage) 
 		Str("peer", peerID.String()).
 		Msg("Received HashMap Exchange SYNC Request")
 
-	// First check the metadata of the client is it valid or not
-	if !CheckChecksum(msg.HashMap.MAIN_HashMap, msg.HashMap_MetaData.Main_HashMap_MetaData.Checksum) {
-		return nil, fmt.Errorf("invalid main HashMap checksum")
+	// Checksum validation, but only if the client's database is not empty.
+	// This prevents failures if a fingerprint for an empty map is inconsistent.
+	// Checksum validation, but only if the client's database is not empty.
+	// This prevents failures if a fingerprint for an empty map is inconsistent.
+	if msg.HashMap_MetaData.Main_HashMap_MetaData.KeysCount > 0 {
+		if !CheckChecksum(msg.HashMap.MAIN_HashMap, msg.HashMap_MetaData.Main_HashMap_MetaData.Checksum) {
+			return nil, fmt.Errorf("invalid main HashMap checksum")
+		}
 	}
-	if !CheckChecksum(msg.HashMap.Accounts_HashMap, msg.HashMap_MetaData.Accounts_HashMap_MetaData.Checksum) {
-		return nil, fmt.Errorf("invalid accounts HashMap checksum")
+
+	if msg.HashMap_MetaData.Accounts_HashMap_MetaData.KeysCount > 0 {
+		if !CheckChecksum(msg.HashMap.Accounts_HashMap, msg.HashMap_MetaData.Accounts_HashMap_MetaData.Checksum) {
+			return nil, fmt.Errorf("invalid accounts HashMap checksum")
+		}
 	}
 
 	// First Compute the hashmap of the server
@@ -449,8 +457,11 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 
 	// Check if the metadata checksums match
 	// else retry to get the HashMap from the server
-	if Phase2.HashMap.MAIN_HashMap.Fingerprint() != MainChecksum ||
-		Phase2.HashMap.Accounts_HashMap.Fingerprint() != AccountChecksum {
+	// Only validate checksum if the diff HashMap is not empty.
+	mainDiffInvalid := Phase2.HashMap.MAIN_HashMap.Size() > 0 && Phase2.HashMap.MAIN_HashMap.Fingerprint() != MainChecksum
+	accountsDiffInvalid := Phase2.HashMap.Accounts_HashMap.Size() > 0 && Phase2.HashMap.Accounts_HashMap.Fingerprint() != AccountChecksum
+
+	if mainDiffInvalid || accountsDiffInvalid {
 		// retry 3 times to get the valid HashMap from the server
 		log.Warn().
 			Str("peer", peerID.String()).
@@ -657,7 +668,7 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 		return nil, fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
-	mainAVROpath := AVRO_FILE_PATH + "main.arvo"
+	mainAVROpath := AVRO_FILE_PATH + "main.avro"
 	accountsAVROpath := AVRO_FILE_PATH + "accounts.avro"
 
 	// 2. Use defer to ensure backup files are cleaned up even if errors occur.
