@@ -14,21 +14,20 @@ import (
 
 const (
 	// Database connection settings
-	DBAddress       = "0.0.0.0"
-	DBPort          = 3322
-	DBUsername      = "immudb"
-	DBPassword      = "immudb"
-	DBName          = "defaultdb"
+	DBAddress         = "localhost"
+	DBPort            = 3322
+	DBUsername        = "immudb"
+	DBPassword        = "immudb"
+	DBName            = "defaultdb"
 	State_Path_Hidden = "./.immudb_state"
 
 	// Constants for the accounts database
 	AccountsDBName = "accountsdb"
-	
+
 	// Operation settings
 	DefaultScanLimit = 100
 	RequestTimeout   = 10 * time.Second
 )
-
 
 // AsyncLogger provides asynchronous file logging
 type AsyncLogger struct {
@@ -48,7 +47,7 @@ type ImmuClient struct {
 	RetryLimit  int
 	IsConnected bool
 	Logger      *AsyncLogger
-	Database  	string
+	Database    string
 }
 
 // BlockHasher for generating block hashes
@@ -62,16 +61,16 @@ type ImmuTransaction struct {
 
 func ProcessLogs(al *AsyncLogger) {
 	defer al.Wg.Done()
-	
+
 	for msg := range al.LogChan {
 		al.Logger.Println(msg)
 	}
 }
 
 // log sends a log message to the channel
-func  Log(al *AsyncLogger ,level, format string, args ...interface{}) {
+func Log(al *AsyncLogger, level, format string, args ...interface{}) {
 	msg := fmt.Sprintf(level+": "+format, args...)
-	
+
 	// Non-blocking send to channel with timeout
 	select {
 	case al.LogChan <- msg:
@@ -101,9 +100,7 @@ func Close(al *AsyncLogger) error {
 	// Close channel and wait for worker to finish
 	close(al.LogChan)
 	al.Wg.Wait()
-	
+
 	// Close file
 	return al.File.Close()
 }
-
-
