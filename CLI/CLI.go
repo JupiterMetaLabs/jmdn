@@ -3,6 +3,7 @@ package CLI
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -68,12 +69,20 @@ func PrintFuncs() {
     printDashes()
 }
 
-// StartCLI starts the interactive CLI
-func (h *CommandHandler) StartCLI() error {
+func (h *CommandHandler) StartCLI(grpcPort int) error {
     PrintFuncs()
 
     var wg sync.WaitGroup
-    wg.Add(1)
+    wg.Add(2) // Increment to 2 for both goroutines
+
+    // Start gRPC server
+    go func() {
+        defer wg.Done()
+        log.Println("Starting gRPC server on port ", grpcPort)
+        if err := StartGRPCServer(h, grpcPort); err != nil {
+            log.Fatalf("Failed to start gRPC server: %v", err)
+        }
+    }()
 
     // Command-line input loop
     go func() {

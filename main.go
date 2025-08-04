@@ -165,6 +165,7 @@ func main() {
 	apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
 	blockgen := flag.Int("blockgen", 0, "Run Block creator API on specified port (0 = disabled)")
 	mempoolgRPC := flag.String("mempool", "localhost:15051", "Mempool gRPC server address")
+	cliGRPC := flag.Int("cli", 15053, "CLI gRPC server address")
 	DIDgRPC := flag.String("did", "localhost:15052", "DID gRPC server address")
 
 	flag.Parse()
@@ -372,7 +373,7 @@ func main() {
 		fmt.Println(config.ColorYellow + "Warning: DID database client not available - some commands disabled" + config.ColorReset)
 	}
 
-	if err := cmdHandler.StartCLI(); err != nil {
+	if err := cmdHandler.StartCLI(*cliGRPC); err != nil {
 		log.Error().Err(err).Msg("Failed to start CLI")
 	}
 
