@@ -898,3 +898,4 @@ func UpdateDIDBalancePooled(did string, newBalance string) error {
 func ListAllDIDsPooled(limit int) ([]*DIDDocument, error) {
 	return ListAllDIDs(nil, limit)
 }
+

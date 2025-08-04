@@ -1,23 +1,23 @@
 package CLI
 
 import (
-    "bufio"
-    "fmt"
-    "os"
-    "strings"
-    "sync"
-    "time"
+	"bufio"
+	"fmt"
+	"os"
+	"strings"
+	"sync"
+	"time"
 
-    "gossipnode/DB_OPs"
-    "gossipnode/config"
-    "gossipnode/fastsync"
-    "gossipnode/messaging"
-    "gossipnode/messaging/directMSG"
-    "gossipnode/node"
-    "gossipnode/seed"
+	"gossipnode/DB_OPs"
+	"gossipnode/config"
+	"gossipnode/fastsync"
+	"gossipnode/messaging"
+	"gossipnode/messaging/directMSG"
+	"gossipnode/node"
+	"gossipnode/seed"
 
-    "github.com/libp2p/go-libp2p/core/peer"
-    ma "github.com/multiformats/go-multiaddr"
+	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 // CommandHandler holds dependencies for CLI command execution
@@ -64,7 +64,7 @@ func PrintFuncs() {
     fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
     fmt.Println("  getDID <did>                      - Get a DID document from the network")
     fmt.Println("  syncinfo                          - Show FastSync configuration")
-    fmt.Println("  exit                              - Exit the program\n")
+    fmt.Println("  exit                              - Exit the program")
     printDashes()
 }
 
@@ -145,7 +145,7 @@ func (h *CommandHandler) handleCommand(parts []string) {
 }
 
 // Individual command handlers
-func (h *CommandHandler) handleSendMessage(parts []string) {
+func (h *CommandHandler) handleSendMessage(parts []string){
     if len(parts) != 3 {
         fmt.Println("Usage: msg <peer_multiaddr> <message>")
         return
@@ -153,9 +153,9 @@ func (h *CommandHandler) handleSendMessage(parts []string) {
     err := node.SendMessage(h.Node, parts[1], parts[2])
     if err != nil {
         fmt.Println("Error:", err)
-    } else {
-        fmt.Println("Message sent successfully")
+        return
     }
+    fmt.Println("Message sent successfully")
 }
 
 func (h *CommandHandler) handleYggdrasilMessage(parts []string) {
@@ -181,9 +181,8 @@ func (h *CommandHandler) handleSendFile(parts []string) {
     err := node.SendFile(h.Node, parts[1], parts[2], parts[3])
     if err != nil {
         fmt.Println("Error:", err)
-    } else {
-        fmt.Println("File sent successfully")
     }
+    fmt.Println("File sent successfully")
 }
 
 func (h *CommandHandler) handleRequestPeers(parts []string) {
