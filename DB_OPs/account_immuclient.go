@@ -228,7 +228,7 @@ func (ap *AccountsConnectionPool) ensureAccountsDatabaseExists(c client.ImmuClie
 }
 
 // Override the base createConnection method to use accounts-specific logic
-func (ap *AccountsConnectionPool) getConnection() (*PooledConnection, error) {
+func (ap *AccountsConnectionPool) GetConnection() (*PooledConnection, error) {
 	ap.mutex.Lock()
 	defer ap.mutex.Unlock()
 
@@ -329,7 +329,7 @@ func withAccountsPooledRetry(operation string, fn func(*PooledConnection) error)
 
 	for attempt := 0; attempt <= retryLimit; attempt++ {
 		// Get connection from accounts pool
-		conn, connErr := pool.getConnection()
+		conn, connErr := pool.GetConnection()
 		if connErr != nil {
 			config.Error(pool.logger, "Failed to get connection from accounts pool for %s (attempt %d/%d): %v",
 				operation, attempt+1, retryLimit+1, connErr)
@@ -898,3 +898,4 @@ func UpdateDIDBalancePooled(did string, newBalance string) error {
 func ListAllDIDsPooled(limit int) ([]*DIDDocument, error) {
 	return ListAllDIDs(nil, limit)
 }
+

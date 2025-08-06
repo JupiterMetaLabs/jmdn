@@ -4,13 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/linkedin/goavro/v2"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog/log"
@@ -18,7 +19,6 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/crdt"
-	"gossipnode/crdt/IBLT"
 )
 
 // Constants for FastSync
@@ -36,10 +36,9 @@ const (
 type DatabaseType int
 
 const (
-	MainDB DatabaseType = 0
+	MainDB     DatabaseType = 0
 	AccountsDB DatabaseType = 1
 )
-
 
 // DBState contains the state of a database
 type DBState struct {
@@ -278,7 +277,7 @@ func (fs *FastSync) handleSyncComplete(peerID peer.ID, msg *SyncMessage) (*SyncM
 		return nil, fmt.Errorf("failed to get main database state: %w", err)
 	}
 
-    accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB)
+	accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get accounts database state: %w", err)
 	}
@@ -303,75 +302,6 @@ func (fs *FastSync) cleanupSync(peerID peer.ID) {
 			state.cancel()
 		}
 		delete(fs.active, peerID)
-	}
-}
-
-// StartSync initiates synchronization with a peer
-func (fs *FastSync) StartSync(peerID peer.ID) error {
-	// Get database states
-	mainState, err := DB_OPs.GetDatabaseState(fs.mainDB)
-	if err != nil {
-		return fmt.Errorf("failed to get main database state: %w", err)
-	}
-	accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB)
-	if err != nil {
-		return fmt.Errorf("failed to get accounts database state: %w", err)
-	}
-	// Calculate key counts (could be cached)
-	mainKeys, _ := DB_OPs.GetKeys(fs.mainDB, "block:", 0)
-	accountsKeys, _ := DB_OPs.GetKeys(fs.accountsDB, "did:", 0)
-	mainM, mainK := calcOptimalIBLTParams(len(mainKeys))
-	accountsM, accountsK := calcOptimalIBLTParams(len(accountsKeys))
-	log.Info().Str("peer", peerID.String()).Uint64("main_tx_id", mainState.TxId).Uint64("accounts_tx_id", accountsState.TxId).Msg("Starting sync with peer")
-	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
-	defer cancel()
-	MainIBLT_Params := &IBLT_Params{
-		M: mainM,
-		K: mainK,
-	}
-	AccountsIBLT_Params := &IBLT_Params{
-		M: accountsM,
-		K: accountsK,
-	}
-	stream, err := fs.host.NewStream(ctx, peerID, SyncProtocolID)
-	if err != nil {
-		return fmt.Errorf("failed to open stream: %w", err)
-	}
-	defer stream.Close()
-	reader := bufio.NewReader(stream)
-	writer := bufio.NewWriter(stream)
-	// Send sync request with IBLT params
-	syncReq := SyncMessage{
-		Type:                TypeSyncRequest,
-		SenderID:            fs.host.ID().String(),
-		TxID:                mainState.TxId,
-		Timestamp:           time.Now().Unix(),
-		IBLT_MetaData:       &IBLT_MetaData_Struct{
-			Main_IBLT_Params:     MainIBLT_Params,
-			Accounts_IBLT_Params: AccountsIBLT_Params,
-		},
-	}
-	if err := writeMessage(writer, stream, &syncReq); err != nil {
-		return fmt.Errorf("failed to send sync request: %w", err)
-	}
-	// Read response
-	response, err := readMessage(reader, stream)
-	if err != nil {
-		return fmt.Errorf("failed to read sync response: %w", err)
-	}
-	// Process response
-	switch response.Type {
-	case TypeSyncResponse:
-		// Use agreed IBLT params from server
-
-		log.Info().Int("mainM", mainM).Int("mainK", mainK).Int("accountsM", accountsM).Int("accountsK", accountsK).Msg("Agreed IBLT params for sync")
-		// TODO: Use these params for all IBLT operations
-		return fs.processSyncWithIBLTParams(peerID, stream, reader, writer, response, MainIBLT_Params.M, MainIBLT_Params.K, AccountsIBLT_Params.M, AccountsIBLT_Params.K)
-	case TypeSyncComplete:
-		log.Info().Msg("Peer reports we're already in sync")
-		return nil
-	default:
-		return fmt.Errorf("unexpected response type: %s", response.Type)
 	}
 }
 
@@ -501,24 +431,6 @@ func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *b
 	return nil
 }
 
-// Add processSyncWithIBLTParams as a stub for now
-func (fs *FastSync) processSyncWithIBLTParams(peerID peer.ID, stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, response *SyncMessage, mainMinM int, mainMinK int, accountsMinM int, accountsMinK int) error {
-	if response.IBLT_MetaData == nil {
-		response.IBLT_MetaData = &IBLT_MetaData_Struct{
-			Main_IBLT_Params: &IBLT_Params{
-				M: max(mainMinM, response.IBLT_MetaData.Main_IBLT_Params.M),
-				K: max(mainMinK, response.IBLT_MetaData.Main_IBLT_Params.K),
-			},
-			Accounts_IBLT_Params: &IBLT_Params{
-				M: max(accountsMinM, response.IBLT_MetaData.Accounts_IBLT_Params.M),
-				K: max(accountsMinK, response.IBLT_MetaData.Accounts_IBLT_Params.K),
-			},
-		}
-	}
-	// TODO: Use these params for all IBLT operations in the sync process
-	return fs.processSync(peerID, stream, reader, writer, response)
-}
-
 // requestBatch requests and processes a batch
 func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, writer *bufio.Writer, batchNum int, startTx, endTx uint64, dbType DatabaseType) error {
 	// Create request
@@ -628,22 +540,6 @@ func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, wr
 	return nil
 }
 
-// Helper function for min value
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// Helper for max
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 // dbTypeToString converts a database type to a string
 func dbTypeToString(dbType DatabaseType) string {
 	switch dbType {
@@ -656,65 +552,12 @@ func dbTypeToString(dbType DatabaseType) string {
 	}
 }
 
-// --- IBLT parameter negotiation logic ---
-// Helper to calculate optimal IBLT params
-func calcOptimalIBLTParams(keyCount int) (m, k int) {
-	return IBLT.OptimalIBLTParams(keyCount, 1.0, 2.0)
-}
-
-func computeCHECKSUM(iblt *IBLT.IBLT) (string, error) {
-	ComputerCHECKSUM := sha1.New()
-	ComputerCHECKSUM.Write([]byte(iblt.String()))
-	ComputerCHECKSUM_Value := ComputerCHECKSUM.Sum(nil)
-	ComputerCHECKSUM_Value_String := hex.EncodeToString(ComputerCHECKSUM_Value)
-	if ComputerCHECKSUM_Value_String == "" {
-		return "", fmt.Errorf("failed to compute checksum for IBLT")
-	}
-	return ComputerCHECKSUM_Value_String, nil
-}
-
-func isAbove20Percent(fs *FastSync) (bool,error) {
-	computeServerKeys, err := DB_OPs.GetKeys(fs.mainDB, "block:", 0)
-	if err != nil {
-		return false, err
-	}
-	computeServerKeyCount := len(computeServerKeys)
-	computeServerAccountsKeys, err := DB_OPs.GetKeys(fs.accountsDB, "did:", 0)
-	if err != nil {
-		return false, err
-	}
-	computeServerAccountsKeyCount := len(computeServerAccountsKeys)
-
-	//debugging
-	fmt.Println("computeServerKeyCount", computeServerKeyCount)
-	fmt.Println("computeServerAccountsKeyCount", computeServerAccountsKeyCount)
-	fmt.Println("fs.IBLT_MetaData.Main_DB_KeyCount", fs.IBLT_MetaData.Main_DB_KeyCount)
-	fmt.Println("fs.IBLT_MetaData.Accounts_DB_KeyCount", fs.IBLT_MetaData.Accounts_DB_KeyCount)
-	
-	return fs.IBLT_MetaData.Main_DB_KeyCount > int(float64(computeServerKeyCount)*0.2) || fs.IBLT_MetaData.Accounts_DB_KeyCount > int(float64(computeServerAccountsKeyCount)*0.2), nil
-}
-
 func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) (*SyncMessage, string, string, error) {
-	Phase2, err := fs.handleIBLTExchangeClient(peerID)
-	if err != nil {
-		return nil, "", "", err
-	}
+	// Got all the data in - msg *SyncMessage
+	// Send the Client_HashMap to the server to get the SYNC_HashMap
+	msg.Type = TypeHashMapExchangeSYNC
 
-	// Send the IBLT to the server to get the SYNC_IBLT
-	Phase2.Type = TypeIBLTExchangeSYNC
-	Phase2.IBLT_MetaData = msg.IBLT_MetaData
-
-	
-	// Debugging
-	fmt.Println("Phase2.IBLT_MAIN_SYNC",Phase2.IBLT.IBLT_MAIN)
-	fmt.Println("Phase2.IBLT_Accounts_SYNC",Phase2.IBLT.IBLT_Accounts)
-	fmt.Println("Phase2.MetaData.Main_SYNC_MetaData.Checksum",Phase2.IBLT.MetaData.Main_SYNC_MetaData.Checksum)
-	fmt.Println("Phase2.MetaData.Accounts_SYNC_MetaData.Checksum",Phase2.IBLT.MetaData.Accounts_SYNC_MetaData.Checksum)
-	fmt.Println("Phase2.Type", Phase2.Type)
-	fmt.Println("Phase2.IBLT_MetaData", Phase2.IBLT_MetaData)
-
-
-	if err := writeMessage(writer, stream, Phase2); err != nil {
+	if err := writeMessage(writer, stream, msg); err != nil {
 		return nil, "", "", err
 	}
 
@@ -723,53 +566,262 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		return nil, "", "", err
 	}
 
-	// Debugging
-	fmt.Println("Phase2_Response.Data", Phase2_Response.Data)
-	fmt.Println("Phase2_Response.Type", Phase2_Response.Type)
-	fmt.Println("Phase2_Response.IBLT_MetaData", Phase2_Response.IBLT_MetaData)
-	
-
-	// Verify the metadata checksum
-	computeMainChecksum, err := computeCHECKSUM(Phase2.IBLT.IBLT_MAIN)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("failed to compute main IBLT checksum: %w", err)
-	}
-	
-	computeAccountCheksum, err := computeCHECKSUM(Phase2.IBLT.IBLT_Accounts)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("failed to compute accounts IBLT checksum: %w", err)
+	if !bytes.Equal(Phase2_Response.Data, json.RawMessage([]byte(`"Message From Server"`))) {
+		return nil, "", "", fmt.Errorf("unexpected response data: %s", Phase2_Response.Data)
 	}
 
-	return Phase2, computeMainChecksum, computeAccountCheksum, nil
+	return Phase2_Response, Phase2_Response.HashMap_MetaData.Main_HashMap_MetaData.Checksum, Phase2_Response.HashMap_MetaData.Accounts_HashMap_MetaData.Checksum, nil
 }
 
+func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) error {
+	const maxRetries = 3
+	var lastErr error
 
-func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader, MainChecksum string, AccountChecksum string) error {
-	// Phase 3: receive BAK File from the server
-	// -> Server will send the BAK file to the client
-	// -> Client will receive the BAK file and store it in the BAK_FILE_PATH
-	// -> Client will append the transactions in the BAK file 
-	
-	// 1. Send the request to the server to send the BAK File. Change the msg type to RequestFiletransfer
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Log the attempt
+		log.Info().
+			Str("peer", peerID.String()).
+			Int("attempt", attempt+1).
+			Msg("Initiating AVRO file transfer request")
 
-	msg.Type = RequestFiletransfer
-	
-	if err := writeMessage(writer, stream, msg); err != nil {
-		return fmt.Errorf("failed to send file transfer request: %w", err)
+		// 1. Create a new message for the request
+		requestMsg := &SyncMessage{
+			Type:             RequestFiletransfer,
+			SenderID:         fs.host.ID().String(),
+			Timestamp:        time.Now().Unix(),
+			HashMap:          msg.HashMap,
+			HashMap_MetaData: msg.HashMap_MetaData,
+			Data:             json.RawMessage([]byte(`"Message From Client - For AVRO File Transfer"`)),
+		}
+
+		// 2. Send the request to the server
+		if err := writeMessage(writer, stream, requestMsg); err != nil {
+			lastErr = fmt.Errorf("failed to send file transfer request (attempt %d/%d): %w",
+				attempt+1, maxRetries, err)
+			log.Error().Err(lastErr).Msg("File transfer request failed")
+
+			// If we can't write to the stream, we need to create a new one
+			if attempt < maxRetries-1 {
+				time.Sleep(time.Second * time.Duration(attempt+1))
+
+				// Try to create a new stream
+				newStream, err := fs.host.NewStream(context.Background(), peerID, stream.Protocol())
+				if err != nil {
+					log.Error().Err(err).Msg("Failed to create new stream for retry")
+					continue
+				}
+				defer newStream.Close()
+
+				// Update the stream and its reader/writer
+				stream = newStream
+				reader = bufio.NewReader(stream)
+				writer = bufio.NewWriter(stream)
+			}
+			continue
+		}
+
+		// 3. Wait for the server's response
+		response, err := readMessage(reader, stream)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response (attempt %d/%d): %w",
+				attempt+1, maxRetries, err)
+			log.Error().Err(lastErr).Msg("Failed to read file transfer response")
+
+			if attempt < maxRetries-1 {
+				time.Sleep(time.Second * time.Duration(attempt+1))
+			}
+			continue
+		}
+
+		// 4. Check the response
+		if response.Type == TypeSyncComplete && response.Success {
+			log.Info().
+				Str("peer", peerID.String()).
+				Msg("Server successfully initiated file transfers. Sync complete.")
+			return nil
+		}
+
+		// If we get here, the server responded but with an error or unexpected message
+		lastErr = fmt.Errorf("unexpected response after file request (attempt %d/%d): type=%s, success=%t, err=%s",
+			attempt+1, maxRetries, response.Type, response.Success, response.ErrorMessage)
+		log.Error().Err(lastErr).Msg("Unexpected response from server")
+
+		if attempt < maxRetries-1 {
+			time.Sleep(time.Second * time.Duration(attempt+1))
+		}
 	}
 
-		// 4. Wait for the server's response. The server should send a SyncComplete message
-	// after successfully initiating the file transfers.
-	response, err := readMessage(reader, stream)
+	// If we've exhausted all retries, return the last error
+	return fmt.Errorf("failed to complete file transfer after %d attempts: %w", maxRetries, lastErr)
+}
+
+func (fs *FastSync) batchCreateWithRetry(entriesMap map[string]interface{}, dbType DatabaseType) error {
+	const maxRetries = 3
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Get the current client for this attempt
+		var dbClient *config.ImmuClient
+		switch dbType {
+		case MainDB:
+			dbClient = fs.mainDB
+		case AccountsDB:
+			dbClient = fs.accountsDB
+		default:
+			return fmt.Errorf("invalid database type: %v", dbType)
+		}
+		if dbClient == nil {
+			return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
+		}
+
+		err := DB_OPs.BatchCreate(dbClient, entriesMap)
+		if err == nil {
+			return nil // Success
+		}
+		lastErr = err
+
+		// Check for the specific "invalid token" error from immudb
+		if strings.Contains(err.Error(), "invalid token") {
+			log.Warn().
+				Str("db", dbTypeToString(dbType)).
+				Int("attempt", attempt+1).
+				Msg("Authentication token expired. Re-authenticating and retrying.")
+
+			var newClient *config.ImmuClient
+			var clientErr error
+
+			if dbType == MainDB {
+				newClient, clientErr = DB_OPs.New(DB_OPs.WithRetryLimit(3), DB_OPs.WithDatabase(config.DBName))
+				if clientErr == nil {
+					DB_OPs.Close(fs.mainDB) // Close the old, invalid client
+					fs.mainDB = newClient   // Replace with the new, valid client
+				}
+			} else if dbType == AccountsDB {
+				newClient, clientErr = DB_OPs.NewAccountsClient()
+				if clientErr == nil {
+					DB_OPs.Close(fs.accountsDB)
+					fs.accountsDB = newClient
+				}
+			}
+
+			if clientErr != nil {
+				return fmt.Errorf("failed to re-authenticate after token error: %w", clientErr)
+			}
+			continue // Retry the operation with the new client
+		}
+
+		// For other transient errors, perform a simple retry with backoff
+		time.Sleep(RetryDelay * time.Duration(attempt+1))
+	}
+
+	return fmt.Errorf("failed to apply batch transaction after %d attempts: %w", maxRetries, lastErr)
+}
+
+func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath string) error {
+	// Get the appropriate database client
+	var dbClient *config.ImmuClient
+	switch dbType {
+	case MainDB:
+		dbClient = fs.mainDB
+	case AccountsDB:
+		dbClient = fs.accountsDB
+	default:
+		return fmt.Errorf("invalid database type: %v", dbType)
+	}
+	if dbClient == nil {
+		return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
+	}
+
+	// Ensure the backup file exists
+	fileInfo, err := os.Stat(dbPath)
+	if os.IsNotExist(err) {
+		log.Info().Str("path", dbPath).Msg("AVRO file does not exist, skipping restore.")
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("failed to read response for file transfer request: %w", err)
+		return fmt.Errorf("failed to stat avro file %s: %w", dbPath, err)
 	}
-
-
-	if response.Type == TypeSyncComplete && response.Success {
-		log.Info().Str("peer", peerID.String()).Msg("Server confirmed file transfer initiation. Sync complete.")
+	if fileInfo.Size() == 0 {
+		log.Info().Str("path", dbPath).Msg("AVRO file is empty, skipping restore.")
 		return nil
 	}
 
-	return fmt.Errorf("unexpected response after file request: type=%s, success=%t, err=%s", response.Type, response.Success, response.ErrorMessage)
+	// Open the backup file
+	file, err := os.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to open avro file: %w", err)
+	}
+	defer file.Close()
+
+	startTime := time.Now()
+	log.Info().
+		Str("db", dbTypeToString(dbType)).
+		Str("file", filepath.Base(dbPath)).
+		Msg("Starting database restore from AVRO backup")
+
+	// Create an OCF reader for the Avro file
+	ocfReader, err := goavro.NewOCFReader(file)
+	if err != nil {
+		return fmt.Errorf("failed to create avro ocf reader for %s: %w", dbPath, err)
+	}
+
+	entriesMap := make(map[string]interface{})
+	batchSize := 1000 // Process in batches of 1000 entries
+	totalEntries := 0
+
+	// Read records from the Avro file
+	for ocfReader.Scan() {
+		record, err := ocfReader.Read()
+		if err != nil {
+			log.Warn().Err(err).Msg("failed to read avro record")
+			continue
+		}
+
+		recordMap, ok := record.(map[string]interface{})
+		if !ok {
+			log.Warn().Msgf("unexpected avro record type: %T", record)
+			continue
+		}
+
+		key, keyOk := recordMap["Key"].(string)
+		value, valueOk := recordMap["Value"].(string)
+
+		if !keyOk || !valueOk {
+			log.Warn().Msg("avro record has missing or invalid Key/Value fields")
+			continue
+		}
+
+		entriesMap[key] = []byte(value)
+
+		if len(entriesMap) >= batchSize {
+			if err := fs.batchCreateWithRetry(entriesMap, dbType); err != nil {
+				return fmt.Errorf("failed to push batch to DB: %w", err)
+			}
+			totalEntries += len(entriesMap)
+			entriesMap = make(map[string]interface{}) // reset map
+
+			// Log progress
+			log.Info().
+				Int("entries_processed", totalEntries).
+				Dur("elapsed", time.Since(startTime)).
+				Str("db", dbTypeToString(dbType)).
+				Msg("Restore in progress")
+		}
+	}
+
+	// Process any remaining entries in the last batch
+	if len(entriesMap) > 0 {
+		if err := fs.batchCreateWithRetry(entriesMap, dbType); err != nil {
+			return fmt.Errorf("failed to push final batch to DB: %w", err)
+		}
+		totalEntries += len(entriesMap)
+	}
+
+	log.Info().
+		Int("total_entries", totalEntries).
+		Dur("total_time", time.Since(startTime)).
+		Str("db", dbTypeToString(dbType)).
+		Msg("Database restore from AVRO completed successfully")
+
+	return nil
 }

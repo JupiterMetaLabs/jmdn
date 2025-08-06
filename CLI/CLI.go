@@ -1,23 +1,24 @@
 package CLI
 
 import (
-    "bufio"
-    "fmt"
-    "os"
-    "strings"
-    "sync"
-    "time"
+	"bufio"
+	"fmt"
+	"log"
+	"os"
+	"strings"
+	"sync"
+	"time"
 
-    "gossipnode/DB_OPs"
-    "gossipnode/config"
-    "gossipnode/fastsync"
-    "gossipnode/messaging"
-    "gossipnode/messaging/directMSG"
-    "gossipnode/node"
-    "gossipnode/seed"
+	"gossipnode/DB_OPs"
+	"gossipnode/config"
+	"gossipnode/fastsync"
+	"gossipnode/messaging"
+	"gossipnode/messaging/directMSG"
+	"gossipnode/node"
+	"gossipnode/seed"
 
-    "github.com/libp2p/go-libp2p/core/peer"
-    ma "github.com/multiformats/go-multiaddr"
+	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 // CommandHandler holds dependencies for CLI command execution
@@ -36,16 +37,23 @@ func printPrompt() {
     fmt.Printf(config.ColorGreen + ">>> " + config.ColorReset)
 }
 
+func printAddrs(n *config.Node) {
+    for _, addr := range n.Host.Addrs() {
+        fmt.Printf("  %s/p2p/%s\n", addr, n.Host.ID().String())
+    }
+}
+
 func printDashes() {
     fmt.Println("\n", strings.Repeat("-", 50), "\n")
 }
 
-// StartCLI starts the interactive CLI
-func (h *CommandHandler) StartCLI() error {
+func PrintFuncs() {
     fmt.Println("\n" + config.ColorCyan + "Available Commands:" + config.ColorReset)
+    fmt.Println("  help                             - Show this help message")
+    fmt.Println("  Addrs                            - Current Peer Addresses")
     fmt.Println("  msg <peer_multiaddr> <message>   - Send a message to a peer via libp2p")
     fmt.Println("  ygg <peer_multiaddr|ygg_ipv6> <message> - Send a message using Yggdrasil")
-    fmt.Println("  file <peer_multiaddr> <filepath> - Send a file to a peer")
+    fmt.Println("  file <peer_multiaddr> <filepath> <remote-filename> - Send a file to a peer")
     fmt.Println("  addpeer <peer_multiaddr>         - Add a peer to managed nodes")
     fmt.Println("  removepeer <peer_id>             - Remove a peer from managed nodes")
     fmt.Println("  listpeers                         - Show all managed peers")
@@ -57,10 +65,24 @@ func (h *CommandHandler) StartCLI() error {
     fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
     fmt.Println("  getDID <did>                      - Get a DID document from the network")
     fmt.Println("  syncinfo                          - Show FastSync configuration")
-    fmt.Println("  exit                              - Exit the program\n")
+    fmt.Println("  exit                              - Exit the program")
+    printDashes()
+}
+
+func (h *CommandHandler) StartCLI(grpcPort int) error {
+    PrintFuncs()
 
     var wg sync.WaitGroup
-    wg.Add(1)
+    wg.Add(2) // Increment to 2 for both goroutines
+
+    // Start gRPC server
+    go func() {
+        defer wg.Done()
+        log.Println("Starting gRPC server on port ", grpcPort)
+        if err := StartGRPCServer(h, grpcPort); err != nil {
+            log.Fatalf("Failed to start gRPC server: %v", err)
+        }
+    }()
 
     // Command-line input loop
     go func() {
@@ -75,7 +97,7 @@ func (h *CommandHandler) StartCLI() error {
                 return
             }
 
-            parts := strings.SplitN(input, " ", 3)
+            parts := strings.SplitN(input, " ", 4)
             if len(parts) == 0 {
                 continue
             }
@@ -92,6 +114,10 @@ func (h *CommandHandler) StartCLI() error {
 // handleCommand processes a single command
 func (h *CommandHandler) handleCommand(parts []string) {
     switch parts[0] {
+    case "addrs":
+        printAddrs(h.Node)
+    case "help":
+        PrintFuncs()
     case "msg":
         h.handleSendMessage(parts)
     case "ygg":
@@ -128,7 +154,7 @@ func (h *CommandHandler) handleCommand(parts []string) {
 }
 
 // Individual command handlers
-func (h *CommandHandler) handleSendMessage(parts []string) {
+func (h *CommandHandler) handleSendMessage(parts []string){
     if len(parts) != 3 {
         fmt.Println("Usage: msg <peer_multiaddr> <message>")
         return
@@ -136,9 +162,9 @@ func (h *CommandHandler) handleSendMessage(parts []string) {
     err := node.SendMessage(h.Node, parts[1], parts[2])
     if err != nil {
         fmt.Println("Error:", err)
-    } else {
-        fmt.Println("Message sent successfully")
+        return
     }
+    fmt.Println("Message sent successfully")
 }
 
 func (h *CommandHandler) handleYggdrasilMessage(parts []string) {
@@ -157,16 +183,15 @@ func (h *CommandHandler) handleYggdrasilMessage(parts []string) {
 }
 
 func (h *CommandHandler) handleSendFile(parts []string) {
-    if len(parts) != 3 {
+    if len(parts) != 4 {
         fmt.Println("Usage: file <peer_multiaddr> <filepath>")
         return
     }
-    err := node.SendFile(h.Node, parts[1], parts[2])
+    err := node.SendFile(h.Node, parts[1], parts[2], parts[3])
     if err != nil {
         fmt.Println("Error:", err)
-    } else {
-        fmt.Println("File sent successfully")
     }
+    fmt.Println("File sent successfully")
 }
 
 func (h *CommandHandler) handleRequestPeers(parts []string) {
