@@ -5,13 +5,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"mime"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 
-	// "sync"
 	"syscall"
 	"time"
 
@@ -34,9 +31,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/host"
-	// "github.com/libp2p/go-libp2p/core/peer"
 	_ "github.com/mattn/go-sqlite3"
-	// ma "github.com/multiformats/go-multiaddr"
 	"github.com/rs/zerolog/log"
 )
 
@@ -67,6 +62,8 @@ func StartAPIServer(address string) error {
 		return fmt.Errorf("failed to create ImmuDB API server: %w", err)
 	}
 
+	go explorer.StartBlockPoller(server, 7*time.Second)
+
 	log.Info().Str("address", address).Msg("Starting ImmuDB API server")
 	return server.Start(address)
 }
@@ -85,21 +82,6 @@ func startDIDServer(h host.Host, address string) error {
 
 	// Start the DID server with our existing client
 	return DID.StartDIDServer(h, address, didDBClient)
-}
-
-// StartExplorerServer starts the explorer server on the given address
-func StartExplorerServer(address string) error {
-	explorer, err := explorer.NewExplorer()
-	if err != nil {
-		return err
-	}
-
-	helper.SetBroadcastHandler(explorer)
-
-	r := explorer.SetupRoutes()
-
-	log.Info().Str("address", address).Msg("Starting ImmuDB Explorer server")
-	return http.ListenAndServe(address, r)
 }
 
 // initYggdrasilMessaging initializes the Yggdrasil messaging system
@@ -161,7 +143,6 @@ func main() {
 	logDir := flag.String("logdir", "./logs", "Directory for log files")
 	logToConsole := flag.Bool("console", false, "Also log to console")
 	enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
-	explorerPort := flag.Int("explorer", 0, "Run blockchain explorer on specified port (0 = disabled)")
 	apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
 	blockgen := flag.Int("blockgen", 0, "Run Block creator API on specified port (0 = disabled)")
 	mempoolgRPC := flag.String("mempool", "localhost:15051", "Mempool gRPC server address")
@@ -317,24 +298,6 @@ func main() {
 				fmt.Printf("  %d. ID: %s, Addresses: %v\n", i+1, p.ID, p.Addrs)
 			}
 		}
-	}
-
-	if *explorerPort > 0 {
-		mime.AddExtensionType(".css", "text/css")
-		mime.AddExtensionType(".js", "application/javascript")
-		mime.AddExtensionType(".html", "text/html")
-		mime.AddExtensionType(".svg", "image/svg+xml")
-		mime.AddExtensionType(".json", "application/json")
-		go func() {
-			log.Info().Msgf("Starting blockchain explorer on port %d", *explorerPort)
-			fmt.Printf("\nBlockchain explorer available at http://localhost:%d\n", *explorerPort)
-
-			// Initialize explorer
-			explorerAddr := fmt.Sprintf(":%d", *explorerPort)
-			if err := StartExplorerServer(explorerAddr); err != nil {
-				log.Error().Err(err).Msg("Failed to start explorer server")
-			}
-		}()
 	}
 
 	if *apiPort > 0 {

@@ -62,7 +62,7 @@ func (h *CommandHandler) ReturnAddrs() (HandleAddrs, error) {
 	addrs = append(addrs, yggdrasilAddr)
 
 	for _, addr := range h.Node.Host.Addrs() {
-		addrs = append(addrs, addr.String())
+		addrs = append(addrs, addr.String()+"/p2p/"+h.Node.Host.ID().String())
 	}
 	return HandleAddrs{
 		Total: len(addrs),

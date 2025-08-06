@@ -55,6 +55,14 @@ func (s *CLIServer) ListPeers(ctx context.Context, _ *emptypb.Empty) (*pb.PeerLi
 	return &pb.PeerList{Peers: peers}, nil
 }
 
+func (s *CLIServer) ReturnAddrs(ctx context.Context, _ *emptypb.Empty) (*pb.Addrs, error) {
+	resp, err := s.handler.ReturnAddrs()
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &pb.Addrs{Peers: resp.Peers, Total: int32(resp.Total), Error: resp.Error}, nil
+}
+
 func (s *CLIServer) AddPeer(ctx context.Context, req *pb.PeerRequest) (*pb.OperationResponse, error) {
 	success, err := s.handler.HandleAddPeer(req.Peer)
 	if err != nil {
