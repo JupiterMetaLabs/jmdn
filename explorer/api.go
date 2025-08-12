@@ -53,6 +53,8 @@ func (s *ImmuDBServer) setupRoutes() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Error opening log file")
 	}
+	defer f.Close()
+
 	gin.DefaultWriter = f
 	gin.DefaultErrorWriter = f
 
@@ -93,8 +95,8 @@ func (s *ImmuDBServer) setupRoutes() {
 		// Get all dids by pagination
 		did.GET("/all", s.listDIDs)
 
-		// get did detials
-		did.GET("/:did", s.getDIDDetails)
+		// Get DID details by one or more DID strings
+		did.GET("/details", s.getDIDDetails)
 
 		// Health check
 		did.GET("/health", s.didHealthCheck)

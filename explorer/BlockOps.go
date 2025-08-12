@@ -2,7 +2,6 @@ package explorer
 
 import (
 	"encoding/hex"
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -81,8 +80,12 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 	for i := endBlock; i >= startBlock; i-- {
 		block, err := DB_OPs.GetZKBlockByNumber(&s.defaultdb, i)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to get block %d: %v", i, err)})
-			return
+			// If a block is not found, it might be a gap in the blockchain.
+			// Log the error and continue to the next block to provide a partial response.
+			config.Warning(s.defaultdb.Logger, "Failed to get block %d, skipping: %v", i, err)
+			continue
+			config.Warning(s.defaultdb.Logger, "Failed to get block %d, skipping: %v", i, err)
+			continue
 		}
 		blocks = append(blocks, block)
 	}

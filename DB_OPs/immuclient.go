@@ -905,7 +905,8 @@ func Read(ic *config.ImmuClient, key string) ([]byte, error) {
 			config.Info(pool.logger, "Reading key: %s", key)
 			entry, err := conn.Client.Get(conn.Ctx, []byte(key))
 			if err != nil {
-				if err.Error() == "key not found" {
+				if strings.Contains(err.Error(), "key not found") ||
+					strings.Contains(err.Error(), "tbtree: key not found") {
 					return ErrNotFound
 				}
 				return err
@@ -927,7 +928,8 @@ func Read(ic *config.ImmuClient, key string) ([]byte, error) {
 		config.Info(ic.Logger, "Reading key: %s", key)
 		entry, err := ic.Client.Get(ic.Ctx, []byte(key))
 		if err != nil {
-			if err.Error() == "key not found" {
+			if strings.Contains(err.Error(), "key not found") ||
+				strings.Contains(err.Error(), "tbtree: key not found") {
 				return ErrNotFound
 			}
 			return err
@@ -1390,7 +1392,8 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 			config.Info(pool.logger, "Reading verified key: %s", key)
 			entry, err := conn.Client.VerifiedGet(conn.Ctx, []byte(key))
 			if err != nil {
-				if err.Error() == "key not found" {
+				if strings.Contains(err.Error(), "key not found") ||
+					strings.Contains(err.Error(), "tbtree: key not found") {
 					return ErrNotFound
 				}
 				return err
@@ -1414,7 +1417,8 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 		config.Info(ic.Logger, "Reading verified key: %s", key)
 		entry, err := ic.Client.VerifiedGet(ic.Ctx, []byte(key))
 		if err != nil {
-			if err.Error() == "key not found" {
+			if strings.Contains(err.Error(), "key not found") ||
+				strings.Contains(err.Error(), "tbtree: key not found") {
 				return ErrNotFound
 			}
 			return err
