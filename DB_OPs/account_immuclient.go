@@ -228,7 +228,7 @@ func (ap *AccountsConnectionPool) ensureAccountsDatabaseExists(c client.ImmuClie
 }
 
 // Override the base createConnection method to use accounts-specific logic
-func (ap *AccountsConnectionPool) getConnection() (*PooledConnection, error) {
+func (ap *AccountsConnectionPool) GetConnection() (*PooledConnection, error) {
 	ap.mutex.Lock()
 	defer ap.mutex.Unlock()
 
@@ -329,7 +329,7 @@ func withAccountsPooledRetry(operation string, fn func(*PooledConnection) error)
 
 	for attempt := 0; attempt <= retryLimit; attempt++ {
 		// Get connection from accounts pool
-		conn, connErr := pool.getConnection()
+		conn, connErr := pool.GetConnection()
 		if connErr != nil {
 			config.Error(pool.logger, "Failed to get connection from accounts pool for %s (attempt %d/%d): %v",
 				operation, attempt+1, retryLimit+1, connErr)
@@ -743,6 +743,124 @@ func ListAllDIDs(ic *config.ImmuClient, limit int) ([]*DIDDocument, error) {
 	}
 
 	return docs, nil
+}
+
+// ListDIDsPaginated retrieves a paginated list of DIDs.
+// It first fetches all keys (which is fast) and then retrieves full documents only for the requested page.
+// This implementation efficiently scans keys without loading all of them into memory.
+func ListDIDsPaginated(ic *config.ImmuClient, limit, offset int) ([]*DIDDocument, error) {
+	// Ensure we're using the accounts database, which also handles reconnections.
+	if err := ensureAccountsDBSelected(ic); err != nil {
+		return nil, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
+	}
+
+	paginatedKeys := make([]string, 0, limit)
+	keysScanned := 0
+	batchSize := 1000 // How many keys to fetch from the DB at a time
+	var lastKey []byte
+
+	// Loop until we have enough keys for our page or we run out of keys in the DB.
+	for len(paginatedKeys) < limit {
+		var scanResult *schema.Entries
+		// Use the existing retry logic from the client for robustness
+		err := withRetry(ic, "ScanDIDsPaginated", func() error {
+			req := &schema.ScanRequest{
+				Prefix:  []byte("did:"),
+				Limit:   uint64(batchSize),
+				SeekKey: lastKey,
+				Desc:    false,
+			}
+			var scanErr error
+			scanResult, scanErr = ic.Client.Scan(ic.Ctx, req)
+			return scanErr
+		})
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan for DIDs: %w", err)
+		}
+
+		if len(scanResult.Entries) == 0 {
+			break // No more keys in the database.
+		}
+
+		for _, entry := range scanResult.Entries {
+			// Check if the current key is past the offset.
+			if keysScanned >= offset {
+				paginatedKeys = append(paginatedKeys, string(entry.Key))
+				// If we have collected enough keys for the page, we can stop.
+				if len(paginatedKeys) == limit {
+					break
+				}
+			}
+			keysScanned++
+		}
+
+		// If we've already collected enough keys, exit the outer loop.
+		if len(paginatedKeys) == limit {
+			break
+		}
+
+		// Prepare for the next batch scan.
+		lastKey = scanResult.Entries[len(scanResult.Entries)-1].Key
+	}
+
+	// Now, fetch the full documents only for the keys of the current page.
+	docs := make([]*DIDDocument, 0, len(paginatedKeys))
+	for _, key := range paginatedKeys {
+		var doc DIDDocument
+		// SafeReadJSON already has retry logic.
+		if err := SafeReadJSON(ic, key, &doc); err != nil {
+			config.Warning(ic.Logger, "Error reading DID %s, skipping: %v", key, err)
+			continue // Skip if a single DID fails to read.
+		}
+		docs = append(docs, &doc)
+	}
+
+	return docs, nil
+}
+
+// CountDIDs returns the total number of DIDs in the database.
+// This implementation scans keys without loading them all into memory.
+func CountDIDs(ic *config.ImmuClient) (int, error) {
+	// Ensure we're using the accounts database, which also handles reconnections.
+	if err := ensureAccountsDBSelected(ic); err != nil {
+		return 0, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
+	}
+	var totalKeys int
+	batchSize := 1000 // How many keys to fetch from the DB at a time
+	var lastKey []byte
+
+	for {
+		var scanResult *schema.Entries
+		// Use the existing retry logic from the client for robustness
+		err := withRetry(ic, "ScanDIDsCount", func() error {
+			req := &schema.ScanRequest{
+				Prefix:  []byte("did:"),
+				Limit:   uint64(batchSize),
+				SeekKey: lastKey,
+				Desc:    false,
+			}
+			var scanErr error
+			scanResult, scanErr = ic.Client.Scan(ic.Ctx, req)
+			return scanErr
+		})
+
+		if err != nil {
+			return 0, fmt.Errorf("failed to scan for DIDs count: %w", err)
+		}
+
+		count := len(scanResult.Entries)
+		totalKeys += count
+
+		if count < batchSize {
+			break // Reached the end of the keys.
+		}
+
+		// Prepare for the next batch scan.
+		lastKey = scanResult.Entries[count-1].Key
+	}
+
+	return totalKeys, nil
 }
 
 // ensureAccountsDBSelected makes sure we're using the accounts database (UNCHANGED)
