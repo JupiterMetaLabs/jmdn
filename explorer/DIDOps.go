@@ -9,6 +9,10 @@ import (
 )
 
 func (s *ImmuDBServer) listDIDs(c *gin.Context) {
+
+    // Get network parameter from URL path (optional)
+    network := c.Query("network")
+    
     // Get pagination parameters with defaults
     page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
     limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
@@ -20,36 +24,29 @@ func (s *ImmuDBServer) listDIDs(c *gin.Context) {
     if limit < 1 || limit > 100 {
         limit = 100 // Default to 10 items per page, max 100
     }
-	// Get total count of DIDs for pagination metadata.
-	// This still requires scanning all keys, but it's much faster than fetching all documents.
-	totalDIDs, err := DB_OPs.CountDIDs(&s.accountsdb)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count DIDs: " + err.Error()})
-        return
-    }
 
 	// Calculate offset for pagination
 	offset := (page - 1) * limit
 
 	// Get the paginated list of DIDs from the database.
 	// This is now efficient as it only fetches the documents for the current page.
-	pagedDIDs, err := DB_OPs.ListDIDsPaginated(&s.accountsdb, limit, offset)
+	pagedDIDs, err := DB_OPs.ListDIDsPaginated(&s.accountsdb, limit, offset, network)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve DIDs: " + err.Error()})
 		return
 	}
 
 	// Calculate total pages for pagination metadata
-    totalPages := (totalDIDs + limit - 1) / limit
+    totalPages := (len(pagedDIDs) + limit - 1) / limit
 
     c.JSON(http.StatusOK, gin.H{
         "data":       pagedDIDs,
-        "pagination": getPaginationMetadata(page, limit, totalDIDs, totalPages),
+        "pagination": getPaginationMetadata(page, limit, totalPages),
     })
 }
 
 // Helper function to create pagination metadata
-func getPaginationMetadata(page, limit, totalItems, totalPages int) gin.H {
+func getPaginationMetadata(page, limit, totalPages int) gin.H {
     hasNext := page < totalPages
     hasPrev := page > 1
 
@@ -57,7 +54,6 @@ func getPaginationMetadata(page, limit, totalItems, totalPages int) gin.H {
         "current_page": page,
         "per_page":     limit,
         "total_pages":  totalPages,
-        "total_items":  totalItems,
         "has_next":     hasNext,
         "has_prev":     hasPrev,
     }

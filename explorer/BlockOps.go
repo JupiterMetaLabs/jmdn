@@ -84,8 +84,6 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 			// Log the error and continue to the next block to provide a partial response.
 			config.Warning(s.defaultdb.Logger, "Failed to get block %d, skipping: %v", i, err)
 			continue
-			config.Warning(s.defaultdb.Logger, "Failed to get block %d, skipping: %v", i, err)
-			continue
 		}
 		blocks = append(blocks, block)
 	}

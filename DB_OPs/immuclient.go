@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"gossipnode/config"
+	"math/big"
+	"strconv"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/client"
 	"google.golang.org/grpc/metadata"
@@ -1857,19 +1860,89 @@ func GetTransactionBlock(mainDBClient *config.ImmuClient, txHash string) (*confi
 
 // Get Transaction by hash
 func GetTransactionByHash(mainDBClient *config.ImmuClient, txHash string) (*config.Transaction, error) {
-	txKey := fmt.Sprintf("tx:%s", txHash)
-
-	txBytes, err := Read(mainDBClient, txKey)
+	// Get the block that contains the transaction.
+	block, err := GetTransactionBlock(mainDBClient, txHash)
 	if err != nil {
-		return nil, fmt.Errorf("transaction %s not found: %w", txHash, err)
+		return nil, err
 	}
 
-	var tx config.Transaction
-	if err := json.Unmarshal(txBytes, &tx); err != nil {
-		return nil, fmt.Errorf("failed to parse transaction %s: %w", txHash, err)
+	// Find the transaction in the block.
+	var zkTx *config.ZKBlockTransaction
+	for i := range block.Transactions {
+		if block.Transactions[i].Hash == txHash {
+			zkTx = &block.Transactions[i]
+			break
+		}
 	}
 
-	return &tx, nil
+	if zkTx == nil {
+		return nil, fmt.Errorf("transaction %s not found in block %d", txHash, block.BlockNumber)
+	}
+
+	// Convert zkTx (*config.ZKBlockTransaction) to *config.Transaction
+	chainID, ok := new(big.Int).SetString(zkTx.ChainID, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid chainID in transaction: %s", zkTx.ChainID)
+	}
+	nonce, err := strconv.ParseUint(zkTx.Nonce, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid nonce in transaction: %s", zkTx.Nonce)
+	}
+	value, ok := new(big.Int).SetString(zkTx.Value, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid value in transaction: %s", zkTx.Value)
+	}
+	gasLimit, err := strconv.ParseUint(zkTx.GasLimit, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid gasLimit in transaction: %s", zkTx.GasLimit)
+	}
+
+	fromAddr, err := ExtractAddressFromDID(zkTx.From)
+	if err != nil {
+		return nil, fmt.Errorf("invalid from address in transaction: %w", err)
+	}
+
+	var toAddrPtr *common.Address
+	if zkTx.To != "" {
+		toAddr, err := ExtractAddressFromDID(zkTx.To)
+		if err != nil {
+			return nil, fmt.Errorf("invalid to address in transaction: %w", err)
+		}
+		toAddrPtr = &toAddr
+	}
+
+	tx := &config.Transaction{
+		From:       &fromAddr,
+		ChainID:    chainID,
+		Nonce:      nonce,
+		To:         toAddrPtr,
+		Value:      value,
+		Data:       []byte(zkTx.Data),
+		GasLimit:   gasLimit,
+		AccessList: zkTx.AccessList,
+		V:          zkTx.V,
+		R:          zkTx.R,
+		S:          zkTx.S,
+	}
+
+	txType, _ := strconv.Atoi(zkTx.Type)
+	if zkTx.Type == "EIP-1559" || txType == 2 {
+		if zkTx.MaxFee != "" {
+			maxFee, _ := new(big.Int).SetString(zkTx.MaxFee, 10)
+			tx.MaxFeePerGas = maxFee
+		}
+		if zkTx.MaxPriorityFee != "" {
+			maxPriority, _ := new(big.Int).SetString(zkTx.MaxPriorityFee, 10)
+			tx.MaxPriorityFeePerGas = maxPriority
+		}
+	} else { // Legacy or other types
+		if zkTx.MaxFee != "" {
+			gasPrice, _ := new(big.Int).SetString(zkTx.MaxFee, 10)
+			tx.GasPrice = gasPrice
+		}
+	}
+
+	return tx, nil
 }
 
 func GetAllBlocks(mainDBClient *config.ImmuClient) ([]*config.ZKBlock, error) {

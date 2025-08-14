@@ -148,6 +148,7 @@ func main() {
 	mempoolgRPC := flag.String("mempool", "localhost:15051", "Mempool gRPC server address")
 	cliGRPC := flag.Int("cli", 15053, "CLI gRPC server address")
 	DIDgRPC := flag.String("did", "localhost:15052", "DID gRPC server address")
+	gETHgRPC := flag.String("gETH", "localhost:15054", "gETH gRPC server address")
 
 	flag.Parse()
 

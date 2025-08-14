@@ -1,16 +1,19 @@
 package DB_OPs
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"gossipnode/config"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/client"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc/metadata"
 )
@@ -748,7 +751,7 @@ func ListAllDIDs(ic *config.ImmuClient, limit int) ([]*DIDDocument, error) {
 // ListDIDsPaginated retrieves a paginated list of DIDs.
 // It first fetches all keys (which is fast) and then retrieves full documents only for the requested page.
 // This implementation efficiently scans keys without loading all of them into memory.
-func ListDIDsPaginated(ic *config.ImmuClient, limit, offset int) ([]*DIDDocument, error) {
+func ListDIDsPaginated(ic *config.ImmuClient, limit, offset int, extendedPrefix string) ([]*DIDDocument, error) {
 	// Ensure we're using the accounts database, which also handles reconnections.
 	if err := ensureAccountsDBSelected(ic); err != nil {
 		return nil, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
@@ -759,13 +762,20 @@ func ListDIDsPaginated(ic *config.ImmuClient, limit, offset int) ([]*DIDDocument
 	batchSize := 1000 // How many keys to fetch from the DB at a time
 	var lastKey []byte
 
+	var prefix string
+	if extendedPrefix == "" {
+		prefix = "did:"
+	}else{
+		prefix = "did:" + "did:jmdt:" + extendedPrefix
+	}
+
 	// Loop until we have enough keys for our page or we run out of keys in the DB.
 	for len(paginatedKeys) < limit {
 		var scanResult *schema.Entries
 		// Use the existing retry logic from the client for robustness
 		err := withRetry(ic, "ScanDIDsPaginated", func() error {
 			req := &schema.ScanRequest{
-				Prefix:  []byte("did:"),
+				Prefix:  []byte(prefix),
 				Limit:   uint64(batchSize),
 				SeekKey: lastKey,
 				Desc:    false,
@@ -862,6 +872,94 @@ func CountDIDs(ic *config.ImmuClient) (int, error) {
 
 	return totalKeys, nil
 }
+
+// GetTransactionsByDID retrieves all transactions associated with a given DID
+// This implementation iterates through all blocks to find matching transactions,
+// which is more efficient than fetching each transaction individually.
+func GetTransactionsByDID(mainDBClient *config.ImmuClient, did string) ([]*config.ZKBlockTransaction, error) {
+	// Extract the address from the DID.
+	addr, err := ExtractAddressFromDID(did)
+	if err != nil {
+		return nil, fmt.Errorf("invalid DID format: %w", err)
+	}
+
+	// Get the latest block number to define the search range.
+	latestBlockNumber, err := GetLatestBlockNumber(mainDBClient)
+	if err != nil {
+		// GetLatestBlockNumber returns 0, nil if no blocks are found, so we only check for other errors.
+		return nil, fmt.Errorf("failed to get latest block number: %w", err)
+	}
+
+	if latestBlockNumber == 0 {
+		return []*config.ZKBlockTransaction{}, nil // No blocks, so no transactions.
+	}
+
+	var matchingTxs []*config.ZKBlockTransaction
+	var logger *config.AsyncLogger
+	if mainDBClient != nil {
+		logger = mainDBClient.Logger
+	} else {
+		// Fallback to global pool logger if client is nil, though it's unlikely for this function.
+		logger = GetGlobalPool().logger
+	}
+
+	// Iterate through each block to find transactions.
+	// We start from block 1, as block 0 is often the genesis block and might be handled differently.
+	for i := uint64(1); i <= latestBlockNumber; i++ {
+		block, err := GetZKBlockByNumber(mainDBClient, i)
+		if err != nil {
+			config.Warning(logger, "Error retrieving block %d, skipping: %v", i, err)
+			continue
+		}
+
+		// Check each transaction in the current block.
+		for _, tx := range block.Transactions {
+			// Convert the DID into common.Address
+			sender, err := ExtractAddressFromDID(tx.From)
+			if err != nil {
+				config.Warning(logger, "Error extracting address from DID %s, skipping: %v", tx.From, err)
+				continue
+			}
+			receiver, err := ExtractAddressFromDID(tx.To)
+			if err != nil {
+				config.Warning(logger, "Error extracting address from DID %s, skipping: %v", tx.To, err)
+				continue
+			}
+
+			// Check if the address from the DID matches the sender or receiver by converting them to common.Address
+			isSender := tx.From != "" && bytes.Equal(sender.Bytes(), addr.Bytes())
+			isReceiver := tx.To != "" && bytes.Equal(receiver.Bytes(), addr.Bytes())
+
+			if isSender || isReceiver {
+				matchingTxs = append(matchingTxs, &tx)
+			}
+		}
+	}
+
+	config.Info(logger, "Found %d transactions for DID %s", len(matchingTxs), did)
+	return matchingTxs, nil
+}
+
+// GetTransactionHashes retrieves all transaction hashes from the database
+func GetTransactionHashes(mainDBClient *config.ImmuClient) ([]string, error) {
+	// Use the existing GetAllKeys helper for robustness and pagination handling.
+	keys, err := GetAllKeys(mainDBClient, "tx:")
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract just the transaction hashes from the keys
+	var hashes []string
+	for _, key := range keys {
+		// Key is in format "tx:<hash>", so we take everything after "tx:"
+		if len(key) > 3 {
+			hashes = append(hashes, key[3:])
+		}
+	}
+
+	return hashes, nil
+}
+
 
 // ensureAccountsDBSelected makes sure we're using the accounts database (UNCHANGED)
 // This helps prevent the "please select a database first" error
@@ -966,6 +1064,25 @@ func reconnectToAccountsDB(ic *config.ImmuClient) error {
 
 	config.Info(ic.Logger, "Successfully reconnected to ImmuDB accounts database")
 	return nil
+}
+
+func ExtractAddressFromDID(did string) (common.Address, error) {
+    
+    // Check if we get the Correct Addr instead of DID then directly return the addr
+    if common.IsHexAddress(did) {
+        return common.HexToAddress(did), nil
+    }
+
+	parts := strings.Split(did, ":")
+	if len(parts) < 4 {
+		return common.Address{}, fmt.Errorf("invalid DID format: %s", did)
+	}
+	// The last part should be the Ethereum address
+	addrStr := parts[len(parts)-1]
+	if !common.IsHexAddress(addrStr) {
+		return common.Address{}, fmt.Errorf("invalid Ethereum address in DID: %s", addrStr)
+	}
+	return common.HexToAddress(addrStr), nil
 }
 
 // ========================================

@@ -1,0 +1,147 @@
+package gETH
+
+import (
+	block "gossipnode/Block"
+	"encoding/hex"
+	"fmt"
+	"gossipnode/DB_OPs"
+	"gossipnode/gETH/proto"
+	"gossipnode/gETH/proto"
+
+	"github.com/ethereum/go-ethereum/common"
+)
+func _GetBlockByNumber(req *proto.GetBlockByNumberReq) (*proto.Block, error) {
+func _GetBlockByNumber(req *proto.GetBlockByNumberReq) (*proto.Block, error) {
+	// Init DB
+	Conn, err := initDBs()
+	if err != nil {
+		return nil, err
+	}
+	// First call the exisitng apis to get the block by the number 
+	zkblock, err := DB_OPs.GetZKBlockByNumber(&Conn.defaultdb, req.Number)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Now Convert the ZKBlock structure to the gETHConfig.Block structure
+	block, err := ConvertZKBlockToETHBlock(zkblock)
+	if err != nil {
+		return nil, err
+	}
+	return block, nil
+}
+func _GetBlockByHash(req *proto.GetBlockByHashReq) (*proto.Block, error) {
+func _GetBlockByHash(req *proto.GetBlockByHashReq) (*proto.Block, error) {
+	// Init DB
+	Conn, err := initDBs()
+	if err != nil {
+		return nil, err
+	}
+	// Convert the hash to string
+	reqHash := hex.EncodeToString(req.Hash)
+	if reqHash[0:2] == "0x" {
+		reqHash = reqHash[2:]
+	}
+
+	// First call the exisitng apis to get the block by the number 
+	zkblock, err := DB_OPs.GetZKBlockByHash(&Conn.defaultdb, reqHash)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Now Convert the ZKBlock structure to the gETHConfig.Block structure
+	block, err := ConvertZKBlockToETHBlock(zkblock)
+	if err != nil {
+		return nil, err
+	}
+	return block, nil
+}
+func _GetTransactionByHash(req *proto.GetByHashReq) (*proto.Transaction, error) {
+func _GetTransactionByHash(req *proto.GetByHashReq) (*proto.Transaction, error) {
+	// Init DB
+	Conn, err := initDBs()
+	if err != nil {
+		return nil, err
+	}
+	// Convert the hash to string
+	reqHash := hex.EncodeToString(req.Hash)
+	if reqHash[0:2] == "0x" {
+		reqHash = reqHash[2:]
+	}
+
+	Txn, err := DB_OPs.GetTransactionByHash(&Conn.defaultdb, reqHash)
+	if err != nil {
+		return nil, err
+	}
+	
+	value, err := ConvertConfigTxnToETHTransaction(Txn)
+	if err != nil{
+		return nil, err
+	}
+	return value, nil
+}
+func _GetReceiptByHash(req *proto.GetByHashReq) (*proto.Receipt, error) {
+func _GetReceiptByHash(req *proto.GetByHashReq) (*proto.Receipt, error) {
+	Blockreq := &proto.GetBlockByHashReq{
+	Blockreq := &proto.GetBlockByHashReq{
+		Hash: req.Hash,
+	}
+	// Get Block by hash first
+	Block, err := _GetBlockByHash(Blockreq)
+	if err != nil {
+		return nil, err
+	}
+
+	return ConvertGETHBlocktoReceipt(Block)
+}
+func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error) {
+func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error) {
+	// Init DB
+	Conn, err := initDBs()
+	if err != nil {
+		return nil, err
+	}
+
+	// Get Txns by DID
+	Txns, err := DB_OPs.GetTransactionsByDID(&Conn.defaultdb, string(req.Address))
+	if err != nil {
+		return nil, err
+	}
+	
+    // Sort the Txns by nonce
+    Txns = SortTransactionsByNonce(Txns)
+    // Now pick the last nonce
+    nonce := Txns[len(Txns)-1].Nonce
+
+    // Create hash of all transactions
+    txHash, err := HashTransactions(Txns)
+    if err != nil {
+        return nil, fmt.Errorf("failed to hash transactions: %w", err)
+    }
+
+	// Get the DID Details to get the balance
+	DIDDetails, err := DB_OPs.GetDID(&Conn.defaultdb, string(req.Address))
+	if err != nil {
+		return nil, err
+	}
+    
+    return &proto.AccountState{
+    return &proto.AccountState{
+        Nonce:       []byte(nonce),
+        Balance:     []byte(DIDDetails.Balance),
+        StorageRoot: []byte(txHash),
+        CodeHash:    []byte{},
+        Code:        []byte{},
+    }, nil
+}
+func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error) {
+func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error) {
+	// Convert Signed Transaction bytes to proper DS	
+	bytes := req.SignedTx
+	hash, err := block.SubmitRawTransaction(bytes)
+	if err != nil {
+		return nil, err
+	}
+	return &proto.SendRawTxResp{TxHash: common.HexToHash(hash).Bytes()}, nil
+	return &proto.SendRawTxResp{TxHash: common.HexToHash(hash).Bytes()}, nil
+}

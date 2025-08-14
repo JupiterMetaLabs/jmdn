@@ -1,0 +1,213 @@
+syntax = "proto3";
+package proto;
+
+
+option go_package = "gossipnode/gETH/proto";
+// Common types
+message Hash { bytes value = 1; }
+message H256 { bytes value = 1; } // same as Hash
+message Address { bytes value = 1; }
+message Quantity { uint64 value = 1; } // use strings if you need >64 bits
+message Empty {}
+
+// Block related messages
+message Block {
+    BlockHeader header = 1;
+    repeated Transaction transactions = 2;
+    repeated bytes ommers = 3; // uncle block hashes
+    bytes withdrawals_root = 4; // EIP-4895
+    repeated Withdrawal withdrawals = 5; // EIP-4895
+    bytes blob_gas_used = 6; // EIP-4844
+    bytes excess_blob_gas = 7; // EIP-4844
+}
+
+message BlockHeader {
+    bytes parent_hash = 1;
+    bytes state_root = 2;
+    bytes receipts_root = 3;
+    bytes logs_bloom = 4;
+    bytes miner = 5;                 // coinbase
+    uint64 number = 6;
+    uint64 gas_limit = 7;
+    uint64 gas_used = 8;
+    uint64 timestamp = 9;
+    bytes mix_hash_or_prev_randao = 10;
+    bytes base_fee = 11;             // EIP-1559
+    uint64 blob_gas_used_field = 12;  // EIP-4844 (renamed to avoid conflict)
+    uint64 excess_blob_gas_field = 13; // EIP-4844 (renamed to avoid conflict)
+    bytes extra_data = 14;
+    bytes hash = 15;
+}
+
+// Transaction related messages
+message Transaction {
+    bytes hash = 1;
+    bytes from = 2;
+    bytes to = 3;          // empty for contract creation
+    bytes input = 4;
+    uint64 nonce = 5;
+    bytes value = 6;       // big.Int as bytes
+    uint64 gas = 7;
+    bytes gas_price = 8;   // or maxFeePerGas, maxPriorityFeePerGas if EIP-1559
+    uint32 type = 9;       // 0/1/2/3/… typed txs
+    bytes r = 10; 
+    bytes s = 11; 
+    uint32 v = 12;
+    AccessList access_list = 13; // EIP-2930
+    bytes max_fee_per_gas = 14;  // EIP-1559
+    bytes max_priority_fee_per_gas = 15; // EIP-1559
+    bytes max_fee_per_blob_gas = 16; // EIP-4844
+    repeated bytes blob_versioned_hashes = 17; // EIP-4844
+}
+
+message AccessList {
+    repeated AccessTuple access_tuples = 1;
+}
+
+message AccessTuple {
+    bytes address = 1;
+    repeated bytes storage_keys = 2;
+}
+
+message Withdrawal {
+    uint64 index = 1;
+    uint64 validator_index = 2;
+    bytes address = 3;
+    uint64 amount = 4; // in gwei
+}
+
+// Receipt and Logs
+message Receipt {
+    bytes tx_hash = 1;
+    uint64 status = 2;
+    uint64 cumulative_gas_used = 3;
+    uint64 gas_used = 4;
+    repeated Log logs = 5;
+    bytes contract_address = 6; // if created
+    uint32 type = 7;
+    bytes block_hash = 8;
+    uint64 block_number = 9;
+    uint64 transaction_index = 10;
+}
+
+message Log {
+    bytes address = 1;
+    repeated bytes topics = 2;
+    bytes data = 3;
+    uint64 block_number = 4;
+    bytes block_hash = 5;
+    uint64 tx_index = 6;
+    bytes tx_hash = 7;
+    uint64 log_index = 8;
+    bool removed = 9; // for reorgs
+}
+
+// Request/Response messages
+message GetBlockByNumberReq {
+    uint64 number = 1;
+    bool full_tx = 2;
+}
+
+message GetBlockByHashReq {
+    bytes hash = 1;
+    bool full_tx = 2;
+}
+
+message GetByHashReq {
+    bytes hash = 1;
+}
+
+message GetAccountStateReq {
+    bytes address = 1;
+    bytes block_hash = 2; // optional
+    uint64 block_number = 3; // optional
+}
+
+message AccountState {
+    bytes nonce = 1;
+    bytes balance = 2;
+    bytes storage_root = 3;
+    bytes code_hash = 4;
+    bytes code = 5;
+}
+
+message GetLogsReq {
+    FilterQuery filter = 1;
+}
+
+message FilterQuery {
+    repeated bytes addresses = 1;
+    repeated bytes topics = 2;
+    bytes block_hash = 3;
+    uint64 from_block = 4;
+    uint64 to_block = 5;
+}
+
+message GetLogsResp {
+    repeated Log logs = 1;
+}
+
+message CallReq {
+    bytes from = 1;
+    bytes to = 2;
+    bytes gas = 3;
+    bytes gas_price = 4;
+    bytes max_fee_per_gas = 5;
+    bytes max_priority_fee_per_gas = 6;
+    bytes value = 7;
+    bytes data = 8;
+    uint64 nonce = 9;
+}
+
+message CallResp {
+    bytes return_data = 1;
+    uint64 gas_used = 2;
+    string error = 3;
+}
+
+message EstimateResp {
+    uint64 gas_estimate = 1;
+    string error = 2;
+}
+
+message SendRawTxReq {
+    bytes signed_tx = 1;
+}
+
+message SendRawTxResp {
+    bytes tx_hash = 1;
+    string error = 2;
+}
+
+message LogsSubReq {
+    repeated bytes addresses = 1;
+    repeated bytes topics = 2;
+}
+
+// Chain service definition
+service Chain {
+    // Block operations
+    rpc GetBlockByNumber(GetBlockByNumberReq) returns (Block);
+    rpc GetBlockByHash(GetBlockByHashReq) returns (Block);
+    
+    // Transaction operations
+    rpc GetTransactionByHash(GetByHashReq) returns (Transaction);
+    rpc GetReceiptByHash(GetByHashReq) returns (Receipt);
+    
+    // Account operations
+    rpc GetAccountState(GetAccountStateReq) returns (AccountState);
+    
+    // Logs and events
+    rpc GetLogs(GetLogsReq) returns (GetLogsResp); //
+    
+    // Contract interaction
+    rpc Call(CallReq) returns (CallResp); //
+    rpc EstimateGas(CallReq) returns (EstimateResp);
+    
+    // Transaction submission
+    rpc SendRawTransaction(SendRawTxReq) returns (SendRawTxResp);
+    
+    // Streaming
+    rpc StreamHeads(Empty) returns (stream BlockHeader); //
+    rpc StreamLogs(LogsSubReq) returns (stream Log); //
+}

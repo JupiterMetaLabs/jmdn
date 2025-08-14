@@ -17,9 +17,11 @@ type ZKBlockTransaction struct {
     ChainID        string `json:"chain_id"`
     Nonce          string `json:"nonce"`
     GasLimit       string `json:"gas_limit"`
-    MaxFee         string `json:"max_fee,omitempty"`
+    MaxFee        string `json:"max_fee,omitempty"`
     MaxPriorityFee string `json:"max_priority_fee,omitempty"`
     Data           string `json:"data"`
+    AccessList     AccessList // Now uses the locally defined type     // For EIP-2930 (Type 1) and EIP-1559 (Type 2)
+    V, R, S        *big.Int   // Signature values
 }
 
 // ZKBlock represents a block processed by the ZKVM with proof
@@ -34,7 +36,7 @@ type ZKBlock struct {
     // Block data
     Transactions []ZKBlockTransaction `json:"transactions"`
     Timestamp    int64                `json:"timestamp"`
-    ExtraData    []byte               `json:"extradata"`
+    ExtraData    string               `json:"extradata"`
     StateRoot    common.Hash          `json:"stateroot"`
     LogsBloom    []byte               `json:"logsbloom"`
     CoinbaseAddr string               `json:"coinbaseaddr"` // DID of the miner
