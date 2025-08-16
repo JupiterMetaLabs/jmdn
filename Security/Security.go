@@ -7,11 +7,12 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/core/types"
+	"gossipnode/config/utils"
 
 	"gossipnode/DB_OPs"
 )
 
-func ThreeChecks(tx *config.Transaction) (bool, error) {
+func ThreeChecks(tx *config.ZKBlockTransaction) (bool, error) {
 	// Initilize the Accounts DB connection pool
 	Conn, err := DB_OPs.NewAccountsClient()
 	if err != nil {
@@ -50,72 +51,78 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 }
 
 // CheckSignature verifies if the transaction signature is valid
-func CheckSignature(tx *config.Transaction) (bool, error) {
+func CheckSignature(tx *config.ZKBlockTransaction) (bool, error) {
 	if tx == nil {
 		return false, errors.New("transaction cannot be nil")
 	}
 
-	if tx.From == nil {
+	if tx.From == "" || tx.To == "" || tx.V == "" || tx.R == "" || tx.S == "" {
 		return false, nil
 	}
 
 	var ethTx *types.Transaction
 	var signer types.Signer
 
+	// Convert config.ZKBlockTransaction to *types.Transaction
+	temp, err := utils.ConvertZKBlockTransactionToTransaction(tx)
+	if err != nil {
+		return false, fmt.Errorf("failed to convert transaction: %v", err)
+	}
+
 	// Determine transaction type based on fields
 	switch {
-	case tx.MaxFeePerGas != nil && tx.MaxPriorityFeePerGas != nil:
+	case tx.MaxFee != "" && tx.MaxPriorityFee != "":
 		// EIP-1559 (Type 2)
 		inner := &types.DynamicFeeTx{
-			ChainID:    tx.ChainID,
-			Nonce:      tx.Nonce,
-			To:         tx.To,
-			Value:      tx.Value,
-			GasTipCap:  tx.MaxPriorityFeePerGas,
-			GasFeeCap:  tx.MaxFeePerGas,
-			Gas:        tx.GasLimit,
-			Data:       tx.Data,
-			AccessList: toGethAccessList(tx.AccessList),
-			V:          tx.V,
-			R:          tx.R,
-			S:          tx.S,
+			ChainID:    temp.ChainID,
+			Nonce:      temp.Nonce,
+			To:         temp.To,
+			Value:      temp.Value,
+			GasTipCap:  temp.MaxPriorityFeePerGas,
+			GasFeeCap:  temp.MaxFeePerGas,
+			Gas:        temp.GasLimit,
+			Data:       temp.Data,
+			AccessList: toGethAccessList(temp.AccessList),
+			V:          temp.V,
+			R:          temp.R,
+			S:          temp.S,
 		}
 		ethTx = types.NewTx(inner)
-		signer = types.NewLondonSigner(tx.ChainID)
+		signer = types.NewLondonSigner(temp.ChainID)
 
 	case len(tx.AccessList) > 0:
 		// EIP-2930 (Type 1)
 		inner := &types.AccessListTx{
-			ChainID:    tx.ChainID,
-			Nonce:      tx.Nonce,
-			To:         tx.To,
-			Value:      tx.Value,
-			GasPrice:   tx.GasPrice,
-			Gas:        tx.GasLimit,
-			Data:       tx.Data,
-			AccessList: toGethAccessList(tx.AccessList),
-			V:          tx.V,
-			R:          tx.R,
-			S:          tx.S,
+			ChainID:    temp.ChainID,
+			Nonce:      temp.Nonce,
+			To:         temp.To,
+			Value:      temp.Value,
+			GasPrice:   temp.GasPrice,
+			Gas:        temp.GasLimit,
+			Data:       temp.Data,
+			AccessList: toGethAccessList(temp.AccessList),
+			V:          temp.V,
+			R:          temp.R,
+			S:          temp.S,
 		}
 		ethTx = types.NewTx(inner)
-		signer = types.NewEIP2930Signer(tx.ChainID)
+		signer = types.NewEIP2930Signer(temp.ChainID)
 
 	default:
 		// Legacy (Type 0)
 		inner := &types.LegacyTx{
-			Nonce:    tx.Nonce,
-			To:       tx.To,
-			Value:    tx.Value,
-			GasPrice: tx.GasPrice,
-			Gas:      tx.GasLimit,
-			Data:     tx.Data,
-			V:        tx.V,
-			R:        tx.R,
-			S:        tx.S,
+			Nonce:    temp.Nonce,
+			To:       temp.To,
+			Value:    temp.Value,
+			GasPrice: temp.GasPrice,
+			Gas:      temp.GasLimit,
+			Data:     temp.Data,
+			V:        temp.V,
+			R:        temp.R,
+			S:        temp.S,
 		}
 		ethTx = types.NewTx(inner)
-		signer = types.NewEIP155Signer(tx.ChainID)
+		signer = types.NewEIP155Signer(temp.ChainID)
 	}
 
 	// Recover the sender address from the signature
@@ -124,53 +131,27 @@ func CheckSignature(tx *config.Transaction) (bool, error) {
 		return false, err
 	}
 
-    fromDID, err := DB_OPs.ExtractAddressFromDID(tx.From.String())
-    if err != nil {
-        return false, fmt.Errorf("invalid sender DID: %v", err)
-    }
-
 	// Compare the recovered address with the From address
-	isMatch := from == fromDID
+	isMatch := from == *temp.From
 	return isMatch, nil
 }
 
-// // extractAddressFromDID extracts the Ethereum address from a DID string
-// // Format: did:jmdt:superj:0x123...
-// func extractAddressFromDID(did string) (common.Address, error) {
-    
-//     // Check if we get the Correct Addr instead of DID then directly return the addr
-//     if common.IsHexAddress(did) {
-//         return common.HexToAddress(did), nil
-//     }
-
-// 	parts := strings.Split(did, ":")
-// 	if len(parts) < 4 {
-// 		return common.Address{}, fmt.Errorf("invalid DID format: %s", did)
-// 	}
-// 	// The last part should be the Ethereum address
-// 	addrStr := parts[len(parts)-1]
-// 	if !common.IsHexAddress(addrStr) {
-// 		return common.Address{}, fmt.Errorf("invalid Ethereum address in DID: %s", addrStr)
-// 	}
-// 	return common.HexToAddress(addrStr), nil
-// }
-
 // CheckAddressExist verifies if both sender and receiver DIDs exist in the database
-func CheckAddressExist(tx *config.Transaction, Conn *config.ImmuClient) (bool, error) {
+func CheckAddressExist(tx *config.ZKBlockTransaction, Conn *config.ImmuClient) (bool, error) {
 	if tx == nil {
 		return false, errors.New("transaction cannot be nil")
 	}
-	if tx.From == nil || tx.To == nil {
+	if tx.From == "" || tx.To == "" {
 		return false, nil
 	}
 
 	// check if the db have From DID and To DID
-	From, err := DB_OPs.GetDID(Conn, tx.From.String())
+	From, err := DB_OPs.GetDID(Conn, tx.From)
 	if err != nil {
 		return false, err
 	}
 
-	To, err := DB_OPs.GetDID(Conn, tx.To.String())
+	To, err := DB_OPs.GetDID(Conn, tx.To)
 	if err != nil {
 		return false, err
 	}
@@ -183,16 +164,16 @@ func CheckAddressExist(tx *config.Transaction, Conn *config.ImmuClient) (bool, e
 }
 
 // Function that helps to check if the From DID have sufficient balance to make a transaction
-func CheckBalance(tx *config.Transaction, Conn *config.ImmuClient) (bool, error) {
+func CheckBalance(tx *config.ZKBlockTransaction, Conn *config.ImmuClient) (bool, error) {
 	if tx == nil {
 		return false, errors.New("transaction cannot be nil")
 	}
-	if tx.From == nil {
+	if tx.From == "" {
 		return false, nil
 	}
 
 	// check if the db have From DID
-	From, err := DB_OPs.GetDID(Conn, tx.From.String())
+	From, err := DB_OPs.GetDID(Conn, tx.From)
 	if err != nil {
 		return false, err
 	}
@@ -202,24 +183,26 @@ func CheckBalance(tx *config.Transaction, Conn *config.ImmuClient) (bool, error)
 	}
 
 	// Convert From.balance from string to big.Int
-	FromBalance := new(big.Int)
-	_, ok := FromBalance.SetString(From.Balance, 10)
-	if !ok {
-		return false, errors.New("invalid balance format in From account")
+	FromBalance, err := utils.StrToBigIntBase(From.Balance, 10)
+	if err != nil {
+		return false, err
 	}
 
 	// Calculate total cost: value + (gasLimit * gasPrice)
-	totalCost := new(big.Int).Set(tx.Value)
+	totalCost, err := utils.StrToBigIntBase(tx.Value, 10)
+	if err != nil {
+		return false, err
+	}
 
 	// Calculate gas cost based on transaction type
 	var gasCost *big.Int
 	switch {
-	case tx.MaxFeePerGas != nil && tx.MaxPriorityFeePerGas != nil:
+	case tx.MaxFee != "" && tx.MaxPriorityFee != "":
 		// EIP-1559 transaction
-		gasCost = new(big.Int).Mul(big.NewInt(int64(tx.GasLimit)), tx.MaxFeePerGas)
-	case tx.GasPrice != nil:
+		gasCost, err = utils.StrToBigIntBase(tx.GasLimit, 10)
+	case tx.GasPrice != "":
 		// Legacy or EIP-2930 transaction
-		gasCost = new(big.Int).Mul(big.NewInt(int64(tx.GasLimit)), tx.GasPrice)
+		gasCost, err = utils.StrToBigIntBase(tx.GasLimit, 10)
 	default:
 		return false, errors.New("invalid gas pricing parameters")
 	}

@@ -34,7 +34,7 @@ func BroadcastNewBlock(block *config.ZKBlock) {
 }
 
 // BroadcastNewTransaction sends new transaction data to all connected clients
-func BroadcastNewTransaction(tx *config.Transaction) {
+func BroadcastNewTransaction(tx *config.ZKBlockTransaction) {
 	event := StreamEvent{
 		EventType: "new_transaction",
 		Data:      tx,

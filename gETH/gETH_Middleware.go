@@ -6,11 +6,10 @@ import (
 	"fmt"
 	"gossipnode/DB_OPs"
 	"gossipnode/gETH/proto"
-	"gossipnode/gETH/proto"
 
 	"github.com/ethereum/go-ethereum/common"
 )
-func _GetBlockByNumber(req *proto.GetBlockByNumberReq) (*proto.Block, error) {
+
 func _GetBlockByNumber(req *proto.GetBlockByNumberReq) (*proto.Block, error) {
 	// Init DB
 	Conn, err := initDBs()
@@ -30,7 +29,7 @@ func _GetBlockByNumber(req *proto.GetBlockByNumberReq) (*proto.Block, error) {
 	}
 	return block, nil
 }
-func _GetBlockByHash(req *proto.GetBlockByHashReq) (*proto.Block, error) {
+
 func _GetBlockByHash(req *proto.GetBlockByHashReq) (*proto.Block, error) {
 	// Init DB
 	Conn, err := initDBs()
@@ -56,7 +55,7 @@ func _GetBlockByHash(req *proto.GetBlockByHashReq) (*proto.Block, error) {
 	}
 	return block, nil
 }
-func _GetTransactionByHash(req *proto.GetByHashReq) (*proto.Transaction, error) {
+
 func _GetTransactionByHash(req *proto.GetByHashReq) (*proto.Transaction, error) {
 	// Init DB
 	Conn, err := initDBs()
@@ -80,9 +79,9 @@ func _GetTransactionByHash(req *proto.GetByHashReq) (*proto.Transaction, error) 
 	}
 	return value, nil
 }
+
 func _GetReceiptByHash(req *proto.GetByHashReq) (*proto.Receipt, error) {
-func _GetReceiptByHash(req *proto.GetByHashReq) (*proto.Receipt, error) {
-	Blockreq := &proto.GetBlockByHashReq{
+
 	Blockreq := &proto.GetBlockByHashReq{
 		Hash: req.Hash,
 	}
@@ -94,7 +93,7 @@ func _GetReceiptByHash(req *proto.GetByHashReq) (*proto.Receipt, error) {
 
 	return ConvertGETHBlocktoReceipt(Block)
 }
-func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error) {
+
 func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error) {
 	// Init DB
 	Conn, err := initDBs()
@@ -125,7 +124,7 @@ func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error
 		return nil, err
 	}
     
-    return &proto.AccountState{
+    // Create and return the account state
     return &proto.AccountState{
         Nonce:       []byte(nonce),
         Balance:     []byte(DIDDetails.Balance),
@@ -134,7 +133,7 @@ func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error
         Code:        []byte{},
     }, nil
 }
-func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error) {
+
 func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error) {
 	// Convert Signed Transaction bytes to proper DS	
 	bytes := req.SignedTx
@@ -142,6 +141,24 @@ func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error
 	if err != nil {
 		return nil, err
 	}
+
 	return &proto.SendRawTxResp{TxHash: common.HexToHash(hash).Bytes()}, nil
-	return &proto.SendRawTxResp{TxHash: common.HexToHash(hash).Bytes()}, nil
+}
+
+func _EstimateGas(req *proto.CallReq) (*proto.EstimateResp, error) {
+    // Get the Mempool Client
+    mempoolClient, err := block.ReturnMempoolObject()
+    if err != nil {
+        return nil, fmt.Errorf("failed to get mempool client: %v", err)
+    }
+
+    // Get the Fee Stats
+    feeStats, err := mempoolClient.WrapperGetFeeStatistics()
+    if err != nil {
+        return nil, err
+    }
+
+    return &proto.EstimateResp{
+        GasEstimate: feeStats.RecommendedFees.Standard,
+    }, nil
 }

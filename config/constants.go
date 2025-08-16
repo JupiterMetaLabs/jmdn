@@ -1,7 +1,6 @@
 package config
 
 import (
-	"math/big"
 	"sync"
 	"time"
 
@@ -120,30 +119,3 @@ type AccessTuple struct {
 // AccessList is an EIP-2930 access list.
 type AccessList []AccessTuple
 
-type Transaction struct {
-	From 				*common.Address // Sender's address
-    ChainID             *big.Int
-    Nonce               uint64
-    To                  *common.Address // nil for contract creation
-    Value               *big.Int
-    Data                []byte
-    GasLimit            uint64
-    GasPrice            *big.Int   // Only for Type 0 and Type 1
-    MaxPriorityFeePerGas *big.Int  // Only for Type 2
-    MaxFeePerGas         *big.Int  // Only for Type 2
-    AccessList          AccessList // Now uses the locally defined type     // For EIP-2930 (Type 1) and EIP-1559 (Type 2)
-    V, R, S             *big.Int   // Signature values
-}
-
-
-type BlockMessage struct {
-    ID          string              `json:"id"`                    // Unique message ID
-    Sender      string              `json:"sender"`                // Original sender's peer ID
-    Timestamp   int64               `json:"timestamp"`             // Unix timestamp when message was created
-    Nonce       string              `json:"nonce"`                 // Unique nonce for CRDT
-    Data        map[string]string   `json:"data,omitempty"`        // Data payload for generic messages
-    Transaction *Transaction        `json:"transaction,omitempty"` // Structured transaction data
-    ZKBlock     *ZKBlock            `json:"zkblock,omitempty"`     // ZK block data for block propagation
-    Type        string              `json:"type"`                  // "transaction", "block", "message", etc.
-    Hops        int                 `json:"hops"`                  // How many hops this message has made
-}

@@ -50,19 +50,12 @@ func ConvertZKTransactiontoETHTransaction(zktransactions []config.ZKBlockTransac
             return nil, fmt.Errorf("failed to convert type %s to uint32: %w", zktransaction.Type, err)
         }
 
-        // convert Big.Int to byte
-        rBytes, err := zktransaction.R.MarshalText()
-        if err != nil {
-            return nil, fmt.Errorf("failed to convert zktransaction.R to []byte: %w", err)
-        }
+        // convert String to byte
+        rBytes := []byte(zktransaction.R)
+        sBytes := []byte(zktransaction.S)
 
-        sBytes, err := zktransaction.S.MarshalText()
-        if err != nil {
-            return nil, fmt.Errorf("failed to convert zktransaction.S to []byte: %w", err)
-        }
-
-        // Convert Big.Int to uint32
-        v, err := strconv.ParseUint(zktransaction.V.String(), 10, 32)
+        // Convert String to uint32
+        v, err := strconv.ParseUint(zktransaction.V, 10, 32)
         if err != nil {
             return nil, fmt.Errorf("failed to convert v %s to uint32: %w", zktransaction.V, err)
         }
@@ -131,46 +124,47 @@ func ConvertZKBlockToETHBlock(zkblock *config.ZKBlock) (*proto.Block, error) {
 	}, nil
 }
 
-func ConvertConfigTxnToETHTransaction(Txn *config.Transaction)(*proto.Transaction, error){
+func ConvertConfigTxnToETHTransaction(Txn *config.ZKBlockTransaction)(*proto.Transaction, error){
 
 	// Convert BigInt to bytes
-	Value, err := Txn.Value.MarshalText()
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert Value to []byte: %w", err)
-	}
+	Value := []byte(Txn.Value)
 
-	GasPrice, err := Txn.GasPrice.MarshalText()
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert GasPrice to []byte: %w", err)
-	}
+	GasPrice := []byte(Txn.GasPrice)
 
-	rBytes, err := Txn.R.MarshalText()
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert R to []byte: %w", err)
-	}
+	rBytes := []byte(Txn.R)
 
-	sBytes, err := Txn.S.MarshalText()
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert S to []byte: %w", err)
-	}
+	sBytes := []byte(Txn.S)
 
 	// Convert Big.Int to uint32
-	v, err := strconv.ParseUint(Txn.V.String(), 10, 32)
+	v, err := strconv.ParseUint(Txn.V, 10, 32)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert v %s to uint32: %w", Txn.V, err)
 	}
 
+	// Convert `Nonce` to uint64
+	nonce, err := strconv.ParseUint(Txn.Nonce, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert nonce %s to uint64: %w", Txn.Nonce, err)
+	}
+
+	// Convert `GasLimit` to uint64
+	gasLimit, err := strconv.ParseUint(Txn.GasLimit, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert gas limit %s to uint64: %w", Txn.GasLimit, err)
+	}
+
 	return &proto.Transaction{
-		From: []byte(Txn.From.Hex()),
-		To: []byte(Txn.To.Hex()),
+		From: []byte(Txn.From),
+		To: []byte(Txn.To),
 		Input: []byte(Txn.Data),
-		Nonce: uint64(Txn.Nonce),
+		Nonce: nonce,
 		Value: Value,
-		Gas: uint64(Txn.GasLimit),
+		Gas: gasLimit,
 		GasPrice: GasPrice,
 		R: rBytes,
 		S: sBytes,
 		V: uint32(v),
+		Type: 0,
 		AccessList: &proto.AccessList{
 			AccessTuples: nil,
 		},

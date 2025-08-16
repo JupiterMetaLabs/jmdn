@@ -35,8 +35,6 @@ type DIDMessage struct {
     Balance   string    `json:"balance,omitempty"`
 }
 
-
-
 // Store for DID message tracking
 var (
     didFilter      *bloom.BloomFilter

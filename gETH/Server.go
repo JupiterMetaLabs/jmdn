@@ -1,33 +1,35 @@
 package gETH
 
 import (
-    "context"
-    "fmt"
-    "net"
-    "os"
-    "os/signal"
-    "syscall"
+	"context"
+	"fmt"
+	"net"
+	"os"
+	"os/signal"
+	"syscall"
 
-    "github.com/rs/zerolog/log"
-    "google.golang.org/grpc"
-    "google.golang.org/grpc/reflection"
-    "google.golang.org/grpc/health"
-    "google.golang.org/grpc/health/grpc_health_v1"
 	"gossipnode/gETH/proto"
+
+	"github.com/cockroachdb/errors/grpc/status"
+	"github.com/rs/zerolog/log"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/health"
+	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/reflection"
 )
 
 // Server implements the gRPC Chain service
 type Server struct {
     proto.UnimplementedChainServer
-    proto.
 }
 
 // StartGRPC starts the gRPC server on the specified port
-func StartGRPC(port int) {
+func StartGRPC(port int) error  {
     // Create a listener on the specified port
     lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
     if err != nil {
-        log.Fatal().Err(err).Msg("Failed to create listener")
+        return fmt.Errorf("failed to create listener: %w", err)
     }
 
     // Create a new gRPC server with default options
@@ -67,6 +69,8 @@ func StartGRPC(port int) {
     grpcServer.GracefulStop()
     healthServer.Shutdown()
     log.Info().Msg("gRPC server stopped")
+
+	return nil
 }
 
 // Implement the Chain service methods

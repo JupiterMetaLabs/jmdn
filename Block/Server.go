@@ -1,14 +1,14 @@
 package Block
 
 import (
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
+
 	"sync"
 	"time"
 
@@ -36,27 +36,8 @@ type TransactionResponse struct {
 }
 
 type FullTxn struct {
-    Transaction     *TransactionData `json:"transaction"`
+    Transaction     *config.ZKBlockTransaction `json:"transaction"`
     TransactionHash string           `json:"transaction_hash"`
-}
-
-// TransactionData represents the structure for both receiving and responding with transaction details.
-type TransactionData struct {
-    ChainID             string        `json:"chain_id"`
-    From                string        `json:"from"` // Sender's address
-    Nonce               uint64        `json:"nonce"`
-    To                  string        `json:"to"`
-    Value               string        `json:"value"`
-    Data                string        `json:"data"`
-    GasLimit            uint64        `json:"gas_limit"`
-    GasPrice            string        `json:"gas_price,omitempty"`
-    MaxPriorityFeePerGas string       `json:"max_priority_fee,omitempty"`
-    MaxFeePerGas         string       `json:"max_fee,omitempty"`
-    AccessList          []APIAccessTuple `json:"access_list,omitempty"`
-    V                   string        `json:"v"`
-    R                   string        `json:"r"`
-    S                   string        `json:"s"`
-    Type                string        `json:"type"`
 }
 
 // Global mutex to protect account access
@@ -83,56 +64,6 @@ func toBlockAccessList(apiList []APIAccessTuple) config.AccessList {
     return result
 }
 
-// Convert Block.Transaction to TransactionData
-func toTransactionData(tx *config.Transaction) *TransactionData {
-    result := &TransactionData{
-        ChainID:  tx.ChainID.String(),
-        From:     tx.From.Hex(),
-        Nonce:    tx.Nonce,
-        Value:    tx.Value.String(),
-        Data:     string(tx.Data),
-        GasLimit: tx.GasLimit,
-        V:        tx.V.String(),
-        R:        tx.R.String(),
-        S:        tx.S.String(),
-    }
-    
-    // Set recipient address
-    if tx.To != nil {
-        result.To = tx.To.Hex()
-    }
-    
-    // Set transaction type and type-specific fields
-    if tx.MaxFeePerGas != nil {
-        result.Type = "EIP-1559"
-        result.MaxFeePerGas = tx.MaxFeePerGas.String()
-        result.MaxPriorityFeePerGas = tx.MaxPriorityFeePerGas.String()
-    } else {
-        result.Type = "Legacy"
-        if tx.GasPrice != nil {
-            result.GasPrice = tx.GasPrice.String()
-        }
-    }
-    
-    // Set access list if present
-    if tx.AccessList != nil && len(tx.AccessList) > 0 {
-        result.AccessList = make([]APIAccessTuple, len(tx.AccessList))
-        for i, tuple := range tx.AccessList {
-            keys := make([]string, len(tuple.StorageKeys))
-            for j, key := range tuple.StorageKeys {
-                keys[j] = key.Hex()
-            }
-            
-            result.AccessList[i] = APIAccessTuple{
-                Address:     tuple.Address.Hex(),
-                StorageKeys: keys,
-            }
-        }
-    }
-    
-    return result
-}
-
 func submitRawTransaction(c *gin.Context) {
     var req struct {
         RawTx string `json:"raw_tx" binding:"required"` // Hex-encoded signed transaction
@@ -155,67 +86,52 @@ func submitRawTransaction(c *gin.Context) {
 
 // SubmitRawTransaction handles pre-signed raw transactions with security validations
 func SubmitRawTransaction(rawTxBytes []byte) (string, error){
-    // 2. Decode the raw transaction
-    rawTxBytes, err := hex.DecodeString(strings.TrimPrefix(string(rawTxBytes), "0x"))
+    // Convert Bytes to Transaction
+    tx := &config.ZKBlockTransaction{}
+    err := json.Unmarshal(rawTxBytes, tx)
     if err != nil {
         return "", err
     }
 
-    // 3. Convert Bytes to Transaction
-    tx := &config.Transaction{}
-    err = json.Unmarshal(rawTxBytes, tx)
-    if err != nil {
-        return "", err
-    }
-    
-    // 5. Run security checks
+    // Run security checks
     status, err := Security.ThreeChecks(tx)
     if !status || err != nil {
         return "", err
     }
     
-    // 6. Basic transaction validation
-    if tx.Value == nil || tx.Value.Sign() < 0 {
-        return "", err
+    // Basic transaction validation
+    if tx.Value == "0" || tx.Value == "" {
+        return "", errors.New("invalid transaction: value is 0 or empty")
     }
 
-    // 8. Check gas price (if not EIP-1559)
-    if tx.GasPrice != nil && tx.GasPrice.Cmp(common.Big0) <= 0 {
-        return "", err
-    }
-
-    // 9. Check gas limit
-    if tx.GasLimit < 21000 { // Minimum gas limit for a simple transfer
-        return "", err
-    }
-
-    // 10. Get recipient address (if any)
-    var to common.Address
-    if tx.To != nil {
-        to = *tx.To
+    // Check the To and From addresses
+    if tx.To == "" || tx.From == "" {
+        return "", errors.New("invalid transaction: missing To or From address")
+    }else if tx.To == tx.From {
+        return "", errors.New("invalid transaction: To and From address are the same")
     }
 
     // Make transaction hash
     txHash := crypto.Keccak256Hash(rawTxBytes).Hex()
 
-    // 13. Asynchronously submit to mempool with context
+    // Asynchronously submit to mempool with context
     go func() {
         if err := SubmitToMempool(tx, txHash); err != nil {
             log.Error().Err(err).
                 Str("txHash", txHash).
-                Str("from", tx.From.Hex()).
-                Str("to", to.Hex()).
+                Str("from", tx.From).
+                Str("to", tx.To).
                 Msg("Error submitting raw transaction to mempool")
-        } else {
+        }else {
             log.Info().
                 Str("txHash", txHash).
-                Str("from", tx.From.Hex()).
-                Str("to", to.Hex()).
+                Str("from", tx.From).
+                Str("to", tx.To).
                 Msg("Raw transaction successfully submitted to mempool")
         }
     }()
 
-    // 14. Return success response
+    // Return success response
     return txHash, nil
 }
 

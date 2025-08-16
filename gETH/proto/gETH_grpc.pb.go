@@ -19,17 +19,17 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Chain_GetBlockByNumber_FullMethodName     = "/proto.Chain/GetBlockByNumber"
-	Chain_GetBlockByHash_FullMethodName       = "/proto.Chain/GetBlockByHash"
-	Chain_GetTransactionByHash_FullMethodName = "/proto.Chain/GetTransactionByHash"
-	Chain_GetReceiptByHash_FullMethodName     = "/proto.Chain/GetReceiptByHash"
-	Chain_GetAccountState_FullMethodName      = "/proto.Chain/GetAccountState"
-	Chain_GetLogs_FullMethodName              = "/proto.Chain/GetLogs"
-	Chain_Call_FullMethodName                 = "/proto.Chain/Call"
-	Chain_EstimateGas_FullMethodName          = "/proto.Chain/EstimateGas"
-	Chain_SendRawTransaction_FullMethodName   = "/proto.Chain/SendRawTransaction"
-	Chain_StreamHeads_FullMethodName          = "/proto.Chain/StreamHeads"
-	Chain_StreamLogs_FullMethodName           = "/proto.Chain/StreamLogs"
+	Chain_GetBlockByNumber_FullMethodName     = "/gETH.Chain/GetBlockByNumber"
+	Chain_GetBlockByHash_FullMethodName       = "/gETH.Chain/GetBlockByHash"
+	Chain_GetTransactionByHash_FullMethodName = "/gETH.Chain/GetTransactionByHash"
+	Chain_GetReceiptByHash_FullMethodName     = "/gETH.Chain/GetReceiptByHash"
+	Chain_GetAccountState_FullMethodName      = "/gETH.Chain/GetAccountState"
+	Chain_GetLogs_FullMethodName              = "/gETH.Chain/GetLogs"
+	Chain_Call_FullMethodName                 = "/gETH.Chain/Call"
+	Chain_EstimateGas_FullMethodName          = "/gETH.Chain/EstimateGas"
+	Chain_SendRawTransaction_FullMethodName   = "/gETH.Chain/SendRawTransaction"
+	Chain_StreamHeads_FullMethodName          = "/gETH.Chain/StreamHeads"
+	Chain_StreamLogs_FullMethodName           = "/gETH.Chain/StreamLogs"
 )
 
 // ChainClient is the client API for Chain service.
@@ -470,7 +470,7 @@ type Chain_StreamLogsServer = grpc.ServerStreamingServer[Log]
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var Chain_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "proto.Chain",
+	ServiceName: "gETH.Chain",
 	HandlerType: (*ChainServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{

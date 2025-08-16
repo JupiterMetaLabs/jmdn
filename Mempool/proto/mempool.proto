@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package proto;
 
-option go_package = "gossipnode/Mempool/proto";
+option go_package = "Mempool/proto";
 
 import "google/protobuf/empty.proto";
 
@@ -22,6 +22,9 @@ service MempoolService {
   
   // Get mempool stats
   rpc GetMempoolStats(google.protobuf.Empty) returns (MempoolStats);
+  
+  // Get detailed fee statistics
+  rpc GetFeeStatistics(google.protobuf.Empty) returns (FeeStatistics);
 }
 
 // Transaction represents a transaction in the mempool
@@ -38,6 +41,10 @@ message Transaction {
   string max_fee = 10;
   string max_priority_fee = 11;
   string data = 12;
+  string signature = 13;
+  string v = 14; // EIP-155 v value
+  string r = 15;
+  string s = 16; // EIP-155 r and s values
 }
 
 // TransactionBatch represents a batch of transactions
@@ -70,9 +77,44 @@ message GetPendingRequest {
   int32 limit = 1;
 }
 
-// Update MempoolStats message in your proto file
+// MempoolStats contains basic mempool statistics
 message MempoolStats {
   int32 queue_count = 1;
   int32 db_count = 2;
   string merkle_root = 3;
+}
+
+// FeeStatistics contains comprehensive fee analysis data
+message FeeStatistics {
+  uint64 min_fee = 1;
+  uint64 max_fee = 2;
+  uint64 median_fee = 3;
+  uint64 mean_fee = 4;
+  map<string, int32> fee_distribution = 5;
+  double priority_fee_ratio = 6;
+  map<string, FeeByType> fee_by_tx_type = 7;
+  repeated FeeTimepoint historical_trend = 8;
+  RecommendedFees recommended_fees = 9;
+}
+
+// FeeByType contains fee statistics for a specific transaction type
+message FeeByType {
+  int32 count = 1;
+  uint64 mean = 2;
+  uint64 max = 3;
+}
+
+// FeeTimepoint represents a point in fee history
+message FeeTimepoint {
+  string timestamp = 1;
+  uint64 mean_fee = 2;
+  int32 count = 3;
+}
+
+// RecommendedFees contains recommended fee levels
+message RecommendedFees {
+  uint64 slow = 1;      // ~10min confirmation
+  uint64 standard = 2;  // ~3min confirmation
+  uint64 fast = 3;      // ~30sec confirmation
+  uint64 instant = 4;   // Next block
 }

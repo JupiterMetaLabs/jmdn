@@ -1867,7 +1867,7 @@ var File_gETH_proto protoreflect.FileDescriptor
 const file_gETH_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"gETH.proto\x12\x05proto\"\x1c\n" +
+	"gETH.proto\x12\x04gETH\"\x1c\n" +
 	"\x04Hash\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\fR\x05value\"\x1c\n" +
 	"\x04H256\x12\x14\n" +
@@ -1876,13 +1876,13 @@ const file_gETH_proto_rawDesc = "" +
 	"\x05value\x18\x01 \x01(\fR\x05value\" \n" +
 	"\bQuantity\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\x04R\x05value\"\a\n" +
-	"\x05Empty\"\xaf\x02\n" +
-	"\x05Block\x12*\n" +
-	"\x06header\x18\x01 \x01(\v2\x12.proto.BlockHeaderR\x06header\x126\n" +
-	"\ftransactions\x18\x02 \x03(\v2\x12.proto.TransactionR\ftransactions\x12\x16\n" +
+	"\x05Empty\"\xac\x02\n" +
+	"\x05Block\x12)\n" +
+	"\x06header\x18\x01 \x01(\v2\x11.gETH.BlockHeaderR\x06header\x125\n" +
+	"\ftransactions\x18\x02 \x03(\v2\x11.gETH.TransactionR\ftransactions\x12\x16\n" +
 	"\x06ommers\x18\x03 \x03(\fR\x06ommers\x12)\n" +
-	"\x10withdrawals_root\x18\x04 \x01(\fR\x0fwithdrawalsRoot\x123\n" +
-	"\vwithdrawals\x18\x05 \x03(\v2\x11.proto.WithdrawalR\vwithdrawals\x12\"\n" +
+	"\x10withdrawals_root\x18\x04 \x01(\fR\x0fwithdrawalsRoot\x122\n" +
+	"\vwithdrawals\x18\x05 \x03(\v2\x10.gETH.WithdrawalR\vwithdrawals\x12\"\n" +
 	"\rblob_gas_used\x18\x06 \x01(\fR\vblobGasUsed\x12&\n" +
 	"\x0fexcess_blob_gas\x18\a \x01(\fR\rexcessBlobGas\"\xfb\x03\n" +
 	"\vBlockHeader\x12\x1f\n" +
@@ -1905,7 +1905,7 @@ const file_gETH_proto_rawDesc = "" +
 	"\x15excess_blob_gas_field\x18\r \x01(\x04R\x12excessBlobGasField\x12\x1d\n" +
 	"\n" +
 	"extra_data\x18\x0e \x01(\fR\textraData\x12\x12\n" +
-	"\x04hash\x18\x0f \x01(\fR\x04hash\"\xeb\x03\n" +
+	"\x04hash\x18\x0f \x01(\fR\x04hash\"\xea\x03\n" +
 	"\vTransaction\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\fR\x04hash\x12\x12\n" +
 	"\x04from\x18\x02 \x01(\fR\x04from\x12\x0e\n" +
@@ -1919,16 +1919,16 @@ const file_gETH_proto_rawDesc = "" +
 	"\x01r\x18\n" +
 	" \x01(\fR\x01r\x12\f\n" +
 	"\x01s\x18\v \x01(\fR\x01s\x12\f\n" +
-	"\x01v\x18\f \x01(\rR\x01v\x122\n" +
-	"\vaccess_list\x18\r \x01(\v2\x11.proto.AccessListR\n" +
+	"\x01v\x18\f \x01(\rR\x01v\x121\n" +
+	"\vaccess_list\x18\r \x01(\v2\x10.gETH.AccessListR\n" +
 	"accessList\x12%\n" +
 	"\x0fmax_fee_per_gas\x18\x0e \x01(\fR\fmaxFeePerGas\x126\n" +
 	"\x18max_priority_fee_per_gas\x18\x0f \x01(\fR\x14maxPriorityFeePerGas\x12.\n" +
 	"\x14max_fee_per_blob_gas\x18\x10 \x01(\fR\x10maxFeePerBlobGas\x122\n" +
-	"\x15blob_versioned_hashes\x18\x11 \x03(\fR\x13blobVersionedHashes\"E\n" +
+	"\x15blob_versioned_hashes\x18\x11 \x03(\fR\x13blobVersionedHashes\"D\n" +
 	"\n" +
-	"AccessList\x127\n" +
-	"\raccess_tuples\x18\x01 \x03(\v2\x12.proto.AccessTupleR\faccessTuples\"J\n" +
+	"AccessList\x126\n" +
+	"\raccess_tuples\x18\x01 \x03(\v2\x11.gETH.AccessTupleR\faccessTuples\"J\n" +
 	"\vAccessTuple\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\fR\aaddress\x12!\n" +
 	"\fstorage_keys\x18\x02 \x03(\fR\vstorageKeys\"}\n" +
@@ -1937,14 +1937,13 @@ const file_gETH_proto_rawDesc = "" +
 	"\x05index\x18\x01 \x01(\x04R\x05index\x12'\n" +
 	"\x0fvalidator_index\x18\x02 \x01(\x04R\x0evalidatorIndex\x12\x18\n" +
 	"\aaddress\x18\x03 \x01(\fR\aaddress\x12\x16\n" +
-	"\x06amount\x18\x04 \x01(\x04R\x06amount\"\xd3\x02\n" +
+	"\x06amount\x18\x04 \x01(\x04R\x06amount\"\xd2\x02\n" +
 	"\aReceipt\x12\x17\n" +
 	"\atx_hash\x18\x01 \x01(\fR\x06txHash\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\x04R\x06status\x12.\n" +
 	"\x13cumulative_gas_used\x18\x03 \x01(\x04R\x11cumulativeGasUsed\x12\x19\n" +
-	"\bgas_used\x18\x04 \x01(\x04R\agasUsed\x12\x1e\n" +
-	"\x04logs\x18\x05 \x03(\v2\n" +
-	".proto.LogR\x04logs\x12)\n" +
+	"\bgas_used\x18\x04 \x01(\x04R\agasUsed\x12\x1d\n" +
+	"\x04logs\x18\x05 \x03(\v2\t.gETH.LogR\x04logs\x12)\n" +
 	"\x10contract_address\x18\x06 \x01(\fR\x0fcontractAddress\x12\x12\n" +
 	"\x04type\x18\a \x01(\rR\x04type\x12\x1d\n" +
 	"\n" +
@@ -1981,10 +1980,10 @@ const file_gETH_proto_rawDesc = "" +
 	"\abalance\x18\x02 \x01(\fR\abalance\x12!\n" +
 	"\fstorage_root\x18\x03 \x01(\fR\vstorageRoot\x12\x1b\n" +
 	"\tcode_hash\x18\x04 \x01(\fR\bcodeHash\x12\x12\n" +
-	"\x04code\x18\x05 \x01(\fR\x04code\"8\n" +
+	"\x04code\x18\x05 \x01(\fR\x04code\"7\n" +
 	"\n" +
-	"GetLogsReq\x12*\n" +
-	"\x06filter\x18\x01 \x01(\v2\x12.proto.FilterQueryR\x06filter\"\x9c\x01\n" +
+	"GetLogsReq\x12)\n" +
+	"\x06filter\x18\x01 \x01(\v2\x11.gETH.FilterQueryR\x06filter\"\x9c\x01\n" +
 	"\vFilterQuery\x12\x1c\n" +
 	"\taddresses\x18\x01 \x03(\fR\taddresses\x12\x16\n" +
 	"\x06topics\x18\x02 \x03(\fR\x06topics\x12\x1d\n" +
@@ -1992,10 +1991,9 @@ const file_gETH_proto_rawDesc = "" +
 	"block_hash\x18\x03 \x01(\fR\tblockHash\x12\x1d\n" +
 	"\n" +
 	"from_block\x18\x04 \x01(\x04R\tfromBlock\x12\x19\n" +
-	"\bto_block\x18\x05 \x01(\x04R\atoBlock\"-\n" +
-	"\vGetLogsResp\x12\x1e\n" +
-	"\x04logs\x18\x01 \x03(\v2\n" +
-	".proto.LogR\x04logs\"\xfb\x01\n" +
+	"\bto_block\x18\x05 \x01(\x04R\atoBlock\",\n" +
+	"\vGetLogsResp\x12\x1d\n" +
+	"\x04logs\x18\x01 \x03(\v2\t.gETH.LogR\x04logs\"\xfb\x01\n" +
 	"\aCallReq\x12\x12\n" +
 	"\x04from\x18\x01 \x01(\fR\x04from\x12\x0e\n" +
 	"\x02to\x18\x02 \x01(\fR\x02to\x12\x10\n" +
@@ -2022,21 +2020,20 @@ const file_gETH_proto_rawDesc = "" +
 	"\n" +
 	"LogsSubReq\x12\x1c\n" +
 	"\taddresses\x18\x01 \x03(\fR\taddresses\x12\x16\n" +
-	"\x06topics\x18\x02 \x03(\fR\x06topics2\xee\x04\n" +
-	"\x05Chain\x12<\n" +
-	"\x10GetBlockByNumber\x12\x1a.proto.GetBlockByNumberReq\x1a\f.proto.Block\x128\n" +
-	"\x0eGetBlockByHash\x12\x18.proto.GetBlockByHashReq\x1a\f.proto.Block\x12?\n" +
-	"\x14GetTransactionByHash\x12\x13.proto.GetByHashReq\x1a\x12.proto.Transaction\x127\n" +
-	"\x10GetReceiptByHash\x12\x13.proto.GetByHashReq\x1a\x0e.proto.Receipt\x12A\n" +
-	"\x0fGetAccountState\x12\x19.proto.GetAccountStateReq\x1a\x13.proto.AccountState\x120\n" +
-	"\aGetLogs\x12\x11.proto.GetLogsReq\x1a\x12.proto.GetLogsResp\x12'\n" +
-	"\x04Call\x12\x0e.proto.CallReq\x1a\x0f.proto.CallResp\x122\n" +
-	"\vEstimateGas\x12\x0e.proto.CallReq\x1a\x13.proto.EstimateResp\x12?\n" +
-	"\x12SendRawTransaction\x12\x13.proto.SendRawTxReq\x1a\x14.proto.SendRawTxResp\x121\n" +
-	"\vStreamHeads\x12\f.proto.Empty\x1a\x12.proto.BlockHeader0\x01\x12-\n" +
+	"\x06topics\x18\x02 \x03(\fR\x06topics2\xd8\x04\n" +
+	"\x05Chain\x12:\n" +
+	"\x10GetBlockByNumber\x12\x19.gETH.GetBlockByNumberReq\x1a\v.gETH.Block\x126\n" +
+	"\x0eGetBlockByHash\x12\x17.gETH.GetBlockByHashReq\x1a\v.gETH.Block\x12=\n" +
+	"\x14GetTransactionByHash\x12\x12.gETH.GetByHashReq\x1a\x11.gETH.Transaction\x125\n" +
+	"\x10GetReceiptByHash\x12\x12.gETH.GetByHashReq\x1a\r.gETH.Receipt\x12?\n" +
+	"\x0fGetAccountState\x12\x18.gETH.GetAccountStateReq\x1a\x12.gETH.AccountState\x12.\n" +
+	"\aGetLogs\x12\x10.gETH.GetLogsReq\x1a\x11.gETH.GetLogsResp\x12%\n" +
+	"\x04Call\x12\r.gETH.CallReq\x1a\x0e.gETH.CallResp\x120\n" +
+	"\vEstimateGas\x12\r.gETH.CallReq\x1a\x12.gETH.EstimateResp\x12=\n" +
+	"\x12SendRawTransaction\x12\x12.gETH.SendRawTxReq\x1a\x13.gETH.SendRawTxResp\x12/\n" +
+	"\vStreamHeads\x12\v.gETH.Empty\x1a\x11.gETH.BlockHeader0\x01\x12+\n" +
 	"\n" +
-	"StreamLogs\x12\x11.proto.LogsSubReq\x1a\n" +
-	".proto.Log0\x01B\x17Z\x15gossipnode/gETH/protob\x06proto3"
+	"StreamLogs\x12\x10.gETH.LogsSubReq\x1a\t.gETH.Log0\x01B\x17Z\x15gossipnode/gETH/protob\x06proto3"
 
 var (
 	file_gETH_proto_rawDescOnce sync.Once
@@ -2052,65 +2049,65 @@ func file_gETH_proto_rawDescGZIP() []byte {
 
 var file_gETH_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_gETH_proto_goTypes = []any{
-	(*Hash)(nil),                // 0: proto.Hash
-	(*H256)(nil),                // 1: proto.H256
-	(*Address)(nil),             // 2: proto.Address
-	(*Quantity)(nil),            // 3: proto.Quantity
-	(*Empty)(nil),               // 4: proto.Empty
-	(*Block)(nil),               // 5: proto.Block
-	(*BlockHeader)(nil),         // 6: proto.BlockHeader
-	(*Transaction)(nil),         // 7: proto.Transaction
-	(*AccessList)(nil),          // 8: proto.AccessList
-	(*AccessTuple)(nil),         // 9: proto.AccessTuple
-	(*Withdrawal)(nil),          // 10: proto.Withdrawal
-	(*Receipt)(nil),             // 11: proto.Receipt
-	(*Log)(nil),                 // 12: proto.Log
-	(*GetBlockByNumberReq)(nil), // 13: proto.GetBlockByNumberReq
-	(*GetBlockByHashReq)(nil),   // 14: proto.GetBlockByHashReq
-	(*GetByHashReq)(nil),        // 15: proto.GetByHashReq
-	(*GetAccountStateReq)(nil),  // 16: proto.GetAccountStateReq
-	(*AccountState)(nil),        // 17: proto.AccountState
-	(*GetLogsReq)(nil),          // 18: proto.GetLogsReq
-	(*FilterQuery)(nil),         // 19: proto.FilterQuery
-	(*GetLogsResp)(nil),         // 20: proto.GetLogsResp
-	(*CallReq)(nil),             // 21: proto.CallReq
-	(*CallResp)(nil),            // 22: proto.CallResp
-	(*EstimateResp)(nil),        // 23: proto.EstimateResp
-	(*SendRawTxReq)(nil),        // 24: proto.SendRawTxReq
-	(*SendRawTxResp)(nil),       // 25: proto.SendRawTxResp
-	(*LogsSubReq)(nil),          // 26: proto.LogsSubReq
+	(*Hash)(nil),                // 0: gETH.Hash
+	(*H256)(nil),                // 1: gETH.H256
+	(*Address)(nil),             // 2: gETH.Address
+	(*Quantity)(nil),            // 3: gETH.Quantity
+	(*Empty)(nil),               // 4: gETH.Empty
+	(*Block)(nil),               // 5: gETH.Block
+	(*BlockHeader)(nil),         // 6: gETH.BlockHeader
+	(*Transaction)(nil),         // 7: gETH.Transaction
+	(*AccessList)(nil),          // 8: gETH.AccessList
+	(*AccessTuple)(nil),         // 9: gETH.AccessTuple
+	(*Withdrawal)(nil),          // 10: gETH.Withdrawal
+	(*Receipt)(nil),             // 11: gETH.Receipt
+	(*Log)(nil),                 // 12: gETH.Log
+	(*GetBlockByNumberReq)(nil), // 13: gETH.GetBlockByNumberReq
+	(*GetBlockByHashReq)(nil),   // 14: gETH.GetBlockByHashReq
+	(*GetByHashReq)(nil),        // 15: gETH.GetByHashReq
+	(*GetAccountStateReq)(nil),  // 16: gETH.GetAccountStateReq
+	(*AccountState)(nil),        // 17: gETH.AccountState
+	(*GetLogsReq)(nil),          // 18: gETH.GetLogsReq
+	(*FilterQuery)(nil),         // 19: gETH.FilterQuery
+	(*GetLogsResp)(nil),         // 20: gETH.GetLogsResp
+	(*CallReq)(nil),             // 21: gETH.CallReq
+	(*CallResp)(nil),            // 22: gETH.CallResp
+	(*EstimateResp)(nil),        // 23: gETH.EstimateResp
+	(*SendRawTxReq)(nil),        // 24: gETH.SendRawTxReq
+	(*SendRawTxResp)(nil),       // 25: gETH.SendRawTxResp
+	(*LogsSubReq)(nil),          // 26: gETH.LogsSubReq
 }
 var file_gETH_proto_depIdxs = []int32{
-	6,  // 0: proto.Block.header:type_name -> proto.BlockHeader
-	7,  // 1: proto.Block.transactions:type_name -> proto.Transaction
-	10, // 2: proto.Block.withdrawals:type_name -> proto.Withdrawal
-	8,  // 3: proto.Transaction.access_list:type_name -> proto.AccessList
-	9,  // 4: proto.AccessList.access_tuples:type_name -> proto.AccessTuple
-	12, // 5: proto.Receipt.logs:type_name -> proto.Log
-	19, // 6: proto.GetLogsReq.filter:type_name -> proto.FilterQuery
-	12, // 7: proto.GetLogsResp.logs:type_name -> proto.Log
-	13, // 8: proto.Chain.GetBlockByNumber:input_type -> proto.GetBlockByNumberReq
-	14, // 9: proto.Chain.GetBlockByHash:input_type -> proto.GetBlockByHashReq
-	15, // 10: proto.Chain.GetTransactionByHash:input_type -> proto.GetByHashReq
-	15, // 11: proto.Chain.GetReceiptByHash:input_type -> proto.GetByHashReq
-	16, // 12: proto.Chain.GetAccountState:input_type -> proto.GetAccountStateReq
-	18, // 13: proto.Chain.GetLogs:input_type -> proto.GetLogsReq
-	21, // 14: proto.Chain.Call:input_type -> proto.CallReq
-	21, // 15: proto.Chain.EstimateGas:input_type -> proto.CallReq
-	24, // 16: proto.Chain.SendRawTransaction:input_type -> proto.SendRawTxReq
-	4,  // 17: proto.Chain.StreamHeads:input_type -> proto.Empty
-	26, // 18: proto.Chain.StreamLogs:input_type -> proto.LogsSubReq
-	5,  // 19: proto.Chain.GetBlockByNumber:output_type -> proto.Block
-	5,  // 20: proto.Chain.GetBlockByHash:output_type -> proto.Block
-	7,  // 21: proto.Chain.GetTransactionByHash:output_type -> proto.Transaction
-	11, // 22: proto.Chain.GetReceiptByHash:output_type -> proto.Receipt
-	17, // 23: proto.Chain.GetAccountState:output_type -> proto.AccountState
-	20, // 24: proto.Chain.GetLogs:output_type -> proto.GetLogsResp
-	22, // 25: proto.Chain.Call:output_type -> proto.CallResp
-	23, // 26: proto.Chain.EstimateGas:output_type -> proto.EstimateResp
-	25, // 27: proto.Chain.SendRawTransaction:output_type -> proto.SendRawTxResp
-	6,  // 28: proto.Chain.StreamHeads:output_type -> proto.BlockHeader
-	12, // 29: proto.Chain.StreamLogs:output_type -> proto.Log
+	6,  // 0: gETH.Block.header:type_name -> gETH.BlockHeader
+	7,  // 1: gETH.Block.transactions:type_name -> gETH.Transaction
+	10, // 2: gETH.Block.withdrawals:type_name -> gETH.Withdrawal
+	8,  // 3: gETH.Transaction.access_list:type_name -> gETH.AccessList
+	9,  // 4: gETH.AccessList.access_tuples:type_name -> gETH.AccessTuple
+	12, // 5: gETH.Receipt.logs:type_name -> gETH.Log
+	19, // 6: gETH.GetLogsReq.filter:type_name -> gETH.FilterQuery
+	12, // 7: gETH.GetLogsResp.logs:type_name -> gETH.Log
+	13, // 8: gETH.Chain.GetBlockByNumber:input_type -> gETH.GetBlockByNumberReq
+	14, // 9: gETH.Chain.GetBlockByHash:input_type -> gETH.GetBlockByHashReq
+	15, // 10: gETH.Chain.GetTransactionByHash:input_type -> gETH.GetByHashReq
+	15, // 11: gETH.Chain.GetReceiptByHash:input_type -> gETH.GetByHashReq
+	16, // 12: gETH.Chain.GetAccountState:input_type -> gETH.GetAccountStateReq
+	18, // 13: gETH.Chain.GetLogs:input_type -> gETH.GetLogsReq
+	21, // 14: gETH.Chain.Call:input_type -> gETH.CallReq
+	21, // 15: gETH.Chain.EstimateGas:input_type -> gETH.CallReq
+	24, // 16: gETH.Chain.SendRawTransaction:input_type -> gETH.SendRawTxReq
+	4,  // 17: gETH.Chain.StreamHeads:input_type -> gETH.Empty
+	26, // 18: gETH.Chain.StreamLogs:input_type -> gETH.LogsSubReq
+	5,  // 19: gETH.Chain.GetBlockByNumber:output_type -> gETH.Block
+	5,  // 20: gETH.Chain.GetBlockByHash:output_type -> gETH.Block
+	7,  // 21: gETH.Chain.GetTransactionByHash:output_type -> gETH.Transaction
+	11, // 22: gETH.Chain.GetReceiptByHash:output_type -> gETH.Receipt
+	17, // 23: gETH.Chain.GetAccountState:output_type -> gETH.AccountState
+	20, // 24: gETH.Chain.GetLogs:output_type -> gETH.GetLogsResp
+	22, // 25: gETH.Chain.Call:output_type -> gETH.CallResp
+	23, // 26: gETH.Chain.EstimateGas:output_type -> gETH.EstimateResp
+	25, // 27: gETH.Chain.SendRawTransaction:output_type -> gETH.SendRawTxResp
+	6,  // 28: gETH.Chain.StreamHeads:output_type -> gETH.BlockHeader
+	12, // 29: gETH.Chain.StreamLogs:output_type -> gETH.Log
 	19, // [19:30] is the sub-list for method output_type
 	8,  // [8:19] is the sub-list for method input_type
 	8,  // [8:8] is the sub-list for extension type_name
