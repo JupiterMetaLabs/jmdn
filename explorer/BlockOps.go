@@ -2,9 +2,10 @@ package explorer
 
 import (
 	"encoding/hex"
+	"math"
 	"net/http"
 	"strconv"
-
+	
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 
@@ -215,3 +216,45 @@ func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, missingBlocks)
 }
+
+func (s *ImmuDBServer) listTransactions(c *gin.Context) {
+    // Get pagination parameters
+    page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+    limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+    if page < 1 {
+        page = 1
+    }
+    if limit < 1 || limit > 100 {
+        limit = 10 // Default to 10 items per page, max 100
+    }
+
+    // Calculate offset
+    offset := (page - 1) * limit
+
+    // Get paginated transaction hashes
+    txHashes, total, err := DB_OPs.GetTransactionHashes(&s.defaultdb, offset, limit)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch transactions"})
+        return
+    }
+
+    // Fetch full transaction details
+    var transactions []*config.ZKBlockTransaction
+	transactions, err = DB_OPs.GetTransactionsBatch(&s.defaultdb, txHashes)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch transaction details"})
+		return
+	}
+
+    // Return paginated response
+    c.JSON(http.StatusOK, gin.H{
+        "transactions": transactions,
+        "pagination": gin.H{
+            "page":       page,
+            "limit":      limit,
+            "total":      total,
+            "totalPages": int(math.Ceil(float64(total) / float64(limit))),
+        },
+    })
+}
+

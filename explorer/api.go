@@ -87,6 +87,9 @@ func (s *ImmuDBServer) setupRoutes() {
 
 		// Get Latest Blocks by count using pagination - max 100 blocks at a time
 		api.GET("/latest/:count", s.getLatestBlock)
+
+		// Get all the transactions based on the pagination
+		api.GET("/transactions/all", s.listTransactions)
 	}
 
 	// Add a new group for Ethereum JSON-RPC

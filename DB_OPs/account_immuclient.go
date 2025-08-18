@@ -940,24 +940,47 @@ func GetTransactionsByDID(mainDBClient *config.ImmuClient, did string) ([]*confi
 	return matchingTxs, nil
 }
 
-// GetTransactionHashes retrieves all transaction hashes from the database
-func GetTransactionHashes(mainDBClient *config.ImmuClient) ([]string, error) {
-	// Use the existing GetAllKeys helper for robustness and pagination handling.
-	keys, err := GetAllKeys(mainDBClient, "tx:")
-	if err != nil {
-		return nil, err
-	}
+// GetTransactionHashes retrieves transaction hashes with pagination
+func GetTransactionHashes(mainDBClient *config.ImmuClient, offset, limit int) ([]string, int, error) {
+    // Get total count first
+    allHashes, err := getAllTransactionHashes(mainDBClient)
+    if err != nil {
+        return nil, 0, err
+    }
+    
+    total := len(allHashes)
+    
+    // Apply pagination
+    if offset >= total {
+        return []string{}, total, nil
+    }
+    
+    end := offset + limit
+    if end > total {
+        end = total
+    }
+    
+    return allHashes[offset:end], total, nil
+}
 
-	// Extract just the transaction hashes from the keys
-	var hashes []string
-	for _, key := range keys {
-		// Key is in format "tx:<hash>", so we take everything after "tx:"
-		if len(key) > 3 {
-			hashes = append(hashes, key[3:])
-		}
-	}
+// getAllTransactionHashes gets all transaction hashes (cached)
+func getAllTransactionHashes(mainDBClient *config.ImmuClient) ([]string, error) {
+    // Use the existing GetAllKeys helper for robustness
+    keys, err := GetAllKeys(mainDBClient, "tx:")
+    if err != nil {
+        return nil, err
+    }
 
-	return hashes, nil
+    // Extract just the transaction hashes from the keys
+    var hashes []string
+    for _, key := range keys {
+        // Key is in format "tx:<hash>", so we take everything after "tx:"
+        if len(key) > 3 {
+            hashes = append(hashes, key[3:])
+        }
+    }
+
+    return hashes, nil
 }
 
 

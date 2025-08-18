@@ -66,7 +66,7 @@ type BlockMessage struct {
 	Sender    string   `json:"sender"`    // Original sender's peer ID
 	Timestamp int64    `json:"timestamp"` // Unix timestamp when message was created
 	Nonce     string   `json:"nonce"`     // Unique nonce for CRDT
-	Block     *ZKBlock          `json:"block"`     // The ZK block data
+	Block     *ZKBlock `json:"block"`     // The ZK block data
 	Hops      int      `json:"hops"`      // How many hops this message has made
     Type      string   `json:"type"`      // Type of message
     Data      map[string]string `json:"data"`      // Additional data

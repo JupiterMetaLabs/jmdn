@@ -1880,6 +1880,49 @@ func GetTransactionByHash(mainDBClient *config.ImmuClient, txHash string) (*conf
 	return zkTx, nil
 }
 
+// GetTransactionsBatch fetches multiple transactions by their hashes in a single batch
+func GetTransactionsBatch(mainDBClient *config.ImmuClient, hashes []string) ([]*config.ZKBlockTransaction, error) {
+    var transactions []*config.ZKBlockTransaction
+    
+    // Process in batches to avoid too many concurrent requests
+    batchSize := 10
+    for i := 0; i < len(hashes); i += batchSize {
+        end := i + batchSize
+        if end > len(hashes) {
+            end = len(hashes)
+        }
+        
+        batch := hashes[i:end]
+        var wg sync.WaitGroup
+        var mu sync.Mutex
+        var batchErr error
+        
+        for _, hash := range batch {
+            wg.Add(1)
+            go func(h string) {
+                defer wg.Done()
+                
+                tx, err := GetTransactionByHash(mainDBClient, h)
+                if err != nil {
+                    batchErr = fmt.Errorf("failed to fetch transaction %s: %w", h, err)
+                    return
+                }
+                
+                mu.Lock()
+                transactions = append(transactions, tx)
+                mu.Unlock()
+            }(hash)
+        }
+        
+        wg.Wait()
+        if batchErr != nil {
+            return nil, batchErr
+        }
+    }
+    
+    return transactions, nil
+}
+
 func GetAllBlocks(mainDBClient *config.ImmuClient) ([]*config.ZKBlock, error) {
 	latestBlockNumber, err := GetLatestBlockNumber(mainDBClient)
 	if err != nil {
