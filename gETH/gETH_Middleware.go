@@ -1,11 +1,13 @@
 package gETH
 
 import (
-	block "gossipnode/Block"
 	"encoding/hex"
 	"fmt"
+	block "gossipnode/Block"
 	"gossipnode/DB_OPs"
+	"gossipnode/config"
 	"gossipnode/gETH/proto"
+	"encoding/json"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -137,7 +139,13 @@ func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error
 func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error) {
 	// Convert Signed Transaction bytes to proper DS	
 	bytes := req.SignedTx
-	hash, err := block.SubmitRawTransaction(bytes)
+	// COnvert bytes to ZKBlockTransaction
+	var tx config.ZKBlockTransaction
+	err := json.Unmarshal(bytes, &tx)
+	if err != nil {
+		return nil, err
+	}
+	hash, err := block.SubmitRawTransaction(&tx)
 	if err != nil {
 		return nil, err
 	}

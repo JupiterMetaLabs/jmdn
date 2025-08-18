@@ -257,4 +257,3 @@ func (s *ImmuDBServer) listTransactions(c *gin.Context) {
         },
     })
 }
-

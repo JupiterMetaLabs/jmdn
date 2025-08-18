@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"gossipnode/config"
 	"math/big"
+	"strings"
+
+	"gossipnode/config/utils"
 
 	"github.com/ethereum/go-ethereum/core/types"
-	"gossipnode/config/utils"
 
 	"gossipnode/DB_OPs"
 )
@@ -28,6 +30,9 @@ func ThreeChecks(tx *config.ZKBlockTransaction) (bool, error) {
 	if !status {
 		return false, errors.New("sender or receiver DID not found")
 	}
+
+	// Debugging
+	fmt.Println("DID Check: ", status)
 
 	// Second Check Signature
 	status, err = CheckSignature(tx)
@@ -124,12 +129,17 @@ func CheckSignature(tx *config.ZKBlockTransaction) (bool, error) {
 		ethTx = types.NewTx(inner)
 		signer = types.NewEIP155Signer(temp.ChainID)
 	}
-
+	// debugging
+	fmt.Println("Signer: ", signer)
 	// Recover the sender address from the signature
 	from, err := types.Sender(signer, ethTx)
 	if err != nil {
-		return false, err
+		return false, errors.New("failed to recover sender address from signature -> " + err.Error())
 	}
+
+	// debugging
+	fmt.Println("Recovered Address: ", from)
+	fmt.Println("From Address: ", *temp.From)
 
 	// Compare the recovered address with the From address
 	isMatch := from == *temp.From
@@ -148,12 +158,13 @@ func CheckAddressExist(tx *config.ZKBlockTransaction, Conn *config.ImmuClient) (
 	// check if the db have From DID and To DID
 	From, err := DB_OPs.GetDID(Conn, tx.From)
 	if err != nil {
-		return false, err
+		return false, errors.New("failed to get From DID from DB -> " + err.Error())
 	}
+
 
 	To, err := DB_OPs.GetDID(Conn, tx.To)
 	if err != nil {
-		return false, err
+		return false, errors.New("failed to get To DID from DB -> " + err.Error())
 	}
 
 	if From == nil || To == nil {
@@ -175,7 +186,7 @@ func CheckBalance(tx *config.ZKBlockTransaction, Conn *config.ImmuClient) (bool,
 	// check if the db have From DID
 	From, err := DB_OPs.GetDID(Conn, tx.From)
 	if err != nil {
-		return false, err
+		return false, errors.New("failed to get From DID from DB -> " + err.Error())
 	}
 
 	if From == nil {
@@ -183,32 +194,47 @@ func CheckBalance(tx *config.ZKBlockTransaction, Conn *config.ImmuClient) (bool,
 	}
 
 	// Convert From.balance from string to big.Int
-	FromBalance, err := utils.StrToBigIntBase(From.Balance, 10)
-	if err != nil {
-		return false, err
+	balanceStr := strings.Trim(From.Balance, "[]\"") // Remove any JSON array or string quotes
+	FromBalance, ok := new(big.Int).SetString(balanceStr, 10)
+	if !ok {
+		return false, fmt.Errorf("failed to convert From balance from string to big.Int: invalid big.Int %q (base 10)", From.Balance)
+	}
+	// Calculate total cost: value + (gasLimit * gasPrice)
+	totalCost, ok := new(big.Int).SetString(tx.Value, 10)
+	if !ok {
+		return false, fmt.Errorf("failed to convert value from string to big.Int: invalid big.Int %q (base 10)", tx.Value)
 	}
 
-	// Calculate total cost: value + (gasLimit * gasPrice)
-	totalCost, err := utils.StrToBigIntBase(tx.Value, 10)
-	if err != nil {
-		return false, err
+	gasLimit, ok := new(big.Int).SetString(tx.GasLimit, 10)
+	if !ok {
+		return false, fmt.Errorf("failed to parse gasLimit: invalid big.Int %q (base 10)", tx.GasLimit)
 	}
 
 	// Calculate gas cost based on transaction type
 	var gasCost *big.Int
 	switch {
 	case tx.MaxFee != "" && tx.MaxPriorityFee != "":
-		// EIP-1559 transaction
-		gasCost, err = utils.StrToBigIntBase(tx.GasLimit, 10)
+		// EIP-1559 transaction: gas cost is gasLimit * maxFeePerGas (worst case)
+		maxFee, ok := new(big.Int).SetString(tx.MaxFee, 10)
+		if !ok {
+			return false, fmt.Errorf("failed to parse maxFee: invalid big.Int %q (base 10)", tx.MaxFee)
+		}
+		gasCost = new(big.Int).Mul(gasLimit, maxFee)
 	case tx.GasPrice != "":
-		// Legacy or EIP-2930 transaction
-		gasCost, err = utils.StrToBigIntBase(tx.GasLimit, 10)
+		// Legacy or EIP-2930 transaction: gas cost is gasLimit * gasPrice
+		gasPrice, ok := new(big.Int).SetString(tx.GasPrice, 10)
+		if !ok {
+			return false, fmt.Errorf("failed to parse gasPrice: invalid big.Int %q (base 10)", tx.GasPrice)
+		}
+		gasCost = new(big.Int).Mul(gasLimit, gasPrice)
 	default:
 		return false, errors.New("invalid gas pricing parameters")
 	}
 
 	totalCost.Add(totalCost, gasCost)
-
+	// Debugging
+	fmt.Println("Total Cost: ", totalCost)
+	fmt.Println("From Balance: ", FromBalance)
 	// Check if balance is sufficient for total cost
 	if FromBalance.Cmp(totalCost) < 0 {
 		return false, nil

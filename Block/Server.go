@@ -1,15 +1,14 @@
 package Block
 
 import (
-	"encoding/json"
+		"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
-
-	"sync"
+		"sync"
 	"time"
 
 	"gossipnode/DB_OPs"
@@ -19,12 +18,17 @@ import (
 	"gossipnode/metrics"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gin-gonic/gin"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
+
+// didPrefix is the application-specific prefix for Decentralized Identifiers.
+const didPrefix = "did:jmdt:superj:"
+
 type APIAccessTuple struct {
     Address     string   `json:"address"`
     StorageKeys []string `json:"storage_keys"`
@@ -65,44 +69,48 @@ func toBlockAccessList(apiList []APIAccessTuple) config.AccessList {
 }
 
 func submitRawTransaction(c *gin.Context) {
-    var req struct {
-        RawTx string `json:"raw_tx" binding:"required"` // Hex-encoded signed transaction
-    }
+    var tx config.ZKBlockTransaction
 
     // 1. Bind and validate request
-    if err := c.ShouldBindJSON(&req); err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+    if err := c.ShouldBindJSON(&tx); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid transaction format: " + err.Error()})
         return
     }
 
-    // Call SubmitRawTransaction with the raw transaction bytes
-    val, err := SubmitRawTransaction([]byte(req.RawTx))
+    txHash, err := SubmitRawTransaction(&tx)
     if err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Transaction validation failed: " + err.Error()})
         return
     }
-    c.JSON(http.StatusOK, gin.H{"transaction_hash": val})
+
+    c.JSON(http.StatusOK, gin.H{
+        "status":          "success",
+        "transaction_hash": txHash,
+        "message":         "Transaction submitted successfully",
+    })
 }
 
 // SubmitRawTransaction handles pre-signed raw transactions with security validations
-func SubmitRawTransaction(rawTxBytes []byte) (string, error){
-    // Convert Bytes to Transaction
-    tx := &config.ZKBlockTransaction{}
-    err := json.Unmarshal(rawTxBytes, tx)
+func SubmitRawTransaction(tx *config.ZKBlockTransaction) (string, error){
+    // Debugging
+    // fmt.Println("Transaction: ", tx)
+    // fmt.Println("Transaction ChainID:", tx.ChainID)
+    
+    // Run security checks
+    ethTx, err := Security.ThreeChecks(tx)
     if err != nil {
         return "", err
     }
+    // Debugging
+    // fmt.Println("Security Checks: ", status)
 
-    // Run security checks
-    status, err := Security.ThreeChecks(tx)
-    if !status || err != nil {
-        return "", err
-    }
-    
     // Basic transaction validation
     if tx.Value == "0" || tx.Value == "" {
         return "", errors.New("invalid transaction: value is 0 or empty")
     }
+    // Debugging
+    fmt.Println("Basic Transaction Validation: ", tx.Value)
+    
 
     // Check the To and From addresses
     if tx.To == "" || tx.From == "" {
@@ -111,9 +119,8 @@ func SubmitRawTransaction(rawTxBytes []byte) (string, error){
         return "", errors.New("invalid transaction: To and From address are the same")
     }
 
-    // Make transaction hash
-    txHash := crypto.Keccak256Hash(rawTxBytes).Hex()
-
+    // The canonical transaction hash is derived from the verified go-ethereum transaction object.
+    txHash := ethTx.Hash().Hex()
     // Asynchronously submit to mempool with context
     go func() {
         if err := SubmitToMempool(tx, txHash); err != nil {
@@ -134,7 +141,6 @@ func SubmitRawTransaction(rawTxBytes []byte) (string, error){
     // Return success response
     return txHash, nil
 }
-
 // Global host variable to store the libp2p host instance for network operations
 var globalHost host.Host
 
