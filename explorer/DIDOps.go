@@ -9,6 +9,10 @@ import (
 )
 
 func (s *ImmuDBServer) listDIDs(c *gin.Context) {
+
+    // Get network parameter from URL path (optional)
+    network := c.Query("network")
+    
     // Get pagination parameters with defaults
     page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
     limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
@@ -17,51 +21,32 @@ func (s *ImmuDBServer) listDIDs(c *gin.Context) {
     if page < 1 {
         page = 1
     }
-    if limit < 1 || limit > 50 {
-        limit = 10 // Default to 10 items per page, max 50
+    if limit < 1 || limit > 100 {
+        limit = 100 // Default to 10 items per page, max 100
     }
 
-    // Get all DIDs (consider optimizing this in DB_OPs if needed)
-    allDIDs, err := DB_OPs.ListAllDIDs(&s.accountsdb, 1000) // Using a large limit to get all
-    if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-        return
-    }
+	// Calculate offset for pagination
+	offset := (page - 1) * limit
 
-    totalDIDs := len(allDIDs)
+	// Get the paginated list of DIDs from the database.
+	// This is now efficient as it only fetches the documents for the current page.
+	pagedDIDs, err := DB_OPs.ListDIDsPaginated(&s.accountsdb, limit, offset, network)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve DIDs: " + err.Error()})
+		return
+	}
 
-    // Calculate pagination
-    totalPages := (totalDIDs + limit - 1) / limit
-    if page > totalPages && totalPages > 0 {
-        page = totalPages
-    }
-
-    // Calculate start and end indices
-    start := (page - 1) * limit
-    if start >= totalDIDs {
-        c.JSON(http.StatusOK, gin.H{
-            "data":       []string{},
-            "pagination": getPaginationMetadata(page, limit, totalDIDs, totalPages),
-        })
-        return
-    }
-
-    end := start + limit
-    if end > totalDIDs {
-        end = totalDIDs
-    }
-
-    // Get paginated results
-    pagedDIDs := allDIDs[start:end]
+	// Calculate total pages for pagination metadata
+    totalPages := (len(pagedDIDs) + limit - 1) / limit
 
     c.JSON(http.StatusOK, gin.H{
         "data":       pagedDIDs,
-        "pagination": getPaginationMetadata(page, limit, totalDIDs, totalPages),
+        "pagination": getPaginationMetadata(page, limit, totalPages),
     })
 }
 
 // Helper function to create pagination metadata
-func getPaginationMetadata(page, limit, totalItems, totalPages int) gin.H {
+func getPaginationMetadata(page, limit, totalPages int) gin.H {
     hasNext := page < totalPages
     hasPrev := page > 1
 
@@ -69,7 +54,6 @@ func getPaginationMetadata(page, limit, totalItems, totalPages int) gin.H {
         "current_page": page,
         "per_page":     limit,
         "total_pages":  totalPages,
-        "total_items":  totalItems,
         "has_next":     hasNext,
         "has_prev":     hasPrev,
     }
@@ -79,6 +63,10 @@ func getPaginationMetadata(page, limit, totalItems, totalPages int) gin.H {
 func (s *ImmuDBServer) getDIDDetails(c *gin.Context) {
 	// list of DIDs in the request
 	DIDs := c.QueryArray("dids")
+	if len(DIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one 'dids' query parameter is required"})
+		return
+	}
 	
 	var didDocs []DB_OPs.DIDDocument
 	for _,DID := range DIDs {

@@ -1,86 +1,230 @@
-package txverifier
+package Security
 
 import (
-    "github.com/ethereum/go-ethereum/common"
-    "github.com/ethereum/go-ethereum/core/types"
-    "math/big"
+	"errors"
+	"fmt"
+	"gossipnode/config"
+	"math/big"
+
+	"github.com/ethereum/go-ethereum/core/types"
+	"gossipnode/config/utils"
+
+	"gossipnode/DB_OPs"
 )
 
-// Transaction is your struct; make sure AccessList here is the same type as types.AccessList
-type Transaction struct {
-    From                 *common.Address
-    ChainID              *big.Int
-    Nonce                uint64
-    To                   *common.Address
-    Value                *big.Int
-    Data                 []byte
-    GasLimit             uint64
-    GasPrice             *big.Int
-    MaxPriorityFeePerGas *big.Int
-    MaxFeePerGas         *big.Int
-    AccessList           types.AccessList
-    V, R, S              *big.Int
+func ThreeChecks(tx *config.ZKBlockTransaction) (bool, error) {
+	// Initilize the Accounts DB connection pool
+	Conn, err := DB_OPs.NewAccountsClient()
+	if err != nil {
+		return false, err
+	}
+	defer Conn.Cancel()
+
+	// First Check DID exist
+	status, err := CheckAddressExist(tx, Conn)
+	if err != nil {
+		return false, fmt.Errorf("DID check failed with DB error: %w", err)
+	}
+	if !status {
+		return false, errors.New("sender or receiver DID not found")
+	}
+
+	// Second Check Signature
+	status, err = CheckSignature(tx)
+	if err != nil {
+		return false, fmt.Errorf("signature recovery failed: %w", err)
+	}
+	if !status {
+		return false, errors.New("invalid signature")
+	}
+
+	// Third Check Balance
+	status, err = CheckBalance(tx, Conn)
+	if err != nil {
+		return false, fmt.Errorf("balance check failed with error: %w", err)
+	}
+	if !status {
+		return false, errors.New("insufficient funds for transaction")
+	}
+
+	return true, nil
 }
 
-// VerifySignature checks that tx.V/R/S is a valid ECDSA signature over the
-// EIP-155/EIP-2930/EIP-1559 signing hash of the transaction fields, and that
-// the recovered address equals tx.From.
-func VerifySignature(tx *Transaction) (bool, error) {
-    // 1) Reconstruct the go-ethereum Transaction of the correct type
-    var ethTx *types.Transaction
+// CheckSignature verifies if the transaction signature is valid
+func CheckSignature(tx *config.ZKBlockTransaction) (bool, error) {
+	if tx == nil {
+		return false, errors.New("transaction cannot be nil")
+	}
 
-    switch {
-    case tx.MaxFeePerGas != nil && tx.MaxPriorityFeePerGas != nil:
-        // EIP-1559 (Type 2)
-        inner := &types.DynamicFeeTx{
-            ChainID:   tx.ChainID,
-            Nonce:     tx.Nonce,
-            To:        tx.To,
-            Value:     tx.Value,
-            GasTipCap: tx.MaxPriorityFeePerGas,
-            GasFeeCap: tx.MaxFeePerGas,
-            Gas:       tx.GasLimit,
-            Data:      tx.Data,
-            AccessList: tx.AccessList,
-        }
-        ethTx = types.NewTx(inner)
+	if tx.From == "" || tx.To == "" || tx.V == "" || tx.R == "" || tx.S == "" {
+		return false, nil
+	}
 
-    case len(tx.AccessList) > 0:
-        // EIP-2930 (Type 1)
-        inner := &types.AccessListTx{
-            ChainID:    tx.ChainID,
-            Nonce:      tx.Nonce,
-            To:         tx.To,
-            Value:      tx.Value,
-            GasPrice:   tx.GasPrice,
-            Gas:        tx.GasLimit,
-            Data:       tx.Data,
-            AccessList: tx.AccessList,
-        }
-        ethTx = types.NewTx(inner)
+	var ethTx *types.Transaction
+	var signer types.Signer
 
-    default:
-        // Legacy (Type 0)
-        inner := &types.LegacyTx{
-            Nonce:    tx.Nonce,
-            To:       tx.To,
-            Value:    tx.Value,
-            GasPrice: tx.GasPrice,
-            Gas:      tx.GasLimit,
-            Data:     tx.Data,
-        }
-        ethTx = types.NewTx(inner)
-    }
+	// Convert config.ZKBlockTransaction to *types.Transaction
+	temp, err := utils.ConvertZKBlockTransactionToTransaction(tx)
+	if err != nil {
+		return false, fmt.Errorf("failed to convert transaction: %v", err)
+	}
 
-    // 2) Use the “London” signer which knows how to hash & recover all three types
-    signer := types.NewLondonSigner(tx.ChainID)
+	// Determine transaction type based on fields
+	switch {
+	case tx.MaxFee != "" && tx.MaxPriorityFee != "":
+		// EIP-1559 (Type 2)
+		inner := &types.DynamicFeeTx{
+			ChainID:    temp.ChainID,
+			Nonce:      temp.Nonce,
+			To:         temp.To,
+			Value:      temp.Value,
+			GasTipCap:  temp.MaxPriorityFeePerGas,
+			GasFeeCap:  temp.MaxFeePerGas,
+			Gas:        temp.GasLimit,
+			Data:       temp.Data,
+			AccessList: toGethAccessList(temp.AccessList),
+			V:          temp.V,
+			R:          temp.R,
+			S:          temp.S,
+		}
+		ethTx = types.NewTx(inner)
+		signer = types.NewLondonSigner(temp.ChainID)
 
-    // 3) Recover the sender address from V/R/S
-    from, err := types.Sender(signer, ethTx)
-    if err != nil {
-        return false, err
-    }
+	case len(tx.AccessList) > 0:
+		// EIP-2930 (Type 1)
+		inner := &types.AccessListTx{
+			ChainID:    temp.ChainID,
+			Nonce:      temp.Nonce,
+			To:         temp.To,
+			Value:      temp.Value,
+			GasPrice:   temp.GasPrice,
+			Gas:        temp.GasLimit,
+			Data:       temp.Data,
+			AccessList: toGethAccessList(temp.AccessList),
+			V:          temp.V,
+			R:          temp.R,
+			S:          temp.S,
+		}
+		ethTx = types.NewTx(inner)
+		signer = types.NewEIP2930Signer(temp.ChainID)
 
-    // 4) Compare recovered address to tx.From
-    return from == *tx.From, nil
+	default:
+		// Legacy (Type 0)
+		inner := &types.LegacyTx{
+			Nonce:    temp.Nonce,
+			To:       temp.To,
+			Value:    temp.Value,
+			GasPrice: temp.GasPrice,
+			Gas:      temp.GasLimit,
+			Data:     temp.Data,
+			V:        temp.V,
+			R:        temp.R,
+			S:        temp.S,
+		}
+		ethTx = types.NewTx(inner)
+		signer = types.NewEIP155Signer(temp.ChainID)
+	}
+
+	// Recover the sender address from the signature
+	from, err := types.Sender(signer, ethTx)
+	if err != nil {
+		return false, err
+	}
+
+	// Compare the recovered address with the From address
+	isMatch := from == *temp.From
+	return isMatch, nil
+}
+
+// CheckAddressExist verifies if both sender and receiver DIDs exist in the database
+func CheckAddressExist(tx *config.ZKBlockTransaction, Conn *config.ImmuClient) (bool, error) {
+	if tx == nil {
+		return false, errors.New("transaction cannot be nil")
+	}
+	if tx.From == "" || tx.To == "" {
+		return false, nil
+	}
+
+	// check if the db have From DID and To DID
+	From, err := DB_OPs.GetDID(Conn, tx.From)
+	if err != nil {
+		return false, err
+	}
+
+	To, err := DB_OPs.GetDID(Conn, tx.To)
+	if err != nil {
+		return false, err
+	}
+
+	if From == nil || To == nil {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// Function that helps to check if the From DID have sufficient balance to make a transaction
+func CheckBalance(tx *config.ZKBlockTransaction, Conn *config.ImmuClient) (bool, error) {
+	if tx == nil {
+		return false, errors.New("transaction cannot be nil")
+	}
+	if tx.From == "" {
+		return false, nil
+	}
+
+	// check if the db have From DID
+	From, err := DB_OPs.GetDID(Conn, tx.From)
+	if err != nil {
+		return false, err
+	}
+
+	if From == nil {
+		return false, nil
+	}
+
+	// Convert From.balance from string to big.Int
+	FromBalance, err := utils.StrToBigIntBase(From.Balance, 10)
+	if err != nil {
+		return false, err
+	}
+
+	// Calculate total cost: value + (gasLimit * gasPrice)
+	totalCost, err := utils.StrToBigIntBase(tx.Value, 10)
+	if err != nil {
+		return false, err
+	}
+
+	// Calculate gas cost based on transaction type
+	var gasCost *big.Int
+	switch {
+	case tx.MaxFee != "" && tx.MaxPriorityFee != "":
+		// EIP-1559 transaction
+		gasCost, err = utils.StrToBigIntBase(tx.GasLimit, 10)
+	case tx.GasPrice != "":
+		// Legacy or EIP-2930 transaction
+		gasCost, err = utils.StrToBigIntBase(tx.GasLimit, 10)
+	default:
+		return false, errors.New("invalid gas pricing parameters")
+	}
+
+	totalCost.Add(totalCost, gasCost)
+
+	// Check if balance is sufficient for total cost
+	if FromBalance.Cmp(totalCost) < 0 {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// Helper function to convert our AccessList to go-ethereum's AccessList
+func toGethAccessList(accessList config.AccessList) types.AccessList {
+	var result types.AccessList
+	for _, at := range accessList {
+		result = append(result, types.AccessTuple{
+			Address:     at.Address,
+			StorageKeys: at.StorageKeys,
+		})
+	}
+	return result
 }

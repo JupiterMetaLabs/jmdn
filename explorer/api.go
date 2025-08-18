@@ -53,6 +53,8 @@ func (s *ImmuDBServer) setupRoutes() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Error opening log file")
 	}
+	defer f.Close()
+
 	gin.DefaultWriter = f
 	gin.DefaultErrorWriter = f
 
@@ -77,34 +79,40 @@ func (s *ImmuDBServer) setupRoutes() {
 		// List all transactions in a block
 		api.GET("/transactions/block/:number", s.listTransactions_inBlock)
 
-        // Return the Missing blocks - take the current block as input and return the missing blocks from current to latest
-        api.GET("/missing/:number", s.getMissingBlocks)
+		// Return the Missing blocks - take the current block as input and return the missing blocks from current to latest
+		api.GET("/missing/:number", s.getMissingBlocks)
 
 		// Health check
 		api.GET("/health", s.healthCheck)
 
 		// Get Latest Blocks by count using pagination - max 100 blocks at a time
 		api.GET("/latest/:count", s.getLatestBlock)
+
+		// Get all the transactions based on the pagination
+		api.GET("/transactions/all", s.listTransactions)
 	}
+
+	// Add a new group for Ethereum JSON-RPC
+	// s.router.POST("/rpc", s.handleJsonRpc)
 
 	// API routes for DID
 	did := s.router.Group("/api/did")
 	{
 		// Get all dids by pagination
-		did.GET("/all", s.listDIDs)
+        did.GET("/all/", s.listDIDs)
 
-		// get did detials
-		did.GET("/:did", s.getDIDDetails)
+		// Get DID details by one or more DID strings
+		did.GET("/details", s.getDIDDetails)
 
 		// Health check
 		did.GET("/health", s.didHealthCheck)
 	}
 
-    // stats api
-    stats := s.router.Group("/api/stats")
-    {
-        stats.GET("/", s.getStats)
-    }
+	// stats api
+	stats := s.router.Group("/api/stats")
+	{
+		stats.GET("/", s.getStats)
+	}
 
 	// Websockets to stream realtime blocks
 	sockets := s.router.Group("/api/sockets")
@@ -113,7 +121,6 @@ func (s *ImmuDBServer) setupRoutes() {
 	}
 
 }
-
 
 // Start runs the HTTP server
 func (s *ImmuDBServer) Start(addr string) error {
@@ -133,24 +140,24 @@ func (s *ImmuDBServer) Close() {
 
 // CORS middleware
 func cors() gin.HandlerFunc {
-    return func(c *gin.Context) {
-        c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-        c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Authorization")
-        c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-        c.Writer.Header().Set("Access-Control-Max-Age", "86400")  // 24 hours
+	return func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Authorization")
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		c.Writer.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
 
-        // Handle WebSocket upgrade
-        if c.GetHeader("Upgrade") == "websocket" {
-            c.Writer.Header().Set("Connection", "Upgrade")
-            c.Writer.Header().Set("Upgrade", "websocket")
-        }
+		// Handle WebSocket upgrade
+		if c.GetHeader("Upgrade") == "websocket" {
+			c.Writer.Header().Set("Connection", "Upgrade")
+			c.Writer.Header().Set("Upgrade", "websocket")
+		}
 
-        if c.Request.Method == "OPTIONS" {
-            c.AbortWithStatus(http.StatusNoContent)
-            return
-        }
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
 
-        c.Next()
-    }
+		c.Next()
+	}
 }

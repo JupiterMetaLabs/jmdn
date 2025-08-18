@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"gossipnode/config"
+
 	"log"
 	"os"
 	"path/filepath"
@@ -905,7 +906,8 @@ func Read(ic *config.ImmuClient, key string) ([]byte, error) {
 			config.Info(pool.logger, "Reading key: %s", key)
 			entry, err := conn.Client.Get(conn.Ctx, []byte(key))
 			if err != nil {
-				if err.Error() == "key not found" {
+				if strings.Contains(err.Error(), "key not found") ||
+					strings.Contains(err.Error(), "tbtree: key not found") {
 					return ErrNotFound
 				}
 				return err
@@ -927,7 +929,8 @@ func Read(ic *config.ImmuClient, key string) ([]byte, error) {
 		config.Info(ic.Logger, "Reading key: %s", key)
 		entry, err := ic.Client.Get(ic.Ctx, []byte(key))
 		if err != nil {
-			if err.Error() == "key not found" {
+			if strings.Contains(err.Error(), "key not found") ||
+				strings.Contains(err.Error(), "tbtree: key not found") {
 				return ErrNotFound
 			}
 			return err
@@ -1390,7 +1393,8 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 			config.Info(pool.logger, "Reading verified key: %s", key)
 			entry, err := conn.Client.VerifiedGet(conn.Ctx, []byte(key))
 			if err != nil {
-				if err.Error() == "key not found" {
+				if strings.Contains(err.Error(), "key not found") ||
+					strings.Contains(err.Error(), "tbtree: key not found") {
 					return ErrNotFound
 				}
 				return err
@@ -1414,7 +1418,8 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 		config.Info(ic.Logger, "Reading verified key: %s", key)
 		entry, err := ic.Client.VerifiedGet(ic.Ctx, []byte(key))
 		if err != nil {
-			if err.Error() == "key not found" {
+			if strings.Contains(err.Error(), "key not found") ||
+				strings.Contains(err.Error(), "tbtree: key not found") {
 				return ErrNotFound
 			}
 			return err
@@ -1852,20 +1857,70 @@ func GetTransactionBlock(mainDBClient *config.ImmuClient, txHash string) (*confi
 }
 
 // Get Transaction by hash
-func GetTransactionByHash(mainDBClient *config.ImmuClient, txHash string) (*config.Transaction, error) {
-	txKey := fmt.Sprintf("tx:%s", txHash)
-
-	txBytes, err := Read(mainDBClient, txKey)
+func GetTransactionByHash(mainDBClient *config.ImmuClient, txHash string) (*config.ZKBlockTransaction, error) {
+	// Get the block that contains the transaction.
+	block, err := GetTransactionBlock(mainDBClient, txHash)
 	if err != nil {
-		return nil, fmt.Errorf("transaction %s not found: %w", txHash, err)
+		return nil, err
 	}
 
-	var tx config.Transaction
-	if err := json.Unmarshal(txBytes, &tx); err != nil {
-		return nil, fmt.Errorf("failed to parse transaction %s: %w", txHash, err)
+	// Find the transaction in the block.
+	var zkTx *config.ZKBlockTransaction
+	for i := range block.Transactions {
+		if block.Transactions[i].Hash == txHash {
+			zkTx = &block.Transactions[i]
+			break
+		}
 	}
 
-	return &tx, nil
+	if zkTx == nil {
+		return nil, fmt.Errorf("transaction %s not found in block %d", txHash, block.BlockNumber)
+	}
+
+	return zkTx, nil
+}
+
+// GetTransactionsBatch fetches multiple transactions by their hashes in a single batch
+func GetTransactionsBatch(mainDBClient *config.ImmuClient, hashes []string) ([]*config.ZKBlockTransaction, error) {
+    var transactions []*config.ZKBlockTransaction
+    
+    // Process in batches to avoid too many concurrent requests
+    batchSize := 10
+    for i := 0; i < len(hashes); i += batchSize {
+        end := i + batchSize
+        if end > len(hashes) {
+            end = len(hashes)
+        }
+        
+        batch := hashes[i:end]
+        var wg sync.WaitGroup
+        var mu sync.Mutex
+        var batchErr error
+        
+        for _, hash := range batch {
+            wg.Add(1)
+            go func(h string) {
+                defer wg.Done()
+                
+                tx, err := GetTransactionByHash(mainDBClient, h)
+                if err != nil {
+                    batchErr = fmt.Errorf("failed to fetch transaction %s: %w", h, err)
+                    return
+                }
+                
+                mu.Lock()
+                transactions = append(transactions, tx)
+                mu.Unlock()
+            }(hash)
+        }
+        
+        wg.Wait()
+        if batchErr != nil {
+            return nil, batchErr
+        }
+    }
+    
+    return transactions, nil
 }
 
 func GetAllBlocks(mainDBClient *config.ImmuClient) ([]*config.ZKBlock, error) {

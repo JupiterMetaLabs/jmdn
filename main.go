@@ -20,6 +20,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/explorer"
 	fastsync "gossipnode/fastsync"
+	"gossipnode/gETH"
 	"gossipnode/helper"
 	"gossipnode/logging"
 	"gossipnode/messaging"
@@ -29,8 +30,8 @@ import (
 	"gossipnode/seed"
 	"gossipnode/transfer"
 
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog/log"
 )
@@ -148,6 +149,7 @@ func main() {
 	mempoolgRPC := flag.String("mempool", "localhost:15051", "Mempool gRPC server address")
 	cliGRPC := flag.Int("cli", 15053, "CLI gRPC server address")
 	DIDgRPC := flag.String("did", "localhost:15052", "DID gRPC server address")
+	gETHgRPC := flag.Int("geth", 15054, "gETH gRPC server address")
 
 	flag.Parse()
 
@@ -298,6 +300,15 @@ func main() {
 				fmt.Printf("  %d. ID: %s, Addresses: %v\n", i+1, p.ID, p.Addrs)
 			}
 		}
+	}
+	
+	if *gETHgRPC > 0 {
+		go func() {
+			fmt.Printf("Starting gETH gRPC server on port %d\n", *gETHgRPC)
+			if err := gETH.StartGRPC(*gETHgRPC); err != nil {
+				log.Error().Err(err).Msg("gETH gRPC server error")
+			}
+		}()
 	}
 
 	if *apiPort > 0 {

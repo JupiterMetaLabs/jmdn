@@ -9,7 +9,7 @@ import (
     "fmt"
     "io"
     "strconv"
-    "sync"
+    "sync" 
     "time"
 
     "github.com/bits-and-blooms/bloom/v3"
@@ -118,8 +118,8 @@ func markMessageProcessed(messageID string) {
 func storeMessageInImmuDB(msg config.BlockMessage) error {
     // Determine the key - focus on ZK blocks
     var key string
-    if msg.Type == "zkblock" && msg.ZKBlock != nil {
-        key = fmt.Sprintf("zkblock:%s", msg.ZKBlock.BlockHash.Hex())
+    if msg.Type == "zkblock" && msg.Block != nil {
+        key = fmt.Sprintf("zkblock:%s", msg.Block.BlockHash.Hex())
     } else if msg.Type == "transaction" && msg.Data != nil && msg.Data["transaction_hash"] != "" {
         key = fmt.Sprintf("tx:%s", msg.Data["transaction_hash"])
     } else {
@@ -159,8 +159,8 @@ func updateMessageSet(key string) error {
 // getMessageIDForBloomFilter gets the appropriate ID to use for duplication checking
 func getMessageIDForBloomFilter(msg config.BlockMessage) string {
     // Special handling for ZK blocks to use hash for deduplication
-    if msg.Type == "zkblock" && msg.ZKBlock != nil {
-        return fmt.Sprintf("zkblock:%s", msg.ZKBlock.BlockHash.Hex())
+    if msg.Type == "zkblock" && msg.Block != nil {
+        return fmt.Sprintf("zkblock:%s", msg.Block.BlockHash.Hex())
     }
     
     if msg.Type == "transaction" && msg.Data != nil && msg.Data["transaction_hash"] != "" {
@@ -210,11 +210,11 @@ func HandleBlockStream(stream network.Stream) {
     markMessageProcessed(messageID)
 
     // For ZK blocks, prioritize forwarding over processing
-    if msg.Type == "zkblock" && msg.ZKBlock != nil {
+    if msg.Type == "zkblock" && msg.Block != nil {
         log.Info().
-            Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
-            Uint64("block_number", msg.ZKBlock.BlockNumber).
-            Int("txn_count", len(msg.ZKBlock.Transactions)).
+            Str("block_hash", msg.Block.BlockHash.Hex()).
+            Uint64("block_number", msg.Block.BlockNumber).
+            Int("txn_count", len(msg.Block.Transactions)).
             Msg("Received ZK block from peer")
 
         // STEP 1: FORWARD BLOCK FIRST - increment hops and forward to other peers
@@ -222,8 +222,8 @@ func HandleBlockStream(stream network.Stream) {
             msg.Hops++
             if globalHost != nil {
                 log.Info().
-                    Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
-                    Uint64("block_number", msg.ZKBlock.BlockNumber).
+                    Str("block_hash", msg.Block.BlockHash.Hex()).
+                    Uint64("block_number", msg.Block.BlockNumber).
                     Int("hops", msg.Hops).
                     Msg("Forwarding ZK block to peers")
                     
@@ -252,47 +252,47 @@ func HandleBlockStream(stream network.Stream) {
             defer DB_OPs.Close(accountsClient)
             
             log.Info().
-                Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
-                Uint64("block_number", msg.ZKBlock.BlockNumber).
+                Str("block_hash", msg.Block.BlockHash.Hex()).
+                Uint64("block_number", msg.Block.BlockNumber).
                 Msg("Processing block transactions")
                 
             // Process all transactions in the block atomically with rollback capability
-            if err := BlockProcessing.ProcessBlockTransactions(msg.ZKBlock, accountsClient); err != nil {
+            if err := BlockProcessing.ProcessBlockTransactions(msg.Block, accountsClient); err != nil {
                 log.Error().
                     Err(err).
-                    Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
+                    Str("block_hash", msg.Block.BlockHash.Hex()).
                     Msg("Block processing failed - not storing block")
                 return
             }
             
             log.Info().
-                Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
+                Str("block_hash", msg.Block.BlockHash.Hex()).
                 Msg("All transactions processed successfully - storing block")
                 
             // Store the validated and processed block in main DB
-            if err := DB_OPs.StoreZKBlock(mainDBClient, msg.ZKBlock); err != nil {
+            if err := DB_OPs.StoreZKBlock(mainDBClient, msg.Block); err != nil {
                 log.Error().
                     Err(err).
-                    Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
+                    Str("block_hash", msg.Block.BlockHash.Hex()).
                     Msg("Failed to store block in database")
                 return
             }
             
             // Store block message metadata
-            if err := storeMessageInImmuDB(msg); err != nil {
+            if err := storeMessageInImmuDB(msg); err != nil { // msg is a copy, but it's fine
                 log.Error().Err(err).Msg("Failed to store block message in ImmuDB")
             }
             
             log.Info().
-                Str("block_hash", msg.ZKBlock.BlockHash.Hex()).
-                Uint64("block_number", msg.ZKBlock.BlockNumber).
+                Str("block_hash", msg.Block.BlockHash.Hex()).
+                Uint64("block_number", msg.Block.BlockNumber).
                 Msg("Block processed and stored successfully")
         }()
         
         // Print to console
         fmt.Printf("\n[ZKBLOCK from %s] Block #%d, Hash: %s, Txns: %d\n>>> ", 
-            msg.Sender, msg.ZKBlock.BlockNumber, msg.ZKBlock.BlockHash.Hex(), 
-            len(msg.ZKBlock.Transactions))
+            msg.Sender, msg.Block.BlockNumber, msg.Block.BlockHash.Hex(), 
+            len(msg.Block.Transactions))
     } else {
         // Handle other message types (not our focus)
         if msg.Hops < config.MaxHops {
@@ -427,7 +427,7 @@ func PropagateZKBlock(h host.Host, block *config.ZKBlock) error {
         Timestamp: now,
         Nonce:     nonce,
         Data:      metadata,
-        ZKBlock:   block,      // Include full block
+        Block:     block,      // Include full block
         Type:      "zkblock",
         Hops:      0,
     }
@@ -539,11 +539,11 @@ func GetZKBlockByHash(blockHash string) (*config.ZKBlock, error) {
         return nil, fmt.Errorf("block not found: %w", err)
     }
     
-    if msg.ZKBlock == nil {
+    if msg.Block == nil {
         return nil, fmt.Errorf("message found but does not contain a ZK block")
     }
     
-    return msg.ZKBlock, nil
+    return msg.Block, nil
 }
 
 // Helper function for min value

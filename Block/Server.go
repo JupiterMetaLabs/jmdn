@@ -1,21 +1,25 @@
 package Block
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"os"
 	"strconv"
+
 	"sync"
 	"time"
 
 	"gossipnode/DB_OPs"
+	"gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/messaging"
 	"gossipnode/metrics"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gin-gonic/gin"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/rs/zerolog"
@@ -26,52 +30,14 @@ type APIAccessTuple struct {
     StorageKeys []string `json:"storage_keys"`
 }
 
-// Request and response models
-type TransactionRequest struct {
-    From              string   `json:"from" binding:"required"`       // Add this line
-    RecipientAddress  string   `json:"recipient_address" binding:"required"`
-    Amount            string   `json:"amount" binding:"required"`     // String to preserve precision
-    Nonce             uint64   `json:"nonce" binding:"required"`
-    GasLimit          uint64   `json:"gas_limit" binding:"required"`
-    GasPrice          string   `json:"gas_price" binding:"required"`  // String to preserve precision
-    Data              string   `json:"data"`                          // Optional data
-    MaxPriorityFee    string   `json:"max_priority_fee"`              // Optional for EIP-1559
-    MaxFee            string   `json:"max_fee"`                       // Optional for EIP-1559
-    ChainID           int64    `json:"chain_id" binding:"required"`
-    AccessList        []APIAccessTuple `json:"access_list"`           // Optional
-}
-
-type TxnsType struct{
-    TxnType string `json:"txn_type" binding:"required"`
-    Txn TransactionRequest `json:"txn" binding:"required"`
-}
-
 type TransactionResponse struct {
     LegacyTx  *FullTxn `json:"legacy_tx,omitempty"`
     EIP1559Tx *FullTxn `json:"eip1559_tx,omitempty"`
 }
 
 type FullTxn struct {
-    Transaction     *TransactionData `json:"transaction"`
+    Transaction     *config.ZKBlockTransaction `json:"transaction"`
     TransactionHash string           `json:"transaction_hash"`
-}
-
-type TransactionData struct {
-    ChainID             string        `json:"chain_id"`
-    From                string        `json:"from"` // Sender's address
-    Nonce               uint64        `json:"nonce"`
-    To                  string        `json:"to"`
-    Value               string        `json:"value"`
-    Data                string        `json:"data"`
-    GasLimit            uint64        `json:"gas_limit"`
-    GasPrice            string        `json:"gas_price,omitempty"`
-    MaxPriorityFeePerGas string       `json:"max_priority_fee,omitempty"`
-    MaxFeePerGas         string       `json:"max_fee,omitempty"`
-    AccessList          []APIAccessTuple `json:"access_list,omitempty"`
-    V                   string        `json:"v"`
-    R                   string        `json:"r"`
-    S                   string        `json:"s"`
-    Type                string        `json:"type"`
 }
 
 // Global mutex to protect account access
@@ -98,209 +64,75 @@ func toBlockAccessList(apiList []APIAccessTuple) config.AccessList {
     return result
 }
 
-// Convert Block.Transaction to TransactionData
-func toTransactionData(tx *config.Transaction) *TransactionData {
-    result := &TransactionData{
-        ChainID:  tx.ChainID.String(),
-        From:     tx.From.Hex(),
-        Nonce:    tx.Nonce,
-        Value:    tx.Value.String(),
-        Data:     string(tx.Data),
-        GasLimit: tx.GasLimit,
-        V:        tx.V.String(),
-        R:        tx.R.String(),
-        S:        tx.S.String(),
+func submitRawTransaction(c *gin.Context) {
+    var req struct {
+        RawTx string `json:"raw_tx" binding:"required"` // Hex-encoded signed transaction
     }
-    
-    // Set recipient address
-    if tx.To != nil {
-        result.To = tx.To.Hex()
-    }
-    
-    // Set transaction type and type-specific fields
-    if tx.MaxFeePerGas != nil {
-        result.Type = "EIP-1559"
-        result.MaxFeePerGas = tx.MaxFeePerGas.String()
-        result.MaxPriorityFeePerGas = tx.MaxPriorityFeePerGas.String()
-    } else {
-        result.Type = "Legacy"
-        if tx.GasPrice != nil {
-            result.GasPrice = tx.GasPrice.String()
-        }
-    }
-    
-    // Set access list if present
-    if tx.AccessList != nil && len(tx.AccessList) > 0 {
-        result.AccessList = make([]APIAccessTuple, len(tx.AccessList))
-        for i, tuple := range tx.AccessList {
-            keys := make([]string, len(tuple.StorageKeys))
-            for j, key := range tuple.StorageKeys {
-                keys[j] = key.Hex()
-            }
-            
-            result.AccessList[i] = APIAccessTuple{
-                Address:     tuple.Address.Hex(),
-                StorageKeys: keys,
-            }
-        }
-    }
-    
-    return result
-}
 
-// Handler for generating transactions
-func generateTransactions(c *gin.Context) {
-    // var req TransactionRequest
-	var req TxnsType
-	var response TransactionResponse
-    
-    // Validate request
+    // 1. Bind and validate request
     if err := c.ShouldBindJSON(&req); err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
-    
-    // Parse big integers from string
-	amount, ok := new(big.Int).SetString(req.Txn.Amount, 10)    
-	if !ok {
-        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount"})
+
+    // Call SubmitRawTransaction with the raw transaction bytes
+    val, err := SubmitRawTransaction([]byte(req.RawTx))
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
-    
-    gasPrice, ok := new(big.Int).SetString(req.Txn.GasPrice, 10)
-    if !ok {
-        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid gas price"})
-        return
+    c.JSON(http.StatusOK, gin.H{"transaction_hash": val})
+}
+
+// SubmitRawTransaction handles pre-signed raw transactions with security validations
+func SubmitRawTransaction(rawTxBytes []byte) (string, error){
+    // Convert Bytes to Transaction
+    tx := &config.ZKBlockTransaction{}
+    err := json.Unmarshal(rawTxBytes, tx)
+    if err != nil {
+        return "", err
+    }
+
+    // Run security checks
+    status, err := Security.ThreeChecks(tx)
+    if !status || err != nil {
+        return "", err
     }
     
-    // Path to account file
-    accountPath := "Account.json"
-    chainID := big.NewInt(req.Txn.ChainID)
-    
-    // Convert data string to byte array
-    data := []byte(req.Txn.Data)
-    
-    // Lock during signing to prevent race conditions
-    accountMutex.Lock()
-    defer accountMutex.Unlock()
-    
-	if req.TxnType == "legacy" {
-    	// Generate Legacy Transaction
-		legacyTx, err := GenerateLegacyTransaction(
-			accountPath,
-			chainID,
-			req.Txn.RecipientAddress,
-			amount,
-			req.Txn.Nonce,
-			req.Txn.GasLimit,
-			gasPrice,
-			data,
-            req.Txn.From,
-		)
-		
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("legacy transaction error: %v", err)})
-			return
-		}
-		
-		// Calculate hash for legacy transaction
-		legacyTxHash, err := Hash(legacyTx)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("hash error: %v", err)})
-			return
-		}
-		// Prepare response with legacy transaction
-		response = TransactionResponse{
-			LegacyTx: &FullTxn{
-				Transaction:     toTransactionData(legacyTx),
-				TransactionHash: legacyTxHash,
-			},
-		}
-        LogTransaction(
-            legacyTxHash, 
-            legacyTx.From.Hex(), 
-            legacyTx.To.Hex(), 
-            legacyTx.Value.String(),
-            "legacy",
-        )
+    // Basic transaction validation
+    if tx.Value == "0" || tx.Value == "" {
+        return "", errors.New("invalid transaction: value is 0 or empty")
+    }
 
-         // Submit the transaction to the mempool
-        go func(){
-            err := SubmitToMempool(legacyTx, legacyTxHash)
-            if err != nil {
-                log.Printf("Error submitting transaction to mempool: %v", err)
-            } else {
-                log.Printf("Transaction %s successfully submitted to mempool", legacyTxHash)
-            }
-        }()
-	}else{
-		// Generate EIP-1559 transaction if maxFee and maxPriorityFee are provided
-		if req.Txn.MaxFee != "" && req.Txn.MaxPriorityFee != "" {
-			maxFee, ok := new(big.Int).SetString(req.Txn.MaxFee, 10)
-			if !ok {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid max fee"})
-				return
-			}
-			
-			maxPriorityFee, ok := new(big.Int).SetString(req.Txn.MaxPriorityFee, 10)
-			if !ok {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid max priority fee"})
-				return
-			}
-			
-			accessList := toBlockAccessList(req.Txn.AccessList)
-			
-			eip1559Tx, err := GenerateEIP1559Transaction(
-				accountPath,
-				chainID,
-				req.Txn.RecipientAddress,
-				amount,
-				req.Txn.Nonce,
-				req.Txn.GasLimit,
-				maxFee,
-				maxPriorityFee,
-				data,
-				accessList,
-                req.Txn.From,
-			)
-			
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("EIP-1559 transaction error: %v", err)})
-				return
-			}
-			
-			// Calculate hash for EIP-1559 transaction
-			eip1559TxHash, err := Hash(eip1559Tx)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("hash error: %v", err)})
-				return
-			}
-			
-			// Add EIP-1559 transaction to response
-			response.EIP1559Tx = &FullTxn{
-				Transaction:     toTransactionData(eip1559Tx),
-				TransactionHash: eip1559TxHash,
-			}
+    // Check the To and From addresses
+    if tx.To == "" || tx.From == "" {
+        return "", errors.New("invalid transaction: missing To or From address")
+    }else if tx.To == tx.From {
+        return "", errors.New("invalid transaction: To and From address are the same")
+    }
 
-            LogTransaction(
-                eip1559TxHash, 
-                eip1559Tx.From.Hex(), 
-                eip1559Tx.To.Hex(), 
-                eip1559Tx.Value.String(),
-                "eip1559",
-            )
+    // Make transaction hash
+    txHash := crypto.Keccak256Hash(rawTxBytes).Hex()
 
-            go func() {
-                err := SubmitToMempool(eip1559Tx, eip1559TxHash)
-                if err != nil {
-                    log.Printf("Error submitting transaction to mempool: %v", err)
-                } else {
-                    log.Printf("Transaction %s successfully submitted to mempool", eip1559TxHash)
-                }
-            }()
-		}
-	}        
-        c.JSON(http.StatusOK, response)
+    // Asynchronously submit to mempool with context
+    go func() {
+        if err := SubmitToMempool(tx, txHash); err != nil {
+            log.Error().Err(err).
+                Str("txHash", txHash).
+                Str("from", tx.From).
+                Str("to", tx.To).
+                Msg("Error submitting raw transaction to mempool")
+        }else {
+            log.Info().
+                Str("txHash", txHash).
+                Str("from", tx.From).
+                Str("to", tx.To).
+                Msg("Raw transaction successfully submitted to mempool")
+        }
+    }()
+
+    // Return success response
+    return txHash, nil
 }
 
 // Global host variable to store the libp2p host instance for network operations
@@ -383,7 +215,7 @@ func Startserver(port int, h host.Host) {
     })
     
     // Transaction endpoints
-    router.POST("/api/generate-tx", generateTransactions)
+    router.POST("/api/submit-raw-tx", submitRawTransaction)
     router.POST("/api/process-block", processZKBlock)
     router.GET("/api/block/:number", getBlockByNumber)
     router.GET("/api/block/hash/:hash", getBlockByHash)

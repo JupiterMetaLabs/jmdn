@@ -17,9 +17,14 @@ type ZKBlockTransaction struct {
     ChainID        string `json:"chain_id"`
     Nonce          string `json:"nonce"`
     GasLimit       string `json:"gas_limit"`
-    MaxFee         string `json:"max_fee,omitempty"`
+    MaxFee        string `json:"max_fee,omitempty"`
     MaxPriorityFee string `json:"max_priority_fee,omitempty"`
     Data           string `json:"data"`
+    GasPrice       string `json:"gas_price,omitempty"`
+    AccessList     AccessList `json:"access_list,omitempty"`
+    V string `json:"v,omitempty"`
+    R string `json:"r,omitempty"`
+    S string `json:"s,omitempty"`
 }
 
 // ZKBlock represents a block processed by the ZKVM with proof
@@ -34,11 +39,11 @@ type ZKBlock struct {
     // Block data
     Transactions []ZKBlockTransaction `json:"transactions"`
     Timestamp    int64                `json:"timestamp"`
-    ExtraData    []byte               `json:"extradata"`
+    ExtraData    string               `json:"extradata"`
     StateRoot    common.Hash          `json:"stateroot"`
     LogsBloom    []byte               `json:"logsbloom"`
-    CoinbaseAddr string               `json:"coinbaseaddr"` // DID of the miner
-    ZKVMAddr     string               `json:"zkvmaddr"`     // DID of the ZKVM 
+    CoinbaseAddr string               `json:"coinbaseaddr"`
+    ZKVMAddr     string               `json:"zkvmaddr"`    
     PrevHash     common.Hash          `json:"prevhash"`
     BlockHash    common.Hash          `json:"blockhash"`
     GasLimit     uint64               `json:"gaslimit"`
@@ -51,5 +56,18 @@ type ParsedZKTransaction struct {
     Original       *ZKBlockTransaction
     ValueBig       *big.Int
     MaxFeeBig      *big.Int
-    EffectiveGasFee *big.Int // The gas fee that will be charged
+    EffectiveGasFee *big.Int
+}
+
+// BlockMessage is a wrapper for a ZKBlock for network propagation.
+// It includes metadata for routing and deduplication.
+type BlockMessage struct {
+	ID        string   `json:"id"`        // Unique message ID
+	Sender    string   `json:"sender"`    // Original sender's peer ID
+	Timestamp int64    `json:"timestamp"` // Unix timestamp when message was created
+	Nonce     string   `json:"nonce"`     // Unique nonce for CRDT
+	Block     *ZKBlock `json:"block"`     // The ZK block data
+	Hops      int      `json:"hops"`      // How many hops this message has made
+    Type      string   `json:"type"`      // Type of message
+    Data      map[string]string `json:"data"`      // Additional data
 }

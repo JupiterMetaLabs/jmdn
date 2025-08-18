@@ -1,16 +1,19 @@
 package DB_OPs
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"gossipnode/config"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/client"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc/metadata"
 )
@@ -745,6 +748,242 @@ func ListAllDIDs(ic *config.ImmuClient, limit int) ([]*DIDDocument, error) {
 	return docs, nil
 }
 
+// ListDIDsPaginated retrieves a paginated list of DIDs.
+// It first fetches all keys (which is fast) and then retrieves full documents only for the requested page.
+// This implementation efficiently scans keys without loading all of them into memory.
+func ListDIDsPaginated(ic *config.ImmuClient, limit, offset int, extendedPrefix string) ([]*DIDDocument, error) {
+	// Ensure we're using the accounts database, which also handles reconnections.
+	if err := ensureAccountsDBSelected(ic); err != nil {
+		return nil, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
+	}
+
+	paginatedKeys := make([]string, 0, limit)
+	keysScanned := 0
+	batchSize := 1000 // How many keys to fetch from the DB at a time
+	var lastKey []byte
+
+	var prefix string
+	if extendedPrefix == "" {
+		prefix = "did:"
+	}else{
+		prefix = "did:" + "did:jmdt:" + extendedPrefix
+	}
+
+	// Loop until we have enough keys for our page or we run out of keys in the DB.
+	for len(paginatedKeys) < limit {
+		var scanResult *schema.Entries
+		// Use the existing retry logic from the client for robustness
+		err := withRetry(ic, "ScanDIDsPaginated", func() error {
+			req := &schema.ScanRequest{
+				Prefix:  []byte(prefix),
+				Limit:   uint64(batchSize),
+				SeekKey: lastKey,
+				Desc:    false,
+			}
+			var scanErr error
+			scanResult, scanErr = ic.Client.Scan(ic.Ctx, req)
+			return scanErr
+		})
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan for DIDs: %w", err)
+		}
+
+		if len(scanResult.Entries) == 0 {
+			break // No more keys in the database.
+		}
+
+		for _, entry := range scanResult.Entries {
+			// Check if the current key is past the offset.
+			if keysScanned >= offset {
+				paginatedKeys = append(paginatedKeys, string(entry.Key))
+				// If we have collected enough keys for the page, we can stop.
+				if len(paginatedKeys) == limit {
+					break
+				}
+			}
+			keysScanned++
+		}
+
+		// If we've already collected enough keys, exit the outer loop.
+		if len(paginatedKeys) == limit {
+			break
+		}
+
+		// Prepare for the next batch scan.
+		lastKey = scanResult.Entries[len(scanResult.Entries)-1].Key
+	}
+
+	// Now, fetch the full documents only for the keys of the current page.
+	docs := make([]*DIDDocument, 0, len(paginatedKeys))
+	for _, key := range paginatedKeys {
+		var doc DIDDocument
+		// SafeReadJSON already has retry logic.
+		if err := SafeReadJSON(ic, key, &doc); err != nil {
+			config.Warning(ic.Logger, "Error reading DID %s, skipping: %v", key, err)
+			continue // Skip if a single DID fails to read.
+		}
+		docs = append(docs, &doc)
+	}
+
+	return docs, nil
+}
+
+// CountDIDs returns the total number of DIDs in the database.
+// This implementation scans keys without loading them all into memory.
+func CountDIDs(ic *config.ImmuClient) (int, error) {
+	// Ensure we're using the accounts database, which also handles reconnections.
+	if err := ensureAccountsDBSelected(ic); err != nil {
+		return 0, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
+	}
+	var totalKeys int
+	batchSize := 1000 // How many keys to fetch from the DB at a time
+	var lastKey []byte
+
+	for {
+		var scanResult *schema.Entries
+		// Use the existing retry logic from the client for robustness
+		err := withRetry(ic, "ScanDIDsCount", func() error {
+			req := &schema.ScanRequest{
+				Prefix:  []byte("did:"),
+				Limit:   uint64(batchSize),
+				SeekKey: lastKey,
+				Desc:    false,
+			}
+			var scanErr error
+			scanResult, scanErr = ic.Client.Scan(ic.Ctx, req)
+			return scanErr
+		})
+
+		if err != nil {
+			return 0, fmt.Errorf("failed to scan for DIDs count: %w", err)
+		}
+
+		count := len(scanResult.Entries)
+		totalKeys += count
+
+		if count < batchSize {
+			break // Reached the end of the keys.
+		}
+
+		// Prepare for the next batch scan.
+		lastKey = scanResult.Entries[count-1].Key
+	}
+
+	return totalKeys, nil
+}
+
+// GetTransactionsByDID retrieves all transactions associated with a given DID
+// This implementation iterates through all blocks to find matching transactions,
+// which is more efficient than fetching each transaction individually.
+func GetTransactionsByDID(mainDBClient *config.ImmuClient, did string) ([]*config.ZKBlockTransaction, error) {
+	// Extract the address from the DID.
+	addr, err := ExtractAddressFromDID(did)
+	if err != nil {
+		return nil, fmt.Errorf("invalid DID format: %w", err)
+	}
+
+	// Get the latest block number to define the search range.
+	latestBlockNumber, err := GetLatestBlockNumber(mainDBClient)
+	if err != nil {
+		// GetLatestBlockNumber returns 0, nil if no blocks are found, so we only check for other errors.
+		return nil, fmt.Errorf("failed to get latest block number: %w", err)
+	}
+
+	if latestBlockNumber == 0 {
+		return []*config.ZKBlockTransaction{}, nil // No blocks, so no transactions.
+	}
+
+	var matchingTxs []*config.ZKBlockTransaction
+	var logger *config.AsyncLogger
+	if mainDBClient != nil {
+		logger = mainDBClient.Logger
+	} else {
+		// Fallback to global pool logger if client is nil, though it's unlikely for this function.
+		logger = GetGlobalPool().logger
+	}
+
+	// Iterate through each block to find transactions.
+	// We start from block 1, as block 0 is often the genesis block and might be handled differently.
+	for i := uint64(1); i <= latestBlockNumber; i++ {
+		block, err := GetZKBlockByNumber(mainDBClient, i)
+		if err != nil {
+			config.Warning(logger, "Error retrieving block %d, skipping: %v", i, err)
+			continue
+		}
+
+		// Check each transaction in the current block.
+		for _, tx := range block.Transactions {
+			// Convert the DID into common.Address
+			sender, err := ExtractAddressFromDID(tx.From)
+			if err != nil {
+				config.Warning(logger, "Error extracting address from DID %s, skipping: %v", tx.From, err)
+				continue
+			}
+			receiver, err := ExtractAddressFromDID(tx.To)
+			if err != nil {
+				config.Warning(logger, "Error extracting address from DID %s, skipping: %v", tx.To, err)
+				continue
+			}
+
+			// Check if the address from the DID matches the sender or receiver by converting them to common.Address
+			isSender := tx.From != "" && bytes.Equal(sender.Bytes(), addr.Bytes())
+			isReceiver := tx.To != "" && bytes.Equal(receiver.Bytes(), addr.Bytes())
+
+			if isSender || isReceiver {
+				matchingTxs = append(matchingTxs, &tx)
+			}
+		}
+	}
+
+	config.Info(logger, "Found %d transactions for DID %s", len(matchingTxs), did)
+	return matchingTxs, nil
+}
+
+// GetTransactionHashes retrieves transaction hashes with pagination
+func GetTransactionHashes(mainDBClient *config.ImmuClient, offset, limit int) ([]string, int, error) {
+    // Get total count first
+    allHashes, err := getAllTransactionHashes(mainDBClient)
+    if err != nil {
+        return nil, 0, err
+    }
+    
+    total := len(allHashes)
+    
+    // Apply pagination
+    if offset >= total {
+        return []string{}, total, nil
+    }
+    
+    end := offset + limit
+    if end > total {
+        end = total
+    }
+    
+    return allHashes[offset:end], total, nil
+}
+
+// getAllTransactionHashes gets all transaction hashes (cached)
+func getAllTransactionHashes(mainDBClient *config.ImmuClient) ([]string, error) {
+    // Use the existing GetAllKeys helper for robustness
+    keys, err := GetAllKeys(mainDBClient, "tx:")
+    if err != nil {
+        return nil, err
+    }
+
+    // Extract just the transaction hashes from the keys
+    var hashes []string
+    for _, key := range keys {
+        // Key is in format "tx:<hash>", so we take everything after "tx:"
+        if len(key) > 3 {
+            hashes = append(hashes, key[3:])
+        }
+    }
+
+    return hashes, nil
+}
+
+
 // ensureAccountsDBSelected makes sure we're using the accounts database (UNCHANGED)
 // This helps prevent the "please select a database first" error
 func ensureAccountsDBSelected(ic *config.ImmuClient) error {
@@ -850,6 +1089,25 @@ func reconnectToAccountsDB(ic *config.ImmuClient) error {
 	return nil
 }
 
+func ExtractAddressFromDID(did string) (common.Address, error) {
+    
+    // Check if we get the Correct Addr instead of DID then directly return the addr
+    if common.IsHexAddress(did) {
+        return common.HexToAddress(did), nil
+    }
+
+	parts := strings.Split(did, ":")
+	if len(parts) < 4 {
+		return common.Address{}, fmt.Errorf("invalid DID format: %s", did)
+	}
+	// The last part should be the Ethereum address
+	addrStr := parts[len(parts)-1]
+	if !common.IsHexAddress(addrStr) {
+		return common.Address{}, fmt.Errorf("invalid Ethereum address in DID: %s", addrStr)
+	}
+	return common.HexToAddress(addrStr), nil
+}
+
 // ========================================
 // OPTIONAL ENHANCED FUNCTIONS FOR CONVENIENCE
 // ========================================
@@ -898,4 +1156,3 @@ func UpdateDIDBalancePooled(did string, newBalance string) error {
 func ListAllDIDsPooled(limit int) ([]*DIDDocument, error) {
 	return ListAllDIDs(nil, limit)
 }
-
