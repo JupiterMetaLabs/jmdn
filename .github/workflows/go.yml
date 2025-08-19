@@ -2,9 +2,9 @@ name: Go
 
 on:
   push:
-    branches: [ "Mainnet" ]
+    branches: [ "Testing" ]
   pull_request:
-    branches: [ "Mainnet" ]
+    branches: [ "Testing" ]
 
 jobs:
   build:
@@ -96,7 +96,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: ./bin/**
-          tag_name: JMDT-Decentralised-Node
+          tag_name: JMDT-Decentralised-Node-beta-`${{ github.sha }}`
           name: JMDT-Decentralised-Node-`${{ github.sha }}`
           body: |
             This is an automated release for commit `${{ github.sha }}`
