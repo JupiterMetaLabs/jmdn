@@ -194,11 +194,19 @@ func CheckBalance(tx *config.ZKBlockTransaction, Conn *config.ImmuClient) (bool,
 	}
 
 	// Convert From.balance from string to big.Int
-	balanceStr := strings.Trim(From.Balance, "[]\"") // Remove any JSON array or string quotes
-	FromBalance, ok := new(big.Int).SetString(balanceStr, 10)
+	if strings.HasPrefix(From.Balance, "[") {
+		balanceStr := strings.Trim(From.Balance, "[]\"") // Remove any JSON array or string quotes
+		From.Balance = balanceStr
+	}
+
+	FromBalance, ok := new(big.Int).SetString(From.Balance, 10)
 	if !ok {
 		return false, fmt.Errorf("failed to convert From balance from string to big.Int: invalid big.Int %q (base 10)", From.Balance)
 	}
+	// Multiply by 10^9 to convert to wei if needed
+	multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(9), nil)
+	FromBalance = new(big.Int).Mul(FromBalance, multiplier)
+
 	// Calculate total cost: value + (gasLimit * gasPrice)
 	totalCost, ok := new(big.Int).SetString(tx.Value, 10)
 	if !ok {

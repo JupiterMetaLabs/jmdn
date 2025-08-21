@@ -189,6 +189,9 @@ service Chain {
     // Block operations
     rpc GetBlockByNumber(GetBlockByNumberReq) returns (Block);
     rpc GetBlockByHash(GetBlockByHashReq) returns (Block);
+
+    // Get ChainID
+    rpc GetChainID(Empty) returns (Quantity);
     
     // Transaction operations
     rpc GetTransactionByHash(GetByHashReq) returns (Transaction);

@@ -1,11 +1,11 @@
-import json
-import requests
-import time
-from eth_account import Account
-from web3 import Web3
-from eth_utils import to_hex, to_checksum_address
-from eth_keys import keys
-from eth_utils import keccak
+# import json
+# import requests
+# import time
+# from eth_account import Account
+# from web3 import Web3
+# from eth_utils import to_hex, to_checksum_address
+# from eth_keys import keys
+# from eth_utils import keccak
 
 def generate_ethereum_keypair():
     """Generate an Ethereum compatible keypair"""
@@ -52,7 +52,6 @@ def sign_transaction(private_key_hex, tx_data):
     # server's `/api/submit-raw-tx` endpoint binds to.
     # Based on the Go code, the server expects a full transaction object in JSON,
     # not just the raw RLP-encoded transaction.
-# In the sign_transaction function, update the api_payload to use decimal strings:
     api_payload = {
         "chain_id": tx_data['chain_id'],
         "nonce": tx_data['nonce'],
@@ -71,47 +70,98 @@ def sign_transaction(private_key_hex, tx_data):
         
     return api_payload
 
-def submit_transaction(api_url, tx_payload):
-    """
-    Submit a signed transaction payload to the node API
+# def submit_transaction(api_url, tx_payload):
+#     """
+#     Submit a signed transaction payload to the node API
     
-    Args:
-        api_url (str): Base URL of the node API
-        tx_payload (dict): Dictionary containing the full transaction payload
+#     Args:
+#         api_url (str): Base URL of the node API
+#         tx_payload (dict): Dictionary containing the full transaction payload
     
-    Returns:
-        dict: Response from the node API
-    """
-    print(f"\nSubmitting transaction to {api_url}...")
-    print(f"Payload: {json.dumps(tx_payload, indent=2)}")
+#     Returns:
+#         dict: Response from the node API
+#     """
+#     print(f"\nSubmitting transaction to {api_url}...")
+#     print(f"Payload: {json.dumps(tx_payload, indent=2)}")
     
+#     try:
+#         # Make the API request
+#         response = requests.post(
+#             f"{api_url}/api/submit-raw-tx",
+#             headers={
+#                 "Content-Type": "application/json",
+#                 "Accept": "application/json"
+#             },
+#             json=tx_payload,  # Send the payload directly
+#             timeout=30
+#         )
+        
+#         # Check for HTTP errors
+#         response.raise_for_status()
+        
+#         # Return the JSON response
+#         return response.json()
+        
+#     except requests.exceptions.RequestException as e:
+#         error_msg = str(e)
+#         if hasattr(e, 'response') and e.response is not None:
+#             error_msg += f"\nStatus Code: {e.response.status_code}"
+#             try:
+#                 error_msg += f"\nResponse: {e.response.text}"
+#             except:
+#                 pass
+#         raise Exception(f"Failed to submit transaction: {error_msg}")
+
+import grpc
+import json
+import time
+
+# NOTE: Generate these files by running the following command from the project root:
+# python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. gETH/proto/gETH.proto
+import gETH_pb2
+import gETH_pb2_grpc
+
+
+def run_grpc(tx_data):
+    """Connects to the gRPC server and sends a raw transaction."""
+
+    # 1. Construct a sample transaction based on the Go ZKBlockTransaction struct.
+    #    Replace with your actual transaction data.
+    ## get data form the function 
+
+
+    # 2. Serialize the dictionary to a JSON string, then encode to bytes.
+    signed_tx_bytes = json.dumps(tx_data).encode('utf-8')
+
+    # 3. Connect to the gRPC server.
+    #    Replace 'localhost:50051' with your gRPC server's address.
+    server_address = '192.168.100.139:15055'
+    print(f"Connecting to {server_address}...")
+
     try:
-        # Make the API request
-        response = requests.post(
-            f"{api_url}/api/submit-raw-tx",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json"
-            },
-            json=tx_payload,  # Send the payload directly
-            timeout=30
-        )
-        
-        # Check for HTTP errors
-        response.raise_for_status()
-        
-        # Return the JSON response
-        return response.json()
-        
-    except requests.exceptions.RequestException as e:
-        error_msg = str(e)
-        if hasattr(e, 'response') and e.response is not None:
-            error_msg += f"\nStatus Code: {e.response.status_code}"
-            try:
-                error_msg += f"\nResponse: {e.response.text}"
-            except:
-                pass
-        raise Exception(f"Failed to submit transaction: {error_msg}")
+        with grpc.insecure_channel(server_address) as channel:
+            stub = gETH_pb2_grpc.ChainStub(channel)
+
+            # 4. Create the request object.
+            request = gETH_pb2.SendRawTxReq(signed_tx=signed_tx_bytes)
+
+            # 5. Call the RPC and get the response.
+            print("Sending raw transaction...")
+            response = stub.SendRawTransaction(request)
+
+            if response.error:
+                print(f"Error from server: {response.error}")
+            else:
+                tx_hash_hex = '0x' + response.tx_hash.hex()
+                print(f"Successfully sent transaction. Hash: {tx_hash_hex}")
+
+    except grpc.RpcError as e:
+        print(f"gRPC connection failed: {e.code()} - {e.details()}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+    
+
+
 if __name__ == "__main__":
     # Configuration
     API_URL = "http://localhost:15050"
@@ -133,14 +183,14 @@ if __name__ == "__main__":
         
         # Transaction parameters
         tx_data = {
-            'chain_id': '7000700',  # Your chain ID
+            'chain_id': '8000800',  # Your chain ID
             'from': f'did:jmdt:superj:{keypair["address"]}',
             'nonce': '0',  # Start with 0 for new accounts
             'to': 'did:jmdt:superj:01F0bAD1b881f7D465c264A52E02E8BdA5ea078B',
-            'value': '4000000000000000000',  # 4 tokens in wei (4 * 10^18)
+            'value': '4',  # 4 tokens in wei (4 * 10^18)
             'data': '0x',  # Empty for simple transfers
             'gas_limit': '21000',  # Standard gas limit for simple transfers
-            'gas_price': '20000000000',  # 20 Gwei (20 * 10^9)
+            'gas_price': '2000',  # 20 Gwei (20 * 10^9)
         }
         
         print("\nTransaction Data:")
@@ -151,12 +201,8 @@ if __name__ == "__main__":
             tx_payload = sign_transaction(keypair['private_key'], tx_data)
             print(f"API Payload prepared: {json.dumps(tx_payload, indent=2)}")
             
-            # Submit the transaction
-            result = submit_transaction(API_URL, tx_payload)
-            
-            print("\nTransaction submitted successfully!")
-            print("Result:", json.dumps(result, indent=2))
-            
+            run_grpc(tx_payload)
+
         except ValueError as ve:
             print(f"\nValidation Error: {str(ve)}")
         except Exception as e:

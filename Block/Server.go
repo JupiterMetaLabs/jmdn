@@ -1,14 +1,14 @@
 package Block
 
 import (
-		"encoding/json"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
-		"sync"
+	"sync"
 	"time"
 
 	"gossipnode/DB_OPs"
@@ -18,7 +18,6 @@ import (
 	"gossipnode/metrics"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gin-gonic/gin"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -26,8 +25,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// didPrefix is the application-specific prefix for Decentralized Identifiers.
-const didPrefix = "did:jmdt:superj:"
 
 type APIAccessTuple struct {
     Address     string   `json:"address"`
@@ -93,16 +90,16 @@ func submitRawTransaction(c *gin.Context) {
 // SubmitRawTransaction handles pre-signed raw transactions with security validations
 func SubmitRawTransaction(tx *config.ZKBlockTransaction) (string, error){
     // Debugging
-    // fmt.Println("Transaction: ", tx)
-    // fmt.Println("Transaction ChainID:", tx.ChainID)
+    fmt.Println("Transaction: ", tx)
+    fmt.Println("Transaction ChainID:", tx.ChainID)
     
     // Run security checks
-    ethTx, err := Security.ThreeChecks(tx)
-    if err != nil {
+    status, err := Security.ThreeChecks(tx)
+    if !status || err != nil {
         return "", err
     }
     // Debugging
-    // fmt.Println("Security Checks: ", status)
+    fmt.Println("Security Checks: ", status)
 
     // Basic transaction validation
     if tx.Value == "0" || tx.Value == "" {
@@ -119,8 +116,14 @@ func SubmitRawTransaction(tx *config.ZKBlockTransaction) (string, error){
         return "", errors.New("invalid transaction: To and From address are the same")
     }
 
-    // The canonical transaction hash is derived from the verified go-ethereum transaction object.
-    txHash := ethTx.Hash().Hex()
+    // Make transaction hash
+    rawTxBytes, err := json.Marshal(tx)
+    if err != nil {
+        return "", err
+    }
+    txHash := crypto.Keccak256Hash(rawTxBytes).Hex()
+    // Debugging
+    fmt.Println("Transaction Hash: ", txHash)
     // Asynchronously submit to mempool with context
     go func() {
         if err := SubmitToMempool(tx, txHash); err != nil {

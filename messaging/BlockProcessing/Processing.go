@@ -317,11 +317,14 @@ func processTransaction(tx config.ZKBlockTransaction, coinbaseAddr, zkvmAddr str
 
     // Calculate gas fee (gasLimit * gasPrice / 1,000,000,000)
     gasFeeToDeduct := new(big.Int).Mul(gasLimit, parsedTx.EffectiveGasFee)
-    gasFeeToDeduct = new(big.Int).Div(gasFeeToDeduct, big.NewInt(1000000000))
+    gasFeeToDeduct = new(big.Int).Div(gasFeeToDeduct, big.NewInt(1000000000000000000))
+
+    // Transaction value will be in Wei
+    parsedTx.ValueBig = new(big.Int).Div(parsedTx.ValueBig, big.NewInt(1000000000000000000))
     
     // Calculate total amount to deduct from sender (amount + gas fee)
     totalDeduction := new(big.Int).Add(parsedTx.ValueBig, gasFeeToDeduct)
-    
+    fmt.Println("Total deduction: ", totalDeduction.String())
     // Split the gas fee between coinbase and ZKVM
     halfGasFee := new(big.Int).Div(gasFeeToDeduct, big.NewInt(2))
     

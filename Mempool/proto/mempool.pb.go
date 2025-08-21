@@ -37,7 +37,6 @@ type Transaction struct {
 	MaxFee         string                 `protobuf:"bytes,10,opt,name=max_fee,json=maxFee,proto3" json:"max_fee,omitempty"`
 	MaxPriorityFee string                 `protobuf:"bytes,11,opt,name=max_priority_fee,json=maxPriorityFee,proto3" json:"max_priority_fee,omitempty"`
 	Data           string                 `protobuf:"bytes,12,opt,name=data,proto3" json:"data,omitempty"`
-	Signature      string                 `protobuf:"bytes,13,opt,name=signature,proto3" json:"signature,omitempty"`
 	V              string                 `protobuf:"bytes,14,opt,name=v,proto3" json:"v,omitempty"` // EIP-155 v value
 	R              string                 `protobuf:"bytes,15,opt,name=r,proto3" json:"r,omitempty"`
 	S              string                 `protobuf:"bytes,16,opt,name=s,proto3" json:"s,omitempty"` // EIP-155 r and s values
@@ -155,13 +154,6 @@ func (x *Transaction) GetMaxPriorityFee() string {
 func (x *Transaction) GetData() string {
 	if x != nil {
 		return x.Data
-	}
-	return ""
-}
-
-func (x *Transaction) GetSignature() string {
-	if x != nil {
-		return x.Signature
 	}
 	return ""
 }
@@ -817,7 +809,7 @@ var File_mempool_proto protoreflect.FileDescriptor
 
 const file_mempool_proto_rawDesc = "" +
 	"\n" +
-	"\rmempool.proto\x12\x05proto\x1a\x1bgoogle/protobuf/empty.proto\"\xfa\x02\n" +
+	"\rmempool.proto\x12\x05proto\x1a\x1bgoogle/protobuf/empty.proto\"\xdc\x02\n" +
 	"\vTransaction\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x12\x12\n" +
 	"\x04from\x18\x02 \x01(\tR\x04from\x12\x0e\n" +
@@ -831,8 +823,7 @@ const file_mempool_proto_rawDesc = "" +
 	"\amax_fee\x18\n" +
 	" \x01(\tR\x06maxFee\x12(\n" +
 	"\x10max_priority_fee\x18\v \x01(\tR\x0emaxPriorityFee\x12\x12\n" +
-	"\x04data\x18\f \x01(\tR\x04data\x12\x1c\n" +
-	"\tsignature\x18\r \x01(\tR\tsignature\x12\f\n" +
+	"\x04data\x18\f \x01(\tR\x04data\x12\f\n" +
 	"\x01v\x18\x0e \x01(\tR\x01v\x12\f\n" +
 	"\x01r\x18\x0f \x01(\tR\x01r\x12\f\n" +
 	"\x01s\x18\x10 \x01(\tR\x01s\"J\n" +

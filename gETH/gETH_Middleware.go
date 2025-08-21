@@ -138,13 +138,16 @@ func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error
 
 func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error) {
 	// Convert Signed Transaction bytes to proper DS	
-	bytes := req.SignedTx
-	// COnvert bytes to ZKBlockTransaction
 	var tx config.ZKBlockTransaction
-	err := json.Unmarshal(bytes, &tx)
+	err := json.Unmarshal(req.SignedTx, &tx)
 	if err != nil {
 		return nil, err
 	}
+	// Debugging
+	fmt.Println("Transaction: ", tx)
+	fmt.Println("Transaction Type: ", tx.Type)
+	fmt.Println("Gas Fee Type: ", tx.GasPrice)
+	fmt.Println("Gas Fee: ", tx.GasPrice)
 	hash, err := block.SubmitRawTransaction(&tx)
 	if err != nil {
 		return nil, err
@@ -169,4 +172,8 @@ func _EstimateGas(req *proto.CallReq) (*proto.EstimateResp, error) {
     return &proto.EstimateResp{
         GasEstimate: feeStats.RecommendedFees.Standard,
     }, nil
+}
+
+func _GetChainID(req *proto.Empty) (*proto.Quantity, error) {
+    return &proto.Quantity{Value: 8000800}, nil
 }

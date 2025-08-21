@@ -2020,10 +2020,12 @@ const file_gETH_proto_rawDesc = "" +
 	"\n" +
 	"LogsSubReq\x12\x1c\n" +
 	"\taddresses\x18\x01 \x03(\fR\taddresses\x12\x16\n" +
-	"\x06topics\x18\x02 \x03(\fR\x06topics2\xd8\x04\n" +
+	"\x06topics\x18\x02 \x03(\fR\x06topics2\x83\x05\n" +
 	"\x05Chain\x12:\n" +
 	"\x10GetBlockByNumber\x12\x19.gETH.GetBlockByNumberReq\x1a\v.gETH.Block\x126\n" +
-	"\x0eGetBlockByHash\x12\x17.gETH.GetBlockByHashReq\x1a\v.gETH.Block\x12=\n" +
+	"\x0eGetBlockByHash\x12\x17.gETH.GetBlockByHashReq\x1a\v.gETH.Block\x12)\n" +
+	"\n" +
+	"GetChainID\x12\v.gETH.Empty\x1a\x0e.gETH.Quantity\x12=\n" +
 	"\x14GetTransactionByHash\x12\x12.gETH.GetByHashReq\x1a\x11.gETH.Transaction\x125\n" +
 	"\x10GetReceiptByHash\x12\x12.gETH.GetByHashReq\x1a\r.gETH.Receipt\x12?\n" +
 	"\x0fGetAccountState\x12\x18.gETH.GetAccountStateReq\x1a\x12.gETH.AccountState\x12.\n" +
@@ -2088,28 +2090,30 @@ var file_gETH_proto_depIdxs = []int32{
 	12, // 7: gETH.GetLogsResp.logs:type_name -> gETH.Log
 	13, // 8: gETH.Chain.GetBlockByNumber:input_type -> gETH.GetBlockByNumberReq
 	14, // 9: gETH.Chain.GetBlockByHash:input_type -> gETH.GetBlockByHashReq
-	15, // 10: gETH.Chain.GetTransactionByHash:input_type -> gETH.GetByHashReq
-	15, // 11: gETH.Chain.GetReceiptByHash:input_type -> gETH.GetByHashReq
-	16, // 12: gETH.Chain.GetAccountState:input_type -> gETH.GetAccountStateReq
-	18, // 13: gETH.Chain.GetLogs:input_type -> gETH.GetLogsReq
-	21, // 14: gETH.Chain.Call:input_type -> gETH.CallReq
-	21, // 15: gETH.Chain.EstimateGas:input_type -> gETH.CallReq
-	24, // 16: gETH.Chain.SendRawTransaction:input_type -> gETH.SendRawTxReq
-	4,  // 17: gETH.Chain.StreamHeads:input_type -> gETH.Empty
-	26, // 18: gETH.Chain.StreamLogs:input_type -> gETH.LogsSubReq
-	5,  // 19: gETH.Chain.GetBlockByNumber:output_type -> gETH.Block
-	5,  // 20: gETH.Chain.GetBlockByHash:output_type -> gETH.Block
-	7,  // 21: gETH.Chain.GetTransactionByHash:output_type -> gETH.Transaction
-	11, // 22: gETH.Chain.GetReceiptByHash:output_type -> gETH.Receipt
-	17, // 23: gETH.Chain.GetAccountState:output_type -> gETH.AccountState
-	20, // 24: gETH.Chain.GetLogs:output_type -> gETH.GetLogsResp
-	22, // 25: gETH.Chain.Call:output_type -> gETH.CallResp
-	23, // 26: gETH.Chain.EstimateGas:output_type -> gETH.EstimateResp
-	25, // 27: gETH.Chain.SendRawTransaction:output_type -> gETH.SendRawTxResp
-	6,  // 28: gETH.Chain.StreamHeads:output_type -> gETH.BlockHeader
-	12, // 29: gETH.Chain.StreamLogs:output_type -> gETH.Log
-	19, // [19:30] is the sub-list for method output_type
-	8,  // [8:19] is the sub-list for method input_type
+	4,  // 10: gETH.Chain.GetChainID:input_type -> gETH.Empty
+	15, // 11: gETH.Chain.GetTransactionByHash:input_type -> gETH.GetByHashReq
+	15, // 12: gETH.Chain.GetReceiptByHash:input_type -> gETH.GetByHashReq
+	16, // 13: gETH.Chain.GetAccountState:input_type -> gETH.GetAccountStateReq
+	18, // 14: gETH.Chain.GetLogs:input_type -> gETH.GetLogsReq
+	21, // 15: gETH.Chain.Call:input_type -> gETH.CallReq
+	21, // 16: gETH.Chain.EstimateGas:input_type -> gETH.CallReq
+	24, // 17: gETH.Chain.SendRawTransaction:input_type -> gETH.SendRawTxReq
+	4,  // 18: gETH.Chain.StreamHeads:input_type -> gETH.Empty
+	26, // 19: gETH.Chain.StreamLogs:input_type -> gETH.LogsSubReq
+	5,  // 20: gETH.Chain.GetBlockByNumber:output_type -> gETH.Block
+	5,  // 21: gETH.Chain.GetBlockByHash:output_type -> gETH.Block
+	3,  // 22: gETH.Chain.GetChainID:output_type -> gETH.Quantity
+	7,  // 23: gETH.Chain.GetTransactionByHash:output_type -> gETH.Transaction
+	11, // 24: gETH.Chain.GetReceiptByHash:output_type -> gETH.Receipt
+	17, // 25: gETH.Chain.GetAccountState:output_type -> gETH.AccountState
+	20, // 26: gETH.Chain.GetLogs:output_type -> gETH.GetLogsResp
+	22, // 27: gETH.Chain.Call:output_type -> gETH.CallResp
+	23, // 28: gETH.Chain.EstimateGas:output_type -> gETH.EstimateResp
+	25, // 29: gETH.Chain.SendRawTransaction:output_type -> gETH.SendRawTxResp
+	6,  // 30: gETH.Chain.StreamHeads:output_type -> gETH.BlockHeader
+	12, // 31: gETH.Chain.StreamLogs:output_type -> gETH.Log
+	20, // [20:32] is the sub-list for method output_type
+	8,  // [8:20] is the sub-list for method input_type
 	8,  // [8:8] is the sub-list for extension type_name
 	8,  // [8:8] is the sub-list for extension extendee
 	0,  // [0:8] is the sub-list for field type_name

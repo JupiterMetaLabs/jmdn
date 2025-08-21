@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/golang/protobuf/ptypes/empty"
@@ -14,7 +15,6 @@ import (
 	"gossipnode/config"
 )
 
-// 
 // MempoolClient provides methods to interact with the mempool service
 type MempoolClient struct {
 	client pb.MempoolServiceClient
@@ -52,14 +52,17 @@ func (m *MempoolClient) SubmitTransaction(tx *config.ZKBlockTransaction, txHash 
 
 	// Convert the transaction to the protobuf format
 	pbTx := convertToPbTransaction(tx, txHash)
+	log.Printf("Submitting transaction to mempool: %+v", pbTx)
 
 	// Submit the transaction to the mempool
 	resp, err := m.client.SubmitTransaction(ctx, pbTx)
 	if err != nil {
+		log.Printf("Failed to submit transaction to mempool: %v", err)
 		return fmt.Errorf("failed to submit transaction to mempool: %v", err)
 	}
 
 	if !resp.Success {
+		log.Printf("Mempool rejected transaction %s: %s", resp.Hash, resp.Error)
 		return fmt.Errorf("mempool rejected transaction: %s", resp.Error)
 	}
 
@@ -142,11 +145,11 @@ func (m *MempoolClient) GetMempoolStats() (*pb.MempoolStats, error) {
 }
 
 type GasFeeStats struct {
-    MaxFee uint64
-    MinFee uint64
-    MedianFee uint64
-    MeanFee uint64
-    RecommendedFees *pb.RecommendedFees
+	MaxFee          uint64
+	MinFee          uint64
+	MedianFee       uint64
+	MeanFee         uint64
+	RecommendedFees *pb.RecommendedFees
 }
 
 // GetFeeStatistics gets detailed fee statistics from the mempool
@@ -172,13 +175,13 @@ func (m *MempoolClient) WrapperGetFeeStatistics() (*GasFeeStats, error) {
 		return nil, fmt.Errorf("failed to get fee statistics: %v", err)
 	}
 
-    return &GasFeeStats{
-        MaxFee: stats.MaxFee,
-        MinFee: stats.MinFee,
-        MedianFee: stats.MedianFee,
-        MeanFee: stats.MeanFee,
-        RecommendedFees: stats.RecommendedFees,
-    }, nil
+	return &GasFeeStats{
+		MaxFee:          stats.MaxFee,
+		MinFee:          stats.MinFee,
+		MedianFee:       stats.MedianFee,
+		MeanFee:         stats.MeanFee,
+		RecommendedFees: stats.RecommendedFees,
+	}, nil
 }
 
 // Helper function to convert a config.ZKBlockTransaction to pb.Transaction
@@ -189,7 +192,7 @@ func convertToPbTransaction(tx *config.ZKBlockTransaction, txHash string) *pb.Tr
 		To:             tx.To,
 		Value:          tx.Value,
 		Type:           tx.Type,
-		Timestamp:      tx.Timestamp,
+		Timestamp:      tx.Timestamp, // Temporarily assign, will be formatted below
 		ChainId:        tx.ChainID,
 		Nonce:          tx.Nonce,
 		GasLimit:       tx.GasLimit,
@@ -201,15 +204,28 @@ func convertToPbTransaction(tx *config.ZKBlockTransaction, txHash string) *pb.Tr
 		S:              tx.S,
 	}
 
-	if pbTx.Timestamp == "" {
+	if tx.Timestamp != "" {
+		i, err := strconv.ParseInt(tx.Timestamp, 10, 64)
+		if err == nil {
+			tm := time.Unix(i, 0)
+			pbTx.Timestamp = tm.Format(time.RFC3339)
+		} else {
+			// If parsing fails, it might already be in a different format or invalid.
+			// For now, we'll default to the current time as a fallback.
+			pbTx.Timestamp = time.Now().Format(time.RFC3339)
+		}
+	} else {
 		pbTx.Timestamp = time.Now().Format(time.RFC3339)
 	}
 
-	if pbTx.Type == "" {
-		if tx.MaxFee != "" && tx.MaxPriorityFee != "" {
-			pbTx.Type = "EIP-1559"
-		} else {
-			pbTx.Type = "Legacy"
+	// Handle transaction fee fields based on type
+	if tx.Type == "EIP-1559" || (tx.MaxFee != "" && tx.MaxPriorityFee != "") {
+		pbTx.Type = "EIP-1559"
+	} else {
+		pbTx.Type = "Legacy"
+		// For legacy transactions, use GasPrice as MaxFee if MaxFee is not set.
+		if pbTx.MaxFee == "" && tx.GasPrice != "" {
+			pbTx.MaxFee = tx.GasPrice
 		}
 	}
 
@@ -254,8 +270,8 @@ func SubmitToMempool(tx *config.ZKBlockTransaction, txHash string) error {
 }
 
 func ReturnMempoolObject() (*MempoolClient, error) {
-    if globalMempoolClient == nil {
-        return nil, fmt.Errorf("mempool client not initialized. Call InitMempoolClient() first")
-    }
-    return globalMempoolClient, nil
+	if globalMempoolClient == nil {
+		return nil, fmt.Errorf("mempool client not initialized. Call InitMempoolClient() first")
+	}
+	return globalMempoolClient, nil
 }
