@@ -1085,6 +1085,60 @@ func GetAllKeys(ic *config.ImmuClient, prefix string) ([]string, error) {
 	return allKeys, nil
 }
 
+// CountAllKeys counts all keys with a given prefix.
+// This is more efficient than GetAllKeys as it doesn't store the keys.
+func CountAllKeys(ic *config.ImmuClient, prefix string) (int, error) {
+	var totalKeys int
+	batchSize := 1000
+	var lastKey []byte
+
+	for {
+		var count int
+		err := withRetry(ic, "CountAllKeysBatch", func() error {
+			scanReq := &schema.ScanRequest{
+				Prefix:  []byte(prefix),
+				Limit:   uint64(batchSize),
+				SeekKey: lastKey,
+				Desc:    false,
+			}
+
+			scanResult, err := ic.Client.Scan(ic.Ctx, scanReq)
+			if err != nil {
+				return err
+			}
+
+			count = len(scanResult.Entries)
+			if count > 0 {
+				lastKey = scanResult.Entries[count-1].Key
+			}
+			return nil
+		})
+
+		if err != nil {
+			return 0, fmt.Errorf("failed to scan for keys count: %w", err)
+		}
+
+		totalKeys += count
+
+		if count < batchSize {
+			break // Reached the end of the keys.
+		}
+	}
+
+	if ic != nil {
+		config.Info(ic.Logger, "Total keys found: %d with Prefix: %s", totalKeys, prefix)
+	}
+
+	return totalKeys, nil
+}
+
+// CountTransactions counts the total number of transactions in the database.
+func CountTransactions(mainDBClient *config.ImmuClient) (int, error) {
+	// This function will scan for keys with the "tx:" prefix and count them.
+	// It's more efficient than fetching all keys.
+	return CountAllKeys(mainDBClient, "tx:")
+}
+
 // Helper function to get a batch of keys (UNCHANGED - but can optionally use connection pool)
 func getKeysBatch(ic *config.ImmuClient, prefix string, limit int, seekKey []byte) ([]string, error) {
 	var keys []string

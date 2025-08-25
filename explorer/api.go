@@ -104,6 +104,9 @@ func (s *ImmuDBServer) setupRoutes() {
 		// Get DID details by one or more DID strings
 		did.GET("/details", s.getDIDDetails)
 
+		// Get DID details by giving addr
+		did.GET("/details/pubaddr", s.getDIDDetailsFromAddr)
+
 		// Health check
 		did.GET("/health", s.didHealthCheck)
 	}

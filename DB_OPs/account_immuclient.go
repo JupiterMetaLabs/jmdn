@@ -3,6 +3,7 @@ package DB_OPs
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"gossipnode/config"
 	"os"
@@ -1107,6 +1108,101 @@ func ExtractAddressFromDID(did string) (common.Address, error) {
 	}
 	return common.HexToAddress(addrStr), nil
 }
+
+// Get the DID Document for the address (suffix match on DID key).
+func GetDIDDocumentFromAddr(ic *config.ImmuClient, addr string) (*DIDDocument, error) {
+	// Ensure we're using the accounts database, which also handles reconnections.
+	if err := ensureAccountsDBSelected(ic); err != nil {
+		return nil, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
+	}
+
+	addrSuffix := strings.ToLower(addr)
+	const defaultBatch = 1000
+	batchSize := defaultBatch
+	var seekKey []byte // start at prefix floor
+
+	prefix := []byte("did:")
+
+	// Helper: next lexicographic key after k (avoids re-reading the last row)
+	nextAfter := func(k []byte) []byte {
+		if k == nil {
+			return nil
+		}
+		// Appending 0x00 produces a key strictly greater than k in lexicographic order.
+		n := make([]byte, len(k)+1)
+		copy(n, k)
+		n[len(k)] = 0x00
+		return n
+	}
+
+	for {
+		select {
+		case <-ic.Ctx.Done():
+			return nil, ic.Ctx.Err()
+		default:
+		}
+
+		var scanResult *schema.Entries
+		err := withRetry(ic, "ScanForDIDByAddress", func() error {
+			req := &schema.ScanRequest{
+				Prefix:  prefix,
+				Limit:   uint64(batchSize),
+				SeekKey: seekKey,
+				Desc:    false,
+			}
+			var scanErr error
+			scanResult, scanErr = ic.Client.Scan(ic.Ctx, req)
+			return scanErr
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan for DIDs by address: %w", err)
+		}
+
+		if len(scanResult.Entries) == 0 {
+			break // exhausted
+		}
+
+		for _, entry := range scanResult.Entries {
+			// Optional guard: ensure we didn't spill out of prefix (defensive)
+			if !bytes.HasPrefix(entry.Key, prefix) {
+				return nil, ErrNotFound
+			}
+
+			// Lowercase once on bytes, then do suffix check.
+			lowerKey := bytes.ToLower(entry.Key)
+			if strings.HasSuffix(string(lowerKey), addrSuffix) {
+				var doc DIDDocument
+
+				// If the scan returned values, prefer them to avoid a second GET.
+				if len(entry.Value) > 0 {
+					if uErr := json.Unmarshal(entry.Value, &doc); uErr == nil {
+						return &doc, nil
+					}
+					// Fall back to SafeReadJSON if value wasn’t present/parsable.
+				}
+
+				if readErr := SafeReadJSON(ic, string(entry.Key), &doc); readErr == nil {
+					return &doc, nil
+				} else {
+					config.Warning(ic.Logger, "Error reading DID document for key %q, skipping: %v", string(entry.Key), readErr)
+				}
+			}
+		}
+
+		// Advance seekKey strictly after the last key to avoid re-reading it.
+		last := scanResult.Entries[len(scanResult.Entries)-1].Key
+		// If seekKey is already >= nextAfter(last), we’re stuck – break to avoid loop.
+		next := nextAfter(last)
+		if seekKey != nil && bytes.Compare(seekKey, next) >= 0 {
+			break
+		}
+		seekKey = next
+	}
+
+	return nil, ErrNotFound
+}
+
+
 
 // ========================================
 // OPTIONAL ENHANCED FUNCTIONS FOR CONVENIENCE
