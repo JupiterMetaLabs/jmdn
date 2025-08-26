@@ -194,6 +194,7 @@ func main() {
 		transfer.HandleFileStream(s, "")
 	})
 
+
 	// Initialize main database client
 	immuClient, err = initMainDBClient()
 	if err != nil {
@@ -203,6 +204,18 @@ func main() {
 	}
 	defer DB_OPs.Close(immuClient)
 
+	// Initialize Connection Pool
+	DB_OPs.InitGlobalPool(&DB_OPs.PoolingConfig{
+		DBAddress:  config.DBAddress,
+		DBPort:     config.DBPort,
+		DBName:     config.DBName,
+		DBUsername: config.DBUsername,
+		DBPassword: config.DBPassword,
+	})
+
+	// Later when you need to use the pool:
+	DefaultDB_Pool := DB_OPs.GetGlobalPool()
+
 	// Initialize DID database client - can be done later if needed
 	didDBClient, err = initDIDDBClient()
 	if err != nil {
@@ -210,6 +223,18 @@ func main() {
 		os.Exit(1) // Exit if DID client is critical
 	}
 	defer DB_OPs.Close(didDBClient)
+
+	// Initilize Connection Pool for accounts database
+	DB_OPs.InitGlobalPool(&DB_OPs.PoolingConfig{
+		DBAddress:  config.DBAddress,
+		DBPort:     config.DBPort,
+		DBName:     config.AccountsDBName,
+		DBUsername: config.DBUsername,
+		DBPassword: config.DBPassword,
+	})
+
+	// Later when you need to use the pool:
+	AccountsDB_Pool := DB_OPs.GetGlobalPool()
 
 	// Initialize FastSync service
 	fastSyncer = initFastSync(n, immuClient, didDBClient)

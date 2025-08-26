@@ -37,7 +37,7 @@ type TransactionResponse struct {
 }
 
 type FullTxn struct {
-    Transaction     *config.ZKBlockTransaction `json:"transaction"`
+    Transaction     *config.Transaction `json:"transaction"`
     TransactionHash string           `json:"transaction_hash"`
 }
 
@@ -66,7 +66,7 @@ func toBlockAccessList(apiList []APIAccessTuple) config.AccessList {
 }
 
 func submitRawTransaction(c *gin.Context) {
-    var tx config.ZKBlockTransaction
+    var tx config.Transaction
 
     // 1. Bind and validate request
     if err := c.ShouldBindJSON(&tx); err != nil {
@@ -88,7 +88,7 @@ func submitRawTransaction(c *gin.Context) {
 }
 
 // SubmitRawTransaction handles pre-signed raw transactions with security validations
-func SubmitRawTransaction(tx *config.ZKBlockTransaction) (string, error){
+func SubmitRawTransaction(tx *config.Transaction) (string, error){
     // Debugging
     fmt.Println("Transaction: ", tx)
     fmt.Println("Transaction ChainID:", tx.ChainID)
@@ -102,7 +102,7 @@ func SubmitRawTransaction(tx *config.ZKBlockTransaction) (string, error){
     fmt.Println("Security Checks: ", status)
 
     // Basic transaction validation
-    if tx.Value == "0" || tx.Value == "" {
+    if tx.Value.Cmp(big.NewInt(0)) == 0 || tx.Value.String() == "" {
         return "", errors.New("invalid transaction: value is 0 or empty")
     }
     // Debugging

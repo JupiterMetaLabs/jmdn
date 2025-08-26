@@ -8,16 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"gossipnode/config"
+	"gossipnode/logging"
 
-	"log"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/client"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -34,116 +33,25 @@ var (
 	ErrNoAvailableConn = errors.New("no available connections in pool")
 )
 
-// ConnectionPoolConfig holds configuration for the connection pool
-type ConnectionPoolConfig struct {
-	MinConnections     int           // Minimum number of connections to maintain
-	MaxConnections     int           // Maximum number of connections allowed
-	ConnectionTimeout  time.Duration // Timeout for establishing new connections
-	IdleTimeout        time.Duration // Time after which idle connections are closed
-	MaxLifetime        time.Duration // Maximum lifetime of a connection
-	TokenRefreshBuffer time.Duration // How early to refresh tokens before expiry
-}
-
-// DefaultConnectionPoolConfig returns a default configuration
-func DefaultConnectionPoolConfig() *ConnectionPoolConfig {
-	return &ConnectionPoolConfig{
-		MinConnections:     2,
-		MaxConnections:     10,
-		ConnectionTimeout:  30 * time.Second,
-		IdleTimeout:        5 * time.Minute,
-		MaxLifetime:        30 * time.Minute,
-		TokenRefreshBuffer: 5 * time.Minute,
-	}
-}
-
-// PooledConnection represents a connection in the pool
-type PooledConnection struct {
-	Client      client.ImmuClient
-	Token       string
-	TokenExpiry time.Time
-	Database    string
-	CreatedAt   time.Time
-	LastUsed    time.Time
-	InUse       bool
-	Ctx         context.Context
-	Cancel      context.CancelFunc
-}
-
-// ConnectionPool manages a pool of ImmuDB connections
-type ConnectionPool struct {
-	config      *ConnectionPoolConfig
-	connections []*PooledConnection
-	mutex       sync.RWMutex
-	closed      bool
-	logger      *config.AsyncLogger
-
-	// Connection details (using default ImmuDB values)
-	address  string
-	port     int
-	database string
-	username string
-	password string
-
-	// Background tasks
-	cleanupTicker *time.Ticker
-	stopCleanup   chan struct{}
-	wg            sync.WaitGroup
-}
-
-// Global connection pool - this will be used by existing functions
-var (
-	globalPool     *ConnectionPool
-	globalPoolOnce sync.Once
-	poolMutex      sync.RWMutex
-)
-
-// NewAsyncLogger creates a new async logger that writes to logs/ImmuDB.log
-func NewAsyncLogger() (*config.AsyncLogger, error) {
-	// Ensure logs directory exists
-	logDir := "logs"
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create logs directory: %w", err)
-	}
-
-	// Open log file
-	logFilePath := filepath.Join(logDir, "ImmuDB.log")
-	file, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open log file: %w", err)
-	}
-
-	// Create logger
-	logger := log.New(file, "", log.LstdFlags)
-
-	// Create async logger
-	asyncLogger := &config.AsyncLogger{
-		Logger:  logger,
-		LogChan: make(chan string, 1000), // Buffer up to 1000 log messages
-		File:    file,
-	}
-
-	// Start background worker
-	asyncLogger.Wg.Add(1)
-	go config.ProcessLogs(asyncLogger)
-
-	return asyncLogger, nil
-}
 
 // InitializeGlobalPool initializes the global connection pool
-func InitializeGlobalPool(poolConfig *ConnectionPoolConfig) error {
-	poolMutex.Lock()
-	defer poolMutex.Unlock()
+func InitializeGlobalPool(poolConfig *config.ConnectionPoolConfig) error {
+	config.poolMutex.Lock()
+	defer config.poolMutex.Unlock()
 
-	if globalPool != nil {
+	if config.globalPool != nil {
 		return nil // Already initialized
 	}
 
-	logger, err := NewAsyncLogger()
-	if err != nil {
-		return fmt.Errorf("failed to create logger for global pool: %w", err)
+	configForPool := &PoolingConfig{
+		DBAddress: config.DBAddress,
+		DBPort: config.DBPort,
+		DBName: config.DBName,
+		DBUsername: config.DBUsername,
+		DBPassword: config.DBPassword,
 	}
 
-	globalPool = NewConnectionPool(poolConfig, logger)
+	globalPool = GetGlobalPool(configForPool)
 
 	// Initialize minimum connections
 	if err := initializePoolConnections(globalPool); err != nil {
@@ -155,60 +63,7 @@ func InitializeGlobalPool(poolConfig *ConnectionPoolConfig) error {
 	return nil
 }
 
-// GetGlobalPool returns the global connection pool, initializing it if necessary
-func GetGlobalPool() *ConnectionPool {
-	poolMutex.RLock()
-	if globalPool != nil {
-		poolMutex.RUnlock()
-		return globalPool
-	}
-	poolMutex.RUnlock()
 
-	// Initialize with default config if not already done
-	globalPoolOnce.Do(func() {
-		poolMutex.Lock()
-		defer poolMutex.Unlock()
-
-		if globalPool == nil {
-			logger, err := NewAsyncLogger()
-			if err != nil {
-				panic(fmt.Sprintf("failed to create logger for global pool: %v", err))
-			}
-
-			globalPool = NewConnectionPool(DefaultConnectionPoolConfig(), logger)
-
-			if err := initializePoolConnections(globalPool); err != nil {
-				panic(fmt.Sprintf("failed to initialize global pool: %v", err))
-			}
-		}
-	})
-
-	return globalPool
-}
-
-// NewConnectionPool creates a new connection pool
-func NewConnectionPool(localconfig *ConnectionPoolConfig, logger *config.AsyncLogger) *ConnectionPool {
-	if localconfig == nil {
-		localconfig = DefaultConnectionPoolConfig()
-	}
-
-	pool := &ConnectionPool{
-		config:      localconfig,
-		connections: make([]*PooledConnection, 0, localconfig.MaxConnections),
-		logger:      logger,
-		address:     config.DBAddress,
-		port:        config.DBPort,
-		database:    config.DBName,
-		username:    config.DBUsername,
-		password:    config.DBPassword,
-		stopCleanup: make(chan struct{}),
-	}
-
-	// Start background cleanup routine
-	pool.startCleanupRoutine()
-
-	return pool
-}
 
 // initializePoolConnections creates the minimum number of connections
 func initializePoolConnections(pool *ConnectionPool) error {
@@ -290,79 +145,6 @@ func (cp *ConnectionPool) closeConnection(conn *PooledConnection) {
 	if conn.Client != nil {
 		conn.Client.Disconnect()
 	}
-}
-
-// createConnection creates a new connection to ImmuDB
-func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
-	config.Info(cp.logger, "Creating new connection to ImmuDB at %s:%d", cp.address, cp.port)
-
-	// ensure our state dir exists
-	stateDir := ".immudb_state"
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		return nil, fmt.Errorf("could not create state dir: %w", err)
-	}
-
-	// build file paths inside .immudb-state
-	certFile := filepath.Join(stateDir, "server.cert.pem")
-	keyFile := filepath.Join(stateDir, "server.key.pem")
-	caFile := filepath.Join(stateDir, "ca.cert.pem") // or ca.cert.pem
-
-	// Configure the client to use TLS with our static certs
-	opts := client.DefaultOptions().
-		WithAddress(cp.address).
-		WithPort(cp.port).
-		WithMTLs(true).
-		WithMTLsOptions(
-			client.MTLsOptions{}.
-				WithCertificate(certFile).
-				WithPkey(keyFile).
-				WithClientCAs(caFile).
-				WithServername(cp.address),
-		)
-
-	c, err := client.NewImmuClient(opts)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create client: %w", err)
-	}
-
-	// login + select database as before
-	ctx, cancel := context.WithTimeout(context.Background(), cp.config.ConnectionTimeout)
-	config.Info(cp.logger, "Authenticating with ImmuDB")
-	lr, err := c.Login(ctx, []byte("immudb"), []byte("immudb"))
-	if err != nil {
-		cancel()
-		c.Disconnect()
-		return nil, fmt.Errorf("login failed: %w", err)
-	}
-
-	md := metadata.Pairs("authorization", lr.Token)
-	authCtx := metadata.NewOutgoingContext(context.Background(), md)
-	config.Info(cp.logger, "Selecting database: %s", cp.database)
-	dbResp, err := c.UseDatabase(authCtx, &schema.Database{DatabaseName: cp.database})
-	if err != nil {
-		cancel()
-		c.Disconnect()
-		return nil, fmt.Errorf("failed to use database %s: %w", cp.database, err)
-	}
-
-	now := time.Now()
-	finalCtx := metadata.NewOutgoingContext(context.Background(),
-		metadata.Pairs("authorization", dbResp.Token),
-	)
-	conn := &PooledConnection{
-		Client:      c,
-		Token:       dbResp.Token,
-		TokenExpiry: now.Add(24 * time.Hour),
-		Database:    cp.database,
-		CreatedAt:   now,
-		LastUsed:    now,
-		InUse:       false,
-		Ctx:         finalCtx,
-		Cancel:      cancel,
-	}
-
-	config.Info(cp.logger, "Successfully created new connection to database: %s", cp.database)
-	return conn, nil
 }
 
 // getConnection gets an available connection from the pool
@@ -798,9 +580,25 @@ func withRetry(ic *config.ImmuClient, operation string, fn func() error) error {
 	for attempt := 0; attempt <= ic.RetryLimit; attempt++ {
 		// Check connection status first
 		if !ic.IsConnected {
-			config.Warning(ic.Logger, "Connection lost, attempting to reconnect before %s operation", operation)
+			ic.Logger.Logger.Warn("Connection lost, attempting to reconnect before %s operation",
+				zap.String("Operation", operation),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.withRetry"),
+			)
 			if err = reconnect(ic); err != nil {
-				config.Error(ic.Logger, "Reconnection attempt %d/%d failed: %v", attempt+1, ic.RetryLimit+1, err)
+				ic.Logger.Logger.Error("Reconnection attempt %d/%d failed: %v",
+					zap.Int("Attempt", attempt+1),
+					zap.Int("RetryLimit", ic.RetryLimit+1),
+					zap.Error(err),
+					zap.Time(logging.Created_at, time.Now()),
+					zap.String(logging.Log_file, LOG_FILE),
+					zap.String(logging.Topic, TOPIC),
+					zap.String(logging.Loki_url, LOKI_URL),
+					zap.String(logging.Function, "DB_OPs.withRetry"),
+				)
 				if attempt == ic.RetryLimit {
 					return fmt.Errorf("%w: %v", ErrConnectionLost, err)
 				}
@@ -819,8 +617,17 @@ func withRetry(ic *config.ImmuClient, operation string, fn func() error) error {
 
 		// Check if error is due to connection issues
 		if isConnectionError(err) {
-			config.Warning(ic.Logger, "%s operation failed due to connection issue (attempt %d/%d): %v",
-				operation, attempt+1, ic.RetryLimit+1, err)
+			ic.Logger.Logger.Warn("%s operation failed due to connection issue (attempt %d/%d): %v",
+				zap.String("Operation", operation),
+				zap.Int("Attempt", attempt+1),
+				zap.Int("RetryLimit", ic.RetryLimit+1),
+				zap.Error(err),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.withRetry"),
+			)
 			ic.IsConnected = false // Force reconnect on next attempt
 			if attempt < ic.RetryLimit {
 				time.Sleep(time.Second * time.Duration(attempt+1))
@@ -829,8 +636,17 @@ func withRetry(ic *config.ImmuClient, operation string, fn func() error) error {
 		}
 
 		// Non-connection error or final attempt
-		config.Error(ic.Logger, "%s operation failed (attempt %d/%d): %v",
-			operation, attempt+1, ic.RetryLimit+1, err)
+		ic.Logger.Logger.Error("%s operation failed (attempt %d/%d): %v",
+			zap.String("Operation", operation),
+			zap.Int("Attempt", attempt+1),
+			zap.Int("RetryLimit", ic.RetryLimit+1),
+			zap.Error(err),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.withRetry"),
+		)
 		return fmt.Errorf("%s failed: %w", operation, err)
 	}
 
@@ -1379,35 +1195,41 @@ func GetMerkleRoot(ic *config.ImmuClient) ([]byte, error) {
 
 // SafeCreate stores a value with the given key and verifies the operation (UNCHANGED - but can optionally use connection pool)
 func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
-	if key == "" {
-		return ErrEmptyKey
-	}
-
-	if value == nil {
-		return ErrNilValue
-	}
+	var err error
+	var PooledConnection *config.PooledConnection
 
 	// Try to use connection pool if available, otherwise fall back to traditional approach
 	if ic == nil {
-		// Use connection pool approach
-		return withPooledRetry("SafeCreate", func(conn *PooledConnection) error {
-			// Convert value to bytes
-			valueBytes, err := toBytes(value)
-			if err != nil {
-				return err
-			}
+		// If Connection is nil, use the global connection pool
+		PooledConnection, err = GetAccountsConnection()
+		if err != nil {
+			return err
+		}
+		ic = PooledConnection.Client
+	}
 
-			pool := GetGlobalPool()
-			config.Info(pool.logger, "Creating verified key: %s", key)
-			// Store the key-value pair with verification
-			verifiedTx, err := conn.Client.VerifiedSet(conn.Ctx, []byte(key), valueBytes)
-			if err != nil {
-				return err
-			}
+	// Check for empty key and nil value
+	if key == "" {
+		ic.Logger.Logger.Error("Empty key provided",
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.SafeCreate"),
+		)
+		return ErrEmptyKey
+	}
 
-			config.Info(pool.logger, "Transaction verified: tx=%d", verifiedTx.Id)
-			return nil
-		})
+	// Check for nil value
+	if value == nil {
+		ic.Logger.Logger.Error("Nil value provided",
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.SafeCreate"),
+		)
+		return ErrNilValue
 	}
 
 	// Traditional approach with single connection
@@ -1418,15 +1240,28 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 			return err
 		}
 
-		config.Info(ic.Logger, "Creating verified key: %s", key)
+		ic.Logger.Logger.Info("Creating verified key: %s", 
+		zap.String("key", key),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.SafeCreate"),
+		)
 		// Store the key-value pair with verification
 		verifiedTx, err := ic.Client.VerifiedSet(ic.Ctx, []byte(key), valueBytes)
 		if err != nil {
 			return err
 		}
 
-		config.Info(ic.Logger, "Transaction verified: tx=%d, verified=%v",
-			verifiedTx.Id, verifiedTx)
+		ic.Logger.Logger.Info("Transaction verified: tx=%d, verified=%v",
+			zap.Uint64("tx", verifiedTx.Id),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.SafeCreate"),
+			)
 		return nil
 	})
 }
