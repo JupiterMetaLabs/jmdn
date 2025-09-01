@@ -46,7 +46,7 @@ func (m *MempoolClient) Close() error {
 }
 
 // SubmitTransaction submits a transaction to the mempool
-func (m *MempoolClient) SubmitTransaction(tx *config.ZKBlockTransaction, txHash string) error {
+func (m *MempoolClient) SubmitTransaction(tx *config.Transaction, txHash string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -71,14 +71,14 @@ func (m *MempoolClient) SubmitTransaction(tx *config.ZKBlockTransaction, txHash 
 }
 
 // SubmitTransactions submits a batch of transactions to the mempool
-func (m *MempoolClient) SubmitTransactions(txs []*config.ZKBlockTransaction) (*pb.BatchSubmitResponse, error) {
+func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.BatchSubmitResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Longer timeout for batches
 	defer cancel()
 
 	pbTxs := make([]*pb.Transaction, len(txs))
 	for i, tx := range txs {
 		// The ZKBlockTransaction should have a pre-computed hash.
-		if tx.Hash == "" {
+		if tx.Hash == nil {
 			return nil, fmt.Errorf("transaction at index %d has no hash", i)
 		}
 		pbTxs[i] = convertToPbTransaction(tx, tx.Hash)
@@ -185,7 +185,7 @@ func (m *MempoolClient) WrapperGetFeeStatistics() (*GasFeeStats, error) {
 }
 
 // Helper function to convert a config.ZKBlockTransaction to pb.Transaction
-func convertToPbTransaction(tx *config.ZKBlockTransaction, txHash string) *pb.Transaction {
+func convertToPbTransaction(tx *config.Transaction, txHash string) *pb.Transaction {
 	pbTx := &pb.Transaction{
 		Hash:           txHash,
 		From:           tx.From,
@@ -261,7 +261,7 @@ func CloseMempoolClient() {
 }
 
 // SubmitToMempool submits a transaction to the mempool instead of propagating it directly
-func SubmitToMempool(tx *config.ZKBlockTransaction, txHash string) error {
+func SubmitToMempool(tx *config.Transaction, txHash string) error {
 	if globalMempoolClient == nil {
 		return fmt.Errorf("mempool client not initialized")
 	}

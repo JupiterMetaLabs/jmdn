@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"os"
 	"strconv"
@@ -110,7 +111,7 @@ func SubmitRawTransaction(tx *config.Transaction) (string, error){
     
 
     // Check the To and From addresses
-    if tx.To == "" || tx.From == "" {
+    if tx.To == nil || tx.From == nil {
         return "", errors.New("invalid transaction: missing To or From address")
     }else if tx.To == tx.From {
         return "", errors.New("invalid transaction: To and From address are the same")
@@ -129,14 +130,14 @@ func SubmitRawTransaction(tx *config.Transaction) (string, error){
         if err := SubmitToMempool(tx, txHash); err != nil {
             log.Error().Err(err).
                 Str("txHash", txHash).
-                Str("from", tx.From).
-                Str("to", tx.To).
+                Str("from", tx.From.String()).
+                Str("to", tx.To.String()).
                 Msg("Error submitting raw transaction to mempool")
         }else {
             log.Info().
                 Str("txHash", txHash).
-                Str("from", tx.From).
-                Str("to", tx.To).
+                Str("from", tx.From.String()).
+                Str("to", tx.To.String()).
                 Msg("Raw transaction successfully submitted to mempool")
         }
     }()
