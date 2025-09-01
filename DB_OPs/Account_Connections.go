@@ -99,6 +99,14 @@ func GetAccountsConnection() (*config.PooledConnection, error) {
 // PutAccountsConnection returns a connection to the accounts database pool.
 func PutAccountsConnection(conn *config.PooledConnection) {
 	if accountsPool != nil {
+		accountsPool.Logger.Logger.Info("Returning accounts connection: %s",
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.PutAccountsConnection"),
+		)
 		accountsPool.Put(conn)
 	}
 }

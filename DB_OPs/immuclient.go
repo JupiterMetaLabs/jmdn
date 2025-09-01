@@ -1,7 +1,6 @@
 package DB_OPs
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,10 +14,14 @@ import (
 	"time"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
-	"github.com/codenotary/immudb/pkg/client"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+)
+
+const (
+	DEFAULT_PREFIX_TX = "tx:"
+	PREFIX_BLOCK      = "block:"
+	PREFIX_BLOCK_HASH = "block:hash:"
 )
 
 // Custom errors
@@ -32,344 +35,6 @@ var (
 	ErrTokenExpired    = errors.New("authentication token expired")
 	ErrNoAvailableConn = errors.New("no available connections in pool")
 )
-
-
-// InitializeGlobalPool initializes the global connection pool
-func InitializeGlobalPool(poolConfig *config.ConnectionPoolConfig) error {
-	config.poolMutex.Lock()
-	defer config.poolMutex.Unlock()
-
-	if config.globalPool != nil {
-		return nil // Already initialized
-	}
-
-	configForPool := &PoolingConfig{
-		DBAddress: config.DBAddress,
-		DBPort: config.DBPort,
-		DBName: config.DBName,
-		DBUsername: config.DBUsername,
-		DBPassword: config.DBPassword,
-	}
-
-	globalPool = GetGlobalPool(configForPool)
-
-	// Initialize minimum connections
-	if err := initializePoolConnections(globalPool); err != nil {
-		globalPool.Close()
-		globalPool = nil
-		return err
-	}
-
-	return nil
-}
-
-
-
-// initializePoolConnections creates the minimum number of connections
-func initializePoolConnections(pool *ConnectionPool) error {
-	pool.mutex.Lock()
-	defer pool.mutex.Unlock()
-
-	for i := 0; i < pool.config.MinConnections; i++ {
-		conn, err := pool.createConnection()
-		if err != nil {
-			return fmt.Errorf("failed to initialize connection %d: %w", i+1, err)
-		}
-		pool.connections = append(pool.connections, conn)
-	}
-
-	config.Info(pool.logger, "Initialized connection pool with %d connections", pool.config.MinConnections)
-	return nil
-}
-
-// startCleanupRoutine starts the background cleanup of idle connections
-func (cp *ConnectionPool) startCleanupRoutine() {
-	cp.cleanupTicker = time.NewTicker(1 * time.Minute)
-	cp.wg.Add(1)
-
-	go func() {
-		defer cp.wg.Done()
-		for {
-			select {
-			case <-cp.cleanupTicker.C:
-				cp.cleanupIdleConnections()
-			case <-cp.stopCleanup:
-				return
-			}
-		}
-	}()
-}
-
-// cleanupIdleConnections removes idle and expired connections
-func (cp *ConnectionPool) cleanupIdleConnections() {
-	cp.mutex.Lock()
-	defer cp.mutex.Unlock()
-
-	if cp.closed {
-		return
-	}
-
-	now := time.Now()
-	activeConnections := make([]*PooledConnection, 0, len(cp.connections))
-
-	for _, conn := range cp.connections {
-		shouldRemove := false
-
-		// Remove if connection is too old
-		if now.Sub(conn.CreatedAt) > cp.config.MaxLifetime {
-			shouldRemove = true
-			config.Info(cp.logger, "Removing connection due to max lifetime exceeded")
-		}
-
-		// Remove if connection has been idle too long (and we have more than minimum)
-		if !conn.InUse && now.Sub(conn.LastUsed) > cp.config.IdleTimeout && len(activeConnections) >= cp.config.MinConnections {
-			shouldRemove = true
-			config.Info(cp.logger, "Removing idle connection")
-		}
-
-		if shouldRemove {
-			cp.closeConnection(conn)
-		} else {
-			activeConnections = append(activeConnections, conn)
-		}
-	}
-
-	cp.connections = activeConnections
-}
-
-// closeConnection safely closes a connection
-func (cp *ConnectionPool) closeConnection(conn *PooledConnection) {
-	if conn.Cancel != nil {
-		conn.Cancel()
-	}
-	if conn.Client != nil {
-		conn.Client.Disconnect()
-	}
-}
-
-// getConnection gets an available connection from the pool
-func (cp *ConnectionPool) GetConnection() (*PooledConnection, error) {
-	cp.mutex.Lock()
-	defer cp.mutex.Unlock()
-
-	if cp.closed {
-		return nil, ErrPoolClosed
-	}
-
-	// Look for an available connection
-	for _, conn := range cp.connections {
-		if !conn.InUse {
-			// Check if token needs refresh
-			if cp.needsTokenRefresh(conn) {
-				if err := cp.refreshConnectionToken(conn); err != nil {
-					config.Warning(cp.logger, "Failed to refresh token for connection: %v", err)
-					continue
-				}
-			}
-
-			conn.InUse = true
-			conn.LastUsed = time.Now()
-			return conn, nil
-		}
-	}
-
-	// If no available connection and we can create more
-	if len(cp.connections) < cp.config.MaxConnections {
-		conn, err := cp.createConnection()
-		if err != nil {
-			return nil, err
-		}
-
-		conn.InUse = true
-		cp.connections = append(cp.connections, conn)
-		return conn, nil
-	}
-
-	return nil, ErrNoAvailableConn
-}
-
-// needsTokenRefresh checks if a connection's token needs to be refreshed
-func (cp *ConnectionPool) needsTokenRefresh(conn *PooledConnection) bool {
-	return time.Until(conn.TokenExpiry) < cp.config.TokenRefreshBuffer
-}
-
-// refreshConnectionToken refreshes the authentication token for a connection
-func (cp *ConnectionPool) refreshConnectionToken(conn *PooledConnection) error {
-	config.Info(cp.logger, "Refreshing authentication token")
-
-	// Create new context for login
-	ctx, cancel := context.WithTimeout(context.Background(), cp.config.ConnectionTimeout)
-	defer cancel()
-
-	// Re-authenticate with default credentials
-	lr, err := conn.Client.Login(ctx, []byte("immudb"), []byte("immudb"))
-	if err != nil {
-		return fmt.Errorf("token refresh login failed: %w", err)
-	}
-
-	// Update context with new token
-	md := metadata.Pairs("authorization", lr.Token)
-	authCtx := metadata.NewOutgoingContext(context.Background(), md)
-
-	// Re-select database to get database-specific token
-	dbResp, err := conn.Client.UseDatabase(authCtx, &schema.Database{DatabaseName: conn.Database})
-	if err != nil {
-		return fmt.Errorf("failed to re-select database during token refresh: %w", err)
-	}
-
-	// Update connection with new token and context
-	conn.Token = dbResp.Token
-	conn.TokenExpiry = time.Now().Add(24 * time.Hour)
-
-	md = metadata.Pairs("authorization", dbResp.Token)
-	conn.Ctx = metadata.NewOutgoingContext(context.Background(), md)
-
-	config.Info(cp.logger, "Successfully refreshed authentication token")
-	return nil
-}
-
-// releaseConnection returns a connection to the pool
-func (cp *ConnectionPool) releaseConnection(conn *PooledConnection) {
-	cp.mutex.Lock()
-	defer cp.mutex.Unlock()
-
-	if cp.closed {
-		cp.closeConnection(conn)
-		return
-	}
-
-	conn.InUse = false
-	conn.LastUsed = time.Now()
-}
-
-// Close closes all connections in the pool
-func (cp *ConnectionPool) Close() error {
-	cp.mutex.Lock()
-	defer cp.mutex.Unlock()
-
-	if cp.closed {
-		return nil
-	}
-
-	cp.closed = true
-
-	// Stop cleanup routine
-	close(cp.stopCleanup)
-	if cp.cleanupTicker != nil {
-		cp.cleanupTicker.Stop()
-	}
-
-	// Close all connections
-	for _, conn := range cp.connections {
-		cp.closeConnection(conn)
-	}
-
-	cp.connections = nil
-
-	// Wait for cleanup routine to finish
-	cp.wg.Wait()
-
-	config.Info(cp.logger, "Connection pool closed successfully")
-	return nil
-}
-
-// GetPoolStats returns statistics about the connection pool
-func (cp *ConnectionPool) GetPoolStats() map[string]interface{} {
-	cp.mutex.RLock()
-	defer cp.mutex.RUnlock()
-
-	totalConnections := len(cp.connections)
-	inUseConnections := 0
-
-	for _, conn := range cp.connections {
-		if conn.InUse {
-			inUseConnections++
-		}
-	}
-
-	return map[string]interface{}{
-		"total_connections":     totalConnections,
-		"in_use_connections":    inUseConnections,
-		"available_connections": totalConnections - inUseConnections,
-		"max_connections":       cp.config.MaxConnections,
-		"min_connections":       cp.config.MinConnections,
-		"pool_closed":           cp.closed,
-	}
-}
-
-// withPooledRetry executes the given operation with retry logic using connection pool
-func withPooledRetry(operation string, fn func(*PooledConnection) error) error {
-	pool := GetGlobalPool()
-	var err error
-
-	retryLimit := 3 // Default retry limit
-
-	for attempt := 0; attempt <= retryLimit; attempt++ {
-		// Get connection from pool
-		conn, connErr := pool.GetConnection()
-		if connErr != nil {
-			config.Error(pool.logger, "Failed to get connection from pool for %s (attempt %d/%d): %v",
-				operation, attempt+1, retryLimit+1, connErr)
-			if attempt == retryLimit {
-				return fmt.Errorf("%s failed: %w", operation, connErr)
-			}
-			time.Sleep(time.Second * time.Duration(attempt+1))
-			continue
-		}
-
-		// Execute the operation
-		err = fn(conn)
-
-		// Always release the connection back to pool
-		pool.releaseConnection(conn)
-
-		// If successful, return nil
-		if err == nil {
-			return nil
-		}
-
-		// Check if error is due to connection issues or token expiration
-		if isConnectionError(err) || isTokenExpiredError(err) {
-			config.Warning(pool.logger, "%s operation failed due to connection/token issue (attempt %d/%d): %v",
-				operation, attempt+1, retryLimit+1, err)
-			if attempt < retryLimit {
-				time.Sleep(time.Second * time.Duration(attempt+1))
-				continue
-			}
-		}
-
-		// Non-connection error or final attempt
-		config.Error(pool.logger, "%s operation failed (attempt %d/%d): %v",
-			operation, attempt+1, retryLimit+1, err)
-		return fmt.Errorf("%s failed: %w", operation, err)
-	}
-
-	return err
-}
-
-// isTokenExpiredError checks if an error is due to token expiration
-func isTokenExpiredError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	errStr := strings.ToLower(err.Error())
-	tokenErrors := []string{
-		"token has expired",
-		"token expired",
-		"invalid token",
-		"unauthorized",
-		"authentication failed",
-	}
-
-	for _, tokenErr := range tokenErrors {
-		if strings.Contains(errStr, tokenErr) {
-			return true
-		}
-	}
-
-	return false
-}
 
 // isConnectionError determines if an error is related to connection issues
 func isConnectionError(err error) bool {
@@ -436,130 +101,24 @@ func toBytes(value interface{}) ([]byte, error) {
 // EXISTING API - UNCHANGED FUNCTION NAMES
 // ========================================
 
-func WithDatabase(dbName string) ImmuClientOption {
-	return func(ic *config.ImmuClient) {
-		ic.Database = dbName
-	}
-}
-
-// ImmuClientOption defines functional options for ImmuClient configuration
-type ImmuClientOption func(*config.ImmuClient)
-
-// WithLogger sets a custom logger for the ImmuClient
-func WithLogger(logger *config.AsyncLogger) ImmuClientOption {
-	return func(ic *config.ImmuClient) {
-		ic.Logger = logger
-	}
-}
-
-// WithRetryLimit sets the maximum number of retry attempts
-func WithRetryLimit(limit int) ImmuClientOption {
-	return func(ic *config.ImmuClient) {
-		ic.RetryLimit = limit
-	}
-}
-
-// New creates and returns a connected ImmuClient (UNCHANGED - but now with connection pooling behind the scenes)
-func New(options ...ImmuClientOption) (*config.ImmuClient, error) {
-	// Create a default async logger
-	defaultLogger, err := NewAsyncLogger()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create default logger: %w", err)
-	}
-
-	// Create a default client
-	ic := &config.ImmuClient{
-		BaseCtx:     context.Background(),
-		RetryLimit:  3,
-		Logger:      defaultLogger,
-		IsConnected: false,
-	}
-
-	// Apply custom options
-	for _, option := range options {
-		option(ic)
-	}
-
-	// Establish connection using the traditional approach
-	// This maintains backward compatibility
-	err = connect(ic)
-	if err != nil {
-		config.Close(ic.Logger)
-		return nil, err
-	}
-
-	return ic, nil
-}
-
-// connect establishes a connection to ImmuDB (UNCHANGED)
-func connect(ic *config.ImmuClient) error {
-	// If database name is not set, use default
-	if ic.Database == "" {
-		ic.Database = config.DBName
-	}
-
-	config.Info(ic.Logger, "Connecting to ImmuDB at %s:%d for database %s",
-		config.DBAddress, config.DBPort, ic.Database)
-
-	opts := client.DefaultOptions().
-		WithAddress(config.DBAddress).
-		WithPort(config.DBPort)
-
-	c, err := client.NewImmuClient(opts)
-	if err != nil {
-		return fmt.Errorf("failed to create client: %w", err)
-	}
-
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(ic.BaseCtx, config.RequestTimeout)
-
-	// Login to immudb with default credentials
-	config.Info(ic.Logger, "Authenticating with ImmuDB")
-	lr, err := c.Login(ctx, []byte("immudb"), []byte("immudb"))
-	if err != nil {
-		cancel()
-		c.Disconnect()
-		return fmt.Errorf("login failed: %w", err)
-	}
-
-	// Store token for reconnection if needed
-	ic.Token = lr.Token
-
-	// Add auth token to context
-	md := metadata.Pairs("authorization", lr.Token)
-	ctx = metadata.NewOutgoingContext(ctx, md)
-
-	// Select database
-	config.Info(ic.Logger, "Selecting database: %s", ic.Database)
-	dbResp, err := c.UseDatabase(ctx, &schema.Database{DatabaseName: ic.Database})
-	if err != nil {
-		cancel()
-		c.Disconnect()
-		return fmt.Errorf("failed to use database %s: %w", ic.Database, err)
-	}
-
-	// Update token with database-specific token
-	ic.Token = dbResp.Token
-
-	// Create new context with the updated token
-	md = metadata.Pairs("authorization", ic.Token)
-	ctx = metadata.NewOutgoingContext(ic.BaseCtx, md)
-
-	ic.Client = c
-	ic.Ctx = ctx
-	ic.Cancel = cancel
-	ic.IsConnected = true
-	config.Info(ic.Logger, "Successfully connected to ImmuDB database: %s", ic.Database)
-
-	return nil
-}
-
 // reconnect attempts to reestablish a lost connection (UNCHANGED)
 func reconnect(ic *config.ImmuClient) error {
-	config.Warning(ic.Logger, "Attempting to reconnect to ImmuDB")
-
+	ic.Logger.Logger.Warn("Connection lost, attempting to reconnect before operation",
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.reconnect"),
+	)
 	// Clean up existing connection if any
 	if ic.Cancel != nil {
+		ic.Logger.Logger.Warn("Canceling existing connection",
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.reconnect"),
+		)
 		ic.Cancel()
 	}
 
@@ -569,8 +128,9 @@ func reconnect(ic *config.ImmuClient) error {
 
 	ic.IsConnected = false
 
-	// Attempt to connect again
-	return connect(ic)
+	// Attempt to connect again by giving back the new connection to the pool
+	_, err := GetMainDBConnection()
+	return err
 }
 
 // withRetry executes the given operation with retry logic (UNCHANGED)
@@ -653,8 +213,9 @@ func withRetry(ic *config.ImmuClient, operation string, fn func() error) error {
 	return err
 }
 
-// Create stores a value with the given key (UNCHANGED - but can optionally use connection pool)
-func Create(ic *config.ImmuClient, key string, value interface{}) error {
+// Create stores a value with the given key using the connection pool
+func Create(PooledConnection *config.PooledConnection, key string, value interface{}) error {
+	var ic *config.ImmuClient
 	if key == "" {
 		return ErrEmptyKey
 	}
@@ -663,93 +224,161 @@ func Create(ic *config.ImmuClient, key string, value interface{}) error {
 		return ErrNilValue
 	}
 
-	// Try to use connection pool if available, otherwise fall back to traditional approach
-	if ic == nil {
-		// Use connection pool approach
-		return withPooledRetry("Create", func(conn *PooledConnection) error {
-			// Convert value to bytes
-			valueBytes, err := toBytes(value)
-			if err != nil {
-				return err
-			}
-
-			pool := GetGlobalPool()
-			config.Info(pool.logger, "Creating key: %s", key)
-			// Store the key-value pair
-			_, err = conn.Client.Set(conn.Ctx, []byte(key), valueBytes)
-			if err != nil {
-				return err
-			}
-
-			config.Info(pool.logger, "Successfully created key: %s", key)
-			return nil
-		})
+	// Get a connection from the poo
+	if PooledConnection == nil {
+		PooledConnection, err := GetMainDBConnection()
+		if err != nil {
+			return fmt.Errorf("failed to get database connection: %w", err)
+		}
+		ic = PooledConnection.Client
 	}
 
-	// Traditional approach with single connection
-	return withRetry(ic, "Create", func() error {
-		// Convert value to bytes
-		valueBytes, err := toBytes(value)
-		if err != nil {
-			return err
-		}
+	defer func() {
+		PooledConnection.Client.Logger.Logger.Info("Returning main database connection",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.PutMainDBConnection"),
+		)
+		PutMainDBConnection(PooledConnection)
+	}()
 
-		config.Info(ic.Logger, "Creating key: %s", key)
-		// Store the key-value pair
-		_, err = ic.Client.Set(ic.Ctx, []byte(key), valueBytes)
-		if err != nil {
-			return err
-		}
+	ic = PooledConnection.Client
+	// Ensure the database is selected
+	if err := ensureMainDBSelected(PooledConnection); err != nil {
+		ic.Logger.Logger.Error("Failed to ensure main database selected",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.Create"),
+		)
+		return fmt.Errorf("database selection failed: %w", err)
+	}
 
-		config.Info(ic.Logger, "Successfully created key: %s", key)
-		return nil
-	})
+	// Convert value to bytes
+	valueBytes, err := toBytes(value)
+	if err != nil {
+		ic.Logger.Logger.Error("Failed to convert value to bytes",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.Create"),
+		)
+		return fmt.Errorf("failed to convert value to bytes: %w", err)
+	}
+
+	// Log the operation
+	ic.Logger.Logger.Info("Creating key",
+		zap.String("key", key),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.Create"),
+	)
+
+	// Store the key-value pair
+	_, err = ic.Client.Set(ic.Ctx, []byte(key), valueBytes)
+	if err != nil {
+		ic.Logger.Logger.Error("Failed to set key",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.Create"),
+		)
+		return fmt.Errorf("failed to set key %s: %w", key, err)
+	}
+
+	// Log success
+	ic.Logger.Logger.Info("Successfully created key",
+		zap.String("key", key),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.Create"),
+	)
+
+	return nil
 }
 
-// Read retrieves a value by key (UNCHANGED - but can optionally use connection pool)
-func Read(ic *config.ImmuClient, key string) ([]byte, error) {
+// Read retrieves a value by key using the connection pool
+func Read(PooledConnection *config.PooledConnection, key string) ([]byte, error) {
 	if key == "" {
 		return nil, ErrEmptyKey
 	}
 
 	var entryValue []byte
+	var err error
+	shouldReturnConnection := false
 
-	// Try to use connection pool if available, otherwise fall back to traditional approach
-	if ic == nil {
-		// Use connection pool approach
-		err := withPooledRetry("Read", func(conn *PooledConnection) error {
-			pool := GetGlobalPool()
-			config.Info(pool.logger, "Reading key: %s", key)
-			entry, err := conn.Client.Get(conn.Ctx, []byte(key))
-			if err != nil {
-				if strings.Contains(err.Error(), "key not found") ||
-					strings.Contains(err.Error(), "tbtree: key not found") {
-					return ErrNotFound
-				}
-				return err
-			}
-
-			entryValue = entry.Value
-			return nil
-		})
-
+	// Handle nil or invalid connection
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetMainDBConnection()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get database connection: %w", err)
 		}
-
-		return entryValue, nil
+		shouldReturnConnection = true
 	}
 
-	// Traditional approach with single connection
-	err := withRetry(ic, "Read", func() error {
-		config.Info(ic.Logger, "Reading key: %s", key)
-		entry, err := ic.Client.Get(ic.Ctx, []byte(key))
+	// Ensure we return the connection if we acquired it
+	defer func() {
+		if shouldReturnConnection && PooledConnection != nil {
+			PutMainDBConnection(PooledConnection)
+		}
+	}()
+
+	// Ensure the database is selected
+	if err := ensureMainDBSelected(PooledConnection); err != nil {
+		PooledConnection.Client.Logger.Logger.Error("Failed to ensure main database selected",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.Read"),
+		)
+		return nil, fmt.Errorf("database selection failed: %w", err)
+	}
+
+	// Log the read operation
+	PooledConnection.Client.Logger.Logger.Info("Reading key from database",
+		zap.String("key", key),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Function, "DB_OPs.Read"),
+	)
+
+	// Execute the read with retry logic
+	err = withRetry(PooledConnection.Client, "Read", func() error {
+		entry, err := PooledConnection.Client.Client.Get(PooledConnection.Client.Ctx, []byte(key))
 		if err != nil {
-			if strings.Contains(err.Error(), "key not found") ||
-				strings.Contains(err.Error(), "tbtree: key not found") {
+			if isNotFoundError(err) {
+				PooledConnection.Client.Logger.Logger.Warn("Key not found",
+					zap.String("key", key),
+					zap.String(logging.Connection_database, config.DBName),
+					zap.Time(logging.Created_at, time.Now()),
+					zap.String(logging.Topic, TOPIC),
+					zap.String(logging.Function, "DB_OPs.Read"),
+				)
 				return ErrNotFound
 			}
-			return err
+			return fmt.Errorf("database read failed: %w", err)
 		}
 
 		entryValue = entry.Value
@@ -757,27 +386,86 @@ func Read(ic *config.ImmuClient, key string) ([]byte, error) {
 	})
 
 	if err != nil {
+		PooledConnection.Client.Logger.Logger.Error("Failed to read key - retry attemps failed and limit exceeded",
+			zap.Error(err),
+			zap.String("key", key),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.Read"),
+		)
 		return nil, err
 	}
+
+	// Log successful read
+	PooledConnection.Client.Logger.Logger.Info("Successfully read key",
+		zap.String("key", key),
+		zap.Int("value_length", len(entryValue)),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Function, "DB_OPs.Read"),
+	)
 
 	return entryValue, nil
 }
 
+// Helper function to check if error is a "not found" error
+func isNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "key not found") ||
+		strings.Contains(err.Error(), "tbtree: key not found")
+}
+
 // ReadJSON retrieves a value by key and unmarshals it into dest (UNCHANGED)
-func ReadJSON(ic *config.ImmuClient, key string, dest interface{}) error {
-	data, err := Read(ic, key)
+func ReadJSON(PooledConnection *config.PooledConnection, key string, dest interface{}) error {
+	var err error
+	var data []byte
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetMainDBConnection()
+		if err != nil {
+			return fmt.Errorf("failed to get database connection: %w", err)
+		}
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.ReadJSON"),
+		)
+	}
+
+	defer func() {
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.ReadJSON"),
+		)
+		PutMainDBConnection(PooledConnection)
+	}()
+
+	data, err = Read(PooledConnection, key)
 	if err != nil {
 		return err
 	}
 
-	var logger *config.AsyncLogger
-	if ic != nil {
-		logger = ic.Logger
-	} else {
-		logger = GetGlobalPool().logger
-	}
-
-	config.Info(logger, "Unmarshaling JSON data for key: %s", key)
+	PooledConnection.Client.Logger.Logger.Info("Unmarshaling JSON data for key: %s",
+		zap.String("key", key),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.ReadJSON"),
+	)
 	if err := json.Unmarshal(data, dest); err != nil {
 		return fmt.Errorf("failed to unmarshal data: %w", err)
 	}
@@ -786,40 +474,106 @@ func ReadJSON(ic *config.ImmuClient, key string, dest interface{}) error {
 }
 
 // Update updates an existing key with a new value (UNCHANGED)
-func Update(ic *config.ImmuClient, key string, value interface{}) error {
+func Update(PooledConnection *config.PooledConnection, key string, value interface{}) error {
+	var err error
 	// In ImmuDB, update is the same as create since it's an immutable database
 	// We simply write the new value with the same key
-	var logger *config.AsyncLogger
-	if ic != nil {
-		logger = ic.Logger
-	} else {
-		logger = GetGlobalPool().logger
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		// If no connection then quickly pull connection from the pool
+		PooledConnection, err = GetMainDBConnection()
+		if err != nil {
+			return fmt.Errorf("failed to get database connection: %w", err)
+		}
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.Update"),
+		)
 	}
-	config.Info(logger, "Updating key: %s", key)
-	return Create(ic, key, value)
+	defer func() {
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.Update"),
+		)
+		PutMainDBConnection(PooledConnection)
+	}()
+	return Create(PooledConnection, key, value)
 }
 
 // GetKeys retrieves keys with a specified prefix (UNCHANGED - but can optionally use connection pool)
-func GetKeys(ic *config.ImmuClient, prefix string, limit int) ([]string, error) {
+func GetKeys(PooledConnection *config.PooledConnection, prefix string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = config.DefaultScanLimit
 	}
 
 	var keys []string
+	var err error
+
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		// If no connection then quickly pull connection from the pool
+		PooledConnection, err = GetMainDBConnection()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get database connection: %w", err)
+		}
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetKeys"),
+		)
+	}
+	defer func() {
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetKeys"),
+		)
+		PutMainDBConnection(PooledConnection)
+	}()
 
 	// Try to use connection pool if available, otherwise fall back to traditional approach
-	if ic == nil {
+	if PooledConnection == nil {
 		// Use connection pool approach
-		err := withPooledRetry("GetKeys", func(conn *PooledConnection) error {
-			pool := GetGlobalPool()
-			config.Info(pool.logger, "Scanning keys with prefix: %s (limit: %d)", prefix, limit)
+		err := withRetry(PooledConnection.Client, "GetKeys", func() error {
+			PooledConnection.Client.Logger.Logger.Info("Scanning keys with prefix: %s (limit: %d)",
+				zap.String("prefix", prefix),
+				zap.Int("limit", limit),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetKeys"),
+			)
 			scanReq := &schema.ScanRequest{
 				Prefix: []byte(prefix),
 				Limit:  uint64(limit),
 			}
 
-			scanResult, err := conn.Client.Scan(conn.Ctx, scanReq)
+			scanResult, err := PooledConnection.Client.Client.Scan(PooledConnection.Client.Ctx, scanReq)
 			if err != nil {
+				PooledConnection.Client.Logger.Logger.Error("Failed to scan keys with prefix: %s (limit: %d)",
+					zap.String("prefix", prefix),
+					zap.Int("limit", limit),
+					zap.String(logging.Connection_database, config.DBName),
+					zap.Time(logging.Created_at, time.Now()),
+					zap.String(logging.Log_file, LOG_FILE),
+					zap.String(logging.Topic, TOPIC),
+					zap.String(logging.Loki_url, LOKI_URL),
+					zap.String(logging.Function, "DB_OPs.GetKeys"),
+				)
 				return err
 			}
 
@@ -828,55 +582,105 @@ func GetKeys(ic *config.ImmuClient, prefix string, limit int) ([]string, error) 
 				keys[i] = string(entry.Key)
 			}
 
-			config.Info(pool.logger, "Found %d keys with prefix: %s", len(keys), prefix)
+			PooledConnection.Client.Logger.Logger.Info("Found %d keys with prefix: %s",
+				zap.Int("count", len(keys)),
+				zap.String("prefix", prefix),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetKeys"),
+			)
 			return nil
 		})
 
 		if err != nil {
+			PooledConnection.Client.Logger.Logger.Error("Failed to scan keys with prefix: %s (limit: %d)",
+				zap.String("prefix", prefix),
+				zap.Int("limit", limit),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetKeys"),
+			)
 			return nil, err
 		}
-
+		PooledConnection.Client.Logger.Logger.Info("Found %d keys with prefix: %s",
+			zap.Int("count", len(keys)),
+			zap.String("prefix", prefix),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetKeys"),
+		)
 		return keys, nil
 	}
-
-	// Traditional approach with single connection
-	err := withRetry(ic, "GetKeys", func() error {
-		config.Info(ic.Logger, "Scanning keys with prefix: %s (limit: %d)", prefix, limit)
-		scanReq := &schema.ScanRequest{
-			Prefix: []byte(prefix),
-			Limit:  uint64(limit),
-		}
-
-		scanResult, err := ic.Client.Scan(ic.Ctx, scanReq)
-		if err != nil {
-			return err
-		}
-
-		keys = make([]string, len(scanResult.Entries))
-		for i, entry := range scanResult.Entries {
-			keys[i] = string(entry.Key)
-		}
-
-		config.Info(ic.Logger, "Found %d keys with prefix: %s", len(keys), prefix)
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
+	PooledConnection.Client.Logger.Logger.Info("Found %d keys with prefix: %s",
+		zap.Int("count", len(keys)),
+		zap.String("prefix", prefix),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetKeys"),
+	)
 	return keys, nil
 }
 
-func GetAllKeys(ic *config.ImmuClient, prefix string) ([]string, error) {
+func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]string, error) {
 	var allKeys []string
 	batchSize := 1000
 	var lastKey []byte
+	var err error
+
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		// If no connection then quickly pull connection from the pool
+		PooledConnection, err = GetMainDBConnection()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get database connection: %w", err)
+		}
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetAllKeys"),
+		)
+	}
+
+	defer func() {
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetAllKeys"),
+		)
+		PutMainDBConnection(PooledConnection)
+	}()
 
 	for {
 		// Create a batch request
-		keys, err := getKeysBatch(ic, prefix, batchSize, lastKey)
+		keys, err := getKeysBatch(PooledConnection, prefix, batchSize, lastKey)
 		if err != nil {
+			PooledConnection.Client.Logger.Logger.Error("Failed to scan keys with prefix: %s (limit: %d)",
+				zap.String("prefix", prefix),
+				zap.Int("limit", batchSize),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetKeys"),
+			)
 			return nil, err
 		}
 
@@ -903,14 +707,41 @@ func GetAllKeys(ic *config.ImmuClient, prefix string) ([]string, error) {
 
 // CountAllKeys counts all keys with a given prefix.
 // This is more efficient than GetAllKeys as it doesn't store the keys.
-func CountAllKeys(ic *config.ImmuClient, prefix string) (int, error) {
+func CountAllKeys(PooledConnection *config.PooledConnection, prefix string) (int, error) {
 	var totalKeys int
 	batchSize := 1000
 	var lastKey []byte
+	var err error
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		// If no connection then quickly pull connection from the pool
+		PooledConnection, err = GetMainDBConnection()
+		if err != nil {
+			return -1, fmt.Errorf("failed to get database connection: %w", err)
+		}
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.CountAllKeys"),
+		)
+	}
 
+	defer func() {
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.CountAllKeys"),
+		)
+		PutMainDBConnection(PooledConnection)
+	}()
 	for {
 		var count int
-		err := withRetry(ic, "CountAllKeysBatch", func() error {
+		err := withRetry(PooledConnection.Client, "CountAllKeysBatch", func() error {
 			scanReq := &schema.ScanRequest{
 				Prefix:  []byte(prefix),
 				Limit:   uint64(batchSize),
@@ -918,7 +749,7 @@ func CountAllKeys(ic *config.ImmuClient, prefix string) (int, error) {
 				Desc:    false,
 			}
 
-			scanResult, err := ic.Client.Scan(ic.Ctx, scanReq)
+			scanResult, err := PooledConnection.Client.Client.Scan(PooledConnection.Client.Ctx, scanReq)
 			if err != nil {
 				return err
 			}
@@ -940,181 +771,274 @@ func CountAllKeys(ic *config.ImmuClient, prefix string) (int, error) {
 			break // Reached the end of the keys.
 		}
 	}
-
-	if ic != nil {
-		config.Info(ic.Logger, "Total keys found: %d with Prefix: %s", totalKeys, prefix)
-	}
-
+	PooledConnection.Client.Logger.Logger.Info("Total keys found: %d with Prefix: %s",
+		zap.Int("count", totalKeys),
+		zap.String("prefix", prefix),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.CountAllKeys"),
+	)
 	return totalKeys, nil
 }
 
 // CountTransactions counts the total number of transactions in the database.
-func CountTransactions(mainDBClient *config.ImmuClient) (int, error) {
+func CountTransactions(mainDBClient *config.PooledConnection) (int, error) {
 	// This function will scan for keys with the "tx:" prefix and count them.
 	// It's more efficient than fetching all keys.
-	return CountAllKeys(mainDBClient, "tx:")
+	return CountAllKeys(mainDBClient, DEFAULT_PREFIX_TX)
 }
 
 // Helper function to get a batch of keys (UNCHANGED - but can optionally use connection pool)
-func getKeysBatch(ic *config.ImmuClient, prefix string, limit int, seekKey []byte) ([]string, error) {
+func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limit int, seekKey []byte) ([]string, error) {
 	var keys []string
+	var err error
 
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		// If no connection then quickly pull connection from the pool
+		PooledConnection, err = GetMainDBConnection()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get database connection: %w", err)
+		}
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.getKeysBatch"),
+		)
+	}
+
+	defer func() {
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.getKeysBatch"),
+		)
+		PutMainDBConnection(PooledConnection)
+	}()
+	ic := PooledConnection.Client
 	// Try to use connection pool if available, otherwise fall back to traditional approach
-	if ic == nil {
+	if ic != nil {
 		// Use connection pool approach
-		err := withPooledRetry("GetKeysBatch", func(conn *PooledConnection) error {
+		err := withRetry(PooledConnection.Client, "GetKeysBatch", func() error {
 			scanReq := &schema.ScanRequest{
 				Prefix:  []byte(prefix),
 				Limit:   uint64(limit),
 				SeekKey: seekKey,
 			}
 
-			scanResult, err := conn.Client.Scan(conn.Ctx, scanReq)
+			ic.Logger.Logger.Info("Scanning keys with prefix: %s (limit: %d)",
+				zap.String("prefix", prefix),
+				zap.Int("limit", limit),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.getKeysBatch"),
+			)
+
+			scanResult, err := ic.Client.Scan(ic.Ctx, scanReq)
 			if err != nil {
+				ic.Logger.Logger.Error("Failed to scan keys with prefix: %s (limit: %d)",
+					zap.String("prefix", prefix),
+					zap.Int("limit", limit),
+					zap.String(logging.Connection_database, config.DBName),
+					zap.Time(logging.Created_at, time.Now()),
+					zap.String(logging.Log_file, LOG_FILE),
+					zap.String(logging.Topic, TOPIC),
+					zap.String(logging.Loki_url, LOKI_URL),
+					zap.String(logging.Function, "DB_OPs.getKeysBatch"),
+				)
 				return err
 			}
+			ic.Logger.Logger.Info("Scanned keys with prefix: %s (limit: %d)",
+				zap.String("prefix", prefix),
+				zap.Int("limit", limit),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.getKeysBatch"),
+			)
 
 			keys = make([]string, len(scanResult.Entries))
 			for i, entry := range scanResult.Entries {
 				keys[i] = string(entry.Key)
 			}
-
+			ic.Logger.Logger.Info("Keys scanned successfully",
+				zap.String("prefix", prefix),
+				zap.Int("limit", limit),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.getKeysBatch"),
+			)
 			return nil
 		})
 
 		if err != nil {
+			ic.Logger.Logger.Error("Failed to scan keys with prefix: %s (limit: %d)",
+				zap.String("prefix", prefix),
+				zap.Int("limit", limit),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.getKeysBatch"),
+			)
 			return nil, err
 		}
-
+		ic.Logger.Logger.Info("Keys scanned successfully",
+			zap.String("prefix", prefix),
+			zap.Int("limit", limit),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.getKeysBatch"),
+		)
 		return keys, nil
 	}
 
-	// Traditional approach with single connection
-	err := withRetry(ic, "GetKeysBatch", func() error {
-		scanReq := &schema.ScanRequest{
-			Prefix:  []byte(prefix),
-			Limit:   uint64(limit),
-			SeekKey: seekKey,
-		}
-
-		scanResult, err := ic.Client.Scan(ic.Ctx, scanReq)
-		if err != nil {
-			return err
-		}
-
-		keys = make([]string, len(scanResult.Entries))
-		for i, entry := range scanResult.Entries {
-			keys[i] = string(entry.Key)
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return keys, nil
+	fmt.Println("Keys scanned Failed - Config.Immuclient Not Found")
+	return nil, nil
 }
 
-// BatchCreate stores multiple key-value pairs in a single transaction (UNCHANGED - but can optionally use connection pool)
-func BatchCreate(ic *config.ImmuClient, entries map[string]interface{}) error {
+// BatchCreate stores multiple key-value pairs in a single transaction
+func BatchCreate(PooledConnection *config.PooledConnection, entries map[string]interface{}) error {
 	if len(entries) == 0 {
+		fmt.Println("BatchCreate Failed - Empty Batch")
 		return ErrEmptyBatch
 	}
 
-	// Try to use connection pool if available, otherwise fall back to traditional approach
-	if ic == nil {
-		// Use connection pool approach
-		return withPooledRetry("BatchCreate", func(conn *PooledConnection) error {
-			pool := GetGlobalPool()
-			config.Info(pool.logger, "Creating batch of %d entries", len(entries))
-			ops := make([]*schema.Op, 0, len(entries))
+	var err error
+	shouldReturnConnection := false
 
-			for key, value := range entries {
-				if key == "" {
-					return ErrEmptyKey
-				}
+	// Handle nil or invalid connection
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetMainDBConnection()
+		if err != nil {
+			fmt.Println("BatchCreate Failed - Config.Immuclient Not Found")
+			return fmt.Errorf("failed to get database connection: %w", err)
+		}
+		shouldReturnConnection = true
+	}
 
-				if value == nil {
-					return ErrNilValue
-				}
+	// Ensure we return the connection if we acquired it
+	defer func() {
+		if shouldReturnConnection && PooledConnection != nil {
+			PutMainDBConnection(PooledConnection)
+		}
+	}()
 
-				valueBytes, err := toBytes(value)
-				if err != nil {
-					return fmt.Errorf("failed to prepare value for key %s: %w", key, err)
-				}
+	// Ensure the database is selected
+	if err := ensureMainDBSelected(PooledConnection); err != nil {
+		PooledConnection.Client.Logger.Logger.Error("Failed to ensure main database selected",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.BatchCreate"),
+		)
+		return fmt.Errorf("database selection failed: %w", err)
+	}
 
-				ops = append(ops, &schema.Op{
-					Operation: &schema.Op_Kv{
-						Kv: &schema.KeyValue{
-							Key:   []byte(key),
-							Value: valueBytes,
-						},
-					},
-				})
-			}
+	// Log the batch operation
+	PooledConnection.Client.Logger.Logger.Info("Creating batch of entries",
+		zap.Int("entry_count", len(entries)),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Function, "DB_OPs.BatchCreate"),
+	)
 
-			// Execute all operations in a single transaction
-			_, err := conn.Client.ExecAll(conn.Ctx, &schema.ExecAllRequest{
-				Operations: ops,
-			})
+	// Prepare operations
+	ops := make([]*schema.Op, 0, len(entries))
+	for key, value := range entries {
+		if key == "" {
+			return ErrEmptyKey
+		}
 
-			if err != nil {
-				return err
-			}
+		if value == nil {
+			return ErrNilValue
+		}
 
-			config.Info(pool.logger, "Successfully created batch of %d entries", len(entries))
-			return nil
+		valueBytes, err := toBytes(value)
+		if err != nil {
+			PooledConnection.Client.Logger.Logger.Error("Failed to prepare value for batch operation",
+				zap.String("key", key),
+				zap.Error(err),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Function, "DB_OPs.BatchCreate"),
+			)
+			return fmt.Errorf("failed to prepare value for key %s: %w", key, err)
+		}
+
+		ops = append(ops, &schema.Op{
+			Operation: &schema.Op_Kv{
+				Kv: &schema.KeyValue{
+					Key:   []byte(key),
+					Value: valueBytes,
+				},
+			},
 		})
 	}
 
-	// Traditional approach with single connection
-	return withRetry(ic, "BatchCreate", func() error {
-		config.Info(ic.Logger, "Creating batch of %d entries", len(entries))
-		ops := make([]*schema.Op, 0, len(entries))
-
-		for key, value := range entries {
-			if key == "" {
-				return ErrEmptyKey
-			}
-
-			if value == nil {
-				return ErrNilValue
-			}
-
-			valueBytes, err := toBytes(value)
-			if err != nil {
-				return fmt.Errorf("failed to prepare value for key %s: %w", key, err)
-			}
-
-			ops = append(ops, &schema.Op{
-				Operation: &schema.Op_Kv{
-					Kv: &schema.KeyValue{
-						Key:   []byte(key),
-						Value: valueBytes,
-					},
-				},
-			})
-		}
-
-		// Execute all operations in a single transaction
-		_, err := ic.Client.ExecAll(ic.Ctx, &schema.ExecAllRequest{
-			Operations: ops,
-		})
-
-		if err != nil {
-			return err
-		}
-
-		config.Info(ic.Logger, "Successfully created batch of %d entries", len(entries))
-		return nil
+	// Execute all operations in a single transaction
+	_, err = PooledConnection.Client.Client.ExecAll(PooledConnection.Client.Ctx, &schema.ExecAllRequest{
+		Operations: ops,
 	})
+
+	if err != nil {
+		PooledConnection.Client.Logger.Logger.Error("Batch create operation failed",
+			zap.Error(err),
+			zap.Int("entry_count", len(entries)),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Function, "DB_OPs.BatchCreate"),
+		)
+		return fmt.Errorf("batch operation failed: %w", err)
+	}
+
+	// Log success
+	PooledConnection.Client.Logger.Logger.Info("Successfully created batch of entries",
+		zap.Int("entry_count", len(entries)),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Function, "DB_OPs.BatchCreate"),
+	)
+
+	return nil
 }
 
 // Close closes the ImmuDB client connection (UNCHANGED)
 func Close(ic *config.ImmuClient) error {
-	config.Info(ic.Logger, "Closing ImmuDB connection")
+	ic.Logger.Logger.Info("Closing ImmuDB connection",
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Function, "DB_OPs.Close"),
+	)
 
 	if ic.Cancel != nil {
 		ic.Cancel()
@@ -1123,74 +1047,83 @@ func Close(ic *config.ImmuClient) error {
 	if ic.Client != nil {
 		err := ic.Client.Disconnect()
 		if err != nil {
-			config.Error(ic.Logger, "Error disconnecting from ImmuDB: %v", err)
+			ic.Logger.Logger.Error("Error disconnecting from ImmuDB: %v",
+				zap.Error(err),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Function, "DB_OPs.Close"),
+			)
 			return fmt.Errorf("error disconnecting from ImmuDB: %w", err)
 		}
 	}
 
 	ic.IsConnected = false
-	config.Info(ic.Logger, "ImmuDB connection closed successfully")
+	ic.Logger.Logger.Info("ImmuDB connection closed successfully",
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Function, "DB_OPs.Close"),
+	)
 
-	// Close the logger
-	err := config.Close(ic.Logger)
-	if err != nil {
-		return fmt.Errorf("error closing logger: %w", err)
-	}
+	// Close the logger - Close after Sync and dumping all the buffered logs
+	// Close the logger - Close after Sync and dumping all the buffered logs
+	defer func() {
+		ic.Logger.Logger.Info("ImmuDB connection closed successfully",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Function, "DB_OPs.Close"),
+		)
+		ic.Logger.Logger.Sync()
+	}()
 
 	return nil
 }
 
-// GetMerkleRoot returns the current database Merkle root (UNCHANGED - but can optionally use connection pool)
-func GetMerkleRoot(ic *config.ImmuClient) ([]byte, error) {
-	var merkleRoot []byte
-
-	// Try to use connection pool if available, otherwise fall back to traditional approach
-	if ic == nil {
-		// Use connection pool approach
-		err := withPooledRetry("GetMerkleRoot", func(conn *PooledConnection) error {
-			pool := GetGlobalPool()
-			config.Info(pool.logger, "Getting current Merkle root")
-			// Get current state from server
-			state, err := conn.Client.CurrentState(conn.Ctx)
-			if err != nil {
-				return err
-			}
-
-			// Extract the Merkle root (txHash)
-			merkleRoot = state.TxHash
-
-			config.Info(pool.logger, "Database state: TxId=%d, TxHash=%x", state.TxId, state.TxHash)
-			return nil
-		})
-
+// GetMerkleRoot returns the current database Merkle root
+func GetMerkleRoot(PooledConnection *config.PooledConnection) ([]byte, error) {
+	var err error
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetAccountsConnection()
 		if err != nil {
 			return nil, err
 		}
-
-		return merkleRoot, nil
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetMerkleRoot"),
+		)
 	}
-
-	// Traditional approach with single connection
-	err := withRetry(ic, "GetMerkleRoot", func() error {
-		config.Info(ic.Logger, "Getting current Merkle root")
-		// Get current state from server
-		state, err := ic.Client.CurrentState(ic.Ctx)
-		if err != nil {
-			return err
-		}
-
-		// Extract the Merkle root (txHash)
-		merkleRoot = state.TxHash
-
-		config.Info(ic.Logger, "Database state: TxId=%d, TxHash=%x", state.TxId, state.TxHash)
-		return nil
-	})
-
+	state, err := PooledConnection.Client.Client.CurrentState(PooledConnection.Client.Ctx)
 	if err != nil {
+		PooledConnection.Client.Logger.Logger.Error("Failed to get current state",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetMerkleRoot"),
+		)
 		return nil, err
 	}
-
-	return merkleRoot, nil
+	PooledConnection.Client.Logger.Logger.Info("Successfully retrieved current state",
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetMerkleRoot"),
+	)
+	// Extract the Merkle root hash from the state
+	return state.TxHash, nil
 }
 
 // SafeCreate stores a value with the given key and verifies the operation (UNCHANGED - but can optionally use connection pool)
@@ -1201,9 +1134,18 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 	// Try to use connection pool if available, otherwise fall back to traditional approach
 	if ic == nil {
 		// If Connection is nil, use the global connection pool
-		PooledConnection, err = GetAccountsConnection()
-		if err != nil {
-			return err
+		if ic.Database == config.AccountsDBName {
+			PooledConnection, err = GetAccountsConnection()
+			if err != nil {
+				return err
+			}
+		} else if ic.Database == config.DBName {
+			PooledConnection, err = GetMainDBConnection()
+			if err != nil {
+				return err
+			}
+		} else {
+			return errors.New("Invalid Database Name")
 		}
 		ic = PooledConnection.Client
 	}
@@ -1240,13 +1182,13 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 			return err
 		}
 
-		ic.Logger.Logger.Info("Creating verified key: %s", 
-		zap.String("key", key),
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, LOKI_URL),
-		zap.String(logging.Function, "DB_OPs.SafeCreate"),
+		ic.Logger.Logger.Info("Creating verified key: %s",
+			zap.String("key", key),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.SafeCreate"),
 		)
 		// Store the key-value pair with verification
 		verifiedTx, err := ic.Client.VerifiedSet(ic.Ctx, []byte(key), valueBytes)
@@ -1261,96 +1203,182 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.SafeCreate"),
-			)
+		)
 		return nil
 	})
 }
 
-// SafeRead retrieves a value by key with cryptographic verification (UNCHANGED - but can optionally use connection pool)
+// SafeRead retrieves a value by key with cryptographic verification
 func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 	if key == "" {
 		return nil, ErrEmptyKey
 	}
 
 	var entryValue []byte
+	var PooledConnection *config.PooledConnection
+	var err error
+	shouldReturnConnection := false
 
-	// Try to use connection pool if available, otherwise fall back to traditional approach
+	// Handle nil or invalid connection
 	if ic == nil {
-		// Use connection pool approach
-		err := withPooledRetry("SafeRead", func(conn *PooledConnection) error {
-			pool := GetGlobalPool()
-			config.Info(pool.logger, "Reading verified key: %s", key)
-			entry, err := conn.Client.VerifiedGet(conn.Ctx, []byte(key))
-			if err != nil {
-				if strings.Contains(err.Error(), "key not found") ||
-					strings.Contains(err.Error(), "tbtree: key not found") {
-					return ErrNotFound
-				}
-				return err
-			}
-
-			config.Info(pool.logger, "Value verified: tx=%d", entry.Tx)
-
-			entryValue = entry.Value
-			return nil
-		})
-
+		PooledConnection, err = GetMainDBConnection()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get database connection: %w", err)
 		}
-
-		return entryValue, nil
+		ic = PooledConnection.Client
+		shouldReturnConnection = true
 	}
 
-	// Traditional approach with single connection
-	err := withRetry(ic, "SafeRead", func() error {
-		config.Info(ic.Logger, "Reading verified key: %s", key)
+	// Ensure we return the connection if we acquired it
+	defer func() {
+		if shouldReturnConnection && PooledConnection != nil {
+			PooledConnection.Client.Logger.Logger.Info("Returning connection to pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.SafeRead"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}
+	}()
+
+	// Log the read operation
+	ic.Logger.Logger.Info("Reading verified key from database",
+		zap.String("key", key),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.SafeRead"),
+	)
+
+	// Execute the read with retry logic
+	err = withRetry(ic, "SafeRead", func() error {
 		entry, err := ic.Client.VerifiedGet(ic.Ctx, []byte(key))
 		if err != nil {
-			if strings.Contains(err.Error(), "key not found") ||
-				strings.Contains(err.Error(), "tbtree: key not found") {
+			if isNotFoundError(err) {
+				ic.Logger.Logger.Warn("Key not found",
+					zap.String("key", key),
+					zap.String(logging.Connection_database, config.DBName),
+					zap.Time(logging.Created_at, time.Now()),
+					zap.String(logging.Log_file, LOG_FILE),
+					zap.String(logging.Topic, TOPIC),
+					zap.String(logging.Loki_url, LOKI_URL),
+					zap.String(logging.Function, "DB_OPs.SafeRead"),
+				)
 				return ErrNotFound
 			}
-			return err
+			return fmt.Errorf("database read failed: %w", err)
 		}
 
-		config.Info(ic.Logger, "Value verified: tx=%d, verified=%v",
-			entry.Tx, entry)
+		ic.Logger.Logger.Info("Successfully read and verified key",
+			zap.String("key", key),
+			zap.Uint64("transaction_id", entry.Tx),
+			zap.Int("value_length", len(entry.Value)),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.SafeRead"),
+		)
 
 		entryValue = entry.Value
 		return nil
 	})
 
 	if err != nil {
+		ic.Logger.Logger.Error("Failed to read key - retry attempts failed and limit exceeded",
+			zap.Error(err),
+			zap.String("key", key),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.SafeRead"),
+		)
 		return nil, err
 	}
 
 	return entryValue, nil
 }
 
-// SafeReadJSON retrieves a verified value by key and unmarshals it into dest (UNCHANGED)
+// SafeReadJSON retrieves a verified value by key and unmarshals it into dest
 func SafeReadJSON(ic *config.ImmuClient, key string, dest interface{}) error {
+	if key == "" {
+		return ErrEmptyKey
+	}
+
+	// Log the operation start
+	var logger *zap.Logger
+	if ic != nil {
+		logger = ic.Logger.Logger
+		logger.Info("Unmarshaling verified JSON data",
+			zap.String("key", key),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.SafeReadJSON"),
+		)
+	}
+
+	// Get the data using SafeRead
 	data, err := SafeRead(ic, key)
 	if err != nil {
+		if logger != nil {
+			logger.Error("Failed to read JSON data",
+				zap.String("key", key),
+				zap.Error(err),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.SafeReadJSON"),
+			)
+		}
 		return err
 	}
 
-	var logger *config.AsyncLogger
-	if ic != nil {
-		logger = ic.Logger
-	} else {
-		logger = GetGlobalPool().logger
+	// Unmarshal the JSON data
+	if err := json.Unmarshal(data, dest); err != nil {
+		if logger != nil {
+			logger.Error("Failed to unmarshal JSON data",
+				zap.String("key", key),
+				zap.Error(err),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.SafeReadJSON"),
+			)
+		}
+		return fmt.Errorf("failed to unmarshal JSON data: %w", err)
 	}
 
-	config.Info(logger, "Unmarshaling verified JSON data for key: %s", key)
-	if err := json.Unmarshal(data, dest); err != nil {
-		return fmt.Errorf("failed to unmarshal data: %w", err)
+	if logger != nil {
+		logger.Info("Successfully unmarshaled JSON data",
+			zap.String("key", key),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.SafeReadJSON"),
+		)
 	}
 
 	return nil
 }
 
-// GetHistory retrieves the history of values for a key (UNCHANGED - but can optionally use connection pool)
+// GetHistory retrieves the history of values for a key
 func GetHistory(ic *config.ImmuClient, key string, limit int) ([]*schema.Entry, error) {
 	if key == "" {
 		return nil, ErrEmptyKey
@@ -1361,38 +1389,49 @@ func GetHistory(ic *config.ImmuClient, key string, limit int) ([]*schema.Entry, 
 	}
 
 	var entries []*schema.Entry
+	var PooledConnection *config.PooledConnection
+	var err error
+	shouldReturnConnection := false
 
-	// Try to use connection pool if available, otherwise fall back to traditional approach
+	// Handle nil or invalid connection
 	if ic == nil {
-		// Use connection pool approach
-		err := withPooledRetry("GetHistory", func(conn *PooledConnection) error {
-			pool := GetGlobalPool()
-			config.Info(pool.logger, "Getting history for key: %s (limit: %d)", key, limit)
-			historyReq := &schema.HistoryRequest{
-				Key:   []byte(key),
-				Limit: int32(limit),
-			}
-
-			historyResp, err := conn.Client.History(conn.Ctx, historyReq)
-			if err != nil {
-				return err
-			}
-
-			entries = historyResp.Entries
-			config.Info(pool.logger, "Found %d historical entries for key: %s", len(entries), key)
-			return nil
-		})
-
+		PooledConnection, err = GetMainDBConnection()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get database connection: %w", err)
 		}
-
-		return entries, nil
+		ic = PooledConnection.Client
+		shouldReturnConnection = true
 	}
 
-	// Traditional approach with single connection
-	err := withRetry(ic, "GetHistory", func() error {
-		config.Info(ic.Logger, "Getting history for key: %s (limit: %d)", key, limit)
+	// Ensure we return the connection if we acquired it
+	defer func() {
+		if shouldReturnConnection && PooledConnection != nil {
+			PooledConnection.Client.Logger.Logger.Info("Returning connection to pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetHistory"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}
+	}()
+
+	// Log the history request
+	ic.Logger.Logger.Info("Getting history for key",
+		zap.String("key", key),
+		zap.Int("limit", limit),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetHistory"),
+	)
+
+	// Execute the history request with retry logic
+	err = withRetry(ic, "GetHistory", func() error {
 		historyReq := &schema.HistoryRequest{
 			Key:   []byte(key),
 			Limit: int32(limit),
@@ -1400,15 +1439,46 @@ func GetHistory(ic *config.ImmuClient, key string, limit int) ([]*schema.Entry, 
 
 		historyResp, err := ic.Client.History(ic.Ctx, historyReq)
 		if err != nil {
-			return err
+			ic.Logger.Logger.Error("Failed to get history",
+				zap.String("key", key),
+				zap.Error(err),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetHistory"),
+			)
+			return fmt.Errorf("failed to get history: %w", err)
 		}
 
 		entries = historyResp.Entries
-		config.Info(ic.Logger, "Found %d historical entries for key: %s", len(entries), key)
+
+		ic.Logger.Logger.Info("Successfully retrieved history",
+			zap.String("key", key),
+			zap.Int("entry_count", len(entries)),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetHistory"),
+		)
+
 		return nil
 	})
 
 	if err != nil {
+		ic.Logger.Logger.Error("Failed to get history - retry attempts failed and limit exceeded",
+			zap.String("key", key),
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetHistory"),
+		)
 		return nil, err
 	}
 
@@ -1432,48 +1502,62 @@ func HashBlock(h *config.BlockHasher, nonce, sender string, timestamp int64) str
 	return hex.EncodeToString(hash[:])[:16]
 }
 
-// GetDatabaseState returns the current state of the database (UNCHANGED - but can optionally use connection pool)
+// GetDatabaseState returns the current state of the database
 func GetDatabaseState(ic *config.ImmuClient) (*schema.ImmutableState, error) {
 	var state *schema.ImmutableState
+	var PooledConnection *config.PooledConnection
+	var err error
+	shouldReturnConnection := false
 
-	// Try to use connection pool if available, otherwise fall back to traditional approach
+	// Handle nil or invalid connection
 	if ic == nil {
-		// Use connection pool approach
-		err := withPooledRetry("GetDatabaseState", func(conn *PooledConnection) error {
-			pool := GetGlobalPool()
-			config.Info(pool.logger, "Getting current database state")
-			// Get current state from server
-			dbState, err := conn.Client.CurrentState(conn.Ctx)
-			if err != nil {
-				// Check if this is a token expired error
-				if strings.Contains(err.Error(), "token has expired") {
-					// Token refresh will be handled by the pool automatically
-					return err
-				} else {
-					return err
-				}
-			}
-
-			state = dbState
-			config.Info(pool.logger, "Database state retrieved: TxId=%d", state.TxId)
-			return nil
-		})
-
+		PooledConnection, err = GetMainDBConnection()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get database connection: %w", err)
 		}
-
-		return state, nil
+		ic = PooledConnection.Client
+		shouldReturnConnection = true
 	}
 
-	// Traditional approach with single connection
-	err := withRetry(ic, "GetDatabaseState", func() error {
-		config.Info(ic.Logger, "Getting current database state")
-		// Get current state from server
+	// Ensure we return the connection if we acquired it
+	defer func() {
+		if shouldReturnConnection && PooledConnection != nil {
+			PooledConnection.Client.Logger.Logger.Info("Returning connection to pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}
+	}()
+
+	// Log the operation
+	ic.Logger.Logger.Info("Getting current database state",
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
+	)
+
+	// Execute the operation with retry logic
+	err = withRetry(ic, "GetDatabaseState", func() error {
 		dbState, err := ic.Client.CurrentState(ic.Ctx)
 		if err != nil {
 			// Check if this is a token expired error
 			if strings.Contains(err.Error(), "token has expired") {
+				ic.Logger.Logger.Warn("Token expired, attempting to reconnect",
+					zap.String(logging.Connection_database, config.DBName),
+					zap.Time(logging.Created_at, time.Now()),
+					zap.String(logging.Log_file, LOG_FILE),
+					zap.String(logging.Topic, TOPIC),
+					zap.String(logging.Loki_url, LOKI_URL),
+					zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
+				)
 				// Re-authenticate to get a new token
 				if reconnErr := reconnect(ic); reconnErr != nil {
 					return fmt.Errorf("failed to reconnect after token expiration: %w", reconnErr)
@@ -1481,19 +1565,55 @@ func GetDatabaseState(ic *config.ImmuClient) (*schema.ImmutableState, error) {
 				// Try again with new token
 				dbState, err = ic.Client.CurrentState(ic.Ctx)
 				if err != nil {
+					ic.Logger.Logger.Error("Failed to get database state after reconnection",
+						zap.Error(err),
+						zap.String(logging.Connection_database, config.DBName),
+						zap.Time(logging.Created_at, time.Now()),
+						zap.String(logging.Log_file, LOG_FILE),
+						zap.String(logging.Topic, TOPIC),
+						zap.String(logging.Loki_url, LOKI_URL),
+						zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
+					)
 					return err
 				}
 			} else {
-				return err
+				ic.Logger.Logger.Error("Failed to get database state",
+					zap.Error(err),
+					zap.String(logging.Connection_database, config.DBName),
+					zap.Time(logging.Created_at, time.Now()),
+					zap.String(logging.Log_file, LOG_FILE),
+					zap.String(logging.Topic, TOPIC),
+					zap.String(logging.Loki_url, LOKI_URL),
+					zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
+				)
+				return fmt.Errorf("failed to get database state: %w", err)
 			}
 		}
 
 		state = dbState
-		config.Info(ic.Logger, "Database state retrieved: TxId=%d", state.TxId)
+		ic.Logger.Logger.Info("Successfully retrieved database state",
+			zap.Uint64("tx_id", state.TxId),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
+		)
+
 		return nil
 	})
 
 	if err != nil {
+		ic.Logger.Logger.Error("Failed to get database state - retry attempts failed and limit exceeded",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
+		)
 		return nil, err
 	}
 
@@ -1501,19 +1621,39 @@ func GetDatabaseState(ic *config.ImmuClient) (*schema.ImmutableState, error) {
 }
 
 // Exists checks if a key exists in the database (UNCHANGED)
-func Exists(ic *config.ImmuClient, key string) (bool, error) {
+func Exists(PooledConnection *config.PooledConnection, key string) (bool, error) {
 	if key == "" {
+		PooledConnection.Client.Logger.Logger.Info("Key is empty",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.Exists"),
+		)
 		return false, ErrEmptyKey
 	}
 
-	_, err := Read(ic, key)
+	_, err := Read(PooledConnection, key)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return false, nil
-		}
+		PooledConnection.Client.Logger.Logger.Error("Failed to read key",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.Exists"),
+		)
 		return false, err
 	}
-
+	PooledConnection.Client.Logger.Logger.Info("Key exists",
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.Exists"),
+	)
 	return true, nil
 }
 
@@ -1537,7 +1677,15 @@ func Transaction(ic *config.ImmuClient, fn func(tx *config.ImmuTransaction) erro
 
 	// Execute transaction
 	return withRetry(ic, "Transaction", func() error {
-		config.Info(ic.Logger, "Executing transaction with %d operations", len(tx.Ops))
+		ic.Logger.Logger.Info("Executing transaction with %d operations",
+			zap.Int("operations", len(tx.Ops)),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.Transaction"),
+		)
 		_, err := ic.Client.ExecAll(ic.Ctx, &schema.ExecAllRequest{
 			Operations: tx.Ops,
 		})
@@ -1546,7 +1694,15 @@ func Transaction(ic *config.ImmuClient, fn func(tx *config.ImmuTransaction) erro
 			return err
 		}
 
-		config.Info(ic.Logger, "Transaction with %d operations executed successfully", len(tx.Ops))
+		ic.Logger.Logger.Info("Transaction with %d operations executed successfully",
+			zap.Int("operations", len(tx.Ops)),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.Transaction"),
+		)
 		return nil
 	})
 }
@@ -1581,12 +1737,8 @@ func Set(tx *config.ImmuTransaction, key string, value interface{}) error {
 // IsHealthy checks if the database connection is healthy (UNCHANGED)
 func IsHealthy(ic *config.ImmuClient) bool {
 	if ic == nil {
-		// Check pool health
-		pool := GetGlobalPool()
-		stats := pool.GetPoolStats()
-		return !stats["pool_closed"].(bool) && stats["total_connections"].(int) > 0
+		return false
 	}
-
 	if !ic.IsConnected {
 		return false
 	}
@@ -1596,83 +1748,215 @@ func IsHealthy(ic *config.ImmuClient) bool {
 	return err == nil
 }
 
-// Ping performs a health check on the database (UNCHANGED - but can optionally use connection pool)
+// Ping performs a health check on the database
 func Ping(ic *config.ImmuClient) error {
-	// Try to use connection pool if available, otherwise fall back to traditional approach
+	// Handle nil or invalid connection
 	if ic == nil {
-		// Use connection pool approach
-		return withPooledRetry("Ping", func(conn *PooledConnection) error {
-			pool := GetGlobalPool()
-			config.Info(pool.logger, "Pinging ImmuDB")
-			_, err := conn.Client.CurrentState(conn.Ctx)
-			if err != nil {
-				return err
-			}
-			config.Info(pool.logger, "ImmuDB ping successful")
-			return nil
-		})
+		return fmt.Errorf("database client is nil")
 	}
 
-	// Traditional approach with single connection
-	return withRetry(ic, "Ping", func() error {
-		config.Info(ic.Logger, "Pinging ImmuDB")
+	// Log the ping attempt
+	ic.Logger.Logger.Info("Pinging database",
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.Ping"),
+	)
+
+	// Execute the ping with retry logic
+	err := withRetry(ic, "Ping", func() error {
 		_, err := ic.Client.CurrentState(ic.Ctx)
 		if err != nil {
-			return err
+			ic.Logger.Logger.Error("Database ping failed",
+				zap.Error(err),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.Ping"),
+			)
+			return fmt.Errorf("database ping failed: %w", err)
 		}
-		config.Info(ic.Logger, "ImmuDB ping successful")
+
+		ic.Logger.Logger.Info("Database ping successful",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.Ping"),
+		)
 		return nil
 	})
+
+	if err != nil {
+		ic.Logger.Logger.Error("Database ping failed after retries",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.Ping"),
+		)
+		return err
+	}
+
+	return nil
 }
 
 // StoreZKBlock stores a complete ZK block in the main database (UNCHANGED)
-func StoreZKBlock(mainDBClient *config.ImmuClient, block *config.ZKBlock) error {
+func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) error {
+	var err error
+	var putback bool
 	// Create a unique key for the block
-	blockKey := fmt.Sprintf("block:%d", block.BlockNumber)
+	blockKey := fmt.Sprintf("%s%d", PREFIX_BLOCK, block.BlockNumber)
+
+	// Ensure the block is not already stored
+	if exists, err := Exists(mainDBClient, blockKey); err != nil {
+		return fmt.Errorf("failed to check if block %d exists: %w", block.BlockNumber, err)
+	} else if exists {
+		return fmt.Errorf("block %d already exists", block.BlockNumber)
+	}
+
+	if mainDBClient == nil {
+		// Pull up quick connection
+		mainDBClient, err = GetMainDBConnection()
+		if err != nil {
+			return fmt.Errorf("failed to get main DB connection: %w", err)
+		}
+		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.StoreZKBlock"),
+		)
+		putback = true
+	}
+
+	defer func() {
+		if putback {
+			mainDBClient.Client.Logger.Logger.Info("Main DB connection put back successfully",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.StoreZKBlock"),
+			)
+			PutMainDBConnection(mainDBClient)
+		}
+	}()
+	mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
+		zap.String(logging.Connection_database, config.DBName),
+		zap.String("blockkey", blockKey),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.StoreZKBlock"),
+	)
+	// ensuer mainDB is selected
+	err = ensureMainDBSelected(mainDBClient)
+	if err != nil {
+		return fmt.Errorf("failed to ensure main DB is selected: %w", err)
+	}
 
 	// Store the full block data
-	if err := SafeCreate(mainDBClient, blockKey, block); err != nil {
+	if err := SafeCreate(mainDBClient.Client, blockKey, block); err != nil {
 		return fmt.Errorf("failed to store block %d: %w", block.BlockNumber, err)
 	}
 
 	// Also store by hash for lookups
-	hashKey := fmt.Sprintf("block:hash:%s", block.BlockHash.Hex())
+	hashKey := fmt.Sprintf("%s%s", PREFIX_BLOCK_HASH, block.BlockHash.Hex())
 	if err := Create(mainDBClient, hashKey, blockKey); err != nil {
+		mainDBClient.Client.Logger.Logger.Error("Failed to store block hash mapping",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.StoreZKBlock"),
+		)
 		return fmt.Errorf("failed to store block hash mapping: %w", err)
 	}
+	mainDBClient.Client.Logger.Logger.Info("Successfully stored block hash mapping",
+		zap.String("blockkey", blockKey),
+		zap.String("blockhash", block.BlockHash.Hex()),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.StoreZKBlock"),
+	)
 
 	// Store the latest block number for quick access
 	if err := Create(mainDBClient, "latest_block", block.BlockNumber); err != nil {
+		mainDBClient.Client.Logger.Logger.Error("Failed to update latest block",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.StoreZKBlock"),
+		)
 		return fmt.Errorf("failed to update latest block: %w", err)
 	}
 
 	// Store each transaction hash -> block number mapping for lookups
 	for _, tx := range block.Transactions {
-		txKey := fmt.Sprintf("tx:%s", tx.Hash)
+		txKey := fmt.Sprintf("%s%s", DEFAULT_PREFIX_TX, tx.Hash)
+		mainDBClient.Client.Logger.Logger.Info("Storing tx mapping",
+			zap.String("txkey", txKey),
+			zap.String("blockkey", blockKey),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.StoreZKBlock"),
+		)
+
 		if err := Create(mainDBClient, txKey, block.BlockNumber); err != nil {
 			return fmt.Errorf("failed to store tx mapping for %s: %w", tx.Hash, err)
 		}
 	}
 
-	var logger *config.AsyncLogger
-	if mainDBClient != nil {
-		logger = mainDBClient.Logger
-	} else {
-		logger = GetGlobalPool().logger
-	}
-
-	config.Info(logger, "Successfully stored block %d with hash %s and %d transactions",
-		block.BlockNumber, block.BlockHash.Hex(), len(block.Transactions))
+	mainDBClient.Client.Logger.Logger.Info("Successfully stored block %d with hash %s and %d transactions",
+		zap.String("blockkey", blockKey),
+		zap.String("blockhash", block.BlockHash.Hex()),
+		zap.Int("transactions", len(block.Transactions)),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.StoreZKBlock"),
+	)
 
 	return nil
 }
 
 // GetZKBlockByNumber retrieves a ZK block by its number (UNCHANGED)
-func GetZKBlockByNumber(mainDBClient *config.ImmuClient, blockNumber uint64) (*config.ZKBlock, error) {
-	blockKey := fmt.Sprintf("block:%d", blockNumber)
+func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint64) (*config.ZKBlock, error) {
+	blockKey := fmt.Sprintf("%s%d", PREFIX_BLOCK, blockNumber)
 
 	block := new(config.ZKBlock)
-	if err := SafeReadJSON(mainDBClient, blockKey, block); err != nil {
+	if err := SafeReadJSON(mainDBClient.Client, blockKey, block); err != nil {
+		mainDBClient.Client.Logger.Logger.Error("Failed to retrieve block",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetZKBlockByNumber"),
+		)
 		return nil, fmt.Errorf("failed to retrieve block %d: %w", blockNumber, err)
 	}
 
@@ -1680,12 +1964,21 @@ func GetZKBlockByNumber(mainDBClient *config.ImmuClient, blockNumber uint64) (*c
 }
 
 // GetZKBlockByHash retrieves a ZK block by its hash (UNCHANGED)
-func GetZKBlockByHash(mainDBClient *config.ImmuClient, blockHash string) (*config.ZKBlock, error) {
+func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (*config.ZKBlock, error) {
 	// First get the block number from the hash
-	hashKey := fmt.Sprintf("block:hash:%s", blockHash)
+	hashKey := fmt.Sprintf("%s%s",PREFIX_BLOCK_HASH, blockHash)
 
 	blockKeyBytes, err := Read(mainDBClient, hashKey)
 	if err != nil {
+		mainDBClient.Client.Logger.Logger.Error("Failed to find block with hash",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetZKBlockByHash"),
+		)
 		return nil, fmt.Errorf("failed to find block with hash %s: %w", blockHash, err)
 	}
 
@@ -1693,52 +1986,113 @@ func GetZKBlockByHash(mainDBClient *config.ImmuClient, blockHash string) (*confi
 	blockKey := string(blockKeyBytes)
 
 	block := new(config.ZKBlock)
-	if err := SafeReadJSON(mainDBClient, blockKey, block); err != nil {
+	if err := SafeReadJSON(mainDBClient.Client, blockKey, block); err != nil {
+		mainDBClient.Client.Logger.Logger.Error("Failed to retrieve block by hash",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetZKBlockByHash"),
+		)
 		return nil, fmt.Errorf("failed to retrieve block by hash %s: %w", blockHash, err)
 	}
-
+	mainDBClient.Client.Logger.Logger.Info("Successfully retrieved block by hash",
+		zap.String("blockkey", blockKey),
+		zap.String("blockhash", blockHash),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetZKBlockByHash"),
+	)
 	return block, nil
 }
 
 // GetLatestBlockNumber returns the latest block number (UNCHANGED)
-func GetLatestBlockNumber(mainDBClient *config.ImmuClient) (uint64, error) {
+func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error) {
 	latestBytes, err := Read(mainDBClient, "latest_block")
 	if err != nil {
 		// Check for both our custom ErrNotFound and the ImmuDB-specific errors
 		if err == ErrNotFound ||
 			strings.Contains(err.Error(), "key not found") ||
 			strings.Contains(err.Error(), "tbtree: key not found") {
-			var logger *config.AsyncLogger
-			if mainDBClient != nil {
-				logger = mainDBClient.Logger
-			} else {
-				logger = GetGlobalPool().logger
+				mainDBClient.Client.Logger.Logger.Info("No blocks found in the database yet",
+					zap.String(logging.Connection_database, config.DBName),
+					zap.Time(logging.Created_at, time.Now()),
+					zap.String(logging.Log_file, LOG_FILE),
+					zap.String(logging.Topic, TOPIC),
+					zap.String(logging.Loki_url, LOKI_URL),
+					zap.String(logging.Function, "DB_OPs.GetLatestBlockNumber"),
+				)
+				return 0, nil // No blocks yet
 			}
-			config.Info(logger, "No blocks found in the database yet")
-			return 0, nil // No blocks yet
-		}
+		mainDBClient.Client.Logger.Logger.Error("Failed to get latest block number",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetLatestBlockNumber"),
+		)
 		return 0, fmt.Errorf("failed to get latest block: %w", err)
 	}
 
 	var blockNumber uint64
 	if err := json.Unmarshal(latestBytes, &blockNumber); err != nil {
+		mainDBClient.Client.Logger.Logger.Error("Failed to parse latest block number",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetLatestBlockNumber"),
+		)
 		return 0, fmt.Errorf("failed to parse latest block number: %w", err)
 	}
-
+    mainDBClient.Client.Logger.Logger.Info("Successfully retrieved latest block number",
+		zap.String("blocknumber", fmt.Sprintf("%d", blockNumber)),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetLatestBlockNumber"),
+	)
 	return blockNumber, nil
 }
 
 // GetTransactionBlock returns the block containing a specific transaction (UNCHANGED)
-func GetTransactionBlock(mainDBClient *config.ImmuClient, txHash string) (*config.ZKBlock, error) {
-	txKey := fmt.Sprintf("tx:%s", txHash)
+func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (*config.ZKBlock, error) {
+	txKey := fmt.Sprintf("%s%s",DEFAULT_PREFIX_TX, txHash)
 
 	blockNumberBytes, err := Read(mainDBClient, txKey)
 	if err != nil {
+		mainDBClient.Client.Logger.Logger.Error("Failed to find block with hash",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetTransactionBlock"),
+		)
 		return nil, fmt.Errorf("transaction %s not found: %w", txHash, err)
 	}
 
 	var blockNumber uint64
 	if err := json.Unmarshal(blockNumberBytes, &blockNumber); err != nil {
+		mainDBClient.Client.Logger.Logger.Error("Failed to parse block number for tx",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetTransactionBlock"),
+		)
 		return nil, fmt.Errorf("failed to parse block number for tx %s: %w", txHash, err)
 	}
 
@@ -1746,7 +2100,7 @@ func GetTransactionBlock(mainDBClient *config.ImmuClient, txHash string) (*confi
 }
 
 // Get Transaction by hash
-func GetTransactionByHash(mainDBClient *config.ImmuClient, txHash string) (*config.ZKBlockTransaction, error) {
+func GetTransactionByHash(mainDBClient *config.PooledConnection, txHash string) (*config.Transaction, error) {
 	// Get the block that contains the transaction.
 	block, err := GetTransactionBlock(mainDBClient, txHash)
 	if err != nil {
@@ -1754,65 +2108,90 @@ func GetTransactionByHash(mainDBClient *config.ImmuClient, txHash string) (*conf
 	}
 
 	// Find the transaction in the block.
-	var zkTx *config.ZKBlockTransaction
+	var zkTx *config.Transaction
 	for i := range block.Transactions {
-		if block.Transactions[i].Hash == txHash {
+		TempBlockHash := block.Transactions[i].Hash.String()
+		if TempBlockHash == txHash {
+			mainDBClient.Client.Logger.Logger.Info("Successfully retrieved transaction by hash",
+				zap.String("transactionhash", txHash),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetTransactionByHash"),
+			)
 			zkTx = &block.Transactions[i]
 			break
 		}
 	}
 
 	if zkTx == nil {
+		mainDBClient.Client.Logger.Logger.Error("Transaction is nil",
+			zap.String("transactionhash", txHash),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetTransactionByHash"),
+		)
 		return nil, fmt.Errorf("transaction %s not found in block %d", txHash, block.BlockNumber)
 	}
-
+	mainDBClient.Client.Logger.Logger.Info("Successfully retrieved transaction by hash",
+		zap.String("transactionhash", txHash),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetTransactionByHash"),
+	)
 	return zkTx, nil
 }
 
 // GetTransactionsBatch fetches multiple transactions by their hashes in a single batch
-func GetTransactionsBatch(mainDBClient *config.ImmuClient, hashes []string) ([]*config.ZKBlockTransaction, error) {
-    var transactions []*config.ZKBlockTransaction
-    
-    // Process in batches to avoid too many concurrent requests
-    batchSize := 10
-    for i := 0; i < len(hashes); i += batchSize {
-        end := i + batchSize
-        if end > len(hashes) {
-            end = len(hashes)
-        }
-        
-        batch := hashes[i:end]
-        var wg sync.WaitGroup
-        var mu sync.Mutex
-        var batchErr error
-        
-        for _, hash := range batch {
-            wg.Add(1)
-            go func(h string) {
-                defer wg.Done()
-                
-                tx, err := GetTransactionByHash(mainDBClient, h)
-                if err != nil {
-                    batchErr = fmt.Errorf("failed to fetch transaction %s: %w", h, err)
-                    return
-                }
-                
-                mu.Lock()
-                transactions = append(transactions, tx)
-                mu.Unlock()
-            }(hash)
-        }
-        
-        wg.Wait()
-        if batchErr != nil {
-            return nil, batchErr
-        }
-    }
-    
-    return transactions, nil
+func GetTransactionsBatch(mainDBClient *config.PooledConnection, hashes []string) ([]*config.Transaction, error) {
+	var transactions []*config.Transaction
+
+
+	// Process in batches to avoid too many concurrent requests
+	batchSize := 10
+	for i := 0; i < len(hashes); i += batchSize {
+		end := i + batchSize
+		if end > len(hashes) {
+			end = len(hashes)
+		}
+
+		batch := hashes[i:end]
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var batchErr error
+
+		for _, hash := range batch {
+			wg.Add(1)
+			go func(h string) {
+				defer wg.Done()
+
+				tx, err := GetTransactionByHash(mainDBClient, h)
+				if err != nil {
+					batchErr = fmt.Errorf("failed to fetch transaction %s: %w", h, err)
+					return
+				}
+
+				mu.Lock()
+				transactions = append(transactions, tx)
+				mu.Unlock()
+			}(hash)
+		}
+
+		wg.Wait()
+		if batchErr != nil {
+			return nil, batchErr
+		}
+	}
+
+	return transactions, nil
 }
 
-func GetAllBlocks(mainDBClient *config.ImmuClient) ([]*config.ZKBlock, error) {
+func GetAllBlocks(mainDBClient *config.PooledConnection) ([]*config.ZKBlock, error) {
 	latestBlockNumber, err := GetLatestBlockNumber(mainDBClient)
 	if err != nil {
 		return nil, err
@@ -1826,32 +2205,4 @@ func GetAllBlocks(mainDBClient *config.ImmuClient) ([]*config.ZKBlock, error) {
 		blocks = append(blocks, block)
 	}
 	return blocks, nil
-}
-
-// ========================================
-// OPTIONAL ENHANCED FUNCTIONS FOR CONVENIENCE
-// ========================================
-
-// EnableConnectionPooling enables connection pooling with custom configuration
-func EnableConnectionPooling(poolConfig *ConnectionPoolConfig) error {
-	return InitializeGlobalPool(poolConfig)
-}
-
-// GetPoolStatistics returns connection pool statistics (new convenience function)
-func GetPoolStatistics() map[string]interface{} {
-	return GetGlobalPool().GetPoolStats()
-}
-
-// CloseGlobalPool closes the global connection pool (new convenience function)
-func CloseGlobalPool() error {
-	poolMutex.Lock()
-	defer poolMutex.Unlock()
-
-	if globalPool != nil {
-		err := globalPool.Close()
-		globalPool = nil
-		return err
-	}
-
-	return nil
 }

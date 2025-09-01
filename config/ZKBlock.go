@@ -8,7 +8,7 @@ import (
 // ZKBlockTransaction represents a single transaction in a ZK block
 type Transaction struct {
     Hash      common.Hash       `json:"hash"`                 // 0x-prefixed 32-byte
-    From      common.Address    `json:"from"`                 // 0x-prefixed 20-byte
+    From      *common.Address    `json:"from"`                 // 0x-prefixed 20-byte
     To        *common.Address   `json:"to,omitempty"`         // nil => contract creation
     Value     *big.Int      `json:"value"`                // big.Int as hex
     Type      uint8             `json:"type"`                 // 0x0=Legacy, 0x1=AccessList, 0x2=DynamicFee
