@@ -15,6 +15,7 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/Security"
 	"gossipnode/config"
+	"gossipnode/logging"
 	"gossipnode/messaging"
 	"gossipnode/metrics"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"go.uber.org/zap"
 )
 
 
@@ -280,11 +282,11 @@ func processZKBlock(c *gin.Context) {
 
     for _, tx := range block.Transactions {
         LogTransaction(
-            tx.Hash,
-            tx.From,
-            tx.To,
-            tx.Value,
-            tx.Type,
+            tx.Hash.Hex(),
+            tx.From.Hex(),
+            tx.To.Hex(),
+            tx.Value.String(),
+            fmt.Sprintf("%d", tx.Type),
         )
     }
 
@@ -313,12 +315,22 @@ func getBlockByNumber(c *gin.Context) {
         return
     }
     
-    mainDBClient, err := DB_OPs.New()
+    mainDBClient, err := DB_OPs.GetMainDBConnection()
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
         return
     }
-    defer DB_OPs.Close(mainDBClient)
+    defer func(){
+        mainDBClient.Client.Logger.Logger.Info("Putting database connection back to pool",
+            zap.String(logging.Connection_database, "MainDB Connection"),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, FILENAME),
+            zap.String(logging.Topic, BLOCKTOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+            zap.String(logging.Function, "Block.getBlockByNumber"),
+        )
+       DB_OPs.PutMainDBConnection(mainDBClient)
+    }()
     
     block, err := DB_OPs.GetZKBlockByNumber(mainDBClient, blockNumber)
     if err != nil {
@@ -338,12 +350,12 @@ func getBlockByNumber(c *gin.Context) {
 func getBlockByHash(c *gin.Context) {
     blockHash := c.Param("hash")
     
-    mainDBClient, err := DB_OPs.New()
+    mainDBClient, err := DB_OPs.GetMainDBConnection()
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
         return
     }
-    defer DB_OPs.Close(mainDBClient)
+    defer DB_OPs.PutMainDBConnection(mainDBClient)
     
     block, err := DB_OPs.GetZKBlockByHash(mainDBClient, blockHash)
     if err != nil {
@@ -362,12 +374,12 @@ func getBlockByHash(c *gin.Context) {
 func getTransactionInfo(c *gin.Context) {
     txHash := c.Param("hash")
     
-    mainDBClient, err := DB_OPs.New()
+    mainDBClient, err := DB_OPs.GetMainDBConnection()
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
         return
     }
-    defer DB_OPs.Close(mainDBClient)
+    defer DB_OPs.PutMainDBConnection(mainDBClient)
     
     block, err := DB_OPs.GetTransactionBlock(mainDBClient, txHash)
     if err != nil {
@@ -376,9 +388,9 @@ func getTransactionInfo(c *gin.Context) {
     }
     
     // Find the specific transaction
-    var foundTx *config.ZKBlockTransaction
+    var foundTx *config.Transaction
     for _, tx := range block.Transactions {
-        if tx.Hash == txHash {
+        if tx.Hash == common.HexToHash(txHash) {
             foundTx = &tx
             break
         }
@@ -401,12 +413,12 @@ func getTransactionInfo(c *gin.Context) {
 
 // getLatestBlock returns information about the latest block
 func getLatestBlock(c *gin.Context) {
-    mainDBClient, err := DB_OPs.New()
+    mainDBClient, err := DB_OPs.GetMainDBConnection()
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
         return
     }
-    defer DB_OPs.Close(mainDBClient)
+    defer DB_OPs.PutMainDBConnection(mainDBClient)
     
     latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(mainDBClient)
     if err != nil {

@@ -6,6 +6,7 @@ import (
     "github.com/ethereum/go-ethereum/rlp"
     "github.com/ethereum/go-ethereum/common"
 )
+
 // Helper function to convert our AccessList type to go-ethereum's types.AccessList
 func convertAccessList(accessList config.AccessList) types.AccessList {
     result := make(types.AccessList, len(accessList))

@@ -4,21 +4,34 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strconv"
+	"math/big"
 	"time"
-
-	"github.com/golang/protobuf/ptypes/empty"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	pb "gossipnode/Mempool/proto"
 	"gossipnode/config"
+	"gossipnode/logging"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/golang/protobuf/ptypes/empty"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+)
+
+const(
+	FILENAME = "mempool.log"
+	TOPIC = "mempool"
+	BLOCKTOPIC = "block"
+	KEEP_LOGS = true
+	BATCH_SIZE = 100
+	BATCH_WAIT = 10 * time.Second
+	TIMEOUT = 5 * time.Second
 )
 
 // MempoolClient provides methods to interact with the mempool service
 type MempoolClient struct {
 	client pb.MempoolServiceClient
 	conn   *grpc.ClientConn
+	logger *logging.AsyncLogger
 }
 
 // NewMempoolClient creates a new mempool client connection
@@ -31,14 +44,40 @@ func NewMempoolClient(address string) (*MempoolClient, error) {
 
 	client := pb.NewMempoolServiceClient(conn)
 
+	// Make logging client
+	Logger, err := logging.NewAsyncLogger(
+		&logging.Logging{
+			FileName: FILENAME,
+			URL:      config.LOKI_URL,
+			Metadata: logging.LoggingMetadata{
+				DIR:       config.LOG_DIR,
+				BatchSize: BATCH_SIZE,
+				BatchWait: BATCH_WAIT,
+				Timeout:   TIMEOUT,
+				KeepLogs:  true,
+			},
+			Topic: TOPIC,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create logger: %v", err)
+	}
+
 	return &MempoolClient{
 		client: client,
 		conn:   conn,
+		logger: Logger,
 	}, nil
 }
 
 // Close closes the gRPC connection
 func (m *MempoolClient) Close() error {
+	// Close the Logger first
+	if m.logger != nil {
+		m.logger.Close()
+	}
+
+	// Close the gRPC connection
 	if m.conn != nil {
 		return m.conn.Close()
 	}
@@ -78,10 +117,10 @@ func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.Batch
 	pbTxs := make([]*pb.Transaction, len(txs))
 	for i, tx := range txs {
 		// The ZKBlockTransaction should have a pre-computed hash.
-		if tx.Hash == nil {
+		if tx.Hash == (common.Hash{}) {
 			return nil, fmt.Errorf("transaction at index %d has no hash", i)
 		}
-		pbTxs[i] = convertToPbTransaction(tx, tx.Hash)
+		pbTxs[i] = convertToPbTransaction(tx, tx.Hash.Hex())
 	}
 
 	batch := &pb.TransactionBatch{
@@ -184,48 +223,59 @@ func (m *MempoolClient) WrapperGetFeeStatistics() (*GasFeeStats, error) {
 	}, nil
 }
 
-// Helper function to convert a config.ZKBlockTransaction to pb.Transaction
+// Helper function to convert a config.Transaction to pb.Transaction
 func convertToPbTransaction(tx *config.Transaction, txHash string) *pb.Transaction {
+	// Helper function to safely convert big.Int to string
+	bigIntToString := func(b *big.Int) string {
+		if b == nil {
+			return "0x0"
+		}
+		return b.Text(16)
+	}
+
+	// Helper function to safely convert address to string
+	addrToString := func(addr *common.Address) string {
+		if addr == nil {
+			return ""
+		}
+		return addr.Hex()
+	}
+
 	pbTx := &pb.Transaction{
 		Hash:           txHash,
-		From:           tx.From,
-		To:             tx.To,
-		Value:          tx.Value,
-		Type:           tx.Type,
-		Timestamp:      tx.Timestamp, // Temporarily assign, will be formatted below
-		ChainId:        tx.ChainID,
-		Nonce:          tx.Nonce,
-		GasLimit:       tx.GasLimit,
-		MaxFee:         tx.MaxFee,
-		MaxPriorityFee: tx.MaxPriorityFee,
-		Data:           tx.Data,
-		V:              tx.V,
-		R:              tx.R,
-		S:              tx.S,
+		From:           addrToString(tx.From),
+		To:             addrToString(tx.To),
+		Value:          bigIntToString(tx.Value),
+		Type:           fmt.Sprintf("%d", tx.Type),
+		Timestamp:      fmt.Sprintf("%d", tx.Timestamp),
+		ChainId:        bigIntToString(tx.ChainID),
+		Nonce:          fmt.Sprintf("%d", tx.Nonce),
+		GasLimit:       fmt.Sprintf("%d", tx.GasLimit),
+		MaxFee:         bigIntToString(tx.MaxFee),
+		MaxPriorityFee: bigIntToString(tx.MaxPriorityFee),
+		Data:           fmt.Sprintf("0x%x", tx.Data),
+		V:              bigIntToString(tx.V),
+		R:              bigIntToString(tx.R),
+		S:              bigIntToString(tx.S),
 	}
 
-	if tx.Timestamp != "" {
-		i, err := strconv.ParseInt(tx.Timestamp, 10, 64)
-		if err == nil {
-			tm := time.Unix(i, 0)
-			pbTx.Timestamp = tm.Format(time.RFC3339)
-		} else {
-			// If parsing fails, it might already be in a different format or invalid.
+	if tx.Timestamp != 0 {
+		// Assuming tx.Timestamp is already a Unix timestamp (uint64)
+		tm := time.Unix(int64(tx.Timestamp), 0)
+		pbTx.Timestamp = tm.Format(time.RFC3339)
+	} else {
+		// If parsing fails, it might already be in a different format or invalid.
 			// For now, we'll default to the current time as a fallback.
 			pbTx.Timestamp = time.Now().Format(time.RFC3339)
-		}
-	} else {
-		pbTx.Timestamp = time.Now().Format(time.RFC3339)
 	}
-
 	// Handle transaction fee fields based on type
-	if tx.Type == "EIP-1559" || (tx.MaxFee != "" && tx.MaxPriorityFee != "") {
+	if tx.Type == 1 || (tx.MaxFee != nil && tx.MaxPriorityFee != nil) {
 		pbTx.Type = "EIP-1559"
 	} else {
 		pbTx.Type = "Legacy"
 		// For legacy transactions, use GasPrice as MaxFee if MaxFee is not set.
-		if pbTx.MaxFee == "" && tx.GasPrice != "" {
-			pbTx.MaxFee = tx.GasPrice
+		if pbTx.MaxFee == "" && tx.GasPrice != nil {
+			pbTx.MaxFee = bigIntToString(tx.GasPrice)
 		}
 	}
 

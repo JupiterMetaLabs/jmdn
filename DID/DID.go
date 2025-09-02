@@ -1,202 +1,331 @@
 package DID
 
 import (
-    "context"
-    "fmt"
-    "math/big"
-    "net"
-    "sync"
-    "time"
+	"context"
+	"encoding/json"
+	"fmt"
+	"gossipnode/logging"
+	"math/big"
+	"net"
+	"sync"
+	"time"
 
-    // "github.com/codenotary/immudb/pkg/api/schema"
-    // "github.com/codenotary/immudb/pkg/client"
-    "github.com/libp2p/go-libp2p/core/host"
-    "github.com/rs/zerolog/log"
-    "google.golang.org/grpc"
-    "google.golang.org/grpc/codes"
-    // "google.golang.org/grpc/metadata"
-    "google.golang.org/grpc/reflection"
-    "google.golang.org/grpc/status"
-    "google.golang.org/protobuf/types/known/emptypb"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/rs/zerolog/log"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 
-    "gossipnode/DB_OPs"
-    "gossipnode/config"
-    "gossipnode/messaging"
-    pb "gossipnode/DID/proto"
+	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
+
+	"gossipnode/DB_OPs"
+	pb "gossipnode/DID/proto"
+	"gossipnode/config"
+	"gossipnode/messaging"
+
+	"go.uber.org/zap"
 )
 
+const (
+	LOG_FILE = "DID.log"
+	TOPIC    = "DID"
+)
+
+// dbOps defines the interface for database operations that AccountServer depends on.
+// This allows for mocking the database in tests.
+type dbOps interface {
+	GetAccount(conn *config.PooledConnection, address common.Address) (*DB_OPs.Account, error)
+	ListAllAccounts(conn *config.PooledConnection, limit int) ([]*DB_OPs.Account, error)
+	StoreAccount(conn *config.PooledConnection, doc *DB_OPs.KeyDocument) error
+	GetAccountsConnection() (*config.PooledConnection, error)
+	PutAccountsConnection(conn *config.PooledConnection)
+}
+
+// realDbOps is the implementation of dbOps that calls the actual DB_OPs functions.
+type realDbOps struct{}
+
+func (r *realDbOps) GetAccount(conn *config.PooledConnection, address common.Address) (*DB_OPs.Account, error) {
+	return DB_OPs.GetAccount(conn, address)
+}
+
+func (r *realDbOps) ListAllAccounts(conn *config.PooledConnection, limit int) ([]*DB_OPs.Account, error) {
+	return DB_OPs.ListAllAccounts(conn, limit)
+}
+
+func (r *realDbOps) StoreAccount(conn *config.PooledConnection, doc *DB_OPs.KeyDocument) error {
+	return DB_OPs.StoreAccount(conn, doc)
+}
+
+func (r *realDbOps) GetAccountsConnection() (*config.PooledConnection, error) {
+	return DB_OPs.GetAccountsConnection()
+}
+
+func (r *realDbOps) PutAccountsConnection(conn *config.PooledConnection) {
+	DB_OPs.PutAccountsConnection(conn)
+}
+
 // Account and DID Server implements the DIDService
-type DIDServer struct {
+type AccountServer struct {
     pb.UnimplementedDIDServiceServer
     host         host.Host
     mutex        sync.RWMutex
     statsAge     int64
     stats        *pb.DIDStats
-    accountsClient *config.ImmuClient
-    inMemoryDIDs map[string]*DB_OPs.Account
+    accountsClient *config.PooledConnection
     standalone   bool
+	db           dbOps // New field for testability
 }
 
-// NewDIDServer creates a new DID server
-func NewDIDServer(h host.Host) *DIDServer {
-    return &DIDServer{
+// NewAccountServer creates a new Account server
+func NewAccountServer(h host.Host) *AccountServer {
+    // Initialize first to check the connection
+    AccountServer := &AccountServer{
         host:         h,
         statsAge:     0,
         stats:        &pb.DIDStats{},
-        inMemoryDIDs: make(map[string]*DB_OPs.Account),
         standalone:   false,
+		db:           &realDbOps{}, // Use the real implementation
     }
+    conn, err := AccountServer.Initialize()
+    if err != nil {
+        log.Warn().Err(err).Msg("Failed to initialize Account server database. Running in standalone mode.")
+        AccountServer.standalone = true
+    }
+
+    AccountServer.accountsClient = &conn
+    conn.Client.Logger.Logger.Info("Successfully connected to the Accounts Pool",
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Loki_url, config.LOKI_URL),
+        zap.String(logging.Function, "DID.NewAccountServer"),
+    )
+    return AccountServer
 }
 
-// Initialize sets up the accounts database connection
-func (s *DIDServer) Initialize() error {
-    // First try to initialize the accounts client
-    client, err := DB_OPs.GetAccountsConnection()
+func (s *AccountServer) Initialize() (config.PooledConnection, error) {
+	// Just test the connection to verify we can connect
+	conn, err := s.db.GetAccountsConnection()
     if err != nil {
-        log.Warn().Err(err).Msg("Failed to initialize accounts database connection. Running in standalone mode.")
+        log.Warn().Err(err).Msg("Failed to get accounts database connection. Running in standalone mode.")
         s.standalone = true
-        return nil
+        return config.PooledConnection{}, err
     }
-
-    s.mutex.Lock()
-    s.accountsClient = client
-    s.standalone = false
-    s.mutex.Unlock()
-
-    log.Info().Msg("DID server successfully connected to accounts database")
-    return nil
+    conn.Client.Logger.Logger.Info("Successfully connected to the Accounts Pool",
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Loki_url, config.LOKI_URL),
+        zap.String(logging.Function, "DID.Initialize"),
+    )
+    return *conn, nil
 }
 
 // Close releases resources used by the server
-func (s *DIDServer) Close() {
+func (s *AccountServer) Close() {
     s.mutex.Lock()
     defer s.mutex.Unlock()
-
-    if s.accountsClient != nil {
-        DB_OPs.Close(s.accountsClient)
-        s.accountsClient = nil
-    }
+    s.accountsClient.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Loki_url, config.LOKI_URL),
+        zap.String(logging.Function, "DID.Close"),
+    )
+	s.db.PutAccountsConnection(s.accountsClient)
+    s.accountsClient = nil
+    s.standalone = true
 }
 
-// storeDID stores a DID either in the database or in memory
-func (s *DIDServer) storeDID(didDoc *DB_OPs.DIDDocument) error {
+// storeAccount stores a Account either in the database or in memory
+func (s *AccountServer) storeAccount(accountDoc *DB_OPs.KeyDocument) error {
     s.mutex.Lock()
     defer s.mutex.Unlock()
 
     // Set creation and update timestamps if not set
-    if didDoc.CreatedAt == 0 {
-        didDoc.CreatedAt = time.Now().Unix()
+    if accountDoc.CreatedAt == 0 {
+        accountDoc.CreatedAt = time.Now().Unix()
     }
-    didDoc.UpdatedAt = time.Now().Unix()
+    accountDoc.UpdatedAt = time.Now().Unix()
 
-    // If in standalone mode, store in memory
-    if s.standalone || s.accountsClient == nil {
-        s.inMemoryDIDs[didDoc.DID] = didDoc
-        return nil
+	// Store in the database via our interface
+	err := s.db.StoreAccount(s.accountsClient, accountDoc)
+    if err != nil {
+        s.accountsClient.Client.Logger.Logger.Error("Failed to store Account",
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+            zap.String(logging.Function, "DID.storeAccount"),
+        )
+        return err
     }
-
-    // Otherwise store in the database
-    return DB_OPs.StoreDID(s.accountsClient, didDoc)
+    s.accountsClient.Client.Logger.Logger.Info("Account stored successfully",
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Loki_url, config.LOKI_URL),
+        zap.String(logging.Function, "DID.storeAccount"),
+    )
+    return nil
 }
 
-// getDID retrieves a DID either from the database or memory
-func (s *DIDServer) getDID(did string) (*DB_OPs.DIDDocument, error) {
+// getAccount retrieves a Account either from the database or memory
+func (s *AccountServer) getAccount(AccountID string) (*DB_OPs.Account, error) {
     s.mutex.RLock()
     defer s.mutex.RUnlock()
 
-    // If in standalone mode, get from memory
-    if s.standalone || s.accountsClient == nil {
-        doc, exists := s.inMemoryDIDs[did]
-        if !exists {
-            return nil, fmt.Errorf("DID not found: %s", did)
-        }
-        return doc, nil
-    }
-
-    // Otherwise get from the database
-    return DB_OPs.GetDID(s.accountsClient, did)
+    TempAccountAddress := common.HexToAddress(AccountID)
+    s.accountsClient.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+        zap.String(logging.Connection_database, config.AccountsDBName),
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Function, "DID.getAccount"),
+    )
+	return s.db.GetAccount(s.accountsClient, TempAccountAddress)
 }
 
-// listDIDs retrieves all DIDs either from the database or memory
-func (s *DIDServer) listDIDs(limit int) ([]*DB_OPs.DIDDocument, error) {
+// listAccounts retrieves all Accounts either from the database or memory
+func (s *AccountServer) listAccounts(limit int) ([]*DB_OPs.Account, error) {
     s.mutex.RLock()
     defer s.mutex.RUnlock()
 
-    // If in standalone mode, get from memory
-    if s.standalone || s.accountsClient == nil {
-        docs := make([]*DB_OPs.DIDDocument, 0, len(s.inMemoryDIDs))
-        count := 0
-        for _, doc := range s.inMemoryDIDs {
-            if count >= limit {
-                break
-            }
-            docs = append(docs, doc)
-            count++
-        }
-        return docs, nil
-    }
-
     // Otherwise get from the database
-    return DB_OPs.ListAllDIDs(s.accountsClient, limit)
+	data, err := s.db.ListAllAccounts(s.accountsClient, limit)
+    if err != nil {
+        s.accountsClient.Client.Logger.Logger.Error("Failed to list Accounts",
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+            zap.String(logging.Function, "DID.listAccounts"),
+        )
+        return nil, err
+    }
+    s.accountsClient.Client.Logger.Logger.Info("Accounts listed successfully",
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Loki_url, config.LOKI_URL),
+        zap.String(logging.Function, "DID.listAccounts"),
+    )
+    return data, nil
 }
 
-// RegisterDID registers a new DID
-func (s *DIDServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequest) (*pb.RegisterDIDResponse, error) {
+// RegisterAccount registers a new account
+func (s *AccountServer) RegisterAccount(ctx context.Context, req *pb.RegisterDIDRequest) (*pb.RegisterDIDResponse, error) {
     if req.Did == "" || req.PublicKey == "" {
         return nil, status.Error(codes.InvalidArgument, "DID and public key are required")
     }
 
-    // Check if DID already exists
-    existingDID, err := s.getDID(req.Did)
-    if err == nil && existingDID != nil {
+    // Check if account already exists
+    existingAccount, err := s.getAccount(req.PublicKey)
+    if err == nil && existingAccount != nil {
+        var Tempmetadata []byte
+        Tempmetadata, err = json.Marshal(existingAccount.Metadata)
+        if err != nil {
+            Tempmetadata = []byte("{}")
+        }
+        s.accountsClient.Client.Logger.Logger.Info("Given account already exists",
+            zap.String(logging.Address, string(existingAccount.Address)),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "DID.RegisterAccount"),
+        )
         return &pb.RegisterDIDResponse{
             Success: false,
-            Message: fmt.Sprintf("DID %s is already registered", req.Did),
+            Message: fmt.Sprintf("Account with public key %s already exists", req.PublicKey),            
             DidInfo: &pb.DIDInfo{
-                Did:       existingDID.DID,
-                PublicKey: existingDID.PublicKey,
-                Balance:   existingDID.Balance,
-                CreatedAt: existingDID.CreatedAt,
-                UpdatedAt: existingDID.UpdatedAt,
+                Did:       existingAccount.DIDAddress,
+                PublicKey: existingAccount.Address,
+                Balance:   existingAccount.Balance,
+                CreatedAt: existingAccount.CreatedAt,
+                UpdatedAt: existingAccount.UpdatedAt,
+                AccountType: existingAccount.AccountType,
+                Nonce: fmt.Sprintf("%d", existingAccount.Nonce),
+                Metadata: string(Tempmetadata),
             },
         }, nil
     }
 
-    // Create DID document
+    // Create KeyDocument 
     now := time.Now().Unix()
-    didDoc := &DB_OPs.DIDDocument{
-        DID:       req.Did,
-        PublicKey: req.PublicKey,
-        Balance:   "0", // Initial balance
-        CreatedAt: now,
-        UpdatedAt: now,
+    keyDoc := &DB_OPs.KeyDocument{
+        DIDAddress: req.Did,
+        Address:    req.PublicKey,
+        CreatedAt:  now,
+        UpdatedAt:  now,
     }
 
-    // Store the DID
-    err = s.storeDID(didDoc)
+	// Store the account using our helper method
+	err = s.storeAccount(keyDoc)
     if err != nil {
-        log.Error().Err(err).Str("did", req.Did).Msg("Failed to store DID")
-        return nil, status.Errorf(codes.Internal, "Failed to store DID: %v", err)
+        s.accountsClient.Client.Logger.Logger.Error("Failed to store account",
+            zap.Error(err),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "DID.RegisterAccount"),
+        )
+        return nil, status.Errorf(codes.Internal, "Failed to store account: %v", err)
+    }
+
+    // Retrive the account from the DB
+    account, err := s.getAccount(req.PublicKey)
+    if err != nil {
+        s.accountsClient.Client.Logger.Logger.Error("Failed to retrieve account",
+            zap.Error(err),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "DID.RegisterAccount"),
+        )
+        return nil, status.Errorf(codes.Internal, "Failed to retrieve account: %v", err)
     }
 
     // If not in standalone mode, propagate the DID
     if !s.standalone && s.accountsClient != nil {
         // Try to propagate to network, but don't fail if it doesn't work
-        err = messaging.PropagateDID(s.host, didDoc)
+        err = messaging.PropagateDID(s.host, &DB_OPs.Account{
+            Address:    account.Address,
+            Balance:    account.Balance,
+            Nonce:      account.Nonce,
+            CreatedAt:  account.CreatedAt,
+            UpdatedAt:  account.UpdatedAt,
+            DIDAddress: account.DIDAddress,
+            AccountType: account.AccountType,
+            Metadata: account.Metadata,
+        })
         if err != nil {
-            log.Warn().Err(err).Str("did", req.Did).Msg("Failed to propagate DID to network")
+            s.accountsClient.Client.Logger.Logger.Warn("Failed to propagate DID to network",
+                zap.Error(err),
+                zap.String("did", req.Did),
+                zap.Time(logging.Created_at, time.Now()),
+                zap.String(logging.Log_file, LOG_FILE),
+                zap.String(logging.Topic, TOPIC),
+                zap.String(logging.Function, "DID.RegisterAccount"),
+            )
         }
+        s.accountsClient.Client.Logger.Logger.Info("Successfully propagated DID to network",
+            zap.String("did", req.Did),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Function, "DID.RegisterAccount"),
+        )
     }
 
-    storageMode := "in-memory storage only"
-    if !s.standalone && s.accountsClient != nil {
-        storageMode = "persistent database storage"
-    }
-
-    // Return response with initial balance of 0
+    // Return success response
     return &pb.RegisterDIDResponse{
         Success: true,
-        Message: fmt.Sprintf("DID registered successfully using %s", storageMode),
+        Message: "DID registered successfully",
         DidInfo: &pb.DIDInfo{
             Did:       req.Did,
             PublicKey: req.PublicKey,
@@ -206,16 +335,24 @@ func (s *DIDServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequest)
         },
     }, nil
 }
-
 // GetDID retrieves information about a specific DID
-func (s *DIDServer) GetDID(ctx context.Context, req *pb.GetDIDRequest) (*pb.DIDResponse, error) {
+func (s *AccountServer) GetDID(ctx context.Context, req *pb.GetDIDRequest) (*pb.DIDResponse, error) {
     if req.Did == "" {
         return nil, status.Error(codes.InvalidArgument, "DID is required")
     }
 
     // Retrieve DID
-    didDoc, err := s.getDID(req.Did)
+    didDoc, err := s.getAccount(req.Did)
     if err != nil {
+        s.accountsClient.Client.Logger.Logger.Error("Failed to retrieve account",
+            zap.Error(err),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+            zap.String(logging.Function, "DID.GetDID"),
+        )
+
         return &pb.DIDResponse{
             Exists: false,
             DidInfo: &pb.DIDInfo{
@@ -224,44 +361,85 @@ func (s *DIDServer) GetDID(ctx context.Context, req *pb.GetDIDRequest) (*pb.DIDR
         }, nil
     }
 
+    // First convert the metadata into string
+    var Tempmetadata []byte
+    Tempmetadata, err = json.Marshal(didDoc.Metadata)
+    if err != nil {
+        s.accountsClient.Client.Logger.Logger.Error("Failed to convert metadata to string",
+            zap.Error(err),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+            zap.String(logging.Function, "DID.GetDID"),
+        )
+        Tempmetadata = []byte("{}")
+    }
+    s.accountsClient.Client.Logger.Logger.Info("Successfully converted metadata to string",
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Loki_url, config.LOKI_URL),
+        zap.String(logging.Function, "DID.GetDID"),
+    )
     // Return DID information
     return &pb.DIDResponse{
         Exists: true,
         DidInfo: &pb.DIDInfo{
-            Did:       didDoc.DID,
-            PublicKey: didDoc.PublicKey,
+            Did:       didDoc.DIDAddress,
+            PublicKey: didDoc.Address,
             Balance:   didDoc.Balance,
             CreatedAt: didDoc.CreatedAt,
             UpdatedAt: didDoc.UpdatedAt,
+            AccountType: didDoc.AccountType,
+            Nonce: fmt.Sprintf("%d", didDoc.Nonce),
+            Metadata: string(Tempmetadata),
         },
     }, nil
 }
 
 // ListDIDs lists all DIDs with pagination
-func (s *DIDServer) ListDIDs(ctx context.Context, req *pb.ListDIDsRequest) (*pb.ListDIDsResponse, error) {
-    limit := int(req.Limit)
+func (s *AccountServer) ListDIDs(ctx context.Context, req *pb.ListDIDsRequest) (*pb.ListDIDsResponse, error) {
+	limit := int(req.Limit)
     if limit <= 0 {
         limit = 100 // Default limit
     }
 
     // Get DIDs
-    dids, err := s.listDIDs(limit)
+    dids, err := s.listAccounts(limit)
     if err != nil {
-        log.Error().Err(err).Msg("Failed to list DIDs")
-        return nil, status.Errorf(codes.Internal, "Failed to list DIDs: %v", err)
+        s.accountsClient.Client.Logger.Logger.Error("Failed to list accounts",
+            zap.Error(err),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "DID.ListDIDs"),
+        )
+        return nil, status.Errorf(codes.Internal, "Failed to list accounts: %v", err)
     }
 
     // Convert to proto format
     var pbDids []*pb.DIDInfo
     for _, did := range dids {
         pbDids = append(pbDids, &pb.DIDInfo{
-            Did:       did.DID,
-            PublicKey: did.PublicKey,
+            Did:       did.DIDAddress,
+            PublicKey: did.Address,
             Balance:   did.Balance,
             CreatedAt: did.CreatedAt,
             UpdatedAt: did.UpdatedAt,
+            AccountType: did.AccountType,
+            Nonce: fmt.Sprintf("%d", did.Nonce),
         })
     }
+    s.accountsClient.Client.Logger.Logger.Info("Successfully listed accounts",
+        zap.String("count", fmt.Sprintf("%d", len(pbDids))),
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Loki_url, config.LOKI_URL),
+		zap.String(logging.Function, "DID.ListDIDs"),
+    )
 
     return &pb.ListDIDsResponse{
         Dids:       pbDids,
@@ -269,8 +447,8 @@ func (s *DIDServer) ListDIDs(ctx context.Context, req *pb.ListDIDsRequest) (*pb.
     }, nil
 }
 
-// GetDIDStats retrieves current DID system statistics
-func (s *DIDServer) GetDIDStats(ctx context.Context, _ *emptypb.Empty) (*pb.DIDStats, error) {
+// GetAccountStats retrieves current Account system statistics
+func (s *AccountServer) GetAccountStats(ctx context.Context, _ *emptypb.Empty) (*pb.DIDStats, error) {
     s.mutex.RLock()
     statsAge := s.statsAge
     stats := s.stats
@@ -303,11 +481,11 @@ func (s *DIDServer) GetDIDStats(ctx context.Context, _ *emptypb.Empty) (*pb.DIDS
 }
 
 // refreshStats refreshes the DID statistics
-func (s *DIDServer) refreshStats() {
+func (s *AccountServer) refreshStats() {
     log.Debug().Msg("Refreshing DID statistics...")
     
     // Get all DIDs
-    dids, err := s.listDIDs(10000)
+    dids, err := s.listAccounts(10000)
     if err != nil {
         log.Error().
             Err(err).
@@ -347,31 +525,32 @@ func (s *DIDServer) refreshStats() {
 }
 
 // StartDIDServer starts the DID gRPC server
-func StartDIDServer(h host.Host, address string, existingClient *config.ImmuClient) error {
+func StartDIDServer(h host.Host, address string, existingClient *config.PooledConnection) error {
     lis, err := net.Listen("tcp", address)
     if err != nil {
         return fmt.Errorf("failed to listen on %s: %w", address, err)
     }
     
     // Create DID server with existing client
-    server := NewDIDServer(h)
+    server := NewAccountServer(h)
     
     // Set the existing client if provided
     if existingClient != nil {
         server.accountsClient = existingClient
-        server.standalone = false
     } else {
         // Try to initialize a new client
-        if err := server.Initialize(); err != nil {
+        conn, err := server.Initialize()
+        if err != nil {
             log.Warn().Err(err).Msg("Failed to initialize DID server database. Running in standalone mode.")
-            server.standalone = true
+            return err
         }
+        server.accountsClient = &conn
     }
     
     // Create gRPC server
     grpcServer := grpc.NewServer()
     pb.RegisterDIDServiceServer(grpcServer, server)
-    
+
     // Register reflection service
     reflection.Register(grpcServer)
     
