@@ -1,6 +1,7 @@
 package gETH
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	block "gossipnode/Block"
@@ -104,7 +105,9 @@ func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error
 	}
 
 	// Get Txns by DID
-	Txns, err := DB_OPs.GetTransactionsByDID(&Conn.defaultdb, string(req.Address))
+	// convert the req.Address from bytes to common.Address
+	addr := common.Address(req.Address)
+	Txns, err := DB_OPs.GetTransactionsByAccount(&Conn.defaultdb, &addr)
 	if err != nil {
 		return nil, err
 	}
@@ -121,14 +124,20 @@ func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error
     }
 
 	// Get the DID Details to get the balance
-	DIDDetails, err := DB_OPs.GetDID(&Conn.defaultdb, string(req.Address))
+	// Conver the req.Address bytes to common.Address
+	DIDDetails, err := DB_OPs.GetAccount(&Conn.defaultdb, common.Address(req.Address))
 	if err != nil {
+
 		return nil, err
 	}
     
+    // Convert nonce to bytes
+    nonceBytes := make([]byte, 8)
+    binary.BigEndian.PutUint64(nonceBytes, nonce)
+    
     // Create and return the account state
     return &proto.AccountState{
-        Nonce:       []byte(nonce),
+        Nonce:       nonceBytes,
         Balance:     []byte(DIDDetails.Balance),
         StorageRoot: []byte(txHash),
         CodeHash:    []byte{},
@@ -138,7 +147,7 @@ func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error
 
 func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error) {
 	// Convert Signed Transaction bytes to proper DS	
-	var tx config.ZKBlockTransaction
+	var tx config.Transaction
 	err := json.Unmarshal(req.SignedTx, &tx)
 	if err != nil {
 		return nil, err

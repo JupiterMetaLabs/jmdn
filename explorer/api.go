@@ -3,30 +3,38 @@ package explorer
 import (
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
+	"go.uber.org/zap"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/logging"
+)
+
+const(
+	LOG_FILE = "explorer.log"
+	TOPIC = "explorer"
 )
 
 // ImmuDBServer represents the ImmuDB API server
 type ImmuDBServer struct {
-	defaultdb  config.ImmuClient
-	accountsdb config.ImmuClient
+	defaultdb  config.PooledConnection
+	accountsdb config.PooledConnection
 	router     *gin.Engine
 }
 
 // NewImmuDBServer creates a new ImmuDB API server
 func NewImmuDBServer() (*ImmuDBServer, error) {
 	// Create ImmuDB client
-	defaultdb, err := DB_OPs.New()
+	defaultdb, err := DB_OPs.GetMainDBConnection()
 	if err != nil {
 		return nil, err
 	}
 
-	accountsdb, err := DB_OPs.NewAccountsClient()
+	accountsdb, err := DB_OPs.GetAccountsConnection()
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +57,7 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 
 // setupRoutes configures the API routes
 func (s *ImmuDBServer) setupRoutes() {
-	f, err := os.OpenFile("logs/gin.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	f, err := os.OpenFile(LOG_FILE, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Error opening log file")
 	}
@@ -134,10 +142,24 @@ func (s *ImmuDBServer) Start(addr string) error {
 // Close cleans up resources
 func (s *ImmuDBServer) Close() {
 	if s.defaultdb.Client != nil {
-		DB_OPs.Close(&s.defaultdb)
+		s.defaultdb.Client.Logger.Logger.Info("Closing the MainDB Connection in the API.go File",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Function, "DB_OPs.Close"),
+		)
+		DB_OPs.PutAccountsConnection(&s.defaultdb)
 	}
 	if s.accountsdb.Client != nil {
-		DB_OPs.Close(&s.accountsdb)
+		s.accountsdb.Client.Logger.Logger.Info("Closing the AccountsDB Connection in the API.go File",
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Function, "DB_OPs.Close"),
+		)
+		DB_OPs.PutMainDBConnection(&s.accountsdb)
 	}
 }
 

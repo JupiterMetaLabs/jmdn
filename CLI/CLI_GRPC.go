@@ -7,7 +7,6 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/helper"
-	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	"gossipnode/node"
 	"gossipnode/seed"
@@ -210,12 +209,12 @@ func (h *CommandHandler) HandleBroadcast(message string) (bool, error){
 
 func (h *CommandHandler) CheckDBStats() (*schema.ImmutableState, *schema.ImmutableState, error) {
 	// Get both database states before sync
-	mainState, err := DB_OPs.GetDatabaseState(h.MainClient)
+	mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
 	if err != nil {
 		return nil, nil, fmt.Errorf("Failed to get main database state: %v", err)
 	}
 
-	accountsState, err := DB_OPs.GetDatabaseState(h.DIDClient)
+	accountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
 	if err != nil {
 		return nil, nil, fmt.Errorf("Failed to get accounts database state: %v", err)
 	}
@@ -274,12 +273,12 @@ func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 	}
 
 	// Get post-sync states
-	newMainState, err := DB_OPs.GetDatabaseState(h.MainClient)
+	newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
 	if err != nil {
 		return SyncStats{}, fmt.Errorf("Failed to get main database state after sync: %v", err)
 	}
 
-	newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient)
+	newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
 	if err != nil {
 		return SyncStats{}, fmt.Errorf("Failed to get accounts database state after sync: %v", err)
 	}
@@ -291,12 +290,12 @@ func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 	}, nil
 }
 
-func (h *CommandHandler) HandleGetDID(did string) (*DB_OPs.DIDDocument, error) {
+func (h *CommandHandler) HandleGetDID(did string) (*DB_OPs.Account, error) {
 	if did == "" {
 		return nil, fmt.Errorf("Usage: getDID <did>")
 	}
 
-	doc, err := messaging.GetDID(did)
+	doc, err := DB_OPs.GetAccountByDID(h.MainClient, did)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to retrieve DID %s: %v", did, err)
 	}

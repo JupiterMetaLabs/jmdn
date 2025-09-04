@@ -19,7 +19,7 @@ type health struct{
 
 // healthCheck handles health check requests for the default database
 func (s *ImmuDBServer) healthCheck(c *gin.Context) {
-    value, err := s.checkHealth(c, &s.defaultdb, "defaultdb")
+    value, err := s.checkHealth(c, s.defaultdb.Client, "defaultdb")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -29,7 +29,7 @@ func (s *ImmuDBServer) healthCheck(c *gin.Context) {
 
 // didHealthCheck handles health check requests for the accounts database
 func (s *ImmuDBServer) didHealthCheck(c *gin.Context) {
-    health, err := s.checkHealth(c, &s.accountsdb, "AccountsDB")
+    health, err := s.checkHealth(c, s.accountsdb.Client, "AccountsDB")
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return

@@ -2,11 +2,15 @@ package explorer
 
 import (
 	"encoding/json"
-	"gossipnode/config"
 	"gossipnode/DB_OPs"
+	"gossipnode/config"
+	"gossipnode/logging"
 	"strconv"
 	"sync"
+	"fmt"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 var (
@@ -43,7 +47,14 @@ func checkForNewBlocks(DBclient *ImmuDBServer) {
 	// Get the latest block number from the database
 	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(&DBclient.defaultdb)
 	if err != nil {
-		config.Error(DBclient.defaultdb.Logger, "Failed to get latest block number: %v", err)
+		DBclient.defaultdb.Client.Logger.Logger.Error("Failed to get latest block number: %v",
+			zap.Error(err),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Explorer.checkForNewBlocks"),
+		)
 		return
 	}
 
@@ -57,15 +68,29 @@ func checkForNewBlocks(DBclient *ImmuDBServer) {
 	}
 
 	// New blocks found, fetch and notify
-	config.Info(DBclient.defaultdb.Logger, "New blocks detected, fetching blocks from %d to %d", 
-		currentBlockNumber, latestBlockNumber)
+	DBclient.defaultdb.Client.Logger.Logger.Info("New blocks detected, fetching blocks from %d to %d",
+		zap.String("currentBlockNumber", fmt.Sprintf("%d", currentBlockNumber)),
+		zap.String("latestBlockNumber", fmt.Sprintf("%d", latestBlockNumber)),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, config.LOKI_URL),
+		zap.String(logging.Function, "Explorer.checkForNewBlocks"),
+	)
 
 	// Fetch missing blocks
 	var missingBlocks []interface{}
 	for i := currentBlockNumber + 1; i <= latestBlockNumber; i++ {
 		block, err := DB_OPs.GetZKBlockByNumber(&DBclient.defaultdb, i)
 		if err != nil {
-			config.Error(DBclient.defaultdb.Logger, "Failed to fetch block %d: %v", i, err)
+			DBclient.defaultdb.Client.Logger.Logger.Error("Failed to fetch block %d: %v",
+				zap.Error(err),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, config.LOKI_URL),
+				zap.String(logging.Function, "Explorer.checkForNewBlocks"),
+			)
 			continue
 		}
 		missingBlocks = append(missingBlocks, block)
@@ -80,7 +105,14 @@ func checkForNewBlocks(DBclient *ImmuDBServer) {
 	if len(missingBlocks) > 0 {
 		data, err := json.Marshal(missingBlocks)
 		if err != nil {
-			config.Error(DBclient.defaultdb.Logger, "Failed to marshal blocks: %v", err)
+			DBclient.defaultdb.Client.Logger.Logger.Error("Failed to marshal blocks: %v",
+				zap.Error(err),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, config.LOKI_URL),
+				zap.String(logging.Function, "Explorer.checkForNewBlocks"),
+			)
 			return
 		}
 

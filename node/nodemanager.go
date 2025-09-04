@@ -16,9 +16,13 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
+	"go.uber.org/zap"
 )
 
-var logger = logging.GetSubLogger("nodemanager")
+const (
+	LOG_FILE = "node.log"
+	TOPIC = "node"
+)
 
 // NodeManager manages connections to manually specified nodes
 type NodeManager struct {
@@ -29,6 +33,7 @@ type NodeManager struct {
     ctx             context.Context
     cancel          context.CancelFunc
     mutex           sync.RWMutex
+    Logger          *logging.AsyncLogger
 }
 
 // ManagedPeer represents a peer being manually managed
@@ -79,8 +84,18 @@ func NewNodeManager(node *config.Node) (*NodeManager, error) {
     ctx, cancel := context.WithCancel(context.Background())
 
 	// Set initial metrics
-	logger = logging.GetSubLogger("node_manager")
-    logger.Info().Msg("Initializing Node Manager")
+	metricsLogger, err := logging.ReturnDefaultLogger("metrics.log", "metrics")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create logger: %w", err)
+	}
+
+    metricsLogger.Logger.Info("Initializing Node Manager",
+        zap.String(logging.Connection_database, config.DBName),
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Function, "node.NewNodeManager"),
+    )
     
     metrics.ManagedPeersGauge.Set(0)
     metrics.ActivePeersGauge.Set(0)
@@ -110,7 +125,13 @@ func NewNodeManager(node *config.Node) (*NodeManager, error) {
     // manager.DisplayDBPeers()
 
     // Set up heartbeat handler
-	logger.Info().Int("managed_peers", len(manager.trackedPeers)).Msg("Node Manager initialized")
+	metricsLogger.Logger.Info("Node Manager initialized",
+        zap.Int("managed_peers", len(manager.trackedPeers)),
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Function, "node.NewNodeManager"),
+    )
     node.Host.SetStreamHandler(config.HeartbeatProtocol, manager.handleHeartbeat)
 
     return manager, nil
@@ -150,9 +171,13 @@ func (nm *NodeManager) loadManagedPeers() error {
     // Call the function to get peers
     peers, err := udb.GetConnectedPeers()
     if err != nil {
-        logger.Error().
-            Err(err).
-            Msg("Failed to get connected peers")
+        nm.Logger.Logger.Error("Failed to get connected peers",
+            zap.Error(err),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Function, "node.loadManagedPeers"),
+        )
         metrics.DatabaseOperations.WithLabelValues("select_peers", "failure").Inc()
         return fmt.Errorf("failed to get connected peers: %w", err)
     }
@@ -169,10 +194,13 @@ func (nm *NodeManager) loadManagedPeers() error {
         // Use the peer package's Decode function to get a peer.ID
         peerID, err := peer.Decode(dbPeer.PeerID)
         if err != nil {
-            logger.Warn().
-                Err(err).
-                Str("peer_id", dbPeer.PeerID).
-                Msg("Invalid peer ID in database")
+            nm.Logger.Logger.Warn("Invalid peer ID in database",
+                zap.Error(err),
+                zap.Time(logging.Created_at, time.Now()),
+                zap.String(logging.Log_file, LOG_FILE),
+                zap.String(logging.Topic, TOPIC),
+                zap.String(logging.Function, "node.loadManagedPeers"),
+            )
             continue
         }
         
@@ -199,11 +227,15 @@ func (nm *NodeManager) loadManagedPeers() error {
     metrics.ActivePeersGauge.Set(float64(activeCount))
     
     duration := time.Since(startTime).Seconds()
-    logger.Info().
-        Int("loaded", loadedCount).
-        Int("active", activeCount).
-        Float64("duration_seconds", duration).
-        Msg("Loaded managed peers from database")
+    nm.Logger.Logger.Info("Loaded managed peers from database",
+        zap.Int("loaded", loadedCount),
+        zap.Int("active", activeCount),
+        zap.Float64("duration_seconds", duration),
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Function, "node.loadManagedPeers"),
+    )
     
     fmt.Printf("Loaded %d managed peers from database in %.2f seconds\n", loadedCount, duration)
     
@@ -314,7 +346,13 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
         _, err = nm.db.Exec(query, now, 0, 1, peerInfo.ID.String())
         if err != nil {
             // Database update failed, but connection was successful
-            logger.Error().Err(err).Str("peer_id", peerInfo.ID.String()).Msg("Failed to update reconnected peer status")
+            nm.Logger.Logger.Error("Failed to update reconnected peer status",
+                zap.Error(err),
+                zap.Time(logging.Created_at, time.Now()),
+                zap.String(logging.Log_file, LOG_FILE),
+                zap.String(logging.Topic, TOPIC),
+                zap.String(logging.Function, "node.AddPeer"),
+            )
         }
         
         metrics.ActivePeersGauge.Inc() // Increment if it was previously marked as inactive
@@ -479,32 +517,58 @@ func (nm *NodeManager) UpdatePeerStatus(peerID peer.ID, isAlive bool, failCount 
 func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
     defer stream.Close()
     
-    remotePeer := stream.Conn().RemotePeer()
-    peerLogger := logger.With().Str("remote_peer", remotePeer.String()).Logger()
+    remotePeer := stream.Conn().RemotePeer() 
     
-    peerLogger.Debug().Msg("Received heartbeat")
+    nm.Logger.Logger.Debug("Received heartbeat",
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Function, "node.handleHeartbeat"),
+    )
     metrics.HeartbeatReceivedCounter.Inc()
-
+    
     // Read the heartbeat message (optional)
     buf := make([]byte, 64)
     n, err := stream.Read(buf)
     if err != nil {
-        peerLogger.Error().Err(err).Msg("Error reading heartbeat")
+        nm.Logger.Logger.Error("Error reading heartbeat",
+            zap.Error(err),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Function, "node.handleHeartbeat"),
+        )
         return
     }
     message := string(buf[:n])
-    
-    peerLogger.Debug().Str("message", message).Msg("Heartbeat message received")
+    if message != "HEARTBEAT" {
+        nm.Logger.Logger.Debug("Heartbeat message received",
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Function, "node.handleHeartbeat"),
+        )
 
     // Send heartbeat response
     response := "OK\n"
     _, err = stream.Write([]byte(response))
     if err != nil {
-        peerLogger.Error().Err(err).Msg("Error sending heartbeat response")
+        nm.Logger.Logger.Error("Error sending heartbeat response",
+            zap.Error(err),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Function, "node.handleHeartbeat"),
+        )
         return
     }
     
-    peerLogger.Debug().Str("response", response).Msg("Sent heartbeat response")
+    nm.Logger.Logger.Debug("Sent heartbeat response",
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Function, "node.handleHeartbeat"),
+    )
 
     // Update the peer's status if it's one of our managed peers
     nm.mutex.RLock()
@@ -524,18 +588,36 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 
         _, err = nm.db.Exec(query, now, 0, 1, remotePeer.String())
         if err != nil {
-            peerLogger.Error().Err(err).Msg("Failed to update peer status in database")
+            nm.Logger.Logger.Error("Failed to update peer status in database",
+                zap.Error(err),
+                zap.Time(logging.Created_at, time.Now()),
+                zap.String(logging.Log_file, LOG_FILE),
+                zap.String(logging.Topic, TOPIC),
+                zap.String(logging.Function, "node.handleHeartbeat"),
+            )
         } else {
-            peerLogger.Debug().Int64("last_seen", now).Msg("Updated peer status in database")
+            nm.Logger.Logger.Debug("Updated peer status in database",
+                zap.Time(logging.Created_at, time.Now()),
+                zap.String(logging.Log_file, LOG_FILE),
+                zap.String(logging.Topic, TOPIC),
+                zap.String(logging.Function, "node.handleHeartbeat"),
+            )
         }
     } else {
         nm.mutex.RUnlock()
-        peerLogger.Debug().Msg("Heartbeat from non-managed peer")
+        nm.Logger.Logger.Debug("Heartbeat from non-managed peer",
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Function, "node.handleHeartbeat"),
+        )
     }
 }
+}
+
+// sendHeartbeat sends a heartbeat message to a peer
 
 func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
-    peerLogger := logger.With().Str("peer_id", peerID.String()).Logger()
     metrics.HeartbeatSentCounter.Inc()
 
     nm.mutex.RLock()
@@ -543,21 +625,38 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
     nm.mutex.RUnlock()
 
     if !exists {
-        peerLogger.Error().Msg("Peer not found in managed peers")
+        nm.Logger.Logger.Error("Peer not found in managed peers",
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Function, "node.sendHeartbeat"),
+        )
         return false, fmt.Errorf("peer %s not found in managed peers", peerID)
     }
 
     // Parse multiaddress
     addr, err := multiaddr.NewMultiaddr(peers.Multiaddr)
     if err != nil {
-        peerLogger.Error().Err(err).Str("multiaddr", peers.Multiaddr).Msg("Invalid stored multiaddress")
+        nm.Logger.Logger.Error("Invalid stored multiaddress",
+            zap.Error(err),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Function, "node.sendHeartbeat"),
+        )
         return false, fmt.Errorf("invalid stored multiaddress: %w", err)
     }
 
     // Extract peer info
     peerInfo, err := peer.AddrInfoFromP2pAddr(addr)
     if err != nil {
-        peerLogger.Error().Err(err).Str("multiaddr", peers.Multiaddr).Msg("Invalid peer info")
+        nm.Logger.Logger.Error("Invalid peer info",
+            zap.Error(err),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Function, "node.sendHeartbeat"),
+        )
         return false, fmt.Errorf("invalid peer info: %w", err)
     }
 
@@ -565,26 +664,54 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
     ctx, cancel := context.WithTimeout(nm.ctx, 5*time.Second)
     defer cancel()
 
-    peerLogger.Debug().Msg("Attempting to connect")
+    nm.Logger.Logger.Debug("Attempting to connect",
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Function, "node.sendHeartbeat"),
+    )
 
     if err := nm.host.Connect(ctx, *peerInfo); err != nil {
-        peerLogger.Debug().Err(err).Msg("Connection failed")
+        nm.Logger.Logger.Debug("Connection failed",
+            zap.Error(err),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Function, "node.sendHeartbeat"),
+        )
         return false, err
     }
 
     // Open a heartbeat stream
     stream, err := nm.host.NewStream(ctx, peerID, config.HeartbeatProtocol)
     if err != nil {
-        peerLogger.Error().Err(err).Str("protocol", string(config.HeartbeatProtocol)).Msg("Failed to open heartbeat stream")
+        nm.Logger.Logger.Error("Failed to open heartbeat stream",
+            zap.Error(err),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Function, "node.sendHeartbeat"),
+        )
         return false, fmt.Errorf("failed to open heartbeat stream: %w", err)
     }
     defer stream.Close()
 
     // Write a simple heartbeat message
-    peerLogger.Debug().Msg("Sending heartbeat message")
+    nm.Logger.Logger.Debug("Sending heartbeat message",
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Function, "node.sendHeartbeat"),
+    )
     _, err = stream.Write([]byte("HEARTBEAT\n"))
     if err != nil {
-        peerLogger.Error().Err(err).Msg("Failed to send heartbeat")
+        nm.Logger.Logger.Error("Failed to send heartbeat",
+            zap.Error(err),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Function, "node.sendHeartbeat"),
+        )
         return false, fmt.Errorf("failed to send heartbeat: %w", err)
     }
 
@@ -592,20 +719,42 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
     responseBytes := make([]byte, 16)
     stream.SetReadDeadline(time.Now().Add(5 * time.Second))
 
-    peerLogger.Debug().Msg("Waiting for heartbeat response")
+    nm.Logger.Logger.Debug("Waiting for heartbeat response",
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Function, "node.sendHeartbeat"),
+    )
     n, err := stream.Read(responseBytes)
     if err != nil {
-        peerLogger.Error().Err(err).Msg("Failed to read heartbeat response")
+        nm.Logger.Logger.Error("Failed to read heartbeat response",
+            zap.Error(err),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Function, "node.sendHeartbeat"),
+        )
         return false, fmt.Errorf("failed to read heartbeat response: %w", err)
     }
 
     response := string(responseBytes[:n])
     if !strings.Contains(response, "OK") {
-        peerLogger.Error().Str("response", response).Msg("Invalid heartbeat response")
+        nm.Logger.Logger.Error("Invalid heartbeat response",
+            zap.String("response", response),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Function, "node.sendHeartbeat"),
+        )
         return false, fmt.Errorf("invalid heartbeat response: %s", response)
     }
 
-    peerLogger.Debug().Str("response", response).Msg("Valid heartbeat response received")
+    nm.Logger.Logger.Debug("Valid heartbeat response received",
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Function, "node.sendHeartbeat"),
+    )
     return true, nil
 }
 
@@ -633,14 +782,24 @@ func (nm *NodeManager) performHeartbeat() {
         go func(id peer.ID) {
             defer wg.Done()
 
-            peerLogger := logger.With().Str("peer_id", id.String()).Logger()
+            nm.Logger.Logger.Debug("Sending heartbeat",
+                zap.Time(logging.Created_at, time.Now()),
+                zap.String(logging.Log_file, LOG_FILE),
+                zap.String(logging.Topic, TOPIC),
+                zap.String(logging.Function, "node.performHeartbeat"),
+            )
 
             nm.mutex.RLock()
             peer := nm.trackedPeers[id]
             failCount := peer.HeartbeatFail
             nm.mutex.RUnlock()
 
-            peerLogger.Debug().Msg("Sending heartbeat")
+            nm.Logger.Logger.Debug("Sending heartbeat",
+                zap.Time(logging.Created_at, time.Now()),
+                zap.String(logging.Log_file, LOG_FILE),
+                zap.String(logging.Topic, TOPIC),
+                zap.String(logging.Function, "node.performHeartbeat"),
+            )
 
             // Record start time for latency measurement
             startTime := time.Now()
@@ -649,17 +808,25 @@ func (nm *NodeManager) performHeartbeat() {
 
             if err != nil {
                 failCount++
-                peerLogger.Warn().
-                    Int("failures", failCount).
-                    Err(err).
-                    Float64("latency_seconds", latency).
-                    Msg("Heartbeat failed")
+                nm.Logger.Logger.Warn("Heartbeat failed",
+                    zap.Int("failures", failCount),
+                    zap.Error(err),
+                    zap.Float64("latency_seconds", latency),
+                    zap.Time(logging.Created_at, time.Now()),
+                    zap.String(logging.Log_file, LOG_FILE),
+                    zap.String(logging.Topic, TOPIC),
+                    zap.String(logging.Function, "node.performHeartbeat"),
+                )
 
                 metrics.HeartbeatFailedCounter.Inc()
             } else {
-                peerLogger.Info().
-                    Float64("latency_seconds", latency).
-                    Msg("Heartbeat successful")
+                nm.Logger.Logger.Info("Heartbeat successful",
+                    zap.Float64("latency_seconds", latency),
+                    zap.Time(logging.Created_at, time.Now()),
+                    zap.String(logging.Log_file, LOG_FILE),
+                    zap.String(logging.Topic, TOPIC),
+                    zap.String(logging.Function, "node.performHeartbeat"),
+                )
                 
                 failCount = 0
                 metrics.HeartbeatLatency.WithLabelValues(id.String()).Observe(latency)
@@ -668,33 +835,53 @@ func (nm *NodeManager) performHeartbeat() {
             // Update peer status
             err = nm.UpdatePeerStatus(id, success, failCount)
             if err != nil {
-                peerLogger.Error().
-                    Err(err).
-                    Msg("Failed to update peer status")
+                nm.Logger.Logger.Error("Failed to update peer status",
+                    zap.Error(err),
+                    zap.Time(logging.Created_at, time.Now()),
+                    zap.String(logging.Log_file, LOG_FILE),
+                    zap.String(logging.Topic, TOPIC),
+                    zap.String(logging.Function, "node.performHeartbeat"),
+                )
             }
 
             // If too many consecutive failures, mark as offline
 			if failCount >= config.HeartbeatFailureThreshold {
-				peerLogger.Warn().
-					Int("failures", failCount).
-					Msg("Peer marked as offline due to consecutive heartbeat failures")
+                nm.Logger.Logger.Warn("Peer marked as offline due to consecutive heartbeat failures",
+                    zap.Int("failures", failCount),
+                    zap.Time(logging.Created_at, time.Now()),
+                    zap.String(logging.Log_file, LOG_FILE),
+                    zap.String(logging.Topic, TOPIC),
+                    zap.String(logging.Function, "node.performHeartbeat"),
+                )
 			}
 			
 
             // NEW CODE: Auto-remove peers with excessive failures (9+)
 			if failCount >= config.HeartbeatRemovalThreshold {
-				peerLogger.Warn().
-					Int("failures", failCount).
-					Msg("Removing peer due to excessive consecutive failures")
+				nm.Logger.Logger.Warn("Removing peer due to excessive consecutive failures",
+					zap.Int("failures", failCount),
+					zap.Time(logging.Created_at, time.Now()),
+					zap.String(logging.Log_file, LOG_FILE),
+					zap.String(logging.Topic, TOPIC),
+					zap.String(logging.Function, "node.performHeartbeat"),
+				)
 				
                 // Remove the peer from management
                 if err := nm.RemovePeer(id.String()); err != nil {
-                    peerLogger.Error().
-                        Err(err).
-                        Msg("Failed to remove unreachable peer")
+                    nm.Logger.Logger.Error("Failed to remove unreachable peer",
+                        zap.Error(err),
+                        zap.Time(logging.Created_at, time.Now()),
+                        zap.String(logging.Log_file, LOG_FILE),
+                        zap.String(logging.Topic, TOPIC),
+                        zap.String(logging.Function, "node.performHeartbeat"),
+                    )
                 } else {
-                    peerLogger.Info().
-                        Msg("Peer removed from management after 9 consecutive failures")
+                    nm.Logger.Logger.Info("Peer removed from management after 9 consecutive failures",
+                        zap.Time(logging.Created_at, time.Now()),
+                        zap.String(logging.Log_file, LOG_FILE),
+                        zap.String(logging.Topic, TOPIC),
+                        zap.String(logging.Function, "node.performHeartbeat"),
+                    )
                     
                     // Send custom metric for peer removal
                     metrics.PeerRemovedCounter.WithLabelValues("excessive_failures").Inc()

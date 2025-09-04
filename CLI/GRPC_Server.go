@@ -2,6 +2,7 @@ package CLI
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -180,8 +181,11 @@ func (s *CLIServer) GetDID(ctx context.Context, req *pb.DIDRequest) (*pb.DIDDocu
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 	return &pb.DIDDocument{
-		Did:        doc.DID,
-		PublicKey:  doc.PublicKey,
+		Did:        doc.DIDAddress,
+		Type:       doc.AccountType,
+		Nonce:      int64(doc.Nonce),
+		Metadata:   convertMetadataToString(doc.Metadata),
+		PublicKey:  doc.Address,
 		Balance:    doc.Balance,
 		CreatedAt:  timestamppb.New(time.Unix(doc.CreatedAt, 0)),
 		UpdatedAt:  timestamppb.New(time.Unix(doc.UpdatedAt, 0)),
@@ -198,8 +202,8 @@ func (s *CLIServer) FastSync(ctx context.Context, req *pb.PeerRequest) (*pb.Sync
 	}
 	return &pb.SyncStats{
 		TimeTaken:   int64(stats.TimeTaken.Seconds()),
-		MainState:     convertDBState(stats.MainState),
-		AccountsState: convertDBState(stats.AccountsState),
+		MainState:     convertDBState(&stats.MainState),
+		AccountsState: convertDBState(&stats.AccountsState),
 	}, nil
 }
 
@@ -209,18 +213,31 @@ func (s *CLIServer) GetDatabaseState(ctx context.Context, _ *emptypb.Empty) (*pb
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &pb.DatabaseStates{
-		MainDb:     convertDBState(*mainState),
-		AccountsDb: convertDBState(*accountsState),
+		MainDb:     convertDBState(mainState),
+		AccountsDb: convertDBState(accountsState),
 	}, nil
 }
 
 // Helper function to convert database state
-func convertDBState(state schema.ImmutableState) *pb.DatabaseState {
+func convertDBState(state *schema.ImmutableState) *pb.DatabaseState {
 	return &pb.DatabaseState{
 		TxId:     state.TxId,
 		TxHash:   state.TxHash,
 		Database: state.Db,
 	}
+}
+
+// convertMetadataToString converts a metadata map to a JSON string
+func convertMetadataToString(metadata map[string]interface{}) string {
+	if metadata == nil {
+		return "{}"
+	}
+	jsonData, err := json.Marshal(metadata)
+	if err != nil {
+		log.Printf("Error marshaling metadata: %v", err)
+		return "{}"
+	}
+	return string(jsonData)
 }
 
 // StartGRPCServer starts the gRPC server

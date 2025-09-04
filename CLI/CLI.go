@@ -17,6 +17,7 @@ import (
 	"gossipnode/node"
 	"gossipnode/seed"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 )
@@ -26,8 +27,8 @@ type CommandHandler struct {
     Node            *config.Node
     NodeManager     *node.NodeManager
     FastSyncer      *fastsync.FastSync
-    MainClient      *config.ImmuClient
-    DIDClient       *config.ImmuClient
+    MainClient      *config.PooledConnection
+    DIDClient       *config.PooledConnection
     SeedNode        string
     EnableYggdrasil bool
 }
@@ -323,13 +324,13 @@ func (h *CommandHandler) handleFastSync(parts []string) {
     }
 
     // Get both database states before sync
-    mainState, err := DB_OPs.GetDatabaseState(h.MainClient)
+    mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
     if err != nil {
         fmt.Printf("Failed to get main database state: %v\n", err)
         return
     }
 
-    accountsState, err := DB_OPs.GetDatabaseState(h.DIDClient)
+    accountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
     if err != nil {
         fmt.Printf("Failed to get accounts database state: %v\n", err)
         return
@@ -363,13 +364,13 @@ func (h *CommandHandler) handleFastSync(parts []string) {
     }
 
     // Get post-sync states
-    newMainState, err := DB_OPs.GetDatabaseState(h.MainClient)
+    newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
     if err != nil {
         fmt.Printf("Failed to get main database state after sync: %v\n", err)
         return
     }
 
-    newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient)
+    newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
     if err != nil {
         fmt.Printf("Failed to get accounts database state after sync: %v\n", err)
         return
@@ -395,11 +396,11 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
         balance = parts[3]
     }
 
-    value := DB_OPs.DIDDocument{
-        DID:       did,
-        PublicKey: publicKey,
-        Balance:   balance,
+    value := DB_OPs.KeyDocument{
+        DIDAddress:       did,
+        Address: publicKey,
     }
+
     fmt.Printf("Propagating DID %s with public key %s and balance %s to the network...\n",
         did, publicKey, balance)
 
@@ -414,7 +415,6 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
 func (h *CommandHandler) handleSyncInfo() {
     fmt.Println("FastSync Configuration:")
     fmt.Printf("  Batch Size: %d\n", fastsync.SyncBatchSize)
-    // fmt.Printf("  Bloom Filter Size: %d\n", fastsync.BloomFilterSize)
     fmt.Printf("  Request Timeout: %v\n", fastsync.RequestTimeout)
     fmt.Printf("  Response Timeout: %v\n", fastsync.ResponseTimeout)
     printDashes()
@@ -427,18 +427,33 @@ func (h *CommandHandler) handleGetDID(parts []string) {
     }
     did := parts[1]
 
-    doc, err := messaging.GetDID(did)
-    if err != nil {
-        fmt.Printf("Failed to retrieve DID %s: %v\n", did, err)
-        return
+    // It can take DID or Address
+    // if prefix is DID: then its a DID else Account
+    var doc *DB_OPs.Account
+    var err error
+    if strings.HasPrefix(did, DB_OPs.DIDPrefix) {
+        doc, err = DB_OPs.GetAccountByDID(h.MainClient, did)
+        if err != nil {
+            fmt.Printf("Failed to retrieve DID %s: %v\n", did, err)
+            return
+        }
+    } else {
+        doc, err = DB_OPs.GetAccount(h.MainClient, common.HexToAddress(did))
+        if err != nil {
+            fmt.Printf("Failed to retrieve Address %s: %v\n", did, err)
+            return
+        }
     }
 
     fmt.Println("DID Document:")
-    fmt.Printf("  DID: %s\n", doc.DID)
-    fmt.Printf("  Public Key: %s\n", doc.PublicKey)
+    fmt.Printf("  DID: %s\n", doc.DIDAddress)
+    fmt.Printf("  Public Key: %s\n", doc.Address)
+    fmt.Printf("  Account Type: %s\n", doc.AccountType)
+    fmt.Printf("  Nonce: %d\n", doc.Nonce)
     fmt.Printf("  Balance: %s\n", doc.Balance)
     fmt.Printf("  Created: %s\n", time.Unix(doc.CreatedAt, 0).Format(time.RFC3339))
     fmt.Printf("  Updated: %s\n", time.Unix(doc.UpdatedAt, 0).Format(time.RFC3339))
+    fmt.Printf("  Metadata: %s\n", doc.Metadata)
 }
 
 func (h *CommandHandler) handleDBState() {
@@ -455,7 +470,7 @@ func (h *CommandHandler) handleDBState() {
         return
     }
 
-    state, err := DB_OPs.GetDatabaseState(h.MainClient)
+    state, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
     if err != nil {
         fmt.Printf("Failed to get database state: %v\n", err)
         return

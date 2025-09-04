@@ -1,25 +1,26 @@
 package messaging
 
 import (
-    "bufio"
-    "context"
-    "crypto/sha256"
-    "encoding/base64"
-    "encoding/json"
-    "fmt"
-    "io"
-    "sync"
-    "time"
+	"bufio"
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"strconv"
+	"sync"
+	"time"
 
-    "github.com/bits-and-blooms/bloom/v3"
-    "github.com/libp2p/go-libp2p/core/host"
-    "github.com/libp2p/go-libp2p/core/network"
-    "github.com/libp2p/go-libp2p/core/peer"
-    "github.com/rs/zerolog/log"
-	
+	"github.com/bits-and-blooms/bloom/v3"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/rs/zerolog/log"
+
 	"gossipnode/DB_OPs"
-    "gossipnode/config"
-    "gossipnode/metrics"
+	"gossipnode/config"
+	"gossipnode/metrics"
 )
 
 // DIDMessage represents a message for DID propagation
@@ -38,13 +39,13 @@ type DIDMessage struct {
 // Store for DID message tracking
 var (
     didFilter      *bloom.BloomFilter
-    accountsClient *config.ImmuClient
+    accountsClient *config.PooledConnection
     accountsMutex  sync.RWMutex
     didOnce        sync.Once
 )
 
 // InitDIDPropagation initializes the DID propagation system
-func InitDIDPropagation(existingClient *config.ImmuClient) error {
+func InitDIDPropagation(existingClient *config.PooledConnection) error {
     fmt.Println("Initializing DID propagation system...")
     var initErr error
     
@@ -60,7 +61,7 @@ func InitDIDPropagation(existingClient *config.ImmuClient) error {
             log.Info().Msg("DID propagation system initialized with existing database client")
         } else {
             // Create accounts database client if none provided
-            client, err := DB_OPs.NewAccountsClient()
+            client, err := DB_OPs.GetAccountsConnection()
             if err != nil {
                 initErr = fmt.Errorf("failed to create accounts database client: %w", err)
                 return
@@ -108,16 +109,15 @@ func storeDIDInDB(msg DIDMessage) {
         accountsMutex.RUnlock()
         
         // Create DID document
-        didDoc := &DB_OPs.DIDDocument{
-            DID:       msg.DID,
-            PublicKey: msg.PublicKey,
-            Balance:   msg.Balance,
+        didDoc := &DB_OPs.KeyDocument{
+            DIDAddress:       msg.DID,
+            Address: msg.PublicKey,
             CreatedAt: msg.Timestamp,
             UpdatedAt: time.Now().Unix(),
         }
         
         // Store DID document
-        err := DB_OPs.StoreDID(client, didDoc)
+        err := DB_OPs.StoreAccount(client, didDoc)
         if err != nil {
             log.Error().Err(err).Str("did", msg.DID).Msg("Failed to store DID in database")
             return
@@ -134,7 +134,7 @@ func storeDIDInDB(msg DIDMessage) {
 }
 
 // updateDIDSet adds a DID to the grow-only set in accounts database
-func updateDIDSet(client *config.ImmuClient, did string) error {
+func updateDIDSet(client *config.PooledConnection, did string) error {
     const setKey = "crdt:did_set"
     
     // Try to get the current set
@@ -294,18 +294,10 @@ func forwardDID(h host.Host, msg DIDMessage) {
 }
 
 // PropagateDID creates and propagates a DID message to the network
-func PropagateDID(h host.Host, doc *DB_OPs.DIDDocument) error {
+func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
     if doc == nil {
         return fmt.Errorf("DID document cannot be nil")
     }
-    
-    // Generate a unique nonce
-    nonceBytes := make([]byte, 16)
-    for i := range nonceBytes {
-        nonceBytes[i] = byte(time.Now().UnixNano() & 0xff)
-        time.Sleep(1 * time.Nanosecond)
-    }
-    nonce := base64.URLEncoding.EncodeToString(nonceBytes)
     
     // Determine message type based on document timestamps
     msgType := "did_created"
@@ -319,16 +311,16 @@ func PropagateDID(h host.Host, doc *DB_OPs.DIDDocument) error {
     msg := DIDMessage{
         Sender:    h.ID().String(),
         Timestamp: now,
-        Nonce:     nonce,
-        DID:       doc.DID,
-        PublicKey: doc.PublicKey,
+        Nonce:     strconv.FormatUint(doc.Nonce, 10),
+        DID:       doc.DIDAddress,
+        PublicKey: doc.Address,
         Balance:   doc.Balance,
         Type:      msgType,
         Hops:      0,
     }
     
     // Generate a unique ID based on sender, DID and timestamp
-    msg.ID = generateDIDMessageID(msg.Sender, doc.DID)
+    msg.ID = generateDIDMessageID(msg.Sender, doc.DIDAddress)
     
     // First, add/update the DID in our own database
     storeDIDInDB(msg)
@@ -347,7 +339,7 @@ func PropagateDID(h host.Host, doc *DB_OPs.DIDDocument) error {
     peers := h.Network().Peers()
     if len(peers) == 0 {
         log.Warn().
-            Str("did", doc.DID).
+            Str("did", doc.DIDAddress).
             Str("type", msgType).
             Msg("No connected peers to propagate DID to")
         return nil // Not an error, just no one to tell
@@ -355,8 +347,8 @@ func PropagateDID(h host.Host, doc *DB_OPs.DIDDocument) error {
     
     log.Info().
         Str("msg_id", msg.ID).
-        Str("did", doc.DID).
-        Str("public_key", doc.PublicKey).
+        Str("did", doc.DIDAddress).
+        Str("public_key", doc.Address).
         Str("balance", doc.Balance).
         Str("type", msgType).
         Int("peers", len(peers)).
@@ -405,7 +397,8 @@ func PropagateDID(h host.Host, doc *DB_OPs.DIDDocument) error {
     
     log.Info().
         Str("msg_id", msg.ID).
-        Str("did", doc.DID).
+        Str("did", doc.DIDAddress).
+        Str("public_key", doc.Address).
         Str("type", msgType).
         Int("success", successCount).
         Int("total", len(peers)).
@@ -414,19 +407,8 @@ func PropagateDID(h host.Host, doc *DB_OPs.DIDDocument) error {
     return nil
 }
 
-// CloseAccountsClient closes the accounts database client
-func CloseAccountsClient() {
-    accountsMutex.Lock()
-    defer accountsMutex.Unlock()
-    
-    if accountsClient != nil {
-        DB_OPs.Close(accountsClient)
-        accountsClient = nil
-    }
-}
-
 // ListAllDIDs retrieves all known DIDs from the database
-func ListAllDIDs(limit int) ([]*DB_OPs.DIDDocument, error) {
+func ListAllDIDs(limit int) ([]*DB_OPs.Account, error) {
     accountsMutex.RLock()
     client := accountsClient
     accountsMutex.RUnlock()
@@ -435,18 +417,6 @@ func ListAllDIDs(limit int) ([]*DB_OPs.DIDDocument, error) {
         return nil, fmt.Errorf("accounts client not initialized")
     }
     
-    return DB_OPs.ListAllDIDs(client, limit)
+    return DB_OPs.ListAllAccounts(client, limit)
 }
 
-// GetDID retrieves a specific DID document
-func GetDID(did string) (*DB_OPs.DIDDocument, error) {
-    accountsMutex.RLock()
-    client := accountsClient
-    accountsMutex.RUnlock()
-    
-    if client == nil {
-        return nil, fmt.Errorf("accounts client not initialized")
-    }
-    
-    return DB_OPs.GetDID(client, did)
-}

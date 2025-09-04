@@ -303,11 +303,11 @@ func (c *Counter) Merge(other CRDT) (CRDT, error) {
 
 // Engine manages CRDT operations and persistence
 type Engine struct {
-    db *config.ImmuClient
+    db *config.PooledConnection
 }
 
 // NewEngine creates a new CRDT engine
-func NewEngine(db *config.ImmuClient) *Engine {
+func NewEngine(db *config.PooledConnection) *Engine {
     return &Engine{
         db: db,
     }

@@ -53,8 +53,8 @@ type SyncMessage struct {
 
 type FastSync struct {
 	host             host.Host
-	mainDB           *config.ImmuClient
-	accountsDB       *config.ImmuClient
+	mainDB           *config.PooledConnection
+	accountsDB       *config.PooledConnection
 	active           map[peer.ID]*syncState
 	mutex            sync.RWMutex
 	HashMap_MetaData *HashMap_MetaData
@@ -91,14 +91,14 @@ const (
 	RequestFiletransfer       = "REQUEST_FILE_TRANSFER"
 )
 
-func (fs *FastSync) getDB(dbType DatabaseType) *config.ImmuClient {
+func (fs *FastSync) getDB(dbType DatabaseType) *config.PooledConnection {
 	if dbType == AccountsDB {
 		return fs.accountsDB
 	}
 	return fs.mainDB
 }
 
-func GetDBData_Default(db *config.ImmuClient, prefix string) ([]string, error) {
+func GetDBData_Default(db *config.PooledConnection, prefix string) ([]string, error) {
 	keys, err := DB_OPs.GetAllKeys(db, prefix)
 	if err != nil {
 		return nil, err
@@ -106,7 +106,7 @@ func GetDBData_Default(db *config.ImmuClient, prefix string) ([]string, error) {
 	return keys, nil
 }
 
-func GetDBData_Accounts(db *config.ImmuClient, prefix string) ([]string, error) {
+func GetDBData_Accounts(db *config.PooledConnection, prefix string) ([]string, error) {
 	DIDs, err := DB_OPs.GetAllKeys(db, prefix)
 	if err != nil {
 		return nil, err
@@ -140,7 +140,7 @@ func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
 	return MAP, nil
 }
 
-func NewFastSync(h host.Host, mainDB, accountsDB *config.ImmuClient) *FastSync {
+func NewFastSync(h host.Host, mainDB, accountsDB *config.PooledConnection) *FastSync {
 	fs := &FastSync{
 		host:       h,
 		mainDB:     mainDB,
@@ -613,7 +613,7 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
 }
 
 func (fs *FastSync) getBatchData(
-	db *config.ImmuClient,
+	db *config.PooledConnection,
 	dbType DatabaseType,
 ) ([]KeyValueEntry, []json.RawMessage, error) {
 	var entries []KeyValueEntry

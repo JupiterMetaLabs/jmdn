@@ -46,8 +46,8 @@ type ZKBlock struct {
     ExtraData    string               `json:"extradata"`
     StateRoot    common.Hash          `json:"stateroot"`
     LogsBloom    []byte               `json:"logsbloom"`
-    CoinbaseAddr string               `json:"coinbaseaddr"`
-    ZKVMAddr     string               `json:"zkvmaddr"`    
+    CoinbaseAddr *common.Address               `json:"coinbaseaddr"`
+    ZKVMAddr     *common.Address               `json:"zkvmaddr"`    
     PrevHash     common.Hash          `json:"prevhash"`
     BlockHash    common.Hash          `json:"blockhash"`
     GasLimit     uint64               `json:"gaslimit"`

@@ -142,7 +142,7 @@ func (fs *FastSync) handleBatchData(peerID peer.ID, msg *SyncMessage) (*SyncMess
 }
 
 // storeEntries stores key-value entries
-func (fs *FastSync) storeEntries(db *config.ImmuClient, entries []KeyValueEntry) error {
+func (fs *FastSync) storeEntries(db *config.PooledConnection, entries []KeyValueEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -221,12 +221,12 @@ func (fs *FastSync) storeCRDTs(crdtEngine *crdt.Engine, crdtData []json.RawMessa
 // handleVerification processes a verification request
 func (fs *FastSync) handleVerification(peerID peer.ID) (*SyncMessage, error) {
 	// Get database states
-	mainState, err := DB_OPs.GetDatabaseState(fs.mainDB)
+	mainState, err := DB_OPs.GetDatabaseState(fs.mainDB.Client)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get main database state: %w", err)
 	}
 
-	accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB)
+	accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB.Client)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get accounts database state: %w", err)
 	}
@@ -272,12 +272,12 @@ func (fs *FastSync) handleSyncComplete(peerID peer.ID, msg *SyncMessage) (*SyncM
 	fs.cleanupSync(peerID)
 
 	// Get database states
-	mainState, err := DB_OPs.GetDatabaseState(fs.mainDB)
+	mainState, err := DB_OPs.GetDatabaseState(fs.mainDB.Client)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get main database state: %w", err)
 	}
 
-	accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB)
+	accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB.Client)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get accounts database state: %w", err)
 	}
@@ -321,7 +321,7 @@ func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *b
 	for _, dbState := range dbStates {
 		// Get our current state
 		db := fs.getDB(dbState.Type)
-		ourState, err := DB_OPs.GetDatabaseState(db)
+		ourState, err := DB_OPs.GetDatabaseState(db.Client)
 		if err != nil {
 			return fmt.Errorf("failed to get our %s state: %w", dbTypeToString(dbState.Type), err)
 		}
@@ -392,12 +392,12 @@ func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *b
 	}
 
 	// Verify states match
-	mainState, err := DB_OPs.GetDatabaseState(fs.mainDB)
+	mainState, err := DB_OPs.GetDatabaseState(fs.mainDB.Client)
 	if err != nil {
 		return fmt.Errorf("failed to get main database state: %w", err)
 	}
 
-	accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB)
+	accountsState, err := DB_OPs.GetDatabaseState(fs.accountsDB.Client)
 	if err != nil {
 		return fmt.Errorf("failed to get accounts database state: %w", err)
 	}
@@ -661,7 +661,7 @@ func (fs *FastSync) batchCreateWithRetry(entriesMap map[string]interface{}, dbTy
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Get the current client for this attempt
-		var dbClient *config.ImmuClient
+		var dbClient *config.PooledConnection
 		switch dbType {
 		case MainDB:
 			dbClient = fs.mainDB
@@ -687,19 +687,21 @@ func (fs *FastSync) batchCreateWithRetry(entriesMap map[string]interface{}, dbTy
 				Int("attempt", attempt+1).
 				Msg("Authentication token expired. Re-authenticating and retrying.")
 
-			var newClient *config.ImmuClient
+			var newClient *config.PooledConnection
 			var clientErr error
 
 			if dbType == MainDB {
-				newClient, clientErr = DB_OPs.New(DB_OPs.WithRetryLimit(3), DB_OPs.WithDatabase(config.DBName))
+				newClient, clientErr = DB_OPs.GetMainDBConnection()
 				if clientErr == nil {
-					DB_OPs.Close(fs.mainDB) // Close the old, invalid client
+					DB_OPs.Close(fs.mainDB.Client) // Close the old, invalid client
+					DB_OPs.PutMainDBConnection(fs.mainDB)
 					fs.mainDB = newClient   // Replace with the new, valid client
 				}
 			} else if dbType == AccountsDB {
-				newClient, clientErr = DB_OPs.NewAccountsClient()
+				newClient, clientErr = DB_OPs.GetAccountsConnection()
 				if clientErr == nil {
-					DB_OPs.Close(fs.accountsDB)
+					DB_OPs.Close(fs.accountsDB.Client)
+					DB_OPs.PutAccountsConnection(fs.accountsDB)
 					fs.accountsDB = newClient
 				}
 			}
@@ -719,7 +721,7 @@ func (fs *FastSync) batchCreateWithRetry(entriesMap map[string]interface{}, dbTy
 
 func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath string) error {
 	// Get the appropriate database client
-	var dbClient *config.ImmuClient
+	var dbClient *config.PooledConnection
 	switch dbType {
 	case MainDB:
 		dbClient = fs.mainDB

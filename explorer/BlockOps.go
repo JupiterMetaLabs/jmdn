@@ -12,9 +12,11 @@ import (
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/logging"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 type stats struct {
@@ -91,7 +93,14 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 		if err != nil {
 			// If a block is not found, it might be a gap in the blockchain.
 			// Log the error and continue to the next block to provide a partial response.
-			config.Warning(s.defaultdb.Logger, "Failed to get block %d, skipping: %v", i, err)
+			s.defaultdb.Client.Logger.Logger.Error("Failed to get block %d, skipping: %v",
+			zap.Error(err), 
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Explorer.listBlocks"),
+			)
 			continue
 		}
 		blocks = append(blocks, block)
@@ -164,7 +173,7 @@ func (s *ImmuDBServer) listTransactions_inBlock(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	Transactions := make([]*config.ZKBlockTransaction, 0)
+	Transactions := make([]*config.Transaction, 0)
 
 	for _, tx := range BlockData.Transactions {
 		Transactions = append(Transactions, &tx)
@@ -199,7 +208,8 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		status, err := DB_OPs.GetDatabaseState(&s.defaultdb)
+		tempClient := s.defaultdb.Client
+		status, err := DB_OPs.GetDatabaseState(tempClient)
 		if err != nil {
 			handleErr(fmt.Errorf("failed to get database state: %w", err))
 			return
@@ -252,7 +262,7 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		totalDIDs, err := DB_OPs.CountDIDs(&s.accountsdb)
+		totalDIDs, err := DB_OPs.CountAccounts(&s.accountsdb)
 		if err != nil {
 			handleErr(fmt.Errorf("failed to list DIDs: %w", err))
 			return
@@ -287,7 +297,7 @@ func (s *ImmuDBServer) getDIDDetailsFromAddr(c *gin.Context) {
         return
     }
     
-    DIDDocument, err := DB_OPs.GetDIDDocumentFromAddr(&s.accountsdb, addr)
+    DIDDocument, err := DB_OPs.GetAccountByDID(&s.accountsdb, addr)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
@@ -347,7 +357,7 @@ func (s *ImmuDBServer) listTransactions(c *gin.Context) {
     }
 
     // Fetch full transaction details
-    var transactions []*config.ZKBlockTransaction
+    var transactions []*config.Transaction
 	transactions, err = DB_OPs.GetTransactionsBatch(&s.defaultdb, txHashes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch transaction details"})

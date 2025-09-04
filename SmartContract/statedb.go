@@ -152,13 +152,13 @@ type dbOperation struct {
 //         witnessMutex: sync.RWMutex{},
 //     }
 // }
-func NewImmuStateDB(client *config.ImmuClient) vm.StateDB {
+func NewImmuStateDB(client *config.PooledConnection) vm.StateDB {
     // Don't try to create a witness with uninitialized objects
     // Just set it to nil for now
     var witness *stateless.Witness = nil
-    
+    var tempClient config.ImmuClient = *client.Client
     return &ImmuStateDB{
-        dbClient:     client,
+        dbClient:     &tempClient,
         accounts:     make(map[common.Address]*stateAccount),
         stateObjects: make(map[common.Address]*stateObject),
         stateObjectsDirty: make(map[common.Address]struct{}),

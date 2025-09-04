@@ -5,12 +5,20 @@ import (
 	"fmt"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/logging"
 	"math/big"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/rs/zerolog/log"
+	"go.uber.org/zap"
+)
+
+const(
+    LOG_FILE = "block_processing.log"
+    TOPIC = "BlockProcessing"
 )
 
 // Global map to track processed transactions during block processing
@@ -55,7 +63,7 @@ func cleanupTransactionLock(txHash string) {
 
 // ProcessBlockTransactions processes all transactions in a block atomically
 // If any transaction fails, all are rolled back
-func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.ImmuClient) error {
+func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.PooledConnection) error {
     // Check if block was already processed
     blockKey := fmt.Sprintf("block_processed:%s", block.BlockHash.Hex())
     processed, err := DB_OPs.Exists(accountsClient, blockKey)
@@ -67,25 +75,25 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Immu
     ClearProcessedTransactions()
     
     // Store original balances to enable rollback
-    originalBalances := make(map[string]string)
-    affectedDIDs := make(map[string]bool)
+    originalBalances := make(map[common.Address]string)
+    affectedAccounts := make(map[common.Address]bool)
     
     // First, collect all affected DIDs from the block
     for _, tx := range block.Transactions {
-        affectedDIDs[tx.From] = true
-        affectedDIDs[tx.To] = true
+        affectedAccounts[*tx.From] = true
+        affectedAccounts[*tx.To] = true
     }
-    affectedDIDs[block.CoinbaseAddr] = true
-    affectedDIDs[block.ZKVMAddr] = true
+    affectedAccounts[*block.CoinbaseAddr] = true
+    affectedAccounts[*block.ZKVMAddr] = true
     
     // Fetch and store original balances
-    for did := range affectedDIDs {
-        doc, err := DB_OPs.GetDID(accountsClient, did)
+    for accounts := range affectedAccounts {
+        doc, err := DB_OPs.GetAccount(accountsClient, accounts)
         if err == nil {
-            originalBalances[did] = doc.Balance
+            originalBalances[accounts] = doc.Balance
         } else {
             // DID doesn't exist yet, so original balance is 0
-            originalBalances[did] = "0"
+            originalBalances[accounts] = "0"
         }
     }
     
@@ -96,34 +104,57 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Immu
     for _, tx := range sortedTxs {
         // Check if this transaction was already processed within this block
         processedTxsMutex.Lock()
-        if processedTxs[tx.Hash] {
-            log.Warn().Str("tx_hash", tx.Hash).Msg("Duplicate transaction in block, skipping")
+        if processedTxs[tx.Hash.Hex()] {
+            log.Warn().Str("tx_hash", tx.Hash.Hex()).Msg("Duplicate transaction in block, skipping")
             processedTxsMutex.Unlock()
             continue
         }
-        processedTxs[tx.Hash] = true
+        processedTxs[tx.Hash.Hex()] = true
         processedTxsMutex.Unlock()
         
         // Check if this transaction was already processed in a previous block
         txKey := fmt.Sprintf("tx_processed:%s", tx.Hash)
         alreadyProcessed, err := DB_OPs.Exists(accountsClient, txKey)
         if err == nil && alreadyProcessed {
-            log.Warn().Str("tx_hash", tx.Hash).Msg("Transaction already processed in previous block, skipping")
+            accountsClient.Client.Logger.Logger.Warn("Transaction already processed in previous block, skipping",
+                zap.Time(logging.Created_at, time.Now()),
+                zap.String(logging.Log_file, LOG_FILE),
+                zap.String(logging.Topic, TOPIC),
+                zap.String(logging.Loki_url, config.LOKI_URL),
+                zap.String(logging.Function, "messaging.BlockProcessing.ProcessBlockTransactions"),
+                zap.String("tx_hash", tx.Hash.Hex()),
+            )
             continue
         }
         
         // Process the transaction
-        Process_err := processTransaction(tx, block.CoinbaseAddr, block.ZKVMAddr, accountsClient)
+        Process_err := processTransaction(tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient)
         if Process_err != nil {
             // If any transaction fails, roll back all affected DIDs
-            log.Error().Err(Process_err).Str("tx_hash", tx.Hash).Msg("Transaction failed, rolling back block")
+            accountsClient.Client.Logger.Logger.Error("Transaction failed, rolling back block",
+                zap.Time(logging.Created_at, time.Now()),
+                zap.String(logging.Log_file, LOG_FILE),
+                zap.String(logging.Topic, TOPIC),
+                zap.String(logging.Loki_url, config.LOKI_URL),
+                zap.String(logging.Function, "messaging.ProcessBlockTransactions"),
+                zap.String("tx_hash", tx.Hash.Hex()),
+                zap.Error(Process_err),
+            )
             rollbackError := rollbackBalances(originalBalances, accountsClient)
             if rollbackError != nil {
-                log.Error().Err(rollbackError).Msg("Failed to rollback balances after transaction failure")
+                accountsClient.Client.Logger.Logger.Error("Failed to rollback balances after transaction failure",
+                    zap.Time(logging.Created_at, time.Now()),
+                    zap.String(logging.Log_file, LOG_FILE),
+                    zap.String(logging.Topic, TOPIC),
+                    zap.String(logging.Loki_url, config.LOKI_URL),
+                    zap.String(logging.Function, "messaging.ProcessBlockTransactions"),
+                    zap.String("tx_hash", tx.Hash.Hex()),
+                    zap.Error(rollbackError),
+                )
             }
             
             // Clean up any processing markers for failed transactions
-            cleanupProcessingMarkers(accountsClient, tx.Hash)
+            cleanupProcessingMarkers(accountsClient, tx.Hash.Hex())
             
             return fmt.Errorf("block processing failed: %w", Process_err)
         }
@@ -154,43 +185,34 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Immu
 }
 
 // sortTransactionsByNonce sorts transactions by their nonce value if available
-func sortTransactionsByNonce(txs []config.ZKBlockTransaction) []config.ZKBlockTransaction {
+func sortTransactionsByNonce(txs []config.Transaction) []config.Transaction {
     // Create a copy to avoid modifying the original
-    sortedTxs := make([]config.ZKBlockTransaction, len(txs))
+    sortedTxs := make([]config.Transaction, len(txs))
     copy(sortedTxs, txs)
     
     // Group transactions by sender address
-    txsBySender := make(map[string][]config.ZKBlockTransaction)
+    txsBySender := make(map[common.Address][]config.Transaction)
     for _, tx := range sortedTxs {
-        txsBySender[tx.From] = append(txsBySender[tx.From], tx)
+        txsBySender[*tx.From] = append(txsBySender[*tx.From], tx)
     }
     
     // Sort each sender's transactions by nonce
     for sender, senderTxs := range txsBySender {
         sort.Slice(senderTxs, func(i, j int) bool {
             // If nonce is missing, maintain original order
-            if senderTxs[i].Nonce == "" || senderTxs[j].Nonce == "" {
+            if senderTxs[i].Nonce == 0 || senderTxs[j].Nonce == 0 {
                 return i < j
             }
             
-            // Parse nonces as big.Int
-            nonceI, okI := new(big.Int).SetString(senderTxs[i].Nonce, 10)
-            nonceJ, okJ := new(big.Int).SetString(senderTxs[j].Nonce, 10)
-            
-            // If parsing fails, maintain original order
-            if !okI || !okJ {
-                return i < j
-            }
-            
-            // Sort by nonce
-            return nonceI.Cmp(nonceJ) < 0
+            // Compare nonces directly as uint64
+            return senderTxs[i].Nonce < senderTxs[j].Nonce
         })
         
         txsBySender[sender] = senderTxs
     }
     
     // Rebuild the sorted transaction list
-    result := []config.ZKBlockTransaction{}
+    result := []config.Transaction{}
     for _, senderTxs := range txsBySender {
         result = append(result, senderTxs...)
     }
@@ -199,11 +221,19 @@ func sortTransactionsByNonce(txs []config.ZKBlockTransaction) []config.ZKBlockTr
 }
 
 // cleanupProcessingMarkers removes temporary processing markers
-func cleanupProcessingMarkers(accountsClient *config.ImmuClient, txHash string) {
+func cleanupProcessingMarkers(accountsClient *config.PooledConnection, txHash string) {
     processingKey := fmt.Sprintf("tx_processing:%s", txHash)
     if exists, _ := DB_OPs.Exists(accountsClient, processingKey); exists {
         if err := DB_OPs.Update(accountsClient, processingKey, -1); err != nil {
-            log.Warn().Err(err).Str("tx_hash", txHash).Msg("Failed to clean up processing marker")
+            accountsClient.Client.Logger.Logger.Warn("Failed to clean up processing marker",
+                zap.Time(logging.Created_at, time.Now()),
+                zap.String(logging.Log_file, LOG_FILE),
+                zap.String(logging.Topic, TOPIC),
+                zap.String(logging.Loki_url, config.LOKI_URL),
+                zap.String(logging.Function, "messaging.cleanupProcessingMarkers"),
+                zap.String("tx_hash", txHash),
+                zap.Error(err),
+            )
         }
     }
     
@@ -212,34 +242,45 @@ func cleanupProcessingMarkers(accountsClient *config.ImmuClient, txHash string) 
 }
 
 // rollbackBalances restores original balances for all affected DIDs
-func rollbackBalances(originalBalances map[string]string, accountsClient *config.ImmuClient) error {
+func rollbackBalances(originalBalances map[common.Address]string, accountsClient *config.PooledConnection) error {
     for did, balance := range originalBalances {
-        if err := DB_OPs.UpdateDIDBalance(accountsClient, did, balance); err != nil {
+        if err := DB_OPs.UpdateAccountBalance(accountsClient, did, balance); err != nil {
             return fmt.Errorf("failed to restore balance for %s: %w", did, err)
         }
-        log.Info().Str("did", did).Str("balance", balance).Msg("Rolled back balance to original value")
+        log.Info().Str("did", did.String()).Str("balance", balance).Msg("Rolled back balance to original value")
     }
     return nil
 }
 
 // ProcessTransaction handles a single transaction's balance updates 
-func processTransaction(tx config.ZKBlockTransaction, coinbaseAddr, zkvmAddr string, accountsClient *config.ImmuClient) error {
+func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection) error {
     // Enhanced logging at start
-    log.Info().
-        Str("tx_hash", tx.Hash).
-        Str("from", tx.From).
-        Str("to", tx.To).
-        Str("value", tx.Value).
-        Str("type", tx.Type).
-        Str("nonce", tx.Nonce).
-        Msg("Starting transaction processing")
-        
+    // First check the connection
+    if accountsClient == nil {
+        log.Error().Msg("Function: messaging.processTransaction - accountsClient is nil")
+        return fmt.Errorf("accountsClient is nil")
+    }
+
+    // Confirm the DB connection
+    err := DB_OPs.EnsureDBConnection(accountsClient)
+    if err != nil {
+        log.Error().Err(err).Msg("Failed to establish database connection")
+        return fmt.Errorf("failed to establish database connection: %w", err)
+    }
+    accountsClient.Client.Logger.Logger.Info("Database connection check successful",
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Loki_url, config.LOKI_URL),
+        zap.String(logging.Function, "messaging.processTransaction"),
+    )
+    
     // Check if transaction was already processed (from previous blocks)
-    txLock := getTransactionLock(tx.Hash)
+    txLock := getTransactionLock(tx.Hash.String())
     txLock.Lock()
     defer func() {
         txLock.Unlock()
-        cleanupTransactionLock(tx.Hash) // Always clean up the lock
+        cleanupTransactionLock(tx.Hash.String()) // Always clean up the lock
     }()
     
     // First check with a preliminary key that shows we've started processing
@@ -249,7 +290,7 @@ func processTransaction(tx config.ZKBlockTransaction, coinbaseAddr, zkvmAddr str
     // Check if already completed
     processed, err := DB_OPs.Exists(accountsClient, txKey)
     if err == nil && processed {
-        log.Info().Str("tx_hash", tx.Hash).Msg("Transaction already processed in previous block, skipping")
+        log.Info().Str("tx_hash", tx.Hash.Hex()).Msg("Transaction already processed in previous block, skipping")
         return nil
     }
     
@@ -263,12 +304,24 @@ func processTransaction(tx config.ZKBlockTransaction, coinbaseAddr, zkvmAddr str
             var timestamp int64
             if err := json.Unmarshal(valueBytes, &timestamp); err == nil {
                 if time.Now().Unix() - timestamp > 300 {
-                    log.Warn().
-                        Str("tx_hash", tx.Hash).
-                        Int64("stale_timestamp", timestamp).
-                        Msg("Found stale processing marker, continuing with transaction")
+                    accountsClient.Client.Logger.Logger.Warn("Found stale processing marker, continuing with transaction",
+                        zap.Time(logging.Created_at, time.Now()),
+                        zap.String(logging.Log_file, LOG_FILE),
+                        zap.String(logging.Topic, TOPIC),
+                        zap.String(logging.Loki_url, config.LOKI_URL),
+                        zap.String(logging.Function, "messaging.processTransaction"),
+                        zap.String("tx_hash", tx.Hash.Hex()),
+                        zap.Int64("stale_timestamp", timestamp),
+                    )
                 } else {
-                    log.Warn().Str("tx_hash", tx.Hash).Msg("Transaction is already being processed, possible duplicate")
+                    accountsClient.Client.Logger.Logger.Warn("Transaction is already being processed, possible duplicate",
+                        zap.Time(logging.Created_at, time.Now()),
+                        zap.String(logging.Log_file, LOG_FILE),
+                        zap.String(logging.Topic, TOPIC),
+                        zap.String(logging.Loki_url, config.LOKI_URL),
+                        zap.String(logging.Function, "messaging.processTransaction"),
+                        zap.String("tx_hash", tx.Hash.Hex()),
+                    )
                     // We have the lock, so continue processing anyway as previous attempt might have failed
                 }// We have the lock, so continue processing anyway as previous attempt might have failed
             }
@@ -277,20 +330,30 @@ func processTransaction(tx config.ZKBlockTransaction, coinbaseAddr, zkvmAddr str
 
     // Mark transaction as being processed
     if err := DB_OPs.Create(accountsClient, txProcessingKey, time.Now().Unix()); err != nil {
-        log.Warn().Err(err).Str("tx_hash", tx.Hash).Msg("Failed to mark transaction as processing")
+        accountsClient.Client.Logger.Logger.Warn("Failed to mark transaction as processing",
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+            zap.String(logging.Function, "messaging.processTransaction"),
+            zap.String("tx_hash", tx.Hash.Hex()),
+            zap.Error(err),
+        )
         // Continue processing since this is just a precaution
     }
 
     // Store original balances for rollback if needed
-    originalBalances := make(map[string]string)
-    affectedDIDs := []string{tx.From, tx.To, coinbaseAddr, zkvmAddr}
+    originalBalances := make(map[common.Address]string)
+    affectedDIDs := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
     
     for _, did := range affectedDIDs {
-        doc, err := DB_OPs.GetDID(accountsClient, did)
+        doc, err := DB_OPs.GetAccount(accountsClient, did)
         if err == nil {
             originalBalances[did] = doc.Balance
         } else if err.Error() == "DID not found" {
             originalBalances[did] = "0"
+        } else {
+            return fmt.Errorf("failed to retrieve original balance for %s: %w", did.Hex(), err)
         }
     }
 
@@ -298,21 +361,25 @@ func processTransaction(tx config.ZKBlockTransaction, coinbaseAddr, zkvmAddr str
     var parsedTx *config.ParsedZKTransaction
     parsedTx, err = parseTransaction(tx)
     if err != nil {
-        log.Error().Err(err).Str("tx_hash", tx.Hash).Msg("Failed to parse transaction")
-        cleanupProcessingMarkers(accountsClient, tx.Hash)
+        accountsClient.Client.Logger.Logger.Error("Failed to parse transaction",
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+            zap.String(logging.Function, "messaging.processTransaction"),
+            zap.String("tx_hash", tx.Hash.Hex()),
+            zap.Error(err),
+        )
+        cleanupProcessingMarkers(accountsClient, tx.Hash.String())
         return fmt.Errorf("failed to parse transaction: %w", err)
     }
 
-    // Get gas limit
-    gasLimit := new(big.Int)
-    var ok bool
-    if tx.GasLimit != "" {
-        gasLimit, ok = gasLimit.SetString(tx.GasLimit, 10)
-        if !ok {
-            gasLimit = big.NewInt(DefaultGasLimit) // Use configurable default
-        }
-    } else {
-        gasLimit = big.NewInt(DefaultGasLimit) // Use configurable default
+    // Gas Limit is already a bigInt
+    var gasLimit *big.Int
+    if tx.GasLimit != 0{
+        gasLimit = big.NewInt(int64(tx.GasLimit))
+    }else{
+        gasLimit = big.NewInt(DefaultGasLimit)
     }
 
     // Calculate gas fee (gasLimit * gasPrice / 1,000,000,000)
@@ -327,122 +394,198 @@ func processTransaction(tx config.ZKBlockTransaction, coinbaseAddr, zkvmAddr str
     fmt.Println("Total deduction: ", totalDeduction.String())
     // Split the gas fee between coinbase and ZKVM
     halfGasFee := new(big.Int).Div(gasFeeToDeduct, big.NewInt(2))
-    
-    log.Info().
-        Str("tx_hash", tx.Hash).
-        Str("from", tx.From).
-        Str("to", tx.To).
-        Str("value", parsedTx.ValueBig.String()).
-        Str("gas_limit", gasLimit.String()).
-        Str("gas_fee", gasFeeToDeduct.String()).
-        Str("total_deduction", totalDeduction.String()).
-        Msg("Transaction amounts calculated")
+
+    accountsClient.Client.Logger.Logger.Info("Transaction Amount Calculated",
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Loki_url, config.LOKI_URL),
+        zap.String(logging.Function, "messaging.processTransaction"),
+        zap.String("tx_hash", tx.Hash.Hex()),
+        zap.String("from", tx.From.Hex()),
+        zap.String("to", tx.To.Hex()),
+        zap.String("value", parsedTx.ValueBig.String()),
+        zap.String("gas_limit", gasLimit.String()),
+        zap.String("gas_fee", gasFeeToDeduct.String()),
+        zap.String("total_deduction", totalDeduction.String()),
+    )
 
     // Check if sender exists before attempting deduction
-    senderExists, _ := didExists(accountsClient, tx.From)
+    senderExists, _ := accountExists(accountsClient, tx.From)
     if !senderExists {
-        log.Error().
-            Str("tx_hash", tx.Hash).
-            Str("from", tx.From).
-            Msg("Sender DID does not exist")
-        cleanupProcessingMarkers(accountsClient, tx.Hash)
+        accountsClient.Client.Logger.Logger.Error("Sender DID does not exist",
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+            zap.String(logging.Function, "messaging.processTransaction"),
+            zap.String("tx_hash", tx.Hash.Hex()),
+            zap.String("from", tx.From.Hex()),
+        )
+        cleanupProcessingMarkers(accountsClient, tx.Hash.String())
         return fmt.Errorf("sender DID %s does not exist", tx.From)
     }
     
     // Check if recipient exists (for better error reporting)
-    recipientExists, _ := didExists(accountsClient, tx.To)
+    recipientExists, _ := accountExists(accountsClient, tx.To)
     if !recipientExists && !CreateMissingAccounts {
-        log.Error().
-            Str("tx_hash", tx.Hash).
-            Str("to", tx.To).
-            Msg("Recipient DID does not exist and automatic creation is disabled")
-        cleanupProcessingMarkers(accountsClient, tx.Hash)
+        accountsClient.Client.Logger.Logger.Error("Recipient DID does not exist",
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+            zap.String(logging.Function, "messaging.processTransaction"),
+            zap.String("tx_hash", tx.Hash.Hex()),
+            zap.String("to", tx.To.Hex()),
+        )
+        cleanupProcessingMarkers(accountsClient, tx.Hash.String())
         return fmt.Errorf("recipient DID %s does not exist and automatic creation is disabled", tx.To)
     }
 
     // 1. Deduct from sender
-    if err := deductFromSender(tx.From, totalDeduction.String(), accountsClient); err != nil {
-        log.Error().Err(err).
-            Str("tx_hash", tx.Hash).
-            Str("from", tx.From).
-            Str("amount", totalDeduction.String()).
-            Msg("Failed to deduct from sender")
-        cleanupProcessingMarkers(accountsClient, tx.Hash)
+    if err := deductFromSender(*tx.From, totalDeduction.String(), accountsClient); err != nil {
+        accountsClient.Client.Logger.Logger.Error("Failed to deduct from sender",
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+            zap.String(logging.Function, "messaging.processTransaction"),
+            zap.String("tx_hash", tx.Hash.Hex()),
+            zap.String("from", tx.From.Hex()),
+            zap.String("amount", totalDeduction.String()),
+        )
+        cleanupProcessingMarkers(accountsClient, tx.Hash.String())
         return categorizeDeductionError(err)
     }
 
     // 2. Add amount to recipient
-    if err := addToRecipient(tx.To, parsedTx.ValueBig.String(), accountsClient); err != nil {
+    if err := addToRecipient(*tx.To, parsedTx.ValueBig.String(), accountsClient); err != nil {
         // Rollback sender deduction on failure
-        if rollbackErr := DB_OPs.UpdateDIDBalance(accountsClient, tx.From, originalBalances[tx.From]); rollbackErr != nil {
-            log.Error().Err(rollbackErr).
-                Str("did", tx.From).
-                Str("original_balance", originalBalances[tx.From]).
-                Msg("Failed to rollback sender balance")
+        if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, *tx.From, originalBalances[*tx.From]); rollbackErr != nil {
+            accountsClient.Client.Logger.Logger.Error("Failed to rollback sender balance",
+                zap.Time(logging.Created_at, time.Now()),
+                zap.String(logging.Log_file, LOG_FILE),
+                zap.String(logging.Topic, TOPIC),
+                zap.String(logging.Loki_url, config.LOKI_URL),
+                zap.String(logging.Function, "messaging.processTransaction"),
+                zap.String("tx_hash", tx.Hash.Hex()),
+                zap.String("from", tx.From.Hex()),
+                zap.String("original_balance", originalBalances[*tx.From]),
+            )
         } else {
-            log.Info().
-                Str("did", tx.From).
-                Str("balance", originalBalances[tx.From]).
-                Msg("Rolled back sender balance due to recipient update failure")
+            accountsClient.Client.Logger.Logger.Info("Rolled back sender balance due to recipient update failure",
+                zap.Time(logging.Created_at, time.Now()),
+                zap.String(logging.Log_file, LOG_FILE),
+                zap.String(logging.Topic, TOPIC),
+                zap.String(logging.Loki_url, config.LOKI_URL),
+                zap.String(logging.Function, "messaging.processTransaction"),
+                zap.String("tx_hash", tx.Hash.Hex()),
+                zap.String("from", tx.From.Hex()),
+                zap.String("original_balance", originalBalances[*tx.From]),
+            )
         }
-        cleanupProcessingMarkers(accountsClient, tx.Hash)
+        cleanupProcessingMarkers(accountsClient, tx.Hash.String())
         return fmt.Errorf("failed to add to recipient: %w", err)
     }
 
     // 3. Split gas fee between coinbase and ZKVM
     if err := addToRecipient(coinbaseAddr, halfGasFee.String(), accountsClient); err != nil {
         // Rollback previous operations
-        rollbackDIDs := []string{tx.From, tx.To}
-        for _, did := range rollbackDIDs {
-            if rollbackErr := DB_OPs.UpdateDIDBalance(accountsClient, did, originalBalances[did]); rollbackErr != nil {
-                log.Error().Err(rollbackErr).Str("did", did).Msg("Failed to rollback balance")
+        rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
+        for _, accounts := range rollbackAccounts {
+            if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
+                accountsClient.Client.Logger.Logger.Error("Failed to rollback balance",
+                    zap.Time(logging.Created_at, time.Now()),
+                    zap.String(logging.Log_file, LOG_FILE),
+                    zap.String(logging.Topic, TOPIC),
+                    zap.String(logging.Loki_url, config.LOKI_URL),
+                    zap.String(logging.Function, "messaging.processTransaction"),
+                    zap.String("tx_hash", tx.Hash.Hex()),
+                    zap.String("from", tx.From.Hex()),
+                    zap.String("original_balance", originalBalances[*tx.From]),
+                )
             } else {
-                log.Info().Str("did", did).Str("balance", originalBalances[did]).Msg("Rolled back balance")
+                accountsClient.Client.Logger.Logger.Info("Rolled back balance due to gas fee update failure",
+                    zap.Time(logging.Created_at, time.Now()),
+                    zap.String(logging.Log_file, LOG_FILE),
+                    zap.String(logging.Topic, TOPIC),
+                    zap.String(logging.Loki_url, config.LOKI_URL),
+                    zap.String(logging.Function, "messaging.processTransaction"),
+                    zap.String("tx_hash", tx.Hash.Hex()),
+                    zap.String("from", tx.From.Hex()),
+                    zap.String("original_balance", originalBalances[*tx.From]),
+                )
             }
         }
-        cleanupProcessingMarkers(accountsClient, tx.Hash)
+        cleanupProcessingMarkers(accountsClient, tx.Hash.String())
         return fmt.Errorf("failed to add gas fee to coinbase: %w", err)
     }
 
     if err := addToRecipient(zkvmAddr, halfGasFee.String(), accountsClient); err != nil {
         // Rollback previous operations
-        rollbackDIDs := []string{tx.From, tx.To, coinbaseAddr}
-        for _, did := range rollbackDIDs {
-            if rollbackErr := DB_OPs.UpdateDIDBalance(accountsClient, did, originalBalances[did]); rollbackErr != nil {
-                log.Error().Err(rollbackErr).Str("did", did).Msg("Failed to rollback balance")
+        rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
+        for _, accounts := range rollbackAccounts {
+            if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
+                accountsClient.Client.Logger.Logger.Error("Failed to rollback balance",
+                    zap.Time(logging.Created_at, time.Now()),
+                    zap.String(logging.Log_file, LOG_FILE),
+                    zap.String(logging.Topic, TOPIC),
+                    zap.String(logging.Loki_url, config.LOKI_URL),
+                    zap.String(logging.Function, "messaging.processTransaction"),
+                    zap.String("tx_hash", tx.Hash.Hex()),
+                    zap.String("from", tx.From.Hex()),
+                    zap.String("original_balance", originalBalances[*tx.From]),
+                )
             } else {
-                log.Info().Str("did", did).Str("balance", originalBalances[did]).Msg("Rolled back balance")
+                accountsClient.Client.Logger.Logger.Info("Rolled back balance due to gas fee update failure",
+                    zap.Time(logging.Created_at, time.Now()),
+                    zap.String(logging.Log_file, LOG_FILE),
+                    zap.String(logging.Topic, TOPIC),
+                    zap.String(logging.Loki_url, config.LOKI_URL),
+                    zap.String(logging.Function, "messaging.processTransaction"),
+                    zap.String("tx_hash", tx.Hash.Hex()),
+                    zap.String("from", tx.From.Hex()),
+                    zap.String("original_balance", originalBalances[*tx.From]),
+                )
             }
         }
-        cleanupProcessingMarkers(accountsClient, tx.Hash)
+        cleanupProcessingMarkers(accountsClient, tx.Hash.String())
         return fmt.Errorf("failed to add gas fee to ZKVM: %w", err)
     }
 
     // Mark transaction as fully processed - this is the key that prevents double processing
     if err := DB_OPs.Create(accountsClient, txKey, time.Now().Unix()); err != nil {
-        log.Warn().Err(err).Str("tx_hash", tx.Hash).Msg("Failed to mark transaction as processed")
+        accountsClient.Client.Logger.Logger.Error("Failed to mark transaction as processed",
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+            zap.String(logging.Function, "messaging.processTransaction"),
+            zap.String("tx_hash", tx.Hash.String()),
+        )
         // Still continue as the transaction was processed successfully
     }
     
     // Clean up the processing marker
-    cleanupProcessingMarkers(accountsClient, tx.Hash)
+    cleanupProcessingMarkers(accountsClient, tx.Hash.String())
 
-    log.Info().
-        Str("tx_hash", tx.Hash).
-        Str("from", tx.From).
-        Str("to", tx.To).
-        Str("value", parsedTx.ValueBig.String()).
-        Str("gas_fee", gasFeeToDeduct.String()).
-        Msg("Transaction processed successfully")
+    accountsClient.Client.Logger.Logger.Info("Transaction processed successfully",
+        zap.String("tx_hash", tx.Hash.String()),
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Loki_url, config.LOKI_URL),
+        zap.String(logging.Function, "messaging.processTransaction"),
+    )
 
     return nil
 }
 
-// didExists checks if a DID exists in the database
-func didExists(accountsClient *config.ImmuClient, did string) (bool, error) {
-    _, err := DB_OPs.GetDID(accountsClient, did)
+// accountExists checks if an account exists in the database
+func accountExists(accountsClient *config.PooledConnection, account *common.Address) (bool, error) {
+    _, err := DB_OPs.GetAccount(accountsClient, *account)
     if err != nil {
-        if err.Error() == "DID not found" {
+        if err.Error() == "Account not found" {
             return false, nil
         }
         return false, err
@@ -475,66 +618,68 @@ func contains(s, substr string) bool {
 }
 
 // parseTransaction parses the numeric values in a transaction
-func parseTransaction(tx config.ZKBlockTransaction) (*config.ParsedZKTransaction, error) {
+func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error) {
     parsed := &config.ParsedZKTransaction{
         Original: &tx,
     }
 
-    // Parse value
-    value := new(big.Int)
-    var ok bool
-    value, ok = value.SetString(tx.Value, 10)
-    if !ok {
-        return nil, fmt.Errorf("invalid value: %s", tx.Value)
+    // Set the value directly since it's already a *big.Int
+    if tx.Value != nil {
+        parsed.ValueBig = new(big.Int).Set(tx.Value)
+    } else {
+        parsed.ValueBig = big.NewInt(0)
     }
-    parsed.ValueBig = value
 
     // Determine gas fee based on transaction type
-    if tx.Type == "eip1559" || tx.Type == "EIP-1559" {
-        // Use max fee for EIP-1559 tx
-        maxFee := new(big.Int)
-        if tx.MaxFee != "" {
-            maxFee, ok = maxFee.SetString(tx.MaxFee, 10)
-            if !ok {
-                // Default to a reasonable value if not specified
-                maxFee = big.NewInt(DefaultGasPrice)
-            }
+    // Type 0x0 = Legacy, 0x1 = AccessList, 0x2 = DynamicFee (EIP-1559)
+    if tx.Type == 2 { // EIP-1559 transaction
+        // For EIP-1559, use MaxFee as the effective gas fee
+        if tx.MaxFee != nil {
+            parsed.MaxFeeBig = new(big.Int).Set(tx.MaxFee)
+            parsed.EffectiveGasFee = new(big.Int).Set(tx.MaxFee)
         } else {
-            maxFee = big.NewInt(DefaultGasPrice)
+            // Fallback to MaxPriorityFee if MaxFee is not set
+            if tx.MaxPriorityFee != nil {
+                parsed.MaxFeeBig = new(big.Int).Set(tx.MaxPriorityFee)
+                parsed.EffectiveGasFee = new(big.Int).Set(tx.MaxPriorityFee)
+            } else {
+                // Fallback to GasPrice if available
+                if tx.GasPrice != nil {
+                    parsed.MaxFeeBig = new(big.Int).Set(tx.GasPrice)
+                    parsed.EffectiveGasFee = new(big.Int).Set(tx.GasPrice)
+                } else {
+                    // Last resort: use default gas price
+                    parsed.MaxFeeBig = big.NewInt(DefaultGasPrice)
+                    parsed.EffectiveGasFee = big.NewInt(DefaultGasPrice)
+                }
+            }
         }
-        parsed.MaxFeeBig = maxFee
-        parsed.EffectiveGasFee = maxFee
     } else {
-        // For legacy transactions, try to get gas price from either MaxFee field or MaxPriorityFee
-        var gasPrice *big.Int
-        gasPrice = new(big.Int)
-        ok = false
-        
-        // First try MaxFee field which might be used for gas price
-        if tx.MaxFee != "" {
-            gasPrice, ok = gasPrice.SetString(tx.MaxFee, 10)
+        // For Legacy or AccessList transactions, use GasPrice if available
+        if tx.GasPrice != nil {
+            parsed.EffectiveGasFee = new(big.Int).Set(tx.GasPrice)
+        } else if tx.MaxFee != nil {
+            // Fallback to MaxFee if GasPrice is not set
+            parsed.EffectiveGasFee = new(big.Int).Set(tx.MaxFee)
+        } else if tx.MaxPriorityFee != nil {
+            // Fallback to MaxPriorityFee if others are not set
+            parsed.EffectiveGasFee = new(big.Int).Set(tx.MaxPriorityFee)
+        } else {
+            // Last resort: use default gas price
+            parsed.EffectiveGasFee = big.NewInt(DefaultGasPrice)
         }
         
-        // If that failed, try MaxPriorityFee field if it exists
-        if !ok && tx.MaxPriorityFee != "" {
-            gasPrice, ok = gasPrice.SetString(tx.MaxPriorityFee, 10)
-        }
-        
-        // If still no valid gas price, use default
-        if !ok || gasPrice.Cmp(big.NewInt(0)) == 0 {
-            gasPrice = big.NewInt(DefaultGasPrice)
-        }
-        
-        parsed.EffectiveGasFee = gasPrice
+        // For non-EIP-1559 transactions, MaxFeeBig is not applicable
+        parsed.MaxFeeBig = nil
     }
 
     return parsed, nil
 }
 
 // deductFromSender deducts an amount from a sender's DID account
-func deductFromSender(fromDID string, amount string, accountsClient *config.ImmuClient) error {
+func deductFromSender(fromDID common.Address, amount string, accountsClient *config.PooledConnection) error {
     // Get the current DID document
-    didDoc, err := DB_OPs.GetDID(accountsClient, fromDID)
+    didDoc, err := DB_OPs.GetAccount(accountsClient, fromDID)
     if err != nil {
         return fmt.Errorf("failed to retrieve sender DID %s: %w", fromDID, err)
     }
@@ -561,51 +706,29 @@ func deductFromSender(fromDID string, amount string, accountsClient *config.Immu
     newBalance := new(big.Int).Sub(currentBalance, deductAmount)
 
     // Update the balance in the database
-    if err := DB_OPs.UpdateDIDBalance(accountsClient, fromDID, newBalance.String()); err != nil {
+    if err := DB_OPs.UpdateAccountBalance(accountsClient, fromDID, newBalance.String()); err != nil {
         return fmt.Errorf("failed to update sender balance: %w", err)
     }
 
-    log.Debug().
-        Str("did", fromDID).
-        Str("old_balance", currentBalance.String()).
-        Str("new_balance", newBalance.String()).
-        Str("deducted", deductAmount.String()).
-        Msg("Deducted amount from sender")
+    accountsClient.Client.Logger.Logger.Info("Deducted amount from sender",
+        zap.String(logging.Account, fromDID.String()),
+        zap.String(logging.Connection_database, config.AccountsDBName),
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Loki_url, config.LOKI_URL),
+        zap.String(logging.Function, "DB_OPs.UpdateAccountBalance"),
+    )
 
     return nil
 }
 
 // addToRecipient adds an amount to a recipient's DID account
-func addToRecipient(toDID string, amount string, accountsClient *config.ImmuClient) error {
+func addToRecipient(toDID common.Address, amount string, accountsClient *config.PooledConnection) error {
     // Get the current DID document
-    didDoc, err := DB_OPs.GetDID(accountsClient, toDID)
+    didDoc, err := DB_OPs.GetAccount(accountsClient, toDID)
     if err != nil {
-        // If DID doesn't exist, create it with the initial balance
-        if err.Error() == "DID not found" {
-            if !CreateMissingAccounts {
-                return fmt.Errorf("recipient DID %s does not exist and auto-creation is disabled", toDID)
-            }
-            
-            newDID := &DB_OPs.DIDDocument{
-                DID:       toDID,
-                PublicKey: "auto-generated-for-recipient",
-                Balance:   amount,
-                CreatedAt: time.Now().Unix(),
-                UpdatedAt: time.Now().Unix(),
-            }
-            
-            if err := DB_OPs.StoreDID(accountsClient, newDID); err != nil {
-                return fmt.Errorf("failed to create recipient DID: %w", err)
-            }
-            
-            log.Info().
-                Str("did", toDID).
-                Str("initial_balance", amount).
-                Msg("Created new DID for recipient")
-                
-            return nil
-        }
-        
+        // If DID doesn't exist,         
         return fmt.Errorf("failed to retrieve recipient DID %s: %w", toDID, err)
     }
 
@@ -625,16 +748,19 @@ func addToRecipient(toDID string, amount string, accountsClient *config.ImmuClie
     newBalance := new(big.Int).Add(currentBalance, addAmount)
 
     // Update the balance in the database
-    if err := DB_OPs.UpdateDIDBalance(accountsClient, toDID, newBalance.String()); err != nil {
+    if err := DB_OPs.UpdateAccountBalance(accountsClient, toDID, newBalance.String()); err != nil {
         return fmt.Errorf("failed to update recipient balance: %w", err)
     }
 
-    log.Debug().
-        Str("did", toDID).
-        Str("old_balance", currentBalance.String()).
-        Str("new_balance", newBalance.String()).
-        Str("added", addAmount.String()).
-        Msg("Added amount to recipient")
+    accountsClient.Client.Logger.Logger.Info("Added amount to recipient",
+        zap.String(logging.Account, toDID.String()),
+        zap.String(logging.Connection_database, config.AccountsDBName),
+        zap.Time(logging.Created_at, time.Now()),
+        zap.String(logging.Log_file, LOG_FILE),
+        zap.String(logging.Topic, TOPIC),
+        zap.String(logging.Loki_url, config.LOKI_URL),
+        zap.String(logging.Function, "DB_OPs.UpdateAccountBalance"),
+    )
 
     return nil
 }

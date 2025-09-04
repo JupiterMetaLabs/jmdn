@@ -13,6 +13,7 @@ import (
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/client"
+	"github.com/rs/zerolog/log"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/metadata"
 )
@@ -223,4 +224,58 @@ func ensureAccountsDBExists() error {
 		zap.String(logging.Function, "DB_OPs.ensureAccountsDBExists"),
 	)
 	return nil
+}
+
+
+// EnsureDBConnection checks if the database connection is active and attempts to reconnect if necessary.
+// It returns an error if the connection cannot be established after retries.
+func EnsureDBConnection(accountsPool *config.PooledConnection) error {
+	const maxRetries = 3
+	const retryDelay = 2 * time.Second
+
+	if accountsPool == nil {
+		return errors.New("accountsPool is nil")
+	}
+
+	// Check if client exists
+	if accountsPool.Client == nil {
+		return errors.New("database client is not initialized")
+	}
+
+	var lastErr error
+
+	// Try to check connection with retries
+	for i := 0; i < maxRetries; i++ {
+		// Check if context is still valid
+		if err := accountsPool.Client.Ctx.Err(); err != nil {
+			return fmt.Errorf("context error: %w", err)
+		}
+
+		// Try to get current state
+		_, err := accountsPool.Client.Client.CurrentState(accountsPool.Client.Ctx)
+		if err == nil {
+			accountsPool.Client.Logger.Logger.Info("Database connection check successful",
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.EnsureDBConnection"),
+			)
+			// Connection is good
+			return nil
+		}
+
+		lastErr = err
+		
+		// Log the failed attempt
+		log.Error().Err(err).Msg("Failed to establish database connection")
+
+		// If not the last attempt, wait before retrying
+		if i < maxRetries-1 {
+			time.Sleep(retryDelay)
+		}
+	}
+
+	// If we got here, all retries failed
+	return fmt.Errorf("failed to establish database connection after %d attempts: %w", maxRetries, lastErr)
 }

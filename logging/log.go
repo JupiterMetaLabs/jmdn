@@ -40,6 +40,28 @@ type AsyncLogger struct {
 	Logging   *Logging
 }
 
+func ReturnDefaultLogger(FileName string, Topic string) (*AsyncLogger, error) {
+	const(
+		TempLOG_DIR = "logs"
+		TempLOKI_BATCH_SIZE = 100
+		TempLOKI_BATCH_WAIT = 2 * time.Second
+		TempLOKI_TIMEOUT = 6 * time.Second
+		TempKEEP_LOGS = true
+	)
+	return NewAsyncLogger(&Logging{
+		FileName: FileName,
+		URL:      getLokiURL(),
+		Metadata: LoggingMetadata{
+			DIR:       TempLOG_DIR,
+			BatchSize: TempLOKI_BATCH_SIZE,
+			BatchWait: TempLOKI_BATCH_WAIT,
+			Timeout:   TempLOKI_TIMEOUT,
+			KeepLogs:  TempKEEP_LOGS,
+		},
+		Topic: Topic,
+	})
+}
+
 // NewAsyncLogger creates a Zap logger with the specified configuration
 func NewAsyncLogger(cfg *Logging) (*AsyncLogger, error) {
 	if cfg == nil {

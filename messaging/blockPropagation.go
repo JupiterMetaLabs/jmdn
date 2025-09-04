@@ -30,7 +30,7 @@ var (
     peerTimeouts     = make(map[string]time.Time)
     peerTimeoutMutex sync.RWMutex
     messageFilter    *bloom.BloomFilter
-    immuClient       *config.ImmuClient
+    immuClient       *config.PooledConnection
     immuClientOnce   sync.Once
     globalHost       host.Host // Add this line
 )
@@ -47,7 +47,7 @@ func InitBlockPropagation(h host.Host) error {
     var initErr error
     immuClientOnce.Do(func() {
         // Initialize ImmuDB client for block propagation system
-        client, err := DB_OPs.New()
+        client, err := DB_OPs.GetMainDBConnection()
         if err != nil {
             initErr = fmt.Errorf("failed to initialize ImmuDB client: %w", err)
             return
@@ -237,19 +237,23 @@ func HandleBlockStream(stream network.Stream) {
         // STEP 2: PROCESS AND VALIDATE BLOCK AFTERWARD
         go func() {
             // Create DB clients for processing
-            mainDBClient, err := DB_OPs.New()
+            mainDBClient, err := DB_OPs.GetMainDBConnection()
             if err != nil {
                 log.Error().Err(err).Msg("Failed to create main DB client")
                 return
             }
-            defer DB_OPs.Close(mainDBClient)
+            defer func(){
+                DB_OPs.PutMainDBConnection(mainDBClient)
+            }()
             
-            accountsClient, err := DB_OPs.New(DB_OPs.WithDatabase(config.AccountsDBName))
+            accountsClient, err := DB_OPs.GetAccountsConnection()
             if err != nil {
                 log.Error().Err(err).Msg("Failed to create accounts DB client")
                 return
             }
-            defer DB_OPs.Close(accountsClient)
+            defer func(){
+                DB_OPs.PutAccountsConnection(accountsClient)
+            }()
             
             log.Info().
                 Str("block_hash", msg.Block.BlockHash.Hex()).
@@ -368,17 +372,17 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 // This function is called by Server.go when receiving a new block via API
 func PropagateZKBlock(h host.Host, block *config.ZKBlock) error {
     // Step 1: Set up database connections
-    mainDBClient, err := DB_OPs.New()
+    mainDBClient, err := DB_OPs.GetMainDBConnection()
     if err != nil {
         return fmt.Errorf("failed to create main DB client: %w", err)
     }
-    defer DB_OPs.Close(mainDBClient)
+    defer DB_OPs.PutMainDBConnection(mainDBClient)
     
-    accountsClient, err := DB_OPs.New(DB_OPs.WithDatabase(config.AccountsDBName))
+    accountsClient, err := DB_OPs.GetAccountsConnection()
     if err != nil {
         return fmt.Errorf("failed to create accounts DB client: %w", err)
     }
-    defer DB_OPs.Close(accountsClient)
+    defer DB_OPs.PutAccountsConnection(accountsClient)
     
     log.Info().
         Str("block_hash", block.BlockHash.Hex()).
@@ -417,7 +421,7 @@ func PropagateZKBlock(h host.Host, block *config.ZKBlock) error {
     // Add sample transaction hashes
     txLimit := min(5, len(block.Transactions))
     for i := 0; i < txLimit; i++ {
-        metadata[fmt.Sprintf("tx_%d", i)] = block.Transactions[i].Hash
+        metadata[fmt.Sprintf("tx_%d", i)] = block.Transactions[i].Hash.Hex()
     }
     
     // Step 6: Create block message with full ZK block data
