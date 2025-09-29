@@ -19,31 +19,34 @@ import (
 )
 
 var (
-    mainDBPool     *config.ConnectionPool
-    mainDBPoolOnce sync.Once
+	mainDBPool     *config.ConnectionPool
+	mainDBPoolOnce sync.Once
 )
 
 // GetMainDBConnection retrieves a connection from the main database pool.
 // Callers are responsible for returning the connection using PutMainDBConnection.
 func GetMainDBConnection() (*config.PooledConnection, error) {
-    if mainDBPool == nil {
-        return nil, errors.New("main database connection pool is not initialized. Call InitMainDBPool first")
-    }
-    
-    mainDBPool.Logger.Logger.Info("Getting main database connection",
-        zap.String(logging.Connection_database, config.DBName),
-        zap.Time(logging.Created_at, time.Now()),
-        zap.String(logging.Log_file, LOG_FILE),
-        zap.String(logging.Topic, TOPIC),
-        zap.String(logging.Loki_url, LOKI_URL),
-        zap.String(logging.Function, "DB_OPs.GetMainDBConnection"),
-    )
-    return mainDBPool.Get()
+	fmt.Println("GetMainDBConnection called - checking if pool is initialized...")
+	if mainDBPool == nil {
+		fmt.Println("mainDBPool is nil - pool not initialized")
+		return nil, errors.New("main database connection pool is not initialized. Call InitMainDBPool first")
+	}
+	fmt.Println("mainDBPool is not nil - attempting to get connection...")
+
+	mainDBPool.Logger.Logger.Info("Getting main database connection",
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetMainDBConnection"),
+	)
+	return mainDBPool.Get()
 }
 
 // PutMainDBConnection returns a connection to the main database pool.
 func PutMainDBConnection(conn *config.PooledConnection) {
-    if mainDBPool != nil {
+	if mainDBPool != nil {
 		mainDBPool.Logger.Logger.Info("Returning main database connection",
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
@@ -52,21 +55,24 @@ func PutMainDBConnection(conn *config.PooledConnection) {
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.PutMainDBConnection"),
 		)
-        mainDBPool.Put(conn)
-    }
+		mainDBPool.Put(conn)
+	}
 }
 
 // InitMainDBPool initializes the main database connection pool.
 func InitMainDBPool(poolConfig *config.ConnectionPoolConfig) error {
-    var initErr error
-    
+	var initErr error
+
 	mainDBPoolOnce.Do(func() {
+		fmt.Println("Creating logger for main DB pool...")
 		logger, err := config.NewAsyncLogger()
 		if err != nil {
+			fmt.Printf("Failed to create logger: %v\n", err)
 			initErr = fmt.Errorf("failed to create logger for main DB pool: %w", err)
 			return
 		}
 		defer logger.Close()
+		fmt.Println("Logger created successfully")
 
 		logger.Logger.Info("Initializing main database connection pool",
 			zap.Time(logging.Created_at, time.Now()),
@@ -75,7 +81,9 @@ func InitMainDBPool(poolConfig *config.ConnectionPoolConfig) error {
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.InitMainDBPool"),
 		)
+		fmt.Println("Connecting to main DB...")
 		if err := connectToMainDB(); err != nil {
+			fmt.Printf("Failed to connect to main DB: %v\n", err)
 			initErr = fmt.Errorf("failed to ensure main DB selected: %w", err)
 			logger.Logger.Error("Main DB setup failed",
 				zap.Time(logging.Created_at, time.Now()),
@@ -86,6 +94,7 @@ func InitMainDBPool(poolConfig *config.ConnectionPoolConfig) error {
 			)
 			return
 		}
+		fmt.Println("Connected to main DB successfully")
 
 		// Now that the DB exists, initialize a dedicated pool for it.
 		poolCfg := config.DefaultConnectionPoolConfig()
@@ -141,58 +150,13 @@ func ensureMainDBSelected(conn *config.PooledConnection) error {
 	return nil
 }
 
-// refreshMainDBToken refreshes the authentication token for a connection
-func refreshMainDBToken(conn *config.PooledConnection) error {
-    if conn == nil || conn.Client == nil {
-        return fmt.Errorf("invalid connection")
-    }
-
-    conn.Client.Logger.Logger.Info("Refreshing main database authentication token",
-        zap.String(logging.Connection_database, config.DBName),
-        zap.Time(logging.Created_at, time.Now()),
-        zap.String(logging.Log_file, LOG_FILE),
-        zap.String(logging.Topic, TOPIC),
-        zap.String(logging.Loki_url, LOKI_URL),
-        zap.String(logging.Function, "DB_OPs.refreshMainDBToken"),
-    )
-
-    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-    defer cancel()
-
-    // Re-authenticate
-    lr, err := conn.Client.Client.Login(ctx, []byte(config.DBUsername), []byte(config.DBPassword))
-    if err != nil {
-        return fmt.Errorf("login failed during token refresh: %w", err)
-    }
-
-    // Update token and context
-    conn.Token = lr.Token
-    conn.TokenExpiry = time.Now().Add(24 * time.Hour)
-
-    md := metadata.Pairs("authorization", lr.Token)
-    ctx = metadata.NewOutgoingContext(ctx, md)
-
-    // Re-select database to get database-specific token
-    dbResp, err := conn.Client.Client.UseDatabase(ctx, &schema.Database{DatabaseName: config.DBName})
-    if err != nil {
-        return fmt.Errorf("failed to re-select database during token refresh: %w", err)
-    }
-
-    // Update connection with new token and context
-    conn.Token = dbResp.Token
-    conn.Client.Ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", conn.Token))
-
-    return nil
-}
-
 // CloseMainDBPool closes the main database connection pool
 func CloseMainDBPool() {
-    if mainDBPool != nil {
-        mainDBPool.Close()
-        mainDBPool = nil
-    }
+	if mainDBPool != nil {
+		mainDBPool.Close()
+		mainDBPool = nil
+	}
 }
-
 
 // ensureMainDBSelected handles the one-time setup of the main database.
 func connectToMainDB() error {
@@ -211,19 +175,19 @@ func connectToMainDB() error {
 	}
 
 	// build file paths inside .immudb-state
-	certFile := filepath.Join(stateDir, "server.cert.pem")
-	keyFile := filepath.Join(stateDir, "server.key.pem")
+	clientCertFile := filepath.Join(stateDir, "client.cert.pem")
+	clientKeyFile := filepath.Join(stateDir, "client.key.pem")
 	caFile := filepath.Join(stateDir, "ca.cert.pem")
 
-	// Configure the client to use TLS with our static certs
+	// Configure the client to use mTLS with client certificates
 	opts := client.DefaultOptions().
 		WithAddress(config.DBAddress).
 		WithPort(config.DBPort).
 		WithMTLs(true).
 		WithMTLsOptions(
 			client.MTLsOptions{}.
-				WithCertificate(certFile).
-				WithPkey(keyFile).
+				WithCertificate(clientCertFile).
+				WithPkey(clientKeyFile).
 				WithClientCAs(caFile).
 				WithServername(config.DBAddress),
 		)
@@ -264,7 +228,7 @@ func connectToMainDB() error {
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
 		zap.String(logging.Function, "DB_OPs.ensureMainDBSelected"),
-	)	
+	)
 
 	// Create accounts database if it doesn't exist
 	if !databaseExists {

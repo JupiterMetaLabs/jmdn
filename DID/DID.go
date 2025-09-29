@@ -38,7 +38,7 @@ const (
 type dbOps interface {
 	GetAccount(conn *config.PooledConnection, address common.Address) (*DB_OPs.Account, error)
 	ListAllAccounts(conn *config.PooledConnection, limit int) ([]*DB_OPs.Account, error)
-	StoreAccount(conn *config.PooledConnection, doc *DB_OPs.KeyDocument) error
+	CreateAccount(conn *config.PooledConnection, DIDAddress string, Address common.Address, metadata map[string]interface{}) error
 	GetAccountsConnection() (*config.PooledConnection, error)
 	PutAccountsConnection(conn *config.PooledConnection)
 }
@@ -54,8 +54,8 @@ func (r *realDbOps) ListAllAccounts(conn *config.PooledConnection, limit int) ([
 	return DB_OPs.ListAllAccounts(conn, limit)
 }
 
-func (r *realDbOps) StoreAccount(conn *config.PooledConnection, doc *DB_OPs.KeyDocument) error {
-	return DB_OPs.StoreAccount(conn, doc)
+func (r *realDbOps) CreateAccount(conn *config.PooledConnection, DIDAddress string, Address common.Address, metadata map[string]interface{}) error {
+	return DB_OPs.CreateAccount(conn, DIDAddress, Address, metadata)
 }
 
 func (r *realDbOps) GetAccountsConnection() (*config.PooledConnection, error) {
@@ -140,18 +140,12 @@ func (s *AccountServer) Close() {
 }
 
 // storeAccount stores a Account either in the database or in memory
-func (s *AccountServer) storeAccount(accountDoc *DB_OPs.KeyDocument) error {
+func (s *AccountServer) storeAccount(DIDAddress string, Address common.Address, metadata map[string]interface{}) error {
     s.mutex.Lock()
     defer s.mutex.Unlock()
 
-    // Set creation and update timestamps if not set
-    if accountDoc.CreatedAt == 0 {
-        accountDoc.CreatedAt = time.Now().Unix()
-    }
-    accountDoc.UpdatedAt = time.Now().Unix()
-
 	// Store in the database via our interface
-	err := s.db.StoreAccount(s.accountsClient, accountDoc)
+	err := s.db.CreateAccount(s.accountsClient, DIDAddress, Address, metadata)
     if err != nil {
         s.accountsClient.Client.Logger.Logger.Error("Failed to store Account",
             zap.Time(logging.Created_at, time.Now()),
@@ -230,7 +224,7 @@ func (s *AccountServer) RegisterAccount(ctx context.Context, req *pb.RegisterDID
             Tempmetadata = []byte("{}")
         }
         s.accountsClient.Client.Logger.Logger.Info("Given account already exists",
-            zap.String(logging.Address, string(existingAccount.Address)),
+            zap.String(logging.Address, existingAccount.Address.Hex()),
             zap.Time(logging.Created_at, time.Now()),
             zap.String(logging.Log_file, LOG_FILE),
             zap.String(logging.Topic, TOPIC),
@@ -242,7 +236,7 @@ func (s *AccountServer) RegisterAccount(ctx context.Context, req *pb.RegisterDID
             Message: fmt.Sprintf("Account with public key %s already exists", req.PublicKey),            
             DidInfo: &pb.DIDInfo{
                 Did:       existingAccount.DIDAddress,
-                PublicKey: existingAccount.Address,
+                PublicKey: existingAccount.Address.Hex(),
                 Balance:   existingAccount.Balance,
                 CreatedAt: existingAccount.CreatedAt,
                 UpdatedAt: existingAccount.UpdatedAt,
@@ -253,17 +247,8 @@ func (s *AccountServer) RegisterAccount(ctx context.Context, req *pb.RegisterDID
         }, nil
     }
 
-    // Create KeyDocument 
-    now := time.Now().Unix()
-    keyDoc := &DB_OPs.KeyDocument{
-        DIDAddress: req.Did,
-        Address:    req.PublicKey,
-        CreatedAt:  now,
-        UpdatedAt:  now,
-    }
-
 	// Store the account using our helper method
-	err = s.storeAccount(keyDoc)
+	err = s.storeAccount(req.Did, common.HexToAddress(req.PublicKey), nil)
     if err != nil {
         s.accountsClient.Client.Logger.Logger.Error("Failed to store account",
             zap.Error(err),
@@ -330,8 +315,8 @@ func (s *AccountServer) RegisterAccount(ctx context.Context, req *pb.RegisterDID
             Did:       req.Did,
             PublicKey: req.PublicKey,
             Balance:   "0",
-            CreatedAt: now,
-            UpdatedAt: now,
+            CreatedAt: time.Now().Unix(),
+            UpdatedAt: time.Now().Unix(),
         },
     }, nil
 }
@@ -387,7 +372,7 @@ func (s *AccountServer) GetDID(ctx context.Context, req *pb.GetDIDRequest) (*pb.
         Exists: true,
         DidInfo: &pb.DIDInfo{
             Did:       didDoc.DIDAddress,
-            PublicKey: didDoc.Address,
+            PublicKey: didDoc.Address.Hex(),
             Balance:   didDoc.Balance,
             CreatedAt: didDoc.CreatedAt,
             UpdatedAt: didDoc.UpdatedAt,
@@ -424,7 +409,7 @@ func (s *AccountServer) ListDIDs(ctx context.Context, req *pb.ListDIDsRequest) (
     for _, did := range dids {
         pbDids = append(pbDids, &pb.DIDInfo{
             Did:       did.DIDAddress,
-            PublicKey: did.Address,
+            PublicKey: did.Address.Hex(),
             Balance:   did.Balance,
             CreatedAt: did.CreatedAt,
             UpdatedAt: did.UpdatedAt,

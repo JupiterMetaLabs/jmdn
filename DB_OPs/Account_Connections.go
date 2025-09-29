@@ -182,7 +182,7 @@ func ensureAccountsDBExists() error {
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
 		zap.String(logging.Function, "DB_OPs.ensureAccountsDBExists"),
-	)	
+	)
 
 	// Create accounts database if it doesn't exist
 	if !databaseExists {
@@ -226,7 +226,6 @@ func ensureAccountsDBExists() error {
 	return nil
 }
 
-
 // EnsureDBConnection checks if the database connection is active and attempts to reconnect if necessary.
 // It returns an error if the connection cannot be established after retries.
 func EnsureDBConnection(accountsPool *config.PooledConnection) error {
@@ -266,7 +265,7 @@ func EnsureDBConnection(accountsPool *config.PooledConnection) error {
 		}
 
 		lastErr = err
-		
+
 		// Log the failed attempt
 		log.Error().Err(err).Msg("Failed to establish database connection")
 

@@ -18,11 +18,11 @@ import (
 )
 
 const (
-	defaultLokiURL = "http://localhost:3100"
+	defaultLokiURL = "http://localhost:3100/loki/api/v1/push" // Temporarily disable Loki
 )
 
 // getLokiURL returns the Loki URL from environment variable or default
-func getLokiURL() string {
+func GetLokiURL() string {
 	if url := os.Getenv("LOKI_URL"); url != "" {
 		return url
 	}
@@ -41,16 +41,16 @@ type AsyncLogger struct {
 }
 
 func ReturnDefaultLogger(FileName string, Topic string) (*AsyncLogger, error) {
-	const(
-		TempLOG_DIR = "logs"
+	const (
+		TempLOG_DIR         = "logs"
 		TempLOKI_BATCH_SIZE = 100
 		TempLOKI_BATCH_WAIT = 2 * time.Second
-		TempLOKI_TIMEOUT = 6 * time.Second
-		TempKEEP_LOGS = true
+		TempLOKI_TIMEOUT    = 6 * time.Second
+		TempKEEP_LOGS       = true
 	)
 	return NewAsyncLogger(&Logging{
 		FileName: FileName,
-		URL:      getLokiURL(),
+		URL:      GetLokiURL(),
 		Metadata: LoggingMetadata{
 			DIR:       TempLOG_DIR,
 			BatchSize: TempLOKI_BATCH_SIZE,
@@ -107,7 +107,7 @@ func NewAsyncLogger(cfg *Logging) (*AsyncLogger, error) {
 	// Loki sink if URL is provided
 	var lokiAsync *lokiWriteSyncer
 	if cfg.URL != "" {
-		parsedURL, err := url.Parse(getLokiURL())
+		parsedURL, err := url.Parse(GetLokiURL())
 		if err != nil {
 			_ = file.Close()
 			return nil, fmt.Errorf("failed to parse loki URL: %w", err)

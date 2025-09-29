@@ -16,10 +16,11 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+var LOKI_URL = logging.GetLokiURL()
+
 const (
 	LOG_FILE        = "ImmuDB.log"
 	LOG_DIR         = "logs"
-	LOKI_URL        = "http://loki:3100"
 	LOKI_BATCH_SIZE = 128 * 1024
 	LOKI_BATCH_WAIT = 1 * time.Second
 	LOKI_TIMEOUT    = 5 * time.Second
@@ -158,8 +159,10 @@ func NewConnectionPool(config *ConnectionPoolConfig, logger *logging.AsyncLogger
 
 // Get gets a connection from the pool
 func (p *ConnectionPool) Get() (*PooledConnection, error) {
+	fmt.Println("ConnectionPool.Get() called - acquiring lock...")
 	p.Mutex.Lock()
 	defer p.Mutex.Unlock()
+	fmt.Println("ConnectionPool.Get() - lock acquired, checking for available connections...")
 
 	if p.Closed {
 		p.Logger.Logger.Info("Connection pool is closed",
@@ -239,12 +242,15 @@ func (p *ConnectionPool) Get() (*PooledConnection, error) {
 	}
 
 	// Create a new connection
+	fmt.Println("No available connections, creating new connection...")
 	var conn *PooledConnection
 	var err error
 	conn, err = p.createConnection()
 	if err != nil {
+		fmt.Printf("Failed to create new connection: %v\n", err)
 		return nil, err
 	}
+	fmt.Println("New connection created successfully")
 
 	conn.InUse = true
 	p.Connections = append(p.Connections, conn)
@@ -253,6 +259,7 @@ func (p *ConnectionPool) Get() (*PooledConnection, error) {
 
 // createConnection creates a new connection to ImmuDB
 func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
+	fmt.Println("createConnection() called - creating new ImmuDB connection...")
 	cp.Logger.Logger.Info("Creating new connection to ImmuDB at %s:%d",
 		zap.String(logging.Address, cp.Address),
 		zap.Int(logging.Port, cp.Port),
@@ -264,32 +271,41 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 		zap.String(logging.Function, "config.createConnection"),
 	)
 	// ensure our state dir exists
+	fmt.Println("Ensuring state directory exists...")
 	if err := os.MkdirAll(State_Path_Hidden, 0o755); err != nil {
 		return nil, fmt.Errorf("could not create state dir: %w", err)
 	}
+	fmt.Println("State directory exists, building certificate paths...")
 
 	// build file paths inside .immudb-state
-	certFile := filepath.Join(State_Path_Hidden, "server.cert.pem")
-	keyFile := filepath.Join(State_Path_Hidden, "server.key.pem")
+	clientCertFile := filepath.Join(State_Path_Hidden, "client.cert.pem")
+	clientKeyFile := filepath.Join(State_Path_Hidden, "client.key.pem")
 	caFile := filepath.Join(State_Path_Hidden, "ca.cert.pem")
 
-	// Configure the client to use TLS with our static certs
+	fmt.Printf("Certificate files: cert=%s, key=%s, ca=%s\n", clientCertFile, clientKeyFile, caFile)
+
+	// Configure the client to use mTLS with client certificates
+	fmt.Println("Configuring ImmuDB client options...")
 	opts := client.DefaultOptions().
 		WithAddress(cp.Address).
 		WithPort(cp.Port).
 		WithMTLs(true).
 		WithMTLsOptions(
 			client.MTLsOptions{}.
-				WithCertificate(certFile).
-				WithPkey(keyFile).
+				WithCertificate(clientCertFile).
+				WithPkey(clientKeyFile).
 				WithClientCAs(caFile).
 				WithServername(cp.Address),
 		)
+	fmt.Println("Client options configured successfully")
 
+	fmt.Println("Creating ImmuDB client with TLS options...")
 	c, err := client.NewImmuClient(opts)
 	if err != nil {
+		fmt.Printf("Failed to create ImmuDB client: %v\n", err)
 		return nil, fmt.Errorf("failed to create client: %w", err)
 	}
+	fmt.Println("ImmuDB client created successfully")
 
 	// login + select database as before
 	ctx, cancel := context.WithTimeout(context.Background(), cp.Config.ConnectionTimeout)
@@ -550,4 +566,3 @@ func GetGlobalPool() *ConnectionPool {
 	)
 	return globalPool
 }
-

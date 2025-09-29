@@ -22,10 +22,11 @@ const(
 	DIDPrefix = "did:"
 )
 
+var LOKI_URL = logging.GetLokiURL()
+
 const (
 	LOG_FILE        = "ImmuDB.log"
 	LOG_DIR         = "logs"
-	LOKI_URL        = "http://localhost:3100"
 	LOKI_BATCH_SIZE = 128 * 1024
 	LOKI_BATCH_WAIT = 1 * time.Second
 	LOKI_TIMEOUT    = 5 * time.Second
@@ -52,12 +53,6 @@ func LoggingStruct() *logging.Logging {
 // DIDDocument represents a DID document
 // Goal is to Migrate from old DID based accounts to PublicKey based accounts
 // Second Goal is to Clean up the code in this file. Migrate everything to connection pool based and for production
-type KeyDocument struct {
-	DIDAddress string         `json:"did"`
-	Address    string `json:"address"`
-	CreatedAt int64 `json:"created_at"`
-	UpdatedAt int64 `json:"updated_at"`
-}
 
 // This will be stored in the DB
 type Account struct {
@@ -65,7 +60,7 @@ type Account struct {
 	DIDAddress string `json:"did,omitempty"`
 
 	// New PublicKey based fields
-	Address string `json:"address"` // Derived from PublicKey
+	Address common.Address `json:"address"` // Derived from PublicKey
 	Balance string         `json:"balance,omitempty"`
 	Nonce   uint64         `json:"nonce"`
 
@@ -89,10 +84,85 @@ func PutNonceofAccount() (uint64, error) {
 	return uint64(timeNow), nil
 }
 
+// Create Account from DID and Address and Store using StoreAccount
+func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string, Address common.Address, metadata map[string]interface{}) error {
+	var err error
+    var AccountDoc *Account
+    if DIDAddress == "" || Address == (common.Address{}) {
+        return fmt.Errorf("DIDAddress and Address cannot be empty")
+    }
+    // Try to use connection pool if available, otherwise fall back to traditional approach
+    if PooledConnection.Client == nil {
+        PooledConnection, err = GetAccountsConnection()
+        if err != nil {
+            return err
+        }
+        PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+            zap.String(logging.Connection_database, config.AccountsDBName),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, LOKI_URL),    
+            zap.String(logging.Function, "DB_OPs.StoreAccount"),
+        )
+    }
+
+    // Return the connection to the pool when done
+    defer func() {
+        PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+            zap.String(logging.Connection_database, config.AccountsDBName),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, LOG_FILE),
+            zap.String(logging.Topic, TOPIC),
+            zap.String(logging.Loki_url, LOKI_URL),
+            zap.String(logging.Function, "DB_OPs.StoreAccount"),
+        )
+        PutAccountsConnection(PooledConnection)
+    }()
+    
+    // Create a Nonce First
+    Nonce, err := PutNonceofAccount()
+    if err != nil {
+        return err
+    }
+    
+    // Create A CreatedAt and UpdatedAt
+    CreatedAt := time.Now().UnixNano()
+    UpdatedAt := time.Now().UnixNano()
+
+    // Create the account document
+    AccountDoc = &Account{
+        DIDAddress:  DIDAddress,
+        Address:     Address,
+        Balance:     "0",
+        Nonce:       Nonce,
+        AccountType: "user",
+        CreatedAt:   CreatedAt,
+        UpdatedAt:   UpdatedAt,
+        Metadata:    metadata,
+    }
+    
+    // Store the account document
+    err = StoreAccount(PooledConnection, AccountDoc)
+    if err != nil {
+        return err
+    }
+    
+    return nil
+}
+
 // StoreAccount stores a Key document in the accounts database and creates a DID reference
-func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *KeyDocument) error {
+func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) error {
     var err error
     var AccountDoc *Account
+
+    if KeyDoc == nil {
+        return fmt.Errorf("Key document cannot be nil")
+    }
+
+    if KeyDoc.DIDAddress == "" || KeyDoc.Address == (common.Address{}){
+        return fmt.Errorf("DIDAddress and Address cannot be empty")
+    }
 
     // Try to use connection pool if available, otherwise fall back to traditional approach
     if PooledConnection.Client == nil {
@@ -112,9 +182,6 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *KeyDocument
 
     // Use the Client pointer directly instead of dereferencing it
     ic := PooledConnection.Client
-    if KeyDoc == nil {
-        return fmt.Errorf("Key document cannot be nil")
-    }
 
     // Return the connection to the pool when done
     defer func() {
@@ -129,33 +196,16 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *KeyDocument
         PutAccountsConnection(PooledConnection)
     }()
 
-    // Get nonce based on the timestamps
-    Nonce, err := PutNonceofAccount()
-    if err != nil {
-        return err
-    }
-
-    InitialBalance := "0"
-
-	if KeyDoc.CreatedAt == 0 {
-		KeyDoc.CreatedAt = time.Now().Unix()
-	}
-
-	if KeyDoc.UpdatedAt == 0 {
-		KeyDoc.UpdatedAt = time.Now().Unix()
-	}
-
-
     // Create the account document
     AccountDoc = &Account{
         DIDAddress:  KeyDoc.DIDAddress,
         Address:     KeyDoc.Address,
-        Balance:     InitialBalance,
-        Nonce:       Nonce,
-        AccountType: "user",
+        Balance:     KeyDoc.Balance,
+        Nonce:       KeyDoc.Nonce,
+        AccountType: KeyDoc.AccountType,
         CreatedAt:   KeyDoc.CreatedAt,
-        UpdatedAt:   KeyDoc.UpdatedAt,
-        Metadata:    nil,
+        UpdatedAt:   time.Now().UnixNano(),
+        Metadata:    KeyDoc.Metadata,
     }
 
     // Create the account key (e.g., "account:<address>")
@@ -215,7 +265,7 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *KeyDocument
 
     ic.Logger.Logger.Info("Successfully stored account and created DID reference",
 		zap.String(logging.Header_Accounts, status.String()),
-        zap.String(logging.Account, KeyDoc.Address),
+        zap.String(logging.Account, KeyDoc.Address.Hex()),
         zap.String(logging.DID, KeyDoc.DIDAddress),
         zap.String(logging.Connection_database, config.AccountsDBName),
         zap.Time(logging.Created_at, time.Now()),

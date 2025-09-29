@@ -38,7 +38,7 @@ const (
 // ImmuStateDB implements vm.StateDB using ImmuDB for persistent storage
 type ImmuStateDB struct {
     // Database connection
-    dbClient      *config.ImmuClient
+    dbClient      *config.PooledConnection
     
     accessList   *accessList // Access list for EIP-2930
     // In-memory caches
@@ -156,9 +156,8 @@ func NewImmuStateDB(client *config.PooledConnection) vm.StateDB {
     // Don't try to create a witness with uninitialized objects
     // Just set it to nil for now
     var witness *stateless.Witness = nil
-    var tempClient config.ImmuClient = *client.Client
     return &ImmuStateDB{
-        dbClient:     &tempClient,
+        dbClient:     client,
         accounts:     make(map[common.Address]*stateAccount),
         stateObjects: make(map[common.Address]*stateObject),
         stateObjectsDirty: make(map[common.Address]struct{}),
@@ -217,7 +216,7 @@ func (s *ImmuStateDB) commitBatch() error {
     }
     
     // Start a database transaction
-    err := DB_OPs.Transaction(s.dbClient, func(tx *config.ImmuTransaction) error {
+    err := DB_OPs.Transaction(s.dbClient.Client, func(tx *config.ImmuTransaction) error {
         for _, op := range s.txOps {
             if op.isDelete {
                 // Handle deletion if needed

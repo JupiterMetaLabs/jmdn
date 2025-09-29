@@ -47,10 +47,27 @@ var (
 	immuClient *config.ImmuClient
 )
 
+// Global connection pools
 var (
-	mainDBClient *config.ImmuClient // For main database operations
-	didDBClient  *config.ImmuClient // For DID/accounts operations
+	mainDBPool     *config.ConnectionPool // Main database connection pool
+	accountsDBPool *config.ConnectionPool // Accounts/DID database connection pool
 )
+
+// GetMainDBPool returns the global main database connection pool
+func GetMainDBPool() *config.ConnectionPool {
+	if mainDBPool == nil {
+		log.Fatal().Msg("Main DB pool not initialized. Call initMainDBPool first")
+	}
+	return mainDBPool
+}
+
+// GetAccountsDBPool returns the global accounts database connection pool
+func GetAccountsDBPool() *config.ConnectionPool {
+	if accountsDBPool == nil {
+		log.Fatal().Msg("Accounts DB pool not initialized. Call initAccountsDBPool first")
+	}
+	return accountsDBPool
+}
 
 func printDashes() {
 	fmt.Println("\n", strings.Repeat("-", 50), "\n")
@@ -72,8 +89,7 @@ func StartAPIServer(address string) error {
 // Update this function:
 
 func startDIDServer(h host.Host, address string) error {
-	// First, initialize the DID propagation system with our didDBClient
-	err := messaging.InitDIDPropagation(didDBClient)
+	didDBClient, err := DB_OPs.GetAccountsConnection()
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to initialize DID propagation with ImmuDB. Starting in standalone mode.")
 		// We'll continue with a standalone server
@@ -91,38 +107,68 @@ func initYggdrasilMessaging(ctx context.Context) {
 	fmt.Println(config.ColorGreen+"Yggdrasil messaging service started on port:"+config.ColorReset, directMSG.YggdrasilPort)
 }
 
-// Initialize ImmuDB client for main DB
-func initMainDBClient() (*config.ImmuClient, error) {
-	client, err := DB_OPs.New(
-		DB_OPs.WithRetryLimit(3),
-		DB_OPs.WithDatabase(config.DBName),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize main database client: %w", err)
+// Initialize main database connection pool
+func initMainDBPool() error {
+	poolingConfig := &config.PoolingConfig{
+		DBAddress:  config.DBAddress,
+		DBPort:     config.DBPort,
+		DBName:     config.DBName,
+		DBUsername: config.DBUsername,
+		DBPassword: config.DBPassword,
 	}
 
-	log.Info().Str("database", config.DBName).Msg("Main ImmuDB client initialized")
-	return client, nil
+	// Initialize the global pool
+	config.InitGlobalPool(poolingConfig)
+	mainDBPool = config.GetGlobalPool()
+
+	// Also initialize the DB_OPs main pool
+	fmt.Println("Initializing DB_OPs main pool...")
+	poolConfig := config.DefaultConnectionPoolConfig()
+	if err := DB_OPs.InitMainDBPool(poolConfig); err != nil {
+		return fmt.Errorf("failed to initialize DB_OPs main pool: %w", err)
+	}
+	fmt.Println("DB_OPs main pool initialized successfully")
+
+	log.Info().Str("database", config.DBName).Msg("Main database connection pool initialized")
+	return nil
 }
 
-// Initialize ImmuDB client for accounts/DID
-func initDIDDBClient() (*config.ImmuClient, error) {
-	client, err := DB_OPs.NewAccountsClient()
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize accounts database client: %w", err)
+// Initialize accounts database connection pool
+func initAccountsDBPool() error {
+	poolConfig := &config.ConnectionPoolConfig{
+		MinConnections:     5,
+		MaxConnections:     20,
+		ConnectionTimeout:  30 * time.Second,
+		IdleTimeout:        5 * time.Minute,
+		MaxLifetime:        30 * time.Minute,
+		TokenMaxLifetime:   24 * time.Hour,
+		TokenRefreshBuffer: 5 * time.Minute,
 	}
 
-	err = DB_OPs.EnableAccountsConnectionPooling(DB_OPs.DefaultConnectionPoolConfig())
-	if err != nil {
-		fmt.Println("Failed to initialize accounts connection pool: %v", err)
+	poolingConfig := &config.PoolingConfig{
+		DBAddress:  config.DBAddress,
+		DBPort:     config.DBPort,
+		DBName:     config.AccountsDBName,
+		DBUsername: config.DBUsername,
+		DBPassword: config.DBPassword,
 	}
 
-	log.Info().Str("database", config.AccountsDBName).Msg("DID/Accounts ImmuDB client initialized")
-	return client, nil
+	// Create logger for accounts pool
+	accountsLogger, err := config.NewAsyncLogger()
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to create logger for accounts pool")
+	}
+
+	// Initialize the accounts pool
+	accountsDBPool = config.NewConnectionPool(poolConfig, accountsLogger, poolingConfig)
+
+	log.Info().Str("database", config.AccountsDBName).Msg("Accounts database connection pool initialized")
+	return nil
 }
 
 // initFastSync initializes the FastSync service
-func initFastSync(n *config.Node, mainClient, accountsClient *config.ImmuClient) *fastsync.FastSync {
+func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsClient *config.PooledConnection) *fastsync.FastSync {
+
 	fs := fastsync.NewFastSync(n.Host, mainClient, accountsClient)
 	log.Info().Msg("FastSync service initialized with multi-database support")
 	return fs
@@ -141,8 +187,6 @@ func main() {
 	connect := flag.String("connect", "", "Connect to a seed node (multiaddr)")
 	heartbeatInterval := flag.Int("heartbeat", 120, "Heartbeat interval in seconds (default: 300)")
 	metricsPort := flag.String("metrics", "8080", "Port for Prometheus metrics")
-	logDir := flag.String("logdir", "./logs", "Directory for log files")
-	logToConsole := flag.Bool("console", false, "Also log to console")
 	enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
 	apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
 	blockgen := flag.Int("blockgen", 0, "Run Block creator API on specified port (0 = disabled)")
@@ -155,13 +199,13 @@ func main() {
 
 	// Initialize logger
 	logFileName := fmt.Sprintf("p2p-node.log")
-	if err := logging.InitLogger(*logDir, logFileName, *logToConsole); err != nil {
+	Logger, err := logging.ReturnDefaultLogger(logFileName, "p2p-node")
+	if err != nil {
 		fmt.Printf("Failed to initialize logger: %v\n", err)
 		return
 	}
-
 	// Clean up any leftover temp files from a previous run
-	defer logging.Close()
+	defer Logger.Close()
 
 	// Create a cancellable context for clean shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -179,13 +223,26 @@ func main() {
 		os.Exit(0)
 	}()
 
+	// Initialize database connection pools FIRST
+	fmt.Println("Initializing main database pool...")
+	if err := initMainDBPool(); err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize main database pool")
+	}
+	fmt.Println("Main database pool initialized successfully")
+
+	if err := initAccountsDBPool(); err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
+	}
+
 	// Start the node
+	fmt.Println("Creating libp2p node...")
 	n, err := node.NewNode()
 	if err != nil {
 		fmt.Println("Error starting node:", err)
 		return
 	}
 	defer n.Host.Close()
+	fmt.Println("Node created successfully")
 
 	// Set the stream handler for receiving files for fastsync. This is crucial
 	// for the final phase of the sync process.
@@ -194,50 +251,29 @@ func main() {
 		transfer.HandleFileStream(s, "")
 	})
 
-
-	// Initialize main database client
-	immuClient, err = initMainDBClient()
+	// Initialize database clients using the pools
+	mainDBClient, err := DB_OPs.GetMainDBConnection()
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to initialize main database client")
-		os.Exit(1)
-		// Handle error or continue with degraded functionality
+		log.Fatal().Err(err).Msg("Failed to get main database connection from pool")
 	}
-	defer DB_OPs.Close(immuClient)
+	defer func() {
+		if mainDBClient != nil {
+			DB_OPs.PutMainDBConnection(mainDBClient)
+		}
+	}()
 
-	// Initialize Connection Pool
-	DB_OPs.InitGlobalPool(&DB_OPs.PoolingConfig{
-		DBAddress:  config.DBAddress,
-		DBPort:     config.DBPort,
-		DBName:     config.DBName,
-		DBUsername: config.DBUsername,
-		DBPassword: config.DBPassword,
-	})
-
-	// Later when you need to use the pool:
-	DefaultDB_Pool := DB_OPs.GetGlobalPool()
-
-	// Initialize DID database client - can be done later if needed
-	didDBClient, err = initDIDDBClient()
+	didDBClient, err := DB_OPs.GetAccountsConnection()
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to initialize DID database client")
-		os.Exit(1) // Exit if DID client is critical
+		log.Fatal().Err(err).Msg("Failed to get accounts database connection from pool")
 	}
-	defer DB_OPs.Close(didDBClient)
-
-	// Initilize Connection Pool for accounts database
-	DB_OPs.InitGlobalPool(&DB_OPs.PoolingConfig{
-		DBAddress:  config.DBAddress,
-		DBPort:     config.DBPort,
-		DBName:     config.AccountsDBName,
-		DBUsername: config.DBUsername,
-		DBPassword: config.DBPassword,
-	})
-
-	// Later when you need to use the pool:
-	AccountsDB_Pool := DB_OPs.GetGlobalPool()
+	defer func() {
+		if didDBClient != nil {
+			DB_OPs.PutAccountsConnection(didDBClient)
+		}
+	}()
 
 	// Initialize FastSync service
-	fastSyncer = initFastSync(n, immuClient, didDBClient)
+	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
 
 	// Initialize Yggdrasil messaging if enabled
 	if *enableYggdrasil {
@@ -326,7 +362,7 @@ func main() {
 			}
 		}
 	}
-	
+
 	if *gETHgRPC > 0 {
 		go func() {
 			fmt.Printf("Starting gETH gRPC server on port %d\n", *gETHgRPC)
@@ -358,8 +394,8 @@ func main() {
 	}
 
 	// Only set database clients if they're properly initialized
-	if immuClient != nil {
-		cmdHandler.MainClient = immuClient
+	if mainDBClient != nil {
+		cmdHandler.MainClient = mainDBClient
 		fmt.Println(config.ColorGreen + "Main database client connected" + config.ColorReset)
 	} else {
 		fmt.Println(config.ColorYellow + "Warning: Main database client not available - some commands disabled" + config.ColorReset)
@@ -372,8 +408,23 @@ func main() {
 		fmt.Println(config.ColorYellow + "Warning: DID database client not available - some commands disabled" + config.ColorReset)
 	}
 
-	if err := cmdHandler.StartCLI(*cliGRPC); err != nil {
-		log.Error().Err(err).Msg("Failed to start CLI")
+	// Add a timeout for the CLI session (e.g., 30 minutes)
+	cliTimeout := 30 * time.Second
+	ctx, cancel = context.WithTimeout(context.Background(), cliTimeout)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmdHandler.StartCLI(*cliGRPC)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to start CLI")
+		}
+	case <-ctx.Done():
+		log.Error().Msg("CLI session timed out")
 	}
 
 }

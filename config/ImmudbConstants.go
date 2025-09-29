@@ -11,22 +11,20 @@ import (
 
 const (
 	// Database connection settings
-	DBAddress       = "0.0.0.0"
-	DBPort          = 3322
-	DBUsername      = "immudb"
-	DBPassword      = "immudb"
-	DBName          = "defaultdb"
+	DBAddress         = "localhost"
+	DBPort            = 3322
+	DBUsername        = "immudb"
+	DBPassword        = "immudb"
+	DBName            = "defaultdb"
 	State_Path_Hidden = "./.immudb_state"
 
 	// Constants for the accounts database
 	AccountsDBName = "accountsdb"
-	
+
 	// Operation settings
 	DefaultScanLimit = 100
 	RequestTimeout   = 10 * time.Second
 )
-
-
 
 // ImmuClient provides a simplified interface for ImmuDB operations
 type ImmuClient struct {
@@ -36,7 +34,7 @@ type ImmuClient struct {
 	BaseCtx     context.Context
 	RetryLimit  int
 	IsConnected bool
-	Database  	string
+	Database    string
 	Logger      *logging.AsyncLogger
 }
 
@@ -48,4 +46,3 @@ type ImmuTransaction struct {
 	Client *ImmuClient
 	Ops    []*schema.Op
 }
-

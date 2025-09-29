@@ -8,11 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strconv"
 	"sync"
 	"time"
 
 	"github.com/bits-and-blooms/bloom/v3"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -28,20 +28,17 @@ type DIDMessage struct {
     ID        string    `json:"id"`
     Sender    string    `json:"sender"`
     Timestamp int64     `json:"timestamp"`
-    Nonce     string    `json:"nonce"`
     Type      string    `json:"type"` // "did_created", "did_updated", etc.
     Hops      int       `json:"hops"`
-    DID       string    `json:"did"`
-    PublicKey string    `json:"public_key"`
-    Balance   string    `json:"balance,omitempty"`
+    Account   *DB_OPs.Account `json:"account,omitempty"`
 }
 
 // Store for DID message tracking
 var (
-    didFilter      *bloom.BloomFilter
+    accountFilter      *bloom.BloomFilter
     accountsClient *config.PooledConnection
     accountsMutex  sync.RWMutex
-    didOnce        sync.Once
+    accountOnce        sync.Once
 )
 
 // InitDIDPropagation initializes the DID propagation system
@@ -49,9 +46,9 @@ func InitDIDPropagation(existingClient *config.PooledConnection) error {
     fmt.Println("Initializing DID propagation system...")
     var initErr error
     
-    didOnce.Do(func() {
+    accountOnce.Do(func() {
         // Initialize the bloom filter for DID messages
-        didFilter = bloom.NewWithEstimates(100000, 0.01)
+        accountFilter = bloom.NewWithEstimates(100000, 0.01)
         
         if existingClient != nil {
             // Use the provided client instead of creating a new one
@@ -77,26 +74,26 @@ func InitDIDPropagation(existingClient *config.PooledConnection) error {
     return initErr
 }
 
-// generateDIDMessageID creates a unique ID for a DID message
-func generateDIDMessageID(sender, did string) string {
+// generateAccountMessageID creates a unique ID for a Account message
+func generateAccountMessageID(sender string, Account common.Address) string {
     hasher := sha256.New()
-    hasher.Write([]byte(fmt.Sprintf("%s-%s-%d", sender, did)))
+    hasher.Write([]byte(fmt.Sprintf("%s-%s-%d", sender, Account)))
     hash := base64.URLEncoding.EncodeToString(hasher.Sum(nil))
     return hash[:16] // Return first 16 chars for brevity
 }
 
-// isDIDMessageProcessed checks if this message has already been processed
-func isDIDMessageProcessed(messageID string) bool {
-    return didFilter.Test([]byte(messageID))
+// isAccountMessageProcessed checks if this message has already been processed
+func isAccountMessageProcessed(messageID string) bool {
+    return accountFilter.Test([]byte(messageID))
 }
 
-// markDIDMessageProcessed marks a message as processed
-func markDIDMessageProcessed(messageID string) {
-    didFilter.Add([]byte(messageID))
+// markAccountMessageProcessed marks a message as processed
+func markAccountMessageProcessed(messageID string) {
+    accountFilter.Add([]byte(messageID))
 }
 
-// storeDIDInDB stores the DID document in the accounts database
-func storeDIDInDB(msg DIDMessage) {
+// storeAccountInDB stores the Account document in the accounts database
+func storeAccountInDB(msg DIDMessage) {
     // Store in accounts database in a separate goroutine to prevent blocking
     go func() {
         accountsMutex.RLock()
@@ -108,22 +105,26 @@ func storeDIDInDB(msg DIDMessage) {
         client := accountsClient
         accountsMutex.RUnlock()
         
-        // Create DID document
-        didDoc := &DB_OPs.KeyDocument{
-            DIDAddress:       msg.DID,
-            Address: msg.PublicKey,
-            CreatedAt: msg.Timestamp,
+        // Create Account document
+        accountDoc := &DB_OPs.Account{
+            DIDAddress: msg.Account.DIDAddress,
+            Address:    msg.Account.Address,
+            Balance:    msg.Account.Balance,
+            Nonce:      msg.Account.Nonce,
+            CreatedAt:  msg.Timestamp,
+            Metadata:   msg.Account.Metadata,
+            AccountType: msg.Account.AccountType,
             UpdatedAt: time.Now().Unix(),
         }
         
-        // Store DID document
-        err := DB_OPs.StoreAccount(client, didDoc)
+        // Store Account document
+        err := DB_OPs.StoreAccount(client, accountDoc)
         if err != nil {
-            log.Error().Err(err).Str("did", msg.DID).Msg("Failed to store DID in database")
+            log.Error().Err(err).Str("Account", msg.Account.DIDAddress).Msg("Failed to store Account in database")
             return
         }
         
-        log.Info().Str("did", msg.DID).Msg("Successfully stored DID in database")
+        log.Info().Str("Account", msg.Account.DIDAddress).Msg("Successfully stored DID in database")
         
         // Also update the DID set (CRDT)
         // err = updateDIDSet(client, msg.DID)
@@ -182,22 +183,22 @@ func HandleDIDStream(stream network.Stream) {
     }
     
     // Check if we've already processed this message
-    if isDIDMessageProcessed(msg.ID) {
-        log.Debug().Str("message_id", msg.ID).Msg("Duplicate DID message received")
+    if isAccountMessageProcessed(msg.ID) {
+        log.Debug().Str("message_id", msg.ID).Msg("Duplicate Account message received")
         return
     }
     
     // Mark message as processed
-    markDIDMessageProcessed(msg.ID)
+    markAccountMessageProcessed(msg.ID)
     
-    // Process the message - update our DID database
-    storeDIDInDB(msg)
+    // Process the message - update our Account database
+    storeAccountInDB(msg)
     
     // Log receipt
-    fmt.Printf("\n[DID from %s] DID: %s, PublicKey: %s\n>>> ", msg.Sender, msg.DID, msg.PublicKey)
+    fmt.Printf("\n[DID from %s] DID: %s, Address: %s\n>>> ", msg.Sender, msg.Account.DIDAddress, msg.Account.Address)
     
     // Only rebroadcast if we haven't reached max hops
-    if msg.Hops < config.MaxDIDHops {
+    if msg.Hops < config.MaxAccountHops {
         // Forward to our peers
         msg.Hops++
         localPeer := stream.Conn().LocalPeer().String()
@@ -206,9 +207,9 @@ func HandleDIDStream(stream network.Stream) {
             Str("type", msg.Type).
             Str("origin", msg.Sender).
             Str("via", localPeer).
-            Str("did", msg.DID).
+            Str("account", msg.Account.Address.Hex()).
             Int("hops", msg.Hops).
-            Msg("Propagating DID message")
+            Msg("Propagating Account message")
         
         // Forward the message to other peers
         if hostInstance := getHostInstance(); hostInstance != nil {
@@ -220,9 +221,9 @@ func HandleDIDStream(stream network.Stream) {
         log.Info().
             Str("msg_id", msg.ID).
             Str("type", msg.Type).
-            Str("did", msg.DID).
+            Str("account", msg.Account.Address.Hex()).
             Int("hops", msg.Hops).
-            Msg("Max hops reached, not propagating DID message")
+            Msg("Max hops reached, not propagating Account message")
     }
 }
 
@@ -288,9 +289,10 @@ func forwardDID(h host.Host, msg DIDMessage) {
     log.Info().
         Str("msg_id", msg.ID).
         Str("type", msg.Type).
-        Str("did", msg.DID).
+        Str("address", msg.Account.Address.Hex()).
+        Int("hops", msg.Hops).
         Int("peers", successCount).
-        Msg("DID message propagated to peers")
+        Msg("Account message propagated to peers")
 }
 
 // PropagateDID creates and propagates a DID message to the network
@@ -311,22 +313,19 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
     msg := DIDMessage{
         Sender:    h.ID().String(),
         Timestamp: now,
-        Nonce:     strconv.FormatUint(doc.Nonce, 10),
-        DID:       doc.DIDAddress,
-        PublicKey: doc.Address,
-        Balance:   doc.Balance,
-        Type:      msgType,
+        Type:     msgType,
+        Account: doc,
         Hops:      0,
     }
     
     // Generate a unique ID based on sender, DID and timestamp
-    msg.ID = generateDIDMessageID(msg.Sender, doc.DIDAddress)
+    msg.ID = generateAccountMessageID(msg.Sender, doc.Address)
     
     // First, add/update the DID in our own database
-    storeDIDInDB(msg)
+    storeAccountInDB(msg)
     
     // Mark this message as processed by us
-    markDIDMessageProcessed(msg.ID)
+    markAccountMessageProcessed(msg.ID)
     
     // Convert to JSON
     msgBytes, err := json.Marshal(msg)
@@ -348,7 +347,7 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
     log.Info().
         Str("msg_id", msg.ID).
         Str("did", doc.DIDAddress).
-        Str("public_key", doc.Address).
+        Str("public_key", doc.Address.Hex()).
         Str("balance", doc.Balance).
         Str("type", msgType).
         Int("peers", len(peers)).
@@ -398,7 +397,8 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
     log.Info().
         Str("msg_id", msg.ID).
         Str("did", doc.DIDAddress).
-        Str("public_key", doc.Address).
+        Str("public_key", doc.Address.Hex()).
+        Str("balance", doc.Balance).
         Str("type", msgType).
         Int("success", successCount).
         Int("total", len(peers)).
