@@ -102,7 +102,9 @@ func toBytes(value interface{}) ([]byte, error) {
 // ========================================
 
 // reconnect attempts to reestablish a lost connection (UNCHANGED)
-func reconnect(ic *config.ImmuClient) error {
+func reconnect(ic *config.ImmuClient, FUNCTION string) error {
+	// Debugging
+	fmt.Println("reconnect called, Function Name that called reconnect is ", FUNCTION)
 	ic.Logger.Logger.Warn("Connection lost, attempting to reconnect before operation",
 		zap.Time(logging.Created_at, time.Now()),
 		zap.String(logging.Log_file, LOG_FILE),
@@ -128,9 +130,18 @@ func reconnect(ic *config.ImmuClient) error {
 
 	ic.IsConnected = false
 
-	// Attempt to connect again by giving back the new connection to the pool
-	_, err := GetMainDBConnection()
-	return err
+	// Don't get a new connection from the pool - this causes pool exhaustion
+	// Instead, mark as disconnected and let the calling code handle it
+	ic.Logger.Logger.Warn("Connection marked as disconnected - calling code should handle reconnection",
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.reconnect"),
+	)
+
+	// Return error to indicate reconnection failed
+	return fmt.Errorf("connection lost - cannot reconnect without getting new connection from pool")
 }
 
 // withRetry executes the given operation with retry logic (UNCHANGED)
@@ -138,6 +149,8 @@ func withRetry(ic *config.ImmuClient, operation string, fn func() error) error {
 	var err error
 
 	for attempt := 0; attempt <= ic.RetryLimit; attempt++ {
+		// Debugging
+		fmt.Println("withRetry called, Function Name that called withRetry is ", operation)
 		// Check connection status first
 		if !ic.IsConnected {
 			ic.Logger.Logger.Warn("Connection lost, attempting to reconnect before %s operation",
@@ -148,7 +161,7 @@ func withRetry(ic *config.ImmuClient, operation string, fn func() error) error {
 				zap.String(logging.Loki_url, LOKI_URL),
 				zap.String(logging.Function, "DB_OPs.withRetry"),
 			)
-			if err = reconnect(ic); err != nil {
+			if err = reconnect(ic, operation); err != nil {
 				ic.Logger.Logger.Error("Reconnection attempt %d/%d failed: %v",
 					zap.Int("Attempt", attempt+1),
 					zap.Int("RetryLimit", ic.RetryLimit+1),
@@ -188,7 +201,21 @@ func withRetry(ic *config.ImmuClient, operation string, fn func() error) error {
 				zap.String(logging.Loki_url, LOKI_URL),
 				zap.String(logging.Function, "DB_OPs.withRetry"),
 			)
-			ic.IsConnected = false // Force reconnect on next attempt
+			ic.IsConnected = false // Mark as disconnected
+
+			// Try to reconnect, but don't retry if reconnection fails
+			if reconnectErr := reconnect(ic, "withRetry"); reconnectErr != nil {
+				ic.Logger.Logger.Error("Reconnection failed during retry - cannot reconnect without getting new connection from pool: %v",
+					zap.Error(reconnectErr),
+					zap.Time(logging.Created_at, time.Now()),
+					zap.String(logging.Log_file, LOG_FILE),
+					zap.String(logging.Topic, TOPIC),
+					zap.String(logging.Loki_url, LOKI_URL),
+					zap.String(logging.Function, "DB_OPs.withRetry"),
+				)
+				return fmt.Errorf("connection lost - cannot reconnect without getting new connection from pool: %w", reconnectErr)
+			}
+
 			if attempt < ic.RetryLimit {
 				time.Sleep(time.Second * time.Duration(attempt+1))
 				continue
@@ -1559,7 +1586,7 @@ func GetDatabaseState(ic *config.ImmuClient) (*schema.ImmutableState, error) {
 					zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
 				)
 				// Re-authenticate to get a new token
-				if reconnErr := reconnect(ic); reconnErr != nil {
+				if reconnErr := reconnect(ic, "GetDatabaseState"); reconnErr != nil {
 					return fmt.Errorf("failed to reconnect after token expiration: %w", reconnErr)
 				}
 				// Try again with new token
@@ -1966,7 +1993,7 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 // GetZKBlockByHash retrieves a ZK block by its hash (UNCHANGED)
 func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (*config.ZKBlock, error) {
 	// First get the block number from the hash
-	hashKey := fmt.Sprintf("%s%s",PREFIX_BLOCK_HASH, blockHash)
+	hashKey := fmt.Sprintf("%s%s", PREFIX_BLOCK_HASH, blockHash)
 
 	blockKeyBytes, err := Read(mainDBClient, hashKey)
 	if err != nil {
@@ -2018,16 +2045,16 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 		if err == ErrNotFound ||
 			strings.Contains(err.Error(), "key not found") ||
 			strings.Contains(err.Error(), "tbtree: key not found") {
-				mainDBClient.Client.Logger.Logger.Info("No blocks found in the database yet",
-					zap.String(logging.Connection_database, config.DBName),
-					zap.Time(logging.Created_at, time.Now()),
-					zap.String(logging.Log_file, LOG_FILE),
-					zap.String(logging.Topic, TOPIC),
-					zap.String(logging.Loki_url, LOKI_URL),
-					zap.String(logging.Function, "DB_OPs.GetLatestBlockNumber"),
-				)
-				return 0, nil // No blocks yet
-			}
+			mainDBClient.Client.Logger.Logger.Info("No blocks found in the database yet",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetLatestBlockNumber"),
+			)
+			return 0, nil // No blocks yet
+		}
 		mainDBClient.Client.Logger.Logger.Error("Failed to get latest block number",
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.DBName),
@@ -2053,7 +2080,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 		)
 		return 0, fmt.Errorf("failed to parse latest block number: %w", err)
 	}
-    mainDBClient.Client.Logger.Logger.Info("Successfully retrieved latest block number",
+	mainDBClient.Client.Logger.Logger.Info("Successfully retrieved latest block number",
 		zap.String("blocknumber", fmt.Sprintf("%d", blockNumber)),
 		zap.Time(logging.Created_at, time.Now()),
 		zap.String(logging.Log_file, LOG_FILE),
@@ -2066,7 +2093,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 
 // GetTransactionBlock returns the block containing a specific transaction (UNCHANGED)
 func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (*config.ZKBlock, error) {
-	txKey := fmt.Sprintf("%s%s",DEFAULT_PREFIX_TX, txHash)
+	txKey := fmt.Sprintf("%s%s", DEFAULT_PREFIX_TX, txHash)
 
 	blockNumberBytes, err := Read(mainDBClient, txKey)
 	if err != nil {
@@ -2150,7 +2177,6 @@ func GetTransactionByHash(mainDBClient *config.PooledConnection, txHash string) 
 // GetTransactionsBatch fetches multiple transactions by their hashes in a single batch
 func GetTransactionsBatch(mainDBClient *config.PooledConnection, hashes []string) ([]*config.Transaction, error) {
 	var transactions []*config.Transaction
-
 
 	// Process in batches to avoid too many concurrent requests
 	batchSize := 10

@@ -87,16 +87,20 @@ func StartAPIServer(address string) error {
 }
 
 // Update this function:
-
 func startDIDServer(h host.Host, address string) error {
 	didDBClient, err := DB_OPs.GetAccountsConnection()
 	if err != nil {
+		//Debugging
+		fmt.Println("Failed to get DID database client", err)
+
 		log.Warn().Err(err).Msg("Failed to initialize DID propagation with ImmuDB. Starting in standalone mode.")
 		// We'll continue with a standalone server
 	} else {
+		//Debugging
+		fmt.Println("Got DID database client successfully", didDBClient)
+
 		log.Info().Msg("DID propagation initialized successfully")
 	}
-
 	// Start the DID server with our existing client
 	return DID.StartDIDServer(h, address, didDBClient)
 }
@@ -135,32 +139,11 @@ func initMainDBPool() error {
 
 // Initialize accounts database connection pool
 func initAccountsDBPool() error {
-	poolConfig := &config.ConnectionPoolConfig{
-		MinConnections:     5,
-		MaxConnections:     20,
-		ConnectionTimeout:  30 * time.Second,
-		IdleTimeout:        5 * time.Minute,
-		MaxLifetime:        30 * time.Minute,
-		TokenMaxLifetime:   24 * time.Hour,
-		TokenRefreshBuffer: 5 * time.Minute,
+	// Use the DB_OPs package to initialize the accounts pool
+	// This ensures the database exists and the pool is properly configured
+	if err := DB_OPs.InitAccountsPool(); err != nil {
+		return fmt.Errorf("failed to initialize accounts database pool: %w", err)
 	}
-
-	poolingConfig := &config.PoolingConfig{
-		DBAddress:  config.DBAddress,
-		DBPort:     config.DBPort,
-		DBName:     config.AccountsDBName,
-		DBUsername: config.DBUsername,
-		DBPassword: config.DBPassword,
-	}
-
-	// Create logger for accounts pool
-	accountsLogger, err := config.NewAsyncLogger()
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to create logger for accounts pool")
-	}
-
-	// Initialize the accounts pool
-	accountsDBPool = config.NewConnectionPool(poolConfig, accountsLogger, poolingConfig)
 
 	log.Info().Str("database", config.AccountsDBName).Msg("Accounts database connection pool initialized")
 	return nil
@@ -170,7 +153,7 @@ func initAccountsDBPool() error {
 func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsClient *config.PooledConnection) *fastsync.FastSync {
 
 	fs := fastsync.NewFastSync(n.Host, mainClient, accountsClient)
-	log.Info().Msg("FastSync service initialized with multi-database support")
+	log.Info().Msg("FastSync service initialized - will get connections when needed")
 	return fs
 }
 
@@ -262,10 +245,17 @@ func main() {
 		}
 	}()
 
+	// Debugging
+	fmt.Println("Getting accounts database connection from pool")
+
 	didDBClient, err := DB_OPs.GetAccountsConnection()
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to get accounts database connection from pool")
 	}
+
+	// Debugging
+	fmt.Println("Got accounts database connection from pool", didDBClient)
+
 	defer func() {
 		if didDBClient != nil {
 			DB_OPs.PutAccountsConnection(didDBClient)
@@ -317,6 +307,9 @@ func main() {
 		fmt.Printf("Failed to initialize node manager: %v\n", err)
 		return
 	}
+	// Debugging
+	fmt.Println("Node manager initialized successfully", nodeManager)
+
 	nodeManager.StartHeartbeat(*heartbeatInterval)
 	defer nodeManager.Shutdown()
 
@@ -408,23 +401,15 @@ func main() {
 		fmt.Println(config.ColorYellow + "Warning: DID database client not available - some commands disabled" + config.ColorReset)
 	}
 
-	// Add a timeout for the CLI session (e.g., 30 minutes)
-	cliTimeout := 30 * time.Second
-	ctx, cancel = context.WithTimeout(context.Background(), cliTimeout)
-	defer cancel()
-
+	// Start CLI without timeout - run indefinitely
 	done := make(chan error, 1)
 	go func() {
 		done <- cmdHandler.StartCLI(*cliGRPC)
 	}()
 
-	select {
-	case err := <-done:
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to start CLI")
-		}
-	case <-ctx.Done():
-		log.Error().Msg("CLI session timed out")
+	// Wait for CLI to complete or error
+	if err := <-done; err != nil {
+		log.Error().Err(err).Msg("Failed to start CLI")
 	}
 
 }

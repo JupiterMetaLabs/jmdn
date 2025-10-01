@@ -141,6 +141,16 @@ var (
         },
         []string{"level", "component"},
     )
+
+    MainDBConnectionPoolCount = promauto.NewGauge(prometheus.GaugeOpts{
+        Name: "p2p_main_db_connection_pool_count",
+        Help: "The total number of main database connections acquired",
+    })
+
+    AccountsDBConnectionPoolCount = promauto.NewGauge(prometheus.GaugeOpts{
+        Name: "p2p_accounts_db_connection_pool_count",
+        Help: "The total number of accounts database connections acquired",
+    })
 )
 
 var PeerRemovedCounter = promauto.NewCounterVec(
@@ -159,4 +169,29 @@ func StartMetricsServer(addr string) {
             fmt.Printf("Error starting metrics server: %v\n", err)
         }
     }()
+}
+
+func InitlizeMainDBConnectionPoolCount(count int) {
+    MainDBConnectionPoolCount.Set(float64(count))
+}
+
+func InitlizeAccountsDBConnectionPoolCount(count int) {
+    AccountsDBConnectionPoolCount.Set(float64(count))
+}
+
+// Helper functions to increment and decrement thread count
+func IncrementMainDBConnectionPoolCount() {
+    MainDBConnectionPoolCount.Inc()
+}
+
+func DecrementMainDBConnectionPoolCount() {
+    MainDBConnectionPoolCount.Dec()
+}
+
+func IncrementAccountsDBConnectionPoolCount() {
+    AccountsDBConnectionPoolCount.Inc()
+}
+
+func DecrementAccountsDBConnectionPoolCount() {
+    AccountsDBConnectionPoolCount.Dec()
 }

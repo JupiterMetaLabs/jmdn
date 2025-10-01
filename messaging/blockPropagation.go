@@ -46,34 +46,8 @@ func InitBlockPropagation(h host.Host) error {
 	fmt.Println("Block propagation system initialized")
 	var initErr error
 	immuClientOnce.Do(func() {
-		// Initialize ImmuDB client for block propagation system
-		fmt.Println("Attempting to get main DB connection for block propagation...")
-		// Add a timeout context to avoid indefinite blocking when getting the DB connection
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		type result struct {
-			client *config.PooledConnection
-			err    error
-		}
-		resultCh := make(chan result, 1)
-		go func() {
-			c, e := DB_OPs.GetMainDBConnection()
-			resultCh <- result{client: c, err: e}
-		}()
-		select {
-		case res := <-resultCh:
-			if res.err != nil {
-				fmt.Printf("Failed to get main DB connection: %v\n", res.err)
-				initErr = fmt.Errorf("failed to initialize ImmuDB client: %w", res.err)
-				return
-			}
-			immuClient = res.client
-		case <-ctx.Done():
-			fmt.Printf("Timeout while getting main DB connection\n")
-			initErr = fmt.Errorf("timeout while initializing ImmuDB client")
-			return
-		}
-		fmt.Println("ImmuDB client initialized successfully for block propagation")
+		// Block propagation system initialized - will get connections on-demand
+		fmt.Println("Block propagation system initialized - connections will be obtained on-demand")
 		log.Info().Msg("Block propagation system initialized")
 	})
 	return initErr
@@ -136,6 +110,13 @@ func markMessageProcessed(messageID string) {
 
 // storeMessageInImmuDB stores a message in ImmuDB using the appropriate key
 func storeMessageInImmuDB(msg config.BlockMessage) error {
+	// Get connection on-demand
+	client, err := DB_OPs.GetMainDBConnection()
+	if err != nil {
+		return fmt.Errorf("failed to get main DB connection: %w", err)
+	}
+	defer DB_OPs.PutMainDBConnection(client)
+
 	// Determine the key - focus on ZK blocks
 	var key string
 	if msg.Type == "zkblock" && msg.Block != nil {
@@ -147,7 +128,7 @@ func storeMessageInImmuDB(msg config.BlockMessage) error {
 	}
 
 	// Store the message
-	if err := DB_OPs.Create(immuClient, key, msg); err != nil {
+	if err := DB_OPs.Create(client, key, msg); err != nil {
 		log.Error().Err(err).Str("key", key).Msg("Failed to store message in ImmuDB")
 		return err
 	}
@@ -164,16 +145,23 @@ func storeMessageInImmuDB(msg config.BlockMessage) error {
 
 // updateMessageSet adds a message key to the grow-only set in ImmuDB
 func updateMessageSet(key string) error {
+	// Get connection on-demand
+	client, err := DB_OPs.GetMainDBConnection()
+	if err != nil {
+		return fmt.Errorf("failed to get main DB connection: %w", err)
+	}
+	defer DB_OPs.PutMainDBConnection(client)
+
 	const setKey = "crdt:message_set"
 
 	var messageSet map[string]bool
-	err := DB_OPs.ReadJSON(immuClient, setKey, &messageSet)
+	err = DB_OPs.ReadJSON(client, setKey, &messageSet)
 	if err != nil {
 		messageSet = make(map[string]bool)
 	}
 
 	messageSet[key] = true
-	return DB_OPs.Create(immuClient, setKey, messageSet)
+	return DB_OPs.Create(client, setKey, messageSet)
 }
 
 // getMessageIDForBloomFilter gets the appropriate ID to use for duplication checking
@@ -527,27 +515,17 @@ func PropagateZKBlock(h host.Host, block *config.ZKBlock) error {
 	return nil
 }
 
-// GetAllMessages retrieves all message keys from ImmuDB
-func GetAllMessages() ([]string, error) {
-	const setKey = "crdt:message_set"
-
-	var messageSet map[string]bool
-	if err := DB_OPs.ReadJSON(immuClient, setKey, &messageSet); err != nil {
-		return nil, fmt.Errorf("failed to read message set: %w", err)
-	}
-
-	keys := make([]string, 0, len(messageSet))
-	for key := range messageSet {
-		keys = append(keys, key)
-	}
-
-	return keys, nil
-}
-
 // GetMessage retrieves a message by key
 func GetMessage(key string) (*config.BlockMessage, error) {
+	// Get connection on-demand
+	client, err := DB_OPs.GetMainDBConnection()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get main DB connection: %w", err)
+	}
+	defer DB_OPs.PutMainDBConnection(client)
+
 	var message config.BlockMessage
-	if err := DB_OPs.ReadJSON(immuClient, key, &message); err != nil {
+	if err := DB_OPs.ReadJSON(client, key, &message); err != nil {
 		return nil, fmt.Errorf("failed to read message data: %w", err)
 	}
 

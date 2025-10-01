@@ -14,9 +14,10 @@ import (
 	"gossipnode/logging"
 )
 
-const(
-	LOG_FILE = "explorer.log"
-	TOPIC = "explorer"
+const (
+	LOG_DIR  = "logs"
+	LOG_FILE = LOG_DIR + "/explorer.log"
+	TOPIC    = "explorer"
 )
 
 // ImmuDBServer represents the ImmuDB API server
@@ -107,7 +108,7 @@ func (s *ImmuDBServer) setupRoutes() {
 	did := s.router.Group("/api/did")
 	{
 		// Get all dids by pagination
-        did.GET("/all/", s.listDIDs)
+		did.GET("/all/", s.listDIDs)
 
 		// Get DID details by one or more DID strings
 		did.GET("/details", s.getDIDDetails)

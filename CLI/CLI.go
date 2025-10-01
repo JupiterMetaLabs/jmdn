@@ -186,6 +186,8 @@ func (h *CommandHandler) handleYggdrasilMessage(parts []string) {
 }
 
 func (h *CommandHandler) handleSendFile(parts []string) {
+	// Debugging the parts
+	fmt.Println("Parts:", parts)
 	if len(parts) != 4 {
 		fmt.Println("Usage: file <peer_multiaddr> <filepath>")
 		return
@@ -479,6 +481,9 @@ func (h *CommandHandler) handleDBState() {
 		fmt.Printf("DID database client not initialized: %v\n", err)
 		return
 	}
+
+	// Debugging
+	fmt.Println("Got DB Client and DID Client", h.MainClient.Client, h.DIDClient.Client)
 
 	state, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
 	if err != nil {

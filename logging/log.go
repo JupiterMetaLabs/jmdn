@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	defaultLokiURL = "http://localhost:3100/loki/api/v1/push" // Temporarily disable Loki
+	defaultLokiURL = "http://localhost:3100/loki/api/v1/push"
+	// defaultLokiURL = "http://localhost:3100/loki/api/v1/push" // Temporarily disable Loki // Debugging
 )
 
 // getLokiURL returns the Loki URL from environment variable or default

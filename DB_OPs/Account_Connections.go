@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"gossipnode/config"
 	"gossipnode/logging"
+	"gossipnode/metrics"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -76,6 +76,7 @@ func InitAccountsPool() error {
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.InitAccountsPool"),
 		)
+		metrics.InitlizeAccountsDBConnectionPoolCount(poolCfg.MinConnections)
 	})
 	return initErr
 }
@@ -94,6 +95,7 @@ func GetAccountsConnection() (*config.PooledConnection, error) {
 		zap.String(logging.Loki_url, LOKI_URL),
 		zap.String(logging.Function, "DB_OPs.GetAccountsConnection"),
 	)
+	metrics.IncrementAccountsDBConnectionPoolCount()
 	return accountsPool.Get()
 }
 
@@ -108,6 +110,7 @@ func PutAccountsConnection(conn *config.PooledConnection) {
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.PutAccountsConnection"),
 		)
+		metrics.DecrementAccountsDBConnectionPoolCount()
 		accountsPool.Put(conn)
 	}
 }
@@ -128,23 +131,11 @@ func ensureAccountsDBExists() error {
 		return fmt.Errorf("could not create state dir: %w", err)
 	}
 
-	// build file paths inside .immudb-state
-	certFile := filepath.Join(stateDir, "server.cert.pem")
-	keyFile := filepath.Join(stateDir, "server.key.pem")
-	caFile := filepath.Join(stateDir, "ca.cert.pem")
-
-	// Configure the client to use TLS with our static certs
+	// Configure the client - disable mTLS for local development
 	opts := client.DefaultOptions().
 		WithAddress(config.DBAddress).
 		WithPort(config.DBPort).
-		WithMTLs(true).
-		WithMTLsOptions(
-			client.MTLsOptions{}.
-				WithCertificate(certFile).
-				WithPkey(keyFile).
-				WithClientCAs(caFile).
-				WithServername(config.DBAddress),
-		)
+		WithMTLs(false) // Disable mTLS for local development
 
 	c, err := client.NewImmuClient(opts)
 	if err != nil {

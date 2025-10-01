@@ -2,12 +2,12 @@ package explorer
 
 import (
 	"encoding/json"
+	"fmt"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/logging"
 	"strconv"
 	"sync"
-	"fmt"
 	"time"
 
 	"go.uber.org/zap"

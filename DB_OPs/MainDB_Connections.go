@@ -10,7 +10,7 @@ import (
 
 	"gossipnode/config"
 	"gossipnode/logging"
-	"path/filepath"
+	"gossipnode/metrics"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/client"
@@ -41,7 +41,19 @@ func GetMainDBConnection() (*config.PooledConnection, error) {
 		zap.String(logging.Loki_url, LOKI_URL),
 		zap.String(logging.Function, "DB_OPs.GetMainDBConnection"),
 	)
-	return mainDBPool.Get()
+
+	// Add metrics when connection is acquired
+	metrics.IncrementMainDBConnectionPoolCount()
+
+	Pool, err := mainDBPool.Get()
+	if err != nil {
+		// debugging
+		fmt.Println("failed to get main database connection: %w", err)
+		return nil, fmt.Errorf("failed to get main database connection: %w", err)
+	}
+	// debugging
+	fmt.Println("got main database connection successfully", Pool)
+	return Pool, nil
 }
 
 // PutMainDBConnection returns a connection to the main database pool.
@@ -56,6 +68,7 @@ func PutMainDBConnection(conn *config.PooledConnection) {
 			zap.String(logging.Function, "DB_OPs.PutMainDBConnection"),
 		)
 		mainDBPool.Put(conn)
+		metrics.DecrementMainDBConnectionPoolCount()
 	}
 }
 
@@ -115,6 +128,7 @@ func InitMainDBPool(poolConfig *config.ConnectionPoolConfig) error {
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.InitMainDBPool"),
 		)
+		metrics.InitlizeMainDBConnectionPoolCount(poolCfg.MinConnections)
 	})
 
 	return initErr
@@ -174,23 +188,11 @@ func connectToMainDB() error {
 		return fmt.Errorf("could not create state dir: %w", err)
 	}
 
-	// build file paths inside .immudb-state
-	clientCertFile := filepath.Join(stateDir, "client.cert.pem")
-	clientKeyFile := filepath.Join(stateDir, "client.key.pem")
-	caFile := filepath.Join(stateDir, "ca.cert.pem")
-
-	// Configure the client to use mTLS with client certificates
+	// Configure the client - disable mTLS for local development
 	opts := client.DefaultOptions().
 		WithAddress(config.DBAddress).
 		WithPort(config.DBPort).
-		WithMTLs(true).
-		WithMTLsOptions(
-			client.MTLsOptions{}.
-				WithCertificate(clientCertFile).
-				WithPkey(clientKeyFile).
-				WithClientCAs(caFile).
-				WithServername(config.DBAddress),
-		)
+		WithMTLs(false) // Disable mTLS for local development
 
 	c, err := client.NewImmuClient(opts)
 	if err != nil {
@@ -222,6 +224,7 @@ func connectToMainDB() error {
 			break
 		}
 	}
+	
 	logger.Logger.Info("Main database check completed",
 		zap.Time(logging.Created_at, time.Now()),
 		zap.String(logging.Log_file, LOG_FILE),

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"gossipnode/logging"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -51,7 +50,7 @@ type PoolingConfig struct {
 func DefaultConnectionPoolConfig() *ConnectionPoolConfig {
 	return &ConnectionPoolConfig{
 		MinConnections:     2,
-		MaxConnections:     10,
+		MaxConnections:     20,
 		ConnectionTimeout:  30 * time.Second,
 		IdleTimeout:        5 * time.Minute,
 		MaxLifetime:        30 * time.Minute,
@@ -162,7 +161,7 @@ func (p *ConnectionPool) Get() (*PooledConnection, error) {
 	fmt.Println("ConnectionPool.Get() called - acquiring lock...")
 	p.Mutex.Lock()
 	defer p.Mutex.Unlock()
-	fmt.Println("ConnectionPool.Get() - lock acquired, checking for available connections...")
+	fmt.Printf("ConnectionPool.Get() - lock acquired, checking for available connections... (pool has %d connections)\n", len(p.Connections))
 
 	if p.Closed {
 		p.Logger.Logger.Info("Connection pool is closed",
@@ -179,6 +178,7 @@ func (p *ConnectionPool) Get() (*PooledConnection, error) {
 	// Iterate backwards to safely remove stale connections while iterating
 	for i := len(p.Connections) - 1; i >= 0; i-- {
 		conn := p.Connections[i]
+		fmt.Printf("Checking connection %d: InUse=%v, CreatedAt=%v, LastUsed=%v\n", i, conn.InUse, conn.CreatedAt, conn.LastUsed)
 		if conn.InUse {
 			p.Logger.Logger.Info("Connection is in use",
 				zap.Time(logging.Created_at, time.Now()),
@@ -195,7 +195,10 @@ func (p *ConnectionPool) Get() (*PooledConnection, error) {
 		}
 
 		// Check if connection is expired (lifetime or token)
-		if time.Since(conn.CreatedAt) > p.Config.MaxLifetime || time.Until(conn.TokenExpiry) < p.Config.TokenRefreshBuffer {
+		lifetimeExpired := time.Since(conn.CreatedAt) > p.Config.MaxLifetime
+		tokenExpired := time.Until(conn.TokenExpiry) < p.Config.TokenRefreshBuffer
+
+		if lifetimeExpired || tokenExpired {
 			p.closeConnection(conn)
 			p.Connections = append(p.Connections[:i], p.Connections[i+1:]...)
 			p.Logger.Logger.Info("Connection closed due to expiration",
@@ -204,6 +207,10 @@ func (p *ConnectionPool) Get() (*PooledConnection, error) {
 				zap.String(logging.Connection_database, conn.Database),
 				zap.Time(logging.Connection_created_at, conn.CreatedAt),
 				zap.Time(logging.Connection_last_used, conn.LastUsed),
+				zap.Bool("lifetime_expired", lifetimeExpired),
+				zap.Bool("token_expired", tokenExpired),
+				zap.Duration("time_until_token_expiry", time.Until(conn.TokenExpiry)),
+				zap.Duration("token_refresh_buffer", p.Config.TokenRefreshBuffer),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -277,26 +284,12 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 	}
 	fmt.Println("State directory exists, building certificate paths...")
 
-	// build file paths inside .immudb-state
-	clientCertFile := filepath.Join(State_Path_Hidden, "client.cert.pem")
-	clientKeyFile := filepath.Join(State_Path_Hidden, "client.key.pem")
-	caFile := filepath.Join(State_Path_Hidden, "ca.cert.pem")
-
-	fmt.Printf("Certificate files: cert=%s, key=%s, ca=%s\n", clientCertFile, clientKeyFile, caFile)
-
-	// Configure the client to use mTLS with client certificates
+	// Configure the client - disable mTLS for local development
 	fmt.Println("Configuring ImmuDB client options...")
 	opts := client.DefaultOptions().
 		WithAddress(cp.Address).
 		WithPort(cp.Port).
-		WithMTLs(true).
-		WithMTLsOptions(
-			client.MTLsOptions{}.
-				WithCertificate(clientCertFile).
-				WithPkey(clientKeyFile).
-				WithClientCAs(caFile).
-				WithServername(cp.Address),
-		)
+		WithMTLs(false) // Disable mTLS for local development
 	fmt.Println("Client options configured successfully")
 
 	fmt.Println("Creating ImmuDB client with TLS options...")
@@ -305,7 +298,8 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 		fmt.Printf("Failed to create ImmuDB client: %v\n", err)
 		return nil, fmt.Errorf("failed to create client: %w", err)
 	}
-	fmt.Println("ImmuDB client created successfully")
+
+	fmt.Println("ImmuDB client created successfully", c.SessionID)
 
 	// login + select database as before
 	ctx, cancel := context.WithTimeout(context.Background(), cp.Config.ConnectionTimeout)
@@ -379,9 +373,11 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 // Put returns a connection to the pool
 func (p *ConnectionPool) Put(conn *PooledConnection) {
 	if conn == nil {
+		fmt.Println("ConnectionPool.Put() called with nil connection")
 		return
 	}
 
+	fmt.Printf("ConnectionPool.Put() called - returning connection to pool (pool will have %d connections after this)\n", len(p.Connections))
 	p.Mutex.Lock()
 	defer p.Mutex.Unlock()
 
@@ -392,6 +388,10 @@ func (p *ConnectionPool) Put(conn *PooledConnection) {
 
 	conn.InUse = false
 	conn.LastUsed = time.Now()
+
+	// Add the connection back to the pool
+	p.Connections = append(p.Connections, conn)
+
 	p.Logger.Logger.Info("Connection returned to pool",
 		zap.String(logging.Connection_id, conn.Token),
 		zap.String(logging.Connection_database, conn.Database),
@@ -424,6 +424,7 @@ func (p *ConnectionPool) Close() {
 		zap.String(logging.Loki_url, LOKI_URL),
 		zap.String(logging.Function, "config.Close"),
 	)
+
 	for _, conn := range p.Connections {
 		p.closeConnection(conn)
 	}

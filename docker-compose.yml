@@ -88,10 +88,7 @@ services:
     volumes:
       - ./.immudb_state:/etc/immudb/certs
     command: [
-      "--mtls",
-      "--certificate=/etc/immudb/certs/server.cert.pem",
-      "--pkey=/etc/immudb/certs/server.key.pem",
-      "--clientcas=/etc/immudb/certs/ca.cert.pem"
+      "--web-console"
     ]
     restart: unless-stopped
     networks:
