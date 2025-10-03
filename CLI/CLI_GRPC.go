@@ -39,10 +39,10 @@ type HandleShowStats struct {
 }
 
 type SyncStats struct {
-	TimeTaken time.Duration
-	MainState schema.ImmutableState
+	TimeTaken     time.Duration
+	MainState     schema.ImmutableState
 	AccountsState schema.ImmutableState
-	Error string
+	Error         string
 }
 
 type HandleAddrs struct {
@@ -57,7 +57,7 @@ func (h *CommandHandler) ReturnAddrs() (HandleAddrs, error) {
 		ipv6 = "?"
 	}
 	addrs := make([]string, 0)
-	yggdrasilAddr := "/ip6/"+ipv6+"/tcp/15000/p2p/"+h.Node.Host.ID().String()
+	yggdrasilAddr := "/ip6/" + ipv6 + "/tcp/15000/p2p/" + h.Node.Host.ID().String()
 	addrs = append(addrs, yggdrasilAddr)
 
 	for _, addr := range h.Node.Host.Addrs() {
@@ -195,9 +195,9 @@ func (h *CommandHandler) HandleShowStats() (HandleShowStats, error) {
 	}
 }
 
-func (h *CommandHandler) HandleBroadcast(message string) (bool, error){
+func (h *CommandHandler) HandleBroadcast(message string) (bool, error) {
 	if message == "" {
-        return false, fmt.Errorf("Usage: broadcast <message>")
+		return false, fmt.Errorf("Usage: broadcast <message>")
 	}
 	err := node.BroadcastMessage(h.Node, message)
 	if err != nil {
@@ -284,8 +284,8 @@ func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 	}
 
 	return SyncStats{
-		TimeTaken: time.Since(startTime),
-		MainState: *newMainState,
+		TimeTaken:     time.Since(startTime),
+		MainState:     *newMainState,
 		AccountsState: *newAccountsState,
 	}, nil
 }

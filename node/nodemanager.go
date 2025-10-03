@@ -761,11 +761,6 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 
 // Update the performHeartbeat function to include auto-removal logic
 func (nm *NodeManager) performHeartbeat() {
-	// logger.Info().
-	//     Int("managed_peers", len(nm.trackedPeers)).
-	//     Int("connected_peers", len(nm.host.Network().Peers())).
-	//     Msg("Starting heartbeat cycle")
-
 	// Update metrics
 	metrics.ConnectedPeersGauge.Set(float64(len(nm.host.Network().Peers())))
 	metrics.ManagedPeersGauge.Set(float64(len(nm.trackedPeers)))
@@ -904,10 +899,6 @@ func (nm *NodeManager) performHeartbeat() {
 
 	metrics.ActivePeersGauge.Set(float64(activeCount))
 
-	// logger.Info().
-	//     Int("active_peers", activeCount).
-	//     Int("total_peers", len(nm.trackedPeers)).
-	//     Msg("Heartbeat cycle completed")
 }
 
 // Shutdown closes all resources

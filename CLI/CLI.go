@@ -188,13 +188,21 @@ func (h *CommandHandler) handleYggdrasilMessage(parts []string) {
 func (h *CommandHandler) handleSendFile(parts []string) {
 	// Debugging the parts
 	fmt.Println("Parts:", parts)
-	if len(parts) != 4 {
-		fmt.Println("Usage: file <peer_multiaddr> <filepath>")
+	if len(parts) < 3 {
+		fmt.Println("Usage: file <peer_multiaddr> <filepath> [remote_filename]")
 		return
 	}
-	err := node.SendFile(h.Node, parts[1], parts[2], parts[3])
+
+	// Set default remote filename if not provided
+	remoteFilename := ""
+	if len(parts) >= 4 {
+		remoteFilename = parts[3]
+	}
+
+	err := node.SendFile(h.Node, parts[1], parts[2], remoteFilename)
 	if err != nil {
 		fmt.Println("Error:", err)
+		return
 	}
 	fmt.Println("File sent successfully")
 }
