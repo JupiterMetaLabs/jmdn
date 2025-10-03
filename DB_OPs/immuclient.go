@@ -1,6 +1,7 @@
 package DB_OPs
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -243,6 +244,7 @@ func withRetry(ic *config.ImmuClient, operation string, fn func() error) error {
 // Create stores a value with the given key using the connection pool
 func Create(PooledConnection *config.PooledConnection, key string, value interface{}) error {
 	var ic *config.ImmuClient
+	var shouldReturnConnection bool = false
 	if key == "" {
 		return ErrEmptyKey
 	}
@@ -251,26 +253,38 @@ func Create(PooledConnection *config.PooledConnection, key string, value interfa
 		return ErrNilValue
 	}
 
-	// Get a connection from the poo
+	// Get a connection from the pool
 	if PooledConnection == nil {
-		PooledConnection, err := GetMainDBConnection()
+		var err error
+		PooledConnection, err = GetMainDBConnection()
 		if err != nil {
 			return fmt.Errorf("failed to get database connection: %w", err)
 		}
 		ic = PooledConnection.Client
-	}
-
-	defer func() {
-		PooledConnection.Client.Logger.Logger.Info("Returning main database connection",
+		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.PutMainDBConnection"),
+			zap.String(logging.Function, "DB_OPs.Create"),
 		)
-		PutMainDBConnection(PooledConnection)
-	}()
+	}
+
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.Create"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
 
 	ic = PooledConnection.Client
 	// Ensure the database is selected
@@ -314,7 +328,9 @@ func Create(PooledConnection *config.PooledConnection, key string, value interfa
 	)
 
 	// Store the key-value pair
-	_, err = ic.Client.Set(ic.Ctx, []byte(key), valueBytes)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = ic.Client.Set(ctx, []byte(key), valueBytes)
 	if err != nil {
 		ic.Logger.Logger.Error("Failed to set key",
 			zap.Error(err),
@@ -350,7 +366,7 @@ func Read(PooledConnection *config.PooledConnection, key string) ([]byte, error)
 
 	var entryValue []byte
 	var err error
-	shouldReturnConnection := false
+	var shouldReturnConnection bool = false
 
 	// Handle nil or invalid connection
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -359,14 +375,30 @@ func Read(PooledConnection *config.PooledConnection, key string) ([]byte, error)
 			return nil, fmt.Errorf("failed to get database connection: %w", err)
 		}
 		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.Read"),
+		)
 	}
 
 	// Ensure we return the connection if we acquired it
-	defer func() {
-		if shouldReturnConnection && PooledConnection != nil {
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.Read"),
+			)
 			PutMainDBConnection(PooledConnection)
-		}
-	}()
+		}()
+	}
 
 	// Ensure the database is selected
 	if err := ensureMainDBSelected(PooledConnection); err != nil {
@@ -391,40 +423,27 @@ func Read(PooledConnection *config.PooledConnection, key string) ([]byte, error)
 		zap.String(logging.Function, "DB_OPs.Read"),
 	)
 
-	// Execute the read with retry logic
-	err = withRetry(PooledConnection.Client, "Read", func() error {
-		entry, err := PooledConnection.Client.Client.Get(PooledConnection.Client.Ctx, []byte(key))
-		if err != nil {
-			if isNotFoundError(err) {
-				PooledConnection.Client.Logger.Logger.Warn("Key not found",
-					zap.String("key", key),
-					zap.String(logging.Connection_database, config.DBName),
-					zap.Time(logging.Created_at, time.Now()),
-					zap.String(logging.Topic, TOPIC),
-					zap.String(logging.Function, "DB_OPs.Read"),
-				)
-				return ErrNotFound
-			}
-			return fmt.Errorf("database read failed: %w", err)
-		}
+	// Execute the read operation
+	// Create a fresh context for the read operation
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-		entryValue = entry.Value
-		return nil
-	})
-
+	entry, err := PooledConnection.Client.Client.Get(ctx, []byte(key))
 	if err != nil {
-		PooledConnection.Client.Logger.Logger.Error("Failed to read key - retry attemps failed and limit exceeded",
-			zap.Error(err),
-			zap.String("key", key),
-			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.Read"),
-		)
-		return nil, err
+		if isNotFoundError(err) {
+			PooledConnection.Client.Logger.Logger.Warn("Key not found",
+				zap.String("key", key),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Function, "DB_OPs.Read"),
+			)
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("database read failed: %w", err)
 	}
+
+	entryValue = entry.Value
 
 	// Log successful read
 	PooledConnection.Client.Logger.Logger.Info("Successfully read key",
@@ -452,11 +471,13 @@ func isNotFoundError(err error) bool {
 func ReadJSON(PooledConnection *config.PooledConnection, key string, dest interface{}) error {
 	var err error
 	var data []byte
+	var shouldReturnConnection bool = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		PooledConnection, err = GetMainDBConnection()
 		if err != nil {
 			return fmt.Errorf("failed to get database connection: %w", err)
 		}
+		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
@@ -467,17 +488,19 @@ func ReadJSON(PooledConnection *config.PooledConnection, key string, dest interf
 		)
 	}
 
-	defer func() {
-		PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
-			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.ReadJSON"),
-		)
-		PutMainDBConnection(PooledConnection)
-	}()
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.ReadJSON"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
 
 	data, err = Read(PooledConnection, key)
 	if err != nil {
@@ -503,6 +526,7 @@ func ReadJSON(PooledConnection *config.PooledConnection, key string, dest interf
 // Update updates an existing key with a new value (UNCHANGED)
 func Update(PooledConnection *config.PooledConnection, key string, value interface{}) error {
 	var err error
+	var shouldReturnConnection bool = false
 	// In ImmuDB, update is the same as create since it's an immutable database
 	// We simply write the new value with the same key
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -511,6 +535,7 @@ func Update(PooledConnection *config.PooledConnection, key string, value interfa
 		if err != nil {
 			return fmt.Errorf("failed to get database connection: %w", err)
 		}
+		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
@@ -520,17 +545,19 @@ func Update(PooledConnection *config.PooledConnection, key string, value interfa
 			zap.String(logging.Function, "DB_OPs.Update"),
 		)
 	}
-	defer func() {
-		PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
-			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.Update"),
-		)
-		PutMainDBConnection(PooledConnection)
-	}()
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.Update"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
 	return Create(PooledConnection, key, value)
 }
 
@@ -542,13 +569,14 @@ func GetKeys(PooledConnection *config.PooledConnection, prefix string, limit int
 
 	var keys []string
 	var err error
-
+	var shouldReturnConnection bool = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		// If no connection then quickly pull connection from the pool
 		PooledConnection, err = GetMainDBConnection()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get database connection: %w", err)
 		}
+		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
@@ -558,8 +586,26 @@ func GetKeys(PooledConnection *config.PooledConnection, prefix string, limit int
 			zap.String(logging.Function, "DB_OPs.GetKeys"),
 		)
 	}
-	defer func() {
-		PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetKeys"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
+
+	// Try to use connection pool if available, otherwise fall back to traditional approach
+	if PooledConnection != nil {
+		// Use connection pool approach
+		PooledConnection.Client.Logger.Logger.Info("Scanning keys with prefix: %s (limit: %d)",
+			zap.String("prefix", prefix),
+			zap.Int("limit", limit),
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
 			zap.String(logging.Log_file, LOG_FILE),
@@ -567,61 +613,16 @@ func GetKeys(PooledConnection *config.PooledConnection, prefix string, limit int
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.GetKeys"),
 		)
-		PutMainDBConnection(PooledConnection)
-	}()
+		scanReq := &schema.ScanRequest{
+			Prefix: []byte(prefix),
+			Limit:  uint64(limit),
+		}
 
-	// Try to use connection pool if available, otherwise fall back to traditional approach
-	if PooledConnection == nil {
-		// Use connection pool approach
-		err := withRetry(PooledConnection.Client, "GetKeys", func() error {
-			PooledConnection.Client.Logger.Logger.Info("Scanning keys with prefix: %s (limit: %d)",
-				zap.String("prefix", prefix),
-				zap.Int("limit", limit),
-				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.GetKeys"),
-			)
-			scanReq := &schema.ScanRequest{
-				Prefix: []byte(prefix),
-				Limit:  uint64(limit),
-			}
+		// Create a fresh context for the scan operation
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-			scanResult, err := PooledConnection.Client.Client.Scan(PooledConnection.Client.Ctx, scanReq)
-			if err != nil {
-				PooledConnection.Client.Logger.Logger.Error("Failed to scan keys with prefix: %s (limit: %d)",
-					zap.String("prefix", prefix),
-					zap.Int("limit", limit),
-					zap.String(logging.Connection_database, config.DBName),
-					zap.Time(logging.Created_at, time.Now()),
-					zap.String(logging.Log_file, LOG_FILE),
-					zap.String(logging.Topic, TOPIC),
-					zap.String(logging.Loki_url, LOKI_URL),
-					zap.String(logging.Function, "DB_OPs.GetKeys"),
-				)
-				return err
-			}
-
-			keys = make([]string, len(scanResult.Entries))
-			for i, entry := range scanResult.Entries {
-				keys[i] = string(entry.Key)
-			}
-
-			PooledConnection.Client.Logger.Logger.Info("Found %d keys with prefix: %s",
-				zap.Int("count", len(keys)),
-				zap.String("prefix", prefix),
-				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.GetKeys"),
-			)
-			return nil
-		})
-
+		scanResult, err := PooledConnection.Client.Client.Scan(ctx, scanReq)
 		if err != nil {
 			PooledConnection.Client.Logger.Logger.Error("Failed to scan keys with prefix: %s (limit: %d)",
 				zap.String("prefix", prefix),
@@ -635,6 +636,12 @@ func GetKeys(PooledConnection *config.PooledConnection, prefix string, limit int
 			)
 			return nil, err
 		}
+
+		keys = make([]string, len(scanResult.Entries))
+		for i, entry := range scanResult.Entries {
+			keys[i] = string(entry.Key)
+		}
+
 		PooledConnection.Client.Logger.Logger.Info("Found %d keys with prefix: %s",
 			zap.Int("count", len(keys)),
 			zap.String("prefix", prefix),
@@ -665,13 +672,14 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 	batchSize := 1000
 	var lastKey []byte
 	var err error
-
+	var shouldReturnConnection bool = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		// If no connection then quickly pull connection from the pool
 		PooledConnection, err = GetMainDBConnection()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get database connection: %w", err)
 		}
+		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
@@ -682,17 +690,19 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 		)
 	}
 
-	defer func() {
-		PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
-			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.GetAllKeys"),
-		)
-		PutMainDBConnection(PooledConnection)
-	}()
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetAllKeys"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
 
 	for {
 		// Create a batch request
@@ -739,12 +749,14 @@ func CountAllKeys(PooledConnection *config.PooledConnection, prefix string) (int
 	batchSize := 1000
 	var lastKey []byte
 	var err error
+	var shouldReturnConnection bool = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		// If no connection then quickly pull connection from the pool
 		PooledConnection, err = GetMainDBConnection()
 		if err != nil {
 			return -1, fmt.Errorf("failed to get database connection: %w", err)
 		}
+		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
@@ -755,41 +767,40 @@ func CountAllKeys(PooledConnection *config.PooledConnection, prefix string) (int
 		)
 	}
 
-	defer func() {
-		PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
-			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.CountAllKeys"),
-		)
-		PutMainDBConnection(PooledConnection)
-	}()
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.CountAllKeys"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
 	for {
 		var count int
-		err := withRetry(PooledConnection.Client, "CountAllKeysBatch", func() error {
-			scanReq := &schema.ScanRequest{
-				Prefix:  []byte(prefix),
-				Limit:   uint64(batchSize),
-				SeekKey: lastKey,
-				Desc:    false,
-			}
+		scanReq := &schema.ScanRequest{
+			Prefix:  []byte(prefix),
+			Limit:   uint64(batchSize),
+			SeekKey: lastKey,
+			Desc:    false,
+		}
 
-			scanResult, err := PooledConnection.Client.Client.Scan(PooledConnection.Client.Ctx, scanReq)
-			if err != nil {
-				return err
-			}
+		// Create a fresh context for the scan operation
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-			count = len(scanResult.Entries)
-			if count > 0 {
-				lastKey = scanResult.Entries[count-1].Key
-			}
-			return nil
-		})
-
+		scanResult, err := PooledConnection.Client.Client.Scan(ctx, scanReq)
 		if err != nil {
 			return 0, fmt.Errorf("failed to scan for keys count: %w", err)
+		}
+
+		count = len(scanResult.Entries)
+		if count > 0 {
+			lastKey = scanResult.Entries[count-1].Key
 		}
 
 		totalKeys += count
@@ -822,13 +833,14 @@ func CountTransactions(mainDBClient *config.PooledConnection) (int, error) {
 func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limit int, seekKey []byte) ([]string, error) {
 	var keys []string
 	var err error
-
+	var shouldReturnConnection bool = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		// If no connection then quickly pull connection from the pool
 		PooledConnection, err = GetMainDBConnection()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get database connection: %w", err)
 		}
+		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
@@ -839,8 +851,32 @@ func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limi
 		)
 	}
 
-	defer func() {
-		PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.getKeysBatch"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
+	ic := PooledConnection.Client
+	// Try to use connection pool if available, otherwise fall back to traditional approach
+	if ic != nil {
+		// Use connection pool approach
+		scanReq := &schema.ScanRequest{
+			Prefix:  []byte(prefix),
+			Limit:   uint64(limit),
+			SeekKey: seekKey,
+		}
+
+		ic.Logger.Logger.Info("Scanning keys with prefix: %s (limit: %d)",
+			zap.String("prefix", prefix),
+			zap.Int("limit", limit),
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
 			zap.String(logging.Log_file, LOG_FILE),
@@ -848,72 +884,11 @@ func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limi
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.getKeysBatch"),
 		)
-		PutMainDBConnection(PooledConnection)
-	}()
-	ic := PooledConnection.Client
-	// Try to use connection pool if available, otherwise fall back to traditional approach
-	if ic != nil {
-		// Use connection pool approach
-		err := withRetry(PooledConnection.Client, "GetKeysBatch", func() error {
-			scanReq := &schema.ScanRequest{
-				Prefix:  []byte(prefix),
-				Limit:   uint64(limit),
-				SeekKey: seekKey,
-			}
 
-			ic.Logger.Logger.Info("Scanning keys with prefix: %s (limit: %d)",
-				zap.String("prefix", prefix),
-				zap.Int("limit", limit),
-				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.getKeysBatch"),
-			)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-			scanResult, err := ic.Client.Scan(ic.Ctx, scanReq)
-			if err != nil {
-				ic.Logger.Logger.Error("Failed to scan keys with prefix: %s (limit: %d)",
-					zap.String("prefix", prefix),
-					zap.Int("limit", limit),
-					zap.String(logging.Connection_database, config.DBName),
-					zap.Time(logging.Created_at, time.Now()),
-					zap.String(logging.Log_file, LOG_FILE),
-					zap.String(logging.Topic, TOPIC),
-					zap.String(logging.Loki_url, LOKI_URL),
-					zap.String(logging.Function, "DB_OPs.getKeysBatch"),
-				)
-				return err
-			}
-			ic.Logger.Logger.Info("Scanned keys with prefix: %s (limit: %d)",
-				zap.String("prefix", prefix),
-				zap.Int("limit", limit),
-				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.getKeysBatch"),
-			)
-
-			keys = make([]string, len(scanResult.Entries))
-			for i, entry := range scanResult.Entries {
-				keys[i] = string(entry.Key)
-			}
-			ic.Logger.Logger.Info("Keys scanned successfully",
-				zap.String("prefix", prefix),
-				zap.Int("limit", limit),
-				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.getKeysBatch"),
-			)
-			return nil
-		})
-
+		scanResult, err := ic.Client.Scan(ctx, scanReq)
 		if err != nil {
 			ic.Logger.Logger.Error("Failed to scan keys with prefix: %s (limit: %d)",
 				zap.String("prefix", prefix),
@@ -926,6 +901,21 @@ func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limi
 				zap.String(logging.Function, "DB_OPs.getKeysBatch"),
 			)
 			return nil, err
+		}
+		ic.Logger.Logger.Info("Scanned keys with prefix: %s (limit: %d)",
+			zap.String("prefix", prefix),
+			zap.Int("limit", limit),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.getKeysBatch"),
+		)
+
+		keys = make([]string, len(scanResult.Entries))
+		for i, entry := range scanResult.Entries {
+			keys[i] = string(entry.Key)
 		}
 		ic.Logger.Logger.Info("Keys scanned successfully",
 			zap.String("prefix", prefix),
@@ -952,7 +942,7 @@ func BatchCreate(PooledConnection *config.PooledConnection, entries map[string]i
 	}
 
 	var err error
-	shouldReturnConnection := false
+	var shouldReturnConnection bool = false
 
 	// Handle nil or invalid connection
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -962,14 +952,30 @@ func BatchCreate(PooledConnection *config.PooledConnection, entries map[string]i
 			return fmt.Errorf("failed to get database connection: %w", err)
 		}
 		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.BatchCreate"),
+		)
 	}
 
 	// Ensure we return the connection if we acquired it
-	defer func() {
-		if shouldReturnConnection && PooledConnection != nil {
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.BatchCreate"),
+			)
 			PutMainDBConnection(PooledConnection)
-		}
-	}()
+		}()
+	}
 
 	// Ensure the database is selected
 	if err := ensureMainDBSelected(PooledConnection); err != nil {
@@ -1029,7 +1035,10 @@ func BatchCreate(PooledConnection *config.PooledConnection, entries map[string]i
 	}
 
 	// Execute all operations in a single transaction
-	_, err = PooledConnection.Client.Client.ExecAll(PooledConnection.Client.Ctx, &schema.ExecAllRequest{
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err = PooledConnection.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{
 		Operations: ops,
 	})
 
@@ -1114,11 +1123,13 @@ func Close(ic *config.ImmuClient) error {
 // GetMerkleRoot returns the current database Merkle root
 func GetMerkleRoot(PooledConnection *config.PooledConnection) ([]byte, error) {
 	var err error
+	var shouldReturnConnection bool = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		PooledConnection, err = GetAccountsConnection()
 		if err != nil {
 			return nil, err
 		}
+		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
@@ -1128,7 +1139,26 @@ func GetMerkleRoot(PooledConnection *config.PooledConnection) ([]byte, error) {
 			zap.String(logging.Function, "DB_OPs.GetMerkleRoot"),
 		)
 	}
-	state, err := PooledConnection.Client.Client.CurrentState(PooledConnection.Client.Ctx)
+
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetMerkleRoot"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
+
+	// Create a fresh context for the operation
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	state, err := PooledConnection.Client.Client.CurrentState(ctx)
 	if err != nil {
 		PooledConnection.Client.Logger.Logger.Error("Failed to get current state",
 			zap.Error(err),
@@ -1157,7 +1187,7 @@ func GetMerkleRoot(PooledConnection *config.PooledConnection) ([]byte, error) {
 func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 	var err error
 	var PooledConnection *config.PooledConnection
-
+	var shouldReturnConnection bool = false
 	// Try to use connection pool if available, otherwise fall back to traditional approach
 	if ic == nil {
 		// If Connection is nil, use the global connection pool
@@ -1166,15 +1196,26 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 			if err != nil {
 				return err
 			}
+			shouldReturnConnection = true
 		} else if ic.Database == config.DBName {
 			PooledConnection, err = GetMainDBConnection()
 			if err != nil {
 				return err
 			}
+			shouldReturnConnection = true
 		} else {
 			return errors.New("Invalid Database Name")
 		}
 		ic = PooledConnection.Client
+		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.SafeCreate"),
+		)
 	}
 
 	// Check for empty key and nil value
@@ -1201,6 +1242,16 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 		return ErrNilValue
 	}
 
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
+
 	// Traditional approach with single connection
 	return withRetry(ic, "SafeCreate", func() error {
 		// Convert value to bytes
@@ -1217,8 +1268,12 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.SafeCreate"),
 		)
+
 		// Store the key-value pair with verification
-		verifiedTx, err := ic.Client.VerifiedSet(ic.Ctx, []byte(key), valueBytes)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		verifiedTx, err := ic.Client.VerifiedSet(ctx, []byte(key), valueBytes)
 		if err != nil {
 			return err
 		}
@@ -1244,7 +1299,7 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 	var entryValue []byte
 	var PooledConnection *config.PooledConnection
 	var err error
-	shouldReturnConnection := false
+	var shouldReturnConnection bool = false
 
 	// Handle nil or invalid connection
 	if ic == nil {
@@ -1254,11 +1309,19 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 		}
 		ic = PooledConnection.Client
 		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.SafeRead"),
+		)
 	}
 
 	// Ensure we return the connection if we acquired it
-	defer func() {
-		if shouldReturnConnection && PooledConnection != nil {
+	if shouldReturnConnection {
+		defer func() {
 			PooledConnection.Client.Logger.Logger.Info("Returning connection to pool",
 				zap.String(logging.Connection_database, config.DBName),
 				zap.Time(logging.Created_at, time.Now()),
@@ -1268,8 +1331,8 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 				zap.String(logging.Function, "DB_OPs.SafeRead"),
 			)
 			PutMainDBConnection(PooledConnection)
-		}
-	}()
+		}()
+	}
 
 	// Log the read operation
 	ic.Logger.Logger.Info("Reading verified key from database",
@@ -1284,7 +1347,9 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 
 	// Execute the read with retry logic
 	err = withRetry(ic, "SafeRead", func() error {
-		entry, err := ic.Client.VerifiedGet(ic.Ctx, []byte(key))
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		entry, err := ic.Client.VerifiedGet(ctx, []byte(key))
 		if err != nil {
 			if isNotFoundError(err) {
 				ic.Logger.Logger.Warn("Key not found",
@@ -1464,7 +1529,10 @@ func GetHistory(ic *config.ImmuClient, key string, limit int) ([]*schema.Entry, 
 			Limit: int32(limit),
 		}
 
-		historyResp, err := ic.Client.History(ic.Ctx, historyReq)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		historyResp, err := ic.Client.History(ctx, historyReq)
 		if err != nil {
 			ic.Logger.Logger.Error("Failed to get history",
 				zap.String("key", key),
@@ -1544,11 +1612,19 @@ func GetDatabaseState(ic *config.ImmuClient) (*schema.ImmutableState, error) {
 		}
 		ic = PooledConnection.Client
 		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
+		)
 	}
 
 	// Ensure we return the connection if we acquired it
-	defer func() {
-		if shouldReturnConnection && PooledConnection != nil {
+	if shouldReturnConnection {
+		defer func() {
 			PooledConnection.Client.Logger.Logger.Info("Returning connection to pool",
 				zap.String(logging.Connection_database, config.DBName),
 				zap.Time(logging.Created_at, time.Now()),
@@ -1558,8 +1634,8 @@ func GetDatabaseState(ic *config.ImmuClient) (*schema.ImmutableState, error) {
 				zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
 			)
 			PutMainDBConnection(PooledConnection)
-		}
-	}()
+		}()
+	}
 
 	// Log the operation
 	ic.Logger.Logger.Info("Getting current database state",
@@ -1573,7 +1649,9 @@ func GetDatabaseState(ic *config.ImmuClient) (*schema.ImmutableState, error) {
 
 	// Execute the operation with retry logic
 	err = withRetry(ic, "GetDatabaseState", func() error {
-		dbState, err := ic.Client.CurrentState(ic.Ctx)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		dbState, err := ic.Client.CurrentState(ctx)
 		if err != nil {
 			// Check if this is a token expired error
 			if strings.Contains(err.Error(), "token has expired") {
@@ -1589,8 +1667,12 @@ func GetDatabaseState(ic *config.ImmuClient) (*schema.ImmutableState, error) {
 				if reconnErr := reconnect(ic, "GetDatabaseState"); reconnErr != nil {
 					return fmt.Errorf("failed to reconnect after token expiration: %w", reconnErr)
 				}
+
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+
 				// Try again with new token
-				dbState, err = ic.Client.CurrentState(ic.Ctx)
+				dbState, err = ic.Client.CurrentState(ctx)
 				if err != nil {
 					ic.Logger.Logger.Error("Failed to get database state after reconnection",
 						zap.Error(err),
@@ -1663,6 +1745,19 @@ func Exists(PooledConnection *config.PooledConnection, key string) (bool, error)
 
 	_, err := Read(PooledConnection, key)
 	if err != nil {
+		// Check if it's a "key not found" error
+		if err == ErrNotFound || strings.Contains(err.Error(), "key not found") {
+			PooledConnection.Client.Logger.Logger.Info("Key does not exist",
+				zap.String("key", key),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.Exists"),
+			)
+			return false, nil
+		}
 		PooledConnection.Client.Logger.Logger.Error("Failed to read key",
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
@@ -1713,7 +1808,11 @@ func Transaction(ic *config.ImmuClient, fn func(tx *config.ImmuTransaction) erro
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.Transaction"),
 		)
-		_, err := ic.Client.ExecAll(ic.Ctx, &schema.ExecAllRequest{
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		_, err := ic.Client.ExecAll(ctx, &schema.ExecAllRequest{
 			Operations: tx.Ops,
 		})
 
@@ -1771,7 +1870,10 @@ func IsHealthy(ic *config.ImmuClient) bool {
 	}
 
 	// Try to get current state as a health check
-	_, err := ic.Client.CurrentState(ic.Ctx)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := ic.Client.CurrentState(ctx)
 	return err == nil
 }
 
@@ -1794,7 +1896,9 @@ func Ping(ic *config.ImmuClient) error {
 
 	// Execute the ping with retry logic
 	err := withRetry(ic, "Ping", func() error {
-		_, err := ic.Client.CurrentState(ic.Ctx)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, err := ic.Client.CurrentState(ctx)
 		if err != nil {
 			ic.Logger.Logger.Error("Database ping failed",
 				zap.Error(err),
@@ -1838,7 +1942,7 @@ func Ping(ic *config.ImmuClient) error {
 // StoreZKBlock stores a complete ZK block in the main database (UNCHANGED)
 func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) error {
 	var err error
-	var putback bool
+	var shouldReturnConnection bool = false
 	// Create a unique key for the block
 	blockKey := fmt.Sprintf("%s%d", PREFIX_BLOCK, block.BlockNumber)
 
@@ -1855,6 +1959,7 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 		if err != nil {
 			return fmt.Errorf("failed to get main DB connection: %w", err)
 		}
+		shouldReturnConnection = true
 		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
@@ -1863,11 +1968,10 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.StoreZKBlock"),
 		)
-		putback = true
 	}
 
-	defer func() {
-		if putback {
+	if shouldReturnConnection {
+		defer func() {
 			mainDBClient.Client.Logger.Logger.Info("Main DB connection put back successfully",
 				zap.String(logging.Connection_database, config.DBName),
 				zap.Time(logging.Created_at, time.Now()),
@@ -1877,8 +1981,8 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 				zap.String(logging.Function, "DB_OPs.StoreZKBlock"),
 			)
 			PutMainDBConnection(mainDBClient)
-		}
-	}()
+		}()
+	}
 	mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
 		zap.String(logging.Connection_database, config.DBName),
 		zap.String("blockkey", blockKey),
@@ -1971,9 +2075,40 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 
 // GetZKBlockByNumber retrieves a ZK block by its number (UNCHANGED)
 func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint64) (*config.ZKBlock, error) {
+	var shouldReturnConnection bool = false
+	var err error
 	blockKey := fmt.Sprintf("%s%d", PREFIX_BLOCK, blockNumber)
 
 	block := new(config.ZKBlock)
+	if mainDBClient == nil {
+		mainDBClient, err = GetMainDBConnection()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
+		}
+		shouldReturnConnection = true
+		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetZKBlockByNumber"),
+		)
+	}
+
+	if shouldReturnConnection {
+		defer func() {
+			mainDBClient.Client.Logger.Logger.Info("Main DB connection put back successfully",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetZKBlockByNumber"),
+			)
+			PutMainDBConnection(mainDBClient)
+		}()
+	}
 	if err := SafeReadJSON(mainDBClient.Client, blockKey, block); err != nil {
 		mainDBClient.Client.Logger.Logger.Error("Failed to retrieve block",
 			zap.Error(err),
@@ -1993,8 +2128,38 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 // GetZKBlockByHash retrieves a ZK block by its hash (UNCHANGED)
 func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (*config.ZKBlock, error) {
 	// First get the block number from the hash
+	var shouldReturnConnection bool = false
+	var err error
 	hashKey := fmt.Sprintf("%s%s", PREFIX_BLOCK_HASH, blockHash)
+	if mainDBClient == nil {
+		mainDBClient, err = GetMainDBConnection()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
+		}
+		shouldReturnConnection = true
+		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetZKBlockByHash"),
+		)
+	}
 
+	if shouldReturnConnection {
+		defer func() {
+			mainDBClient.Client.Logger.Logger.Info("Main DB connection put back successfully",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetZKBlockByHash"),
+			)
+			PutMainDBConnection(mainDBClient)
+		}()
+	}
 	blockKeyBytes, err := Read(mainDBClient, hashKey)
 	if err != nil {
 		mainDBClient.Client.Logger.Logger.Error("Failed to find block with hash",
@@ -2039,6 +2204,37 @@ func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (
 
 // GetLatestBlockNumber returns the latest block number (UNCHANGED)
 func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error) {
+	var err error
+	var shouldReturnConnection bool = false
+	if mainDBClient == nil {
+		mainDBClient, err = GetMainDBConnection()
+		if err != nil {
+			return 0, fmt.Errorf("failed to get main DB connection: %w", err)
+		}
+		shouldReturnConnection = true
+		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetLatestBlockNumber"),
+		)
+	}
+
+	if shouldReturnConnection {
+		defer func() {
+			mainDBClient.Client.Logger.Logger.Info("Main DB connection put back successfully",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetLatestBlockNumber"),
+			)
+			PutMainDBConnection(mainDBClient)
+		}()
+	}
 	latestBytes, err := Read(mainDBClient, "latest_block")
 	if err != nil {
 		// Check for both our custom ErrNotFound and the ImmuDB-specific errors
@@ -2093,6 +2289,36 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 
 // GetTransactionBlock returns the block containing a specific transaction (UNCHANGED)
 func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (*config.ZKBlock, error) {
+	var err error
+	var shouldReturnConnection bool = false
+	if mainDBClient == nil {
+		mainDBClient, err = GetMainDBConnection()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
+		}
+		shouldReturnConnection = true
+		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetTransactionBlock"),
+		)
+	}
+	if shouldReturnConnection {
+		defer func() {
+			mainDBClient.Client.Logger.Logger.Info("Main DB connection put back successfully",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetTransactionBlock"),
+			)
+			PutMainDBConnection(mainDBClient)
+		}()
+	}
 	txKey := fmt.Sprintf("%s%s", DEFAULT_PREFIX_TX, txHash)
 
 	blockNumberBytes, err := Read(mainDBClient, txKey)
@@ -2129,9 +2355,48 @@ func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (
 // Get Transaction by hash
 func GetTransactionByHash(mainDBClient *config.PooledConnection, txHash string) (*config.Transaction, error) {
 	// Get the block that contains the transaction.
+	var err error
+	var shouldReturnConnection bool = false
+	if mainDBClient == nil {
+		mainDBClient, err = GetMainDBConnection()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
+		}
+		shouldReturnConnection = true
+		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetTransactionByHash"),
+		)
+	}
+	if shouldReturnConnection {
+		defer func() {
+			mainDBClient.Client.Logger.Logger.Info("Main DB connection put back successfully",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetTransactionByHash"),
+			)
+			PutMainDBConnection(mainDBClient)
+		}()
+	}
 	block, err := GetTransactionBlock(mainDBClient, txHash)
 	if err != nil {
-		return nil, err
+		mainDBClient.Client.Logger.Logger.Error("Failed to get transaction block",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetTransactionByHash"),
+		)
+		return nil, fmt.Errorf("failed to get transaction block: %w", err)
 	}
 
 	// Find the transaction in the block.
@@ -2177,7 +2442,36 @@ func GetTransactionByHash(mainDBClient *config.PooledConnection, txHash string) 
 // GetTransactionsBatch fetches multiple transactions by their hashes in a single batch
 func GetTransactionsBatch(mainDBClient *config.PooledConnection, hashes []string) ([]*config.Transaction, error) {
 	var transactions []*config.Transaction
-
+	var err error
+	var shouldReturnConnection bool = false
+	if mainDBClient == nil {
+		mainDBClient, err = GetMainDBConnection()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
+		}
+		shouldReturnConnection = true
+		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetTransactionsBatch"),
+		)
+	}
+	if shouldReturnConnection {
+		defer func() {
+			mainDBClient.Client.Logger.Logger.Info("Main DB connection put back successfully",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetTransactionsBatch"),
+			)
+			PutMainDBConnection(mainDBClient)
+		}()
+	}
 	// Process in batches to avoid too many concurrent requests
 	batchSize := 10
 	for i := 0; i < len(hashes); i += batchSize {
@@ -2218,6 +2512,36 @@ func GetTransactionsBatch(mainDBClient *config.PooledConnection, hashes []string
 }
 
 func GetAllBlocks(mainDBClient *config.PooledConnection) ([]*config.ZKBlock, error) {
+	var err error
+	var shouldReturnConnection bool = false
+	if mainDBClient == nil {
+		mainDBClient, err = GetMainDBConnection()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
+		}
+		shouldReturnConnection = true
+		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetAllBlocks"),
+		)
+	}
+	if shouldReturnConnection {
+		defer func() {
+			mainDBClient.Client.Logger.Logger.Info("Main DB connection put back successfully",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetAllBlocks"),
+			)
+			PutMainDBConnection(mainDBClient)
+		}()
+	}
 	latestBlockNumber, err := GetLatestBlockNumber(mainDBClient)
 	if err != nil {
 		return nil, err

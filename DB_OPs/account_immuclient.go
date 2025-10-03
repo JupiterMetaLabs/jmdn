@@ -8,7 +8,7 @@ import (
 	"gossipnode/logging"
 	"strings"
 
-	// "sync/atomic"
+	"sync/atomic"
 	"time"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
@@ -75,19 +75,13 @@ type Account struct {
 }
 
 // Get the Nonce of a account - NTF
-func PutNonceofAccount() (uint64, error) {
-	// Nonce is created based on the timestamps for each account
-	timeNow := time.Now().UnixNano()
-	return uint64(timeNow), nil
-}
+var counter uint64
 
-// Get the Nonce of a account - NTF
-// var counter uint64
-// func PutNonceofAccount() (uint64, error) {
-//     ts := uint64(time.Now().UnixNano())
-//     c  := atomic.AddUint64(&counter, 1)
-//     return ts<<16 | (c & 0xFFFF), nil // embed counter in low bits
-// }
+func PutNonceofAccount() (uint64, error) {
+	ts := uint64(time.Now().UnixNano())
+	c := atomic.AddUint64(&counter, 1)
+	return ts<<16 | (c & 0xFFFF), nil // embed counter in low bits
+}
 
 // Create Account from DID and Address and Store using StoreAccount
 func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string, Address common.Address, metadata map[string]interface{}) error {
@@ -265,7 +259,7 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 		}}},
 	}
 
-	// Create a fresh context with a timeout (not based on ic.Ctx which might be canceled)
+	// Create a fresh context with a timeout (not based on ctx which might be canceled)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -496,7 +490,7 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 	}
 
 	doc.Balance = newBalance
-	doc.UpdatedAt = time.Now().Unix()
+	doc.UpdatedAt = time.Now().UnixNano()
 
 	// Safe Write to the DB with the same key
 	err = SafeCreate(PooledConnection.Client, fmt.Sprintf("%s%s", Prefix, address), doc)
@@ -693,7 +687,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 			SeekKey: lastKey,
 			Desc:    false,
 		}
-        ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		scanResult, err := ic.Client.Scan(ctx, scanReq)
 		if err != nil {
@@ -775,21 +769,16 @@ func CountAccounts(PooledConnection *config.PooledConnection) (int, error) {
 	var lastKey []byte
 
 	for {
-		var scanResult *schema.Entries
-		// Use the existing retry logic from the client for robustness
-		err := withRetry(PooledConnection.Client, "ScanAccountsCount", func() error {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			req := &schema.ScanRequest{
-				Prefix:  []byte(Prefix),
-				Limit:   uint64(batchSize),
-				SeekKey: lastKey,
-				Desc:    false,
-			}
-			var scanErr error
-			scanResult, scanErr = ic.Client.Scan(ctx, req)
-			return scanErr
-		})
+		// Create a fresh context for the scan operation
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		req := &schema.ScanRequest{
+			Prefix:  []byte(Prefix),
+			Limit:   uint64(batchSize),
+			SeekKey: lastKey,
+			Desc:    false,
+		}
+		scanResult, err := ic.Client.Scan(ctx, req)
+		cancel()
 
 		if err != nil {
 			ic.Logger.Logger.Error("Failed to scan for Accounts count",
@@ -830,18 +819,19 @@ func CountAccounts(PooledConnection *config.PooledConnection) (int, error) {
 // This implementation iterates through all blocks to find matching transactions,
 // which is more efficient than fetching each transaction individually.
 // GetTransactionsByAccount retrieves all transactions associated with a given account address
-// This implementation uses the connection pool and follows the codebase's patterns
+// This implementation uses the MAIN database connection pool (not accounts) since transactions are stored in main DB
 func GetTransactionsByAccount(PooledConnection *config.PooledConnection, accountAddr *common.Address) ([]*config.Transaction, error) {
 	var err error
 	var shouldReturnConnection bool = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		// Use MAIN database connection since transactions are stored in main DB
+		PooledConnection, err = GetMainDBConnection()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get connection from pool: %w", err)
+			return nil, fmt.Errorf("failed to get main DB connection from pool: %w", err)
 		}
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
-			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
@@ -852,14 +842,14 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 	if shouldReturnConnection {
 		defer func() {
 			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
-				zap.String(logging.Connection_database, config.AccountsDBName),
+				zap.String(logging.Connection_database, config.DBName),
 				zap.Time(logging.Created_at, time.Now()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
 				zap.String(logging.Function, "DB_OPs.GetTransactionsByAccount"),
 			)
-			PutAccountsConnection(PooledConnection)
+			PutMainDBConnection(PooledConnection)
 		}()
 	}
 
@@ -1023,12 +1013,12 @@ func getAllTransactionHashes(mainDBClient *config.PooledConnection) ([]string, e
 // ensureAccountsDBSelected makes sure we're using the accounts database (UNCHANGED)
 // This helps prevent the "please select a database first" error
 func ensureAccountsDBSelected(PooledConnection *config.PooledConnection) error {
-	if PooledConnection == nil || PooledConnection.Client == nil || !PooledConnection.Client.IsConnected {
+	if PooledConnection == nil || PooledConnection.Client == nil {
 		return fmt.Errorf("client not connected")
 	}
 
 	// Try a simple operation to see if the database selection is still valid
-	ctx, cancel := context.WithTimeout(PooledConnection.Client.BaseCtx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// Use the stored token

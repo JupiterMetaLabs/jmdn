@@ -317,9 +317,10 @@ func Test_Account_Nonce_Generation(t *testing.T) {
 	}
 
 	// Verify nonces are reasonable (based on timestamp)
+	// Note: The nonce includes a counter in the lower bits, so it might be slightly larger than current timestamp
 	now := time.Now().UnixNano()
-	if nonce1 > uint64(now) || nonce2 > uint64(now) {
-		t.Fatalf("Generated nonces should be less than current timestamp")
+	if nonce1 > uint64(now)+1000000 || nonce2 > uint64(now)+1000000 {
+		t.Fatalf("Generated nonces should be close to current timestamp")
 	}
 
 	fmt.Printf("✅ Account nonce generation test passed!\n")
@@ -704,6 +705,13 @@ func Test_GetTransactionsByAccount(t *testing.T) {
 		t.Fatalf("Failed to initialize accounts pool: %v", err)
 	}
 
+	// Initialize the main database pool (needed for transaction queries)
+	poolConfig := config.DefaultConnectionPoolConfig()
+	err = DB_OPs.InitMainDBPool(poolConfig)
+	if err != nil {
+		t.Fatalf("Failed to initialize main DB pool: %v", err)
+	}
+
 	// Create a test account
 	fmt.Printf("Creating test account for transaction lookup...\n")
 	privateKey, err := ecdsa.GenerateKey(crypto.S256(), rand.Reader)
@@ -730,9 +738,9 @@ func Test_GetTransactionsByAccount(t *testing.T) {
 		t.Fatalf("Failed to create account: %v", err)
 	}
 
-	// Get transactions for the account
+	// Get transactions for the account (pass nil to use main DB connection)
 	fmt.Printf("Getting transactions for account: %s\n", address.Hex())
-	transactions, err := DB_OPs.GetTransactionsByAccount(conn, &address)
+	transactions, err := DB_OPs.GetTransactionsByAccount(nil, &address)
 	if err != nil {
 		DB_OPs.PutAccountsConnection(conn)
 		t.Fatalf("Failed to get transactions: %v", err)
