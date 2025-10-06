@@ -452,13 +452,14 @@ func (h *CommandHandler) handleGetDID(parts []string) {
 	var doc *DB_OPs.Account
 	var err error
 	if strings.HasPrefix(did, DB_OPs.DIDPrefix) {
-		doc, err = DB_OPs.GetAccountByDID(h.MainClient, did)
+		doc, err = DB_OPs.GetAccountByDID(h.DIDClient, did)
 		if err != nil {
 			fmt.Printf("Failed to retrieve DID %s: %v\n", did, err)
 			return
 		}
 	} else {
-		doc, err = DB_OPs.GetAccount(h.MainClient, common.HexToAddress(did))
+		addr := common.HexToAddress(did)
+		doc, err = DB_OPs.GetAccount(h.DIDClient, addr)
 		if err != nil {
 			fmt.Printf("Failed to retrieve Address %s: %v\n", did, err)
 			return

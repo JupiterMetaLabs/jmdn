@@ -340,7 +340,7 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	entry, err := ic.Client.VerifiedGet(ctx, key) // deref happens server-side for references
+	entry, err := ic.Client.Get(ctx, key) // Get follows references automatically
 	if err != nil {
 		if strings.Contains(err.Error(), "key not found") {
 			return nil, ErrNotFound

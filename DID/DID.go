@@ -7,6 +7,7 @@ import (
 	"gossipnode/logging"
 	"math/big"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -177,15 +178,29 @@ func (s *AccountServer) getAccount(AccountID string) (*DB_OPs.Account, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
-	TempAccountAddress := common.HexToAddress(AccountID)
-	s.accountsClient.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
-		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Function, "DID.getAccount"),
-	)
-	return s.db.GetAccount(s.accountsClient, TempAccountAddress)
+	// Check if AccountID is a DID (starts with "did:") or an address
+	if strings.HasPrefix(AccountID, "did:") {
+		// It's a DID, use GetAccountByDID
+		s.accountsClient.Client.Logger.Logger.Info("Retrieving account by DID",
+			zap.String("did", AccountID),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Function, "DID.getAccount"),
+		)
+		return DB_OPs.GetAccountByDID(s.accountsClient, AccountID)
+	} else {
+		// It's an address, use GetAccount
+		TempAccountAddress := common.HexToAddress(AccountID)
+		s.accountsClient.Client.Logger.Logger.Info("Retrieving account by address",
+			zap.String("address", AccountID),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Function, "DID.getAccount"),
+		)
+		return s.db.GetAccount(s.accountsClient, TempAccountAddress)
+	}
 }
 
 // listAccounts retrieves all Accounts either from the database or memory

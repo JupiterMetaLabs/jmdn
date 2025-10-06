@@ -712,31 +712,15 @@ func Test_GetTransactionsByAccount(t *testing.T) {
 		t.Fatalf("Failed to initialize main DB pool: %v", err)
 	}
 
-	// Create a test account
-	fmt.Printf("Creating test account for transaction lookup...\n")
-	privateKey, err := ecdsa.GenerateKey(crypto.S256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("Failed to generate private key: %v", err)
-	}
-	address := crypto.PubkeyToAddress(privateKey.PublicKey)
-	didAddress := fmt.Sprintf("did:superjtest:tx-test-%d", time.Now().UnixNano())
-	metadata := map[string]interface{}{
-		"test":     true,
-		"function": "Test_GetTransactionsByAccount",
-		"version":  "1.0",
-	}
-
 	// Create account in database
 	conn, err := DB_OPs.GetAccountsConnection()
 	if err != nil {
 		t.Fatalf("Failed to get connection: %v", err)
 	}
 
-	err = DB_OPs.CreateAccount(conn, didAddress, address, metadata)
-	if err != nil {
-		DB_OPs.PutAccountsConnection(conn)
-		t.Fatalf("Failed to create account: %v", err)
-	}
+	// Test with the address that exists in the database
+	address := common.HexToAddress("0x724C5970319327d788d07FbFA7450A60001434C5")
+	fmt.Printf("Testing with address: %s\n", address.Hex())
 
 	// Get transactions for the account (pass nil to use main DB connection)
 	fmt.Printf("Getting transactions for account: %s\n", address.Hex())
@@ -748,13 +732,27 @@ func Test_GetTransactionsByAccount(t *testing.T) {
 
 	fmt.Printf("✅ Found %d transactions for account\n", len(transactions))
 
-	// Display transaction details
-	for i, tx := range transactions {
-		fmt.Printf("   Transaction %d:\n", i+1)
-		fmt.Printf("     Hash: %s\n", tx.Hash)
-		fmt.Printf("     From: %s\n", tx.From.Hex())
-		fmt.Printf("     To: %s\n", tx.To.Hex())
-		fmt.Printf("     Value: %s\n", tx.Value)
+	// Display transaction details in a neat table
+	if len(transactions) > 0 {
+		fmt.Printf("\n📋 Transaction Details:\n")
+		fmt.Printf("┌─────────────────────────────────────────────────────────────────────────────────┐\n")
+		fmt.Printf("│ %-20s │ %-20s │ %-20s │ %-15s │\n", "Hash", "From", "To", "Value")
+		fmt.Printf("├─────────────────────────────────────────────────────────────────────────────────┤\n")
+
+		for _, tx := range transactions {
+			hash := tx.Hash
+
+			from := tx.From.Hex()
+
+			to := tx.To.Hex()
+
+			value := tx.Value
+
+			fmt.Printf("│ %-20s │ %-20s │ %-20s │ %-15s │\n", hash, from, to, value)
+		}
+		fmt.Printf("└─────────────────────────────────────────────────────────────────────────────────┘\n")
+	} else {
+		fmt.Printf("📭 No transactions found for this account\n")
 	}
 
 	DB_OPs.PutAccountsConnection(conn)
@@ -849,4 +847,128 @@ func Test_ListAllDIDs(t *testing.T) {
 
 	DB_OPs.PutAccountsConnection(conn)
 	fmt.Printf("\n✅ ListAllDIDs test completed successfully!\n")
+}
+
+func Test_PrintAllDatabaseKeys(t *testing.T) {
+	fmt.Printf("=== Testing Database Key Inspection ===\n")
+
+	// Initialize the accounts pool
+	err := DB_OPs.InitAccountsPool()
+	if err != nil {
+		t.Fatalf("Failed to initialize accounts pool: %v", err)
+	}
+
+	// Initialize the main database pool
+	poolConfig := config.DefaultConnectionPoolConfig()
+	err = DB_OPs.InitMainDBPool(poolConfig)
+	if err != nil {
+		t.Fatalf("Failed to initialize main DB pool: %v", err)
+	}
+
+	fmt.Printf("Inspecting all database keys...\n")
+	printDashes()
+
+	// Get keys from main database
+	fmt.Printf("🔍 MAIN DATABASE KEYS:\n")
+	mainConn, err := DB_OPs.GetMainDBConnection()
+	if err != nil {
+		t.Fatalf("Failed to get main DB connection: %v", err)
+	}
+	defer DB_OPs.PutMainDBConnection(mainConn)
+
+	mainKeys, err := DB_OPs.GetAllKeys(mainConn, "")
+	if err != nil {
+		fmt.Printf("❌ Failed to get main DB keys: %v\n", err)
+	} else {
+		printKeysTable("Main Database", mainKeys)
+	}
+
+	// Get keys from accounts database
+	fmt.Printf("\n🔍 ACCOUNTS DATABASE KEYS:\n")
+	accountsConn, err := DB_OPs.GetAccountsConnection()
+	if err != nil {
+		t.Fatalf("Failed to get accounts connection: %v", err)
+	}
+	defer DB_OPs.PutAccountsConnection(accountsConn)
+
+	accountsKeys, err := DB_OPs.GetAllKeys(accountsConn, "")
+	if err != nil {
+		fmt.Printf("❌ Failed to get accounts DB keys: %v\n", err)
+	} else {
+		printKeysTable("Accounts Database", accountsKeys)
+	}
+
+	// Get keys with specific prefixes
+	fmt.Printf("\n🔍 KEYS BY PREFIX:\n")
+
+	// Check for address: prefix
+	addressKeys, err := DB_OPs.GetAllKeys(accountsConn, "address:")
+	if err != nil {
+		fmt.Printf("❌ Failed to get address keys: %v\n", err)
+	} else {
+		printKeysTable("Address Keys (address:)", addressKeys)
+	}
+
+	// Check for did: prefix
+	didKeys, err := DB_OPs.GetAllKeys(accountsConn, "did:")
+	if err != nil {
+		fmt.Printf("❌ Failed to get DID keys: %v\n", err)
+	} else {
+		printKeysTable("DID Keys (did:)", didKeys)
+	}
+
+	// Check for block: prefix in main DB
+	blockKeys, err := DB_OPs.GetAllKeys(mainConn, "block:")
+	if err != nil {
+		fmt.Printf("❌ Failed to get block keys: %v\n", err)
+	} else {
+		printKeysTable("Block Keys (block:)", blockKeys)
+	}
+
+	// Check for tx: prefix in main DB
+	txKeys, err := DB_OPs.GetAllKeys(mainConn, "tx:")
+	if err != nil {
+		fmt.Printf("❌ Failed to get transaction keys: %v\n", err)
+	} else {
+		printKeysTable("Transaction Keys (tx:)", txKeys)
+	}
+
+	fmt.Printf("\n✅ Database key inspection completed!\n")
+}
+
+func printKeysTable(title string, keys []string) {
+	if len(keys) == 0 {
+		fmt.Printf("   📭 No keys found\n")
+		return
+	}
+
+	fmt.Printf("   📊 %s (%d keys):\n", title, len(keys))
+	fmt.Printf("   ┌─────────────────────────────────────────────────────────────────────────────────┐\n")
+	fmt.Printf("   │ %-75s │\n", "KEY")
+	fmt.Printf("   ├─────────────────────────────────────────────────────────────────────────────────┤\n")
+
+	// Show first 20 keys, or all if less than 20
+	maxKeys := 20
+	if len(keys) < maxKeys {
+		maxKeys = len(keys)
+	}
+
+	for i := 0; i < maxKeys; i++ {
+		key := keys[i]
+		// Truncate very long keys for display
+		if len(key) > 75 {
+			key = key[:72] + "..."
+		}
+		fmt.Printf("   │ %-75s │\n", key)
+	}
+
+	if len(keys) > maxKeys {
+		fmt.Printf("   │ %-75s │\n", fmt.Sprintf("... and %d more keys", len(keys)-maxKeys))
+	}
+
+	fmt.Printf("   └─────────────────────────────────────────────────────────────────────────────────┘\n")
+}
+
+func printDashes() {
+	fmt.Printf("─────────────────────────────────────────────────────────────────────────────────\n")
 }
