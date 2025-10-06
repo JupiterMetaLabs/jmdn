@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -199,11 +200,22 @@ func connectToMainDB() error {
 		return fmt.Errorf("could not create state dir: %w", err)
 	}
 
+	// build file paths inside .immudb-state
+	certFile := filepath.Join(stateDir, "server.cert.pem")
+	keyFile  := filepath.Join(stateDir, "server.key.pem")
+	caFile   := filepath.Join(stateDir, "ca.cert.pem")
+	fmt.Println("Certificate paths built successfully")
+
 	// Configure the client - disable mTLS for local development
 	opts := client.DefaultOptions().
 		WithAddress(config.DBAddress).
 		WithPort(config.DBPort).
-		WithMTLs(false) // Disable mTLS for local development
+		WithDir(stateDir).
+		WithMaxRecvMsgSize(1024 * 1024 * 20). // 20MB message size
+		WithDisableIdentityCheck(false). 
+		WithMTLsOptions(
+			client.MTLsOptions{}.WithCertificate(certFile).WithPkey(keyFile).WithClientCAs(caFile).WithServername(config.DBAddress),
+		)
 
 	c, err := client.NewImmuClient(opts)
 	if err != nil {

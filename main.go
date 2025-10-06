@@ -316,6 +316,12 @@ func main() {
 	// Initialize DID propagation handler
 	n.Host.SetStreamHandler(config.DIDPropagationProtocol, messaging.HandleDIDStream)
 
+	// Initialize DID propagation system
+	if err := messaging.InitDIDPropagation(nil); err != nil {
+		fmt.Printf("Failed to initialize DID propagation: %v\n", err)
+		log.Error().Err(err).Msg("Failed to initialize DID propagation")
+	}
+
 	// We'll initialize the DID system in the DID server to avoid blocking main
 	go func() {
 		log.Info().Str("address", *DIDgRPC).Msg("Starting DID gRPC server")

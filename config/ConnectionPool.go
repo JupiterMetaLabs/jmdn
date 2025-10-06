@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"gossipnode/logging"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -283,13 +284,22 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 		return nil, fmt.Errorf("could not create state dir: %w", err)
 	}
 	fmt.Println("State directory exists, building certificate paths...")
-
-	// Configure the client - disable mTLS for local development
+	// build file paths inside .immudb-state
+	certFile := filepath.Join(State_Path_Hidden, "server.cert.pem")
+	keyFile := filepath.Join(State_Path_Hidden, "server.key.pem")
+	caFile := filepath.Join(State_Path_Hidden, "ca.cert.pem")
+	fmt.Println("Certificate paths built successfully")
+	// Configure the client with mTLS enabled
 	fmt.Println("Configuring ImmuDB client options...")
 	opts := client.DefaultOptions().
 		WithAddress(cp.Address).
 		WithPort(cp.Port).
-		WithMTLs(false) // Disable mTLS for local development
+		WithDir(State_Path_Hidden).
+		WithMaxRecvMsgSize(1024 * 1024 * 20). // 20MB message size
+		WithDisableIdentityCheck(false).       // Disable identity file to prevent 24-hour expiration
+		WithMTLsOptions(
+			client.MTLsOptions{}.WithCertificate(certFile).WithPkey(keyFile).WithClientCAs(caFile).WithServername(cp.Address),
+		)
 	fmt.Println("Client options configured successfully")
 
 	fmt.Println("Creating ImmuDB client with TLS options...")
