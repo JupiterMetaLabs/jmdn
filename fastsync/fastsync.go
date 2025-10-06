@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linkedin/goavro/v2"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/linkedin/goavro/v2"
 	"github.com/rs/zerolog/log"
 
 	"gossipnode/DB_OPs"
@@ -557,17 +557,42 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 	// Send the Client_HashMap to the server to get the SYNC_HashMap
 	msg.Type = TypeHashMapExchangeSYNC
 
+	// Debug: Log the message being sent
+	log.Info().
+		Str("peer_id", peerID.String()).
+		Str("message_type", msg.Type).
+		Str("message_data", string(msg.Data)).
+		Int("data_length", len(msg.Data)).
+		Msg("Sending Phase2_Sync request")
+
 	if err := writeMessage(writer, stream, msg); err != nil {
+		log.Error().Err(err).Msg("Failed to write Phase2_Sync message")
 		return nil, "", "", err
 	}
+
+	log.Info().Msg("Phase2_Sync message sent successfully, waiting for response...")
 
 	Phase2_Response, err := readMessage(reader, stream)
 	if err != nil {
 		return nil, "", "", err
 	}
 
-	if !bytes.Equal(Phase2_Response.Data, json.RawMessage([]byte(`"Message From Server"`))) {
-		return nil, "", "", fmt.Errorf("unexpected response data: %s", Phase2_Response.Data)
+	// Debug: Log the received response
+	log.Info().
+		Str("response_type", Phase2_Response.Type).
+		Str("response_data", string(Phase2_Response.Data)).
+		Int("data_length", len(Phase2_Response.Data)).
+		Msg("Received Phase2_Response")
+
+	expectedData := json.RawMessage([]byte(`"Message From Server"`))
+	if !bytes.Equal(Phase2_Response.Data, expectedData) {
+		log.Error().
+			Str("expected", string(expectedData)).
+			Str("received", string(Phase2_Response.Data)).
+			Int("expected_len", len(expectedData)).
+			Int("received_len", len(Phase2_Response.Data)).
+			Msg("Response data mismatch")
+		return nil, "", "", fmt.Errorf("unexpected response data: expected '%s', got '%s'", string(expectedData), string(Phase2_Response.Data))
 	}
 
 	return Phase2_Response, Phase2_Response.HashMap_MetaData.Main_HashMap_MetaData.Checksum, Phase2_Response.HashMap_MetaData.Accounts_HashMap_MetaData.Checksum, nil
@@ -695,7 +720,7 @@ func (fs *FastSync) batchCreateWithRetry(entriesMap map[string]interface{}, dbTy
 				if clientErr == nil {
 					DB_OPs.Close(fs.mainDB.Client) // Close the old, invalid client
 					DB_OPs.PutMainDBConnection(fs.mainDB)
-					fs.mainDB = newClient   // Replace with the new, valid client
+					fs.mainDB = newClient // Replace with the new, valid client
 				}
 			} else if dbType == AccountsDB {
 				newClient, clientErr = DB_OPs.GetAccountsConnection()

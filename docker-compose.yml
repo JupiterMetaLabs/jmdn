@@ -83,13 +83,11 @@ services:
     container_name: immudb
     ports:
       - "3322:3322"
-      - "9247:9247"
-      - "8009:8080"
+      - "9497:9497"
+      - "8080:8080"
     volumes:
-      - ./.immudb_state:/etc/immudb/certs
-    command: [
-      "--web-console"
-    ]
+      - immudb_data:/var/lib/immudb 
+
     restart: unless-stopped
     networks:
       - monitoring
@@ -100,3 +98,4 @@ networks:
 volumes:
   prometheus_data:
   grafana_data:
+  immudb_data:

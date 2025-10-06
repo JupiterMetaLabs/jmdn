@@ -95,8 +95,19 @@ func GetAccountsConnection() (*config.PooledConnection, error) {
 		zap.String(logging.Loki_url, LOKI_URL),
 		zap.String(logging.Function, "DB_OPs.GetAccountsConnection"),
 	)
-	metrics.IncrementAccountsDBConnectionPoolCount()
-	return accountsPool.Get()
+	conn, err := accountsPool.Get()
+	if err != nil {
+		return nil, err
+	}
+
+	// Update metrics with current pool state
+	metrics.UpdateAccountsDBConnectionPoolMetrics(
+		accountsPool.GetPoolSize(),
+		accountsPool.GetActiveConnections(),
+		accountsPool.GetIdleConnections(),
+	)
+
+	return conn, nil
 }
 
 // PutAccountsConnection returns a connection to the accounts database pool.
@@ -110,8 +121,14 @@ func PutAccountsConnection(conn *config.PooledConnection) {
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.PutAccountsConnection"),
 		)
-		metrics.DecrementAccountsDBConnectionPoolCount()
 		accountsPool.Put(conn)
+
+		// Update metrics with current pool state
+		metrics.UpdateAccountsDBConnectionPoolMetrics(
+			accountsPool.GetPoolSize(),
+			accountsPool.GetActiveConnections(),
+			accountsPool.GetIdleConnections(),
+		)
 	}
 }
 

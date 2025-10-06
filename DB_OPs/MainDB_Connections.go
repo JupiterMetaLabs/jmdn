@@ -42,15 +42,20 @@ func GetMainDBConnection() (*config.PooledConnection, error) {
 		zap.String(logging.Function, "DB_OPs.GetMainDBConnection"),
 	)
 
-	// Add metrics when connection is acquired
-	metrics.IncrementMainDBConnectionPoolCount()
-
 	Pool, err := mainDBPool.Get()
 	if err != nil {
 		// debugging
 		fmt.Println("failed to get main database connection: %w", err)
 		return nil, fmt.Errorf("failed to get main database connection: %w", err)
 	}
+
+	// Update metrics with current pool state
+	metrics.UpdateMainDBConnectionPoolMetrics(
+		mainDBPool.GetPoolSize(),
+		mainDBPool.GetActiveConnections(),
+		mainDBPool.GetIdleConnections(),
+	)
+
 	// debugging
 	fmt.Println("got main database connection successfully", Pool)
 	return Pool, nil
@@ -68,7 +73,13 @@ func PutMainDBConnection(conn *config.PooledConnection) {
 			zap.String(logging.Function, "DB_OPs.PutMainDBConnection"),
 		)
 		mainDBPool.Put(conn)
-		metrics.DecrementMainDBConnectionPoolCount()
+
+		// Update metrics with current pool state
+		metrics.UpdateMainDBConnectionPoolMetrics(
+			mainDBPool.GetPoolSize(),
+			mainDBPool.GetActiveConnections(),
+			mainDBPool.GetIdleConnections(),
+		)
 	}
 }
 
@@ -224,7 +235,7 @@ func connectToMainDB() error {
 			break
 		}
 	}
-	
+
 	logger.Logger.Info("Main database check completed",
 		zap.Time(logging.Created_at, time.Now()),
 		zap.String(logging.Log_file, LOG_FILE),

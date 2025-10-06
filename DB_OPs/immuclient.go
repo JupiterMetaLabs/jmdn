@@ -1252,15 +1252,30 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 		}()
 	}
 
-	// Traditional approach with single connection
-	return withRetry(ic, "SafeCreate", func() error {
-		// Convert value to bytes
-		valueBytes, err := toBytes(value)
-		if err != nil {
-			return err
-		}
+	// Traditional approach with single connection (no withRetry for pooled connections)
+	// Convert value to bytes
+	valueBytes, err := toBytes(value)
+	if err != nil {
+		return err
+	}
 
-		ic.Logger.Logger.Info("Creating verified key: %s",
+	ic.Logger.Logger.Info("Creating verified key: %s",
+		zap.String("key", key),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.SafeCreate"),
+	)
+
+	// Store the key-value pair with verification
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	verifiedTx, err := ic.Client.VerifiedSet(ctx, []byte(key), valueBytes)
+	if err != nil {
+		ic.Logger.Logger.Error("Failed to create verified key",
+			zap.Error(err),
 			zap.String("key", key),
 			zap.Time(logging.Created_at, time.Now()),
 			zap.String(logging.Log_file, LOG_FILE),
@@ -1268,26 +1283,18 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.SafeCreate"),
 		)
+		return err
+	}
 
-		// Store the key-value pair with verification
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		verifiedTx, err := ic.Client.VerifiedSet(ctx, []byte(key), valueBytes)
-		if err != nil {
-			return err
-		}
-
-		ic.Logger.Logger.Info("Transaction verified: tx=%d, verified=%v",
-			zap.Uint64("tx", verifiedTx.Id),
-			zap.Time(logging.Created_at, time.Now()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.SafeCreate"),
-		)
-		return nil
-	})
+	ic.Logger.Logger.Info("Transaction verified: tx=%d, verified=%v",
+		zap.Uint64("tx", verifiedTx.Id),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.SafeCreate"),
+	)
+	return nil
 }
 
 // SafeRead retrieves a value by key with cryptographic verification
@@ -1345,45 +1352,24 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 		zap.String(logging.Function, "DB_OPs.SafeRead"),
 	)
 
-	// Execute the read with retry logic
-	err = withRetry(ic, "SafeRead", func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		entry, err := ic.Client.VerifiedGet(ctx, []byte(key))
-		if err != nil {
-			if isNotFoundError(err) {
-				ic.Logger.Logger.Warn("Key not found",
-					zap.String("key", key),
-					zap.String(logging.Connection_database, config.DBName),
-					zap.Time(logging.Created_at, time.Now()),
-					zap.String(logging.Log_file, LOG_FILE),
-					zap.String(logging.Topic, TOPIC),
-					zap.String(logging.Loki_url, LOKI_URL),
-					zap.String(logging.Function, "DB_OPs.SafeRead"),
-				)
-				return ErrNotFound
-			}
-			return fmt.Errorf("database read failed: %w", err)
-		}
-
-		ic.Logger.Logger.Info("Successfully read and verified key",
-			zap.String("key", key),
-			zap.Uint64("transaction_id", entry.Tx),
-			zap.Int("value_length", len(entry.Value)),
-			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.SafeRead"),
-		)
-
-		entryValue = entry.Value
-		return nil
-	})
-
+	// Execute the read directly (no withRetry for pooled connections)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	entry, err := ic.Client.VerifiedGet(ctx, []byte(key))
 	if err != nil {
-		ic.Logger.Logger.Error("Failed to read key - retry attempts failed and limit exceeded",
+		if isNotFoundError(err) {
+			ic.Logger.Logger.Warn("Key not found",
+				zap.String("key", key),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.SafeRead"),
+			)
+			return nil, ErrNotFound
+		}
+		ic.Logger.Logger.Error("Database read failed",
 			zap.Error(err),
 			zap.String("key", key),
 			zap.String(logging.Connection_database, config.DBName),
@@ -1393,8 +1379,22 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.SafeRead"),
 		)
-		return nil, err
+		return nil, fmt.Errorf("database read failed: %w", err)
 	}
+
+	ic.Logger.Logger.Info("Successfully read and verified key",
+		zap.String("key", key),
+		zap.Uint64("transaction_id", entry.Tx),
+		zap.Int("value_length", len(entry.Value)),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.SafeRead"),
+	)
+
+	entryValue = entry.Value
 
 	return entryValue, nil
 }
@@ -1647,74 +1647,12 @@ func GetDatabaseState(ic *config.ImmuClient) (*schema.ImmutableState, error) {
 		zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
 	)
 
-	// Execute the operation with retry logic
-	err = withRetry(ic, "GetDatabaseState", func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		dbState, err := ic.Client.CurrentState(ctx)
-		if err != nil {
-			// Check if this is a token expired error
-			if strings.Contains(err.Error(), "token has expired") {
-				ic.Logger.Logger.Warn("Token expired, attempting to reconnect",
-					zap.String(logging.Connection_database, config.DBName),
-					zap.Time(logging.Created_at, time.Now()),
-					zap.String(logging.Log_file, LOG_FILE),
-					zap.String(logging.Topic, TOPIC),
-					zap.String(logging.Loki_url, LOKI_URL),
-					zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
-				)
-				// Re-authenticate to get a new token
-				if reconnErr := reconnect(ic, "GetDatabaseState"); reconnErr != nil {
-					return fmt.Errorf("failed to reconnect after token expiration: %w", reconnErr)
-				}
-
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-
-				// Try again with new token
-				dbState, err = ic.Client.CurrentState(ctx)
-				if err != nil {
-					ic.Logger.Logger.Error("Failed to get database state after reconnection",
-						zap.Error(err),
-						zap.String(logging.Connection_database, config.DBName),
-						zap.Time(logging.Created_at, time.Now()),
-						zap.String(logging.Log_file, LOG_FILE),
-						zap.String(logging.Topic, TOPIC),
-						zap.String(logging.Loki_url, LOKI_URL),
-						zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
-					)
-					return err
-				}
-			} else {
-				ic.Logger.Logger.Error("Failed to get database state",
-					zap.Error(err),
-					zap.String(logging.Connection_database, config.DBName),
-					zap.Time(logging.Created_at, time.Now()),
-					zap.String(logging.Log_file, LOG_FILE),
-					zap.String(logging.Topic, TOPIC),
-					zap.String(logging.Loki_url, LOKI_URL),
-					zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
-				)
-				return fmt.Errorf("failed to get database state: %w", err)
-			}
-		}
-
-		state = dbState
-		ic.Logger.Logger.Info("Successfully retrieved database state",
-			zap.Uint64("tx_id", state.TxId),
-			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
-		)
-
-		return nil
-	})
-
+	// Execute the operation directly (no withRetry for pooled connections)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	state, err = ic.Client.CurrentState(ctx)
 	if err != nil {
-		ic.Logger.Logger.Error("Failed to get database state - retry attempts failed and limit exceeded",
+		ic.Logger.Logger.Error("Failed to get database state",
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now()),
@@ -1725,6 +1663,16 @@ func GetDatabaseState(ic *config.ImmuClient) (*schema.ImmutableState, error) {
 		)
 		return nil, err
 	}
+
+	ic.Logger.Logger.Info("Successfully retrieved database state",
+		zap.Uint64("tx_id", state.TxId),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetDatabaseState"),
+	)
 
 	return state, nil
 }

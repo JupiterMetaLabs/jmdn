@@ -9,7 +9,7 @@ import (
 	"gossipnode/config"
 	hashmap "gossipnode/crdt/HashMap"
 	"io"
-		"os"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -166,6 +166,7 @@ func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, err
 	for {
 		chunk, isPrefix, err := reader.ReadLine()
 		if err != nil {
+			log.Error().Err(err).Msg("Failed to read message chunk")
 			return nil, fmt.Errorf("failed to read message: %w", err)
 		}
 
@@ -176,11 +177,23 @@ func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, err
 		}
 	}
 
-	// Add debugging to show message size
-	log.Debug().Int("bytes", len(msgData)).Msg("Read message data")
+	// Add debugging to show message size and content
+	log.Info().
+		Int("bytes", len(msgData)).
+		Str("raw_data", string(msgData)).
+		Msg("Read message data")
+
+	if len(msgData) == 0 {
+		return nil, fmt.Errorf("received empty message")
+	}
 
 	var msg SyncMessage
 	if err := json.Unmarshal(msgData, &msg); err != nil {
+		log.Error().
+			Err(err).
+			Int("bytes", len(msgData)).
+			Str("raw_data", string(msgData)).
+			Msg("Failed to unmarshal message")
 		return nil, fmt.Errorf("failed to unmarshal message (%d bytes): %w", len(msgData), err)
 	}
 
@@ -190,22 +203,33 @@ func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, err
 func writeMessage(writer *bufio.Writer, stream network.Stream, msg *SyncMessage) error {
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal message")
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 	msgBytes = append(msgBytes, '\n')
 
+	// Debug: Log the message being written
+	log.Info().
+		Int("bytes", len(msgBytes)).
+		Str("raw_data", string(msgBytes)).
+		Msg("Writing message data")
+
 	if err := stream.SetWriteDeadline(time.Now().Add(ResponseTimeout)); err != nil {
+		log.Error().Err(err).Msg("Failed to set write deadline")
 		return fmt.Errorf("failed to set write deadline: %w", err)
 	}
 
 	if _, err := writer.Write(msgBytes); err != nil {
+		log.Error().Err(err).Msg("Failed to write message bytes")
 		return fmt.Errorf("failed to write message: %w", err)
 	}
 
 	if err := writer.Flush(); err != nil {
+		log.Error().Err(err).Msg("Failed to flush message")
 		return fmt.Errorf("failed to flush message: %w", err)
 	}
 
+	log.Info().Msg("Message written and flushed successfully")
 	return nil
 }
 
@@ -353,8 +377,7 @@ func (fs *FastSync) handleHashMapExchangeSYNC(peerID peer.ID, msg *SyncMessage) 
 		SYNC_HashMap_Accounts.Insert(key)
 	}
 
-
-	return &SyncMessage{
+	response := &SyncMessage{
 		Type:      TypeHashMapExchangeSYNC,
 		SenderID:  fs.host.ID().String(),
 		Timestamp: time.Now().Unix(),
@@ -373,7 +396,18 @@ func (fs *FastSync) handleHashMapExchangeSYNC(peerID peer.ID, msg *SyncMessage) 
 				Checksum:  SYNC_HashMap_Accounts.Fingerprint(),
 			},
 		},
-	}, nil
+	}
+
+	// Debug: Log the response being sent
+	log.Info().
+		Str("response_type", response.Type).
+		Str("response_data", string(response.Data)).
+		Int("data_length", len(response.Data)).
+		Int("main_keys", SYNC_HashMap_MAIN.Size()).
+		Int("accounts_keys", SYNC_HashMap_Accounts.Size()).
+		Msg("Sending Phase2_Response")
+
+	return response, nil
 }
 
 func returnStream(fs *FastSync, peerID peer.ID) (network.Stream, error) {
@@ -483,10 +517,8 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 		return nil, fmt.Errorf("failed to get valid HashMap from server: %w", err)
 	}
 
-
 	// Phase3: Request the AVRO file from the server
 	// Server will send the AVRO file to the client
-
 
 	err = fs.Phase3_FileRequest(Phase2, peerID, stream, writer, reader)
 	if err != nil {
