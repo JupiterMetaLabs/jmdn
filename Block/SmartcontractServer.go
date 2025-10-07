@@ -105,12 +105,12 @@ func deployContract(c *gin.Context) {
     }
 
     // Connect to DB
-    mainDBClient, err := DB_OPs.New()
+    mainDBClient, err := DB_OPs.GetMainDBConnection()
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
         return
     }
-    defer DB_OPs.Close(mainDBClient)
+    defer DB_OPs.PutMainDBConnection(mainDBClient)
 
     // Create state DB and EVM
     stateDB := SmartContract.NewImmuStateDB(mainDBClient)
@@ -188,12 +188,12 @@ func executeContract(c *gin.Context) {
     }
 
     // Connect to DB
-    mainDBClient, err := DB_OPs.New()
+    mainDBClient, err := DB_OPs.GetMainDBConnection()
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
         return
     }
-    defer DB_OPs.Close(mainDBClient)
+    defer DB_OPs.PutMainDBConnection(mainDBClient)
 
     // Create state DB and EVM
     stateDB := SmartContract.NewImmuStateDB(mainDBClient)

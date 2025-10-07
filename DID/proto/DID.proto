@@ -17,9 +17,6 @@ service DIDService {
   
   // Get stats about the DID system
   rpc GetDIDStats(google.protobuf.Empty) returns (DIDStats);
-  
-  // Update an existing DID
-  rpc UpdateDID(UpdateDIDRequest) returns (UpdateDIDResponse);
 }
 
 message RegisterDIDRequest {
@@ -45,9 +42,12 @@ message DIDResponse {
 message DIDInfo {
   string did = 1;
   string public_key = 2;
-  string balance = 3;
-  int64 created_at = 4;
-  int64 updated_at = 5;
+  int64 created_at = 3;
+  int64 updated_at = 4;
+  string balance = 5;
+  string nonce = 6;
+  string metadata = 7;
+  string account_type = 8;
 }
 
 message ListDIDsRequest {
@@ -64,29 +64,4 @@ message DIDStats {
   int32 total_dids = 1;
   string total_balance = 2;
   int64 last_update = 3;
-}
-
-// New messages for UpdateDID RPC
-message UpdateDIDRequest {
-  string did = 1;  // Required - the DID to update
-  string public_key = 2;  // Optional - new public key
-  string balance = 3;  // Optional - new balance
-}
-
-message UpdateDIDResponse {
-  bool success = 1;
-  string message = 2;
-  DIDInfo did_info = 3;
-}
-
-// Optional enhancement for dedicated balance operations
-enum BalanceOperation {
-  ADD = 0;
-  SUBTRACT = 1;
-}
-
-message UpdateDIDBalanceRequest {
-  string did = 1;  // The DID to update
-  string amount = 2;  // The amount to add or subtract
-  BalanceOperation operation = 3;  // Operation to perform
 }

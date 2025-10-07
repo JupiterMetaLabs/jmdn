@@ -41,7 +41,6 @@ message Transaction {
   string max_fee = 10;
   string max_priority_fee = 11;
   string data = 12;
-  string signature = 13;
   string v = 14; // EIP-155 v value
   string r = 15;
   string s = 16; // EIP-155 r and s values

@@ -116,12 +116,16 @@ func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
 // NewNode creates and starts a libp2p node
 func NewNode() (*config.Node, error) {
 	// Load or create Peer ID
+	fmt.Println("Loading or creating private key...")
 	privKey, peerID, err := loadOrCreatePrivateKey()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load/create Peer ID: %v", err)
 	}
+	fmt.Println("Private key loaded successfully")
 
+	fmt.Println("Getting libp2p metrics registerer...")
 	libp2pRegisterer := metrics.GetLibp2pRegisterer()
+	fmt.Println("Creating libp2p host...")
 
 	h, err := libp2p.New(
 		libp2p.Identity(privKey), // Peer ID
@@ -143,11 +147,14 @@ func NewNode() (*config.Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to start libp2p: %v", err)
 	}
+	fmt.Println("libp2p host created successfully")
 
+	fmt.Println("Initializing block propagation...")
 	if err := messaging.InitBlockPropagation(h); err != nil {
 		fmt.Errorf("failed to initialize block propagation: %v", err)
 		return nil, err
 	}
+	fmt.Println("Block propagation initialized successfully")
 
 	// Verify the host's peer ID matches what we expect
 	if peerID.String() != h.ID().String() {

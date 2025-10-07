@@ -159,3 +159,13 @@ func (s *Server) StreamLogs(req *proto.LogsSubReq, stream proto.Chain_StreamLogs
 	log.Warn().Msg("gRPC: StreamLogs is not implemented")
 	return status.Errorf(codes.Unimplemented, "method StreamLogs not implemented")
 }
+
+func (s *Server) GetChainID(ctx context.Context, req *proto.Empty) (*proto.Quantity, error) {
+	log.Info().Msg("gRPC: GetChainID")
+	quantity, err := _GetChainID(req)
+	if err != nil {
+		log.Error().Err(err).Msg("gRPC: GetChainID failed")
+		return nil, status.Errorf(codes.Internal, "failed to get chain ID: %v", err)
+	}
+	return quantity, nil
+}
