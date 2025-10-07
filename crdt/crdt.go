@@ -1,427 +1,302 @@
 package crdt
 
 import (
-	"encoding/json"
 	"fmt"
-
-	// "time"
-
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-
-	"github.com/rs/zerolog/log"
 )
 
 // CRDT is an interface for conflict-free replicated data types
 type CRDT interface {
-    // GetKey returns the unique identifier for this CRDT
-    GetKey() string
-    
-    // GetTimestamp returns the vector timestamp of this CRDT
-    GetTimestamp() VectorClock
-    
-    // Merge combines this CRDT with another one and returns the result
-    Merge(other CRDT) (CRDT, error)
+	// GetKey returns the unique identifier for this CRDT
+	GetKey() string
+
+	// GetTimestamp returns the vector timestamp of this CRDT
+	GetTimestamp() VectorClock
+
+	// Merge combines this CRDT with another one and returns the result
+	Merge(other CRDT) (CRDT, error)
 }
+
+// =============================
+// === Vector Clock Section ===
+// =============================
 
 // VectorClock represents a vector clock for tracking causality
 type VectorClock map[string]uint64
 
 // Compare compares two vector clocks and returns:
-//   -1 if vc is less than other (happens-before)
-//    0 if vc is concurrent with other
-//    1 if vc is greater than other (happens-after)
+//
+//	-1 if vc < other (happens-before)
+//	 0 if vc || other (concurrent or equal)
+//	 1 if vc > other (happens-after)
 func (vc VectorClock) Compare(other VectorClock) int {
-    less := false
-    greater := false
-    
-    // Check entries in our clock
-    for node, timestamp := range vc {
-        otherTimestamp, exists := other[node]
-        if !exists {
-            greater = true
-        } else if timestamp > otherTimestamp {
-            greater = true
-        } else if timestamp < otherTimestamp {
-            less = true
-        }
-    }
-    
-    // Check for entries in other clock that we don't have
-    for node := range other {
-        if _, exists := vc[node]; !exists {
-            less = true
-        }
-    }
-    
-    // Determine relationship
-    if less && greater {
-        return 0 // Concurrent changes
-    } else if greater {
-        return 1 // Happens-after
-    } else if less {
-        return -1 // Happens-before
-    }
-    return 0 // Equal clocks
+	less := false
+	greater := false
+	equal := true
+
+	// Check all nodes in both clocks
+	allNodes := make(map[string]bool)
+	for node := range vc {
+		allNodes[node] = true
+	}
+	for node := range other {
+		allNodes[node] = true
+	}
+
+	for node := range allNodes {
+		ourTS, ourExists := vc[node]
+		otherTS, otherExists := other[node]
+
+		if !ourExists {
+			// We don't have this node, other does
+			less = true
+			equal = false
+		} else if !otherExists {
+			// Other doesn't have this node, we do
+			greater = true
+			equal = false
+		} else {
+			// Both have this node
+			if ourTS > otherTS {
+				greater = true
+				equal = false
+			} else if ourTS < otherTS {
+				less = true
+				equal = false
+			}
+		}
+	}
+
+	if equal {
+		return 0 // equal
+	} else if less && greater {
+		return 0 // concurrent
+	} else if greater {
+		return 1 // happens-after
+	} else {
+		return -1 // happens-before
+	}
 }
 
 // Merge combines two vector clocks, taking the maximum value for each node
 func (vc VectorClock) Merge(other VectorClock) VectorClock {
-    result := make(VectorClock)
-    
-    // Copy our clock
-    for node, ts := range vc {
-        result[node] = ts
-    }
-    
-    // Merge with other clock, taking max values
-    for node, otherTS := range other {
-        if ourTS, exists := result[node]; !exists || otherTS > ourTS {
-            result[node] = otherTS
-        }
-    }
-    
-    return result
+	result := make(VectorClock)
+	for node, ts := range vc {
+		result[node] = ts
+	}
+	for node, otherTS := range other {
+		if ourTS, exists := result[node]; !exists || otherTS > ourTS {
+			result[node] = otherTS
+		}
+	}
+	return result
 }
 
 // Increment increases the counter for the specified node
 func (vc VectorClock) Increment(nodeID string) {
-    if current, exists := vc[nodeID]; exists {
-        vc[nodeID] = current + 1
-    } else {
-        vc[nodeID] = 1
-    }
+	if current, exists := vc[nodeID]; exists {
+		vc[nodeID] = current + 1
+	} else {
+		vc[nodeID] = 1
+	}
 }
 
-// LWWSet implements a Last-Writer-Wins Set CRDT
+// =============================
+// === LWW Set (Last Writer Wins)
+// =============================
+
 type LWWSet struct {
-    Key       string                 `json:"key"`
-    Adds      map[string]VectorClock `json:"adds"`
-    Removes   map[string]VectorClock `json:"removes"`
-    Timestamp VectorClock            `json:"timestamp"`
+	Key       string                 `json:"key"`
+	Adds      map[string]VectorClock `json:"adds"`
+	Removes   map[string]VectorClock `json:"removes"`
+	Timestamp VectorClock            `json:"timestamp"`
 }
 
-// NewLWWSet creates a new Last-Writer-Wins Set
+// NewLWWSet creates a new LWW set
 func NewLWWSet(key string) *LWWSet {
-    return &LWWSet{
-        Key:       key,
-        Adds:      make(map[string]VectorClock),
-        Removes:   make(map[string]VectorClock),
-        Timestamp: make(VectorClock),
-    }
+	return &LWWSet{
+		Key:       key,
+		Adds:      make(map[string]VectorClock),
+		Removes:   make(map[string]VectorClock),
+		Timestamp: make(VectorClock),
+	}
 }
 
-// GetKey returns the unique identifier for this CRDT
-func (s *LWWSet) GetKey() string {
-    return s.Key
-}
+func (s *LWWSet) GetKey() string                { return s.Key }
+func (s *LWWSet) GetTimestamp() VectorClock     { return s.Timestamp }
+func (s *LWWSet) Add(nodeID, element string)    { s.applyOp(nodeID, element, true) }
+func (s *LWWSet) Remove(nodeID, element string) { s.applyOp(nodeID, element, false) }
 
-// GetTimestamp returns the vector timestamp of this CRDT
-func (s *LWWSet) GetTimestamp() VectorClock {
-    return s.Timestamp
-}
-
-// Add adds an element to the set
-func (s *LWWSet) Add(nodeID, element string) {
-    // Clone and increment timestamp
-    ts := make(VectorClock)
-    for k, v := range s.Timestamp {
-        ts[k] = v
-    }
-    ts.Increment(nodeID)
-    
-    // Add element with new timestamp
-    s.Adds[element] = ts
-    
-    // Update CRDT timestamp
-    s.Timestamp = ts
-}
-
-// Remove removes an element from the set
-func (s *LWWSet) Remove(nodeID, element string) {
-    // Clone and increment timestamp
-    ts := make(VectorClock)
-    for k, v := range s.Timestamp {
-        ts[k] = v
-    }
-    ts.Increment(nodeID)
-    
-    // Mark element as removed with new timestamp
-    s.Removes[element] = ts
-    
-    // Update CRDT timestamp
-    s.Timestamp = ts
+func (s *LWWSet) applyOp(nodeID, element string, isAdd bool) {
+	ts := make(VectorClock)
+	for k, v := range s.Timestamp {
+		ts[k] = v
+	}
+	ts.Increment(nodeID)
+	if isAdd {
+		s.Adds[element] = ts
+	} else {
+		s.Removes[element] = ts
+	}
+	s.Timestamp = ts
 }
 
 // Contains checks if an element is in the set
 func (s *LWWSet) Contains(element string) bool {
-    addTS, addExists := s.Adds[element]
-    removeTS, removeExists := s.Removes[element]
-    
-    // If element was never added, it's not in the set
-    if !addExists {
-        return false
-    }
-    
-    // If element was never removed, it's in the set
-    if !removeExists {
-        return true
-    }
-    
-    // Compare timestamps - removal wins in case of tie
-    return addTS.Compare(removeTS) > 0
+	addTS, added := s.Adds[element]
+	rmTS, removed := s.Removes[element]
+	if !added {
+		return false
+	}
+	if !removed {
+		return true
+	}
+	// Removal wins on tie
+	return addTS.Compare(rmTS) > 0
 }
 
-// GetElements returns all elements currently in the set
+// GetElements returns current visible elements
 func (s *LWWSet) GetElements() []string {
-    var elements []string
-    
-    for element := range s.Adds {
-        if s.Contains(element) {
-            elements = append(elements, element)
-        }
-    }
-    
-    return elements
+	var elems []string
+	for el := range s.Adds {
+		if s.Contains(el) {
+			elems = append(elems, el)
+		}
+	}
+	return elems
 }
 
-// Merge combines this CRDT with another one
+// Merge merges another LWWSet into this one
 func (s *LWWSet) Merge(other CRDT) (CRDT, error) {
-    otherSet, ok := other.(*LWWSet)
-    if !ok {
-        return nil, fmt.Errorf("can't merge different CRDT types")
-    }
-    
-    if s.Key != otherSet.Key {
-        return nil, fmt.Errorf("can't merge sets with different keys")
-    }
-    
-    // Create a new set for the result
-    result := NewLWWSet(s.Key)
-    
-    // Merge adds
-    for element, ts := range s.Adds {
-        result.Adds[element] = ts
-    }
-    for element, ts := range otherSet.Adds {
-        if ourTS, exists := result.Adds[element]; !exists || ts.Compare(ourTS) != -1 {
-            result.Adds[element] = ts
-        }
-    }
-    
-    // Merge removes
-    for element, ts := range s.Removes {
-        result.Removes[element] = ts
-    }
-    for element, ts := range otherSet.Removes {
-        if ourTS, exists := result.Removes[element]; !exists || ts.Compare(ourTS) != -1 {
-            result.Removes[element] = ts
-        }
-    }
-    
-    // Merge timestamps
-    result.Timestamp = s.Timestamp.Merge(otherSet.Timestamp)
-    
-    return result, nil
+	o, ok := other.(*LWWSet)
+	if !ok {
+		return nil, fmt.Errorf("cannot merge different CRDT types")
+	}
+	if s.Key != o.Key {
+		return nil, fmt.Errorf("cannot merge sets with different keys")
+	}
+
+	res := NewLWWSet(s.Key)
+
+	// merge adds
+	for e, ts := range s.Adds {
+		res.Adds[e] = ts
+	}
+	for e, ts := range o.Adds {
+		if our, exists := res.Adds[e]; !exists {
+			res.Adds[e] = ts
+		} else {
+			// Keep the later timestamp, or either if concurrent
+			compare := ts.Compare(our)
+			if compare > 0 {
+				// ts is later
+				res.Adds[e] = ts
+			} else if compare == 0 {
+				// Concurrent - keep the first one for determinism
+				// (in practice, you might want to use a tie-breaker like node ID)
+				res.Adds[e] = our
+			}
+		}
+	}
+
+	// merge removes
+	for e, ts := range s.Removes {
+		res.Removes[e] = ts
+	}
+	for e, ts := range o.Removes {
+		if our, exists := res.Removes[e]; !exists {
+			res.Removes[e] = ts
+		} else {
+			// Keep the later timestamp, or either if concurrent
+			compare := ts.Compare(our)
+			if compare > 0 {
+				// ts is later
+				res.Removes[e] = ts
+			} else if compare == 0 {
+				// Concurrent - keep the first one for determinism
+				// (in practice, you might want to use a tie-breaker like node ID)
+				res.Removes[e] = our
+			}
+		}
+	}
+
+	res.Timestamp = s.Timestamp.Merge(o.Timestamp)
+	return res, nil
 }
 
-// Counter implements a Grow-Only Counter CRDT
+// =============================
+// === Grow-only Counter (G-Counter)
+// =============================
+
 type Counter struct {
-    Key       string              `json:"key"`
-    Counters  map[string]uint64   `json:"counters"`
-    Timestamp VectorClock         `json:"timestamp"`
+	Key       string            `json:"key"`
+	Counters  map[string]uint64 `json:"counters"`
+	Timestamp VectorClock       `json:"timestamp"`
 }
 
-// NewCounter creates a new Counter CRDT
 func NewCounter(key string) *Counter {
-    return &Counter{
-        Key:       key,
-        Counters:  make(map[string]uint64),
-        Timestamp: make(VectorClock),
-    }
+	return &Counter{
+		Key:       key,
+		Counters:  make(map[string]uint64),
+		Timestamp: make(VectorClock),
+	}
 }
 
-// GetKey returns the unique identifier for this CRDT
-func (c *Counter) GetKey() string {
-    return c.Key
-}
+func (c *Counter) GetKey() string            { return c.Key }
+func (c *Counter) GetTimestamp() VectorClock { return c.Timestamp }
 
-// GetTimestamp returns the vector timestamp of this CRDT
-func (c *Counter) GetTimestamp() VectorClock {
-    return c.Timestamp
-}
-
-// Increment increases the counter for the specified node
+// Increment increases the counter for a given node
+// This method is used internally by MemStore; external users should use Engine.CounterInc
 func (c *Counter) Increment(nodeID string, value uint64) {
-    if current, exists := c.Counters[nodeID]; exists {
-        c.Counters[nodeID] = current + value
-    } else {
-        c.Counters[nodeID] = value
-    }
-    
-    c.Timestamp.Increment(nodeID)
+	c.Counters[nodeID] += value
+	c.Timestamp.Increment(nodeID)
 }
 
-// Value returns the current value of the counter
+// IncrementWithTimestamp increases the counter with a specific timestamp
+// This is used when applying operations with provided timestamps
+func (c *Counter) IncrementWithTimestamp(nodeID string, value uint64, ts VectorClock) {
+	c.Counters[nodeID] += value
+	if len(ts) > 0 {
+		// Use provided timestamp and merge with current
+		c.Timestamp = c.Timestamp.Merge(ts)
+	} else {
+		// Fallback to incrementing current timestamp
+		c.Timestamp.Increment(nodeID)
+	}
+}
+
 func (c *Counter) Value() uint64 {
-    var total uint64
-    for _, value := range c.Counters {
-        total += value
-    }
-    return total
+	var total uint64
+	for _, v := range c.Counters {
+		total += v
+	}
+	return total
 }
 
-// Merge combines this CRDT with another one
+// Merge merges another counter
 func (c *Counter) Merge(other CRDT) (CRDT, error) {
-    otherCounter, ok := other.(*Counter)
-    if !ok {
-        return nil, fmt.Errorf("can't merge different CRDT types")
-    }
-    
-    if c.Key != otherCounter.Key {
-        return nil, fmt.Errorf("can't merge counters with different keys")
-    }
-    
-    // Create a new counter for the result
-    result := NewCounter(c.Key)
-    
-    // Merge counters by taking max values
-    for nodeID, value := range c.Counters {
-        result.Counters[nodeID] = value
-    }
-    for nodeID, value := range otherCounter.Counters {
-        if ourValue, exists := result.Counters[nodeID]; !exists || value > ourValue {
-            result.Counters[nodeID] = value
-        }
-    }
-    
-    // Merge timestamps
-    result.Timestamp = c.Timestamp.Merge(otherCounter.Timestamp)
-    
-    return result, nil
-}
+	o, ok := other.(*Counter)
+	if !ok {
+		return nil, fmt.Errorf("cannot merge different CRDT types")
+	}
+	if c.Key != o.Key {
+		return nil, fmt.Errorf("cannot merge counters with different keys")
+	}
 
-// Engine manages CRDT operations and persistence
-type Engine struct {
-    db *config.PooledConnection
-}
-
-// NewEngine creates a new CRDT engine
-func NewEngine(db *config.PooledConnection) *Engine {
-    return &Engine{
-        db: db,
-    }
-}
-
-// IsCRDT checks if a key represents a CRDT
-func (e *Engine) IsCRDT(key string) bool {
-    // Check if key has our CRDT prefix
-    return len(key) > 6 && key[:5] == "crdt:"
-}
-
-// StoreCRDT persists a CRDT to the database
-func (e *Engine) StoreCRDT(crdt CRDT) error {
-    // Serialize the CRDT
-    data, err := json.Marshal(crdt)
-    if err != nil {
-        return fmt.Errorf("failed to serialize CRDT: %w", err)
-    }
-    
-    // Store with CRDT prefix
-    key := "crdt:" + crdt.GetKey()
-    return DB_OPs.Create(e.db, key, data)
-}
-
-// LoadCRDT retrieves a CRDT from the database
-func (e *Engine) LoadCRDT(key string) (CRDT, error) {
-    // Ensure key has prefix
-    if !e.IsCRDT(key) {
-        key = "crdt:" + key
-    }
-    
-    // Retrieve data
-    data, err := DB_OPs.Read(e.db,key)
-    if err != nil {
-        return nil, fmt.Errorf("failed to read CRDT: %w", err)
-    }
-    
-    // Determine CRDT type and deserialize
-    return e.DeserializeCRDT(key, data, nil)
-}
-
-// DeserializeCRDT deserializes CRDT data based on the key
-func (e *Engine) DeserializeCRDT(key string, data []byte, target CRDT) (CRDT, error) {
-    // Extract base key without prefix
-    baseKey := key
-    if e.IsCRDT(key) {
-        baseKey = key[5:]
-    }
-    
-    // Check key pattern to determine type
-    var result CRDT
-    
-    // If target is provided, use its type
-    if target != nil {
-        result = target
-    } else if len(baseKey) > 4 && baseKey[:4] == "set:" {
-        result = &LWWSet{}
-    } else if len(baseKey) > 8 && baseKey[:8] == "counter:" {
-        result = &Counter{}
-    } else {
-        // Default to LWWSet
-        result = &LWWSet{}
-    }
-    
-    // Deserialize
-    if err := json.Unmarshal(data, result); err != nil {
-        return nil, fmt.Errorf("failed to deserialize CRDT: %w", err)
-    }
-    
-    return result, nil
-}
-
-// MergeCRDT merges a CRDT with existing one in database
-func (e *Engine) MergeCRDT(incoming CRDT) (CRDT, error) {
-    key := "crdt:" + incoming.GetKey()
-
-    log.Debug().
-        Str("key", incoming.GetKey()).
-        Interface("incoming_type", fmt.Sprintf("%T", incoming)).
-        Msg("Attempting to merge CRDT") 
-
-    // Try to load existing CRDT
-    existing, err := e.LoadCRDT(key)
-    if err != nil {
-        // If not found, just return the incoming CRDT
-        if err.Error() == "key not found" {
-            return incoming, nil
-        }
-        return nil, err
-    }
-    
-    // Merge CRDTs
-    merged, err := existing.Merge(incoming)
-    if err != nil {
-        return nil, fmt.Errorf("failed to merge CRDTs: %w", err)
-    }
-    
-    return merged, nil
-}
-
-// CreateLWWSet creates and stores a new LWWSet
-func (e *Engine) CreateLWWSet(key string) (*LWWSet, error) {
-    set := NewLWWSet(key)
-    if err := e.StoreCRDT(set); err != nil {
-        return nil, err
-    }
-    return set, nil
-}
-
-// CreateCounter creates and stores a new Counter
-func (e *Engine) CreateCounter(key string) (*Counter, error) {
-    counter := NewCounter(key)
-    if err := e.StoreCRDT(counter); err != nil {
-        return nil, err
-    }
-    return counter, nil
+	res := NewCounter(c.Key)
+	for n, v := range c.Counters {
+		res.Counters[n] = v
+	}
+	for n, v := range o.Counters {
+		if our, exists := res.Counters[n]; !exists {
+			res.Counters[n] = v
+		} else {
+			// For counters, we take the maximum value per node
+			// This is correct for G-Counters (grow-only counters)
+			if v > our {
+				res.Counters[n] = v
+			}
+		}
+	}
+	res.Timestamp = c.Timestamp.Merge(o.Timestamp)
+	return res, nil
 }
