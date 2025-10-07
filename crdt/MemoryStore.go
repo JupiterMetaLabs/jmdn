@@ -14,6 +14,8 @@ type MemStore struct {
 	ops      *OpHeap
 	maxBytes int64 // cap of heap, e.g., 50<<20
 	metrics  StoreMetrics
+	// Eviction handling
+	evictionHandler func([]*Op) error // Called when operations are evicted
 }
 
 type StoreMetrics struct {
@@ -27,6 +29,16 @@ func NewMemStore(maxBytes int64) *MemStore {
 		objects:  make(map[string]CRDT),
 		ops:      NewOpHeap(maxBytes),
 		maxBytes: maxBytes,
+	}
+}
+
+// NewMemStoreWithEviction creates a MemStore with eviction handling
+func NewMemStoreWithEviction(maxBytes int64, evictionHandler func([]*Op) error) *MemStore {
+	return &MemStore{
+		objects:         make(map[string]CRDT),
+		ops:             NewOpHeap(maxBytes),
+		maxBytes:        maxBytes,
+		evictionHandler: evictionHandler,
 	}
 }
 
@@ -91,6 +103,15 @@ func (s *MemStore) AppendOp(op *Op) error {
 	if len(evicted) > 0 {
 		s.metrics.TotalOpsEvicted += uint64(len(evicted))
 		s.metrics.LastEvictAt = time.Now()
+
+		// Handle evicted operations if handler is set
+		if s.evictionHandler != nil {
+			if err := s.evictionHandler(evicted); err != nil {
+				// Log error but don't fail the operation
+				// In production, you might want to use a proper logger
+				_ = err // TODO: Add proper logging
+			}
+		}
 	}
 	s.metrics.TotalOpsAppended++
 	return nil
@@ -149,4 +170,104 @@ func (s *MemStore) GetCounterValue(key string) (uint64, bool) {
 		return 0, false
 	}
 	return cnt.Value(), true
+}
+
+// PruneVectorClocks removes entries for inactive nodes from all CRDT objects
+// This helps prevent memory leaks in long-running systems
+func (s *MemStore) PruneVectorClocks(activeNodes map[string]bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, crdt := range s.objects {
+		switch v := crdt.(type) {
+		case *LWWSet:
+			// Prune timestamps in adds and removes
+			for _, ts := range v.Adds {
+				ts.Prune(activeNodes)
+			}
+			for _, ts := range v.Removes {
+				ts.Prune(activeNodes)
+			}
+			// Prune main timestamp
+			v.Timestamp.Prune(activeNodes)
+		case *Counter:
+			// Prune main timestamp
+			v.Timestamp.Prune(activeNodes)
+		}
+	}
+}
+
+// GetActiveNodes returns all active node IDs across all CRDT objects
+func (s *MemStore) GetActiveNodes() map[string]bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	activeNodes := make(map[string]bool)
+
+	for _, crdt := range s.objects {
+		switch v := crdt.(type) {
+		case *LWWSet:
+			// Collect nodes from all timestamps
+			for _, ts := range v.Adds {
+				for node := range ts.GetActiveNodes() {
+					activeNodes[node] = true
+				}
+			}
+			for _, ts := range v.Removes {
+				for node := range ts.GetActiveNodes() {
+					activeNodes[node] = true
+				}
+			}
+			for node := range v.Timestamp.GetActiveNodes() {
+				activeNodes[node] = true
+			}
+		case *Counter:
+			for node := range v.Timestamp.GetActiveNodes() {
+				activeNodes[node] = true
+			}
+		}
+	}
+
+	return activeNodes
+}
+
+// GetAllCRDTs returns a copy of all CRDTs in the store for export
+// This is thread-safe and returns a snapshot of the current state
+func (s *MemStore) GetAllCRDTs() map[string]CRDT {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Create a deep copy to avoid race conditions
+	result := make(map[string]CRDT)
+	for key, crdt := range s.objects {
+		// Create a new instance of the same type
+		switch v := crdt.(type) {
+		case *LWWSet:
+			newSet := NewLWWSet(key)
+			// Copy the data
+			for element, timestamp := range v.Adds {
+				newSet.Adds[element] = timestamp
+			}
+			for element, timestamp := range v.Removes {
+				newSet.Removes[element] = timestamp
+			}
+			// Copy the global timestamp
+			for node, ts := range v.Timestamp {
+				newSet.Timestamp[node] = ts
+			}
+			result[key] = newSet
+		case *Counter:
+			newCounter := NewCounter(key)
+			// Copy the data
+			for nodeID, value := range v.Counters {
+				newCounter.Counters[nodeID] = value
+			}
+			// Copy the global timestamp
+			for node, ts := range v.Timestamp {
+				newCounter.Timestamp[node] = ts
+			}
+			result[key] = newCounter
+		}
+	}
+	return result
 }

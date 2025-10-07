@@ -1,7 +1,6 @@
 package crdt
 
 import (
-	"gossipnode/DB_OPs"
 	"time"
 	// "gossipnode/config"
 )
@@ -22,6 +21,10 @@ func NewEngineMemOnly(maxHeapBytes int64) *Engine {
 // LWWAdd adds an element to a Last-Writer-Wins set
 // If ts is empty, a new timestamp will be generated automatically
 func (e *Engine) LWWAdd(nodeID, key, element string, ts VectorClock) error {
+	if err := validateInput(nodeID, key, element); err != nil {
+		return err
+	}
+
 	return e.mem.AppendOp(&Op{
 		Key:      key,
 		Kind:     OpAdd,
@@ -35,6 +38,10 @@ func (e *Engine) LWWAdd(nodeID, key, element string, ts VectorClock) error {
 // LWWRemove removes an element from a Last-Writer-Wins set
 // If ts is empty, a new timestamp will be generated automatically
 func (e *Engine) LWWRemove(nodeID, key, element string, ts VectorClock) error {
+	if err := validateInput(nodeID, key, element); err != nil {
+		return err
+	}
+
 	return e.mem.AppendOp(&Op{
 		Key:      key,
 		Kind:     OpRemove,
@@ -48,6 +55,10 @@ func (e *Engine) LWWRemove(nodeID, key, element string, ts VectorClock) error {
 // CounterInc increments a counter by the specified delta
 // If ts is empty, a new timestamp will be generated automatically
 func (e *Engine) CounterInc(nodeID, key string, delta uint64, ts VectorClock) error {
+	if err := validateCounterInput(nodeID, key, delta); err != nil {
+		return err
+	}
+
 	return e.mem.AppendOp(&Op{
 		Key:      key,
 		Kind:     OpCounterInc,
@@ -66,14 +77,8 @@ func (e *Engine) GetCounter(key string) (uint64, bool) {
 	return e.mem.GetCounterValue(key)
 }
 
-// Pseudocode; implement your own encoder/DB write batching
-func (e *Engine) SnapshotAll(encode func(map[string]CRDT) ([]byte, error)) error {
-	e.mem.mu.RLock()
-	defer e.mem.mu.RUnlock()
-	blob, err := encode(e.mem.objects)
-	if err != nil {
-		return err
-	}
-	// Single key snapshot (or per-key if you prefer). Crucially: not per op.
-	return DB_OPs.Create(nil, "crdt_snapshot", blob)
+// GetAllCRDTs returns all CRDTs from the memory store for export
+// This provides access to the internal memory store's GetAllCRDTs method
+func (e *Engine) GetAllCRDTs() map[string]CRDT {
+	return e.mem.GetAllCRDTs()
 }

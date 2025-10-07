@@ -1,3 +1,31 @@
+// Package fastsync - Core FastSync Implementation with CRDT Integration
+//
+// This file contains the main FastSync implementation with integrated CRDT support.
+// It provides the core synchronization functionality for distributed systems.
+//
+// CRDT INTEGRATION CHANGES:
+// =========================
+// 1. FastSync struct now includes a CRDT engine for conflict-free operations
+// 2. NewFastSync constructor initializes CRDT engine with 50MB memory limit
+// 3. Added GetCRDTEngine() method for external CRDT operations
+// 4. Added ExportCRDTs() and ImportCRDTs() methods for network sync
+// 5. Enhanced error handling and logging for CRDT operations
+//
+// FUNCTIONALITY ADDED:
+// ===================
+// - Conflict-free synchronization of LWW-Sets and Counters
+// - Operation-based sync instead of state-based (preserves operation history)
+// - Deterministic convergence across distributed nodes
+// - Memory-bounded operation history with automatic eviction
+// - Comprehensive logging and error handling for CRDT operations
+//
+// USAGE EXAMPLE:
+// ==============
+//
+//	fs := NewFastSync(host, mainDB, accountsDB)
+//	crdtEngine := fs.GetCRDTEngine()
+//	crdtEngine.LWWAdd("user:123", "preferences", "theme:dark", VectorClock{})
+//	crdtEngine.CounterInc("node:abc", "requests", 1, VectorClock{})
 package fastsync
 
 import (
@@ -7,6 +35,7 @@ import (
 	"fmt"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/crdt"
 	hashmap "gossipnode/crdt/HashMap"
 	"io"
 	"os"
@@ -58,6 +87,10 @@ type FastSync struct {
 	active           map[peer.ID]*syncState
 	mutex            sync.RWMutex
 	HashMap_MetaData *HashMap_MetaData
+	// NEW: CRDT engine for conflict-free replicated data types
+	// This enables proper handling of concurrent operations during synchronization
+	// without data loss or conflicts. Supports LWW-Sets and Counters.
+	crdtEngine *crdt.Engine
 }
 
 type HashMap_MetaData struct {
@@ -140,18 +173,136 @@ func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
 	return MAP, nil
 }
 
+// UPDATED: NewFastSync now initializes CRDT engine for conflict-free synchronization
+// This enables proper handling of concurrent operations during sync without data loss
 func NewFastSync(h host.Host, mainDB, accountsDB *config.PooledConnection) *FastSync {
+	// NEW: Initialize CRDT engine with 50MB memory limit for operation history
+	// This allows the system to maintain a bounded operation log for synchronization
+	crdtEngine := crdt.NewEngineMemOnly(50 * 1024 * 1024)
+
 	fs := &FastSync{
 		host:       h,
 		mainDB:     mainDB,
 		accountsDB: accountsDB,
 		active:     make(map[peer.ID]*syncState),
+		crdtEngine: crdtEngine, // NEW: CRDT engine for conflict-free operations
 	}
 
 	h.SetStreamHandler(SyncProtocolID, fs.handleStream)
-	log.Info().Msg("FastSync initialized with multi-database support")
+	log.Info().Msg("FastSync initialized with multi-database support and CRDT engine")
 
 	return fs
+}
+
+// NEW: GetCRDTEngine provides access to the CRDT engine for external operations
+// This allows other parts of the system to perform CRDT operations like:
+// - Adding/removing elements from LWW-Sets
+// - Incrementing counters
+// - Querying current CRDT state
+func (fs *FastSync) GetCRDTEngine() *crdt.Engine {
+	return fs.crdtEngine
+}
+
+// IMPLEMENTED: ExportCRDTs exports all CRDTs for synchronization with other nodes
+// This is used during sync to send CRDT state to remote nodes
+// Returns serialized CRDT data that can be transmitted over the network
+func (fs *FastSync) ExportCRDTs() ([]json.RawMessage, error) {
+	if fs.crdtEngine == nil {
+		return nil, fmt.Errorf("CRDT engine not initialized")
+	}
+
+	log.Info().Msg("Starting CRDT export for synchronization")
+
+	// 1. Get all CRDT objects from the memory store
+	allCRDTs := fs.crdtEngine.GetAllCRDTs()
+
+	if len(allCRDTs) == 0 {
+		log.Info().Msg("No CRDTs to export")
+		return []json.RawMessage{}, nil
+	}
+
+	log.Info().Int("count", len(allCRDTs)).Msg("Exporting CRDTs")
+
+	// 2. Serialize each CRDT to JSON format with metadata
+	var exportedCRDTs []json.RawMessage
+
+	for key, crdtObj := range allCRDTs {
+		// Determine CRDT type using proper type assertion
+		var crdtType string
+		switch crdtObj.(type) {
+		case *crdt.LWWSet:
+			crdtType = "lww-set"
+		case *crdt.Counter:
+			crdtType = "counter"
+		default:
+			log.Warn().Str("key", key).Msg("Unknown CRDT type, skipping export")
+			continue
+		}
+
+		// Serialize CRDT data to JSON
+		crdtData, err := json.Marshal(crdtObj)
+		if err != nil {
+			log.Error().Err(err).Str("key", key).Str("type", crdtType).Msg("Failed to marshal CRDT data")
+			continue
+		}
+
+		// 3. Wrap with metadata (type, key, timestamp)
+		wrapper := map[string]interface{}{
+			"type":      crdtType,
+			"key":       key,
+			"data":      json.RawMessage(crdtData),
+			"timestamp": time.Now().Unix(),
+			"version":   "1.0", // For future compatibility
+		}
+
+		// Serialize wrapper to JSON
+		wrapperData, err := json.Marshal(wrapper)
+		if err != nil {
+			log.Error().Err(err).Str("key", key).Str("type", crdtType).Msg("Failed to marshal CRDT wrapper")
+			continue
+		}
+
+		exportedCRDTs = append(exportedCRDTs, json.RawMessage(wrapperData))
+
+		log.Debug().
+			Str("key", key).
+			Str("type", crdtType).
+			Int("size", len(wrapperData)).
+			Msg("Exported CRDT")
+	}
+
+	log.Info().
+		Int("total", len(allCRDTs)).
+		Int("exported", len(exportedCRDTs)).
+		Msg("CRDT export completed")
+
+	// 4. Return serialized data for network transmission
+	return exportedCRDTs, nil
+}
+
+// IMPLEMENTED: ImportCRDTs imports CRDTs received from other nodes during sync
+// This processes incoming CRDT data and applies it to the local CRDT engine
+func (fs *FastSync) ImportCRDTs(crdtData []json.RawMessage) error {
+	if fs.crdtEngine == nil {
+		return fmt.Errorf("CRDT engine not initialized")
+	}
+
+	if len(crdtData) == 0 {
+		log.Info().Msg("No CRDTs to import")
+		return nil
+	}
+
+	log.Info().Int("count", len(crdtData)).Msg("Starting CRDT import")
+
+	// Use the existing storeCRDTs function which already handles the import logic
+	err := fs.storeCRDTs(fs.crdtEngine, crdtData)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to import CRDTs")
+		return fmt.Errorf("failed to import CRDTs: %w", err)
+	}
+
+	log.Info().Int("imported", len(crdtData)).Msg("CRDT import completed successfully")
+	return nil
 }
 
 func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, error) {

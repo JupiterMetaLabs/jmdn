@@ -2,6 +2,7 @@ package crdt
 
 import (
 	"fmt"
+	"sort"
 )
 
 // CRDT is an interface for conflict-free replicated data types
@@ -91,6 +92,42 @@ func (vc VectorClock) Merge(other VectorClock) VectorClock {
 	return result
 }
 
+// deterministicMerge merges two vector clocks with deterministic tie-breaking
+func deterministicMerge(ts1, ts2 VectorClock, nodeID1, nodeID2 string) VectorClock {
+	compare := ts1.Compare(ts2)
+	if compare > 0 {
+		return ts1
+	} else if compare < 0 {
+		return ts2
+	} else {
+		// Concurrent - use node ID as tie-breaker for determinism
+		if nodeID1 < nodeID2 {
+			return ts1
+		}
+		return ts2
+	}
+}
+
+// extractNodeID extracts the primary node ID from a vector clock
+// For tie-breaking, we use the node with the highest timestamp
+func extractNodeID(ts VectorClock) string {
+	if len(ts) == 0 {
+		return ""
+	}
+
+	var maxNode string
+	var maxTS uint64
+
+	for node, timestamp := range ts {
+		if timestamp > maxTS {
+			maxTS = timestamp
+			maxNode = node
+		}
+	}
+
+	return maxNode
+}
+
 // Increment increases the counter for the specified node
 func (vc VectorClock) Increment(nodeID string) {
 	if current, exists := vc[nodeID]; exists {
@@ -98,6 +135,26 @@ func (vc VectorClock) Increment(nodeID string) {
 	} else {
 		vc[nodeID] = 1
 	}
+}
+
+// Prune removes entries for inactive nodes to prevent memory leaks
+// activeNodes: set of currently active node IDs
+// maxAge: maximum age for node entries (not used in current implementation)
+func (vc VectorClock) Prune(activeNodes map[string]bool) {
+	for node := range vc {
+		if !activeNodes[node] {
+			delete(vc, node)
+		}
+	}
+}
+
+// GetActiveNodes returns a set of all node IDs in the vector clock
+func (vc VectorClock) GetActiveNodes() map[string]bool {
+	activeNodes := make(map[string]bool)
+	for node := range vc {
+		activeNodes[node] = true
+	}
+	return activeNodes
 }
 
 // =============================
@@ -154,7 +211,7 @@ func (s *LWWSet) Contains(element string) bool {
 	return addTS.Compare(rmTS) > 0
 }
 
-// GetElements returns current visible elements
+// GetElements returns current visible elements in deterministic order
 func (s *LWWSet) GetElements() []string {
 	var elems []string
 	for el := range s.Adds {
@@ -162,6 +219,8 @@ func (s *LWWSet) GetElements() []string {
 			elems = append(elems, el)
 		}
 	}
+	// Sort elements for deterministic ordering
+	sort.Strings(elems)
 	return elems
 }
 
@@ -185,15 +244,20 @@ func (s *LWWSet) Merge(other CRDT) (CRDT, error) {
 		if our, exists := res.Adds[e]; !exists {
 			res.Adds[e] = ts
 		} else {
-			// Keep the later timestamp, or either if concurrent
+			// Use deterministic merge for concurrent operations
 			compare := ts.Compare(our)
 			if compare > 0 {
 				// ts is later
 				res.Adds[e] = ts
-			} else if compare == 0 {
-				// Concurrent - keep the first one for determinism
-				// (in practice, you might want to use a tie-breaker like node ID)
+			} else if compare < 0 {
+				// our is later
 				res.Adds[e] = our
+			} else {
+				// Concurrent - use deterministic tie-breaker
+				// Extract node IDs from timestamps for tie-breaking
+				nodeID1 := extractNodeID(our)
+				nodeID2 := extractNodeID(ts)
+				res.Adds[e] = deterministicMerge(our, ts, nodeID1, nodeID2)
 			}
 		}
 	}
@@ -206,15 +270,20 @@ func (s *LWWSet) Merge(other CRDT) (CRDT, error) {
 		if our, exists := res.Removes[e]; !exists {
 			res.Removes[e] = ts
 		} else {
-			// Keep the later timestamp, or either if concurrent
+			// Use deterministic merge for concurrent operations
 			compare := ts.Compare(our)
 			if compare > 0 {
 				// ts is later
 				res.Removes[e] = ts
-			} else if compare == 0 {
-				// Concurrent - keep the first one for determinism
-				// (in practice, you might want to use a tie-breaker like node ID)
+			} else if compare < 0 {
+				// our is later
 				res.Removes[e] = our
+			} else {
+				// Concurrent - use deterministic tie-breaker
+				// Extract node IDs from timestamps for tie-breaking
+				nodeID1 := extractNodeID(our)
+				nodeID2 := extractNodeID(ts)
+				res.Removes[e] = deterministicMerge(our, ts, nodeID1, nodeID2)
 			}
 		}
 	}
@@ -287,14 +356,8 @@ func (c *Counter) Merge(other CRDT) (CRDT, error) {
 		res.Counters[n] = v
 	}
 	for n, v := range o.Counters {
-		if our, exists := res.Counters[n]; !exists {
+		if our, exists := res.Counters[n]; !exists || v > our {
 			res.Counters[n] = v
-		} else {
-			// For counters, we take the maximum value per node
-			// This is correct for G-Counters (grow-only counters)
-			if v > our {
-				res.Counters[n] = v
-			}
 		}
 	}
 	res.Timestamp = c.Timestamp.Merge(o.Timestamp)
