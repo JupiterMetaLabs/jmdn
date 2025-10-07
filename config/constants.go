@@ -47,7 +47,7 @@ const (
 
 const (
     DIDPropagationProtocol protocol.ID = "/gossipnode/did/1.0.0"
-    MaxDIDHops             = 7
+    MaxAccountHops             = 7
 )
 
 // Network addresses

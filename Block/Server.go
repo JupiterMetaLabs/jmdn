@@ -5,16 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"os"
 	"strconv"
-
 	"sync"
 	"time"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/Security"
 	"gossipnode/config"
+	"gossipnode/logging"
 	"gossipnode/messaging"
 	"gossipnode/metrics"
 
@@ -24,7 +25,10 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"go.uber.org/zap"
 )
+
+
 type APIAccessTuple struct {
     Address     string   `json:"address"`
     StorageKeys []string `json:"storage_keys"`
@@ -36,7 +40,7 @@ type TransactionResponse struct {
 }
 
 type FullTxn struct {
-    Transaction     *config.ZKBlockTransaction `json:"transaction"`
+    Transaction     *config.Transaction `json:"transaction"`
     TransactionHash string           `json:"transaction_hash"`
 }
 
@@ -65,68 +69,77 @@ func toBlockAccessList(apiList []APIAccessTuple) config.AccessList {
 }
 
 func submitRawTransaction(c *gin.Context) {
-    var req struct {
-        RawTx string `json:"raw_tx" binding:"required"` // Hex-encoded signed transaction
-    }
+    var tx config.Transaction
 
     // 1. Bind and validate request
-    if err := c.ShouldBindJSON(&req); err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+    if err := c.ShouldBindJSON(&tx); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid transaction format: " + err.Error()})
         return
     }
 
-    // Call SubmitRawTransaction with the raw transaction bytes
-    val, err := SubmitRawTransaction([]byte(req.RawTx))
+    txHash, err := SubmitRawTransaction(&tx)
     if err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Transaction validation failed: " + err.Error()})
         return
     }
-    c.JSON(http.StatusOK, gin.H{"transaction_hash": val})
+
+    c.JSON(http.StatusOK, gin.H{
+        "status":          "success",
+        "transaction_hash": txHash,
+        "message":         "Transaction submitted successfully",
+    })
 }
 
 // SubmitRawTransaction handles pre-signed raw transactions with security validations
-func SubmitRawTransaction(rawTxBytes []byte) (string, error){
-    // Convert Bytes to Transaction
-    tx := &config.ZKBlockTransaction{}
-    err := json.Unmarshal(rawTxBytes, tx)
-    if err != nil {
-        return "", err
-    }
-
+func SubmitRawTransaction(tx *config.Transaction) (string, error){
+    // Debugging
+    fmt.Println("Transaction: ", tx)
+    fmt.Println("Transaction ChainID:", tx.ChainID)
+    
     // Run security checks
     status, err := Security.ThreeChecks(tx)
     if !status || err != nil {
         return "", err
     }
-    
+    // Debugging
+    fmt.Println("Security Checks: ", status)
+
     // Basic transaction validation
-    if tx.Value == "0" || tx.Value == "" {
+    if tx.Value.Cmp(big.NewInt(0)) == 0 || tx.Value.String() == "" {
         return "", errors.New("invalid transaction: value is 0 or empty")
     }
+    // Debugging
+    fmt.Println("Basic Transaction Validation: ", tx.Value)
+    
 
     // Check the To and From addresses
-    if tx.To == "" || tx.From == "" {
+    if tx.To == nil || tx.From == nil {
         return "", errors.New("invalid transaction: missing To or From address")
     }else if tx.To == tx.From {
         return "", errors.New("invalid transaction: To and From address are the same")
     }
 
     // Make transaction hash
+    rawTxBytes, err := json.Marshal(tx)
+    if err != nil {
+        return "", err
+    }
     txHash := crypto.Keccak256Hash(rawTxBytes).Hex()
-
+    // Debugging
+    fmt.Println("Transaction Hash: ", txHash)
     // Asynchronously submit to mempool with context
     go func() {
         if err := SubmitToMempool(tx, txHash); err != nil {
             log.Error().Err(err).
                 Str("txHash", txHash).
-                Str("from", tx.From).
-                Str("to", tx.To).
+                Str("from", tx.From.String()).
+                Str("to", tx.To.String()).
                 Msg("Error submitting raw transaction to mempool")
         }else {
             log.Info().
                 Str("txHash", txHash).
-                Str("from", tx.From).
-                Str("to", tx.To).
+                Str("from", tx.From.String()).
+                Str("to", tx.To.String()).
                 Msg("Raw transaction successfully submitted to mempool")
         }
     }()
@@ -134,7 +147,6 @@ func SubmitRawTransaction(rawTxBytes []byte) (string, error){
     // Return success response
     return txHash, nil
 }
-
 // Global host variable to store the libp2p host instance for network operations
 var globalHost host.Host
 
@@ -270,11 +282,11 @@ func processZKBlock(c *gin.Context) {
 
     for _, tx := range block.Transactions {
         LogTransaction(
-            tx.Hash,
-            tx.From,
-            tx.To,
-            tx.Value,
-            tx.Type,
+            tx.Hash.Hex(),
+            tx.From.Hex(),
+            tx.To.Hex(),
+            tx.Value.String(),
+            fmt.Sprintf("%d", tx.Type),
         )
     }
 
@@ -303,12 +315,22 @@ func getBlockByNumber(c *gin.Context) {
         return
     }
     
-    mainDBClient, err := DB_OPs.New()
+    mainDBClient, err := DB_OPs.GetMainDBConnection()
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
         return
     }
-    defer DB_OPs.Close(mainDBClient)
+    defer func(){
+        mainDBClient.Client.Logger.Logger.Info("Putting database connection back to pool",
+            zap.String(logging.Connection_database, "MainDB Connection"),
+            zap.Time(logging.Created_at, time.Now()),
+            zap.String(logging.Log_file, FILENAME),
+            zap.String(logging.Topic, BLOCKTOPIC),
+            zap.String(logging.Loki_url, config.LOKI_URL),
+            zap.String(logging.Function, "Block.getBlockByNumber"),
+        )
+       DB_OPs.PutMainDBConnection(mainDBClient)
+    }()
     
     block, err := DB_OPs.GetZKBlockByNumber(mainDBClient, blockNumber)
     if err != nil {
@@ -328,12 +350,12 @@ func getBlockByNumber(c *gin.Context) {
 func getBlockByHash(c *gin.Context) {
     blockHash := c.Param("hash")
     
-    mainDBClient, err := DB_OPs.New()
+    mainDBClient, err := DB_OPs.GetMainDBConnection()
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
         return
     }
-    defer DB_OPs.Close(mainDBClient)
+    defer DB_OPs.PutMainDBConnection(mainDBClient)
     
     block, err := DB_OPs.GetZKBlockByHash(mainDBClient, blockHash)
     if err != nil {
@@ -352,12 +374,12 @@ func getBlockByHash(c *gin.Context) {
 func getTransactionInfo(c *gin.Context) {
     txHash := c.Param("hash")
     
-    mainDBClient, err := DB_OPs.New()
+    mainDBClient, err := DB_OPs.GetMainDBConnection()
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
         return
     }
-    defer DB_OPs.Close(mainDBClient)
+    defer DB_OPs.PutMainDBConnection(mainDBClient)
     
     block, err := DB_OPs.GetTransactionBlock(mainDBClient, txHash)
     if err != nil {
@@ -366,9 +388,9 @@ func getTransactionInfo(c *gin.Context) {
     }
     
     // Find the specific transaction
-    var foundTx *config.ZKBlockTransaction
+    var foundTx *config.Transaction
     for _, tx := range block.Transactions {
-        if tx.Hash == txHash {
+        if tx.Hash == common.HexToHash(txHash) {
             foundTx = &tx
             break
         }
@@ -391,12 +413,12 @@ func getTransactionInfo(c *gin.Context) {
 
 // getLatestBlock returns information about the latest block
 func getLatestBlock(c *gin.Context) {
-    mainDBClient, err := DB_OPs.New()
+    mainDBClient, err := DB_OPs.GetMainDBConnection()
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
         return
     }
-    defer DB_OPs.Close(mainDBClient)
+    defer DB_OPs.PutMainDBConnection(mainDBClient)
     
     latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(mainDBClient)
     if err != nil {

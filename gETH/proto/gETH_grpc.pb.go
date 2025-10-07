@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	Chain_GetBlockByNumber_FullMethodName     = "/gETH.Chain/GetBlockByNumber"
 	Chain_GetBlockByHash_FullMethodName       = "/gETH.Chain/GetBlockByHash"
+	Chain_GetChainID_FullMethodName           = "/gETH.Chain/GetChainID"
 	Chain_GetTransactionByHash_FullMethodName = "/gETH.Chain/GetTransactionByHash"
 	Chain_GetReceiptByHash_FullMethodName     = "/gETH.Chain/GetReceiptByHash"
 	Chain_GetAccountState_FullMethodName      = "/gETH.Chain/GetAccountState"
@@ -41,6 +42,8 @@ type ChainClient interface {
 	// Block operations
 	GetBlockByNumber(ctx context.Context, in *GetBlockByNumberReq, opts ...grpc.CallOption) (*Block, error)
 	GetBlockByHash(ctx context.Context, in *GetBlockByHashReq, opts ...grpc.CallOption) (*Block, error)
+	// Get ChainID
+	GetChainID(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*Quantity, error)
 	// Transaction operations
 	GetTransactionByHash(ctx context.Context, in *GetByHashReq, opts ...grpc.CallOption) (*Transaction, error)
 	GetReceiptByHash(ctx context.Context, in *GetByHashReq, opts ...grpc.CallOption) (*Receipt, error)
@@ -80,6 +83,16 @@ func (c *chainClient) GetBlockByHash(ctx context.Context, in *GetBlockByHashReq,
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Block)
 	err := c.cc.Invoke(ctx, Chain_GetBlockByHash_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *chainClient) GetChainID(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*Quantity, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Quantity)
+	err := c.cc.Invoke(ctx, Chain_GetChainID_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -203,6 +216,8 @@ type ChainServer interface {
 	// Block operations
 	GetBlockByNumber(context.Context, *GetBlockByNumberReq) (*Block, error)
 	GetBlockByHash(context.Context, *GetBlockByHashReq) (*Block, error)
+	// Get ChainID
+	GetChainID(context.Context, *Empty) (*Quantity, error)
 	// Transaction operations
 	GetTransactionByHash(context.Context, *GetByHashReq) (*Transaction, error)
 	GetReceiptByHash(context.Context, *GetByHashReq) (*Receipt, error)
@@ -233,6 +248,9 @@ func (UnimplementedChainServer) GetBlockByNumber(context.Context, *GetBlockByNum
 }
 func (UnimplementedChainServer) GetBlockByHash(context.Context, *GetBlockByHashReq) (*Block, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetBlockByHash not implemented")
+}
+func (UnimplementedChainServer) GetChainID(context.Context, *Empty) (*Quantity, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetChainID not implemented")
 }
 func (UnimplementedChainServer) GetTransactionByHash(context.Context, *GetByHashReq) (*Transaction, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetTransactionByHash not implemented")
@@ -314,6 +332,24 @@ func _Chain_GetBlockByHash_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ChainServer).GetBlockByHash(ctx, req.(*GetBlockByHashReq))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Chain_GetChainID_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ChainServer).GetChainID(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Chain_GetChainID_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ChainServer).GetChainID(ctx, req.(*Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -480,6 +516,10 @@ var Chain_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetBlockByHash",
 			Handler:    _Chain_GetBlockByHash_Handler,
+		},
+		{
+			MethodName: "GetChainID",
+			Handler:    _Chain_GetChainID_Handler,
 		},
 		{
 			MethodName: "GetTransactionByHash",

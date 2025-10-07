@@ -2,6 +2,7 @@ package CLI
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -180,11 +181,14 @@ func (s *CLIServer) GetDID(ctx context.Context, req *pb.DIDRequest) (*pb.DIDDocu
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 	return &pb.DIDDocument{
-		Did:        doc.DID,
-		PublicKey:  doc.PublicKey,
-		Balance:    doc.Balance,
-		CreatedAt:  timestamppb.New(time.Unix(doc.CreatedAt, 0)),
-		UpdatedAt:  timestamppb.New(time.Unix(doc.UpdatedAt, 0)),
+		Did:       doc.DIDAddress,
+		Type:      doc.AccountType,
+		Nonce:     int64(doc.Nonce),
+		Metadata:  convertMetadataToString(doc.Metadata),
+		PublicKey: doc.Address.Hex(),
+		Balance:   doc.Balance,
+		CreatedAt: timestamppb.New(time.Unix(doc.CreatedAt, 0)),
+		UpdatedAt: timestamppb.New(time.Unix(doc.UpdatedAt, 0)),
 	}, nil
 }
 
@@ -197,9 +201,9 @@ func (s *CLIServer) FastSync(ctx context.Context, req *pb.PeerRequest) (*pb.Sync
 		}, nil
 	}
 	return &pb.SyncStats{
-		TimeTaken:   int64(stats.TimeTaken.Seconds()),
-		MainState:     convertDBState(stats.MainState),
-		AccountsState: convertDBState(stats.AccountsState),
+		TimeTaken:     int64(stats.TimeTaken.Seconds()),
+		MainState:     convertDBState(&stats.MainState),
+		AccountsState: convertDBState(&stats.AccountsState),
 	}, nil
 }
 
@@ -209,13 +213,13 @@ func (s *CLIServer) GetDatabaseState(ctx context.Context, _ *emptypb.Empty) (*pb
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &pb.DatabaseStates{
-		MainDb:     convertDBState(*mainState),
-		AccountsDb: convertDBState(*accountsState),
+		MainDb:     convertDBState(mainState),
+		AccountsDb: convertDBState(accountsState),
 	}, nil
 }
 
 // Helper function to convert database state
-func convertDBState(state schema.ImmutableState) *pb.DatabaseState {
+func convertDBState(state *schema.ImmutableState) *pb.DatabaseState {
 	return &pb.DatabaseState{
 		TxId:     state.TxId,
 		TxHash:   state.TxHash,
@@ -223,21 +227,39 @@ func convertDBState(state schema.ImmutableState) *pb.DatabaseState {
 	}
 }
 
+// convertMetadataToString converts a metadata map to a JSON string
+func convertMetadataToString(metadata map[string]interface{}) string {
+	if metadata == nil {
+		return "{}"
+	}
+	jsonData, err := json.Marshal(metadata)
+	if err != nil {
+		log.Printf("Error marshaling metadata: %v", err)
+		return "{}"
+	}
+	return string(jsonData)
+}
+
 // StartGRPCServer starts the gRPC server
 func StartGRPCServer(handler *CommandHandler, port int) error {
-    lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-    if err != nil {
-        return fmt.Errorf("failed to listen: %v", err)
-    }
+	fmt.Printf("Attempting to listen on port %d...\n", port)
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		fmt.Printf("Failed to listen on port %d: %v\n", port, err)
+		return fmt.Errorf("failed to listen: %v", err)
+	}
+	fmt.Printf("Successfully listening on port %d\n", port)
 
-    grpcServer := grpc.NewServer()
-    cliServer := NewCLIServer(handler)
-    cliServer.Register(grpcServer)
+	grpcServer := grpc.NewServer()
+	cliServer := NewCLIServer(handler)
+	cliServer.Register(grpcServer)
 
-    log.Printf("Starting gRPC server on port %d", port)
-    if err := grpcServer.Serve(lis); err != nil {
-        return fmt.Errorf("failed to serve: %v", err)
-    }
+	fmt.Printf("gRPC server configured, starting to serve...\n")
+	log.Printf("Starting gRPC server on port %d", port)
+	if err := grpcServer.Serve(lis); err != nil {
+		fmt.Printf("gRPC server failed to serve: %v\n", err)
+		return fmt.Errorf("failed to serve: %v", err)
+	}
 
-    return nil
+	return nil
 }

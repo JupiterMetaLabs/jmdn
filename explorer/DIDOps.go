@@ -30,7 +30,7 @@ func (s *ImmuDBServer) listDIDs(c *gin.Context) {
 
 	// Get the paginated list of DIDs from the database.
 	// This is now efficient as it only fetches the documents for the current page.
-	pagedDIDs, err := DB_OPs.ListDIDsPaginated(&s.accountsdb, limit, offset, network)
+	pagedDIDs, err := DB_OPs.ListAccountsPaginated(&s.accountsdb, limit, offset, network)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve DIDs: " + err.Error()})
 		return
@@ -68,9 +68,9 @@ func (s *ImmuDBServer) getDIDDetails(c *gin.Context) {
 		return
 	}
 	
-	var didDocs []DB_OPs.DIDDocument
+	var didDocs []DB_OPs.Account
 	for _,DID := range DIDs {
-		DID_Doc, err := DB_OPs.GetDID(&s.accountsdb, DID)
+		DID_Doc, err := DB_OPs.GetAccountByDID(&s.accountsdb, DID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
