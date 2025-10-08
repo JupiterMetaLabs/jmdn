@@ -1,0 +1,76 @@
+package rpc
+
+import (
+	"context"
+	"net/http"
+	"time"
+
+	"gossipnode/gETH/Facade/Service"
+
+	"github.com/gin-gonic/gin"
+)
+
+type HTTPServer struct {
+	h *Handlers
+}
+
+func NewHTTPServer(h *Handlers) *HTTPServer {
+	Service.Once.Do(func() {
+		if err := Service.InitLogger(); err != nil {
+			panic("failed to initialize logger: " + err.Error())
+		}
+	})
+	return &HTTPServer{h: h}
+}
+
+func (s *HTTPServer) Serve(addr string) error {
+	// Set GIN mode to release for production
+	gin.SetMode(gin.ReleaseMode)
+
+	// Create GIN router
+	router := gin.New()
+
+	// Add middleware
+	router.Use(gin.Logger())
+	router.Use(gin.Recovery())
+	router.Use(withCORS())
+
+	// Add JSON-RPC handler
+	router.Any("/", s.handleJSONRPC)
+
+	// Create HTTP server with GIN router
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	return srv.ListenAndServe()
+}
+
+func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
+	var req Request
+	if err := c.ShouldBindJSON(&req); err != nil {
+		write(c, RespErr(nil, -32700, "Parse error"))
+		return
+	}
+	resp, _ := s.h.Handle(context.Background(), req)
+	write(c, resp)
+}
+
+func write(c *gin.Context, resp Response) {
+	c.Header("Content-Type", "application/json")
+	c.JSON(http.StatusOK, resp)
+}
+
+func withCORS() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Headers", "content-type")
+		if c.Request.Method == http.MethodOptions {
+			c.Status(204)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}

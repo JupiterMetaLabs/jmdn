@@ -205,7 +205,7 @@ service Chain {
     
     // Contract interaction
     rpc Call(CallReq) returns (CallResp); //
-    rpc EstimateGas(CallReq) returns (EstimateResp);
+    rpc EstimateGas(CallReq) returns (EstimateResp); //
     
     // Transaction submission
     rpc SendRawTransaction(SendRawTxReq) returns (SendRawTxResp);

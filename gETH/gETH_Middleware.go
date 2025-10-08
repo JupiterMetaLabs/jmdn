@@ -13,6 +13,19 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+type ServiceInterface interface {
+	GetBlockByNumber(req *proto.GetBlockByNumberReq) (*proto.Block, error)
+	GetBlockByHash(req *proto.GetBlockByHashReq) (*proto.Block, error)
+	GetTransactionByHash(req *proto.GetByHashReq) (*proto.Transaction, error)
+	GetReceiptByHash(req *proto.GetByHashReq) (*proto.Receipt, error)
+	GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error)
+	GetLogs(req *proto.GetLogsReq) (*proto.GetLogsResp, error)
+	Call(req *proto.CallReq) (*proto.CallResp, error)
+	EstimateGas(req *proto.CallReq) (*proto.EstimateResp, error)
+	SendRawTx(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error)
+	GetChainID(req *proto.Empty) (*proto.Quantity, error)
+}
+
 func _GetBlockByNumber(req *proto.GetBlockByNumberReq) (*proto.Block, error) {
 	// Init DB
 	Conn, err := initDBs()
