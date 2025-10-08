@@ -14,7 +14,7 @@ var Logger *logging.AsyncLogger
 const(
 	LOG_FILE = "gETH.log"
 	TOPIC = "gETH"
-	URL = "http://localhost:3100/loki/api/v1/push"
+	LOKI_URL = "http://localhost:3100/loki/api/v1/push"
 	DIR = "logs"
 	BatchSize = 128 * 1024
 )
@@ -24,7 +24,7 @@ func InitLogger() error {
 	Logger, err = logging.NewAsyncLogger(&logging.Logging{
 		FileName: LOG_FILE,
 		Topic:    TOPIC,
-		URL:      URL,
+		URL:      LOKI_URL,
 		Metadata: logging.LoggingMetadata{
 			DIR:       DIR,
 			BatchSize: BatchSize,
