@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"gossipnode/gETH/Facade/Service"
+	"gossipnode/gETH/Facade/Service/Logger"
 
 	"github.com/gin-gonic/gin"
 )
@@ -15,8 +15,8 @@ type HTTPServer struct {
 }
 
 func NewHTTPServer(h *Handlers) *HTTPServer {
-	Service.Once.Do(func() {
-		if err := Service.InitLogger(); err != nil {
+	Logger.Once.Do(func() {
+		if err := Logger.InitLogger(); err != nil {
 			panic("failed to initialize logger: " + err.Error())
 		}
 	})

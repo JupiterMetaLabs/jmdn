@@ -11,6 +11,8 @@ import (
 	"log"
 
 	"gossipnode/gETH/Facade/Service"
+	"gossipnode/gETH/Facade/Service/Types"
+
 )
 
 type Handlers struct{ service Service.Service }
@@ -263,10 +265,10 @@ func mustString(v any) string {
 	return s
 }
 
-func toCallMsg(p any) (Service.CallMsg, error) {
+func toCallMsg(p any) (Types.CallMsg, error) {
 	// Parse call object from JSON-RPC params
 	if callObj, ok := p.(map[string]any); ok {
-		msg := Service.CallMsg{}
+		msg := Types.CallMsg{}
 
 		if from, ok := callObj["from"].(string); ok {
 			msg.From = from
@@ -305,13 +307,13 @@ func toCallMsg(p any) (Service.CallMsg, error) {
 
 		return msg, nil
 	}
-	return Service.CallMsg{}, errors.New("invalid call object")
+	return Types.CallMsg{}, errors.New("invalid call object")
 }
 
-func toFilterQuery(p any) (*Service.FilterQuery, error) {
+func toFilterQuery(p any) (*Types.FilterQuery, error) {
 	// Parse filter object from JSON-RPC params
 	if filterObj, ok := p.(map[string]any); ok {
-		query := &Service.FilterQuery{}
+		query := &Types.FilterQuery{}
 
 		if fromBlock, ok := filterObj["fromBlock"].(string); ok {
 			if strings.HasPrefix(fromBlock, "0x") {
@@ -353,10 +355,10 @@ func toFilterQuery(p any) (*Service.FilterQuery, error) {
 
 		return query, nil
 	}
-	return &Service.FilterQuery{}, errors.New("invalid filter object")
+	return &Types.FilterQuery{}, errors.New("invalid filter object")
 }
 
-func marshalBlock(b *Service.Block, full bool) map[string]any {
+func marshalBlock(b *Types.Block, full bool) map[string]any {
 	result := map[string]any{
 		"number":       "0x" + b.Number.Text(16),
 		"hash":         b.Hash,
@@ -382,7 +384,7 @@ func marshalBlock(b *Service.Block, full bool) map[string]any {
 	return result
 }
 
-func marshalTx(tx *Service.Tx) map[string]any {
+func marshalTx(tx *Types.Tx) map[string]any {
 	result := map[string]any{
 		"hash":     tx.Hash,
 		"from":     tx.From,
@@ -396,7 +398,7 @@ func marshalTx(tx *Service.Tx) map[string]any {
 	return result
 }
 
-func marshalLogs(logs []Service.Log) []map[string]any {
+func marshalLogs(logs []Types.Log) []map[string]any {
 	result := make([]map[string]any, len(logs))
 	for i, log := range logs {
 		result[i] = map[string]any{

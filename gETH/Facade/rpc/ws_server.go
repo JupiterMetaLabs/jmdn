@@ -3,11 +3,13 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"gossipnode/gETH/Facade/Service"
+	"gossipnode/gETH/Facade/Service/Types"
 	"log"
 	"net/http"
 	"sync"
 	"time"
-	"gossipnode/gETH/Facade/Service"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -86,7 +88,7 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 				go forwardBlocks(conn, sid, ch)
 
 			case "logs":
-				var q Service.FilterQuery
+				var q Types.FilterQuery
 				if len(req.Params) > 1 {
 					if qq, err := toFilterQuery(req.Params[1]); err == nil {
 						q = *qq
@@ -155,7 +157,7 @@ type subMsg struct {
 	} `json:"params"`
 }
 
-func forwardBlocks(conn *websocket.Conn, sid string, ch <-chan *Service.Block) {
+	func forwardBlocks(conn *websocket.Conn, sid string, ch <-chan *Types.Block) {
 	for b := range ch {
 		msg := subMsg{Jsonrpc: "2.0", Method: "eth_subscription"}
 		msg.Params.Subscription = sid
@@ -163,11 +165,11 @@ func forwardBlocks(conn *websocket.Conn, sid string, ch <-chan *Service.Block) {
 		_ = conn.WriteJSON(msg)
 	}
 }
-func forwardLogs(conn *websocket.Conn, sid string, ch <-chan Service.Log) {
+func forwardLogs(conn *websocket.Conn, sid string, ch <-chan Types.Log) {
 	for l := range ch {
 		msg := subMsg{Jsonrpc: "2.o", Method: "eth_subscription"}
 		msg.Params.Subscription = sid
-		msg.Params.Result = marshalLogs([]Service.Log{l})[0]
+		msg.Params.Result = marshalLogs([]Types.Log{l})[0]
 		_ = conn.WriteJSON(msg)
 	}
 }
