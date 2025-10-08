@@ -168,3 +168,5 @@ func looksBase64(s string) bool {
 func IsDID(s string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(s)), "did:")
 }
+
+
