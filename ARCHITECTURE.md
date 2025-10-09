@@ -31,6 +31,7 @@ The central orchestrator that initializes and coordinates all system components:
 **Command Line Flags:**
 - `-seed`: Run as a seed node for network bootstrapping
 - `-connect`: Connect to a seed node (multiaddr)
+- `-seednode`: Seed node gRPC URL for peer registration (e.g., 34.174.233.203:17002)
 - `-heartbeat`: Heartbeat interval in seconds (default: 120)
 - `-metrics`: Port for Prometheus metrics (default: 8080)
 - `-ygg`: Enable Yggdrasil direct messaging (default: true)
@@ -266,7 +267,44 @@ Libp2p node creation and peer management:
 - **Heartbeat Monitoring**: Track peer health and availability
 - **Address Management**: Handle multiple network addresses
 
-### 12. Configuration (`config/`)
+### 12. Seed Node Integration (`seednode/`)
+
+External seed node registration and peer discovery system:
+
+**Key Files:**
+- `seednode.go`: gRPC client for seed node communication
+- `proto/seednode.proto`: Protocol buffer definitions for seed node service
+- `proto/seednode.pb.go`: Generated Go code for protocol buffers
+- `proto/seednode_grpc.pb.go`: Generated gRPC service code
+
+**Core Services:**
+- **Peer Registration**: Register this node with external seed node
+- **Public IP Detection**: Automatically detect public IP using ifconfig.me
+- **Multiaddress Construction**: Build proper libp2p multiaddresses
+- **VRS Signing**: Cryptographic signing of peer records and heartbeats
+
+**Key Functions:**
+- `RegisterPeer()`: Register this peer with the seed node
+- `SendHeartbeat()`: Send periodic heartbeat to seed node
+- `getPublicIP()`: Fetch public IP address from ifconfig.me
+- `signPeerRecord()`: Sign peer records with VRS signature
+- `signHeartbeat()`: Sign heartbeat messages with VRS signature
+
+**Protocol Features:**
+- **Public IP Detection**: Uses ifconfig.me service for external IP
+- **Port Detection**: Automatically detects TCP port from libp2p host
+- **Address Filtering**: Filters out local/private addresses for external registration
+- **Fallback Strategy**: Falls back to local addresses if public IP unavailable
+- **VRS Signing**: Complete ECDSA signature with R, S, V components
+- **Deterministic V Calculation**: Consistent V component calculation
+
+**Integration Points:**
+- **Startup Registration**: Automatically registers during node startup
+- **Command Line**: Configurable via `-seednode` flag
+- **Error Handling**: Graceful handling of connection failures
+- **Logging**: Comprehensive logging of registration status
+
+### 13. Configuration (`config/`)
 
 System configuration and constants:
 
@@ -277,7 +315,7 @@ System configuration and constants:
 - `ZKBlock.go`: Zero-knowledge block data structures
 - `UpdateMetrics.go`: Metrics update utilities
 
-### 13. Security (`Security/`)
+### 14. Security (`Security/`)
 
 Security validation and checks:
 
@@ -289,7 +327,7 @@ Security validation and checks:
 2. **Signature Verification**: Verify cryptographic signatures
 3. **Business Logic**: Apply business rules and constraints
 
-### 14. Monitoring & Logging
+### 15. Monitoring & Logging
 
 **Metrics (`metrics/`):**
 - Prometheus-compatible metrics for system monitoring
@@ -304,7 +342,16 @@ Security validation and checks:
 
 ## Data Flow
 
-### 1. Transaction Processing Flow
+### 1. Node Startup and Seed Node Registration Flow
+1. **Node Initialization**: Create libp2p host and initialize services
+2. **Public IP Detection**: Query ifconfig.me for external IP address
+3. **Port Detection**: Extract TCP port from libp2p host addresses
+4. **Multiaddress Construction**: Build proper libp2p multiaddresses with public IP
+5. **VRS Signing**: Generate cryptographic signature for peer record
+6. **Seed Node Registration**: Register with external seed node via gRPC
+7. **Confirmation**: Receive registration confirmation from seed node
+
+### 2. Transaction Processing Flow
 1. **Transaction Submission**: Via Block API or gETH interface
 2. **Security Validation**: Three-layer security checks
 3. **Mempool Submission**: Send to external mempool service
@@ -312,14 +359,14 @@ Security validation and checks:
 5. **Block Processing**: Process and store verified blocks
 6. **Network Propagation**: Broadcast blocks to all peers
 
-### 2. Synchronization Flow
+### 3. Synchronization Flow
 1. **State Exchange**: Nodes exchange current database states
 2. **Diff Calculation**: Use HashMaps to identify missing data
 3. **Batch Transfer**: Transfer missing data in optimized batches
 4. **Verification**: Verify synchronization consistency
 5. **CRDT Merge**: Merge any concurrent operations
 
-### 3. DID Management Flow
+### 4. DID Management Flow
 1. **DID Registration**: Register new identity with public key
 2. **Database Storage**: Store in accounts database
 3. **Network Propagation**: Broadcast to all connected peers
@@ -335,11 +382,14 @@ Security validation and checks:
 - **Gin**: HTTP web framework
 - **Zerolog**: Structured logging
 - **Prometheus**: Metrics collection
+- **Protocol Buffers**: Data serialization for gRPC services
 
 **Key External Services:**
 - **Mempool Service**: External transaction mempool (port 15051)
 - **ZKVM**: Zero-knowledge virtual machine for block verification
 - **Yggdrasil**: Alternative P2P networking protocol
+- **Seed Node Service**: External peer discovery and registration service
+- **ifconfig.me**: Public IP address detection service
 
 ## Deployment Architecture
 
@@ -375,6 +425,9 @@ The system supports multiple deployment modes:
 3. **Database Security**: ImmuDB provides tamper-proof storage
 4. **Input Validation**: Comprehensive validation of all inputs
 5. **Access Control**: gRPC-based access control for services
+6. **VRS Signing**: ECDSA signatures with R, S, V components for peer records
+7. **Public Key Verification**: Cryptographic verification of peer identities
+8. **External Service Security**: Secure communication with seed nodes and external services
 
 ## Performance Optimizations
 

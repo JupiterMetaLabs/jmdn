@@ -28,6 +28,7 @@ import (
 	"gossipnode/metrics"
 	"gossipnode/node"
 	"gossipnode/seed"
+	"gossipnode/seednode"
 	"gossipnode/transfer"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -168,6 +169,7 @@ func main() {
 	// Command-line flags for node configuration
 	isSeed := flag.Bool("seed", false, "Run as a seed node")
 	connect := flag.String("connect", "", "Connect to a seed node (multiaddr)")
+	seedNodeURL := flag.String("seednode", "", "Seed node gRPC URL for peer registration (e.g., localhost:9090)")
 	heartbeatInterval := flag.Int("heartbeat", 120, "Heartbeat interval in seconds (default: 300)")
 	metricsPort := flag.String("metrics", "8080", "Port for Prometheus metrics")
 	enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
@@ -358,6 +360,28 @@ func main() {
 			fmt.Printf("Connected to seed. Discovered %d peers\n", len(peers))
 			for i, p := range peers {
 				fmt.Printf("  %d. ID: %s, Addresses: %v\n", i+1, p.ID, p.Addrs)
+			}
+		}
+	}
+
+	// Register with seed node gRPC if URL is provided
+	if *seedNodeURL != "" {
+		fmt.Printf("Registering with seed node gRPC: %s\n", *seedNodeURL)
+		seedClient, err := seednode.NewClient(*seedNodeURL)
+		if err != nil {
+			fmt.Printf("Failed to create seed node client: %v\n", err)
+			log.Error().Err(err).Msg("Failed to create seed node client")
+		} else {
+			defer seedClient.Close()
+
+			// Register this peer with the seed node
+			err = seedClient.RegisterPeer(n.Host)
+			if err != nil {
+				fmt.Printf("Failed to register with seed node: %v\n", err)
+				log.Error().Err(err).Msg("Failed to register with seed node")
+			} else {
+				fmt.Println("Successfully registered with seed node")
+				log.Info().Msg("Successfully registered with seed node")
 			}
 		}
 	}
