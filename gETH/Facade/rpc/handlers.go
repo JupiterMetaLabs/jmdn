@@ -12,7 +12,6 @@ import (
 
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
-
 )
 
 type Handlers struct{ service Service.Service }
@@ -360,23 +359,23 @@ func toFilterQuery(p any) (*Types.FilterQuery, error) {
 
 func marshalBlock(b *Types.Block, full bool) map[string]any {
 	result := map[string]any{
-		"number":       "0x" + b.Number.Text(16),
-		"hash":         b.Hash,
-		"parentHash":   b.ParentHash,
-		"timestamp":    "0x" + new(big.Int).SetUint64(b.Timestamp).Text(16),
+		"number":       "0x" + new(big.Int).SetUint64(b.Header.Number).Text(16),
+		"hash":         "0x" + hex.EncodeToString(b.Header.Hash),
+		"parentHash":   "0x" + hex.EncodeToString(b.Header.ParentHash),
+		"timestamp":    "0x" + new(big.Int).SetUint64(b.Header.Timestamp).Text(16),
 		"transactions": []any{},
 	}
 
 	if full && len(b.Transactions) > 0 {
 		txs := make([]any, len(b.Transactions))
 		for i, tx := range b.Transactions {
-			txs[i] = marshalTx(&tx)
+			txs[i] = marshalTx(tx)
 		}
 		result["transactions"] = txs
 	} else if len(b.Transactions) > 0 {
 		txHashes := make([]string, len(b.Transactions))
 		for i, tx := range b.Transactions {
-			txHashes[i] = tx.Hash
+			txHashes[i] = "0x" + hex.EncodeToString(tx.Hash)
 		}
 		result["transactions"] = txHashes
 	}
@@ -386,28 +385,50 @@ func marshalBlock(b *Types.Block, full bool) map[string]any {
 
 func marshalTx(tx *Types.Tx) map[string]any {
 	result := map[string]any{
-		"hash":     tx.Hash,
-		"from":     tx.From,
-		"to":       tx.To,
+		"hash":     "0x" + hex.EncodeToString(tx.Hash),
+		"from":     "0x" + hex.EncodeToString(tx.From),
+		"to":       "0x" + hex.EncodeToString(tx.To),
 		"input":    "0x" + hex.EncodeToString(tx.Input),
-		"value":    "0x" + tx.Value.Text(16),
+		"value":    "0x" + new(big.Int).SetBytes(tx.Value).Text(16),
 		"nonce":    "0x" + new(big.Int).SetUint64(tx.Nonce).Text(16),
-		"gas":      "0x" + tx.Gas.Text(16),
-		"gasPrice": "0x" + tx.GasPrice.Text(16),
+		"gas":      "0x" + new(big.Int).SetUint64(tx.Gas).Text(16),
+		"gasPrice": "0x" + new(big.Int).SetBytes(tx.GasPrice).Text(16),
+		"type":     "0x" + new(big.Int).SetUint64(uint64(tx.Type)).Text(16),
 	}
+
+	// Add optional fields if they exist
+	if len(tx.R) > 0 {
+		result["r"] = "0x" + hex.EncodeToString(tx.R)
+	}
+	if len(tx.S) > 0 {
+		result["s"] = "0x" + hex.EncodeToString(tx.S)
+	}
+	if tx.V > 0 {
+		result["v"] = "0x" + new(big.Int).SetUint64(uint64(tx.V)).Text(16)
+	}
+
 	return result
 }
 
 func marshalLogs(logs []Types.Log) []map[string]any {
 	result := make([]map[string]any, len(logs))
 	for i, log := range logs {
+		// Convert topics from [][]byte to []string
+		topics := make([]string, len(log.Topics))
+		for j, topic := range log.Topics {
+			topics[j] = "0x" + hex.EncodeToString(topic)
+		}
+
 		result[i] = map[string]any{
-			"address":         log.Address,
-			"topics":          log.Topics,
-			"data":            "0x" + hex.EncodeToString(log.Data),
-			"blockNumber":     "0x" + log.BlockNumber.Text(16),
-			"transactionHash": log.TxHash,
-			"logIndex":        "0x" + new(big.Int).SetUint64(uint64(log.LogIndex)).Text(16),
+			"address":          "0x" + hex.EncodeToString(log.Address),
+			"topics":           topics,
+			"data":             "0x" + hex.EncodeToString(log.Data),
+			"blockNumber":      "0x" + new(big.Int).SetUint64(log.BlockNumber).Text(16),
+			"transactionHash":  "0x" + hex.EncodeToString(log.TxHash),
+			"logIndex":         "0x" + new(big.Int).SetUint64(log.LogIndex).Text(16),
+			"blockHash":        "0x" + hex.EncodeToString(log.BlockHash),
+			"transactionIndex": "0x" + new(big.Int).SetUint64(log.TxIndex).Text(16),
+			"removed":          log.Removed,
 		}
 	}
 	return result

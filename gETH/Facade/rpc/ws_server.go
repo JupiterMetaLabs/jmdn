@@ -83,7 +83,7 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 					_ = conn.WriteJSON(RespErr(req.ID, -32000, err.Error()))
 					continue
 				}
-				storeSub(subs, mu, sid, stop)
+				storeSub(subs, &mu, sid, stop)
 				_ = conn.WriteJSON(RespOK(req.ID, sid))
 				go forwardBlocks(conn, sid, ch)
 
@@ -99,7 +99,7 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 					_ = conn.WriteJSON(RespErr(req.ID, -32000, err.Error()))
 					continue
 				}
-				storeSub(subs, mu, sid, stop)
+				storeSub(subs, &mu, sid, stop)
 				_ = conn.WriteJSON(RespOK(req.ID, sid))
 				go forwardLogs(conn, sid, ch)
 
@@ -109,7 +109,7 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 					_ = conn.WriteJSON(RespErr(req.ID, -32000, err.Error()))
 					continue
 				}
-				storeSub(subs, mu, sid, stop)
+				storeSub(subs, &mu, sid, stop)
 				_ = conn.WriteJSON(RespOK(req.ID, sid))
 				go forwardPending(conn, sid, ch)
 
@@ -142,7 +142,7 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func storeSub(m map[string]*sub, mu sync.Mutex, id string, stop func()) {
+func storeSub(m map[string]*sub, mu *sync.Mutex, id string, stop func()) {
 	mu.Lock()
 	defer mu.Unlock()
 	m[id] = &sub{id: id, stop: stop}
@@ -157,7 +157,7 @@ type subMsg struct {
 	} `json:"params"`
 }
 
-	func forwardBlocks(conn *websocket.Conn, sid string, ch <-chan *Types.Block) {
+func forwardBlocks(conn *websocket.Conn, sid string, ch <-chan *Types.Block) {
 	for b := range ch {
 		msg := subMsg{Jsonrpc: "2.0", Method: "eth_subscription"}
 		msg.Params.Subscription = sid

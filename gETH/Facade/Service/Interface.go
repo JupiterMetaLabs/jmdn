@@ -22,6 +22,8 @@ type Service interface {
 
 	// Streaming (for WS subscriptions)
 	SubscribeNewHeads(ctx context.Context) (<-chan *Types.Block, func(), error)
+	// SubscribeLogs is used to subscribe to logs - Its used by Smartcontracts so it can be skipped for some time - // Future
 	SubscribeLogs(ctx context.Context, q *Types.FilterQuery) (<-chan Types.Log, func(), error)
+	// This is to get the pending transactions - It will be implemented once MRE is ready - // Future
 	SubscribePendingTxs(ctx context.Context) (<-chan string, func(), error)
 }

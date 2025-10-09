@@ -14,7 +14,15 @@ import (
 	"time"
 )
 
-func ChainID(ctx context.Context) (*big.Int, error) {
+// ServiceImpl implements the Service interface
+type ServiceImpl struct{}
+
+// NewService creates a new service implementation
+func NewService() Service {
+	return &ServiceImpl{}
+}
+
+func (s *ServiceImpl) ChainID(ctx context.Context) (*big.Int, error) {
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -30,7 +38,7 @@ func ChainID(ctx context.Context) (*big.Int, error) {
 	return big.NewInt(int64(ChainID)), nil
 }
 
-func ClientVersion(ctx context.Context) (string, error) {
+func (s *ServiceImpl) ClientVersion(ctx context.Context) (string, error) {
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -46,7 +54,7 @@ func ClientVersion(ctx context.Context) (string, error) {
 	return ClientVersion, nil
 }
 
-func BlockNumber(ctx context.Context) (*big.Int, error) {
+func (s *ServiceImpl) BlockNumber(ctx context.Context) (*big.Int, error) {
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -69,7 +77,7 @@ func BlockNumber(ctx context.Context) (*big.Int, error) {
 	return big.NewInt(int64(BlockNumber)), nil
 }
 
-func BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error) {
+func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error) {
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -105,7 +113,7 @@ func BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block
 }
 
 // Need to add more functionality to this
-func Balance(ctx context.Context, addr string, block *big.Int) (*big.Int, error) {
+func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int) (*big.Int, error) {
 
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -142,7 +150,7 @@ func Balance(ctx context.Context, addr string, block *big.Int) (*big.Int, error)
 	return balance, nil
 }
 
-func SendRawTx(ctx context.Context, rawHex string) (string, error) {
+func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, error) {
 
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -171,7 +179,7 @@ func SendRawTx(ctx context.Context, rawHex string) (string, error) {
 	return hash, nil
 }
 
-func TxByHash(ctx context.Context, hash string) (*Types.Tx, error) {
+func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, error) {
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -202,7 +210,7 @@ func TxByHash(ctx context.Context, hash string) (*Types.Tx, error) {
 	return tx, nil
 }
 
-func ReceiptByHash(ctx context.Context, hash string) (map[string]any, error) {
+func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[string]any, error) {
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -251,7 +259,7 @@ func ReceiptByHash(ctx context.Context, hash string) (map[string]any, error) {
 	return receiptMap, nil
 }
 
-func GetLogs(ctx context.Context, q Types.FilterQuery) ([]Types.Log, error) {
+func (s *ServiceImpl) GetLogs(ctx context.Context, q Types.FilterQuery) ([]Types.Log, error) {
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -266,4 +274,22 @@ func GetLogs(ctx context.Context, q Types.FilterQuery) ([]Types.Log, error) {
 	}
 
 	return logs, nil
+}
+
+// Call implements the Service interface - placeholder implementation
+func (s *ServiceImpl) Call(ctx context.Context, msg Types.CallMsg, block *big.Int) ([]byte, error) {
+	// TODO: Implement contract call functionality
+	return nil, fmt.Errorf("Call method not yet implemented")
+}
+
+// EstimateGas implements the Service interface - placeholder implementation
+func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint64, error) {
+	// TODO: Implement gas estimation functionality
+	return 21000, nil // Return base gas cost as fallback
+}
+
+// GasPrice implements the Service interface - placeholder implementation
+func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
+	// TODO: Implement gas price calculation
+	return big.NewInt(20000000000), nil // Return 20 gwei as fallback
 }
