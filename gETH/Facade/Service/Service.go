@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	block "gossipnode/Block"
-	"gossipnode/gETH/Facade/Service/Logger"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/gETH/Facade/Service/Logger"
 	"gossipnode/gETH/Facade/Service/Types"
 	"gossipnode/gETH/Facade/Service/Utils"
 	"math/big"
@@ -104,15 +104,14 @@ func BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block
 	return block, nil
 }
 
-
 // Need to add more functionality to this
-func Balance(ctx context.Context, addr string, block *big.Int) (*big.Int, error) {	
+func Balance(ctx context.Context, addr string, block *big.Int) (*big.Int, error) {
 
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	// Lets assume block is the latest - so we will get the balance from the latest block
-	// Future we will add the balance retrival based on the particular block. 
+	// Future we will add the balance retrival based on the particular block.
 	AccountDetails, err := DB_OPs.GetAccount(nil, Utils.ConvertAddress(addr))
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance failed: %v", err), "Balance", -1); logErr != nil {
@@ -203,3 +202,68 @@ func TxByHash(ctx context.Context, hash string) (*Types.Tx, error) {
 	return tx, nil
 }
 
+func ReceiptByHash(ctx context.Context, hash string) (map[string]any, error) {
+	// Create a new context with timeout for this operation
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Get the receipt from the database
+	receipt, err := DB_OPs.GetReceiptByHash(nil, hash)
+	if err != nil {
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash failed: %v", err), "ReceiptByHash", -1); logErr != nil {
+			fmt.Printf("Failed to log ReceiptByHash error: %v\n", logErr)
+		}
+		return nil, err
+	}
+
+	// Convert the receipt to a map for JSON serialization
+	receiptMap := map[string]any{
+		"transactionHash":   receipt.TxHash.Hex(),
+		"blockHash":         receipt.BlockHash.Hex(),
+		"blockNumber":       fmt.Sprintf("%x", receipt.BlockNumber),
+		"transactionIndex":  fmt.Sprintf("%x", receipt.TransactionIndex),
+		"status":            fmt.Sprintf("%x", receipt.Status),
+		"type":              fmt.Sprintf("%x", receipt.Type),
+		"gasUsed":           fmt.Sprintf("%x", receipt.GasUsed),
+		"cumulativeGasUsed": fmt.Sprintf("%x", receipt.CumulativeGasUsed),
+		"logs":              Utils.ConvertLogsToMap(receipt.Logs),
+		"logsBloom":         fmt.Sprintf("%x", receipt.LogsBloom),
+	}
+
+	// Add contract address if present
+	if receipt.ContractAddress != nil {
+		receiptMap["contractAddress"] = receipt.ContractAddress.Hex()
+	}
+
+	// Add ZK-specific fields
+	if len(receipt.ZKProof) > 0 {
+		receiptMap["zkProof"] = fmt.Sprintf("%x", receipt.ZKProof)
+	}
+	if receipt.ZKStatus != "" {
+		receiptMap["zkStatus"] = receipt.ZKStatus
+	}
+
+	// Log success
+	if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash returned to the client: %s", hash), "ReceiptByHash", 1); logErr != nil {
+		fmt.Printf("Failed to log ReceiptByHash success: %v\n", logErr)
+	}
+
+	return receiptMap, nil
+}
+
+func GetLogs(ctx context.Context, q Types.FilterQuery) ([]Types.Log, error) {
+	// Create a new context with timeout for this operation
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Get the logs from the database
+	logs, err := DB_OPs.GetLogs(nil, q)
+	if err != nil {
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetLogs failed: %v", err), "GetLogs", -1); logErr != nil {
+			fmt.Printf("Failed to log GetLogs error: %v\n", logErr)
+		}
+		return nil, err
+	}
+
+	return logs, nil
+}

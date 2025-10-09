@@ -56,3 +56,27 @@ func ConvertBalance(balance string) (*big.Int, error) {
 	}
 	return balanceInt, nil
 }
+
+// convertLogsToMap converts receipt logs to a map format suitable for JSON serialization
+func ConvertLogsToMap(logs []config.Log) []map[string]any {
+	logMaps := make([]map[string]any, len(logs))
+	for i, log := range logs {
+		topics := make([]string, len(log.Topics))
+		for j, topic := range log.Topics {
+			topics[j] = topic.Hex()
+		}
+
+		logMaps[i] = map[string]any{
+			"address":     log.Address.Hex(),
+			"topics":      topics,
+			"data":        fmt.Sprintf("%x", log.Data),
+			"blockNumber": fmt.Sprintf("%x", log.BlockNumber),
+			"blockHash":   log.BlockHash.Hex(),
+			"txHash":      log.TxHash.Hex(),
+			"txIndex":     fmt.Sprintf("%x", log.TxIndex),
+			"logIndex":    fmt.Sprintf("%x", log.LogIndex),
+			"removed":     log.Removed,
+		}
+	}
+	return logMaps
+}
