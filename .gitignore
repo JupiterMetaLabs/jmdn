@@ -10,3 +10,4 @@ Account.json
 .identity*
 .state*
 .vscode
+*.avro

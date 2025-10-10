@@ -2,12 +2,9 @@ package seednode
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	peerpb "gossipnode/seednode/proto"
 	"io"
-	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -59,96 +56,6 @@ func isPublicAddress(addr string) bool {
 		return false
 	}
 	return true
-}
-
-// calculateVFromSignature calculates V component using a deterministic approach
-func calculateVFromSignature(r, s *big.Int, hash []byte) byte {
-	// Use a simple deterministic approach based on the signature values
-	// This ensures consistency while providing a valid V component
-	sum := new(big.Int).Add(r, s)
-	return byte(sum.Bit(0)) // Use the least significant bit
-}
-
-// signPeerRecord signs a peer record using the host's private key
-func signPeerRecord(peerRecord *peerpb.SignedPeerRecord, h host.Host) error {
-	// Get the host's private key
-	privKey := h.Peerstore().PrivKey(h.ID())
-	if privKey == nil {
-		return fmt.Errorf("no private key found for host")
-	}
-
-	// Create a message to sign (concatenate peer_id, multiaddrs, seq, status)
-	var messageParts []string
-	messageParts = append(messageParts, peerRecord.PeerId)
-	messageParts = append(messageParts, peerRecord.Multiaddrs...)
-	messageParts = append(messageParts, fmt.Sprintf("%d", peerRecord.Seq))
-	messageParts = append(messageParts, peerRecord.CurrentStatus.String())
-
-	message := strings.Join(messageParts, "|")
-
-	// Hash the message
-	hash := sha256.Sum256([]byte(message))
-
-	// Sign the hash using libp2p crypto
-	signature, err := privKey.Sign(hash[:])
-	if err != nil {
-		return fmt.Errorf("failed to sign message: %w", err)
-	}
-
-	// Convert libp2p signature to ECDSA format
-	r := new(big.Int).SetBytes(signature[:32])
-	s := new(big.Int).SetBytes(signature[32:64])
-
-	// Calculate V component using a deterministic approach
-	// For libp2p signatures, we'll use a simple parity-based V calculation
-	v := calculateVFromSignature(r, s, hash[:])
-
-	// Convert to hex strings
-	peerRecord.R = hex.EncodeToString(r.Bytes())
-	peerRecord.S = hex.EncodeToString(s.Bytes())
-	peerRecord.V = hex.EncodeToString([]byte{v})
-
-	return nil
-}
-
-// signHeartbeat signs a heartbeat message using the host's private key
-func signHeartbeat(heartbeat *peerpb.HeartbeatMessage, h host.Host) error {
-	// Get the host's private key
-	privKey := h.Peerstore().PrivKey(h.ID())
-	if privKey == nil {
-		return fmt.Errorf("no private key found for host")
-	}
-
-	// Create a message to sign (concatenate peer_id, status, multiaddrs)
-	var messageParts []string
-	messageParts = append(messageParts, heartbeat.PeerId)
-	messageParts = append(messageParts, heartbeat.Status.String())
-	messageParts = append(messageParts, heartbeat.Multiaddrs...)
-
-	message := strings.Join(messageParts, "|")
-
-	// Hash the message
-	hash := sha256.Sum256([]byte(message))
-
-	// Sign the hash using libp2p crypto
-	signature, err := privKey.Sign(hash[:])
-	if err != nil {
-		return fmt.Errorf("failed to sign message: %w", err)
-	}
-
-	// Convert libp2p signature to ECDSA format
-	r := new(big.Int).SetBytes(signature[:32])
-	s := new(big.Int).SetBytes(signature[32:64])
-
-	// Calculate V component using a deterministic approach
-	v := calculateVFromSignature(r, s, hash[:])
-
-	// Convert to hex strings
-	heartbeat.R = hex.EncodeToString(r.Bytes())
-	heartbeat.S = hex.EncodeToString(s.Bytes())
-	heartbeat.V = hex.EncodeToString([]byte{v})
-
-	return nil
 }
 
 // Client represents a seed node gRPC client
@@ -256,7 +163,7 @@ func (c *Client) RegisterPeer(h host.Host) error {
 	}
 
 	// Sign the peer record
-	err = signPeerRecord(peerRecord, h)
+	err = SignPeerRecord(peerRecord, h)
 	if err != nil {
 		return fmt.Errorf("failed to sign peer record: %w", err)
 	}
@@ -304,7 +211,7 @@ func (c *Client) SendHeartbeat(h host.Host) error {
 	}
 
 	// Sign the heartbeat message
-	err := signHeartbeat(heartbeat, h)
+	err := SignHeartbeat(heartbeat, h)
 	if err != nil {
 		return fmt.Errorf("failed to sign heartbeat: %w", err)
 	}
