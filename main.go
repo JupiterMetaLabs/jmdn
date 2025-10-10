@@ -67,6 +67,20 @@ func StartFacadeServer(port int) {
 		}
 	}()
 }
+
+func StartWSServer(port int) {
+	go func() {
+		log.Info().Msg("Starting WSServer")
+		// Get the Http Server
+		HTTPServer := rpc.NewHandlers(Service.NewService())
+	
+		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService())
+		if err := WSServer.Serve(fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
+			log.Error().Err(err).Msg("Failed to start WSServer")
+		}
+	}()
+}
+
 // GetMainDBPool returns the global main database connection pool
 func GetMainDBPool() *config.ConnectionPool {
 	if mainDBPool == nil {
@@ -192,8 +206,8 @@ func main() {
 	cliGRPC := flag.Int("cli", 15053, "CLI gRPC server address")
 	DIDgRPC := flag.String("did", "localhost:15052", "DID gRPC server address")
 	gETHgRPC := flag.Int("geth", 15054, "gETH gRPC server address")
-	gETHFacade := flag.Int("facade", 15055, "gETH Facade server address")
-
+	gETHFacade := flag.Int("facade", 15001, "gETH Facade server address")
+	gETHWSServer := flag.Int("ws", 15002, "gETH WSServer address")
 	flag.Parse()
 
 	// Initialize logger
@@ -448,6 +462,11 @@ func main() {
 	if *gETHFacade > 0 {
 		fmt.Printf("Starting gETH Facade server on port %d\n", *gETHFacade)
 		StartFacadeServer(*gETHFacade)
+	}
+
+	if *gETHWSServer > 0 {
+		fmt.Printf("Starting gETH WSServer on port %d\n", *gETHWSServer)
+		StartWSServer(*gETHWSServer)
 	}
 
 	// Start CLI without timeout - run indefinitely
