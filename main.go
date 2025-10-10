@@ -30,6 +30,8 @@ import (
 	"gossipnode/seed"
 	"gossipnode/seednode"
 	"gossipnode/transfer"
+	"gossipnode/gETH/Facade/Service"
+	"gossipnode/gETH/Facade/rpc"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -54,6 +56,17 @@ var (
 	accountsDBPool *config.ConnectionPool // Accounts/DID database connection pool
 )
 
+func StartFacadeServer(port int) {
+	go func() {
+		log.Info().Msg("Starting facade server")
+		// Get the Http Server
+		HTTPServer := rpc.NewHandlers(Service.NewService())
+		httpServer := rpc.NewHTTPServer(HTTPServer)
+		if err := httpServer.Serve(fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
+			log.Error().Err(err).Msg("Failed to start facade server")
+		}
+	}()
+}
 // GetMainDBPool returns the global main database connection pool
 func GetMainDBPool() *config.ConnectionPool {
 	if mainDBPool == nil {
@@ -179,6 +192,7 @@ func main() {
 	cliGRPC := flag.Int("cli", 15053, "CLI gRPC server address")
 	DIDgRPC := flag.String("did", "localhost:15052", "DID gRPC server address")
 	gETHgRPC := flag.Int("geth", 15054, "gETH gRPC server address")
+	gETHFacade := flag.Int("facade", 15055, "gETH Facade server address")
 
 	flag.Parse()
 
@@ -431,6 +445,11 @@ func main() {
 		fmt.Println(config.ColorYellow + "Warning: DID database client not available - some commands disabled" + config.ColorReset)
 	}
 
+	if *gETHFacade > 0 {
+		fmt.Printf("Starting gETH Facade server on port %d\n", *gETHFacade)
+		StartFacadeServer(*gETHFacade)
+	}
+
 	// Start CLI without timeout - run indefinitely
 	done := make(chan error, 1)
 	go func() {
@@ -441,5 +460,4 @@ func main() {
 	if err := <-done; err != nil {
 		log.Error().Err(err).Msg("Failed to start CLI")
 	}
-
 }

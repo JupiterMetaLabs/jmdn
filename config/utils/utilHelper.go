@@ -9,6 +9,12 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"gossipnode/config"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 //
@@ -35,7 +41,6 @@ func BigIntToStrBase(x *big.Int, base int) string {
 	}
 	return x.Text(base)
 }
-
 
 //
 // -------- Uint64 <-> String --------
@@ -169,4 +174,43 @@ func IsDID(s string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(s)), "did:")
 }
 
+// Conversion of []common.Hash to [][]byte
+func ConvertHashesToByteArrays(hashes []common.Hash) [][]byte {
+	byteArrays := make([][]byte, len(hashes))
+	for i, hash := range hashes {
+		byteArrays[i] = hash.Bytes()
+	}
+	return byteArrays
+}
 
+// GenerateReceiptRoot generates a receipt root from a list of receipts
+// This follows Ethereum's receipt root calculation using RLP encoding and Keccak-256
+func GenerateReceiptRoot(receipts []*config.Receipt) ([]byte, error) {
+	if len(receipts) == 0 {
+		// Empty receipts list - return empty hash
+		return make([]byte, 32), nil
+	}
+
+	// RLP encode the receipts
+	receiptBytes, err := rlp.EncodeToBytes(receipts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to RLP encode receipts: %w", err)
+	}
+
+	// Calculate Keccak-256 hash of the RLP encoded receipts
+	hash := crypto.Keccak256(receiptBytes)
+
+	return hash, nil
+}
+
+// GenerateReceiptRootAsHash generates a receipt root and returns it as common.Hash
+func GenerateReceiptRootAsHash(receipts []*config.Receipt) (common.Hash, error) {
+	rootBytes, err := GenerateReceiptRoot(receipts)
+	if err != nil {
+		return common.Hash{}, err
+	}
+
+	var hash common.Hash
+	copy(hash[:], rootBytes)
+	return hash, nil
+}

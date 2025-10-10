@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	DEFAULT_PREFIX_TX = "tx:"
-	PREFIX_BLOCK      = "block:"
-	PREFIX_BLOCK_HASH = "block:hash:"
+	DEFAULT_PREFIX_TX      = "tx:"
+	PREFIX_BLOCK           = "block:"
+	PREFIX_BLOCK_HASH      = "block:hash:"
+	DEFAULT_PREFIX_RECEIPT = "receipt:"
 )
 
 // Custom errors
