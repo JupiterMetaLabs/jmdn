@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math/big"
 	"strings"
 
@@ -58,6 +59,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 			return resp, nil
 		}
+		fmt.Println("req.Params: ", req.Params)
 		tag, _ := req.Params[0].(string)
 		full := false
 		if len(req.Params) > 1 {
@@ -94,7 +96,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 			return resp, err
 		}
-		bal, err := handler.service.Balance(ctx, addr, num)
+		bal, err := handler.service.Balance(ctx, addr, num, "wallet")
 		if err != nil {
 			resp, _ := finish(req, nil, err)
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)

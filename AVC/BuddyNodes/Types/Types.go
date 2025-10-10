@@ -5,26 +5,27 @@ import (
 
 	"github.com/multiformats/go-multiaddr"
 )
-const(
+
+const (
 	// Operation flags
-	ADD = 1
-	REMOVE = -1
-	SYNC = 200
-	COUNTERINC = 201
+	ADD        = 1
+	REMOVE     = -1
+	SYNC       = 100
+	COUNTERINC = 101
 )
 
 type Controller struct {
 	CRDTLayer *crdt.Engine
 }
 
-type KeyValue struct{
-	Key string
+type KeyValue struct {
+	Key   string
 	Value string
 }
 
-type OP struct{
-	NodeID multiaddr.Multiaddr
-	OpType uint8
+type OP struct {
+	NodeID   multiaddr.Multiaddr
+	OpType   int8
 	KeyValue KeyValue
-	VEC crdt.VectorClock
+	VEC      crdt.VectorClock
 }

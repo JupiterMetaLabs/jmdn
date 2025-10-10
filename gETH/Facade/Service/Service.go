@@ -11,6 +11,7 @@ import (
 	"gossipnode/gETH/Facade/Service/Types"
 	"gossipnode/gETH/Facade/Service/Utils"
 	"math/big"
+	"strings"
 	"time"
 )
 
@@ -113,7 +114,7 @@ func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bo
 }
 
 // Need to add more functionality to this
-func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int) (*big.Int, error) {
+func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, network string) (*big.Int, error) {
 
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -122,6 +123,33 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int) 
 	// Future we will add the balance retrival based on the particular block.
 	AccountDetails, err := DB_OPs.GetAccount(nil, Utils.ConvertAddress(addr))
 	if err != nil {
+		// If account not found, create a new account with zero balance
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
+			// Convert address to common.Address
+			address := Utils.ConvertAddress(addr)
+
+			// Create new account with zero balance
+			// We need to provide a DID address, so we'll use the address as DID for now
+			didAddress := fmt.Sprintf("did:%s:%s", network, address.Hex())
+
+			// Save the new account to database
+			if createErr := DB_OPs.CreateAccount(nil, didAddress, address, nil); createErr != nil {
+				if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance failed to create account: %v", createErr), "Balance", -1); logErr != nil {
+					fmt.Printf("Failed to log Balance account creation error: %v\n", logErr)
+				}
+				return nil, createErr
+			}
+
+			// Log account creation
+			if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance created new account for address: %s", addr), "Balance", 1); logErr != nil {
+				fmt.Printf("Failed to log Balance account creation: %v\n", logErr)
+			}
+
+			// Return zero balance for new account
+			return big.NewInt(0), nil
+		}
+
+		// For other errors, log and return
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance failed: %v", err), "Balance", -1); logErr != nil {
 			fmt.Printf("Failed to log Balance error: %v\n", logErr)
 		}

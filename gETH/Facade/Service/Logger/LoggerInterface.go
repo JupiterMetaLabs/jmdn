@@ -14,11 +14,11 @@ import (
 var Once sync.Once
 var Logger *logging.AsyncLogger
 
-const(
-	LOG_FILE = "gETH.log"
-	TOPIC = "gETH"
-	LOKI_URL = "http://localhost:3100/loki/api/v1/push"
-	DIR = "logs"
+const (
+	LOG_FILE  = "gETH.log"
+	TOPIC     = "gETH"
+	LOKI_URL  = "" // Disable Loki for now
+	DIR       = "logs"
 	BatchSize = 128 * 1024
 )
 

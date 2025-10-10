@@ -11,7 +11,7 @@ type Service interface {
 	ClientVersion(ctx context.Context) (string, error)
 	BlockNumber(ctx context.Context) (*big.Int, error)
 	BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error)
-	Balance(ctx context.Context, addr string, block *big.Int) (*big.Int, error)
+	Balance(ctx context.Context, addr string, block *big.Int, network string) (*big.Int, error)
 	Call(ctx context.Context, msg Types.CallMsg, block *big.Int) ([]byte, error)
 	EstimateGas(ctx context.Context, msg Types.CallMsg) (uint64, error)
 	GasPrice(ctx context.Context) (*big.Int, error) // or return base+tip separately
