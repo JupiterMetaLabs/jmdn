@@ -5,22 +5,24 @@ import (
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/Types"
 
+	"testing"
+
 	"github.com/multiformats/go-multiaddr"
 )
 
-// ExampleUsage demonstrates proper usage of the CRDT layer with multiaddr
-func ExampleUsage() {
+// TestExampleUsage demonstrates proper usage of the CRDT layer with multiaddr
+func TestExampleUsage(t *testing.T) {
 	// Create multiaddr for node identification
-	node1Addr, err := multiaddr.NewMultiaddr("/ip4/127.0.0.1/tcp/15001/p2p/12D3KooWNode1")
+	node1Addr, err := multiaddr.NewMultiaddr("/ip4/127.0.0.1/tcp/15001/p2p/12D3KooWFMi4oXTbyZxnUX3vjc4PD4yMWmULXNsPdsokTGHAWfeT")
 	if err != nil {
 		fmt.Printf("Error creating multiaddr: %v\n", err)
-		return
+		t.Fatal(err)
 	}
 
-	node2Addr, err := multiaddr.NewMultiaddr("/ip4/127.0.0.1/tcp/15002/p2p/12D3KooWNode2")
+	node2Addr, err := multiaddr.NewMultiaddr("/ip4/127.0.0.1/tcp/15002/p2p/12D3KooWFMi4oXTbyZxnUX3vjc4PD4yMWmULXNsPdsokTGHAWfe2")
 	if err != nil {
 		fmt.Printf("Error creating multiaddr: %v\n", err)
-		return
+		t.Fatal(err)
 	}
 
 	// Create CRDT controllers for each node
@@ -32,19 +34,19 @@ func ExampleUsage() {
 	err = Add(node1Controller, node1Addr, "users", "alice")
 	if err != nil {
 		fmt.Printf("Error adding to node1: %v\n", err)
-		return
+		t.Fatal(err)
 	}
 
 	err = Add(node1Controller, node1Addr, "users", "bob")
 	if err != nil {
 		fmt.Printf("Error adding to node1: %v\n", err)
-		return
+		t.Fatal(err)
 	}
 
 	err = CounterInc(node1Controller, node1Addr, "likes", 5)
 	if err != nil {
 		fmt.Printf("Error incrementing counter on node1: %v\n", err)
-		return
+		t.Fatal(err)
 	}
 
 	// Add data to node2
@@ -52,13 +54,13 @@ func ExampleUsage() {
 	err = Add(node2Controller, node2Addr, "users", "charlie")
 	if err != nil {
 		fmt.Printf("Error adding to node2: %v\n", err)
-		return
+		t.Fatal(err)
 	}
 
 	err = CounterInc(node2Controller, node2Addr, "likes", 3)
 	if err != nil {
 		fmt.Printf("Error incrementing counter on node2: %v\n", err)
-		return
+		t.Fatal(err)
 	}
 
 	// Show state before sync
@@ -77,7 +79,7 @@ func ExampleUsage() {
 	err = SyncWithNode(ctx, node1Controller, node2Controller, "node1", "node2")
 	if err != nil {
 		fmt.Printf("Error syncing nodes: %v\n", err)
-		return
+		t.Fatal(err)
 	}
 
 	// Show state after sync
@@ -99,10 +101,10 @@ func ExampleUsage() {
 
 	// Add a third node
 	node3Controller := NewCRDTLayer(nil)
-	node3Addr, err := multiaddr.NewMultiaddr("/ip4/127.0.0.1/tcp/15003/p2p/12D3KooWNode3")
+	node3Addr, err := multiaddr.NewMultiaddr("/ip4/127.0.0.1/tcp/15003/p2p/12D3KooWFMi4oXTbyZxnUX3vjc4PD4yMWmULXNsPdsokTGHAWfe3")
 	if err != nil {
 		fmt.Printf("Error creating node3 multiaddr: %v\n", err)
-		return
+		t.Fatal(err)
 	}
 
 	Add(node3Controller, node3Addr, "users", "diana")
@@ -115,7 +117,7 @@ func ExampleUsage() {
 	err = SyncAllNodes(ctx, nodes)
 	if err != nil {
 		fmt.Printf("Error syncing all nodes: %v\n", err)
-		return
+		t.Fatal(err)
 	}
 
 	// Show final state

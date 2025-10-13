@@ -30,6 +30,25 @@ const (
 	BroadcastProtocol     protocol.ID = "/broadcast/1.0.0"
 	BlockPropagationProtocol protocol.ID = "/broadcast/block/1.0.0"
 	SyncProtocol 		  protocol.ID = "/p2p/sync/1.0.0"
+	BuddyNodesMessageProtocol protocol.ID = "/p2p/buddy/message/1.0.0"
+)
+
+
+const (
+	Delimiter = 0x1E
+	PubSub_ConsensusChannel = "pubsub-consensus"
+)
+
+const(
+	// Operation flags
+	Type_StartPubSub = "START_PUBSUB"
+	Type_EndPubSub = "END_PUBSUB"
+	Type_Publish = "PUBLISH"
+	Type_Subscribe = "SUBSCRIBE"
+	Type_Unsubscribe = "UNSUBSCRIBE"
+
+	Topic_EndPubSub = "END_PUBSUB"
+	Topic_SYNCRequest = "SYNC_REQUEST"
 )
 
 // Increase buffer sizes
