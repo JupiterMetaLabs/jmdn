@@ -12,42 +12,48 @@ import (
 
 // Add ANSI color constants
 const (
-    ColorReset  = "\033[0m"
-    ColorGreen  = "\033[1;32m"
-    ColorCyan   = "\033[1;36m"
-    ColorYellow = "\033[1;33m"
-    ColorRed    = "\033[1;31m"
+	ColorReset  = "\033[0m"
+	ColorGreen  = "\033[1;32m"
+	ColorCyan   = "\033[1;36m"
+	ColorYellow = "\033[1;33m"
+	ColorRed    = "\033[1;31m"
 )
 
 // Protocol IDs for message and file sharing
 const (
-	MessageProtocol       protocol.ID = "/custom/message/1.0.0"
-	FileProtocol          protocol.ID = "/custom/file/1.0.0"
-	SeedProtocol          protocol.ID = "/custom/seed/1.0.0"           // Protocol for seed node operations
-	PeerDiscoveryProtocol protocol.ID = "/custom/peer/discovery/1.0.0" // For finding peers
-	HeartbeatProtocol     protocol.ID = "/heartbeat/1.0.0"
-	RegisterProtocol      protocol.ID = "/seednode/register/1.0.0" // For peer registration
-	BroadcastProtocol     protocol.ID = "/broadcast/1.0.0"
-	BlockPropagationProtocol protocol.ID = "/broadcast/block/1.0.0"
-	SyncProtocol 		  protocol.ID = "/p2p/sync/1.0.0"
+	MessageProtocol           protocol.ID = "/custom/message/1.0.0"
+	FileProtocol              protocol.ID = "/custom/file/1.0.0"
+	SeedProtocol              protocol.ID = "/custom/seed/1.0.0"           // Protocol for seed node operations
+	PeerDiscoveryProtocol     protocol.ID = "/custom/peer/discovery/1.0.0" // For finding peers
+	HeartbeatProtocol         protocol.ID = "/heartbeat/1.0.0"
+	RegisterProtocol          protocol.ID = "/seednode/register/1.0.0" // For peer registration
+	BroadcastProtocol         protocol.ID = "/broadcast/1.0.0"
+	BlockPropagationProtocol  protocol.ID = "/broadcast/block/1.0.0"
+	SyncProtocol              protocol.ID = "/p2p/sync/1.0.0"
 	BuddyNodesMessageProtocol protocol.ID = "/p2p/buddy/message/1.0.0"
 )
 
-
 const (
-	Delimiter = 0x1E
+	Delimiter               = 0x1E
 	PubSub_ConsensusChannel = "pubsub-consensus"
 )
 
-const(
+const (
 	// Operation flags
-	Type_StartPubSub = "START_PUBSUB"
-	Type_EndPubSub = "END_PUBSUB"
-	Type_Publish = "PUBLISH"
-	Type_Subscribe = "SUBSCRIBE"
-	Type_Unsubscribe = "UNSUBSCRIBE"
+	Type_StartPubSub        = "START_PUBSUB"
+	Type_EndPubSub          = "END_PUBSUB"
+	Type_Publish            = "PUBLISH"
+	Type_Subscribe          = "SUBSCRIBE"
+	Type_Unsubscribe        = "UNSUBSCRIBE"
+	Type_AskForSubscription = "ASK_FOR_SUBSCRIPTION"
 
-	Topic_EndPubSub = "END_PUBSUB"
+	// ACK messages
+	Type_ACK_True  = "ACK_TRUE"
+	Type_ACK_False = "ACK_FALSE"
+
+	//
+
+	Topic_EndPubSub   = "END_PUBSUB"
 	Topic_SYNCRequest = "SYNC_REQUEST"
 )
 
@@ -65,11 +71,14 @@ const (
 )
 
 const (
-    DIDPropagationProtocol protocol.ID = "/gossipnode/did/1.0.0"
-    MaxAccountHops             = 7
+	DIDPropagationProtocol protocol.ID = "/gossipnode/did/1.0.0"
+	MaxAccountHops                     = 7
 )
 
 // Network addresses
+var Yggdrasil_Address string
+var IP6YGG = "/ip6/"+Yggdrasil_Address+"/tcp/15000/p2p/"
+
 const (
 	IP6TCP  = "/ip6/::/tcp/15000"
 	IP6QUIC = "/ip6/::/udp/15000/quic-v1"
@@ -128,13 +137,11 @@ type UnifiedDB struct {
 	Mutex    sync.RWMutex
 }
 
-
 // AccessTuple is the element type of an access list.
 type AccessTuple struct {
-    Address     common.Address
-    StorageKeys []common.Hash
+	Address     common.Address
+	StorageKeys []common.Hash
 }
 
 // AccessList is an EIP-2930 access list.
 type AccessList []AccessTuple
-

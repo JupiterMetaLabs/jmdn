@@ -12,6 +12,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/multiformats/go-multiaddr"
 )
 
 // NewGossipPubSub creates a new gossip pub/sub instance
@@ -22,7 +23,7 @@ func NewGossipPubSub(host host.Host, Protocol protocol.ID) (*GossipPubSub, error
 		handlers:      make(map[string]func(*GossipMessage)),
 		messageCache:  make(map[string]bool),
 		channelAccess: make(map[string]*ChannelAccess),
-		peers:         make(map[peer.ID]bool),
+		peers:         make([]peer.ID, 0),
 	}
 
 	// Set up stream handler for gossip messages
@@ -33,7 +34,7 @@ func NewGossipPubSub(host host.Host, Protocol protocol.ID) (*GossipPubSub, error
 }
 
 // CreateChannel creates a new channel with access control
-func (gps *GossipPubSub) CreateChannel(channelName string, isPublic bool, allowedPeers []peer.ID) error {
+func (gps *GossipPubSub) CreateChannel(channelName string, isPublic bool, allowedPeers []multiaddr.Multiaddr) error {
 	gps.mutex.Lock()
 	defer gps.mutex.Unlock()
 
@@ -42,13 +43,14 @@ func (gps *GossipPubSub) CreateChannel(channelName string, isPublic bool, allowe
 	}
 
 	// Create allowed peers map
-	allowedMap := make(map[peer.ID]bool)
+	allowedMap := make(map[string]bool)
 	for _, peerID := range allowedPeers {
-		allowedMap[peerID] = true
+		// Convert multiaddr to string
+		allowedMap[peerID.String()] = true
 	}
 
 	// Add creator to allowed peers
-	allowedMap[gps.Host.ID()] = true
+	allowedMap[gps.Host.ID().String()] = true
 
 	// Create channel access control
 	gps.channelAccess[channelName] = &ChannelAccess{
@@ -74,18 +76,17 @@ func (gps *GossipPubSub) AddPeerToChannel(channelName string, peerID peer.ID) er
 		return fmt.Errorf("channel %s does not exist", channelName)
 	}
 
-	// Only creator can add peers
 	if gps.Host.ID() != access.Creator {
 		return fmt.Errorf("only channel creator can add peers")
 	}
 
-	access.AllowedPeers[peerID] = true
+	access.AllowedPeers[peerID.String()] = true
 	log.Printf("Added peer %s to channel %s", peerID, channelName)
 	return nil
 }
 
 // RemovePeerFromChannel removes a peer from the allowed list of a channel
-func (gps *GossipPubSub) RemovePeerFromChannel(channelName string, peerID peer.ID) error {
+func (gps *GossipPubSub) RemovePeerFromChannel(channelName string, mutliaddr multiaddr.Multiaddr) error {
 	gps.mutex.Lock()
 	defer gps.mutex.Unlock()
 
@@ -99,13 +100,13 @@ func (gps *GossipPubSub) RemovePeerFromChannel(channelName string, peerID peer.I
 		return fmt.Errorf("only channel creator can remove peers")
 	}
 
-	delete(access.AllowedPeers, peerID)
-	log.Printf("Removed peer %s from channel %s", peerID, channelName)
+	delete(access.AllowedPeers, mutliaddr.String())
+	log.Printf("Removed peer %s from channel %s", mutliaddr, channelName)
 	return nil
 }
 
 // CanSubscribe checks if a peer can subscribe to a channel
-func (gps *GossipPubSub) CanSubscribe(channelName string, peerID peer.ID) bool {
+func (gps *GossipPubSub) CanSubscribe(channelName string, multiaddr multiaddr.Multiaddr) bool {
 	gps.mutex.RLock()
 	defer gps.mutex.RUnlock()
 
@@ -120,13 +121,14 @@ func (gps *GossipPubSub) CanSubscribe(channelName string, peerID peer.ID) bool {
 	}
 
 	// Check if peer is in allowed list
-	return access.AllowedPeers[peerID]
+	return access.AllowedPeers[multiaddr.String()]
 }
 
 // Subscribe subscribes to a topic with access control
 func (gps *GossipPubSub) Subscribe(topic string, handler func(*GossipMessage)) error {
 	// Check if we can subscribe to this channel
-	if !gps.CanSubscribe(topic, gps.Host.ID()) {
+	hostMultiAddr := getLargestMultiaddr(gps.Host.Addrs())
+	if !gps.CanSubscribe(topic, hostMultiAddr) {
 		return fmt.Errorf("access denied: not authorized to subscribe to channel %s", topic)
 	}
 
@@ -255,26 +257,21 @@ func (gps *GossipPubSub) writeMessage(s network.Stream, message []byte) error {
 // gossipMessage forwards a message to connected peers
 func (gps *GossipPubSub) gossipMessage(messageBytes []byte) {
 	gps.mutex.RLock()
-	peers := make([]peer.ID, 0, len(gps.peers))
-	for peerID := range gps.peers {
-		peers = append(peers, peerID)
+	peerAddrs := make([]peer.ID, 0, len(gps.peers))
+	for _, peerAddr := range gps.peers {
+		peerAddrs = append(peerAddrs, peerAddr)
 	}
-	gps.mutex.RUnlock()
-
-	// Send to a subset of peers (gossip protocol)
-	maxPeers := 3 // Limit to prevent flooding
-	if len(peers) > maxPeers {
-		peers = peers[:maxPeers]
-	}
-
-	for _, peerID := range peers {
-		if peerID != gps.Host.ID() { // Don't send to ourselves
-			go func(p peer.ID) {
-				if err := gps.sendToPeer(p, messageBytes); err != nil {
-					log.Printf("Failed to gossip message to %s: %v", p, err)
-				}
-			}(peerID)
+	for _, peerAddr := range peerAddrs {
+		// Don't send to ourselves
+		if peerAddr == gps.Host.ID() {
+			continue
 		}
+
+		go func(p peer.ID) {
+			if err := gps.sendToPeer(p, messageBytes); err != nil {
+				log.Printf("Failed to gossip message to %s: %v", p, err)
+			}
+		}(peerAddr)
 	}
 }
 
@@ -326,7 +323,7 @@ func (gps *GossipPubSub) GetPeers() []peer.ID {
 	defer gps.mutex.RUnlock()
 
 	peers := make([]peer.ID, 0, len(gps.peers))
-	for peerID := range gps.peers {
+	for _, peerID := range gps.peers {
 		peers = append(peers, peerID)
 	}
 	return peers
@@ -348,9 +345,38 @@ func (gps *GossipPubSub) Close() error {
 func (gps *GossipPubSub) HandlePeerFound(pi peer.AddrInfo) {
 	log.Printf("Peer discovered: %s", pi.ID)
 
-	// Add to peers
+	// Don't add ourselves
+	if pi.ID == gps.Host.ID() {
+		log.Printf("Skipping self-discovery for peer: %s", pi.ID)
+		return
+	}
+
+	// Validate that peer has addresses
+	if len(pi.Addrs) == 0 {
+		log.Printf("Peer %s has no addresses, skipping", pi.ID)
+		return
+	}
+
+	// Check for duplicate peers before adding
 	gps.mutex.Lock()
-	gps.peers[pi.ID] = true
+	peerAlreadyExists := false
+	for _, existingPeer := range gps.peers {
+
+		if existingPeer == pi.ID {
+			peerAlreadyExists = true
+			break
+		}
+	}
+
+	if !peerAlreadyExists {
+		// Use the largest multiaddr (following the pattern from utils.go)
+		if pi.ID != "" {
+			gps.peers = append(gps.peers, pi.ID)
+			log.Printf("Added peer %s to peers list with address: %s", pi.ID, pi.Addrs)
+		}
+	} else {
+		log.Printf("Peer %s already exists in peers list", pi.ID)
+	}
 	gps.mutex.Unlock()
 
 	// Connect to the discovered peer

@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"gossipnode/config"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
-
-
 
 // HandleBuddyNodesMessageStream handles incoming messages on the buddy nodes protocol
 func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
@@ -33,10 +32,34 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 		return
 	}
 
+	// Remove the delimiter from the message
+	msg = strings.TrimSuffix(msg, string(rune(config.Delimiter)))
+
 	log.Printf("Received buddy message from %s: %s", s.Conn().RemotePeer(), msg)
 
-	// TODO: Process the message based on your protocol requirements
-	// You might want to parse the message and handle different message types
+	switch msg {
+	case config.Type_StartPubSub:
+		// If node is okay to listen for subscriptions, then return ACK True
+		if buddy.Host != nil && buddy.Network != nil {
+			// Node is ready to listen for subscriptions
+			ackMessage := config.Type_ACK_True
+			if err := buddy.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage); err != nil {
+				log.Printf("Failed to send ACK to %s: %v", s.Conn().RemotePeer(), err)
+			} else {
+				log.Printf("Sent ACK_TRUE to %s for pubsub subscription", s.Conn().RemotePeer())
+			}
+		} else {
+			// Node is not ready to listen for subscriptions
+			ackMessage := config.Type_ACK_False
+			if err := buddy.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage); err != nil {
+				log.Printf("Failed to send ACK to %s: %v", s.Conn().RemotePeer(), err)
+			} else {
+				log.Printf("Sent ACK_FALSE to %s - node not ready for pubsub", s.Conn().RemotePeer())
+			}
+		}
+	default:
+		log.Printf("Unknown message type received from %s: %s", s.Conn().RemotePeer(), msg)
+	}
 }
 
 // NewBuddyNode creates a new BuddyNode instance from an existing host
@@ -63,10 +86,10 @@ func NewBuddyNode(h host.Host, buddies *Buddies) *BuddyNode {
 	return buddy
 }
 
-// SendMessage sends a message to a specific peer using the buddy nodes protocol
-func (buddy *BuddyNode) SendMessage(peerID peer.ID, message string) error {
+// SendMessageToPeer sends a message to a specific peer using peer.ID (for already connected peers)
+func (buddy *BuddyNode) SendMessageToPeer(peerID peer.ID, message string) error {
 	// Create a stream to the peer
-	stream, err := buddy.Host.NewStream(network.WithAllowLimitedConn(context.Background(), ""), peerID, config.BuddyNodesMessageProtocol)
+	stream, err := buddy.Host.NewStream(context.Background(), peerID, config.BuddyNodesMessageProtocol)
 	if err != nil {
 		return fmt.Errorf("failed to create stream to %s: %v", peerID, err)
 	}
@@ -78,13 +101,16 @@ func (buddy *BuddyNode) SendMessage(peerID peer.ID, message string) error {
 		return fmt.Errorf("failed to send message to %s: %v", peerID, err)
 	}
 
-	// Update metadata
-	buddy.Mutex.Lock()
-	buddy.MetaData.Sent++
-	buddy.MetaData.Total++
-	buddy.MetaData.UpdatedAt = time.Now()
-	buddy.Mutex.Unlock()
+	if message != config.Type_ACK_True && message != config.Type_ACK_False {
+		// Update metadata
+		buddy.Mutex.Lock()
+		buddy.MetaData.Sent++
+		buddy.MetaData.Total++
+		buddy.MetaData.UpdatedAt = time.Now()
+		buddy.Mutex.Unlock()
 
-	log.Printf("Sent buddy message to %s: %s", peerID, message)
+		log.Printf("Sent buddy message to %s: %s", peerID, message)
+	}
+
 	return nil
 }

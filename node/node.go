@@ -130,6 +130,7 @@ func NewNode() (*config.Node, error) {
 	h, err := libp2p.New(
 		libp2p.Identity(privKey), // Peer ID
 		libp2p.ListenAddrStrings(
+			config.IP6YGG, // Yggdrasil over IPv6
 			config.IP6QUIC, // QUIC over IPv6
 			config.IP6TCP,  // TCP over IPv6
 			config.IP4QUIC, // QUIC over IPv4

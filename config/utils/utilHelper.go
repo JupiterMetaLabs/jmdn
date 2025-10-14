@@ -15,6 +15,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/multiformats/go-multiaddr"
 )
 
 //
@@ -213,4 +215,17 @@ func GenerateReceiptRootAsHash(receipts []*config.Receipt) (common.Hash, error) 
 	var hash common.Hash
 	copy(hash[:], rootBytes)
 	return hash, nil
+}
+
+
+// Get the Multiaddr of the host
+func GetMultiAddrs(host host.Host) []multiaddr.Multiaddr {
+	list := make([]multiaddr.Multiaddr, 0)
+	for _, addr := range host.Addrs() {
+		ma, err := multiaddr.NewMultiaddr(fmt.Sprintf("%s/p2p/%s", addr.String(), host.ID().String()))
+		if err == nil {
+			list = append(list, ma)
+		}
+	}
+	return list
 }

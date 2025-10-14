@@ -135,6 +135,8 @@ func startDIDServer(h host.Host, address string) error {
 // initYggdrasilMessaging initializes the Yggdrasil messaging system
 func initYggdrasilMessaging(ctx context.Context) {
 	directMSG.StartYggdrasilListener(ctx)
+	// Assign yggdraisl address to the config.Yggdrasil_Address
+	
 	fmt.Println(config.ColorGreen+"Yggdrasil messaging service started on port:"+config.ColorReset, directMSG.YggdrasilPort)
 }
 
@@ -305,6 +307,7 @@ func main() {
 		ipv6 = "?"
 		log.Printf("Error getting tun0 IPv6 address: %v", err)
 	}
+	config.Yggdrasil_Address = ipv6
 	fmt.Println(config.ColorGreen+"Yggdrasil Global IPv6 Address:"+config.ColorReset, ipv6)
 	fmt.Println(config.ColorGreen+"Yggdrasil Global IPv6 Full Peer Address:"+config.ColorReset, "/ip6/"+ipv6+"/tcp/15000/p2p/"+n.Host.ID().String())
 

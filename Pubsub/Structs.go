@@ -20,11 +20,11 @@ type GossipMessage struct {
 
 // ChannelAccess represents access control for a channel
 type ChannelAccess struct {
-	ChannelName  string           `json:"channelName"`  // Name of the channel
-	AllowedPeers map[peer.ID]bool `json:"allowedPeers"` // Peers allowed to subscribe
-	IsPublic     bool             `json:"isPublic"`     // If true, anyone can join
-	Creator      peer.ID          `json:"creator"`      // Who created the channel
-	CreatedAt    int64            `json:"createdAt"`    // When channel was created
+	ChannelName  string                `json:"channelName"`  // Name of the channel
+	AllowedPeers map[string]bool       `json:"allowedPeers"` // Peers allowed to subscribe
+	IsPublic     bool                  `json:"isPublic"`     // If true, anyone can join
+	Creator      peer.ID               `json:"creator"`      // Who created the channel (gave multiple addresses for fallback)
+	CreatedAt    int64                 `json:"createdAt"`    // When channel was created
 }
 
 // GossipPubSub handles gossip-based pub/sub messaging
@@ -34,7 +34,7 @@ type GossipPubSub struct {
 	handlers      map[string]func(*GossipMessage) // Topic -> handler function
 	messageCache  map[string]bool                 // Message deduplication
 	channelAccess map[string]*ChannelAccess       // Channel access control
-	peers         map[peer.ID]bool                // Connected peers
+	peers         []peer.ID                       // Connected peers
 	mutex         sync.RWMutex                    // Read-write mutex for thread safety
 	messageID     uint64                          // Counter for message IDs
 }
