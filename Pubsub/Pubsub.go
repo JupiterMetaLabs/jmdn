@@ -12,7 +12,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
-	"github.com/multiformats/go-multiaddr"
 )
 
 // NewGossipPubSub creates a new gossip pub/sub instance
@@ -33,8 +32,8 @@ func NewGossipPubSub(host host.Host, Protocol protocol.ID) (*GossipPubSub, error
 	return gps, nil
 }
 
-// CreateChannel creates a new channel with access control
-func (gps *GossipPubSub) CreateChannel(channelName string, isPublic bool, allowedPeers []multiaddr.Multiaddr) error {
+// CreateChannel creates a new channel with access control and self-subscription
+func (gps *GossipPubSub) CreateChannel(channelName string, isPublic bool, allowedPeers []peer.ID) error {
 	gps.mutex.Lock()
 	defer gps.mutex.Unlock()
 
@@ -43,14 +42,14 @@ func (gps *GossipPubSub) CreateChannel(channelName string, isPublic bool, allowe
 	}
 
 	// Create allowed peers map
-	allowedMap := make(map[string]bool)
+	allowedMap := make(map[peer.ID]bool)
 	for _, peerID := range allowedPeers {
 		// Convert multiaddr to string
-		allowedMap[peerID.String()] = true
+		allowedMap[peerID] = true
 	}
 
 	// Add creator to allowed peers
-	allowedMap[gps.Host.ID().String()] = true
+	allowedMap[gps.Host.ID()] = true
 
 	// Create channel access control
 	gps.channelAccess[channelName] = &ChannelAccess{
@@ -80,13 +79,13 @@ func (gps *GossipPubSub) AddPeerToChannel(channelName string, peerID peer.ID) er
 		return fmt.Errorf("only channel creator can add peers")
 	}
 
-	access.AllowedPeers[peerID.String()] = true
+	access.AllowedPeers[peerID] = true
 	log.Printf("Added peer %s to channel %s", peerID, channelName)
 	return nil
 }
 
 // RemovePeerFromChannel removes a peer from the allowed list of a channel
-func (gps *GossipPubSub) RemovePeerFromChannel(channelName string, mutliaddr multiaddr.Multiaddr) error {
+func (gps *GossipPubSub) RemovePeerFromChannel(channelName string, peerID peer.ID) error {
 	gps.mutex.Lock()
 	defer gps.mutex.Unlock()
 
@@ -100,13 +99,13 @@ func (gps *GossipPubSub) RemovePeerFromChannel(channelName string, mutliaddr mul
 		return fmt.Errorf("only channel creator can remove peers")
 	}
 
-	delete(access.AllowedPeers, mutliaddr.String())
-	log.Printf("Removed peer %s from channel %s", mutliaddr, channelName)
+	delete(access.AllowedPeers, peerID)
+	log.Printf("Removed peer %s from channel %s", peerID, channelName)
 	return nil
 }
 
 // CanSubscribe checks if a peer can subscribe to a channel
-func (gps *GossipPubSub) CanSubscribe(channelName string, multiaddr multiaddr.Multiaddr) bool {
+func (gps *GossipPubSub) CanSubscribe(channelName string, peerID peer.ID) bool {
 	gps.mutex.RLock()
 	defer gps.mutex.RUnlock()
 
@@ -121,13 +120,13 @@ func (gps *GossipPubSub) CanSubscribe(channelName string, multiaddr multiaddr.Mu
 	}
 
 	// Check if peer is in allowed list
-	return access.AllowedPeers[multiaddr.String()]
+	return access.AllowedPeers[peerID]
 }
 
 // Subscribe subscribes to a topic with access control
 func (gps *GossipPubSub) Subscribe(topic string, handler func(*GossipMessage)) error {
 	// Check if we can subscribe to this channel
-	hostMultiAddr := getLargestMultiaddr(gps.Host.Addrs())
+	hostMultiAddr := gps.Host.ID()
 	if !gps.CanSubscribe(topic, hostMultiAddr) {
 		return fmt.Errorf("access denied: not authorized to subscribe to channel %s", topic)
 	}
@@ -257,13 +256,10 @@ func (gps *GossipPubSub) writeMessage(s network.Stream, message []byte) error {
 // gossipMessage forwards a message to connected peers
 func (gps *GossipPubSub) gossipMessage(messageBytes []byte) {
 	gps.mutex.RLock()
-	peerAddrs := make([]peer.ID, 0, len(gps.peers))
-	for _, peerAddr := range gps.peers {
-		peerAddrs = append(peerAddrs, peerAddr)
-	}
-	for _, peerAddr := range peerAddrs {
+
+	for _, peerID := range gps.peers {
 		// Don't send to ourselves
-		if peerAddr == gps.Host.ID() {
+		if peerID == gps.Host.ID() {
 			continue
 		}
 
@@ -271,7 +267,7 @@ func (gps *GossipPubSub) gossipMessage(messageBytes []byte) {
 			if err := gps.sendToPeer(p, messageBytes); err != nil {
 				log.Printf("Failed to gossip message to %s: %v", p, err)
 			}
-		}(peerAddr)
+		}(peerID)
 	}
 }
 

@@ -21,7 +21,7 @@ type GossipMessage struct {
 // ChannelAccess represents access control for a channel
 type ChannelAccess struct {
 	ChannelName  string                `json:"channelName"`  // Name of the channel
-	AllowedPeers map[string]bool       `json:"allowedPeers"` // Peers allowed to subscribe
+	AllowedPeers map[peer.ID]bool       `json:"allowedPeers"` // Peers allowed to subscribe
 	IsPublic     bool                  `json:"isPublic"`     // If true, anyone can join
 	Creator      peer.ID               `json:"creator"`      // Who created the channel (gave multiple addresses for fallback)
 	CreatedAt    int64                 `json:"createdAt"`    // When channel was created

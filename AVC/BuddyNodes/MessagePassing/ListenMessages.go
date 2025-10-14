@@ -57,18 +57,52 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 				log.Printf("Sent ACK_FALSE to %s - node not ready for pubsub", s.Conn().RemotePeer())
 			}
 		}
+	case config.Type_AskForSubscription:
+		// Handle subscription request
+		if buddy.Host != nil && buddy.Network != nil {
+			// Node is ready to accept subscription
+			ackMessage := config.Type_ACK_True
+			if err := buddy.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage); err != nil {
+				log.Printf("Failed to send ACK to %s: %v", s.Conn().RemotePeer(), err)
+			} else {
+				log.Printf("Sent ACK_TRUE to %s for subscription request", s.Conn().RemotePeer())
+			}
+		} else {
+			// Node is not ready to accept subscription
+			ackMessage := config.Type_ACK_False
+			if err := buddy.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage); err != nil {
+				log.Printf("Failed to send ACK to %s: %v", s.Conn().RemotePeer(), err)
+			} else {
+				log.Printf("Sent ACK_FALSE to %s - node not ready for subscription", s.Conn().RemotePeer())
+			}
+		}
+	case config.Type_ACK_True:
+		// Handle ACK_TRUE response
+		log.Printf("Received ACK_TRUE from %s", s.Conn().RemotePeer())
+		// Notify the response handler if available
+		if buddy.ResponseHandler != nil {
+			buddy.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), true)
+		}
+	case config.Type_ACK_False:
+		// Handle ACK_FALSE response
+		log.Printf("Received ACK_FALSE from %s", s.Conn().RemotePeer())
+		// Notify the response handler if available
+		if buddy.ResponseHandler != nil {
+			buddy.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), false)
+		}
 	default:
 		log.Printf("Unknown message type received from %s: %s", s.Conn().RemotePeer(), msg)
 	}
 }
 
 // NewBuddyNode creates a new BuddyNode instance from an existing host
-func NewBuddyNode(h host.Host, buddies *Buddies) *BuddyNode {
+func NewBuddyNode(h host.Host, buddies *Buddies, responseHandler ResponseHandler) *BuddyNode {
 	buddy := &BuddyNode{
-		Host:       h,
-		Network:    h.Network(),
-		PeerID:     h.ID(),
-		BuddyNodes: *buddies,
+		Host:            h,
+		Network:         h.Network(),
+		PeerID:          h.ID(),
+		BuddyNodes:      *buddies,
+		ResponseHandler: responseHandler,
 		MetaData: MetaData{
 			Received:  0,
 			Sent:      0,
