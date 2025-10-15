@@ -128,49 +128,32 @@ func (c *Consensus) RequestSubscriptionPermission() error {
 }
 
 // VerifySubscriptions checks if nodes are actually subscribed to the pubsub channel
+// This method now uses the new pubsub-based verification system
 func (c *Consensus) VerifySubscriptions() error {
 	if c.gps == nil {
 		return fmt.Errorf("GossipPubSub not initialized")
 	}
 
-	// Get the list of connected peers from the pubsub system
-	connectedPeers := c.gps.GetPeers()
+	log.Printf("Starting subscription verification using pubsub messaging...")
 
-	log.Printf("Verifying subscriptions: found %d connected peers", len(connectedPeers))
-
-	// Check if we have the expected number of subscribers (13)
-	if len(connectedPeers) != MaxMainPeers {
-		return fmt.Errorf("incorrect number of subscribed peers: got %d, expected %d", len(connectedPeers), MaxMainPeers)
+	// Use the new VerifySubscriptions function from Communication.go
+	verifiedPeerIDs, err := VerifySubscriptions(c.gps, c)
+	if err != nil {
+		return fmt.Errorf("failed to verify subscriptions: %v", err)
 	}
 
-	// Verify that all expected peers are connected
-	expectedPeers := make(map[peer.ID]bool)
+	log.Printf("Received verification responses from %d peers", len(verifiedPeerIDs))
 
-	// Add main peers to expected list
-	for _, peerID := range c.PeerList.MainPeers {
-		expectedPeers[peerID] = true
+	// Verify that we have the expected number of subscribers (13)
+	if len(verifiedPeerIDs) != MaxMainPeers {
+		return fmt.Errorf("incorrect number of verified peers: got %d, expected %d", len(verifiedPeerIDs), MaxMainPeers)
 	}
 
-	// Add backup peers to expected list (in case some main peers failed)
-	for _, peerID := range c.PeerList.BackupPeers {
-		expectedPeers[peerID] = true
+	// Log all verified PeerIDs
+	for connectionPeerID, responsePeerID := range verifiedPeerIDs {
+		log.Printf("Verified subscription: connection peer %s -> response peer %s", connectionPeerID, responsePeerID)
 	}
 
-	// Check which peers are actually connected
-	connectedCount := 0
-	for _, peerID := range connectedPeers {
-		if expectedPeers[peerID] {
-			connectedCount++
-			log.Printf("Verified subscription for peer: %s", peerID)
-		} else {
-			log.Printf("Warning: unexpected peer connected: %s", peerID)
-		}
-	}
-
-	if connectedCount != MaxMainPeers {
-		return fmt.Errorf("subscription verification failed: %d expected peers connected, need %d", connectedCount, MaxMainPeers)
-	}
-
-	log.Printf("Subscription verification successful: %d peers properly subscribed to channel", connectedCount)
+	log.Printf("Subscription verification successful: %d peers properly verified via pubsub messaging", len(verifiedPeerIDs))
 	return nil
 }

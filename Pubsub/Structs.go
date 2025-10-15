@@ -5,6 +5,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 // GossipMessage represents a message in the gossip pub/sub system
@@ -37,4 +38,5 @@ type GossipPubSub struct {
 	peers         []peer.ID                       // Connected peers
 	mutex         sync.RWMutex                    // Read-write mutex for thread safety
 	messageID     uint64                          // Counter for message IDs
+	Protocol      protocol.ID                     // Protocol ID
 }

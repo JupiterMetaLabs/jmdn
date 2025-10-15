@@ -31,6 +31,7 @@ const (
 	BlockPropagationProtocol  protocol.ID = "/broadcast/block/1.0.0"
 	SyncProtocol              protocol.ID = "/p2p/sync/1.0.0"
 	BuddyNodesMessageProtocol protocol.ID = "/p2p/buddy/message/1.0.0"
+	SubmitMessageProtocol     protocol.ID = "/p2p/submit/message/1.0.0"
 )
 
 const (
@@ -47,11 +48,16 @@ const (
 	Type_Unsubscribe        = "UNSUBSCRIBE"
 	Type_AskForSubscription = "ASK_FOR_SUBSCRIPTION"
 
+	// Verify
+	Type_VerifySubscription   = "VERIFY_SUBSCRIPTION"
+	Type_SubscriptionResponse = "SUBSCRIPTION_RESPONSE"
+
 	// ACK messages
 	Type_ACK_True  = "ACK_TRUE"
 	Type_ACK_False = "ACK_FALSE"
 
-	//
+	// For Voting Aggregation
+	Type_SubmitVote = "SUBMIT_VOTE"
 
 	Topic_EndPubSub   = "END_PUBSUB"
 	Topic_SYNCRequest = "SYNC_REQUEST"
@@ -77,7 +83,7 @@ const (
 
 // Network addresses
 var Yggdrasil_Address string
-var IP6YGG = "/ip6/"+Yggdrasil_Address+"/tcp/15000/p2p/"
+var IP6YGG string
 
 const (
 	IP6TCP  = "/ip6/::/tcp/15000"
@@ -117,6 +123,12 @@ type PeerInfo struct {
 	Addrs        []string
 	LastSeen     int64
 	Capabilities []string // What the peer can do (e.g., "relay", "storage", etc.)
+}
+
+type Consensus_Response struct {
+	Status string `json:"status"`
+	PeerID string `json:"peer_id"`
+	Stage  string `json:"stage"`
 }
 
 // Database configuration

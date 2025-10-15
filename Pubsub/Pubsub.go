@@ -23,6 +23,7 @@ func NewGossipPubSub(host host.Host, Protocol protocol.ID) (*GossipPubSub, error
 		messageCache:  make(map[string]bool),
 		channelAccess: make(map[string]*ChannelAccess),
 		peers:         make([]peer.ID, 0),
+		Protocol:      Protocol,
 	}
 
 	// Set up stream handler for gossip messages
@@ -142,7 +143,7 @@ func (gps *GossipPubSub) Subscribe(topic string, handler func(*GossipMessage)) e
 }
 
 // Publish publishes a message to a topic
-func (gps *GossipPubSub) Publish(topic string, data interface{}, metadata map[string]interface{}) error {
+func (gps *GossipPubSub) Publish(topic string, data interface{}, metadata map[string]interface{},  protocol protocol.ID) error {
 	// Create message
 	message := &GossipMessage{
 		ID:        fmt.Sprintf("%s-%d", gps.Host.ID().String(), gps.messageID),
@@ -273,7 +274,7 @@ func (gps *GossipPubSub) gossipMessage(messageBytes []byte) {
 
 // sendToPeer sends a message to a specific peer
 func (gps *GossipPubSub) sendToPeer(peerID peer.ID, messageBytes []byte) error {
-	stream, err := gps.Host.NewStream(context.Background(), peerID, config.BuddyNodesMessageProtocol)
+	stream, err := gps.Host.NewStream(context.Background(), peerID, gps.Protocol)
 	if err != nil {
 		return err
 	}

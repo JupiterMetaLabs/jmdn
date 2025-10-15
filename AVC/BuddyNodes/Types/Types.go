@@ -3,7 +3,7 @@ package Types
 import (
 	"gossipnode/crdt"
 
-	"github.com/multiformats/go-multiaddr"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 const (
@@ -24,7 +24,7 @@ type KeyValue struct {
 }
 
 type OP struct {
-	NodeID   multiaddr.Multiaddr
+	NodeID   peer.ID
 	OpType   int8
 	KeyValue KeyValue
 	VEC      crdt.VectorClock

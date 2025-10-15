@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/multiformats/go-multiaddr"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 var (
@@ -32,14 +32,14 @@ func GetCRDTLayer() *Types.Controller {
 	return CRDTLayer
 }
 
-func Add(controller *Types.Controller, nodeID multiaddr.Multiaddr, key string, value string) error {
+func Add(controller *Types.Controller, nodeID peer.ID, key string, value string) error {
 	_, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	// Use the CRDT Engine to add to LWW Set
 	return controller.CRDTLayer.LWWAdd(nodeID.String(), key, value, nil)
 }
 
-func Remove(controller *Types.Controller, nodeID multiaddr.Multiaddr, key string, value string) error {
+func Remove(controller *Types.Controller, nodeID peer.ID, key string, value string) error {
 	_, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	// Use the CRDT Engine to remove from LWW Set
@@ -53,7 +53,7 @@ func GetSet(controller *Types.Controller, key string) ([]string, bool) {
 	return controller.CRDTLayer.GetSet(key)
 }
 
-func CounterInc(controller *Types.Controller, nodeID multiaddr.Multiaddr, key string, value uint64) error {
+func CounterInc(controller *Types.Controller, nodeID peer.ID, key string, value uint64) error {
 	_, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	// Increment a counter

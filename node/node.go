@@ -18,7 +18,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	quic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	tcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
-	"github.com/multiformats/go-multiaddr"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -127,15 +126,27 @@ func NewNode() (*config.Node, error) {
 	libp2pRegisterer := metrics.GetLibp2pRegisterer()
 	fmt.Println("Creating libp2p host...")
 
+	// Build listen addresses conditionally
+	listenAddrs := []string{
+		config.IP6QUIC, // QUIC over IPv6
+		config.IP6TCP,  // TCP over IPv6
+		config.IP4QUIC, // QUIC over IPv4
+		config.IP4TCP,  // TCP over IPv4
+	}
+
+	// Only add Yggdrasil address if it's valid
+	if config.Yggdrasil_Address != "" && config.Yggdrasil_Address != "?" {
+		// Dynamically construct the Yggdrasil address
+		config.IP6YGG = "/ip6/" + config.Yggdrasil_Address + "/tcp/15000"
+		listenAddrs = append(listenAddrs, config.IP6YGG)
+		fmt.Printf("Adding Yggdrasil address to listen addresses: %s\n", config.IP6YGG)
+	} else {
+		fmt.Printf("Skipping Yggdrasil address (not available or invalid): %s\n", config.Yggdrasil_Address)
+	}
+
 	h, err := libp2p.New(
 		libp2p.Identity(privKey), // Peer ID
-		libp2p.ListenAddrStrings(
-			config.IP6YGG, // Yggdrasil over IPv6
-			config.IP6QUIC, // QUIC over IPv6
-			config.IP6TCP,  // TCP over IPv6
-			config.IP4QUIC, // QUIC over IPv4
-			config.IP4TCP,  // TCP over IPv4
-		),
+		libp2p.ListenAddrStrings(listenAddrs...),
 		libp2p.Transport(tcp.NewTCPTransport),         // TCP transport
 		libp2p.Transport(quic.NewTransport),           // QUIC transport
 		libp2p.NATPortMap(),                           // NAT traversal
@@ -152,8 +163,7 @@ func NewNode() (*config.Node, error) {
 
 	fmt.Println("Initializing block propagation...")
 	if err := messaging.InitBlockPropagation(h); err != nil {
-		fmt.Errorf("failed to initialize block propagation: %v", err)
-		return nil, err
+		return nil, fmt.Errorf("failed to initialize block propagation: %v", err)
 	}
 	fmt.Println("Block propagation initialized successfully")
 
@@ -217,7 +227,7 @@ func SendFile(n *config.Node, target string, filepath string, destination string
 }
 
 // getPeerInfo extracts peer information from a multiaddress
-func getPeerInfo(target string, host host.Host) (multiaddr.Multiaddr, *peer.AddrInfo, bool, error) {
+func getPeerInfo(target string, host host.Host) (ma.Multiaddr, *peer.AddrInfo, bool, error) {
 	maddr, err := ma.NewMultiaddr(target)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("invalid multiaddr: %v", err)

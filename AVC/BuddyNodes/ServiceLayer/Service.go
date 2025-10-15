@@ -4,10 +4,23 @@ import (
 	"context"
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
+	"sync"
+)
+
+var (
+	Once          sync.Once
+	ServiceController *Types.Controller
 )
 
 func InitService(controller *Types.Controller) {
 	DataLayer.GetCRDTLayer()
+}
+
+func GetServiceController() *Types.Controller {
+	Once.Do(func() {
+		ServiceController = DataLayer.GetCRDTLayer()
+	})
+	return ServiceController
 }
 
 func Controller(controller *Types.Controller, OP *Types.OP) interface{} {
