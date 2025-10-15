@@ -457,6 +457,9 @@ func main() {
 		FastSyncer:      fastSyncer,
 		SeedNode:        *seedNodeURL,
 		EnableYggdrasil: *enableYggdrasil,
+		ChainID:         *chainID,
+		FacadePort:      *gETHFacade,
+		WSPort:          *gETHWSServer,
 	}
 
 	// Only set database clients if they're properly initialized

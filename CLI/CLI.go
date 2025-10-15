@@ -32,6 +32,9 @@ type CommandHandler struct {
 	DIDClient       *config.PooledConnection
 	SeedNode        string
 	EnableYggdrasil bool
+	ChainID         int
+	FacadePort      int
+	WSPort          int
 }
 
 // Simple helper to print the CLI prompt in color
@@ -46,7 +49,7 @@ func printAddrs(n *config.Node) {
 }
 
 func printDashes() {
-	fmt.Println("\n", strings.Repeat("-", 50), "\n")
+	fmt.Println("\n" + strings.Repeat("-", 50) + "\n")
 }
 
 func PrintFuncs() {
@@ -68,6 +71,7 @@ func PrintFuncs() {
 	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
 	fmt.Println("  syncinfo                          - Show FastSync configuration")
+	fmt.Println("  gethstatus                        - Show gETH server status (chain ID, ports)")
 	fmt.Println("  exit                              - Exit the program")
 	printDashes()
 }
@@ -167,6 +171,8 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleGetDID(parts)
 	case "dbstate":
 		h.handleDBState()
+	case "gethstatus":
+		h.handleGethStatus()
 	default:
 		fmt.Println("Unknown command")
 	}
@@ -790,4 +796,29 @@ func (h *CommandHandler) checkDIDClient() error {
 		return fmt.Errorf("DID database client not initialized")
 	}
 	return nil
+}
+
+// handleGethStatus displays the current gETH configuration
+func (h *CommandHandler) handleGethStatus() {
+	fmt.Println(config.ColorGreen + "=== gETH Status ===" + config.ColorReset)
+	fmt.Printf("Chain ID: %d\n", h.ChainID)
+	fmt.Printf("Facade Port: %d\n", h.FacadePort)
+	fmt.Printf("WebSocket Port: %d\n", h.WSPort)
+
+	// Show status of services
+	if h.FacadePort > 0 {
+		fmt.Printf("Facade Server: %sRunning%s (http://localhost:%d)\n",
+			config.ColorGreen, config.ColorReset, h.FacadePort)
+	} else {
+		fmt.Printf("Facade Server: %sDisabled%s\n",
+			config.ColorYellow, config.ColorReset)
+	}
+
+	if h.WSPort > 0 {
+		fmt.Printf("WebSocket Server: %sRunning%s (ws://localhost:%d)\n",
+			config.ColorGreen, config.ColorReset, h.WSPort)
+	} else {
+		fmt.Printf("WebSocket Server: %sDisabled%s\n",
+			config.ColorYellow, config.ColorReset)
+	}
 }
