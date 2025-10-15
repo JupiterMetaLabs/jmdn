@@ -3,12 +3,12 @@ package gETH
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	block "gossipnode/Block"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/gETH/proto"
-	"encoding/json"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -32,12 +32,12 @@ func _GetBlockByNumber(req *proto.GetBlockByNumberReq) (*proto.Block, error) {
 	if err != nil {
 		return nil, err
 	}
-	// First call the exisitng apis to get the block by the number 
+	// First call the exisitng apis to get the block by the number
 	zkblock, err := DB_OPs.GetZKBlockByNumber(&Conn.defaultdb, req.Number)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Now Convert the ZKBlock structure to the gETHConfig.Block structure
 	block, err := ConvertZKBlockToETHBlock(zkblock)
 	if err != nil {
@@ -58,12 +58,12 @@ func _GetBlockByHash(req *proto.GetBlockByHashReq) (*proto.Block, error) {
 		reqHash = reqHash[2:]
 	}
 
-	// First call the exisitng apis to get the block by the number 
+	// First call the exisitng apis to get the block by the number
 	zkblock, err := DB_OPs.GetZKBlockByHash(&Conn.defaultdb, reqHash)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Now Convert the ZKBlock structure to the gETHConfig.Block structure
 	block, err := ConvertZKBlockToETHBlock(zkblock)
 	if err != nil {
@@ -88,9 +88,9 @@ func _GetTransactionByHash(req *proto.GetByHashReq) (*proto.Transaction, error) 
 	if err != nil {
 		return nil, err
 	}
-	
+
 	value, err := ConvertConfigTxnToETHTransaction(Txn)
-	if err != nil{
+	if err != nil {
 		return nil, err
 	}
 	return value, nil
@@ -124,17 +124,17 @@ func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error
 	if err != nil {
 		return nil, err
 	}
-	
-    // Sort the Txns by nonce
-    Txns = SortTransactionsByNonce(Txns)
-    // Now pick the last nonce
-    nonce := Txns[len(Txns)-1].Nonce
 
-    // Create hash of all transactions
-    txHash, err := HashTransactions(Txns)
-    if err != nil {
-        return nil, fmt.Errorf("failed to hash transactions: %w", err)
-    }
+	// Sort the Txns by nonce
+	Txns = SortTransactionsByNonce(Txns)
+	// Now pick the last nonce
+	nonce := Txns[len(Txns)-1].Nonce
+
+	// Create hash of all transactions
+	txHash, err := HashTransactions(Txns)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash transactions: %w", err)
+	}
 
 	// Get the DID Details to get the balance
 	// Conver the req.Address bytes to common.Address
@@ -143,23 +143,23 @@ func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error
 
 		return nil, err
 	}
-    
-    // Convert nonce to bytes
-    nonceBytes := make([]byte, 8)
-    binary.BigEndian.PutUint64(nonceBytes, nonce)
-    
-    // Create and return the account state
-    return &proto.AccountState{
-        Nonce:       nonceBytes,
-        Balance:     []byte(DIDDetails.Balance),
-        StorageRoot: []byte(txHash),
-        CodeHash:    []byte{},
-        Code:        []byte{},
-    }, nil
+
+	// Convert nonce to bytes
+	nonceBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(nonceBytes, nonce)
+
+	// Create and return the account state
+	return &proto.AccountState{
+		Nonce:       nonceBytes,
+		Balance:     []byte(DIDDetails.Balance),
+		StorageRoot: []byte(txHash),
+		CodeHash:    []byte{},
+		Code:        []byte{},
+	}, nil
 }
 
 func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error) {
-	// Convert Signed Transaction bytes to proper DS	
+	// Convert Signed Transaction bytes to proper DS
 	var tx config.Transaction
 	err := json.Unmarshal(req.SignedTx, &tx)
 	if err != nil {
@@ -179,23 +179,23 @@ func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error
 }
 
 func _EstimateGas(req *proto.CallReq) (*proto.EstimateResp, error) {
-    // Get the Mempool Client
-    mempoolClient, err := block.ReturnMempoolObject()
-    if err != nil {
-        return nil, fmt.Errorf("failed to get mempool client: %v", err)
-    }
+	// Get the Mempool Client
+	mempoolClient, err := block.ReturnMempoolObject()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get mempool client: %v", err)
+	}
 
-    // Get the Fee Stats
-    feeStats, err := mempoolClient.WrapperGetFeeStatistics()
-    if err != nil {
-        return nil, err
-    }
+	// Get the Fee Stats
+	feeStats, err := mempoolClient.WrapperGetFeeStatistics()
+	if err != nil {
+		return nil, err
+	}
 
-    return &proto.EstimateResp{
-        GasEstimate: feeStats.RecommendedFees.Standard,
-    }, nil
+	return &proto.EstimateResp{
+		GasEstimate: feeStats.RecommendedFees.Standard,
+	}, nil
 }
 
-func _GetChainID(req *proto.Empty) (*proto.Quantity, error) {
-    return &proto.Quantity{Value: 8000800}, nil
+func _GetChainID(req *proto.Empty, chainID int) (*proto.Quantity, error) {
+	return &proto.Quantity{Value: uint64(chainID)}, nil
 }

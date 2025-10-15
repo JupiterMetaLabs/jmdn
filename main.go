@@ -56,11 +56,11 @@ var (
 	accountsDBPool *config.ConnectionPool // Accounts/DID database connection pool
 )
 
-func StartFacadeServer(port int) {
+func StartFacadeServer(port int, chainID int) {
 	go func() {
 		log.Info().Msg("Starting facade server")
 		// Get the Http Server
-		HTTPServer := rpc.NewHandlers(Service.NewService())
+		HTTPServer := rpc.NewHandlers(Service.NewService(chainID))
 		httpServer := rpc.NewHTTPServer(HTTPServer)
 		if err := httpServer.Serve(fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
 			log.Error().Err(err).Msg("Failed to start facade server")
@@ -68,13 +68,13 @@ func StartFacadeServer(port int) {
 	}()
 }
 
-func StartWSServer(port int) {
+func StartWSServer(port int, chainID int) {
 	go func() {
 		log.Info().Msg("Starting WSServer")
 		// Get the Http Server
-		HTTPServer := rpc.NewHandlers(Service.NewService())
+		HTTPServer := rpc.NewHandlers(Service.NewService(chainID))
 
-		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService())
+		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService(chainID))
 		if err := WSServer.Serve(fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
 			log.Error().Err(err).Msg("Failed to start WSServer")
 		}
@@ -210,6 +210,7 @@ func main() {
 	gETHgRPC := flag.Int("geth", 15054, "gETH gRPC server address")
 	gETHFacade := flag.Int("facade", 15001, "gETH Facade server address")
 	gETHWSServer := flag.Int("ws", 15002, "gETH WSServer address")
+	chainID := flag.Int("chainID", 7000700, "Chain ID for the blockchain network")
 	flag.Parse()
 
 	// Initialize logger
@@ -367,7 +368,7 @@ func main() {
 		go func() {
 			log.Info().Msgf("Starting block generator on port %d", *blockgen)
 			fmt.Printf("\nBlock generator available at http://localhost:%d\n", *blockgen)
-			Block.Startserver(*blockgen, n.Host)
+			Block.Startserver(*blockgen, n.Host, *chainID)
 		}()
 	}
 	// Configure as seed node if requested
@@ -431,7 +432,7 @@ func main() {
 	if *gETHgRPC > 0 {
 		go func() {
 			fmt.Printf("Starting gETH gRPC server on port %d\n", *gETHgRPC)
-			if err := gETH.StartGRPC(*gETHgRPC); err != nil {
+			if err := gETH.StartGRPC(*gETHgRPC, *chainID); err != nil {
 				log.Error().Err(err).Msg("gETH gRPC server error")
 			}
 		}()
@@ -475,12 +476,12 @@ func main() {
 
 	if *gETHFacade > 0 {
 		fmt.Printf("Starting gETH Facade server on port %d\n", *gETHFacade)
-		StartFacadeServer(*gETHFacade)
+		StartFacadeServer(*gETHFacade, *chainID)
 	}
 
 	if *gETHWSServer > 0 {
 		fmt.Printf("Starting gETH WSServer on port %d\n", *gETHWSServer)
-		StartWSServer(*gETHWSServer)
+		StartWSServer(*gETHWSServer, *chainID)
 	}
 
 	// Start CLI without timeout - run indefinitely
