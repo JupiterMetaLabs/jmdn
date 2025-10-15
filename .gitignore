@@ -11,3 +11,6 @@ Account.json
 .state*
 .vscode
 *.avro
+/data
+test-cli
+immudb_mac

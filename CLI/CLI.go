@@ -2,11 +2,11 @@ package CLI
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"gossipnode/DB_OPs"
@@ -15,7 +15,8 @@ import (
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	"gossipnode/node"
-	"gossipnode/seed"
+	"gossipnode/seednode"
+	peerpb "gossipnode/seednode/proto"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -51,14 +52,15 @@ func printDashes() {
 func PrintFuncs() {
 	fmt.Println("\n" + config.ColorCyan + "Available Commands:" + config.ColorReset)
 	fmt.Println("  help                             - Show this help message")
-	fmt.Println("  Addrs                            - Current Peer Addresses")
+	fmt.Println("  addrs                            - Current Peer Addresses")
 	fmt.Println("  msg <peer_multiaddr> <message>   - Send a message to a peer via libp2p")
 	fmt.Println("  ygg <peer_multiaddr|ygg_ipv6> <message> - Send a message using Yggdrasil")
 	fmt.Println("  file <peer_multiaddr> <filepath> <remote-filename> - Send a file to a peer")
 	fmt.Println("  addpeer <peer_multiaddr>         - Add a peer to managed nodes")
 	fmt.Println("  removepeer <peer_id>             - Remove a peer from managed nodes")
 	fmt.Println("  listpeers                         - Show all managed peers")
-	fmt.Println("  peers                             - Request updated peer list from seed")
+	fmt.Println("  listaliases                       - List all peer aliases from seed node")
+	fmt.Println("  seednodeStats                     - Check seed node connection and get peer statistics")
 	fmt.Println("  stats                             - Show messaging statistics")
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
 	fmt.Println("  fastsync <peer_multiaddr>        - Fast sync blockchain data with a peer")
@@ -74,23 +76,29 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 	PrintFuncs()
 	fmt.Printf("Starting CLI with gRPC port: %d\n", grpcPort)
 
-	var wg sync.WaitGroup
-	wg.Add(2) // Increment to 2 for both goroutines
+	// Create a context for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Channel to signal when we should exit
+	exitChan := make(chan struct{})
 
 	// Start gRPC server
 	go func() {
-		defer wg.Done()
 		fmt.Printf("Starting gRPC server on port %d...\n", grpcPort)
 		log.Println("Starting gRPC server on port ", grpcPort)
 		if err := StartGRPCServer(h, grpcPort); err != nil {
-			log.Fatalf("Failed to start gRPC server: %v", err)
+			log.Printf("gRPC server error: %v", err)
 		}
 	}()
 
 	// Command-line input loop
 	go func() {
-		defer wg.Done()
-		defer fmt.Println("Exiting...")
+		defer func() {
+			fmt.Println("Exiting...")
+			close(exitChan)
+		}()
+
 		fmt.Println()
 		scanner := bufio.NewScanner(os.Stdin)
 		printPrompt()
@@ -110,8 +118,14 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 		}
 	}()
 
-	wg.Wait()
-	return nil
+	// Wait for exit signal
+	select {
+	case <-exitChan:
+		fmt.Println("CLI shutdown complete")
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // handleCommand processes a single command
@@ -127,14 +141,16 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleYggdrasilMessage(parts)
 	case "file":
 		h.handleSendFile(parts)
-	case "peers":
-		h.handleRequestPeers(parts)
+	case "seednodeStats":
+		h.handleSeedNodeStats(parts)
 	case "addpeer":
 		h.handleAddPeer(parts)
 	case "removepeer":
 		h.handleRemovePeer(parts)
 	case "listpeers":
 		h.handleListPeers()
+	case "listaliases":
+		h.handleListAliases()
 	case "cleanpeers":
 		h.handleCleanPeers()
 	case "stats":
@@ -207,21 +223,116 @@ func (h *CommandHandler) handleSendFile(parts []string) {
 	fmt.Println("File sent successfully")
 }
 
-func (h *CommandHandler) handleRequestPeers(parts []string) {
+func (h *CommandHandler) handleSeedNodeStats(parts []string) {
 	if h.SeedNode == "" {
-		fmt.Println("No seed node specified. Use -connect flag to specify a seed node.")
+		fmt.Println("❌ No seed node specified. Use -seednode flag to specify a seed node.")
 		return
 	}
 
-	peers, err := seed.RequestPeers(h.Node.Host, h.SeedNode, 20, "")
+	fmt.Printf("🔍 Checking seed node connection: %s\n", h.SeedNode)
+	printDashes()
+
+	// Create seed node client to test connection
+	client, err := seednode.NewClient(h.SeedNode)
 	if err != nil {
-		fmt.Printf("Error connecting to seed: %v\n", err)
+		fmt.Printf("❌ Failed to connect to seed node: %v\n", err)
+		fmt.Println("💡 Check if the seed node is running and accessible.")
+		return
+	}
+	defer client.Close()
+
+	fmt.Println("✅ Successfully connected to seed node!")
+
+	// Test latency with multiple ping attempts
+	fmt.Println("\n🏓 Testing network latency...")
+	latencyStats := h.measureLatency(client)
+
+	// Test health check
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err = client.HealthCheck(ctx)
+	if err != nil {
+		fmt.Printf("⚠️  Seed node health check failed: %v\n", err)
 	} else {
-		fmt.Printf("Connected to seed. Discovered %d peers\n", len(peers))
-		for i, p := range peers {
-			fmt.Printf("  %d. ID: %s, Addresses: %v\n", i+1, p.ID, p.Addrs)
+		fmt.Println("✅ Seed node health check passed!")
+	}
+
+	// Get peer statistics
+	fmt.Println("\n📊 Fetching peer statistics...")
+
+	request := &peerpb.PeerListRequest{
+		Limit:  1000,
+		Status: peerpb.PeerStatus_PEER_STATUS_ACTIVE,
+	}
+
+	response, err := client.ListPeers(ctx, request)
+	if err != nil {
+		fmt.Printf("❌ Failed to get peer list: %v\n", err)
+		return
+	}
+
+	// Display statistics
+	fmt.Printf("📈 Seed Node Statistics:\n")
+	fmt.Printf("  Total Active Peers: %d\n", len(response.Peers))
+
+	// Count peers with aliases (this is an approximation)
+	aliasCount := 0
+	for _, peer := range response.Peers {
+		// Try to get alias for this peer (this is a workaround)
+		_, aliasErr := client.GetPeerByAlias(peer.PeerId)
+		if aliasErr == nil {
+			aliasCount++
 		}
 	}
+
+	fmt.Printf("  Peers with Aliases: %d\n", aliasCount)
+	fmt.Printf("  Peers without Aliases: %d\n", len(response.Peers)-aliasCount)
+
+	// Display latency statistics
+	fmt.Printf("\n🌐 Network Latency Statistics:\n")
+	fmt.Printf("  Average Latency: %.2f ms\n", latencyStats.Average)
+	fmt.Printf("  Minimum Latency: %.2f ms\n", latencyStats.Minimum)
+	fmt.Printf("  Maximum Latency: %.2f ms\n", latencyStats.Maximum)
+	fmt.Printf("  Successful Pings: %d/%d\n", latencyStats.Successful, latencyStats.Total)
+	if latencyStats.Successful > 0 {
+		fmt.Printf("  Packet Loss: %.1f%%\n", float64(latencyStats.Total-latencyStats.Successful)/float64(latencyStats.Total)*100)
+	}
+
+	// Show recent peers (first 10)
+	if len(response.Peers) > 0 {
+		fmt.Printf("\n📋 Recent Peers (showing first 10):\n")
+		fmt.Println(strings.Repeat("-", 80))
+		fmt.Printf("%-20s %-50s %-10s\n", "Peer ID", "Status", "Seq")
+		fmt.Println(strings.Repeat("-", 80))
+
+		displayCount := 10
+		if len(response.Peers) < displayCount {
+			displayCount = len(response.Peers)
+		}
+
+		for i := 0; i < displayCount; i++ {
+			peer := response.Peers[i]
+			peerID := peer.PeerId
+			if len(peerID) > 20 {
+				peerID = peerID[:20] + "..."
+			}
+
+			fmt.Printf("%-20s %-50s %-10d\n",
+				peerID,
+				peer.CurrentStatus.String(),
+				peer.Seq)
+		}
+
+		if len(response.Peers) > displayCount {
+			fmt.Printf("... and %d more peers\n", len(response.Peers)-displayCount)
+		}
+		fmt.Println(strings.Repeat("-", 80))
+	}
+
+	fmt.Println("\n🎯 Seed node connection is healthy and operational!")
+	printDashes()
+	fmt.Println("✅ seednodeStats command completed successfully!")
 }
 
 func (h *CommandHandler) handleAddPeer(parts []string) {
@@ -536,11 +647,141 @@ func (h *CommandHandler) handleDBState() {
 	printDashes()
 }
 
+// handleListAliases shows the alias of the current node
+func (h *CommandHandler) handleListAliases() {
+	if h.SeedNode == "" {
+		fmt.Println("❌ No seed node configured. Cannot check alias.")
+		return
+	}
+
+	fmt.Printf("📋 Checking alias for current node from seed node: %s\n", h.SeedNode)
+
+	// Create seed node client
+	client, err := seednode.NewClient(h.SeedNode)
+	if err != nil {
+		fmt.Printf("❌ Failed to connect to seed node: %v\n", err)
+		return
+	}
+	defer client.Close()
+
+	// Get current node's peer ID
+	currentPeerID := h.Node.Host.ID().String()
+	fmt.Printf("🔍 Current node peer ID: %s\n", currentPeerID)
+
+	// Try to get the current peer's record
+	peerRecord, err := client.GetPeer(currentPeerID)
+	if err != nil {
+		fmt.Printf("❌ Current node not found in seed node: %v\n", err)
+		fmt.Println("💡 Make sure this node is registered with the seed node.")
+		return
+	}
+
+	fmt.Printf("✅ Current node found in seed node (seq: %d)\n", peerRecord.Seq)
+
+	// Try to get the alias for this peer
+	alias, err := client.GetAliasByPeerID(currentPeerID)
+	if err != nil {
+		fmt.Printf("❌ No alias found for this peer: %v\n", err)
+		fmt.Println("💡 This node is registered but doesn't have an alias.")
+	} else {
+		fmt.Printf("✅ Alias found: %s\n", alias)
+	}
+
+	fmt.Println("\n📊 Current Node Information:")
+	fmt.Println(strings.Repeat("-", 60))
+	fmt.Printf("Peer ID: %s\n", peerRecord.PeerId)
+	fmt.Printf("Sequence: %d\n", peerRecord.Seq)
+	fmt.Printf("Status: %s\n", peerRecord.CurrentStatus.String())
+	fmt.Printf("Multiaddrs: %d addresses\n", len(peerRecord.Multiaddrs))
+
+	if len(peerRecord.Multiaddrs) > 0 {
+		fmt.Println("Addresses:")
+		for i, addr := range peerRecord.Multiaddrs {
+			if i < 3 { // Show first 3 addresses
+				fmt.Printf("  %d. %s\n", i+1, addr)
+			}
+		}
+		if len(peerRecord.Multiaddrs) > 3 {
+			fmt.Printf("  ... and %d more addresses\n", len(peerRecord.Multiaddrs)-3)
+		}
+	}
+
+	printDashes()
+}
+
 func (h *CommandHandler) checkDBClient() error {
 	if h.MainClient == nil {
 		return fmt.Errorf("database client not initialized")
 	}
 	return nil
+}
+
+// LatencyStats holds latency measurement results
+type LatencyStats struct {
+	Average    float64
+	Minimum    float64
+	Maximum    float64
+	Successful int
+	Total      int
+}
+
+// measureLatency performs multiple ping tests to measure network latency
+func (h *CommandHandler) measureLatency(client *seednode.Client) LatencyStats {
+	const numPings = 5
+	var latencies []float64
+	successful := 0
+
+	fmt.Printf("  Performing %d ping tests...\n", numPings)
+
+	for i := 0; i < numPings; i++ {
+		start := time.Now()
+
+		// Use a short timeout for each ping
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := client.HealthCheck(ctx)
+		cancel()
+
+		latency := float64(time.Since(start).Nanoseconds()) / 1e6 // Convert to milliseconds
+
+		if err != nil {
+			fmt.Printf("    Ping %d: ❌ Failed (%.2f ms) - %v\n", i+1, latency, err)
+		} else {
+			fmt.Printf("    Ping %d: ✅ %.2f ms\n", i+1, latency)
+			latencies = append(latencies, latency)
+			successful++
+		}
+
+		// Small delay between pings
+		if i < numPings-1 {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+
+	stats := LatencyStats{
+		Total:      numPings,
+		Successful: successful,
+	}
+
+	if len(latencies) > 0 {
+		// Calculate statistics
+		var sum float64
+		stats.Minimum = latencies[0]
+		stats.Maximum = latencies[0]
+
+		for _, latency := range latencies {
+			sum += latency
+			if latency < stats.Minimum {
+				stats.Minimum = latency
+			}
+			if latency > stats.Maximum {
+				stats.Maximum = latency
+			}
+		}
+
+		stats.Average = sum / float64(len(latencies))
+	}
+
+	return stats
 }
 
 // checkDIDClient ensures the DID database client is properly initialized before use

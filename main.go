@@ -21,6 +21,8 @@ import (
 	"gossipnode/explorer"
 	fastsync "gossipnode/fastsync"
 	"gossipnode/gETH"
+	"gossipnode/gETH/Facade/Service"
+	"gossipnode/gETH/Facade/rpc"
 	"gossipnode/helper"
 	"gossipnode/logging"
 	"gossipnode/messaging"
@@ -30,8 +32,6 @@ import (
 	"gossipnode/seed"
 	"gossipnode/seednode"
 	"gossipnode/transfer"
-	"gossipnode/gETH/Facade/Service"
-	"gossipnode/gETH/Facade/rpc"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -73,7 +73,7 @@ func StartWSServer(port int) {
 		log.Info().Msg("Starting WSServer")
 		// Get the Http Server
 		HTTPServer := rpc.NewHandlers(Service.NewService())
-	
+
 		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService())
 		if err := WSServer.Serve(fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
 			log.Error().Err(err).Msg("Failed to start WSServer")
@@ -98,7 +98,7 @@ func GetAccountsDBPool() *config.ConnectionPool {
 }
 
 func printDashes() {
-	fmt.Println("\n", strings.Repeat("-", 50), "\n")
+	fmt.Println("\n" + strings.Repeat("-", 50) + "\n")
 }
 
 func StartAPIServer(address string) error {
@@ -140,7 +140,7 @@ func initYggdrasilMessaging(ctx context.Context) {
 }
 
 // Initialize main database connection pool
-func initMainDBPool() error {
+func initMainDBPool(enableLoki bool) error {
 	poolingConfig := &config.PoolingConfig{
 		DBAddress:  config.DBAddress,
 		DBPort:     config.DBPort,
@@ -150,13 +150,13 @@ func initMainDBPool() error {
 	}
 
 	// Initialize the global pool
-	config.InitGlobalPool(poolingConfig)
+	config.InitGlobalPoolWithLoki(poolingConfig, enableLoki)
 	mainDBPool = config.GetGlobalPool()
 
 	// Also initialize the DB_OPs main pool
 	fmt.Println("Initializing DB_OPs main pool...")
 	poolConfig := config.DefaultConnectionPoolConfig()
-	if err := DB_OPs.InitMainDBPool(poolConfig); err != nil {
+	if err := DB_OPs.InitMainDBPoolWithLoki(poolConfig, enableLoki); err != nil {
 		return fmt.Errorf("failed to initialize DB_OPs main pool: %w", err)
 	}
 	fmt.Println("DB_OPs main pool initialized successfully")
@@ -166,10 +166,10 @@ func initMainDBPool() error {
 }
 
 // Initialize accounts database connection pool
-func initAccountsDBPool() error {
+func initAccountsDBPool(enableLoki bool) error {
 	// Use the DB_OPs package to initialize the accounts pool
 	// This ensures the database exists and the pool is properly configured
-	if err := DB_OPs.InitAccountsPool(); err != nil {
+	if err := DB_OPs.InitAccountsPoolWithLoki(enableLoki); err != nil {
 		return fmt.Errorf("failed to initialize accounts database pool: %w", err)
 	}
 
@@ -197,6 +197,8 @@ func main() {
 	isSeed := flag.Bool("seed", false, "Run as a seed node")
 	connect := flag.String("connect", "", "Connect to a seed node (multiaddr)")
 	seedNodeURL := flag.String("seednode", "", "Seed node gRPC URL for peer registration (e.g., localhost:9090)")
+	peerAlias := flag.String("alias", "", "Peer alias for registration with seed node")
+	enableLoki := flag.Bool("loki", false, "Enable Loki logging (default: false)")
 	heartbeatInterval := flag.Int("heartbeat", 120, "Heartbeat interval in seconds (default: 300)")
 	metricsPort := flag.String("metrics", "8080", "Port for Prometheus metrics")
 	enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
@@ -211,8 +213,8 @@ func main() {
 	flag.Parse()
 
 	// Initialize logger
-	logFileName := fmt.Sprintf("p2p-node.log")
-	Logger, err := logging.ReturnDefaultLogger(logFileName, "p2p-node")
+	logFileName := "p2p-node.log"
+	Logger, err := logging.ReturnDefaultLoggerWithLoki(logFileName, "p2p-node", *enableLoki)
 	if err != nil {
 		fmt.Printf("Failed to initialize logger: %v\n", err)
 		return
@@ -233,17 +235,17 @@ func main() {
 		cancel() // Cancel the context
 		// Give some time for cleanup
 		time.Sleep(500 * time.Millisecond)
-		os.Exit(0)
+		os.Exit(1)
 	}()
 
 	// Initialize database connection pools FIRST
 	fmt.Println("Initializing main database pool...")
-	if err := initMainDBPool(); err != nil {
+	if err := initMainDBPool(*enableLoki); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize main database pool")
 	}
 	fmt.Println("Main database pool initialized successfully")
 
-	if err := initAccountsDBPool(); err != nil {
+	if err := initAccountsDBPool(*enableLoki); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
 	}
 
@@ -332,7 +334,7 @@ func main() {
 	fmt.Printf(config.ColorGreen+"\nMetrics available at "+config.ColorReset+"http://localhost%s/metrics\n", metricsAddr)
 
 	// Initialize node manager
-	nodeManager, err = node.NewNodeManager(n)
+	nodeManager, err = node.NewNodeManagerWithLoki(n, *enableLoki)
 	if err != nil {
 		fmt.Printf("Failed to initialize node manager: %v\n", err)
 		return
@@ -402,14 +404,26 @@ func main() {
 		} else {
 			defer seedClient.Close()
 
-			// Register this peer with the seed node
-			err = seedClient.RegisterPeer(n.Host)
-			if err != nil {
-				fmt.Printf("Failed to register with seed node: %v\n", err)
-				log.Error().Err(err).Msg("Failed to register with seed node")
+			// Register this peer with the seed node (with or without alias)
+			if *peerAlias != "" {
+				fmt.Printf("Registering with alias: %s\n", *peerAlias)
+				err = seedClient.RegisterPeerWithAlias(n.Host, *peerAlias)
+				if err != nil {
+					fmt.Printf("Failed to register with seed node using alias: %v\n", err)
+					log.Error().Err(err).Msg("Failed to register with seed node using alias")
+				} else {
+					fmt.Printf("Successfully registered with seed node using alias '%s'\n", *peerAlias)
+					log.Info().Str("alias", *peerAlias).Msg("Successfully registered with seed node using alias")
+				}
 			} else {
-				fmt.Println("Successfully registered with seed node")
-				log.Info().Msg("Successfully registered with seed node")
+				err = seedClient.RegisterPeer(n.Host)
+				if err != nil {
+					fmt.Printf("Failed to register with seed node: %v\n", err)
+					log.Error().Err(err).Msg("Failed to register with seed node")
+				} else {
+					fmt.Println("Successfully registered with seed node")
+					log.Info().Msg("Successfully registered with seed node")
+				}
 			}
 		}
 	}
@@ -440,7 +454,7 @@ func main() {
 		Node:            n,
 		NodeManager:     nodeManager,
 		FastSyncer:      fastSyncer,
-		SeedNode:        *connect,
+		SeedNode:        *seedNodeURL,
 		EnableYggdrasil: *enableYggdrasil,
 	}
 

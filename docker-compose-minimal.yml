@@ -1,0 +1,26 @@
+services:
+  # Minimal setup - only ImmuDB
+  immudb:
+    image: codenotary/immudb:dev-almalinux-8-minimal
+    platform: linux/amd64
+    container_name: immudb
+    ports:
+      - "3322:3322"
+      - "9497:9497"
+      - "8080:8080"
+    volumes:
+      - immudb_data:/var/lib/immudb 
+    environment:
+      - IMMUDB_LOG_LEVEL=info
+      - IMMUDB_MTLS=false
+    command: ["immudb", "--mtls=false", "--log-level=info", "--max-recv-msg-size=16777216"]
+    restart: unless-stopped
+    networks:
+      - monitoring
+
+networks:
+  monitoring:
+    driver: bridge
+
+volumes:
+  immudb_data:

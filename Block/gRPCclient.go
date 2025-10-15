@@ -17,14 +17,14 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const(
-	FILENAME = "mempool.log"
-	TOPIC = "mempool"
+const (
+	FILENAME   = "mempool.log"
+	TOPIC      = "mempool"
 	BLOCKTOPIC = "block"
-	KEEP_LOGS = true
+	KEEP_LOGS  = true
 	BATCH_SIZE = 100
 	BATCH_WAIT = 10 * time.Second
-	TIMEOUT = 5 * time.Second
+	TIMEOUT    = 5 * time.Second
 )
 
 // MempoolClient provides methods to interact with the mempool service
@@ -48,7 +48,7 @@ func NewMempoolClient(address string) (*MempoolClient, error) {
 	Logger, err := logging.NewAsyncLogger(
 		&logging.Logging{
 			FileName: FILENAME,
-			URL:      config.LOKI_URL,
+			URL:      "", // Disable Loki by default
 			Metadata: logging.LoggingMetadata{
 				DIR:       config.LOG_DIR,
 				BatchSize: BATCH_SIZE,
@@ -265,8 +265,8 @@ func convertToPbTransaction(tx *config.Transaction, txHash string) *pb.Transacti
 		pbTx.Timestamp = tm.Format(time.RFC3339)
 	} else {
 		// If parsing fails, it might already be in a different format or invalid.
-			// For now, we'll default to the current time as a fallback.
-			pbTx.Timestamp = time.Now().Format(time.RFC3339)
+		// For now, we'll default to the current time as a fallback.
+		pbTx.Timestamp = time.Now().Format(time.RFC3339)
 	}
 	// Handle transaction fee fields based on type
 	if tx.Type == 1 || (tx.MaxFee != nil && tx.MaxPriorityFee != nil) {

@@ -14,11 +14,11 @@ import (
 var Once sync.Once
 var Logger *logging.AsyncLogger
 
-const(
-	LOG_FILE = "gETH.log"
-	TOPIC = "gETH"
-	LOKI_URL = "http://localhost:3100/loki/api/v1/push"
-	DIR = "logs"
+const (
+	LOG_FILE  = "gETH.log"
+	TOPIC     = "gETH"
+	LOKI_URL  = "" // Disabled by default
+	DIR       = "logs"
 	BatchSize = 128 * 1024
 )
 
@@ -27,7 +27,7 @@ func InitLogger() error {
 	Logger, err = logging.NewAsyncLogger(&logging.Logging{
 		FileName: LOG_FILE,
 		Topic:    TOPIC,
-		URL:      LOKI_URL,
+		URL:      "", // Disable Loki by default
 		Metadata: logging.LoggingMetadata{
 			DIR:       DIR,
 			BatchSize: BatchSize,
