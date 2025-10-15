@@ -7,7 +7,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 )
-
 // GossipMessage represents a message in the gossip pub/sub system
 type GossipMessage struct {
 	ID        string                 `json:"id"`                 // Unique message identifier

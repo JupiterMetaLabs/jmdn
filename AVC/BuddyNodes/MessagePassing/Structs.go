@@ -4,11 +4,16 @@ import (
 	"sync"
 	"time"
 
+	"gossipnode/AVC/BuddyNodes/Types"
+	"gossipnode/Pubsub"
+
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"gossipnode/AVC/BuddyNodes/Types"
 )
+
+var PubSub_BuddyNode *BuddyNode
+var ForListner *BuddyNode
 
 // ResponseHandler interface for handling ACK responses
 type ResponseHandler interface {
@@ -23,8 +28,8 @@ type BuddyNode struct {
 	BuddyNodes      Buddies
 	Mutex           sync.RWMutex
 	MetaData        MetaData
-	ResponseHandler ResponseHandler // Interface for handling responses
-	PubSub          interface{}     // Will hold a reference to GossipPubSub instance
+	ResponseHandler ResponseHandler      // Interface for handling responses
+	PubSub          *Pubsub.GossipPubSub // Will hold a reference to GossipPubSub instance
 }
 
 type Message struct {

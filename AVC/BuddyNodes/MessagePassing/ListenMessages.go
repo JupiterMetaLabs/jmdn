@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"gossipnode/AVC/BuddyNodes/ServiceLayer"
+	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/Pubsub"
 	"gossipnode/config"
 	"log"
 	"strings"
 	"time"
-	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -34,7 +35,8 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 		log.Printf("Error reading message from %s: %v", s.Conn().RemotePeer(), err)
 		return
 	}
-
+	// Add the buddy Node to the Pubsub node for singleton instance
+	PubSub_BuddyNode = buddy
 	// Remove the delimiter from the message
 	msg = strings.TrimSuffix(msg, string(rune(config.Delimiter)))
 
@@ -43,10 +45,10 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 	switch msg {
 	case config.Type_StartPubSub:
 		// If node is okay to listen for subscriptions, then return ACK True
-		if buddy.Host != nil && buddy.Network != nil {
+		if PubSub_BuddyNode != nil && PubSub_BuddyNode.Host != nil && PubSub_BuddyNode.Network != nil {
 			// Node is ready to listen for subscriptions
 			ackMessage := config.Type_ACK_True
-			if err := buddy.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage); err != nil {
+			if err := PubSub_BuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage); err != nil {
 				log.Printf("Failed to send ACK to %s: %v", s.Conn().RemotePeer(), err)
 			} else {
 				log.Printf("Sent ACK_TRUE to %s for pubsub subscription", s.Conn().RemotePeer())
@@ -54,7 +56,7 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 		} else {
 			// Node is not ready to listen for subscriptions
 			ackMessage := config.Type_ACK_False
-			if err := buddy.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage); err != nil {
+			if err := PubSub_BuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage); err != nil {
 				log.Printf("Failed to send ACK to %s: %v", s.Conn().RemotePeer(), err)
 			} else {
 				log.Printf("Sent ACK_FALSE to %s - node not ready for pubsub", s.Conn().RemotePeer())
@@ -62,31 +64,9 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 		}
 	case config.Type_AskForSubscription:
 		// Handle subscription request
-		if buddy.Host != nil && buddy.Network != nil && buddy.PubSub != nil {
-			// Try to subscribe to the consensus pubsub channel
-			pubsub, ok := buddy.PubSub.(*Pubsub.GossipPubSub)
-			if !ok {
-				log.Printf("PubSub instance is not of correct type")
-				ackMessage := config.Consensus_Response{
-					Status: config.Type_ACK_False,
-					PeerID: buddy.PeerID.String(),
-					Stage:  config.Type_SubscriptionResponse,
-				}
-				ackMessageJSON, err := json.Marshal(ackMessage)
-				if err != nil {
-					log.Printf("Failed to marshal ACK_FALSE to %s: %v", s.Conn().RemotePeer(), err)
-					return
-				}
-				if err := buddy.SendMessageToPeer(s.Conn().RemotePeer(), string(ackMessageJSON)); err != nil {
-					log.Printf("Failed to send ACK_FALSE to %s: %v", s.Conn().RemotePeer(), err)
-				} else {
-					log.Printf("Sent ACK_FALSE to %s - invalid pubsub instance", s.Conn().RemotePeer())
-				}
-				return
-			}
-
+		if PubSub_BuddyNode != nil && PubSub_BuddyNode.Host != nil && PubSub_BuddyNode.Network != nil && PubSub_BuddyNode.PubSub != nil {
 			// Subscribe to the consensus channel
-			err := pubsub.Subscribe(config.PubSub_ConsensusChannel, func(msg *Pubsub.GossipMessage) {
+			err := PubSub_BuddyNode.PubSub.Subscribe(config.PubSub_ConsensusChannel, func(msg *Pubsub.GossipMessage) {
 				log.Printf("Received pubsub message on consensus channel: %s from %s", msg.ID, msg.Sender)
 				// Handle the received message here if needed
 			})
@@ -95,7 +75,7 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 				log.Printf("Failed to subscribe to consensus channel: %v", err)
 				ackMessage := config.Consensus_Response{
 					Status: config.Type_ACK_False,
-					PeerID: buddy.PeerID.String(),
+					PeerID: PubSub_BuddyNode.PeerID.String(),
 					Stage:  config.Type_SubscriptionResponse,
 				}
 				ackMessageJSON, err := json.Marshal(ackMessage)
@@ -103,7 +83,7 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 					log.Printf("Failed to marshal ACK_FALSE to %s: %v", s.Conn().RemotePeer(), err)
 					return
 				}
-				if err := buddy.SendMessageToPeer(s.Conn().RemotePeer(), string(ackMessageJSON)); err != nil {
+				if err := PubSub_BuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), string(ackMessageJSON)); err != nil {
 					log.Printf("Failed to send ACK_FALSE to %s: %v", s.Conn().RemotePeer(), err)
 				} else {
 					log.Printf("Sent ACK_FALSE to %s - subscription failed", s.Conn().RemotePeer())
@@ -112,7 +92,7 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 				log.Printf("Successfully subscribed to consensus channel: %s", config.PubSub_ConsensusChannel)
 				ackMessage := config.Consensus_Response{
 					Status: config.Type_ACK_True,
-					PeerID: buddy.PeerID.String(),
+					PeerID: PubSub_BuddyNode.PeerID.String(),
 					Stage:  config.Type_SubscriptionResponse,
 				}
 				ackMessageJSON, err := json.Marshal(ackMessage)
@@ -120,7 +100,7 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 					log.Printf("Failed to marshal ACK_TRUE to %s: %v", s.Conn().RemotePeer(), err)
 					return
 				}
-				if err := buddy.SendMessageToPeer(s.Conn().RemotePeer(), string(ackMessageJSON)); err != nil {
+				if err := PubSub_BuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), string(ackMessageJSON)); err != nil {
 					log.Printf("Failed to send ACK_TRUE to %s: %v", s.Conn().RemotePeer(), err)
 				} else {
 					log.Printf("Sent ACK_TRUE to %s for subscription request", s.Conn().RemotePeer())
@@ -130,7 +110,7 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 			// Node is not ready to accept subscription
 			ackMessage := config.Consensus_Response{
 				Status: config.Type_ACK_False,
-				PeerID: buddy.PeerID.String(),
+				PeerID: PubSub_BuddyNode.PeerID.String(),
 				Stage:  config.Type_SubscriptionResponse,
 			}
 			ackMessageJSON, err := json.Marshal(ackMessage)
@@ -138,7 +118,7 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 				log.Printf("Failed to marshal ACK_FALSE to %s: %v", s.Conn().RemotePeer(), err)
 				return
 			}
-			if err := buddy.SendMessageToPeer(s.Conn().RemotePeer(), string(ackMessageJSON)); err != nil {
+			if err := PubSub_BuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), string(ackMessageJSON)); err != nil {
 				log.Printf("Failed to send ACK_FALSE to %s: %v", s.Conn().RemotePeer(), err)
 			} else {
 				log.Printf("Sent ACK_FALSE to %s - node not ready for subscription", s.Conn().RemotePeer())
@@ -147,11 +127,11 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 	case config.Type_VerifySubscription:
 		// Handle subscription verification request
 		log.Printf("Received VERIFY_SUBSCRIPTION request from %s", s.Conn().RemotePeer())
-		if buddy.Host != nil && buddy.Network != nil {
+   		if PubSub_BuddyNode != nil && PubSub_BuddyNode.Host != nil && PubSub_BuddyNode.Network != nil && PubSub_BuddyNode.PubSub != nil {
 			// Node is ready and subscribed, respond with ACK_TRUE + PeerID
 			ackMessage := config.Consensus_Response{
 				Status: config.Type_ACK_True,
-				PeerID: buddy.PeerID.String(),
+				PeerID: PubSub_BuddyNode.PeerID.String(),
 				Stage:  config.Type_VerifySubscription,
 			}
 
@@ -161,16 +141,16 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 				return
 			}
 
-			if err := buddy.SendMessageToPeer(s.Conn().RemotePeer(), string(ackMessageJSON)); err != nil {
+			if err := PubSub_BuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), string(ackMessageJSON)); err != nil {
 				log.Printf("Failed to send ACK_TRUE with PeerID to %s: %v", s.Conn().RemotePeer(), err)
 			} else {
-				log.Printf("Sent ACK_TRUE with PeerID %s to %s for subscription verification", buddy.Host.ID(), s.Conn().RemotePeer())
+				log.Printf("Sent ACK_TRUE with PeerID %s to %s for subscription verification", PubSub_BuddyNode.Host.ID(), s.Conn().RemotePeer())
 			}
 		} else {
 			// Node is not ready, respond with ACK_FALSE
 			ackMessage := config.Consensus_Response{
 				Status: config.Type_ACK_False,
-				PeerID: buddy.PeerID.String(), // Return This Node's PeerID
+				PeerID: PubSub_BuddyNode.PeerID.String(), // Return This Node's PeerID
 				Stage:  config.Type_VerifySubscription,
 			}
 
@@ -179,8 +159,7 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 				log.Printf("Failed to marshal ACK_FALSE with PeerID to %s: %v", s.Conn().RemotePeer(), err)
 				return
 			}
-
-			if err := buddy.SendMessageToPeer(s.Conn().RemotePeer(), string(ackMessageJSON)); err != nil {
+			if err := PubSub_BuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), string(ackMessageJSON)); err != nil {
 				log.Printf("Failed to send ACK_FALSE to %s: %v", s.Conn().RemotePeer(), err)
 			} else {
 				log.Printf("Sent ACK_FALSE to %s - node not ready for subscription verification", s.Conn().RemotePeer())
@@ -198,21 +177,21 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 			switch consensusResponse.Status {
 			case config.Type_ACK_True:
 				// Notify the response handler with PeerID information
-				if buddy.ResponseHandler != nil {
+				if PubSub_BuddyNode.ResponseHandler != nil {
 					// Check if the response handler supports PeerID handling
-					if handlerWithPeerID, ok := buddy.ResponseHandler.(interface {
+					if handlerWithPeerID, ok := PubSub_BuddyNode.ResponseHandler.(interface {
 						HandleResponseWithPeerID(peer.ID, bool, string)
 					}); ok {
 						handlerWithPeerID.HandleResponseWithPeerID(s.Conn().RemotePeer(), true, consensusResponse.PeerID)
 					} else {
 						// Fallback to regular response handling
-						buddy.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), true)
+						PubSub_BuddyNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), true)
 					}
 				}
 			case config.Type_ACK_False:
 				// Handle ACK_FALSE response
-				if buddy.ResponseHandler != nil {
-					buddy.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), false)
+				if PubSub_BuddyNode.ResponseHandler != nil {
+					PubSub_BuddyNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), false)
 				}
 			default:
 				log.Printf("Unknown status in consensus response: %s", consensusResponse.Status)
@@ -229,9 +208,11 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 
 func (Listener *BuddyNode) HandleSubmitMessageStream(s network.Stream) {
 	defer s.Close()
+	// Add the buddy Node to the Listener node for singleton instance
+	ForListner = Listener
 
-	Controller := ServiceLayer.GetServiceController()
-	if Controller == nil {
+	ForListner.CRDTLayer = ServiceLayer.GetServiceController()
+	if ForListner.CRDTLayer == nil {
 		log.Printf("Service controller is not initialized")
 		return
 	}
@@ -241,7 +222,8 @@ func (Listener *BuddyNode) HandleSubmitMessageStream(s network.Stream) {
 		log.Printf("Error reading message from %s: %v", s.Conn().RemotePeer(), err)
 		return
 	}
-	
+
+
 	msg = strings.TrimSuffix(msg, string(rune(config.Delimiter)))
 
 	log.Printf("Received submit message from %s: %s", s.Conn().RemotePeer(), msg)
@@ -250,9 +232,42 @@ func (Listener *BuddyNode) HandleSubmitMessageStream(s network.Stream) {
 	case config.Type_SubmitVote:
 		log.Printf("Received submit vote from %s: %s", s.Conn().RemotePeer(), msg)
 		// First Add to local CRDT Engine
-		
+		if err := SubmitMessage(msg, PubSub_BuddyNode.PubSub, ForListner); err != nil {
+			log.Printf("Failed to add vote to local CRDT Engine: %v", err)
+		}
+	default:
+		log.Printf("Unknown message type received from %s: %s", s.Conn().RemotePeer(), msg)
 	}
 
+}
+
+func SubmitMessage(msg string, PubSub *Pubsub.GossipPubSub, ListenerNode *BuddyNode) error {
+	OP := &Types.OP{}
+	if err := json.Unmarshal([]byte(msg), OP); err != nil {
+		return fmt.Errorf("failed to unmarshal message: %v", err)
+	}
+	// Adding data to the CRDT First - Before PubSub
+	if err := ServiceLayer.Controller(ListenerNode.CRDTLayer, OP); err != nil {
+		return fmt.Errorf("failed to add vote to local CRDT Engine: %v", err)
+	}
+
+	// Now Submit to the publish function in the pubsub
+	if err := PubSub.Publish(config.PubSub_ConsensusChannel, msg, nil); err != nil {
+		return fmt.Errorf("failed to publish message to pubsub: %v", err)
+	}
+	return nil
+}
+
+func SubmitMessageToCRDT(msg string, ListenerNode *BuddyNode) error {
+	OP := &Types.OP{}
+	if err := json.Unmarshal([]byte(msg), OP); err != nil {
+		return fmt.Errorf("failed to unmarshal message: %v", err)
+	}
+	// Adding data to the CRDT First - Before PubSub
+	if err := ServiceLayer.Controller(ListenerNode.CRDTLayer, OP); err != nil {
+		return fmt.Errorf("failed to add vote to local CRDT Engine: %v", err)
+	}
+	return nil
 }
 
 // NewBuddyNode creates a new BuddyNode instance from an existing host
