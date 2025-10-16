@@ -2,12 +2,13 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.29.3
-// source: seednode.proto
+// source: peer.proto
 
 package peerpb
 
 import (
 	context "context"
+
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -35,6 +36,7 @@ const (
 	PeerDirectory_AddNeighbor_FullMethodName                          = "/peerpb.PeerDirectory/AddNeighbor"
 	PeerDirectory_RemoveNeighbor_FullMethodName                       = "/peerpb.PeerDirectory/RemoveNeighbor"
 	PeerDirectory_GetNeighbors_FullMethodName                         = "/peerpb.PeerDirectory/GetNeighbors"
+	PeerDirectory_AllocateNeighbors_FullMethodName                    = "/peerpb.PeerDirectory/AllocateNeighbors"
 	PeerDirectory_ReportInactiveNeighbor_FullMethodName               = "/peerpb.PeerDirectory/ReportInactiveNeighbor"
 	PeerDirectory_CheckPeerHealth_FullMethodName                      = "/peerpb.PeerDirectory/CheckPeerHealth"
 	PeerDirectory_GetInactiveNeighborReportsForSubject_FullMethodName = "/peerpb.PeerDirectory/GetInactiveNeighborReportsForSubject"
@@ -64,6 +66,7 @@ type PeerDirectoryClient interface {
 	AddNeighbor(ctx context.Context, in *AddNeighborRequest, opts ...grpc.CallOption) (*AddNeighborResponse, error)
 	RemoveNeighbor(ctx context.Context, in *RemoveNeighborRequest, opts ...grpc.CallOption) (*RemoveNeighborResponse, error)
 	GetNeighbors(ctx context.Context, in *GetNeighborsRequest, opts ...grpc.CallOption) (*GetNeighborsResponse, error)
+	AllocateNeighbors(ctx context.Context, in *AllocateNeighborsRequest, opts ...grpc.CallOption) (*AllocateNeighborsResponse, error)
 	// Inactive neighbor reporting
 	ReportInactiveNeighbor(ctx context.Context, in *ReportInactiveNeighborRequest, opts ...grpc.CallOption) (*ReportInactiveNeighborResponse, error)
 	// Health check for specific peers
@@ -232,6 +235,16 @@ func (c *peerDirectoryClient) GetNeighbors(ctx context.Context, in *GetNeighbors
 	return out, nil
 }
 
+func (c *peerDirectoryClient) AllocateNeighbors(ctx context.Context, in *AllocateNeighborsRequest, opts ...grpc.CallOption) (*AllocateNeighborsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AllocateNeighborsResponse)
+	err := c.cc.Invoke(ctx, PeerDirectory_AllocateNeighbors_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *peerDirectoryClient) ReportInactiveNeighbor(ctx context.Context, in *ReportInactiveNeighborRequest, opts ...grpc.CallOption) (*ReportInactiveNeighborResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ReportInactiveNeighborResponse)
@@ -304,6 +317,7 @@ type PeerDirectoryServer interface {
 	AddNeighbor(context.Context, *AddNeighborRequest) (*AddNeighborResponse, error)
 	RemoveNeighbor(context.Context, *RemoveNeighborRequest) (*RemoveNeighborResponse, error)
 	GetNeighbors(context.Context, *GetNeighborsRequest) (*GetNeighborsResponse, error)
+	AllocateNeighbors(context.Context, *AllocateNeighborsRequest) (*AllocateNeighborsResponse, error)
 	// Inactive neighbor reporting
 	ReportInactiveNeighbor(context.Context, *ReportInactiveNeighborRequest) (*ReportInactiveNeighborResponse, error)
 	// Health check for specific peers
@@ -366,6 +380,9 @@ func (UnimplementedPeerDirectoryServer) RemoveNeighbor(context.Context, *RemoveN
 }
 func (UnimplementedPeerDirectoryServer) GetNeighbors(context.Context, *GetNeighborsRequest) (*GetNeighborsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetNeighbors not implemented")
+}
+func (UnimplementedPeerDirectoryServer) AllocateNeighbors(context.Context, *AllocateNeighborsRequest) (*AllocateNeighborsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AllocateNeighbors not implemented")
 }
 func (UnimplementedPeerDirectoryServer) ReportInactiveNeighbor(context.Context, *ReportInactiveNeighborRequest) (*ReportInactiveNeighborResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReportInactiveNeighbor not implemented")
@@ -673,6 +690,24 @@ func _PeerDirectory_GetNeighbors_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PeerDirectory_AllocateNeighbors_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AllocateNeighborsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PeerDirectoryServer).AllocateNeighbors(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PeerDirectory_AllocateNeighbors_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PeerDirectoryServer).AllocateNeighbors(ctx, req.(*AllocateNeighborsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _PeerDirectory_ReportInactiveNeighbor_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ReportInactiveNeighborRequest)
 	if err := dec(in); err != nil {
@@ -831,6 +866,10 @@ var PeerDirectory_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _PeerDirectory_GetNeighbors_Handler,
 		},
 		{
+			MethodName: "AllocateNeighbors",
+			Handler:    _PeerDirectory_AllocateNeighbors_Handler,
+		},
+		{
 			MethodName: "ReportInactiveNeighbor",
 			Handler:    _PeerDirectory_ReportInactiveNeighbor_Handler,
 		},
@@ -852,5 +891,5 @@ var PeerDirectory_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "seednode.proto",
+	Metadata: "peer.proto",
 }

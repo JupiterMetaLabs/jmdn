@@ -426,6 +426,17 @@ func main() {
 					log.Info().Msg("Successfully registered with seed node")
 				}
 			}
+
+			// Perform neighbor discovery after successful registration
+			fmt.Println("\n🔍 Starting neighbor discovery process...")
+			err = seedClient.DiscoverAndAddNeighbors(n.Host, nodeManager)
+			if err != nil {
+				fmt.Printf("⚠️  Neighbor discovery failed: %v\n", err)
+				log.Error().Err(err).Msg("Neighbor discovery failed")
+			} else {
+				fmt.Println("✅ Neighbor discovery completed successfully")
+				log.Info().Msg("Neighbor discovery completed successfully")
+			}
 		}
 	}
 

@@ -63,6 +63,7 @@ func PrintFuncs() {
 	fmt.Println("  removepeer <peer_id>             - Remove a peer from managed nodes")
 	fmt.Println("  listpeers                         - Show all managed peers")
 	fmt.Println("  listaliases                       - List all peer aliases from seed node")
+	fmt.Println("  discoverneighbors                 - Discover and add neighbors from seed node")
 	fmt.Println("  seednodeStats                     - Check seed node connection and get peer statistics")
 	fmt.Println("  stats                             - Show messaging statistics")
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
@@ -155,6 +156,8 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleListPeers()
 	case "listaliases":
 		h.handleListAliases()
+	case "discoverneighbors":
+		h.handleDiscoverNeighbors()
 	case "cleanpeers":
 		h.handleCleanPeers()
 	case "stats":
@@ -712,6 +715,33 @@ func (h *CommandHandler) handleListAliases() {
 		}
 	}
 
+	printDashes()
+}
+
+func (h *CommandHandler) handleDiscoverNeighbors() {
+	if h.SeedNode == "" {
+		fmt.Println("❌ No seed node specified. Use -seednode flag to specify a seed node.")
+		return
+	}
+
+	fmt.Printf("🔍 Starting neighbor discovery from seed node: %s\n", h.SeedNode)
+	printDashes()
+
+	// Create seed node client
+	client, err := seednode.NewClient(h.SeedNode)
+	if err != nil {
+		fmt.Printf("❌ Failed to connect to seed node: %v\n", err)
+		return
+	}
+	defer client.Close()
+
+	// Perform neighbor discovery
+	err = client.DiscoverAndAddNeighbors(h.Node.Host, h.NodeManager)
+	if err != nil {
+		fmt.Printf("❌ Neighbor discovery failed: %v\n", err)
+	} else {
+		fmt.Println("✅ Neighbor discovery completed successfully")
+	}
 	printDashes()
 }
 

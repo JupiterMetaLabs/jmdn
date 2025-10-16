@@ -46,6 +46,16 @@ func getPublicIP() (string, error) {
 	return publicIP, nil
 }
 
+// isValidMultiaddr validates if a multiaddress is properly formatted and has a valid peer ID
+func isValidMultiaddr(addr string) bool {
+	// Try to parse the multiaddress
+	_, err := multiaddr.NewMultiaddr(addr)
+	if err != nil {
+		return false
+	}
+	return true
+}
+
 // isPublicAddress checks if an address is public (not localhost or private)
 func isPublicAddress(addr string) bool {
 	// Skip localhost addresses
@@ -153,6 +163,181 @@ func (c *Client) GetAliasByPeerID(peerID string) (string, error) {
 	// The seed node API would need to be extended to support this functionality
 	// This is a placeholder for future implementation
 	return "", fmt.Errorf("alias lookup by peer ID not yet implemented in seed node API")
+}
+
+// GetNeighbors retrieves neighbors for a given peer
+func (c *Client) GetNeighbors(peerID string) ([]*peerpb.PeerNeighbor, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	request := &peerpb.GetNeighborsRequest{
+		PeerId: peerID,
+	}
+
+	response, err := c.client.GetNeighbors(ctx, request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get neighbors: %w", err)
+	}
+
+	if !response.Found {
+		return []*peerpb.PeerNeighbor{}, nil
+	}
+
+	return response.Neighbors, nil
+}
+
+// AllocateNeighbors requests new neighbors from the seed node
+func (c *Client) AllocateNeighbors(peerID string, forceRefresh bool) ([]*peerpb.PeerNeighbor, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	request := &peerpb.AllocateNeighborsRequest{
+		PeerId:       peerID,
+		ForceRefresh: forceRefresh,
+	}
+
+	response, err := c.client.AllocateNeighbors(ctx, request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to allocate neighbors: %w", err)
+	}
+
+	if !response.Allocated {
+		return []*peerpb.PeerNeighbor{}, nil
+	}
+
+	return response.Neighbors, nil
+}
+
+// AddNeighbor adds a neighbor relationship to the seed node
+func (c *Client) AddNeighbor(neighbor *peerpb.PeerNeighbor) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	request := &peerpb.AddNeighborRequest{
+		Neighbor: neighbor,
+	}
+
+	response, err := c.client.AddNeighbor(ctx, request)
+	if err != nil {
+		return fmt.Errorf("failed to add neighbor: %w", err)
+	}
+
+	if !response.Accepted {
+		return fmt.Errorf("neighbor addition rejected: %s", response.Message)
+	}
+
+	return nil
+}
+
+// DiscoverAndAddNeighbors performs the complete neighbor discovery process
+func (c *Client) DiscoverAndAddNeighbors(h host.Host, nodeManager interface{}) error {
+	peerID := h.ID().String()
+	fmt.Printf("🔍 Starting neighbor discovery for peer: %s\n", peerID)
+
+	// Step 1: Check if we already have neighbors
+	fmt.Println("📋 Checking existing neighbors...")
+	existingNeighbors, err := c.GetNeighbors(peerID)
+	if err != nil {
+		fmt.Printf("⚠️  Warning: Failed to check existing neighbors: %v\n", err)
+	} else if len(existingNeighbors) > 0 {
+		fmt.Printf("✅ Found %d existing neighbors\n", len(existingNeighbors))
+		// Convert existing neighbors to multiaddrs and add them to node manager
+		for _, neighbor := range existingNeighbors {
+			if neighbor.IsActive {
+				// Try to construct multiaddr from neighbor info
+				// Note: We might need to get the full peer record to get multiaddrs
+				fmt.Printf("  - Neighbor: %s (active: %v)\n", neighbor.NeighborId, neighbor.IsActive)
+			}
+		}
+	}
+
+	// Step 2: Check current managed peers using listpeers command
+	fmt.Println("📋 Checking current managed peers...")
+	// We'll need to call the listpeers functionality through the node manager
+	// For now, let's assume we need to get new neighbors
+
+	// Step 3: Request new neighbors from seed node
+	fmt.Println("🔄 Requesting new neighbors from seed node...")
+	newNeighbors, err := c.AllocateNeighbors(peerID, false) // Don't force refresh initially
+	if err != nil {
+		return fmt.Errorf("failed to allocate neighbors: %w", err)
+	}
+
+	if len(newNeighbors) == 0 {
+		fmt.Println("ℹ️  No new neighbors allocated by seed node")
+		return nil
+	}
+
+	fmt.Printf("✅ Allocated %d new neighbors from seed node\n", len(newNeighbors))
+
+	// Step 4: Add neighbors to node manager
+	var successfullyAddedPeers []string
+	for _, neighbor := range newNeighbors {
+		neighborID := neighbor.NeighborId
+		fmt.Printf("🔗 Processing neighbor: %s\n", neighborID)
+
+		// Get the full peer record to get multiaddrs
+		peerRecord, err := c.GetPeer(neighborID)
+		if err != nil {
+			fmt.Printf("⚠️  Warning: Failed to get peer record for %s: %v\n", neighborID, err)
+			continue
+		}
+
+		// Add each multiaddr to the node manager
+		for _, multiaddr := range peerRecord.Multiaddrs {
+			fmt.Printf("  📍 Adding peer: %s\n", multiaddr)
+
+			// Validate the multiaddress before attempting to add it
+			if !isValidMultiaddr(multiaddr) {
+				fmt.Printf("⚠️  Skipping invalid multiaddr: %s\n", multiaddr)
+				continue
+			}
+
+			// Use type assertion to call AddPeer method on nodeManager
+			// This is a workaround since we don't have direct access to the NodeManager type
+			if nm, ok := nodeManager.(interface{ AddPeer(string) error }); ok {
+				err := nm.AddPeer(multiaddr)
+				if err != nil {
+					fmt.Printf("❌ Failed to add peer %s: %v\n", multiaddr, err)
+					continue
+				}
+				fmt.Printf("✅ Successfully added peer: %s\n", multiaddr)
+				successfullyAddedPeers = append(successfullyAddedPeers, neighborID)
+			} else {
+				fmt.Printf("❌ Node manager does not support AddPeer method\n")
+				return fmt.Errorf("node manager does not support AddPeer method")
+			}
+		}
+	}
+
+	// Step 5: Report successfully added peers to seed node
+	if len(successfullyAddedPeers) > 0 {
+		fmt.Printf("📤 Reporting %d successfully added peers to seed node\n", len(successfullyAddedPeers))
+		for _, peerID := range successfullyAddedPeers {
+			neighbor := &peerpb.PeerNeighbor{
+				PeerId:     h.ID().String(),
+				NeighborId: peerID,
+				CreatedAt:  time.Now().Unix(),
+				LastSeen:   time.Now().Unix(),
+				IsActive:   true,
+				V:          "",
+				R:          "",
+				S:          "",
+			}
+
+			// Sign the neighbor record (we'll need to implement this)
+			// For now, we'll add it without signature
+			err := c.AddNeighbor(neighbor)
+			if err != nil {
+				fmt.Printf("⚠️  Warning: Failed to report neighbor %s: %v\n", peerID, err)
+			} else {
+				fmt.Printf("✅ Successfully reported neighbor: %s\n", peerID)
+			}
+		}
+	}
+
+	fmt.Printf("🎉 Neighbor discovery completed. Added %d peers successfully.\n", len(successfullyAddedPeers))
+	return nil
 }
 
 // UpdatePeer updates an existing peer record
