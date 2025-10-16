@@ -9,7 +9,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/gETH/Facade/Service/Logger"
 	"gossipnode/gETH/Facade/Service/Types"
-	"gossipnode/gETH/Facade/Service/Utils"
+	Utils "gossipnode/gETH/Facade/Service/utils"
 	"math/big"
 	"time"
 )
