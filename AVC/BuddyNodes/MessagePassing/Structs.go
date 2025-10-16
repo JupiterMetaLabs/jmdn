@@ -34,8 +34,9 @@ type BuddyNode struct {
 
 type Message struct {
 	Sender    peer.ID
-	Vote      int8
+	Message   string // json string of the json message - it could be a vote, a block, a transaction, etc.
 	Timestamp int64
+	ACK       *ACK_Message
 }
 
 type MetaData struct {

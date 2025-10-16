@@ -59,7 +59,6 @@ const (
 	// For Voting Aggregation
 	Type_SubmitVote = "SUBMIT_VOTE"
 
-	Topic_EndPubSub   = "END_PUBSUB"
 	Topic_SYNCRequest = "SYNC_REQUEST"
 )
 
@@ -125,11 +124,6 @@ type PeerInfo struct {
 	Capabilities []string // What the peer can do (e.g., "relay", "storage", etc.)
 }
 
-type Consensus_Response struct {
-	Status string `json:"status"`
-	PeerID string `json:"peer_id"`
-	Stage  string `json:"stage"`
-}
 
 // Database configuration
 var (

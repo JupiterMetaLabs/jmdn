@@ -1,6 +1,13 @@
 package MessagePassing
 
 import (
+	"encoding/json"
+	"fmt"
+	"gossipnode/AVC/BuddyNodes/ServiceLayer"
+	"gossipnode/AVC/BuddyNodes/Types"
+	"gossipnode/Pubsub"
+	"gossipnode/config"
+
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -38,4 +45,33 @@ func (buddy *BuddyNode) GetMetadata() MetaData {
 		Total:     buddy.MetaData.Total,
 		UpdatedAt: buddy.MetaData.UpdatedAt,
 	}
+}
+
+func SubmitMessage(msg string, PubSub *Pubsub.GossipPubSub, ListenerNode *BuddyNode) error {
+	OP := &Types.OP{}
+	if err := json.Unmarshal([]byte(msg), OP); err != nil {
+		return fmt.Errorf("failed to unmarshal message: %v", err)
+	}
+	// Adding data to the CRDT First - Before PubSub
+	if err := ServiceLayer.Controller(ListenerNode.CRDTLayer, OP); err != nil {
+		return fmt.Errorf("failed to add vote to local CRDT Engine: %v", err)
+	}
+
+	// Now Submit to the publish function in the pubsub
+	if err := PubSub.Publish(config.PubSub_ConsensusChannel, msg, nil); err != nil {
+		return fmt.Errorf("failed to publish message to pubsub: %v", err)
+	}
+	return nil
+}
+
+func SubmitMessageToCRDT(msg string, ListenerNode *BuddyNode) error {
+	OP := &Types.OP{}
+	if err := json.Unmarshal([]byte(msg), OP); err != nil {
+		return fmt.Errorf("failed to unmarshal message: %v", err)
+	}
+	// Adding data to the CRDT First - Before PubSub
+	if err := ServiceLayer.Controller(ListenerNode.CRDTLayer, OP); err != nil {
+		return fmt.Errorf("failed to add vote to local CRDT Engine: %v", err)
+	}
+	return nil
 }
