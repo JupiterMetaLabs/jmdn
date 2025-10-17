@@ -324,14 +324,6 @@ func SignNeighbor(neighbor *peerpb.PeerNeighbor, h host.Host) error {
 	neighbor.S = hex.EncodeToString(s.Bytes())
 	neighbor.V = hex.EncodeToString([]byte{v})
 
-	// Debug: Print signature creation details
-	fmt.Printf("🔐 Debug - Signature creation:\n")
-	fmt.Printf("  Message: %s\n", message)
-	fmt.Printf("  Hash: %x\n", hash)
-	fmt.Printf("  R: %s (bytes: %d)\n", neighbor.R, len(r.Bytes()))
-	fmt.Printf("  S: %s (bytes: %d)\n", neighbor.S, len(s.Bytes()))
-	fmt.Printf("  V: %s (value: %d)\n", neighbor.V, v)
-
 	return nil
 }
 
