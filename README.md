@@ -28,36 +28,100 @@ The system is built on a modular architecture combining several advanced distrib
 
 ## Setup & Requirements
 
+### System Requirements
+
+- **Operating System**: Ubuntu 18.04+, Debian 10+, elementaryOS, or Linux Mint
+- **Architecture**: x86_64, ARM64, or ARMv7
+- **Memory**: Minimum 2GB RAM
+- **Storage**: At least 10GB free space
+- **Network**: Internet connection for initial setup
+
 ### Dependencies
 
-- Go 1.18+
-- ImmuDB
-- SQLite (via mattn/go-sqlite3)
+- **Go 1.18+**: Programming language runtime
+- **Docker & Docker Compose**: Containerization platform
+- **Yggdrasil**: Decentralized mesh networking protocol
+- **ImmuDB**: Tamper-proof database (installed automatically)
+- **SQLite**: Database engine (via mattn/go-sqlite3)
 
-### Installation
+### Quick Setup
 
-1. Clone the repository:
+The easiest way to set up the environment is using the provided setup script:
 
-   ```
-   cd P2P-Communication
-   ```
-2. Install Go dependencies:
+```bash
+# Make the setup script executable and run it
+chmod +x Setup.sh
+./Setup.sh
+```
 
-   ```
+This script will automatically install all prerequisites in the correct order:
+1. **Go Programming Language** - Latest version with proper PATH configuration
+2. **Yggdrasil Network** - Official Debian package installation
+3. **Docker** (optional) - Uncomment in Setup.sh if needed
+
+#### Setup.sh Script Details
+
+The `Setup.sh` script provides a streamlined installation process:
+
+```bash
+#!/bin/bash
+# chmod +x ./Scripts/Docker_Prerequisite.sh
+chmod +x ./Scripts/Go_Prerequisite.sh
+chmod +x ./Scripts/YGG_Prerequisite.sh
+# ./Scripts/Docker_Prerequisite.sh
+./Scripts/Go_Prerequisite.sh
+./Scripts/YGG_Prerequisite.sh
+```
+
+**Features:**
+- Automatically makes prerequisite scripts executable
+- Installs Go with cross-platform support (Ubuntu/macOS)
+- Installs Yggdrasil using official Debian packages
+- Docker installation is commented out by default (uncomment if needed)
+- Provides colored output and error handling
+
+### Manual Installation
+
+If you prefer to install dependencies manually or need to install them individually:
+
+#### 1. Install Go
+```bash
+chmod +x ./Scripts/Go_Prerequisite.sh
+./Scripts/Go_Prerequisite.sh
+```
+
+#### 2. Install Yggdrasil
+```bash
+chmod +x ./Scripts/YGG_Prerequisite.sh
+./Scripts/YGG_Prerequisite.sh
+```
+
+#### 3. Install Docker (Optional)
+```bash
+chmod +x ./Scripts/Docker_Prerequisite.sh
+./Scripts/Docker_Prerequisite.sh
+```
+
+### Build the Application
+
+After installing prerequisites:
+
+1. Install Go dependencies:
+   ```bash
    go mod download
    ```
-3. Build the application:
 
-   ```
-   go build -o p2p-node
+2. Build the application:
+   ```bash
+   go build -o gossipnode
    ```
 
 ## Running a Node
 
 Basic node startup:
 
-```
-./p2p-node
+```bash
+./gossipnode
 ```
 
 ### Configuration Options
