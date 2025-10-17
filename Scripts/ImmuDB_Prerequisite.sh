@@ -93,11 +93,29 @@ check_existing_installation() {
 get_latest_version() {
     print_status "Fetching latest ImmuDB version..."
     
-    local version=$(curl -s "https://api.github.com/repos/codenotary/immudb/releases/latest" 2>/dev/null | grep -o '"tag_name":"[^"]*"' | head -n1 | cut -d'"' -f4)
+    # Try multiple methods to get the latest version
+    local version=""
     
-    if [ -z "$version" ]; then
-        print_error "Could not determine latest ImmuDB version"
-        exit 1
+    # Method 1: Try GitHub API with jq if available
+    if command -v jq >/dev/null 2>&1; then
+        version=$(curl -s "https://api.github.com/repos/codenotary/immudb/releases/latest" 2>/dev/null | jq -r '.tag_name' 2>/dev/null)
+    fi
+    
+    # Method 2: Try GitHub API with grep
+    if [ -z "$version" ] || [ "$version" = "null" ]; then
+        version=$(curl -s "https://api.github.com/repos/codenotary/immudb/releases/latest" 2>/dev/null | grep -o '"tag_name":"[^"]*"' | head -n1 | cut -d'"' -f4)
+    fi
+    
+    # Method 3: Try parsing the releases page
+    if [ -z "$version" ] || [ "$version" = "null" ]; then
+        print_warning "GitHub API failed, trying alternative method..."
+        version=$(curl -s "https://github.com/codenotary/immudb/releases" 2>/dev/null | grep -o 'tag/v[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n1 | sed 's/tag\/v//')
+    fi
+    
+    # Method 4: Use a known stable version as fallback
+    if [ -z "$version" ] || [ "$version" = "null" ]; then
+        print_warning "Could not fetch latest version, using fallback version..."
+        version="1.4.1"  # Known stable version
     fi
     
     # Remove 'v' prefix if present
@@ -118,6 +136,12 @@ install_immudb() {
     
     print_status "Installing ImmuDB $version for $os-$arch..."
     print_status "Download URL: $url"
+    
+    # Validate version is not empty
+    if [ -z "$version" ]; then
+        print_error "Version is empty, cannot proceed with installation"
+        exit 1
+    fi
     
     # Check if we have permission to write to /usr/local/bin
     if [ ! -w "$install_dir" ] && [ "$EUID" -ne 0 ]; then
@@ -146,12 +170,31 @@ install_immudb() {
         exit 1
     fi
     
+    # Check if downloaded file is actually a tar.gz file
+    if ! file "$filename" | grep -q "gzip compressed"; then
+        print_error "Downloaded file is not a valid gzip archive"
+        print_error "File type: $(file "$filename")"
+        print_error "This might indicate the download URL is incorrect"
+        rm -rf "$temp_dir"
+        exit 1
+    fi
+    
     print_success "Download completed successfully!"
     
     # Extract ImmuDB
     print_status "Extracting ImmuDB..."
     if ! tar -xzf "$filename"; then
         print_error "Failed to extract ImmuDB archive"
+        print_error "Archive might be corrupted or in wrong format"
+        rm -rf "$temp_dir"
+        exit 1
+    fi
+    
+    # Check if immudb binary exists after extraction
+    if [ ! -f "immudb" ]; then
+        print_error "ImmuDB binary not found after extraction"
+        print_error "Contents of extracted archive:"
+        ls -la
         rm -rf "$temp_dir"
         exit 1
     fi
