@@ -56,8 +56,9 @@ chmod +x Setup.sh
 
 This script will automatically install all prerequisites in the correct order:
 1. **Go Programming Language** - Latest version with proper PATH configuration
-2. **Yggdrasil Network** - Official Debian package installation
-3. **Docker** (optional) - Uncomment in Setup.sh if needed
+2. **ImmuDB** - Tamper-proof database with OS detection
+3. **Yggdrasil Network** - Official Debian package installation
+4. **Docker** (optional) - Uncomment in Setup.sh if needed
 
 #### Setup.sh Script Details
 
@@ -65,20 +66,45 @@ The `Setup.sh` script provides a streamlined installation process:
 
 ```bash
 #!/bin/bash
-# chmod +x ./Scripts/Docker_Prerequisite.sh
+# Setup script for JMZK Decentralized Network
+# Installs all prerequisites in the correct order
+
+echo "=== JMZK Decentralized Network Setup ==="
+echo "Installing prerequisites..."
+
+# Make prerequisite scripts executable
 chmod +x ./Scripts/Go_Prerequisite.sh
+chmod +x ./Scripts/ImmuDB_Prerequisite.sh
 chmod +x ./Scripts/YGG_Prerequisite.sh
-# ./Scripts/Docker_Prerequisite.sh
+# chmod +x ./Scripts/Docker_Prerequisite.sh
+
+# Install prerequisites in order
+echo "1. Installing Go..."
 ./Scripts/Go_Prerequisite.sh
+
+echo "2. Installing ImmuDB..."
+./Scripts/ImmuDB_Prerequisite.sh
+
+echo "3. Installing Yggdrasil..."
 ./Scripts/YGG_Prerequisite.sh
+
+# Uncomment the line below if you need Docker
+# echo "4. Installing Docker..."
+# ./Scripts/Docker_Prerequisite.sh
+
+echo "=== Setup Complete ==="
+echo "All prerequisites have been installed successfully!"
+echo "You can now build the application with: go build -o gossipnode"
 ```
 
 **Features:**
 - Automatically makes prerequisite scripts executable
 - Installs Go with cross-platform support (Ubuntu/macOS)
+- Installs ImmuDB with OS and architecture detection
 - Installs Yggdrasil using official Debian packages
 - Docker installation is commented out by default (uncomment if needed)
 - Provides colored output and error handling
+- Clear progress indicators and completion messages
 
 ### Manual Installation
 
@@ -90,13 +116,19 @@ chmod +x ./Scripts/Go_Prerequisite.sh
 ./Scripts/Go_Prerequisite.sh
 ```
 
-#### 2. Install Yggdrasil
+#### 2. Install ImmuDB
+```bash
+chmod +x ./Scripts/ImmuDB_Prerequisite.sh
+./Scripts/ImmuDB_Prerequisite.sh
+```
+
+#### 3. Install Yggdrasil
 ```bash
 chmod +x ./Scripts/YGG_Prerequisite.sh
 ./Scripts/YGG_Prerequisite.sh
 ```
 
-#### 3. Install Docker (Optional)
+#### 4. Install Docker (Optional)
 ```bash
 chmod +x ./Scripts/Docker_Prerequisite.sh
 ./Scripts/Docker_Prerequisite.sh
