@@ -130,7 +130,7 @@ install_immudb() {
     local os=$2
     local arch=$3
     
-    local filename="immudb-${version}-${os}-${arch}.tar.gz"
+    local filename="immudb-v${version}-${os}-${arch}"
     local url="https://github.com/codenotary/immudb/releases/download/v${version}/${filename}"
     local install_dir="/usr/local/bin"
     
@@ -154,7 +154,7 @@ install_immudb() {
     local temp_dir=$(mktemp -d)
     cd "$temp_dir"
     
-    # Download ImmuDB
+    # Download ImmuDB binary
     print_status "Downloading $filename..."
     if ! curl -L -o "$filename" "$url"; then
         print_error "Failed to download ImmuDB from $url"
@@ -170,9 +170,9 @@ install_immudb() {
         exit 1
     fi
     
-    # Check if downloaded file is actually a tar.gz file
-    if ! file "$filename" | grep -q "gzip compressed"; then
-        print_error "Downloaded file is not a valid gzip archive"
+    # Check if downloaded file is a valid binary
+    if ! file "$filename" | grep -q "executable"; then
+        print_error "Downloaded file is not a valid executable binary"
         print_error "File type: $(file "$filename")"
         print_error "This might indicate the download URL is incorrect"
         rm -rf "$temp_dir"
@@ -181,27 +181,9 @@ install_immudb() {
     
     print_success "Download completed successfully!"
     
-    # Extract ImmuDB
-    print_status "Extracting ImmuDB..."
-    if ! tar -xzf "$filename"; then
-        print_error "Failed to extract ImmuDB archive"
-        print_error "Archive might be corrupted or in wrong format"
-        rm -rf "$temp_dir"
-        exit 1
-    fi
-    
-    # Check if immudb binary exists after extraction
-    if [ ! -f "immudb" ]; then
-        print_error "ImmuDB binary not found after extraction"
-        print_error "Contents of extracted archive:"
-        ls -la
-        rm -rf "$temp_dir"
-        exit 1
-    fi
-    
-    # Install binary
+    # Install binary directly (no extraction needed)
     print_status "Installing ImmuDB binary to $install_dir..."
-    sudo cp immudb "$install_dir/"
+    sudo cp "$filename" "$install_dir/immudb"
     sudo chmod +x "$install_dir/immudb"
     
     # Clean up
