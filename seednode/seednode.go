@@ -325,9 +325,22 @@ func (c *Client) DiscoverAndAddNeighbors(h host.Host, nodeManager interface{}) e
 				S:          "",
 			}
 
-			// Sign the neighbor record (we'll need to implement this)
-			// For now, we'll add it without signature
-			err := c.AddNeighbor(neighbor)
+			// Sign the neighbor record using the host's private key
+			err := SignNeighbor(neighbor, h)
+			if err != nil {
+				fmt.Printf("⚠️  Warning: Failed to sign neighbor record for %s: %v\n", peerID, err)
+				continue
+			}
+
+			// Debug: Print signature values
+			fmt.Printf("🔐 Debug - Neighbor signature for %s:\n", peerID)
+			fmt.Printf("  V: %s\n", neighbor.V)
+			fmt.Printf("  R: %s\n", neighbor.R)
+			fmt.Printf("  S: %s\n", neighbor.S)
+			fmt.Printf("  PeerId: %s\n", neighbor.PeerId)
+			fmt.Printf("  NeighborId: %s\n", neighbor.NeighborId)
+
+			err = c.AddNeighbor(neighbor)
 			if err != nil {
 				fmt.Printf("⚠️  Warning: Failed to report neighbor %s: %v\n", peerID, err)
 			} else {

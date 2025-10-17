@@ -31,11 +31,18 @@ jobs:
         with:
           go-version: '1.23.9'
 
-      - name: Cross-compile for Linux amd64
-        run: GOOS=linux GOARCH=amd64 go build -o JMZKDecentralisedNetwork-linux-amd64 .
+      - name: Install dependencies for CGO
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc
 
-      - name: Cross-compile for Linux arm64
-        run: GOOS=linux GOARCH=arm64 go build -o JMZKDecentralisedNetwork-linux-arm64 .
+      - name: Build for Linux amd64
+        run: go build -o JMZKDecentralisedNetwork-linux-amd64 .
+
+      - name: Build for Linux arm64
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -o JMZKDecentralisedNetwork-linux-arm64 .
 
       - name: Cross-compile for Windows amd64
         run: GOOS=windows GOARCH=amd64 go build -o JMZKDecentralisedNetwork-windows-amd64.exe .

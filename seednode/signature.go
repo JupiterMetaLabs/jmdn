@@ -285,6 +285,106 @@ func ValidateHeartbeatSignature(heartbeat *peerpb.HeartbeatMessage, peerID peer.
 	return nil
 }
 
+// SignNeighbor signs a neighbor record using the host's private key
+func SignNeighbor(neighbor *peerpb.PeerNeighbor, h host.Host) error {
+	// Get the host's private key
+	privKey := h.Peerstore().PrivKey(h.ID())
+	if privKey == nil {
+		return fmt.Errorf("no private key found for host")
+	}
+
+	// Create a message to sign (concatenate peer_id, neighbor_id, created_at, last_seen, is_active)
+	var messageParts []string
+	messageParts = append(messageParts, neighbor.PeerId)
+	messageParts = append(messageParts, neighbor.NeighborId)
+	messageParts = append(messageParts, fmt.Sprintf("%d", neighbor.CreatedAt))
+	messageParts = append(messageParts, fmt.Sprintf("%d", neighbor.LastSeen))
+	messageParts = append(messageParts, fmt.Sprintf("%t", neighbor.IsActive))
+
+	message := strings.Join(messageParts, "|")
+
+	// Hash the message
+	hash := sha256.Sum256([]byte(message))
+
+	// Sign the hash using libp2p crypto
+	signature, err := privKey.Sign(hash[:])
+	if err != nil {
+		return fmt.Errorf("failed to sign neighbor message: %w", err)
+	}
+
+	// Convert libp2p signature to ECDSA format
+	r := new(big.Int).SetBytes(signature[:32])
+	s := new(big.Int).SetBytes(signature[32:64])
+
+	// Calculate V component using a deterministic approach
+	v := calculateVFromSignature(r, s, hash[:])
+
+	// Convert to hex strings
+	neighbor.R = hex.EncodeToString(r.Bytes())
+	neighbor.S = hex.EncodeToString(s.Bytes())
+	neighbor.V = hex.EncodeToString([]byte{v})
+
+	// Debug: Print signature creation details
+	fmt.Printf("🔐 Debug - Signature creation:\n")
+	fmt.Printf("  Message: %s\n", message)
+	fmt.Printf("  Hash: %x\n", hash)
+	fmt.Printf("  R: %s (bytes: %d)\n", neighbor.R, len(r.Bytes()))
+	fmt.Printf("  S: %s (bytes: %d)\n", neighbor.S, len(s.Bytes()))
+	fmt.Printf("  V: %s (value: %d)\n", neighbor.V, v)
+
+	return nil
+}
+
+// ValidateNeighborSignature validates the signature of a neighbor record
+func ValidateNeighborSignature(neighbor *peerpb.PeerNeighbor, peerID peer.ID) error {
+	// Parse the peer ID to get the public key
+	pubKey, err := peerID.ExtractPublicKey()
+	if err != nil {
+		return fmt.Errorf("failed to extract public key from peer ID: %w", err)
+	}
+
+	// Recreate the message that was signed
+	var messageParts []string
+	messageParts = append(messageParts, neighbor.PeerId)
+	messageParts = append(messageParts, neighbor.NeighborId)
+	messageParts = append(messageParts, fmt.Sprintf("%d", neighbor.CreatedAt))
+	messageParts = append(messageParts, fmt.Sprintf("%d", neighbor.LastSeen))
+	messageParts = append(messageParts, fmt.Sprintf("%t", neighbor.IsActive))
+
+	message := strings.Join(messageParts, "|")
+
+	// Hash the message
+	hash := sha256.Sum256([]byte(message))
+
+	// Parse the signature components
+	r, s, err := parseRSComponents(neighbor.R, neighbor.S)
+	if err != nil {
+		return fmt.Errorf("failed to parse signature components: %w", err)
+	}
+
+	// Reconstruct the libp2p signature from R and S components
+	signature := append(r.Bytes(), s.Bytes()...)
+
+	// Pad to 64 bytes if necessary
+	if len(signature) < 64 {
+		padded := make([]byte, 64)
+		copy(padded[64-len(signature):], signature)
+		signature = padded
+	}
+
+	// Validate using libp2p crypto
+	valid, err := pubKey.Verify(hash[:], signature)
+	if err != nil {
+		return fmt.Errorf("failed to verify neighbor signature: %w", err)
+	}
+
+	if !valid {
+		return fmt.Errorf("neighbor signature verification failed")
+	}
+
+	return nil
+}
+
 // parseRSComponents parses R and S components from hex strings
 func parseRSComponents(rHex, sHex string) (*big.Int, *big.Int, error) {
 	// Parse R component
