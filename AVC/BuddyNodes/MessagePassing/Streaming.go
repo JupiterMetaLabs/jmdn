@@ -1,10 +1,8 @@
 package MessagePassing
 
 import (
-	"bufio"
-	"context"
 	"fmt"
-	log "gossipnode/AVC/BuddyNodes/MessagePassing/Log"
+	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/Pubsub"
 	"gossipnode/config"
 	"gossipnode/logging"
@@ -69,43 +67,17 @@ func StartStreamHandlers(h host.Host, buddies *Buddies, responseHandler Response
 	log.LogConsensusInfo("Stream handlers started and listening for connections")
 }
 
-
-func (Listener *BuddyNode) HandleSubmitMessageStream(s network.Stream) {
-	defer s.Close()
-	// Add the buddy Node to the Listener node for singleton instance
-	NewGlobalVariables().Set_ForListner(Listener)
-
-	reader := bufio.NewReader(s)
-	msg, err := reader.ReadString(config.Delimiter)
-	if err != nil {
-		log.LogConsensusError(fmt.Sprintf("Error reading message from %s: %v", s.Conn().RemotePeer(), err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
-		fmt.Printf("Error reading message from %s: %v", s.Conn().RemotePeer(), err)
-		return
-	}
-
-	message := NewMessageProcessor().DeferenceMessage(msg)
-
-	log.LogMessagesInfo(fmt.Sprintf("Received submit message from %s: %s", s.Conn().RemotePeer(), msg), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
-
-	switch message.Message {
-	case config.Type_SubmitVote:
-		log.LogMessagesInfo(fmt.Sprintf("Received submit vote from %s: %s", s.Conn().RemotePeer(), message.Message), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
-		// First Add to local CRDT Engine
-		if err := SubmitMessage(message.Message, PubSub_BuddyNode.PubSub, ForListner); err != nil {
-			log.LogMessagesError(fmt.Sprintf("Failed to add vote to local CRDT Engine: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
-		}
-	default:
-		log.LogMessagesError(fmt.Sprintf("Unknown message type received from %s: %s", s.Conn().RemotePeer(), msg), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
-	}
-
-}
-
 func NewListenerNode(h host.Host, responseHandler ResponseHandler) *BuddyNode {
+	streamCache, err := NewStreamCacheBuilder().SetHost(h).SetMaxStreams(20).SetTTL(5*time.Minute).SetAccessOrder().Build()
+	if err != nil {
+		panic(fmt.Sprintf("failed to create stream cache: %v", err))
+	}
 	listener := &BuddyNode{
 		Host:            h,
 		Network:         h.Network(),
 		PeerID:          h.ID(),
 		ResponseHandler: responseHandler,
+		StreamCache:     streamCache, // Max 20 streams, 5min TTL
 		MetaData: MetaData{
 			Received:  0,
 			Sent:      0,
@@ -123,18 +95,52 @@ func NewListenerNode(h host.Host, responseHandler ResponseHandler) *BuddyNode {
 	return listener
 }
 
-// SendMessageToPeer sends a message to a specific peer using peer.ID (for already connected peers)
-func (buddy *BuddyNode) SendMessageToPeer(peerID peer.ID, message string) error {
-	// Create a stream to the peer
-	stream, err := buddy.Host.NewStream(context.Background(), peerID, config.BuddyNodesMessageProtocol)
+// NewBuddyNode creates a new BuddyNode instance from an existing host
+func NewBuddyNode(h host.Host, buddies *Buddies, responseHandler ResponseHandler, pubsub *Pubsub.GossipPubSub) *BuddyNode {
+	streamCache, err := NewStreamCacheBuilder().SetHost(h).SetMaxStreams(20).SetTTL(5*time.Minute).SetAccessOrder().Build()
 	if err != nil {
-		return fmt.Errorf("failed to create stream to %s: %v", peerID, err)
+		panic(fmt.Sprintf("failed to create stream cache: %v", err))
 	}
-	defer stream.Close()
+
+	buddy := &BuddyNode{
+		Host:            h,
+		Network:         h.Network(),
+		PeerID:          h.ID(),
+		BuddyNodes:      *buddies,
+		ResponseHandler: responseHandler,
+		PubSub:          pubsub,
+		StreamCache:     streamCache,
+		MetaData: MetaData{
+			Received:  0,
+			Sent:      0,
+			Total:     0,
+			UpdatedAt: time.Now(),
+		},
+	}
+
+	// Set up the stream handler for the buddy nodes message protocol
+	h.SetStreamHandler(config.BuddyNodesMessageProtocol, buddy.HandleBuddyNodesMessageStream)
+
+	log.LogConsensusInfo(fmt.Sprintf("BuddyNode initialized with ID: %s", h.ID()), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewBuddyNode"))
+	log.LogConsensusInfo(fmt.Sprintf("Listening for buddy messages on protocol: %s", config.BuddyNodesMessageProtocol), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewBuddyNode"))
+
+	return buddy
+}
+
+// SendMessageToPeer sends a message to a specific peer using peer.ID (for already connected peers)
+// Uses LRU cache with TTL for optimal performance and resource efficiency
+func (buddy *BuddyNode) SendMessageToPeer(peerID peer.ID, message string) error {
+	// Get or create a stream from the cache
+	stream, err := buddy.StreamCache.GetStream(peerID)
+	if err != nil {
+		return fmt.Errorf("failed to get stream to %s: %v", peerID, err)
+	}
 
 	// Send the message
 	_, err = stream.Write([]byte(message + string(rune(config.Delimiter))))
 	if err != nil {
+		// If write fails, the stream might be invalid, close it and try to get a new one
+		buddy.StreamCache.CloseStream(peerID)
 		return fmt.Errorf("failed to send message to %s: %v", peerID, err)
 	}
 
@@ -150,4 +156,43 @@ func (buddy *BuddyNode) SendMessageToPeer(peerID peer.ID, message string) error 
 	}
 
 	return nil
+}
+
+// CleanupStreams performs periodic cleanup of expired streams
+func (buddy *BuddyNode) CleanupStreams() {
+	if buddy.StreamCache != nil {
+		buddy.StreamCache.CleanupExpiredStreams()
+	}
+}
+
+// CloseAllStreams closes all streams in the cache (for cleanup)
+func (buddy *BuddyNode) CloseAllStreams() {
+	if buddy.StreamCache != nil {
+		buddy.StreamCache.CloseAll()
+	}
+}
+
+// StartStreamCleanup starts a background goroutine to periodically clean up expired streams
+func (buddy *BuddyNode) StartStreamCleanup(interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			buddy.CleanupStreams()
+		}
+	}()
+}
+
+// GetStreamCacheStats returns statistics about the stream cache
+func (buddy *BuddyNode) GetStreamCacheStats() map[string]interface{} {
+	if buddy.StreamCache != nil {
+		return buddy.StreamCache.GetStats()
+	}
+	return map[string]interface{}{
+		"active_streams": 0,
+		"max_streams":    0,
+		"ttl_seconds":    0,
+		"total_accesses": 0,
+	}
 }

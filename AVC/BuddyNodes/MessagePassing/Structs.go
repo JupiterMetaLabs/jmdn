@@ -30,6 +30,7 @@ type BuddyNode struct {
 	MetaData        MetaData
 	ResponseHandler ResponseHandler      // Interface for handling responses
 	PubSub          *Pubsub.GossipPubSub // Will hold a reference to GossipPubSub instance
+	StreamCache     *StreamCache         // LRU cache of reusable streams with TTL
 }
 
 type Message struct {

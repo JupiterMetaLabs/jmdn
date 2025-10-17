@@ -23,7 +23,7 @@ type Consensus struct {
 	Channel  string
 	PeerList PeerList
 	Host     host.Host
-	gps      *Pubsub.GossipPubSub
+	gossipnode      *Pubsub.GossipPubSub
 }
 
 func NewConsensus(peerList PeerList, host host.Host) *Consensus {
@@ -34,15 +34,15 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	}
 }
 
-func (c *Consensus) Start() error {
+func (consensus *Consensus) Start() error {
 	// Validate consensus configuration first
-	if err := ValidateConsensusConfiguration(c); err != nil {
+	if err := ValidateConsensusConfiguration(consensus); err != nil {
 		return fmt.Errorf("invalid consensus configuration: %w", err)
 	}
 
 	// First create the pubsub channel
 	var err error
-	c.gps, err = Pubsub.NewGossipPubSub(c.Host, config.PubSub_ConsensusChannel)
+	consensus.gossipnode, err = Pubsub.NewGossipPubSub(consensus.Host, config.PubSub_ConsensusChannel)
 	if err != nil {
 		return fmt.Errorf("failed to create pubsub: %v", err)
 	}
@@ -51,74 +51,53 @@ func (c *Consensus) Start() error {
 	allowedPeers := make([]peer.ID, 0, MaxMainPeers+MaxBackupPeers+1)
 
 	// Add the creator (host) to the allowed list
-	allowedPeers = append(allowedPeers, c.Host.ID())
+	allowedPeers = append(allowedPeers, consensus.Host.ID())
 
 	// Add main peers to the allowed list
-	allowedPeers = append(allowedPeers, c.PeerList.MainPeers...)
+	allowedPeers = append(allowedPeers, consensus.PeerList.MainPeers...)
 
 	// Add backup peers to the allowed list
-	allowedPeers = append(allowedPeers, c.PeerList.BackupPeers...)
+	allowedPeers = append(allowedPeers, consensus.PeerList.BackupPeers...)
 
 	log.Printf("Creating pubsub channel with %d allowed peers (1 creator + %d main + %d backup)",
-		len(allowedPeers), len(c.PeerList.MainPeers), len(c.PeerList.BackupPeers))
+		len(allowedPeers), len(consensus.PeerList.MainPeers), len(consensus.PeerList.BackupPeers))
 
-	if err := c.gps.CreateChannel(config.PubSub_ConsensusChannel, true, allowedPeers); err != nil {
+	if err := consensus.gossipnode.CreateChannel(config.PubSub_ConsensusChannel, true, allowedPeers); err != nil {
 		return fmt.Errorf("failed to create pubsub channel: %v", err)
 	}
 
 	log.Printf("Successfully created pubsub channel: %s", config.PubSub_ConsensusChannel)
 
 	// After creating the channel, ask peers to subscribe to the channel
-	if err := c.RequestSubscriptionPermission(); err != nil {
+	if err := consensus.RequestSubscriptionPermission(); err != nil {
 		return fmt.Errorf("failed to request subscription permission: %v", err)
 	}
 
 	// Verify that nodes are actually subscribed
-	if err := c.VerifySubscriptions(); err != nil {
+	if err := consensus.VerifySubscriptions(); err != nil {
 		return fmt.Errorf("subscription verification failed: %w", err)
 	}
 
 	return nil
 }
 
-func (c *Consensus) AddPeersToChannel() {
-	if c.gps == nil {
-		fmt.Printf("GossipPubSub not initialized, cannot add peers to channel\n")
-		return
-	}
-
-	// Add main peers
-	for _, peerID := range c.PeerList.MainPeers {
-		if err := c.gps.AddPeerToChannel(config.PubSub_ConsensusChannel, peerID); err != nil {
-			fmt.Printf("Failed to add main peer %s to pubsub channel: %v\n", peerID, err)
-		}
-	}
-
-	// Add backup peers
-	for _, peerID := range c.PeerList.BackupPeers {
-		if err := c.gps.AddPeerToChannel(config.PubSub_ConsensusChannel, peerID); err != nil {
-			fmt.Printf("Failed to add backup peer %s to pubsub channel: %v\n", peerID, err)
-		}
-	}
-}
-
 // RequestSubscriptionPermission asks all buddy nodes for permission to subscribe to the consensus channel
 // Ensures: 1 creator + 13 subscribers = 14 total nodes
 // Maximum 3 main nodes can fail, use backup nodes as replacements
-func (c *Consensus) RequestSubscriptionPermission() error {
-	if c.gps == nil {
+func (consensus *Consensus) RequestSubscriptionPermission() error {
+	if consensus.gossipnode == nil {
 		return fmt.Errorf("GossipPubSub not initialized")
 	}
 
 	// Validate consensus configuration first
-	if err := ValidateConsensusConfiguration(c); err != nil {
+	if err := ValidateConsensusConfiguration(consensus); err != nil {
 		return fmt.Errorf("invalid consensus configuration: %w", err)
 	}
 
-	log.Printf("Requesting subscription permission from buddy nodes for channel: %s", c.Channel)
+	log.Printf("Requesting subscription permission from buddy nodes for channel: %s", consensus.Channel)
 
 	// Use the AskForSubscription function from Communication.go
-	err := AskForSubscription(c.gps, c.Channel, c)
+	err := AskForSubscription(consensus.gossipnode, consensus.Channel, consensus)
 	if err != nil {
 		return fmt.Errorf("failed to get subscription permission: %w", err)
 	}
@@ -129,15 +108,15 @@ func (c *Consensus) RequestSubscriptionPermission() error {
 
 // VerifySubscriptions checks if nodes are actually subscribed to the pubsub channel
 // This method now uses the new pubsub-based verification system
-func (c *Consensus) VerifySubscriptions() error {
-	if c.gps == nil {
-		return fmt.Errorf("GossipPubSub not initialized")
+func (consensus *Consensus) VerifySubscriptions() error {
+	if consensus.gossipnode == nil {
+		return fmt.Errorf("GossipPubSub not initialized for consensus")
 	}
 
 	log.Printf("Starting subscription verification using pubsub messaging...")
 
 	// Use the new VerifySubscriptions function from Communication.go
-	verifiedPeerIDs, err := VerifySubscriptions(c.gps, c)
+	verifiedPeerIDs, err := VerifySubscriptions(consensus.gossipnode, consensus)
 	if err != nil {
 		return fmt.Errorf("failed to verify subscriptions: %v", err)
 	}

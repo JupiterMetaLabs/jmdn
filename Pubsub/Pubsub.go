@@ -45,7 +45,7 @@ func (gps *GossipPubSub) CreateChannel(channelName string, isPublic bool, allowe
 	// Create allowed peers map
 	allowedMap := make(map[peer.ID]bool)
 	for _, peerID := range allowedPeers {
-		// Convert multiaddr to string
+		// Convert peer ID to string
 		allowedMap[peerID] = true
 	}
 
@@ -63,25 +63,6 @@ func (gps *GossipPubSub) CreateChannel(channelName string, isPublic bool, allowe
 
 	gps.topics[channelName] = true
 	log.Printf("Created channel: %s (public: %v, allowed peers: %d)", channelName, isPublic, len(allowedPeers))
-	return nil
-}
-
-// AddPeerToChannel adds a peer to the allowed list of a channel
-func (gps *GossipPubSub) AddPeerToChannel(channelName string, peerID peer.ID) error {
-	gps.mutex.Lock()
-	defer gps.mutex.Unlock()
-
-	access, exists := gps.channelAccess[channelName]
-	if !exists {
-		return fmt.Errorf("channel %s does not exist", channelName)
-	}
-
-	if gps.Host.ID() != access.Creator {
-		return fmt.Errorf("only channel creator can add peers")
-	}
-
-	access.AllowedPeers[peerID] = true
-	log.Printf("Added peer %s to channel %s", peerID, channelName)
 	return nil
 }
 

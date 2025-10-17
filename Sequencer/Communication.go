@@ -315,8 +315,9 @@ func askPeersForSubscription(gps *Pubsub.GossipPubSub, topic string, peerAddrs [
 }
 
 // ValidateConsensusConfiguration validates that the consensus configuration is correct
-// Ensures: 1 creator + 13 subscribers = 14 total nodes
-// Maximum 3 main nodes can fail, use backup nodes as replacements
+// Architecture: 1 creator + 13 main peers + 3 backup peers = 17 total allowed peers
+// Active consensus: 1 creator + 13 main peers = 14 active participants
+// Backup peers are standby replacements, not active participants
 func ValidateConsensusConfiguration(consensus *Consensus) error {
 	// Check main peers count (should be 13)
 	if len(consensus.PeerList.MainPeers) != MaxMainPeers {
@@ -328,16 +329,25 @@ func ValidateConsensusConfiguration(consensus *Consensus) error {
 		return fmt.Errorf("backup peers count must be exactly %d, got %d", MaxBackupPeers, len(consensus.PeerList.BackupPeers))
 	}
 
-	// Check for duplicate peer IDs between main and backup
+	// Check for duplicate peer IDs within main peers
+	if err := checkForDuplicatePeerIDs(consensus.PeerList.MainPeers); err != nil {
+		return fmt.Errorf("duplicate peer ID found in main peers: %w", err)
+	}
+
+	// Check for duplicate peer IDs within backup peers
+	if err := checkForDuplicatePeerIDs(consensus.PeerList.BackupPeers); err != nil {
+		return fmt.Errorf("duplicate peer ID found in backup peers: %w", err)
+	}
+
+	// Check for duplicate peer IDs between main and backup peers
 	allPeers := make(map[peer.ID]bool)
 
+	// Add main peers to the map
 	for _, peerID := range consensus.PeerList.MainPeers {
-		if allPeers[peerID] {
-			return fmt.Errorf("duplicate peer ID found in main peers: %s", peerID)
-		}
 		allPeers[peerID] = true
 	}
 
+	// Check backup peers against main peers
 	for _, peerID := range consensus.PeerList.BackupPeers {
 		if allPeers[peerID] {
 			return fmt.Errorf("duplicate peer ID found between main and backup peers: %s", peerID)
@@ -352,8 +362,22 @@ func ValidateConsensusConfiguration(consensus *Consensus) error {
 		return fmt.Errorf("total peers count must be exactly %d (13 main + 3 backup), got %d", expectedTotal, totalPeers)
 	}
 
-	log.Printf("Consensus configuration validated: %d main peers, %d backup peers (1 creator + 13 subscribers = 14 total nodes)",
+	log.Printf("Consensus configuration validated: %d main peers, %d backup peers (1 creator + 13 active + 3 standby = 17 total allowed)",
 		len(consensus.PeerList.MainPeers), len(consensus.PeerList.BackupPeers))
+
+	return nil
+}
+
+// checkForDuplicatePeerIDs checks for duplicate peer IDs within a single peer list
+func checkForDuplicatePeerIDs(peerList []peer.ID) error {
+	peerMap := make(map[peer.ID]bool)
+
+	for _, peerID := range peerList {
+		if peerMap[peerID] {
+			return fmt.Errorf("duplicate peer ID found: %s", peerID)
+		}
+		peerMap[peerID] = true
+	}
 
 	return nil
 }

@@ -3,41 +3,15 @@ package MessagePassing
 import (
 	"bufio"
 	"fmt"
-	log "gossipnode/AVC/BuddyNodes/MessagePassing/Log"
-	"gossipnode/config"
+	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/Pubsub"
-	"time"
+	"gossipnode/config"
 
-	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"go.uber.org/zap"
 )
 
-// NewBuddyNode creates a new BuddyNode instance from an existing host
-func NewBuddyNode(h host.Host, buddies *Buddies, responseHandler ResponseHandler, pubsub *Pubsub.GossipPubSub) *BuddyNode {
-	buddy := &BuddyNode{
-		Host:            h,
-		Network:         h.Network(),
-		PeerID:          h.ID(),
-		BuddyNodes:      *buddies,
-		ResponseHandler: responseHandler,
-		PubSub:          pubsub,
-		MetaData: MetaData{
-			Received:  0,
-			Sent:      0,
-			Total:     0,
-			UpdatedAt: time.Now(),
-		},
-	}
 
-	// Set up the stream handler for the buddy nodes message protocol
-	h.SetStreamHandler(config.BuddyNodesMessageProtocol, buddy.HandleBuddyNodesMessageStream)
-
-	log.LogConsensusInfo(fmt.Sprintf("BuddyNode initialized with ID: %s", h.ID()), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewBuddyNode"))
-	log.LogConsensusInfo(fmt.Sprintf("Listening for buddy messages on protocol: %s", config.BuddyNodesMessageProtocol), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewBuddyNode"))
-
-	return buddy
-}
 
 // HandleBuddyNodesMessageStream handles incoming messages on the buddy nodes protocol
 func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
