@@ -332,14 +332,6 @@ func (c *Client) DiscoverAndAddNeighbors(h host.Host, nodeManager interface{}) e
 				continue
 			}
 
-			// Debug: Print signature values
-			fmt.Printf("🔐 Debug - Neighbor signature for %s:\n", peerID)
-			fmt.Printf("  V: %s\n", neighbor.V)
-			fmt.Printf("  R: %s\n", neighbor.R)
-			fmt.Printf("  S: %s\n", neighbor.S)
-			fmt.Printf("  PeerId: %s\n", neighbor.PeerId)
-			fmt.Printf("  NeighborId: %s\n", neighbor.NeighborId)
-
 			err = c.AddNeighbor(neighbor)
 			if err != nil {
 				fmt.Printf("⚠️  Warning: Failed to report neighbor %s: %v\n", peerID, err)
