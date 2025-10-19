@@ -27,6 +27,7 @@ type StreamCache struct {
 	ttl         time.Duration // Time-to-live for idle streams
 	mutex       sync.RWMutex
 	host        host.Host
+	parallelCleanUpRoutine bool
 }
 
 
@@ -34,6 +35,7 @@ type StreamCache struct {
 func NewStreamCacheBuilder() *StreamCache {
 	return &StreamCache{
 		streams: make(map[peer.ID]*StreamEntry),
+		parallelCleanUpRoutine: false,
 	}
 }
 
@@ -211,4 +213,21 @@ func (sc *StreamCache) GetStats() map[string]interface{} {
 		"ttl_seconds":    sc.ttl.Seconds(),
 		"total_accesses": totalAccesses,
 	}
+}
+
+// <-- Singleton process - make sure it is only called once --> if called more than once, just continue
+func (sc *StreamCache) ParallelCleanUpRoutine(){
+	if sc.parallelCleanUpRoutine {
+		return
+	}
+	go func() {
+		sc.parallelCleanUpRoutine = true
+		defer func() {
+			sc.parallelCleanUpRoutine = false
+		}()
+		for {
+			sc.CleanupExpiredStreams()
+			time.Sleep(5 * time.Second)
+		}
+	}()
 }

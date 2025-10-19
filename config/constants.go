@@ -37,6 +37,7 @@ const (
 const (
 	Delimiter               = 0x1E
 	PubSub_ConsensusChannel = "pubsub-consensus"
+	Pubsub_MessageBuffer    = "pubsub-buffer"
 )
 
 const (
@@ -123,7 +124,6 @@ type PeerInfo struct {
 	LastSeen     int64
 	Capabilities []string // What the peer can do (e.g., "relay", "storage", etc.)
 }
-
 
 // Database configuration
 var (

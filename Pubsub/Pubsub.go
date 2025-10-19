@@ -124,7 +124,7 @@ func (gps *GossipPubSub) Subscribe(topic string, handler func(*GossipMessage)) e
 }
 
 // Publish publishes a message to a topic
-func (gps *GossipPubSub) Publish(topic string, data interface{}, metadata map[string]interface{}) error {
+func (gps *GossipPubSub) Publish(topic string, data string, metadata map[string]string) error {
 	// Create message
 	message := &GossipMessage{
 		ID:        fmt.Sprintf("%s-%d", gps.Host.ID().String(), gps.messageID),
@@ -192,6 +192,7 @@ func (gps *GossipPubSub) handleGossipStream(s network.Stream) {
 	gossipMsg.TTL--
 
 	log.Printf("Received gossip message from %s on topic %s: %s", gossipMsg.Sender, gossipMsg.Topic, gossipMsg.ID)
+	// <-- Write the logic to check the processing of the message based on the message type --> TODO
 
 	// Call handler if we're subscribed to this topic
 	gps.mutex.RLock()

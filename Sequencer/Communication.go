@@ -153,90 +153,110 @@ func AskForSubscription(gps *Pubsub.GossipPubSub, topic string, consensus *Conse
 	return nil
 }
 
-// VerifySubscriptions sends Type_VerifySubscription to all peers and collects their responses
+// VerifySubscriptions publishes a verification message to the pubsub channel and collects ACK responses
+// All subscribed nodes should reply with ACK_TRUE status and their PeerID
 func VerifySubscriptions(gps *Pubsub.GossipPubSub, consensus *Consensus) (map[peer.ID]string, error) {
-	responseHandler := NewResponseHandler()
-
-	// Get all peers (main + backup)
-	allPeers := make([]peer.ID, 0, len(consensus.PeerList.MainPeers)+len(consensus.PeerList.BackupPeers))
-	allPeers = append(allPeers, consensus.PeerList.MainPeers...)
-	allPeers = append(allPeers, consensus.PeerList.BackupPeers...)
-
-	if len(allPeers) == 0 {
-		return nil, fmt.Errorf("no peers available for verification")
-	}
-
-	log.Printf("Verifying subscriptions with %d peers", len(allPeers))
-
-	accepted := make(map[string]bool)
-	var wg sync.WaitGroup
+	// Create a channel to collect verification responses
+	verificationResponses := make(map[peer.ID]string)
 	var mu sync.Mutex
 
-	// Create a BuddyNode from the GossipPubSub's host with response handler
-	buddy := MessagePassing.NewBuddyNode(gps.Host, &MessagePassing.Buddies{}, responseHandler, gps)
+	// Expected number of responses (13 main peers)
+	expectedResponses := len(consensus.PeerList.MainPeers)
+	responseCount := 0
+	timeout := 10 * time.Second
 
-	for _, peerID := range allPeers {
-		// Register peer for response tracking
-		responseChan := responseHandler.RegisterPeer(peerID)
+	log.Printf("Starting pubsub-based subscription verification for %d main peers", expectedResponses)
 
-		wg.Add(1)
-		go func(peerID peer.ID) {
-			defer wg.Done()
-			defer responseHandler.UnregisterPeer(peerID)
+	// Subscribe to the consensus channel to receive verification responses
+	handler := func(msg *Pubsub.GossipMessage) {
+		// Parse the message data to extract ACK information
+		if msgData, ok := msg.Data.(map[string]interface{}); ok {
+			// Check if this is a verification response with all required fields
+			if status, hasStatus := msgData["status"]; hasStatus && status == config.Type_ACK_True {
+				if peerIDStr, hasPeerID := msgData["peer_id"]; hasPeerID {
+					if stage, hasStage := msgData["stage"]; hasStage && stage == config.Type_VerifySubscription {
+						// Parse peer ID
+						peerID, err := peer.Decode(peerIDStr.(string))
+						if err != nil {
+							log.Printf("Failed to decode peer ID: %v", err)
+							return
+						}
 
-			// Create context with timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+						// Check if this peer is in our main peers list
+						isMainPeer := false
+						for _, mainPeer := range consensus.PeerList.MainPeers {
+							if mainPeer == peerID {
+								isMainPeer = true
+								break
+							}
+						}
 
-			// Send verification request
-			if err := buddy.SendMessageToPeer(peerID, config.Type_VerifySubscription); err != nil {
-				log.Printf("Failed to send verification request to %s: %v", peerID, err)
-				mu.Lock()
-				accepted[peerID.String()] = false
-				mu.Unlock()
-				return
-			}
-
-			log.Printf("Sent verification request to peer: %s, waiting for ACK...", peerID)
-
-			// Wait for response with timeout
-			select {
-			case response := <-responseChan:
-				mu.Lock()
-				accepted[peerID.String()] = response
-				mu.Unlock()
-
-				if response {
-					log.Printf("Peer %s verified subscription", peerID)
-				} else {
-					log.Printf("Peer %s failed subscription verification", peerID)
+						if isMainPeer {
+							mu.Lock()
+							verificationResponses[peerID] = peerIDStr.(string)
+							responseCount++
+							log.Printf("Received verification ACK from main peer: %s", peerID)
+							mu.Unlock()
+						} else {
+							log.Printf("Received verification ACK from non-main peer: %s (ignoring)", peerID)
+						}
+					}
 				}
-			case <-ctx.Done():
-				log.Printf("Timeout waiting for verification response from peer: %s", peerID)
-				mu.Lock()
-				accepted[peerID.String()] = false
-				mu.Unlock()
 			}
-		}(peerID)
-	}
-
-	// Wait for all goroutines to complete
-	wg.Wait()
-
-	// Get verified PeerIDs
-	verifiedPeerIDs := responseHandler.GetVerifiedPeerIDs()
-
-	// Count accepted peers
-	acceptedCount := 0
-	for _, isAccepted := range accepted {
-		if isAccepted {
-			acceptedCount++
 		}
 	}
 
-	log.Printf("Subscription verification completed: %d peers verified out of %d", acceptedCount, len(allPeers))
+	// Subscribe to the consensus channel
+	if err := gps.Subscribe(consensus.Channel, handler); err != nil {
+		return nil, fmt.Errorf("failed to subscribe to consensus channel for verification: %v", err)
+	}
 
-	return verifiedPeerIDs, nil
+	// Create verification message
+	verificationMessage := MessagePassing.Message{
+		"type":    config.Type_VerifySubscription,
+		"message": "Please verify your subscription to the consensus channel",
+		"sender":  gps.Host.ID().String(),
+	}
+	var message string = "Please verify your subscription to the consensus channel"
+	
+	verificationMessage = MessagePassing.NewACKBuilder().set
+
+	// Publish verification request to the pubsub channel
+	if err := gps.Publish(consensus.Channel, verificationMessage, map[string]interface{}{}); err != nil {
+		return nil, fmt.Errorf("failed to publish verification message: %v", err)
+	}
+
+	log.Printf("Published verification request to pubsub channel: %s", consensus.Channel)
+
+	// Wait for responses with timeout
+	startTime := time.Now()
+	for time.Since(startTime) < timeout {
+		mu.Lock()
+		currentCount := responseCount
+		mu.Unlock()
+
+		if currentCount >= expectedResponses {
+			log.Printf("Received all expected verification responses: %d/%d", currentCount, expectedResponses)
+			break
+		}
+
+		// Check every 100ms
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Final count
+	mu.Lock()
+	finalCount := responseCount
+	mu.Unlock()
+
+	log.Printf("Subscription verification completed: %d peers verified out of %d expected", finalCount, expectedResponses)
+
+	// Unsubscribe from the channel
+	if err := gps.Unsubscribe(consensus.Channel); err != nil {
+		log.Printf("Warning: failed to unsubscribe from consensus channel: %v", err)
+	}
+
+	return verificationResponses, nil
 }
 
 // askPeersForSubscription asks a list of peers for subscription
@@ -253,7 +273,7 @@ func askPeersForSubscription(gps *Pubsub.GossipPubSub, topic string, peerAddrs [
 	log.Printf("Asking %d %s peers for subscription to topic: %s", len(peerAddrs), peerType, topic)
 
 	// Create a BuddyNode from the GossipPubSub's host with response handler
-	buddy := MessagePassing.NewBuddyNode(gps.Host, &MessagePassing.Buddies{}, responseHandler, gps)
+	buddy := MessagePassing.NewBuddyNode(gps.Host, &MessagePassing.Buddies{Buddies_Nodes: peerAddrs}, responseHandler, gps)
 
 	for _, peerID := range peerAddrs {
 		// Register peer for response tracking

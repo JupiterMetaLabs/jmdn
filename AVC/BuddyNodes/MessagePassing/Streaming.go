@@ -68,10 +68,12 @@ func StartStreamHandlers(h host.Host, buddies *Buddies, responseHandler Response
 }
 
 func NewListenerNode(h host.Host, responseHandler ResponseHandler) *BuddyNode {
-	streamCache, err := NewStreamCacheBuilder().SetHost(h).SetMaxStreams(20).SetTTL(5*time.Minute).SetAccessOrder().Build()
+	streamCache, err := NewStreamCacheBuilder().SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
 	if err != nil {
 		panic(fmt.Sprintf("failed to create stream cache: %v", err))
 	}
+	streamCache.ParallelCleanUpRoutine()
+
 	listener := &BuddyNode{
 		Host:            h,
 		Network:         h.Network(),
@@ -97,10 +99,11 @@ func NewListenerNode(h host.Host, responseHandler ResponseHandler) *BuddyNode {
 
 // NewBuddyNode creates a new BuddyNode instance from an existing host
 func NewBuddyNode(h host.Host, buddies *Buddies, responseHandler ResponseHandler, pubsub *Pubsub.GossipPubSub) *BuddyNode {
-	streamCache, err := NewStreamCacheBuilder().SetHost(h).SetMaxStreams(20).SetTTL(5*time.Minute).SetAccessOrder().Build()
+	streamCache, err := NewStreamCacheBuilder().SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
 	if err != nil {
 		panic(fmt.Sprintf("failed to create stream cache: %v", err))
 	}
+	streamCache.ParallelCleanUpRoutine()
 
 	buddy := &BuddyNode{
 		Host:            h,
@@ -158,30 +161,11 @@ func (buddy *BuddyNode) SendMessageToPeer(peerID peer.ID, message string) error 
 	return nil
 }
 
-// CleanupStreams performs periodic cleanup of expired streams
-func (buddy *BuddyNode) CleanupStreams() {
-	if buddy.StreamCache != nil {
-		buddy.StreamCache.CleanupExpiredStreams()
-	}
-}
-
 // CloseAllStreams closes all streams in the cache (for cleanup)
 func (buddy *BuddyNode) CloseAllStreams() {
 	if buddy.StreamCache != nil {
 		buddy.StreamCache.CloseAll()
 	}
-}
-
-// StartStreamCleanup starts a background goroutine to periodically clean up expired streams
-func (buddy *BuddyNode) StartStreamCleanup(interval time.Duration) {
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			buddy.CleanupStreams()
-		}
-	}()
 }
 
 // GetStreamCacheStats returns statistics about the stream cache

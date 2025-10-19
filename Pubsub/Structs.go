@@ -11,11 +11,11 @@ import (
 type GossipMessage struct {
 	ID        string                 `json:"id"`                 // Unique message identifier
 	Topic     string                 `json:"topic"`              // Channel/topic name
-	Data      interface{}            `json:"data"`               // Message payload
+	Data      string                 `json:"data"`               // Message payload
 	Sender    peer.ID                `json:"sender"`             // Sender's peer ID
 	Timestamp int64                  `json:"timestamp"`          // Unix timestamp
 	TTL       int                    `json:"ttl"`                // Time to live (hop count)
-	Metadata  map[string]interface{} `json:"metadata,omitempty"` // Additional metadata
+	Metadata  map[string]string `json:"metadata,omitempty"` // Additional metadata
 }
 
 // ChannelAccess represents access control for a channel
