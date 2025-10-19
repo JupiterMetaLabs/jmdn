@@ -33,13 +33,6 @@ type BuddyNode struct {
 	StreamCache     *StreamCache         // LRU cache of reusable streams with TTL
 }
 
-type Message struct {
-	Sender    peer.ID
-	Message   string // json string of the json message - it could be a vote, a block, a transaction, etc.
-	Timestamp int64
-	ACK       *ACK_Message
-}
-
 type MetaData struct {
 	Received  uint32
 	Sent      uint32
@@ -51,17 +44,3 @@ type Buddies struct {
 	Buddies_Nodes []peer.ID
 }
 
-type ACK interface {
-	True_ACK_Message(PeerID peer.ID, Stage string) *ACK_Message
-	False_ACK_Message(PeerID peer.ID, Stage string) *ACK_Message
-}
-
-type Interface_Message interface {
-	DeferenceMessage(msg string) *Message
-}
-
-type ACK_Message struct {
-	Status string `json:"status"`
-	PeerID string `json:"peer_id"`
-	Stage  string `json:"stage"`
-}

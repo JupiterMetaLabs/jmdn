@@ -11,7 +11,7 @@ import (
 type GossipMessage struct {
 	ID        string                 `json:"id"`                 // Unique message identifier
 	Topic     string                 `json:"topic"`              // Channel/topic name
-	Data      string                 `json:"data"`               // Message payload
+	Data      *Message                 `json:"data"`               // Message payload
 	Sender    peer.ID                `json:"sender"`             // Sender's peer ID
 	Timestamp int64                  `json:"timestamp"`          // Unix timestamp
 	TTL       int                    `json:"ttl"`                // Time to live (hop count)
@@ -39,3 +39,16 @@ type GossipPubSub struct {
 	messageID     uint64                          // Counter for message IDs
 	Protocol      protocol.ID                     // Protocol ID
 }
+
+type Message struct {
+	Sender    peer.ID
+	Message   string // json string of the json message - it could be a vote, a block, a transaction, etc.
+	Timestamp int64
+	ACK       *ACK_Message
+}
+type ACK_Message struct {
+	Status string `json:"status"`
+	PeerID string `json:"peer_id"`
+	Stage  string `json:"stage"`
+}
+

@@ -169,38 +169,34 @@ func VerifySubscriptions(gps *Pubsub.GossipPubSub, consensus *Consensus) (map[pe
 
 	// Subscribe to the consensus channel to receive verification responses
 	handler := func(msg *Pubsub.GossipMessage) {
-		// Parse the message data to extract ACK information
-		if msgData, ok := msg.Data.(map[string]interface{}); ok {
+		// Check if message has ACK data
+		if msg.Data != nil && msg.Data.ACK != nil {
 			// Check if this is a verification response with all required fields
-			if status, hasStatus := msgData["status"]; hasStatus && status == config.Type_ACK_True {
-				if peerIDStr, hasPeerID := msgData["peer_id"]; hasPeerID {
-					if stage, hasStage := msgData["stage"]; hasStage && stage == config.Type_VerifySubscription {
-						// Parse peer ID
-						peerID, err := peer.Decode(peerIDStr.(string))
-						if err != nil {
-							log.Printf("Failed to decode peer ID: %v", err)
-							return
-						}
+			if msg.Data.ACK.Status == config.Type_ACK_True && msg.Data.ACK.Stage == config.Type_VerifySubscription {
+				// Parse peer ID
+				peerID, err := peer.Decode(msg.Data.ACK.PeerID)
+				if err != nil {
+					log.Printf("Failed to decode peer ID: %v", err)
+					return
+				}
 
-						// Check if this peer is in our main peers list
-						isMainPeer := false
-						for _, mainPeer := range consensus.PeerList.MainPeers {
-							if mainPeer == peerID {
-								isMainPeer = true
-								break
-							}
-						}
-
-						if isMainPeer {
-							mu.Lock()
-							verificationResponses[peerID] = peerIDStr.(string)
-							responseCount++
-							log.Printf("Received verification ACK from main peer: %s", peerID)
-							mu.Unlock()
-						} else {
-							log.Printf("Received verification ACK from non-main peer: %s (ignoring)", peerID)
-						}
+				// Check if this peer is in our main peers list
+				isMainPeer := false
+				for _, mainPeer := range consensus.PeerList.MainPeers {
+					if mainPeer == peerID {
+						isMainPeer = true
+						break
 					}
+				}
+
+				if isMainPeer {
+					mu.Lock()
+					verificationResponses[peerID] = msg.Data.ACK.PeerID
+					responseCount++
+					log.Printf("Received verification ACK from main peer: %s", peerID)
+					mu.Unlock()
+				} else {
+					log.Printf("Received verification ACK from non-main peer: %s (ignoring)", peerID)
 				}
 			}
 		}
@@ -211,18 +207,13 @@ func VerifySubscriptions(gps *Pubsub.GossipPubSub, consensus *Consensus) (map[pe
 		return nil, fmt.Errorf("failed to subscribe to consensus channel for verification: %v", err)
 	}
 
-	// Create verification message
-	verificationMessage := MessagePassing.Message{
-		"type":    config.Type_VerifySubscription,
-		"message": "Please verify your subscription to the consensus channel",
-		"sender":  gps.Host.ID().String(),
-	}
-	var message string = "Please verify your subscription to the consensus channel"
-	
-	verificationMessage = MessagePassing.NewACKBuilder().set
 
-	// Publish verification request to the pubsub channel
-	if err := gps.Publish(consensus.Channel, verificationMessage, map[string]interface{}{}); err != nil {
+	var message string = "Please verify your subscription to the consensus channel"
+
+	ACK_MESSAGE := MessagePassing.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_VerifySubscription).GetACK_Message()
+
+	verificationMessage := MessagePassing.NewMessageBuilder().SetMessage(message).SetSender(gps.Host.ID()).SetTimestamp(time.Now().Unix()).SetACK(ACK_MESSAGE).GetMessage()
+	if err := gps.Publish(consensus.Channel, verificationMessage, map[string]string{}); err != nil {
 		return nil, fmt.Errorf("failed to publish verification message: %v", err)
 	}
 

@@ -39,7 +39,7 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 		zap.String("message", msg),
 		zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 
-	switch message.ACK.Stage {
+	switch message.Message.ACK.Stage {
 	case config.Type_StartPubSub:
 		// If node is okay to listen for subscriptions, then return ACK True
 		if PubSub_BuddyNode != nil && PubSub_BuddyNode.Host != nil && PubSub_BuddyNode.Network != nil {
@@ -169,8 +169,8 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 	case config.Type_SubscriptionResponse:
 		// Try to parse as JSON ACK_Message
 		message := NewMessageProcessor().DeferenceMessage(msg)
-		if message.ACK != nil {
-			switch message.ACK.Status {
+		if message.Message.ACK != nil {
+			switch message.Message.ACK.Status {
 			case config.Type_ACK_True:
 				if PubSub_BuddyNode.ResponseHandler != nil {
 					PubSub_BuddyNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), true)
@@ -184,8 +184,8 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 					PubSub_BuddyNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), false)
 				}
 			default:
-				log.LogConsensusError(fmt.Sprintf("Unknown status in ACK_Message: %s", message.ACK.Status), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
-				fmt.Printf("Unknown status in ACK_Message: %s", message.ACK.Status)
+				log.LogConsensusError(fmt.Sprintf("Unknown status in ACK_Message: %s", message.Message.ACK.Status), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
+				fmt.Printf("Unknown status in ACK_Message: %s", message.Message.ACK.Status)
 			}
 		} else {
 			log.LogConsensusError(fmt.Sprintf("Unknown message type received from %s: %s", s.Conn().RemotePeer(), msg), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
@@ -206,7 +206,7 @@ func (buddy *BuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
 		return
 	case config.Type_Publish:
 		// handle the incoming message and add it to the CRDT Engine
-		if err := SubmitMessageToCRDT(message.Message, PubSub_BuddyNode); err != nil {
+		if err := SubmitMessageToCRDT(message.Message.Message, PubSub_BuddyNode); err != nil {
 			log.LogConsensusError(fmt.Sprintf("Failed to add vote to local CRDT Engine: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 			fmt.Printf("Failed to add vote to local CRDT Engine: %v", err)
 		}

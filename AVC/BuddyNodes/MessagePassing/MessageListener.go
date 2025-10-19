@@ -27,11 +27,11 @@ func (Listener *BuddyNode) HandleSubmitMessageStream(s network.Stream) {
 
 	log.LogMessagesInfo(fmt.Sprintf("Received submit message from %s: %s", s.Conn().RemotePeer(), msg), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 
-	switch message.Message {
+	switch message.Message.Message {
 	case config.Type_SubmitVote:
 		log.LogMessagesInfo(fmt.Sprintf("Received submit vote from %s: %s", s.Conn().RemotePeer(), message.Message), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 		// First Add to local CRDT Engine
-		if err := SubmitMessage(message.Message, PubSub_BuddyNode.PubSub, ForListner); err != nil {
+		if err := SubmitMessage(message.GetMessage(), PubSub_BuddyNode.PubSub, ForListner); err != nil {
 			log.LogMessagesError(fmt.Sprintf("Failed to add vote to local CRDT Engine: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 		}
 	default:

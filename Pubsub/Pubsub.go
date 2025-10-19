@@ -124,7 +124,7 @@ func (gps *GossipPubSub) Subscribe(topic string, handler func(*GossipMessage)) e
 }
 
 // Publish publishes a message to a topic
-func (gps *GossipPubSub) Publish(topic string, data string, metadata map[string]string) error {
+func (gps *GossipPubSub) Publish(topic string, data *Message, metadata map[string]string) error {
 	// Create message
 	message := &GossipMessage{
 		ID:        fmt.Sprintf("%s-%d", gps.Host.ID().String(), gps.messageID),

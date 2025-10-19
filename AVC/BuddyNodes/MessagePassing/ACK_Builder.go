@@ -2,6 +2,7 @@ package MessagePassing
 
 import (
 	"encoding/json"
+	"gossipnode/Pubsub"
 	"gossipnode/config"
 	"strings"
 
@@ -9,77 +10,108 @@ import (
 )
 
 
+type ACK_MESSAGE_REQUEST struct {
+	ACK_Message *Pubsub.ACK_Message
+}
 // < -- ACK Builder Pattern -- >
 // Builder constructor
-func NewACKBuilder() *ACK_Message {
-	return &ACK_Message{}
+func NewACKBuilder() *ACK_MESSAGE_REQUEST {
+	return &ACK_MESSAGE_REQUEST{
+		ACK_Message: &Pubsub.ACK_Message{},
+	}
 }
 
 // Chainable builder methods
-func (a *ACK_Message) setTrueStatus() *ACK_Message {
-	a.Status = config.Type_ACK_True
-	return a
+func (ack *ACK_MESSAGE_REQUEST) setTrueStatus() *ACK_MESSAGE_REQUEST {
+	ack.ACK_Message.Status = config.Type_ACK_True
+	return ack
 }
 
-func (a *ACK_Message) setFalseStatus() *ACK_Message {
-	a.Status = config.Type_ACK_False
-	return a
+func (ack *ACK_MESSAGE_REQUEST) setFalseStatus() *ACK_MESSAGE_REQUEST {
+	ack.ACK_Message.Status = config.Type_ACK_False
+	return ack
 }
 
-func (a *ACK_Message) setPeerID(peerID peer.ID) *ACK_Message {
-	a.PeerID = peerID.String()
-	return a
+func (ack *ACK_MESSAGE_REQUEST) setPeerID(peerID peer.ID) *ACK_MESSAGE_REQUEST {
+	ack.ACK_Message.PeerID = peerID.String()
+	return ack
 }
 
-func (a *ACK_Message) setStage(stage string) *ACK_Message {
-	a.Stage = stage
-	return a
+func (ack *ACK_MESSAGE_REQUEST) setStage(stage string) *ACK_MESSAGE_REQUEST {
+	ack.ACK_Message.Stage = stage
+	return ack
 }
 
-func (a *ACK_Message) Marshal() ([]byte, error) {
-	return json.Marshal(a)
+func (ack *ACK_MESSAGE_REQUEST) Marshal() ([]byte, error) {
+	return json.Marshal(ack)
 } 
 
-func (a *ACK_Message) ToString() string {
-	data, err := a.Marshal()
+func (ack *ACK_MESSAGE_REQUEST) ToString() string {
+	data, err := ack.Marshal()
 	if err != nil {
 		return ""
 	}
 	return string(data)
 }
 
+func (ack *ACK_MESSAGE_REQUEST) GetACK_Message() *Pubsub.ACK_Message {
+	return ack.ACK_Message
+}
+
 // Trying to acheive the builder pattern for the ACK message
-func (ack *ACK_Message) True_ACK_Message(peerID peer.ID, Stage string) *ACK_Message {
+func (ack *ACK_MESSAGE_REQUEST) True_ACK_Message(peerID peer.ID, Stage string) *ACK_MESSAGE_REQUEST {
 	return NewACKBuilder().setTrueStatus().setPeerID(peerID).setStage(Stage)
 }
 
-func (ack *ACK_Message) False_ACK_Message(peerID peer.ID, Stage string) *ACK_Message {
+func (ack *ACK_MESSAGE_REQUEST) False_ACK_Message(peerID peer.ID, Stage string) *ACK_MESSAGE_REQUEST {
 	return NewACKBuilder().setFalseStatus().setPeerID(peerID).setStage(Stage)
 }
 
+type PUBSUB_Message struct{
+	Message *Pubsub.Message
+}
+
 // < -- Message Builder Pattern -- >
-func NewMessageBuilder() *Message {
-	return &Message{}
+func NewMessageBuilder() *PUBSUB_Message {
+	return &PUBSUB_Message{
+		Message: &Pubsub.Message{},
+	}
 }
 
-func (msg *Message) SetSender(sender peer.ID) *Message {
-	msg.Sender = sender
+func (msg *PUBSUB_Message) SetSender(sender peer.ID) *PUBSUB_Message {
+	msg.Message.Sender = sender
 	return msg
 }
 
-func (msg *Message) SetMessage(message string) *Message {
-	msg.Message = message
+func (msg *PUBSUB_Message) SetMessage(message string) *PUBSUB_Message {
+	msg.Message.Message = message
 	return msg
 }
 
-func (msg *Message) SetTimestamp(timestamp int64) *Message {
-	msg.Timestamp = timestamp
+func (msg *PUBSUB_Message) SetTimestamp(timestamp int64) *PUBSUB_Message {
+	msg.Message.Timestamp = timestamp
 	return msg
 }
 
-func (msg *Message) SetACK(ack *ACK_Message) *Message {
-	msg.ACK = ack
+func (msg *PUBSUB_Message) SetACK(ack *Pubsub.ACK_Message) *PUBSUB_Message {
+	msg.Message.ACK = ack
 	return msg
+}
+
+func (msg *PUBSUB_Message) GetMessage() *Pubsub.Message {
+	return msg.Message
+}
+
+func (msg *PUBSUB_Message) Marshal() ([]byte, error) {
+	return json.Marshal(msg)
+}
+
+func (msg *PUBSUB_Message) ToString() string {
+	data, err := msg.Marshal()
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // MessageProcessor implements Interface_Message
@@ -90,9 +122,9 @@ func NewMessageProcessor() *MessageProcessor {
 }
 
 // DeferenceMessage implements the Interface_Message interface
-func (mp *MessageProcessor) DeferenceMessage(msg string) *Message {
+func (mp *MessageProcessor) DeferenceMessage(msg string) *PUBSUB_Message {
 	msg = strings.TrimSuffix(msg, string(rune(config.Delimiter)))
-	var message *Message
+	var message *PUBSUB_Message
 	if err := json.Unmarshal([]byte(msg), &message); err != nil {
 		return nil
 	}

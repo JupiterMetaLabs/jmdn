@@ -47,9 +47,9 @@ func (buddy *BuddyNode) GetMetadata() MetaData {
 	}
 }
 
-func SubmitMessage(msg string, PubSub *Pubsub.GossipPubSub, ListenerNode *BuddyNode) error {
+func SubmitMessage(msg *Pubsub.Message, PubSub *Pubsub.GossipPubSub, ListenerNode *BuddyNode) error {
 	OP := &Types.OP{}
-	if err := json.Unmarshal([]byte(msg), OP); err != nil {
+	if err := json.Unmarshal([]byte(msg.Message), OP); err != nil {
 		return fmt.Errorf("failed to unmarshal message: %v", err)
 	}
 	// Adding data to the CRDT First - Before PubSub
