@@ -3,8 +3,8 @@ package MessagePassing
 import (
 	"context"
 	"fmt"
+	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/config"
-	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -12,90 +12,86 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// StreamEntry represents a cached stream with metadata
-type StreamEntry struct {
-	stream      network.Stream
-	lastUsed    time.Time
-	accessCount int64
-}
-
-// StreamCache manages reusable streams using LRU with TTL
-type StreamCache struct {
-	streams     map[peer.ID]*StreamEntry
-	accessOrder []peer.ID     // LRU order (most recent at end)
-	maxStreams  int           // Maximum number of streams to cache
-	ttl         time.Duration // Time-to-live for idle streams
-	mutex       sync.RWMutex
-	host        host.Host
-	parallelCleanUpRoutine bool
-}
-
-
 // <-- Use Builder Pattern Here -->
-func NewStreamCacheBuilder() *StreamCache {
-	return &StreamCache{
-		streams: make(map[peer.ID]*StreamEntry),
-		parallelCleanUpRoutine: false,
+type StructStreamCache struct{
+	StreamCache *Structs.StreamCache
+}
+
+func NewStreamCacheBuilder(streamcache *Structs.StreamCache) *StructStreamCache {
+	if streamcache == nil {
+		return &StructStreamCache{
+			StreamCache: &Structs.StreamCache{
+				Streams: make(map[peer.ID]*Structs.StreamEntry),
+				ParallelCleanUpRoutine: false,
+			},
+		}
+	}
+	return &StructStreamCache{
+		StreamCache: streamcache,
 	}
 }
 
-func (sc *StreamCache) SetAccessOrder() *StreamCache {
-	sc.accessOrder = make([]peer.ID, 0, sc.maxStreams)
+func (sc *StructStreamCache) SetAccessOrder() *StructStreamCache {
+	sc.StreamCache.AccessOrder = make([]peer.ID, 0, sc.StreamCache.MaxStreams)
 	return sc
 }
 
-func (sc *StreamCache) SetTTL(ttl time.Duration) *StreamCache {
-	sc.ttl = ttl
+func (sc *StructStreamCache) SetTTL(ttl time.Duration) *StructStreamCache {
+	sc.StreamCache.TTL = ttl
 	return sc
 }
 
-func (sc *StreamCache) SetHost(host host.Host) *StreamCache {
-	sc.host = host
+func (sc *StructStreamCache) SetHost(host host.Host) *StructStreamCache {
+	sc.StreamCache.Host = host
 	return sc
 }
 
-func (sc *StreamCache) SetMaxStreams(maxstreams int) *StreamCache {
-	sc.maxStreams = maxstreams
+func (sc *StructStreamCache) SetMaxStreams(maxstreams int) *StructStreamCache {
+	sc.StreamCache.MaxStreams = maxstreams
 	return sc
 }
 
-func (sc *StreamCache) Build() (*StreamCache, error) {
-	if sc.host == nil {
+func (sc *StructStreamCache) GetStreamCache() *Structs.StreamCache {
+	return sc.StreamCache
+}
+
+func (sc *StructStreamCache) Build() (*StructStreamCache, error) {
+	if sc.StreamCache.Host == nil {
 		return nil, fmt.Errorf("host is not set")
 	}
-	if sc.maxStreams == 0 {
+	if sc.StreamCache.MaxStreams == 0 {
 		return nil, fmt.Errorf("max streams is not set")
 	}
-	if sc.ttl == 0 {
+	if sc.StreamCache.TTL == 0 {
 		return nil, fmt.Errorf("ttl is not set")
 	}
-	if sc.accessOrder == nil {
+	if sc.StreamCache.AccessOrder == nil {
 		return nil, fmt.Errorf("access order is not set")
 	}
 	return sc, nil
 }
 
 // GetStream gets or creates a stream to the specified peer
-func (sc *StreamCache) GetStream(peerID peer.ID) (network.Stream, error) {
-	sc.mutex.Lock()
-	defer sc.mutex.Unlock()
+func (sc *StructStreamCache) GetStream(peerID peer.ID) (network.Stream, error) {
+	sc.StreamCache.Mutex.Lock()
+	defer sc.StreamCache.Mutex.Unlock()
 
 	// Check if we already have a valid stream
-	if entry, exists := sc.streams[peerID]; exists {
+	if entry, exists := sc.StreamCache.Streams[peerID]; exists {
 		// Check if stream is still valid
-		if entry.stream.Conn().Stat().Direction != network.DirUnknown {
+		if entry.Stream.Conn().Stat().Direction != network.DirUnknown {
 			// Update access time and move to end of LRU list
-			entry.lastUsed = time.Now()
-			entry.accessCount++
+			entry.LastUsed = time.Now()
+			entry.AccessCount++
 			sc.moveToEnd(peerID)
-			return entry.stream, nil
+			return entry.Stream, nil
 		}
 		// Stream is invalid, remove it
 		sc.removeEntry(peerID)
 	}
 
 	// Create new stream
-	stream, err := sc.host.NewStream(context.Background(), peerID, config.BuddyNodesMessageProtocol)
+	stream, err := sc.StreamCache.Host.NewStream(context.Background(), peerID, config.BuddyNodesMessageProtocol)
 	if err != nil {
 		return nil, err
 	}
@@ -106,87 +102,87 @@ func (sc *StreamCache) GetStream(peerID peer.ID) (network.Stream, error) {
 }
 
 // addEntry adds a new stream entry to the cache
-func (sc *StreamCache) addEntry(peerID peer.ID, stream network.Stream) {
+func (sc *StructStreamCache) addEntry(peerID peer.ID, stream network.Stream) {
 	// If cache is full, remove least recently used
-	if len(sc.streams) >= sc.maxStreams {
+	if len(sc.StreamCache.Streams) >= sc.StreamCache.MaxStreams {
 		sc.evictLRU()
 	}
 
-	entry := &StreamEntry{
-		stream:      stream,
-		lastUsed:    time.Now(),
-		accessCount: 1,
+	entry := &Structs.StreamEntry{
+		Stream:      stream,
+		LastUsed:    time.Now(),
+		AccessCount: 1,
 	}
 
-	sc.streams[peerID] = entry
-	sc.accessOrder = append(sc.accessOrder, peerID)
+	sc.StreamCache.Streams[peerID] = entry
+	sc.StreamCache.AccessOrder = append(sc.StreamCache.AccessOrder, peerID)
 }
 
 // removeEntry removes a stream entry from the cache
-func (sc *StreamCache) removeEntry(peerID peer.ID) {
-	if entry, exists := sc.streams[peerID]; exists {
-		entry.stream.Close()
-		delete(sc.streams, peerID)
+func (sc *StructStreamCache) removeEntry(peerID peer.ID) {
+	if entry, exists := sc.StreamCache.Streams[peerID]; exists {
+		entry.Stream.Close()
+		delete(sc.StreamCache.Streams, peerID)
 		sc.removeFromOrder(peerID)
 	}
 }
 
 // moveToEnd moves a peer to the end of the access order (most recent)
-func (sc *StreamCache) moveToEnd(peerID peer.ID) {
+func (sc *StructStreamCache) moveToEnd(peerID peer.ID) {
 	sc.removeFromOrder(peerID)
-	sc.accessOrder = append(sc.accessOrder, peerID)
+	sc.StreamCache.AccessOrder = append(sc.StreamCache.AccessOrder, peerID)
 }
 
 // removeFromOrder removes a peer from the access order
-func (sc *StreamCache) removeFromOrder(peerID peer.ID) {
-	for i, id := range sc.accessOrder {
+func (sc *StructStreamCache) removeFromOrder(peerID peer.ID) {
+	for i, id := range sc.StreamCache.AccessOrder {
 		if id == peerID {
-			sc.accessOrder = append(sc.accessOrder[:i], sc.accessOrder[i+1:]...)
+			sc.StreamCache.AccessOrder = append(sc.StreamCache.AccessOrder[:i], sc.StreamCache.AccessOrder[i+1:]...)
 			break
 		}
 	}
 }
 
 // evictLRU removes the least recently used stream
-func (sc *StreamCache) evictLRU() {
-	if len(sc.accessOrder) == 0 {
+func (sc *StructStreamCache) evictLRU() {
+	if len(sc.StreamCache.AccessOrder) == 0 {
 		return
 	}
 
 	// Remove the first (oldest) entry
-	oldestPeerID := sc.accessOrder[0]
+	oldestPeerID := sc.StreamCache.AccessOrder[0]
 	sc.removeEntry(oldestPeerID)
 }
 
 // CloseStream closes and removes a stream from the cache
-func (sc *StreamCache) CloseStream(peerID peer.ID) {
-	sc.mutex.Lock()
-	defer sc.mutex.Unlock()
+func (sc *StructStreamCache) CloseStream(peerID peer.ID) {
+	sc.StreamCache.Mutex.Lock()
+	defer sc.StreamCache.Mutex.Unlock()
 	sc.removeEntry(peerID)
 }
 
 // CloseAll closes all streams in the cache
-func (sc *StreamCache) CloseAll() {
-	sc.mutex.Lock()
-	defer sc.mutex.Unlock()
+func (sc *StructStreamCache) CloseAll() {
+	sc.StreamCache.Mutex.Lock()
+	defer sc.StreamCache.Mutex.Unlock()
 
-	for peerID := range sc.streams {
+	for peerID := range sc.StreamCache.Streams {
 		sc.removeEntry(peerID)
 	}
 }
 
 // CleanupExpiredStreams removes streams that have exceeded their TTL
-func (sc *StreamCache) CleanupExpiredStreams() {
-	sc.mutex.Lock()
-	defer sc.mutex.Unlock()
+func (sc *StructStreamCache) CleanupExpiredStreams() {
+	sc.StreamCache.Mutex.Lock()
+	defer sc.StreamCache.Mutex.Unlock()
 
 	now := time.Now()
 	expiredPeers := make([]peer.ID, 0)
 
-	for peerID, entry := range sc.streams {
+	for peerID, entry := range sc.StreamCache.Streams {
 		// Check if stream is invalid or expired
-		if entry.stream.Conn().Stat().Direction == network.DirUnknown ||
-			now.Sub(entry.lastUsed) > sc.ttl {
+		if entry.Stream.Conn().Stat().Direction == network.DirUnknown ||
+			now.Sub(entry.LastUsed) > sc.StreamCache.TTL {
 			expiredPeers = append(expiredPeers, peerID)
 		}
 	}
@@ -198,32 +194,32 @@ func (sc *StreamCache) CleanupExpiredStreams() {
 }
 
 // GetStats returns cache statistics
-func (sc *StreamCache) GetStats() map[string]interface{} {
-	sc.mutex.RLock()
-	defer sc.mutex.RUnlock()
+func (sc *StructStreamCache) GetStats() map[string]interface{} {
+	sc.StreamCache.Mutex.RLock()
+	defer sc.StreamCache.Mutex.RUnlock()
 
 	totalAccesses := int64(0)
-	for _, entry := range sc.streams {
-		totalAccesses += entry.accessCount
+	for _, entry := range sc.StreamCache.Streams {
+		totalAccesses += entry.AccessCount
 	}
 
 	return map[string]interface{}{
-		"active_streams": len(sc.streams),
-		"max_streams":    sc.maxStreams,
-		"ttl_seconds":    sc.ttl.Seconds(),
+		"active_streams": len(sc.StreamCache.Streams),
+		"max_streams":    sc.StreamCache.MaxStreams,
+		"ttl_seconds":    sc.StreamCache.TTL.Seconds(),
 		"total_accesses": totalAccesses,
 	}
 }
 
 // <-- Singleton process - make sure it is only called once --> if called more than once, just continue
-func (sc *StreamCache) ParallelCleanUpRoutine(){
-	if sc.parallelCleanUpRoutine {
+func (sc *StructStreamCache) ParallelCleanUpRoutine(){
+	if sc.StreamCache.ParallelCleanUpRoutine {
 		return
 	}
 	go func() {
-		sc.parallelCleanUpRoutine = true
+		sc.StreamCache.ParallelCleanUpRoutine = true
 		defer func() {
-			sc.parallelCleanUpRoutine = false
+			sc.StreamCache.ParallelCleanUpRoutine = false
 		}()
 		for {
 			sc.CleanupExpiredStreams()

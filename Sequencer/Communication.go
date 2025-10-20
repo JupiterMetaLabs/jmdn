@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
+	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/Pubsub"
 	"gossipnode/config"
 	"log"
@@ -264,7 +265,7 @@ func askPeersForSubscription(gps *Pubsub.GossipPubSub, topic string, peerAddrs [
 	log.Printf("Asking %d %s peers for subscription to topic: %s", len(peerAddrs), peerType, topic)
 
 	// Create a BuddyNode from the GossipPubSub's host with response handler
-	buddy := MessagePassing.NewBuddyNode(gps.Host, &MessagePassing.Buddies{Buddies_Nodes: peerAddrs}, responseHandler, gps)
+	buddy := MessagePassing.NewBuddyNode(gps.Host, &Structs.Buddies{Buddies_Nodes: peerAddrs}, responseHandler, gps)
 
 	for _, peerID := range peerAddrs {
 		// Register peer for response tracking
@@ -280,7 +281,7 @@ func askPeersForSubscription(gps *Pubsub.GossipPubSub, topic string, peerAddrs [
 			defer cancel()
 
 			// Send subscription request
-			if err := buddy.SendMessageToPeer(peerID, config.Type_AskForSubscription); err != nil {
+			if err := MessagePassing.NewStructBuddyNode(buddy).SendMessageToPeer(peerID, config.Type_AskForSubscription); err != nil {
 				log.Printf("Failed to send subscription request to %s %s: %v", peerType, peerID, err)
 				mu.Lock()
 				accepted[peerID.String()] = false

@@ -1,8 +1,7 @@
-package MessagePassing
+package Structs
 
 import (
 	"encoding/json"
-	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/Pubsub"
 	"gossipnode/config"
 	"strings"
@@ -140,18 +139,18 @@ func NewGlobalVariables() *GlobalVariables {
 	return &GlobalVariables{}
 }
 
-func(globalvar *GlobalVariables) Set_PubSubNode(pubsub *Structs.BuddyNode) {
-	Structs.PubSub_BuddyNode = pubsub
+func(globalvar *GlobalVariables) Set_PubSubNode(pubsub *BuddyNode) {
+	PubSub_BuddyNode = pubsub
 }
 
-func(globalvar *GlobalVariables) Get_PubSubNode() *Structs.BuddyNode {
-	return Structs.PubSub_BuddyNode
+func(globalvar *GlobalVariables) Get_PubSubNode() *BuddyNode {
+	return PubSub_BuddyNode
 }
 
-func(globalvar *GlobalVariables) Set_ForListner(forlistener *Structs.BuddyNode) {
-	Structs.ForListner = forlistener
+func(globalvar *GlobalVariables) Set_ForListner(forlistener *BuddyNode) {
+	ForListner = forlistener
 }
 
-func(globalvar *GlobalVariables) Get_ForListner() *Structs.BuddyNode {
-	return Structs.ForListner
+func(globalvar *GlobalVariables) Get_ForListner() *BuddyNode {
+	return ForListner
 }

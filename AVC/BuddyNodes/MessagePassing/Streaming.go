@@ -3,6 +3,7 @@ package MessagePassing
 import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
+	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/Pubsub"
 	"gossipnode/config"
 	"gossipnode/logging"
@@ -45,7 +46,7 @@ func Init_Loggers(loki bool) {
 	}
 }
 
-func StartStreamHandlers(h host.Host, buddies *Buddies, responseHandler ResponseHandler, pubsub *Pubsub.GossipPubSub) {
+func StartStreamHandlers(h host.Host, buddies *Structs.Buddies, responseHandler Structs.ResponseHandler, pubsub *Pubsub.GossipPubSub) {
 	buddy := NewBuddyNode(h, buddies, responseHandler, pubsub)
 	listener := NewListenerNode(h, responseHandler)
 
@@ -54,7 +55,7 @@ func StartStreamHandlers(h host.Host, buddies *Buddies, responseHandler Response
 		log.LogConsensusInfo("New buddy nodes connection received",
 			zap.String("peer", stream.Conn().RemotePeer().String()),
 			zap.String("protocol", string(config.BuddyNodesMessageProtocol)))
-		go buddy.HandleBuddyNodesMessageStream(stream)
+		go NewStructBuddyNode(buddy).HandleBuddyNodesMessageStream(stream)
 	})
 
 	h.SetStreamHandler(config.SubmitMessageProtocol, func(stream network.Stream) {
@@ -67,29 +68,31 @@ func StartStreamHandlers(h host.Host, buddies *Buddies, responseHandler Response
 	log.LogConsensusInfo("Stream handlers started and listening for connections")
 }
 
-func NewListenerNode(h host.Host, responseHandler ResponseHandler) *BuddyNode {
-	streamCache, err := NewStreamCacheBuilder().SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
+func NewListenerNode(h host.Host, responseHandler Structs.ResponseHandler) *StructListener {
+	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
 	if err != nil {
 		panic(fmt.Sprintf("failed to create stream cache: %v", err))
 	}
 	streamCache.ParallelCleanUpRoutine()
 
-	listener := &BuddyNode{
+	Node := &Structs.BuddyNode{
 		Host:            h,
 		Network:         h.Network(),
 		PeerID:          h.ID(),
 		ResponseHandler: responseHandler,
-		StreamCache:     streamCache, // Max 20 streams, 5min TTL
-		MetaData: MetaData{
+		StreamCache:     streamCache.GetStreamCache(), // Max 20 streams, 5min TTL
+		MetaData: Structs.MetaData{
 			Received:  0,
 			Sent:      0,
 			Total:     0,
 			UpdatedAt: time.Now(),
 		},
 	}
+	listener := NewListenerStruct(Node)
 
 	// Set up the stream handler for the listener nodes message protocol
-	h.SetStreamHandler(config.SubmitMessageProtocol, listener.HandleSubmitMessageStream)
+	var Listner_Network network.StreamHandler = listener.HandleSubmitMessageStream
+	h.SetStreamHandler(config.SubmitMessageProtocol, Listner_Network)
 
 	log.LogConsensusInfo(fmt.Sprintf("ListenerNode initialized with ID: %s", h.ID()), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewListenerNode"))
 	log.LogConsensusInfo(fmt.Sprintf("Listening for listener messages on protocol: %s", config.SubmitMessageProtocol), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewListenerNode"))
@@ -98,31 +101,33 @@ func NewListenerNode(h host.Host, responseHandler ResponseHandler) *BuddyNode {
 }
 
 // NewBuddyNode creates a new BuddyNode instance from an existing host
-func NewBuddyNode(h host.Host, buddies *Buddies, responseHandler ResponseHandler, pubsub *Pubsub.GossipPubSub) *BuddyNode {
-	streamCache, err := NewStreamCacheBuilder().SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
+func NewBuddyNode(h host.Host, buddies *Structs.Buddies, responseHandler Structs.ResponseHandler, pubsub *Pubsub.GossipPubSub) *Structs.BuddyNode {
+	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
 	if err != nil {
 		panic(fmt.Sprintf("failed to create stream cache: %v", err))
 	}
 	streamCache.ParallelCleanUpRoutine()
 
-	buddy := &BuddyNode{
+	buddy := &Structs.BuddyNode{
 		Host:            h,
 		Network:         h.Network(),
 		PeerID:          h.ID(),
 		BuddyNodes:      *buddies,
 		ResponseHandler: responseHandler,
 		PubSub:          pubsub,
-		StreamCache:     streamCache,
-		MetaData: MetaData{
+		StreamCache:     streamCache.GetStreamCache(),
+		MetaData: Structs.MetaData{
 			Received:  0,
 			Sent:      0,
 			Total:     0,
 			UpdatedAt: time.Now(),
 		},
 	}
+	buddyStream := NewStructBuddyNode(buddy)
 
 	// Set up the stream handler for the buddy nodes message protocol
-	h.SetStreamHandler(config.BuddyNodesMessageProtocol, buddy.HandleBuddyNodesMessageStream)
+	var BuddyNode_Stream_Channel network.StreamHandler = buddyStream.HandleBuddyNodesMessageStream
+	h.SetStreamHandler(config.BuddyNodesMessageProtocol, BuddyNode_Stream_Channel)
 
 	log.LogConsensusInfo(fmt.Sprintf("BuddyNode initialized with ID: %s", h.ID()), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewBuddyNode"))
 	log.LogConsensusInfo(fmt.Sprintf("Listening for buddy messages on protocol: %s", config.BuddyNodesMessageProtocol), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewBuddyNode"))
@@ -132,9 +137,14 @@ func NewBuddyNode(h host.Host, buddies *Buddies, responseHandler ResponseHandler
 
 // SendMessageToPeer sends a message to a specific peer using peer.ID (for already connected peers)
 // Uses LRU cache with TTL for optimal performance and resource efficiency
-func (buddy *BuddyNode) SendMessageToPeer(peerID peer.ID, message string) error {
+func (StructBuddyNode *StructBuddyNode) SendMessageToPeer(peerID peer.ID, message string) error {
 	// Get or create a stream from the cache
-	stream, err := buddy.StreamCache.GetStream(peerID)
+	StreamCache := NewStreamCacheBuilder(StructBuddyNode.BuddyNode.StreamCache)
+	if StreamCache == nil{
+		return fmt.Errorf("Faield to get the StreamCache, Nil Streamcache occured")
+	}
+
+	stream, err := StreamCache.GetStream(peerID)
 	if err != nil {
 		return fmt.Errorf("failed to get stream to %s: %v", peerID, err)
 	}
@@ -143,17 +153,17 @@ func (buddy *BuddyNode) SendMessageToPeer(peerID peer.ID, message string) error 
 	_, err = stream.Write([]byte(message + string(rune(config.Delimiter))))
 	if err != nil {
 		// If write fails, the stream might be invalid, close it and try to get a new one
-		buddy.StreamCache.CloseStream(peerID)
+		StreamCache.CloseStream(peerID)
 		return fmt.Errorf("failed to send message to %s: %v", peerID, err)
 	}
 
 	if message != config.Type_ACK_True && message != config.Type_ACK_False {
 		// Update metadata
-		buddy.Mutex.Lock()
-		buddy.MetaData.Sent++
-		buddy.MetaData.Total++
-		buddy.MetaData.UpdatedAt = time.Now()
-		buddy.Mutex.Unlock()
+		StructBuddyNode.BuddyNode.Mutex.Lock()
+		StructBuddyNode.BuddyNode.MetaData.Sent++
+		StructBuddyNode.BuddyNode.MetaData.Total++
+		StructBuddyNode.BuddyNode.MetaData.UpdatedAt = time.Now()
+		StructBuddyNode.BuddyNode.Mutex.Unlock()
 
 		log.LogConsensusInfo(fmt.Sprintf("Sent buddy message to %s: %s", peerID, message), zap.String("peer", peerID.String()), zap.String("message", message), zap.String("function", "SendMessageToPeer"))
 	}
@@ -162,21 +172,26 @@ func (buddy *BuddyNode) SendMessageToPeer(peerID peer.ID, message string) error 
 }
 
 // CloseAllStreams closes all streams in the cache (for cleanup)
-func (buddy *BuddyNode) CloseAllStreams() {
-	if buddy.StreamCache != nil {
-		buddy.StreamCache.CloseAll()
+func (StructBuddyNode *StructBuddyNode) CloseAllStreams() {
+	StreamCache := NewStreamCacheBuilder(StructBuddyNode.BuddyNode.StreamCache)
+	if StreamCache == nil{
+		return 
 	}
+
+	StreamCache.CloseAll()
 }
 
 // GetStreamCacheStats returns statistics about the stream cache
-func (buddy *BuddyNode) GetStreamCacheStats() map[string]interface{} {
-	if buddy.StreamCache != nil {
-		return buddy.StreamCache.GetStats()
+func (StructBuddyNode *StructBuddyNode) GetStreamCacheStats() map[string]interface{} {
+	StreamCache := NewStreamCacheBuilder(StructBuddyNode.BuddyNode.StreamCache)
+	if StreamCache == nil{
+		return map[string]interface{}{
+			"active_streams": 0,
+			"max_streams":    0,
+			"ttl_seconds":    0,
+			"total_accesses": 0,
+		}
 	}
-	return map[string]interface{}{
-		"active_streams": 0,
-		"max_streams":    0,
-		"ttl_seconds":    0,
-		"total_accesses": 0,
-	}
+
+	return StreamCache.GetStats()
 }

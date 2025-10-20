@@ -1,4 +1,4 @@
-package MessagePassing
+package Structs
 
 import (
 	"sync"

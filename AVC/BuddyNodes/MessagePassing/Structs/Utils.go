@@ -1,4 +1,4 @@
-package MessagePassing
+package Structs
 
 import (
 	"encoding/json"
@@ -74,4 +74,37 @@ func SubmitMessageToCRDT(msg string, ListenerNode *BuddyNode) error {
 		return fmt.Errorf("failed to add vote to local CRDT Engine: %v", err)
 	}
 	return nil
+}
+
+
+// Implement PubSubHandler interface
+func (buddy *BuddyNode) Subscribe(topic string, handler func(*Pubsub.GossipMessage)) error {
+	if buddy.PubSub != nil {
+		return buddy.PubSub.Subscribe(topic, handler)
+	}
+	return fmt.Errorf("PubSub not available")
+}
+
+func (buddy *BuddyNode) Unsubscribe(topic string) error {
+	if buddy.PubSub != nil {
+		return buddy.PubSub.Unsubscribe(topic)
+	}
+	return fmt.Errorf("PubSub not available")
+}
+
+// Implement BuddyNodeHandler interface
+func (buddy *BuddyNode) GetPeerID() string {
+	return buddy.PeerID.String()
+}
+
+func (buddy *BuddyNode) GetHostID() string {
+	return buddy.Host.ID().String()
+}
+
+func (buddy *BuddyNode) SubmitToCRDT(message string) error {
+	return SubmitMessageToCRDT(message, buddy)
+}
+
+func (buddy *BuddyNode) GetPubSub() *Pubsub.GossipPubSub{
+	return buddy.PubSub
 }

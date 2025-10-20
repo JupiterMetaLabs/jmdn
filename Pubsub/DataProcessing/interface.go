@@ -3,6 +3,7 @@ package DataProcessing
 import (
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessageParsing"
+	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/config"
 
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -20,12 +21,14 @@ func NewMessageProcessing() *MessageProcessing{
 	}
 }
 
-func (Data *MessageProcessing) setProtocol(protocol protocol.ID) {
+func (Data *MessageProcessing) SetProtocol(protocol protocol.ID) *MessageProcessing {
 	Data.MessageProcessingStruct.Protocol = protocol
+	return Data
 }
 
-func (Data *MessageProcessing) setMessage(message string) {
+func (Data *MessageProcessing) SetMessage(message string) *MessageProcessing {
 	Data.MessageProcessingStruct.GossipMessage = message
+	return Data
 }
 
 
@@ -41,8 +44,9 @@ func (Data *MessageProcessing) GetMessage() string {
 // < -- Parse functions -->
 func (Data *MessageProcessing) ParseMessage() error {
 	switch Data.GetProtocol() {
-		case config.BuddyNodesMessageProtocol:
-			return MessageParsing.Router(Data.GetMessage())
+		case config.BuddyNodesMessageProtocol:	
+			pubSub := MessagePassing.NewGlobalVariables().Get_PubSubNode().GetPubSub()
+			return MessageParsing.Router(Data.GetMessage(), pubSub)
 		default:
 			return fmt.Errorf("unknown protocol: %s", Data.GetProtocol())
 	}
