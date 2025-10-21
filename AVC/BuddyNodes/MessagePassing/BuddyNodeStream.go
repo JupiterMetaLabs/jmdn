@@ -92,7 +92,7 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 		}
 	case config.Type_AskForSubscription:
 		// Route to MessageParsing for PubSub subscription handling
-		if err := Router.Router(msg, Structs.NewGlobalVariables().Get_PubSubNode().GetPubSub()); err != nil {
+		if err := Router.Router(msg); err != nil {
 			log.LogConsensusError(fmt.Sprintf("Failed to handle subscription request: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 			// Send ACK_FALSE response
 			ackMessage := Structs.NewACKBuilder().False_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_SubscriptionResponse).ToString()
@@ -109,7 +109,7 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 	case config.Type_VerifySubscription:
 		// Route to MessageParsing for PubSub verification handling
 		log.LogConsensusInfo(fmt.Sprintf("Received VERIFY_SUBSCRIPTION request from %s", s.Conn().RemotePeer()), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
-		if err := Router.Router(msg, Structs.NewGlobalVariables().Get_PubSubNode().PubSub); err != nil {
+		if err := Router.Router(msg); err != nil {
 			log.LogConsensusError(fmt.Sprintf("Failed to handle verification request: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 			// Send ACK_FALSE response
 			ackMessage := Structs.NewACKBuilder().False_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_VerifySubscription).ToString()
@@ -152,13 +152,13 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 	case config.Type_EndPubSub:
 		// Route to MessageParsing for PubSub unsubscription handling
 		log.LogConsensusInfo(fmt.Sprintf("Received END_PUBSUB request from %s", s.Conn().RemotePeer()), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
-		if err := Router.Router(msg, Structs.NewGlobalVariables().Get_PubSubNode().GetPubSub()); err != nil {
+		if err := Router.Router(msg); err != nil {
 			log.LogConsensusError(fmt.Sprintf("Failed to handle end pubsub request: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 		}
 		return
 	case config.Type_Publish:
 		// Route to MessageParsing for PubSub message publishing handling
-		if err := Router.Router(msg, Structs.NewGlobalVariables().Get_PubSubNode().GetPubSub()); err != nil {
+		if err := Router.Router(msg); err != nil {
 			log.LogConsensusError(fmt.Sprintf("Failed to handle publish message: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 		}
 	default:
