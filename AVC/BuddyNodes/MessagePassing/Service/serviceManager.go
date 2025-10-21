@@ -2,23 +2,27 @@ package Service
 
 import (
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
-	"gossipnode/Pubsub"
+	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 )
 
 // ServiceManager coordinates all services
 type ServiceManager struct {
-	subscriptionService *SubscriptionService
-	consensusService    *ConsensusService
-	publishService      *PublishService
+	subscriptionService  *SubscriptionService
+	consensusService     *ConsensusService
+	publishService       *PublishService
+	nodeDiscoveryService *NodeDiscoveryService
+	validationService    *ValidationService
 }
 
 // NewServiceManager creates a new service manager with all services
-func NewServiceManager(pubSub *Pubsub.GossipPubSub, buddyNode *Structs.BuddyNode) *ServiceManager {
+func NewServiceManager(pubSub *Struct.GossipPubSub, buddyNode *Structs.BuddyNode) *ServiceManager {
 	// Convert the buddyNode into struct
 	return &ServiceManager{
-		subscriptionService: NewSubscriptionService(pubSub),
-		consensusService:    NewConsensusService(buddyNode),
-		publishService:      NewPublishService(buddyNode),
+		subscriptionService:  NewSubscriptionService(pubSub),
+		consensusService:     NewConsensusService(buddyNode),
+		publishService:       NewPublishService(buddyNode),
+		nodeDiscoveryService: NewNodeDiscoveryService(buddyNode),
+		validationService:    NewValidationService(),
 	}
 }
 
@@ -35,4 +39,14 @@ func (sm *ServiceManager) GetConsensusService() *ConsensusService {
 // GetPublishService returns the publish service
 func (sm *ServiceManager) GetPublishService() *PublishService {
 	return sm.publishService
+}
+
+// GetNodeDiscoveryService returns the node discovery service
+func (sm *ServiceManager) GetNodeDiscoveryService() *NodeDiscoveryService {
+	return sm.nodeDiscoveryService
+}
+
+// GetValidationService returns the validation service
+func (sm *ServiceManager) GetValidationService() *ValidationService {
+	return sm.validationService
 }

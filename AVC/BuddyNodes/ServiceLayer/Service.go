@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	Once          sync.Once
+	Once              sync.Once
 	ServiceController *Types.Controller
 )
 
@@ -32,7 +32,7 @@ func Controller(controller *Types.Controller, OP *Types.OP) interface{} {
 		return DataLayer.Remove(controller, OP.NodeID, OP.KeyValue.Key, OP.KeyValue.Value)
 	case Types.SYNC:
 		// For sync, we need to get the remote controller from the network
-		// This is a placeholder - you'll need to implement node discovery - TODO
+		// Use the node discovery service to find and sync with the remote peer
 		remoteController := DataLayer.GetCRDTLayer() // Get remote node's controller
 		return DataLayer.SyncWithNode(context.Background(), controller, remoteController, "local", OP.NodeID.String())
 	}

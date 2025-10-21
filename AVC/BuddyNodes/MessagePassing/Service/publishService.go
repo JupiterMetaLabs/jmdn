@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
-	"gossipnode/Pubsub"
+	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 
 	"go.uber.org/zap"
 )
@@ -22,7 +22,7 @@ func NewPublishService(buddyNode *Structs.BuddyNode) *PublishService {
 }
 
 // HandlePublish handles incoming publish messages
-func (s *PublishService) HandlePublish(gossipMessage *Pubsub.GossipMessage) error {
+func (s *PublishService) HandlePublish(gossipMessage *Struct.GossipMessage) error {
 	log.LogConsensusInfo("Handling publish message",
 		zap.String("topic", log.Consensus_TOPIC),
 		zap.String("function", "PublishService.HandlePublish"))

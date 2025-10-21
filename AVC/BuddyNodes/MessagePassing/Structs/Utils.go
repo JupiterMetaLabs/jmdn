@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
-	"gossipnode/Pubsub"
+	Helper "gossipnode/Pubsub/DataProcessing/Helper"
+	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 	"gossipnode/config"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -47,7 +48,7 @@ func (buddy *BuddyNode) GetMetadata() MetaData {
 	}
 }
 
-func SubmitMessage(msg *Pubsub.Message, PubSub *Pubsub.GossipPubSub, ListenerNode *BuddyNode) error {
+func SubmitMessage(msg *Struct.Message, PubSub *Struct.GossipPubSub, ListenerNode *BuddyNode) error {
 	OP := &Types.OP{}
 	if err := json.Unmarshal([]byte(msg.Message), OP); err != nil {
 		return fmt.Errorf("failed to unmarshal message: %v", err)
@@ -58,7 +59,7 @@ func SubmitMessage(msg *Pubsub.Message, PubSub *Pubsub.GossipPubSub, ListenerNod
 	}
 
 	// Now Submit to the publish function in the pubsub
-	if err := PubSub.Publish(config.PubSub_ConsensusChannel, msg, nil); err != nil {
+	if err := Helper.GPStoSGPS(PubSub).Publish(config.PubSub_ConsensusChannel, msg, nil); err != nil {
 		return fmt.Errorf("failed to publish message to pubsub: %v", err)
 	}
 	return nil
@@ -76,18 +77,17 @@ func SubmitMessageToCRDT(msg string, ListenerNode *BuddyNode) error {
 	return nil
 }
 
-
 // Implement PubSubHandler interface
-func (buddy *BuddyNode) Subscribe(topic string, handler func(*Pubsub.GossipMessage)) error {
+func (buddy *BuddyNode) Subscribe(topic string, handler func(*Struct.GossipMessage)) error {
 	if buddy.PubSub != nil {
-		return buddy.PubSub.Subscribe(topic, handler)
+		return Helper.GPStoSGPS(buddy.PubSub).Subscribe(topic, handler)
 	}
 	return fmt.Errorf("PubSub not available")
 }
 
 func (buddy *BuddyNode) Unsubscribe(topic string) error {
 	if buddy.PubSub != nil {
-		return buddy.PubSub.Unsubscribe(topic)
+		return Helper.GPStoSGPS(buddy.PubSub).Unsubscribe(topic)
 	}
 	return fmt.Errorf("PubSub not available")
 }
@@ -105,6 +105,6 @@ func (buddy *BuddyNode) SubmitToCRDT(message string) error {
 	return SubmitMessageToCRDT(message, buddy)
 }
 
-func (buddy *BuddyNode) GetPubSub() *Pubsub.GossipPubSub{
+func (buddy *BuddyNode) GetPubSub() *Struct.GossipPubSub {
 	return buddy.PubSub
 }

@@ -2,12 +2,11 @@ package DataProcessing
 
 import (
 	"fmt"
-	"gossipnode/AVC/BuddyNodes/MessageParsing"
-	"gossipnode/AVC/BuddyNodes/MessagePassing"
+	Router "gossipnode/AVC/BuddyNodes/Router"
 	"gossipnode/config"
+	"gossipnode/Pubsub/DataProcessing/Struct"
 
 	"github.com/libp2p/go-libp2p/core/protocol"
-	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 )
 
 // Parse messages from the go pubsub channel buffer and submit to the message parsing in MessageParsing.go
@@ -45,8 +44,7 @@ func (Data *MessageProcessing) GetMessage() string {
 func (Data *MessageProcessing) ParseMessage() error {
 	switch Data.GetProtocol() {
 		case config.BuddyNodesMessageProtocol:	
-			pubSub := MessagePassing.NewGlobalVariables().Get_PubSubNode().GetPubSub()
-			return MessageParsing.Router(Data.GetMessage(), pubSub)
+			return Router.Router(Data.GetMessage(), nil)
 		default:
 			return fmt.Errorf("unknown protocol: %s", Data.GetProtocol())
 	}

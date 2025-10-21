@@ -5,7 +5,7 @@ import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
-	"gossipnode/AVC/BuddyNodes/MessageParsing"
+	"gossipnode/AVC/BuddyNodes/Router"
 	"gossipnode/config"
 
 	"github.com/libp2p/go-libp2p/core/network"
@@ -45,9 +45,9 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 		return
 	}
 	// Add the buddy Node to the Pubsub node for singleton instance
-	NewGlobalVariables().Set_PubSubNode(buddy)
+	Structs.NewGlobalVariables().Set_PubSubNode(buddy)
 
-	message := NewMessageProcessor().DeferenceMessage(msg)
+	message := Structs.NewMessageProcessor().DeferenceMessage(msg)
 
 	log.LogConsensusInfo(fmt.Sprintf("Received buddy message from %s: %s", s.Conn().RemotePeer(), msg),
 		zap.String("peer", s.Conn().RemotePeer().String()),
@@ -60,7 +60,7 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 		// If node is okay to listen for subscriptions, then return ACK True
 		if Structs.PubSub_BuddyNode != nil && Structs.PubSub_BuddyNode.Host != nil && Structs.PubSub_BuddyNode.Network != nil {
 			// Node is ready to listen for subscriptions
-			ackMessage := NewACKBuilder().True_ACK_Message(Structs.PubSub_BuddyNode.PeerID, config.Type_StartPubSub).ToString()
+			ackMessage := Structs.NewACKBuilder().True_ACK_Message(Structs.PubSub_BuddyNode.PeerID, config.Type_StartPubSub).ToString()
 			if ackMessage == "" {
 				log.LogConsensusError("Failed to create ACK_TRUE message", err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 				fmt.Printf("Failed to create ACK_TRUE message")
@@ -76,7 +76,7 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 			}
 		} else {
 			// Node is not ready to listen for subscriptions
-			ackMessage := NewACKBuilder().False_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_StartPubSub).ToString()
+			ackMessage := Structs.NewACKBuilder().False_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_StartPubSub).ToString()
 			if ackMessage == "" {
 				log.LogConsensusError("Failed to create ACK_FALSE message", err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 				fmt.Printf("Failed to create ACK_FALSE message")
@@ -92,16 +92,16 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 		}
 	case config.Type_AskForSubscription:
 		// Route to MessageParsing for PubSub subscription handling
-		if err := MessageParsing.Router(msg, Structs.NewGlobalVariables().Get_PubSubNode().PubSub); err != nil {
+		if err := Router.Router(msg, Structs.NewGlobalVariables().Get_PubSubNode().GetPubSub()); err != nil {
 			log.LogConsensusError(fmt.Sprintf("Failed to handle subscription request: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 			// Send ACK_FALSE response
-			ackMessage := NewACKBuilder().False_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_SubscriptionResponse).ToString()
+			ackMessage := Structs.NewACKBuilder().False_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_SubscriptionResponse).ToString()
 			if ackMessage != "" {
 				StructBuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage)
 			}
 		} else {
 			// Send ACK_TRUE response
-			ackMessage := NewACKBuilder().True_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_SubscriptionResponse).ToString()
+			ackMessage := Structs.NewACKBuilder().True_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_SubscriptionResponse).ToString()
 			if ackMessage != "" {
 				StructBuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage)
 			}
@@ -109,23 +109,23 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 	case config.Type_VerifySubscription:
 		// Route to MessageParsing for PubSub verification handling
 		log.LogConsensusInfo(fmt.Sprintf("Received VERIFY_SUBSCRIPTION request from %s", s.Conn().RemotePeer()), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
-		if err := MessageParsing.Router(msg, Structs.NewGlobalVariables().Get_PubSubNode().PubSub); err != nil {
+		if err := Router.Router(msg, Structs.NewGlobalVariables().Get_PubSubNode().PubSub); err != nil {
 			log.LogConsensusError(fmt.Sprintf("Failed to handle verification request: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 			// Send ACK_FALSE response
-			ackMessage := NewACKBuilder().False_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_VerifySubscription).ToString()
+			ackMessage := Structs.NewACKBuilder().False_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_VerifySubscription).ToString()
 			if ackMessage != "" {
 				StructBuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage)
 			}
 		} else {
 			// Send ACK_TRUE response
-			ackMessage := NewACKBuilder().True_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_VerifySubscription).ToString()
+			ackMessage := Structs.NewACKBuilder().True_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_VerifySubscription).ToString()
 			if ackMessage != "" {
 				StructBuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage)
 			}
 		}
 	case config.Type_SubscriptionResponse:
 		// Try to parse as JSON ACK_Message
-		message := NewMessageProcessor().DeferenceMessage(msg)
+		message := Structs.NewMessageProcessor().DeferenceMessage(msg)
 		if message.Message.ACK != nil {
 			switch message.Message.ACK.Status {
 			case config.Type_ACK_True:
@@ -152,13 +152,13 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 	case config.Type_EndPubSub:
 		// Route to MessageParsing for PubSub unsubscription handling
 		log.LogConsensusInfo(fmt.Sprintf("Received END_PUBSUB request from %s", s.Conn().RemotePeer()), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
-		if err := MessageParsing.Router(msg, Structs.NewGlobalVariables().Get_PubSubNode().PubSub); err != nil {
+		if err := Router.Router(msg, Structs.NewGlobalVariables().Get_PubSubNode().GetPubSub()); err != nil {
 			log.LogConsensusError(fmt.Sprintf("Failed to handle end pubsub request: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 		}
 		return
 	case config.Type_Publish:
 		// Route to MessageParsing for PubSub message publishing handling
-		if err := MessageParsing.Router(msg, Structs.NewGlobalVariables().Get_PubSubNode().PubSub); err != nil {
+		if err := Router.Router(msg, Structs.NewGlobalVariables().Get_PubSubNode().GetPubSub()); err != nil {
 			log.LogConsensusError(fmt.Sprintf("Failed to handle publish message: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 		}
 	default:

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
-	"gossipnode/Pubsub"
+	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 
 	"go.uber.org/zap"
 )
@@ -22,7 +22,7 @@ func NewConsensusService(buddyNode *Structs.BuddyNode) *ConsensusService {
 }
 
 // HandleVerifySubscription handles subscription verification
-func (s *ConsensusService) HandleVerifySubscription(gossipMessage *Pubsub.GossipMessage) error {
+func (s *ConsensusService) HandleVerifySubscription(gossipMessage *Struct.GossipMessage) error {
 	log.LogConsensusInfo("Handling verify subscription message",
 		zap.String("topic", log.Consensus_TOPIC),
 		zap.String("function", "ConsensusService.HandleVerifySubscription"))

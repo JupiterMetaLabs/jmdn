@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
+	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 	"gossipnode/Pubsub"
 	"gossipnode/config"
 	"log"
@@ -104,11 +105,11 @@ func (rh *ResponseHandler) UnregisterPeer(peerID peer.ID) {
 // AskForSubscription asks peers for subscription with backup node fallback
 // Ensures: 1 creator + 13 subscribers = 14 total nodes
 // Maximum 3 main nodes can fail, use backup nodes as replacements
-func AskForSubscription(gps *Pubsub.GossipPubSub, topic string, consensus *Consensus) error {
+func AskForSubscription(sgps *Pubsub.StructGossipPubSub, topic string, consensus *Consensus) error {
 	responseHandler := NewResponseHandler()
 
 	// First, try main peers (up to 13)
-	mainAccepted, mainTotal := askPeersForSubscription(gps, topic, consensus.PeerList.MainPeers, responseHandler, "main")
+	mainAccepted, mainTotal := askPeersForSubscription(sgps, topic, consensus.PeerList.MainPeers, responseHandler, "main")
 	mainFailed := mainTotal - mainAccepted
 
 	log.Printf("Main peers results: %d accepted, %d failed out of %d", mainAccepted, mainFailed, mainTotal)
@@ -135,7 +136,7 @@ func AskForSubscription(gps *Pubsub.GossipPubSub, topic string, consensus *Conse
 			backupPeersToTry = backupPeersToTry[:needed]
 		}
 
-		backupAccepted, backupTotal := askPeersForSubscription(gps, topic, backupPeersToTry, responseHandler, "backup")
+		backupAccepted, backupTotal := askPeersForSubscription(sgps, topic, backupPeersToTry, responseHandler, "backup")
 
 		log.Printf("Backup peers results: %d accepted out of %d tried", backupAccepted, backupTotal)
 
@@ -156,7 +157,7 @@ func AskForSubscription(gps *Pubsub.GossipPubSub, topic string, consensus *Conse
 
 // VerifySubscriptions publishes a verification message to the pubsub channel and collects ACK responses
 // All subscribed nodes should reply with ACK_TRUE status and their PeerID
-func VerifySubscriptions(gps *Pubsub.GossipPubSub, consensus *Consensus) (map[peer.ID]string, error) {
+func VerifySubscriptions(sgps *Pubsub.StructGossipPubSub, consensus *Consensus) (map[peer.ID]string, error) {
 	// Create a channel to collect verification responses
 	verificationResponses := make(map[peer.ID]string)
 	var mu sync.Mutex
@@ -169,7 +170,7 @@ func VerifySubscriptions(gps *Pubsub.GossipPubSub, consensus *Consensus) (map[pe
 	log.Printf("Starting pubsub-based subscription verification for %d main peers", expectedResponses)
 
 	// Subscribe to the consensus channel to receive verification responses
-	handler := func(msg *Pubsub.GossipMessage) {
+	handler := func(msg *Struct.GossipMessage) {
 		// Check if message has ACK data
 		if msg.Data != nil && msg.Data.ACK != nil {
 			// Check if this is a verification response with all required fields
@@ -204,17 +205,17 @@ func VerifySubscriptions(gps *Pubsub.GossipPubSub, consensus *Consensus) (map[pe
 	}
 
 	// Subscribe to the consensus channel
-	if err := gps.Subscribe(consensus.Channel, handler); err != nil {
+	if err := sgps.Subscribe(consensus.Channel, handler); err != nil {
 		return nil, fmt.Errorf("failed to subscribe to consensus channel for verification: %v", err)
 	}
 
 
 	var message string = "Please verify your subscription to the consensus channel"
 
-	ACK_MESSAGE := MessagePassing.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_VerifySubscription).GetACK_Message()
+	ACK_MESSAGE := Structs.NewACKBuilder().True_ACK_Message(sgps.GetGossipPubSub().Host.ID(), config.Type_VerifySubscription).GetACK_Message()
 
-	verificationMessage := MessagePassing.NewMessageBuilder().SetMessage(message).SetSender(gps.Host.ID()).SetTimestamp(time.Now().Unix()).SetACK(ACK_MESSAGE).GetMessage()
-	if err := gps.Publish(consensus.Channel, verificationMessage, map[string]string{}); err != nil {
+	verificationMessage := Structs.NewMessageBuilder().SetMessage(message).SetSender(sgps.GetGossipPubSub().Host.ID()).SetTimestamp(time.Now().Unix()).SetACK(ACK_MESSAGE).GetMessage()
+	if err := sgps.Publish(consensus.Channel, verificationMessage, map[string]string{}); err != nil {
 		return nil, fmt.Errorf("failed to publish verification message: %v", err)
 	}
 
@@ -244,7 +245,7 @@ func VerifySubscriptions(gps *Pubsub.GossipPubSub, consensus *Consensus) (map[pe
 	log.Printf("Subscription verification completed: %d peers verified out of %d expected", finalCount, expectedResponses)
 
 	// Unsubscribe from the channel
-	if err := gps.Unsubscribe(consensus.Channel); err != nil {
+	if err := sgps.Unsubscribe(consensus.Channel); err != nil {
 		log.Printf("Warning: failed to unsubscribe from consensus channel: %v", err)
 	}
 
@@ -252,7 +253,7 @@ func VerifySubscriptions(gps *Pubsub.GossipPubSub, consensus *Consensus) (map[pe
 }
 
 // askPeersForSubscription asks a list of peers for subscription
-func askPeersForSubscription(gps *Pubsub.GossipPubSub, topic string, peerAddrs []peer.ID, responseHandler *ResponseHandler, peerType string) (int, int) {
+func askPeersForSubscription(sgps *Pubsub.StructGossipPubSub, topic string, peerAddrs []peer.ID, responseHandler *ResponseHandler, peerType string) (int, int) {
 	if len(peerAddrs) == 0 {
 		log.Printf("No %s peers to ask for subscription", peerType)
 		return 0, 0
@@ -265,7 +266,7 @@ func askPeersForSubscription(gps *Pubsub.GossipPubSub, topic string, peerAddrs [
 	log.Printf("Asking %d %s peers for subscription to topic: %s", len(peerAddrs), peerType, topic)
 
 	// Create a BuddyNode from the GossipPubSub's host with response handler
-	buddy := MessagePassing.NewBuddyNode(gps.Host, &Structs.Buddies{Buddies_Nodes: peerAddrs}, responseHandler, gps)
+	buddy := MessagePassing.NewBuddyNode(sgps.GetGossipPubSub().GetHost(), &Structs.Buddies{Buddies_Nodes: peerAddrs}, responseHandler, sgps.GetGossipPubSub())
 
 	for _, peerID := range peerAddrs {
 		// Register peer for response tracking

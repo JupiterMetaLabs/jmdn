@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"gossipnode/AVC/BuddyNodes/Types"
-	"gossipnode/Pubsub"
+	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -29,7 +29,7 @@ type BuddyNode struct {
 	Mutex           sync.RWMutex
 	MetaData        MetaData
 	ResponseHandler ResponseHandler      // Interface for handling responses
-	PubSub          *Pubsub.GossipPubSub // Will hold a reference to GossipPubSub instance
+	PubSub          *Struct.GossipPubSub // Will hold a reference to GossipPubSub instance
 	StreamCache     *StreamCache         // LRU cache of reusable streams with TTL
 }
 
@@ -43,4 +43,5 @@ type MetaData struct {
 type Buddies struct {
 	Buddies_Nodes []peer.ID
 }
+
 

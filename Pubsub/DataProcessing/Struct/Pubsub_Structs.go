@@ -1,4 +1,4 @@
-package Pubsub
+package Struct
 
 import (
 	"sync"
@@ -30,13 +30,13 @@ type ChannelAccess struct {
 // GossipPubSub handles gossip-based pub/sub messaging
 type GossipPubSub struct {
 	Host          host.Host                       // libp2p host instance
-	topics        map[string]bool                 // Subscribed topics
-	handlers      map[string]func(*GossipMessage) // Topic -> handler function
-	messageCache  map[string]bool                 // Message deduplication
-	channelAccess map[string]*ChannelAccess       // Channel access control
-	peers         []peer.ID                       // Connected peers
-	mutex         sync.RWMutex                    // Read-write mutex for thread safety
-	messageID     uint64                          // Counter for message IDs
+	Topics        map[string]bool                 // Subscribed topics
+	Handlers      map[string]func(*GossipMessage) // Topic -> handler function
+	MessageCache  map[string]bool                 // Message deduplication
+	ChannelAccess map[string]*ChannelAccess       // Channel access control
+	Peers         []peer.ID                       // Connected peers
+	Mutex         sync.RWMutex                    // Read-write mutex for thread safety
+	MessageID     uint64                          // Counter for message IDs
 	Protocol      protocol.ID                     // Protocol ID
 }
 

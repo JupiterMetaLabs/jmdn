@@ -23,7 +23,7 @@ type Consensus struct {
 	Channel  string
 	PeerList PeerList
 	Host     host.Host
-	gossipnode      *Pubsub.GossipPubSub
+	gossipnode      *Pubsub.StructGossipPubSub
 }
 
 func NewConsensus(peerList PeerList, host host.Host) *Consensus {

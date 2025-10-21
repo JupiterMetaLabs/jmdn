@@ -24,7 +24,7 @@ func NewListenerStruct(listner *Structs.BuddyNode) *StructListener{
 func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.Stream) {
 	defer s.Close()
 	// Add the buddy Node to the Listener node for singleton instance
-	NewGlobalVariables().Set_ForListner(StructListenerNode.ListenerBuddyNode)
+	Structs.NewGlobalVariables().Set_ForListner(StructListenerNode.ListenerBuddyNode)
 
 	reader := bufio.NewReader(s)
 	msg, err := reader.ReadString(config.Delimiter)
@@ -34,7 +34,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 		return
 	}
 
-	message := NewMessageProcessor().DeferenceMessage(msg)
+	message := Structs.NewMessageProcessor().DeferenceMessage(msg)
 
 	log.LogMessagesInfo(fmt.Sprintf("Received submit message from %s: %s", s.Conn().RemotePeer(), msg), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 

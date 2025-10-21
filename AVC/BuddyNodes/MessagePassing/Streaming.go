@@ -4,7 +4,7 @@ import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
-	"gossipnode/Pubsub"
+	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 	"gossipnode/config"
 	"gossipnode/logging"
 	"time"
@@ -46,7 +46,7 @@ func Init_Loggers(loki bool) {
 	}
 }
 
-func StartStreamHandlers(h host.Host, buddies *Structs.Buddies, responseHandler Structs.ResponseHandler, pubsub *Pubsub.GossipPubSub) {
+func StartStreamHandlers(h host.Host, buddies *Structs.Buddies, responseHandler Structs.ResponseHandler, pubsub *Struct.GossipPubSub) {
 	buddy := NewBuddyNode(h, buddies, responseHandler, pubsub)
 	listener := NewListenerNode(h, responseHandler)
 
@@ -101,7 +101,7 @@ func NewListenerNode(h host.Host, responseHandler Structs.ResponseHandler) *Stru
 }
 
 // NewBuddyNode creates a new BuddyNode instance from an existing host
-func NewBuddyNode(h host.Host, buddies *Structs.Buddies, responseHandler Structs.ResponseHandler, pubsub *Pubsub.GossipPubSub) *Structs.BuddyNode {
+func NewBuddyNode(h host.Host, buddies *Structs.Buddies, responseHandler Structs.ResponseHandler, pubsub *Struct.GossipPubSub) *Structs.BuddyNode {
 	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
 	if err != nil {
 		panic(fmt.Sprintf("failed to create stream cache: %v", err))
