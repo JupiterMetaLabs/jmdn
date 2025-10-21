@@ -3,7 +3,7 @@ package Service
 import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
-	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
+	Structs "gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 
 	"go.uber.org/zap"

@@ -205,7 +205,7 @@ func VerifySubscriptions(sgps *Pubsub.StructGossipPubSub, consensus *Consensus) 
 	}
 
 	// Subscribe to the consensus channel
-	if err := sgps.Subscribe(consensus.Channel, handler); err != nil {
+	if err := Pubsub.Subscribe(consensus.gossipnode.GetGossipPubSub(), consensus.Channel, handler); err != nil {
 		return nil, fmt.Errorf("failed to subscribe to consensus channel for verification: %v", err)
 	}
 
@@ -215,7 +215,7 @@ func VerifySubscriptions(sgps *Pubsub.StructGossipPubSub, consensus *Consensus) 
 	ACK_MESSAGE := Structs.NewACKBuilder().True_ACK_Message(sgps.GetGossipPubSub().Host.ID(), config.Type_VerifySubscription).GetACK_Message()
 
 	verificationMessage := Structs.NewMessageBuilder().SetMessage(message).SetSender(sgps.GetGossipPubSub().Host.ID()).SetTimestamp(time.Now().Unix()).SetACK(ACK_MESSAGE).GetMessage()
-	if err := sgps.Publish(consensus.Channel, verificationMessage, map[string]string{}); err != nil {
+	if err := Pubsub.Publish(consensus.gossipnode.GetGossipPubSub(), consensus.Channel, verificationMessage, map[string]string{}); err != nil {
 		return nil, fmt.Errorf("failed to publish verification message: %v", err)
 	}
 
@@ -245,7 +245,7 @@ func VerifySubscriptions(sgps *Pubsub.StructGossipPubSub, consensus *Consensus) 
 	log.Printf("Subscription verification completed: %d peers verified out of %d expected", finalCount, expectedResponses)
 
 	// Unsubscribe from the channel
-	if err := sgps.Unsubscribe(consensus.Channel); err != nil {
+	if err := Pubsub.Unsubscribe(consensus.gossipnode.GetGossipPubSub(), consensus.Channel); err != nil {
 		log.Printf("Warning: failed to unsubscribe from consensus channel: %v", err)
 	}
 

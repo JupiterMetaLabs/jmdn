@@ -5,7 +5,7 @@ import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
-	"gossipnode/AVC/BuddyNodes/Router"
+	Router "gossipnode/AVC/BuddyNodes/MessagePassing/Router"
 	"gossipnode/config"
 
 	"github.com/libp2p/go-libp2p/core/network"

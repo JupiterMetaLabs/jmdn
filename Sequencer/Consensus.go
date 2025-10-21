@@ -62,7 +62,7 @@ func (consensus *Consensus) Start() error {
 	log.Printf("Creating pubsub channel with %d allowed peers (1 creator + %d main + %d backup)",
 		len(allowedPeers), len(consensus.PeerList.MainPeers), len(consensus.PeerList.BackupPeers))
 
-	if err := consensus.gossipnode.CreateChannel(config.PubSub_ConsensusChannel, true, allowedPeers); err != nil {
+	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.PubSub_ConsensusChannel, true, allowedPeers); err != nil {
 		return fmt.Errorf("failed to create pubsub channel: %v", err)
 	}
 

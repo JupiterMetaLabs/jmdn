@@ -2,7 +2,7 @@ package DataProcessing
 
 import (
 	"fmt"
-	Router "gossipnode/AVC/BuddyNodes/Router"
+	Router "gossipnode/AVC/BuddyNodes/MessagePassing/Router"
 	"gossipnode/config"
 	"gossipnode/Pubsub/DataProcessing/Struct"
 

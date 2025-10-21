@@ -1,2 +1,5 @@
 grpcio
 grpcio-tools
+requests
+eth-account
+eth-utils

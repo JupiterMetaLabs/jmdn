@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
-	Helper "gossipnode/Pubsub/DataProcessing/Helper"
+	"gossipnode/Pubsub"
 	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 	"gossipnode/config"
 
@@ -59,7 +59,7 @@ func SubmitMessage(msg *Struct.Message, PubSub *Struct.GossipPubSub, ListenerNod
 	}
 
 	// Now Submit to the publish function in the pubsub
-	if err := Helper.GPStoSGPS(PubSub).Publish(config.PubSub_ConsensusChannel, msg, nil); err != nil {
+	if err := Pubsub.Publish(PubSub, config.PubSub_ConsensusChannel, msg, nil); err != nil {
 		return fmt.Errorf("failed to publish message to pubsub: %v", err)
 	}
 	return nil
@@ -80,14 +80,14 @@ func SubmitMessageToCRDT(msg string, ListenerNode *BuddyNode) error {
 // Implement PubSubHandler interface
 func (buddy *BuddyNode) Subscribe(topic string, handler func(*Struct.GossipMessage)) error {
 	if buddy.PubSub != nil {
-		return Helper.GPStoSGPS(buddy.PubSub).Subscribe(topic, handler)
+		return Pubsub.Subscribe(buddy.PubSub, topic, handler)
 	}
 	return fmt.Errorf("PubSub not available")
 }
 
 func (buddy *BuddyNode) Unsubscribe(topic string) error {
 	if buddy.PubSub != nil {
-		return Helper.GPStoSGPS(buddy.PubSub).Unsubscribe(topic)
+		return Pubsub.Unsubscribe(buddy.PubSub, topic)
 	}
 	return fmt.Errorf("PubSub not available")
 }

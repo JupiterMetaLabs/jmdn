@@ -5,7 +5,7 @@ import (
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 	"gossipnode/config"
-	Helper "gossipnode/Pubsub/DataProcessing/Helper"
+	"gossipnode/Pubsub"
 
 	"go.uber.org/zap"
 )
@@ -34,7 +34,7 @@ func (s *SubscriptionService) HandleAskForSubscription(gossipMessage *Struct.Gos
 
 	// Subscribe to the consensus channel
 
-	err := Helper.GPStoSGPS(s.pubSub).Subscribe(config.PubSub_ConsensusChannel, func(msg *Struct.GossipMessage) {
+	err := Pubsub.Subscribe(s.pubSub, config.PubSub_ConsensusChannel, func(msg *Struct.GossipMessage) {
 		log.LogConsensusInfo(fmt.Sprintf("Received pubsub message on consensus channel: %s from %s", msg.ID, msg.Sender),
 			zap.String("topic", log.Consensus_TOPIC),
 			zap.String("function", "SubscriptionService.HandleAskForSubscription"))
@@ -72,7 +72,7 @@ func (s *SubscriptionService) HandleEndPubSub(gossipMessage *Struct.GossipMessag
 	}
 
 	// Unsubscribe from the consensus channel
-	if err := Helper.GPStoSGPS(s.pubSub).Unsubscribe(config.PubSub_ConsensusChannel); err != nil {
+	if err := Pubsub.Unsubscribe(s.pubSub, config.PubSub_ConsensusChannel); err != nil {
 		log.LogConsensusError(fmt.Sprintf("Failed to unsubscribe from consensus channel: %v", err), err,
 			zap.String("topic", log.Consensus_TOPIC),
 			zap.String("function", "SubscriptionService.HandleEndPubSub"))
