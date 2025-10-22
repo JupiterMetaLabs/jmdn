@@ -18,3 +18,4 @@ immudb_mac
 *.exe
 jmdn
 immuclient
+.DS_Store

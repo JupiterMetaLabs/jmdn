@@ -2,6 +2,7 @@ package seednode
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	peerpb "gossipnode/seednode/proto"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/multiformats/go-multiaddr"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -50,10 +52,7 @@ func getPublicIP() (string, error) {
 func isValidMultiaddr(addr string) bool {
 	// Try to parse the multiaddress
 	_, err := multiaddr.NewMultiaddr(addr)
-	if err != nil {
-		return false
-	}
-	return true
+	return err == nil
 }
 
 // isPublicAddress checks if an address is public (not localhost or private)
@@ -77,8 +76,21 @@ type Client struct {
 
 // NewClient creates a new seed node client
 func NewClient(seedNodeURL string) (*Client, error) {
-	// Create gRPC connection
-	conn, err := grpc.Dial(seedNodeURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Determine if we need secure or insecure credentials based on the URL
+	var creds credentials.TransportCredentials
+	if strings.HasPrefix(seedNodeURL, "https://") || strings.Contains(seedNodeURL, ":443") {
+		// Use secure credentials for SSL/TLS connections with proper ALPN configuration
+		tlsConfig := &tls.Config{
+			NextProtos: []string{"h2"}, // Specify HTTP/2 protocol for gRPC
+		}
+		creds = credentials.NewTLS(tlsConfig)
+	} else {
+		// Use insecure credentials for non-SSL connections
+		creds = insecure.NewCredentials()
+	}
+
+	// Create gRPC connection with appropriate credentials
+	conn, err := grpc.Dial(seedNodeURL, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to seed node: %w", err)
 	}
