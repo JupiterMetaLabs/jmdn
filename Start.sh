@@ -201,8 +201,17 @@ start_network() {
     echo "✅ jmdn executable built successfully"
     echo ""
 
-    echo "Starting jmdn with alias: $ALIAS"
-    echo "Command: ./jmdn -heartbeat 10 -metrics 8080 -api 8090 -blockgen 15050 -did localhost:15052 -cli 15053 -seednode 34.174.233.203:17002 -facade 8081 -ws 8086 -alias \"$ALIAS\" -chainID 7000700"
+    # Build jmdn command with conditional alias
+    JMDN_CMD="./jmdn -heartbeat 10 -metrics 8080 -api 8090 -blockgen 15050 -did localhost:15052 -cli 15053 -seednode 34.174.233.203:17002 -facade 8081 -ws 8086 -chainID 7000700"
+    
+    if [ "$ALIAS" != "default-node" ]; then
+        JMDN_CMD="$JMDN_CMD -alias \"$ALIAS\""
+        echo "Starting jmdn with alias: $ALIAS"
+    else
+        echo "Starting jmdn without alias"
+    fi
+    
+    echo "Command: $JMDN_CMD"
     echo ""
 
     # Display service status before starting jmdn
@@ -213,10 +222,17 @@ start_network() {
     echo ""
 
     # Start jmdn with the specified parameters
-    ./jmdn -heartbeat 10 -metrics 8080 -api 8090 -blockgen 15050 -did localhost:15052 -cli 15053 -seednode 34.174.233.203:17002 -facade 8081 -ws 8086 -alias "$ALIAS" -chainID 7000700
+    eval $JMDN_CMD
 }
 
 # Parse command line arguments
+# First, handle help commands
+if [ "$1" = "-h" ] || [ "$1" = "--help" ] || [ "$1" = "-help" ]; then
+    show_help
+    exit 0
+fi
+
+# Handle status commands
 if [ "$1" = "status" ]; then
     if [ "$2" = "jmdn" ]; then
         show_jmdn_status
@@ -236,18 +252,20 @@ if [ "$1" = "status" ]; then
         echo "  status all   - Show status for both processes"
         exit 1
     fi
+# Handle exit/stop commands
 elif [ "$1" = "exit" ] || [ "$1" = "stop" ]; then
     stop_all_processes
     exit 0
-elif [ "$1" = "start" ] || [ -z "$1" ]; then
-    # start is default behavior, so handle alias parsing
+# Handle start command or default behavior (no args or start)
+elif [ "$1" = "start" ] || [ -z "$1" ] || [ "$1" = "-alias" ]; then
+    # Parse all arguments for start command
     while [[ $# -gt 0 ]]; do
         case $1 in
             -alias)
                 ALIAS="$2"
                 shift 2
                 ;;
-            -h|--help)
+            -h|--help|-help)
                 show_help
                 exit 0
                 ;;
@@ -263,13 +281,7 @@ elif [ "$1" = "start" ] || [ -z "$1" ]; then
     done
     start_network
 else
-    # Handle help and unknown commands
-    if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-        show_help
-        exit 0
-    else
-        echo "Unknown command: $1"
-        echo "Use -h or --help for usage information"
-        exit 1
-    fi
+    echo "Unknown command: $1"
+    echo "Use -h or --help for usage information"
+    exit 1
 fi
