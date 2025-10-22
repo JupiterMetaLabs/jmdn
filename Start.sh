@@ -3,12 +3,16 @@
 # Default alias if not provided
 ALIAS="default-node"
 
-# Cleanup function to kill immudb when script exits
+# Cleanup function to kill all processes when script exits
 cleanup() {
     if [ ! -z "$IMMUDB_PID" ]; then
         echo ""
         echo "Stopping ImmuDB (PID: $IMMUDB_PID)..."
         kill $IMMUDB_PID 2>/dev/null
+    fi
+    if [ ! -z "$JMDN_PID" ]; then
+        echo "Stopping jmdn (PID: $JMDN_PID)..."
+        kill $JMDN_PID 2>/dev/null
     fi
 }
 
@@ -114,12 +118,109 @@ stop_all_processes() {
     echo "🏁 All processes stopped"
 }
 
+# Function to start in daemon mode (no wait)
+start_daemon() {
+    echo "🚀 Starting JMZK Decentralized Network (Daemon Mode)"
+    echo "=================================================="
+    echo "Node Alias: $ALIAS"
+    echo ""
+
+    echo "Checking ImmuDB installation..."
+    # Check if immudb is installed
+    if ! command -v immudb &> /dev/null; then
+        echo "❌ ImmuDB is not installed or not in PATH"
+        echo "Please install ImmuDB first:"
+        echo "  curl -L https://github.com/codenotary/immudb/releases/latest/download/immudb-v1.5.2-linux-amd64 -o immudb"
+        echo "  chmod +x immudb"
+        echo "  sudo mv immudb /usr/local/bin/"
+        exit 1
+    fi
+
+    echo "✅ ImmuDB is installed"
+
+    echo ""
+    echo "Starting ImmuDB..."
+    # Start ImmuDB in the background
+    immudb &
+
+    # Store the PID for potential cleanup
+    IMMUDB_PID=$!
+
+    echo "ImmuDB started with PID: $IMMUDB_PID"
+    echo "Waiting for ImmuDB to be ready..."
+    sleep 3
+
+    # Check if ImmuDB is running and responding
+    echo "Checking ImmuDB status..."
+    if ! pgrep -f "immudb" > /dev/null; then
+        echo "❌ ImmuDB failed to start"
+        exit 1
+    fi
+
+    # Try to connect to ImmuDB to verify it's responding
+    if command -v immuclient &> /dev/null; then
+        # Use immuclient to check connection
+        if timeout 5 immuclient status &> /dev/null; then
+            echo "✅ ImmuDB is running and responding"
+        else
+            echo "⚠️  ImmuDB is running but not responding to client connections yet"
+            echo "   This is normal during startup, continuing..."
+        fi
+    else
+        echo "✅ ImmuDB process is running (immudb client not available for detailed check)"
+    fi
+
+    echo ""
+    echo "Building jmdn executable..."
+    # Build the jmdn executable with optimized flags
+    go build -ldflags='-linkmode=external -w -s' -o jmdn .
+
+    if [ $? -ne 0 ]; then
+        echo "❌ Failed to build jmdn executable"
+        exit 1
+    fi
+
+    echo "✅ jmdn executable built successfully"
+    echo ""
+
+    # Build jmdn command with conditional alias
+    JMDN_CMD="./jmdn -heartbeat 10 -metrics 8080 -api 8090 -blockgen 15050 -did localhost:15052 -cli 15053 -seednode 34.174.233.203:17002 -facade 8081 -ws 8086 -chainID 7000700"
+    
+    if [ "$ALIAS" != "default-node" ]; then
+        JMDN_CMD="$JMDN_CMD -alias \"$ALIAS\""
+        echo "Starting jmdn with alias: $ALIAS"
+    else
+        echo "Starting jmdn without alias"
+    fi
+    
+    echo "Command: $JMDN_CMD"
+    echo ""
+
+    # Start jmdn in the background
+    echo "Starting jmdn in background..."
+    eval $JMDN_CMD &
+    JMDN_PID=$!
+    
+    echo "jmdn started with PID: $JMDN_PID"
+    echo ""
+    echo "🎉 JMZK Decentralized Network is now running in daemon mode!"
+    echo "=========================================================="
+    echo "✅ ImmuDB: Running (PID: $IMMUDB_PID)"
+    echo "✅ jmdn: Running (PID: $JMDN_PID)"
+    echo ""
+    echo "To check status: ./Start.sh status all"
+    echo "To stop: ./Start.sh exit"
+    echo ""
+    echo "Processes are running in the background. Use 'exit' command to stop them."
+}
+
 # Function to show help
 show_help() {
     echo "Usage: $0 [command] [options]"
     echo ""
     echo "Commands:"
-    echo "  start         - Start the JMZK network (default)"
+    echo "  start         - Start the JMZK network (default, foreground)"
+    echo "  daemon        - Start the JMZK network in background (daemon mode)"
     echo "  exit/stop     - Stop all running processes"
     echo "  status jmdn   - Show jmdn process status and last 30 lines"
     echo "  status immu   - Show ImmuDB process status and last 30 lines"
@@ -130,8 +231,9 @@ show_help() {
     echo "  -h, --help   - Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0                                    # Start with default alias"
-    echo "  $0 start -alias my-node              # Start with custom alias"
+    echo "  $0                                    # Start with default alias (foreground)"
+    echo "  $0 start -alias my-node              # Start with custom alias (foreground)"
+    echo "  $0 daemon -alias my-node             # Start with custom alias (background)"
     echo "  $0 status jmdn                       # Check jmdn status"
     echo "  $0 exit                             # Stop all processes"
 }
@@ -159,7 +261,7 @@ start_network() {
     echo ""
     echo "Starting ImmuDB..."
     # Start ImmuDB in the background
-    immudb --dir ./data --web-server &
+    immudb &
 
     # Store the PID for potential cleanup
     IMMUDB_PID=$!
@@ -221,8 +323,25 @@ start_network() {
     echo "✅ jmdn: Built and ready to start"
     echo ""
 
-    # Start jmdn with the specified parameters
-    eval $JMDN_CMD
+    # Start jmdn in the background
+    echo "Starting jmdn in background..."
+    eval $JMDN_CMD &
+    JMDN_PID=$!
+    
+    echo "jmdn started with PID: $JMDN_PID"
+    echo ""
+    echo "🎉 JMZK Decentralized Network is now running!"
+    echo "============================================="
+    echo "✅ ImmuDB: Running (PID: $IMMUDB_PID)"
+    echo "✅ jmdn: Running (PID: $JMDN_PID)"
+    echo ""
+    echo "To check status: ./Start.sh status all"
+    echo "To stop: ./Start.sh exit"
+    echo ""
+    echo "Press Ctrl+C to stop all processes"
+    
+    # Wait for user interrupt
+    wait
 }
 
 # Parse command line arguments
@@ -256,6 +375,30 @@ if [ "$1" = "status" ]; then
 elif [ "$1" = "exit" ] || [ "$1" = "stop" ]; then
     stop_all_processes
     exit 0
+# Handle daemon command
+elif [ "$1" = "daemon" ]; then
+    # Parse all arguments for daemon command
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -alias)
+                ALIAS="$2"
+                shift 2
+                ;;
+            -h|--help|-help)
+                show_help
+                exit 0
+                ;;
+            daemon)
+                shift
+                ;;
+            *)
+                echo "Unknown option $1"
+                echo "Use -h or --help for usage information"
+                exit 1
+                ;;
+        esac
+    done
+    start_daemon
 # Handle start command or default behavior (no args or start)
 elif [ "$1" = "start" ] || [ -z "$1" ] || [ "$1" = "-alias" ]; then
     # Parse all arguments for start command
