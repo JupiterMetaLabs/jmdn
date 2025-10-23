@@ -3,7 +3,7 @@ package MessagePassing
 import (
 	"context"
 	"fmt"
-	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
+	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/config"
 	"time"
 
@@ -14,14 +14,14 @@ import (
 
 // <-- Use Builder Pattern Here -->
 type StructStreamCache struct{
-	StreamCache *Structs.StreamCache
+	StreamCache *AVCStruct.StreamCache
 }
 
-func NewStreamCacheBuilder(streamcache *Structs.StreamCache) *StructStreamCache {
+func NewStreamCacheBuilder(streamcache *AVCStruct.StreamCache) *StructStreamCache {
 	if streamcache == nil {
 		return &StructStreamCache{
-			StreamCache: &Structs.StreamCache{
-				Streams: make(map[peer.ID]*Structs.StreamEntry),
+			StreamCache: &AVCStruct.StreamCache{
+				Streams: make(map[peer.ID]*AVCStruct.StreamEntry),
 				ParallelCleanUpRoutine: false,
 			},
 		}
@@ -51,7 +51,7 @@ func (sc *StructStreamCache) SetMaxStreams(maxstreams int) *StructStreamCache {
 	return sc
 }
 
-func (sc *StructStreamCache) GetStreamCache() *Structs.StreamCache {
+func (sc *StructStreamCache) GetStreamCache() *AVCStruct.StreamCache {
 	return sc.StreamCache
 }
 
@@ -108,7 +108,7 @@ func (sc *StructStreamCache) addEntry(peerID peer.ID, stream network.Stream) {
 		sc.evictLRU()
 	}
 
-	entry := &Structs.StreamEntry{
+	entry := &AVCStruct.StreamEntry{
 		Stream:      stream,
 		LastUsed:    time.Now(),
 		AccessCount: 1,

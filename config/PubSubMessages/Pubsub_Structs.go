@@ -1,4 +1,4 @@
-package Struct
+package PubSubMessages
 
 import (
 	"sync"
@@ -52,3 +52,11 @@ type ACK_Message struct {
 	Stage  string `json:"stage"`
 }
 
+type MessageProcessing struct {
+	GossipMessage string
+	Protocol protocol.ID
+}
+
+func ConvertMessageProcessingToInterface(messageProcessing *MessageProcessing) interface{} {
+	return messageProcessing
+}

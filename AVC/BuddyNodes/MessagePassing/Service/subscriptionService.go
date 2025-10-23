@@ -3,8 +3,8 @@ package Service
 import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
-	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 	"gossipnode/config"
+	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/Pubsub"
 
 	"go.uber.org/zap"
@@ -12,18 +12,18 @@ import (
 
 // SubscriptionService handles subscription-related operations
 type SubscriptionService struct {
-	pubSub *Struct.GossipPubSub
+	pubSub *AVCStruct.GossipPubSub
 }
 
 // NewSubscriptionService creates a new subscription service
-func NewSubscriptionService(pubSub *Struct.GossipPubSub) *SubscriptionService {
+func NewSubscriptionService(pubSub *AVCStruct.GossipPubSub) *SubscriptionService {
 	return &SubscriptionService{
 		pubSub: pubSub,
 	}
 }
 
 // HandleAskForSubscription handles subscription requests
-func (s *SubscriptionService) HandleAskForSubscription(gossipMessage *Struct.GossipMessage) error {
+func (s *SubscriptionService) HandleAskForSubscription(gossipMessage *AVCStruct.GossipMessage) error {
 	log.LogConsensusInfo("Handling ask for subscription message",
 		zap.String("topic", log.Consensus_TOPIC),
 		zap.String("function", "SubscriptionService.HandleAskForSubscription"))
@@ -33,8 +33,7 @@ func (s *SubscriptionService) HandleAskForSubscription(gossipMessage *Struct.Gos
 	}
 
 	// Subscribe to the consensus channel
-
-	err := Pubsub.Subscribe(s.pubSub, config.PubSub_ConsensusChannel, func(msg *Struct.GossipMessage) {
+	err := Pubsub.Subscribe(s.pubSub, config.PubSub_ConsensusChannel, func(msg *AVCStruct.GossipMessage) {
 		log.LogConsensusInfo(fmt.Sprintf("Received pubsub message on consensus channel: %s from %s", msg.ID, msg.Sender),
 			zap.String("topic", log.Consensus_TOPIC),
 			zap.String("function", "SubscriptionService.HandleAskForSubscription"))
@@ -62,7 +61,7 @@ func (s *SubscriptionService) HandleAskForSubscription(gossipMessage *Struct.Gos
 }
 
 // HandleEndPubSub handles unsubscription requests
-func (s *SubscriptionService) HandleEndPubSub(gossipMessage *Struct.GossipMessage) error {
+func (s *SubscriptionService) HandleEndPubSub(gossipMessage *AVCStruct.GossipMessage) error {
 	log.LogConsensusInfo("Handling end pubsub message",
 		zap.String("topic", log.Consensus_TOPIC),
 		zap.String("function", "SubscriptionService.HandleEndPubSub"))
@@ -87,7 +86,7 @@ func (s *SubscriptionService) HandleEndPubSub(gossipMessage *Struct.GossipMessag
 }
 
 // handleReceivedMessage processes received pubsub messages
-func (s *SubscriptionService) handleReceivedMessage(msg *Struct.GossipMessage) error {
+func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage) error {
 	log.LogConsensusInfo("Processing received pubsub message",
 		zap.String("topic", log.Consensus_TOPIC),
 		zap.String("message_id", msg.ID),
@@ -127,7 +126,7 @@ func (s *SubscriptionService) handleReceivedMessage(msg *Struct.GossipMessage) e
 }
 
 // handleSubscriptionRequest processes subscription requests from other nodes
-func (s *SubscriptionService) handleSubscriptionRequest(msg *Struct.GossipMessage) error {
+func (s *SubscriptionService) handleSubscriptionRequest(msg *AVCStruct.GossipMessage) error{
 	log.LogConsensusInfo("Handling subscription request from pubsub",
 		zap.String("topic", log.Consensus_TOPIC),
 		zap.String("sender", string(msg.Sender)),

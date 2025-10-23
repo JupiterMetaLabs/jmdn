@@ -9,7 +9,7 @@ import (
 
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/Types"
-	Struct "gossipnode/Pubsub/DataProcessing/Struct"
+	AVCStruct "gossipnode/config/PubSubMessages"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
@@ -58,7 +58,7 @@ func NewValidationService() *ValidationService {
 }
 
 // ValidateGossipMessage validates a gossip message
-func (vs *ValidationService) ValidateGossipMessage(msg *Struct.GossipMessage) error {
+func (vs *ValidationService) ValidateGossipMessage(msg *AVCStruct.GossipMessage) error {
 	if msg == nil {
 		return &ValidationError{
 			Field:   "message",
@@ -208,7 +208,7 @@ func (vs *ValidationService) validateTimestamp(timestamp time.Time) error {
 }
 
 // validateMessageData validates message data structure
-func (vs *ValidationService) validateMessageData(data *Struct.Message) error {
+func (vs *ValidationService) validateMessageData(data *AVCStruct.Message) error {
 	if data == nil {
 		return &ValidationError{
 			Field:   "data",

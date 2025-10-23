@@ -1,9 +1,8 @@
-package Structs
+package PubSubMessages
 
 
 import (
 	"encoding/json"
-	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 	"gossipnode/config"
 	"strings"
 
@@ -12,13 +11,13 @@ import (
 
 
 type ACK_MESSAGE_REQUEST struct {
-	ACK_Message *Struct.ACK_Message
+	ACK_Message *ACK_Message
 }
 // < -- ACK Builder Pattern -- >
 // Builder constructor
 func NewACKBuilder() *ACK_MESSAGE_REQUEST {
 	return &ACK_MESSAGE_REQUEST{
-		ACK_Message: &Struct.ACK_Message{},
+		ACK_Message: &ACK_Message{},
 	}
 }
 
@@ -55,7 +54,7 @@ func (ack *ACK_MESSAGE_REQUEST) ToString() string {
 	return string(data)
 }
 
-func (ack *ACK_MESSAGE_REQUEST) GetACK_Message() *Struct.ACK_Message {
+func (ack *ACK_MESSAGE_REQUEST) GetACK_Message() *ACK_Message {
 	return ack.ACK_Message
 }
 
@@ -69,13 +68,13 @@ func (ack *ACK_MESSAGE_REQUEST) False_ACK_Message(peerID peer.ID, Stage string) 
 }
 
 type PUBSUB_Message struct{
-	Message *Struct.Message
+	Message *Message
 }
 
 // < -- Message Builder Pattern -- >
 func NewMessageBuilder() *PUBSUB_Message {
 	return &PUBSUB_Message{
-		Message: &Struct.Message{},
+		Message: &Message{},
 	}
 }
 
@@ -94,12 +93,12 @@ func (msg *PUBSUB_Message) SetTimestamp(timestamp int64) *PUBSUB_Message {
 	return msg
 }
 
-func (msg *PUBSUB_Message) SetACK(ack *Struct.ACK_Message) *PUBSUB_Message {
+func (msg *PUBSUB_Message) SetACK(ack *ACK_Message) *PUBSUB_Message {
 	msg.Message.ACK = ack
 	return msg
 }
 
-func (msg *PUBSUB_Message) GetMessage() *Struct.Message {
+func (msg *PUBSUB_Message) GetMessage() *Message {
 	return msg.Message
 }
 

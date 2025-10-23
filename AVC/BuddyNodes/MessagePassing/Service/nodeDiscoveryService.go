@@ -8,8 +8,8 @@ import (
 
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
-	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/AVC/BuddyNodes/Types"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
@@ -17,7 +17,7 @@ import (
 
 // NodeDiscoveryService handles peer discovery and CRDT synchronization
 type NodeDiscoveryService struct {
-	buddyNode     *Structs.BuddyNode
+	buddyNode     *PubSubMessages.BuddyNode
 	knownPeers    map[peer.ID]*PeerInfo
 	peerMutex     sync.RWMutex
 	discoveryChan chan peer.ID
@@ -33,7 +33,7 @@ type PeerInfo struct {
 }
 
 // NewNodeDiscoveryService creates a new node discovery service
-func NewNodeDiscoveryService(buddyNode *Structs.BuddyNode) *NodeDiscoveryService {
+func NewNodeDiscoveryService(buddyNode *PubSubMessages.BuddyNode) *NodeDiscoveryService {
 	return &NodeDiscoveryService{
 		buddyNode:     buddyNode,
 		knownPeers:    make(map[peer.ID]*PeerInfo),

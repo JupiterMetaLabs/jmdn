@@ -759,6 +759,132 @@ func Test_GetTransactionsByAccount(t *testing.T) {
 	fmt.Printf("\n✅ GetTransactionsByAccount test completed successfully!\n")
 }
 
+func Test_GetTransactionsByAccount_SpecificAddress(t *testing.T) {
+	fmt.Printf("=== Testing GetTransactionsByAccount for Specific Address ===\n")
+
+	// Initialize the accounts pool
+	err := DB_OPs.InitAccountsPool()
+	if err != nil {
+		t.Fatalf("Failed to initialize accounts pool: %v", err)
+	}
+
+	// Initialize the main database pool (needed for transaction queries)
+	poolConfig := config.DefaultConnectionPoolConfig()
+	err = DB_OPs.InitMainDBPool(poolConfig)
+	if err != nil {
+		t.Fatalf("Failed to initialize main DB pool: %v", err)
+	}
+
+	// Test with the specific address from the user's query
+	testAddress := "0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2"
+	address := common.HexToAddress(testAddress)
+	fmt.Printf("Testing with specific address: %s\n", address.Hex())
+
+	// Get transactions for the account (pass nil to use main DB connection)
+	fmt.Printf("Getting transactions for account: %s\n", address.Hex())
+	transactions, err := DB_OPs.GetTransactionsByAccount(nil, &address)
+	if err != nil {
+		t.Fatalf("Failed to get transactions: %v", err)
+	}
+
+	fmt.Printf("✅ Found %d transactions for account %s\n", len(transactions), testAddress)
+
+	// Display transaction details in a neat table
+	if len(transactions) > 0 {
+		fmt.Printf("\n📋 Transaction Details for %s:\n", testAddress)
+		fmt.Printf("┌─────────────────────────────────────────────────────────────────────────────────┐\n")
+		fmt.Printf("│ %-20s │ %-20s │ %-20s │ %-15s │ %-10s │\n", "Hash", "From", "To", "Value", "Type")
+		fmt.Printf("├─────────────────────────────────────────────────────────────────────────────────┤\n")
+
+		for _, tx := range transactions {
+			hash := tx.Hash.Hex()
+			from := "nil"
+			if tx.From != nil {
+				from = tx.From.Hex()
+			}
+			to := "nil"
+			if tx.To != nil {
+				to = tx.To.Hex()
+			}
+			value := tx.Value.String()
+			txType := fmt.Sprintf("%d", tx.Type)
+
+			fmt.Printf("│ %-20s │ %-20s │ %-20s │ %-15s │ %-10s │\n",
+				hash[:20]+"...", from, to, value, txType)
+		}
+		fmt.Printf("└─────────────────────────────────────────────────────────────────────────────────┘\n")
+
+		// Additional transaction details
+		fmt.Printf("\n📊 Transaction Summary:\n")
+		for i, tx := range transactions {
+			fmt.Printf("   Transaction %d:\n", i+1)
+			fmt.Printf("     Hash: %s\n", tx.Hash.Hex())
+			fmt.Printf("     From: %s\n", tx.From.Hex())
+			fmt.Printf("     To: %s\n", tx.To.Hex())
+			fmt.Printf("     Value: %s wei\n", tx.Value.String())
+			fmt.Printf("     Type: %d\n", tx.Type)
+			fmt.Printf("     Nonce: %d\n", tx.Nonce)
+			fmt.Printf("     Gas Limit: %d\n", tx.GasLimit)
+			if tx.GasPrice != nil {
+				fmt.Printf("     Gas Price: %s wei\n", tx.GasPrice.String())
+			}
+			if tx.MaxFee != nil {
+				fmt.Printf("     Max Fee: %s wei\n", tx.MaxFee.String())
+			}
+			if tx.MaxPriorityFee != nil {
+				fmt.Printf("     Max Priority Fee: %s wei\n", tx.MaxPriorityFee.String())
+			}
+			fmt.Printf("     Data Length: %d bytes\n", len(tx.Data))
+			fmt.Printf("     Timestamp: %d\n", tx.Timestamp)
+			fmt.Printf("     Chain ID: %s\n", tx.ChainID.String())
+			fmt.Printf("     ---\n")
+		}
+	} else {
+		fmt.Printf("📭 No transactions found for account %s\n", testAddress)
+		fmt.Printf("   This could mean:\n")
+		fmt.Printf("   - No blocks exist in the database (latest block number is 0)\n")
+		fmt.Printf("   - No transactions involving this address have been created\n")
+		fmt.Printf("   - The address has not been used in any transactions\n")
+	}
+
+	// Test the transaction count logic
+	fmt.Printf("\n🔍 Testing Transaction Count Logic:\n")
+
+	// Check latest block number
+	latestBlock, err := DB_OPs.GetLatestBlockNumber(nil)
+	if err != nil {
+		fmt.Printf("❌ Failed to get latest block number: %v\n", err)
+	} else {
+		fmt.Printf("✅ Latest block number: %d\n", latestBlock)
+		if latestBlock == 0 {
+			fmt.Printf("   ⚠️  No blocks in database - this explains why no transactions were found\n")
+		}
+	}
+
+	// Test with a different approach - check if any blocks exist
+	fmt.Printf("\n🔍 Checking for blocks in database:\n")
+
+	// Try to get block 0 (genesis block)
+	block0, err := DB_OPs.GetZKBlockByNumber(nil, 0)
+	if err != nil {
+		fmt.Printf("❌ Failed to get block 0: %v\n", err)
+	} else {
+		fmt.Printf("✅ Found block 0 with %d transactions\n", len(block0.Transactions))
+		if len(block0.Transactions) > 0 {
+			fmt.Printf("   Block 0 transactions:\n")
+			for i, tx := range block0.Transactions {
+				fmt.Printf("     TX %d: From=%s, To=%s, Value=%s\n",
+					i+1,
+					tx.From.Hex(),
+					tx.To.Hex(),
+					tx.Value.String())
+			}
+		}
+	}
+
+	fmt.Printf("\n✅ GetTransactionsByAccount test for %s completed successfully!\n", testAddress)
+}
+
 func Test_ListAllDIDs(t *testing.T) {
 	fmt.Printf("=== Testing ListAllDIDs Function ===\n")
 

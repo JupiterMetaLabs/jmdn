@@ -224,8 +224,8 @@ func sortTransactionsByNonce(txs []config.Transaction) []config.Transaction {
 // cleanupProcessingMarkers removes temporary processing markers
 func cleanupProcessingMarkers(accountsClient *config.PooledConnection, txHash string) {
 	processingKey := fmt.Sprintf("tx_processing:%s", txHash)
-	if exists, _ := DB_OPs.Exists(accountsClient, processingKey); exists {
-		if err := DB_OPs.Update(accountsClient, processingKey, -1); err != nil {
+	if exists, _ := DB_OPs.Exists(nil, processingKey); exists {
+		if err := DB_OPs.Update(nil, processingKey, -1); err != nil {
 			accountsClient.Client.Logger.Logger.Warn("Failed to clean up processing marker",
 				zap.Time(logging.Created_at, time.Now()),
 				zap.String(logging.Log_file, LOG_FILE),
@@ -466,10 +466,13 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		return categorizeDeductionError(err)
 	}
 
+	// Debugging
+	fmt.Println(">>>>>> Deducted amount from sender: ", totalDeduction.String())
+
 	// 2. Add amount to recipient
 	if err := addToRecipient(*tx.To, parsedTx.ValueBig.String(), accountsClient); err != nil {
 		// Rollback sender deduction on failure
-		if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, *tx.From, originalBalances[*tx.From]); rollbackErr != nil {
+		if rollbackErr := DB_OPs.UpdateAccountBalance(nil, *tx.From, originalBalances[*tx.From]); rollbackErr != nil {
 			accountsClient.Client.Logger.Logger.Error("Failed to rollback sender balance",
 				zap.Time(logging.Created_at, time.Now()),
 				zap.String(logging.Log_file, LOG_FILE),
@@ -496,12 +499,15 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		return fmt.Errorf("failed to add to recipient: %w", err)
 	}
 
+	// Debugging
+		fmt.Println(">>>>>> Added amount to recipient:", halfGasFee.String(), "with address", tx.To.Hex())
+
 	// 3. Split gas fee between coinbase and ZKVM
 	if err := addToRecipient(coinbaseAddr, halfGasFee.String(), accountsClient); err != nil {
 		// Rollback previous operations
 		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
 		for _, accounts := range rollbackAccounts {
-			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
+			if rollbackErr := DB_OPs.UpdateAccountBalance(nil, accounts, originalBalances[accounts]); rollbackErr != nil {
 				accountsClient.Client.Logger.Logger.Error("Failed to rollback balance",
 					zap.Time(logging.Created_at, time.Now()),
 					zap.String(logging.Log_file, LOG_FILE),
@@ -529,11 +535,14 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		return fmt.Errorf("failed to add gas fee to coinbase: %w", err)
 	}
 
+	// Debugging
+	fmt.Println(">>>>>> Added amount to Coinbase:", halfGasFee.String(), "with address", coinbaseAddr.Hex())
+
 	if err := addToRecipient(zkvmAddr, halfGasFee.String(), accountsClient); err != nil {
 		// Rollback previous operations
 		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
 		for _, accounts := range rollbackAccounts {
-			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
+			if rollbackErr := DB_OPs.UpdateAccountBalance(nil, accounts, originalBalances[accounts]); rollbackErr != nil {
 				accountsClient.Client.Logger.Logger.Error("Failed to rollback balance",
 					zap.Time(logging.Created_at, time.Now()),
 					zap.String(logging.Log_file, LOG_FILE),
@@ -561,8 +570,11 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		return fmt.Errorf("failed to add gas fee to ZKVM: %w", err)
 	}
 
+	// Debugging
+	fmt.Println(">>>>>> Added amount to ZKVM:", halfGasFee.String(), "with address", zkvmAddr.Hex())
+
 	// Mark transaction as fully processed - this is the key that prevents double processing
-	if err := DB_OPs.Create(accountsClient, txKey, time.Now().Unix()); err != nil {
+	if err := DB_OPs.Create(nil, txKey, time.Now().Unix()); err != nil {
 		accountsClient.Client.Logger.Logger.Error("Failed to mark transaction as processed",
 			zap.Time(logging.Created_at, time.Now()),
 			zap.String(logging.Log_file, LOG_FILE),
@@ -736,18 +748,18 @@ func deductFromSender(fromDID common.Address, amount string, accountsClient *con
 }
 
 // addToRecipient adds an amount to a recipient's DID account
-func addToRecipient(toDID common.Address, amount string, accountsClient *config.PooledConnection) error {
+func addToRecipient(ToAddress common.Address, amount string, accountsClient *config.PooledConnection) error {
 	// Get the current DID document
-	didDoc, err := DB_OPs.GetAccount(nil, toDID)
+	didDoc, err := DB_OPs.GetAccount(nil, ToAddress)
 	if err != nil {
 		// If DID doesn't exist,
-		return fmt.Errorf("failed to retrieve recipient DID %s: %w", toDID, err)
+		return fmt.Errorf("failed to retrieve recipient DID %s: %w", ToAddress, err)
 	}
 
 	// Parse current balance
 	currentBalance, ok := new(big.Int).SetString(didDoc.Balance, 10)
 	if !ok {
-		return fmt.Errorf("invalid balance format for DID %s: %s", toDID, didDoc.Balance)
+		return fmt.Errorf("invalid balance format for DID %s: %s", ToAddress, didDoc.Balance)
 	}
 
 	// Parse amount to add
@@ -760,12 +772,12 @@ func addToRecipient(toDID common.Address, amount string, accountsClient *config.
 	newBalance := new(big.Int).Add(currentBalance, addAmount)
 
 	// Update the balance in the database
-	if err := DB_OPs.UpdateAccountBalance(accountsClient, toDID, newBalance.String()); err != nil {
+	if err := DB_OPs.UpdateAccountBalance(nil, ToAddress, newBalance.String()); err != nil {
 		return fmt.Errorf("failed to update recipient balance: %w", err)
 	}
 
 	accountsClient.Client.Logger.Logger.Info("Added amount to recipient",
-		zap.String(logging.Account, toDID.String()),
+		zap.String(logging.Account, ToAddress.String()),
 		zap.String(logging.Connection_database, config.AccountsDBName),
 		zap.Time(logging.Created_at, time.Now()),
 		zap.String(logging.Log_file, LOG_FILE),

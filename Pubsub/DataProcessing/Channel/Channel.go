@@ -1,22 +1,21 @@
-package Channel
+package Pubsub
 
 import (
 	"fmt"
-	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 	DataProcessing "gossipnode/Pubsub/DataProcessing"
 	"sync"
 	"time"
 )
 
 var (
-	ChannelBuffer = make(chan *Struct.MessageProcessing) // small buffer prevents blocking
+	ChannelBuffer = make(chan interface{}) // small buffer prevents blocking
 	isStarted     bool
 	mu            sync.Mutex
 )
 
 // AppendMessage is used by producers to push a message into the shared channel.
 // It auto-starts the listener if not already running.
-func AppendMessage(message *Struct.MessageProcessing) {
+func AppendMessage(message *interface{}) {
 	mu.Lock()
 	if !isStarted {
 		isStarted = true
@@ -81,13 +80,18 @@ func closeChannel() {
 
 	close(ChannelBuffer)
 	isStarted = false
-	ChannelBuffer = make(chan *Struct.MessageProcessing, 100) // recreate new channel for next use
+	ChannelBuffer = make(chan interface{}) // recreate new channel for next use
 
 	fmt.Println("✅ Channel closed and reset")
 }
 
-func processMessage(msg *Struct.MessageProcessing) {
-	err := DataProcessing.NewMessageProcessing().SetMessage(msg.GossipMessage).SetProtocol(msg.Protocol).ParseMessage()
+func processMessage(msg interface{}) {
+	value, err := DataProcessing.ConvertInterfacetoStructMessageProcessing(msg)
+	if err != nil {
+		fmt.Println("Error converting message to struct:", err)
+		return
+	}
+	err = DataProcessing.NewMessageProcessing().SetMessage(value.GossipMessage).SetProtocol(value.Protocol).ParseMessage()
 	if err != nil {
 		fmt.Println("Error processing message:", err)
 	}

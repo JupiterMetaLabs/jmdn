@@ -1,12 +1,10 @@
-package Structs
+package PubSubMessages
 
 import (
 	"sync"
 	"time"
 
 	"gossipnode/AVC/BuddyNodes/Types"
-	Struct "gossipnode/Pubsub/DataProcessing/Struct"
-
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -29,7 +27,7 @@ type BuddyNode struct {
 	Mutex           sync.RWMutex
 	MetaData        MetaData
 	ResponseHandler ResponseHandler      // Interface for handling responses
-	PubSub          *Struct.GossipPubSub // Will hold a reference to GossipPubSub instance
+	PubSub          *GossipPubSub // Will hold a reference to GossipPubSub instance
 	StreamCache     *StreamCache         // LRU cache of reusable streams with TTL
 }
 

@@ -4,23 +4,22 @@ import (
 	"bufio"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
-	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
-	Router "gossipnode/AVC/BuddyNodes/MessagePassing/Router"
+	Router "gossipnode/Pubsub/Router"
 	"gossipnode/config"
-
+	AVCStruct "gossipnode/config/PubSubMessages"
 	"github.com/libp2p/go-libp2p/core/network"
 	"go.uber.org/zap"
 )
 
 // < -- CRDT Utils -- >
 type StructBuddyNode struct{
-	BuddyNode *Structs.BuddyNode
+	BuddyNode *AVCStruct.BuddyNode
 }
 
-func NewStructBuddyNode(buddy *Structs.BuddyNode) *StructBuddyNode {
+func NewStructBuddyNode(buddy *AVCStruct.BuddyNode) *StructBuddyNode {
 	if buddy == nil{
 		return &StructBuddyNode{
-			BuddyNode: &Structs.BuddyNode{},
+			BuddyNode: &AVCStruct.BuddyNode{},
 		}
 	}
 	return &StructBuddyNode{
@@ -45,9 +44,9 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 		return
 	}
 	// Add the buddy Node to the Pubsub node for singleton instance
-	Structs.NewGlobalVariables().Set_PubSubNode(buddy)
+	AVCStruct.NewGlobalVariables().Set_PubSubNode(buddy)
 
-	message := Structs.NewMessageProcessor().DeferenceMessage(msg)
+	message := AVCStruct.NewMessageProcessor().DeferenceMessage(msg)
 
 	log.LogConsensusInfo(fmt.Sprintf("Received buddy message from %s: %s", s.Conn().RemotePeer(), msg),
 		zap.String("peer", s.Conn().RemotePeer().String()),
@@ -58,9 +57,9 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 	switch message.Message.ACK.Stage {
 	case config.Type_StartPubSub:
 		// If node is okay to listen for subscriptions, then return ACK True
-		if Structs.PubSub_BuddyNode != nil && Structs.PubSub_BuddyNode.Host != nil && Structs.PubSub_BuddyNode.Network != nil {
+		if AVCStruct.PubSub_BuddyNode != nil && AVCStruct.PubSub_BuddyNode.Host != nil && AVCStruct.PubSub_BuddyNode.Network != nil {
 			// Node is ready to listen for subscriptions
-			ackMessage := Structs.NewACKBuilder().True_ACK_Message(Structs.PubSub_BuddyNode.PeerID, config.Type_StartPubSub).ToString()
+			ackMessage := AVCStruct.NewACKBuilder().True_ACK_Message(AVCStruct.PubSub_BuddyNode.PeerID, config.Type_StartPubSub).ToString()
 			if ackMessage == "" {
 				log.LogConsensusError("Failed to create ACK_TRUE message", err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 				fmt.Printf("Failed to create ACK_TRUE message")
@@ -76,7 +75,7 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 			}
 		} else {
 			// Node is not ready to listen for subscriptions
-			ackMessage := Structs.NewACKBuilder().False_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_StartPubSub).ToString()
+			ackMessage := AVCStruct.NewACKBuilder().False_ACK_Message(AVCStruct.PubSub_BuddyNode.PeerID, config.Type_StartPubSub).ToString()
 			if ackMessage == "" {
 				log.LogConsensusError("Failed to create ACK_FALSE message", err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 				fmt.Printf("Failed to create ACK_FALSE message")
@@ -95,13 +94,13 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 		if err := Router.Router(msg); err != nil {
 			log.LogConsensusError(fmt.Sprintf("Failed to handle subscription request: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 			// Send ACK_FALSE response
-			ackMessage := Structs.NewACKBuilder().False_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_SubscriptionResponse).ToString()
+			ackMessage := AVCStruct.NewACKBuilder().False_ACK_Message(AVCStruct.PubSub_BuddyNode.PeerID, config.Type_SubscriptionResponse).ToString()
 			if ackMessage != "" {
 				StructBuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage)
 			}
 		} else {
 			// Send ACK_TRUE response
-			ackMessage := Structs.NewACKBuilder().True_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_SubscriptionResponse).ToString()
+			ackMessage := AVCStruct.NewACKBuilder().True_ACK_Message(AVCStruct.PubSub_BuddyNode.PeerID, config.Type_SubscriptionResponse).ToString()
 			if ackMessage != "" {
 				StructBuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage)
 			}
@@ -112,20 +111,20 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 		if err := Router.Router(msg); err != nil {
 			log.LogConsensusError(fmt.Sprintf("Failed to handle verification request: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 			// Send ACK_FALSE response
-			ackMessage := Structs.NewACKBuilder().False_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_VerifySubscription).ToString()
+			ackMessage := AVCStruct.NewACKBuilder().False_ACK_Message(AVCStruct.PubSub_BuddyNode.PeerID, config.Type_VerifySubscription).ToString()
 			if ackMessage != "" {
 				StructBuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage)
 			}
 		} else {
 			// Send ACK_TRUE response
-			ackMessage := Structs.NewACKBuilder().True_ACK_Message(StructBuddyNode.BuddyNode.PeerID, config.Type_VerifySubscription).ToString()
+			ackMessage := AVCStruct.NewACKBuilder().True_ACK_Message(AVCStruct.PubSub_BuddyNode.PeerID, config.Type_VerifySubscription).ToString()
 			if ackMessage != "" {
 				StructBuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage)
 			}
 		}
 	case config.Type_SubscriptionResponse:
 		// Try to parse as JSON ACK_Message
-		message := Structs.NewMessageProcessor().DeferenceMessage(msg)
+		message := AVCStruct.NewMessageProcessor().DeferenceMessage(msg)
 		if message.Message.ACK != nil {
 			switch message.Message.ACK.Status {
 			case config.Type_ACK_True:

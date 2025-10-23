@@ -6,30 +6,34 @@ import (
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/Pubsub"
-	Struct "gossipnode/Pubsub/DataProcessing/Struct"
+	"gossipnode/config/PubSubMessages"
 	"gossipnode/config"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// GetBuddyNodes returns a copy of the current buddy nodes list
-func (buddy *BuddyNode) GetBuddyNodes() []peer.ID {
-	buddy.Mutex.RLock()
-	defer buddy.Mutex.RUnlock()
+type UtilsBuddyNode struct {
+	BuddyNode *PubSubMessages.BuddyNode
+}
 
-	nodes := make([]peer.ID, len(buddy.BuddyNodes.Buddies_Nodes))
-	copy(nodes, buddy.BuddyNodes.Buddies_Nodes)
+// GetBuddyNodes returns a copy of the current buddy nodes list
+func (buddy *UtilsBuddyNode) GetBuddyNodes() []peer.ID {
+	buddy.BuddyNode.Mutex.RLock()
+	defer buddy.BuddyNode.Mutex.RUnlock()
+
+	nodes := make([]peer.ID, len(buddy.BuddyNode.BuddyNodes.Buddies_Nodes))
+	copy(nodes, buddy.BuddyNode.BuddyNodes.Buddies_Nodes)
 	return nodes
 }
 
 // GetBuddyNodesCount returns the number of buddy nodes (excluding self)
-func (buddy *BuddyNode) GetBuddyNodesCount() int {
-	buddy.Mutex.RLock()
-	defer buddy.Mutex.RUnlock()
+func (buddy *UtilsBuddyNode) GetBuddyNodesCount() int {
+	buddy.BuddyNode.Mutex.RLock()
+	defer buddy.BuddyNode.Mutex.RUnlock()
 
 	count := 0
-	for _, peerID := range buddy.BuddyNodes.Buddies_Nodes {
-		if peerID != buddy.PeerID {
+	for _, peerID := range buddy.BuddyNode.BuddyNodes.Buddies_Nodes {
+		if peerID != buddy.BuddyNode.PeerID {
 			count++
 		}
 	}
@@ -37,18 +41,18 @@ func (buddy *BuddyNode) GetBuddyNodesCount() int {
 }
 
 // GetMetadata returns a copy of the current metadata
-func (buddy *BuddyNode) GetMetadata() MetaData {
-	buddy.Mutex.RLock()
-	defer buddy.Mutex.RUnlock()
-	return MetaData{
-		Received:  buddy.MetaData.Received,
-		Sent:      buddy.MetaData.Sent,
-		Total:     buddy.MetaData.Total,
-		UpdatedAt: buddy.MetaData.UpdatedAt,
+func (buddy *UtilsBuddyNode) GetMetadata() PubSubMessages.MetaData {
+	buddy.BuddyNode.Mutex.RLock()
+	defer buddy.BuddyNode.Mutex.RUnlock()
+	return PubSubMessages.MetaData{
+		Received:  buddy.BuddyNode.MetaData.Received,
+		Sent:      buddy.BuddyNode.MetaData.Sent,
+		Total:     buddy.BuddyNode.MetaData.Total,
+		UpdatedAt: buddy.BuddyNode.MetaData.UpdatedAt,
 	}
 }
 
-func SubmitMessage(msg *Struct.Message, PubSub *Struct.GossipPubSub, ListenerNode *BuddyNode) error {
+func SubmitMessage(msg *PubSubMessages.Message, PubSub *PubSubMessages.GossipPubSub, ListenerNode *PubSubMessages.BuddyNode) error {
 	OP := &Types.OP{}
 	if err := json.Unmarshal([]byte(msg.Message), OP); err != nil {
 		return fmt.Errorf("failed to unmarshal message: %v", err)
@@ -65,46 +69,4 @@ func SubmitMessage(msg *Struct.Message, PubSub *Struct.GossipPubSub, ListenerNod
 	return nil
 }
 
-func SubmitMessageToCRDT(msg string, ListenerNode *BuddyNode) error {
-	OP := &Types.OP{}
-	if err := json.Unmarshal([]byte(msg), OP); err != nil {
-		return fmt.Errorf("failed to unmarshal message: %v", err)
-	}
-	// Adding data to the CRDT First - Before PubSub
-	if err := ServiceLayer.Controller(ListenerNode.CRDTLayer, OP); err != nil {
-		return fmt.Errorf("failed to add vote to local CRDT Engine: %v", err)
-	}
-	return nil
-}
 
-// Implement PubSubHandler interface
-func (buddy *BuddyNode) Subscribe(topic string, handler func(*Struct.GossipMessage)) error {
-	if buddy.PubSub != nil {
-		return Pubsub.Subscribe(buddy.PubSub, topic, handler)
-	}
-	return fmt.Errorf("PubSub not available")
-}
-
-func (buddy *BuddyNode) Unsubscribe(topic string) error {
-	if buddy.PubSub != nil {
-		return Pubsub.Unsubscribe(buddy.PubSub, topic)
-	}
-	return fmt.Errorf("PubSub not available")
-}
-
-// Implement BuddyNodeHandler interface
-func (buddy *BuddyNode) GetPeerID() string {
-	return buddy.PeerID.String()
-}
-
-func (buddy *BuddyNode) GetHostID() string {
-	return buddy.Host.ID().String()
-}
-
-func (buddy *BuddyNode) SubmitToCRDT(message string) error {
-	return SubmitMessageToCRDT(message, buddy)
-}
-
-func (buddy *BuddyNode) GetPubSub() *Struct.GossipPubSub {
-	return buddy.PubSub
-}

@@ -3,26 +3,25 @@ package Service
 import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
-	Structs "gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
-	Struct "gossipnode/Pubsub/DataProcessing/Struct"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 
 	"go.uber.org/zap"
 )
 
 // ConsensusService handles consensus-related operations
 type ConsensusService struct {
-	buddyNode *Structs.BuddyNode
+	buddyNode *PubSubMessages.BuddyNode
 }
 
 // NewConsensusService creates a new consensus service
-func NewConsensusService(buddyNode *Structs.BuddyNode) *ConsensusService {
+func NewConsensusService(buddyNode *PubSubMessages.BuddyNode) *ConsensusService {
 	return &ConsensusService{
 		buddyNode: buddyNode,
 	}
 }
 
 // HandleVerifySubscription handles subscription verification
-func (s *ConsensusService) HandleVerifySubscription(gossipMessage *Struct.GossipMessage) error {
+func (s *ConsensusService) HandleVerifySubscription(gossipMessage *PubSubMessages.GossipMessage) error {
 	log.LogConsensusInfo("Handling verify subscription message",
 		zap.String("topic", log.Consensus_TOPIC),
 		zap.String("function", "ConsensusService.HandleVerifySubscription"))

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
-	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
-	Struct "gossipnode/Pubsub/DataProcessing/Struct"
+	AVCStruct "gossipnode/config/PubSubMessages"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/Pubsub"
 	"gossipnode/config"
 	"log"
@@ -170,7 +170,7 @@ func VerifySubscriptions(sgps *Pubsub.StructGossipPubSub, consensus *Consensus) 
 	log.Printf("Starting pubsub-based subscription verification for %d main peers", expectedResponses)
 
 	// Subscribe to the consensus channel to receive verification responses
-	handler := func(msg *Struct.GossipMessage) {
+	handler := func(msg *PubSubMessages.GossipMessage) {
 		// Check if message has ACK data
 		if msg.Data != nil && msg.Data.ACK != nil {
 			// Check if this is a verification response with all required fields
@@ -212,9 +212,9 @@ func VerifySubscriptions(sgps *Pubsub.StructGossipPubSub, consensus *Consensus) 
 
 	var message string = "Please verify your subscription to the consensus channel"
 
-	ACK_MESSAGE := Structs.NewACKBuilder().True_ACK_Message(sgps.GetGossipPubSub().Host.ID(), config.Type_VerifySubscription).GetACK_Message()
+	ACK_MESSAGE := AVCStruct.NewACKBuilder().True_ACK_Message(sgps.GetGossipPubSub().Host.ID(), config.Type_VerifySubscription).GetACK_Message()
 
-	verificationMessage := Structs.NewMessageBuilder().SetMessage(message).SetSender(sgps.GetGossipPubSub().Host.ID()).SetTimestamp(time.Now().Unix()).SetACK(ACK_MESSAGE).GetMessage()
+	verificationMessage := AVCStruct.NewMessageBuilder().SetMessage(message).SetSender(sgps.GetGossipPubSub().Host.ID()).SetTimestamp(time.Now().Unix()).SetACK(ACK_MESSAGE).GetMessage()
 	if err := Pubsub.Publish(consensus.gossipnode.GetGossipPubSub(), consensus.Channel, verificationMessage, map[string]string{}); err != nil {
 		return nil, fmt.Errorf("failed to publish verification message: %v", err)
 	}
@@ -266,7 +266,7 @@ func askPeersForSubscription(sgps *Pubsub.StructGossipPubSub, topic string, peer
 	log.Printf("Asking %d %s peers for subscription to topic: %s", len(peerAddrs), peerType, topic)
 
 	// Create a BuddyNode from the GossipPubSub's host with response handler
-	buddy := MessagePassing.NewBuddyNode(sgps.GetGossipPubSub().GetHost(), &Structs.Buddies{Buddies_Nodes: peerAddrs}, responseHandler, sgps.GetGossipPubSub())
+	buddy := MessagePassing.NewBuddyNode(sgps.GetGossipPubSub().GetHost(), &PubSubMessages.Buddies{Buddies_Nodes: peerAddrs}, responseHandler, sgps.GetGossipPubSub())
 
 	for _, peerID := range peerAddrs {
 		// Register peer for response tracking

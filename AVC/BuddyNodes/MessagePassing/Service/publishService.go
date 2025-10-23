@@ -1,28 +1,30 @@
 package Service
 
 import (
+	"encoding/json"
 	"fmt"
-	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
-	Struct "gossipnode/Pubsub/DataProcessing/Struct"
+	"gossipnode/AVC/BuddyNodes/Types"
+	"gossipnode/AVC/BuddyNodes/ServiceLayer"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 
 	"go.uber.org/zap"
 )
 
 // PublishService handles publish operations
 type PublishService struct {
-	buddyNode *Structs.BuddyNode
+	buddyNode *PubSubMessages.BuddyNode
 }
 
 // NewPublishService creates a new publish service
-func NewPublishService(buddyNode *Structs.BuddyNode) *PublishService {
+func NewPublishService(buddyNode *PubSubMessages.BuddyNode) *PublishService {
 	return &PublishService{
 		buddyNode: buddyNode,
 	}
 }
 
 // HandlePublish handles incoming publish messages
-func (s *PublishService) HandlePublish(gossipMessage *Struct.GossipMessage) error {
+func (s *PublishService) HandlePublish(gossipMessage *PubSubMessages.GossipMessage) error {
 	log.LogConsensusInfo("Handling publish message",
 		zap.String("topic", log.Consensus_TOPIC),
 		zap.String("function", "PublishService.HandlePublish"))
@@ -32,12 +34,24 @@ func (s *PublishService) HandlePublish(gossipMessage *Struct.GossipMessage) erro
 	}
 
 	// Handle the incoming message and add it to the CRDT Engine
-	if err := s.buddyNode.SubmitToCRDT(gossipMessage.Data.Message); err != nil {
+	if err := SubmitMessageToCRDT(gossipMessage.Data.Message, s.buddyNode); err != nil {
 		log.LogConsensusError(fmt.Sprintf("Failed to add vote to local CRDT Engine: %v", err), err,
 			zap.String("topic", log.Consensus_TOPIC),
 			zap.String("function", "PublishService.HandlePublish"))
 		return fmt.Errorf("failed to add vote to local CRDT Engine: %v", err)
 	}
 
+	return nil
+}
+
+func SubmitMessageToCRDT(msg string, ListenerNode *PubSubMessages.BuddyNode) error {
+	OP := &Types.OP{}
+	if err := json.Unmarshal([]byte(msg), OP); err != nil {
+		return fmt.Errorf("failed to unmarshal message: %v", err)
+	}
+	// Adding data to the CRDT First - Before PubSub
+	if err := ServiceLayer.Controller(ListenerNode.CRDTLayer, OP); err != nil {
+		return fmt.Errorf("failed to add vote to local CRDT Engine: %v", err)
+	}
 	return nil
 }

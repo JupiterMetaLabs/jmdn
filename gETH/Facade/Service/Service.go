@@ -2,6 +2,7 @@ package Service
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	block "gossipnode/Block"
@@ -13,6 +14,9 @@ import (
 	"math/big"
 	"strings"
 	"time"
+
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 // ServiceImpl implements the Service interface
@@ -76,6 +80,23 @@ func (s *ServiceImpl) BlockNumber(ctx context.Context) (*big.Int, error) {
 	}
 
 	return big.NewInt(int64(BlockNumber)), nil
+}
+
+func (s *ServiceImpl) GetTransactionCount(ctx context.Context, addr string, block string) (*big.Int, error) {
+	// Create a new context with timeout for this operation
+	_, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Return the transaction count for the given address of latest block
+	address := Utils.ConvertAddress(addr)
+	Transactions, err := DB_OPs.GetTransactionsByAccount(nil, &address)
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Println("Transactions: ", Transactions)
+
+	return big.NewInt(int64(len(Transactions))), nil
 }
 
 func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error) {
@@ -179,16 +200,46 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 }
 
 func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, error) {
-
+	// Debugging
+	fmt.Println(">>>>>> SendRawTx received: ", rawHex)
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	// Convert the bytes rawHex to proper datastructure and submit the transaction
-	var tx config.Transaction
-	err := json.Unmarshal([]byte(rawHex), &tx)
+	// Remove 0x prefix if present
+	rawHex = strings.TrimPrefix(rawHex, "0x")
+
+	// Decode hex string to bytes
+	rawBytes, err := hex.DecodeString(rawHex)
 	if err != nil {
-		return "", err
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed to decode hex: %v", err), "SendRawTx", -1); logErr != nil {
+			fmt.Printf("Failed to log SendRawTx hex decode error: %v\n", logErr)
+		}
+		return "", fmt.Errorf("failed to decode hex string: %w", err)
+	}
+
+	// Try to parse as JSON first (for test compatibility)
+	var tx config.Transaction
+	err = json.Unmarshal(rawBytes, &tx)
+	if err != nil {
+		// If JSON parsing fails, try to parse as RLP-encoded transaction
+		fmt.Println(">>>>>> JSON parsing failed, trying RLP parsing")
+
+		// Parse RLP-encoded transaction
+		var ethTx types.Transaction
+		err = rlp.DecodeBytes(rawBytes, &ethTx)
+		if err != nil {
+			if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed to parse RLP transaction: %v", err), "SendRawTx", -1); logErr != nil {
+				fmt.Printf("Failed to log SendRawTx RLP parse error: %v\n", logErr)
+			}
+			return "", fmt.Errorf("failed to parse RLP transaction: %w", err)
+		}
+
+		// Convert Ethereum transaction to our config.Transaction format
+		tx = convertEthTxToConfigTx(&ethTx)
+		fmt.Println(">>>>>> Converted RLP transaction: ", tx)
+	} else {
+		fmt.Println(">>>>>> JSON transaction parsed: ", tx)
 	}
 
 	hash, err := block.SubmitRawTransaction(&tx)
@@ -196,6 +247,8 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed: %v", err), "SendRawTx", -1); logErr != nil {
 			fmt.Printf("Failed to log SendRawTx error: %v\n", logErr)
 		}
+		// Debugging
+		fmt.Println(">>>>>> SubmitRawTransaction failed: ", err)
 		return "", err
 	}
 
@@ -203,8 +256,67 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx returned to the client: %s", hash), "SendRawTx", 1); logErr != nil {
 		fmt.Printf("Failed to log SendRawTx success: %v\n", logErr)
 	}
+	// Debugging
+	fmt.Println(">>>>>> SubmitRawTransaction success: ", hash)
 
 	return hash, nil
+}
+
+// convertEthTxToConfigTx converts an Ethereum transaction to our config.Transaction format
+func convertEthTxToConfigTx(ethTx *types.Transaction) config.Transaction {
+	// Get the sender address
+	from, _ := types.Sender(types.NewEIP155Signer(ethTx.ChainId()), ethTx)
+
+	// Convert to our transaction format
+	tx := config.Transaction{
+		Hash:      ethTx.Hash(),
+		From:      &from,
+		To:        ethTx.To(),
+		Value:     ethTx.Value(),
+		Type:      uint8(ethTx.Type()),
+		Timestamp: uint64(time.Now().Unix()),
+		ChainID:   ethTx.ChainId(),
+		Nonce:     ethTx.Nonce(),
+		GasLimit:  ethTx.Gas(),
+		Data:      ethTx.Data(),
+	}
+
+	// Set gas price based on transaction type
+	if ethTx.Type() == types.LegacyTxType {
+		tx.GasPrice = ethTx.GasPrice()
+	} else if ethTx.Type() == types.AccessListTxType {
+		tx.GasPrice = ethTx.GasPrice()
+	} else if ethTx.Type() == types.DynamicFeeTxType {
+		tx.MaxFee = ethTx.GasFeeCap()
+		tx.MaxPriorityFee = ethTx.GasTipCap()
+	}
+
+	// Set signature components
+	v, r, s := ethTx.RawSignatureValues()
+	tx.V = v
+	tx.R = r
+	tx.S = s
+
+	// Debugging
+	fmt.Println("Hash: ", tx.Hash.Hex())
+	fmt.Println("From: ", tx.From.Hex())
+	fmt.Println("To: ", tx.To.Hex())
+	fmt.Println("Value: ", tx.Value.String())
+	fmt.Println("Type: ", tx.Type)
+	fmt.Println("Timestamp: ", tx.Timestamp)
+	fmt.Println("ChainID: ", tx.ChainID.String())
+	fmt.Println("Nonce: ", tx.Nonce)
+	fmt.Println("GasLimit: ", tx.GasLimit)
+	fmt.Println("GasPrice: ", tx.GasPrice.String())
+	fmt.Println("MaxFee: ", tx.MaxFee.String())
+	fmt.Println("MaxPriorityFee: ", tx.MaxPriorityFee.String())
+	fmt.Println("Data: ", tx.Data)
+	fmt.Println("AccessList: ", tx.AccessList)
+	fmt.Println("V: ", tx.V.String())
+	fmt.Println("R: ", tx.R.String())
+	fmt.Println("S: ", tx.S.String())
+
+	return tx
 }
 
 func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, error) {
@@ -313,7 +425,7 @@ func (s *ServiceImpl) Call(ctx context.Context, msg Types.CallMsg, block *big.In
 // EstimateGas implements the Service interface - placeholder implementation
 func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint64, error) {
 	// TODO: Implement gas estimation functionality
-	return 21000, nil // Return base gas cost as fallback
+	return 321000, nil // Return base gas cost as fallback
 }
 
 // GasPrice implements the Service interface - placeholder implementation

@@ -3,9 +3,8 @@ package MessagePassing
 import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
-	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
-	Struct "gossipnode/Pubsub/DataProcessing/Struct"
 	"gossipnode/config"
+	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/logging"
 	"time"
 
@@ -46,7 +45,7 @@ func Init_Loggers(loki bool) {
 	}
 }
 
-func StartStreamHandlers(h host.Host, buddies *Structs.Buddies, responseHandler Structs.ResponseHandler, pubsub *Struct.GossipPubSub) {
+func StartStreamHandlers(h host.Host, buddies *AVCStruct.Buddies, responseHandler AVCStruct.ResponseHandler, pubsub *AVCStruct.GossipPubSub) {
 	buddy := NewBuddyNode(h, buddies, responseHandler, pubsub)
 	listener := NewListenerNode(h, responseHandler)
 
@@ -68,20 +67,20 @@ func StartStreamHandlers(h host.Host, buddies *Structs.Buddies, responseHandler 
 	log.LogConsensusInfo("Stream handlers started and listening for connections")
 }
 
-func NewListenerNode(h host.Host, responseHandler Structs.ResponseHandler) *StructListener {
+func NewListenerNode(h host.Host, responseHandler AVCStruct.ResponseHandler) *StructListener {
 	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
 	if err != nil {
 		panic(fmt.Sprintf("failed to create stream cache: %v", err))
 	}
 	streamCache.ParallelCleanUpRoutine()
 
-	Node := &Structs.BuddyNode{
+	Node := &AVCStruct.BuddyNode{
 		Host:            h,
 		Network:         h.Network(),
 		PeerID:          h.ID(),
 		ResponseHandler: responseHandler,
 		StreamCache:     streamCache.GetStreamCache(), // Max 20 streams, 5min TTL
-		MetaData: Structs.MetaData{
+		MetaData: AVCStruct.MetaData{
 			Received:  0,
 			Sent:      0,
 			Total:     0,
@@ -101,14 +100,14 @@ func NewListenerNode(h host.Host, responseHandler Structs.ResponseHandler) *Stru
 }
 
 // NewBuddyNode creates a new BuddyNode instance from an existing host
-func NewBuddyNode(h host.Host, buddies *Structs.Buddies, responseHandler Structs.ResponseHandler, pubsub *Struct.GossipPubSub) *Structs.BuddyNode {
+func NewBuddyNode(h host.Host, buddies *AVCStruct.Buddies, responseHandler AVCStruct.ResponseHandler, pubsub *AVCStruct.GossipPubSub) *AVCStruct.BuddyNode {
 	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
 	if err != nil {
 		panic(fmt.Sprintf("failed to create stream cache: %v", err))
 	}
 	streamCache.ParallelCleanUpRoutine()
 
-	buddy := &Structs.BuddyNode{
+	buddy := &AVCStruct.BuddyNode{
 		Host:            h,
 		Network:         h.Network(),
 		PeerID:          h.ID(),
@@ -116,7 +115,7 @@ func NewBuddyNode(h host.Host, buddies *Structs.Buddies, responseHandler Structs
 		ResponseHandler: responseHandler,
 		PubSub:          pubsub,
 		StreamCache:     streamCache.GetStreamCache(),
-		MetaData: Structs.MetaData{
+		MetaData: AVCStruct.MetaData{
 			Received:  0,
 			Sent:      0,
 			Total:     0,

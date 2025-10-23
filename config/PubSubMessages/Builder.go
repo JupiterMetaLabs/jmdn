@@ -1,4 +1,4 @@
-package Struct
+package PubSubMessages
 
 import (
 	"github.com/libp2p/go-libp2p/core/host"

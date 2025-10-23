@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	Channel "gossipnode/Pubsub/DataProcessing/Channel"
-	Struct "gossipnode/Pubsub/DataProcessing/Struct"
+	"gossipnode/config/PubSubMessages"
 	"gossipnode/config"
 	"log"
 	"time"
@@ -17,16 +17,16 @@ import (
 )
 
 type StructGossipPubSub struct {
-	GossipPubSub *Struct.GossipPubSub
+	GossipPubSub *PubSubMessages.GossipPubSub
 }
 
-func (sgps *StructGossipPubSub) GetGossipPubSub() *Struct.GossipPubSub {
+func (sgps *StructGossipPubSub) GetGossipPubSub() *PubSubMessages.GossipPubSub {
 	return sgps.GossipPubSub
 }
 
 // NewGossipPubSub creates a new gossip pub/sub instance
 func NewGossipPubSub(host host.Host, Protocol protocol.ID) (*StructGossipPubSub, error) {
-	GossipPubSubInput := Struct.NewGossipPubSubBuilder(nil).SetHost(host).SetProtocol(Protocol)
+	GossipPubSubInput := PubSubMessages.NewGossipPubSubBuilder(nil).SetHost(host).SetProtocol(Protocol)
 	gps := &StructGossipPubSub{
 		GossipPubSub: GossipPubSubInput.Build(),
 	}
@@ -43,7 +43,7 @@ func NewGossipPubSub(host host.Host, Protocol protocol.ID) (*StructGossipPubSub,
 }
 
 // CreateChannel creates a new channel with access control and self-subscription
-func CreateChannel(gps *Struct.GossipPubSub, channelName string, isPublic bool, allowedPeers []peer.ID) error {
+func CreateChannel(gps *PubSubMessages.GossipPubSub, channelName string, isPublic bool, allowedPeers []peer.ID) error {
 
 	gps.Mutex.Lock()
 	defer gps.Mutex.Unlock()
@@ -63,7 +63,7 @@ func CreateChannel(gps *Struct.GossipPubSub, channelName string, isPublic bool, 
 	allowedMap[gps.Host.ID()] = true
 
 	// Create channel access control
-	gps.ChannelAccess[channelName] = &Struct.ChannelAccess{
+	gps.ChannelAccess[channelName] = &PubSubMessages.ChannelAccess{
 		ChannelName:  channelName,
 		AllowedPeers: allowedMap,
 		IsPublic:     isPublic,
@@ -77,7 +77,7 @@ func CreateChannel(gps *Struct.GossipPubSub, channelName string, isPublic bool, 
 }
 
 // RemovePeerFromChannel removes a peer from the allowed list of a channel
-func RemovePeerFromChannel(gps *Struct.GossipPubSub, channelName string, peerID peer.ID) error {
+func RemovePeerFromChannel(gps *PubSubMessages.GossipPubSub, channelName string, peerID peer.ID) error {
 	gps.Mutex.Lock()
 	defer gps.Mutex.Unlock()
 
@@ -97,7 +97,7 @@ func RemovePeerFromChannel(gps *Struct.GossipPubSub, channelName string, peerID 
 }
 
 // CanSubscribe checks if a peer can subscribe to a channel
-func CanSubscribe(gps *Struct.GossipPubSub, channelName string, peerID peer.ID) bool {
+func CanSubscribe(gps *PubSubMessages.GossipPubSub, channelName string, peerID peer.ID) bool {
 	gps.Mutex.RLock()
 	defer gps.Mutex.RUnlock()
 
@@ -116,7 +116,7 @@ func CanSubscribe(gps *Struct.GossipPubSub, channelName string, peerID peer.ID) 
 }
 
 // Subscribe subscribes to a topic with access control
-func Subscribe(gps *Struct.GossipPubSub, topic string, handler func(*Struct.GossipMessage)) error {
+func Subscribe(gps *PubSubMessages.GossipPubSub, topic string, handler func(*PubSubMessages.GossipMessage)) error {
 	// Check if we can subscribe to this channel
 	hostMultiAddr := gps.Host.ID()
 	if !CanSubscribe(gps, topic, hostMultiAddr) {
@@ -134,9 +134,9 @@ func Subscribe(gps *Struct.GossipPubSub, topic string, handler func(*Struct.Goss
 }
 
 // Publish publishes a message to a topic
-func Publish(gps *Struct.GossipPubSub, topic string, data *Struct.Message, metadata map[string]string) error {
+func Publish(gps *PubSubMessages.GossipPubSub, topic string, data *PubSubMessages.Message, metadata map[string]string) error {
 	// Create message
-	message := &Struct.GossipMessage{
+	message := &PubSubMessages.GossipMessage{
 		ID:        fmt.Sprintf("%s-%d", gps.Host.ID().String(), gps.MessageID),
 		Topic:     topic,
 		Data:      data,
@@ -166,7 +166,7 @@ func Publish(gps *Struct.GossipPubSub, topic string, data *Struct.Message, metad
 }
 
 // handleGossipStream handles incoming gossip messages
-func handleGossipStream(gps *Struct.GossipPubSub, s network.Stream) {
+func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 	defer s.Close()
 
 	// Read message using delimiter
@@ -177,7 +177,7 @@ func handleGossipStream(gps *Struct.GossipPubSub, s network.Stream) {
 	}
 
 	// Deserialize message
-	var gossipMsg Struct.GossipMessage
+	var gossipMsg PubSubMessages.GossipMessage
 	if err := json.Unmarshal(messageBytes, &gossipMsg); err != nil {
 		log.Printf("Failed to unmarshal gossip message: %v", err)
 		return
@@ -203,10 +203,12 @@ func handleGossipStream(gps *Struct.GossipPubSub, s network.Stream) {
 
 	log.Printf("Received gossip message from %s on topic %s: %s", gossipMsg.Sender, gossipMsg.Topic, gossipMsg.ID)
 	// <-- Write the logic to check the processing of the message based on the message type --> TODO
-	Channel.AppendMessage(&Struct.MessageProcessing{
+	messageProcessing := &PubSubMessages.MessageProcessing{
 		GossipMessage: string(messageBytes),
 		Protocol:      gps.Protocol,
-	})
+	}
+	messageProcessingInterface := PubSubMessages.ConvertMessageProcessingToInterface(messageProcessing)
+	Channel.AppendMessage(&messageProcessingInterface)
 	// Call handler if we're subscribed to this topic
 	gps.Mutex.RLock()
 	handler, subscribed := gps.Handlers[gossipMsg.Topic]
@@ -223,7 +225,7 @@ func handleGossipStream(gps *Struct.GossipPubSub, s network.Stream) {
 }
 
 // readMessage reads a message from the stream using delimiter
-func readMessage(gps *Struct.GossipPubSub, s network.Stream) ([]byte, error) {
+func readMessage(gps *PubSubMessages.GossipPubSub, s network.Stream) ([]byte, error) {
 	var message []byte
 	buffer := make([]byte, 1)
 
@@ -244,13 +246,13 @@ func readMessage(gps *Struct.GossipPubSub, s network.Stream) ([]byte, error) {
 }
 
 // writeMessage writes a message to the stream using delimiter
-func writeMessage(gps *Struct.GossipPubSub, s network.Stream, message []byte) error {
+func writeMessage(gps *PubSubMessages.GossipPubSub, s network.Stream, message []byte) error {
 	_, err := s.Write(append(message, config.Delimiter))
 	return err
 }
 
 // gossipMessage forwards a message to connected peers
-func gossipMessage(gps *Struct.GossipPubSub, messageBytes []byte) {
+func gossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 	gps.Mutex.RLock()
 
 	for _, peerID := range gps.Peers {
@@ -268,7 +270,7 @@ func gossipMessage(gps *Struct.GossipPubSub, messageBytes []byte) {
 }
 
 // sendToPeer sends a message to a specific peer
-func sendToPeer(gps *Struct.GossipPubSub, peerID peer.ID, messageBytes []byte) error {
+func sendToPeer(gps *PubSubMessages.GossipPubSub, peerID peer.ID, messageBytes []byte) error {
 	stream, err := gps.Host.NewStream(context.Background(), peerID, gps.Protocol)
 	if err != nil {
 		return err
@@ -279,7 +281,7 @@ func sendToPeer(gps *Struct.GossipPubSub, peerID peer.ID, messageBytes []byte) e
 }
 
 // Unsubscribe unsubscribes from a topic
-func Unsubscribe(gps *Struct.GossipPubSub, topic string) error {
+func Unsubscribe(gps *PubSubMessages.GossipPubSub, topic string) error {
 	gps.Mutex.Lock()
 	defer gps.Mutex.Unlock()
 
@@ -291,7 +293,7 @@ func Unsubscribe(gps *Struct.GossipPubSub, topic string) error {
 }
 
 // GetTopics returns a list of subscribed topics
-func GetTopics(gps *Struct.GossipPubSub) []string {
+func GetTopics(gps *PubSubMessages.GossipPubSub) []string {
 	gps.Mutex.RLock()
 	defer gps.Mutex.RUnlock()
 
@@ -303,14 +305,14 @@ func GetTopics(gps *Struct.GossipPubSub) []string {
 }
 
 // GetPeerCount returns the number of connected peers
-func GetPeerCount(gps *Struct.GossipPubSub) int {
+func GetPeerCount(gps *PubSubMessages.GossipPubSub) int {
 	gps.Mutex.RLock()
 	defer gps.Mutex.RUnlock()
 	return len(gps.Peers)
 }
 
 // GetPeers returns a list of connected peers
-func GetPeers(gps *Struct.GossipPubSub) []peer.ID {
+func GetPeers(gps *PubSubMessages.GossipPubSub) []peer.ID {
 	gps.Mutex.RLock()
 	defer gps.Mutex.RUnlock()
 
@@ -322,7 +324,7 @@ func GetPeers(gps *Struct.GossipPubSub) []peer.ID {
 }
 
 // Close closes the gossip pub/sub instance
-func Close(gps *Struct.GossipPubSub) error {
+func Close(gps *PubSubMessages.GossipPubSub) error {
 	gps.Mutex.Lock()
 	defer gps.Mutex.Unlock()
 
@@ -334,7 +336,7 @@ func Close(gps *Struct.GossipPubSub) error {
 }
 
 // HandlePeerFound is called when a new peer is discovered
-func HandlePeerFound(gps *Struct.GossipPubSub, pi peer.AddrInfo) {
+func HandlePeerFound(gps *PubSubMessages.GossipPubSub, pi peer.AddrInfo) {
 	log.Printf("Peer discovered: %s", pi.ID)
 
 	// Don't add ourselves

@@ -2,8 +2,7 @@ package Router
 
 import (
 	"fmt"
-	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
-	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
+	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/config"
 )
 
@@ -16,9 +15,9 @@ func Router(message string) error {
 		return fmt.Errorf("failed to convert message: %v", err)
 	}
 	// Create service manager with dependencies
-	GossipNode := Structs.NewGlobalVariables().Get_PubSubNode()
+	GossipNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
 	PubSub := GossipNode.PubSub
-	serviceManager := Service.NewServiceManager(PubSub, GossipNode)
+	serviceManager := NewServiceManager(PubSub, GossipNode)
 
 	// Route to appropriate services based on the message ack type
 	switch gossipMessage.Data.ACK.Stage {

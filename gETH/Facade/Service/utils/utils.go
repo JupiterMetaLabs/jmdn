@@ -14,14 +14,15 @@ import (
 // Convert ZKBlock to Block - May required to review this piece
 func ConvertZKBlockToBlock(zkBlock *config.ZKBlock) *Types.Block {
 	Header := ConvertZKBlockToblockheader(*zkBlock)
+
 	return &Types.Block{
-		Header: &Header,
-		Transactions: ConvertTransactionToTxs(&zkBlock.Transactions),
-		Ommers: nil,
+		Header:          &Header,
+		Transactions:    ConvertTransactionToTxs(&zkBlock.Transactions),
+		Ommers:          nil,
 		WithdrawalsRoot: nil,
-		Withdrawals: nil,
-		BlobGasUsed: nil,
-		ExcessBlobGas: nil,
+		Withdrawals:     nil,
+		BlobGasUsed:     nil,
+		ExcessBlobGas:   nil,
 	}
 }
 
@@ -34,24 +35,96 @@ func ConvertTransactionToTxs(zkTx *[]config.Transaction) []*Types.Tx {
 	return txs
 }
 
-func ConvertTrabsactionToTx(tx *config.Transaction) *Types.Tx{
+func ConvertTrabsactionToTx(tx *config.Transaction) *Types.Tx {
 	accesslist := tx.AccessList
+	// Handle MaxFee with nil check
+	var maxFeePerGas []byte
+	if tx.MaxFee != nil {
+		maxFeePerGas = tx.MaxFee.Bytes()
+	} else {
+		maxFeePerGas = nil
+	}
+
+	// Handle MaxPriorityFee with nil check
+	var maxPriorityFeePerGas []byte
+	if tx.MaxPriorityFee != nil {
+		maxPriorityFeePerGas = tx.MaxPriorityFee.Bytes()
+	} else {
+		maxPriorityFeePerGas = nil
+	}
+
+	// Handle GasPrice with nil check
+	var gasPrice []byte
+	if tx.GasPrice != nil {
+		gasPrice = tx.GasPrice.Bytes()
+	} else {
+		gasPrice = nil
+	}
+
+	// Handle Value with nil check
+	var value []byte
+	if tx.Value != nil {
+		value = tx.Value.Bytes()
+	} else {
+		value = nil
+	}
+
+	// Handle From address with nil check
+	var from []byte
+	if tx.From != nil {
+		from = tx.From.Bytes()
+	} else {
+		from = nil
+	}
+
+	// Handle To address with nil check
+	var to []byte
+	if tx.To != nil {
+		to = tx.To.Bytes()
+	} else {
+		to = nil
+	}
+
+	// Handle R with nil check
+	var r []byte
+	if tx.R != nil {
+		r = tx.R.Bytes()
+	} else {
+		r = nil
+	}
+
+	// Handle S with nil check
+	var s []byte
+	if tx.S != nil {
+		s = tx.S.Bytes()
+	} else {
+		s = nil
+	}
+
+	// Handle V with nil check
+	var v uint32
+	if tx.V != nil {
+		v = uint32(tx.V.Uint64())
+	} else {
+		v = 0
+	}
+
 	Txn := &Types.Tx{
-		Hash:          tx.Hash.Bytes(),
-		From:          tx.From.Bytes(),
-		To:            tx.To.Bytes(),
-		Input:         tx.Data,
-		Value:         tx.Value.Bytes(),
-		Nonce:         tx.Nonce,
-		Gas:           tx.GasLimit,
-		GasPrice:      tx.GasPrice.Bytes(),
-		Type:          uint32(tx.Type),
-		R:             tx.R.Bytes(),
-		S:             tx.S.Bytes(),
-		V:             uint32(tx.V.Uint64()),
-		AccessList: &accesslist,
-		MaxFeePerGas:         tx.MaxFee.Bytes(),
-		MaxPriorityFeePerGas: tx.MaxPriorityFee.Bytes(),
+		Hash:                 tx.Hash.Bytes(),
+		From:                 from,
+		To:                   to,
+		Input:                tx.Data,
+		Value:                value,
+		Nonce:                tx.Nonce,
+		Gas:                  tx.GasLimit,
+		GasPrice:             gasPrice,
+		Type:                 uint32(tx.Type),
+		R:                    r,
+		S:                    s,
+		V:                    v,
+		AccessList:           &accesslist,
+		MaxFeePerGas:         maxFeePerGas,
+		MaxPriorityFeePerGas: maxPriorityFeePerGas,
 		MaxFeePerBlobGas:     nil,
 		BlobVersionedHashes:  nil,
 	}
@@ -96,9 +169,8 @@ func ConvertLogsToMap(logs []config.Log) []map[string]any {
 	return logMaps
 }
 
-
 // Conversion
-func ConvertZKBlockToblockheader(ZKBlock config.ZKBlock) (Types.BlockHeader){
+func ConvertZKBlockToblockheader(ZKBlock config.ZKBlock) Types.BlockHeader {
 	// First Compute the Receipts
 	Receipts, err := DB_OPs.GetReceiptsofBlock(nil, ZKBlock.BlockNumber)
 	if err != nil {
@@ -114,18 +186,18 @@ func ConvertZKBlockToblockheader(ZKBlock config.ZKBlock) (Types.BlockHeader){
 	LogsBloom := utils.GenerateBlockLogsBloom(Receipts)
 
 	return Types.BlockHeader{
-		ParentHash: ZKBlock.PrevHash.Bytes(),
-		StateRoot: ZKBlock.StateRoot.Bytes(),
-		ReceiptsRoot: Receiptshash,
-		LogsBloom: LogsBloom,
-		Miner: ZKBlock.ZKVMAddr.Bytes(),
-		Number: ZKBlock.BlockNumber,
-		GasLimit: ZKBlock.GasLimit,
-		GasUsed: ZKBlock.GasUsed,
-		Timestamp: uint64(ZKBlock.Timestamp),
+		ParentHash:          ZKBlock.PrevHash.Bytes(),
+		StateRoot:           ZKBlock.StateRoot.Bytes(),
+		ReceiptsRoot:        Receiptshash,
+		LogsBloom:           LogsBloom,
+		Miner:               ZKBlock.ZKVMAddr.Bytes(),
+		Number:              ZKBlock.BlockNumber,
+		GasLimit:            ZKBlock.GasLimit,
+		GasUsed:             ZKBlock.GasUsed,
+		Timestamp:           uint64(ZKBlock.Timestamp),
 		MixHashOrPrevRandao: nil,
-		BaseFee: nil,
-		ExtraData: []byte(ZKBlock.ExtraData),
-		Hash: ZKBlock.BlockHash.Bytes(),
+		BaseFee:             nil,
+		ExtraData:           []byte(ZKBlock.ExtraData),
+		Hash:                ZKBlock.BlockHash.Bytes(),
 	}
 }
