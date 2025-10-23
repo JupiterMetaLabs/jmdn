@@ -23,7 +23,8 @@ const (
 	DIDPrefix = "did:"
 )
 
-var LOKI_URL = logging.GetLokiURL()
+// LOKI_URL will be set conditionally based on whether Loki is enabled
+var LOKI_URL string
 
 const (
 	LOG_FILE        = "ImmuDB.log"
@@ -36,9 +37,24 @@ const (
 )
 
 func LoggingStruct() *logging.Logging {
+	return LoggingStructWithLoki(true)
+}
+
+func LoggingStructWithLoki(enableLoki bool) *logging.Logging {
+	var lokiURL string
+	if enableLoki {
+		// Only get Loki URL when actually needed
+		LOKI_URL = logging.GetLokiURL()
+		lokiURL = LOKI_URL
+	} else {
+		// Set empty string when Loki is disabled
+		LOKI_URL = ""
+		lokiURL = ""
+	}
+
 	LogStruct := &logging.Logging{
 		FileName: LOG_FILE,
-		URL:      LOKI_URL,
+		URL:      lokiURL,
 		Metadata: logging.LoggingMetadata{
 			DIR:       LOG_DIR,
 			BatchSize: LOKI_BATCH_SIZE,

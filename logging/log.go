@@ -42,6 +42,10 @@ type AsyncLogger struct {
 }
 
 func ReturnDefaultLogger(FileName string, Topic string) (*AsyncLogger, error) {
+	return ReturnDefaultLoggerWithLoki(FileName, Topic, false)
+}
+
+func ReturnDefaultLoggerWithLoki(FileName string, Topic string, enableLoki bool) (*AsyncLogger, error) {
 	const (
 		TempLOG_DIR         = "logs"
 		TempLOKI_BATCH_SIZE = 100
@@ -49,9 +53,15 @@ func ReturnDefaultLogger(FileName string, Topic string) (*AsyncLogger, error) {
 		TempLOKI_TIMEOUT    = 6 * time.Second
 		TempKEEP_LOGS       = true
 	)
+
+	var lokiURL string
+	if enableLoki {
+		lokiURL = GetLokiURL()
+	}
+
 	return NewAsyncLogger(&Logging{
 		FileName: FileName,
-		URL:      GetLokiURL(),
+		URL:      lokiURL,
 		Metadata: LoggingMetadata{
 			DIR:       TempLOG_DIR,
 			BatchSize: TempLOKI_BATCH_SIZE,

@@ -21,54 +21,57 @@ import (
 
 // Server implements the gRPC Chain service
 type Server struct {
-    proto.UnimplementedChainServer
+	proto.UnimplementedChainServer
+	ChainID int
 }
 
 // StartGRPC starts the gRPC server on the specified port
-func StartGRPC(port int) error  {
-    // Create a listener on the specified port
-    lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-    if err != nil {
-        return fmt.Errorf("failed to create listener: %w", err)
-    }
+func StartGRPC(port int, chainID int) error {
+	// Create a listener on the specified port
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return fmt.Errorf("failed to create listener: %w", err)
+	}
 
-    // Create a new gRPC server with default options
-    grpcServer := grpc.NewServer(
-        grpc.MaxRecvMsgSize(10 * 1024 * 1024), // 10MB max message size
-    )
+	// Create a new gRPC server with default options
+	grpcServer := grpc.NewServer(
+		grpc.MaxRecvMsgSize(10 * 1024 * 1024), // 10MB max message size
+	)
 
-    // Register the service implementation
-    server := &Server{}
-    proto.RegisterChainServer(grpcServer, server)
+	// Register the service implementation
+	server := &Server{
+		ChainID: chainID,
+	}
+	proto.RegisterChainServer(grpcServer, server)
 
-    // Register health check service
-    healthServer := health.NewServer()
-    grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
-    healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+	// Register health check service
+	healthServer := health.NewServer()
+	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
+	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 
-    // Register reflection service for debugging
-    reflection.Register(grpcServer)
+	// Register reflection service for debugging
+	reflection.Register(grpcServer)
 
-    // Start the server in a goroutine
-    go func() {
-        log.Info().Int("port", port).Msg("gRPC server starting")
-        if err := grpcServer.Serve(lis); err != nil {
-            log.Fatal().Err(err).Msg("Failed to serve gRPC")
-        }
-    }()
+	// Start the server in a goroutine
+	go func() {
+		log.Info().Int("port", port).Msg("gRPC server starting")
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Fatal().Err(err).Msg("Failed to serve gRPC")
+		}
+	}()
 
-    // Set up graceful shutdown
-    stop := make(chan os.Signal, 1)
-    signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-    
-    // Block until we receive a shutdown signal
-    <-stop
-    log.Info().Msg("Shutting down gRPC server...")
-    
-    // Gracefully stop the server
-    grpcServer.GracefulStop()
-    healthServer.Shutdown()
-    log.Info().Msg("gRPC server stopped")
+	// Set up graceful shutdown
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	// Block until we receive a shutdown signal
+	<-stop
+	log.Info().Msg("Shutting down gRPC server...")
+
+	// Gracefully stop the server
+	grpcServer.GracefulStop()
+	healthServer.Shutdown()
+	log.Info().Msg("gRPC server stopped")
 
 	return nil
 }
@@ -162,7 +165,7 @@ func (s *Server) StreamLogs(req *proto.LogsSubReq, stream proto.Chain_StreamLogs
 
 func (s *Server) GetChainID(ctx context.Context, req *proto.Empty) (*proto.Quantity, error) {
 	log.Info().Msg("gRPC: GetChainID")
-	quantity, err := _GetChainID(req)
+	quantity, err := _GetChainID(req, s.ChainID)
 	if err != nil {
 		log.Error().Err(err).Msg("gRPC: GetChainID failed")
 		return nil, status.Errorf(codes.Internal, "failed to get chain ID: %v", err)

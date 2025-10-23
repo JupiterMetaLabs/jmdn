@@ -10,7 +10,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/gETH/Facade/Service/Logger"
 	"gossipnode/gETH/Facade/Service/Types"
-	"gossipnode/gETH/Facade/Service/Utils"
+	Utils "gossipnode/gETH/Facade/Service/utils"
 	"math/big"
 	"strings"
 	"time"
@@ -20,11 +20,15 @@ import (
 )
 
 // ServiceImpl implements the Service interface
-type ServiceImpl struct{}
+type ServiceImpl struct {
+	ChainIDValue int
+}
 
 // NewService creates a new service implementation
-func NewService() Service {
-	return &ServiceImpl{}
+func NewService(chainID int) Service {
+	return &ServiceImpl{
+		ChainIDValue: chainID,
+	}
 }
 
 func (s *ServiceImpl) ChainID(ctx context.Context) (*big.Int, error) {
@@ -32,15 +36,13 @@ func (s *ServiceImpl) ChainID(ctx context.Context) (*big.Int, error) {
 	opCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	ChainID := 7000700
-
 	// Log the operation
 	if err := Logger.LogData(opCtx, "ChainID returned to the client", "ChainID", 1); err != nil {
 		// Log error but don't fail the operation
 		fmt.Printf("Failed to log ChainID operation: %v\n", err)
 	}
 
-	return big.NewInt(int64(ChainID)), nil
+	return big.NewInt(int64(s.ChainIDValue)), nil
 }
 
 func (s *ServiceImpl) ClientVersion(ctx context.Context) (string, error) {

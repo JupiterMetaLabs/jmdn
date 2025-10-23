@@ -86,11 +86,15 @@ func PutMainDBConnection(conn *config.PooledConnection) {
 
 // InitMainDBPool initializes the main database connection pool.
 func InitMainDBPool(poolConfig *config.ConnectionPoolConfig) error {
+	return InitMainDBPoolWithLoki(poolConfig, true)
+}
+
+func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki bool) error {
 	var initErr error
 
 	mainDBPoolOnce.Do(func() {
 		fmt.Println("Creating logger for main DB pool...")
-		logger, err := config.NewAsyncLogger()
+		logger, err := config.NewAsyncLoggerWithLoki(enableLoki)
 		if err != nil {
 			fmt.Printf("Failed to create logger: %v\n", err)
 			initErr = fmt.Errorf("failed to create logger for main DB pool: %w", err)
@@ -188,7 +192,7 @@ func CloseMainDBPool() {
 func connectToMainDB() error {
 	// This function contains the database setup logic from the original NewMainDBClient.
 	// It creates a temporary, single-use client.
-	logger, err := config.NewAsyncLogger()
+	logger, err := config.NewAsyncLoggerWithLoki(false) // Disable Loki for temporary client
 	if err != nil {
 		return fmt.Errorf("failed to create logger for DB setup: %w", err)
 	}
@@ -202,8 +206,8 @@ func connectToMainDB() error {
 
 	// build file paths inside .immudb-state
 	certFile := filepath.Join(stateDir, "server.cert.pem")
-	keyFile  := filepath.Join(stateDir, "server.key.pem")
-	caFile   := filepath.Join(stateDir, "ca.cert.pem")
+	keyFile := filepath.Join(stateDir, "server.key.pem")
+	caFile := filepath.Join(stateDir, "ca.cert.pem")
 	fmt.Println("Certificate paths built successfully")
 
 	// Configure the client - disable mTLS for local development
@@ -212,7 +216,7 @@ func connectToMainDB() error {
 		WithPort(config.DBPort).
 		WithDir(stateDir).
 		WithMaxRecvMsgSize(1024 * 1024 * 20). // 20MB message size
-		WithDisableIdentityCheck(false). 
+		WithDisableIdentityCheck(false).
 		WithMTLsOptions(
 			client.MTLsOptions{}.WithCertificate(certFile).WithPkey(keyFile).WithClientCAs(caFile).WithServername(config.DBAddress),
 		)
