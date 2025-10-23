@@ -15,17 +15,17 @@ func NewACKBuilder() *ACK {
 }
 
 // Chainable builder methods
-func (ack *ACK) setTrueStatus() *ACK {
+func (ack *ACK) SetTrueStatus() *ACK {
 	ack.Status = config.Type_ACK_True
 	return ack
 }
 
-func (ack *ACK) setFalseStatus() *ACK {
+func (ack *ACK) SetFalseStatus() *ACK {
 	ack.Status = config.Type_ACK_False
 	return ack
 }
 
-func (ack *ACK) setPeerID(peerID peer.ID) *ACK {
+func (ack *ACK) SetPeerID(peerID peer.ID) *ACK {
 	ack.PeerID = peerID.String()
 	return ack
 }
@@ -34,7 +34,7 @@ func (ack *ACK) GetPeerID() string {
 	return ack.PeerID
 }
 
-func (ack *ACK) setStage(stage string) *ACK {
+func (ack *ACK) SetStage(stage string) *ACK {
 	ack.Stage = stage
 	return ack
 }
@@ -61,9 +61,9 @@ func (ack *ACK) ToString() string {
 
 // Trying to acheive the builder pattern for the ACK message
 func (ack *ACK) True_ACK_Message(peerID peer.ID, Stage string) *ACK {
-	return NewACKBuilder().setTrueStatus().setPeerID(peerID).setStage(Stage)
+	return NewACKBuilder().SetTrueStatus().SetPeerID(peerID).SetStage(Stage)
 }
 
 func (ack *ACK) False_ACK_Message(peerID peer.ID, Stage string) *ACK {
-	return NewACKBuilder().setFalseStatus().setPeerID(peerID).setStage(Stage)
+	return NewACKBuilder().SetFalseStatus().SetPeerID(peerID).SetStage(Stage)
 }

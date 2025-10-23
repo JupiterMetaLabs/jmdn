@@ -30,7 +30,6 @@ func NewStructBuddyNode(buddy *AVCStruct.BuddyNode) *StructBuddyNode {
 
 // HandleBuddyNodesMessageStream handles incoming messages on the buddy nodes protocol
 func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
-	buddy := StructBuddyNode.BuddyNode
 	defer s.Close()
 
 	reader := bufio.NewReader(s)
@@ -45,8 +44,6 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 		return
 	}
 
-	// Add the buddy Node to the Pubsub node for singleton instance
-	AVCStruct.NewGlobalVariables().Set_PubSubNode(buddy)
 
 	message := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(msg)
 

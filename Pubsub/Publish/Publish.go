@@ -28,6 +28,11 @@ func Publish(gps *PubSubMessages.GossipPubSub, topic string, message *PubSubMess
 	}
 	gps.MessageID++
 
+	// Need to change the message type to Processmessage type from config.Type_ToBeProcessed if the current type is Publish @config.Type_Publish
+	if messageGossip.Data.GetACK().GetStage() == config.Type_Publish {
+		messageGossip.Data.GetACK().SetStage(config.Type_ToBeProcessed)
+	}
+
 	// Serialize message
 	messageBytes, err := json.Marshal(messageGossip)
 	if err != nil {

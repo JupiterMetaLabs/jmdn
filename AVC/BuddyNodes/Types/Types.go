@@ -19,8 +19,8 @@ type Controller struct {
 }
 
 type KeyValue struct {
-	Key   string
-	Value string
+	Key   string // String of the peer id of struct PubSubMessages.PeerID type peer.ID
+	Value string // string of the json message of struct PubSubMessages.Vote.Vote. Vote is a int8
 }
 
 type OP struct {

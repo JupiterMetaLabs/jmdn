@@ -24,8 +24,7 @@ func NewListenerStruct(listner *AVCStruct.BuddyNode) *StructListener{
 
 func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.Stream) {
 	defer s.Close()
-	// Add the buddy Node to the Listener node for singleton instance
-	AVCStruct.NewGlobalVariables().Set_ForListner(StructListenerNode.ListenerBuddyNode)
+
 
 	reader := bufio.NewReader(s)
 	msg, err := reader.ReadString(config.Delimiter)

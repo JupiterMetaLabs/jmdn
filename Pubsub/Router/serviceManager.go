@@ -9,7 +9,7 @@ import (
 // ServiceManager coordinates all services
 type ServiceManager struct {
 	subscriptionService  *PubSubConnector.SubscriptionService
-	consensusService     *Service.ConsensusService
+	consensusService     *Service.VerificationService
 	publishService       *Service.PublishService
 	nodeDiscoveryService *Service.NodeDiscoveryService
 	validationService    *Service.ValidationService
@@ -20,7 +20,7 @@ func NewServiceManager(pubSub *AVCStruct.GossipPubSub, buddyNode *AVCStruct.Budd
 	// Convert the buddyNode into struct
 	return &ServiceManager{
 		subscriptionService:  PubSubConnector.NewSubscriptionService(pubSub),
-		consensusService:     Service.NewConsensusService(buddyNode),
+		consensusService:     Service.NewVerificationService(buddyNode),
 		publishService:       Service.NewPublishService(buddyNode),
 		nodeDiscoveryService: Service.NewNodeDiscoveryService(buddyNode),
 		validationService:    Service.NewValidationService(),
@@ -33,7 +33,7 @@ func (sm *ServiceManager) GetSubscriptionService() *PubSubConnector.Subscription
 }
 
 // GetConsensusService returns the consensus service
-func (sm *ServiceManager) GetConsensusService() *Service.ConsensusService {
+func (sm *ServiceManager) GetConsensusService() *Service.VerificationService {
 	return sm.consensusService
 }
 

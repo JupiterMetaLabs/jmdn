@@ -24,7 +24,10 @@ func Router(message *AVCStruct.GossipMessage) error {
 		return serviceManager.GetConsensusService().HandleVerifySubscription(message)
 	case config.Type_EndPubSub:
 		return serviceManager.GetSubscriptionService().HandleEndPubSub(message)
-	case config.Type_Publish:
+	// case config.Type_Publish:
+	// 	return serviceManager.GetPublishService().HandlePublish(message)
+	case config.Type_ToBeProcessed:
+		// TODO not implemented yet
 		return serviceManager.GetPublishService().HandlePublish(message)
 	default:
 		return fmt.Errorf("unknown stage: %s", message.Data.ACK.Stage)

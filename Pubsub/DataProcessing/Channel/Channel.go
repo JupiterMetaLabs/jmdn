@@ -87,6 +87,7 @@ func closeChannel() {
 }
 
 func processMessage(msg PubSubMessages.GossipMessage) {
+	// This is the to be processed message so Publish message is not a type here
 	err := Router.Router(&msg)
 	if err != nil {
 		fmt.Println("Error processing message:", err)

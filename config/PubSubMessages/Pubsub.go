@@ -43,14 +43,14 @@ type GossipPubSub struct {
 
 type Message struct {
 	Sender    peer.ID
-	Message   string // json string of the json message - it could be a vote, a block, a transaction, etc.
+	Message   string // json string of the json message - it would be a OP of struct Types.OP with the Vote of struct Vote
 	Timestamp int64
 	ACK       *ACK
 }
 
 type Vote struct {
 	Vote int8 `json:"vote"` // 1 for yes, -1 for no
-	BlockHash string `json:"block_hash"`
+	BlockHash string `json:"block_hash"` // hash of the block
 }
 
 type ACK struct {

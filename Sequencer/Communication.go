@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
-	PubSubMessages "gossipnode/config/PubSubMessages"
-	Connector "gossipnode/Pubsub/Subscription"
-	Publisher "gossipnode/Pubsub/Publish"
+	"gossipnode/Sequencer/Router"
 	"gossipnode/config"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 	"log"
 	"sync"
 	"time"
+
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -156,100 +156,73 @@ func AskForSubscription(gps *PubSubMessages.GossipPubSub, topic string, consensu
 
 // VerifySubscriptions publishes a verification message to the pubsub channel and collects ACK responses
 // All subscribed nodes should reply with ACK_TRUE status and their PeerID
+// This function now uses the Router for centralized verification handling
 func VerifySubscriptions(gps *PubSubMessages.GossipPubSub, consensus *Consensus) (map[peer.ID]string, error) {
-	// Create a channel to collect verification responses
-	verificationResponses := make(map[peer.ID]string)
-	var mu sync.Mutex
+	log.Printf("Starting pubsub-based subscription verification for %d main peers", len(consensus.PeerList.MainPeers))
 
-	// Expected number of responses (13 main peers)
-	expectedResponses := len(consensus.PeerList.MainPeers)
-	responseCount := 0
-	timeout := 10 * time.Second
+	// Create Router instance for centralized verification handling
+	router := createRouter(gps)
+	defer router.Close()
 
-	log.Printf("Starting pubsub-based subscription verification for %d main peers", expectedResponses)
-
-	// Subscribe to the consensus channel to receive verification responses
-	handler := func(msg *PubSubMessages.GossipMessage) {
-		// Check if message has ACK data
-		if msg.Data != nil && msg.Data.ACK != nil {
-			// Check if this is a verification response with all required fields
-			if msg.Data.ACK.Status == config.Type_ACK_True && msg.Data.ACK.Stage == config.Type_VerifySubscription {
-				// Parse peer ID
-				peerID, err := peer.Decode(msg.Data.ACK.PeerID)
-				if err != nil {
-					log.Printf("Failed to decode peer ID: %v", err)
-					return
-				}
-
-				// Check if this peer is in our main peers list
-				isMainPeer := false
-				for _, mainPeer := range consensus.PeerList.MainPeers {
-					if mainPeer == peerID {
-						isMainPeer = true
-						break
-					}
-				}
-
-				if isMainPeer {
-					mu.Lock()
-					verificationResponses[peerID] = msg.Data.ACK.PeerID
-					responseCount++
-					log.Printf("Received verification ACK from main peer: %s", peerID)
-					mu.Unlock()
-				} else {
-					log.Printf("Received verification ACK from non-main peer: %s (ignoring)", peerID)
-				}
-			}
-		}
+	// Use the Router to verify subscriptions with a 10-second timeout
+	verificationResponses, err := router.VerifySubscriptions(consensus.PeerList.MainPeers, 10*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("router verification failed: %v", err)
 	}
 
-	// Subscribe to the consensus channel
-	if err := Connector.Subscribe(gps, consensus.Channel, handler); err != nil {
-		return nil, fmt.Errorf("failed to subscribe to consensus channel for verification: %v", err)
-	}
-
-
-	var message string = "Please verify your subscription to the consensus channel"
-
-	ACK_MESSAGE := PubSubMessages.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_VerifySubscription)
-
-	verificationMessage := PubSubMessages.NewMessageBuilder(nil).SetMessage(message).SetSender(gps.Host.ID()).SetTimestamp(time.Now().Unix()).SetACK(ACK_MESSAGE)
-
-	if err := Publisher.Publish(gps, consensus.Channel, verificationMessage, map[string]string{}); err != nil {
-		return nil, fmt.Errorf("failed to publish verification message: %v", err)
-	}
-
-	log.Printf("Published verification request to pubsub channel: %s", consensus.Channel)
-
-	// Wait for responses with timeout
-	startTime := time.Now()
-	for time.Since(startTime) < timeout {
-		mu.Lock()
-		currentCount := responseCount
-		mu.Unlock()
-
-		if currentCount >= expectedResponses {
-			log.Printf("Received all expected verification responses: %d/%d", currentCount, expectedResponses)
-			break
-		}
-
-		// Check every 100ms
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	// Final count
-	mu.Lock()
-	finalCount := responseCount
-	mu.Unlock()
-
-	log.Printf("Subscription verification completed: %d peers verified out of %d expected", finalCount, expectedResponses)
-
-	// Unsubscribe from the channel
-	if err := Connector.Unsubscribe(gps, consensus.Channel); err != nil {
-		log.Printf("Warning: failed to unsubscribe from consensus channel: %v", err)
-	}
+	log.Printf("Subscription verification completed: %d peers verified out of %d expected",
+		len(verificationResponses), len(consensus.PeerList.MainPeers))
 
 	return verificationResponses, nil
+}
+
+// createRouter creates a new Router instance for the given GossipPubSub
+func createRouter(gps *PubSubMessages.GossipPubSub) *Router.Router {
+	// Create a BuddyNode from the GossipPubSub to use with Router
+	buddyNode := &PubSubMessages.BuddyNode{
+		PeerID: gps.Host.ID(),
+		Host:   gps.Host,
+		PubSub: gps,
+	}
+
+	// Create Router instance for centralized verification handling
+	return Router.NewRouter(buddyNode)
+}
+
+// ProcessVerificationMessage processes incoming verification messages using the Router
+func ProcessVerificationMessage(gps *PubSubMessages.GossipPubSub, gossipMessage *PubSubMessages.GossipMessage) error {
+	// Create Router instance for centralized verification handling
+	router := createRouter(gps)
+	defer router.Close()
+	// Use the Router to process the verification message
+	return router.ProcessCompleteVerification(gossipMessage)
+}
+
+// CheckNodeSubscriptionStatus checks if a node is subscribed using the Router
+func CheckNodeSubscriptionStatus(gps *PubSubMessages.GossipPubSub) (bool, error) {
+	// Create Router instance for centralized verification handling
+	router := createRouter(gps)
+	defer router.Close()
+	// Use the Router to check subscription status
+	return router.CheckSubscriptionStatus()
+}
+
+// SendVerificationResponseWithRouter sends verification response using the Router
+func SendVerificationResponseWithRouter(gps *PubSubMessages.GossipPubSub, accepted bool) error {
+	// Create Router instance for centralized verification handling
+	router := createRouter(gps)
+	defer router.Close()
+	// Use the Router to send verification response with validation
+	return router.SendVerificationResponseWithValidation(accepted)
+}
+
+// GetVerificationStatsWithRouter gets verification statistics using the Router
+func GetVerificationStatsWithRouter(gps *PubSubMessages.GossipPubSub) map[string]interface{} {
+	// Create Router instance for centralized verification handling
+	router := createRouter(gps)
+
+	// Use the Router to get verification stats
+	return router.GetVerificationStats()
 }
 
 // askPeersForSubscription asks a list of peers for subscription

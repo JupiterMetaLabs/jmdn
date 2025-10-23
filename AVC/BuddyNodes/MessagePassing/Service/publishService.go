@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
-	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
+	"gossipnode/AVC/BuddyNodes/Types"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 
 	"go.uber.org/zap"
@@ -46,9 +46,14 @@ func (s *PublishService) HandlePublish(gossipMessage *PubSubMessages.GossipMessa
 
 func SubmitMessageToCRDT(msg string, ListenerNode *PubSubMessages.BuddyNode) error {
 	OP := &Types.OP{}
-	if err := json.Unmarshal([]byte(msg), OP); err != nil {
+	Vote := &PubSubMessages.Vote{}
+	if err := json.Unmarshal([]byte(msg), Vote); err != nil {
 		return fmt.Errorf("failed to unmarshal message: %v", err)
 	}
+	OP.NodeID = ListenerNode.PeerID
+	OP.OpType = Types.ADD
+	OP.KeyValue = *Vote.ReturnOP(ListenerNode.PeerID)
+
 	// Adding data to the CRDT First - Before PubSub
 	if err := ServiceLayer.Controller(ListenerNode.CRDTLayer, OP); err != nil {
 		return fmt.Errorf("failed to add vote to local CRDT Engine: %v", err)

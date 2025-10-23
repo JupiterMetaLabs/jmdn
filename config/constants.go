@@ -49,6 +49,7 @@ const (
 	Type_StartPubSub        = "START_PUBSUB"
 	Type_EndPubSub          = "END_PUBSUB"
 	Type_Publish            = "PUBLISH"
+	Type_ToBeProcessed      = "PROCESS_MESSAGE"
 	Type_Subscribe          = "SUBSCRIBE"
 	Type_Unsubscribe        = "UNSUBSCRIBE"
 	Type_AskForSubscription = "ASK_FOR_SUBSCRIPTION"
