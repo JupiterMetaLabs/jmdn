@@ -10,10 +10,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-const (
-	MaxMainPeers   = 13
-	MaxBackupPeers = 3
-)
+
 
 type PeerList struct {
 	MainPeers   []peer.ID
@@ -48,7 +45,7 @@ func (consensus *Consensus) Start() error {
 	}
 
 	// Create allowed peers list (1 creator + 13 main + 3 backup = 17 total)
-	allowedPeers := make([]peer.ID, 0, MaxMainPeers+MaxBackupPeers+1)
+	allowedPeers := make([]peer.ID, 0, config.MaxMainPeers + config.MaxBackupPeers+1)
 
 	// Add the creator (host) to the allowed list
 	allowedPeers = append(allowedPeers, consensus.Host.ID())
@@ -97,7 +94,7 @@ func (consensus *Consensus) RequestSubscriptionPermission() error {
 	log.Printf("Requesting subscription permission from buddy nodes for channel: %s", consensus.Channel)
 
 	// Use the AskForSubscription function from Communication.go
-	err := AskForSubscription(consensus.gossipnode, consensus.Channel, consensus)
+	err := AskForSubscription(consensus.gossipnode.GetGossipPubSub(), consensus.Channel, consensus)
 	if err != nil {
 		return fmt.Errorf("failed to get subscription permission: %w", err)
 	}
@@ -116,7 +113,7 @@ func (consensus *Consensus) VerifySubscriptions() error {
 	log.Printf("Starting subscription verification using pubsub messaging...")
 
 	// Use the new VerifySubscriptions function from Communication.go
-	verifiedPeerIDs, err := VerifySubscriptions(consensus.gossipnode, consensus)
+	verifiedPeerIDs, err := VerifySubscriptions(consensus.gossipnode.GetGossipPubSub(), consensus)
 	if err != nil {
 		return fmt.Errorf("failed to verify subscriptions: %v", err)
 	}
@@ -124,8 +121,8 @@ func (consensus *Consensus) VerifySubscriptions() error {
 	log.Printf("Received verification responses from %d peers", len(verifiedPeerIDs))
 
 	// Verify that we have the expected number of subscribers (13)
-	if len(verifiedPeerIDs) != MaxMainPeers {
-		return fmt.Errorf("incorrect number of verified peers: got %d, expected %d", len(verifiedPeerIDs), MaxMainPeers)
+	if len(verifiedPeerIDs) != config.MaxMainPeers {
+		return fmt.Errorf("incorrect number of verified peers: got %d, expected %d", len(verifiedPeerIDs), config.MaxMainPeers)
 	}
 
 	// Log all verified PeerIDs

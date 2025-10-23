@@ -1,13 +1,14 @@
 package Router
 
 import (
-	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
+	PubSubConnector "gossipnode/AVC/BuddyNodes/MessagePassing/Service/PubSubConnector"
+	Service "gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	AVCStruct "gossipnode/config/PubSubMessages"
 )
 
 // ServiceManager coordinates all services
 type ServiceManager struct {
-	subscriptionService  *Service.SubscriptionService
+	subscriptionService  *PubSubConnector.SubscriptionService
 	consensusService     *Service.ConsensusService
 	publishService       *Service.PublishService
 	nodeDiscoveryService *Service.NodeDiscoveryService
@@ -18,7 +19,7 @@ type ServiceManager struct {
 func NewServiceManager(pubSub *AVCStruct.GossipPubSub, buddyNode *AVCStruct.BuddyNode) *ServiceManager {
 	// Convert the buddyNode into struct
 	return &ServiceManager{
-		subscriptionService:  Service.NewSubscriptionService(pubSub),
+		subscriptionService:  PubSubConnector.NewSubscriptionService(pubSub),
 		consensusService:     Service.NewConsensusService(buddyNode),
 		publishService:       Service.NewPublishService(buddyNode),
 		nodeDiscoveryService: Service.NewNodeDiscoveryService(buddyNode),
@@ -27,7 +28,7 @@ func NewServiceManager(pubSub *AVCStruct.GossipPubSub, buddyNode *AVCStruct.Budd
 }
 
 // GetSubscriptionService returns the subscription service
-func (sm *ServiceManager) GetSubscriptionService() *Service.SubscriptionService {
+func (sm *ServiceManager) GetSubscriptionService() *PubSubConnector.SubscriptionService {
 	return sm.subscriptionService
 }
 

@@ -7,6 +7,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 )
+
 // GossipMessage represents a message in the gossip pub/sub system
 type GossipMessage struct {
 	ID        string                 `json:"id"`                 // Unique message identifier
@@ -44,19 +45,16 @@ type Message struct {
 	Sender    peer.ID
 	Message   string // json string of the json message - it could be a vote, a block, a transaction, etc.
 	Timestamp int64
-	ACK       *ACK_Message
+	ACK       *ACK
 }
-type ACK_Message struct {
+
+type Vote struct {
+	Vote int8 `json:"vote"` // 1 for yes, -1 for no
+	BlockHash string `json:"block_hash"`
+}
+
+type ACK struct {
 	Status string `json:"status"`
 	PeerID string `json:"peer_id"`
 	Stage  string `json:"stage"`
-}
-
-type MessageProcessing struct {
-	GossipMessage string
-	Protocol protocol.ID
-}
-
-func ConvertMessageProcessingToInterface(messageProcessing *MessageProcessing) interface{} {
-	return messageProcessing
 }

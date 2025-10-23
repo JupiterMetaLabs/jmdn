@@ -96,3 +96,4 @@ func (gps *GossipPubSub) GetProtocol() protocol.ID {
 func (gps *GossipPubSub) Build() *GossipPubSub {
 	return gps
 }
+

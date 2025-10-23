@@ -19,6 +19,10 @@ const (
 	ColorRed    = "\033[1;31m"
 )
 
+const (
+	MaxMainPeers   = 13
+	MaxBackupPeers = 3
+)
 // Protocol IDs for message and file sharing
 const (
 	MessageProtocol           protocol.ID = "/custom/message/1.0.0"

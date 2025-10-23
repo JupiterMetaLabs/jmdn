@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
-	"gossipnode/Pubsub"
+	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/config/PubSubMessages"
 	"gossipnode/config"
 
@@ -63,7 +63,7 @@ func SubmitMessage(msg *PubSubMessages.Message, PubSub *PubSubMessages.GossipPub
 	}
 
 	// Now Submit to the publish function in the pubsub
-	if err := Pubsub.Publish(PubSub, config.PubSub_ConsensusChannel, msg, nil); err != nil {
+	if err := Publisher.Publish(PubSub, config.PubSub_ConsensusChannel, msg, map[string]string{}); err != nil {
 		return fmt.Errorf("failed to publish message to pubsub: %v", err)
 	}
 	return nil
