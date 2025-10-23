@@ -16,7 +16,7 @@ type Transaction struct {
 	Timestamp uint64          `json:"timestamp"`          // seconds since epoch (if you keep it)
 	ChainID   *big.Int        `json:"chain_id,omitempty"` // present for 2930/1559 (and signed legacy w/155)
 	Nonce     uint64          `json:"nonce"`
-	GasLimit  uint64          `json:"gas_limit"`
+	GasLimit  uint64          `json:"gas_limit"` //TODO: Make it big int
 
 	// Fee fields (use one set depending on Type)
 	GasPrice       *big.Int `json:"gas_price,omitempty"`        // Legacy/EIP-2930

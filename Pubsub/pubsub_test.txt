@@ -1,0 +1,377 @@
+// package Pubsub
+
+// import (
+// 	"testing"
+// 	"time"
+
+// 	Struct "gossipnode/Pubsub/DataProcessing/Struct"
+// 	"gossipnode/config"
+
+// 	"github.com/libp2p/go-libp2p"
+// 	"github.com/libp2p/go-libp2p/core/peer"
+// )
+
+// // TestPubSubCreation tests creating a new pubsub instance
+// func TestPubSubCreation(t *testing.T) {
+// 	// Create a libp2p host
+// 	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+// 	if err != nil {
+// 		t.Fatalf("Failed to create host: %v", err)
+// 	}
+// 	defer h.Close()
+
+// 	// Create pubsub instance
+// 	pubsub, err := NewGossipPubSub(h, config.BuddyNodesMessageProtocol)
+// 	if err != nil {
+// 		t.Fatalf("Failed to create pubsub: %v", err)
+// 	}
+
+// 	if pubsub == nil {
+// 		t.Fatal("Pubsub instance is nil")
+// 	}
+
+// 	if pubsub.GetGossipPubSub() == nil {
+// 		t.Fatal("GossipPubSub is nil")
+// 	}
+
+// 	t.Logf("✅ Successfully created pubsub instance with host ID: %s", h.ID())
+// }
+
+// // TestChannelCreation tests creating channels
+// func TestChannelCreation(t *testing.T) {
+// 	// Create host and pubsub
+// 	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+// 	if err != nil {
+// 		t.Fatalf("Failed to create host: %v", err)
+// 	}
+// 	defer h.Close()
+
+// 	pubsub, err := NewGossipPubSub(h, config.BuddyNodesMessageProtocol)
+// 	if err != nil {
+// 		t.Fatalf("Failed to create pubsub: %v", err)
+// 	}
+
+// 	gps := pubsub.GetGossipPubSub()
+
+// 	// Test creating a public channel
+// 	err = CreateChannel(gps, "test-channel", true, []peer.ID{})
+// 	if err != nil {
+// 		t.Fatalf("Failed to create public channel: %v", err)
+// 	}
+
+// 	// Test creating a private channel
+// 	allowedPeers := []peer.ID{h.ID()} // Allow self
+// 	err = CreateChannel(gps, "private-channel", false, allowedPeers)
+// 	if err != nil {
+// 		t.Fatalf("Failed to create private channel: %v", err)
+// 	}
+
+// 	// Test creating duplicate channel (should fail)
+// 	err = CreateChannel(gps, "test-channel", true, []peer.ID{})
+// 	if err == nil {
+// 		t.Fatal("Expected error when creating duplicate channel")
+// 	}
+
+// 	t.Log("✅ Successfully created channels")
+// }
+
+// // TestSubscription tests subscribing to topics
+// func TestSubscription(t *testing.T) {
+// 	// Create host and pubsub
+// 	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+// 	if err != nil {
+// 		t.Fatalf("Failed to create host: %v", err)
+// 	}
+// 	defer h.Close()
+
+// 	pubsub, err := NewGossipPubSub(h, config.BuddyNodesMessageProtocol)
+// 	if err != nil {
+// 		t.Fatalf("Failed to create pubsub: %v", err)
+// 	}
+
+// 	gps := pubsub.GetGossipPubSub()
+
+// 	// Create a channel first
+// 	err = CreateChannel(gps, "test-channel", true, []peer.ID{})
+// 	if err != nil {
+// 		t.Fatalf("Failed to create channel: %v", err)
+// 	}
+
+// 	// Test subscription
+// 	messageReceived := make(chan bool, 1)
+// 	handler := func(msg *Struct.GossipMessage) {
+// 		t.Logf("📨 Received message: %s", msg.ID)
+// 		messageReceived <- true
+// 	}
+
+// 	err = Subscribe(gps, "test-channel", handler)
+// 	if err != nil {
+// 		t.Fatalf("Failed to subscribe: %v", err)
+// 	}
+
+// 	// Test unsubscription
+// 	err = Unsubscribe(gps, "test-channel")
+// 	if err != nil {
+// 		t.Fatalf("Failed to unsubscribe: %v", err)
+// 	}
+
+// 	t.Log("✅ Successfully tested subscription/unsubscription")
+// }
+
+// // TestPublishing tests publishing messages
+// func TestPublishing(t *testing.T) {
+// 	// Create host and pubsub
+// 	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+// 	if err != nil {
+// 		t.Fatalf("Failed to create host: %v", err)
+// 	}
+// 	defer h.Close()
+
+// 	pubsub, err := NewGossipPubSub(h, config.BuddyNodesMessageProtocol)
+// 	if err != nil {
+// 		t.Fatalf("Failed to create pubsub: %v", err)
+// 	}
+
+// 	gps := pubsub.GetGossipPubSub()
+
+// 	// Create a channel
+// 	err = CreateChannel(gps, "test-channel", true, []peer.ID{})
+// 	if err != nil {
+// 		t.Fatalf("Failed to create channel: %v", err)
+// 	}
+
+// 	// Subscribe to the channel
+// 	messageReceived := make(chan bool, 1)
+// 	handler := func(msg *Struct.GossipMessage) {
+// 		t.Logf("📨 Received message: %s", msg.ID)
+// 		messageReceived <- true
+// 	}
+
+// 	err = Subscribe(gps, "test-channel", handler)
+// 	if err != nil {
+// 		t.Fatalf("Failed to subscribe: %v", err)
+// 	}
+
+// 	// Create a test message
+// 	testMessage := &Struct.Message{
+// 		Sender:    h.ID(),
+// 		Message:   `{"test": "data", "timestamp": 1234567890}`,
+// 		Timestamp: time.Now().Unix(),
+// 		ACK: &Struct.ACK_Message{
+// 			Status: "success",
+// 			PeerID: h.ID().String(),
+// 			Stage:  config.Type_Publish,
+// 		},
+// 	}
+
+// 	// Publish the message
+// 	err = Publish(gps, "test-channel", testMessage, map[string]string{"source": "test"})
+// 	if err != nil {
+// 		t.Fatalf("Failed to publish message: %v", err)
+// 	}
+
+// 	// Wait a bit for message processing
+// 	time.Sleep(100 * time.Millisecond)
+
+// 	t.Log("✅ Successfully published message")
+// }
+
+// // TestAccessControl tests channel access control
+// func TestAccessControl(t *testing.T) {
+// 	// Create host and pubsub
+// 	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+// 	if err != nil {
+// 		t.Fatalf("Failed to create host: %v", err)
+// 	}
+// 	defer h.Close()
+
+// 	pubsub, err := NewGossipPubSub(h, config.BuddyNodesMessageProtocol)
+// 	if err != nil {
+// 		t.Fatalf("Failed to create pubsub: %v", err)
+// 	}
+
+// 	gps := pubsub.GetGossipPubSub()
+
+// 	// Create a private channel
+// 	err = CreateChannel(gps, "private-channel", false, []peer.ID{h.ID()})
+// 	if err != nil {
+// 		t.Fatalf("Failed to create private channel: %v", err)
+// 	}
+
+// 	// Test access control
+// 	canSubscribe := CanSubscribe(gps, "private-channel", h.ID())
+// 	if !canSubscribe {
+// 		t.Fatal("Should be able to subscribe to private channel as creator")
+// 	}
+
+// 	// Test non-existent channel
+// 	canSubscribe = CanSubscribe(gps, "non-existent", h.ID())
+// 	if canSubscribe {
+// 		t.Fatal("Should not be able to subscribe to non-existent channel")
+// 	}
+
+// 	t.Log("✅ Successfully tested access control")
+// }
+
+// // TestPeerManagement tests peer management functions
+// func TestPeerManagement(t *testing.T) {
+// 	// Create host and pubsub
+// 	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+// 	if err != nil {
+// 		t.Fatalf("Failed to create host: %v", err)
+// 	}
+// 	defer h.Close()
+
+// 	pubsub, err := NewGossipPubSub(h, config.BuddyNodesMessageProtocol)
+// 	if err != nil {
+// 		t.Fatalf("Failed to create pubsub: %v", err)
+// 	}
+
+// 	gps := pubsub.GetGossipPubSub()
+
+// 	// Test initial peer count
+// 	peerCount := GetPeerCount(gps)
+// 	if peerCount != 0 {
+// 		t.Fatalf("Expected 0 peers, got %d", peerCount)
+// 	}
+
+// 	// Test getting topics
+// 	topics := GetTopics(gps)
+// 	if len(topics) != 0 {
+// 		t.Fatalf("Expected 0 topics, got %d", len(topics))
+// 	}
+
+// 	// Test getting peers
+// 	peers := GetPeers(gps)
+// 	if len(peers) != 0 {
+// 		t.Fatalf("Expected 0 peers, got %d", len(peers))
+// 	}
+
+// 	t.Log("✅ Successfully tested peer management")
+// }
+
+// // TestPubSubQueue demonstrates creating a pubsub queue system
+// func TestPubSubQueue(t *testing.T) {
+// 	t.Log("🚀 Starting PubSub Queue Test")
+
+// 	// Create host
+// 	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+// 	if err != nil {
+// 		t.Fatalf("Failed to create host: %v", err)
+// 	}
+// 	defer h.Close()
+
+// 	t.Logf("📡 Created host with ID: %s", h.ID())
+
+// 	// Create pubsub instance
+// 	pubsub, err := NewGossipPubSub(h, config.BuddyNodesMessageProtocol)
+// 	if err != nil {
+// 		t.Fatalf("Failed to create pubsub: %v", err)
+// 	}
+
+// 	gps := pubsub.GetGossipPubSub()
+// 	t.Log("📦 Created pubsub instance")
+
+// 	// Create multiple channels for different purposes
+// 	channels := []string{
+// 		"consensus-queue",
+// 		"transaction-queue",
+// 		"block-queue",
+// 		"notification-queue",
+// 	}
+
+// 	for _, channelName := range channels {
+// 		err = CreateChannel(gps, channelName, true, []peer.ID{})
+// 		if err != nil {
+// 			t.Fatalf("Failed to create channel %s: %v", channelName, err)
+// 		}
+// 		t.Logf("📺 Created channel: %s", channelName)
+// 	}
+
+// 	// Subscribe to all channels
+// 	messageCounts := make(map[string]int)
+// 	for _, channelName := range channels {
+// 		handler := func(topic string) func(*Struct.GossipMessage) {
+// 			return func(msg *Struct.GossipMessage) {
+// 				messageCounts[topic]++
+// 				t.Logf("📨 [%s] Received message: %s", topic, msg.ID)
+// 			}
+// 		}(channelName)
+
+// 		err = Subscribe(gps, channelName, handler)
+// 		if err != nil {
+// 			t.Fatalf("Failed to subscribe to %s: %v", channelName, err)
+// 		}
+// 		t.Logf("🔔 Subscribed to: %s", channelName)
+// 	}
+
+// 	// Publish test messages to different queues
+// 	testMessages := []struct {
+// 		channel string
+// 		message string
+// 		stage   string
+// 	}{
+// 		{"consensus-queue", `{"type": "vote", "proposal": "abc123"}`, config.Type_SubmitVote},
+// 		{"transaction-queue", `{"from": "alice", "to": "bob", "amount": 100}`, config.Type_Publish},
+// 		{"block-queue", `{"blockNumber": 12345, "hash": "def456"}`, config.Type_Publish},
+// 		{"notification-queue", `{"alert": "system", "message": "Node sync complete"}`, config.Type_Publish},
+// 	}
+
+// 	for _, testMsg := range testMessages {
+// 		message := &Struct.Message{
+// 			Sender:    h.ID(),
+// 			Message:   testMsg.message,
+// 			Timestamp: time.Now().Unix(),
+// 			ACK: &Struct.ACK_Message{
+// 				Status: "success",
+// 				PeerID: h.ID().String(),
+// 				Stage:  testMsg.stage,
+// 			},
+// 		}
+
+// 		err = Publish(gps, testMsg.channel, message, map[string]string{
+// 			"source": "test",
+// 			"queue":  testMsg.channel,
+// 		})
+// 		if err != nil {
+// 			t.Fatalf("Failed to publish to %s: %v", testMsg.channel, err)
+// 		}
+// 		t.Logf("📤 Published to %s: %s", testMsg.channel, testMsg.message)
+// 	}
+
+// 	// Wait for message processing
+// 	time.Sleep(200 * time.Millisecond)
+
+// 	// Verify message counts
+// 	totalMessages := 0
+// 	for channel, count := range messageCounts {
+// 		t.Logf("📊 Channel %s received %d messages", channel, count)
+// 		totalMessages += count
+// 	}
+
+// 	if totalMessages == 0 {
+// 		t.Fatal("No messages were received")
+// 	}
+
+// 	t.Log("✅ PubSub Queue Test completed successfully!")
+// 	t.Logf("📈 Total messages processed: %d", totalMessages)
+// 	t.Logf("🎯 Channels active: %d", len(channels))
+// 	t.Logf("🔗 Host ID: %s", h.ID())
+// }
+
+// // BenchmarkPubSubCreation benchmarks pubsub creation
+// func BenchmarkPubSubCreation(b *testing.B) {
+// 	for i := 0; i < b.N; i++ {
+// 		h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+// 		if err != nil {
+// 			b.Fatalf("Failed to create host: %v", err)
+// 		}
+
+// 		_, err = NewGossipPubSub(h, config.BuddyNodesMessageProtocol)
+// 		if err != nil {
+// 			b.Fatalf("Failed to create pubsub: %v", err)
+// 		}
+
+// 		h.Close()
+// 	}
+// }

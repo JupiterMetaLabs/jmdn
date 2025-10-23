@@ -528,7 +528,7 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
 	}
 
 	// First create document then propagate
-	err := DB_OPs.CreateAccount(h.DIDClient, did, common.HexToAddress(publicKey), nil)
+	err := DB_OPs.CreateAccount(nil, did, common.HexToAddress(publicKey), nil)
 	if err != nil {
 		fmt.Printf("Failed to create account: %v\n", err)
 		return
@@ -537,7 +537,7 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
 	fmt.Printf("Propagating DID %s with public key %s and balance %s to the network...\n",
 		did, publicKey, balance)
 
-	Document, err := DB_OPs.GetAccount(h.DIDClient, common.HexToAddress(publicKey))
+	Document, err := DB_OPs.GetAccount(nil, common.HexToAddress(publicKey))
 	if err != nil {
 		fmt.Printf("Failed to get account: %v\n", err)
 		return

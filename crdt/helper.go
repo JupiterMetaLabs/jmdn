@@ -59,7 +59,6 @@ func validateCounterInput(nodeID, key string, delta uint64) error {
 	return nil
 }
 
-
 // SnapshotAll creates a snapshot of all CRDT objects
 // encode: function to encode CRDT objects to bytes
 // Returns error if encoding or database operation fails
@@ -82,4 +81,3 @@ func (e *Engine) SnapshotAll(encode func(map[string]CRDT) ([]byte, error)) error
 	}
 	return nil
 }
-
