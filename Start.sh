@@ -292,8 +292,11 @@ start_network() {
 
     echo ""
     echo "Building jmdn executable..."
+    apt install -y build-essentials
+    apt install -y gcc
+    
     # Build the jmdn executable with optimized flags
-    go build -ldflags='-linkmode=external -w -s' -o jmdn .
+    CGO_ENABLED=1 go build -ldflags='-linkmode=external -w -s' -o jmdn .
 
     if [ $? -ne 0 ]; then
         echo "❌ Failed to build jmdn executable"
