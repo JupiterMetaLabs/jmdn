@@ -172,8 +172,38 @@ start_daemon() {
 
     echo ""
     echo "Building jmdn executable..."
+    
+    # Check for C compiler and install if needed
+    if ! command -v gcc &> /dev/null; then
+        echo "❌ GCC compiler not found. Installing Xcode Command Line Tools..."
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            # macOS - install Xcode Command Line Tools
+            xcode-select --install 2>/dev/null || echo "Xcode Command Line Tools installation may require user interaction"
+            echo "Please complete the Xcode Command Line Tools installation and run the script again."
+            exit 1
+        elif command -v apt &> /dev/null; then
+            # Linux with apt
+            echo "Installing build-essential package (this includes GCC)..."
+            sudo apt update
+            sudo apt install -y build-essential
+        elif command -v yum &> /dev/null; then
+            # Linux with yum
+            sudo yum install -y gcc
+        elif command -v brew &> /dev/null; then
+            # macOS with Homebrew
+            brew install gcc
+        else
+            echo "❌ Cannot install GCC automatically. Please install a C compiler manually."
+            echo "For macOS: Install Xcode Command Line Tools: xcode-select --install"
+            echo "For Linux: Install build-essential package"
+            exit 1
+        fi
+    fi
+    
+    echo "✅ C compiler found"
+    
     # Build the jmdn executable with optimized flags
-    go build -ldflags='-linkmode=external -w -s' -o jmdn .
+    CGO_ENABLED=1 go build -ldflags='-linkmode=external -w -s' -o jmdn .
 
     if [ $? -ne 0 ]; then
         echo "❌ Failed to build jmdn executable"
@@ -292,8 +322,35 @@ start_network() {
 
     echo ""
     echo "Building jmdn executable..."
-    apt install -y build-essentials
-    apt install -y gcc
+    
+    # Check for C compiler and install if needed
+    if ! command -v gcc &> /dev/null; then
+        echo "❌ GCC compiler not found. Installing Xcode Command Line Tools..."
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            # macOS - install Xcode Command Line Tools
+            xcode-select --install 2>/dev/null || echo "Xcode Command Line Tools installation may require user interaction"
+            echo "Please complete the Xcode Command Line Tools installation and run the script again."
+            exit 1
+        elif command -v apt &> /dev/null; then
+            # Linux with apt
+            echo "Installing build-essential package (this includes GCC)..."
+            sudo apt update
+            sudo apt install -y build-essential
+        elif command -v yum &> /dev/null; then
+            # Linux with yum
+            sudo yum install -y gcc
+        elif command -v brew &> /dev/null; then
+            # macOS with Homebrew
+            brew install gcc
+        else
+            echo "❌ Cannot install GCC automatically. Please install a C compiler manually."
+            echo "For macOS: Install Xcode Command Line Tools: xcode-select --install"
+            echo "For Linux: Install build-essential package"
+            exit 1
+        fi
+    fi
+    
+    echo "✅ C compiler found"
     
     # Build the jmdn executable with optimized flags
     CGO_ENABLED=1 go build -ldflags='-linkmode=external -w -s' -o jmdn .
