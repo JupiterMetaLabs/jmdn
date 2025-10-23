@@ -19,3 +19,10 @@ immudb_mac
 jmdn
 immuclient
 .DS_Store
+*.pb.go
+*_grpc.pb.go
+Thumbs.db
+*.swp
+*.swo
+*.out
+*.test
