@@ -28,9 +28,14 @@ var (
 // It ensures the database exists, creating it if necessary. This function
 // should be called once at application startup.
 func InitAccountsPool() error {
+	return InitAccountsPoolWithLoki(true)
+}
+
+// InitAccountsPoolWithLoki initializes the connection pool for the accounts database with optional Loki support
+func InitAccountsPoolWithLoki(enableLoki bool) error {
 	var initErr error
 	accountsPoolOnce.Do(func() {
-		logger, err := config.NewAsyncLogger()
+		logger, err := config.NewAsyncLoggerWithLoki(enableLoki)
 		if err != nil {
 			initErr = fmt.Errorf("could not create logger for accounts pool: %w", err)
 			fmt.Println("Logger creation for accounts pool failed")
@@ -151,8 +156,8 @@ func ensureAccountsDBExists() error {
 
 	// build file paths inside .immudb-state
 	certFile := filepath.Join(stateDir, "server.cert.pem")
-	keyFile  := filepath.Join(stateDir, "server.key.pem")
-	caFile   := filepath.Join(stateDir, "ca.cert.pem")
+	keyFile := filepath.Join(stateDir, "server.key.pem")
+	caFile := filepath.Join(stateDir, "ca.cert.pem")
 	fmt.Println("Certificate paths built successfully")
 
 	// Configure the client - disable mTLS for local development

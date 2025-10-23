@@ -117,3 +117,5 @@ message RecommendedFees {
   uint64 fast = 3;      // ~30sec confirmation
   uint64 instant = 4;   // Next block
 }
+
+//health

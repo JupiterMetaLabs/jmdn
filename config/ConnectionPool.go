@@ -16,7 +16,8 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-var LOKI_URL = logging.GetLokiURL()
+// LOKI_URL will be set conditionally based on whether Loki is enabled
+var LOKI_URL string
 
 const (
 	LOG_FILE        = "ImmuDB.log"
@@ -94,9 +95,25 @@ type ConnectionPool struct {
 
 // NewAsyncLogger creates a new async logger using the centralized logging package
 func NewAsyncLogger() (*logging.AsyncLogger, error) {
+	return NewAsyncLoggerWithLoki(true)
+}
+
+// NewAsyncLoggerWithLoki creates a new async logger with optional Loki support
+func NewAsyncLoggerWithLoki(enableLoki bool) (*logging.AsyncLogger, error) {
+	var lokiURL string
+	if enableLoki {
+		// Only get Loki URL when actually needed
+		LOKI_URL = logging.GetLokiURL()
+		lokiURL = LOKI_URL
+	} else {
+		// Set empty string when Loki is disabled
+		LOKI_URL = ""
+		lokiURL = ""
+	}
+
 	LogStruct := &logging.Logging{
 		FileName: LOG_FILE,
-		URL:      LOKI_URL,
+		URL:      lokiURL,
 		Metadata: logging.LoggingMetadata{
 			DIR:       LOG_DIR,
 			BatchSize: LOKI_BATCH_SIZE,
@@ -116,8 +133,8 @@ func NewAsyncLogger() (*logging.AsyncLogger, error) {
 		zap.Time(logging.Created_at, time.Now()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, LOKI_URL),
-		zap.String(logging.Function, "config.NewAsyncLogger"),
+		zap.String(logging.Loki_url, lokiURL),
+		zap.String(logging.Function, "config.NewAsyncLoggerWithLoki"),
 	)
 	return logger, nil
 }
@@ -296,7 +313,7 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 		WithPort(cp.Port).
 		WithDir(State_Path_Hidden).
 		WithMaxRecvMsgSize(1024 * 1024 * 20). // 20MB message size
-		WithDisableIdentityCheck(false).       // Disable identity file to prevent 24-hour expiration
+		WithDisableIdentityCheck(false).      // Disable identity file to prevent 24-hour expiration
 		WithMTLsOptions(
 			client.MTLsOptions{}.WithCertificate(certFile).WithPkey(keyFile).WithClientCAs(caFile).WithServername(cp.Address),
 		)
@@ -540,22 +557,19 @@ var (
 // It panics if initialization fails, as a DB connection pool is a critical
 // component for the application to run.
 func InitGlobalPool(poolConfig *PoolingConfig) {
+	InitGlobalPoolWithLoki(poolConfig, true)
+}
+
+// InitGlobalPoolWithLoki initializes the global connection pool with optional Loki support
+func InitGlobalPoolWithLoki(poolConfig *PoolingConfig, enableLoki bool) {
 	globalPoolOnce.Do(func() {
 		if poolConfig == nil {
 			panic("FATAL: poolConfig cannot be nil for InitGlobalPool")
 		}
 		poolCfg := DefaultConnectionPoolConfig()
-		logger, err := NewAsyncLogger()
+		logger, err := NewAsyncLoggerWithLoki(enableLoki)
 		if err != nil {
 			// If we can't create a logger, the application is in an unrecoverable state.
-			logger.Logger.Error("FATAL: could not create logger for connection pool: %v",
-				zap.String("error", err.Error()),
-				zap.Time(logging.Created_at, time.Now()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "config.InitGlobalPool"),
-			)
 			panic(fmt.Sprintf("FATAL: could not create logger for connection pool: %v", err))
 		}
 		globalPool = NewConnectionPool(poolCfg, logger, poolConfig)

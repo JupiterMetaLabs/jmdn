@@ -47,6 +47,10 @@ type ManagedPeer struct {
 
 // NewNodeManager creates a new node manager for the host
 func NewNodeManager(node *config.Node) (*NodeManager, error) {
+	return NewNodeManagerWithLoki(node, true)
+}
+
+func NewNodeManagerWithLoki(node *config.Node, enableLoki bool) (*NodeManager, error) {
 	if node == nil || node.Host == nil {
 		return nil, fmt.Errorf("invalid node configuration")
 	}
@@ -84,7 +88,7 @@ func NewNodeManager(node *config.Node) (*NodeManager, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Set initial metrics
-	metricsLogger, err := logging.ReturnDefaultLogger("metrics.log", "metrics")
+	metricsLogger, err := logging.ReturnDefaultLoggerWithLoki("metrics.log", "metrics", enableLoki)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create logger: %w", err)
 	}

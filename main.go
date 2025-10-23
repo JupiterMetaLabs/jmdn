@@ -30,6 +30,7 @@ import (
 	"gossipnode/metrics"
 	"gossipnode/node"
 	"gossipnode/seed"
+	"gossipnode/seednode"
 	"gossipnode/transfer"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -55,11 +56,11 @@ var (
 	accountsDBPool *config.ConnectionPool // Accounts/DID database connection pool
 )
 
-func StartFacadeServer(port int) {
+func StartFacadeServer(port int, chainID int) {
 	go func() {
 		log.Info().Msg("Starting facade server")
 		// Get the Http Server
-		HTTPServer := rpc.NewHandlers(Service.NewService())
+		HTTPServer := rpc.NewHandlers(Service.NewService(chainID))
 		httpServer := rpc.NewHTTPServer(HTTPServer)
 		if err := httpServer.Serve(fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
 			log.Error().Err(err).Msg("Failed to start facade server")
@@ -67,13 +68,13 @@ func StartFacadeServer(port int) {
 	}()
 }
 
-func StartWSServer(port int) {
+func StartWSServer(port int, chainID int) {
 	go func() {
 		log.Info().Msg("Starting WSServer")
 		// Get the Http Server
-		HTTPServer := rpc.NewHandlers(Service.NewService())
+		HTTPServer := rpc.NewHandlers(Service.NewService(chainID))
 
-		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService())
+		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService(chainID))
 		if err := WSServer.Serve(fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
 			log.Error().Err(err).Msg("Failed to start WSServer")
 		}
@@ -97,7 +98,7 @@ func GetAccountsDBPool() *config.ConnectionPool {
 }
 
 func printDashes() {
-	fmt.Println("\n", strings.Repeat("-", 50), "\n")
+	fmt.Println("\n" + strings.Repeat("-", 50) + "\n")
 }
 
 func StartAPIServer(address string) error {
@@ -141,7 +142,7 @@ func initYggdrasilMessaging(ctx context.Context) {
 }
 
 // Initialize main database connection pool
-func initMainDBPool() error {
+func initMainDBPool(enableLoki bool) error {
 	poolingConfig := &config.PoolingConfig{
 		DBAddress:  config.DBAddress,
 		DBPort:     config.DBPort,
@@ -151,13 +152,13 @@ func initMainDBPool() error {
 	}
 
 	// Initialize the global pool
-	config.InitGlobalPool(poolingConfig)
+	config.InitGlobalPoolWithLoki(poolingConfig, enableLoki)
 	mainDBPool = config.GetGlobalPool()
 
 	// Also initialize the DB_OPs main pool
 	fmt.Println("Initializing DB_OPs main pool...")
 	poolConfig := config.DefaultConnectionPoolConfig()
-	if err := DB_OPs.InitMainDBPool(poolConfig); err != nil {
+	if err := DB_OPs.InitMainDBPoolWithLoki(poolConfig, enableLoki); err != nil {
 		return fmt.Errorf("failed to initialize DB_OPs main pool: %w", err)
 	}
 	fmt.Println("DB_OPs main pool initialized successfully")
@@ -167,10 +168,10 @@ func initMainDBPool() error {
 }
 
 // Initialize accounts database connection pool
-func initAccountsDBPool() error {
+func initAccountsDBPool(enableLoki bool) error {
 	// Use the DB_OPs package to initialize the accounts pool
 	// This ensures the database exists and the pool is properly configured
-	if err := DB_OPs.InitAccountsPool(); err != nil {
+	if err := DB_OPs.InitAccountsPoolWithLoki(enableLoki); err != nil {
 		return fmt.Errorf("failed to initialize accounts database pool: %w", err)
 	}
 
@@ -197,6 +198,9 @@ func main() {
 	// Command-line flags for node configuration
 	isSeed := flag.Bool("seed", false, "Run as a seed node")
 	connect := flag.String("connect", "", "Connect to a seed node (multiaddr)")
+	seedNodeURL := flag.String("seednode", "", "Seed node gRPC URL for peer registration (e.g., localhost:9090)")
+	peerAlias := flag.String("alias", "", "Peer alias for registration with seed node")
+	enableLoki := flag.Bool("loki", false, "Enable Loki logging (default: false)")
 	heartbeatInterval := flag.Int("heartbeat", 120, "Heartbeat interval in seconds (default: 300)")
 	metricsPort := flag.String("metrics", "8080", "Port for Prometheus metrics")
 	enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
@@ -208,11 +212,12 @@ func main() {
 	gETHgRPC := flag.Int("geth", 15054, "gETH gRPC server address")
 	gETHFacade := flag.Int("facade", 15001, "gETH Facade server address")
 	gETHWSServer := flag.Int("ws", 15002, "gETH WSServer address")
+	chainID := flag.Int("chainID", 7000700, "Chain ID for the blockchain network")
 	flag.Parse()
 
 	// Initialize logger
-	logFileName := fmt.Sprintf("p2p-node.log")
-	Logger, err := logging.ReturnDefaultLogger(logFileName, "p2p-node")
+	logFileName := "p2p-node.log"
+	Logger, err := logging.ReturnDefaultLoggerWithLoki(logFileName, "p2p-node", *enableLoki)
 	if err != nil {
 		fmt.Printf("Failed to initialize logger: %v\n", err)
 		return
@@ -233,17 +238,17 @@ func main() {
 		cancel() // Cancel the context
 		// Give some time for cleanup
 		time.Sleep(500 * time.Millisecond)
-		os.Exit(0)
+		os.Exit(1)
 	}()
 
 	// Initialize database connection pools FIRST
 	fmt.Println("Initializing main database pool...")
-	if err := initMainDBPool(); err != nil {
+	if err := initMainDBPool(*enableLoki); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize main database pool")
 	}
 	fmt.Println("Main database pool initialized successfully")
 
-	if err := initAccountsDBPool(); err != nil {
+	if err := initAccountsDBPool(*enableLoki); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
 	}
 
@@ -337,7 +342,7 @@ func main() {
 	fmt.Printf(config.ColorGreen+"\nMetrics available at "+config.ColorReset+"http://localhost%s/metrics\n", metricsAddr)
 
 	// Initialize node manager
-	nodeManager, err = node.NewNodeManager(n)
+	nodeManager, err = node.NewNodeManagerWithLoki(n, *enableLoki)
 	if err != nil {
 		fmt.Printf("Failed to initialize node manager: %v\n", err)
 		return
@@ -370,7 +375,7 @@ func main() {
 		go func() {
 			log.Info().Msgf("Starting block generator on port %d", *blockgen)
 			fmt.Printf("\nBlock generator available at http://localhost:%d\n", *blockgen)
-			Block.Startserver(*blockgen, n.Host)
+			Block.Startserver(*blockgen, n.Host, *chainID)
 		}()
 	}
 	// Configure as seed node if requested
@@ -397,10 +402,55 @@ func main() {
 		}
 	}
 
+	// Register with seed node gRPC if URL is provided
+	if *seedNodeURL != "" {
+		fmt.Printf("Registering with seed node gRPC: %s\n", *seedNodeURL)
+		seedClient, err := seednode.NewClient(*seedNodeURL)
+		if err != nil {
+			fmt.Printf("Failed to create seed node client: %v\n", err)
+			log.Error().Err(err).Msg("Failed to create seed node client")
+		} else {
+			defer seedClient.Close()
+
+			// Register this peer with the seed node (with or without alias)
+			if *peerAlias != "" {
+				fmt.Printf("Registering with alias: %s\n", *peerAlias)
+				err = seedClient.RegisterPeerWithAlias(n.Host, *peerAlias)
+				if err != nil {
+					fmt.Printf("Failed to register with seed node using alias: %v\n", err)
+					log.Error().Err(err).Msg("Failed to register with seed node using alias")
+				} else {
+					fmt.Printf("Successfully registered with seed node using alias '%s'\n", *peerAlias)
+					log.Info().Str("alias", *peerAlias).Msg("Successfully registered with seed node using alias")
+				}
+			} else {
+				err = seedClient.RegisterPeer(n.Host)
+				if err != nil {
+					fmt.Printf("Failed to register with seed node: %v\n", err)
+					log.Error().Err(err).Msg("Failed to register with seed node")
+				} else {
+					fmt.Println("Successfully registered with seed node")
+					log.Info().Msg("Successfully registered with seed node")
+				}
+			}
+
+			// Perform neighbor discovery after successful registration
+			fmt.Println("\n🔍 Starting neighbor discovery process...")
+			err = seedClient.DiscoverAndAddNeighbors(n.Host, nodeManager)
+			if err != nil {
+				fmt.Printf("⚠️  Neighbor discovery failed: %v\n", err)
+				log.Error().Err(err).Msg("Neighbor discovery failed")
+			} else {
+				fmt.Println("✅ Neighbor discovery completed successfully")
+				log.Info().Msg("Neighbor discovery completed successfully")
+			}
+		}
+	}
+
 	if *gETHgRPC > 0 {
 		go func() {
 			fmt.Printf("Starting gETH gRPC server on port %d\n", *gETHgRPC)
-			if err := gETH.StartGRPC(*gETHgRPC); err != nil {
+			if err := gETH.StartGRPC(*gETHgRPC, *chainID); err != nil {
 				log.Error().Err(err).Msg("gETH gRPC server error")
 			}
 		}()
@@ -423,8 +473,11 @@ func main() {
 		Node:            n,
 		NodeManager:     nodeManager,
 		FastSyncer:      fastSyncer,
-		SeedNode:        *connect,
+		SeedNode:        *seedNodeURL,
 		EnableYggdrasil: *enableYggdrasil,
+		ChainID:         *chainID,
+		FacadePort:      *gETHFacade,
+		WSPort:          *gETHWSServer,
 	}
 
 	// Only set database clients if they're properly initialized
@@ -444,12 +497,12 @@ func main() {
 
 	if *gETHFacade > 0 {
 		fmt.Printf("Starting gETH Facade server on port %d\n", *gETHFacade)
-		StartFacadeServer(*gETHFacade)
+		StartFacadeServer(*gETHFacade, *chainID)
 	}
 
 	if *gETHWSServer > 0 {
 		fmt.Printf("Starting gETH WSServer on port %d\n", *gETHWSServer)
-		StartWSServer(*gETHWSServer)
+		StartWSServer(*gETHWSServer, *chainID)
 	}
 
 	// Start CLI without timeout - run indefinitely

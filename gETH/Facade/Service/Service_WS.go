@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"gossipnode/DB_OPs"
 	"gossipnode/gETH/Facade/Service/Types"
-	"gossipnode/gETH/Facade/Service/Utils"
+	Utils "gossipnode/gETH/Facade/Service/utils"
 	"sync"
 	"time"
 )
@@ -150,8 +150,6 @@ func getBlockForSubscription(blockNumber uint64) (*Types.Block, error) {
 
 	return block, nil
 }
-
-
 
 // notifyNewBlock sends a new block to all active subscribers
 func notifyNewBlock(block *Types.Block) {
