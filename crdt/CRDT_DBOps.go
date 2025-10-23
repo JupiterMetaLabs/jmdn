@@ -82,3 +82,11 @@ func (e *Engine) GetCounter(key string) (uint64, bool) {
 func (e *Engine) GetAllCRDTs() map[string]CRDT {
 	return e.mem.GetAllCRDTs()
 }
+
+// ApplyMergedCRDT applies a merged CRDT to the engine's memory store
+// This is used for synchronization between nodes
+func (e *Engine) ApplyMergedCRDT(key string, crdt CRDT) {
+	e.mem.mu.Lock()
+	defer e.mem.mu.Unlock()
+	e.mem.objects[key] = crdt
+}

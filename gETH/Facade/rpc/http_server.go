@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -17,7 +18,8 @@ type HTTPServer struct {
 func NewHTTPServer(h *Handlers) *HTTPServer {
 	Logger.Once.Do(func() {
 		if err := Logger.InitLogger(); err != nil {
-			panic("failed to initialize logger: " + err.Error())
+			// Log error but don't panic - continue without logger
+			fmt.Printf("Warning: failed to initialize logger: %v\n", err)
 		}
 	})
 	return &HTTPServer{h: h}

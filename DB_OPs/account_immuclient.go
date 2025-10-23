@@ -870,14 +870,11 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 		return nil, fmt.Errorf("failed to get latest block number: %w", err)
 	}
 
-	if latestBlockNumber == 0 {
-		return []*config.Transaction{}, nil
-	}
-
 	var matchingTxs []*config.Transaction
 	batchSize := uint64(100) // Process 100 blocks at a time
 
-	for startBlock := uint64(1); startBlock <= latestBlockNumber; startBlock += batchSize {
+	// Start from block 0 (genesis block) to include all blocks
+	for startBlock := uint64(0); startBlock <= latestBlockNumber; startBlock += batchSize {
 		endBlock := startBlock + batchSize - 1
 		if endBlock > latestBlockNumber {
 			endBlock = latestBlockNumber
@@ -928,7 +925,11 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 
 // isTransactionInvolvingAccount checks if a transaction involves a specific account
 func isTransactionInvolvingAccount(tx config.Transaction, accountAddr *common.Address) bool {
-	if tx.From == accountAddr || tx.To == accountAddr {
+	// Compare address values, not pointers
+	if tx.From != nil && *tx.From == *accountAddr {
+		return true
+	}
+	if tx.To != nil && *tx.To == *accountAddr {
 		return true
 	}
 	return false

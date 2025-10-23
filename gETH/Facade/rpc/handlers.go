@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math/big"
 	"strings"
 
@@ -51,6 +52,24 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, err
 
+	case "eth_getTransactionCount":
+		if len(req.Params) < 2 {
+			resp, _ := invalidParams(req, "missing address and block tag")
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, nil
+		}
+		addr, _ := req.Params[0].(string)
+		block, _ := req.Params[1].(string)
+		count, err := handler.service.GetTransactionCount(ctx, addr, block)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		resp, _ := finish(req, "0x"+count.Text(16), nil)
+		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		return resp, nil
+
 	case "eth_getBlockByNumber":
 		// params: [blockTag, fullTx(bool)]
 		if len(req.Params) < 1 {
@@ -58,6 +77,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 			return resp, nil
 		}
+		fmt.Println("req.Params: ", req.Params)
 		tag, _ := req.Params[0].(string)
 		full := false
 		if len(req.Params) > 1 {
@@ -94,7 +114,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 			return resp, err
 		}
-		bal, err := handler.service.Balance(ctx, addr, num)
+		bal, err := handler.service.Balance(ctx, addr, num, "wallet")
 		if err != nil {
 			resp, _ := finish(req, nil, err)
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
@@ -103,7 +123,6 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		resp, _ := finish(req, "0x"+bal.Text(16), nil)
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
-
 	case "eth_call":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing call object")
@@ -170,6 +189,8 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			return resp, nil
 		}
 		raw, _ := req.Params[0].(string)
+		// Debugging
+		fmt.Println(">>>>>> eth_sendRawTransaction received: ", raw)
 		txh, err := handler.service.SendRawTx(ctx, raw)
 		resp, _ := finish(req, txh, err)
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)

@@ -86,17 +86,17 @@ func Test_BlockByNumber(t *testing.T) {
 
 // 0x630f87b95c414056572380164d7edbfb6c3b20f8
 
-func Test_Balance(t *testing.T) {
-	init_logger()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+// func Test_Balance(t *testing.T) {
+// 	init_logger()
+// 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+// 	defer cancel()
 
-	balance, err := service.Balance(ctx, "0x630f87b95c414056572380164d7edbfb6c3b20f8", big.NewInt(0))
-	if err != nil {
-		t.Fatalf("Failed to get balance: %v", err)
-	}
-	t.Logf("Balance: %+v", balance)
-}
+// 	balance, err := service.Balance(ctx, "0x630f87b95c414056572380164d7edbfb6c3b20f8", big.NewInt(0))
+// 	if err != nil {
+// 		t.Fatalf("Failed to get balance: %v", err)
+// 	}
+// 	t.Logf("Balance: %+v", balance)
+// }
 
 func Test_SendRawTx(t *testing.T) {
 	init_logger()

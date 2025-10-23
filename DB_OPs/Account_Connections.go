@@ -265,13 +265,12 @@ func EnsureDBConnection(accountsPool *config.PooledConnection) error {
 
 	// Try to check connection with retries
 	for i := 0; i < maxRetries; i++ {
-		// Check if context is still valid
-		if err := accountsPool.Client.Ctx.Err(); err != nil {
-			return fmt.Errorf("context error: %w", err)
-		}
 
 		// Try to get current state
-		_, err := accountsPool.Client.Client.CurrentState(accountsPool.Client.Ctx)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		
+		_, err := accountsPool.Client.Client.CurrentState(ctx)
 		if err == nil {
 			accountsPool.Client.Logger.Logger.Info("Database connection check successful",
 				zap.Time(logging.Created_at, time.Now()),
