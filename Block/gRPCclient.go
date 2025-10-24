@@ -37,7 +37,7 @@ type MempoolClient struct {
 // NewMempoolClient creates a new mempool client connection
 func NewMempoolClient(address string) (*MempoolClient, error) {
 	// Create a gRPC connection to the mempool service
-	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to mempool service: %v", err)
 	}
@@ -94,7 +94,11 @@ func (m *MempoolClient) SubmitTransaction(tx *config.Transaction, txHash string)
 	log.Printf("Submitting transaction to mempool: %+v", pbTx)
 
 	// Submit the transaction to the mempool
-	resp, err := m.client.SubmitTransaction(ctx, pbTx)
+	RoutingClient, err := GetRoutingClient()
+	if err != nil {
+		return fmt.Errorf("routing client connection failed:  %v", err)
+	}
+	resp, err := RoutingClient.client.SubmitTransaction(ctx, pbTx)
 	if err != nil {
 		log.Printf("Failed to submit transaction to mempool: %v", err)
 		return fmt.Errorf("failed to submit transaction to mempool: %v", err)
@@ -126,12 +130,14 @@ func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.Batch
 	batch := &pb.TransactionBatch{
 		Transactions: pbTxs,
 	}
-
-	resp, err := m.client.SubmitTransactions(ctx, batch)
+	RoutingClient, err := GetRoutingClient()
 	if err != nil {
-		return nil, fmt.Errorf("failed to submit transaction batch: %v", err)
+		return nil, err
 	}
-
+	resp, err := RoutingClient.client.SubmitTransactions(ctx, batch)
+	if err != nil {
+		return nil, fmt.Errorf("routing client could not submit transactions: %s", err)
+	}
 	if !resp.Success {
 		// The response itself is returned to allow the caller to inspect partial successes if applicable.
 		return resp, fmt.Errorf("mempool rejected transaction batch: %s", resp.Error)
@@ -147,7 +153,11 @@ func (m *MempoolClient) GetTransaction(hash string) (*pb.Transaction, error) {
 	defer cancel()
 
 	req := &pb.GetTransactionRequest{Hash: hash}
-	tx, err := m.client.GetTransaction(ctx, req)
+	RoutingClient, err := GetRoutingClient()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := RoutingClient.client.GetTransaction(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get transaction %s: %v", hash, err)
 	}
@@ -161,7 +171,11 @@ func (m *MempoolClient) GetPendingTransactions(limit int32) (*pb.TransactionBatc
 	defer cancel()
 
 	req := &pb.GetPendingRequest{Limit: limit}
-	batch, err := m.client.GetPendingTransactions(ctx, req)
+	RoutingClient, err := GetRoutingClient()
+	if err != nil {
+		return nil, err
+	}
+	batch, err := RoutingClient.client.GetPendingTransactions(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pending transactions: %v", err)
 	}
@@ -246,14 +260,14 @@ func convertToPbTransaction(tx *config.Transaction, txHash string) *pb.Transacti
 		From:           addrToString(tx.From),
 		To:             addrToString(tx.To),
 		Value:          bigIntToString(tx.Value),
-		Type:           fmt.Sprintf("%d", tx.Type),
-		Timestamp:      fmt.Sprintf("%d", tx.Timestamp),
+		Type:           uint32(tx.Type),
+		Timestamp:      uint64(tx.Timestamp),
 		ChainId:        bigIntToString(tx.ChainID),
-		Nonce:          fmt.Sprintf("%d", tx.Nonce),
+		Nonce:          uint64(tx.Nonce),
 		GasLimit:       fmt.Sprintf("%d", tx.GasLimit),
 		MaxFee:         bigIntToString(tx.MaxFee),
 		MaxPriorityFee: bigIntToString(tx.MaxPriorityFee),
-		Data:           fmt.Sprintf("0x%x", tx.Data),
+		Data:           tx.Data,
 		V:              bigIntToString(tx.V),
 		R:              bigIntToString(tx.R),
 		S:              bigIntToString(tx.S),
@@ -261,18 +275,13 @@ func convertToPbTransaction(tx *config.Transaction, txHash string) *pb.Transacti
 
 	if tx.Timestamp != 0 {
 		// Assuming tx.Timestamp is already a Unix timestamp (uint64)
-		tm := time.Unix(int64(tx.Timestamp), 0)
-		pbTx.Timestamp = tm.Format(time.RFC3339)
-	} else {
-		// If parsing fails, it might already be in a different format or invalid.
-		// For now, we'll default to the current time as a fallback.
-		pbTx.Timestamp = time.Now().Format(time.RFC3339)
+		pbTx.Timestamp = uint64(tx.Timestamp)
 	}
 	// Handle transaction fee fields based on type
 	if tx.Type == 1 || (tx.MaxFee != nil && tx.MaxPriorityFee != nil) {
-		pbTx.Type = "EIP-1559"
+		pbTx.Type = 1
 	} else {
-		pbTx.Type = "Legacy"
+		pbTx.Type = 0
 		// For legacy transactions, use GasPrice as MaxFee if MaxFee is not set.
 		if pbTx.MaxFee == "" && tx.GasPrice != nil {
 			pbTx.MaxFee = bigIntToString(tx.GasPrice)

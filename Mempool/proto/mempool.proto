@@ -2,53 +2,118 @@ syntax = "proto3";
 
 package proto;
 
-option go_package = "Mempool/proto";
+option go_package = "./proto";
 
 import "google/protobuf/empty.proto";
+
+
+// NEW: Routing Engine service definition (receives from JMDT)
+service RoutingService {
+  // JMDT calls this to submit transactions to routing engine
+  rpc SubmitTransaction(Transaction) returns (SubmitResponseMRE);
+  
+  // JMDT calls this to submit multiple transactions to routing engine
+  rpc SubmitTransactions(TransactionBatch) returns (BatchSubmitResponse);
+  
+  // JMDT calls this to get a specific transaction by hash
+  rpc GetTransaction(GetTransactionRequest) returns (Transaction);
+  
+  // JMDT calls this to get pending transactions from all mempools
+  rpc GetPendingTransactions(GetPendingRequest) returns (TransactionBatch);
+
+  // Get mempool stats
+  rpc GetMempoolStats(google.protobuf.Empty) returns (MREStats);
+  
+  // Get detailed fee statistics
+  rpc GetFeeStatistics(google.protobuf.Empty) returns (FeeSnapshot);
+
+  // Get transaction lookup information
+  rpc GetTransactionLookup(GetTransactionRequest) returns (TransactionLookupResponse);
+  
+  // Get all transactions from lookup table
+  rpc GetAllTransactionLookups(google.protobuf.Empty) returns (TransactionLookupBatch);
+
+  rpc OnReceiveFromJMDT(JMDTTransactionData) returns (JMDTAcknowledgment);
+}
+
 
 // Mempool service definition
 service MempoolService {
   // Submit a single transaction to the mempool
-  rpc SubmitTransaction(Transaction) returns (SubmitResponse);
-  
+  rpc SubmitTransaction(MempoolTxn) returns (SubmitResponse);
+
   // Submit multiple transactions to the mempool
-  rpc SubmitTransactions(TransactionBatch) returns (BatchSubmitResponse);
-  
+  rpc SubmitTransactions(MempoolTxnBatch) returns (BatchSubmitResponse);
+
   // Get a specific transaction by hash
-  rpc GetTransaction(GetTransactionRequest) returns (Transaction);
-  
-  // Get pending transactions with priority ordering
-  rpc GetPendingTransactions(GetPendingRequest) returns (TransactionBatch);
-  
-  // Get mempool stats
+  rpc GetTransactionByHash(GetTransactionByHashRequest) returns (MempoolTxn);
+
+  // Peek at pending transactions without removing them (non-destructive)
+  rpc PeekPendingTransactions(GetPendingRequest) returns (MempoolTxnBatch);
+
+  // Get pending transactions with priority ordering (destructive)
+  rpc GetPendingTransactions(GetPendingRequest) returns (MempoolTxnBatch);
+
+  // Get primary DB Merkle root
+  rpc GetPrimaryMerkleRoot(google.protobuf.Empty) returns (MerkleRootResponse);
+
+  // Get individual Merkle roots for each component
+  rpc GetAllMerkleRoots(google.protobuf.Empty) returns (MerkleRoots);
+
+  // Get comprehensive mempool statistics
   rpc GetMempoolStats(google.protobuf.Empty) returns (MempoolStats);
-  
+
   // Get detailed fee statistics
   rpc GetFeeStatistics(google.protobuf.Empty) returns (FeeStatistics);
+
+  // Get fee snapshot for monitoring/RPC
+  rpc GetFeeSnapshot(google.protobuf.Empty) returns (FeeSnapshot);
+
 }
 
-// Transaction represents a transaction in the mempool
+// Transaction represents an Ethereum transaction
 message Transaction {
   string hash = 1;
   string from = 2;
   string to = 3;
   string value = 4;
-  string type = 5;
-  string timestamp = 6;
+  uint32 type = 5;
+  uint64 timestamp = 6;
   string chain_id = 7;
-  string nonce = 8;
+  uint64 nonce = 8;
   string gas_limit = 9;
-  string max_fee = 10;
-  string max_priority_fee = 11;
-  string data = 12;
-  string v = 14; // EIP-155 v value
-  string r = 15;
-  string s = 16; // EIP-155 r and s values
+  string gas_price = 10;
+  string max_fee = 11;
+  string max_priority_fee = 12;
+  bytes data = 13;
+  repeated AccessTuple access_list = 14;
+  string v = 15;
+  string r = 16;
+  string s = 17;
 }
 
-// TransactionBatch represents a batch of transactions
-message TransactionBatch {
-  repeated Transaction transactions = 1;
+// AccessTuple is the element type of an access list
+message AccessTuple {
+  string address = 1;
+  repeated string storage_keys = 2;
+}
+
+// Metadata contains routing information for mempool transactions
+message Metadata {
+  bool primary_node = 1;
+  bool replica_node = 2;
+  string created_at = 3;
+  int32 total_replicas = 4;
+}
+
+message MempoolTxn {
+  Transaction transaction = 1;
+  Metadata metadata = 2;
+}
+
+// MempoolTxnBatch represents a batch of mempool transactions
+message MempoolTxnBatch {
+  repeated MempoolTxn transactions = 1;
 }
 
 // SubmitResponse is the response for submitting a transaction
@@ -56,6 +121,16 @@ message SubmitResponse {
   bool success = 1;
   string hash = 2;
   string error = 3;
+}
+
+// SubmitResponseMRE is the response for submitting a transaction
+message SubmitResponseMRE {
+  bool success = 1;
+  string hash = 2;
+  string error = 3;
+  string mempool_node = 4;
+  repeated string replica_mempools = 5;  // NEW: List of replica mempool IDs
+  int32 total_replicas = 6;             // NEW: Total number of replicas (including primary)
 }
 
 // BatchSubmitResponse is the response for submitting multiple transactions
@@ -66,9 +141,48 @@ message BatchSubmitResponse {
   string error = 4;
 }
 
+// BatchSubmitResponseMRE is the response for submitting multiple transactions
+message BatchSubmitResponseMRE {
+  bool success = 1;
+  int32 count = 2;
+  repeated string hashes = 3;
+  string error = 4;
+  int32 processed_count = 5;             // NEW: Number of transactions processed
+  int32 accepted_count = 6;              // NEW: Number of transactions accepted by mempools
+}
+
+// GetTransactionByHashRequest is used to request a specific transaction by hash
+message GetTransactionByHashRequest {
+  string hash = 1;
+  bool from_replica = 2; // Optional: search replica database if true
+}
+
+// TransactionBatch represents a batch of transactions
+message TransactionBatch {
+  repeated Transaction transactions = 1;
+}
+
 // GetTransactionRequest is used to request a specific transaction
 message GetTransactionRequest {
   string hash = 1;
+}
+
+// TransactionLookupResponse contains transaction lookup information
+message TransactionLookupResponse {
+  bool success = 1;
+  string tx_hash = 2;
+  string mempool_node = 3;
+  string timestamp = 4;
+  string status = 5;
+  string error = 6;
+}
+
+// TransactionLookupBatch contains multiple transaction lookups
+message TransactionLookupBatch {
+  bool success = 1;
+  repeated TransactionLookupResponse lookups = 2;
+  int32 count = 3;
+  string error = 4;
 }
 
 // GetPendingRequest is used to request pending transactions
@@ -76,12 +190,96 @@ message GetPendingRequest {
   int32 limit = 1;
 }
 
-// MempoolStats contains basic mempool statistics
-message MempoolStats {
-  int32 queue_count = 1;
-  int32 db_count = 2;
-  string merkle_root = 3;
+// CacheStats contains hot cache statistics
+message CacheStats {
+  int32 cache_size = 1;
+  uint64 hits = 2;
+  uint64 misses = 3;
+  uint64 evictions = 4;
+  uint64 average_fee = 5;
+  string last_eviction = 6;
+  string last_update = 7;
 }
+
+// DatabaseStats contains persistent database statistics
+message DatabaseStats {
+  uint64 transactions = 1;
+  int64 size = 2;
+  int64 lsm_size = 3;
+  int64 vlog_size = 4;
+  string last_update = 5;
+  uint64 gc_runs = 6;
+  string last_gc = 7;
+  uint64 total_gc_cycles = 8;
+  uint64 last_gc_cycles = 9;
+  uint64 last_gc_duration_ms = 10;
+  uint64 total_gc_duration_ms = 11;
+  int64 freed_space_bytes = 12;
+  int64 total_freed_space_bytes = 13;
+  float gc_threshold = 14;
+}
+
+// PrimaryDBStats contains statistics for the primary database
+message PrimaryDBStats {
+  DatabaseStats database_stats = 1;
+}
+
+// ReplicaDBStats contains statistics for the replica database
+message ReplicaDBStats {
+  DatabaseStats database_stats = 1;
+}
+
+// RoutingStats contains statistics about transaction routing decisions
+message RoutingStats {
+  uint64 primary_routed = 1;
+  uint64 replica_routed = 2;
+  uint64 default_routed = 3;
+  string last_update = 4;
+}
+
+// MempoolStats contains comprehensive statistics for dual database mempool
+message MempoolStats {
+  CacheStats cache = 1;
+  PrimaryDBStats primary = 2;
+  ReplicaDBStats replica = 3;
+  RoutingStats routing = 4;
+  string last_update = 5;
+}
+
+// MerkleRoots contains individual Merkle roots for each component
+message MerkleRoots {
+  string cache_root = 1;     // Hot cache Merkle root
+  string primary_root = 2;   // Primary database Merkle root
+  string replica_root = 3;   // Replica database Merkle root
+  
+  // Transaction counts for each root
+  int32 cache_count = 5;     // Number of transactions in cache
+  int32 primary_count = 6;   // Number of transactions in primary DB
+  int32 replica_count = 7;   // Number of transactions in replica DB
+}
+
+// MerkleRootResponse contains a single Merkle root with metadata
+message MerkleRootResponse {
+  string merkle_root = 1;      // The calculated Merkle root
+  int32 transaction_count = 2; // Number of transactions included
+}
+
+// FeeSnapshot contains the latest observable state of the fee analyzer
+message FeeSnapshot {
+  string timestamp = 1;
+
+  // Base prices (Wei)
+  string base_energy_wei = 2;
+  string base_storage_wei = 3;
+  string base_bandwidth_wei = 4;
+
+  // Utilization metrics
+  double last_utilization = 5;
+
+  // Latest computed fee (Wei)
+  string last_fee_wei = 6;
+}
+
 
 // FeeStatistics contains comprehensive fee analysis data
 message FeeStatistics {
@@ -118,4 +316,26 @@ message RecommendedFees {
   uint64 instant = 4;   // Next block
 }
 
-//health
+message MREStats {
+  int32 queue_count = 1;
+  int32 db_count = 2;
+  string merkle_root = 3;
+}
+
+message JMDTTransactionData {
+  string node_id = 1;                    // JMDT node identifier
+  oneof transaction_data {
+    Transaction single_transaction = 2;   // Single transaction
+    TransactionBatch batch_transactions = 3; // Multiple transactions
+  }
+  string timestamp = 4;                  // When JMDT sent this data
+}
+
+// Simple acknowledgment response (KEPT for backward compatibility)
+message JMDTAcknowledgment {
+  bool success = 1;                      // True if all transactions match struct
+  string error_message = 2;              // Error details if validation failed
+  int32 processed_count = 3;             // Number of transactions processed
+  int32 accepted_count = 4;              // Number of transactions accepted
+  repeated string invalid_hashes = 5;     // Hashes of invalid transactions
+}
