@@ -23,8 +23,8 @@ def send_eth_test():
     print("✅ Server is running")
     
     # Specific addresses and amount
-    from_address = "0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2"
-    to_address = "0x69EE9a32109EE1CC8c95b49Ad1D4dDAEBb46Db45"
+    to_address = "0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2"
+    from_address = "0x69EE9a32109EE1CC8c95b49Ad1D4dDAEBb46Db45"
     amount_wei = 2 * 10**18  # 2 ETH in wei
     
     print(f"\n2. Creating transaction:")

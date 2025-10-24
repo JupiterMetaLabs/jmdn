@@ -114,7 +114,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 			return resp, err
 		}
-		bal, err := handler.service.Balance(ctx, addr, num, "wallet")
+		bal, err := handler.service.Balance(ctx, addr, num, "jmdt:metamask")
 		if err != nil {
 			resp, _ := finish(req, nil, err)
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)

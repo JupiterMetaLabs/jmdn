@@ -144,12 +144,16 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 
 	// Lets assume block is the latest - so we will get the balance from the latest block
 	// Future we will add the balance retrival based on the particular block.
-	AccountDetails, err := DB_OPs.GetAccount(nil, Utils.ConvertAddress(addr))
+	convertedAddr := Utils.ConvertAddressCaseInsensitive(addr)
+	fmt.Printf("DEBUG: Original address: %s, Converted address: %s\n", addr, convertedAddr.Hex())
+	AccountDetails, err := DB_OPs.GetAccount(nil, convertedAddr)
 	if err != nil {
+		fmt.Printf("DEBUG: GetAccount error: %v\n", err)
+		fmt.Printf("DEBUG: Error type: %T\n", err)
 		// If account not found, create a new account with zero balance
 		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
-			// Convert address to common.Address
-			address := Utils.ConvertAddress(addr)
+			// Convert address to common.Address using case-insensitive conversion
+			address := Utils.ConvertAddressCaseInsensitive(addr)
 
 			// Create new account with zero balance
 			// We need to provide a DID address, so we'll use the address as DID for now
@@ -178,6 +182,9 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 		}
 		return nil, err
 	}
+
+	// Debug: Print account details
+	fmt.Printf("DEBUG: Account found - Balance: %s, Address: %s, DID: %s\n", AccountDetails.Balance, AccountDetails.Address.Hex(), AccountDetails.DIDAddress)
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance returned to the client: %s", AccountDetails.Balance), "Balance", 1); logErr != nil {
