@@ -53,6 +53,11 @@ type Vote struct {
 	BlockHash string `json:"block_hash"` // hash of the block
 }
 
+type BlockResult struct{
+	BlockHash string `json:"block_hash"`
+	Result bool `json:"result"`
+}
+
 type ACK struct {
 	Status string `json:"status"`
 	PeerID string `json:"peer_id"`

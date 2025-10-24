@@ -54,7 +54,7 @@ func (buddy *BuddyNode) SetBuddyNodes(buddies Buddies) *BuddyNode {
 }
 
 func (buddy *BuddyNode) AddBuddies(buddies []peer.ID) *BuddyNode {
-	buddy.BuddyNodes.Buddies_Nodes = append(buddy.BuddyNodes.Buddies_Nodes, buddies...)
+	buddy.BuddyNodes = *NewBuddiesBuilder(buddies)
 	return buddy
 }
 
@@ -137,6 +137,5 @@ func (buddy *BuddyNode) IsAllowed(peerID peer.ID) bool {
 }
 
 func (buddy *BuddyNode) IsPublicChannel(peerID peer.ID) bool {
-
 	return buddy.PubSub.ChannelAccess[config.PubSub_ConsensusChannel].IsPublic
 }

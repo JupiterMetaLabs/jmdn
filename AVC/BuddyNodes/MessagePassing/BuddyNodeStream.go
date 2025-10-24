@@ -17,6 +17,11 @@ type StructBuddyNode struct {
 	BuddyNode *AVCStruct.BuddyNode
 }
 
+// Abstraction function to start the handleBuddynode message stream
+func HandleBuddyNodeStream(s network.Stream) {
+	NewStructBuddyNode(AVCStruct.PubSub_BuddyNode).HandleBuddyNodesMessageStream(s)
+}
+
 func NewStructBuddyNode(buddy *AVCStruct.BuddyNode) *StructBuddyNode {
 	if buddy == nil {
 		return &StructBuddyNode{
@@ -43,7 +48,6 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 			zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 		return
 	}
-
 
 	message := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(msg)
 

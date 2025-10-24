@@ -106,15 +106,22 @@ func (c *PeerClient) ListAllPeers(ctx context.Context) ([]Node, error) {
 
 // ListBuddyPeers fetches available buddy peers (excluding recent buddies)
 func (c *PeerClient) ListBuddyPeers(ctx context.Context) ([]Node, error) {
+	fmt.Printf("Debugging 4\n")
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	fmt.Printf("Debugging 5\n")
 	resp, err := c.client.ListBuddy(reqCtx, &pb.ListBuddyRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list buddy peers: %w", err)
 	}
 
+	fmt.Printf("Debugging 6\n")
 	fmt.Printf("✅ Received %d buddy-eligible peers\n", len(resp.Peers))
+
+	if len(resp.Peers) == 0 {
+		return nil, fmt.Errorf("no buddy peers found")
+	}
 
 	nodes := make([]Node, 0, len(resp.Peers))
 	fmt.Printf("%+v\n", resp.Peers[0])

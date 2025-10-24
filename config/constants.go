@@ -22,6 +22,7 @@ const (
 const (
 	MaxMainPeers   = 13
 	MaxBackupPeers = 3
+	ConsensusTimeout = 20 * time.Second
 )
 // Protocol IDs for message and file sharing
 const (
@@ -156,3 +157,4 @@ type AccessTuple struct {
 
 // AccessList is an EIP-2930 access list.
 type AccessList []AccessTuple
+

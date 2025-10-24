@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/config"
 	"gossipnode/messaging"
 	"gossipnode/metrics"
@@ -186,8 +187,9 @@ func NewNode() (*config.Node, error) {
 	})
 	h.SetStreamHandler(config.BroadcastProtocol, messaging.HandleBroadcastStream)
 	h.SetStreamHandler(config.BlockPropagationProtocol, messaging.HandleBlockStream)
-
-	// Start peer discovery using mDNS (optional)
+	h.SetStreamHandler(config.BuddyNodesMessageProtocol, func(s network.Stream) {
+		MessagePassing.HandleBuddyNodeStream(s)
+	})
 	go StartDiscovery(h)
 
 	return &localNode, nil
@@ -247,4 +249,38 @@ func getPeerInfo(target string, host host.Host) (ma.Multiaddr, *peer.AddrInfo, b
 // BroadcastMessage broadcasts a message to all connected peers
 func BroadcastMessage(n *config.Node, message string) error {
 	return messaging.BroadcastMessage(n.Host, message)
+}
+
+// GetPeerID returns the peer ID string of the local node
+func GetPeerID() string {
+	if localNode.Host == nil {
+		return ""
+	}
+	return localNode.Host.ID().String()
+}
+
+func GetPeerIDFromJSON() string {
+	// Check if file exists
+	if _, err := os.Stat(peerFile); err != nil {
+		fmt.Println("Failed to stat peer.json:", err)
+		return ""
+	}
+
+	// Open the file
+	file, err := os.Open(peerFile)
+	if err != nil {
+		fmt.Println("Failed to open peer.json:", err)
+		return ""
+	}
+	defer file.Close()
+
+	// Decode JSON
+	var config PeerConfig
+	if err := json.NewDecoder(file).Decode(&config); err != nil {
+		fmt.Println("Failed to decode peer.json:", err)
+		return ""
+	}
+
+	fmt.Println("Peer ID from peer.json:", config.PeerID)
+	return config.PeerID
 }

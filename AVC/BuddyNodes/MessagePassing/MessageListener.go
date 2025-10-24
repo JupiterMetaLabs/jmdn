@@ -25,7 +25,6 @@ func NewListenerStruct(listner *AVCStruct.BuddyNode) *StructListener{
 func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.Stream) {
 	defer s.Close()
 
-
 	reader := bufio.NewReader(s)
 	msg, err := reader.ReadString(config.Delimiter)
 	if err != nil {

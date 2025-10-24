@@ -4,10 +4,14 @@ import (
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
+	"gossipnode/AVC/NodeSelection/Router"
 	"gossipnode/Pubsub"
+	"gossipnode/Sequencer/Metadata"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 	"log"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -25,6 +29,7 @@ type Consensus struct {
 	ListenerNode     *MessagePassing.StructListener
 	ResponseHandler  *ResponseHandler
 	DiscoveryService *Service.NodeDiscoveryService
+	ZKBlockData      *PubSubMessages.ConsensusMessage
 }
 
 func NewConsensus(peerList PeerList, host host.Host) *Consensus {
@@ -37,12 +42,48 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	}
 }
 
-func (consensus *Consensus) Start() error {
+// With the block you will attack the metadata to it before the propagation of the block
+// QUERY BUDDY NODES FUNCTIONALITY (we would need this to get the buddy nodes prompted)
+func (consensus *Consensus) QueryBuddyNodes() ([]peer.ID, error) {
+	router := Router.NewNodeselectionRouter()
+	buddies, err := router.GetBuddyNodes(config.MaxMainPeers+config.MaxBackupPeers)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get buddy nodes: %v", err)
+	}
+	for _, buddy := range buddies {
+		consensus.PeerList.MainPeers = append(consensus.PeerList.MainPeers, peer.ID(buddy.Node.ID))
+	}
+	return consensus.PeerList.MainPeers, nil
+}
+
+func (consensus *Consensus) AddBuddyNodesToPeerList(zkBlock *config.ZKBlock, buddies []peer.ID) (*PubSubMessages.ConsensusMessage, error) {
+
+	ZKBlock := Metadata.ZKBlockMetadata(zkBlock, PubSubMessages.NewBuddiesBuilder(buddies)).SetEndTimeoutMetadata(time.Now().Add(config.ConsensusTimeout)).SetStartTimeMetadata(time.Now())
+	if ZKBlock == nil {
+		return nil, fmt.Errorf("failed to create ZKBlock metadata")
+	}
+	return ZKBlock.GetConsensusMessage(), nil
+}
+
+func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Start the Loggers in the Streaming.go
 	MessagePassing.Init_Loggers(config.LOKI_URL != "")
 	// Validate consensus configuration first
 	if err := ValidateConsensusConfiguration(consensus); err != nil {
 		return fmt.Errorf("invalid consensus configuration: %w", err)
+	}
+
+	// Attach the metadata to the block
+	// 1. Pull the buddies from the NodeSelectionRouter
+	peerIDs, errMSG := consensus.QueryBuddyNodes()
+	if errMSG != nil {
+		return fmt.Errorf("failed to query buddy nodes: %v", errMSG)
+	}
+
+	// 2. Attach the buddies to the zkblock as metadata
+	consensus.ZKBlockData, errMSG = consensus.AddBuddyNodesToPeerList(zkblock, peerIDs)
+	if errMSG != nil {
+		return fmt.Errorf("failed to add buddy nodes to peer list: %v", errMSG)
 	}
 
 	// First create the pubsub channel

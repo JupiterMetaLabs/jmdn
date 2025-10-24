@@ -43,3 +43,26 @@ type MetaData struct {
 type Buddies struct {
 	Buddies_Nodes []peer.ID
 }
+
+func NewBuddiesBuilder(buddies []peer.ID) *Buddies {
+	if buddies != nil {
+		return &Buddies{
+			Buddies_Nodes: buddies,
+		}
+	}
+	return &Buddies{}
+}
+
+func (buddies *Buddies) AddBuddies(buddyNodes []peer.ID) *Buddies {
+	buddies.Buddies_Nodes = append(buddies.Buddies_Nodes, buddyNodes...)
+	return buddies
+}
+
+func (buddies *Buddies) RemoveBuddies(buddyNodes []peer.ID) *Buddies {
+	buddies.Buddies_Nodes = removeBuddies(buddies.Buddies_Nodes, buddyNodes)
+	return buddies
+}
+
+func (buddies *Buddies) GetBuddies() []peer.ID {
+	return buddies.Buddies_Nodes
+}
