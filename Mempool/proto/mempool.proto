@@ -25,7 +25,7 @@ service RoutingService {
   rpc GetMempoolStats(google.protobuf.Empty) returns (MREStats);
   
   // Get detailed fee statistics
-  rpc GetFeeStatistics(google.protobuf.Empty) returns (FeeSnapshot);
+  rpc GetFeeStatistics(google.protobuf.Empty) returns (FeeStatistics);
 
   // Get transaction lookup information
   rpc GetTransactionLookup(GetTransactionRequest) returns (TransactionLookupResponse);
