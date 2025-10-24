@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"gossipnode/Block"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/fastsync"
@@ -77,6 +78,7 @@ func PrintFuncs() {
 	fmt.Println("  listaliases                       - List all peer aliases from seed node")
 	fmt.Println("  discoverneighbors                 - Discover and add neighbors from seed node")
 	fmt.Println("  seednodeStats                     - Check seed node connection and get peer statistics")
+	fmt.Println("  mempoolStats                      - Show mempool statistics")
 	fmt.Println("  stats                             - Show messaging statistics")
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
 	fmt.Println("  fastsync <peer_multiaddr>        - Fast sync blockchain data with a peer")
@@ -169,6 +171,8 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleSendFile(parts)
 	case "seednodeStats":
 		h.handleSeedNodeStats(parts)
+	case "mempoolStats":
+		h.handleMempoolStats(parts)
 	case "addpeer":
 		h.handleAddPeer(parts)
 	case "removepeer":
@@ -363,6 +367,75 @@ func (h *CommandHandler) handleSeedNodeStats(parts []string) {
 	fmt.Println("\n🎯 Seed node connection is healthy and operational!")
 	printDashes()
 	fmt.Println("✅ seednodeStats command completed successfully!")
+}
+
+func (h *CommandHandler) handleMempoolStats(parts []string) {
+	// Get mempool client
+	mempoolClient, err := Block.ReturnMempoolObject()
+	if err != nil {
+		fmt.Printf("❌ Mempool client not available: %v\n", err)
+		return
+	}
+
+	// Get mempool statistics
+	stats, err := mempoolClient.GetMempoolStats()
+	if err != nil {
+		fmt.Printf("❌ Failed to get mempool stats: %v\n", err)
+		return
+	}
+
+	// Display comprehensive mempool statistics
+	fmt.Println(config.ColorGreen + "=== Mempool Statistics ===" + config.ColorReset)
+
+	// Cache statistics
+	fmt.Printf("📊 Cache Statistics:\n")
+	fmt.Printf("  Cache Size: %d transactions\n", stats.Cache.CacheSize)
+	fmt.Printf("  Cache Hits: %d\n", stats.Cache.Hits)
+	fmt.Printf("  Cache Misses: %d\n", stats.Cache.Misses)
+	fmt.Printf("  Cache Evictions: %d\n", stats.Cache.Evictions)
+	fmt.Printf("  Average Fee: %d Wei\n", stats.Cache.AverageFee)
+	fmt.Printf("  Last Update: %s\n", stats.Cache.LastUpdate)
+
+	// Primary database statistics
+	fmt.Printf("\n🗄️ Primary Database:\n")
+	fmt.Printf("  Transactions: %d\n", stats.Primary.DatabaseStats.Transactions)
+	fmt.Printf("  Size: %d bytes\n", stats.Primary.DatabaseStats.Size)
+	fmt.Printf("  LSM Size: %d bytes\n", stats.Primary.DatabaseStats.LsmSize)
+	fmt.Printf("  VLog Size: %d bytes\n", stats.Primary.DatabaseStats.VlogSize)
+	fmt.Printf("  GC Runs: %d\n", stats.Primary.DatabaseStats.GcRuns)
+	fmt.Printf("  Last GC: %s\n", stats.Primary.DatabaseStats.LastGc)
+
+	// Replica database statistics
+	fmt.Printf("\n🔄 Replica Database:\n")
+	fmt.Printf("  Transactions: %d\n", stats.Replica.DatabaseStats.Transactions)
+	fmt.Printf("  Size: %d bytes\n", stats.Replica.DatabaseStats.Size)
+
+	// Routing statistics
+	fmt.Printf("\n🛣️ Routing Statistics:\n")
+	fmt.Printf("  Primary Routed: %d\n", stats.Routing.PrimaryRouted)
+	fmt.Printf("  Replica Routed: %d\n", stats.Routing.ReplicaRouted)
+	fmt.Printf("  Default Routed: %d\n", stats.Routing.DefaultRouted)
+
+	// Get fee statistics
+	feeStats, err := mempoolClient.GetFeeStatistics()
+	if err == nil {
+		fmt.Printf("\n💰 Fee Statistics:\n")
+		fmt.Printf("  Min Fee: %d Wei\n", feeStats.MinFee)
+		fmt.Printf("  Max Fee: %d Wei\n", feeStats.MaxFee)
+		fmt.Printf("  Median Fee: %d Wei\n", feeStats.MedianFee)
+		fmt.Printf("  Mean Fee: %d Wei\n", feeStats.MeanFee)
+		fmt.Printf("  Priority Fee Ratio: %.2f\n", feeStats.PriorityFeeRatio)
+
+		if feeStats.RecommendedFees != nil {
+			fmt.Printf("\n💡 Recommended Fees:\n")
+			fmt.Printf("  Slow (~10min): %d Wei\n", feeStats.RecommendedFees.Slow)
+			fmt.Printf("  Standard (~3min): %d Wei\n", feeStats.RecommendedFees.Standard)
+			fmt.Printf("  Fast (~30sec): %d Wei\n", feeStats.RecommendedFees.Fast)
+			fmt.Printf("  Instant (next block): %d Wei\n", feeStats.RecommendedFees.Instant)
+		}
+	}
+
+	printDashes()
 }
 
 func (h *CommandHandler) handleAddPeer(parts []string) {
