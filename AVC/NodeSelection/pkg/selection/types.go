@@ -1,33 +1,17 @@
 package selection
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"sync"
 
-	"gossipnode/AVC/NodeSelection/pkg/types"
+	sharedselection "gossipnode/shared/selection"
 )
 
-// Node wraps types.Node with selection score
-type Node struct {
-	types.Node
-	SelectionScore float64 // 0.0 to 1.0, if >= 0.5 then eligible
-}
-
-// Factory creates selection algorithms
-type Factory func(config interface{}) (Selector, error)
-
-// Selector interface for selection algorithms
-type Selector interface {
-	SelectBuddy(ctx context.Context, nodeID string, nodes []Node) (*BuddyNode, error)
-}
-
-// BuddyNode represents the selected buddy with proof
-type BuddyNode struct {
-	Node  *Node
-	Proof []byte
-}
+// Re-export types from shared package for convenience
+type Node = sharedselection.Node
+type BuddyNode = sharedselection.BuddyNode
+type Factory = sharedselection.Factory
+type Selector = sharedselection.Selector
 
 // Registry manages selection algorithms
 type Registry struct {
@@ -76,9 +60,9 @@ func init() {
 	DefaultRegistry.Register(VRFAlgorithmName, NewVRFSelector)
 }
 
-// Errors
+// Re-export errors from shared package for convenience
 var (
-	ErrNoPeersAvailable    = errors.New("no peers available for selection")
-	ErrVRFGenerationFailed = errors.New("VRF proof generation failed")
-	ErrInvalidNodeID       = errors.New("invalid node ID")
+	ErrNoPeersAvailable    = sharedselection.ErrNoPeersAvailable
+	ErrVRFGenerationFailed = sharedselection.ErrVRFGenerationFailed
+	ErrInvalidNodeID       = sharedselection.ErrInvalidNodeID
 )
