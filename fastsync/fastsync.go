@@ -813,14 +813,24 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 	switch dbType {
 	case MainDB:
 		dbClient = fs.mainDB
+		log.Info().Str("db_type", "MainDB").Msg("Using MainDB client for restoration")
 	case AccountsDB:
 		dbClient = fs.accountsDB
+		log.Info().Str("db_type", "AccountsDB").Msg("Using AccountsDB client for restoration")
 	default:
 		return fmt.Errorf("invalid database type: %v", dbType)
 	}
 	if dbClient == nil {
+		log.Error().
+			Str("db_type", dbTypeToString(dbType)).
+			Msg("Database client is nil")
 		return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
 	}
+
+	log.Info().
+		Str("db_type", dbTypeToString(dbType)).
+		Str("file_path", dbPath).
+		Msg("Starting database restoration")
 
 	// Ensure the backup file exists
 	fileInfo, err := os.Stat(dbPath)
