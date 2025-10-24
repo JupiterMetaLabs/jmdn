@@ -52,6 +52,18 @@ func printDashes() {
 	fmt.Println("\n" + strings.Repeat("-", 50) + "\n")
 }
 
+// isInteractive checks if the program is running in interactive mode
+func isInteractive() bool {
+	// Check if stdin is a terminal
+	fileInfo, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+
+	// Check if stdin is a character device (terminal)
+	return (fileInfo.Mode() & os.ModeCharDevice) != 0
+}
+
 func PrintFuncs() {
 	fmt.Println("\n" + config.ColorCyan + "Available Commands:" + config.ColorReset)
 	fmt.Println("  help                             - Show this help message")
@@ -103,6 +115,15 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 			fmt.Println("Exiting...")
 			close(exitChan)
 		}()
+
+		// Check if stdin is available (interactive mode)
+		if !isInteractive() {
+			fmt.Println("Running in non-interactive mode - CLI will run with gRPC server only")
+			// In non-interactive mode, just wait for the gRPC server
+			// The CLI will be accessible via gRPC calls
+			<-ctx.Done()
+			return
+		}
 
 		fmt.Println()
 		scanner := bufio.NewScanner(os.Stdin)
