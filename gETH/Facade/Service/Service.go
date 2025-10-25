@@ -210,7 +210,7 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 
 func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, error) {
 	// Debugging
-	fmt.Println(">>>>>> SendRawTx received: ", rawHex)
+	// fmt.Println(">>>>>> SendRawTx received: ", rawHex)
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()

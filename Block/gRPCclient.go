@@ -118,6 +118,9 @@ func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.Batch
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Longer timeout for batches
 	defer cancel()
 
+	// Log batch submission
+	fmt.Printf("Submitting %d transactions to mempool\n", len(txs))
+
 	pbTxs := make([]*pb.Transaction, len(txs))
 	for i, tx := range txs {
 		// The ZKBlockTransaction should have a pre-computed hash.
@@ -130,14 +133,17 @@ func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.Batch
 	batch := &pb.TransactionBatch{
 		Transactions: pbTxs,
 	}
+
 	RoutingClient, err := GetRoutingClient()
 	if err != nil {
 		return nil, err
 	}
+
 	resp, err := RoutingClient.client.SubmitTransactions(ctx, batch)
 	if err != nil {
 		return nil, fmt.Errorf("routing client could not submit transactions: %s", err)
 	}
+
 	if !resp.Success {
 		// The response itself is returned to allow the caller to inspect partial successes if applicable.
 		return resp, fmt.Errorf("mempool rejected transaction batch: %s", resp.Error)

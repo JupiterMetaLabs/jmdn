@@ -670,7 +670,7 @@ func (h *CommandHandler) handleDBState() {
 	}
 
 	// Debugging
-	fmt.Println("Got DB Client and DID Client", h.MainClient.Client, h.DIDClient.Client)
+	// fmt.Println("Got DB Client and DID Client", h.MainClient.Client, h.DIDClient.Client)
 
 	state, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
 	if err != nil {
