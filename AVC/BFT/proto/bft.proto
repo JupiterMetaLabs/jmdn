@@ -1,0 +1,62 @@
+// =============================================================================
+// FILE: proto/bft/bft.proto
+// =============================================================================
+syntax = "proto3";
+
+package bft;
+
+option go_package = "github.com/JupiterMetaLabs/Asynchronous-Validation-Consensus/pkg/bft/pb";
+
+// BFTService handles BFT consensus coordination
+service BFTService {
+  // Sequencer calls this to initiate BFT on buddy nodes
+  rpc InitiateBFT(BFTRequest) returns (BFTResponse);
+  
+  // Buddy calls this to report result back to Sequencer
+  rpc ReportResult(BFTResult) returns (ResultAck);
+}
+
+// BFTRequest is sent from Sequencer to Buddy nodes
+message BFTRequest {
+  uint64 round = 1;              // Round number
+  string block_hash = 2;          // Block hash to validate
+  string gossipsub_topic = 3;     // GossipSub topic name to join
+  repeated BuddyInfo all_buddies = 4; // All 13 buddies in this round
+  int64 timeout_seconds = 5;      // BFT timeout
+}
+
+// BuddyInfo contains information about each buddy
+message BuddyInfo {
+  string id = 1;           // Buddy node ID
+  string address = 2;      // Network address
+  bytes public_key = 3;    // Ed25519 public key
+  string decision = 4;     // ACCEPT or REJECT (from CRDT phase)
+}
+
+// BFTResponse acknowledges the request
+message BFTResponse {
+  bool accepted = 1;       // Whether buddy accepted the request
+  string message = 2;      // Status message
+  string buddy_id = 3;     // Responding buddy ID
+}
+
+// BFTResult is sent from Buddy to Sequencer after consensus
+message BFTResult {
+  uint64 round = 1;              // Round number
+  string block_hash = 2;          // Block hash
+  string buddy_id = 3;            // Reporting buddy ID
+  bool success = 4;               // Whether consensus succeeded
+  string decision = 5;            // ACCEPT or REJECT
+  bool block_accepted = 6;        // Final decision
+  int32 prepare_count = 7;        // Number of PREPARE votes
+  int32 commit_count = 8;         // Number of COMMIT votes
+  repeated string byzantine = 9;  // Byzantine nodes detected
+  int64 duration_ms = 10;         // Total duration in milliseconds
+  string failure_reason = 11;     // Reason if failed
+}
+
+// ResultAck acknowledges result receipt
+message ResultAck {
+  bool received = 1;
+  string message = 2;
+}

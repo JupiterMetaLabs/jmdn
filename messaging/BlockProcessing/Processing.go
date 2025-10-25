@@ -224,7 +224,7 @@ func sortTransactionsByNonce(txs []config.Transaction) []config.Transaction {
 // cleanupProcessingMarkers removes temporary processing markers
 func cleanupProcessingMarkers(accountsClient *config.PooledConnection, txHash string) {
 	processingKey := fmt.Sprintf("tx_processing:%s", txHash)
-	if exists, _ := DB_OPs.Exists(nil, processingKey); exists {
+	if exists, _ := DB_OPs.Exists(accountsClient, processingKey); exists {
 		if err := DB_OPs.Update(nil, processingKey, -1); err != nil {
 			accountsClient.Client.Logger.Logger.Warn("Failed to clean up processing marker",
 				zap.Time(logging.Created_at, time.Now()),
@@ -447,8 +447,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
 		return fmt.Errorf("recipient DID %s does not exist and automatic creation is disabled", tx.To)
 	}
-    fmt.Println("Recipient exists: ", recipientExists) // Debugging
-    
+	fmt.Println("Recipient exists: ", recipientExists) // Debugging
 
 	// 1. Deduct from sender
 	if err := deductFromSender(*tx.From, totalDeduction.String(), accountsClient); err != nil {
@@ -500,7 +499,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	}
 
 	// Debugging
-		fmt.Println(">>>>>> Added amount to recipient:", halfGasFee.String(), "with address", tx.To.Hex())
+	fmt.Println(">>>>>> Added amount to recipient:", halfGasFee.String(), "with address", tx.To.Hex())
 
 	// 3. Split gas fee between coinbase and ZKVM
 	if err := addToRecipient(coinbaseAddr, halfGasFee.String(), accountsClient); err != nil {

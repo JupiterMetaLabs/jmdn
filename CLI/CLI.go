@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"gossipnode/Block"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/fastsync"
@@ -52,6 +53,18 @@ func printDashes() {
 	fmt.Println("\n" + strings.Repeat("-", 50) + "\n")
 }
 
+// isInteractive checks if the program is running in interactive mode
+func isInteractive() bool {
+	// Check if stdin is a terminal
+	fileInfo, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+
+	// Check if stdin is a character device (terminal)
+	return (fileInfo.Mode() & os.ModeCharDevice) != 0
+}
+
 func PrintFuncs() {
 	fmt.Println("\n" + config.ColorCyan + "Available Commands:" + config.ColorReset)
 	fmt.Println("  help                             - Show this help message")
@@ -65,6 +78,7 @@ func PrintFuncs() {
 	fmt.Println("  listaliases                       - List all peer aliases from seed node")
 	fmt.Println("  discoverneighbors                 - Discover and add neighbors from seed node")
 	fmt.Println("  seednodeStats                     - Check seed node connection and get peer statistics")
+	fmt.Println("  mempoolStats                      - Show mempool statistics")
 	fmt.Println("  stats                             - Show messaging statistics")
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
 	fmt.Println("  fastsync <peer_multiaddr>        - Fast sync blockchain data with a peer")
@@ -103,6 +117,15 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 			fmt.Println("Exiting...")
 			close(exitChan)
 		}()
+
+		// Check if stdin is available (interactive mode)
+		if !isInteractive() {
+			fmt.Println("Running in non-interactive mode - CLI will run with gRPC server only")
+			// In non-interactive mode, just wait for the gRPC server
+			// The CLI will be accessible via gRPC calls
+			<-ctx.Done()
+			return
+		}
 
 		fmt.Println()
 		scanner := bufio.NewScanner(os.Stdin)
@@ -148,6 +171,8 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleSendFile(parts)
 	case "seednodeStats":
 		h.handleSeedNodeStats(parts)
+	case "mempoolStats":
+		h.handleMempoolStats(parts)
 	case "addpeer":
 		h.handleAddPeer(parts)
 	case "removepeer":
@@ -342,6 +367,39 @@ func (h *CommandHandler) handleSeedNodeStats(parts []string) {
 	fmt.Println("\n🎯 Seed node connection is healthy and operational!")
 	printDashes()
 	fmt.Println("✅ seednodeStats command completed successfully!")
+}
+
+func (h *CommandHandler) handleMempoolStats(parts []string) {
+	// Get mempool client
+	routingClient, err := Block.GetRoutingClient()
+	if err != nil {
+		fmt.Printf("❌ Mempool client not available: %v\n", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// Get mempool statistics
+	// Get fee statistics
+	feeStats, err := routingClient.GetFeeStatistics(ctx)
+	if err != nil {
+		fmt.Printf("❌ Failed to get fee statistics: %v\n", err)
+		return
+	}
+	fmt.Printf("  Min Fee: %d Wei\n", feeStats.MinFee)
+	fmt.Printf("  Max Fee: %d Wei\n", feeStats.MaxFee)
+	fmt.Printf("  Median Fee: %d Wei\n", feeStats.MedianFee)
+	fmt.Printf("  Mean Fee: %d Wei\n", feeStats.MeanFee)
+	fmt.Printf("  Priority Fee Ratio: %.2f\n", feeStats.PriorityFeeRatio)
+
+	mempoolStats, err := routingClient.GetMempoolStats(ctx)
+	if err != nil {
+		fmt.Printf("❌ Failed to get mempool stats: %v\n", err)
+		return
+	}
+	fmt.Printf("  Queue Count: %d\n", mempoolStats.QueueCount)
+	fmt.Printf("  DB Count: %d\n", mempoolStats.DbCount)
+	fmt.Printf("  Merkle Root: %s\n", mempoolStats.MerkleRoot)
+	printDashes()
 }
 
 func (h *CommandHandler) handleAddPeer(parts []string) {
@@ -612,7 +670,7 @@ func (h *CommandHandler) handleDBState() {
 	}
 
 	// Debugging
-	fmt.Println("Got DB Client and DID Client", h.MainClient.Client, h.DIDClient.Client)
+	// fmt.Println("Got DB Client and DID Client", h.MainClient.Client, h.DIDClient.Client)
 
 	state, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
 	if err != nil {

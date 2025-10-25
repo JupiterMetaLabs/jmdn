@@ -106,7 +106,7 @@ func toBytes(value interface{}) ([]byte, error) {
 // reconnect attempts to reestablish a lost connection (UNCHANGED)
 func reconnect(ic *config.ImmuClient, FUNCTION string) error {
 	// Debugging
-	fmt.Println("reconnect called, Function Name that called reconnect is ", FUNCTION)
+	// fmt.Println("reconnect called, Function Name that called reconnect is ", FUNCTION)
 	ic.Logger.Logger.Warn("Connection lost, attempting to reconnect before operation",
 		zap.Time(logging.Created_at, time.Now()),
 		zap.String(logging.Log_file, LOG_FILE),
@@ -152,7 +152,7 @@ func withRetry(ic *config.ImmuClient, operation string, fn func() error) error {
 
 	for attempt := 0; attempt <= ic.RetryLimit; attempt++ {
 		// Debugging
-		fmt.Println("withRetry called, Function Name that called withRetry is ", operation)
+		// fmt.Println("withRetry called, Function Name that called withRetry is ", operation)
 		// Check connection status first
 		if !ic.IsConnected {
 			ic.Logger.Logger.Warn("Connection lost, attempting to reconnect before %s operation",

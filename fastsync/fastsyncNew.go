@@ -709,13 +709,31 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 
 	// 2. Push the Accounts DB Transactions from AVRO file to the DB - if no accountsdb then skip
 	if Phase2.HashMap.Accounts_HashMap != nil && Phase2.HashMap.Accounts_HashMap.Size() > 0 {
+		log.Info().
+			Int("accounts_hashmap_size", Phase2.HashMap.Accounts_HashMap.Size()).
+			Msg("Processing Accounts DB transactions")
+
+		// Check if accounts database client is properly initialized
+		if fs.accountsDB == nil {
+			log.Error().Msg("Accounts database client is nil - cannot restore accounts data")
+			return nil, fmt.Errorf("accounts database client is not initialized")
+		}
+
 		if err := fs.PushDataToDB(Phase2, AccountsDB, "fastsync/.temp/accounts.avro"); err != nil {
 			log.Error().Err(err).Msg("Failed to push Accounts DB transactions")
 			return nil, fmt.Errorf("failed to push Accounts DB transactions: %w", err)
 		}
 		log.Info().Msg("Successfully pushed Accounts DB transactions")
 	} else {
-		log.Info().Msg("Skipping Accounts DB push - no data to push")
+		log.Info().
+			Bool("hashmap_nil", Phase2.HashMap.Accounts_HashMap == nil).
+			Int("hashmap_size", func() int {
+				if Phase2.HashMap.Accounts_HashMap != nil {
+					return Phase2.HashMap.Accounts_HashMap.Size()
+				}
+				return 0
+			}()).
+			Msg("Skipping Accounts DB push - no data to push")
 	}
 
 	return &SyncMessage{
@@ -869,7 +887,7 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 		Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
 		Username:   config.DBUsername,
 		Password:   config.DBPassword,
-		Database:   config.DBName,
+		Database:   config.DBName, // This is correct for main DB (defaultdb)
 		OutputPath: mainAVROpath,
 	}
 
