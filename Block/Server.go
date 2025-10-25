@@ -281,7 +281,10 @@ func processZKBlock(c *gin.Context) {
 		BackupPeers: []peer.ID{},
 	}
 	consensus := Sequencer.NewConsensus(peerList, globalHost)
+	// Debugging
+	fmt.Printf("Consensus: %+v\n", consensus)
 	if err := consensus.Start(&block); err != nil {
+		fmt.Printf("Error starting consensus process: %+v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("failed to start consensus process: %v", err),
 		})
