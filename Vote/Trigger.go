@@ -1,24 +1,27 @@
 package Vote
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"gossipnode/AVC/BuddyNodes/MessagePassing"
+	"gossipnode/Security"
+
 	"gossipnode/config/PubSubMessages"
-	"gossipnode/Pubsub/Publish"
-	"gossipnode/config"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-type VoteTrigger struct{
+type VoteTrigger struct {
 	ConsensusMessage *PubSubMessages.ConsensusMessage
-	Vote *PubSubMessages.Vote
+	Vote             *PubSubMessages.Vote
 }
 
 func NewVoteTrigger() VoteTrigger {
 	return VoteTrigger{
 		ConsensusMessage: nil,
-		Vote: nil,
+		Vote:             nil,
 	}
 }
 
@@ -26,7 +29,7 @@ func (vt *VoteTrigger) SetConsensusMessage(consensusMessage *PubSubMessages.Cons
 	vt.ConsensusMessage = consensusMessage
 }
 
-func (vt *VoteTrigger) SetVote(Vote *PubSubMessages.Vote) error {
+func (vt *VoteTrigger) setVote(Vote *PubSubMessages.Vote) error {
 
 	if Vote.GetVote() != 1 && Vote.GetVote() != -1 {
 		return fmt.Errorf("invalid vote")
@@ -40,34 +43,76 @@ func (vt *VoteTrigger) GetVote() *PubSubMessages.Vote {
 	return vt.Vote
 }
 
-func (vt *VoteTrigger) SubmitVote() error{
+func (vt *VoteTrigger) ToVoteString(vote *PubSubMessages.Vote) string {
+	jsonData, err := json.Marshal(vote)
+	if err != nil {
+		return ""
+	}
+	return string(jsonData)
+}
+
+func (vt *VoteTrigger) SubmitVote() error {
 	// Get the Listener Node
 	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
 	if listenerNode == nil {
 		return fmt.Errorf("listener node not found")
 	}
 
-	// Create a new message
-	message := &PubSubMessages.Message{
-		Sender: listenerNode.PeerID,
-		Message: convertVoteToString(vt.Vote),
+	// If consensus message is not set, try to get it from global cache
+	if vt.ConsensusMessage == nil {
+		// This should not happen in normal flow, but handle gracefully
+		return fmt.Errorf("consensus message not set for voting")
 	}
 
-	// Submit the message to the listener node
-	if err := Publish.Publish(listenerNode.PubSub, config.PubSub_ConsensusChannel, message, map[string]string{}); err != nil {
-		return fmt.Errorf("failed to publish message to pubsub: %v", err)
+	// Check the Three checks from the Security Module
+	status, err := Security.CheckZKBlockValidation(vt.ConsensusMessage.GetZKBlock())
+	if !status || err != nil {
+		vote := PubSubMessages.Vote{
+			Vote:      -1,
+			BlockHash: vt.ConsensusMessage.GetZKBlock().BlockHash.String(),
+		}
+		vt.setVote(&vote)
+		fmt.Printf("failed to check ZKBlock validation: %v\n", err)
+	} else if status {
+		vote := PubSubMessages.Vote{
+			Vote:      1,
+			BlockHash: vt.ConsensusMessage.GetZKBlock().BlockHash.String(),
+		}
+		vt.setVote(&vote)
+	} else {
+		return fmt.Errorf("failed to vote, as vote is neither 1 or -1")
 	}
+
+	// Pick up the listener node using the consistent hashing to send message to
+	NodeToSendTo := vt.PickListner(listenerNode.PeerID)
+
+	// Send the message to the listener node
+	if err := MessagePassing.NewListenerStruct(listenerNode).SendMessageToPeer(NodeToSendTo, vt.ToVoteString(vt.Vote)); err != nil {
+		return fmt.Errorf("failed to send message to listener node: %v", err)
+	}
+
 	return nil
 }
 
-func Consistanthashing(PeerID peer.ID){
-	// Node should hash its own peerID 
+func (vt *VoteTrigger) PickListner(PeerID peer.ID) peer.ID {
+	// Node should hash its own peerID  pick one from all the keys in buddies map
+	buddies := vt.ConsensusMessage.GetBuddies()
+	numKeys := len(buddies)
+	// Get the all the keys in the buddies map
+	selectedKey := consistentHashing(PeerID, numKeys)
+
+	// if the selected Key not in the buddies map, return the first peer
+	if _, ok := buddies[selectedKey]; !ok {
+		return buddies[0]
+	}
+	return buddies[selectedKey]
 }
 
-func convertVoteToString(vote *PubSubMessages.Vote) string {
-	jsonData, err := json.Marshal(vote)
-	if err != nil {
-		return ""
-	}
-	return string(jsonData)
+func consistentHashing(PeerID peer.ID, num int) int {
+	// Node should hash its own peerID  pick one from all the keys in buddies map
+	hasher := sha256.New()
+	hasher.Write([]byte(PeerID.String()))
+	hashBytes := hasher.Sum(nil)
+	hashInt := binary.BigEndian.Uint64(hashBytes[:8])
+	return int(hashInt % uint64(num)) // 0 index would be the first peer
 }

@@ -2,13 +2,19 @@ package MessagePassing
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"gossipnode/seednode"
+	"os"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 	"go.uber.org/zap"
 )
 
@@ -48,4 +54,117 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 	default:
 		log.LogMessagesError(fmt.Sprintf("Unknown message type received from %s: %s", s.Conn().RemotePeer(), msg), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 	}
+}
+
+// SendMessageToPeer sends a message to a specific peer using peer.ID (for already connected peers)
+// Uses LRU cache with TTL for optimal performance and resource efficiency
+func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, message string) error {
+	// Get or create a stream from the cache
+	StreamCache := NewStreamCacheBuilder(StructListenerNode.ListenerBuddyNode.StreamCache)
+	if StreamCache == nil {
+		return fmt.Errorf("failed to get the StreamCache, nil StreamCache occurred")
+	}
+
+	stream, err := StreamCache.GetStream(peerID)
+	if err != nil {
+		// Direct connection failed, try fallback via seed node
+		log.LogConsensusInfo(fmt.Sprintf("Direct connection failed, using seed node fallback for %s", peerID), zap.String("peer", peerID.String()), zap.String("function", "SendMessageToPeer"))
+		return StructListenerNode.sendViaSeedNode(peerID, message)
+	}
+
+	// Send the message
+	_, err = stream.Write([]byte(message + string(rune(config.Delimiter))))
+	if err != nil {
+		// If write fails, the stream might be invalid, close it and try fallback
+		StreamCache.CloseStream(peerID)
+		log.LogConsensusInfo(fmt.Sprintf("Stream write failed, using seed node fallback for %s", peerID), zap.String("peer", peerID.String()), zap.String("function", "SendMessageToPeer"))
+		return StructListenerNode.sendViaSeedNode(peerID, message)
+	}
+
+	// Update metadata
+	StructListenerNode.ListenerBuddyNode.Mutex.Lock()
+	StructListenerNode.ListenerBuddyNode.MetaData.Sent++
+	StructListenerNode.ListenerBuddyNode.MetaData.Total++
+	StructListenerNode.ListenerBuddyNode.MetaData.UpdatedAt = time.Now()
+	StructListenerNode.ListenerBuddyNode.Mutex.Unlock()
+
+	log.LogConsensusInfo(fmt.Sprintf("Sent listener message to %s: %s", peerID, message), zap.String("peer", peerID.String()), zap.String("message", message), zap.String("function", "SendMessageToPeer"))
+
+	return nil
+}
+
+// sendViaSeedNode establishes a quick connection via seed node, sends message, and drops connection
+func (StructListenerNode *StructListener) sendViaSeedNode(peerID peer.ID, message string) error {
+	// Get peer's multiaddr from seed node
+	peerInfo, err := StructListenerNode.getPeerInfoFromSeedNode(peerID)
+	if err != nil {
+		return fmt.Errorf("failed to get peer info from seed node: %v", err)
+	}
+
+	// Connect directly to the peer
+	if err := StructListenerNode.ListenerBuddyNode.Host.Connect(context.Background(), *peerInfo); err != nil {
+		return fmt.Errorf("failed to connect to peer %s: %v", peerID, err)
+	}
+
+	// Open stream and send message
+	stream, err := StructListenerNode.ListenerBuddyNode.Host.NewStream(context.Background(), peerID, config.BuddyNodesMessageProtocol)
+	if err != nil {
+		return fmt.Errorf("failed to create stream to %s: %v", peerID, err)
+	}
+	defer stream.Close() // Drop connection immediately after sending
+
+	// Send the message
+	_, err = stream.Write([]byte(message + string(rune(config.Delimiter))))
+	if err != nil {
+		return fmt.Errorf("failed to send message to %s: %v", peerID, err)
+	}
+
+	// Update metadata
+	StructListenerNode.ListenerBuddyNode.Mutex.Lock()
+	StructListenerNode.ListenerBuddyNode.MetaData.Sent++
+	StructListenerNode.ListenerBuddyNode.MetaData.Total++
+	StructListenerNode.ListenerBuddyNode.MetaData.UpdatedAt = time.Now()
+	StructListenerNode.ListenerBuddyNode.Mutex.Unlock()
+
+	log.LogConsensusInfo(fmt.Sprintf("Sent listener message to %s (via seed node): %s", peerID, message), zap.String("peer", peerID.String()), zap.String("message", message), zap.String("function", "sendViaSeedNode"))
+
+	return nil
+}
+
+// getPeerInfoFromSeedNode retrieves peer information from seed node
+func (StructListenerNode *StructListener) getPeerInfoFromSeedNode(peerID peer.ID) (*peer.AddrInfo, error) {
+	// Create seed node client - configurable via environment variable or use default
+	seedNodeURL := os.Getenv("SEED_NODE_URL")
+	if seedNodeURL == "" {
+		seedNodeURL = config.SeedNodeURL
+	}
+
+	client, err := seednode.NewClient(seedNodeURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create seed node client: %v", err)
+	}
+	defer client.Close()
+
+	// Get peer record from seed node
+	peerRecord, err := client.GetPeer(peerID.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get peer from seed node: %v", err)
+	}
+
+	// Convert multiaddrs to peer.AddrInfo
+	peerInfo := &peer.AddrInfo{ID: peerID}
+	for _, multiaddrStr := range peerRecord.Multiaddrs {
+		addr, err := multiaddr.NewMultiaddr(multiaddrStr)
+		if err != nil {
+			log.LogConsensusInfo(fmt.Sprintf("Skipping invalid multiaddr: %s", multiaddrStr), zap.String("function", "getPeerInfoFromSeedNode"))
+			continue
+		}
+		peerInfo.Addrs = append(peerInfo.Addrs, addr)
+	}
+
+	if len(peerInfo.Addrs) == 0 {
+		return nil, fmt.Errorf("no valid multiaddrs found for peer %s", peerID)
+	}
+
+	return peerInfo, nil
 }

@@ -32,6 +32,9 @@ const (
 	MessageBufferTime      = 5 * time.Second  // 5-second buffer between windows
 )
 
+var SeedNodeURL string = "34.174.233.203:17002"
+
+
 // Protocol IDs for message and file sharing
 const (
 	MessageProtocol           protocol.ID = "/custom/message/1.0.0"
@@ -92,7 +95,7 @@ const (
 
 const (
 	DIDPropagationProtocol protocol.ID = "/gossipnode/did/1.0.0"
-	MaxAccountHops                     = 7
+	MaxAccountHops         int         = 7
 )
 
 // Network addresses

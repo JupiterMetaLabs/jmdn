@@ -13,13 +13,16 @@ import (
 	"time"
 
 	"github.com/bits-and-blooms/bloom/v3"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog/log"
 
 	"gossipnode/DB_OPs"
+	"gossipnode/Vote"
 	"gossipnode/config"
+	"gossipnode/config/PubSubMessages"
 	"gossipnode/helper"
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
@@ -378,35 +381,62 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 }
 
 // This function is called by Server.go when receiving a new block via API
-func PropagateZKBlock(h host.Host, block *config.ZKBlock) error {
-	// Step 1: Set up database connections
-	mainDBClient, err := DB_OPs.GetMainDBConnection()
-	if err != nil {
-		return fmt.Errorf("failed to create main DB client: %w", err)
-	}
-	defer DB_OPs.PutMainDBConnection(mainDBClient)
-
-	accountsClient, err := DB_OPs.GetAccountsConnection()
-	if err != nil {
-		return fmt.Errorf("failed to create accounts DB client: %w", err)
-	}
-	defer DB_OPs.PutAccountsConnection(accountsClient)
-
+func PropagateZKBlock(h host.Host, block *PubSubMessages.ConsensusMessage) error {
 	log.Info().
-		Str("block_hash", block.BlockHash.Hex()).
-		Uint64("block_number", block.BlockNumber).
-		Int("txn_count", len(block.Transactions)).
-		Msg("Starting ZK block propagation")
+		Str("block_hash", block.GetZKBlock().BlockHash.Hex()).
+		Uint64("block_number", block.GetZKBlock().BlockNumber).
+		Int("txn_count", len(block.GetZKBlock().Transactions)).
+		Msg("Starting ZK block propagation and voting process")
 
-	// Step 2: Process the entire block atomically with proper rollback capability
-	if err := BlockProcessing.ProcessBlockTransactions(block, accountsClient); err != nil {
-		return fmt.Errorf("block validation failed: %w", err)
+	// Step 1: Create consensus message and store in cache (non-blocking)
+	consensusMessage := createConsensusMessageForVoting(block)
+	if consensusMessage == nil {
+		return fmt.Errorf("failed to create consensus message for voting")
 	}
 
-	// Step 3: Store the block in main DB - all transactions are valid
-	if err := DB_OPs.StoreZKBlock(mainDBClient, block); err != nil {
-		return fmt.Errorf("failed to store block: %w", err)
-	}
+	// Step 2: Store in global cache using consensus builder
+	consensusMessage.SetGloalVarCacheConsensusMessage()
+
+	// Step 3: Submit to voting process asynchronously (don't wait for response)
+	go func() {
+		if notTimeout, err := submitZKBlockToVoting(consensusMessage); notTimeout {
+			log.Info().
+				Str("block_hash", block.GetZKBlock().BlockHash.Hex()).
+				Msg("ZK block submitted to voting process successfully")
+			return
+		} else {
+			log.Error().
+				Str("error", err.Error()).
+				Str("block_hash", block.GetZKBlock().BlockHash.Hex()).
+				Msg("ZK block timed out, not submitting to voting process")
+			return
+		}
+	}()
+
+	// Step 3.5: Start consensus monitoring asynchronously (only if not timed out)
+	go func() {
+		// Check if consensus message is still valid before monitoring
+		if consensusMessage.CheckTimeOut() {
+			log.Info().
+				Str("block_hash", block.GetZKBlock().BlockHash.Hex()).
+				Msg("Consensus already timed out - skipping monitoring")
+			return
+		}
+
+		// Wait for consensus result with extended timeout
+		consensusTimeout := config.ConsensusTimeout + 10*time.Second // Add buffer
+		if err := WaitForConsensusResult(block.GetZKBlock().BlockHash.Hex(), consensusTimeout); err != nil {
+			log.Info().
+				Err(err).
+				Str("block_hash", block.GetZKBlock().BlockHash.Hex()).
+				Msg("Consensus monitoring completed (timeout expected)")
+		}
+	}()
+
+	// Step 4: Continue with block propagation (don't wait for consensus)
+	log.Info().
+		Str("block_hash", block.GetZKBlock().BlockHash.Hex()).
+		Msg("ZK block submitted to voting, continuing with propagation")
 
 	// Step 4: Generate a unique nonce for the block message
 	nonceBytes := make([]byte, 16)
@@ -418,18 +448,18 @@ func PropagateZKBlock(h host.Host, block *config.ZKBlock) error {
 
 	// Step 5: Create summary metadata for logs and Bloom filter
 	metadata := map[string]string{
-		"block_hash":   block.BlockHash.Hex(),
-		"block_number": strconv.FormatUint(block.BlockNumber, 10),
-		"txn_count":    strconv.Itoa(len(block.Transactions)),
-		"proof_hash":   block.ProofHash,
-		"status":       block.Status,
-		"timestamp":    strconv.FormatInt(block.Timestamp, 10),
+		"block_hash":   block.GetZKBlock().BlockHash.Hex(),
+		"block_number": strconv.FormatUint(block.GetZKBlock().BlockNumber, 10),
+		"txn_count":    strconv.Itoa(len(block.GetZKBlock().Transactions)),
+		"proof_hash":   block.GetZKBlock().ProofHash,
+		"status":       block.GetZKBlock().Status,
+		"timestamp":    strconv.FormatInt(block.GetZKBlock().Timestamp, 10),
 	}
 
 	// Add sample transaction hashes
-	txLimit := min(5, len(block.Transactions))
+	txLimit := min(5, len(block.GetZKBlock().Transactions))
 	for i := 0; i < txLimit; i++ {
-		metadata[fmt.Sprintf("tx_%d", i)] = block.Transactions[i].Hash.Hex()
+		metadata[fmt.Sprintf("tx_%d", i)] = block.GetZKBlock().Transactions[i].Hash.Hex()
 	}
 
 	// Step 6: Create block message with full ZK block data
@@ -439,7 +469,7 @@ func PropagateZKBlock(h host.Host, block *config.ZKBlock) error {
 		Timestamp: now,
 		Nonce:     nonce,
 		Data:      metadata,
-		Block:     block, // Include full block
+		Block:     block.GetZKBlock(), // Include full block
 		Type:      "zkblock",
 		Hops:      0,
 	}
@@ -507,7 +537,7 @@ func PropagateZKBlock(h host.Host, block *config.ZKBlock) error {
 	wg.Wait()
 
 	log.Info().
-		Str("block_hash", block.BlockHash.Hex()).
+		Str("block_hash", block.GetZKBlock().BlockHash.Hex()).
 		Int("success", successCount).
 		Int("total", len(peers)).
 		Msg("ZK block propagated successfully")
@@ -554,4 +584,118 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// createConsensusMessageForVoting creates a consensus message for voting process
+func createConsensusMessageForVoting(MSG *PubSubMessages.ConsensusMessage) *PubSubMessages.ConsensusMessage {
+	// Create a new consensus message
+	consensusMessage := PubSubMessages.NewConsensusMessageBuilder(MSG)
+
+	// Set the ZK block
+	consensusMessage.SetZKBlock(MSG.GetZKBlock())
+
+	// Set timing information
+	now := time.Now()
+	consensusMessage.SetStartTime(now)
+	consensusMessage.SetEndTimeout(now.Add(config.ConsensusTimeout))
+	// Note: Buddies will be added by the consensus process
+	// This is just the initial setup for voting
+
+	return consensusMessage
+}
+
+// submitZKBlockToVoting submits the ZK block to voting process
+// If we have crossed the end timeout, we will not submit the vote
+func submitZKBlockToVoting(consensusMessage *PubSubMessages.ConsensusMessage) (bool, error) {
+	if consensusMessage.CheckTimeOut() {
+		// Timeout occurred - this is normal and expected
+		return false, fmt.Errorf("consensus message timed out - skipping vote")
+	}
+
+	// Create vote trigger
+	voteTrigger := Vote.NewVoteTrigger()
+
+	// Set the consensus message
+	voteTrigger.SetConsensusMessage(consensusMessage)
+
+	// Submit the vote (this will trigger the voting process)
+	if err := voteTrigger.SubmitVote(); err != nil {
+		return false, fmt.Errorf("failed to submit vote: %w", err)
+	}
+
+	return true, nil
+}
+
+// WaitForConsensusResult waits for consensus result and handles final storage
+func WaitForConsensusResult(blockHash string, timeout time.Duration) error {
+	// Create a channel to receive consensus result
+	resultChan := make(chan error, 1)
+
+	// Start goroutine to monitor consensus
+	go func() {
+		startTime := time.Now()
+		for time.Since(startTime) < timeout {
+			// Check if consensus is complete
+			consensusMessage := PubSubMessages.NewConsensusMessageBuilder(nil)
+			consensusMessage.SetZKBlock(&config.ZKBlock{BlockHash: common.HexToHash(blockHash)})
+			cachedMessage := consensusMessage.GetGloalVarCacheConsensusMessage()
+
+			if cachedMessage != nil {
+				// Check if consensus timeout has passed
+				if time.Now().After(cachedMessage.GetEndTimeout()) {
+					// Consensus window closed, check results
+					resultChan <- handleConsensusResult(cachedMessage)
+					return
+				}
+			}
+
+			// Wait a bit before checking again
+			time.Sleep(1 * time.Second)
+		}
+
+		// Timeout reached - this is expected behavior
+		resultChan <- fmt.Errorf("consensus timeout reached for block %s (expected)", blockHash)
+	}()
+
+	// Wait for result or timeout
+	select {
+	case result := <-resultChan:
+		return result
+	case <-time.After(timeout):
+		return fmt.Errorf("consensus monitoring timeout for block %s", blockHash)
+	}
+}
+
+// handleConsensusResult processes the final consensus result
+func handleConsensusResult(consensusMessage *PubSubMessages.ConsensusMessage) error {
+	// Check if consensus timed out
+	if consensusMessage.CheckTimeOut() {
+		log.Info().
+			Str("block_hash", consensusMessage.GetZKBlock().BlockHash.Hex()).
+			Time("end_timeout", consensusMessage.GetEndTimeout()).
+			Msg("Consensus timed out - cleaning up cache")
+
+		// Remove from cache
+		consensusMessage.RemoveGloalVarCacheConsensusMessage()
+		return nil
+	}
+
+	// TODO: Implement consensus result processing for successful consensus
+	// This is where you would implement the consensus result processing
+	// For now, we'll just log the result and clean up the cache
+
+	log.Info().
+		Str("block_hash", consensusMessage.GetZKBlock().BlockHash.Hex()).
+		Time("end_timeout", consensusMessage.GetEndTimeout()).
+		Msg("Processing consensus result")
+
+	// Remove from cache
+	consensusMessage.RemoveGloalVarCacheConsensusMessage()
+
+	// Here you would typically:
+	// 1. Check vote results
+	// 2. Store in database if consensus reached
+	// 3. Handle rejection if consensus failed
+
+	return nil
 }
