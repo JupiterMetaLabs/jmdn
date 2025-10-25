@@ -49,6 +49,10 @@ func (consensus *Consensus) QueryBuddyNodes() ([]peer.ID, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get buddy nodes: %v", err)
 	}
+
+	fmt.Printf("Queried Buddies: %+v\n", buddies)
+
+
 	for _, buddy := range buddies {
 		consensus.PeerList.MainPeers = append(consensus.PeerList.MainPeers, peer.ID(buddy.Node.ID))
 	}
@@ -66,11 +70,7 @@ func (consensus *Consensus) AddBuddyNodesToPeerList(zkBlock *config.ZKBlock, bud
 
 func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Start the Loggers in the Streaming.go
-	MessagePassing.Init_Loggers(config.LOKI_URL != "")
-	// Validate consensus configuration first
-	if err := ValidateConsensusConfiguration(consensus); err != nil {
-		return fmt.Errorf("invalid consensus configuration: %w", err)
-	}
+
 
 	// Attach the metadata to the block
 	// 1. Pull the buddies from the NodeSelectionRouter
@@ -85,6 +85,20 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		return fmt.Errorf("failed to add buddy nodes to peer list: %v", errMSG)
 	}
 
+	// Split peerIDs into 13 main and 3 backup peers
+	if len(peerIDs) < config.MaxMainPeers+config.MaxBackupPeers {
+		return fmt.Errorf("not enough peers returned for consensus: got %d, need at least %d", len(peerIDs), config.MaxMainPeers+config.MaxBackupPeers)
+	}
+	consensus.PeerList.MainPeers = make([]peer.ID, config.MaxMainPeers)
+	consensus.PeerList.BackupPeers = make([]peer.ID, config.MaxBackupPeers)
+	copy(consensus.PeerList.MainPeers, peerIDs[:config.MaxMainPeers])
+	copy(consensus.PeerList.BackupPeers, peerIDs[config.MaxMainPeers:config.MaxMainPeers+config.MaxBackupPeers])
+
+	MessagePassing.Init_Loggers(config.LOKI_URL != "")
+	// Validate consensus configuration first
+	if err := ValidateConsensusConfiguration(consensus); err != nil {
+		return fmt.Errorf("invalid consensus configuration: %w", err)
+	}
 	// First create the pubsub channel
 	var err error
 	consensus.gossipnode, err = Pubsub.NewGossipPubSub(consensus.Host, config.PubSub_ConsensusChannel)
