@@ -1,11 +1,13 @@
 package Block
 
 import (
+	"context"
 	"fmt"
 	pb "gossipnode/Mempool/proto"
 	"gossipnode/config"
 	"gossipnode/logging"
 
+	"github.com/golang/protobuf/ptypes/empty"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -73,4 +75,13 @@ func GetRoutingClient() (*RoutingClient, error) {
 // SetRoutingClient sets the singleton routing client (mainly for testing or manual override)
 func SetRoutingClient(client *RoutingClient) {
 	routingclient = client
+}
+
+// GetFeeStatistics gets fee statistics from the routing service
+func (r *RoutingClient) GetFeeStatistics(ctx context.Context) (*pb.FeeStatistics, error) {
+	return r.client.GetFeeStatistics(ctx, &empty.Empty{})
+}
+
+func (r *RoutingClient) GetMempoolStats(ctx context.Context) (*pb.MREStats, error) {
+	return r.client.GetMempoolStats(ctx, &empty.Empty{})
 }
