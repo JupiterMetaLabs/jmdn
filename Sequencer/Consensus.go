@@ -8,7 +8,6 @@ import (
 	"gossipnode/Pubsub"
 	"gossipnode/Sequencer/Metadata"
 	"gossipnode/config"
-	AVCStruct "gossipnode/config/PubSubMessages"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"log"
 	"time"
@@ -46,7 +45,7 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 // QUERY BUDDY NODES FUNCTIONALITY (we would need this to get the buddy nodes prompted)
 func (consensus *Consensus) QueryBuddyNodes() ([]peer.ID, error) {
 	router := Router.NewNodeselectionRouter()
-	buddies, err := router.GetBuddyNodes(config.MaxMainPeers+config.MaxBackupPeers)
+	buddies, err := router.GetBuddyNodes(config.MaxMainPeers + config.MaxBackupPeers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get buddy nodes: %v", err)
 	}
@@ -128,6 +127,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		return fmt.Errorf("subscription verification failed: %w", err)
 	}
 
+	// TODO -> write go routine to desolve the pubsub channel and also start the bft process -> start bft in 20secs
 	return nil
 }
 
@@ -190,7 +190,7 @@ func (consensus *Consensus) VerifySubscriptions() error {
 // GetVoteStats returns statistics about votes collected by the listener node
 func (consensus *Consensus) GetVoteStats() map[string]interface{} {
 	// Use global singleton to get listener node
-	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
+	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
 
 	if listenerNode == nil {
 		return map[string]interface{}{
@@ -213,7 +213,7 @@ func (consensus *Consensus) GetVoteStats() map[string]interface{} {
 // IsListenerActive checks if the listener node is active and ready to collect votes
 func (consensus *Consensus) IsListenerActive() bool {
 	// Check global singleton
-	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
+	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
 	return listenerNode != nil
 }
 

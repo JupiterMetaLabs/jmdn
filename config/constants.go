@@ -20,10 +20,18 @@ const (
 )
 
 const (
-	MaxMainPeers   = 13
-	MaxBackupPeers = 3
+	MaxMainPeers     = 13
+	MaxBackupPeers   = 3
 	ConsensusTimeout = 20 * time.Second
 )
+
+// Time-bounded message handling constants
+const (
+	MessageListeningWindow = 15 * time.Second // Nodes listen for 15 seconds
+	MessageRejectionWindow = 20 * time.Second // Reject messages after 20 seconds
+	MessageBufferTime      = 5 * time.Second  // 5-second buffer between windows
+)
+
 // Protocol IDs for message and file sharing
 const (
 	MessageProtocol           protocol.ID = "/custom/message/1.0.0"
@@ -157,4 +165,3 @@ type AccessTuple struct {
 
 // AccessList is an EIP-2930 access list.
 type AccessList []AccessTuple
-

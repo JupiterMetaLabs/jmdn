@@ -7,8 +7,8 @@ import (
 	Channel "gossipnode/Pubsub/DataProcessing/Channel"
 	Publisher "gossipnode/Pubsub/Publish"
 	Connector "gossipnode/Pubsub/Subscription"
-	"gossipnode/config/PubSubMessages"
 	"gossipnode/config"
+	"gossipnode/config/PubSubMessages"
 	"log"
 	"time"
 
@@ -97,7 +97,6 @@ func RemovePeerFromChannel(gps *PubSubMessages.GossipPubSub, channelName string,
 	log.Printf("Removed peer %s from channel %s", peerID, channelName)
 	return nil
 }
-
 
 // handleGossipStream handles incoming gossip messages
 func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {

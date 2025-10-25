@@ -5,18 +5,18 @@ import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
-	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/config"
+	AVCStruct "gossipnode/config/PubSubMessages"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"go.uber.org/zap"
 )
 
-type StructListener struct{
-	ListenerBuddyNode *AVCStruct.BuddyNode	
+type StructListener struct {
+	ListenerBuddyNode *AVCStruct.BuddyNode
 }
 
-func NewListenerStruct(listner *AVCStruct.BuddyNode) *StructListener{
+func NewListenerStruct(listner *AVCStruct.BuddyNode) *StructListener {
 	return &StructListener{
 		ListenerBuddyNode: listner,
 	}

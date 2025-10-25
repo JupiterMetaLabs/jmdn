@@ -3,17 +3,19 @@ package PubSubMessages
 import (
 	"gossipnode/config"
 	"time"
+
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 func NewConsensusMessageBuilder(consensusMessage *ConsensusMessage) *ConsensusMessage {
 	if consensusMessage != nil {
 		return &ConsensusMessage{
-			ZKBlock: consensusMessage.ZKBlock,
-			Buddies: consensusMessage.Buddies,
-			EndTimeout: consensusMessage.EndTimeout,
-			StartTime: consensusMessage.StartTime,
+			ZKBlock:      consensusMessage.ZKBlock,
+			Buddies:      consensusMessage.Buddies,
+			EndTimeout:   consensusMessage.EndTimeout,
+			StartTime:    consensusMessage.StartTime,
 			InteriumTime: consensusMessage.InteriumTime,
-			TotalNodes: consensusMessage.TotalNodes,
+			TotalNodes:   consensusMessage.TotalNodes,
 		}
 	}
 	return &ConsensusMessage{}
@@ -47,21 +49,29 @@ func (consensusMessage *ConsensusMessage) GetZKBlock() *config.ZKBlock {
 }
 
 func (consensusMessage *ConsensusMessage) SetBuddies(buddies *Buddies) *ConsensusMessage {
-	consensusMessage.Buddies = buddies
+	consensusMessage.Buddies = ConvertBuddiesIntoHashMap(buddies)
 	return consensusMessage
 }
 
-func (consensusMessage *ConsensusMessage) GetBuddies() *Buddies {
+func (consensusMessage *ConsensusMessage) GetBuddies() map[int]peer.ID {
 	return consensusMessage.Buddies
 }
 
 func (consensusMessage *ConsensusMessage) AddBuddies(buddies *Buddies) *ConsensusMessage {
-	consensusMessage.Buddies.Buddies_Nodes = append(consensusMessage.Buddies.Buddies_Nodes, buddies.Buddies_Nodes...)
+	// Convert new buddies to HashMap and merge with existing
+	newBuddiesMap := ConvertBuddiesIntoHashMap(buddies)
+	for key, value := range newBuddiesMap {
+		consensusMessage.Buddies[key] = value
+	}
 	return consensusMessage
 }
 
 func (consensusMessage *ConsensusMessage) RemoveBuddies(buddies *Buddies) *ConsensusMessage {
-	consensusMessage.Buddies.Buddies_Nodes = removeBuddies(consensusMessage.Buddies.Buddies_Nodes, buddies.Buddies_Nodes)
+	// Convert buddies to remove into HashMap and remove from existing
+	buddiesToRemove := ConvertBuddiesIntoHashMap(buddies)
+	for key := range buddiesToRemove {
+		delete(consensusMessage.Buddies, key)
+	}
 	return consensusMessage
 }
 
