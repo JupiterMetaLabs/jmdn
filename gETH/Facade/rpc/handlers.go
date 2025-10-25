@@ -190,7 +190,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		}
 		raw, _ := req.Params[0].(string)
 		// Debugging
-		fmt.Println(">>>>>> eth_sendRawTransaction received: ", raw)
+		// fmt.Println(">>>>>> eth_sendRawTransaction received: ", raw)
 		txh, err := handler.service.SendRawTx(ctx, raw)
 		resp, _ := finish(req, txh, err)
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)

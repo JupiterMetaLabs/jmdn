@@ -125,7 +125,7 @@ func startDIDServer(h host.Host, address string) error {
 		// We'll continue with a standalone server
 	} else {
 		//Debugging
-		fmt.Println("Got DID database client successfully", didDBClient)
+		// fmt.Println("Got DID database client successfully", didDBClient)
 
 		log.Info().Msg("DID propagation initialized successfully")
 	}
@@ -142,13 +142,13 @@ func initYggdrasilMessaging(ctx context.Context) {
 }
 
 // Initialize main database connection pool
-func initMainDBPool(enableLoki bool) error {
+func initMainDBPool(enableLoki bool, username, password string) error {
 	poolingConfig := &config.PoolingConfig{
 		DBAddress:  config.DBAddress,
 		DBPort:     config.DBPort,
 		DBName:     config.DBName,
-		DBUsername: config.DBUsername,
-		DBPassword: config.DBPassword,
+		DBUsername: username,
+		DBPassword: password,
 	}
 
 	// Initialize the global pool
@@ -168,10 +168,10 @@ func initMainDBPool(enableLoki bool) error {
 }
 
 // Initialize accounts database connection pool
-func initAccountsDBPool(enableLoki bool) error {
+func initAccountsDBPool(enableLoki bool, username, password string) error {
 	// Use the DB_OPs package to initialize the accounts pool
 	// This ensures the database exists and the pool is properly configured
-	if err := DB_OPs.InitAccountsPoolWithLoki(enableLoki); err != nil {
+	if err := DB_OPs.InitAccountsPoolWithLoki(enableLoki, username, password); err != nil {
 		return fmt.Errorf("failed to initialize accounts database pool: %w", err)
 	}
 
@@ -213,6 +213,8 @@ func main() {
 	gETHFacade := flag.Int("facade", 15001, "gETH Facade server address")
 	gETHWSServer := flag.Int("ws", 15002, "gETH WSServer address")
 	chainID := flag.Int("chainID", 7000700, "Chain ID for the blockchain network")
+	immudbUsername := flag.String("immudb-user", "immudb", "ImmuDB username")
+	immudbPassword := flag.String("immudb-pass", "immudb", "ImmuDB password")
 	flag.Parse()
 
 	// Initialize logger
@@ -243,12 +245,12 @@ func main() {
 
 	// Initialize database connection pools FIRST
 	fmt.Println("Initializing main database pool...")
-	if err := initMainDBPool(*enableLoki); err != nil {
+	if err := initMainDBPool(*enableLoki, *immudbUsername, *immudbPassword); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize main database pool")
 	}
 	fmt.Println("Main database pool initialized successfully")
 
-	if err := initAccountsDBPool(*enableLoki); err != nil {
+	if err := initAccountsDBPool(*enableLoki, *immudbUsername, *immudbPassword); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
 	}
 
@@ -291,7 +293,7 @@ func main() {
 	}()
 
 	// Debugging
-	fmt.Println("Getting accounts database connection from pool")
+	// fmt.Println("Getting accounts database connection from pool")
 
 	didDBClient, err := DB_OPs.GetAccountsConnection()
 	if err != nil {
@@ -299,7 +301,7 @@ func main() {
 	}
 
 	// Debugging
-	fmt.Println("Got accounts database connection from pool", didDBClient)
+	// fmt.Println("Got accounts database connection from pool", didDBClient)
 
 	defer func() {
 		if didDBClient != nil {

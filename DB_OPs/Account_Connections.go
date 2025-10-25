@@ -28,11 +28,11 @@ var (
 // It ensures the database exists, creating it if necessary. This function
 // should be called once at application startup.
 func InitAccountsPool() error {
-	return InitAccountsPoolWithLoki(true)
+	return InitAccountsPoolWithLoki(true, config.DBUsername, config.DBPassword)
 }
 
 // InitAccountsPoolWithLoki initializes the connection pool for the accounts database with optional Loki support
-func InitAccountsPoolWithLoki(enableLoki bool) error {
+func InitAccountsPoolWithLoki(enableLoki bool, username, password string) error {
 	var initErr error
 	accountsPoolOnce.Do(func() {
 		logger, err := config.NewAsyncLoggerWithLoki(enableLoki)
@@ -51,7 +51,7 @@ func InitAccountsPoolWithLoki(enableLoki bool) error {
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.InitAccountsPool"),
 		)
-		if err := ensureAccountsDBExists(); err != nil {
+		if err := ensureAccountsDBExists(username, password); err != nil {
 			initErr = fmt.Errorf("failed to ensure accounts database exists: %w", err)
 			logger.Logger.Error("Accounts DB setup failed",
 				zap.Time(logging.Created_at, time.Now()),
@@ -70,8 +70,8 @@ func InitAccountsPoolWithLoki(enableLoki bool) error {
 			DBAddress:  config.DBAddress,
 			DBPort:     config.DBPort,
 			DBName:     config.AccountsDBName,
-			DBUsername: config.DBUsername,
-			DBPassword: config.DBPassword,
+			DBUsername: username,
+			DBPassword: password,
 		}
 
 		accountsPool = config.NewConnectionPool(poolCfg, logger, poolingConfig)
@@ -139,7 +139,7 @@ func PutAccountsConnection(conn *config.PooledConnection) {
 }
 
 // ensureAccountsDBExists handles the one-time setup of the accounts database.
-func ensureAccountsDBExists() error {
+func ensureAccountsDBExists(username, password string) error {
 	// This function contains the database setup logic from the original NewAccountsClient.
 	// It creates a temporary, single-use client.
 	logger, err := config.NewAsyncLogger()
@@ -181,7 +181,7 @@ func ensureAccountsDBExists() error {
 	defer cancel()
 
 	// Login with admin credentials
-	lr, err := c.Login(ctx, []byte(config.DBUsername), []byte(config.DBPassword))
+	lr, err := c.Login(ctx, []byte(username), []byte(password))
 	if err != nil {
 		return fmt.Errorf("temporary client login failed: %w", err)
 	}
@@ -274,7 +274,7 @@ func EnsureDBConnection(accountsPool *config.PooledConnection) error {
 		// Try to get current state
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		
+
 		_, err := accountsPool.Client.Client.CurrentState(ctx)
 		if err == nil {
 			accountsPool.Client.Logger.Logger.Info("Database connection check successful",

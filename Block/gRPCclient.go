@@ -118,30 +118,67 @@ func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.Batch
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Longer timeout for batches
 	defer cancel()
 
+	// Debug: Log function entry
+	fmt.Printf("🔍 [DEBUG] SubmitTransactions: Starting batch submission with %d transactions\n", len(txs))
+
+	// Debug: Log transaction details
+	for i, tx := range txs {
+		fromStr := "nil"
+		if tx.From != nil {
+			fromStr = tx.From.Hex()
+		}
+		toStr := "nil"
+		if tx.To != nil {
+			toStr = tx.To.Hex()
+		}
+		valueStr := "nil"
+		if tx.Value != nil {
+			valueStr = tx.Value.String()
+		}
+		fmt.Printf("🔍 [DEBUG] Transaction %d: Hash=%s, From=%s, To=%s, Value=%s, Nonce=%d\n",
+			i, tx.Hash.Hex(), fromStr, toStr, valueStr, tx.Nonce)
+	}
+
 	pbTxs := make([]*pb.Transaction, len(txs))
 	for i, tx := range txs {
 		// The ZKBlockTransaction should have a pre-computed hash.
 		if tx.Hash == (common.Hash{}) {
+			fmt.Printf("❌ [DEBUG] Transaction at index %d has no hash\n", i)
 			return nil, fmt.Errorf("transaction at index %d has no hash", i)
 		}
 		pbTxs[i] = convertToPbTransaction(tx, tx.Hash.Hex())
+		fmt.Printf("✅ [DEBUG] Converted transaction %d to protobuf format\n", i)
 	}
 
 	batch := &pb.TransactionBatch{
 		Transactions: pbTxs,
 	}
+	fmt.Printf("🔍 [DEBUG] Created TransactionBatch with %d transactions\n", len(batch.Transactions))
+
 	RoutingClient, err := GetRoutingClient()
 	if err != nil {
+		fmt.Printf("❌ [DEBUG] Failed to get routing client: %v\n", err)
 		return nil, err
 	}
+	fmt.Printf("✅ [DEBUG] Successfully obtained routing client\n")
+
+	fmt.Printf("🔍 [DEBUG] Submitting batch to routing client...\n")
 	resp, err := RoutingClient.client.SubmitTransactions(ctx, batch)
 	if err != nil {
+		fmt.Printf("❌ [DEBUG] Routing client submission failed: %v\n", err)
 		return nil, fmt.Errorf("routing client could not submit transactions: %s", err)
 	}
+
+	fmt.Printf("🔍 [DEBUG] Received response: Success=%t, Count=%d, Error=%s\n",
+		resp.Success, resp.Count, resp.Error)
+
 	if !resp.Success {
+		fmt.Printf("❌ [DEBUG] Mempool rejected transaction batch: %s\n", resp.Error)
 		// The response itself is returned to allow the caller to inspect partial successes if applicable.
 		return resp, fmt.Errorf("mempool rejected transaction batch: %s", resp.Error)
 	}
+
+	fmt.Printf("✅ [DEBUG] Successfully submitted %d transactions to mempool\n", resp.Count)
 
 	log.Printf("%d transactions successfully submitted to mempool", resp.Count)
 	return resp, nil
