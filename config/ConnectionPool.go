@@ -176,10 +176,10 @@ func NewConnectionPool(config *ConnectionPoolConfig, logger *logging.AsyncLogger
 
 // Get gets a connection from the pool
 func (p *ConnectionPool) Get() (*PooledConnection, error) {
-	fmt.Println("ConnectionPool.Get() called - acquiring lock...")
+	// fmt.Println("ConnectionPool.Get() called - acquiring lock...")
 	p.Mutex.Lock()
 	defer p.Mutex.Unlock()
-	fmt.Printf("ConnectionPool.Get() - lock acquired, checking for available connections... (pool has %d connections)\n", len(p.Connections))
+	// fmt.Printf("ConnectionPool.Get() - lock acquired, checking for available connections... (pool has %d connections)\n", len(p.Connections))
 
 	if p.Closed {
 		p.Logger.Logger.Info("Connection pool is closed",
@@ -196,7 +196,7 @@ func (p *ConnectionPool) Get() (*PooledConnection, error) {
 	// Iterate backwards to safely remove stale connections while iterating
 	for i := len(p.Connections) - 1; i >= 0; i-- {
 		conn := p.Connections[i]
-		fmt.Printf("Checking connection %d: InUse=%v, CreatedAt=%v, LastUsed=%v\n", i, conn.InUse, conn.CreatedAt, conn.LastUsed)
+		// fmt.Printf("Checking connection %d: InUse=%v, CreatedAt=%v, LastUsed=%v\n", i, conn.InUse, conn.CreatedAt, conn.LastUsed)
 		if conn.InUse {
 			p.Logger.Logger.Info("Connection is in use",
 				zap.Time(logging.Created_at, time.Now()),
@@ -267,7 +267,7 @@ func (p *ConnectionPool) Get() (*PooledConnection, error) {
 	}
 
 	// Create a new connection
-	fmt.Println("No available connections, creating new connection...")
+	// fmt.Println("No available connections, creating new connection...")
 	var conn *PooledConnection
 	var err error
 	conn, err = p.createConnection()
@@ -284,7 +284,7 @@ func (p *ConnectionPool) Get() (*PooledConnection, error) {
 
 // createConnection creates a new connection to ImmuDB
 func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
-	fmt.Println("createConnection() called - creating new ImmuDB connection...")
+	// fmt.Println("createConnection() called - creating new ImmuDB connection...")
 	cp.Logger.Logger.Info("Creating new connection to ImmuDB at %s:%d",
 		zap.String(logging.Address, cp.Address),
 		zap.Int(logging.Port, cp.Port),
@@ -404,7 +404,7 @@ func (p *ConnectionPool) Put(conn *PooledConnection) {
 		return
 	}
 
-	fmt.Printf("ConnectionPool.Put() called - returning connection to pool (pool will have %d connections after this)\n", len(p.Connections))
+	// fmt.Printf("ConnectionPool.Put() called - returning connection to pool (pool will have %d connections after this)\n", len(p.Connections))
 	p.Mutex.Lock()
 	defer p.Mutex.Unlock()
 

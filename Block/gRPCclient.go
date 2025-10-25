@@ -37,7 +37,7 @@ type MempoolClient struct {
 // NewMempoolClient creates a new mempool client connection
 func NewMempoolClient(address string) (*MempoolClient, error) {
 	// Create a gRPC connection to the mempool service
-	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to mempool service: %v", err)
 	}
@@ -86,18 +86,38 @@ func (m *MempoolClient) Close() error {
 
 // SubmitTransaction submits a transaction to the mempool
 func (m *MempoolClient) SubmitTransaction(tx *config.Transaction, txHash string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Convert the transaction to the protobuf format
 	pbTx := convertToPbTransaction(tx, txHash)
 	log.Printf("Submitting transaction to mempool: %+v", pbTx)
 
-	// Submit the transaction to the mempool
-	resp, err := m.client.SubmitTransaction(ctx, pbTx)
+	// Submit the transaction to the routing service
+	log.Printf("Getting routing client...")
+	RoutingClient, err := GetRoutingClient()
 	if err != nil {
-		log.Printf("Failed to submit transaction to mempool: %v", err)
+		log.Printf("Failed to get routing client: %v", err)
+		return fmt.Errorf("routing client connection failed: %v", err)
+	}
+	log.Printf("Routing client obtained successfully")
+	log.Printf("Calling SubmitTransaction on routing client (timeout: 10s)...")
+	start := time.Now()
+	resp, err := RoutingClient.client.SubmitTransaction(ctx, pbTx)
+	duration := time.Since(start)
+
+	if err != nil {
+		log.Printf("Failed to submit transaction to mempool after %v: %v", duration, err)
 		return fmt.Errorf("failed to submit transaction to mempool: %v", err)
+	}
+	log.Printf("SubmitTransaction call completed successfully in %v", duration)
+
+	// Log the full response
+	log.Printf("Mempool response: success=%t, hash=%s, error=%s, mempool_node=%s, total_replicas=%d",
+		resp.Success, resp.Hash, resp.Error, resp.MempoolNode, resp.TotalReplicas)
+
+	if len(resp.ReplicaMempools) > 0 {
+		log.Printf("Replica mempools: %v", resp.ReplicaMempools)
 	}
 
 	if !resp.Success {
@@ -111,8 +131,11 @@ func (m *MempoolClient) SubmitTransaction(tx *config.Transaction, txHash string)
 
 // SubmitTransactions submits a batch of transactions to the mempool
 func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.BatchSubmitResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Longer timeout for batches
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) // Longer timeout for batches
 	defer cancel()
+
+	// Log batch submission
+	fmt.Printf("Submitting %d transactions to mempool\n", len(txs))
 
 	pbTxs := make([]*pb.Transaction, len(txs))
 	for i, tx := range txs {
@@ -127,10 +150,21 @@ func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.Batch
 		Transactions: pbTxs,
 	}
 
-	resp, err := m.client.SubmitTransactions(ctx, batch)
+	RoutingClient, err := GetRoutingClient()
 	if err != nil {
-		return nil, fmt.Errorf("failed to submit transaction batch: %v", err)
+		return nil, err
 	}
+
+	log.Printf("Calling SubmitTransactions on routing client (timeout: 15s)...")
+	start := time.Now()
+	resp, err := RoutingClient.client.SubmitTransactions(ctx, batch)
+	duration := time.Since(start)
+
+	if err != nil {
+		log.Printf("Failed to submit transactions to mempool after %v: %v", duration, err)
+		return nil, fmt.Errorf("routing client could not submit transactions: %s", err)
+	}
+	log.Printf("SubmitTransactions call completed successfully in %v", duration)
 
 	if !resp.Success {
 		// The response itself is returned to allow the caller to inspect partial successes if applicable.
@@ -147,7 +181,11 @@ func (m *MempoolClient) GetTransaction(hash string) (*pb.Transaction, error) {
 	defer cancel()
 
 	req := &pb.GetTransactionRequest{Hash: hash}
-	tx, err := m.client.GetTransaction(ctx, req)
+	RoutingClient, err := GetRoutingClient()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := RoutingClient.client.GetTransaction(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get transaction %s: %v", hash, err)
 	}
@@ -161,7 +199,11 @@ func (m *MempoolClient) GetPendingTransactions(limit int32) (*pb.TransactionBatc
 	defer cancel()
 
 	req := &pb.GetPendingRequest{Limit: limit}
-	batch, err := m.client.GetPendingTransactions(ctx, req)
+	RoutingClient, err := GetRoutingClient()
+	if err != nil {
+		return nil, err
+	}
+	batch, err := RoutingClient.client.GetPendingTransactions(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pending transactions: %v", err)
 	}
@@ -225,12 +267,28 @@ func (m *MempoolClient) WrapperGetFeeStatistics() (*GasFeeStats, error) {
 
 // Helper function to convert a config.Transaction to pb.Transaction
 func convertToPbTransaction(tx *config.Transaction, txHash string) *pb.Transaction {
-	// Helper function to safely convert big.Int to string
-	bigIntToString := func(b *big.Int) string {
+	// Helper function to safely convert big.Int to decimal string
+	getBigIntString := func(b *big.Int) string {
 		if b == nil {
+			return "0"
+		}
+		return b.String()
+	}
+
+	// Helper function to safely convert signature fields
+	getSignatureString := func(b *big.Int) string {
+		if b == nil || b.Cmp(big.NewInt(0)) == 0 {
 			return "0x0"
 		}
-		return b.Text(16)
+		return "0x" + b.Text(16)
+	}
+
+	// Helper function to safely convert data field
+	getDataBytes := func(data []byte) []byte {
+		if data == nil {
+			return []byte{}
+		}
+		return data
 	}
 
 	// Helper function to safely convert address to string
@@ -245,41 +303,58 @@ func convertToPbTransaction(tx *config.Transaction, txHash string) *pb.Transacti
 		Hash:           txHash,
 		From:           addrToString(tx.From),
 		To:             addrToString(tx.To),
-		Value:          bigIntToString(tx.Value),
-		Type:           fmt.Sprintf("%d", tx.Type),
-		Timestamp:      fmt.Sprintf("%d", tx.Timestamp),
-		ChainId:        bigIntToString(tx.ChainID),
-		Nonce:          fmt.Sprintf("%d", tx.Nonce),
+		Value:          getBigIntString(tx.Value),
+		Type:           0, // Will be set correctly below
+		Timestamp:      uint64(tx.Timestamp),
+		ChainId:        getBigIntString(tx.ChainID),
+		Nonce:          uint64(tx.Nonce),
 		GasLimit:       fmt.Sprintf("%d", tx.GasLimit),
-		MaxFee:         bigIntToString(tx.MaxFee),
-		MaxPriorityFee: bigIntToString(tx.MaxPriorityFee),
-		Data:           fmt.Sprintf("0x%x", tx.Data),
-		V:              bigIntToString(tx.V),
-		R:              bigIntToString(tx.R),
-		S:              bigIntToString(tx.S),
+		GasPrice:       getBigIntString(tx.GasPrice),
+		MaxFee:         getBigIntString(tx.MaxFee),
+		MaxPriorityFee: getBigIntString(tx.MaxPriorityFee),
+		Data:           getDataBytes(tx.Data),
+		AccessList:     convertAccessListToPb(tx.AccessList),
+		V:              getSignatureString(tx.V),
+		R:              getSignatureString(tx.R),
+		S:              getSignatureString(tx.S),
 	}
 
 	if tx.Timestamp != 0 {
 		// Assuming tx.Timestamp is already a Unix timestamp (uint64)
-		tm := time.Unix(int64(tx.Timestamp), 0)
-		pbTx.Timestamp = tm.Format(time.RFC3339)
-	} else {
-		// If parsing fails, it might already be in a different format or invalid.
-		// For now, we'll default to the current time as a fallback.
-		pbTx.Timestamp = time.Now().Format(time.RFC3339)
+		pbTx.Timestamp = uint64(tx.Timestamp)
 	}
 	// Handle transaction fee fields based on type
 	if tx.Type == 1 || (tx.MaxFee != nil && tx.MaxPriorityFee != nil) {
-		pbTx.Type = "EIP-1559"
+		pbTx.Type = 2 // EIP-1559
 	} else {
-		pbTx.Type = "Legacy"
+		pbTx.Type = 0 // Legacy
 		// For legacy transactions, use GasPrice as MaxFee if MaxFee is not set.
-		if pbTx.MaxFee == "" && tx.GasPrice != nil {
-			pbTx.MaxFee = bigIntToString(tx.GasPrice)
+		if pbTx.MaxFee == "0" && tx.GasPrice != nil {
+			pbTx.MaxFee = tx.GasPrice.String()
 		}
 	}
 
 	return pbTx
+}
+
+// Helper function to convert config AccessList to []*pb.AccessTuple
+func convertAccessListToPb(accessList config.AccessList) []*pb.AccessTuple {
+	if len(accessList) == 0 {
+		return nil
+	}
+
+	pbAccessList := make([]*pb.AccessTuple, len(accessList))
+	for i, access := range accessList {
+		storageKeys := make([]string, len(access.StorageKeys))
+		for j, key := range access.StorageKeys {
+			storageKeys[j] = key.Hex()
+		}
+		pbAccessList[i] = &pb.AccessTuple{
+			Address:     access.Address.Hex(),
+			StorageKeys: storageKeys,
+		}
+	}
+	return pbAccessList
 }
 
 // Global mempool client instance

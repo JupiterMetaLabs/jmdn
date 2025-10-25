@@ -118,7 +118,8 @@ message GetPeerRequest {
 
 message GetPeerResponse {
   SignedPeerRecord peer_record = 1;
-  bool found = 2;
+  PeerAlias alias = 2;
+  bool found = 3;
 }
 
 message CreateAliasRequest {
@@ -164,6 +165,10 @@ message SendHeartbeatResponse {
 
 message DeleteAliasRequest {
   string alias = 1;
+  string peer_id = 2;    // Required for ownership verification
+  string v = 3;          // Signature V component
+  string r = 4;          // Signature R component  
+  string s = 5;          // Signature S component
 }
 
 message DeleteAliasResponse {
@@ -247,6 +252,17 @@ message GetNeighborsResponse {
   bool found = 2;
 }
 
+message AllocateNeighborsRequest {
+  string peer_id = 1;
+  bool force_refresh = 2; // If true, allocate new neighbors even if existing ones exist
+}
+
+message AllocateNeighborsResponse {
+  repeated PeerNeighbor neighbors = 1;
+  bool allocated = 2; // True if new neighbors were allocated
+  string message = 3;
+}
+
 message HealthCheckRequest {
   string peer_id = 1;
   repeated string multiaddrs = 2;
@@ -300,6 +316,26 @@ message ListBuddyResponse {
   int32 total_count = 2;
 }
 
+message RemoveBuddyRequest {
+  string peer_id = 1;
+}
+
+message RemoveBuddyResponse {
+  bool accepted = 1;
+  string message = 2;
+  bool removed = 3;
+}
+
+message RemoveAllBuddiesRequest {
+  // Empty request - removes all buddies
+}
+
+message RemoveAllBuddiesResponse {
+  bool accepted = 1;
+  string message = 2;
+  int64 removed_count = 3;
+}
+
 // Peer Directory Service
 service PeerDirectory {
   rpc RegisterPeer(RegisterPeerRequest) returns (RegisterPeerResponse);
@@ -319,6 +355,7 @@ service PeerDirectory {
   rpc AddNeighbor(AddNeighborRequest) returns (AddNeighborResponse);
   rpc RemoveNeighbor(RemoveNeighborRequest) returns (RemoveNeighborResponse);
   rpc GetNeighbors(GetNeighborsRequest) returns (GetNeighborsResponse);
+  rpc AllocateNeighbors(AllocateNeighborsRequest) returns (AllocateNeighborsResponse);
   
   // Inactive neighbor reporting
   rpc ReportInactiveNeighbor(ReportInactiveNeighborRequest) returns (ReportInactiveNeighborResponse);
@@ -330,4 +367,6 @@ service PeerDirectory {
   // Buddy management
   rpc UpdateBuddy(UpdateBuddyRequest) returns (UpdateBuddyResponse);
   rpc ListBuddy(ListBuddyRequest) returns (ListBuddyResponse);
+  rpc RemoveBuddy(RemoveBuddyRequest) returns (RemoveBuddyResponse);
+  rpc RemoveAllBuddies(RemoveAllBuddiesRequest) returns (RemoveAllBuddiesResponse);
 }

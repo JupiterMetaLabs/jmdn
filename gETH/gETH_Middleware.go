@@ -28,12 +28,12 @@ type ServiceInterface interface {
 
 func _GetBlockByNumber(req *proto.GetBlockByNumberReq) (*proto.Block, error) {
 	// Init DB
-	Conn, err := initDBs()
-	if err != nil {
-		return nil, err
-	}
+	// Conn, err := initDBs()
+	// if err != nil {
+	// 	return nil, err
+	// }
 	// First call the exisitng apis to get the block by the number
-	zkblock, err := DB_OPs.GetZKBlockByNumber(&Conn.defaultdb, req.Number)
+	zkblock, err := DB_OPs.GetZKBlockByNumber(nil, req.Number)
 	if err != nil {
 		return nil, err
 	}
@@ -48,10 +48,10 @@ func _GetBlockByNumber(req *proto.GetBlockByNumberReq) (*proto.Block, error) {
 
 func _GetBlockByHash(req *proto.GetBlockByHashReq) (*proto.Block, error) {
 	// Init DB
-	Conn, err := initDBs()
-	if err != nil {
-		return nil, err
-	}
+	// Conn, err := initDBs()
+	// if err != nil {
+	// 	return nil, err
+	// }
 	// Convert the hash to string
 	reqHash := hex.EncodeToString(req.Hash)
 	if reqHash[0:2] == "0x" {
@@ -59,7 +59,7 @@ func _GetBlockByHash(req *proto.GetBlockByHashReq) (*proto.Block, error) {
 	}
 
 	// First call the exisitng apis to get the block by the number
-	zkblock, err := DB_OPs.GetZKBlockByHash(&Conn.defaultdb, reqHash)
+	zkblock, err := DB_OPs.GetZKBlockByHash(nil, reqHash)
 	if err != nil {
 		return nil, err
 	}
@@ -74,17 +74,17 @@ func _GetBlockByHash(req *proto.GetBlockByHashReq) (*proto.Block, error) {
 
 func _GetTransactionByHash(req *proto.GetByHashReq) (*proto.Transaction, error) {
 	// Init DB
-	Conn, err := initDBs()
-	if err != nil {
-		return nil, err
-	}
+	// Conn, err := initDBs()
+	// if err != nil {
+	// 	return nil, err
+	// }
 	// Convert the hash to string
 	reqHash := hex.EncodeToString(req.Hash)
 	if reqHash[0:2] == "0x" {
 		reqHash = reqHash[2:]
 	}
 
-	Txn, err := DB_OPs.GetTransactionByHash(&Conn.defaultdb, reqHash)
+	Txn, err := DB_OPs.GetTransactionByHash(nil, reqHash)
 	if err != nil {
 		return nil, err
 	}
@@ -112,15 +112,15 @@ func _GetReceiptByHash(req *proto.GetByHashReq) (*proto.Receipt, error) {
 
 func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error) {
 	// Init DB
-	Conn, err := initDBs()
-	if err != nil {
-		return nil, err
-	}
+	// Conn, err := initDBs()
+	// if err != nil {
+	// 	return nil, err
+	// }
 
 	// Get Txns by DID
 	// convert the req.Address from bytes to common.Address
 	addr := common.Address(req.Address)
-	Txns, err := DB_OPs.GetTransactionsByAccount(&Conn.defaultdb, &addr)
+	Txns, err := DB_OPs.GetTransactionsByAccount(nil, &addr)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +138,7 @@ func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error
 
 	// Get the DID Details to get the balance
 	// Conver the req.Address bytes to common.Address
-	DIDDetails, err := DB_OPs.GetAccount(&Conn.defaultdb, common.Address(req.Address))
+	DIDDetails, err := DB_OPs.GetAccount(nil, common.Address(req.Address))
 	if err != nil {
 
 		return nil, err

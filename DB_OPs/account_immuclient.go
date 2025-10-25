@@ -164,7 +164,7 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 		Metadata:    metadata,
 	}
 	// Debugging
-	fmt.Println("AccountDoc: ", AccountDoc)
+	// fmt.Println("AccountDoc: ", AccountDoc)
 	// Store the account document
 	err = StoreAccount(PooledConnection, AccountDoc)
 	if err != nil {
@@ -282,7 +282,7 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 	// Execute all operations atomically
 	status, err := ic.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops})
 	// Debugging
-	fmt.Println("Executed ExecAll function and Status: ", status.String())
+	// fmt.Println("Executed ExecAll function and Status: ", status.String())
 	if err != nil {
 		ic.Logger.Logger.Error("Failed to store account and create DID reference",
 			zap.Error(err),

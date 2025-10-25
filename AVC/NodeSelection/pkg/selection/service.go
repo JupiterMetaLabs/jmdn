@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
-	"time"
+	seednode "gossipnode/seednode"
 )
 
 func displayNodeDetail(node Node) {
@@ -22,7 +22,7 @@ func GetBuddyNodes(
 	numBuddies int,
 ) ([]*BuddyNode, error) {
 	// 1. Connect to peer directory
-	peerClient, err := NewPeerClient(peerDirAddress, 30*time.Second)
+	peerClient, err := seednode.NewClient(peerDirAddress)
 	if err != nil {
 		fmt.Println("❌ Failed to connect to peer directory:", err)
 		return nil, err
@@ -57,6 +57,7 @@ func GetBuddyNodes(
 	fmt.Printf("📋 Fetched %d eligible peers\n", len(allNodes))
 
 	// 3. Use the nodes to select buddies
+	// The selection score is already calculated in seednode.go
 	buddies, err := GetBuddyNodesWithNodes(ctx, nodeID, privateKey, networkSalt, allNodes, numBuddies)
 	if err != nil {
 		return nil, err

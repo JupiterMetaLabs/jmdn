@@ -32,7 +32,7 @@ func GetMainDBConnection() (*config.PooledConnection, error) {
 		fmt.Println("mainDBPool is nil - pool not initialized")
 		return nil, errors.New("main database connection pool is not initialized. Call InitMainDBPool first")
 	}
-	fmt.Println("mainDBPool is not nil - attempting to get connection...")
+	// fmt.Println("mainDBPool is not nil - attempting to get connection...")
 
 	mainDBPool.Logger.Logger.Info("Getting main database connection",
 		zap.String(logging.Connection_database, config.DBName),
@@ -46,7 +46,7 @@ func GetMainDBConnection() (*config.PooledConnection, error) {
 	Pool, err := mainDBPool.Get()
 	if err != nil {
 		// debugging
-		fmt.Println("failed to get main database connection: %w", err)
+		// fmt.Println("failed to get main database connection: %w", err)
 		return nil, fmt.Errorf("failed to get main database connection: %w", err)
 	}
 
@@ -58,7 +58,7 @@ func GetMainDBConnection() (*config.PooledConnection, error) {
 	)
 
 	// debugging
-	fmt.Println("got main database connection successfully", Pool)
+	// fmt.Println("got main database connection successfully", Pool)
 	return Pool, nil
 }
 
@@ -111,7 +111,7 @@ func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki 
 			zap.String(logging.Function, "DB_OPs.InitMainDBPool"),
 		)
 		fmt.Println("Connecting to main DB...")
-		if err := connectToMainDB(); err != nil {
+		if err := connectToMainDB(config.DBUsername, config.DBPassword); err != nil {
 			fmt.Printf("Failed to connect to main DB: %v\n", err)
 			initErr = fmt.Errorf("failed to ensure main DB selected: %w", err)
 			logger.Logger.Error("Main DB setup failed",
@@ -189,7 +189,7 @@ func CloseMainDBPool() {
 }
 
 // ensureMainDBSelected handles the one-time setup of the main database.
-func connectToMainDB() error {
+func connectToMainDB(username, password string) error {
 	// This function contains the database setup logic from the original NewMainDBClient.
 	// It creates a temporary, single-use client.
 	logger, err := config.NewAsyncLoggerWithLoki(false) // Disable Loki for temporary client
@@ -231,7 +231,7 @@ func connectToMainDB() error {
 	defer cancel()
 
 	// Login with admin credentials
-	lr, err := c.Login(ctx, []byte(config.DBUsername), []byte(config.DBPassword))
+	lr, err := c.Login(ctx, []byte(username), []byte(password))
 	if err != nil {
 		return fmt.Errorf("temporary client login failed: %w", err)
 	}

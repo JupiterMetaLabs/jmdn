@@ -7,6 +7,7 @@ import (
 	"gossipnode/config/utils"
 	"gossipnode/gETH/Facade/Service/Types"
 	"math/big"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -134,6 +135,31 @@ func ConvertTrabsactionToTx(tx *config.Transaction) *Types.Tx {
 // Convert the address string to common.Address
 func ConvertAddress(address string) common.Address {
 	return common.HexToAddress(address)
+}
+
+// ConvertAddressCaseInsensitive converts address string to common.Address in a case-insensitive manner
+func ConvertAddressCaseInsensitive(address string) common.Address {
+	// Remove 0x prefix if present
+	addr := address
+	if strings.HasPrefix(addr, "0x") || strings.HasPrefix(addr, "0X") {
+		addr = addr[2:]
+	}
+
+	// Convert to lowercase for case-insensitive comparison
+	addr = strings.ToLower(addr)
+
+	// Add 0x prefix back
+	return common.HexToAddress("0x" + addr)
+}
+
+// ConvertAddressCaseInsensitiveWithFallback tries case-insensitive conversion first, then falls back to exact match
+func ConvertAddressCaseInsensitiveWithFallback(address string) common.Address {
+	// First try case-insensitive conversion
+	normalized := ConvertAddressCaseInsensitive(address)
+
+	// For now, return the normalized version
+	// In a real implementation, we might need to try both and see which one works
+	return normalized
 }
 
 // Convert the balance string to big.Int

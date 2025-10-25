@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"gossipnode/AVC/NodeSelection/pkg/types"
+	seednodetypes "gossipnode/seednode/types"
 )
 
 // TestVRF_BasicSelection tests basic VRF selection
@@ -349,7 +349,7 @@ func createTestNodes(count, numASNs int) []Node {
 		selectionScore := 0.5 + (float64(i%5) * 0.1) // 0.5 to 0.9
 
 		nodes[i] = Node{
-			Node: types.Node{
+			Node: seednodetypes.Node{
 				ID:              fmt.Sprintf("node-%d", i+1),
 				Address:         fmt.Sprintf("/ip4/10.0.%d.%d/tcp/8000", i/256, i%256),
 				ReputationScore: 0.7 + (float64(i%3) * 0.1),
