@@ -14,6 +14,7 @@ import (
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -124,8 +125,13 @@ func (s *BuddyService) ReportResult(
 func (s *BuddyService) runBFTConsensus(ctx context.Context, req *pb.BFTRequest) {
 	log.Printf("🔧 [%s] Starting BFT consensus for round %d", s.buddyID, req.Round)
 
-	// Step 1: Join GossipSub topic
-	messenger, err := NewGossipSubMessenger(ctx, s.libp2pHost, s.pubsub, req.GossipsubTopic)
+	// CHANGED: Create messenger using service2's PubSub
+	messenger, err := NewGossipSubMessenger(
+		ctx,
+		s.libp2pHost,
+		protocol.ID("/bft/1.0.0"), // Use protocol ID instead of pubsub instance
+		req.GossipsubTopic,
+	)
 	if err != nil {
 		s.reportFailure(req, fmt.Sprintf("failed to join gossipsub: %v", err))
 		return
@@ -138,7 +144,12 @@ func (s *BuddyService) runBFTConsensus(ctx context.Context, req *pb.BFTRequest) 
 		return
 	}
 
-	log.Printf("✅ [%s] Joined GossipSub topic: %s", s.buddyID, req.GossipsubTopic)
+	log.Printf("✅ [%s] Joined GossipSub channel: %s", s.buddyID, req.GossipsubTopic)
+
+	// CHANGED: Wait for peers using service2's peer management
+	time.Sleep(2 * time.Second)
+	peerCount := messenger.GetPeerCount()
+	log.Printf("🌐 [%s] Connected to %d peers", s.buddyID, peerCount)
 
 	// Step 2: Wait for mesh readiness
 	if err := waitForMesh(ctx, messenger, len(req.AllBuddies)); err != nil {
@@ -320,9 +331,9 @@ func waitForMesh(ctx context.Context, messenger *GossipSubMessenger, expectedPee
 		case <-timeoutCtx.Done():
 			return fmt.Errorf("mesh readiness timed out after 10s")
 		case <-ticker.C:
-			peers := messenger.topic.ListPeers()
-			if len(peers) >= expectedPeers-1 {
-				log.Printf("🌐 Mesh ready with %d peers (expected %d)", len(peers), expectedPeers)
+			peerCount := messenger.GetPeerCount()
+			if peerCount >= expectedPeers-1 {
+				log.Printf("🌐 Mesh ready with %d peers (expected %d)", peerCount, expectedPeers)
 				return nil
 			}
 		}
