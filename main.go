@@ -338,6 +338,14 @@ func main() {
 	}
 	defer Block.CloseMempoolClient()
 
+	// Initialize routing client to the same address as mempool
+	_, err = Block.NewRoutingServiceClient(address)
+	if err != nil {
+		log.Printf("Failed to connect to routing service: %v", err)
+	} else {
+		log.Printf("Routing client initialized successfully")
+	}
+
 	// Start metrics server (just once)
 	metricsAddr := ":" + *metricsPort
 	metrics.StartMetricsServer(metricsAddr)
