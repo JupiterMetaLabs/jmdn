@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"go.uber.org/zap"
 
 	"gossipnode/DB_OPs"
@@ -24,6 +25,43 @@ const(
 	LOKI_TIMEOUT    = 5 * time.Second
 	KEEP_LOGS       = true
 )
+
+func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
+	// Check the ZKBlock nil or not
+	if zkBlock == nil {
+		return false, errors.New("zkBlock cannot be nil")
+	}
+	
+	// 1. Check the ZKBlock validation for Transactions in the ZKBlokc
+	for _, tx := range zkBlock.Transactions {
+		status, err := ThreeChecks(&tx)
+		if err != nil {
+			return false, err
+		}
+		if !status {
+			return false, errors.New("zkBlock validation failed")
+		}
+	}
+
+	// 2. Check the ZKBlock.Hash validation - this is the hash of the ZKBlock
+	// First compute the hash of the ZKBlock
+	zkBlockHash := crypto.Keccak256Hash(zkBlock.BlockHash.Bytes())
+	if zkBlockHash != zkBlock.BlockHash {
+		return false, errors.New("zkBlock hash validation failed")
+	}
+
+	// 3. ZK Check comes here - TODO: Implement the ZK Check
+	return true, nil
+}
+
+func ZKBlockHashValidation(zkBlock *config.ZKBlock) (bool, error) {
+	// First compute the hash of the ZKBlock
+	zkBlockHash := crypto.Keccak256Hash(zkBlock.BlockHash.Bytes())
+	if zkBlockHash != zkBlock.BlockHash {
+		return false, errors.New("zkBlock hash validation failed")
+	}
+	return true, nil
+}
 
 func ThreeChecks(tx *config.Transaction) (bool, error) {
 	// Initilize the Accounts DB connection pool

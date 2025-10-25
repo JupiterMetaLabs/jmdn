@@ -84,6 +84,8 @@ func (consensusMessage *ConsensusMessage) GetEndTimeout() time.Time {
 	return consensusMessage.EndTimeout
 }
 
+// Returns true if the consensus message has timed out
+// Returns false if the consensus message has not timed out
 func (consensusMessage *ConsensusMessage) CheckTimeOut() bool {
 	return time.Now().After(consensusMessage.GetEndTimeout())
 }
@@ -95,4 +97,23 @@ func (consensusMessage *ConsensusMessage) SetStartTime(startTime time.Time) *Con
 
 func (consensusMessage *ConsensusMessage) GetStartTime() time.Time {
 	return consensusMessage.StartTime
+}
+
+func (consensusMessage *ConsensusMessage) SetGloalVarCacheConsensusMessage() *ConsensusMessage {
+	CacheConsensuMessage[consensusMessage.ZKBlock.BlockHash.String()] = consensusMessage
+	return consensusMessage
+}
+
+func (consensusMessage *ConsensusMessage) GetGloalVarCacheConsensusMessage() *ConsensusMessage {
+	return CacheConsensuMessage[consensusMessage.ZKBlock.BlockHash.String()]
+}
+
+func (consensusMessage *ConsensusMessage) RemoveGloalVarCacheConsensusMessage() *ConsensusMessage {
+	delete(CacheConsensuMessage, consensusMessage.ZKBlock.BlockHash.String())
+	return consensusMessage
+}
+
+func (consensusMessage *ConsensusMessage) ClearGloalVarCacheConsensusMessage() *ConsensusMessage {
+	CacheConsensuMessage = make(map[string]*ConsensusMessage)
+	return consensusMessage
 }

@@ -7,6 +7,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+var CacheConsensuMessage map[string]*ConsensusMessage
+
 type ConsensusMessage struct {
 	ZKBlock      *config.ZKBlock
 	Buddies      map[int]peer.ID
@@ -19,7 +21,7 @@ type ConsensusMessage struct {
 func ConvertBuddiesIntoHashMap(buddies *Buddies) map[int]peer.ID {
 	hashMap := make(map[int]peer.ID)
 	for i, buddy := range buddies.Buddies_Nodes {
-		hashMap[i+1] = buddy // Start from 1, not 0
+		hashMap[i] = buddy // Start from 0, not 1
 	}
 	return hashMap
 }
