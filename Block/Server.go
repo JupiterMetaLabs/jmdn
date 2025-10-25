@@ -14,6 +14,7 @@ import (
 
 	"gossipnode/DB_OPs"
 	"gossipnode/Security"
+	"gossipnode/Sequencer"
 	"gossipnode/config"
 	"gossipnode/logging"
 	"gossipnode/messaging"
@@ -23,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gin-gonic/gin"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"go.uber.org/zap"
@@ -273,12 +275,39 @@ func processZKBlock(c *gin.Context) {
 		return
 	}
 
-	if err := messaging.PropagateZKBlock(globalHost, &block); err != nil {
+	// Create consensus instance and start consensus process
+	peerList := Sequencer.PeerList{
+		MainPeers:   []peer.ID{},
+		BackupPeers: []peer.ID{},
+	}
+	consensus := Sequencer.NewConsensus(peerList, globalHost)
+	if err := consensus.Start(&block); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": fmt.Sprintf("failed to process/propagate block: %v", err),
+			"error": fmt.Sprintf("failed to start consensus process: %v", err),
 		})
 		return
 	}
+
+	// Start block propagation as a new goroutine after consensus setup
+	go func() {
+		// Create consensus message from the consensus data
+		consensusMessage := consensus.ZKBlockData
+		if consensusMessage == nil {
+			log.Error().Msg("Consensus message is nil, cannot propagate block")
+			return
+		}
+
+		if err := messaging.PropagateZKBlock(globalHost, consensusMessage); err != nil {
+			log.Error().
+				Err(err).
+				Str("block_hash", block.BlockHash.Hex()).
+				Msg("Failed to propagate block after consensus setup")
+		} else {
+			log.Info().
+				Str("block_hash", block.BlockHash.Hex()).
+				Msg("Block propagated successfully after consensus setup")
+		}
+	}()
 
 	for _, tx := range block.Transactions {
 		LogTransaction(
