@@ -2,20 +2,21 @@ package Pubsub
 
 import (
 	"fmt"
-	DataProcessing "gossipnode/Pubsub/DataProcessing"
+	Router "gossipnode/Pubsub/Router"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 	"sync"
 	"time"
 )
 
 var (
-	ChannelBuffer = make(chan interface{}) // small buffer prevents blocking
+	ChannelBuffer = make(chan PubSubMessages.GossipMessage) // small buffer prevents blocking
 	isStarted     bool
 	mu            sync.Mutex
 )
 
 // AppendMessage is used by producers to push a message into the shared channel.
 // It auto-starts the listener if not already running.
-func AppendMessage(message *interface{}) {
+func AppendMessage(message *PubSubMessages.GossipMessage) {
 	mu.Lock()
 	if !isStarted {
 		isStarted = true
@@ -24,7 +25,7 @@ func AppendMessage(message *interface{}) {
 	mu.Unlock()
 
 	select {
-	case ChannelBuffer <- message:
+	case ChannelBuffer <- *message:
 	default:
 		fmt.Println("⚠️ Channel buffer full, message dropped")
 	}
@@ -40,7 +41,7 @@ func startMessageListener() {
 	for {
 		select {
 		case msg := <-ChannelBuffer:
-			if msg == nil {
+			if msg.ID == "" {
 				continue
 			}
 
@@ -80,18 +81,14 @@ func closeChannel() {
 
 	close(ChannelBuffer)
 	isStarted = false
-	ChannelBuffer = make(chan interface{}) // recreate new channel for next use
+	ChannelBuffer = make(chan PubSubMessages.GossipMessage) // recreate new channel for next use
 
 	fmt.Println("✅ Channel closed and reset")
 }
 
-func processMessage(msg interface{}) {
-	value, err := DataProcessing.ConvertInterfacetoStructMessageProcessing(msg)
-	if err != nil {
-		fmt.Println("Error converting message to struct:", err)
-		return
-	}
-	err = DataProcessing.NewMessageProcessing().SetMessage(value.GossipMessage).SetProtocol(value.Protocol).ParseMessage()
+func processMessage(msg PubSubMessages.GossipMessage) {
+	// This is the to be processed message so Publish message is not a type here
+	err := Router.Router(&msg)
 	if err != nil {
 		fmt.Println("Error processing message:", err)
 	}

@@ -19,6 +19,19 @@ const (
 	ColorRed    = "\033[1;31m"
 )
 
+const (
+	MaxMainPeers     = 13
+	MaxBackupPeers   = 3
+	ConsensusTimeout = 20 * time.Second
+)
+
+// Time-bounded message handling constants
+const (
+	MessageListeningWindow = 15 * time.Second // Nodes listen for 15 seconds
+	MessageRejectionWindow = 20 * time.Second // Reject messages after 20 seconds
+	MessageBufferTime      = 5 * time.Second  // 5-second buffer between windows
+)
+
 // Protocol IDs for message and file sharing
 const (
 	MessageProtocol           protocol.ID = "/custom/message/1.0.0"
@@ -45,6 +58,7 @@ const (
 	Type_StartPubSub        = "START_PUBSUB"
 	Type_EndPubSub          = "END_PUBSUB"
 	Type_Publish            = "PUBLISH"
+	Type_ToBeProcessed      = "PROCESS_MESSAGE"
 	Type_Subscribe          = "SUBSCRIBE"
 	Type_Unsubscribe        = "UNSUBSCRIBE"
 	Type_AskForSubscription = "ASK_FOR_SUBSCRIPTION"

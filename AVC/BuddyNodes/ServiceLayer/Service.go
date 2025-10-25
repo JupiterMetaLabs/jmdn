@@ -2,6 +2,7 @@ package ServiceLayer
 
 import (
 	"context"
+	"fmt"
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
 	"sync"
@@ -36,5 +37,5 @@ func Controller(controller *Types.Controller, OP *Types.OP) interface{} {
 		remoteController := DataLayer.GetCRDTLayer() // Get remote node's controller
 		return DataLayer.SyncWithNode(context.Background(), controller, remoteController, "local", OP.NodeID.String())
 	}
-	return nil
+	return fmt.Errorf("invalid operation type: %d", OP.OpType)
 }

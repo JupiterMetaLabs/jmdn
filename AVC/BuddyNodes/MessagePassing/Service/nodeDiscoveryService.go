@@ -212,7 +212,7 @@ func (nds *NodeDiscoveryService) discoveryLoop() {
 
 // syncLoop periodically syncs with all peers
 func (nds *NodeDiscoveryService) syncLoop() {
-	ticker := time.NewTicker(2 * time.Minute) // Sync every 2 minutes
+	ticker := time.NewTicker(7 * time.Second) // Sync every 2 minutes
 	defer ticker.Stop()
 
 	for {

@@ -1,23 +1,23 @@
 package messaging
 
 import (
-    "bufio"
-    "context"
-    "crypto/sha256"
-    "encoding/base64"
-    "encoding/json"
-    "fmt"
-    "io"
-    "sync"
-    "time"
+	"bufio"
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"sync"
+	"time"
 
-    "gossipnode/config"
-    "gossipnode/metrics"
+	"gossipnode/config"
+	"gossipnode/metrics"
 
-    "github.com/libp2p/go-libp2p/core/host"
-    "github.com/libp2p/go-libp2p/core/network"
-    "github.com/libp2p/go-libp2p/core/peer"
-    "github.com/rs/zerolog/log"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/rs/zerolog/log"
 )
 
 // BroadcastMessage represents a message that is broadcast through the network
@@ -307,3 +307,7 @@ func BroadcastMessage(h host.Host, content string) error {
     
     return nil
 }
+
+// func BroadcastBlockToEveryNode(h host.Host, block *config.ZKBlock, BuddyNodes PubSubMessages.Buddies) error {
+    
+// }

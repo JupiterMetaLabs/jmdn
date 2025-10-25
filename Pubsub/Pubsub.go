@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	Channel "gossipnode/Pubsub/DataProcessing/Channel"
-	"gossipnode/config/PubSubMessages"
+	Publisher "gossipnode/Pubsub/Publish"
+	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
+	"gossipnode/config/PubSubMessages"
 	"log"
 	"time"
 
@@ -96,81 +98,12 @@ func RemovePeerFromChannel(gps *PubSubMessages.GossipPubSub, channelName string,
 	return nil
 }
 
-// CanSubscribe checks if a peer can subscribe to a channel
-func CanSubscribe(gps *PubSubMessages.GossipPubSub, channelName string, peerID peer.ID) bool {
-	gps.Mutex.RLock()
-	defer gps.Mutex.RUnlock()
-
-	access, exists := gps.ChannelAccess[channelName]
-	if !exists {
-		return false // Channel doesn't exist
-	}
-
-	// Public channels allow anyone
-	if access.IsPublic {
-		return true
-	}
-
-	// Check if peer is in allowed list
-	return access.AllowedPeers[peerID]
-}
-
-// Subscribe subscribes to a topic with access control
-func Subscribe(gps *PubSubMessages.GossipPubSub, topic string, handler func(*PubSubMessages.GossipMessage)) error {
-	// Check if we can subscribe to this channel
-	hostMultiAddr := gps.Host.ID()
-	if !CanSubscribe(gps, topic, hostMultiAddr) {
-		return fmt.Errorf("access denied: not authorized to subscribe to channel %s", topic)
-	}
-
-	gps.Mutex.Lock()
-	defer gps.Mutex.Unlock()
-
-	gps.Topics[topic] = true
-	gps.Handlers[topic] = handler
-
-	log.Printf("Subscribed to topic: %s", topic)
-	return nil
-}
-
-// Publish publishes a message to a topic
-func Publish(gps *PubSubMessages.GossipPubSub, topic string, data *PubSubMessages.Message, metadata map[string]string) error {
-	// Create message
-	message := &PubSubMessages.GossipMessage{
-		ID:        fmt.Sprintf("%s-%d", gps.Host.ID().String(), gps.MessageID),
-		Topic:     topic,
-		Data:      data,
-		Sender:    gps.Host.ID(),
-		Timestamp: time.Now().Unix(),
-		TTL:       10, // Default TTL
-		Metadata:  metadata,
-	}
-	gps.MessageID++
-
-	// Serialize message
-	messageBytes, err := json.Marshal(message)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %v", err)
-	}
-
-	// Add to message cache to prevent loops
-	gps.Mutex.Lock()
-	gps.MessageCache[message.ID] = true
-	gps.Mutex.Unlock()
-
-	// Gossip to all connected peers
-	gossipMessage(gps, messageBytes)
-
-	log.Printf("Published message to topic %s: %s", topic, message.ID)
-	return nil
-}
-
 // handleGossipStream handles incoming gossip messages
 func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 	defer s.Close()
 
 	// Read message using delimiter
-	messageBytes, err := readMessage(gps, s)
+	messageBytes, err := readMessage(s)
 	if err != nil {
 		log.Printf("Error reading gossip message from %s: %v", s.Conn().RemotePeer(), err)
 		return
@@ -203,12 +136,8 @@ func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 
 	log.Printf("Received gossip message from %s on topic %s: %s", gossipMsg.Sender, gossipMsg.Topic, gossipMsg.ID)
 	// <-- Write the logic to check the processing of the message based on the message type --> TODO
-	messageProcessing := &PubSubMessages.MessageProcessing{
-		GossipMessage: string(messageBytes),
-		Protocol:      gps.Protocol,
-	}
-	messageProcessingInterface := PubSubMessages.ConvertMessageProcessingToInterface(messageProcessing)
-	Channel.AppendMessage(&messageProcessingInterface)
+
+	Channel.AppendMessage(&gossipMsg)
 	// Call handler if we're subscribed to this topic
 	gps.Mutex.RLock()
 	handler, subscribed := gps.Handlers[gossipMsg.Topic]
@@ -220,12 +149,12 @@ func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 
 	// Forward message to other peers (gossip)
 	if gossipMsg.TTL > 0 {
-		gossipMessage(gps, messageBytes)
+		Publisher.GossipMessage(gps, messageBytes)
 	}
 }
 
 // readMessage reads a message from the stream using delimiter
-func readMessage(gps *PubSubMessages.GossipPubSub, s network.Stream) ([]byte, error) {
+func readMessage(s network.Stream) ([]byte, error) {
 	var message []byte
 	buffer := make([]byte, 1)
 
@@ -243,53 +172,6 @@ func readMessage(gps *PubSubMessages.GossipPubSub, s network.Stream) ([]byte, er
 	}
 
 	return message, nil
-}
-
-// writeMessage writes a message to the stream using delimiter
-func writeMessage(gps *PubSubMessages.GossipPubSub, s network.Stream, message []byte) error {
-	_, err := s.Write(append(message, config.Delimiter))
-	return err
-}
-
-// gossipMessage forwards a message to connected peers
-func gossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
-	gps.Mutex.RLock()
-
-	for _, peerID := range gps.Peers {
-		// Don't send to ourselves
-		if peerID == gps.Host.ID() {
-			continue
-		}
-
-		go func(p peer.ID) {
-			if err := sendToPeer(gps, p, messageBytes); err != nil {
-				log.Printf("Failed to gossip message to %s: %v", p, err)
-			}
-		}(peerID)
-	}
-}
-
-// sendToPeer sends a message to a specific peer
-func sendToPeer(gps *PubSubMessages.GossipPubSub, peerID peer.ID, messageBytes []byte) error {
-	stream, err := gps.Host.NewStream(context.Background(), peerID, gps.Protocol)
-	if err != nil {
-		return err
-	}
-	defer stream.Close()
-
-	return writeMessage(gps, stream, messageBytes)
-}
-
-// Unsubscribe unsubscribes from a topic
-func Unsubscribe(gps *PubSubMessages.GossipPubSub, topic string) error {
-	gps.Mutex.Lock()
-	defer gps.Mutex.Unlock()
-
-	delete(gps.Topics, topic)
-	delete(gps.Handlers, topic)
-
-	log.Printf("Unsubscribed from topic: %s", topic)
-	return nil
 }
 
 // GetTopics returns a list of subscribed topics
@@ -317,9 +199,8 @@ func GetPeers(gps *PubSubMessages.GossipPubSub) []peer.ID {
 	defer gps.Mutex.RUnlock()
 
 	peers := make([]peer.ID, 0, len(gps.Peers))
-	for _, peerID := range gps.Peers {
-		peers = append(peers, peerID)
-	}
+	peers = append(peers, gps.Peers...)
+
 	return peers
 }
 
@@ -329,7 +210,7 @@ func Close(gps *PubSubMessages.GossipPubSub) error {
 	defer gps.Mutex.Unlock()
 
 	for topic := range gps.Topics {
-		Unsubscribe(gps, topic)
+		Connector.Unsubscribe(gps, topic)
 	}
 
 	return nil
