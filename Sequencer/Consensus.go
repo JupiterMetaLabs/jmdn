@@ -127,7 +127,6 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		return fmt.Errorf("subscription verification failed: %w", err)
 	}
 
-	// TODO -> write go routine to desolve the pubsub channel and also start the bft process -> start bft in 20secs
 	return nil
 }
 
