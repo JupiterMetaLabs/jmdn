@@ -10,6 +10,8 @@ import (
 
 	// Import service2's PubSub
 	"gossipnode/Pubsub"
+	publisher "gossipnode/Pubsub/Publish"
+	subscription "gossipnode/Pubsub/Subscription"
 	"gossipnode/config/PubSubMessages"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -77,7 +79,7 @@ func NewGossipSubMessenger(
 	}
 
 	// Subscribe to channel with message handler
-	err = Pubsub.Subscribe(
+	err = subscription.Subscribe(
 		gps.GetGossipPubSub(),
 		channelName,
 		messenger.handleMessage,
@@ -114,7 +116,7 @@ func (g *GossipSubMessenger) Stop() error {
 	g.wg.Wait()
 
 	// Unsubscribe from channel
-	Pubsub.Unsubscribe(g.pubsub.GetGossipPubSub(), g.channelName)
+	subscription.Unsubscribe(g.pubsub.GetGossipPubSub(), g.channelName)
 
 	close(g.prepareChan)
 	close(g.commitChan)
@@ -250,7 +252,7 @@ func (g *GossipSubMessenger) BroadcastPrepare(msg *PrepareMessage) error {
 		"blockHash": msg.BlockHash,
 	}
 
-	err = Pubsub.Publish(
+	err = publisher.Publish(
 		g.pubsub.GetGossipPubSub(),
 		g.channelName,
 		data,
@@ -284,7 +286,7 @@ func (g *GossipSubMessenger) BroadcastCommit(msg *CommitMessage) error {
 		"blockHash": msg.BlockHash,
 	}
 
-	err = Pubsub.Publish(
+	err = publisher.Publish(
 		g.pubsub.GetGossipPubSub(),
 		g.channelName,
 		data,
