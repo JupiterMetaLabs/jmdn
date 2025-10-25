@@ -22,7 +22,7 @@ func NewHandlers(service Service.Service) *Handlers { return &Handlers{service: 
 func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, error) {
 	// Log incoming request
 	reqJSON, _ := json.Marshal(req)
-	log.Printf("📥 RPC Request: %s", string(reqJSON))
+	log.Printf("⚡️RPC Request: %s", string(reqJSON))
 
 	switch req.Method {
 	case "web3_clientVersion":
