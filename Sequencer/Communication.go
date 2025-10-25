@@ -4,10 +4,9 @@ import (
 	"context"
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
-	AVCStruct "gossipnode/config/PubSubMessages"
-	PubSubMessages "gossipnode/config/PubSubMessages"
-	"gossipnode/Pubsub"
+	"gossipnode/Sequencer/Router"
 	"gossipnode/config"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 	"log"
 	"sync"
 	"time"
@@ -105,29 +104,29 @@ func (rh *ResponseHandler) UnregisterPeer(peerID peer.ID) {
 // AskForSubscription asks peers for subscription with backup node fallback
 // Ensures: 1 creator + 13 subscribers = 14 total nodes
 // Maximum 3 main nodes can fail, use backup nodes as replacements
-func AskForSubscription(sgps *Pubsub.StructGossipPubSub, topic string, consensus *Consensus) error {
+func AskForSubscription(gps *PubSubMessages.GossipPubSub, topic string, consensus *Consensus) error {
 	responseHandler := NewResponseHandler()
 
 	// First, try main peers (up to 13)
-	mainAccepted, mainTotal := askPeersForSubscription(sgps, topic, consensus.PeerList.MainPeers, responseHandler, "main")
+	mainAccepted, mainTotal := askPeersForSubscription(gps, topic, consensus.PeerList.MainPeers, responseHandler, "main")
 	mainFailed := mainTotal - mainAccepted
 
 	log.Printf("Main peers results: %d accepted, %d failed out of %d", mainAccepted, mainFailed, mainTotal)
 
 	// Check if more than 3 main nodes failed
-	if mainFailed > MaxBackupPeers {
-		return fmt.Errorf("too many main nodes failed: %d failed, maximum allowed is %d", mainFailed, MaxBackupPeers)
+	if mainFailed > config.MaxBackupPeers {
+		return fmt.Errorf("too many main nodes failed: %d failed, maximum allowed is %d", mainFailed, config.MaxBackupPeers)
 	}
 
 	// If we have exactly 13 main peers, we're done
-	if mainAccepted == MaxMainPeers {
-		log.Printf("Perfect! Got exactly %d main peers for consensus (1 creator + 13 subscribers = 14 total)", MaxMainPeers)
+	if mainAccepted == config.MaxMainPeers {
+		log.Printf("Perfect! Got exactly %d main peers for consensus (1 creator + 13 subscribers = 14 total)", config.MaxMainPeers)
 		return nil
 	}
 
 	// If we have less than 13 main peers, use backup peers as replacements
-	if mainAccepted < MaxMainPeers {
-		needed := MaxMainPeers - mainAccepted
+	if mainAccepted < config.MaxMainPeers {
+		needed := config.MaxMainPeers - mainAccepted
 		log.Printf("Need %d backup nodes as replacements for failed main nodes", needed)
 
 		// Limit backup peers to only what we need (max 3)
@@ -136,7 +135,7 @@ func AskForSubscription(sgps *Pubsub.StructGossipPubSub, topic string, consensus
 			backupPeersToTry = backupPeersToTry[:needed]
 		}
 
-		backupAccepted, backupTotal := askPeersForSubscription(sgps, topic, backupPeersToTry, responseHandler, "backup")
+		backupAccepted, backupTotal := askPeersForSubscription(gps, topic, backupPeersToTry, responseHandler, "backup")
 
 		log.Printf("Backup peers results: %d accepted out of %d tried", backupAccepted, backupTotal)
 
@@ -145,8 +144,8 @@ func AskForSubscription(sgps *Pubsub.StructGossipPubSub, topic string, consensus
 		log.Printf("Final subscription results: %d main + %d backup = %d total subscribers", mainAccepted, backupAccepted, totalAccepted)
 
 		// Ensure we have exactly 13 subscribers (1 creator + 13 subscribers = 14 total)
-		if totalAccepted != MaxMainPeers {
-			return fmt.Errorf("insufficient subscribers for consensus: got %d, need exactly %d (1 creator + 13 subscribers = 14 total)", totalAccepted, MaxMainPeers)
+		if totalAccepted != config.MaxMainPeers {
+			return fmt.Errorf("insufficient subscribers for consensus: got %d, need exactly %d (1 creator + 13 subscribers = 14 total)", totalAccepted, config.MaxMainPeers)
 		}
 
 		log.Printf("Successfully achieved consensus: 1 creator + %d subscribers = 14 total nodes", totalAccepted)
@@ -157,103 +156,77 @@ func AskForSubscription(sgps *Pubsub.StructGossipPubSub, topic string, consensus
 
 // VerifySubscriptions publishes a verification message to the pubsub channel and collects ACK responses
 // All subscribed nodes should reply with ACK_TRUE status and their PeerID
-func VerifySubscriptions(sgps *Pubsub.StructGossipPubSub, consensus *Consensus) (map[peer.ID]string, error) {
-	// Create a channel to collect verification responses
-	verificationResponses := make(map[peer.ID]string)
-	var mu sync.Mutex
+// This function now uses the Router for centralized verification handling
+func VerifySubscriptions(gps *PubSubMessages.GossipPubSub, consensus *Consensus) (map[peer.ID]string, error) {
+	log.Printf("Starting pubsub-based subscription verification for %d main peers", len(consensus.PeerList.MainPeers))
 
-	// Expected number of responses (13 main peers)
-	expectedResponses := len(consensus.PeerList.MainPeers)
-	responseCount := 0
-	timeout := 10 * time.Second
+	// Create Router instance for centralized verification handling
+	router := createRouter(gps)
+	defer router.Close()
 
-	log.Printf("Starting pubsub-based subscription verification for %d main peers", expectedResponses)
-
-	// Subscribe to the consensus channel to receive verification responses
-	handler := func(msg *PubSubMessages.GossipMessage) {
-		// Check if message has ACK data
-		if msg.Data != nil && msg.Data.ACK != nil {
-			// Check if this is a verification response with all required fields
-			if msg.Data.ACK.Status == config.Type_ACK_True && msg.Data.ACK.Stage == config.Type_VerifySubscription {
-				// Parse peer ID
-				peerID, err := peer.Decode(msg.Data.ACK.PeerID)
-				if err != nil {
-					log.Printf("Failed to decode peer ID: %v", err)
-					return
-				}
-
-				// Check if this peer is in our main peers list
-				isMainPeer := false
-				for _, mainPeer := range consensus.PeerList.MainPeers {
-					if mainPeer == peerID {
-						isMainPeer = true
-						break
-					}
-				}
-
-				if isMainPeer {
-					mu.Lock()
-					verificationResponses[peerID] = msg.Data.ACK.PeerID
-					responseCount++
-					log.Printf("Received verification ACK from main peer: %s", peerID)
-					mu.Unlock()
-				} else {
-					log.Printf("Received verification ACK from non-main peer: %s (ignoring)", peerID)
-				}
-			}
-		}
+	// Use the Router to verify subscriptions with a 10-second timeout
+	verificationResponses, err := router.VerifySubscriptions(consensus.PeerList.MainPeers, 10*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("router verification failed: %v", err)
 	}
 
-	// Subscribe to the consensus channel
-	if err := Pubsub.Subscribe(consensus.gossipnode.GetGossipPubSub(), consensus.Channel, handler); err != nil {
-		return nil, fmt.Errorf("failed to subscribe to consensus channel for verification: %v", err)
-	}
-
-
-	var message string = "Please verify your subscription to the consensus channel"
-
-	ACK_MESSAGE := AVCStruct.NewACKBuilder().True_ACK_Message(sgps.GetGossipPubSub().Host.ID(), config.Type_VerifySubscription).GetACK_Message()
-
-	verificationMessage := AVCStruct.NewMessageBuilder().SetMessage(message).SetSender(sgps.GetGossipPubSub().Host.ID()).SetTimestamp(time.Now().Unix()).SetACK(ACK_MESSAGE).GetMessage()
-	if err := Pubsub.Publish(consensus.gossipnode.GetGossipPubSub(), consensus.Channel, verificationMessage, map[string]string{}); err != nil {
-		return nil, fmt.Errorf("failed to publish verification message: %v", err)
-	}
-
-	log.Printf("Published verification request to pubsub channel: %s", consensus.Channel)
-
-	// Wait for responses with timeout
-	startTime := time.Now()
-	for time.Since(startTime) < timeout {
-		mu.Lock()
-		currentCount := responseCount
-		mu.Unlock()
-
-		if currentCount >= expectedResponses {
-			log.Printf("Received all expected verification responses: %d/%d", currentCount, expectedResponses)
-			break
-		}
-
-		// Check every 100ms
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	// Final count
-	mu.Lock()
-	finalCount := responseCount
-	mu.Unlock()
-
-	log.Printf("Subscription verification completed: %d peers verified out of %d expected", finalCount, expectedResponses)
-
-	// Unsubscribe from the channel
-	if err := Pubsub.Unsubscribe(consensus.gossipnode.GetGossipPubSub(), consensus.Channel); err != nil {
-		log.Printf("Warning: failed to unsubscribe from consensus channel: %v", err)
-	}
+	log.Printf("Subscription verification completed: %d peers verified out of %d expected",
+		len(verificationResponses), len(consensus.PeerList.MainPeers))
 
 	return verificationResponses, nil
 }
 
+// createRouter creates a new Router instance for the given GossipPubSub
+func createRouter(gps *PubSubMessages.GossipPubSub) *Router.Router {
+	// Create a BuddyNode from the GossipPubSub to use with Router
+	buddyNode := &PubSubMessages.BuddyNode{
+		PeerID: gps.Host.ID(),
+		Host:   gps.Host,
+		PubSub: gps,
+	}
+
+	// Create Router instance for centralized verification handling
+	return Router.NewRouter(buddyNode)
+}
+
+// ProcessVerificationMessage processes incoming verification messages using the Router
+func ProcessVerificationMessage(gps *PubSubMessages.GossipPubSub, gossipMessage *PubSubMessages.GossipMessage) error {
+	// Create Router instance for centralized verification handling
+	router := createRouter(gps)
+	defer router.Close()
+	// Use the Router to process the verification message
+	return router.ProcessCompleteVerification(gossipMessage)
+}
+
+// CheckNodeSubscriptionStatus checks if a node is subscribed using the Router
+func CheckNodeSubscriptionStatus(gps *PubSubMessages.GossipPubSub) (bool, error) {
+	// Create Router instance for centralized verification handling
+	router := createRouter(gps)
+	defer router.Close()
+	// Use the Router to check subscription status
+	return router.CheckSubscriptionStatus()
+}
+
+// SendVerificationResponseWithRouter sends verification response using the Router
+func SendVerificationResponseWithRouter(gps *PubSubMessages.GossipPubSub, accepted bool) error {
+	// Create Router instance for centralized verification handling
+	router := createRouter(gps)
+	defer router.Close()
+	// Use the Router to send verification response with validation
+	return router.SendVerificationResponseWithValidation(accepted)
+}
+
+// GetVerificationStatsWithRouter gets verification statistics using the Router
+func GetVerificationStatsWithRouter(gps *PubSubMessages.GossipPubSub) map[string]interface{} {
+	// Create Router instance for centralized verification handling
+	router := createRouter(gps)
+
+	// Use the Router to get verification stats
+	return router.GetVerificationStats()
+}
+
 // askPeersForSubscription asks a list of peers for subscription
-func askPeersForSubscription(sgps *Pubsub.StructGossipPubSub, topic string, peerAddrs []peer.ID, responseHandler *ResponseHandler, peerType string) (int, int) {
+func askPeersForSubscription(gps *PubSubMessages.GossipPubSub, topic string, peerAddrs []peer.ID, responseHandler *ResponseHandler, peerType string) (int, int) {
 	if len(peerAddrs) == 0 {
 		log.Printf("No %s peers to ask for subscription", peerType)
 		return 0, 0
@@ -266,7 +239,7 @@ func askPeersForSubscription(sgps *Pubsub.StructGossipPubSub, topic string, peer
 	log.Printf("Asking %d %s peers for subscription to topic: %s", len(peerAddrs), peerType, topic)
 
 	// Create a BuddyNode from the GossipPubSub's host with response handler
-	buddy := MessagePassing.NewBuddyNode(sgps.GetGossipPubSub().GetHost(), &PubSubMessages.Buddies{Buddies_Nodes: peerAddrs}, responseHandler, sgps.GetGossipPubSub())
+	buddy := MessagePassing.NewBuddyNode(gps.GetHost(), &PubSubMessages.Buddies{Buddies_Nodes: peerAddrs}, responseHandler, gps)
 
 	for _, peerID := range peerAddrs {
 		// Register peer for response tracking
@@ -333,13 +306,13 @@ func askPeersForSubscription(sgps *Pubsub.StructGossipPubSub, topic string, peer
 // Backup peers are standby replacements, not active participants
 func ValidateConsensusConfiguration(consensus *Consensus) error {
 	// Check main peers count (should be 13)
-	if len(consensus.PeerList.MainPeers) != MaxMainPeers {
-		return fmt.Errorf("main peers count must be exactly %d, got %d", MaxMainPeers, len(consensus.PeerList.MainPeers))
+	if len(consensus.PeerList.MainPeers) != config.MaxMainPeers {
+		return fmt.Errorf("main peers count must be exactly %d, got %d", config.MaxMainPeers, len(consensus.PeerList.MainPeers))
 	}
 
 	// Check backup peers count (should be 3)
-	if len(consensus.PeerList.BackupPeers) != MaxBackupPeers {
-		return fmt.Errorf("backup peers count must be exactly %d, got %d", MaxBackupPeers, len(consensus.PeerList.BackupPeers))
+	if len(consensus.PeerList.BackupPeers) != config.MaxBackupPeers {
+		return fmt.Errorf("backup peers count must be exactly %d, got %d", config.MaxBackupPeers, len(consensus.PeerList.BackupPeers))
 	}
 
 	// Check for duplicate peer IDs within main peers
@@ -370,7 +343,7 @@ func ValidateConsensusConfiguration(consensus *Consensus) error {
 
 	// Check total peers (should be 16: 13 main + 3 backup)
 	totalPeers := len(consensus.PeerList.MainPeers) + len(consensus.PeerList.BackupPeers)
-	expectedTotal := MaxMainPeers + MaxBackupPeers
+	expectedTotal := config.MaxMainPeers + config.MaxBackupPeers
 	if totalPeers != expectedTotal {
 		return fmt.Errorf("total peers count must be exactly %d (13 main + 3 backup), got %d", expectedTotal, totalPeers)
 	}

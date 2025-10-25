@@ -4,19 +4,19 @@ import (
 	"bufio"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
-	"gossipnode/AVC/BuddyNodes/Service"
-	AVCStruct "gossipnode/config/PubSubMessages"
+	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/config"
+	AVCStruct "gossipnode/config/PubSubMessages"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"go.uber.org/zap"
 )
 
-type StructListener struct{
-	ListenerBuddyNode *AVCStruct.BuddyNode	
+type StructListener struct {
+	ListenerBuddyNode *AVCStruct.BuddyNode
 }
 
-func NewListenerStruct(listner *AVCStruct.BuddyNode) *StructListener{
+func NewListenerStruct(listner *AVCStruct.BuddyNode) *StructListener {
 	return &StructListener{
 		ListenerBuddyNode: listner,
 	}
@@ -24,8 +24,6 @@ func NewListenerStruct(listner *AVCStruct.BuddyNode) *StructListener{
 
 func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.Stream) {
 	defer s.Close()
-	// Add the buddy Node to the Listener node for singleton instance
-	AVCStruct.NewGlobalVariables().Set_ForListner(StructListenerNode.ListenerBuddyNode)
 
 	reader := bufio.NewReader(s)
 	msg, err := reader.ReadString(config.Delimiter)
@@ -35,15 +33,15 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 		return
 	}
 
-	message := AVCStruct.NewMessageProcessor().DeferenceMessage(msg)
+	message := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(msg)
 
 	log.LogMessagesInfo(fmt.Sprintf("Received submit message from %s: %s", s.Conn().RemotePeer(), msg), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 
-	switch message.Message.Message {
+	switch message.GetACK().GetStage() {
 	case config.Type_SubmitVote:
 		log.LogMessagesInfo(fmt.Sprintf("Received submit vote from %s: %s", s.Conn().RemotePeer(), message.Message), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 		// First Add to local CRDT Engine
-		if err := Service.SubmitMessage(message.GetMessage(), AVCStruct.NewGlobalVariables().Get_PubSubNode().PubSub, AVCStruct.NewGlobalVariables().Get_ForListner()); err != nil {
+		if err := Structs.SubmitMessage(message, AVCStruct.NewGlobalVariables().Get_PubSubNode().PubSub, AVCStruct.NewGlobalVariables().Get_ForListner()); err != nil {
 			log.LogMessagesError(fmt.Sprintf("Failed to add vote to local CRDT Engine: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 			return
 		}

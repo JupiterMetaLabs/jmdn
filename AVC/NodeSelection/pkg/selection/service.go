@@ -27,16 +27,22 @@ func GetBuddyNodes(
 		fmt.Println("❌ Failed to connect to peer directory:", err)
 		return nil, err
 	}
+	fmt.Printf("Debugging 1\n")
 	defer peerClient.Close()
 
 	fmt.Println("📡 Connected to peer directory at", peerDirAddress)
 
 	// 2. Fetch buddy-eligible peers (excludes recent buddies)
-	allNodes, err := peerClient.ListBuddyPeers(ctx)
-	if err != nil {
+	fmt.Printf("Debugging 2\n")
+	allNodes := make([]Node, 0)
+	allNodes, err = peerClient.ListBuddyPeers(ctx)
+	fmt.Printf("Debugging 3\n")
+	fmt.Printf("allNodes: %+v\n", len(allNodes))
+	if err == nil || len(allNodes) == 0 {
 		fmt.Println("⚠️  Failed to fetch buddy peers, falling back to all active peers:", err)
 		// Fallback to all active peers
 		allNodes, err = peerClient.ListAllPeers(ctx)
+		fmt.Printf("allNodes --  fallback: %+v\n", allNodes)
 		if err != nil {
 			return nil, err
 		}
@@ -87,6 +93,9 @@ func GetBuddyNodesWithNodes(
 		return nil, ErrNoPeersAvailable
 	}
 
+	fmt.Printf("Debugging 7\n")
+	fmt.Printf("nodes: %+v\n", len(nodes))
+
 	// fmt.Printf("🔍 Filtering %d nodes for eligibility\n", len(nodes))
 
 	// 1. Filter eligible nodes
@@ -98,7 +107,8 @@ func GetBuddyNodesWithNodes(
 	}
 
 	// fmt.Printf("✅ %d eligible nodes after filtering\n", len(eligible))
-
+	fmt.Printf("Debugging 8\n")
+	fmt.Printf("eligible: %+v\n", len(eligible))
 	// 2. Create VRF selector
 	vrfConfig := &VRFConfig{
 		NetworkSalt: networkSalt,
@@ -109,7 +119,7 @@ func GetBuddyNodesWithNodes(
 	if err != nil {
 		return nil, err
 	}
-
+	fmt.Printf("Debugging 9\n")
 	vrfSelector := selector.(*VRFSelector)
 
 	// 3. Select buddies using VRF algorithm

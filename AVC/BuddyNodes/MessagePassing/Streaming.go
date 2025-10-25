@@ -45,27 +45,6 @@ func Init_Loggers(loki bool) {
 	}
 }
 
-func StartStreamHandlers(h host.Host, buddies *AVCStruct.Buddies, responseHandler AVCStruct.ResponseHandler, pubsub *AVCStruct.GossipPubSub) {
-	buddy := NewBuddyNode(h, buddies, responseHandler, pubsub)
-	listener := NewListenerNode(h, responseHandler)
-
-	// Set stream handlers (these will run continuously)
-	h.SetStreamHandler(config.BuddyNodesMessageProtocol, func(stream network.Stream) {
-		log.LogConsensusInfo("New buddy nodes connection received",
-			zap.String("peer", stream.Conn().RemotePeer().String()),
-			zap.String("protocol", string(config.BuddyNodesMessageProtocol)))
-		go NewStructBuddyNode(buddy).HandleBuddyNodesMessageStream(stream)
-	})
-
-	h.SetStreamHandler(config.SubmitMessageProtocol, func(stream network.Stream) {
-		log.LogMessagesInfo("New submit message connection received",
-			zap.String("peer", stream.Conn().RemotePeer().String()),
-			zap.String("protocol", string(config.SubmitMessageProtocol)))
-		go listener.HandleSubmitMessageStream(stream)
-	})
-
-	log.LogConsensusInfo("Stream handlers started and listening for connections")
-}
 
 func NewListenerNode(h host.Host, responseHandler AVCStruct.ResponseHandler) *StructListener {
 	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
@@ -88,10 +67,16 @@ func NewListenerNode(h host.Host, responseHandler AVCStruct.ResponseHandler) *St
 		},
 	}
 	listener := NewListenerStruct(Node)
+	// Add the buddy Node to the Listener node for singleton instance
+	AVCStruct.NewGlobalVariables().Set_ForListner(Node)
 
 	// Set up the stream handler for the listener nodes message protocol
-	var Listner_Network network.StreamHandler = listener.HandleSubmitMessageStream
-	h.SetStreamHandler(config.SubmitMessageProtocol, Listner_Network)
+	h.SetStreamHandler(config.SubmitMessageProtocol, func(stream network.Stream) {
+		log.LogMessagesInfo("New submit message connection received",
+			zap.String("peer", stream.Conn().RemotePeer().String()),
+			zap.String("protocol", string(config.SubmitMessageProtocol)))
+		go listener.HandleSubmitMessageStream(stream)
+	})
 
 	log.LogConsensusInfo(fmt.Sprintf("ListenerNode initialized with ID: %s", h.ID()), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewListenerNode"))
 	log.LogConsensusInfo(fmt.Sprintf("Listening for listener messages on protocol: %s", config.SubmitMessageProtocol), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewListenerNode"))
@@ -124,9 +109,16 @@ func NewBuddyNode(h host.Host, buddies *AVCStruct.Buddies, responseHandler AVCSt
 	}
 	buddyStream := NewStructBuddyNode(buddy)
 
+	// Add the buddy Node to the Pubsub node for singleton instance
+	AVCStruct.NewGlobalVariables().Set_PubSubNode(buddy)
+
 	// Set up the stream handler for the buddy nodes message protocol
-	var BuddyNode_Stream_Channel network.StreamHandler = buddyStream.HandleBuddyNodesMessageStream
-	h.SetStreamHandler(config.BuddyNodesMessageProtocol, BuddyNode_Stream_Channel)
+	h.SetStreamHandler(config.BuddyNodesMessageProtocol, func(stream network.Stream) {
+		log.LogConsensusInfo("New buddy nodes connection received",
+			zap.String("peer", stream.Conn().RemotePeer().String()),
+			zap.String("protocol", string(config.BuddyNodesMessageProtocol)))
+		go buddyStream.HandleBuddyNodesMessageStream(stream)
+	})
 
 	log.LogConsensusInfo(fmt.Sprintf("BuddyNode initialized with ID: %s", h.ID()), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewBuddyNode"))
 	log.LogConsensusInfo(fmt.Sprintf("Listening for buddy messages on protocol: %s", config.BuddyNodesMessageProtocol), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewBuddyNode"))
