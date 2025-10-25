@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"fmt"
 	peerpb "gossipnode/seednode/proto"
+	seednodetypes "gossipnode/seednode/types"
+	selection "gossipnode/shared/selection"
 	"io"
 	"net/http"
 	"os"
@@ -843,4 +845,201 @@ func (c *Client) GetPeers(limit int32, status peerpb.PeerStatus) ([]*peerpb.Sign
 	}
 
 	return response.Peers, nil
+}
+func convertProtoToNode(peer *peerpb.SignedPeerRecord) selection.Node {
+	fmt.Println("ℹ️ Converting peer:", peer.PeerId)
+
+	var lastSeen time.Time
+	if peer.LastUpdated > 0 {
+		lastSeen = time.Unix(peer.LastUpdated, 0)
+	} else {
+		lastSeen = time.Unix(peer.FirstCreated, 0)
+	}
+
+	var address string
+	if len(peer.Multiaddrs) > 0 {
+		address = peer.Multiaddrs[0]
+	}
+
+	var asn string
+	if peer.Labels != nil {
+		asn = peer.Labels["asn"]
+	}
+	// Fallback if ASN not in labels
+	if asn == "" {
+		asn = "AS" + peer.Region // Use region as fallback
+	}
+
+	isActive := peer.CurrentStatus == peerpb.PeerStatus_PEER_STATUS_ACTIVE &&
+		time.Since(lastSeen) <= 10*time.Minute
+
+	capacity := int(peer.Weights * 100)
+	if capacity == 0 {
+		capacity = 100 // Default capacity
+	}
+
+	// Selection score logic with proper defaults
+	selectionScore := 0.5 // Default starting score for new nodes
+	if peer.Labels != nil && peer.Labels["selection_score"] != "" {
+		fmt.Sscanf(peer.Labels["selection_score"], "%f", &selectionScore)
+	} else if peer.Weights > 0 {
+		selectionScore = float64(peer.Weights)
+		// Clamp to valid range [0.5, 1.0)
+		if selectionScore < 0.5 {
+			selectionScore = 0.5
+		}
+		if selectionScore >= 1.0 {
+			selectionScore = 0.99
+		}
+	}
+
+	return selection.Node{
+		Node: seednodetypes.Node{
+			ID:              peer.PeerId,
+			Address:         address,
+			ReputationScore: float64(peer.Weights),
+			ASN:             asn,
+			LastSeen:        lastSeen,
+			IsActive:        isActive,
+			Capacity:        capacity,
+		},
+		SelectionScore: selectionScore, // 0.0 to 1.0 range for selection logic
+	}
+}
+
+// convertBuddyPeerRecordToNode converts BuddyPeerRecord to selection.Node
+func convertBuddyPeerRecordToNode(peer *peerpb.BuddyPeerRecord) selection.Node {
+	var lastSeen time.Time
+	if peer.LastUpdated > 0 {
+		lastSeen = time.Unix(peer.LastUpdated, 0)
+	} else {
+		lastSeen = time.Unix(peer.FirstCreated, 0)
+	}
+
+	var address string
+	if len(peer.Multiaddrs) > 0 {
+		address = peer.Multiaddrs[0]
+	}
+
+	// ASN from region or use default
+	asn := "UNKNOWN"
+	if peer.Region != "" {
+		asn = "AS-" + peer.Region
+	}
+
+	capacity := int(peer.Weights * 100)
+	if capacity == 0 {
+		capacity = 100
+	}
+
+	// Buddy peers get default selection score of 0.8 (high priority)
+	selectionScore := 0.8
+	if peer.Weights > 0 && peer.Weights < 1.0 {
+		selectionScore = float64(peer.Weights)
+		// Clamp to valid range [0.5, 1.0)
+		if selectionScore < 0.5 {
+			selectionScore = 0.5
+		}
+		if selectionScore >= 1.0 {
+			selectionScore = 0.99
+		}
+	}
+
+	return selection.Node{
+		Node: seednodetypes.Node{
+			ID:              peer.PeerId,
+			Address:         address,
+			ReputationScore: float64(peer.Weights),
+			ASN:             asn,
+			LastSeen:        lastSeen,
+			IsActive:        true, // Buddy peers are always active
+			Capacity:        capacity,
+		},
+		SelectionScore: selectionScore, // 0.0 to 1.0 range for selection logic
+	}
+}
+
+func (c *Client) ListBuddy(ctx context.Context) (*peerpb.ListBuddyResponse, error) {
+	return c.client.ListBuddy(ctx, &peerpb.ListBuddyRequest{})
+}
+
+func (c *Client) UpdateBuddy(ctx context.Context, peerIDs []string) (*peerpb.UpdateBuddyResponse, error) {
+	return c.client.UpdateBuddy(ctx, &peerpb.UpdateBuddyRequest{
+		PeerIds: peerIDs,
+	})
+}
+
+// UpdateBuddies updates the buddy list on the peer directory
+func (c *Client) UpdateBuddies(ctx context.Context, peerIDs []string) error {
+	resp, err := c.UpdateBuddy(ctx, peerIDs)
+	if err != nil {
+		return fmt.Errorf("failed to update buddies: %w", err)
+	}
+
+	if !resp.Accepted {
+		return fmt.Errorf("buddy update rejected: %s", resp.Message)
+	}
+
+	fmt.Printf("✅ Updated buddy list: added %d, removed %d\n", resp.AddedCount, resp.RemovedCount)
+	return nil
+}
+
+// Add conversion functions
+func (c *Client) ListBuddyPeers(ctx context.Context) ([]selection.Node, error) {
+	resp, err := c.ListBuddy(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	nodes := make([]selection.Node, 0, len(resp.Peers))
+	for _, peer := range resp.Peers {
+		node := convertBuddyPeerRecordToNode(peer)
+		nodes = append(nodes, node)
+	}
+	return nodes, nil
+}
+
+func (c *Client) ListAllPeers(ctx context.Context) ([]selection.Node, error) {
+	allNodes := make([]selection.Node, 0, 100)
+	var afterPeerID string
+	limit := int32(100)
+	totalFetched := 0
+
+	for {
+		reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+
+		req := &peerpb.PeerListRequest{
+			AfterPeerId: afterPeerID,
+			Limit:       limit,
+			Status:      peerpb.PeerStatus_PEER_STATUS_ACTIVE,
+		}
+
+		fmt.Printf("🔍 Fetching peers (after: %s, limit: %d)...\n", afterPeerID, limit)
+
+		resp, err := c.client.ListPeers(reqCtx, req)
+		cancel()
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to list peers: %w", err)
+		}
+
+		batchSize := len(resp.Peers)
+		totalFetched += batchSize
+
+		// Convert proto peers to Node type
+		for _, peer := range resp.Peers {
+			node := convertProtoToNode(peer)
+			allNodes = append(allNodes, node)
+		}
+
+		// Check if there are more peers to fetch
+		if !resp.HasMore {
+			fmt.Println("✅ No more peers to fetch")
+			break
+		}
+
+		afterPeerID = resp.Last
+	}
+
+	return allNodes, nil
 }

@@ -22,7 +22,7 @@ func NewHandlers(service Service.Service) *Handlers { return &Handlers{service: 
 func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, error) {
 	// Log incoming request
 	reqJSON, _ := json.Marshal(req)
-	log.Printf("📥 RPC Request: %s", string(reqJSON))
+	log.Printf("⚡️RPC Request: %s", string(reqJSON))
 
 	switch req.Method {
 	case "web3_clientVersion":
@@ -114,7 +114,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 			return resp, err
 		}
-		bal, err := handler.service.Balance(ctx, addr, num, "wallet")
+		bal, err := handler.service.Balance(ctx, addr, num, "jmdt:metamask")
 		if err != nil {
 			resp, _ := finish(req, nil, err)
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
@@ -190,7 +190,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		}
 		raw, _ := req.Params[0].(string)
 		// Debugging
-		fmt.Println(">>>>>> eth_sendRawTransaction received: ", raw)
+		// fmt.Println(">>>>>> eth_sendRawTransaction received: ", raw)
 		txh, err := handler.service.SendRawTx(ctx, raw)
 		resp, _ := finish(req, txh, err)
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
