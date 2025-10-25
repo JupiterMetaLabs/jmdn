@@ -87,14 +87,14 @@ func (vt *VoteTrigger) SubmitVote() error {
 	NodeToSendTo := vt.PickListner(listenerNode.PeerID)
 
 	// Send the message to the listener node
-	if err := MessagePassing.NewListenerStruct(listenerNode).SendMessageToPeer(NodeToSendTo, vt.ToVoteString(vt.Vote)); err != nil {
+	if err := MessagePassing.NewListenerStruct(listenerNode).SendMessageToPeer(NodeToSendTo.PeerID, vt.ToVoteString(vt.Vote)); err != nil {
 		return fmt.Errorf("failed to send message to listener node: %v", err)
 	}
 
 	return nil
 }
 
-func (vt *VoteTrigger) PickListner(PeerID peer.ID) peer.ID {
+func (vt *VoteTrigger) PickListner(PeerID peer.ID) PubSubMessages.Buddy_PeerMultiaddr {
 	// Node should hash its own peerID  pick one from all the keys in buddies map
 	buddies := vt.ConsensusMessage.GetBuddies()
 	numKeys := len(buddies)

@@ -45,6 +45,21 @@ type ManagedPeer struct {
 	IsAlive       bool
 }
 
+// NodeManager Global Variable to be immported by other packages
+var NodeManagerInterface *NodeManager
+
+func setNodeManagerInterface(nodeManager *NodeManager) {
+	NodeManagerInterface = nodeManager
+}
+
+func GetNodeManagerInterface() *NodeManager {
+	return NodeManagerInterface
+}
+
+func ClearNodeManagerInterface() {
+	NodeManagerInterface = nil
+}
+
 // NewNodeManager creates a new node manager for the host
 func NewNodeManager(node *config.Node) (*NodeManager, error) {
 	return NewNodeManagerWithLoki(node, true)
@@ -138,6 +153,9 @@ func NewNodeManagerWithLoki(node *config.Node, enableLoki bool) (*NodeManager, e
 		zap.String(logging.Function, "node.NewNodeManager"),
 	)
 	node.Host.SetStreamHandler(config.HeartbeatProtocol, manager.handleHeartbeat)
+
+	// Set the NodeManagerInterface
+	setNodeManagerInterface(manager)
 
 	return manager, nil
 }
