@@ -10,7 +10,6 @@ import (
 	Subscription "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
-	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/seednode"
 	"os"
 	"time"
@@ -86,7 +85,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 			zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 
 		// Create GossipPubSub using Pubsub_Builder.go first
-		gps := PubSubMessages.NewGossipPubSubBuilder(nil).
+		gps := AVCStruct.NewGossipPubSubBuilder(nil).
 			SetHost(AVCStruct.NewGlobalVariables().Get_ForListner().Host).
 			SetProtocol(config.BuddyNodesMessageProtocol).
 			Build()
@@ -103,7 +102,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 		}
 
 		// Subscribe to BuddyNodesMessageProtocol
-		if err := Subscription.Subscribe(gps, log.Consensus_TOPIC, func(msg *PubSubMessages.GossipMessage) {
+		if err := Subscription.Subscribe(gps, log.Consensus_TOPIC, func(msg *AVCStruct.GossipMessage) {
 			log.LogMessagesInfo(fmt.Sprintf("Received message on BuddyNodesMessageProtocol: %s", msg.ID), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 		}); err != nil {
 			log.LogMessagesError(fmt.Sprintf("Failed to subscribe to BuddyNodesMessageProtocol: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
@@ -150,13 +149,13 @@ func sendSubscriptionResponse(s network.Stream, accepted bool) {
 // SendMessageToPeer sends a message to a specific peer using peer.ID (for already connected peers)
 // Uses LRU cache with TTL for optimal performance and resource efficiency
 func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, message string) error {
-	// Get or create a stream from the cache
+	// Get or create a stream from the cache using SubmitMessageProtocol
 	StreamCache := NewStreamCacheBuilder(StructListenerNode.ListenerBuddyNode.StreamCache)
 	if StreamCache == nil {
 		return fmt.Errorf("failed to get the StreamCache, nil StreamCache occurred")
 	}
 
-	stream, err := StreamCache.GetStream(peerID)
+	stream, err := StreamCache.GetSubmitMessageStream(peerID)
 	if err != nil {
 		// Direct connection failed, try fallback via seed node
 		log.LogConsensusInfo(fmt.Sprintf("Direct connection failed, using seed node fallback for %s", peerID), zap.String("peer", peerID.String()), zap.String("function", "SendMessageToPeer"))
@@ -197,8 +196,8 @@ func (StructListenerNode *StructListener) sendViaSeedNode(peerID peer.ID, messag
 		return fmt.Errorf("failed to connect to peer %s: %v", peerID, err)
 	}
 
-	// Open stream and send message
-	stream, err := StructListenerNode.ListenerBuddyNode.Host.NewStream(context.Background(), peerID, config.BuddyNodesMessageProtocol)
+	// Open stream and send message using SubmitMessageProtocol
+	stream, err := StructListenerNode.ListenerBuddyNode.Host.NewStream(context.Background(), peerID, config.SubmitMessageProtocol)
 	if err != nil {
 		return fmt.Errorf("failed to create stream to %s: %v", peerID, err)
 	}

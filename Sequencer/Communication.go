@@ -256,7 +256,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 			defer responseHandler.UnregisterPeer(peerID)
 
 			// Create context with timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Increased timeout
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // Increased timeout to 30 seconds
 			defer cancel()
 
 			// Create proper message with ACK for subscription request
@@ -322,6 +322,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 
 	return acceptedCount, len(peerAddrs)
 }
+
 // ValidateConsensusConfiguration validates that the consensus configuration is correct
 // Architecture: 1 creator + 13 main peers + 3 backup peers = 17 total allowed peers
 // Active consensus: 1 creator + 13 main peers = 14 active participants

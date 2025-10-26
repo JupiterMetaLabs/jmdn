@@ -3,8 +3,8 @@ package MessagePassing
 import (
 	"context"
 	"fmt"
-	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/config"
+	AVCStruct "gossipnode/config/PubSubMessages"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -13,7 +13,7 @@ import (
 )
 
 // <-- Use Builder Pattern Here -->
-type StructStreamCache struct{
+type StructStreamCache struct {
 	StreamCache *AVCStruct.StreamCache
 }
 
@@ -21,7 +21,7 @@ func NewStreamCacheBuilder(streamcache *AVCStruct.StreamCache) *StructStreamCach
 	if streamcache == nil {
 		return &StructStreamCache{
 			StreamCache: &AVCStruct.StreamCache{
-				Streams: make(map[peer.ID]*AVCStruct.StreamEntry),
+				Streams:                make(map[peer.ID]*AVCStruct.StreamEntry),
 				ParallelCleanUpRoutine: false,
 			},
 		}
@@ -69,6 +69,29 @@ func (sc *StructStreamCache) Build() (*StructStreamCache, error) {
 		return nil, fmt.Errorf("access order is not set")
 	}
 	return sc, nil
+}
+
+// GetSubmitMessageStream gets or creates a stream using SubmitMessageProtocol
+// This is specifically for subscription requests and vote submissions
+func (sc *StructStreamCache) GetSubmitMessageStream(peerID peer.ID) (network.Stream, error) {
+	sc.StreamCache.Mutex.Lock()
+	defer sc.StreamCache.Mutex.Unlock()
+
+	// Create new stream using SubmitMessageProtocol
+	stream, err := sc.StreamCache.Host.NewStream(context.Background(), peerID, config.SubmitMessageProtocol)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add to cache with a unique key for SubmitMessageProtocol
+	submitKey := peerID + "_submit"
+	sc.StreamCache.Streams[submitKey] = &AVCStruct.StreamEntry{
+		Stream:      stream,
+		LastUsed:    time.Now(),
+		AccessCount: 1,
+	}
+
+	return stream, nil
 }
 
 // GetStream gets or creates a stream to the specified peer
@@ -212,7 +235,7 @@ func (sc *StructStreamCache) GetStats() map[string]interface{} {
 }
 
 // <-- Singleton process - make sure it is only called once --> if called more than once, just continue
-func (sc *StructStreamCache) ParallelCleanUpRoutine(){
+func (sc *StructStreamCache) ParallelCleanUpRoutine() {
 	if sc.StreamCache.ParallelCleanUpRoutine {
 		return
 	}
