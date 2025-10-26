@@ -76,8 +76,10 @@ const (
 	// For Voting Aggregation
 	Type_SubmitVote = "SUBMIT_VOTE"
 
-	Topic_SYNCRequest = "SYNC_REQUEST"
-	Type_BFTRequest   = "BFT_REQUEST" // ADD THIS LINE
+	Topic_SYNCRequest   = "SYNC_REQUEST"
+	Type_BFTRequest     = "BFT_REQUEST" // ADD THIS LINE
+	Type_BFTPrepareVote = "bFT_PREPARE_VOTE"
+	Type_BFTCommitVote  = "BFT_COMMIT_VOTE"
 )
 
 // Increase buffer sizes
