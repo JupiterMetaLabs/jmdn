@@ -34,7 +34,7 @@ func Publish(gps *PubSubMessages.GossipPubSub, topic string, message *PubSubMess
 		Data:      message,
 		Sender:    message.GetSender(),
 		Timestamp: time.Now().Unix(),
-		TTL:       10, // Default TTL
+		TTL:       30, // Default TTL
 		Metadata:  metadata,
 	}
 	gps.MessageID++
