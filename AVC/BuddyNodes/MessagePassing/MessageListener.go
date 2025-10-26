@@ -7,10 +7,10 @@ import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
+	Subscription "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	PubSubMessages "gossipnode/config/PubSubMessages"
-	Subscription "gossipnode/Pubsub/Subscription"
 	"gossipnode/seednode"
 	"os"
 	"time"
@@ -32,7 +32,7 @@ func NewListenerStruct(listner *AVCStruct.BuddyNode) *StructListener {
 }
 
 func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.Stream) {
-	defer s.Close()
+	// Note: Stream closure is handled by the caller to allow response reading
 
 	reader := bufio.NewReader(s)
 	msg, err := reader.ReadString(config.Delimiter)
@@ -80,22 +80,24 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 			zap.String("peer", s.Conn().RemotePeer().String()),
 			zap.String("topic", log.Messages_TOPIC),
 			zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
-	
-		// Initialize PubSub BuddyNode if not already done
-		if AVCStruct.NewGlobalVariables().Get_PubSubNode() == nil {
-			listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
-			if listenerNode != nil && listenerNode.Host != nil {
-				buddy := NewBuddyNode(listenerNode.Host, nil, nil, nil)
-				AVCStruct.NewGlobalVariables().Set_PubSubNode(buddy)
-			}
-		}
-	
-		// Create GossipPubSub using Pubsub_Builder.go
+
+		// Create GossipPubSub using Pubsub_Builder.go first
 		gps := PubSubMessages.NewGossipPubSubBuilder(nil).
 			SetHost(AVCStruct.NewGlobalVariables().Get_ForListner().Host).
 			SetProtocol(config.BuddyNodesMessageProtocol).
 			Build()
-	
+
+		// Initialize PubSub BuddyNode if not already done
+		if AVCStruct.NewGlobalVariables().Get_PubSubNode() == nil {
+			listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
+			if listenerNode != nil && listenerNode.Host != nil {
+				// Create default Buddies instance
+				defaultBuddies := AVCStruct.NewBuddiesBuilder(nil)
+				buddy := NewBuddyNode(listenerNode.Host, defaultBuddies, nil, gps)
+				AVCStruct.NewGlobalVariables().Set_PubSubNode(buddy)
+			}
+		}
+
 		// Subscribe to BuddyNodesMessageProtocol
 		if err := Subscription.Subscribe(gps, log.Consensus_TOPIC, func(msg *PubSubMessages.GossipMessage) {
 			log.LogMessagesInfo(fmt.Sprintf("Received message on BuddyNodesMessageProtocol: %s", msg.ID), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
@@ -112,33 +114,33 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 
 // sendSubscriptionResponse sends ACK response for subscription requests
 func sendSubscriptionResponse(s network.Stream, accepted bool) {
-    host := s.Conn().LocalPeer()
-    var ackBuilder *AVCStruct.ACK
-    if accepted {
-        ackBuilder = AVCStruct.NewACKBuilder().True_ACK_Message(host, config.Type_AskForSubscription)
-    } else {
-        ackBuilder = AVCStruct.NewACKBuilder().False_ACK_Message(host, config.Type_AskForSubscription)
-    }
+	host := s.Conn().LocalPeer()
+	var ackBuilder *AVCStruct.ACK
+	if accepted {
+		ackBuilder = AVCStruct.NewACKBuilder().True_ACK_Message(host, config.Type_AskForSubscription)
+	} else {
+		ackBuilder = AVCStruct.NewACKBuilder().False_ACK_Message(host, config.Type_AskForSubscription)
+	}
 
-    message := AVCStruct.NewMessageBuilder(nil).
-        SetSender(host).
-        SetMessage(fmt.Sprintf("Subscription %s", map[bool]string{true: "accepted", false: "rejected"}[accepted])).
-        SetTimestamp(time.Now().Unix()).
-        SetACK(ackBuilder)
+	message := AVCStruct.NewMessageBuilder(nil).
+		SetSender(host).
+		SetMessage(fmt.Sprintf("Subscription %s", map[bool]string{true: "accepted", false: "rejected"}[accepted])).
+		SetTimestamp(time.Now().Unix()).
+		SetACK(ackBuilder)
 
-    messageBytes, err := json.Marshal(message)
-    if err != nil {
-        log.LogMessagesError(fmt.Sprintf("Failed to marshal response: %v", err), err)
-        return
-    }
+	messageBytes, err := json.Marshal(message)
+	if err != nil {
+		log.LogMessagesError(fmt.Sprintf("Failed to marshal response: %v", err), err)
+		return
+	}
 
-    // Send response back through the SAME stream (SubmitMessageProtocol)
-    _, err = s.Write([]byte(string(messageBytes) + string(rune(config.Delimiter))))
-    if err != nil {
-        log.LogMessagesError(fmt.Sprintf("Failed to send response: %v", err), err)
-    } else {
-        log.LogMessagesInfo(fmt.Sprintf("Sent subscription response: %s", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted]))
-    }
+	// Send response back through the SAME stream (SubmitMessageProtocol)
+	_, err = s.Write([]byte(string(messageBytes) + string(rune(config.Delimiter))))
+	if err != nil {
+		log.LogMessagesError(fmt.Sprintf("Failed to send response: %v", err), err)
+	} else {
+		log.LogMessagesInfo(fmt.Sprintf("Sent subscription response: %s", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted]))
+	}
 }
 
 // SendMessageToPeer sends a message to a specific peer using peer.ID (for already connected peers)
