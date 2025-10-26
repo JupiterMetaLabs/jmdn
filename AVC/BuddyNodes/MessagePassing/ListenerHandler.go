@@ -99,8 +99,30 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 		zap.String("topic", log.Messages_TOPIC),
 		zap.String("function", "ListenerHandler.handleSubmitVote"))
 
+	// Check if PubSubNode and ForListner are initialized
+	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
+	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
+
+	if pubSubNode == nil || pubSubNode.PubSub == nil {
+		log.LogMessagesError("PubSubNode not initialized - cannot process vote",
+			nil,
+			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("topic", log.Messages_TOPIC),
+			zap.String("function", "ListenerHandler.handleSubmitVote"))
+		return
+	}
+
+	if listenerNode == nil {
+		log.LogMessagesError("ForListner not initialized - cannot process vote",
+			nil,
+			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("topic", log.Messages_TOPIC),
+			zap.String("function", "ListenerHandler.handleSubmitVote"))
+		return
+	}
+
 	// Add vote to local CRDT Engine
-	if err := Structs.SubmitMessage(message, AVCStruct.NewGlobalVariables().Get_PubSubNode().PubSub, AVCStruct.NewGlobalVariables().Get_ForListner()); err != nil {
+	if err := Structs.SubmitMessage(message, pubSubNode.PubSub, listenerNode); err != nil {
 		log.LogMessagesError(fmt.Sprintf("Failed to add vote to local CRDT Engine: %v", err),
 			err,
 			zap.String("peer", s.Conn().RemotePeer().String()),
@@ -121,21 +143,30 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 		zap.String("topic", log.Messages_TOPIC),
 		zap.String("function", "ListenerHandler.handleAskForSubscription"))
 
+	// Check if ForListner is initialized
+	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
+	if listenerNode == nil || listenerNode.Host == nil {
+		log.LogMessagesError("ForListner not initialized - cannot process subscription request",
+			nil,
+			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("topic", log.Messages_TOPIC),
+			zap.String("function", "ListenerHandler.handleAskForSubscription"))
+		lh.sendSubscriptionResponse(s, false)
+		return
+	}
+
 	// Create GossipPubSub using Pubsub_Builder.go
 	gps := PubSubMessages.NewGossipPubSubBuilder(nil).
-		SetHost(AVCStruct.NewGlobalVariables().Get_ForListner().Host).
+		SetHost(listenerNode.Host).
 		SetProtocol(config.BuddyNodesMessageProtocol).
 		Build()
 
 	// Initialize PubSub BuddyNode if not already done
 	if AVCStruct.NewGlobalVariables().Get_PubSubNode() == nil {
-		listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
-		if listenerNode != nil && listenerNode.Host != nil {
-			// Create default Buddies instance
-			defaultBuddies := AVCStruct.NewBuddiesBuilder(nil)
-			buddy := NewBuddyNode(listenerNode.Host, defaultBuddies, nil, gps)
-			AVCStruct.NewGlobalVariables().Set_PubSubNode(buddy)
-		}
+		// Create default Buddies instance
+		defaultBuddies := AVCStruct.NewBuddiesBuilder(nil)
+		buddy := NewBuddyNode(listenerNode.Host, defaultBuddies, nil, gps)
+		AVCStruct.NewGlobalVariables().Set_PubSubNode(buddy)
 	}
 
 	// Subscribe to BuddyNodesMessageProtocol
