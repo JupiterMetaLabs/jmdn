@@ -188,7 +188,7 @@ func NewNode() (*config.Node, error) {
 	h.SetStreamHandler(config.BroadcastProtocol, messaging.HandleBroadcastStream)
 	h.SetStreamHandler(config.BlockPropagationProtocol, messaging.HandleBlockStream)
 	h.SetStreamHandler(config.BuddyNodesMessageProtocol, func(s network.Stream) {
-		MessagePassing.HandleBuddyNodeStream(s)
+		MessagePassing.HandleBuddyNodeStream(h, s)
 	})
 	go StartDiscovery(h)
 

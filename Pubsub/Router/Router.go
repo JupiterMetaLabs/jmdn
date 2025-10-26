@@ -22,11 +22,19 @@ func Router(message *AVCStruct.GossipMessage) error {
 
 	// Convert the message into Pubsub.GossipMessage
 	// Create service manager with dependencies
-	GossipNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
+	globalVars := AVCStruct.NewGlobalVariables()
+	if !globalVars.IsPubSubNodeInitialized() {
+		return fmt.Errorf("PubSub node not properly initialized - call Set_PubSubNode() with valid BuddyNode first")
+	}
+
+	GossipNode := globalVars.Get_PubSubNode()
+	if GossipNode == nil {
+		return fmt.Errorf("GossipNode is nil - buddy node not initialized")
+	}
 	PubSub := GossipNode.PubSub
 	serviceManager := NewServiceManager(PubSub, GossipNode)
-	fmt.Println("Router", message.Data.ACK.Stage)
-	fmt.Println("message", message)
+	fmt.Printf("Router: Processing message with stage %s from peer %s\n", message.Data.ACK.Stage, message.Sender)
+	fmt.Printf("Router: GossipNode PeerID: %s, PubSub Host: %s\n", GossipNode.PeerID, PubSub.Host.ID())
 
 	// Route to appropriate services based on the message ack type
 	switch message.Data.ACK.Stage {

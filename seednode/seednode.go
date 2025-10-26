@@ -122,6 +122,28 @@ func (c *Client) ListPeers(ctx context.Context, request *peerpb.PeerListRequest)
 	return c.client.ListPeers(ctx, request)
 }
 
+func (c *Client) ListWeightsofPeers() (map[string]float64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Get all peers from the seed node
+	peers, err := c.ListPeers(ctx, &peerpb.PeerListRequest{
+		Limit: 1000,
+		Status: peerpb.PeerStatus_PEER_STATUS_ACTIVE,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list peers: %w", err)
+	}
+	
+	// Create a map of peer IDs to weights
+	weights := make(map[string]float64)
+	for _, peer := range peers.Peers {
+		weights[peer.PeerId] = float64(peer.Weights)
+	}
+
+	return weights, nil
+}
+
 // GetPeer retrieves a peer record by peer ID
 func (c *Client) GetPeer(peerID string) (*peerpb.SignedPeerRecord, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

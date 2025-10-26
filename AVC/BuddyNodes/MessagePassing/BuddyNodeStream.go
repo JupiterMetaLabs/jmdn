@@ -6,10 +6,12 @@ import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	Router "gossipnode/Pubsub/Router"
+
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"go.uber.org/zap"
 )
@@ -20,8 +22,8 @@ type StructBuddyNode struct {
 }
 
 // Abstraction function to start the handleBuddynode message stream
-func HandleBuddyNodeStream(s network.Stream) {
-	NewStructBuddyNode(AVCStruct.PubSub_BuddyNode).HandleBuddyNodesMessageStream(s)
+func HandleBuddyNodeStream(host host.Host, s network.Stream) {
+	NewStructBuddyNode(AVCStruct.PubSub_BuddyNode).HandleBuddyNodesMessageStream(host, s)
 }
 
 func NewStructBuddyNode(buddy *AVCStruct.BuddyNode) *StructBuddyNode {
@@ -36,9 +38,8 @@ func NewStructBuddyNode(buddy *AVCStruct.BuddyNode) *StructBuddyNode {
 }
 
 // HandleBuddyNodesMessageStream handles incoming messages on the buddy nodes protocol
-func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.Stream) {
+func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(host host.Host, s network.Stream) {
 	defer s.Close()
-
 	reader := bufio.NewReader(s)
 	msg, err := reader.ReadString(config.Delimiter)
 	if err != nil {
