@@ -1231,37 +1231,35 @@ func GetMerkleRoot(PooledConnection *config.PooledConnection) ([]byte, error) {
 
 // SafeCreate stores a value with the given key and verifies the operation (UNCHANGED - but can optionally use connection pool)
 func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
+	fmt.Printf("=== DEBUG: SafeCreate called with key: %s ===\n", key)
+	
 	var err error
 	var PooledConnection *config.PooledConnection
 	var shouldReturnConnection bool = false
-	// Try to use connection pool if available, otherwise fall back to traditional approach
+	
+	// If ic is nil, we need to determine which database to use based on context
+	// For now, we'll default to accounts database since this is called from UpdateAccountBalance
 	if ic == nil {
-		// If Connection is nil, use the global connection pool
-		if ic.Database == config.AccountsDBName {
-			PooledConnection, err = GetAccountsConnection()
-			if err != nil {
-				return err
-			}
-			shouldReturnConnection = true
-		} else if ic.Database == config.DBName {
-			PooledConnection, err = GetMainDBConnection()
-			if err != nil {
-				return err
-			}
-			shouldReturnConnection = true
-		} else {
-			return errors.New("Invalid Database Name")
+		fmt.Println("DEBUG: ic is nil, getting accounts connection")
+		PooledConnection, err = GetAccountsConnection()
+		if err != nil {
+			fmt.Printf("DEBUG: Failed to get accounts connection: %v\n", err)
+			return err
 		}
-		ic = PooledConnection.Client
 		shouldReturnConnection = true
+		ic = PooledConnection.Client
+		fmt.Println("DEBUG: Successfully got accounts connection")
+		
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
-			zap.String(logging.Connection_database, config.DBName),
+			zap.String(logging.Connection_database, config.AccountsDBName),
 			zap.Time(logging.Created_at, time.Now()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.SafeCreate"),
 		)
+	} else {
+		fmt.Println("DEBUG: Using provided ic client")
 	}
 
 	// Check for empty key and nil value
@@ -1291,21 +1289,28 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 	if shouldReturnConnection {
 		defer func() {
 			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
-				zap.String(logging.Connection_database, config.DBName),
+				zap.String(logging.Connection_database, config.AccountsDBName),
 				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.SafeCreate"),
 			)
-			PutMainDBConnection(PooledConnection)
+			PutAccountsConnection(PooledConnection)
 		}()
 	}
 
 	// Traditional approach with single connection (no withRetry for pooled connections)
 	// Convert value to bytes
+	fmt.Println("DEBUG: Converting value to bytes")
 	valueBytes, err := toBytes(value)
 	if err != nil {
+		fmt.Printf("DEBUG: Failed to convert value to bytes: %v\n", err)
 		return err
 	}
+	fmt.Printf("DEBUG: Successfully converted value to bytes (length: %d)\n", len(valueBytes))
 
-	ic.Logger.Logger.Info("Creating verified key: %s",
+	ic.Logger.Logger.Info("Creating verified key",
 		zap.String("key", key),
 		zap.Time(logging.Created_at, time.Now()),
 		zap.String(logging.Log_file, LOG_FILE),
@@ -1315,11 +1320,13 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 	)
 
 	// Store the key-value pair with verification
+	fmt.Println("DEBUG: Creating context and calling VerifiedSet")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	verifiedTx, err := ic.Client.VerifiedSet(ctx, []byte(key), valueBytes)
 	if err != nil {
+		fmt.Printf("DEBUG: VerifiedSet failed: %v\n", err)
 		ic.Logger.Logger.Error("Failed to create verified key",
 			zap.Error(err),
 			zap.String("key", key),
@@ -1331,8 +1338,9 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 		)
 		return err
 	}
+	fmt.Printf("DEBUG: VerifiedSet completed successfully - TX ID: %d\n", verifiedTx.Id)
 
-	ic.Logger.Logger.Info("Transaction verified: tx=%d, verified=%v",
+	ic.Logger.Logger.Info("Transaction verified",
 		zap.Uint64("tx", verifiedTx.Id),
 		zap.Time(logging.Created_at, time.Now()),
 		zap.String(logging.Log_file, LOG_FILE),
@@ -1340,6 +1348,7 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 		zap.String(logging.Loki_url, LOKI_URL),
 		zap.String(logging.Function, "DB_OPs.SafeCreate"),
 	)
+	fmt.Printf("=== DEBUG: SafeCreate completed successfully for key: %s ===\n", key)
 	return nil
 }
 

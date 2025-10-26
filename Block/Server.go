@@ -18,6 +18,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/logging"
 	"gossipnode/messaging"
+	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -156,7 +157,7 @@ var globalChainID int
 
 // SetHostInstance sets the global host instance for transaction propagation
 func SetHostInstance(h host.Host) {
-	globalHost = h
+	globalHost = h // Uncommented - host is needed for consensus
 }
 
 func Startserver(port int, h host.Host, chainID int) {
@@ -336,6 +337,134 @@ func processZKBlock(c *gin.Context) {
 		"block_hash":   block.BlockHash.Hex(),
 		"block_number": block.BlockNumber,
 	})
+}
+
+func processZKBlockNoConsensus(c *gin.Context) {
+	fmt.Println("=== DEBUG: processZKBlock API called ===")
+
+	// Parse the block data from the request
+	var block config.ZKBlock
+	if err := c.ShouldBindJSON(&block); err != nil {
+		fmt.Printf("DEBUG: Failed to parse block data: %v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid block data: %v", err)})
+		return
+	}
+	fmt.Printf("DEBUG: Successfully parsed block data - Block #%d, Hash: %s, Txns: %d\n",
+		block.BlockNumber, block.BlockHash.Hex(), len(block.Transactions))
+
+	// Validate block data
+	if len(block.Transactions) == 0 {
+		fmt.Println("DEBUG: Block contains no transactions")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "block contains no transactions"})
+		return
+	}
+
+	if block.Status != "verified" {
+		fmt.Printf("DEBUG: Block status is '%s', not 'verified'\n", block.Status)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "block has not been verified by ZKVM"})
+		return
+	}
+	fmt.Println("DEBUG: Block validation passed")
+
+	// Skip consensus for testing - directly process the block
+	txLogger.Info().
+		Uint64("block_number", block.BlockNumber).
+		Str("block_hash", block.BlockHash.Hex()).
+		Int("tx_count", len(block.Transactions)).
+		Msg("Processing block directly (consensus bypassed for testing)")
+
+	fmt.Println("DEBUG: Getting database connections...")
+	// Create DB clients for processing
+	mainDBClient, err := DB_OPs.GetMainDBConnection()
+	if err != nil {
+		fmt.Printf("DEBUG: Failed to get main DB connection: %v\n", err)
+		txLogger.Error().Err(err).Msg("Failed to get main DB connection")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get main DB connection"})
+		return
+	}
+	fmt.Println("DEBUG: Successfully got main DB connection")
+	defer func() {
+		fmt.Println("DEBUG: Returning main DB connection to pool")
+		DB_OPs.PutMainDBConnection(mainDBClient)
+	}()
+
+	accountsClient, err := DB_OPs.GetAccountsConnection()
+	if err != nil {
+		fmt.Printf("DEBUG: Failed to get accounts DB connection: %v\n", err)
+		txLogger.Error().Err(err).Msg("Failed to get accounts DB connection")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get accounts DB connection"})
+		return
+	}
+	fmt.Println("DEBUG: Successfully got accounts DB connection")
+	defer func() {
+		fmt.Println("DEBUG: Returning accounts DB connection to pool")
+		DB_OPs.PutAccountsConnection(accountsClient)
+	}()
+
+	fmt.Println("DEBUG: Starting transaction processing...")
+	// Process all transactions in the block atomically with rollback capability
+	if err := BlockProcessing.ProcessBlockTransactions(&block, accountsClient); err != nil {
+		fmt.Printf("DEBUG: Block processing failed: %v\n", err)
+		txLogger.Error().
+			Err(err).
+			Str("block_hash", block.BlockHash.Hex()).
+			Msg("Block processing failed")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("failed to process block transactions: %v", err),
+		})
+		return
+	}
+	fmt.Println("DEBUG: All transactions processed successfully")
+
+	txLogger.Info().
+		Str("block_hash", block.BlockHash.Hex()).
+		Msg("All transactions processed successfully - storing block")
+
+	fmt.Println("DEBUG: Storing block in main DB...")
+	// Store the validated and processed block in main DB
+	if err := DB_OPs.StoreZKBlock(mainDBClient, &block); err != nil {
+		fmt.Printf("DEBUG: Failed to store block: %v\n", err)
+		txLogger.Error().
+			Err(err).
+			Str("block_hash", block.BlockHash.Hex()).
+			Msg("Failed to store block in database")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("failed to store block: %v", err),
+		})
+		return
+	}
+	fmt.Println("DEBUG: Block stored successfully")
+
+	// Log transactions
+	fmt.Println("DEBUG: Logging transaction details...")
+	for i, tx := range block.Transactions {
+		fmt.Printf("DEBUG: Transaction %d - Hash: %s, From: %s, To: %s, Value: %s\n",
+			i+1, tx.Hash.Hex(), tx.From.Hex(), tx.To.Hex(), tx.Value.String())
+		LogTransaction(
+			tx.Hash.Hex(),
+			tx.From.Hex(),
+			tx.To.Hex(),
+			tx.Value.String(),
+			fmt.Sprintf("%d", tx.Type),
+		)
+	}
+
+	txLogger.Info().
+		Uint64("block_number", block.BlockNumber).
+		Str("block_hash", block.BlockHash.Hex()).
+		Int("tx_count", len(block.Transactions)).
+		Msg("Block processed and stored successfully")
+
+	fmt.Println("DEBUG: Returning success response")
+	// Return success
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"message": fmt.Sprintf("Block %d with %d transactions processed and stored successfully (consensus bypassed)",
+			block.BlockNumber, len(block.Transactions)),
+		"block_hash":   block.BlockHash.Hex(),
+		"block_number": block.BlockNumber,
+	})
+	fmt.Println("=== DEBUG: processZKBlock API completed successfully ===")
 }
 
 // getBlockByNumber retrieves a block by its number

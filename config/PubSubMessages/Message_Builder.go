@@ -35,8 +35,6 @@ func NewMessageBuilder(message *Message) *Message {
 	return &Message{}
 }
 
-
-
 // < -- Gossip Message Builder Pattern -- >
 func (gossipmessage *GossipMessage) SetID(id string) *GossipMessage {
 	gossipmessage.ID = id
@@ -102,8 +100,6 @@ func (gossipmessage *GossipMessage) GetMetadata() map[string]string {
 	return gossipmessage.Metadata
 }
 
-
-
 // < -- Message Builder Pattern -- >
 func (msg *Message) SetSender(sender peer.ID) *Message {
 	msg.Sender = sender
@@ -138,6 +134,9 @@ func (msg *Message) SetACK(ack *ACK) *Message {
 }
 
 func (msg *Message) GetACK() *ACK {
+	if msg == nil {
+		return nil
+	}
 	return msg.ACK
 }
 
@@ -153,10 +152,8 @@ func (msg *Message) ToString() string {
 	return string(data)
 }
 
-
-
 // DeferenceMessage implements the Interface_Message interface
-func(msg *Message) DeferenceMessage(message string) *Message {
+func (msg *Message) DeferenceMessage(message string) *Message {
 	message = strings.TrimSuffix(message, string(rune(config.Delimiter)))
 	if err := json.Unmarshal([]byte(message), &msg); err != nil {
 		return nil

@@ -28,6 +28,14 @@ func (sgps *StructGossipPubSub) GetGossipPubSub() *PubSubMessages.GossipPubSub {
 
 // NewGossipPubSub creates a new gossip pub/sub instance
 func NewGossipPubSub(host host.Host, Protocol protocol.ID) (*StructGossipPubSub, error) {
+	// Validate input parameters
+	if host == nil {
+		return nil, fmt.Errorf("host cannot be nil")
+	}
+	if Protocol == "" {
+		return nil, fmt.Errorf("protocol cannot be empty")
+	}
+
 	GossipPubSubInput := PubSubMessages.NewGossipPubSubBuilder(nil).SetHost(host).SetProtocol(Protocol)
 	gps := &StructGossipPubSub{
 		GossipPubSub: GossipPubSubInput.Build(),
