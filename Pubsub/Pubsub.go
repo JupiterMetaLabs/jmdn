@@ -133,14 +133,18 @@ func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 	gps.MessageCache[gossipMsg.ID] = true
 	gps.Mutex.Unlock()
 
-	// Check TTL
-	if gossipMsg.TTL <= 0 {
+	// Skip TTL checks for direct messages (TTL = 0)
+	// TTL is only needed for multi-hop gossip propagation
+	if gossipMsg.TTL == 0 {
+		log.Printf("Processing direct message (no TTL needed): %s", gossipMsg.ID)
+	} else if gossipMsg.TTL < 0 {
 		log.Printf("Gossip message TTL expired: %s", gossipMsg.ID)
 		return
+	} else {
+		// Only decrement TTL for actual gossip messages
+		gossipMsg.TTL--
+		log.Printf("Forwarding gossip message (TTL=%d): %s", gossipMsg.TTL, gossipMsg.ID)
 	}
-
-	// Decrement TTL for forwarding
-	gossipMsg.TTL--
 
 	log.Printf("Received gossip message from %s on topic %s: %s", gossipMsg.Sender, gossipMsg.Topic, gossipMsg.ID)
 	// <-- Write the logic to check the processing of the message based on the message type --> TODO
