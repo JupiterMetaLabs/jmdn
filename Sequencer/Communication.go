@@ -2,6 +2,7 @@ package Sequencer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Sequencer/Router"
@@ -255,8 +256,26 @@ func askPeersForSubscription(gps *PubSubMessages.GossipPubSub, topic string, pee
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
+			// Create proper message with ACK for subscription request
+			ackMessage := PubSubMessages.NewACKBuilder().True_ACK_Message(buddy.PeerID, config.Type_AskForSubscription)
+			message := PubSubMessages.NewMessageBuilder(nil).
+				SetSender(buddy.PeerID).
+				SetMessage("Requesting subscription to consensus channel").
+				SetTimestamp(time.Now().Unix()).
+				SetACK(ackMessage)
+
+			// Marshal the message to JSON
+			messageBytes, err := json.Marshal(message)
+			if err != nil {
+				log.Printf("Failed to marshal subscription request message: %v", err)
+				mu.Lock()
+				accepted[peerID.String()] = false
+				mu.Unlock()
+				return
+			}
+
 			// Send subscription request
-			if err := MessagePassing.NewStructBuddyNode(buddy).SendMessageToPeer(peerID, config.Type_AskForSubscription); err != nil {
+			if err := MessagePassing.NewStructBuddyNode(buddy).SendMessageToPeer(peerID, string(messageBytes)); err != nil {
 				log.Printf("Failed to send subscription request to %s %s: %v", peerType, peerID, err)
 				mu.Lock()
 				accepted[peerID.String()] = false

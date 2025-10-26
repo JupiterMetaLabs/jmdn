@@ -43,6 +43,15 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 
 	log.LogMessagesInfo(fmt.Sprintf("Received submit message from %s: %s", s.Conn().RemotePeer(), msg), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 
+	// Check if ACK is not nil before accessing it
+	if message.GetACK() == nil {
+		log.LogMessagesError("Received message with nil ACK", nil,
+			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("topic", log.Messages_TOPIC),
+			zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
+		return
+	}
+
 	switch message.GetACK().GetStage() {
 	case config.Type_SubmitVote:
 		log.LogMessagesInfo(fmt.Sprintf("Received submit vote from %s: %s", s.Conn().RemotePeer(), message.Message), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
