@@ -416,7 +416,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	)
 
 	// Check if sender exists before attempting deduction
-	senderExists, _ := accountExists(tx.From)
+	senderExists, _ := accountExists(tx.From, accountsClient)
 	if !senderExists {
 		accountsClient.Client.Logger.Logger.Error("Sender DID does not exist",
 			zap.Time(logging.Created_at, time.Now()),
@@ -433,7 +433,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	fmt.Println("Sender exists: ", senderExists) // Debugging
 
 	// Check if recipient exists (for better error reporting)
-	recipientExists, _ := accountExists(tx.To)
+	recipientExists, _ := accountExists(tx.To, accountsClient)
 	if !recipientExists && !CreateMissingAccounts {
 		accountsClient.Client.Logger.Logger.Error("Recipient DID does not exist",
 			zap.Time(logging.Created_at, time.Now()),
@@ -471,7 +471,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// 2. Add amount to recipient
 	if err := addToRecipient(*tx.To, parsedTx.ValueBig.String(), accountsClient); err != nil {
 		// Rollback sender deduction on failure
-		if rollbackErr := DB_OPs.UpdateAccountBalance(nil, *tx.From, originalBalances[*tx.From]); rollbackErr != nil {
+		if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, *tx.From, originalBalances[*tx.From]); rollbackErr != nil {
 			accountsClient.Client.Logger.Logger.Error("Failed to rollback sender balance",
 				zap.Time(logging.Created_at, time.Now()),
 				zap.String(logging.Log_file, LOG_FILE),
@@ -506,7 +506,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		// Rollback previous operations
 		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
 		for _, accounts := range rollbackAccounts {
-			if rollbackErr := DB_OPs.UpdateAccountBalance(nil, accounts, originalBalances[accounts]); rollbackErr != nil {
+			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
 				accountsClient.Client.Logger.Logger.Error("Failed to rollback balance",
 					zap.Time(logging.Created_at, time.Now()),
 					zap.String(logging.Log_file, LOG_FILE),
@@ -541,7 +541,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		// Rollback previous operations
 		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
 		for _, accounts := range rollbackAccounts {
-			if rollbackErr := DB_OPs.UpdateAccountBalance(nil, accounts, originalBalances[accounts]); rollbackErr != nil {
+			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
 				accountsClient.Client.Logger.Logger.Error("Failed to rollback balance",
 					zap.Time(logging.Created_at, time.Now()),
 					zap.String(logging.Log_file, LOG_FILE),
@@ -601,9 +601,9 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 }
 
 // accountExists checks if an account exists in the database
-func accountExists(account *common.Address) (bool, error) {
+func accountExists(account *common.Address, accountsClient *config.PooledConnection) (bool, error) {
 	fmt.Println("Checking if account exists: ", account.Hex()) // Debugging
-	_, err := DB_OPs.GetAccount(nil, *account)
+	_, err := DB_OPs.GetAccount(accountsClient, *account)
 	if err != nil {
 		if err == DB_OPs.ErrNotFound || strings.Contains(err.Error(), "key not found") {
 			fmt.Println("Account does not exist: ", account.Hex()) // Debugging
@@ -701,8 +701,8 @@ func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error
 
 // deductFromSender deducts an amount from a sender's DID account
 func deductFromSender(fromDID common.Address, amount string, accountsClient *config.PooledConnection) error {
-	// Get the current DID document
-	didDoc, err := DB_OPs.GetAccount(nil, fromDID)
+	// Get the current DID document using the provided accounts client
+	didDoc, err := DB_OPs.GetAccount(accountsClient, fromDID)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve sender DID %s: %w", fromDID, err)
 	}
@@ -728,8 +728,8 @@ func deductFromSender(fromDID common.Address, amount string, accountsClient *con
 	// Calculate new balance
 	newBalance := new(big.Int).Sub(currentBalance, deductAmount)
 
-	// Update the balance in the database
-	if err := DB_OPs.UpdateAccountBalance(nil, fromDID, newBalance.String()); err != nil {
+	// Update the balance in the database using the provided accounts client
+	if err := DB_OPs.UpdateAccountBalance(accountsClient, fromDID, newBalance.String()); err != nil {
 		return fmt.Errorf("failed to update sender balance: %w", err)
 	}
 
@@ -748,8 +748,8 @@ func deductFromSender(fromDID common.Address, amount string, accountsClient *con
 
 // addToRecipient adds an amount to a recipient's DID account
 func addToRecipient(ToAddress common.Address, amount string, accountsClient *config.PooledConnection) error {
-	// Get the current DID document
-	didDoc, err := DB_OPs.GetAccount(nil, ToAddress)
+	// Get the current DID document using the provided accounts client
+	didDoc, err := DB_OPs.GetAccount(accountsClient, ToAddress)
 	if err != nil {
 		// If DID doesn't exist,
 		return fmt.Errorf("failed to retrieve recipient DID %s: %w", ToAddress, err)
@@ -770,8 +770,8 @@ func addToRecipient(ToAddress common.Address, amount string, accountsClient *con
 	// Calculate new balance
 	newBalance := new(big.Int).Add(currentBalance, addAmount)
 
-	// Update the balance in the database
-	if err := DB_OPs.UpdateAccountBalance(nil, ToAddress, newBalance.String()); err != nil {
+	// Update the balance in the database using the provided accounts client
+	if err := DB_OPs.UpdateAccountBalance(accountsClient, ToAddress, newBalance.String()); err != nil {
 		return fmt.Errorf("failed to update recipient balance: %w", err)
 	}
 
