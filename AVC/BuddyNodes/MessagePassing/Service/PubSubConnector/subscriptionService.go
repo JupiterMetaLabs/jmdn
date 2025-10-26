@@ -600,7 +600,7 @@ func (s *SubscriptionService) handleBFTCommitVote(msg *AVCStruct.GossipMessage) 
 }
 
 // SetMyBuddyID sets the buddy ID
-func (s *SubscriptionService) SetMyBuddyIDgiv(id string) {
+func (s *SubscriptionService) SetMyBuddyID(id string) {
 	s.myBuddyID = id
 }
 
