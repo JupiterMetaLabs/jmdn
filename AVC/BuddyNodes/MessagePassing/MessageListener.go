@@ -43,11 +43,22 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 
 	log.LogMessagesInfo(fmt.Sprintf("Received submit message from %s: %s", s.Conn().RemotePeer(), msg), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 
+	// Check if message was successfully parsed
+	if message == nil {
+		log.LogMessagesError("Failed to parse message - malformed JSON or invalid structure", nil,
+			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("topic", log.Messages_TOPIC),
+			zap.String("raw_message", msg),
+			zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
+		return
+	}
+
 	// Check if ACK is not nil before accessing it
 	if message.GetACK() == nil {
 		log.LogMessagesError("Received message with nil ACK", nil,
 			zap.String("peer", s.Conn().RemotePeer().String()),
 			zap.String("topic", log.Messages_TOPIC),
+			zap.String("raw_message", msg),
 			zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 		return
 	}

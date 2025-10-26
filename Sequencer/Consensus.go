@@ -77,13 +77,23 @@ func (consensus *Consensus) AddBuddyNodesToPeerList(zkBlock *config.ZKBlock, bud
 	return ZKBlock.GetConsensusMessage(), nil
 }
 
-func (Consensus *Consensus) AddBuddyNodesTemporarily(buddies []PubSubMessages.Buddy_PeerMultiaddr){
+func (Consensus *Consensus) AddBuddyNodesTemporarily(buddies []PubSubMessages.Buddy_PeerMultiaddr) {
 	Cache.AddPeersTemporary(buddies)
 }
 
 func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
-	// Start the Loggers in the Streaming.go
+	// Validate consensus configuration
+	if consensus.Host == nil {
+		return fmt.Errorf("consensus host is nil - call SetHostInstance() first")
+	}
+	if consensus.PeerList.MainPeers == nil {
+		return fmt.Errorf("main peers list is nil")
+	}
+	if consensus.PeerList.BackupPeers == nil {
+		return fmt.Errorf("backup peers list is nil")
+	}
 
+	// Start the Loggers in the Streaming.go
 
 	// Attach the metadata to the block
 	// 1. Pull the buddies from the NodeSelectionRouter
@@ -125,7 +135,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	// 3. Add the buddies to the temporary cache
 	consensus.AddBuddyNodesTemporarily(buddies)
-	
+
 	// First create the pubsub channel
 	var err error
 	consensus.gossipnode, err = Pubsub.NewGossipPubSub(consensus.Host, config.PubSub_ConsensusChannel)
@@ -157,7 +167,6 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Initialize listener node for vote collection
 	consensus.ListenerNode = MessagePassing.NewListenerNode(consensus.Host, consensus.ResponseHandler)
 	log.Printf("Listener node initialized for vote collection on protocol: %s", config.SubmitMessageProtocol)
-
 
 	// After creating the channel, ask peers to subscribe to the channel
 	if err := consensus.RequestSubscriptionPermission(); err != nil {
