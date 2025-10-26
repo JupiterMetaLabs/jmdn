@@ -65,13 +65,18 @@ func cleanupTransactionLock(txHash string) {
 // ProcessBlockTransactions processes all transactions in a block atomically
 // If any transaction fails, all are rolled back
 func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.PooledConnection) error {
+	fmt.Printf("=== DEBUG: ProcessBlockTransactions called for block %d ===\n", block.BlockNumber)
+
 	// Check if block was already processed
 	blockKey := fmt.Sprintf("block_processed:%s", block.BlockHash.Hex())
+	fmt.Printf("DEBUG: Checking if block already processed with key: %s\n", blockKey)
 	processed, err := DB_OPs.Exists(accountsClient, blockKey)
 	if err == nil && processed {
+		fmt.Printf("DEBUG: Block %s already processed, skipping\n", block.BlockHash.Hex())
 		log.Info().Str("block_hash", block.BlockHash.Hex()).Msg("Block already processed, skipping")
 		return nil
 	}
+	fmt.Printf("DEBUG: Block not previously processed, continuing...\n")
 
 	ClearProcessedTransactions()
 
@@ -100,12 +105,16 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 
 	// Sort transactions by nonce if available to ensure proper ordering
 	sortedTxs := sortTransactionsByNonce(block.Transactions)
+	fmt.Printf("DEBUG: Found %d transactions to process\n", len(sortedTxs))
 
 	// Process all transactions
-	for _, tx := range sortedTxs {
+	for i, tx := range sortedTxs {
+		fmt.Printf("DEBUG: Processing transaction %d/%d - Hash: %s\n", i+1, len(sortedTxs), tx.Hash.Hex())
+
 		// Check if this transaction was already processed within this block
 		processedTxsMutex.Lock()
 		if processedTxs[tx.Hash.Hex()] {
+			fmt.Printf("DEBUG: Transaction %s already processed in this block, skipping\n", tx.Hash.Hex())
 			log.Warn().Str("tx_hash", tx.Hash.Hex()).Msg("Duplicate transaction in block, skipping")
 			processedTxsMutex.Unlock()
 			continue
@@ -115,8 +124,10 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 
 		// Check if this transaction was already processed in a previous block
 		txKey := fmt.Sprintf("tx_processed:%s", tx.Hash)
+		fmt.Printf("DEBUG: Checking if transaction already processed with key: %s\n", txKey)
 		alreadyProcessed, err := DB_OPs.Exists(accountsClient, txKey)
 		if err == nil && alreadyProcessed {
+			fmt.Printf("DEBUG: Transaction %s already processed in previous block, skipping\n", tx.Hash.Hex())
 			accountsClient.Client.Logger.Logger.Warn("Transaction already processed in previous block, skipping",
 				zap.Time(logging.Created_at, time.Now()),
 				zap.String(logging.Log_file, LOG_FILE),
@@ -129,8 +140,10 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 		}
 
 		// Process the transaction
+		fmt.Printf("DEBUG: Calling processTransaction for tx %s\n", tx.Hash.Hex())
 		Process_err := processTransaction(tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient)
 		if Process_err != nil {
+			fmt.Printf("DEBUG: processTransaction failed for tx %s: %v\n", tx.Hash.Hex(), Process_err)
 			// If any transaction fails, roll back all affected DIDs
 			accountsClient.Client.Logger.Logger.Error("Transaction failed, rolling back block",
 				zap.Time(logging.Created_at, time.Now()),
@@ -225,7 +238,7 @@ func sortTransactionsByNonce(txs []config.Transaction) []config.Transaction {
 func cleanupProcessingMarkers(accountsClient *config.PooledConnection, txHash string) {
 	processingKey := fmt.Sprintf("tx_processing:%s", txHash)
 	if exists, _ := DB_OPs.Exists(accountsClient, processingKey); exists {
-		if err := DB_OPs.Update(nil, processingKey, -1); err != nil {
+		if err := DB_OPs.Update(accountsClient, processingKey, -1); err != nil {
 			accountsClient.Client.Logger.Logger.Warn("Failed to clean up processing marker",
 				zap.Time(logging.Created_at, time.Now()),
 				zap.String(logging.Log_file, LOG_FILE),
@@ -255,19 +268,27 @@ func rollbackBalances(originalBalances map[common.Address]string, accountsClient
 
 // ProcessTransaction handles a single transaction's balance updates
 func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection) error {
+	fmt.Printf("=== DEBUG: processTransaction called for tx %s ===\n", tx.Hash.Hex())
+	fmt.Printf("DEBUG: From: %s, To: %s, Value: %s\n", tx.From.Hex(), tx.To.Hex(), tx.Value.String())
+
 	// Enhanced logging at start
 	// First check the connection
 	if accountsClient == nil {
+		fmt.Println("DEBUG: accountsClient is nil!")
 		log.Error().Msg("Function: messaging.processTransaction - accountsClient is nil")
 		return fmt.Errorf("accountsClient is nil")
 	}
+	fmt.Println("DEBUG: accountsClient is not nil")
 
 	// Confirm the DB connection
+	fmt.Println("DEBUG: Ensuring DB connection...")
 	err := DB_OPs.EnsureDBConnection(accountsClient)
 	if err != nil {
+		fmt.Printf("DEBUG: Failed to establish database connection: %v\n", err)
 		log.Error().Err(err).Msg("Failed to establish database connection")
 		return fmt.Errorf("failed to establish database connection: %w", err)
 	}
+	fmt.Println("DEBUG: Database connection check successful")
 	accountsClient.Client.Logger.Logger.Info("Database connection check successful",
 		zap.Time(logging.Created_at, time.Now()),
 		zap.String(logging.Log_file, LOG_FILE),
@@ -391,8 +412,8 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	gasFeeToDeduct := new(big.Int).Mul(gasLimit, parsedTx.EffectiveGasFee)
 	gasFeeToDeduct = new(big.Int).Div(gasFeeToDeduct, big.NewInt(1000000000000000000))
 
-	// Transaction value will be in Wei
-	parsedTx.ValueBig = new(big.Int).Div(parsedTx.ValueBig, big.NewInt(1000000000000000000))
+	// Transaction value should remain in Wei for balance calculations
+	// parsedTx.ValueBig is already in Wei, no conversion needed
 
 	// Calculate total amount to deduct from sender (amount + gas fee)
 	totalDeduction := new(big.Int).Add(parsedTx.ValueBig, gasFeeToDeduct)
@@ -416,7 +437,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	)
 
 	// Check if sender exists before attempting deduction
-	senderExists, _ := accountExists(tx.From)
+	senderExists, _ := accountExists(tx.From, accountsClient)
 	if !senderExists {
 		accountsClient.Client.Logger.Logger.Error("Sender DID does not exist",
 			zap.Time(logging.Created_at, time.Now()),
@@ -433,7 +454,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	fmt.Println("Sender exists: ", senderExists) // Debugging
 
 	// Check if recipient exists (for better error reporting)
-	recipientExists, _ := accountExists(tx.To)
+	recipientExists, _ := accountExists(tx.To, accountsClient)
 	if !recipientExists && !CreateMissingAccounts {
 		accountsClient.Client.Logger.Logger.Error("Recipient DID does not exist",
 			zap.Time(logging.Created_at, time.Now()),
@@ -471,7 +492,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// 2. Add amount to recipient
 	if err := addToRecipient(*tx.To, parsedTx.ValueBig.String(), accountsClient); err != nil {
 		// Rollback sender deduction on failure
-		if rollbackErr := DB_OPs.UpdateAccountBalance(nil, *tx.From, originalBalances[*tx.From]); rollbackErr != nil {
+		if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, *tx.From, originalBalances[*tx.From]); rollbackErr != nil {
 			accountsClient.Client.Logger.Logger.Error("Failed to rollback sender balance",
 				zap.Time(logging.Created_at, time.Now()),
 				zap.String(logging.Log_file, LOG_FILE),
@@ -506,7 +527,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		// Rollback previous operations
 		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
 		for _, accounts := range rollbackAccounts {
-			if rollbackErr := DB_OPs.UpdateAccountBalance(nil, accounts, originalBalances[accounts]); rollbackErr != nil {
+			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
 				accountsClient.Client.Logger.Logger.Error("Failed to rollback balance",
 					zap.Time(logging.Created_at, time.Now()),
 					zap.String(logging.Log_file, LOG_FILE),
@@ -541,7 +562,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		// Rollback previous operations
 		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
 		for _, accounts := range rollbackAccounts {
-			if rollbackErr := DB_OPs.UpdateAccountBalance(nil, accounts, originalBalances[accounts]); rollbackErr != nil {
+			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
 				accountsClient.Client.Logger.Logger.Error("Failed to rollback balance",
 					zap.Time(logging.Created_at, time.Now()),
 					zap.String(logging.Log_file, LOG_FILE),
@@ -573,7 +594,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	fmt.Println(">>>>>> Added amount to ZKVM:", halfGasFee.String(), "with address", zkvmAddr.Hex())
 
 	// Mark transaction as fully processed - this is the key that prevents double processing
-	if err := DB_OPs.Create(nil, txKey, time.Now().Unix()); err != nil {
+	if err := DB_OPs.Create(accountsClient, txKey, time.Now().Unix()); err != nil {
 		accountsClient.Client.Logger.Logger.Error("Failed to mark transaction as processed",
 			zap.Time(logging.Created_at, time.Now()),
 			zap.String(logging.Log_file, LOG_FILE),
@@ -601,9 +622,9 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 }
 
 // accountExists checks if an account exists in the database
-func accountExists(account *common.Address) (bool, error) {
+func accountExists(account *common.Address, accountsClient *config.PooledConnection) (bool, error) {
 	fmt.Println("Checking if account exists: ", account.Hex()) // Debugging
-	_, err := DB_OPs.GetAccount(nil, *account)
+	_, err := DB_OPs.GetAccount(accountsClient, *account)
 	if err != nil {
 		if err == DB_OPs.ErrNotFound || strings.Contains(err.Error(), "key not found") {
 			fmt.Println("Account does not exist: ", account.Hex()) // Debugging
@@ -701,8 +722,8 @@ func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error
 
 // deductFromSender deducts an amount from a sender's DID account
 func deductFromSender(fromDID common.Address, amount string, accountsClient *config.PooledConnection) error {
-	// Get the current DID document
-	didDoc, err := DB_OPs.GetAccount(nil, fromDID)
+	// Get the current DID document using the provided accounts client
+	didDoc, err := DB_OPs.GetAccount(accountsClient, fromDID)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve sender DID %s: %w", fromDID, err)
 	}
@@ -728,8 +749,8 @@ func deductFromSender(fromDID common.Address, amount string, accountsClient *con
 	// Calculate new balance
 	newBalance := new(big.Int).Sub(currentBalance, deductAmount)
 
-	// Update the balance in the database
-	if err := DB_OPs.UpdateAccountBalance(nil, fromDID, newBalance.String()); err != nil {
+	// Update the balance in the database using the provided accounts client
+	if err := DB_OPs.UpdateAccountBalance(accountsClient, fromDID, newBalance.String()); err != nil {
 		return fmt.Errorf("failed to update sender balance: %w", err)
 	}
 
@@ -748,8 +769,8 @@ func deductFromSender(fromDID common.Address, amount string, accountsClient *con
 
 // addToRecipient adds an amount to a recipient's DID account
 func addToRecipient(ToAddress common.Address, amount string, accountsClient *config.PooledConnection) error {
-	// Get the current DID document
-	didDoc, err := DB_OPs.GetAccount(nil, ToAddress)
+	// Get the current DID document using the provided accounts client
+	didDoc, err := DB_OPs.GetAccount(accountsClient, ToAddress)
 	if err != nil {
 		// If DID doesn't exist,
 		return fmt.Errorf("failed to retrieve recipient DID %s: %w", ToAddress, err)
@@ -770,8 +791,8 @@ func addToRecipient(ToAddress common.Address, amount string, accountsClient *con
 	// Calculate new balance
 	newBalance := new(big.Int).Add(currentBalance, addAmount)
 
-	// Update the balance in the database
-	if err := DB_OPs.UpdateAccountBalance(nil, ToAddress, newBalance.String()); err != nil {
+	// Update the balance in the database using the provided accounts client
+	if err := DB_OPs.UpdateAccountBalance(accountsClient, ToAddress, newBalance.String()); err != nil {
 		return fmt.Errorf("failed to update recipient balance: %w", err)
 	}
 
