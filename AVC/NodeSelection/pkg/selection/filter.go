@@ -47,7 +47,7 @@ func FilterEligible(myNodeID string, nodes []Node, config FilterConfig) []Node {
 			continue
 		}
 
-		// Check if node is active
+		// // Check if node is active
 		if !node.IsActive {
 			fmt.Println("⚠️  Skipping node due to timeout:", 0)
 			continue
