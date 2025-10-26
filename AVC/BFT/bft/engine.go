@@ -12,6 +12,10 @@ import (
 	"time"
 )
 
+const (
+	AllowedTimestampSkew = 30 // seconds - max allowed timestamp difference
+)
+
 type engine struct {
 	config     Config
 	myBuddyID  string

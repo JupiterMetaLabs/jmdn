@@ -10,9 +10,19 @@ import (
 	"go.uber.org/zap"
 )
 
+// BFTMessageHandler defines the interface for BFT message handling
+// This avoids importing the bft package directly
+type BFTMessageHandler interface {
+	HandleStartPubSub(msg *AVCStruct.GossipMessage) error
+	HandleEndPubSub(msg *AVCStruct.GossipMessage) error
+	HandlePrepareVote(msg *AVCStruct.GossipMessage) error
+	HandleCommitVote(msg *AVCStruct.GossipMessage) error
+}
+
 // SubscriptionService handles subscription-related operations
 type SubscriptionService struct {
-	pubSub *AVCStruct.GossipPubSub
+	pubSub     *AVCStruct.GossipPubSub
+	bftAdapter BFTMessageHandler // ✅ Use interface instead of concrete type
 }
 
 // NewSubscriptionService creates a new subscription service
@@ -20,6 +30,11 @@ func NewSubscriptionService(pubSub *AVCStruct.GossipPubSub) *SubscriptionService
 	return &SubscriptionService{
 		pubSub: pubSub,
 	}
+}
+
+// SetBFTAdapter sets the BFT adapter for handling consensus messages
+func (s *SubscriptionService) SetBFTAdapter(adapter BFTMessageHandler) {
+	s.bftAdapter = adapter
 }
 
 // HandleAskForSubscription handles subscription requests
@@ -100,13 +115,57 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 
 	// Process the message based on its type
 	switch msg.Data.ACK.Stage {
+
+	// ========== BFT CONSENSUS MESSAGES ==========
+	case config.Type_StartPubSub:
+		log.LogConsensusInfo("Processing START_PUBSUB from pubsub",
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("round_id", msg.Data.RoundID),
+			zap.String("function", "SubscriptionService.handleReceivedMessage"))
+
+		if s.bftAdapter != nil {
+			return s.bftAdapter.HandleStartPubSub(msg)
+		}
+		return nil
+
+	case config.Type_EndPubSub:
+		log.LogConsensusInfo("Processing END_PUBSUB from pubsub",
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("round_id", msg.Data.RoundID),
+			zap.Bool("success", msg.Data.ConsensusSuccess),
+			zap.String("function", "SubscriptionService.handleReceivedMessage"))
+
+		if s.bftAdapter != nil {
+			return s.bftAdapter.HandleEndPubSub(msg)
+		}
+		return nil
+
+	case config.Type_SubmitVote:
+		log.LogConsensusInfo("Processing SUBMIT_VOTE from pubsub",
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("round_id", msg.Data.RoundID),
+			zap.String("phase", msg.Data.Phase),
+			zap.String("function", "SubscriptionService.handleReceivedMessage"))
+
+		return s.handleVoteSubmission(msg)
+
 	case config.Type_Publish:
+		// Check if it's a BFT vote (has Phase and RoundID)
+		if msg.Data.Phase != "" && msg.Data.RoundID != "" {
+			log.LogConsensusInfo("Processing BFT vote via PUBLISH",
+				zap.String("topic", log.Consensus_TOPIC),
+				zap.String("round_id", msg.Data.RoundID),
+				zap.String("phase", msg.Data.Phase),
+				zap.String("function", "SubscriptionService.handleReceivedMessage"))
+
+			return s.handleVoteSubmission(msg)
+		}
+
+		// Regular publish message
 		log.LogConsensusInfo("Processing publish message from pubsub",
 			zap.String("topic", log.Consensus_TOPIC),
 			zap.String("function", "SubscriptionService.handleReceivedMessage"))
 
-		// The message will be handled by the publish service
-		// This is just for logging and validation
 		return nil
 
 	case config.Type_AskForSubscription:
@@ -114,8 +173,15 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 			zap.String("topic", log.Consensus_TOPIC),
 			zap.String("function", "SubscriptionService.handleReceivedMessage"))
 
-		// Handle subscription request
 		return s.handleSubscriptionRequest(msg)
+
+	case config.Type_ToBeProcessed:
+		log.LogConsensusInfo("Processing TO_BE_PROCESSED message",
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("message_id", msg.ID),
+			zap.String("function", "SubscriptionService.handleReceivedMessage"))
+
+		return nil
 
 	default:
 		log.LogConsensusInfo(fmt.Sprintf("Received message with unknown stage: %s", msg.Data.ACK.Stage),
@@ -125,6 +191,61 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 	}
 }
 
+// ========== BFT HANDLER METHODS ==========
+
+func (s *SubscriptionService) handleVoteSubmission(msg *AVCStruct.GossipMessage) error {
+	if s.bftAdapter == nil {
+		log.LogConsensusInfo("BFT adapter not set, ignoring vote",
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("round_id", msg.Data.RoundID),
+			zap.String("function", "SubscriptionService.handleVoteSubmission"))
+		return nil
+	}
+
+	// Route to appropriate handler based on phase
+	switch msg.Data.Phase {
+	case "PREPARE":
+		return s.handlePrepareVote(msg)
+	case "COMMIT":
+		return s.handleCommitVote(msg)
+	}
+
+	log.LogConsensusInfo(fmt.Sprintf("Unknown vote phase: %s", msg.Data.Phase),
+		zap.String("topic", log.Consensus_TOPIC),
+		zap.String("round_id", msg.Data.RoundID),
+		zap.String("function", "SubscriptionService.handleVoteSubmission"))
+	return nil
+}
+
+func (s *SubscriptionService) handlePrepareVote(msg *AVCStruct.GossipMessage) error {
+	log.LogConsensusInfo("Processing PREPARE vote",
+		zap.String("topic", log.Consensus_TOPIC),
+		zap.String("round_id", msg.Data.RoundID),
+		zap.String("sender", msg.Sender.String()),
+		zap.String("function", "SubscriptionService.handlePrepareVote"))
+
+	if s.bftAdapter != nil {
+		return s.bftAdapter.HandlePrepareVote(msg)
+	}
+
+	return nil
+}
+
+func (s *SubscriptionService) handleCommitVote(msg *AVCStruct.GossipMessage) error {
+	log.LogConsensusInfo("Processing COMMIT vote",
+		zap.String("topic", log.Consensus_TOPIC),
+		zap.String("round_id", msg.Data.RoundID),
+		zap.String("sender", msg.Sender.String()),
+		zap.String("function", "SubscriptionService.handleCommitVote"))
+
+	if s.bftAdapter != nil {
+		return s.bftAdapter.HandleCommitVote(msg)
+	}
+
+	return nil
+}
+
+// ========== EXISTING METHODS ==========
 // handleSubscriptionRequest processes subscription requests from other nodes
 func (s *SubscriptionService) handleSubscriptionRequest(msg *AVCStruct.GossipMessage) error {
 	log.LogConsensusInfo("Handling subscription request from pubsub",
