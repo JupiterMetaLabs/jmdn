@@ -1,21 +1,71 @@
 package PubSubConnector
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	Publisher "gossipnode/Pubsub/Publish"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
 )
 
+// BFTMessageHandler defines the interface for BFT message handling
+type BFTMessageHandler interface {
+	HandleStartPubSub(msg *AVCStruct.GossipMessage) error
+	HandleEndPubSub(msg *AVCStruct.GossipMessage) error
+	HandlePrepareVote(msg *AVCStruct.GossipMessage) error
+	HandleCommitVote(msg *AVCStruct.GossipMessage) error
+	ProposeConsensus(
+		ctx context.Context,
+		round uint64,
+		blockHash string,
+		myBuddyID string,
+		allBuddies []BuddyInput,
+	) (*Result, error)
+}
+
+// BFTFactory creates BFT handlers for channels
+type BFTFactory func(ctx context.Context, pubSub *AVCStruct.GossipPubSub, channelName string) (BFTMessageHandler, error)
+
+// Decision represents consensus decision
+type Decision string
+
+const (
+	Accept Decision = "ACCEPT"
+	Reject Decision = "REJECT"
+)
+
+// BuddyInput represents buddy node information
+type BuddyInput struct {
+	ID        string
+	Decision  Decision
+	PublicKey []byte
+}
+
+// Result represents consensus result
+type Result struct {
+	Success       bool
+	BlockAccepted bool
+	Decision      Decision
+}
+
 // SubscriptionService handles subscription-related operations
 type SubscriptionService struct {
-	pubSub *AVCStruct.GossipPubSub
+	pubSub      *AVCStruct.GossipPubSub
+	myBuddyID   string
+	bftFactory  BFTFactory
+	bftHandlers map[string]BFTMessageHandler // channelName -> handler
+	handlersMux sync.RWMutex
+
+	// Callback to store consensus results (for testing)
+	OnConsensusComplete func(result *Result)
 }
 
 // NewSubscriptionService creates a new subscription service
@@ -107,18 +157,31 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 		log.LogConsensusInfo("Processing publish message from pubsub",
 			zap.String("topic", log.Consensus_TOPIC),
 			zap.String("function", "SubscriptionService.handleReceivedMessage"))
-
-		// The message will be handled by the publish service
-		// This is just for logging and validation
 		return nil
 
 	case config.Type_AskForSubscription:
 		log.LogConsensusInfo("Processing subscription request from pubsub",
 			zap.String("topic", log.Consensus_TOPIC),
 			zap.String("function", "SubscriptionService.handleReceivedMessage"))
-
-		// Handle subscription request
 		return s.handleSubscriptionRequest(msg)
+
+	case config.Type_BFTRequest:
+		log.LogConsensusInfo("Processing BFT request from pubsub",
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("function", "SubscriptionService.handleReceivedMessage"))
+		return s.handleBFTRequest(msg)
+
+	case config.Type_BFTPrepareVote:
+		log.LogConsensusInfo("Processing BFT prepare vote from pubsub",
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("function", "SubscriptionService.handleReceivedMessage"))
+		return s.handleBFTPrepareVote(msg)
+
+	case config.Type_BFTCommitVote:
+		log.LogConsensusInfo("Processing BFT commit vote from pubsub",
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("function", "SubscriptionService.handleReceivedMessage"))
+		return s.handleBFTCommitVote(msg)
 
 	default:
 		log.LogConsensusInfo(fmt.Sprintf("Received message with unknown stage: %s", msg.Data.ACK.Stage),
@@ -381,4 +444,174 @@ func (s *SubscriptionService) hasChannelAccess(peerID peer.ID) bool {
 	}
 	// Check if channel is public or peer is in allowed list
 	return buddyNode.IsPublicChannel(peerID) || buddyNode.IsAllowed(peerID)
+}
+
+// ============================================================================
+// BFT MESSAGE HANDLING
+// ============================================================================
+
+// getBFTHandler gets or creates a BFT handler for a channel
+func (s *SubscriptionService) getBFTHandler(channelName string) (BFTMessageHandler, error) {
+	s.handlersMux.RLock()
+	handler, exists := s.bftHandlers[channelName]
+	s.handlersMux.RUnlock()
+
+	if exists {
+		return handler, nil
+	}
+
+	// Create new handler
+	s.handlersMux.Lock()
+	defer s.handlersMux.Unlock()
+
+	// Double-check after acquiring write lock
+	if handler, exists := s.bftHandlers[channelName]; exists {
+		return handler, nil
+	}
+
+	// Use factory to create handler
+	if s.bftFactory == nil {
+		return nil, fmt.Errorf("BFT factory not configured")
+	}
+
+	handler, err := s.bftFactory(context.Background(), s.pubSub, channelName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create BFT handler: %w", err)
+	}
+
+	s.bftHandlers[channelName] = handler
+	log.LogConsensusInfo(fmt.Sprintf("Created BFT handler for channel: %s", channelName),
+		zap.String("topic", log.Consensus_TOPIC),
+		zap.String("channel", channelName))
+
+	return handler, nil
+}
+
+// handleBFTRequest handles incoming BFT consensus requests
+func (s *SubscriptionService) handleBFTRequest(msg *AVCStruct.GossipMessage) error {
+	log.LogConsensusInfo("Handling BFT request",
+		zap.String("topic", log.Consensus_TOPIC),
+		zap.String("message_id", msg.ID))
+
+	// Parse the request data
+	var reqData struct {
+		Round          uint64                   `json:"Round"`
+		BlockHash      string                   `json:"BlockHash"`
+		GossipsubTopic string                   `json:"GossipsubTopic"`
+		AllBuddies     []map[string]interface{} `json:"AllBuddies"`
+	}
+
+	if err := json.Unmarshal([]byte(msg.Data.Message), &reqData); err != nil {
+		log.LogConsensusError("Failed to parse BFT request", err,
+			zap.String("topic", log.Consensus_TOPIC))
+		return fmt.Errorf("failed to parse BFT request: %w", err)
+	}
+
+	log.LogConsensusInfo(fmt.Sprintf("BFT Request - Round: %d, Block: %s, Buddies: %d",
+		reqData.Round, reqData.BlockHash, len(reqData.AllBuddies)),
+		zap.String("topic", log.Consensus_TOPIC))
+
+	// Convert buddies to BuddyInput format
+	allBuddies := make([]BuddyInput, len(reqData.AllBuddies))
+	for i, buddyMap := range reqData.AllBuddies {
+		id, _ := buddyMap["ID"].(string)
+		decisionStr, _ := buddyMap["Decision"].(string)
+
+		// Handle public key - it might be a slice of float64 from JSON unmarshaling
+		var pubKeyBytes []byte
+		if pubKeyInterface, ok := buddyMap["PublicKey"]; ok {
+			switch v := pubKeyInterface.(type) {
+			case []byte:
+				pubKeyBytes = v
+			case []interface{}:
+				pubKeyBytes = make([]byte, len(v))
+				for j, b := range v {
+					if floatVal, ok := b.(float64); ok {
+						pubKeyBytes[j] = byte(floatVal)
+					}
+				}
+			}
+		}
+
+		decision := Accept
+		if decisionStr == "REJECT" {
+			decision = Reject
+		}
+
+		allBuddies[i] = BuddyInput{
+			ID:        id,
+			Decision:  decision,
+			PublicKey: pubKeyBytes,
+		}
+	}
+
+	// Get BFT handler
+	handler, err := s.getBFTHandler(msg.Topic)
+	if err != nil {
+		log.LogConsensusError("Failed to get BFT handler", err,
+			zap.String("topic", log.Consensus_TOPIC))
+		return err
+	}
+
+	// Start consensus process in a goroutine
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		log.LogConsensusInfo(fmt.Sprintf("Starting consensus for round %d, block %s", reqData.Round, reqData.BlockHash),
+			zap.String("topic", log.Consensus_TOPIC))
+
+		result, err := handler.ProposeConsensus(ctx, reqData.Round, reqData.BlockHash, s.myBuddyID, allBuddies)
+		if err != nil {
+			log.LogConsensusError(fmt.Sprintf("Consensus failed: %v", err), err,
+				zap.String("topic", log.Consensus_TOPIC))
+			return
+		}
+
+		log.LogConsensusInfo(fmt.Sprintf("Consensus completed - Success: %v, Decision: %s, BlockAccepted: %v",
+			result.Success, result.Decision, result.BlockAccepted),
+			zap.String("topic", log.Consensus_TOPIC))
+
+		// Call callback if set (for testing)
+		if s.OnConsensusComplete != nil {
+			s.OnConsensusComplete(result)
+		}
+	}()
+
+	return nil
+}
+
+// handleBFTPrepareVote handles prepare vote messages
+func (s *SubscriptionService) handleBFTPrepareVote(msg *AVCStruct.GossipMessage) error {
+	handler, err := s.getBFTHandler(msg.Topic)
+	if err != nil {
+		return err
+	}
+	return handler.HandlePrepareVote(msg)
+}
+
+// handleBFTCommitVote handles commit vote messages
+func (s *SubscriptionService) handleBFTCommitVote(msg *AVCStruct.GossipMessage) error {
+	handler, err := s.getBFTHandler(msg.Topic)
+	if err != nil {
+		return err
+	}
+	return handler.HandleCommitVote(msg)
+}
+
+// SetMyBuddyID sets the buddy ID
+func (s *SubscriptionService) SetMyBuddyIDgiv(id string) {
+	s.myBuddyID = id
+}
+
+// SetBFTFactory sets the BFT factory
+func (s *SubscriptionService) SetBFTFactory(factory BFTFactory) {
+	s.bftFactory = factory
+}
+
+// InitBFTHandlers initializes the BFT handlers map if not already done
+func (s *SubscriptionService) InitBFTHandlers() {
+	if s.bftHandlers == nil {
+		s.bftHandlers = make(map[string]BFTMessageHandler)
+	}
 }
