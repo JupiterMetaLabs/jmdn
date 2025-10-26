@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
+	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/status"
 )
@@ -821,6 +822,50 @@ func CountAllKeys(PooledConnection *config.PooledConnection, prefix string) (int
 		zap.String(logging.Function, "DB_OPs.CountAllKeys"),
 	)
 	return totalKeys, nil
+}
+
+// CountTransactionsByAccount counts the number of transactions for a specific account
+func CountTransactionsByAccount(mainDBClient *config.PooledConnection, accountAddr *common.Address) (int64, error) {
+	var err error
+	var shouldReturnConnection bool = false
+
+	if mainDBClient == nil || mainDBClient.Client == nil {
+		mainDBClient, err = GetMainDBConnection()
+		if err != nil {
+			return 0, fmt.Errorf("failed to get main DB connection: %w", err)
+		}
+		shouldReturnConnection = true
+		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved for transaction counting",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.CountTransactionsByAccount"),
+		)
+	}
+
+	if shouldReturnConnection {
+		defer func() {
+			mainDBClient.Client.Logger.Logger.Info("Main DB connection returned to pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.CountTransactionsByAccount"),
+			)
+			PutMainDBConnection(mainDBClient)
+		}()
+	}
+
+	// Get all transactions for this account
+	transactions, err := GetTransactionsByAccount(mainDBClient, accountAddr)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get transactions for account: %w", err)
+	}
+
+	return int64(len(transactions)), nil
 }
 
 // CountTransactions counts the total number of transactions in the database.
