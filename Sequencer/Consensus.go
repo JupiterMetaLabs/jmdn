@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -168,14 +167,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Initialize listener node for vote collection
 	consensus.ListenerNode = MessagePassing.NewListenerNode(consensus.Host, consensus.ResponseHandler)
 	log.Printf("Listener node initialized for vote collection on protocol: %s", config.SubmitMessageProtocol)
-
-	// Set up clear SubmitMessageProtocol handler for sequencer
-	consensus.Host.SetStreamHandler(config.SubmitMessageProtocol, func(s network.Stream) {
-		// Create a clear listener handler with ResponseHandler for sequencer
-		listenerHandler := MessagePassing.NewListenerHandler(consensus.ResponseHandler)
-		go listenerHandler.HandleSubmitMessageStream(s)
-	})
-	log.Printf("Clear SubmitMessageProtocol handler set up for sequencer")
+	log.Printf("SubmitMessageProtocol handler is already set up by NewListenerNode()")
 
 	// After creating the channel, ask peers to subscribe to the channel
 	if err := consensus.RequestSubscriptionPermission(); err != nil {
