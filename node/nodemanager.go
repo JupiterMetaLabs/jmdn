@@ -8,6 +8,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/logging"
 	"gossipnode/metrics"
+
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
+	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	"github.com/multiformats/go-multiaddr"
 	"go.uber.org/zap"
 )
@@ -960,4 +963,84 @@ func (nm *NodeManager) CleanupOfflinePeers(minFailures int) (int, error) {
 	}
 
 	return removedCount, nil
+}
+
+// CheckMultiaddrReachability verifies whether a multiaddr is reachable
+// without performing a libp2p-level connection. It uses a raw TCP dial.
+// PingMultiaddrWithRetries performs multiple ping attempts for better reliability
+func (nm *NodeManager) PingMultiaddrWithRetries(multiAddr string, attempts int) (bool, time.Duration, error) {
+	addr, err := multiaddr.NewMultiaddr(multiAddr)
+	if err != nil {
+		return false, 0, fmt.Errorf("invalid multiaddress: %w", err)
+	}
+
+	peerInfo, err := peer.AddrInfoFromP2pAddr(addr)
+	if err != nil {
+		return false, 0, fmt.Errorf("multiaddr missing peer ID: %w", err)
+	}
+
+	nm.host.Peerstore().AddAddrs(peerInfo.ID, peerInfo.Addrs, peerstore.TempAddrTTL)
+
+	// Connect first
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := nm.host.Connect(ctx, *peerInfo); err != nil {
+		nm.Logger.Logger.Debug("Connection failed",
+			zap.String("multiaddr", multiAddr),
+			zap.Error(err),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Function, "node.PingMultiaddrWithRetries"),
+			zap.String(logging.Topic, TOPIC),
+		)
+		return false, 0, nil
+	}
+
+	// Perform multiple pings
+	pingService := ping.NewPingService(nm.host)
+	var totalRTT time.Duration
+	successCount := 0
+
+	for i := 0; i < attempts; i++ {
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		responseChan := pingService.Ping(pingCtx, peerInfo.ID)
+
+		select {
+		case res := <-responseChan:
+			if res.Error == nil {
+				totalRTT += res.RTT
+				successCount++
+			}
+		case <-pingCtx.Done():
+			// Timeout for this attempt
+		}
+		pingCancel()
+
+		// Small delay between attempts
+		if i < attempts-1 {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+
+	if successCount > 0 {
+		avgRTT := totalRTT / time.Duration(successCount)
+		nm.Logger.Logger.Info("Ping successful",
+			zap.String("multiaddr", multiAddr),
+			zap.Int("successful_pings", successCount),
+			zap.Int("total_attempts", attempts),
+			zap.Duration("avg_rtt", avgRTT),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Function, "node.PingMultiaddrWithRetries"),
+			zap.String(logging.Topic, TOPIC),
+		)
+		return true, avgRTT, nil
+	}
+
+	nm.Logger.Logger.Debug("All ping attempts failed",
+		zap.String("multiaddr", multiAddr),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Function, "node.PingMultiaddrWithRetries"),
+		zap.String(logging.Topic, TOPIC),
+	)
+	return false, 0, nil
 }

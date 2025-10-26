@@ -2,27 +2,35 @@ package Cache
 
 import (
 	"fmt"
+	"gossipnode/config"
 	"gossipnode/config/PubSubMessages"
 	"gossipnode/node"
+	"gossipnode/seednode"
+	"sync"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 )
 
-var AddPeersCache map[peer.ID]multiaddr.Multiaddr
+var (
+	AddPeersCache   map[peer.ID]multiaddr.Multiaddr
+	AddPeersCacheMu sync.Mutex // protect global cache
+)
 
-func NewAddPeersCache() map[peer.ID]multiaddr.Multiaddr {
-	return make(map[peer.ID]multiaddr.Multiaddr)
-}
+func NewAddPeersCache() map[peer.ID]multiaddr.Multiaddr { return make(map[peer.ID]multiaddr.Multiaddr) }
 
 func AddPeer(peerID peer.ID, addr multiaddr.Multiaddr) {
 	if AddPeersCache == nil {
 		AddPeersCache = make(map[peer.ID]multiaddr.Multiaddr)
 	}
+	AddPeersCacheMu.Lock()
 	AddPeersCache[peerID] = addr
+	AddPeersCacheMu.Unlock()
 }
 
 func GetPeer(peerID peer.ID) multiaddr.Multiaddr {
+	AddPeersCacheMu.Lock()
+	defer AddPeersCacheMu.Unlock()
 	if AddPeersCache == nil {
 		return nil
 	}
@@ -30,6 +38,8 @@ func GetPeer(peerID peer.ID) multiaddr.Multiaddr {
 }
 
 func RemovePeer(peerID peer.ID) {
+	AddPeersCacheMu.Lock()
+	defer AddPeersCacheMu.Unlock()
 	if AddPeersCache == nil {
 		return
 	}
@@ -37,13 +47,22 @@ func RemovePeer(peerID peer.ID) {
 }
 
 func GetAllPeers() map[peer.ID]multiaddr.Multiaddr {
+	AddPeersCacheMu.Lock()
+	defer AddPeersCacheMu.Unlock()
 	if AddPeersCache == nil {
 		return make(map[peer.ID]multiaddr.Multiaddr)
 	}
-	return AddPeersCache
+	// return a copy to avoid external mutation races
+	cp := make(map[peer.ID]multiaddr.Multiaddr, len(AddPeersCache))
+	for k, v := range AddPeersCache {
+		cp[k] = v
+	}
+	return cp
 }
 
 func GetPeerCount() int {
+	AddPeersCacheMu.Lock()
+	defer AddPeersCacheMu.Unlock()
 	if AddPeersCache == nil {
 		return 0
 	}
@@ -51,121 +70,170 @@ func GetPeerCount() int {
 }
 
 func ClearCache() {
+	AddPeersCacheMu.Lock()
 	AddPeersCache = make(map[peer.ID]multiaddr.Multiaddr)
+	AddPeersCacheMu.Unlock()
 }
 
+// FallbackConnectionFunction: update cache only (no connect)
+func FallbackConnectionFunction(peerID peer.ID) {
+	client, err := seednode.NewClient(config.SeedNodeURL)
+	if err != nil {
+		fmt.Printf("[%s] Failed to create seed node client: %v\n", peerID, err)
+		return
+	}
+	defer client.Close()
+
+	peerRecord, err := client.GetPeer(peerID.String())
+	if err != nil {
+		fmt.Printf("[%s] Failed to get peer from seed node: %v\n", peerID, err)
+		return
+	}
+
+	reachableFound := false
+
+	for _, multiaddrStr := range peerRecord.Multiaddrs {
+		addr, err := multiaddr.NewMultiaddr(multiaddrStr)
+		if err != nil {
+			fmt.Printf("[%s] Invalid multiaddr: %v\n", peerID, err)
+			continue
+		}
+
+		nm := GetNodeManager()
+		if nm == nil {
+			fmt.Printf("[%s] NodeManager not available for reachability check\n", peerID)
+			break
+		}
+
+		reachable,timeTaken, err := nm.PingMultiaddrWithRetries(multiaddrStr, 3) // or call a standalone func
+		if err != nil {
+			fmt.Printf("[%s] Error checking reachability: %v\n", peerID, err)
+			continue
+		}
+		fmt.Printf("[%s] Time taken to check reachability: %v\n", peerID, timeTaken)
+		if !reachable {
+			fmt.Printf("[%s] Multiaddr not reachable: %s\n", peerID, multiaddrStr)
+			continue
+		}
+
+		AddPeer(peerID, addr)
+		reachableFound = true
+		fmt.Printf("[%s] Reachable fallback multiaddr found: %s\n", peerID, multiaddrStr)
+		break
+	}
+
+	if !reachableFound {
+		fmt.Printf("[%s] No reachable fallback multiaddr found\n", peerID)
+	}
+}
+
+// AddPeersTemporary: concurrent reachability + fallback, then single connect
 func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) {
-	// Initialize the cache if it's nil
+	AddPeersCacheMu.Lock()
 	if AddPeersCache == nil {
 		AddPeersCache = make(map[peer.ID]multiaddr.Multiaddr)
 	}
+	AddPeersCacheMu.Unlock()
 
-	// Add peers to the temporary cache
+	var wg sync.WaitGroup
+	// Workers can emit up to 2 messages each → buffer accordingly (or just read concurrently)
+	results := make(chan string, len(peers)*2)
+
+	fmt.Println("---- Starting concurrent reachability checks ----")
+
 	for _, buddy := range peers {
-		AddPeersCache[buddy.PeerID] = buddy.Multiaddr
+		wg.Add(1)
+		go func(peerID peer.ID, maddr multiaddr.Multiaddr) {
+			defer wg.Done()
+
+			addrStr := maddr.String()
+			nm := GetNodeManager()
+			if nm == nil {
+				results <- fmt.Sprintf("[%s] NodeManager not available for reachability check", peerID)
+				// still try fallback; it does not require nm if your Check is standalone
+				FallbackConnectionFunction(peerID)
+				results <- fmt.Sprintf("[%s] Fallback triggered (no NodeManager)", peerID)
+				return
+			}
+
+			reachable,timeTaken, err := nm.PingMultiaddrWithRetries(addrStr, 3)
+			if err != nil {
+				results <- fmt.Sprintf("[%s] Error checking reachability for %s: %v", peerID, addrStr, err)
+				FallbackConnectionFunction(peerID)
+				results <- fmt.Sprintf("[%s] Fallback triggered (error in check)", peerID)
+				return
+			}
+
+			fmt.Printf("[%s] Time taken to check reachability: %v\n", peerID, timeTaken)
+			if !reachable {
+				results <- fmt.Sprintf("[%s] Multiaddr not reachable, triggering fallback: %s", peerID, addrStr)
+				FallbackConnectionFunction(peerID)
+				results <- fmt.Sprintf("[%s] Fallback completed (unreachable primary)", peerID)
+				return
+			}
+
+			AddPeer(peerID, maddr)
+			results <- fmt.Sprintf("[%s] Reachable and added: %s", peerID, addrStr)
+		}(buddy.PeerID, buddy.Multiaddr)
 	}
 
-	err := ConnectToTemporaryPeers(AddPeersCache)
-	if err != nil {
-		fmt.Printf("Failed to connect to temporary peers: %v\n", err)
+	// Close results after all workers finish
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Read results concurrently so writers never block
+	fmt.Println("---- Reachability Check Summary ----")
+	for res := range results {
+		fmt.Println(res)
 	}
-	fmt.Printf("Successfully connected to %d temporary peers\n", len(peers))
+
+	total := GetPeerCount()
+	fmt.Printf("Total reachable peers in global cache: %d\n", total)
+
+	if total > 0 {
+		fmt.Println("---- Connecting to reachable peers ----")
+		// Use a snapshot to avoid races if something else modifies the cache
+		reachable := GetAllPeers()
+		if err := ConnectToTemporaryPeers(reachable); err != nil {
+			fmt.Printf("Failed to connect to temporary peers: %v\n", err)
+			return
+		}
+		fmt.Printf("Successfully connected to %d reachable peers\n", len(reachable))
+	} else {
+		fmt.Println("No reachable peers found — all fallback attempts failed.")
+	}
 }
 
 func GetNodeManager() *node.NodeManager {
-	if node.GetNodeManagerInterface() != nil {
-		return node.GetNodeManagerInterface()
-	}
-	return nil
+	return node.GetNodeManagerInterface()
 }
 
-// ConnectToTemporaryPeers connects to all peers in the temporary cache using NodeManager
 func ConnectToTemporaryPeers(peers map[peer.ID]multiaddr.Multiaddr) error {
 	nodeManager := GetNodeManager()
 	if nodeManager == nil {
 		return fmt.Errorf("NodeManager not available")
 	}
 
-	var connectedCount int
-	var failedCount int
+	var connectedCount, failedCount int
 
 	for peerID, addr := range peers {
-		// Convert multiaddr to string format for NodeManager.AddPeer
 		addrStr := addr.String()
-
 		fmt.Printf("Adding temporary peer for consensus: %s at %s\n", peerID, addrStr)
 
-		// Use existing NodeManager.AddPeer method
-		// Note: NodeManager.AddPeer is designed to be resilient - it adds peers to DB
-		// even if initial connection fails, expecting retry via heartbeat
 		if err := nodeManager.AddPeer(addrStr); err != nil {
 			fmt.Printf("Failed to add peer %s: %v\n", peerID, err)
 			failedCount++
 		} else {
-			// NodeManager.AddPeer succeeded (peer added to database)
-			// The actual connection may still be in progress or failed
-			// This is expected behavior for temporary consensus peers
 			fmt.Printf("Peer %s added to NodeManager for consensus\n", peerID)
 			connectedCount++
 		}
 	}
 
 	fmt.Printf("Temporary peer connection summary: %d added to NodeManager, %d failed\n", connectedCount, failedCount)
-
-	// For consensus, we accept that some peers may not be immediately connected
-	// The NodeManager will handle reconnection attempts via heartbeat
 	if failedCount > 0 {
 		fmt.Printf("Warning: %d peers failed to be added to NodeManager\n", failedCount)
 	}
-
 	return nil
-}
-
-// ClearTemporaryPeers removes all temporary peers using NodeManager
-func ClearTemporaryPeers() {
-	if AddPeersCache == nil {
-		return
-	}
-
-	// Get the NodeManager instance
-	nodeManager := GetNodeManager()
-	if nodeManager == nil {
-		fmt.Printf("Warning: NodeManager not available, clearing cache only\n")
-		ClearCache()
-		return
-	}
-
-	fmt.Printf("Clearing %d temporary peers using NodeManager...\n", len(AddPeersCache))
-
-	for peerID := range AddPeersCache {
-		fmt.Printf("Removing temporary peer: %s\n", peerID)
-
-		// Use existing NodeManager.RemovePeer method
-		if err := nodeManager.RemovePeer(peerID.String()); err != nil {
-			fmt.Printf("Warning: Failed to remove peer %s: %v\n", peerID, err)
-		} else {
-			fmt.Printf("Successfully removed temporary peer: %s\n", peerID)
-		}
-	}
-
-	// Clear the cache
-	ClearCache()
-	fmt.Println("Temporary peers cleared using NodeManager")
-}
-
-// GetTemporaryPeerCount returns the number of temporary peers
-func GetTemporaryPeerCount() int {
-	if AddPeersCache == nil {
-		return 0
-	}
-	return len(AddPeersCache)
-}
-
-// IsTemporaryPeer checks if a peer ID is in the temporary cache
-func IsTemporaryPeer(peerID peer.ID) bool {
-	if AddPeersCache == nil {
-		return false
-	}
-	_, exists := AddPeersCache[peerID]
-	return exists
 }
