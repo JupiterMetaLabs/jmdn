@@ -59,12 +59,23 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 		zap.String("message", msg),
 		zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 
+	// Check if message was successfully parsed
+	if message == nil {
+		log.LogConsensusError("Failed to parse message - malformed JSON or invalid structure", nil,
+			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("raw_message", msg),
+			zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
+		return
+	}
+
 	// Handle special cases that need direct response
 	// Check if ACK is not nil before accessing it
 	if message.GetACK() == nil {
 		log.LogConsensusError("Received message with nil ACK", nil,
 			zap.String("peer", s.Conn().RemotePeer().String()),
 			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("raw_message", msg),
 			zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 		return
 	}

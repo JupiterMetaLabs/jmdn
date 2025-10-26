@@ -156,10 +156,8 @@ var globalHost host.Host
 var globalChainID int
 
 // SetHostInstance sets the global host instance for transaction propagation
-// Note: Currently unused as consensus is bypassed for testing
 func SetHostInstance(h host.Host) {
-	// globalHost = h  // Commented out for testing - consensus bypassed
-	_ = h // Suppress unused parameter warning
+	globalHost = h // Uncommented - host is needed for consensus
 }
 
 func Startserver(port int, h host.Host, chainID int) {

@@ -16,6 +16,17 @@ import (
 
 // Publish publishes a message to a topic
 func Publish(gps *PubSubMessages.GossipPubSub, topic string, message *PubSubMessages.Message, metadata map[string]string) error {
+	// Validate input parameters
+	if gps == nil {
+		return fmt.Errorf("GossipPubSub cannot be nil")
+	}
+	if message == nil {
+		return fmt.Errorf("message cannot be nil")
+	}
+	if topic == "" {
+		return fmt.Errorf("topic cannot be empty")
+	}
+
 	// Create message
 	messageGossip := &PubSubMessages.GossipMessage{
 		ID:        fmt.Sprintf("%s-%d", gps.Host.ID().String(), gps.MessageID),
