@@ -66,7 +66,7 @@ func cleanupTransactionLock(txHash string) {
 // If any transaction fails, all are rolled back
 func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.PooledConnection) error {
 	fmt.Printf("=== DEBUG: ProcessBlockTransactions called for block %d ===\n", block.BlockNumber)
-	
+
 	// Check if block was already processed
 	blockKey := fmt.Sprintf("block_processed:%s", block.BlockHash.Hex())
 	fmt.Printf("DEBUG: Checking if block already processed with key: %s\n", blockKey)
@@ -110,7 +110,7 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 	// Process all transactions
 	for i, tx := range sortedTxs {
 		fmt.Printf("DEBUG: Processing transaction %d/%d - Hash: %s\n", i+1, len(sortedTxs), tx.Hash.Hex())
-		
+
 		// Check if this transaction was already processed within this block
 		processedTxsMutex.Lock()
 		if processedTxs[tx.Hash.Hex()] {
@@ -270,7 +270,7 @@ func rollbackBalances(originalBalances map[common.Address]string, accountsClient
 func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection) error {
 	fmt.Printf("=== DEBUG: processTransaction called for tx %s ===\n", tx.Hash.Hex())
 	fmt.Printf("DEBUG: From: %s, To: %s, Value: %s\n", tx.From.Hex(), tx.To.Hex(), tx.Value.String())
-	
+
 	// Enhanced logging at start
 	// First check the connection
 	if accountsClient == nil {
@@ -412,8 +412,8 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	gasFeeToDeduct := new(big.Int).Mul(gasLimit, parsedTx.EffectiveGasFee)
 	gasFeeToDeduct = new(big.Int).Div(gasFeeToDeduct, big.NewInt(1000000000000000000))
 
-	// Transaction value will be in Wei
-	parsedTx.ValueBig = new(big.Int).Div(parsedTx.ValueBig, big.NewInt(1000000000000000000))
+	// Transaction value should remain in Wei for balance calculations
+	// parsedTx.ValueBig is already in Wei, no conversion needed
 
 	// Calculate total amount to deduct from sender (amount + gas fee)
 	totalDeduction := new(big.Int).Add(parsedTx.ValueBig, gasFeeToDeduct)
