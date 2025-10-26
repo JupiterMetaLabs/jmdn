@@ -10,19 +10,19 @@ type ConsensusMetadataRouter struct{
 	ConsensusMessage *PubSubMessages.ConsensusMessage
 }
 
-func ZKBlockMetadata(zkBlock *config.ZKBlock, buddies *PubSubMessages.Buddies) *ConsensusMetadataRouter {
+func ZKBlockMetadata(zkBlock *config.ZKBlock, buddies []PubSubMessages.Buddy_PeerMultiaddr) *ConsensusMetadataRouter {
 	NewBlock := &ConsensusMetadataRouter{
 		ConsensusMessage: PubSubMessages.NewConsensusMessageBuilder(nil).SetZKBlock(zkBlock).SetBuddies(buddies),
 	}
 	return NewBlock
 }
 
-func(cmr *ConsensusMetadataRouter) AddBuddieNodesMetadata(buddies *PubSubMessages.Buddies) *ConsensusMetadataRouter {
+func(cmr *ConsensusMetadataRouter) AddBuddieNodesMetadata(buddies []PubSubMessages.Buddy_PeerMultiaddr) *ConsensusMetadataRouter {
 	cmr.ConsensusMessage.AddBuddies(buddies)
 	return cmr
 }
 
-func(cmr *ConsensusMetadataRouter) RemoveBuddieNodesMetadata(buddies *PubSubMessages.Buddies) *ConsensusMetadataRouter {
+func(cmr *ConsensusMetadataRouter) RemoveBuddieNodesMetadata(buddies []PubSubMessages.Buddy_PeerMultiaddr) *ConsensusMetadataRouter {
 	cmr.ConsensusMessage.RemoveBuddies(buddies)
 	return cmr
 }

@@ -16,7 +16,7 @@ import hashlib
 class ZKBlockTester:
     """Test client for ZKBlock processing endpoint"""
     
-    def __init__(self, base_url="http://192.168.100.24:15050"):
+    def __init__(self, base_url="http://localhost:15050"):
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
         self.session.headers.update({

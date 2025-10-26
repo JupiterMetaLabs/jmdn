@@ -227,6 +227,7 @@ func GetVerificationStatsWithRouter(gps *PubSubMessages.GossipPubSub) map[string
 
 // askPeersForSubscription asks a list of peers for subscription
 func askPeersForSubscription(gps *PubSubMessages.GossipPubSub, topic string, peerAddrs []peer.ID, responseHandler *ResponseHandler, peerType string) (int, int) {
+	fmt.Println("askPeersForSubscription", peerAddrs)
 	if len(peerAddrs) == 0 {
 		log.Printf("No %s peers to ask for subscription", peerType)
 		return 0, 0

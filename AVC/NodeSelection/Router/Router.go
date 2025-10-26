@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"gossipnode/AVC/NodeSelection/pkg/selection"
+	"gossipnode/config/PubSubMessages"
 	"gossipnode/node"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 )
 
 type NodeselectionRouter struct{}
@@ -44,18 +46,32 @@ func (r *NodeselectionRouter) GetBuddyNodes(number int) ([]*selection.BuddyNode,
 	if err != nil {
 		return nil, err
 	}
+	// Debugging
+	for _, buddy := range buddies {
+		fmt.Println("buddy", buddy.Node.ID)
+	}
 
 	return buddies, nil
 }
 
-func (r *NodeselectionRouter) GetBuddyNodesFromList(peers []*selection.BuddyNode) ([]peer.ID, error) {
-	peerIDs := make([]peer.ID, 0)
+func (r *NodeselectionRouter) GetBuddyNodesFromList(peers []*selection.BuddyNode) ([]PubSubMessages.Buddy_PeerMultiaddr, error) {
+	peerIDs := make([]PubSubMessages.Buddy_PeerMultiaddr, 0)
 	for _, node := range peers {
-		peerID := peer.ID(node.Node.ID)
-		if peerID == "" {
-			return nil, fmt.Errorf("failed to get peer ID for node: %v", node.Node.ID)
+		peerID, err := peer.Decode(node.Node.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode peer ID for node: %v", node.Node.ID)
 		}
-		peerIDs = append(peerIDs, peerID)
+		multiAddress, err := multiaddr.NewMultiaddr(node.Node.Address)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create multiaddress for node: %v", node.Node.ID)
+		}
+		if peerID == ""  || multiAddress == nil {
+			return nil, fmt.Errorf("failed to get peer ID or multiaddress for node: %v", node.Node.ID)
+		}
+		peerIDs = append(peerIDs, PubSubMessages.Buddy_PeerMultiaddr{
+			PeerID: peerID,
+			Multiaddr: multiAddress,
+		})
 	}
 	return peerIDs, nil
 }
