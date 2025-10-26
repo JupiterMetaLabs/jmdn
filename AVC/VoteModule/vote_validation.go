@@ -6,7 +6,7 @@ import (
 	"math"
 )
 
-func VoteAggregation(weights map[string]float64, votes map[string]int) (bool, error) {
+func VoteAggregation(weights map[string]float64, votes map[string]int8) (bool, error) {
 	var positiveVotes float64
 	var negetiveVotes float64
 	if len(weights) != len(votes) {

@@ -45,7 +45,6 @@ func Init_Loggers(loki bool) {
 	}
 }
 
-
 func NewListenerNode(h host.Host, responseHandler AVCStruct.ResponseHandler) *StructListener {
 	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
 	if err != nil {
@@ -86,6 +85,14 @@ func NewListenerNode(h host.Host, responseHandler AVCStruct.ResponseHandler) *St
 
 // NewBuddyNode creates a new BuddyNode instance from an existing host
 func NewBuddyNode(h host.Host, buddies *AVCStruct.Buddies, responseHandler AVCStruct.ResponseHandler, pubsub *AVCStruct.GossipPubSub) *AVCStruct.BuddyNode {
+	// Debug logging
+	fmt.Printf("NewBuddyNode: Creating buddy node for peer %s\n", h.ID())
+	if pubsub == nil {
+		fmt.Printf("NewBuddyNode: WARNING - pubsub parameter is nil!\n")
+	} else {
+		fmt.Printf("NewBuddyNode: pubsub parameter is valid, Host: %s\n", pubsub.Host.ID())
+	}
+
 	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
 	if err != nil {
 		panic(fmt.Sprintf("failed to create stream cache: %v", err))
@@ -117,7 +124,7 @@ func NewBuddyNode(h host.Host, buddies *AVCStruct.Buddies, responseHandler AVCSt
 		log.LogConsensusInfo("New buddy nodes connection received",
 			zap.String("peer", stream.Conn().RemotePeer().String()),
 			zap.String("protocol", string(config.BuddyNodesMessageProtocol)))
-		go buddyStream.HandleBuddyNodesMessageStream(stream)
+		go buddyStream.HandleBuddyNodesMessageStream(h, stream)
 	})
 
 	log.LogConsensusInfo(fmt.Sprintf("BuddyNode initialized with ID: %s", h.ID()), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewBuddyNode"))
@@ -131,7 +138,7 @@ func NewBuddyNode(h host.Host, buddies *AVCStruct.Buddies, responseHandler AVCSt
 func (StructBuddyNode *StructBuddyNode) SendMessageToPeer(peerID peer.ID, message string) error {
 	// Get or create a stream from the cache
 	StreamCache := NewStreamCacheBuilder(StructBuddyNode.BuddyNode.StreamCache)
-	if StreamCache == nil{
+	if StreamCache == nil {
 		return fmt.Errorf("Faield to get the StreamCache, Nil Streamcache occured")
 	}
 
@@ -165,8 +172,8 @@ func (StructBuddyNode *StructBuddyNode) SendMessageToPeer(peerID peer.ID, messag
 // CloseAllStreams closes all streams in the cache (for cleanup)
 func (StructBuddyNode *StructBuddyNode) CloseAllStreams() {
 	StreamCache := NewStreamCacheBuilder(StructBuddyNode.BuddyNode.StreamCache)
-	if StreamCache == nil{
-		return 
+	if StreamCache == nil {
+		return
 	}
 
 	StreamCache.CloseAll()
@@ -175,7 +182,7 @@ func (StructBuddyNode *StructBuddyNode) CloseAllStreams() {
 // GetStreamCacheStats returns statistics about the stream cache
 func (StructBuddyNode *StructBuddyNode) GetStreamCacheStats() map[string]interface{} {
 	StreamCache := NewStreamCacheBuilder(StructBuddyNode.BuddyNode.StreamCache)
-	if StreamCache == nil{
+	if StreamCache == nil {
 		return map[string]interface{}{
 			"active_streams": 0,
 			"max_streams":    0,

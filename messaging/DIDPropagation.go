@@ -249,16 +249,16 @@ func HandleDIDStream(stream network.Stream) {
 			Str("account", msg.Account.Address.Hex()).
 			Int("hops", msg.Hops).
 			Msg("Max hops reached, not propagating Account message")
-	}else{
-        if msg.Account == nil {
-            log.Info().
-                Str("msg_id", msg.ID).
-                Str("type", msg.Type).
-                Int("hops", msg.Hops).
-                Msg("Account data is nil, not propagating Account message")
-            fmt.Printf("MessageID:%s, Type:%s, Hops:%d : Account data is nil, not propagating Account message\n", msg.ID, msg.Type, msg.Hops)
-        }
-    }
+	} else {
+		if msg.Account == nil {
+			log.Info().
+				Str("msg_id", msg.ID).
+				Str("type", msg.Type).
+				Int("hops", msg.Hops).
+				Msg("Account data is nil, not propagating Account message")
+			fmt.Printf("MessageID:%s, Type:%s, Hops:%d : Account data is nil, not propagating Account message\n", msg.ID, msg.Type, msg.Hops)
+		}
+	}
 }
 
 // forwardDID sends the DID message to all connected peers

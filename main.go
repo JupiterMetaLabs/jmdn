@@ -17,6 +17,7 @@ import (
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
 	"gossipnode/DID"
+	"gossipnode/Pubsub"
 	"gossipnode/config"
 	"gossipnode/explorer"
 	fastsync "gossipnode/fastsync"
@@ -46,8 +47,9 @@ func printPrompt() {
 
 // Global variables for easier access
 var (
-	fastSyncer *fastsync.FastSync
-	immuClient *config.ImmuClient
+	fastSyncer   *fastsync.FastSync
+	immuClient   *config.ImmuClient
+	globalPubSub *Pubsub.StructGossipPubSub
 )
 
 // Global connection pools
@@ -95,6 +97,14 @@ func GetAccountsDBPool() *config.ConnectionPool {
 		log.Fatal().Msg("Accounts DB pool not initialized. Call initAccountsDBPool first")
 	}
 	return accountsDBPool
+}
+
+// GetGlobalPubSub returns the global PubSub instance
+func GetGlobalPubSub() *Pubsub.StructGossipPubSub {
+	if globalPubSub == nil {
+		log.Warn().Msg("Global PubSub not initialized - PubSub features may be limited")
+	}
+	return globalPubSub
 }
 
 func printDashes() {
@@ -187,6 +197,25 @@ func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsC
 	return fs
 }
 
+// initPubSub initializes the PubSub system for the node
+func initPubSub(n *config.Node) (*Pubsub.StructGossipPubSub, error) {
+	fmt.Println("Initializing PubSub system...")
+
+	// Create a protocol ID for PubSub (using the consensus channel name as protocol)
+	pubSubProtocol := config.BuddyNodesMessageProtocol
+
+	// Initialize the GossipPubSub instance
+	gossipPubSub, err := Pubsub.NewGossipPubSub(n.Host, pubSubProtocol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize GossipPubSub: %w", err)
+	}
+
+	fmt.Printf("✅ PubSub system initialized successfully for host: %s\n", n.Host.ID())
+	fmt.Printf("📡 PubSub protocol: %s\n", pubSubProtocol)
+
+	return gossipPubSub, nil
+}
+
 func main() {
 	var nodeManager *node.NodeManager
 	if err := ImmuDB_CA.EnsureTLSAssets(".immudb_state"); err != nil {
@@ -274,6 +303,19 @@ func main() {
 	}
 	defer n.Host.Close()
 	fmt.Println("Node created successfully")
+
+	// Initialize PubSub system
+	globalPubSub, err := initPubSub(n)
+	if err != nil {
+		fmt.Printf("Failed to initialize PubSub system: %v\n", err)
+		log.Error().Err(err).Msg("Failed to initialize PubSub system")
+		// Continue without PubSub - some features may be limited
+	} else {
+		fmt.Println("✅ PubSub system ready for consensus and messaging")
+		log.Info().Msg("PubSub system initialized successfully")
+		// Store reference for later use
+		_ = globalPubSub // Mark as used to avoid linting error
+	}
 
 	// Set the stream handler for receiving files for fastsync. This is crucial
 	// for the final phase of the sync process.

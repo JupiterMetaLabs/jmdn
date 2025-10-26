@@ -105,11 +105,11 @@ func (rh *ResponseHandler) UnregisterPeer(peerID peer.ID) {
 // AskForSubscription asks peers for subscription with backup node fallback
 // Ensures: 1 creator + 13 subscribers = 14 total nodes
 // Maximum 3 main nodes can fail, use backup nodes as replacements
-func AskForSubscription(gps *PubSubMessages.GossipPubSub, topic string, consensus *Consensus) error {
+func AskForSubscription(Listener *MessagePassing.StructListener, topic string, consensus *Consensus) error {
 	responseHandler := NewResponseHandler()
 
 	// First, try main peers (up to 13)
-	mainAccepted, mainTotal := askPeersForSubscription(gps, topic, consensus.PeerList.MainPeers, responseHandler, "main")
+	mainAccepted, mainTotal := askPeersForSubscription(Listener, topic, consensus.PeerList.MainPeers, responseHandler, "main")
 	mainFailed := mainTotal - mainAccepted
 
 	log.Printf("Main peers results: %d accepted, %d failed out of %d", mainAccepted, mainFailed, mainTotal)
@@ -136,7 +136,7 @@ func AskForSubscription(gps *PubSubMessages.GossipPubSub, topic string, consensu
 			backupPeersToTry = backupPeersToTry[:needed]
 		}
 
-		backupAccepted, backupTotal := askPeersForSubscription(gps, topic, backupPeersToTry, responseHandler, "backup")
+		backupAccepted, backupTotal := askPeersForSubscription(Listener, topic, backupPeersToTry, responseHandler, "backup")
 
 		log.Printf("Backup peers results: %d accepted out of %d tried", backupAccepted, backupTotal)
 
@@ -227,7 +227,7 @@ func GetVerificationStatsWithRouter(gps *PubSubMessages.GossipPubSub) map[string
 }
 
 // askPeersForSubscription asks a list of peers for subscription
-func askPeersForSubscription(gps *PubSubMessages.GossipPubSub, topic string, peerAddrs []peer.ID, responseHandler *ResponseHandler, peerType string) (int, int) {
+func askPeersForSubscription(Listener *MessagePassing.StructListener, topic string, peerAddrs []peer.ID, responseHandler *ResponseHandler, peerType string) (int, int) {
 	fmt.Println("askPeersForSubscription", peerAddrs)
 	if len(peerAddrs) == 0 {
 		log.Printf("No %s peers to ask for subscription", peerType)
@@ -240,8 +240,8 @@ func askPeersForSubscription(gps *PubSubMessages.GossipPubSub, topic string, pee
 
 	log.Printf("Asking %d %s peers for subscription to topic: %s", len(peerAddrs), peerType, topic)
 
-	// Create a BuddyNode from the GossipPubSub's host with response handler
-	buddy := MessagePassing.NewBuddyNode(gps.GetHost(), &PubSubMessages.Buddies{Buddies_Nodes: peerAddrs}, responseHandler, gps)
+	// Get host from GossipPubSub (not create BuddyNode yet)
+	host := Listener.ListenerBuddyNode.Host
 
 	for _, peerID := range peerAddrs {
 		// Register peer for response tracking
@@ -257,9 +257,9 @@ func askPeersForSubscription(gps *PubSubMessages.GossipPubSub, topic string, pee
 			defer cancel()
 
 			// Create proper message with ACK for subscription request
-			ackMessage := PubSubMessages.NewACKBuilder().True_ACK_Message(buddy.PeerID, config.Type_AskForSubscription)
+			ackMessage := PubSubMessages.NewACKBuilder().True_ACK_Message(host.ID(), config.Type_AskForSubscription)
 			message := PubSubMessages.NewMessageBuilder(nil).
-				SetSender(buddy.PeerID).
+				SetSender(host.ID()).
 				SetMessage("Requesting subscription to consensus channel").
 				SetTimestamp(time.Now().Unix()).
 				SetACK(ackMessage)
@@ -274,8 +274,8 @@ func askPeersForSubscription(gps *PubSubMessages.GossipPubSub, topic string, pee
 				return
 			}
 
-			// Send subscription request
-			if err := MessagePassing.NewStructBuddyNode(buddy).SendMessageToPeer(peerID, string(messageBytes)); err != nil {
+			// Send subscription request via SubmitMessageProtocol using existing function
+			if err := Listener.SendMessageToPeer(peerID, string(messageBytes)); err != nil {
 				log.Printf("Failed to send subscription request to %s %s: %v", peerType, peerID, err)
 				mu.Lock()
 				accepted[peerID.String()] = false
@@ -319,6 +319,7 @@ func askPeersForSubscription(gps *PubSubMessages.GossipPubSub, topic string, pee
 
 	return acceptedCount, len(peerAddrs)
 }
+
 
 // ValidateConsensusConfiguration validates that the consensus configuration is correct
 // Architecture: 1 creator + 13 main peers + 3 backup peers = 17 total allowed peers

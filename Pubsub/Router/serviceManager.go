@@ -1,8 +1,8 @@
 package Router
 
 import (
-	PubSubConnector "gossipnode/AVC/BuddyNodes/MessagePassing/Service/PubSubConnector"
 	Service "gossipnode/AVC/BuddyNodes/MessagePassing/Service"
+	PubSubConnector "gossipnode/AVC/BuddyNodes/MessagePassing/Service/PubSubConnector"
 	AVCStruct "gossipnode/config/PubSubMessages"
 )
 
@@ -17,6 +17,14 @@ type ServiceManager struct {
 
 // NewServiceManager creates a new service manager with all services
 func NewServiceManager(pubSub *AVCStruct.GossipPubSub, buddyNode *AVCStruct.BuddyNode) *ServiceManager {
+	// Validate inputs
+	if pubSub == nil {
+		panic("NewServiceManager: pubSub cannot be nil")
+	}
+	if buddyNode == nil {
+		panic("NewServiceManager: buddyNode cannot be nil")
+	}
+
 	// Convert the buddyNode into struct
 	return &ServiceManager{
 		subscriptionService:  PubSubConnector.NewSubscriptionService(pubSub),

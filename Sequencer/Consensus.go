@@ -136,13 +136,6 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// 3. Add the buddies to the temporary cache
 	consensus.AddBuddyNodesTemporarily(buddies)
 
-	// First create the pubsub channel
-	var err error
-	consensus.gossipnode, err = Pubsub.NewGossipPubSub(consensus.Host, config.PubSub_ConsensusChannel)
-	if err != nil {
-		return fmt.Errorf("failed to create pubsub: %v", err)
-	}
-
 	// Create allowed peers list (1 creator + 13 main + 3 backup = 17 total)
 	allowedPeers := make([]peer.ID, 0, config.MaxMainPeers+config.MaxBackupPeers+1)
 
@@ -157,6 +150,13 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	log.Printf("Creating pubsub channel with %d allowed peers (1 creator + %d main + %d backup)",
 		len(allowedPeers), len(consensus.PeerList.MainPeers), len(consensus.PeerList.BackupPeers))
+
+	// First create the pubsub channel
+	var err error
+	consensus.gossipnode, err = Pubsub.NewGossipPubSub(consensus.Host, config.PubSub_ConsensusChannel)
+	if err != nil {
+		return fmt.Errorf("failed to create pubsub: %v", err)
+	}
 
 	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.PubSub_ConsensusChannel, true, allowedPeers); err != nil {
 		return fmt.Errorf("failed to create pubsub channel: %v", err)
@@ -197,7 +197,7 @@ func (consensus *Consensus) RequestSubscriptionPermission() error {
 	log.Printf("Requesting subscription permission from buddy nodes for channel: %s", consensus.Channel)
 
 	// Use the AskForSubscription function from Communication.go
-	err := AskForSubscription(consensus.gossipnode.GetGossipPubSub(), consensus.Channel, consensus)
+	err := AskForSubscription(consensus.ListenerNode, consensus.Channel, consensus)
 	if err != nil {
 		return fmt.Errorf("failed to get subscription permission: %w", err)
 	}

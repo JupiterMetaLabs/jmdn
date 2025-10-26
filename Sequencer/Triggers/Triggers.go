@@ -7,9 +7,11 @@ import (
 	"gossipnode/AVC/BFT/bft"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service/PubSubConnector"
 	"gossipnode/config"
+	voteaggregation "gossipnode/AVC/VoteModule"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/seednode"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -18,7 +20,12 @@ import (
 // This trigger is used to trigger the Close the accepting messages from the nodes for listener protocol
 const ListeningTriggerMessage = "ListeningTrigger"
 const ListeningTriggerBufferTime = 20 * time.Second
-const BFTTriggerBufferTime = 27 * time.Second
+const CRDTDataSubmitBufferTime = 25 * time.Second
+
+// Global variable to store vote data locally
+var globalVoteData map[string]int8
+
+const BFTTriggerBufferTime = 30 * time.Second
 
 // Global variables for trigger management
 var (
@@ -60,6 +67,145 @@ func InitializeTriggers(pubSub *AVCStruct.GossipPubSub, buddyID string) error {
 
 	log.Printf("Triggers initialized with subscription service and BFT engine")
 	return nil
+}
+
+// extractVoteDataFromCRDT extracts vote data from CRDT and stores peerID and vote value in a hashmap
+func extractVoteDataFromCRDT(buddyNode *AVCStruct.BuddyNode) (map[string]int8, error) {
+	voteData := make(map[string]int8)
+
+	if buddyNode == nil || buddyNode.CRDTLayer == nil {
+		return nil, fmt.Errorf("buddy node or CRDT layer not available")
+	}
+
+	engine := buddyNode.CRDTLayer.CRDTLayer
+
+	// Try to get votes from common vote keys
+	voteKeys := []string{"votes", "consensus_votes", "block_votes", "vote_data"}
+
+	for _, key := range voteKeys {
+		elements, exists := engine.GetSet(key)
+		if exists && len(elements) > 0 {
+			log.Printf("Found vote data in key '%s' with %d elements", key, len(elements))
+
+			for _, element := range elements {
+				// Parse element format: "peerID:voteJSON"
+				parts := strings.SplitN(element, ":", 2)
+				if len(parts) != 2 {
+					log.Printf("Invalid vote element format: %s", element)
+					continue
+				}
+
+				peerIDStr := parts[0]
+				voteJSON := parts[1]
+
+				// Unmarshal the Vote JSON to get the vote value
+				var vote AVCStruct.Vote
+				if err := json.Unmarshal([]byte(voteJSON), &vote); err != nil {
+					log.Printf("Failed to unmarshal vote JSON: %s, error: %v", voteJSON, err)
+					continue
+				}
+
+				// Validate vote value
+				if vote.Vote != 1 && vote.Vote != -1 {
+					log.Printf("Invalid vote value: %d", vote.Vote)
+					continue
+				}
+
+				// Store peerID and vote value in hashmap
+				voteData[peerIDStr] = vote.Vote
+
+				log.Printf("Extracted vote: peer=%s, vote=%d", peerIDStr, vote.Vote)
+			}
+		}
+	}
+
+	if len(voteData) == 0 {
+		return nil, fmt.Errorf("no valid vote data found in CRDT")
+	}
+
+	log.Printf("Successfully extracted %d vote entries", len(voteData))
+	return voteData, nil
+}
+
+// processVoteData processes the extracted vote data and stores it in global variable
+func processVoteData(voteData map[string]int8) (int8, error){
+	log.Printf("Processing %d vote entries", len(voteData))
+
+	// Store vote data in global variable
+	globalVoteData = voteData
+	// Get the weights of the peers
+	client, err := seednode.NewClient(config.SeedNodeURL)
+	if err != nil {
+		log.Printf("Failed to get weights of peers: %v", err)
+		return 0, fmt.Errorf("failed to get weights of peers: %v", err)
+	}
+	weights, err := client.ListWeightsofPeers()
+	if err != nil {
+		log.Printf("Failed to get weights of peers: %v", err)
+		return 0, fmt.Errorf("failed to get weights of peers: %v", err)
+	}
+	log.Printf("Weights of peers: %v", weights)
+
+	log.Printf("Stored %d vote entries in global variable", len(globalVoteData))
+
+	// Once you get the weights and peers then you should submit the to the votemodule.VoteAggregation function.
+	result, err := voteaggregation.VoteAggregation(weights, globalVoteData)
+	if err != nil {
+		log.Printf("Failed to aggregate votes: %v", err)
+		return 0, fmt.Errorf("failed to aggregate votes: %v", err)
+	}
+
+	log.Printf("Vote aggregation result: %v", result)
+
+	if result {
+		return 1, nil
+	} else {
+		return -1, nil
+	}
+}
+
+// GetGlobalVoteData returns the stored vote data from global variable
+func GetGlobalVoteData() map[string]int8 {
+	return globalVoteData
+}
+
+// ClearGlobalVoteData clears the global vote data
+func ClearGlobalVoteData() {
+	globalVoteData = nil
+	log.Printf("Cleared global vote data")
+}
+
+func CRDTDataSubmitTrigger(){
+	// Submit the CRDT data to the @votemodule.VoteAggregation function.
+	time.AfterFunc(CRDTDataSubmitBufferTime, func() {
+		log.Printf("CRDTDataSubmitTrigger: Starting CRDT data aggregation")
+
+		// Get CRDT data from the global buddy node
+		buddyNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
+		if buddyNode == nil || buddyNode.CRDTLayer == nil {
+			log.Printf("CRDTDataSubmitTrigger: Buddy node or CRDT layer not available")
+			return
+		}
+
+		// Extract vote data from CRDT
+		voteData, err := extractVoteDataFromCRDT(buddyNode)
+		if err != nil {
+			log.Printf("CRDTDataSubmitTrigger: Failed to extract vote data: %v", err)
+			return
+		}
+
+		log.Printf("CRDTDataSubmitTrigger: Extracted %d vote entries", len(voteData))
+
+		// Process the vote data
+		result, err := processVoteData(voteData)
+		if err != nil {
+			log.Printf("CRDTDataSubmitTrigger: Failed to process vote data: %v", err)
+			return
+		}
+
+		log.Printf("CRDTDataSubmitTrigger: Processed vote data: %v", result)
+
+	})
 }
 
 func ListeningTrigger() {

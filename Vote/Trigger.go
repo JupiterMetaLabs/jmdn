@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"gossipnode/AVC/BuddyNodes/MessagePassing"
+	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/config/PubSubMessages"
