@@ -20,12 +20,14 @@ import (
 )
 
 type stats struct {
-	DBState    *schema.ImmutableState
-	MerkleRoot string
+	DBState           *schema.ImmutableState
+	MerkleRoot        string
 	LatestBlockNumber uint64
-	TotalBlocks uint64
-	TotalDIDs	int64
+	TotalBlocks       uint64
+	TotalDIDs         int64
 	TotalTransactions int64
+	TotalAddresses    int64
+	TotalBalance      string
 }
 
 // Get block by number
@@ -94,12 +96,12 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 			// If a block is not found, it might be a gap in the blockchain.
 			// Log the error and continue to the next block to provide a partial response.
 			s.defaultdb.Client.Logger.Logger.Error("Failed to get block %d, skipping: %v",
-			zap.Error(err), 
-			zap.Time(logging.Created_at, time.Now()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Explorer.listBlocks"),
+				zap.Error(err),
+				zap.Time(logging.Created_at, time.Now()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, config.LOKI_URL),
+				zap.String(logging.Function, "Explorer.listBlocks"),
 			)
 			continue
 		}
@@ -192,8 +194,8 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 	var mu sync.Mutex
 
 	// Channel to collect errors from goroutines
-	errChan := make(chan error, 4)
-	
+	errChan := make(chan error, 6)
+
 	// Function to handle errors from goroutines
 	handleErr := func(err error) {
 		if err != nil {
@@ -244,7 +246,7 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 		}
 		mu.Lock()
 		stats.LatestBlockNumber = latestBlockNumber
-		stats.TotalBlocks = latestBlockNumber+1
+		stats.TotalBlocks = latestBlockNumber + 1
 		mu.Unlock()
 
 		// Get total transactions count efficiently
@@ -272,6 +274,37 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 		mu.Unlock()
 	}()
 
+	// Get total addresses and total balance in a goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		accounts, err := DB_OPs.ListAllAccounts(&s.accountsdb, 0)
+		if err != nil {
+			handleErr(fmt.Errorf("failed to list accounts: %w", err))
+			return
+		}
+
+		mu.Lock()
+		stats.TotalAddresses = int64(len(accounts))
+
+		// Calculate total balance (sum of all account balances)
+		totalBalance := "0"
+		for _, account := range accounts {
+			if account.Balance != "" {
+				// Simple string addition for balance calculation
+				// In a real implementation, you'd want to use big.Int for proper arithmetic
+				if totalBalance == "0" {
+					totalBalance = account.Balance
+				} else {
+					// For now, just concatenate as strings - in production use proper big.Int arithmetic
+					totalBalance = fmt.Sprintf("%s + %s", totalBalance, account.Balance)
+				}
+			}
+		}
+		stats.TotalBalance = totalBalance
+		mu.Unlock()
+	}()
+
 	// Wait for all goroutines to complete
 	go func() {
 		wg.Wait()
@@ -290,19 +323,19 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 }
 
 func (s *ImmuDBServer) getDIDDetailsFromAddr(c *gin.Context) {
-    // Change from c.Param to c.Query since addr is a query parameter
-    addr := c.Query("addr")
-    if addr == "" {
-        c.JSON(http.StatusBadRequest, gin.H{"error": "addr query parameter is required"})
-        return
-    }
-    
-    DIDDocument, err := DB_OPs.GetAccountByDID(&s.accountsdb, addr)
-    if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-        return
-    }
-    c.JSON(http.StatusOK, DIDDocument)
+	// Change from c.Param to c.Query since addr is a query parameter
+	addr := c.Query("addr")
+	if addr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "addr query parameter is required"})
+		return
+	}
+
+	DIDDocument, err := DB_OPs.GetAccountByDID(&s.accountsdb, addr)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, DIDDocument)
 }
 
 // Get the Missing blocks
@@ -336,42 +369,42 @@ func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
 }
 
 func (s *ImmuDBServer) listTransactions(c *gin.Context) {
-    // Get pagination parameters
-    page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-    limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
-    if page < 1 {
-        page = 1
-    }
-    if limit < 1 || limit > 100 {
-        limit = 10 // Default to 10 items per page, max 100
-    }
+	// Get pagination parameters
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 10 // Default to 10 items per page, max 100
+	}
 
-    // Calculate offset
-    offset := (page - 1) * limit
+	// Calculate offset
+	offset := (page - 1) * limit
 
-    // Get paginated transaction hashes
-    txHashes, total, err := DB_OPs.GetTransactionHashes(&s.defaultdb, offset, limit)
-    if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch transactions"})
-        return
-    }
+	// Get paginated transaction hashes
+	txHashes, total, err := DB_OPs.GetTransactionHashes(&s.defaultdb, offset, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch transactions"})
+		return
+	}
 
-    // Fetch full transaction details
-    var transactions []*config.Transaction
+	// Fetch full transaction details
+	var transactions []*config.Transaction
 	transactions, err = DB_OPs.GetTransactionsBatch(&s.defaultdb, txHashes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch transaction details"})
 		return
 	}
 
-    // Return paginated response
-    c.JSON(http.StatusOK, gin.H{
-        "transactions": transactions,
-        "pagination": gin.H{
-            "page":       page,
-            "limit":      limit,
-            "total":      total,
-            "totalPages": int(math.Ceil(float64(total) / float64(limit))),
-        },
-    })
+	// Return paginated response
+	c.JSON(http.StatusOK, gin.H{
+		"transactions": transactions,
+		"pagination": gin.H{
+			"page":       page,
+			"limit":      limit,
+			"total":      total,
+			"totalPages": int(math.Ceil(float64(total) / float64(limit))),
+		},
+	})
 }

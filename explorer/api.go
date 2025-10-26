@@ -22,13 +22,14 @@ const (
 
 // ImmuDBServer represents the ImmuDB API server
 type ImmuDBServer struct {
-	defaultdb  config.PooledConnection
-	accountsdb config.PooledConnection
-	router     *gin.Engine
+	defaultdb      config.PooledConnection
+	accountsdb     config.PooledConnection
+	router         *gin.Engine
+	enableExplorer bool
 }
 
 // NewImmuDBServer creates a new ImmuDB API server
-func NewImmuDBServer() (*ImmuDBServer, error) {
+func NewImmuDBServer(enableExplorer bool) (*ImmuDBServer, error) {
 	// Create ImmuDB client
 	defaultdb, err := DB_OPs.GetMainDBConnection()
 	if err != nil {
@@ -45,9 +46,10 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 
 	// Create server instance
 	server := &ImmuDBServer{
-		defaultdb:  *defaultdb,
-		accountsdb: *accountsdb,
-		router:     router,
+		defaultdb:      *defaultdb,
+		accountsdb:    *accountsdb,
+		router:        router,
+		enableExplorer: enableExplorer,
 	}
 
 	// Set up routes
@@ -69,6 +71,12 @@ func (s *ImmuDBServer) setupRoutes() {
 
 	// Add CORS middleware
 	s.router.Use(cors())
+
+	// Serve static HTML frontend only if explorer is enabled
+	if s.enableExplorer {
+		s.router.StaticFile("/", "./explorer/index.html")
+		s.router.StaticFile("/explorer", "./explorer/index.html")
+	}
 
 	// API routes
 	api := s.router.Group("/api/block")
@@ -124,6 +132,19 @@ func (s *ImmuDBServer) setupRoutes() {
 	stats := s.router.Group("/api/stats")
 	{
 		stats.GET("/", s.getStats)
+	}
+
+	// Address and balance endpoints
+	addresses := s.router.Group("/api/addresses")
+	{
+		// List all addresses with balances
+		addresses.GET("/", s.listAddresses)
+
+		// Get specific address details and balance
+		addresses.GET("/:address", s.getAddressDetails)
+
+		// Get transactions for a specific address
+		addresses.GET("/:address/transactions", s.getAddressTransactions)
 	}
 
 	// Websockets to stream realtime blocks
