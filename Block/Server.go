@@ -14,8 +14,10 @@ import (
 
 	"gossipnode/DB_OPs"
 	"gossipnode/Security"
+	"gossipnode/Sequencer"
 	"gossipnode/config"
 	"gossipnode/logging"
+	"gossipnode/messaging"
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
 
@@ -23,6 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gin-gonic/gin"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"go.uber.org/zap"
@@ -257,6 +260,88 @@ func Startserver(port int, h host.Host, chainID int) {
 }
 
 func processZKBlock(c *gin.Context) {
+	// Parse the block data from the request
+	var block config.ZKBlock
+	if err := c.ShouldBindJSON(&block); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid block data: %v", err)})
+		return
+	}
+
+	// Validate block data
+	if len(block.Transactions) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "block contains no transactions"})
+		return
+	}
+
+	if block.Status != "verified" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "block has not been verified by ZKVM"})
+		return
+	}
+
+	// Create consensus instance and start consensus process
+	peerList := Sequencer.PeerList{
+		MainPeers:   []peer.ID{},
+		BackupPeers: []peer.ID{},
+	}
+	consensus := Sequencer.NewConsensus(peerList, globalHost)
+	// Debugging
+	fmt.Printf("Consensus: %+v\n", consensus)
+	if err := consensus.Start(&block); err != nil {
+		fmt.Printf("Error starting consensus process: %+v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("failed to start consensus process: %v", err),
+		})
+		return
+	}
+
+	// Start block propagation as a new goroutine after consensus setup
+	go func() {
+		// Create consensus message from the consensus data
+		consensusMessage := consensus.ZKBlockData
+		if consensusMessage == nil {
+			log.Error().Msg("Consensus message is nil, cannot propagate block")
+			return
+		}
+
+		if err := messaging.PropagateZKBlock(globalHost, consensusMessage); err != nil {
+			log.Error().
+				Err(err).
+				Str("block_hash", block.BlockHash.Hex()).
+				Msg("Failed to propagate block after consensus setup")
+		} else {
+			log.Info().
+				Str("block_hash", block.BlockHash.Hex()).
+				Msg("Block propagated successfully after consensus setup")
+		}
+	}()
+
+	for _, tx := range block.Transactions {
+		LogTransaction(
+			tx.Hash.Hex(),
+			tx.From.Hex(),
+			tx.To.Hex(),
+			tx.Value.String(),
+			fmt.Sprintf("%d", tx.Type),
+		)
+	}
+
+	txLogger.Info().
+		Uint64("block_number", block.BlockNumber).
+		Str("block_hash", block.BlockHash.Hex()).
+		Int("tx_count", len(block.Transactions)).
+		Msg("Block processed")
+
+	// Return success
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"message": fmt.Sprintf("Block %d with %d transactions processed and propagated successfully",
+			block.BlockNumber, len(block.Transactions)),
+		"block_hash":   block.BlockHash.Hex(),
+		"block_number": block.BlockNumber,
+	})
+}
+
+func processZKBlockNoConsensus(c *gin.Context) {
 	fmt.Println("=== DEBUG: processZKBlock API called ===")
 
 	// Parse the block data from the request
