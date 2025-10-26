@@ -104,12 +104,43 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 		// Subscribe to BuddyNodesMessageProtocol
 		if err := Subscription.Subscribe(gps, log.Consensus_TOPIC, func(msg *AVCStruct.GossipMessage) {
 			log.LogMessagesInfo(fmt.Sprintf("Received message on BuddyNodesMessageProtocol: %s", msg.ID), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
+			// print the log as messabe
+			fmt.Println("Received message for the subscription: ", msg.Data.Message)
+			fmt.Println("ACK: ", msg.Data.ACK)
 		}); err != nil {
 			log.LogMessagesError(fmt.Sprintf("Failed to subscribe to BuddyNodesMessageProtocol: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
+			fmt.Println("Failed to subscribe to BuddyNodesMessageProtocol: ", err)
+			fmt.Println("Sending subscription response: false")
+			fmt.Println("--------------------------------")	
 			sendSubscriptionResponse(s, false)
 			return
 		}
+		fmt.Println("--------------------------------")
+		fmt.Println("Subscribed to BuddyNodesMessageProtocol")
+		fmt.Println("Sending subscription response: true")
+		fmt.Println("--------------------------------")
 		sendSubscriptionResponse(s, true)
+	case config.Type_SubscriptionResponse:
+		// Handle subscription response from buddy nodes
+		log.LogMessagesInfo(fmt.Sprintf("Received subscription response from %s: %s", s.Conn().RemotePeer(), message.Message),
+			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("topic", log.Messages_TOPIC),
+			zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
+
+		// Route the response to the ResponseHandler if available
+		if StructListenerNode.ResponseHandler != nil {
+			accepted := message.GetACK().GetStatus() == "ACK_TRUE"
+			StructListenerNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), accepted)
+			log.LogMessagesInfo("Successfully routed subscription response to ResponseHandler",
+				zap.String("peer", s.Conn().RemotePeer().String()),
+				zap.String("accepted", fmt.Sprintf("%t", accepted)),
+				zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
+		} else {
+			log.LogMessagesError("No ResponseHandler set - subscription response not routed",
+				nil,
+				zap.String("peer", s.Conn().RemotePeer().String()),
+				zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
+		}
 	default:
 		log.LogMessagesError(fmt.Sprintf("Unknown message type received from %s: %s", s.Conn().RemotePeer(), msg), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 	}
