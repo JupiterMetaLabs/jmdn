@@ -86,10 +86,10 @@ func PutMainDBConnection(conn *config.PooledConnection) {
 
 // InitMainDBPool initializes the main database connection pool.
 func InitMainDBPool(poolConfig *config.ConnectionPoolConfig) error {
-	return InitMainDBPoolWithLoki(poolConfig, true)
+	return InitMainDBPoolWithLoki(poolConfig, true, config.DBUsername, config.DBPassword)
 }
 
-func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki bool) error {
+func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki bool, username, password string) error {
 	var initErr error
 
 	mainDBPoolOnce.Do(func() {
@@ -111,7 +111,7 @@ func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki 
 			zap.String(logging.Function, "DB_OPs.InitMainDBPool"),
 		)
 		fmt.Println("Connecting to main DB...")
-		if err := connectToMainDB(config.DBUsername, config.DBPassword); err != nil {
+		if err := connectToMainDB(username, password); err != nil {
 			fmt.Printf("Failed to connect to main DB: %v\n", err)
 			initErr = fmt.Errorf("failed to ensure main DB selected: %w", err)
 			logger.Logger.Error("Main DB setup failed",
@@ -132,8 +132,8 @@ func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki 
 			DBAddress:  config.DBAddress,
 			DBPort:     config.DBPort,
 			DBName:     config.DBName,
-			DBUsername: config.DBUsername,
-			DBPassword: config.DBPassword,
+			DBUsername: username,
+			DBPassword: password,
 		}
 
 		mainDBPool = config.NewConnectionPool(poolCfg, logger, poolingConfig)

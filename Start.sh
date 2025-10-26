@@ -214,7 +214,7 @@ start_daemon() {
     echo ""
 
     # Build jmdn command with conditional alias
-    JMDN_CMD="./jmdn -heartbeat 10 -api 8090 -blockgen 15050 -did localhost:15052 -cli 15053 -seednode 34.174.233.203:17002 -facade 8545 -ws 8546 -chainID 7000700 -metrics 8082"
+    JMDN_CMD="./jmdn -heartbeat 10 -api 8090 -blockgen 15050 -did localhost:15052 -cli 15053 -seednode 34.174.233.203:17002 -facade 8545 -ws 8546 -chainID 7000700 -metrics 8082 -mempool 34.129.53.115:18001"
     
     if [ "$ALIAS" != "default-node" ]; then
         JMDN_CMD="$JMDN_CMD -alias \"$ALIAS\""
@@ -364,7 +364,7 @@ start_network() {
     echo ""
 
     # Build jmdn command with conditional alias
-    JMDN_CMD="./jmdn -heartbeat 10 -api 8090 -blockgen 15050 -did localhost:15052 -cli 15053 -seednode 34.174.233.203:17002 -facade 8545 -ws 8546 -chainID 7000700 -metrics 8082"
+    JMDN_CMD="./jmdn -heartbeat 10 -api 8090 -blockgen 15050 -did localhost:15052 -cli 15053 -seednode 34.174.233.203:17002 -facade 8545 -ws 8546 -chainID 7000700 -metrics 8082 -mempool 34.129.53.115:18001 "
     
     if [ "$ALIAS" != "default-node" ]; then
         JMDN_CMD="$JMDN_CMD -alias \"$ALIAS\""
