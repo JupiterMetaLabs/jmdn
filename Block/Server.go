@@ -258,7 +258,7 @@ func Startserver(port int, h host.Host, chainID int) {
 
 func processZKBlock(c *gin.Context) {
 	fmt.Println("=== DEBUG: processZKBlock API called ===")
-	
+
 	// Parse the block data from the request
 	var block config.ZKBlock
 	if err := c.ShouldBindJSON(&block); err != nil {
@@ -266,7 +266,7 @@ func processZKBlock(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid block data: %v", err)})
 		return
 	}
-	fmt.Printf("DEBUG: Successfully parsed block data - Block #%d, Hash: %s, Txns: %d\n", 
+	fmt.Printf("DEBUG: Successfully parsed block data - Block #%d, Hash: %s, Txns: %d\n",
 		block.BlockNumber, block.BlockHash.Hex(), len(block.Transactions))
 
 	// Validate block data
@@ -355,7 +355,7 @@ func processZKBlock(c *gin.Context) {
 	// Log transactions
 	fmt.Println("DEBUG: Logging transaction details...")
 	for i, tx := range block.Transactions {
-		fmt.Printf("DEBUG: Transaction %d - Hash: %s, From: %s, To: %s, Value: %s\n", 
+		fmt.Printf("DEBUG: Transaction %d - Hash: %s, From: %s, To: %s, Value: %s\n",
 			i+1, tx.Hash.Hex(), tx.From.Hex(), tx.To.Hex(), tx.Value.String())
 		LogTransaction(
 			tx.Hash.Hex(),

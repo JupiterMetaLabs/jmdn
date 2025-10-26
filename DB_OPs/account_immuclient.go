@@ -463,7 +463,7 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 // UpdateAccountBalance updates the balance for a Account
 func UpdateAccountBalance(PooledConnection *config.PooledConnection, address common.Address, newBalance string) error {
 	fmt.Printf("=== DEBUG: UpdateAccountBalance called for address %s with balance %s ===\n", address.Hex(), newBalance)
-	
+
 	var err error
 	var shouldReturnConnection bool = false
 	if PooledConnection == nil || PooledConnection.Client == nil {

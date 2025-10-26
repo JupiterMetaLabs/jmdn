@@ -69,7 +69,7 @@ def send_eth_test():
         "blockhash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
         "gaslimit": 30000000,
         "gasused": 21000,
-        "blocknumber": 7
+        "blocknumber": 8
     }
     
     print(f"\n3. ZKBlock Details:")
