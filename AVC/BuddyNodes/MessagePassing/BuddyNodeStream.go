@@ -58,6 +58,15 @@ func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(s network.
 		zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
 
 	// Handle special cases that need direct response
+	// Check if ACK is not nil before accessing it
+	if message.GetACK() == nil {
+		log.LogConsensusError("Received message with nil ACK", nil,
+			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("function", "ListenMessages.HandleBuddyNodesMessageStream"))
+		return
+	}
+
 	switch message.GetACK().GetStage() {
 	case config.Type_StartPubSub:
 		StructBuddyNode.handleStartPubSub(s)

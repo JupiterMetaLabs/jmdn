@@ -61,7 +61,6 @@ func (b *BFT) RunConsensus(
 		config:      b.config,
 		myBuddyID:   myBuddyID,
 		myDecision:  myBuddy.Decision,
-		privateKey:  myBuddy.PrivateKey,
 		buddies:     buddyMap,
 		threshold:   threshold,
 		round:       round,
@@ -70,7 +69,6 @@ func (b *BFT) RunConsensus(
 		prepareMsgs: make(map[string]*PrepareMessage),
 		commitMsgs:  make(map[string]*CommitMessage),
 		lastSeqSeen: make(map[string]uint64),
-		signer:      signer,
 	}
 
 	// Phase 3a: PREPARE

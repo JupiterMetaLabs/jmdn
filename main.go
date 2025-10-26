@@ -101,9 +101,9 @@ func printDashes() {
 	fmt.Println("\n" + strings.Repeat("-", 50) + "\n")
 }
 
-func StartAPIServer(address string) error {
+func StartAPIServer(address string, enableExplorer bool) error {
 	// Create ImmuDB API server
-	server, err := explorer.NewImmuDBServer()
+	server, err := explorer.NewImmuDBServer(enableExplorer)
 	if err != nil {
 		return fmt.Errorf("failed to create ImmuDB API server: %w", err)
 	}
@@ -158,7 +158,7 @@ func initMainDBPool(enableLoki bool, username, password string) error {
 	// Also initialize the DB_OPs main pool
 	fmt.Println("Initializing DB_OPs main pool...")
 	poolConfig := config.DefaultConnectionPoolConfig()
-	if err := DB_OPs.InitMainDBPoolWithLoki(poolConfig, enableLoki); err != nil {
+	if err := DB_OPs.InitMainDBPoolWithLoki(poolConfig, enableLoki, username, password); err != nil {
 		return fmt.Errorf("failed to initialize DB_OPs main pool: %w", err)
 	}
 	fmt.Println("DB_OPs main pool initialized successfully")
@@ -205,6 +205,7 @@ func main() {
 	metricsPort := flag.String("metrics", "8080", "Port for Prometheus metrics")
 	enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
 	apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
+	enableExplorer := flag.Bool("explorer", false, "Enable blockchain explorer UI (default: false)")
 	blockgen := flag.Int("blockgen", 0, "Run Block creator API on specified port (0 = disabled)")
 	mempoolgRPC := flag.String("mempool", "localhost:15051", "Mempool gRPC server address")
 	cliGRPC := flag.Int("cli", 15053, "CLI gRPC server address")
@@ -471,9 +472,15 @@ func main() {
 			log.Info().Msgf("Starting ImmuDB API on port %d", *apiPort)
 			fmt.Printf("\nImmuDB API available at http://localhost:%d/api\n", *apiPort)
 
+			if *enableExplorer {
+				fmt.Printf("🌐 Blockchain Explorer UI available at http://localhost:%d\n", *apiPort)
+			} else {
+				fmt.Printf("ℹ️  Blockchain Explorer UI disabled (use --explorer flag to enable)\n")
+			}
+
 			// Initialize API server
 			apiAddr := fmt.Sprintf(":%d", *apiPort)
-			if err := StartAPIServer(apiAddr); err != nil {
+			if err := StartAPIServer(apiAddr, *enableExplorer); err != nil {
 				log.Error().Err(err).Msg("Failed to start API server")
 			}
 		}()

@@ -12,7 +12,8 @@ import (
 	"net"
 	"time"
 
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"gossipnode/config/PubSubMessages"
+
 	"github.com/libp2p/go-libp2p/core/host"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -28,7 +29,7 @@ type BuddyService struct {
 	buddyID      string
 	privateKey   []byte
 	libp2pHost   host.Host
-	pubsub       *pubsub.PubSub
+	gps          *PubSubMessages.GossipPubSub // Your existing GossipPubSub instance
 	sequencerURL string
 
 	bftConfig Config
@@ -45,7 +46,7 @@ func NewBuddyService(
 	buddyID string,
 	privateKey []byte,
 	libp2pHost host.Host,
-	ps *pubsub.PubSub,
+	gps *PubSubMessages.GossipPubSub, // Pass your existing GossipPubSub
 	sequencerURL string,
 	tlsCfg *tls.Config,
 ) *BuddyService {
@@ -59,10 +60,10 @@ func NewBuddyService(
 		buddyID:      buddyID,
 		privateKey:   privateKey,
 		libp2pHost:   libp2pHost,
-		pubsub:       ps,
+		gps:          gps,
 		sequencerURL: sequencerURL,
 		bftConfig:    config,
-		signer:       NewLocalSigner(privateKey), // wrapped signer abstraction
+		signer:       NewLocalSigner(privateKey),
 		tlsCfg:       tlsCfg,
 	}
 }
@@ -124,29 +125,28 @@ func (s *BuddyService) ReportResult(
 func (s *BuddyService) runBFTConsensus(ctx context.Context, req *pb.BFTRequest) {
 	log.Printf("🔧 [%s] Starting BFT consensus for round %d", s.buddyID, req.Round)
 
-	// Step 1: Join GossipSub topic
-	messenger, err := NewGossipSubMessenger(ctx, s.libp2pHost, s.pubsub, req.GossipsubTopic)
+	// Step 1: Create BFT engine
+	bftEngine := New(s.bftConfig)
+
+	// Step 2: Create BFT adapter with your existing GossipPubSub
+	adapter, err := NewBFTPubSubAdapter(
+		ctx,
+		s.gps, // Use your existing GossipPubSub instance
+		bftEngine,
+		req.GossipsubTopic, // channel name
+	)
 	if err != nil {
-		s.reportFailure(req, fmt.Sprintf("failed to join gossipsub: %v", err))
+		s.reportFailure(req, fmt.Sprintf("failed to create BFT adapter: %v", err))
 		return
 	}
-	defer messenger.Stop()
+	defer adapter.Close()
 
-	// Start listening
-	if err := messenger.Start(); err != nil {
-		s.reportFailure(req, fmt.Sprintf("failed to start messenger: %v", err))
-		return
-	}
+	log.Printf("✅ [%s] BFT adapter initialized on channel: %s", s.buddyID, req.GossipsubTopic)
 
-	log.Printf("✅ [%s] Joined GossipSub topic: %s", s.buddyID, req.GossipsubTopic)
+	// Step 3: Wait for network readiness (optional, but good practice)
+	time.Sleep(2 * time.Second)
 
-	// Step 2: Wait for mesh readiness
-	if err := waitForMesh(ctx, messenger, len(req.AllBuddies)); err != nil {
-		s.reportFailure(req, fmt.Sprintf("mesh readiness failed: %v", err))
-		return
-	}
-
-	// Step 3: Convert protobuf buddies → BFT inputs
+	// Step 4: Convert protobuf buddies → BFT inputs
 	bftInputs := make([]BuddyInput, len(req.AllBuddies))
 	for i, buddy := range req.AllBuddies {
 		decision := Accept
@@ -162,29 +162,22 @@ func (s *BuddyService) runBFTConsensus(ctx context.Context, req *pb.BFTRequest) 
 		if buddy.Id == s.buddyID {
 			bftInputs[i].PrivateKey = s.privateKey
 		}
-		// Register public keys for signature validation (used by messenger)
-		if len(buddy.PublicKey) > 0 {
-			RegisterPublicKey(buddy.Id, buddy.PublicKey)
-		}
 	}
 
-	// Step 4: Run BFT consensus
-	engine := New(s.bftConfig)
-	result, err := engine.RunConsensus(
+	// Step 5: Run BFT consensus through the adapter
+	result, err := adapter.ProposeConsensus(
 		ctx,
 		req.Round,
 		req.BlockHash,
 		s.buddyID,
 		bftInputs,
-		messenger,
-		s.signer, // Pass signer explicitly (no setSigner needed)
 	)
 	if err != nil {
 		s.reportFailure(req, fmt.Sprintf("consensus failed: %v", err))
 		return
 	}
 
-	// Step 5: Report result
+	// Step 6: Report result
 	log.Printf("✅ [%s] Consensus complete - Decision: %s (Accepted: %v, Duration: %v)",
 		s.buddyID, result.Decision, result.BlockAccepted, result.TotalDuration)
 	s.reportResult(req, result)
@@ -304,30 +297,8 @@ func (s *BuddyService) StartServer(port int) error {
 }
 
 // =============================================================================
-// Mesh readiness
+// Utility
 // =============================================================================
-
-// waitForMesh waits until the GossipSub mesh has expected peers or times out.
-func waitForMesh(ctx context.Context, messenger *GossipSubMessenger, expectedPeers int) error {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	ticker := time.NewTicker(300 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-timeoutCtx.Done():
-			return fmt.Errorf("mesh readiness timed out after 10s")
-		case <-ticker.C:
-			peers := messenger.topic.ListPeers()
-			if len(peers) >= expectedPeers-1 {
-				log.Printf("🌐 Mesh ready with %d peers (expected %d)", len(peers), expectedPeers)
-				return nil
-			}
-		}
-	}
-}
 
 // GetID returns the BuddyService's ID (exported for integration and logging).
 func (s *BuddyService) GetID() string {

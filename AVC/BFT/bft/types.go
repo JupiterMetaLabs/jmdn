@@ -99,7 +99,7 @@ func DefaultConfig() Config {
 		ByzantineTolerance: 0, // Auto-calc
 		PrepareTimeout:     8 * time.Second,
 		CommitTimeout:      8 * time.Second,
-		RequireSignatures:  true,
+		RequireSignatures:  false,
 		ValidateProofs:     true,
 		MaxProofSize:       256,
 	}

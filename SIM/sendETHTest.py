@@ -12,7 +12,7 @@ def send_eth_test():
     print("="*50)
     
     # Create tester
-    tester = ZKBlockTester("http://localhost:15050")
+    tester = ZKBlockTester("http://192.168.100.81:15050")
     
     # Check if server is running
     print("1. Checking server health...")
@@ -25,7 +25,8 @@ def send_eth_test():
     # Specific addresses and amount
     to_address = "0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2"
     from_address = "0x69EE9a32109EE1CC8c95b49Ad1D4dDAEBb46Db45"
-    amount_wei = 0 * 10**18  # 2 ETH in wei
+    amount = 0
+    amount_wei = int(amount * 10**18 )# 2 ETH in wei
     
     print(f"\n2. Creating transaction:")
     print(f"   From: {from_address}")
