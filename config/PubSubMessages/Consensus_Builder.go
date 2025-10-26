@@ -4,7 +4,6 @@ import (
 	"gossipnode/config"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 func NewConsensusMessageBuilder(consensusMessage *ConsensusMessage) *ConsensusMessage {
@@ -48,27 +47,27 @@ func (consensusMessage *ConsensusMessage) GetZKBlock() *config.ZKBlock {
 	return consensusMessage.ZKBlock
 }
 
-func (consensusMessage *ConsensusMessage) SetBuddies(buddies *Buddies) *ConsensusMessage {
-	consensusMessage.Buddies = ConvertBuddiesIntoHashMap(buddies)
+func (consensusMessage *ConsensusMessage) SetBuddies(buddies []Buddy_PeerMultiaddr) *ConsensusMessage {
+	consensusMessage.Buddies = ConvertBuddiesIntoHashMap_PeerMultiaddr(buddies)
 	return consensusMessage
 }
 
-func (consensusMessage *ConsensusMessage) GetBuddies() map[int]peer.ID {
+func (consensusMessage *ConsensusMessage) GetBuddies() map[int]Buddy_PeerMultiaddr {
 	return consensusMessage.Buddies
 }
 
-func (consensusMessage *ConsensusMessage) AddBuddies(buddies *Buddies) *ConsensusMessage {
+func (consensusMessage *ConsensusMessage) AddBuddies(buddies []Buddy_PeerMultiaddr) *ConsensusMessage {
 	// Convert new buddies to HashMap and merge with existing
-	newBuddiesMap := ConvertBuddiesIntoHashMap(buddies)
+	newBuddiesMap := ConvertBuddiesIntoHashMap_PeerMultiaddr(buddies)
 	for key, value := range newBuddiesMap {
 		consensusMessage.Buddies[key] = value
 	}
 	return consensusMessage
 }
 
-func (consensusMessage *ConsensusMessage) RemoveBuddies(buddies *Buddies) *ConsensusMessage {
+func (consensusMessage *ConsensusMessage) RemoveBuddies(buddies []Buddy_PeerMultiaddr) *ConsensusMessage {
 	// Convert buddies to remove into HashMap and remove from existing
-	buddiesToRemove := ConvertBuddiesIntoHashMap(buddies)
+	buddiesToRemove := ConvertBuddiesIntoHashMap_PeerMultiaddr(buddies)
 	for key := range buddiesToRemove {
 		delete(consensusMessage.Buddies, key)
 	}

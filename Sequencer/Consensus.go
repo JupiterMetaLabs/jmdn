@@ -9,6 +9,7 @@ import (
 	"gossipnode/Sequencer/Metadata"
 	"gossipnode/config"
 	PubSubMessages "gossipnode/config/PubSubMessages"
+	"gossipnode/config/PubSubMessages/Cache"
 	"log"
 	"time"
 
@@ -43,29 +44,41 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 
 // With the block you will attack the metadata to it before the propagation of the block
 // QUERY BUDDY NODES FUNCTIONALITY (we would need this to get the buddy nodes prompted)
-func (consensus *Consensus) QueryBuddyNodes() ([]peer.ID, error) {
+func (consensus *Consensus) QueryBuddyNodes() ([]PubSubMessages.Buddy_PeerMultiaddr, error) {
 	router := Router.NewNodeselectionRouter()
 	buddies, err := router.GetBuddyNodes(config.MaxMainPeers + config.MaxBackupPeers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get buddy nodes: %v", err)
 	}
 
-	fmt.Printf("Queried Buddies: %+v\n", buddies)
-
-
-	for _, buddy := range buddies {
-		consensus.PeerList.MainPeers = append(consensus.PeerList.MainPeers, peer.ID(buddy.Node.ID))
+	GetPeerIDFromBuddy, errMSG := router.GetBuddyNodesFromList(buddies)
+	if errMSG != nil {
+		return nil, fmt.Errorf("failed to get buddy nodes from list: %v", errMSG)
 	}
-	return consensus.PeerList.MainPeers, nil
+
+	fmt.Printf("Queried Buddies: %+v\n", GetPeerIDFromBuddy)
+	return GetPeerIDFromBuddy, nil
 }
 
-func (consensus *Consensus) AddBuddyNodesToPeerList(zkBlock *config.ZKBlock, buddies []peer.ID) (*PubSubMessages.ConsensusMessage, error) {
+func (consensus *Consensus) GetOnlyPeerIDs(buddies []PubSubMessages.Buddy_PeerMultiaddr) ([]peer.ID, error) {
+	peerIDs := make([]peer.ID, 0)
+	for _, buddy := range buddies {
+		peerIDs = append(peerIDs, buddy.PeerID)
+	}
+	return peerIDs, nil
+}
 
-	ZKBlock := Metadata.ZKBlockMetadata(zkBlock, PubSubMessages.NewBuddiesBuilder(buddies)).SetEndTimeoutMetadata(time.Now().Add(config.ConsensusTimeout)).SetStartTimeMetadata(time.Now())
+func (consensus *Consensus) AddBuddyNodesToPeerList(zkBlock *config.ZKBlock, buddies []PubSubMessages.Buddy_PeerMultiaddr) (*PubSubMessages.ConsensusMessage, error) {
+
+	ZKBlock := Metadata.ZKBlockMetadata(zkBlock, buddies).SetEndTimeoutMetadata(time.Now().Add(config.ConsensusTimeout)).SetStartTimeMetadata(time.Now())
 	if ZKBlock == nil {
 		return nil, fmt.Errorf("failed to create ZKBlock metadata")
 	}
 	return ZKBlock.GetConsensusMessage(), nil
+}
+
+func (Consensus *Consensus) AddBuddyNodesTemporarily(buddies []PubSubMessages.Buddy_PeerMultiaddr){
+	Cache.AddPeersTemporary(buddies)
 }
 
 func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
@@ -74,13 +87,23 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	// Attach the metadata to the block
 	// 1. Pull the buddies from the NodeSelectionRouter
-	peerIDs, errMSG := consensus.QueryBuddyNodes()
+	buddies, errMSG := consensus.QueryBuddyNodes()
 	if errMSG != nil {
 		return fmt.Errorf("failed to query buddy nodes: %v", errMSG)
 	}
 
+	peerIDs, errMSG := consensus.GetOnlyPeerIDs(buddies)
+	if errMSG != nil {
+		return fmt.Errorf("failed to get only peer IDs: %v", errMSG)
+	}
+
+	// Debugging
+	for _, buddy := range buddies {
+		fmt.Println("buddy", buddy)
+	}
+
 	// 2. Attach the buddies to the zkblock as metadata
-	consensus.ZKBlockData, errMSG = consensus.AddBuddyNodesToPeerList(zkblock, peerIDs)
+	consensus.ZKBlockData, errMSG = consensus.AddBuddyNodesToPeerList(zkblock, buddies)
 	if errMSG != nil {
 		return fmt.Errorf("failed to add buddy nodes to peer list: %v", errMSG)
 	}
@@ -99,6 +122,10 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	if err := ValidateConsensusConfiguration(consensus); err != nil {
 		return fmt.Errorf("invalid consensus configuration: %w", err)
 	}
+
+	// 3. Add the buddies to the temporary cache
+	consensus.AddBuddyNodesTemporarily(buddies)
+	
 	// First create the pubsub channel
 	var err error
 	consensus.gossipnode, err = Pubsub.NewGossipPubSub(consensus.Host, config.PubSub_ConsensusChannel)
@@ -130,6 +157,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Initialize listener node for vote collection
 	consensus.ListenerNode = MessagePassing.NewListenerNode(consensus.Host, consensus.ResponseHandler)
 	log.Printf("Listener node initialized for vote collection on protocol: %s", config.SubmitMessageProtocol)
+
 
 	// After creating the channel, ask peers to subscribe to the channel
 	if err := consensus.RequestSubscriptionPermission(); err != nil {

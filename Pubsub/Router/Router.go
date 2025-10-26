@@ -14,11 +14,14 @@ func Router(message *AVCStruct.GossipMessage) error {
 	GossipNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
 	PubSub := GossipNode.PubSub
 	serviceManager := NewServiceManager(PubSub, GossipNode)
+	fmt.Println("Router", message.Data.ACK.Stage)
+	fmt.Println("message", message)
 
 
 	// Route to appropriate services based on the message ack type
 	switch message.Data.ACK.Stage {
 	case config.Type_AskForSubscription:
+
 		return serviceManager.GetSubscriptionService().HandleAskForSubscription(message)
 	case config.Type_VerifySubscription:
 		return serviceManager.GetConsensusService().HandleVerifySubscription(message)
