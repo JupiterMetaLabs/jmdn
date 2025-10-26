@@ -472,15 +472,31 @@
         // Convert WEI to ETH
         function weiToEth(wei) {
             if (!wei || wei === '0') return '0';
+            
             const weiBigInt = BigInt(wei);
-            const ethBigInt = weiBigInt / BigInt(10**18);
-            const remainder = weiBigInt % BigInt(10**18);
+            const divisor = BigInt(10**18);
+            const ethBigInt = weiBigInt / divisor;
+            const remainder = weiBigInt % divisor;
             
             if (remainder === 0n) {
                 return ethBigInt.toString();
             } else {
-                const ethFloat = Number(weiBigInt) / 10**18;
-                return ethFloat.toFixed(4);
+                // Convert remainder to string and ensure it has exactly 18 digits
+                let remainderStr = remainder.toString();
+                
+                // Pad with leading zeros to make it exactly 18 digits
+                while (remainderStr.length < 18) {
+                    remainderStr = '0' + remainderStr;
+                }
+                
+                // Remove trailing zeros from the decimal part
+                const trimmedRemainder = remainderStr.replace(/0+$/, '');
+                
+                if (trimmedRemainder === '') {
+                    return ethBigInt.toString();
+                } else {
+                    return ethBigInt.toString() + '.' + trimmedRemainder;
+                }
             }
         }
 
