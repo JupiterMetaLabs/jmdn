@@ -23,11 +23,13 @@ import (
 
 type StructListener struct {
 	ListenerBuddyNode *AVCStruct.BuddyNode
+	ResponseHandler   AVCStruct.ResponseHandler
 }
 
 func NewListenerStruct(listner *AVCStruct.BuddyNode) *StructListener {
 	return &StructListener{
 		ListenerBuddyNode: listner,
+		ResponseHandler:   nil, // Will be set by NewListenerNode
 	}
 }
 
@@ -75,6 +77,8 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 			return
 		}
 	case config.Type_AskForSubscription:
+
+		// Otherwise, this is a subscription request - handle it
 		// Handle subscription request
 		log.LogMessagesInfo(fmt.Sprintf("Received subscription request from %s", s.Conn().RemotePeer()),
 			zap.String("peer", s.Conn().RemotePeer().String()),

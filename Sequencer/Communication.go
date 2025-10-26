@@ -243,6 +243,9 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 	// Get host from GossipPubSub (not create BuddyNode yet)
 	host := Listener.ListenerBuddyNode.Host
 
+	// Response handler is now set up in the buddy nodes themselves
+	// No need to set up additional handlers here
+
 	for _, peerID := range peerAddrs {
 		// Register peer for response tracking
 		responseChan := responseHandler.RegisterPeer(peerID)
@@ -253,7 +256,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 			defer responseHandler.UnregisterPeer(peerID)
 
 			// Create context with timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Increased timeout
 			defer cancel()
 
 			// Create proper message with ACK for subscription request
@@ -319,8 +322,6 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 
 	return acceptedCount, len(peerAddrs)
 }
-
-
 // ValidateConsensusConfiguration validates that the consensus configuration is correct
 // Architecture: 1 creator + 13 main peers + 3 backup peers = 17 total allowed peers
 // Active consensus: 1 creator + 13 main peers = 14 active participants

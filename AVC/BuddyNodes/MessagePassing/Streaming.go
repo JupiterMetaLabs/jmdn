@@ -66,6 +66,9 @@ func NewListenerNode(h host.Host, responseHandler AVCStruct.ResponseHandler) *St
 		},
 	}
 	listener := NewListenerStruct(Node)
+	// Set the ResponseHandler for handling subscription responses
+	listener.ResponseHandler = responseHandler
+
 	// Add the buddy Node to the Listener node for singleton instance
 	AVCStruct.NewGlobalVariables().Set_ForListner(Node)
 

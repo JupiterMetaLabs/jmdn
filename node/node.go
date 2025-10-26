@@ -190,6 +190,14 @@ func NewNode() (*config.Node, error) {
 	h.SetStreamHandler(config.BuddyNodesMessageProtocol, func(s network.Stream) {
 		MessagePassing.HandleBuddyNodeStream(h, s)
 	})
+
+	// Set up SubmitMessageProtocol handler for all nodes (so they can receive subscription requests)
+	h.SetStreamHandler(config.SubmitMessageProtocol, func(s network.Stream) {
+		// Create a clear listener handler for handling subscription requests, votes, and responses
+		listenerHandler := MessagePassing.NewListenerHandler(nil)
+		go listenerHandler.HandleSubmitMessageStream(s)
+	})
+
 	go StartDiscovery(h)
 
 	return &localNode, nil
