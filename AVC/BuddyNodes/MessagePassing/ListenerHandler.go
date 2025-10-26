@@ -193,8 +193,8 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 		AVCStruct.NewGlobalVariables().Set_PubSubNode(buddy)
 	}
 
-	// Subscribe to BuddyNodesMessageProtocol
-	if err := Subscription.Subscribe(gps, log.Consensus_TOPIC, func(msg *AVCStruct.GossipMessage) {
+	// Subscribe to the same consensus channel that the sequencer creates
+	if err := Subscription.Subscribe(gps, config.PubSub_ConsensusChannel, func(msg *AVCStruct.GossipMessage) {
 		log.LogMessagesInfo(fmt.Sprintf("Received message on BuddyNodesMessageProtocol: %s", msg.ID),
 			zap.String("peer", s.Conn().RemotePeer().String()),
 			zap.String("topic", log.Messages_TOPIC),
