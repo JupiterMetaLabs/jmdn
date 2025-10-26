@@ -1,26 +1,16 @@
-// =============================================================================
-// FILE: pkg/bft/engine.go
-// =============================================================================
 package bft
 
 import (
 	"context"
-	"crypto/ed25519"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
-)
-
-const (
-	AllowedTimestampSkew = 30 // seconds - max allowed timestamp difference
 )
 
 type engine struct {
 	config     Config
 	myBuddyID  string
 	myDecision Decision
-	privateKey []byte
 	buddies    map[string]*BuddyInput
 	threshold  int
 	round      uint64
@@ -32,26 +22,19 @@ type engine struct {
 	prepareMsgs map[string]*PrepareMessage
 	commitMsgs  map[string]*CommitMessage
 
-	// signer abstraction (local)
-	signer Signer
-
 	seqMu       sync.RWMutex
 	lastSeqSeen map[string]uint64
 }
 
 func (e *engine) runPrepare(ctx context.Context, messenger Messenger) (*PhaseResult, error) {
 	myPrepare := &PrepareMessage{
-		Version:   "PREPARE_V1",
-		Seq:       ensureSeqForSelf(e),
+		Version:   PrepareVersionV1,
+		Seq:       e.ensureSeqForSelf(),
 		Round:     e.round,
 		BlockHash: e.blockHash,
 		BuddyID:   e.myBuddyID,
 		Decision:  e.myDecision,
 		Timestamp: time.Now().Unix(),
-	}
-
-	if err := e.signPrepare(myPrepare); err != nil {
-		return nil, err
 	}
 
 	e.addPrepareMsg(myPrepare)
@@ -118,18 +101,15 @@ func (e *engine) runCommit(ctx context.Context, messenger Messenger, prepareDeci
 				if msg == nil {
 					continue
 				}
-
 				if err := e.validateCommit(msg); err != nil {
 					continue
 				}
-
 				if byzantine := e.byzantine.detectConflicts(msg, e.prepareMsgs); len(byzantine) > 0 {
 					for _, id := range byzantine {
 						e.byzantine.mark(id)
 					}
 					continue
 				}
-
 				e.addCommitMsg(msg)
 			}
 		}
@@ -195,7 +175,7 @@ func (e *engine) waitForCommitThreshold(ctx context.Context) (Decision, error) {
 		select {
 		case <-ctx.Done():
 			acceptCount, rejectCount := e.getCommitVoteCountsClean()
-			return "", fmt.Errorf("COMMIT timeout: accepts=%d, rejects=%d, need=%d, byzantine=%d", acceptCount, rejectCount, e.threshold, e.byzantine.count())
+			return "", fmt.Errorf("COMMIT timeout: accepts=%d, rejects=%d, need=%d", acceptCount, rejectCount, e.threshold)
 		case <-ticker.C:
 			acceptCount, rejectCount := e.getCommitVoteCountsClean()
 			if acceptCount >= e.threshold {
@@ -253,72 +233,9 @@ func (e *engine) collectPrepareProof(decision Decision) []PrepareMessage {
 	return proof
 }
 
-func (e *engine) signPrepare(msg *PrepareMessage) error {
-	payload, _ := json.Marshal(struct {
-		Version   string
-		Round     uint64
-		BlockHash string
-		BuddyID   string
-		Decision  Decision
-		Seq       uint64
-		Timestamp int64
-	}{
-		Version:   msg.Version,
-		Round:     msg.Round,
-		BlockHash: msg.BlockHash,
-		BuddyID:   msg.BuddyID,
-		Decision:  msg.Decision,
-		Seq:       msg.Seq,
-		Timestamp: msg.Timestamp,
-	})
-
-	if e.signer == nil {
-		msg.Signature = ed25519.Sign(ed25519.PrivateKey(e.privateKey), payload)
-		return nil
-	}
-	sig, err := e.signer.Sign(payload)
-	if err != nil {
-		return err
-	}
-	msg.Signature = sig
-	return nil
-}
-
-func (e *engine) signCommit(msg *CommitMessage) error {
-	payload, _ := json.Marshal(struct {
-		Version   string
-		Round     uint64
-		BlockHash string
-		BuddyID   string
-		Decision  Decision
-		ProofSize int
-		Seq       uint64
-		Timestamp int64
-	}{
-		Version:   msg.Version,
-		Round:     msg.Round,
-		BlockHash: msg.BlockHash,
-		BuddyID:   msg.BuddyID,
-		Decision:  msg.Decision,
-		ProofSize: len(msg.PrepareProof),
-		Seq:       msg.Seq,
-		Timestamp: msg.Timestamp,
-	})
-
-	if e.signer == nil {
-		msg.Signature = ed25519.Sign(ed25519.PrivateKey(e.privateKey), payload)
-		return nil
-	}
-	sig, err := e.signer.Sign(payload)
-	if err != nil {
-		return err
-	}
-	msg.Signature = sig
-	return nil
-}
-
+// SIMPLIFIED - No signature validation
 func (e *engine) validatePrepare(msg *PrepareMessage) error {
-	buddy, exists := e.buddies[msg.BuddyID]
+	_, exists := e.buddies[msg.BuddyID]
 	if !exists {
 		return fmt.Errorf("unknown buddy")
 	}
@@ -330,31 +247,17 @@ func (e *engine) validatePrepare(msg *PrepareMessage) error {
 	if !isTimestampFresh(msg.Timestamp) {
 		return fmt.Errorf("stale timestamp")
 	}
+
 	if err := e.checkAndMarkSeq(msg.BuddyID, msg.Seq); err != nil {
 		return fmt.Errorf("replay/seq error: %w", err)
-	}
-
-	if e.config.RequireSignatures {
-		payload, _ := json.Marshal(struct {
-			Version   string
-			Round     uint64
-			BlockHash string
-			BuddyID   string
-			Decision  Decision
-			Seq       uint64
-			Timestamp int64
-		}{msg.Version, msg.Round, msg.BlockHash, msg.BuddyID, msg.Decision, msg.Seq, msg.Timestamp})
-
-		if !ed25519.Verify(ed25519.PublicKey(buddy.PublicKey), payload, msg.Signature) {
-			return fmt.Errorf("invalid signature")
-		}
 	}
 
 	return nil
 }
 
+// SIMPLIFIED - No signature validation
 func (e *engine) validateCommit(msg *CommitMessage) error {
-	buddy, exists := e.buddies[msg.BuddyID]
+	_, exists := e.buddies[msg.BuddyID]
 	if !exists {
 		return fmt.Errorf("unknown buddy")
 	}
@@ -370,68 +273,36 @@ func (e *engine) validateCommit(msg *CommitMessage) error {
 	if !isTimestampFresh(msg.Timestamp) {
 		return fmt.Errorf("stale timestamp")
 	}
+
 	if err := e.checkAndMarkSeq(msg.BuddyID, msg.Seq); err != nil {
 		return fmt.Errorf("replay/seq error: %w", err)
 	}
 
-	if e.config.ValidateProofs {
-		supportingCount := 0
-		seen := make(map[string]bool)
+	// Validate proof has enough supporting votes
+	supportingCount := 0
+	seen := make(map[string]bool)
 
-		for _, prepare := range msg.PrepareProof {
-			if seen[prepare.BuddyID] {
-				return fmt.Errorf("duplicate in proof")
-			}
-			seen[prepare.BuddyID] = true
+	for _, prepare := range msg.PrepareProof {
+		if seen[prepare.BuddyID] {
+			return fmt.Errorf("duplicate in proof")
+		}
+		seen[prepare.BuddyID] = true
 
-			if _, ok := e.buddies[prepare.BuddyID]; !ok {
-				return fmt.Errorf("unknown buddy in proof: %s", prepare.BuddyID)
-			}
-
-			if !isTimestampFresh(prepare.Timestamp) {
-				return fmt.Errorf("stale prepare in proof: %s", prepare.BuddyID)
-			}
-
-			payload, _ := json.Marshal(struct {
-				Version   string
-				Round     uint64
-				BlockHash string
-				BuddyID   string
-				Decision  Decision
-				Seq       uint64
-				Timestamp int64
-			}{prepare.Version, prepare.Round, prepare.BlockHash, prepare.BuddyID, prepare.Decision, prepare.Seq, prepare.Timestamp})
-
-			pubBytes := e.buddies[prepare.BuddyID].PublicKey
-			if !ed25519.Verify(ed25519.PublicKey(pubBytes), payload, prepare.Signature) {
-				return fmt.Errorf("invalid signature in proof from %s", prepare.BuddyID)
-			}
-
-			if prepare.Decision == msg.Decision {
-				supportingCount++
-			}
+		if _, ok := e.buddies[prepare.BuddyID]; !ok {
+			return fmt.Errorf("unknown buddy in proof: %s", prepare.BuddyID)
 		}
 
-		if supportingCount < e.threshold {
-			return fmt.Errorf("insufficient supporting votes")
+		if !isTimestampFresh(prepare.Timestamp) {
+			return fmt.Errorf("stale prepare in proof: %s", prepare.BuddyID)
+		}
+
+		if prepare.Decision == msg.Decision {
+			supportingCount++
 		}
 	}
 
-	if e.config.RequireSignatures {
-		payload, _ := json.Marshal(struct {
-			Version   string
-			Round     uint64
-			BlockHash string
-			BuddyID   string
-			Decision  Decision
-			ProofSize int
-			Seq       uint64
-			Timestamp int64
-		}{msg.Version, msg.Round, msg.BlockHash, msg.BuddyID, msg.Decision, len(msg.PrepareProof), msg.Seq, msg.Timestamp})
-
-		if !ed25519.Verify(ed25519.PublicKey(buddy.PublicKey), payload, msg.Signature) {
-			return fmt.Errorf("invalid signature")
-		}
+	if supportingCount < e.threshold {
+		return fmt.Errorf("insufficient supporting votes")
 	}
 
 	return nil
@@ -447,8 +318,8 @@ func (e *engine) createCommit(decision Decision) (*CommitMessage, error) {
 	}
 
 	msg := &CommitMessage{
-		Version:      "COMMIT_V1",
-		Seq:          ensureSeqForSelf(e),
+		Version:      CommitVersionV1,
+		Seq:          e.ensureSeqForSelf(),
 		Round:        e.round,
 		BlockHash:    e.blockHash,
 		BuddyID:      e.myBuddyID,
@@ -457,13 +328,9 @@ func (e *engine) createCommit(decision Decision) (*CommitMessage, error) {
 		Timestamp:    time.Now().Unix(),
 	}
 
-	if err := e.signCommit(msg); err != nil {
-		return nil, err
-	}
 	return msg, nil
 }
 
-// replay helpers
 func (e *engine) checkAndMarkSeq(buddyID string, seq uint64) error {
 	e.seqMu.Lock()
 	defer e.seqMu.Unlock()
@@ -476,7 +343,7 @@ func (e *engine) checkAndMarkSeq(buddyID string, seq uint64) error {
 	return nil
 }
 
-func ensureSeqForSelf(e *engine) uint64 {
+func (e *engine) ensureSeqForSelf() uint64 {
 	e.seqMu.Lock()
 	defer e.seqMu.Unlock()
 	last := e.lastSeqSeen[e.myBuddyID]
@@ -485,7 +352,6 @@ func ensureSeqForSelf(e *engine) uint64 {
 	return last
 }
 
-// global helper for freshness
 func isTimestampFresh(ts int64) bool {
 	now := time.Now().Unix()
 	if ts == 0 {
@@ -496,49 +362,4 @@ func isTimestampFresh(ts int64) bool {
 		diff = -diff
 	}
 	return diff <= AllowedTimestampSkew
-}
-
-// verify functions used by messenger (use registry)
-func verifyPrepareSignature(msg *PrepareMessage) error {
-	pub, ok := GetPublicKey(msg.BuddyID)
-	if !ok || len(pub) == 0 {
-		return fmt.Errorf("no public key for %s", msg.BuddyID)
-	}
-
-	payload, _ := json.Marshal(struct {
-		Version   string
-		Round     uint64
-		BlockHash string
-		BuddyID   string
-		Decision  Decision
-		Seq       uint64
-		Timestamp int64
-	}{msg.Version, msg.Round, msg.BlockHash, msg.BuddyID, msg.Decision, msg.Seq, msg.Timestamp})
-
-	if !ed25519.Verify(ed25519.PublicKey(pub), payload, msg.Signature) {
-		return fmt.Errorf("invalid signature")
-	}
-	return nil
-}
-
-func verifyCommitSignature(msg *CommitMessage) error {
-	pub, ok := GetPublicKey(msg.BuddyID)
-	if !ok || len(pub) == 0 {
-		return fmt.Errorf("no public key for %s", msg.BuddyID)
-	}
-	payload, _ := json.Marshal(struct {
-		Version   string
-		Round     uint64
-		BlockHash string
-		BuddyID   string
-		Decision  Decision
-		ProofSize int
-		Seq       uint64
-		Timestamp int64
-	}{msg.Version, msg.Round, msg.BlockHash, msg.BuddyID, msg.Decision, len(msg.PrepareProof), msg.Seq, msg.Timestamp})
-
-	if !ed25519.Verify(ed25519.PublicKey(pub), payload, msg.Signature) {
-		return fmt.Errorf("invalid signature")
-	}
-	return nil
 }

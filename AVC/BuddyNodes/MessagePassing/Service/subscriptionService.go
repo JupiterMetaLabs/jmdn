@@ -1,6 +1,8 @@
 package Service
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/config"
@@ -10,26 +12,79 @@ import (
 	"go.uber.org/zap"
 )
 
+// Decision represents a BFT vote decision (avoid importing bft package)
+type Decision string
+
+const (
+	Accept Decision = "ACCEPT"
+	Reject Decision = "REJECT"
+)
+
+// BuddyInput represents buddy input data (avoid importing bft package)
+type BuddyInput struct {
+	ID        string
+	Decision  Decision
+	PublicKey []byte
+}
+
+// Result represents consensus result (avoid importing bft package)
+type Result struct {
+	Success       bool
+	BlockAccepted bool
+	Decision      Decision
+}
+
 // BFTMessageHandler defines the interface for BFT message handling
-// This avoids importing the bft package directly
 type BFTMessageHandler interface {
 	HandleStartPubSub(msg *AVCStruct.GossipMessage) error
 	HandleEndPubSub(msg *AVCStruct.GossipMessage) error
 	HandlePrepareVote(msg *AVCStruct.GossipMessage) error
 	HandleCommitVote(msg *AVCStruct.GossipMessage) error
+	ProposeConsensus(ctx context.Context, round uint64, blockHash string, myBuddyID string, allBuddies []BuddyInput) (*Result, error)
 }
+
+// BFTAdapterFactory is a function type for creating BFT adapters
+type BFTAdapterFactory func(
+	ctx context.Context,
+	pubSub *AVCStruct.GossipPubSub,
+	channelName string,
+) (BFTMessageHandler, error)
 
 // SubscriptionService handles subscription-related operations
 type SubscriptionService struct {
-	pubSub     *AVCStruct.GossipPubSub
-	bftAdapter BFTMessageHandler // ✅ Use interface instead of concrete type
+	pubSub         *AVCStruct.GossipPubSub
+	bftAdapter     BFTMessageHandler
+	myBuddyID      string
+	adapterFactory BFTAdapterFactory
 }
 
-// NewSubscriptionService creates a new subscription service
-func NewSubscriptionService(pubSub *AVCStruct.GossipPubSub) *SubscriptionService {
-	return &SubscriptionService{
+// NewSubscriptionService creates a new subscription service (BACKWARD COMPATIBLE)
+func NewSubscriptionService(pubSub *AVCStruct.GossipPubSub, optionalParams ...interface{}) *SubscriptionService {
+	service := &SubscriptionService{
 		pubSub: pubSub,
 	}
+
+	// Parse optional parameters
+	for _, param := range optionalParams {
+		switch v := param.(type) {
+		case string:
+			service.myBuddyID = v
+		case BFTAdapterFactory:
+			service.adapterFactory = v
+		}
+	}
+
+	// Set default buddy ID if not provided
+	if service.myBuddyID == "" && pubSub != nil {
+		service.myBuddyID = pubSub.Host.ID().String()
+	}
+
+	return service
+}
+
+// SetBFTAdapterFactory allows setting the factory after creation
+func (s *SubscriptionService) SetBFTAdapterFactory(factory BFTAdapterFactory) {
+	s.adapterFactory = factory
 }
 
 // SetBFTAdapter sets the BFT adapter for handling consensus messages
@@ -117,6 +172,12 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 	switch msg.Data.ACK.Stage {
 
 	// ========== BFT CONSENSUS MESSAGES ==========
+	case config.Type_BFTRequest:
+		log.LogConsensusInfo("Processing BFT_REQUEST from pubsub",
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("function", "SubscriptionService.handleReceivedMessage"))
+		return s.handleBFTRequest(msg)
+
 	case config.Type_StartPubSub:
 		log.LogConsensusInfo("Processing START_PUBSUB from pubsub",
 			zap.String("topic", log.Consensus_TOPIC),
@@ -316,4 +377,106 @@ func (s *SubscriptionService) canSubscribe(channelName string, peerID peer.ID) b
 	}
 
 	return access.AllowedPeers[peerID]
+}
+
+func (s *SubscriptionService) GetMyBuddyID() string {
+	if s.myBuddyID != "" {
+		return s.myBuddyID
+	}
+	return s.pubSub.Host.ID().String()
+}
+
+func (s *SubscriptionService) handleBFTRequest(msg *AVCStruct.GossipMessage) error {
+	// If no factory is set, just log and return
+	if s.adapterFactory == nil {
+		log.LogConsensusInfo("BFT adapter factory not configured, ignoring BFT request",
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("function", "SubscriptionService.handleBFTRequest"))
+		return nil
+	}
+
+	var reqData struct {
+		Round          uint64
+		BlockHash      string
+		GossipsubTopic string
+		AllBuddies     []struct {
+			ID        string
+			Decision  string
+			PublicKey []byte
+		}
+	}
+
+	if err := json.Unmarshal([]byte(msg.Data.Message), &reqData); err != nil {
+		return fmt.Errorf("failed to parse BFT request: %w", err)
+	}
+
+	myBuddyID := s.GetMyBuddyID()
+	amIaBuddy := false
+
+	buddies := make([]BuddyInput, 0)
+	for _, buddy := range reqData.AllBuddies {
+		decision := Accept
+		if buddy.Decision == "REJECT" {
+			decision = Reject
+		}
+
+		buddies = append(buddies, BuddyInput{
+			ID:        buddy.ID,
+			Decision:  decision,
+			PublicKey: buddy.PublicKey,
+		})
+
+		if buddy.ID == myBuddyID {
+			amIaBuddy = true
+		}
+	}
+
+	if !amIaBuddy {
+		log.LogConsensusInfo("Not in buddy list, skipping consensus",
+			zap.String("round", fmt.Sprintf("%d", reqData.Round)),
+			zap.String("function", "SubscriptionService.handleBFTRequest"))
+		return nil
+	}
+
+	log.LogConsensusInfo("I'm a buddy! Starting consensus",
+		zap.String("round", fmt.Sprintf("%d", reqData.Round)),
+		zap.String("function", "SubscriptionService.handleBFTRequest"))
+
+	go func() {
+		if s.bftAdapter == nil {
+			adapter, err := s.adapterFactory(
+				context.Background(),
+				s.pubSub,
+				reqData.GossipsubTopic,
+			)
+			if err != nil {
+				log.LogConsensusError("Failed to create BFT adapter", err,
+					zap.String("function", "SubscriptionService.handleBFTRequest"))
+				return
+			}
+			s.bftAdapter = adapter
+		}
+
+		result, err := s.bftAdapter.ProposeConsensus(
+			context.Background(),
+			reqData.Round,
+			reqData.BlockHash,
+			myBuddyID,
+			buddies,
+		)
+
+		if err != nil {
+			log.LogConsensusError("Consensus failed", err,
+				zap.String("round", fmt.Sprintf("%d", reqData.Round)),
+				zap.String("function", "SubscriptionService.handleBFTRequest"))
+		} else {
+			log.LogConsensusInfo("Consensus completed successfully",
+				zap.String("round", fmt.Sprintf("%d", reqData.Round)),
+				zap.String("decision", string(result.Decision)),
+				zap.Bool("accepted", result.BlockAccepted),
+				zap.String("function", "SubscriptionService.handleBFTRequest"))
+		}
+	}()
+
+	return nil
 }

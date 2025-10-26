@@ -34,7 +34,6 @@ const (
 
 var SeedNodeURL string = "34.174.233.203:17002"
 
-
 // Protocol IDs for message and file sharing
 const (
 	MessageProtocol           protocol.ID = "/custom/message/1.0.0"
@@ -78,6 +77,7 @@ const (
 	Type_SubmitVote = "SUBMIT_VOTE"
 
 	Topic_SYNCRequest = "SYNC_REQUEST"
+	Type_BFTRequest   = "BFT_REQUEST" // ADD THIS LINE
 )
 
 // Increase buffer sizes
