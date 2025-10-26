@@ -238,7 +238,7 @@ func sortTransactionsByNonce(txs []config.Transaction) []config.Transaction {
 func cleanupProcessingMarkers(accountsClient *config.PooledConnection, txHash string) {
 	processingKey := fmt.Sprintf("tx_processing:%s", txHash)
 	if exists, _ := DB_OPs.Exists(accountsClient, processingKey); exists {
-		if err := DB_OPs.Update(nil, processingKey, -1); err != nil {
+		if err := DB_OPs.Update(accountsClient, processingKey, -1); err != nil {
 			accountsClient.Client.Logger.Logger.Warn("Failed to clean up processing marker",
 				zap.Time(logging.Created_at, time.Now()),
 				zap.String(logging.Log_file, LOG_FILE),
@@ -594,7 +594,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	fmt.Println(">>>>>> Added amount to ZKVM:", halfGasFee.String(), "with address", zkvmAddr.Hex())
 
 	// Mark transaction as fully processed - this is the key that prevents double processing
-	if err := DB_OPs.Create(nil, txKey, time.Now().Unix()); err != nil {
+	if err := DB_OPs.Create(accountsClient, txKey, time.Now().Unix()); err != nil {
 		accountsClient.Client.Logger.Logger.Error("Failed to mark transaction as processed",
 			zap.Time(logging.Created_at, time.Now()),
 			zap.String(logging.Log_file, LOG_FILE),
