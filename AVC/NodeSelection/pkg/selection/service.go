@@ -34,11 +34,12 @@ func GetBuddyNodes(
 
 	// 2. Fetch buddy-eligible peers (excludes recent buddies)
 	fmt.Printf("Debugging 2\n")
-	allNodes := make([]Node, 0)
-	allNodes, err = peerClient.ListBuddyPeers(ctx)
+	// allNodes := make([]Node, 0) 
+	allNodes, err := peerClient.ListBuddyPeers(ctx)
 	fmt.Printf("Debugging 3\n")
-	fmt.Printf("allNodes: %+v\n", len(allNodes))
-	if err == nil || len(allNodes) == 0 {
+
+
+	if err != nil || len(allNodes) == 0 {
 		fmt.Println("⚠️  Failed to fetch buddy peers, falling back to all active peers:", err)
 		// Fallback to all active peers
 		allNodes, err = peerClient.ListAllPeers(ctx)
