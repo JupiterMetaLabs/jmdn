@@ -462,11 +462,15 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 
 // UpdateAccountBalance updates the balance for a Account
 func UpdateAccountBalance(PooledConnection *config.PooledConnection, address common.Address, newBalance string) error {
+	fmt.Printf("=== DEBUG: UpdateAccountBalance called for address %s with balance %s ===\n", address.Hex(), newBalance)
+
 	var err error
 	var shouldReturnConnection bool = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
+		fmt.Println("DEBUG: PooledConnection is nil, getting new connection from pool")
 		PooledConnection, err = GetAccountsConnection()
 		if err != nil {
+			fmt.Printf("DEBUG: Failed to get connection from pool: %v\n", err)
 			return fmt.Errorf("failed to get connection from pool: %w", err)
 		}
 		shouldReturnConnection = true
@@ -478,10 +482,13 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.UpdateAccountBalance"),
 		)
+	} else {
+		fmt.Println("DEBUG: Using provided PooledConnection")
 	}
 
 	if shouldReturnConnection {
 		defer func() {
+			fmt.Println("DEBUG: Returning connection to pool")
 			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
 				zap.String(logging.Connection_database, config.AccountsDBName),
 				zap.Time(logging.Created_at, time.Now()),
@@ -495,23 +502,33 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 
 	// Ensure we're using the accounts database
 	if PooledConnection != nil {
+		fmt.Println("DEBUG: Ensuring accounts database is selected")
 		if err := ensureAccountsDBSelected(PooledConnection); err != nil {
+			fmt.Printf("DEBUG: Failed to ensure accounts database is selected: %v\n", err)
 			return fmt.Errorf("failed to ensure accounts database is selected: %w", err)
 		}
+		fmt.Println("DEBUG: Accounts database selection confirmed")
 	}
 
+	fmt.Printf("DEBUG: Getting account for address %s\n", address.Hex())
 	doc, err := GetAccount(PooledConnection, address)
 	if err != nil {
+		fmt.Printf("DEBUG: Failed to get account: %v\n", err)
 		return err
 	}
+	fmt.Printf("DEBUG: Retrieved account - Current balance: %s, UpdatedAt: %d\n", doc.Balance, doc.UpdatedAt)
 
 	doc.Balance = newBalance
 	doc.UpdatedAt = time.Now().UnixNano()
+	fmt.Printf("DEBUG: Updated account document - New balance: %s, New UpdatedAt: %d\n", doc.Balance, doc.UpdatedAt)
 
 	// Safe Write to the DB with the same key
-	err = SafeCreate(PooledConnection.Client, fmt.Sprintf("%s%s", Prefix, address), doc)
+	key := fmt.Sprintf("%s%s", Prefix, address)
+	fmt.Printf("DEBUG: Writing to database with key: %s\n", key)
+	err = SafeCreate(PooledConnection.Client, key, doc)
 	if err != nil {
-		PooledConnection.Client.Logger.Logger.Error("Failed to update DID balance: %s",
+		fmt.Printf("DEBUG: SafeCreate failed: %v\n", err)
+		PooledConnection.Client.Logger.Logger.Error("Failed to update DID balance",
 			zap.String(logging.Account, address.String()),
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.AccountsDBName),
@@ -523,9 +540,11 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 		)
 		return err
 	}
+	fmt.Println("DEBUG: SafeCreate completed successfully")
 
-	PooledConnection.Client.Logger.Logger.Info("Successfully updated Account balance of address: %s",
+	PooledConnection.Client.Logger.Logger.Info("Successfully updated Account balance",
 		zap.String(logging.Account, address.String()),
+		zap.String("new_balance", newBalance),
 		zap.String(logging.Connection_database, config.AccountsDBName),
 		zap.Time(logging.Created_at, time.Now()),
 		zap.String(logging.Log_file, LOG_FILE),
@@ -533,6 +552,7 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 		zap.String(logging.Loki_url, LOKI_URL),
 		zap.String(logging.Function, "DB_OPs.UpdateAccountBalance"),
 	)
+	fmt.Printf("=== DEBUG: UpdateAccountBalance completed successfully for address %s ===\n", address.Hex())
 	return nil
 }
 
@@ -1027,14 +1047,14 @@ func getAllTransactionHashes(mainDBClient *config.PooledConnection) ([]string, e
 	return hashes, nil
 }
 
-// ensureAccountsDBSelected makes sure we're using the accounts database (UNCHANGED)
-// This helps prevent the "please select a database first" error
+// ensureAccountsDBSelected makes sure we're using the accounts database
+// This helps prevent the "please select a database first" error and ensures we're using the correct database
 func ensureAccountsDBSelected(PooledConnection *config.PooledConnection) error {
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		return fmt.Errorf("client not connected")
 	}
 
-	// Try a simple operation to see if the database selection is still valid
+	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -1042,10 +1062,11 @@ func ensureAccountsDBSelected(PooledConnection *config.PooledConnection) error {
 	md := metadata.Pairs("authorization", PooledConnection.Token)
 	ctx = metadata.NewOutgoingContext(ctx, md)
 
-	// Try to execute a simple operation to check if we're still connected
-	_, err := PooledConnection.Client.Client.CurrentState(ctx)
+	// Always ensure we're using the accounts database by calling UseDatabase
+	// This is necessary because connections from the pool might be connected to defaultdb
+	dbResp, err := PooledConnection.Client.Client.UseDatabase(ctx, &schema.Database{DatabaseName: config.AccountsDBName})
 	if err != nil {
-		PooledConnection.Client.Logger.Logger.Warn("Database state check failed, reconnecting...",
+		PooledConnection.Client.Logger.Logger.Warn("Failed to select accounts database, reconnecting...",
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.AccountsDBName),
 			zap.Time(logging.Created_at, time.Now()),
@@ -1056,6 +1077,20 @@ func ensureAccountsDBSelected(PooledConnection *config.PooledConnection) error {
 		)
 		return reconnectToAccountsDB(PooledConnection)
 	}
+
+	// Update the token if it changed
+	if dbResp.Token != "" {
+		PooledConnection.Token = dbResp.Token
+	}
+
+	PooledConnection.Client.Logger.Logger.Info("Successfully ensured accounts database is selected",
+		zap.String(logging.Connection_database, config.AccountsDBName),
+		zap.Time(logging.Created_at, time.Now()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.ensureAccountsDBSelected"),
+	)
 
 	return nil
 }
