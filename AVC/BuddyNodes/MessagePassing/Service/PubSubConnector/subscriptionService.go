@@ -312,25 +312,22 @@ func (s *SubscriptionService) sendSubscriptionResponse(msg *AVCStruct.GossipMess
 	}
 
 	// Create ACK message
-	var ackMessage string
+	var ackBuilder *AVCStruct.ACK
 	if accepted {
-		ackMessage = AVCStruct.NewACKBuilder().True_ACK_Message(buddyNode.PeerID, config.Type_SubscriptionResponse).ToString()
+		ackBuilder = AVCStruct.NewACKBuilder().True_ACK_Message(buddyNode.PeerID, config.Type_SubscriptionResponse)
 	} else {
-		ackMessage = AVCStruct.NewACKBuilder().False_ACK_Message(buddyNode.PeerID, config.Type_SubscriptionResponse).ToString()
-	}
-
-	if ackMessage == "" {
-		return fmt.Errorf("failed to create ACK message")
+		ackBuilder = AVCStruct.NewACKBuilder().False_ACK_Message(buddyNode.PeerID, config.Type_SubscriptionResponse)
 	}
 
 	// Create a new message with the ACK response
 	message := AVCStruct.NewMessageBuilder(nil).
 		SetSender(buddyNode.PeerID).
-		SetMessage(ackMessage).
+		SetMessage(fmt.Sprintf("Subscription response: %t", accepted)).
 		SetTimestamp(time.Now().Unix()).
-		SetACK(AVCStruct.NewACKBuilder().True_ACK_Message(buddyNode.PeerID, config.Type_SubscriptionResponse))
+		SetACK(ackBuilder)
 
-	// Convert to GossipMessage for publishing
+	// Send the response via PubSub (consistent with how requests are received)
+	// Create GossipMessage for publishing
 	gossipMessage := AVCStruct.NewGossipMessageBuilder(nil).
 		SetID(fmt.Sprintf("sub_response_%d", time.Now().UnixNano())).
 		SetTopic(config.PubSub_ConsensusChannel).
@@ -338,9 +335,12 @@ func (s *SubscriptionService) sendSubscriptionResponse(msg *AVCStruct.GossipMess
 		SetSender(buddyNode.PeerID).
 		SetTimestamp(time.Now().Unix())
 
-	// Publish the response message
+	// Publish the response via PubSub
 	if err := s.publishResponse(gossipMessage); err != nil {
-		return fmt.Errorf("failed to publish response: %v", err)
+		log.LogConsensusError(fmt.Sprintf("Failed to publish subscription response: %v", err), err,
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("function", "SubscriptionService.sendSubscriptionResponse"))
+		return err
 	}
 
 	log.LogConsensusInfo(fmt.Sprintf("Sent subscription response to %s: %t", msg.Sender, accepted),

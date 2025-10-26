@@ -2,11 +2,13 @@ package MessagePassing
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	Router "gossipnode/Pubsub/Router"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"go.uber.org/zap"
@@ -99,16 +101,24 @@ func (StructBuddyNode *StructBuddyNode) handleStartPubSub(s network.Stream) {
 	// If node is okay to listen for subscriptions, then return ACK True
 	if AVCStruct.PubSub_BuddyNode != nil && AVCStruct.PubSub_BuddyNode.Host != nil && AVCStruct.PubSub_BuddyNode.Network != nil {
 		// Node is ready to listen for subscriptions
-		ackMessage := AVCStruct.NewACKBuilder().True_ACK_Message(AVCStruct.PubSub_BuddyNode.PeerID, config.Type_StartPubSub).ToString()
-		if ackMessage == "" {
-			log.LogConsensusError("Failed to create ACK_TRUE message", nil,
+		ackBuilder := AVCStruct.NewACKBuilder().True_ACK_Message(AVCStruct.PubSub_BuddyNode.PeerID, config.Type_StartPubSub)
+		message := AVCStruct.NewMessageBuilder(nil).
+			SetSender(AVCStruct.PubSub_BuddyNode.PeerID).
+			SetMessage("ACK_TRUE for StartPubSub").
+			SetTimestamp(time.Now().Unix()).
+			SetACK(ackBuilder)
+
+		// Marshal the message to JSON
+		messageBytes, err := json.Marshal(message)
+		if err != nil {
+			log.LogConsensusError(fmt.Sprintf("Failed to marshal ACK message: %v", err), err,
 				zap.String("peer", s.Conn().RemotePeer().String()),
 				zap.String("topic", log.Consensus_TOPIC),
 				zap.String("function", "ListenMessages.handleStartPubSub"))
 			return
 		}
 
-		if err := StructBuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage); err != nil {
+		if err := StructBuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), string(messageBytes)); err != nil {
 			log.LogConsensusError(fmt.Sprintf("Failed to send ACK to %s: %v", s.Conn().RemotePeer(), err), err,
 				zap.String("peer", s.Conn().RemotePeer().String()),
 				zap.String("topic", log.Consensus_TOPIC),
@@ -121,15 +131,24 @@ func (StructBuddyNode *StructBuddyNode) handleStartPubSub(s network.Stream) {
 		}
 	} else {
 		// Node is not ready to listen for subscriptions
-		ackMessage := AVCStruct.NewACKBuilder().False_ACK_Message(AVCStruct.PubSub_BuddyNode.PeerID, config.Type_StartPubSub).ToString()
-		if ackMessage == "" {
-			log.LogConsensusError("Failed to create ACK_FALSE message", nil,
+		ackBuilder := AVCStruct.NewACKBuilder().False_ACK_Message(AVCStruct.PubSub_BuddyNode.PeerID, config.Type_StartPubSub)
+		message := AVCStruct.NewMessageBuilder(nil).
+			SetSender(AVCStruct.PubSub_BuddyNode.PeerID).
+			SetMessage("ACK_FALSE for StartPubSub").
+			SetTimestamp(time.Now().Unix()).
+			SetACK(ackBuilder)
+
+		// Marshal the message to JSON
+		messageBytes, err := json.Marshal(message)
+		if err != nil {
+			log.LogConsensusError(fmt.Sprintf("Failed to marshal ACK message: %v", err), err,
 				zap.String("peer", s.Conn().RemotePeer().String()),
 				zap.String("topic", log.Consensus_TOPIC),
 				zap.String("function", "ListenMessages.handleStartPubSub"))
 			return
 		}
-		if err := StructBuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage); err != nil {
+
+		if err := StructBuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), string(messageBytes)); err != nil {
 			log.LogConsensusError(fmt.Sprintf("Failed to send ACK to %s: %v", s.Conn().RemotePeer(), err), err,
 				zap.String("peer", s.Conn().RemotePeer().String()),
 				zap.String("topic", log.Consensus_TOPIC),
@@ -171,19 +190,33 @@ func (StructBuddyNode *StructBuddyNode) handleSubscriptionResponse(s network.Str
 
 // sendACKResponse sends ACK response based on success/failure
 func (StructBuddyNode *StructBuddyNode) sendACKResponse(s network.Stream, success bool, stage string) {
-	var ackMessage string
+	var ackBuilder *AVCStruct.ACK
 	if success {
-		ackMessage = AVCStruct.NewACKBuilder().True_ACK_Message(AVCStruct.PubSub_BuddyNode.PeerID, stage).ToString()
+		ackBuilder = AVCStruct.NewACKBuilder().True_ACK_Message(AVCStruct.PubSub_BuddyNode.PeerID, stage)
 	} else {
-		ackMessage = AVCStruct.NewACKBuilder().False_ACK_Message(AVCStruct.PubSub_BuddyNode.PeerID, stage).ToString()
+		ackBuilder = AVCStruct.NewACKBuilder().False_ACK_Message(AVCStruct.PubSub_BuddyNode.PeerID, stage)
 	}
 
-	if ackMessage != "" {
-		if err := StructBuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), ackMessage); err != nil {
-			log.LogConsensusError(fmt.Sprintf("Failed to send ACK response to %s: %v", s.Conn().RemotePeer(), err), err,
-				zap.String("peer", s.Conn().RemotePeer().String()),
-				zap.String("topic", log.Consensus_TOPIC),
-				zap.String("function", "ListenMessages.sendACKResponse"))
-		}
+	message := AVCStruct.NewMessageBuilder(nil).
+		SetSender(AVCStruct.PubSub_BuddyNode.PeerID).
+		SetMessage(fmt.Sprintf("ACK response for %s", stage)).
+		SetTimestamp(time.Now().Unix()).
+		SetACK(ackBuilder)
+
+	// Marshal the message to JSON
+	messageBytes, err := json.Marshal(message)
+	if err != nil {
+		log.LogConsensusError(fmt.Sprintf("Failed to marshal ACK response message: %v", err), err,
+			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("function", "ListenMessages.sendACKResponse"))
+		return
+	}
+
+	if err := StructBuddyNode.SendMessageToPeer(s.Conn().RemotePeer(), string(messageBytes)); err != nil {
+		log.LogConsensusError(fmt.Sprintf("Failed to send ACK response to %s: %v", s.Conn().RemotePeer(), err), err,
+			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("topic", log.Consensus_TOPIC),
+			zap.String("function", "ListenMessages.sendACKResponse"))
 	}
 }

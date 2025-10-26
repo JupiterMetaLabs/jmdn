@@ -17,3 +17,10 @@ func ReleaseBuddyNodesTrigger(){
 	// of that context, you need to release the buddy nodes to the consensus message
 }
 
+func BFTTrigger(){
+	// TODO call the BFT Consensus Start Function from here
+}
+
+func StartBFTConsensus(){
+	
+}
