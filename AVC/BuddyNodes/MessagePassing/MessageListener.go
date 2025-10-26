@@ -111,7 +111,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 			log.LogMessagesError(fmt.Sprintf("Failed to subscribe to BuddyNodesMessageProtocol: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 			fmt.Println("Failed to subscribe to BuddyNodesMessageProtocol: ", err)
 			fmt.Println("Sending subscription response: false")
-			fmt.Println("--------------------------------")	
+			fmt.Println("--------------------------------")
 			sendSubscriptionResponse(s, false)
 			return
 		}
@@ -122,6 +122,10 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 		sendSubscriptionResponse(s, true)
 	case config.Type_SubscriptionResponse:
 		// Handle subscription response from buddy nodes
+		fmt.Printf("=== SEQUENCER: Received subscription response from %s ===\n", s.Conn().RemotePeer())
+		fmt.Printf("Message: %s\n", message.Message)
+		fmt.Printf("ACK Status: %s\n", message.GetACK().GetStatus())
+
 		log.LogMessagesInfo(fmt.Sprintf("Received subscription response from %s: %s", s.Conn().RemotePeer(), message.Message),
 			zap.String("peer", s.Conn().RemotePeer().String()),
 			zap.String("topic", log.Messages_TOPIC),
@@ -130,12 +134,15 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 		// Route the response to the ResponseHandler if available
 		if StructListenerNode.ResponseHandler != nil {
 			accepted := message.GetACK().GetStatus() == "ACK_TRUE"
+			fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", s.Conn().RemotePeer(), accepted)
 			StructListenerNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), accepted)
+			fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
 			log.LogMessagesInfo("Successfully routed subscription response to ResponseHandler",
 				zap.String("peer", s.Conn().RemotePeer().String()),
 				zap.String("accepted", fmt.Sprintf("%t", accepted)),
 				zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 		} else {
+			fmt.Printf("ERROR: No ResponseHandler set - subscription response not routed\n")
 			log.LogMessagesError("No ResponseHandler set - subscription response not routed",
 				nil,
 				zap.String("peer", s.Conn().RemotePeer().String()),

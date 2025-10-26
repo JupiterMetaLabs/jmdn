@@ -200,6 +200,7 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 			zap.String("topic", log.Messages_TOPIC),
 			zap.String("function", "ListenerHandler.handleAskForSubscription"))
 	}); err != nil {
+		fmt.Printf("Failed to subscribe to BuddyNodesMessageProtocol: %v\n", err)
 		log.LogMessagesError(fmt.Sprintf("Failed to subscribe to BuddyNodesMessageProtocol: %v", err),
 			err,
 			zap.String("peer", s.Conn().RemotePeer().String()),
@@ -209,7 +210,8 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 		return
 	}
 
-	// Send successful subscription response
+	fmt.Println("Successfully subscribed to BuddyNodesMessageProtocol")
+	fmt.Println("Sending subscription response: true")
 	lh.sendSubscriptionResponse(s, true)
 }
 
@@ -242,6 +244,9 @@ func (lh *ListenerHandler) handleSubscriptionResponse(s network.Stream, message 
 
 // sendSubscriptionResponse sends ACK response for subscription requests
 func (lh *ListenerHandler) sendSubscriptionResponse(s network.Stream, accepted bool) {
+	fmt.Printf("=== sendSubscriptionResponse called: %s ===\n", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted])
+	fmt.Printf("Sending response to: %s\n", s.Conn().RemotePeer())
+
 	host := s.Conn().LocalPeer()
 	var ackBuilder *AVCStruct.ACK
 	if accepted {
@@ -258,15 +263,20 @@ func (lh *ListenerHandler) sendSubscriptionResponse(s network.Stream, accepted b
 
 	messageBytes, err := json.Marshal(message)
 	if err != nil {
+		fmt.Printf("Failed to marshal response: %v\n", err)
 		log.LogMessagesError(fmt.Sprintf("Failed to marshal response: %v", err), err)
 		return
 	}
 
+	fmt.Printf("Response message: %s\n", string(messageBytes))
+
 	// Send response back through the SAME stream (SubmitMessageProtocol)
 	_, err = s.Write([]byte(string(messageBytes) + string(rune(config.Delimiter))))
 	if err != nil {
+		fmt.Printf("Failed to send response: %v\n", err)
 		log.LogMessagesError(fmt.Sprintf("Failed to send response: %v", err), err)
 	} else {
+		fmt.Printf("Successfully sent subscription response: %s\n", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted])
 		log.LogMessagesInfo(fmt.Sprintf("Sent subscription response: %s", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted]))
 	}
 }
