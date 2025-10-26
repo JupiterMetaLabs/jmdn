@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/config"
+	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/messaging"
 	"gossipnode/metrics"
 	"gossipnode/transfer"
 	"os"
+	"time"
 
 	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -193,6 +195,31 @@ func NewNode() (*config.Node, error) {
 
 	// Set up SubmitMessageProtocol handler for all nodes (so they can receive subscription requests)
 	h.SetStreamHandler(config.SubmitMessageProtocol, func(s network.Stream) {
+		// Initialize ForListner for this node so it can handle subscription requests
+		// This is needed because ListenerHandler.handleAskForSubscription requires ForListner to be set
+		if AVCStruct.NewGlobalVariables().Get_ForListner() == nil {
+			fmt.Printf("=== Initializing ForListner for regular node: %s ===\n", h.ID())
+			// Create a basic BuddyNode for this regular node
+			defaultBuddies := AVCStruct.NewBuddiesBuilder(nil)
+			basicBuddyNode := &AVCStruct.BuddyNode{
+				PeerID:      h.ID(),
+				Host:        h,
+				PubSub:      nil, // Will be set when needed
+				BuddyNodes:  *defaultBuddies,
+				StreamCache: nil, // Will be set when needed
+				MetaData: AVCStruct.MetaData{
+					Received:  0,
+					Sent:      0,
+					Total:     0,
+					UpdatedAt: time.Now(),
+				},
+			}
+			AVCStruct.NewGlobalVariables().Set_ForListner(basicBuddyNode)
+			fmt.Printf("=== ForListner initialized successfully ===\n")
+		} else {
+			fmt.Printf("=== ForListner already initialized for node: %s ===\n", h.ID())
+		}
+
 		// Create a clear listener handler for handling subscription requests, votes, and responses
 		listenerHandler := MessagePassing.NewListenerHandler(nil)
 		go listenerHandler.HandleSubmitMessageStream(s)
