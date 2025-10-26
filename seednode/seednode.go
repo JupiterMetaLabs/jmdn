@@ -1043,3 +1043,16 @@ func (c *Client) ListAllPeers(ctx context.Context) ([]selection.Node, error) {
 
 	return allNodes, nil
 }
+
+func (c *Client) RemoveAllBuddies(ctx context.Context) error {
+	resp, err := c.client.RemoveAllBuddies(ctx, &peerpb.RemoveAllBuddiesRequest{})
+	if err != nil {
+		return fmt.Errorf("failed to remove all buddies: %w", err)
+	}
+
+	if !resp.Accepted {
+		return fmt.Errorf("buddy removal rejected: %s", resp.Message)
+	}
+
+	return nil
+}
