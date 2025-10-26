@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Security"
-
+	"gossipnode/config"
 	"gossipnode/config/PubSubMessages"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -86,8 +87,21 @@ func (vt *VoteTrigger) SubmitVote() error {
 	// Pick up the listener node using the consistent hashing to send message to
 	NodeToSendTo := vt.PickListner(listenerNode.PeerID)
 
+	// Create proper message with ACK stage for vote submission
+	voteMessage := PubSubMessages.NewMessageBuilder(nil).
+		SetSender(listenerNode.PeerID).
+		SetMessage(vt.ToVoteString(vt.Vote)).
+		SetTimestamp(time.Now().Unix()).
+		SetACK(PubSubMessages.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_SubmitVote))
+
+	// Marshal the message to JSON
+	messageBytes, err := json.Marshal(voteMessage)
+	if err != nil {
+		return fmt.Errorf("failed to marshal vote message: %v", err)
+	}
+
 	// Send the message to the listener node
-	if err := MessagePassing.NewListenerStruct(listenerNode).SendMessageToPeer(NodeToSendTo.PeerID, vt.ToVoteString(vt.Vote)); err != nil {
+	if err := MessagePassing.NewListenerStruct(listenerNode).SendMessageToPeer(NodeToSendTo.PeerID, string(messageBytes)); err != nil {
 		return fmt.Errorf("failed to send message to listener node: %v", err)
 	}
 

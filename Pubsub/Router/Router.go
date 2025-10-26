@@ -9,6 +9,17 @@ import (
 // Router routes messages to appropriate services based on message type
 // This function acts as a simple router that delegates to service layer
 func Router(message *AVCStruct.GossipMessage) error {
+	// Validate message structure
+	if message == nil {
+		return fmt.Errorf("message is nil")
+	}
+	if message.Data == nil {
+		return fmt.Errorf("message data is nil")
+	}
+	if message.Data.ACK == nil {
+		return fmt.Errorf("message ACK is nil")
+	}
+
 	// Convert the message into Pubsub.GossipMessage
 	// Create service manager with dependencies
 	GossipNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
@@ -17,11 +28,9 @@ func Router(message *AVCStruct.GossipMessage) error {
 	fmt.Println("Router", message.Data.ACK.Stage)
 	fmt.Println("message", message)
 
-
 	// Route to appropriate services based on the message ack type
 	switch message.Data.ACK.Stage {
 	case config.Type_AskForSubscription:
-
 		return serviceManager.GetSubscriptionService().HandleAskForSubscription(message)
 	case config.Type_VerifySubscription:
 		return serviceManager.GetConsensusService().HandleVerifySubscription(message)
