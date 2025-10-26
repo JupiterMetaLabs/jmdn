@@ -9,7 +9,6 @@ import (
 	Subscription "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
-	PubSubMessages "gossipnode/config/PubSubMessages"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
@@ -34,9 +33,13 @@ func NewListenerHandler(responseHandler AVCStruct.ResponseHandler) *ListenerHand
 func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 	defer s.Close()
 
+	fmt.Println("=== ListenerHandler.HandleSubmitMessageStream CALLED ===")
+	fmt.Printf("Received stream from: %s\n", s.Conn().RemotePeer())
+
 	reader := bufio.NewReader(s)
 	msg, err := reader.ReadString(config.Delimiter)
 	if err != nil {
+		fmt.Printf("Error reading message: %v\n", err)
 		log.LogConsensusError(fmt.Sprintf("Error reading message from %s: %v", s.Conn().RemotePeer(), err),
 			err,
 			zap.String("peer", s.Conn().RemotePeer().String()),
@@ -46,8 +49,11 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 		return
 	}
 
+	fmt.Printf("Raw message received: %s\n", msg)
+
 	message := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(msg)
 	if message == nil {
+		fmt.Println("Failed to parse message - malformed JSON")
 		log.LogMessagesError("Failed to parse message - malformed JSON or invalid structure",
 			nil,
 			zap.String("peer", s.Conn().RemotePeer().String()),
@@ -57,6 +63,9 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 		return
 	}
 
+	fmt.Printf("Parsed message: %+v\n", message)
+	fmt.Printf("ACK: %+v\n", message.GetACK())
+
 	log.LogMessagesInfo(fmt.Sprintf("Received submit message from %s: %s", s.Conn().RemotePeer(), msg),
 		zap.String("peer", s.Conn().RemotePeer().String()),
 		zap.String("topic", log.Messages_TOPIC),
@@ -65,6 +74,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 
 	// Check if ACK is not nil before accessing it
 	if message.GetACK() == nil {
+		fmt.Println("Received message with nil ACK")
 		log.LogMessagesError("Received message with nil ACK",
 			nil,
 			zap.String("peer", s.Conn().RemotePeer().String()),
@@ -74,15 +84,21 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 		return
 	}
 
+	fmt.Printf("ACK Stage: %s\n", message.GetACK().GetStage())
+
 	// Route message based on ACK stage
 	switch message.GetACK().GetStage() {
 	case config.Type_SubmitVote:
+		fmt.Println("Handling Type_SubmitVote")
 		lh.handleSubmitVote(s, message)
 	case config.Type_AskForSubscription:
+		fmt.Println("Handling Type_AskForSubscription")
 		lh.handleAskForSubscription(s, message)
 	case config.Type_SubscriptionResponse:
+		fmt.Println("Handling Type_SubscriptionResponse")
 		lh.handleSubscriptionResponse(s, message)
 	default:
+		fmt.Printf("Unknown message type: %s\n", message.GetACK().GetStage())
 		log.LogMessagesError(fmt.Sprintf("Unknown message type received from %s: %s", s.Conn().RemotePeer(), msg),
 			nil,
 			zap.String("peer", s.Conn().RemotePeer().String()),
@@ -138,6 +154,11 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 
 // handleAskForSubscription processes subscription request messages
 func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *AVCStruct.Message) {
+	fmt.Println("=== ListenerHandler.handleAskForSubscription CALLED ===")
+	fmt.Printf("Received subscription request from: %s\n", s.Conn().RemotePeer())
+	fmt.Printf("Message: %s\n", message.Message)
+	fmt.Printf("ACK Stage: %s\n", message.GetACK().GetStage())
+
 	log.LogMessagesInfo(fmt.Sprintf("Received subscription request from %s", s.Conn().RemotePeer()),
 		zap.String("peer", s.Conn().RemotePeer().String()),
 		zap.String("topic", log.Messages_TOPIC),
@@ -146,6 +167,7 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 	// Check if ForListner is initialized
 	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
 	if listenerNode == nil || listenerNode.Host == nil {
+		fmt.Println("ForListner not initialized - sending rejection response")
 		log.LogMessagesError("ForListner not initialized - cannot process subscription request",
 			nil,
 			zap.String("peer", s.Conn().RemotePeer().String()),
@@ -155,8 +177,10 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 		return
 	}
 
+	fmt.Println("ForListner is initialized - processing subscription request")
+
 	// Create GossipPubSub using Pubsub_Builder.go
-	gps := PubSubMessages.NewGossipPubSubBuilder(nil).
+	gps := AVCStruct.NewGossipPubSubBuilder(nil).
 		SetHost(listenerNode.Host).
 		SetProtocol(config.BuddyNodesMessageProtocol).
 		Build()
@@ -170,7 +194,7 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 	}
 
 	// Subscribe to BuddyNodesMessageProtocol
-	if err := Subscription.Subscribe(gps, log.Consensus_TOPIC, func(msg *PubSubMessages.GossipMessage) {
+	if err := Subscription.Subscribe(gps, log.Consensus_TOPIC, func(msg *AVCStruct.GossipMessage) {
 		log.LogMessagesInfo(fmt.Sprintf("Received message on BuddyNodesMessageProtocol: %s", msg.ID),
 			zap.String("peer", s.Conn().RemotePeer().String()),
 			zap.String("topic", log.Messages_TOPIC),
