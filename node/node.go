@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
+	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/messaging"
@@ -211,12 +212,16 @@ func NewNode() (*config.Node, error) {
 				ParallelCleanUpRoutine: false,
 			}
 
+			// Initialize CRDT Layer
+			CRDTLayer := ServiceLayer.GetServiceController()
+
 			basicBuddyNode := &AVCStruct.BuddyNode{
 				PeerID:      h.ID(),
 				Host:        h,
 				PubSub:      nil, // Will be set when needed
 				BuddyNodes:  *defaultBuddies,
 				StreamCache: streamCache, // Initialize with proper StreamCache
+				CRDTLayer:   CRDTLayer,   // Initialize CRDT Layer
 				MetaData: AVCStruct.MetaData{
 					Received:  0,
 					Sent:      0,
