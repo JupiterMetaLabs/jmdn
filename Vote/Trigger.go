@@ -53,24 +53,18 @@ func (vt *VoteTrigger) ToVoteString(vote *PubSubMessages.Vote) string {
 }
 
 func (vt *VoteTrigger) SubmitVote() error {
-	fmt.Printf("\n📊 [VoteTrigger.SubmitVote] Starting vote submission...\n")
-
 	// Get the Listener Node
 	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
 	if listenerNode == nil {
-		fmt.Printf("❌ [VoteTrigger.SubmitVote] Listener node not found\n")
 		return fmt.Errorf("listener node not found")
 	}
-	fmt.Printf("✅ [VoteTrigger.SubmitVote] Listener node found: %s\n", listenerNode.PeerID.String())
 
 	// If consensus message is not set, try to get it from global cache
 	if vt.ConsensusMessage == nil {
 		// This should not happen in normal flow, but handle gracefully
-		fmt.Printf("❌ [VoteTrigger.SubmitVote] Consensus message not set for voting\n")
 		return fmt.Errorf("consensus message not set for voting")
 	}
 
-	fmt.Printf("🔍 [VoteTrigger.SubmitVote] Checking ZKBlock validation...\n")
 	// Check the Three checks from the Security Module
 	status, err := Security.CheckZKBlockValidation(vt.ConsensusMessage.GetZKBlock())
 	if !status || err != nil {
@@ -79,24 +73,16 @@ func (vt *VoteTrigger) SubmitVote() error {
 			BlockHash: vt.ConsensusMessage.GetZKBlock().BlockHash.String(),
 		}
 		vt.setVote(&vote)
-		fmt.Printf("❌ [VoteTrigger.SubmitVote] ZKBlock validation failed: %v\n", err)
-		fmt.Printf("❌ [VoteTrigger.SubmitVote] Voting NO (-1)\n")
+		fmt.Printf("failed to check ZKBlock validation: %v\n", err)
 	} else if status {
 		vote := PubSubMessages.Vote{
 			Vote:      1,
 			BlockHash: vt.ConsensusMessage.GetZKBlock().BlockHash.String(),
 		}
 		vt.setVote(&vote)
-		fmt.Printf("✅ [VoteTrigger.SubmitVote] ZKBlock validation passed\n")
-		fmt.Printf("✅ [VoteTrigger.SubmitVote] Voting YES (1)\n")
 	} else {
-		fmt.Printf("❌ [VoteTrigger.SubmitVote] Failed to vote, as vote is neither 1 or -1\n")
 		return fmt.Errorf("failed to vote, as vote is neither 1 or -1")
 	}
-
-	// Pick up the listener node using the consistent hashing to send message to
-	NodeToSendTo := vt.PickListner(listenerNode.PeerID)
-	fmt.Printf("📡 [VoteTrigger.SubmitVote] Sending vote to peer: %s\n", NodeToSendTo.PeerID.String())
 
 	// Create proper message with ACK stage for vote submission
 	voteMessage := PubSubMessages.NewMessageBuilder(nil).
@@ -108,30 +94,65 @@ func (vt *VoteTrigger) SubmitVote() error {
 	// Marshal the message to JSON
 	messageBytes, err := json.Marshal(voteMessage)
 	if err != nil {
-		fmt.Printf("❌ [VoteTrigger.SubmitVote] Failed to marshal vote message: %v\n", err)
 		return fmt.Errorf("failed to marshal vote message: %v", err)
 	}
 
-	fmt.Printf("📤 [VoteTrigger.SubmitVote] Sending message to listener node...\n")
-	// Send the message to the listener node
-	if err := MessagePassing.NewListenerStruct(listenerNode).SendMessageToPeer(NodeToSendTo.PeerID, string(messageBytes)); err != nil {
-		fmt.Printf("❌ [VoteTrigger.SubmitVote] Failed to send message to listener node: %v\n", err)
-		return fmt.Errorf("failed to send message to listener node: %v", err)
+	// Try to send to multiple nodes if first attempt fails
+	maxAttempts := 3
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// Pick up the listener node using the consistent hashing with offset
+		NodeToSendTo := vt.PickListnerWithOffset(listenerNode.PeerID, attempt)
+
+		// Check if trying to send to self - skip and try next
+		if NodeToSendTo.PeerID == listenerNode.PeerID && attempt < maxAttempts-1 {
+			continue
+		}
+
+		// Send the message to the listener node
+		err := MessagePassing.NewListenerStruct(listenerNode).SendMessageToPeer(NodeToSendTo.PeerID, string(messageBytes))
+		if err != nil {
+			// If this is not the last attempt, try again
+			if attempt < maxAttempts-1 {
+				continue
+			}
+			// Last attempt failed
+			return fmt.Errorf("failed to send message to listener node after %d attempts: %v", maxAttempts, err)
+		}
+
+		// Success!
+		return nil
 	}
 
-	fmt.Printf("✅ [VoteTrigger.SubmitVote] Vote submitted successfully!\n\n")
-	return nil
+	return fmt.Errorf("failed to submit vote after %d attempts", maxAttempts)
 }
 
 func (vt *VoteTrigger) PickListner(PeerID peer.ID) PubSubMessages.Buddy_PeerMultiaddr {
+	return vt.PickListnerWithOffset(PeerID, 0)
+}
+
+// PickListnerWithOffset picks a listener node using consistent hashing with an offset
+func (vt *VoteTrigger) PickListnerWithOffset(PeerID peer.ID, offset int) PubSubMessages.Buddy_PeerMultiaddr {
 	// Node should hash its own peerID  pick one from all the keys in buddies map
 	buddies := vt.ConsensusMessage.GetBuddies()
 	numKeys := len(buddies)
-	// Get the all the keys in the buddies map
-	selectedKey := consistentHashing(PeerID, numKeys)
+
+	if numKeys == 0 {
+		// Return empty buddy if no buddies exist
+		return PubSubMessages.Buddy_PeerMultiaddr{}
+	}
+
+	// Get the initial selected key using consistent hashing
+	baseKey := consistentHashing(PeerID, numKeys)
+
+	// Add offset to try different nodes
+	selectedKey := (baseKey + offset) % numKeys
 
 	// if the selected Key not in the buddies map, return the first peer
 	if _, ok := buddies[selectedKey]; !ok {
+		if offset < numKeys {
+			// Try the next key
+			return vt.PickListnerWithOffset(PeerID, (offset+1)%numKeys)
+		}
 		return buddies[0]
 	}
 	return buddies[selectedKey]
