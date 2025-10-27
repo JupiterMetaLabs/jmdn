@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package Block;
+
+option go_package = "gossipnode/Block/proto";
+
+// ZKBlock message represents a block processed by the ZKVM
+message ZKBlock {
+    // ZK-Stark proof data
+    bytes stark_proof = 1;
+    repeated uint32 commitment = 2;
+    string proof_hash = 3;
+    string status = 4;
+    string txns_root = 5;
+
+    // Block data
+    repeated Transaction transactions = 6;
+    int64 timestamp = 7;
+    string extra_data = 8;
+    bytes state_root = 9;
+    bytes logs_bloom = 10;
+    bytes coinbase_addr = 11;
+    bytes zkvm_addr = 12;
+    bytes prev_hash = 13;
+    bytes block_hash = 14;
+    uint64 gas_limit = 15;
+    uint64 gas_used = 16;
+    uint64 block_number = 17;
+}
+
+// Transaction message
+message Transaction {
+    bytes hash = 1;
+    bytes from = 2;
+    bytes to = 3;
+    bytes value = 4;
+    uint32 type = 5;
+    uint64 timestamp = 6;
+    bytes chain_id = 7;
+    uint64 nonce = 8;
+    uint64 gas_limit = 9;
+    bytes gas_price = 10;
+    bytes max_fee = 11;
+    bytes max_priority_fee = 12;
+    bytes data = 13;
+    AccessList access_list = 14;
+    bytes v = 15;
+    bytes r = 16;
+    bytes s = 17;
+}
+
+// AccessList message
+message AccessList {
+    repeated AccessTuple access_tuples = 1;
+}
+
+message AccessTuple {
+    bytes address = 1;
+    repeated bytes storage_keys = 2;
+}
+
+// ProcessBlock request and response
+message ProcessBlockRequest {
+    ZKBlock block = 1;
+}
+
+message ProcessBlockResponse {
+    bool success = 1;
+    string message = 2;
+    string block_hash = 3;
+    uint64 block_number = 4;
+    string error = 5;
+}
+
+// BlockService defines the gRPC service for block operations
+service BlockService {
+    rpc ProcessBlock(ProcessBlockRequest) returns (ProcessBlockResponse);
+}
+
