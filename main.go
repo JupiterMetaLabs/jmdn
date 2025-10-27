@@ -401,7 +401,7 @@ func main() {
 		return
 	}
 	// Debugging
-	fmt.Println("Node manager initialized successfully", nodeManager)
+	fmt.Println("Node manager initialized successfully")
 
 	nodeManager.StartHeartbeat(*heartbeatInterval)
 	defer nodeManager.Shutdown()
