@@ -9,6 +9,7 @@ import (
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	ServiceLayer "gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
+	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"time"
@@ -192,6 +193,16 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 		}
 
 		fmt.Printf("=== THIS IS BUDDY NODE HANDLER FUNCTION - Successfully added vote to CRDT (without republishing) ===\n")
+
+		// Now publish the vote to pubsub so other buddy nodes can receive it
+		if pubSubNode != nil && pubSubNode.PubSub != nil {
+			fmt.Printf("=== Publishing vote to pubsub for other buddy nodes ===\n")
+			if err := Publisher.Publish(pubSubNode.PubSub, config.PubSub_ConsensusChannel, message, map[string]string{}); err != nil {
+				fmt.Printf("=== Failed to publish vote to pubsub: %v ===\n", err)
+			} else {
+				fmt.Printf("=== Successfully published vote to pubsub ===\n")
+			}
+		}
 	}
 
 	// Debugging
