@@ -3,11 +3,9 @@ package MessagePassing
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
-	Subscription "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/seednode"
@@ -76,50 +74,9 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 			return
 		}
 	case config.Type_AskForSubscription:
-
-		// Otherwise, this is a subscription request - handle it
-		// Handle subscription request
-		log.LogMessagesInfo(fmt.Sprintf("Received subscription request from %s", s.Conn().RemotePeer()),
-			zap.String("peer", s.Conn().RemotePeer().String()),
-			zap.String("topic", log.Messages_TOPIC),
-			zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
-
-		// Create GossipPubSub using Pubsub_Builder.go first
-		gps := AVCStruct.NewGossipPubSubBuilder(nil).
-			SetHost(AVCStruct.NewGlobalVariables().Get_ForListner().Host).
-			SetProtocol(config.BuddyNodesMessageProtocol).
-			Build()
-
-		// Initialize PubSub BuddyNode if not already done
-		if AVCStruct.NewGlobalVariables().Get_PubSubNode() == nil {
-			listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
-			if listenerNode != nil && listenerNode.Host != nil {
-				// Create default Buddies instance
-				defaultBuddies := AVCStruct.NewBuddiesBuilder(nil)
-				buddy := NewBuddyNode(listenerNode.Host, defaultBuddies, nil, gps)
-				AVCStruct.NewGlobalVariables().Set_PubSubNode(buddy)
-			}
-		}
-
-		// Subscribe to BuddyNodesMessageProtocol
-		if err := Subscription.Subscribe(gps, log.Consensus_TOPIC, func(msg *AVCStruct.GossipMessage) {
-			log.LogMessagesInfo(fmt.Sprintf("Received message on BuddyNodesMessageProtocol: %s", msg.ID), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
-			// print the log as messabe
-			fmt.Println("Received message for the subscription: ", msg.Data.Message)
-			fmt.Println("ACK: ", msg.Data.ACK)
-		}); err != nil {
-			log.LogMessagesError(fmt.Sprintf("Failed to subscribe to BuddyNodesMessageProtocol: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
-			fmt.Println("Failed to subscribe to BuddyNodesMessageProtocol: ", err)
-			fmt.Println("Sending subscription response: false")
-			fmt.Println("--------------------------------")
-			sendSubscriptionResponse(s, false)
-			return
-		}
-		fmt.Println("--------------------------------")
-		fmt.Println("Subscribed to BuddyNodesMessageProtocol")
-		fmt.Println("Sending subscription response: true")
-		fmt.Println("--------------------------------")
-		sendSubscriptionResponse(s, true)
+		// Delegate subscription handling to ListenerHandler
+		listenerHandler := NewListenerHandler(StructListenerNode.ResponseHandler)
+		listenerHandler.handleAskForSubscription(s, message)
 	case config.Type_SubscriptionResponse:
 		// Handle subscription response from buddy nodes
 		fmt.Printf("=== SEQUENCER: Received subscription response from %s ===\n", s.Conn().RemotePeer())
@@ -150,37 +107,6 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 		}
 	default:
 		log.LogMessagesError(fmt.Sprintf("Unknown message type received from %s: %s", s.Conn().RemotePeer(), msg), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
-	}
-}
-
-// sendSubscriptionResponse sends ACK response for subscription requests
-func sendSubscriptionResponse(s network.Stream, accepted bool) {
-	host := s.Conn().LocalPeer()
-	var ackBuilder *AVCStruct.ACK
-	if accepted {
-		ackBuilder = AVCStruct.NewACKBuilder().True_ACK_Message(host, config.Type_AskForSubscription)
-	} else {
-		ackBuilder = AVCStruct.NewACKBuilder().False_ACK_Message(host, config.Type_AskForSubscription)
-	}
-
-	message := AVCStruct.NewMessageBuilder(nil).
-		SetSender(host).
-		SetMessage(fmt.Sprintf("Subscription %s", map[bool]string{true: "accepted", false: "rejected"}[accepted])).
-		SetTimestamp(time.Now().Unix()).
-		SetACK(ackBuilder)
-
-	messageBytes, err := json.Marshal(message)
-	if err != nil {
-		log.LogMessagesError(fmt.Sprintf("Failed to marshal response: %v", err), err)
-		return
-	}
-
-	// Send response back through the SAME stream (SubmitMessageProtocol)
-	_, err = s.Write([]byte(string(messageBytes) + string(rune(config.Delimiter))))
-	if err != nil {
-		log.LogMessagesError(fmt.Sprintf("Failed to send response: %v", err), err)
-	} else {
-		log.LogMessagesInfo(fmt.Sprintf("Sent subscription response: %s", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted]))
 	}
 }
 
@@ -264,9 +190,29 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 	}
 
 	// Read response after sending (for subscription requests)
-	// HandleSubscriptionResponse will read from the stream and process the response
-	// Pass the peerID so it can be used to route the response correctly
-	go StructListenerNode.HandleSubscriptionResponse(stream, nil, peerID)
+	reader := bufio.NewReader(stream)
+	responseMsg, err := reader.ReadString(config.Delimiter)
+	if err == nil && responseMsg != "" {
+		fmt.Printf("=== SendMessageToPeer: Received response from %s: %s ===\n", peerID, responseMsg)
+
+		// Parse the response message
+		responseMessage := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(responseMsg)
+		if responseMessage != nil && responseMessage.GetACK() != nil {
+			// Process the subscription response directly
+			if responseMessage.GetACK().GetStage() == config.Type_SubscriptionResponse {
+				fmt.Printf("=== SendMessageToPeer: Processing subscription response from %s ===\n", peerID)
+
+				// Route the response to ResponseHandler if available
+				if StructListenerNode.ResponseHandler != nil {
+					accepted := responseMessage.GetACK().GetStatus() == "ACK_TRUE"
+					fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", peerID, accepted)
+
+					StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted)
+					fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
+				}
+			}
+		}
+	}
 
 	// Update metadata
 	StructListenerNode.ListenerBuddyNode.Mutex.Lock()
@@ -298,12 +244,37 @@ func (StructListenerNode *StructListener) sendViaSeedNode(peerID peer.ID, messag
 	if err != nil {
 		return fmt.Errorf("failed to create stream to %s: %v", peerID, err)
 	}
-	defer stream.Close() // Drop connection immediately after sending
+	defer stream.Close()
 
 	// Send the message
 	_, err = stream.Write([]byte(message + string(rune(config.Delimiter))))
 	if err != nil {
 		return fmt.Errorf("failed to send message to %s: %v", peerID, err)
+	}
+
+	// Read response after sending (for subscription requests)
+	reader := bufio.NewReader(stream)
+	responseMsg, err := reader.ReadString(config.Delimiter)
+	if err == nil && responseMsg != "" {
+		fmt.Printf("=== sendViaSeedNode: Received response from %s: %s ===\n", peerID, responseMsg)
+
+		// Parse the response message
+		responseMessage := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(responseMsg)
+		if responseMessage != nil && responseMessage.GetACK() != nil {
+			// Process the subscription response directly
+			if responseMessage.GetACK().GetStage() == config.Type_SubscriptionResponse {
+				fmt.Printf("=== sendViaSeedNode: Processing subscription response from %s ===\n", peerID)
+
+				// Route the response to ResponseHandler if available
+				if StructListenerNode.ResponseHandler != nil {
+					accepted := responseMessage.GetACK().GetStatus() == "ACK_TRUE"
+					fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", peerID, accepted)
+
+					StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted)
+					fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
+				}
+			}
+		}
 	}
 
 	// Update metadata

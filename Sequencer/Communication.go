@@ -37,21 +37,30 @@ func (rh *ResponseHandler) RegisterPeer(peerID peer.ID) chan bool {
 
 	responseChan := make(chan bool, 1)
 	rh.responses[peerID] = responseChan
+	fmt.Printf("=== ResponseHandler.RegisterPeer: Created channel for peer: %s ===\n", peerID)
 	return responseChan
 }
 
 // HandleResponse handles an ACK response from a peer
 func (rh *ResponseHandler) HandleResponse(peerID peer.ID, accepted bool) {
+	fmt.Printf("=== ResponseHandler.HandleResponse called for peer: %s (accepted: %t) ===\n", peerID, accepted)
+
 	rh.mutex.RLock()
 	responseChan, exists := rh.responses[peerID]
 	rh.mutex.RUnlock()
 
+	fmt.Printf("ResponseHandler: Channel exists for peer %s: %t\n", peerID, exists)
 	if exists {
+		fmt.Printf("ResponseHandler: Attempting to send to channel for peer %s\n", peerID)
 		select {
 		case responseChan <- accepted:
+			fmt.Printf("ResponseHandler: Successfully sent response to channel for peer %s\n", peerID)
 		default:
+			fmt.Printf("ResponseHandler: Channel full or closed for peer %s\n", peerID)
 			// Channel is full or closed, ignore
 		}
+	} else {
+		fmt.Printf("ResponseHandler: No channel found for peer %s\n", peerID)
 	}
 }
 
@@ -287,10 +296,12 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 			}
 
 			log.Printf("Sent subscription request to %s peer: %s, waiting for ACK...", peerType, peerID)
+			fmt.Printf("=== askPeersForSubscription: Waiting for response from peer: %s ===\n", peerID)
 
 			// Wait for response with timeout
 			select {
 			case response := <-responseChan:
+				fmt.Printf("=== askPeersForSubscription: Received response from peer: %s (accepted: %t) ===\n", peerID, response)
 				mu.Lock()
 				accepted[peerID.String()] = response
 				mu.Unlock()
@@ -301,6 +312,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 					log.Printf("%s peer %s rejected subscription", peerType, peerID)
 				}
 			case <-ctx.Done():
+				fmt.Printf("=== askPeersForSubscription: TIMEOUT waiting for response from peer: %s ===\n", peerID)
 				log.Printf("Timeout waiting for ACK from %s peer: %s", peerType, peerID)
 				mu.Lock()
 				accepted[peerID.String()] = false

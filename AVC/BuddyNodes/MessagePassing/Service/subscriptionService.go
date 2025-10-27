@@ -328,6 +328,62 @@ func (s *SubscriptionService) handleSubscriptionRequest(msg *AVCStruct.GossipMes
 	return nil
 }
 
+// HandleStreamSubscriptionRequest handles subscription requests received via stream
+// This method can be called from ListenerHandler to delegate subscription processing
+func (s *SubscriptionService) HandleStreamSubscriptionRequest(channelName string) error {
+	if s.pubSub == nil {
+		return fmt.Errorf("pubsub not available")
+	}
+
+	log.LogConsensusInfo("Handling stream subscription request",
+		zap.String("channel", channelName),
+		zap.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
+
+	// Define the consensus channel in this node's pubsub instance if it doesn't exist
+	s.pubSub.Mutex.Lock()
+	if _, exists := s.pubSub.ChannelAccess[channelName]; !exists {
+		// Channel doesn't exist, create it as public so this node can subscribe
+		allowedMap := make(map[peer.ID]bool)
+		allowedMap[s.pubSub.Host.ID()] = true
+
+		s.pubSub.ChannelAccess[channelName] = &AVCStruct.ChannelAccess{
+			ChannelName:  channelName,
+			AllowedPeers: allowedMap,
+			IsPublic:     true, // Make it public so node can subscribe
+			Creator:      s.pubSub.Host.ID(),
+		}
+		fmt.Printf("Created %s channel locally for peer %s\n", channelName, s.pubSub.Host.ID())
+	}
+	s.pubSub.Mutex.Unlock()
+
+	// Use the existing subscribeToTopic method to handle the subscription
+	err := s.subscribeToTopic(channelName, func(msg *AVCStruct.GossipMessage) {
+		log.LogConsensusInfo(fmt.Sprintf("Received message on %s: %s", channelName, msg.ID),
+			zap.String("channel", channelName),
+			zap.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
+
+		// Handle the received message by processing it through the message router
+		if err := s.handleReceivedMessage(msg); err != nil {
+			log.LogConsensusError(fmt.Sprintf("Failed to handle received message: %v", err), err,
+				zap.String("channel", channelName),
+				zap.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
+		}
+	})
+
+	if err != nil {
+		log.LogConsensusError(fmt.Sprintf("Failed to subscribe to %s: %v", channelName, err), err,
+			zap.String("channel", channelName),
+			zap.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
+		return fmt.Errorf("failed to subscribe to %s: %v", channelName, err)
+	}
+
+	log.LogConsensusInfo(fmt.Sprintf("Successfully subscribed to %s", channelName),
+		zap.String("channel", channelName),
+		zap.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
+
+	return nil
+}
+
 func (s *SubscriptionService) subscribeToTopic(topic string, handler func(*AVCStruct.GossipMessage)) error {
 	if s.pubSub == nil {
 		return fmt.Errorf("pubsub not available")
