@@ -105,7 +105,7 @@ func FallbackConnectionFunction(peerID peer.ID) {
 			break
 		}
 
-		reachable,timeTaken, err := nm.PingMultiaddrWithRetries(multiaddrStr, 3) // or call a standalone func
+		reachable, timeTaken, err := nm.PingMultiaddrWithRetries(multiaddrStr, 3) // or call a standalone func
 		if err != nil {
 			fmt.Printf("[%s] Error checking reachability: %v\n", peerID, err)
 			continue
@@ -141,12 +141,16 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) {
 
 	fmt.Println("---- Starting concurrent reachability checks ----")
 
-	for _, buddy := range peers {
+	for idx, buddy := range peers {
 		wg.Add(1)
-		go func(peerID peer.ID, maddr multiaddr.Multiaddr) {
+		// Capture buddy values by making a copy for each goroutine
+		buddy := buddy
+		go func(peerID peer.ID, maddr multiaddr.Multiaddr, index int) {
 			defer wg.Done()
 
 			addrStr := maddr.String()
+			fmt.Printf("[Thread %d] Checking peer %s at address: %s\n", index, peerID, addrStr)
+
 			nm := GetNodeManager()
 			if nm == nil {
 				results <- fmt.Sprintf("[%s] NodeManager not available for reachability check", peerID)
@@ -156,7 +160,7 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) {
 				return
 			}
 
-			reachable,timeTaken, err := nm.PingMultiaddrWithRetries(addrStr, 3)
+			reachable, timeTaken, err := nm.PingMultiaddrWithRetries(addrStr, 3)
 			if err != nil {
 				results <- fmt.Sprintf("[%s] Error checking reachability for %s: %v", peerID, addrStr, err)
 				FallbackConnectionFunction(peerID)
@@ -174,7 +178,7 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) {
 
 			AddPeer(peerID, maddr)
 			results <- fmt.Sprintf("[%s] Reachable and added: %s", peerID, addrStr)
-		}(buddy.PeerID, buddy.Multiaddr)
+		}(buddy.PeerID, buddy.Multiaddr, idx)
 	}
 
 	// Close results after all workers finish

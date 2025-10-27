@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
+	"gossipnode/AVC/BuddyNodes/ServiceLayer"
+	"gossipnode/AVC/BuddyNodes/Types"
+	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 
@@ -158,7 +161,7 @@ func (s *SubscriptionService) HandleEndPubSub(gossipMessage *AVCStruct.GossipMes
 // handleReceivedMessage processes received pubsub messages
 func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage) error {
 	log.LogConsensusInfo("Processing received pubsub message",
-			zap.String("topic", config.PubSub_ConsensusChannel),
+		zap.String("topic", config.PubSub_ConsensusChannel),
 		zap.String("message_id", msg.ID),
 		zap.String("sender", string(msg.Sender)),
 		zap.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -208,7 +211,53 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 			zap.String("phase", msg.Data.Phase),
 			zap.String("function", "SubscriptionService.handleReceivedMessage"))
 
-		return s.handleVoteSubmission(msg)
+		// Add vote to local CRDT for this buddy node
+		fmt.Printf("\n[BUDDY] Processing vote submission via pubsub\n")
+		fmt.Printf("Message: %s\n", msg.Data.Message)
+		fmt.Printf("From: %s\n", msg.Sender)
+
+		// Get the global ForListner
+		globalVars := AVCStruct.NewGlobalVariables()
+		listenerNode := globalVars.Get_ForListner()
+
+		if listenerNode == nil || listenerNode.CRDTLayer == nil {
+			fmt.Printf("[BUDDY] ✗ Listener node or CRDT layer not initialized\n")
+			log.LogConsensusError("Listener node or CRDT layer not initialized", nil,
+				zap.String("function", "SubscriptionService.handleReceivedMessage"))
+			return fmt.Errorf("listener node or CRDT layer not initialized")
+		}
+
+		// Add vote to CRDT directly
+		var voteData map[string]interface{}
+		if err := json.Unmarshal([]byte(msg.Data.Message), &voteData); err != nil {
+			fmt.Printf("[BUDDY] ✗ Failed to unmarshal vote message: %v\n", err)
+			return fmt.Errorf("failed to unmarshal vote message: %v", err)
+		}
+
+		if vote, exists := voteData["vote"]; exists {
+			voteValue, ok := vote.(float64)
+			if !ok {
+				return fmt.Errorf("invalid vote value type")
+			}
+
+			OP := &Types.OP{
+				NodeID: msg.Data.Sender,
+				OpType: int8(voteValue),
+				KeyValue: Types.KeyValue{
+					Key:   "vote",
+					Value: msg.Data.Message,
+				},
+			}
+
+			if err := ServiceLayer.Controller(listenerNode.CRDTLayer, OP); err != nil {
+				fmt.Printf("[BUDDY] ✗ Failed to add vote to CRDT: %v\n", err)
+				return fmt.Errorf("failed to add vote to local CRDT Engine: %v", err)
+			}
+
+			fmt.Printf("[BUDDY] ✓ Successfully added vote to CRDT\n")
+		}
+
+		return nil
 
 	case config.Type_Publish:
 		// Check if it's a BFT vote (has Phase and RoundID)
@@ -245,6 +294,11 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 		return nil
 
 	default:
+		// Debugging in the default case
+		fmt.Printf("==============================================\n")
+		fmt.Printf("[BUDDY] Received message with unknown stage: %s\n", msg.Data.ACK.Stage)
+		fmt.Printf("Message: %s\n", msg.Data.Message)
+		fmt.Printf("==============================================\n")
 		log.LogConsensusInfo(fmt.Sprintf("Received message with unknown stage: %s", msg.Data.ACK.Stage),
 			zap.String("topic", config.PubSub_ConsensusChannel),
 			zap.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -280,7 +334,7 @@ func (s *SubscriptionService) handleVoteSubmission(msg *AVCStruct.GossipMessage)
 
 func (s *SubscriptionService) handlePrepareVote(msg *AVCStruct.GossipMessage) error {
 	log.LogConsensusInfo("Processing PREPARE vote",
-				zap.String("topic", config.PubSub_ConsensusChannel),
+		zap.String("topic", config.PubSub_ConsensusChannel),
 		zap.String("round_id", msg.Data.RoundID),
 		zap.String("sender", msg.Sender.String()),
 		zap.String("function", "SubscriptionService.handlePrepareVote"))
@@ -356,8 +410,14 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(channelName string
 	}
 	s.pubSub.Mutex.Unlock()
 
-	// Use the existing subscribeToTopic method to handle the subscription
-	err := s.subscribeToTopic(channelName, func(msg *AVCStruct.GossipMessage) {
+	// Use the Connector.Subscribe to handle the subscription properly with GossipSub
+	// This ensures messages are received via GossipSub
+	err := Connector.Subscribe(s.pubSub, channelName, func(msg *AVCStruct.GossipMessage) {
+		fmt.Printf("\n[BUDDY NODE PUBSUB HANDLER] Received message on %s\n", channelName)
+		fmt.Printf("Message ID: %s\n", msg.ID)
+		fmt.Printf("From: %s\n", msg.Sender)
+		fmt.Printf("Topic: %s\n", msg.Topic)
+
 		log.LogConsensusInfo(fmt.Sprintf("Received message on %s: %s", channelName, msg.ID),
 			zap.String("channel", channelName),
 			zap.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
