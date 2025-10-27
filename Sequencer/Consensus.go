@@ -381,20 +381,9 @@ func (consensus *Consensus) PrintCRDTState() error {
 		return fmt.Errorf("failed to process votes from CRDT: %w", err)
 	}
 
-	if len(voteData) > 0 {
-		fmt.Printf("\n🔔 Calling processVoteData with %d votes from CRDT\n", len(voteData))
 
-		// Call processVoteData from Sequencer/Triggers
-		result, err := Triggers.ProcessVoteData(voteData)
-		if err != nil {
-			fmt.Printf("❌ Failed to process vote data: %v\n", err)
-			return fmt.Errorf("failed to process vote data: %w", err)
-		}
 
-		fmt.Printf("✅ Vote processing result: %d\n", result)
-	} else {
-		fmt.Printf("⚠️ No votes found in CRDT to process\n")
-	}
+	fmt.Printf("✅ Vote processing result: %d\n", voteData)
 
 	return nil
 }

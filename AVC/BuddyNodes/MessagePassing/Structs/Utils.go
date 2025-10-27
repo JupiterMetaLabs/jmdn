@@ -6,9 +6,11 @@ import (
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
+	voteaggregation "gossipnode/AVC/VoteModule"
 	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/config"
 	"gossipnode/config/PubSubMessages"
+	"gossipnode/seednode"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -182,10 +184,10 @@ func PrintCRDTState(listenerNode *PubSubMessages.BuddyNode) error {
 	return nil
 }
 
-// ProcessVotesFromCRDT extracts votes from CRDT and returns them as map[string]int8 (block_hash -> vote)
-func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (map[string]int8, error) {
+// ProcessVotesFromCRDT extracts votes from CRDT, processes them through votemodule, and returns the result
+func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) {
 	if listenerNode == nil || listenerNode.CRDTLayer == nil {
-		return nil, fmt.Errorf("listener node or CRDT layer not initialized")
+		return 0, fmt.Errorf("listener node or CRDT layer not initialized")
 	}
 
 	fmt.Printf("\n=== Processing votes from CRDT for voting ===\n")
@@ -235,5 +237,39 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (map[string]in
 	fmt.Printf("DEBUG: Extracted %d votes from CRDT (unique block hashes)\n", len(voteData))
 	fmt.Printf("DEBUG: Vote data map: %v\n", voteData)
 
-	return voteData, nil
+	if len(voteData) == 0 {
+		fmt.Printf("⚠️ No votes found in CRDT to process\n")
+		return 0, fmt.Errorf("no votes found in CRDT")
+	}
+
+	// Get peer weights from seed node
+	client, err := seednode.NewClient(config.SeedNodeURL)
+	if err != nil {
+		fmt.Printf("❌ Failed to create seed node client: %v\n", err)
+		return 0, fmt.Errorf("failed to create seed node client: %v", err)
+	}
+
+	weights, err := client.ListWeightsofPeers()
+	if err != nil {
+		fmt.Printf("❌ Failed to get peer weights: %v\n", err)
+		return 0, fmt.Errorf("failed to get peer weights: %v", err)
+	}
+
+	fmt.Printf("DEBUG: Peer weights: %v\n", weights)
+
+	// Call votemodule.VoteAggregation
+	result, err := voteaggregation.VoteAggregation(weights, voteData)
+	if err != nil {
+		fmt.Printf("❌ Failed to aggregate votes: %v\n", err)
+		return 0, fmt.Errorf("failed to aggregate votes: %v", err)
+	}
+
+	fmt.Printf("✅ Vote aggregation result: %v\n", result)
+
+	// Convert boolean result to int8
+	if result {
+		return 1, nil
+	} else {
+		return -1, nil
+	}
 }
