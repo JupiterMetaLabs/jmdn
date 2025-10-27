@@ -1,4 +1,4 @@
-# P2P-Communication
+# P2P-Communication.
 
 A robust peer-to-peer communication framework featuring blockchain synchronization, distributed consensus, and resilient messaging.
 
