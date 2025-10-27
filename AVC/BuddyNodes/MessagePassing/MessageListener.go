@@ -92,7 +92,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 		if StructListenerNode.ResponseHandler != nil {
 			accepted := message.GetACK().GetStatus() == "ACK_TRUE"
 			fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", s.Conn().RemotePeer(), accepted)
-			StructListenerNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), accepted)
+			StructListenerNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), accepted, "main")
 			fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
 			log.LogMessagesInfo("Successfully routed subscription response to ResponseHandler",
 				zap.String("peer", s.Conn().RemotePeer().String()),
@@ -145,7 +145,7 @@ func (StructListenerNode *StructListener) HandleSubscriptionResponse(s network.S
 		accepted := message.GetACK().GetStatus() == "ACK_TRUE"
 		fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", peerID, accepted)
 
-		StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted)
+		StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted, "main")
 		fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
 
 		log.LogMessagesInfo("Successfully routed subscription response to ResponseHandler",
@@ -207,7 +207,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 					accepted := responseMessage.GetACK().GetStatus() == "ACK_TRUE"
 					fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", peerID, accepted)
 
-					StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted)
+					StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted, "main")
 					fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
 				}
 			}
@@ -270,7 +270,7 @@ func (StructListenerNode *StructListener) sendViaSeedNode(peerID peer.ID, messag
 					accepted := responseMessage.GetACK().GetStatus() == "ACK_TRUE"
 					fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", peerID, accepted)
 
-					StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted)
+					StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted, "main")
 					fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
 				}
 			}

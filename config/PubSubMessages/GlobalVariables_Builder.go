@@ -14,6 +14,7 @@ type GlobalVariables struct{}
 type SubscriptionTracker struct {
 	AcceptedPeers map[peer.ID]bool
 	ActiveCount   int
+	BuddyNodes    map[peer.ID]string // peerID -> "main" or "backup"
 	mutex         sync.RWMutex
 }
 
@@ -25,20 +26,22 @@ func GetSubscriptionTracker() *SubscriptionTracker {
 		subscriptionTracker = &SubscriptionTracker{
 			AcceptedPeers: make(map[peer.ID]bool),
 			ActiveCount:   0,
+			BuddyNodes:    make(map[peer.ID]string),
 		}
 	})
 	return subscriptionTracker
 }
 
-// MarkPeerAccepted marks a peer as accepted
-func (st *SubscriptionTracker) MarkPeerAccepted(peerID peer.ID) {
+// MarkPeerAccepted marks a peer as accepted with role
+func (st *SubscriptionTracker) MarkPeerAccepted(peerID peer.ID, role string) {
 	st.mutex.Lock()
 	defer st.mutex.Unlock()
 
 	if !st.AcceptedPeers[peerID] {
 		st.AcceptedPeers[peerID] = true
 		st.ActiveCount++
-		fmt.Printf("=== SubscriptionTracker: Marked peer %s as accepted (count: %d) ===\n", peerID, st.ActiveCount)
+		st.BuddyNodes[peerID] = role
+		fmt.Printf("=== SubscriptionTracker: Marked peer %s as accepted (role: %s, count: %d) ===\n", peerID, role, st.ActiveCount)
 	}
 }
 
@@ -61,12 +64,54 @@ func (st *SubscriptionTracker) HasRequiredSubscriptions(required int) bool {
 	return st.GetActiveCount() >= required
 }
 
+// GetBuddyNodes returns the map of active buddy nodes with their roles
+func (st *SubscriptionTracker) GetBuddyNodes() map[peer.ID]string {
+	st.mutex.RLock()
+	defer st.mutex.RUnlock()
+
+	// Return a copy to avoid race conditions
+	result := make(map[peer.ID]string)
+	for peerID, role := range st.BuddyNodes {
+		result[peerID] = role
+	}
+	return result
+}
+
+// GetMainPeers returns only the main peers
+func (st *SubscriptionTracker) GetMainPeers() []peer.ID {
+	st.mutex.RLock()
+	defer st.mutex.RUnlock()
+
+	var mainPeers []peer.ID
+	for peerID, role := range st.BuddyNodes {
+		if role == "main" {
+			mainPeers = append(mainPeers, peerID)
+		}
+	}
+	return mainPeers
+}
+
+// GetBackupPeers returns only the backup peers
+func (st *SubscriptionTracker) GetBackupPeers() []peer.ID {
+	st.mutex.RLock()
+	defer st.mutex.RUnlock()
+
+	var backupPeers []peer.ID
+	for peerID, role := range st.BuddyNodes {
+		if role == "backup" {
+			backupPeers = append(backupPeers, peerID)
+		}
+	}
+	return backupPeers
+}
+
 // Reset resets the tracker
 func (st *SubscriptionTracker) Reset() {
 	st.mutex.Lock()
 	defer st.mutex.Unlock()
 	st.AcceptedPeers = make(map[peer.ID]bool)
 	st.ActiveCount = 0
+	st.BuddyNodes = make(map[peer.ID]string)
 }
 
 func NewGlobalVariables() *GlobalVariables {

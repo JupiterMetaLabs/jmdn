@@ -227,7 +227,7 @@ func (lh *ListenerHandler) handleSubscriptionResponse(s network.Stream, message 
 
 	// Route the response to the ResponseHandler if available
 	if lh.responseHandler != nil {
-		lh.responseHandler.HandleResponse(s.Conn().RemotePeer(), accepted)
+		lh.responseHandler.HandleResponse(s.Conn().RemotePeer(), accepted, "main")
 		log.LogMessagesInfo("Successfully routed subscription response to ResponseHandler",
 			zap.String("peer", s.Conn().RemotePeer().String()),
 			zap.String("function", "ListenerHandler.handleSubscriptionResponse"))

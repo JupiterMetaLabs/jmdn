@@ -6,7 +6,6 @@ import (
 
 	"gossipnode/AVC/BuddyNodes/Types"
 
-
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -17,7 +16,7 @@ var ForListner *BuddyNode
 
 // ResponseHandler interface for handling ACK responses
 type ResponseHandler interface {
-	HandleResponse(peerID peer.ID, accepted bool)
+	HandleResponse(peerID peer.ID, accepted bool, role string)
 }
 
 type BuddyNode struct {
@@ -28,9 +27,9 @@ type BuddyNode struct {
 	BuddyNodes      Buddies
 	Mutex           sync.RWMutex
 	MetaData        MetaData
-	ResponseHandler ResponseHandler      // Interface for handling responses
-	PubSub          *GossipPubSub // Will hold a reference to GossipPubSub instance
-	StreamCache     *StreamCache         // LRU cache of reusable streams with TTL
+	ResponseHandler ResponseHandler // Interface for handling responses
+	PubSub          *GossipPubSub   // Will hold a reference to GossipPubSub instance
+	StreamCache     *StreamCache    // LRU cache of reusable streams with TTL
 }
 
 type MetaData struct {

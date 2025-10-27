@@ -19,6 +19,7 @@ import (
 type ResponseHandler struct {
 	responses map[peer.ID]chan bool
 	peerIDs   map[peer.ID]string // Store the actual PeerID from ACK responses
+	roles     map[peer.ID]string // Store the role (main/backup) for each peer
 	mutex     sync.RWMutex
 }
 
@@ -27,29 +28,42 @@ func NewResponseHandler() *ResponseHandler {
 	return &ResponseHandler{
 		responses: make(map[peer.ID]chan bool),
 		peerIDs:   make(map[peer.ID]string),
+		roles:     make(map[peer.ID]string),
 	}
 }
 
-// RegisterPeer registers a peer for response tracking
-func (rh *ResponseHandler) RegisterPeer(peerID peer.ID) chan bool {
+// RegisterPeer registers a peer for response tracking with role
+func (rh *ResponseHandler) RegisterPeer(peerID peer.ID, role string) chan bool {
 	rh.mutex.Lock()
 	defer rh.mutex.Unlock()
 
 	responseChan := make(chan bool, 1)
 	rh.responses[peerID] = responseChan
-	fmt.Printf("=== ResponseHandler.RegisterPeer: Created channel for peer: %s ===\n", peerID)
+	rh.roles[peerID] = role
+	fmt.Printf("=== ResponseHandler.RegisterPeer: Created channel for peer: %s (role: %s) ===\n", peerID, role)
 	return responseChan
 }
 
 // HandleResponse handles an ACK response from a peer
-func (rh *ResponseHandler) HandleResponse(peerID peer.ID, accepted bool) {
+func (rh *ResponseHandler) HandleResponse(peerID peer.ID, accepted bool, role string) {
 	fmt.Printf("=== ResponseHandler.HandleResponse called for peer: %s (accepted: %t) ===\n", peerID, accepted)
+
+	// Get the stored role for this peer
+	rh.mutex.RLock()
+	storedRole, exists := rh.roles[peerID]
+	rh.mutex.RUnlock()
+
+	if !exists {
+		storedRole = "unknown" // fallback
+	}
+
+	fmt.Printf("=== ResponseHandler: Using stored role '%s' for peer: %s ===\n", storedRole, peerID)
 
 	// Track accepted peers in the global tracker
 	if accepted {
 		tracker := PubSubMessages.GetSubscriptionTracker()
-		tracker.MarkPeerAccepted(peerID)
-		fmt.Printf("=== Global tracker: Marked peer %s as accepted (total: %d) ===\n", peerID, tracker.GetActiveCount())
+		tracker.MarkPeerAccepted(peerID, storedRole)
+		fmt.Printf("=== Global tracker: Marked peer %s as accepted (role: %s, total: %d) ===\n", peerID, storedRole, tracker.GetActiveCount())
 	}
 
 	rh.mutex.RLock()
@@ -114,8 +128,9 @@ func (rh *ResponseHandler) UnregisterPeer(peerID peer.ID) {
 		delete(rh.responses, peerID)
 	}
 
-	// Also clean up the peerIDs map
+	// Also clean up the peerIDs and roles maps
 	delete(rh.peerIDs, peerID)
+	delete(rh.roles, peerID)
 }
 
 // AskForSubscription asks peers for subscription with backup node fallback
@@ -264,11 +279,16 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 		return 0, 0
 	}
 
+	// Get initial tracker count before this call
+	tracker := PubSubMessages.GetSubscriptionTracker()
+	initialCount := tracker.GetActiveCount()
+
 	accepted := make(map[string]bool)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
 	log.Printf("Asking %d %s peers for subscription to topic: %s", len(peerAddrs), peerType, topic)
+	log.Printf("Initial tracker count: %d", initialCount)
 
 	// Get host from GossipPubSub (not create BuddyNode yet)
 	host := Listener.ListenerBuddyNode.Host
@@ -278,7 +298,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 
 	for _, peerID := range peerAddrs {
 		// Register peer for response tracking
-		responseChan := responseHandler.RegisterPeer(peerID)
+		responseChan := responseHandler.RegisterPeer(peerID, peerType)
 
 		wg.Add(1)
 		go func(peerID peer.ID) {
@@ -348,13 +368,13 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 	// Give some time for async responses to arrive
 	time.Sleep(2 * time.Second)
 
-	// Use the global tracker count (more reliable than channels)
-	tracker := PubSubMessages.GetSubscriptionTracker()
-	acceptedCount := tracker.GetActiveCount()
+	// Calculate how many NEW peers were accepted in this call
+	finalCount := tracker.GetActiveCount()
+	newAccepted := finalCount - initialCount
 
-	log.Printf("Global tracker reports %d accepted peers for %s peers", acceptedCount, peerType)
+	log.Printf("Tracker count: %d -> %d (new: %d) for %s peers", initialCount, finalCount, newAccepted, peerType)
 
-	return acceptedCount, len(peerAddrs)
+	return newAccepted, len(peerAddrs)
 }
 
 // ValidateConsensusConfiguration validates that the consensus configuration is correct

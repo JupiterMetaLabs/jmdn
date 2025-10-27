@@ -180,11 +180,11 @@ func (StructBuddyNode *StructBuddyNode) handleSubscriptionResponse(s network.Str
 		switch message.ACK.Status {
 		case config.Type_ACK_True:
 			if StructBuddyNode.BuddyNode.ResponseHandler != nil {
-				StructBuddyNode.BuddyNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), true)
+				StructBuddyNode.BuddyNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), true, "main")
 			}
 		case config.Type_ACK_False:
 			if StructBuddyNode.BuddyNode.ResponseHandler != nil {
-				StructBuddyNode.BuddyNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), false)
+				StructBuddyNode.BuddyNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), false, "main")
 			}
 		default:
 			log.LogConsensusError(fmt.Sprintf("Unknown status in ACK_Message: %s", message.ACK.Status), nil,
