@@ -146,6 +146,7 @@ else
   echo "⚠️ Cron service not running. Starting it now..."
   (systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null) || true
 fi
+systemctl daemon-reload
 
 # --- 5. Summary ---
 echo "✅ Bootstrap complete."
