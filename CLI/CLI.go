@@ -87,7 +87,7 @@ func PrintFuncs() {
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
 	fmt.Println("  syncinfo                          - Show FastSync configuration")
 	fmt.Println("  gethstatus                        - Show gETH server status (chain ID, ports)")
-	fmt.Println("  exit                              - Exit the program")
+	fmt.Println("  stopservice                       - Stop the service and exit the program")
 	printDashes()
 }
 
@@ -132,7 +132,7 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 		printPrompt()
 		for scanner.Scan() {
 			input := strings.TrimSpace(scanner.Text())
-			if input == "exit" {
+			if input == "stopservice" {
 				return
 			}
 
