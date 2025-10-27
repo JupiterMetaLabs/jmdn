@@ -89,6 +89,7 @@ const (
 
 	Topic_SYNCRequest   = "SYNC_REQUEST"
 	Type_BFTRequest     = "BFT_REQUEST" // ADD THIS LINE
+	Type_BFTPrepare     = "BFT_PREPARE"
 	Type_BFTPrepareVote = "BFT_PREPARE_VOTE"
 	Type_BFTCommitVote  = "BFT_COMMIT_VOTE"
 	Type_BFTResult      = "BFT_RESULT"

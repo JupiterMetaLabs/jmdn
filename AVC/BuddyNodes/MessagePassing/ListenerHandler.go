@@ -2,6 +2,7 @@ package MessagePassing
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -860,7 +861,103 @@ func (lh *ListenerHandler) handleVoteResult(s network.Stream, message *AVCStruct
 	fmt.Printf("✅ Acknowledgment sent to peer %s\n", peerID.String())
 }
 
-// SetResponseHandler sets a new ResponseHandler
-func (lh *ListenerHandler) SetResponseHandler(responseHandler AVCStruct.ResponseHandler) {
-	lh.responseHandler = responseHandler
+func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message *AVCStruct.Message) {
+	defer s.Close()
+
+	fmt.Println("📩 Received BFT trigger from Sequencer:", message.Message)
+
+	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
+	if listenerNode == nil {
+		fmt.Println("❌ Listener node not initialized")
+		return
+	}
+
+	// Get buddy list from global config or BFT context
+	buddies := AVCStruct.NewGlobalVariables().Get_PubSubNode().BuddyNodes.GetBuddies()
+	if len(buddies) < 0 {
+		fmt.Println("⚠️ No buddies found to request vote results")
+		return
+	}
+
+	fmt.Printf("🚀 Triggering BFT across %d buddy nodes\n", len(buddies))
+
+	// Send acknowledgment to sequencer
+	ack := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_SubmitVote)
+	response := AVCStruct.NewMessageBuilder(nil).
+		SetSender(listenerNode.PeerID).
+		SetMessage("BFT started across buddies").
+		SetTimestamp(time.Now().Unix()).
+		SetACK(ack)
+	data, _ := json.Marshal(response)
+	data = append(data, byte(config.Delimiter))
+	s.Write(data)
+
+	// ✅ Send RequestForVoteResult to all buddies in parallel
+	var wg sync.WaitGroup
+	for _, b := range buddies {
+		wg.Add(1)
+		go func(peerID peer.ID) {
+			defer wg.Done()
+			stream, err := listenerNode.Host.NewStream(context.Background(), peerID, config.BuddyNodesMessageProtocol)
+			if err != nil {
+				fmt.Printf("❌ Failed to open stream to %s: %v\n", peerID, err)
+				return
+			}
+			defer stream.Close()
+
+			reqAck := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
+			reqMsg := AVCStruct.NewMessageBuilder(nil).
+				SetSender(listenerNode.PeerID).
+				SetMessage("RequestForVoteResult").
+				SetTimestamp(time.Now().Unix()).
+				SetACK(reqAck)
+
+			reqData, _ := json.Marshal(reqMsg)
+			reqData = append(reqData, byte(config.Delimiter))
+			if _, err := stream.Write(reqData); err != nil {
+				fmt.Printf("❌ Failed to send RequestForVoteResult to %s: %v\n", peerID, err)
+				return
+			}
+			fmt.Printf("📨 Sent RequestForVoteResult to %s\n", peerID)
+
+			// Wait for the vote result
+			readCh := make(chan []byte, 1)
+			go func() {
+				buf := make([]byte, 0)
+				tmp := make([]byte, 1024)
+				for {
+					n, err := stream.Read(tmp)
+					if err != nil {
+						close(readCh)
+						return
+					}
+					buf = append(buf, tmp[:n]...)
+					if bytes.Contains(buf, []byte{byte(config.Delimiter)}) {
+						readCh <- bytes.TrimSuffix(buf, []byte{byte(config.Delimiter)})
+						return
+					}
+				}
+			}()
+
+			select {
+			case payload := <-readCh:
+				if payload == nil {
+					fmt.Printf("⚠️ No response from %s\n", peerID)
+					return
+				}
+				var msg AVCStruct.Message
+				if err := json.Unmarshal(payload, &msg); err == nil {
+					fmt.Printf("✅ Received vote result from %s\n", peerID)
+					lh.handleVoteResult(stream, &msg)
+				} else {
+					fmt.Printf("⚠️ Invalid response from %s: %s\n", peerID, string(payload))
+				}
+			case <-time.After(5 * time.Second):
+				fmt.Printf("⏳ Timeout waiting for vote result from %s\n", peerID)
+			}
+		}(b)
+	}
+
+	wg.Wait()
+	fmt.Println("✅ Collected vote results from all nodes")
 }
