@@ -115,6 +115,7 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 		zap.String("function", "ListenerHandler.handleSubmitVote"))
 
 	// Debugging
+	fmt.Printf("=== THIS IS BUDDY NODE HANDLER FUNCTION - ListenerHandler.handleSubmitVote CALLED ===\n")
 	fmt.Printf("message: %+v\n", message)
 	fmt.Printf("From Peer: %s\n", s.Conn().RemotePeer())
 
@@ -123,6 +124,7 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
 
 	if pubSubNode == nil || pubSubNode.PubSub == nil {
+		fmt.Printf("=== THIS IS BUDDY NODE HANDLER FUNCTION - PubSubNode not initialized - cannot process vote ===\n")
 		log.LogMessagesError("PubSubNode not initialized - cannot process vote",
 			nil,
 			zap.String("peer", s.Conn().RemotePeer().String()),
@@ -132,6 +134,7 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 	}
 
 	if listenerNode == nil {
+		fmt.Printf("=== THIS IS BUDDY NODE HANDLER FUNCTION - ForListner not initialized - cannot process vote ===\n")
 		log.LogMessagesError("ForListner not initialized - cannot process vote",
 			nil,
 			zap.String("peer", s.Conn().RemotePeer().String()),
@@ -142,6 +145,7 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 
 	// Add vote to local CRDT Engine
 	if err := Structs.SubmitMessage(message, pubSubNode.PubSub, listenerNode); err != nil {
+		fmt.Printf("=== THIS IS BUDDY NODE HANDLER FUNCTION - Failed to add vote to local CRDT Engine: %v ===\n", err)
 		log.LogMessagesError(fmt.Sprintf("Failed to add vote to local CRDT Engine: %v", err),
 			err,
 			zap.String("peer", s.Conn().RemotePeer().String()),
