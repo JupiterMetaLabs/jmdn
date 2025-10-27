@@ -130,6 +130,7 @@ func extractVoteDataFromCRDT(buddyNode *AVCStruct.BuddyNode) (map[string]int8, e
 // processVoteData processes the extracted vote data and stores it in global variable
 func ProcessVoteData(voteData map[string]int8) (int8, error) {
 	log.Printf("Processing %d vote entries", len(voteData))
+	log.Printf("Vote data: %v", voteData)	
 
 	// Store vote data in global variable
 	globalVoteData = voteData

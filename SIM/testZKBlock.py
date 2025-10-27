@@ -16,7 +16,7 @@ import hashlib
 class ZKBlockTester:
     """Test client for ZKBlock processing endpoint"""
     
-    def __init__(self, base_url="http://34.40.202.196:15050"):
+    def __init__(self, base_url="http://localhost:15050"):
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
         self.session.headers.update({
@@ -231,7 +231,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Test ZKBlock processing endpoint")
-    parser.add_argument("--url", default="http://34.40.202.196:15050", 
+    parser.add_argument("--url", default="http://localhost:15050", 
                        help="Base URL of the API server")
     parser.add_argument("--transactions", type=int, default=3,
                        help="Number of transactions in test block")
