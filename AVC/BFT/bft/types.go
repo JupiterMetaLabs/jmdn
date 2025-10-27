@@ -89,6 +89,9 @@ type Config struct {
 	RequireSignatures  bool
 	ValidateProofs     bool
 	MaxProofSize       int // cap proof length per commit
+	// ✅ ADD THESE TWO FIELDS
+	InactivityTimeout time.Duration // How long to wait for new messages before proceeding
+	MinimumVotesRatio float64
 }
 
 // DefaultConfig returns production config

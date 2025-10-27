@@ -91,6 +91,7 @@ const (
 	Type_BFTRequest     = "BFT_REQUEST" // ADD THIS LINE
 	Type_BFTPrepareVote = "BFT_PREPARE_VOTE"
 	Type_BFTCommitVote  = "BFT_COMMIT_VOTE"
+	Type_BFTResult      = "BFT_RESULT"
 )
 
 // Increase buffer sizes
