@@ -12,6 +12,7 @@ import (
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -24,6 +25,11 @@ type Decision string
 const (
 	Accept Decision = "ACCEPT"
 	Reject Decision = "REJECT"
+)
+
+var (
+	voteProcessingTriggered = false
+	voteProcessingMutex     sync.Mutex
 )
 
 // BuddyInput represents buddy input data (avoid importing bft package)
@@ -294,11 +300,22 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 			fmt.Printf("✅ Stored under key: %s\n", msg.Data.Sender.String())
 			fmt.Printf("═══════════════════════════════════════════════════════════\n\n")
 
-			// Trigger vote processing after a delay to collect more votes
-			go func() {
-				time.Sleep(10 * time.Second) // Wait 10 seconds to collect more votes
-				processVotesAndTriggerBFT(listenerNode)
-			}()
+			// Only trigger vote processing once (check if already triggered)
+			voteProcessingMutex.Lock()
+			if !voteProcessingTriggered {
+				voteProcessingTriggered = true
+				voteProcessingMutex.Unlock()
+				// Trigger vote processing after a delay to collect more votes
+				go func() {
+					time.Sleep(10 * time.Second) // Wait 10 seconds to collect more votes
+					processVotesAndTriggerBFT(listenerNode)
+					voteProcessingMutex.Lock()
+					voteProcessingTriggered = false // Reset flag after processing
+					voteProcessingMutex.Unlock()
+				}()
+			} else {
+				voteProcessingMutex.Unlock()
+			}
 		}
 
 		return nil
@@ -681,21 +698,32 @@ func processVotesAndTriggerBFT(listenerNode *AVCStruct.BuddyNode) {
 
 // sendVoteResultToSequencer sends the vote result back to the sequencer via SubmitMessageProtocol
 func sendVoteResultToSequencer(listenerNode *AVCStruct.BuddyNode, result int8) {
+	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  SENDING VOTE RESULT TO SEQUENCER                        ║\n")
+	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+
 	if listenerNode == nil || listenerNode.PeerID == "" {
 		fmt.Printf("❌ Cannot send vote result - listener node not initialized\n")
 		return
 	}
 
-	// Get the sequencer peer ID from global variables
-	sequencerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
-	if sequencerNode == nil || sequencerNode.Host == nil {
-		fmt.Printf("❌ Cannot send vote result - sequencer node not initialized\n")
+	// Get the host from the current buddy node
+	if listenerNode.Host == nil {
+		fmt.Printf("❌ Cannot send vote result - buddy node host not initialized\n")
 		return
 	}
 
-	// Get the host from the listener node
-	host := sequencerNode.Host
-	sequencerPeerID := sequencerNode.PeerID
+	// Get the sequencer peer ID from the subscription cache
+	// The sequencer is the first peer in the cache (from when we subscribed)
+	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
+	if pubSubNode == nil || len(pubSubNode.BuddyNodes.Buddies_Nodes) == 0 {
+		fmt.Printf("❌ Cannot send vote result - no sequencer peer found\n")
+		return
+	}
+
+	// The sequencer is typically the first peer we connected to
+	sequencerPeerID := pubSubNode.BuddyNodes.Buddies_Nodes[0]
+	host := listenerNode.Host
 
 	fmt.Printf("📤 Sending vote result %d to sequencer %s...\n", result, sequencerPeerID.String())
 
@@ -739,4 +767,6 @@ func sendVoteResultToSequencer(listenerNode *AVCStruct.BuddyNode, result int8) {
 	}
 
 	fmt.Printf("✅ Vote result %d sent to sequencer successfully\n", result)
+	fmt.Printf("📝 Message sent: %s\n", resultMessage)
+	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
 }
