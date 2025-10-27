@@ -2,7 +2,9 @@ package MessagePassing
 
 import (
 	"fmt"
+	"gossipnode/AVC/BuddyNodes/DataLayer"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
+	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/logging"
@@ -19,7 +21,7 @@ func Init_Loggers(loki bool) {
 	_, err := log.NewLoggerBuilder().
 		SetURL(logging.GetLokiURL(), loki).
 		SetFileName("buddy_nodes.log").
-		SetTopic(log.Consensus_TOPIC).
+		SetTopic(config.PubSub_ConsensusChannel).
 		SetDirectory("logs").
 		SetBatchSize(100).
 		SetBatchWait(2 * time.Second).
@@ -195,4 +197,15 @@ func (StructBuddyNode *StructBuddyNode) GetStreamCacheStats() map[string]interfa
 	}
 
 	return StreamCache.GetStats()
+}
+
+// GetVotesFromCRDT retrieves all votes from the CRDT for a given key
+func GetVotesFromCRDT(crdtLayer *Types.Controller, key string) ([]string, bool) {
+	if crdtLayer == nil {
+		return nil, false
+	}
+
+	// Get all elements from the CRDT set
+	votes, found := DataLayer.GetSet(crdtLayer, key)
+	return votes, found
 }
