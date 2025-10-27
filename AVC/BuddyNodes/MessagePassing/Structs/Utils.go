@@ -202,7 +202,7 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) 
 
 	fmt.Printf("DEBUG: Querying votes for %d peers\n", len(allPeers))
 
-	// Map to store block_hash -> vote value
+	// Map to store peer_id -> vote value
 	voteData := make(map[string]int8)
 
 	for _, peerID := range allPeers {
@@ -213,7 +213,7 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) 
 			continue
 		}
 
-		// Parse each vote and extract block_hash and vote value
+		// Parse each vote and extract vote value
 		for _, voteStr := range votes {
 			var voteDataObj map[string]interface{}
 			if err := json.Unmarshal([]byte(voteStr), &voteDataObj); err != nil {
@@ -221,20 +221,18 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) 
 				continue
 			}
 
-			blockHash, ok1 := voteDataObj["block_hash"].(string)
-			voteValue, ok2 := voteDataObj["vote"].(float64)
-
-			if !ok1 || !ok2 {
+			voteValue, ok := voteDataObj["vote"].(float64)
+			if !ok {
 				continue
 			}
 
-			// Store block_hash -> vote, latest vote wins if multiple exist
-			voteData[blockHash] = int8(voteValue)
-			fmt.Printf("DEBUG: Added vote for block %s: %d\n", blockHash, int8(voteValue))
+			// Store peer_id -> vote, only the latest vote for each peer
+			voteData[peerID.String()] = int8(voteValue)
+			fmt.Printf("DEBUG: Added vote for peer %s: %d\n", peerID.String(), int8(voteValue))
 		}
 	}
 
-	fmt.Printf("DEBUG: Extracted %d votes from CRDT (unique block hashes)\n", len(voteData))
+	fmt.Printf("DEBUG: Extracted %d votes from CRDT (unique peers)\n", len(voteData))
 	fmt.Printf("DEBUG: Vote data map: %v\n", voteData)
 
 	if len(voteData) == 0 {
