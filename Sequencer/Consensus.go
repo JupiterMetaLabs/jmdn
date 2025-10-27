@@ -175,6 +175,19 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	log.Printf("Listener node initialized for vote collection on protocol: %s", config.SubmitMessageProtocol)
 	log.Printf("SubmitMessageProtocol handler is already set up by NewListenerNode()")
 
+	// Populate buddy nodes list for the global listener node
+	allPeerIDs := make([]peer.ID, 0, len(consensus.PeerList.MainPeers)+len(consensus.PeerList.BackupPeers))
+	allPeerIDs = append(allPeerIDs, consensus.PeerList.MainPeers...)
+	allPeerIDs = append(allPeerIDs, consensus.PeerList.BackupPeers...)
+
+	// Update the global listener node with buddy nodes
+	globalListenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
+	if globalListenerNode != nil {
+		globalListenerNode.BuddyNodes.Buddies_Nodes = allPeerIDs
+		log.Printf("Populated listener node with %d buddy nodes (%d main + %d backup)",
+			len(allPeerIDs), len(consensus.PeerList.MainPeers), len(consensus.PeerList.BackupPeers))
+	}
+
 	// After creating the channel, ask peers to subscribe to the channel
 	if err := consensus.RequestSubscriptionPermission(); err != nil {
 		return fmt.Errorf("failed to request subscription permission: %v", err)
@@ -429,7 +442,7 @@ func (consensus *Consensus) PrintCRDTState() error {
 		// }
 
 		// Create a trigger message for each buddy node
-		triggerAck := PubSubMessages.NewACKBuilder().True_ACK_Message(consensus.Host.ID(), config.Type_BFTRequest)
+		triggerAck := PubSubMessages.NewACKBuilder().True_ACK_Message(consensus.Host.ID(), config.Type_SubmitVote)
 		triggerMsg := PubSubMessages.NewMessageBuilder(nil).
 			SetSender(consensus.Host.ID()).
 			SetMessage("Requesting vote results from buddies").
@@ -437,17 +450,14 @@ func (consensus *Consensus) PrintCRDTState() error {
 			SetACK(triggerAck)
 
 		// Send trigger to all buddy nodes
-		for _, buddyID := range listenerNode.BuddyNodes.Buddies_Nodes {
-			stream, err := consensus.Host.NewStream(context.Background(), buddyID, config.SubmitMessageProtocol)
-			if err != nil {
-				fmt.Printf("❌ Failed to open stream to %s: %v\n", buddyID, err)
-				continue
-			}
-
-			lh := MessagePassing.NewListenerHandler(consensus.ResponseHandler) 
-			lh.TriggerForBFTFromSequencer(stream, triggerMsg)
+		fmt.Println("Sending trigger to all buddy nodes:", listenerNode.BuddyNodes.Buddies_Nodes)
+		lh := MessagePassing.NewListenerHandler(consensus.ResponseHandler)
+		stream, err := consensus.Host.NewStream(context.Background(), listenerNode.PeerID, config.SubmitMessageProtocol)
+		if err != nil {
+			fmt.Printf("❌ Failed to open stream to %s: %v\n", listenerNode.PeerID, err)
+			return
 		}
-
+		lh.TriggerForBFTFromSequencer(stream, triggerMsg, listenerNode.BuddyNodes.Buddies_Nodes)
 		fmt.Printf("✅ Triggered vote collection on all buddy nodes\n")
 	}()
 

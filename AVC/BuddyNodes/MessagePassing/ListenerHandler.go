@@ -907,10 +907,10 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 	fmt.Printf("✅ Sent vote result %d to %s\n\n", result, s.Conn().RemotePeer().String())
 }
 
-func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message *AVCStruct.Message) {
+func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message *AVCStruct.Message, buddies []peer.ID) {
 	defer s.Close()
 
-	fmt.Println("📩 Received BFT trigger from Sequencer:", message.Message)
+	fmt.Println("📩 Received BFT trigger from Sequencer:", message)
 
 	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
 	if listenerNode == nil {
@@ -919,7 +919,6 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 	}
 
 	// Get buddy list from global config or BFT context
-	buddies := AVCStruct.NewGlobalVariables().Get_PubSubNode().BuddyNodes.GetBuddies()
 	if len(buddies) < 0 {
 		fmt.Println("⚠️ No buddies found to request vote results")
 		return
