@@ -271,6 +271,31 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 
 }
 
+func (lh *ListenerHandler) RequestForVoteResult(s network.Stream, message *AVCStruct.Message) {
+	fmt.Println("=== ListenerHandler.RequestForVoteResult CALLED ===")
+	fmt.Printf("Received request for vote result from: %s\n", s.Conn().RemotePeer())
+	fmt.Printf("Message: %s\n", message.Message)
+	fmt.Printf("ACK Stage: %s\n", message.GetACK().GetStage())
+	
+	// Check if ForListner is initialized
+	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
+	if listenerNode == nil || listenerNode.Host == nil {
+		fmt.Println("ForListner not initialized - sending rejection response")
+		log.LogMessagesError("ForListner not initialized - cannot process request for vote result",
+			nil,
+			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("topic", config.PubSub_ConsensusChannel),
+			zap.String("function", "ListenerHandler.RequestForVoteResult"))
+		
+			return
+	}
+
+	// Write a message to the node to send the vote result
+
+	fmt.Println("ForListner is initialized - processing request for vote result")
+
+}
+
 // handleAskForSubscription processes subscription request messages
 func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *AVCStruct.Message) {
 	fmt.Println("=== ListenerHandler.handleAskForSubscription CALLED ===")
