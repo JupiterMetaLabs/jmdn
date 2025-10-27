@@ -286,6 +286,26 @@ func StartBFTConsensus() error {
 		return fmt.Errorf("subscription service not initialized")
 	}
 
+	// Wait for vote results to be collected (poll for up to 60 seconds)
+	maxWait := 35 * time.Second
+	checkInterval := 2 * time.Second
+	elapsed := time.Duration(0)
+
+	for elapsed < maxWait {
+		voteResultsMutex.Lock()
+		hasResults := len(voteResultsMap) > 0
+		voteResultsMutex.Unlock()
+
+		if hasResults {
+			log.Printf("StartBFTConsensus: Found %d vote results, proceeding with BFT", len(voteResultsMap))
+			break
+		}
+
+		log.Printf("StartBFTConsensus: Waiting for vote results... (elapsed: %v)", elapsed)
+		time.Sleep(checkInterval)
+		elapsed += checkInterval
+	}
+
 	// Get buddy nodes for consensus
 	buddyNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
 	if buddyNode == nil {
