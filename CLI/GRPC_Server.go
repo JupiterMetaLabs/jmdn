@@ -9,6 +9,7 @@ import (
 	"time"
 
 	pb "gossipnode/CLI/proto"
+	"gossipnode/seednode"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"google.golang.org/grpc"
@@ -262,4 +263,87 @@ func StartGRPCServer(handler *CommandHandler, port int) error {
 	}
 
 	return nil
+}
+
+// GetSyncInfo returns FastSync configuration
+func (s *CLIServer) GetSyncInfo(ctx context.Context, _ *emptypb.Empty) (*pb.SyncInfo, error) {
+	// SyncInfo constants would need to be exposed from fastsync package
+	// For now, return sensible defaults
+	return &pb.SyncInfo{
+		BatchSize:          1000,
+		RequestTimeoutSec:  30,
+		ResponseTimeoutSec: 60,
+	}, nil
+}
+
+// GetGethStatus returns gETH configuration
+func (s *CLIServer) GetGethStatus(ctx context.Context, _ *emptypb.Empty) (*pb.GethStatus, error) {
+	return &pb.GethStatus{
+		ChainId:    int32(s.handler.ChainID),
+		FacadePort: int32(s.handler.FacadePort),
+		WsPort:     int32(s.handler.WSPort),
+	}, nil
+}
+
+// DiscoverNeighbors discovers and adds neighbors from seed node
+func (s *CLIServer) DiscoverNeighbors(ctx context.Context, _ *emptypb.Empty) (*pb.OperationResponse, error) {
+	if s.handler.Node == nil || s.handler.NodeManager == nil {
+		return &pb.OperationResponse{
+			Success: false,
+			Message: "Node or NodeManager not initialized",
+		}, nil
+	}
+
+	client, err := seednode.NewClient(s.handler.SeedNode)
+	if err != nil {
+		return &pb.OperationResponse{
+			Success: false,
+			Message: err.Error(),
+		}, nil
+	}
+	defer client.Close()
+
+	err = client.DiscoverAndAddNeighbors(s.handler.Node.Host, s.handler.NodeManager)
+	if err != nil {
+		return &pb.OperationResponse{
+			Success: false,
+			Message: err.Error(),
+		}, nil
+	}
+
+	return &pb.OperationResponse{
+		Success: true,
+		Message: "Neighbor discovery completed successfully",
+	}, nil
+}
+
+// ListAliases returns the current node's alias
+func (s *CLIServer) ListAliases(ctx context.Context, _ *emptypb.Empty) (*pb.AliasList, error) {
+	if s.handler.SeedNode == "" {
+		return &pb.AliasList{Aliases: []string{}}, nil
+	}
+
+	client, err := seednode.NewClient(s.handler.SeedNode)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	defer client.Close()
+
+	currentPeerID := s.handler.Node.Host.ID().String()
+	alias, err := client.GetAliasByPeerID(currentPeerID)
+	if err != nil {
+		// No alias found, return empty
+		return &pb.AliasList{Aliases: []string{}}, nil
+	}
+
+	return &pb.AliasList{Aliases: []string{alias}}, nil
+}
+
+// PropagateDID propagates a DID to the network
+func (s *CLIServer) PropagateDID(ctx context.Context, req *pb.DIDPropagationRequest) (*pb.OperationResponse, error) {
+	// This would need to be implemented in CLI_GRPC.go
+	return &pb.OperationResponse{
+		Success: false,
+		Message: "Not implemented",
+	}, nil
 }

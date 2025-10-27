@@ -121,6 +121,23 @@ func runCommand(command string, args []string, grpcPort int) {
 	defer client.Close()
 
 	switch command {
+	case "help":
+		fmt.Println("\nAvailable CLI Commands:")
+		fmt.Println("  listpeers, list     - List all managed peers")
+		fmt.Println("  addrs                - Show node addresses")
+		fmt.Println("  stats                - Show messaging statistics")
+		fmt.Println("  dbstate              - Show database state")
+		fmt.Println("  addpeer <addr>       - Add a peer")
+		fmt.Println("  removepeer <id>      - Remove a peer")
+		fmt.Println("  cleanpeers           - Clean offline peers")
+		fmt.Println("  sendmsg <tgt> <msg>  - Send message")
+		fmt.Println("  broadcast <msg>      - Broadcast message")
+		fmt.Println("  getdid <did>         - Get DID document")
+		fmt.Println("  fastsync <peer>      - Fast sync with peer")
+		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
+		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
+		fmt.Println("are only available in interactive mode.")
+
 	case "listpeers", "list":
 		peers, err := client.ListPeers()
 		if err != nil {
@@ -255,17 +272,44 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Printf("  Main DB TxID: %d\n", stats.MainState.TxId)
 		fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
 
+	case "sendfile":
+		if len(args) < 3 {
+			fmt.Println("Usage: jmdn -cmd sendfile <peer> <filepath> <remote_filename>")
+			os.Exit(1)
+		}
+		resp, err := client.SendFile(args[0], args[1], args[2])
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Result: %s\n", resp.Message)
+
+	case "ygg":
+		if len(args) < 2 {
+			fmt.Println("Usage: jmdn -cmd ygg <target> <message>")
+			os.Exit(1)
+		}
+		resp, err := client.SendYggdrasilMessage(args[0], strings.Join(args[1:], " "))
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Result: %s\n", resp.Message)
+
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		fmt.Println("\nAvailable commands:")
-		fmt.Println("  listpeers, list     - List all managed peers")
+		fmt.Println("  help                 - Show this help message")
+		fmt.Println("  listpeers, list      - List all managed peers")
 		fmt.Println("  addrs                - Show node addresses")
 		fmt.Println("  stats                - Show messaging statistics")
 		fmt.Println("  dbstate              - Show database state")
 		fmt.Println("  addpeer <addr>       - Add a peer")
-		fmt.Println("  removepeer <id>      - Remove a peer")
-		fmt.Println("  cleanpeers           - Clean offline peers")
-		fmt.Println("  sendmsg <tgt> <msg>  - Send message")
+		fmt.Println("  removepeer <id>     - Remove a peer")
+		fmt.Println("  cleanpeers          - Clean offline peers")
+		fmt.Println("  sendmsg <tgt> <msg>  - Send message via libp2p")
+		fmt.Println("  ygg <tgt> <msg>      - Send message via Yggdrasil")
+		fmt.Println("  sendfile <peer> <filepath> <remote> - Send file")
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  fastsync <peer>      - Fast sync with peer")
