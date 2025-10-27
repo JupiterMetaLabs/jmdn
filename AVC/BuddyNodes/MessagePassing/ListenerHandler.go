@@ -15,7 +15,7 @@ import (
 	ServiceLayer "gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
 	Publisher "gossipnode/Pubsub/Publish"
-	"gossipnode/Sequencer/Triggers"
+	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 
@@ -627,7 +627,7 @@ func (lh *ListenerHandler) RequestForVoteResult(s network.Stream, message *AVCSt
 	fmt.Printf("Received request for vote result from: %s\n", s.Conn().RemotePeer())
 	fmt.Printf("Message: %s\n", message.Message)
 	fmt.Printf("ACK Stage: %s\n", message.GetACK().GetStage())
-	
+
 	// Check if ForListner is initialized
 	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
 	if listenerNode == nil || listenerNode.Host == nil {
@@ -637,8 +637,8 @@ func (lh *ListenerHandler) RequestForVoteResult(s network.Stream, message *AVCSt
 			zap.String("peer", s.Conn().RemotePeer().String()),
 			zap.String("topic", config.PubSub_ConsensusChannel),
 			zap.String("function", "ListenerHandler.RequestForVoteResult"))
-		
-			return
+
+		return
 	}
 
 	// Write a message to the node to send the vote result
@@ -833,7 +833,7 @@ func (lh *ListenerHandler) handleVoteResult(s network.Stream, message *AVCStruct
 
 	// Import Triggers package to use StoreVoteResult
 	// Note: We need to add the import at the top of the file
-	Triggers.StoreVoteResult(peerID.String(), voteResult)
+	Maps.StoreVoteResult(peerID.String(), voteResult)
 	fmt.Printf("✅ Stored vote result for peer %s: %d\n", peerID.String(), voteResult)
 
 	// Get listener node from global variables

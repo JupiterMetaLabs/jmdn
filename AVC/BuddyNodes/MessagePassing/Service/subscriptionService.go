@@ -690,7 +690,7 @@ func processVotesAndTriggerBFT(listenerNode *AVCStruct.BuddyNode) {
 	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
 
 	// Send vote result back to the sequencer
-	sendVoteResultToSequencer(listenerNode, result)
+	// sendVoteResultToSequencer(listenerNode, result)
 
 	// BFT will be triggered elsewhere (from ListenerHandler)
 	fmt.Printf("✅ Vote processing completed, BFT will be triggered\n")

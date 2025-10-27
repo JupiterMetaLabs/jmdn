@@ -116,6 +116,10 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 				zap.String("peer", s.Conn().RemotePeer().String()),
 				zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 		}
+	case config.Type_BFTRequest:
+		fmt.Println("🚀 Handling Type_BFTRequest -> TriggerForBFTFromSequencer")
+		listenerHandler := NewListenerHandler(StructListenerNode.ResponseHandler)
+		listenerHandler.TriggerForBFTFromSequencer(s, message)
 	default:
 		fmt.Printf("❓ Unknown message type: %s\n", message.GetACK().GetStage())
 		log.LogMessagesError(fmt.Sprintf("Unknown message type received from %s: %s", s.Conn().RemotePeer(), msg), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))

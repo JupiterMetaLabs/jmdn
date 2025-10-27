@@ -11,7 +11,7 @@ import (
 	"gossipnode/AVC/NodeSelection/Router"
 	"gossipnode/Pubsub"
 	"gossipnode/Sequencer/Metadata"
-	"gossipnode/Sequencer/Triggers"
+	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/config"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/PubSubMessages/Cache"
@@ -386,7 +386,7 @@ func (consensus *Consensus) PrintCRDTState() error {
 
 	go func() {
 		// Get all vote results from Triggers
-		voteResults := Triggers.GetAllVoteResults()
+		voteResults := Maps.GetAllVoteResults()
 		fmt.Printf("📊 Vote results from buddy nodes: %v\n", voteResults)
 
 		// Convert []peer.ID to []BuddyInput with decisions from vote results

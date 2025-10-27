@@ -1,18 +1,19 @@
 package Triggers
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"gossipnode/AVC/BFT/bft"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service/PubSubConnector"
 	voteaggregation "gossipnode/AVC/VoteModule"
+	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/seednode"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -26,18 +27,13 @@ const CRDTDataSubmitBufferTime = 25 * time.Second
 // Global variable to store vote data locally
 var globalVoteData map[string]int8
 
-// Global map to store vote results from buddy nodes: map[peerID]voteResult
-var voteResultsMap = make(map[string]int8)
-
 const BFTTriggerBufferTime = 30 * time.Second
 
 // Global variables for trigger management
 var (
 	subscriptionService *PubSubConnector.SubscriptionService
 	bftEngine           *bft.BFT
-	consensusContext    context.Context
 	consensusCancel     context.CancelFunc
-	voteResultsMutex    sync.Mutex // Mutex to protect voteResultsMap
 )
 
 // InitializeTriggers initializes the trigger system with required services
@@ -269,7 +265,7 @@ func BFTTrigger() {
 		}
 
 		// Create consensus context with timeout
-		consensusContext, consensusCancel = context.WithTimeout(context.Background(), 30*time.Second)
+		_, consensusCancel = context.WithTimeout(context.Background(), 30*time.Second)
 		defer consensusCancel()
 
 		// Start BFT consensus process
@@ -279,11 +275,96 @@ func BFTTrigger() {
 	})
 }
 
+// RequestVoteResultsFromBuddies requests vote results from all buddy nodes
+func RequestVoteResultsFromBuddies() error {
+	log.Printf("RequestVoteResultsFromBuddies: Requesting vote results from all buddy nodes")
+
+	// Get the listener node
+	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
+	if listenerNode == nil {
+		return fmt.Errorf("listener node not available")
+	}
+
+	// Get buddy nodes
+	buddyNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
+	if buddyNode == nil {
+		return fmt.Errorf("buddy node not available")
+	}
+
+	buddyNode.Mutex.RLock()
+	buddies := make([]peer.ID, len(buddyNode.BuddyNodes.Buddies_Nodes))
+	copy(buddies, buddyNode.BuddyNodes.Buddies_Nodes)
+	buddyNode.Mutex.RUnlock()
+
+	if len(buddies) == 0 {
+		return fmt.Errorf("no buddy nodes to request vote results from")
+	}
+
+	log.Printf("RequestVoteResultsFromBuddies: Requesting from %d buddy nodes", len(buddies))
+
+	// Request vote results from each buddy node
+	for _, peerID := range buddies {
+		go func(pid peer.ID) {
+			stream, err := listenerNode.Host.NewStream(context.Background(), pid, config.SubmitMessageProtocol)
+			if err != nil {
+				log.Printf("RequestVoteResultsFromBuddies: Failed to open stream to %s: %v", pid, err)
+				return
+			}
+			defer stream.Close()
+
+			// Create vote result request message
+			reqAck := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
+			reqMsg := AVCStruct.NewMessageBuilder(nil).
+				SetSender(listenerNode.PeerID).
+				SetMessage("RequestForVoteResult").
+				SetTimestamp(time.Now().Unix()).
+				SetACK(reqAck)
+
+			reqData, _ := json.Marshal(reqMsg)
+			reqData = append(reqData, byte(config.Delimiter))
+
+			if _, err := stream.Write(reqData); err != nil {
+				log.Printf("RequestVoteResultsFromBuddies: Failed to send request to %s: %v", pid, err)
+				return
+			}
+
+			log.Printf("RequestVoteResultsFromBuddies: Sent request to %s", pid)
+
+			// Read response
+			reader := bufio.NewReader(stream)
+			response, err := reader.ReadString(config.Delimiter)
+			if err != nil {
+				log.Printf("RequestVoteResultsFromBuddies: Failed to read response from %s: %v", pid, err)
+				return
+			}
+
+			// Parse and store vote result
+			responseMsg := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(response)
+			if responseMsg != nil {
+				var resultData map[string]interface{}
+				if err := json.Unmarshal([]byte(responseMsg.Message), &resultData); err == nil {
+					if result, ok := resultData["result"].(float64); ok {
+						Maps.StoreVoteResult(pid.String(), int8(result))
+						log.Printf("RequestVoteResultsFromBuddies: Stored vote result from %s: %d", pid, int8(result))
+					}
+				}
+			}
+		}(peerID)
+	}
+
+	return nil
+}
+
 func StartBFTConsensus() error {
 	log.Printf("StartBFTConsensus: Initiating BFT consensus process")
 
 	if subscriptionService == nil {
 		return fmt.Errorf("subscription service not initialized")
+	}
+
+	// First, request vote results from all buddy nodes
+	if err := RequestVoteResultsFromBuddies(); err != nil {
+		log.Printf("StartBFTConsensus: Failed to request vote results: %v", err)
 	}
 
 	// Wait for vote results to be collected (poll for up to 60 seconds)
@@ -292,12 +373,9 @@ func StartBFTConsensus() error {
 	elapsed := time.Duration(0)
 
 	for elapsed < maxWait {
-		voteResultsMutex.Lock()
-		hasResults := len(voteResultsMap) > 0
-		voteResultsMutex.Unlock()
-
-		if hasResults {
-			log.Printf("StartBFTConsensus: Found %d vote results, proceeding with BFT", len(voteResultsMap))
+		count := Maps.GetVoteResultsCount()
+		if count > 0 {
+			log.Printf("StartBFTConsensus: Found %d vote results, proceeding with BFT", count)
 			break
 		}
 
@@ -314,10 +392,11 @@ func StartBFTConsensus() error {
 
 	// Prepare buddy input data for BFT using vote results
 	buddyNode.Mutex.RLock()
-	voteResultsMutex.Lock()
+	allVoteResults := Maps.GetAllVoteResults()
+
 	allBuddies := make([]bft.BuddyInput, len(buddyNode.BuddyNodes.Buddies_Nodes))
 	for i, peerID := range buddyNode.BuddyNodes.Buddies_Nodes {
-		voteResult := voteResultsMap[peerID.String()]
+		voteResult := allVoteResults[peerID.String()]
 
 		// Convert vote result to decision: >0 = Accept, <=0 = Reject
 		var decision bft.Decision = bft.Reject
@@ -331,7 +410,6 @@ func StartBFTConsensus() error {
 			PublicKey: []byte{}, // TODO: Get actual public key
 		}
 	}
-	voteResultsMutex.Unlock()
 	buddyNode.Mutex.RUnlock()
 
 	// Create BFT instance
@@ -381,41 +459,6 @@ func StartBFTConsensus() error {
 		result.Success, result.Decision)
 
 	return nil
-}
-
-// StoreVoteResult stores a vote result from a buddy node
-func StoreVoteResult(peerID string, result int8) {
-	voteResultsMutex.Lock()
-	defer voteResultsMutex.Unlock()
-	voteResultsMap[peerID] = result
-	log.Printf("Stored vote result for peer %s: %d", peerID, result)
-}
-
-// GetVoteResult retrieves a vote result for a peer
-func GetVoteResult(peerID string) (int8, bool) {
-	voteResultsMutex.Lock()
-	defer voteResultsMutex.Unlock()
-	result, exists := voteResultsMap[peerID]
-	return result, exists
-}
-
-// GetAllVoteResults retrieves all vote results
-func GetAllVoteResults() map[string]int8 {
-	voteResultsMutex.Lock()
-	defer voteResultsMutex.Unlock()
-	result := make(map[string]int8)
-	for k, v := range voteResultsMap {
-		result[k] = v
-	}
-	return result
-}
-
-// ClearVoteResults clears all vote results
-func ClearVoteResults() {
-	voteResultsMutex.Lock()
-	defer voteResultsMutex.Unlock()
-	voteResultsMap = make(map[string]int8)
-	log.Printf("Cleared all vote results")
 }
 
 // CleanupTriggers cleans up resources when consensus is complete
