@@ -2,8 +2,10 @@ package MessagePassing
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
+	"gossipnode/AVC/BFT/bft"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
@@ -13,6 +15,7 @@ import (
 	"gossipnode/Sequencer/Triggers"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
@@ -24,6 +27,14 @@ import (
 type ListenerHandler struct {
 	responseHandler AVCStruct.ResponseHandler
 }
+
+type VoteResult map[string]int8
+
+var (
+	voteResultTimer      *time.Timer
+	voteResultTimerMutex sync.Mutex
+	TIMER                = 5 * time.Second
+)
 
 // NewListenerHandler creates a new ListenerHandler instance
 func NewListenerHandler(responseHandler AVCStruct.ResponseHandler) *ListenerHandler {
@@ -233,7 +244,7 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 	// Print CRDT state after processing the vote (non-blocking)
 	go func() {
 		// Wait for more votes to be processed (increased from 5s to 15s)
-		time.Sleep(15 * time.Second)
+		time.Sleep(5 * time.Second)
 		if err := Structs.PrintCRDTState(listenerNode); err != nil {
 			fmt.Printf("Failed to print CRDT state: %v\n", err)
 		}
@@ -245,32 +256,19 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 			return
 		}
 
-		fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
-		fmt.Printf("║         VOTE PROCESSING RESULT - BUDDY NODE               ║\n")
-		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
-		fmt.Printf("📊 Vote Result: %d\n", result)
-		fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-		fmt.Printf("✅ Vote processing completed successfully\n")
-		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
+		// Trigger to send the vote to the sequencer
+		// Fixed: Add nil check for Triggers, and error handling if SendVoteResultToSequencer is not defined
+		// SUbmit to the handler function to send the vote to the sequencer
+		message := AVCStruct.NewMessageBuilder(nil).
+			SetSender(listenerNode.PeerID).
+			SetMessage(fmt.Sprintf("Vote result: %d", result)).
+			SetTimestamp(time.Now().Unix()).
+			SetACK(AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_VoteResult))
 
-		// Trigger BFT after vote processing
-		fmt.Printf("🔔 Triggering BFT consensus after vote processing...\n")
-		Triggers.BFTTrigger()
-
-		// Get the vote result and use it for BFT consensus
-		// The result is: 1 for accept, -1 for reject
-		bftDecision := "REJECT"
-		if result > 0 {
-			bftDecision = "ACCEPT"
-		}
-
-		fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
-		fmt.Printf("║          PREPARING BFT CONSENSUS                        ║\n")
-		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
-		fmt.Printf("📊 Vote Result from VoteAggregation: %d\n", result)
-		fmt.Printf("🔔 BFT Decision: %s\n", bftDecision)
-		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
+		lh.sendVoteResultToSequencer(s, message)
+		fmt.Printf("✅ Vote result sent to sequencer successfully: %s\n", message.Message)
 	}()
+
 }
 
 // handleAskForSubscription processes subscription request messages
@@ -431,6 +429,8 @@ func (lh *ListenerHandler) GetResponseHandler() AVCStruct.ResponseHandler {
 
 // handleVoteResult handles incoming vote result messages from buddy nodes
 func (lh *ListenerHandler) handleVoteResult(s network.Stream, message *AVCStruct.Message) {
+	// if new vote comes then the timer would start, if new vote comes then the timer would restart
+	// if the timer reaches 0 then you should give the result to the BFT Decision
 	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
 	fmt.Printf("║            RECEIVED VOTE RESULT                            ║\n")
 	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
@@ -454,13 +454,152 @@ func (lh *ListenerHandler) handleVoteResult(s network.Stream, message *AVCStruct
 	}
 
 	// Store the result in the global vote results map
-	peerID := s.Conn().RemotePeer()
+	// Use the message sender's peer ID as the key (this is the buddy node)
+	peerID := message.Sender
 	voteResult := int8(resultValue)
 
-	// Import Triggers package to use StoreVoteResult
-	// Note: We need to add the import at the top of the file
+	// Store in global hashmap
 	Triggers.StoreVoteResult(peerID.String(), voteResult)
-	fmt.Printf("✅ Stored vote result for peer %s: %d\n", peerID.String(), voteResult)
+	fmt.Printf("✅ Stored vote result in global map for peer %s: %d\n", peerID.String(), voteResult)
+	fmt.Printf("📊 Current vote results map: %v\n", Triggers.GetAllVoteResults())
+
+	// Timer logic: if new vote comes then timer restarts
+	voteResultTimerMutex.Lock()
+
+	// If timer already exists, stop it and restart
+	if voteResultTimer != nil {
+		voteResultTimer.Stop()
+		fmt.Printf("🔄 Restarting vote result timer due to new vote from %s\n", peerID.String())
+	}
+
+	// Create new timer
+	voteResultTimer = time.AfterFunc(TIMER, func() {
+		fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+		fmt.Printf("║     VOTE RESULT TIMER EXPIRED - RUNNING BFT                ║\n")
+		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+
+		// Get all vote results
+		voteResults := Triggers.GetAllVoteResults()
+		fmt.Printf("📊 Collected vote results: %v\n", voteResults)
+
+		if len(voteResults) == 0 {
+			fmt.Printf("⚠️ No vote results collected\n")
+			return
+		}
+
+		// Get listener node
+		listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
+		if listenerNode == nil || len(listenerNode.BuddyNodes.Buddies_Nodes) == 0 {
+			fmt.Printf("❌ Listener node or buddies not initialized\n")
+			return
+		}
+
+		// Convert vote results to BFT input
+		allBuddies := make([]bft.BuddyInput, 0)
+		for _, buddy := range listenerNode.BuddyNodes.Buddies_Nodes {
+			buddyID := buddy.String()
+			result, hasResult := voteResults[buddyID]
+
+			// Only include buddies that have submitted their vote results
+			if hasResult {
+				decision := bft.Reject
+				if result > 0 {
+					decision = bft.Accept
+				}
+
+				allBuddies = append(allBuddies, bft.BuddyInput{
+					ID:         buddyID,
+					Decision:   decision,
+					PublicKey:  []byte(buddyID), // Use buddy ID as placeholder public key
+					PrivateKey: []byte{},        // Empty for non-local nodes
+				})
+
+				fmt.Printf("  ✓ Buddy %s: Decision=%s (vote_result=%d)\n", buddyID, decision, result)
+			} else {
+				fmt.Printf("  ✗ Buddy %s: No vote result available (excluded from BFT)\n", buddyID)
+			}
+		}
+
+		if len(allBuddies) == 0 {
+			fmt.Printf("⚠️ No valid buddies for BFT consensus\n")
+			return
+		}
+
+		fmt.Printf("🔔 Starting BFT consensus with %d buddies (out of %d total)\n",
+			len(allBuddies), len(listenerNode.BuddyNodes.Buddies_Nodes))
+
+		// Create BFT config
+		bftConfig := bft.Config{
+			MinBuddies:         4,
+			ByzantineTolerance: (len(allBuddies) - 1) / 3,
+		}
+
+		fmt.Printf("✅ BFT config created with Byzantine tolerance: %d\n", bftConfig.ByzantineTolerance)
+		fmt.Printf("   - MinBuddies: %d\n", bftConfig.MinBuddies)
+		fmt.Printf("   - All buddies mapped successfully\n")
+		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
+
+		// Create BFT instance
+		bftInstance := bft.New(bftConfig)
+
+		// Get context with timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Create a simple in-memory messenger for the consensus
+		// Determine my buddy ID (the sequencer's peer ID)
+		adapter, err := bft.NewBFTPubSubAdapter(context.Background(), AVCStruct.NewGlobalVariables().Get_PubSubNode().PubSub, bftInstance, config.PubSub_ConsensusChannel)
+		if err != nil {
+			fmt.Printf("❌ Failed to create BFT adapter: %v\n", err)
+			return
+		}
+		messenger := bft.Return_pubsubMessenger(adapter, listenerNode.PeerID.String())
+		myBuddyID := listenerNode.PeerID.String()
+
+		// Generate round and block hash
+		round := uint64(time.Now().Unix())
+		blockHash := "consensus_block_" + fmt.Sprintf("%d", time.Now().Unix())
+
+		fmt.Printf("🚀 Starting BFT Consensus\n")
+		fmt.Printf("   - Round: %d\n", round)
+		fmt.Printf("   - Block Hash: %s\n", blockHash)
+		fmt.Printf("   - My Buddy ID: %s\n", myBuddyID)
+		fmt.Printf("   - Total Buddies: %d\n", len(allBuddies))
+
+		// Run BFT consensus
+		result, err := bftInstance.RunConsensus(ctx, round, blockHash, myBuddyID, allBuddies, messenger, nil)
+
+		if err != nil {
+			fmt.Printf("❌ BFT Consensus Failed: %v\n", err)
+			fmt.Printf("   - Failure Reason: %s\n", result.FailureReason)
+			fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
+			return
+		}
+
+		// Log consensus result
+		fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+		fmt.Printf("║           BFT CONSENSUS COMPLETED                        ║\n")
+		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+		fmt.Printf("✅ Success: %v\n", result.Success)
+		fmt.Printf("📊 Decision: %s\n", result.Decision)
+		fmt.Printf("📦 Block Accepted: %v\n", result.BlockAccepted)
+		fmt.Printf("⏱️  Total Duration: %v\n", result.TotalDuration)
+		fmt.Printf("   - Prepare: %v\n", result.PrepareDuration)
+		fmt.Printf("   - Commit: %v\n", result.CommitDuration)
+		fmt.Printf("📈 Votes: %d prepare, %d commit\n", result.PrepareCount, result.CommitCount)
+		fmt.Printf("👥 Participants: %d total buddies\n", result.TotalBuddies)
+
+		if len(result.ByzantineDetected) > 0 {
+			fmt.Printf("⚠️  Byzantine nodes detected: %v\n", result.ByzantineDetected)
+		}
+
+		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
+	})
+
+	fmt.Printf("⏰ Started/restarted vote result timer for %v\n", TIMER)
+
+	// Unlock the mutex here (defer was in the wrong scope)
+	voteResultTimerMutex.Unlock()
 
 	// Get listener node from global variables
 	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
@@ -485,6 +624,55 @@ func (lh *ListenerHandler) handleVoteResult(s network.Stream, message *AVCStruct
 
 	s.Write([]byte(string(responseBytes) + string(rune(config.Delimiter))))
 	fmt.Printf("✅ Acknowledgment sent to peer %s\n", peerID.String())
+}
+
+func (lh *ListenerHandler) sendVoteResultToSequencer(s network.Stream, message *AVCStruct.Message) {
+	fmt.Printf("Sending vote result to sequencer: %s\n", message.Message)
+
+	// Get the sequencer peer ID from the subscription cache
+	// The sequencer is the first peer in the cache (from when we subscribed)
+	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
+	if pubSubNode == nil || len(pubSubNode.BuddyNodes.Buddies_Nodes) == 0 {
+		fmt.Printf("❌ Cannot send vote result - no sequencer peer found\n")
+		return
+	}
+
+	// The sequencer is typically the first peer we connected to
+	sequencerPeerID := pubSubNode.BuddyNodes.Buddies_Nodes[0]
+	host := AVCStruct.NewGlobalVariables().Get_ForListner().Host
+
+	// Open a stream to the sequencer
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stream, err := host.NewStream(ctx, sequencerPeerID, config.SubmitMessageProtocol)
+	if err != nil {
+		fmt.Printf("❌ Failed to open stream to sequencer: %v\n", err)
+		return
+	}
+	defer stream.Close()
+
+	messageBytes, err := json.Marshal(message)
+	if err != nil {
+		fmt.Printf("❌ Failed to marshal message: %v\n", err)
+		return
+	}
+
+	writer := bufio.NewWriter(s)
+	_, err = writer.WriteString(string(messageBytes) + string(rune(config.Delimiter)))
+	if err != nil {
+		fmt.Printf("❌ Failed to write message: %v\n", err)
+		return
+	}
+	err = writer.Flush()
+	if err != nil {
+		fmt.Printf("❌ Failed to flush message: %v\n", err)
+		return
+	}
+
+	fmt.Printf("✅ Vote result sent to sequencer successfully\n")
+	fmt.Printf("📝 Message sent: %s\n", message.Message)
+	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
 }
 
 // SetResponseHandler sets a new ResponseHandler
