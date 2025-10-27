@@ -412,6 +412,7 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(channelName string
 
 	// Use the Connector.Subscribe to handle the subscription properly with GossipSub
 	// This ensures messages are received via GossipSub
+	fmt.Printf("About to call Connector.Subscribe for %s\n", channelName)
 	err := Connector.Subscribe(s.pubSub, channelName, func(msg *AVCStruct.GossipMessage) {
 		fmt.Printf("\n[BUDDY NODE PUBSUB HANDLER] Received message on %s\n", channelName)
 		fmt.Printf("Message ID: %s\n", msg.ID)
@@ -429,6 +430,7 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(channelName string
 				zap.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 		}
 	})
+	fmt.Printf("Connector.Subscribe returned with err: %v\n", err)
 
 	if err != nil {
 		log.LogConsensusError(fmt.Sprintf("Failed to subscribe to %s: %v", channelName, err), err,
