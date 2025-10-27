@@ -232,6 +232,21 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 		if err := Structs.PrintCRDTState(listenerNode); err != nil {
 			fmt.Printf("Failed to print CRDT state: %v\n", err)
 		}
+
+		// Process votes from CRDT and get the voting result
+		result, err := Structs.ProcessVotesFromCRDT(listenerNode)
+		if err != nil {
+			fmt.Printf("❌ Failed to process votes from CRDT: %v\n", err)
+			return
+		}
+
+		fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+		fmt.Printf("║         VOTE PROCESSING RESULT - BUDDY NODE               ║\n")
+		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+		fmt.Printf("📊 Vote Result: %d\n", result)
+		fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+		fmt.Printf("✅ Vote processing completed successfully\n")
+		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
 	}()
 }
 
