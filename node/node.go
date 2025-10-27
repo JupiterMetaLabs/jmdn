@@ -222,7 +222,10 @@ func NewNode() (*config.Node, error) {
 
 		// Create a clear listener handler for handling subscription requests, votes, and responses
 		listenerHandler := MessagePassing.NewListenerHandler(nil)
-		go listenerHandler.HandleSubmitMessageStream(s)
+		go func(stream network.Stream) {
+			defer stream.Close()
+			listenerHandler.HandleSubmitMessageStream(stream)
+		}(s)
 	})
 
 	go StartDiscovery(h)

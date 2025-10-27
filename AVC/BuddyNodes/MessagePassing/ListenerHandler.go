@@ -31,9 +31,8 @@ func NewListenerHandler(responseHandler AVCStruct.ResponseHandler) *ListenerHand
 
 // HandleSubmitMessageStream processes incoming messages on the SubmitMessageProtocol
 // This is the main entry point for handling subscription requests, votes, and responses
+// Note: Stream closure is handled by the caller to allow response reading
 func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
-	defer s.Close()
-
 	fmt.Println("=== ListenerHandler.HandleSubmitMessageStream CALLED ===")
 	fmt.Printf("Received stream from: %s\n", s.Conn().RemotePeer())
 
