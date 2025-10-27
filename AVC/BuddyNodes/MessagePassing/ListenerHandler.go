@@ -177,6 +177,15 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 	log.LogMessagesInfo(fmt.Sprintf("Successfully processed vote from %s", s.Conn().RemotePeer()),
 		zap.String("peer", s.Conn().RemotePeer().String()),
 		zap.String("function", "ListenerHandler.handleSubmitVote"))
+
+	// Print CRDT state after processing the vote (non-blocking)
+	go func() {
+		// Wait a bit for other votes to be processed
+		time.Sleep(100 * time.Millisecond)
+		if err := Structs.PrintCRDTState(listenerNode); err != nil {
+			fmt.Printf("Failed to print CRDT state: %v\n", err)
+		}
+	}()
 }
 
 // handleAskForSubscription processes subscription request messages
