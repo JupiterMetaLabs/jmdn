@@ -287,6 +287,13 @@ func (s *CLIServer) GetGethStatus(ctx context.Context, _ *emptypb.Empty) (*pb.Ge
 
 // DiscoverNeighbors discovers and adds neighbors from seed node
 func (s *CLIServer) DiscoverNeighbors(ctx context.Context, _ *emptypb.Empty) (*pb.OperationResponse, error) {
+	if s.handler.SeedNode == "" {
+		return &pb.OperationResponse{
+			Success: false,
+			Message: "No seed node configured",
+		}, nil
+	}
+
 	if s.handler.Node == nil || s.handler.NodeManager == nil {
 		return &pb.OperationResponse{
 			Success: false,
@@ -319,7 +326,7 @@ func (s *CLIServer) DiscoverNeighbors(ctx context.Context, _ *emptypb.Empty) (*p
 
 // ListAliases returns the current node's alias
 func (s *CLIServer) ListAliases(ctx context.Context, _ *emptypb.Empty) (*pb.AliasList, error) {
-	if s.handler.SeedNode == "" {
+	if s.handler.SeedNode == "" || s.handler.Node == nil {
 		return &pb.AliasList{Aliases: []string{}}, nil
 	}
 
@@ -344,6 +351,6 @@ func (s *CLIServer) PropagateDID(ctx context.Context, req *pb.DIDPropagationRequ
 	// This would need to be implemented in CLI_GRPC.go
 	return &pb.OperationResponse{
 		Success: false,
-		Message: "Not implemented",
+		Message: "Not implemented yet",
 	}, nil
 }
