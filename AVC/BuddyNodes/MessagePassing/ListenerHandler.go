@@ -271,9 +271,9 @@ func (lh *ListenerHandler) sendSubscriptionResponse(s network.Stream, accepted b
 	host := s.Conn().LocalPeer()
 	var ackBuilder *AVCStruct.ACK
 	if accepted {
-		ackBuilder = AVCStruct.NewACKBuilder().True_ACK_Message(host, config.Type_AskForSubscription)
+		ackBuilder = AVCStruct.NewACKBuilder().True_ACK_Message(host, config.Type_SubscriptionResponse)
 	} else {
-		ackBuilder = AVCStruct.NewACKBuilder().False_ACK_Message(host, config.Type_AskForSubscription)
+		ackBuilder = AVCStruct.NewACKBuilder().False_ACK_Message(host, config.Type_SubscriptionResponse)
 	}
 
 	message := AVCStruct.NewMessageBuilder(nil).
