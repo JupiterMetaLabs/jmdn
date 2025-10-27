@@ -248,22 +248,19 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 			return fmt.Errorf("failed to unmarshal vote message: %v", err)
 		}
 
-		if vote, exists := voteData["vote"]; exists {
-			voteValue, ok := vote.(float64)
-			if !ok {
-				return fmt.Errorf("invalid vote value type")
-			}
+		if _, exists := voteData["vote"]; exists {
 
 			OP := &Types.OP{
 				NodeID: msg.Data.Sender,
-				OpType: int8(voteValue),
+				OpType: int8(1), // 1 for add, -1 for remove
 				KeyValue: Types.KeyValue{
-					Key:   "vote",
+					Key:   msg.Data.Sender.String(), // key would be the peer id of the sender
 					Value: msg.Data.Message,
 				},
 			}
 
-			if err := ServiceLayer.Controller(listenerNode.CRDTLayer, OP); err != nil {
+			result := ServiceLayer.Controller(listenerNode.CRDTLayer, OP)
+			if err, ok := result.(error); ok && err != nil {
 				fmt.Printf("[BUDDY] ✗ Failed to add vote to CRDT: %v\n", err)
 				return fmt.Errorf("failed to add vote to local CRDT Engine: %v", err)
 			}

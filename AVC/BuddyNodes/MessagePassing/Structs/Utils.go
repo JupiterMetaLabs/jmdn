@@ -62,19 +62,14 @@ func SubmitMessage(msg *PubSubMessages.Message, PubSub *PubSubMessages.GossipPub
 	}
 
 	// Check if this is a vote message by looking for vote field
-	if vote, exists := voteData["vote"]; exists {
-		// This is a vote message, create proper OP struct
-		voteValue, ok := vote.(float64)
-		if !ok {
-			return fmt.Errorf("invalid vote value type")
-		}
+	if _, exists := voteData["vote"]; exists {
 
 		// Create OP struct for vote
 		OP := &Types.OP{
 			NodeID: msg.Sender,
-			OpType: int8(voteValue), // vote = 1 (ADD) or -1 (REMOVE)
+			OpType: int8(1), // 1 for add, -1 for remove
 			KeyValue: Types.KeyValue{
-				Key:   "vote",
+				Key:   msg.Sender.String(), // key would be the peer id of the sender
 				Value: msg.Message, // Store the full vote message as value
 			},
 		}

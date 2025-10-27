@@ -175,23 +175,18 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 		return
 	}
 
-	if vote, exists := voteData["vote"]; exists {
-		voteValue, ok := vote.(float64)
-		if !ok {
-			fmt.Printf("=== THIS IS BUDDY NODE HANDLER FUNCTION - Invalid vote value type ===\n")
-			return
-		}
-
+	if _, exists := voteData["vote"]; exists {
 		OP := &Types.OP{
 			NodeID: message.Sender,
-			OpType: int8(voteValue),
+			OpType: int8(1), // 1 for add, -1 for remove
 			KeyValue: Types.KeyValue{
-				Key:   "vote",
+				Key:   message.Sender.String(), // key would be the peer id of the sender
 				Value: message.Message,
 			},
 		}
 
-		if err := ServiceLayer.Controller(listenerNode.CRDTLayer, OP); err != nil {
+		result := ServiceLayer.Controller(listenerNode.CRDTLayer, OP)
+		if err, ok := result.(error); ok && err != nil {
 			fmt.Printf("=== THIS IS BUDDY NODE HANDLER FUNCTION - Failed to add vote to CRDT: %v ===\n", err)
 			return
 		}
