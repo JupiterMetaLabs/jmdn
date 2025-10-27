@@ -121,7 +121,7 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 		// Check if stdin is available (interactive mode)
 		if !isInteractive() {
 			fmt.Println("Running in non-interactive mode - CLI will run with gRPC server only")
-			// In non-interactive mode, just wait for the gRPC server
+			// In non-interactive mode, just wait indefinitely
 			// The CLI will be accessible via gRPC calls
 			<-ctx.Done()
 			return
@@ -130,6 +130,8 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 		fmt.Println()
 		scanner := bufio.NewScanner(os.Stdin)
 		printPrompt()
+
+		// Only scan if we got input, otherwise wait for context
 		for scanner.Scan() {
 			input := strings.TrimSpace(scanner.Text())
 			if input == "stopservice" {
@@ -144,6 +146,11 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 			h.handleCommand(parts)
 			printPrompt()
 		}
+
+		// If scanner loop exits (EOF without any input), keep running
+		// This happens when running as a service without a TTY
+		fmt.Println("Stdin closed - running in daemon mode with gRPC server")
+		<-ctx.Done()
 	}()
 
 	// Wait for exit signal

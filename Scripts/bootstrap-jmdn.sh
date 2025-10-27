@@ -86,7 +86,7 @@ Type=simple
 User=root
 WorkingDirectory=${REPO_DIR}
 ExecStartPre=${UPDATE_SCRIPT}
-ExecStart=/bin/bash -lc 'exec ${BIN_PATH} \
+ExecStart=${BIN_PATH} \
   -heartbeat 10 \
   -metrics 8081 \
   -api 8090 \
@@ -98,11 +98,13 @@ ExecStart=/bin/bash -lc 'exec ${BIN_PATH} \
   -ws 8546 \
   -chainID 7000700 \
   -mempool 34.129.53.115:18001 \
-  -explorer 2>&1 | tee -a ${LOG_PATH}'
-Restart=on-failure
-RestartSec=3
+  -explorer
+Restart=always
+RestartSec=10
 NoNewPrivileges=true
 LimitNOFILE=1048576
+StandardOutput=append:${LOG_PATH}
+StandardError=append:${LOG_PATH}
 
 [Install]
 WantedBy=multi-user.target

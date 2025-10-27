@@ -110,6 +110,169 @@ func printDashes() {
 	fmt.Println("\n" + strings.Repeat("-", 50) + "\n")
 }
 
+// runCommand executes a CLI command via gRPC to the running service
+func runCommand(command string, args []string, grpcPort int) {
+	client, err := cli.NewClient(fmt.Sprintf("localhost:%d", grpcPort))
+	if err != nil {
+		fmt.Printf("Error connecting to gRPC server: %v\n", err)
+		fmt.Println("Make sure the service is running.")
+		os.Exit(1)
+	}
+	defer client.Close()
+
+	switch command {
+	case "listpeers", "list":
+		peers, err := client.ListPeers()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("\nPeers (%d):\n", len(peers.Peers))
+		for _, peer := range peers.Peers {
+			status := "OFFLINE"
+			if peer.IsAlive {
+				status = "ONLINE"
+			}
+			fmt.Printf("  %s - %s [%s] Last: %s\n",
+				peer.Id, peer.Multiaddr, status, peer.LastSeen)
+		}
+
+	case "addrs":
+		addrs, err := client.ReturnAddrs()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("\nNode Addresses:\n")
+		for _, addr := range addrs.Peers {
+			fmt.Printf("  %s\n", addr)
+		}
+
+	case "stats":
+		stats, err := client.GetMessageStats()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("\nMessaging Statistics:\n")
+		fmt.Printf("  Sent:     %d\n", stats.MessagesSent)
+		fmt.Printf("  Received: %d\n", stats.MessagesReceived)
+		fmt.Printf("  Failed:   %d\n", stats.MessagesFailed)
+
+	case "dbstate":
+		state, err := client.GetDatabaseState()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("\nDatabase State:\n")
+		fmt.Printf("  Main DB TxID:     %d\n", state.MainDb.TxId)
+		fmt.Printf("  Accounts DB TxID: %d\n", state.AccountsDb.TxId)
+
+	case "addpeer":
+		if len(args) < 1 {
+			fmt.Println("Usage: jmdn -cmd addpeer <peer_multiaddr>")
+			os.Exit(1)
+		}
+		resp, err := client.AddPeer(args[0])
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Result: %s\n", resp.Message)
+
+	case "removepeer":
+		if len(args) < 1 {
+			fmt.Println("Usage: jmdn -cmd removepeer <peer_id>")
+			os.Exit(1)
+		}
+		resp, err := client.RemovePeer(args[0])
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Result: %s\n", resp.Message)
+
+	case "cleanpeers":
+		resp, err := client.CleanPeers()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Cleaned %d peers\n", resp.CleanedCount)
+
+	case "sendmsg":
+		if len(args) < 2 {
+			fmt.Println("Usage: jmdn -cmd sendmsg <target> <message>")
+			os.Exit(1)
+		}
+		resp, err := client.SendMessage(args[0], strings.Join(args[1:], " "))
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Result: %s\n", resp.Message)
+
+	case "broadcast":
+		if len(args) < 1 {
+			fmt.Println("Usage: jmdn -cmd broadcast <message>")
+			os.Exit(1)
+		}
+		resp, err := client.BroadcastMessage(strings.Join(args, " "))
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Result: %s\n", resp.Message)
+
+	case "getdid":
+		if len(args) < 1 {
+			fmt.Println("Usage: jmdn -cmd getdid <did>")
+			os.Exit(1)
+		}
+		doc, err := client.GetDID(args[0])
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("\nDID Document:\n")
+		fmt.Printf("  DID:       %s\n", doc.Did)
+		fmt.Printf("  PublicKey: %s\n", doc.PublicKey)
+		fmt.Printf("  Balance:   %s\n", doc.Balance)
+
+	case "fastsync":
+		if len(args) < 1 {
+			fmt.Println("Usage: jmdn -cmd fastsync <peer_multiaddr>")
+			os.Exit(1)
+		}
+		fmt.Println("Starting fast sync...")
+		stats, err := client.FastSync(args[0])
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Sync completed in %dms\n", stats.TimeTaken)
+		fmt.Printf("  Main DB TxID: %d\n", stats.MainState.TxId)
+		fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
+
+	default:
+		fmt.Printf("Unknown command: %s\n", command)
+		fmt.Println("\nAvailable commands:")
+		fmt.Println("  listpeers, list     - List all managed peers")
+		fmt.Println("  addrs                - Show node addresses")
+		fmt.Println("  stats                - Show messaging statistics")
+		fmt.Println("  dbstate              - Show database state")
+		fmt.Println("  addpeer <addr>       - Add a peer")
+		fmt.Println("  removepeer <id>      - Remove a peer")
+		fmt.Println("  cleanpeers           - Clean offline peers")
+		fmt.Println("  sendmsg <tgt> <msg>  - Send message")
+		fmt.Println("  broadcast <msg>      - Broadcast message")
+		fmt.Println("  getdid <did>         - Get DID document")
+		fmt.Println("  fastsync <peer>      - Fast sync with peer")
+		os.Exit(1)
+	}
+}
+
 func StartAPIServer(address string, enableExplorer bool) error {
 	// Create ImmuDB API server
 	server, err := explorer.NewImmuDBServer(enableExplorer)
@@ -242,7 +405,14 @@ func main() {
 	chainID := flag.Int("chainID", 7000700, "Chain ID for the blockchain network")
 	immudbUsername := flag.String("immudb-user", "immudb", "ImmuDB username")
 	immudbPassword := flag.String("immudb-pass", "immudb", "ImmuDB password")
+	command := flag.String("cmd", "", "Execute a CLI command (e.g., listpeers, addrs, stats, dbstate)")
 	flag.Parse()
+
+	// Handle command execution mode - if -cmd is provided, execute command via gRPC and exit
+	if *command != "" {
+		runCommand(*command, flag.Args(), *cliGRPC)
+		return
+	}
 
 	// Update the global seed node URL if provided via command-line
 	if *seedNodeURL != "" {
