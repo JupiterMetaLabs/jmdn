@@ -255,8 +255,26 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) 
 
 	fmt.Printf("DEBUG: Peer weights: %v\n", weights)
 
+	// Filter voteData to only include peers that have weights
+	filteredVoteData := make(map[string]int8)
+	for peerID, vote := range voteData {
+		if weight, exists := weights[peerID]; exists {
+			filteredVoteData[peerID] = vote
+			fmt.Printf("DEBUG: Peer %s has weight %f and vote %d\n", peerID, weight, vote)
+		} else {
+			fmt.Printf("DEBUG: Peer %s not found in weights, skipping\n", peerID)
+		}
+	}
+
+	if len(filteredVoteData) == 0 {
+		fmt.Printf("⚠️ No votes found after filtering by weights\n")
+		return 0, fmt.Errorf("no votes found after filtering by weights")
+	}
+
+	fmt.Printf("DEBUG: Filtered vote data (%d peers with votes and weights): %v\n", len(filteredVoteData), filteredVoteData)
+
 	// Call votemodule.VoteAggregation
-	result, err := voteaggregation.VoteAggregation(weights, voteData)
+	result, err := voteaggregation.VoteAggregation(weights, filteredVoteData)
 	if err != nil {
 		fmt.Printf("❌ Failed to aggregate votes: %v\n", err)
 		return 0, fmt.Errorf("failed to aggregate votes: %v", err)
