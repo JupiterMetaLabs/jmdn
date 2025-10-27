@@ -113,7 +113,7 @@ echo "[init] Reloading systemd and starting ${SERVICE_NAME}..."
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
 
-# --- 4. Add cron job for updater ---
+# --- 4A. Add cron job for updater ---
 echo "[init] Setting up cron job to run every minute..."
 ( crontab -l 2>/dev/null || true ) > /tmp/current_cron.txt
 
@@ -123,6 +123,18 @@ else
   echo "$CRON_ENTRY" >> /tmp/current_cron.txt
   crontab /tmp/current_cron.txt
   echo "✅ Cron job added: runs every minute."
+fi
+
+# --- 4B. Add cron job to start ImmuDB in screen at reboot ---
+echo "[init] Ensuring ImmuDB @reboot cron is configured..."
+IMMUD_CRON="@reboot sleep 10 && screen -dmS immu /usr/local/bin/immudb --dir ${REPO_DIR}/data >> /root/immudb.log 2>&1"
+
+if grep -Fq "/usr/local/bin/immudb" /tmp/current_cron.txt; then
+  echo "✅ ImmuDB @reboot cron already exists."
+else
+  echo "$IMMUD_CRON" >> /tmp/current_cron.txt
+  crontab /tmp/current_cron.txt
+  echo "✅ ImmuDB @reboot cron added."
 fi
 
 # Ensure cron daemon is running

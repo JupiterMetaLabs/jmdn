@@ -30,7 +30,6 @@ import (
 	"gossipnode/messaging/directMSG"
 	"gossipnode/metrics"
 	"gossipnode/node"
-	"gossipnode/seed"
 	"gossipnode/seednode"
 	"gossipnode/transfer"
 
@@ -225,13 +224,11 @@ func main() {
 	fmt.Println("ImmuDB TLS assets generated.")
 
 	// Command-line flags for node configuration
-	isSeed := flag.Bool("seed", false, "Run as a seed node")
-	connect := flag.String("connect", "", "Connect to a seed node (multiaddr)")
 	seedNodeURL := flag.String("seednode", "", "Seed node gRPC URL for peer registration (e.g., localhost:9090)")
 	peerAlias := flag.String("alias", "", "Peer alias for registration with seed node")
 	enableLoki := flag.Bool("loki", false, "Enable Loki logging (default: false)")
 	heartbeatInterval := flag.Int("heartbeat", 120, "Heartbeat interval in seconds (default: 300)")
-	metricsPort := flag.String("metrics", "8080", "Port for Prometheus metrics")
+	metricsPort := flag.String("metrics", "8081", "Port for Prometheus metrics")
 	enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
 	apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
 	enableExplorer := flag.Bool("explorer", false, "Enable blockchain explorer UI (default: false)")
@@ -240,8 +237,8 @@ func main() {
 	cliGRPC := flag.Int("cli", 15053, "CLI gRPC server address")
 	DIDgRPC := flag.String("did", "localhost:15052", "DID gRPC server address")
 	gETHgRPC := flag.Int("geth", 15054, "gETH gRPC server address")
-	gETHFacade := flag.Int("facade", 15001, "gETH Facade server address")
-	gETHWSServer := flag.Int("ws", 15002, "gETH WSServer address")
+	gETHFacade := flag.Int("facade", 8545, "gETH Facade server address")
+	gETHWSServer := flag.Int("ws", 8546, "gETH WSServer address")
 	chainID := flag.Int("chainID", 7000700, "Chain ID for the blockchain network")
 	immudbUsername := flag.String("immudb-user", "immudb", "ImmuDB username")
 	immudbPassword := flag.String("immudb-pass", "immudb", "ImmuDB password")
@@ -435,29 +432,6 @@ func main() {
 			fmt.Printf("\nBlock generator available at http://localhost:%d\n", *blockgen)
 			Block.Startserver(*blockgen, n.Host, *chainID)
 		}()
-	}
-	// Configure as seed node if requested
-	if *isSeed {
-		err = seed.RegisterAsSeed(n)
-		if err != nil {
-			fmt.Printf("Failed to register as seed node: %v\n", err)
-			return
-		}
-		fmt.Println("Running as a seed node")
-	}
-
-	// Connect to a seed node if requested
-	if *connect != "" {
-		fmt.Printf("Connecting to seed node: %s\n", *connect)
-		peers, err := seed.RequestPeers(n.Host, *connect, 10, "")
-		if err != nil {
-			fmt.Printf("Error connecting to seed: %v\n", err)
-		} else {
-			fmt.Printf("Connected to seed. Discovered %d peers\n", len(peers))
-			for i, p := range peers {
-				fmt.Printf("  %d. ID: %s, Addresses: %v\n", i+1, p.ID, p.Addrs)
-			}
-		}
 	}
 
 	// Register with seed node gRPC if URL is provided
