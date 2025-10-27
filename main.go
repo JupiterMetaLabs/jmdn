@@ -12,12 +12,14 @@ import (
 	"syscall"
 	"time"
 
+	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Block"
 	"gossipnode/CA/ImmuDB_CA"
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
 	"gossipnode/DID"
 	"gossipnode/Pubsub"
+	"gossipnode/Sequencer"
 	"gossipnode/config"
 	"gossipnode/explorer"
 	fastsync "gossipnode/fastsync"
@@ -519,6 +521,14 @@ func main() {
 	}
 	defer n.Host.Close()
 	fmt.Println("Node created successfully")
+
+	// Set the host instance for broadcast messaging
+	messaging.SetHostInstance(n.Host)
+
+	// Initialize the listener node for handling submit message protocol
+	// This sets up the SubmitMessageProtocol handler for vote submission
+	listener := MessagePassing.NewListenerNode(n.Host, Sequencer.NewResponseHandler())
+	fmt.Printf("✅ Message listener initialized with ID: %s\n", listener.ListenerBuddyNode.PeerID.String())
 
 	// Initialize PubSub system
 	globalPubSub, err := initPubSub(n)

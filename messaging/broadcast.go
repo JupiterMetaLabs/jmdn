@@ -344,6 +344,7 @@ func handleVoteTriggerBroadcast(msg BroadcastMessageStruct) {
 	// Check if ForListner is initialized
 	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
 	if listenerNode == nil {
+		// Initialize the listener node
 		log.Error().Msg("ForListner not initialized - cannot submit vote")
 		fmt.Printf("❌ ForListner not initialized - this node cannot vote yet\n")
 		fmt.Printf("   This node may not have accepted subscription requests yet\n")
