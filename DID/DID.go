@@ -230,8 +230,8 @@ func (s *AccountServer) listAccounts(limit int) ([]*DB_OPs.Account, error) {
 	return data, nil
 }
 
-// RegisterAccount registers a new account
-func (s *AccountServer) RegisterAccount(ctx context.Context, req *pb.RegisterDIDRequest) (*pb.RegisterDIDResponse, error) {
+// RegisterDID registers a new DID
+func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequest) (*pb.RegisterDIDResponse, error) {
 	if req.Did == "" || req.PublicKey == "" {
 		return nil, status.Error(codes.InvalidArgument, "DID and public key are required")
 	}
@@ -250,7 +250,7 @@ func (s *AccountServer) RegisterAccount(ctx context.Context, req *pb.RegisterDID
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "DID.RegisterAccount"),
+			zap.String(logging.Function, "DID.RegisterDID"),
 		)
 		return &pb.RegisterDIDResponse{
 			Success: false,
@@ -277,7 +277,7 @@ func (s *AccountServer) RegisterAccount(ctx context.Context, req *pb.RegisterDID
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "DID.RegisterAccount"),
+			zap.String(logging.Function, "DID.RegisterDID"),
 		)
 		return nil, status.Errorf(codes.Internal, "Failed to store account: %v", err)
 	}
@@ -291,7 +291,7 @@ func (s *AccountServer) RegisterAccount(ctx context.Context, req *pb.RegisterDID
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "DID.RegisterAccount"),
+			zap.String(logging.Function, "DID.RegisterDID"),
 		)
 		return nil, status.Errorf(codes.Internal, "Failed to retrieve account: %v", err)
 	}
@@ -316,7 +316,7 @@ func (s *AccountServer) RegisterAccount(ctx context.Context, req *pb.RegisterDID
 				zap.Time(logging.Created_at, time.Now()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Function, "DID.RegisterAccount"),
+				zap.String(logging.Function, "DID.RegisterDID"),
 			)
 		}
 		s.accountsClient.Client.Logger.Logger.Info("Successfully propagated DID to network",
@@ -324,7 +324,7 @@ func (s *AccountServer) RegisterAccount(ctx context.Context, req *pb.RegisterDID
 			zap.Time(logging.Created_at, time.Now()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Function, "DID.RegisterAccount"),
+			zap.String(logging.Function, "DID.RegisterDID"),
 		)
 	}
 
