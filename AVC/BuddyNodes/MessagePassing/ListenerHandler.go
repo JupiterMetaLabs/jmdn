@@ -7,6 +7,8 @@ import (
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
+	ServiceLayer "gossipnode/AVC/BuddyNodes/ServiceLayer"
+	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"time"
@@ -165,15 +167,36 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 		return
 	}
 
-	// Add vote to local CRDT Engine
-	if err := Structs.SubmitMessage(message, pubSubNode.PubSub, listenerNode); err != nil {
-		fmt.Printf("=== THIS IS BUDDY NODE HANDLER FUNCTION - Failed to add vote to local CRDT Engine: %v ===\n", err)
-		log.LogMessagesError(fmt.Sprintf("Failed to add vote to local CRDT Engine: %v", err),
-			err,
-			zap.String("peer", s.Conn().RemotePeer().String()),
-			zap.String("topic", log.Messages_TOPIC),
-			zap.String("function", "ListenerHandler.handleSubmitVote"))
+	// Add vote to local CRDT Engine WITHOUT republishing to pubsub (to avoid loops)
+	// Parse the vote message
+	var voteData map[string]interface{}
+	if err := json.Unmarshal([]byte(message.Message), &voteData); err != nil {
+		fmt.Printf("=== THIS IS BUDDY NODE HANDLER FUNCTION - Failed to unmarshal vote message: %v ===\n", err)
 		return
+	}
+
+	if vote, exists := voteData["vote"]; exists {
+		voteValue, ok := vote.(float64)
+		if !ok {
+			fmt.Printf("=== THIS IS BUDDY NODE HANDLER FUNCTION - Invalid vote value type ===\n")
+			return
+		}
+
+		OP := &Types.OP{
+			NodeID: message.Sender,
+			OpType: int8(voteValue),
+			KeyValue: Types.KeyValue{
+				Key:   "vote",
+				Value: message.Message,
+			},
+		}
+
+		if err := ServiceLayer.Controller(listenerNode.CRDTLayer, OP); err != nil {
+			fmt.Printf("=== THIS IS BUDDY NODE HANDLER FUNCTION - Failed to add vote to CRDT: %v ===\n", err)
+			return
+		}
+
+		fmt.Printf("=== THIS IS BUDDY NODE HANDLER FUNCTION - Successfully added vote to CRDT (without republishing) ===\n")
 	}
 
 	// Debugging
