@@ -31,19 +31,7 @@ func (gps *GossipPubSub) GetOrJoinTopic(topicName string) (*pubsub.Topic, error)
 		return nil, fmt.Errorf("GossipSub not initialized")
 	}
 
-	// Check if topic already exists (with read lock)
-	gps.Mutex.RLock()
-	if topic, exists := gps.TopicsMap[topicName]; exists {
-		gps.Mutex.RUnlock()
-		return topic, nil
-	}
-	gps.Mutex.RUnlock()
-
-	// Acquire write lock before creating new topic
-	gps.Mutex.Lock()
-	defer gps.Mutex.Unlock()
-
-	// Double-check after acquiring lock (another goroutine might have created it)
+	// Check if topic already exists
 	if topic, exists := gps.TopicsMap[topicName]; exists {
 		return topic, nil
 	}
