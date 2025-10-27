@@ -45,6 +45,13 @@ func (rh *ResponseHandler) RegisterPeer(peerID peer.ID) chan bool {
 func (rh *ResponseHandler) HandleResponse(peerID peer.ID, accepted bool) {
 	fmt.Printf("=== ResponseHandler.HandleResponse called for peer: %s (accepted: %t) ===\n", peerID, accepted)
 
+	// Track accepted peers in the global tracker
+	if accepted {
+		tracker := PubSubMessages.GetSubscriptionTracker()
+		tracker.MarkPeerAccepted(peerID)
+		fmt.Printf("=== Global tracker: Marked peer %s as accepted (total: %d) ===\n", peerID, tracker.GetActiveCount())
+	}
+
 	rh.mutex.RLock()
 	responseChan, exists := rh.responses[peerID]
 	rh.mutex.RUnlock()
@@ -115,6 +122,10 @@ func (rh *ResponseHandler) UnregisterPeer(peerID peer.ID) {
 // Ensures: 1 creator + 13 subscribers = 14 total nodes
 // Maximum 3 main nodes can fail, use backup nodes as replacements
 func AskForSubscription(Listener *MessagePassing.StructListener, topic string, consensus *Consensus) error {
+	// Reset the global tracker at the start
+	tracker := PubSubMessages.GetSubscriptionTracker()
+	tracker.Reset()
+
 	responseHandler := NewResponseHandler()
 
 	// First, try main peers (up to 13)
@@ -131,7 +142,11 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 	// If we have exactly 13 main peers, we're done
 	if mainAccepted == config.MaxMainPeers {
 		log.Printf("Perfect! Got exactly %d main peers for consensus (1 creator + 13 subscribers = 14 total)", config.MaxMainPeers)
-		return nil
+		// Verify with global tracker
+		if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
+			log.Printf("Global tracker confirms: %d active subscriptions", tracker.GetActiveCount())
+			return nil
+		}
 	}
 
 	// If we have less than 13 main peers, use backup peers as replacements
@@ -159,9 +174,15 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 		}
 
 		log.Printf("Successfully achieved consensus: 1 creator + %d subscribers = 14 total nodes", totalAccepted)
+
+		// Verify with global tracker
+		if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
+			log.Printf("Global tracker confirms: %d active subscriptions", tracker.GetActiveCount())
+			return nil
+		}
 	}
 
-	return nil
+	return fmt.Errorf("global tracker validation failed: got %d, need %d", tracker.GetActiveCount(), config.MaxMainPeers)
 }
 
 // VerifySubscriptions publishes a verification message to the pubsub channel and collects ACK responses
@@ -324,13 +345,14 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 	// Wait for all goroutines to complete
 	wg.Wait()
 
-	// Count accepted peers
-	acceptedCount := 0
-	for _, isAccepted := range accepted {
-		if isAccepted {
-			acceptedCount++
-		}
-	}
+	// Give some time for async responses to arrive
+	time.Sleep(2 * time.Second)
+
+	// Use the global tracker count (more reliable than channels)
+	tracker := PubSubMessages.GetSubscriptionTracker()
+	acceptedCount := tracker.GetActiveCount()
+
+	log.Printf("Global tracker reports %d accepted peers for %s peers", acceptedCount, peerType)
 
 	return acceptedCount, len(peerAddrs)
 }
