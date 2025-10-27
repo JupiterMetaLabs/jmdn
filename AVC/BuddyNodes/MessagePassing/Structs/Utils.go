@@ -120,7 +120,10 @@ func PrintCRDTState(listenerNode *PubSubMessages.BuddyNode) error {
 		listenerNode.MetaData.Total)
 
 	// Get all votes from CRDT
+	fmt.Printf("DEBUG: About to call GetSet with key='vote'\n")
 	votes, exists := DataLayer.GetSet(listenerNode.CRDTLayer, "vote")
+	fmt.Printf("DEBUG: GetSet returned exists=%t, votes=%v\n", exists, votes)
+
 	if !exists || len(votes) == 0 {
 		fmt.Printf("\n📊 Votes in CRDT: 0 (no votes collected yet)\n")
 	} else {
