@@ -255,11 +255,13 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) 
 
 	fmt.Printf("DEBUG: Peer weights: %v\n", weights)
 
-	// Filter voteData to only include peers that have weights
+	// Filter weights to only include peers that voted
+	filteredWeights := make(map[string]float64)
 	filteredVoteData := make(map[string]int8)
 	for peerID, vote := range voteData {
 		if weight, exists := weights[peerID]; exists {
 			filteredVoteData[peerID] = vote
+			filteredWeights[peerID] = weight
 			fmt.Printf("DEBUG: Peer %s has weight %f and vote %d\n", peerID, weight, vote)
 		} else {
 			fmt.Printf("DEBUG: Peer %s not found in weights, skipping\n", peerID)
@@ -272,9 +274,10 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) 
 	}
 
 	fmt.Printf("DEBUG: Filtered vote data (%d peers with votes and weights): %v\n", len(filteredVoteData), filteredVoteData)
+	fmt.Printf("DEBUG: Filtered weights map (%d peers): %v\n", len(filteredWeights), filteredWeights)
 
-	// Call votemodule.VoteAggregation
-	result, err := voteaggregation.VoteAggregation(weights, filteredVoteData)
+	// Call votemodule.VoteAggregation with filtered maps
+	result, err := voteaggregation.VoteAggregation(filteredWeights, filteredVoteData)
 	if err != nil {
 		fmt.Printf("❌ Failed to aggregate votes: %v\n", err)
 		return 0, fmt.Errorf("failed to aggregate votes: %v", err)
