@@ -442,6 +442,7 @@ func main() {
 	apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
 	enableExplorer := flag.Bool("explorer", false, "Enable blockchain explorer UI (default: false)")
 	blockgen := flag.Int("blockgen", 0, "Run Block creator API on specified port (0 = disabled)")
+	blockgRPC := flag.Int("blockgrpc", 0, "Run Block gRPC server on specified port (0 = disabled)")
 	mempoolgRPC := flag.String("mempool", "localhost:15051", "Mempool gRPC server address")
 	cliGRPC := flag.Int("cli", 15053, "CLI gRPC server address")
 	DIDgRPC := flag.String("did", "localhost:15052", "DID gRPC server address")
@@ -655,6 +656,16 @@ func main() {
 			log.Info().Msgf("Starting block generator on port %d", *blockgen)
 			fmt.Printf("\nBlock generator available at http://localhost:%d\n", *blockgen)
 			Block.Startserver(*blockgen, n.Host, *chainID)
+		}()
+	}
+
+	if *blockgRPC > 0 {
+		go func() {
+			log.Info().Int("port", *blockgRPC).Msg("Starting block gRPC server")
+			fmt.Printf("\nBlock gRPC server available at localhost:%d\n", *blockgRPC)
+			if err := Block.StartGRPCServer(*blockgRPC, n.Host, *chainID); err != nil {
+				log.Error().Err(err).Msg("Failed to start block gRPC server")
+			}
 		}()
 	}
 

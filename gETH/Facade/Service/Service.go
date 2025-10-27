@@ -506,18 +506,8 @@ func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Get the mempool client
-	RoutingClient, err := block.ReturnMempoolObject()
-	if err != nil {
-		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GasPrice failed to get mempool client: %v", err), "GasPrice", -1); logErr != nil {
-			fmt.Printf("Failed to log GasPrice error: %v\n", logErr)
-		}
-		// Return fallback value on error
-		return big.NewInt(20000000000), nil // 20 gwei fallback
-	}
-
-	// Get the fee statistics from routing service
-	feeStats, err := RoutingClient.WrapperGetFeeStatistics()
+	// Get fee statistics directly from routing service
+	feeStats, err := block.GetFeeStatisticsFromRouting()
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GasPrice failed to get fee statistics: %v", err), "GasPrice", -1); logErr != nil {
 			fmt.Printf("Failed to log GasPrice error: %v\n", logErr)
