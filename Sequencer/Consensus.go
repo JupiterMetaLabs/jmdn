@@ -175,24 +175,31 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		return fmt.Errorf("failed to request subscription permission: %v", err)
 	}
 
-	// Verify that nodes are actually subscribed
+	// Start vote trigger in a goroutine with 5-second delay
+	go func() {
+		fmt.Printf("=== [Consensus.Start] Starting vote trigger goroutine with 5-second delay ===\n")
+		time.Sleep(5 * time.Second)
+
+		fmt.Printf("=== [Consensus.Start] About to call BroadcastVoteTrigger ===\n")
+		fmt.Printf("=== [Consensus.Start] consensus.ZKBlockData: %+v ===\n", consensus.ZKBlockData)
+
+		// Broadcast vote trigger to all subscribed peers
+		if err := consensus.BroadcastVoteTrigger(); err != nil {
+			fmt.Printf("=== [Consensus.Start] BroadcastVoteTrigger FAILED: %v ===\n", err)
+		} else {
+			fmt.Printf("=== [Consensus.Start] BroadcastVoteTrigger completed successfully ===\n")
+		}
+	}()
+
+	// Verify that nodes are actually subscribed (non-blocking for vote trigger)
 	fmt.Printf("=== [Consensus.Start] About to verify subscriptions ===\n")
 	if err := consensus.VerifySubscriptions(); err != nil {
 		fmt.Printf("=== [Consensus.Start] VerifySubscriptions FAILED: %v ===\n", err)
-		return fmt.Errorf("subscription verification failed: %w", err)
+		// Don't return error, let vote trigger run anyway
+		fmt.Printf("=== [Consensus.Start] Continuing despite verification failure ===\n")
+	} else {
+		fmt.Printf("=== [Consensus.Start] VerifySubscriptions PASSED ===\n")
 	}
-
-	fmt.Printf("=== [Consensus.Start] VerifySubscriptions PASSED ===\n")
-	fmt.Printf("=== [Consensus.Start] About to call BroadcastVoteTrigger ===\n")
-	fmt.Printf("=== [Consensus.Start] consensus.ZKBlockData: %+v ===\n", consensus.ZKBlockData)
-
-	// After successful subscription verification, broadcast vote trigger to all subscribed peers
-	if err := consensus.BroadcastVoteTrigger(); err != nil {
-		fmt.Printf("=== [Consensus.Start] BroadcastVoteTrigger FAILED: %v ===\n", err)
-		return fmt.Errorf("failed to broadcast vote trigger: %w", err)
-	}
-
-	fmt.Printf("=== [Consensus.Start] BroadcastVoteTrigger completed successfully ===\n")
 
 	return nil
 }

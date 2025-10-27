@@ -201,12 +201,22 @@ func NewNode() (*config.Node, error) {
 			fmt.Printf("=== Initializing ForListner for regular node: %s ===\n", h.ID())
 			// Create a basic BuddyNode for this regular node
 			defaultBuddies := AVCStruct.NewBuddiesBuilder(nil)
+			// Create StreamCache for this node
+			streamCache := &AVCStruct.StreamCache{
+				Streams:                make(map[peer.ID]*AVCStruct.StreamEntry),
+				AccessOrder:            []peer.ID{},
+				MaxStreams:             100,
+				TTL:                    5 * time.Minute,
+				Host:                   h,
+				ParallelCleanUpRoutine: false,
+			}
+
 			basicBuddyNode := &AVCStruct.BuddyNode{
 				PeerID:      h.ID(),
 				Host:        h,
 				PubSub:      nil, // Will be set when needed
 				BuddyNodes:  *defaultBuddies,
-				StreamCache: nil, // Will be set when needed
+				StreamCache: streamCache, // Initialize with proper StreamCache
 				MetaData: AVCStruct.MetaData{
 					Received:  0,
 					Sent:      0,
