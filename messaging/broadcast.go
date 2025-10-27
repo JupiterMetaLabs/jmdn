@@ -325,22 +325,52 @@ func handleVoteTriggerBroadcast(msg BroadcastMessageStruct) {
 		Str("type", msg.Type).
 		Msg("Processing vote trigger broadcast")
 
+	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  PROCESSING VOTE TRIGGER BROADCAST                        ║\n")
+	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+	fmt.Printf("📩 Received vote trigger broadcast\n")
+	fmt.Printf("🆔 Message ID: %s\n", msg.ID)
+	fmt.Printf("📤 From: %s\n", msg.Sender)
+	fmt.Printf("═══════════════════════════════════════════════════════════\n")
+
 	// Parse the consensus message data
 	var consensusMessage PubSubMessages.ConsensusMessage
 	if err := json.Unmarshal([]byte(msg.Data), &consensusMessage); err != nil {
 		log.Error().Err(err).Msg("Failed to unmarshal consensus message from vote trigger")
+		fmt.Printf("❌ Failed to unmarshal consensus message: %v\n", err)
 		return
 	}
+
+	// Check if ForListner is initialized
+	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
+	if listenerNode == nil {
+		log.Error().Msg("ForListner not initialized - cannot submit vote")
+		fmt.Printf("❌ ForListner not initialized - this node cannot vote yet\n")
+		fmt.Printf("   This node may not have accepted subscription requests yet\n")
+		fmt.Printf("═══════════════════════════════════════════════════════════\n\n")
+		return
+	}
+
+	fmt.Printf("✅ ForListner initialized\n")
+	fmt.Printf("📊 Node: %s\n", listenerNode.PeerID.String())
+	fmt.Printf("═══════════════════════════════════════════════════════════\n")
 
 	// Create vote trigger and submit vote
 	voteTrigger := Vote.NewVoteTrigger()
 	voteTrigger.SetConsensusMessage(&consensusMessage)
 
+	fmt.Printf("📝 Submitting vote...\n")
+
 	// Submit the vote (this will send Type_SubmitVote message via SubmitMessageProtocol)
 	if err := voteTrigger.SubmitVote(); err != nil {
 		log.Error().Err(err).Msg("Failed to submit vote from broadcast trigger")
+		fmt.Printf("❌ Failed to submit vote: %v\n", err)
+		fmt.Printf("═══════════════════════════════════════════════════════════\n\n")
 		return
 	}
+
+	fmt.Printf("✅ Vote submitted successfully\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════\n\n")
 
 	log.Info().
 		Str("msg_id", msg.ID).

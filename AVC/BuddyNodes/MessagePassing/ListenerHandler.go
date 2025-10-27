@@ -192,27 +192,29 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 			return
 		}
 
-		fmt.Printf("=== THIS IS BUDDY NODE HANDLER FUNCTION - Successfully added vote to CRDT (without republishing) ===\n")
+		fmt.Printf("=== THIS IS BUDDY NODE HANDLER FUNCTION - Successfully added vote to CRDT ===\n")
 
-		// Now publish the vote to pubsub so other buddy nodes can receive it
+		// Now publish the vote to pubsub so ALL other buddy nodes can receive it
 		if pubSubNode != nil && pubSubNode.PubSub != nil {
 			fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
-			fmt.Printf("║  PUBLISHING VOTE TO PUBSUB                                ║\n")
+			fmt.Printf("║  REPUBLISHING VOTE TO PUBSUB FOR ALL BUDDY NODES         ║\n")
 			fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
-			fmt.Printf("📤 From Buddy Node: %s\n", listenerNode.PeerID.String())
-			fmt.Printf("📝 Vote Message: %s\n", message.Message)
-			fmt.Printf("🆔 Sender: %s\n", message.Sender.String())
-			fmt.Printf("📡 Channel: %s\n", config.PubSub_ConsensusChannel)
+			fmt.Printf("📤 Republishing from Buddy Node: %s\n", listenerNode.PeerID.String())
+			fmt.Printf("📝 Original Vote Message: %s\n", message.Message)
+			fmt.Printf("🆔 Original Sender: %s\n", message.Sender.String())
+			fmt.Printf("📡 Republishing to Channel: %s\n", config.PubSub_ConsensusChannel)
 			fmt.Printf("⏰ Timestamp: %d\n", message.Timestamp)
 			fmt.Printf("═══════════════════════════════════════════════════════════\n")
 
+			// This is necessary because the vote was sent via direct stream to ONE node
+			// We need to republish it to pubsub so ALL buddy nodes receive it
 			if err := Publisher.Publish(pubSubNode.PubSub, config.PubSub_ConsensusChannel, message, map[string]string{}); err != nil {
-				fmt.Printf("❌ Failed to publish vote to pubsub: %v\n", err)
+				fmt.Printf("❌ Failed to republish vote to pubsub: %v\n", err)
 			} else {
-				fmt.Printf("✅ Successfully published vote to pubsub - Other buddy nodes will receive this vote\n\n")
+				fmt.Printf("✅ Successfully republished vote to pubsub - ALL buddy nodes will now receive this vote\n\n")
 			}
 		} else {
-			fmt.Printf("⚠️ Cannot publish vote - pubSubNode or pubSubNode.PubSub is nil\n")
+			fmt.Printf("⚠️ Cannot republish vote - pubSubNode or pubSubNode.PubSub is nil\n")
 		}
 	}
 

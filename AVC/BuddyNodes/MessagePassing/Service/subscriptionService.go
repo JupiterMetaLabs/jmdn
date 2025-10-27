@@ -225,11 +225,26 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 			zap.String("phase", msg.Data.Phase),
 			zap.String("function", "SubscriptionService.handleReceivedMessage"))
 
+		// Check if this is our own vote to prevent self-loops
+		globalVars := AVCStruct.NewGlobalVariables()
+		listenerNode := globalVars.Get_ForListner()
+
+		if listenerNode != nil && msg.Data.Sender == listenerNode.PeerID {
+			fmt.Printf("\n⚠️ Skipping own vote (self-loop prevention)\n")
+			fmt.Printf("   Vote from: %s (this node)\n", msg.Data.Sender.String())
+			fmt.Printf("   Message: %s\n", msg.Data.Message)
+			return nil // Don't process own vote from pubsub
+		}
+
 		// Add vote to local CRDT for this buddy node
 		fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
 		fmt.Printf("║  RECEIVED VOTE VIA PUBSUB                                ║\n")
 		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
-		fmt.Printf("📥 To Buddy Node: %s\n", msg.Sender.String())
+		if listenerNode != nil {
+			fmt.Printf("📥 To Buddy Node: %s\n", listenerNode.PeerID.String())
+		} else {
+			fmt.Printf("📥 To Buddy Node: <unknown>\n")
+		}
 		fmt.Printf("📨 Message ID: %s\n", msg.ID)
 		fmt.Printf("📝 Vote Message: %s\n", msg.Data.Message)
 		fmt.Printf("🆔 From Sender: %s\n", msg.Data.Sender.String())
@@ -237,10 +252,7 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 		fmt.Printf("⏰ Timestamp: %d\n", msg.Timestamp)
 		fmt.Printf("═══════════════════════════════════════════════════════════\n")
 
-		// Get the global ForListner
-		globalVars := AVCStruct.NewGlobalVariables()
-		listenerNode := globalVars.Get_ForListner()
-
+		// listenerNode was already retrieved above for self-loop check
 		if listenerNode == nil || listenerNode.CRDTLayer == nil {
 			fmt.Printf("[BUDDY] ✗ Listener node or CRDT layer not initialized\n")
 			log.LogConsensusError("Listener node or CRDT layer not initialized", nil,
