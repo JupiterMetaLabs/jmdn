@@ -32,15 +32,18 @@ func NewListenerStruct(listner *AVCStruct.BuddyNode) *StructListener {
 
 func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.Stream) {
 	// Note: Stream closure is handled by the caller to allow response reading
+	fmt.Println("=== StructListener.HandleSubmitMessageStream CALLED ===")
+	fmt.Printf("Received stream from: %s\n", s.Conn().RemotePeer())
 
 	reader := bufio.NewReader(s)
 	msg, err := reader.ReadString(config.Delimiter)
 	if err != nil {
+		fmt.Printf("❌ Error reading message from %s: %v\n", s.Conn().RemotePeer(), err)
 		log.LogConsensusError(fmt.Sprintf("Error reading message from %s: %v", s.Conn().RemotePeer(), err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
-		fmt.Printf("Error reading message from %s: %v", s.Conn().RemotePeer(), err)
 		return
 	}
 
+	fmt.Printf("📨 Raw message received: %s\n", msg)
 	message := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(msg)
 
 	log.LogMessagesInfo(fmt.Sprintf("Received submit message from %s: %s", s.Conn().RemotePeer(), msg), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
@@ -65,8 +68,10 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 		return
 	}
 
+	fmt.Printf("🔍 ACK Stage: %s\n", message.GetACK().GetStage())
 	switch message.GetACK().GetStage() {
 	case config.Type_SubmitVote:
+		fmt.Println("🗳️ Handling Type_SubmitVote")
 		log.LogMessagesInfo(fmt.Sprintf("Received submit vote from %s: %s", s.Conn().RemotePeer(), message.Message), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 
 		// Initialize PubSub node if not already done
@@ -99,9 +104,16 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 			return
 		}
 	case config.Type_AskForSubscription:
+		fmt.Println("🎯 Handling Type_AskForSubscription")
+		fmt.Printf("📋 Message: %s\n", message.Message)
+		fmt.Printf("🔑 ACK Stage: %s\n", message.GetACK().GetStage())
+		fmt.Printf("📤 Sender: %s\n", message.GetSender())
+
 		// Delegate subscription handling to ListenerHandler
+		fmt.Println("🔄 Creating ListenerHandler and delegating to handleAskForSubscription...")
 		listenerHandler := NewListenerHandler(StructListenerNode.ResponseHandler)
 		listenerHandler.handleAskForSubscription(s, message)
+		fmt.Println("✅ handleAskForSubscription completed")
 	case config.Type_SubscriptionResponse:
 		// Handle subscription response from buddy nodes
 		fmt.Printf("=== SEQUENCER: Received subscription response from %s ===\n", s.Conn().RemotePeer())
@@ -131,6 +143,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 				zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 		}
 	default:
+		fmt.Printf("❓ Unknown message type: %s\n", message.GetACK().GetStage())
 		log.LogMessagesError(fmt.Sprintf("Unknown message type received from %s: %s", s.Conn().RemotePeer(), msg), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 	}
 }
@@ -229,6 +242,11 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 		// Don't return error here - the response might come via pubsub or the connection might be closing
 	} else if responseMsg != "" {
 		fmt.Printf("✅ SendMessageToPeer: Received response from %s: %s\n", peerID, responseMsg)
+		fmt.Printf("📊 Stream state after receiving response:\n")
+		fmt.Printf("   - Stream: %p\n", stream)
+		stat := stream.Conn().Stat()
+		fmt.Printf("   - Connection State: Direction=%s\n", stat.Direction)
+		fmt.Printf("   - Stream Protocol: %s\n", stream.Protocol())
 
 		// Parse the response message
 		responseMessage := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(responseMsg)
@@ -246,6 +264,12 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 					fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
 				}
 			}
+
+			// IMPORTANT: Close the stream after receiving the response
+			// to prevent hanging on the next read when the receiver has already closed their end
+			fmt.Printf("🔒 Closing stream after receiving response from %s\n", peerID)
+			stream.Close()
+			fmt.Printf("✅ Stream closed successfully\n")
 		}
 	}
 

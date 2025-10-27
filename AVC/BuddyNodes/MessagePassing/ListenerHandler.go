@@ -239,10 +239,15 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 	}
 
 	// Delegate subscription logic to SubscriptionService with config.PubSub_ConsensusChannel
+	fmt.Println("About to call HandleStreamSubscriptionRequest...")
 	service := Service.NewSubscriptionService(gps)
+	fmt.Println("Service created, calling HandleStreamSubscriptionRequest...")
+
 	err := service.HandleStreamSubscriptionRequest(topicToSubscribe)
+	fmt.Printf("HandleStreamSubscriptionRequest returned, err=%v\n", err)
+
 	if err != nil {
-		fmt.Printf("Failed to subscribe to consensus channel via SubscriptionService: %v\n", err)
+		fmt.Printf("❌ Failed to subscribe to consensus channel via SubscriptionService: %v\n", err)
 		log.LogMessagesError(fmt.Sprintf("Failed to subscribe to consensus channel: %v", err),
 			err,
 			zap.String("peer", s.Conn().RemotePeer().String()),
@@ -252,14 +257,14 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 		return
 	}
 
-	fmt.Println("Successfully subscribed to consensus channel via SubscriptionService")
-	fmt.Println("Sending subscription response: true")
+	fmt.Println("✅ Successfully subscribed to consensus channel via SubscriptionService")
+	fmt.Println("📤 Sending subscription response: true")
 
 	// IMPORTANT: sendSubscriptionResponse will close the stream
 	// Make sure we send the response before the stream is closed
 	lh.sendSubscriptionResponse(s, true)
 
-	fmt.Println("sendSubscriptionResponse completed")
+	fmt.Println("✅ sendSubscriptionResponse completed")
 }
 
 // handleSubscriptionResponse processes subscription response messages
