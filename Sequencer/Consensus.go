@@ -410,25 +410,45 @@ func (consensus *Consensus) PrintCRDTState() error {
 
 		fmt.Printf("🔔 Starting BFT consensus with %d buddies\n", len(buddyInputs))
 
-		BFT := bft.New(bft.Config{
-			MinBuddies:         config.MaxMainPeers,
-			ByzantineTolerance: 4,
-			PrepareTimeout:     10 * time.Second,
-			CommitTimeout:      10 * time.Second,
-		})
+		// BFT := bft.New(bft.Config{
+		// 	MinBuddies:         config.MaxMainPeers,
+		// 	ByzantineTolerance: 4,
+		// 	PrepareTimeout:     10 * time.Second,
+		// 	CommitTimeout:      10 * time.Second,
+		// })
 
-		adapter, err := bft.NewBFTPubSubAdapter(context.Background(), consensus.gossipnode.GetGossipPubSub(), BFT, config.PubSub_ConsensusChannel)
-		if err != nil {
-			fmt.Printf("❌ Failed to create BFT adapter: %v\n", err)
+		// adapter, err := bft.NewBFTPubSubAdapter(context.Background(), consensus.gossipnode.GetGossipPubSub(), BFT, config.PubSub_ConsensusChannel)
+		// if err != nil {
+		// 	fmt.Printf("❌ Failed to create BFT adapter: %v\n", err)
+		// }
+		// messenger := bft.Return_pubsubMessenger(adapter, consensus.ZKBlockData.GetZKBlock().BlockHash.String())
+
+		// result, err := BFT.RunConsensus(context.Background(), 1, consensus.ZKBlockData.GetZKBlock().BlockHash.String(), listenerNode.PeerID.String(), buddyInputs, messenger, nil)
+		// if err != nil {
+		// 	fmt.Printf("❌ Failed to run BFT consensus: %v\n", err)
+		// }
+
+		// Create a trigger message for each buddy node
+		triggerAck := PubSubMessages.NewACKBuilder().True_ACK_Message(consensus.Host.ID(), config.Type_BFTRequest)
+		triggerMsg := PubSubMessages.NewMessageBuilder(nil).
+			SetSender(consensus.Host.ID()).
+			SetMessage("Requesting vote results from buddies").
+			SetTimestamp(time.Now().Unix()).
+			SetACK(triggerAck)
+
+		// Send trigger to all buddy nodes
+		for _, buddyID := range listenerNode.BuddyNodes.Buddies_Nodes {
+			stream, err := consensus.Host.NewStream(context.Background(), buddyID, config.SubmitMessageProtocol)
+			if err != nil {
+				fmt.Printf("❌ Failed to open stream to %s: %v\n", buddyID, err)
+				continue
+			}
+
+			lh := MessagePassing.NewListenerHandler(consensus.ResponseHandler) 
+			lh.TriggerForBFTFromSequencer(stream, triggerMsg)
 		}
-		messenger := bft.Return_pubsubMessenger(adapter, consensus.ZKBlockData.GetZKBlock().BlockHash.String())
 
-		result, err := BFT.RunConsensus(context.Background(), 1, consensus.ZKBlockData.GetZKBlock().BlockHash.String(), listenerNode.PeerID.String(), buddyInputs, messenger, nil)
-		if err != nil {
-			fmt.Printf("❌ Failed to run BFT consensus: %v\n", err)
-		}
-
-		fmt.Printf("=== [PrintCRDTState] BFT result: %+v ===\n", result)
+		fmt.Printf("✅ Triggered vote collection on all buddy nodes\n")
 	}()
 
 	// Get metadata from the global listener node

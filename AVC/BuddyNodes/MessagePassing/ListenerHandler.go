@@ -12,6 +12,7 @@ import (
 	"gossipnode/AVC/BFT/bft"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
+	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	ServiceLayer "gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
 	Publisher "gossipnode/Pubsub/Publish"
@@ -130,8 +131,8 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 		lh.handleSubscriptionResponse(s, message)
 		defer s.Close()
 	case config.Type_VoteResult:
-		fmt.Println("Handling Type_VoteResult")
-		lh.handleVoteResult(s, message)
+		fmt.Println("Handling Type_VoteResult (request for vote aggregation result)")
+		lh.handleVoteResultRequest(s, message)
 		defer s.Close()
 	default:
 		fmt.Printf("Unknown message type: %s\n", message.GetACK().GetStage())
@@ -859,6 +860,51 @@ func (lh *ListenerHandler) handleVoteResult(s network.Stream, message *AVCStruct
 
 	s.Write([]byte(string(responseBytes) + string(rune(config.Delimiter))))
 	fmt.Printf("✅ Acknowledgment sent to peer %s\n", peerID.String())
+}
+
+// handleVoteResultRequest handles request for vote aggregation result from a buddy node
+func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AVCStruct.Message) {
+	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║       REQUEST FOR VOTE AGGREGATION RESULT                 ║\n")
+	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+	fmt.Printf("📨 Request from: %s\n", s.Conn().RemotePeer().String())
+
+	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
+	if listenerNode == nil || listenerNode.CRDTLayer == nil {
+		fmt.Printf("❌ Listener node or CRDT layer not initialized\n")
+		return
+	}
+
+	// Process votes from CRDT
+	result, err := Structs.ProcessVotesFromCRDT(listenerNode)
+	if err != nil {
+		fmt.Printf("❌ Failed to process votes from CRDT: %v\n", err)
+		return
+	}
+
+	fmt.Printf("📊 Vote aggregation result: %d\n", result)
+
+	// Send the result back
+	resultData := map[string]interface{}{
+		"result": result,
+	}
+	resultJSON, _ := json.Marshal(resultData)
+
+	ackMessage := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_ACK_True)
+	response := AVCStruct.NewMessageBuilder(nil).
+		SetSender(listenerNode.PeerID).
+		SetMessage(string(resultJSON)).
+		SetTimestamp(time.Now().Unix()).
+		SetACK(ackMessage)
+
+	responseBytes, err := json.Marshal(response)
+	if err != nil {
+		fmt.Printf("❌ Failed to marshal response: %v\n", err)
+		return
+	}
+
+	s.Write([]byte(string(responseBytes) + string(rune(config.Delimiter))))
+	fmt.Printf("✅ Sent vote result %d to %s\n\n", result, s.Conn().RemotePeer().String())
 }
 
 func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message *AVCStruct.Message) {
