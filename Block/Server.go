@@ -17,7 +17,7 @@ import (
 	"gossipnode/Sequencer"
 	"gossipnode/config"
 	"gossipnode/logging"
-	"gossipnode/messaging"
+	// "gossipnode/messaging"
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
 
@@ -292,26 +292,26 @@ func processZKBlock(c *gin.Context) {
 		return
 	}
 
-	// Start block propagation as a new goroutine after consensus setup
-	go func() {
-		// Create consensus message from the consensus data
-		consensusMessage := consensus.ZKBlockData
-		if consensusMessage == nil {
-			log.Error().Msg("Consensus message is nil, cannot propagate block")
-			return
-		}
+	// // Start block propagation as a new goroutine after consensus setup
+	// go func() {
+	// 	// Create consensus message from the consensus data
+	// 	consensusMessage := consensus.ZKBlockData
+	// 	if consensusMessage == nil {
+	// 		log.Error().Msg("Consensus message is nil, cannot propagate block")
+	// 		return
+	// 	}
 
-		if err := messaging.PropagateZKBlock(globalHost, consensusMessage); err != nil {
-			log.Error().
-				Err(err).
-				Str("block_hash", block.BlockHash.Hex()).
-				Msg("Failed to propagate block after consensus setup")
-		} else {
-			log.Info().
-				Str("block_hash", block.BlockHash.Hex()).
-				Msg("Block propagated successfully after consensus setup")
-		}
-	}()
+	// 	if err := messaging.PropagateZKBlock(globalHost, consensusMessage); err != nil {
+	// 		log.Error().
+	// 			Err(err).
+	// 			Str("block_hash", block.BlockHash.Hex()).
+	// 			Msg("Failed to propagate block after consensus setup")
+	// 	} else {
+	// 		log.Info().
+	// 			Str("block_hash", block.BlockHash.Hex()).
+	// 			Msg("Block propagated successfully after consensus setup")
+	// 	}
+	// }()
 
 	for _, tx := range block.Transactions {
 		LogTransaction(

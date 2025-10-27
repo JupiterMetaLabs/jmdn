@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
+	"gossipnode/config"
 	"gossipnode/config/PubSubMessages"
 	"time"
 
@@ -126,9 +127,18 @@ func subscribeViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, h
 			}
 			fmt.Printf("Message unmarshalled successfully for %s\n", topicName)
 			fmt.Printf("Unmarshalled messageData: %+v\n", messageData)
+
+			// Attach ACK if missing
 			if messageData.ACK == nil {
-				fmt.Printf("WARNING: messageData.ACK is nil!\n")
+				fmt.Printf("Received message with nil ACK - attaching default ACK\n")
+
+				// Create a default ACK with Type_ACK_True stage
+				ack := PubSubMessages.NewACKBuilder().
+					True_ACK_Message(msg.GetFrom(), config.Type_ACK_True)
+
+				messageData.SetACK(ack)
 			}
+
 			// Convert to our GossipMessage format
 			gossipMsg := &PubSubMessages.GossipMessage{
 				ID:        msg.ID,
