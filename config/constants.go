@@ -20,7 +20,7 @@ const (
 )
 
 const (
-	MaxMainPeers     = 8
+	MaxMainPeers     = 4
 	MaxBackupPeers   = 5 + 2 // +2 for temporary purpose //TEMP
 	ConsensusTimeout = 20 * time.Second
 )
