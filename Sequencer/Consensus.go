@@ -10,6 +10,7 @@ import (
 	"gossipnode/config"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/PubSubMessages/Cache"
+	"gossipnode/messaging"
 	"log"
 	"time"
 
@@ -179,6 +180,11 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		return fmt.Errorf("subscription verification failed: %w", err)
 	}
 
+	// After successful subscription verification, broadcast vote trigger to all subscribed peers
+	if err := consensus.BroadcastVoteTrigger(); err != nil {
+		return fmt.Errorf("failed to broadcast vote trigger: %w", err)
+	}
+
 	return nil
 }
 
@@ -235,6 +241,28 @@ func (consensus *Consensus) VerifySubscriptions() error {
 	}
 
 	log.Printf("Subscription verification successful: %d peers properly verified via pubsub messaging", len(verifiedPeerIDs))
+	return nil
+}
+
+// BroadcastVoteTrigger broadcasts a vote trigger message to all subscribed peers
+// This initiates the voting process by sending vote trigger broadcasts
+func (consensus *Consensus) BroadcastVoteTrigger() error {
+	if consensus.gossipnode == nil {
+		return fmt.Errorf("GossipPubSub not initialized for consensus")
+	}
+
+	if consensus.ZKBlockData == nil {
+		return fmt.Errorf("ZKBlockData not set - cannot trigger voting")
+	}
+
+	log.Printf("Starting vote trigger broadcast to all connected peers...")
+
+	// Use the messaging.BroadcastVoteTrigger function to broadcast the vote trigger
+	if err := messaging.BroadcastVoteTrigger(consensus.Host, consensus.ZKBlockData); err != nil {
+		return fmt.Errorf("failed to broadcast vote trigger: %w", err)
+	}
+
+	log.Printf("Vote trigger broadcast completed successfully")
 	return nil
 }
 

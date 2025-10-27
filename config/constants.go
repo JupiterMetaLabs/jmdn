@@ -20,7 +20,7 @@ const (
 )
 
 const (
-	MaxMainPeers     = 13
+	MaxMainPeers     = 10
 	MaxBackupPeers   = 3
 	ConsensusTimeout = 20 * time.Second
 )

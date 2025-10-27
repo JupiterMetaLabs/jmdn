@@ -149,11 +149,6 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 
 	log.Printf("Main peers results: %d accepted, %d failed out of %d", mainAccepted, mainFailed, mainTotal)
 
-	// Check if more than 3 main nodes failed
-	if mainFailed > config.MaxBackupPeers {
-		return fmt.Errorf("too many main nodes failed: %d failed, maximum allowed is %d", mainFailed, config.MaxBackupPeers)
-	}
-
 	// If we have exactly 13 main peers, we're done
 	if mainAccepted == config.MaxMainPeers {
 		log.Printf("Perfect! Got exactly %d main peers for consensus (1 creator + 13 subscribers = 14 total)", config.MaxMainPeers)
@@ -162,6 +157,12 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 			log.Printf("Global tracker confirms: %d active subscriptions", tracker.GetActiveCount())
 			return nil
 		}
+	}
+
+	// Check if too many main nodes failed (we need at least 10 from main peers to ensure we can reach 13 with 3 backups)
+	minMainRequired := config.MaxMainPeers - config.MaxBackupPeers // 13 - 3 = 10
+	if mainAccepted < minMainRequired {
+		return fmt.Errorf("too many main nodes failed: got %d, need at least %d to ensure 13 total with %d backups", mainAccepted, minMainRequired, config.MaxBackupPeers)
 	}
 
 	// If we have less than 13 main peers, use backup peers as replacements
@@ -303,10 +304,11 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 		wg.Add(1)
 		go func(peerID peer.ID) {
 			defer wg.Done()
-			defer responseHandler.UnregisterPeer(peerID)
+			// DON'T unregister here - keep the role stored for HandleResponse
+			// defer responseHandler.UnregisterPeer(peerID)
 
 			// Create context with timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // Increased timeout to 30 seconds
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
 			// Create proper message with ACK for subscription request
@@ -373,6 +375,11 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 	newAccepted := finalCount - initialCount
 
 	log.Printf("Tracker count: %d -> %d (new: %d) for %s peers", initialCount, finalCount, newAccepted, peerType)
+
+	// Cleanup: Close all channels and unregister peers after we're done with this batch
+	for _, peerID := range peerAddrs {
+		responseHandler.UnregisterPeer(peerID)
+	}
 
 	return newAccepted, len(peerAddrs)
 }

@@ -46,7 +46,7 @@ func InitializeTriggers(pubSub *AVCStruct.GossipPubSub, buddyID string) error {
 	subscriptionService.SetBFTFactory(func(ctx context.Context, pubSub *AVCStruct.GossipPubSub, channelName string) (PubSubConnector.BFTMessageHandler, error) {
 		// Create BFT engine with configuration
 		config := bft.Config{
-			MinBuddies:         13, // 13 main peers + 1 creator = 14 total
+			MinBuddies:         config.MaxMainPeers + 1, // 13 main peers + 1 creator = 14 total
 			ByzantineTolerance: 4,  // Can tolerate up to 4 Byzantine nodes
 			PrepareTimeout:     10 * time.Second,
 			CommitTimeout:      10 * time.Second,

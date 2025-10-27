@@ -11,7 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"gossipnode/Vote"
 	"gossipnode/config"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/metrics"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -27,6 +29,8 @@ type BroadcastMessageStruct struct {
 	Content   string `json:"content"`   // Message content
 	Timestamp int64  `json:"timestamp"` // Unix timestamp when message was created
 	Hops      int    `json:"hops"`      // How many hops this message has made
+	Type      string `json:"type"`      // Message type: "general", "vote_trigger", etc.
+	Data      string `json:"data"`      // Additional data for specific message types
 }
 
 // Track seen messages to prevent loops
@@ -115,6 +119,11 @@ func HandleBroadcastStream(stream network.Stream) {
 
 	// Print the received broadcast
 	fmt.Printf("\n[BROADCAST from %s] %s\n>>> ", msg.Sender, msg.Content)
+
+	// Handle different message types
+	if msg.Type == "vote_trigger" {
+		handleVoteTriggerBroadcast(msg)
+	}
 
 	// Only rebroadcast if we haven't reached max hops
 	if msg.Hops < config.MaxHops {
@@ -305,6 +314,150 @@ func BroadcastMessage(h host.Host, content string) error {
 		Int("total", len(peers)).
 		Msg("Broadcast complete")
 
+	return nil
+}
+
+// handleVoteTriggerBroadcast processes vote trigger broadcast messages
+func handleVoteTriggerBroadcast(msg BroadcastMessageStruct) {
+	log.Info().
+		Str("msg_id", msg.ID).
+		Str("sender", msg.Sender).
+		Str("type", msg.Type).
+		Msg("Processing vote trigger broadcast")
+
+	// Parse the consensus message data
+	var consensusMessage PubSubMessages.ConsensusMessage
+	if err := json.Unmarshal([]byte(msg.Data), &consensusMessage); err != nil {
+		log.Error().Err(err).Msg("Failed to unmarshal consensus message from vote trigger")
+		return
+	}
+
+	// Create vote trigger and submit vote
+	voteTrigger := Vote.NewVoteTrigger()
+	voteTrigger.SetConsensusMessage(&consensusMessage)
+
+	// Submit the vote (this will send Type_SubmitVote message via SubmitMessageProtocol)
+	if err := voteTrigger.SubmitVote(); err != nil {
+		log.Error().Err(err).Msg("Failed to submit vote from broadcast trigger")
+		return
+	}
+
+	log.Info().
+		Str("msg_id", msg.ID).
+		Msg("Successfully processed vote trigger broadcast")
+}
+
+// BroadcastVoteTrigger sends a vote trigger message to all connected peers
+func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.ConsensusMessage) error {
+	if consensusMessage == nil {
+		return fmt.Errorf("consensus message cannot be nil")
+	}
+
+	fmt.Printf("Consensus message: %+v\n", consensusMessage)
+
+	// Set the voting timer when broadcast starts
+	now := time.Now()
+	consensusMessage.SetStartTime(now)
+	consensusMessage.SetEndTimeout(now.Add(config.ConsensusTimeout))
+
+	log.Info().
+		Str("start_time", now.Format(time.RFC3339)).
+		Str("end_time", now.Add(config.ConsensusTimeout).Format(time.RFC3339)).
+		Dur("timeout_duration", config.ConsensusTimeout).
+		Msg("Voting timer set - broadcast vote trigger started")
+
+	// Marshal the consensus message to JSON
+	consensusData, err := json.Marshal(consensusMessage)
+	if err != nil {
+		return fmt.Errorf("failed to marshal consensus message: %w", err)
+	}
+
+	// Create a vote trigger broadcast message
+	msg := BroadcastMessageStruct{
+		Sender:    h.ID().String(),
+		Content:   "Vote trigger broadcast - initiate voting process",
+		Timestamp: now.Unix(),
+		Hops:      0,
+		Type:      "vote_trigger",
+		Data:      string(consensusData),
+	}
+
+	// Generate a unique ID based on content and timestamp
+	msg.ID = generateMessageID(msg.Sender, msg.Content, now.Unix())
+	fmt.Printf("Vote trigger broadcast message: %+v\n", msg)
+	// Remember this message so we don't process it if we receive it back
+	markMessageSeen(msg.ID)
+
+	// Convert to JSON
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal vote trigger broadcast message: %w", err)
+	}
+	msgBytes = append(msgBytes, '\n')
+
+	// Get all connected peers
+	peers := h.Network().Peers()
+	if len(peers) == 0 {
+		return fmt.Errorf("no connected peers to broadcast vote trigger to")
+	}
+
+	log.Info().
+		Str("msg_id", msg.ID).
+		Int("peers", len(peers)).
+		Msg("Starting vote trigger broadcast to peers")
+
+	// Send message to all peers
+	var wg sync.WaitGroup
+	var successCount int
+	var successMutex sync.Mutex
+
+	for _, peerID := range peers {
+		wg.Add(1)
+		go func(peer peer.ID) {
+			defer wg.Done()
+
+			// Open stream to peer with timeout
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			stream, err := h.NewStream(ctx, peer, config.BroadcastProtocol)
+			if err != nil {
+				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open broadcast stream for vote trigger")
+				return
+			}
+			defer stream.Close()
+
+			// Send the message
+			_, err = stream.Write(msgBytes)
+			if err != nil {
+				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to send vote trigger broadcast message")
+				return
+			}
+
+			// Record success
+			successMutex.Lock()
+			successCount++
+			successMutex.Unlock()
+
+			// Record metrics
+			metrics.MessagesSentCounter.WithLabelValues("broadcast", peer.String()).Inc()
+		}(peerID)
+	}
+
+	// Wait for all sends to complete
+	wg.Wait()
+
+	if successCount == 0 {
+		fmt.Printf("Failed to broadcast vote trigger message to any peers\n")
+		return fmt.Errorf("failed to broadcast vote trigger message to any peers")
+	}
+
+	log.Info().
+		Str("msg_id", msg.ID).
+		Int("success", successCount).
+		Int("total", len(peers)).
+		Msg("Vote trigger broadcast complete")
+	fmt.Printf("Vote trigger broadcast complete\n")
 	return nil
 }
 
