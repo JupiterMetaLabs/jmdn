@@ -49,8 +49,18 @@ func Publish(gps *PubSubMessages.GossipPubSub, topic string, message *PubSubMess
 		messageGossip.Data.GetACK().SetStage(config.Type_ToBeProcessed)
 	}
 
-	// Serialize message
-	messageBytes, err := json.Marshal(messageGossip)
+	// Serialize message - for GossipSub, publish only the Data (Message) part
+	var messageBytes []byte
+	var err error
+
+	if gps.GossipSubPS != nil {
+		// For GossipSub, marshal only the Data part
+		messageBytes, err = json.Marshal(messageGossip.Data)
+	} else {
+		// For custom gossip, marshal the entire GossipMessage
+		messageBytes, err = json.Marshal(messageGossip)
+	}
+
 	if err != nil {
 		log.LogConsensusError(fmt.Sprintf("Failed to marshal message: %v", err), err, zap.String("topic", topic), zap.String("message", string(messageBytes)), zap.String("function", "Subscription.Publish"))
 		return fmt.Errorf("failed to marshal message: %v", err)

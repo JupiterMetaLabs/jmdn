@@ -129,9 +129,9 @@ func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 		fmt.Printf("Received message with nil ACK - attaching default ACK\n")
 		log.Printf("Received message with nil ACK - attaching default ACK\n")
 
-		// Create a default ACK with Type_ACK_True stage
+		// Create a default ACK with Type_Publish stage
 		ack := PubSubMessages.NewACKBuilder().
-			True_ACK_Message(gossipMsg.Sender, config.Type_ACK_True)
+			True_ACK_Message(gossipMsg.Sender, config.Type_Publish)
 
 		gossipMsg.Data.SetACK(ack)
 	}

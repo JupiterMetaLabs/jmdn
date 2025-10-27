@@ -178,9 +178,9 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 		fmt.Printf("Received message with nil ACK - attaching default ACK\n")
 		log.LogConsensusError("Received message with nil ACK - attaching default ACK", nil, zap.String("function", "SubscriptionService.handleReceivedMessage"))
 
-		// Create a default ACK with Type_ACK_True stage
+		// Create a default ACK with Type_Publish stage
 		ack := AVCStruct.NewACKBuilder().
-			True_ACK_Message(msg.Sender, config.Type_ACK_True)
+			True_ACK_Message(msg.Sender, config.Type_Publish)
 
 		msg.Data.SetACK(ack)
 	}
