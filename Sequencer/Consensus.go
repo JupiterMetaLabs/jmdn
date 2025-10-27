@@ -1,15 +1,17 @@
 package Sequencer
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"gossipnode/AVC/BFT/bft"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/AVC/NodeSelection/Router"
 	"gossipnode/Pubsub"
 	"gossipnode/Sequencer/Metadata"
-	// "gossipnode/Sequencer/Triggers"
+	"gossipnode/Sequencer/Triggers"
 	"gossipnode/config"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/PubSubMessages/Cache"
@@ -375,40 +377,62 @@ func (consensus *Consensus) PrintCRDTState() error {
 	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
 
 	// Process votes from CRDT and call processVoteData
-	voteData, err := Structs.ProcessVotesFromCRDT(listenerNode)
+	_, err := Structs.ProcessVotesFromCRDT(listenerNode)
 	if err != nil {
 		fmt.Printf("❌ Failed to process votes from CRDT: %v\n", err)
-		return fmt.Errorf("failed to process votes from CRDT: %w", err)
 	}
+	metadata := listenerNode.MetaData
+	fmt.Println("metadata", metadata)
 
+	go func() {
+		// Get all vote results from Triggers
+		voteResults := Triggers.GetAllVoteResults()
+		fmt.Printf("📊 Vote results from buddy nodes: %v\n", voteResults)
 
+		// Convert []peer.ID to []BuddyInput with decisions from vote results
+		buddyInputs := make([]bft.BuddyInput, len(listenerNode.BuddyNodes.Buddies_Nodes))
+		for i, buddy := range listenerNode.BuddyNodes.Buddies_Nodes {
+			buddyID := buddy.String()
+			voteResult := voteResults[buddyID]
 
-	fmt.Printf("✅ Vote processing result: %d\n", voteData)
+			// Convert vote result to decision: >0 = Accept, <=0 = Reject
+			decision := bft.Decision("REJECT")
+			if voteResult > 0 {
+				decision = bft.Decision("ACCEPT")
+			}
 
-	return nil
-}
-
-// GetVoteStats returns statistics about votes collected by the listener node
-func (consensus *Consensus) GetVoteStats() map[string]interface{} {
-	// Use global singleton to get listener node
-	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
-
-	if listenerNode == nil {
-		return map[string]interface{}{
-			"error": "listener node not initialized in global singleton",
+			buddyInputs[i] = bft.BuddyInput{
+				ID:        buddyID,
+				Decision:  decision,
+				PublicKey: []byte{}, // TODO: Get actual public key
+			}
 		}
-	}
+
+		fmt.Printf("🔔 Starting BFT consensus with %d buddies\n", len(buddyInputs))
+
+		BFT := bft.New(bft.Config{
+			MinBuddies:         config.MaxMainPeers,
+			ByzantineTolerance: 4,
+			PrepareTimeout:     10 * time.Second,
+			CommitTimeout:      10 * time.Second,
+		})
+
+		adapter, err := bft.NewBFTPubSubAdapter(context.Background(), consensus.gossipnode.GetGossipPubSub(), BFT, config.PubSub_ConsensusChannel)
+		if err != nil {
+			fmt.Printf("❌ Failed to create BFT adapter: %v\n", err)
+		}
+		messenger := bft.Return_pubsubMessenger(adapter, consensus.ZKBlockData.GetZKBlock().BlockHash.String())
+
+		result, err := BFT.RunConsensus(context.Background(), 1, consensus.ZKBlockData.GetZKBlock().BlockHash.String(), listenerNode.PeerID.String(), buddyInputs, messenger, nil)
+		if err != nil {
+			fmt.Printf("❌ Failed to run BFT consensus: %v\n", err)
+		}
+
+		fmt.Printf("=== [PrintCRDTState] BFT result: %+v ===\n", result)
+	}()
 
 	// Get metadata from the global listener node
-	metadata := listenerNode.MetaData
-
-	return map[string]interface{}{
-		"votes_received":   metadata.Received,
-		"votes_sent":       metadata.Sent,
-		"total_messages":   metadata.Total,
-		"last_updated":     metadata.UpdatedAt,
-		"listener_peer_id": listenerNode.PeerID.String(),
-	}
+	return nil
 }
 
 // IsListenerActive checks if the listener node is active and ready to collect votes

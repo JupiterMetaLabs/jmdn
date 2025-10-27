@@ -1,15 +1,18 @@
 package Service
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
+	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
@@ -290,6 +293,12 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 			fmt.Printf("✅ Vote successfully added to CRDT from sender: %s\n", msg.Data.Sender.String())
 			fmt.Printf("✅ Stored under key: %s\n", msg.Data.Sender.String())
 			fmt.Printf("═══════════════════════════════════════════════════════════\n\n")
+
+			// Trigger vote processing after a delay to collect more votes
+			go func() {
+				time.Sleep(10 * time.Second) // Wait 10 seconds to collect more votes
+				processVotesAndTriggerBFT(listenerNode)
+			}()
 		}
 
 		return nil
@@ -632,4 +641,102 @@ func (s *SubscriptionService) handleBFTRequest(msg *AVCStruct.GossipMessage) err
 	}()
 
 	return nil
+}
+
+// processVotesAndTriggerBFT processes votes from CRDT and triggers BFT consensus
+func processVotesAndTriggerBFT(listenerNode *AVCStruct.BuddyNode) {
+	if listenerNode == nil || listenerNode.CRDTLayer == nil {
+		fmt.Printf("❌ Cannot process votes - listener node or CRDT layer not initialized\n")
+		return
+	}
+
+	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  PROCESSING VOTES AND TRIGGERING BFT - BUDDY NODE       ║\n")
+	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+
+	// Process votes from CRDT
+	result, err := Structs.ProcessVotesFromCRDT(listenerNode)
+	if err != nil {
+		fmt.Printf("❌ Failed to process votes from CRDT: %v\n", err)
+		return
+	}
+
+	// Get the vote result and use it for BFT consensus
+	// The result is: 1 for accept, -1 for reject
+	bftDecision := "REJECT"
+	if result > 0 {
+		bftDecision = "ACCEPT"
+	}
+
+	fmt.Printf("📊 Vote Result from VoteAggregation: %d\n", result)
+	fmt.Printf("🔔 BFT Decision: %s\n", bftDecision)
+	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
+
+	// Send vote result back to the sequencer
+	sendVoteResultToSequencer(listenerNode, result)
+
+	// BFT will be triggered elsewhere (from ListenerHandler)
+	fmt.Printf("✅ Vote processing completed, BFT will be triggered\n")
+}
+
+// sendVoteResultToSequencer sends the vote result back to the sequencer via SubmitMessageProtocol
+func sendVoteResultToSequencer(listenerNode *AVCStruct.BuddyNode, result int8) {
+	if listenerNode == nil || listenerNode.PeerID == "" {
+		fmt.Printf("❌ Cannot send vote result - listener node not initialized\n")
+		return
+	}
+
+	// Get the sequencer peer ID from global variables
+	sequencerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
+	if sequencerNode == nil || sequencerNode.Host == nil {
+		fmt.Printf("❌ Cannot send vote result - sequencer node not initialized\n")
+		return
+	}
+
+	// Get the host from the listener node
+	host := sequencerNode.Host
+	sequencerPeerID := sequencerNode.PeerID
+
+	fmt.Printf("📤 Sending vote result %d to sequencer %s...\n", result, sequencerPeerID.String())
+
+	// Create vote result message
+	resultMessage := fmt.Sprintf(`{"result":%d,"timestamp":%d,"node":"%s"}`,
+		result, time.Now().Unix(), listenerNode.PeerID.String())
+
+	ackMessage := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
+	message := AVCStruct.NewMessageBuilder(nil).
+		SetSender(listenerNode.PeerID).
+		SetMessage(resultMessage).
+		SetTimestamp(time.Now().Unix()).
+		SetACK(ackMessage)
+
+	// Open a stream to the sequencer
+	stream, err := host.NewStream(context.Background(), sequencerPeerID, config.SubmitMessageProtocol)
+	if err != nil {
+		fmt.Printf("❌ Failed to open stream to sequencer: %v\n", err)
+		return
+	}
+	defer stream.Close()
+
+	// Serialize and send the message
+	messageBytes, err := json.Marshal(message)
+	if err != nil {
+		fmt.Printf("❌ Failed to marshal message: %v\n", err)
+		return
+	}
+
+	writer := bufio.NewWriter(stream)
+	_, err = writer.WriteString(string(messageBytes) + string(rune(config.Delimiter)))
+	if err != nil {
+		fmt.Printf("❌ Failed to write message: %v\n", err)
+		return
+	}
+
+	err = writer.Flush()
+	if err != nil {
+		fmt.Printf("❌ Failed to flush message: %v\n", err)
+		return
+	}
+
+	fmt.Printf("✅ Vote result %d sent to sequencer successfully\n", result)
 }

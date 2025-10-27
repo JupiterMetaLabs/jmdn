@@ -12,6 +12,7 @@ import (
 	"gossipnode/seednode"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -25,6 +26,9 @@ const CRDTDataSubmitBufferTime = 25 * time.Second
 // Global variable to store vote data locally
 var globalVoteData map[string]int8
 
+// Global map to store vote results from buddy nodes: map[peerID]voteResult
+var voteResultsMap = make(map[string]int8)
+
 const BFTTriggerBufferTime = 30 * time.Second
 
 // Global variables for trigger management
@@ -33,6 +37,7 @@ var (
 	bftEngine           *bft.BFT
 	consensusContext    context.Context
 	consensusCancel     context.CancelFunc
+	voteResultsMutex    sync.Mutex // Mutex to protect voteResultsMap
 )
 
 // InitializeTriggers initializes the trigger system with required services
@@ -130,7 +135,7 @@ func extractVoteDataFromCRDT(buddyNode *AVCStruct.BuddyNode) (map[string]int8, e
 // processVoteData processes the extracted vote data and stores it in global variable
 func ProcessVoteData(voteData map[string]int8) (int8, error) {
 	log.Printf("Processing %d vote entries", len(voteData))
-	log.Printf("Vote data: %v", voteData)	
+	log.Printf("Vote data: %v", voteData)
 
 	// Store vote data in global variable
 	globalVoteData = voteData
@@ -287,58 +292,110 @@ func StartBFTConsensus() error {
 		return fmt.Errorf("buddy node not available")
 	}
 
-	// Prepare buddy input data for BFT
+	// Prepare buddy input data for BFT using vote results
 	buddyNode.Mutex.RLock()
-	buddies := make([]map[string]interface{}, len(buddyNode.BuddyNodes.Buddies_Nodes))
+	voteResultsMutex.Lock()
+	allBuddies := make([]bft.BuddyInput, len(buddyNode.BuddyNodes.Buddies_Nodes))
 	for i, peerID := range buddyNode.BuddyNodes.Buddies_Nodes {
-		buddies[i] = map[string]interface{}{
-			"ID":        peerID.String(),
-			"Decision":  "ACCEPT", // Default to accept
-			"PublicKey": []byte{}, // TODO: Get actual public key
+		voteResult := voteResultsMap[peerID.String()]
+
+		// Convert vote result to decision: >0 = Accept, <=0 = Reject
+		var decision bft.Decision = bft.Reject
+		if voteResult > 0 {
+			decision = bft.Accept
+		}
+
+		allBuddies[i] = bft.BuddyInput{
+			ID:        peerID.String(),
+			Decision:  decision,
+			PublicKey: []byte{}, // TODO: Get actual public key
 		}
 	}
+	voteResultsMutex.Unlock()
 	buddyNode.Mutex.RUnlock()
 
-	// Create BFT request message
-	requestData := map[string]interface{}{
-		"Round":          uint64(1),
-		"BlockHash":      "consensus_block_hash", // TODO: Get actual block hash
-		"GossipsubTopic": config.PubSub_ConsensusChannel,
-		"AllBuddies":     buddies,
-	}
+	// Create BFT instance
+	BFTInstance := bft.New(bft.Config{
+		MinBuddies:         config.MaxMainPeers,
+		ByzantineTolerance: 4,
+		PrepareTimeout:     10 * time.Second,
+		CommitTimeout:      10 * time.Second,
+	})
 
-	// Convert to JSON
-	requestJSON, err := json.Marshal(requestData)
+	// Create BFT adapter
+	adapter, err := bft.NewBFTPubSubAdapter(
+		context.Background(),
+		buddyNode.PubSub,
+		BFTInstance,
+		config.PubSub_ConsensusChannel,
+	)
 	if err != nil {
-		return fmt.Errorf("failed to marshal BFT request: %v", err)
+		return fmt.Errorf("failed to create BFT adapter: %v", err)
 	}
 
-	// Create GossipMessage for BFT request
-	ackMessage := AVCStruct.NewACKBuilder().True_ACK_Message(buddyNode.PeerID, config.Type_BFTRequest)
-	message := AVCStruct.NewMessageBuilder(nil).
-		SetSender(buddyNode.PeerID).
-		SetMessage(string(requestJSON)).
-		SetTimestamp(time.Now().Unix()).
-		SetACK(ackMessage)
+	// Create messenger
+	roundID := fmt.Sprintf("%d", time.Now().Unix())
+	messenger := bft.Return_pubsubMessenger(adapter, roundID)
 
-	gossipMessage := AVCStruct.NewGossipMessageBuilder(nil).
-		SetID(fmt.Sprintf("bft_request_%d", time.Now().UnixNano())).
-		SetTopic(config.PubSub_ConsensusChannel).
-		SetMesssage(message).
-		SetSender(buddyNode.PeerID).
-		SetTimestamp(time.Now().Unix())
+	// Run BFT consensus
+	round := uint64(1)
+	blockHash := "consensus_block_hash" // TODO: Get actual block hash
+	myBuddyID := buddyNode.PeerID.String()
 
-	// Process BFT request through subscription service
-	// Note: This would need to be called through the message handling system
-	// For now, we'll simulate the BFT request processing
-	log.Printf("StartBFTConsensus: Would process BFT request through subscription service")
-	log.Printf("StartBFTConsensus: Created GossipMessage with ID: %s", gossipMessage.ID)
+	log.Printf("StartBFTConsensus: Running BFT consensus with %d buddies", len(allBuddies))
+	result, err := BFTInstance.RunConsensus(
+		context.Background(),
+		round,
+		blockHash,
+		myBuddyID,
+		allBuddies,
+		messenger,
+		nil, // signer
+	)
 
-	// TODO: Implement proper BFT request processing through the subscription service
-	// The subscription service handles BFT requests via its message routing system
+	if err != nil {
+		return fmt.Errorf("BFT consensus failed: %v", err)
+	}
 
-	log.Printf("StartBFTConsensus: BFT consensus process initiated successfully")
+	log.Printf("StartBFTConsensus: BFT consensus completed - Success: %v, Decision: %s",
+		result.Success, result.Decision)
+
 	return nil
+}
+
+// StoreVoteResult stores a vote result from a buddy node
+func StoreVoteResult(peerID string, result int8) {
+	voteResultsMutex.Lock()
+	defer voteResultsMutex.Unlock()
+	voteResultsMap[peerID] = result
+	log.Printf("Stored vote result for peer %s: %d", peerID, result)
+}
+
+// GetVoteResult retrieves a vote result for a peer
+func GetVoteResult(peerID string) (int8, bool) {
+	voteResultsMutex.Lock()
+	defer voteResultsMutex.Unlock()
+	result, exists := voteResultsMap[peerID]
+	return result, exists
+}
+
+// GetAllVoteResults retrieves all vote results
+func GetAllVoteResults() map[string]int8 {
+	voteResultsMutex.Lock()
+	defer voteResultsMutex.Unlock()
+	result := make(map[string]int8)
+	for k, v := range voteResultsMap {
+		result[k] = v
+	}
+	return result
+}
+
+// ClearVoteResults clears all vote results
+func ClearVoteResults() {
+	voteResultsMutex.Lock()
+	defer voteResultsMutex.Unlock()
+	voteResultsMap = make(map[string]int8)
+	log.Printf("Cleared all vote results")
 }
 
 // CleanupTriggers cleans up resources when consensus is complete

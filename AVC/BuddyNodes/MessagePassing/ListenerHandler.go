@@ -10,6 +10,7 @@ import (
 	ServiceLayer "gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
 	Publisher "gossipnode/Pubsub/Publish"
+	"gossipnode/Sequencer/Triggers"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"time"
@@ -102,6 +103,10 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 	case config.Type_SubscriptionResponse:
 		fmt.Println("Handling Type_SubscriptionResponse")
 		lh.handleSubscriptionResponse(s, message)
+		defer s.Close()
+	case config.Type_VoteResult:
+		fmt.Println("Handling Type_VoteResult")
+		lh.handleVoteResult(s, message)
 		defer s.Close()
 	default:
 		fmt.Printf("Unknown message type: %s\n", message.GetACK().GetStage())
@@ -246,6 +251,24 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 		fmt.Printf("📊 Vote Result: %d\n", result)
 		fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 		fmt.Printf("✅ Vote processing completed successfully\n")
+		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
+
+		// Trigger BFT after vote processing
+		fmt.Printf("🔔 Triggering BFT consensus after vote processing...\n")
+		Triggers.BFTTrigger()
+
+		// Get the vote result and use it for BFT consensus
+		// The result is: 1 for accept, -1 for reject
+		bftDecision := "REJECT"
+		if result > 0 {
+			bftDecision = "ACCEPT"
+		}
+
+		fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+		fmt.Printf("║          PREPARING BFT CONSENSUS                        ║\n")
+		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+		fmt.Printf("📊 Vote Result from VoteAggregation: %d\n", result)
+		fmt.Printf("🔔 BFT Decision: %s\n", bftDecision)
 		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
 	}()
 }
@@ -404,6 +427,64 @@ func (lh *ListenerHandler) sendSubscriptionResponse(s network.Stream, accepted b
 // GetResponseHandler returns the current ResponseHandler
 func (lh *ListenerHandler) GetResponseHandler() AVCStruct.ResponseHandler {
 	return lh.responseHandler
+}
+
+// handleVoteResult handles incoming vote result messages from buddy nodes
+func (lh *ListenerHandler) handleVoteResult(s network.Stream, message *AVCStruct.Message) {
+	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║            RECEIVED VOTE RESULT                            ║\n")
+	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+	fmt.Printf("📨 Received from: %s\n", s.Conn().RemotePeer().String())
+	fmt.Printf("📊 Vote Result: %s\n", message.Message)
+	fmt.Printf("⏰ Timestamp: %d\n", message.Timestamp)
+	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
+
+	// Parse the vote result message
+	var resultData map[string]interface{}
+	if err := json.Unmarshal([]byte(message.Message), &resultData); err != nil {
+		fmt.Printf("❌ Failed to parse vote result: %v\n", err)
+		return
+	}
+
+	// Extract the result value
+	resultValue, ok := resultData["result"].(float64)
+	if !ok {
+		fmt.Printf("❌ Invalid vote result format\n")
+		return
+	}
+
+	// Store the result in the global vote results map
+	peerID := s.Conn().RemotePeer()
+	voteResult := int8(resultValue)
+
+	// Import Triggers package to use StoreVoteResult
+	// Note: We need to add the import at the top of the file
+	Triggers.StoreVoteResult(peerID.String(), voteResult)
+	fmt.Printf("✅ Stored vote result for peer %s: %d\n", peerID.String(), voteResult)
+
+	// Get listener node from global variables
+	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
+	if listenerNode == nil {
+		fmt.Printf("❌ Listener node not initialized\n")
+		return
+	}
+
+	// Send acknowledgment back
+	ackMessage := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_ACK_True)
+	response := AVCStruct.NewMessageBuilder(nil).
+		SetSender(listenerNode.PeerID).
+		SetMessage("Vote result received").
+		SetTimestamp(time.Now().Unix()).
+		SetACK(ackMessage)
+
+	responseBytes, err := json.Marshal(response)
+	if err != nil {
+		fmt.Printf("❌ Failed to marshal response: %v\n", err)
+		return
+	}
+
+	s.Write([]byte(string(responseBytes) + string(rune(config.Delimiter))))
+	fmt.Printf("✅ Acknowledgment sent to peer %s\n", peerID.String())
 }
 
 // SetResponseHandler sets a new ResponseHandler

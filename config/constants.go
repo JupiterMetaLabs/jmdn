@@ -85,6 +85,7 @@ const (
 
 	// For Voting Aggregation
 	Type_SubmitVote = "SUBMIT_VOTE"
+	Type_VoteResult = "VOTE_RESULT"
 
 	Topic_SYNCRequest   = "SYNC_REQUEST"
 	Type_BFTRequest     = "BFT_REQUEST" // ADD THIS LINE
