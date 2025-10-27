@@ -216,7 +216,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 
 	// Read response after sending (for subscription requests)
 	// Set a timeout for reading the response (10 seconds to allow for processing)
-	stream.SetReadDeadline(time.Now().Add(10 * time.Second))
+	stream.SetReadDeadline(time.Now().Add(15 * time.Second))
 	reader := bufio.NewReader(stream)
 	responseMsg, err := reader.ReadString(config.Delimiter)
 

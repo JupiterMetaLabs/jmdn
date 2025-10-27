@@ -368,6 +368,7 @@ func (s *SubscriptionService) addNodeToBuddyList(peerID peer.ID) error {
 
 // sendSubscriptionResponse sends a response back to the requesting node
 func (s *SubscriptionService) sendSubscriptionResponse(msg *AVCStruct.GossipMessage, accepted bool) error {
+	fmt.Printf("=== sendSubscriptionResponse called: %s ===\n", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted])
 	// Get the current buddy node from global variables
 	buddyNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
 	if buddyNode == nil {
@@ -417,6 +418,7 @@ func (s *SubscriptionService) sendSubscriptionResponse(msg *AVCStruct.GossipMess
 
 // publishResponse publishes a response message using the existing Publish service
 func (s *SubscriptionService) publishResponse(gossipMessage *AVCStruct.GossipMessage) error {
+	fmt.Printf("=== publishResponse called: %s ===\n", gossipMessage.ID)
 	if s.pubSub == nil {
 		return fmt.Errorf("PubSub not available for publishing response")
 	}

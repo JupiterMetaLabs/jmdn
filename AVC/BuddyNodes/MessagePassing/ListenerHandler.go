@@ -90,12 +90,16 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 	case config.Type_SubmitVote:
 		fmt.Println("Handling Type_SubmitVote")
 		lh.handleSubmitVote(s, message)
+		// Close stream after handling vote
+		defer s.Close()
 	case config.Type_AskForSubscription:
 		fmt.Println("Handling Type_AskForSubscription")
 		lh.handleAskForSubscription(s, message)
+		// Stream is closed in sendSubscriptionResponse after sending the response
 	case config.Type_SubscriptionResponse:
 		fmt.Println("Handling Type_SubscriptionResponse")
 		lh.handleSubscriptionResponse(s, message)
+		defer s.Close()
 	default:
 		fmt.Printf("Unknown message type: %s\n", message.GetACK().GetStage())
 		log.LogMessagesError(fmt.Sprintf("Unknown message type received from %s: %s", s.Conn().RemotePeer(), msg),
@@ -104,6 +108,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 			zap.String("topic", log.Messages_TOPIC),
 			zap.String("message", msg),
 			zap.String("function", "ListenerHandler.HandleSubmitMessageStream"))
+		defer s.Close()
 	}
 }
 
@@ -316,6 +321,9 @@ func (lh *ListenerHandler) sendSubscriptionResponse(s network.Stream, accepted b
 		fmt.Printf("Successfully sent subscription response: %s\n", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted])
 		log.LogMessagesInfo(fmt.Sprintf("Sent subscription response: %s", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted]))
 	}
+
+	// Close the stream after sending the response
+	s.Close()
 }
 
 // GetResponseHandler returns the current ResponseHandler
