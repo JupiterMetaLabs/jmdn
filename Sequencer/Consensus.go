@@ -9,7 +9,7 @@ import (
 	"gossipnode/AVC/NodeSelection/Router"
 	"gossipnode/Pubsub"
 	"gossipnode/Sequencer/Metadata"
-	"gossipnode/Sequencer/Triggers"
+	// "gossipnode/Sequencer/Triggers"
 	"gossipnode/config"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/PubSubMessages/Cache"
