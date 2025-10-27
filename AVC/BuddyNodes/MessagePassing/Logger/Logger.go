@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"gossipnode/logging"
 	"time"
-
+	"gossipnode/config"
 	"go.uber.org/zap"
 )
 
 // < -- Constants for buddy nodes logging -- >
 const (
 	LOG_FILE        = "buddy_nodes.log"
-	Consensus_TOPIC = "buddy_nodes/pubsub"
+	Consensus_TOPIC = config.PubSub_ConsensusChannel
 	Messages_TOPIC  = "buddy_nodes/messages"
 	DIR             = "logs"
 	BatchSize       = 100

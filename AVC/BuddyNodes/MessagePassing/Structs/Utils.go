@@ -94,7 +94,7 @@ func SubmitMessage(msg *PubSubMessages.Message, PubSub *PubSubMessages.GossipPub
 		}
 	}
 
-	// Now Submit to the publish function in the pubsub
+	// Now Submit to the publish function in the pubsub using config.PubSub_ConsensusChannel
 	if err := Publisher.Publish(PubSub, config.PubSub_ConsensusChannel, msg, map[string]string{}); err != nil {
 		return fmt.Errorf("failed to publish message to pubsub: %v", err)
 	}

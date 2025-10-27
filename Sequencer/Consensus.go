@@ -191,6 +191,17 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		}
 	}()
 
+	// Start CRDT print trigger in a goroutine with 10-second delay after broadcast trigger
+	go func() {
+		fmt.Printf("=== [Consensus.Start] Starting CRDT print trigger goroutine with 10-second delay ===\n")
+		time.Sleep(10 * time.Second)
+
+		fmt.Printf("\n=== [CRDT PRINT TRIGGER] Printing CRDT state after 10 seconds ===\n")
+		if err := consensus.PrintCRDTState(); err != nil {
+			fmt.Printf("=== [CRDT PRINT TRIGGER] Failed to print CRDT state: %v ===\n", err)
+		}
+	}()
+
 	// Verify that nodes are actually subscribed (non-blocking for vote trigger)
 	fmt.Printf("=== [Consensus.Start] About to verify subscriptions ===\n")
 	if err := consensus.VerifySubscriptions(); err != nil {
@@ -292,6 +303,34 @@ func (consensus *Consensus) BroadcastVoteTrigger() error {
 
 	fmt.Printf("=== [BroadcastVoteTrigger] SUCCESS ===\n")
 	log.Printf("Vote trigger broadcast completed successfully")
+	return nil
+}
+
+// PrintCRDTState prints the current state of the CRDT
+func (consensus *Consensus) PrintCRDTState() error {
+	// Get the listener node
+	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
+	if listenerNode == nil || listenerNode.CRDTLayer == nil {
+		return fmt.Errorf("listener node or CRDT layer not initialized")
+	}
+
+	fmt.Printf("\n========== CRDT STATE DUMP ==========\n")
+	fmt.Printf("Timestamp: %s\n", time.Now().Format(time.RFC3339))
+	fmt.Printf("Block Hash: %s\n", consensus.ZKBlockData.GetZKBlock().BlockHash.String())
+
+	// Get all votes from CRDT
+	votes, exists := MessagePassing.GetVotesFromCRDT(listenerNode.CRDTLayer, "vote")
+	if !exists {
+		fmt.Printf("No votes found in CRDT\n")
+	} else {
+		fmt.Printf("\nTotal votes in CRDT: %d\n", len(votes))
+		fmt.Printf("\nVote Details:\n")
+		for i, vote := range votes {
+			fmt.Printf("  Vote %d: %s\n", i+1, vote)
+		}
+	}
+
+	fmt.Printf("====================================\n\n")
 	return nil
 }
 

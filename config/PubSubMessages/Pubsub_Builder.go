@@ -1,6 +1,8 @@
 package PubSubMessages
 
 import (
+	"fmt"
+
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -20,13 +22,14 @@ func NewGossipPubSubBuilder(GossipPubSubInput *GossipPubSub) *GossipPubSub {
 		}
 	}
 	return &GossipPubSub{
-		Host:          nil,
-		Topics:        make(map[string]bool),
-		Handlers:      make(map[string]func(*GossipMessage)),
-		MessageCache:  make(map[string]bool),
-		ChannelAccess: make(map[string]*ChannelAccess),
-		Peers:         make([]peer.ID, 0),
-		Protocol:      "",
+		Host:             nil,
+		Topics:           make(map[string]bool),
+		Handlers:         make(map[string]func(*GossipMessage)),
+		MessageCache:     make(map[string]bool),
+		ChannelAccess:    make(map[string]*ChannelAccess),
+		Peers:            make([]peer.ID, 0),
+		TopicSubscribers: make(map[string]map[peer.ID]bool),
+		Protocol:         "",
 	}
 }
 
@@ -94,6 +97,12 @@ func (gps *GossipPubSub) GetProtocol() protocol.ID {
 }
 
 func (gps *GossipPubSub) Build() *GossipPubSub {
+	// Initialize GossipSub if host is set
+	if gps.Host != nil {
+		if err := gps.InitGossipSub(); err != nil {
+			// Log error but don't fail build
+			fmt.Printf("Warning: Failed to initialize GossipSub: %v\n", err)
+		}
+	}
 	return gps
 }
-

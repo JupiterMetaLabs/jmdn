@@ -315,7 +315,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 			ackMessage := PubSubMessages.NewACKBuilder().True_ACK_Message(host.ID(), config.Type_AskForSubscription)
 			message := PubSubMessages.NewMessageBuilder(nil).
 				SetSender(host.ID()).
-				SetMessage("Requesting subscription to consensus channel").
+				SetMessage(fmt.Sprintf("Requesting subscription to channel: %s", topic)).
 				SetTimestamp(time.Now().Unix()).
 				SetACK(ackMessage)
 
