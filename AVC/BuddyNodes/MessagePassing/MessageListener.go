@@ -184,7 +184,7 @@ func sendSubscriptionResponse(s network.Stream, accepted bool) {
 	}
 }
 
-func (StructListenerNode *StructListener) HandleSubscriptionResponse(s network.Stream, message *AVCStruct.Message) {
+func (StructListenerNode *StructListener) HandleSubscriptionResponse(s network.Stream, message *AVCStruct.Message, peerID peer.ID) {
 	// If message is nil, read from the stream
 	if message == nil {
 		reader := bufio.NewReader(s)
@@ -203,32 +203,34 @@ func (StructListenerNode *StructListener) HandleSubscriptionResponse(s network.S
 		}
 	}
 
-	fmt.Printf("=== HandleSubscriptionResponse: Received response from %s ===\n", s.Conn().RemotePeer())
+	fmt.Printf("=== HandleSubscriptionResponse: Received response from %s (expecting peer: %s) ===\n", s.Conn().RemotePeer(), peerID)
 	fmt.Printf("Message: %s\n", message.Message)
 	fmt.Printf("ACK Status: %s\n", message.GetACK().GetStatus())
 
 	log.LogMessagesInfo(fmt.Sprintf("HandleSubscriptionResponse: Received response from %s", s.Conn().RemotePeer()),
 		zap.String("peer", s.Conn().RemotePeer().String()),
+		zap.String("expected_peer", peerID.String()),
 		zap.String("topic", log.Messages_TOPIC),
 		zap.String("function", "HandleSubscriptionResponse"))
 
 	// Route the response to ResponseHandler if available
+	// Use peerID (the peer we sent the request to) not s.Conn().RemotePeer() (the peer responding)
 	if StructListenerNode.ResponseHandler != nil {
 		accepted := message.GetACK().GetStatus() == "ACK_TRUE"
-		fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", s.Conn().RemotePeer(), accepted)
+		fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", peerID, accepted)
 
-		StructListenerNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), accepted)
+		StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted)
 		fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
 
 		log.LogMessagesInfo("Successfully routed subscription response to ResponseHandler",
-			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("peer", peerID.String()),
 			zap.String("accepted", fmt.Sprintf("%t", accepted)),
 			zap.String("function", "HandleSubscriptionResponse"))
 	} else {
 		fmt.Printf("ERROR: No ResponseHandler set - subscription response not routed\n")
 		log.LogMessagesError("No ResponseHandler set - subscription response not routed",
 			nil,
-			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("peer", peerID.String()),
 			zap.String("function", "HandleSubscriptionResponse"))
 	}
 }
@@ -263,7 +265,8 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 
 	// Read response after sending (for subscription requests)
 	// HandleSubscriptionResponse will read from the stream and process the response
-	go StructListenerNode.HandleSubscriptionResponse(stream, nil)
+	// Pass the peerID so it can be used to route the response correctly
+	go StructListenerNode.HandleSubscriptionResponse(stream, nil, peerID)
 
 	// Update metadata
 	StructListenerNode.ListenerBuddyNode.Mutex.Lock()
