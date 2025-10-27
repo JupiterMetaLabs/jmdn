@@ -40,7 +40,7 @@ func (rh *ResponseHandler) RegisterPeer(peerID peer.ID, role string) chan bool {
 	responseChan := make(chan bool, 1)
 	rh.responses[peerID] = responseChan
 	rh.roles[peerID] = role
-	fmt.Printf("=== ResponseHandler.RegisterPeer: Created channel for peer: %s (role: %s) ===\n", peerID, role)
+	fmt.Printf("=== ResponseHandler.RegisterPeer: Created channel %p for peer: %s (role: %s) ===\n", responseChan, peerID, role)
 	return responseChan
 }
 
@@ -48,8 +48,18 @@ func (rh *ResponseHandler) RegisterPeer(peerID peer.ID, role string) chan bool {
 func (rh *ResponseHandler) HandleResponse(peerID peer.ID, accepted bool, role string) {
 	fmt.Printf("=== ResponseHandler.HandleResponse called for peer: %s (accepted: %t) ===\n", peerID, accepted)
 
-	// Get the stored role for this peer
+	// Debug: Show all registered peers
 	rh.mutex.RLock()
+	fmt.Printf("=== ResponseHandler DEBUG: All registered peers (roles): ===\n")
+	for p, r := range rh.roles {
+		fmt.Printf("  - Peer: %s, Role: %s\n", p, r)
+	}
+	fmt.Printf("=== ResponseHandler DEBUG: All registered peers (channels): ===\n")
+	for p, ch := range rh.responses {
+		fmt.Printf("  - Peer: %s, Channel: %p\n", p, ch)
+	}
+	fmt.Printf("=== End of registered peers ===\n")
+
 	storedRole, exists := rh.roles[peerID]
 	rh.mutex.RUnlock()
 
@@ -82,6 +92,7 @@ func (rh *ResponseHandler) HandleResponse(peerID peer.ID, accepted bool, role st
 		}
 	} else {
 		fmt.Printf("ResponseHandler: No channel found for peer %s\n", peerID)
+		fmt.Printf("ResponseHandler: Available channels: %v\n", rh.responses)
 	}
 }
 
@@ -133,6 +144,26 @@ func (rh *ResponseHandler) UnregisterPeer(peerID peer.ID) {
 	delete(rh.roles, peerID)
 }
 
+// cleanupResponseHandler removes all peers from the response handler
+func cleanupResponseHandler(rh *ResponseHandler) {
+	if rh == nil {
+		return
+	}
+
+	rh.mutex.Lock()
+	defer rh.mutex.Unlock()
+
+	// Close all channels
+	for _, ch := range rh.responses {
+		close(ch)
+	}
+
+	// Clear all maps
+	rh.responses = make(map[peer.ID]chan bool)
+	rh.peerIDs = make(map[peer.ID]string)
+	rh.roles = make(map[peer.ID]string)
+}
+
 // AskForSubscription asks peers for subscription with backup node fallback
 // Ensures: 1 creator + 13 subscribers = 14 total nodes
 // Maximum 3 main nodes can fail, use backup nodes as replacements
@@ -155,6 +186,7 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 		// Verify with global tracker
 		if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
 			log.Printf("Global tracker confirms: %d active subscriptions", tracker.GetActiveCount())
+			cleanupResponseHandler(responseHandler)
 			return nil
 		}
 	}
@@ -162,6 +194,7 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 	// Check if too many main nodes failed (we need at least 10 from main peers to ensure we can reach 13 with 3 backups)
 	minMainRequired := config.MaxMainPeers - config.MaxBackupPeers // 13 - 3 = 10
 	if mainAccepted < minMainRequired {
+		cleanupResponseHandler(responseHandler)
 		return fmt.Errorf("too many main nodes failed: got %d, need at least %d to ensure 13 total with %d backups", mainAccepted, minMainRequired, config.MaxBackupPeers)
 	}
 
@@ -194,9 +227,16 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 		// Verify with global tracker
 		if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
 			log.Printf("Global tracker confirms: %d active subscriptions", tracker.GetActiveCount())
+
+			// Cleanup response handler channels now that we're done
+			cleanupResponseHandler(responseHandler)
+
 			return nil
 		}
 	}
+
+	// Cleanup response handler before returning error
+	cleanupResponseHandler(responseHandler)
 
 	return fmt.Errorf("global tracker validation failed: got %d, need %d", tracker.GetActiveCount(), config.MaxMainPeers)
 }
@@ -340,6 +380,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 
 			log.Printf("Sent subscription request to %s peer: %s, waiting for ACK...", peerType, peerID)
 			fmt.Printf("=== askPeersForSubscription: Waiting for response from peer: %s ===\n", peerID)
+			fmt.Printf("=== askPeersForSubscription: Response channel: %p for peer: %s ===\n", responseChan, peerID)
 
 			// Wait for response with timeout
 			select {
@@ -356,6 +397,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 				}
 			case <-ctx.Done():
 				fmt.Printf("=== askPeersForSubscription: TIMEOUT waiting for response from peer: %s ===\n", peerID)
+				fmt.Printf("=== askPeersForSubscription: Timeout context done for peer: %s ===\n", peerID)
 				log.Printf("Timeout waiting for ACK from %s peer: %s", peerType, peerID)
 				mu.Lock()
 				accepted[peerID.String()] = false
@@ -367,8 +409,10 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 	// Wait for all goroutines to complete
 	wg.Wait()
 
-	// Give some time for async responses to arrive
-	time.Sleep(2 * time.Second)
+	log.Printf("All goroutines completed for %s peers", peerType)
+
+	// Give some time for late-arriving responses to be processed
+	time.Sleep(500 * time.Millisecond)
 
 	// Calculate how many NEW peers were accepted in this call
 	finalCount := tracker.GetActiveCount()
@@ -376,11 +420,8 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 
 	log.Printf("Tracker count: %d -> %d (new: %d) for %s peers", initialCount, finalCount, newAccepted, peerType)
 
-	// Cleanup: Close all channels and unregister peers after we're done with this batch
-	for _, peerID := range peerAddrs {
-		responseHandler.UnregisterPeer(peerID)
-	}
-
+	// Note: Don't cleanup channels here - they're still being used
+	// Cleanup will happen when the next batch starts or when consensus completes
 	return newAccepted, len(peerAddrs)
 }
 
