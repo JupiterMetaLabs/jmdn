@@ -1,6 +1,7 @@
 package Sequencer
 
 import (
+	"encoding/json"
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
@@ -314,23 +315,62 @@ func (consensus *Consensus) PrintCRDTState() error {
 		return fmt.Errorf("listener node or CRDT layer not initialized")
 	}
 
-	fmt.Printf("\n========== CRDT STATE DUMP ==========\n")
+	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║             CRDT STATE - SEQUENCER                         ║\n")
+	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+	fmt.Printf("Peer ID: %s\n", listenerNode.PeerID.String())
 	fmt.Printf("Timestamp: %s\n", time.Now().Format(time.RFC3339))
 	fmt.Printf("Block Hash: %s\n", consensus.ZKBlockData.GetZKBlock().BlockHash.String())
+	fmt.Printf("Messages Received: %d | Sent: %d | Total: %d\n",
+		listenerNode.MetaData.Received,
+		listenerNode.MetaData.Sent,
+		listenerNode.MetaData.Total)
 
 	// Get all votes from CRDT
 	votes, exists := MessagePassing.GetVotesFromCRDT(listenerNode.CRDTLayer, "vote")
-	if !exists {
-		fmt.Printf("No votes found in CRDT\n")
+	if !exists || len(votes) == 0 {
+		fmt.Printf("\n📊 Votes in CRDT: 0 (no votes collected yet)\n")
 	} else {
-		fmt.Printf("\nTotal votes in CRDT: %d\n", len(votes))
-		fmt.Printf("\nVote Details:\n")
+		fmt.Printf("\n📊 Total Votes in CRDT: %d\n", len(votes))
+		fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+
+		// Parse and count votes
+		yesVotes := 0
+		noVotes := 0
+
 		for i, vote := range votes {
-			fmt.Printf("  Vote %d: %s\n", i+1, vote)
+			// Parse the vote JSON
+			var voteData map[string]interface{}
+			if err := json.Unmarshal([]byte(vote), &voteData); err != nil {
+				fmt.Printf("  Vote %d: [PARSING ERROR] %s\n", i+1, vote)
+				continue
+			}
+
+			// Extract vote details
+			voteValue := voteData["vote"]
+			blockHash := voteData["block_hash"]
+
+			// Count vote types
+			if voteValue == float64(1) {
+				yesVotes++
+			} else if voteValue == float64(-1) {
+				noVotes++
+			}
+
+			fmt.Printf("  ✓ Vote %d:\n", i+1)
+			fmt.Printf("    - Value: %v\n", voteValue)
+			fmt.Printf("    - Block Hash: %v\n", blockHash)
+			if i < len(votes)-1 {
+				fmt.Printf("    ─────────────────────────────────────────────\n")
+			}
 		}
+
+		fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+		fmt.Printf("📊 Vote Summary: YES=%d, NO=%d, Total=%d\n", yesVotes, noVotes, len(votes))
 	}
 
-	fmt.Printf("====================================\n\n")
+	fmt.Printf("╔════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
 	return nil
 }
 
