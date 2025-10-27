@@ -124,6 +124,19 @@ func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 		return
 	}
 
+	// Attach ACK if missing
+	if gossipMsg.Data.GetACK() == nil {
+		fmt.Printf("Received message with nil ACK - attaching default ACK\n")
+		log.Printf("Received message with nil ACK - attaching default ACK\n")
+
+		// Create a default ACK with Type_ACK_True stage
+		ack := PubSubMessages.NewACKBuilder().
+			True_ACK_Message(gossipMsg.Sender, config.Type_ACK_True)
+
+		gossipMsg.Data.SetACK(ack)
+	}
+	fmt.Printf("Received message with ACK: %+v\n", gossipMsg.Data.GetACK())
+	fmt.Printf("==============================================\n")
 	// Check if we've already seen this message
 	gps.Mutex.Lock()
 	if gps.MessageCache[gossipMsg.ID] {

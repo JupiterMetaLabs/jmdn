@@ -27,6 +27,11 @@ func Publish(gps *PubSubMessages.GossipPubSub, topic string, message *PubSubMess
 		return fmt.Errorf("topic cannot be empty")
 	}
 
+	// Validate that message has ACK
+	if message.GetACK() == nil {
+		return fmt.Errorf("message cannot be published without ACK - message type: %T", message)
+	}
+
 	// Create message
 	messageGossip := &PubSubMessages.GossipMessage{
 		ID:        fmt.Sprintf("%s-%d", gps.Host.ID().String(), gps.MessageID),

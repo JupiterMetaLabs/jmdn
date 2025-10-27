@@ -173,6 +173,13 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 	fmt.Printf("==============================================\n")
 	fmt.Printf("Message: %+v\n", msg)
 
+	// Check if ACK is nil before accessing it
+	if msg.Data.ACK == nil {
+		fmt.Printf("Received message with nil ACK - message type: %+v\n", msg.Data)
+		log.LogConsensusError("Received message with nil ACK", nil, zap.String("function", "SubscriptionService.handleReceivedMessage"))
+		return fmt.Errorf("received message has no ACK")
+	}
+
 	// Process the message based on its type
 	switch msg.Data.ACK.Stage {
 

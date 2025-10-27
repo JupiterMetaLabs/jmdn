@@ -120,10 +120,15 @@ func subscribeViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, h
 			var messageData PubSubMessages.Message
 			if err := json.Unmarshal(msg.Data, &messageData); err != nil {
 				fmt.Printf("Failed to unmarshal message data: %v\n", err)
+				fmt.Printf("Raw bytes: %v\n", msg.Data)
 				// Continue to next message
 				continue
 			}
 			fmt.Printf("Message unmarshalled successfully for %s\n", topicName)
+			fmt.Printf("Unmarshalled messageData: %+v\n", messageData)
+			if messageData.ACK == nil {
+				fmt.Printf("WARNING: messageData.ACK is nil!\n")
+			}
 			// Convert to our GossipMessage format
 			gossipMsg := &PubSubMessages.GossipMessage{
 				ID:        msg.ID,
