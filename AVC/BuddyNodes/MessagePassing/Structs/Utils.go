@@ -70,7 +70,7 @@ func SubmitMessage(msg *PubSubMessages.Message, PubSub *PubSubMessages.GossipPub
 			OpType: int8(1), // 1 for add, -1 for remove
 			KeyValue: Types.KeyValue{
 				Key:   msg.Sender.String(), // key would be the peer id of the sender
-				Value: msg.Message, // Store the full vote message as value
+				Value: msg.Message,         // Store the full vote message as value
 			},
 		}
 
@@ -114,18 +114,47 @@ func PrintCRDTState(listenerNode *PubSubMessages.BuddyNode) error {
 		listenerNode.MetaData.Sent,
 		listenerNode.MetaData.Total)
 
-	// Get all votes from CRDT
-	fmt.Printf("DEBUG: About to call GetSet with key='vote'\n")
-	votes, exists := DataLayer.GetSet(listenerNode.CRDTLayer, "vote")
-	fmt.Printf("DEBUG: GetSet returned exists=%t, votes=%v\n", exists, votes)
+	// Get all votes from CRDT by querying with peer IDs as keys
+	// We need to query all known peers to get their votes
+	fmt.Printf("\n=== Collecting votes from CRDT ===\n")
 
-	if !exists || len(votes) == 0 {
+	// Get all connected peers or buddy nodes
+	var allPeers []peer.ID
+	if listenerNode.Host != nil {
+		allPeers = listenerNode.Host.Network().Peers()
+	} else {
+		// Try to get peers from buddy nodes
+		if listenerNode.BuddyNodes.Buddies_Nodes != nil {
+			allPeers = listenerNode.BuddyNodes.Buddies_Nodes
+		}
+	}
+
+	fmt.Printf("DEBUG: Querying votes for %d peers\n", len(allPeers))
+
+	allVotes := make([]string, 0)
+	for _, peerID := range allPeers {
+		votes, exists := DataLayer.GetSet(listenerNode.CRDTLayer, peerID.String())
+		fmt.Printf("DEBUG: Peer %s - exists=%t, votes=%v\n", peerID, exists, votes)
+		if exists && len(votes) > 0 {
+			allVotes = append(allVotes, votes...)
+		}
+	}
+
+	// Also query for votes stored with "vote" key (legacy)
+	if legacyVotes, exists := DataLayer.GetSet(listenerNode.CRDTLayer, "vote"); exists && len(legacyVotes) > 0 {
+		fmt.Printf("DEBUG: Found %d legacy votes with key='vote'\n", len(legacyVotes))
+		allVotes = append(allVotes, legacyVotes...)
+	}
+
+	fmt.Printf("DEBUG: Total unique votes collected: %d\n", len(allVotes))
+
+	if len(allVotes) == 0 {
 		fmt.Printf("\n📊 Votes in CRDT: 0 (no votes collected yet)\n")
 	} else {
-		fmt.Printf("\n📊 Total Votes in CRDT: %d\n", len(votes))
+		fmt.Printf("\n📊 Total Votes in CRDT: %d\n", len(allVotes))
 		fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
-		for i, vote := range votes {
+		for i, vote := range allVotes {
 			// Parse the vote JSON
 			var voteData map[string]interface{}
 			if err := json.Unmarshal([]byte(vote), &voteData); err != nil {
@@ -140,7 +169,7 @@ func PrintCRDTState(listenerNode *PubSubMessages.BuddyNode) error {
 			fmt.Printf("  ✓ Vote %d:\n", i+1)
 			fmt.Printf("    - Value: %v\n", voteValue)
 			fmt.Printf("    - Block Hash: %v\n", blockHash)
-			if i < len(votes)-1 {
+			if i < len(allVotes)-1 {
 				fmt.Printf("    ─────────────────────────────────────────────\n")
 			}
 		}

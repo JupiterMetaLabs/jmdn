@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
-	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/seednode"
@@ -75,35 +74,9 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 		fmt.Println("🗳️ Handling Type_SubmitVote")
 		log.LogMessagesInfo(fmt.Sprintf("Received submit vote from %s: %s", s.Conn().RemotePeer(), message.Message), zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
 
-		// Initialize PubSub node if not already done
-		pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
-		if pubSubNode == nil {
-			fmt.Printf("=== Initializing PubSub_BuddyNode for vote submission ===\n")
-			// Get the ForListner (which should be initialized)
-			listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
-			if listenerNode == nil {
-				log.LogMessagesError("ForListner not initialized - cannot process vote", nil, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
-				return
-			}
-
-			// Create GossipPubSub for this node
-			gps := AVCStruct.NewGossipPubSubBuilder(nil).
-				SetHost(listenerNode.Host).
-				SetProtocol(config.BuddyNodesMessageProtocol).
-				Build()
-
-			// Create and set PubSub_BuddyNode
-			pubSubBuddyNode := NewBuddyNode(listenerNode.Host, &listenerNode.BuddyNodes, nil, gps)
-			AVCStruct.NewGlobalVariables().Set_PubSubNode(pubSubBuddyNode)
-			pubSubNode = pubSubBuddyNode
-			fmt.Printf("=== PubSub_BuddyNode initialized successfully ===\n")
-		}
-
-		// First Add to local CRDT Engine
-		if err := Structs.SubmitMessage(message, pubSubNode.PubSub, AVCStruct.NewGlobalVariables().Get_ForListner()); err != nil {
-			log.LogMessagesError(fmt.Sprintf("Failed to add vote to local CRDT Engine: %v", err), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
-			return
-		}
+		// Delegate to ListenerHandler for processing the vote
+		listenerHandler := NewListenerHandler(StructListenerNode.ResponseHandler)
+		listenerHandler.handleSubmitVote(s, message)
 	case config.Type_AskForSubscription:
 		fmt.Println("🎯 Handling Type_AskForSubscription")
 		fmt.Printf("📋 Message: %s\n", message.Message)
