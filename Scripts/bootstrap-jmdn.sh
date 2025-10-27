@@ -63,11 +63,22 @@ if [ ! -x "${BIN_PATH}.new" ]; then
   exit 1
 fi
 
+# Verify the new binary is valid
+if ! "${BIN_PATH}.new" -help &>/dev/null; then
+  echo "❌ New binary is not valid."
+  rm -f "${BIN_PATH}.new"
+  exit 1
+fi
+
+# Atomic replacement: stop service, replace binary, start service
+systemctl stop "${SERVICE_NAME}" || true
+sleep 2
+
 mv -f "${BIN_PATH}.new" "${BIN_PATH}"
 chmod +x "${BIN_PATH}"
 echo "[update] New binary deployed."
 
-systemctl restart "${SERVICE_NAME}"
+systemctl start "${SERVICE_NAME}"
 echo "[update] ${SERVICE_NAME} restarted successfully."
 EOF
 
