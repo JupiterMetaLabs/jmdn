@@ -180,13 +180,13 @@ func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error
 
 func _EstimateGas(req *proto.CallReq) (*proto.EstimateResp, error) {
 	// Get the Mempool Client
-	mempoolClient, err := block.ReturnMempoolObject()
+	RoutingClient, err := block.ReturnMempoolObject()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get mempool client: %v", err)
 	}
 
 	// Get the Fee Stats
-	feeStats, err := mempoolClient.WrapperGetFeeStatistics()
+	feeStats, err := RoutingClient.WrapperGetFeeStatistics()
 	if err != nil {
 		return nil, err
 	}
