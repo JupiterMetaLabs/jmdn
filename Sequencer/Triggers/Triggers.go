@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"gossipnode/AVC/BFT/bft"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service/PubSubConnector"
-	"gossipnode/config"
 	voteaggregation "gossipnode/AVC/VoteModule"
+	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/seednode"
 	"log"
@@ -47,7 +47,7 @@ func InitializeTriggers(pubSub *AVCStruct.GossipPubSub, buddyID string) error {
 		// Create BFT engine with configuration
 		config := bft.Config{
 			MinBuddies:         config.MaxMainPeers + 1, // 13 main peers + 1 creator = 14 total
-			ByzantineTolerance: 4,  // Can tolerate up to 4 Byzantine nodes
+			ByzantineTolerance: 4,                       // Can tolerate up to 4 Byzantine nodes
 			PrepareTimeout:     10 * time.Second,
 			CommitTimeout:      10 * time.Second,
 		}
@@ -128,7 +128,7 @@ func extractVoteDataFromCRDT(buddyNode *AVCStruct.BuddyNode) (map[string]int8, e
 }
 
 // processVoteData processes the extracted vote data and stores it in global variable
-func processVoteData(voteData map[string]int8) (int8, error){
+func ProcessVoteData(voteData map[string]int8) (int8, error) {
 	log.Printf("Processing %d vote entries", len(voteData))
 
 	// Store vote data in global variable
@@ -175,7 +175,7 @@ func ClearGlobalVoteData() {
 	log.Printf("Cleared global vote data")
 }
 
-func CRDTDataSubmitTrigger(){
+func CRDTDataSubmitTrigger() {
 	// Submit the CRDT data to the @votemodule.VoteAggregation function.
 	time.AfterFunc(CRDTDataSubmitBufferTime, func() {
 		log.Printf("CRDTDataSubmitTrigger: Starting CRDT data aggregation")
@@ -197,7 +197,7 @@ func CRDTDataSubmitTrigger(){
 		log.Printf("CRDTDataSubmitTrigger: Extracted %d vote entries", len(voteData))
 
 		// Process the vote data
-		result, err := processVoteData(voteData)
+		result, err := ProcessVoteData(voteData)
 		if err != nil {
 			log.Printf("CRDTDataSubmitTrigger: Failed to process vote data: %v", err)
 			return

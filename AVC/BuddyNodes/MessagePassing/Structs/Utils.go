@@ -181,3 +181,71 @@ func PrintCRDTState(listenerNode *PubSubMessages.BuddyNode) error {
 
 	return nil
 }
+
+// ProcessVotesFromCRDT extracts votes from CRDT and returns them as map[string]int8
+func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (map[string]int8, error) {
+	if listenerNode == nil || listenerNode.CRDTLayer == nil {
+		return nil, fmt.Errorf("listener node or CRDT layer not initialized")
+	}
+
+	fmt.Printf("\n=== Processing votes from CRDT for voting ===\n")
+
+	// Get all connected peers or buddy nodes
+	var allPeers []peer.ID
+	if listenerNode.Host != nil {
+		allPeers = listenerNode.Host.Network().Peers()
+	} else {
+		// Try to get peers from buddy nodes
+		if listenerNode.BuddyNodes.Buddies_Nodes != nil {
+			allPeers = listenerNode.BuddyNodes.Buddies_Nodes
+		}
+	}
+
+	fmt.Printf("DEBUG: Querying votes for %d peers\n", len(allPeers))
+
+	// Map to store peer ID -> vote value
+	voteData := make(map[string]int8)
+
+	for _, peerID := range allPeers {
+		votes, exists := DataLayer.GetSet(listenerNode.CRDTLayer, peerID.String())
+		if exists && len(votes) > 0 {
+			// Parse the vote JSON
+			for _, voteStr := range votes {
+				var voteDataObj map[string]interface{}
+				if err := json.Unmarshal([]byte(voteStr), &voteDataObj); err != nil {
+					fmt.Printf("DEBUG: Failed to parse vote: %s\n", voteStr)
+					continue
+				}
+
+				// Extract vote value
+				if voteValue, ok := voteDataObj["vote"].(float64); ok {
+					voteData[peerID.String()] = int8(voteValue)
+				}
+			}
+		}
+	}
+
+	// Also query for votes stored with "vote" key (legacy)
+	if legacyVotes, exists := DataLayer.GetSet(listenerNode.CRDTLayer, "vote"); exists && len(legacyVotes) > 0 {
+		fmt.Printf("DEBUG: Found %d legacy votes with key='vote'\n", len(legacyVotes))
+		for _, voteStr := range legacyVotes {
+			var voteDataObj map[string]interface{}
+			if err := json.Unmarshal([]byte(voteStr), &voteDataObj); err != nil {
+				fmt.Printf("DEBUG: Failed to parse legacy vote: %s\n", voteStr)
+				continue
+			}
+
+			// Extract vote value
+			if voteValue, ok := voteDataObj["vote"].(float64); ok {
+				// For legacy votes, use a generic key or extract peer ID from the data
+				if peerID, ok := voteDataObj["peer_id"].(string); ok {
+					voteData[peerID] = int8(voteValue)
+				}
+			}
+		}
+	}
+
+	fmt.Printf("DEBUG: Extracted %d votes from CRDT\n", len(voteData))
+
+	return voteData, nil
+}
