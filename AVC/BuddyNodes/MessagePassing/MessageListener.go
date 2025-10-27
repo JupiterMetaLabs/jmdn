@@ -3,6 +3,7 @@ package MessagePassing
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
@@ -227,50 +228,68 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 		return StructListenerNode.sendViaSeedNode(peerID, message)
 	}
 
-	// Read response after sending (for subscription requests)
-	// Set a timeout for reading the response (20 seconds to allow for processing)
-	deadline := time.Now().Add(20 * time.Second)
-	stream.SetReadDeadline(deadline)
-	fmt.Printf("⏰ Set read deadline to: %v\n", deadline)
+	// Parse the message to check if it's a vote submission or subscription request
+	var voteMessage map[string]interface{}
+	json.Unmarshal([]byte(message), &voteMessage)
 
-	reader := bufio.NewReader(stream)
-	fmt.Printf("📖 Starting to read response from %s...\n", peerID)
-	responseMsg, err := reader.ReadString(config.Delimiter)
-
-	if err != nil {
-		fmt.Printf("❌ SendMessageToPeer: Failed to read response from %s: %v (deadline was %v)\n", peerID, err, deadline)
-		// Don't return error here - the response might come via pubsub or the connection might be closing
-	} else if responseMsg != "" {
-		fmt.Printf("✅ SendMessageToPeer: Received response from %s: %s\n", peerID, responseMsg)
-		fmt.Printf("📊 Stream state after receiving response:\n")
-		fmt.Printf("   - Stream: %p\n", stream)
-		stat := stream.Conn().Stat()
-		fmt.Printf("   - Connection State: Direction=%s\n", stat.Direction)
-		fmt.Printf("   - Stream Protocol: %s\n", stream.Protocol())
-
-		// Parse the response message
-		responseMessage := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(responseMsg)
-		if responseMessage != nil && responseMessage.GetACK() != nil {
-			// Process the subscription response directly
-			if responseMessage.GetACK().GetStage() == config.Type_SubscriptionResponse {
-				fmt.Printf("=== SendMessageToPeer: Processing subscription response from %s ===\n", peerID)
-
-				// Route the response to ResponseHandler if available
-				if StructListenerNode.ResponseHandler != nil {
-					accepted := responseMessage.GetACK().GetStatus() == "ACK_TRUE"
-					fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", peerID, accepted)
-
-					StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted, "main")
-					fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
-				}
-			}
-
-			// IMPORTANT: Close the stream after receiving the response
-			// to prevent hanging on the next read when the receiver has already closed their end
-			fmt.Printf("🔒 Closing stream after receiving response from %s\n", peerID)
-			stream.Close()
-			fmt.Printf("✅ Stream closed successfully\n")
+	var isVote bool
+	if ack, ok := voteMessage["ACK"].(map[string]interface{}); ok {
+		if stage, ok := ack["stage"].(string); ok && stage == config.Type_SubmitVote {
+			isVote = true
 		}
+	}
+
+	// Only wait for response if it's NOT a vote (votes don't expect responses)
+	if !isVote {
+		// Read response after sending (for subscription requests)
+		// Set a timeout for reading the response (20 seconds to allow for processing)
+		deadline := time.Now().Add(20 * time.Second)
+		stream.SetReadDeadline(deadline)
+		fmt.Printf("⏰ Set read deadline to: %v\n", deadline)
+
+		reader := bufio.NewReader(stream)
+		fmt.Printf("📖 Starting to read response from %s...\n", peerID)
+		responseMsg, err := reader.ReadString(config.Delimiter)
+
+		if err != nil {
+			fmt.Printf("❌ SendMessageToPeer: Failed to read response from %s: %v (deadline was %v)\n", peerID, err, deadline)
+			// Don't return error here - the response might come via pubsub or the connection might be closing
+		} else if responseMsg != "" {
+			fmt.Printf("✅ SendMessageToPeer: Received response from %s: %s\n", peerID, responseMsg)
+			fmt.Printf("📊 Stream state after receiving response:\n")
+			fmt.Printf("   - Stream: %p\n", stream)
+			stat := stream.Conn().Stat()
+			fmt.Printf("   - Connection State: Direction=%s\n", stat.Direction)
+			fmt.Printf("   - Stream Protocol: %s\n", stream.Protocol())
+
+			// Parse the response message
+			responseMessage := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(responseMsg)
+			if responseMessage != nil && responseMessage.GetACK() != nil {
+				// Process the subscription response directly
+				if responseMessage.GetACK().GetStage() == config.Type_SubscriptionResponse {
+					fmt.Printf("=== SendMessageToPeer: Processing subscription response from %s ===\n", peerID)
+
+					// Route the response to ResponseHandler if available
+					if StructListenerNode.ResponseHandler != nil {
+						accepted := responseMessage.GetACK().GetStatus() == "ACK_TRUE"
+						fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", peerID, accepted)
+
+						StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted, "main")
+						fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
+					}
+				}
+
+				// IMPORTANT: Close the stream after receiving the response
+				// to prevent hanging on the next read when the receiver has already closed their end
+				fmt.Printf("🔒 Closing stream after receiving response from %s\n", peerID)
+				stream.Close()
+				fmt.Printf("✅ Stream closed successfully\n")
+			}
+		}
+	} else {
+		// For votes, just close the stream without waiting for response
+		fmt.Printf("📤 Vote submitted - no response expected, closing stream\n")
+		stream.Close()
 	}
 
 	// Update metadata

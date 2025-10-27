@@ -250,11 +250,12 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 
 		if _, exists := voteData["vote"]; exists {
 
+			// Use the sender's peer ID as the CRDT set key to separate votes by sender
 			OP := &Types.OP{
 				NodeID: msg.Data.Sender,
 				OpType: int8(1), // 1 for add, -1 for remove
 				KeyValue: Types.KeyValue{
-					Key:   msg.Data.Sender.String(), // key would be the peer id of the sender
+					Key:   msg.Data.Sender.String(), // Use peer ID as the key to separate votes by sender
 					Value: msg.Data.Message,
 				},
 			}
