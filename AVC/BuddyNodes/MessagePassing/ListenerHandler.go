@@ -254,7 +254,12 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 
 	fmt.Println("Successfully subscribed to consensus channel via SubscriptionService")
 	fmt.Println("Sending subscription response: true")
+
+	// IMPORTANT: sendSubscriptionResponse will close the stream
+	// Make sure we send the response before the stream is closed
 	lh.sendSubscriptionResponse(s, true)
+
+	fmt.Println("sendSubscriptionResponse completed")
 }
 
 // handleSubscriptionResponse processes subscription response messages
@@ -305,25 +310,33 @@ func (lh *ListenerHandler) sendSubscriptionResponse(s network.Stream, accepted b
 
 	messageBytes, err := json.Marshal(message)
 	if err != nil {
-		fmt.Printf("Failed to marshal response: %v\n", err)
+		fmt.Printf("❌ Failed to marshal response: %v\n", err)
 		log.LogMessagesError(fmt.Sprintf("Failed to marshal response: %v", err), err)
+		s.Close()
 		return
 	}
 
 	fmt.Printf("Response message: %s\n", string(messageBytes))
 
 	// Send response back through the SAME stream (SubmitMessageProtocol)
-	_, err = s.Write([]byte(string(messageBytes) + string(rune(config.Delimiter))))
+	bytesWritten, err := s.Write([]byte(string(messageBytes) + string(rune(config.Delimiter))))
 	if err != nil {
-		fmt.Printf("Failed to send response: %v\n", err)
+		fmt.Printf("❌ Failed to write response: %v (wrote %d bytes)\n", err, bytesWritten)
 		log.LogMessagesError(fmt.Sprintf("Failed to send response: %v", err), err)
-	} else {
-		fmt.Printf("Successfully sent subscription response: %s\n", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted])
-		log.LogMessagesInfo(fmt.Sprintf("Sent subscription response: %s", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted]))
+		s.Close()
+		return
 	}
 
-	// Close the stream after sending the response
+	fmt.Printf("✅ Successfully wrote %d bytes to stream\n", bytesWritten)
+	fmt.Printf("✅ Successfully sent subscription response: %s\n", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted])
+	log.LogMessagesInfo(fmt.Sprintf("Sent subscription response: %s", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted]))
+
+	// Give a small delay to ensure the data is sent before closing
+	time.Sleep(50 * time.Millisecond)
+
+	fmt.Printf("Closing stream now...\n")
 	s.Close()
+	fmt.Printf("Stream closed\n")
 }
 
 // GetResponseHandler returns the current ResponseHandler
