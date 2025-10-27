@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
 )
 
@@ -193,24 +194,44 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 		AVCStruct.NewGlobalVariables().Set_PubSubNode(buddy)
 	}
 
-	// Subscribe to the same consensus channel that the sequencer creates
-	if err := Subscription.Subscribe(gps, config.PubSub_ConsensusChannel, func(msg *AVCStruct.GossipMessage) {
-		log.LogMessagesInfo(fmt.Sprintf("Received message on BuddyNodesMessageProtocol: %s", msg.ID),
+	// Define the consensus channel in this node's pubsub instance
+	// This allows the node to subscribe even though the channel was created by the sequencer
+	gps.Mutex.Lock()
+	if _, exists := gps.ChannelAccess[config.PubSub_ConsensusChannel]; !exists {
+		// Channel doesn't exist, create it as public so this node can subscribe
+		allowedMap := make(map[peer.ID]bool)
+		allowedMap[listenerNode.Host.ID()] = true
+
+		gps.ChannelAccess[config.PubSub_ConsensusChannel] = &AVCStruct.ChannelAccess{
+			ChannelName:  config.PubSub_ConsensusChannel,
+			AllowedPeers: allowedMap,
+			IsPublic:     true, // Make it public so node can subscribe
+			Creator:      listenerNode.Host.ID(),
+			CreatedAt:    time.Now().Unix(),
+		}
+		fmt.Printf("Created consensus channel locally for peer %s\n", listenerNode.Host.ID())
+	}
+	gps.Mutex.Unlock()
+
+	// Subscribe to the consensus channel
+	err := Subscription.Subscribe(gps, config.PubSub_ConsensusChannel, func(msg *AVCStruct.GossipMessage) {
+		log.LogMessagesInfo(fmt.Sprintf("Received message on consensus channel: %s", msg.ID),
 			zap.String("peer", s.Conn().RemotePeer().String()),
-			zap.String("topic", log.Messages_TOPIC),
+			zap.String("topic", config.PubSub_ConsensusChannel),
 			zap.String("function", "ListenerHandler.handleAskForSubscription"))
-	}); err != nil {
-		fmt.Printf("Failed to subscribe to BuddyNodesMessageProtocol: %v\n", err)
-		log.LogMessagesError(fmt.Sprintf("Failed to subscribe to BuddyNodesMessageProtocol: %v", err),
+	})
+	if err != nil {
+		fmt.Printf("Failed to subscribe to consensus channel: %v\n", err)
+		log.LogMessagesError(fmt.Sprintf("Failed to subscribe to consensus channel: %v", err),
 			err,
 			zap.String("peer", s.Conn().RemotePeer().String()),
-			zap.String("topic", log.Messages_TOPIC),
+			zap.String("topic", config.PubSub_ConsensusChannel),
 			zap.String("function", "ListenerHandler.handleAskForSubscription"))
 		lh.sendSubscriptionResponse(s, false)
 		return
 	}
 
-	fmt.Println("Successfully subscribed to BuddyNodesMessageProtocol")
+	fmt.Println("Successfully subscribed to consensus channel")
 	fmt.Println("Sending subscription response: true")
 	lh.sendSubscriptionResponse(s, true)
 }
