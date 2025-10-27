@@ -97,8 +97,9 @@ ExecStart=/bin/bash -lc 'exec ${BIN_PATH} \
   -facade 8545 \
   -ws 8546 \
   -chainID 7000700 \
-  -mempool 34.129.53.115:18001 2>&1 | tee -a ${LOG_PATH}'
-Restart=always
+  -mempool 34.129.53.115:18001 \
+  -explorer 2>&1 | tee -a ${LOG_PATH}'
+Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
 LimitNOFILE=1048576
