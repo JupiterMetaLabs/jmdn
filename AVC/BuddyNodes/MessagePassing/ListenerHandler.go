@@ -114,6 +114,10 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 		zap.String("topic", log.Messages_TOPIC),
 		zap.String("function", "ListenerHandler.handleSubmitVote"))
 
+	// Debugging
+	fmt.Printf("message: %+v\n", message)
+	fmt.Printf("From Peer: %s\n", s.Conn().RemotePeer())
+
 	// Check if PubSubNode and ForListner are initialized
 	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
 	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
@@ -145,6 +149,9 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 			zap.String("function", "ListenerHandler.handleSubmitVote"))
 		return
 	}
+
+	// Debugging
+	fmt.Printf("Successfully processed vote from %s\n", s.Conn().RemotePeer())
 
 	log.LogMessagesInfo(fmt.Sprintf("Successfully processed vote from %s", s.Conn().RemotePeer()),
 		zap.String("peer", s.Conn().RemotePeer().String()),
