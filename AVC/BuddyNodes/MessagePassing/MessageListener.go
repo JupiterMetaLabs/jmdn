@@ -184,9 +184,61 @@ func sendSubscriptionResponse(s network.Stream, accepted bool) {
 	}
 }
 
+func (StructListenerNode *StructListener) HandleSubscriptionResponse(s network.Stream, message *AVCStruct.Message) {
+	// If message is nil, read from the stream
+	if message == nil {
+		reader := bufio.NewReader(s)
+		responseMsg, err := reader.ReadString(config.Delimiter)
+		if err != nil {
+			fmt.Printf("Error reading response from stream: %v\n", err)
+			return
+		}
+
+		fmt.Printf("=== HandleSubscriptionResponse: Received response: %s ===\n", responseMsg)
+
+		message = AVCStruct.NewMessageBuilder(nil).DeferenceMessage(responseMsg)
+		if message == nil {
+			fmt.Printf("Failed to parse response message\n")
+			return
+		}
+	}
+
+	fmt.Printf("=== HandleSubscriptionResponse: Received response from %s ===\n", s.Conn().RemotePeer())
+	fmt.Printf("Message: %s\n", message.Message)
+	fmt.Printf("ACK Status: %s\n", message.GetACK().GetStatus())
+
+	log.LogMessagesInfo(fmt.Sprintf("HandleSubscriptionResponse: Received response from %s", s.Conn().RemotePeer()),
+		zap.String("peer", s.Conn().RemotePeer().String()),
+		zap.String("topic", log.Messages_TOPIC),
+		zap.String("function", "HandleSubscriptionResponse"))
+
+	// Route the response to ResponseHandler if available
+	if StructListenerNode.ResponseHandler != nil {
+		accepted := message.GetACK().GetStatus() == "ACK_TRUE"
+		fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", s.Conn().RemotePeer(), accepted)
+
+		StructListenerNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), accepted)
+		fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
+
+		log.LogMessagesInfo("Successfully routed subscription response to ResponseHandler",
+			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("accepted", fmt.Sprintf("%t", accepted)),
+			zap.String("function", "HandleSubscriptionResponse"))
+	} else {
+		fmt.Printf("ERROR: No ResponseHandler set - subscription response not routed\n")
+		log.LogMessagesError("No ResponseHandler set - subscription response not routed",
+			nil,
+			zap.String("peer", s.Conn().RemotePeer().String()),
+			zap.String("function", "HandleSubscriptionResponse"))
+	}
+}
+
 // SendMessageToPeer sends a message to a specific peer using peer.ID (for already connected peers)
 // Uses LRU cache with TTL for optimal performance and resource efficiency
 func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, message string) error {
+	fmt.Println("Sending message to peer: ", peerID)
+	fmt.Println("Message: ", message)
+	fmt.Println("--------------------------------")
 	// Get or create a stream from the cache using SubmitMessageProtocol
 	StreamCache := NewStreamCacheBuilder(StructListenerNode.ListenerBuddyNode.StreamCache)
 	if StreamCache == nil {
@@ -208,6 +260,10 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 		log.LogConsensusInfo(fmt.Sprintf("Stream write failed, using seed node fallback for %s", peerID), zap.String("peer", peerID.String()), zap.String("function", "SendMessageToPeer"))
 		return StructListenerNode.sendViaSeedNode(peerID, message)
 	}
+
+	// Read response after sending (for subscription requests)
+	// HandleSubscriptionResponse will read from the stream and process the response
+	go StructListenerNode.HandleSubscriptionResponse(stream, nil)
 
 	// Update metadata
 	StructListenerNode.ListenerBuddyNode.Mutex.Lock()
