@@ -188,7 +188,7 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 
 	log.LogMessagesInfo(fmt.Sprintf("Received subscription request from %s", s.Conn().RemotePeer()),
 		zap.String("peer", s.Conn().RemotePeer().String()),
-		zap.String("topic", log.Messages_TOPIC),
+		zap.String("topic", config.PubSub_ConsensusChannel),
 		zap.String("function", "ListenerHandler.handleAskForSubscription"))
 
 	// Check if ForListner is initialized
@@ -198,13 +198,17 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 		log.LogMessagesError("ForListner not initialized - cannot process subscription request",
 			nil,
 			zap.String("peer", s.Conn().RemotePeer().String()),
-			zap.String("topic", log.Messages_TOPIC),
+			zap.String("topic", config.PubSub_ConsensusChannel),
 			zap.String("function", "ListenerHandler.handleAskForSubscription"))
 		lh.sendSubscriptionResponse(s, false)
 		return
 	}
 
 	fmt.Println("ForListner is initialized - processing subscription request")
+
+	// Use config.PubSub_ConsensusChannel as the GossipSub topic
+	topicToSubscribe := config.PubSub_ConsensusChannel
+	fmt.Printf("Subscribing to GossipSub topic: %s\n", topicToSubscribe)
 
 	// Create GossipPubSub using Pubsub_Builder.go
 	gps := AVCStruct.NewGossipPubSubBuilder(nil).
@@ -220,9 +224,9 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 		AVCStruct.NewGlobalVariables().Set_PubSubNode(buddy)
 	}
 
-	// Delegate subscription logic to SubscriptionService
+	// Delegate subscription logic to SubscriptionService with config.PubSub_ConsensusChannel
 	service := Service.NewSubscriptionService(gps)
-	err := service.HandleStreamSubscriptionRequest(config.PubSub_ConsensusChannel)
+	err := service.HandleStreamSubscriptionRequest(topicToSubscribe)
 	if err != nil {
 		fmt.Printf("Failed to subscribe to consensus channel via SubscriptionService: %v\n", err)
 		log.LogMessagesError(fmt.Sprintf("Failed to subscribe to consensus channel: %v", err),
@@ -243,7 +247,7 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 func (lh *ListenerHandler) handleSubscriptionResponse(s network.Stream, message *AVCStruct.Message) {
 	log.LogMessagesInfo(fmt.Sprintf("Received subscription response from %s: %s", s.Conn().RemotePeer(), message.Message),
 		zap.String("peer", s.Conn().RemotePeer().String()),
-		zap.String("topic", log.Messages_TOPIC),
+		zap.String("topic", config.PubSub_ConsensusChannel),
 		zap.String("function", "ListenerHandler.handleSubscriptionResponse"))
 
 	accepted := message.GetACK().GetStatus() == "ACK_TRUE"

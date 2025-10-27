@@ -56,8 +56,17 @@ func Publish(gps *PubSubMessages.GossipPubSub, topic string, message *PubSubMess
 	gps.MessageCache[messageGossip.ID] = true
 	gps.Mutex.Unlock()
 
-	// Gossip to all connected peers
-	GossipMessage(gps, messageBytes)
+	// Publish using GossipSub if available, otherwise use custom gossip
+	if gps.GossipSubPS != nil {
+		if err := publishViaGossipSub(gps, topic, messageBytes); err != nil {
+			log.LogConsensusError(fmt.Sprintf("Failed to publish via GossipSub, falling back to custom gossip: %v", err), err, zap.String("topic", topic), zap.String("function", "Publish.Publish"))
+			// Fall back to custom gossip on error
+			GossipMessage(gps, messageBytes)
+		}
+	} else {
+		// Use custom gossip when GossipSub is not available
+		GossipMessage(gps, messageBytes)
+	}
 
 	log.LogConsensusInfo(fmt.Sprintf("Published message to topic %s: %s", topic, messageGossip.ID), zap.String("topic", topic), zap.String("message", messageGossip.ID), zap.String("function", "Subscription.Publish"))
 
@@ -77,31 +86,72 @@ func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 	fmt.Printf("=== Publish.GossipMessage CALLED ===\n")
 	fmt.Printf("Message Bytes: %s\n", string(messageBytes))
 	fmt.Printf("From Peer: %s\n", gps.Host.ID())
-	fmt.Printf("Message ID: %s\n", gps.MessageID)
+	fmt.Printf("Message ID: %d\n", gps.MessageID)
 	fmt.Printf("Protocol: %s\n", gps.Protocol)
 	fmt.Printf("Message Cache: %v\n", gps.MessageCache)
-	fmt.Printf("Mutex: %v\n", gps.Mutex)
-	fmt.Printf("=== Publish.GossipMessage ENDED ===\n")
+
+	// Parse the message to get the topic
+	var gossipMsg PubSubMessages.GossipMessage
+	if err := json.Unmarshal(messageBytes, &gossipMsg); err != nil {
+		log.LogConsensusError(fmt.Sprintf("Failed to parse message for topic routing: %v", err), err, zap.String("function", "Publish.GossipMessage"))
+		return
+	}
+
+	topic := gossipMsg.Topic
+	fmt.Printf("Message topic: %s\n", topic)
+
 	gps.Mutex.RLock()
+	// Get topic subscribers for this topic
+	topicSubscribers := gps.TopicSubscribers[topic]
+	fmt.Printf("Topic subscribers for %s: %v\n", topic, topicSubscribers)
+	gps.Mutex.RUnlock()
 
-	for _, peerID := range gps.Peers {
-		// Don't send to ourselves
-		if peerID == gps.Host.ID() {
-			continue
+	// Use topic subscribers if available, otherwise fall back to all connected peers
+	connectedPeers := gps.Host.Network().Peers()
+	fmt.Printf("Connected Peers: %v\n", connectedPeers)
+
+	// Determine which peers to send to
+	peersToSend := make([]peer.ID, 0)
+	if len(topicSubscribers) > 0 {
+		// Send to topic subscribers
+		for peerID := range topicSubscribers {
+			if peerID != gps.Host.ID() {
+				// Check if peer is actually connected
+				connectedPeerMap := make(map[peer.ID]bool)
+				for _, cp := range connectedPeers {
+					connectedPeerMap[cp] = true
+				}
+				if connectedPeerMap[peerID] {
+					peersToSend = append(peersToSend, peerID)
+				}
+			}
 		}
+		fmt.Printf("Using topic-based routing: %d subscribers\n", len(peersToSend))
+	} else {
+		// Fall back to all connected peers
+		for _, peerID := range connectedPeers {
+			if peerID != gps.Host.ID() {
+				peersToSend = append(peersToSend, peerID)
+			}
+		}
+		fmt.Printf("Using broadcast fallback: %d peers\n", len(peersToSend))
+	}
 
+	fmt.Printf("=== Publish.GossipMessage ENDED ===\n")
+
+	// Send to filtered peers
+	for _, peerID := range peersToSend {
 		go func(p peer.ID) {
 			fmt.Printf("=== Publish.GossipMessage Sending to Peer: %s ===\n", p)
 
 			if err := sendToPeer(gps, p, messageBytes); err != nil {
 				fmt.Printf("=== Publish.GossipMessage Failed to send to Peer: %s ===\n", p)
-				log.LogConsensusError(fmt.Sprintf("Failed to gossip message to %s: %v", p, err), err, zap.String("peer", p.String()), zap.String("topic", log.Consensus_TOPIC), zap.String("message", string(messageBytes)), zap.String("function", "Subscription.gossipMessage"))
+				log.LogConsensusError(fmt.Sprintf("Failed to gossip message to %s: %v", p, err), err, zap.String("peer", p.String()), zap.String("topic", topic), zap.String("message", string(messageBytes)), zap.String("function", "Subscription.gossipMessage"))
+			} else {
+				fmt.Printf("=== Publish.GossipMessage Sent to Peer: %s ===\n", p)
 			}
-			fmt.Printf("=== Publish.GossipMessage Sent to Peer: %s ===\n", p)
-
 		}(peerID)
 	}
-	fmt.Printf("=== Publish.GossipMessage ENDED ===\n")
 }
 
 // sendToPeer sends a message to a specific peer
@@ -126,4 +176,22 @@ func sendToPeer(gps *PubSubMessages.GossipPubSub, peerID peer.ID, messageBytes [
 func writeMessage(stream network.Stream, message []byte) error {
 	_, err := stream.Write(append(message, config.Delimiter))
 	return err
+}
+
+// publishViaGossipSub publishes a message using libp2p GossipSub
+func publishViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, messageBytes []byte) error {
+	// Get or join the topic
+	topic, err := gps.GetOrJoinTopic(topicName)
+	if err != nil {
+		return fmt.Errorf("failed to get or join topic %s: %w", topicName, err)
+	}
+
+	// Publish the message
+	err = topic.Publish(context.Background(), messageBytes)
+	if err != nil {
+		return fmt.Errorf("failed to publish message to topic %s: %w", topicName, err)
+	}
+
+	fmt.Printf("=== Published via GossipSub to topic: %s ===\n", topicName)
+	return nil
 }

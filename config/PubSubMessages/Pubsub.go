@@ -3,6 +3,7 @@ package PubSubMessages
 import (
 	"sync"
 
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -30,15 +31,18 @@ type ChannelAccess struct {
 
 // GossipPubSub handles gossip-based pub/sub messaging
 type GossipPubSub struct {
-	Host          host.Host                       // libp2p host instance
-	Topics        map[string]bool                 // Subscribed topics
-	Handlers      map[string]func(*GossipMessage) // Topic -> handler function
-	MessageCache  map[string]bool                 // Message deduplication
-	ChannelAccess map[string]*ChannelAccess       // Channel access control
-	Peers         []peer.ID                       // Connected peers
-	Mutex         sync.RWMutex                    // Read-write mutex for thread safety
-	MessageID     uint64                          // Counter for message IDs
-	Protocol      protocol.ID                     // Protocol ID
+	Host             host.Host                       // libp2p host instance
+	Topics           map[string]bool                 // Subscribed topics
+	Handlers         map[string]func(*GossipMessage) // Topic -> handler function
+	MessageCache     map[string]bool                 // Message deduplication
+	ChannelAccess    map[string]*ChannelAccess       // Channel access control
+	Peers            []peer.ID                       // Connected peers
+	TopicSubscribers map[string]map[peer.ID]bool     // Topic -> map of subscriber peer IDs
+	Mutex            sync.RWMutex                    // Read-write mutex for thread safety
+	MessageID        uint64                          // Counter for message IDs
+	Protocol         protocol.ID                     // Protocol ID
+	GossipSubPS      *pubsub.PubSub                  // libp2p GossipSub instance (NEW)
+	TopicsMap        map[string]*pubsub.Topic        // Topic name -> GossipSub topic (NEW)
 }
 
 // Message represents the data payload of a gossip message
