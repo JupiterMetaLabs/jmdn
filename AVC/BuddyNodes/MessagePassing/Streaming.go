@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
+	ServiceLayer "gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
@@ -54,12 +55,16 @@ func NewListenerNode(h host.Host, responseHandler AVCStruct.ResponseHandler) *St
 	}
 	streamCache.ParallelCleanUpRoutine()
 
+	// Initialize CRDT Layer
+	CRDTLayer := ServiceLayer.GetServiceController()
+
 	Node := &AVCStruct.BuddyNode{
 		Host:            h,
 		Network:         h.Network(),
 		PeerID:          h.ID(),
 		ResponseHandler: responseHandler,
 		StreamCache:     streamCache.GetStreamCache(), // Max 20 streams, 5min TTL
+		CRDTLayer:       CRDTLayer,                    // Initialize CRDT Layer
 		MetaData: AVCStruct.MetaData{
 			Received:  0,
 			Sent:      0,
@@ -144,7 +149,7 @@ func (StructBuddyNode *StructBuddyNode) SendMessageToPeer(peerID peer.ID, messag
 	// Get or create a stream from the cache
 	StreamCache := NewStreamCacheBuilder(StructBuddyNode.BuddyNode.StreamCache)
 	if StreamCache == nil {
-		return fmt.Errorf("Faield to get the StreamCache, Nil Streamcache occured")
+		return fmt.Errorf("failed to get the stream cache, nil streamcache occurred")
 	}
 
 	stream, err := StreamCache.GetStream(peerID)
