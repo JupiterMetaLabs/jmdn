@@ -247,6 +247,11 @@ func main() {
 	immudbPassword := flag.String("immudb-pass", "immudb", "ImmuDB password")
 	flag.Parse()
 
+	// Update the global seed node URL if provided via command-line
+	if *seedNodeURL != "" {
+		config.SetSeedNodeURL(*seedNodeURL)
+	}
+
 	// Initialize logger
 	logFileName := "p2p-node.log"
 	Logger, err := logging.ReturnDefaultLoggerWithLoki(logFileName, "p2p-node", *enableLoki)

@@ -32,7 +32,17 @@ const (
 	MessageBufferTime      = 5 * time.Second  // 5-second buffer between windows
 )
 
-var SeedNodeURL string = "34.174.233.203:17002"
+var SeedNodeURL string = "" // Default seed node URL, can be updated via SetSeedNodeURL
+
+// SetSeedNodeURL sets the seed node URL for the application
+func SetSeedNodeURL(url string) {
+	SeedNodeURL = url
+}
+
+// GetSeedNodeURL returns the current seed node URL
+func GetSeedNodeURL() string {
+	return SeedNodeURL
+}
 
 // Protocol IDs for message and file sharing
 const (
