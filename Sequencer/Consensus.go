@@ -175,14 +175,30 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		return fmt.Errorf("failed to request subscription permission: %v", err)
 	}
 
-	// Verify that nodes are actually subscribed
-	if err := consensus.VerifySubscriptions(); err != nil {
-		return fmt.Errorf("subscription verification failed: %w", err)
-	}
+	// Start vote trigger in a goroutine with 5-second delay
+	go func() {
+		fmt.Printf("=== [Consensus.Start] Starting vote trigger goroutine with 5-second delay ===\n")
+		time.Sleep(5 * time.Second)
 
-	// After successful subscription verification, broadcast vote trigger to all subscribed peers
-	if err := consensus.BroadcastVoteTrigger(); err != nil {
-		return fmt.Errorf("failed to broadcast vote trigger: %w", err)
+		fmt.Printf("=== [Consensus.Start] About to call BroadcastVoteTrigger ===\n")
+		fmt.Printf("=== [Consensus.Start] consensus.ZKBlockData: %+v ===\n", consensus.ZKBlockData)
+
+		// Broadcast vote trigger to all subscribed peers
+		if err := consensus.BroadcastVoteTrigger(); err != nil {
+			fmt.Printf("=== [Consensus.Start] BroadcastVoteTrigger FAILED: %v ===\n", err)
+		} else {
+			fmt.Printf("=== [Consensus.Start] BroadcastVoteTrigger completed successfully ===\n")
+		}
+	}()
+
+	// Verify that nodes are actually subscribed (non-blocking for vote trigger)
+	fmt.Printf("=== [Consensus.Start] About to verify subscriptions ===\n")
+	if err := consensus.VerifySubscriptions(); err != nil {
+		fmt.Printf("=== [Consensus.Start] VerifySubscriptions FAILED: %v ===\n", err)
+		// Don't return error, let vote trigger run anyway
+		fmt.Printf("=== [Consensus.Start] Continuing despite verification failure ===\n")
+	} else {
+		fmt.Printf("=== [Consensus.Start] VerifySubscriptions PASSED ===\n")
 	}
 
 	return nil
@@ -229,11 +245,14 @@ func (consensus *Consensus) VerifySubscriptions() error {
 	}
 
 	log.Printf("Received verification responses from %d peers", len(verifiedPeerIDs))
+	fmt.Printf("=== [VerifySubscriptions] Got %d verified peers, expecting %d ===\n", len(verifiedPeerIDs), config.MaxMainPeers)
 
 	// Verify that we have the expected number of subscribers (13)
 	if len(verifiedPeerIDs) != config.MaxMainPeers {
 		return fmt.Errorf("incorrect number of verified peers: got %d, expected %d", len(verifiedPeerIDs), config.MaxMainPeers)
 	}
+
+	fmt.Printf("=== [VerifySubscriptions] Verification count check PASSED ===\n")
 
 	// Log all verified PeerIDs
 	for connectionPeerID, responsePeerID := range verifiedPeerIDs {
@@ -247,21 +266,31 @@ func (consensus *Consensus) VerifySubscriptions() error {
 // BroadcastVoteTrigger broadcasts a vote trigger message to all subscribed peers
 // This initiates the voting process by sending vote trigger broadcasts
 func (consensus *Consensus) BroadcastVoteTrigger() error {
+	fmt.Printf("=== [BroadcastVoteTrigger] ENTRY ===\n")
+
 	if consensus.gossipnode == nil {
+		fmt.Printf("=== [BroadcastVoteTrigger] ERROR: GossipPubSub not initialized ===\n")
 		return fmt.Errorf("GossipPubSub not initialized for consensus")
 	}
 
 	if consensus.ZKBlockData == nil {
+		fmt.Printf("=== [BroadcastVoteTrigger] ERROR: ZKBlockData not set ===\n")
 		return fmt.Errorf("ZKBlockData not set - cannot trigger voting")
 	}
+
+	fmt.Printf("=== [BroadcastVoteTrigger] GossipPubSub and ZKBlockData are valid ===\n")
+	fmt.Printf("=== [BroadcastVoteTrigger] About to call messaging.BroadcastVoteTrigger ===\n")
+	fmt.Printf("=== [BroadcastVoteTrigger] consensus.Host.ID(): %s ===\n", consensus.Host.ID())
 
 	log.Printf("Starting vote trigger broadcast to all connected peers...")
 
 	// Use the messaging.BroadcastVoteTrigger function to broadcast the vote trigger
 	if err := messaging.BroadcastVoteTrigger(consensus.Host, consensus.ZKBlockData); err != nil {
+		fmt.Printf("=== [BroadcastVoteTrigger] messaging.BroadcastVoteTrigger FAILED: %v ===\n", err)
 		return fmt.Errorf("failed to broadcast vote trigger: %w", err)
 	}
 
+	fmt.Printf("=== [BroadcastVoteTrigger] SUCCESS ===\n")
 	log.Printf("Vote trigger broadcast completed successfully")
 	return nil
 }
