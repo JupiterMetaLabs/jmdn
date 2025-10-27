@@ -196,12 +196,23 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 
 		// Now publish the vote to pubsub so other buddy nodes can receive it
 		if pubSubNode != nil && pubSubNode.PubSub != nil {
-			fmt.Printf("=== Publishing vote to pubsub for other buddy nodes ===\n")
+			fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+			fmt.Printf("║  PUBLISHING VOTE TO PUBSUB                                ║\n")
+			fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+			fmt.Printf("📤 From Buddy Node: %s\n", listenerNode.PeerID.String())
+			fmt.Printf("📝 Vote Message: %s\n", message.Message)
+			fmt.Printf("🆔 Sender: %s\n", message.Sender.String())
+			fmt.Printf("📡 Channel: %s\n", config.PubSub_ConsensusChannel)
+			fmt.Printf("⏰ Timestamp: %d\n", message.Timestamp)
+			fmt.Printf("═══════════════════════════════════════════════════════════\n")
+
 			if err := Publisher.Publish(pubSubNode.PubSub, config.PubSub_ConsensusChannel, message, map[string]string{}); err != nil {
-				fmt.Printf("=== Failed to publish vote to pubsub: %v ===\n", err)
+				fmt.Printf("❌ Failed to publish vote to pubsub: %v\n", err)
 			} else {
-				fmt.Printf("=== Successfully published vote to pubsub ===\n")
+				fmt.Printf("✅ Successfully published vote to pubsub - Other buddy nodes will receive this vote\n\n")
 			}
+		} else {
+			fmt.Printf("⚠️ Cannot publish vote - pubSubNode or pubSubNode.PubSub is nil\n")
 		}
 	}
 
@@ -214,8 +225,8 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 
 	// Print CRDT state after processing the vote (non-blocking)
 	go func() {
-		// Wait a bit for other votes to be processed
-		time.Sleep(5000 * time.Millisecond)
+		// Wait for more votes to be processed (increased from 5s to 15s)
+		time.Sleep(15 * time.Second)
 		if err := Structs.PrintCRDTState(listenerNode); err != nil {
 			fmt.Printf("Failed to print CRDT state: %v\n", err)
 		}

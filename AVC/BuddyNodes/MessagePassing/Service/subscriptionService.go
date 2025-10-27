@@ -226,9 +226,16 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 			zap.String("function", "SubscriptionService.handleReceivedMessage"))
 
 		// Add vote to local CRDT for this buddy node
-		fmt.Printf("\n[BUDDY] Processing vote submission via pubsub\n")
-		fmt.Printf("Message: %s\n", msg.Data.Message)
-		fmt.Printf("From: %s\n", msg.Sender)
+		fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+		fmt.Printf("║  RECEIVED VOTE VIA PUBSUB                                ║\n")
+		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+		fmt.Printf("📥 To Buddy Node: %s\n", msg.Sender.String())
+		fmt.Printf("📨 Message ID: %s\n", msg.ID)
+		fmt.Printf("📝 Vote Message: %s\n", msg.Data.Message)
+		fmt.Printf("🆔 From Sender: %s\n", msg.Data.Sender.String())
+		fmt.Printf("📡 Channel: %s\n", msg.Topic)
+		fmt.Printf("⏰ Timestamp: %d\n", msg.Timestamp)
+		fmt.Printf("═══════════════════════════════════════════════════════════\n")
 
 		// Get the global ForListner
 		globalVars := AVCStruct.NewGlobalVariables()
@@ -267,6 +274,10 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 			}
 
 			fmt.Printf("[BUDDY] ✓ Successfully added vote to CRDT\n")
+			fmt.Printf("═══════════════════════════════════════════════════════════\n")
+			fmt.Printf("✅ Vote successfully added to CRDT from sender: %s\n", msg.Data.Sender.String())
+			fmt.Printf("✅ Stored under key: %s\n", msg.Data.Sender.String())
+			fmt.Printf("═══════════════════════════════════════════════════════════\n\n")
 		}
 
 		return nil
