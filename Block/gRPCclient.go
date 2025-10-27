@@ -12,7 +12,7 @@ import (
 	"gossipnode/logging"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/golang/protobuf/ptypes/empty"
+	// "github.com/golang/protobuf/ptypes/empty"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -212,12 +212,17 @@ func (m *MempoolClient) GetPendingTransactions(limit int32) (*pb.TransactionBatc
 }
 
 // GetMempoolStats gets the current mempool statistics
-func (m *MempoolClient) GetMempoolStats() (*pb.MempoolStats, error) {
+func (m *MempoolClient) GetMempoolStats() (*pb.MREStats, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	RoutingClient, err := GetRoutingClient()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get routing client: %v", err)
+	}
+
 	// Use the empty.Empty type directly
-	stats, err := m.client.GetMempoolStats(ctx, &empty.Empty{})
+	stats, err := RoutingClient.GetMempoolStats(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get mempool stats: %v", err)
 	}
@@ -233,12 +238,42 @@ type GasFeeStats struct {
 	RecommendedFees *pb.RecommendedFees
 }
 
+// GetFeeStatisticsFromRouting gets fee statistics directly from routing service
+// This is the recommended way to access routing service functionality
+func GetFeeStatisticsFromRouting() (*GasFeeStats, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	routingClient, err := GetRoutingClient()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get routing client: %v", err)
+	}
+
+	stats, err := routingClient.GetFeeStatistics(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get fee statistics: %v", err)
+	}
+
+	return &GasFeeStats{
+		MaxFee:          stats.MaxFee,
+		MinFee:          stats.MinFee,
+		MedianFee:       stats.MedianFee,
+		MeanFee:         stats.MeanFee,
+		RecommendedFees: stats.RecommendedFees,
+	}, nil
+}
+
 // GetFeeStatistics gets detailed fee statistics from the mempool
 func (m *MempoolClient) GetFeeStatistics() (*pb.FeeStatistics, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	stats, err := m.client.GetFeeStatistics(ctx, &empty.Empty{})
+	RoutingClient, err := GetRoutingClient()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get routing client: %v", err)
+	}
+
+	stats, err := RoutingClient.GetFeeStatistics(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get fee statistics: %v", err)
 	}
@@ -251,7 +286,12 @@ func (m *MempoolClient) WrapperGetFeeStatistics() (*GasFeeStats, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	stats, err := m.client.GetFeeStatistics(ctx, &empty.Empty{})
+	RoutingClient, err := GetRoutingClient()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get routing client: %v", err)
+	}
+
+	stats, err := RoutingClient.GetFeeStatistics(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get fee statistics: %v", err)
 	}
@@ -368,12 +408,9 @@ func InitMempoolClient(address string) error {
 	}
 
 	globalMempoolClient = client
-	stats, err := globalMempoolClient.GetMempoolStats()
-	if err != nil {
-		fmt.Println("Mempool stats failed:", err)
-	} else {
-		fmt.Println("Mempool stats:", stats)
-	}
+	// Don't verify connection here since GetMempoolStats depends on routing client
+	// which is initialized later in main.go
+	fmt.Println("Mempool client initialized successfully")
 	return nil
 }
 

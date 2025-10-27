@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	block "gossipnode/Block"
-	"time"
-	"gossipnode/gETH/Facade/Service/Types"
 	"gossipnode/gETH/Facade/Service/Logger"
+	"gossipnode/gETH/Facade/Service/Types"
+	"time"
 )
 
 func GasPrice(ctx context.Context, msg Types.CallMsg) (uint64, error) {
@@ -14,19 +14,10 @@ func GasPrice(ctx context.Context, msg Types.CallMsg) (uint64, error) {
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Get the mempool client
-	mempoolClient, err := block.ReturnMempoolObject()
+	// Get fee statistics directly from routing service
+	feeStats, err := block.GetFeeStatisticsFromRouting()
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("EstimateGas failed: %v", err), "EstimateGas", -1); logErr != nil {
-			fmt.Printf("Failed to log EstimateGas error: %v\n", logErr)
-		}
-		return 0, err
-	}
-
-	// Get the Fee Stats
-	feeStats, err := mempoolClient.WrapperGetFeeStatistics()
-	if err != nil {
-		if logErr := Logger.LogData(opCtx, fmt.Sprintf("Estimate Gas Fee Stats failed: %v", err), "EstimateGas", -1); logErr != nil {
 			fmt.Printf("Failed to log EstimateGas error: %v\n", logErr)
 		}
 		return 0, err

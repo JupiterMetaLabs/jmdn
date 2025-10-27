@@ -431,14 +431,108 @@ func (s *ServiceImpl) Call(ctx context.Context, msg Types.CallMsg, block *big.In
 	return nil, fmt.Errorf("Call method not yet implemented")
 }
 
-// EstimateGas implements the Service interface - placeholder implementation
+// EstimateGas implements the Service interface - estimates gas needed for a transaction
 func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint64, error) {
-	// TODO: Implement gas estimation functionality
-	return 321000, nil // Return base gas cost as fallback
+	// Create a new context with timeout for this operation
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Base gas cost for any transaction
+	baseGas := uint64(1000)
+
+	// Get fee statistics from routing service to adjust base gas estimate
+	feeStats, err := block.GetFeeStatisticsFromRouting()
+	if err == nil && feeStats != nil {
+		fmt.Printf("📊 Fee stats from routing service:\n")
+		fmt.Printf("   MeanFee: %d wei (%.9f gwei)\n", feeStats.MeanFee, float64(feeStats.MeanFee)/1000000000.0)
+		fmt.Printf("   Standard: %d wei (%.9f gwei)\n", feeStats.RecommendedFees.Standard, float64(feeStats.RecommendedFees.Standard)/1000000000.0)
+		fmt.Printf("   Min: %d wei, Max: %d wei, Median: %d wei\n", feeStats.MinFee, feeStats.MaxFee, feeStats.MedianFee)
+
+		if feeStats.MeanFee > 0 {
+			// Use mean fee from routing service to adjust base gas
+			// Higher fees typically correlate with more complex transactions requiring more gas
+			feeMultiplier := float64(feeStats.MeanFee) / 20000000000.0 // Normalize against 20 gwei
+			if feeMultiplier > 1.0 {
+				fmt.Printf("💰 Applying fee multiplier: %.4f (MeanFee exceeds 20 gwei threshold)\n", feeMultiplier)
+				baseGas = uint64(float64(baseGas) * feeMultiplier)
+			} else {
+				fmt.Printf("✅ Fee multiplier not applied (MeanFee=%.9f gwei < 20 gwei threshold)\n", float64(feeStats.MeanFee)/1000000000.0)
+			}
+		}
+	} else if err != nil {
+		fmt.Printf("⚠️ Failed to get fee statistics from routing service: %v\n", err)
+	}
+
+	// Additional gas for contract deployment
+	if msg.To == "" {
+		baseGas += 32000 // Contract creation cost
+	}
+
+	// Additional gas for data payload
+	if len(msg.Data) > 0 {
+		// Calculate gas for data
+		// - 4 gas for each zero byte
+		// - 16 gas for each non-zero byte
+		var dataGas uint64
+		for _, b := range msg.Data {
+			if b == 0 {
+				dataGas += 4
+			} else {
+				dataGas += 16
+			}
+		}
+		baseGas += dataGas
+	}
+
+	// Additional gas for value transfer
+	if msg.Value != nil && msg.Value.Sign() > 0 {
+		baseGas += 9000 // Value transfer cost
+	}
+
+	// Add a buffer for safety (5%)
+	estimatedGas := baseGas + (baseGas / 5)
+
+	// Log success
+	if logErr := Logger.LogData(opCtx, fmt.Sprintf("EstimateGas returned to client: %d", estimatedGas), "EstimateGas", 1); logErr != nil {
+		fmt.Printf("Failed to log EstimateGas success: %v\n", logErr)
+	}
+
+	return estimatedGas, nil
 }
 
-// GasPrice implements the Service interface - placeholder implementation
+// GasPrice implements the Service interface - gets gas price from routing service
 func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
-	// TODO: Implement gas price calculation
-	return big.NewInt(20000000000), nil // Return 20 gwei as fallback
+	// Create a new context with timeout for this operation
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Get the mempool client
+	RoutingClient, err := block.ReturnMempoolObject()
+	if err != nil {
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GasPrice failed to get mempool client: %v", err), "GasPrice", -1); logErr != nil {
+			fmt.Printf("Failed to log GasPrice error: %v\n", logErr)
+		}
+		// Return fallback value on error
+		return big.NewInt(20000000000), nil // 20 gwei fallback
+	}
+
+	// Get the fee statistics from routing service
+	feeStats, err := RoutingClient.WrapperGetFeeStatistics()
+	if err != nil {
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GasPrice failed to get fee statistics: %v", err), "GasPrice", -1); logErr != nil {
+			fmt.Printf("Failed to log GasPrice error: %v\n", logErr)
+		}
+		// Return fallback value on error
+		return big.NewInt(20000000000), nil // 20 gwei fallback
+	}
+
+	// Get standard recommended fee (gas price in gwei)
+	gasPrice := big.NewInt(int64(feeStats.RecommendedFees.Standard))
+
+	// Log success
+	if logErr := Logger.LogData(opCtx, fmt.Sprintf("GasPrice returned to client: %s", gasPrice.String()), "GasPrice", 1); logErr != nil {
+		fmt.Printf("Failed to log GasPrice success: %v\n", logErr)
+	}
+
+	return gasPrice, nil
 }
