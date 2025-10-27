@@ -22,7 +22,6 @@ func Subscribe(gps *PubSubMessages.GossipPubSub, topic string, handler func(*Pub
 	}
 	fmt.Printf("CanSubscribe returned true for %s\n", topic)
 	gps.Mutex.Lock()
-	defer gps.Mutex.Unlock()
 	gps.Topics[topic] = true
 	gps.Handlers[topic] = handler
 	// Initialize TopicSubscribers map if not exists
@@ -37,6 +36,8 @@ func Subscribe(gps *PubSubMessages.GossipPubSub, topic string, handler func(*Pub
 	// Add this peer as a subscriber to the topic
 	gps.TopicSubscribers[topic][gps.Host.ID()] = true
 	fmt.Printf("TopicSubscribers map updated for %s\n", topic)
+	gps.Mutex.Unlock() // Unlock before calling subscribeViaGossipSub to avoid deadlock
+
 	// Subscribe using GossipSub if available
 	if gps.GossipSubPS != nil {
 		if err := subscribeViaGossipSub(gps, topic, handler); err != nil {

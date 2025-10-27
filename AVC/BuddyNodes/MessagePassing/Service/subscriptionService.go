@@ -170,6 +170,8 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 	if msg.Data == nil {
 		return fmt.Errorf("received message has no data")
 	}
+	fmt.Printf("==============================================\n")
+	fmt.Printf("Message: %+v\n", msg)
 
 	// Process the message based on its type
 	switch msg.Data.ACK.Stage {
@@ -228,7 +230,7 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 		}
 
 		// Add vote to CRDT directly
-		var voteData map[string]interface{}
+		voteData := make(map[string]interface{})
 		if err := json.Unmarshal([]byte(msg.Data.Message), &voteData); err != nil {
 			fmt.Printf("[BUDDY] ✗ Failed to unmarshal vote message: %v\n", err)
 			return fmt.Errorf("failed to unmarshal vote message: %v", err)

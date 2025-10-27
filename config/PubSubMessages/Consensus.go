@@ -8,7 +8,7 @@ import (
 	"github.com/multiformats/go-multiaddr"
 )
 
-var CacheConsensuMessage map[string]*ConsensusMessage
+var CacheConsensuMessage = make(map[string]*ConsensusMessage)
 
 type ConsensusMessage struct {
 	ZKBlock      *config.ZKBlock
@@ -20,7 +20,7 @@ type ConsensusMessage struct {
 }
 
 type Buddy_PeerMultiaddr struct {
-	PeerID peer.ID
+	PeerID    peer.ID
 	Multiaddr multiaddr.Multiaddr
 }
 
