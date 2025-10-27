@@ -99,7 +99,7 @@ ExecStart=/bin/bash -lc 'exec ${BIN_PATH} \
   -chainID 7000700 \
   -mempool 34.129.53.115:18001
   -explorer 2>&1 | tee -a ${LOG_PATH}'
-Restart=always
+Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
 LimitNOFILE=1048576
