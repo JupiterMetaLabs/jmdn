@@ -13,8 +13,19 @@ import (
 	"go.uber.org/zap"
 )
 
-// Subscribe subscribes to a topic with access control
+// Subscribe subscribes to a topic with access control (now uses enhanced implementation)
 func Subscribe(gps *PubSubMessages.GossipPubSub, topic string, handler func(*PubSubMessages.GossipMessage)) error {
+	// Use enhanced subscription if available, fall back to original implementation
+	if gps.GossipSubPS != nil {
+		return SubscribeEnhanced(gps, topic, handler)
+	}
+
+	// Fall back to original implementation for custom gossip
+	return subscribeOriginal(gps, topic, handler)
+}
+
+// subscribeOriginal is the original subscribe implementation (renamed for clarity)
+func subscribeOriginal(gps *PubSubMessages.GossipPubSub, topic string, handler func(*PubSubMessages.GossipMessage)) error {
 	fmt.Printf("About to call Subscribe for %s\n", topic)
 	// Check if we can subscribe to this channel
 	if !CanSubscribe(gps, topic, gps.Host.ID()) {

@@ -62,6 +62,7 @@ func NewListenerHandler(responseHandler AVCStruct.ResponseHandler) *ListenerHand
 func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 	fmt.Println("=== ListenerHandler.HandleSubmitMessageStream CALLED ===")
 	fmt.Printf("Received stream from: %s\n", s.Conn().RemotePeer())
+	fmt.Printf("🔄 STREAM RECEIVED FROM REMOTE PEER\n")
 
 	reader := bufio.NewReader(s)
 	msg, err := reader.ReadString(config.Delimiter)
@@ -131,7 +132,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 		lh.handleSubscriptionResponse(s, message)
 		defer s.Close()
 	case config.Type_VoteResult:
-		fmt.Println("Handling Type_VoteResult (request for vote aggregation result)")
+		fmt.Println("\n🚨🚨🚨 HANDLING Type_VoteResult - VOTE RESULT REQUEST 🚨🚨🚨\n")
 		lh.handleVoteResultRequest(s, message)
 		defer s.Close()
 	default:
@@ -864,10 +865,12 @@ func (lh *ListenerHandler) handleVoteResult(s network.Stream, message *AVCStruct
 
 // handleVoteResultRequest handles request for vote aggregation result from a buddy node
 func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AVCStruct.Message) {
+	fmt.Printf("\n\n\n🎯🎯🎯 RECEIVED VOTE RESULT REQUEST FROM SEQUENCER 🎯🎯🎯\n\n\n")
 	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
 	fmt.Printf("║       REQUEST FOR VOTE AGGREGATION RESULT                 ║\n")
 	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
 	fmt.Printf("📨 Request from: %s\n", s.Conn().RemotePeer().String())
+	fmt.Printf("📋 Message: %s\n", message.Message)
 
 	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
 	if listenerNode == nil || listenerNode.CRDTLayer == nil {

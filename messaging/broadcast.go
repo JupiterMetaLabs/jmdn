@@ -11,9 +11,11 @@ import (
 	"sync"
 	"time"
 
+	"gossipnode/DB_OPs"
 	"gossipnode/Vote"
 	"gossipnode/config"
 	PubSubMessages "gossipnode/config/PubSubMessages"
+	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -492,6 +494,166 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 	return nil
 }
 
-// func BroadcastBlockToEveryNode(h host.Host, block *config.ZKBlock, BuddyNodes PubSubMessages.Buddies) error {
+func BroadcastBlockToEveryNode(h host.Host, block *config.ZKBlock, result bool) error {
+	log.Info().
+		Str("block_hash", block.BlockHash.Hex()).
+		Uint64("block_number", block.BlockNumber).
+		Bool("process_result", result).
+		Msg("Broadcasting block to all nodes")
 
-// }
+	// Get all connected peers
+	peers := h.Network().Peers()
+	if len(peers) == 0 {
+		log.Warn().Msg("No connected peers to broadcast block to")
+
+		// Even if no peers, process if result is positive
+		if result {
+			return processBlockLocally(block)
+		}
+		return nil
+	}
+
+	// Generate a unique nonce for the block message
+	nonceBytes := make([]byte, 16)
+	for i := range nonceBytes {
+		nonceBytes[i] = byte(time.Now().UnixNano() & 0xff)
+		time.Sleep(1 * time.Nanosecond)
+	}
+	nonce := base64.URLEncoding.EncodeToString(nonceBytes)
+
+	// Create block message with metadata
+	now := time.Now().Unix()
+	msg := config.BlockMessage{
+		Sender:    h.ID().String(),
+		Timestamp: now,
+		Nonce:     nonce,
+		Block:     block,
+		Type:      "zkblock",
+		Hops:      0,
+		Data: map[string]string{
+			"block_hash":   block.BlockHash.Hex(),
+			"block_number": fmt.Sprintf("%d", block.BlockNumber),
+			"txn_count":    fmt.Sprintf("%d", len(block.Transactions)),
+			"proof_hash":   block.ProofHash,
+			"status":       block.Status,
+			"timestamp":    fmt.Sprintf("%d", block.Timestamp),
+		},
+	}
+
+	// Generate message ID
+	msg.ID = generateBlockMessageID(msg.Sender, nonce, now)
+
+	// Mark as processed by us to avoid processing our own message
+	markMessageProcessed(getMessageIDForBloomFilter(msg))
+
+	// Convert to JSON
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal block message: %w", err)
+	}
+	msgBytes = append(msgBytes, '\n')
+
+	// Broadcast to all peers concurrently
+	var wg sync.WaitGroup
+	var successCount int
+	var successMutex sync.Mutex
+
+	for _, peerID := range peers {
+		wg.Add(1)
+		go func(peer peer.ID) {
+			defer wg.Done()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			stream, err := h.NewStream(ctx, peer, config.BlockPropagationProtocol)
+			if err != nil {
+				log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to open stream")
+				return
+			}
+			defer stream.Close()
+
+			if _, err := stream.Write(msgBytes); err != nil {
+				log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to write message")
+				return
+			}
+
+			successMutex.Lock()
+			successCount++
+			successMutex.Unlock()
+
+			metrics.MessagesSentCounter.WithLabelValues("zkblock", peer.String()).Inc()
+		}(peerID)
+	}
+
+	wg.Wait()
+
+	log.Info().
+		Str("block_hash", block.BlockHash.Hex()).
+		Int("success", successCount).
+		Int("total", len(peers)).
+		Msg("Block broadcast complete")
+
+	// If result is positive, process the block locally
+	if result {
+		log.Info().
+			Str("block_hash", block.BlockHash.Hex()).
+			Msg("Positive result - processing block locally")
+		return processBlockLocally(block)
+	}
+
+	return nil
+}
+
+// processBlockLocally processes a block locally (similar to processZKBlockNoConsensus)
+func processBlockLocally(block *config.ZKBlock) error {
+	log.Info().
+		Str("block_hash", block.BlockHash.Hex()).
+		Uint64("block_number", block.BlockNumber).
+		Msg("Processing block locally")
+
+	// Create DB clients for processing
+	mainDBClient, err := DB_OPs.GetMainDBConnection()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to get main DB connection")
+		return fmt.Errorf("failed to get main DB connection: %w", err)
+	}
+	defer func() {
+		DB_OPs.PutMainDBConnection(mainDBClient)
+	}()
+
+	accountsClient, err := DB_OPs.GetAccountsConnection()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to get accounts DB connection")
+		return fmt.Errorf("failed to get accounts DB connection: %w", err)
+	}
+	defer func() {
+		DB_OPs.PutAccountsConnection(accountsClient)
+	}()
+
+	// Process all transactions in the block atomically
+	if err := BlockProcessing.ProcessBlockTransactions(block, accountsClient); err != nil {
+		log.Error().
+			Err(err).
+			Str("block_hash", block.BlockHash.Hex()).
+			Msg("Block processing failed")
+		return fmt.Errorf("failed to process block transactions: %w", err)
+	}
+
+	// Store the validated and processed block in main DB
+	if err := DB_OPs.StoreZKBlock(mainDBClient, block); err != nil {
+		log.Error().
+			Err(err).
+			Str("block_hash", block.BlockHash.Hex()).
+			Msg("Failed to store block in database")
+		return fmt.Errorf("failed to store block: %w", err)
+	}
+
+	log.Info().
+		Uint64("block_number", block.BlockNumber).
+		Str("block_hash", block.BlockHash.Hex()).
+		Int("tx_count", len(block.Transactions)).
+		Msg("Block processed and stored successfully")
+
+	return nil
+}
