@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v6.32.1
-// source: seednode.proto
+// source: seednode/proto/seednode.proto
 
 package peerpb
 
@@ -53,11 +53,11 @@ func (x PeerStatus) String() string {
 }
 
 func (PeerStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_seednode_proto_enumTypes[0].Descriptor()
+	return file_seednode_proto_seednode_proto_enumTypes[0].Descriptor()
 }
 
 func (PeerStatus) Type() protoreflect.EnumType {
-	return &file_seednode_proto_enumTypes[0]
+	return &file_seednode_proto_seednode_proto_enumTypes[0]
 }
 
 func (x PeerStatus) Number() protoreflect.EnumNumber {
@@ -66,7 +66,7 @@ func (x PeerStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use PeerStatus.Descriptor instead.
 func (PeerStatus) EnumDescriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{0}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{0}
 }
 
 // Signed peer record message
@@ -92,7 +92,7 @@ type SignedPeerRecord struct {
 
 func (x *SignedPeerRecord) Reset() {
 	*x = SignedPeerRecord{}
-	mi := &file_seednode_proto_msgTypes[0]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -104,7 +104,7 @@ func (x *SignedPeerRecord) String() string {
 func (*SignedPeerRecord) ProtoMessage() {}
 
 func (x *SignedPeerRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[0]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -117,7 +117,7 @@ func (x *SignedPeerRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignedPeerRecord.ProtoReflect.Descriptor instead.
 func (*SignedPeerRecord) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{0}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *SignedPeerRecord) GetPeerId() string {
@@ -231,7 +231,7 @@ type PeerRecordUpdate struct {
 
 func (x *PeerRecordUpdate) Reset() {
 	*x = PeerRecordUpdate{}
-	mi := &file_seednode_proto_msgTypes[1]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -243,7 +243,7 @@ func (x *PeerRecordUpdate) String() string {
 func (*PeerRecordUpdate) ProtoMessage() {}
 
 func (x *PeerRecordUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[1]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -256,7 +256,7 @@ func (x *PeerRecordUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerRecordUpdate.ProtoReflect.Descriptor instead.
 func (*PeerRecordUpdate) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{1}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *PeerRecordUpdate) GetPeerId() string {
@@ -351,7 +351,7 @@ type HeartbeatMessage struct {
 
 func (x *HeartbeatMessage) Reset() {
 	*x = HeartbeatMessage{}
-	mi := &file_seednode_proto_msgTypes[2]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -363,7 +363,7 @@ func (x *HeartbeatMessage) String() string {
 func (*HeartbeatMessage) ProtoMessage() {}
 
 func (x *HeartbeatMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[2]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -376,7 +376,7 @@ func (x *HeartbeatMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatMessage.ProtoReflect.Descriptor instead.
 func (*HeartbeatMessage) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{2}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *HeartbeatMessage) GetPeerId() string {
@@ -438,7 +438,7 @@ type PeerNeighbor struct {
 
 func (x *PeerNeighbor) Reset() {
 	*x = PeerNeighbor{}
-	mi := &file_seednode_proto_msgTypes[3]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -450,7 +450,7 @@ func (x *PeerNeighbor) String() string {
 func (*PeerNeighbor) ProtoMessage() {}
 
 func (x *PeerNeighbor) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[3]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -463,7 +463,7 @@ func (x *PeerNeighbor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerNeighbor.ProtoReflect.Descriptor instead.
 func (*PeerNeighbor) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{3}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *PeerNeighbor) GetPeerId() string {
@@ -540,7 +540,7 @@ type InactiveNeighborReport struct {
 
 func (x *InactiveNeighborReport) Reset() {
 	*x = InactiveNeighborReport{}
-	mi := &file_seednode_proto_msgTypes[4]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -552,7 +552,7 @@ func (x *InactiveNeighborReport) String() string {
 func (*InactiveNeighborReport) ProtoMessage() {}
 
 func (x *InactiveNeighborReport) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[4]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -565,7 +565,7 @@ func (x *InactiveNeighborReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InactiveNeighborReport.ProtoReflect.Descriptor instead.
 func (*InactiveNeighborReport) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{4}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *InactiveNeighborReport) GetReporterPeerId() string {
@@ -648,7 +648,7 @@ type PeerAlias struct {
 
 func (x *PeerAlias) Reset() {
 	*x = PeerAlias{}
-	mi := &file_seednode_proto_msgTypes[5]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -660,7 +660,7 @@ func (x *PeerAlias) String() string {
 func (*PeerAlias) ProtoMessage() {}
 
 func (x *PeerAlias) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[5]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -673,7 +673,7 @@ func (x *PeerAlias) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerAlias.ProtoReflect.Descriptor instead.
 func (*PeerAlias) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{5}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *PeerAlias) GetName() string {
@@ -736,7 +736,7 @@ type RegisterPeerRequest struct {
 
 func (x *RegisterPeerRequest) Reset() {
 	*x = RegisterPeerRequest{}
-	mi := &file_seednode_proto_msgTypes[6]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -748,7 +748,7 @@ func (x *RegisterPeerRequest) String() string {
 func (*RegisterPeerRequest) ProtoMessage() {}
 
 func (x *RegisterPeerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[6]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -761,7 +761,7 @@ func (x *RegisterPeerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterPeerRequest.ProtoReflect.Descriptor instead.
 func (*RegisterPeerRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{6}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *RegisterPeerRequest) GetPeerRecord() *SignedPeerRecord {
@@ -788,7 +788,7 @@ type RegisterPeerResponse struct {
 
 func (x *RegisterPeerResponse) Reset() {
 	*x = RegisterPeerResponse{}
-	mi := &file_seednode_proto_msgTypes[7]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -800,7 +800,7 @@ func (x *RegisterPeerResponse) String() string {
 func (*RegisterPeerResponse) ProtoMessage() {}
 
 func (x *RegisterPeerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[7]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -813,7 +813,7 @@ func (x *RegisterPeerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterPeerResponse.ProtoReflect.Descriptor instead.
 func (*RegisterPeerResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{7}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *RegisterPeerResponse) GetAccepted() bool {
@@ -839,7 +839,7 @@ type UpdatePeerRequest struct {
 
 func (x *UpdatePeerRequest) Reset() {
 	*x = UpdatePeerRequest{}
-	mi := &file_seednode_proto_msgTypes[8]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -851,7 +851,7 @@ func (x *UpdatePeerRequest) String() string {
 func (*UpdatePeerRequest) ProtoMessage() {}
 
 func (x *UpdatePeerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[8]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -864,7 +864,7 @@ func (x *UpdatePeerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdatePeerRequest.ProtoReflect.Descriptor instead.
 func (*UpdatePeerRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{8}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *UpdatePeerRequest) GetUpdate() *PeerRecordUpdate {
@@ -884,7 +884,7 @@ type UpdatePeerResponse struct {
 
 func (x *UpdatePeerResponse) Reset() {
 	*x = UpdatePeerResponse{}
-	mi := &file_seednode_proto_msgTypes[9]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -896,7 +896,7 @@ func (x *UpdatePeerResponse) String() string {
 func (*UpdatePeerResponse) ProtoMessage() {}
 
 func (x *UpdatePeerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[9]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -909,7 +909,7 @@ func (x *UpdatePeerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdatePeerResponse.ProtoReflect.Descriptor instead.
 func (*UpdatePeerResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{9}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *UpdatePeerResponse) GetAccepted() bool {
@@ -935,7 +935,7 @@ type GetPeerRequest struct {
 
 func (x *GetPeerRequest) Reset() {
 	*x = GetPeerRequest{}
-	mi := &file_seednode_proto_msgTypes[10]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -947,7 +947,7 @@ func (x *GetPeerRequest) String() string {
 func (*GetPeerRequest) ProtoMessage() {}
 
 func (x *GetPeerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[10]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -960,7 +960,7 @@ func (x *GetPeerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPeerRequest.ProtoReflect.Descriptor instead.
 func (*GetPeerRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{10}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *GetPeerRequest) GetPeerId() string {
@@ -981,7 +981,7 @@ type GetPeerResponse struct {
 
 func (x *GetPeerResponse) Reset() {
 	*x = GetPeerResponse{}
-	mi := &file_seednode_proto_msgTypes[11]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -993,7 +993,7 @@ func (x *GetPeerResponse) String() string {
 func (*GetPeerResponse) ProtoMessage() {}
 
 func (x *GetPeerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[11]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1006,7 +1006,7 @@ func (x *GetPeerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPeerResponse.ProtoReflect.Descriptor instead.
 func (*GetPeerResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{11}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetPeerResponse) GetPeerRecord() *SignedPeerRecord {
@@ -1039,7 +1039,7 @@ type CreateAliasRequest struct {
 
 func (x *CreateAliasRequest) Reset() {
 	*x = CreateAliasRequest{}
-	mi := &file_seednode_proto_msgTypes[12]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1051,7 +1051,7 @@ func (x *CreateAliasRequest) String() string {
 func (*CreateAliasRequest) ProtoMessage() {}
 
 func (x *CreateAliasRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[12]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1064,7 +1064,7 @@ func (x *CreateAliasRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAliasRequest.ProtoReflect.Descriptor instead.
 func (*CreateAliasRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{12}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CreateAliasRequest) GetAlias() *PeerAlias {
@@ -1084,7 +1084,7 @@ type CreateAliasResponse struct {
 
 func (x *CreateAliasResponse) Reset() {
 	*x = CreateAliasResponse{}
-	mi := &file_seednode_proto_msgTypes[13]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1096,7 +1096,7 @@ func (x *CreateAliasResponse) String() string {
 func (*CreateAliasResponse) ProtoMessage() {}
 
 func (x *CreateAliasResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[13]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1109,7 +1109,7 @@ func (x *CreateAliasResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAliasResponse.ProtoReflect.Descriptor instead.
 func (*CreateAliasResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{13}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CreateAliasResponse) GetAccepted() bool {
@@ -1135,7 +1135,7 @@ type GetPeerByAliasRequest struct {
 
 func (x *GetPeerByAliasRequest) Reset() {
 	*x = GetPeerByAliasRequest{}
-	mi := &file_seednode_proto_msgTypes[14]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1147,7 +1147,7 @@ func (x *GetPeerByAliasRequest) String() string {
 func (*GetPeerByAliasRequest) ProtoMessage() {}
 
 func (x *GetPeerByAliasRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[14]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1160,7 +1160,7 @@ func (x *GetPeerByAliasRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPeerByAliasRequest.ProtoReflect.Descriptor instead.
 func (*GetPeerByAliasRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{14}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *GetPeerByAliasRequest) GetAlias() string {
@@ -1181,7 +1181,7 @@ type GetPeerByAliasResponse struct {
 
 func (x *GetPeerByAliasResponse) Reset() {
 	*x = GetPeerByAliasResponse{}
-	mi := &file_seednode_proto_msgTypes[15]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1193,7 +1193,7 @@ func (x *GetPeerByAliasResponse) String() string {
 func (*GetPeerByAliasResponse) ProtoMessage() {}
 
 func (x *GetPeerByAliasResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[15]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1206,7 +1206,7 @@ func (x *GetPeerByAliasResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPeerByAliasResponse.ProtoReflect.Descriptor instead.
 func (*GetPeerByAliasResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{15}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *GetPeerByAliasResponse) GetPeerRecord() *SignedPeerRecord {
@@ -1242,7 +1242,7 @@ type PeerListRequest struct {
 
 func (x *PeerListRequest) Reset() {
 	*x = PeerListRequest{}
-	mi := &file_seednode_proto_msgTypes[16]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1254,7 +1254,7 @@ func (x *PeerListRequest) String() string {
 func (*PeerListRequest) ProtoMessage() {}
 
 func (x *PeerListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[16]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1267,7 +1267,7 @@ func (x *PeerListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerListRequest.ProtoReflect.Descriptor instead.
 func (*PeerListRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{16}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *PeerListRequest) GetAfterPeerId() string {
@@ -1309,7 +1309,7 @@ type PeerListResponse struct {
 
 func (x *PeerListResponse) Reset() {
 	*x = PeerListResponse{}
-	mi := &file_seednode_proto_msgTypes[17]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1321,7 +1321,7 @@ func (x *PeerListResponse) String() string {
 func (*PeerListResponse) ProtoMessage() {}
 
 func (x *PeerListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[17]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1334,7 +1334,7 @@ func (x *PeerListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerListResponse.ProtoReflect.Descriptor instead.
 func (*PeerListResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{17}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *PeerListResponse) GetPeers() []*SignedPeerRecord {
@@ -1367,7 +1367,7 @@ type SendHeartbeatRequest struct {
 
 func (x *SendHeartbeatRequest) Reset() {
 	*x = SendHeartbeatRequest{}
-	mi := &file_seednode_proto_msgTypes[18]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1379,7 +1379,7 @@ func (x *SendHeartbeatRequest) String() string {
 func (*SendHeartbeatRequest) ProtoMessage() {}
 
 func (x *SendHeartbeatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[18]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1392,7 +1392,7 @@ func (x *SendHeartbeatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendHeartbeatRequest.ProtoReflect.Descriptor instead.
 func (*SendHeartbeatRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{18}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *SendHeartbeatRequest) GetHeartbeat() *HeartbeatMessage {
@@ -1412,7 +1412,7 @@ type SendHeartbeatResponse struct {
 
 func (x *SendHeartbeatResponse) Reset() {
 	*x = SendHeartbeatResponse{}
-	mi := &file_seednode_proto_msgTypes[19]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1424,7 +1424,7 @@ func (x *SendHeartbeatResponse) String() string {
 func (*SendHeartbeatResponse) ProtoMessage() {}
 
 func (x *SendHeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[19]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1437,7 +1437,7 @@ func (x *SendHeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendHeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*SendHeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{19}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *SendHeartbeatResponse) GetAccepted() bool {
@@ -1467,7 +1467,7 @@ type DeleteAliasRequest struct {
 
 func (x *DeleteAliasRequest) Reset() {
 	*x = DeleteAliasRequest{}
-	mi := &file_seednode_proto_msgTypes[20]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1479,7 +1479,7 @@ func (x *DeleteAliasRequest) String() string {
 func (*DeleteAliasRequest) ProtoMessage() {}
 
 func (x *DeleteAliasRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[20]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1492,7 +1492,7 @@ func (x *DeleteAliasRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteAliasRequest.ProtoReflect.Descriptor instead.
 func (*DeleteAliasRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{20}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *DeleteAliasRequest) GetAlias() string {
@@ -1540,7 +1540,7 @@ type DeleteAliasResponse struct {
 
 func (x *DeleteAliasResponse) Reset() {
 	*x = DeleteAliasResponse{}
-	mi := &file_seednode_proto_msgTypes[21]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1552,7 +1552,7 @@ func (x *DeleteAliasResponse) String() string {
 func (*DeleteAliasResponse) ProtoMessage() {}
 
 func (x *DeleteAliasResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[21]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1565,7 +1565,7 @@ func (x *DeleteAliasResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteAliasResponse.ProtoReflect.Descriptor instead.
 func (*DeleteAliasResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{21}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *DeleteAliasResponse) GetAccepted() bool {
@@ -1591,7 +1591,7 @@ type DeletePeerRequest struct {
 
 func (x *DeletePeerRequest) Reset() {
 	*x = DeletePeerRequest{}
-	mi := &file_seednode_proto_msgTypes[22]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1603,7 +1603,7 @@ func (x *DeletePeerRequest) String() string {
 func (*DeletePeerRequest) ProtoMessage() {}
 
 func (x *DeletePeerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[22]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1616,7 +1616,7 @@ func (x *DeletePeerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeletePeerRequest.ProtoReflect.Descriptor instead.
 func (*DeletePeerRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{22}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *DeletePeerRequest) GetPeerId() string {
@@ -1636,7 +1636,7 @@ type DeletePeerResponse struct {
 
 func (x *DeletePeerResponse) Reset() {
 	*x = DeletePeerResponse{}
-	mi := &file_seednode_proto_msgTypes[23]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1648,7 +1648,7 @@ func (x *DeletePeerResponse) String() string {
 func (*DeletePeerResponse) ProtoMessage() {}
 
 func (x *DeletePeerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[23]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1661,7 +1661,7 @@ func (x *DeletePeerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeletePeerResponse.ProtoReflect.Descriptor instead.
 func (*DeletePeerResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{23}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *DeletePeerResponse) GetAccepted() bool {
@@ -1689,7 +1689,7 @@ type RegisterPeerWithAliasRequest struct {
 
 func (x *RegisterPeerWithAliasRequest) Reset() {
 	*x = RegisterPeerWithAliasRequest{}
-	mi := &file_seednode_proto_msgTypes[24]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1701,7 +1701,7 @@ func (x *RegisterPeerWithAliasRequest) String() string {
 func (*RegisterPeerWithAliasRequest) ProtoMessage() {}
 
 func (x *RegisterPeerWithAliasRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[24]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1714,7 +1714,7 @@ func (x *RegisterPeerWithAliasRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterPeerWithAliasRequest.ProtoReflect.Descriptor instead.
 func (*RegisterPeerWithAliasRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{24}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *RegisterPeerWithAliasRequest) GetPeerRecord() *SignedPeerRecord {
@@ -1748,7 +1748,7 @@ type RegisterPeerWithAliasResponse struct {
 
 func (x *RegisterPeerWithAliasResponse) Reset() {
 	*x = RegisterPeerWithAliasResponse{}
-	mi := &file_seednode_proto_msgTypes[25]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1760,7 +1760,7 @@ func (x *RegisterPeerWithAliasResponse) String() string {
 func (*RegisterPeerWithAliasResponse) ProtoMessage() {}
 
 func (x *RegisterPeerWithAliasResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[25]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1773,7 +1773,7 @@ func (x *RegisterPeerWithAliasResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterPeerWithAliasResponse.ProtoReflect.Descriptor instead.
 func (*RegisterPeerWithAliasResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{25}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *RegisterPeerWithAliasResponse) GetAccepted() bool {
@@ -1804,7 +1804,7 @@ type UpdatePeerWeightsRequest struct {
 
 func (x *UpdatePeerWeightsRequest) Reset() {
 	*x = UpdatePeerWeightsRequest{}
-	mi := &file_seednode_proto_msgTypes[26]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1816,7 +1816,7 @@ func (x *UpdatePeerWeightsRequest) String() string {
 func (*UpdatePeerWeightsRequest) ProtoMessage() {}
 
 func (x *UpdatePeerWeightsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[26]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1829,7 +1829,7 @@ func (x *UpdatePeerWeightsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdatePeerWeightsRequest.ProtoReflect.Descriptor instead.
 func (*UpdatePeerWeightsRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{26}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *UpdatePeerWeightsRequest) GetPeerId() string {
@@ -1877,7 +1877,7 @@ type UpdatePeerWeightsResponse struct {
 
 func (x *UpdatePeerWeightsResponse) Reset() {
 	*x = UpdatePeerWeightsResponse{}
-	mi := &file_seednode_proto_msgTypes[27]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1889,7 +1889,7 @@ func (x *UpdatePeerWeightsResponse) String() string {
 func (*UpdatePeerWeightsResponse) ProtoMessage() {}
 
 func (x *UpdatePeerWeightsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[27]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1902,7 +1902,7 @@ func (x *UpdatePeerWeightsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdatePeerWeightsResponse.ProtoReflect.Descriptor instead.
 func (*UpdatePeerWeightsResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{27}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *UpdatePeerWeightsResponse) GetAccepted() bool {
@@ -1928,7 +1928,7 @@ type ReportInactiveNeighborRequest struct {
 
 func (x *ReportInactiveNeighborRequest) Reset() {
 	*x = ReportInactiveNeighborRequest{}
-	mi := &file_seednode_proto_msgTypes[28]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1940,7 +1940,7 @@ func (x *ReportInactiveNeighborRequest) String() string {
 func (*ReportInactiveNeighborRequest) ProtoMessage() {}
 
 func (x *ReportInactiveNeighborRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[28]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1953,7 +1953,7 @@ func (x *ReportInactiveNeighborRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportInactiveNeighborRequest.ProtoReflect.Descriptor instead.
 func (*ReportInactiveNeighborRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{28}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ReportInactiveNeighborRequest) GetReport() *InactiveNeighborReport {
@@ -1974,7 +1974,7 @@ type ReportInactiveNeighborResponse struct {
 
 func (x *ReportInactiveNeighborResponse) Reset() {
 	*x = ReportInactiveNeighborResponse{}
-	mi := &file_seednode_proto_msgTypes[29]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1986,7 +1986,7 @@ func (x *ReportInactiveNeighborResponse) String() string {
 func (*ReportInactiveNeighborResponse) ProtoMessage() {}
 
 func (x *ReportInactiveNeighborResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[29]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1999,7 +1999,7 @@ func (x *ReportInactiveNeighborResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportInactiveNeighborResponse.ProtoReflect.Descriptor instead.
 func (*ReportInactiveNeighborResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{29}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ReportInactiveNeighborResponse) GetAccepted() bool {
@@ -2032,7 +2032,7 @@ type AddNeighborRequest struct {
 
 func (x *AddNeighborRequest) Reset() {
 	*x = AddNeighborRequest{}
-	mi := &file_seednode_proto_msgTypes[30]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2044,7 +2044,7 @@ func (x *AddNeighborRequest) String() string {
 func (*AddNeighborRequest) ProtoMessage() {}
 
 func (x *AddNeighborRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[30]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2057,7 +2057,7 @@ func (x *AddNeighborRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddNeighborRequest.ProtoReflect.Descriptor instead.
 func (*AddNeighborRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{30}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *AddNeighborRequest) GetNeighbor() *PeerNeighbor {
@@ -2077,7 +2077,7 @@ type AddNeighborResponse struct {
 
 func (x *AddNeighborResponse) Reset() {
 	*x = AddNeighborResponse{}
-	mi := &file_seednode_proto_msgTypes[31]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2089,7 +2089,7 @@ func (x *AddNeighborResponse) String() string {
 func (*AddNeighborResponse) ProtoMessage() {}
 
 func (x *AddNeighborResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[31]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2102,7 +2102,7 @@ func (x *AddNeighborResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddNeighborResponse.ProtoReflect.Descriptor instead.
 func (*AddNeighborResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{31}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *AddNeighborResponse) GetAccepted() bool {
@@ -2132,7 +2132,7 @@ type RemoveNeighborRequest struct {
 
 func (x *RemoveNeighborRequest) Reset() {
 	*x = RemoveNeighborRequest{}
-	mi := &file_seednode_proto_msgTypes[32]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2144,7 +2144,7 @@ func (x *RemoveNeighborRequest) String() string {
 func (*RemoveNeighborRequest) ProtoMessage() {}
 
 func (x *RemoveNeighborRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[32]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2157,7 +2157,7 @@ func (x *RemoveNeighborRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveNeighborRequest.ProtoReflect.Descriptor instead.
 func (*RemoveNeighborRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{32}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *RemoveNeighborRequest) GetPeerId() string {
@@ -2205,7 +2205,7 @@ type RemoveNeighborResponse struct {
 
 func (x *RemoveNeighborResponse) Reset() {
 	*x = RemoveNeighborResponse{}
-	mi := &file_seednode_proto_msgTypes[33]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2217,7 +2217,7 @@ func (x *RemoveNeighborResponse) String() string {
 func (*RemoveNeighborResponse) ProtoMessage() {}
 
 func (x *RemoveNeighborResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[33]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2230,7 +2230,7 @@ func (x *RemoveNeighborResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveNeighborResponse.ProtoReflect.Descriptor instead.
 func (*RemoveNeighborResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{33}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *RemoveNeighborResponse) GetAccepted() bool {
@@ -2256,7 +2256,7 @@ type GetNeighborsRequest struct {
 
 func (x *GetNeighborsRequest) Reset() {
 	*x = GetNeighborsRequest{}
-	mi := &file_seednode_proto_msgTypes[34]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2268,7 +2268,7 @@ func (x *GetNeighborsRequest) String() string {
 func (*GetNeighborsRequest) ProtoMessage() {}
 
 func (x *GetNeighborsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[34]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2281,7 +2281,7 @@ func (x *GetNeighborsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNeighborsRequest.ProtoReflect.Descriptor instead.
 func (*GetNeighborsRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{34}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *GetNeighborsRequest) GetPeerId() string {
@@ -2301,7 +2301,7 @@ type GetNeighborsResponse struct {
 
 func (x *GetNeighborsResponse) Reset() {
 	*x = GetNeighborsResponse{}
-	mi := &file_seednode_proto_msgTypes[35]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2313,7 +2313,7 @@ func (x *GetNeighborsResponse) String() string {
 func (*GetNeighborsResponse) ProtoMessage() {}
 
 func (x *GetNeighborsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[35]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2326,7 +2326,7 @@ func (x *GetNeighborsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNeighborsResponse.ProtoReflect.Descriptor instead.
 func (*GetNeighborsResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{35}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *GetNeighborsResponse) GetNeighbors() []*PeerNeighbor {
@@ -2353,7 +2353,7 @@ type AllocateNeighborsRequest struct {
 
 func (x *AllocateNeighborsRequest) Reset() {
 	*x = AllocateNeighborsRequest{}
-	mi := &file_seednode_proto_msgTypes[36]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2365,7 +2365,7 @@ func (x *AllocateNeighborsRequest) String() string {
 func (*AllocateNeighborsRequest) ProtoMessage() {}
 
 func (x *AllocateNeighborsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[36]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2378,7 +2378,7 @@ func (x *AllocateNeighborsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AllocateNeighborsRequest.ProtoReflect.Descriptor instead.
 func (*AllocateNeighborsRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{36}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *AllocateNeighborsRequest) GetPeerId() string {
@@ -2406,7 +2406,7 @@ type AllocateNeighborsResponse struct {
 
 func (x *AllocateNeighborsResponse) Reset() {
 	*x = AllocateNeighborsResponse{}
-	mi := &file_seednode_proto_msgTypes[37]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2418,7 +2418,7 @@ func (x *AllocateNeighborsResponse) String() string {
 func (*AllocateNeighborsResponse) ProtoMessage() {}
 
 func (x *AllocateNeighborsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[37]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2431,7 +2431,7 @@ func (x *AllocateNeighborsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AllocateNeighborsResponse.ProtoReflect.Descriptor instead.
 func (*AllocateNeighborsResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{37}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *AllocateNeighborsResponse) GetNeighbors() []*PeerNeighbor {
@@ -2465,7 +2465,7 @@ type HealthCheckRequest struct {
 
 func (x *HealthCheckRequest) Reset() {
 	*x = HealthCheckRequest{}
-	mi := &file_seednode_proto_msgTypes[38]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2477,7 +2477,7 @@ func (x *HealthCheckRequest) String() string {
 func (*HealthCheckRequest) ProtoMessage() {}
 
 func (x *HealthCheckRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[38]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2490,7 +2490,7 @@ func (x *HealthCheckRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckRequest.ProtoReflect.Descriptor instead.
 func (*HealthCheckRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{38}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *HealthCheckRequest) GetPeerId() string {
@@ -2518,7 +2518,7 @@ type HealthCheckResponse struct {
 
 func (x *HealthCheckResponse) Reset() {
 	*x = HealthCheckResponse{}
-	mi := &file_seednode_proto_msgTypes[39]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2530,7 +2530,7 @@ func (x *HealthCheckResponse) String() string {
 func (*HealthCheckResponse) ProtoMessage() {}
 
 func (x *HealthCheckResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[39]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2543,7 +2543,7 @@ func (x *HealthCheckResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckResponse.ProtoReflect.Descriptor instead.
 func (*HealthCheckResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{39}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *HealthCheckResponse) GetIsHealthy() bool {
@@ -2567,6 +2567,59 @@ func (x *HealthCheckResponse) GetCheckedAt() int64 {
 	return 0
 }
 
+// Response containing this node's addresses and peer ID
+type GetSelfAddressResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Addresses     []string               `protobuf:"bytes,1,rep,name=addresses,proto3" json:"addresses,omitempty"`
+	PeerId        string                 `protobuf:"bytes,2,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSelfAddressResponse) Reset() {
+	*x = GetSelfAddressResponse{}
+	mi := &file_seednode_proto_seednode_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSelfAddressResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSelfAddressResponse) ProtoMessage() {}
+
+func (x *GetSelfAddressResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_seednode_proto_seednode_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSelfAddressResponse.ProtoReflect.Descriptor instead.
+func (*GetSelfAddressResponse) Descriptor() ([]byte, []int) {
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *GetSelfAddressResponse) GetAddresses() []string {
+	if x != nil {
+		return x.Addresses
+	}
+	return nil
+}
+
+func (x *GetSelfAddressResponse) GetPeerId() string {
+	if x != nil {
+		return x.PeerId
+	}
+	return ""
+}
+
 type GetInactiveNeighborReportsForSubjectRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SubjectPeerId string                 `protobuf:"bytes,1,opt,name=subject_peer_id,json=subjectPeerId,proto3" json:"subject_peer_id,omitempty"`
@@ -2576,7 +2629,7 @@ type GetInactiveNeighborReportsForSubjectRequest struct {
 
 func (x *GetInactiveNeighborReportsForSubjectRequest) Reset() {
 	*x = GetInactiveNeighborReportsForSubjectRequest{}
-	mi := &file_seednode_proto_msgTypes[40]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2588,7 +2641,7 @@ func (x *GetInactiveNeighborReportsForSubjectRequest) String() string {
 func (*GetInactiveNeighborReportsForSubjectRequest) ProtoMessage() {}
 
 func (x *GetInactiveNeighborReportsForSubjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[40]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2601,7 +2654,7 @@ func (x *GetInactiveNeighborReportsForSubjectRequest) ProtoReflect() protoreflec
 
 // Deprecated: Use GetInactiveNeighborReportsForSubjectRequest.ProtoReflect.Descriptor instead.
 func (*GetInactiveNeighborReportsForSubjectRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{40}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *GetInactiveNeighborReportsForSubjectRequest) GetSubjectPeerId() string {
@@ -2621,7 +2674,7 @@ type GetInactiveNeighborReportsForSubjectResponse struct {
 
 func (x *GetInactiveNeighborReportsForSubjectResponse) Reset() {
 	*x = GetInactiveNeighborReportsForSubjectResponse{}
-	mi := &file_seednode_proto_msgTypes[41]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2633,7 +2686,7 @@ func (x *GetInactiveNeighborReportsForSubjectResponse) String() string {
 func (*GetInactiveNeighborReportsForSubjectResponse) ProtoMessage() {}
 
 func (x *GetInactiveNeighborReportsForSubjectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[41]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2646,7 +2699,7 @@ func (x *GetInactiveNeighborReportsForSubjectResponse) ProtoReflect() protorefle
 
 // Deprecated: Use GetInactiveNeighborReportsForSubjectResponse.ProtoReflect.Descriptor instead.
 func (*GetInactiveNeighborReportsForSubjectResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{41}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *GetInactiveNeighborReportsForSubjectResponse) GetReports() []*InactiveNeighborReport {
@@ -2673,7 +2726,7 @@ type UpdateBuddyRequest struct {
 
 func (x *UpdateBuddyRequest) Reset() {
 	*x = UpdateBuddyRequest{}
-	mi := &file_seednode_proto_msgTypes[42]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2685,7 +2738,7 @@ func (x *UpdateBuddyRequest) String() string {
 func (*UpdateBuddyRequest) ProtoMessage() {}
 
 func (x *UpdateBuddyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[42]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2698,7 +2751,7 @@ func (x *UpdateBuddyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateBuddyRequest.ProtoReflect.Descriptor instead.
 func (*UpdateBuddyRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{42}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *UpdateBuddyRequest) GetPeerIds() []string {
@@ -2720,7 +2773,7 @@ type UpdateBuddyResponse struct {
 
 func (x *UpdateBuddyResponse) Reset() {
 	*x = UpdateBuddyResponse{}
-	mi := &file_seednode_proto_msgTypes[43]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2732,7 +2785,7 @@ func (x *UpdateBuddyResponse) String() string {
 func (*UpdateBuddyResponse) ProtoMessage() {}
 
 func (x *UpdateBuddyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[43]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2745,7 +2798,7 @@ func (x *UpdateBuddyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateBuddyResponse.ProtoReflect.Descriptor instead.
 func (*UpdateBuddyResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{43}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *UpdateBuddyResponse) GetAccepted() bool {
@@ -2784,7 +2837,7 @@ type ListBuddyRequest struct {
 
 func (x *ListBuddyRequest) Reset() {
 	*x = ListBuddyRequest{}
-	mi := &file_seednode_proto_msgTypes[44]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2796,7 +2849,7 @@ func (x *ListBuddyRequest) String() string {
 func (*ListBuddyRequest) ProtoMessage() {}
 
 func (x *ListBuddyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[44]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2809,7 +2862,7 @@ func (x *ListBuddyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBuddyRequest.ProtoReflect.Descriptor instead.
 func (*ListBuddyRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{44}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{45}
 }
 
 // Simplified buddy peer record
@@ -2829,7 +2882,7 @@ type BuddyPeerRecord struct {
 
 func (x *BuddyPeerRecord) Reset() {
 	*x = BuddyPeerRecord{}
-	mi := &file_seednode_proto_msgTypes[45]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2841,7 +2894,7 @@ func (x *BuddyPeerRecord) String() string {
 func (*BuddyPeerRecord) ProtoMessage() {}
 
 func (x *BuddyPeerRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[45]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2854,7 +2907,7 @@ func (x *BuddyPeerRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BuddyPeerRecord.ProtoReflect.Descriptor instead.
 func (*BuddyPeerRecord) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{45}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *BuddyPeerRecord) GetPeerId() string {
@@ -2923,7 +2976,7 @@ type ListBuddyResponse struct {
 
 func (x *ListBuddyResponse) Reset() {
 	*x = ListBuddyResponse{}
-	mi := &file_seednode_proto_msgTypes[46]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2935,7 +2988,7 @@ func (x *ListBuddyResponse) String() string {
 func (*ListBuddyResponse) ProtoMessage() {}
 
 func (x *ListBuddyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[46]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2948,7 +3001,7 @@ func (x *ListBuddyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBuddyResponse.ProtoReflect.Descriptor instead.
 func (*ListBuddyResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{46}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ListBuddyResponse) GetPeers() []*BuddyPeerRecord {
@@ -2974,7 +3027,7 @@ type RemoveBuddyRequest struct {
 
 func (x *RemoveBuddyRequest) Reset() {
 	*x = RemoveBuddyRequest{}
-	mi := &file_seednode_proto_msgTypes[47]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2986,7 +3039,7 @@ func (x *RemoveBuddyRequest) String() string {
 func (*RemoveBuddyRequest) ProtoMessage() {}
 
 func (x *RemoveBuddyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[47]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2999,7 +3052,7 @@ func (x *RemoveBuddyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveBuddyRequest.ProtoReflect.Descriptor instead.
 func (*RemoveBuddyRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{47}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *RemoveBuddyRequest) GetPeerId() string {
@@ -3020,7 +3073,7 @@ type RemoveBuddyResponse struct {
 
 func (x *RemoveBuddyResponse) Reset() {
 	*x = RemoveBuddyResponse{}
-	mi := &file_seednode_proto_msgTypes[48]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3032,7 +3085,7 @@ func (x *RemoveBuddyResponse) String() string {
 func (*RemoveBuddyResponse) ProtoMessage() {}
 
 func (x *RemoveBuddyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[48]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3045,7 +3098,7 @@ func (x *RemoveBuddyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveBuddyResponse.ProtoReflect.Descriptor instead.
 func (*RemoveBuddyResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{48}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *RemoveBuddyResponse) GetAccepted() bool {
@@ -3077,7 +3130,7 @@ type RemoveAllBuddiesRequest struct {
 
 func (x *RemoveAllBuddiesRequest) Reset() {
 	*x = RemoveAllBuddiesRequest{}
-	mi := &file_seednode_proto_msgTypes[49]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3089,7 +3142,7 @@ func (x *RemoveAllBuddiesRequest) String() string {
 func (*RemoveAllBuddiesRequest) ProtoMessage() {}
 
 func (x *RemoveAllBuddiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[49]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3102,7 +3155,7 @@ func (x *RemoveAllBuddiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveAllBuddiesRequest.ProtoReflect.Descriptor instead.
 func (*RemoveAllBuddiesRequest) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{49}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{50}
 }
 
 type RemoveAllBuddiesResponse struct {
@@ -3116,7 +3169,7 @@ type RemoveAllBuddiesResponse struct {
 
 func (x *RemoveAllBuddiesResponse) Reset() {
 	*x = RemoveAllBuddiesResponse{}
-	mi := &file_seednode_proto_msgTypes[50]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3128,7 +3181,7 @@ func (x *RemoveAllBuddiesResponse) String() string {
 func (*RemoveAllBuddiesResponse) ProtoMessage() {}
 
 func (x *RemoveAllBuddiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_seednode_proto_msgTypes[50]
+	mi := &file_seednode_proto_seednode_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3141,7 +3194,7 @@ func (x *RemoveAllBuddiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveAllBuddiesResponse.ProtoReflect.Descriptor instead.
 func (*RemoveAllBuddiesResponse) Descriptor() ([]byte, []int) {
-	return file_seednode_proto_rawDescGZIP(), []int{50}
+	return file_seednode_proto_seednode_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *RemoveAllBuddiesResponse) GetAccepted() bool {
@@ -3165,11 +3218,11 @@ func (x *RemoveAllBuddiesResponse) GetRemovedCount() int64 {
 	return 0
 }
 
-var File_seednode_proto protoreflect.FileDescriptor
+var File_seednode_proto_seednode_proto protoreflect.FileDescriptor
 
-const file_seednode_proto_rawDesc = "" +
+const file_seednode_proto_seednode_proto_rawDesc = "" +
 	"\n" +
-	"\x0eseednode.proto\x12\x06peerpb\x1a\x1bgoogle/protobuf/empty.proto\"\xd6\x03\n" +
+	"\x1dseednode/proto/seednode.proto\x12\x06peerpb\x1a\x1bgoogle/protobuf/empty.proto\"\xd6\x03\n" +
 	"\x10SignedPeerRecord\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\tR\x06peerId\x12\x1e\n" +
 	"\n" +
@@ -3370,7 +3423,10 @@ const file_seednode_proto_rawDesc = "" +
 	"is_healthy\x18\x01 \x01(\bR\tisHealthy\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1d\n" +
 	"\n" +
-	"checked_at\x18\x03 \x01(\x03R\tcheckedAt\"U\n" +
+	"checked_at\x18\x03 \x01(\x03R\tcheckedAt\"O\n" +
+	"\x16GetSelfAddressResponse\x12\x1c\n" +
+	"\taddresses\x18\x01 \x03(\tR\taddresses\x12\x17\n" +
+	"\apeer_id\x18\x02 \x01(\tR\x06peerId\"U\n" +
 	"+GetInactiveNeighborReportsForSubjectRequest\x12&\n" +
 	"\x0fsubject_peer_id\x18\x01 \x01(\tR\rsubjectPeerId\"~\n" +
 	",GetInactiveNeighborReportsForSubjectResponse\x128\n" +
@@ -3415,7 +3471,7 @@ const file_seednode_proto_rawDesc = "" +
 	"\n" +
 	"PeerStatus\x12\x18\n" +
 	"\x14PEER_STATUS_INACTIVE\x10\x00\x12\x16\n" +
-	"\x12PEER_STATUS_ACTIVE\x10\x012\xbe\x0e\n" +
+	"\x12PEER_STATUS_ACTIVE\x10\x012\x88\x0f\n" +
 	"\rPeerDirectory\x12I\n" +
 	"\fRegisterPeer\x12\x1b.peerpb.RegisterPeerRequest\x1a\x1c.peerpb.RegisterPeerResponse\x12d\n" +
 	"\x15RegisterPeerWithAlias\x12$.peerpb.RegisterPeerWithAliasRequest\x1a%.peerpb.RegisterPeerWithAliasResponse\x12C\n" +
@@ -3430,7 +3486,8 @@ const file_seednode_proto_rawDesc = "" +
 	"\vDeleteAlias\x12\x1a.peerpb.DeleteAliasRequest\x1a\x1b.peerpb.DeleteAliasResponse\x12C\n" +
 	"\n" +
 	"DeletePeer\x12\x19.peerpb.DeletePeerRequest\x1a\x1a.peerpb.DeletePeerResponse\x12=\n" +
-	"\vHealthCheck\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\x12F\n" +
+	"\vHealthCheck\x12\x16.google.protobuf.Empty\x1a\x16.google.protobuf.Empty\x12H\n" +
+	"\x0eGetSelfAddress\x12\x16.google.protobuf.Empty\x1a\x1e.peerpb.GetSelfAddressResponse\x12F\n" +
 	"\vAddNeighbor\x12\x1a.peerpb.AddNeighborRequest\x1a\x1b.peerpb.AddNeighborResponse\x12O\n" +
 	"\x0eRemoveNeighbor\x12\x1d.peerpb.RemoveNeighborRequest\x1a\x1e.peerpb.RemoveNeighborResponse\x12I\n" +
 	"\fGetNeighbors\x12\x1b.peerpb.GetNeighborsRequest\x1a\x1c.peerpb.GetNeighborsResponse\x12X\n" +
@@ -3444,20 +3501,20 @@ const file_seednode_proto_rawDesc = "" +
 	"\x10RemoveAllBuddies\x12\x1f.peerpb.RemoveAllBuddiesRequest\x1a .peerpb.RemoveAllBuddiesResponseB\x1bZ\x19seedNodes/api/peer;peerpbb\x06proto3"
 
 var (
-	file_seednode_proto_rawDescOnce sync.Once
-	file_seednode_proto_rawDescData []byte
+	file_seednode_proto_seednode_proto_rawDescOnce sync.Once
+	file_seednode_proto_seednode_proto_rawDescData []byte
 )
 
-func file_seednode_proto_rawDescGZIP() []byte {
-	file_seednode_proto_rawDescOnce.Do(func() {
-		file_seednode_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_seednode_proto_rawDesc), len(file_seednode_proto_rawDesc)))
+func file_seednode_proto_seednode_proto_rawDescGZIP() []byte {
+	file_seednode_proto_seednode_proto_rawDescOnce.Do(func() {
+		file_seednode_proto_seednode_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_seednode_proto_seednode_proto_rawDesc), len(file_seednode_proto_seednode_proto_rawDesc)))
 	})
-	return file_seednode_proto_rawDescData
+	return file_seednode_proto_seednode_proto_rawDescData
 }
 
-var file_seednode_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_seednode_proto_msgTypes = make([]protoimpl.MessageInfo, 54)
-var file_seednode_proto_goTypes = []any{
+var file_seednode_proto_seednode_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_seednode_proto_seednode_proto_msgTypes = make([]protoimpl.MessageInfo, 55)
+var file_seednode_proto_seednode_proto_goTypes = []any{
 	(PeerStatus)(0),                                      // 0: peerpb.PeerStatus
 	(*SignedPeerRecord)(nil),                             // 1: peerpb.SignedPeerRecord
 	(*PeerRecordUpdate)(nil),                             // 2: peerpb.PeerRecordUpdate
@@ -3499,27 +3556,28 @@ var file_seednode_proto_goTypes = []any{
 	(*AllocateNeighborsResponse)(nil),                    // 38: peerpb.AllocateNeighborsResponse
 	(*HealthCheckRequest)(nil),                           // 39: peerpb.HealthCheckRequest
 	(*HealthCheckResponse)(nil),                          // 40: peerpb.HealthCheckResponse
-	(*GetInactiveNeighborReportsForSubjectRequest)(nil),  // 41: peerpb.GetInactiveNeighborReportsForSubjectRequest
-	(*GetInactiveNeighborReportsForSubjectResponse)(nil), // 42: peerpb.GetInactiveNeighborReportsForSubjectResponse
-	(*UpdateBuddyRequest)(nil),                           // 43: peerpb.UpdateBuddyRequest
-	(*UpdateBuddyResponse)(nil),                          // 44: peerpb.UpdateBuddyResponse
-	(*ListBuddyRequest)(nil),                             // 45: peerpb.ListBuddyRequest
-	(*BuddyPeerRecord)(nil),                              // 46: peerpb.BuddyPeerRecord
-	(*ListBuddyResponse)(nil),                            // 47: peerpb.ListBuddyResponse
-	(*RemoveBuddyRequest)(nil),                           // 48: peerpb.RemoveBuddyRequest
-	(*RemoveBuddyResponse)(nil),                          // 49: peerpb.RemoveBuddyResponse
-	(*RemoveAllBuddiesRequest)(nil),                      // 50: peerpb.RemoveAllBuddiesRequest
-	(*RemoveAllBuddiesResponse)(nil),                     // 51: peerpb.RemoveAllBuddiesResponse
-	nil,                                                  // 52: peerpb.SignedPeerRecord.LabelsEntry
-	nil,                                                  // 53: peerpb.PeerRecordUpdate.LabelsEntry
-	nil,                                                  // 54: peerpb.PeerListRequest.LabelsEntry
-	(*emptypb.Empty)(nil),                                // 55: google.protobuf.Empty
+	(*GetSelfAddressResponse)(nil),                       // 41: peerpb.GetSelfAddressResponse
+	(*GetInactiveNeighborReportsForSubjectRequest)(nil),  // 42: peerpb.GetInactiveNeighborReportsForSubjectRequest
+	(*GetInactiveNeighborReportsForSubjectResponse)(nil), // 43: peerpb.GetInactiveNeighborReportsForSubjectResponse
+	(*UpdateBuddyRequest)(nil),                           // 44: peerpb.UpdateBuddyRequest
+	(*UpdateBuddyResponse)(nil),                          // 45: peerpb.UpdateBuddyResponse
+	(*ListBuddyRequest)(nil),                             // 46: peerpb.ListBuddyRequest
+	(*BuddyPeerRecord)(nil),                              // 47: peerpb.BuddyPeerRecord
+	(*ListBuddyResponse)(nil),                            // 48: peerpb.ListBuddyResponse
+	(*RemoveBuddyRequest)(nil),                           // 49: peerpb.RemoveBuddyRequest
+	(*RemoveBuddyResponse)(nil),                          // 50: peerpb.RemoveBuddyResponse
+	(*RemoveAllBuddiesRequest)(nil),                      // 51: peerpb.RemoveAllBuddiesRequest
+	(*RemoveAllBuddiesResponse)(nil),                     // 52: peerpb.RemoveAllBuddiesResponse
+	nil,                                                  // 53: peerpb.SignedPeerRecord.LabelsEntry
+	nil,                                                  // 54: peerpb.PeerRecordUpdate.LabelsEntry
+	nil,                                                  // 55: peerpb.PeerListRequest.LabelsEntry
+	(*emptypb.Empty)(nil),                                // 56: google.protobuf.Empty
 }
-var file_seednode_proto_depIdxs = []int32{
+var file_seednode_proto_seednode_proto_depIdxs = []int32{
 	0,  // 0: peerpb.SignedPeerRecord.current_status:type_name -> peerpb.PeerStatus
-	52, // 1: peerpb.SignedPeerRecord.labels:type_name -> peerpb.SignedPeerRecord.LabelsEntry
+	53, // 1: peerpb.SignedPeerRecord.labels:type_name -> peerpb.SignedPeerRecord.LabelsEntry
 	0,  // 2: peerpb.PeerRecordUpdate.status:type_name -> peerpb.PeerStatus
-	53, // 3: peerpb.PeerRecordUpdate.labels:type_name -> peerpb.PeerRecordUpdate.LabelsEntry
+	54, // 3: peerpb.PeerRecordUpdate.labels:type_name -> peerpb.PeerRecordUpdate.LabelsEntry
 	0,  // 4: peerpb.HeartbeatMessage.status:type_name -> peerpb.PeerStatus
 	1,  // 5: peerpb.RegisterPeerRequest.peer_record:type_name -> peerpb.SignedPeerRecord
 	2,  // 6: peerpb.UpdatePeerRequest.update:type_name -> peerpb.PeerRecordUpdate
@@ -3529,7 +3587,7 @@ var file_seednode_proto_depIdxs = []int32{
 	1,  // 10: peerpb.GetPeerByAliasResponse.peer_record:type_name -> peerpb.SignedPeerRecord
 	6,  // 11: peerpb.GetPeerByAliasResponse.alias:type_name -> peerpb.PeerAlias
 	0,  // 12: peerpb.PeerListRequest.status:type_name -> peerpb.PeerStatus
-	54, // 13: peerpb.PeerListRequest.labels:type_name -> peerpb.PeerListRequest.LabelsEntry
+	55, // 13: peerpb.PeerListRequest.labels:type_name -> peerpb.PeerListRequest.LabelsEntry
 	1,  // 14: peerpb.PeerListResponse.peers:type_name -> peerpb.SignedPeerRecord
 	3,  // 15: peerpb.SendHeartbeatRequest.heartbeat:type_name -> peerpb.HeartbeatMessage
 	1,  // 16: peerpb.RegisterPeerWithAliasRequest.peer_record:type_name -> peerpb.SignedPeerRecord
@@ -3539,7 +3597,7 @@ var file_seednode_proto_depIdxs = []int32{
 	4,  // 20: peerpb.GetNeighborsResponse.neighbors:type_name -> peerpb.PeerNeighbor
 	4,  // 21: peerpb.AllocateNeighborsResponse.neighbors:type_name -> peerpb.PeerNeighbor
 	5,  // 22: peerpb.GetInactiveNeighborReportsForSubjectResponse.reports:type_name -> peerpb.InactiveNeighborReport
-	46, // 23: peerpb.ListBuddyResponse.peers:type_name -> peerpb.BuddyPeerRecord
+	47, // 23: peerpb.ListBuddyResponse.peers:type_name -> peerpb.BuddyPeerRecord
 	7,  // 24: peerpb.PeerDirectory.RegisterPeer:input_type -> peerpb.RegisterPeerRequest
 	25, // 25: peerpb.PeerDirectory.RegisterPeerWithAlias:input_type -> peerpb.RegisterPeerWithAliasRequest
 	9,  // 26: peerpb.PeerDirectory.UpdatePeer:input_type -> peerpb.UpdatePeerRequest
@@ -3551,69 +3609,71 @@ var file_seednode_proto_depIdxs = []int32{
 	19, // 32: peerpb.PeerDirectory.SendHeartbeat:input_type -> peerpb.SendHeartbeatRequest
 	21, // 33: peerpb.PeerDirectory.DeleteAlias:input_type -> peerpb.DeleteAliasRequest
 	23, // 34: peerpb.PeerDirectory.DeletePeer:input_type -> peerpb.DeletePeerRequest
-	55, // 35: peerpb.PeerDirectory.HealthCheck:input_type -> google.protobuf.Empty
-	31, // 36: peerpb.PeerDirectory.AddNeighbor:input_type -> peerpb.AddNeighborRequest
-	33, // 37: peerpb.PeerDirectory.RemoveNeighbor:input_type -> peerpb.RemoveNeighborRequest
-	35, // 38: peerpb.PeerDirectory.GetNeighbors:input_type -> peerpb.GetNeighborsRequest
-	37, // 39: peerpb.PeerDirectory.AllocateNeighbors:input_type -> peerpb.AllocateNeighborsRequest
-	29, // 40: peerpb.PeerDirectory.ReportInactiveNeighbor:input_type -> peerpb.ReportInactiveNeighborRequest
-	39, // 41: peerpb.PeerDirectory.CheckPeerHealth:input_type -> peerpb.HealthCheckRequest
-	41, // 42: peerpb.PeerDirectory.GetInactiveNeighborReportsForSubject:input_type -> peerpb.GetInactiveNeighborReportsForSubjectRequest
-	43, // 43: peerpb.PeerDirectory.UpdateBuddy:input_type -> peerpb.UpdateBuddyRequest
-	45, // 44: peerpb.PeerDirectory.ListBuddy:input_type -> peerpb.ListBuddyRequest
-	48, // 45: peerpb.PeerDirectory.RemoveBuddy:input_type -> peerpb.RemoveBuddyRequest
-	50, // 46: peerpb.PeerDirectory.RemoveAllBuddies:input_type -> peerpb.RemoveAllBuddiesRequest
-	8,  // 47: peerpb.PeerDirectory.RegisterPeer:output_type -> peerpb.RegisterPeerResponse
-	26, // 48: peerpb.PeerDirectory.RegisterPeerWithAlias:output_type -> peerpb.RegisterPeerWithAliasResponse
-	10, // 49: peerpb.PeerDirectory.UpdatePeer:output_type -> peerpb.UpdatePeerResponse
-	28, // 50: peerpb.PeerDirectory.UpdatePeerWeights:output_type -> peerpb.UpdatePeerWeightsResponse
-	12, // 51: peerpb.PeerDirectory.GetPeer:output_type -> peerpb.GetPeerResponse
-	14, // 52: peerpb.PeerDirectory.CreateAlias:output_type -> peerpb.CreateAliasResponse
-	16, // 53: peerpb.PeerDirectory.GetPeerByAlias:output_type -> peerpb.GetPeerByAliasResponse
-	18, // 54: peerpb.PeerDirectory.ListPeers:output_type -> peerpb.PeerListResponse
-	20, // 55: peerpb.PeerDirectory.SendHeartbeat:output_type -> peerpb.SendHeartbeatResponse
-	22, // 56: peerpb.PeerDirectory.DeleteAlias:output_type -> peerpb.DeleteAliasResponse
-	24, // 57: peerpb.PeerDirectory.DeletePeer:output_type -> peerpb.DeletePeerResponse
-	55, // 58: peerpb.PeerDirectory.HealthCheck:output_type -> google.protobuf.Empty
-	32, // 59: peerpb.PeerDirectory.AddNeighbor:output_type -> peerpb.AddNeighborResponse
-	34, // 60: peerpb.PeerDirectory.RemoveNeighbor:output_type -> peerpb.RemoveNeighborResponse
-	36, // 61: peerpb.PeerDirectory.GetNeighbors:output_type -> peerpb.GetNeighborsResponse
-	38, // 62: peerpb.PeerDirectory.AllocateNeighbors:output_type -> peerpb.AllocateNeighborsResponse
-	30, // 63: peerpb.PeerDirectory.ReportInactiveNeighbor:output_type -> peerpb.ReportInactiveNeighborResponse
-	40, // 64: peerpb.PeerDirectory.CheckPeerHealth:output_type -> peerpb.HealthCheckResponse
-	42, // 65: peerpb.PeerDirectory.GetInactiveNeighborReportsForSubject:output_type -> peerpb.GetInactiveNeighborReportsForSubjectResponse
-	44, // 66: peerpb.PeerDirectory.UpdateBuddy:output_type -> peerpb.UpdateBuddyResponse
-	47, // 67: peerpb.PeerDirectory.ListBuddy:output_type -> peerpb.ListBuddyResponse
-	49, // 68: peerpb.PeerDirectory.RemoveBuddy:output_type -> peerpb.RemoveBuddyResponse
-	51, // 69: peerpb.PeerDirectory.RemoveAllBuddies:output_type -> peerpb.RemoveAllBuddiesResponse
-	47, // [47:70] is the sub-list for method output_type
-	24, // [24:47] is the sub-list for method input_type
+	56, // 35: peerpb.PeerDirectory.HealthCheck:input_type -> google.protobuf.Empty
+	56, // 36: peerpb.PeerDirectory.GetSelfAddress:input_type -> google.protobuf.Empty
+	31, // 37: peerpb.PeerDirectory.AddNeighbor:input_type -> peerpb.AddNeighborRequest
+	33, // 38: peerpb.PeerDirectory.RemoveNeighbor:input_type -> peerpb.RemoveNeighborRequest
+	35, // 39: peerpb.PeerDirectory.GetNeighbors:input_type -> peerpb.GetNeighborsRequest
+	37, // 40: peerpb.PeerDirectory.AllocateNeighbors:input_type -> peerpb.AllocateNeighborsRequest
+	29, // 41: peerpb.PeerDirectory.ReportInactiveNeighbor:input_type -> peerpb.ReportInactiveNeighborRequest
+	39, // 42: peerpb.PeerDirectory.CheckPeerHealth:input_type -> peerpb.HealthCheckRequest
+	42, // 43: peerpb.PeerDirectory.GetInactiveNeighborReportsForSubject:input_type -> peerpb.GetInactiveNeighborReportsForSubjectRequest
+	44, // 44: peerpb.PeerDirectory.UpdateBuddy:input_type -> peerpb.UpdateBuddyRequest
+	46, // 45: peerpb.PeerDirectory.ListBuddy:input_type -> peerpb.ListBuddyRequest
+	49, // 46: peerpb.PeerDirectory.RemoveBuddy:input_type -> peerpb.RemoveBuddyRequest
+	51, // 47: peerpb.PeerDirectory.RemoveAllBuddies:input_type -> peerpb.RemoveAllBuddiesRequest
+	8,  // 48: peerpb.PeerDirectory.RegisterPeer:output_type -> peerpb.RegisterPeerResponse
+	26, // 49: peerpb.PeerDirectory.RegisterPeerWithAlias:output_type -> peerpb.RegisterPeerWithAliasResponse
+	10, // 50: peerpb.PeerDirectory.UpdatePeer:output_type -> peerpb.UpdatePeerResponse
+	28, // 51: peerpb.PeerDirectory.UpdatePeerWeights:output_type -> peerpb.UpdatePeerWeightsResponse
+	12, // 52: peerpb.PeerDirectory.GetPeer:output_type -> peerpb.GetPeerResponse
+	14, // 53: peerpb.PeerDirectory.CreateAlias:output_type -> peerpb.CreateAliasResponse
+	16, // 54: peerpb.PeerDirectory.GetPeerByAlias:output_type -> peerpb.GetPeerByAliasResponse
+	18, // 55: peerpb.PeerDirectory.ListPeers:output_type -> peerpb.PeerListResponse
+	20, // 56: peerpb.PeerDirectory.SendHeartbeat:output_type -> peerpb.SendHeartbeatResponse
+	22, // 57: peerpb.PeerDirectory.DeleteAlias:output_type -> peerpb.DeleteAliasResponse
+	24, // 58: peerpb.PeerDirectory.DeletePeer:output_type -> peerpb.DeletePeerResponse
+	56, // 59: peerpb.PeerDirectory.HealthCheck:output_type -> google.protobuf.Empty
+	41, // 60: peerpb.PeerDirectory.GetSelfAddress:output_type -> peerpb.GetSelfAddressResponse
+	32, // 61: peerpb.PeerDirectory.AddNeighbor:output_type -> peerpb.AddNeighborResponse
+	34, // 62: peerpb.PeerDirectory.RemoveNeighbor:output_type -> peerpb.RemoveNeighborResponse
+	36, // 63: peerpb.PeerDirectory.GetNeighbors:output_type -> peerpb.GetNeighborsResponse
+	38, // 64: peerpb.PeerDirectory.AllocateNeighbors:output_type -> peerpb.AllocateNeighborsResponse
+	30, // 65: peerpb.PeerDirectory.ReportInactiveNeighbor:output_type -> peerpb.ReportInactiveNeighborResponse
+	40, // 66: peerpb.PeerDirectory.CheckPeerHealth:output_type -> peerpb.HealthCheckResponse
+	43, // 67: peerpb.PeerDirectory.GetInactiveNeighborReportsForSubject:output_type -> peerpb.GetInactiveNeighborReportsForSubjectResponse
+	45, // 68: peerpb.PeerDirectory.UpdateBuddy:output_type -> peerpb.UpdateBuddyResponse
+	48, // 69: peerpb.PeerDirectory.ListBuddy:output_type -> peerpb.ListBuddyResponse
+	50, // 70: peerpb.PeerDirectory.RemoveBuddy:output_type -> peerpb.RemoveBuddyResponse
+	52, // 71: peerpb.PeerDirectory.RemoveAllBuddies:output_type -> peerpb.RemoveAllBuddiesResponse
+	48, // [48:72] is the sub-list for method output_type
+	24, // [24:48] is the sub-list for method input_type
 	24, // [24:24] is the sub-list for extension type_name
 	24, // [24:24] is the sub-list for extension extendee
 	0,  // [0:24] is the sub-list for field type_name
 }
 
-func init() { file_seednode_proto_init() }
-func file_seednode_proto_init() {
-	if File_seednode_proto != nil {
+func init() { file_seednode_proto_seednode_proto_init() }
+func file_seednode_proto_seednode_proto_init() {
+	if File_seednode_proto_seednode_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_seednode_proto_rawDesc), len(file_seednode_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_seednode_proto_seednode_proto_rawDesc), len(file_seednode_proto_seednode_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   54,
+			NumMessages:   55,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_seednode_proto_goTypes,
-		DependencyIndexes: file_seednode_proto_depIdxs,
-		EnumInfos:         file_seednode_proto_enumTypes,
-		MessageInfos:      file_seednode_proto_msgTypes,
+		GoTypes:           file_seednode_proto_seednode_proto_goTypes,
+		DependencyIndexes: file_seednode_proto_seednode_proto_depIdxs,
+		EnumInfos:         file_seednode_proto_seednode_proto_enumTypes,
+		MessageInfos:      file_seednode_proto_seednode_proto_msgTypes,
 	}.Build()
-	File_seednode_proto = out.File
-	file_seednode_proto_goTypes = nil
-	file_seednode_proto_depIdxs = nil
+	File_seednode_proto_seednode_proto = out.File
+	file_seednode_proto_seednode_proto_goTypes = nil
+	file_seednode_proto_seednode_proto_depIdxs = nil
 }

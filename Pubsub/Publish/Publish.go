@@ -14,8 +14,19 @@ import (
 	"go.uber.org/zap"
 )
 
-// Publish publishes a message to a topic
+// Publish publishes a message to a topic (now uses enhanced implementation)
 func Publish(gps *PubSubMessages.GossipPubSub, topic string, message *PubSubMessages.Message, metadata map[string]string) error {
+	// Use enhanced publishing if available, fall back to original implementation
+	if gps.GossipSubPS != nil {
+		return PublishEnhanced(gps, topic, message, metadata)
+	}
+
+	// Fall back to original implementation for custom gossip
+	return publishOriginal(gps, topic, message, metadata)
+}
+
+// publishOriginal is the original publish implementation (renamed for clarity)
+func publishOriginal(gps *PubSubMessages.GossipPubSub, topic string, message *PubSubMessages.Message, metadata map[string]string) error {
 	// Validate input parameters
 	if gps == nil {
 		return fmt.Errorf("GossipPubSub cannot be nil")

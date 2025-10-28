@@ -1,6 +1,7 @@
 package Sequencer
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"gossipnode/config/PubSubMessages/Cache"
 	"gossipnode/messaging"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -235,12 +237,13 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		}
 	}()
 
-	// Start CRDT print trigger in a goroutine with 10-second delay after broadcast trigger
+	// Start CRDT print trigger in a goroutine with 15-second delay after broadcast trigger
+	// This gives time for votes to propagate through the network
 	go func() {
-		fmt.Printf("=== [Consensus.Start] Starting CRDT print trigger goroutine with 10-second delay ===\n")
-		time.Sleep(10 * time.Second)
+		fmt.Printf("=== [Consensus.Start] Starting CRDT print trigger goroutine with 15-second delay ===\n")
+		time.Sleep(15 * time.Second)
 
-		fmt.Printf("\n=== [CRDT PRINT TRIGGER] Printing CRDT state after 10 seconds ===\n")
+		fmt.Printf("\n=== [CRDT PRINT TRIGGER] Printing CRDT state after 15 seconds ===\n")
 		if err := consensus.PrintCRDTState(); err != nil {
 			fmt.Printf("=== [CRDT PRINT TRIGGER] Failed to print CRDT state: %v ===\n", err)
 		}
@@ -421,6 +424,8 @@ func (consensus *Consensus) PrintCRDTState() error {
 		fmt.Printf("❌ Failed to process votes from CRDT: %v\n", err)
 	}
 
+	// Collect vote aggregation results from buddy nodes
+	// Note: Votes are stored on buddy nodes' CRDTs, not on the sequencer
 	go func() {
 		// Get all vote results from Triggers
 		voteResults := Maps.GetAllVoteResults()
@@ -486,31 +491,73 @@ func (consensus *Consensus) PrintCRDTState() error {
 		// 	fmt.Printf("❌ Failed to run BFT consensus: %v\n", err)
 		// }
 
-		// Create a trigger message for each buddy node
-		triggerAck := PubSubMessages.NewACKBuilder().True_ACK_Message(consensus.Host.ID(), config.Type_SubmitVote)
-		triggerMsg := PubSubMessages.NewMessageBuilder(nil).
-			SetSender(consensus.Host.ID()).
-			SetMessage("Requesting vote results from buddies").
-			SetTimestamp(time.Now().Unix()).
-			SetACK(triggerAck)
+		// Request vote aggregation results from all buddy nodes
+		fmt.Println("Requesting vote results from all buddy nodes:", listenerNode.BuddyNodes.Buddies_Nodes)
 
-		// Send trigger to all buddy nodes
-		fmt.Println("Sending trigger to all buddy nodes:", listenerNode.BuddyNodes.Buddies_Nodes)
-		lh := MessagePassing.NewListenerHandler(consensus.ResponseHandler)
+		var wg sync.WaitGroup
+		for _, buddyID := range listenerNode.BuddyNodes.Buddies_Nodes {
+			wg.Add(1)
+			go func(peerID peer.ID) {
+				defer wg.Done()
+				stream, err := consensus.Host.NewStream(context.Background(), peerID, config.SubmitMessageProtocol)
+				if err != nil {
+					fmt.Printf("❌ Failed to open stream to %s: %v\n", peerID, err)
+					return
+				}
+				defer stream.Close()
 
-		// Validate that we're not trying to dial ourselves
-		if listenerNode.PeerID == consensus.Host.ID() {
-			fmt.Printf("❌ Cannot trigger vote collection - listener node is the same as current node (%s)\n", listenerNode.PeerID.String())
-			return
+				// Request vote aggregation result from this buddy node
+				reqAck := PubSubMessages.NewACKBuilder().True_ACK_Message(consensus.Host.ID(), config.Type_VoteResult)
+				reqMsg := PubSubMessages.NewMessageBuilder(nil).
+					SetSender(consensus.Host.ID()).
+					SetMessage("RequestForVoteAggregationResult").
+					SetTimestamp(time.Now().Unix()).
+					SetACK(reqAck)
+
+				reqData, _ := json.Marshal(reqMsg)
+				stream.Write([]byte(string(reqData) + string(rune(config.Delimiter))))
+				fmt.Printf("📨 Sent vote result request to %s\n", peerID)
+
+				// Read the result with timeout
+				responseCh := make(chan string, 1)
+				errCh := make(chan error, 1)
+				reader := bufio.NewReader(stream)
+
+				go func() {
+					response, err := reader.ReadString(config.Delimiter)
+					if err != nil {
+						errCh <- err
+						return
+					}
+					responseCh <- response
+				}()
+
+				var response string
+				select {
+				case resp := <-responseCh:
+					response = resp
+				case err := <-errCh:
+					fmt.Printf("⚠️ Failed to read response from %s: %v\n", peerID, err)
+					return
+				case <-time.After(3 * time.Second):
+					fmt.Printf("⏱️ Timeout waiting for response from %s\n", peerID)
+					return
+				}
+
+				responseMsg := PubSubMessages.NewMessageBuilder(nil).DeferenceMessage(response)
+				if responseMsg != nil {
+					var resultData map[string]interface{}
+					if err := json.Unmarshal([]byte(responseMsg.Message), &resultData); err == nil {
+						if result, ok := resultData["result"].(float64); ok {
+							Maps.StoreVoteResult(peerID.String(), int8(result))
+							fmt.Printf("✅ Received vote result from %s: %d\n", peerID, int8(result))
+						}
+					}
+				}
+			}(buddyID)
 		}
-
-		stream, err := consensus.Host.NewStream(context.Background(), listenerNode.PeerID, config.SubmitMessageProtocol)
-		if err != nil {
-			fmt.Printf("❌ Failed to open stream to %s: %v\n", listenerNode.PeerID, err)
-			return
-		}
-		lh.TriggerForBFTFromSequencer(stream, triggerMsg, listenerNode.BuddyNodes.Buddies_Nodes)
-		fmt.Printf("✅ Triggered vote collection on all buddy nodes\n")
+		wg.Wait()
+		fmt.Printf("✅ Collected vote results from all buddy nodes\n")
 	}()
 
 	// Get metadata from the global listener node
