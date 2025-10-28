@@ -302,8 +302,41 @@ func RequestVoteResultsFromBuddies() error {
 
 	log.Printf("RequestVoteResultsFromBuddies: Requesting from %d buddy nodes", len(buddies))
 
+	// Filter out self from buddies to avoid "dial to self attempted" error
+	filteredBuddies := make([]peer.ID, 0, len(buddies))
+	listenerIDStr := listenerNode.PeerID.String()
+	listenerHostIDStr := listenerNode.Host.ID().String()
+
+	// Also check PubSubNode peer ID in case it's different
+	var currentPeerIDStr string
+	var currentHostIDStr string
+	if buddyNode != nil {
+		currentPeerIDStr = buddyNode.PeerID.String()
+		if buddyNode.Host != nil {
+			currentHostIDStr = buddyNode.Host.ID().String()
+		}
+	}
+
+	for _, pid := range buddies {
+		peerIDStr := pid.String()
+		// Compare against all possible IDs
+		if peerIDStr != listenerIDStr && peerIDStr != listenerHostIDStr &&
+			peerIDStr != currentPeerIDStr && peerIDStr != currentHostIDStr {
+			filteredBuddies = append(filteredBuddies, pid)
+			log.Printf("RequestVoteResultsFromBuddies: Including buddy %s", pid)
+		} else {
+			log.Printf("RequestVoteResultsFromBuddies: Filtering out self %s", pid)
+		}
+	}
+
+	if len(filteredBuddies) == 0 {
+		return fmt.Errorf("no valid buddy nodes after filtering self")
+	}
+
+	log.Printf("RequestVoteResultsFromBuddies: Filtered to %d valid buddy nodes", len(filteredBuddies))
+
 	// Request vote results from each buddy node
-	for _, peerID := range buddies {
+	for _, peerID := range filteredBuddies {
 		go func(pid peer.ID) {
 			stream, err := listenerNode.Host.NewStream(context.Background(), pid, config.SubmitMessageProtocol)
 			if err != nil {

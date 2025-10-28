@@ -191,19 +191,33 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 		}
 	}
 
-	// Check if too many main nodes failed (we need at least 10 from main peers to ensure we can reach 13 with 3 backups)
-	minMainRequired := config.MaxMainPeers - config.MaxBackupPeers // 13 - 3 = 10
-	if mainAccepted < minMainRequired {
-		cleanupResponseHandler(responseHandler)
-		return fmt.Errorf("too many main nodes failed: got %d, need at least %d to ensure 13 total with %d backups", mainAccepted, minMainRequired, config.MaxBackupPeers)
+	// Check if too many main nodes failed
+	// If we have backup peers, we need fewer main peers to accept (allows for replacement)
+	// If no backup peers, we need ALL main peers to be accepted
+	var minMainRequired int
+	if config.MaxBackupPeers > 0 {
+		minMainRequired = config.MaxMainPeers - config.MaxBackupPeers
+	} else {
+		// No backup peers available - require all main peers
+		minMainRequired = config.MaxMainPeers
 	}
 
-	// If we have less than 13 main peers, use backup peers as replacements
-	if mainAccepted < config.MaxMainPeers {
+	if mainAccepted < minMainRequired {
+		cleanupResponseHandler(responseHandler)
+		return fmt.Errorf("too many main nodes failed: got %d, need at least %d (configured with %d main peers and %d backup peers)", mainAccepted, minMainRequired, config.MaxMainPeers, config.MaxBackupPeers)
+	}
+
+	// If we have less than required main peers, use backup peers as replacements
+	if mainAccepted < config.MaxMainPeers && config.MaxBackupPeers > 0 {
 		needed := config.MaxMainPeers - mainAccepted
 		log.Printf("Need %d backup nodes as replacements for failed main nodes", needed)
 
-		// Limit backup peers to only what we need (max 3)
+		// Check if we have backup peers available
+		if len(consensus.PeerList.BackupPeers) == 0 {
+			log.Printf("No backup peers available to replace failed main nodes")
+		}
+
+		// Limit backup peers to only what we need
 		backupPeersToTry := consensus.PeerList.BackupPeers
 		if len(backupPeersToTry) > needed {
 			backupPeersToTry = backupPeersToTry[:needed]
@@ -231,6 +245,18 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 			// Cleanup response handler channels now that we're done
 			cleanupResponseHandler(responseHandler)
 
+			return nil
+		}
+	}
+
+	// Check if we got exactly the required number of main peers (no backups needed)
+	if mainAccepted == config.MaxMainPeers {
+		log.Printf("Successfully achieved consensus with %d main peers (no backups needed)", mainAccepted)
+
+		// Verify with global tracker
+		if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
+			log.Printf("Global tracker confirms: %d active subscriptions", tracker.GetActiveCount())
+			cleanupResponseHandler(responseHandler)
 			return nil
 		}
 	}

@@ -919,12 +919,84 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 	}
 
 	// Get buddy list from global config or BFT context
-	if len(buddies) < 0 {
+	if len(buddies) == 0 {
 		fmt.Println("⚠️ No buddies found to request vote results")
 		return
 	}
 
 	fmt.Printf("🚀 Triggering BFT across %d buddy nodes\n", len(buddies))
+	fmt.Printf("📍 Listener PeerID: %s\n", listenerNode.PeerID.String())
+	fmt.Printf("📍 Listener Host ID: %s\n", listenerNode.Host.ID().String())
+	fmt.Printf("📋 All buddies received: %v\n", buddies)
+
+	// Filter out self from buddies to avoid "dial to self attempted" error
+	filteredBuddies := make([]peer.ID, 0, len(buddies))
+	listenerIDStr := listenerNode.PeerID.String()
+	listenerHostIDStr := listenerNode.Host.ID().String()
+
+	// Also check PubSubNode peer ID in case it's different
+	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
+	var currentPeerID peer.ID
+	var currentPeerIDStr string
+	if pubSubNode != nil {
+		currentPeerID = pubSubNode.PeerID
+		currentPeerIDStr = currentPeerID.String()
+		fmt.Printf("📍 PubSub PeerID: %s\n", currentPeerIDStr)
+		if pubSubNode.Host != nil {
+			fmt.Printf("📍 PubSub Host ID: %s\n", pubSubNode.Host.ID().String())
+		}
+	} else {
+		currentPeerID = listenerNode.PeerID
+		currentPeerIDStr = currentPeerID.String()
+	}
+
+	for _, b := range buddies {
+		buddyIDStr := b.String()
+		// Compare against all possible IDs (listener peer, host, pubsub peer and host)
+		isListener := buddyIDStr == listenerIDStr
+		isListenerHost := buddyIDStr == listenerHostIDStr
+		isPubSub := buddyIDStr == currentPeerIDStr
+
+		if !isListener && !isListenerHost && !isPubSub {
+			// Also check if it matches PubSub host ID
+			isPubSubHost := false
+			if pubSubNode != nil && pubSubNode.Host != nil {
+				isPubSubHost = buddyIDStr == pubSubNode.Host.ID().String()
+			}
+
+			if !isPubSubHost {
+				filteredBuddies = append(filteredBuddies, b)
+				fmt.Printf("✅ Including buddy: %s\n", buddyIDStr)
+			} else {
+				fmt.Printf("⚠️ Filtering out self: %s (matches PubSub host)\n", buddyIDStr)
+			}
+		} else {
+			matched := ""
+			if isListener {
+				matched = "listener peer"
+			}
+			if isListenerHost {
+				if matched != "" {
+					matched += ", "
+				}
+				matched += "listener host"
+			}
+			if isPubSub {
+				if matched != "" {
+					matched += ", "
+				}
+				matched += "pubsub"
+			}
+			fmt.Printf("⚠️ Filtering out self: %s (matches %s)\n", buddyIDStr, matched)
+		}
+	}
+
+	if len(filteredBuddies) == 0 {
+		fmt.Println("⚠️ No valid buddy nodes (all are self)")
+		return
+	}
+
+	fmt.Printf("📊 Filtered to %d valid buddy nodes (excluding self)\n", len(filteredBuddies))
 
 	// Send acknowledgment to sequencer
 	ack := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_SubmitVote)
@@ -939,7 +1011,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 
 	// ✅ Send RequestForVoteResult to all buddies in parallel
 	var wg sync.WaitGroup
-	for _, b := range buddies {
+	for _, b := range filteredBuddies {
 		wg.Add(1)
 		go func(peerID peer.ID) {
 			defer wg.Done()

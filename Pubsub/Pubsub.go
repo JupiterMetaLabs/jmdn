@@ -124,7 +124,13 @@ func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 		return
 	}
 
-	// Attach ACK if missing
+	// Attach ACK if missing or if Data is nil
+	if gossipMsg.Data == nil {
+		fmt.Printf("Received message with nil Data - initializing new Message\n")
+		log.Printf("Received message with nil Data - initializing new Message\n")
+		gossipMsg.Data = PubSubMessages.NewMessageBuilder(nil).SetSender(gossipMsg.Sender)
+	}
+
 	if gossipMsg.Data.GetACK() == nil {
 		fmt.Printf("Received message with nil ACK - attaching default ACK\n")
 		log.Printf("Received message with nil ACK - attaching default ACK\n")

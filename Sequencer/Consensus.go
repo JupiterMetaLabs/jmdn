@@ -403,10 +403,17 @@ func (consensus *Consensus) PrintCRDTState() error {
 		fmt.Printf("📊 Vote results from buddy nodes: %v\n", voteResults)
 
 		// Convert []peer.ID to []BuddyInput with decisions from vote results
-		buddyInputs := make([]bft.BuddyInput, len(listenerNode.BuddyNodes.Buddies_Nodes))
-		for i, buddy := range listenerNode.BuddyNodes.Buddies_Nodes {
+		// Only include buddies that actually participated (have vote results)
+		buddyInputs := make([]bft.BuddyInput, 0, len(listenerNode.BuddyNodes.Buddies_Nodes))
+		for _, buddy := range listenerNode.BuddyNodes.Buddies_Nodes {
 			buddyID := buddy.String()
-			voteResult := voteResults[buddyID]
+			voteResult, hasVote := voteResults[buddyID]
+
+			// Only include buddies that participated (have a vote)
+			if !hasVote {
+				fmt.Printf("⚠️ Skipping buddy %s - no vote received\n", buddyID)
+				continue
+			}
 
 			// Convert vote result to decision: >0 = Accept, <=0 = Reject
 			decision := bft.Decision("REJECT")
@@ -414,14 +421,14 @@ func (consensus *Consensus) PrintCRDTState() error {
 				decision = bft.Decision("ACCEPT")
 			}
 
-			buddyInputs[i] = bft.BuddyInput{
+			buddyInputs = append(buddyInputs, bft.BuddyInput{
 				ID:        buddyID,
 				Decision:  decision,
 				PublicKey: []byte{}, // TODO: Get actual public key
-			}
+			})
 		}
 
-		fmt.Printf("🔔 Starting BFT consensus with %d buddies\n", len(buddyInputs))
+		fmt.Printf("🔔 Starting BFT consensus with %d buddies (only those that participated)\n", len(buddyInputs))
 
 		// BFT := bft.New(bft.Config{
 		// 	MinBuddies:         config.MaxMainPeers,

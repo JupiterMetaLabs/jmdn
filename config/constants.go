@@ -21,7 +21,7 @@ const (
 
 const (
 	MaxMainPeers     = 4
-	MaxBackupPeers   = 5 + 2 // +2 for temporary purpose //TEMP
+	MaxBackupPeers   = 7 // No backup peers - using only main peers
 	ConsensusTimeout = 20 * time.Second
 )
 
@@ -57,11 +57,13 @@ const (
 	SyncProtocol              protocol.ID = "/p2p/sync/1.0.0"
 	BuddyNodesMessageProtocol protocol.ID = "/p2p/buddy/message/1.0.0"
 	SubmitMessageProtocol     protocol.ID = "/p2p/submit/message/1.0.0"
+	BFTConsensusProtocol      protocol.ID = "/p2p/bft/consensus/1.0.0"
 )
 
 const (
 	Delimiter               = 0x1E
 	PubSub_ConsensusChannel = "pubsub-consensus"
+	PubSub_BFTConsensus     = "pubsub-bft-consensus"
 	Pubsub_MessageBuffer    = "pubsub-buffer"
 )
 
