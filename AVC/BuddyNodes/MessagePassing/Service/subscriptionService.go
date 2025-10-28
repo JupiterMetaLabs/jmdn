@@ -695,6 +695,7 @@ func processVotesAndTriggerBFT(listenerNode *AVCStruct.BuddyNode) {
 	bftDecision := "REJECT"
 	if result > 0 {
 		bftDecision = "ACCEPT"
+
 	}
 
 	fmt.Printf("📊 Vote Result from VoteAggregation: %d\n", result)
@@ -733,8 +734,28 @@ func sendVoteResultToSequencer(listenerNode *AVCStruct.BuddyNode, result int8) {
 		return
 	}
 
-	// The sequencer is typically the first peer we connected to
-	sequencerPeerID := pubSubNode.BuddyNodes.Buddies_Nodes[0]
+	// Find a valid sequencer peer (not self)
+	var sequencerPeerID peer.ID
+	found := false
+	currentPeerID := listenerNode.PeerID
+	currentHostID := listenerNode.Host.ID()
+
+	for _, peerID := range pubSubNode.BuddyNodes.Buddies_Nodes {
+		// Skip if this is our own peer ID
+		if peerID == currentPeerID || peerID == currentHostID {
+			fmt.Printf("⚠️ Skipping self-peer %s (matches current node)\n", peerID.String())
+			continue
+		}
+		sequencerPeerID = peerID
+		found = true
+		break
+	}
+
+	if !found {
+		fmt.Printf("❌ Cannot send vote result - no valid sequencer peer found (all are self)\n")
+		return
+	}
+
 	host := listenerNode.Host
 
 	fmt.Printf("📤 Sending vote result %d to sequencer %s...\n", result, sequencerPeerID.String())

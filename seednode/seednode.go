@@ -10,16 +10,28 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
+
+// ManagedPeer represents a peer being manually managed (local copy to avoid circular imports)
+type ManagedPeer struct {
+	ID            peer.ID
+	Multiaddr     string
+	LastSeen      int64
+	HeartbeatFail int
+	IsAlive       bool
+}
 
 // getPublicIP fetches the public IP address using ifconfig.me
 func getPublicIP() (string, error) {
@@ -51,10 +63,26 @@ func getPublicIP() (string, error) {
 }
 
 // isValidMultiaddr validates if a multiaddress is properly formatted and has a valid peer ID
-func isValidMultiaddr(addr string) bool {
+func isValidMultiaddr(addr string, currentPeerID peer.ID) bool {
 	// Try to parse the multiaddress
-	_, err := multiaddr.NewMultiaddr(addr)
-	return err == nil
+	maddr, err := multiaddr.NewMultiaddr(addr)
+	if err != nil {
+		return false
+	}
+
+	// Extract peer ID from multiaddress
+	peerInfo, err := peer.AddrInfoFromP2pAddr(maddr)
+	if err != nil {
+		return false
+	}
+
+	// Check if this is a self-connection attempt
+	if peerInfo.ID == currentPeerID {
+		fmt.Printf("🚫 Skipping self-connection attempt: %s\n", addr)
+		return false
+	}
+
+	return peerInfo.ID != ""
 }
 
 // isPublicAddress checks if an address is public (not localhost or private)
@@ -128,13 +156,13 @@ func (c *Client) ListWeightsofPeers() (map[string]float64, error) {
 
 	// Get all peers from the seed node
 	peers, err := c.ListPeers(ctx, &peerpb.PeerListRequest{
-		Limit: 1000,
+		Limit:  1000,
 		Status: peerpb.PeerStatus_PEER_STATUS_ACTIVE,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list peers: %w", err)
 	}
-	
+
 	// Create a map of peer IDs to weights
 	weights := make(map[string]float64)
 	for _, peer := range peers.Peers {
@@ -289,8 +317,54 @@ func (c *Client) DiscoverAndAddNeighbors(h host.Host, nodeManager interface{}) e
 
 	// Step 2: Check current managed peers using listpeers command
 	fmt.Println("📋 Checking current managed peers...")
-	// We'll need to call the listpeers functionality through the node manager
-	// For now, let's assume we need to get new neighbors
+	var currentPeerIDs map[string]bool = make(map[string]bool)
+
+	// Get current managed peers from node manager using reflection
+	peerCount := 0
+	if nodeManager != nil {
+		// Use reflection to call ListManagedPeers method
+		nodeManagerValue := reflect.ValueOf(nodeManager)
+		listMethod := nodeManagerValue.MethodByName("ListManagedPeers")
+
+		if listMethod.IsValid() {
+			results := listMethod.Call(nil)
+			if len(results) > 0 {
+				peersValue := results[0]
+				if peersValue.Kind() == reflect.Slice {
+					peerCount = peersValue.Len()
+					fmt.Printf("✅ Found %d currently managed peers\n", peerCount)
+
+					// Create a map of current peer IDs for quick lookup
+					for i := 0; i < peerCount; i++ {
+						peerValue := peersValue.Index(i)
+						if peerValue.Kind() == reflect.Ptr {
+							peerValue = peerValue.Elem()
+						}
+
+						// Try to get the ID field
+						idField := peerValue.FieldByName("ID")
+						if idField.IsValid() {
+							// Convert peer.ID to string
+							if idField.CanInterface() {
+								if peerID, ok := idField.Interface().(peer.ID); ok {
+									currentPeerIDs[peerID.String()] = true
+								}
+							}
+						}
+					}
+				}
+			}
+		} else {
+			fmt.Printf("⚠️  Warning: Node manager does not support ListManagedPeers method\n")
+		}
+	}
+
+	// Check if we're already at the peer limit (7)
+	const MAX_PEERS = 7
+	if peerCount >= MAX_PEERS {
+		fmt.Printf("⚠️  Already at maximum peer limit (%d). Skipping neighbor discovery.\n", MAX_PEERS)
+		return nil
+	}
 
 	// Step 3: Request new neighbors from seed node
 	fmt.Println("🔄 Requesting new neighbors from seed node...")
@@ -306,10 +380,25 @@ func (c *Client) DiscoverAndAddNeighbors(h host.Host, nodeManager interface{}) e
 
 	fmt.Printf("✅ Allocated %d new neighbors from seed node\n", len(newNeighbors))
 
-	// Step 4: Add neighbors to node manager
+	// Step 4: Add neighbors to node manager (only if not already managed and under limit)
 	var successfullyAddedPeers []string
+	peersAdded := 0
+
 	for _, neighbor := range newNeighbors {
 		neighborID := neighbor.NeighborId
+
+		// Check if we've reached the peer limit
+		if peerCount+peersAdded >= MAX_PEERS {
+			fmt.Printf("⚠️  Reached maximum peer limit (%d). Stopping peer addition.\n", MAX_PEERS)
+			break
+		}
+
+		// Check if this peer is already managed
+		if currentPeerIDs[neighborID] {
+			fmt.Printf("⏭️  Skipping peer %s - already managed\n", neighborID)
+			continue
+		}
+
 		fmt.Printf("🔗 Processing neighbor: %s\n", neighborID)
 
 		// Get the full peer record to get multiaddrs
@@ -320,11 +409,12 @@ func (c *Client) DiscoverAndAddNeighbors(h host.Host, nodeManager interface{}) e
 		}
 
 		// Add each multiaddr to the node manager
+		peerAdded := false
 		for _, multiaddr := range peerRecord.Multiaddrs {
 			fmt.Printf("  📍 Adding peer: %s\n", multiaddr)
 
 			// Validate the multiaddress before attempting to add it
-			if !isValidMultiaddr(multiaddr) {
+			if !isValidMultiaddr(multiaddr, h.ID()) {
 				fmt.Printf("⚠️  Skipping invalid multiaddr: %s\n", multiaddr)
 				continue
 			}
@@ -338,11 +428,19 @@ func (c *Client) DiscoverAndAddNeighbors(h host.Host, nodeManager interface{}) e
 					continue
 				}
 				fmt.Printf("✅ Successfully added peer: %s\n", multiaddr)
-				successfullyAddedPeers = append(successfullyAddedPeers, neighborID)
+				peerAdded = true
+				break // Only add one multiaddr per peer
 			} else {
 				fmt.Printf("❌ Node manager does not support AddPeer method\n")
 				return fmt.Errorf("node manager does not support AddPeer method")
 			}
+		}
+
+		if peerAdded {
+			successfullyAddedPeers = append(successfullyAddedPeers, neighborID)
+			peersAdded++
+			// Update the current peer IDs map to avoid duplicates in the same run
+			currentPeerIDs[neighborID] = true
 		}
 	}
 
@@ -883,13 +981,32 @@ func convertProtoToNode(peer *peerpb.SignedPeerRecord) selection.Node {
 		address = peer.Multiaddrs[0]
 	}
 
-	var asn string
-	if peer.Labels != nil {
-		asn = peer.Labels["asn"]
+	// Extract ASN from labels (ASN is stored as string in labels map)
+	var asn int
+	if peer.Labels != nil && peer.Labels["asn"] != "" {
+		if parsedASN, err := strconv.Atoi(peer.Labels["asn"]); err == nil {
+			asn = parsedASN
+		}
 	}
-	// Fallback if ASN not in labels
-	if asn == "" {
-		asn = "AS" + peer.Region // Use region as fallback
+
+	// Extract additional fields from labels
+	var ipPrefix, reachability string
+	if peer.Labels != nil {
+		ipPrefix = peer.Labels["ip_prefix"]
+		reachability = peer.Labels["reachability"]
+	}
+
+	// Determine RTT bucket and RTT based on labels
+	var rttBucket string
+	var rttMs int
+	if peer.Labels != nil {
+		if peer.Labels["rtt_failure_reason"] != "" {
+			rttBucket = "failed"
+			rttMs = -1 // Indicate failure
+		} else {
+			rttBucket = "unknown" // Default when no RTT data available
+			rttMs = 0
+		}
 	}
 
 	isActive := peer.CurrentStatus == peerpb.PeerStatus_PEER_STATUS_ACTIVE &&
@@ -917,11 +1034,21 @@ func convertProtoToNode(peer *peerpb.SignedPeerRecord) selection.Node {
 
 	return selection.Node{
 		Node: seednodetypes.Node{
+			// New structured fields
+			PeerId:       peer.PeerId,
+			Alias:        "", // Not available in SignedPeerRecord
+			Region:       peer.Region,
+			ASN:          asn,
+			IPPrefix:     ipPrefix,
+			Reachability: reachability,
+			RTTBucket:    rttBucket,
+			RTTMs:        rttMs,
+			LastSeen:     lastSeen,
+			Multiaddrs:   peer.Multiaddrs,
+			// Legacy fields for backward compatibility
 			ID:              peer.PeerId,
 			Address:         address,
 			ReputationScore: float64(peer.Weights),
-			ASN:             asn,
-			LastSeen:        lastSeen,
 			IsActive:        isActive,
 			Capacity:        capacity,
 		},
@@ -943,10 +1070,20 @@ func convertBuddyPeerRecordToNode(peer *peerpb.BuddyPeerRecord) selection.Node {
 		address = peer.Multiaddrs[0]
 	}
 
-	// ASN from region or use default
-	asn := "UNKNOWN"
+	// BuddyPeerRecord doesn't have ASN field, so we'll use a hash-based approach
+	// or set to 0 to indicate unknown ASN
+	var asn int
 	if peer.Region != "" {
-		asn = "AS-" + peer.Region
+		// Convert region to a numeric ASN (simple hash-based approach)
+		asnStr := "AS-" + peer.Region
+		// Simple hash to convert string to number
+		hash := 0
+		for _, c := range asnStr {
+			hash = hash*31 + int(c)
+		}
+		asn = hash % 1000000 // Keep it reasonable
+	} else {
+		asn = 0 // Unknown ASN
 	}
 
 	capacity := int(peer.Weights * 100)
@@ -969,11 +1106,21 @@ func convertBuddyPeerRecordToNode(peer *peerpb.BuddyPeerRecord) selection.Node {
 
 	return selection.Node{
 		Node: seednodetypes.Node{
+			// New structured fields
+			PeerId:       peer.PeerId,
+			Alias:        peer.Alias, // Available in BuddyPeerRecord
+			Region:       peer.Region,
+			ASN:          asn,
+			IPPrefix:     "",        // Not available in BuddyPeerRecord
+			Reachability: "",        // Not available in BuddyPeerRecord
+			RTTBucket:    "unknown", // Not available in BuddyPeerRecord
+			RTTMs:        0,         // Not available in BuddyPeerRecord
+			LastSeen:     lastSeen,
+			Multiaddrs:   peer.Multiaddrs,
+			// Legacy fields for backward compatibility
 			ID:              peer.PeerId,
 			Address:         address,
 			ReputationScore: float64(peer.Weights),
-			ASN:             asn,
-			LastSeen:        lastSeen,
 			IsActive:        true, // Buddy peers are always active
 			Capacity:        capacity,
 		},

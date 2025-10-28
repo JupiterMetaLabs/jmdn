@@ -68,8 +68,14 @@ func (consensus *Consensus) QueryBuddyNodes() ([]PubSubMessages.Buddy_PeerMultia
 
 func (consensus *Consensus) GetOnlyPeerIDs(buddies []PubSubMessages.Buddy_PeerMultiaddr) ([]peer.ID, error) {
 	peerIDs := make([]peer.ID, 0)
+	seenPeers := make(map[string]bool) // Track seen peer IDs to avoid duplicates
+
 	for _, buddy := range buddies {
-		peerIDs = append(peerIDs, buddy.PeerID)
+		peerIDStr := buddy.PeerID.String()
+		if !seenPeers[peerIDStr] {
+			peerIDs = append(peerIDs, buddy.PeerID)
+			seenPeers[peerIDStr] = true
+		}
 	}
 	return peerIDs, nil
 }
@@ -491,6 +497,13 @@ func (consensus *Consensus) PrintCRDTState() error {
 		// Send trigger to all buddy nodes
 		fmt.Println("Sending trigger to all buddy nodes:", listenerNode.BuddyNodes.Buddies_Nodes)
 		lh := MessagePassing.NewListenerHandler(consensus.ResponseHandler)
+
+		// Validate that we're not trying to dial ourselves
+		if listenerNode.PeerID == consensus.Host.ID() {
+			fmt.Printf("❌ Cannot trigger vote collection - listener node is the same as current node (%s)\n", listenerNode.PeerID.String())
+			return
+		}
+
 		stream, err := consensus.Host.NewStream(context.Background(), listenerNode.PeerID, config.SubmitMessageProtocol)
 		if err != nil {
 			fmt.Printf("❌ Failed to open stream to %s: %v\n", listenerNode.PeerID, err)

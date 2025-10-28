@@ -20,7 +20,7 @@ func TestNodeSelectionWith16Nodes(t *testing.T) {
 	Num := 10
 	ctx := context.Background()
 	buddies, err := selection.GetBuddyNodes(
-		ctx ,
+		ctx,
 		"test-node-001",
 		privateKey,
 		[]byte("test-salt"),
@@ -39,7 +39,6 @@ func TestNodeSelectionWith16Nodes(t *testing.T) {
 	// Print results
 	fmt.Printf("Selected %d buddies from %d nodes:\n", len(buddies), 0)
 	for i, buddy := range buddies {
-		fmt.Printf("%d. %s at %s\n", i+1, buddy.Node.ID, buddy.Node.Address)
+		fmt.Printf("%d. %s at %s\n", i+1, buddy.Node.PeerId, buddy.Node.Address)
 	}
 }
-

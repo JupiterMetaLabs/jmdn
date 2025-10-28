@@ -66,6 +66,12 @@ func ConnectToPeers(ctx context.Context, h host.Host, peerAddrs []string) error 
 			continue
 		}
 
+		// Check if this is a self-connection attempt
+		if peerInfo.ID == h.ID() {
+			fmt.Printf("🚫 Skipping self-connection attempt: %s\n", addrStr)
+			continue
+		}
+
 		// Connect
 		if err := h.Connect(ctx, *peerInfo); err != nil {
 			fmt.Printf("❌ Failed to connect to %s: %v\n", peerInfo.ID, err)
