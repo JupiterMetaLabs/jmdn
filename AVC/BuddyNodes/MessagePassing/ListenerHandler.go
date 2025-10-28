@@ -624,30 +624,8 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 	// when BFT request is received from Sequencer
 }
 
-func (lh *ListenerHandler) RequestForVoteResult(s network.Stream, message *AVCStruct.Message) {
-	fmt.Println("=== ListenerHandler.RequestForVoteResult CALLED ===")
-	fmt.Printf("Received request for vote result from: %s\n", s.Conn().RemotePeer())
-	fmt.Printf("Message: %s\n", message.Message)
-	fmt.Printf("ACK Stage: %s\n", message.GetACK().GetStage())
-
-	// Check if ForListner is initialized
-	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
-	if listenerNode == nil || listenerNode.Host == nil {
-		fmt.Println("ForListner not initialized - sending rejection response")
-		log.LogMessagesError("ForListner not initialized - cannot process request for vote result",
-			nil,
-			zap.String("peer", s.Conn().RemotePeer().String()),
-			zap.String("topic", config.PubSub_ConsensusChannel),
-			zap.String("function", "ListenerHandler.RequestForVoteResult"))
-
-		return
-	}
-
-	// Write a message to the node to send the vote result
-
-	fmt.Println("ForListner is initialized - processing request for vote result")
-
-}
+// RequestForVoteResult is now handled by handleVoteResultRequest
+// This function was kept for backward compatibility but is deprecated
 
 // handleAskForSubscription processes subscription request messages
 func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *AVCStruct.Message) {
@@ -906,8 +884,20 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 		return
 	}
 
-	s.Write([]byte(string(responseBytes) + string(rune(config.Delimiter))))
-	fmt.Printf("✅ Sent vote result %d to %s\n\n", result, s.Conn().RemotePeer().String())
+	// Write response with delimiter
+	responseWithDelimiter := string(responseBytes) + string(rune(config.Delimiter))
+	n, err := s.Write([]byte(responseWithDelimiter))
+	if err != nil {
+		fmt.Printf("❌ Failed to write response: %v\n", err)
+		return
+	}
+
+	// Force flush the stream
+	if err := s.CloseWrite(); err != nil {
+		fmt.Printf("⚠️ Failed to close write side: %v\n", err)
+	}
+
+	fmt.Printf("✅ Sent vote result %d to %s (%d bytes written)\n\n", result, s.Conn().RemotePeer().String(), n)
 }
 
 func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message *AVCStruct.Message, buddies []peer.ID) {
@@ -922,12 +912,84 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 	}
 
 	// Get buddy list from global config or BFT context
-	if len(buddies) < 0 {
+	if len(buddies) == 0 {
 		fmt.Println("⚠️ No buddies found to request vote results")
 		return
 	}
 
 	fmt.Printf("🚀 Triggering BFT across %d buddy nodes\n", len(buddies))
+	fmt.Printf("📍 Listener PeerID: %s\n", listenerNode.PeerID.String())
+	fmt.Printf("📍 Listener Host ID: %s\n", listenerNode.Host.ID().String())
+	fmt.Printf("📋 All buddies received: %v\n", buddies)
+
+	// Filter out self from buddies to avoid "dial to self attempted" error
+	filteredBuddies := make([]peer.ID, 0, len(buddies))
+	listenerIDStr := listenerNode.PeerID.String()
+	listenerHostIDStr := listenerNode.Host.ID().String()
+
+	// Also check PubSubNode peer ID in case it's different
+	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
+	var currentPeerID peer.ID
+	var currentPeerIDStr string
+	if pubSubNode != nil {
+		currentPeerID = pubSubNode.PeerID
+		currentPeerIDStr = currentPeerID.String()
+		fmt.Printf("📍 PubSub PeerID: %s\n", currentPeerIDStr)
+		if pubSubNode.Host != nil {
+			fmt.Printf("📍 PubSub Host ID: %s\n", pubSubNode.Host.ID().String())
+		}
+	} else {
+		currentPeerID = listenerNode.PeerID
+		currentPeerIDStr = currentPeerID.String()
+	}
+
+	for _, b := range buddies {
+		buddyIDStr := b.String()
+		// Compare against all possible IDs (listener peer, host, pubsub peer and host)
+		isListener := buddyIDStr == listenerIDStr
+		isListenerHost := buddyIDStr == listenerHostIDStr
+		isPubSub := buddyIDStr == currentPeerIDStr
+
+		if !isListener && !isListenerHost && !isPubSub {
+			// Also check if it matches PubSub host ID
+			isPubSubHost := false
+			if pubSubNode != nil && pubSubNode.Host != nil {
+				isPubSubHost = buddyIDStr == pubSubNode.Host.ID().String()
+			}
+
+			if !isPubSubHost {
+				filteredBuddies = append(filteredBuddies, b)
+				fmt.Printf("✅ Including buddy: %s\n", buddyIDStr)
+			} else {
+				fmt.Printf("⚠️ Filtering out self: %s (matches PubSub host)\n", buddyIDStr)
+			}
+		} else {
+			matched := ""
+			if isListener {
+				matched = "listener peer"
+			}
+			if isListenerHost {
+				if matched != "" {
+					matched += ", "
+				}
+				matched += "listener host"
+			}
+			if isPubSub {
+				if matched != "" {
+					matched += ", "
+				}
+				matched += "pubsub"
+			}
+			fmt.Printf("⚠️ Filtering out self: %s (matches %s)\n", buddyIDStr, matched)
+		}
+	}
+
+	if len(filteredBuddies) == 0 {
+		fmt.Println("⚠️ No valid buddy nodes (all are self)")
+		return
+	}
+
+	fmt.Printf("📊 Filtered to %d valid buddy nodes (excluding self)\n", len(filteredBuddies))
 
 	// Send acknowledgment to sequencer
 	ack := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_SubmitVote)
@@ -941,17 +1003,27 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 	s.Write(data)
 
 	// ✅ Send RequestForVoteResult to all buddies in parallel
+	// Track successful responses to ensure we meet the minimum requirement
+	responsesReceived := 0
+	var responsesMutex sync.Mutex
+
+	responseCh := make(chan bool, len(filteredBuddies))
 	var wg sync.WaitGroup
-	for _, b := range buddies {
+
+	for _, b := range filteredBuddies {
 		wg.Add(1)
 		go func(peerID peer.ID) {
 			defer wg.Done()
 			stream, err := listenerNode.Host.NewStream(context.Background(), peerID, config.BuddyNodesMessageProtocol)
 			if err != nil {
 				fmt.Printf("❌ Failed to open stream to %s: %v\n", peerID, err)
+				responseCh <- false
 				return
 			}
-			defer stream.Close()
+			defer func() {
+				stream.Close()
+				fmt.Printf("🔌 Closed stream to %s\n", peerID)
+			}()
 
 			reqAck := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
 			reqMsg := AVCStruct.NewMessageBuilder(nil).
@@ -964,6 +1036,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 			reqData = append(reqData, byte(config.Delimiter))
 			if _, err := stream.Write(reqData); err != nil {
 				fmt.Printf("❌ Failed to send RequestForVoteResult to %s: %v\n", peerID, err)
+				responseCh <- false
 				return
 			}
 			fmt.Printf("📨 Sent RequestForVoteResult to %s\n", peerID)
@@ -990,22 +1063,74 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 			select {
 			case payload := <-readCh:
 				if payload == nil {
-					fmt.Printf("⚠️ No response from %s\n", peerID)
+					fmt.Printf("⚠️ No response from %s (nil payload)\n", peerID)
+					responseCh <- false
 					return
 				}
+
+				fmt.Printf("📥 Received payload from %s: %d bytes\n", peerID, len(payload))
+				fmt.Printf("📝 Payload content: %s\n", string(payload))
+
 				var msg AVCStruct.Message
 				if err := json.Unmarshal(payload, &msg); err == nil {
-					fmt.Printf("✅ Received vote result from %s\n", peerID)
-					lh.handleVoteResult(stream, &msg)
+					fmt.Printf("✅ Parsed vote result message from %s\n", peerID)
+					fmt.Printf("   Message content: %s\n", msg.Message)
+
+					// Parse and store the vote result directly
+					var resultData map[string]interface{}
+					if err := json.Unmarshal([]byte(msg.Message), &resultData); err == nil {
+						if result, ok := resultData["result"].(float64); ok {
+							voteResult := int8(result)
+							Maps.StoreVoteResult(peerID.String(), voteResult)
+							fmt.Printf("✅ Stored vote result for peer %s: %d\n", peerID.String(), voteResult)
+							responsesMutex.Lock()
+							responsesReceived++
+							count := responsesReceived
+							responsesMutex.Unlock()
+
+							// Check if we've reached the minimum requirement
+							if count >= config.MaxMainPeers {
+								fmt.Printf("✅ Reached minimum requirement: %d/%d responses\n", count, config.MaxMainPeers)
+							}
+							responseCh <- true
+							return
+						}
+					}
+					fmt.Printf("⚠️ Failed to parse vote result from %s\n", peerID)
+					responseCh <- false
 				} else {
 					fmt.Printf("⚠️ Invalid response from %s: %s\n", peerID, string(payload))
+					responseCh <- false
 				}
 			case <-time.After(5 * time.Second):
 				fmt.Printf("⏳ Timeout waiting for vote result from %s\n", peerID)
+				responseCh <- false
 			}
 		}(b)
 	}
 
-	wg.Wait()
-	fmt.Println("✅ Collected vote results from all nodes")
+	// Wait for all goroutines to complete
+	go func() {
+		wg.Wait()
+		close(responseCh)
+	}()
+
+	// Wait for responses and check if we have enough
+	for success := range responseCh {
+		if !success {
+			continue
+		}
+	}
+
+	responsesMutex.Lock()
+	finalCount := responsesReceived
+	responsesMutex.Unlock()
+
+	fmt.Printf("✅ Collected vote results from %d/%d nodes\n", finalCount, len(filteredBuddies))
+
+	// Check if we have enough responses for consensus
+	if finalCount < config.MaxMainPeers {
+		fmt.Printf("⚠️ WARNING: Only received %d responses, but need at least %d for consensus\n", finalCount, config.MaxMainPeers)
+		fmt.Printf("⚠️ This may cause consensus failures. Consider increasing backup nodes.\n")
+	}
 }

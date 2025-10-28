@@ -192,22 +192,17 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) 
 
 	fmt.Printf("\n=== Processing votes from CRDT for voting ===\n")
 
-	// Get all connected peers or buddy nodes
-	var allPeers []peer.ID
-	if listenerNode.Host != nil {
-		allPeers = listenerNode.Host.Network().Peers()
-	} else if listenerNode.BuddyNodes.Buddies_Nodes != nil {
-		allPeers = listenerNode.BuddyNodes.Buddies_Nodes
-	}
-
-	fmt.Printf("DEBUG: Querying votes for %d peers\n", len(allPeers))
+	// Get all CRDTs to find all keys that might contain votes
+	allCRDTs := listenerNode.CRDTLayer.CRDTLayer.GetAllCRDTs()
+	fmt.Printf("DEBUG: Found %d CRDT keys in storage\n", len(allCRDTs))
 
 	// Map to store peer_id -> vote value
 	voteData := make(map[string]int8)
 
-	for _, peerID := range allPeers {
-		votes, exists := DataLayer.GetSet(listenerNode.CRDTLayer, peerID.String())
-		fmt.Printf("DEBUG: Peer %s - exists=%t, votes=%v\n", peerID, exists, votes)
+	// Iterate through all CRDT keys
+	for key := range allCRDTs {
+		votes, exists := DataLayer.GetSet(listenerNode.CRDTLayer, key)
+		fmt.Printf("DEBUG: Key '%s' - exists=%t, votes=%v\n", key, exists, votes)
 
 		if !exists || len(votes) == 0 {
 			continue
@@ -221,14 +216,21 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) 
 				continue
 			}
 
-			voteValue, ok := voteDataObj["vote"].(float64)
-			if !ok {
+			// Check if this is a vote message
+			voteValueRaw, isVote := voteDataObj["vote"]
+			if !isVote {
 				continue
 			}
 
-			// Store peer_id -> vote, only the latest vote for each peer
-			voteData[peerID.String()] = int8(voteValue)
-			fmt.Printf("DEBUG: Added vote for peer %s: %d\n", peerID.String(), int8(voteValue))
+			voteValue, ok := voteValueRaw.(float64)
+			if !ok {
+				fmt.Printf("DEBUG: Invalid vote value type: %v\n", voteValueRaw)
+				continue
+			}
+
+			// Use the key (which is the peer ID) to store the vote
+			voteData[key] = int8(voteValue)
+			fmt.Printf("DEBUG: Added vote for peer %s: %d\n", key, int8(voteValue))
 		}
 	}
 

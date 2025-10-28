@@ -8,6 +8,7 @@ import (
 	"gossipnode/AVC/BFT/bft"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
+	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/AVC/NodeSelection/Router"
 	"gossipnode/Pubsub"
 	"gossipnode/Sequencer/Metadata"
@@ -170,6 +171,26 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	}
 
 	log.Printf("Successfully created pubsub channel: %s", config.PubSub_ConsensusChannel)
+
+	// Subscribe the sequencer to its own channel to receive votes from buddy nodes
+	// This is critical - without this, the sequencer won't receive any vote messages
+	globalVars := PubSubMessages.NewGlobalVariables()
+
+	// Initialize PubSub BuddyNode for sequencer if not already done
+	if !globalVars.IsPubSubNodeInitialized() {
+		defaultBuddies := PubSubMessages.NewBuddiesBuilder(nil)
+		pubSubBuddyNode := MessagePassing.NewBuddyNode(consensus.Host, defaultBuddies, nil, consensus.gossipnode.GetGossipPubSub())
+		globalVars.Set_PubSubNode(pubSubBuddyNode)
+		log.Printf("✅ Initialized PubSubNode for sequencer")
+	}
+
+	// Now subscribe to the channel
+	service := Service.NewSubscriptionService(consensus.gossipnode.GetGossipPubSub())
+	if err := service.HandleStreamSubscriptionRequest(config.PubSub_ConsensusChannel); err != nil {
+		log.Printf("⚠️ Failed to subscribe sequencer to consensus channel: %v", err)
+	} else {
+		log.Printf("✅ Sequencer subscribed to consensus channel for vote collection")
+	}
 
 	// Initialize listener node for vote collection
 	consensus.ListenerNode = MessagePassing.NewListenerNode(consensus.Host, consensus.ResponseHandler)
@@ -391,8 +412,11 @@ func (consensus *Consensus) PrintCRDTState() error {
 	fmt.Printf("╔════════════════════════════════════════════════════════════╗\n")
 	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
 
-	metadata := listenerNode.MetaData
-	fmt.Println("metadata", metadata)
+	// Process votes from CRDT and call processVoteData
+	_, err := Structs.ProcessVotesFromCRDT(listenerNode)
+	if err != nil {
+		fmt.Printf("❌ Failed to process votes from CRDT: %v\n", err)
+	}
 
 	// Collect vote aggregation results from buddy nodes
 	// Note: Votes are stored on buddy nodes' CRDTs, not on the sequencer
@@ -402,10 +426,17 @@ func (consensus *Consensus) PrintCRDTState() error {
 		fmt.Printf("📊 Vote results from buddy nodes: %v\n", voteResults)
 
 		// Convert []peer.ID to []BuddyInput with decisions from vote results
-		buddyInputs := make([]bft.BuddyInput, len(listenerNode.BuddyNodes.Buddies_Nodes))
-		for i, buddy := range listenerNode.BuddyNodes.Buddies_Nodes {
+		// Only include buddies that actually participated (have vote results)
+		buddyInputs := make([]bft.BuddyInput, 0, len(listenerNode.BuddyNodes.Buddies_Nodes))
+		for _, buddy := range listenerNode.BuddyNodes.Buddies_Nodes {
 			buddyID := buddy.String()
-			voteResult := voteResults[buddyID]
+			voteResult, hasVote := voteResults[buddyID]
+
+			// Only include buddies that participated (have a vote)
+			if !hasVote {
+				fmt.Printf("⚠️ Skipping buddy %s - no vote received\n", buddyID)
+				continue
+			}
 
 			// Convert vote result to decision: >0 = Accept, <=0 = Reject
 			decision := bft.Decision("REJECT")
@@ -413,14 +444,28 @@ func (consensus *Consensus) PrintCRDTState() error {
 				decision = bft.Decision("ACCEPT")
 			}
 
-			buddyInputs[i] = bft.BuddyInput{
+			buddyInputs = append(buddyInputs, bft.BuddyInput{
 				ID:        buddyID,
 				Decision:  decision,
 				PublicKey: []byte{}, // TODO: Get actual public key
-			}
+			})
 		}
 
-		fmt.Printf("🔔 Starting BFT consensus with %d buddies\n", len(buddyInputs))
+		// Check if we have enough responses for consensus
+		fmt.Printf("🔔 Starting BFT consensus with %d buddies that participated\n", len(buddyInputs))
+
+		if len(buddyInputs) < config.MaxMainPeers {
+			fmt.Printf("⚠️ CRITICAL: Only %d buddies participated, but need at least %d (MaxMainPeers) for consensus\n", len(buddyInputs), config.MaxMainPeers)
+			fmt.Printf("⚠️ Current buddy pool: %d total (should have %d main + %d backup)\n",
+				len(listenerNode.BuddyNodes.Buddies_Nodes), config.MaxMainPeers, config.MaxBackupPeers)
+			fmt.Printf("⚠️ Consensus may fail due to insufficient participation. Consider:\n")
+			fmt.Printf("   1. Increasing backup peers (MaxBackupPeers)\n")
+			fmt.Printf("   2. Checking network connectivity\n")
+			fmt.Printf("   3. Extending timeout for vote collection\n")
+			// Note: We continue anyway, but BFT may fail
+		} else {
+			fmt.Printf("✅ Sufficient participation: %d/%d minimum required for consensus\n", len(buddyInputs), config.MaxMainPeers)
+		}
 
 		// BFT := bft.New(bft.Config{
 		// 	MinBuddies:         config.MaxMainPeers,

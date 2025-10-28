@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v6.32.1
-// source: seednode.proto
+// source: seednode/proto/seednode.proto
 
 package peerpb
 
@@ -32,6 +32,7 @@ const (
 	PeerDirectory_DeleteAlias_FullMethodName                          = "/peerpb.PeerDirectory/DeleteAlias"
 	PeerDirectory_DeletePeer_FullMethodName                           = "/peerpb.PeerDirectory/DeletePeer"
 	PeerDirectory_HealthCheck_FullMethodName                          = "/peerpb.PeerDirectory/HealthCheck"
+	PeerDirectory_GetSelfAddress_FullMethodName                       = "/peerpb.PeerDirectory/GetSelfAddress"
 	PeerDirectory_AddNeighbor_FullMethodName                          = "/peerpb.PeerDirectory/AddNeighbor"
 	PeerDirectory_RemoveNeighbor_FullMethodName                       = "/peerpb.PeerDirectory/RemoveNeighbor"
 	PeerDirectory_GetNeighbors_FullMethodName                         = "/peerpb.PeerDirectory/GetNeighbors"
@@ -63,6 +64,8 @@ type PeerDirectoryClient interface {
 	DeleteAlias(ctx context.Context, in *DeleteAliasRequest, opts ...grpc.CallOption) (*DeleteAliasResponse, error)
 	DeletePeer(ctx context.Context, in *DeletePeerRequest, opts ...grpc.CallOption) (*DeletePeerResponse, error)
 	HealthCheck(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// Self address of the running PeerDirectory node
+	GetSelfAddress(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetSelfAddressResponse, error)
 	// Neighbor management
 	AddNeighbor(ctx context.Context, in *AddNeighborRequest, opts ...grpc.CallOption) (*AddNeighborResponse, error)
 	RemoveNeighbor(ctx context.Context, in *RemoveNeighborRequest, opts ...grpc.CallOption) (*RemoveNeighborResponse, error)
@@ -208,6 +211,16 @@ func (c *peerDirectoryClient) HealthCheck(ctx context.Context, in *emptypb.Empty
 	return out, nil
 }
 
+func (c *peerDirectoryClient) GetSelfAddress(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*GetSelfAddressResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSelfAddressResponse)
+	err := c.cc.Invoke(ctx, PeerDirectory_GetSelfAddress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *peerDirectoryClient) AddNeighbor(ctx context.Context, in *AddNeighborRequest, opts ...grpc.CallOption) (*AddNeighborResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(AddNeighborResponse)
@@ -336,6 +349,8 @@ type PeerDirectoryServer interface {
 	DeleteAlias(context.Context, *DeleteAliasRequest) (*DeleteAliasResponse, error)
 	DeletePeer(context.Context, *DeletePeerRequest) (*DeletePeerResponse, error)
 	HealthCheck(context.Context, *emptypb.Empty) (*emptypb.Empty, error)
+	// Self address of the running PeerDirectory node
+	GetSelfAddress(context.Context, *emptypb.Empty) (*GetSelfAddressResponse, error)
 	// Neighbor management
 	AddNeighbor(context.Context, *AddNeighborRequest) (*AddNeighborResponse, error)
 	RemoveNeighbor(context.Context, *RemoveNeighborRequest) (*RemoveNeighborResponse, error)
@@ -396,6 +411,9 @@ func (UnimplementedPeerDirectoryServer) DeletePeer(context.Context, *DeletePeerR
 }
 func (UnimplementedPeerDirectoryServer) HealthCheck(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method HealthCheck not implemented")
+}
+func (UnimplementedPeerDirectoryServer) GetSelfAddress(context.Context, *emptypb.Empty) (*GetSelfAddressResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSelfAddress not implemented")
 }
 func (UnimplementedPeerDirectoryServer) AddNeighbor(context.Context, *AddNeighborRequest) (*AddNeighborResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AddNeighbor not implemented")
@@ -667,6 +685,24 @@ func _PeerDirectory_HealthCheck_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PeerDirectory_GetSelfAddress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PeerDirectoryServer).GetSelfAddress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PeerDirectory_GetSelfAddress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PeerDirectoryServer).GetSelfAddress(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _PeerDirectory_AddNeighbor_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(AddNeighborRequest)
 	if err := dec(in); err != nil {
@@ -921,6 +957,10 @@ var PeerDirectory_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _PeerDirectory_HealthCheck_Handler,
 		},
 		{
+			MethodName: "GetSelfAddress",
+			Handler:    _PeerDirectory_GetSelfAddress_Handler,
+		},
+		{
 			MethodName: "AddNeighbor",
 			Handler:    _PeerDirectory_AddNeighbor_Handler,
 		},
@@ -966,5 +1006,5 @@ var PeerDirectory_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "seednode.proto",
+	Metadata: "seednode/proto/seednode.proto",
 }

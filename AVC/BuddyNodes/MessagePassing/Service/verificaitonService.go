@@ -1,13 +1,13 @@
 package Service
 
 import (
-	"slices"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	Publisher "gossipnode/Pubsub/Publish"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
 	PubSubMessages "gossipnode/config/PubSubMessages"
+	"slices"
 	"sync"
 	"time"
 
@@ -135,9 +135,19 @@ func (s *VerificationService) VerifySubscriptions(expectedPeers []peer.ID, timeo
 	var mu sync.Mutex
 	responseCount := 0
 
-	// Subscribe to the consensus channel to receive verification responses
+	// Store the original handler if it exists, to restore later
+	s.buddyNode.PubSub.Mutex.RLock()
+	originalHandler, hadHandler := s.buddyNode.PubSub.Handlers[config.PubSub_ConsensusChannel]
+	s.buddyNode.PubSub.Mutex.RUnlock()
+
+	// Create a wrapper handler that calls both the original handler and collects responses
 	handler := func(msg *PubSubMessages.GossipMessage) {
-		// Check if message has ACK data
+		// Call the original handler first to ensure verification requests are processed
+		if hadHandler && originalHandler != nil {
+			originalHandler(msg)
+		}
+
+		// Then check if this is a verification response to collect
 		if msg.Data != nil && msg.Data.ACK != nil {
 			// Check if this is a verification response with all required fields
 			if msg.Data.ACK.Status == config.Type_ACK_True && msg.Data.ACK.Stage == config.Type_VerifySubscription {
@@ -172,7 +182,7 @@ func (s *VerificationService) VerifySubscriptions(expectedPeers []peer.ID, timeo
 		}
 	}
 
-	// Subscribe to the consensus channel
+	// Subscribe to the consensus channel with the wrapper handler
 	if err := Connector.Subscribe(s.buddyNode.PubSub, config.PubSub_ConsensusChannel, handler); err != nil {
 		return nil, fmt.Errorf("failed to subscribe to consensus channel for verification: %v", err)
 	}
@@ -230,6 +240,15 @@ func (s *VerificationService) VerifySubscriptions(expectedPeers []peer.ID, timeo
 		zap.String("verified", fmt.Sprintf("%d", finalCount)),
 		zap.String("expected", fmt.Sprintf("%d", len(expectedPeers))),
 		zap.String("function", "VerificationService.VerifySubscriptions"))
+
+	// Restore the original handler
+	s.buddyNode.PubSub.Mutex.Lock()
+	if hadHandler {
+		s.buddyNode.PubSub.Handlers[config.PubSub_ConsensusChannel] = originalHandler
+	} else {
+		delete(s.buddyNode.PubSub.Handlers, config.PubSub_ConsensusChannel)
+	}
+	s.buddyNode.PubSub.Mutex.Unlock()
 
 	// Unsubscribe from the channel
 	if err := Connector.Unsubscribe(s.buddyNode.PubSub, config.PubSub_ConsensusChannel); err != nil {
