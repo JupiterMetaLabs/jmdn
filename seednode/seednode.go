@@ -128,13 +128,13 @@ func (c *Client) ListWeightsofPeers() (map[string]float64, error) {
 
 	// Get all peers from the seed node
 	peers, err := c.ListPeers(ctx, &peerpb.PeerListRequest{
-		Limit: 1000,
+		Limit:  1000,
 		Status: peerpb.PeerStatus_PEER_STATUS_ACTIVE,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list peers: %w", err)
 	}
-	
+
 	// Create a map of peer IDs to weights
 	weights := make(map[string]float64)
 	for _, peer := range peers.Peers {
@@ -1077,4 +1077,17 @@ func (c *Client) RemoveAllBuddies(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (c *Client) GetSelfAddress(ctx context.Context) ([]string, string, error) {
+	resp, err := c.client.GetSelfAddress(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get self address: %w", err)
+	}
+	// Return all addresses and the peer ID; handle nil slice gracefully
+	addrs := resp.Addresses
+	if addrs == nil {
+		addrs = []string{}
+	}
+	return addrs, resp.PeerId, nil
 }

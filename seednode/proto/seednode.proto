@@ -274,6 +274,12 @@ message HealthCheckResponse {
   int64 checked_at = 3;
 }
 
+// Response containing this node's addresses and peer ID
+message GetSelfAddressResponse {
+  repeated string addresses = 1;
+  string peer_id = 2;
+}
+
 message GetInactiveNeighborReportsForSubjectRequest {
   string subject_peer_id = 1;
 }
@@ -350,6 +356,9 @@ service PeerDirectory {
   rpc DeleteAlias(DeleteAliasRequest) returns (DeleteAliasResponse);
   rpc DeletePeer(DeletePeerRequest) returns (DeletePeerResponse);
   rpc HealthCheck(google.protobuf.Empty) returns (google.protobuf.Empty);
+  
+  // Self address of the running PeerDirectory node
+  rpc GetSelfAddress(google.protobuf.Empty) returns (GetSelfAddressResponse);
   
   // Neighbor management
   rpc AddNeighbor(AddNeighborRequest) returns (AddNeighborResponse);
