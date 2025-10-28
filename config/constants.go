@@ -21,7 +21,7 @@ const (
 
 const (
 	MaxMainPeers     = 4
-	MaxBackupPeers   = 7 // No backup peers - using only main peers
+	MaxBackupPeers   = 10 // Backup peers to handle failures of main nodes
 	ConsensusTimeout = 20 * time.Second
 )
 

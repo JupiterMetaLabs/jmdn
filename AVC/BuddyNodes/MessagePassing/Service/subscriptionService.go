@@ -187,9 +187,21 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 		fmt.Printf("Received message with nil ACK - attaching default ACK\n")
 		log.LogConsensusError("Received message with nil ACK - attaching default ACK", nil, zap.String("function", "SubscriptionService.handleReceivedMessage"))
 
-		// Create a default ACK with Type_Publish stage
+		// Detect if this is a vote message by checking the message content
+		ackStage := config.Type_Publish
+		if msg.Data.Message != "" {
+			var voteData map[string]interface{}
+			if err := json.Unmarshal([]byte(msg.Data.Message), &voteData); err == nil {
+				if _, isVote := voteData["vote"]; isVote {
+					ackStage = config.Type_SubmitVote
+					fmt.Printf("Detected vote message - setting ACK stage to Type_SubmitVote\n")
+				}
+			}
+		}
+
+		// Create ACK with appropriate stage
 		ack := AVCStruct.NewACKBuilder().
-			True_ACK_Message(msg.Sender, config.Type_Publish)
+			True_ACK_Message(msg.Sender, ackStage)
 
 		msg.Data.SetACK(ack)
 	}
