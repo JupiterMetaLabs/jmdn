@@ -1,170 +1,246 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# bootstrap-jmdn.sh — Bootstrap JMDN Installation and Systemd Service
+# --------------------------------------------------------------
+# Sets up JMDN (JMZK Decentralized Network) with systemd service,
+# creates necessary directories, builds binary, and starts the service.
+# 
+# Usage:
+#   sudo ./scripts/bootstrap-jmdn.sh
+# --------------------------------------------------------------
+
 set -euo pipefail
 
+APP_NAME="jmdn"
 SERVICE_NAME="jmdn"
-REPO_DIR="/root/JMZK-Decentalized-Network"
-BIN_PATH="${REPO_DIR}/jmdn"
-LOG_PATH="/root/jmdn.log"
-UPDATE_SCRIPT="/usr/local/bin/jmdn-update.sh"
-UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-CRON_LOG="/root/jmdn-cron.log"
-CRON_ENTRY="* * * * * ${UPDATE_SCRIPT} >> ${CRON_LOG} 2>&1"
+WORK_DIR="/opt/jmdn"
+DATA_DIR="${WORK_DIR}/data"
+BIN_PATH="/usr/local/bin/jmdn"
+START_SCRIPT="/usr/local/bin/start_JMDN.sh"
 
-# --- Sanity checks ---
-if [ ! -d "$REPO_DIR" ]; then
-  echo "❌ Repo dir ${REPO_DIR} not found. Clone your repo there first."
+# ===== Utility colors =====
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; RED='\033[0;31m'; NC='\033[0m'
+info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+error() { echo -e "${RED}[ERROR]${NC} $*"; }
+section() { echo -e "${BLUE}========================================${NC}"; }
+
+# ===== Root check =====
+if [ "$EUID" -ne 0 ]; then
+  error "Please run this script as root:"
+  echo "    sudo $0"
   exit 1
 fi
+
+section
+info "JMDN Bootstrap Script"
+section
+
+# ===== Detect project directory =====
+PROJECT_DIR=""
+# Try common locations
+if [ -d "$HOME/JMZK-Decentalized-Network" ]; then
+  PROJECT_DIR="$HOME/JMZK-Decentalized-Network"
+elif [ -d "/root/JMZK-Decentalized-Network" ]; then
+  PROJECT_DIR="/root/JMZK-Decentalized-Network"
+elif [ -d "$(pwd)/.git" ] && [ -f "$(pwd)/main.go" ]; then
+  PROJECT_DIR="$(pwd)"
+else
+  error "JMDN project directory not found."
+  echo "Please run this script from the project root or ensure the project is in:"
+  echo "  - $HOME/JMZK-Decentalized-Network"
+  echo "  - /root/JMZK-Decentalized-Network"
+  exit 1
+fi
+
+info "Found project directory: ${PROJECT_DIR}"
+cd "${PROJECT_DIR}" || exit 1
+echo "[OK] Working in $(pwd)"
+
+# ===== Check prerequisites =====
+info "Checking prerequisites..."
+
 if ! command -v go >/dev/null 2>&1; then
-  echo "❌ Go toolchain not found in PATH. Install Go and re-run."
+  error "Go is not installed. Please install Go first:"
+  echo "  ./scripts/Go_Prerequisite.sh"
   exit 1
 fi
+info "Go found: $(go version)"
 
-# --- 0. Ensure cron log file exists ---
-echo "[init] Ensuring cron log file exists..."
-touch "$CRON_LOG"
-chmod 644 "$CRON_LOG"
-
-# --- 1. Create update script ---
-echo "[init] Writing updater script: ${UPDATE_SCRIPT}"
-cat > "$UPDATE_SCRIPT" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-SERVICE_NAME="jmdn"
-REPO_DIR="/root/JMZK-Decentalized-Network"
-BIN_PATH="${REPO_DIR}/jmdn"
-
-cd "$REPO_DIR"
-
-# Ensure upstream is set
-CURR_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if ! git rev-parse --abbrev-ref "@{u}" &>/dev/null; then
-  git branch --set-upstream-to="origin/${CURR_BRANCH}" "${CURR_BRANCH}" || true
-fi
-
-git fetch --prune --quiet
-LOCAL_SHA="$(git rev-parse HEAD)"
-REMOTE_SHA="$(git rev-parse @{u} 2>/dev/null || echo "$LOCAL_SHA")"
-
-if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
-  echo "[update] No repo changes."
-  exit 0
-fi
-
-echo "[update] Changes detected — pulling and rebuilding."
-git pull --rebase --autostash
-go mod tidy || true
-go build -o "${BIN_PATH}.new" .
-
-if [ ! -x "${BIN_PATH}.new" ]; then
-  echo "❌ Build failed."
+if ! command -v immudb >/dev/null 2>&1; then
+  error "ImmuDB is not installed. Please install ImmuDB first:"
+  echo "  ./scripts/ImmuDB_Prerequisite.sh"
   exit 1
 fi
+info "ImmuDB found: $(immudb version 2>/dev/null | head -n1 || echo 'installed')"
 
-# Verify the new binary is valid
-if ! "${BIN_PATH}.new" -help &>/dev/null; then
-  echo "❌ New binary is not valid."
-  rm -f "${BIN_PATH}.new"
-  exit 1
+if ! command -v gcc >/dev/null 2>&1; then
+  warn "GCC compiler not found. CGO may fail."
+  echo "  Consider installing: build-essential (Linux) or Xcode Command Line Tools (macOS)"
+else
+  info "GCC compiler found"
 fi
 
-# Atomic replacement: stop service, replace binary, start service
-systemctl stop "${SERVICE_NAME}" || true
-sleep 2
+# ===== Create directories =====
+section
+info "Creating directories..."
 
-mv -f "${BIN_PATH}.new" "${BIN_PATH}"
-chmod +x "${BIN_PATH}"
-echo "[update] New binary deployed."
+mkdir -p /etc/${APP_NAME}
+mkdir -p "${WORK_DIR}"
+mkdir -p "${DATA_DIR}"
+mkdir -p /var/log/${APP_NAME}
 
-systemctl start "${SERVICE_NAME}"
-echo "[update] ${SERVICE_NAME} restarted successfully."
+info "Directories created successfully"
+
+# ===== Create config.env (optional) =====
+CONFIG_PATH="/etc/${APP_NAME}/config.env"
+if [ ! -f "$CONFIG_PATH" ]; then
+  info "Creating config.env at ${CONFIG_PATH}..."
+  cat <<EOF > "$CONFIG_PATH"
+# Environment configuration for JMDN Daemon
+# This file is optional - defaults are used if not present
+NODE_ENV=production
+LOG_LEVEL=info
+WORK_DIR=${WORK_DIR}
+DATA_DIR=${DATA_DIR}
 EOF
+  info "Config file created"
+else
+  warn "Config file already exists at ${CONFIG_PATH}"
+fi
 
-chmod +x "$UPDATE_SCRIPT"
+# ===== Build JMDN binary =====
+section
+info "Building JMDN binary..."
 
-# --- 2. Create systemd unit ---
-echo "[init] Writing systemd unit: ${UNIT_FILE}"
-cat > "$UNIT_FILE" <<EOF
+cd "${PROJECT_DIR}" || exit 1
+
+info "Building with CGO enabled..."
+CGO_ENABLED=1 go build -ldflags='-linkmode=external -w -s' -o jmdn .
+
+if [ ! -f "./jmdn" ]; then
+  error "Build failed - jmdn binary not found"
+  exit 1
+fi
+
+info "Build successful"
+
+# ===== Install binary =====
+section
+info "Installing JMDN binary..."
+cp ./jmdn "${BIN_PATH}"
+chmod 755 "${BIN_PATH}"
+rm -f ./jmdn
+info "Binary installed to ${BIN_PATH}"
+
+# ===== Install start script =====
+info "Installing start_JMDN.sh script..."
+if [ ! -f "./scripts/start_JMDN.sh" ]; then
+  error "start_JMDN.sh not found in ./scripts/"
+  exit 1
+fi
+
+cp ./scripts/start_JMDN.sh "${START_SCRIPT}"
+chmod 755 "${START_SCRIPT}"
+info "Start script installed to ${START_SCRIPT}"
+
+# ===== Create systemd service =====
+section
+info "Creating systemd service..."
+
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+
+cat <<EOF > "${SERVICE_FILE}"
 [Unit]
 Description=JMZK Decentralized Network Node (jmdn)
-Wants=network-online.target
-After=network-online.target
+After=network.target
+Wants=network.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=${REPO_DIR}
-ExecStartPre=${UPDATE_SCRIPT}
-ExecStart=${BIN_PATH} \
-  -heartbeat 10 \
-  -metrics 8081 \
-  -api 8090 \
-  -blockgen 15050 \
-  -did 0.0.0.0:15052 \
-  -cli 15053 \
-  -seednode 34.174.233.203:17002 \
-  -facade 8545 \
-  -ws 8546 \
-  -chainID 7000700 \
-  -mempool 34.129.53.115:18001 \
-  -explorer
+WorkingDirectory=${WORK_DIR}
+Environment="WORK_DIR=${WORK_DIR}"
+Environment="DATA_DIR=${DATA_DIR}"
+Environment="BIN_PATH=${BIN_PATH}"
+ExecStart=${START_SCRIPT}
 Restart=always
 RestartSec=10
-NoNewPrivileges=true
-LimitNOFILE=1048576
-StandardOutput=append:${LOG_PATH}
-StandardError=append:${LOG_PATH}
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=${APP_NAME}
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=32768
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# --- 3. Enable + start service ---
-echo "[init] Reloading systemd and starting ${SERVICE_NAME}..."
-systemctl daemon-reload
-systemctl enable --now "$SERVICE_NAME"
+info "Systemd service file created: ${SERVICE_FILE}"
 
-# --- 4A. Add cron job for updater ---
-echo "[init] Setting up cron job to run every minute..."
-( crontab -l 2>/dev/null || true ) > /tmp/current_cron.txt
-
-if grep -Fq "$UPDATE_SCRIPT" /tmp/current_cron.txt; then
-  echo "✅ Cron job already exists."
-else
-  echo "$CRON_ENTRY" >> /tmp/current_cron.txt
-  crontab /tmp/current_cron.txt
-  echo "✅ Cron job added: runs every minute."
-fi
-
-# --- 4B. Add cron job to start ImmuDB in screen at reboot ---
-echo "[init] Ensuring ImmuDB @reboot cron is configured..."
-IMMUD_CRON="@reboot sleep 10 && screen -dmS immu /usr/local/bin/immudb --dir ${REPO_DIR}/data >> /root/immudb.log 2>&1"
-
-if grep -Fq "/usr/local/bin/immudb" /tmp/current_cron.txt; then
-  echo "✅ ImmuDB @reboot cron already exists."
-else
-  echo "$IMMUD_CRON" >> /tmp/current_cron.txt
-  crontab /tmp/current_cron.txt
-  echo "✅ ImmuDB @reboot cron added."
-fi
-
-# Ensure cron daemon is running
-if systemctl is-active --quiet cron 2>/dev/null; then
-  echo "✅ Cron service active."
-elif systemctl is-active --quiet crond 2>/dev/null; then
-  echo "✅ Crond service active."
-else
-  echo "⚠️ Cron service not running. Starting it now..."
-  (systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null) || true
-fi
+# ===== Reload and start service =====
+section
+info "Reloading systemd daemon..."
 systemctl daemon-reload
 
-# --- 5. Summary ---
-echo "✅ Bootstrap complete."
-echo "• Service:    systemctl status ${SERVICE_NAME}"
-echo "• Logs:       journalctl -u ${SERVICE_NAME} -f"
-echo "• File Log:   tail -f ${LOG_PATH}"
-echo "• Cron Log:   tail -f ${CRON_LOG}"
-echo "• Manual Run: ${UPDATE_SCRIPT}"
+# Stop service if already running
+if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+  info "Stopping existing ${SERVICE_NAME} service..."
+  systemctl stop "${SERVICE_NAME}"
+  sleep 2
+fi
+
+info "Starting ${SERVICE_NAME} service..."
+systemctl start "${SERVICE_NAME}"
+
+info "Enabling ${SERVICE_NAME} to start on boot..."
+systemctl enable "${SERVICE_NAME}"
+
+# Wait for service to start
+sleep 5
+
+# ===== Check service status =====
+section
+info "Checking service status..."
+if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+  info "${SERVICE_NAME} service is running"
+else
+  error "${SERVICE_NAME} service failed to start"
+  systemctl status "${SERVICE_NAME}" --no-pager || true
+  exit 1
+fi
+
+systemctl status "${SERVICE_NAME}" --no-pager --lines=20
+
+# ===== Show logs =====
+section
+info "Showing first 50 lines of logs..."
+echo "---------------------------------------------"
+
+# Check journald logs first
+if command -v journalctl >/dev/null 2>&1; then
+  journalctl -u "${SERVICE_NAME}" -n 50 --no-pager || true
+else
+  # Fallback to log file
+  if [ -f "/var/log/${APP_NAME}/${APP_NAME}.log" ]; then
+    head -n 50 "/var/log/${APP_NAME}/${APP_NAME}.log" || true
+  else
+    warn "Log file not found yet"
+  fi
+fi
+
+section
+info "JMDN bootstrap completed successfully!"
+echo ""
+info "Service management commands:"
+echo "  sudo systemctl status ${SERVICE_NAME}  - Check service status"
+echo "  sudo systemctl stop ${SERVICE_NAME}     - Stop service"
+echo "  sudo systemctl start ${SERVICE_NAME}    - Start service"
+echo "  sudo systemctl restart ${SERVICE_NAME}  - Restart service"
+echo "  sudo journalctl -u ${SERVICE_NAME} -f  - Follow logs"
+echo ""
+info "Working directory: ${WORK_DIR}"
+info "Data directory: ${DATA_DIR}"
+info "Binary location: ${BIN_PATH}"
+section
