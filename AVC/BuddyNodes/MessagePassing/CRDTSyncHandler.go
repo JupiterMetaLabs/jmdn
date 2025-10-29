@@ -263,11 +263,59 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 		return fmt.Errorf("listener node or host not initialized")
 	}
 
-	buddyPeerIDs := listenerNode.BuddyNodes.Buddies_Nodes
+	// Get buddy nodes from multiple sources (avoid duplicates)
+	buddyPeerIDs := make([]peer.ID, 0)
+	seenPeers := make(map[string]bool)
+
+	addPeerIfNew := func(peerID peer.ID) {
+		peerIDStr := peerID.String()
+		if !seenPeers[peerIDStr] && peerID != listenerNode.PeerID {
+			buddyPeerIDs = append(buddyPeerIDs, peerID)
+			seenPeers[peerIDStr] = true
+		}
+	}
+
+	// Source 1: Check listenerNode.BuddyNodes.Buddies_Nodes
+	initialCount := len(buddyPeerIDs)
+	for _, peerID := range listenerNode.BuddyNodes.Buddies_Nodes {
+		addPeerIfNew(peerID)
+	}
+	if len(buddyPeerIDs) > initialCount {
+		fmt.Printf("📋 Found %d buddy nodes from listenerNode.BuddyNodes\n", len(buddyPeerIDs)-initialCount)
+	}
+
+	// Source 2: Get from consensus message cache (Buddy_PeerMultiaddr with multiaddrs)
+	initialCount = len(buddyPeerIDs)
+	for _, consensusMsg := range AVCStruct.CacheConsensuMessage {
+		if consensusMsg != nil && consensusMsg.Buddies != nil {
+			for _, buddy := range consensusMsg.Buddies {
+				addPeerIfNew(buddy.PeerID)
+			}
+		}
+	}
+	if len(buddyPeerIDs) > initialCount {
+		fmt.Printf("📋 Found %d buddy nodes from consensus message cache\n", len(buddyPeerIDs)-initialCount)
+	}
+
+	// Source 3: Get from connected peers on the network (as fallback)
+	initialCount = len(buddyPeerIDs)
 	if len(buddyPeerIDs) == 0 {
-		fmt.Printf("⚠️ No buddy nodes to connect to\n")
+		connectedPeers := listenerNode.Host.Network().Peers()
+		for _, peerID := range connectedPeers {
+			addPeerIfNew(peerID)
+		}
+		if len(buddyPeerIDs) > initialCount {
+			fmt.Printf("📋 Found %d buddy nodes from connected peers\n", len(buddyPeerIDs)-initialCount)
+		}
+	}
+
+	if len(buddyPeerIDs) == 0 {
+		fmt.Printf("⚠️ No buddy nodes found from any source\n")
+		fmt.Printf("⚠️ Cannot connect to other nodes for CRDT sync\n")
 		return nil
 	}
+
+	fmt.Printf("✅ Total buddy nodes to connect: %d\n", len(buddyPeerIDs))
 
 	fmt.Printf("🔌 Connecting to %d buddy nodes for CRDT sync...\n", len(buddyPeerIDs))
 
@@ -291,14 +339,32 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 
 		var multiaddrs []multiaddr.Multiaddr
 
-		// First, try to get from peerstore (fastest)
-		peerstoreAddrs := listenerNode.Host.Peerstore().Addrs(buddyPeerID)
-		if len(peerstoreAddrs) > 0 {
-			multiaddrs = peerstoreAddrs
-			fmt.Printf("📋 Got %d multiaddrs from peerstore for buddy %s\n", len(multiaddrs), buddyPeerID.String()[:8])
+		// Priority 1: Check consensus message cache (has Buddy_PeerMultiaddr with multiaddrs)
+		for _, consensusMsg := range AVCStruct.CacheConsensuMessage {
+			if consensusMsg != nil && consensusMsg.Buddies != nil {
+				for _, buddy := range consensusMsg.Buddies {
+					if buddy.PeerID == buddyPeerID && buddy.Multiaddr != nil {
+						multiaddrs = []multiaddr.Multiaddr{buddy.Multiaddr}
+						fmt.Printf("📋 Got multiaddr from consensus cache for buddy %s: %s\n", buddyPeerID.String()[:8], buddy.Multiaddr.String())
+						break
+					}
+				}
+				if len(multiaddrs) > 0 {
+					break
+				}
+			}
 		}
 
-		// If not in peerstore, query seed node
+		// Priority 2: Try to get from peerstore (fastest local source)
+		if len(multiaddrs) == 0 {
+			peerstoreAddrs := listenerNode.Host.Peerstore().Addrs(buddyPeerID)
+			if len(peerstoreAddrs) > 0 {
+				multiaddrs = peerstoreAddrs
+				fmt.Printf("📋 Got %d multiaddrs from peerstore for buddy %s\n", len(multiaddrs), buddyPeerID.String()[:8])
+			}
+		}
+
+		// Priority 3: Query seed node as last resort
 		if len(multiaddrs) == 0 && config.SeedNodeURL != "" {
 			fmt.Printf("🔍 Querying seed node for multiaddr of buddy %s...\n", buddyPeerID.String()[:8])
 
