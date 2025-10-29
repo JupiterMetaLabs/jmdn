@@ -11,12 +11,14 @@ import (
 
 	"gossipnode/AVC/BFT/bft"
 	"gossipnode/AVC/BuddyNodes/CRDTSync"
+	"gossipnode/AVC/BuddyNodes/DataLayer"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	ServiceLayer "gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
 	Publisher "gossipnode/Pubsub/Publish"
+	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
@@ -1149,6 +1151,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 
 // triggerCRDTSyncForBuddyNode triggers CRDT synchronization for a buddy node
 // This ensures the buddy node has the latest CRDT data before processing votes
+// Uses mode "both" - publishes local state and subscribes to receive others' state
 func triggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 	if listenerNode == nil || listenerNode.Host == nil {
 		return fmt.Errorf("listener node or host not initialized")
@@ -1157,8 +1160,6 @@ func triggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 	// Get the pubsub node if available
 	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
 	if pubSubNode == nil || pubSubNode.PubSub == nil {
-		// If pubsub is not available, we can't sync via pubsub
-		// This is acceptable - the node will use its local CRDT data
 		fmt.Printf("⚠️ PubSub node not available, using local CRDT data only\n")
 		return nil
 	}
@@ -1172,35 +1173,73 @@ func triggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 	syncConfig := CRDTSync.DefaultSyncConfig()
 	topicName := syncConfig.TopicName
 
-	// Request sync from other nodes via pubsub
-	// Send a sync_request message
-	syncRequestMsg := map[string]interface{}{
-		"type":      config.Type_CRDT_SYNC,
-		"node_id":   listenerNode.PeerID.String(),
-		"timestamp": time.Now().Unix(),
-	}
+	fmt.Printf("🔄 Starting CRDT sync (mode: both - publish & subscribe) on topic: %s\n", topicName)
 
-	requestData, err := json.Marshal(syncRequestMsg)
+	// Channel to collect received sync messages
+	syncMessages := make(chan CRDTSync.Message, 100)
+	syncComplete := make(chan bool, 1)
+	var receivedCount int64
+	var receivedCountMutex sync.Mutex
+
+	// Subscribe to sync topic to receive CRDT data from other nodes
+	// This is the "subscribe" part of "mode both"
+	err := Connector.SubscribeEnhanced(pubSubNode.PubSub, topicName, func(gossipMsg *AVCStruct.GossipMessage) {
+		if gossipMsg == nil || gossipMsg.Data == nil {
+			return
+		}
+
+		// Parse the message content
+		var crdtSyncMsg CRDTSync.Message
+		if err := json.Unmarshal([]byte(gossipMsg.Data.Message), &crdtSyncMsg); err != nil {
+			fmt.Printf("⚠️ Failed to parse CRDT sync message: %v\n", err)
+			return
+		}
+
+		// Skip our own messages
+		if crdtSyncMsg.NodeID == listenerNode.PeerID.String() {
+			return
+		}
+
+		// Only process actual sync messages (with sync_data)
+		if crdtSyncMsg.Type == config.Type_CRDT_SYNC && crdtSyncMsg.SyncData != nil {
+			receivedCountMutex.Lock()
+			receivedCount++
+			count := receivedCount
+			receivedCountMutex.Unlock()
+
+			fmt.Printf("📥 Received CRDT sync from %s (%d messages received)\n", crdtSyncMsg.NodeID[:8], count)
+			syncMessages <- crdtSyncMsg
+
+			// For eventual consistency: wait for messages from at least half the buddy nodes
+			// or wait for timeout (whichever comes first)
+			buddyCount := len(listenerNode.BuddyNodes.Buddies_Nodes)
+			if buddyCount == 0 {
+				buddyCount = 1 // Prevent division by zero
+			}
+			minRequired := buddyCount / 2
+			if minRequired < 1 {
+				minRequired = 1 // At least 1 message
+			}
+
+			if count >= int64(minRequired) {
+				// We have enough messages for eventual consistency
+				select {
+				case syncComplete <- true:
+				default:
+				}
+			}
+		}
+	})
+
 	if err != nil {
-		return fmt.Errorf("failed to marshal sync request: %w", err)
+		fmt.Printf("⚠️ Failed to subscribe to CRDT sync topic: %v\n", err)
+		return fmt.Errorf("failed to subscribe to sync topic: %w", err)
 	}
 
-	// Publish sync request
-	err = Publisher.Publish(pubSubNode.PubSub, topicName,
-		AVCStruct.NewMessageBuilder(nil).
-			SetSender(listenerNode.PeerID).
-			SetMessage(string(requestData)).
-			SetTimestamp(time.Now().Unix()).
-			SetACK(AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_CRDT_SYNC)),
-		nil)
-
-	if err != nil {
-		fmt.Printf("⚠️ Failed to publish sync request: %v\n", err)
-		// Continue anyway - we'll use local data
-	}
-
-	// Publish our own CRDT state
+	// Publish our own CRDT state (mode "both" - publish part)
 	allCRDTs := listenerNode.CRDTLayer.CRDTLayer.GetAllCRDTs()
+	fmt.Printf("📤 Publishing local CRDT state (%d objects)\n", len(allCRDTs))
+
 	if len(allCRDTs) > 0 {
 		syncData := make(map[string]json.RawMessage)
 		for key, crdt := range allCRDTs {
@@ -1220,19 +1259,125 @@ func triggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 
 		syncDataBytes, err := json.Marshal(syncMsg)
 		if err == nil {
-			Publisher.Publish(pubSubNode.PubSub, topicName,
+			if err := Publisher.Publish(pubSubNode.PubSub, topicName,
 				AVCStruct.NewMessageBuilder(nil).
 					SetSender(listenerNode.PeerID).
 					SetMessage(string(syncDataBytes)).
 					SetTimestamp(time.Now().Unix()).
 					SetACK(AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_CRDT_SYNC)),
-				nil)
+				nil); err != nil {
+				fmt.Printf("⚠️ Failed to publish CRDT sync: %v\n", err)
+			}
 		}
 	}
 
-	// Wait a bit for sync responses to arrive
-	time.Sleep(2 * time.Second)
+	// Wait for sync messages and merge them
+	fmt.Printf("⏳ Waiting for CRDT sync messages from other nodes...\n")
+	timeout := time.After(5 * time.Second)
+	mergedCount := 0
 
-	fmt.Printf("✅ CRDT sync request completed\n")
+	for {
+		select {
+		case syncMsg := <-syncMessages:
+			// Merge received CRDT data into local CRDT
+			if err := mergeCRDTData(listenerNode, syncMsg); err != nil {
+				fmt.Printf("⚠️ Failed to merge CRDT from %s: %v\n", syncMsg.NodeID[:8], err)
+			} else {
+				mergedCount++
+				fmt.Printf("✅ Merged CRDT data from %s (total merged: %d)\n", syncMsg.NodeID[:8], mergedCount)
+			}
+
+		case <-syncComplete:
+			fmt.Printf("✅ Received sync messages from all buddy nodes\n")
+			// Give a moment for any remaining messages
+			time.Sleep(1 * time.Second)
+			goto SyncDone
+
+		case <-timeout:
+			fmt.Printf("⏱️ Sync timeout - processed %d messages\n", mergedCount)
+			goto SyncDone
+		}
+	}
+
+SyncDone:
+	// Process any remaining messages in the channel (non-blocking)
+	processedRemaining := 0
+	for processedRemaining < 50 {
+		select {
+		case syncMsg := <-syncMessages:
+			if err := mergeCRDTData(listenerNode, syncMsg); err == nil {
+				mergedCount++
+				processedRemaining++
+			}
+		default:
+			// No more messages available
+			processedRemaining = 50 // Exit loop
+		}
+		if processedRemaining >= 50 {
+			break
+		}
+	}
+
+	fmt.Printf("✅ CRDT sync completed - merged data from %d nodes\n", mergedCount)
+	return nil
+}
+
+// mergeCRDTData merges received CRDT data into the local CRDT layer
+func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) error {
+	if listenerNode.CRDTLayer == nil || listenerNode.CRDTLayer.CRDTLayer == nil {
+		return fmt.Errorf("CRDT layer not available")
+	}
+
+	// Get the sender's peer ID (who sent this sync message)
+	senderPeerID, err := peer.Decode(syncMsg.NodeID)
+	if err != nil {
+		return fmt.Errorf("invalid sender peer ID: %w", err)
+	}
+
+	fmt.Printf("🔄 Merging CRDT data from peer %s\n", senderPeerID.String()[:8])
+
+	// Merge each CRDT from the sync message
+	// Key is the vote peer ID, value is the CRDT set containing vote elements
+	for votePeerIDStr, rawData := range syncMsg.SyncData {
+		// Parse the vote peer ID
+		votePeerID, err := peer.Decode(votePeerIDStr)
+		if err != nil {
+			fmt.Printf("⚠️ Invalid peer ID in sync data: %s\n", votePeerIDStr)
+			continue
+		}
+
+		// Unmarshal the CRDT structure (LWWSet)
+		var remoteCRDT struct {
+			Key     string                 `json:"key"`
+			Adds    map[string]interface{} `json:"adds"`
+			Removes map[string]interface{} `json:"removes"`
+		}
+
+		if err := json.Unmarshal(rawData, &remoteCRDT); err != nil {
+			fmt.Printf("⚠️ Failed to unmarshal CRDT for peer %s: %v\n", votePeerIDStr[:8], err)
+			continue
+		}
+
+		// Extract all elements from the Adds map (these are the vote JSON strings)
+		if remoteCRDT.Adds != nil {
+			for element := range remoteCRDT.Adds {
+				// Add this vote element to our local CRDT
+				// DataLayer.Add(controller, nodeID peer.ID, key string, value string)
+				// For votes: key is the vote peer ID, value is the vote JSON element
+				if err := DataLayer.Add(listenerNode.CRDTLayer, votePeerID, votePeerIDStr, element); err != nil {
+					fmt.Printf("⚠️ Failed to add vote element to CRDT for peer %s: %v\n", votePeerIDStr[:8], err)
+				} else {
+					if len(element) > 50 {
+						fmt.Printf("  ✅ Added vote element from peer %s: %s...\n", votePeerIDStr[:8], element[:50])
+					} else {
+						fmt.Printf("  ✅ Added vote element from peer %s: %s\n", votePeerIDStr[:8], element)
+					}
+				}
+			}
+		}
+	}
+
+	fmt.Printf("✅ Completed merging CRDT data from peer %s\n", senderPeerID.String()[:8])
+
 	return nil
 }

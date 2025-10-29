@@ -237,6 +237,21 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) 
 	fmt.Printf("DEBUG: Extracted %d votes from CRDT (unique peers)\n", len(voteData))
 	fmt.Printf("DEBUG: Vote data map: %v\n", voteData)
 
+	// Print all votes in CRDT for visibility
+	fmt.Printf("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	fmt.Printf("📊 ALL VOTES IN CRDT FOR THIS NODE:\n")
+	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	for key := range allCRDTs {
+		voteElements, exists := DataLayer.GetSet(listenerNode.CRDTLayer, key)
+		if exists && len(voteElements) > 0 {
+			fmt.Printf("Peer: %s\n", key)
+			for i, voteStr := range voteElements {
+				fmt.Printf("  Vote %d: %s\n", i+1, voteStr)
+			}
+		}
+	}
+	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
 	if len(voteData) == 0 {
 		fmt.Printf("⚠️ No votes found in CRDT to process\n")
 		return 0, fmt.Errorf("no votes found in CRDT")
