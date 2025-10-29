@@ -110,20 +110,32 @@ class ZKBlockTesterGRPC:
         tx_hash = hashlib.sha256(tx_data.encode()).hexdigest()
         
         # Convert addresses to bytes (remove 0x prefix and convert to bytes)
-        from_bytes = bytes.fromhex(from_address[2:]) if from_address.startswith('0x') else from_address.encode()
-        to_bytes = bytes.fromhex(to_address[2:]) if to_address.startswith('0x') else to_address.encode()
+        # Ethereum addresses should be exactly 20 bytes
+        def address_to_bytes(address):
+            if address.startswith('0x'):
+                return bytes.fromhex(address[2:])
+            return bytes.fromhex(address)
         
-        # Convert value to bytes (big-endian)
+        from_bytes = address_to_bytes(from_address)
+        to_bytes = address_to_bytes(to_address)
+        
+        # Ensure addresses are exactly 20 bytes
+        if len(from_bytes) != 20:
+            raise ValueError(f"Invalid from address length: {len(from_bytes)} bytes")
+        if len(to_bytes) != 20:
+            raise ValueError(f"Invalid to address length: {len(to_bytes)} bytes")
+        
+        # Convert value to bytes (big-endian, 32 bytes)
         value_bytes = value_wei.to_bytes(32, byteorder='big')
         
-        # Convert chain_id to bytes
+        # Convert chain_id to bytes (32 bytes)
         chain_id_bytes = (7000700).to_bytes(32, byteorder='big')
         
-        # Convert gas_price to bytes
+        # Convert gas_price to bytes (32 bytes)
         gas_price_bytes = (20000000000).to_bytes(32, byteorder='big')
         
-        # Generate v, r, s values
-        v_bytes = (27).to_bytes(1, byteorder='big')
+        # Generate v, r, s values (32 bytes each)
+        v_bytes = (27).to_bytes(32, byteorder='big')
         r_bytes = random.randint(1000000000000000000000000000000000000000000000000000000000000000000000, 9999999999999999999999999999999999999999999999999999999999999999999999).to_bytes(32, byteorder='big')
         s_bytes = random.randint(1000000000000000000000000000000000000000000000000000000000000000000000, 9999999999999999999999999999999999999999999999999999999999999999999999).to_bytes(32, byteorder='big')
         
@@ -161,6 +173,12 @@ class ZKBlockTesterGRPC:
                 return bytes.fromhex(hex_str[2:])
             return bytes.fromhex(hex_str)
         
+        # Convert addresses to bytes (Ethereum addresses should be 20 bytes)
+        def address_to_bytes(address):
+            if address.startswith('0x'):
+                return bytes.fromhex(address[2:])
+            return bytes.fromhex(address)
+        
         # Create ZKBlock protobuf message
         zkblock = block_pb2.ZKBlock(
             stark_proof=b"",  # Empty stark proof
@@ -173,8 +191,8 @@ class ZKBlockTesterGRPC:
             extra_data="0x",
             state_root=hex_to_bytes(f"0x{unique_stateroot}"),
             logs_bloom=b"",
-            coinbase_addr=hex_to_bytes("0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2"),
-            zkvm_addr=hex_to_bytes("0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2"),
+            coinbase_addr=address_to_bytes("0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2"),
+            zkvm_addr=address_to_bytes("0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2"),
             prev_hash=hex_to_bytes(f"0x{unique_prevhash}"),
             block_hash=hex_to_bytes(f"0x{unique_blockhash}"),
             gas_limit=1000000,
