@@ -156,6 +156,10 @@ fi
 mkdir -p "${WORK_DIR}/.immudb_state"
 chmod 755 "${WORK_DIR}/.immudb_state"
 
+# Create DB directory for SQLite database (JMDN uses SQLite for peer tracking)
+mkdir -p "${WORK_DIR}/DB"
+chmod 755 "${WORK_DIR}/DB"
+
 info "Working directory structure ready"
 
 # ===== Install start script =====

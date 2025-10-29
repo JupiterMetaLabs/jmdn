@@ -75,6 +75,9 @@ die()   { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 [ -x "${BIN_PATH}" ] || die "Binary not executable: ${BIN_PATH}"
 mkdir -p "${LOG_DIR}"
 mkdir -p "${DATA_DIR}"
+# Ensure DB directory exists for SQLite database
+mkdir -p "${WORK_DIR}/DB"
+chmod 755 "${WORK_DIR}/DB"
 
 # ===== ImmuDB setup =====
 # Check if ImmuDB is installed
