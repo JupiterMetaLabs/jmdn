@@ -134,12 +134,12 @@ info "Binary installed to ${BIN_PATH}"
 
 # ===== Install start script =====
 info "Installing start_JMDN.sh script..."
-if [ ! -f "./scripts/start_JMDN.sh" ]; then
+if [ ! -f "./Scripts/start_JMDN.sh" ]; then
   error "start_JMDN.sh not found in ./scripts/"
   exit 1
 fi
 
-cp ./scripts/start_JMDN.sh "${START_SCRIPT}"
+cp ./Scripts/start_JMDN.sh "${START_SCRIPT}"
 chmod 755 "${START_SCRIPT}"
 info "Start script installed to ${START_SCRIPT}"
 
