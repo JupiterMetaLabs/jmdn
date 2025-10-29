@@ -19,8 +19,15 @@ import (
 
 // Function to initialize the loggers
 func Init_Loggers(loki bool) {
+	var lokiURL string
+	if loki {
+		lokiURL = logging.GetLokiURL()
+	} else {
+		lokiURL = ""
+	}
+
 	_, err := log.NewLoggerBuilder().
-		SetURL(logging.GetLokiURL(), loki).
+		SetURL(lokiURL, loki).
 		SetFileName("buddy_nodes.log").
 		SetTopic(config.PubSub_ConsensusChannel).
 		SetDirectory("logs").
@@ -34,7 +41,7 @@ func Init_Loggers(loki bool) {
 	}
 
 	_, err = log.NewLoggerBuilder().
-		SetURL(logging.GetLokiURL(), loki).
+		SetURL(lokiURL, loki).
 		SetFileName("buddy_nodes.log").
 		SetTopic(log.Messages_TOPIC).
 		SetDirectory("logs").

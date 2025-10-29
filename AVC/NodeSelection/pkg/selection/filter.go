@@ -11,17 +11,17 @@ type FilterConfig struct {
 	MinSelectionScore  float64 // Minimum selection score (0.5 <= score < 1.0)
 	MaxSelectionScore  float64 // Maximum selection score (exclude score >= 1.0)
 	NodeTimeoutMinutes int
-	NodesPerASN        int // Target nodes per ASN for diversity
+	NodesPerRegion     int // Target nodes per region for geographic diversity
 }
 
 // DefaultFilterConfig returns sensible defaults
 func DefaultFilterConfig() FilterConfig {
 	return FilterConfig{
-		MinReputationScore: 0.0, // Accept all reputation scores (or use 0.5 if you want)
-		MinSelectionScore:  0.5, // Only nodes with score >= 0.5
-		MaxSelectionScore:  1.0, // Exclude nodes with score >= 1.0 (perfect score = reserved/system nodes)
+		MinReputationScore: 0.0,  // Accept all reputation scores (or use 0.5 if you want)
+		MinSelectionScore:  0.5,  // Only nodes with score >= 0.5
+		MaxSelectionScore:  0.95, // Exclude nodes with score >= 1.0 (perfect score = reserved/system nodes)
 		NodeTimeoutMinutes: 10,
-		NodesPerASN:        2, // Try to get 2 nodes per ASN
+		NodesPerRegion:     2, // Try to get 2 nodes per region
 	}
 }
 
@@ -42,7 +42,7 @@ func FilterEligible(myNodeID string, nodes []Node, config FilterConfig) []Node {
 		node := &nodes[i]
 
 		// Skip self
-		if node.ID == myNodeID {
+		if node.PeerId == myNodeID {
 			fmt.Println("⚠️  Skipping node due to timeout:", -1)
 			continue
 		}
@@ -76,12 +76,6 @@ func FilterEligible(myNodeID string, nodes []Node, config FilterConfig) []Node {
 		// 	continue
 		// }
 
-		// Check if ASN is valid (not unknown/empty)
-		// Optionally skip nodes with unknown ASN for diversity
-		// if node.ASN == "" || node.ASN == "UNKNOWN" || node.ASN == "AS-UNKNOWN" {
-		// 	continue
-		// }
-
 		// Node passed all filters
 		eligible = append(eligible, *node)
 	}
@@ -89,19 +83,19 @@ func FilterEligible(myNodeID string, nodes []Node, config FilterConfig) []Node {
 	return eligible
 }
 
-// GroupNodesByASN groups nodes by their ASN
-func GroupNodesByASN(nodes []Node) map[string][]Node {
-	asnMap := make(map[string][]Node)
+// GroupNodesByRegion groups nodes by their region
+func GroupNodesByRegion(nodes []Node) map[string][]Node {
+	regionMap := make(map[string][]Node)
 
 	for _, node := range nodes {
-		asn := node.ASN
-		if asn == "" || asn == "UNKNOWN" {
-			asn = "AS-UNKNOWN"
+		region := node.Region
+		if region == "" || region == "UNKNOWN" {
+			region = "REGION-UNKNOWN"
 		}
-		asnMap[asn] = append(asnMap[asn], node)
+		regionMap[region] = append(regionMap[region], node)
 	}
 
-	return asnMap
+	return regionMap
 }
 
 // GetEligibleCount returns count of nodes that would pass filters
@@ -120,6 +114,7 @@ type FilterStats struct {
 	FilteredReputation int
 	FilteredTimeout    int
 	EligibleNodes      int
+	RegionCount        int // Number of unique regions
 }
 
 // GetFilterStats returns detailed filtering statistics
@@ -134,7 +129,7 @@ func GetFilterStats(myNodeID string, nodes []Node, config FilterConfig) FilterSt
 	for i := range nodes {
 		node := &nodes[i]
 
-		if node.ID == myNodeID {
+		if node.PeerId == myNodeID {
 			stats.FilteredSelf++
 			continue
 		}
@@ -166,6 +161,20 @@ func GetFilterStats(myNodeID string, nodes []Node, config FilterConfig) FilterSt
 
 		stats.EligibleNodes++
 	}
+
+	// Calculate region diversity counts
+	regionSet := make(map[string]bool)
+
+	for _, node := range nodes {
+		// Count regions
+		region := node.Region
+		if region == "" || region == "UNKNOWN" {
+			region = "REGION-UNKNOWN"
+		}
+		regionSet[region] = true
+	}
+
+	stats.RegionCount = len(regionSet)
 
 	return stats
 }

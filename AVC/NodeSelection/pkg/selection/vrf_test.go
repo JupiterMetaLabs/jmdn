@@ -29,7 +29,7 @@ func TestVRF_BasicSelection(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	nodes := createTestNodes(50, 5) // 50 nodes, 5 ASNs
+	nodes := createTestNodes(50, 5) // 50 nodes, 5 regions
 
 	buddy, err := selector.SelectBuddy(ctx, "node-orchestrator", nodes)
 	if err != nil {
@@ -40,7 +40,7 @@ func TestVRF_BasicSelection(t *testing.T) {
 		t.Fatal("Expected buddy to be selected")
 	}
 
-	if buddy.Proof == nil || len(buddy.Proof) == 0 {
+	if len(buddy.Proof) == 0 {
 		t.Fatal("Expected valid proof")
 	}
 
@@ -49,8 +49,8 @@ func TestVRF_BasicSelection(t *testing.T) {
 		t.Errorf("Selected node has invalid score %.2f (< 0.5)", buddy.Node.SelectionScore)
 	}
 
-	t.Logf("✓ Selected buddy: %s (ASN: %s, Score: %.2f)",
-		buddy.Node.ID, buddy.Node.ASN, buddy.Node.SelectionScore)
+	t.Logf("✓ Selected buddy: %s (ASN: %d, Score: %.2f)",
+		buddy.Node.PeerId, buddy.Node.ASN, buddy.Node.SelectionScore)
 	t.Logf("✓ Public key: %x", publicKey[:8])
 }
 
@@ -90,7 +90,7 @@ func TestVRF_MultipleBuddiesWithASNDiversity(t *testing.T) {
 	// Check ASN diversity
 	asnCount := make(map[string]int)
 	for _, buddy := range buddies {
-		asnCount[buddy.Node.ASN]++
+		asnCount[fmt.Sprintf("AS%d", buddy.Node.ASN)]++
 	}
 
 	t.Logf("ASN Distribution:")
@@ -113,7 +113,7 @@ func TestVRF_MultipleBuddiesWithASNDiversity(t *testing.T) {
 	// Verify all have valid selection scores
 	for _, buddy := range buddies {
 		if buddy.Node.SelectionScore < 0.5 {
-			t.Errorf("Buddy %s has invalid score %.2f", buddy.Node.ID, buddy.Node.SelectionScore)
+			t.Errorf("Buddy %s has invalid score %.2f", buddy.Node.PeerId, buddy.Node.SelectionScore)
 		}
 	}
 
@@ -184,8 +184,8 @@ func TestVRF_Determinism(t *testing.T) {
 	}
 
 	// Note: Results may differ due to timestamp, but algorithm is deterministic
-	t.Logf("✓ First selection:  %s", buddies1[0].Node.ID)
-	t.Logf("✓ Second selection: %s", buddies2[0].Node.ID)
+	t.Logf("✓ First selection:  %s", buddies1[0].Node.PeerId)
+	t.Logf("✓ Second selection: %s", buddies2[0].Node.PeerId)
 	t.Logf("✓ Algorithm is deterministic for same timestamp")
 }
 
@@ -228,7 +228,7 @@ func TestVRF_DifferentBuddyCounts(t *testing.T) {
 			// Check ASN diversity
 			asnCount := make(map[string]int)
 			for _, buddy := range buddies {
-				asnCount[buddy.Node.ASN]++
+				asnCount[fmt.Sprintf("AS%d", buddy.Node.ASN)]++
 			}
 
 			t.Logf("✓ Selected %d buddies across %d ASNs", numBuddies, len(asnCount))
@@ -270,8 +270,8 @@ func TestVRF_EdgeCases(t *testing.T) {
 		if err != nil {
 			t.Errorf("Failed with single node: %v", err)
 		}
-		if buddy.Node.ID != "node-1" {
-			t.Errorf("Expected node-1, got %s", buddy.Node.ID)
+		if buddy.Node.PeerId != "node-1" {
+			t.Errorf("Expected node-1, got %s", buddy.Node.PeerId)
 		}
 		t.Logf("✓ Correctly handled single node")
 	})
@@ -298,7 +298,7 @@ func TestVRF_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("All nodes from same ASN", func(t *testing.T) {
-		nodes := createTestNodes(20, 1) // All from AS1000
+		nodes := createTestNodes(20, 1) // All from Region-1
 		buddies, err := vrfSelector.SelectMultipleBuddies(ctx, "node-0", nodes, 10)
 		if err != nil {
 			t.Errorf("Failed with single ASN: %v", err)
@@ -307,7 +307,7 @@ func TestVRF_EdgeCases(t *testing.T) {
 		// All should be from same ASN
 		asnCount := make(map[string]int)
 		for _, buddy := range buddies {
-			asnCount[buddy.Node.ASN]++
+			asnCount[fmt.Sprintf("AS%d", buddy.Node.ASN)]++
 		}
 
 		if len(asnCount) != 1 {
@@ -318,43 +318,52 @@ func TestVRF_EdgeCases(t *testing.T) {
 	})
 }
 
-// TestVRF_GroupNodesByASN tests ASN grouping
-func TestVRF_GroupNodesByASN(t *testing.T) {
-	nodes := createTestNodes(50, 5) // 50 nodes, 5 ASNs
+// TestVRF_GroupNodesByRegion tests region grouping
+func TestVRF_GroupNodesByRegion(t *testing.T) {
+	nodes := createTestNodes(50, 5) // 50 nodes, 5 regions
 
-	asnGroups := GroupNodesByASN(nodes)
+	regionGroups := GroupNodesByRegion(nodes)
 
-	if len(asnGroups) != 5 {
-		t.Errorf("Expected 5 ASN groups, got %d", len(asnGroups))
+	if len(regionGroups) != 5 {
+		t.Errorf("Expected 5 region groups, got %d", len(regionGroups))
 	}
 
-	// Each ASN should have 10 nodes (50 / 5 = 10)
-	for asn, nodesInASN := range asnGroups {
-		if len(nodesInASN) != 10 {
-			t.Errorf("ASN %s has %d nodes, expected 10", asn, len(nodesInASN))
+	// Each region should have 10 nodes (50 / 5 = 10)
+	for region, nodesInRegion := range regionGroups {
+		if len(nodesInRegion) != 10 {
+			t.Errorf("Region %s has %d nodes, expected 10", region, len(nodesInRegion))
 		}
 	}
 
-	t.Logf("✓ Correctly grouped %d nodes into %d ASNs", len(nodes), len(asnGroups))
+	t.Logf("✓ Correctly grouped %d nodes into %d regions", len(nodes), len(regionGroups))
 }
 
 // Helper functions
 
-func createTestNodes(count, numASNs int) []Node {
+func createTestNodes(count, numRegions int) []Node {
 	nodes := make([]Node, count)
 	now := time.Now()
 
 	for i := 0; i < count; i++ {
-		asn := fmt.Sprintf("AS%d", 1000+(i%numASNs))
+		regionNumber := (i % numRegions) + 1
 		selectionScore := 0.5 + (float64(i%5) * 0.1) // 0.5 to 0.9
 
 		nodes[i] = Node{
 			Node: seednodetypes.Node{
+				PeerId:       fmt.Sprintf("node-%d", i+1),
+				Alias:        fmt.Sprintf("test-node-%d", i+1),
+				Region:       fmt.Sprintf("Region-%d", regionNumber),
+				ASN:          1000 + regionNumber, // Simple ASN assignment
+				IPPrefix:     fmt.Sprintf("10.0.%d.%d/24", i/256, i%256),
+				Reachability: "public",
+				RTTBucket:    "fast",
+				RTTMs:        10 + (i % 50),
+				LastSeen:     now,
+				Multiaddrs:   []string{fmt.Sprintf("/ip4/10.0.%d.%d/tcp/8000/p2p/node-%d", i/256, i%256, i+1)},
+				// Legacy fields for backward compatibility
 				ID:              fmt.Sprintf("node-%d", i+1),
 				Address:         fmt.Sprintf("/ip4/10.0.%d.%d/tcp/8000", i/256, i%256),
 				ReputationScore: 0.7 + (float64(i%3) * 0.1),
-				ASN:             asn,
-				LastSeen:        now,
 				IsActive:        true,
 				Capacity:        80 + (i % 20),
 			},

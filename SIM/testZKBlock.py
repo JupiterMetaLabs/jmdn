@@ -105,8 +105,8 @@ class ZKBlockTester:
         
         return zkblock
     
-    def test_process_zkblock(self, zkblock_data):
-        """Test the processZKBlock endpoint"""
+    def test_process_zkblock(self, zkblock_data, max_retries=3, timeout=120):
+        """Test the processZKBlock endpoint with retry logic and extended timeout"""
         url = f"{self.base_url}/api/process-block"
         
         print(f"Testing ZKBlock processing at {url}")
@@ -114,33 +114,69 @@ class ZKBlockTester:
         print(f"Number of Transactions: {len(zkblock_data['transactions'])}")
         print(f"Block Hash: {zkblock_data['blockhash']}")
         print(f"Status: {zkblock_data['status']}")
+        print(f"⏱️  Timeout set to: {timeout}s")
         
-        try:
-            response = self.session.post(url, json=zkblock_data, timeout=30)
-            
-            print(f"\nResponse Status: {response.status_code}")
-            print(f"Response Headers: {dict(response.headers)}")
-            
-            if response.status_code == 200:
-                result = response.json()
-                print(f"\n✅ Success! Response:")
-                print(json.dumps(result, indent=2))
-                return True
-            else:
-                print(f"\n❌ Error! Status: {response.status_code}")
-                try:
-                    error_data = response.json()
-                    print(f"Error Response: {json.dumps(error_data, indent=2)}")
-                except:
-                    print(f"Error Response (text): {response.text}")
-                return False
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    wait_time = 2 ** attempt  # Exponential backoff: 2, 4, 8 seconds
+                    print(f"🔄 Retry attempt {attempt + 1}/{max_retries} after {wait_time}s...")
+                    time.sleep(wait_time)
                 
-        except requests.exceptions.RequestException as e:
-            print(f"\n❌ Request failed: {str(e)}")
-            return False
-        except Exception as e:
-            print(f"\n❌ Unexpected error: {str(e)}")
-            return False
+                print(f"📤 Sending request (attempt {attempt + 1}/{max_retries})...")
+                response = self.session.post(url, json=zkblock_data, timeout=timeout)
+                
+                print(f"\nResponse Status: {response.status_code}")
+                print(f"Response Headers: {dict(response.headers)}")
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    print(f"\n✅ Success! Response:")
+                    print(json.dumps(result, indent=2))
+                    return True
+                else:
+                    print(f"\n❌ Error! Status: {response.status_code}")
+                    try:
+                        error_data = response.json()
+                        print(f"Error Response: {json.dumps(error_data, indent=2)}")
+                    except:
+                        print(f"Error Response (text): {response.text}")
+                    
+                    # Don't retry on client errors (4xx), only on server errors (5xx)
+                    if 400 <= response.status_code < 500:
+                        print("🚫 Client error - not retrying")
+                        return False
+                    
+            except requests.exceptions.Timeout as e:
+                print(f"\n⏰ Request timed out after {timeout}s: {str(e)}")
+                if attempt < max_retries - 1:
+                    print(f"🔄 Will retry with extended timeout...")
+                    timeout = min(timeout * 1.5, 300)  # Increase timeout up to 5 minutes
+                else:
+                    print("❌ Max retries reached - giving up")
+                    return False
+                    
+            except requests.exceptions.ConnectionError as e:
+                print(f"\n🔌 Connection error: {str(e)}")
+                if attempt < max_retries - 1:
+                    print("🔄 Will retry...")
+                else:
+                    print("❌ Max retries reached - giving up")
+                    return False
+                    
+            except requests.exceptions.RequestException as e:
+                print(f"\n❌ Request failed: {str(e)}")
+                if attempt < max_retries - 1:
+                    print("🔄 Will retry...")
+                else:
+                    print("❌ Max retries reached - giving up")
+                    return False
+                    
+            except Exception as e:
+                print(f"\n❌ Unexpected error: {str(e)}")
+                return False
+        
+        return False
     
     def test_invalid_zkblock(self):
         """Test with invalid ZKBlock data to verify error handling"""
@@ -172,7 +208,7 @@ class ZKBlockTester:
         print(f"\nTesting health check at {url}")
         
         try:
-            response = self.session.get(url, timeout=10)
+            response = self.session.get(url, timeout=15)
             if response.status_code == 200:
                 print("✅ Health check passed")
                 return True

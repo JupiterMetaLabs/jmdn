@@ -57,6 +57,8 @@ func ReturnDefaultLoggerWithLoki(FileName string, Topic string, enableLoki bool)
 	var lokiURL string
 	if enableLoki {
 		lokiURL = GetLokiURL()
+	} else {
+		lokiURL = "" // Explicitly set empty string when Loki is disabled
 	}
 
 	return NewAsyncLogger(&Logging{
@@ -118,7 +120,7 @@ func NewAsyncLogger(cfg *Logging) (*AsyncLogger, error) {
 	// Loki sink if URL is provided
 	var lokiAsync *lokiWriteSyncer
 	if cfg.URL != "" {
-		parsedURL, err := url.Parse(GetLokiURL())
+		parsedURL, err := url.Parse(cfg.URL)
 		if err != nil {
 			_ = file.Close()
 			return nil, fmt.Errorf("failed to parse loki URL: %w", err)

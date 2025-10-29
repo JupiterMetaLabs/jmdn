@@ -328,6 +328,19 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 		return fmt.Errorf("invalid peer address: %w", err)
 	}
 
+	// Check if this is a self-connection attempt
+	if peerInfo.ID == nm.host.ID() {
+		nm.Logger.Logger.Warn("Attempted to add self as peer",
+			zap.String("peer_id", peerInfo.ID.String()),
+			zap.String("multiaddr", multiAddr),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Function, "node.AddPeer"),
+		)
+		return fmt.Errorf("cannot add self as peer: %s", peerInfo.ID)
+	}
+
 	nm.mutex.Lock()
 	defer nm.mutex.Unlock()
 

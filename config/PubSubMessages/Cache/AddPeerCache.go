@@ -2,10 +2,8 @@ package Cache
 
 import (
 	"fmt"
-	"gossipnode/config"
 	"gossipnode/config/PubSubMessages"
 	"gossipnode/node"
-	"gossipnode/seednode"
 	"sync"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -76,23 +74,15 @@ func ClearCache() {
 }
 
 // FallbackConnectionFunction: update cache only (no connect)
-func FallbackConnectionFunction(peerID peer.ID) {
-	client, err := seednode.NewClient(config.SeedNodeURL)
-	if err != nil {
-		fmt.Printf("[%s] Failed to create seed node client: %v\n", peerID, err)
-		return
-	}
-	defer client.Close()
-
-	peerRecord, err := client.GetPeer(peerID.String())
-	if err != nil {
-		fmt.Printf("[%s] Failed to get peer from seed node: %v\n", peerID, err)
+func FallbackConnectionFunction(peerID peer.ID, multiaddrs []string) {
+	if len(multiaddrs) == 0 {
+		fmt.Printf("[%s] No multiaddrs provided for fallback\n", peerID)
 		return
 	}
 
 	reachableFound := false
 
-	for _, multiaddrStr := range peerRecord.Multiaddrs {
+	for _, multiaddrStr := range multiaddrs {
 		addr, err := multiaddr.NewMultiaddr(multiaddrStr)
 		if err != nil {
 			fmt.Printf("[%s] Invalid multiaddr: %v\n", peerID, err)
@@ -155,7 +145,7 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) {
 			if nm == nil {
 				results <- fmt.Sprintf("[%s] NodeManager not available for reachability check", peerID)
 				// still try fallback; it does not require nm if your Check is standalone
-				FallbackConnectionFunction(peerID)
+				FallbackConnectionFunction(peerID, []string{addrStr})
 				results <- fmt.Sprintf("[%s] Fallback triggered (no NodeManager)", peerID)
 				return
 			}
@@ -163,7 +153,7 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) {
 			reachable, timeTaken, err := nm.PingMultiaddrWithRetries(addrStr, 3)
 			if err != nil {
 				results <- fmt.Sprintf("[%s] Error checking reachability for %s: %v", peerID, addrStr, err)
-				FallbackConnectionFunction(peerID)
+				FallbackConnectionFunction(peerID, []string{addrStr})
 				results <- fmt.Sprintf("[%s] Fallback triggered (error in check)", peerID)
 				return
 			}
@@ -171,7 +161,7 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) {
 			fmt.Printf("[%s] Time taken to check reachability: %v\n", peerID, timeTaken)
 			if !reachable {
 				results <- fmt.Sprintf("[%s] Multiaddr not reachable, triggering fallback: %s", peerID, addrStr)
-				FallbackConnectionFunction(peerID)
+				FallbackConnectionFunction(peerID, []string{addrStr})
 				results <- fmt.Sprintf("[%s] Fallback completed (unreachable primary)", peerID)
 				return
 			}

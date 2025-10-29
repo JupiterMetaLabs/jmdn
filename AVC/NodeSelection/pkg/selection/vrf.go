@@ -181,8 +181,8 @@ func (s *VRFSelector) SelectMultipleBuddies(
 	// Apply Fisher-Yates shuffle first for VRF randomness
 	s.fisherYatesShuffle(nodesCopy, seed)
 
-	// Then select with ASN diversity and selection score priority
-	selected := s.selectWithASNDiversity(nodesCopy, k, seed)
+	// Then select with region diversity and selection score priority
+	selected := s.selectWithRegionDiversity(nodesCopy, k, seed)
 
 	if len(selected) == 0 {
 		return nil, ErrNoPeersAvailable
@@ -200,8 +200,8 @@ func (s *VRFSelector) SelectMultipleBuddies(
 	return buddies, nil
 }
 
-// selectWithASNDiversity selects k nodes ensuring ASN diversity with selection score priority
-func (s *VRFSelector) selectWithASNDiversity(nodes []Node, k int, seed uint64) []Node {
+// selectWithRegionDiversity selects k nodes ensuring region diversity with selection score priority
+func (s *VRFSelector) selectWithRegionDiversity(nodes []Node, k int, seed uint64) []Node {
 	if k >= len(nodes) {
 		return nodes
 	}
@@ -222,59 +222,59 @@ func (s *VRFSelector) selectWithASNDiversity(nodes []Node, k int, seed uint64) [
 		return eligibleNodes
 	}
 
-	// Group nodes by ASN
-	asnGroups := GroupNodesByASN(eligibleNodes)
+	// Group nodes by region
+	regionGroups := GroupNodesByRegion(eligibleNodes)
 
-	// Sort nodes within each ASN by selection score (descending)
-	for asn := range asnGroups {
-		sort.Slice(asnGroups[asn], func(i, j int) bool {
-			return asnGroups[asn][i].SelectionScore > asnGroups[asn][j].SelectionScore
+	// Sort nodes within each region by selection score (descending)
+	for region := range regionGroups {
+		sort.Slice(regionGroups[region], func(i, j int) bool {
+			return regionGroups[region][i].SelectionScore > regionGroups[region][j].SelectionScore
 		})
 	}
 
-	// Get ASN list
-	asns := make([]string, 0, len(asnGroups))
-	for asn := range asnGroups {
-		asns = append(asns, asn)
+	// Get region list
+	regions := make([]string, 0, len(regionGroups))
+	for region := range regionGroups {
+		regions = append(regions, region)
 	}
 
-	// Shuffle ASNs for fairness
-	s.shuffleStrings(asns, seed)
+	// Shuffle regions for fairness
+	s.shuffleStrings(regions, seed)
 
 	selected := make([]Node, 0, k)
 	selectedIDs := make(map[string]bool) // Track selected node IDs
-	asnCounts := make(map[string]int)
+	regionCounts := make(map[string]int)
 
-	// Round-robin selection across ASNs
+	// Round-robin selection across regions
 	for len(selected) < k {
 		selectedThisRound := false
 
-		for _, asn := range asns {
+		for _, region := range regions {
 			if len(selected) >= k {
 				break
 			}
 
-			nodesInASN := asnGroups[asn]
+			nodesInRegion := regionGroups[region]
 
-			// Skip if we've already selected all nodes from this ASN
-			if asnCounts[asn] >= len(nodesInASN) {
+			// Skip if we've already selected all nodes from this region
+			if regionCounts[region] >= len(nodesInRegion) {
 				continue
 			}
 
-			// Find next unselected node from this ASN (already sorted by score)
-			for idx := asnCounts[asn]; idx < len(nodesInASN); idx++ {
-				node := nodesInASN[idx]
+			// Find next unselected node from this region (already sorted by score)
+			for idx := regionCounts[region]; idx < len(nodesInRegion); idx++ {
+				node := nodesInRegion[idx]
 
 				// Skip if already selected
-				if selectedIDs[node.ID] {
-					asnCounts[asn]++
+				if selectedIDs[node.PeerId] {
+					regionCounts[region]++
 					continue
 				}
 
 				// Select this node
 				selected = append(selected, node)
-				selectedIDs[node.ID] = true
-				asnCounts[asn]++
+				selectedIDs[node.PeerId] = true
+				regionCounts[region]++
 				selectedThisRound = true
 				break
 			}

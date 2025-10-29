@@ -70,8 +70,14 @@ func (consensus *Consensus) QueryBuddyNodes() ([]PubSubMessages.Buddy_PeerMultia
 
 func (consensus *Consensus) GetOnlyPeerIDs(buddies []PubSubMessages.Buddy_PeerMultiaddr) ([]peer.ID, error) {
 	peerIDs := make([]peer.ID, 0)
+	seenPeers := make(map[string]bool) // Track seen peer IDs to avoid duplicates
+
 	for _, buddy := range buddies {
-		peerIDs = append(peerIDs, buddy.PeerID)
+		peerIDStr := buddy.PeerID.String()
+		if !seenPeers[peerIDStr] {
+			peerIDs = append(peerIDs, buddy.PeerID)
+			seenPeers[peerIDStr] = true
+		}
 	}
 	return peerIDs, nil
 }

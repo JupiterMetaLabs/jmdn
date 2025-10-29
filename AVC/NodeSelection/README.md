@@ -54,7 +54,7 @@ if err != nil {
 
 // Use the selected buddies
 for _, buddy := range buddies {
-    fmt.Printf("Buddy: %s at %s\n", buddy.Node.ID, buddy.Node.Address)
+    fmt.Printf("Buddy: %s at %s\n", buddy.Node.PeerId, buddy.Node.Address)
 }
 ```
 
@@ -115,9 +115,9 @@ func main() {
     fmt.Println("Selected Buddies:")
     fmt.Println("=================")
     for i, buddy := range buddies {
-        fmt.Printf("%2d. %-20s | %s | Score: %.2f | ASN: %s\n",
+        fmt.Printf("%2d. %-20s | %s | Score: %.2f | ASN: %d\n",
             i+1,
-            buddy.Node.ID,
+            buddy.Node.PeerId,
             buddy.Node.Address,
             buddy.Node.SelectionScore,
             buddy.Node.ASN,
@@ -179,14 +179,22 @@ type BuddyNode struct {
 #### `Node`
 ```go
 type Node struct {
+    PeerId       string
+    Alias        string
+    Region       string
+    ASN          int
+    IPPrefix     string
+    Reachability string
+    RTTBucket    string
+    RTTMs        int
+    LastSeen     time.Time
+    Multiaddrs   []string
+    // Legacy fields for backward compatibility
     ID              string
     PublicKey       ed25519.PublicKey
     Address         string
-    ASN             string
-    Region          string
     ReputationScore float64
-    LastSeen        time.Time
-    SelectionScore  int
+    SelectionScore  float64
     LastSelectedRound uint64
     IsActive        bool
     Capacity        int
@@ -209,9 +217,9 @@ The following dependencies are automatically included:
 mockNodes := []selection.Node{
     {
         Node: types.Node{
-            ID: "node-1",
+            PeerId: "node-1",
             Address: "/ip4/127.0.0.1/tcp/8000",
-            ASN: "AS1001",
+            ASN: 1001,
             ReputationScore: 0.8,
             IsActive: true,
         },

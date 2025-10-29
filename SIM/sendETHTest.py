@@ -11,17 +11,37 @@ import uuid
 import time
 import hashlib
 import random
+from datetime import datetime
 
 def generate_unique_hash():
     """Generate a unique hash for testing"""
     unique_string = f"{time.time()}{uuid.uuid4()}{random.randint(1000, 9999)}"
     return hashlib.sha256(unique_string.encode()).hexdigest()
 
+def format_duration(seconds):
+    """Format duration in a human-readable way"""
+    if seconds < 1:
+        return f"{seconds*1000:.1f}ms"
+    elif seconds < 60:
+        return f"{seconds:.2f}s"
+    else:
+        minutes = int(seconds // 60)
+        remaining_seconds = seconds % 60
+        return f"{minutes}m {remaining_seconds:.1f}s"
+
+def print_timing(step_name, start_time, end_time=None):
+    """Print timing information for a step"""
+    if end_time is None:
+        end_time = time.time()
+    duration = end_time - start_time
+    print(f"⏱️  {step_name}: {format_duration(duration)}")
+    return end_time
+
 def get_latest_block_number():
     """Get the latest block number from the node stats API on port 8090"""
     try:
         # Use the stats API to get the latest block number
-        response = requests.get("http://localhost:8090/api/stats/", timeout=10)
+        response = requests.get("http://192.168.100.81:8090/api/stats/", timeout=10)
         if response.status_code == 200:
             data = response.json()
             # Get the latest block number from stats
@@ -35,21 +55,26 @@ def get_latest_block_number():
 
 def send_eth_test():
     """Test sending 2 ETH between specific addresses"""
+    test_start_time = time.time()
     print("💰 Sending 2 ETH Test")
     print("="*50)
+    print(f"🕐 Test started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # Create tester
-    tester = ZKBlockTester("http://localhost:15050")
+    # Create tester with extended timeout
+    tester = ZKBlockTester("http://192.168.100.81:15050")
     
     # Check if server is running
+    step_start = time.time()
     print("1. Checking server health...")
     if not tester.test_health_check():
         print("❌ Server is not responding. Make sure your Go server is running on port 15050")
         return False
     
     print("✅ Server is running")
+    print_timing("Health check", step_start)
     
     # Get the latest block number from the node stats API
+    step_start = time.time()
     print("2. Getting latest block number from stats API...")
     latest_block_number = get_latest_block_number()
     if latest_block_number > 0:
@@ -57,12 +82,14 @@ def send_eth_test():
     else:
         print("⚠️  Using default block number: 8")
         latest_block_number = 8
+    print_timing("Block number retrieval", step_start)
     
     # Specific addresses and amount
+    step_start = time.time()
     to_address = "0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2"
     from_address = "0x69EE9a32109EE1CC8c95b49Ad1D4dDAEBb46Db45"
     amount = 1
-    amount_wei = int(amount * 10**18 )# 2 ETH in wei
+    amount_wei = int(amount * 10**18)  # 1 ETH in wei
     
     print(f"\n3. Creating transaction:")
     print(f"   From: {from_address}")
@@ -74,7 +101,7 @@ def send_eth_test():
         "hash": f"0x{secrets.token_hex(32)}",
         "from": from_address,
         "to": to_address,
-        "value": amount_wei,  # 2 ETH in wei
+        "value": amount_wei,  # 1 ETH in wei
         "type": 0,
         "timestamp": 1761045000,
         "chain_id": 7000700,
@@ -122,17 +149,31 @@ def send_eth_test():
     print(f"   Transactions: {len(zkblock['transactions'])}")
     print(f"   Status: {zkblock['status']}")
     print(f"   Block Hash: {zkblock['blockhash']}")
+    print_timing("Transaction and ZKBlock creation", step_start)
     
     # Test the block processing
+    step_start = time.time()
     print(f"\n5. Testing ZKBlock processing...")
+    print("⏳ Processing may take up to 2 minutes...")
     success = tester.test_process_zkblock(zkblock)
+    processing_time = print_timing("ZKBlock processing", step_start)
+    
+    # Print final results with timing summary
+    total_time = time.time() - test_start_time
+    print(f"\n{'='*50}")
+    print("📊 TIMING SUMMARY")
+    print(f"{'='*50}")
+    print(f"⏱️  Total test duration: {format_duration(total_time)}")
+    print(f"🕐 Test completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     if success:
         print("\n✅ ETH transfer test completed successfully!")
-        print("2 ETH has been sent from 0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2 to 0x69EE9a32109EE1CC8c95b49Ad1D4dDAEBb46Db45")
+        print("1 ETH has been sent from 0x69EE9a32109EE1CC8c95b49Ad1D4dDAEBb46Db45 to 0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2")
+        print(f"🚀 Processing completed in {format_duration(processing_time)}")
     else:
         print("\n❌ ETH transfer test failed!")
         print("Check the server logs for more details.")
+        print(f"⏰ Failed after {format_duration(total_time)}")
     
     return success
 
