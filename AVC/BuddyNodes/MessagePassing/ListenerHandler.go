@@ -17,6 +17,7 @@ import (
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	ServiceLayer "gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
+	Pubsub "gossipnode/Pubsub"
 	Publisher "gossipnode/Pubsub/Publish"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/Sequencer/Triggers/Maps"
@@ -1174,6 +1175,19 @@ func triggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 	topicName := syncConfig.TopicName
 
 	fmt.Printf("🔄 Starting CRDT sync (mode: both - publish & subscribe) on topic: %s\n", topicName)
+
+	// Create the CRDT sync channel with access control for all buddy nodes
+	// If channel doesn't exist, create it as public so all nodes can sync
+	if err := Pubsub.CreateChannel(pubSubNode.PubSub, topicName, true, listenerNode.BuddyNodes.Buddies_Nodes); err != nil {
+		if err.Error() != fmt.Sprintf("channel %s already exists", topicName) {
+			fmt.Printf("⚠️ Failed to create CRDT sync channel: %v\n", err)
+			// Try to continue anyway - channel might exist
+		} else {
+			fmt.Printf("✅ CRDT sync channel already exists\n")
+		}
+	} else {
+		fmt.Printf("✅ Created CRDT sync channel: %s (public, allowing all buddy nodes)\n", topicName)
+	}
 
 	// Channel to collect received sync messages
 	syncMessages := make(chan CRDTSync.Message, 100)
