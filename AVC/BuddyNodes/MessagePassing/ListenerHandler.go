@@ -1203,10 +1203,51 @@ func triggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 		}
 
 		// Parse the message content
-		var crdtSyncMsg CRDTSync.Message
-		if err := json.Unmarshal([]byte(gossipMsg.Data.Message), &crdtSyncMsg); err != nil {
-			fmt.Printf("⚠️ Failed to parse CRDT sync message: %v\n", err)
+		// Use a flexible message struct that can handle different timestamp formats
+		var rawMsg map[string]json.RawMessage
+		messageBytes := []byte(gossipMsg.Data.Message)
+
+		if err := json.Unmarshal(messageBytes, &rawMsg); err != nil {
+			fmt.Printf("⚠️ Failed to parse CRDT sync message (raw): %v\n", err)
 			return
+		}
+
+		// Build the CRDT sync message manually to handle flexible timestamp
+		crdtSyncMsg := CRDTSync.Message{}
+
+		if val, ok := rawMsg["type"]; ok {
+			json.Unmarshal(val, &crdtSyncMsg.Type)
+		}
+		if val, ok := rawMsg["node_id"]; ok {
+			json.Unmarshal(val, &crdtSyncMsg.NodeID)
+		}
+		if val, ok := rawMsg["key"]; ok {
+			json.Unmarshal(val, &crdtSyncMsg.Key)
+		}
+		if val, ok := rawMsg["sync_data"]; ok {
+			json.Unmarshal(val, &crdtSyncMsg.SyncData)
+		}
+
+		// Handle timestamp - could be Unix int64 or RFC3339 string
+		if val, ok := rawMsg["timestamp"]; ok {
+			// Try Unix timestamp first (int64)
+			var unixTS int64
+			if err := json.Unmarshal(val, &unixTS); err == nil {
+				crdtSyncMsg.Timestamp = time.Unix(unixTS, 0)
+			} else {
+				// Try RFC3339 string format
+				var timeStr string
+				if err := json.Unmarshal(val, &timeStr); err == nil {
+					if t, err := time.Parse(time.RFC3339, timeStr); err == nil {
+						crdtSyncMsg.Timestamp = t
+					} else if t, err := time.Parse(time.RFC3339Nano, timeStr); err == nil {
+						crdtSyncMsg.Timestamp = t
+					}
+				} else {
+					// Try direct time.Time unmarshal
+					json.Unmarshal(val, &crdtSyncMsg.Timestamp)
+				}
+			}
 		}
 
 		// Skip our own messages
@@ -1264,11 +1305,13 @@ func triggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 			syncData[key] = data
 		}
 
-		syncMsg := map[string]interface{}{
-			"type":      config.Type_CRDT_SYNC,
-			"node_id":   listenerNode.PeerID.String(),
-			"sync_data": syncData,
-			"timestamp": time.Now().Unix(),
+		// Create sync message using CRDTSync.Message struct directly for proper marshaling
+		syncMsg := CRDTSync.Message{
+			Type:      config.Type_CRDT_SYNC,
+			NodeID:    listenerNode.PeerID.String(),
+			Key:       "all-crdts",
+			SyncData:  syncData,
+			Timestamp: time.Now(),
 		}
 
 		syncDataBytes, err := json.Marshal(syncMsg)
