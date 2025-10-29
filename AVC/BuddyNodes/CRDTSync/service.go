@@ -50,7 +50,7 @@ func DefaultSyncConfig() *SyncConfig {
 	return &SyncConfig{
 		Mode:              ModeBoth,
 		SyncInterval:      3 * time.Second, // Faster sync for vote aggregation
-		TopicName:         "crdt-sync-topic",
+			TopicName:         config.Pubsub_CRDTSync,
 		PrintStore:        false,
 		HeartbeatInterval: 10 * time.Second, // More frequent heartbeat
 	}
