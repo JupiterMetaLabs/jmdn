@@ -104,14 +104,13 @@ if [ "$IMMUDB_RUNNING" = false ]; then
   chmod 755 "${DATA_DIR}" 2>/dev/null || true
   
   # Start ImmuDB in the background with the shared data directory
-  # Add common flags: --mtls=false (disable mTLS for easier setup) and --log-level=info
   cd "${WORK_DIR}" || die "Cannot change to working directory: ${WORK_DIR}"
   
   # Clear any old log entries for fresh start
   echo "Starting ImmuDB at $(date)" >>"${LOG_DIR}/immudb.log" 2>&1 || true
   
   # Start ImmuDB with explicit flags for better compatibility
-  nohup immudb --dir "${DATA_DIR}" --mtls=false --log-level=info >>"${LOG_DIR}/immudb.log" 2>&1 &
+  nohup immudb --dir "${DATA_DIR}" >>"${LOG_DIR}/immudb.log" 2>&1 &
   IMMUDB_PID=$!
   
   # Wait briefly to see if the process starts
