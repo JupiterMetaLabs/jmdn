@@ -79,7 +79,7 @@ mkdir -p "${DATA_DIR}"
 # ===== ImmuDB setup =====
 # Check if ImmuDB is installed
 if ! command -v immudb >/dev/null 2>&1; then
-  die "ImmuDB not found. Please install ImmuDB first (see ./scripts/ImmuDB_Prerequisite.sh)"
+  die "ImmuDB not found. Please install ImmuDB first (see ./Scripts/ImmuDB_Prerequisite.sh)"
 fi
 
 # Check if ImmuDB is already running
@@ -99,31 +99,80 @@ IMMUDB_STARTED_BY_SCRIPT=false
 if [ "$IMMUDB_RUNNING" = false ]; then
   IMMUDB_STARTED_BY_SCRIPT=true
   info "Starting ImmuDB with data directory: ${DATA_DIR}"
+  
+  # Ensure data directory has proper permissions
+  chmod 755 "${DATA_DIR}" 2>/dev/null || true
+  
   # Start ImmuDB in the background with the shared data directory
+  # Add common flags: --mtls=false (disable mTLS for easier setup) and --log-level=info
   cd "${WORK_DIR}" || die "Cannot change to working directory: ${WORK_DIR}"
-  nohup immudb --dir "${DATA_DIR}" >>"${LOG_DIR}/immudb.log" 2>&1 &
+  
+  # Clear any old log entries for fresh start
+  echo "Starting ImmuDB at $(date)" >>"${LOG_DIR}/immudb.log" 2>&1 || true
+  
+  # Start ImmuDB with explicit flags for better compatibility
+  nohup immudb --dir "${DATA_DIR}" --mtls=false --log-level=info >>"${LOG_DIR}/immudb.log" 2>&1 &
   IMMUDB_PID=$!
+  
+  # Wait briefly to see if the process starts
+  sleep 1
+  
+  # Check if process is still running immediately
+  if ! kill -0 "${IMMUDB_PID}" 2>/dev/null; then
+    warn "ImmuDB process exited immediately. Checking logs..."
+    # Show last 20 lines of log for debugging
+    if [ -f "${LOG_DIR}/immudb.log" ]; then
+      warn "Last 20 lines of ImmuDB log:"
+      tail -n 20 "${LOG_DIR}/immudb.log" || true
+    fi
+    die "ImmuDB failed to start. Process exited with PID ${IMMUDB_PID}. Check logs: ${LOG_DIR}/immudb.log"
+  fi
+  
   echo "${IMMUDB_PID}" > "${IMMUDB_PID_FILE}"
   info "ImmuDB started with PID ${IMMUDB_PID}"
   
-  # Wait for ImmuDB to be ready
+  # Wait for ImmuDB to be ready with progressive checks
   info "Waiting for ImmuDB to be ready..."
-  sleep 3
+  IMMUDB_READY=false
+  for i in {1..10}; do
+    sleep 1
+    if ! kill -0 "${IMMUDB_PID}" 2>/dev/null; then
+      warn "ImmuDB process died after ${i} seconds. Checking logs..."
+      if [ -f "${LOG_DIR}/immudb.log" ]; then
+        warn "Last 30 lines of ImmuDB log:"
+        tail -n 30 "${LOG_DIR}/immudb.log" || true
+      fi
+      die "ImmuDB failed to start. Process exited after ${i} seconds. Check logs: ${LOG_DIR}/immudb.log"
+    fi
+    
+    # Try to connect via immuclient if available
+    if command -v immuclient >/dev/null 2>&1; then
+      if timeout 2 immuclient status >/dev/null 2>&1; then
+        IMMUDB_READY=true
+        break
+      fi
+    else
+      # If no immuclient, just check if process is still running after a few seconds
+      if [ $i -ge 3 ]; then
+        IMMUDB_READY=true
+        break
+      fi
+    fi
+  done
   
-  # Verify ImmuDB is running
+  # Final verification
   if ! kill -0 "${IMMUDB_PID}" 2>/dev/null; then
-    die "ImmuDB failed to start. Check logs: ${LOG_DIR}/immudb.log"
+    if [ -f "${LOG_DIR}/immudb.log" ]; then
+      warn "Last 30 lines of ImmuDB log:"
+      tail -n 30 "${LOG_DIR}/immudb.log" || true
+    fi
+    die "ImmuDB process died during startup. Check logs: ${LOG_DIR}/immudb.log"
   fi
   
-  # Try to verify ImmuDB is responding (optional check with immuclient)
-  if command -v immuclient >/dev/null 2>&1; then
-    if timeout 5 immuclient status >/dev/null 2>&1; then
-      ok "ImmuDB is running and responding"
-    else
-      warn "ImmuDB is running but may not be fully ready yet (normal during startup)"
-    fi
+  if [ "$IMMUDB_READY" = true ]; then
+    ok "ImmuDB is running and ready"
   else
-    info "ImmuDB process is running (immuclient not available for detailed check)"
+    warn "ImmuDB is running but connection check timed out (this may be normal)"
   fi
 else
   info "Using existing ImmuDB instance"

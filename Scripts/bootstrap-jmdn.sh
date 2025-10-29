@@ -61,14 +61,14 @@ info "Checking prerequisites..."
 
 if ! command -v go >/dev/null 2>&1; then
   error "Go is not installed. Please install Go first:"
-  echo "  ./scripts/Go_Prerequisite.sh"
+  echo "  ./Scripts/Go_Prerequisite.sh"
   exit 1
 fi
 info "Go found: $(go version)"
 
 if ! command -v immudb >/dev/null 2>&1; then
   error "ImmuDB is not installed. Please install ImmuDB first:"
-  echo "  ./scripts/ImmuDB_Prerequisite.sh"
+  echo "  ./Scripts/ImmuDB_Prerequisite.sh"
   exit 1
 fi
 info "ImmuDB found: $(immudb version 2>/dev/null | head -n1 || echo 'installed')"
@@ -132,10 +132,36 @@ chmod 755 "${BIN_PATH}"
 rm -f ./jmdn
 info "Binary installed to ${BIN_PATH}"
 
+# ===== Copy required directories to working directory =====
+section
+info "Setting up JMDN working directory structure..."
+
+# Copy config directory (required for peer.json and other config files)
+if [ -d "./config" ]; then
+  info "Copying config directory to ${WORK_DIR}/config..."
+  cp -r ./config "${WORK_DIR}/"
+  chmod -R 755 "${WORK_DIR}/config"
+  info "Config directory copied"
+else
+  warn "config directory not found in project. Creating minimal structure..."
+  mkdir -p "${WORK_DIR}/config"
+  # Create a minimal peer.json if it doesn't exist (JMDN will generate one, but this avoids errors)
+  if [ ! -f "${WORK_DIR}/config/peer.json" ]; then
+    echo '{}' > "${WORK_DIR}/config/peer.json"
+    chmod 644 "${WORK_DIR}/config/peer.json"
+  fi
+fi
+
+# Ensure .immudb_state directory will be writable (created by JMDN at runtime)
+mkdir -p "${WORK_DIR}/.immudb_state"
+chmod 755 "${WORK_DIR}/.immudb_state"
+
+info "Working directory structure ready"
+
 # ===== Install start script =====
 info "Installing start_JMDN.sh script..."
 if [ ! -f "./Scripts/start_JMDN.sh" ]; then
-  error "start_JMDN.sh not found in ./scripts/"
+  error "start_JMDN.sh not found in ./Scripts/"
   exit 1
 fi
 
