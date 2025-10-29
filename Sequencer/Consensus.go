@@ -172,11 +172,27 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		return fmt.Errorf("failed to create pubsub: %v", err)
 	}
 
+	// Create the consensus channel for message passing
 	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.PubSub_ConsensusChannel, true, allowedPeers); err != nil {
 		return fmt.Errorf("failed to create pubsub channel: %v", err)
 	}
 
 	log.Printf("Successfully created pubsub channel: %s", config.PubSub_ConsensusChannel)
+
+	// Create the CRDT sync channel ONLY for buddy nodes (vote aggregators) to synchronize their CRDTs
+	// This channel is restricted to only the selected buddy nodes (main + backup peers)
+	// Regular network nodes cannot join - only nodes performing vote aggregation can access it
+	// Using the same allowed peers list as the consensus channel (sequencer + main buddies + backup buddies)
+	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.Pubsub_CRDTSync, false, allowedPeers); err != nil {
+		if err.Error() != fmt.Sprintf("channel %s already exists", config.Pubsub_CRDTSync) {
+			log.Printf("⚠️ Failed to create CRDT sync channel: %v (continuing anyway)", err)
+		} else {
+			log.Printf("✅ CRDT sync channel already exists: %s", config.Pubsub_CRDTSync)
+		}
+	} else {
+		log.Printf("✅ Successfully created CRDT sync channel: %s (private, %d allowed peers - sequencer + %d main + %d backup buddies only)",
+			config.Pubsub_CRDTSync, len(allowedPeers), len(consensus.PeerList.MainPeers), len(consensus.PeerList.BackupPeers))
+	}
 
 	// Subscribe the sequencer to its own channel to receive votes from buddy nodes
 	// This is critical - without this, the sequencer won't receive any vote messages
