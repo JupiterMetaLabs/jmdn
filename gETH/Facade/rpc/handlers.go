@@ -80,11 +80,16 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		fmt.Println("req.Params: ", req.Params)
 		tag, _ := req.Params[0].(string)
 		full := false
+
 		if len(req.Params) > 1 {
-			if b, ok := req.Params[1].(bool); ok {
-				full = b
+			switch v := req.Params[1].(type) {
+			case bool:
+				full = v
+			case string:
+				full = strings.EqualFold(v, "true")
 			}
 		}
+
 		num, err := parseBlockTag(ctx, handler.service, tag)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
@@ -124,6 +129,8 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 	case "eth_call":
+		// Log incoming payload for eth_call
+		log.Printf("📥 eth_call payload: %+v", req.Params)
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing call object")
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
@@ -245,6 +252,93 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
+	case "eth_getCode":
+		if len(req.Params) < 2 {
+			resp, _ := invalidParams(req, "missing address and block tag")
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, nil
+		}
+		addr, _ := req.Params[0].(string)
+		num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		code, err := handler.service.GetCode(ctx, addr, num)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		resp, _ := finish(req, code, nil)
+		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		return resp, nil
+
+	case "eth_feeHistory":
+		if len(req.Params) < 2 {
+			resp, _ := invalidParams(req, "missing blockCount and newestBlock")
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, nil
+		}
+
+		// Parse blockCount (can be string hex or number)
+		var blockCount uint64
+		switch v := req.Params[0].(type) {
+		case string:
+			if strings.HasPrefix(v, "0x") {
+				bigVal := new(big.Int)
+				bigVal.SetString(v[2:], 16)
+				blockCount = bigVal.Uint64()
+			} else {
+				fmt.Sscanf(v, "%d", &blockCount)
+			}
+		case float64:
+			blockCount = uint64(v)
+		case int:
+			blockCount = uint64(v)
+		default:
+			resp, _ := invalidParams(req, "invalid blockCount type")
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, nil
+		}
+
+		// Parse newestBlock (block tag)
+		newestBlock, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+
+		// Parse rewardPercentiles (optional, third parameter)
+		var rewardPercentiles []float64
+		if len(req.Params) > 2 {
+			if percArray, ok := req.Params[2].([]any); ok {
+				rewardPercentiles = make([]float64, 0, len(percArray))
+				for _, p := range percArray {
+					switch v := p.(type) {
+					case float64:
+						rewardPercentiles = append(rewardPercentiles, v)
+					case string:
+						var val float64
+						fmt.Sscanf(v, "%f", &val)
+						rewardPercentiles = append(rewardPercentiles, val)
+					}
+				}
+			}
+		}
+
+		history, err := handler.service.FeeHistory(ctx, blockCount, newestBlock, rewardPercentiles)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		resp, _ := finish(req, history, nil)
+		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		return resp, nil
+
 	default:
 		resp := RespErr(req.ID, -32601, "Method not found")
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
@@ -253,7 +347,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 }
 
 func parseBlockTag(ctx context.Context, be Service.Service, tag string) (*big.Int, error) {
-	switch strings.ToLower(tag) {
+	switch strings.ToLower(strings.TrimSpace(tag)) {
 	case "latest", "":
 		return be.BlockNumber(ctx)
 	case "pending":
@@ -384,7 +478,18 @@ func marshalBlock(b *Types.Block, full bool) map[string]any {
 		"hash":         "0x" + hex.EncodeToString(b.Header.Hash),
 		"parentHash":   "0x" + hex.EncodeToString(b.Header.ParentHash),
 		"timestamp":    "0x" + new(big.Int).SetUint64(b.Header.Timestamp).Text(16),
+		"gasLimit":     "0x" + new(big.Int).SetUint64(b.Header.GasLimit).Text(16),
+		"gasUsed":      "0x" + new(big.Int).SetUint64(b.Header.GasUsed).Text(16),
 		"transactions": []any{},
+	}
+
+	// Add baseFeePerGas at top-level from header (EIP-1559)
+	if b.Header != nil && len(b.Header.BaseFee) > 0 {
+		baseFeeBig := new(big.Int).SetBytes(b.Header.BaseFee)
+		result["baseFeePerGas"] = "0x" + baseFeeBig.Text(16)
+	} else {
+		// If no base fee (pre-EIP-1559 blocks), set to null or omit
+		result["baseFeePerGas"] = nil
 	}
 
 	if full && len(b.Transactions) > 0 {

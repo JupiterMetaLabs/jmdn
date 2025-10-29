@@ -2,8 +2,8 @@ package Service
 
 import (
 	"context"
-	"math/big"
 	"gossipnode/gETH/Facade/Service/Types"
+	"math/big"
 )
 
 type Service interface {
@@ -20,6 +20,8 @@ type Service interface {
 	TxByHash(ctx context.Context, hash string) (*Types.Tx, error)
 	ReceiptByHash(ctx context.Context, hash string) (map[string]any, error)
 	GetLogs(ctx context.Context, q Types.FilterQuery) ([]Types.Log, error)
+	GetCode(ctx context.Context, addr string, block *big.Int) (string, error)
+	FeeHistory(ctx context.Context, blockCount uint64, newest *big.Int, perc []float64) (map[string]any, error)
 
 	// Streaming (for WS subscriptions)
 	SubscribeNewHeads(ctx context.Context) (<-chan *Types.Block, func(), error)

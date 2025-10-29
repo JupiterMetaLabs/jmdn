@@ -451,12 +451,12 @@ func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint6
 		if feeStats.MeanFee > 0 {
 			// Use mean fee from routing service to adjust base gas
 			// Higher fees typically correlate with more complex transactions requiring more gas
-			feeMultiplier := float64(feeStats.MeanFee) / 20000000000.0 // Normalize against 20 gwei
+			feeMultiplier := float64(feeStats.MeanFee) / 35000000000.0 // Normalize against 20 gwei
 			if feeMultiplier > 1.0 {
-				fmt.Printf("💰 Applying fee multiplier: %.4f (MeanFee exceeds 20 gwei threshold)\n", feeMultiplier)
+				fmt.Printf("💰 Applying fee multiplier: %.4f (MeanFee exceeds 35 gwei threshold)\n", feeMultiplier)
 				baseGas = uint64(float64(baseGas) * feeMultiplier)
 			} else {
-				fmt.Printf("✅ Fee multiplier not applied (MeanFee=%.9f gwei < 20 gwei threshold)\n", float64(feeStats.MeanFee)/1000000000.0)
+				fmt.Printf("✅ Fee multiplier not applied (MeanFee=%.9f gwei < 35 gwei threshold)\n", float64(feeStats.MeanFee)/1000000000.0)
 			}
 		}
 	} else if err != nil {
@@ -525,4 +525,136 @@ func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
 	}
 
 	return gasPrice, nil
+}
+
+// GetCode implements the Service interface - retrieves contract code at a specific address and block
+func (s *ServiceImpl) GetCode(ctx context.Context, addr string, block *big.Int) (string, error) {
+	// Create a new context with timeout for this operation
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Log the operation
+	if err := Logger.LogData(opCtx, fmt.Sprintf("GetCode called for address: %s, block: %s", addr, block.String()), "GetCode", 1); err != nil {
+		fmt.Printf("Failed to log GetCode operation: %v\n", err)
+	}
+
+	// For now, return "0x" as there's no contract code storage implemented yet
+	// TODO: Implement actual contract code retrieval from state/storage
+	// This would typically involve:
+	// 1. Getting the state at the specified block
+	// 2. Looking up the account at the given address
+	// 3. Returning the code field (empty for EOAs, bytecode for contracts)
+
+	// Log success
+	if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetCode returned 0x for address: %s", addr), "GetCode", 1); logErr != nil {
+		fmt.Printf("Failed to log GetCode success: %v\n", logErr)
+	}
+
+	return "0x", nil
+}
+
+// FeeHistory implements the Service interface - retrieves fee history for the last N blocks
+func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest *big.Int, perc []float64) (map[string]any, error) {
+	// Create a new context with timeout for this operation
+	opCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Determine the newest block number
+	var newestNum *big.Int
+	if newest != nil {
+		newestNum = newest
+	} else {
+		// Get latest block if newest not specified
+		latest, err := s.BlockNumber(ctx)
+		if err != nil {
+			if logErr := Logger.LogData(opCtx, fmt.Sprintf("FeeHistory failed to get latest block: %v", err), "FeeHistory", -1); logErr != nil {
+				fmt.Printf("Failed to log FeeHistory error: %v\n", logErr)
+			}
+			return nil, err
+		}
+		newestNum = latest
+	}
+
+	// Calculate oldest block number
+	// We need blockCount + 1 blocks (newest block + blockCount blocks before it)
+	oldestNum := new(big.Int).Sub(newestNum, big.NewInt(int64(blockCount)))
+	if oldestNum.Sign() < 0 {
+		oldestNum = big.NewInt(0)
+	}
+
+	// Initialize result arrays
+	baseFeePerGas := make([]string, 0, blockCount+1)
+	gasUsedRatio := make([]float64, 0, blockCount+1)
+	var rewards [][]string
+
+	// If percentiles are provided, initialize rewards array
+	if len(perc) > 0 {
+		rewards = make([][]string, 0, blockCount+1)
+	}
+
+	// Fetch blocks from newest to oldest (inclusive)
+	current := new(big.Int).Set(newestNum)
+	blocksToFetch := blockCount + 1
+
+	for i := uint64(0); i < blocksToFetch && current.Sign() >= 0 && current.Cmp(oldestNum) >= 0; i++ {
+		block, err := s.BlockByNumber(ctx, current, false)
+		if err != nil {
+			// If block doesn't exist, skip it
+			current.Sub(current, big.NewInt(1))
+			continue
+		}
+
+		// Extract base fee per gas
+		var baseFeeHex string
+		if len(block.Header.BaseFee) > 0 {
+			baseFeeBig := new(big.Int).SetBytes(block.Header.BaseFee)
+			baseFeeHex = "0x" + baseFeeBig.Text(16)
+		} else {
+			// If no base fee (pre-EIP-1559), set to 0x0
+			baseFeeHex = "0x0"
+		}
+		baseFeePerGas = append(baseFeePerGas, baseFeeHex)
+
+		// Calculate gas used ratio
+		var gasUsedRatioVal float64
+		if block.Header.GasLimit > 0 {
+			gasUsedRatioVal = float64(block.Header.GasUsed) / float64(block.Header.GasLimit)
+		} else {
+			gasUsedRatioVal = 0.0
+		}
+		gasUsedRatio = append(gasUsedRatio, gasUsedRatioVal)
+
+		// Calculate rewards if percentiles are provided
+		if len(perc) > 0 {
+			blockRewards := make([]string, len(perc))
+			// TODO: Calculate actual rewards from transaction priority fees
+			// For now, set all rewards to 0x0
+			for j := range perc {
+				blockRewards[j] = "0x0"
+			}
+			rewards = append(rewards, blockRewards)
+		}
+
+		// Move to previous block
+		current.Sub(current, big.NewInt(1))
+	}
+
+	// Build result map
+	result := map[string]any{
+		"oldestBlock":   fmt.Sprintf("0x%x", oldestNum.Uint64()),
+		"baseFeePerGas": baseFeePerGas,
+		"gasUsedRatio":  gasUsedRatio,
+	}
+
+	// Add rewards if provided
+	if len(perc) > 0 && len(rewards) > 0 {
+		result["reward"] = rewards
+	}
+
+	// Log success
+	if logErr := Logger.LogData(opCtx, fmt.Sprintf("FeeHistory returned for blockCount: %d, newest: %s", blockCount, newestNum.String()), "FeeHistory", 1); logErr != nil {
+		fmt.Printf("Failed to log FeeHistory success: %v\n", logErr)
+	}
+
+	return result, nil
 }
