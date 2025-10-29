@@ -167,14 +167,14 @@ func NewDefaultLogger() *LoggerBuilder {
 	return NewLoggerBuilder().
 		SetFileName("gossipnode.log").
 		SetTopic("gossipnode").
-		SetURL(GetLokiURL())
+		SetURL("") // No Loki by default
 }
 
 func NewComponentLogger(component string) *LoggerBuilder {
 	return NewLoggerBuilder().
 		SetFileName(fmt.Sprintf("%s.log", component)).
 		SetTopic(component).
-		SetURL(GetLokiURL())
+		SetURL("") // No Loki by default
 }
 
 func NewFileOnlyLogger(fileName string) *LoggerBuilder {

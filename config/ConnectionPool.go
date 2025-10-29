@@ -95,7 +95,7 @@ type ConnectionPool struct {
 
 // NewAsyncLogger creates a new async logger using the centralized logging package
 func NewAsyncLogger() (*logging.AsyncLogger, error) {
-	return NewAsyncLoggerWithLoki(true)
+	return NewAsyncLoggerWithLoki(false) // Disable Loki by default
 }
 
 // NewAsyncLoggerWithLoki creates a new async logger with optional Loki support
