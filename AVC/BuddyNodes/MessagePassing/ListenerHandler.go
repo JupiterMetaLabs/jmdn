@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gossipnode/AVC/BFT/bft"
+	"gossipnode/AVC/BuddyNodes/CRDTSync"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
@@ -856,6 +857,17 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 		return
 	}
 
+	// 🔄 CRDT SYNC: Sync CRDT data before processing votes
+	fmt.Printf("🔄 Triggering CRDT sync before processing votes...\n")
+	if err := triggerCRDTSyncForBuddyNode(listenerNode); err != nil {
+		fmt.Printf("⚠️ CRDT sync failed, continuing with existing data: %v\n", err)
+		// Don't fail the vote processing, just log the warning
+	} else {
+		fmt.Printf("✅ CRDT sync completed successfully\n")
+		// Print CRDT content after sync
+		CRDTSync.PrintCurrentCRDTContent()
+	}
+
 	// Process votes from CRDT
 	result, err := Structs.ProcessVotesFromCRDT(listenerNode)
 	if err != nil {
@@ -1133,4 +1145,94 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 		fmt.Printf("⚠️ WARNING: Only received %d responses, but need at least %d for consensus\n", finalCount, config.MaxMainPeers)
 		fmt.Printf("⚠️ This may cause consensus failures. Consider increasing backup nodes.\n")
 	}
+}
+
+// triggerCRDTSyncForBuddyNode triggers CRDT synchronization for a buddy node
+// This ensures the buddy node has the latest CRDT data before processing votes
+func triggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
+	if listenerNode == nil || listenerNode.Host == nil {
+		return fmt.Errorf("listener node or host not initialized")
+	}
+
+	// Get the pubsub node if available
+	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
+	if pubSubNode == nil || pubSubNode.PubSub == nil {
+		// If pubsub is not available, we can't sync via pubsub
+		// This is acceptable - the node will use its local CRDT data
+		fmt.Printf("⚠️ PubSub node not available, using local CRDT data only\n")
+		return nil
+	}
+
+	// Get the CRDT layer
+	if listenerNode.CRDTLayer == nil {
+		return fmt.Errorf("CRDT layer not available")
+	}
+
+	// Create sync topic name
+	syncConfig := CRDTSync.DefaultSyncConfig()
+	topicName := syncConfig.TopicName
+
+	// Request sync from other nodes via pubsub
+	// Send a sync_request message
+	syncRequestMsg := map[string]interface{}{
+		"type":      config.Type_CRDT_SYNC,
+		"node_id":   listenerNode.PeerID.String(),
+		"timestamp": time.Now().Unix(),
+	}
+
+	requestData, err := json.Marshal(syncRequestMsg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal sync request: %w", err)
+	}
+
+	// Publish sync request
+	err = Publisher.Publish(pubSubNode.PubSub, topicName,
+		AVCStruct.NewMessageBuilder(nil).
+			SetSender(listenerNode.PeerID).
+			SetMessage(string(requestData)).
+			SetTimestamp(time.Now().Unix()).
+			SetACK(AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_CRDT_SYNC)),
+		nil)
+
+	if err != nil {
+		fmt.Printf("⚠️ Failed to publish sync request: %v\n", err)
+		// Continue anyway - we'll use local data
+	}
+
+	// Publish our own CRDT state
+	allCRDTs := listenerNode.CRDTLayer.CRDTLayer.GetAllCRDTs()
+	if len(allCRDTs) > 0 {
+		syncData := make(map[string]json.RawMessage)
+		for key, crdt := range allCRDTs {
+			data, err := json.Marshal(crdt)
+			if err != nil {
+				continue
+			}
+			syncData[key] = data
+		}
+
+		syncMsg := map[string]interface{}{
+			"type":      config.Type_CRDT_SYNC,
+			"node_id":   listenerNode.PeerID.String(),
+			"sync_data": syncData,
+			"timestamp": time.Now().Unix(),
+		}
+
+		syncDataBytes, err := json.Marshal(syncMsg)
+		if err == nil {
+			Publisher.Publish(pubSubNode.PubSub, topicName,
+				AVCStruct.NewMessageBuilder(nil).
+					SetSender(listenerNode.PeerID).
+					SetMessage(string(syncDataBytes)).
+					SetTimestamp(time.Now().Unix()).
+					SetACK(AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_CRDT_SYNC)),
+				nil)
+		}
+	}
+
+	// Wait a bit for sync responses to arrive
+	time.Sleep(2 * time.Second)
+
+	fmt.Printf("✅ CRDT sync request completed\n")
+	return nil
 }

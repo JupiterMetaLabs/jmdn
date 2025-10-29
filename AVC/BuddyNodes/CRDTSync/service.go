@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"gossipnode/config"
 	"gossipnode/crdt"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -168,7 +169,7 @@ func (s *SyncService) syncCRDTState() error {
 
 	// Create sync message
 	msg := Message{
-		Type:      "sync",
+		Type:      config.Type_CRDT_SYNC,
 		NodeID:    s.nodeID,
 		Key:       "all-crdts",
 		SyncData:  syncData,
@@ -220,7 +221,7 @@ func (s *SyncService) receiveCRDTMessage() error {
 	s.msgStore.Add(key, crdtMsg)
 
 	// Handle sync messages
-	if crdtMsg.Type == "sync" && crdtMsg.SyncData != nil {
+	if crdtMsg.Type == config.Type_CRDT_SYNC && crdtMsg.SyncData != nil {
 		if err := s.applyCRDTSync(crdtMsg); err != nil {
 			log.Printf("⚠️  Failed to apply CRDT sync: %v", err)
 		}

@@ -89,6 +89,9 @@ const (
 	Type_SubmitVote = "SUBMIT_VOTE"
 	Type_VoteResult = "VOTE_RESULT"
 
+	// For CRDT Synchronization
+	Type_CRDT_SYNC = "CRDT_SYNC"
+
 	Topic_SYNCRequest   = "SYNC_REQUEST"
 	Type_BFTRequest     = "BFT_REQUEST" // ADD THIS LINE
 	Type_BFTPrepare     = "BFT_PREPARE"
