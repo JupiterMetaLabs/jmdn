@@ -65,6 +65,7 @@ const (
 	PubSub_ConsensusChannel = "pubsub-consensus"
 	PubSub_BFTConsensus     = "pubsub-bft-consensus"
 	Pubsub_MessageBuffer    = "pubsub-buffer"
+	Pubsub_CRDTSync         = "pubsub-crdt-sync"
 )
 
 const (
