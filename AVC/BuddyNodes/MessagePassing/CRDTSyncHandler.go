@@ -79,23 +79,40 @@ func TriggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 	}
 	pubSubNode.PubSub.Mutex.Unlock()
 
-	// Get list of all buddy nodes (excluding self)
+	// IMPORTANT: Only sync with config.MaxMainPeers buddy nodes (the vote aggregating nodes)
+	// NOT all nodes in the network - we want exactly MaxMainPeers nodes for CRDT sync
+	expectedBuddyCount := config.MaxMainPeers
+
+	// Get buddy nodes - only use the first MaxMainPeers nodes
+	// This ensures we sync with the same set of nodes that are performing vote aggregation
 	buddyNodeIDs := make(map[string]bool)
 	allBuddyNodes := make([]peer.ID, 0)
-	for _, buddyID := range listenerNode.BuddyNodes.Buddies_Nodes {
+
+	// Take only the first MaxMainPeers buddy nodes (excluding self)
+	for i, buddyID := range listenerNode.BuddyNodes.Buddies_Nodes {
+		if i >= expectedBuddyCount {
+			break // Only use MaxMainPeers nodes
+		}
 		if buddyID != listenerNode.PeerID {
-			buddyNodeIDs[buddyID.String()] = true
-			allBuddyNodes = append(allBuddyNodes, buddyID)
+			buddyIDStr := buddyID.String()
+			if !buddyNodeIDs[buddyIDStr] {
+				buddyNodeIDs[buddyIDStr] = true
+				allBuddyNodes = append(allBuddyNodes, buddyID)
+			}
 		}
 	}
 
 	totalBuddyNodes := len(allBuddyNodes)
 	if totalBuddyNodes == 0 {
-		fmt.Printf("⚠️ No other buddy nodes found - skipping CRDT sync\n")
+		fmt.Printf("⚠️ No other buddy nodes found (expected %d) - skipping CRDT sync\n", expectedBuddyCount)
 		return nil
 	}
 
-	fmt.Printf("📋 Will sync with %d buddy nodes\n", totalBuddyNodes)
+	if totalBuddyNodes < expectedBuddyCount {
+		fmt.Printf("⚠️ Only found %d buddy nodes, expected %d (config.MaxMainPeers)\n", totalBuddyNodes, expectedBuddyCount)
+	}
+
+	fmt.Printf("📋 Will sync with %d buddy nodes (expected: %d from config.MaxMainPeers)\n", totalBuddyNodes, expectedBuddyCount)
 
 	// Track received messages from each buddy node
 	receivedFrom := make(map[string]bool)
@@ -258,10 +275,18 @@ func TriggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 	}
 
 	// Wait for sync messages from all buddy nodes and merge them
-	fmt.Printf("⏳ Waiting for CRDT sync messages from %d buddy nodes (timeout: 10s)...\n", totalBuddyNodes)
-	timeout := time.After(10 * time.Second)
+	// Keep the pubsub channel open for full 10 seconds to ensure all nodes sync
+	syncDuration := 10 * time.Second
+	fmt.Printf("⏳ Waiting for CRDT sync messages from %d buddy nodes\n", totalBuddyNodes)
+	fmt.Printf("   Pubsub channel will stay open for %v to ensure complete synchronization\n", syncDuration)
+
+	startTime := time.Now()
+	timeout := time.After(syncDuration)
 	mergedCount := 0
 	var subscriptionDone bool
+
+	// Track periodic updates
+	lastUpdate := time.Now()
 
 	for !subscriptionDone {
 		select {
@@ -271,33 +296,58 @@ func TriggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 				fmt.Printf("⚠️ Failed to merge CRDT from %s: %v\n", syncMsg.NodeID[:8], err)
 			} else {
 				mergedCount++
-				fmt.Printf("✅ Merged CRDT data from %s (%d/%d merged)\n",
-					syncMsg.NodeID[:8], mergedCount, totalBuddyNodes)
-
-				// Check if we've received and merged from all buddy nodes
 				receivedMutex.Lock()
-				allReceived := len(receivedFrom) >= totalBuddyNodes
+				receivedCount := len(receivedFrom)
 				receivedMutex.Unlock()
 
-				if allReceived && mergedCount >= totalBuddyNodes {
-					fmt.Printf("✅ Received and merged CRDT from all %d buddy nodes - completing sync\n", totalBuddyNodes)
-					subscriptionDone = true
+				elapsed := time.Since(startTime)
+				fmt.Printf("✅ Merged CRDT from %s (%d/%d merged, %d/%d received, elapsed: %v)\n",
+					syncMsg.NodeID[:8], mergedCount, totalBuddyNodes, receivedCount, totalBuddyNodes, elapsed.Round(time.Second))
+
+				// Check if we've received from all buddy nodes
+				if receivedCount >= totalBuddyNodes {
+					// Received from all, but keep subscription open for remaining time to catch any late messages
+					remaining := syncDuration - elapsed
+					if remaining > 0 && time.Since(lastUpdate) > 2*time.Second {
+						fmt.Printf("📥 Received from all %d buddies, keeping channel open for %v more to ensure full sync\n",
+							totalBuddyNodes, remaining.Round(time.Second))
+						lastUpdate = time.Now()
+					}
 				}
 			}
 
 		case <-syncComplete:
-			fmt.Printf("✅ Received sync messages from all buddy nodes\n")
-			// Wait a bit to ensure all messages are processed
-			time.Sleep(500 * time.Millisecond)
-			subscriptionDone = true
+			elapsed := time.Since(startTime)
+			fmt.Printf("✅ Received sync messages from all %d buddy nodes (elapsed: %v)\n",
+				totalBuddyNodes, elapsed.Round(time.Second))
+			// Keep subscription open until timeout to ensure we receive all messages
+			remaining := syncDuration - elapsed
+			if remaining > 0 {
+				fmt.Printf("   Keeping channel open for %v more to catch any late messages\n", remaining.Round(time.Second))
+			}
 
 		case <-timeout:
 			receivedMutex.Lock()
 			receivedCount := len(receivedFrom)
 			receivedMutex.Unlock()
-			fmt.Printf("⏱️ Sync timeout - received from %d/%d buddy nodes, merged %d\n",
-				receivedCount, totalBuddyNodes, mergedCount)
+			elapsed := time.Since(startTime)
+			fmt.Printf("⏱️ Sync duration complete (%v) - received from %d/%d buddy nodes, merged %d\n",
+				elapsed.Round(time.Second), receivedCount, totalBuddyNodes, mergedCount)
 			subscriptionDone = true
+		}
+
+		// Periodic status update every 2 seconds
+		if time.Since(lastUpdate) > 2*time.Second && !subscriptionDone {
+			receivedMutex.Lock()
+			receivedCount := len(receivedFrom)
+			receivedMutex.Unlock()
+			elapsed := time.Since(startTime)
+			remaining := syncDuration - elapsed
+			if remaining > 0 {
+				fmt.Printf("📊 Sync status: %d/%d received, %d merged, %v remaining\n",
+					receivedCount, totalBuddyNodes, mergedCount, remaining.Round(time.Second))
+				lastUpdate = time.Now()
+			}
 		}
 	}
 
@@ -336,11 +386,20 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 		return fmt.Errorf("listener node or host not initialized")
 	}
 
+	// IMPORTANT: Only connect to config.MaxMainPeers buddy nodes for CRDT sync
+	// NOT all nodes in the network - we want exactly MaxMainPeers nodes
+	expectedBuddyCount := config.MaxMainPeers
+
 	// Get buddy nodes from multiple sources (avoid duplicates)
+	// Only use the first MaxMainPeers nodes (excluding self)
 	buddyPeerIDs := make([]peer.ID, 0)
 	seenPeers := make(map[string]bool)
 
 	addPeerIfNew := func(peerID peer.ID) {
+		// Stop if we already have MaxMainPeers nodes
+		if len(buddyPeerIDs) >= expectedBuddyCount {
+			return
+		}
 		peerIDStr := peerID.String()
 		if !seenPeers[peerIDStr] && peerID != listenerNode.PeerID {
 			buddyPeerIDs = append(buddyPeerIDs, peerID)
@@ -349,46 +408,60 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 	}
 
 	// Source 1: Check listenerNode.BuddyNodes.Buddies_Nodes
+	// Only take the first MaxMainPeers nodes
 	initialCount := len(buddyPeerIDs)
-	for _, peerID := range listenerNode.BuddyNodes.Buddies_Nodes {
+	for i, peerID := range listenerNode.BuddyNodes.Buddies_Nodes {
+		if i >= expectedBuddyCount {
+			break // Only use MaxMainPeers nodes
+		}
 		addPeerIfNew(peerID)
 	}
 	if len(buddyPeerIDs) > initialCount {
-		fmt.Printf("📋 Found %d buddy nodes from listenerNode.BuddyNodes\n", len(buddyPeerIDs)-initialCount)
+		fmt.Printf("📋 Found %d buddy nodes from listenerNode.BuddyNodes (limited to MaxMainPeers=%d)\n",
+			len(buddyPeerIDs)-initialCount, expectedBuddyCount)
 	}
 
 	// Source 2: Get from consensus message cache (Buddy_PeerMultiaddr with multiaddrs)
+	// IMPORTANT: Only take the first MaxMainPeers from cache as well
 	initialCount = len(buddyPeerIDs)
+	cacheIndex := 0
 	for _, consensusMsg := range AVCStruct.CacheConsensuMessage {
 		if consensusMsg != nil && consensusMsg.Buddies != nil {
 			for _, buddy := range consensusMsg.Buddies {
+				// Only take MaxMainPeers nodes from cache
+				if cacheIndex >= expectedBuddyCount {
+					break
+				}
 				addPeerIfNew(buddy.PeerID)
+				cacheIndex++
+			}
+			if len(buddyPeerIDs) >= expectedBuddyCount {
+				break // Stop if we have enough
 			}
 		}
 	}
 	if len(buddyPeerIDs) > initialCount {
-		fmt.Printf("📋 Found %d buddy nodes from consensus message cache\n", len(buddyPeerIDs)-initialCount)
+		fmt.Printf("📋 Found %d buddy nodes from consensus message cache (limited to MaxMainPeers=%d)\n",
+			len(buddyPeerIDs)-initialCount, expectedBuddyCount)
 	}
 
-	// Source 3: Get from connected peers on the network (as fallback)
-	initialCount = len(buddyPeerIDs)
-	if len(buddyPeerIDs) == 0 {
-		connectedPeers := listenerNode.Host.Network().Peers()
-		for _, peerID := range connectedPeers {
-			addPeerIfNew(peerID)
-		}
-		if len(buddyPeerIDs) > initialCount {
-			fmt.Printf("📋 Found %d buddy nodes from connected peers\n", len(buddyPeerIDs)-initialCount)
-		}
-	}
+	// NOTE: We do NOT use connected peers as fallback anymore
+	// This was causing us to include all network nodes (18-20) instead of just MaxMainPeers (4)
+	// We rely only on the sequencer-populated buddy node list
 
 	if len(buddyPeerIDs) == 0 {
-		fmt.Printf("⚠️ No buddy nodes found from any source\n")
+		fmt.Printf("⚠️ No buddy nodes found from any source (expected %d MaxMainPeers)\n", expectedBuddyCount)
 		fmt.Printf("⚠️ Cannot connect to other nodes for CRDT sync\n")
 		return nil
 	}
 
-	fmt.Printf("✅ Total buddy nodes to connect: %d\n", len(buddyPeerIDs))
+	if len(buddyPeerIDs) < expectedBuddyCount {
+		fmt.Printf("⚠️ Only found %d buddy nodes, expected %d (config.MaxMainPeers)\n",
+			len(buddyPeerIDs), expectedBuddyCount)
+	}
+
+	fmt.Printf("✅ Total buddy nodes to connect: %d (expected: %d from config.MaxMainPeers)\n",
+		len(buddyPeerIDs), expectedBuddyCount)
 
 	fmt.Printf("🔌 Connecting to %d buddy nodes for CRDT sync...\n", len(buddyPeerIDs))
 
