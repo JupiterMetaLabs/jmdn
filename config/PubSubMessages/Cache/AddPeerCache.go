@@ -2,6 +2,7 @@ package Cache
 
 import (
 	"fmt"
+	"gossipnode/config"
 	"gossipnode/config/PubSubMessages"
 	"gossipnode/node"
 	"sync"
@@ -95,7 +96,7 @@ func FallbackConnectionFunction(peerID peer.ID, multiaddrs []string) {
 			break
 		}
 
-		reachable, timeTaken, err := nm.PingMultiaddrWithRetries(multiaddrStr, 3) // or call a standalone func
+		reachable, timeTaken, err := nm.PingMultiaddrWithRetries(multiaddrStr, 3)
 		if err != nil {
 			fmt.Printf("[%s] Error checking reachability: %v\n", peerID, err)
 			continue
@@ -117,7 +118,7 @@ func FallbackConnectionFunction(peerID peer.ID, multiaddrs []string) {
 	}
 }
 
-// AddPeersTemporary: concurrent reachability + fallback, then single connect
+// AddPeersTemporary: concurrent reachability check, stops at 4 reachable peers
 func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) {
 	AddPeersCacheMu.Lock()
 	if AddPeersCache == nil {
@@ -125,78 +126,87 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) {
 	}
 	AddPeersCacheMu.Unlock()
 
+	const targetPeers = config.MaxMainPeers
+	
 	var wg sync.WaitGroup
-	// Workers can emit up to 2 messages each → buffer accordingly (or just read concurrently)
-	results := make(chan string, len(peers)*2)
-
+	var found sync.Mutex
+	foundCount := 0
+	done := make(chan struct{})
+	
+	reachablePeers := make(map[peer.ID]multiaddr.Multiaddr)
+	
 	fmt.Println("---- Starting concurrent reachability checks ----")
+
+	nm := GetNodeManager()
+	if nm == nil {
+		fmt.Println("NodeManager not available")
+		return
+	}
 
 	for idx, buddy := range peers {
 		wg.Add(1)
-		// Capture buddy values by making a copy for each goroutine
-		buddy := buddy
 		go func(peerID peer.ID, maddr multiaddr.Multiaddr, index int) {
 			defer wg.Done()
+			
+			// Check if we already found enough peers
+			select {
+			case <-done:
+				return
+			default:
+			}
 
 			addrStr := maddr.String()
-			fmt.Printf("[Thread %d] Checking peer %s at address: %s\n", index, peerID, addrStr)
+			fmt.Printf("[Thread %d] Checking peer %s at %s\n", index, peerID, addrStr)
 
-			nm := GetNodeManager()
 			if nm == nil {
-				results <- fmt.Sprintf("[%s] NodeManager not available for reachability check", peerID)
-				// still try fallback; it does not require nm if your Check is standalone
-				FallbackConnectionFunction(peerID, []string{addrStr})
-				results <- fmt.Sprintf("[%s] Fallback triggered (no NodeManager)", peerID)
+				fmt.Printf("[%s] NodeManager not available\n", peerID)
 				return
 			}
 
 			reachable, timeTaken, err := nm.PingMultiaddrWithRetries(addrStr, 3)
 			if err != nil {
-				results <- fmt.Sprintf("[%s] Error checking reachability for %s: %v", peerID, addrStr, err)
-				FallbackConnectionFunction(peerID, []string{addrStr})
-				results <- fmt.Sprintf("[%s] Fallback triggered (error in check)", peerID)
+				fmt.Printf("[%s] Error: %v\n", peerID, err)
 				return
 			}
 
-			fmt.Printf("[%s] Time taken to check reachability: %v\n", peerID, timeTaken)
-			if !reachable {
-				results <- fmt.Sprintf("[%s] Multiaddr not reachable, triggering fallback: %s", peerID, addrStr)
-				FallbackConnectionFunction(peerID, []string{addrStr})
-				results <- fmt.Sprintf("[%s] Fallback completed (unreachable primary)", peerID)
-				return
+			fmt.Printf("[%s] Time: %v, Reachable: %v\n", peerID, timeTaken, reachable)
+			
+			if reachable {
+				found.Lock()
+				if foundCount < targetPeers {
+					reachablePeers[peerID] = maddr
+					AddPeer(peerID, maddr)
+					foundCount++
+					fmt.Printf("✓ Peer %s added (%d/%d)\n", peerID, foundCount, targetPeers)
+					
+					if foundCount >= targetPeers {
+						close(done)
+					}
+				}
+				found.Unlock()
 			}
-
-			AddPeer(peerID, maddr)
-			results <- fmt.Sprintf("[%s] Reachable and added: %s", peerID, addrStr)
 		}(buddy.PeerID, buddy.Multiaddr, idx)
 	}
 
-	// Close results after all workers finish
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// Read results concurrently so writers never block
-	fmt.Println("---- Reachability Check Summary ----")
-	for res := range results {
-		fmt.Println(res)
+	wg.Wait()
+	
+	// Ensure done channel is closed
+	select {
+	case <-done:
+	default:
+		close(done)
 	}
 
-	total := GetPeerCount()
-	fmt.Printf("Total reachable peers in global cache: %d\n", total)
-
-	if total > 0 {
-		fmt.Println("---- Connecting to reachable peers ----")
-		// Use a snapshot to avoid races if something else modifies the cache
-		reachable := GetAllPeers()
-		if err := ConnectToTemporaryPeers(reachable); err != nil {
-			fmt.Printf("Failed to connect to temporary peers: %v\n", err)
+	fmt.Printf("\n---- Found %d/%d reachable peers ----\n", len(reachablePeers), targetPeers)
+	
+	if len(reachablePeers) > 0 {
+		if err := ConnectToTemporaryPeers(reachablePeers); err != nil {
+			fmt.Printf("Connection failed: %v\n", err)
 			return
 		}
-		fmt.Printf("Successfully connected to %d reachable peers\n", len(reachable))
+		fmt.Printf("Connected to %d peers\n", len(reachablePeers))
 	} else {
-		fmt.Println("No reachable peers found — all fallback attempts failed.")
+		fmt.Println("No reachable peers found")
 	}
 }
 

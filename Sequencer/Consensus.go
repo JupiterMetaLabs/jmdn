@@ -107,59 +107,121 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		return fmt.Errorf("backup peers list is nil")
 	}
 
-	// Start the Loggers in the Streaming.go
+	MessagePassing.Init_Loggers(config.LOKI_URL != "")
 
-	// Attach the metadata to the block
-	// 1. Pull the buddies from the NodeSelectionRouter
+	// 1. Pull the buddies from the NodeSelectionRouter (all candidates)
 	buddies, errMSG := consensus.QueryBuddyNodes()
 	if errMSG != nil {
 		return fmt.Errorf("failed to query buddy nodes: %v", errMSG)
 	}
 
-	peerIDs, errMSG := consensus.GetOnlyPeerIDs(buddies)
-	if errMSG != nil {
-		return fmt.Errorf("failed to get only peer IDs: %v", errMSG)
+	log.Printf("Queried %d buddy node candidates from NodeSelectionRouter", len(buddies))
+
+	// 2. Ping buddies and add ONLY reachable ones to cache (stops at config.MaxMainPeers)
+	// This will connect to reachable peers and add them to AddPeersCache
+	consensus.AddBuddyNodesTemporarily(buddies)
+
+	// 3. Get ONLY the reachable peers from cache (these are the ones that passed ping test)
+	// AddPeersTemporary stops at config.MaxMainPeers, so this will have at most MaxMainPeers entries
+	buddiesReachableMap := Cache.GetAllPeers()
+
+	if len(buddiesReachableMap) < config.MaxMainPeers {
+		return fmt.Errorf("not enough reachable peers: got %d, need at least %d (MaxMainPeers)",
+			len(buddiesReachableMap), config.MaxMainPeers)
 	}
 
-	// Debugging
+	log.Printf("Found %d reachable peers in cache (will use first %d as main peers)",
+		len(buddiesReachableMap), config.MaxMainPeers)
+
+	// 4. Convert reachable peers map to PeerList (only MaxMainPeers for main peers)
+	// Extract peer IDs from cache and limit to MaxMainPeers
+	reachablePeerIDs := make([]peer.ID, 0, config.MaxMainPeers)
+	count := 0
+	for peerID := range buddiesReachableMap {
+		if count >= config.MaxMainPeers {
+			break
+		}
+		reachablePeerIDs = append(reachablePeerIDs, peerID)
+		count++
+		log.Printf("Main peer %d: %s", count, peerID.String()[:16])
+	}
+
+	// Set main peers to the reachable ones (exactly MaxMainPeers)
+	consensus.PeerList.MainPeers = reachablePeerIDs
+
+	// For backup peers, we can use remaining buddies from original query (or empty for now)
+	// Backup peers are standby replacements, not critical for initial setup
+	consensus.PeerList.BackupPeers = make([]peer.ID, 0)
+	if len(buddies) > config.MaxMainPeers {
+		// Use remaining buddies as backup (but don't require them to be reachable)
+		backupCount := config.MaxBackupPeers
+		if len(buddies)-config.MaxMainPeers < backupCount {
+			backupCount = len(buddies) - config.MaxMainPeers
+		}
+		// Get peer IDs from original buddies list (excluding ones we used for main)
+		remainingPeerIDs := make([]peer.ID, 0)
+		usedPeers := make(map[string]bool)
+		for _, pid := range reachablePeerIDs {
+			usedPeers[pid.String()] = true
+		}
+		for _, buddy := range buddies {
+			if !usedPeers[buddy.PeerID.String()] && len(remainingPeerIDs) < backupCount {
+				remainingPeerIDs = append(remainingPeerIDs, buddy.PeerID)
+			}
+		}
+		consensus.PeerList.BackupPeers = remainingPeerIDs
+		log.Printf("Set %d backup peers from remaining candidates", len(consensus.PeerList.BackupPeers))
+	}
+
+	// 5. Filter original buddies list to match reachable peers (for ConsensusMessage)
+	// Only include buddies that are in the reachable cache
+	reachableBuddies := make([]PubSubMessages.Buddy_PeerMultiaddr, 0, config.MaxMainPeers)
+	reachableSet := make(map[string]bool)
+	for _, pid := range reachablePeerIDs {
+		reachableSet[pid.String()] = true
+	}
+
+	// Find matching buddies from original list
 	for _, buddy := range buddies {
-		fmt.Println("buddy", buddy)
+		if reachableSet[buddy.PeerID.String()] && len(reachableBuddies) < config.MaxMainPeers {
+			// Use the multiaddr from cache (it's the reachable one)
+			if cachedAddr := Cache.GetPeer(buddy.PeerID); cachedAddr != nil {
+				reachableBuddies = append(reachableBuddies, PubSubMessages.Buddy_PeerMultiaddr{
+					PeerID:    buddy.PeerID,
+					Multiaddr: cachedAddr,
+				})
+			}
+		}
 	}
 
-	// 2. Attach the buddies to the zkblock as metadata
-	consensus.ZKBlockData, errMSG = consensus.AddBuddyNodesToPeerList(zkblock, buddies)
+	if len(reachableBuddies) < config.MaxMainPeers {
+		return fmt.Errorf("failed to build reachable buddies list: got %d, need %d",
+			len(reachableBuddies), config.MaxMainPeers)
+	}
+
+	log.Printf("Built reachable buddies list: %d peers (all reachable and added as neighbors)", len(reachableBuddies))
+
+	// 6. Create ConsensusMessage with ONLY reachable buddies
+	consensus.ZKBlockData, errMSG = consensus.AddBuddyNodesToPeerList(zkblock, reachableBuddies)
 	if errMSG != nil {
 		return fmt.Errorf("failed to add buddy nodes to peer list: %v", errMSG)
 	}
 
-	// Split peerIDs into 13 main and 3 backup peers
-	if len(peerIDs) < config.MaxMainPeers+config.MaxBackupPeers {
-		return fmt.Errorf("not enough peers returned for consensus: got %d, need at least %d", len(peerIDs), config.MaxMainPeers+config.MaxBackupPeers)
-	}
-	consensus.PeerList.MainPeers = make([]peer.ID, config.MaxMainPeers)
-	consensus.PeerList.BackupPeers = make([]peer.ID, config.MaxBackupPeers)
-	copy(consensus.PeerList.MainPeers, peerIDs[:config.MaxMainPeers])
-	copy(consensus.PeerList.BackupPeers, peerIDs[config.MaxMainPeers:config.MaxMainPeers+config.MaxBackupPeers])
-
-	MessagePassing.Init_Loggers(config.LOKI_URL != "")
-	// Validate consensus configuration first
+	// Validate consensus configuration
 	if err := ValidateConsensusConfiguration(consensus); err != nil {
 		return fmt.Errorf("invalid consensus configuration: %w", err)
 	}
 
-	// 3. Add the buddies to the temporary cache
-	consensus.AddBuddyNodesTemporarily(buddies)
-
-	// Create allowed peers list (1 creator + 13 main + 3 backup = 17 total)
+	// 7. Create allowed peers list (1 creator + MaxMainPeers reachable main peers + backup)
 	allowedPeers := make([]peer.ID, 0, config.MaxMainPeers+config.MaxBackupPeers+1)
 
 	// Add the creator (host) to the allowed list
 	allowedPeers = append(allowedPeers, consensus.Host.ID())
 
-	// Add main peers to the allowed list
+	// Add main peers (only reachable ones) to the allowed list
 	allowedPeers = append(allowedPeers, consensus.PeerList.MainPeers...)
 
-	// Add backup peers to the allowed list
+	// Add backup peers to the allowed list (if any)
 	allowedPeers = append(allowedPeers, consensus.PeerList.BackupPeers...)
 
 	log.Printf("Creating pubsub channel with %d allowed peers (1 creator + %d main + %d backup)",
@@ -173,7 +235,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	}
 
 	// Create the consensus channel for message passing
-	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.PubSub_ConsensusChannel, true, allowedPeers); err != nil {
+	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.PubSub_ConsensusChannel, false, allowedPeers); err != nil {
 		return fmt.Errorf("failed to create pubsub channel: %v", err)
 	}
 
