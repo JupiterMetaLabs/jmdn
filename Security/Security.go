@@ -43,7 +43,6 @@ func SetExpectedChainIDBig(id *big.Int) {
 	}
 	expectedChainID = new(big.Int).Set(id)
 	fmt.Printf("Expected Chain ID: %s\n", expectedChainID.String())
-	expectedChainID = new(big.Int).SetInt64(7000700)
 }
 
 func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
@@ -92,7 +91,7 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 
 	// Preliminary Check: Chain ID must be present and valid (> 0)
 	if tx == nil || tx.ChainID == nil {
-		// || tx.ChainID.Sign() <= 0 
+		// || tx.ChainID.Sign() <= 0
 		Conn.Client.Logger.Logger.Error("Invalid or missing ChainID",
 			zap.Error(errors.New("transaction chain ID is missing or invalid")),
 			zap.String(logging.Connection_database, config.AccountsDBName),
@@ -228,7 +227,7 @@ func CheckSignature(tx *config.Transaction) (bool, error) {
 	}
 
 	if tx.From == nil || tx.To == nil || tx.V == nil || tx.R == nil || tx.S == nil {
-		return false, nil
+		return false, errors.New("transaction missing required signature fields (From, To, V, R, or S)")
 	}
 
 	var ethTx *types.Transaction
@@ -329,7 +328,7 @@ func CheckAddressExist(tx *config.Transaction, Conn *config.PooledConnection) (b
 			zap.String(logging.Loki_url, config.LOKI_URL),
 			zap.String(logging.Function, "Security.CheckAddressExist"),
 		)
-		return false, nil
+		return false, errors.New("From or To address is empty")
 	}
 
 	// check if the db have From DID and To DID
@@ -369,7 +368,7 @@ func CheckAddressExist(tx *config.Transaction, Conn *config.PooledConnection) (b
 			zap.String(logging.Loki_url, config.LOKI_URL),
 			zap.String(logging.Function, "Security.CheckAddressExist"),
 		)
-		return false, nil
+		return false, errors.New("From or To address not found in database")
 	}
 
 	Conn.Client.Logger.Logger.Info("Successfully checked the From and To address",
@@ -407,7 +406,7 @@ func CheckBalance(tx *config.Transaction, Conn *config.PooledConnection) (bool, 
 			zap.String(logging.Loki_url, config.LOKI_URL),
 			zap.String(logging.Function, "Security.CheckBalance"),
 		)
-		return false, nil
+		return false, errors.New("From address is empty")
 	}
 
 	// check if the db have From DID
@@ -433,7 +432,7 @@ func CheckBalance(tx *config.Transaction, Conn *config.PooledConnection) (bool, 
 			zap.String(logging.Loki_url, config.LOKI_URL),
 			zap.String(logging.Function, "Security.CheckBalance"),
 		)
-		return false, nil
+		return false, errors.New("From address not found in database")
 	}
 
 	// Convert From.balance from string to big.Int
@@ -500,14 +499,12 @@ func CheckBalance(tx *config.Transaction, Conn *config.PooledConnection) (bool, 
 		return false, errors.New("invalid gas pricing parameters")
 	}
 
-	tx.Value.Add(tx.Value, gasCost)
-
-	// Debugging
-	fmt.Println("Total Cost: ", tx.Value)
-	fmt.Println("From Balance: ", FromBalance)
+	// Calculate total cost (value + gas) without mutating the original transaction
+	totalCost := new(big.Int).Set(tx.Value)
+	totalCost.Add(totalCost, gasCost)
 
 	Conn.Client.Logger.Logger.Info("Total Cost: ",
-		zap.String("Total Cost", tx.Value.String()),
+		zap.String("Total Cost", totalCost.String()),
 		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
@@ -515,22 +512,22 @@ func CheckBalance(tx *config.Transaction, Conn *config.PooledConnection) (bool, 
 		zap.String(logging.Function, "Security.CheckBalance"),
 	)
 	// Check if balance is sufficient for total cost
-	if FromBalance.Cmp(tx.Value) < 0 {
+	if FromBalance.Cmp(totalCost) < 0 {
 		Conn.Client.Logger.Logger.Info("From Balance is less than Total Cost",
 			zap.String("From Balance", FromBalance.String()),
-			zap.String("Total Cost", tx.Value.String()),
+			zap.String("Total Cost", totalCost.String()),
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
 			zap.String(logging.Function, "Security.CheckBalance"),
 		)
-		return false, nil
+		return false, errors.New("insufficient balance for transaction")
 	}
 
 	Conn.Client.Logger.Logger.Info("From Balance is sufficient for total cost",
 		zap.String("From Balance", FromBalance.String()),
-		zap.String("Total Cost", tx.Value.String()),
+		zap.String("Total Cost", totalCost.String()),
 		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
