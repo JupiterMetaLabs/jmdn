@@ -20,7 +20,8 @@ const (
 )
 
 const PeerFile = "./config/peer.json"
-const BLSFile = "./config/bls.json"
+// const BLSFile = "./config/bls.json"
+const BLSFile = "/Users/neeraj/CodeSection/JM/JMZK-Decentalized-Network/config/bls.json"
 
 const (
 	MaxMainPeers     = 4

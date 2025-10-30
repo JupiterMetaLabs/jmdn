@@ -19,6 +19,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog/log"
 
+	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
+	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/DB_OPs"
 	"gossipnode/Vote"
 	"gossipnode/config"
@@ -247,6 +249,34 @@ func HandleBlockStream(stream network.Stream) {
 
 		// STEP 2: PROCESS AND VALIDATE BLOCK AFTERWARD
 		go func() {
+			// Verify buddy BLS signatures if provided; require majority to continue
+			if blsJSON, ok := msg.Data["bls_results"]; ok && len(blsJSON) > 0 {
+				var blsResponses []BLS_Signer.BLSresponse
+				if err := json.Unmarshal([]byte(blsJSON), &blsResponses); err != nil {
+					log.Error().Err(err).Msg("Failed to unmarshal bls_results; skipping verification")
+				} else if len(blsResponses) > 0 {
+					// Count how many verify successfully using their own Agree flag as vote
+					validCount := 0
+					for _, r := range blsResponses {
+						vote := int8(-1)
+						if r.Agree {
+							vote = 1
+						}
+						if err := BLS_Verifier.Verify(r, vote); err != nil {
+							log.Warn().Err(err).Str("peer", r.PeerID).Msg("BLS verification failed for buddy response")
+						} else {
+							validCount++
+						}
+					}
+					needed := (len(blsResponses) / 2) + 1
+					if validCount < needed {
+						log.Error().Int("valid", validCount).Int("needed", needed).Msg("Insufficient valid BLS signatures - aborting block processing")
+						return
+					}
+					log.Info().Int("valid", validCount).Int("total", len(blsResponses)).Msg("BLS majority verified - continuing block processing")
+				}
+			}
+
 			// Create DB clients for processing
 			mainDBClient, err := DB_OPs.GetMainDBConnection()
 			if err != nil {
