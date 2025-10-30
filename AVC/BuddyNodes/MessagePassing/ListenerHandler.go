@@ -11,6 +11,7 @@ import (
 
 	"gossipnode/AVC/BFT/bft"
 	"gossipnode/AVC/BuddyNodes/CRDTSync"
+	"gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
@@ -446,7 +447,20 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		return
 	}
 
-	// Create result message
+	// Derive vote from decision and prepare BLS signature over blockHash
+	var vote int8 = -1
+	if success && decision == "ACCEPT" {
+		vote = 1
+	}
+
+	blsResp, agreed, err := BLS_Signer.SignMessage(blockHash, vote)
+	if err != nil {
+		fmt.Printf("⚠️ Failed to create BLS signature for BFT result: %v\n", err)
+	}
+	// Attach local PeerID into BLS payload
+	blsResp.SetPeerID(listenerNode.PeerID.String())
+
+	// Create result message (include BLS payload)
 	resultData := map[string]interface{}{
 		"round":          round,
 		"block_hash":     blockHash,
@@ -456,8 +470,11 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		"block_accepted": success && decision == "ACCEPT",
 		"failure_reason": failureReason,
 		"timestamp":      time.Now().UTC().Unix(),
+		"bls":            blsResp,
+		"vote":           vote,
+		"agree":          agreed,
 	}
-
+	fmt.Printf(">>> resultData-bls: %+v\n", resultData["bls"])
 	resultJSON, err := json.Marshal(resultData)
 	if err != nil {
 		fmt.Printf("❌ Failed to marshal result: %v\n", err)
@@ -1060,7 +1077,8 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 		wg.Add(1)
 		go func(peerID peer.ID) {
 			defer wg.Done()
-			stream, err := listenerNode.Host.NewStream(context.Background(), peerID, config.BuddyNodesMessageProtocol)
+			// Use SubmitMessageProtocol because HandleSubmitMessageStream routes Type_VoteResult
+			stream, err := listenerNode.Host.NewStream(context.Background(), peerID, config.SubmitMessageProtocol)
 			if err != nil {
 				fmt.Printf("❌ Failed to open stream to %s: %v\n", peerID, err)
 				responseCh <- false
@@ -1148,7 +1166,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 					fmt.Printf("⚠️ Invalid response from %s: %s\n", peerID, string(payload))
 					responseCh <- false
 				}
-			case <-time.After(5 * time.Second):
+			case <-time.After(12 * time.Second):
 				fmt.Printf("⏳ Timeout waiting for vote result from %s\n", peerID)
 				responseCh <- false
 			}

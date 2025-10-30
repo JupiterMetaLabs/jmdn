@@ -130,6 +130,47 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 		// Delegate to ListenerHandler for processing the vote result request
 		listenerHandler := NewListenerHandler(StructListenerNode.ResponseHandler)
 		listenerHandler.handleVoteResultRequest(s, message)
+	case config.Type_BFTResult:
+		fmt.Println("🧾 Handling Type_BFTResult -> print buddy result with BLS")
+		// Expected payload shape from sendBFTResultToSequencer
+		var payload struct {
+			Round         uint64 `json:"round"`
+			BlockHash     string `json:"block_hash"`
+			BuddyID       string `json:"buddy_id"`
+			Success       bool   `json:"success"`
+			Decision      string `json:"decision"`
+			BlockAccepted bool   `json:"block_accepted"`
+			FailureReason string `json:"failure_reason"`
+			Timestamp     int64  `json:"timestamp"`
+			Vote          int8   `json:"vote"`
+			Agree         bool   `json:"agree"`
+			BLS           struct {
+				Signature string `json:"Signature"`
+				Agree     bool   `json:"Agree"`
+				PubKey    string `json:"PubKey"`
+				PeerID    string `json:"PeerID"`
+			} `json:"bls"`
+		}
+
+		if err := json.Unmarshal([]byte(message.Message), &payload); err != nil {
+			fmt.Printf("❌ Failed to parse BFTResult payload: %v\n", err)
+			break
+		}
+
+		fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+		fmt.Printf("║         RECEIVED BFT RESULT FROM BUDDY (WITH BLS)         ║\n")
+		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+		fmt.Printf("🆔 Buddy: %s\n", payload.BuddyID)
+		fmt.Printf("🔗 Block: %s  | Round: %d\n", payload.BlockHash, payload.Round)
+		fmt.Printf("✅ Success: %v | Decision: %s | Accepted: %v\n", payload.Success, payload.Decision, payload.BlockAccepted)
+		if payload.FailureReason != "" {
+			fmt.Printf("❌ Reason: %s\n", payload.FailureReason)
+		}
+		fmt.Printf("🗳️ Vote: %d | Agree: %v\n", payload.Vote, payload.Agree)
+		fmt.Printf("🔐 BLS PeerID: %s\n", payload.BLS.PeerID)
+		fmt.Printf("🔑 BLS PubKey: %s\n", payload.BLS.PubKey)
+		fmt.Printf("✍️  BLS Signature (len=%d)\n", len(payload.BLS.Signature))
+		fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
 	default:
 		fmt.Printf("❓ Unknown message type: %s\n", message.GetACK().GetStage())
 		log.LogMessagesError(fmt.Sprintf("Unknown message type received from %s: %s", s.Conn().RemotePeer(), msg), err, zap.String("peer", s.Conn().RemotePeer().String()), zap.String("topic", log.Messages_TOPIC), zap.String("message", msg), zap.String("function", "ListenMessages.HandleSubmitMessageStream"))
