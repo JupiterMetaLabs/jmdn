@@ -11,7 +11,6 @@ import (
 
 	"gossipnode/AVC/BFT/bft"
 	"gossipnode/AVC/BuddyNodes/CRDTSync"
-	"gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
@@ -956,68 +955,6 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 	if listenerNode == nil {
 		fmt.Println("❌ Listener node not initialized")
 		return
-	}
-
-	// Attempt to parse requested vote and message-to-sign from Sequencer payload
-	// Expected optional JSON in message.Message: {"vote": 1|-1, "sign_message": "..."}
-	vote := int8(1)
-	signTarget := message.Message
-	if len(message.Message) > 0 {
-		var req map[string]interface{}
-		if err := json.Unmarshal([]byte(message.Message), &req); err == nil {
-			if v, ok := req["vote"].(float64); ok {
-				if v == -1 {
-					vote = -1
-				} else {
-					vote = 1
-				}
-			}
-			if sm, ok := req["sign_message"].(string); ok && sm != "" {
-				signTarget = sm
-			}
-		}
-	}
-
-	// Sign using local BLS signer module and node keys
-	blsResp, agreed, err := BLS_Signer.SignMessage(signTarget, vote)
-	if err != nil {
-		fmt.Printf("❌ Failed to create BLS vote signature: %v\n", err)
-	} else if !agreed {
-		fmt.Printf("ℹ️ Node does not agree with vote; returning disagree payload\n")
-	}
-
-	blsResp.SetPeerID(listenerNode.PeerID.String())
-
-	// Build and send BLS vote response to Sequencer (Type_BLSVote) using BLS_Signer.BLSresponse
-	type BLSVotePayload struct {
-		Vote      int8                   `json:"vote"`
-		Message   string                 `json:"message"`
-		Data      BLS_Signer.BLSresponse `json:"bls"`
-		Timestamp int64                  `json:"timestamp"`
-	}
-
-	payload := BLSVotePayload{
-		Vote:      vote,
-		Message:   signTarget,
-		Data:      blsResp,
-		Timestamp: time.Now().UTC().Unix(),
-	}
-	replyJSON, _ := json.Marshal(payload)
-
-	ackBLS := AVCStruct.NewACKBuilder().
-		True_ACK_Message(listenerNode.PeerID, config.Type_BLSVote)
-
-	blsMsg := AVCStruct.NewMessageBuilder(nil).
-		SetSender(listenerNode.PeerID).
-		SetMessage(string(replyJSON)).
-		SetTimestamp(time.Now().UTC().Unix()).
-		SetACK(ackBLS)
-
-	blsBytes, _ := json.Marshal(blsMsg)
-	if _, err := s.Write(append(blsBytes, byte(config.Delimiter))); err != nil {
-		fmt.Printf("❌ Failed to send BLS vote response to Sequencer: %v\n", err)
-	} else {
-		fmt.Printf("✅ Sent BLS vote response (Type_BLSVote) to Sequencer\n")
 	}
 
 	// Get buddy list from global config or BFT context
