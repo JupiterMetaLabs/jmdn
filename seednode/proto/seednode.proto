@@ -342,6 +342,20 @@ message RemoveAllBuddiesResponse {
   int64 removed_count = 3;
 }
 
+// Ping RTT measurement
+message PingRTTRequest {
+  string peer_id = 1;
+  repeated string multiaddrs = 2;
+}
+
+message PingRTTResponse {
+  bool success = 1;
+  int64 rtt_us = 2;  // RTT in microseconds for better precision
+  string error_message = 3;
+  string used_multiaddr = 4;
+}
+
+
 // Peer Directory Service
 service PeerDirectory {
   rpc RegisterPeer(RegisterPeerRequest) returns (RegisterPeerResponse);
@@ -378,4 +392,6 @@ service PeerDirectory {
   rpc ListBuddy(ListBuddyRequest) returns (ListBuddyResponse);
   rpc RemoveBuddy(RemoveBuddyRequest) returns (RemoveBuddyResponse);
   rpc RemoveAllBuddies(RemoveAllBuddiesRequest) returns (RemoveAllBuddiesResponse);
+
+  rpc PingRTT(PingRTTRequest) returns (PingRTTResponse);
 }

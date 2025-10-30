@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v6.32.1
-// source: seednode/proto/seednode.proto
+// source: seednode.proto
 
 package peerpb
 
@@ -44,6 +44,7 @@ const (
 	PeerDirectory_ListBuddy_FullMethodName                            = "/peerpb.PeerDirectory/ListBuddy"
 	PeerDirectory_RemoveBuddy_FullMethodName                          = "/peerpb.PeerDirectory/RemoveBuddy"
 	PeerDirectory_RemoveAllBuddies_FullMethodName                     = "/peerpb.PeerDirectory/RemoveAllBuddies"
+	PeerDirectory_PingRTT_FullMethodName                              = "/peerpb.PeerDirectory/PingRTT"
 )
 
 // PeerDirectoryClient is the client API for PeerDirectory service.
@@ -81,6 +82,7 @@ type PeerDirectoryClient interface {
 	ListBuddy(ctx context.Context, in *ListBuddyRequest, opts ...grpc.CallOption) (*ListBuddyResponse, error)
 	RemoveBuddy(ctx context.Context, in *RemoveBuddyRequest, opts ...grpc.CallOption) (*RemoveBuddyResponse, error)
 	RemoveAllBuddies(ctx context.Context, in *RemoveAllBuddiesRequest, opts ...grpc.CallOption) (*RemoveAllBuddiesResponse, error)
+	PingRTT(ctx context.Context, in *PingRTTRequest, opts ...grpc.CallOption) (*PingRTTResponse, error)
 }
 
 type peerDirectoryClient struct {
@@ -331,6 +333,16 @@ func (c *peerDirectoryClient) RemoveAllBuddies(ctx context.Context, in *RemoveAl
 	return out, nil
 }
 
+func (c *peerDirectoryClient) PingRTT(ctx context.Context, in *PingRTTRequest, opts ...grpc.CallOption) (*PingRTTResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PingRTTResponse)
+	err := c.cc.Invoke(ctx, PeerDirectory_PingRTT_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PeerDirectoryServer is the server API for PeerDirectory service.
 // All implementations must embed UnimplementedPeerDirectoryServer
 // for forward compatibility.
@@ -366,6 +378,7 @@ type PeerDirectoryServer interface {
 	ListBuddy(context.Context, *ListBuddyRequest) (*ListBuddyResponse, error)
 	RemoveBuddy(context.Context, *RemoveBuddyRequest) (*RemoveBuddyResponse, error)
 	RemoveAllBuddies(context.Context, *RemoveAllBuddiesRequest) (*RemoveAllBuddiesResponse, error)
+	PingRTT(context.Context, *PingRTTRequest) (*PingRTTResponse, error)
 	mustEmbedUnimplementedPeerDirectoryServer()
 }
 
@@ -447,6 +460,9 @@ func (UnimplementedPeerDirectoryServer) RemoveBuddy(context.Context, *RemoveBudd
 }
 func (UnimplementedPeerDirectoryServer) RemoveAllBuddies(context.Context, *RemoveAllBuddiesRequest) (*RemoveAllBuddiesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RemoveAllBuddies not implemented")
+}
+func (UnimplementedPeerDirectoryServer) PingRTT(context.Context, *PingRTTRequest) (*PingRTTResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PingRTT not implemented")
 }
 func (UnimplementedPeerDirectoryServer) mustEmbedUnimplementedPeerDirectoryServer() {}
 func (UnimplementedPeerDirectoryServer) testEmbeddedByValue()                       {}
@@ -901,6 +917,24 @@ func _PeerDirectory_RemoveAllBuddies_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PeerDirectory_PingRTT_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PingRTTRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PeerDirectoryServer).PingRTT(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PeerDirectory_PingRTT_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PeerDirectoryServer).PingRTT(ctx, req.(*PingRTTRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PeerDirectory_ServiceDesc is the grpc.ServiceDesc for PeerDirectory service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1004,7 +1038,11 @@ var PeerDirectory_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "RemoveAllBuddies",
 			Handler:    _PeerDirectory_RemoveAllBuddies_Handler,
 		},
+		{
+			MethodName: "PingRTT",
+			Handler:    _PeerDirectory_PingRTT_Handler,
+		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "seednode/proto/seednode.proto",
+	Metadata: "seednode.proto",
 }
