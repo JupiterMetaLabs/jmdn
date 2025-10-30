@@ -27,18 +27,13 @@ import (
 
 var localNode config.Node
 
-type PeerConfig struct {
-	PeerID     string `json:"peer_id"`
-	PrivKeyB64 string `json:"priv_key"` // Base64 encoded private key
-}
-
-const peerFile = "./config/peer.json"
+const peerFile = config.PeerFile
 
 func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
 	var colorgreen = config.ColorGreen
 	var colorreset = config.ColorReset
 
-	var config PeerConfig
+	var config config.PeerConfig
 
 	// Check if peer.json exists
 	if _, err := os.Stat(peerFile); err == nil {
@@ -328,7 +323,7 @@ func GetPeerIDFromJSON() string {
 	defer file.Close()
 
 	// Decode JSON
-	var config PeerConfig
+	var config config.PeerConfig
 	if err := json.NewDecoder(file).Decode(&config); err != nil {
 		fmt.Println("Failed to decode peer.json:", err)
 		return ""
