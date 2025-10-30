@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"gossipnode/AVC/BFT/bft"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
+	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/AVC/NodeSelection/Router"
@@ -657,6 +658,9 @@ func (consensus *Consensus) PrintCRDTState() error {
 		fmt.Println("Requesting vote results from all buddy nodes:", listenerNode.BuddyNodes.Buddies_Nodes)
 
 		var wg sync.WaitGroup
+		// collect BLS responses from buddies to include in block broadcast
+		var blsResultsMu sync.Mutex
+		blsResults := make([]BLS_Signer.BLSresponse, 0, config.MaxMainPeers)
 		for _, buddyID := range listenerNode.BuddyNodes.Buddies_Nodes {
 			wg.Add(1)
 			go func(peerID peer.ID) {
@@ -710,9 +714,46 @@ func (consensus *Consensus) PrintCRDTState() error {
 				if responseMsg != nil {
 					var resultData map[string]interface{}
 					if err := json.Unmarshal([]byte(responseMsg.Message), &resultData); err == nil {
+						// Pretty print full payload for debugging (includes BLS if present)
+						if pretty, err := json.MarshalIndent(resultData, "", "  "); err == nil {
+							fmt.Printf("📦 Full vote payload from %s:\n%s\n", peerID, string(pretty))
+						}
+
+						// Extract and store numeric vote
 						if result, ok := resultData["result"].(float64); ok {
 							Maps.StoreVoteResult(peerID.String(), int8(result))
 							fmt.Printf("✅ Received vote result from %s: %d\n", peerID, int8(result))
+						}
+
+						// If BLS present, log key fields
+						if blsAny, ok := resultData["bls"].(map[string]interface{}); ok {
+							sig := ""
+							if v, ok := blsAny["Signature"].(string); ok {
+								sig = v
+							}
+							agree := false
+							if v, ok := blsAny["Agree"].(bool); ok {
+								agree = v
+							}
+							pub := ""
+							if v, ok := blsAny["PubKey"].(string); ok {
+								pub = v
+							}
+							pid := ""
+							if v, ok := blsAny["PeerID"].(string); ok {
+								pid = v
+							}
+							fmt.Printf("🔐 BLS from %s | peer=%s agree=%t pubkey_len=%d sig_len=%d\n", peerID, pid, agree, len(pub), len(sig))
+
+							// append typed response
+							blsResultsMu.Lock()
+							blsResults = append(blsResults, *BLS_Signer.NewBLSresponseBuilder(nil).
+								SetSignature(sig).
+								SetAgree(agree).
+								SetPubKey(pub).
+								SetPeerID(pid).
+								Build())
+							blsResultsMu.Unlock()
 						}
 					}
 				}
@@ -720,6 +761,17 @@ func (consensus *Consensus) PrintCRDTState() error {
 		}
 		wg.Wait()
 		fmt.Printf("✅ Collected vote results from all buddy nodes\n")
+
+		// After collecting votes, broadcast block with attached BLS results (no local processing here)
+		if consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
+			if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, consensus.ZKBlockData.GetZKBlock(), false, map[string]string{}, blsResults); err != nil {
+				fmt.Printf("❌ Failed to broadcast block with BLS results: %v\n", err)
+			} else {
+				fmt.Printf("✅ Broadcasted block with %d BLS results\n", len(blsResults))
+			}
+		} else {
+			fmt.Printf("⚠️ Cannot broadcast block: ZKBlockData missing\n")
+		}
 	}()
 
 	// Get metadata from the global listener node
