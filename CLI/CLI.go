@@ -657,9 +657,23 @@ func (h *CommandHandler) handleGetDID(parts []string) {
 	fmt.Printf("  Account Type: %s\n", doc.AccountType)
 	fmt.Printf("  Nonce: %d\n", doc.Nonce)
 	fmt.Printf("  Balance: %s\n", doc.Balance)
-	fmt.Printf("  Created: %s\n", time.Unix(doc.CreatedAt, 0).Format(time.RFC3339))
-	fmt.Printf("  Updated: %s\n", time.Unix(doc.UpdatedAt, 0).Format(time.RFC3339))
+	fmt.Printf("  Created: %s\n", formatTS(doc.CreatedAt))
+	fmt.Printf("  Updated: %s\n", formatTS(doc.UpdatedAt))
 	fmt.Printf("  Metadata: %s\n", doc.Metadata)
+}
+
+func formatTS(ts int64) string {
+	// Normalize epoch units: ns (>=1e14), ms (>=1e11), else seconds
+	switch {
+	case ts >= 1e14: // nanoseconds
+		return time.Unix(0, ts).UTC().Format(time.RFC3339)
+	case ts >= 1e11: // milliseconds
+		sec := ts / 1e3
+		nsec := (ts % 1e3) * 1e6
+		return time.Unix(sec, nsec).UTC().Format(time.RFC3339)
+	default: // seconds
+		return time.Unix(ts, 0).UTC().Format(time.RFC3339)
+	}
 }
 
 func (h *CommandHandler) handleDBState() {
