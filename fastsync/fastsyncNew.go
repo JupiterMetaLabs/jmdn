@@ -698,7 +698,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 
 	// 1. Push the Main DB Transactions from AVRO file to the DB - if no maindb then skip
 	if Phase2.HashMap.MAIN_HashMap != nil && Phase2.HashMap.MAIN_HashMap.Size() > 0 {
-		if err := fs.PushDataToDB(Phase2, MainDB, "fastsync/.temp/main.avro"); err != nil {
+		if err := fs.PushDataToDB(Phase2, MainDB, "defaultdb.avro"); err != nil {
 			log.Error().Err(err).Msg("Failed to push Main DB transactions")
 			return nil, fmt.Errorf("failed to push Main DB transactions: %w", err)
 		}
@@ -719,7 +719,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 			return nil, fmt.Errorf("accounts database client is not initialized")
 		}
 
-		if err := fs.PushDataToDB(Phase2, AccountsDB, "fastsync/.temp/accounts.avro"); err != nil {
+		if err := fs.PushDataToDB(Phase2, AccountsDB, "accountsdb.avro"); err != nil {
 			log.Error().Err(err).Msg("Failed to push Accounts DB transactions")
 			return nil, fmt.Errorf("failed to push Accounts DB transactions: %w", err)
 		}
@@ -903,9 +903,13 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 
 	// Transfer the main DB backup file
 	log.Info().Str("peer", peerID.String()).Str("file", mainAVROpath).Msg("Transferring main DB backup file")
-	err = TransferAVROFile(fs.host, peerID, mainAVROpath, "fastsync/.temp/main.avro")
-	if err != nil {
-		return nil, fmt.Errorf("failed to transfer main database: %w", err)
+	if msg.HashMap.MAIN_HashMap != nil && msg.HashMap.MAIN_HashMap.Size() > 0 {
+		err = TransferAVROFile(fs.host, peerID, mainAVROpath, "defaultdb.avro")
+		if err != nil {
+			return nil, fmt.Errorf("failed to transfer main database: %w", err)
+		}
+	} else {
+		log.Info().Msg("Skipping main DB file transfer (no keys to sync)")
 	}
 
 	// Process accounts DB if it has entries
@@ -930,7 +934,7 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 
 		// Transfer the accounts DB backup file
 		log.Info().Str("peer", peerID.String()).Str("file", accountsAVROpath).Msg("Transferring accounts DB backup file")
-		err = TransferAVROFile(fs.host, peerID, accountsAVROpath, "fastsync/.temp/accounts.avro")
+		err = TransferAVROFile(fs.host, peerID, accountsAVROpath, "accountsdb.avro")
 		if err != nil {
 			return nil, fmt.Errorf("failed to transfer accounts database: %w", err)
 		}

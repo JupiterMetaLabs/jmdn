@@ -898,6 +898,19 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		return nil
 	}
 
+	// Validate filename against DB type
+	base := filepath.Base(dbPath)
+	expected := ""
+	switch dbType {
+	case MainDB:
+		expected = "defaultdb.avro"
+	case AccountsDB:
+		expected = "accountsdb.avro"
+	}
+	if expected != "" && base != expected {
+		return fmt.Errorf("avro filename mismatch: got %s, expected %s for %s", base, expected, dbTypeToString(dbType))
+	}
+
 	// Open the backup file
 	file, err := os.Open(dbPath)
 	if err != nil {
