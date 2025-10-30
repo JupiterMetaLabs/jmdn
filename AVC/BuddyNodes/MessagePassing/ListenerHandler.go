@@ -474,7 +474,7 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		"vote":           vote,
 		"agree":          agreed,
 	}
-
+	fmt.Printf(">>> resultData-bls: %+v\n", resultData["bls"])
 	resultJSON, err := json.Marshal(resultData)
 	if err != nil {
 		fmt.Printf("❌ Failed to marshal result: %v\n", err)
@@ -1077,7 +1077,8 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 		wg.Add(1)
 		go func(peerID peer.ID) {
 			defer wg.Done()
-			stream, err := listenerNode.Host.NewStream(context.Background(), peerID, config.BuddyNodesMessageProtocol)
+			// Use SubmitMessageProtocol because HandleSubmitMessageStream routes Type_VoteResult
+			stream, err := listenerNode.Host.NewStream(context.Background(), peerID, config.SubmitMessageProtocol)
 			if err != nil {
 				fmt.Printf("❌ Failed to open stream to %s: %v\n", peerID, err)
 				responseCh <- false
@@ -1165,7 +1166,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 					fmt.Printf("⚠️ Invalid response from %s: %s\n", peerID, string(payload))
 					responseCh <- false
 				}
-			case <-time.After(5 * time.Second):
+			case <-time.After(12 * time.Second):
 				fmt.Printf("⏳ Timeout waiting for vote result from %s\n", peerID)
 				responseCh <- false
 			}
