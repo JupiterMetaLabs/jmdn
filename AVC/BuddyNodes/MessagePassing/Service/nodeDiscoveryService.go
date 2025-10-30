@@ -68,7 +68,7 @@ func (nds *NodeDiscoveryService) AddPeer(peerID peer.ID) {
 	if _, exists := nds.knownPeers[peerID]; !exists {
 		nds.knownPeers[peerID] = &PeerInfo{
 			PeerID:      peerID,
-			LastSeen:    time.Now(),
+			LastSeen:    time.Now().UTC(),
 			IsConnected: true,
 			CRDTState:   nil, // Will be populated during sync
 		}
@@ -151,7 +151,7 @@ func (nds *NodeDiscoveryService) SyncWithPeer(ctx context.Context, peerID peer.I
 
 	// Update peer info
 	nds.peerMutex.Lock()
-	peerInfo.LastSeen = time.Now()
+	peerInfo.LastSeen = time.Now().UTC()
 	nds.peerMutex.Unlock()
 
 	log.LogConsensusInfo(fmt.Sprintf("Successfully synced with peer: %s", peerID),

@@ -251,7 +251,7 @@ func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 	fmt.Printf("Starting blockchain sync with peer %s\n", addrInfo.ID.String())
 
 	// Start the sync process
-	startTime := time.Now()
+	startTime := time.Now().UTC()
 
 	maxRetries := 3
 	var syncErr error

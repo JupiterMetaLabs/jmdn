@@ -97,7 +97,7 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 			// Log the error and continue to the next block to provide a partial response.
 			s.defaultdb.Client.Logger.Logger.Error("Failed to get block %d, skipping: %v",
 				zap.Error(err),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, config.LOKI_URL),

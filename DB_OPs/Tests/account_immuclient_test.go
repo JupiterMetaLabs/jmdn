@@ -184,13 +184,13 @@ func Test_Account_Data_Structure(t *testing.T) {
 
 	// Create test account document
 	account := &DB_OPs.Account{
-		DIDAddress:  fmt.Sprintf("did:superjtest:test-%d", time.Now().UnixNano()),
+		DIDAddress:  fmt.Sprintf("did:superjtest:test-%d", time.Now().UTC().UnixNano()),
 		Address:     address,
 		Balance:     "1000.50",
-		Nonce:       uint64(time.Now().UnixNano()),
+		Nonce:       uint64(time.Now().UTC().UnixNano()),
 		AccountType: "test",
-		CreatedAt:   time.Now().UnixNano(),
-		UpdatedAt:   time.Now().UnixNano(),
+		CreatedAt:   time.Now().UTC().UnixNano(),
+		UpdatedAt:   time.Now().UTC().UnixNano(),
 		Metadata: map[string]interface{}{
 			"test":     true,
 			"function": "Test_Account_Data_Structure",
@@ -256,7 +256,7 @@ func Test_ConnectionPool_WithNilConnection(t *testing.T) {
 		t.Fatalf("Failed to generate private key: %v", err)
 	}
 	address := crypto.PubkeyToAddress(privateKey.PublicKey)
-	didAddress := fmt.Sprintf("did:example:nil-test-%d", time.Now().UnixNano())
+	didAddress := fmt.Sprintf("did:example:nil-test-%d", time.Now().UTC().UnixNano())
 	metadata := map[string]interface{}{
 		"test":     true,
 		"function": "Test_ConnectionPool_WithNilConnection",
@@ -318,7 +318,7 @@ func Test_Account_Nonce_Generation(t *testing.T) {
 
 	// Verify nonces are reasonable (based on timestamp)
 	// Note: The nonce includes a counter in the lower bits, so it might be slightly larger than current timestamp
-	now := time.Now().UnixNano()
+	now := time.Now().UTC().UnixNano()
 	if nonce1 > uint64(now)+1000000 || nonce2 > uint64(now)+1000000 {
 		t.Fatalf("Generated nonces should be close to current timestamp")
 	}
@@ -341,12 +341,12 @@ func Test_Account_Database_Write_Read(t *testing.T) {
 		t.Fatalf("Failed to generate private key: %v", err)
 	}
 	address := crypto.PubkeyToAddress(privateKey.PublicKey)
-	didAddress := fmt.Sprintf("did:superjtest:write-read-test-%d", time.Now().UnixNano())
+	didAddress := fmt.Sprintf("did:superjtest:write-read-test-%d", time.Now().UTC().UnixNano())
 	metadata := map[string]interface{}{
 		"test":      true,
 		"function":  "Test_Account_Database_Write_Read",
 		"version":   "1.0",
-		"timestamp": time.Now().Unix(),
+		"timestamp": time.Now().UTC().Unix(),
 	}
 
 	fmt.Printf("Test data prepared:\n")
@@ -486,7 +486,7 @@ func Test_ListAllAccounts(t *testing.T) {
 			t.Fatalf("Failed to generate private key %d: %v", i, err)
 		}
 		address := crypto.PubkeyToAddress(privateKey.PublicKey)
-		didAddress := fmt.Sprintf("did:superjtest:list-test-%d-%d", i, time.Now().UnixNano())
+		didAddress := fmt.Sprintf("did:superjtest:list-test-%d-%d", i, time.Now().UTC().UnixNano())
 		metadata := map[string]interface{}{
 			"test":     true,
 			"function": "Test_ListAllAccounts",
@@ -573,7 +573,7 @@ func Test_UpdateAccountBalance(t *testing.T) {
 		t.Fatalf("Failed to generate private key: %v", err)
 	}
 	address := crypto.PubkeyToAddress(privateKey.PublicKey)
-	didAddress := fmt.Sprintf("did:superjtest:balance-test-%d", time.Now().UnixNano())
+	didAddress := fmt.Sprintf("did:superjtest:balance-test-%d", time.Now().UTC().UnixNano())
 	metadata := map[string]interface{}{
 		"test":     true,
 		"function": "Test_UpdateAccountBalance",
@@ -665,7 +665,7 @@ func Test_CountAccounts(t *testing.T) {
 		t.Fatalf("Failed to generate private key: %v", err)
 	}
 	address := crypto.PubkeyToAddress(privateKey.PublicKey)
-	didAddress := fmt.Sprintf("did:superjtest:count-test-%d", time.Now().UnixNano())
+	didAddress := fmt.Sprintf("did:superjtest:count-test-%d", time.Now().UTC().UnixNano())
 	metadata := map[string]interface{}{
 		"test":     true,
 		"function": "Test_CountAccounts",
@@ -905,7 +905,7 @@ func Test_ListAllDIDs(t *testing.T) {
 			t.Fatalf("Failed to generate private key %d: %v", i, err)
 		}
 		address := crypto.PubkeyToAddress(privateKey.PublicKey)
-		didAddress := fmt.Sprintf("did:superjtest:did-test-%d-%d", i, time.Now().UnixNano())
+		didAddress := fmt.Sprintf("did:superjtest:did-test-%d-%d", i, time.Now().UTC().UnixNano())
 		metadata := map[string]interface{}{
 			"test":     true,
 			"function": "Test_ListAllDIDs",

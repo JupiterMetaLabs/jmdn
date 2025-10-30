@@ -129,7 +129,7 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 		if err == nil && alreadyProcessed {
 			fmt.Printf("DEBUG: Transaction %s already processed in previous block, skipping\n", tx.Hash.Hex())
 			accountsClient.Client.Logger.Logger.Warn("Transaction already processed in previous block, skipping",
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, config.LOKI_URL),
@@ -146,7 +146,7 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 			fmt.Printf("DEBUG: processTransaction failed for tx %s: %v\n", tx.Hash.Hex(), Process_err)
 			// If any transaction fails, roll back all affected DIDs
 			accountsClient.Client.Logger.Logger.Error("Transaction failed, rolling back block",
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, config.LOKI_URL),
@@ -157,7 +157,7 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 			rollbackError := rollbackBalances(originalBalances, accountsClient)
 			if rollbackError != nil {
 				accountsClient.Client.Logger.Logger.Error("Failed to rollback balances after transaction failure",
-					zap.Time(logging.Created_at, time.Now()),
+					zap.Time(logging.Created_at, time.Now().UTC()),
 					zap.String(logging.Log_file, LOG_FILE),
 					zap.String(logging.Topic, TOPIC),
 					zap.String(logging.Loki_url, config.LOKI_URL),
@@ -240,7 +240,7 @@ func cleanupProcessingMarkers(accountsClient *config.PooledConnection, txHash st
 	if exists, _ := DB_OPs.Exists(accountsClient, processingKey); exists {
 		if err := DB_OPs.Update(accountsClient, processingKey, -1); err != nil {
 			accountsClient.Client.Logger.Logger.Warn("Failed to clean up processing marker",
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, config.LOKI_URL),
@@ -290,7 +290,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	}
 	fmt.Println("DEBUG: Database connection check successful")
 	accountsClient.Client.Logger.Logger.Info("Database connection check successful",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
@@ -327,7 +327,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 			if err := json.Unmarshal(valueBytes, &timestamp); err == nil {
 				if time.Now().UTC().Unix()-timestamp > 300 {
 					accountsClient.Client.Logger.Logger.Warn("Found stale processing marker, continuing with transaction",
-						zap.Time(logging.Created_at, time.Now()),
+						zap.Time(logging.Created_at, time.Now().UTC()),
 						zap.String(logging.Log_file, LOG_FILE),
 						zap.String(logging.Topic, TOPIC),
 						zap.String(logging.Loki_url, config.LOKI_URL),
@@ -337,7 +337,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 					)
 				} else {
 					accountsClient.Client.Logger.Logger.Warn("Transaction is already being processed, possible duplicate",
-						zap.Time(logging.Created_at, time.Now()),
+						zap.Time(logging.Created_at, time.Now().UTC()),
 						zap.String(logging.Log_file, LOG_FILE),
 						zap.String(logging.Topic, TOPIC),
 						zap.String(logging.Loki_url, config.LOKI_URL),
@@ -353,7 +353,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// Mark transaction as being processed
 	if err := DB_OPs.Create(accountsClient, txProcessingKey, time.Now().UTC().Unix()); err != nil {
 		accountsClient.Client.Logger.Logger.Warn("Failed to mark transaction as processing",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -388,7 +388,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	parsedTx, err = parseTransaction(tx)
 	if err != nil {
 		accountsClient.Client.Logger.Logger.Error("Failed to parse transaction",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -422,7 +422,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	halfGasFee := new(big.Int).Div(gasFeeToDeduct, big.NewInt(2))
 
 	accountsClient.Client.Logger.Logger.Info("Transaction Amount Calculated",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
@@ -440,7 +440,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	senderExists, _ := accountExists(tx.From, accountsClient)
 	if !senderExists {
 		accountsClient.Client.Logger.Logger.Error("Sender DID does not exist",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -457,7 +457,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	recipientExists, _ := accountExists(tx.To, accountsClient)
 	if !recipientExists && !CreateMissingAccounts {
 		accountsClient.Client.Logger.Logger.Error("Recipient DID does not exist",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -473,7 +473,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// 1. Deduct from sender
 	if err := deductFromSender(*tx.From, totalDeduction.String(), accountsClient); err != nil {
 		accountsClient.Client.Logger.Logger.Error("Failed to deduct from sender",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -494,7 +494,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		// Rollback sender deduction on failure
 		if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, *tx.From, originalBalances[*tx.From]); rollbackErr != nil {
 			accountsClient.Client.Logger.Logger.Error("Failed to rollback sender balance",
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, config.LOKI_URL),
@@ -505,7 +505,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 			)
 		} else {
 			accountsClient.Client.Logger.Logger.Info("Rolled back sender balance due to recipient update failure",
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, config.LOKI_URL),
@@ -529,7 +529,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		for _, accounts := range rollbackAccounts {
 			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
 				accountsClient.Client.Logger.Logger.Error("Failed to rollback balance",
-					zap.Time(logging.Created_at, time.Now()),
+					zap.Time(logging.Created_at, time.Now().UTC()),
 					zap.String(logging.Log_file, LOG_FILE),
 					zap.String(logging.Topic, TOPIC),
 					zap.String(logging.Loki_url, config.LOKI_URL),
@@ -540,7 +540,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 				)
 			} else {
 				accountsClient.Client.Logger.Logger.Info("Rolled back balance due to gas fee update failure",
-					zap.Time(logging.Created_at, time.Now()),
+					zap.Time(logging.Created_at, time.Now().UTC()),
 					zap.String(logging.Log_file, LOG_FILE),
 					zap.String(logging.Topic, TOPIC),
 					zap.String(logging.Loki_url, config.LOKI_URL),
@@ -564,7 +564,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		for _, accounts := range rollbackAccounts {
 			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
 				accountsClient.Client.Logger.Logger.Error("Failed to rollback balance",
-					zap.Time(logging.Created_at, time.Now()),
+					zap.Time(logging.Created_at, time.Now().UTC()),
 					zap.String(logging.Log_file, LOG_FILE),
 					zap.String(logging.Topic, TOPIC),
 					zap.String(logging.Loki_url, config.LOKI_URL),
@@ -575,7 +575,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 				)
 			} else {
 				accountsClient.Client.Logger.Logger.Info("Rolled back balance due to gas fee update failure",
-					zap.Time(logging.Created_at, time.Now()),
+					zap.Time(logging.Created_at, time.Now().UTC()),
 					zap.String(logging.Log_file, LOG_FILE),
 					zap.String(logging.Topic, TOPIC),
 					zap.String(logging.Loki_url, config.LOKI_URL),
@@ -596,7 +596,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// Mark transaction as fully processed - this is the key that prevents double processing
 	if err := DB_OPs.Create(accountsClient, txKey, time.Now().UTC().Unix()); err != nil {
 		accountsClient.Client.Logger.Logger.Error("Failed to mark transaction as processed",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -611,7 +611,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 
 	accountsClient.Client.Logger.Logger.Info("Transaction processed successfully",
 		zap.String("tx_hash", tx.Hash.String()),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
@@ -757,7 +757,7 @@ func deductFromSender(fromDID common.Address, amount string, accountsClient *con
 	accountsClient.Client.Logger.Logger.Info("Deducted amount from sender",
 		zap.String(logging.Account, fromDID.String()),
 		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
@@ -799,7 +799,7 @@ func addToRecipient(ToAddress common.Address, amount string, accountsClient *con
 	accountsClient.Client.Logger.Logger.Info("Added amount to recipient",
 		zap.String(logging.Account, ToAddress.String()),
 		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),

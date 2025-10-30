@@ -265,7 +265,7 @@ func (es *EnhancedSubscriber) GetUniquePeerCount() int {
 // GetRecentPeers returns peers that have sent messages recently (thread-safe)
 func (es *EnhancedSubscriber) GetRecentPeers(since time.Duration) []string {
 	var recentPeers []string
-	cutoff := time.Now().Add(-since).UnixNano()
+	cutoff := time.Now().UTC().Add(-since).UnixNano()
 
 	es.metrics.uniquePeersMu.RLock()
 	defer es.metrics.uniquePeersMu.RUnlock()

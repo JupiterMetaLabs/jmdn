@@ -537,7 +537,7 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 	fmt.Printf("Our current accounts DB state: TxID=%d, Root=%x\n", accountsState.TxId, accountsState.TxHash)
 
 	// Start the sync process
-	startTime := time.Now()
+	startTime := time.Now().UTC()
 
 	maxRetries := 3
 	var syncErr error
@@ -849,7 +849,7 @@ func (h *CommandHandler) measureLatency(client *seednode.Client) LatencyStats {
 	fmt.Printf("  Performing %d ping tests...\n", numPings)
 
 	for i := 0; i < numPings; i++ {
-		start := time.Now()
+		start := time.Now().UTC()
 
 		// Use a short timeout for each ping
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

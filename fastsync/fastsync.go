@@ -831,7 +831,7 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 		case MainDB:
 			err = DB_OPs.BatchCreateOrdered(dbClient, entries)
 		case AccountsDB:
-			err = DB_OPs.BatchCreateAccountsOrdered(dbClient, entries)
+			err = DB_OPs.BatchRestoreAccounts(dbClient, entries)
 		}
 		if err == nil {
 			return nil

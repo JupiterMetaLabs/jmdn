@@ -47,8 +47,8 @@ func NewImmuDBServer(enableExplorer bool) (*ImmuDBServer, error) {
 	// Create server instance
 	server := &ImmuDBServer{
 		defaultdb:      *defaultdb,
-		accountsdb:    *accountsdb,
-		router:        router,
+		accountsdb:     *accountsdb,
+		router:         router,
 		enableExplorer: enableExplorer,
 	}
 
@@ -166,7 +166,7 @@ func (s *ImmuDBServer) Close() {
 	if s.defaultdb.Client != nil {
 		s.defaultdb.Client.Logger.Logger.Info("Closing the MainDB Connection in the API.go File",
 			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Function, "DB_OPs.Close"),
@@ -176,7 +176,7 @@ func (s *ImmuDBServer) Close() {
 	if s.accountsdb.Client != nil {
 		s.accountsdb.Client.Logger.Logger.Info("Closing the AccountsDB Connection in the API.go File",
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Function, "DB_OPs.Close"),

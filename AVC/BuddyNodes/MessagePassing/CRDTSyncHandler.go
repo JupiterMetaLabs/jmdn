@@ -103,7 +103,7 @@ func TriggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 			AllowedPeers: allowedMap,
 			IsPublic:     false, // Private channel - only allowed peers (vote aggregating buddies) can subscribe
 			Creator:      pubSubNode.PubSub.Host.ID(),
-			CreatedAt:    time.Now().Unix(),
+			CreatedAt:    time.Now().UTC().Unix(),
 		}
 		fmt.Printf("📋 Created local channel reference for %s (private, only vote aggregating buddies allowed)\n", topicName)
 	}
@@ -310,13 +310,13 @@ func TriggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 	fmt.Printf("⏳ Waiting for CRDT sync messages from %d buddy nodes\n", totalBuddyNodes)
 	fmt.Printf("   Pubsub channel will stay open for %v to ensure complete synchronization\n", syncDuration)
 
-	startTime := time.Now()
+	startTime := time.Now().UTC()
 	timeout := time.After(syncDuration)
 	mergedCount := 0
 	var subscriptionDone bool
 
 	// Track periodic updates
-	lastUpdate := time.Now()
+	lastUpdate := time.Now().UTC()
 
 	for !subscriptionDone {
 		select {
@@ -341,7 +341,7 @@ func TriggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 					if remaining > 0 && time.Since(lastUpdate) > 2*time.Second {
 						fmt.Printf("📥 Received from all %d buddies, keeping channel open for %v more to ensure full sync\n",
 							totalBuddyNodes, remaining.Round(time.Second))
-						lastUpdate = time.Now()
+						lastUpdate = time.Now().UTC()
 					}
 				}
 			}
@@ -376,7 +376,7 @@ func TriggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 			if remaining > 0 {
 				fmt.Printf("📊 Sync status: %d/%d received, %d merged, %v remaining\n",
 					receivedCount, totalBuddyNodes, mergedCount, remaining.Round(time.Second))
-				lastUpdate = time.Now()
+				lastUpdate = time.Now().UTC()
 			}
 		}
 	}

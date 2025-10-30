@@ -13,7 +13,7 @@ import hashlib
 import random
 from datetime import datetime
 
-nodeIP = "34.174.137.160"
+nodeIP = "localhost"
 
 def generate_unique_hash():
     """Generate a unique hash for testing"""
@@ -88,8 +88,8 @@ def send_eth_test():
     
     # Specific addresses and amount
     step_start = time.time()
-    to_address = "0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2"
-    from_address = "0x69EE9a32109EE1CC8c95b49Ad1D4dDAEBb46Db45"
+    from_address = "0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2"
+    to_address = "0x69EE9a32109EE1CC8c95b49Ad1D4dDAEBb46Db45"
     amount = 1
     amount_wei = int(amount * 10**18)  # 1 ETH in wei
     

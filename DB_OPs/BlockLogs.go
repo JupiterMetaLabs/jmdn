@@ -3,8 +3,8 @@ package DB_OPs
 import (
 	"fmt"
 	"gossipnode/config"
-	"gossipnode/gETH/Facade/Service/Types"
 	"gossipnode/config/utils"
+	"gossipnode/gETH/Facade/Service/Types"
 	"gossipnode/logging"
 	"time"
 
@@ -25,7 +25,7 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 		shouldReturnConnection = true
 		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
 			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
 			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 			zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -38,7 +38,7 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 		defer func() {
 			mainDBClient.Client.Logger.Logger.Info("Main DB connection put back successfully",
 				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, "ImmuDB.log"),
 				zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 				zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -67,7 +67,7 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 			mainDBClient.Client.Logger.Logger.Error("Failed to get latest block number",
 				zap.Error(err),
 				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, "ImmuDB.log"),
 				zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 				zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -87,7 +87,7 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 				zap.Error(err),
 				zap.Uint64("blockNumber", blockNum),
 				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, "ImmuDB.log"),
 				zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 				zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -104,7 +104,7 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 				zap.Error(err),
 				zap.Uint64("blockNumber", blockNum),
 				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, "ImmuDB.log"),
 				zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 				zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -121,7 +121,7 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 		zap.Uint64("toBlock", toBlock),
 		zap.Int("logCount", len(allLogs)),
 		zap.String(logging.Connection_database, config.DBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, "ImmuDB.log"),
 		zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 		zap.String(logging.Loki_url, logging.GetLokiURL()),

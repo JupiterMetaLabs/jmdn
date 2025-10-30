@@ -130,34 +130,36 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		return resp, nil
 	case "eth_call":
 		// Log incoming payload for eth_call
-		log.Printf("📥 eth_call payload: %+v", req.Params)
-		if len(req.Params) < 1 {
-			resp, _ := invalidParams(req, "missing call object")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-			return resp, nil
-		}
-		msg, err := toCallMsg(req.Params[0])
-		if err != nil {
-			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-			return resp, err
-		}
-		var num *big.Int
-		if len(req.Params) > 1 {
-			num, err = parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
-			if err != nil {
-				resp, _ := finish(req, nil, err)
-				log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-				return resp, err
-			}
-		}
-		out, err := handler.service.Call(ctx, msg, num)
-		if err != nil {
-			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-			return resp, err
-		}
-		resp, _ := finish(req, "0x"+hex.EncodeToString(out), nil)
+		// log.Printf("📥 eth_call payload: %+v", req.Params)
+		// if len(req.Params) < 1 {
+		// 	resp, _ := invalidParams(req, "missing call object")
+		// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		// 	return resp, nil
+		// }
+		// msg, err := toCallMsg(req.Params[0])
+		// if err != nil {
+		// 	resp, _ := finish(req, nil, err)
+		// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		// 	return resp, err
+		// }
+		// var num *big.Int
+		// if len(req.Params) > 1 {
+		// 	num, err = parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
+		// 	if err != nil {
+		// 		resp, _ := finish(req, nil, err)
+		// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		// 		return resp, err
+		// 	}
+		// }
+		// out, err := handler.service.Call(ctx, msg, num)
+		// if err != nil {
+		// 	resp, _ := finish(req, nil, err)
+		// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		// 	return resp, err
+		// }
+		// resp, _ := finish(req, "0x"+hex.EncodeToString(out), nil)
+		// Explicitly disabled for security/compliance
+		resp := RespErr(req.ID, -32601, "eth_call disabled")
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
@@ -197,7 +199,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		}
 		raw, _ := req.Params[0].(string)
 		// Debugging
-		// fmt.Println(">>>>>> eth_sendRawTransaction received: ", raw)
+		fmt.Println(">>>>>> eth_sendRawTransaction received: ", raw)
 		txh, err := handler.service.SendRawTx(ctx, raw)
 		resp, _ := finish(req, txh, err)
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
@@ -252,92 +254,92 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
-	case "eth_getCode":
-		if len(req.Params) < 2 {
-			resp, _ := invalidParams(req, "missing address and block tag")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-			return resp, nil
-		}
-		addr, _ := req.Params[0].(string)
-		num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
-		if err != nil {
-			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-			return resp, err
-		}
-		code, err := handler.service.GetCode(ctx, addr, num)
-		if err != nil {
-			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-			return resp, err
-		}
-		resp, _ := finish(req, code, nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		return resp, nil
+	// case "eth_getCode":
+	// 	if len(req.Params) < 2 {
+	// 		resp, _ := invalidParams(req, "missing address and block tag")
+	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+	// 		return resp, nil
+	// 	}
+	// 	addr, _ := req.Params[0].(string)
+	// 	num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
+	// 	if err != nil {
+	// 		resp, _ := finish(req, nil, err)
+	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+	// 		return resp, err
+	// 	}
+	// 	code, err := handler.service.GetCode(ctx, addr, num)
+	// 	if err != nil {
+	// 		resp, _ := finish(req, nil, err)
+	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+	// 		return resp, err
+	// 	}
+	// 	resp, _ := finish(req, code, nil)
+	// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+	// 	return resp, nil
 
-	case "eth_feeHistory":
-		if len(req.Params) < 2 {
-			resp, _ := invalidParams(req, "missing blockCount and newestBlock")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-			return resp, nil
-		}
+	// case "eth_feeHistory":
+	// 	if len(req.Params) < 2 {
+	// 		resp, _ := invalidParams(req, "missing blockCount and newestBlock")
+	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+	// 		return resp, nil
+	// 	}
 
-		// Parse blockCount (can be string hex or number)
-		var blockCount uint64
-		switch v := req.Params[0].(type) {
-		case string:
-			if strings.HasPrefix(v, "0x") {
-				bigVal := new(big.Int)
-				bigVal.SetString(v[2:], 16)
-				blockCount = bigVal.Uint64()
-			} else {
-				fmt.Sscanf(v, "%d", &blockCount)
-			}
-		case float64:
-			blockCount = uint64(v)
-		case int:
-			blockCount = uint64(v)
-		default:
-			resp, _ := invalidParams(req, "invalid blockCount type")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-			return resp, nil
-		}
+	// 	// Parse blockCount (can be string hex or number)
+	// 	var blockCount uint64
+	// 	switch v := req.Params[0].(type) {
+	// 	case string:
+	// 		if strings.HasPrefix(v, "0x") {
+	// 			bigVal := new(big.Int)
+	// 			bigVal.SetString(v[2:], 16)
+	// 			blockCount = bigVal.Uint64()
+	// 		} else {
+	// 			fmt.Sscanf(v, "%d", &blockCount)
+	// 		}
+	// 	case float64:
+	// 		blockCount = uint64(v)
+	// 	case int:
+	// 		blockCount = uint64(v)
+	// 	default:
+	// 		resp, _ := invalidParams(req, "invalid blockCount type")
+	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+	// 		return resp, nil
+	// 	}
 
-		// Parse newestBlock (block tag)
-		newestBlock, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
-		if err != nil {
-			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-			return resp, err
-		}
+	// 	// Parse newestBlock (block tag)
+	// 	newestBlock, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
+	// 	if err != nil {
+	// 		resp, _ := finish(req, nil, err)
+	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+	// 		return resp, err
+	// 	}
 
-		// Parse rewardPercentiles (optional, third parameter)
-		var rewardPercentiles []float64
-		if len(req.Params) > 2 {
-			if percArray, ok := req.Params[2].([]any); ok {
-				rewardPercentiles = make([]float64, 0, len(percArray))
-				for _, p := range percArray {
-					switch v := p.(type) {
-					case float64:
-						rewardPercentiles = append(rewardPercentiles, v)
-					case string:
-						var val float64
-						fmt.Sscanf(v, "%f", &val)
-						rewardPercentiles = append(rewardPercentiles, val)
-					}
-				}
-			}
-		}
+	// 	// Parse rewardPercentiles (optional, third parameter)
+	// 	var rewardPercentiles []float64
+	// 	if len(req.Params) > 2 {
+	// 		if percArray, ok := req.Params[2].([]any); ok {
+	// 			rewardPercentiles = make([]float64, 0, len(percArray))
+	// 			for _, p := range percArray {
+	// 				switch v := p.(type) {
+	// 				case float64:
+	// 					rewardPercentiles = append(rewardPercentiles, v)
+	// 				case string:
+	// 					var val float64
+	// 					fmt.Sscanf(v, "%f", &val)
+	// 					rewardPercentiles = append(rewardPercentiles, val)
+	// 				}
+	// 			}
+	// 		}
+	// 	}
 
-		history, err := handler.service.FeeHistory(ctx, blockCount, newestBlock, rewardPercentiles)
-		if err != nil {
-			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-			return resp, err
-		}
-		resp, _ := finish(req, history, nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		return resp, nil
+	// 	history, err := handler.service.FeeHistory(ctx, blockCount, newestBlock, rewardPercentiles)
+	// 	if err != nil {
+	// 		resp, _ := finish(req, nil, err)
+	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+	// 		return resp, err
+	// 	}
+	// 	resp, _ := finish(req, history, nil)
+	// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+	// 	return resp, nil
 
 	default:
 		resp := RespErr(req.ID, -32601, "Method not found")

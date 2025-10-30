@@ -255,7 +255,7 @@ func (s *SubscriptionService) validateRequestingNode(msg *AVCStruct.GossipMessag
 	}
 
 	// Validate message timestamp (not too old or in future)
-	now := time.Now()
+	now := time.Now().UTC()
 	messageTime := time.Unix(msg.Timestamp, 0)
 
 	if now.Sub(messageTime) > time.Hour {
@@ -355,7 +355,7 @@ func (s *SubscriptionService) addNodeToBuddyList(peerID peer.ID) error {
 	buddyNode.AddBuddies([]peer.ID{peerID})
 
 	// Update metadata
-	buddyNode.MetaData.UpdatedAt = time.Now()
+	buddyNode.MetaData.UpdatedAt = time.Now().UTC()
 
 	log.LogConsensusInfo(fmt.Sprintf("Added peer %s to buddy list. Total buddies: %d",
 		peerID, len(buddyNode.BuddyNodes.Buddies_Nodes)),
@@ -387,17 +387,17 @@ func (s *SubscriptionService) sendSubscriptionResponse(msg *AVCStruct.GossipMess
 	message := AVCStruct.NewMessageBuilder(nil).
 		SetSender(buddyNode.PeerID).
 		SetMessage(fmt.Sprintf("Subscription response: %t", accepted)).
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ackBuilder)
 
 	// Send the response via PubSub (consistent with how requests are received)
 	// Create GossipMessage for publishing
 	gossipMessage := AVCStruct.NewGossipMessageBuilder(nil).
-		SetID(fmt.Sprintf("sub_response_%d", time.Now().UnixNano())).
+		SetID(fmt.Sprintf("sub_response_%d", time.Now().UTC().UnixNano())).
 		SetTopic(config.PubSub_ConsensusChannel).
 		SetMesssage(message).
 		SetSender(buddyNode.PeerID).
-		SetTimestamp(time.Now().Unix())
+		SetTimestamp(time.Now().UTC().Unix())
 
 	// Publish the response via PubSub
 	if err := s.publishResponse(gossipMessage); err != nil {

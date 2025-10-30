@@ -306,7 +306,7 @@ func (fs *FastSync) ImportCRDTs(crdtData []json.RawMessage) error {
 }
 
 func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, error) {
-	if err := stream.SetReadDeadline(time.Now().Add(ResponseTimeout)); err != nil {
+	if err := stream.SetReadDeadline(time.Now().UTC().Add(ResponseTimeout)); err != nil {
 		return nil, fmt.Errorf("failed to set read deadline: %w", err)
 	}
 
@@ -365,7 +365,7 @@ func writeMessage(writer *bufio.Writer, stream network.Stream, msg *SyncMessage)
 		Str("raw_data", string(msgBytes)).
 		Msg("Writing message data")
 
-	if err := stream.SetWriteDeadline(time.Now().Add(ResponseTimeout)); err != nil {
+	if err := stream.SetWriteDeadline(time.Now().UTC().Add(ResponseTimeout)); err != nil {
 		log.Error().Err(err).Msg("Failed to set write deadline")
 		return fmt.Errorf("failed to set write deadline: %w", err)
 	}
@@ -846,7 +846,7 @@ func (fs *FastSync) getBatchData(
 		entries = append(entries, KeyValueEntry{
 			Key:       []byte(key),
 			Value:     data,
-			Timestamp: time.Now(),
+			Timestamp: time.Now().UTC(),
 			TxID:      0,
 		})
 	}

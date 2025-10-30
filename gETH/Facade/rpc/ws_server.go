@@ -74,7 +74,7 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			typ, _ := req.Params[0].(string)
-			sid := "0x" + time.Now().Format("150405.000000") // simple unique id; replace in prod
+			sid := "0x" + time.Now().UTC().Format("150405.000000") // simple unique id; replace in prod
 
 			switch typ {
 			case "newHeads":

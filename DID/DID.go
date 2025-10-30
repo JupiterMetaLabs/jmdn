@@ -103,7 +103,7 @@ func NewAccountServer(h host.Host) *AccountServer {
 
 	AccountServer.accountsClient = &conn
 	conn.Client.Logger.Logger.Info("Successfully connected to the Accounts Pool",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
@@ -121,7 +121,7 @@ func (s *AccountServer) Initialize() (config.PooledConnection, error) {
 		return config.PooledConnection{}, err
 	}
 	conn.Client.Logger.Logger.Info("Successfully connected to the Accounts Pool",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
@@ -135,7 +135,7 @@ func (s *AccountServer) Close() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.accountsClient.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
@@ -155,7 +155,7 @@ func (s *AccountServer) storeAccount(DIDAddress string, Address common.Address, 
 	err := s.db.CreateAccount(s.accountsClient, DIDAddress, Address, metadata)
 	if err != nil {
 		s.accountsClient.Client.Logger.Logger.Error("Failed to store Account",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -164,7 +164,7 @@ func (s *AccountServer) storeAccount(DIDAddress string, Address common.Address, 
 		return err
 	}
 	s.accountsClient.Client.Logger.Logger.Info("Account stored successfully",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
@@ -183,7 +183,7 @@ func (s *AccountServer) getAccount(AccountID string) (*DB_OPs.Account, error) {
 		// It's a DID, use GetAccountByDID
 		s.accountsClient.Client.Logger.Logger.Info("Retrieving account by DID",
 			zap.String("did", AccountID),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Function, "DID.getAccount"),
@@ -194,7 +194,7 @@ func (s *AccountServer) getAccount(AccountID string) (*DB_OPs.Account, error) {
 		TempAccountAddress := common.HexToAddress(AccountID)
 		s.accountsClient.Client.Logger.Logger.Info("Retrieving account by address",
 			zap.String("address", AccountID),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Function, "DID.getAccount"),
@@ -212,7 +212,7 @@ func (s *AccountServer) listAccounts(limit int) ([]*DB_OPs.Account, error) {
 	data, err := s.db.ListAllAccounts(s.accountsClient, limit)
 	if err != nil {
 		s.accountsClient.Client.Logger.Logger.Error("Failed to list Accounts",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -221,7 +221,7 @@ func (s *AccountServer) listAccounts(limit int) ([]*DB_OPs.Account, error) {
 		return nil, err
 	}
 	s.accountsClient.Client.Logger.Logger.Info("Accounts listed successfully",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
@@ -246,7 +246,7 @@ func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequ
 		}
 		s.accountsClient.Client.Logger.Logger.Info("Given account already exists",
 			zap.String(logging.Address, existingAccount.Address.Hex()),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -273,7 +273,7 @@ func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequ
 	if err != nil {
 		s.accountsClient.Client.Logger.Logger.Error("Failed to store account",
 			zap.Error(err),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -287,7 +287,7 @@ func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequ
 	if err != nil {
 		s.accountsClient.Client.Logger.Logger.Error("Failed to retrieve account",
 			zap.Error(err),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -313,7 +313,7 @@ func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequ
 			s.accountsClient.Client.Logger.Logger.Warn("Failed to propagate DID to network",
 				zap.Error(err),
 				zap.String("did", req.Did),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Function, "DID.RegisterDID"),
@@ -321,7 +321,7 @@ func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequ
 		}
 		s.accountsClient.Client.Logger.Logger.Info("Successfully propagated DID to network",
 			zap.String("did", req.Did),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Function, "DID.RegisterDID"),
@@ -353,7 +353,7 @@ func (s *AccountServer) GetDID(ctx context.Context, req *pb.GetDIDRequest) (*pb.
 	if err != nil {
 		s.accountsClient.Client.Logger.Logger.Error("Failed to retrieve account",
 			zap.Error(err),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -374,7 +374,7 @@ func (s *AccountServer) GetDID(ctx context.Context, req *pb.GetDIDRequest) (*pb.
 	if err != nil {
 		s.accountsClient.Client.Logger.Logger.Error("Failed to convert metadata to string",
 			zap.Error(err),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -383,7 +383,7 @@ func (s *AccountServer) GetDID(ctx context.Context, req *pb.GetDIDRequest) (*pb.
 		Tempmetadata = []byte("{}")
 	}
 	s.accountsClient.Client.Logger.Logger.Info("Successfully converted metadata to string",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
@@ -417,7 +417,7 @@ func (s *AccountServer) ListDIDs(ctx context.Context, req *pb.ListDIDsRequest) (
 	if err != nil {
 		s.accountsClient.Client.Logger.Logger.Error("Failed to list accounts",
 			zap.Error(err),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -441,7 +441,7 @@ func (s *AccountServer) ListDIDs(ctx context.Context, req *pb.ListDIDsRequest) (
 	}
 	s.accountsClient.Client.Logger.Logger.Info("Successfully listed accounts",
 		zap.String("count", fmt.Sprintf("%d", len(pbDids))),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),

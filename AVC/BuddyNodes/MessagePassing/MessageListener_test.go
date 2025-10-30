@@ -44,7 +44,7 @@ func TestSubscriptionFlow(t *testing.T) {
 		MetaData: AVCStruct.MetaData{
 			Sent:      0,
 			Total:     0,
-			UpdatedAt: time.Now(),
+			UpdatedAt: time.Now().UTC(),
 		},
 	}
 
@@ -162,7 +162,7 @@ func createSubscriptionRequest(senderID peer.ID) *AVCStruct.Message {
 	return AVCStruct.NewMessageBuilder(nil).
 		SetSender(senderID).
 		SetMessage("Request subscription to BuddyNodesMessageProtocol").
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ackBuilder)
 }
 
@@ -224,7 +224,7 @@ func TestSingleNodeSubscription(t *testing.T) {
 		MetaData: AVCStruct.MetaData{
 			Sent:      0,
 			Total:     0,
-			UpdatedAt: time.Now(),
+			UpdatedAt: time.Now().UTC(),
 		},
 	}
 
@@ -317,7 +317,7 @@ func TestSubscriptionWithMockPubSub(t *testing.T) {
 		MetaData: AVCStruct.MetaData{
 			Sent:      0,
 			Total:     0,
-			UpdatedAt: time.Now(),
+			UpdatedAt: time.Now().UTC(),
 		},
 	}
 
@@ -398,7 +398,7 @@ func TestSubscriptionWithSpecificPeer(t *testing.T) {
 		MetaData: AVCStruct.MetaData{
 			Sent:      0,
 			Total:     0,
-			UpdatedAt: time.Now(),
+			UpdatedAt: time.Now().UTC(),
 		},
 	}
 
@@ -583,7 +583,7 @@ func TestSubscriptionFlowWithRealPeerID(t *testing.T) {
 		MetaData: AVCStruct.MetaData{
 			Sent:      0,
 			Total:     0,
-			UpdatedAt: time.Now(),
+			UpdatedAt: time.Now().UTC(),
 		},
 	}
 
@@ -678,7 +678,7 @@ func TestSimpleSubscriptionFlow(t *testing.T) {
 		MetaData: AVCStruct.MetaData{
 			Sent:      0,
 			Total:     0,
-			UpdatedAt: time.Now(),
+			UpdatedAt: time.Now().UTC(),
 		},
 	}
 
@@ -749,7 +749,7 @@ func TestSimpleSubscriptionFlow(t *testing.T) {
 
 	// Step 8: Read the response with a timeout
 	responseBytes := make([]byte, 1024)
-	stream.SetReadDeadline(time.Now().Add(5 * time.Second))
+	stream.SetReadDeadline(time.Now().UTC().Add(5 * time.Second))
 	n, err := stream.Read(responseBytes)
 	if err != nil {
 		t.Fatalf("Failed to read response: %v", err)

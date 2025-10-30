@@ -88,7 +88,7 @@ func StartYggdrasilListener(ctx context.Context) {
 				if deadline, ok := ctx.Deadline(); ok {
 					listener.(*net.TCPListener).SetDeadline(deadline)
 				} else {
-					listener.(*net.TCPListener).SetDeadline(time.Now().Add(1 * time.Second))
+					listener.(*net.TCPListener).SetDeadline(time.Now().UTC().Add(1 * time.Second))
 				}
 
 				conn, err := listener.Accept()
@@ -126,7 +126,7 @@ func handleYggdrasilConnection(conn net.Conn) {
 	log.Debug().Str("remote_addr", remoteAddr).Msg("New Yggdrasil connection")
 
 	// Set reasonable read deadline
-	conn.SetReadDeadline(time.Now().Add(ReadTimeout))
+	conn.SetReadDeadline(time.Now().UTC().Add(ReadTimeout))
 
 	// Use a limited reader to prevent memory exhaustion
 	limitedReader := io.LimitReader(conn, MaxMessageSize)
@@ -184,7 +184,7 @@ func handleYggdrasilConnection(conn net.Conn) {
 	if prefix != "" {
 		ack = prefix + ":" + ack
 	}
-	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	conn.SetWriteDeadline(time.Now().UTC().Add(2 * time.Second))
 	_, err = conn.Write([]byte(ack))
 	if err != nil {
 		log.Warn().Err(err).Str("remote_addr", remoteAddr).Msg("Failed to send acknowledgment")
@@ -231,7 +231,7 @@ func SendViaYggdrasil(target string, message string) error {
 	formattedMessage := fmt.Sprintf("YGGMSG:%s\n", message)
 
 	// Set write deadline
-	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	conn.SetWriteDeadline(time.Now().UTC().Add(5 * time.Second))
 
 	// Send the message
 	_, err = conn.Write([]byte(formattedMessage))
@@ -252,7 +252,7 @@ func SendViaYggdrasil(target string, message string) error {
 	}
 
 	// Wait for acknowledgment
-	conn.SetReadDeadline(time.Now().Add(ReadTimeout))
+	conn.SetReadDeadline(time.Now().UTC().Add(ReadTimeout))
 	reader := bufio.NewReader(conn)
 	response, err := reader.ReadString('\n')
 
@@ -339,9 +339,9 @@ func getConnection(targetAddr string) (net.Conn, error) {
 
 	// Check if we have a valid connection in the pool
 	if pooled, exists := connectionPool[targetAddr]; exists {
-		if time.Now().Before(pooled.expiresAt) {
+		if time.Now().UTC().Before(pooled.expiresAt) {
 			// Connection is still valid
-			pooled.lastUsed = time.Now()
+			pooled.lastUsed = time.Now().UTC()
 			return pooled.conn, nil
 		}
 		// Connection expired, close it
@@ -365,8 +365,8 @@ func returnConnectionToPool(targetAddr string, conn net.Conn) {
 	// Store connection in pool with expiration
 	connectionPool[targetAddr] = &pooledConnection{
 		conn:      conn,
-		lastUsed:  time.Now(),
-		expiresAt: time.Now().Add(30 * time.Second),
+		lastUsed:  time.Now().UTC(),
+		expiresAt: time.Now().UTC().Add(30 * time.Second),
 	}
 }
 
@@ -390,7 +390,7 @@ func cleanConnectionPool(ctx context.Context) {
 			return
 		case <-ticker.C:
 			connectionPoolLock.Lock()
-			now := time.Now()
+			now := time.Now().UTC()
 
 			for addr, conn := range connectionPool {
 				if now.After(conn.expiresAt) {

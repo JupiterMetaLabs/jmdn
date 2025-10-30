@@ -87,7 +87,7 @@ func (sc *StructStreamCache) GetSubmitMessageStream(peerID peer.ID) (network.Str
 	submitKey := peerID + "_submit"
 	sc.StreamCache.Streams[submitKey] = &AVCStruct.StreamEntry{
 		Stream:      stream,
-		LastUsed:    time.Now(),
+		LastUsed:    time.Now().UTC(),
 		AccessCount: 1,
 	}
 
@@ -104,7 +104,7 @@ func (sc *StructStreamCache) GetStream(peerID peer.ID) (network.Stream, error) {
 		// Check if stream is still valid
 		if entry.Stream.Conn().Stat().Direction != network.DirUnknown {
 			// Update access time and move to end of LRU list
-			entry.LastUsed = time.Now()
+			entry.LastUsed = time.Now().UTC()
 			entry.AccessCount++
 			sc.moveToEnd(peerID)
 			return entry.Stream, nil
@@ -133,7 +133,7 @@ func (sc *StructStreamCache) addEntry(peerID peer.ID, stream network.Stream) {
 
 	entry := &AVCStruct.StreamEntry{
 		Stream:      stream,
-		LastUsed:    time.Now(),
+		LastUsed:    time.Now().UTC(),
 		AccessCount: 1,
 	}
 
@@ -199,7 +199,7 @@ func (sc *StructStreamCache) CleanupExpiredStreams() {
 	sc.StreamCache.Mutex.Lock()
 	defer sc.StreamCache.Mutex.Unlock()
 
-	now := time.Now()
+	now := time.Now().UTC()
 	expiredPeers := make([]peer.ID, 0)
 
 	for peerID, entry := range sc.StreamCache.Streams {

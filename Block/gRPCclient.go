@@ -102,7 +102,7 @@ func (m *MempoolClient) SubmitTransaction(tx *config.Transaction, txHash string)
 	}
 	log.Printf("Routing client obtained successfully")
 	log.Printf("Calling SubmitTransaction on routing client (timeout: 10s)...")
-	start := time.Now()
+	start := time.Now().UTC()
 	resp, err := RoutingClient.client.SubmitTransaction(ctx, pbTx)
 	duration := time.Since(start)
 
@@ -156,7 +156,7 @@ func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.Batch
 	}
 
 	log.Printf("Calling SubmitTransactions on routing client (timeout: 15s)...")
-	start := time.Now()
+	start := time.Now().UTC()
 	resp, err := RoutingClient.client.SubmitTransactions(ctx, batch)
 	duration := time.Since(start)
 

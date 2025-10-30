@@ -182,7 +182,7 @@ func (vs *ValidationService) validatePeerID(peerID string) error {
 
 // validateTimestamp validates message timestamp
 func (vs *ValidationService) validateTimestamp(timestamp time.Time) error {
-	now := time.Now()
+	now := time.Now().UTC()
 
 	// Check if timestamp is too far in the past (older than 1 hour)
 	if now.Sub(timestamp) > time.Hour {

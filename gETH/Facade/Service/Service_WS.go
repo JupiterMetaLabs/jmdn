@@ -36,7 +36,7 @@ type NewHeadsSubscription struct {
 // SubscribeNewHeads creates a subscription to new block headers
 func (s *ServiceImpl) SubscribeNewHeads(ctx context.Context) (<-chan *Types.Block, func(), error) {
 	// Create a unique subscription ID
-	subscriptionID := fmt.Sprintf("newheads_%d", time.Now().UnixNano())
+	subscriptionID := fmt.Sprintf("newheads_%d", time.Now().UTC().UnixNano())
 
 	// Create context with cancellation
 	subCtx, cancel := context.WithCancel(ctx)

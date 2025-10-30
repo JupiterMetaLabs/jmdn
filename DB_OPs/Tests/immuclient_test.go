@@ -21,10 +21,10 @@ func Test_Create_Read_Update(t *testing.T) {
 	}
 
 	// Test data
-	testKey := fmt.Sprintf("test:create-read-update-%d", time.Now().UnixNano())
+	testKey := fmt.Sprintf("test:create-read-update-%d", time.Now().UTC().UnixNano())
 	testValue := map[string]interface{}{
 		"message":   "Hello, ImmuDB!",
-		"timestamp": time.Now().Unix(),
+		"timestamp": time.Now().UTC().Unix(),
 		"test":      true,
 	}
 
@@ -69,7 +69,7 @@ func Test_Create_Read_Update(t *testing.T) {
 	fmt.Printf("Testing Update operation...\n")
 	updatedValue := map[string]interface{}{
 		"message":   "Hello, Updated ImmuDB!",
-		"timestamp": time.Now().Unix(),
+		"timestamp": time.Now().UTC().Unix(),
 		"test":      true,
 		"updated":   true,
 	}
@@ -117,7 +117,7 @@ func Test_ReadJSON(t *testing.T) {
 	}
 
 	// Test data
-	testKey := fmt.Sprintf("test:readjson-%d", time.Now().UnixNano())
+	testKey := fmt.Sprintf("test:readjson-%d", time.Now().UTC().UnixNano())
 	testValue := map[string]interface{}{
 		"name":   "Test User",
 		"age":    30,
@@ -169,7 +169,7 @@ func Test_GetKeys(t *testing.T) {
 	}
 
 	// Create test data with prefix
-	prefix := fmt.Sprintf("test:getkeys-%d", time.Now().UnixNano())
+	prefix := fmt.Sprintf("test:getkeys-%d", time.Now().UTC().UnixNano())
 	conn, err := DB_OPs.GetMainDBConnection()
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
@@ -186,7 +186,7 @@ func Test_GetKeys(t *testing.T) {
 		value := map[string]interface{}{
 			"index":     i + 1,
 			"key":       key,
-			"timestamp": time.Now().Unix(),
+			"timestamp": time.Now().UTC().Unix(),
 		}
 		err = DB_OPs.Create(conn, key, value)
 		if err != nil {
@@ -242,7 +242,7 @@ func Test_GetAllKeys(t *testing.T) {
 	}
 
 	// Create test data with prefix
-	prefix := fmt.Sprintf("test:getallkeys-%d", time.Now().UnixNano())
+	prefix := fmt.Sprintf("test:getallkeys-%d", time.Now().UTC().UnixNano())
 	conn, err := DB_OPs.GetMainDBConnection()
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
@@ -259,7 +259,7 @@ func Test_GetAllKeys(t *testing.T) {
 		value := map[string]interface{}{
 			"batch":     i + 1,
 			"key":       key,
-			"timestamp": time.Now().Unix(),
+			"timestamp": time.Now().UTC().Unix(),
 		}
 		err = DB_OPs.Create(conn, key, value)
 		if err != nil {
@@ -302,7 +302,7 @@ func Test_CountAllKeys(t *testing.T) {
 	}
 
 	// Create test data with prefix
-	prefix := fmt.Sprintf("test:countkeys-%d", time.Now().UnixNano())
+	prefix := fmt.Sprintf("test:countkeys-%d", time.Now().UTC().UnixNano())
 	conn, err := DB_OPs.GetMainDBConnection()
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
@@ -319,7 +319,7 @@ func Test_CountAllKeys(t *testing.T) {
 		value := map[string]interface{}{
 			"count":     i + 1,
 			"key":       key,
-			"timestamp": time.Now().Unix(),
+			"timestamp": time.Now().UTC().Unix(),
 		}
 		err = DB_OPs.Create(conn, key, value)
 		if err != nil {
@@ -359,7 +359,7 @@ func Test_BatchCreate(t *testing.T) {
 	}
 
 	// Prepare batch data
-	prefix := fmt.Sprintf("test:batch-%d", time.Now().UnixNano())
+	prefix := fmt.Sprintf("test:batch-%d", time.Now().UTC().UnixNano())
 	batchData := map[string]interface{}{
 		fmt.Sprintf("%s:item1", prefix): map[string]interface{}{
 			"id":     1,
@@ -434,10 +434,10 @@ func Test_SafeCreate_SafeRead(t *testing.T) {
 	}
 
 	// Test data
-	testKey := fmt.Sprintf("test:safe-%d", time.Now().UnixNano())
+	testKey := fmt.Sprintf("test:safe-%d", time.Now().UTC().UnixNano())
 	testValue := map[string]interface{}{
 		"message":   "Safe operation test",
-		"timestamp": time.Now().Unix(),
+		"timestamp": time.Now().UTC().Unix(),
 		"verified":  true,
 	}
 
@@ -494,8 +494,8 @@ func Test_Exists(t *testing.T) {
 	}
 
 	// Test data
-	existingKey := fmt.Sprintf("test:exists-%d", time.Now().UnixNano())
-	nonExistingKey := fmt.Sprintf("test:nonexistent-%d", time.Now().UnixNano())
+	existingKey := fmt.Sprintf("test:exists-%d", time.Now().UTC().UnixNano())
+	nonExistingKey := fmt.Sprintf("test:nonexistent-%d", time.Now().UTC().UnixNano())
 
 	conn, err := DB_OPs.GetMainDBConnection()
 	if err != nil {
@@ -505,7 +505,7 @@ func Test_Exists(t *testing.T) {
 	// Create a key
 	testValue := map[string]interface{}{
 		"message":   "Exists test",
-		"timestamp": time.Now().Unix(),
+		"timestamp": time.Now().UTC().Unix(),
 	}
 	err = DB_OPs.Create(conn, existingKey, testValue)
 	if err != nil {
@@ -683,7 +683,7 @@ func Test_Transaction(t *testing.T) {
 
 	// Test Transaction
 	fmt.Printf("Testing Transaction operation...\n")
-	prefix := fmt.Sprintf("test:transaction-%d", time.Now().UnixNano())
+	prefix := fmt.Sprintf("test:transaction-%d", time.Now().UTC().UnixNano())
 
 	err = DB_OPs.Transaction(conn.Client, func(tx *config.ImmuTransaction) error {
 		// Add multiple operations to the transaction
@@ -798,10 +798,10 @@ func Test_ConnectionPoolIntegration(t *testing.T) {
 
 	// Test with nil connection (should get connection from pool)
 	fmt.Printf("Testing with nil connection...\n")
-	testKey := fmt.Sprintf("test:pool-integration-%d", time.Now().UnixNano())
+	testKey := fmt.Sprintf("test:pool-integration-%d", time.Now().UTC().UnixNano())
 	testValue := map[string]interface{}{
 		"message":   "Pool integration test",
-		"timestamp": time.Now().Unix(),
+		"timestamp": time.Now().UTC().Unix(),
 	}
 
 	// This should work because Create will get a connection from the pool
@@ -842,14 +842,14 @@ func Test_StressOperations(t *testing.T) {
 
 	// Test rapid operations
 	fmt.Printf("Testing rapid operations...\n")
-	prefix := fmt.Sprintf("test:stress-%d", time.Now().UnixNano())
+	prefix := fmt.Sprintf("test:stress-%d", time.Now().UTC().UnixNano())
 
 	// Create multiple keys rapidly
 	for i := 0; i < 10; i++ {
 		key := fmt.Sprintf("%s:stress%d", prefix, i)
 		value := map[string]interface{}{
 			"index":     i,
-			"timestamp": time.Now().UnixNano(),
+			"timestamp": time.Now().UTC().UnixNano(),
 		}
 
 		err = DB_OPs.Create(nil, key, value)
@@ -876,7 +876,7 @@ func Test_StressOperations(t *testing.T) {
 		key := fmt.Sprintf("%s:batch%d", prefix, i)
 		value := map[string]interface{}{
 			"batch_index": i,
-			"timestamp":   time.Now().UnixNano(),
+			"timestamp":   time.Now().UTC().UnixNano(),
 		}
 		batchData[key] = value
 	}

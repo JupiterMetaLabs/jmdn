@@ -762,13 +762,13 @@ func sendVoteResultToSequencer(listenerNode *AVCStruct.BuddyNode, result int8) {
 
 	// Create vote result message
 	resultMessage := fmt.Sprintf(`{"result":%d,"timestamp":%d,"node":"%s"}`,
-		result, time.Now().Unix(), listenerNode.PeerID.String())
+		result, time.Now().UTC().Unix(), listenerNode.PeerID.String())
 
 	ackMessage := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
 	message := AVCStruct.NewMessageBuilder(nil).
 		SetSender(listenerNode.PeerID).
 		SetMessage(resultMessage).
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ackMessage)
 
 	// Open a stream to the sequencer

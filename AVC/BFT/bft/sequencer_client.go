@@ -165,7 +165,7 @@ func (s *SequencerBFTClient) waitForResults(
 
 	log.Printf("⏳ [Sequencer] Waiting for results (timeout: %v)", timeout)
 
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().UTC().Add(timeout)
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -187,7 +187,7 @@ func (s *SequencerBFTClient) waitForResults(
 			}
 
 			// Check timeout
-			if time.Now().After(deadline) {
+			if time.Now().UTC().After(deadline) {
 				return s.finalizeResults(round, "timeout waiting for results")
 			}
 		}

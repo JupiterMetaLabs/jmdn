@@ -156,7 +156,7 @@
 // 	testMessage := &Struct.Message{
 // 		Sender:    h.ID(),
 // 		Message:   `{"test": "data", "timestamp": 1234567890}`,
-// 		Timestamp: time.Now().Unix(),
+// 		Timestamp: time.Now().UTC().Unix(),
 // 		ACK: &Struct.ACK_Message{
 // 			Status: "success",
 // 			PeerID: h.ID().String(),
@@ -321,7 +321,7 @@
 // 		message := &Struct.Message{
 // 			Sender:    h.ID(),
 // 			Message:   testMsg.message,
-// 			Timestamp: time.Now().Unix(),
+// 			Timestamp: time.Now().UTC().Unix(),
 // 			ACK: &Struct.ACK_Message{
 // 				Status: "success",
 // 				PeerID: h.ID().String(),

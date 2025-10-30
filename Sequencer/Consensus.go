@@ -85,7 +85,7 @@ func (consensus *Consensus) GetOnlyPeerIDs(buddies []PubSubMessages.Buddy_PeerMu
 
 func (consensus *Consensus) AddBuddyNodesToPeerList(zkBlock *config.ZKBlock, buddies []PubSubMessages.Buddy_PeerMultiaddr) (*PubSubMessages.ConsensusMessage, error) {
 
-	ZKBlock := Metadata.ZKBlockMetadata(zkBlock, buddies).SetEndTimeoutMetadata(time.Now().Add(config.ConsensusTimeout)).SetStartTimeMetadata(time.Now())
+	ZKBlock := Metadata.ZKBlockMetadata(zkBlock, buddies).SetEndTimeoutMetadata(time.Now().UTC().Add(config.ConsensusTimeout)).SetStartTimeMetadata(time.Now().UTC())
 	if ZKBlock == nil {
 		return nil, fmt.Errorf("failed to create ZKBlock metadata")
 	}
@@ -527,7 +527,7 @@ func (consensus *Consensus) PrintCRDTState() error {
 	fmt.Printf("║             CRDT STATE - SEQUENCER                         ║\n")
 	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
 	fmt.Printf("Peer ID: %s\n", listenerNode.PeerID.String())
-	fmt.Printf("Timestamp: %s\n", time.Now().Format(time.RFC3339))
+	fmt.Printf("Timestamp: %s\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Printf("Block Hash: %s\n", consensus.ZKBlockData.GetZKBlock().BlockHash.String())
 	fmt.Printf("Messages Received: %d | Sent: %d | Total: %d\n",
 		listenerNode.MetaData.Received,

@@ -76,7 +76,7 @@ func NewListenerNode(h host.Host, responseHandler AVCStruct.ResponseHandler) *St
 			Received:  0,
 			Sent:      0,
 			Total:     0,
-			UpdatedAt: time.Now(),
+			UpdatedAt: time.Now().UTC(),
 		},
 	}
 	listener := NewListenerStruct(Node)
@@ -128,7 +128,7 @@ func NewBuddyNode(h host.Host, buddies *AVCStruct.Buddies, responseHandler AVCSt
 			Received:  0,
 			Sent:      0,
 			Total:     0,
-			UpdatedAt: time.Now(),
+			UpdatedAt: time.Now().UTC(),
 		},
 	}
 	buddyStream := NewStructBuddyNode(buddy)
@@ -177,7 +177,7 @@ func (StructBuddyNode *StructBuddyNode) SendMessageToPeer(peerID peer.ID, messag
 		StructBuddyNode.BuddyNode.Mutex.Lock()
 		StructBuddyNode.BuddyNode.MetaData.Sent++
 		StructBuddyNode.BuddyNode.MetaData.Total++
-		StructBuddyNode.BuddyNode.MetaData.UpdatedAt = time.Now()
+		StructBuddyNode.BuddyNode.MetaData.UpdatedAt = time.Now().UTC()
 		StructBuddyNode.BuddyNode.Mutex.Unlock()
 
 		log.LogConsensusInfo(fmt.Sprintf("Sent buddy message to %s: %s", peerID, message), zap.String("peer", peerID.String()), zap.String("message", message), zap.String("function", "SendMessageToPeer"))

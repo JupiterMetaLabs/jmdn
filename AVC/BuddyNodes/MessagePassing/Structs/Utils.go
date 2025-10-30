@@ -110,7 +110,7 @@ func PrintCRDTState(listenerNode *PubSubMessages.BuddyNode) error {
 	fmt.Printf("║             CRDT STATE - BUDDY NODE                      ║\n")
 	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
 	fmt.Printf("Peer ID: %s\n", listenerNode.PeerID.String())
-	fmt.Printf("Timestamp: %s\n", time.Now().Format(time.RFC3339))
+	fmt.Printf("Timestamp: %s\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Printf("Messages Received: %d | Sent: %d | Total: %d\n",
 		listenerNode.MetaData.Received,
 		listenerNode.MetaData.Sent,

@@ -45,7 +45,7 @@ func InitAccountsPoolWithLoki(enableLoki bool, username, password string) error 
 		// This logic is extracted from the original NewAccountsClient function.
 		// It creates a temporary client to ensure the database exists.
 		logger.Logger.Info("Initializing accounts database connection pool",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -54,7 +54,7 @@ func InitAccountsPoolWithLoki(enableLoki bool, username, password string) error 
 		if err := ensureAccountsDBExists(username, password); err != nil {
 			initErr = fmt.Errorf("failed to ensure accounts database exists: %w", err)
 			logger.Logger.Error("Accounts DB setup failed",
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -76,7 +76,7 @@ func InitAccountsPoolWithLoki(enableLoki bool, username, password string) error 
 
 		accountsPool = config.NewConnectionPool(poolCfg, logger, poolingConfig)
 		accountsPool.Logger.Logger.Info("Accounts database connection pool initialized successfully.",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -95,7 +95,7 @@ func GetAccountsConnection() (*config.PooledConnection, error) {
 	}
 	accountsPool.Logger.Logger.Info("Getting accounts connection: %s",
 		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -121,7 +121,7 @@ func PutAccountsConnection(conn *config.PooledConnection) {
 	if accountsPool != nil {
 		accountsPool.Logger.Logger.Info("Returning accounts connection: %s",
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -202,7 +202,7 @@ func ensureAccountsDBExists(username, password string) error {
 		}
 	}
 	logger.Logger.Info("Accounts database check completed",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -212,7 +212,7 @@ func ensureAccountsDBExists(username, password string) error {
 	// Create accounts database if it doesn't exist
 	if !databaseExists {
 		logger.Logger.Info("Creating accounts database", zap.String("database", config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -225,7 +225,7 @@ func ensureAccountsDBExists(username, password string) error {
 			return fmt.Errorf("failed to create accounts database: %w", err)
 		}
 		logger.Logger.Info("Accounts database created successfully",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -233,7 +233,7 @@ func ensureAccountsDBExists(username, password string) error {
 		)
 	} else {
 		logger.Logger.Info("Accounts database already exists",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -242,7 +242,7 @@ func ensureAccountsDBExists(username, password string) error {
 	}
 
 	logger.Logger.Info("Accounts database setup completed",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -278,7 +278,7 @@ func EnsureDBConnection(accountsPool *config.PooledConnection) error {
 		_, err := accountsPool.Client.Client.CurrentState(ctx)
 		if err == nil {
 			accountsPool.Client.Logger.Logger.Info("Database connection check successful",
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),

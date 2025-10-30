@@ -94,7 +94,7 @@ type Account struct {
 var counter uint64
 
 func PutNonceofAccount() (uint64, error) {
-	ts := uint64(time.Now().UnixNano())
+	ts := uint64(time.Now().UTC().UnixNano())
 	c := atomic.AddUint64(&counter, 1)
 	return ts<<16 | (c & 0xFFFF), nil // embed counter in low bits
 }
@@ -119,7 +119,7 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -132,7 +132,7 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 		defer func() {
 			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
 				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -149,8 +149,8 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 	}
 
 	// Create A CreatedAt and UpdatedAt
-	CreatedAt := time.Now().UnixNano()
-	UpdatedAt := time.Now().UnixNano()
+	CreatedAt := time.Now().UTC().UnixNano()
+	UpdatedAt := time.Now().UTC().UnixNano()
 
 	// Create the account document
 	AccountDoc = &Account{
@@ -198,7 +198,7 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -214,7 +214,7 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 		defer func() {
 			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
 				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -232,7 +232,7 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 		Nonce:       KeyDoc.Nonce,
 		AccountType: KeyDoc.AccountType,
 		CreatedAt:   KeyDoc.CreatedAt,
-		UpdatedAt:   time.Now().UnixNano(),
+		UpdatedAt:   time.Now().UTC().UnixNano(),
 		Metadata:    KeyDoc.Metadata,
 	}
 
@@ -253,7 +253,7 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 		ic.Logger.Logger.Error("Failed to marshal account document",
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -288,7 +288,7 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 			zap.Error(err),
 			zap.String(logging.Header_Accounts, status.String()),
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -302,7 +302,7 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 		zap.String(logging.Account, KeyDoc.Address.Hex()),
 		zap.String(logging.DID, KeyDoc.DIDAddress),
 		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -351,6 +351,87 @@ func BatchCreateAccountsOrdered(PooledConnection *config.PooledConnection, entri
 	return nil
 }
 
+// BatchRestoreAccounts applies a batch of entries into accountsdb.
+// For address:<addr> keys it writes KV. For did:<did> it creates a bound reference to the corresponding address key.
+func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []struct {
+	Key   string
+	Value []byte
+}) error {
+	if len(entries) == 0 {
+		return fmt.Errorf("entries cannot be empty")
+	}
+	var err error
+	var shouldReturnConnection bool
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetAccountsConnection()
+		if err != nil {
+			return fmt.Errorf("failed to get accounts connection: %w", err)
+		}
+		shouldReturnConnection = true
+	}
+	if shouldReturnConnection {
+		defer PutAccountsConnection(PooledConnection)
+	}
+	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
+		return fmt.Errorf("failed to select accounts database: %w", err)
+	}
+
+	ops := make([]*schema.Op, 0, len(entries))
+	for _, e := range entries {
+		if e.Key == "" || e.Value == nil {
+			return fmt.Errorf("invalid entry (empty key or nil value)")
+		}
+		if strings.HasPrefix(e.Key, DIDPrefix) {
+			// For DID keys, create a reference to the address key
+			var acc Account
+			if err := json.Unmarshal(e.Value, &acc); err != nil {
+				// If payload is not an Account, skip creating ref to avoid corrupt data
+				continue
+			}
+			addrKey := []byte(fmt.Sprintf("%s%s", Prefix, acc.Address))
+			didKey := []byte(e.Key)
+			ops = append(ops, &schema.Op{Operation: &schema.Op_Ref{Ref: &schema.ReferenceRequest{
+				Key:           didKey,
+				ReferencedKey: addrKey,
+				AtTx:          0,
+				BoundRef:      true,
+			}}})
+			continue
+		}
+		// Default: KV for address and other keys with LWW based on UpdatedAt
+		if strings.HasPrefix(e.Key, Prefix) {
+			var incoming Account
+			if err := json.Unmarshal(e.Value, &incoming); err == nil {
+				// Try read existing
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				entry, getErr := PooledConnection.Client.Client.Get(ctx, []byte(e.Key))
+				cancel()
+				if getErr == nil && entry != nil && len(entry.Value) > 0 {
+					var existing Account
+					if jsonErr := json.Unmarshal(entry.Value, &existing); jsonErr == nil {
+						// If existing is newer or same, skip writing
+						if existing.UpdatedAt >= incoming.UpdatedAt {
+							continue
+						}
+					}
+				}
+			}
+		}
+		ops = append(ops, &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{Key: []byte(e.Key), Value: e.Value}}})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if len(ops) == 0 {
+		// Nothing to apply (e.g., all entries skipped by LWW) -> treat as success
+		return nil
+	}
+	_, err = PooledConnection.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops})
+	if err != nil {
+		return fmt.Errorf("accounts batch restore failed: %w", err)
+	}
+	return nil
+}
+
 // shared helper: read & unmarshal an Account by ANY key (account:<addr> OR did:<did>)
 func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, logFn string) (*Account, error) {
 	var err error
@@ -365,7 +446,7 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -377,7 +458,7 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 		defer func() {
 			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
 				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -403,7 +484,7 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 		ic.Logger.Logger.Error("VerifiedGet failed",
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -418,7 +499,7 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 		ic.Logger.Logger.Error("Unmarshal failed",
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -429,7 +510,7 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 	}
 	PooledConnection.Client.Logger.Logger.Info("Account loaded successfully",
 		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -455,7 +536,7 @@ func GetAccountByDID(PooledConnection *config.PooledConnection, did string) (*Ac
 		defer func() {
 			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
 				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -485,7 +566,7 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 		defer func() {
 			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
 				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Function, "DB_OPs.GetAccount"),
@@ -515,7 +596,7 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -530,7 +611,7 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 			fmt.Println("DEBUG: Returning connection to pool")
 			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
 				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Function, "DB_OPs.UpdateAccountBalance"),
@@ -558,7 +639,7 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 	fmt.Printf("DEBUG: Retrieved account - Current balance: %s, UpdatedAt: %d\n", doc.Balance, doc.UpdatedAt)
 
 	doc.Balance = newBalance
-	doc.UpdatedAt = time.Now().UnixNano()
+	doc.UpdatedAt = time.Now().UTC().UnixNano()
 	fmt.Printf("DEBUG: Updated account document - New balance: %s, New UpdatedAt: %d\n", doc.Balance, doc.UpdatedAt)
 
 	// Safe Write to the DB with the same key
@@ -571,7 +652,7 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 			zap.String(logging.Account, address.String()),
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -585,7 +666,7 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 		zap.String(logging.Account, address.String()),
 		zap.String("new_balance", newBalance),
 		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -609,7 +690,7 @@ func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*A
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -621,7 +702,7 @@ func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*A
 		defer func() {
 			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
 				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -636,7 +717,7 @@ func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*A
 		PooledConnection.Client.Logger.Logger.Error("Failed to ensure accounts database is selected",
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -651,7 +732,7 @@ func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*A
 		PooledConnection.Client.Logger.Logger.Error("Failed to get Account keys",
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -677,7 +758,7 @@ func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*A
 			PooledConnection.Client.Logger.Logger.Error("Failed to get Account document",
 				zap.Error(err),
 				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -691,7 +772,7 @@ func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*A
 	PooledConnection.Client.Logger.Logger.Info("Successfully retrieved DIDs",
 		zap.Int(logging.Count, len(docs)),
 		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -716,7 +797,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -727,7 +808,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 		defer func() {
 			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
 				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -769,7 +850,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 			PooledConnection.Client.Logger.Logger.Error("Failed to scan for accounts",
 				zap.Error(err),
 				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -792,7 +873,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 						zap.Error(err),
 						zap.String("key", string(entry.Key)),
 						zap.String(logging.Connection_database, config.AccountsDBName),
-						zap.Time(logging.Created_at, time.Now()),
+						zap.Time(logging.Created_at, time.Now().UTC()),
 						zap.String(logging.Log_file, LOG_FILE),
 						zap.String(logging.Topic, TOPIC),
 						zap.String(logging.Loki_url, LOKI_URL),
@@ -821,7 +902,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 		zap.Int("requested_limit", limit),
 		zap.Int("offset", offset),
 		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -859,7 +940,7 @@ func CountAccounts(PooledConnection *config.PooledConnection) (int, error) {
 			ic.Logger.Logger.Error("Failed to scan for Accounts count",
 				zap.Error(err),
 				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -881,7 +962,7 @@ func CountAccounts(PooledConnection *config.PooledConnection) (int, error) {
 	ic.Logger.Logger.Info("Successfully retrieved Accounts count",
 		zap.Int(logging.Count, totalKeys),
 		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -907,7 +988,7 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -918,7 +999,7 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 		defer func() {
 			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
 				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -936,7 +1017,7 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 		ic.Logger.Logger.Error("Failed to get latest block number",
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -963,7 +1044,7 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 					zap.Uint64("block_number", i),
 					zap.Error(err),
 					zap.String(logging.Connection_database, config.AccountsDBName),
-					zap.Time(logging.Created_at, time.Now()),
+					zap.Time(logging.Created_at, time.Now().UTC()),
 					zap.String(logging.Log_file, LOG_FILE),
 					zap.String(logging.Topic, TOPIC),
 					zap.String(logging.Loki_url, LOKI_URL),
@@ -988,7 +1069,7 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 		zap.String("account", accountAddr.Hex()),
 		zap.Int("transaction_count", len(matchingTxs)),
 		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -1022,7 +1103,7 @@ func GetTransactionHashes(PooledConnection *config.PooledConnection, offset, lim
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -1035,7 +1116,7 @@ func GetTransactionHashes(PooledConnection *config.PooledConnection, offset, lim
 		defer func() {
 			mainDBClient.Logger.Logger.Info("Client Connection is returned to the Pool",
 				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -1108,7 +1189,7 @@ func ensureAccountsDBSelected(PooledConnection *config.PooledConnection) error {
 		PooledConnection.Client.Logger.Logger.Warn("Failed to select accounts database, reconnecting...",
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -1124,7 +1205,7 @@ func ensureAccountsDBSelected(PooledConnection *config.PooledConnection) error {
 
 	PooledConnection.Client.Logger.Logger.Info("Successfully ensured accounts database is selected",
 		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -1143,7 +1224,7 @@ func reconnectToAccountsDB(PooledConnection *config.PooledConnection) error {
 	// Log the reconnection attempt
 	ic.Logger.Logger.Warn("Attempting to reconnect to ImmuDB accounts database",
 		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -1160,7 +1241,7 @@ func reconnectToAccountsDB(PooledConnection *config.PooledConnection) error {
 			ic.Logger.Logger.Warn("Error disconnecting old client",
 				zap.Error(err),
 				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -1206,7 +1287,7 @@ func reconnectToAccountsDB(PooledConnection *config.PooledConnection) error {
 		PooledConnection.Client.Logger.Logger.Error("Failed to select accounts database during reconnect",
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -1224,7 +1305,7 @@ func reconnectToAccountsDB(PooledConnection *config.PooledConnection) error {
 	// Log successful reconnection
 	ic.Logger.Logger.Info("Successfully reconnected to ImmuDB accounts database",
 		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),

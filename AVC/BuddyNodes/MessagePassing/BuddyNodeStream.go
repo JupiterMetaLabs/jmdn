@@ -117,7 +117,7 @@ func (StructBuddyNode *StructBuddyNode) handleStartPubSub(s network.Stream) {
 		message := AVCStruct.NewMessageBuilder(nil).
 			SetSender(AVCStruct.PubSub_BuddyNode.PeerID).
 			SetMessage("ACK_TRUE for StartPubSub").
-			SetTimestamp(time.Now().Unix()).
+			SetTimestamp(time.Now().UTC().Unix()).
 			SetACK(ackBuilder)
 
 		// Marshal the message to JSON
@@ -147,7 +147,7 @@ func (StructBuddyNode *StructBuddyNode) handleStartPubSub(s network.Stream) {
 		message := AVCStruct.NewMessageBuilder(nil).
 			SetSender(AVCStruct.PubSub_BuddyNode.PeerID).
 			SetMessage("ACK_FALSE for StartPubSub").
-			SetTimestamp(time.Now().Unix()).
+			SetTimestamp(time.Now().UTC().Unix()).
 			SetACK(ackBuilder)
 
 		// Marshal the message to JSON
@@ -212,7 +212,7 @@ func (StructBuddyNode *StructBuddyNode) sendACKResponse(s network.Stream, succes
 	message := AVCStruct.NewMessageBuilder(nil).
 		SetSender(AVCStruct.PubSub_BuddyNode.PeerID).
 		SetMessage(fmt.Sprintf("ACK response for %s", stage)).
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ackBuilder)
 
 	// Marshal the message to JSON

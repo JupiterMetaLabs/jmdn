@@ -26,7 +26,7 @@ func testPubSubPublish(consensusHost host.Host, consensusGps *PubSubMessages.Gos
 	log.Printf("Publishing test message to channel: %s", config.PubSub_ConsensusChannel)
 	err := Publish.Publish(consensusGps, config.PubSub_ConsensusChannel, testMessage, map[string]string{
 		"test":      "true",
-		"timestamp": fmt.Sprintf("%d", time.Now().Unix()),
+		"timestamp": fmt.Sprintf("%d", time.Now().UTC().Unix()),
 		"host":      consensusHost.ID().String(),
 	})
 
@@ -51,7 +51,7 @@ func createTestConsensusMessage(hostID peer.ID) *PubSubMessages.Message {
 	message := PubSubMessages.NewMessageBuilder(nil).
 		SetSender(hostID).
 		SetMessage("Test consensus message from sequencer").
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ack)
 
 	return message
@@ -74,13 +74,13 @@ func testPublishProposalMessage(consensusHost host.Host, consensusGps *PubSubMes
 	message := PubSubMessages.NewMessageBuilder(nil).
 		SetSender(consensusHost.ID()).
 		SetMessage(string(proposalBytes)).
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ack)
 
 	// Publish to consensus channel
 	err = Publish.Publish(consensusGps, config.PubSub_ConsensusChannel, message, map[string]string{
 		"type":      "proposal",
-		"timestamp": fmt.Sprintf("%d", time.Now().Unix()),
+		"timestamp": fmt.Sprintf("%d", time.Now().UTC().Unix()),
 		"host":      consensusHost.ID().String(),
 	})
 
@@ -104,14 +104,14 @@ func testPublishVoteRequest(consensusHost host.Host, consensusGps *PubSubMessage
 	message := PubSubMessages.NewMessageBuilder(nil).
 		SetSender(consensusHost.ID()).
 		SetMessage(fmt.Sprintf("Vote request for round: %s", roundID)).
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ack)
 
 	// Publish to consensus channel
 	err := Publish.Publish(consensusGps, config.PubSub_ConsensusChannel, message, map[string]string{
 		"type":      "vote_request",
 		"round_id":  roundID,
-		"timestamp": fmt.Sprintf("%d", time.Now().Unix()),
+		"timestamp": fmt.Sprintf("%d", time.Now().UTC().Unix()),
 		"host":      consensusHost.ID().String(),
 	})
 
@@ -157,7 +157,7 @@ func testConsensusFlow(consensusHost host.Host, consensusGps *PubSubMessages.Gos
 
 	// Step 3: Publish vote request
 	log.Println("\nStep 3: Publishing vote request...")
-	roundID := fmt.Sprintf("round-%d", time.Now().Unix())
+	roundID := fmt.Sprintf("round-%d", time.Now().UTC().Unix())
 	if err := testPublishVoteRequest(consensusHost, consensusGps, roundID); err != nil {
 		return err
 	}
