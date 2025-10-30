@@ -720,6 +720,31 @@ func (consensus *Consensus) PrintCRDTState() error {
 		}
 		wg.Wait()
 		fmt.Printf("✅ Collected vote results from all buddy nodes\n")
+
+		// Decide final result (simple majority >0 as ACCEPT)
+		allResults := Maps.GetAllVoteResults()
+		acceptCount := 0
+		rejectCount := 0
+		for _, v := range allResults {
+			if v > 0 {
+				acceptCount++
+			} else {
+				rejectCount++
+			}
+		}
+		finalAccept := acceptCount >= rejectCount
+		fmt.Printf("📊 Final decision (aggregated): ACCEPT=%d, REJECT=%d → %v\n", acceptCount, rejectCount, finalAccept)
+
+		// Broadcast the block to every node (skip local processing)
+		if consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
+			if err := messaging.BroadcastBlockToEveryNode(consensus.Host, consensus.ZKBlockData.GetZKBlock(), false); err != nil {
+				fmt.Printf("❌ Failed to broadcast block to all nodes: %v\n", err)
+			} else {
+				fmt.Printf("✅ Broadcasted block to all nodes (no local processing)\n")
+			}
+		} else {
+			fmt.Printf("⚠️ Cannot broadcast block: ZKBlockData missing\n")
+		}
 	}()
 
 	// Get metadata from the global listener node
