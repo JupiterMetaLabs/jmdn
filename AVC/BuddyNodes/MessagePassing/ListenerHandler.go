@@ -1165,7 +1165,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 					fmt.Printf("⚠️ Invalid response from %s: %s\n", peerID, string(payload))
 					responseCh <- false
 				}
-			case <-time.After(12 * time.Second):
+			case <-time.After(5 * time.Second):
 				fmt.Printf("⏳ Timeout waiting for vote result from %s\n", peerID)
 				responseCh <- false
 			}
