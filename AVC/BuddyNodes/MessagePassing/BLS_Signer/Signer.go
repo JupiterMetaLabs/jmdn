@@ -6,7 +6,6 @@ import (
 	blssign "gossipnode/AVC/BLS/bls-sign"
 	"strconv"
 	"sync"
-	"gossipnode/config/utils"
 )
 
 type BLSresponse struct {
