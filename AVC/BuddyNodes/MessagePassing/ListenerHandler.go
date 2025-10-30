@@ -919,6 +919,8 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 	blsResp, status, err := BLS_Signer.SignMessage(result)
 	if err != nil || status == false{
 		fmt.Printf("⚠️ Failed to create BLS signature for BFT result: %v\n", err)
+	}else{
+		fmt.Printf("✅ BLS signature created successfully: %v\n", blsResp)
 	}
 	// Attach local PeerID into BLS payload
 	blsResp.SetPeerID(listenerNode.PeerID.String())

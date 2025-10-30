@@ -701,7 +701,7 @@ func (consensus *Consensus) PrintCRDTState() error {
 				case err := <-errCh:
 					fmt.Printf("⚠️ Failed to read response from %s: %v\n", peerID, err)
 					return
-				case <-time.After(10 * time.Second):
+				case <-time.After(20 * time.Second):
 					fmt.Printf("⏱️ Timeout waiting for response from %s\n", peerID)
 					return
 				}
