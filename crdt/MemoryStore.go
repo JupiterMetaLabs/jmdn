@@ -102,7 +102,7 @@ func (s *MemStore) AppendOp(op *Op) error {
 	evicted := s.ops.Append(op)
 	if len(evicted) > 0 {
 		s.metrics.TotalOpsEvicted += uint64(len(evicted))
-		s.metrics.LastEvictAt = time.Now()
+		s.metrics.LastEvictAt = time.Now().UTC()
 
 		// Handle evicted operations if handler is set
 		if s.evictionHandler != nil {

@@ -34,7 +34,7 @@ func (b *BFT) RunConsensus(
 	signer Signer,
 ) (*Result, error) {
 
-	startTime := time.Now()
+	startTime := time.Now().UTC()
 
 	// Validate inputs
 	if err := b.validateInputs(myBuddyID, allBuddies); err != nil {
@@ -72,7 +72,7 @@ func (b *BFT) RunConsensus(
 	}
 
 	// Phase 3a: PREPARE
-	prepareStart := time.Now()
+	prepareStart := time.Now().UTC()
 	prepareResult, err := engine.runPrepare(ctx, messenger)
 	prepareDuration := time.Since(prepareStart)
 
@@ -91,7 +91,7 @@ func (b *BFT) RunConsensus(
 	}
 
 	// Phase 3b: COMMIT
-	commitStart := time.Now()
+	commitStart := time.Now().UTC()
 	commitResult, err := engine.runCommit(ctx, messenger, prepareResult.Decision)
 	commitDuration := time.Since(commitStart)
 

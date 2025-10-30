@@ -70,7 +70,7 @@ func cleanupPeerTimeouts() {
 		time.Sleep(10 * time.Second)
 		peerTimeoutMutex.Lock()
 		for peerID, until := range peerTimeouts {
-			if time.Now().After(until) {
+			if time.Now().UTC().After(until) {
 				delete(peerTimeouts, peerID)
 			}
 		}
@@ -86,7 +86,7 @@ func isPeerTimedOut(peerID string) bool {
 	if !exists {
 		return false
 	}
-	return time.Now().Before(timeout)
+	return time.Now().UTC().Before(timeout)
 }
 
 // timeoutPeer sets a timeout for a specific peer
@@ -94,7 +94,7 @@ func timeoutPeer(peerID string, duration time.Duration) {
 	peerTimeoutMutex.Lock()
 	defer peerTimeoutMutex.Unlock()
 
-	peerTimeouts[peerID] = time.Now().Add(duration)
+	peerTimeouts[peerID] = time.Now().UTC().Add(duration)
 	log.Info().
 		Str("peer", peerID).
 		Dur("duration", duration).
@@ -441,7 +441,7 @@ func PropagateZKBlock(h host.Host, block *PubSubMessages.ConsensusMessage) error
 	// Step 4: Generate a unique nonce for the block message
 	nonceBytes := make([]byte, 16)
 	for i := range nonceBytes {
-		nonceBytes[i] = byte(time.Now().UnixNano() & 0xff)
+		nonceBytes[i] = byte(time.Now().UTC().UnixNano() & 0xff)
 		time.Sleep(1 * time.Nanosecond)
 	}
 	nonce := base64.URLEncoding.EncodeToString(nonceBytes)
@@ -595,7 +595,7 @@ func createConsensusMessageForVoting(MSG *PubSubMessages.ConsensusMessage) *PubS
 	consensusMessage.SetZKBlock(MSG.GetZKBlock())
 
 	// Set timing information
-	now := time.Now()
+	now := time.Now().UTC()
 	consensusMessage.SetStartTime(now)
 	consensusMessage.SetEndTimeout(now.Add(config.ConsensusTimeout))
 	// Note: Buddies will be added by the consensus process
@@ -633,7 +633,7 @@ func WaitForConsensusResult(blockHash string, timeout time.Duration) error {
 
 	// Start goroutine to monitor consensus
 	go func() {
-		startTime := time.Now()
+		startTime := time.Now().UTC()
 		for time.Since(startTime) < timeout {
 			// Check if consensus is complete
 			consensusMessage := PubSubMessages.NewConsensusMessageBuilder(nil)
@@ -642,7 +642,7 @@ func WaitForConsensusResult(blockHash string, timeout time.Duration) error {
 
 			if cachedMessage != nil {
 				// Check if consensus timeout has passed
-				if time.Now().After(cachedMessage.GetEndTimeout()) {
+				if time.Now().UTC().After(cachedMessage.GetEndTimeout()) {
 					// Consensus window closed, check results
 					resultChan <- handleConsensusResult(cachedMessage)
 					return

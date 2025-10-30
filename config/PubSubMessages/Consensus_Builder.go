@@ -3,7 +3,6 @@ package PubSubMessages
 import (
 	"gossipnode/config"
 	"time"
-
 )
 
 func NewConsensusMessageBuilder(consensusMessage *ConsensusMessage) *ConsensusMessage {
@@ -86,7 +85,7 @@ func (consensusMessage *ConsensusMessage) GetEndTimeout() time.Time {
 // Returns true if the consensus message has timed out
 // Returns false if the consensus message has not timed out
 func (consensusMessage *ConsensusMessage) CheckTimeOut() bool {
-	return time.Now().After(consensusMessage.GetEndTimeout())
+	return time.Now().UTC().After(consensusMessage.GetEndTimeout())
 }
 
 func (consensusMessage *ConsensusMessage) SetStartTime(startTime time.Time) *ConsensusMessage {

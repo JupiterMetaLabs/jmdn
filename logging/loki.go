@@ -63,14 +63,14 @@ func (l *lokiWriteSyncer) processLogs() {
 			for {
 				select {
 				case p := <-l.ch:
-					_ = l.client.Handle(l.labels, time.Now(), string(p))
+					_ = l.client.Handle(l.labels, time.Now().UTC(), string(p))
 				default:
 					return
 				}
 			}
 		case p := <-l.ch:
 			// Process the log entry
-			err := l.client.Handle(l.labels, time.Now(), string(p))
+			err := l.client.Handle(l.labels, time.Now().UTC(), string(p))
 			if err != nil {
 				// Silently drop errors to prevent blocking
 				// The client has its own retry logic

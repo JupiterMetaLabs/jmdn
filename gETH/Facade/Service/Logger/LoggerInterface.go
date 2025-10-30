@@ -63,7 +63,7 @@ func LogData(ctx context.Context, Message string, Function string, status int) e
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 		)
 	case -1:
 		// Error
@@ -72,7 +72,7 @@ func LogData(ctx context.Context, Message string, Function string, status int) e
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 		)
 	default:
 		return fmt.Errorf("invalid status code: %d", status)

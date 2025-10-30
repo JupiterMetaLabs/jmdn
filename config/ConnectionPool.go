@@ -130,7 +130,7 @@ func NewAsyncLoggerWithLoki(enableLoki bool) (*logging.AsyncLogger, error) {
 		return nil, fmt.Errorf("failed to create logger: %w", err)
 	}
 	logger.Logger.Info("Logger initialized",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, lokiURL),
@@ -164,7 +164,7 @@ func NewConnectionPool(config *ConnectionPoolConfig, logger *logging.AsyncLogger
 	// Start background cleanup
 	go pool.cleanupRoutine()
 	logger.Logger.Info("New Connection Pool Created",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -183,7 +183,7 @@ func (p *ConnectionPool) Get() (*PooledConnection, error) {
 
 	if p.Closed {
 		p.Logger.Logger.Info("Connection pool is closed",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -199,7 +199,7 @@ func (p *ConnectionPool) Get() (*PooledConnection, error) {
 		// fmt.Printf("Checking connection %d: InUse=%v, CreatedAt=%v, LastUsed=%v\n", i, conn.InUse, conn.CreatedAt, conn.LastUsed)
 		if conn.InUse {
 			p.Logger.Logger.Info("Connection is in use",
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.Time(logging.Connection_created_at, conn.CreatedAt),
 				zap.Time(logging.Connection_last_used, conn.LastUsed),
 				zap.String(logging.Connection_id, conn.Token),
@@ -220,7 +220,7 @@ func (p *ConnectionPool) Get() (*PooledConnection, error) {
 			p.closeConnection(conn)
 			p.Connections = append(p.Connections[:i], p.Connections[i+1:]...)
 			p.Logger.Logger.Info("Connection closed due to expiration",
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Connection_id, conn.Token),
 				zap.String(logging.Connection_database, conn.Database),
 				zap.Time(logging.Connection_created_at, conn.CreatedAt),
@@ -239,9 +239,9 @@ func (p *ConnectionPool) Get() (*PooledConnection, error) {
 
 		// Found a valid, idle connection
 		conn.InUse = true
-		conn.LastUsed = time.Now()
+		conn.LastUsed = time.Now().UTC()
 		p.Logger.Logger.Info("Connection found",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Connection_id, conn.Token),
 			zap.String(logging.Connection_database, conn.Database),
 			zap.Time(logging.Connection_created_at, conn.CreatedAt),
@@ -257,7 +257,7 @@ func (p *ConnectionPool) Get() (*PooledConnection, error) {
 	// No reusable connection found, check if we can create a new one
 	if len(p.Connections) >= p.Config.MaxConnections {
 		p.Logger.Logger.Info("Maximum number of connections reached",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -288,9 +288,9 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 	cp.Logger.Logger.Info("Creating new connection to ImmuDB at %s:%d",
 		zap.String(logging.Address, cp.Address),
 		zap.Int(logging.Port, cp.Port),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
-		zap.Time(logging.Connection_created_at, time.Now()),
+		zap.Time(logging.Connection_created_at, time.Now().UTC()),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
 		zap.String(logging.Function, "config.createConnection"),
@@ -334,7 +334,7 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 
 	cp.Logger.Logger.Info("Authenticating with ImmuDB as user '%s'",
 		zap.String(logging.Username, cp.Username),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -351,7 +351,7 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 
 	cp.Logger.Logger.Info("Selecting database: %s",
 		zap.String(logging.Connection_database, cp.Database),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -374,7 +374,7 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 		Logger:      cp.Logger,
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	conn := &PooledConnection{
 		Client:      &Immuclient,
 		Token:       dbResp.Token,
@@ -388,7 +388,7 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 	cp.Logger.Logger.Info("Successfully created new connection to database: %s",
 		zap.String(logging.Connection_database, cp.Database),
 		zap.String(logging.Connection_id, conn.Token),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -414,7 +414,7 @@ func (p *ConnectionPool) Put(conn *PooledConnection) {
 	}
 
 	conn.InUse = false
-	conn.LastUsed = time.Now()
+	conn.LastUsed = time.Now().UTC()
 
 	// Add the connection back to the pool
 	p.Connections = append(p.Connections, conn)
@@ -422,7 +422,7 @@ func (p *ConnectionPool) Put(conn *PooledConnection) {
 	p.Logger.Logger.Info("Connection returned to pool",
 		zap.String(logging.Connection_id, conn.Token),
 		zap.String(logging.Connection_database, conn.Database),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -445,7 +445,7 @@ func (p *ConnectionPool) Close() {
 
 	p.Logger.Logger.Info("Closing connection pool and disconnecting %d connections.",
 		zap.Int(logging.ConnectionCount, len(p.Connections)),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -468,7 +468,7 @@ func (p *ConnectionPool) closeConnection(conn *PooledConnection) {
 
 	// Log the disconnection
 	p.Logger.Logger.Info("Disconnected ImmuDB client",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -479,7 +479,7 @@ func (p *ConnectionPool) closeConnection(conn *PooledConnection) {
 // cleanupRoutine periodically cleans up idle connections
 func (p *ConnectionPool) cleanupRoutine() {
 	p.Logger.Logger.Info("Starting connection pool cleanup routine",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -491,7 +491,7 @@ func (p *ConnectionPool) cleanupRoutine() {
 			p.cleanupIdleConnections()
 		case <-p.StopCleanup:
 			p.Logger.Logger.Info("Stopping connection pool cleanup routine",
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -512,7 +512,7 @@ func (p *ConnectionPool) cleanupIdleConnections() {
 	}
 
 	var active []*PooledConnection
-	now := time.Now()
+	now := time.Now().UTC()
 	closedCount := 0
 
 	for _, conn := range p.Connections {
@@ -536,7 +536,7 @@ func (p *ConnectionPool) cleanupIdleConnections() {
 		if p.Logger != nil && p.Logger.Logger != nil {
 			p.Logger.Logger.Info("Cleaned up %d idle/stale connections",
 				zap.Int(logging.ConnectionCount, closedCount),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -583,7 +583,7 @@ func GetGlobalPool() *ConnectionPool {
 		panic("FATAL: global connection pool is not initialized. Call InitGlobalPool first.")
 	}
 	globalPool.Logger.Logger.Info("Global connection pool retrieved",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),

@@ -9,11 +9,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// Get all the transactions of a block 
+// Get all the transactions of a block
 func GetTransactionsOfBlock(mainDBClient *config.PooledConnection, blockNumber uint64) ([]*config.Transaction, error) {
 	var err error
 	var shouldReturnConnection bool = false
-	
+
 	if mainDBClient == nil {
 		mainDBClient, err = GetMainDBConnection()
 		if err != nil {
@@ -22,9 +22,9 @@ func GetTransactionsOfBlock(mainDBClient *config.PooledConnection, blockNumber u
 		shouldReturnConnection = true
 		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
 			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
-			
+
 			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 			zap.String(logging.Loki_url, logging.GetLokiURL()),
 			zap.String(logging.Function, "DB_OPs.GetTransactionsOfBlock"),
@@ -34,7 +34,7 @@ func GetTransactionsOfBlock(mainDBClient *config.PooledConnection, blockNumber u
 		defer func() {
 			mainDBClient.Client.Logger.Logger.Info("Main DB connection put back successfully",
 				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, "ImmuDB.log"),
 				zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 				zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -43,14 +43,14 @@ func GetTransactionsOfBlock(mainDBClient *config.PooledConnection, blockNumber u
 			PutMainDBConnection(mainDBClient)
 		}()
 	}
-	
+
 	// First get the zkblock
 	zkblock, err := GetZKBlockByNumber(mainDBClient, blockNumber)
 	if err != nil {
 		mainDBClient.Client.Logger.Logger.Error("Failed to get zkblock of block",
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
 			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 			zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -67,7 +67,7 @@ func GetTransactionsOfBlock(mainDBClient *config.PooledConnection, blockNumber u
 		zap.Uint64("blockNumber", blockNumber),
 		zap.Int("transactionCount", len(transactions)),
 		zap.String(logging.Connection_database, config.DBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, "ImmuDB.log"),
 		zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 		zap.String(logging.Loki_url, logging.GetLokiURL()),

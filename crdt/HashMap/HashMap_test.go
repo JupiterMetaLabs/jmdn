@@ -12,7 +12,7 @@ func generateRandomDIDs(n int) []string {
 	schemes := []string{"did:zkm:mainnet:", "did:zkm:superj:", "did:zkm:metamask:"}
 	letters := []rune("abcdef0123456789")
 	dids := make([]string, n)
-	rand.Seed(time.Now().UnixNano())
+	rand.Seed(time.Now().UTC().UnixNano())
 
 	for i := 0; i < n; i++ {
 		prefix := schemes[rand.Intn(len(schemes))]

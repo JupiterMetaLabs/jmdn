@@ -25,7 +25,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 		shouldReturnConnection = true
 		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
 			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
 			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 			zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -38,7 +38,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 		defer func() {
 			mainDBClient.Client.Logger.Logger.Info("Main DB connection put back successfully",
 				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, "ImmuDB.log"),
 				zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 				zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -59,7 +59,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 				zap.Error(err),
 				zap.String("txHash", hash),
 				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -72,7 +72,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 			zap.String("txHash", hash),
 			zap.Uint64("blockNumber", receipt.BlockNumber),
 			zap.Uint64("status", receipt.Status),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
 			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 			zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -84,7 +84,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 	// Receipt doesn't exist in storage, generate it from transaction data
 	mainDBClient.Client.Logger.Logger.Info("Receipt not found in storage, generating from transaction data",
 		zap.String("txHash", hash),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -98,7 +98,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 			zap.Error(err),
 			zap.String("txHash", hash),
 			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
 			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 			zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -114,7 +114,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 			zap.Error(err),
 			zap.String("txHash", hash),
 			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
 			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 			zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -142,7 +142,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 			zap.Error(err),
 			zap.String("txHash", hash),
 			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
 			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 			zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -156,7 +156,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 				zap.Error(err),
 				zap.String("txHash", hash),
 				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -170,7 +170,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 		zap.String("txHash", hash),
 		zap.Uint64("blockNumber", receipt.BlockNumber),
 		zap.Uint64("status", receipt.Status),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -232,11 +232,10 @@ func generateReceiptFromTransaction(tx *config.Transaction, block *config.ZKBloc
 	return receipt
 }
 
-
 func MakeReceiptRoot(mainDBClient *config.PooledConnection, receipts []*config.Receipt) ([]byte, error) {
 	var err error
 	var shouldReturnConnection bool = false
-	
+
 	if mainDBClient == nil {
 		mainDBClient, err = GetMainDBConnection()
 		if err != nil {
@@ -245,20 +244,20 @@ func MakeReceiptRoot(mainDBClient *config.PooledConnection, receipts []*config.R
 		shouldReturnConnection = true
 		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
 			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
 			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 			zap.String(logging.Loki_url, logging.GetLokiURL()),
 			zap.String(logging.Function, "DB_OPs.MakeReceiptRoot"),
 		)
 	}
-	
+
 	receiptRoot, err := utils.GenerateReceiptRoot(receipts)
 	if err != nil {
 		mainDBClient.Client.Logger.Logger.Error("Failed to generate receipt root",
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
 			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 			zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -271,7 +270,7 @@ func MakeReceiptRoot(mainDBClient *config.PooledConnection, receipts []*config.R
 		defer func() {
 			mainDBClient.Client.Logger.Logger.Info("Main DB connection put back successfully",
 				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, "ImmuDB.log"),
 				zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 				zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -283,7 +282,7 @@ func MakeReceiptRoot(mainDBClient *config.PooledConnection, receipts []*config.R
 
 	mainDBClient.Client.Logger.Logger.Info("Successfully generated receipt root",
 		zap.String(logging.Connection_database, config.DBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, "ImmuDB.log"),
 		zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 		zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -291,13 +290,13 @@ func MakeReceiptRoot(mainDBClient *config.PooledConnection, receipts []*config.R
 	)
 
 	return receiptRoot, nil
-	
+
 }
 
 func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint64) ([]*config.Receipt, error) {
 	var err error
 	var shouldReturnConnection bool = false
-	
+
 	if mainDBClient == nil {
 		mainDBClient, err = GetMainDBConnection()
 		if err != nil {
@@ -306,7 +305,7 @@ func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint6
 		shouldReturnConnection = true
 		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",
 			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
 			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 			zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -318,7 +317,7 @@ func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint6
 		defer func() {
 			mainDBClient.Client.Logger.Logger.Info("Main DB connection put back successfully",
 				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, "ImmuDB.log"),
 				zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 				zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -334,7 +333,7 @@ func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint6
 		mainDBClient.Client.Logger.Logger.Error("Failed to get transactions of block",
 			zap.Error(err),
 			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
 			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 			zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -350,7 +349,7 @@ func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint6
 			mainDBClient.Client.Logger.Logger.Error("Failed to get receipt by hash",
 				zap.Error(err),
 				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, "ImmuDB.log"),
 				zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 				zap.String(logging.Loki_url, logging.GetLokiURL()),
@@ -365,7 +364,7 @@ func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint6
 		zap.Uint64("blockNumber", blockNumber),
 		zap.Int("receiptCount", len(receipts)),
 		zap.String(logging.Connection_database, config.DBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, "ImmuDB.log"),
 		zap.String(logging.Topic, "ImmuDB_ImmuClient"),
 		zap.String(logging.Loki_url, logging.GetLokiURL()),

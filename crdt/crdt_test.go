@@ -212,7 +212,7 @@ func TestMemStoreOperations(t *testing.T) {
 		NodeID:   "node1",
 		Element:  "element1",
 		TS:       VectorClock{"node1": 1},
-		WallTime: time.Now(),
+		WallTime: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatalf("AppendOp() error = %v", err)
@@ -233,7 +233,7 @@ func TestMemStoreOperations(t *testing.T) {
 		NodeID:   "node1",
 		Value:    5,
 		TS:       VectorClock{"node1": 1},
-		WallTime: time.Now(),
+		WallTime: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatalf("AppendOp() error = %v", err)
@@ -260,7 +260,7 @@ func TestOpHeapEviction(t *testing.T) {
 			NodeID:   "node1",
 			Element:  "element",
 			TS:       VectorClock{"node1": uint64(i)},
-			WallTime: time.Now(),
+			WallTime: time.Now().UTC(),
 		}
 		evicted = append(evicted, heap.Append(op)...)
 	}
@@ -415,7 +415,7 @@ func TestHeapStats(t *testing.T) {
 			NodeID:   "node1",
 			Element:  "element",
 			TS:       VectorClock{"node1": uint64(i)},
-			WallTime: time.Now(),
+			WallTime: time.Now().UTC(),
 		}
 		heap.Append(op)
 	}
@@ -451,7 +451,7 @@ func TestEvictionHandling(t *testing.T) {
 			NodeID:   "node1",
 			Element:  "element",
 			TS:       VectorClock{"node1": uint64(i)},
-			WallTime: time.Now(),
+			WallTime: time.Now().UTC(),
 		}
 		store.AppendOp(op)
 	}
@@ -472,7 +472,7 @@ func TestMemStorePruning(t *testing.T) {
 		NodeID:   "node1",
 		Element:  "element1",
 		TS:       VectorClock{"node1": 1, "node2": 1},
-		WallTime: time.Now(),
+		WallTime: time.Now().UTC(),
 	})
 
 	store.AppendOp(&Op{
@@ -481,7 +481,7 @@ func TestMemStorePruning(t *testing.T) {
 		NodeID:   "node2",
 		Value:    5,
 		TS:       VectorClock{"node1": 1, "node2": 1, "node3": 1},
-		WallTime: time.Now(),
+		WallTime: time.Now().UTC(),
 	})
 
 	// Get active nodes
@@ -1179,7 +1179,7 @@ func (pe *PersistentEngine) LWWAdd(nodeID, key, element string, ts VectorClock) 
 			NodeID:   nodeID,
 			Element:  element,
 			TS:       ts,
-			WallTime: time.Now(),
+			WallTime: time.Now().UTC(),
 		})
 	}
 	return err
@@ -1198,7 +1198,7 @@ func (pe *PersistentEngine) LWWRemove(nodeID, key, element string, ts VectorCloc
 			NodeID:   nodeID,
 			Element:  element,
 			TS:       ts,
-			WallTime: time.Now(),
+			WallTime: time.Now().UTC(),
 		})
 	}
 	return err
@@ -1217,7 +1217,7 @@ func (pe *PersistentEngine) CounterInc(nodeID, key string, delta uint64, ts Vect
 			NodeID:   nodeID,
 			Value:    delta,
 			TS:       ts,
-			WallTime: time.Now(),
+			WallTime: time.Now().UTC(),
 		})
 	}
 	return err

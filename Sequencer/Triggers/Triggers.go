@@ -367,7 +367,7 @@ func RequestVoteResultsFromBuddies() error {
 			reqMsg := AVCStruct.NewMessageBuilder(nil).
 				SetSender(listenerNode.PeerID).
 				SetMessage("RequestForVoteResult").
-				SetTimestamp(time.Now().Unix()).
+				SetTimestamp(time.Now().UTC().Unix()).
 				SetACK(reqAck)
 
 			reqData, _ := json.Marshal(reqMsg)
@@ -482,7 +482,7 @@ func StartBFTConsensus() error {
 	}
 
 	// Create messenger
-	roundID := fmt.Sprintf("%d", time.Now().Unix())
+	roundID := fmt.Sprintf("%d", time.Now().UTC().Unix())
 	messenger := bft.Return_pubsubMessenger(adapter, roundID)
 
 	// Run BFT consensus

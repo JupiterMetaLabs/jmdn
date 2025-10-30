@@ -230,7 +230,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 	if !isVote {
 		// Read response after sending (for subscription requests)
 		// Set a timeout for reading the response (20 seconds to allow for processing)
-		deadline := time.Now().Add(20 * time.Second)
+		deadline := time.Now().UTC().Add(20 * time.Second)
 		stream.SetReadDeadline(deadline)
 		fmt.Printf("⏰ Set read deadline to: %v\n", deadline)
 
@@ -283,7 +283,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 	StructListenerNode.ListenerBuddyNode.Mutex.Lock()
 	StructListenerNode.ListenerBuddyNode.MetaData.Sent++
 	StructListenerNode.ListenerBuddyNode.MetaData.Total++
-	StructListenerNode.ListenerBuddyNode.MetaData.UpdatedAt = time.Now()
+	StructListenerNode.ListenerBuddyNode.MetaData.UpdatedAt = time.Now().UTC()
 	StructListenerNode.ListenerBuddyNode.Mutex.Unlock()
 
 	log.LogConsensusInfo(fmt.Sprintf("Sent listener message to %s: %s", peerID, message), zap.String("peer", peerID.String()), zap.String("message", message), zap.String("function", "SendMessageToPeer"))
@@ -346,7 +346,7 @@ func (StructListenerNode *StructListener) sendViaSeedNode(peerID peer.ID, messag
 	StructListenerNode.ListenerBuddyNode.Mutex.Lock()
 	StructListenerNode.ListenerBuddyNode.MetaData.Sent++
 	StructListenerNode.ListenerBuddyNode.MetaData.Total++
-	StructListenerNode.ListenerBuddyNode.MetaData.UpdatedAt = time.Now()
+	StructListenerNode.ListenerBuddyNode.MetaData.UpdatedAt = time.Now().UTC()
 	StructListenerNode.ListenerBuddyNode.Mutex.Unlock()
 
 	log.LogConsensusInfo(fmt.Sprintf("Sent listener message to %s (via seed node): %s", peerID, message), zap.String("peer", peerID.String()), zap.String("message", message), zap.String("function", "sendViaSeedNode"))

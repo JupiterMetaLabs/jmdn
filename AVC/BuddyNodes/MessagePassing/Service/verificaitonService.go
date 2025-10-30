@@ -91,7 +91,7 @@ func (s *VerificationService) SendVerificationResponse(accepted bool) error {
 	responseMessage := PubSubMessages.NewMessageBuilder(nil).
 		SetSender(s.buddyNode.PeerID).
 		SetMessage(fmt.Sprintf("Verification response: %t", accepted)).
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ackMessage)
 
 	// Publish the verification response using the existing Publisher service
@@ -194,7 +194,7 @@ func (s *VerificationService) VerifySubscriptions(expectedPeers []peer.ID, timeo
 	message := PubSubMessages.NewMessageBuilder(nil).
 		SetMessage(verificationMessage).
 		SetSender(s.buddyNode.PeerID).
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ackMessage)
 
 	if err := Publisher.Publish(s.buddyNode.PubSub, config.PubSub_ConsensusChannel, message, map[string]string{
@@ -211,7 +211,7 @@ func (s *VerificationService) VerifySubscriptions(expectedPeers []peer.ID, timeo
 		zap.String("function", "VerificationService.VerifySubscriptions"))
 
 	// Wait for responses with timeout
-	startTime := time.Now()
+	startTime := time.Now().UTC()
 	for time.Since(startTime) < timeout {
 		mu.Lock()
 		currentCount := responseCount

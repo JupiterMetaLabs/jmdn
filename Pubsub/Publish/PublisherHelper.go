@@ -128,7 +128,7 @@ func (ep *EnhancedPublisher) publishWithRetry(ctx context.Context, messageBytes 
 		// Success - update metrics atomically
 		atomic.AddInt64(&ep.metrics.MessagesPublished, 1)
 		atomic.AddInt64(&ep.metrics.BytesPublished, int64(len(messageBytes)))
-		atomic.StoreInt64(&ep.metrics.lastPublishTime, time.Now().UnixNano())
+		atomic.StoreInt64(&ep.metrics.lastPublishTime, time.Now().UTC().UnixNano())
 
 		if attempt > 0 {
 			log.Printf("✅ Published after %d retries", attempt)
@@ -196,7 +196,7 @@ func (ep *EnhancedPublisher) publishBatch(ctx context.Context, messages []*PubSu
 	if successCount > 0 {
 		atomic.AddInt64(&ep.metrics.MessagesPublished, successCount)
 		atomic.AddInt64(&ep.metrics.BytesPublished, totalBytes)
-		atomic.StoreInt64(&ep.metrics.lastPublishTime, time.Now().UnixNano())
+		atomic.StoreInt64(&ep.metrics.lastPublishTime, time.Now().UTC().UnixNano())
 	}
 
 	if len(errors) > 0 {

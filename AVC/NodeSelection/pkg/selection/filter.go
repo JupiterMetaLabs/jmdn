@@ -35,7 +35,7 @@ func FilterEligible(myNodeID string, nodes []Node, config FilterConfig) []Node {
 	eligible := make([]Node, 0, len(nodes)/2)
 
 	// Calculate timeout threshold once
-	// now := time.Now()
+	// now := time.Now().UTC()
 	// timeoutDuration := time.Duration(config.NodeTimeoutMinutes) * time.Minute
 
 	for i := range nodes {
@@ -123,7 +123,7 @@ func GetFilterStats(myNodeID string, nodes []Node, config FilterConfig) FilterSt
 		TotalNodes: len(nodes),
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	timeoutDuration := time.Duration(config.NodeTimeoutMinutes) * time.Minute
 
 	for i := range nodes {

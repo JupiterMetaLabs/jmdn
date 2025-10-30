@@ -55,7 +55,7 @@ func cleanupOldMessages() {
 		time.Sleep(1 * time.Minute)
 
 		seenMessagesMu.Lock()
-		now := time.Now()
+		now := time.Now().UTC()
 		for id, timestamp := range seenMessages {
 			if now.Sub(timestamp) > config.MessageExpiryTime {
 				delete(seenMessages, id)
@@ -82,7 +82,7 @@ func isMessageSeen(msgID string) bool {
 func markMessageSeen(msgID string) {
 	seenMessagesMu.Lock()
 	defer seenMessagesMu.Unlock()
-	seenMessages[msgID] = time.Now()
+	seenMessages[msgID] = time.Now().UTC()
 }
 
 // HandleBroadcastStream processes incoming broadcast messages
@@ -233,7 +233,7 @@ func forwardBroadcast(h host.Host, msg BroadcastMessageStruct) {
 // BroadcastMessage sends a message to all connected peers
 func BroadcastMessage(h host.Host, content string) error {
 	// Create a new broadcast message
-	now := time.Now().Unix()
+	now := time.Now().UTC().Unix()
 	msg := BroadcastMessageStruct{
 		Sender:    h.ID().String(),
 		Content:   content,
@@ -424,7 +424,7 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 	fmt.Printf("Consensus message: %+v\n", consensusMessage)
 
 	// Set the voting timer when broadcast starts
-	now := time.Now()
+	now := time.Now().UTC()
 	consensusMessage.SetStartTime(now)
 	consensusMessage.SetEndTimeout(now.Add(config.ConsensusTimeout))
 
@@ -551,13 +551,13 @@ func BroadcastBlockToEveryNode(h host.Host, block *config.ZKBlock, result bool) 
 	// Generate a unique nonce for the block message
 	nonceBytes := make([]byte, 16)
 	for i := range nonceBytes {
-		nonceBytes[i] = byte(time.Now().UnixNano() & 0xff)
+		nonceBytes[i] = byte(time.Now().UTC().UnixNano() & 0xff)
 		time.Sleep(1 * time.Nanosecond)
 	}
 	nonce := base64.URLEncoding.EncodeToString(nonceBytes)
 
 	// Create block message with metadata
-	now := time.Now().Unix()
+	now := time.Now().UTC().Unix()
 	msg := config.BlockMessage{
 		Sender:    h.ID().String(),
 		Timestamp: now,

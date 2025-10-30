@@ -49,7 +49,7 @@ func checkForNewBlocks(DBclient *ImmuDBServer) {
 	if err != nil {
 		DBclient.defaultdb.Client.Logger.Logger.Error("Failed to get latest block number: %v",
 			zap.Error(err),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
@@ -71,7 +71,7 @@ func checkForNewBlocks(DBclient *ImmuDBServer) {
 	DBclient.defaultdb.Client.Logger.Logger.Info("New blocks detected, fetching blocks from %d to %d",
 		zap.String("currentBlockNumber", fmt.Sprintf("%d", currentBlockNumber)),
 		zap.String("latestBlockNumber", fmt.Sprintf("%d", latestBlockNumber)),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
@@ -85,7 +85,7 @@ func checkForNewBlocks(DBclient *ImmuDBServer) {
 		if err != nil {
 			DBclient.defaultdb.Client.Logger.Logger.Error("Failed to fetch block %d: %v",
 				zap.Error(err),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, config.LOKI_URL),
@@ -107,7 +107,7 @@ func checkForNewBlocks(DBclient *ImmuDBServer) {
 		if err != nil {
 			DBclient.defaultdb.Client.Logger.Logger.Error("Failed to marshal blocks: %v",
 				zap.Error(err),
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, config.LOKI_URL),

@@ -342,7 +342,7 @@ func TestVRF_GroupNodesByRegion(t *testing.T) {
 
 func createTestNodes(count, numRegions int) []Node {
 	nodes := make([]Node, count)
-	now := time.Now()
+	now := time.Now().UTC()
 
 	for i := 0; i < count; i++ {
 		regionNumber := (i % numRegions) + 1

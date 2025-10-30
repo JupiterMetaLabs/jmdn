@@ -209,7 +209,7 @@ func Startserver(port int, h host.Host, chainID int) {
 		}
 
 		// Start timing
-		start := time.Now()
+		start := time.Now().UTC()
 		path := c.Request.URL.Path
 
 		// Process request
@@ -487,7 +487,7 @@ func getBlockByNumber(c *gin.Context) {
 	defer func() {
 		mainDBClient.Client.Logger.Logger.Info("Putting database connection back to pool",
 			zap.String(logging.Connection_database, "MainDB Connection"),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, FILENAME),
 			zap.String(logging.Topic, BLOCKTOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),

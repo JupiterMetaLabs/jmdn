@@ -36,7 +36,7 @@ func GetMainDBConnection() (*config.PooledConnection, error) {
 
 	mainDBPool.Logger.Logger.Info("Getting main database connection",
 		zap.String(logging.Connection_database, config.DBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -67,7 +67,7 @@ func PutMainDBConnection(conn *config.PooledConnection) {
 	if mainDBPool != nil {
 		mainDBPool.Logger.Logger.Info("Returning main database connection",
 			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -104,7 +104,7 @@ func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki 
 		fmt.Println("Logger created successfully")
 
 		logger.Logger.Info("Initializing main database connection pool",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -115,7 +115,7 @@ func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki 
 			fmt.Printf("Failed to connect to main DB: %v\n", err)
 			initErr = fmt.Errorf("failed to ensure main DB selected: %w", err)
 			logger.Logger.Error("Main DB setup failed",
-				zap.Time(logging.Created_at, time.Now()),
+				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
@@ -138,7 +138,7 @@ func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki 
 
 		mainDBPool = config.NewConnectionPool(poolCfg, logger, poolingConfig)
 		mainDBPool.Logger.Logger.Info("Main database connection pool initialized successfully.",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -157,7 +157,7 @@ func ensureMainDBSelected(conn *config.PooledConnection) error {
 
 	conn.Client.Logger.Logger.Info("Ensuring main database selected",
 		zap.String(logging.Connection_database, config.DBName),
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -253,7 +253,7 @@ func connectToMainDB(username, password string) error {
 	}
 
 	logger.Logger.Info("Main database check completed",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
@@ -263,7 +263,7 @@ func connectToMainDB(username, password string) error {
 	// Create accounts database if it doesn't exist
 	if !databaseExists {
 		logger.Logger.Info("Creating main database", zap.String("database", config.DBName),
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -276,7 +276,7 @@ func connectToMainDB(username, password string) error {
 			return fmt.Errorf("failed to create main database: %w", err)
 		}
 		logger.Logger.Info("Main database created successfully",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -284,7 +284,7 @@ func connectToMainDB(username, password string) error {
 		)
 	} else {
 		logger.Logger.Info("Main database already exists",
-			zap.Time(logging.Created_at, time.Now()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
@@ -293,7 +293,7 @@ func connectToMainDB(username, password string) error {
 	}
 
 	logger.Logger.Info("Main database setup completed",
-		zap.Time(logging.Created_at, time.Now()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),

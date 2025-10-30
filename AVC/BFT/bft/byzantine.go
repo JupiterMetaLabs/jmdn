@@ -58,7 +58,7 @@ func (b *byzantineDetector) mark(buddyID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.byzantine[buddyID] = byzantineEntry{
-		bannedAt: time.Now(),
+		bannedAt: time.Now().UTC(),
 		ttl:      b.defaultTTL,
 	}
 }
@@ -77,7 +77,7 @@ func (b *byzantineDetector) count() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	n := 0
-	now := time.Now()
+	now := time.Now().UTC()
 	for _, entry := range b.byzantine {
 		if now.Sub(entry.bannedAt) <= entry.ttl {
 			n++
@@ -90,7 +90,7 @@ func (b *byzantineDetector) getAll() []string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	now := time.Now()
+	now := time.Now().UTC()
 	ids := make([]string, 0, len(b.byzantine))
 	for id, entry := range b.byzantine {
 		if now.Sub(entry.bannedAt) <= entry.ttl {
@@ -105,7 +105,7 @@ func (b *byzantineDetector) cleaner() {
 	defer ticker.Stop()
 	for range ticker.C {
 		b.mu.Lock()
-		now := time.Now()
+		now := time.Now().UTC()
 		for id, entry := range b.byzantine {
 			if now.Sub(entry.bannedAt) > entry.ttl {
 				delete(b.byzantine, id)
