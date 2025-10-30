@@ -438,30 +438,30 @@ func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint6
 	defer cancel()
 
 	// Base gas cost for any transaction
-	baseGas := uint64(1000)
+	baseGas := uint64(21000)
 
-	// Get fee statistics from routing service to adjust base gas estimate
-	feeStats, err := block.GetFeeStatisticsFromRouting()
-	if err == nil && feeStats != nil {
-		fmt.Printf("📊 Fee stats from routing service:\n")
-		fmt.Printf("   MeanFee: %d wei (%.9f gwei)\n", feeStats.MeanFee, float64(feeStats.MeanFee)/1000000000.0)
-		fmt.Printf("   Standard: %d wei (%.9f gwei)\n", feeStats.RecommendedFees.Standard, float64(feeStats.RecommendedFees.Standard)/1000000000.0)
-		fmt.Printf("   Min: %d wei, Max: %d wei, Median: %d wei\n", feeStats.MinFee, feeStats.MaxFee, feeStats.MedianFee)
+	// // Get fee statistics from routing service to adjust base gas estimate
+	// feeStats, err := block.GetFeeStatisticsFromRouting()
+	// if err == nil && feeStats != nil {
+	// 	fmt.Printf("📊 Fee stats from routing service:\n")
+	// 	fmt.Printf("   MeanFee: %d wei (%.9f gwei)\n", feeStats.MeanFee, float64(feeStats.MeanFee)/1000000000.0)
+	// 	fmt.Printf("   Standard: %d wei (%.9f gwei)\n", feeStats.RecommendedFees.Standard, float64(feeStats.RecommendedFees.Standard)/1000000000.0)
+	// 	fmt.Printf("   Min: %d wei, Max: %d wei, Median: %d wei\n", feeStats.MinFee, feeStats.MaxFee, feeStats.MedianFee)
 
-		if feeStats.MeanFee > 0 {
-			// Use mean fee from routing service to adjust base gas
-			// Higher fees typically correlate with more complex transactions requiring more gas
-			feeMultiplier := float64(feeStats.MeanFee) / 35000000000.0 // Normalize against 35 gwei
-			if feeMultiplier > 1.0 {
-				fmt.Printf("💰 Applying fee multiplier: %.4f (MeanFee exceeds 35 gwei threshold)\n", feeMultiplier)
-				baseGas = uint64(float64(baseGas) * feeMultiplier)
-			} else {
-				fmt.Printf("✅ Fee multiplier not applied (MeanFee=%.9f gwei < 35 gwei threshold)\n", float64(feeStats.MeanFee)/1000000000.0)
-			}
-		}
-	} else if err != nil {
-		fmt.Printf("⚠️ Failed to get fee statistics from routing service: %v\n", err)
-	}
+	// 	if feeStats.MeanFee > 0 {
+	// 		// Use mean fee from routing service to adjust base gas
+	// 		// Higher fees typically correlate with more complex transactions requiring more gas
+	// 		feeMultiplier := float64(feeStats.MeanFee) / 35000000000.0 // Normalize against 35 gwei
+	// 		if feeMultiplier > 1.0 {
+	// 			fmt.Printf("💰 Applying fee multiplier: %.4f (MeanFee exceeds 35 gwei threshold)\n", feeMultiplier)
+	// 			baseGas = uint64(float64(baseGas) * feeMultiplier)
+	// 		} else {
+	// 			fmt.Printf("✅ Fee multiplier not applied (MeanFee=%.9f gwei < 35 gwei threshold)\n", float64(feeStats.MeanFee)/1000000000.0)
+	// 		}
+	// 	}
+	// } else if err != nil {
+	// 	fmt.Printf("⚠️ Failed to get fee statistics from routing service: %v\n", err)
+	// }
 
 	// Additional gas for contract deployment
 	if msg.To == "" {
@@ -485,12 +485,12 @@ func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint6
 	}
 
 	// Additional gas for value transfer
-	if msg.Value != nil && msg.Value.Sign() > 0 {
-		baseGas += 9000 // Value transfer cost
-	}
+	// if msg.Value != nil && msg.Value.Sign() > 0 {
+	// 	baseGas += 9000 // Value transfer cost
+	// }
 
 	// Add a buffer for safety (5%)
-	estimatedGas := baseGas + (baseGas / 5)
+	estimatedGas := baseGas + (baseGas * 5 / 100)
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("EstimateGas returned to client: %d", estimatedGas), "EstimateGas", 1); logErr != nil {
@@ -512,12 +512,20 @@ func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GasPrice failed to get fee statistics: %v", err), "GasPrice", -1); logErr != nil {
 			fmt.Printf("Failed to log GasPrice error: %v\n", logErr)
 		}
-		// Return fallback value on error
-		return big.NewInt(20000000000), nil // 20 gwei fallback
+		// Return fallback value on error (use 35 gwei minimum)
+		return big.NewInt(35000000000), nil
 	}
 
-	// Get standard recommended fee (gas price in gwei)
+	// Get standard recommended fee (wei)
 	gasPrice := big.NewInt(int64(feeStats.RecommendedFees.Standard))
+
+	// Enforce minimum gas price:
+	// - if zero or less than 20 gwei, use 35 gwei
+	twentyGwei := big.NewInt(20000000000)
+	thirtyFiveGwei := big.NewInt(35000000000)
+	if gasPrice.Sign() <= 0 || gasPrice.Cmp(twentyGwei) < 0 {
+		gasPrice = new(big.Int).Set(thirtyFiveGwei)
+	}
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("GasPrice returned to client: %s", gasPrice.String()), "GasPrice", 1); logErr != nil {
