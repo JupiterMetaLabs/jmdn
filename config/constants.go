@@ -19,6 +19,8 @@ const (
 	ColorRed    = "\033[1;31m"
 )
 
+const PeerFile = "./config/peer.json"
+
 const (
 	MaxMainPeers     = 4
 	MaxBackupPeers   = 10 // Backup peers to handle failures of main nodes
@@ -99,6 +101,10 @@ const (
 	Type_BFTPrepareVote = "BFT_PREPARE_VOTE"
 	Type_BFTCommitVote  = "BFT_COMMIT_VOTE"
 	Type_BFTResult      = "BFT_RESULT"
+
+	// For BLS Voting - BLS Voting would be listening on the message transfer protocol
+	Type_BLSRequest = "BLS_REQUEST"
+	Type_BLSVote    = "BLS_VOTE"
 )
 
 // Increase buffer sizes
@@ -189,3 +195,8 @@ type AccessTuple struct {
 
 // AccessList is an EIP-2930 access list.
 type AccessList []AccessTuple
+
+type PeerConfig struct {
+	PeerID     string `json:"peer_id"`
+	PrivKeyB64 string `json:"priv_key"` // Base64 encoded private key
+}
