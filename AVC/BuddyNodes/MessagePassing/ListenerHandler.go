@@ -11,6 +11,7 @@ import (
 
 	"gossipnode/AVC/BFT/bft"
 	"gossipnode/AVC/BuddyNodes/CRDTSync"
+	"gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
@@ -446,7 +447,20 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		return
 	}
 
-	// Create result message
+	// Derive vote from decision and prepare BLS signature over blockHash
+	var vote int8 = -1
+	if success && decision == "ACCEPT" {
+		vote = 1
+	}
+
+	blsResp, agreed, err := BLS_Signer.SignMessage(blockHash, vote)
+	if err != nil {
+		fmt.Printf("⚠️ Failed to create BLS signature for BFT result: %v\n", err)
+	}
+	// Attach local PeerID into BLS payload
+	blsResp.SetPeerID(listenerNode.PeerID.String())
+
+	// Create result message (include BLS payload)
 	resultData := map[string]interface{}{
 		"round":          round,
 		"block_hash":     blockHash,
@@ -456,6 +470,9 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		"block_accepted": success && decision == "ACCEPT",
 		"failure_reason": failureReason,
 		"timestamp":      time.Now().UTC().Unix(),
+		"bls":            blsResp,
+		"vote":           vote,
+		"agree":          agreed,
 	}
 
 	resultJSON, err := json.Marshal(resultData)
