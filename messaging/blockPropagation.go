@@ -255,25 +255,42 @@ func HandleBlockStream(stream network.Stream) {
 				if err := json.Unmarshal([]byte(blsJSON), &blsResponses); err != nil {
 					log.Error().Err(err).Msg("Failed to unmarshal bls_results; skipping verification")
 				} else if len(blsResponses) > 0 {
-					// Count how many verify successfully using their own Agree flag as vote
-					validCount := 0
+					// Count how many verified signatures explicitly favor (+1)
+					validYes := 0
+					validTotal := 0
 					for _, r := range blsResponses {
+						// verify signature for stated vote (+1 if Agree else -1)
 						vote := int8(-1)
 						if r.Agree {
 							vote = 1
 						}
 						if err := BLS_Verifier.Verify(r, vote); err != nil {
 							log.Warn().Err(err).Str("peer", r.PeerID).Msg("BLS verification failed for buddy response")
-						} else {
-							validCount++
+							continue
+						}
+						validTotal++
+						if vote == 1 {
+							validYes++
 						}
 					}
-					needed := (len(blsResponses) / 2) + 1
-					if validCount < needed {
-						log.Error().Int("valid", validCount).Int("needed", needed).Msg("Insufficient valid BLS signatures - aborting block processing")
+					if validTotal == 0 {
+						log.Error().Msg("No valid BLS signatures - skipping block processing (irrelevant block)")
 						return
 					}
-					log.Info().Int("valid", validCount).Int("total", len(blsResponses)).Msg("BLS majority verified - continuing block processing")
+					needed := (validTotal / 2) + 1
+					if validYes < needed {
+						log.Error().
+							Int("valid_yes", validYes).
+							Int("needed", needed).
+							Int("valid_total", validTotal).
+							Msg("BLS majority not in favor (+1) - skipping block processing (irrelevant block)")
+						return
+					}
+					log.Info().
+						Int("valid_yes", validYes).
+						Int("needed", needed).
+						Int("valid_total", validTotal).
+						Msg("BLS majority in favor verified - continuing block processing")
 				}
 			}
 
