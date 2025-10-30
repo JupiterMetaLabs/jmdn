@@ -886,6 +886,20 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		key, keyOk := recordMap["Key"].(string)
 		value, valueOk := recordMap["Value"].(string)
 
+		// Optional Database field for origin validation
+		avroDB, _ := recordMap["Database"].(string)
+		if avroDB != "" {
+			var expectedDB string
+			if dbType == MainDB {
+				expectedDB = config.DBName
+			} else if dbType == AccountsDB {
+				expectedDB = config.AccountsDBName
+			}
+			if expectedDB != "" && avroDB != expectedDB {
+				return fmt.Errorf("avro database mismatch: got %s, expected %s", avroDB, expectedDB)
+			}
+		}
+
 		if !keyOk || !valueOk {
 			log.Warn().Msg("avro record has missing or invalid Key/Value fields")
 			continue
