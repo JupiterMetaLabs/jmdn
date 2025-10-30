@@ -4,6 +4,7 @@ import (
 	"fmt"
 	blssign "gossipnode/AVC/BLS/bls-sign"
 	"gossipnode/config/utils"
+	"strconv"
 )
 
 type BLSresponse struct {
@@ -14,7 +15,14 @@ type BLSresponse struct {
 }
 
 // Service functions for the BLSresponse struct
-func SignMessage(message string, vote int8) (BLSresponse, bool, error) {
+func SignMessage(vote int8) (BLSresponse, bool, error) {
+
+	if vote != -1 && vote != 1 {
+		return *NewBLSresponseBuilder(nil), false, fmt.Errorf("invalid vote")
+	}
+
+	voteString := strconv.Itoa(int(vote))
+
 	privKey, err := utils.ReturnPrivateKey()
 	if err != nil {
 		return *NewBLSresponseBuilder(nil), false, err
@@ -30,20 +38,14 @@ func SignMessage(message string, vote int8) (BLSresponse, bool, error) {
 		return *NewBLSresponseBuilder(nil), false, err
 	}
 
-	switch vote {
-	case -1:
-		return *NewBLSresponseBuilder(nil), false, nil
-	case 1:
-		sig, err := blssign.BLSSign(privKeyBytes, []byte(message))
-		if err != nil {
-			return *NewBLSresponseBuilder(nil), false, err
-		}
-		return *NewBLSresponseBuilder(nil).
-			SetSignature(string(sig)).
-			SetAgree(true).
-			SetPubKey(pubkey).
-			Build(), true, nil
-	default:
-		return *NewBLSresponseBuilder(nil), false, fmt.Errorf("invalid vote")
+	sig, err := blssign.BLSSign(privKeyBytes, []byte(voteString))
+	if err != nil {
+		return *NewBLSresponseBuilder(nil), false, err
 	}
+
+	return *NewBLSresponseBuilder(nil).
+		SetSignature(string(sig)).
+		SetAgree(true).
+		SetPubKey(pubkey).
+		Build(), true, nil
 }
