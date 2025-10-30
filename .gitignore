@@ -3,6 +3,7 @@ gossipnode
 gossipnode.exe.sig
 logs/*.log
 config/peer.json
+config/bls.json
 DB/*.db
 yggdrasil
 Account.json
