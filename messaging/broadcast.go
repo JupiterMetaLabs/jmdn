@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
 	"gossipnode/Vote"
 	"gossipnode/config"
@@ -529,26 +530,25 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 	return nil
 }
 
-func BroadcastBlockToEveryNode(h host.Host, block *config.ZKBlock, result bool) error {
+
+// BroadcastBlockToEveryNodeWithExtraData sends a block to all connected peers and attaches extra metadata.
+// The extra map will be merged into msg.Data. Keys in extra override existing keys.
+func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, result bool, extra map[string]string, bls []BLS_Signer.BLSresponse) error {
 	log.Info().
 		Str("block_hash", block.BlockHash.Hex()).
 		Uint64("block_number", block.BlockNumber).
 		Bool("process_result", result).
-		Msg("Broadcasting block to all nodes")
+		Msg("Broadcasting block to all nodes (with extra data)")
 
-	// Get all connected peers
 	peers := h.Network().Peers()
 	if len(peers) == 0 {
 		log.Warn().Msg("No connected peers to broadcast block to")
-
-		// Even if no peers, process if result is positive
 		if result {
 			return processBlockLocally(block)
 		}
 		return nil
 	}
 
-	// Generate a unique nonce for the block message
 	nonceBytes := make([]byte, 16)
 	for i := range nonceBytes {
 		nonceBytes[i] = byte(time.Now().UTC().UnixNano() & 0xff)
@@ -556,8 +556,27 @@ func BroadcastBlockToEveryNode(h host.Host, block *config.ZKBlock, result bool) 
 	}
 	nonce := base64.URLEncoding.EncodeToString(nonceBytes)
 
-	// Create block message with metadata
 	now := time.Now().UTC().Unix()
+	data := map[string]string{
+		"block_hash":   block.BlockHash.Hex(),
+		"block_number": fmt.Sprintf("%d", block.BlockNumber),
+		"txn_count":    fmt.Sprintf("%d", len(block.Transactions)),
+		"proof_hash":   block.ProofHash,
+		"status":       block.Status,
+		"timestamp":    fmt.Sprintf("%d", block.Timestamp),
+	}
+	// Merge extras
+	for k, v := range extra {
+		data[k] = v
+	}
+
+	// Attach BLS results (typed) as JSON string under data["bls_results"]
+	if len(bls) > 0 {
+		if enc, err := json.Marshal(bls); err == nil {
+			data["bls_results"] = string(enc)
+		}
+	}
+
 	msg := config.BlockMessage{
 		Sender:    h.ID().String(),
 		Timestamp: now,
@@ -565,30 +584,18 @@ func BroadcastBlockToEveryNode(h host.Host, block *config.ZKBlock, result bool) 
 		Block:     block,
 		Type:      "zkblock",
 		Hops:      0,
-		Data: map[string]string{
-			"block_hash":   block.BlockHash.Hex(),
-			"block_number": fmt.Sprintf("%d", block.BlockNumber),
-			"txn_count":    fmt.Sprintf("%d", len(block.Transactions)),
-			"proof_hash":   block.ProofHash,
-			"status":       block.Status,
-			"timestamp":    fmt.Sprintf("%d", block.Timestamp),
-		},
+		Data:      data,
 	}
 
-	// Generate message ID
 	msg.ID = generateBlockMessageID(msg.Sender, nonce, now)
-
-	// Mark as processed by us to avoid processing our own message
 	markMessageProcessed(getMessageIDForBloomFilter(msg))
 
-	// Convert to JSON
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal block message: %w", err)
 	}
 	msgBytes = append(msgBytes, '\n')
 
-	// Broadcast to all peers concurrently
 	var wg sync.WaitGroup
 	var successCount int
 	var successMutex sync.Mutex
@@ -597,26 +604,21 @@ func BroadcastBlockToEveryNode(h host.Host, block *config.ZKBlock, result bool) 
 		wg.Add(1)
 		go func(peer peer.ID) {
 			defer wg.Done()
-
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-
 			stream, err := h.NewStream(ctx, peer, config.BlockPropagationProtocol)
 			if err != nil {
 				log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to open stream")
 				return
 			}
 			defer stream.Close()
-
 			if _, err := stream.Write(msgBytes); err != nil {
 				log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to write message")
 				return
 			}
-
 			successMutex.Lock()
 			successCount++
 			successMutex.Unlock()
-
 			metrics.MessagesSentCounter.WithLabelValues("zkblock", peer.String()).Inc()
 		}(peerID)
 	}
@@ -627,16 +629,12 @@ func BroadcastBlockToEveryNode(h host.Host, block *config.ZKBlock, result bool) 
 		Str("block_hash", block.BlockHash.Hex()).
 		Int("success", successCount).
 		Int("total", len(peers)).
-		Msg("Block broadcast complete")
+		Msg("Block broadcast complete (with extra data)")
 
-	// If result is positive, process the block locally
 	if result {
-		log.Info().
-			Str("block_hash", block.BlockHash.Hex()).
-			Msg("Positive result - processing block locally")
+		log.Info().Str("block_hash", block.BlockHash.Hex()).Msg("Positive result - processing block locally")
 		return processBlockLocally(block)
 	}
-
 	return nil
 }
 
