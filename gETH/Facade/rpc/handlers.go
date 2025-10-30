@@ -486,13 +486,13 @@ func marshalBlock(b *Types.Block, full bool) map[string]any {
 	}
 
 	// Add baseFeePerGas at top-level from header (EIP-1559)
-	if b.Header != nil && len(b.Header.BaseFee) > 0 {
-		baseFeeBig := new(big.Int).SetBytes(b.Header.BaseFee)
-		result["baseFeePerGas"] = "0x" + baseFeeBig.Text(16)
-	} else {
-		// If no base fee (pre-EIP-1559 blocks), set to null or omit
-		result["baseFeePerGas"] = nil
-	}
+	// if b.Header != nil && len(b.Header.BaseFee) > 0 {
+	// 	baseFeeBig := new(big.Int).SetBytes(b.Header.BaseFee)
+	// 	result["baseFeePerGas"] = "0x" + baseFeeBig.Text(16)
+	// } else {
+	// 	// If no base fee (pre-EIP-1559 blocks), set to null or omit
+	// 	result["baseFeePerGas"] = nil
+	// }
 
 	if full && len(b.Transactions) > 0 {
 		txs := make([]any, len(b.Transactions))

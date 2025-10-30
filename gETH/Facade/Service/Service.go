@@ -431,7 +431,7 @@ func (s *ServiceImpl) Call(ctx context.Context, msg Types.CallMsg, block *big.In
 	return nil, fmt.Errorf("Call method not yet implemented")
 }
 
-// EstimateGas implements the Service interface - estimates gas needed for a transaction
+// EstimateGas UNITS!! implements the Service interface - estimates gas needed for a transaction
 func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint64, error) {
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -451,7 +451,7 @@ func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint6
 		if feeStats.MeanFee > 0 {
 			// Use mean fee from routing service to adjust base gas
 			// Higher fees typically correlate with more complex transactions requiring more gas
-			feeMultiplier := float64(feeStats.MeanFee) / 35000000000.0 // Normalize against 20 gwei
+			feeMultiplier := float64(feeStats.MeanFee) / 35000000000.0 // Normalize against 35 gwei
 			if feeMultiplier > 1.0 {
 				fmt.Printf("💰 Applying fee multiplier: %.4f (MeanFee exceeds 35 gwei threshold)\n", feeMultiplier)
 				baseGas = uint64(float64(baseGas) * feeMultiplier)
@@ -641,9 +641,9 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 
 	// Build result map
 	result := map[string]any{
-		"oldestBlock":   fmt.Sprintf("0x%x", oldestNum.Uint64()),
-		"baseFeePerGas": baseFeePerGas,
-		"gasUsedRatio":  gasUsedRatio,
+		"oldestBlock": fmt.Sprintf("0x%x", oldestNum.Uint64()),
+		// "baseFeePerGas": baseFeePerGas,
+		"gasUsedRatio": gasUsedRatio,
 	}
 
 	// Add rewards if provided
