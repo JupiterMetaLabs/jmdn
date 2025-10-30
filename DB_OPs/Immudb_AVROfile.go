@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"time"
 
 	hashmap "gossipnode/crdt/HashMap"
@@ -115,6 +116,7 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 	// 3. Peel the HashMap & stream into Avro
 	// ———————————————————————————————————————————————
 	keys := MAP.Keys()
+	sort.Strings(keys)
 	log.Printf("Exporting %d keys into Avro → %s", len(keys), cfg.OutputPath)
 
 	for _, key := range keys {

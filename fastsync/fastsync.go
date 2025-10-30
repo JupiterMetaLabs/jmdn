@@ -807,6 +807,58 @@ func (fs *FastSync) batchCreateWithRetry(entriesMap map[string]interface{}, dbTy
 	return fmt.Errorf("failed to apply batch transaction after %d attempts: %w", maxRetries, lastErr)
 }
 
+func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
+	Key   string
+	Value []byte
+}, dbType DatabaseType) error {
+	const maxRetries = 3
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		var dbClient *config.PooledConnection
+		switch dbType {
+		case MainDB:
+			dbClient = fs.mainDB
+		case AccountsDB:
+			dbClient = fs.accountsDB
+		default:
+			return fmt.Errorf("invalid database type: %v", dbType)
+		}
+		if dbClient == nil {
+			return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
+		}
+		if err := DB_OPs.BatchCreateOrdered(dbClient, entries); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if strings.Contains(lastErr.Error(), "invalid token") {
+			var newClient *config.PooledConnection
+			var clientErr error
+			if dbType == MainDB {
+				newClient, clientErr = DB_OPs.GetMainDBConnection()
+				if clientErr == nil {
+					DB_OPs.Close(fs.mainDB.Client)
+					DB_OPs.PutMainDBConnection(fs.mainDB)
+					fs.mainDB = newClient
+				}
+			} else {
+				newClient, clientErr = DB_OPs.GetAccountsConnection()
+				if clientErr == nil {
+					DB_OPs.Close(fs.accountsDB.Client)
+					DB_OPs.PutAccountsConnection(fs.accountsDB)
+					fs.accountsDB = newClient
+				}
+			}
+			if clientErr != nil {
+				return fmt.Errorf("failed to re-authenticate after token error: %w", clientErr)
+			}
+			continue
+		}
+		time.Sleep(RetryDelay * time.Duration(attempt+1))
+	}
+	return fmt.Errorf("failed to apply ordered batch after %d attempts: %w", maxRetries, lastErr)
+}
+
 func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath string) error {
 	// Get the appropriate database client
 	var dbClient *config.PooledConnection
@@ -865,8 +917,11 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		return fmt.Errorf("failed to create avro ocf reader for %s: %w", dbPath, err)
 	}
 
-	entriesMap := make(map[string]interface{})
-	batchSize := 1000 // Process in batches of 1000 entries
+	var entriesOrdered []struct {
+		Key   string
+		Value []byte
+	}
+	batchSize := 50000 // Process in batches of 50,000 entries
 	totalEntries := 0
 
 	// Read records from the Avro file
@@ -905,16 +960,18 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 			continue
 		}
 
-		entriesMap[key] = []byte(value)
+		entriesOrdered = append(entriesOrdered, struct {
+			Key   string
+			Value []byte
+		}{Key: key, Value: []byte(value)})
 
-		if len(entriesMap) >= batchSize {
-			if err := fs.batchCreateWithRetry(entriesMap, dbType); err != nil {
+		if len(entriesOrdered) >= batchSize {
+			if err := fs.batchCreateOrderedWithRetry(entriesOrdered, dbType); err != nil {
 				return fmt.Errorf("failed to push batch to DB: %w", err)
 			}
-			totalEntries += len(entriesMap)
-			entriesMap = make(map[string]interface{}) // reset map
+			totalEntries += len(entriesOrdered)
+			entriesOrdered = nil
 
-			// Log progress
 			log.Info().
 				Int("entries_processed", totalEntries).
 				Dur("elapsed", time.Since(startTime)).
@@ -924,11 +981,11 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 	}
 
 	// Process any remaining entries in the last batch
-	if len(entriesMap) > 0 {
-		if err := fs.batchCreateWithRetry(entriesMap, dbType); err != nil {
+	if len(entriesOrdered) > 0 {
+		if err := fs.batchCreateOrderedWithRetry(entriesOrdered, dbType); err != nil {
 			return fmt.Errorf("failed to push final batch to DB: %w", err)
 		}
-		totalEntries += len(entriesMap)
+		totalEntries += len(entriesOrdered)
 	}
 
 	log.Info().

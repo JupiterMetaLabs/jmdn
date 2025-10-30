@@ -1232,11 +1232,11 @@ func GetMerkleRoot(PooledConnection *config.PooledConnection) ([]byte, error) {
 // SafeCreate stores a value with the given key and verifies the operation (UNCHANGED - but can optionally use connection pool)
 func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 	fmt.Printf("=== DEBUG: SafeCreate called with key: %s ===\n", key)
-	
+
 	var err error
 	var PooledConnection *config.PooledConnection
 	var shouldReturnConnection bool = false
-	
+
 	// If ic is nil, we need to determine which database to use based on context
 	// For now, we'll default to accounts database since this is called from UpdateAccountBalance
 	if ic == nil {
@@ -1249,7 +1249,7 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 		shouldReturnConnection = true
 		ic = PooledConnection.Client
 		fmt.Println("DEBUG: Successfully got accounts connection")
-		
+
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
 			zap.String(logging.Connection_database, config.AccountsDBName),
 			zap.Time(logging.Created_at, time.Now()),
@@ -2558,4 +2558,43 @@ func GetAllBlocks(mainDBClient *config.PooledConnection) ([]*config.ZKBlock, err
 		blocks = append(blocks, block)
 	}
 	return blocks, nil
+}
+
+// BatchCreateOrdered stores multiple key-value pairs preserving order
+func BatchCreateOrdered(PooledConnection *config.PooledConnection, entries []struct {
+	Key   string
+	Value []byte
+}) error {
+	if len(entries) == 0 {
+		return ErrEmptyBatch
+	}
+	var err error
+	var shouldReturnConnection bool = false
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetMainDBConnection()
+		if err != nil {
+			return fmt.Errorf("failed to get database connection: %w", err)
+		}
+		shouldReturnConnection = true
+	}
+	if shouldReturnConnection {
+		defer PutMainDBConnection(PooledConnection)
+	}
+	if err := ensureMainDBSelected(PooledConnection); err != nil {
+		return fmt.Errorf("database selection failed: %w", err)
+	}
+	ops := make([]*schema.Op, 0, len(entries))
+	for _, e := range entries {
+		if e.Key == "" || e.Value == nil {
+			return ErrEmptyKey
+		}
+		ops = append(ops, &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{Key: []byte(e.Key), Value: e.Value}}})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = PooledConnection.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops})
+	if err != nil {
+		return fmt.Errorf("batch operation failed: %w", err)
+	}
+	return nil
 }
