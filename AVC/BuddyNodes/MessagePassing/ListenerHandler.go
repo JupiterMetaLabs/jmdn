@@ -889,6 +889,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 			fmt.Printf("⚠️ Could not populate buddy nodes from cache\n")
 		}
 	}
+	fmt.Printf("✅ Buddy nodes populated: %v\n", listenerNode.BuddyNodes.Buddies_Nodes)
 
 	// 🔄 CRDT SYNC: Sync CRDT data before processing votes
 	fmt.Printf("🔄 Triggering CRDT sync before processing votes...\n")

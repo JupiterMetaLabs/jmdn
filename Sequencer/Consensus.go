@@ -136,6 +136,10 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	MessagePassing.Init_Loggers(config.LOKI_URL != "")
 
+	// Always start a new round with a clean vote results map
+	Maps.ClearVoteResults()
+	log.Printf("Cleared previous round vote results at start of consensus round")
+
 	// 1. Pull the buddies from the NodeSelectionRouter (all candidates)
 	buddies, errMSG := consensus.QueryBuddyNodes()
 	if errMSG != nil {

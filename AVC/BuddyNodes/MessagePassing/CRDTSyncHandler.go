@@ -40,6 +40,36 @@ func TriggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 		return fmt.Errorf("CRDT layer not available")
 	}
 
+	// Ensure buddy nodes list is populated from cached consensus if empty
+	if len(listenerNode.BuddyNodes.Buddies_Nodes) == 0 {
+		fmt.Printf("⚠️ Buddy list empty at CRDT sync; attempting to populate from consensus cache\n")
+		buddyIDs := make([]peer.ID, 0, config.MaxMainPeers)
+		count := 0
+		for _, consensusMsg := range AVCStruct.CacheConsensuMessage {
+			if consensusMsg == nil || consensusMsg.Buddies == nil {
+				continue
+			}
+			for i := 0; i < config.MaxMainPeers && i < len(consensusMsg.Buddies); i++ {
+				if b, ok := consensusMsg.Buddies[i]; ok {
+					if b.PeerID != listenerNode.PeerID {
+						buddyIDs = append(buddyIDs, b.PeerID)
+						count++
+						if count >= config.MaxMainPeers {
+							break
+						}
+					}
+				}
+			}
+			if count >= config.MaxMainPeers {
+				break
+			}
+		}
+		if len(buddyIDs) > 0 {
+			listenerNode.BuddyNodes.Buddies_Nodes = buddyIDs
+			fmt.Printf("✅ Populated buddy nodes from cache for CRDT sync: %d peers (MaxMainPeers=%d)\n", len(buddyIDs), config.MaxMainPeers)
+		}
+	}
+
 	// Create sync topic name
 	syncConfig := CRDTSync.DefaultSyncConfig()
 	topicName := syncConfig.TopicName
@@ -390,87 +420,87 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 	// NOT all nodes in the network - we want exactly MaxMainPeers nodes
 	expectedBuddyCount := config.MaxMainPeers
 
-	// Get buddy nodes from multiple sources (avoid duplicates)
-	// Only use the first MaxMainPeers nodes (excluding self)
-	buddyPeerIDs := make([]peer.ID, 0)
+	// Prefer multiaddr-based targets taken directly from cached consensus message
+	// This avoids relying on peerstore-only lookups and ensures we dial using explicit multiaddrs
+	buddyTargets := make([]AVCStruct.Buddy_PeerMultiaddr, 0, expectedBuddyCount)
 	seenPeers := make(map[string]bool)
 
-	addPeerIfNew := func(peerID peer.ID) {
-		// Stop if we already have MaxMainPeers nodes
-		if len(buddyPeerIDs) >= expectedBuddyCount {
-			return
-		}
-		peerIDStr := peerID.String()
-		if !seenPeers[peerIDStr] && peerID != listenerNode.PeerID {
-			buddyPeerIDs = append(buddyPeerIDs, peerID)
-			seenPeers[peerIDStr] = true
-		}
-	}
-
-	// Source 1: Check listenerNode.BuddyNodes.Buddies_Nodes
-	// Only take the first MaxMainPeers nodes
-	initialCount := len(buddyPeerIDs)
-	for i, peerID := range listenerNode.BuddyNodes.Buddies_Nodes {
-		if i >= expectedBuddyCount {
-			break // Only use MaxMainPeers nodes
-		}
-		addPeerIfNew(peerID)
-	}
-	if len(buddyPeerIDs) > initialCount {
-		fmt.Printf("📋 Found %d buddy nodes from listenerNode.BuddyNodes (limited to MaxMainPeers=%d)\n",
-			len(buddyPeerIDs)-initialCount, expectedBuddyCount)
-	}
-
-	// Source 2: Get from consensus message cache (Buddy_PeerMultiaddr with multiaddrs)
-	// IMPORTANT: Only take the first MaxMainPeers from cache as well
-	initialCount = len(buddyPeerIDs)
-	cacheIndex := 0
+	// Source 1: Use consensus cache with explicit multiaddrs
+	cacheAdded := 0
 	for _, consensusMsg := range AVCStruct.CacheConsensuMessage {
-		if consensusMsg != nil && consensusMsg.Buddies != nil {
-			for _, buddy := range consensusMsg.Buddies {
-				// Only take MaxMainPeers nodes from cache
-				if cacheIndex >= expectedBuddyCount {
-					break
+		if consensusMsg == nil || consensusMsg.Buddies == nil {
+			continue
+		}
+		for i := 0; i < expectedBuddyCount && i < len(consensusMsg.Buddies); i++ {
+			if b, ok := consensusMsg.Buddies[i]; ok {
+				if b.PeerID == listenerNode.PeerID {
+					continue
 				}
-				addPeerIfNew(buddy.PeerID)
-				cacheIndex++
-			}
-			if len(buddyPeerIDs) >= expectedBuddyCount {
-				break // Stop if we have enough
+				pid := b.PeerID.String()
+				if !seenPeers[pid] && b.Multiaddr != nil {
+					buddyTargets = append(buddyTargets, b)
+					seenPeers[pid] = true
+					cacheAdded++
+					if len(buddyTargets) >= expectedBuddyCount {
+						break
+					}
+				}
 			}
 		}
+		if len(buddyTargets) >= expectedBuddyCount {
+			break
+		}
 	}
-	if len(buddyPeerIDs) > initialCount {
-		fmt.Printf("📋 Found %d buddy nodes from consensus message cache (limited to MaxMainPeers=%d)\n",
-			len(buddyPeerIDs)-initialCount, expectedBuddyCount)
+	if cacheAdded > 0 {
+		fmt.Printf("📋 Using %d buddy targets from consensus cache (multiaddr-based)\n", cacheAdded)
 	}
 
 	// NOTE: We do NOT use connected peers as fallback anymore
 	// This was causing us to include all network nodes (18-20) instead of just MaxMainPeers (4)
 	// We rely only on the sequencer-populated buddy node list
 
-	if len(buddyPeerIDs) == 0 {
-		fmt.Printf("⚠️ No buddy nodes found from any source (expected %d MaxMainPeers)\n", expectedBuddyCount)
-		fmt.Printf("⚠️ Cannot connect to other nodes for CRDT sync\n")
-		return nil
+	// If we still have no targets, fall back to peer IDs from listenerNode (will resolve addrs later)
+	if len(buddyTargets) == 0 {
+		fallbackIDs := make([]peer.ID, 0, expectedBuddyCount)
+		for i, pid := range listenerNode.BuddyNodes.Buddies_Nodes {
+			if i >= expectedBuddyCount {
+				break
+			}
+			if pid != listenerNode.PeerID && !seenPeers[pid.String()] {
+				fallbackIDs = append(fallbackIDs, pid)
+				seenPeers[pid.String()] = true
+			}
+		}
+		if len(fallbackIDs) == 0 {
+			fmt.Printf("⚠️ No buddy nodes found from any source (expected %d MaxMainPeers)\n", expectedBuddyCount)
+			fmt.Printf("⚠️ Cannot connect to other nodes for CRDT sync\n")
+			return nil
+		}
+		fmt.Printf("📋 Falling back to %d buddy peer IDs (will resolve multiaddrs)\n", len(fallbackIDs))
+
+		// Convert fallback IDs into targets by resolving multiaddrs below
+		for _, pid := range fallbackIDs {
+			buddyTargets = append(buddyTargets, AVCStruct.Buddy_PeerMultiaddr{PeerID: pid})
+		}
 	}
 
-	if len(buddyPeerIDs) < expectedBuddyCount {
+	if len(buddyTargets) < expectedBuddyCount {
 		fmt.Printf("⚠️ Only found %d buddy nodes, expected %d (config.MaxMainPeers)\n",
-			len(buddyPeerIDs), expectedBuddyCount)
+			len(buddyTargets), expectedBuddyCount)
 	}
 
 	fmt.Printf("✅ Total buddy nodes to connect: %d (expected: %d from config.MaxMainPeers)\n",
-		len(buddyPeerIDs), expectedBuddyCount)
+		len(buddyTargets), expectedBuddyCount)
 
-	fmt.Printf("🔌 Connecting to %d buddy nodes for CRDT sync...\n", len(buddyPeerIDs))
+	fmt.Printf("🔌 Connecting to %d buddy nodes for CRDT sync...\n", len(buddyTargets))
 
 	connectedCount := 0
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Connect to each buddy node
-	for _, buddyPeerID := range buddyPeerIDs {
+	for _, target := range buddyTargets {
+		buddyPeerID := target.PeerID
 		// Skip self
 		if buddyPeerID == listenerNode.PeerID {
 			continue
@@ -485,20 +515,10 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 
 		var multiaddrs []multiaddr.Multiaddr
 
-		// Priority 1: Check consensus message cache (has Buddy_PeerMultiaddr with multiaddrs)
-		for _, consensusMsg := range AVCStruct.CacheConsensuMessage {
-			if consensusMsg != nil && consensusMsg.Buddies != nil {
-				for _, buddy := range consensusMsg.Buddies {
-					if buddy.PeerID == buddyPeerID && buddy.Multiaddr != nil {
-						multiaddrs = []multiaddr.Multiaddr{buddy.Multiaddr}
-						fmt.Printf("📋 Got multiaddr from consensus cache for buddy %s: %s\n", buddyPeerID.String()[:8], buddy.Multiaddr.String())
-						break
-					}
-				}
-				if len(multiaddrs) > 0 {
-					break
-				}
-			}
+		// Priority 1: Use target's provided multiaddr if present
+		if target.Multiaddr != nil {
+			multiaddrs = []multiaddr.Multiaddr{target.Multiaddr}
+			fmt.Printf("📋 Using provided multiaddr for buddy %s: %s\n", buddyPeerID.String()[:8], target.Multiaddr.String())
 		}
 
 		// Priority 2: Try to get from peerstore (fastest local source)
@@ -568,7 +588,7 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	fmt.Printf("✅ Connected to %d/%d buddy nodes for CRDT sync\n", connectedCount, len(buddyPeerIDs))
+	fmt.Printf("✅ Connected to %d/%d buddy nodes for CRDT sync\n", connectedCount, len(buddyTargets))
 
 	// Wait a moment for connections to establish
 	time.Sleep(1 * time.Second)
