@@ -270,9 +270,22 @@ func runCommand(command string, args []string, grpcPort int) {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
+		// Defensive guards against nil responses to prevent panics
+		if stats == nil {
+			fmt.Println("FastSync returned no stats (nil). The target peer may be unreachable or rejected the request.")
+			os.Exit(1)
+		}
 		fmt.Printf("Sync completed in %dms\n", stats.TimeTaken)
-		fmt.Printf("  Main DB TxID: %d\n", stats.MainState.TxId)
-		fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
+		if stats.MainState == nil {
+			fmt.Println("  Main DB TxID: unavailable (no state returned)")
+		} else {
+			fmt.Printf("  Main DB TxID: %d\n", stats.MainState.TxId)
+		}
+		if stats.AccountsState == nil {
+			fmt.Println("  Accounts DB TxID: unavailable (no state returned)")
+		} else {
+			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
+		}
 
 	case "sendfile":
 		if len(args) < 3 {

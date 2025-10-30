@@ -17,7 +17,7 @@ import (
 	"gossipnode/DB_OPs"
 )
 
-const(
+const (
 	LOG_FILE        = "SecurityModule.log"
 	TOPIC           = "SecurityModule"
 	LOKI_BATCH_SIZE = 128 * 1024
@@ -26,12 +26,30 @@ const(
 	KEEP_LOGS       = true
 )
 
+// expectedChainID holds the node's configured chain ID for validation.
+// Set this at startup using SetExpectedChainID/SetExpectedChainIDBig.
+var expectedChainID *big.Int
+
+// SetExpectedChainID sets the expected chain ID used to validate incoming transactions.
+func SetExpectedChainID(id int) {
+	expectedChainID = big.NewInt(int64(id))
+}
+
+// SetExpectedChainIDBig sets the expected chain ID from a big.Int.
+func SetExpectedChainIDBig(id *big.Int) {
+	if id == nil {
+		expectedChainID = nil
+		return
+	}
+	expectedChainID = new(big.Int).Set(id)
+}
+
 func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	// Check the ZKBlock nil or not
 	if zkBlock == nil {
 		return false, errors.New("zkBlock cannot be nil")
 	}
-	
+
 	// 1. Check the ZKBlock validation for Transactions in the ZKBlokc
 	for _, tx := range zkBlock.Transactions {
 		status, err := ThreeChecks(&tx)
@@ -68,6 +86,35 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 	Conn, err := DB_OPs.GetAccountsConnection()
 	if err != nil {
 		return false, err
+	}
+
+	// Preliminary Check: Chain ID must be present and valid (> 0)
+	if tx == nil || tx.ChainID == nil || tx.ChainID.Sign() <= 0 {
+		Conn.Client.Logger.Logger.Error("Invalid or missing ChainID",
+			zap.Error(errors.New("transaction chain ID is missing or invalid")),
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.ThreeChecks"),
+		)
+		return false, errors.New("invalid transaction: chain ID is missing or invalid")
+	}
+
+	// Compare Chain ID to node's expected Chain ID if configured
+	if expectedChainID != nil && tx.ChainID.Cmp(expectedChainID) != 0 {
+		Conn.Client.Logger.Logger.Error("chain id mismatch",
+			zap.String("tx_chain_id", tx.ChainID.String()),
+			zap.String("expected_chain_id", expectedChainID.String()),
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.ThreeChecks"),
+		)
+		return false, errors.New("invalid transaction: chain id does not match node configuration")
 	}
 
 	// First Check Accounts exist
@@ -261,24 +308,24 @@ func CheckSignature(tx *config.Transaction) (bool, error) {
 func CheckAddressExist(tx *config.Transaction, Conn *config.PooledConnection) (bool, error) {
 	if tx == nil {
 		Conn.Client.Logger.Logger.Error("Transaction is empty",
-		zap.Error(errors.New("transaction cannot be nil")),
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.CheckAddressExist"),
-	)
+			zap.Error(errors.New("transaction cannot be nil")),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckAddressExist"),
+		)
 		return false, errors.New("transaction cannot be nil")
 	}
 	if tx.From == nil || tx.To == nil {
 		Conn.Client.Logger.Logger.Error("From or To address is empty",
-		zap.Error(errors.New("From or To address is empty")),
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.CheckAddressExist"),
-	)
+			zap.Error(errors.New("From or To address is empty")),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckAddressExist"),
+		)
 		return false, nil
 	}
 
@@ -286,40 +333,39 @@ func CheckAddressExist(tx *config.Transaction, Conn *config.PooledConnection) (b
 	From, err := DB_OPs.GetAccount(Conn, *tx.From)
 	if err != nil {
 		Conn.Client.Logger.Logger.Error("Failed to get From DID from DB",
-		zap.Error(errors.New("failed to get From DID from DB -> " + err.Error())),
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.CheckAddressExist"),
-	)
+			zap.Error(errors.New("failed to get From DID from DB -> "+err.Error())),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckAddressExist"),
+		)
 		return false, errors.New("failed to get From DID from DB -> " + err.Error())
 	}
-
 
 	To, err := DB_OPs.GetAccount(Conn, *tx.To)
 	if err != nil {
 		Conn.Client.Logger.Logger.Error("Failed to get the Account",
-		zap.Error(errors.New("failed to get To DID from DB -> " + err.Error())),
-		zap.String("Target Function","DB_OPs.GetAccount"),
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.CheckAddressExist"),
-	)
+			zap.Error(errors.New("failed to get To DID from DB -> "+err.Error())),
+			zap.String("Target Function", "DB_OPs.GetAccount"),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckAddressExist"),
+		)
 		return false, errors.New("failed to get To DID from DB -> " + err.Error())
 	}
 
 	if From == nil || To == nil {
 		Conn.Client.Logger.Logger.Error("From or To address is empty",
-		zap.Error(errors.New("From or To address is empty")),
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.CheckAddressExist"),
-	)
+			zap.Error(errors.New("From or To address is empty")),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckAddressExist"),
+		)
 		return false, nil
 	}
 
@@ -339,25 +385,25 @@ func CheckAddressExist(tx *config.Transaction, Conn *config.PooledConnection) (b
 func CheckBalance(tx *config.Transaction, Conn *config.PooledConnection) (bool, error) {
 	if tx == nil {
 		Conn.Client.Logger.Logger.Error("Transaction is empty",
-		zap.Error(errors.New("transaction cannot be nil")),
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.CheckBalance"),
-	)
+			zap.Error(errors.New("transaction cannot be nil")),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
 		return false, errors.New("transaction cannot be nil")
 	}
 
 	if tx.From == nil {
 		Conn.Client.Logger.Logger.Error("From address is empty",
-		zap.Error(errors.New("From address is empty")),
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.CheckBalance"),
-	)
+			zap.Error(errors.New("From address is empty")),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
 		return false, nil
 	}
 
@@ -365,37 +411,37 @@ func CheckBalance(tx *config.Transaction, Conn *config.PooledConnection) (bool, 
 	From, err := DB_OPs.GetAccount(Conn, *tx.From)
 	if err != nil {
 		Conn.Client.Logger.Logger.Error("Failed to get From DID from DB",
-		zap.Error(errors.New("failed to get From DID from DB -> " + err.Error())),
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.CheckBalance"),
-	)
+			zap.Error(errors.New("failed to get From DID from DB -> "+err.Error())),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
 		return false, errors.New("failed to get From DID from DB -> " + err.Error())
 	}
 
 	if From == nil {
 		Conn.Client.Logger.Logger.Error("From address is empty",
-		zap.Error(errors.New("From address is empty")),
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.CheckBalance"),
-	)
+			zap.Error(errors.New("From address is empty")),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
 		return false, nil
 	}
 
 	// Convert From.balance from string to big.Int
 	if strings.HasPrefix(From.Balance, "[") {
 		Conn.Client.Logger.Logger.Info("Have Prefix [",
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.CheckBalance"),
-	)
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
 		balanceStr := strings.Trim(From.Balance, "[]\"") // Remove any JSON array or string quotes
 		From.Balance = balanceStr
 	}
@@ -419,35 +465,35 @@ func CheckBalance(tx *config.Transaction, Conn *config.PooledConnection) (bool, 
 	switch {
 	case tx.MaxFee != nil && tx.MaxPriorityFee != nil:
 		Conn.Client.Logger.Logger.Info("Have MaxFee and MaxPriorityFee",
-		zap.String("MaxFee", tx.MaxFee.String()),
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.CheckBalance"),
-	)
+			zap.String("MaxFee", tx.MaxFee.String()),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
 		// EIP-1559 transaction: gas cost is gasLimit * maxFeePerGas (worst case)
 		gasCost = new(big.Int).Mul(gasLimit, tx.MaxFee)
 
 	case tx.GasPrice != nil:
 		Conn.Client.Logger.Logger.Info("Have GasPrice",
-		zap.String("GasPrice", tx.GasPrice.String()),
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.CheckBalance"),
-	)
+			zap.String("GasPrice", tx.GasPrice.String()),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
 		// Legacy or EIP-2930 transaction: gas cost is gasLimit * gasPrice
 		gasCost = new(big.Int).Mul(gasLimit, tx.GasPrice)
 	default:
 		Conn.Client.Logger.Logger.Info("Invalid gas pricing parameters",
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.CheckBalance"),
-	)
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
 		return false, errors.New("invalid gas pricing parameters")
 	}
 
@@ -468,14 +514,14 @@ func CheckBalance(tx *config.Transaction, Conn *config.PooledConnection) (bool, 
 	// Check if balance is sufficient for total cost
 	if FromBalance.Cmp(tx.Value) < 0 {
 		Conn.Client.Logger.Logger.Info("From Balance is less than Total Cost",
-		zap.String("From Balance", FromBalance.String()),
-		zap.String("Total Cost", tx.Value.String()),
-		zap.Time(logging.Created_at, time.Now()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.CheckBalance"),
-	)
+			zap.String("From Balance", FromBalance.String()),
+			zap.String("Total Cost", tx.Value.String()),
+			zap.Time(logging.Created_at, time.Now()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
 		return false, nil
 	}
 

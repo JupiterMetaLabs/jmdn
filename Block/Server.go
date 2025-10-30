@@ -17,6 +17,7 @@ import (
 	"gossipnode/Sequencer"
 	"gossipnode/config"
 	"gossipnode/logging"
+
 	// "gossipnode/messaging"
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
@@ -192,6 +193,8 @@ func Startserver(port int, h host.Host, chainID int) {
 	router := gin.Default()
 	SetHostInstance(h)
 	globalChainID = chainID
+	// Also set expected chain ID in Security module for tx validation
+	Security.SetExpectedChainID(chainID)
 
 	// Add logging middleware
 	router.Use(func(c *gin.Context) {
