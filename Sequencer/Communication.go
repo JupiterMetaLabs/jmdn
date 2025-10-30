@@ -452,18 +452,19 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 }
 
 // ValidateConsensusConfiguration validates that the consensus configuration is correct
-// Architecture: 1 creator + 13 main peers + 3 backup peers = 17 total allowed peers
-// Active consensus: 1 creator + 13 main peers = 14 active participants
-// Backup peers are standby replacements, not active participants
+// NEW Architecture: 1 creator + MaxMainPeers final buddy nodes (no separate backup peers)
+// Final buddy nodes are selected by trying main candidates first, then filling from backup candidates
+// After selection, only the final connected peers are kept (no backup peers stored separately)
 func ValidateConsensusConfiguration(consensus *Consensus) error {
-	// Check main peers count (should be 13)
+	// Check main peers count (should be exactly MaxMainPeers - these are the final connected buddy nodes)
 	if len(consensus.PeerList.MainPeers) != config.MaxMainPeers {
-		return fmt.Errorf("main peers count must be exactly %d, got %d", config.MaxMainPeers, len(consensus.PeerList.MainPeers))
+		return fmt.Errorf("main peers count must be exactly %d (final buddy nodes), got %d", config.MaxMainPeers, len(consensus.PeerList.MainPeers))
 	}
 
-	// Check backup peers count (should be 3)
-	if len(consensus.PeerList.BackupPeers) != config.MaxBackupPeers {
-		return fmt.Errorf("backup peers count must be exactly %d, got %d", config.MaxBackupPeers, len(consensus.PeerList.BackupPeers))
+	// Backup peers are now optional/empty - they're only used during selection, not stored separately
+	// Allow empty backup peers since final buddy nodes are all in MainPeers after selection
+	if len(consensus.PeerList.BackupPeers) > 0 && len(consensus.PeerList.BackupPeers) != config.MaxBackupPeers {
+		return fmt.Errorf("if backup peers are set, count must be exactly %d, got %d", config.MaxBackupPeers, len(consensus.PeerList.BackupPeers))
 	}
 
 	// Check for duplicate peer IDs within main peers
@@ -471,9 +472,11 @@ func ValidateConsensusConfiguration(consensus *Consensus) error {
 		return fmt.Errorf("duplicate peer ID found in main peers: %w", err)
 	}
 
-	// Check for duplicate peer IDs within backup peers
-	if err := checkForDuplicatePeerIDs(consensus.PeerList.BackupPeers); err != nil {
-		return fmt.Errorf("duplicate peer ID found in backup peers: %w", err)
+	// Check for duplicate peer IDs within backup peers (if any)
+	if len(consensus.PeerList.BackupPeers) > 0 {
+		if err := checkForDuplicatePeerIDs(consensus.PeerList.BackupPeers); err != nil {
+			return fmt.Errorf("duplicate peer ID found in backup peers: %w", err)
+		}
 	}
 
 	// Check for duplicate peer IDs between main and backup peers
@@ -484,7 +487,7 @@ func ValidateConsensusConfiguration(consensus *Consensus) error {
 		allPeers[peerID] = true
 	}
 
-	// Check backup peers against main peers
+	// Check backup peers against main peers (if any)
 	for _, peerID := range consensus.PeerList.BackupPeers {
 		if allPeers[peerID] {
 			return fmt.Errorf("duplicate peer ID found between main and backup peers: %s", peerID)
@@ -492,15 +495,14 @@ func ValidateConsensusConfiguration(consensus *Consensus) error {
 		allPeers[peerID] = true
 	}
 
-	// Check total peers (should be 16: 13 main + 3 backup)
-	totalPeers := len(consensus.PeerList.MainPeers) + len(consensus.PeerList.BackupPeers)
-	expectedTotal := config.MaxMainPeers + config.MaxBackupPeers
-	if totalPeers != expectedTotal {
-		return fmt.Errorf("total peers count must be exactly %d (13 main + 3 backup), got %d", expectedTotal, totalPeers)
+	// Total peers validation: only check main peers (backup peers may be empty)
+	totalPeers := len(consensus.PeerList.MainPeers)
+	if totalPeers != config.MaxMainPeers {
+		return fmt.Errorf("total main peers count must be exactly %d (final buddy nodes), got %d", config.MaxMainPeers, totalPeers)
 	}
 
-	log.Printf("Consensus configuration validated: %d main peers, %d backup peers (1 creator + 13 active + 3 standby = 17 total allowed)",
-		len(consensus.PeerList.MainPeers), len(consensus.PeerList.BackupPeers))
+	log.Printf("Consensus configuration validated: %d final buddy nodes (main peers), %d backup peers (1 creator + %d active = %d total allowed)",
+		len(consensus.PeerList.MainPeers), len(consensus.PeerList.BackupPeers), len(consensus.PeerList.MainPeers), len(consensus.PeerList.MainPeers)+1)
 
 	return nil
 }

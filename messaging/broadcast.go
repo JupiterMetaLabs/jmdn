@@ -358,6 +358,41 @@ func handleVoteTriggerBroadcast(msg BroadcastMessageStruct) {
 	fmt.Printf("📊 Node: %s\n", listenerNode.PeerID.String())
 	fmt.Printf("═══════════════════════════════════════════════════════════\n")
 
+	// IMPORTANT: Populate buddy nodes list from consensus message
+	// Extract ONLY the final connected buddy nodes (MaxMainPeers) from consensus message's Buddies map
+	// These are the buddy nodes selected by sequencer (main candidates + backup fill-ins if needed)
+	buddyPeerIDs := make([]peer.ID, 0, config.MaxMainPeers)
+	buddiesMap := consensusMessage.GetBuddies()
+	if len(buddiesMap) > 0 {
+		// Buddies is a map[int]Buddy_PeerMultiaddr
+		// The consensus message contains exactly MaxMainPeers buddies (the final connected ones)
+		// Extract them in order (by map key index 0, 1, 2, ... MaxMainPeers-1)
+		for i := 0; i < config.MaxMainPeers && i < len(buddiesMap); i++ {
+			if buddy, exists := buddiesMap[i]; exists {
+				// Check if PeerID is valid (not empty)
+				if buddy.PeerID != "" && len(buddy.PeerID.String()) > 0 {
+					buddyPeerIDs = append(buddyPeerIDs, buddy.PeerID)
+				}
+			}
+		}
+	}
+
+	// Populate listener node's buddy list with the final connected buddy nodes (MaxMainPeers)
+	if len(buddyPeerIDs) > 0 {
+		listenerNode.BuddyNodes.Buddies_Nodes = buddyPeerIDs
+		fmt.Printf("📋 Populated buddy nodes list from consensus message: %d buddy nodes (MaxMainPeers=%d)\n",
+			len(buddyPeerIDs), config.MaxMainPeers)
+		for i, pid := range buddyPeerIDs {
+			fmt.Printf("   Buddy %d: %s\n", i+1, pid.String()[:16])
+		}
+	} else {
+		fmt.Printf("⚠️ No buddy nodes found in consensus message - CRDT sync may fail\n")
+	}
+
+	// Store consensus message in global cache (needed for CRDT sync multiaddr lookup)
+	consensusMessage.SetGloalVarCacheConsensusMessage()
+	fmt.Printf("✅ Stored consensus message in cache for multiaddr lookup\n")
+
 	// Create vote trigger and submit vote
 	voteTrigger := Vote.NewVoteTrigger()
 	voteTrigger.SetConsensusMessage(&consensusMessage)

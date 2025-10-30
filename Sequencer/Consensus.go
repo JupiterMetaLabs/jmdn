@@ -23,6 +23,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 )
 
 type PeerList struct {
@@ -95,6 +96,32 @@ func (Consensus *Consensus) AddBuddyNodesTemporarily(buddies []PubSubMessages.Bu
 	Cache.AddPeersTemporary(buddies)
 }
 
+// pingAndAddToCache pings a buddy node and adds it to cache if reachable
+// Does NOT connect - connection is handled separately by AddPeerCache.ConnectToTemporaryPeers
+func (consensus *Consensus) pingAndAddToCache(buddy PubSubMessages.Buddy_PeerMultiaddr) error {
+	nodeManager := Cache.GetNodeManager()
+	if nodeManager == nil {
+		return fmt.Errorf("NodeManager not available")
+	}
+
+	addrStr := buddy.Multiaddr.String()
+
+	// Ping to check reachability
+	reachable, _, err := nodeManager.PingMultiaddrWithRetries(addrStr, 3)
+	if err != nil {
+		return fmt.Errorf("ping failed: %v", err)
+	}
+
+	if !reachable {
+		return fmt.Errorf("peer not reachable at %s", addrStr)
+	}
+
+	// Add to cache (connection will be done by AddPeerCache.ConnectToTemporaryPeers)
+	Cache.AddPeer(buddy.PeerID, buddy.Multiaddr)
+
+	return nil
+}
+
 func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Validate consensus configuration
 	if consensus.Host == nil {
@@ -117,91 +144,141 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	log.Printf("Queried %d buddy node candidates from NodeSelectionRouter", len(buddies))
 
-	// 2. Ping buddies and add ONLY reachable ones to cache (stops at config.MaxMainPeers)
-	// This will connect to reachable peers and add them to AddPeersCache
-	consensus.AddBuddyNodesTemporarily(buddies)
+	// 2. Split buddies into main candidates (first MaxMainPeers) and backup candidates (next MaxBackupPeers)
+	// Main peers are primary - we try to connect to these first
+	// Backup peers are fallback - we use these if main peer connections fail
+	mainCandidates := make([]PubSubMessages.Buddy_PeerMultiaddr, 0, config.MaxMainPeers)
+	backupCandidates := make([]PubSubMessages.Buddy_PeerMultiaddr, 0, config.MaxBackupPeers)
 
-	// 3. Get ONLY the reachable peers from cache (these are the ones that passed ping test)
-	// AddPeersTemporary stops at config.MaxMainPeers, so this will have at most MaxMainPeers entries
-	buddiesReachableMap := Cache.GetAllPeers()
+	// Deduplicate buddies by peer.ID (buddies may have multiple multiaddrs per peer)
+	seenPeers := make(map[string]bool)
+	for _, buddy := range buddies {
+		pidStr := buddy.PeerID.String()
+		if seenPeers[pidStr] {
+			continue // Skip duplicates
+		}
+		seenPeers[pidStr] = true
 
-	if len(buddiesReachableMap) < config.MaxMainPeers {
-		return fmt.Errorf("not enough reachable peers: got %d, need at least %d (MaxMainPeers)",
-			len(buddiesReachableMap), config.MaxMainPeers)
+		if len(mainCandidates) < config.MaxMainPeers {
+			mainCandidates = append(mainCandidates, buddy)
+		} else if len(backupCandidates) < config.MaxBackupPeers {
+			backupCandidates = append(backupCandidates, buddy)
+		}
 	}
 
-	log.Printf("Found %d reachable peers in cache (will use first %d as main peers)",
-		len(buddiesReachableMap), config.MaxMainPeers)
+	log.Printf("Split into %d main candidates and %d backup candidates", len(mainCandidates), len(backupCandidates))
 
-	// 4. Convert reachable peers map to PeerList (only MaxMainPeers for main peers)
-	// Extract peer IDs from cache and limit to MaxMainPeers
-	reachablePeerIDs := make([]peer.ID, 0, config.MaxMainPeers)
-	count := 0
-	for peerID := range buddiesReachableMap {
-		if count >= config.MaxMainPeers {
+	// 3. Try main peers first (primary) - ping and add to cache (no connection yet)
+	finalBuddyNodes := make([]PubSubMessages.Buddy_PeerMultiaddr, 0, config.MaxMainPeers)
+	seenPeersMap := make(map[string]bool)
+
+	// Clear cache before starting
+	Cache.ClearCache()
+
+	// Try main candidates first - ping and add to cache
+	log.Printf("Checking reachability for %d main peer candidates...", len(mainCandidates))
+	for _, mainBuddy := range mainCandidates {
+		if len(finalBuddyNodes) >= config.MaxMainPeers {
 			break
 		}
-		reachablePeerIDs = append(reachablePeerIDs, peerID)
-		count++
-		log.Printf("Main peer %d: %s", count, peerID.String()[:16])
+		pidStr := mainBuddy.PeerID.String()
+		if seenPeersMap[pidStr] {
+			continue // Already processed
+		}
+
+		// Ping and add to cache (no connection - that will be done by AddPeerCache)
+		if err := consensus.pingAndAddToCache(mainBuddy); err != nil {
+			log.Printf("Main peer %s ping failed: %v (will try backup if needed)",
+				mainBuddy.PeerID.String()[:16], err)
+			continue
+		}
+
+		// Successfully pinged and added to cache
+		finalBuddyNodes = append(finalBuddyNodes, mainBuddy)
+		seenPeersMap[pidStr] = true
+		log.Printf("✓ Main peer %d/%d reachable: %s",
+			len(finalBuddyNodes), config.MaxMainPeers, mainBuddy.PeerID.String()[:16])
 	}
 
-	// Set main peers to the reachable ones (exactly MaxMainPeers)
-	consensus.PeerList.MainPeers = reachablePeerIDs
+	// 4. Fill empty slots from backup peers if needed
+	if len(finalBuddyNodes) < config.MaxMainPeers {
+		needed := config.MaxMainPeers - len(finalBuddyNodes)
+		log.Printf("Filling %d empty slots from backup candidates...", needed)
 
-	// For backup peers, we can use remaining buddies from original query (or empty for now)
-	// Backup peers are standby replacements, not critical for initial setup
-	consensus.PeerList.BackupPeers = make([]peer.ID, 0)
-	if len(buddies) > config.MaxMainPeers {
-		// Use remaining buddies as backup (but don't require them to be reachable)
-		backupCount := config.MaxBackupPeers
-		if len(buddies)-config.MaxMainPeers < backupCount {
-			backupCount = len(buddies) - config.MaxMainPeers
-		}
-		// Get peer IDs from original buddies list (excluding ones we used for main)
-		remainingPeerIDs := make([]peer.ID, 0)
-		usedPeers := make(map[string]bool)
-		for _, pid := range reachablePeerIDs {
-			usedPeers[pid.String()] = true
-		}
-		for _, buddy := range buddies {
-			if !usedPeers[buddy.PeerID.String()] && len(remainingPeerIDs) < backupCount {
-				remainingPeerIDs = append(remainingPeerIDs, buddy.PeerID)
+		for _, backupBuddy := range backupCandidates {
+			if len(finalBuddyNodes) >= config.MaxMainPeers {
+				break
 			}
-		}
-		consensus.PeerList.BackupPeers = remainingPeerIDs
-		log.Printf("Set %d backup peers from remaining candidates", len(consensus.PeerList.BackupPeers))
-	}
-
-	// 5. Filter original buddies list to match reachable peers (for ConsensusMessage)
-	// Only include buddies that are in the reachable cache
-	reachableBuddies := make([]PubSubMessages.Buddy_PeerMultiaddr, 0, config.MaxMainPeers)
-	reachableSet := make(map[string]bool)
-	for _, pid := range reachablePeerIDs {
-		reachableSet[pid.String()] = true
-	}
-
-	// Find matching buddies from original list
-	for _, buddy := range buddies {
-		if reachableSet[buddy.PeerID.String()] && len(reachableBuddies) < config.MaxMainPeers {
-			// Use the multiaddr from cache (it's the reachable one)
-			if cachedAddr := Cache.GetPeer(buddy.PeerID); cachedAddr != nil {
-				reachableBuddies = append(reachableBuddies, PubSubMessages.Buddy_PeerMultiaddr{
-					PeerID:    buddy.PeerID,
-					Multiaddr: cachedAddr,
-				})
+			pidStr := backupBuddy.PeerID.String()
+			if seenPeersMap[pidStr] {
+				continue // Already processed
 			}
+
+			// Ping and add to cache (no connection - that will be done by AddPeerCache)
+			if err := consensus.pingAndAddToCache(backupBuddy); err != nil {
+				log.Printf("Backup peer %s ping failed: %v",
+					backupBuddy.PeerID.String()[:16], err)
+				continue
+			}
+
+			// Successfully pinged and added to cache
+			finalBuddyNodes = append(finalBuddyNodes, backupBuddy)
+			seenPeersMap[pidStr] = true
+			log.Printf("✓ Filled slot with backup peer %d/%d: %s",
+				len(finalBuddyNodes), config.MaxMainPeers, backupBuddy.PeerID.String()[:16])
 		}
 	}
 
-	if len(reachableBuddies) < config.MaxMainPeers {
-		return fmt.Errorf("failed to build reachable buddies list: got %d, need %d",
-			len(reachableBuddies), config.MaxMainPeers)
+	// 5. Verify we have exactly MaxMainPeers reachable buddy nodes
+	if len(finalBuddyNodes) < config.MaxMainPeers {
+		return fmt.Errorf("not enough reachable peers: got %d, need exactly %d (MaxMainPeers). Main candidates: %d, Backup candidates: %d",
+			len(finalBuddyNodes), config.MaxMainPeers, len(mainCandidates), len(backupCandidates))
 	}
 
-	log.Printf("Built reachable buddies list: %d peers (all reachable and added as neighbors)", len(reachableBuddies))
+	// 6. Now connect to all final buddy nodes at once using AddPeerCache's ConnectToTemporaryPeers
+	// This uses the existing connection logic that handles already-connected peers gracefully
+	reachablePeers := make(map[peer.ID]multiaddr.Multiaddr, len(finalBuddyNodes))
+	for _, buddy := range finalBuddyNodes {
+		if cachedAddr := Cache.GetPeer(buddy.PeerID); cachedAddr != nil {
+			reachablePeers[buddy.PeerID] = cachedAddr
+		}
+	}
 
-	// 6. Create ConsensusMessage with ONLY reachable buddies
+	log.Printf("Connecting to %d final buddy nodes via AddPeerCache...", len(reachablePeers))
+	if err := Cache.ConnectToTemporaryPeers(reachablePeers); err != nil {
+		return fmt.Errorf("failed to connect to final buddy nodes: %v", err)
+	}
+
+	// 7. Set final buddy nodes - these are the only peers we use (no backup peers)
+	finalPeerIDs := make([]peer.ID, 0, len(finalBuddyNodes))
+	for _, buddy := range finalBuddyNodes {
+		finalPeerIDs = append(finalPeerIDs, buddy.PeerID)
+	}
+
+	consensus.PeerList.MainPeers = finalPeerIDs
+	consensus.PeerList.BackupPeers = make([]peer.ID, 0) // No backup peers - only final 4 count
+
+	log.Printf("✅ Final buddy nodes: %d connected peers (these are responsible for votes, CRDT sync, pubsub sync, vote aggregation)",
+		len(finalBuddyNodes))
+
+	// 8. Build final buddies list for ConsensusMessage (using connected peers with cached multiaddrs)
+	reachableBuddies := make([]PubSubMessages.Buddy_PeerMultiaddr, 0, len(finalBuddyNodes))
+	for _, buddy := range finalBuddyNodes {
+		// Use the multiaddr from cache (it's the one that successfully connected)
+		if cachedAddr := Cache.GetPeer(buddy.PeerID); cachedAddr != nil {
+			reachableBuddies = append(reachableBuddies, PubSubMessages.Buddy_PeerMultiaddr{
+				PeerID:    buddy.PeerID,
+				Multiaddr: cachedAddr,
+			})
+		} else {
+			// Fallback to original multiaddr if not in cache
+			reachableBuddies = append(reachableBuddies, buddy)
+		}
+	}
+
+	log.Printf("Built final buddies list: %d peers (all connected and ready for consensus)", len(reachableBuddies))
+
+	// 8. Create ConsensusMessage with ONLY the final connected buddy nodes
 	consensus.ZKBlockData, errMSG = consensus.AddBuddyNodesToPeerList(zkblock, reachableBuddies)
 	if errMSG != nil {
 		return fmt.Errorf("failed to add buddy nodes to peer list: %v", errMSG)
@@ -212,20 +289,18 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		return fmt.Errorf("invalid consensus configuration: %w", err)
 	}
 
-	// 7. Create allowed peers list (1 creator + MaxMainPeers reachable main peers + backup)
-	allowedPeers := make([]peer.ID, 0, config.MaxMainPeers+config.MaxBackupPeers+1)
+	// 9. Create allowed peers list (1 creator + MaxMainPeers final buddy nodes)
+	// No backup peers - only the final 4 connected peers
+	allowedPeers := make([]peer.ID, 0, config.MaxMainPeers+1)
 
 	// Add the creator (host) to the allowed list
 	allowedPeers = append(allowedPeers, consensus.Host.ID())
 
-	// Add main peers (only reachable ones) to the allowed list
+	// Add final buddy nodes (the connected ones)
 	allowedPeers = append(allowedPeers, consensus.PeerList.MainPeers...)
 
-	// Add backup peers to the allowed list (if any)
-	allowedPeers = append(allowedPeers, consensus.PeerList.BackupPeers...)
-
-	log.Printf("Creating pubsub channel with %d allowed peers (1 creator + %d main + %d backup)",
-		len(allowedPeers), len(consensus.PeerList.MainPeers), len(consensus.PeerList.BackupPeers))
+	log.Printf("Creating pubsub channel with %d allowed peers (1 creator + %d buddy nodes)",
+		len(allowedPeers), len(consensus.PeerList.MainPeers))
 
 	// First create the pubsub channel
 	var err error
@@ -241,10 +316,9 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	log.Printf("Successfully created pubsub channel: %s", config.PubSub_ConsensusChannel)
 
-	// Create the CRDT sync channel ONLY for buddy nodes (vote aggregators) to synchronize their CRDTs
-	// This channel is restricted to only the selected buddy nodes (main + backup peers)
-	// Regular network nodes cannot join - only nodes performing vote aggregation can access it
-	// Using the same allowed peers list as the consensus channel (sequencer + main buddies + backup buddies)
+	// Create the CRDT sync channel ONLY for final buddy nodes (vote aggregators) to synchronize their CRDTs
+	// This channel is restricted to only the final connected buddy nodes
+	// Regular network nodes cannot join - only the 4 buddy nodes performing vote aggregation can access it
 	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.Pubsub_CRDTSync, false, allowedPeers); err != nil {
 		if err.Error() != fmt.Sprintf("channel %s already exists", config.Pubsub_CRDTSync) {
 			log.Printf("⚠️ Failed to create CRDT sync channel: %v (continuing anyway)", err)
@@ -252,8 +326,8 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 			log.Printf("✅ CRDT sync channel already exists: %s", config.Pubsub_CRDTSync)
 		}
 	} else {
-		log.Printf("✅ Successfully created CRDT sync channel: %s (private, %d allowed peers - sequencer + %d main + %d backup buddies only)",
-			config.Pubsub_CRDTSync, len(allowedPeers), len(consensus.PeerList.MainPeers), len(consensus.PeerList.BackupPeers))
+		log.Printf("✅ Successfully created CRDT sync channel: %s (private, %d allowed peers - sequencer + %d buddy nodes only)",
+			config.Pubsub_CRDTSync, len(allowedPeers), len(consensus.PeerList.MainPeers))
 	}
 
 	// Subscribe the sequencer to its own channel to receive votes from buddy nodes
@@ -327,15 +401,21 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		}
 	}()
 
-	// Verify that nodes are actually subscribed (non-blocking for vote trigger)
-	fmt.Printf("=== [Consensus.Start] About to verify subscriptions ===\n")
-	if err := consensus.VerifySubscriptions(); err != nil {
-		fmt.Printf("=== [Consensus.Start] VerifySubscriptions FAILED: %v ===\n", err)
-		// Don't return error, let vote trigger run anyway
-		fmt.Printf("=== [Consensus.Start] Continuing despite verification failure ===\n")
-	} else {
-		fmt.Printf("=== [Consensus.Start] VerifySubscriptions PASSED ===\n")
-	}
+	// Verify that nodes are actually subscribed (non-blocking, with delay to allow subscription)
+	// Buddy nodes need time to receive subscription request, subscribe to channel, and be ready
+	go func() {
+		fmt.Printf("=== [Consensus.Start] Starting subscription verification goroutine with 3-second delay ===\n")
+		time.Sleep(3 * time.Second) // Give buddy nodes time to subscribe
+
+		fmt.Printf("=== [Consensus.Start] About to verify subscriptions ===\n")
+		if err := consensus.VerifySubscriptions(); err != nil {
+			fmt.Printf("=== [Consensus.Start] VerifySubscriptions FAILED: %v ===\n", err)
+			// Don't return error, let vote trigger run anyway
+			fmt.Printf("=== [Consensus.Start] Continuing despite verification failure ===\n")
+		} else {
+			fmt.Printf("=== [Consensus.Start] VerifySubscriptions PASSED ===\n")
+		}
+	}()
 
 	return nil
 }

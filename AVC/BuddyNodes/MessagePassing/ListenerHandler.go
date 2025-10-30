@@ -857,6 +857,39 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 		return
 	}
 
+	// Ensure buddy nodes are populated from the cached consensus message
+	// This guards cases where the broadcast handler didn't run yet on this node
+	if len(listenerNode.BuddyNodes.Buddies_Nodes) == 0 {
+		fmt.Printf("⚠️ Buddy list empty at vote result request; attempting to populate from consensus cache\n")
+		buddyIDs := make([]peer.ID, 0, config.MaxMainPeers)
+		count := 0
+		for _, consensusMsg := range AVCStruct.CacheConsensuMessage {
+			if consensusMsg == nil || consensusMsg.Buddies == nil {
+				continue
+			}
+			for i := 0; i < config.MaxMainPeers && i < len(consensusMsg.Buddies); i++ {
+				if b, ok := consensusMsg.Buddies[i]; ok {
+					if b.PeerID != listenerNode.PeerID {
+						buddyIDs = append(buddyIDs, b.PeerID)
+						count++
+						if count >= config.MaxMainPeers {
+							break
+						}
+					}
+				}
+			}
+			if count >= config.MaxMainPeers {
+				break
+			}
+		}
+		if len(buddyIDs) > 0 {
+			listenerNode.BuddyNodes.Buddies_Nodes = buddyIDs
+			fmt.Printf("✅ Populated buddy nodes from cache: %d peers (MaxMainPeers=%d)\n", len(buddyIDs), config.MaxMainPeers)
+		} else {
+			fmt.Printf("⚠️ Could not populate buddy nodes from cache\n")
+		}
+	}
+
 	// 🔄 CRDT SYNC: Sync CRDT data before processing votes
 	fmt.Printf("🔄 Triggering CRDT sync before processing votes...\n")
 	if err := TriggerCRDTSyncForBuddyNode(listenerNode); err != nil {
