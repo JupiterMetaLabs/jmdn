@@ -453,13 +453,6 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		vote = 1
 	}
 
-	blsResp, agreed, err := BLS_Signer.SignMessage(blockHash, vote)
-	if err != nil {
-		fmt.Printf("⚠️ Failed to create BLS signature for BFT result: %v\n", err)
-	}
-	// Attach local PeerID into BLS payload
-	blsResp.SetPeerID(listenerNode.PeerID.String())
-
 	// Create result message (include BLS payload)
 	resultData := map[string]interface{}{
 		"round":          round,
@@ -470,11 +463,8 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		"block_accepted": success && decision == "ACCEPT",
 		"failure_reason": failureReason,
 		"timestamp":      time.Now().UTC().Unix(),
-		"bls":            blsResp,
 		"vote":           vote,
-		"agree":          agreed,
 	}
-	fmt.Printf(">>> resultData-bls: %+v\n", resultData["bls"])
 	resultJSON, err := json.Marshal(resultData)
 	if err != nil {
 		fmt.Printf("❌ Failed to marshal result: %v\n", err)
@@ -926,12 +916,21 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 		return
 	}
 
+	blsResp, status, err := BLS_Signer.SignMessage(result)
+	if err != nil || status == false{
+		fmt.Printf("⚠️ Failed to create BLS signature for BFT result: %v\n", err)
+	}
+	// Attach local PeerID into BLS payload
+	blsResp.SetPeerID(listenerNode.PeerID.String())
+
 	fmt.Printf("📊 Vote aggregation result: %d\n", result)
 
 	// Send the result back
 	resultData := map[string]interface{}{
 		"result": result,
+		"bls":    blsResp,
 	}
+
 	resultJSON, _ := json.Marshal(resultData)
 
 	ackMessage := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_ACK_True)

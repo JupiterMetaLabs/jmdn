@@ -1,8 +1,11 @@
 package BLS_Signer
 
 import (
+	"encoding/hex"
 	"fmt"
 	blssign "gossipnode/AVC/BLS/bls-sign"
+	"strconv"
+	"sync"
 	"gossipnode/config/utils"
 )
 
@@ -13,37 +16,59 @@ type BLSresponse struct {
 	PeerID    string
 }
 
+// cached BLS keypair (per-process)
+var (
+	blsOnce sync.Once
+	blsPriv []byte
+	blsPub  []byte
+	blsErr  error
+)
+
+func getBLSKeypair(rawPriv []byte) ([]byte, []byte, error) {
+	blsOnce.Do(func() {
+		blsPriv, blsPub, blsErr = blssign.GenerateBLSKeyPairFromRawPrivKey(rawPriv)
+	})
+	return blsPriv, blsPub, blsErr
+}
+
 // Service functions for the BLSresponse struct
-func SignMessage(message string, vote int8) (BLSresponse, bool, error) {
+// Signs canonical message "vote:<v>" for BOTH 1 and -1
+func SignMessage(vote int8) (BLSresponse, bool, error) {
+	if vote != -1 && vote != 1 {
+		return *NewBLSresponseBuilder(nil), false, fmt.Errorf("invalid vote")
+	}
+
 	privKey, err := utils.ReturnPrivateKey()
 	if err != nil {
 		return *NewBLSresponseBuilder(nil), false, err
 	}
 
-	privKeyBytes, err := privKey.Raw()
+	rawPriv, err := privKey.Raw()
 	if err != nil {
 		return *NewBLSresponseBuilder(nil), false, err
 	}
 
-	pubkey, err := utils.ReturnPublicKeyString()
+	priv, pub, err := getBLSKeypair(rawPriv)
+	if err != nil {
+		return *NewBLSresponseBuilder(nil), false, err
+	}
+	fmt.Printf("priv: %v\n", priv)
+	fmt.Printf("pub: %v\n", pub)
+
+	msg := []byte("vote:" + strconv.Itoa(int(vote)))
+	sig, err := blssign.BLSSign(priv, msg)
 	if err != nil {
 		return *NewBLSresponseBuilder(nil), false, err
 	}
 
-	switch vote {
-	case -1:
-		return *NewBLSresponseBuilder(nil), false, nil
-	case 1:
-		sig, err := blssign.BLSSign(privKeyBytes, []byte(message))
-		if err != nil {
-			return *NewBLSresponseBuilder(nil), false, err
-		}
-		return *NewBLSresponseBuilder(nil).
-			SetSignature(string(sig)).
-			SetAgree(true).
-			SetPubKey(pubkey).
-			Build(), true, nil
-	default:
-		return *NewBLSresponseBuilder(nil), false, fmt.Errorf("invalid vote")
-	}
+	pubHex := hex.EncodeToString(pub)
+
+	return *NewBLSresponseBuilder(nil).
+		SetSignature(hex.EncodeToString(sig)).
+		SetAgree(vote == 1).
+		SetPubKey(pubHex).
+		Build(), true, nil
 }
+
+
+// failed to create BLS signer from seed: while unmarshaling scalar: UnmarshalBinary: value out of range

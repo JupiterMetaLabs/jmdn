@@ -96,6 +96,33 @@ func GenerateBLSKeyPair() ([]byte, []byte, error) {
 	return privBytes, pubBytes, nil
 }
 
+// GenerateBLSKeyPairFromRawPrivKey derives a deterministic BLS keypair from a raw private key byte slice.
+// The input should be the raw bytes of the node's private key (e.g., libp2p private key bytes).
+// We derive a 32-byte seed using SHA-256 and initialize a BLS signer from that seed.
+func GenerateBLSKeyPairFromRawPrivKey(rawPriv []byte) ([]byte, []byte, error) {
+	if len(rawPriv) == 0 {
+		return nil, nil, fmt.Errorf("raw private key is empty")
+	}
+
+	seed := sha256.Sum256(rawPriv)
+	s, err := bls.NewSignerFromBytes(seed[:])
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create BLS signer from seed: %w", err)
+	}
+	signer := s.(bls.Signer)
+
+	privBytes, err := signer.MarshalBinary()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to marshal BLS private key: %w", err)
+	}
+	pub := signer.GetPublicKey()
+	pubBytes, err := pub.MarshalBinary()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to marshal BLS public key: %w", err)
+	}
+	return privBytes, pubBytes, nil
+}
+
 //
 // ---- Core multisig-only types & manager ----
 //
