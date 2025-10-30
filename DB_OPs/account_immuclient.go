@@ -312,6 +312,45 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 	return nil
 }
 
+// BatchCreateAccountsOrdered stores multiple key-value pairs in accountsdb preserving order
+func BatchCreateAccountsOrdered(PooledConnection *config.PooledConnection, entries []struct {
+	Key   string
+	Value []byte
+}) error {
+	if len(entries) == 0 {
+		return fmt.Errorf("entries cannot be empty")
+	}
+	var err error
+	var shouldReturnConnection bool
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetAccountsConnection()
+		if err != nil {
+			return fmt.Errorf("failed to get accounts connection: %w", err)
+		}
+		shouldReturnConnection = true
+	}
+	if shouldReturnConnection {
+		defer PutAccountsConnection(PooledConnection)
+	}
+	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
+		return fmt.Errorf("failed to select accounts database: %w", err)
+	}
+	ops := make([]*schema.Op, 0, len(entries))
+	for _, e := range entries {
+		if e.Key == "" || e.Value == nil {
+			return fmt.Errorf("invalid entry (empty key or nil value)")
+		}
+		ops = append(ops, &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{Key: []byte(e.Key), Value: e.Value}}})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = PooledConnection.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops})
+	if err != nil {
+		return fmt.Errorf("accounts batch operation failed: %w", err)
+	}
+	return nil
+}
+
 // shared helper: read & unmarshal an Account by ANY key (account:<addr> OR did:<did>)
 func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, logFn string) (*Account, error) {
 	var err error

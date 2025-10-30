@@ -826,11 +826,17 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 		if dbClient == nil {
 			return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
 		}
-		if err := DB_OPs.BatchCreateOrdered(dbClient, entries); err == nil {
-			return nil
-		} else {
-			lastErr = err
+		var err error
+		switch dbType {
+		case MainDB:
+			err = DB_OPs.BatchCreateOrdered(dbClient, entries)
+		case AccountsDB:
+			err = DB_OPs.BatchCreateAccountsOrdered(dbClient, entries)
 		}
+		if err == nil {
+			return nil
+		}
+		lastErr = err
 		if strings.Contains(lastErr.Error(), "invalid token") {
 			var newClient *config.PooledConnection
 			var clientErr error
@@ -865,7 +871,7 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 	switch dbType {
 	case MainDB:
 		dbClient = fs.mainDB
-		log.Info().Str("db_type", "MainDB").Msg("Using MainDB client for restoration")
+		log.Info().Str("db_type", "defaultDB").Msg("Using defaultDB client for restoration")
 	case AccountsDB:
 		dbClient = fs.accountsDB
 		log.Info().Str("db_type", "AccountsDB").Msg("Using AccountsDB client for restoration")
@@ -887,8 +893,39 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 	// Ensure the backup file exists
 	fileInfo, err := os.Stat(dbPath)
 	if os.IsNotExist(err) {
-		log.Info().Str("path", dbPath).Msg("AVRO file does not exist, skipping restore.")
-		return nil
+		// Try expected path under fastsync/.temp
+		tryPath := dbPath
+		// For legacy calls that might pass only basename, prefix the temp dir
+		if filepath.Base(dbPath) == dbPath { // no dir component
+			tryPath = filepath.Join("fastsync", ".temp", dbPath)
+		}
+		if fi, err2 := os.Stat(tryPath); err2 == nil && fi.Size() > 0 {
+			dbPath = tryPath
+			fileInfo = fi
+			err = nil
+		} else {
+			// Try legacy filenames explicitly
+			legacy := ""
+			switch dbType {
+			case MainDB:
+				legacy = filepath.Join("fastsync", ".temp", "main.avro")
+			case AccountsDB:
+				legacy = filepath.Join("fastsync", ".temp", "accounts.avro")
+			}
+			if legacy != "" {
+				if fi2, err3 := os.Stat(legacy); err3 == nil && fi2.Size() > 0 {
+					dbPath = legacy
+					fileInfo = fi2
+					err = nil
+				} else {
+					log.Info().Str("path", dbPath).Msg("AVRO file does not exist (and legacy not found), skipping restore.")
+					return nil
+				}
+			} else {
+				log.Info().Str("path", dbPath).Msg("AVRO file does not exist, skipping restore.")
+				return nil
+			}
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("failed to stat avro file %s: %w", dbPath, err)
@@ -898,17 +935,21 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		return nil
 	}
 
-	// Validate filename against DB type
+	// Validate filename against DB type (allow legacy names for backward compatibility)
 	base := filepath.Base(dbPath)
-	expected := ""
+	valid := false
 	switch dbType {
 	case MainDB:
-		expected = "defaultdb.avro"
+		if base == "defaultdb.avro" {
+			valid = true
+		}
 	case AccountsDB:
-		expected = "accountsdb.avro"
+		if base == "accountsdb.avro" {
+			valid = true
+		}
 	}
-	if expected != "" && base != expected {
-		return fmt.Errorf("avro filename mismatch: got %s, expected %s for %s", base, expected, dbTypeToString(dbType))
+	if !valid {
+		return fmt.Errorf("avro filename mismatch: got %s for %s", base, dbTypeToString(dbType))
 	}
 
 	// Open the backup file

@@ -1016,22 +1016,19 @@ func BatchCreate(PooledConnection *config.PooledConnection, entries map[string]i
 				zap.Time(logging.Created_at, time.Now()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
 				zap.String(logging.Function, "DB_OPs.BatchCreate"),
 			)
 			PutMainDBConnection(PooledConnection)
 		}()
 	}
 
-	// Ensure the database is selected
-	if err := ensureMainDBSelected(PooledConnection); err != nil {
-		PooledConnection.Client.Logger.Logger.Error("Failed to ensure main database selected",
+	// Ensure the database for this pooled connection is selected
+	if err := ensureConnectionDatabaseSelected(PooledConnection); err != nil {
+		PooledConnection.Client.Logger.Logger.Error("Failed to ensure database selected",
 			zap.Error(err),
-			zap.String(logging.Connection_database, config.DBName),
+			zap.String(logging.Connection_database, PooledConnection.Database),
 			zap.Time(logging.Created_at, time.Now()),
-			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.BatchCreate"),
 		)
 		return fmt.Errorf("database selection failed: %w", err)
@@ -2580,7 +2577,8 @@ func BatchCreateOrdered(PooledConnection *config.PooledConnection, entries []str
 	if shouldReturnConnection {
 		defer PutMainDBConnection(PooledConnection)
 	}
-	if err := ensureMainDBSelected(PooledConnection); err != nil {
+	// Ensure the database for this pooled connection is selected
+	if err := ensureConnectionDatabaseSelected(PooledConnection); err != nil {
 		return fmt.Errorf("database selection failed: %w", err)
 	}
 	ops := make([]*schema.Op, 0, len(entries))
@@ -2597,4 +2595,15 @@ func BatchCreateOrdered(PooledConnection *config.PooledConnection, entries []str
 		return fmt.Errorf("batch operation failed: %w", err)
 	}
 	return nil
+}
+
+// ensureConnectionDatabaseSelected selects the database associated with this pooled connection
+func ensureConnectionDatabaseSelected(pc *config.PooledConnection) error {
+	if pc == nil || pc.Client == nil || pc.Client.Client == nil {
+		return fmt.Errorf("invalid pooled connection")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := pc.Client.Client.UseDatabase(ctx, &schema.Database{DatabaseName: pc.Database})
+	return err
 }
