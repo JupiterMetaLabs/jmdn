@@ -336,8 +336,8 @@ func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequ
 			Did:       req.Did,
 			PublicKey: req.PublicKey,
 			Balance:   "0",
-			CreatedAt: time.Now().Unix(),
-			UpdatedAt: time.Now().Unix(),
+			CreatedAt: time.Now().UTC().Unix(),
+			UpdatedAt: time.Now().UTC().Unix(),
 		},
 	}, nil
 }
@@ -462,7 +462,7 @@ func (s *AccountServer) GetAccountStats(ctx context.Context, _ *emptypb.Empty) (
 	s.mutex.RUnlock()
 
 	// Always refresh stats on first call (statsAge == 0) or if older than 60 seconds
-	if statsAge == 0 || time.Now().Unix()-statsAge > 60 {
+	if statsAge == 0 || time.Now().UTC().Unix()-statsAge > 60 {
 		// Force refresh stats synchronously if they're empty
 		s.refreshStats()
 
@@ -520,9 +520,9 @@ func (s *AccountServer) refreshStats() {
 	s.stats = &pb.DIDStats{
 		TotalDids:    int32(len(dids)),
 		TotalBalance: totalBalance.String(),
-		LastUpdate:   time.Now().Unix(),
+		LastUpdate:   time.Now().UTC().Unix(),
 	}
-	s.statsAge = time.Now().Unix()
+	s.statsAge = time.Now().UTC().Unix()
 	s.mutex.Unlock()
 
 	log.Info().

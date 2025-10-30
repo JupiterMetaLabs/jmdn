@@ -62,7 +62,7 @@ func PublishEnhanced(gps *PubSubMessages.GossipPubSub, topic string, message *Pu
 		Topic:     topic,
 		Data:      message,
 		Sender:    message.GetSender(),
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 		TTL:       30, // Default TTL
 		Metadata:  metadata,
 	}
@@ -169,7 +169,7 @@ func (ep *EnhancedPublisher) publishBatch(ctx context.Context, messages []*PubSu
 			Topic:     "", // Will be set by caller
 			Data:      message,
 			Sender:    message.GetSender(),
-			Timestamp: time.Now().Unix(),
+			Timestamp: time.Now().UTC().Unix(),
 			TTL:       30,
 			Metadata:  metadata,
 		}

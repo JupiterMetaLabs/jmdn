@@ -265,7 +265,7 @@ func TriggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 			NodeID:    listenerNode.PeerID.String(),
 			Key:       "all-crdts",
 			SyncData:  syncData,
-			Timestamp: time.Now(),
+			Timestamp: time.Now().UTC(),
 		}
 
 		syncDataBytes, err := json.Marshal(syncMsg)
@@ -276,7 +276,7 @@ func TriggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 				AVCStruct.NewMessageBuilder(nil).
 					SetSender(listenerNode.PeerID).
 					SetMessage(string(syncDataBytes)).
-					SetTimestamp(time.Now().Unix()).
+					SetTimestamp(time.Now().UTC().Unix()).
 					SetACK(AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_CRDT_SYNC)),
 				nil); err != nil {
 				fmt.Printf("⚠️ Failed to publish CRDT sync: %v\n", err)
@@ -292,14 +292,14 @@ func TriggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 			NodeID:    listenerNode.PeerID.String(),
 			Key:       "all-crdts",
 			SyncData:  make(map[string]json.RawMessage),
-			Timestamp: time.Now(),
+			Timestamp: time.Now().UTC(),
 		}
 		syncDataBytes, _ := json.Marshal(syncMsg)
 		Publisher.Publish(pubSubNode.PubSub, topicName,
 			AVCStruct.NewMessageBuilder(nil).
 				SetSender(listenerNode.PeerID).
 				SetMessage(string(syncDataBytes)).
-				SetTimestamp(time.Now().Unix()).
+				SetTimestamp(time.Now().UTC().Unix()).
 				SetACK(AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_CRDT_SYNC)),
 			nil)
 	}

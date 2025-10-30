@@ -251,7 +251,7 @@ func (fs *FastSync) ExportCRDTs() ([]json.RawMessage, error) {
 			"type":      crdtType,
 			"key":       key,
 			"data":      json.RawMessage(crdtData),
-			"timestamp": time.Now().Unix(),
+			"timestamp": time.Now().UTC().Unix(),
 			"version":   "1.0", // For future compatibility
 		}
 
@@ -461,7 +461,7 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 				Type:         TypeSyncAbort,
 				SenderID:     fs.host.ID().String(),
 				ErrorMessage: handleErr.Error(),
-				Timestamp:    time.Now().Unix(),
+				Timestamp:    time.Now().UTC().Unix(),
 			}
 
 			writeMessage(writer, stream, abortMsg)
@@ -531,7 +531,7 @@ func (fs *FastSync) handleHashMapExchangeSYNC(peerID peer.ID, msg *SyncMessage) 
 	response := &SyncMessage{
 		Type:      TypeHashMapExchangeSYNC,
 		SenderID:  fs.host.ID().String(),
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 		Data:      json.RawMessage([]byte(`"Message From Server"`)),
 		HashMap: &TypeHashMapExchange_Struct{
 			MAIN_HashMap:     SYNC_HashMap_MAIN,
@@ -603,7 +603,7 @@ func (fs *FastSync) Phase1_SYNC(peerID peer.ID) (*SyncMessage, error) {
 		Type:      TypeSyncRequest,
 		SenderID:  fs.host.ID().String(),
 		TxID:      0,
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 		Data:      json.RawMessage([]byte(`"Message From Client"`)),
 		HashMap: &TypeHashMapExchange_Struct{
 			MAIN_HashMap:     MAIN_HashMap,
@@ -739,7 +739,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	return &SyncMessage{
 		Type:      TypeSyncComplete,
 		SenderID:  fs.host.ID().String(),
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 		Success:   true,
 	}, nil
 }
@@ -809,7 +809,7 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
 		BatchNumber: msg.BatchNumber,
 		Data:        dataBytes,
 		DBType:      msg.DBType,
-		Timestamp:   time.Now().Unix(),
+		Timestamp:   time.Now().UTC().Unix(),
 	}, nil
 }
 
@@ -941,7 +941,7 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 	return &SyncMessage{
 		Type:      TypeSyncComplete,
 		SenderID:  fs.host.ID().String(),
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 		Success:   true,
 	}, nil
 }

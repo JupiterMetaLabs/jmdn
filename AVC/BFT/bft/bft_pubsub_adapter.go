@@ -198,11 +198,11 @@ func (adapter *BFTPubSubAdapter) broadcastStartPubSub(roundID string, buddies []
 		Topic:     adapter.channelName,
 		Sender:    adapter.gps.Host.ID(),
 		TTL:       config.MaxHops,
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 		Data: &PubSubMessages.Message{
 			Sender:    adapter.gps.Host.ID(),
 			Message:   "",
-			Timestamp: time.Now().Unix(),
+			Timestamp: time.Now().UTC().Unix(),
 			ACK: &PubSubMessages.ACK{
 				Status: "start",
 				PeerID: adapter.gps.Host.ID().String(),
@@ -235,11 +235,11 @@ func (adapter *BFTPubSubAdapter) broadcastEndPubSub(roundID string, success bool
 		Topic:     adapter.channelName,
 		Sender:    adapter.gps.Host.ID(),
 		TTL:       config.MaxHops,
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 		Data: &PubSubMessages.Message{
 			Sender:    adapter.gps.Host.ID(),
 			Message:   "",
-			Timestamp: time.Now().Unix(),
+			Timestamp: time.Now().UTC().Unix(),
 			ACK: &PubSubMessages.ACK{
 				Status: "end",
 				PeerID: adapter.gps.Host.ID().String(),
@@ -287,11 +287,11 @@ func (pm *pubsubMessenger) BroadcastPrepare(msg *PrepareMessage) error {
 		Topic:     pm.adapter.channelName,
 		Sender:    pm.adapter.gps.Host.ID(),
 		TTL:       config.MaxHops,
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 		Data: &PubSubMessages.Message{
 			Sender:    pm.adapter.gps.Host.ID(),
 			Message:   "",
-			Timestamp: time.Now().Unix(),
+			Timestamp: time.Now().UTC().Unix(),
 			ACK: &PubSubMessages.ACK{
 				Status: "prepare",
 				PeerID: pm.adapter.gps.Host.ID().String(),
@@ -330,11 +330,11 @@ func (pm *pubsubMessenger) BroadcastCommit(msg *CommitMessage) error {
 		Topic:     pm.adapter.channelName,
 		Sender:    pm.adapter.gps.Host.ID(),
 		TTL:       config.MaxHops,
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 		Data: &PubSubMessages.Message{
 			Sender:    pm.adapter.gps.Host.ID(),
 			Message:   "",
-			Timestamp: time.Now().Unix(),
+			Timestamp: time.Now().UTC().Unix(),
 			ACK: &PubSubMessages.ACK{
 				Status: "commit",
 				PeerID: pm.adapter.gps.Host.ID().String(),

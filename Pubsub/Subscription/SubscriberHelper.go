@@ -159,12 +159,12 @@ func (es *EnhancedSubscriber) receiveMessageEnhanced(ctx context.Context) error 
 
 	// Update metrics (thread-safe)
 	atomic.AddInt64(&es.metrics.MessagesReceived, 1)
-	atomic.StoreInt64(&es.metrics.lastReceiveTime, time.Now().UnixNano())
+	atomic.StoreInt64(&es.metrics.lastReceiveTime, time.Now().UTC().UnixNano())
 
 	// Track unique peers (protected by mutex)
 	peerID := msg.ReceivedFrom.String()
 	es.metrics.uniquePeersMu.Lock()
-	es.metrics.uniquePeers[peerID] = time.Now().UnixNano()
+	es.metrics.uniquePeers[peerID] = time.Now().UTC().UnixNano()
 	es.metrics.uniquePeersMu.Unlock()
 
 	// Process the message
@@ -221,7 +221,7 @@ func (es *EnhancedSubscriber) processMessageEnhanced(msg *pubsub.Message) error 
 		Topic:     "", // Will be set by caller
 		Data:      &messageData,
 		Sender:    msg.GetFrom(),
-		Timestamp: int64(time.Now().Unix()),
+		Timestamp: time.Now().UTC().UnixNano(),
 		TTL:       0,
 	}
 

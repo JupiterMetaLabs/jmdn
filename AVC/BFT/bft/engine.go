@@ -34,7 +34,7 @@ func (e *engine) runPrepare(ctx context.Context, messenger Messenger) (*PhaseRes
 		BlockHash: e.blockHash,
 		BuddyID:   e.myBuddyID,
 		Decision:  e.myDecision,
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 	}
 
 	e.addPrepareMsg(myPrepare)
@@ -325,7 +325,7 @@ func (e *engine) createCommit(decision Decision) (*CommitMessage, error) {
 		BuddyID:      e.myBuddyID,
 		Decision:     decision,
 		PrepareProof: proof,
-		Timestamp:    time.Now().Unix(),
+		Timestamp:    time.Now().UTC().Unix(),
 	}
 
 	return msg, nil
@@ -353,7 +353,7 @@ func (e *engine) ensureSeqForSelf() uint64 {
 }
 
 func isTimestampFresh(ts int64) bool {
-	now := time.Now().Unix()
+	now := time.Now().UTC().Unix()
 	if ts == 0 {
 		return false
 	}

@@ -78,7 +78,7 @@ func CreateChannel(gps *PubSubMessages.GossipPubSub, channelName string, isPubli
 		AllowedPeers: allowedMap,
 		IsPublic:     isPublic,
 		Creator:      gps.Host.ID(),
-		CreatedAt:    time.Now().Unix(),
+		CreatedAt:    time.Now().UTC().Unix(),
 	}
 
 	gps.Topics[channelName] = true

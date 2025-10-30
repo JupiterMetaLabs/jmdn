@@ -226,7 +226,7 @@ func NewNode() (*config.Node, error) {
 					Received:  0,
 					Sent:      0,
 					Total:     0,
-					UpdatedAt: time.Now(),
+					UpdatedAt: time.Now().UTC(),
 				},
 			}
 			AVCStruct.NewGlobalVariables().Set_ForListner(basicBuddyNode)

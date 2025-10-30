@@ -31,7 +31,7 @@ func (e *Engine) LWWAdd(nodeID, key, element string, ts VectorClock) error {
 		NodeID:   nodeID,
 		Element:  element,
 		TS:       ts, // Will be used if provided, otherwise auto-generated
-		WallTime: time.Now(),
+		WallTime: time.Now().UTC(),
 	})
 }
 
@@ -48,7 +48,7 @@ func (e *Engine) LWWRemove(nodeID, key, element string, ts VectorClock) error {
 		NodeID:   nodeID,
 		Element:  element,
 		TS:       ts, // Will be used if provided, otherwise auto-generated
-		WallTime: time.Now(),
+		WallTime: time.Now().UTC(),
 	})
 }
 
@@ -65,7 +65,7 @@ func (e *Engine) CounterInc(nodeID, key string, delta uint64, ts VectorClock) er
 		NodeID:   nodeID,
 		Value:    delta,
 		TS:       ts, // Will be used if provided, otherwise auto-generated
-		WallTime: time.Now(),
+		WallTime: time.Now().UTC(),
 	})
 }
 

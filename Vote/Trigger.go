@@ -88,7 +88,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 	voteMessage := PubSubMessages.NewMessageBuilder(nil).
 		SetSender(listenerNode.PeerID).
 		SetMessage(vt.ToVoteString(vt.Vote)).
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(PubSubMessages.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_SubmitVote))
 
 	// Marshal the message to JSON

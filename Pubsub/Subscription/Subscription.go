@@ -156,7 +156,7 @@ func subscribeViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, h
 				Topic:     topicName,
 				Data:      &messageData,
 				Sender:    msg.GetFrom(),
-				Timestamp: int64(time.Now().Unix()),
+				Timestamp: int64(time.Now().UTC().Unix()),
 				TTL:       0,
 			}
 			fmt.Printf("GossipMessage created successfully for %s\n", topicName)

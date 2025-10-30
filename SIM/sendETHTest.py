@@ -13,6 +13,8 @@ import hashlib
 import random
 from datetime import datetime
 
+nodeIP = "34.174.137.160"
+
 def generate_unique_hash():
     """Generate a unique hash for testing"""
     unique_string = f"{time.time()}{uuid.uuid4()}{random.randint(1000, 9999)}"
@@ -41,7 +43,7 @@ def get_latest_block_number():
     """Get the latest block number from the node stats API on port 8090"""
     try:
         # Use the stats API to get the latest block number
-        response = requests.get("http://192.168.100.81:8090/api/stats/", timeout=10)
+        response = requests.get(f"http://{nodeIP}:8090/api/stats/", timeout=10)
         if response.status_code == 200:
             data = response.json()
             # Get the latest block number from stats
@@ -61,7 +63,7 @@ def send_eth_test():
     print(f"🕐 Test started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Create tester with extended timeout
-    tester = ZKBlockTester("http://192.168.100.81:15050")
+    tester = ZKBlockTester(f"http://{nodeIP}:15050")
     
     # Check if server is running
     step_start = time.time()
@@ -167,11 +169,11 @@ def send_eth_test():
     print(f"🕐 Test completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     if success:
-        print("\n✅ ETH transfer test completed successfully!")
-        print("1 ETH has been sent from 0x69EE9a32109EE1CC8c95b49Ad1D4dDAEBb46Db45 to 0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2")
+        print("\n✅ JMDT transfer test completed successfully!")
+        print(f"{amount} JMDT has been sent from {from_address} to {to_address} on node {nodeIP}")
         print(f"🚀 Processing completed in {format_duration(processing_time)}")
     else:
-        print("\n❌ ETH transfer test failed!")
+        print("\n❌ JMDT transfer test failed!")
         print("Check the server logs for more details.")
         print(f"⏰ Failed after {format_duration(total_time)}")
     

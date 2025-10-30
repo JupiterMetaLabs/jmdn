@@ -283,7 +283,7 @@ func convertEthTxToConfigTx(ethTx *types.Transaction) config.Transaction {
 		To:        ethTx.To(),
 		Value:     ethTx.Value(),
 		Type:      uint8(ethTx.Type()),
-		Timestamp: uint64(time.Now().Unix()),
+		Timestamp: uint64(time.Now().UTC().Unix()),
 		ChainID:   ethTx.ChainId(),
 		Nonce:     ethTx.Nonce(),
 		GasLimit:  ethTx.Gas(),

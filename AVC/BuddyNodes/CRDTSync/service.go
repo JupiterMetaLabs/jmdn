@@ -50,7 +50,7 @@ func DefaultSyncConfig() *SyncConfig {
 	return &SyncConfig{
 		Mode:              ModeBoth,
 		SyncInterval:      3 * time.Second, // Faster sync for vote aggregation
-			TopicName:         config.Pubsub_CRDTSync,
+		TopicName:         config.Pubsub_CRDTSync,
 		PrintStore:        false,
 		HeartbeatInterval: 10 * time.Second, // More frequent heartbeat
 	}
@@ -173,7 +173,7 @@ func (s *SyncService) syncCRDTState() error {
 		NodeID:    s.nodeID,
 		Key:       "all-crdts",
 		SyncData:  syncData,
-		Timestamp: time.Now(),
+		Timestamp: time.Now().UTC(),
 	}
 
 	// Serialize and publish
@@ -280,7 +280,7 @@ func (s *SyncService) applyCRDTSync(msg Message) error {
 				Key:      key,
 				Kind:     crdt.OpAdd, // Use appropriate operation kind
 				NodeID:   s.nodeID,
-				WallTime: time.Now(),
+				WallTime: time.Now().UTC(),
 			}
 
 			if err := s.engine.AppendOp(op); err != nil {
@@ -295,7 +295,7 @@ func (s *SyncService) applyCRDTSync(msg Message) error {
 				Key:      key,
 				Kind:     crdt.OpAdd, // Use appropriate operation kind
 				NodeID:   s.nodeID,
-				WallTime: time.Now(),
+				WallTime: time.Now().UTC(),
 			}
 
 			if err := s.engine.AppendOp(op); err != nil {
@@ -316,7 +316,7 @@ func (s *SyncService) sendSyncRequest() error {
 		Type:      "sync_request",
 		NodeID:    s.nodeID,
 		Key:       "request",
-		Timestamp: time.Now(),
+		Timestamp: time.Now().UTC(),
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {

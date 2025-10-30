@@ -141,7 +141,7 @@ func (fs *FastSync) handleBatchData(peerID peer.ID, msg *SyncMessage) (*SyncMess
 		response = &SyncMessage{
 			Type:      TypeVerificationRequest,
 			SenderID:  fs.host.ID().String(),
-			Timestamp: time.Now().Unix(),
+			Timestamp: time.Now().UTC().Unix(),
 		}
 	} else {
 		response = &SyncMessage{
@@ -150,7 +150,7 @@ func (fs *FastSync) handleBatchData(peerID peer.ID, msg *SyncMessage) (*SyncMess
 			BatchNumber: msg.BatchNumber,
 			Success:     true,
 			DBType:      batchData.DBType,
-			Timestamp:   time.Now().Unix(),
+			Timestamp:   time.Now().UTC().Unix(),
 		}
 	}
 
@@ -323,7 +323,7 @@ func (fs *FastSync) handleVerification(peerID peer.ID) (*SyncMessage, error) {
 		TxID:       mainState.TxId,
 		MerkleRoot: MerkleRoot{MainMerkleRoot: mainState.TxHash, AccountsMerkleRoot: accountsState.TxHash},
 		Data:       statesData,
-		Timestamp:  time.Now().Unix(),
+		Timestamp:  time.Now().UTC().Unix(),
 	}, nil
 }
 
@@ -349,7 +349,7 @@ func (fs *FastSync) handleSyncComplete(peerID peer.ID, msg *SyncMessage) (*SyncM
 		SenderID:   fs.host.ID().String(),
 		Success:    true,
 		MerkleRoot: MerkleRoot{MainMerkleRoot: mainState.TxHash, AccountsMerkleRoot: accountsState.TxHash},
-		Timestamp:  time.Now().Unix(),
+		Timestamp:  time.Now().UTC().Unix(),
 	}, nil
 }
 
@@ -429,7 +429,7 @@ func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *b
 	verifyReq := SyncMessage{
 		Type:      TypeVerificationRequest,
 		SenderID:  fs.host.ID().String(),
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 	}
 
 	if err := writeMessage(writer, stream, &verifyReq); err != nil {
@@ -477,7 +477,7 @@ func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *b
 		Type:      TypeSyncComplete,
 		SenderID:  fs.host.ID().String(),
 		Success:   mainMatch && accountsMatch,
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 	}
 
 	if err := writeMessage(writer, stream, &completeMsg); err != nil {
@@ -502,7 +502,7 @@ func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, wr
 		StartTxID:   startTx,
 		EndTxID:     endTx,
 		DBType:      dbType,
-		Timestamp:   time.Now().Unix(),
+		Timestamp:   time.Now().UTC().Unix(),
 	}
 
 	// Send request
@@ -593,7 +593,7 @@ func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, wr
 		BatchNumber: batchNum,
 		Success:     true,
 		DBType:      dbType,
-		Timestamp:   time.Now().Unix(),
+		Timestamp:   time.Now().UTC().Unix(),
 	}
 
 	if err := writeMessage(writer, stream, &ackMsg); err != nil {
@@ -676,7 +676,7 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 		requestMsg := &SyncMessage{
 			Type:             RequestFiletransfer,
 			SenderID:         fs.host.ID().String(),
-			Timestamp:        time.Now().Unix(),
+			Timestamp:        time.Now().UTC().Unix(),
 			HashMap:          msg.HashMap,
 			HashMap_MetaData: msg.HashMap_MetaData,
 			Data:             json.RawMessage([]byte(`"Message From Client - For AVRO File Transfer"`)),

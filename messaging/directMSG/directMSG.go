@@ -139,7 +139,7 @@ func handleYggdrasilConnection(conn net.Conn) {
 		logMessageEvent(MessageEvent{
 			Type:      "received",
 			Source:    remoteAddr,
-			Timestamp: time.Now(),
+			Timestamp: time.Now().UTC(),
 			Success:   false,
 			Error:     err.Error(),
 		})
@@ -164,7 +164,7 @@ func handleYggdrasilConnection(conn net.Conn) {
 	logMessageEvent(MessageEvent{
 		Type:      "received",
 		Source:    remoteAddr,
-		Timestamp: time.Now(),
+		Timestamp: time.Now().UTC(),
 		Success:   true,
 	})
 
@@ -176,7 +176,7 @@ func handleYggdrasilConnection(conn net.Conn) {
 	}
 	fmt.Printf("\033[1;42m                               \033[0m\n\n")
 	fmt.Printf("From: \033[1;36m%s\033[0m\n", remoteAddr)
-	fmt.Printf("Time: \033[1;33m%s\033[0m\n", time.Now().Format(time.RFC3339))
+	fmt.Printf("Time: \033[1;33m%s\033[0m\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Printf("\nContent:\n\033[1;37m%s\033[0m\n\n", message)
 
 	// Send acknowledgment
@@ -200,7 +200,7 @@ func SendViaYggdrasil(target string, message string) error {
 		logMessageEvent(MessageEvent{
 			Type:      "sent",
 			Target:    target,
-			Timestamp: time.Now(),
+			Timestamp: time.Now().UTC(),
 			Success:   false,
 			Error:     err.Error(),
 		})
@@ -219,7 +219,7 @@ func SendViaYggdrasil(target string, message string) error {
 		logMessageEvent(MessageEvent{
 			Type:      "sent",
 			Target:    targetAddr,
-			Timestamp: time.Now(),
+			Timestamp: time.Now().UTC(),
 			Success:   false,
 			Error:     err.Error(),
 		})
@@ -242,7 +242,7 @@ func SendViaYggdrasil(target string, message string) error {
 		logMessageEvent(MessageEvent{
 			Type:      "sent",
 			Target:    targetAddr,
-			Timestamp: time.Now(),
+			Timestamp: time.Now().UTC(),
 			Success:   false,
 			Error:     err.Error(),
 		})
@@ -263,7 +263,7 @@ func SendViaYggdrasil(target string, message string) error {
 		logMessageEvent(MessageEvent{
 			Type:      "sent",
 			Target:    targetAddr,
-			Timestamp: time.Now(),
+			Timestamp: time.Now().UTC(),
 			Success:   false,
 			Error:     "no acknowledgment: " + err.Error(),
 		})
@@ -282,7 +282,7 @@ func SendViaYggdrasil(target string, message string) error {
 	logMessageEvent(MessageEvent{
 		Type:      "sent",
 		Target:    targetAddr,
-		Timestamp: time.Now(),
+		Timestamp: time.Now().UTC(),
 		Success:   true,
 	})
 

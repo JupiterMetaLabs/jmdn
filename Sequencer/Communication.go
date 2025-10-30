@@ -187,8 +187,8 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 		if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
 			log.Printf("Global tracker confirms: %d active subscriptions", tracker.GetActiveCount())
 			cleanupResponseHandler(responseHandler)
-		return nil
-	}
+			return nil
+		}
 	}
 
 	// Check if too many main nodes failed
@@ -257,7 +257,7 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 		if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
 			log.Printf("Global tracker confirms: %d active subscriptions", tracker.GetActiveCount())
 			cleanupResponseHandler(responseHandler)
-	return nil
+			return nil
 		}
 	}
 
@@ -382,7 +382,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 			message := PubSubMessages.NewMessageBuilder(nil).
 				SetSender(host.ID()).
 				SetMessage(fmt.Sprintf("Requesting subscription to channel: %s", topic)).
-				SetTimestamp(time.Now().Unix()).
+				SetTimestamp(time.Now().UTC().Unix()).
 				SetACK(ackMessage)
 
 			// Marshal the message to JSON
@@ -474,8 +474,8 @@ func ValidateConsensusConfiguration(consensus *Consensus) error {
 
 	// Check for duplicate peer IDs within backup peers (if any)
 	if len(consensus.PeerList.BackupPeers) > 0 {
-	if err := checkForDuplicatePeerIDs(consensus.PeerList.BackupPeers); err != nil {
-		return fmt.Errorf("duplicate peer ID found in backup peers: %w", err)
+		if err := checkForDuplicatePeerIDs(consensus.PeerList.BackupPeers); err != nil {
+			return fmt.Errorf("duplicate peer ID found in backup peers: %w", err)
 		}
 	}
 

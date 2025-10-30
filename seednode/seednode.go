@@ -451,8 +451,8 @@ func (c *Client) DiscoverAndAddNeighbors(h host.Host, nodeManager interface{}) e
 			neighbor := &peerpb.PeerNeighbor{
 				PeerId:     h.ID().String(),
 				NeighborId: peerID,
-				CreatedAt:  time.Now().Unix(),
-				LastSeen:   time.Now().Unix(),
+				CreatedAt:  time.Now().UTC().Unix(),
+				LastSeen:   time.Now().UTC().Unix(),
 				IsActive:   true,
 				V:          "",
 				R:          "",

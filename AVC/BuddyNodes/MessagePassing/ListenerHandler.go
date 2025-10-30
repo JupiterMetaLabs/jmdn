@@ -276,7 +276,7 @@ func (lh *ListenerHandler) sendBFTAcknowledgment(s network.Stream, round uint64,
 	response := AVCStruct.NewMessageBuilder(nil).
 		SetSender(listenerNode.PeerID).
 		SetMessage(string(ackJSON)).
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ack)
 
 	responseBytes, _ := json.Marshal(response)
@@ -455,7 +455,7 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		"decision":       decision,
 		"block_accepted": success && decision == "ACCEPT",
 		"failure_reason": failureReason,
-		"timestamp":      time.Now().Unix(),
+		"timestamp":      time.Now().UTC().Unix(),
 	}
 
 	resultJSON, err := json.Marshal(resultData)
@@ -474,7 +474,7 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 	message := AVCStruct.NewMessageBuilder(nil).
 		SetSender(listenerNode.PeerID).
 		SetMessage(string(resultJSON)).
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ack)
 
 	// Decode Sequencer peer ID
@@ -745,7 +745,7 @@ func (lh *ListenerHandler) sendSubscriptionResponse(s network.Stream, accepted b
 	message := AVCStruct.NewMessageBuilder(nil).
 		SetSender(host).
 		SetMessage(fmt.Sprintf("Subscription %s", map[bool]string{true: "accepted", false: "rejected"}[accepted])).
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ackBuilder)
 
 	messageBytes, err := json.Marshal(message)
@@ -829,7 +829,7 @@ func (lh *ListenerHandler) handleVoteResult(s network.Stream, message *AVCStruct
 	response := AVCStruct.NewMessageBuilder(nil).
 		SetSender(listenerNode.PeerID).
 		SetMessage("Vote result received").
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ackMessage)
 
 	responseBytes, err := json.Marshal(response)
@@ -921,7 +921,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 	response := AVCStruct.NewMessageBuilder(nil).
 		SetSender(listenerNode.PeerID).
 		SetMessage(string(resultJSON)).
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ackMessage)
 
 	responseBytes, err := json.Marshal(response)
@@ -1042,7 +1042,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 	response := AVCStruct.NewMessageBuilder(nil).
 		SetSender(listenerNode.PeerID).
 		SetMessage("BFT started across buddies").
-		SetTimestamp(time.Now().Unix()).
+		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ack)
 	data, _ := json.Marshal(response)
 	data = append(data, byte(config.Delimiter))
@@ -1075,7 +1075,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 			reqMsg := AVCStruct.NewMessageBuilder(nil).
 				SetSender(listenerNode.PeerID).
 				SetMessage("RequestForVoteResult").
-				SetTimestamp(time.Now().Unix()).
+				SetTimestamp(time.Now().UTC().Unix()).
 				SetACK(reqAck)
 
 			reqData, _ := json.Marshal(reqMsg)

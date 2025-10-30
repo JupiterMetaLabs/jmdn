@@ -673,7 +673,7 @@ func (consensus *Consensus) PrintCRDTState() error {
 				reqMsg := PubSubMessages.NewMessageBuilder(nil).
 					SetSender(consensus.Host.ID()).
 					SetMessage("RequestForVoteAggregationResult").
-					SetTimestamp(time.Now().Unix()).
+					SetTimestamp(time.Now().UTC().Unix()).
 					SetACK(reqAck)
 
 				reqData, _ := json.Marshal(reqMsg)

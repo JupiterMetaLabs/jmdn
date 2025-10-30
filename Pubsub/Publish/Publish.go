@@ -49,7 +49,7 @@ func publishOriginal(gps *PubSubMessages.GossipPubSub, topic string, message *Pu
 		Topic:     topic,
 		Data:      message,
 		Sender:    message.GetSender(),
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 		TTL:       30, // Default TTL
 		Metadata:  metadata,
 	}

@@ -177,7 +177,7 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 	// Mark all transactions as successfully processed in the database
 	for txHash := range processedTxs {
 		txKey := fmt.Sprintf("tx_processed:%s", txHash)
-		if err := DB_OPs.Create(accountsClient, txKey, time.Now().Unix()); err != nil {
+		if err := DB_OPs.Create(accountsClient, txKey, time.Now().UTC().Unix()); err != nil {
 			log.Warn().Err(err).Str("tx_hash", txHash).Msg("Failed to mark transaction as processed")
 		}
 
@@ -191,7 +191,7 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 	}
 
 	// Mark the block as processed
-	if err := DB_OPs.Create(accountsClient, blockKey, time.Now().Unix()); err != nil {
+	if err := DB_OPs.Create(accountsClient, blockKey, time.Now().UTC().Unix()); err != nil {
 		log.Warn().Err(err).Str("block_hash", block.BlockHash.Hex()).Msg("Failed to mark block as processed")
 	}
 
@@ -325,7 +325,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 			// If processing marker is older than 5 minutes, consider it stale
 			var timestamp int64
 			if err := json.Unmarshal(valueBytes, &timestamp); err == nil {
-				if time.Now().Unix()-timestamp > 300 {
+				if time.Now().UTC().Unix()-timestamp > 300 {
 					accountsClient.Client.Logger.Logger.Warn("Found stale processing marker, continuing with transaction",
 						zap.Time(logging.Created_at, time.Now()),
 						zap.String(logging.Log_file, LOG_FILE),
@@ -351,7 +351,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	}
 
 	// Mark transaction as being processed
-	if err := DB_OPs.Create(accountsClient, txProcessingKey, time.Now().Unix()); err != nil {
+	if err := DB_OPs.Create(accountsClient, txProcessingKey, time.Now().UTC().Unix()); err != nil {
 		accountsClient.Client.Logger.Logger.Warn("Failed to mark transaction as processing",
 			zap.Time(logging.Created_at, time.Now()),
 			zap.String(logging.Log_file, LOG_FILE),
@@ -594,7 +594,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	fmt.Println(">>>>>> Added amount to ZKVM:", halfGasFee.String(), "with address", zkvmAddr.Hex())
 
 	// Mark transaction as fully processed - this is the key that prevents double processing
-	if err := DB_OPs.Create(accountsClient, txKey, time.Now().Unix()); err != nil {
+	if err := DB_OPs.Create(accountsClient, txKey, time.Now().UTC().Unix()); err != nil {
 		accountsClient.Client.Logger.Logger.Error("Failed to mark transaction as processed",
 			zap.Time(logging.Created_at, time.Now()),
 			zap.String(logging.Log_file, LOG_FILE),

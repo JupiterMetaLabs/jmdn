@@ -463,7 +463,7 @@ func PropagateZKBlock(h host.Host, block *PubSubMessages.ConsensusMessage) error
 	}
 
 	// Step 6: Create block message with full ZK block data
-	now := time.Now().Unix()
+	now := time.Now().UTC().Unix()
 	msg := config.BlockMessage{
 		Sender:    h.ID().String(),
 		Timestamp: now,

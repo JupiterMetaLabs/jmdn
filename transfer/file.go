@@ -275,7 +275,7 @@ func HandleFileStream(s network.Stream, outputPath string) {
 		if filename != "" {
 			outputPath = filename
 		} else {
-			outputPath = fmt.Sprintf("received_%s_%d", peerID, time.Now().Unix())
+			outputPath = fmt.Sprintf("received_%s_%d", peerID, time.Now().UTC().Unix())
 		}
 	} else {
 		// If outputPath is a directory, append the original filename

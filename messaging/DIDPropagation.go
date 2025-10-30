@@ -77,7 +77,7 @@ func InitDIDPropagation(existingClient *config.PooledConnection) error {
 // generateAccountMessageID creates a unique ID for a Account message
 func generateAccountMessageID(sender string, Account common.Address) string {
 	hasher := sha256.New()
-	hasher.Write([]byte(fmt.Sprintf("%s-%s-%d", sender, Account)))
+	hasher.Write([]byte(fmt.Sprintf("%s-%s", sender, Account.Hex())))
 	hash := base64.URLEncoding.EncodeToString(hasher.Sum(nil))
 	return hash[:16] // Return first 16 chars for brevity
 }
@@ -135,7 +135,7 @@ func storeAccountInDB(msg DIDMessage) {
 			CreatedAt:   msg.Timestamp,
 			Metadata:    msg.Account.Metadata,
 			AccountType: msg.Account.AccountType,
-			UpdatedAt:   time.Now().Unix(),
+			UpdatedAt:   time.Now().UTC().Unix(),
 		}
 
 		// Store Account document
@@ -343,7 +343,7 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 	}
 
 	// Create a DID message
-	now := time.Now().Unix()
+	now := time.Now().UTC().Unix()
 	msg := DIDMessage{
 		Sender:    h.ID().String(),
 		Timestamp: now,
