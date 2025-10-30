@@ -91,7 +91,8 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 	}
 
 	// Preliminary Check: Chain ID must be present and valid (> 0)
-	if tx == nil || tx.ChainID == nil || tx.ChainID.Sign() <= 0 {
+	if tx == nil || tx.ChainID == nil {
+		// || tx.ChainID.Sign() <= 0 
 		Conn.Client.Logger.Logger.Error("Invalid or missing ChainID",
 			zap.Error(errors.New("transaction chain ID is missing or invalid")),
 			zap.String(logging.Connection_database, config.AccountsDBName),

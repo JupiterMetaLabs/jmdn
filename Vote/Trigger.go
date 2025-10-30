@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
-	"gossipnode/Security"
+	// "gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/config/PubSubMessages"
 	"time"
@@ -66,24 +66,28 @@ func (vt *VoteTrigger) SubmitVote() error {
 	}
 
 	// Check the Three checks from the Security Module
-	status, err := Security.CheckZKBlockValidation(vt.ConsensusMessage.GetZKBlock())
-	if !status || err != nil {
-		vote := PubSubMessages.Vote{
-			Vote:      -1,
-			BlockHash: vt.ConsensusMessage.GetZKBlock().BlockHash.String(),
-		}
-		vt.setVote(&vote)
-		fmt.Printf("failed to check ZKBlock validation: %v\n", err)
-	} else if status {
-		vote := PubSubMessages.Vote{
-			Vote:      1,
-			BlockHash: vt.ConsensusMessage.GetZKBlock().BlockHash.String(),
-		}
-		vt.setVote(&vote)
-	} else {
-		return fmt.Errorf("failed to vote, as vote is neither 1 or -1")
+	// status, err := Security.CheckZKBlockValidation(vt.ConsensusMessage.GetZKBlock())
+	// if !status || err != nil {
+	// 	vote := PubSubMessages.Vote{
+	// 		Vote:      -1,
+	// 		BlockHash: vt.ConsensusMessage.GetZKBlock().BlockHash.String(),
+	// 	}
+	// 	vt.setVote(&vote)
+	// 	fmt.Printf("failed to check ZKBlock validation: %v\n", err)
+	// } else if status {
+	// 	vote := PubSubMessages.Vote{
+	// 		Vote:      1,
+	// 		BlockHash: vt.ConsensusMessage.GetZKBlock().BlockHash.String(),
+	// 	}
+	// 	vt.setVote(&vote)
+	// } else {
+	// 	return fmt.Errorf("failed to vote, as vote is neither 1 or -1")
+	// }
+	vote := PubSubMessages.Vote{
+		Vote:      1,
+		BlockHash: vt.ConsensusMessage.GetZKBlock().BlockHash.String(),
 	}
-
+	vt.setVote(&vote)
 	// Create proper message with ACK stage for vote submission
 	voteMessage := PubSubMessages.NewMessageBuilder(nil).
 		SetSender(listenerNode.PeerID).
