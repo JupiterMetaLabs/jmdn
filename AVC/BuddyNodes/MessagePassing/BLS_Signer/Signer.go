@@ -24,9 +24,9 @@ var (
 	blsErr  error
 )
 
-func getBLSKeypair(rawPriv []byte) ([]byte, []byte, error) {
+func getBLSKeypair() ([]byte, []byte, error) {
 	blsOnce.Do(func() {
-		blsPriv, blsPub, blsErr = blssign.GenerateBLSKeyPairFromRawPrivKey(rawPriv)
+		blsPriv, blsPub, blsErr = blssign.GenerateBLSKeyPair()
 	})
 	return blsPriv, blsPub, blsErr
 }
@@ -38,17 +38,7 @@ func SignMessage(vote int8) (BLSresponse, bool, error) {
 		return *NewBLSresponseBuilder(nil), false, fmt.Errorf("invalid vote")
 	}
 
-	privKey, err := utils.ReturnPrivateKey()
-	if err != nil {
-		return *NewBLSresponseBuilder(nil), false, err
-	}
-
-	rawPriv, err := privKey.Raw()
-	if err != nil {
-		return *NewBLSresponseBuilder(nil), false, err
-	}
-
-	priv, pub, err := getBLSKeypair(rawPriv)
+	priv, pub, err := getBLSKeypair()
 	if err != nil {
 		return *NewBLSresponseBuilder(nil), false, err
 	}
@@ -69,6 +59,4 @@ func SignMessage(vote int8) (BLSresponse, bool, error) {
 		SetPubKey(pubHex).
 		Build(), true, nil
 }
-
-
 // failed to create BLS signer from seed: while unmarshaling scalar: UnmarshalBinary: value out of range

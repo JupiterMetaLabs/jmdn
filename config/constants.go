@@ -20,6 +20,7 @@ const (
 )
 
 const PeerFile = "./config/peer.json"
+const BLSFile = "./config/bls.json"
 
 const (
 	MaxMainPeers     = 4

@@ -2,9 +2,15 @@ package blssign
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"gossipnode/config"
+	"io/ioutil"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"go.dedis.ch/dela/crypto"
@@ -83,6 +89,26 @@ func BLSFastAggregateVerify(pubKeys [][]byte, message, aggSig []byte) (bool, err
 
 // GenerateBLSKeyPair generates and returns a private and public key (as byte slices) for BLS.
 func GenerateBLSKeyPair() ([]byte, []byte, error) {
+	// 1) Try to load from config/bls.json
+	type blsFile struct {
+		PeerID  string `json:"peer_id,omitempty"`
+		PrivKey string `json:"bls_priv"`
+		PubKey  string `json:"bls_pub"`
+	}
+
+	if data, err := ioutil.ReadFile(config.BLSFile); err == nil {
+		var bf blsFile
+		if err := json.Unmarshal(data, &bf); err == nil && bf.PrivKey != "" && bf.PubKey != "" {
+			if priv, err := base64.StdEncoding.DecodeString(bf.PrivKey); err == nil {
+				if pub, err := base64.StdEncoding.DecodeString(bf.PubKey); err == nil {
+					return priv, pub, nil
+				}
+			}
+		}
+		// If file exists but invalid, continue to regenerate below
+	}
+
+	// 2) Not found or invalid → generate new keypair
 	signer := bls.Generate().(bls.Signer)
 	privBytes, err := signer.MarshalBinary()
 	if err != nil {
@@ -93,6 +119,27 @@ func GenerateBLSKeyPair() ([]byte, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// 3) Persist to config/bls.json (best-effort)
+	_ = os.MkdirAll(filepath.Dir(config.BLSFile), 0o755)
+	// Try to read peer_id from peer.json (optional)
+	type peerFile struct {
+		PeerID string `json:"peer_id"`
+	}
+	var pf peerFile
+	if pdata, err := ioutil.ReadFile(config.PeerFile); err == nil {
+		_ = json.Unmarshal(pdata, &pf)
+	}
+
+	bf := blsFile{
+		PeerID:  pf.PeerID,
+		PrivKey: base64.StdEncoding.EncodeToString(privBytes),
+		PubKey:  base64.StdEncoding.EncodeToString(pubBytes),
+	}
+	if out, err := json.MarshalIndent(bf, "", "  "); err == nil {
+		_ = ioutil.WriteFile(config.BLSFile, out, 0o600)
+	}
+
 	return privBytes, pubBytes, nil
 }
 
