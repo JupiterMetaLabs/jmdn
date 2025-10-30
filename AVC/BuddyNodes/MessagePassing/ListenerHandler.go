@@ -917,7 +917,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 	}
 
 	blsResp, status, err := BLS_Signer.SignMessage(result)
-	if err != nil || !status {
+	if err != nil || status == false{
 		fmt.Printf("⚠️ Failed to create BLS signature for BFT result: %v\n", err)
 	}
 	// Attach local PeerID into BLS payload
@@ -930,7 +930,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 		"result": result,
 		"bls":    blsResp,
 	}
-	
+
 	resultJSON, _ := json.Marshal(resultData)
 
 	ackMessage := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_ACK_True)
@@ -939,8 +939,6 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 		SetMessage(string(resultJSON)).
 		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ackMessage)
-	
-
 
 	responseBytes, err := json.Marshal(response)
 	if err != nil {

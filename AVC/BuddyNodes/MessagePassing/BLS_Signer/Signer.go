@@ -52,6 +52,8 @@ func SignMessage(vote int8) (BLSresponse, bool, error) {
 	if err != nil {
 		return *NewBLSresponseBuilder(nil), false, err
 	}
+	fmt.Printf("priv: %v\n", priv)
+	fmt.Printf("pub: %v\n", pub)
 
 	msg := []byte("vote:" + strconv.Itoa(int(vote)))
 	sig, err := blssign.BLSSign(priv, msg)
@@ -67,3 +69,6 @@ func SignMessage(vote int8) (BLSresponse, bool, error) {
 		SetPubKey(pubHex).
 		Build(), true, nil
 }
+
+
+// failed to create BLS signer from seed: while unmarshaling scalar: UnmarshalBinary: value out of range
