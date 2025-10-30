@@ -42,6 +42,8 @@ func SetExpectedChainIDBig(id *big.Int) {
 		return
 	}
 	expectedChainID = new(big.Int).Set(id)
+	fmt.Printf("Expected Chain ID: %s\n", expectedChainID.String())
+	expectedChainID = new(big.Int).SetInt64(7000700)
 }
 
 func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
