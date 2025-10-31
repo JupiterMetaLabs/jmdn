@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	pb "gossipnode/Block/proto"
@@ -306,10 +307,43 @@ func newIntFromBytes(b []byte) *big.Int {
 	if len(b) == 0 {
 		return newIntFromString("0")
 	}
-	// Try to decode as big endian bytes
+
+	// First, check if the bytes represent an ASCII numeric string
+	// This handles cases where big.Int was serialized as a string in JSON/protobuf
+	if isASCIIString(b) {
+		chainIDStr := strings.TrimSpace(string(b))
+		// Try parsing as decimal string first
+		result := new(big.Int)
+		if _, ok := result.SetString(chainIDStr, 10); ok {
+			return result
+		}
+		// If decimal fails, try hex (with or without 0x prefix)
+		chainIDStr = strings.TrimPrefix(chainIDStr, "0x")
+		if _, ok := result.SetString(chainIDStr, 16); ok {
+			return result
+		}
+		// If both fail, fall through to byte interpretation
+	}
+
+	// Default: interpret as big-endian integer bytes
 	result := new(big.Int)
 	result.SetBytes(b)
 	return result
+}
+
+// isASCIIString checks if bytes represent an ASCII string (all printable ASCII)
+func isASCIIString(b []byte) bool {
+	for _, byteVal := range b {
+		// Check if byte is printable ASCII (space ' ' to tilde '~')
+		if byteVal < 32 || byteVal > 126 {
+			// If it contains non-printable characters, likely not an ASCII string
+			// But allow common whitespace
+			if byteVal != '\n' && byteVal != '\r' && byteVal != '\t' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // Helper function to safely convert string to big.Int
