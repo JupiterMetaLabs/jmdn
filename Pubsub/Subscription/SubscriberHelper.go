@@ -230,7 +230,7 @@ func (es *EnhancedSubscriber) processMessageEnhanced(msg *pubsub.Message) error 
 		es.handler(gossipMsg)
 	}
 
-	log.Printf("📨 Enhanced processing completed for message from %s", msg.ReceivedFrom.String())
+
 	return nil
 }
 

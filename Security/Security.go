@@ -53,10 +53,6 @@ func SetExpectedChainIDBig(id *big.Int) {
 	// Convert to binary (big-endian) representation
 	chainIDBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(chainIDBytes, chainIDUint)
-
-	fmt.Printf("Expected Chain ID (big.Int): %s\n", expectedChainID.String())
-	fmt.Printf("Expected Chain ID (uint64): %d\n", chainIDUint)
-	fmt.Printf("Expected Chain ID (bytes): %x\n", chainIDBytes)
 }
 
 // func chainIDCheck(chainID *big.Int) (bool, error) {
@@ -71,8 +67,6 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 
 	// 1. Check the ZKBlock validation for Transactions in the ZKBlokc
 	for _, tx := range zkBlock.Transactions {
-		fmt.Printf("tx.ChainID: %+v\n", tx.ChainID)
-		fmt.Printf("Block: %+v\n", zkBlock)
 		status, err := ThreeChecks(&tx)
 		if err != nil {
 			return false, err
@@ -103,7 +97,6 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 
 	// Preliminary Check: Chain ID must be present and valid (> 0)
 	if tx == nil || tx.ChainID == nil {
-		fmt.Printf(">>>>>>>> tx.ChainID: %+v\n", tx.ChainID)
 		// || tx.ChainID.Sign() <= 0
 		Conn.Client.Logger.Logger.Error("Invalid or missing ChainID",
 			zap.Error(errors.New("transaction chain ID is missing or invalid")),
@@ -122,29 +115,6 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 		fmt.Printf("DEBUG ChainID - String(): %s, Uint64(): %d, Bytes: %x\n",
 			tx.ChainID.String(), tx.ChainID.Uint64(), tx.ChainID.Bytes())
 	}
-
-	// Compare Chain ID to node's expected Chain ID if configured
-	// TEMPORARILY DISABLED: ChainID parsing issue - bytes are being interpreted incorrectly
-	// TODO: Re-enable once ChainID parsing is fixed in config/ZKBlock.go and Block/grpc_server.go
-	/*
-		if expectedChainID != nil && tx.ChainID.Cmp(expectedChainID) != 0 {
-			Conn.Client.Logger.Logger.Error("chain id mismatch",
-				zap.String("tx_chain_id", tx.ChainID.String()),
-				zap.Uint64("tx_chain_id_uint64", tx.ChainID.Uint64()),
-				zap.String("expected_chain_id", expectedChainID.String()),
-				zap.Uint64("expected_chain_id_uint64", expectedChainID.Uint64()),
-				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, config.LOKI_URL),
-				zap.String(logging.Function, "Security.ThreeChecks"),
-			)
-			fmt.Printf("ERROR: ChainID mismatch - Got: %s (uint64: %d), Expected: %s (uint64: %d)\n",
-				tx.ChainID.String(), tx.ChainID.Uint64(), expectedChainID.String(), expectedChainID.Uint64())
-			return false, errors.New("invalid transaction: chain id does not match node configuration")
-		}
-	*/
 
 	// Log ChainID for debugging (temporarily)
 	if tx.ChainID != nil && expectedChainID != nil {
@@ -277,22 +247,6 @@ func CheckSignature(tx *config.Transaction) (bool, error) {
 		return false, errors.New("transaction missing required signature fields (From, To, V, R, or S)")
 	}
 
-	// Debugging - Print full transaction details
-	fmt.Println("\n📋 Transaction Details for Signature Verification:")
-	fmt.Printf("   From: %s\n", tx.From.Hex())
-	fmt.Printf("   To: %s\n", tx.To.Hex())
-	fmt.Printf("   Value: %s\n", tx.Value.String())
-	fmt.Printf("   Nonce: %d\n", tx.Nonce)
-	fmt.Printf("   GasLimit: %d\n", tx.GasLimit)
-	if tx.GasPrice != nil {
-		fmt.Printf("   GasPrice: %s\n", tx.GasPrice.String())
-	}
-	fmt.Printf("   ChainID: %s\n", tx.ChainID.String())
-	fmt.Printf("   Data: %x\n", tx.Data)
-	fmt.Printf("   V: %s\n", tx.V.String())
-	fmt.Printf("   R: %s\n", tx.R.String())
-	fmt.Printf("   S: %s\n", tx.S.String())
-	fmt.Println("─────────────────────────────────────────────────────")
 
 	var ethTx *types.Transaction
 	var signer types.Signer

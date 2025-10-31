@@ -268,9 +268,6 @@ func rollbackBalances(originalBalances map[common.Address]string, accountsClient
 
 // ProcessTransaction handles a single transaction's balance updates
 func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection) error {
-	fmt.Printf("=== DEBUG: processTransaction called for tx %s ===\n", tx.Hash.Hex())
-	fmt.Printf("DEBUG: From: %s, To: %s, Value: %s\n", tx.From.Hex(), tx.To.Hex(), tx.Value.String())
-
 	// Enhanced logging at start
 	// First check the connection
 	if accountsClient == nil {
