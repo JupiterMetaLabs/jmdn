@@ -88,6 +88,8 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// Ensure connection is returned to pool when function exits
+	defer DB_OPs.PutAccountsConnection(Conn)
 
 	// Preliminary Check: Chain ID must be present and valid (> 0)
 	if tx == nil || tx.ChainID == nil {
