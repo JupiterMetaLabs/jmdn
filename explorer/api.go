@@ -157,8 +157,29 @@ func (s *ImmuDBServer) setupRoutes() {
 
 // Start runs the HTTP server
 func (s *ImmuDBServer) Start(addr string) error {
-	log.Info().Str("addr", addr).Msg("Starting ImmuDB API server")
-	return s.router.Run(addr)
+	// Ensure we bind to all interfaces for production deployments
+	// If addr doesn't specify a host, bind to 0.0.0.0 explicitly
+	bindAddr := addr
+	if len(addr) > 0 && addr[0] == ':' {
+		// Address is in format :port, ensure we bind to all interfaces
+		bindAddr = "0.0.0.0" + addr
+	} else if addr == "" {
+		// Default to binding to all interfaces on a default port
+		bindAddr = "0.0.0.0:8090"
+	}
+
+	log.Info().Str("addr", bindAddr).Msg("Starting ImmuDB API server")
+
+	// Use http.Server for explicit control over binding
+	srv := &http.Server{
+		Addr:           bindAddr,
+		Handler:        s.router,
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   10 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1 MB
+	}
+
+	return srv.ListenAndServe()
 }
 
 // Close cleans up resources

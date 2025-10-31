@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-Specific test to send 2 ETH from 0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2 to 0x69EE9a32109EE1CC8c95b49Ad1D4dDAEBb46Db45
+Test script to send ETH with properly signed transactions.
+This script generates a keypair, signs the transaction using EIP-155,
+and includes valid v, r, s signature components that will pass
+Security.CheckSignature validation.
 """
 
 from testZKBlock import ZKBlockTester
@@ -12,6 +15,7 @@ import time
 import hashlib
 import random
 from datetime import datetime
+from eth_account import Account
 
 nodeIP = "localhost"
 
@@ -55,6 +59,58 @@ def get_latest_block_number():
         print(f"⚠️  Warning: Could not connect to node on port 8090: {e}")
         return 0
 
+def sign_transaction_with_keypair(private_key_hex, from_address, to_address, value_wei, chain_id, nonce, gas_limit, gas_price, data=""):
+    """
+    Sign a transaction using a private key and return the signed transaction components.
+    
+    Args:
+        private_key_hex: Private key in hex format (with or without 0x prefix)
+        from_address: Sender address (must match the private key)
+        to_address: Receiver address
+        value_wei: Transaction value in wei
+        chain_id: Chain ID for EIP-155 signing
+        nonce: Transaction nonce
+        gas_limit: Gas limit
+        gas_price: Gas price in wei
+        data: Transaction data (optional)
+    
+    Returns:
+        Dictionary with v, r, s signature components and the actual from_address
+    """
+    # Ensure private key is in the correct format
+    if private_key_hex.startswith('0x'):
+        private_key_hex = private_key_hex[2:]
+    
+    # Validate that the private key corresponds to the from_address
+    account = Account.from_key('0x' + private_key_hex)
+    derived_address = account.address
+    
+    if derived_address.lower() != from_address.lower():
+        raise ValueError(f"Private key does not match from_address. "
+                        f"Expected {from_address}, got {derived_address}")
+    
+    # Prepare the transaction dictionary for signing
+    transaction_dict = {
+        'chainId': int(chain_id),
+        'nonce': int(nonce),
+        'to': to_address,
+        'value': int(value_wei),
+        'gas': int(gas_limit),
+        'gasPrice': int(gas_price),
+        'data': data if data else '0x',
+    }
+    
+    # Sign the transaction
+    signed_tx = Account.sign_transaction(transaction_dict, '0x' + private_key_hex)
+    
+    # Return signature components as integers (Go will parse them as big.Int)
+    return {
+        'v': signed_tx.v,  # v is an integer
+        'r': signed_tx.r,  # r is an integer
+        's': signed_tx.s,  # s is an integer
+        'from_address': derived_address  # Use the derived address to ensure match
+    }
+
 def send_eth_test():
     """Test sending 2 ETH between specific addresses"""
     test_start_time = time.time()
@@ -86,34 +142,73 @@ def send_eth_test():
         latest_block_number = 8
     print_timing("Block number retrieval", step_start)
     
-    # Specific addresses and amount
+    # Generate or use a keypair for signing
+    # Note: To use a specific address, you need its private key
+    # For this test, we'll generate a new keypair and use its address
     step_start = time.time()
-    from_address = "0xCdf1eFFD70cecB41bA0b4c41eB13D263578a4cC2"
+    
+    # Option 1: Generate a new keypair (recommended for testing)
+    account = Account.create()
+    from_address = account.address
+    private_key_hex = account.key.hex()
+    
+    # Option 2: Use a specific private key (uncomment and set if you have the private key for the desired address)
+    # private_key_hex = "your_private_key_here_without_0x"
+    # account = Account.from_key('0x' + private_key_hex)
+    # from_address = account.address
+    
     to_address = "0x69EE9a32109EE1CC8c95b49Ad1D4dDAEBb46Db45"
     amount = 1
     amount_wei = int(amount * 10**18)  # 1 ETH in wei
+    chain_id = 7000700
+    nonce = 0
+    gas_limit = 21000
+    gas_price = 20000000000  # 20 Gwei
     
-    print(f"\n3. Creating transaction:")
+    print(f"\n3. Creating and signing transaction:")
     print(f"   From: {from_address}")
     print(f"   To: {to_address}")
     print(f"   Amount: {amount} ETH ({amount_wei} wei)")
+    print(f"   Chain ID: {chain_id}")
+    print(f"   Nonce: {nonce}")
     
-    # Create a custom transaction with specific addresses
+    # Sign the transaction to get valid v, r, s values
+    try:
+        signature = sign_transaction_with_keypair(
+            private_key_hex=private_key_hex,
+            from_address=from_address,
+            to_address=to_address,
+            value_wei=amount_wei,
+            chain_id=chain_id,
+            nonce=nonce,
+            gas_limit=gas_limit,
+            gas_price=gas_price,
+            data=""
+        )
+        print(f"✅ Transaction signed successfully")
+        print(f"   v: {signature['v']}")
+        print(f"   r: {signature['r']}")
+        print(f"   s: {signature['s']}")
+    except Exception as e:
+        print(f"❌ Failed to sign transaction: {e}")
+        return False
+    
+    # Create a custom transaction with signed values
     transaction = {
         "hash": f"0x{secrets.token_hex(32)}",
-        "from": from_address,
+        "from": signature['from_address'],  # Use the address from the signature
         "to": to_address,
         "value": amount_wei,  # 1 ETH in wei
         "type": 0,
         "timestamp": 1761045000,
-        "chain_id": 7000700,
-        "nonce": 0,
-        "gas_limit": 21000,
-        "gas_price": 20000000000,  # 20 Gwei
+        "chain_id": chain_id,
+        "nonce": nonce,
+        "gas_limit": gas_limit,
+        "gas_price": gas_price,
         "data": "",
-        "v": 27,
-        "r": 1234567890123456789012345678901234567890123456789012345678901234567890,
-        "s": 9876543210987654321098765432109876543210987654321098765432109876543210
+        "v": signature['v'],  # Actual signature v
+        "r": signature['r'],  # Actual signature r
+        "s": signature['s']   # Actual signature s
     }
     
     # Generate unique hashes for this test
@@ -137,8 +232,8 @@ def send_eth_test():
         "extradata": "0x",
         "stateroot": unique_stateroot,
         "logsbloom": "",
-        "coinbaseaddr": from_address,
-        "zkvmaddr": from_address,
+        "coinbaseaddr": signature['from_address'],  # Use the signed from_address
+        "zkvmaddr": signature['from_address'],      # Use the signed from_address
         "prevhash": unique_prevhash,
         "blockhash": unique_blockhash,
         "gaslimit": 30000000,
