@@ -409,11 +409,14 @@ func handleVoteTriggerBroadcast(msg BroadcastMessageStruct) {
 	}
 
 	fmt.Printf("✅ Vote submitted successfully\n")
+	fmt.Printf("⏳ Waiting for consensus confirmation (block with BLS results)...\n")
+	fmt.Printf("   Block will be processed after sequencer confirms majority votes\n")
 	fmt.Printf("═══════════════════════════════════════════════════════════\n\n")
 
 	log.Info().
 		Str("msg_id", msg.ID).
-		Msg("Successfully processed vote trigger broadcast")
+		Str("block_hash", consensusMessage.GetZKBlock().BlockHash.Hex()).
+		Msg("Vote submitted - waiting for consensus confirmation broadcast")
 }
 
 // BroadcastVoteTrigger sends a vote trigger message to all connected peers
@@ -529,7 +532,6 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 	fmt.Printf("Vote trigger broadcast complete\n")
 	return nil
 }
-
 
 // BroadcastBlockToEveryNodeWithExtraData sends a block to all connected peers and attaches extra metadata.
 // The extra map will be merged into msg.Data. Keys in extra override existing keys.

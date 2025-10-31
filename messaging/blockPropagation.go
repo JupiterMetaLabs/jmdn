@@ -645,6 +645,8 @@ func createConsensusMessageForVoting(MSG *PubSubMessages.ConsensusMessage) *PubS
 	now := time.Now().UTC()
 	consensusMessage.SetStartTime(now)
 	consensusMessage.SetEndTimeout(now.Add(config.ConsensusTimeout))
+
+	fmt.Printf("Consensus message: %+v\n", consensusMessage)
 	// Note: Buddies will be added by the consensus process
 	// This is just the initial setup for voting
 
