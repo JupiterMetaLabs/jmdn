@@ -17,9 +17,11 @@ import (
 	"gossipnode/Sequencer"
 	"gossipnode/config"
 	"gossipnode/logging"
+
 	// "gossipnode/messaging"
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
+
 	// "gossipnode/PubSubMessages"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -97,7 +99,12 @@ func submitRawTransaction(c *gin.Context) {
 func SubmitRawTransaction(tx *config.Transaction) (string, error) {
 	// Debugging
 	fmt.Println("Transaction: ", tx)
-	fmt.Println("Transaction ChainID:", tx.ChainID)
+	if tx.ChainID != nil {
+		fmt.Printf("Transaction ChainID - String(): %s, Uint64(): %d, Bytes: %x\n",
+			tx.ChainID.String(), tx.ChainID.Uint64(), tx.ChainID.Bytes())
+	} else {
+		fmt.Println("Transaction ChainID: nil")
+	}
 
 	// Run security checks
 	status, err := Security.ThreeChecks(tx)
