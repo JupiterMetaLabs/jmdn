@@ -1,0 +1,29 @@
+name: Deploy to Test Nodes
+
+on:
+  push:
+    branches:
+      - Testing    
+
+jobs:
+  deploy:
+    name: Run Ansible Deploy on Seed Node
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup SSH key for Ansible connection
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.ANSIBLE_SSH_KEY }}
+
+      - name: Verify SSH connectivity
+        run: |
+          ssh -o StrictHostKeyChecking=no root@${{ secrets.ANSIBLE_HOST }} "hostname && date"
+
+      - name: Trigger Ansible deployment
+        run: |
+          ssh -o StrictHostKeyChecking=no root@${{ secrets.ANSIBLE_HOST }} \
+            "cd /opt/ansible/project && ansible-playbook run-deploy.yml"

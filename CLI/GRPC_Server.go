@@ -2,12 +2,14 @@ package CLI
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"time"
 
 	pb "gossipnode/CLI/proto"
+	"gossipnode/seednode"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"google.golang.org/grpc"
@@ -180,11 +182,14 @@ func (s *CLIServer) GetDID(ctx context.Context, req *pb.DIDRequest) (*pb.DIDDocu
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
 	return &pb.DIDDocument{
-		Did:        doc.DID,
-		PublicKey:  doc.PublicKey,
-		Balance:    doc.Balance,
-		CreatedAt:  timestamppb.New(time.Unix(doc.CreatedAt, 0)),
-		UpdatedAt:  timestamppb.New(time.Unix(doc.UpdatedAt, 0)),
+		Did:       doc.DIDAddress,
+		Type:      doc.AccountType,
+		Nonce:     int64(doc.Nonce),
+		Metadata:  convertMetadataToString(doc.Metadata),
+		PublicKey: doc.Address.Hex(),
+		Balance:   doc.Balance,
+		CreatedAt: timestamppb.New(normalizeTimestamp(doc.CreatedAt)),
+		UpdatedAt: timestamppb.New(normalizeTimestamp(doc.UpdatedAt)),
 	}, nil
 }
 
@@ -197,9 +202,9 @@ func (s *CLIServer) FastSync(ctx context.Context, req *pb.PeerRequest) (*pb.Sync
 		}, nil
 	}
 	return &pb.SyncStats{
-		TimeTaken:   int64(stats.TimeTaken.Seconds()),
-		MainState:     convertDBState(stats.MainState),
-		AccountsState: convertDBState(stats.AccountsState),
+		TimeTaken:     int64(stats.TimeTaken.Seconds()),
+		MainState:     convertDBState(&stats.MainState),
+		AccountsState: convertDBState(&stats.AccountsState),
 	}, nil
 }
 
@@ -209,13 +214,13 @@ func (s *CLIServer) GetDatabaseState(ctx context.Context, _ *emptypb.Empty) (*pb
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &pb.DatabaseStates{
-		MainDb:     convertDBState(*mainState),
-		AccountsDb: convertDBState(*accountsState),
+		MainDb:     convertDBState(mainState),
+		AccountsDb: convertDBState(accountsState),
 	}, nil
 }
 
 // Helper function to convert database state
-func convertDBState(state schema.ImmutableState) *pb.DatabaseState {
+func convertDBState(state *schema.ImmutableState) *pb.DatabaseState {
 	return &pb.DatabaseState{
 		TxId:     state.TxId,
 		TxHash:   state.TxHash,
@@ -223,21 +228,149 @@ func convertDBState(state schema.ImmutableState) *pb.DatabaseState {
 	}
 }
 
+// convertMetadataToString converts a metadata map to a JSON string
+func convertMetadataToString(metadata map[string]interface{}) string {
+	if metadata == nil {
+		return "{}"
+	}
+	jsonData, err := json.Marshal(metadata)
+	if err != nil {
+		log.Printf("Error marshaling metadata: %v", err)
+		return "{}"
+	}
+	return string(jsonData)
+}
+
+// normalizeTimestamp converts an int64 timestamp to time.Time, handling nanoseconds, milliseconds, or seconds
+func normalizeTimestamp(ts int64) time.Time {
+	switch {
+	case ts >= 1e14: // nanoseconds
+		return time.Unix(0, ts).UTC()
+	case ts >= 1e11: // milliseconds
+		sec := ts / 1e3
+		nsec := (ts % 1e3) * 1e6
+		return time.Unix(sec, nsec).UTC()
+	default: // seconds
+		return time.Unix(ts, 0).UTC()
+	}
+}
+
 // StartGRPCServer starts the gRPC server
 func StartGRPCServer(handler *CommandHandler, port int) error {
-    lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-    if err != nil {
-        return fmt.Errorf("failed to listen: %v", err)
-    }
+	fmt.Printf("Attempting to listen on port %d...\n", port)
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		fmt.Printf("Failed to listen on port %d: %v\n", port, err)
+		return fmt.Errorf("failed to listen: %v", err)
+	}
+	fmt.Printf("Successfully listening on port %d\n", port)
 
-    grpcServer := grpc.NewServer()
-    cliServer := NewCLIServer(handler)
-    cliServer.Register(grpcServer)
+	grpcServer := grpc.NewServer()
+	cliServer := NewCLIServer(handler)
+	cliServer.Register(grpcServer)
 
-    log.Printf("Starting gRPC server on port %d", port)
-    if err := grpcServer.Serve(lis); err != nil {
-        return fmt.Errorf("failed to serve: %v", err)
-    }
+	fmt.Printf("gRPC server configured, starting to serve...\n")
+	log.Printf("Starting gRPC server on port %d", port)
+	if err := grpcServer.Serve(lis); err != nil {
+		fmt.Printf("gRPC server failed to serve: %v\n", err)
+		return fmt.Errorf("failed to serve: %v", err)
+	}
 
-    return nil
+	return nil
+}
+
+// GetSyncInfo returns FastSync configuration
+func (s *CLIServer) GetSyncInfo(ctx context.Context, _ *emptypb.Empty) (*pb.SyncInfo, error) {
+	// SyncInfo constants would need to be exposed from fastsync package
+	// For now, return sensible defaults
+	return &pb.SyncInfo{
+		BatchSize:          1000,
+		RequestTimeoutSec:  30,
+		ResponseTimeoutSec: 60,
+	}, nil
+}
+
+// GetGethStatus returns gETH configuration
+func (s *CLIServer) GetGethStatus(ctx context.Context, _ *emptypb.Empty) (*pb.GethStatus, error) {
+	return &pb.GethStatus{
+		ChainId:    int32(s.handler.ChainID),
+		FacadePort: int32(s.handler.FacadePort),
+		WsPort:     int32(s.handler.WSPort),
+	}, nil
+}
+
+// DiscoverNeighbors discovers and adds neighbors from seed node
+func (s *CLIServer) DiscoverNeighbors(ctx context.Context, _ *emptypb.Empty) (*pb.OperationResponse, error) {
+	if s.handler.SeedNode == "" {
+		return &pb.OperationResponse{
+			Success: false,
+			Message: "No seed node configured",
+		}, nil
+	}
+
+	if s.handler.Node == nil || s.handler.NodeManager == nil {
+		return &pb.OperationResponse{
+			Success: false,
+			Message: "Node or NodeManager not initialized",
+		}, nil
+	}
+
+	client, err := seednode.NewClient(s.handler.SeedNode)
+	if err != nil {
+		return &pb.OperationResponse{
+			Success: false,
+			Message: err.Error(),
+		}, nil
+	}
+	defer client.Close()
+
+	err = client.DiscoverAndAddNeighbors(s.handler.Node.Host, s.handler.NodeManager)
+	if err != nil {
+		return &pb.OperationResponse{
+			Success: false,
+			Message: err.Error(),
+		}, nil
+	}
+
+	return &pb.OperationResponse{
+		Success: true,
+		Message: "Neighbor discovery completed successfully",
+	}, nil
+}
+
+// ListAliases returns the current node's alias
+func (s *CLIServer) ListAliases(ctx context.Context, _ *emptypb.Empty) (*pb.AliasList, error) {
+	if s.handler.SeedNode == "" || s.handler.Node == nil {
+		return &pb.AliasList{Aliases: []string{}}, nil
+	}
+
+	client, err := seednode.NewClient(s.handler.SeedNode)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	defer client.Close()
+
+	currentPeerID := s.handler.Node.Host.ID().String()
+	alias, err := client.GetAliasByPeerID(currentPeerID)
+	if err != nil {
+		// No alias found, return empty
+		return &pb.AliasList{Aliases: []string{}}, nil
+	}
+
+	return &pb.AliasList{Aliases: []string{alias}}, nil
+}
+
+// PropagateDID propagates a DID to the network
+func (s *CLIServer) PropagateDID(ctx context.Context, req *pb.DIDPropagationRequest) (*pb.OperationResponse, error) {
+	err := s.handler.HandlePropagateDID(req.Did, req.PublicKey, req.Balance)
+	if err != nil {
+		return &pb.OperationResponse{
+			Success: false,
+			Message: err.Error(),
+		}, nil
+	}
+	return &pb.OperationResponse{
+		Success: true,
+		Message: fmt.Sprintf("DID %s propagated successfully to all connected peers", req.Did),
+	}, nil
 }

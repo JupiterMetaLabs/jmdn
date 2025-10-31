@@ -1,9 +1,9 @@
 name: Go
 on:
   push:
-    branches: [ "Mainnet" ]
+    branches: [ "Testing" ]
   pull_request:
-    branches: [ "Mainnet" ]
+    branches: [ "Testing" ]
 
 jobs:
   build:
@@ -30,17 +30,21 @@ jobs:
         with:
           go-version: '1.23.9'
 
-      - name: Cross-compile for Linux amd64
-        run: GOOS=linux GOARCH=amd64 go build -o JMZKDecentralisedNetwork-linux-amd64 .
+      - name: Install dependencies for CGO
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc
 
-      - name: Cross-compile for Linux arm64
-        run: GOOS=linux GOARCH=arm64 go build -o JMZKDecentralisedNetwork-linux-arm64 .
+      - name: Build for Linux amd64
+        run: go build -o JMZKDecentralisedNetwork-linux-amd64 .
+
+      - name: Build for Linux arm64
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -o JMZKDecentralisedNetwork-linux-arm64 .
 
       - name: Cross-compile for Windows amd64
         run: GOOS=windows GOARCH=amd64 go build -o JMZKDecentralisedNetwork-windows-amd64.exe .
-
-      - name: Cross-compile for Windows arm64
-        run: GOOS=windows GOARCH=arm64 go build -o JMZKDecentralisedNetwork-windows-arm64.exe .
 
       - name: Upload Linux & Windows binaries
         uses: actions/upload-artifact@v4
@@ -95,7 +99,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: ./bin/**
-          tag_name: JMDT-Decentralised-Node-mainnet-release-${{ github.sha }}
+          tag_name: JMDT-Decentralised-Node-beta-`${{ github.sha }}`
           name: JMDT-Decentralised-Node-`${{ github.sha }}`
           body: |
             This is an automated release for commit `${{ github.sha }}`

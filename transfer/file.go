@@ -62,7 +62,7 @@ func addSpeedSample(peerID string, speed float64, bufferSize int) {
 			BufferHistory:  make([]int, 0, speedSampleWindow),
 			LastBufferSize: bufferSize,
 			LastSpeed:      speed,
-			LastUpdated:    time.Now(),
+			LastUpdated:    time.Now().UTC(),
 		}
 		peerConnStats[peerID] = stats
 	}
@@ -88,7 +88,7 @@ func addSpeedSample(peerID string, speed float64, bufferSize int) {
 
 	stats.LastSpeed = speed
 	stats.LastBufferSize = bufferSize
-	stats.LastUpdated = time.Now()
+	stats.LastUpdated = time.Now().UTC()
 }
 
 // calculateVariance computes the variance of the speed samples
@@ -247,7 +247,7 @@ func calculateSpeedTrend(samples []float64) float64 {
 // If outputPath is empty, defaults to "received_<peerID>_<timestamp>"
 func HandleFileStream(s network.Stream, outputPath string) {
 	defer s.Close()
-	startTime := time.Now()
+	startTime := time.Now().UTC()
 	peerID := s.Conn().RemotePeer().String()
 
 	// Read file metadata (size and filename)
@@ -275,7 +275,7 @@ func HandleFileStream(s network.Stream, outputPath string) {
 		if filename != "" {
 			outputPath = filename
 		} else {
-			outputPath = fmt.Sprintf("received_%s_%d", peerID, time.Now().Unix())
+			outputPath = fmt.Sprintf("received_%s_%d", peerID, time.Now().UTC().Unix())
 		}
 	} else {
 		// If outputPath is a directory, append the original filename
@@ -310,7 +310,7 @@ func HandleFileStream(s network.Stream, outputPath string) {
 	var bytesRead int64
 	var speedSamples []float64
 	var bufferSizes []int
-	checkTime := time.Now()
+	checkTime := time.Now().UTC()
 	lastBytes := int64(0)
 
 	// Create initial buffer
@@ -354,7 +354,7 @@ func HandleFileStream(s network.Stream, outputPath string) {
 			}
 
 			// Update for next interval
-			checkTime = time.Now()
+			checkTime = time.Now().UTC()
 			lastBytes = bytesRead
 		}
 
@@ -411,7 +411,7 @@ func HandleFileStream(s network.Stream, outputPath string) {
 // If remotePath is empty, the base filename will be used
 func SendFile(h host.Host, peerID peer.ID, filePath, remotePath string) error {
 	// Start timing
-	startTime := time.Now()
+	startTime := time.Now().UTC()
 	peerIDStr := peerID.String()
 
 	// Get file info
@@ -471,7 +471,7 @@ func SendFile(h host.Host, peerID peer.ID, filePath, remotePath string) error {
 	var bytesSent int64
 	var speedSamples []float64
 	var bufferSizes []int
-	checkTime := time.Now()
+	checkTime := time.Now().UTC()
 	lastBytes := int64(0)
 
 	for bytesSent < fileSize {
@@ -514,7 +514,7 @@ func SendFile(h host.Host, peerID peer.ID, filePath, remotePath string) error {
 			}
 
 			// Update for next interval
-			checkTime = time.Now()
+			checkTime = time.Now().UTC()
 			lastBytes = bytesSent
 		}
 

@@ -1,0 +1,9 @@
+log:
+  dir: "logs"
+  keep_logs: true
+
+loki:
+  url: "http://localhost:3100"
+  batch_size: 131072        # 128 * 1024
+  batch_wait: 1s            # 1 * time.Second
+  timeout: 5s               # 5 * time.Second

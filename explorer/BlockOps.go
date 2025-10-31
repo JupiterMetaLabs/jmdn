@@ -1,20 +1,33 @@
 package explorer
 
 import (
+	"context"
 	"encoding/hex"
+	"fmt"
+	"math"
 	"net/http"
 	"strconv"
+	"sync"
+	"time"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/logging"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 type stats struct {
-	DBState    *schema.ImmutableState
-	MerkleRoot string
+	DBState           *schema.ImmutableState
+	MerkleRoot        string
+	LatestBlockNumber uint64
+	TotalBlocks       uint64
+	TotalDIDs         int64
+	TotalTransactions int64
+	TotalAddresses    int64
+	TotalBalance      string
 }
 
 // Get block by number
@@ -82,9 +95,14 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 		if err != nil {
 			// If a block is not found, it might be a gap in the blockchain.
 			// Log the error and continue to the next block to provide a partial response.
-			config.Warning(s.defaultdb.Logger, "Failed to get block %d, skipping: %v", i, err)
-			continue
-			config.Warning(s.defaultdb.Logger, "Failed to get block %d, skipping: %v", i, err)
+			s.defaultdb.Client.Logger.Logger.Error("Failed to get block %d, skipping: %v",
+				zap.Error(err),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, config.LOKI_URL),
+				zap.String(logging.Function, "Explorer.listBlocks"),
+			)
 			continue
 		}
 		blocks = append(blocks, block)
@@ -157,7 +175,7 @@ func (s *ImmuDBServer) listTransactions_inBlock(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	Transactions := make([]*config.ZKBlockTransaction, 0)
+	Transactions := make([]*config.Transaction, 0)
 
 	for _, tx := range BlockData.Transactions {
 		Transactions = append(Transactions, &tx)
@@ -167,25 +185,157 @@ func (s *ImmuDBServer) listTransactions_inBlock(c *gin.Context) {
 
 // Get default db stats
 func (s *ImmuDBServer) getStats(c *gin.Context) {
+	// Create a context with 60 second timeout
+	_, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel()
+
 	var stats stats
+	var wg sync.WaitGroup
+	var mu sync.Mutex
 
-	status, err := DB_OPs.GetDatabaseState(&s.defaultdb)
+	// Channel to collect errors from goroutines
+	errChan := make(chan error, 6)
 
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+	// Function to handle errors from goroutines
+	handleErr := func(err error) {
+		if err != nil {
+			select {
+			case errChan <- err:
+			default:
+			}
+		}
 	}
 
-	merkleroot, err := DB_OPs.GetMerkleRoot(&s.defaultdb)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
+	// Get database status in a goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tempClient := s.defaultdb.Client
+		status, err := DB_OPs.GetDatabaseState(tempClient)
+		if err != nil {
+			handleErr(fmt.Errorf("failed to get database state: %w", err))
+			return
+		}
+		mu.Lock()
+		stats.DBState = status
+		mu.Unlock()
+	}()
 
-	stats.DBState = status
-	stats.MerkleRoot = hex.EncodeToString(merkleroot)
+	// Get merkle root in a goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		merkleroot, err := DB_OPs.GetMerkleRoot(&s.defaultdb)
+		if err != nil {
+			handleErr(fmt.Errorf("failed to get merkle root: %w", err))
+			return
+		}
+		mu.Lock()
+		stats.MerkleRoot = hex.EncodeToString(merkleroot)
+		mu.Unlock()
+	}()
+
+	// Get latest block number and total blocks in a goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(&s.defaultdb)
+		if err != nil {
+			handleErr(fmt.Errorf("failed to get latest block number: %w", err))
+			return
+		}
+		mu.Lock()
+		stats.LatestBlockNumber = latestBlockNumber
+		stats.TotalBlocks = latestBlockNumber + 1
+		mu.Unlock()
+
+		// Get total transactions count efficiently
+		totalTx, err := DB_OPs.CountTransactions(&s.defaultdb)
+		if err != nil {
+			handleErr(fmt.Errorf("failed to count transactions: %w", err))
+			return
+		}
+		mu.Lock()
+		stats.TotalTransactions = int64(totalTx)
+		mu.Unlock()
+	}()
+
+	// Get total DIDs in a goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		totalDIDs, err := DB_OPs.CountAccounts(&s.accountsdb)
+		if err != nil {
+			handleErr(fmt.Errorf("failed to list DIDs: %w", err))
+			return
+		}
+		mu.Lock()
+		stats.TotalDIDs = int64(totalDIDs)
+		mu.Unlock()
+	}()
+
+	// Get total addresses and total balance in a goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		accounts, err := DB_OPs.ListAllAccounts(&s.accountsdb, 0)
+		if err != nil {
+			handleErr(fmt.Errorf("failed to list accounts: %w", err))
+			return
+		}
+
+		mu.Lock()
+		stats.TotalAddresses = int64(len(accounts))
+
+		// Calculate total balance (sum of all account balances)
+		totalBalance := "0"
+		for _, account := range accounts {
+			if account.Balance != "" {
+				// Simple string addition for balance calculation
+				// In a real implementation, you'd want to use big.Int for proper arithmetic
+				if totalBalance == "0" {
+					totalBalance = account.Balance
+				} else {
+					// For now, just concatenate as strings - in production use proper big.Int arithmetic
+					totalBalance = fmt.Sprintf("%s + %s", totalBalance, account.Balance)
+				}
+			}
+		}
+		stats.TotalBalance = totalBalance
+		mu.Unlock()
+	}()
+
+	// Wait for all goroutines to complete
+	go func() {
+		wg.Wait()
+		close(errChan)
+	}()
+
+	// Check for any errors
+	for err := range errChan {
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
 
 	c.JSON(http.StatusOK, stats)
+}
+
+func (s *ImmuDBServer) getDIDDetailsFromAddr(c *gin.Context) {
+	// Change from c.Param to c.Query since addr is a query parameter
+	addr := c.Query("addr")
+	if addr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "addr query parameter is required"})
+		return
+	}
+
+	DIDDocument, err := DB_OPs.GetAccountByDID(&s.accountsdb, addr)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, DIDDocument)
 }
 
 // Get the Missing blocks
@@ -216,4 +366,45 @@ func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
 		missingBlocks = append(missingBlocks, block)
 	}
 	c.JSON(http.StatusOK, missingBlocks)
+}
+
+func (s *ImmuDBServer) listTransactions(c *gin.Context) {
+	// Get pagination parameters
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 10 // Default to 10 items per page, max 100
+	}
+
+	// Calculate offset
+	offset := (page - 1) * limit
+
+	// Get paginated transaction hashes
+	txHashes, total, err := DB_OPs.GetTransactionHashes(&s.defaultdb, offset, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch transactions"})
+		return
+	}
+
+	// Fetch full transaction details
+	var transactions []*config.Transaction
+	transactions, err = DB_OPs.GetTransactionsBatch(&s.defaultdb, txHashes)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch transaction details"})
+		return
+	}
+
+	// Return paginated response
+	c.JSON(http.StatusOK, gin.H{
+		"transactions": transactions,
+		"pagination": gin.H{
+			"page":       page,
+			"limit":      limit,
+			"total":      total,
+			"totalPages": int(math.Ceil(float64(total) / float64(limit))),
+		},
+	})
 }

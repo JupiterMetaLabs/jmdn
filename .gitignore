@@ -3,6 +3,7 @@ gossipnode
 gossipnode.exe.sig
 logs/*.log
 config/peer.json
+config/bls.json
 DB/*.db
 yggdrasil
 Account.json
@@ -10,3 +11,25 @@ Account.json
 .identity*
 .state*
 .vscode
+*.avro
+/data
+test-cli
+immudb_mac
+/immu
+*.exe
+jmdn
+immuclient
+.DS_Store
+# *.pb.go
+# *_grpc.pb.go
+Thumbs.db
+*.swp
+*.swo
+*.out
+*.test
+fastsync/
+/fastsync
+jmzk-node
+test
+   
+SIM/__pycache__/testZKBlock.cpython-313.pyc

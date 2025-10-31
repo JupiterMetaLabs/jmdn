@@ -66,7 +66,7 @@ message BlockResponse {
   string txns_root = 6;
   repeated ZKBlockTransaction transactions = 7;
   int64 timestamp = 8;
-  bytes extra_data = 9;
+  string extra_data = 9;
   bytes state_root = 10;
   bytes logs_bloom = 11;
   string coinbase_addr = 12;

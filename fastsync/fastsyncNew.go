@@ -1,3 +1,31 @@
+// Package fastsync - Core FastSync Implementation with CRDT Integration
+//
+// This file contains the main FastSync implementation with integrated CRDT support.
+// It provides the core synchronization functionality for distributed systems.
+//
+// CRDT INTEGRATION CHANGES:
+// =========================
+// 1. FastSync struct now includes a CRDT engine for conflict-free operations
+// 2. NewFastSync constructor initializes CRDT engine with 50MB memory limit
+// 3. Added GetCRDTEngine() method for external CRDT operations
+// 4. Added ExportCRDTs() and ImportCRDTs() methods for network sync
+// 5. Enhanced error handling and logging for CRDT operations
+//
+// FUNCTIONALITY ADDED:
+// ===================
+// - Conflict-free synchronization of LWW-Sets and Counters
+// - Operation-based sync instead of state-based (preserves operation history)
+// - Deterministic convergence across distributed nodes
+// - Memory-bounded operation history with automatic eviction
+// - Comprehensive logging and error handling for CRDT operations
+//
+// USAGE EXAMPLE:
+// ==============
+//
+//	fs := NewFastSync(host, mainDB, accountsDB)
+//	crdtEngine := fs.GetCRDTEngine()
+//	crdtEngine.LWWAdd("user:123", "preferences", "theme:dark", VectorClock{})
+//	crdtEngine.CounterInc("node:abc", "requests", 1, VectorClock{})
 package fastsync
 
 import (
@@ -7,9 +35,10 @@ import (
 	"fmt"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/crdt"
 	hashmap "gossipnode/crdt/HashMap"
 	"io"
-		"os"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,11 +82,15 @@ type SyncMessage struct {
 
 type FastSync struct {
 	host             host.Host
-	mainDB           *config.ImmuClient
-	accountsDB       *config.ImmuClient
+	mainDB           *config.PooledConnection
+	accountsDB       *config.PooledConnection
 	active           map[peer.ID]*syncState
 	mutex            sync.RWMutex
 	HashMap_MetaData *HashMap_MetaData
+	// NEW: CRDT engine for conflict-free replicated data types
+	// This enables proper handling of concurrent operations during synchronization
+	// without data loss or conflicts. Supports LWW-Sets and Counters.
+	crdtEngine *crdt.Engine
 }
 
 type HashMap_MetaData struct {
@@ -91,14 +124,14 @@ const (
 	RequestFiletransfer       = "REQUEST_FILE_TRANSFER"
 )
 
-func (fs *FastSync) getDB(dbType DatabaseType) *config.ImmuClient {
+func (fs *FastSync) getDB(dbType DatabaseType) *config.PooledConnection {
 	if dbType == AccountsDB {
 		return fs.accountsDB
 	}
 	return fs.mainDB
 }
 
-func GetDBData_Default(db *config.ImmuClient, prefix string) ([]string, error) {
+func GetDBData_Default(db *config.PooledConnection, prefix string) ([]string, error) {
 	keys, err := DB_OPs.GetAllKeys(db, prefix)
 	if err != nil {
 		return nil, err
@@ -106,7 +139,7 @@ func GetDBData_Default(db *config.ImmuClient, prefix string) ([]string, error) {
 	return keys, nil
 }
 
-func GetDBData_Accounts(db *config.ImmuClient, prefix string) ([]string, error) {
+func GetDBData_Accounts(db *config.PooledConnection, prefix string) ([]string, error) {
 	DIDs, err := DB_OPs.GetAllKeys(db, prefix)
 	if err != nil {
 		return nil, err
@@ -140,22 +173,140 @@ func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
 	return MAP, nil
 }
 
-func NewFastSync(h host.Host, mainDB, accountsDB *config.ImmuClient) *FastSync {
+// UPDATED: NewFastSync now initializes CRDT engine for conflict-free synchronization
+// This enables proper handling of concurrent operations during sync without data loss
+func NewFastSync(h host.Host, mainDB, accountsDB *config.PooledConnection) *FastSync {
+	// NEW: Initialize CRDT engine with 50MB memory limit for operation history
+	// This allows the system to maintain a bounded operation log for synchronization
+	crdtEngine := crdt.NewEngineMemOnly(50 * 1024 * 1024)
+
 	fs := &FastSync{
 		host:       h,
 		mainDB:     mainDB,
 		accountsDB: accountsDB,
 		active:     make(map[peer.ID]*syncState),
+		crdtEngine: crdtEngine, // NEW: CRDT engine for conflict-free operations
 	}
 
 	h.SetStreamHandler(SyncProtocolID, fs.handleStream)
-	log.Info().Msg("FastSync initialized with multi-database support")
+	log.Info().Msg("FastSync initialized with multi-database support and CRDT engine")
 
 	return fs
 }
 
+// NEW: GetCRDTEngine provides access to the CRDT engine for external operations
+// This allows other parts of the system to perform CRDT operations like:
+// - Adding/removing elements from LWW-Sets
+// - Incrementing counters
+// - Querying current CRDT state
+func (fs *FastSync) GetCRDTEngine() *crdt.Engine {
+	return fs.crdtEngine
+}
+
+// IMPLEMENTED: ExportCRDTs exports all CRDTs for synchronization with other nodes
+// This is used during sync to send CRDT state to remote nodes
+// Returns serialized CRDT data that can be transmitted over the network
+func (fs *FastSync) ExportCRDTs() ([]json.RawMessage, error) {
+	if fs.crdtEngine == nil {
+		return nil, fmt.Errorf("CRDT engine not initialized")
+	}
+
+	log.Info().Msg("Starting CRDT export for synchronization")
+
+	// 1. Get all CRDT objects from the memory store
+	allCRDTs := fs.crdtEngine.GetAllCRDTs()
+
+	if len(allCRDTs) == 0 {
+		log.Info().Msg("No CRDTs to export")
+		return []json.RawMessage{}, nil
+	}
+
+	log.Info().Int("count", len(allCRDTs)).Msg("Exporting CRDTs")
+
+	// 2. Serialize each CRDT to JSON format with metadata
+	var exportedCRDTs []json.RawMessage
+
+	for key, crdtObj := range allCRDTs {
+		// Determine CRDT type using proper type assertion
+		var crdtType string
+		switch crdtObj.(type) {
+		case *crdt.LWWSet:
+			crdtType = "lww-set"
+		case *crdt.Counter:
+			crdtType = "counter"
+		default:
+			log.Warn().Str("key", key).Msg("Unknown CRDT type, skipping export")
+			continue
+		}
+
+		// Serialize CRDT data to JSON
+		crdtData, err := json.Marshal(crdtObj)
+		if err != nil {
+			log.Error().Err(err).Str("key", key).Str("type", crdtType).Msg("Failed to marshal CRDT data")
+			continue
+		}
+
+		// 3. Wrap with metadata (type, key, timestamp)
+		wrapper := map[string]interface{}{
+			"type":      crdtType,
+			"key":       key,
+			"data":      json.RawMessage(crdtData),
+			"timestamp": time.Now().UTC().Unix(),
+			"version":   "1.0", // For future compatibility
+		}
+
+		// Serialize wrapper to JSON
+		wrapperData, err := json.Marshal(wrapper)
+		if err != nil {
+			log.Error().Err(err).Str("key", key).Str("type", crdtType).Msg("Failed to marshal CRDT wrapper")
+			continue
+		}
+
+		exportedCRDTs = append(exportedCRDTs, json.RawMessage(wrapperData))
+
+		log.Debug().
+			Str("key", key).
+			Str("type", crdtType).
+			Int("size", len(wrapperData)).
+			Msg("Exported CRDT")
+	}
+
+	log.Info().
+		Int("total", len(allCRDTs)).
+		Int("exported", len(exportedCRDTs)).
+		Msg("CRDT export completed")
+
+	// 4. Return serialized data for network transmission
+	return exportedCRDTs, nil
+}
+
+// IMPLEMENTED: ImportCRDTs imports CRDTs received from other nodes during sync
+// This processes incoming CRDT data and applies it to the local CRDT engine
+func (fs *FastSync) ImportCRDTs(crdtData []json.RawMessage) error {
+	if fs.crdtEngine == nil {
+		return fmt.Errorf("CRDT engine not initialized")
+	}
+
+	if len(crdtData) == 0 {
+		log.Info().Msg("No CRDTs to import")
+		return nil
+	}
+
+	log.Info().Int("count", len(crdtData)).Msg("Starting CRDT import")
+
+	// Use the existing storeCRDTs function which already handles the import logic
+	err := fs.storeCRDTs(fs.crdtEngine, crdtData)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to import CRDTs")
+		return fmt.Errorf("failed to import CRDTs: %w", err)
+	}
+
+	log.Info().Int("imported", len(crdtData)).Msg("CRDT import completed successfully")
+	return nil
+}
+
 func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, error) {
-	if err := stream.SetReadDeadline(time.Now().Add(ResponseTimeout)); err != nil {
+	if err := stream.SetReadDeadline(time.Now().UTC().Add(ResponseTimeout)); err != nil {
 		return nil, fmt.Errorf("failed to set read deadline: %w", err)
 	}
 
@@ -166,6 +317,7 @@ func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, err
 	for {
 		chunk, isPrefix, err := reader.ReadLine()
 		if err != nil {
+			log.Error().Err(err).Msg("Failed to read message chunk")
 			return nil, fmt.Errorf("failed to read message: %w", err)
 		}
 
@@ -176,11 +328,23 @@ func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, err
 		}
 	}
 
-	// Add debugging to show message size
-	log.Debug().Int("bytes", len(msgData)).Msg("Read message data")
+	// Add debugging to show message size and content
+	log.Info().
+		Int("bytes", len(msgData)).
+		Str("raw_data", string(msgData)).
+		Msg("Read message data")
+
+	if len(msgData) == 0 {
+		return nil, fmt.Errorf("received empty message")
+	}
 
 	var msg SyncMessage
 	if err := json.Unmarshal(msgData, &msg); err != nil {
+		log.Error().
+			Err(err).
+			Int("bytes", len(msgData)).
+			Str("raw_data", string(msgData)).
+			Msg("Failed to unmarshal message")
 		return nil, fmt.Errorf("failed to unmarshal message (%d bytes): %w", len(msgData), err)
 	}
 
@@ -190,22 +354,33 @@ func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, err
 func writeMessage(writer *bufio.Writer, stream network.Stream, msg *SyncMessage) error {
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to marshal message")
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 	msgBytes = append(msgBytes, '\n')
 
-	if err := stream.SetWriteDeadline(time.Now().Add(ResponseTimeout)); err != nil {
+	// Debug: Log the message being written
+	log.Info().
+		Int("bytes", len(msgBytes)).
+		Str("raw_data", string(msgBytes)).
+		Msg("Writing message data")
+
+	if err := stream.SetWriteDeadline(time.Now().UTC().Add(ResponseTimeout)); err != nil {
+		log.Error().Err(err).Msg("Failed to set write deadline")
 		return fmt.Errorf("failed to set write deadline: %w", err)
 	}
 
 	if _, err := writer.Write(msgBytes); err != nil {
+		log.Error().Err(err).Msg("Failed to write message bytes")
 		return fmt.Errorf("failed to write message: %w", err)
 	}
 
 	if err := writer.Flush(); err != nil {
+		log.Error().Err(err).Msg("Failed to flush message")
 		return fmt.Errorf("failed to flush message: %w", err)
 	}
 
+	log.Info().Msg("Message written and flushed successfully")
 	return nil
 }
 
@@ -286,7 +461,7 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 				Type:         TypeSyncAbort,
 				SenderID:     fs.host.ID().String(),
 				ErrorMessage: handleErr.Error(),
-				Timestamp:    time.Now().Unix(),
+				Timestamp:    time.Now().UTC().Unix(),
 			}
 
 			writeMessage(writer, stream, abortMsg)
@@ -353,11 +528,10 @@ func (fs *FastSync) handleHashMapExchangeSYNC(peerID peer.ID, msg *SyncMessage) 
 		SYNC_HashMap_Accounts.Insert(key)
 	}
 
-
-	return &SyncMessage{
+	response := &SyncMessage{
 		Type:      TypeHashMapExchangeSYNC,
 		SenderID:  fs.host.ID().String(),
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 		Data:      json.RawMessage([]byte(`"Message From Server"`)),
 		HashMap: &TypeHashMapExchange_Struct{
 			MAIN_HashMap:     SYNC_HashMap_MAIN,
@@ -373,7 +547,18 @@ func (fs *FastSync) handleHashMapExchangeSYNC(peerID peer.ID, msg *SyncMessage) 
 				Checksum:  SYNC_HashMap_Accounts.Fingerprint(),
 			},
 		},
-	}, nil
+	}
+
+	// Debug: Log the response being sent
+	log.Info().
+		Str("response_type", response.Type).
+		Str("response_data", string(response.Data)).
+		Int("data_length", len(response.Data)).
+		Int("main_keys", SYNC_HashMap_MAIN.Size()).
+		Int("accounts_keys", SYNC_HashMap_Accounts.Size()).
+		Msg("Sending Phase2_Response")
+
+	return response, nil
 }
 
 func returnStream(fs *FastSync, peerID peer.ID) (network.Stream, error) {
@@ -418,7 +603,7 @@ func (fs *FastSync) Phase1_SYNC(peerID peer.ID) (*SyncMessage, error) {
 		Type:      TypeSyncRequest,
 		SenderID:  fs.host.ID().String(),
 		TxID:      0,
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 		Data:      json.RawMessage([]byte(`"Message From Client"`)),
 		HashMap: &TypeHashMapExchange_Struct{
 			MAIN_HashMap:     MAIN_HashMap,
@@ -483,10 +668,8 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 		return nil, fmt.Errorf("failed to get valid HashMap from server: %w", err)
 	}
 
-
 	// Phase3: Request the AVRO file from the server
 	// Server will send the AVRO file to the client
-
 
 	err = fs.Phase3_FileRequest(Phase2, peerID, stream, writer, reader)
 	if err != nil {
@@ -515,7 +698,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 
 	// 1. Push the Main DB Transactions from AVRO file to the DB - if no maindb then skip
 	if Phase2.HashMap.MAIN_HashMap != nil && Phase2.HashMap.MAIN_HashMap.Size() > 0 {
-		if err := fs.PushDataToDB(Phase2, MainDB, "fastsync/.temp/main.avro"); err != nil {
+		if err := fs.PushDataToDB(Phase2, MainDB, "fastsync/.temp/defaultdb.avro"); err != nil {
 			log.Error().Err(err).Msg("Failed to push Main DB transactions")
 			return nil, fmt.Errorf("failed to push Main DB transactions: %w", err)
 		}
@@ -526,19 +709,37 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 
 	// 2. Push the Accounts DB Transactions from AVRO file to the DB - if no accountsdb then skip
 	if Phase2.HashMap.Accounts_HashMap != nil && Phase2.HashMap.Accounts_HashMap.Size() > 0 {
-		if err := fs.PushDataToDB(Phase2, AccountsDB, "fastsync/.temp/accounts.avro"); err != nil {
+		log.Info().
+			Int("accounts_hashmap_size", Phase2.HashMap.Accounts_HashMap.Size()).
+			Msg("Processing Accounts DB transactions")
+
+		// Check if accounts database client is properly initialized
+		if fs.accountsDB == nil {
+			log.Error().Msg("Accounts database client is nil - cannot restore accounts data")
+			return nil, fmt.Errorf("accounts database client is not initialized")
+		}
+
+		if err := fs.PushDataToDB(Phase2, AccountsDB, "fastsync/.temp/accountsdb.avro"); err != nil {
 			log.Error().Err(err).Msg("Failed to push Accounts DB transactions")
 			return nil, fmt.Errorf("failed to push Accounts DB transactions: %w", err)
 		}
 		log.Info().Msg("Successfully pushed Accounts DB transactions")
 	} else {
-		log.Info().Msg("Skipping Accounts DB push - no data to push")
+		log.Info().
+			Bool("hashmap_nil", Phase2.HashMap.Accounts_HashMap == nil).
+			Int("hashmap_size", func() int {
+				if Phase2.HashMap.Accounts_HashMap != nil {
+					return Phase2.HashMap.Accounts_HashMap.Size()
+				}
+				return 0
+			}()).
+			Msg("Skipping Accounts DB push - no data to push")
 	}
 
 	return &SyncMessage{
 		Type:      TypeSyncComplete,
 		SenderID:  fs.host.ID().String(),
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 		Success:   true,
 	}, nil
 }
@@ -608,12 +809,12 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
 		BatchNumber: msg.BatchNumber,
 		Data:        dataBytes,
 		DBType:      msg.DBType,
-		Timestamp:   time.Now().Unix(),
+		Timestamp:   time.Now().UTC().Unix(),
 	}, nil
 }
 
 func (fs *FastSync) getBatchData(
-	db *config.ImmuClient,
+	db *config.PooledConnection,
 	dbType DatabaseType,
 ) ([]KeyValueEntry, []json.RawMessage, error) {
 	var entries []KeyValueEntry
@@ -645,7 +846,7 @@ func (fs *FastSync) getBatchData(
 		entries = append(entries, KeyValueEntry{
 			Key:       []byte(key),
 			Value:     data,
-			Timestamp: time.Now(),
+			Timestamp: time.Now().UTC(),
 			TxID:      0,
 		})
 	}
@@ -686,7 +887,7 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 		Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
 		Username:   config.DBUsername,
 		Password:   config.DBPassword,
-		Database:   config.DBName,
+		Database:   config.DBName, // This is correct for main DB (defaultdb)
 		OutputPath: mainAVROpath,
 	}
 
@@ -702,9 +903,13 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 
 	// Transfer the main DB backup file
 	log.Info().Str("peer", peerID.String()).Str("file", mainAVROpath).Msg("Transferring main DB backup file")
-	err = TransferAVROFile(fs.host, peerID, mainAVROpath, "fastsync/.temp/main.avro")
-	if err != nil {
-		return nil, fmt.Errorf("failed to transfer main database: %w", err)
+	if msg.HashMap.MAIN_HashMap != nil && msg.HashMap.MAIN_HashMap.Size() > 0 {
+		err = TransferAVROFile(fs.host, peerID, mainAVROpath, "fastsync/.temp/defaultdb.avro")
+		if err != nil {
+			return nil, fmt.Errorf("failed to transfer main database: %w", err)
+		}
+	} else {
+		log.Info().Msg("Skipping main DB file transfer (no keys to sync)")
 	}
 
 	// Process accounts DB if it has entries
@@ -729,7 +934,7 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 
 		// Transfer the accounts DB backup file
 		log.Info().Str("peer", peerID.String()).Str("file", accountsAVROpath).Msg("Transferring accounts DB backup file")
-		err = TransferAVROFile(fs.host, peerID, accountsAVROpath, "fastsync/.temp/accounts.avro")
+		err = TransferAVROFile(fs.host, peerID, accountsAVROpath, "fastsync/.temp/accountsdb.avro")
 		if err != nil {
 			return nil, fmt.Errorf("failed to transfer accounts database: %w", err)
 		}
@@ -740,7 +945,7 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 	return &SyncMessage{
 		Type:      TypeSyncComplete,
 		SenderID:  fs.host.ID().String(),
-		Timestamp: time.Now().Unix(),
+		Timestamp: time.Now().UTC().Unix(),
 		Success:   true,
 	}, nil
 }

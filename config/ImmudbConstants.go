@@ -2,10 +2,7 @@ package config
 
 import (
 	"context"
-	"fmt"
-	"log"
-	"os"
-	"sync"
+	"gossipnode/logging"
 	"time"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
@@ -43,7 +40,6 @@ type ImmuClient struct {
 	Ctx         context.Context
 	Cancel      context.CancelFunc
 	BaseCtx     context.Context
-	Token       string
 	RetryLimit  int
 	IsConnected bool
 	Logger      *AsyncLogger

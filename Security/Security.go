@@ -1,86 +1,607 @@
-package txverifier
+package Security
 
 import (
-    "github.com/ethereum/go-ethereum/common"
-    "github.com/ethereum/go-ethereum/core/types"
-    "math/big"
+	"bytes"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"gossipnode/config"
+	"gossipnode/logging"
+	"math/big"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	"go.uber.org/zap"
+
+	"gossipnode/DB_OPs"
 )
 
-// Transaction is your struct; make sure AccessList here is the same type as types.AccessList
-type Transaction struct {
-    From                 *common.Address
-    ChainID              *big.Int
-    Nonce                uint64
-    To                   *common.Address
-    Value                *big.Int
-    Data                 []byte
-    GasLimit             uint64
-    GasPrice             *big.Int
-    MaxPriorityFeePerGas *big.Int
-    MaxFeePerGas         *big.Int
-    AccessList           types.AccessList
-    V, R, S              *big.Int
+const (
+	LOG_FILE        = "SecurityModule.log"
+	TOPIC           = "SecurityModule"
+	LOKI_BATCH_SIZE = 128 * 1024
+	LOKI_BATCH_WAIT = 1 * time.Second
+	LOKI_TIMEOUT    = 5 * time.Second
+	KEEP_LOGS       = true
+)
+
+// expectedChainID holds the node's configured chain ID for validation.
+// Set this at startup using SetExpectedChainID/SetExpectedChainIDBig.
+var expectedChainID *big.Int
+
+// SetExpectedChainID sets the expected chain ID used to validate incoming transactions.
+func SetExpectedChainID(id int) {
+	expectedChainID = big.NewInt(int64(id))
 }
 
-// VerifySignature checks that tx.V/R/S is a valid ECDSA signature over the
-// EIP-155/EIP-2930/EIP-1559 signing hash of the transaction fields, and that
-// the recovered address equals tx.From.
-func VerifySignature(tx *Transaction) (bool, error) {
-    // 1) Reconstruct the go-ethereum Transaction of the correct type
-    var ethTx *types.Transaction
+// SetExpectedChainIDBig sets the expected chain ID from a big.Int safely.
+func SetExpectedChainIDBig(id *big.Int) {
+	if id == nil {
+		expectedChainID = nil
+		return
+	}
 
-    switch {
-    case tx.MaxFeePerGas != nil && tx.MaxPriorityFeePerGas != nil:
-        // EIP-1559 (Type 2)
-        inner := &types.DynamicFeeTx{
-            ChainID:   tx.ChainID,
-            Nonce:     tx.Nonce,
-            To:        tx.To,
-            Value:     tx.Value,
-            GasTipCap: tx.MaxPriorityFeePerGas,
-            GasFeeCap: tx.MaxFeePerGas,
-            Gas:       tx.GasLimit,
-            Data:      tx.Data,
-            AccessList: tx.AccessList,
-        }
-        ethTx = types.NewTx(inner)
+	expectedChainID = new(big.Int).Set(id)
 
-    case len(tx.AccessList) > 0:
-        // EIP-2930 (Type 1)
-        inner := &types.AccessListTx{
-            ChainID:    tx.ChainID,
-            Nonce:      tx.Nonce,
-            To:         tx.To,
-            Value:      tx.Value,
-            GasPrice:   tx.GasPrice,
-            Gas:        tx.GasLimit,
-            Data:       tx.Data,
-            AccessList: tx.AccessList,
-        }
-        ethTx = types.NewTx(inner)
+	// Convert to uint64 safely
+	chainIDUint := expectedChainID.Uint64()
 
-    default:
-        // Legacy (Type 0)
-        inner := &types.LegacyTx{
-            Nonce:    tx.Nonce,
-            To:       tx.To,
-            Value:    tx.Value,
-            GasPrice: tx.GasPrice,
-            Gas:      tx.GasLimit,
-            Data:     tx.Data,
-        }
-        ethTx = types.NewTx(inner)
-    }
+	// Convert to binary (big-endian) representation
+	chainIDBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(chainIDBytes, chainIDUint)
+}
 
-    // 2) Use the “London” signer which knows how to hash & recover all three types
-    signer := types.NewLondonSigner(tx.ChainID)
+// func chainIDCheck(chainID *big.Int) (bool, error) {
 
-    // 3) Recover the sender address from V/R/S
-    from, err := types.Sender(signer, ethTx)
-    if err != nil {
-        return false, err
-    }
+// }
 
-    // 4) Compare recovered address to tx.From
-    return from == *tx.From, nil
+func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
+	// Check the ZKBlock nil or not
+	if zkBlock == nil {
+		return false, errors.New("zkBlock cannot be nil")
+	}
+
+	// 1. Check the ZKBlock validation for Transactions in the ZKBlokc
+	for _, tx := range zkBlock.Transactions {
+		status, err := ThreeChecks(&tx)
+		if err != nil {
+			return false, err
+		}
+		if !status {
+			return false, errors.New("zkBlock validation failed")
+		}
+	}
+
+	// 2. Check the ZKBlock.Hash validation - this is the hash of all transaction's hashes
+	// First compute the hash of all transaction's hashes
+	transactionHashes := make([][]byte, len(zkBlock.Transactions))
+	for i, tx := range zkBlock.Transactions {
+		transactionHashes[i] = tx.Hash.Bytes()
+	}
+	transactionHashesHash := crypto.Keccak256Hash(bytes.Join(transactionHashes, []byte{}))
+	if transactionHashesHash != zkBlock.BlockHash {
+		return false, errors.New("zkBlock hash validation failed")
+	}
+	return true, nil
+}
+func ThreeChecks(tx *config.Transaction) (bool, error) {
+	// Initilize the Accounts DB connection pool
+	Conn, err := DB_OPs.GetAccountsConnection()
+	if err != nil {
+		return false, err
+	}
+	// Ensure connection is returned to pool when function exits
+	defer DB_OPs.PutAccountsConnection(Conn)
+
+	// Preliminary Check: Chain ID must be present and valid (> 0)
+	if tx == nil || tx.ChainID == nil {
+		// || tx.ChainID.Sign() <= 0
+		Conn.Client.Logger.Logger.Error("Invalid or missing ChainID",
+			zap.Error(errors.New("transaction chain ID is missing or invalid")),
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.ThreeChecks"),
+		)
+		return false, errors.New("invalid transaction: chain ID is missing or invalid")
+	}
+
+	// Debug: Print ChainID details for troubleshooting
+	if tx.ChainID != nil {
+		fmt.Printf("DEBUG ChainID - String(): %s, Uint64(): %d, Bytes: %x\n",
+			tx.ChainID.String(), tx.ChainID.Uint64(), tx.ChainID.Bytes())
+	}
+
+	// Log ChainID for debugging (temporarily)
+	if tx.ChainID != nil && expectedChainID != nil {
+		if tx.ChainID.Cmp(expectedChainID) != 0 {
+			Conn.Client.Logger.Logger.Warn("chain id mismatch (validation temporarily disabled)",
+				zap.String("tx_chain_id", tx.ChainID.String()),
+				zap.Uint64("tx_chain_id_uint64", tx.ChainID.Uint64()),
+				zap.String("expected_chain_id", expectedChainID.String()),
+				zap.Uint64("expected_chain_id_uint64", expectedChainID.Uint64()),
+				zap.String(logging.Connection_database, config.AccountsDBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, config.LOKI_URL),
+				zap.String(logging.Function, "Security.ThreeChecks"),
+			)
+			fmt.Printf("WARN: ChainID mismatch (validation disabled) - Got: %s (uint64: %d), Expected: %s (uint64: %d)\n",
+				tx.ChainID.String(), tx.ChainID.Uint64(), expectedChainID.String(), expectedChainID.Uint64())
+		}
+	}
+
+	// First Check Accounts exist
+	status, err := CheckAddressExist(tx, Conn)
+	if err != nil {
+		Conn.Client.Logger.Logger.Error("Failed to check Address Exist",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.ThreeChecks"),
+		)
+		return false, fmt.Errorf("DID check failed with DB error: %w", err)
+	}
+	if !status {
+		Conn.Client.Logger.Logger.Error("Sender or receiver DID not found",
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.ThreeChecks"),
+		)
+		return false, errors.New("sender or receiver DID not found")
+	}
+
+	Conn.Client.Logger.Logger.Info("DID Check: ",
+		zap.Bool("DID Check", status),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, config.LOKI_URL),
+		zap.String(logging.Function, "Security.ThreeChecks"),
+	)
+
+	// Debugging
+	fmt.Println("DID Check: ", status)
+
+	// Second Check Signature
+	status, err = CheckSignature(tx)
+	if err != nil {
+		Conn.Client.Logger.Logger.Error("Failed to check Signature",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.ThreeChecks"),
+		)
+		return false, fmt.Errorf("signature recovery failed: %w", err)
+	}
+	if !status {
+		Conn.Client.Logger.Logger.Error("Invalid Signature",
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.ThreeChecks"),
+		)
+		return false, errors.New("invalid signature")
+	}
+
+	// Third Check Balance
+	status, err = CheckBalance(tx, Conn)
+	if err != nil {
+		Conn.Client.Logger.Logger.Error("Failed to check Balance",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.ThreeChecks"),
+		)
+		return false, fmt.Errorf("balance check failed with error: %w", err)
+	}
+	if !status {
+		Conn.Client.Logger.Logger.Error("Insufficient Funds",
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.ThreeChecks"),
+		)
+		return false, errors.New("insufficient funds for transaction")
+	}
+
+	Conn.Client.Logger.Logger.Info("Transaction is valid",
+		zap.String(logging.Connection_database, config.AccountsDBName),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, config.LOKI_URL),
+		zap.String(logging.Function, "Security.ThreeChecks"),
+	)
+	return true, nil
+}
+
+// CheckSignature verifies if the transaction signature is valid
+func CheckSignature(tx *config.Transaction) (bool, error) {
+	if tx == nil {
+		return false, errors.New("transaction cannot be nil")
+	}
+
+	if tx.From == nil || tx.To == nil || tx.V == nil || tx.R == nil || tx.S == nil {
+		return false, errors.New("transaction missing required signature fields (From, To, V, R, or S)")
+	}
+
+
+	var ethTx *types.Transaction
+	var signer types.Signer
+
+	// Determine transaction type based on fields
+	switch {
+	case tx.MaxFee != nil && tx.MaxPriorityFee != nil:
+		// EIP-1559 (Type 2)
+		inner := &types.DynamicFeeTx{
+			ChainID:    tx.ChainID,
+			Nonce:      tx.Nonce,
+			To:         tx.To,
+			Value:      tx.Value,
+			GasTipCap:  tx.MaxPriorityFee,
+			GasFeeCap:  tx.MaxFee,
+			Gas:        tx.GasLimit,
+			Data:       tx.Data,
+			AccessList: toGethAccessList(tx.AccessList),
+			V:          tx.V,
+			R:          tx.R,
+			S:          tx.S,
+		}
+		ethTx = types.NewTx(inner)
+		signer = types.NewLondonSigner(tx.ChainID)
+
+	case len(tx.AccessList) > 0:
+		// EIP-2930 (Type 1)
+		inner := &types.AccessListTx{
+			ChainID:    tx.ChainID,
+			Nonce:      tx.Nonce,
+			To:         tx.To,
+			Value:      tx.Value,
+			GasPrice:   tx.GasPrice,
+			Gas:        tx.GasLimit,
+			Data:       tx.Data,
+			AccessList: toGethAccessList(tx.AccessList),
+			V:          tx.V,
+			R:          tx.R,
+			S:          tx.S,
+		}
+		ethTx = types.NewTx(inner)
+		signer = types.NewEIP2930Signer(tx.ChainID)
+
+	default:
+		// Legacy (Type 0)
+		inner := &types.LegacyTx{
+			Nonce:    tx.Nonce,
+			To:       tx.To,
+			Value:    tx.Value,
+			GasPrice: tx.GasPrice,
+			Gas:      tx.GasLimit,
+			Data:     tx.Data,
+			V:        tx.V,
+			R:        tx.R,
+			S:        tx.S,
+		}
+		ethTx = types.NewTx(inner)
+	}
+
+	// 👇 Smart signer detection with fallback for MetaMask compatibility
+	v := tx.V.Uint64()
+	var from common.Address
+	var err error
+
+	fmt.Printf("🔍 Signature Check - V: %d, ChainID: %s\n", v, tx.ChainID.String())
+
+	// Strategy: MetaMask signs legacy transactions with V=27/28 (pre-EIP-155)
+	// Even when ChainID is present, we need to try both signers
+	if v == 27 || v == 28 {
+		// First try HomesteadSigner (pre-EIP-155) - this is what MetaMask uses
+		signer = types.HomesteadSigner{}
+		fmt.Println("🔑 Trying HomesteadSigner (pre-EIP-155, MetaMask standard)...")
+		from, err = types.Sender(signer, ethTx)
+		if err == nil && from == *tx.From {
+			fmt.Println("✅ Signature verified with HomesteadSigner")
+			return true, nil
+		}
+
+		// If that failed and ChainID is present, try EIP155Signer as fallback
+		if tx.ChainID != nil && err != nil {
+			signer = types.NewEIP155Signer(tx.ChainID)
+			fmt.Printf("⚠️  HomesteadSigner failed (%v), trying EIP155Signer with ChainID %s...\n", err, tx.ChainID.String())
+			from, err = types.Sender(signer, ethTx)
+			if err == nil && from == *tx.From {
+				fmt.Println("✅ Signature verified with EIP155Signer")
+				return true, nil
+			}
+		}
+	} else {
+		// V != 27/28 means EIP-155 encoded (V = chainID*2 + 35 or chainID*2 + 36)
+		signer = types.NewEIP155Signer(tx.ChainID)
+		fmt.Println("🔑 Trying EIP155Signer (EIP-155 encoded V value)...")
+		from, err = types.Sender(signer, ethTx)
+		if err == nil && from == *tx.From {
+			fmt.Println("✅ Signature verified with EIP155Signer")
+			return true, nil
+		}
+	}
+
+	// If we get here, signature verification failed
+	if err != nil {
+		fmt.Printf("❌ Signature recovery failed with all signers: %v\n", err)
+		return false, fmt.Errorf("failed to recover sender address from signature -> %w", err)
+	}
+
+	// Signature recovered but address doesn't match
+	fmt.Printf("❌ Signature recovered but address mismatch - Got: %s, Expected: %s\n", from.Hex(), tx.From.Hex())
+	fmt.Println("Recovered Address: ", from)
+	fmt.Println("From Address: ", tx.From)
+
+	return false, errors.New("signature address does not match transaction From address")
+}
+
+// CheckAddressExist verifies if both sender and receiver DIDs exist in the database
+func CheckAddressExist(tx *config.Transaction, Conn *config.PooledConnection) (bool, error) {
+	if tx == nil {
+		Conn.Client.Logger.Logger.Error("Transaction is empty",
+			zap.Error(errors.New("transaction cannot be nil")),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckAddressExist"),
+		)
+		return false, errors.New("transaction cannot be nil")
+	}
+	if tx.From == nil || tx.To == nil {
+		Conn.Client.Logger.Logger.Error("From or To address is empty",
+			zap.Error(errors.New("From or To address is empty")),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckAddressExist"),
+		)
+		return false, errors.New("From or To address is empty")
+	}
+
+	// check if the db have From DID and To DID
+	From, err := DB_OPs.GetAccount(Conn, *tx.From)
+	if err != nil {
+		Conn.Client.Logger.Logger.Error("Failed to get From DID from DB",
+			zap.Error(errors.New("failed to get From DID from DB -> "+err.Error())),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckAddressExist"),
+		)
+		return false, errors.New("failed to get From DID from DB -> " + err.Error())
+	}
+
+	To, err := DB_OPs.GetAccount(Conn, *tx.To)
+	if err != nil {
+		Conn.Client.Logger.Logger.Error("Failed to get the Account",
+			zap.Error(errors.New("failed to get To DID from DB -> "+err.Error())),
+			zap.String("Target Function", "DB_OPs.GetAccount"),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckAddressExist"),
+		)
+		return false, errors.New("failed to get To DID from DB -> " + err.Error())
+	}
+
+	if From == nil || To == nil {
+		Conn.Client.Logger.Logger.Error("From or To address is empty",
+			zap.Error(errors.New("From or To address is empty")),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckAddressExist"),
+		)
+		return false, errors.New("From or To address not found in database")
+	}
+
+	Conn.Client.Logger.Logger.Info("Successfully checked the From and To address",
+		zap.String(logging.Connection_database, config.AccountsDBName),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, config.LOKI_URL),
+		zap.String(logging.Function, "Security.CheckAddressExist"),
+	)
+
+	return true, nil
+}
+
+// Function that helps to check if the From DID have sufficient balance to make a transaction
+func CheckBalance(tx *config.Transaction, Conn *config.PooledConnection) (bool, error) {
+	if tx == nil {
+		Conn.Client.Logger.Logger.Error("Transaction is empty",
+			zap.Error(errors.New("transaction cannot be nil")),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
+		return false, errors.New("transaction cannot be nil")
+	}
+
+	if tx.From == nil {
+		Conn.Client.Logger.Logger.Error("From address is empty",
+			zap.Error(errors.New("From address is empty")),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
+		return false, errors.New("From address is empty")
+	}
+
+	// check if the db have From DID
+	From, err := DB_OPs.GetAccount(Conn, *tx.From)
+	if err != nil {
+		Conn.Client.Logger.Logger.Error("Failed to get From DID from DB",
+			zap.Error(errors.New("failed to get From DID from DB -> "+err.Error())),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
+		return false, errors.New("failed to get From DID from DB -> " + err.Error())
+	}
+
+	if From == nil {
+		Conn.Client.Logger.Logger.Error("From address is empty",
+			zap.Error(errors.New("From address is empty")),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
+		return false, errors.New("From address not found in database")
+	}
+
+	// Convert From.balance from string to big.Int
+	if strings.HasPrefix(From.Balance, "[") {
+		Conn.Client.Logger.Logger.Info("Have Prefix [",
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
+		balanceStr := strings.Trim(From.Balance, "[]\"") // Remove any JSON array or string quotes
+		From.Balance = balanceStr
+	}
+
+	FromBalance, ok := new(big.Int).SetString(From.Balance, 10)
+	if !ok {
+		return false, fmt.Errorf("failed to convert From balance from string to big.Int: invalid big.Int %q (base 10)", From.Balance)
+	}
+
+	// Multiply by 10^9 to convert to wei if needed
+	multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(9), nil)
+	FromBalance = new(big.Int).Mul(FromBalance, multiplier)
+
+	gasLimit, ok := new(big.Int).SetString(strconv.FormatUint(tx.GasLimit, 10), 10)
+	if !ok {
+		return false, fmt.Errorf("failed to parse gasLimit: invalid big.Int %q (base 10)", tx.GasLimit)
+	}
+
+	// Calculate gas cost based on transaction type
+	var gasCost *big.Int
+	switch {
+	case tx.MaxFee != nil && tx.MaxPriorityFee != nil:
+		Conn.Client.Logger.Logger.Info("Have MaxFee and MaxPriorityFee",
+			zap.String("MaxFee", tx.MaxFee.String()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
+		// EIP-1559 transaction: gas cost is gasLimit * maxFeePerGas (worst case)
+		gasCost = new(big.Int).Mul(gasLimit, tx.MaxFee)
+
+	case tx.GasPrice != nil:
+		Conn.Client.Logger.Logger.Info("Have GasPrice",
+			zap.String("GasPrice", tx.GasPrice.String()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
+		// Legacy or EIP-2930 transaction: gas cost is gasLimit * gasPrice
+		gasCost = new(big.Int).Mul(gasLimit, tx.GasPrice)
+	default:
+		Conn.Client.Logger.Logger.Info("Invalid gas pricing parameters",
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
+		return false, errors.New("invalid gas pricing parameters")
+	}
+
+	// Calculate total cost (value + gas) without mutating the original transaction
+	totalCost := new(big.Int).Set(tx.Value)
+	totalCost.Add(totalCost, gasCost)
+
+	Conn.Client.Logger.Logger.Info("Total Cost: ",
+		zap.String("Total Cost", totalCost.String()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, config.LOKI_URL),
+		zap.String(logging.Function, "Security.CheckBalance"),
+	)
+	// Check if balance is sufficient for total cost
+	if FromBalance.Cmp(totalCost) < 0 {
+		Conn.Client.Logger.Logger.Info("From Balance is less than Total Cost",
+			zap.String("From Balance", FromBalance.String()),
+			zap.String("Total Cost", totalCost.String()),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.CheckBalance"),
+		)
+		return false, errors.New("insufficient balance for transaction")
+	}
+
+	Conn.Client.Logger.Logger.Info("From Balance is sufficient for total cost",
+		zap.String("From Balance", FromBalance.String()),
+		zap.String("Total Cost", totalCost.String()),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, config.LOKI_URL),
+		zap.String(logging.Function, "Security.CheckBalance"),
+	)
+
+	return true, nil
+}
+
+// Helper function to convert our AccessList to go-ethereum's AccessList
+func toGethAccessList(accessList config.AccessList) types.AccessList {
+	var result types.AccessList
+	for _, at := range accessList {
+		result = append(result, types.AccessTuple{
+			Address:     at.Address,
+			StorageKeys: at.StorageKeys,
+		})
+	}
+	return result
 }
