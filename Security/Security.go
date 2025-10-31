@@ -45,6 +45,10 @@ func SetExpectedChainIDBig(id *big.Int) {
 	fmt.Printf("Expected Chain ID: %s\n", expectedChainID.String())
 }
 
+// func chainIDCheck(chainID *big.Int) (bool, error) {
+
+// }
+
 func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	// Check the ZKBlock nil or not
 	if zkBlock == nil {
@@ -53,6 +57,8 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 
 	// 1. Check the ZKBlock validation for Transactions in the ZKBlokc
 	for _, tx := range zkBlock.Transactions {
+		fmt.Printf("tx.ChainID: %+v\n", tx.ChainID)
+		fmt.Printf("Block: %+v\n", zkBlock)
 		status, err := ThreeChecks(&tx)
 		if err != nil {
 			return false, err
@@ -91,6 +97,7 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 
 	// Preliminary Check: Chain ID must be present and valid (> 0)
 	if tx == nil || tx.ChainID == nil {
+		fmt.Printf(">>>>>>>> tx.ChainID: %+v\n", tx.ChainID)
 		// || tx.ChainID.Sign() <= 0
 		Conn.Client.Logger.Logger.Error("Invalid or missing ChainID",
 			zap.Error(errors.New("transaction chain ID is missing or invalid")),
