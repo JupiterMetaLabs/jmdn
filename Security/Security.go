@@ -1,6 +1,8 @@
 package Security
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"gossipnode/config"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"go.uber.org/zap"
@@ -35,15 +38,26 @@ func SetExpectedChainID(id int) {
 	expectedChainID = big.NewInt(int64(id))
 }
 
-// SetExpectedChainIDBig sets the expected chain ID from a big.Int.
+// SetExpectedChainIDBig sets the expected chain ID from a big.Int safely.
 func SetExpectedChainIDBig(id *big.Int) {
 	if id == nil {
 		expectedChainID = nil
 		return
 	}
+
 	expectedChainID = new(big.Int).Set(id)
-	fmt.Printf("Expected Chain ID: %s\n", expectedChainID.String())
+
+	// Convert to uint64 safely
+	chainIDUint := expectedChainID.Uint64()
+
+	// Convert to binary (big-endian) representation
+	chainIDBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(chainIDBytes, chainIDUint)
 }
+
+// func chainIDCheck(chainID *big.Int) (bool, error) {
+
+// }
 
 func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	// Check the ZKBlock nil or not
@@ -62,26 +76,18 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 		}
 	}
 
-	// 2. Check the ZKBlock.Hash validation - this is the hash of the ZKBlock
-	// First compute the hash of the ZKBlock
-	zkBlockHash := crypto.Keccak256Hash(zkBlock.BlockHash.Bytes())
-	if zkBlockHash != zkBlock.BlockHash {
-		return false, errors.New("zkBlock hash validation failed")
+	// 2. Check the ZKBlock.Hash validation - this is the hash of all transaction's hashes
+	// First compute the hash of all transaction's hashes
+	transactionHashes := make([][]byte, len(zkBlock.Transactions))
+	for i, tx := range zkBlock.Transactions {
+		transactionHashes[i] = tx.Hash.Bytes()
 	}
-
-	// 3. ZK Check comes here - TODO: Implement the ZK Check
-	return true, nil
-}
-
-func ZKBlockHashValidation(zkBlock *config.ZKBlock) (bool, error) {
-	// First compute the hash of the ZKBlock
-	zkBlockHash := crypto.Keccak256Hash(zkBlock.BlockHash.Bytes())
-	if zkBlockHash != zkBlock.BlockHash {
+	transactionHashesHash := crypto.Keccak256Hash(bytes.Join(transactionHashes, []byte{}))
+	if transactionHashesHash != zkBlock.BlockHash {
 		return false, errors.New("zkBlock hash validation failed")
 	}
 	return true, nil
 }
-
 func ThreeChecks(tx *config.Transaction) (bool, error) {
 	// Initilize the Accounts DB connection pool
 	Conn, err := DB_OPs.GetAccountsConnection()
@@ -111,29 +117,6 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 		fmt.Printf("DEBUG ChainID - String(): %s, Uint64(): %d, Bytes: %x\n",
 			tx.ChainID.String(), tx.ChainID.Uint64(), tx.ChainID.Bytes())
 	}
-
-	// Compare Chain ID to node's expected Chain ID if configured
-	// TEMPORARILY DISABLED: ChainID parsing issue - bytes are being interpreted incorrectly
-	// TODO: Re-enable once ChainID parsing is fixed in config/ZKBlock.go and Block/grpc_server.go
-	/*
-		if expectedChainID != nil && tx.ChainID.Cmp(expectedChainID) != 0 {
-			Conn.Client.Logger.Logger.Error("chain id mismatch",
-				zap.String("tx_chain_id", tx.ChainID.String()),
-				zap.Uint64("tx_chain_id_uint64", tx.ChainID.Uint64()),
-				zap.String("expected_chain_id", expectedChainID.String()),
-				zap.Uint64("expected_chain_id_uint64", expectedChainID.Uint64()),
-				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, config.LOKI_URL),
-				zap.String(logging.Function, "Security.ThreeChecks"),
-			)
-			fmt.Printf("ERROR: ChainID mismatch - Got: %s (uint64: %d), Expected: %s (uint64: %d)\n",
-				tx.ChainID.String(), tx.ChainID.Uint64(), expectedChainID.String(), expectedChainID.Uint64())
-			return false, errors.New("invalid transaction: chain id does not match node configuration")
-		}
-	*/
 
 	// Log ChainID for debugging (temporarily)
 	if tx.ChainID != nil && expectedChainID != nil {
@@ -266,6 +249,7 @@ func CheckSignature(tx *config.Transaction) (bool, error) {
 		return false, errors.New("transaction missing required signature fields (From, To, V, R, or S)")
 	}
 
+
 	var ethTx *types.Transaction
 	var signer types.Signer
 
@@ -322,24 +306,60 @@ func CheckSignature(tx *config.Transaction) (bool, error) {
 			S:        tx.S,
 		}
 		ethTx = types.NewTx(inner)
+	}
+
+	// 👇 Smart signer detection with fallback for MetaMask compatibility
+	v := tx.V.Uint64()
+	var from common.Address
+	var err error
+
+	fmt.Printf("🔍 Signature Check - V: %d, ChainID: %s\n", v, tx.ChainID.String())
+
+	// Strategy: MetaMask signs legacy transactions with V=27/28 (pre-EIP-155)
+	// Even when ChainID is present, we need to try both signers
+	if v == 27 || v == 28 {
+		// First try HomesteadSigner (pre-EIP-155) - this is what MetaMask uses
+		signer = types.HomesteadSigner{}
+		fmt.Println("🔑 Trying HomesteadSigner (pre-EIP-155, MetaMask standard)...")
+		from, err = types.Sender(signer, ethTx)
+		if err == nil && from == *tx.From {
+			fmt.Println("✅ Signature verified with HomesteadSigner")
+			return true, nil
+		}
+
+		// If that failed and ChainID is present, try EIP155Signer as fallback
+		if tx.ChainID != nil && err != nil {
+			signer = types.NewEIP155Signer(tx.ChainID)
+			fmt.Printf("⚠️  HomesteadSigner failed (%v), trying EIP155Signer with ChainID %s...\n", err, tx.ChainID.String())
+			from, err = types.Sender(signer, ethTx)
+			if err == nil && from == *tx.From {
+				fmt.Println("✅ Signature verified with EIP155Signer")
+				return true, nil
+			}
+		}
+	} else {
+		// V != 27/28 means EIP-155 encoded (V = chainID*2 + 35 or chainID*2 + 36)
 		signer = types.NewEIP155Signer(tx.ChainID)
+		fmt.Println("🔑 Trying EIP155Signer (EIP-155 encoded V value)...")
+		from, err = types.Sender(signer, ethTx)
+		if err == nil && from == *tx.From {
+			fmt.Println("✅ Signature verified with EIP155Signer")
+			return true, nil
+		}
 	}
-	// debugging
-	fmt.Println("Signer: ", signer)
 
-	// Recover the sender address from the signature
-	from, err := types.Sender(signer, ethTx)
+	// If we get here, signature verification failed
 	if err != nil {
-		return false, errors.New("failed to recover sender address from signature -> " + err.Error())
+		fmt.Printf("❌ Signature recovery failed with all signers: %v\n", err)
+		return false, fmt.Errorf("failed to recover sender address from signature -> %w", err)
 	}
 
-	// debugging
+	// Signature recovered but address doesn't match
+	fmt.Printf("❌ Signature recovered but address mismatch - Got: %s, Expected: %s\n", from.Hex(), tx.From.Hex())
 	fmt.Println("Recovered Address: ", from)
 	fmt.Println("From Address: ", tx.From)
 
-	// Compare the recovered address with the From address
-	isMatch := from == *tx.From
-	return isMatch, nil
+	return false, errors.New("signature address does not match transaction From address")
 }
 
 // CheckAddressExist verifies if both sender and receiver DIDs exist in the database

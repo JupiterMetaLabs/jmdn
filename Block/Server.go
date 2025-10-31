@@ -201,7 +201,8 @@ func Startserver(port int, h host.Host, chainID int) {
 	SetHostInstance(h)
 	globalChainID = chainID
 	// Also set expected chain ID in Security module for tx validation
-	Security.SetExpectedChainID(chainID)
+	Security.SetExpectedChainIDBig(big.NewInt(int64(chainID)))
+	fmt.Printf("Expected Chain ID: %d - Type: %T\n", chainID, chainID)
 
 	// Add logging middleware
 	router.Use(func(c *gin.Context) {

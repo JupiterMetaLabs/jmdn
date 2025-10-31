@@ -1,10 +1,7 @@
 package config
 
 import (
-	"encoding/json"
-	"fmt"
 	"math/big"
-	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -33,92 +30,6 @@ type Transaction struct {
 	V *big.Int `json:"v,omitempty"`
 	R *big.Int `json:"r,omitempty"`
 	S *big.Int `json:"s,omitempty"`
-}
-
-// UnmarshalJSON implements custom JSON unmarshaling for Transaction to properly handle ChainID
-func (t *Transaction) UnmarshalJSON(data []byte) error {
-	// Create a temporary struct to avoid infinite recursion
-	type Alias Transaction
-	aux := &struct {
-		ChainID interface{} `json:"chain_id,omitempty"` // Accept string or number
-		*Alias
-	}{
-		Alias: (*Alias)(t),
-	}
-
-	// First, unmarshal everything normally
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-
-	// Handle ChainID parsing - it might come as string, number, or bytes
-	if aux.ChainID != nil {
-		fmt.Printf("DEBUG UnmarshalJSON ChainID: type=%T, value=%v\n", aux.ChainID, aux.ChainID)
-		switch v := aux.ChainID.(type) {
-		case string:
-			// Remove 0x prefix if present and trim whitespace
-			chainIDStr := strings.TrimSpace(strings.TrimPrefix(v, "0x"))
-			fmt.Printf("DEBUG UnmarshalJSON ChainID (string): %q -> %q\n", v, chainIDStr)
-			if chainIDStr == "" {
-				t.ChainID = nil
-				break
-			}
-			// Try parsing as decimal first
-			chainID := new(big.Int)
-			_, ok := chainID.SetString(chainIDStr, 10)
-			if !ok {
-				// If decimal fails, try hex
-				_, ok = chainID.SetString(chainIDStr, 16)
-				if !ok {
-					fmt.Printf("ERROR UnmarshalJSON ChainID: failed to parse string %q\n", chainIDStr)
-					return &json.UnmarshalTypeError{Value: "string", Type: nil, Field: "chain_id"}
-				}
-			}
-			fmt.Printf("DEBUG UnmarshalJSON ChainID (string): parsed as %s\n", chainID.String())
-			t.ChainID = chainID
-		case float64:
-			// JSON numbers are unmarshaled as float64
-			fmt.Printf("DEBUG UnmarshalJSON ChainID (float64): %f\n", v)
-			t.ChainID = big.NewInt(int64(v))
-		case int64:
-			fmt.Printf("DEBUG UnmarshalJSON ChainID (int64): %d\n", v)
-			t.ChainID = big.NewInt(v)
-		case uint64:
-			fmt.Printf("DEBUG UnmarshalJSON ChainID (uint64): %d\n", v)
-			t.ChainID = new(big.Int).SetUint64(v)
-		case []byte:
-			// If ChainID comes as bytes (ASCII string), convert to string first
-			chainIDStr := strings.TrimSpace(string(v))
-			fmt.Printf("DEBUG UnmarshalJSON ChainID ([]byte): hex=%x, ASCII=%q\n", v, chainIDStr)
-			// Check if it's a valid numeric string
-			chainID := new(big.Int)
-			_, ok := chainID.SetString(chainIDStr, 10)
-			if !ok {
-				// If string parsing fails, try interpreting bytes as big-endian integer
-				fmt.Printf("DEBUG UnmarshalJSON ChainID: string parse failed, trying bytes interpretation\n")
-				chainID.SetBytes(v)
-			}
-			fmt.Printf("DEBUG UnmarshalJSON ChainID ([]byte): parsed as %s\n", chainID.String())
-			t.ChainID = chainID
-		default:
-			// Try to convert via string representation
-			str := strings.TrimSpace(strings.Trim(fmt.Sprintf("%v", v), `"`))
-			fmt.Printf("DEBUG UnmarshalJSON ChainID (default): %T -> %q\n", v, str)
-			chainID := new(big.Int)
-			_, ok := chainID.SetString(str, 10)
-			if !ok {
-				_, ok = chainID.SetString(str, 16)
-				if !ok {
-					fmt.Printf("ERROR UnmarshalJSON ChainID: failed to parse default type %T\n", v)
-					return &json.UnmarshalTypeError{Value: fmt.Sprintf("%T", v), Type: nil, Field: "chain_id"}
-				}
-			}
-			fmt.Printf("DEBUG UnmarshalJSON ChainID (default): parsed as %s\n", chainID.String())
-			t.ChainID = chainID
-		}
-	}
-
-	return nil
 }
 
 // ZKBlock represents a block processed by the ZKVM with proof

@@ -234,23 +234,6 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) 
 		}
 	}
 
-	fmt.Printf("DEBUG: Extracted %d votes from CRDT (unique peers)\n", len(voteData))
-	fmt.Printf("DEBUG: Vote data map: %v\n", voteData)
-
-	// Print all votes in CRDT for visibility
-	fmt.Printf("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	fmt.Printf("📊 ALL VOTES IN CRDT FOR THIS NODE:\n")
-	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	for key := range allCRDTs {
-		voteElements, exists := DataLayer.GetSet(listenerNode.CRDTLayer, key)
-		if exists && len(voteElements) > 0 {
-			fmt.Printf("Peer: %s\n", key)
-			for i, voteStr := range voteElements {
-				fmt.Printf("  Vote %d: %s\n", i+1, voteStr)
-			}
-		}
-	}
-	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
 	if len(voteData) == 0 {
 		fmt.Printf("⚠️ No votes found in CRDT to process\n")
@@ -270,8 +253,7 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) 
 		return 0, fmt.Errorf("failed to get peer weights: %v", err)
 	}
 
-	fmt.Printf("DEBUG: Peer weights: %v\n", weights)
-
+	
 	// Filter weights to only include peers that voted
 	filteredWeights := make(map[string]float64)
 	filteredVoteData := make(map[string]int8)
@@ -289,9 +271,6 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) 
 		fmt.Printf("⚠️ No votes found after filtering by weights\n")
 		return 0, fmt.Errorf("no votes found after filtering by weights")
 	}
-
-	fmt.Printf("DEBUG: Filtered vote data (%d peers with votes and weights): %v\n", len(filteredVoteData), filteredVoteData)
-	fmt.Printf("DEBUG: Filtered weights map (%d peers): %v\n", len(filteredWeights), filteredWeights)
 
 	// Call votemodule.VoteAggregation with filtered maps
 	result, err := voteaggregation.VoteAggregation(filteredWeights, filteredVoteData)
