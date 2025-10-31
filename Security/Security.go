@@ -111,11 +111,19 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 		return false, errors.New("invalid transaction: chain ID is missing or invalid")
 	}
 
+	// Debug: Print ChainID details for troubleshooting
+	if tx.ChainID != nil {
+		fmt.Printf("DEBUG ChainID - String(): %s, Uint64(): %d, Bytes: %x\n",
+			tx.ChainID.String(), tx.ChainID.Uint64(), tx.ChainID.Bytes())
+	}
+
 	// Compare Chain ID to node's expected Chain ID if configured
 	if expectedChainID != nil && tx.ChainID.Cmp(expectedChainID) != 0 {
 		Conn.Client.Logger.Logger.Error("chain id mismatch",
 			zap.String("tx_chain_id", tx.ChainID.String()),
+			zap.Uint64("tx_chain_id_uint64", tx.ChainID.Uint64()),
 			zap.String("expected_chain_id", expectedChainID.String()),
+			zap.Uint64("expected_chain_id_uint64", expectedChainID.Uint64()),
 			zap.String(logging.Connection_database, config.AccountsDBName),
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
@@ -123,6 +131,8 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Loki_url, config.LOKI_URL),
 			zap.String(logging.Function, "Security.ThreeChecks"),
 		)
+		fmt.Printf("ERROR: ChainID mismatch - Got: %s (uint64: %d), Expected: %s (uint64: %d)\n",
+			tx.ChainID.String(), tx.ChainID.Uint64(), expectedChainID.String(), expectedChainID.Uint64())
 		return false, errors.New("invalid transaction: chain id does not match node configuration")
 	}
 

@@ -6,6 +6,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/config/utils"
 	"gossipnode/logging"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -48,8 +49,30 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 		}()
 	}
 
-	// First, try to get the receipt directly from storage
-	receiptKey := fmt.Sprintf("%s%s", DEFAULT_PREFIX_RECEIPT, hash)
+	// Normalize hash - ensure it has 0x prefix (keys are stored with 0x prefix)
+	normalizedHash := hash
+	if !strings.HasPrefix(strings.ToLower(hash), "0x") {
+		normalizedHash = "0x" + hash
+	}
+
+	// First, check if transaction is currently processing
+	processingKey := fmt.Sprintf("tx_processing:%s", normalizedHash)
+	processing, err := Exists(mainDBClient, processingKey)
+	if err == nil && processing {
+		mainDBClient.Client.Logger.Logger.Info("Transaction is currently processing, receipt not available yet",
+			zap.String("txHash", normalizedHash),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
+		)
+		// Return nil to indicate receipt not available yet (transaction still processing)
+		return nil, ErrNotFound
+	}
+
+	// Try to get the receipt directly from storage
+	receiptKey := fmt.Sprintf("%s%s", DEFAULT_PREFIX_RECEIPT, normalizedHash)
 	receiptBytes, err := Read(mainDBClient, receiptKey)
 	if err == nil && len(receiptBytes) > 0 {
 		// Receipt exists, unmarshal it
@@ -57,7 +80,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 		if err := json.Unmarshal(receiptBytes, &receipt); err != nil {
 			mainDBClient.Client.Logger.Logger.Error("Failed to unmarshal receipt",
 				zap.Error(err),
-				zap.String("txHash", hash),
+				zap.String("txHash", normalizedHash),
 				zap.String(logging.Connection_database, config.DBName),
 				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
@@ -69,7 +92,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 		}
 
 		mainDBClient.Client.Logger.Logger.Info("Successfully retrieved receipt from storage",
-			zap.String("txHash", hash),
+			zap.String("txHash", normalizedHash),
 			zap.Uint64("blockNumber", receipt.BlockNumber),
 			zap.Uint64("status", receipt.Status),
 			zap.Time(logging.Created_at, time.Now().UTC()),
@@ -83,7 +106,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 
 	// Receipt doesn't exist in storage, generate it from transaction data
 	mainDBClient.Client.Logger.Logger.Info("Receipt not found in storage, generating from transaction data",
-		zap.String("txHash", hash),
+		zap.String("txHash", normalizedHash),
 		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
@@ -92,11 +115,11 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 	)
 
 	// Get the transaction to generate receipt
-	tx, err := GetTransactionByHash(mainDBClient, hash)
+	tx, err := GetTransactionByHash(mainDBClient, normalizedHash)
 	if err != nil {
 		mainDBClient.Client.Logger.Logger.Error("Failed to get transaction for receipt generation",
 			zap.Error(err),
-			zap.String("txHash", hash),
+			zap.String("txHash", normalizedHash),
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
@@ -108,11 +131,11 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 	}
 
 	// Get the block containing this transaction
-	block, err := GetTransactionBlock(mainDBClient, hash)
+	block, err := GetTransactionBlock(mainDBClient, normalizedHash)
 	if err != nil {
 		mainDBClient.Client.Logger.Logger.Error("Failed to get block for receipt generation",
 			zap.Error(err),
-			zap.String("txHash", hash),
+			zap.String("txHash", normalizedHash),
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
@@ -126,7 +149,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 	// Find transaction index in the block
 	var txIndex uint64 = 0
 	for i, blockTx := range block.Transactions {
-		if blockTx.Hash.Hex() == hash {
+		if blockTx.Hash.Hex() == normalizedHash {
 			txIndex = uint64(i)
 			break
 		}
@@ -140,7 +163,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 	if err != nil {
 		mainDBClient.Client.Logger.Logger.Error("Failed to marshal generated receipt",
 			zap.Error(err),
-			zap.String("txHash", hash),
+			zap.String("txHash", normalizedHash),
 			zap.String(logging.Connection_database, config.DBName),
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, "ImmuDB.log"),
@@ -154,7 +177,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 		if err := Create(mainDBClient, receiptKey, receiptBytes); err != nil {
 			mainDBClient.Client.Logger.Logger.Error("Failed to store generated receipt",
 				zap.Error(err),
-				zap.String("txHash", hash),
+				zap.String("txHash", normalizedHash),
 				zap.String(logging.Connection_database, config.DBName),
 				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
@@ -167,7 +190,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 	}
 
 	mainDBClient.Client.Logger.Logger.Info("Successfully generated and returned receipt",
-		zap.String("txHash", hash),
+		zap.String("txHash", normalizedHash),
 		zap.Uint64("blockNumber", receipt.BlockNumber),
 		zap.Uint64("status", receipt.Status),
 		zap.Time(logging.Created_at, time.Now().UTC()),
