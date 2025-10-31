@@ -2,16 +2,19 @@ package CLI
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/helper"
+	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	"gossipnode/node"
 	"gossipnode/seed"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 )
@@ -295,10 +298,52 @@ func (h *CommandHandler) HandleGetDID(did string) (*DB_OPs.Account, error) {
 		return nil, fmt.Errorf("Usage: getDID <did>")
 	}
 
-	doc, err := DB_OPs.GetAccountByDID(h.MainClient, did)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to retrieve DID %s: %v", did, err)
+	// It can take DID or Address
+	// if prefix is DID: then its a DID else Account
+	var doc *DB_OPs.Account
+	var err error
+	if strings.HasPrefix(did, DB_OPs.DIDPrefix) {
+		doc, err = DB_OPs.GetAccountByDID(h.DIDClient, did)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to retrieve DID %s: %v", did, err)
+		}
+	} else {
+		addr := common.HexToAddress(did)
+		doc, err = DB_OPs.GetAccount(h.DIDClient, addr)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to retrieve Address %s: %v", did, err)
+		}
 	}
 
 	return doc, nil
+}
+
+func (h *CommandHandler) HandlePropagateDID(did, publicKey, balance string) error {
+	if did == "" || publicKey == "" {
+		return fmt.Errorf("Usage: propagateDID <did> <public_key> [balance]")
+	}
+
+	// Default balance is "0" if not provided
+	if balance == "" {
+		balance = "0"
+	}
+
+	// First create document then propagate
+	err := DB_OPs.CreateAccount(nil, did, common.HexToAddress(publicKey), nil)
+	if err != nil {
+		return fmt.Errorf("Failed to create account: %v", err)
+	}
+
+	Document, err := DB_OPs.GetAccount(nil, common.HexToAddress(publicKey))
+	if err != nil {
+		return fmt.Errorf("Failed to get account: %v", err)
+	}
+
+	// Propagate the DID
+	err = messaging.PropagateDID(h.Node.Host, Document)
+	if err != nil {
+		return fmt.Errorf("Failed to propagate DID: %v", err)
+	}
+
+	return nil
 }

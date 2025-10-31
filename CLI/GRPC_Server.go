@@ -188,8 +188,8 @@ func (s *CLIServer) GetDID(ctx context.Context, req *pb.DIDRequest) (*pb.DIDDocu
 		Metadata:  convertMetadataToString(doc.Metadata),
 		PublicKey: doc.Address.Hex(),
 		Balance:   doc.Balance,
-		CreatedAt: timestamppb.New(time.Unix(doc.CreatedAt, 0)),
-		UpdatedAt: timestamppb.New(time.Unix(doc.UpdatedAt, 0)),
+		CreatedAt: timestamppb.New(normalizeTimestamp(doc.CreatedAt)),
+		UpdatedAt: timestamppb.New(normalizeTimestamp(doc.UpdatedAt)),
 	}, nil
 }
 
@@ -239,6 +239,20 @@ func convertMetadataToString(metadata map[string]interface{}) string {
 		return "{}"
 	}
 	return string(jsonData)
+}
+
+// normalizeTimestamp converts an int64 timestamp to time.Time, handling nanoseconds, milliseconds, or seconds
+func normalizeTimestamp(ts int64) time.Time {
+	switch {
+	case ts >= 1e14: // nanoseconds
+		return time.Unix(0, ts).UTC()
+	case ts >= 1e11: // milliseconds
+		sec := ts / 1e3
+		nsec := (ts % 1e3) * 1e6
+		return time.Unix(sec, nsec).UTC()
+	default: // seconds
+		return time.Unix(ts, 0).UTC()
+	}
 }
 
 // StartGRPCServer starts the gRPC server
@@ -348,9 +362,15 @@ func (s *CLIServer) ListAliases(ctx context.Context, _ *emptypb.Empty) (*pb.Alia
 
 // PropagateDID propagates a DID to the network
 func (s *CLIServer) PropagateDID(ctx context.Context, req *pb.DIDPropagationRequest) (*pb.OperationResponse, error) {
-	// This would need to be implemented in CLI_GRPC.go
+	err := s.handler.HandlePropagateDID(req.Did, req.PublicKey, req.Balance)
+	if err != nil {
+		return &pb.OperationResponse{
+			Success: false,
+			Message: err.Error(),
+		}, nil
+	}
 	return &pb.OperationResponse{
-		Success: false,
-		Message: "Not implemented yet",
+		Success: true,
+		Message: fmt.Sprintf("DID %s propagated successfully to all connected peers", req.Did),
 	}, nil
 }

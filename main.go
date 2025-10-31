@@ -112,6 +112,14 @@ func printDashes() {
 	fmt.Println("\n" + strings.Repeat("-", 50) + "\n")
 }
 
+// formatTimestamp formats a time.Time as "DD-MM-YYYY HH:MM:SS" (readable format)
+// Converts UTC time to local time before formatting
+func formatTimestamp(t time.Time) string {
+	// Convert UTC to local time
+	localTime := t.Local()
+	return localTime.Format("02-01-2006 15:04:05")
+}
+
 // runCommand executes a CLI command via gRPC to the running service
 func runCommand(command string, args []string, grpcPort int) {
 	client, err := cli.NewClient(fmt.Sprintf("localhost:%d", grpcPort))
@@ -135,6 +143,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  sendmsg <tgt> <msg>  - Send message")
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
+		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
 		fmt.Println("  fastsync <peer>      - Fast sync with peer")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
@@ -258,6 +267,39 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Printf("  DID:       %s\n", doc.Did)
 		fmt.Printf("  PublicKey: %s\n", doc.PublicKey)
 		fmt.Printf("  Balance:   %s\n", doc.Balance)
+
+		// Format CreatedAt timestamp as DD-MM-YYYY HH:MM:SS
+		if doc.CreatedAt != nil {
+			createdAt := doc.CreatedAt.AsTime()
+			fmt.Printf("  CreatedAt: %s\n", formatTimestamp(createdAt))
+		}
+
+		// Format UpdatedAt timestamp as DD-MM-YYYY HH:MM:SS
+		if doc.UpdatedAt != nil {
+			updatedAt := doc.UpdatedAt.AsTime()
+			fmt.Printf("  UpdatedAt: %s\n", formatTimestamp(updatedAt))
+		}
+
+	case "propagatedid":
+		if len(args) < 2 {
+			fmt.Println("Usage: jmdn -cmd propagatedid <did> <public_key> [balance]")
+			os.Exit(1)
+		}
+		balance := "0"
+		if len(args) >= 3 {
+			balance = args[2]
+		}
+		resp, err := client.PropagateDID(args[0], args[1], balance)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if resp.Success {
+			fmt.Printf("Success: %s\n", resp.Message)
+		} else {
+			fmt.Printf("Error: %s\n", resp.Message)
+			os.Exit(1)
+		}
 
 	case "fastsync":
 		if len(args) < 1 {
