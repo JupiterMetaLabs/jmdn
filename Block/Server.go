@@ -304,16 +304,16 @@ func processZKBlock(c *gin.Context) {
 	// 		return
 	// 	}
 
-	// 	if err := messaging.PropagateZKBlock(globalHost, consensusMessage); err != nil {
-	// 		log.Error().
-	// 			Err(err).
-	// 			Str("block_hash", block.BlockHash.Hex()).
-	// 			Msg("Failed to propagate block after consensus setup")
-	// 	} else {
-	// 		log.Info().
-	// 			Str("block_hash", block.BlockHash.Hex()).
-	// 			Msg("Block propagated successfully after consensus setup")
-	// 	}
+	// 	// if err := messaging.PropagateZKBlock(globalHost, consensusMessage); err != nil {
+	// 	// 	log.Error().
+	// 	// 		Err(err).
+	// 	// 		Str("block_hash", block.BlockHash.Hex()).
+	// 	// 		Msg("Failed to propagate block after consensus setup")
+	// 	// } else {
+	// 	// 	log.Info().
+	// 	// 		Str("block_hash", block.BlockHash.Hex()).
+	// 	// 		Msg("Block propagated successfully after consensus setup")
+	// 	// }
 	// }()
 
 	for _, tx := range block.Transactions {

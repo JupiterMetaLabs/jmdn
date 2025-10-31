@@ -93,10 +93,10 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 		BackupPeers: []peer.ID{},
 	}
 	consensus := Sequencer.NewConsensus(peerList, s.host)
-
-	s.logger.Info().Str("consensus", fmt.Sprintf("%+v", consensus)).Msg("gRPC: Starting consensus")
-
+	// Debugging
+	fmt.Printf("Consensus: %+v\n", consensus)
 	if err := consensus.Start(block); err != nil {
+		fmt.Printf("Error starting consensus process: %+v\n", err)
 		s.logger.Error().
 			Err(err).
 			Str("block_hash", block.BlockHash.Hex()).

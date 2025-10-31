@@ -66,7 +66,7 @@ func (consensus *Consensus) QueryBuddyNodes() ([]PubSubMessages.Buddy_PeerMultia
 		return nil, fmt.Errorf("failed to get buddy nodes from list: %v", errMSG)
 	}
 
-	fmt.Printf("Queried Buddies: %+v\n", GetPeerIDFromBuddy)
+	// fmt.Printf("Queried Buddies: %+v\n", GetPeerIDFromBuddy)
 	return GetPeerIDFromBuddy, nil
 }
 
