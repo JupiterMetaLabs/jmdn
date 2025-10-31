@@ -17,10 +17,10 @@ import (
 	"gossipnode/Sequencer"
 	"gossipnode/config"
 	"gossipnode/logging"
-
 	// "gossipnode/messaging"
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
+	// "gossipnode/PubSubMessages"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -296,6 +296,7 @@ func processZKBlock(c *gin.Context) {
 	}
 
 	// // Start block propagation as a new goroutine after consensus setup
+	// // This propagates the block to peers for voting
 	// go func() {
 	// 	// Create consensus message from the consensus data
 	// 	consensusMessage := consensus.ZKBlockData
