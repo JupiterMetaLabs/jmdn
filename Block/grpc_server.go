@@ -312,22 +312,28 @@ func newIntFromBytes(b []byte) *big.Int {
 	// This handles cases where big.Int was serialized as a string in JSON/protobuf
 	if isASCIIString(b) {
 		chainIDStr := strings.TrimSpace(string(b))
+		// Debug: print the bytes and string representation
+		fmt.Printf("DEBUG newIntFromBytes: bytes (hex): %x, bytes (ASCII): %s\n", b, chainIDStr)
 		// Try parsing as decimal string first
 		result := new(big.Int)
 		if _, ok := result.SetString(chainIDStr, 10); ok {
+			fmt.Printf("DEBUG newIntFromBytes: parsed as decimal string: %s -> %s\n", chainIDStr, result.String())
 			return result
 		}
 		// If decimal fails, try hex (with or without 0x prefix)
 		chainIDStr = strings.TrimPrefix(chainIDStr, "0x")
 		if _, ok := result.SetString(chainIDStr, 16); ok {
+			fmt.Printf("DEBUG newIntFromBytes: parsed as hex string: %s -> %s\n", chainIDStr, result.String())
 			return result
 		}
+		fmt.Printf("DEBUG newIntFromBytes: failed to parse as string, falling back to byte interpretation\n")
 		// If both fail, fall through to byte interpretation
 	}
 
 	// Default: interpret as big-endian integer bytes
 	result := new(big.Int)
 	result.SetBytes(b)
+	fmt.Printf("DEBUG newIntFromBytes: interpreted as big-endian bytes: %x -> %s\n", b, result.String())
 	return result
 }
 
