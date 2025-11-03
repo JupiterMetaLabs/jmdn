@@ -403,11 +403,26 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		addressKeysInBatch[e.Key] = true
 	}
 
+	// Build a map of did: entries by their target address key for efficient lookup
+	didEntriesByAddress := make(map[string][]struct {
+		Key   string
+		Value []byte
+	})
+	for _, e := range didEntries {
+		var acc Account
+		if err := json.Unmarshal(e.Value, &acc); err != nil {
+			continue
+		}
+		addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
+		didEntriesByAddress[addrKey] = append(didEntriesByAddress[addrKey], e)
+	}
+
 	ops := make([]*schema.Op, 0, len(entries))
 
-	// Process address: keys first (with LWW logic)
+	// Process address: keys and create corresponding did: references in the same transaction
 	for _, e := range addressEntries {
 		var incoming Account
+		shouldWrite := true
 		if err := json.Unmarshal(e.Value, &incoming); err == nil {
 			// Try read existing account
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -420,63 +435,65 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 					if existing.UpdatedAt > incoming.UpdatedAt {
 						// Remove from batch map since we're not writing it
 						delete(addressKeysInBatch, e.Key)
-						continue
-					}
-					// If timestamps are equal, only update if incoming has different balance
-					// This handles race conditions where sync happens during local update
-					if existing.UpdatedAt == incoming.UpdatedAt {
+						shouldWrite = false
+					} else if existing.UpdatedAt == incoming.UpdatedAt {
 						if existing.Balance == incoming.Balance {
 							// Same timestamp and balance - skip to avoid unnecessary write
 							delete(addressKeysInBatch, e.Key)
-							continue
+							shouldWrite = false
 						}
-						// Same timestamp but different balance - this shouldn't happen normally,
-						// but we'll use incoming if it has different data (might indicate a merge issue)
+						// Same timestamp but different balance - write it
 					}
 				}
 			}
 		}
-		ops = append(ops, &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{Key: []byte(e.Key), Value: e.Value}}})
+
+		if shouldWrite {
+			// Write the address: key
+			ops = append(ops, &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{Key: []byte(e.Key), Value: e.Value}}})
+
+			// Create all did: references that point to this address key in the same transaction
+			if didRefs, hasRefs := didEntriesByAddress[e.Key]; hasRefs {
+				for _, didEntry := range didRefs {
+					didKey := []byte(didEntry.Key)
+					ops = append(ops, &schema.Op{Operation: &schema.Op_Ref{Ref: &schema.ReferenceRequest{
+						Key:           didKey,
+						ReferencedKey: []byte(e.Key),
+						AtTx:          0,
+						BoundRef:      true,
+					}}})
+				}
+			}
+		}
 	}
 
-	// Process did: keys after address: keys are updated
-	// Create references for all did: entries that came from synced data.
-	// Only skip if we explicitly know the address key was skipped due to LWW.
-	// If address key is not in batch map, it either exists in DB already or will be synced
-	// in a different batch, so we create the reference anyway.
+	// Process remaining did: entries that point to address keys not in this batch
 	for _, e := range didEntries {
-		// For DID keys, create a reference to the address key
 		var acc Account
 		if err := json.Unmarshal(e.Value, &acc); err != nil {
-			// If payload is not an Account, skip creating ref to avoid corrupt data
 			continue
 		}
 		addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
 
-		// If address key is still in the batch map, it will be written - create reference
-		// If address key is NOT in the batch map, it was either:
-		// 1. Never in this batch (exists in DB or will be synced later) - create reference
-		// 2. Removed from map due to LWW skip - check DB, create ref if exists
+		// If address key was in batch but skipped, or not in batch at all
 		if !addressKeysInBatch[addrKey] {
-			// Address key was not in batch or was removed (LWW skip)
-			// Check if it exists in DB - if not, it was likely skipped due to LWW
+			// Check if address key exists in database
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
 			cancel()
-			if getErr != nil {
-				// Address key doesn't exist - it was likely skipped due to LWW
-				// Don't create orphaned reference
-				continue
+			if getErr == nil {
+				// Address key exists in DB - create reference
+				didKey := []byte(e.Key)
+				ops = append(ops, &schema.Op{Operation: &schema.Op_Ref{Ref: &schema.ReferenceRequest{
+					Key:           didKey,
+					ReferencedKey: []byte(addrKey),
+					AtTx:          0,
+					BoundRef:      true,
+				}}})
 			}
+			// If getErr != nil, address key doesn't exist - skip creating orphaned reference
 		}
-		// Address key exists (will be written in batch or exists in DB) - create reference
-		didKey := []byte(e.Key)
-		ops = append(ops, &schema.Op{Operation: &schema.Op_Ref{Ref: &schema.ReferenceRequest{
-			Key:           didKey,
-			ReferencedKey: []byte(addrKey),
-			AtTx:          0,
-			BoundRef:      true,
-		}}})
+		// If addressKeysInBatch[addrKey] is true, we already processed it above
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
