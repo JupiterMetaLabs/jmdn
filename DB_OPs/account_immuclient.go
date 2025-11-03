@@ -376,48 +376,87 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		return fmt.Errorf("failed to select accounts database: %w", err)
 	}
 
-	ops := make([]*schema.Op, 0, len(entries))
+	// Separate address: and did: keys to ensure proper ordering
+	var addressEntries []struct {
+		Key   string
+		Value []byte
+	}
+	var didEntries []struct {
+		Key   string
+		Value []byte
+	}
+
 	for _, e := range entries {
 		if e.Key == "" || e.Value == nil {
 			return fmt.Errorf("invalid entry (empty key or nil value)")
 		}
-		if strings.HasPrefix(e.Key, DIDPrefix) {
-			// For DID keys, create a reference to the address key
-			var acc Account
-			if err := json.Unmarshal(e.Value, &acc); err != nil {
-				// If payload is not an Account, skip creating ref to avoid corrupt data
-				continue
-			}
-			addrKey := []byte(fmt.Sprintf("%s%s", Prefix, acc.Address))
-			didKey := []byte(e.Key)
-			ops = append(ops, &schema.Op{Operation: &schema.Op_Ref{Ref: &schema.ReferenceRequest{
-				Key:           didKey,
-				ReferencedKey: addrKey,
-				AtTx:          0,
-				BoundRef:      true,
-			}}})
-			continue
-		}
-		// Default: KV for address and other keys with LWW based on UpdatedAt
 		if strings.HasPrefix(e.Key, Prefix) {
-			var incoming Account
-			if err := json.Unmarshal(e.Value, &incoming); err == nil {
-				// Try read existing
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				entry, getErr := PooledConnection.Client.Client.Get(ctx, []byte(e.Key))
-				cancel()
-				if getErr == nil && entry != nil && len(entry.Value) > 0 {
-					var existing Account
-					if jsonErr := json.Unmarshal(entry.Value, &existing); jsonErr == nil {
-						// If existing is newer or same, skip writing
-						if existing.UpdatedAt >= incoming.UpdatedAt {
+			addressEntries = append(addressEntries, e)
+		} else if strings.HasPrefix(e.Key, DIDPrefix) {
+			didEntries = append(didEntries, e)
+		}
+	}
+
+	ops := make([]*schema.Op, 0, len(entries))
+
+	// Process address: keys first (with LWW logic)
+	for _, e := range addressEntries {
+		var incoming Account
+		if err := json.Unmarshal(e.Value, &incoming); err == nil {
+			// Try read existing account
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			entry, getErr := PooledConnection.Client.Client.Get(ctx, []byte(e.Key))
+			cancel()
+			if getErr == nil && entry != nil && len(entry.Value) > 0 {
+				var existing Account
+				if jsonErr := json.Unmarshal(entry.Value, &existing); jsonErr == nil {
+					// If existing is newer, skip writing to preserve newer balance
+					if existing.UpdatedAt > incoming.UpdatedAt {
+						continue
+					}
+					// If timestamps are equal, only update if incoming has different balance
+					// This handles race conditions where sync happens during local update
+					if existing.UpdatedAt == incoming.UpdatedAt {
+						if existing.Balance == incoming.Balance {
+							// Same timestamp and balance - skip to avoid unnecessary write
 							continue
 						}
+						// Same timestamp but different balance - this shouldn't happen normally,
+						// but we'll use incoming if it has different data (might indicate a merge issue)
 					}
 				}
 			}
 		}
 		ops = append(ops, &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{Key: []byte(e.Key), Value: e.Value}}})
+	}
+
+	// Process did: keys after address: keys are updated
+	for _, e := range didEntries {
+		// For DID keys, create a reference to the address key
+		var acc Account
+		if err := json.Unmarshal(e.Value, &acc); err != nil {
+			// If payload is not an Account, skip creating ref to avoid corrupt data
+			continue
+		}
+		addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
+
+		// Verify that the target address key exists before creating reference
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
+		cancel()
+		if getErr != nil {
+			// Address key doesn't exist yet - skip creating reference
+			// This can happen if address: key was skipped due to LWW or ordering issues
+			continue
+		}
+
+		didKey := []byte(e.Key)
+		ops = append(ops, &schema.Op{Operation: &schema.Op_Ref{Ref: &schema.ReferenceRequest{
+			Key:           didKey,
+			ReferencedKey: []byte(addrKey),
+			AtTx:          0,
+			BoundRef:      true,
+		}}})
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
