@@ -199,13 +199,34 @@ func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
 		MAP.Insert(key)
 	}
 
-	// Get did: keys (DID references to accounts)
-	didKeys, err := GetDBData_Accounts(fs.accountsDB, "did:")
-	if err != nil {
-		return nil, err
+	// Derive did: keys from address: keys
+	// Scan doesn't find reference keys, so we need to derive them from account data
+	// For each address: key, if the account has a DIDAddress, create the corresponding did: key
+	for _, addrKey := range addressKeys {
+		// Read the account to get its DIDAddress
+		data, err := DB_OPs.Read(fs.accountsDB, addrKey)
+		if err != nil {
+			continue // Skip if we can't read this account
+		}
+
+		// Unmarshal to check if account has a DIDAddress
+		var account struct {
+			DIDAddress string `json:"did,omitempty"`
+		}
+		if err := json.Unmarshal(data, &account); err == nil && account.DIDAddress != "" {
+			// Create the corresponding did: key
+			didKey := fmt.Sprintf("did:%s", account.DIDAddress)
+			MAP.Insert(didKey)
+		}
 	}
-	for _, key := range didKeys {
-		MAP.Insert(key)
+
+	// Also try to get did: keys directly (in case they exist as regular keys, not just references)
+	// This handles edge cases where did: keys might be stored as regular KV pairs
+	didKeys, err := GetDBData_Accounts(fs.accountsDB, "did:")
+	if err == nil {
+		for _, key := range didKeys {
+			MAP.Insert(key)
+		}
 	}
 
 	return MAP, nil
@@ -863,6 +884,9 @@ func (fs *FastSync) getBatchData(
 		return nil, nil, err
 	}
 
+	// Track which keys we've processed to avoid duplicates
+	processedKeys := make(map[string]bool)
+
 	for _, key := range keys {
 		// pick the correct prefix
 		switch dbType {
@@ -892,6 +916,52 @@ func (fs *FastSync) getBatchData(
 			Timestamp: time.Now().UTC(),
 			TxID:      0,
 		})
+		processedKeys[key] = true
+	}
+
+	// For AccountsDB, also derive did: keys from address: keys
+	// Scan doesn't find reference keys, so we need to derive them from account data
+	if dbType == AccountsDB {
+		// Get all address: keys we processed
+		addressKeys := make([]string, 0)
+		for key := range processedKeys {
+			if strings.HasPrefix(key, "address:") {
+				addressKeys = append(addressKeys, key)
+			}
+		}
+
+		// For each address: key, check if the account has a DIDAddress and create did: entry
+		for _, addrKey := range addressKeys {
+			// Read the account to get its DIDAddress
+			data, err := DB_OPs.Read(db, addrKey)
+			if err != nil {
+				continue // Skip if we can't read this account
+			}
+
+			// Unmarshal to check if account has a DIDAddress
+			var account struct {
+				DIDAddress string `json:"did,omitempty"`
+			}
+			if err := json.Unmarshal(data, &account); err == nil && account.DIDAddress != "" {
+				// Create the corresponding did: key
+				didKey := fmt.Sprintf("did:%s", account.DIDAddress)
+
+				// Only add if we haven't already processed it
+				if !processedKeys[didKey] {
+					// Read the did: key data (this will follow the reference)
+					didData, err := DB_OPs.Read(db, didKey)
+					if err == nil {
+						entries = append(entries, KeyValueEntry{
+							Key:       []byte(didKey),
+							Value:     didData, // This will be the account data (reference follows)
+							Timestamp: time.Now().UTC(),
+							TxID:      0,
+						})
+						processedKeys[didKey] = true
+					}
+				}
+			}
+		}
 	}
 
 	return entries, crdts, nil
