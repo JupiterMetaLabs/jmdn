@@ -187,12 +187,23 @@ func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
 }
 
 func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
-	keys, err := GetDBData_Accounts(fs.accountsDB, "did:")
+	MAP := hashmap.New()
+
+	// Get address: keys (actual account data)
+	addressKeys, err := GetDBData_Accounts(fs.accountsDB, "address:")
 	if err != nil {
 		return nil, err
 	}
-	MAP := hashmap.New()
-	for _, key := range keys {
+	for _, key := range addressKeys {
+		MAP.Insert(key)
+	}
+
+	// Get did: keys (DID references to accounts)
+	didKeys, err := GetDBData_Accounts(fs.accountsDB, "did:")
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range didKeys {
 		MAP.Insert(key)
 	}
 
@@ -863,7 +874,8 @@ func (fs *FastSync) getBatchData(
 				continue
 			}
 		case AccountsDB:
-			if !strings.HasPrefix(key, "did:") {
+			// Include address: keys (actual account data) and did: keys (DID references)
+			if !strings.HasPrefix(key, "address:") && !strings.HasPrefix(key, "did:") {
 				continue
 			}
 		}
