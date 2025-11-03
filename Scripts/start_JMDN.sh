@@ -58,7 +58,7 @@ JMDN_ARGS=(
   -seednode 34.174.233.203:17002
   -facade 8545
   -ws 8546
-  -chainID 7000700
+  -chainID 8000800
   -mempool 34.129.53.115:18001
   -explorer
   -blockgrpc 15055
