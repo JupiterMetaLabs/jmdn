@@ -2,7 +2,11 @@ package config
 
 import (
 	"context"
+	"fmt"
 	"gossipnode/logging"
+	"log"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
@@ -42,7 +46,7 @@ type ImmuClient struct {
 	BaseCtx     context.Context
 	RetryLimit  int
 	IsConnected bool
-	Logger      *AsyncLogger
+	Logger      *logging.AsyncLogger
 	Database    string
 }
 
@@ -63,8 +67,8 @@ func ProcessLogs(al *AsyncLogger) {
 	}
 }
 
-// log sends a log message to the channel
-func Log(al *AsyncLogger, level, format string, args ...interface{}) {
+// LogMessage sends a log message to the channel
+func LogMessage(al *AsyncLogger, level, format string, args ...interface{}) {
 	msg := fmt.Sprintf(level+": "+format, args...)
 
 	// Non-blocking send to channel with timeout
@@ -78,17 +82,17 @@ func Log(al *AsyncLogger, level, format string, args ...interface{}) {
 
 // Info logs an info message
 func Info(al *AsyncLogger, format string, args ...interface{}) {
-	Log(al, "INFO", format, args...)
+	LogMessage(al, "INFO", format, args...)
 }
 
 // Warning logs a warning message
 func Warning(al *AsyncLogger, format string, args ...interface{}) {
-	Log(al, "WARNING", format, args...)
+	LogMessage(al, "WARNING", format, args...)
 }
 
 // Error logs an error message
 func Error(al *AsyncLogger, format string, args ...interface{}) {
-	Log(al, "ERROR", format, args...)
+	LogMessage(al, "ERROR", format, args...)
 }
 
 // Close closes the logger
