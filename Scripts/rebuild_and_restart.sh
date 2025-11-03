@@ -52,10 +52,18 @@ sudo cp jmdn /usr/local/bin/jmdn
 sudo chmod 755 /usr/local/bin/jmdn
 info "Binary installed successfully"
 
-info "Updating start_JMDN.sh script..."
+info "Updating start scripts..."
 sudo cp ./Scripts/start_JMDN.sh /usr/local/bin/start_JMDN.sh
 sudo chmod 755 /usr/local/bin/start_JMDN.sh
-info "Script updated successfully"
+info "start_JMDN.sh updated successfully"
+
+if [ -f "./Scripts/firstStart.sh" ]; then
+    sudo cp ./Scripts/firstStart.sh /usr/local/bin/firstStart.sh
+    sudo chmod 755 /usr/local/bin/firstStart.sh
+    info "firstStart.sh updated successfully"
+else
+    warn "firstStart.sh not found in ./Scripts/"
+fi
 
 # Restart service if it was running
 if [ "$SERVICE_WAS_RUNNING" = true ]; then
