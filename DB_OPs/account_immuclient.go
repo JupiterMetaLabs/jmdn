@@ -899,11 +899,13 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 		return nil, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
 	}
 
-	// Build the prefix
-	prefix := []byte(DIDPrefix)
-	if extendedPrefix != "" {
-		prefix = []byte(fmt.Sprintf("%s%s", DIDPrefix, extendedPrefix))
-	}
+	// Scan for address: keys instead of did: keys
+	// This is more reliable because:
+	// 1. address: keys are regular KV pairs, always scannable by ImmuDB Scan
+	// 2. did: references might not appear in Scan results
+	// 3. Every account has an address: key, so we'll get all accounts
+	// 4. This works for both locally created and synced accounts
+	prefix := []byte(Prefix) // Use "address:" prefix instead of "did:"
 
 	// Scan for keys with pagination
 	var accounts []*Account
@@ -942,10 +944,11 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 		// Process the batch
 		for _, entry := range scanResult.Entries {
 			if keysScanned >= offset {
-				// Load the account using our shared helper
-				account, err := loadAccountByKey(PooledConnection, entry.Key, "DB_OPs.ListAccountsPaginated")
-				if err != nil {
-					PooledConnection.Client.Logger.Logger.Warn("Skipping account due to error",
+				// Load the account directly from address: key value
+				// This works for both synced and locally created accounts
+				var acc Account
+				if err := json.Unmarshal(entry.Value, &acc); err != nil {
+					PooledConnection.Client.Logger.Logger.Warn("Skipping account due to unmarshal error",
 						zap.Error(err),
 						zap.String("key", string(entry.Key)),
 						zap.String(logging.Connection_database, config.AccountsDBName),
@@ -957,7 +960,14 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 					)
 					continue
 				}
-				accounts = append(accounts, account)
+
+				// Filter by network prefix if specified (e.g., "did:jmdt:mainnet:")
+				if extendedPrefix != "" && !strings.HasPrefix(acc.DIDAddress, extendedPrefix) {
+					keysScanned++
+					continue
+				}
+
+				accounts = append(accounts, &acc)
 				if len(accounts) >= limit {
 					break
 				}
