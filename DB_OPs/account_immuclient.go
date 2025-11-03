@@ -440,6 +440,10 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 	}
 
 	// Process did: keys after address: keys are updated
+	// Create references for all did: entries that came from synced data.
+	// Only skip if we explicitly know the address key was skipped due to LWW.
+	// If address key is not in batch map, it either exists in DB already or will be synced
+	// in a different batch, so we create the reference anyway.
 	for _, e := range didEntries {
 		// For DID keys, create a reference to the address key
 		var acc Account
@@ -449,29 +453,23 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		}
 		addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
 
-		// Check if address key is being written in this batch OR already exists in DB
-		// This ensures references are only created for valid address keys
-		shouldCreateRef := false
-		if addressKeysInBatch[addrKey] {
-			// Address key is being written in this batch - safe to create reference
-			shouldCreateRef = true
-		} else {
-			// Check if address key exists in database
+		// If address key is still in the batch map, it will be written - create reference
+		// If address key is NOT in the batch map, it was either:
+		// 1. Never in this batch (exists in DB or will be synced later) - create reference
+		// 2. Removed from map due to LWW skip - check DB, create ref if exists
+		if !addressKeysInBatch[addrKey] {
+			// Address key was not in batch or was removed (LWW skip)
+			// Check if it exists in DB - if not, it was likely skipped due to LWW
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
 			cancel()
-			if getErr == nil {
-				// Address key exists in database - safe to create reference
-				shouldCreateRef = true
+			if getErr != nil {
+				// Address key doesn't exist - it was likely skipped due to LWW
+				// Don't create orphaned reference
+				continue
 			}
 		}
-
-		if !shouldCreateRef {
-			// Address key doesn't exist - skip creating reference
-			// This can happen if address: key was skipped due to LWW or was never synced
-			continue
-		}
-
+		// Address key exists (will be written in batch or exists in DB) - create reference
 		didKey := []byte(e.Key)
 		ops = append(ops, &schema.Op{Operation: &schema.Op_Ref{Ref: &schema.ReferenceRequest{
 			Key:           didKey,
