@@ -23,7 +23,7 @@ if ! command -v go >/dev/null 2>&1; then
         export PATH="/usr/local/go/bin:$PATH"
         info "Using Go from /usr/local/go/bin"
     else
-        warn "Go not found. Please install Go or run ./scripts/Go_Prerequisite.sh"
+        warn "Go not found. Please install Go or run ./Scripts/Go_Prerequisite.sh"
         exit 1
     fi
 fi
@@ -53,7 +53,7 @@ sudo chmod 755 /usr/local/bin/jmdn
 info "Binary installed successfully"
 
 info "Updating start_JMDN.sh script..."
-sudo cp ./scripts/start_JMDN.sh /usr/local/bin/start_JMDN.sh
+sudo cp ./Scripts/start_JMDN.sh /usr/local/bin/start_JMDN.sh
 sudo chmod 755 /usr/local/bin/start_JMDN.sh
 info "Script updated successfully"
 
