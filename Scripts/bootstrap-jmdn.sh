@@ -162,16 +162,28 @@ chmod 755 "${WORK_DIR}/DB"
 
 info "Working directory structure ready"
 
-# ===== Install start script =====
-info "Installing start_JMDN.sh script..."
+# ===== Install start scripts =====
+info "Installing start scripts..."
 if [ ! -f "./Scripts/start_JMDN.sh" ]; then
   error "start_JMDN.sh not found in ./Scripts/"
   exit 1
 fi
 
+if [ ! -f "./Scripts/firstStart.sh" ]; then
+  error "firstStart.sh not found in ./Scripts/"
+  exit 1
+fi
+
+# Install start_JMDN.sh (main entry point)
 cp ./Scripts/start_JMDN.sh "${START_SCRIPT}"
 chmod 755 "${START_SCRIPT}"
 info "Start script installed to ${START_SCRIPT}"
+
+# Install firstStart.sh (used for first-time initialization)
+FIRST_START_SCRIPT="/usr/local/bin/firstStart.sh"
+cp ./Scripts/firstStart.sh "${FIRST_START_SCRIPT}"
+chmod 755 "${FIRST_START_SCRIPT}"
+info "First start script installed to ${FIRST_START_SCRIPT}"
 
 # ===== Create systemd service =====
 section

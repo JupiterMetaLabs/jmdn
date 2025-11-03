@@ -55,13 +55,14 @@ JMDN_ARGS=(
   -blockgen 15050
   -did 0.0.0.0:15052
   -cli 15053
-  -seednode 34.174.233.203:17002
+  -seednode 34.174.94.172:17002
   -facade 8545
   -ws 8546
   -chainID 7000700
-  -mempool 34.129.53.115:18001
+  -mempool 34.174.252.23:18001
   -explorer
   -blockgrpc 15055
+  -alias "$(hostname)"
 )
 
 # ===== Utility colors =====
@@ -70,6 +71,22 @@ info()  { echo -e "${BLUE}[INFO]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 die()   { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+
+# ===== First Start Detection =====
+# Check if this is the first start and delegate to firstStart.sh if needed
+FIRST_START_MARKER="${WORK_DIR}/.first_start_complete"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
+FIRST_START_SCRIPT="${SCRIPT_DIR}/firstStart.sh"
+
+if [ ! -f "${FIRST_START_MARKER}" ]; then
+  if [ -f "${FIRST_START_SCRIPT}" ]; then
+    info "First start detected. Delegating to firstStart.sh..."
+    exec "${FIRST_START_SCRIPT}" "$@"
+  else
+    warn "First start detected but firstStart.sh not found at ${FIRST_START_SCRIPT}"
+    warn "Proceeding with normal start..."
+  fi
+fi
 
 # ===== Pre-flight checks =====
 [ -x "${BIN_PATH}" ] || die "Binary not executable: ${BIN_PATH}"
