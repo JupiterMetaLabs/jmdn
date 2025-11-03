@@ -62,7 +62,6 @@ JMDN_ARGS=(
   -mempool 34.174.252.23:18001
   -explorer
   -blockgrpc 15055
-  -alias "$(hostname)"
 )
 
 # ===== Utility colors =====
