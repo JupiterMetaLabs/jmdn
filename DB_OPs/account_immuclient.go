@@ -397,6 +397,12 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		}
 	}
 
+	// Build a map of address keys being written in this batch for quick lookup
+	addressKeysInBatch := make(map[string]bool)
+	for _, e := range addressEntries {
+		addressKeysInBatch[e.Key] = true
+	}
+
 	ops := make([]*schema.Op, 0, len(entries))
 
 	// Process address: keys first (with LWW logic)
@@ -412,6 +418,8 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 				if jsonErr := json.Unmarshal(entry.Value, &existing); jsonErr == nil {
 					// If existing is newer, skip writing to preserve newer balance
 					if existing.UpdatedAt > incoming.UpdatedAt {
+						// Remove from batch map since we're not writing it
+						delete(addressKeysInBatch, e.Key)
 						continue
 					}
 					// If timestamps are equal, only update if incoming has different balance
@@ -419,6 +427,7 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 					if existing.UpdatedAt == incoming.UpdatedAt {
 						if existing.Balance == incoming.Balance {
 							// Same timestamp and balance - skip to avoid unnecessary write
+							delete(addressKeysInBatch, e.Key)
 							continue
 						}
 						// Same timestamp but different balance - this shouldn't happen normally,
@@ -440,13 +449,26 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		}
 		addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
 
-		// Verify that the target address key exists before creating reference
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
-		cancel()
-		if getErr != nil {
-			// Address key doesn't exist yet - skip creating reference
-			// This can happen if address: key was skipped due to LWW or ordering issues
+		// Check if address key is being written in this batch OR already exists in DB
+		// This ensures references are only created for valid address keys
+		shouldCreateRef := false
+		if addressKeysInBatch[addrKey] {
+			// Address key is being written in this batch - safe to create reference
+			shouldCreateRef = true
+		} else {
+			// Check if address key exists in database
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
+			cancel()
+			if getErr == nil {
+				// Address key exists in database - safe to create reference
+				shouldCreateRef = true
+			}
+		}
+
+		if !shouldCreateRef {
+			// Address key doesn't exist - skip creating reference
+			// This can happen if address: key was skipped due to LWW or was never synced
 			continue
 		}
 
