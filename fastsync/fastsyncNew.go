@@ -148,13 +148,39 @@ func GetDBData_Accounts(db *config.PooledConnection, prefix string) ([]string, e
 }
 
 func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
-	keys, err := GetDBData_Default(fs.mainDB, "block:")
+	MAP := hashmap.New()
+
+	// Get block: keys
+	blockKeys, err := GetDBData_Default(fs.mainDB, "block:")
 	if err != nil {
 		return nil, err
 	}
-	MAP := hashmap.New()
-	for _, key := range keys {
+	for _, key := range blockKeys {
 		MAP.Insert(key)
+	}
+
+	// Get tx: keys
+	txKeys, err := GetDBData_Default(fs.mainDB, "tx:")
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range txKeys {
+		MAP.Insert(key)
+	}
+
+	// Get tx_processed: keys
+	txProcessedKeys, err := GetDBData_Default(fs.mainDB, "tx_processed:")
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range txProcessedKeys {
+		MAP.Insert(key)
+	}
+
+	// Check for latest_block key explicitly
+	exists, err := DB_OPs.Exists(fs.mainDB, "latest_block")
+	if err == nil && exists {
+		MAP.Insert("latest_block")
 	}
 
 	return MAP, nil
@@ -829,7 +855,11 @@ func (fs *FastSync) getBatchData(
 		// pick the correct prefix
 		switch dbType {
 		case MainDB:
-			if !strings.HasPrefix(key, "block:") {
+			// Include block: keys, latest_block, tx: keys, and tx_processed: keys
+			if !strings.HasPrefix(key, "block:") &&
+				key != "latest_block" &&
+				!strings.HasPrefix(key, "tx:") &&
+				!strings.HasPrefix(key, "tx_processed:") {
 				continue
 			}
 		case AccountsDB:
