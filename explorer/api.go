@@ -131,6 +131,7 @@ func (s *ImmuDBServer) setupRoutes() {
 	// stats api
 	stats := s.router.Group("/api/stats")
 	{
+		stats.GET("/block/latest", s.getLatestBlockStats)
 		stats.GET("/", s.getStats)
 	}
 

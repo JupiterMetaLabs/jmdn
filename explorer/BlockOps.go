@@ -29,6 +29,13 @@ type stats struct {
 	TotalAddresses    int64
 }
 
+type LatestBlockStats struct {
+	BlockNumber uint64
+	BlockHash string
+	StateRoot string
+	Timestamp int64
+}
+
 // Get block by number
 func (s *ImmuDBServer) getBlockByNumber(c *gin.Context) {
 	number := c.Param("number")
@@ -137,17 +144,42 @@ func (s *ImmuDBServer) getTransactionBlock(c *gin.Context) {
 }
 
 func (s *ImmuDBServer) getLatestBlock(c *gin.Context) {
-	blockNumber, err := DB_OPs.GetLatestBlockNumber(&s.defaultdb)
+	// Get the latest block number
+	latestBlockNumber, err := GetLatesBlockNumber(s)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	block, err := DB_OPs.GetZKBlockByNumber(&s.defaultdb, blockNumber)
+	// Get the latest block by number
+	block, err := GetLatestBlockByNumber(s, latestBlockNumber)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, block)
+}
+
+func (s *ImmuDBServer) getLatestBlockStats(c *gin.Context) {
+	latestBlockNumber, err := GetLatesBlockNumber(s)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	block, err := GetLatestBlockByNumber(s, latestBlockNumber)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Get the latest block stats with block number, block hash, state root, timestamp
+	latestBlockStats := LatestBlockStats{
+		BlockNumber: block.BlockNumber,
+		BlockHash: block.BlockHash.Hex(),
+		StateRoot: block.StateRoot.Hex(),
+		Timestamp: block.Timestamp,
+	}
+	fmt.Println("latestBlockStats", latestBlockStats)
+	c.JSON(http.StatusOK, latestBlockStats)
 }
 
 // Get transaction by hash
