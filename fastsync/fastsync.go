@@ -34,6 +34,7 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/crdt"
+	hashmap "gossipnode/crdt/HashMap"
 )
 
 // Constants for FastSync
@@ -43,7 +44,7 @@ const (
 	MaxRetries      = 3
 	SyncTimeout     = 5 * time.Minute
 	RequestTimeout  = 30 * time.Second
-	ResponseTimeout = 60 * time.Second
+	ResponseTimeout = 60 * time.Second // Reduced to 60s since we chunk HashMaps (100 keys per chunk)
 	RetryDelay      = 500 * time.Millisecond
 )
 
@@ -618,47 +619,172 @@ func dbTypeToString(dbType DatabaseType) string {
 func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) (*SyncMessage, string, string, error) {
 	// Got all the data in - msg *SyncMessage
 	// Send the Client_HashMap to the server to get the SYNC_HashMap
+	fmt.Println(">>> [CLIENT] Starting Phase2_Sync - sending HashMap exchange request")
 	msg.Type = TypeHashMapExchangeSYNC
 
 	// Debug: Log the message being sent
 	log.Info().
 		Str("peer_id", peerID.String()).
 		Str("message_type", msg.Type).
-		Str("message_data", string(msg.Data)).
 		Int("data_length", len(msg.Data)).
 		Msg("Sending Phase2_Sync request")
 
+	fmt.Printf(">>> [CLIENT] Sending HashMap exchange request to server...\n")
 	if err := writeMessage(writer, stream, msg); err != nil {
+		fmt.Printf(">>> [CLIENT] ERROR: Failed to write Phase2_Sync message: %v\n", err)
 		log.Error().Err(err).Msg("Failed to write Phase2_Sync message")
 		return nil, "", "", err
 	}
 
-	log.Info().Msg("Phase2_Sync message sent successfully, waiting for response...")
+	fmt.Println(">>> [CLIENT] ✓ Phase2_Sync message sent, waiting for server response...")
+	log.Info().Msg("Phase2_Sync message sent successfully, waiting for chunks...")
 
-	Phase2_Response, err := readMessage(reader, stream)
-	if err != nil {
-		return nil, "", "", err
+	// Receive metadata first - extend timeout for HashMap computation (server may take time)
+	fmt.Println(">>> [CLIENT] Waiting for HashMap metadata from server (this may take time for large datasets)...")
+	// Extend read deadline for HashMap computation phase - 30 minutes for debugging
+	if err := stream.SetReadDeadline(time.Now().UTC().Add(30 * time.Minute)); err != nil {
+		fmt.Printf(">>> [CLIENT] WARNING: Failed to extend read deadline: %v\n", err)
 	}
+	fmt.Println(">>> [CLIENT] Extended read deadline to 30 minutes for HashMap computation")
+	metadataMsg, err := readMessage(reader, stream)
+	if err != nil {
+		fmt.Printf(">>> [CLIENT] ERROR: Failed to read HashMap metadata: %v\n", err)
+		return nil, "", "", fmt.Errorf("failed to read HashMap metadata: %w", err)
+	}
+	fmt.Println(">>> [CLIENT] ✓ Received HashMap metadata from server")
 
-	// Debug: Log the received response
-	log.Info().
-		Str("response_type", Phase2_Response.Type).
-		Str("response_data", string(Phase2_Response.Data)).
-		Int("data_length", len(Phase2_Response.Data)).
-		Msg("Received Phase2_Response")
+	if metadataMsg.Type != TypeHashMapExchangeSYNC {
+		return nil, "", "", fmt.Errorf("unexpected message type: %s", metadataMsg.Type)
+	}
 
 	expectedData := json.RawMessage([]byte(`"Message From Server"`))
-	if !bytes.Equal(Phase2_Response.Data, expectedData) {
-		log.Error().
-			Str("expected", string(expectedData)).
-			Str("received", string(Phase2_Response.Data)).
-			Int("expected_len", len(expectedData)).
-			Int("received_len", len(Phase2_Response.Data)).
-			Msg("Response data mismatch")
-		return nil, "", "", fmt.Errorf("unexpected response data: expected '%s', got '%s'", string(expectedData), string(Phase2_Response.Data))
+	if !bytes.Equal(metadataMsg.Data, expectedData) {
+		return nil, "", "", fmt.Errorf("unexpected metadata data")
 	}
 
-	return Phase2_Response, Phase2_Response.HashMap_MetaData.Main_HashMap_MetaData.Checksum, Phase2_Response.HashMap_MetaData.Accounts_HashMap_MetaData.Checksum, nil
+	// Extract metadata
+	totalChunks := metadataMsg.TotalChunks
+	mainKeysCount := metadataMsg.HashMap_MetaData.Main_HashMap_MetaData.KeysCount
+	accountsKeysCount := metadataMsg.HashMap_MetaData.Accounts_HashMap_MetaData.KeysCount
+
+	fmt.Printf(">>> [CLIENT] Metadata received - Total chunks: %d, Main keys: %d, Accounts keys: %d\n", totalChunks, mainKeysCount, accountsKeysCount)
+	log.Info().
+		Int("total_chunks", totalChunks).
+		Int("main_keys", mainKeysCount).
+		Int("accounts_keys", accountsKeysCount).
+		Msg("Received HashMap metadata, receiving chunks...")
+
+	// Reassemble HashMap from chunks
+	fmt.Printf(">>> [CLIENT] Starting to receive chunks (expecting %d chunks)...\n", totalChunks)
+	var allKeys []string
+	receivedChunks := 0
+
+	for receivedChunks < totalChunks {
+		fmt.Printf(">>> [CLIENT] Waiting for chunk %d/%d...\n", receivedChunks+1, totalChunks)
+		chunkMsg, err := readMessage(reader, stream)
+		if err != nil {
+			fmt.Printf(">>> [CLIENT] ERROR: Failed to read chunk %d: %v\n", receivedChunks+1, err)
+			return nil, "", "", fmt.Errorf("failed to read chunk %d: %w", receivedChunks+1, err)
+		}
+
+		if chunkMsg.Type == TypeHashMapChunkComplete {
+			fmt.Println(">>> [CLIENT] ✓ Received chunk complete message")
+			log.Info().Msg("Received chunk complete message")
+			break
+		}
+
+		if chunkMsg.Type != TypeHashMapChunk {
+			fmt.Printf(">>> [CLIENT] ERROR: Unexpected message type: %s (expected HASHMAP_CHUNK)\n", chunkMsg.Type)
+			return nil, "", "", fmt.Errorf("unexpected message type: %s", chunkMsg.Type)
+		}
+
+		// Add chunk keys to our collection
+		allKeys = append(allKeys, chunkMsg.ChunkKeys...)
+		receivedChunks++
+
+		fmt.Printf(">>> [CLIENT] ✓ Received chunk %d/%d (%d keys, total collected: %d keys)\n",
+			chunkMsg.ChunkNumber, totalChunks, len(chunkMsg.ChunkKeys), len(allKeys))
+		log.Debug().
+			Int("chunk", chunkMsg.ChunkNumber).
+			Int("total", totalChunks).
+			Int("keys_in_chunk", len(chunkMsg.ChunkKeys)).
+			Int("total_keys_collected", len(allKeys)).
+			Msg("Received chunk")
+
+		// Send ACK for this chunk
+		fmt.Printf(">>> [CLIENT] Sending ACK for chunk %d...\n", chunkMsg.ChunkNumber)
+		ackMsg := &SyncMessage{
+			Type:        TypeHashMapChunkAck,
+			SenderID:    fs.host.ID().String(),
+			Timestamp:   time.Now().UTC().Unix(),
+			ChunkNumber: chunkMsg.ChunkNumber,
+			Success:     true,
+		}
+
+		if err := writeMessage(writer, stream, ackMsg); err != nil {
+			fmt.Printf(">>> [CLIENT] ERROR: Failed to send chunk ACK: %v\n", err)
+			return nil, "", "", fmt.Errorf("failed to send chunk ACK: %w", err)
+		}
+		fmt.Printf(">>> [CLIENT] ✓ ACK sent for chunk %d (progress: %.1f%%)\n", chunkMsg.ChunkNumber, float64(receivedChunks)/float64(totalChunks)*100)
+	}
+
+	// Split keys back into Main and Accounts
+	fmt.Printf(">>> [CLIENT] Reassembling HashMaps from %d received chunks...\n", receivedChunks)
+	SYNC_Keys_Main := allKeys[:mainKeysCount]
+	SYNC_Keys_Accounts := allKeys[mainKeysCount:]
+
+	// Rebuild HashMaps
+	fmt.Printf(">>> [CLIENT] Rebuilding Main HashMap (%d keys)...\n", len(SYNC_Keys_Main))
+	SYNC_HashMap_MAIN := hashmap.New()
+	for _, key := range SYNC_Keys_Main {
+		SYNC_HashMap_MAIN.Insert(key)
+	}
+	fmt.Println(">>> [CLIENT] ✓ Main HashMap rebuilt")
+
+	fmt.Printf(">>> [CLIENT] Rebuilding Accounts HashMap (%d keys)...\n", len(SYNC_Keys_Accounts))
+	SYNC_HashMap_Accounts := hashmap.New()
+	for _, key := range SYNC_Keys_Accounts {
+		SYNC_HashMap_Accounts.Insert(key)
+	}
+	fmt.Println(">>> [CLIENT] ✓ Accounts HashMap rebuilt")
+
+	// Compute checksums
+	fmt.Println(">>> [CLIENT] Computing checksums...")
+	MainChecksum := SYNC_HashMap_MAIN.Fingerprint()
+	AccountChecksum := SYNC_HashMap_Accounts.Fingerprint()
+	fmt.Println(">>> [CLIENT] ✓ Checksums computed")
+
+	log.Info().
+		Int("total_chunks", receivedChunks).
+		Int("main_keys", len(SYNC_Keys_Main)).
+		Int("accounts_keys", len(SYNC_Keys_Accounts)).
+		Msg("Reassembled HashMap from chunks")
+
+	fmt.Printf(">>> [CLIENT] ✓ Phase2_Sync completed successfully - Main: %d keys, Accounts: %d keys\n", len(SYNC_Keys_Main), len(SYNC_Keys_Accounts))
+
+	// Create response message with reassembled HashMap
+	response := &SyncMessage{
+		Type:      TypeHashMapExchangeSYNC,
+		SenderID:  fs.host.ID().String(),
+		Timestamp: time.Now().UTC().Unix(),
+		Data:      json.RawMessage([]byte(`"Message From Server"`)),
+		HashMap: &TypeHashMapExchange_Struct{
+			MAIN_HashMap:     SYNC_HashMap_MAIN,
+			Accounts_HashMap: SYNC_HashMap_Accounts,
+		},
+		HashMap_MetaData: &HashMap_MetaData{
+			Main_HashMap_MetaData: &MetaData{
+				KeysCount: SYNC_HashMap_MAIN.Size(),
+				Checksum:  MainChecksum,
+			},
+			Accounts_HashMap_MetaData: &MetaData{
+				KeysCount: SYNC_HashMap_Accounts.Size(),
+				Checksum:  AccountChecksum,
+			},
+		},
+	}
+
+	return response, MainChecksum, AccountChecksum, nil
 }
 
 func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) error {
@@ -813,30 +939,63 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 }, dbType DatabaseType) error {
 	const maxRetries = 3
 	var lastErr error
+	fmt.Printf(">>> [DB] batchCreateOrderedWithRetry: %d entries for %s\n", len(entries), dbTypeToString(dbType))
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		var dbClient *config.PooledConnection
 		switch dbType {
 		case MainDB:
 			dbClient = fs.mainDB
+			if dbClient == nil {
+				fmt.Printf(">>> [DB] ERROR: MainDB client is nil\n")
+				return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
+			}
+			fmt.Printf(">>> [DB] MainDB client: %v, database: %s\n", dbClient != nil, func() string {
+				if dbClient != nil && dbClient.Client != nil {
+					return dbClient.Database
+				}
+				return "unknown"
+			}())
 		case AccountsDB:
 			dbClient = fs.accountsDB
+			if dbClient == nil {
+				fmt.Printf(">>> [DB] ERROR: AccountsDB client is nil\n")
+				return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
+			}
+			fmt.Printf(">>> [DB] AccountsDB client: %v, database: %s\n", dbClient != nil, func() string {
+				if dbClient != nil && dbClient.Client != nil {
+					return dbClient.Database
+				}
+				return "unknown"
+			}())
 		default:
 			return fmt.Errorf("invalid database type: %v", dbType)
 		}
-		if dbClient == nil {
-			return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
-		}
+
 		var err error
 		switch dbType {
 		case MainDB:
+			fmt.Printf(">>> [DB] Calling BatchCreateOrdered for MainDB with %d entries...\n", len(entries))
 			err = DB_OPs.BatchCreateOrdered(dbClient, entries)
+			if err != nil {
+				fmt.Printf(">>> [DB] ERROR: BatchCreateOrdered failed for MainDB: %v\n", err)
+			} else {
+				fmt.Printf(">>> [DB] ✓ BatchCreateOrdered succeeded for MainDB (%d entries)\n", len(entries))
+			}
 		case AccountsDB:
+			fmt.Printf(">>> [DB] Calling BatchRestoreAccounts for AccountsDB with %d entries...\n", len(entries))
 			err = DB_OPs.BatchRestoreAccounts(dbClient, entries)
+			if err != nil {
+				fmt.Printf(">>> [DB] ERROR: BatchRestoreAccounts failed for AccountsDB: %v\n", err)
+			} else {
+				fmt.Printf(">>> [DB] ✓ BatchRestoreAccounts succeeded for AccountsDB (%d entries)\n", len(entries))
+			}
 		}
 		if err == nil {
 			return nil
 		}
 		lastErr = err
+		fmt.Printf(">>> [DB] Attempt %d/%d failed: %v\n", attempt+1, maxRetries, err)
 		if strings.Contains(lastErr.Error(), "invalid token") {
 			var newClient *config.PooledConnection
 			var clientErr error
@@ -866,19 +1025,32 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 }
 
 func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath string) error {
+	fmt.Printf(">>> [DB] PushDataToDB called for %s, file: %s\n", dbTypeToString(dbType), dbPath)
+
 	// Get the appropriate database client
 	var dbClient *config.PooledConnection
 	switch dbType {
 	case MainDB:
 		dbClient = fs.mainDB
+		if dbClient == nil {
+			fmt.Printf(">>> [DB] ERROR: MainDB client is nil!\n")
+		} else {
+			fmt.Printf(">>> [DB] MainDB client OK, database: %s\n", dbClient.Database)
+		}
 		log.Info().Str("db_type", "defaultDB").Msg("Using defaultDB client for restoration")
 	case AccountsDB:
 		dbClient = fs.accountsDB
+		if dbClient == nil {
+			fmt.Printf(">>> [DB] ERROR: AccountsDB client is nil!\n")
+		} else {
+			fmt.Printf(">>> [DB] AccountsDB client OK, database: %s\n", dbClient.Database)
+		}
 		log.Info().Str("db_type", "AccountsDB").Msg("Using AccountsDB client for restoration")
 	default:
 		return fmt.Errorf("invalid database type: %v", dbType)
 	}
 	if dbClient == nil {
+		fmt.Printf(">>> [DB] ERROR: Database client for %s is nil\n", dbTypeToString(dbType))
 		log.Error().
 			Str("db_type", dbTypeToString(dbType)).
 			Msg("Database client is nil")
@@ -960,6 +1132,7 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 	defer file.Close()
 
 	startTime := time.Now()
+	fmt.Printf(">>> [DB] Starting database restore from AVRO: %s (DB: %s)\n", filepath.Base(dbPath), dbTypeToString(dbType))
 	log.Info().
 		Str("db", dbTypeToString(dbType)).
 		Str("file", filepath.Base(dbPath)).
@@ -975,16 +1148,23 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		Key   string
 		Value []byte
 	}
-	batchSize := 50000 // Process in batches of 50,000 entries
+	// ImmuDB has a limit on entries per transaction (typically 1000-5000)
+	// Using 1000 to be safe and avoid "max number of entries per tx exceeded" errors
+	batchSize := 1000 // Process in batches of 1,000 entries
 	totalEntries := 0
 
+	fmt.Printf(">>> [DB] Using batch size: %d entries per transaction\n", batchSize)
+
 	// Read records from the Avro file
+	recordsRead := 0
 	for ocfReader.Scan() {
 		record, err := ocfReader.Read()
 		if err != nil {
+			fmt.Printf(">>> [DB] WARNING: Failed to read AVRO record: %v\n", err)
 			log.Warn().Err(err).Msg("failed to read avro record")
 			continue
 		}
+		recordsRead++
 
 		recordMap, ok := record.(map[string]interface{})
 		if !ok {
@@ -1020,12 +1200,35 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		}{Key: key, Value: []byte(value)})
 
 		if len(entriesOrdered) >= batchSize {
+			fmt.Printf(">>> [DB] Processing batch of %d entries for %s...\n", len(entriesOrdered), dbTypeToString(dbType))
 			if err := fs.batchCreateOrderedWithRetry(entriesOrdered, dbType); err != nil {
-				return fmt.Errorf("failed to push batch to DB: %w", err)
+				// If batch is too large, try splitting it into smaller chunks
+				if strings.Contains(err.Error(), "max number of entries per tx exceeded") {
+					fmt.Printf(">>> [DB] WARNING: Batch too large, splitting into smaller chunks...\n")
+					// Split into smaller batches of 500
+					chunkSize := 500
+					for i := 0; i < len(entriesOrdered); i += chunkSize {
+						end := i + chunkSize
+						if end > len(entriesOrdered) {
+							end = len(entriesOrdered)
+						}
+						chunk := entriesOrdered[i:end]
+						fmt.Printf(">>> [DB] Processing chunk %d-%d (%d entries)...\n", i, end, len(chunk))
+						if err := fs.batchCreateOrderedWithRetry(chunk, dbType); err != nil {
+							return fmt.Errorf("failed to push chunk to DB: %w", err)
+						}
+						totalEntries += len(chunk)
+					}
+				} else {
+					return fmt.Errorf("failed to push batch to DB: %w", err)
+				}
+			} else {
+				totalEntries += len(entriesOrdered)
 			}
-			totalEntries += len(entriesOrdered)
 			entriesOrdered = nil
 
+			fmt.Printf(">>> [DB] Restore progress: %d entries processed for %s (elapsed: %v)\n",
+				totalEntries, dbTypeToString(dbType), time.Since(startTime))
 			log.Info().
 				Int("entries_processed", totalEntries).
 				Dur("elapsed", time.Since(startTime)).
@@ -1036,12 +1239,42 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 
 	// Process any remaining entries in the last batch
 	if len(entriesOrdered) > 0 {
+		fmt.Printf(">>> [DB] Processing final batch of %d entries for %s...\n", len(entriesOrdered), dbTypeToString(dbType))
 		if err := fs.batchCreateOrderedWithRetry(entriesOrdered, dbType); err != nil {
-			return fmt.Errorf("failed to push final batch to DB: %w", err)
+			// If batch is too large, try splitting it into smaller chunks
+			if strings.Contains(err.Error(), "max number of entries per tx exceeded") {
+				fmt.Printf(">>> [DB] WARNING: Final batch too large, splitting into smaller chunks...\n")
+				// Split into smaller batches of 500
+				chunkSize := 500
+				for i := 0; i < len(entriesOrdered); i += chunkSize {
+					end := i + chunkSize
+					if end > len(entriesOrdered) {
+						end = len(entriesOrdered)
+					}
+					chunk := entriesOrdered[i:end]
+					fmt.Printf(">>> [DB] Processing final chunk %d-%d (%d entries)...\n", i, end, len(chunk))
+					if err := fs.batchCreateOrderedWithRetry(chunk, dbType); err != nil {
+						return fmt.Errorf("failed to push final chunk to DB: %w", err)
+					}
+					totalEntries += len(chunk)
+				}
+			} else {
+				return fmt.Errorf("failed to push final batch to DB: %w", err)
+			}
+		} else {
+			totalEntries += len(entriesOrdered)
 		}
-		totalEntries += len(entriesOrdered)
 	}
 
+	fmt.Printf(">>> [DB] ✓ Database restore completed: %d total entries processed, %d records read from AVRO for %s (time: %v)\n",
+		totalEntries, recordsRead, dbTypeToString(dbType), time.Since(startTime))
+
+	if totalEntries == 0 {
+		fmt.Printf(">>> [DB] WARNING: No entries were written to %s! This might indicate:\n", dbTypeToString(dbType))
+		fmt.Printf(">>> [DB]   1. AVRO file is empty or corrupted\n")
+		fmt.Printf(">>> [DB]   2. All entries were filtered out\n")
+		fmt.Printf(">>> [DB]   3. Database write operations failed silently\n")
+	}
 	log.Info().
 		Int("total_entries", totalEntries).
 		Dur("total_time", time.Since(startTime)).
