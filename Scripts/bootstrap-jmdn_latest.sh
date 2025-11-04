@@ -16,6 +16,7 @@ WORK_DIR="/opt/jmdn"
 DATA_DIR="${WORK_DIR}/data"
 BIN_PATH="/usr/local/bin/jmdn"
 START_SCRIPT="/usr/local/bin/start_JMDN.sh"
+LOG_DIR="/var/log/${APP_NAME}"    # ✅ Added definition for LOG_DIR
 
 # ===== Utility colors =====
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; RED='\033[0;31m'; NC='\033[0m'
@@ -37,7 +38,6 @@ section
 
 # ===== Detect project directory =====
 PROJECT_DIR=""
-# Try common locations
 if [ -d "$HOME/JMZK-Decentalized-Network" ]; then
   PROJECT_DIR="$HOME/JMZK-Decentalized-Network"
 elif [ -d "/root/JMZK-Decentalized-Network" ]; then
@@ -56,102 +56,28 @@ info "Found project directory: ${PROJECT_DIR}"
 cd "${PROJECT_DIR}" || exit 1
 echo "[OK] Working in $(pwd)"
 
-# ===== Check and install prerequisites =====
-section
+# ===== Check prerequisites =====
 info "Checking prerequisites..."
 
-# Function to install Go if missing
-install_go_if_needed() {
-  if ! command -v go >/dev/null 2>&1; then
-    warn "Go is not installed. Installing Go..."
-    if [ -f "${PROJECT_DIR}/Scripts/Go_Prerequisite.sh" ]; then
-      info "Running Go_Prerequisite.sh..."
-      bash "${PROJECT_DIR}/Scripts/Go_Prerequisite.sh"
-      if [ $? -eq 0 ]; then
-        info "Go installed successfully"
-        # Source shell config to update PATH in current session
-        if [ -f ~/.bashrc ]; then
-          source ~/.bashrc 2>/dev/null || true
-        elif [ -f ~/.bash_profile ]; then
-          source ~/.bash_profile 2>/dev/null || true
-        elif [ -f ~/.zshrc ]; then
-          source ~/.zshrc 2>/dev/null || true
-        fi
-      else
-        error "Go installation failed"
-        exit 1
-      fi
-    else
-      error "Go_Prerequisite.sh not found at ${PROJECT_DIR}/Scripts/Go_Prerequisite.sh"
-      exit 1
-    fi
-  else
-    info "Go found: $(go version)"
-  fi
-}
+if ! command -v go >/dev/null 2>&1; then
+  error "Go is not installed. Please install Go first:"
+  echo "  ./Scripts/Go_Prerequisite.sh"
+  exit 1
+fi
+info "Go found: $(go version)"
 
-# Function to install ImmuDB if missing
-install_immudb_if_needed() {
-  if ! command -v immudb >/dev/null 2>&1; then
-    warn "ImmuDB is not installed. Installing ImmuDB..."
-    if [ -f "${PROJECT_DIR}/Scripts/ImmuDB_Prerequisite.sh" ]; then
-      info "Running ImmuDB_Prerequisite.sh..."
-      bash "${PROJECT_DIR}/Scripts/ImmuDB_Prerequisite.sh"
-      if [ $? -eq 0 ]; then
-        info "ImmuDB installed successfully"
-      else
-        error "ImmuDB installation failed"
-        exit 1
-      fi
-    else
-      error "ImmuDB_Prerequisite.sh not found at ${PROJECT_DIR}/Scripts/ImmuDB_Prerequisite.sh"
-      exit 1
-    fi
-  else
-    info "ImmuDB found: $(immudb version 2>/dev/null | head -n1 || echo 'installed')"
-  fi
-}
+if ! command -v immudb >/dev/null 2>&1; then
+  error "ImmuDB is not installed. Please install ImmuDB first:"
+  echo "  ./Scripts/ImmuDB_Prerequisite.sh"
+  exit 1
+fi
+info "ImmuDB found: $(immudb version 2>/dev/null | head -n1 || echo 'installed')"
 
-# Function to install Yggdrasil if missing
-install_yggdrasil_if_needed() {
-  if ! command -v yggdrasil >/dev/null 2>&1; then
-    warn "Yggdrasil is not installed. Installing Yggdrasil..."
-    if [ -f "${PROJECT_DIR}/Scripts/YGG_Prerequisite.sh" ]; then
-      info "Running YGG_Prerequisite.sh..."
-      # YGG_Prerequisite.sh may ask for user input (OS check and reinstall prompts)
-      # For automated install, we auto-confirm with 'y' for both prompts
-      echo -e "y\ny" | bash "${PROJECT_DIR}/Scripts/YGG_Prerequisite.sh" || {
-        error "Yggdrasil installation failed"
-        exit 1
-      }
-      info "Yggdrasil installed successfully"
-    else
-      error "YGG_Prerequisite.sh not found at ${PROJECT_DIR}/Scripts/YGG_Prerequisite.sh"
-      exit 1
-    fi
-  else
-    info "Yggdrasil found: $(yggdrasil -version 2>/dev/null | head -n1 || echo 'installed')"
-  fi
-}
-
-# Check and install Go
-install_go_if_needed
-
-# Check and install ImmuDB
-install_immudb_if_needed
-
-# Check and install Yggdrasil
-install_yggdrasil_if_needed
-
-# Check GCC (optional, but recommended)
 if ! command -v gcc >/dev/null 2>&1; then
   warn "GCC compiler not found. CGO may fail."
-  warn "Consider installing: build-essential (Linux) or Xcode Command Line Tools (macOS)"
 else
   info "GCC compiler found"
 fi
-
-info "Prerequisites check completed"
 
 # ===== Create directories =====
 section
@@ -160,7 +86,7 @@ info "Creating directories..."
 mkdir -p /etc/${APP_NAME}
 mkdir -p "${WORK_DIR}"
 mkdir -p "${DATA_DIR}"
-mkdir -p /var/log/${APP_NAME}
+mkdir -p "${LOG_DIR}"   # ✅ use defined LOG_DIR variable
 
 info "Directories created successfully"
 
@@ -170,11 +96,11 @@ if [ ! -f "$CONFIG_PATH" ]; then
   info "Creating config.env at ${CONFIG_PATH}..."
   cat <<EOF > "$CONFIG_PATH"
 # Environment configuration for JMDN Daemon
-# This file is optional - defaults are used if not present
 NODE_ENV=production
 LOG_LEVEL=info
 WORK_DIR=${WORK_DIR}
 DATA_DIR=${DATA_DIR}
+LOG_DIR=${LOG_DIR}
 EOF
   info "Config file created"
 else
@@ -186,7 +112,6 @@ section
 info "Building JMDN binary..."
 
 cd "${PROJECT_DIR}" || exit 1
-
 info "Building with CGO enabled..."
 CGO_ENABLED=1 go build -ldflags='-linkmode=external -w -s' -o jmdn .
 
@@ -205,11 +130,10 @@ chmod 755 "${BIN_PATH}"
 rm -f ./jmdn
 info "Binary installed to ${BIN_PATH}"
 
-# ===== Copy required directories to working directory =====
+# ===== Copy required directories =====
 section
 info "Setting up JMDN working directory structure..."
 
-# Copy config directory (required for peer.json and other config files)
 if [ -d "./config" ]; then
   info "Copying config directory to ${WORK_DIR}/config..."
   cp -r ./config "${WORK_DIR}/"
@@ -218,45 +142,29 @@ if [ -d "./config" ]; then
 else
   warn "config directory not found in project. Creating minimal structure..."
   mkdir -p "${WORK_DIR}/config"
-  # Create a minimal peer.json if it doesn't exist (JMDN will generate one, but this avoids errors)
   if [ ! -f "${WORK_DIR}/config/peer.json" ]; then
     echo '{}' > "${WORK_DIR}/config/peer.json"
     chmod 644 "${WORK_DIR}/config/peer.json"
   fi
 fi
 
-# Ensure .immudb_state directory will be writable (created by JMDN at runtime)
 mkdir -p "${WORK_DIR}/.immudb_state"
 chmod 755 "${WORK_DIR}/.immudb_state"
-
-# Create DB directory for SQLite database (JMDN uses SQLite for peer tracking)
 mkdir -p "${WORK_DIR}/DB"
 chmod 755 "${WORK_DIR}/DB"
 
 info "Working directory structure ready"
 
-# ===== Install start scripts =====
-info "Installing start scripts..."
+# ===== Install start script =====
+info "Installing start_JMDN.sh script..."
 if [ ! -f "./Scripts/start_JMDN.sh" ]; then
   error "start_JMDN.sh not found in ./Scripts/"
   exit 1
 fi
 
-if [ ! -f "./Scripts/firstStart.sh" ]; then
-  error "firstStart.sh not found in ./Scripts/"
-  exit 1
-fi
-
-# Install start_JMDN.sh (main entry point)
 cp ./Scripts/start_JMDN.sh "${START_SCRIPT}"
 chmod 755 "${START_SCRIPT}"
 info "Start script installed to ${START_SCRIPT}"
-
-# Install firstStart.sh (used for first-time initialization)
-FIRST_START_SCRIPT="/usr/local/bin/firstStart.sh"
-cp ./Scripts/firstStart.sh "${FIRST_START_SCRIPT}"
-chmod 755 "${FIRST_START_SCRIPT}"
-info "First start script installed to ${FIRST_START_SCRIPT}"
 
 # ===== Create systemd service =====
 section
@@ -277,19 +185,13 @@ WorkingDirectory=${WORK_DIR}
 Environment="WORK_DIR=${WORK_DIR}"
 Environment="DATA_DIR=${DATA_DIR}"
 Environment="BIN_PATH=${BIN_PATH}"
+Environment="LOG_DIR=${LOG_DIR}"
 ExecStart=${START_SCRIPT}
 Restart=always
 RestartSec=10
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=${APP_NAME}
-
-# Logging (journal + files)
 StandardOutput=append:${LOG_DIR}/${APP_NAME}.out.log
 StandardError=append:${LOG_DIR}/${APP_NAME}.err.log
 SyslogIdentifier=${APP_NAME}
-
-# Resource limits
 LimitNOFILE=65536
 LimitNPROC=32768
 
@@ -304,7 +206,6 @@ section
 info "Reloading systemd daemon..."
 systemctl daemon-reload
 
-# Stop service if already running
 if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
   info "Stopping existing ${SERVICE_NAME} service..."
   systemctl stop "${SERVICE_NAME}"
@@ -313,11 +214,9 @@ fi
 
 info "Starting ${SERVICE_NAME} service..."
 systemctl start "${SERVICE_NAME}"
-
 info "Enabling ${SERVICE_NAME} to start on boot..."
 systemctl enable "${SERVICE_NAME}"
 
-# Wait for service to start
 sleep 5
 
 # ===== Check service status =====
@@ -338,13 +237,11 @@ section
 info "Showing first 50 lines of logs..."
 echo "---------------------------------------------"
 
-# Check journald logs first
 if command -v journalctl >/dev/null 2>&1; then
   journalctl -u "${SERVICE_NAME}" -n 50 --no-pager || true
 else
-  # Fallback to log file
-  if [ -f "/var/log/${APP_NAME}/${APP_NAME}.log" ]; then
-    head -n 50 "/var/log/${APP_NAME}/${APP_NAME}.log" || true
+  if [ -f "${LOG_DIR}/${APP_NAME}.out.log" ]; then
+    head -n 50 "${LOG_DIR}/${APP_NAME}.out.log" || true
   else
     warn "Log file not found yet"
   fi
@@ -354,13 +251,14 @@ section
 info "JMDN bootstrap completed successfully!"
 echo ""
 info "Service management commands:"
-echo "  sudo systemctl status ${SERVICE_NAME}  - Check service status"
-echo "  sudo systemctl stop ${SERVICE_NAME}     - Stop service"
-echo "  sudo systemctl start ${SERVICE_NAME}    - Start service"
-echo "  sudo systemctl restart ${SERVICE_NAME}  - Restart service"
-echo "  sudo journalctl -u ${SERVICE_NAME} -f  - Follow logs"
+echo "  sudo systemctl status ${SERVICE_NAME}"
+echo "  sudo systemctl stop ${SERVICE_NAME}"
+echo "  sudo systemctl start ${SERVICE_NAME}"
+echo "  sudo systemctl restart ${SERVICE_NAME}"
+echo "  sudo journalctl -u ${SERVICE_NAME} -f"
 echo ""
 info "Working directory: ${WORK_DIR}"
 info "Data directory: ${DATA_DIR}"
 info "Binary location: ${BIN_PATH}"
+info "Log directory: ${LOG_DIR}"
 section

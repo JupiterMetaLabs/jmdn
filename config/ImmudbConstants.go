@@ -30,14 +30,6 @@ const (
 	RequestTimeout   = 10 * time.Second
 )
 
-// AsyncLogger provides asynchronous file logging
-type AsyncLogger struct {
-	Logger  *log.Logger
-	LogChan chan string
-	Wg      sync.WaitGroup
-	File    *os.File
-}
-
 // ImmuClient provides a simplified interface for ImmuDB operations
 type ImmuClient struct {
 	Client      client.ImmuClient
