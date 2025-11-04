@@ -44,6 +44,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -69,6 +70,9 @@ type SyncMessage struct {
 	EndTxID          uint64                      `json:"end_tx_id,omitempty"`
 	BatchNumber      int                         `json:"batch_number,omitempty"`
 	TotalBatches     int                         `json:"total_batches,omitempty"`
+	ChunkNumber      int                         `json:"chunk_number,omitempty"` // New: Chunk number for HashMap transfer
+	TotalChunks      int                         `json:"total_chunks,omitempty"` // New: Total chunks for HashMap transfer
+	ChunkKeys        []string                    `json:"chunk_keys,omitempty"`   // New: Keys in this chunk
 	MerkleRoot       MerkleRoot                  `json:"merkle_root,omitempty"`
 	KeysCount        int                         `json:"keys_count,omitempty"`
 	Data             json.RawMessage             `json:"data,omitempty"`
@@ -113,6 +117,10 @@ const (
 	TypeSyncResponse          = "SYNC_RESP"
 	TypeHashMapExchangeClient = "HASHMAP_EXCHANGE_CLIENT"
 	TypeHashMapExchangeSYNC   = "HASHMAP_EXCHANGE_SYNC"
+	TypeHashMapChunk          = "HASHMAP_CHUNK"          // New: Chunk of HashMap data
+	TypeHashMapChunkAck       = "HASHMAP_CHUNK_ACK"      // New: Acknowledgment for chunk
+	TypeHashMapChunkRequest   = "HASHMAP_CHUNK_REQ"      // New: Request for specific chunk
+	TypeHashMapChunkComplete  = "HASHMAP_CHUNK_COMPLETE" // New: All chunks sent
 	TypeBatchRequest          = "BATCH_REQ"
 	TypeBatchData             = "BATCH_DATA"
 	TypeSyncComplete          = "SYNC_COMPLETE"
@@ -122,6 +130,9 @@ const (
 	TypeBatchAck              = "BATCH_ACK"
 	TypeTransferFile          = "TRANSFER_FILE"
 	RequestFiletransfer       = "REQUEST_FILE_TRANSFER"
+
+	// Chunk size for HashMap transfer (100 keys per chunk)
+	HashMapChunkSize = 100
 )
 
 func (fs *FastSync) getDB(dbType DatabaseType) *config.PooledConnection {
@@ -129,6 +140,126 @@ func (fs *FastSync) getDB(dbType DatabaseType) *config.PooledConnection {
 		return fs.accountsDB
 	}
 	return fs.mainDB
+}
+
+// getKeysBatchIncremental gets a batch of keys from database using direct scan
+// This is a helper function to avoid loading all keys into memory
+func (fs *FastSync) getKeysBatchIncremental(db *config.PooledConnection, prefix string, limit int, seekKey []byte) ([]string, error) {
+	if db == nil || db.Client == nil {
+		return nil, fmt.Errorf("database connection is nil")
+	}
+
+	ic := db.Client
+	scanReq := &schema.ScanRequest{
+		Prefix:  []byte(prefix),
+		Limit:   uint64(limit),
+		SeekKey: seekKey,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	scanResult, err := ic.Client.Scan(ctx, scanReq)
+	if err != nil {
+		return nil, fmt.Errorf("scan failed for prefix %s: %w", prefix, err)
+	}
+
+	// Validate that all keys match the prefix (SeekKey might cause issues with prefix filtering)
+	keys := make([]string, 0, len(scanResult.Entries))
+	for _, entry := range scanResult.Entries {
+		key := string(entry.Key)
+		if strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		} else {
+			// If we get a key that doesn't match the prefix, we've gone past the prefix range
+			fmt.Printf(">>> [SERVER] Key '%s' doesn't match prefix '%s' - stopping scan\n", key, prefix)
+			break
+		}
+	}
+
+	return keys, nil
+}
+
+// computeSyncKeysIncremental computes SYNC keys by streaming through database keys
+// without building the full server HashMap. This is much more memory-efficient for large datasets.
+func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clientHashMap *hashmap.HashMap, dbType DatabaseType) ([]string, error) {
+	var syncKeys []string
+	var prefixes []string
+
+	// Determine which prefixes to check based on DB type
+	if dbType == MainDB {
+		prefixes = []string{"block:", "tx:", "tx_processed:"}
+		// Also check for latest_block
+		exists, err := DB_OPs.Exists(db, "latest_block")
+		if err == nil && exists {
+			if !clientHashMap.Exists("latest_block") {
+				syncKeys = append(syncKeys, "latest_block")
+			}
+		}
+	} else {
+		prefixes = []string{"address:", "did:"}
+	}
+
+	fmt.Printf(">>> [SERVER] Checking %d prefixes for SYNC keys (incremental approach)...\n", len(prefixes))
+
+	// Process each prefix incrementally
+	for prefixIdx, prefix := range prefixes {
+		fmt.Printf(">>> [SERVER] Processing prefix %d/%d: '%s'...\n", prefixIdx+1, len(prefixes), prefix)
+
+		batchSize := 1000
+		var lastKey []byte
+		batchNum := 0
+		totalChecked := 0
+		keysInClientHashMap := 0
+
+		for {
+			batchNum++
+			if batchNum%100 == 0 {
+				fmt.Printf(">>> [SERVER] Progress for '%s': batch %d (checked %d keys, found %d SYNC keys, %d already in client)...\n",
+					prefix, batchNum, totalChecked, len(syncKeys), keysInClientHashMap)
+			}
+
+			// Get batch of keys from database
+			keys, err := fs.getKeysBatchIncremental(db, prefix, batchSize, lastKey)
+			if err != nil {
+				fmt.Printf(">>> [SERVER] ERROR: Failed to get batch for '%s': %v\n", prefix, err)
+				return nil, fmt.Errorf("failed to get keys batch for prefix %s: %w", prefix, err)
+			}
+
+			if len(keys) == 0 {
+				fmt.Printf(">>> [SERVER] ✓ Finished processing prefix '%s' (total batches: %d, checked %d, found %d SYNC, %d in client)\n",
+					prefix, batchNum, totalChecked, len(syncKeys), keysInClientHashMap)
+				break
+			}
+
+			totalChecked += len(keys)
+
+			// Check each key against client HashMap - only keep keys NOT in client HashMap
+			for _, key := range keys {
+				if !clientHashMap.Exists(key) {
+					syncKeys = append(syncKeys, key)
+				} else {
+					keysInClientHashMap++
+				}
+			}
+
+			// If we got fewer than batch size, we're done with this prefix
+			if len(keys) < batchSize {
+				fmt.Printf(">>> [SERVER] ✓ Finished processing prefix '%s' (total batches: %d, checked %d keys, found %d SYNC keys, %d already in client)\n",
+					prefix, batchNum, totalChecked, len(syncKeys), keysInClientHashMap)
+				break
+			}
+
+			// Set last key for next iteration
+			lastKey = []byte(keys[len(keys)-1])
+		}
+
+		fmt.Printf(">>> [SERVER] ✓ Prefix '%s' complete - checked %d keys, found %d SYNC keys, %d already in client HashMap\n",
+			prefix, totalChecked, len(syncKeys), keysInClientHashMap)
+	}
+
+	fmt.Printf(">>> [SERVER] ✓ Incremental SYNC computation complete - total SYNC keys: %d\n", len(syncKeys))
+	return syncKeys, nil
 }
 
 func GetDBData_Default(db *config.PooledConnection, prefix string) ([]string, error) {
@@ -148,65 +279,86 @@ func GetDBData_Accounts(db *config.PooledConnection, prefix string) ([]string, e
 }
 
 func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
+	fmt.Println(">>> [SERVER] Making Default HashMap...")
 	MAP := hashmap.New()
 
 	// Get block: keys
+	fmt.Println(">>> [SERVER] Getting block: keys...")
 	blockKeys, err := GetDBData_Default(fs.mainDB, "block:")
 	if err != nil {
+		fmt.Printf(">>> [SERVER] ERROR: Failed to get block keys: %v\n", err)
 		return nil, err
 	}
+	fmt.Printf(">>> [SERVER] ✓ Got %d block keys\n", len(blockKeys))
 	for _, key := range blockKeys {
 		MAP.Insert(key)
 	}
 
 	// Get tx: keys
+	fmt.Println(">>> [SERVER] Getting tx: keys...")
 	txKeys, err := GetDBData_Default(fs.mainDB, "tx:")
 	if err != nil {
+		fmt.Printf(">>> [SERVER] ERROR: Failed to get tx keys: %v\n", err)
 		return nil, err
 	}
+	fmt.Printf(">>> [SERVER] ✓ Got %d tx keys\n", len(txKeys))
 	for _, key := range txKeys {
 		MAP.Insert(key)
 	}
 
 	// Get tx_processed: keys
+	fmt.Println(">>> [SERVER] Getting tx_processed: keys...")
 	txProcessedKeys, err := GetDBData_Default(fs.mainDB, "tx_processed:")
 	if err != nil {
+		fmt.Printf(">>> [SERVER] ERROR: Failed to get tx_processed keys: %v\n", err)
 		return nil, err
 	}
+	fmt.Printf(">>> [SERVER] ✓ Got %d tx_processed keys\n", len(txProcessedKeys))
 	for _, key := range txProcessedKeys {
 		MAP.Insert(key)
 	}
 
 	// Check for latest_block key explicitly
+	fmt.Println(">>> [SERVER] Checking for latest_block key...")
 	exists, err := DB_OPs.Exists(fs.mainDB, "latest_block")
 	if err == nil && exists {
 		MAP.Insert("latest_block")
+		fmt.Println(">>> [SERVER] ✓ Added latest_block key")
 	}
 
+	fmt.Printf(">>> [SERVER] ✓ Default HashMap complete: %d total keys\n", MAP.Size())
 	return MAP, nil
 }
 
 func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
+	fmt.Println(">>> [SERVER] Making Accounts HashMap...")
 	MAP := hashmap.New()
 
 	// Get address: keys (actual account data)
+	fmt.Println(">>> [SERVER] Getting address: keys...")
 	addressKeys, err := GetDBData_Accounts(fs.accountsDB, "address:")
 	if err != nil {
+		fmt.Printf(">>> [SERVER] ERROR: Failed to get address keys: %v\n", err)
 		return nil, err
 	}
+	fmt.Printf(">>> [SERVER] ✓ Got %d address keys\n", len(addressKeys))
 	for _, key := range addressKeys {
 		MAP.Insert(key)
 	}
 
 	// Get did: keys (DID references to accounts)
+	fmt.Println(">>> [SERVER] Getting did: keys...")
 	didKeys, err := GetDBData_Accounts(fs.accountsDB, "did:")
 	if err != nil {
+		fmt.Printf(">>> [SERVER] ERROR: Failed to get did keys: %v\n", err)
 		return nil, err
 	}
+	fmt.Printf(">>> [SERVER] ✓ Got %d did keys\n", len(didKeys))
 	for _, key := range didKeys {
 		MAP.Insert(key)
 	}
 
+	fmt.Printf(">>> [SERVER] ✓ Accounts HashMap complete: %d total keys\n", MAP.Size())
 	return MAP, nil
 }
 
@@ -343,15 +495,36 @@ func (fs *FastSync) ImportCRDTs(crdtData []json.RawMessage) error {
 }
 
 func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, error) {
-	if err := stream.SetReadDeadline(time.Now().UTC().Add(ResponseTimeout)); err != nil {
+	// Set initial deadline - use extended timeout for debugging (30 minutes)
+	// This allows for very long HashMap computation times
+	extendedTimeout := 30 * time.Minute
+	deadline := time.Now().UTC().Add(extendedTimeout)
+	if err := stream.SetReadDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("failed to set read deadline: %w", err)
 	}
 
 	// Use a larger buffer for reading message data
 	var msgData []byte
+	chunkCount := 0
+	lastDeadlineUpdate := time.Now().UTC()
 
 	// Read until newline to get complete message
 	for {
+		// Extend deadline periodically during long reads (every 30 seconds)
+		// This prevents timeout for very large messages like HashMap exchanges
+		if time.Since(lastDeadlineUpdate) > 30*time.Second {
+			deadline = time.Now().UTC().Add(extendedTimeout)
+			if err := stream.SetReadDeadline(deadline); err != nil {
+				log.Warn().Err(err).Msg("Failed to extend read deadline, continuing")
+			} else {
+				lastDeadlineUpdate = time.Now().UTC()
+				log.Debug().
+					Int("chunks_read", chunkCount).
+					Int("bytes_read", len(msgData)).
+					Msg("Extended read deadline for large message")
+			}
+		}
+
 		chunk, isPrefix, err := reader.ReadLine()
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to read message chunk")
@@ -359,6 +532,7 @@ func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, err
 		}
 
 		msgData = append(msgData, chunk...)
+		chunkCount++
 
 		if !isPrefix {
 			break
@@ -368,7 +542,7 @@ func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, err
 	// Add debugging to show message size and content
 	log.Info().
 		Int("bytes", len(msgData)).
-		Str("raw_data", string(msgData)).
+		Int("chunks", chunkCount).
 		Msg("Read message data")
 
 	if len(msgData) == 0 {
@@ -389,6 +563,22 @@ func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, err
 }
 
 func writeMessage(writer *bufio.Writer, stream network.Stream, msg *SyncMessage) error {
+	// For large HashMap messages, serialization can take time
+	// Estimate message size based on HashMap metadata if available
+	var estimatedSize int
+	if msg.HashMap_MetaData != nil {
+		// Rough estimate: ~100 bytes per key for HashMap serialization
+		mainKeys := 0
+		accountsKeys := 0
+		if msg.HashMap_MetaData.Main_HashMap_MetaData != nil {
+			mainKeys = msg.HashMap_MetaData.Main_HashMap_MetaData.KeysCount
+		}
+		if msg.HashMap_MetaData.Accounts_HashMap_MetaData != nil {
+			accountsKeys = msg.HashMap_MetaData.Accounts_HashMap_MetaData.KeysCount
+		}
+		estimatedSize = (mainKeys + accountsKeys) * 100
+	}
+
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to marshal message")
@@ -396,20 +586,53 @@ func writeMessage(writer *bufio.Writer, stream network.Stream, msg *SyncMessage)
 	}
 	msgBytes = append(msgBytes, '\n')
 
-	// Debug: Log the message being written
+	actualSize := len(msgBytes)
 	log.Info().
-		Int("bytes", len(msgBytes)).
-		Str("raw_data", string(msgBytes)).
+		Int("bytes", actualSize).
+		Int("estimated_keys", estimatedSize/100).
 		Msg("Writing message data")
 
-	if err := stream.SetWriteDeadline(time.Now().UTC().Add(ResponseTimeout)); err != nil {
+	// Set write deadline - extend for large messages
+	deadline := time.Now().UTC().Add(ResponseTimeout)
+	if estimatedSize > 1000000 || actualSize > 1000000 {
+		// For very large messages (>1MB), give extra time
+		deadline = time.Now().UTC().Add(ResponseTimeout * 2)
+		log.Info().
+			Int("size_bytes", actualSize).
+			Msg("Large message detected, using extended timeout")
+	}
+
+	if err := stream.SetWriteDeadline(deadline); err != nil {
 		log.Error().Err(err).Msg("Failed to set write deadline")
 		return fmt.Errorf("failed to set write deadline: %w", err)
 	}
 
-	if _, err := writer.Write(msgBytes); err != nil {
-		log.Error().Err(err).Msg("Failed to write message bytes")
-		return fmt.Errorf("failed to write message: %w", err)
+	// Write in chunks for very large messages to avoid blocking
+	if actualSize > 1024*1024 { // > 1MB
+		chunkSize := 64 * 1024 // 64KB chunks
+		for i := 0; i < len(msgBytes); i += chunkSize {
+			end := i + chunkSize
+			if end > len(msgBytes) {
+				end = len(msgBytes)
+			}
+			if _, err := writer.Write(msgBytes[i:end]); err != nil {
+				log.Error().Err(err).Int("offset", i).Msg("Failed to write message chunk")
+				return fmt.Errorf("failed to write message chunk: %w", err)
+			}
+			// Periodically flush and extend deadline during long writes
+			if (i/chunkSize)%10 == 0 {
+				if err := writer.Flush(); err != nil {
+					log.Error().Err(err).Msg("Failed to flush during chunk write")
+				}
+				deadline = time.Now().UTC().Add(ResponseTimeout)
+				stream.SetWriteDeadline(deadline)
+			}
+		}
+	} else {
+		if _, err := writer.Write(msgBytes); err != nil {
+			log.Error().Err(err).Msg("Failed to write message bytes")
+			return fmt.Errorf("failed to write message: %w", err)
+		}
 	}
 
 	if err := writer.Flush(); err != nil {
@@ -479,7 +702,28 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 		case TypeSyncComplete:
 			response, handleErr = fs.handleSyncComplete(peerID, msg)
 		case TypeHashMapExchangeSYNC:
-			response, handleErr = fs.handleHashMapExchangeSYNC(peerID, msg) //Server will send the SYNC HashMap to the client
+			// Send chunks directly instead of returning response
+			handleErr = fs.handleHashMapExchangeSYNCChunked(peerID, msg, writer, reader, stream)
+			response = nil // Chunks are sent directly
+		case TypeHashMapChunkRequest:
+			// Client requesting a specific chunk
+			response, handleErr = fs.handleHashMapChunkRequest(peerID, msg)
+		case TypeHashMapChunkAck:
+			// Acknowledgment received, continue sending chunks
+			response = nil // No response needed for ACK
+		case TypeHashMapChunk:
+			// Chunk received, send ACK
+			ackMsg := &SyncMessage{
+				Type:        TypeHashMapChunkAck,
+				SenderID:    fs.host.ID().String(),
+				Timestamp:   time.Now().UTC().Unix(),
+				ChunkNumber: msg.ChunkNumber,
+				Success:     true,
+			}
+			response = ackMsg
+		case TypeHashMapChunkComplete:
+			// All chunks received, no response needed
+			response = nil
 		case RequestFiletransfer: // This will trigger for the file transfer
 			response, handleErr = fs.MakeAVROFile_Transfer(peerID, msg)
 		default:
@@ -519,83 +763,183 @@ func CheckChecksum(temp *hashmap.HashMap, checksum string) bool {
 	return computedChecksum == checksum
 }
 
-func (fs *FastSync) handleHashMapExchangeSYNC(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
+// handleHashMapExchangeSYNCChunked sends HashMap data in chunks of 100 keys
+func (fs *FastSync) handleHashMapExchangeSYNCChunked(peerID peer.ID, msg *SyncMessage, writer *bufio.Writer, reader *bufio.Reader, stream network.Stream) error {
+	fmt.Println(">>> [SERVER] Received HashMap Exchange SYNC Request - starting chunked transfer")
 	log.Info().
 		Str("peer", peerID.String()).
-		Msg("Received HashMap Exchange SYNC Request")
+		Msg("Received HashMap Exchange SYNC Request - sending chunks")
 
-	// Checksum validation, but only if the client's database is not empty.
-	// This prevents failures if a fingerprint for an empty map is inconsistent.
-	// Checksum validation, but only if the client's database is not empty.
-	// This prevents failures if a fingerprint for an empty map is inconsistent.
+	// Checksum validation
+	fmt.Println(">>> [SERVER] Validating client HashMap checksums...")
 	if msg.HashMap_MetaData.Main_HashMap_MetaData.KeysCount > 0 {
 		if !CheckChecksum(msg.HashMap.MAIN_HashMap, msg.HashMap_MetaData.Main_HashMap_MetaData.Checksum) {
-			return nil, fmt.Errorf("invalid main HashMap checksum")
+			fmt.Println(">>> [SERVER] ERROR: Invalid main HashMap checksum")
+			return fmt.Errorf("invalid main HashMap checksum")
 		}
+		fmt.Println(">>> [SERVER] ✓ Main HashMap checksum valid")
 	}
 
 	if msg.HashMap_MetaData.Accounts_HashMap_MetaData.KeysCount > 0 {
 		if !CheckChecksum(msg.HashMap.Accounts_HashMap, msg.HashMap_MetaData.Accounts_HashMap_MetaData.Checksum) {
-			return nil, fmt.Errorf("invalid accounts HashMap checksum")
+			fmt.Println(">>> [SERVER] ERROR: Invalid accounts HashMap checksum")
+			return fmt.Errorf("invalid accounts HashMap checksum")
 		}
+		fmt.Println(">>> [SERVER] ✓ Accounts HashMap checksum valid")
 	}
 
-	// First Compute the hashmap of the server
-	ServerHashMap_Main, err := fs.MakeHashMap_Default()
+	// OPTIMIZATION: For very large datasets, compute SYNC keys incrementally without building full HashMaps
+	// This avoids loading millions of keys into memory
+	fmt.Println(">>> [SERVER] Computing SYNC keys incrementally (streaming approach for large datasets)...")
+
+	// Compute SYNC keys incrementally for Main DB
+	fmt.Printf(">>> [SERVER] Computing Main DB SYNC keys incrementally...\n")
+	fmt.Printf(">>> [SERVER] Client Main HashMap size: %d\n", func() int {
+		if msg.HashMap.MAIN_HashMap != nil {
+			return msg.HashMap.MAIN_HashMap.Size()
+		}
+		return 0
+	}())
+	SYNC_Keys_Main, err := fs.computeSyncKeysIncremental(fs.mainDB, msg.HashMap.MAIN_HashMap, MainDB)
 	if err != nil {
-		return nil, err
+		fmt.Printf(">>> [SERVER] ERROR: Failed to compute Main SYNC keys: %v\n", err)
+		return err
 	}
-	ServerHashMap_Accounts, err := fs.MakeHashMap_Accounts()
+	fmt.Printf(">>> [SERVER] ✓ Main SYNC keys computed: %d keys (server has more, client needs %d)\n", len(SYNC_Keys_Main), len(SYNC_Keys_Main))
+
+	// Compute SYNC keys incrementally for Accounts DB
+	fmt.Printf(">>> [SERVER] Computing Accounts DB SYNC keys incrementally...\n")
+	fmt.Printf(">>> [SERVER] Client Accounts HashMap size: %d\n", func() int {
+		if msg.HashMap.Accounts_HashMap != nil {
+			return msg.HashMap.Accounts_HashMap.Size()
+		}
+		return 0
+	}())
+	SYNC_Keys_Accounts, err := fs.computeSyncKeysIncremental(fs.accountsDB, msg.HashMap.Accounts_HashMap, AccountsDB)
 	if err != nil {
-		return nil, err
+		fmt.Printf(">>> [SERVER] ERROR: Failed to compute Accounts SYNC keys: %v\n", err)
+		return err
 	}
+	fmt.Printf(">>> [SERVER] ✓ Accounts SYNC keys computed: %d keys (server has more, client needs %d)\n", len(SYNC_Keys_Accounts), len(SYNC_Keys_Accounts))
 
-	// Compute SYNC_HashMap -> ServerHashMap_Main - ClientHashMap_Main
-	SYNC_Keys_Main := ServerHashMap_Main.Subtract(msg.HashMap.MAIN_HashMap)
-	SYNC_Keys_Accounts := ServerHashMap_Accounts.Subtract(msg.HashMap.Accounts_HashMap)
+	// Calculate total chunks needed
+	totalKeys := len(SYNC_Keys_Main) + len(SYNC_Keys_Accounts)
+	totalChunks := (totalKeys + HashMapChunkSize - 1) / HashMapChunkSize
 
-	// Compute Hashmap from the keys
-	SYNC_HashMap_MAIN := hashmap.New()
-	for _, key := range SYNC_Keys_Main {
-		SYNC_HashMap_MAIN.Insert(key)
-	}
+	fmt.Printf(">>> [SERVER] Preparing to send %d chunks (total %d keys, %d keys per chunk)\n", totalChunks, totalKeys, HashMapChunkSize)
+	log.Info().
+		Int("main_keys", len(SYNC_Keys_Main)).
+		Int("accounts_keys", len(SYNC_Keys_Accounts)).
+		Int("total_chunks", totalChunks).
+		Msg("Sending HashMap in chunks")
 
-	SYNC_HashMap_Accounts := hashmap.New()
-	for _, key := range SYNC_Keys_Accounts {
-		SYNC_HashMap_Accounts.Insert(key)
-	}
-
-	response := &SyncMessage{
-		Type:      TypeHashMapExchangeSYNC,
-		SenderID:  fs.host.ID().String(),
-		Timestamp: time.Now().UTC().Unix(),
-		Data:      json.RawMessage([]byte(`"Message From Server"`)),
-		HashMap: &TypeHashMapExchange_Struct{
-			MAIN_HashMap:     SYNC_HashMap_MAIN,
-			Accounts_HashMap: SYNC_HashMap_Accounts,
-		},
+	// Send metadata first
+	fmt.Println(">>> [SERVER] Sending HashMap metadata...")
+	metadataResponse := &SyncMessage{
+		Type:        TypeHashMapExchangeSYNC,
+		SenderID:    fs.host.ID().String(),
+		Timestamp:   time.Now().UTC().Unix(),
+		Data:        json.RawMessage([]byte(`"Message From Server"`)),
+		TotalChunks: totalChunks,
 		HashMap_MetaData: &HashMap_MetaData{
 			Main_HashMap_MetaData: &MetaData{
-				KeysCount: SYNC_HashMap_MAIN.Size(),
-				Checksum:  SYNC_HashMap_MAIN.Fingerprint(),
+				KeysCount: len(SYNC_Keys_Main),
 			},
 			Accounts_HashMap_MetaData: &MetaData{
-				KeysCount: SYNC_HashMap_Accounts.Size(),
-				Checksum:  SYNC_HashMap_Accounts.Fingerprint(),
+				KeysCount: len(SYNC_Keys_Accounts),
 			},
 		},
 	}
 
-	// Debug: Log the response being sent
-	log.Info().
-		Str("response_type", response.Type).
-		Str("response_data", string(response.Data)).
-		Int("data_length", len(response.Data)).
-		Int("main_keys", SYNC_HashMap_MAIN.Size()).
-		Int("accounts_keys", SYNC_HashMap_Accounts.Size()).
-		Msg("Sending Phase2_Response")
+	if err := writeMessage(writer, stream, metadataResponse); err != nil {
+		fmt.Printf(">>> [SERVER] ERROR: Failed to send HashMap metadata: %v\n", err)
+		return fmt.Errorf("failed to send HashMap metadata: %w", err)
+	}
+	fmt.Println(">>> [SERVER] ✓ Metadata sent successfully")
 
-	return response, nil
+	// Send chunks: Main HashMap first, then Accounts
+	allKeys := append(SYNC_Keys_Main, SYNC_Keys_Accounts...)
+	chunkNum := 0
+
+	fmt.Printf(">>> [SERVER] Starting to send chunks (total: %d chunks)...\n", totalChunks)
+	for i := 0; i < len(allKeys); i += HashMapChunkSize {
+		end := i + HashMapChunkSize
+		if end > len(allKeys) {
+			end = len(allKeys)
+		}
+
+		chunkKeys := allKeys[i:end]
+		chunkNum++
+
+		fmt.Printf(">>> [SERVER] Sending chunk %d/%d (%d keys)...\n", chunkNum, totalChunks, len(chunkKeys))
+		chunkMsg := &SyncMessage{
+			Type:        TypeHashMapChunk,
+			SenderID:    fs.host.ID().String(),
+			Timestamp:   time.Now().UTC().Unix(),
+			ChunkNumber: chunkNum,
+			TotalChunks: totalChunks,
+			ChunkKeys:   chunkKeys,
+		}
+
+		if err := writeMessage(writer, stream, chunkMsg); err != nil {
+			fmt.Printf(">>> [SERVER] ERROR: Failed to send chunk %d: %v\n", chunkNum, err)
+			return fmt.Errorf("failed to send chunk %d: %w", chunkNum, err)
+		}
+		fmt.Printf(">>> [SERVER] ✓ Chunk %d sent, waiting for ACK...\n", chunkNum)
+
+		// Wait for ACK before sending next chunk
+		fmt.Printf(">>> [SERVER] Waiting for ACK for chunk %d...\n", chunkNum)
+		ackMsg, err := readMessage(reader, stream)
+		if err != nil {
+			fmt.Printf(">>> [SERVER] ERROR: Failed to read chunk ACK: %v\n", err)
+			return fmt.Errorf("failed to read chunk ACK: %w", err)
+		}
+
+		if ackMsg.Type != TypeHashMapChunkAck || ackMsg.ChunkNumber != chunkNum {
+			fmt.Printf(">>> [SERVER] ERROR: Invalid ACK for chunk %d (type: %s, chunkNum: %d)\n", chunkNum, ackMsg.Type, ackMsg.ChunkNumber)
+			return fmt.Errorf("invalid ACK for chunk %d", chunkNum)
+		}
+
+		fmt.Printf(">>> [SERVER] ✓ Chunk %d/%d acknowledged (progress: %.1f%%)\n", chunkNum, totalChunks, float64(chunkNum)/float64(totalChunks)*100)
+		log.Debug().
+			Int("chunk", chunkNum).
+			Int("total", totalChunks).
+			Int("keys", len(chunkKeys)).
+			Msg("Chunk sent and acknowledged")
+	}
+
+	// Send completion message
+	fmt.Println(">>> [SERVER] All chunks sent, sending completion message...")
+	completeMsg := &SyncMessage{
+		Type:      TypeHashMapChunkComplete,
+		SenderID:  fs.host.ID().String(),
+		Timestamp: time.Now().UTC().Unix(),
+		Success:   true,
+	}
+
+	if err := writeMessage(writer, stream, completeMsg); err != nil {
+		fmt.Printf(">>> [SERVER] ERROR: Failed to send chunk complete: %v\n", err)
+		return fmt.Errorf("failed to send chunk complete: %w", err)
+	}
+
+	fmt.Printf(">>> [SERVER] ✓ All HashMap chunks sent successfully (%d chunks)\n", totalChunks)
+	log.Info().
+		Int("total_chunks", totalChunks).
+		Msg("All HashMap chunks sent successfully")
+
+	return nil
+}
+
+// handleHashMapChunkRequest handles a request for a specific chunk (for future use)
+func (fs *FastSync) handleHashMapChunkRequest(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
+	// This can be used for retry logic if needed
+	return nil, fmt.Errorf("not implemented")
+}
+
+// Legacy handler kept for backward compatibility
+func (fs *FastSync) handleHashMapExchangeSYNC(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
+	// This is now handled by handleHashMapExchangeSYNCChunked
+	return nil, fmt.Errorf("use handleHashMapExchangeSYNCChunked instead")
 }
 
 func returnStream(fs *FastSync, peerID peer.ID) (network.Stream, error) {
@@ -611,21 +955,28 @@ func returnStream(fs *FastSync, peerID peer.ID) (network.Stream, error) {
 func (fs *FastSync) Phase1_SYNC(peerID peer.ID) (*SyncMessage, error) {
 
 	// First make hashmap of Main DB
+	fmt.Println(">>> [CLIENT] Phase1: Making Main HashMap...")
 	MAIN_HashMap, err := fs.MakeHashMap_Default()
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf(">>> [CLIENT] Phase1: Main HashMap created with %d keys\n", MAIN_HashMap.Size())
 
 	// Second make hashmap of Accounts DB
+	fmt.Println(">>> [CLIENT] Phase1: Making Accounts HashMap...")
 	ACCOUNTS_HashMap, err := fs.MakeHashMap_Accounts()
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf(">>> [CLIENT] Phase1: Accounts HashMap created with %d keys\n", ACCOUNTS_HashMap.Size())
 
 	// Compute the Metadata for the both Maps
 
 	ComputeCHECKSUM_MAIN_Value := MAIN_HashMap.Fingerprint()
 	ComputeCHECKSUM_ACCOUNTS_Value := ACCOUNTS_HashMap.Fingerprint()
+
+	fmt.Printf(">>> [CLIENT] Phase1: Sending HashMaps to server - Main: %d keys, Accounts: %d keys\n",
+		MAIN_HashMap.Size(), ACCOUNTS_HashMap.Size())
 
 	MAIN_HashMap_Metadata := &MetaData{
 		KeysCount: MAIN_HashMap.Size(),
@@ -732,36 +1083,82 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	}
 
 	// Phase4: Push the Transactions from AVRO file to the DB
+	fmt.Println(">>> [CLIENT] Starting Phase4 - Pushing data from AVRO files to database...")
+
+	// Debug: Check Phase2 state
+	fmt.Printf(">>> [CLIENT] DEBUG: Phase2 state - Main HashMap: %v, Accounts HashMap: %v\n",
+		Phase2.HashMap != nil,
+		Phase2.HashMap != nil)
+	if Phase2.HashMap != nil {
+		fmt.Printf(">>> [CLIENT] DEBUG: Phase2.MAIN_HashMap: %v, size: %d\n",
+			Phase2.HashMap.MAIN_HashMap != nil,
+			func() int {
+				if Phase2.HashMap.MAIN_HashMap != nil {
+					return Phase2.HashMap.MAIN_HashMap.Size()
+				}
+				return 0
+			}())
+		fmt.Printf(">>> [CLIENT] DEBUG: Phase2.Accounts_HashMap: %v, size: %d\n",
+			Phase2.HashMap.Accounts_HashMap != nil,
+			func() int {
+				if Phase2.HashMap.Accounts_HashMap != nil {
+					return Phase2.HashMap.Accounts_HashMap.Size()
+				}
+				return 0
+			}())
+	}
 
 	// 1. Push the Main DB Transactions from AVRO file to the DB - if no maindb then skip
-	if Phase2.HashMap.MAIN_HashMap != nil && Phase2.HashMap.MAIN_HashMap.Size() > 0 {
+	mainHashMapSize := 0
+	if Phase2.HashMap != nil && Phase2.HashMap.MAIN_HashMap != nil {
+		mainHashMapSize = Phase2.HashMap.MAIN_HashMap.Size()
+	}
+	fmt.Printf(">>> [CLIENT] Checking Main DB - HashMap size: %d\n", mainHashMapSize)
+
+	if Phase2.HashMap != nil && Phase2.HashMap.MAIN_HashMap != nil && Phase2.HashMap.MAIN_HashMap.Size() > 0 {
+		fmt.Printf(">>> [CLIENT] Pushing Main DB data (%d keys) from AVRO file...\n", Phase2.HashMap.MAIN_HashMap.Size())
 		if err := fs.PushDataToDB(Phase2, MainDB, "fastsync/.temp/defaultdb.avro"); err != nil {
+			fmt.Printf(">>> [CLIENT] ERROR: Failed to push Main DB transactions: %v\n", err)
 			log.Error().Err(err).Msg("Failed to push Main DB transactions")
 			return nil, fmt.Errorf("failed to push Main DB transactions: %w", err)
 		}
+		fmt.Println(">>> [CLIENT] ✓ Successfully pushed Main DB transactions to immudb")
 		log.Info().Msg("Successfully pushed Main DB transactions")
 	} else {
+		fmt.Println(">>> [CLIENT] Skipping Main DB push - no data to push")
 		log.Info().Msg("Skipping Main DB push - no data to push")
 	}
 
 	// 2. Push the Accounts DB Transactions from AVRO file to the DB - if no accountsdb then skip
+	fmt.Printf(">>> [CLIENT] Checking Accounts DB - HashMap size: %d\n", func() int {
+		if Phase2.HashMap.Accounts_HashMap != nil {
+			return Phase2.HashMap.Accounts_HashMap.Size()
+		}
+		return 0
+	}())
+
 	if Phase2.HashMap.Accounts_HashMap != nil && Phase2.HashMap.Accounts_HashMap.Size() > 0 {
+		fmt.Printf(">>> [CLIENT] Pushing Accounts DB data (%d keys) from AVRO file...\n", Phase2.HashMap.Accounts_HashMap.Size())
 		log.Info().
 			Int("accounts_hashmap_size", Phase2.HashMap.Accounts_HashMap.Size()).
 			Msg("Processing Accounts DB transactions")
 
 		// Check if accounts database client is properly initialized
 		if fs.accountsDB == nil {
+			fmt.Println(">>> [CLIENT] ERROR: Accounts database client is nil - cannot restore accounts data")
 			log.Error().Msg("Accounts database client is nil - cannot restore accounts data")
 			return nil, fmt.Errorf("accounts database client is not initialized")
 		}
 
 		if err := fs.PushDataToDB(Phase2, AccountsDB, "fastsync/.temp/accountsdb.avro"); err != nil {
+			fmt.Printf(">>> [CLIENT] ERROR: Failed to push Accounts DB transactions: %v\n", err)
 			log.Error().Err(err).Msg("Failed to push Accounts DB transactions")
 			return nil, fmt.Errorf("failed to push Accounts DB transactions: %w", err)
 		}
+		fmt.Println(">>> [CLIENT] ✓ Successfully pushed Accounts DB transactions to immudb")
 		log.Info().Msg("Successfully pushed Accounts DB transactions")
 	} else {
+		fmt.Println(">>> [CLIENT] Skipping Accounts DB push - no data to push")
 		log.Info().
 			Bool("hashmap_nil", Phase2.HashMap.Accounts_HashMap == nil).
 			Int("hashmap_size", func() int {
@@ -772,6 +1169,8 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 			}()).
 			Msg("Skipping Accounts DB push - no data to push")
 	}
+
+	fmt.Println(">>> [CLIENT] ✓ Phase4 completed successfully")
 
 	return &SyncMessage{
 		Type:      TypeSyncComplete,
