@@ -101,8 +101,10 @@ func (s *SequencerBFTClient) InitiateBFTRound(
 		}
 	}
 
-	if acceptedCount < 9 {
-		return nil, fmt.Errorf("insufficient buddies accepted: %d/13", acceptedCount)
+	expectedCount := len(buddies)
+	threshold := QuorumThreshold(expectedCount)
+	if acceptedCount < threshold {
+		return nil, fmt.Errorf("insufficient buddies accepted: %d/%d (need %d)", acceptedCount, expectedCount, threshold)
 	}
 
 	log.Printf("✅ [Sequencer] %d buddies accepted, waiting for results...", acceptedCount)
@@ -181,8 +183,9 @@ func (s *SequencerBFTClient) waitForResults(
 
 			log.Printf("📊 [Sequencer] Results received: %d/%d", count, expectedCount)
 
-			// Check if we have enough results (9/13 threshold)
-			if count >= 9 {
+			// Check if we have enough results (quorum threshold)
+			threshold := QuorumThreshold(expectedCount)
+			if count >= threshold {
 				return s.finalizeResults(round, "")
 			}
 
@@ -226,15 +229,17 @@ func (s *SequencerBFTClient) finalizeResults(round uint64, failureReason string)
 		log.Printf("   %s: Success=%v, Decision=%s", buddyID, result.Success, result.Decision)
 	}
 
-	// Determine consensus
-	consensusReached := successCount >= 9
+	// Determine consensus using quorum threshold
+	totalBuddies := len(s.results)
+	threshold := QuorumThreshold(totalBuddies)
+	consensusReached := HasQuorum(successCount, totalBuddies)
 	var finalDecision Decision
 	blockAccepted := false
 
-	if acceptCount >= 9 {
+	if HasQuorum(acceptCount, totalBuddies) {
 		finalDecision = Accept
 		blockAccepted = true
-	} else if rejectCount >= 9 {
+	} else if HasQuorum(rejectCount, totalBuddies) {
 		finalDecision = Reject
 		blockAccepted = false
 	} else {
@@ -261,7 +266,7 @@ func (s *SequencerBFTClient) finalizeResults(round uint64, failureReason string)
 	} else {
 		log.Printf("❌ [Sequencer] CONSENSUS FAILED")
 		log.Printf("   Reason: %s", failureReason)
-		log.Printf("   Results: %d/%d", len(s.results), 13)
+		log.Printf("   Results: %d/%d (threshold: %d)", len(s.results), totalBuddies, threshold)
 	}
 
 	return result
