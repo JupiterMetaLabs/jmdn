@@ -27,7 +27,6 @@ type stats struct {
 	TotalDIDs         int64
 	TotalTransactions int64
 	TotalAddresses    int64
-	TotalBalance      string
 }
 
 // Get block by number
@@ -271,37 +270,6 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 		}
 		mu.Lock()
 		stats.TotalDIDs = int64(totalDIDs)
-		mu.Unlock()
-	}()
-
-	// Get total addresses and total balance in a goroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		accounts, err := DB_OPs.ListAllAccounts(&s.accountsdb, 0)
-		if err != nil {
-			handleErr(fmt.Errorf("failed to list accounts: %w", err))
-			return
-		}
-
-		mu.Lock()
-		stats.TotalAddresses = int64(len(accounts))
-
-		// Calculate total balance (sum of all account balances)
-		totalBalance := "0"
-		for _, account := range accounts {
-			if account.Balance != "" {
-				// Simple string addition for balance calculation
-				// In a real implementation, you'd want to use big.Int for proper arithmetic
-				if totalBalance == "0" {
-					totalBalance = account.Balance
-				} else {
-					// For now, just concatenate as strings - in production use proper big.Int arithmetic
-					totalBalance = fmt.Sprintf("%s + %s", totalBalance, account.Balance)
-				}
-			}
-		}
-		stats.TotalBalance = totalBalance
 		mu.Unlock()
 	}()
 

@@ -103,7 +103,7 @@ func (s *ImmuDBServer) setupRoutes() {
 		api.GET("/health", s.healthCheck)
 
 		// Get Latest Blocks by count using pagination - max 100 blocks at a time
-		api.GET("/latest/:count", s.getLatestBlock)
+		api.GET("/latest", s.getLatestBlock)
 
 		// Get all the transactions based on the pagination
 		api.GET("/transactions/all", s.listTransactions)
