@@ -267,9 +267,9 @@
 
         <div class="nav-tabs">
             <div class="tab-buttons">
-                <button class="tab-button active" onclick="showTab('addresses')">Addresses</button>
-                <button class="tab-button" onclick="showTab('transactions')">Transactions</button>
-                <button class="tab-button" onclick="showTab('blocks')">Blocks</button>
+                <button class="tab-button active" onclick="showTab(event, 'addresses')">Addresses</button>
+                <button class="tab-button" onclick="showTab(event, 'transactions')">Transactions</button>
+                <button class="tab-button" onclick="showTab(event, 'blocks')">Blocks</button>
             </div>
 
             <div id="addresses" class="tab-content active">
@@ -364,7 +364,33 @@
             try {
                 const response = await fetch(`${API_BASE}/block/transactions/all?page=${page}&limit=20`);
                 const data = await response.json();
-                
+
+                // Normalize transactions list across possible response shapes
+                const transactions = Array.isArray(data.transactions)
+                    ? data.transactions
+                    : (Array.isArray(data.data) ? data.data : (Array.isArray(data.items) ? data.items : []));
+
+                // Normalize pagination fields
+                const pagination = data.pagination || {};
+                const totalPages = pagination.totalPages || pagination.total_pages || data.total_pages || data.totalPages || 1;
+                const current = page || pagination.current_page || pagination.page || 1;
+
+                const rowsHtml = transactions.map(tx => {
+                    const hash = tx.hash || tx.txHash || tx.tx_hash || '';
+                    const fromAddr = tx.from || tx.from_address || '';
+                    const toAddr = tx.to || tx.to_address || '';
+                    const valueStr = tx.value !== undefined && tx.value !== null ? String(tx.value) : '0';
+                    const blockNum = tx.blockNumber || tx.block_number || tx.block || tx.blocknumber || 'N/A';
+                    return `
+                                <tr>
+                                    <td><a href="#" class="address-link" onclick="showTransactionDetails('${hash}')">${hash ? hash.substring(0, 20) + '...' : 'N/A'}</a></td>
+                                    <td>${fromAddr}</td>
+                                    <td>${toAddr}</td>
+                                    <td>${weiToEth(valueStr)} JMDT</td>
+                                    <td>${blockNum}</td>
+                                </tr>`;
+                }).join('');
+
                 const tableHtml = `
                     <table class="data-table">
                         <thead>
@@ -377,26 +403,18 @@
                             </tr>
                         </thead>
                         <tbody>
-                            ${data.transactions.map(tx => `
-                                <tr>
-                                    <td><a href="#" class="address-link" onclick="showTransactionDetails('${tx.hash}')">${tx.hash.substring(0, 20)}...</a></td>
-                                    <td>${tx.from}</td>
-                                    <td>${tx.to}</td>
-                                    <td>${weiToEth(tx.value.toString())} JMDT</td>
-                                    <td>${tx.blockNumber || 'N/A'}</td>
-                                </tr>
-                            `).join('')}
+                            ${rowsHtml || `<tr><td colspan="5">No transactions found</td></tr>`}
                         </tbody>
                     </table>
                     <div class="pagination">
-                        <button onclick="loadTransactions(${page - 1})" ${page <= 1 ? 'disabled' : ''}>Previous</button>
-                        <span>Page ${page} of ${data.pagination.totalPages}</span>
-                        <button onclick="loadTransactions(${page + 1})" ${page >= data.pagination.totalPages ? 'disabled' : ''}>Next</button>
+                        <button onclick="loadTransactions(${current - 1})" ${current <= 1 ? 'disabled' : ''}>Previous</button>
+                        <span>Page ${current} of ${totalPages}</span>
+                        <button onclick="loadTransactions(${current + 1})" ${current >= totalPages ? 'disabled' : ''}>Next</button>
                     </div>
                 `;
-                
+
                 document.getElementById('transactionsTable').innerHTML = tableHtml;
-                currentPage.transactions = page;
+                currentPage.transactions = current;
             } catch (error) {
                 console.error('Error loading transactions:', error);
                 document.getElementById('transactionsTable').innerHTML = '<div class="error">Error loading transactions</div>';
@@ -444,7 +462,7 @@
             }
         }
 
-        function showTab(tabName) {
+        function showTab(evt, tabName) {
             // Hide all tab contents
             document.querySelectorAll('.tab-content').forEach(tab => {
                 tab.classList.remove('active');
@@ -459,7 +477,9 @@
             document.getElementById(tabName).classList.add('active');
             
             // Add active class to clicked button
-            event.target.classList.add('active');
+            if (evt && evt.target) {
+                evt.target.classList.add('active');
+            }
             
             // Load data for the tab if not already loaded
             if (tabName === 'transactions' && !document.getElementById('transactionsTable').innerHTML) {

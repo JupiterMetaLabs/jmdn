@@ -51,14 +51,11 @@ func InitializeTriggers(pubSub *AVCStruct.GossipPubSub, buddyID string) error {
 	// Set up BFT factory
 	subscriptionService.SetBFTFactory(func(ctx context.Context, pubSub *AVCStruct.GossipPubSub, channelName string) (PubSubConnector.BFTMessageHandler, error) {
 		// Create BFT engine with configuration
-		config := bft.Config{
-			MinBuddies:         config.MaxMainPeers + 1, // 13 main peers + 1 creator = 14 total
-			ByzantineTolerance: 4,                       // Can tolerate up to 4 Byzantine nodes
-			PrepareTimeout:     10 * time.Second,
-			CommitTimeout:      10 * time.Second,
-		}
+		// Byzantine tolerance is calculated dynamically from actual buddy count
+		cfg := bft.DefaultConfig()
+		cfg.MinBuddies = config.MaxMainPeers + 1
 
-		bftEngine = bft.New(config)
+		bftEngine = bft.New(cfg)
 
 		// Create BFT PubSub adapter that implements the required interface
 		adapter, err := bft.NewBFTPubSubAdapter(ctx, pubSub, bftEngine, channelName)
@@ -463,12 +460,10 @@ func StartBFTConsensus() error {
 	buddyNode.Mutex.RUnlock()
 
 	// Create BFT instance
-	BFTInstance := bft.New(bft.Config{
-		MinBuddies:         config.MaxMainPeers,
-		ByzantineTolerance: 4,
-		PrepareTimeout:     10 * time.Second,
-		CommitTimeout:      10 * time.Second,
-	})
+	// Byzantine tolerance is calculated dynamically from actual buddy count
+	cfg := bft.DefaultConfig()
+	cfg.MinBuddies = config.MaxMainPeers
+	BFTInstance := bft.New(cfg)
 
 	// Create BFT adapter
 	adapter, err := bft.NewBFTPubSubAdapter(

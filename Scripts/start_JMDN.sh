@@ -55,7 +55,7 @@ JMDN_ARGS=(
   -blockgen 15050
   -did 0.0.0.0:15052
   -cli 15053
-  -seednode 34.174.94.172:17002
+  -seednode 34.174.233.203:17002
   -facade 8545
   -ws 8546
   -chainID 8000800
@@ -70,6 +70,35 @@ info()  { echo -e "${BLUE}[INFO]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 die()   { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+
+# ===== First Start Detection =====
+# Check if this is the first start and delegate to firstStart.sh if needed
+FIRST_START_MARKER="${WORK_DIR}/.first_start_complete"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
+FIRST_START_SCRIPT="${SCRIPT_DIR}/firstStart.sh"
+
+# Fallback: check common installation paths if relative path doesn't work
+if [ ! -f "${FIRST_START_SCRIPT}" ]; then
+  # Try common installation locations
+  if [ -f "/usr/local/bin/firstStart.sh" ]; then
+    FIRST_START_SCRIPT="/usr/local/bin/firstStart.sh"
+  elif command -v firstStart.sh >/dev/null 2>&1; then
+    FIRST_START_SCRIPT="$(command -v firstStart.sh)"
+  fi
+fi
+
+if [ ! -f "${FIRST_START_MARKER}" ]; then
+  if [ -f "${FIRST_START_SCRIPT}" ]; then
+    info "First start detected. Delegating to firstStart.sh at ${FIRST_START_SCRIPT}..."
+    exec "${FIRST_START_SCRIPT}" "$@"
+  else
+    warn "First start detected but firstStart.sh not found."
+    warn "Checked locations:"
+    warn "  - ${SCRIPT_DIR}/firstStart.sh"
+    warn "  - /usr/local/bin/firstStart.sh"
+    warn "Proceeding with normal start..."
+  fi
+fi
 
 # ===== Pre-flight checks =====
 [ -x "${BIN_PATH}" ] || die "Binary not executable: ${BIN_PATH}"

@@ -23,7 +23,7 @@ func main() {
 	defer client.Close()
 
 	// Load private key
-	privateKey, err := crypto.HexToECDSA("b2299edadf87bf42660e1cd3f8dbd3872a1830fc9a8a8aa129a7f4dd0df4a178") // hex without 0x
+	privateKey, err := crypto.HexToECDSA("<use your private key here>") // hex without 0x
 	if err != nil {
 		log.Fatalf("Failed to load private key: %v", err)
 	}
