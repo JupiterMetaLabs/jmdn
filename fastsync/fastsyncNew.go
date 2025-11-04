@@ -177,10 +177,9 @@ func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
 		MAP.Insert(key)
 	}
 
-	// Check for latest_block key explicitly by trying to read it
-	// This is more reliable than Exists() as it ensures the key actually has data
-	latestBlockData, err := DB_OPs.Read(fs.mainDB, "latest_block")
-	if err == nil && latestBlockData != nil && len(latestBlockData) > 0 {
+	// Check for latest_block key explicitly
+	exists, err := DB_OPs.Exists(fs.mainDB, "latest_block")
+	if err == nil && exists {
 		MAP.Insert("latest_block")
 	}
 
