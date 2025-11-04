@@ -43,7 +43,7 @@ const (
 	MaxRetries      = 3
 	SyncTimeout     = 5 * time.Minute
 	RequestTimeout  = 30 * time.Second
-	ResponseTimeout = 60 * time.Second
+	ResponseTimeout = 5 * time.Minute // Increased from 60s to accommodate large HashMap processing in Phase2
 	RetryDelay      = 500 * time.Millisecond
 )
 

@@ -117,25 +117,65 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 	// ———————————————————————————————————————————————
 	keys := MAP.Keys()
 	sort.Strings(keys)
-	log.Printf("Exporting %d keys into Avro → %s", len(keys), cfg.OutputPath)
+	totalKeys := len(keys)
+	log.Printf("Exporting %d keys into Avro → %s", totalKeys, cfg.OutputPath)
 
-	for _, key := range keys {
-		resp, err := client.Get(apiCtx, &schema.KeyRequest{Key: []byte(key)})
-		if err != nil {
-			log.Printf("[WARN] Get(%s): %v", key, err)
-			continue
+	// Batch size for processing keys and AVRO writes
+	const (
+		readBatchSize  = 100  // Process 100 keys at a time
+		writeBatchSize = 1000 // Write 1000 records to AVRO at once
+	)
+
+	var recordsBatch []interface{}
+	processed := 0
+
+	for i := 0; i < totalKeys; i += readBatchSize {
+		end := i + readBatchSize
+		if end > totalKeys {
+			end = totalKeys
 		}
-		record := map[string]interface{}{
-			"Key":      key,
-			"Value":    string(resp.Value),
-			"Database": cfg.Database,
+
+		batchKeys := keys[i:end]
+		log.Printf("Processing batch %d-%d of %d keys", i+1, end, totalKeys)
+
+		// Process batch of keys
+		for _, key := range batchKeys {
+			resp, err := client.Get(apiCtx, &schema.KeyRequest{Key: []byte(key)})
+			if err != nil {
+				log.Printf("[WARN] Get(%s): %v", key, err)
+				continue
+			}
+			record := map[string]interface{}{
+				"Key":      key,
+				"Value":    string(resp.Value),
+				"Database": cfg.Database,
+			}
+			recordsBatch = append(recordsBatch, record)
+			processed++
+
+			// Write to AVRO in batches to improve I/O efficiency
+			if len(recordsBatch) >= writeBatchSize {
+				if err := ocfWriter.Append(recordsBatch); err != nil {
+					log.Printf("[WARN] Avro batch append failed: %v", err)
+					// Continue with next batch even if this one failed
+				}
+				recordsBatch = recordsBatch[:0] // Clear batch
+			}
 		}
-		if err := ocfWriter.Append([]interface{}{record}); err != nil {
-			log.Printf("[WARN] Avro append: %v", err)
-			continue
+
+		// Progress update every 1000 keys
+		if processed%1000 == 0 {
+			log.Printf("Progress: %d/%d keys processed (%.1f%%)", processed, totalKeys, float64(processed)/float64(totalKeys)*100)
 		}
 	}
 
-	log.Printf("Avro export complete.")
+	// Write remaining records
+	if len(recordsBatch) > 0 {
+		if err := ocfWriter.Append(recordsBatch); err != nil {
+			log.Printf("[WARN] Avro final batch append failed: %v", err)
+		}
+	}
+
+	log.Printf("Avro export complete. Processed %d/%d keys", processed, totalKeys)
 	return nil
 }
