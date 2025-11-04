@@ -198,6 +198,15 @@ func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
 		MAP.Insert(key)
 	}
 
+	// Get did: keys (DID references to accounts)
+	didKeys, err := GetDBData_Accounts(fs.accountsDB, "did:")
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range didKeys {
+		MAP.Insert(key)
+	}
+
 	// Derive did: keys from address: keys
 	// Scan doesn't find reference keys, so we need to derive them from account data
 	// For each address: key, if the account has a DIDAddress, create the corresponding did: key
