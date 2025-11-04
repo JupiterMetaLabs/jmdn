@@ -230,12 +230,35 @@ update_path() {
     # Update current session PATH
     export PATH="$PATH:$go_bin"
     
-    # Also update PATH for the current shell session
+    # Source the shell config file to update PATH in current session
+    print_status "Sourcing shell configuration to update PATH in current session..."
     if [ -n "$BASH_VERSION" ]; then
-        source ~/.bashrc 2>/dev/null || true
+        # Try .bashrc first, then .bash_profile (macOS), then .profile
+        if [ -f ~/.bashrc ]; then
+            source ~/.bashrc 2>/dev/null || true
+        elif [ -f ~/.bash_profile ]; then
+            source ~/.bash_profile 2>/dev/null || true
+        elif [ -f ~/.profile ]; then
+            source ~/.profile 2>/dev/null || true
+        fi
     elif [ -n "$ZSH_VERSION" ]; then
-        source ~/.zshrc 2>/dev/null || true
+        if [ -f ~/.zshrc ]; then
+            source ~/.zshrc 2>/dev/null || true
+        fi
+    else
+        # Fallback: try to source common config files
+        if [ -f ~/.bashrc ]; then
+            source ~/.bashrc 2>/dev/null || true
+        elif [ -f ~/.bash_profile ]; then
+            source ~/.bash_profile 2>/dev/null || true
+        elif [ -f ~/.profile ]; then
+            source ~/.profile 2>/dev/null || true
+        elif [ -f ~/.zshrc ]; then
+            source ~/.zshrc 2>/dev/null || true
+        fi
     fi
+    
+    print_status "PATH updated in current session"
 }
 
 # Function to verify installation

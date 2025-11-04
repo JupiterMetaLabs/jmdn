@@ -56,29 +56,102 @@ info "Found project directory: ${PROJECT_DIR}"
 cd "${PROJECT_DIR}" || exit 1
 echo "[OK] Working in $(pwd)"
 
-# ===== Check prerequisites =====
+# ===== Check and install prerequisites =====
+section
 info "Checking prerequisites..."
 
-if ! command -v go >/dev/null 2>&1; then
-  error "Go is not installed. Please install Go first:"
-  echo "  ./Scripts/Go_Prerequisite.sh"
-  exit 1
-fi
-info "Go found: $(go version)"
+# Function to install Go if missing
+install_go_if_needed() {
+  if ! command -v go >/dev/null 2>&1; then
+    warn "Go is not installed. Installing Go..."
+    if [ -f "${PROJECT_DIR}/Scripts/Go_Prerequisite.sh" ]; then
+      info "Running Go_Prerequisite.sh..."
+      bash "${PROJECT_DIR}/Scripts/Go_Prerequisite.sh"
+      if [ $? -eq 0 ]; then
+        info "Go installed successfully"
+        # Source shell config to update PATH in current session
+        if [ -f ~/.bashrc ]; then
+          source ~/.bashrc 2>/dev/null || true
+        elif [ -f ~/.bash_profile ]; then
+          source ~/.bash_profile 2>/dev/null || true
+        elif [ -f ~/.zshrc ]; then
+          source ~/.zshrc 2>/dev/null || true
+        fi
+      else
+        error "Go installation failed"
+        exit 1
+      fi
+    else
+      error "Go_Prerequisite.sh not found at ${PROJECT_DIR}/Scripts/Go_Prerequisite.sh"
+      exit 1
+    fi
+  else
+    info "Go found: $(go version)"
+  fi
+}
 
-if ! command -v immudb >/dev/null 2>&1; then
-  error "ImmuDB is not installed. Please install ImmuDB first:"
-  echo "  ./Scripts/ImmuDB_Prerequisite.sh"
-  exit 1
-fi
-info "ImmuDB found: $(immudb version 2>/dev/null | head -n1 || echo 'installed')"
+# Function to install ImmuDB if missing
+install_immudb_if_needed() {
+  if ! command -v immudb >/dev/null 2>&1; then
+    warn "ImmuDB is not installed. Installing ImmuDB..."
+    if [ -f "${PROJECT_DIR}/Scripts/ImmuDB_Prerequisite.sh" ]; then
+      info "Running ImmuDB_Prerequisite.sh..."
+      bash "${PROJECT_DIR}/Scripts/ImmuDB_Prerequisite.sh"
+      if [ $? -eq 0 ]; then
+        info "ImmuDB installed successfully"
+      else
+        error "ImmuDB installation failed"
+        exit 1
+      fi
+    else
+      error "ImmuDB_Prerequisite.sh not found at ${PROJECT_DIR}/Scripts/ImmuDB_Prerequisite.sh"
+      exit 1
+    fi
+  else
+    info "ImmuDB found: $(immudb version 2>/dev/null | head -n1 || echo 'installed')"
+  fi
+}
 
+# Function to install Yggdrasil if missing
+install_yggdrasil_if_needed() {
+  if ! command -v yggdrasil >/dev/null 2>&1; then
+    warn "Yggdrasil is not installed. Installing Yggdrasil..."
+    if [ -f "${PROJECT_DIR}/Scripts/YGG_Prerequisite.sh" ]; then
+      info "Running YGG_Prerequisite.sh..."
+      # YGG_Prerequisite.sh may ask for user input (OS check and reinstall prompts)
+      # For automated install, we auto-confirm with 'y' for both prompts
+      echo -e "y\ny" | bash "${PROJECT_DIR}/Scripts/YGG_Prerequisite.sh" || {
+        error "Yggdrasil installation failed"
+        exit 1
+      }
+      info "Yggdrasil installed successfully"
+    else
+      error "YGG_Prerequisite.sh not found at ${PROJECT_DIR}/Scripts/YGG_Prerequisite.sh"
+      exit 1
+    fi
+  else
+    info "Yggdrasil found: $(yggdrasil -version 2>/dev/null | head -n1 || echo 'installed')"
+  fi
+}
+
+# Check and install Go
+install_go_if_needed
+
+# Check and install ImmuDB
+install_immudb_if_needed
+
+# Check and install Yggdrasil
+install_yggdrasil_if_needed
+
+# Check GCC (optional, but recommended)
 if ! command -v gcc >/dev/null 2>&1; then
   warn "GCC compiler not found. CGO may fail."
-  echo "  Consider installing: build-essential (Linux) or Xcode Command Line Tools (macOS)"
+  warn "Consider installing: build-essential (Linux) or Xcode Command Line Tools (macOS)"
 else
   info "GCC compiler found"
 fi
+
+info "Prerequisites check completed"
 
 # ===== Create directories =====
 section
@@ -162,16 +235,28 @@ chmod 755 "${WORK_DIR}/DB"
 
 info "Working directory structure ready"
 
-# ===== Install start script =====
-info "Installing start_JMDN.sh script..."
+# ===== Install start scripts =====
+info "Installing start scripts..."
 if [ ! -f "./Scripts/start_JMDN.sh" ]; then
   error "start_JMDN.sh not found in ./Scripts/"
   exit 1
 fi
 
+if [ ! -f "./Scripts/firstStart.sh" ]; then
+  error "firstStart.sh not found in ./Scripts/"
+  exit 1
+fi
+
+# Install start_JMDN.sh (main entry point)
 cp ./Scripts/start_JMDN.sh "${START_SCRIPT}"
 chmod 755 "${START_SCRIPT}"
 info "Start script installed to ${START_SCRIPT}"
+
+# Install firstStart.sh (used for first-time initialization)
+FIRST_START_SCRIPT="/usr/local/bin/firstStart.sh"
+cp ./Scripts/firstStart.sh "${FIRST_START_SCRIPT}"
+chmod 755 "${FIRST_START_SCRIPT}"
+info "First start script installed to ${FIRST_START_SCRIPT}"
 
 # ===== Create systemd service =====
 section
