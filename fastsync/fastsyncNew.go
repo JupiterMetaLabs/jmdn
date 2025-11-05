@@ -39,6 +39,7 @@ import (
 	hashmap "gossipnode/crdt/HashMap"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -180,27 +181,252 @@ func (fs *FastSync) getKeysBatchIncremental(db *config.PooledConnection, prefix 
 	return keys, nil
 }
 
+// getAllUniquePrefixes scans the database and extracts all unique prefixes from keys
+// A prefix is defined as everything before the first colon (:) or the entire key if no colon exists
+// Uses a more efficient approach: sample keys from different prefixes instead of scanning all keys
+func (fs *FastSync) getAllUniquePrefixes(db *config.PooledConnection, dbType DatabaseType) ([]string, error) {
+	fmt.Printf(">>> [SERVER] Discovering prefixes by sampling keys from database...\n")
+
+	prefixSet := make(map[string]bool)
+	batchSize := 1000
+	maxKeysToScan := 50000 // Limit to 50k keys max to avoid infinite loops
+	totalKeysScanned := 0
+
+	// Instead of scanning all keys with empty prefix (which can loop), sample from known common prefixes
+	// This is more efficient and avoids the infinite loop issue
+	commonPrefixes := []string{"block:", "tx:", "tx_processed:", "tx_processing:", "address:", "did:", "latest_block"}
+
+	// Sample a small batch from each common prefix to discover all unique prefixes
+	for _, prefix := range commonPrefixes {
+		keys, err := fs.getKeysBatchIncremental(db, prefix, 100, nil) // Sample 100 keys per prefix
+		if err != nil {
+			// Prefix might not exist, continue
+			continue
+		}
+
+		totalKeysScanned += len(keys)
+
+		// Extract prefixes from keys
+		for _, key := range keys {
+			// Extract prefix: everything before the first colon, or entire key if no colon
+			extractedPrefix := key
+			if idx := strings.Index(key, ":"); idx != -1 {
+				extractedPrefix = key[:idx+1] // Include the colon in the prefix
+			}
+			prefixSet[extractedPrefix] = true
+		}
+	}
+
+	// If we still haven't found many prefixes, do a limited full scan as fallback
+	// But with strict limits to prevent infinite loops
+	if len(prefixSet) < 3 && totalKeysScanned < maxKeysToScan {
+		fmt.Printf(">>> [SERVER] Sampling from common prefixes found %d prefixes, doing limited full scan...\n", len(prefixSet))
+
+		var lastKey []byte
+		batchNum := 0
+		seenKeys := make(map[string]bool)
+
+		for totalKeysScanned < maxKeysToScan {
+			batchNum++
+			keys, err := fs.getKeysBatchIncremental(db, "", batchSize, lastKey)
+			if err != nil {
+				fmt.Printf(">>> [SERVER] ERROR: Failed to scan batch %d: %v\n", batchNum, err)
+				break
+			}
+
+			if len(keys) == 0 {
+				break
+			}
+
+			// Check for duplicate keys (loop detection)
+			allDuplicates := true
+			for _, key := range keys {
+				if !seenKeys[key] {
+					seenKeys[key] = true
+					allDuplicates = false
+
+					// Extract prefix
+					extractedPrefix := key
+					if idx := strings.Index(key, ":"); idx != -1 {
+						extractedPrefix = key[:idx+1]
+					}
+					prefixSet[extractedPrefix] = true
+				}
+			}
+
+			// If all keys in this batch were duplicates, we're in a loop - stop
+			if allDuplicates && batchNum > 1 {
+				fmt.Printf(">>> [SERVER] Detected duplicate keys (loop), stopping scan at batch %d\n", batchNum)
+				break
+			}
+
+			totalKeysScanned += len(keys)
+
+			if batchNum%10 == 0 {
+				fmt.Printf(">>> [SERVER] Prefix discovery progress: batch %d, scanned %d keys, found %d unique prefixes...\n",
+					batchNum, totalKeysScanned, len(prefixSet))
+			}
+
+			// If we got fewer than batch size, we're done
+			if len(keys) < batchSize {
+				break
+			}
+
+			// Set last key for next iteration
+			newLastKey := []byte(keys[len(keys)-1])
+
+			// Check if lastKey is the same as before (loop detection)
+			if lastKey != nil && string(newLastKey) == string(lastKey) {
+				fmt.Printf(">>> [SERVER] Detected same last key (loop), stopping scan\n")
+				break
+			}
+
+			lastKey = newLastKey
+		}
+	}
+
+	// Convert set to sorted slice
+	prefixes := make([]string, 0, len(prefixSet))
+	for prefix := range prefixSet {
+		prefixes = append(prefixes, prefix)
+	}
+
+	// Sort prefixes for consistent output
+	sort.Strings(prefixes)
+
+	fmt.Printf(">>> [SERVER] ✓ Prefix discovery complete: scanned %d keys, found %d unique prefixes: %v\n",
+		totalKeysScanned, len(prefixes), prefixes)
+
+	return prefixes, nil
+}
+
 // computeSyncKeysIncremental computes SYNC keys by streaming through database keys
 // without building the full server HashMap. This is much more memory-efficient for large datasets.
 func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clientHashMap *hashmap.HashMap, dbType DatabaseType) ([]string, error) {
 	var syncKeys []string
 	var prefixes []string
 
-	// Determine which prefixes to check based on DB type
-	if dbType == MainDB {
-		prefixes = []string{"block:", "tx:", "tx_processed:"}
-		// Also check for latest_block
-		exists, err := DB_OPs.Exists(db, "latest_block")
-		if err == nil && exists {
-			if !clientHashMap.Exists("latest_block") {
-				syncKeys = append(syncKeys, "latest_block")
-			}
+	// Dynamically discover all prefixes in the database instead of hardcoding
+	fmt.Printf(">>> [SERVER] Discovering prefixes dynamically for %s...\n", func() string {
+		if dbType == MainDB {
+			return "MainDB"
+		}
+		return "AccountsDB"
+	}())
+
+	discoveredPrefixes, err := fs.getAllUniquePrefixes(db, dbType)
+	if err != nil {
+		fmt.Printf(">>> [SERVER] WARNING: Failed to discover prefixes dynamically: %v, falling back to hardcoded prefixes\n", err)
+		// Fallback to hardcoded prefixes if discovery fails
+		if dbType == MainDB {
+			prefixes = []string{"block:", "tx:", "tx_processed:", "tx_processing:"}
+		} else {
+			prefixes = []string{"address:", "did:"}
 		}
 	} else {
-		prefixes = []string{"address:", "did:"}
+		fmt.Printf(">>> [SERVER] Discovered %d prefixes: %v\n", len(discoveredPrefixes), discoveredPrefixes)
+		prefixes = discoveredPrefixes
+		// Filter out latest_block from prefixes (it's handled separately)
+		filteredPrefixes := make([]string, 0, len(prefixes))
+		for _, prefix := range prefixes {
+			if prefix != "latest_block" {
+				filteredPrefixes = append(filteredPrefixes, prefix)
+			}
+		}
+		prefixes = filteredPrefixes
+
+		// Log which prefixes will be processed
+		fmt.Printf(">>> [SERVER] Prefixes to process (after filtering latest_block): %v\n", prefixes)
+
+		// Check if tx_processing is in the list
+		hasTxProcessing := false
+		for _, prefix := range prefixes {
+			if prefix == "tx_processing:" {
+				hasTxProcessing = true
+				break
+			}
+		}
+		if !hasTxProcessing && dbType == MainDB {
+			fmt.Printf(">>> [SERVER] WARNING: tx_processing: prefix not found in discovered prefixes! Adding it manually...\n")
+			prefixes = append(prefixes, "tx_processing:")
+			fmt.Printf(">>> [SERVER] Updated prefixes: %v\n", prefixes)
+		}
+	}
+
+	// CRITICAL: Handle latest_block for MainDB (compare VALUES to prevent downgrading client's newer blocks)
+	// Only include latest_block if server's value is newer than client's (or client doesn't have it)
+	if dbType == MainDB {
+		exists, err := DB_OPs.Exists(db, "latest_block")
+		if err == nil && exists {
+			// Get server's latest_block value
+			serverLatestBytes, err := DB_OPs.Read(db, "latest_block")
+			if err == nil {
+				var serverLatestBlock uint64
+				if err := json.Unmarshal(serverLatestBytes, &serverLatestBlock); err == nil {
+					// Check if client has latest_block in HashMap and compare values
+					clientHasLatestBlock := clientHashMap.Exists("latest_block")
+
+					if !clientHasLatestBlock {
+						// Client doesn't have latest_block, include it
+						syncKeys = append(syncKeys, "latest_block")
+						fmt.Printf(">>> [SERVER] ✓ latest_block will be included (client doesn't have it, server: %d)\n", serverLatestBlock)
+					} else {
+						// Client has latest_block, need to check if we can get its value from HashMap
+						// Note: HashMap only stores keys, not values, so we can't directly compare
+						// But we can check if client has blocks up to server's latest_block
+						// If client has block:serverLatestBlock, then client likely has same or newer latest_block
+						clientBlockKey := fmt.Sprintf("block:%d", serverLatestBlock)
+						if !clientHashMap.Exists(clientBlockKey) {
+							// Client doesn't have the block corresponding to server's latest_block
+							// This means server's latest_block is newer (or client has different blocks)
+							// Include latest_block to sync it
+							syncKeys = append(syncKeys, "latest_block")
+							fmt.Printf(">>> [SERVER] ✓ latest_block will be included (server: %d, client missing block:%d)\n", serverLatestBlock, serverLatestBlock)
+						} else {
+							// Client has the block corresponding to server's latest_block
+							// Check if client might have newer blocks by checking for higher block numbers
+							clientHasNewerBlock := false
+							for testBlock := serverLatestBlock + 1; testBlock <= serverLatestBlock+10; testBlock++ {
+								testBlockKey := fmt.Sprintf("block:%d", testBlock)
+								if clientHashMap.Exists(testBlockKey) {
+									clientHasNewerBlock = true
+									break
+								}
+							}
+
+							if clientHasNewerBlock {
+								// Client has newer blocks than server, DON'T include latest_block to avoid downgrading
+								fmt.Printf(">>> [SERVER] ⚠ SKIPPING latest_block (server: %d, client has newer blocks - would downgrade)\n", serverLatestBlock)
+							} else {
+								// Client has same or older blocks, include latest_block for safety
+								syncKeys = append(syncKeys, "latest_block")
+								fmt.Printf(">>> [SERVER] ✓ latest_block will be included (server: %d, client likely same or older)\n", serverLatestBlock)
+							}
+						}
+					}
+				} else {
+					fmt.Printf(">>> [SERVER] WARNING: Failed to parse server's latest_block value: %v\n", err)
+				}
+			} else {
+				fmt.Printf(">>> [SERVER] WARNING: Failed to read server's latest_block: %v\n", err)
+			}
+		} else {
+			fmt.Printf(">>> [SERVER] WARNING: Server does not have latest_block key (exists: %v, err: %v)\n", exists, err)
+		}
 	}
 
 	fmt.Printf(">>> [SERVER] Checking %d prefixes for SYNC keys (incremental approach)...\n", len(prefixes))
+	fmt.Printf(">>> [SERVER] Client HashMap size: %d\n", func() int {
+		if clientHashMap != nil {
+			return clientHashMap.Size()
+		}
+		return 0
+	}())
+
+	// Track block key statistics across all prefixes
+	totalBlockKeysChecked := 0
+	totalBlockKeysInSync := 0
+	totalBlockKeysSkipped := 0
 
 	// Process each prefix incrementally
 	for prefixIdx, prefix := range prefixes {
@@ -211,6 +437,9 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 		batchNum := 0
 		totalChecked := 0
 		keysInClientHashMap := 0
+		prefixBlockKeysChecked := 0
+		prefixBlockKeysInSync := 0
+		prefixBlockKeysSkipped := 0
 
 		for {
 			batchNum++
@@ -235,12 +464,44 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 			totalChecked += len(keys)
 
 			// Check each key against client HashMap - only keep keys NOT in client HashMap
+			// CRITICAL: For block keys, we skip latest_block check here since it's already handled above
+			blockKeysChecked := 0
+			blockKeysInSync := 0
+			blockKeysSkipped := 0
+
 			for _, key := range keys {
+				// Skip latest_block - it's already handled above
+				if key == "latest_block" {
+					continue
+				}
+
+				isBlockKey := strings.HasPrefix(key, "block:")
+				if isBlockKey {
+					blockKeysChecked++
+				}
+
 				if !clientHashMap.Exists(key) {
 					syncKeys = append(syncKeys, key)
+					if isBlockKey {
+						blockKeysInSync++
+					}
 				} else {
 					keysInClientHashMap++
+					if isBlockKey {
+						blockKeysSkipped++
+					}
 				}
+			}
+
+			// Accumulate block key statistics for this prefix
+			prefixBlockKeysChecked += blockKeysChecked
+			prefixBlockKeysInSync += blockKeysInSync
+			prefixBlockKeysSkipped += blockKeysSkipped
+
+			// Log block key statistics for debugging
+			if blockKeysChecked > 0 && batchNum%10 == 0 {
+				fmt.Printf(">>> [SERVER] Block keys in batch %d: checked %d, SYNC %d, skipped %d (already in client HashMap)\n",
+					batchNum, blockKeysChecked, blockKeysInSync, blockKeysSkipped)
 			}
 
 			// If we got fewer than batch size, we're done with this prefix
@@ -254,11 +515,54 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 			lastKey = []byte(keys[len(keys)-1])
 		}
 
-		fmt.Printf(">>> [SERVER] ✓ Prefix '%s' complete - checked %d keys, found %d SYNC keys, %d already in client HashMap\n",
-			prefix, totalChecked, len(syncKeys), keysInClientHashMap)
+		// Accumulate block key statistics across all prefixes
+		if prefix == "block:" {
+			totalBlockKeysChecked += prefixBlockKeysChecked
+			totalBlockKeysInSync += prefixBlockKeysInSync
+			totalBlockKeysSkipped += prefixBlockKeysSkipped
+			fmt.Printf(">>> [SERVER] ✓ Prefix 'block:' complete - checked %d keys, found %d SYNC keys, %d already in client HashMap\n",
+				totalChecked, len(syncKeys), keysInClientHashMap)
+			fmt.Printf(">>> [SERVER]   Block keys: checked %d, SYNC %d, skipped %d (in client HashMap)\n",
+				prefixBlockKeysChecked, prefixBlockKeysInSync, prefixBlockKeysSkipped)
+		} else {
+			fmt.Printf(">>> [SERVER] ✓ Prefix '%s' complete - checked %d keys, found %d SYNC keys, %d already in client HashMap\n",
+				prefix, totalChecked, len(syncKeys), keysInClientHashMap)
+		}
 	}
 
-	fmt.Printf(">>> [SERVER] ✓ Incremental SYNC computation complete - total SYNC keys: %d\n", len(syncKeys))
+	// Count block keys and latest_block in final SYNC keys
+	blockKeyCount := 0
+	hasLatestBlock := false
+	for _, key := range syncKeys {
+		if strings.HasPrefix(key, "block:") {
+			blockKeyCount++
+		} else if key == "latest_block" {
+			hasLatestBlock = true
+		}
+	}
+
+	fmt.Printf(">>> [SERVER] ✓ Incremental SYNC computation complete\n")
+	fmt.Printf(">>> [SERVER]   Total SYNC keys: %d\n", len(syncKeys))
+	fmt.Printf(">>> [SERVER]   Block keys in SYNC: %d\n", blockKeyCount)
+	fmt.Printf(">>> [SERVER]   latest_block in SYNC: %v\n", hasLatestBlock)
+
+	if dbType == MainDB {
+		fmt.Printf(">>> [SERVER]   Block key statistics:\n")
+		fmt.Printf(">>> [SERVER]     Total block keys checked: %d\n", totalBlockKeysChecked)
+		fmt.Printf(">>> [SERVER]     Block keys in SYNC: %d\n", totalBlockKeysInSync)
+		fmt.Printf(">>> [SERVER]     Block keys skipped (in client HashMap): %d\n", totalBlockKeysSkipped)
+
+		if totalBlockKeysChecked > 0 && totalBlockKeysInSync == 0 && totalBlockKeysSkipped > 0 {
+			fmt.Printf(">>> [SERVER] ⚠ WARNING: Client HashMap contains ALL %d block keys, but 0 were added to SYNC!\n", totalBlockKeysSkipped)
+			fmt.Printf(">>> [SERVER] ⚠ This suggests client's HashMap is stale (contains keys not in client's actual database)\n")
+			fmt.Printf(">>> [SERVER] ⚠ Client should validate HashMap keys before sending to server\n")
+		}
+
+		if blockKeyCount == 0 && !hasLatestBlock {
+			fmt.Printf(">>> [SERVER] WARNING: No block keys or latest_block in SYNC keys! This may indicate client HashMap is stale.\n")
+		}
+	}
+
 	return syncKeys, nil
 }
 
