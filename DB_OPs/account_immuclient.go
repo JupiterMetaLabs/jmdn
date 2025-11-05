@@ -433,10 +433,86 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 						// Same timestamp but different balance - this shouldn't happen normally,
 						// but we'll use incoming if it has different data (might indicate a merge issue)
 					}
+					// Same timestamp but different balance - write it (takes newer data)
+				} else {
+					// incoming.UpdatedAt > existing.UpdatedAt - we write the newer data
+					PooledConnection.Client.Logger.Logger.Info("Updating account - incoming is newer (LWW)",
+						zap.String("key", e.Key),
+						zap.Int64("existing_updated_at", existing.UpdatedAt),
+						zap.Int64("incoming_updated_at", incoming.UpdatedAt),
+						zap.String("existing_balance", existing.Balance),
+						zap.String("incoming_balance", incoming.Balance),
+						zap.String(logging.Connection_database, config.AccountsDBName),
+						zap.Time(logging.Created_at, time.Now().UTC()),
+						zap.String(logging.Log_file, LOG_FILE),
+						zap.String(logging.Topic, TOPIC),
+						zap.String(logging.Loki_url, LOKI_URL),
+						zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
+					)
+				}
+			}
+			// If existing unmarshal fails, proceed with write (shouldWrite = true)
+		} else {
+			// Account doesn't exist yet - we'll create it
+			PooledConnection.Client.Logger.Logger.Info("Creating new account during sync",
+				zap.String("key", e.Key),
+				zap.Int64("incoming_updated_at", incoming.UpdatedAt),
+				zap.String("incoming_balance", incoming.Balance),
+				zap.String(logging.Connection_database, config.AccountsDBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
+			)
+		}
+
+		if shouldWrite {
+			// Write the address: key with incoming data (which is newer or equal)
+			ops = append(ops, &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{Key: []byte(e.Key), Value: e.Value}}})
+
+			// Create all did: references that point to this address key in the same transaction
+			if didRefs, hasRefs := didEntriesByAddress[e.Key]; hasRefs {
+				for _, didEntry := range didRefs {
+					didKey := []byte(didEntry.Key)
+					ops = append(ops, &schema.Op{Operation: &schema.Op_Ref{Ref: &schema.ReferenceRequest{
+						Key:           didKey,
+						ReferencedKey: []byte(e.Key),
+						AtTx:          0,
+						BoundRef:      true,
+					}}})
 				}
 			}
 		}
-		ops = append(ops, &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{Key: []byte(e.Key), Value: e.Value}}})
+	}
+
+	// Process remaining did: entries that point to address keys not in this batch
+	for _, e := range didEntries {
+		var acc Account
+		if err := json.Unmarshal(e.Value, &acc); err != nil {
+			continue
+		}
+		addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
+
+		// If address key was in batch but skipped, or not in batch at all
+		if !addressKeysInBatch[addrKey] {
+			// Check if address key exists in database
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
+			cancel()
+			if getErr == nil {
+				// Address key exists in DB - create reference
+				didKey := []byte(e.Key)
+				ops = append(ops, &schema.Op{Operation: &schema.Op_Ref{Ref: &schema.ReferenceRequest{
+					Key:           didKey,
+					ReferencedKey: []byte(addrKey),
+					AtTx:          0,
+					BoundRef:      true,
+				}}})
+			}
+			// If getErr != nil, address key doesn't exist - skip creating orphaned reference
+		}
+		// If addressKeysInBatch[addrKey] is true, we already processed it above
 	}
 
 	// Process did: keys after address: keys are updated
@@ -484,12 +560,51 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 	defer cancel()
 	if len(ops) == 0 {
 		// Nothing to apply (e.g., all entries skipped by LWW) -> treat as success
+		PooledConnection.Client.Logger.Logger.Info("No operations to apply in batch restore (all skipped by LWW)",
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
+		)
 		return nil
 	}
+
+	PooledConnection.Client.Logger.Logger.Info("Executing batch restore",
+		zap.Int("total_operations", len(ops)),
+		zap.String(logging.Connection_database, config.AccountsDBName),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
+	)
+
 	_, err = PooledConnection.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops})
 	if err != nil {
+		PooledConnection.Client.Logger.Logger.Error("Batch restore ExecAll failed",
+			zap.Error(err),
+			zap.Int("operations_count", len(ops)),
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
+		)
 		return fmt.Errorf("accounts batch restore failed: %w", err)
 	}
+
+	PooledConnection.Client.Logger.Logger.Info("Batch restore completed successfully",
+		zap.Int("operations_applied", len(ops)),
+		zap.String(logging.Connection_database, config.AccountsDBName),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
+	)
 	return nil
 }
 
@@ -637,7 +752,6 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 	}
 
 	key := []byte(fmt.Sprintf("%s%s", Prefix, address))
-
 	return loadAccountByKey(PooledConnection, key, "DB_OPs.GetAccount")
 }
 
@@ -884,11 +998,13 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 		return nil, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
 	}
 
-	// Build the prefix
-	prefix := []byte(DIDPrefix)
-	if extendedPrefix != "" {
-		prefix = []byte(fmt.Sprintf("%s%s", DIDPrefix, extendedPrefix))
-	}
+	// Scan for address: keys instead of did: keys
+	// This is more reliable because:
+	// 1. address: keys are regular KV pairs, always scannable by ImmuDB Scan
+	// 2. did: references might not appear in Scan results
+	// 3. Every account has an address: key, so we'll get all accounts
+	// 4. This works for both locally created and synced accounts
+	prefix := []byte(Prefix) // Use "address:" prefix instead of "did:"
 
 	// Scan for keys with pagination
 	var accounts []*Account
@@ -927,10 +1043,11 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 		// Process the batch
 		for _, entry := range scanResult.Entries {
 			if keysScanned >= offset {
-				// Load the account using our shared helper
-				account, err := loadAccountByKey(PooledConnection, entry.Key, "DB_OPs.ListAccountsPaginated")
-				if err != nil {
-					PooledConnection.Client.Logger.Logger.Warn("Skipping account due to error",
+				// Load the account directly from address: key value
+				// This works for both synced and locally created accounts
+				var acc Account
+				if err := json.Unmarshal(entry.Value, &acc); err != nil {
+					PooledConnection.Client.Logger.Logger.Warn("Skipping account due to unmarshal error",
 						zap.Error(err),
 						zap.String("key", string(entry.Key)),
 						zap.String(logging.Connection_database, config.AccountsDBName),
@@ -942,7 +1059,14 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 					)
 					continue
 				}
-				accounts = append(accounts, account)
+
+				// Filter by network prefix if specified (e.g., "did:jmdt:mainnet:")
+				if extendedPrefix != "" && !strings.HasPrefix(acc.DIDAddress, extendedPrefix) {
+					keysScanned++
+					continue
+				}
+
+				accounts = append(accounts, &acc)
 				if len(accounts) >= limit {
 					break
 				}

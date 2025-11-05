@@ -15,6 +15,7 @@ import (
 	"gossipnode/logging"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -27,7 +28,13 @@ type stats struct {
 	TotalDIDs         int64
 	TotalTransactions int64
 	TotalAddresses    int64
-	TotalBalance      string
+}
+
+type LatestBlockStats struct {
+	BlockNumber uint64
+	BlockHash string
+	StateRoot string
+	Timestamp int64
 }
 
 // Get block by number
@@ -138,17 +145,42 @@ func (s *ImmuDBServer) getTransactionBlock(c *gin.Context) {
 }
 
 func (s *ImmuDBServer) getLatestBlock(c *gin.Context) {
-	blockNumber, err := DB_OPs.GetLatestBlockNumber(&s.defaultdb)
+	// Get the latest block number
+	latestBlockNumber, err := GetLatesBlockNumber(s)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	block, err := DB_OPs.GetZKBlockByNumber(&s.defaultdb, blockNumber)
+	// Get the latest block by number
+	block, err := GetLatestBlockByNumber(s, latestBlockNumber)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, block)
+}
+
+func (s *ImmuDBServer) getLatestBlockStats(c *gin.Context) {
+	latestBlockNumber, err := GetLatesBlockNumber(s)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	block, err := GetLatestBlockByNumber(s, latestBlockNumber)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Get the latest block stats with block number, block hash, state root, timestamp
+	latestBlockStats := LatestBlockStats{
+		BlockNumber: block.BlockNumber,
+		BlockHash: block.BlockHash.Hex(),
+		StateRoot: block.StateRoot.Hex(),
+		Timestamp: block.Timestamp,
+	}
+	fmt.Println("latestBlockStats", latestBlockStats)
+	c.JSON(http.StatusOK, latestBlockStats)
 }
 
 // Get transaction by hash
@@ -274,37 +306,6 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 		mu.Unlock()
 	}()
 
-	// Get total addresses and total balance in a goroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		accounts, err := DB_OPs.ListAllAccounts(&s.accountsdb, 0)
-		if err != nil {
-			handleErr(fmt.Errorf("failed to list accounts: %w", err))
-			return
-		}
-
-		mu.Lock()
-		stats.TotalAddresses = int64(len(accounts))
-
-		// Calculate total balance (sum of all account balances)
-		totalBalance := "0"
-		for _, account := range accounts {
-			if account.Balance != "" {
-				// Simple string addition for balance calculation
-				// In a real implementation, you'd want to use big.Int for proper arithmetic
-				if totalBalance == "0" {
-					totalBalance = account.Balance
-				} else {
-					// For now, just concatenate as strings - in production use proper big.Int arithmetic
-					totalBalance = fmt.Sprintf("%s + %s", totalBalance, account.Balance)
-				}
-			}
-		}
-		stats.TotalBalance = totalBalance
-		mu.Unlock()
-	}()
-
 	// Wait for all goroutines to complete
 	go func() {
 		wg.Wait()
@@ -330,7 +331,9 @@ func (s *ImmuDBServer) getDIDDetailsFromAddr(c *gin.Context) {
 		return
 	}
 
-	DIDDocument, err := DB_OPs.GetAccountByDID(&s.accountsdb, addr)
+	fmt.Println("addr", addr)
+
+	DIDDocument, err := DB_OPs.GetAccount(&s.accountsdb, common.HexToAddress(addr))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
