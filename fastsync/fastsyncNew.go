@@ -1424,17 +1424,30 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 
 		// Count block keys in HashMap for debugging
 		blockKeyCount := 0
+		txKeyCount := 0
+		txProcessedKeyCount := 0
 		latestBlockInHashMap := false
+		totalKeysInHashMap := 0
 		if msg.HashMap.MAIN_HashMap != nil {
+			totalKeysInHashMap = msg.HashMap.MAIN_HashMap.Size()
 			for _, key := range msg.HashMap.MAIN_HashMap.Keys() {
 				if strings.HasPrefix(key, "block:") {
 					blockKeyCount++
+				} else if strings.HasPrefix(key, "tx:") {
+					txKeyCount++
+				} else if strings.HasPrefix(key, "tx_processed:") {
+					txProcessedKeyCount++
 				} else if key == "latest_block" {
 					latestBlockInHashMap = true
 				}
 			}
 		}
-		fmt.Printf(">>> [SERVER] MainDB HashMap contains %d block keys, latest_block: %v\n", blockKeyCount, latestBlockInHashMap)
+		fmt.Printf(">>> [SERVER] MainDB HashMap breakdown for AVRO creation:\n")
+		fmt.Printf(">>> [SERVER]   Total keys: %d\n", totalKeysInHashMap)
+		fmt.Printf(">>> [SERVER]   Block keys: %d\n", blockKeyCount)
+		fmt.Printf(">>> [SERVER]   TX keys: %d\n", txKeyCount)
+		fmt.Printf(">>> [SERVER]   TX_processed keys: %d\n", txProcessedKeyCount)
+		fmt.Printf(">>> [SERVER]   latest_block: %v\n", latestBlockInHashMap)
 
 		log.Info().
 			Str("peer", peerID.String()).
