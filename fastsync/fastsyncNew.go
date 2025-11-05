@@ -279,81 +279,63 @@ func GetDBData_Accounts(db *config.PooledConnection, prefix string) ([]string, e
 }
 
 func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
-	fmt.Println(">>> [SERVER] Making Default HashMap...")
 	MAP := hashmap.New()
 
 	// Get block: keys
-	fmt.Println(">>> [SERVER] Getting block: keys...")
 	blockKeys, err := GetDBData_Default(fs.mainDB, "block:")
 	if err != nil {
 		fmt.Printf(">>> [SERVER] ERROR: Failed to get block keys: %v\n", err)
 		return nil, err
 	}
-	fmt.Printf(">>> [SERVER] ✓ Got %d block keys\n", len(blockKeys))
 	for _, key := range blockKeys {
 		MAP.Insert(key)
 	}
 
 	// Get tx: keys
-	fmt.Println(">>> [SERVER] Getting tx: keys...")
 	txKeys, err := GetDBData_Default(fs.mainDB, "tx:")
 	if err != nil {
-		fmt.Printf(">>> [SERVER] ERROR: Failed to get tx keys: %v\n", err)
 		return nil, err
 	}
-	fmt.Printf(">>> [SERVER] ✓ Got %d tx keys\n", len(txKeys))
 	for _, key := range txKeys {
 		MAP.Insert(key)
 	}
 
 	// Get tx_processed: keys
-	fmt.Println(">>> [SERVER] Getting tx_processed: keys...")
 	txProcessedKeys, err := GetDBData_Default(fs.mainDB, "tx_processed:")
 	if err != nil {
-		fmt.Printf(">>> [SERVER] ERROR: Failed to get tx_processed keys: %v\n", err)
 		return nil, err
 	}
-	fmt.Printf(">>> [SERVER] ✓ Got %d tx_processed keys\n", len(txProcessedKeys))
 	for _, key := range txProcessedKeys {
 		MAP.Insert(key)
 	}
 
 	// Check for latest_block key explicitly
-	fmt.Println(">>> [SERVER] Checking for latest_block key...")
 	exists, err := DB_OPs.Exists(fs.mainDB, "latest_block")
 	if err == nil && exists {
 		MAP.Insert("latest_block")
-		fmt.Println(">>> [SERVER] ✓ Added latest_block key")
 	}
 
-	fmt.Printf(">>> [SERVER] ✓ Default HashMap complete: %d total keys\n", MAP.Size())
 	return MAP, nil
 }
 
 func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
-	fmt.Println(">>> [SERVER] Making Accounts HashMap...")
 	MAP := hashmap.New()
 
 	// Get address: keys (actual account data)
-	fmt.Println(">>> [SERVER] Getting address: keys...")
 	addressKeys, err := GetDBData_Accounts(fs.accountsDB, "address:")
 	if err != nil {
 		fmt.Printf(">>> [SERVER] ERROR: Failed to get address keys: %v\n", err)
 		return nil, err
 	}
-	fmt.Printf(">>> [SERVER] ✓ Got %d address keys\n", len(addressKeys))
 	for _, key := range addressKeys {
 		MAP.Insert(key)
 	}
 
 	// Get did: keys (DID references to accounts)
-	fmt.Println(">>> [SERVER] Getting did: keys...")
 	didKeys, err := GetDBData_Accounts(fs.accountsDB, "did:")
 	if err != nil {
-		fmt.Printf(">>> [SERVER] ERROR: Failed to get did keys: %v\n", err)
 		return nil, err
 	}
-	fmt.Printf(">>> [SERVER] ✓ Got %d did keys\n", len(didKeys))
 	for _, key := range didKeys {
 		MAP.Insert(key)
 	}
