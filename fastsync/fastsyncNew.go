@@ -1052,7 +1052,15 @@ func retry(operation func() error) error {
 
 // handleStream processes incoming sync protocol messages
 func (fs *FastSync) handleStream(stream network.Stream) {
-	defer stream.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error().
+				Interface("panic", r).
+				Msg("PANIC in handleStream - recovering and closing stream")
+			fmt.Printf(">>> [SERVER] PANIC in handleStream: %v\n", r)
+		}
+		stream.Close()
+	}()
 
 	peerID := stream.Conn().RemotePeer()
 	remote := stream.Conn().RemoteMultiaddr().String()
@@ -1069,7 +1077,8 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 		msg, err := readMessage(reader, stream)
 		if err != nil {
 			if err != io.EOF {
-				log.Debug().Err(err).Msg("Error reading from stream")
+				log.Error().Err(err).Msg("Error reading from stream")
+				fmt.Printf(">>> [SERVER] ERROR reading message: %v\n", err)
 			}
 			break
 		}
@@ -1077,42 +1086,85 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 		var response *SyncMessage
 		var handleErr error
 
-		switch msg.Type {
-		case TypeBatchRequest:
-			response, handleErr = fs.handleBatchRequest(peerID, msg)
-		case TypeBatchData:
-			response, handleErr = fs.handleBatchData(peerID, msg)
-		case TypeVerificationRequest:
-			response, handleErr = fs.handleVerification(peerID)
-		case TypeSyncComplete:
-			response, handleErr = fs.handleSyncComplete(peerID, msg)
-		case TypeHashMapExchangeSYNC:
-			// Send chunks directly instead of returning response
-			handleErr = fs.handleHashMapExchangeSYNCChunked(peerID, msg, writer, reader, stream)
-			response = nil // Chunks are sent directly
-		case TypeHashMapChunkRequest:
-			// Client requesting a specific chunk
-			response, handleErr = fs.handleHashMapChunkRequest(peerID, msg)
-		case TypeHashMapChunkAck:
-			// Acknowledgment received, continue sending chunks
-			response = nil // No response needed for ACK
-		case TypeHashMapChunk:
-			// Chunk received, send ACK
-			ackMsg := &SyncMessage{
-				Type:        TypeHashMapChunkAck,
-				SenderID:    fs.host.ID().String(),
-				Timestamp:   time.Now().UTC().Unix(),
-				ChunkNumber: msg.ChunkNumber,
-				Success:     true,
+		// Wrap handler in panic recovery
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error().
+						Interface("panic", r).
+						Str("message_type", msg.Type).
+						Msg("PANIC in message handler - recovering")
+					fmt.Printf(">>> [SERVER] PANIC handling message type %s: %v\n", msg.Type, r)
+					handleErr = fmt.Errorf("panic in handler: %v", r)
+
+					// Try to send error response to client
+					errorMsg := &SyncMessage{
+						Type:      "ERROR",
+						SenderID:  fs.host.ID().String(),
+						Timestamp: time.Now().UTC().Unix(),
+						Success:   false,
+						Data:      []byte(fmt.Sprintf(`{"error":"panic in handler: %v"}`, r)),
+					}
+					writeMessage(writer, stream, errorMsg)
+				}
+			}()
+
+			switch msg.Type {
+			case TypeBatchRequest:
+				response, handleErr = fs.handleBatchRequest(peerID, msg)
+			case TypeBatchData:
+				response, handleErr = fs.handleBatchData(peerID, msg)
+			case TypeVerificationRequest:
+				response, handleErr = fs.handleVerification(peerID)
+			case TypeSyncComplete:
+				response, handleErr = fs.handleSyncComplete(peerID, msg)
+			case TypeHashMapExchangeSYNC:
+				// Send chunks directly instead of returning response
+				fmt.Printf(">>> [SERVER] Received HashMap exchange request from %s\n", peerID.String())
+				fmt.Printf(">>> [SERVER] Client HashMap sizes - Main: %d, Accounts: %d\n",
+					func() int {
+						if msg.HashMap != nil && msg.HashMap.MAIN_HashMap != nil {
+							return msg.HashMap.MAIN_HashMap.Size()
+						}
+						return 0
+					}(),
+					func() int {
+						if msg.HashMap != nil && msg.HashMap.Accounts_HashMap != nil {
+							return msg.HashMap.Accounts_HashMap.Size()
+						}
+						return 0
+					}())
+				handleErr = fs.handleHashMapExchangeSYNCChunked(peerID, msg, writer, reader, stream)
+				response = nil // Chunks are sent directly
+			case TypeHashMapChunkRequest:
+				// Client requesting a specific chunk
+				response, handleErr = fs.handleHashMapChunkRequest(peerID, msg)
+			case TypeHashMapChunkAck:
+				// Acknowledgment received, continue sending chunks
+				response = nil // No response needed for ACK
+			case TypeHashMapChunk:
+				// Chunk received, send ACK
+				ackMsg := &SyncMessage{
+					Type:        TypeHashMapChunkAck,
+					SenderID:    fs.host.ID().String(),
+					Timestamp:   time.Now().UTC().Unix(),
+					ChunkNumber: msg.ChunkNumber,
+					Success:     true,
+				}
+				response = ackMsg
+			case TypeHashMapChunkComplete:
+				// All chunks received, no response needed
+				response = nil
+			case RequestFiletransfer: // This will trigger for the file transfer
+				response, handleErr = fs.MakeAVROFile_Transfer(peerID, msg)
+			default:
+				log.Warn().Str("type", msg.Type).Msg("Unknown message type")
+				handleErr = fmt.Errorf("unknown message type: %s", msg.Type)
 			}
-			response = ackMsg
-		case TypeHashMapChunkComplete:
-			// All chunks received, no response needed
-			response = nil
-		case RequestFiletransfer: // This will trigger for the file transfer
-			response, handleErr = fs.MakeAVROFile_Transfer(peerID, msg)
-		default:
-			log.Warn().Str("type", msg.Type).Msg("Unknown message type")
+		}() // End panic recovery wrapper
+
+		// Skip unknown message types
+		if handleErr != nil && strings.Contains(handleErr.Error(), "unknown message type") {
 			continue
 		}
 
