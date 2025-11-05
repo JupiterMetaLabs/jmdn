@@ -327,7 +327,41 @@ func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
 	}
 
 	fmt.Printf(">>> [SERVER] ✓ Default HashMap complete: %d total keys\n", MAP.Size())
-	return MAP, nil
+
+	// CRITICAL: Validate HashMap keys exist in DB to remove stale keys
+	// This ensures the HashMap accurately reflects the current DB state
+	// This is especially important for subsequent syncs where the HashMap might contain stale keys
+	fmt.Println(">>> [SERVER] Validating Main HashMap keys against DB (removing stale keys)...")
+	validatedHashMap := hashmap.New()
+	allKeys := MAP.Keys()
+	validatedCount := 0
+	removedCount := 0
+
+	for _, key := range allKeys {
+		exists, err := DB_OPs.Exists(fs.mainDB, key)
+		if err != nil {
+			fmt.Printf(">>> [SERVER] WARNING: Error checking key '%s': %v, skipping\n", key, err)
+			removedCount++
+			continue
+		}
+		if exists {
+			validatedHashMap.Insert(key)
+			validatedCount++
+		} else {
+			removedCount++
+			fmt.Printf(">>> [SERVER] Removed stale key from HashMap: '%s' (not in DB)\n", key)
+		}
+	}
+
+	if removedCount > 0 {
+		fmt.Printf(">>> [SERVER] WARNING: Removed %d stale keys from Main HashMap (original: %d, validated: %d)\n",
+			removedCount, MAP.Size(), validatedHashMap.Size())
+		fmt.Printf(">>> [SERVER] This suggests keys were deleted or the HashMap was out of sync with DB\n")
+	} else {
+		fmt.Printf(">>> [SERVER] ✓ All %d keys validated - HashMap matches DB state\n", validatedHashMap.Size())
+	}
+
+	return validatedHashMap, nil
 }
 
 func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
@@ -359,7 +393,40 @@ func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
 	}
 
 	fmt.Printf(">>> [SERVER] ✓ Accounts HashMap complete: %d total keys\n", MAP.Size())
-	return MAP, nil
+
+	// CRITICAL: Validate HashMap keys exist in DB to remove stale keys
+	// This ensures the HashMap accurately reflects the current DB state
+	fmt.Println(">>> [SERVER] Validating Accounts HashMap keys against DB (removing stale keys)...")
+	validatedHashMap := hashmap.New()
+	allKeys := MAP.Keys()
+	validatedCount := 0
+	removedCount := 0
+
+	for _, key := range allKeys {
+		exists, err := DB_OPs.Exists(fs.accountsDB, key)
+		if err != nil {
+			fmt.Printf(">>> [SERVER] WARNING: Error checking key '%s': %v, skipping\n", key, err)
+			removedCount++
+			continue
+		}
+		if exists {
+			validatedHashMap.Insert(key)
+			validatedCount++
+		} else {
+			removedCount++
+			fmt.Printf(">>> [SERVER] Removed stale key from HashMap: '%s' (not in DB)\n", key)
+		}
+	}
+
+	if removedCount > 0 {
+		fmt.Printf(">>> [SERVER] WARNING: Removed %d stale keys from Accounts HashMap (original: %d, validated: %d)\n",
+			removedCount, MAP.Size(), validatedHashMap.Size())
+		fmt.Printf(">>> [SERVER] This suggests keys were deleted or the HashMap was out of sync with DB\n")
+	} else {
+		fmt.Printf(">>> [SERVER] ✓ All %d keys validated - HashMap matches DB state\n", validatedHashMap.Size())
+	}
+
+	return validatedHashMap, nil
 }
 
 // UPDATED: NewFastSync now initializes CRDT engine for conflict-free synchronization
@@ -1324,33 +1391,49 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 	}()
 
 	// 3. Create targeted backups using the client's HashMap.
-	mainCfg := DB_OPs.Config{
-		Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
-		Username:   config.DBUsername,
-		Password:   config.DBPassword,
-		Database:   config.DBName, // This is correct for main DB (defaultdb)
-		OutputPath: mainAVROpath,
-	}
+	// Only create MainDB AVRO file if there are keys to sync
+	fmt.Printf(">>> [SERVER] MakeAVROFile_Transfer: MainDB HashMap size: %d\n",
+		func() int {
+			if msg.HashMap != nil && msg.HashMap.MAIN_HashMap != nil {
+				return msg.HashMap.MAIN_HashMap.Size()
+			}
+			return 0
+		}())
+	if msg.HashMap != nil && msg.HashMap.MAIN_HashMap != nil && msg.HashMap.MAIN_HashMap.Size() > 0 {
+		mainCfg := DB_OPs.Config{
+			Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
+			Username:   config.DBUsername,
+			Password:   config.DBPassword,
+			Database:   config.DBName, // This is correct for main DB (defaultdb)
+			OutputPath: mainAVROpath,
+		}
 
-	log.Info().
-		Str("peer", peerID.String()).
-		Int("keys", msg.HashMap.MAIN_HashMap.Size()).
-		Msg("Creating targeted backup from MAIN HashMap")
+		log.Info().
+			Str("peer", peerID.String()).
+			Int("keys", msg.HashMap.MAIN_HashMap.Size()).
+			Msg("Creating targeted backup from MAIN HashMap")
 
-	err := DB_OPs.BackupFromHashMap(mainCfg, msg.HashMap.MAIN_HashMap)
-	if err != nil {
-		return nil, fmt.Errorf("failed to backup main database: %w", err)
-	}
+		err := DB_OPs.BackupFromHashMap(mainCfg, msg.HashMap.MAIN_HashMap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to backup main database: %w", err)
+		}
 
-	// Transfer the main DB backup file
-	log.Info().Str("peer", peerID.String()).Str("file", mainAVROpath).Msg("Transferring main DB backup file")
-	if msg.HashMap.MAIN_HashMap != nil && msg.HashMap.MAIN_HashMap.Size() > 0 {
+		// Transfer the main DB backup file
+		log.Info().Str("peer", peerID.String()).Str("file", mainAVROpath).Msg("Transferring main DB backup file")
 		err = TransferAVROFile(fs.host, peerID, mainAVROpath, "fastsync/.temp/defaultdb.avro")
 		if err != nil {
 			return nil, fmt.Errorf("failed to transfer main database: %w", err)
 		}
+		log.Info().Int("keys", msg.HashMap.MAIN_HashMap.Size()).Msg("Successfully transferred main DB backup file")
 	} else {
-		log.Info().Msg("Skipping main DB file transfer (no keys to sync)")
+		log.Info().Msg("Skipping main DB AVRO file creation and transfer (no keys to sync - HashMap is empty)")
+		fmt.Printf(">>> [SERVER] MainDB HashMap is empty (size: %d), skipping AVRO file creation\n",
+			func() int {
+				if msg.HashMap.MAIN_HashMap != nil {
+					return msg.HashMap.MAIN_HashMap.Size()
+				}
+				return 0
+			}())
 	}
 
 	// Process accounts DB if it has entries
