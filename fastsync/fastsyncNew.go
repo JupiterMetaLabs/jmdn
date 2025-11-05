@@ -338,18 +338,32 @@ func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
 	removedCount := 0
 
 	for _, key := range allKeys {
+		// Explicitly handle latest_block for clarity
+		isLatestBlock := (key == "latest_block")
+
 		exists, err := DB_OPs.Exists(fs.mainDB, key)
 		if err != nil {
-			fmt.Printf(">>> [SERVER] WARNING: Error checking key '%s': %v, skipping\n", key, err)
+			if isLatestBlock {
+				fmt.Printf(">>> [SERVER] WARNING: Error checking latest_block key: %v, skipping\n", err)
+			} else {
+				fmt.Printf(">>> [SERVER] WARNING: Error checking key '%s': %v, skipping\n", key, err)
+			}
 			removedCount++
 			continue
 		}
 		if exists {
 			validatedHashMap.Insert(key)
 			validatedCount++
+			if isLatestBlock {
+				fmt.Printf(">>> [SERVER] ✓ latest_block validated and included in HashMap\n")
+			}
 		} else {
 			removedCount++
-			fmt.Printf(">>> [SERVER] Removed stale key from HashMap: '%s' (not in DB)\n", key)
+			if isLatestBlock {
+				fmt.Printf(">>> [SERVER] WARNING: Removed stale latest_block from HashMap (not in DB)\n")
+			} else {
+				fmt.Printf(">>> [SERVER] Removed stale key from HashMap: '%s' (not in DB)\n", key)
+			}
 		}
 	}
 
