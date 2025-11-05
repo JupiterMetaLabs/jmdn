@@ -1422,9 +1422,25 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 			OutputPath: mainAVROpath,
 		}
 
+		// Count block keys in HashMap for debugging
+		blockKeyCount := 0
+		latestBlockInHashMap := false
+		if msg.HashMap.MAIN_HashMap != nil {
+			for _, key := range msg.HashMap.MAIN_HashMap.Keys() {
+				if strings.HasPrefix(key, "block:") {
+					blockKeyCount++
+				} else if key == "latest_block" {
+					latestBlockInHashMap = true
+				}
+			}
+		}
+		fmt.Printf(">>> [SERVER] MainDB HashMap contains %d block keys, latest_block: %v\n", blockKeyCount, latestBlockInHashMap)
+
 		log.Info().
 			Str("peer", peerID.String()).
 			Int("keys", msg.HashMap.MAIN_HashMap.Size()).
+			Int("block_keys", blockKeyCount).
+			Bool("latest_block", latestBlockInHashMap).
 			Msg("Creating targeted backup from MAIN HashMap")
 
 		err := DB_OPs.BackupFromHashMap(mainCfg, msg.HashMap.MAIN_HashMap)

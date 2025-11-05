@@ -1152,6 +1152,8 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 	// Using 1000 to be safe and avoid "max number of entries per tx exceeded" errors
 	batchSize := 1000 // Process in batches of 1,000 entries
 	totalEntries := 0
+	blockKeysCount := 0
+	latestBlockCount := 0
 
 	fmt.Printf(">>> [DB] Using batch size: %d entries per transaction\n", batchSize)
 
@@ -1174,6 +1176,24 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 
 		key, keyOk := recordMap["Key"].(string)
 		value, valueOk := recordMap["Value"].(string)
+
+		// Track block and latest_block keys for debugging
+		isBlockKey := keyOk && strings.HasPrefix(key, "block:")
+		isLatestBlock := keyOk && key == "latest_block"
+		if isBlockKey || isLatestBlock {
+			fmt.Printf(">>> [DB] Found %s key in AVRO: %s (value length: %d)\n",
+				func() string {
+					if isLatestBlock {
+						return "latest_block"
+					}
+					return "block"
+				}(), key, func() int {
+					if valueOk {
+						return len(value)
+					}
+					return 0
+				}())
+		}
 
 		// Optional Database field for origin validation
 		avroDB, _ := recordMap["Database"].(string)
@@ -1198,6 +1218,15 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 			Key   string
 			Value []byte
 		}{Key: key, Value: []byte(value)})
+
+		// Track block keys added to batch
+		if isBlockKey {
+			blockKeysCount++
+			fmt.Printf(">>> [DB] Added block key to restore batch: %s (total blocks: %d)\n", key, blockKeysCount)
+		} else if isLatestBlock {
+			latestBlockCount++
+			fmt.Printf(">>> [DB] Added latest_block to restore batch (count: %d)\n", latestBlockCount)
+		}
 
 		if len(entriesOrdered) >= batchSize {
 			fmt.Printf(">>> [DB] Processing batch of %d entries for %s...\n", len(entriesOrdered), dbTypeToString(dbType))
@@ -1268,6 +1297,16 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 
 	fmt.Printf(">>> [DB] ✓ Database restore completed: %d total entries processed, %d records read from AVRO for %s (time: %v)\n",
 		totalEntries, recordsRead, dbTypeToString(dbType), time.Since(startTime))
+
+	if dbType == MainDB {
+		fmt.Printf(">>> [DB] Block keys summary: %d block keys processed, latest_block: %d\n", blockKeysCount, latestBlockCount)
+		if blockKeysCount == 0 && latestBlockCount == 0 {
+			fmt.Printf(">>> [DB] WARNING: No block keys or latest_block were processed! This might indicate:\n")
+			fmt.Printf(">>> [DB]   1. AVRO file doesn't contain block keys\n")
+			fmt.Printf(">>> [DB]   2. Block keys were filtered out during processing\n")
+			fmt.Printf(">>> [DB]   3. HashMap didn't include block keys for sync\n")
+		}
+	}
 
 	if totalEntries == 0 {
 		fmt.Printf(">>> [DB] WARNING: No entries were written to %s! This might indicate:\n", dbTypeToString(dbType))

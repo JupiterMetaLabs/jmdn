@@ -140,11 +140,35 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 
 		// Process batch of keys
 		for _, key := range batchKeys {
+			isBlockKey := strings.HasPrefix(key, "block:")
+			isLatestBlock := (key == "latest_block")
+			
 			resp, err := client.Get(apiCtx, &schema.KeyRequest{Key: []byte(key)})
 			if err != nil {
-				log.Printf("[WARN] Get(%s): %v", key, err)
+				if isBlockKey || isLatestBlock {
+					log.Printf("[ERROR] Failed to get %s key '%s': %v - THIS IS A BLOCK KEY!", 
+						func() string {
+							if isLatestBlock {
+								return "latest_block"
+							}
+							return "block"
+						}(), key, err)
+				} else {
+					log.Printf("[WARN] Get(%s): %v", key, err)
+				}
 				continue
 			}
+			
+			if isBlockKey || isLatestBlock {
+				log.Printf("[INFO] Successfully retrieved %s key '%s' (value length: %d)", 
+					func() string {
+						if isLatestBlock {
+							return "latest_block"
+						}
+						return "block"
+					}(), key, len(resp.Value))
+			}
+			
 			record := map[string]interface{}{
 				"Key":      key,
 				"Value":    string(resp.Value),
