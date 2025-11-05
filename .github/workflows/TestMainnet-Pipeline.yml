@@ -1,4 +1,4 @@
-name: Deploy JMDN via Ansible
+name: Deploy JMDN via Ansible 
 
 on:
   push:
