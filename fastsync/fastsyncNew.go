@@ -279,69 +279,168 @@ func GetDBData_Accounts(db *config.PooledConnection, prefix string) ([]string, e
 }
 
 func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
+	fmt.Println(">>> [SERVER] Making Default HashMap...")
 	MAP := hashmap.New()
 
 	// Get block: keys
+	fmt.Println(">>> [SERVER] Getting block: keys...")
 	blockKeys, err := GetDBData_Default(fs.mainDB, "block:")
 	if err != nil {
 		fmt.Printf(">>> [SERVER] ERROR: Failed to get block keys: %v\n", err)
 		return nil, err
 	}
+	fmt.Printf(">>> [SERVER] ✓ Got %d block keys\n", len(blockKeys))
 	for _, key := range blockKeys {
 		MAP.Insert(key)
 	}
 
 	// Get tx: keys
+	fmt.Println(">>> [SERVER] Getting tx: keys...")
 	txKeys, err := GetDBData_Default(fs.mainDB, "tx:")
 	if err != nil {
+		fmt.Printf(">>> [SERVER] ERROR: Failed to get tx keys: %v\n", err)
 		return nil, err
 	}
+	fmt.Printf(">>> [SERVER] ✓ Got %d tx keys\n", len(txKeys))
 	for _, key := range txKeys {
 		MAP.Insert(key)
 	}
 
 	// Get tx_processed: keys
+	fmt.Println(">>> [SERVER] Getting tx_processed: keys...")
 	txProcessedKeys, err := GetDBData_Default(fs.mainDB, "tx_processed:")
 	if err != nil {
+		fmt.Printf(">>> [SERVER] ERROR: Failed to get tx_processed keys: %v\n", err)
 		return nil, err
 	}
+	fmt.Printf(">>> [SERVER] ✓ Got %d tx_processed keys\n", len(txProcessedKeys))
 	for _, key := range txProcessedKeys {
 		MAP.Insert(key)
 	}
 
 	// Check for latest_block key explicitly
+	fmt.Println(">>> [SERVER] Checking for latest_block key...")
 	exists, err := DB_OPs.Exists(fs.mainDB, "latest_block")
 	if err == nil && exists {
 		MAP.Insert("latest_block")
+		fmt.Println(">>> [SERVER] ✓ Added latest_block key")
 	}
 
-	return MAP, nil
+	fmt.Printf(">>> [SERVER] ✓ Default HashMap complete: %d total keys\n", MAP.Size())
+
+	// CRITICAL: Validate HashMap keys exist in DB to remove stale keys
+	// This ensures the HashMap accurately reflects the current DB state
+	// This is especially important for subsequent syncs where the HashMap might contain stale keys
+	fmt.Println(">>> [SERVER] Validating Main HashMap keys against DB (removing stale keys)...")
+	validatedHashMap := hashmap.New()
+	allKeys := MAP.Keys()
+	validatedCount := 0
+	removedCount := 0
+
+	for _, key := range allKeys {
+		// Explicitly handle latest_block for clarity
+		isLatestBlock := (key == "latest_block")
+
+		exists, err := DB_OPs.Exists(fs.mainDB, key)
+		if err != nil {
+			if isLatestBlock {
+				fmt.Printf(">>> [SERVER] WARNING: Error checking latest_block key: %v, skipping\n", err)
+			} else {
+				fmt.Printf(">>> [SERVER] WARNING: Error checking key '%s': %v, skipping\n", key, err)
+			}
+			removedCount++
+			continue
+		}
+		if exists {
+			validatedHashMap.Insert(key)
+			validatedCount++
+			if isLatestBlock {
+				fmt.Printf(">>> [SERVER] ✓ latest_block validated and included in HashMap\n")
+			}
+		} else {
+			removedCount++
+			if isLatestBlock {
+				fmt.Printf(">>> [SERVER] WARNING: Removed stale latest_block from HashMap (not in DB)\n")
+			} else {
+				fmt.Printf(">>> [SERVER] Removed stale key from HashMap: '%s' (not in DB)\n", key)
+			}
+		}
+	}
+
+	if removedCount > 0 {
+		fmt.Printf(">>> [SERVER] WARNING: Removed %d stale keys from Main HashMap (original: %d, validated: %d)\n",
+			removedCount, MAP.Size(), validatedHashMap.Size())
+		fmt.Printf(">>> [SERVER] This suggests keys were deleted or the HashMap was out of sync with DB\n")
+	} else {
+		fmt.Printf(">>> [SERVER] ✓ All %d keys validated - HashMap matches DB state\n", validatedHashMap.Size())
+	}
+
+	return validatedHashMap, nil
 }
 
 func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
+	fmt.Println(">>> [SERVER] Making Accounts HashMap...")
 	MAP := hashmap.New()
 
 	// Get address: keys (actual account data)
+	fmt.Println(">>> [SERVER] Getting address: keys...")
 	addressKeys, err := GetDBData_Accounts(fs.accountsDB, "address:")
 	if err != nil {
 		fmt.Printf(">>> [SERVER] ERROR: Failed to get address keys: %v\n", err)
 		return nil, err
 	}
+	fmt.Printf(">>> [SERVER] ✓ Got %d address keys\n", len(addressKeys))
 	for _, key := range addressKeys {
 		MAP.Insert(key)
 	}
 
 	// Get did: keys (DID references to accounts)
+	fmt.Println(">>> [SERVER] Getting did: keys...")
 	didKeys, err := GetDBData_Accounts(fs.accountsDB, "did:")
 	if err != nil {
+		fmt.Printf(">>> [SERVER] ERROR: Failed to get did keys: %v\n", err)
 		return nil, err
 	}
+	fmt.Printf(">>> [SERVER] ✓ Got %d did keys\n", len(didKeys))
 	for _, key := range didKeys {
 		MAP.Insert(key)
 	}
 
 	fmt.Printf(">>> [SERVER] ✓ Accounts HashMap complete: %d total keys\n", MAP.Size())
-	return MAP, nil
+
+	// CRITICAL: Validate HashMap keys exist in DB to remove stale keys
+	// This ensures the HashMap accurately reflects the current DB state
+	fmt.Println(">>> [SERVER] Validating Accounts HashMap keys against DB (removing stale keys)...")
+	validatedHashMap := hashmap.New()
+	allKeys := MAP.Keys()
+	validatedCount := 0
+	removedCount := 0
+
+	for _, key := range allKeys {
+		exists, err := DB_OPs.Exists(fs.accountsDB, key)
+		if err != nil {
+			fmt.Printf(">>> [SERVER] WARNING: Error checking key '%s': %v, skipping\n", key, err)
+			removedCount++
+			continue
+		}
+		if exists {
+			validatedHashMap.Insert(key)
+			validatedCount++
+		} else {
+			removedCount++
+			fmt.Printf(">>> [SERVER] Removed stale key from HashMap: '%s' (not in DB)\n", key)
+		}
+	}
+
+	if removedCount > 0 {
+		fmt.Printf(">>> [SERVER] WARNING: Removed %d stale keys from Accounts HashMap (original: %d, validated: %d)\n",
+			removedCount, MAP.Size(), validatedHashMap.Size())
+		fmt.Printf(">>> [SERVER] This suggests keys were deleted or the HashMap was out of sync with DB\n")
+	} else {
+		fmt.Printf(">>> [SERVER] ✓ All %d keys validated - HashMap matches DB state\n", validatedHashMap.Size())
+	}
+
+	return validatedHashMap, nil
 }
 
 // UPDATED: NewFastSync now initializes CRDT engine for conflict-free synchronization
@@ -1243,9 +1342,6 @@ func (fs *FastSync) getBatchData(
 		return nil, nil, err
 	}
 
-	// Track which keys we've processed to avoid duplicates
-	processedKeys := make(map[string]bool)
-
 	for _, key := range keys {
 		// pick the correct prefix
 		switch dbType {
@@ -1275,52 +1371,6 @@ func (fs *FastSync) getBatchData(
 			Timestamp: time.Now().UTC(),
 			TxID:      0,
 		})
-		processedKeys[key] = true
-	}
-
-	// For AccountsDB, also derive did: keys from address: keys
-	// Scan doesn't find reference keys, so we need to derive them from account data
-	if dbType == AccountsDB {
-		// Get all address: keys we processed
-		addressKeys := make([]string, 0)
-		for key := range processedKeys {
-			if strings.HasPrefix(key, "address:") {
-				addressKeys = append(addressKeys, key)
-			}
-		}
-
-		// For each address: key, check if the account has a DIDAddress and create did: entry
-		for _, addrKey := range addressKeys {
-			// Read the account to get its DIDAddress
-			data, err := DB_OPs.Read(db, addrKey)
-			if err != nil {
-				continue // Skip if we can't read this account
-			}
-
-			// Unmarshal to check if account has a DIDAddress
-			var account struct {
-				DIDAddress string `json:"did,omitempty"`
-			}
-			if err := json.Unmarshal(data, &account); err == nil && account.DIDAddress != "" {
-				// Create the corresponding did: key
-				didKey := fmt.Sprintf("did:%s", account.DIDAddress)
-
-				// Only add if we haven't already processed it
-				if !processedKeys[didKey] {
-					// Read the did: key data (this will follow the reference)
-					didData, err := DB_OPs.Read(db, didKey)
-					if err == nil {
-						entries = append(entries, KeyValueEntry{
-							Key:       []byte(didKey),
-							Value:     didData, // This will be the account data (reference follows)
-							Timestamp: time.Now().UTC(),
-							TxID:      0,
-						})
-						processedKeys[didKey] = true
-					}
-				}
-			}
-		}
 	}
 
 	return entries, crdts, nil
@@ -1355,33 +1405,49 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 	}()
 
 	// 3. Create targeted backups using the client's HashMap.
-	mainCfg := DB_OPs.Config{
-		Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
-		Username:   config.DBUsername,
-		Password:   config.DBPassword,
-		Database:   config.DBName, // This is correct for main DB (defaultdb)
-		OutputPath: mainAVROpath,
-	}
+	// Only create MainDB AVRO file if there are keys to sync
+	fmt.Printf(">>> [SERVER] MakeAVROFile_Transfer: MainDB HashMap size: %d\n",
+		func() int {
+			if msg.HashMap != nil && msg.HashMap.MAIN_HashMap != nil {
+				return msg.HashMap.MAIN_HashMap.Size()
+			}
+			return 0
+		}())
+	if msg.HashMap != nil && msg.HashMap.MAIN_HashMap != nil && msg.HashMap.MAIN_HashMap.Size() > 0 {
+		mainCfg := DB_OPs.Config{
+			Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
+			Username:   config.DBUsername,
+			Password:   config.DBPassword,
+			Database:   config.DBName, // This is correct for main DB (defaultdb)
+			OutputPath: mainAVROpath,
+		}
 
-	log.Info().
-		Str("peer", peerID.String()).
-		Int("keys", msg.HashMap.MAIN_HashMap.Size()).
-		Msg("Creating targeted backup from MAIN HashMap")
+		log.Info().
+			Str("peer", peerID.String()).
+			Int("keys", msg.HashMap.MAIN_HashMap.Size()).
+			Msg("Creating targeted backup from MAIN HashMap")
 
-	err := DB_OPs.BackupFromHashMap(mainCfg, msg.HashMap.MAIN_HashMap)
-	if err != nil {
-		return nil, fmt.Errorf("failed to backup main database: %w", err)
-	}
+		err := DB_OPs.BackupFromHashMap(mainCfg, msg.HashMap.MAIN_HashMap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to backup main database: %w", err)
+		}
 
-	// Transfer the main DB backup file
-	log.Info().Str("peer", peerID.String()).Str("file", mainAVROpath).Msg("Transferring main DB backup file")
-	if msg.HashMap.MAIN_HashMap != nil && msg.HashMap.MAIN_HashMap.Size() > 0 {
+		// Transfer the main DB backup file
+		log.Info().Str("peer", peerID.String()).Str("file", mainAVROpath).Msg("Transferring main DB backup file")
 		err = TransferAVROFile(fs.host, peerID, mainAVROpath, "fastsync/.temp/defaultdb.avro")
 		if err != nil {
 			return nil, fmt.Errorf("failed to transfer main database: %w", err)
 		}
+		log.Info().Int("keys", msg.HashMap.MAIN_HashMap.Size()).Msg("Successfully transferred main DB backup file")
 	} else {
-		log.Info().Msg("Skipping main DB file transfer (no keys to sync)")
+		log.Info().Msg("Skipping main DB AVRO file creation and transfer (no keys to sync - HashMap is empty)")
+		fmt.Printf(">>> [SERVER] MainDB HashMap is empty (size: %d), skipping AVRO file creation\n",
+			func() int {
+				if msg.HashMap.MAIN_HashMap != nil {
+					return msg.HashMap.MAIN_HashMap.Size()
+				}
+				return 0
+			}())
 	}
 
 	// Process accounts DB if it has entries
