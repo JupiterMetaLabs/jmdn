@@ -752,7 +752,6 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 	}
 
 	key := []byte(fmt.Sprintf("%s%s", Prefix, address))
-
 	return loadAccountByKey(PooledConnection, key, "DB_OPs.GetAccount")
 }
 
