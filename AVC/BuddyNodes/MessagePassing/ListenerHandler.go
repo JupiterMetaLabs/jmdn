@@ -331,13 +331,11 @@ func (lh *ListenerHandler) runBFTConsensusFlow(contextKey string) {
 
 	// ✅ ADD ACTIVITY-BASED SETTINGS HERE
 	bftConfig.InactivityTimeout = 5 * time.Second // 5 seconds of silence
-	bftConfig.MinimumVotesRatio = 0.5             // Need at least 50% of buddies
 
 	fmt.Printf("🔧 BFT Config:\n")
 	fmt.Printf("   Prepare Timeout: %v\n", bftConfig.PrepareTimeout)
 	fmt.Printf("   Commit Timeout: %v\n", bftConfig.CommitTimeout)
 	fmt.Printf("   Inactivity Timeout: %v\n", bftConfig.InactivityTimeout)
-	fmt.Printf("   Minimum Votes Ratio: %.0f%%\n\n", bftConfig.MinimumVotesRatio*100)
 
 	bftEngine := bft.New(bftConfig)
 
@@ -917,9 +915,9 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 	}
 
 	blsResp, status, err := BLS_Signer.SignMessage(result)
-	if err != nil || status == false{
+	if err != nil || status == false {
 		fmt.Printf("⚠️ Failed to create BLS signature for BFT result: %v\n", err)
-	}else{
+	} else {
 		fmt.Printf("✅ BLS signature created successfully: %v\n", blsResp)
 	}
 	// Attach local PeerID into BLS payload

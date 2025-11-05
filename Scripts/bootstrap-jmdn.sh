@@ -284,6 +284,11 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=${APP_NAME}
 
+# Logging (journal + files)
+StandardOutput=append:${LOG_DIR}/${APP_NAME}.out.log
+StandardError=append:${LOG_DIR}/${APP_NAME}.err.log
+SyslogIdentifier=${APP_NAME}
+
 # Resource limits
 LimitNOFILE=65536
 LimitNPROC=32768

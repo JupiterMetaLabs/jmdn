@@ -55,7 +55,7 @@ JMDN_ARGS=(
   -blockgen 15050
   -did 0.0.0.0:15052
   -cli 15053
-  -seednode 34.174.94.172:17002
+  -seednode 34.174.233.203:17002
   -facade 8545
   -ws 8546
   -chainID 8000800
