@@ -583,6 +583,10 @@ func GetDBData_Accounts(db *config.PooledConnection, prefix string) ([]string, e
 }
 
 func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
+	if fs.mainDB == nil {
+		return nil, fmt.Errorf("mainDB is nil - FastSync not properly initialized")
+	}
+
 	fmt.Println(">>> [SERVER] Making Default HashMap...")
 	MAP := hashmap.New()
 
@@ -683,6 +687,10 @@ func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
 }
 
 func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
+	if fs.accountsDB == nil {
+		return nil, fmt.Errorf("accountsDB is nil - FastSync not properly initialized")
+	}
+
 	fmt.Println(">>> [SERVER] Making Accounts HashMap...")
 	MAP := hashmap.New()
 
@@ -1202,6 +1210,13 @@ func CheckChecksum(temp *hashmap.HashMap, checksum string) bool {
 
 // handleHashMapExchangeSYNCChunked sends HashMap data in chunks of 100 keys
 func (fs *FastSync) handleHashMapExchangeSYNCChunked(peerID peer.ID, msg *SyncMessage, writer *bufio.Writer, reader *bufio.Reader, stream network.Stream) error {
+	if fs.mainDB == nil {
+		return fmt.Errorf("mainDB is nil - FastSync not properly initialized")
+	}
+	if fs.accountsDB == nil {
+		return fmt.Errorf("accountsDB is nil - FastSync not properly initialized")
+	}
+
 	fmt.Println(">>> [SERVER] Received HashMap Exchange SYNC Request - starting chunked transfer")
 	log.Info().
 		Str("peer", peerID.String()).
