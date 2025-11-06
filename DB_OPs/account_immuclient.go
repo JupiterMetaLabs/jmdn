@@ -403,7 +403,6 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 
 	// Process address: keys first (with LWW logic)
 	for _, e := range addressEntries {
-		var shouldWrite bool = true
 		var incoming Account
 		shouldWrite := false
 
@@ -419,10 +418,11 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 					if existing.UpdatedAt > incoming.UpdatedAt {
 						// Remove from batch map since we're not writing it
 						delete(addressKeysInBatch, e.Key)
-						shouldWrite = false
-					} else if existing.UpdatedAt == incoming.UpdatedAt {
-						// If timestamps are equal, only update if incoming has different balance
-						// This handles race conditions where sync happens during local update
+						continue
+					}
+					// If timestamps are equal, only update if incoming has different balance
+					// This handles race conditions where sync happens during local update
+					if existing.UpdatedAt == incoming.UpdatedAt {
 						if existing.Balance == incoming.Balance {
 							// Same timestamp and balance - skip to avoid unnecessary write
 							delete(addressKeysInBatch, e.Key)
