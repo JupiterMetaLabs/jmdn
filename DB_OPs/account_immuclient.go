@@ -385,10 +385,24 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		addressKeysInBatch[e.Key] = true
 	}
 
+	// Build a map of DID entries grouped by their address key
+	didEntriesByAddress := make(map[string][]struct {
+		Key   string
+		Value []byte
+	})
+	for _, e := range didEntries {
+		var acc Account
+		if err := json.Unmarshal(e.Value, &acc); err == nil {
+			addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
+			didEntriesByAddress[addrKey] = append(didEntriesByAddress[addrKey], e)
+		}
+	}
+
 	ops := make([]*schema.Op, 0, len(entries))
 
 	// Process address: keys first (with LWW logic)
 	for _, e := range addressEntries {
+		var shouldWrite bool = true
 		var incoming Account
 		if err := json.Unmarshal(e.Value, &incoming); err == nil {
 			// Try read existing account
@@ -402,38 +416,36 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 					if existing.UpdatedAt > incoming.UpdatedAt {
 						// Remove from batch map since we're not writing it
 						delete(addressKeysInBatch, e.Key)
-						continue
-					}
-					// If timestamps are equal, only update if incoming has different balance
-					// This handles race conditions where sync happens during local update
-					if existing.UpdatedAt == incoming.UpdatedAt {
+						shouldWrite = false
+					} else if existing.UpdatedAt == incoming.UpdatedAt {
+						// If timestamps are equal, only update if incoming has different balance
+						// This handles race conditions where sync happens during local update
 						if existing.Balance == incoming.Balance {
 							// Same timestamp and balance - skip to avoid unnecessary write
 							delete(addressKeysInBatch, e.Key)
-							continue
+							shouldWrite = false
 						}
-						// Same timestamp but different balance - this shouldn't happen normally,
-						// but we'll use incoming if it has different data (might indicate a merge issue)
+						// Same timestamp but different balance - write it (takes newer data)
 					}
-					// Same timestamp but different balance - write it (takes newer data)
-				} else {
 					// incoming.UpdatedAt > existing.UpdatedAt - we write the newer data
-					PooledConnection.Client.Logger.Logger.Info("Updating account - incoming is newer (LWW)",
-						zap.String("key", e.Key),
-						zap.Int64("existing_updated_at", existing.UpdatedAt),
-						zap.Int64("incoming_updated_at", incoming.UpdatedAt),
-						zap.String("existing_balance", existing.Balance),
-						zap.String("incoming_balance", incoming.Balance),
-						zap.String(logging.Connection_database, config.AccountsDBName),
-						zap.Time(logging.Created_at, time.Now().UTC()),
-						zap.String(logging.Log_file, LOG_FILE),
-						zap.String(logging.Topic, TOPIC),
-						zap.String(logging.Loki_url, LOKI_URL),
-						zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
-					)
+					if shouldWrite && existing.UpdatedAt < incoming.UpdatedAt {
+						PooledConnection.Client.Logger.Logger.Info("Updating account - incoming is newer (LWW)",
+							zap.String("key", e.Key),
+							zap.Int64("existing_updated_at", existing.UpdatedAt),
+							zap.Int64("incoming_updated_at", incoming.UpdatedAt),
+							zap.String("existing_balance", existing.Balance),
+							zap.String("incoming_balance", incoming.Balance),
+							zap.String(logging.Connection_database, config.AccountsDBName),
+							zap.Time(logging.Created_at, time.Now().UTC()),
+							zap.String(logging.Log_file, LOG_FILE),
+							zap.String(logging.Topic, TOPIC),
+							zap.String(logging.Loki_url, LOKI_URL),
+							zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
+						)
+					}
 				}
+				// If existing unmarshal fails, proceed with write (shouldWrite = true)
 			}
-			// If existing unmarshal fails, proceed with write (shouldWrite = true)
 		} else {
 			// Account doesn't exist yet - we'll create it
 			PooledConnection.Client.Logger.Logger.Info("Creating new account during sync",
