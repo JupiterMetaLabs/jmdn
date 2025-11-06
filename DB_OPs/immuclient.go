@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"gossipnode/config"
 	"gossipnode/logging"
@@ -20,24 +19,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const (
-	DEFAULT_PREFIX_TX      = "tx:"
-	PREFIX_BLOCK           = "block:"
-	PREFIX_BLOCK_HASH      = "block:hash:"
-	DEFAULT_PREFIX_RECEIPT = "receipt:"
-)
-
-// Custom errors
-var (
-	ErrEmptyKey        = errors.New("key cannot be empty")
-	ErrEmptyBatch      = errors.New("entries map cannot be empty")
-	ErrNilValue        = errors.New("value cannot be nil")
-	ErrNotFound        = errors.New("key not found")
-	ErrConnectionLost  = errors.New("connection to immudb lost")
-	ErrPoolClosed      = errors.New("connection pool is closed")
-	ErrTokenExpired    = errors.New("authentication token expired")
-	ErrNoAvailableConn = errors.New("no available connections in pool")
-)
 
 // isConnectionError determines if an error is related to connection issues
 func isConnectionError(err error) bool {
@@ -706,10 +687,14 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 		}()
 	}
 
+	batchNum := 0
 	for {
+		batchNum++
 		// Create a batch request
-		keys, err := getKeysBatch(PooledConnection, prefix, batchSize, lastKey)
+		fmt.Printf(">>> [DB] Getting batch %d for prefix '%s' (current count: %d keys)...\n", batchNum, prefix, len(allKeys))
+		rawKeys, err := getKeysBatch(PooledConnection, prefix, batchSize, lastKey)
 		if err != nil {
+			fmt.Printf(">>> [DB] ERROR: Failed to get batch %d for prefix '%s': %v\n", batchNum, prefix, err)
 			PooledConnection.Client.Logger.Logger.Error("Failed to scan keys with prefix: %s (limit: %d)",
 				zap.String("prefix", prefix),
 				zap.Int("limit", batchSize),
@@ -723,21 +708,54 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 			return nil, err
 		}
 
+		// Validate that all keys match the prefix (SeekKey might cause issues)
+		validKeys := make([]string, 0, len(rawKeys))
+		for _, key := range rawKeys {
+			if strings.HasPrefix(key, prefix) {
+				validKeys = append(validKeys, key)
+			} else {
+				// If we get a key that doesn't match the prefix, we've gone past the prefix range
+				fmt.Printf(">>> [DB] WARNING: Key '%s' doesn't match prefix '%s' - stopping scan\n", key, prefix)
+				break
+			}
+		}
+
+		// Check for duplicates
+		keysSet := make(map[string]bool)
+		uniqueKeys := make([]string, 0, len(validKeys))
+		for _, key := range validKeys {
+			if !keysSet[key] {
+				keysSet[key] = true
+				uniqueKeys = append(uniqueKeys, key)
+			} else {
+				fmt.Printf(">>> [DB] WARNING: Duplicate key found: '%s'\n", key)
+			}
+		}
+
+		fmt.Printf(">>> [DB] ✓ Got batch %d: %d raw keys for prefix '%s' (%d valid, %d unique, total so far: %d keys)\n",
+			batchNum, len(rawKeys), prefix, len(validKeys), len(uniqueKeys), len(allKeys)+len(uniqueKeys))
+
 		// If no keys returned, we're done
-		if len(keys) == 0 {
+		if len(uniqueKeys) == 0 {
+			fmt.Printf(">>> [DB] No more valid keys for prefix '%s', stopping\n", prefix)
 			break
 		}
 
 		// Add keys to our result
-		allKeys = append(allKeys, keys...)
+		allKeys = append(allKeys, uniqueKeys...)
+
+		// Use uniqueKeys for the rest of the logic
+		keys := uniqueKeys
 
 		// If we got fewer than batch size, we're done
 		if len(keys) < batchSize {
+			fmt.Printf(">>> [DB] Got fewer than batch size (%d < %d), stopping\n", len(keys), batchSize)
 			break
 		}
 
 		// Set last key for next iteration
 		lastKey = []byte(keys[len(keys)-1])
+		fmt.Printf(">>> [DB] Continuing to next batch for prefix '%s'...\n", prefix)
 	}
 	// Debugging output with a newline for clarity
 	fmt.Printf("Total keys found: %d with Prefix: %s\n", len(allKeys), prefix)
@@ -931,11 +949,13 @@ func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limi
 			zap.String(logging.Function, "DB_OPs.getKeysBatch"),
 		)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		fmt.Printf(">>> [DB] Executing Scan for prefix '%s' (limit: %d, seekKey: %v)...\n", prefix, limit, len(seekKey) > 0)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // Increased timeout for large datasets
 		defer cancel()
 
 		scanResult, err := ic.Client.Scan(ctx, scanReq)
 		if err != nil {
+			fmt.Printf(">>> [DB] ERROR: Scan failed for prefix '%s': %v\n", prefix, err)
 			ic.Logger.Logger.Error("Failed to scan keys with prefix: %s (limit: %d)",
 				zap.String("prefix", prefix),
 				zap.Int("limit", limit),
@@ -948,6 +968,7 @@ func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limi
 			)
 			return nil, err
 		}
+		fmt.Printf(">>> [DB] ✓ Scan completed for prefix '%s': %d entries returned\n", prefix, len(scanResult.Entries))
 		ic.Logger.Logger.Info("Scanned keys with prefix: %s (limit: %d)",
 			zap.String("prefix", prefix),
 			zap.Int("limit", limit),

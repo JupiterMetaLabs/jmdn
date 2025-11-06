@@ -16,9 +16,6 @@ type BFT struct {
 
 // New creates a new BFT instance
 func New(config Config) *BFT {
-	if config.ByzantineTolerance == 0 {
-		config.ByzantineTolerance = (config.MinBuddies - 1) / 3
-	}
 	return &BFT{config: config}
 }
 
@@ -163,22 +160,20 @@ func (b *BFT) validateInputs(myBuddyID string, buddies []BuddyInput) error {
 	return nil
 }
 
+// calculateThreshold calculates the BFT threshold using the standard BFTThreshold formula.
+// Byzantine tolerance is always calculated dynamically from the actual buddy count.
 func (b *BFT) calculateThreshold(buddyCount int) int {
-	f := (buddyCount - 1) / 3
-	if b.config.ByzantineTolerance > 0 {
-		f = b.config.ByzantineTolerance
-	}
-	threshold := 2*f + 1
-	if threshold > buddyCount {
-		threshold = (buddyCount / 2) + 1
-	}
-	return threshold
+	return BFTThreshold(buddyCount)
 }
 
+// CalculateThreshold is the public method that delegates to calculateThreshold.
+// This preserves the existing API while using the centralized BFTThreshold function.
 func (b *BFT) CalculateThreshold(buddyCount int) int {
 	return b.calculateThreshold(buddyCount)
 }
 
+// CanTolerate returns the maximum Byzantine faults that can be tolerated.
+// This delegates to the centralized ByzantineTolerance function.
 func (b *BFT) CanTolerate(buddyCount int) int {
-	return (buddyCount - 1) / 3
+	return ByzantineTolerance(buddyCount)
 }
