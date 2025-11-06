@@ -15,6 +15,7 @@ import (
 	"gossipnode/logging"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -331,7 +332,9 @@ func (s *ImmuDBServer) getDIDDetailsFromAddr(c *gin.Context) {
 	}
 	fmt.Println("addr", addr)
 
-	DIDDocument, err := DB_OPs.GetAccountByDID(&s.accountsdb, addr)
+	fmt.Println("addr", addr)
+
+	DIDDocument, err := DB_OPs.GetAccount(&s.accountsdb, common.HexToAddress(addr))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
