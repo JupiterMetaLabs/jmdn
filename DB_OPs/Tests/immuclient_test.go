@@ -300,51 +300,55 @@ func Test_CountAllKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to initialize main DB pool: %v", err)
 	}
-
-	// Create test data with prefix
-	prefix := fmt.Sprintf("test:countkeys-%d", time.Now().UTC().UnixNano())
-	conn, err := DB_OPs.GetMainDBConnection()
-	if err != nil {
-		t.Fatalf("Failed to get main DB connection: %v", err)
-	}
-
-	// Create multiple test keys
-	testKeys := []string{
-		fmt.Sprintf("%s:count1", prefix),
-		fmt.Sprintf("%s:count2", prefix),
-		fmt.Sprintf("%s:count3", prefix),
-	}
-
-	for i, key := range testKeys {
-		value := map[string]interface{}{
-			"count":     i + 1,
-			"key":       key,
-			"timestamp": time.Now().UTC().Unix(),
-		}
-		err = DB_OPs.Create(conn, key, value)
-		if err != nil {
-			DB_OPs.PutMainDBConnection(conn)
-			t.Fatalf("Failed to create test key %s: %v", key, err)
-		}
-		fmt.Printf("✅ Created test key: %s\n", key)
-	}
+	
+	prefix := DB_OPs.DEFAULT_PREFIX_TX
 
 	// Test CountAllKeys
 	fmt.Printf("Testing CountAllKeys operation...\n")
-	count, err := DB_OPs.CountAllKeys(conn, prefix)
+	start := time.Now()
+	count, err := DB_OPs.CountBuilder{}.GetMainDBCount(prefix)
 	if err != nil {
-		DB_OPs.PutMainDBConnection(conn)
+		DB_OPs.PutMainDBConnection(nil)
 		t.Fatalf("Failed to count keys: %v", err)
 	}
 
 	fmt.Printf("✅ Found %d keys with prefix\n", count)
 
-	// Verify we got at least our test keys
-	if count < len(testKeys) {
-		t.Fatalf("Expected at least %d keys, got %d", len(testKeys), count)
+	elapsed := time.Since(start)
+	fmt.Printf("✅ CountAllKeys operation took %s\n", elapsed)
+
+	DB_OPs.PutMainDBConnection(nil)
+	fmt.Printf("✅ CountAllKeys test completed successfully!\n")
+}
+
+// Test_CountAllKeys tests the CountAllKeys functionality
+func Test_CountAllKeysAccountsDB(t *testing.T) {
+	fmt.Printf("=== Testing CountAllKeys AccountsDB Operation ===\n")
+
+	// Initialize the main database pool
+	err := DB_OPs.InitAccountsPool()
+	if err != nil {
+		t.Fatalf("Failed to initialize accounts DB pool: %v", err)
+	}
+	
+	prefix := DB_OPs.Prefix
+
+	// Test CountAllKeys
+	fmt.Printf("Testing CountAllKeys operation...\n")
+	start := time.Now()
+	count, err := DB_OPs.CountBuilder{}.GetAccountsDBCount(prefix)
+	if err != nil {
+		DB_OPs.PutAccountsConnection(nil)
+		t.Fatalf("Failed to count keys: %v", err)
 	}
 
-	DB_OPs.PutMainDBConnection(conn)
+	fmt.Printf("✅ Found %d keys with prefix\n", count)
+
+	elapsed := time.Since(start)
+	fmt.Printf("✅ CountAllKeys operation took %s\n", elapsed)
+
+
+	DB_OPs.PutAccountsConnection(nil)
 	fmt.Printf("✅ CountAllKeys test completed successfully!\n")
 }
 

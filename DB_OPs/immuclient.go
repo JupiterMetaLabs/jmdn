@@ -890,7 +890,11 @@ func CountTransactionsByAccount(mainDBClient *config.PooledConnection, accountAd
 func CountTransactions(mainDBClient *config.PooledConnection) (int, error) {
 	// This function will scan for keys with the "tx:" prefix and count them.
 	// It's more efficient than fetching all keys.
-	return CountAllKeys(mainDBClient, DEFAULT_PREFIX_TX)
+	count, err := CountBuilder{}.GetMainDBCount(DEFAULT_PREFIX_TX)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // Helper function to get a batch of keys (UNCHANGED - but can optionally use connection pool)

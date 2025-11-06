@@ -1094,60 +1094,11 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 // CountAccounts returns the total number of Accounts in the database.
 // This implementation scans keys without loading them all into memory.
 func CountAccounts(PooledConnection *config.PooledConnection) (int, error) {
-	// Ensure we're using the accounts database, which also handles reconnections.
-	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
-		return 0, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
+	count, err := CountBuilder{}.GetAccountsDBCount(Prefix)
+	if err != nil {
+		return 0, err
 	}
-	ic := PooledConnection.Client
-	var totalKeys int
-	batchSize := 1000 // How many keys to fetch from the DB at a time
-	var lastKey []byte
-
-	for {
-		// Create a fresh context for the scan operation
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		req := &schema.ScanRequest{
-			Prefix:  []byte(Prefix),
-			Limit:   uint64(batchSize),
-			SeekKey: lastKey,
-			Desc:    false,
-		}
-		scanResult, err := ic.Client.Scan(ctx, req)
-		cancel()
-
-		if err != nil {
-			ic.Logger.Logger.Error("Failed to scan for Accounts count",
-				zap.Error(err),
-				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.CountAccounts"),
-			)
-			return 0, fmt.Errorf("failed to scan for Accounts count: %w", err)
-		}
-
-		count := len(scanResult.Entries)
-		totalKeys += count
-
-		if count < batchSize {
-			break // Reached the end of the keys.
-		}
-
-		// Prepare for the next batch scan.
-		lastKey = scanResult.Entries[count-1].Key
-	}
-	ic.Logger.Logger.Info("Successfully retrieved Accounts count",
-		zap.Int(logging.Count, totalKeys),
-		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now().UTC()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, LOKI_URL),
-		zap.String(logging.Function, "DB_OPs.CountAccounts"),
-	)
-	return totalKeys, nil
+	return count, nil
 }
 
 // GetTransactionsByDID retrieves all transactions associated with a given DID
