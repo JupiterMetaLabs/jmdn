@@ -18,24 +18,6 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-const (
-	Prefix    = "address:"
-	DIDPrefix = "did:"
-)
-
-// LOKI_URL will be set conditionally based on whether Loki is enabled
-var LOKI_URL string
-
-const (
-	LOG_FILE        = "ImmuDB.log"
-	LOG_DIR         = "logs"
-	LOKI_BATCH_SIZE = 128 * 1024
-	LOKI_BATCH_WAIT = 1 * time.Second
-	LOKI_TIMEOUT    = 5 * time.Second
-	KEEP_LOGS       = true
-	TOPIC           = "ImmuDB_ImmuClient"
-)
-
 func LoggingStruct() *logging.Logging {
 	return LoggingStructWithLoki(true)
 }
