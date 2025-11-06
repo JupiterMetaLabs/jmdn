@@ -385,11 +385,27 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		addressKeysInBatch[e.Key] = true
 	}
 
+	// Build a map of DID entries grouped by their address key
+	didEntriesByAddress := make(map[string][]struct {
+		Key   string
+		Value []byte
+	})
+	for _, e := range didEntries {
+		var acc Account
+		if err := json.Unmarshal(e.Value, &acc); err != nil {
+			continue
+		}
+		addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
+		didEntriesByAddress[addrKey] = append(didEntriesByAddress[addrKey], e)
+	}
+
 	ops := make([]*schema.Op, 0, len(entries))
 
 	// Process address: keys first (with LWW logic)
 	for _, e := range addressEntries {
 		var incoming Account
+		shouldWrite := false
+
 		if err := json.Unmarshal(e.Value, &incoming); err == nil {
 			// Try read existing account
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -415,31 +431,32 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 						// Same timestamp but different balance - this shouldn't happen normally,
 						// but we'll use incoming if it has different data (might indicate a merge issue)
 					}
-					// Same timestamp but different balance - write it (takes newer data)
+					// incoming.UpdatedAt >= existing.UpdatedAt - we write the newer data
+					shouldWrite = true
 				} else {
-					// incoming.UpdatedAt > existing.UpdatedAt - we write the newer data
-					PooledConnection.Client.Logger.Logger.Info("Updating account - incoming is newer (LWW)",
-						zap.String("key", e.Key),
-						zap.Int64("existing_updated_at", existing.UpdatedAt),
-						zap.Int64("incoming_updated_at", incoming.UpdatedAt),
-						zap.String("existing_balance", existing.Balance),
-						zap.String("incoming_balance", incoming.Balance),
-						zap.String(logging.Connection_database, config.AccountsDBName),
-						zap.Time(logging.Created_at, time.Now().UTC()),
-						zap.String(logging.Log_file, LOG_FILE),
-						zap.String(logging.Topic, TOPIC),
-						zap.String(logging.Loki_url, LOKI_URL),
-						zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
-					)
+					// Existing unmarshal failed, proceed with write
+					shouldWrite = true
 				}
+			} else {
+				// Account doesn't exist yet - we'll create it
+				shouldWrite = true
+				PooledConnection.Client.Logger.Logger.Info("Creating new account during sync",
+					zap.String("key", e.Key),
+					zap.Int64("incoming_updated_at", incoming.UpdatedAt),
+					zap.String("incoming_balance", incoming.Balance),
+					zap.String(logging.Connection_database, config.AccountsDBName),
+					zap.Time(logging.Created_at, time.Now().UTC()),
+					zap.String(logging.Log_file, LOG_FILE),
+					zap.String(logging.Topic, TOPIC),
+					zap.String(logging.Loki_url, LOKI_URL),
+					zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
+				)
 			}
-			// If existing unmarshal fails, proceed with write (shouldWrite = true)
 		} else {
-			// Account doesn't exist yet - we'll create it
-			PooledConnection.Client.Logger.Logger.Info("Creating new account during sync",
+			// Incoming unmarshal failed - skip this entry
+			PooledConnection.Client.Logger.Logger.Warn("Skipping address entry due to unmarshal error",
+				zap.Error(err),
 				zap.String("key", e.Key),
-				zap.Int64("incoming_updated_at", incoming.UpdatedAt),
-				zap.String("incoming_balance", incoming.Balance),
 				zap.String(logging.Connection_database, config.AccountsDBName),
 				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
@@ -447,6 +464,7 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 				zap.String(logging.Loki_url, LOKI_URL),
 				zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
 			)
+			continue
 		}
 
 		if shouldWrite {
