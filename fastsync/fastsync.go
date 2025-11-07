@@ -1162,8 +1162,9 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		Value []byte
 	}
 	// ImmuDB has a limit on entries per transaction (typically 1000-5000)
-	// Using 1000 to be safe and avoid "max number of entries per tx exceeded" errors
-	batchSize := 1000 // Process in batches of 1,000 entries
+	// Using 100 to be safe and avoid gRPC message size limits (32MB default, 200MB max)
+	// Large block values can cause 1000 entries to exceed message size limits
+	batchSize := 100 // Process in batches of 100 entries to avoid message size limits
 	totalEntries := 0
 	blockKeysCount := 0
 	latestBlockCount := 0
@@ -1245,10 +1246,10 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 			fmt.Printf(">>> [DB] Processing batch of %d entries for %s...\n", len(entriesOrdered), dbTypeToString(dbType))
 			if err := fs.batchCreateOrderedWithRetry(entriesOrdered, dbType); err != nil {
 				// If batch is too large, try splitting it into smaller chunks
-				if strings.Contains(err.Error(), "max number of entries per tx exceeded") {
+				if strings.Contains(err.Error(), "max number of entries per tx exceeded") || strings.Contains(err.Error(), "message larger than max") {
 					fmt.Printf(">>> [DB] WARNING: Batch too large, splitting into smaller chunks...\n")
-					// Split into smaller batches of 500
-					chunkSize := 500
+					// Split into smaller batches of 50 to avoid message size limits
+					chunkSize := 50
 					for i := 0; i < len(entriesOrdered); i += chunkSize {
 						end := i + chunkSize
 						if end > len(entriesOrdered) {
@@ -1284,10 +1285,10 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		fmt.Printf(">>> [DB] Processing final batch of %d entries for %s...\n", len(entriesOrdered), dbTypeToString(dbType))
 		if err := fs.batchCreateOrderedWithRetry(entriesOrdered, dbType); err != nil {
 			// If batch is too large, try splitting it into smaller chunks
-			if strings.Contains(err.Error(), "max number of entries per tx exceeded") {
+			if strings.Contains(err.Error(), "max number of entries per tx exceeded") || strings.Contains(err.Error(), "message larger than max") {
 				fmt.Printf(">>> [DB] WARNING: Final batch too large, splitting into smaller chunks...\n")
-				// Split into smaller batches of 500
-				chunkSize := 500
+				// Split into smaller batches of 50 to avoid message size limits
+				chunkSize := 50
 				for i := 0; i < len(entriesOrdered); i += chunkSize {
 					end := i + chunkSize
 					if end > len(entriesOrdered) {
