@@ -678,8 +678,21 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 	fmt.Printf(">>> [CLIENT] Starting to receive chunks (expecting %d chunks)...\n", totalChunks)
 	var allKeys []string
 	receivedChunks := 0
+	lastDeadlineUpdate := time.Now().UTC()
 
 	for receivedChunks < totalChunks {
+		// Extend read deadline periodically during chunk reception to prevent timeout
+		// This is important when server is still batching/computing keys
+		if time.Since(lastDeadlineUpdate) > 30*time.Second {
+			newDeadline := time.Now().UTC().Add(30 * time.Minute)
+			if err := stream.SetReadDeadline(newDeadline); err != nil {
+				fmt.Printf(">>> [CLIENT] WARNING: Failed to extend read deadline: %v\n", err)
+			} else {
+				lastDeadlineUpdate = time.Now().UTC()
+				fmt.Printf(">>> [CLIENT] Extended read deadline (receiving chunk %d/%d)...\n", receivedChunks+1, totalChunks)
+			}
+		}
+
 		fmt.Printf(">>> [CLIENT] Waiting for chunk %d/%d...\n", receivedChunks+1, totalChunks)
 		chunkMsg, err := readMessage(reader, stream)
 		if err != nil {
