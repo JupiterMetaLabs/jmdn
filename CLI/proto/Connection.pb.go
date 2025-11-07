@@ -705,6 +705,66 @@ func (x *DIDRequest) GetDid() string {
 	return ""
 }
 
+type DIDPropagationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Did           string                 `protobuf:"bytes,1,opt,name=did,proto3" json:"did,omitempty"`
+	PublicKey     string                 `protobuf:"bytes,2,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	Balance       string                 `protobuf:"bytes,3,opt,name=balance,proto3" json:"balance,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DIDPropagationRequest) Reset() {
+	*x = DIDPropagationRequest{}
+	mi := &file_Connection_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DIDPropagationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DIDPropagationRequest) ProtoMessage() {}
+
+func (x *DIDPropagationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_Connection_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DIDPropagationRequest.ProtoReflect.Descriptor instead.
+func (*DIDPropagationRequest) Descriptor() ([]byte, []int) {
+	return file_Connection_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *DIDPropagationRequest) GetDid() string {
+	if x != nil {
+		return x.Did
+	}
+	return ""
+}
+
+func (x *DIDPropagationRequest) GetPublicKey() string {
+	if x != nil {
+		return x.PublicKey
+	}
+	return ""
+}
+
+func (x *DIDPropagationRequest) GetBalance() string {
+	if x != nil {
+		return x.Balance
+	}
+	return ""
+}
+
 type FirstSyncRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Peer          string                 `protobuf:"bytes,1,opt,name=peer,proto3" json:"peer,omitempty"`
@@ -715,7 +775,7 @@ type FirstSyncRequest struct {
 
 func (x *FirstSyncRequest) Reset() {
 	*x = FirstSyncRequest{}
-	mi := &file_Connection_proto_msgTypes[11]
+	mi := &file_Connection_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -727,7 +787,7 @@ func (x *FirstSyncRequest) String() string {
 func (*FirstSyncRequest) ProtoMessage() {}
 
 func (x *FirstSyncRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_Connection_proto_msgTypes[11]
+	mi := &file_Connection_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -740,7 +800,7 @@ func (x *FirstSyncRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FirstSyncRequest.ProtoReflect.Descriptor instead.
 func (*FirstSyncRequest) Descriptor() ([]byte, []int) {
-	return file_Connection_proto_rawDescGZIP(), []int{11}
+	return file_Connection_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *FirstSyncRequest) GetPeer() string {
@@ -757,6 +817,170 @@ func (x *FirstSyncRequest) GetMode() string {
 	return ""
 }
 
+type SyncInfo struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	BatchSize          int64                  `protobuf:"varint,1,opt,name=batch_size,json=batchSize,proto3" json:"batch_size,omitempty"`
+	RequestTimeoutSec  int64                  `protobuf:"varint,2,opt,name=request_timeout_sec,json=requestTimeoutSec,proto3" json:"request_timeout_sec,omitempty"`
+	ResponseTimeoutSec int64                  `protobuf:"varint,3,opt,name=response_timeout_sec,json=responseTimeoutSec,proto3" json:"response_timeout_sec,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *SyncInfo) Reset() {
+	*x = SyncInfo{}
+	mi := &file_Connection_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SyncInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SyncInfo) ProtoMessage() {}
+
+func (x *SyncInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_Connection_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SyncInfo.ProtoReflect.Descriptor instead.
+func (*SyncInfo) Descriptor() ([]byte, []int) {
+	return file_Connection_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *SyncInfo) GetBatchSize() int64 {
+	if x != nil {
+		return x.BatchSize
+	}
+	return 0
+}
+
+func (x *SyncInfo) GetRequestTimeoutSec() int64 {
+	if x != nil {
+		return x.RequestTimeoutSec
+	}
+	return 0
+}
+
+func (x *SyncInfo) GetResponseTimeoutSec() int64 {
+	if x != nil {
+		return x.ResponseTimeoutSec
+	}
+	return 0
+}
+
+type GethStatus struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ChainId       int32                  `protobuf:"varint,1,opt,name=chain_id,json=chainId,proto3" json:"chain_id,omitempty"`
+	FacadePort    int32                  `protobuf:"varint,2,opt,name=facade_port,json=facadePort,proto3" json:"facade_port,omitempty"`
+	WsPort        int32                  `protobuf:"varint,3,opt,name=ws_port,json=wsPort,proto3" json:"ws_port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GethStatus) Reset() {
+	*x = GethStatus{}
+	mi := &file_Connection_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GethStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GethStatus) ProtoMessage() {}
+
+func (x *GethStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_Connection_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GethStatus.ProtoReflect.Descriptor instead.
+func (*GethStatus) Descriptor() ([]byte, []int) {
+	return file_Connection_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *GethStatus) GetChainId() int32 {
+	if x != nil {
+		return x.ChainId
+	}
+	return 0
+}
+
+func (x *GethStatus) GetFacadePort() int32 {
+	if x != nil {
+		return x.FacadePort
+	}
+	return 0
+}
+
+func (x *GethStatus) GetWsPort() int32 {
+	if x != nil {
+		return x.WsPort
+	}
+	return 0
+}
+
+type AliasList struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Aliases       []string               `protobuf:"bytes,1,rep,name=aliases,proto3" json:"aliases,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AliasList) Reset() {
+	*x = AliasList{}
+	mi := &file_Connection_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AliasList) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AliasList) ProtoMessage() {}
+
+func (x *AliasList) ProtoReflect() protoreflect.Message {
+	mi := &file_Connection_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AliasList.ProtoReflect.Descriptor instead.
+func (*AliasList) Descriptor() ([]byte, []int) {
+	return file_Connection_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *AliasList) GetAliases() []string {
+	if x != nil {
+		return x.Aliases
+	}
+	return nil
+}
+
 type OperationResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
@@ -767,7 +991,7 @@ type OperationResponse struct {
 
 func (x *OperationResponse) Reset() {
 	*x = OperationResponse{}
-	mi := &file_Connection_proto_msgTypes[12]
+	mi := &file_Connection_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -779,7 +1003,7 @@ func (x *OperationResponse) String() string {
 func (*OperationResponse) ProtoMessage() {}
 
 func (x *OperationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_Connection_proto_msgTypes[12]
+	mi := &file_Connection_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -792,7 +1016,7 @@ func (x *OperationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationResponse.ProtoReflect.Descriptor instead.
 func (*OperationResponse) Descriptor() ([]byte, []int) {
-	return file_Connection_proto_rawDescGZIP(), []int{12}
+	return file_Connection_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *OperationResponse) GetSuccess() bool {
@@ -819,7 +1043,7 @@ type CleanPeersResponse struct {
 
 func (x *CleanPeersResponse) Reset() {
 	*x = CleanPeersResponse{}
-	mi := &file_Connection_proto_msgTypes[13]
+	mi := &file_Connection_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -831,7 +1055,7 @@ func (x *CleanPeersResponse) String() string {
 func (*CleanPeersResponse) ProtoMessage() {}
 
 func (x *CleanPeersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_Connection_proto_msgTypes[13]
+	mi := &file_Connection_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -844,7 +1068,7 @@ func (x *CleanPeersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CleanPeersResponse.ProtoReflect.Descriptor instead.
 func (*CleanPeersResponse) Descriptor() ([]byte, []int) {
-	return file_Connection_proto_rawDescGZIP(), []int{13}
+	return file_Connection_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CleanPeersResponse) GetCleanedCount() int32 {
@@ -871,7 +1095,7 @@ type DatabaseStates struct {
 
 func (x *DatabaseStates) Reset() {
 	*x = DatabaseStates{}
-	mi := &file_Connection_proto_msgTypes[14]
+	mi := &file_Connection_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -883,7 +1107,7 @@ func (x *DatabaseStates) String() string {
 func (*DatabaseStates) ProtoMessage() {}
 
 func (x *DatabaseStates) ProtoReflect() protoreflect.Message {
-	mi := &file_Connection_proto_msgTypes[14]
+	mi := &file_Connection_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -896,7 +1120,7 @@ func (x *DatabaseStates) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseStates.ProtoReflect.Descriptor instead.
 func (*DatabaseStates) Descriptor() ([]byte, []int) {
-	return file_Connection_proto_rawDescGZIP(), []int{14}
+	return file_Connection_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *DatabaseStates) GetMainDb() *DatabaseState {
@@ -969,10 +1193,28 @@ const file_Connection_proto_rawDesc = "" +
 	"\x0fremote_filename\x18\x03 \x01(\tR\x0eremoteFilename\"\x1e\n" +
 	"\n" +
 	"DIDRequest\x12\x10\n" +
-	"\x03did\x18\x01 \x01(\tR\x03did\":\n" +
+	"\x03did\x18\x01 \x01(\tR\x03did\"b\n" +
+	"\x15DIDPropagationRequest\x12\x10\n" +
+	"\x03did\x18\x01 \x01(\tR\x03did\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\x02 \x01(\tR\tpublicKey\x12\x18\n" +
+	"\abalance\x18\x03 \x01(\tR\abalance\":\n" +
 	"\x10FirstSyncRequest\x12\x12\n" +
 	"\x04peer\x18\x01 \x01(\tR\x04peer\x12\x12\n" +
-	"\x04mode\x18\x02 \x01(\tR\x04mode\"G\n" +
+	"\x04mode\x18\x02 \x01(\tR\x04mode\"\x8b\x01\n" +
+	"\bSyncInfo\x12\x1d\n" +
+	"\n" +
+	"batch_size\x18\x01 \x01(\x03R\tbatchSize\x12.\n" +
+	"\x13request_timeout_sec\x18\x02 \x01(\x03R\x11requestTimeoutSec\x120\n" +
+	"\x14response_timeout_sec\x18\x03 \x01(\x03R\x12responseTimeoutSec\"a\n" +
+	"\n" +
+	"GethStatus\x12\x19\n" +
+	"\bchain_id\x18\x01 \x01(\x05R\achainId\x12\x1f\n" +
+	"\vfacade_port\x18\x02 \x01(\x05R\n" +
+	"facadePort\x12\x17\n" +
+	"\aws_port\x18\x03 \x01(\x05R\x06wsPort\"%\n" +
+	"\tAliasList\x12\x18\n" +
+	"\aaliases\x18\x01 \x03(\tR\aaliases\"G\n" +
 	"\x11OperationResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"O\n" +
@@ -982,7 +1224,7 @@ const file_Connection_proto_rawDesc = "" +
 	"\x0eDatabaseStates\x12+\n" +
 	"\amain_db\x18\x01 \x01(\v2\x12.cli.DatabaseStateR\x06mainDb\x123\n" +
 	"\vaccounts_db\x18\x02 \x01(\v2\x12.cli.DatabaseStateR\n" +
-	"accountsDb2\xc1\x06\n" +
+	"accountsDb2\xfb\b\n" +
 	"\n" +
 	"CLIService\x124\n" +
 	"\tListPeers\x12\x16.google.protobuf.Empty\x1a\r.cli.PeerList\"\x00\x125\n" +
@@ -996,12 +1238,17 @@ const file_Connection_proto_rawDesc = "" +
 	"\bSendFile\x12\x10.cli.FileRequest\x1a\x16.cli.OperationResponse\"\x00\x12A\n" +
 	"\x10BroadcastMessage\x12\x13.cli.MessageRequest\x1a\x16.cli.OperationResponse\"\x00\x12>\n" +
 	"\x0fGetMessageStats\x12\x16.google.protobuf.Empty\x1a\x11.cli.MessageStats\"\x00\x12-\n" +
-	"\x06GetDID\x12\x0f.cli.DIDRequest\x1a\x10.cli.DIDDocument\"\x00\x12.\n" +
+	"\x06GetDID\x12\x0f.cli.DIDRequest\x1a\x10.cli.DIDDocument\"\x00\x12D\n" +
+	"\fPropagateDID\x12\x1a.cli.DIDPropagationRequest\x1a\x16.cli.OperationResponse\"\x00\x12.\n" +
 	"\bFastSync\x12\x10.cli.PeerRequest\x1a\x0e.cli.SyncStats\"\x00\x124\n" +
 	"\tFirstSync\x12\x15.cli.FirstSyncRequest\x1a\x0e.cli.SyncStats\"\x00\x12A\n" +
 	"\x10GetDatabaseState\x12\x16.google.protobuf.Empty\x1a\x13.cli.DatabaseStates\"\x00\x123\n" +
 	"\vReturnAddrs\x12\x16.google.protobuf.Empty\x1a\n" +
-	".cli.Addrs\"\x00B\tZ\a./protob\x06proto3"
+	".cli.Addrs\"\x00\x126\n" +
+	"\vGetSyncInfo\x12\x16.google.protobuf.Empty\x1a\r.cli.SyncInfo\"\x00\x12:\n" +
+	"\rGetGethStatus\x12\x16.google.protobuf.Empty\x1a\x0f.cli.GethStatus\"\x00\x12E\n" +
+	"\x11DiscoverNeighbors\x12\x16.google.protobuf.Empty\x1a\x16.cli.OperationResponse\"\x00\x127\n" +
+	"\vListAliases\x12\x16.google.protobuf.Empty\x1a\x0e.cli.AliasList\"\x00B\tZ\a./protob\x06proto3"
 
 var (
 	file_Connection_proto_rawDescOnce sync.Once
@@ -1015,7 +1262,7 @@ func file_Connection_proto_rawDescGZIP() []byte {
 	return file_Connection_proto_rawDescData
 }
 
-var file_Connection_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_Connection_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_Connection_proto_goTypes = []any{
 	(*Peer)(nil),                  // 0: cli.Peer
 	(*PeerList)(nil),              // 1: cli.PeerList
@@ -1028,51 +1275,65 @@ var file_Connection_proto_goTypes = []any{
 	(*MessageRequest)(nil),        // 8: cli.MessageRequest
 	(*FileRequest)(nil),           // 9: cli.FileRequest
 	(*DIDRequest)(nil),            // 10: cli.DIDRequest
-	(*FirstSyncRequest)(nil),      // 11: cli.FirstSyncRequest
-	(*OperationResponse)(nil),     // 12: cli.OperationResponse
-	(*CleanPeersResponse)(nil),    // 13: cli.CleanPeersResponse
-	(*DatabaseStates)(nil),        // 14: cli.DatabaseStates
-	(*timestamppb.Timestamp)(nil), // 15: google.protobuf.Timestamp
-	(*emptypb.Empty)(nil),         // 16: google.protobuf.Empty
+	(*DIDPropagationRequest)(nil), // 11: cli.DIDPropagationRequest
+	(*FirstSyncRequest)(nil),      // 12: cli.FirstSyncRequest
+	(*SyncInfo)(nil),              // 13: cli.SyncInfo
+	(*GethStatus)(nil),            // 14: cli.GethStatus
+	(*AliasList)(nil),             // 15: cli.AliasList
+	(*OperationResponse)(nil),     // 16: cli.OperationResponse
+	(*CleanPeersResponse)(nil),    // 17: cli.CleanPeersResponse
+	(*DatabaseStates)(nil),        // 18: cli.DatabaseStates
+	(*timestamppb.Timestamp)(nil), // 19: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),         // 20: google.protobuf.Empty
 }
 var file_Connection_proto_depIdxs = []int32{
 	0,  // 0: cli.PeerList.peers:type_name -> cli.Peer
-	15, // 1: cli.DIDDocument.created_at:type_name -> google.protobuf.Timestamp
-	15, // 2: cli.DIDDocument.updated_at:type_name -> google.protobuf.Timestamp
+	19, // 1: cli.DIDDocument.created_at:type_name -> google.protobuf.Timestamp
+	19, // 2: cli.DIDDocument.updated_at:type_name -> google.protobuf.Timestamp
 	3,  // 3: cli.SyncStats.main_state:type_name -> cli.DatabaseState
 	3,  // 4: cli.SyncStats.accounts_state:type_name -> cli.DatabaseState
 	3,  // 5: cli.DatabaseStates.main_db:type_name -> cli.DatabaseState
 	3,  // 6: cli.DatabaseStates.accounts_db:type_name -> cli.DatabaseState
-	16, // 7: cli.CLIService.ListPeers:input_type -> google.protobuf.Empty
+	20, // 7: cli.CLIService.ListPeers:input_type -> google.protobuf.Empty
 	7,  // 8: cli.CLIService.AddPeer:input_type -> cli.PeerRequest
 	7,  // 9: cli.CLIService.RemovePeer:input_type -> cli.PeerRequest
-	16, // 10: cli.CLIService.CleanPeers:input_type -> google.protobuf.Empty
+	20, // 10: cli.CLIService.CleanPeers:input_type -> google.protobuf.Empty
 	8,  // 11: cli.CLIService.SendMessage:input_type -> cli.MessageRequest
 	8,  // 12: cli.CLIService.SendYggdrasilMessage:input_type -> cli.MessageRequest
 	9,  // 13: cli.CLIService.SendFile:input_type -> cli.FileRequest
 	8,  // 14: cli.CLIService.BroadcastMessage:input_type -> cli.MessageRequest
-	16, // 15: cli.CLIService.GetMessageStats:input_type -> google.protobuf.Empty
+	20, // 15: cli.CLIService.GetMessageStats:input_type -> google.protobuf.Empty
 	10, // 16: cli.CLIService.GetDID:input_type -> cli.DIDRequest
-	7,  // 17: cli.CLIService.FastSync:input_type -> cli.PeerRequest
-	11, // 18: cli.CLIService.FirstSync:input_type -> cli.FirstSyncRequest
-	16, // 19: cli.CLIService.GetDatabaseState:input_type -> google.protobuf.Empty
-	16, // 20: cli.CLIService.ReturnAddrs:input_type -> google.protobuf.Empty
-	1,  // 21: cli.CLIService.ListPeers:output_type -> cli.PeerList
-	12, // 22: cli.CLIService.AddPeer:output_type -> cli.OperationResponse
-	12, // 23: cli.CLIService.RemovePeer:output_type -> cli.OperationResponse
-	13, // 24: cli.CLIService.CleanPeers:output_type -> cli.CleanPeersResponse
-	12, // 25: cli.CLIService.SendMessage:output_type -> cli.OperationResponse
-	12, // 26: cli.CLIService.SendYggdrasilMessage:output_type -> cli.OperationResponse
-	12, // 27: cli.CLIService.SendFile:output_type -> cli.OperationResponse
-	12, // 28: cli.CLIService.BroadcastMessage:output_type -> cli.OperationResponse
-	2,  // 29: cli.CLIService.GetMessageStats:output_type -> cli.MessageStats
-	4,  // 30: cli.CLIService.GetDID:output_type -> cli.DIDDocument
-	5,  // 31: cli.CLIService.FastSync:output_type -> cli.SyncStats
-	5,  // 32: cli.CLIService.FirstSync:output_type -> cli.SyncStats
-	14, // 33: cli.CLIService.GetDatabaseState:output_type -> cli.DatabaseStates
-	6,  // 34: cli.CLIService.ReturnAddrs:output_type -> cli.Addrs
-	21, // [21:35] is the sub-list for method output_type
-	7,  // [7:21] is the sub-list for method input_type
+	11, // 17: cli.CLIService.PropagateDID:input_type -> cli.DIDPropagationRequest
+	7,  // 18: cli.CLIService.FastSync:input_type -> cli.PeerRequest
+	12, // 19: cli.CLIService.FirstSync:input_type -> cli.FirstSyncRequest
+	20, // 20: cli.CLIService.GetDatabaseState:input_type -> google.protobuf.Empty
+	20, // 21: cli.CLIService.ReturnAddrs:input_type -> google.protobuf.Empty
+	20, // 22: cli.CLIService.GetSyncInfo:input_type -> google.protobuf.Empty
+	20, // 23: cli.CLIService.GetGethStatus:input_type -> google.protobuf.Empty
+	20, // 24: cli.CLIService.DiscoverNeighbors:input_type -> google.protobuf.Empty
+	20, // 25: cli.CLIService.ListAliases:input_type -> google.protobuf.Empty
+	1,  // 26: cli.CLIService.ListPeers:output_type -> cli.PeerList
+	16, // 27: cli.CLIService.AddPeer:output_type -> cli.OperationResponse
+	16, // 28: cli.CLIService.RemovePeer:output_type -> cli.OperationResponse
+	17, // 29: cli.CLIService.CleanPeers:output_type -> cli.CleanPeersResponse
+	16, // 30: cli.CLIService.SendMessage:output_type -> cli.OperationResponse
+	16, // 31: cli.CLIService.SendYggdrasilMessage:output_type -> cli.OperationResponse
+	16, // 32: cli.CLIService.SendFile:output_type -> cli.OperationResponse
+	16, // 33: cli.CLIService.BroadcastMessage:output_type -> cli.OperationResponse
+	2,  // 34: cli.CLIService.GetMessageStats:output_type -> cli.MessageStats
+	4,  // 35: cli.CLIService.GetDID:output_type -> cli.DIDDocument
+	16, // 36: cli.CLIService.PropagateDID:output_type -> cli.OperationResponse
+	5,  // 37: cli.CLIService.FastSync:output_type -> cli.SyncStats
+	5,  // 38: cli.CLIService.FirstSync:output_type -> cli.SyncStats
+	18, // 39: cli.CLIService.GetDatabaseState:output_type -> cli.DatabaseStates
+	6,  // 40: cli.CLIService.ReturnAddrs:output_type -> cli.Addrs
+	13, // 41: cli.CLIService.GetSyncInfo:output_type -> cli.SyncInfo
+	14, // 42: cli.CLIService.GetGethStatus:output_type -> cli.GethStatus
+	16, // 43: cli.CLIService.DiscoverNeighbors:output_type -> cli.OperationResponse
+	15, // 44: cli.CLIService.ListAliases:output_type -> cli.AliasList
+	26, // [26:45] is the sub-list for method output_type
+	7,  // [7:26] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name
 	7,  // [7:7] is the sub-list for extension extendee
 	0,  // [0:7] is the sub-list for field type_name
@@ -1089,7 +1350,7 @@ func file_Connection_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_Connection_proto_rawDesc), len(file_Connection_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   15,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
