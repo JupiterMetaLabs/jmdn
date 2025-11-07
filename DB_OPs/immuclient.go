@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"gossipnode/config"
 	"gossipnode/logging"
@@ -20,24 +19,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const (
-	DEFAULT_PREFIX_TX      = "tx:"
-	PREFIX_BLOCK           = "block:"
-	PREFIX_BLOCK_HASH      = "block:hash:"
-	DEFAULT_PREFIX_RECEIPT = "receipt:"
-)
-
-// Custom errors
-var (
-	ErrEmptyKey        = errors.New("key cannot be empty")
-	ErrEmptyBatch      = errors.New("entries map cannot be empty")
-	ErrNilValue        = errors.New("value cannot be nil")
-	ErrNotFound        = errors.New("key not found")
-	ErrConnectionLost  = errors.New("connection to immudb lost")
-	ErrPoolClosed      = errors.New("connection pool is closed")
-	ErrTokenExpired    = errors.New("authentication token expired")
-	ErrNoAvailableConn = errors.New("no available connections in pool")
-)
 
 // isConnectionError determines if an error is related to connection issues
 func isConnectionError(err error) bool {
@@ -909,7 +890,11 @@ func CountTransactionsByAccount(mainDBClient *config.PooledConnection, accountAd
 func CountTransactions(mainDBClient *config.PooledConnection) (int, error) {
 	// This function will scan for keys with the "tx:" prefix and count them.
 	// It's more efficient than fetching all keys.
-	return CountAllKeys(mainDBClient, DEFAULT_PREFIX_TX)
+	count, err := CountBuilder{}.GetMainDBCount(DEFAULT_PREFIX_TX)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // Helper function to get a batch of keys (UNCHANGED - but can optionally use connection pool)

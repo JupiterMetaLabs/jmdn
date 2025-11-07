@@ -330,6 +330,7 @@ func (s *ImmuDBServer) getDIDDetailsFromAddr(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "addr query parameter is required"})
 		return
 	}
+	fmt.Println("addr", addr)
 
 	fmt.Println("addr", addr)
 

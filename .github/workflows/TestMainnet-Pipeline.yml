@@ -1,40 +1,40 @@
-name: Deploy JMDN via Ansible
+# name: Deploy JMDN via Ansible 
 
-on:
-  push:
-    branches:
-      - "T-Freeze"
+# on:
+#   push:
+#     branches:
+#       - "T-Freeze"
 
-jobs:
-  deploy:
-    name: Run Ansible Playbook
-    runs-on: ubuntu-latest
+# jobs:
+#   deploy:
+#     name: Run Ansible Playbook
+#     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
 
-      - name: Set up SSH key for Ansible server
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.ANSIBLE_SSH_KEY }}
+#       - name: Set up SSH key for Ansible server
+#         uses: webfactory/ssh-agent@v0.9.0
+#         with:
+#           ssh-private-key: ${{ secrets.ANSIBLE_SSH_KEY }}
 
-      - name: Run Ansible playbook on remote server
-        env:
-          ANSIBLE_HOST: ${{ secrets.ANSIBLE_HOST }}
-          ANSIBLE_USER: ${{ secrets.ANSIBLE_USER }}
-        run: |
-          echo "🔄 Starting deployment on $ANSIBLE_HOST..."
-          ssh -o StrictHostKeyChecking=no $ANSIBLE_USER@$ANSIBLE_HOST "
-            cd /opt/ansible/project &&
-            ansible-playbook -i inventory.ini run-deploy.yml ||
-            (echo '❌ Some nodes failed. Check logs above.' && exit 1)
-          "
+#       - name: Run Ansible playbook on remote server
+#         env:
+#           ANSIBLE_HOST: ${{ secrets.ANSIBLE_HOST }}
+#           ANSIBLE_USER: ${{ secrets.ANSIBLE_USER }}
+#         run: |
+#           echo "🔄 Starting deployment on $ANSIBLE_HOST..."
+#           ssh -o StrictHostKeyChecking=no $ANSIBLE_USER@$ANSIBLE_HOST "
+#             cd /opt/ansible/project &&
+#             ansible-playbook -i inventory.ini run-deploy.yml ||
+#             (echo '❌ Some nodes failed. Check logs above.' && exit 1)
+#           "
 
-      - name: ✅ Success
-        if: success()
-        run: echo "✅ Deployment completed successfully on branch T-Freeze"
+#       - name: ✅ Success
+#         if: success()
+#         run: echo "✅ Deployment completed successfully on branch T-Freeze"
 
-      - name: ❌ Failure
-        if: failure()
-        run: echo "❌ Deployment failed — check the logs above for details."
+#       - name: ❌ Failure
+#         if: failure()
+#         run: echo "❌ Deployment failed — check the logs above for details."
