@@ -151,17 +151,52 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 		}
 
 		// Interactive mode: read from stdin
-		defer func() {
-			fmt.Println("Exiting...")
-			close(exitChan)
-		}()
-
+		// But if stdin closes (EOF), switch to signal-based waiting instead of exiting
 		fmt.Println()
 		scanner := bufio.NewScanner(os.Stdin)
 		printPrompt()
+
+		// Try to read first line - if EOF immediately, switch to non-interactive mode
+		if !scanner.Scan() {
+			// EOF immediately - stdin not actually available, switch to signal mode
+			if err := scanner.Err(); err != nil {
+				log.Printf("Scanner error: %v", err)
+			}
+			fmt.Println("Stdin closed immediately - switching to non-interactive mode")
+			// Wait for signals instead of exiting
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			select {
+			case sig := <-sigCh:
+				fmt.Printf("Received signal: %v\n", sig)
+				close(exitChan)
+			case <-ctx.Done():
+				close(exitChan)
+			}
+			return
+		}
+
+		// Process first input
+		input := strings.TrimSpace(scanner.Text())
+		if input == "stopService" {
+			fmt.Println("Exiting...")
+			close(exitChan)
+			return
+		}
+
+		parts := strings.SplitN(input, " ", 4)
+		if len(parts) > 0 {
+			h.handleCommand(parts)
+		}
+		printPrompt()
+
+		// Continue reading from stdin
+		// If stdin closes later, switch to signal mode instead of exiting
 		for scanner.Scan() {
 			input := strings.TrimSpace(scanner.Text())
 			if input == "stopService" {
+				fmt.Println("Exiting...")
+				close(exitChan)
 				return
 			}
 
@@ -174,10 +209,20 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 			printPrompt()
 		}
 
-		// If scanner exits (EOF), check if we're in interactive mode
-		// If stdin was closed but we're still interactive, exit gracefully
+		// Scanner exited (EOF) - stdin closed, switch to signal mode
 		if err := scanner.Err(); err != nil {
 			log.Printf("Scanner error: %v", err)
+		}
+		fmt.Println("Stdin closed - switching to non-interactive mode")
+		// Wait for signals instead of exiting
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		select {
+		case sig := <-sigCh:
+			fmt.Printf("Received signal: %v\n", sig)
+			close(exitChan)
+		case <-ctx.Done():
+			close(exitChan)
 		}
 	}()
 
