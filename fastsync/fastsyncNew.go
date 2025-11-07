@@ -480,6 +480,19 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 				break
 			}
 
+			// CRITICAL: Skip the first key if it matches lastKey (SeekKey can include the key itself)
+			// This prevents duplicates when using SeekKey with lexicographically ordered keys
+			// Immudb returns keys lexicographically: block:1, block:10, block:100, block:1000, etc.
+			// When using SeekKey, it may include the SeekKey itself in the next batch
+			if lastKey != nil && len(keys) > 0 && string(keys[0]) == string(lastKey) {
+				fmt.Printf(">>> [SERVER] Skipping duplicate key '%s' (matches lastKey from previous batch)\n", keys[0])
+				keys = keys[1:]
+				if len(keys) == 0 {
+					// If we skipped the only key, get next batch
+					continue
+				}
+			}
+
 			totalChecked += len(keys)
 
 			// Check each key against client HashMap - only keep keys NOT in client HashMap
@@ -1095,7 +1108,11 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 	for {
 		msg, err := readMessage(reader, stream)
 		if err != nil {
-			if err != io.EOF {
+			if err == io.EOF {
+				// EOF is expected when client closes stream after sync completion
+				log.Debug().Msg("Stream closed by client (EOF) - sync likely completed successfully")
+				fmt.Printf(">>> [SERVER] Stream closed by client (EOF) - sync completed\n")
+			} else {
 				log.Error().Err(err).Msg("Error reading from stream")
 				fmt.Printf(">>> [SERVER] ERROR reading message: %v\n", err)
 			}
@@ -1872,6 +1889,21 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 
 	// Process accounts DB if it has entries
 	if msg.HashMap.Accounts_HashMap != nil && msg.HashMap.Accounts_HashMap.Size() > 0 {
+		// Count address and did keys in HashMap for debugging
+		addressKeyCount := 0
+		didKeyCount := 0
+		for _, key := range msg.HashMap.Accounts_HashMap.Keys() {
+			if strings.HasPrefix(key, "address:") {
+				addressKeyCount++
+			} else if strings.HasPrefix(key, "did:") {
+				didKeyCount++
+			}
+		}
+		fmt.Printf(">>> [SERVER] AccountsDB HashMap breakdown for AVRO creation:\n")
+		fmt.Printf(">>> [SERVER]   Total keys: %d\n", msg.HashMap.Accounts_HashMap.Size())
+		fmt.Printf(">>> [SERVER]   Address keys: %d\n", addressKeyCount)
+		fmt.Printf(">>> [SERVER]   DID keys: %d\n", didKeyCount)
+
 		accountsCfg := DB_OPs.Config{
 			Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
 			Username:   config.DBUsername,
@@ -1883,6 +1915,8 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 		log.Info().
 			Str("peer", peerID.String()).
 			Int("keys", msg.HashMap.Accounts_HashMap.Size()).
+			Int("address_keys", addressKeyCount).
+			Int("did_keys", didKeyCount).
 			Msg("Creating targeted backup from Accounts HashMap")
 
 		err := DB_OPs.BackupFromHashMap(accountsCfg, msg.HashMap.Accounts_HashMap)
