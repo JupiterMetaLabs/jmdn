@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"gossipnode/Block"
@@ -132,19 +134,27 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 
 	// Command-line input loop
 	go func() {
+		// Check if stdin is available (interactive mode)
+		if !isInteractive() {
+			fmt.Println("Running in non-interactive mode - CLI will run with gRPC server only")
+			// In non-interactive mode, wait for signals (SIGTERM/SIGINT) from systemd
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			select {
+			case sig := <-sigCh:
+				fmt.Printf("Received signal: %v\n", sig)
+				close(exitChan)
+			case <-ctx.Done():
+				close(exitChan)
+			}
+			return
+		}
+
+		// Interactive mode: read from stdin
 		defer func() {
 			fmt.Println("Exiting...")
 			close(exitChan)
 		}()
-
-		// Check if stdin is available (interactive mode)
-		if !isInteractive() {
-			fmt.Println("Running in non-interactive mode - CLI will run with gRPC server only")
-			// In non-interactive mode, just wait for the gRPC server
-			// The CLI will be accessible via gRPC calls
-			<-ctx.Done()
-			return
-		}
 
 		fmt.Println()
 		scanner := bufio.NewScanner(os.Stdin)
@@ -162,6 +172,12 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 
 			h.handleCommand(parts)
 			printPrompt()
+		}
+
+		// If scanner exits (EOF), check if we're in interactive mode
+		// If stdin was closed but we're still interactive, exit gracefully
+		if err := scanner.Err(); err != nil {
+			log.Printf("Scanner error: %v", err)
 		}
 	}()
 
