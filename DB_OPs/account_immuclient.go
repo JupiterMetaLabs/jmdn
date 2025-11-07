@@ -1453,7 +1453,7 @@ func reconnectToAccountsDB(PooledConnection *config.PooledConnection) error {
 	opts := client.DefaultOptions().
 		WithAddress(config.DBAddress).
 		WithPort(config.DBPort).
-		WithMaxRecvMsgSize(1024 * 1024 * 20) // 20MB message size
+		WithMaxRecvMsgSize(1024 * 1024 * 200) // 20MB message size
 
 	// Create context with timeout for the connection attempt
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
