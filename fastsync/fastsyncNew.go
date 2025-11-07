@@ -441,6 +441,22 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 		prefixBlockKeysInSync := 0
 		prefixBlockKeysSkipped := 0
 
+		// Use smaller batch size for large prefixes to avoid gRPC message size limits
+		// block: keys can be very large (each block contains full transaction data)
+		// gRPC has a 20MB message size limit, so we use much smaller batches for block: prefix
+		// Note: Scan returns entries (key+value), so even small batches can be large for blocks
+		// Error showed 97MB for 1000 blocks, so ~97KB per block. Using 20 blocks = ~2MB (safe margin)
+		actualBatchSize := batchSize
+		switch prefix {
+		case "block:":
+			actualBatchSize = 20 // Very small batch for blocks - each block ~97KB, so 20 blocks = ~2MB (well under 20MB limit)
+			fmt.Printf(">>> [SERVER] Using reduced batch size %d for 'block:' prefix (to avoid gRPC 20MB message size limit)\n", actualBatchSize)
+		case "tx:", "tx_processed:":
+			actualBatchSize = 200 // Medium batch for transactions
+		case "tx_processing:":
+			actualBatchSize = 500 // Small prefix, can use larger batches
+		}
+
 		for {
 			batchNum++
 			if batchNum%100 == 0 {
@@ -449,7 +465,7 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 			}
 
 			// Get batch of keys from database
-			keys, err := fs.getKeysBatchIncremental(db, prefix, batchSize, lastKey)
+			keys, err := fs.getKeysBatchIncremental(db, prefix, actualBatchSize, lastKey)
 			if err != nil {
 				fmt.Printf(">>> [SERVER] ERROR: Failed to get batch for '%s': %v\n", prefix, err)
 				return nil, fmt.Errorf("failed to get keys batch for prefix %s: %w", prefix, err)
@@ -583,10 +599,6 @@ func GetDBData_Accounts(db *config.PooledConnection, prefix string) ([]string, e
 }
 
 func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
-	if fs.mainDB == nil {
-		return nil, fmt.Errorf("mainDB is nil - FastSync not properly initialized")
-	}
-
 	fmt.Println(">>> [SERVER] Making Default HashMap...")
 	MAP := hashmap.New()
 
@@ -687,10 +699,6 @@ func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
 }
 
 func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
-	if fs.accountsDB == nil {
-		return nil, fmt.Errorf("accountsDB is nil - FastSync not properly initialized")
-	}
-
 	fmt.Println(">>> [SERVER] Making Accounts HashMap...")
 	MAP := hashmap.New()
 
@@ -1210,13 +1218,6 @@ func CheckChecksum(temp *hashmap.HashMap, checksum string) bool {
 
 // handleHashMapExchangeSYNCChunked sends HashMap data in chunks of 100 keys
 func (fs *FastSync) handleHashMapExchangeSYNCChunked(peerID peer.ID, msg *SyncMessage, writer *bufio.Writer, reader *bufio.Reader, stream network.Stream) error {
-	if fs.mainDB == nil {
-		return fmt.Errorf("mainDB is nil - FastSync not properly initialized")
-	}
-	if fs.accountsDB == nil {
-		return fmt.Errorf("accountsDB is nil - FastSync not properly initialized")
-	}
-
 	fmt.Println(">>> [SERVER] Received HashMap Exchange SYNC Request - starting chunked transfer")
 	log.Info().
 		Str("peer", peerID.String()).
