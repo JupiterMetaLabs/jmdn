@@ -19,7 +19,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-
 // isConnectionError determines if an error is related to connection issues
 func isConnectionError(err error) bool {
 	if err == nil {
@@ -239,7 +238,9 @@ func Create(PooledConnection *config.PooledConnection, key string, value interfa
 	// Get a connection from the pool
 	if PooledConnection == nil {
 		var err error
-		PooledConnection, err = GetMainDBConnection()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get database connection: %w", err)
 		}

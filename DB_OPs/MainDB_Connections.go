@@ -24,15 +24,13 @@ var (
 	mainDBPoolOnce sync.Once
 )
 
-// GetMainDBConnection retrieves a connection from the main database pool.
+// GetMainDBConnections retrieves a connection from the main database pool.
 // Callers are responsible for returning the connection using PutMainDBConnection.
-func GetMainDBConnection() (*config.PooledConnection, error) {
-	fmt.Println("GetMainDBConnection called - checking if pool is initialized...")
+// This context helps to put back the connections properly in the pool if putback connection is not called.
+func GetMainDBConnection(ctx context.Context) (*config.PooledConnection, error) {
 	if mainDBPool == nil {
-		fmt.Println("mainDBPool is nil - pool not initialized")
 		return nil, errors.New("main database connection pool is not initialized. Call InitMainDBPool first")
 	}
-	// fmt.Println("mainDBPool is not nil - attempting to get connection...")
 
 	mainDBPool.Logger.Logger.Info("Getting main database connection",
 		zap.String(logging.Connection_database, config.DBName),
@@ -40,13 +38,11 @@ func GetMainDBConnection() (*config.PooledConnection, error) {
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
-		zap.String(logging.Function, "DB_OPs.GetMainDBConnection"),
+		zap.String(logging.Function, "DB_OPs.GetMainDBConnections"),
 	)
 
-	Pool, err := mainDBPool.Get()
+	conn, err := mainDBPool.Get()
 	if err != nil {
-		// debugging
-		// fmt.Println("failed to get main database connection: %w", err)
 		return nil, fmt.Errorf("failed to get main database connection: %w", err)
 	}
 
@@ -57,9 +53,7 @@ func GetMainDBConnection() (*config.PooledConnection, error) {
 		mainDBPool.GetIdleConnections(),
 	)
 
-	// debugging
-	// fmt.Println("got main database connection successfully", Pool)
-	return Pool, nil
+	return conn, nil
 }
 
 // PutMainDBConnection returns a connection to the main database pool.
@@ -300,4 +294,83 @@ func connectToMainDB(username, password string) error {
 		zap.String(logging.Function, "DB_OPs.ensureMainDBSelected"),
 	)
 	return nil
+}
+
+
+/* GetMainDBConnectionandPutBack retrieves a connection from the main database pool
+and automatically returns it to the pool when the context is cancelled or done.
+
+This factory method ensures proper connection cleanup without requiring explicit PutMainDBConnection calls.
+
+Important: The connection will be automatically returned when:
+   - The context is cancelled (via cancel() or timeout)
+   - The context's Done channel is closed
+
+If you need to return the connection earlier, you can still call PutMainDBConnection manually.
+The PutMainDBConnection function is safe to call multiple times.
+
+Usage:
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel() // This will trigger automatic connection return
+	conn, err := GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+	    return err
+	}
+	- Use conn - it will be automatically returned when ctx is cancelled.
+	- Optionally return early: PutMainDBConnection(conn)
+*/
+
+func GetMainDBConnectionandPutBack(ctx context.Context) (*config.PooledConnection, error) {
+	if ctx == nil {
+		return nil, errors.New("context cannot be nil - GetMainDBConnectionandPutBack")
+	}
+	conn, err := GetMainDBConnection(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get main database connection: %w - GetMainDBConnectionandPutBack", err)
+	}
+
+	// Log successful connection retrieval
+	conn.Client.Logger.Logger.Info("Got main database connection",
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetMainDBConnectionandPutBack"),
+	)
+
+	// Set up automatic cleanup when context is done
+	// Use a goroutine to monitor context cancellation
+	go func() {
+		<-ctx.Done()
+		// Context was cancelled or timed out, return connection to pool
+		// Only return if connection is still in use (not already manually returned)
+		if conn != nil && conn.Client != nil && conn.InUse {
+			conn.Client.Logger.Logger.Info("Auto-returning main database connection due to context cancellation",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetMainDBConnectionandPutBack"),
+				zap.String("context_error", ctx.Err().Error()),
+			)
+			// Debugging
+			fmt.Printf("Auto-returning main database connection due to context cancellation: %s\n", conn.Client.Ctx)
+			PutMainDBConnection(conn)
+		} else if conn != nil && conn.Client != nil && !conn.InUse {
+			// Connection was already manually returned, no need to return again
+			conn.Client.Logger.Logger.Info("Connection already returned, skipping auto-return",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetMainDBConnectionandPutBack"),
+			)
+		}
+	}()
+
+	return conn, nil
 }

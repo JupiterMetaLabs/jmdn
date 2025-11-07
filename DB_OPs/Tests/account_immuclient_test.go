@@ -1,6 +1,7 @@
 package DB_OPs_Tests
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"fmt"
@@ -22,7 +23,7 @@ func Test_InitAccountsPool(t *testing.T) {
 	}
 
 	// Draw a connection from the pool
-	conn, err := DB_OPs.GetAccountsConnection()
+	conn, err := DB_OPs.GetAccountsConnections(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get accounts connection: %v", err)
 	}
@@ -54,14 +55,14 @@ func Test_ConnectionPool_Management(t *testing.T) {
 	fmt.Printf("Testing connection pool management...\n")
 
 	// Get first connection
-	conn1, err := DB_OPs.GetAccountsConnection()
+	conn1, err := DB_OPs.GetAccountsConnections(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get first connection: %v", err)
 	}
 	fmt.Printf("✅ Got FIRST connection (ID: %p)\n", conn1)
 
 	// Get second connection
-	conn2, err := DB_OPs.GetAccountsConnection()
+	conn2, err := DB_OPs.GetAccountsConnections(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get second connection: %v", err)
 	}
@@ -94,7 +95,7 @@ func Test_ConnectionPool_Reuse(t *testing.T) {
 	}
 
 	// Get a connection
-	conn1, err := DB_OPs.GetAccountsConnection()
+	conn1, err := DB_OPs.GetAccountsConnections(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get first connection: %v", err)
 	}
@@ -104,7 +105,7 @@ func Test_ConnectionPool_Reuse(t *testing.T) {
 	fmt.Printf("✅ First connection returned to pool\n")
 
 	// Get another connection - should reuse the first one
-	conn2, err := DB_OPs.GetAccountsConnection()
+	conn2, err := DB_OPs.GetAccountsConnections(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get second connection: %v", err)
 	}
@@ -144,7 +145,7 @@ func Test_ConnectionPool_Stress(t *testing.T) {
 	// Phase 1: Acquire all 5 connections rapidly
 	fmt.Printf("Phase 1: Acquiring 5 connections rapidly...\n")
 	for i := 0; i < testConnections; i++ {
-		conn, err := DB_OPs.GetAccountsConnection()
+		conn, err := DB_OPs.GetAccountsConnections(context.Background())
 		if err != nil {
 			t.Fatalf("Failed to get connection %d: %v", i+1, err)
 		}
@@ -358,7 +359,7 @@ func Test_Account_Database_Write_Read(t *testing.T) {
 	fmt.Printf("\n--- PHASE 1: Writing Account to Database ---\n")
 
 	// Get connection from pool for writing
-	writeConn, err := DB_OPs.GetAccountsConnection()
+	writeConn, err := DB_OPs.GetAccountsConnections(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get connection for writing: %v", err)
 	}
@@ -384,7 +385,7 @@ func Test_Account_Database_Write_Read(t *testing.T) {
 	fmt.Printf("\n--- PHASE 2: Reading Account from Database ---\n")
 
 	// Get connection from pool for reading
-	readConn, err := DB_OPs.GetAccountsConnection()
+	readConn, err := DB_OPs.GetAccountsConnections(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get connection for reading: %v", err)
 	}
@@ -501,7 +502,7 @@ func Test_ListAllAccounts(t *testing.T) {
 		}{didAddress, address, metadata})
 
 		// Create account in database
-		conn, err := DB_OPs.GetAccountsConnection()
+		conn, err := DB_OPs.GetAccountsConnections(context.Background())
 		if err != nil {
 			t.Fatalf("Failed to get connection for account %d: %v", i, err)
 		}
@@ -518,7 +519,7 @@ func Test_ListAllAccounts(t *testing.T) {
 
 	// Test ListAllAccounts with limit
 	fmt.Printf("\n--- Testing ListAllAccounts with limit ---\n")
-	conn, err := DB_OPs.GetAccountsConnection()
+	conn, err := DB_OPs.GetAccountsConnections(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get connection for listing: %v", err)
 	}
@@ -581,7 +582,7 @@ func Test_UpdateAccountBalance(t *testing.T) {
 	}
 
 	// Create account in database
-	conn, err := DB_OPs.GetAccountsConnection()
+	conn, err := DB_OPs.GetAccountsConnections(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get connection: %v", err)
 	}
@@ -645,7 +646,7 @@ func Test_CountAccounts(t *testing.T) {
 
 	// Get initial count
 	fmt.Printf("Getting initial account count...\n")
-	conn, err := DB_OPs.GetAccountsConnection()
+	conn, err := DB_OPs.GetAccountsConnections(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get connection: %v", err)
 	}
@@ -713,7 +714,7 @@ func Test_GetTransactionsByAccount(t *testing.T) {
 	}
 
 	// Create account in database
-	conn, err := DB_OPs.GetAccountsConnection()
+	conn, err := DB_OPs.GetAccountsConnections(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get connection: %v", err)
 	}
@@ -916,7 +917,7 @@ func Test_ListAllDIDs(t *testing.T) {
 		testDIDs = append(testDIDs, didAddress)
 
 		// Create account in database
-		conn, err := DB_OPs.GetAccountsConnection()
+		conn, err := DB_OPs.GetAccountsConnections(context.Background())
 		if err != nil {
 			t.Fatalf("Failed to get connection for account %d: %v", i, err)
 		}
@@ -933,7 +934,7 @@ func Test_ListAllDIDs(t *testing.T) {
 
 	// Test ListAllDIDs function
 	fmt.Printf("\n--- Testing ListAllDIDs function ---\n")
-	conn, err := DB_OPs.GetAccountsConnection()
+	conn, err := DB_OPs.GetAccountsConnections(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get connection for listing DIDs: %v", err)
 	}
@@ -996,7 +997,7 @@ func Test_PrintAllDatabaseKeys(t *testing.T) {
 
 	// Get keys from main database
 	fmt.Printf("🔍 MAIN DATABASE KEYS:\n")
-	mainConn, err := DB_OPs.GetMainDBConnection()
+	mainConn, err := DB_OPs.GetMainDBConnection(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
 	}
@@ -1011,7 +1012,7 @@ func Test_PrintAllDatabaseKeys(t *testing.T) {
 
 	// Get keys from accounts database
 	fmt.Printf("\n🔍 ACCOUNTS DATABASE KEYS:\n")
-	accountsConn, err := DB_OPs.GetAccountsConnection()
+	accountsConn, err := DB_OPs.GetAccountsConnections(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get accounts connection: %v", err)
 	}
@@ -1097,4 +1098,133 @@ func printKeysTable(title string, keys []string) {
 
 func printDashes() {
 	fmt.Printf("─────────────────────────────────────────────────────────────────────────────────\n")
+}
+
+// Test_GetAccountConnectionandPutBack_NilContext tests that the function properly handles nil context
+func Test_GetAccountConnectionandPutBack(t *testing.T) {
+	fmt.Printf("=== Testing GetAccountConnectionandPutBack with Nil Context ===\n")
+
+	// Initialize the accounts pool
+	err := DB_OPs.InitAccountsPool()
+	if err != nil {
+		t.Fatalf("Failed to initialize accounts pool: %v", err)
+	}
+
+	for i := 0; i < 10; i++ {
+		fmt.Printf("Iteration %d\n", i)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		conn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
+		if err != nil {
+			t.Fatalf("Expected error for nil context, got error: %v", err)
+		}
+		// Debugging
+		fmt.Printf("Took Connection with the sessions ID: %s\n", conn.Client.Ctx)
+	}
+
+	time.Sleep(6 * time.Second)
+}
+
+// Test_GetAccountConnectionandPutBack_Success tests successful connection retrieval and pool reuse
+func Test_GetAccountConnectionandPutBack_Success(t *testing.T) {
+	fmt.Printf("=== Testing GetAccountConnectionandPutBack Success ===\n")
+
+	// Initialize the accounts pool
+	err := DB_OPs.InitAccountsPool()
+	if err != nil {
+		t.Fatalf("Failed to initialize accounts pool: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get first connection
+	conn1, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get first connection: %v", err)
+	}
+	if conn1 == nil {
+		t.Fatalf("Expected non-nil connection, got nil")
+	}
+	if conn1.Client == nil {
+		t.Fatalf("Expected non-nil client, got nil")
+	}
+
+	fmt.Printf("✅ First connection retrieved successfully\n")
+	fmt.Printf("   Connection pointer: %p\n", conn1)
+	fmt.Printf("   Database: %s\n", conn1.Database)
+	fmt.Printf("   Created At: %s\n", conn1.CreatedAt.Format(time.RFC3339))
+	fmt.Printf("   In Use: %t\n", conn1.InUse)
+
+	// Get session ID for comparison
+	sessionID1 := conn1.Client.Client.GetSessionID()
+	fmt.Printf("   Session ID: %s\n", sessionID1)
+
+	// Manually return connection to pool
+	DB_OPs.PutAccountsConnection(conn1)
+	fmt.Printf("✅ First connection returned to pool\n")
+
+	// Wait a bit to ensure connection is back in pool
+	time.Sleep(100 * time.Millisecond)
+
+	// Get second connection - should be the same one if pool is working correctly
+	conn2, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get second connection: %v", err)
+	}
+	if conn2 == nil {
+		t.Fatalf("Expected non-nil second connection, got nil")
+	}
+
+	fmt.Printf("✅ Second connection retrieved successfully\n")
+	fmt.Printf("   Connection pointer: %p\n", conn2)
+	fmt.Printf("   Database: %s\n", conn2.Database)
+	fmt.Printf("   In Use: %t\n", conn2.InUse)
+
+	// Get session ID for comparison
+	sessionID2 := conn2.Client.Client.GetSessionID()
+	fmt.Printf("   Session ID: %s\n", sessionID2)
+
+	// Verify if it's the same connection (same pointer)
+	if conn1 == conn2 {
+		fmt.Printf("✅ Same connection reused from pool (pointer match)\n")
+	} else {
+		fmt.Printf("⚠️  Different connection pointer (pool may have multiple connections)\n")
+	}
+
+	// Verify session ID matches (more reliable check)
+	if sessionID1 == sessionID2 {
+		fmt.Printf("✅ Same session ID - connection was correctly reused from pool\n")
+	} else {
+		t.Fatalf("Expected same session ID, got different: %s vs %s", sessionID1, sessionID2)
+	}
+
+	// Return second connection
+	DB_OPs.PutAccountsConnection(conn2)
+	fmt.Printf("✅ Second connection returned to pool\n")
+}
+
+// Check if the nil context is handled properly
+func Test_GetAccountConnectionandPutBack_NilContext(t *testing.T) {
+	fmt.Printf("=== Testing GetAccountConnectionandPutBack with Nil Context ===\n")
+
+	// Initialize the accounts pool
+	err := DB_OPs.InitAccountsPool()
+	if err != nil {
+		t.Fatalf("Failed to initialize accounts pool: %v", err)
+	}
+
+	conn, err := DB_OPs.GetAccountConnectionandPutBack(nil)
+	if err == nil {
+		t.Fatalf("Expected error for nil context, got error: %v", err)
+	}
+	fmt.Printf("✅ Error for nil context: %v\n", err)
+	if conn != nil {
+		t.Fatalf("Expected nil connection, got non-nil connection")
+	}
+	fmt.Printf("✅ Nil context handled properly\n")
+
+	DB_OPs.PutAccountsConnection(conn)
+	fmt.Printf("✅ Connection returned to pool\n")
 }
