@@ -20,7 +20,7 @@ scrape_configs:
 
   - job_name: "p2p_nodes"
     static_configs:
-      - targets: ["localhost:8080"]
+      - targets: ["host.docker.internal:8081"]
     metrics_path: /metrics
 
   - job_name: 'IMMUDB'

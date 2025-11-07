@@ -9,6 +9,7 @@ import (
 	"gossipnode/metrics"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -82,19 +83,21 @@ func InitAccountsPoolWithLoki(enableLoki bool, username, password string) error 
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.InitAccountsPool"),
 		)
-		metrics.InitlizeAccountsDBConnectionPoolCount(poolCfg.MinConnections)
+		metrics.NewAccountsDBMetricsBuilder().WithFunction("DB_OPs.InitAccountsPool").SetTotal(poolCfg.MinConnections)
+		metrics.NewAccountsDBMetricsBuilder().WithFunction("DB_OPs.InitAccountsPool").SetActive(0)
+		metrics.NewAccountsDBMetricsBuilder().WithFunction("DB_OPs.InitAccountsPool").SetIdle(poolCfg.MinConnections)
 	})
 	return initErr
 }
 
-// GetAccountsConnection retrieves a connection from the accounts database pool.
+// GetAccountsConnections retrieves a connection from the accounts database pool.
 // Callers are responsible for returning the connection using PutAccountsConnection.
-// This context help to put back the connections properly in the pool if putback connection is not called.
+// The context parameter is accepted for future use but is not currently used by the pool.
 func GetAccountsConnections(ctx context.Context) (*config.PooledConnection, error) {
 	if accountsPool == nil {
 		return nil, errors.New("accounts connection pool is not initialized. Call InitAccountsPool first")
 	}
-	accountsPool.Logger.Logger.Info("Getting accounts connection: %s",
+![1762524853040](image/Account_Connections/1762524853040.png)	accountsPool.Logger.Logger.Info("Getting accounts connection",
 		zap.String(logging.Connection_database, config.AccountsDBName),
 		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
@@ -108,11 +111,14 @@ func GetAccountsConnections(ctx context.Context) (*config.PooledConnection, erro
 	}
 
 	// Update metrics with current pool state
-	metrics.UpdateAccountsDBConnectionPoolMetrics(
-		accountsPool.GetPoolSize(),
-		accountsPool.GetActiveConnections(),
-		accountsPool.GetIdleConnections(),
-	)
+	pc, file, line, ok := runtime.Caller(1)
+	if ok {
+		fn := runtime.FuncForPC(pc)
+		metrics.NewAccountsDBMetricsBuilder().WithFunction(fmt.Sprintf("%s >> %s:%d", fn.Name(), file, line)).ConnectionTaken()
+	} else {
+		metrics.NewAccountsDBMetricsBuilder().WithFunction("unknown").ConnectionTaken()
+		fmt.Println("Failed to get caller information")
+	}
 
 	return conn, nil
 }
@@ -131,11 +137,14 @@ func PutAccountsConnection(conn *config.PooledConnection) {
 		accountsPool.Put(conn)
 
 		// Update metrics with current pool state
-		metrics.UpdateAccountsDBConnectionPoolMetrics(
-			accountsPool.GetPoolSize(),
-			accountsPool.GetActiveConnections(),
-			accountsPool.GetIdleConnections(),
-		)
+		pc, file, line, ok := runtime.Caller(1)
+		if ok {
+			fn := runtime.FuncForPC(pc)
+			metrics.NewAccountsDBMetricsBuilder().WithFunction(fmt.Sprintf("%s >> %s:%d", fn.Name(), file, line)).ConnectionReturned()
+		} else {
+			metrics.NewAccountsDBMetricsBuilder().WithFunction("unknown").ConnectionReturned()
+			fmt.Println("Failed to get caller information")
+		}
 	}
 }
 
@@ -303,7 +312,6 @@ func EnsureDBConnection(accountsPool *config.PooledConnection) error {
 	// If we got here, all retries failed
 	return fmt.Errorf("failed to establish database connection after %d attempts: %w", maxRetries, lastErr)
 }
-
 
 /* GetAccountConnectionandPutBack retrieves a connection from the accounts database pool
 and automatically returns it to the pool when the context is cancelled or done.

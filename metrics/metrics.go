@@ -142,35 +142,35 @@ var (
 		[]string{"level", "component"},
 	)
 
-	MainDBConnectionPoolCount = promauto.NewGauge(prometheus.GaugeOpts{
+	MainDBConnectionPoolCount = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "p2p_main_db_connection_pool_count",
 		Help: "The total number of main database connections in the pool",
-	})
+	}, []string{"function"})
 
-	MainDBConnectionPoolActive = promauto.NewGauge(prometheus.GaugeOpts{
+	MainDBConnectionPoolActive = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "p2p_main_db_connection_pool_active",
 		Help: "The number of active (in-use) main database connections",
-	})
+	}, []string{"function"})
 
-	MainDBConnectionPoolIdle = promauto.NewGauge(prometheus.GaugeOpts{
+	MainDBConnectionPoolIdle = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "p2p_main_db_connection_pool_idle",
 		Help: "The number of idle main database connections",
-	})
+	}, []string{"function"})
 
-	AccountsDBConnectionPoolCount = promauto.NewGauge(prometheus.GaugeOpts{
+	AccountsDBConnectionPoolCount = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "p2p_accounts_db_connection_pool_count",
 		Help: "The total number of accounts database connections in the pool",
-	})
+	}, []string{"function"})
 
-	AccountsDBConnectionPoolActive = promauto.NewGauge(prometheus.GaugeOpts{
+	AccountsDBConnectionPoolActive = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "p2p_accounts_db_connection_pool_active",
 		Help: "The number of active (in-use) accounts database connections",
-	})
+	}, []string{"function"})
 
-	AccountsDBConnectionPoolIdle = promauto.NewGauge(prometheus.GaugeOpts{
+	AccountsDBConnectionPoolIdle = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "p2p_accounts_db_connection_pool_idle",
 		Help: "The number of idle accounts database connections",
-	})
+	}, []string{"function"})
 )
 
 var PeerRemovedCounter = promauto.NewCounterVec(
@@ -193,40 +193,53 @@ func StartMetricsServer(addr string) {
 }
 
 // UpdateMainDBConnectionPoolMetrics updates all main DB connection pool metrics
+// Uses "unknown" as default function name for backward compatibility
 func UpdateMainDBConnectionPoolMetrics(total, active, idle int) {
-	MainDBConnectionPoolCount.Set(float64(total))
-	MainDBConnectionPoolActive.Set(float64(active))
-	MainDBConnectionPoolIdle.Set(float64(idle))
+	UpdateMainDBConnectionPoolMetricsWithFunction("unknown", total, active, idle)
 }
 
 // UpdateAccountsDBConnectionPoolMetrics updates all accounts DB connection pool metrics
+// Uses "unknown" as default function name for backward compatibility
 func UpdateAccountsDBConnectionPoolMetrics(total, active, idle int) {
-	AccountsDBConnectionPoolCount.Set(float64(total))
-	AccountsDBConnectionPoolActive.Set(float64(active))
-	AccountsDBConnectionPoolIdle.Set(float64(idle))
+	UpdateAccountsDBConnectionPoolMetricsWithFunction("unknown", total, active, idle)
+}
+
+// UpdateMainDBConnectionPoolMetricsWithFunction updates all main DB connection pool metrics with function name
+func UpdateMainDBConnectionPoolMetricsWithFunction(functionName string, total, active, idle int) {
+	MainDBConnectionPoolCount.WithLabelValues(functionName).Set(float64(total))
+	MainDBConnectionPoolActive.WithLabelValues(functionName).Set(float64(active))
+	MainDBConnectionPoolIdle.WithLabelValues(functionName).Set(float64(idle))
+}
+
+// UpdateAccountsDBConnectionPoolMetricsWithFunction updates all accounts DB connection pool metrics with function name
+func UpdateAccountsDBConnectionPoolMetricsWithFunction(functionName string, total, active, idle int) {
+	AccountsDBConnectionPoolCount.WithLabelValues(functionName).Set(float64(total))
+	AccountsDBConnectionPoolActive.WithLabelValues(functionName).Set(float64(active))
+	AccountsDBConnectionPoolIdle.WithLabelValues(functionName).Set(float64(idle))
 }
 
 // Legacy functions for backward compatibility (deprecated)
+// Uses "unknown" as default function name for backward compatibility
 func InitlizeMainDBConnectionPoolCount(count int) {
-	MainDBConnectionPoolCount.Set(float64(count))
+	MainDBConnectionPoolCount.WithLabelValues("unknown").Set(float64(count))
 }
 
 func InitlizeAccountsDBConnectionPoolCount(count int) {
-	AccountsDBConnectionPoolCount.Set(float64(count))
+	AccountsDBConnectionPoolCount.WithLabelValues("unknown").Set(float64(count))
 }
 
 func IncrementMainDBConnectionPoolCount() {
-	MainDBConnectionPoolCount.Inc()
+	MainDBConnectionPoolCount.WithLabelValues("unknown").Inc()
 }
 
 func DecrementMainDBConnectionPoolCount() {
-	MainDBConnectionPoolCount.Dec()
+	MainDBConnectionPoolCount.WithLabelValues("unknown").Dec()
 }
 
 func IncrementAccountsDBConnectionPoolCount() {
-	AccountsDBConnectionPoolCount.Inc()
+	AccountsDBConnectionPoolCount.WithLabelValues("unknown").Inc()
 }
 
 func DecrementAccountsDBConnectionPoolCount() {
-	AccountsDBConnectionPoolCount.Dec()
+	AccountsDBConnectionPoolCount.WithLabelValues("unknown").Dec()
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -24,9 +25,9 @@ var (
 	mainDBPoolOnce sync.Once
 )
 
-// GetMainDBConnections retrieves a connection from the main database pool.
+// GetMainDBConnection retrieves a connection from the main database pool.
 // Callers are responsible for returning the connection using PutMainDBConnection.
-// This context helps to put back the connections properly in the pool if putback connection is not called.
+// The context parameter is accepted for future use but is not currently used by the pool.
 func GetMainDBConnection(ctx context.Context) (*config.PooledConnection, error) {
 	if mainDBPool == nil {
 		return nil, errors.New("main database connection pool is not initialized. Call InitMainDBPool first")
@@ -38,7 +39,7 @@ func GetMainDBConnection(ctx context.Context) (*config.PooledConnection, error) 
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, LOKI_URL),
-		zap.String(logging.Function, "DB_OPs.GetMainDBConnections"),
+		zap.String(logging.Function, "DB_OPs.GetMainDBConnection"),
 	)
 
 	conn, err := mainDBPool.Get()
@@ -47,11 +48,14 @@ func GetMainDBConnection(ctx context.Context) (*config.PooledConnection, error) 
 	}
 
 	// Update metrics with current pool state
-	metrics.UpdateMainDBConnectionPoolMetrics(
-		mainDBPool.GetPoolSize(),
-		mainDBPool.GetActiveConnections(),
-		mainDBPool.GetIdleConnections(),
-	)
+	pc, file, line, ok := runtime.Caller(1)
+	if ok {
+		fn := runtime.FuncForPC(pc)
+		metrics.NewMainDBMetricsBuilder().WithFunction(fmt.Sprintf("%s >> %s:%d", fn.Name(), file, line)).ConnectionTaken()
+	} else {
+		metrics.NewMainDBMetricsBuilder().WithFunction("unknown").ConnectionTaken()
+		fmt.Println("Failed to get caller information")
+	}
 
 	return conn, nil
 }
@@ -70,11 +74,14 @@ func PutMainDBConnection(conn *config.PooledConnection) {
 		mainDBPool.Put(conn)
 
 		// Update metrics with current pool state
-		metrics.UpdateMainDBConnectionPoolMetrics(
-			mainDBPool.GetPoolSize(),
-			mainDBPool.GetActiveConnections(),
-			mainDBPool.GetIdleConnections(),
-		)
+		pc, file, line, ok := runtime.Caller(1)
+		if ok {
+			fn := runtime.FuncForPC(pc)
+			metrics.NewMainDBMetricsBuilder().WithFunction(fmt.Sprintf("%s >> %s:%d", fn.Name(), file, line)).ConnectionReturned()
+		} else {
+			metrics.NewMainDBMetricsBuilder().WithFunction("unknown").ConnectionReturned()
+			fmt.Println("Failed to get caller information")
+		}
 	}
 }
 
@@ -138,7 +145,9 @@ func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki 
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.InitMainDBPool"),
 		)
-		metrics.InitlizeMainDBConnectionPoolCount(poolCfg.MinConnections)
+		metrics.NewMainDBMetricsBuilder().WithFunction("DB_OPs.InitMainDBPool").SetTotal(poolCfg.MinConnections)
+		metrics.NewMainDBMetricsBuilder().WithFunction("DB_OPs.InitMainDBPool").SetActive(0)
+		metrics.NewMainDBMetricsBuilder().WithFunction("DB_OPs.InitMainDBPool").SetIdle(poolCfg.MinConnections)
 	})
 
 	return initErr
@@ -295,7 +304,6 @@ func connectToMainDB(username, password string) error {
 	)
 	return nil
 }
-
 
 /* GetMainDBConnectionandPutBack retrieves a connection from the main database pool
 and automatically returns it to the pool when the context is cancelled or done.

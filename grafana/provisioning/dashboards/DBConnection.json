@@ -67,7 +67,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "p2p_accounts_db_connection_pool_count",
+          "expr": "sum(p2p_accounts_db_connection_pool_count)",
           "refId": "A"
         }
       ],
@@ -133,7 +133,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "p2p_accounts_db_connection_pool_active",
+          "expr": "sum(p2p_accounts_db_connection_pool_active)",
           "refId": "A"
         }
       ],
@@ -199,7 +199,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "p2p_accounts_db_connection_pool_idle",
+          "expr": "sum(p2p_accounts_db_connection_pool_idle)",
           "refId": "A"
         }
       ],
@@ -335,7 +335,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "p2p_accounts_db_connection_pool_count",
+          "expr": "sum(p2p_accounts_db_connection_pool_count)",
           "legendFormat": "Total Pool Count",
           "refId": "A"
         },
@@ -344,7 +344,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "p2p_accounts_db_connection_pool_active",
+          "expr": "sum(p2p_accounts_db_connection_pool_active)",
           "legendFormat": "Active Connections",
           "refId": "B"
         },
@@ -353,7 +353,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "p2p_accounts_db_connection_pool_idle",
+          "expr": "sum(p2p_accounts_db_connection_pool_idle)",
           "legendFormat": "Idle Connections",
           "refId": "C"
         }
@@ -420,7 +420,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "p2p_main_db_connection_pool_count",
+          "expr": "sum(p2p_main_db_connection_pool_count)",
           "refId": "A"
         }
       ],
@@ -486,7 +486,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "p2p_main_db_connection_pool_active",
+          "expr": "sum(p2p_main_db_connection_pool_active)",
           "refId": "A"
         }
       ],
@@ -552,7 +552,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "p2p_main_db_connection_pool_idle",
+          "expr": "sum(p2p_main_db_connection_pool_idle)",
           "refId": "A"
         }
       ],
@@ -688,7 +688,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "p2p_main_db_connection_pool_count",
+          "expr": "sum(p2p_main_db_connection_pool_count)",
           "legendFormat": "Total Pool Count",
           "refId": "A"
         },
@@ -697,7 +697,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "p2p_main_db_connection_pool_active",
+          "expr": "sum(p2p_main_db_connection_pool_active)",
           "legendFormat": "Active Connections",
           "refId": "B"
         },
@@ -706,7 +706,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "p2p_main_db_connection_pool_idle",
+          "expr": "sum(p2p_main_db_connection_pool_idle)",
           "legendFormat": "Idle Connections",
           "refId": "C"
         }
@@ -828,7 +828,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "p2p_accounts_db_connection_pool_active",
+          "expr": "sum(p2p_accounts_db_connection_pool_active)",
           "legendFormat": "AccountsDB Active",
           "refId": "A"
         },
@@ -837,7 +837,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "p2p_main_db_connection_pool_active",
+          "expr": "sum(p2p_main_db_connection_pool_active)",
           "legendFormat": "MainDB Active",
           "refId": "B"
         }
