@@ -1316,6 +1316,7 @@ func (fs *FastSync) handleHashMapExchangeSYNCChunked(peerID peer.ID, msg *SyncMe
 	// Send chunks: Main HashMap first, then Accounts
 	allKeys := append(SYNC_Keys_Main, SYNC_Keys_Accounts...)
 	chunkNum := 0
+	lastDeadlineUpdate := time.Now().UTC()
 
 	fmt.Printf(">>> [SERVER] Starting to send chunks (total: %d chunks)...\n", totalChunks)
 	for i := 0; i < len(allKeys); i += HashMapChunkSize {
@@ -1326,6 +1327,21 @@ func (fs *FastSync) handleHashMapExchangeSYNCChunked(peerID peer.ID, msg *SyncMe
 
 		chunkKeys := allKeys[i:end]
 		chunkNum++
+
+		// Extend write/read deadlines periodically during chunk sending to prevent timeout
+		// This is important when sending many chunks or waiting for ACKs
+		if time.Since(lastDeadlineUpdate) > 30*time.Second {
+			newDeadline := time.Now().UTC().Add(30 * time.Minute)
+			if err := stream.SetWriteDeadline(newDeadline); err != nil {
+				fmt.Printf(">>> [SERVER] WARNING: Failed to extend write deadline: %v\n", err)
+			}
+			if err := stream.SetReadDeadline(newDeadline); err != nil {
+				fmt.Printf(">>> [SERVER] WARNING: Failed to extend read deadline: %v\n", err)
+			} else {
+				lastDeadlineUpdate = time.Now().UTC()
+				fmt.Printf(">>> [SERVER] Extended deadlines (sending chunk %d/%d)...\n", chunkNum, totalChunks)
+			}
+		}
 
 		fmt.Printf(">>> [SERVER] Sending chunk %d/%d (%d keys)...\n", chunkNum, totalChunks, len(chunkKeys))
 		chunkMsg := &SyncMessage{
