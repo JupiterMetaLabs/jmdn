@@ -131,6 +131,8 @@ const (
 	TypeBatchAck              = "BATCH_ACK"
 	TypeTransferFile          = "TRANSFER_FILE"
 	RequestFiletransfer       = "REQUEST_FILE_TRANSFER"
+	TypeFirstSyncRequest      = "FIRST_SYNC_REQ"  // Request for first sync (all data)
+	TypeFirstSyncResponse     = "FIRST_SYNC_RESP" // Response to first sync request
 
 	// Chunk size for HashMap transfer (100 keys per chunk)
 	HashMapChunkSize = 100
@@ -1940,4 +1942,251 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 		Timestamp: time.Now().UTC().Unix(),
 		Success:   true,
 	}, nil
+}
+
+// FirstSyncServer exports all data from both databases (defaultdb and accountsdb)
+// and sends it to the receiver over port 15000 using FileProtocol (same as fastsync).
+// This is used for initial synchronization when a node needs to get all data from another node.
+func (fs *FastSync) FirstSyncServer(peerID peer.ID) error {
+	fmt.Println(">>> [FIRST_SYNC_SERVER] Starting first sync - exporting all data from both databases")
+	log.Info().
+		Str("peer", peerID.String()).
+		Msg("Starting first sync server - exporting all data")
+
+	// Ensure the temporary directory exists
+	if err := os.MkdirAll(AVRO_FILE_PATH, os.ModePerm); err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+
+	mainAVROpath := AVRO_FILE_PATH + "defaultdb.avro"
+	accountsAVROpath := AVRO_FILE_PATH + "accountsdb.avro"
+
+	// Clean up any existing files
+	defer func() {
+		if err := os.Remove(mainAVROpath); err != nil && !os.IsNotExist(err) {
+			log.Error().Err(err).Str("path", mainAVROpath).Msg("Failed to remove temp file")
+		}
+		if err := os.Remove(accountsAVROpath); err != nil && !os.IsNotExist(err) {
+			log.Error().Err(err).Str("path", accountsAVROpath).Msg("Failed to remove temp file")
+		}
+	}()
+
+	// 1. Get ALL keys from MainDB (defaultdb)
+	fmt.Println(">>> [FIRST_SYNC_SERVER] Getting all keys from MainDB (defaultdb)...")
+	mainHashMap := hashmap.New()
+	mainKeys, err := DB_OPs.GetAllKeys(fs.mainDB, "")
+	if err != nil {
+		return fmt.Errorf("failed to get all keys from MainDB: %w", err)
+	}
+	fmt.Printf(">>> [FIRST_SYNC_SERVER] Found %d keys in MainDB\n", len(mainKeys))
+	for _, key := range mainKeys {
+		mainHashMap.Insert(key)
+	}
+	fmt.Printf(">>> [FIRST_SYNC_SERVER] MainDB HashMap created with %d keys\n", mainHashMap.Size())
+
+	// 2. Get ALL keys from AccountsDB
+	fmt.Println(">>> [FIRST_SYNC_SERVER] Getting all keys from AccountsDB...")
+	accountsHashMap := hashmap.New()
+	accountsKeys, err := DB_OPs.GetAllKeys(fs.accountsDB, "")
+	if err != nil {
+		return fmt.Errorf("failed to get all keys from AccountsDB: %w", err)
+	}
+	fmt.Printf(">>> [FIRST_SYNC_SERVER] Found %d keys in AccountsDB\n", len(accountsKeys))
+	for _, key := range accountsKeys {
+		accountsHashMap.Insert(key)
+	}
+	fmt.Printf(">>> [FIRST_SYNC_SERVER] AccountsDB HashMap created with %d keys\n", accountsHashMap.Size())
+
+	// 3. Create AVRO file for MainDB if it has data
+	if mainHashMap.Size() > 0 {
+		fmt.Printf(">>> [FIRST_SYNC_SERVER] Creating AVRO file for MainDB (%d keys)...\n", mainHashMap.Size())
+		mainCfg := DB_OPs.Config{
+			Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
+			Username:   config.DBUsername,
+			Password:   config.DBPassword,
+			Database:   config.DBName, // defaultdb
+			OutputPath: mainAVROpath,
+		}
+
+		if err := DB_OPs.BackupFromHashMap(mainCfg, mainHashMap); err != nil {
+			return fmt.Errorf("failed to backup MainDB: %w", err)
+		}
+		fmt.Println(">>> [FIRST_SYNC_SERVER] ✓ MainDB AVRO file created")
+
+		// Transfer the MainDB file
+		fmt.Println(">>> [FIRST_SYNC_SERVER] Transferring MainDB AVRO file to receiver...")
+		if err := TransferAVROFile(fs.host, peerID, mainAVROpath, "fastsync/.temp/defaultdb.avro"); err != nil {
+			return fmt.Errorf("failed to transfer MainDB file: %w", err)
+		}
+		fmt.Println(">>> [FIRST_SYNC_SERVER] ✓ MainDB file transferred successfully")
+		log.Info().
+			Str("peer", peerID.String()).
+			Int("keys", mainHashMap.Size()).
+			Msg("MainDB file transferred successfully")
+	} else {
+		fmt.Println(">>> [FIRST_SYNC_SERVER] MainDB is empty, skipping AVRO file creation")
+	}
+
+	// 4. Create AVRO file for AccountsDB if it has data
+	if accountsHashMap.Size() > 0 {
+		fmt.Printf(">>> [FIRST_SYNC_SERVER] Creating AVRO file for AccountsDB (%d keys)...\n", accountsHashMap.Size())
+		accountsCfg := DB_OPs.Config{
+			Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
+			Username:   config.DBUsername,
+			Password:   config.DBPassword,
+			Database:   config.AccountsDBName,
+			OutputPath: accountsAVROpath,
+		}
+
+		if err := DB_OPs.BackupFromHashMap(accountsCfg, accountsHashMap); err != nil {
+			return fmt.Errorf("failed to backup AccountsDB: %w", err)
+		}
+		fmt.Println(">>> [FIRST_SYNC_SERVER] ✓ AccountsDB AVRO file created")
+
+		// Transfer the AccountsDB file
+		fmt.Println(">>> [FIRST_SYNC_SERVER] Transferring AccountsDB AVRO file to receiver...")
+		if err := TransferAVROFile(fs.host, peerID, accountsAVROpath, "fastsync/.temp/accountsdb.avro"); err != nil {
+			return fmt.Errorf("failed to transfer AccountsDB file: %w", err)
+		}
+		fmt.Println(">>> [FIRST_SYNC_SERVER] ✓ AccountsDB file transferred successfully")
+		log.Info().
+			Str("peer", peerID.String()).
+			Int("keys", accountsHashMap.Size()).
+			Msg("AccountsDB file transferred successfully")
+	} else {
+		fmt.Println(">>> [FIRST_SYNC_SERVER] AccountsDB is empty, skipping AVRO file creation")
+	}
+
+	fmt.Println(">>> [FIRST_SYNC_SERVER] ✓ First sync server completed successfully")
+	log.Info().
+		Str("peer", peerID.String()).
+		Int("main_keys", mainHashMap.Size()).
+		Int("accounts_keys", accountsHashMap.Size()).
+		Msg("First sync server completed successfully")
+
+	return nil
+}
+
+// FirstSyncClient receives all data from the server and loads it into the respective databases.
+// This is used for initial synchronization when a node needs to get all data from another node.
+// The files are received over port 15000 using FileProtocol (same as fastsync).
+func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
+	fmt.Println(">>> [FIRST_SYNC_CLIENT] Starting first sync client - waiting for data from server")
+	log.Info().
+		Str("peer", peerID.String()).
+		Msg("Starting first sync client - waiting for data")
+
+	// Ensure the temp directory exists
+	if err := os.MkdirAll(AVRO_FILE_PATH, os.ModePerm); err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+
+	// The files will be received by HandleFileStream which saves them to fastsync/.temp/
+	// We need to wait for the files to be received, then load them
+	mainDBPath := "fastsync/.temp/defaultdb.avro"
+	accountsDBPath := "fastsync/.temp/accountsdb.avro"
+
+	// Wait for files to be received (with timeout)
+	fmt.Println(">>> [FIRST_SYNC_CLIENT] Waiting for files from server...")
+	maxWaitTime := 30 * time.Minute // Allow up to 30 minutes for large transfers
+	checkInterval := 5 * time.Second
+	startTime := time.Now()
+
+	var mainFileExists, accountsFileExists bool
+	for time.Since(startTime) < maxWaitTime {
+		// Check if MainDB file exists
+		if _, err := os.Stat(mainDBPath); err == nil {
+			mainFileExists = true
+		}
+
+		// Check if AccountsDB file exists
+		if _, err := os.Stat(accountsDBPath); err == nil {
+			accountsFileExists = true
+		}
+
+		// If both files exist, break
+		if mainFileExists && accountsFileExists {
+			fmt.Println(">>> [FIRST_SYNC_CLIENT] ✓ Both files received")
+			break
+		}
+
+		// If we've been waiting a while and at least one file exists, check if transfer is complete
+		if time.Since(startTime) > 2*time.Minute {
+			if mainFileExists || accountsFileExists {
+				// Give it a bit more time for the other file
+				time.Sleep(30 * time.Second)
+				// Re-check
+				if _, err := os.Stat(mainDBPath); err == nil {
+					mainFileExists = true
+				}
+				if _, err := os.Stat(accountsDBPath); err == nil {
+					accountsFileExists = true
+				}
+				if mainFileExists && accountsFileExists {
+					break
+				}
+			}
+		}
+
+		time.Sleep(checkInterval)
+	}
+
+	if !mainFileExists && !accountsFileExists {
+		return fmt.Errorf("timeout waiting for files from server (waited %v)", time.Since(startTime))
+	}
+
+	// 1. Load MainDB data if file exists
+	if mainFileExists {
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] Loading MainDB data from AVRO file...")
+		// Create a dummy SyncMessage for PushDataToDB
+		mainSyncMsg := &SyncMessage{
+			Type:      TypeSyncComplete,
+			SenderID:  fs.host.ID().String(),
+			Timestamp: time.Now().UTC().Unix(),
+			Success:   true,
+		}
+
+		if err := fs.PushDataToDB(mainSyncMsg, MainDB, mainDBPath); err != nil {
+			return fmt.Errorf("failed to load MainDB data: %w", err)
+		}
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] ✓ MainDB data loaded successfully")
+		log.Info().
+			Str("peer", peerID.String()).
+			Str("file", mainDBPath).
+			Msg("MainDB data loaded successfully")
+	} else {
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] MainDB file not received, skipping")
+	}
+
+	// 2. Load AccountsDB data if file exists
+	if accountsFileExists {
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] Loading AccountsDB data from AVRO file...")
+		// Create a dummy SyncMessage for PushDataToDB
+		accountsSyncMsg := &SyncMessage{
+			Type:      TypeSyncComplete,
+			SenderID:  fs.host.ID().String(),
+			Timestamp: time.Now().UTC().Unix(),
+			Success:   true,
+		}
+
+		if err := fs.PushDataToDB(accountsSyncMsg, AccountsDB, accountsDBPath); err != nil {
+			return fmt.Errorf("failed to load AccountsDB data: %w", err)
+		}
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] ✓ AccountsDB data loaded successfully")
+		log.Info().
+			Str("peer", peerID.String()).
+			Str("file", accountsDBPath).
+			Msg("AccountsDB data loaded successfully")
+	} else {
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] AccountsDB file not received, skipping")
+	}
+
+	fmt.Println(">>> [FIRST_SYNC_CLIENT] ✓ First sync client completed successfully")
+	log.Info().
+		Str("peer", peerID.String()).
+		Bool("main_loaded", mainFileExists).
+		Bool("accounts_loaded", accountsFileExists).
+		Msg("First sync client completed successfully")
+
+	return nil
 }
