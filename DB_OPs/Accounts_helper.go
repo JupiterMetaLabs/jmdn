@@ -18,10 +18,11 @@ const (
 func GetImmuClient() (*config.PooledConnection, error) {
 	var err error
 	var PooledConnection *config.PooledConnection
-
-	PooledConnection, err = GetMainDBConnection()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get main database connection: %w - GetImmuClient", err)
 	}
 	PooledConnection.Client.Logger.Logger.Info("Successfully retrieved Main DB Connection",
 		zap.String(logging.Connection_database, config.DBName),
@@ -53,9 +54,11 @@ func CloseImmuClient(PooledConnection *config.PooledConnection) error {
 func GetAccountsImmuClient() (*config.PooledConnection, error) {
 	var err error
 	var PooledConnection *config.PooledConnection
-	PooledConnection, err = GetAccountsConnection()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get accounts database connection: %w - GetAccountsImmuClient", err)
 	}
 	PooledConnection.Client.Logger.Logger.Info("Successfully retrieved Accounts DB Connection",
 		zap.String(logging.Connection_database, config.AccountsDBName),
@@ -95,7 +98,7 @@ func GetCountofRecords(PooledConnection *config.PooledConnection, ConnType int, 
 		if PooledConnection == nil || PooledConnection.Client == nil {
 			PooledConnection, err = GetImmuClient()
 			if err != nil {
-				return 0, err
+				return 0, fmt.Errorf("failed to get main database connection: %w - GetCountofRecords", err)
 			}
 			shouldReturnConnection = true
 			defer func() {
@@ -108,7 +111,7 @@ func GetCountofRecords(PooledConnection *config.PooledConnection, ConnType int, 
 		if PooledConnection == nil || PooledConnection.Client == nil {
 			PooledConnection, err = GetAccountsImmuClient()
 			if err != nil {
-				return 0, err
+				return 0, fmt.Errorf("failed to get accounts database connection: %w - GetCountofRecords", err)
 			}
 			shouldReturnConnection = true
 			defer func() {

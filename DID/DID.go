@@ -60,7 +60,7 @@ func (r *realDbOps) CreateAccount(conn *config.PooledConnection, DIDAddress stri
 }
 
 func (r *realDbOps) GetAccountsConnection() (*config.PooledConnection, error) {
-	return DB_OPs.GetAccountsConnection()
+	return DB_OPs.GetAccountConnectionandPutBack(context.Background())
 }
 
 func (r *realDbOps) PutAccountsConnection(conn *config.PooledConnection) {

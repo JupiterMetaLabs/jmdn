@@ -1,6 +1,7 @@
 package DB_OPs
 
 import (
+	"context"
 	"fmt"
 	"gossipnode/config"
 	"gossipnode/config/utils"
@@ -16,11 +17,15 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 	var err error
 	var shouldReturnConnection bool = false
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	// Get connection if not provided
 	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnection()
+		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
+			return nil, fmt.Errorf("failed to get main DB connection: %w - GetLogs", err)
 		}
 		shouldReturnConnection = true
 		mainDBClient.Client.Logger.Logger.Info("Main DB connection retrieved successfully",

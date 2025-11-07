@@ -91,11 +91,15 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 		return fmt.Errorf("DIDAddress and Address cannot be empty")
 	}
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	// Check if we need to get a connection
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to get accounts connection: %w - CreateAccount", err)
 		}
 		shouldReturnConnection = true // We acquired the connection, so we should return it
 
@@ -162,6 +166,10 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 	var AccountDoc *Account
 	var shouldReturnConnection bool = false
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	defer cancel()
+
 	if KeyDoc == nil {
 		return fmt.Errorf("Key document cannot be nil")
 	}
@@ -172,9 +180,9 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 
 	// Try to use connection pool if available, otherwise fall back to traditional approach
 	if PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to get accounts connection: %w - StoreAccount", err)
 		}
 		shouldReturnConnection = true // We acquired the connection, so we should return it
 
@@ -226,7 +234,7 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 
 	// Ensure we're using the accounts database
 	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
-		return fmt.Errorf("failed to ensure accounts database is selected: %w", err)
+		return fmt.Errorf("failed to ensure accounts database is selected: %w - StoreAccount", err)
 	}
 
 	// Marshal the account document
@@ -257,9 +265,7 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 		}}},
 	}
 
-	// Create a fresh context with a timeout (not based on ctx which might be canceled)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+
 
 	// Execute all operations atomically
 	status, err := ic.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops})
@@ -302,12 +308,17 @@ func BatchCreateAccountsOrdered(PooledConnection *config.PooledConnection, entri
 	if len(entries) == 0 {
 		return fmt.Errorf("entries cannot be empty")
 	}
+
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	var err error
 	var shouldReturnConnection bool
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to get accounts connection: %w", err)
+			return fmt.Errorf("failed to get accounts connection: %w - BatchCreateAccountsOrdered", err)
 		}
 		shouldReturnConnection = true
 	}
@@ -315,7 +326,7 @@ func BatchCreateAccountsOrdered(PooledConnection *config.PooledConnection, entri
 		defer PutAccountsConnection(PooledConnection)
 	}
 	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
-		return fmt.Errorf("failed to select accounts database: %w", err)
+		return fmt.Errorf("failed to select accounts database: %w - BatchCreateAccountsOrdered", err)
 	}
 	ops := make([]*schema.Op, 0, len(entries))
 	for _, e := range entries {
@@ -324,11 +335,9 @@ func BatchCreateAccountsOrdered(PooledConnection *config.PooledConnection, entri
 		}
 		ops = append(ops, &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{Key: []byte(e.Key), Value: e.Value}}})
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	_, err = PooledConnection.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops})
 	if err != nil {
-		return fmt.Errorf("accounts batch operation failed: %w", err)
+		return fmt.Errorf("accounts batch operation failed: %w - BatchCreateAccountsOrdered", err)
 	}
 	return nil
 }
@@ -344,10 +353,17 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 	}
 	var err error
 	var shouldReturnConnection bool
+
+	// Define Function wide context for timeout
+	ctx := context.Background()
+
+	// End the context.Background()
+	defer ctx.Done()
+
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to get accounts connection: %w", err)
+			return fmt.Errorf("failed to get accounts connection: %w - BatchRestoreAccounts", err)
 		}
 		shouldReturnConnection = true
 	}
@@ -355,7 +371,7 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		defer PutAccountsConnection(PooledConnection)
 	}
 	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
-		return fmt.Errorf("failed to select accounts database: %w", err)
+		return fmt.Errorf("failed to select accounts database: %w - BatchRestoreAccounts", err)
 	}
 
 	// Separate address: and did: keys to ensure proper ordering
@@ -614,8 +630,12 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 	ic := PooledConnection.Client
 	var shouldReturnConnection bool = false
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get connection from pool: %w", err)
 		}
@@ -647,10 +667,6 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
 		return nil, fmt.Errorf("failed to select accounts DB: %w", err)
 	}
-
-	// Create a fresh context for the read operation
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	entry, err := ic.Client.Get(ctx, key) // Get follows references automatically
 	if err != nil {
@@ -700,10 +716,14 @@ func GetAccountByDID(PooledConnection *config.PooledConnection, did string) (*Ac
 	var err error
 	var shouldReturnConnection bool = false
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get connection from pool: %w", err)
+			return nil, fmt.Errorf("failed to get connection from pool: %w - GetAccountByDID", err)
 		}
 		shouldReturnConnection = true
 	}
@@ -730,10 +750,14 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 	var err error
 	var shouldReturnConnection bool = false
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get connection from pool: %w - GetAccount", err)
 		}
 		shouldReturnConnection = true
 	}
@@ -759,14 +783,18 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 func UpdateAccountBalance(PooledConnection *config.PooledConnection, address common.Address, newBalance string) error {
 	fmt.Printf("=== DEBUG: UpdateAccountBalance called for address %s with balance %s ===\n", address.Hex(), newBalance)
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	var err error
 	var shouldReturnConnection bool = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		fmt.Println("DEBUG: PooledConnection is nil, getting new connection from pool")
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
 			fmt.Printf("DEBUG: Failed to get connection from pool: %v\n", err)
-			return fmt.Errorf("failed to get connection from pool: %w", err)
+			return fmt.Errorf("failed to get connection from pool: %w - UpdateAccountBalance", err)
 		}
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
@@ -855,12 +883,17 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*Account, error) {
 	var err error
 	var shouldReturnConnection bool = false
+
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
 	// Try to use connection pool if available, otherwise fall back to traditional approach
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		// Get a connection from the pool
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get connection from pool: %w", err)
+			return nil, fmt.Errorf("failed to get connection from pool: %w - ListAllAccounts", err)
 		}
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
@@ -898,7 +931,7 @@ func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*A
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.ListAllAccounts"),
 		)
-		return nil, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
+		return nil, fmt.Errorf("failed to ensure accounts database is selected: %w - ListAllAccounts", err)
 	}
 
 	// Get all keys with "account:" prefix
@@ -964,10 +997,16 @@ func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*A
 func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, offset int, extendedPrefix string) ([]*Account, error) {
 	var err error
 	var shouldReturnConnection bool = false
+
+	// Define Function wide context for timeout
+	ctx := context.Background()
+	// End the context.Background()
+	defer ctx.Done()
+
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get connection from pool: %w", err)
+			return nil, fmt.Errorf("failed to get connection from pool: %w - ListAccountsPaginated", err)
 		}
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
@@ -995,7 +1034,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 	ic := PooledConnection.Client
 	// Ensure we're using the accounts database
 	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
-		return nil, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
+		return nil, fmt.Errorf("failed to ensure accounts database is selected: %w - ListAccountsPaginated", err)
 	}
 
 	// Scan for address: keys instead of did: keys
@@ -1020,9 +1059,9 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 			SeekKey: lastKey,
 			Desc:    false,
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		scanResult, err := ic.Client.Scan(ctx, scanReq)
+		ReadCtx, ReadCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ReadCancel()
+		scanResult, err := ic.Client.Scan(ReadCtx, scanReq)
 		if err != nil {
 			PooledConnection.Client.Logger.Logger.Error("Failed to scan for accounts",
 				zap.Error(err),
@@ -1033,7 +1072,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 				zap.String(logging.Loki_url, LOKI_URL),
 				zap.String(logging.Function, "DB_OPs.ListAccountsPaginated"),
 			)
-			return nil, fmt.Errorf("failed to scan for accounts: %w", err)
+			return nil, fmt.Errorf("failed to scan for accounts: %w - ListAccountsPaginated", err)
 		}
 
 		if len(scanResult.Entries) == 0 {
@@ -1115,11 +1154,16 @@ func CountAccounts(PooledConnection *config.PooledConnection) (int, error) {
 func GetTransactionsByAccount(PooledConnection *config.PooledConnection, accountAddr *common.Address) ([]*config.Transaction, error) {
 	var err error
 	var shouldReturnConnection bool = false
+
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		// Use MAIN database connection since transactions are stored in main DB
-		PooledConnection, err = GetMainDBConnection()
+		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get main DB connection from pool: %w", err)
+			return nil, fmt.Errorf("failed to get main DB connection from pool: %w - GetTransactionsByAccount", err)
 		}
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
@@ -1231,10 +1275,16 @@ func isTransactionInvolvingAccount(tx config.Transaction, accountAddr *common.Ad
 func GetTransactionHashes(PooledConnection *config.PooledConnection, offset, limit int) ([]string, int, error) {
 	var err error
 	var shouldReturnConnection bool = false
+
+	// Define Function wide context for timeout
+	ctx := context.Background()
+	// End the context.Background()
+	defer ctx.Done()
+
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return nil, 0, fmt.Errorf("failed to get connection from pool: %w", err)
+			return nil, 0, fmt.Errorf("failed to get connection from pool: %w - GetTransactionHashes", err)
 		}
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",

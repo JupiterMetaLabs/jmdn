@@ -75,7 +75,7 @@ func Test_Create_Read_Update(t *testing.T) {
 		"updated":   true,
 	}
 
-	err = DB_OPs.Update(conn, testKey, updatedValue)
+	err = DB_OPs.Update(testKey, updatedValue)
 	if err != nil {
 		DB_OPs.PutMainDBConnection(conn)
 		t.Fatalf("Failed to update key: %v", err)
@@ -141,7 +141,7 @@ func Test_ReadJSON(t *testing.T) {
 	// Test ReadJSON
 	fmt.Printf("Testing ReadJSON operation...\n")
 	var retrievedValue map[string]interface{}
-	err = DB_OPs.ReadJSON(conn, testKey, &retrievedValue)
+	err = DB_OPs.ReadJSON(testKey, &retrievedValue)
 	if err != nil {
 		DB_OPs.PutMainDBConnection(conn)
 		t.Fatalf("Failed to read JSON: %v", err)
