@@ -389,7 +389,7 @@ func StartAPIServer(address string, enableExplorer bool) error {
 
 // Update this function:
 func startDIDServer(h host.Host, address string) error {
-	didDBClient, err := DB_OPs.GetAccountsConnection()
+	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
 	if err != nil {
 		//Debugging
 		fmt.Println("Failed to get DID database client", err)
@@ -607,7 +607,7 @@ func main() {
 	})
 
 	// Initialize database clients using the pools
-	mainDBClient, err := DB_OPs.GetMainDBConnection()
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to get main database connection from pool")
 	}
@@ -620,7 +620,7 @@ func main() {
 	// Debugging
 	// fmt.Println("Getting accounts database connection from pool")
 
-	didDBClient, err := DB_OPs.GetAccountsConnection()
+	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to get accounts database connection from pool")
 	}

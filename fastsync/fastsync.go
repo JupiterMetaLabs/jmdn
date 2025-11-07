@@ -905,14 +905,14 @@ func (fs *FastSync) batchCreateWithRetry(entriesMap map[string]interface{}, dbTy
 			var clientErr error
 
 			if dbType == MainDB {
-				newClient, clientErr = DB_OPs.GetMainDBConnection()
+				newClient, clientErr = DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 				if clientErr == nil {
 					DB_OPs.Close(fs.mainDB.Client) // Close the old, invalid client
 					DB_OPs.PutMainDBConnection(fs.mainDB)
 					fs.mainDB = newClient // Replace with the new, valid client
 				}
 			} else if dbType == AccountsDB {
-				newClient, clientErr = DB_OPs.GetAccountsConnection()
+				newClient, clientErr = DB_OPs.GetAccountConnectionandPutBack(context.Background())
 				if clientErr == nil {
 					DB_OPs.Close(fs.accountsDB.Client)
 					DB_OPs.PutAccountsConnection(fs.accountsDB)
@@ -1000,14 +1000,14 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 			var newClient *config.PooledConnection
 			var clientErr error
 			if dbType == MainDB {
-				newClient, clientErr = DB_OPs.GetMainDBConnection()
+				newClient, clientErr = DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 				if clientErr == nil {
 					DB_OPs.Close(fs.mainDB.Client)
 					DB_OPs.PutMainDBConnection(fs.mainDB)
 					fs.mainDB = newClient
 				}
 			} else {
-				newClient, clientErr = DB_OPs.GetAccountsConnection()
+				newClient, clientErr = DB_OPs.GetAccountConnectionandPutBack(context.Background())
 				if clientErr == nil {
 					DB_OPs.Close(fs.accountsDB.Client)
 					DB_OPs.PutAccountsConnection(fs.accountsDB)

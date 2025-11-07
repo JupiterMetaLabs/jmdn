@@ -115,13 +115,6 @@ func markMessageProcessed(messageID string) {
 
 // storeMessageInImmuDB stores a message in ImmuDB using the appropriate key
 func storeMessageInImmuDB(msg config.BlockMessage) error {
-	// Get connection on-demand
-	client, err := DB_OPs.GetMainDBConnection()
-	if err != nil {
-		return fmt.Errorf("failed to get main DB connection: %w", err)
-	}
-	defer DB_OPs.PutMainDBConnection(client)
-
 	// Determine the key - focus on ZK blocks
 	var key string
 	if msg.Type == "zkblock" && msg.Block != nil {
@@ -133,7 +126,7 @@ func storeMessageInImmuDB(msg config.BlockMessage) error {
 	}
 
 	// Store the message
-	if err := DB_OPs.Create(client, key, msg); err != nil {
+	if err := DB_OPs.Create(nil, key, msg); err != nil {
 		log.Error().Err(err).Str("key", key).Msg("Failed to store message in ImmuDB")
 		return err
 	}
@@ -150,23 +143,17 @@ func storeMessageInImmuDB(msg config.BlockMessage) error {
 
 // updateMessageSet adds a message key to the grow-only set in ImmuDB
 func updateMessageSet(key string) error {
-	// Get connection on-demand
-	client, err := DB_OPs.GetMainDBConnection()
-	if err != nil {
-		return fmt.Errorf("failed to get main DB connection: %w", err)
-	}
-	defer DB_OPs.PutMainDBConnection(client)
 
 	const setKey = "crdt:message_set"
 
 	var messageSet map[string]bool
-	err = DB_OPs.ReadJSON(client, setKey, &messageSet)
+	err := DB_OPs.ReadJSON(setKey, &messageSet)
 	if err != nil {
 		messageSet = make(map[string]bool)
 	}
 
 	messageSet[key] = true
-	return DB_OPs.Create(client, setKey, messageSet)
+	return DB_OPs.Create(nil, setKey, messageSet)
 }
 
 // getMessageIDForBloomFilter gets the appropriate ID to use for duplication checking
@@ -294,22 +281,22 @@ func HandleBlockStream(stream network.Stream) {
 				}
 			}
 
+			ctx := context.Background()
+
 			// Create DB clients for processing
-			mainDBClient, err := DB_OPs.GetMainDBConnection()
+			mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to create main DB client")
 				return
 			}
-			defer func() {
-				DB_OPs.PutMainDBConnection(mainDBClient)
-			}()
 
-			accountsClient, err := DB_OPs.GetAccountsConnection()
+			accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to create accounts DB client")
 				return
 			}
 			defer func() {
+				DB_OPs.PutMainDBConnection(mainDBClient)
 				DB_OPs.PutAccountsConnection(accountsClient)
 			}()
 
@@ -594,18 +581,10 @@ func PropagateZKBlock(h host.Host, block *PubSubMessages.ConsensusMessage) error
 
 // GetMessage retrieves a message by key
 func GetMessage(key string) (*config.BlockMessage, error) {
-	// Get connection on-demand
-	client, err := DB_OPs.GetMainDBConnection()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get main DB connection: %w", err)
-	}
-	defer DB_OPs.PutMainDBConnection(client)
-
 	var message config.BlockMessage
-	if err := DB_OPs.ReadJSON(client, key, &message); err != nil {
+	if err := DB_OPs.ReadJSON(key, &message); err != nil {
 		return nil, fmt.Errorf("failed to read message data: %w", err)
 	}
-
 	return &message, nil
 }
 
