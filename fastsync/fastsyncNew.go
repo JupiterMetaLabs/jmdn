@@ -188,7 +188,7 @@ func (fs *FastSync) getAllUniquePrefixes(db *config.PooledConnection, dbType Dat
 	fmt.Printf(">>> [SERVER] Discovering prefixes by sampling keys from database...\n")
 
 	prefixSet := make(map[string]bool)
-	batchSize := 1000
+	batchSize := 20
 	maxKeysToScan := 50000 // Limit to 50k keys max to avoid infinite loops
 	totalKeysScanned := 0
 
@@ -432,7 +432,7 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 	for prefixIdx, prefix := range prefixes {
 		fmt.Printf(">>> [SERVER] Processing prefix %d/%d: '%s'...\n", prefixIdx+1, len(prefixes), prefix)
 
-		batchSize := 1000
+		batchSize := 100
 		var lastKey []byte
 		batchNum := 0
 		totalChecked := 0
@@ -452,9 +452,12 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 			actualBatchSize = 20 // Very small batch for blocks - each block ~97KB, so 20 blocks = ~2MB (well under 20MB limit)
 			fmt.Printf(">>> [SERVER] Using reduced batch size %d for 'block:' prefix (to avoid gRPC 20MB message size limit)\n", actualBatchSize)
 		case "tx:", "tx_processed:":
-			actualBatchSize = 200 // Medium batch for transactions
+			actualBatchSize = 20 // Medium batch for transactions
 		case "tx_processing:":
-			actualBatchSize = 500 // Small prefix, can use larger batches
+			actualBatchSize = 20 // Small prefix, can use larger batches
+		case "address:", "did:":
+			actualBatchSize = 20 // AccountsDB entries - using smaller batch to ensure all DIDs/addresses are synced
+			fmt.Printf(">>> [SERVER] Using batch size %d for '%s' prefix (AccountsDB)\n", actualBatchSize, prefix)
 		}
 
 		for {
