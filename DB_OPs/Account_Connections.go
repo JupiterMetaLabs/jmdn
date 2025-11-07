@@ -165,7 +165,7 @@ func ensureAccountsDBExists(username, password string) error {
 		WithAddress(config.DBAddress).
 		WithPort(config.DBPort).
 		WithDir(stateDir).
-		WithMaxRecvMsgSize(1024 * 1024 * 20). // 20MB message size
+		WithMaxRecvMsgSize(1024 * 1024 * 200). // 20MB message size
 		WithDisableIdentityCheck(false).
 		WithMTLsOptions(
 			client.MTLsOptions{}.WithCertificate(certFile).WithPkey(keyFile).WithClientCAs(caFile).WithServername(config.DBAddress),
