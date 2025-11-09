@@ -546,7 +546,7 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 	if len(peers) == 0 {
 		log.Warn().Msg("No connected peers to broadcast block to")
 		if result {
-			return processBlockLocally(block)
+			return ProcessBlockLocally(block)
 		}
 		return nil
 	}
@@ -635,13 +635,14 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 
 	if result {
 		log.Info().Str("block_hash", block.BlockHash.Hex()).Msg("Positive result - processing block locally")
-		return processBlockLocally(block)
+		return ProcessBlockLocally(block)
 	}
 	return nil
 }
 
-// processBlockLocally processes a block locally (similar to processZKBlockNoConsensus)
-func processBlockLocally(block *config.ZKBlock) error {
+// ProcessBlockLocally processes a block locally (similar to processZKBlockNoConsensus)
+// This function processes all transactions in the block and updates account balances
+func ProcessBlockLocally(block *config.ZKBlock) error {
 	log.Info().
 		Str("block_hash", block.BlockHash.Hex()).
 		Uint64("block_number", block.BlockNumber).
