@@ -97,7 +97,7 @@ func GetAccountsConnections(ctx context.Context) (*config.PooledConnection, erro
 	if accountsPool == nil {
 		return nil, errors.New("accounts connection pool is not initialized. Call InitAccountsPool first")
 	}
-![1762524853040](image/Account_Connections/1762524853040.png)	accountsPool.Logger.Logger.Info("Getting accounts connection",
+	accountsPool.Logger.Logger.Info("Getting accounts connection",
 		zap.String(logging.Connection_database, config.AccountsDBName),
 		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),

@@ -142,33 +142,33 @@ var (
 		[]string{"level", "component"},
 	)
 
-	MainDBConnectionPoolCount = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "p2p_main_db_connection_pool_count",
+	MainDBConnectionPoolCount = factory.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "main_db_connection_pool_count",
 		Help: "The total number of main database connections in the pool",
 	}, []string{"function"})
 
-	MainDBConnectionPoolActive = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "p2p_main_db_connection_pool_active",
+	MainDBConnectionPoolActive = factory.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "main_db_connection_pool_active",
 		Help: "The number of active (in-use) main database connections",
 	}, []string{"function"})
 
-	MainDBConnectionPoolIdle = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "p2p_main_db_connection_pool_idle",
+	MainDBConnectionPoolIdle = factory.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "main_db_connection_pool_idle",
 		Help: "The number of idle main database connections",
 	}, []string{"function"})
 
-	AccountsDBConnectionPoolCount = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "p2p_accounts_db_connection_pool_count",
+	AccountsDBConnectionPoolCount = factory.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "accounts_db_connection_pool_count",
 		Help: "The total number of accounts database connections in the pool",
 	}, []string{"function"})
 
-	AccountsDBConnectionPoolActive = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "p2p_accounts_db_connection_pool_active",
+	AccountsDBConnectionPoolActive = factory.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "accounts_db_connection_pool_active",
 		Help: "The number of active (in-use) accounts database connections",
 	}, []string{"function"})
 
-	AccountsDBConnectionPoolIdle = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "p2p_accounts_db_connection_pool_idle",
+	AccountsDBConnectionPoolIdle = factory.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "accounts_db_connection_pool_idle",
 		Help: "The number of idle accounts database connections",
 	}, []string{"function"})
 )
