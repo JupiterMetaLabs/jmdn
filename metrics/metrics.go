@@ -141,36 +141,6 @@ var (
 		},
 		[]string{"level", "component"},
 	)
-
-	MainDBConnectionPoolCount = factory.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "main_db_connection_pool_count",
-		Help: "The total number of main database connections in the pool",
-	}, []string{"function"})
-
-	MainDBConnectionPoolActive = factory.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "main_db_connection_pool_active",
-		Help: "The number of active (in-use) main database connections",
-	}, []string{"function"})
-
-	MainDBConnectionPoolIdle = factory.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "main_db_connection_pool_idle",
-		Help: "The number of idle main database connections",
-	}, []string{"function"})
-
-	AccountsDBConnectionPoolCount = factory.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "accounts_db_connection_pool_count",
-		Help: "The total number of accounts database connections in the pool",
-	}, []string{"function"})
-
-	AccountsDBConnectionPoolActive = factory.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "accounts_db_connection_pool_active",
-		Help: "The number of active (in-use) accounts database connections",
-	}, []string{"function"})
-
-	AccountsDBConnectionPoolIdle = factory.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "accounts_db_connection_pool_idle",
-		Help: "The number of idle accounts database connections",
-	}, []string{"function"})
 )
 
 var PeerRemovedCounter = promauto.NewCounterVec(
@@ -190,56 +160,4 @@ func StartMetricsServer(addr string) {
 			fmt.Printf("Error starting metrics server: %v\n", err)
 		}
 	}()
-}
-
-// UpdateMainDBConnectionPoolMetrics updates all main DB connection pool metrics
-// Uses "unknown" as default function name for backward compatibility
-func UpdateMainDBConnectionPoolMetrics(total, active, idle int) {
-	UpdateMainDBConnectionPoolMetricsWithFunction("unknown", total, active, idle)
-}
-
-// UpdateAccountsDBConnectionPoolMetrics updates all accounts DB connection pool metrics
-// Uses "unknown" as default function name for backward compatibility
-func UpdateAccountsDBConnectionPoolMetrics(total, active, idle int) {
-	UpdateAccountsDBConnectionPoolMetricsWithFunction("unknown", total, active, idle)
-}
-
-// UpdateMainDBConnectionPoolMetricsWithFunction updates all main DB connection pool metrics with function name
-func UpdateMainDBConnectionPoolMetricsWithFunction(functionName string, total, active, idle int) {
-	MainDBConnectionPoolCount.WithLabelValues(functionName).Set(float64(total))
-	MainDBConnectionPoolActive.WithLabelValues(functionName).Set(float64(active))
-	MainDBConnectionPoolIdle.WithLabelValues(functionName).Set(float64(idle))
-}
-
-// UpdateAccountsDBConnectionPoolMetricsWithFunction updates all accounts DB connection pool metrics with function name
-func UpdateAccountsDBConnectionPoolMetricsWithFunction(functionName string, total, active, idle int) {
-	AccountsDBConnectionPoolCount.WithLabelValues(functionName).Set(float64(total))
-	AccountsDBConnectionPoolActive.WithLabelValues(functionName).Set(float64(active))
-	AccountsDBConnectionPoolIdle.WithLabelValues(functionName).Set(float64(idle))
-}
-
-// Legacy functions for backward compatibility (deprecated)
-// Uses "unknown" as default function name for backward compatibility
-func InitlizeMainDBConnectionPoolCount(count int) {
-	MainDBConnectionPoolCount.WithLabelValues("unknown").Set(float64(count))
-}
-
-func InitlizeAccountsDBConnectionPoolCount(count int) {
-	AccountsDBConnectionPoolCount.WithLabelValues("unknown").Set(float64(count))
-}
-
-func IncrementMainDBConnectionPoolCount() {
-	MainDBConnectionPoolCount.WithLabelValues("unknown").Inc()
-}
-
-func DecrementMainDBConnectionPoolCount() {
-	MainDBConnectionPoolCount.WithLabelValues("unknown").Dec()
-}
-
-func IncrementAccountsDBConnectionPoolCount() {
-	AccountsDBConnectionPoolCount.WithLabelValues("unknown").Inc()
-}
-
-func DecrementAccountsDBConnectionPoolCount() {
-	AccountsDBConnectionPoolCount.WithLabelValues("unknown").Dec()
 }
