@@ -83,9 +83,9 @@ func InitAccountsPoolWithLoki(enableLoki bool, username, password string) error 
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.InitAccountsPool"),
 		)
-		metrics.NewAccountsDBMetricsBuilder().WithFunction("DB_OPs.InitAccountsPool").SetTotal(poolCfg.MinConnections)
+		metrics.NewAccountsDBMetricsBuilder().WithFunction("DB_OPs.InitAccountsPool").SetTotal(accountsPool.Config.MaxConnections)
 		metrics.NewAccountsDBMetricsBuilder().WithFunction("DB_OPs.InitAccountsPool").SetActive(0)
-		metrics.NewAccountsDBMetricsBuilder().WithFunction("DB_OPs.InitAccountsPool").SetIdle(poolCfg.MinConnections)
+		metrics.NewAccountsDBMetricsBuilder().WithFunction("DB_OPs.InitAccountsPool").SetIdle(accountsPool.Config.MaxConnections)
 	})
 	return initErr
 }

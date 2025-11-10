@@ -145,9 +145,9 @@ func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki 
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.InitMainDBPool"),
 		)
-		metrics.NewMainDBMetricsBuilder().WithFunction("DB_OPs.InitMainDBPool").SetTotal(poolCfg.MinConnections)
+		metrics.NewMainDBMetricsBuilder().WithFunction("DB_OPs.InitMainDBPool").SetTotal(mainDBPool.Config.MaxConnections)
 		metrics.NewMainDBMetricsBuilder().WithFunction("DB_OPs.InitMainDBPool").SetActive(0)
-		metrics.NewMainDBMetricsBuilder().WithFunction("DB_OPs.InitMainDBPool").SetIdle(poolCfg.MinConnections)
+		metrics.NewMainDBMetricsBuilder().WithFunction("DB_OPs.InitMainDBPool").SetIdle(mainDBPool.Config.MaxConnections)
 	})
 
 	return initErr
