@@ -762,12 +762,20 @@ func (consensus *Consensus) PrintCRDTState() error {
 		wg.Wait()
 		fmt.Printf("✅ Collected vote results from all buddy nodes\n")
 
-		// After collecting votes, broadcast block with attached BLS results (no local processing here)
+		// After collecting votes, broadcast block with attached BLS results
 		if consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
-			if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, consensus.ZKBlockData.GetZKBlock(), false, map[string]string{}, blsResults); err != nil {
+			block := consensus.ZKBlockData.GetZKBlock()
+			if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, block, false, map[string]string{}, blsResults); err != nil {
 				fmt.Printf("❌ Failed to broadcast block with BLS results: %v\n", err)
 			} else {
 				fmt.Printf("✅ Broadcasted block with %d BLS results\n", len(blsResults))
+
+				// Process block locally after successful broadcast to update account balances
+				if err := messaging.ProcessBlockLocally(block); err != nil {
+					fmt.Printf("❌ Failed to process block locally after broadcast: %v\n", err)
+				} else {
+					fmt.Printf("✅ Processed block locally - account balances updated\n")
+				}
 			}
 		} else {
 			fmt.Printf("⚠️ Cannot broadcast block: ZKBlockData missing\n")

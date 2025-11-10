@@ -80,15 +80,17 @@ service CLIService {
     rpc GetDID(DIDRequest) returns (DIDDocument) {}
     rpc PropagateDID(DIDPropagationRequest) returns (OperationResponse) {}
 
+
     // Database Operations
     rpc FastSync(PeerRequest) returns (SyncStats) {}
+    rpc FirstSync(FirstSyncRequest) returns (SyncStats) {}
     rpc GetDatabaseState(google.protobuf.Empty) returns (DatabaseStates) {}
 
     // Node Operations
     rpc ReturnAddrs(google.protobuf.Empty) returns (Addrs) {}
     rpc GetSyncInfo(google.protobuf.Empty) returns (SyncInfo) {}
     rpc GetGethStatus(google.protobuf.Empty) returns (GethStatus) {}
-    
+
     // Discovery
     rpc DiscoverNeighbors(google.protobuf.Empty) returns (OperationResponse) {}
     rpc ListAliases(google.protobuf.Empty) returns (AliasList) {}
@@ -118,6 +120,11 @@ message DIDPropagationRequest {
     string did = 1;
     string public_key = 2;
     string balance = 3;
+}
+
+message FirstSyncRequest {
+    string peer = 1;
+    string mode = 2;  // "server" or "client"
 }
 
 message SyncInfo {

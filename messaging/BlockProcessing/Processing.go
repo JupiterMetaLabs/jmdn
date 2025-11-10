@@ -184,7 +184,7 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 		// Clean up the processing key
 		processingKey := fmt.Sprintf("tx_processing:%s", txHash)
 		if exists, _ := DB_OPs.Exists(accountsClient, processingKey); exists {
-			if err := DB_OPs.Update(processingKey, int64(-1)); err != nil {
+			if err := DB_OPs.Create(accountsClient, processingKey, int64(-1)); err != nil {
 				log.Warn().Err(err).Str("tx_hash", txHash).Msg("Failed to clean up processing marker")
 			}
 		}
@@ -238,7 +238,7 @@ func sortTransactionsByNonce(txs []config.Transaction) []config.Transaction {
 func cleanupProcessingMarkers(accountsClient *config.PooledConnection, txHash string) {
 	processingKey := fmt.Sprintf("tx_processing:%s", txHash)
 	if exists, _ := DB_OPs.Exists(accountsClient, processingKey); exists {
-		if err := DB_OPs.Update(processingKey, int64(-1)); err != nil {
+		if err := DB_OPs.Create(accountsClient, processingKey, int64(-1)); err != nil {
 			accountsClient.Client.Logger.Logger.Warn("Failed to clean up processing marker",
 				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),

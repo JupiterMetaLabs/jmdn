@@ -252,7 +252,6 @@ func CheckSignature(tx *config.Transaction) (bool, error) {
 		return false, errors.New("transaction missing required signature fields (From, To, V, R, or S)")
 	}
 
-
 	var ethTx *types.Transaction
 	var signer types.Signer
 

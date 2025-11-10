@@ -312,8 +312,8 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 		WithAddress(cp.Address).
 		WithPort(cp.Port).
 		WithDir(State_Path_Hidden).
-		WithMaxRecvMsgSize(1024 * 1024 * 20). // 20MB message size
-		WithDisableIdentityCheck(false).      // Disable identity file to prevent 24-hour expiration
+		WithMaxRecvMsgSize(1024 * 1024 * 200). // 20MB message size
+		WithDisableIdentityCheck(false).       // Disable identity file to prevent 24-hour expiration
 		WithMTLsOptions(
 			client.MTLsOptions{}.WithCertificate(certFile).WithPkey(keyFile).WithClientCAs(caFile).WithServername(cp.Address),
 		)

@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v5.29.3
-// source: CLI/proto/Connection.proto
+// source: Connection.proto
 
 package proto
 
@@ -38,7 +38,7 @@ type Peer struct {
 
 func (x *Peer) Reset() {
 	*x = Peer{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[0]
+	mi := &file_Connection_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -50,7 +50,7 @@ func (x *Peer) String() string {
 func (*Peer) ProtoMessage() {}
 
 func (x *Peer) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[0]
+	mi := &file_Connection_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -63,7 +63,7 @@ func (x *Peer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Peer.ProtoReflect.Descriptor instead.
 func (*Peer) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{0}
+	return file_Connection_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *Peer) GetId() string {
@@ -117,7 +117,7 @@ type PeerList struct {
 
 func (x *PeerList) Reset() {
 	*x = PeerList{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[1]
+	mi := &file_Connection_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -129,7 +129,7 @@ func (x *PeerList) String() string {
 func (*PeerList) ProtoMessage() {}
 
 func (x *PeerList) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[1]
+	mi := &file_Connection_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -142,7 +142,7 @@ func (x *PeerList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerList.ProtoReflect.Descriptor instead.
 func (*PeerList) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{1}
+	return file_Connection_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *PeerList) GetPeers() []*Peer {
@@ -164,7 +164,7 @@ type MessageStats struct {
 
 func (x *MessageStats) Reset() {
 	*x = MessageStats{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[2]
+	mi := &file_Connection_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -176,7 +176,7 @@ func (x *MessageStats) String() string {
 func (*MessageStats) ProtoMessage() {}
 
 func (x *MessageStats) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[2]
+	mi := &file_Connection_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -189,7 +189,7 @@ func (x *MessageStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageStats.ProtoReflect.Descriptor instead.
 func (*MessageStats) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{2}
+	return file_Connection_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *MessageStats) GetMessagesSent() int64 {
@@ -225,7 +225,7 @@ type DatabaseState struct {
 
 func (x *DatabaseState) Reset() {
 	*x = DatabaseState{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[3]
+	mi := &file_Connection_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -237,7 +237,7 @@ func (x *DatabaseState) String() string {
 func (*DatabaseState) ProtoMessage() {}
 
 func (x *DatabaseState) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[3]
+	mi := &file_Connection_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -250,7 +250,7 @@ func (x *DatabaseState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseState.ProtoReflect.Descriptor instead.
 func (*DatabaseState) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{3}
+	return file_Connection_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *DatabaseState) GetTxId() uint64 {
@@ -291,7 +291,7 @@ type DIDDocument struct {
 
 func (x *DIDDocument) Reset() {
 	*x = DIDDocument{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[4]
+	mi := &file_Connection_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -303,7 +303,7 @@ func (x *DIDDocument) String() string {
 func (*DIDDocument) ProtoMessage() {}
 
 func (x *DIDDocument) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[4]
+	mi := &file_Connection_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -316,7 +316,7 @@ func (x *DIDDocument) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DIDDocument.ProtoReflect.Descriptor instead.
 func (*DIDDocument) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{4}
+	return file_Connection_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *DIDDocument) GetDid() string {
@@ -388,7 +388,7 @@ type SyncStats struct {
 
 func (x *SyncStats) Reset() {
 	*x = SyncStats{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[5]
+	mi := &file_Connection_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -400,7 +400,7 @@ func (x *SyncStats) String() string {
 func (*SyncStats) ProtoMessage() {}
 
 func (x *SyncStats) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[5]
+	mi := &file_Connection_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -413,7 +413,7 @@ func (x *SyncStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncStats.ProtoReflect.Descriptor instead.
 func (*SyncStats) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{5}
+	return file_Connection_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *SyncStats) GetTimeTaken() int64 {
@@ -455,7 +455,7 @@ type Addrs struct {
 
 func (x *Addrs) Reset() {
 	*x = Addrs{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[6]
+	mi := &file_Connection_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -467,7 +467,7 @@ func (x *Addrs) String() string {
 func (*Addrs) ProtoMessage() {}
 
 func (x *Addrs) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[6]
+	mi := &file_Connection_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -480,7 +480,7 @@ func (x *Addrs) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Addrs.ProtoReflect.Descriptor instead.
 func (*Addrs) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{6}
+	return file_Connection_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Addrs) GetTotal() int32 {
@@ -514,7 +514,7 @@ type PeerRequest struct {
 
 func (x *PeerRequest) Reset() {
 	*x = PeerRequest{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[7]
+	mi := &file_Connection_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -526,7 +526,7 @@ func (x *PeerRequest) String() string {
 func (*PeerRequest) ProtoMessage() {}
 
 func (x *PeerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[7]
+	mi := &file_Connection_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -539,7 +539,7 @@ func (x *PeerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerRequest.ProtoReflect.Descriptor instead.
 func (*PeerRequest) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{7}
+	return file_Connection_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *PeerRequest) GetPeer() string {
@@ -559,7 +559,7 @@ type MessageRequest struct {
 
 func (x *MessageRequest) Reset() {
 	*x = MessageRequest{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[8]
+	mi := &file_Connection_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -571,7 +571,7 @@ func (x *MessageRequest) String() string {
 func (*MessageRequest) ProtoMessage() {}
 
 func (x *MessageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[8]
+	mi := &file_Connection_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -584,7 +584,7 @@ func (x *MessageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageRequest.ProtoReflect.Descriptor instead.
 func (*MessageRequest) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{8}
+	return file_Connection_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *MessageRequest) GetTarget() string {
@@ -612,7 +612,7 @@ type FileRequest struct {
 
 func (x *FileRequest) Reset() {
 	*x = FileRequest{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[9]
+	mi := &file_Connection_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -624,7 +624,7 @@ func (x *FileRequest) String() string {
 func (*FileRequest) ProtoMessage() {}
 
 func (x *FileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[9]
+	mi := &file_Connection_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -637,7 +637,7 @@ func (x *FileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileRequest.ProtoReflect.Descriptor instead.
 func (*FileRequest) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{9}
+	return file_Connection_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *FileRequest) GetPeer() string {
@@ -670,7 +670,7 @@ type DIDRequest struct {
 
 func (x *DIDRequest) Reset() {
 	*x = DIDRequest{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[10]
+	mi := &file_Connection_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -682,7 +682,7 @@ func (x *DIDRequest) String() string {
 func (*DIDRequest) ProtoMessage() {}
 
 func (x *DIDRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[10]
+	mi := &file_Connection_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -695,7 +695,7 @@ func (x *DIDRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DIDRequest.ProtoReflect.Descriptor instead.
 func (*DIDRequest) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{10}
+	return file_Connection_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DIDRequest) GetDid() string {
@@ -716,7 +716,7 @@ type DIDPropagationRequest struct {
 
 func (x *DIDPropagationRequest) Reset() {
 	*x = DIDPropagationRequest{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[11]
+	mi := &file_Connection_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -728,7 +728,7 @@ func (x *DIDPropagationRequest) String() string {
 func (*DIDPropagationRequest) ProtoMessage() {}
 
 func (x *DIDPropagationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[11]
+	mi := &file_Connection_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -741,7 +741,7 @@ func (x *DIDPropagationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DIDPropagationRequest.ProtoReflect.Descriptor instead.
 func (*DIDPropagationRequest) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{11}
+	return file_Connection_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *DIDPropagationRequest) GetDid() string {
@@ -765,6 +765,58 @@ func (x *DIDPropagationRequest) GetBalance() string {
 	return ""
 }
 
+type FirstSyncRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Peer          string                 `protobuf:"bytes,1,opt,name=peer,proto3" json:"peer,omitempty"`
+	Mode          string                 `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"` // "server" or "client"
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FirstSyncRequest) Reset() {
+	*x = FirstSyncRequest{}
+	mi := &file_Connection_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FirstSyncRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FirstSyncRequest) ProtoMessage() {}
+
+func (x *FirstSyncRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_Connection_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FirstSyncRequest.ProtoReflect.Descriptor instead.
+func (*FirstSyncRequest) Descriptor() ([]byte, []int) {
+	return file_Connection_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *FirstSyncRequest) GetPeer() string {
+	if x != nil {
+		return x.Peer
+	}
+	return ""
+}
+
+func (x *FirstSyncRequest) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
 type SyncInfo struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	BatchSize          int64                  `protobuf:"varint,1,opt,name=batch_size,json=batchSize,proto3" json:"batch_size,omitempty"`
@@ -776,7 +828,7 @@ type SyncInfo struct {
 
 func (x *SyncInfo) Reset() {
 	*x = SyncInfo{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[12]
+	mi := &file_Connection_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -788,7 +840,7 @@ func (x *SyncInfo) String() string {
 func (*SyncInfo) ProtoMessage() {}
 
 func (x *SyncInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[12]
+	mi := &file_Connection_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -801,7 +853,7 @@ func (x *SyncInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncInfo.ProtoReflect.Descriptor instead.
 func (*SyncInfo) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{12}
+	return file_Connection_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *SyncInfo) GetBatchSize() int64 {
@@ -836,7 +888,7 @@ type GethStatus struct {
 
 func (x *GethStatus) Reset() {
 	*x = GethStatus{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[13]
+	mi := &file_Connection_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -848,7 +900,7 @@ func (x *GethStatus) String() string {
 func (*GethStatus) ProtoMessage() {}
 
 func (x *GethStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[13]
+	mi := &file_Connection_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -861,7 +913,7 @@ func (x *GethStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GethStatus.ProtoReflect.Descriptor instead.
 func (*GethStatus) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{13}
+	return file_Connection_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *GethStatus) GetChainId() int32 {
@@ -894,7 +946,7 @@ type AliasList struct {
 
 func (x *AliasList) Reset() {
 	*x = AliasList{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[14]
+	mi := &file_Connection_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -906,7 +958,7 @@ func (x *AliasList) String() string {
 func (*AliasList) ProtoMessage() {}
 
 func (x *AliasList) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[14]
+	mi := &file_Connection_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -919,7 +971,7 @@ func (x *AliasList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AliasList.ProtoReflect.Descriptor instead.
 func (*AliasList) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{14}
+	return file_Connection_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AliasList) GetAliases() []string {
@@ -939,7 +991,7 @@ type OperationResponse struct {
 
 func (x *OperationResponse) Reset() {
 	*x = OperationResponse{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[15]
+	mi := &file_Connection_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -951,7 +1003,7 @@ func (x *OperationResponse) String() string {
 func (*OperationResponse) ProtoMessage() {}
 
 func (x *OperationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[15]
+	mi := &file_Connection_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -964,7 +1016,7 @@ func (x *OperationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationResponse.ProtoReflect.Descriptor instead.
 func (*OperationResponse) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{15}
+	return file_Connection_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *OperationResponse) GetSuccess() bool {
@@ -991,7 +1043,7 @@ type CleanPeersResponse struct {
 
 func (x *CleanPeersResponse) Reset() {
 	*x = CleanPeersResponse{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[16]
+	mi := &file_Connection_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1003,7 +1055,7 @@ func (x *CleanPeersResponse) String() string {
 func (*CleanPeersResponse) ProtoMessage() {}
 
 func (x *CleanPeersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[16]
+	mi := &file_Connection_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1016,7 +1068,7 @@ func (x *CleanPeersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CleanPeersResponse.ProtoReflect.Descriptor instead.
 func (*CleanPeersResponse) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{16}
+	return file_Connection_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CleanPeersResponse) GetCleanedCount() int32 {
@@ -1043,7 +1095,7 @@ type DatabaseStates struct {
 
 func (x *DatabaseStates) Reset() {
 	*x = DatabaseStates{}
-	mi := &file_CLI_proto_Connection_proto_msgTypes[17]
+	mi := &file_Connection_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1055,7 +1107,7 @@ func (x *DatabaseStates) String() string {
 func (*DatabaseStates) ProtoMessage() {}
 
 func (x *DatabaseStates) ProtoReflect() protoreflect.Message {
-	mi := &file_CLI_proto_Connection_proto_msgTypes[17]
+	mi := &file_Connection_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1068,7 +1120,7 @@ func (x *DatabaseStates) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseStates.ProtoReflect.Descriptor instead.
 func (*DatabaseStates) Descriptor() ([]byte, []int) {
-	return file_CLI_proto_Connection_proto_rawDescGZIP(), []int{17}
+	return file_Connection_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *DatabaseStates) GetMainDb() *DatabaseState {
@@ -1085,11 +1137,11 @@ func (x *DatabaseStates) GetAccountsDb() *DatabaseState {
 	return nil
 }
 
-var File_CLI_proto_Connection_proto protoreflect.FileDescriptor
+var File_Connection_proto protoreflect.FileDescriptor
 
-const file_CLI_proto_Connection_proto_rawDesc = "" +
+const file_Connection_proto_rawDesc = "" +
 	"\n" +
-	"\x1aCLI/proto/Connection.proto\x12\x03cli\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xab\x01\n" +
+	"\x10Connection.proto\x12\x03cli\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xab\x01\n" +
 	"\x04Peer\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1c\n" +
 	"\tmultiaddr\x18\x02 \x01(\tR\tmultiaddr\x12%\n" +
@@ -1146,7 +1198,10 @@ const file_CLI_proto_Connection_proto_rawDesc = "" +
 	"\x03did\x18\x01 \x01(\tR\x03did\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x02 \x01(\tR\tpublicKey\x12\x18\n" +
-	"\abalance\x18\x03 \x01(\tR\abalance\"\x8b\x01\n" +
+	"\abalance\x18\x03 \x01(\tR\abalance\":\n" +
+	"\x10FirstSyncRequest\x12\x12\n" +
+	"\x04peer\x18\x01 \x01(\tR\x04peer\x12\x12\n" +
+	"\x04mode\x18\x02 \x01(\tR\x04mode\"\x8b\x01\n" +
 	"\bSyncInfo\x12\x1d\n" +
 	"\n" +
 	"batch_size\x18\x01 \x01(\x03R\tbatchSize\x12.\n" +
@@ -1169,7 +1224,7 @@ const file_CLI_proto_Connection_proto_rawDesc = "" +
 	"\x0eDatabaseStates\x12+\n" +
 	"\amain_db\x18\x01 \x01(\v2\x12.cli.DatabaseStateR\x06mainDb\x123\n" +
 	"\vaccounts_db\x18\x02 \x01(\v2\x12.cli.DatabaseStateR\n" +
-	"accountsDb2\xc5\b\n" +
+	"accountsDb2\xfb\b\n" +
 	"\n" +
 	"CLIService\x124\n" +
 	"\tListPeers\x12\x16.google.protobuf.Empty\x1a\r.cli.PeerList\"\x00\x125\n" +
@@ -1185,7 +1240,8 @@ const file_CLI_proto_Connection_proto_rawDesc = "" +
 	"\x0fGetMessageStats\x12\x16.google.protobuf.Empty\x1a\x11.cli.MessageStats\"\x00\x12-\n" +
 	"\x06GetDID\x12\x0f.cli.DIDRequest\x1a\x10.cli.DIDDocument\"\x00\x12D\n" +
 	"\fPropagateDID\x12\x1a.cli.DIDPropagationRequest\x1a\x16.cli.OperationResponse\"\x00\x12.\n" +
-	"\bFastSync\x12\x10.cli.PeerRequest\x1a\x0e.cli.SyncStats\"\x00\x12A\n" +
+	"\bFastSync\x12\x10.cli.PeerRequest\x1a\x0e.cli.SyncStats\"\x00\x124\n" +
+	"\tFirstSync\x12\x15.cli.FirstSyncRequest\x1a\x0e.cli.SyncStats\"\x00\x12A\n" +
 	"\x10GetDatabaseState\x12\x16.google.protobuf.Empty\x1a\x13.cli.DatabaseStates\"\x00\x123\n" +
 	"\vReturnAddrs\x12\x16.google.protobuf.Empty\x1a\n" +
 	".cli.Addrs\"\x00\x126\n" +
@@ -1195,19 +1251,19 @@ const file_CLI_proto_Connection_proto_rawDesc = "" +
 	"\vListAliases\x12\x16.google.protobuf.Empty\x1a\x0e.cli.AliasList\"\x00B\tZ\a./protob\x06proto3"
 
 var (
-	file_CLI_proto_Connection_proto_rawDescOnce sync.Once
-	file_CLI_proto_Connection_proto_rawDescData []byte
+	file_Connection_proto_rawDescOnce sync.Once
+	file_Connection_proto_rawDescData []byte
 )
 
-func file_CLI_proto_Connection_proto_rawDescGZIP() []byte {
-	file_CLI_proto_Connection_proto_rawDescOnce.Do(func() {
-		file_CLI_proto_Connection_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_CLI_proto_Connection_proto_rawDesc), len(file_CLI_proto_Connection_proto_rawDesc)))
+func file_Connection_proto_rawDescGZIP() []byte {
+	file_Connection_proto_rawDescOnce.Do(func() {
+		file_Connection_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_Connection_proto_rawDesc), len(file_Connection_proto_rawDesc)))
 	})
-	return file_CLI_proto_Connection_proto_rawDescData
+	return file_Connection_proto_rawDescData
 }
 
-var file_CLI_proto_Connection_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
-var file_CLI_proto_Connection_proto_goTypes = []any{
+var file_Connection_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_Connection_proto_goTypes = []any{
 	(*Peer)(nil),                  // 0: cli.Peer
 	(*PeerList)(nil),              // 1: cli.PeerList
 	(*MessageStats)(nil),          // 2: cli.MessageStats
@@ -1220,86 +1276,89 @@ var file_CLI_proto_Connection_proto_goTypes = []any{
 	(*FileRequest)(nil),           // 9: cli.FileRequest
 	(*DIDRequest)(nil),            // 10: cli.DIDRequest
 	(*DIDPropagationRequest)(nil), // 11: cli.DIDPropagationRequest
-	(*SyncInfo)(nil),              // 12: cli.SyncInfo
-	(*GethStatus)(nil),            // 13: cli.GethStatus
-	(*AliasList)(nil),             // 14: cli.AliasList
-	(*OperationResponse)(nil),     // 15: cli.OperationResponse
-	(*CleanPeersResponse)(nil),    // 16: cli.CleanPeersResponse
-	(*DatabaseStates)(nil),        // 17: cli.DatabaseStates
-	(*timestamppb.Timestamp)(nil), // 18: google.protobuf.Timestamp
-	(*emptypb.Empty)(nil),         // 19: google.protobuf.Empty
+	(*FirstSyncRequest)(nil),      // 12: cli.FirstSyncRequest
+	(*SyncInfo)(nil),              // 13: cli.SyncInfo
+	(*GethStatus)(nil),            // 14: cli.GethStatus
+	(*AliasList)(nil),             // 15: cli.AliasList
+	(*OperationResponse)(nil),     // 16: cli.OperationResponse
+	(*CleanPeersResponse)(nil),    // 17: cli.CleanPeersResponse
+	(*DatabaseStates)(nil),        // 18: cli.DatabaseStates
+	(*timestamppb.Timestamp)(nil), // 19: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),         // 20: google.protobuf.Empty
 }
-var file_CLI_proto_Connection_proto_depIdxs = []int32{
+var file_Connection_proto_depIdxs = []int32{
 	0,  // 0: cli.PeerList.peers:type_name -> cli.Peer
-	18, // 1: cli.DIDDocument.created_at:type_name -> google.protobuf.Timestamp
-	18, // 2: cli.DIDDocument.updated_at:type_name -> google.protobuf.Timestamp
+	19, // 1: cli.DIDDocument.created_at:type_name -> google.protobuf.Timestamp
+	19, // 2: cli.DIDDocument.updated_at:type_name -> google.protobuf.Timestamp
 	3,  // 3: cli.SyncStats.main_state:type_name -> cli.DatabaseState
 	3,  // 4: cli.SyncStats.accounts_state:type_name -> cli.DatabaseState
 	3,  // 5: cli.DatabaseStates.main_db:type_name -> cli.DatabaseState
 	3,  // 6: cli.DatabaseStates.accounts_db:type_name -> cli.DatabaseState
-	19, // 7: cli.CLIService.ListPeers:input_type -> google.protobuf.Empty
+	20, // 7: cli.CLIService.ListPeers:input_type -> google.protobuf.Empty
 	7,  // 8: cli.CLIService.AddPeer:input_type -> cli.PeerRequest
 	7,  // 9: cli.CLIService.RemovePeer:input_type -> cli.PeerRequest
-	19, // 10: cli.CLIService.CleanPeers:input_type -> google.protobuf.Empty
+	20, // 10: cli.CLIService.CleanPeers:input_type -> google.protobuf.Empty
 	8,  // 11: cli.CLIService.SendMessage:input_type -> cli.MessageRequest
 	8,  // 12: cli.CLIService.SendYggdrasilMessage:input_type -> cli.MessageRequest
 	9,  // 13: cli.CLIService.SendFile:input_type -> cli.FileRequest
 	8,  // 14: cli.CLIService.BroadcastMessage:input_type -> cli.MessageRequest
-	19, // 15: cli.CLIService.GetMessageStats:input_type -> google.protobuf.Empty
+	20, // 15: cli.CLIService.GetMessageStats:input_type -> google.protobuf.Empty
 	10, // 16: cli.CLIService.GetDID:input_type -> cli.DIDRequest
 	11, // 17: cli.CLIService.PropagateDID:input_type -> cli.DIDPropagationRequest
 	7,  // 18: cli.CLIService.FastSync:input_type -> cli.PeerRequest
-	19, // 19: cli.CLIService.GetDatabaseState:input_type -> google.protobuf.Empty
-	19, // 20: cli.CLIService.ReturnAddrs:input_type -> google.protobuf.Empty
-	19, // 21: cli.CLIService.GetSyncInfo:input_type -> google.protobuf.Empty
-	19, // 22: cli.CLIService.GetGethStatus:input_type -> google.protobuf.Empty
-	19, // 23: cli.CLIService.DiscoverNeighbors:input_type -> google.protobuf.Empty
-	19, // 24: cli.CLIService.ListAliases:input_type -> google.protobuf.Empty
-	1,  // 25: cli.CLIService.ListPeers:output_type -> cli.PeerList
-	15, // 26: cli.CLIService.AddPeer:output_type -> cli.OperationResponse
-	15, // 27: cli.CLIService.RemovePeer:output_type -> cli.OperationResponse
-	16, // 28: cli.CLIService.CleanPeers:output_type -> cli.CleanPeersResponse
-	15, // 29: cli.CLIService.SendMessage:output_type -> cli.OperationResponse
-	15, // 30: cli.CLIService.SendYggdrasilMessage:output_type -> cli.OperationResponse
-	15, // 31: cli.CLIService.SendFile:output_type -> cli.OperationResponse
-	15, // 32: cli.CLIService.BroadcastMessage:output_type -> cli.OperationResponse
-	2,  // 33: cli.CLIService.GetMessageStats:output_type -> cli.MessageStats
-	4,  // 34: cli.CLIService.GetDID:output_type -> cli.DIDDocument
-	15, // 35: cli.CLIService.PropagateDID:output_type -> cli.OperationResponse
-	5,  // 36: cli.CLIService.FastSync:output_type -> cli.SyncStats
-	17, // 37: cli.CLIService.GetDatabaseState:output_type -> cli.DatabaseStates
-	6,  // 38: cli.CLIService.ReturnAddrs:output_type -> cli.Addrs
-	12, // 39: cli.CLIService.GetSyncInfo:output_type -> cli.SyncInfo
-	13, // 40: cli.CLIService.GetGethStatus:output_type -> cli.GethStatus
-	15, // 41: cli.CLIService.DiscoverNeighbors:output_type -> cli.OperationResponse
-	14, // 42: cli.CLIService.ListAliases:output_type -> cli.AliasList
-	25, // [25:43] is the sub-list for method output_type
-	7,  // [7:25] is the sub-list for method input_type
+	12, // 19: cli.CLIService.FirstSync:input_type -> cli.FirstSyncRequest
+	20, // 20: cli.CLIService.GetDatabaseState:input_type -> google.protobuf.Empty
+	20, // 21: cli.CLIService.ReturnAddrs:input_type -> google.protobuf.Empty
+	20, // 22: cli.CLIService.GetSyncInfo:input_type -> google.protobuf.Empty
+	20, // 23: cli.CLIService.GetGethStatus:input_type -> google.protobuf.Empty
+	20, // 24: cli.CLIService.DiscoverNeighbors:input_type -> google.protobuf.Empty
+	20, // 25: cli.CLIService.ListAliases:input_type -> google.protobuf.Empty
+	1,  // 26: cli.CLIService.ListPeers:output_type -> cli.PeerList
+	16, // 27: cli.CLIService.AddPeer:output_type -> cli.OperationResponse
+	16, // 28: cli.CLIService.RemovePeer:output_type -> cli.OperationResponse
+	17, // 29: cli.CLIService.CleanPeers:output_type -> cli.CleanPeersResponse
+	16, // 30: cli.CLIService.SendMessage:output_type -> cli.OperationResponse
+	16, // 31: cli.CLIService.SendYggdrasilMessage:output_type -> cli.OperationResponse
+	16, // 32: cli.CLIService.SendFile:output_type -> cli.OperationResponse
+	16, // 33: cli.CLIService.BroadcastMessage:output_type -> cli.OperationResponse
+	2,  // 34: cli.CLIService.GetMessageStats:output_type -> cli.MessageStats
+	4,  // 35: cli.CLIService.GetDID:output_type -> cli.DIDDocument
+	16, // 36: cli.CLIService.PropagateDID:output_type -> cli.OperationResponse
+	5,  // 37: cli.CLIService.FastSync:output_type -> cli.SyncStats
+	5,  // 38: cli.CLIService.FirstSync:output_type -> cli.SyncStats
+	18, // 39: cli.CLIService.GetDatabaseState:output_type -> cli.DatabaseStates
+	6,  // 40: cli.CLIService.ReturnAddrs:output_type -> cli.Addrs
+	13, // 41: cli.CLIService.GetSyncInfo:output_type -> cli.SyncInfo
+	14, // 42: cli.CLIService.GetGethStatus:output_type -> cli.GethStatus
+	16, // 43: cli.CLIService.DiscoverNeighbors:output_type -> cli.OperationResponse
+	15, // 44: cli.CLIService.ListAliases:output_type -> cli.AliasList
+	26, // [26:45] is the sub-list for method output_type
+	7,  // [7:26] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name
 	7,  // [7:7] is the sub-list for extension extendee
 	0,  // [0:7] is the sub-list for field type_name
 }
 
-func init() { file_CLI_proto_Connection_proto_init() }
-func file_CLI_proto_Connection_proto_init() {
-	if File_CLI_proto_Connection_proto != nil {
+func init() { file_Connection_proto_init() }
+func file_Connection_proto_init() {
+	if File_Connection_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_CLI_proto_Connection_proto_rawDesc), len(file_CLI_proto_Connection_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_Connection_proto_rawDesc), len(file_Connection_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   18,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_CLI_proto_Connection_proto_goTypes,
-		DependencyIndexes: file_CLI_proto_Connection_proto_depIdxs,
-		MessageInfos:      file_CLI_proto_Connection_proto_msgTypes,
+		GoTypes:           file_Connection_proto_goTypes,
+		DependencyIndexes: file_Connection_proto_depIdxs,
+		MessageInfos:      file_Connection_proto_msgTypes,
 	}.Build()
-	File_CLI_proto_Connection_proto = out.File
-	file_CLI_proto_Connection_proto_goTypes = nil
-	file_CLI_proto_Connection_proto_depIdxs = nil
+	File_Connection_proto = out.File
+	file_Connection_proto_goTypes = nil
+	file_Connection_proto_depIdxs = nil
 }

@@ -1,34 +1,117 @@
-# JMDT Blockchain Explorer
+# Explorer Module
 
-A comprehensive blockchain explorer for the JMDT decentralized network that allows you to view addresses, balances, transactions, and blocks.
+## Overview
 
-## Features
+The Explorer module provides a comprehensive blockchain explorer for the JMZK decentralized network. It offers both a web interface and RESTful API for viewing addresses, balances, transactions, and blocks.
+
+## Purpose
+
+The Explorer module enables:
+- Web-based blockchain exploration
+- RESTful API for programmatic access
+- Real-time transaction streaming via WebSocket
+- Network statistics and monitoring
+- Address and transaction history
+- Block browsing and details
+
+## Key Features
 
 ### 🔍 **Address Management**
-- **List all addresses** with pagination support
-- **View address details** including balance, nonce, and account type
-- **Transaction history** for specific addresses
-- **Search functionality** to find addresses quickly
+- List all addresses with pagination
+- View address details including balance, nonce, and account type
+- Transaction history for specific addresses
+- Search functionality to find addresses quickly
 
 ### 📊 **Transaction Explorer**
-- **Browse all transactions** with pagination
-- **Transaction details** including hash, from/to addresses, value, and block information
-- **Filter by address** to see transactions for specific accounts
-- **Real-time transaction streaming** via WebSocket
+- Browse all transactions with pagination
+- Transaction details including hash, from/to addresses, value, and block information
+- Filter by address to see transactions for specific accounts
+- Real-time transaction streaming via WebSocket
 
 ### 🧱 **Block Explorer**
-- **List all blocks** with pagination
-- **Block details** including hash, timestamp, and transaction count
-- **Latest blocks** with real-time updates
-- **Missing block detection** for network synchronization
+- List all blocks with pagination
+- Block details including hash, timestamp, and transaction count
+- Latest blocks with real-time updates
+- Missing block detection for network synchronization
 
 ### 📈 **Network Statistics**
-- **Total blocks** count
-- **Total transactions** count
-- **Total addresses** count
-- **Latest block number**
-- **Total network balance**
-- **Database state** and merkle root
+- Total blocks count
+- Total transactions count
+- Total addresses count
+- Latest block number
+- Total network balance
+- Database state and merkle root
+
+## Key Components
+
+### 1. API Server
+**File:** `api.go`
+
+Main HTTP server with Gin framework:
+- RESTful API endpoints
+- CORS support
+- Health check endpoints
+- WebSocket support
+
+### 2. Block Operations
+**File:** `BlockOps.go`
+
+Block-related API handlers:
+- Get block by number
+- Get block by hash
+- List all blocks
+- Get latest blocks
+- Get missing blocks
+
+### 3. Address Operations
+**File:** `addressOps.go`
+
+Address and balance API handlers:
+- List all addresses
+- Get address details
+- Get address transactions
+- Get address balance
+
+### 4. DID Operations
+**File:** `DIDOps.go`
+
+DID-related functionality:
+- List all DIDs
+- Get DID details
+- DID statistics
+
+### 5. Streaming
+**File:** `StreamTxns.go`
+
+Real-time data streaming:
+- WebSocket support for block updates
+- Transaction streaming
+- Real-time statistics
+
+### 6. Health Check
+**File:** `health.go`
+
+Health check endpoints:
+- `/health`: Basic health check
+- `/ready`: Readiness check
+
+### 7. Utilities
+**File:** `utils.go`
+
+Utility functions:
+- Block polling
+- Data conversion
+- Error handling
+
+### 8. Web Interface
+**File:** `index.html`
+
+Modern, responsive web interface:
+- Dashboard with network statistics
+- Address browser
+- Transaction explorer
+- Block browser
+- Search functionality
 
 ## API Endpoints
 
@@ -51,7 +134,7 @@ GET /api/block/missing/:number         # Get missing blocks from a given number
 ### Transaction Endpoints
 ```
 GET /api/block/transactions/all        # List all transactions with pagination
-GET /api/block/transactions/:hash      # Get transaction by hash
+GET /api/block/transactions/:hash     # Get transaction by hash
 GET /api/block/transactions/block/:number # Get transactions in a specific block
 ```
 
@@ -69,29 +152,26 @@ WS /api/sockets/blocks                 # Stream real-time block updates
 
 ### Starting the Explorer
 
-1. **Start the explorer server:**
-   ```bash
-   go run main.go
-   ```
+```bash
+# Start the node with explorer enabled
+./jmdn -api 8085 -explorer
+```
 
-2. **Access the web interface:**
-   - Open your browser and go to `http://localhost:8085`
-   - The explorer will automatically load network statistics and addresses
+### Accessing the Web Interface
 
-3. **API access:**
-   - All API endpoints are available at `http://localhost:8085/api/`
-   - Use the web interface or tools like Postman to interact with the API
+Open your browser and go to:
+```
+http://localhost:8085
+```
 
-### Web Interface Features
+### API Access
 
-- **Dashboard**: View network statistics at a glance
-- **Addresses Tab**: Browse all addresses with their balances
-- **Transactions Tab**: Explore transaction history
-- **Blocks Tab**: View blockchain blocks and their details
-- **Search**: Use the search boxes to find specific addresses, transactions, or blocks
-- **Pagination**: Navigate through large datasets easily
+All API endpoints are available at:
+```
+http://localhost:8085/api/
+```
 
-### API Examples
+### Example API Calls
 
 **Get all addresses:**
 ```bash
@@ -113,94 +193,72 @@ curl "http://localhost:8085/api/stats/"
 curl "http://localhost:8085/api/block/latest/10"
 ```
 
+## Integration Points
+
+### Database (DB_OPs)
+- Queries blocks, transactions, and accounts
+- Retrieves network statistics
+- Accesses database state
+
+### Block Module
+- Uses block data structures
+- Accesses block operations
+
+### DID Module
+- Displays DID information
+- Lists all DIDs
+
+### Messaging Module
+- Receives block updates
+- Handles real-time streaming
+
 ## Configuration
 
-The explorer uses the existing database connections from the JMDT network:
-- **Main Database**: Stores blocks, transactions, and receipts
-- **Accounts Database**: Stores address information and balances
+Explorer server port can be configured via command-line flag:
 
-## Architecture
-
-### Backend Components
-- **API Server** (`api.go`): Main HTTP server with Gin framework
-- **Block Operations** (`BlockOps.go`): Block-related API handlers
-- **Address Operations** (`addressOps.go`): Address and balance API handlers
-- **DID Operations** (`DIDOps.go`): DID-related functionality
-- **Streaming** (`StreamTxns.go`): Real-time data streaming
-
-### Frontend Components
-- **HTML Interface** (`index.html`): Modern, responsive web interface
-- **JavaScript**: Client-side API interactions and UI management
-- **CSS**: Beautiful styling with gradient backgrounds and card layouts
-
-### Database Integration
-- **Connection Pooling**: Efficient database connection management
-- **Error Handling**: Comprehensive error handling and logging
-- **Pagination**: Optimized data retrieval with pagination support
-
-## Security Features
-
-- **CORS Support**: Cross-origin resource sharing enabled
-- **Input Validation**: Address format validation and parameter sanitization
-- **Error Handling**: Secure error messages without sensitive information
-- **Connection Pooling**: Prevents connection exhaustion attacks
-
-## Performance Optimizations
-
-- **Pagination**: Limits data transfer and improves response times
-- **Connection Pooling**: Reuses database connections efficiently
-- **Concurrent Processing**: Uses goroutines for parallel data fetching
-- **Caching**: Implements efficient data caching strategies
-
-## Development
-
-### Adding New Features
-
-1. **New API Endpoints**: Add routes in `api.go` and implement handlers
-2. **Database Operations**: Extend `DB_OPs` package with new functions
-3. **Frontend Updates**: Modify `index.html` for new UI features
-4. **Testing**: Use the existing test patterns for new functionality
-
-### Code Structure
-
-```
-explorer/
-├── api.go              # Main API server and routing
-├── BlockOps.go         # Block-related operations
-├── addressOps.go       # Address and balance operations
-├── DIDOps.go          # DID operations
-├── StreamTxns.go      # Real-time streaming
-├── health.go          # Health check endpoints
-├── utils.go           # Utility functions
-├── index.html         # Web frontend
-└── readme.md          # This documentation
+```bash
+./jmdn -api 8085 -explorer  # Enable explorer on port 8085
 ```
 
-## Troubleshooting
+## Error Handling
 
-### Common Issues
+The module includes comprehensive error handling:
+- Invalid address format errors
+- Block not found errors
+- Database connection errors
+- Pagination errors
 
-1. **Database Connection Errors**: Ensure ImmuDB is running and accessible
-2. **Port Conflicts**: Check if port 8085 is available
-3. **CORS Issues**: Verify CORS middleware is properly configured
-4. **Missing Data**: Check database state and ensure data is properly indexed
+## Logging
 
-### Logs
+Explorer operations are logged to:
+- `logs/explorer.log`: Explorer operations
+- Loki (if enabled): Centralized logging
 
-The explorer logs all operations to:
-- **File**: `logs/explorer.log`
-- **Loki**: If configured, logs are also sent to Loki for centralized logging
+## Security
 
-## Contributing
+- CORS support for cross-origin requests
+- Input validation for all parameters
+- Address format validation
+- Error message sanitization
 
-When contributing to the explorer:
+## Performance
 
-1. **Follow the existing code patterns**
-2. **Add proper error handling and logging**
-3. **Include pagination for list endpoints**
-4. **Update documentation for new features**
-5. **Test with real blockchain data**
+- Pagination for large datasets
+- Connection pooling
+- Efficient database queries
+- Real-time updates via WebSocket
 
-## License
+## Testing
 
-This explorer is part of the JMDT decentralized network project.
+Test files:
+- `explorer_test.go`: Explorer API tests
+- Integration tests
+- WebSocket tests
+
+## Future Enhancements
+
+- Enhanced search functionality
+- Advanced filtering options
+- Export capabilities
+- Performance optimizations
+- Mobile-responsive improvements
