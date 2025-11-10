@@ -113,7 +113,6 @@ func ConvertZKBlockToETHBlock(zkblock *config.ZKBlock) (*proto.Block, error) {
 
 func ConvertConfigTxnToETHTransaction(Txn *config.Transaction) (*proto.Transaction, error) {
 
-
 	// convert BigInt to bytes
 	rBytes := Txn.R.Bytes()
 

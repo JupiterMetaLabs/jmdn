@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.29.3
-// source: CLI/proto/Connection.proto
+// source: Connection.proto
 
 package proto
 
@@ -32,6 +32,7 @@ const (
 	CLIService_GetDID_FullMethodName               = "/cli.CLIService/GetDID"
 	CLIService_PropagateDID_FullMethodName         = "/cli.CLIService/PropagateDID"
 	CLIService_FastSync_FullMethodName             = "/cli.CLIService/FastSync"
+	CLIService_FirstSync_FullMethodName            = "/cli.CLIService/FirstSync"
 	CLIService_GetDatabaseState_FullMethodName     = "/cli.CLIService/GetDatabaseState"
 	CLIService_ReturnAddrs_FullMethodName          = "/cli.CLIService/ReturnAddrs"
 	CLIService_GetSyncInfo_FullMethodName          = "/cli.CLIService/GetSyncInfo"
@@ -62,6 +63,7 @@ type CLIServiceClient interface {
 	PropagateDID(ctx context.Context, in *DIDPropagationRequest, opts ...grpc.CallOption) (*OperationResponse, error)
 	// Database Operations
 	FastSync(ctx context.Context, in *PeerRequest, opts ...grpc.CallOption) (*SyncStats, error)
+	FirstSync(ctx context.Context, in *FirstSyncRequest, opts ...grpc.CallOption) (*SyncStats, error)
 	GetDatabaseState(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*DatabaseStates, error)
 	// Node Operations
 	ReturnAddrs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*Addrs, error)
@@ -200,6 +202,16 @@ func (c *cLIServiceClient) FastSync(ctx context.Context, in *PeerRequest, opts .
 	return out, nil
 }
 
+func (c *cLIServiceClient) FirstSync(ctx context.Context, in *FirstSyncRequest, opts ...grpc.CallOption) (*SyncStats, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SyncStats)
+	err := c.cc.Invoke(ctx, CLIService_FirstSync_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *cLIServiceClient) GetDatabaseState(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*DatabaseStates, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DatabaseStates)
@@ -282,6 +294,7 @@ type CLIServiceServer interface {
 	PropagateDID(context.Context, *DIDPropagationRequest) (*OperationResponse, error)
 	// Database Operations
 	FastSync(context.Context, *PeerRequest) (*SyncStats, error)
+	FirstSync(context.Context, *FirstSyncRequest) (*SyncStats, error)
 	GetDatabaseState(context.Context, *emptypb.Empty) (*DatabaseStates, error)
 	// Node Operations
 	ReturnAddrs(context.Context, *emptypb.Empty) (*Addrs, error)
@@ -335,6 +348,9 @@ func (UnimplementedCLIServiceServer) PropagateDID(context.Context, *DIDPropagati
 }
 func (UnimplementedCLIServiceServer) FastSync(context.Context, *PeerRequest) (*SyncStats, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method FastSync not implemented")
+}
+func (UnimplementedCLIServiceServer) FirstSync(context.Context, *FirstSyncRequest) (*SyncStats, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FirstSync not implemented")
 }
 func (UnimplementedCLIServiceServer) GetDatabaseState(context.Context, *emptypb.Empty) (*DatabaseStates, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetDatabaseState not implemented")
@@ -591,6 +607,24 @@ func _CLIService_FastSync_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CLIService_FirstSync_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FirstSyncRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CLIServiceServer).FirstSync(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CLIService_FirstSync_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CLIServiceServer).FirstSync(ctx, req.(*FirstSyncRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _CLIService_GetDatabaseState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(emptypb.Empty)
 	if err := dec(in); err != nil {
@@ -755,6 +789,10 @@ var CLIService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _CLIService_FastSync_Handler,
 		},
 		{
+			MethodName: "FirstSync",
+			Handler:    _CLIService_FirstSync_Handler,
+		},
+		{
 			MethodName: "GetDatabaseState",
 			Handler:    _CLIService_GetDatabaseState_Handler,
 		},
@@ -780,5 +818,5 @@ var CLIService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "CLI/proto/Connection.proto",
+	Metadata: "Connection.proto",
 }

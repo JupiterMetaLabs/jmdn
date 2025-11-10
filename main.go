@@ -145,6 +145,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
 		fmt.Println("  fastsync <peer>      - Fast sync with peer")
+		fmt.Println("  firstsync <peer> <server|client> - First sync: get all data from peer (server) or receive all data (client)")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
 		fmt.Println("are only available in interactive mode.")
@@ -329,6 +330,40 @@ func runCommand(command string, args []string, grpcPort int) {
 			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
 		}
 
+	case "firstsync":
+		if len(args) < 2 {
+			fmt.Println("Usage: jmdn -cmd firstsync <peer_multiaddr> <server|client>")
+			os.Exit(1)
+		}
+		mode := args[1]
+		if mode != "server" && mode != "client" {
+			fmt.Println("Error: mode must be 'server' or 'client'")
+			fmt.Println("Usage: jmdn -cmd firstsync <peer_multiaddr> <server|client>")
+			os.Exit(1)
+		}
+		fmt.Printf("Starting first sync in %s mode...\n", mode)
+		stats, err := client.FirstSync(args[0], mode)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		// Defensive guards against nil responses to prevent panics
+		if stats == nil {
+			fmt.Println("FirstSync returned no stats (nil). The target peer may be unreachable or rejected the request.")
+			os.Exit(1)
+		}
+		fmt.Printf("Sync completed in %dms\n", stats.TimeTaken)
+		if stats.MainState == nil {
+			fmt.Println("  Main DB TxID: unavailable (no state returned)")
+		} else {
+			fmt.Printf("  Main DB TxID: %d\n", stats.MainState.TxId)
+		}
+		if stats.AccountsState == nil {
+			fmt.Println("  Accounts DB TxID: unavailable (no state returned)")
+		} else {
+			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
+		}
+
 	case "sendfile":
 		if len(args) < 3 {
 			fmt.Println("Usage: jmdn -cmd sendfile <peer> <filepath> <remote_filename>")
@@ -370,6 +405,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  fastsync <peer>      - Fast sync with peer")
+		fmt.Println("  firstsync <peer> <server|client> - First sync: get all data from peer (server) or receive all data (client)")
 		os.Exit(1)
 	}
 }

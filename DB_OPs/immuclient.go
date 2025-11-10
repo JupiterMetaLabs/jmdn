@@ -349,6 +349,7 @@ func Read(PooledConnection *config.PooledConnection, key string) ([]byte, error)
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
 	var entryValue []byte
 	var err error
 	var shouldReturnConnection bool = false
@@ -1312,6 +1313,7 @@ func SafeReadJSON(ic *config.ImmuClient, key string, dest interface{}) error {
 	if key == "" {
 		return ErrEmptyKey
 	}
+
 	// Log the operation start
 	var logger *zap.Logger
 	if ic != nil {
@@ -2328,7 +2330,7 @@ func GetTransactionsBatch(mainDBClient *config.PooledConnection, hashes []string
 	var transactions []*config.Transaction
 	var err error
 	var shouldReturnConnection bool = false
-	
+
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2403,7 +2405,7 @@ func GetTransactionsBatch(mainDBClient *config.PooledConnection, hashes []string
 func GetAllBlocks(mainDBClient *config.PooledConnection) ([]*config.ZKBlock, error) {
 	var err error
 	var shouldReturnConnection bool = false
-	
+
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2461,7 +2463,6 @@ func BatchCreateOrdered(PooledConnection *config.PooledConnection, entries []str
 	}
 	var err error
 	var shouldReturnConnection bool = false
-
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

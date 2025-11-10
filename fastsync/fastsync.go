@@ -678,8 +678,21 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 	fmt.Printf(">>> [CLIENT] Starting to receive chunks (expecting %d chunks)...\n", totalChunks)
 	var allKeys []string
 	receivedChunks := 0
+	lastDeadlineUpdate := time.Now().UTC()
 
 	for receivedChunks < totalChunks {
+		// Extend read deadline periodically during chunk reception to prevent timeout
+		// This is important when server is still batching/computing keys
+		if time.Since(lastDeadlineUpdate) > 30*time.Second {
+			newDeadline := time.Now().UTC().Add(30 * time.Minute)
+			if err := stream.SetReadDeadline(newDeadline); err != nil {
+				fmt.Printf(">>> [CLIENT] WARNING: Failed to extend read deadline: %v\n", err)
+			} else {
+				lastDeadlineUpdate = time.Now().UTC()
+				fmt.Printf(">>> [CLIENT] Extended read deadline (receiving chunk %d/%d)...\n", receivedChunks+1, totalChunks)
+			}
+		}
+
 		fmt.Printf(">>> [CLIENT] Waiting for chunk %d/%d...\n", receivedChunks+1, totalChunks)
 		chunkMsg, err := readMessage(reader, stream)
 		if err != nil {
@@ -1000,14 +1013,14 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 			var newClient *config.PooledConnection
 			var clientErr error
 			if dbType == MainDB {
-				newClient, clientErr = DB_OPs.GetMainDBConnectionandPutBack(context.Background())
+				newClient, clientErr = DB_OPs.GetMainDBConnection()
 				if clientErr == nil {
 					DB_OPs.Close(fs.mainDB.Client)
 					DB_OPs.PutMainDBConnection(fs.mainDB)
 					fs.mainDB = newClient
 				}
 			} else {
-				newClient, clientErr = DB_OPs.GetAccountConnectionandPutBack(context.Background())
+				newClient, clientErr = DB_OPs.GetAccountsConnection()
 				if clientErr == nil {
 					DB_OPs.Close(fs.accountsDB.Client)
 					DB_OPs.PutAccountsConnection(fs.accountsDB)
@@ -1149,9 +1162,12 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		Value []byte
 	}
 	// ImmuDB has a limit on entries per transaction (typically 1000-5000)
-	// Using 1000 to be safe and avoid "max number of entries per tx exceeded" errors
-	batchSize := 1000 // Process in batches of 1,000 entries
+	// Using 100 to be safe and avoid gRPC message size limits (32MB default, 200MB max)
+	// Large block values can cause 1000 entries to exceed message size limits
+	batchSize := 100 // Process in batches of 100 entries to avoid message size limits
 	totalEntries := 0
+	blockKeysCount := 0
+	latestBlockCount := 0
 
 	fmt.Printf(">>> [DB] Using batch size: %d entries per transaction\n", batchSize)
 
@@ -1174,6 +1190,24 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 
 		key, keyOk := recordMap["Key"].(string)
 		value, valueOk := recordMap["Value"].(string)
+
+		// Track block and latest_block keys for debugging
+		isBlockKey := keyOk && strings.HasPrefix(key, "block:")
+		isLatestBlock := keyOk && key == "latest_block"
+		if isBlockKey || isLatestBlock {
+			fmt.Printf(">>> [DB] Found %s key in AVRO: %s (value length: %d)\n",
+				func() string {
+					if isLatestBlock {
+						return "latest_block"
+					}
+					return "block"
+				}(), key, func() int {
+					if valueOk {
+						return len(value)
+					}
+					return 0
+				}())
+		}
 
 		// Optional Database field for origin validation
 		avroDB, _ := recordMap["Database"].(string)
@@ -1199,14 +1233,23 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 			Value []byte
 		}{Key: key, Value: []byte(value)})
 
+		// Track block keys added to batch
+		if isBlockKey {
+			blockKeysCount++
+			fmt.Printf(">>> [DB] Added block key to restore batch: %s (total blocks: %d)\n", key, blockKeysCount)
+		} else if isLatestBlock {
+			latestBlockCount++
+			fmt.Printf(">>> [DB] Added latest_block to restore batch (count: %d)\n", latestBlockCount)
+		}
+
 		if len(entriesOrdered) >= batchSize {
 			fmt.Printf(">>> [DB] Processing batch of %d entries for %s...\n", len(entriesOrdered), dbTypeToString(dbType))
 			if err := fs.batchCreateOrderedWithRetry(entriesOrdered, dbType); err != nil {
 				// If batch is too large, try splitting it into smaller chunks
-				if strings.Contains(err.Error(), "max number of entries per tx exceeded") {
+				if strings.Contains(err.Error(), "max number of entries per tx exceeded") || strings.Contains(err.Error(), "message larger than max") {
 					fmt.Printf(">>> [DB] WARNING: Batch too large, splitting into smaller chunks...\n")
-					// Split into smaller batches of 500
-					chunkSize := 500
+					// Split into smaller batches of 50 to avoid message size limits
+					chunkSize := 50
 					for i := 0; i < len(entriesOrdered); i += chunkSize {
 						end := i + chunkSize
 						if end > len(entriesOrdered) {
@@ -1242,10 +1285,10 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		fmt.Printf(">>> [DB] Processing final batch of %d entries for %s...\n", len(entriesOrdered), dbTypeToString(dbType))
 		if err := fs.batchCreateOrderedWithRetry(entriesOrdered, dbType); err != nil {
 			// If batch is too large, try splitting it into smaller chunks
-			if strings.Contains(err.Error(), "max number of entries per tx exceeded") {
+			if strings.Contains(err.Error(), "max number of entries per tx exceeded") || strings.Contains(err.Error(), "message larger than max") {
 				fmt.Printf(">>> [DB] WARNING: Final batch too large, splitting into smaller chunks...\n")
-				// Split into smaller batches of 500
-				chunkSize := 500
+				// Split into smaller batches of 50 to avoid message size limits
+				chunkSize := 50
 				for i := 0; i < len(entriesOrdered); i += chunkSize {
 					end := i + chunkSize
 					if end > len(entriesOrdered) {
@@ -1268,6 +1311,16 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 
 	fmt.Printf(">>> [DB] ✓ Database restore completed: %d total entries processed, %d records read from AVRO for %s (time: %v)\n",
 		totalEntries, recordsRead, dbTypeToString(dbType), time.Since(startTime))
+
+	if dbType == MainDB {
+		fmt.Printf(">>> [DB] Block keys summary: %d block keys processed, latest_block: %d\n", blockKeysCount, latestBlockCount)
+		if blockKeysCount == 0 && latestBlockCount == 0 {
+			fmt.Printf(">>> [DB] WARNING: No block keys or latest_block were processed! This might indicate:\n")
+			fmt.Printf(">>> [DB]   1. AVRO file doesn't contain block keys\n")
+			fmt.Printf(">>> [DB]   2. Block keys were filtered out during processing\n")
+			fmt.Printf(">>> [DB]   3. HashMap didn't include block keys for sync\n")
+		}
+	}
 
 	if totalEntries == 0 {
 		fmt.Printf(">>> [DB] WARNING: No entries were written to %s! This might indicate:\n", dbTypeToString(dbType))

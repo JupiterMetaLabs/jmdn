@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"gossipnode/Block"
@@ -23,6 +25,24 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 )
+
+// formatTimestamp handles both Unix seconds and nanoseconds formats
+// Returns a properly formatted RFC3339 timestamp string
+func formatTimestamp(timestamp int64) string {
+	// Threshold to detect if timestamp is in seconds (< 1e10) or nanoseconds (>= 1e10)
+	// Unix epoch in seconds will be ~1.7e9 in 2025, nanoseconds will be ~1.7e18
+	const secondsThreshold int64 = 10000000000 // 1e10
+
+	var t time.Time
+	if timestamp < secondsThreshold {
+		// Timestamp is in seconds
+		t = time.Unix(timestamp, 0)
+	} else {
+		// Timestamp is in nanoseconds
+		t = time.Unix(0, timestamp)
+	}
+	return t.UTC().Format(time.RFC3339)
+}
 
 // CommandHandler holds dependencies for CLI command execution
 type CommandHandler struct {
@@ -82,12 +102,13 @@ func PrintFuncs() {
 	fmt.Println("  stats                             - Show messaging statistics")
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
 	fmt.Println("  fastsync <peer_multiaddr>        - Fast sync blockchain data with a peer")
+	fmt.Println("  firstsync <peer_multiaddr> <server|client> - First sync: get all data from peer (server) or receive all data (client)")
 	fmt.Println("  dbstate                           - Show current ImmuDB database state")
 	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
 	fmt.Println("  syncinfo                          - Show FastSync configuration")
 	fmt.Println("  gethstatus                        - Show gETH server status (chain ID, ports)")
-	fmt.Println("  stopservice                       - Stop the service and exit the program")
+	fmt.Println("  stopService                       - Stop the service")
 	printDashes()
 }
 
@@ -113,28 +134,69 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 
 	// Command-line input loop
 	go func() {
-		defer func() {
-			fmt.Println("Exiting...")
-			close(exitChan)
-		}()
-
 		// Check if stdin is available (interactive mode)
 		if !isInteractive() {
 			fmt.Println("Running in non-interactive mode - CLI will run with gRPC server only")
-			// In non-interactive mode, just wait indefinitely
-			// The CLI will be accessible via gRPC calls
-			<-ctx.Done()
+			// In non-interactive mode, wait for signals (SIGTERM/SIGINT) from systemd
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			select {
+			case sig := <-sigCh:
+				fmt.Printf("Received signal: %v\n", sig)
+				close(exitChan)
+			case <-ctx.Done():
+				close(exitChan)
+			}
 			return
 		}
 
+		// Interactive mode: read from stdin
+		// But if stdin closes (EOF), switch to signal-based waiting instead of exiting
 		fmt.Println()
 		scanner := bufio.NewScanner(os.Stdin)
 		printPrompt()
 
-		// Only scan if we got input, otherwise wait for context
+		// Try to read first line - if EOF immediately, switch to non-interactive mode
+		if !scanner.Scan() {
+			// EOF immediately - stdin not actually available, switch to signal mode
+			if err := scanner.Err(); err != nil {
+				log.Printf("Scanner error: %v", err)
+			}
+			fmt.Println("Stdin closed immediately - switching to non-interactive mode")
+			// Wait for signals instead of exiting
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			select {
+			case sig := <-sigCh:
+				fmt.Printf("Received signal: %v\n", sig)
+				close(exitChan)
+			case <-ctx.Done():
+				close(exitChan)
+			}
+			return
+		}
+
+		// Process first input
+		input := strings.TrimSpace(scanner.Text())
+		if input == "stopService" {
+			fmt.Println("Exiting...")
+			close(exitChan)
+			return
+		}
+
+		parts := strings.SplitN(input, " ", 4)
+		if len(parts) > 0 {
+			h.handleCommand(parts)
+		}
+		printPrompt()
+
+		// Continue reading from stdin
+		// If stdin closes later, switch to signal mode instead of exiting
 		for scanner.Scan() {
 			input := strings.TrimSpace(scanner.Text())
-			if input == "stopservice" {
+			if input == "stopService" {
+				fmt.Println("Exiting...")
+				close(exitChan)
 				return
 			}
 
@@ -147,10 +209,21 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 			printPrompt()
 		}
 
-		// If scanner loop exits (EOF without any input), keep running
-		// This happens when running as a service without a TTY
-		fmt.Println("Stdin closed - running in daemon mode with gRPC server")
-		<-ctx.Done()
+		// Scanner exited (EOF) - stdin closed, switch to signal mode
+		if err := scanner.Err(); err != nil {
+			log.Printf("Scanner error: %v", err)
+		}
+		fmt.Println("Stdin closed - switching to non-interactive mode")
+		// Wait for signals instead of exiting
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		select {
+		case sig := <-sigCh:
+			fmt.Printf("Received signal: %v\n", sig)
+			close(exitChan)
+		case <-ctx.Done():
+			close(exitChan)
+		}
 	}()
 
 	// Wait for exit signal
@@ -198,6 +271,8 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleBroadcast(parts)
 	case "fastsync":
 		h.handleFastSync(parts)
+	case "firstsync":
+		h.handleFirstSync(parts)
 	case "propagateDID":
 		h.handlePropagateDID(parts)
 	case "syncinfo":
@@ -578,6 +653,84 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 	printDashes()
 }
 
+func (h *CommandHandler) handleFirstSync(parts []string) {
+	if len(parts) != 3 {
+		fmt.Println("Usage: firstsync <peer_multiaddr> <server|client>")
+		fmt.Println("  server - Export and send all data from this node")
+		fmt.Println("  client - Receive and load all data from peer")
+		return
+	}
+
+	err := h.checkDBClient()
+	if err != nil {
+		fmt.Printf("Database client not initialized: %v\n", err)
+		return
+	}
+
+	err = h.checkDIDClient()
+	if err != nil {
+		fmt.Printf("DID database client not initialized: %v\n", err)
+		return
+	}
+
+	// Parse the multiaddr
+	addr, err := ma.NewMultiaddr(parts[1])
+	if err != nil {
+		fmt.Printf("Invalid multiaddress: %v\n", err)
+		return
+	}
+
+	// Extract peer ID from multiaddr
+	addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
+	if err != nil {
+		fmt.Printf("Failed to extract peer info: %v\n", err)
+		return
+	}
+
+	mode := strings.ToLower(parts[2])
+	if mode != "server" && mode != "client" {
+		fmt.Printf("Invalid mode: %s. Must be 'server' or 'client'\n", parts[2])
+		return
+	}
+
+	fmt.Printf("Starting first sync with peer %s (mode: %s)\n", addrInfo.ID.String(), mode)
+	startTime := time.Now().UTC()
+
+	var syncErr error
+	if mode == "server" {
+		// Server mode: export and send all data
+		fmt.Println(">>> Running in SERVER mode - exporting all data...")
+		syncErr = h.FastSyncer.FirstSyncServer(addrInfo.ID)
+	} else {
+		// Client mode: receive and load all data
+		fmt.Println(">>> Running in CLIENT mode - receiving all data...")
+		syncErr = h.FastSyncer.FirstSyncClient(addrInfo.ID)
+	}
+
+	if syncErr != nil {
+		fmt.Printf("First sync failed: %v\n", syncErr)
+		return
+	}
+
+	// Get post-sync states
+	newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+	if err != nil {
+		fmt.Printf("Failed to get main database state after sync: %v\n", err)
+		return
+	}
+
+	newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
+	if err != nil {
+		fmt.Printf("Failed to get accounts database state after sync: %v\n", err)
+		return
+	}
+
+	fmt.Printf("First sync completed in %v\n", time.Since(startTime))
+	fmt.Printf("New main DB state: TxID=%d, Root=%x\n", newMainState.TxId, newMainState.TxHash)
+	fmt.Printf("New accounts DB state: TxID=%d, Root=%x\n", newAccountsState.TxId, newAccountsState.TxHash)
+	printDashes()
+}
+
 func (h *CommandHandler) handlePropagateDID(parts []string) {
 	if len(parts) < 3 || len(parts) > 4 {
 		fmt.Println("Usage: propagateDID <did> <public_key> [balance]")
@@ -657,23 +810,9 @@ func (h *CommandHandler) handleGetDID(parts []string) {
 	fmt.Printf("  Account Type: %s\n", doc.AccountType)
 	fmt.Printf("  Nonce: %d\n", doc.Nonce)
 	fmt.Printf("  Balance: %s\n", doc.Balance)
-	fmt.Printf("  Created: %s\n", formatTS(doc.CreatedAt))
-	fmt.Printf("  Updated: %s\n", formatTS(doc.UpdatedAt))
+	fmt.Printf("  Created: %s\n", formatTimestamp(doc.CreatedAt))
+	fmt.Printf("  Updated: %s\n", formatTimestamp(doc.UpdatedAt))
 	fmt.Printf("  Metadata: %s\n", doc.Metadata)
-}
-
-func formatTS(ts int64) string {
-	// Normalize epoch units: ns (>=1e14), ms (>=1e11), else seconds
-	switch {
-	case ts >= 1e14: // nanoseconds
-		return time.Unix(0, ts).UTC().Format(time.RFC3339)
-	case ts >= 1e11: // milliseconds
-		sec := ts / 1e3
-		nsec := (ts % 1e3) * 1e6
-		return time.Unix(sec, nsec).UTC().Format(time.RFC3339)
-	default: // seconds
-		return time.Unix(ts, 0).UTC().Format(time.RFC3339)
-	}
 }
 
 func (h *CommandHandler) handleDBState() {

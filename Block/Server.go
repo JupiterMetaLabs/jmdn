@@ -17,6 +17,7 @@ import (
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
 	"gossipnode/config"
+	"gossipnode/logging"
 
 	// "gossipnode/messaging"
 	"gossipnode/messaging/BlockProcessing"
@@ -31,6 +32,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"go.uber.org/zap"
 )
 
 type APIAccessTuple struct {
@@ -354,6 +356,7 @@ func processZKBlockNoConsensus(c *gin.Context) {
 	fmt.Println("=== DEBUG: processZKBlock API called ===")
 	ctx, cancel := context.WithTimeout(context.Background(), 14*time.Second)
 	defer cancel()
+
 	// Parse the block data from the request
 	var block config.ZKBlock
 	if err := c.ShouldBindJSON(&block); err != nil {
@@ -488,7 +491,26 @@ func getBlockByNumber(c *gin.Context) {
 		return
 	}
 
-	block, err := DB_OPs.GetZKBlockByNumber(nil, blockNumber)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
+		return
+	}
+	defer func() {
+		mainDBClient.Client.Logger.Logger.Info("Putting database connection back to pool",
+			zap.String(logging.Connection_database, "MainDB Connection"),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, FILENAME),
+			zap.String(logging.Topic, BLOCKTOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Block.getBlockByNumber"),
+		)
+		DB_OPs.PutMainDBConnection(mainDBClient)
+	}()
+
+	block, err := DB_OPs.GetZKBlockByNumber(mainDBClient, blockNumber)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("block not found: %v", err)})
 		return
@@ -505,7 +527,17 @@ func getBlockByNumber(c *gin.Context) {
 func getBlockByHash(c *gin.Context) {
 	blockHash := c.Param("hash")
 
-	block, err := DB_OPs.GetZKBlockByHash(nil, blockHash)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
+		return
+	}
+	defer DB_OPs.PutMainDBConnection(mainDBClient)
+
+	block, err := DB_OPs.GetZKBlockByHash(mainDBClient, blockHash)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("block not found: %v", err)})
 		return
@@ -521,8 +553,18 @@ func getBlockByHash(c *gin.Context) {
 // getTransactionInfo gets detailed information about a transaction
 func getTransactionInfo(c *gin.Context) {
 	txHash := c.Param("hash")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
 
-	block, err := DB_OPs.GetTransactionBlock(nil, txHash)
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
+		return
+	}
+	defer DB_OPs.PutMainDBConnection(mainDBClient)
+
+	block, err := DB_OPs.GetTransactionBlock(mainDBClient, txHash)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("transaction not found: %v", err)})
 		return
@@ -554,8 +596,18 @@ func getTransactionInfo(c *gin.Context) {
 
 // getLatestBlock returns information about the latest block
 func getLatestBlock(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
 
-	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(nil)
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
+		return
+	}
+	defer DB_OPs.PutMainDBConnection(mainDBClient)
+
+	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(mainDBClient)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get latest block: %v", err)})
 		return
@@ -566,7 +618,7 @@ func getLatestBlock(c *gin.Context) {
 		return
 	}
 
-	block, err := DB_OPs.GetZKBlockByNumber(nil, latestBlockNumber)
+	block, err := DB_OPs.GetZKBlockByNumber(mainDBClient, latestBlockNumber)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get latest block data: %v", err)})
 		return

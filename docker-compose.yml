@@ -1,104 +1,107 @@
 services:
-
-  prometheus:
-    image: prom/prometheus:latest
-    platform: linux/amd64
-    container_name: prometheus
-    ports:
-      - 9090:9090
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
-    restart: unless-stopped
-    networks:
-      - monitoring
-
-  grafana:
-    image: grafana/grafana:latest
-    platform: linux/amd64
-    container_name: grafana
-    ports:
-      - 3000:3000
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=password
-      - GF_USERS_ALLOW_SIGN_UP=false
-    restart: unless-stopped
-    networks:
-      - monitoring
-    depends_on:
-      - prometheus
-
-  node-exporter:
-    image: prom/node-exporter:latest
-    platform: linux/amd64
-    container_name: node-exporter
-    ports:
-      - 9100:9100
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    command:
-      - '--path.procfs=/host/proc'
-      - '--path.sysfs=/host/sys'
-      - '--collector.filesystem.ignored-mount-points="^/(sys|proc|dev|host|etc)($$|/)"'
-    restart: unless-stopped
-    networks:
-      - monitoring
-     
-  loki:
-    image: grafana/loki:latest
-    platform: linux/amd64
-    container_name: loki
-    ports:
-      - "3100:3100"
-    command: -config.file=/etc/loki/local-config.yaml
-    volumes:
-      - ./loki-config.yaml:/etc/loki/local-config.yaml
-    networks:
-      - monitoring
-      
-  promtail:
-    image: grafana/promtail:2.8.4  # Use a specific recent version with multiline support
-    platform: linux/amd64
-    container_name: promtail
-    volumes:
-      - ./promtail-config.yaml:/etc/promtail/config.yaml
-      - ./logs:/var/log/p2p
-    command:
-      - "-config.file=/etc/promtail/config.yaml"
-    networks:
-      - monitoring
-    restart: unless-stopped
-    depends_on:
-      - loki
-      
-  # immudb:
-  #   image: codenotary/immudb:dev-almalinux-8-minimal
+  # Monitoring services are disabled by default
+  # Uncomment the following services if you want to enable monitoring
+  # prometheus:
+  #   image: prom/prometheus:latest
   #   platform: linux/amd64
-  #   container_name: immudb
+  #   container_name: prometheus
   #   ports:
-  #     - "3322:3322"
-  #     - "9497:9497"
-  #     - "8080:8080"
+  #     - 9090:9090
   #   volumes:
-  #     - immudb_data:/var/lib/immudb 
-  #   environment:
-  #     - IMMUDB_LOG_LEVEL=info
-  #     - IMMUDB_MTLS=false
-  #   command: ["immudb", "--mtls=false", "--log-level=info", "--max-recv-msg-size=16777216"]
+  #     - ./prometheus.yml:/etc/prometheus/prometheus.yml
+  #     - prometheus_data:/prometheus
+  #   command:
+  #     - '--config.file=/etc/prometheus/prometheus.yml'
+  #     - '--storage.tsdb.path=/prometheus'
+  #     - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+  #     - '--web.console.templates=/usr/share/prometheus/consoles'
   #   restart: unless-stopped
   #   networks:
   #     - monitoring
+
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   platform: linux/amd64
+  #   container_name: grafana
+  #   ports:
+  #     - 3000:3000
+  #   volumes:
+  #     - grafana_data:/var/lib/grafana
+  #     - ./grafana/provisioning:/etc/grafana/provisioning
+  #   environment:
+  #     - GF_SECURITY_ADMIN_USER=admin
+  #     - GF_SECURITY_ADMIN_PASSWORD=password
+  #     - GF_USERS_ALLOW_SIGN_UP=false
+  #   restart: unless-stopped
+  #   networks:
+  #     - monitoring
+  #   depends_on:
+  #     - prometheus
+
+  # node-exporter:
+  #   image: prom/node-exporter:latest
+  #   platform: linux/amd64
+  #   container_name: node-exporter
+  #   ports:
+  #     - 9100:9100
+  #   volumes:
+  #     - /proc:/host/proc:ro
+  #     - /sys:/host/sys:ro
+  #     - /:/rootfs:ro
+  #   command:
+  #     - '--path.procfs=/host/proc'
+  #     - '--path.sysfs=/host/sys'
+  #     - '--collector.filesystem.ignored-mount-points="^/(sys|proc|dev|host|etc)($$|/)"'
+  #   restart: unless-stopped
+  #   networks:
+  #     - monitoring
+      
+  # Loki and Promtail are disabled by default
+  # Uncomment the following services if you want to enable Loki logging
+  # loki:
+  #   image: grafana/loki:latest
+  #   platform: linux/amd64
+  #   container_name: loki
+  #   ports:
+  #     - "3100:3100"
+  #   command: -config.file=/etc/loki/local-config.yaml
+  #   volumes:
+  #     - ./loki-config.yaml:/etc/loki/local-config.yaml
+  #   networks:
+  #     - monitoring
+  #     
+  # promtail:
+  #   image: grafana/promtail:2.8.4  # Use a specific recent version with multiline support
+  #   platform: linux/amd64
+  #   container_name: promtail
+  #   volumes:
+  #     - ./promtail-config.yaml:/etc/promtail/config.yaml
+  #     - ./logs:/var/log/p2p
+  #   command:
+  #     - "-config.file=/etc/promtail/config.yaml"
+  #   networks:
+  #     - monitoring
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - loki
+      
+  immudb:
+    image: codenotary/immudb:dev-almalinux-8-minimal
+    platform: linux/amd64
+    container_name: immudb
+    ports:
+      - "3322:3322"
+      - "9497:9497"
+      - "8080:8080"
+    volumes:
+      - immudb_data:/var/lib/immudb 
+    environment:
+      - IMMUDB_LOG_LEVEL=info
+      - IMMUDB_MTLS=false
+    command: ["immudb", "--mtls=false", "--log-level=info", "--max-recv-msg-size=16777216"]
+    restart: unless-stopped
+    networks:
+      - monitoring
 networks:
   monitoring:
     driver: bridge
