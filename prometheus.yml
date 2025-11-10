@@ -1,12 +1,12 @@
 global:
-  scrape_interval: 15s
-  scrape_timeout: 10s
-  evaluation_interval: 15s
+  scrape_interval: 5s
+  scrape_timeout: 4s        # ← FIXED: Must be < 5s
+  evaluation_interval: 5s   # ← Also set to 5s for consistency
 
 alerting:
   alertmanagers:
     - static_configs:
-        - targets:
+        - targets: []
           # - alertmanager:9093
 
 rule_files:
@@ -19,15 +19,21 @@ scrape_configs:
       - targets: ["localhost:9090"]
 
   - job_name: "p2p_nodes"
+    scrape_interval: 5s       # ← Added: explicit 5s
+    scrape_timeout: 4s        # ← Added: explicit 4s
     static_configs:
       - targets: ["host.docker.internal:8081"]
     metrics_path: /metrics
 
   - job_name: 'IMMUDB'
+    scrape_interval: 5s       # ← Added
+    scrape_timeout: 4s        # ← Added
     static_configs:
-      - targets: ['localhost:9497']
+      - targets: ['host.docker.internal:9497']  # ← Changed from localhost
     metrics_path: /metrics
 
   - job_name: "node_exporter"
+    scrape_interval: 5s       # ← Added
+    scrape_timeout: 4s        # ← Added
     static_configs:
       - targets: ["node-exporter:9100"]
