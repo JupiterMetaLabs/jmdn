@@ -42,64 +42,68 @@
 
 package metrics
 
-import "fmt"
-
-
-type DBPoolMetricsBuilder struct {
-	poolType     string // "accounts" or "main"
-	functionName string // name of the function using the connection (optional)
-}
-
-// Singleton instances for DB Metrics
-var (
-	AccountsDBMetricsBuilder *DBPoolMetricsBuilder
-	MainDBMetricsBuilder    *DBPoolMetricsBuilder
+import (
+	"fmt"
+	"sync"
 )
 
-// Set funcitons for DB Metrics - Private functions
-func setAccountsDBMetricsBuilder(builder *DBPoolMetricsBuilder) {
-	// Debugging
-	fmt.Println("Setting AccountsDBMetricsBuilder: ", builder)
-	AccountsDBMetricsBuilder = builder
+type DBPoolMetricsBuilder struct {
+	poolType     string     // "accounts" or "main"
+	functionName string     // name of the function using the connection (optional)
+	mu           sync.Mutex // mutex to protect functionName in concurrent scenarios
 }
 
-func setMainDBMetricsBuilder(builder *DBPoolMetricsBuilder) {
-	// Debugging
-	fmt.Println("Setting MainDBMetricsBuilder: ", builder)
-	MainDBMetricsBuilder = builder
-}
+// Singleton instances for DB Metrics (with mutex for thread-safety)
+var (
+	AccountsDBMetricsBuilder *DBPoolMetricsBuilder
+	MainDBMetricsBuilder     *DBPoolMetricsBuilder
+	accountsDBMutex          sync.Mutex
+	mainDBMutex              sync.Mutex
+)
 
 // NewAccountsDBMetricsBuilder creates a new builder for AccountsDB connection pool metrics
+// Uses singleton pattern with thread-safe initialization
 func NewAccountsDBMetricsBuilder() *DBPoolMetricsBuilder {
 	if AccountsDBMetricsBuilder == nil {
-		AccountsDBMetricsBuilder = &DBPoolMetricsBuilder{
-			poolType:     "accounts",
-			functionName: "",
+		accountsDBMutex.Lock()
+		defer accountsDBMutex.Unlock()
+		// Double-check after acquiring lock
+		if AccountsDBMetricsBuilder == nil {
+			AccountsDBMetricsBuilder = &DBPoolMetricsBuilder{
+				poolType:     "accounts",
+				functionName: "",
+			}
+			fmt.Println("AccountsDBMetricsBuilder initialized: ", AccountsDBMetricsBuilder)
 		}
-		// Debugging
-		fmt.Println("AccountsDBMetricsBuilder: ", AccountsDBMetricsBuilder)
-		setAccountsDBMetricsBuilder(AccountsDBMetricsBuilder)
 	}
 	return AccountsDBMetricsBuilder
 }
 
 // NewMainDBMetricsBuilder creates a new builder for MainDB connection pool metrics
+// Uses singleton pattern with thread-safe initialization
 func NewMainDBMetricsBuilder() *DBPoolMetricsBuilder {
 	if MainDBMetricsBuilder == nil {
-		MainDBMetricsBuilder = &DBPoolMetricsBuilder{
-			poolType:     "main",
-			functionName: "",
+		mainDBMutex.Lock()
+		defer mainDBMutex.Unlock()
+		// Double-check after acquiring lock
+		if MainDBMetricsBuilder == nil {
+			MainDBMetricsBuilder = &DBPoolMetricsBuilder{
+				poolType:     "main",
+				functionName: "",
+			}
+			fmt.Println("MainDBMetricsBuilder initialized: ", MainDBMetricsBuilder)
 		}
-		// Debugging
-		fmt.Println("MainDBMetricsBuilder: ", MainDBMetricsBuilder)
-		setMainDBMetricsBuilder(MainDBMetricsBuilder)
 	}
 	return MainDBMetricsBuilder
 }
 
 // WithFunction sets the function name for tracking which function is using connections
 // This enables per-function metrics for detailed analysis (separate from pool totals)
+// NOTE: This is NOT thread-safe if multiple goroutines use the same builder instance.
+// For thread-safety, create a new builder for each operation or use a mutex.
 func (b *DBPoolMetricsBuilder) WithFunction(functionName string) *DBPoolMetricsBuilder {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.functionName = functionName
 	return b
 }
@@ -116,15 +120,19 @@ func (b *DBPoolMetricsBuilder) SetTotal(count int) *DBPoolMetricsBuilder {
 
 // SetActive sets the number of active (in-use) connections (pool-level metric only)
 func (b *DBPoolMetricsBuilder) SetActive(count int) *DBPoolMetricsBuilder {
+	b.mu.Lock()
+	functionName := b.functionName
+	b.mu.Unlock()
+
 	if b.poolType == "accounts" {
-		if b.functionName != "" {
-			AccountsDBConnectionPoolActive.WithLabelValues(b.functionName).Set(float64(count))
+		if functionName != "" {
+			AccountsDBConnectionPoolActive.WithLabelValues(functionName).Set(float64(count))
 		} else {
 			AccountsDBConnectionPoolActive.WithLabelValues("unknown").Set(float64(count))
 		}
 	} else {
-		if b.functionName != "" {
-			MainDBConnectionPoolActive.WithLabelValues(b.functionName).Set(float64(count))
+		if functionName != "" {
+			MainDBConnectionPoolActive.WithLabelValues(functionName).Set(float64(count))
 		} else {
 			MainDBConnectionPoolActive.WithLabelValues("unknown").Set(float64(count))
 		}
@@ -174,15 +182,19 @@ func (b *DBPoolMetricsBuilder) DecrementTotal() *DBPoolMetricsBuilder {
 
 // IncrementActive increments the active connection count by 1 (pool-level)
 func (b *DBPoolMetricsBuilder) IncrementActive() *DBPoolMetricsBuilder {
+	b.mu.Lock()
+	functionName := b.functionName
+	b.mu.Unlock()
+
 	if b.poolType == "accounts" {
-		if b.functionName != "" {
-			AccountsDBConnectionPoolActive.WithLabelValues(b.functionName).Inc()
+		if functionName != "" {
+			AccountsDBConnectionPoolActive.WithLabelValues(functionName).Inc()
 		} else {
 			AccountsDBConnectionPoolActive.WithLabelValues("unknown").Inc()
 		}
 	} else {
-		if b.functionName != "" {
-			MainDBConnectionPoolActive.WithLabelValues(b.functionName).Inc()
+		if functionName != "" {
+			MainDBConnectionPoolActive.WithLabelValues(functionName).Inc()
 		} else {
 			MainDBConnectionPoolActive.WithLabelValues("unknown").Inc()
 		}
@@ -192,15 +204,19 @@ func (b *DBPoolMetricsBuilder) IncrementActive() *DBPoolMetricsBuilder {
 
 // DecrementActive decrements the active connection count by 1 (pool-level)
 func (b *DBPoolMetricsBuilder) DecrementActive() *DBPoolMetricsBuilder {
+	b.mu.Lock()
+	functionName := b.functionName
+	b.mu.Unlock()
+
 	if b.poolType == "accounts" {
-		if b.functionName != "" {
-			AccountsDBConnectionPoolActive.WithLabelValues(b.functionName).Dec()
+		if functionName != "" {
+			AccountsDBConnectionPoolActive.WithLabelValues(functionName).Dec()
 		} else {
 			AccountsDBConnectionPoolActive.WithLabelValues("unknown").Dec()
 		}
 	} else {
-		if b.functionName != "" {
-			MainDBConnectionPoolActive.WithLabelValues(b.functionName).Dec()
+		if functionName != "" {
+			MainDBConnectionPoolActive.WithLabelValues(functionName).Dec()
 		} else {
 			MainDBConnectionPoolActive.WithLabelValues("unknown").Dec()
 		}
@@ -240,15 +256,19 @@ func (b *DBPoolMetricsBuilder) AddToTotal(delta int) *DBPoolMetricsBuilder {
 
 // AddToActive adds a specific value to the active connection count (pool-level)
 func (b *DBPoolMetricsBuilder) AddToActive(delta int) *DBPoolMetricsBuilder {
+	b.mu.Lock()
+	functionName := b.functionName
+	b.mu.Unlock()
+
 	if b.poolType == "accounts" {
-		if b.functionName != "" {
-			AccountsDBConnectionPoolActive.WithLabelValues(b.functionName).Add(float64(delta))
+		if functionName != "" {
+			AccountsDBConnectionPoolActive.WithLabelValues(functionName).Add(float64(delta))
 		} else {
 			AccountsDBConnectionPoolActive.WithLabelValues("unknown").Add(float64(delta))
 		}
 	} else {
-		if b.functionName != "" {
-			MainDBConnectionPoolActive.WithLabelValues(b.functionName).Add(float64(delta))
+		if functionName != "" {
+			MainDBConnectionPoolActive.WithLabelValues(functionName).Add(float64(delta))
 		} else {
 			MainDBConnectionPoolActive.WithLabelValues("unknown").Add(float64(delta))
 		}
@@ -270,17 +290,37 @@ func (b *DBPoolMetricsBuilder) AddToIdle(delta int) *DBPoolMetricsBuilder {
 // This increments active and decrements idle (pool-level)
 // AND tracks per-function usage if function name is set
 func (b *DBPoolMetricsBuilder) ConnectionTaken() *DBPoolMetricsBuilder {
-	// Update pool-level metrics
-	b.IncrementActive().DecrementIdle()
+	// Get function name atomically ONCE at the start to avoid race conditions
+	b.mu.Lock()
+	functionName := b.functionName
+	b.mu.Unlock()
+
+	// Update pool-level metrics using the captured functionName
+	// This ensures we use the same functionName for both IncrementActive and per-function tracking
+	if b.poolType == "accounts" {
+		if functionName != "" {
+			AccountsDBConnectionPoolActive.WithLabelValues(functionName).Inc()
+		} else {
+			AccountsDBConnectionPoolActive.WithLabelValues("unknown").Inc()
+		}
+		AccountsDBConnectionPoolIdle.Dec()
+	} else {
+		if functionName != "" {
+			MainDBConnectionPoolActive.WithLabelValues(functionName).Inc()
+		} else {
+			MainDBConnectionPoolActive.WithLabelValues("unknown").Inc()
+		}
+		MainDBConnectionPoolIdle.Dec()
+	}
 
 	// Track per-function metrics if function name is provided
-	if b.functionName != "" {
+	if functionName != "" {
 		if b.poolType == "accounts" {
-			AccountsDBConnectionsByFunction.WithLabelValues(b.functionName).Inc()
-			AccountsDBConnectionTakesTotal.WithLabelValues(b.functionName).Inc()
+			AccountsDBConnectionsByFunction.WithLabelValues(functionName).Inc()
+			AccountsDBConnectionTakesTotal.WithLabelValues(functionName).Inc()
 		} else {
-			MainDBConnectionsByFunction.WithLabelValues(b.functionName).Inc()
-			MainDBConnectionTakesTotal.WithLabelValues(b.functionName).Inc()
+			MainDBConnectionsByFunction.WithLabelValues(functionName).Inc()
+			MainDBConnectionTakesTotal.WithLabelValues(functionName).Inc()
 		}
 	}
 
@@ -291,17 +331,37 @@ func (b *DBPoolMetricsBuilder) ConnectionTaken() *DBPoolMetricsBuilder {
 // This decrements active and increments idle (pool-level)
 // AND tracks per-function usage if function name is set
 func (b *DBPoolMetricsBuilder) ConnectionReturned() *DBPoolMetricsBuilder {
-	// Update pool-level metrics
-	b.DecrementActive().IncrementIdle()
+	// Get function name atomically ONCE at the start to avoid race conditions
+	b.mu.Lock()
+	functionName := b.functionName
+	b.mu.Unlock()
+
+	// Update pool-level metrics using the captured functionName
+	// This ensures we use the same functionName for both DecrementActive and per-function tracking
+	if b.poolType == "accounts" {
+		if functionName != "" {
+			AccountsDBConnectionPoolActive.WithLabelValues(functionName).Dec()
+		} else {
+			AccountsDBConnectionPoolActive.WithLabelValues("unknown").Dec()
+		}
+		AccountsDBConnectionPoolIdle.Inc()
+	} else {
+		if functionName != "" {
+			MainDBConnectionPoolActive.WithLabelValues(functionName).Dec()
+		} else {
+			MainDBConnectionPoolActive.WithLabelValues("unknown").Dec()
+		}
+		MainDBConnectionPoolIdle.Inc()
+	}
 
 	// Track per-function metrics if function name is provided
-	if b.functionName != "" {
+	if functionName != "" {
 		if b.poolType == "accounts" {
-			AccountsDBConnectionsByFunction.WithLabelValues(b.functionName).Dec()
-			AccountsDBConnectionReturnsTotal.WithLabelValues(b.functionName).Inc()
+			AccountsDBConnectionsByFunction.WithLabelValues(functionName).Dec()
+			AccountsDBConnectionReturnsTotal.WithLabelValues(functionName).Inc()
 		} else {
-			MainDBConnectionsByFunction.WithLabelValues(b.functionName).Dec()
-			MainDBConnectionReturnsTotal.WithLabelValues(b.functionName).Inc()
+			MainDBConnectionsByFunction.WithLabelValues(functionName).Dec()
+			MainDBConnectionReturnsTotal.WithLabelValues(functionName).Inc()
 		}
 	}
 
