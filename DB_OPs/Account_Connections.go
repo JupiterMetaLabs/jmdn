@@ -111,10 +111,10 @@ func GetAccountsConnections(ctx context.Context) (*config.PooledConnection, erro
 	}
 
 	// Update metrics with current pool state
-	pc, file, line, ok := runtime.Caller(1)
+	pc, _, _, ok := runtime.Caller(1)
 	if ok {
 		fn := runtime.FuncForPC(pc)
-		metrics.NewAccountsDBMetricsBuilder().WithFunction(fmt.Sprintf("%s >> %s:%d", fn.Name(), file, line)).ConnectionTaken()
+		metrics.NewAccountsDBMetricsBuilder().WithFunction(fn.Name()).ConnectionTaken()
 	} else {
 		metrics.NewAccountsDBMetricsBuilder().WithFunction("unknown").ConnectionTaken()
 		fmt.Println("Failed to get caller information")
@@ -137,10 +137,10 @@ func PutAccountsConnection(conn *config.PooledConnection) {
 		accountsPool.Put(conn)
 
 		// Update metrics with current pool state
-		pc, file, line, ok := runtime.Caller(1)
+		pc, _, _, ok := runtime.Caller(1)
 		if ok {
 			fn := runtime.FuncForPC(pc)
-			metrics.NewAccountsDBMetricsBuilder().WithFunction(fmt.Sprintf("%s >> %s:%d", fn.Name(), file, line)).ConnectionReturned()
+			metrics.NewAccountsDBMetricsBuilder().WithFunction(fn.Name()).ConnectionReturned()
 		} else {
 			metrics.NewAccountsDBMetricsBuilder().WithFunction("unknown").ConnectionReturned()
 			fmt.Println("Failed to get caller information")

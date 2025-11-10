@@ -1,5 +1,10 @@
 package metrics
 
+import (
+	"fmt"
+	"reflect"
+)
+
 // DBPoolMetricsBuilder provides a fluent builder interface for updating database connection pool metrics.
 // All changes are immediately reflected in Prometheus metrics and will appear on the Grafana dashboard.
 //
@@ -292,15 +297,51 @@ func SetMainDBPoolMetricsWithFunction(functionName string, total, active, idle i
 	NewMainDBMetricsBuilder().WithFunction(functionName).SetAll(total, active, idle)
 }
 
-// ExecuteBuilderMethodByName executes a builder method by name
+// ExecuteBuilderMethodByName executes a builder method by name using reflection
 // methodName: name of the method to call (e.g., "SetTotal", "IncrementActive", "ConnectionTaken")
 // poolType: "accounts" or "main"
 // args: optional arguments for methods that take parameters (e.g., SetTotal(10))
+//
+// Example usage:
+//
+//	ExecuteBuilderMethodByName("SetTotal", "main", 20)
+//	ExecuteBuilderMethodByName("IncrementActive", "accounts")
+//	ExecuteBuilderMethodByName("ConnectionTaken", "main")
 func ExecuteBuilderMethodByName(methodName string, poolType string, args ...interface{}) error {
-	// TODO: Implement method execution logic here
-	// methodName: string - the method name to execute
-	// poolType: "accounts" or "main" - which pool to use
-	// args: variadic arguments for methods that take parameters
+	// Create the appropriate builder
+	var builder *DBPoolMetricsBuilder
+	if poolType == "accounts" {
+		builder = NewAccountsDBMetricsBuilder()
+	} else if poolType == "main" {
+		builder = NewMainDBMetricsBuilder()
+	} else {
+		return fmt.Errorf("invalid poolType: %s (must be 'accounts' or 'main')", poolType)
+	}
+
+	// Use reflection to get the method by name
+	method := reflect.ValueOf(builder).MethodByName(methodName)
+	if !method.IsValid() {
+		return fmt.Errorf("method '%s' not found on DBPoolMetricsBuilder", methodName)
+	}
+
+	// Convert args to reflect.Value slice
+	argValues := make([]reflect.Value, len(args))
+	for i, arg := range args {
+		argValues[i] = reflect.ValueOf(arg)
+	}
+
+	// Call the method
+	results := method.Call(argValues)
+
+	// Check if method returned an error
+	if len(results) > 0 {
+		lastResult := results[len(results)-1]
+		if lastResult.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) {
+			if !lastResult.IsNil() {
+				return lastResult.Interface().(error)
+			}
+		}
+	}
 
 	return nil
 }

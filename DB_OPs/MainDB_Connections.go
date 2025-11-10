@@ -48,10 +48,10 @@ func GetMainDBConnection(ctx context.Context) (*config.PooledConnection, error) 
 	}
 
 	// Update metrics with current pool state
-	pc, file, line, ok := runtime.Caller(1)
+	pc, _, _, ok := runtime.Caller(1)
 	if ok {
 		fn := runtime.FuncForPC(pc)
-		metrics.NewMainDBMetricsBuilder().WithFunction(fmt.Sprintf("%s >> %s:%d", fn.Name(), file, line)).ConnectionTaken()
+		metrics.NewMainDBMetricsBuilder().WithFunction(fn.Name()).ConnectionTaken()
 	} else {
 		metrics.NewMainDBMetricsBuilder().WithFunction("unknown").ConnectionTaken()
 		fmt.Println("Failed to get caller information")
@@ -74,10 +74,10 @@ func PutMainDBConnection(conn *config.PooledConnection) {
 		mainDBPool.Put(conn)
 
 		// Update metrics with current pool state
-		pc, file, line, ok := runtime.Caller(1)
+		pc, _, _, ok := runtime.Caller(1)
 		if ok {
 			fn := runtime.FuncForPC(pc)
-			metrics.NewMainDBMetricsBuilder().WithFunction(fmt.Sprintf("%s >> %s:%d", fn.Name(), file, line)).ConnectionReturned()
+			metrics.NewMainDBMetricsBuilder().WithFunction(fn.Name()).ConnectionReturned()
 		} else {
 			metrics.NewMainDBMetricsBuilder().WithFunction("unknown").ConnectionReturned()
 			fmt.Println("Failed to get caller information")
