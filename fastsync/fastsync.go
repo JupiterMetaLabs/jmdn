@@ -1013,14 +1013,14 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 			var newClient *config.PooledConnection
 			var clientErr error
 			if dbType == MainDB {
-				newClient, clientErr = DB_OPs.GetMainDBConnection(context.Background())
+				newClient, clientErr = DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 				if clientErr == nil {
 					DB_OPs.Close(fs.mainDB.Client)
 					DB_OPs.PutMainDBConnection(fs.mainDB)
 					fs.mainDB = newClient
 				}
 			} else {
-				newClient, clientErr = DB_OPs.GetAccountsConnections(context.Background())
+				newClient, clientErr = DB_OPs.GetAccountConnectionandPutBack(context.Background())
 				if clientErr == nil {
 					DB_OPs.Close(fs.accountsDB.Client)
 					DB_OPs.PutAccountsConnection(fs.accountsDB)
