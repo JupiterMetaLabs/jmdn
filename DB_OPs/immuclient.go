@@ -531,6 +531,7 @@ func GetKeys(PooledConnection *config.PooledConnection, prefix string, limit int
 		scanReq := &schema.ScanRequest{
 			Prefix: []byte(prefix),
 			Limit:  uint64(limit),
+			Desc:   true, // latest keys first
 		}
 
 		// Create a fresh context for the scan operation
@@ -768,6 +769,7 @@ func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limi
 			Prefix:  []byte(prefix),
 			Limit:   uint64(limit),
 			SeekKey: seekKey,
+			Desc:    true, // latest keys first
 		}
 
 		ic.Logger.Logger.Info("Scanning keys with prefix: %s (limit: %d)",

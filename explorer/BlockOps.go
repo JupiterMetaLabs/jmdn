@@ -32,9 +32,9 @@ type stats struct {
 
 type LatestBlockStats struct {
 	BlockNumber uint64
-	BlockHash string
-	StateRoot string
-	Timestamp int64
+	BlockHash   string
+	StateRoot   string
+	Timestamp   int64
 }
 
 // Get block by number
@@ -175,9 +175,9 @@ func (s *ImmuDBServer) getLatestBlockStats(c *gin.Context) {
 	// Get the latest block stats with block number, block hash, state root, timestamp
 	latestBlockStats := LatestBlockStats{
 		BlockNumber: block.BlockNumber,
-		BlockHash: block.BlockHash.Hex(),
-		StateRoot: block.StateRoot.Hex(),
-		Timestamp: block.Timestamp,
+		BlockHash:   block.BlockHash.Hex(),
+		StateRoot:   block.StateRoot.Hex(),
+		Timestamp:   block.Timestamp,
 	}
 	fmt.Println("latestBlockStats", latestBlockStats)
 	c.JSON(http.StatusOK, latestBlockStats)
@@ -385,18 +385,10 @@ func (s *ImmuDBServer) listTransactions(c *gin.Context) {
 	// Calculate offset
 	offset := (page - 1) * limit
 
-	// Get paginated transaction hashes
-	txHashes, total, err := DB_OPs.GetTransactionHashes(&s.defaultdb, offset, limit)
+	// Get paginated transactions directly from database (database-level pagination)
+	transactions, total, err := DB_OPs.GetTransactionsPaginated(&s.defaultdb, offset, limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch transactions"})
-		return
-	}
-
-	// Fetch full transaction details
-	var transactions []*config.Transaction
-	transactions, err = DB_OPs.GetTransactionsBatch(&s.defaultdb, txHashes)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch transaction details"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch transactions: " + err.Error()})
 		return
 	}
 
