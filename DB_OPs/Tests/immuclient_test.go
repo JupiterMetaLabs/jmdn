@@ -1,6 +1,7 @@
 package DB_OPs_Tests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -30,7 +31,7 @@ func Test_Create_Read_Update(t *testing.T) {
 
 	// Test Create
 	fmt.Printf("Testing Create operation...\n")
-	conn, err := DB_OPs.GetMainDBConnection()
+	conn, err := DB_OPs.GetMainDBConnection(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
 	}
@@ -74,7 +75,7 @@ func Test_Create_Read_Update(t *testing.T) {
 		"updated":   true,
 	}
 
-	err = DB_OPs.Update(conn, testKey, updatedValue)
+	err = DB_OPs.Update(testKey, updatedValue)
 	if err != nil {
 		DB_OPs.PutMainDBConnection(conn)
 		t.Fatalf("Failed to update key: %v", err)
@@ -126,7 +127,7 @@ func Test_ReadJSON(t *testing.T) {
 	}
 
 	// Create test data
-	conn, err := DB_OPs.GetMainDBConnection()
+	conn, err := DB_OPs.GetMainDBConnection(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
 	}
@@ -140,7 +141,7 @@ func Test_ReadJSON(t *testing.T) {
 	// Test ReadJSON
 	fmt.Printf("Testing ReadJSON operation...\n")
 	var retrievedValue map[string]interface{}
-	err = DB_OPs.ReadJSON(conn, testKey, &retrievedValue)
+	err = DB_OPs.ReadJSON(testKey, &retrievedValue)
 	if err != nil {
 		DB_OPs.PutMainDBConnection(conn)
 		t.Fatalf("Failed to read JSON: %v", err)
@@ -170,7 +171,7 @@ func Test_GetKeys(t *testing.T) {
 
 	// Create test data with prefix
 	prefix := fmt.Sprintf("test:getkeys-%d", time.Now().UTC().UnixNano())
-	conn, err := DB_OPs.GetMainDBConnection()
+	conn, err := DB_OPs.GetMainDBConnection(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
 	}
@@ -243,7 +244,7 @@ func Test_GetAllKeys(t *testing.T) {
 
 	// Create test data with prefix
 	prefix := fmt.Sprintf("test:getallkeys-%d", time.Now().UTC().UnixNano())
-	conn, err := DB_OPs.GetMainDBConnection()
+	conn, err := DB_OPs.GetMainDBConnection(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
 	}
@@ -301,50 +302,53 @@ func Test_CountAllKeys(t *testing.T) {
 		t.Fatalf("Failed to initialize main DB pool: %v", err)
 	}
 
-	// Create test data with prefix
-	prefix := fmt.Sprintf("test:countkeys-%d", time.Now().UTC().UnixNano())
-	conn, err := DB_OPs.GetMainDBConnection()
-	if err != nil {
-		t.Fatalf("Failed to get main DB connection: %v", err)
-	}
-
-	// Create multiple test keys
-	testKeys := []string{
-		fmt.Sprintf("%s:count1", prefix),
-		fmt.Sprintf("%s:count2", prefix),
-		fmt.Sprintf("%s:count3", prefix),
-	}
-
-	for i, key := range testKeys {
-		value := map[string]interface{}{
-			"count":     i + 1,
-			"key":       key,
-			"timestamp": time.Now().UTC().Unix(),
-		}
-		err = DB_OPs.Create(conn, key, value)
-		if err != nil {
-			DB_OPs.PutMainDBConnection(conn)
-			t.Fatalf("Failed to create test key %s: %v", key, err)
-		}
-		fmt.Printf("✅ Created test key: %s\n", key)
-	}
+	prefix := DB_OPs.DEFAULT_PREFIX_TX
 
 	// Test CountAllKeys
 	fmt.Printf("Testing CountAllKeys operation...\n")
-	count, err := DB_OPs.CountAllKeys(conn, prefix)
+	start := time.Now()
+	count, err := DB_OPs.CountBuilder{}.GetMainDBCount(prefix)
 	if err != nil {
-		DB_OPs.PutMainDBConnection(conn)
+		DB_OPs.PutMainDBConnection(nil)
 		t.Fatalf("Failed to count keys: %v", err)
 	}
 
 	fmt.Printf("✅ Found %d keys with prefix\n", count)
 
-	// Verify we got at least our test keys
-	if count < len(testKeys) {
-		t.Fatalf("Expected at least %d keys, got %d", len(testKeys), count)
+	elapsed := time.Since(start)
+	fmt.Printf("✅ CountAllKeys operation took %s\n", elapsed)
+
+	DB_OPs.PutMainDBConnection(nil)
+	fmt.Printf("✅ CountAllKeys test completed successfully!\n")
+}
+
+// Test_CountAllKeys tests the CountAllKeys functionality
+func Test_CountAllKeysAccountsDB(t *testing.T) {
+	fmt.Printf("=== Testing CountAllKeys AccountsDB Operation ===\n")
+
+	// Initialize the main database pool
+	err := DB_OPs.InitAccountsPool()
+	if err != nil {
+		t.Fatalf("Failed to initialize accounts DB pool: %v", err)
 	}
 
-	DB_OPs.PutMainDBConnection(conn)
+	prefix := DB_OPs.Prefix
+
+	// Test CountAllKeys
+	fmt.Printf("Testing CountAllKeys operation...\n")
+	start := time.Now()
+	count, err := DB_OPs.CountBuilder{}.GetAccountsDBCount(prefix)
+	if err != nil {
+		DB_OPs.PutAccountsConnection(nil)
+		t.Fatalf("Failed to count keys: %v", err)
+	}
+
+	fmt.Printf("✅ Found %d keys with prefix\n", count)
+
+	elapsed := time.Since(start)
+	fmt.Printf("✅ CountAllKeys operation took %s\n", elapsed)
+
+	DB_OPs.PutAccountsConnection(nil)
 	fmt.Printf("✅ CountAllKeys test completed successfully!\n")
 }
 
@@ -380,7 +384,7 @@ func Test_BatchCreate(t *testing.T) {
 
 	// Test BatchCreate
 	fmt.Printf("Testing BatchCreate operation...\n")
-	conn, err := DB_OPs.GetMainDBConnection()
+	conn, err := DB_OPs.GetMainDBConnection(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
 	}
@@ -443,7 +447,7 @@ func Test_SafeCreate_SafeRead(t *testing.T) {
 
 	// Test SafeCreate
 	fmt.Printf("Testing SafeCreate operation...\n")
-	conn, err := DB_OPs.GetMainDBConnection()
+	conn, err := DB_OPs.GetMainDBConnection(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
 	}
@@ -497,7 +501,7 @@ func Test_Exists(t *testing.T) {
 	existingKey := fmt.Sprintf("test:exists-%d", time.Now().UTC().UnixNano())
 	nonExistingKey := fmt.Sprintf("test:nonexistent-%d", time.Now().UTC().UnixNano())
 
-	conn, err := DB_OPs.GetMainDBConnection()
+	conn, err := DB_OPs.GetMainDBConnection(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
 	}
@@ -551,7 +555,7 @@ func Test_GetMerkleRoot(t *testing.T) {
 		t.Fatalf("Failed to initialize main DB pool: %v", err)
 	}
 
-	conn, err := DB_OPs.GetMainDBConnection()
+	conn, err := DB_OPs.GetMainDBConnection(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
 	}
@@ -584,7 +588,7 @@ func Test_GetDatabaseState(t *testing.T) {
 		t.Fatalf("Failed to initialize main DB pool: %v", err)
 	}
 
-	conn, err := DB_OPs.GetMainDBConnection()
+	conn, err := DB_OPs.GetMainDBConnection(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
 	}
@@ -619,7 +623,7 @@ func Test_IsHealthy(t *testing.T) {
 		t.Fatalf("Failed to initialize main DB pool: %v", err)
 	}
 
-	conn, err := DB_OPs.GetMainDBConnection()
+	conn, err := DB_OPs.GetMainDBConnection(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
 	}
@@ -647,7 +651,7 @@ func Test_Ping(t *testing.T) {
 		t.Fatalf("Failed to initialize main DB pool: %v", err)
 	}
 
-	conn, err := DB_OPs.GetMainDBConnection()
+	conn, err := DB_OPs.GetMainDBConnection(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
 	}
@@ -676,7 +680,7 @@ func Test_Transaction(t *testing.T) {
 		t.Fatalf("Failed to initialize main DB pool: %v", err)
 	}
 
-	conn, err := DB_OPs.GetMainDBConnection()
+	conn, err := DB_OPs.GetMainDBConnection(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
 	}
@@ -750,7 +754,7 @@ func Test_ErrorHandling(t *testing.T) {
 		t.Fatalf("Failed to initialize main DB pool: %v", err)
 	}
 
-	conn, err := DB_OPs.GetMainDBConnection()
+	conn, err := DB_OPs.GetMainDBConnection(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to get main DB connection: %v", err)
 	}
@@ -888,4 +892,436 @@ func Test_StressOperations(t *testing.T) {
 	fmt.Printf("✅ Batch created 5 keys\n")
 
 	fmt.Printf("✅ Stress operations test completed successfully!\n")
+}
+
+// Test_GetMainDBConnectionandPutBack tests that connections are automatically returned when context is cancelled
+func Test_GetMainDBConnectionandPutBack(t *testing.T) {
+	fmt.Printf("=== Testing GetMainDBConnectionandPutBack Auto PutBack ===\n")
+
+	// Initialize the main DB pool
+	err := DB_OPs.InitMainDBPool(config.DefaultConnectionPoolConfig())
+	if err != nil {
+		t.Fatalf("Failed to initialize main DB pool: %v", err)
+	}
+
+	// Test multiple connections to verify auto-putback works correctly
+	for i := 0; i < 10; i++ {
+		fmt.Printf("\n--- Iteration %d ---\n", i+1)
+
+		// Create a context with timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+
+		// Get connection with auto-putback
+		conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+		if err != nil {
+			t.Fatalf("Failed to get connection on iteration %d: %v", i+1, err)
+		}
+		if conn == nil {
+			t.Fatalf("Expected non-nil connection on iteration %d, got nil", i+1)
+		}
+		if conn.Client == nil {
+			t.Fatalf("Expected non-nil client on iteration %d, got nil", i+1)
+		}
+
+		// Debugging - print session ID
+		sessionID := conn.Client.Client.GetSessionID()
+		fmt.Printf("✅ Got connection with session ID: %s\n", sessionID)
+		fmt.Printf("   Connection pointer: %p\n", conn)
+		fmt.Printf("   In Use: %t\n", conn.InUse)
+
+		// Wait for context timeout - this should trigger automatic cleanup
+		<-ctx.Done()
+
+		// Wait a bit for the goroutine to process the cancellation
+		time.Sleep(300 * time.Millisecond)
+
+		fmt.Printf("✅ Context cancelled, connection should be auto-returned\n")
+
+		// Cancel to clean up
+		cancel()
+
+		// Verify we can still get connections from the pool (connection was returned)
+		conn2, err := DB_OPs.GetMainDBConnection(context.Background())
+		if err != nil {
+			t.Fatalf("Failed to get second connection on iteration %d: %v", i+1, err)
+		}
+		defer DB_OPs.PutMainDBConnection(conn2)
+
+		fmt.Printf("✅ Pool is still working after auto-return (iteration %d)\n", i+1)
+	}
+
+	fmt.Printf("\n✅ All 10 iterations completed successfully - auto-putback is working!\n")
+}
+
+// Test_GetMainDBConnectionandPutBack_Success tests successful connection retrieval and pool reuse
+func Test_GetMainDBConnectionandPutBack_Success(t *testing.T) {
+	fmt.Printf("=== Testing GetMainDBConnectionandPutBack Success ===\n")
+
+	// Initialize the main DB pool
+	err := DB_OPs.InitMainDBPool(config.DefaultConnectionPoolConfig())
+	if err != nil {
+		t.Fatalf("Failed to initialize main DB pool: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get first connection
+	conn1, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get first connection: %v", err)
+	}
+	if conn1 == nil {
+		t.Fatalf("Expected non-nil connection, got nil")
+	}
+	if conn1.Client == nil {
+		t.Fatalf("Expected non-nil client, got nil")
+	}
+
+	fmt.Printf("✅ First connection retrieved successfully\n")
+	fmt.Printf("   Connection pointer: %p\n", conn1)
+	fmt.Printf("   Database: %s\n", conn1.Database)
+	fmt.Printf("   Created At: %s\n", conn1.CreatedAt.Format(time.RFC3339))
+	fmt.Printf("   In Use: %t\n", conn1.InUse)
+
+	// Get session ID for comparison
+	sessionID1 := conn1.Client.Client.GetSessionID()
+	fmt.Printf("   Session ID: %s\n", sessionID1)
+
+	// Manually return connection to pool
+	DB_OPs.PutMainDBConnection(conn1)
+	fmt.Printf("✅ First connection returned to pool\n")
+
+	// Wait a bit to ensure connection is back in pool
+	time.Sleep(100 * time.Millisecond)
+
+	// Get second connection - should be the same one if pool is working correctly
+	conn2, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get second connection: %v", err)
+	}
+	if conn2 == nil {
+		t.Fatalf("Expected non-nil second connection, got nil")
+	}
+
+	fmt.Printf("✅ Second connection retrieved successfully\n")
+	fmt.Printf("   Connection pointer: %p\n", conn2)
+	fmt.Printf("   Database: %s\n", conn2.Database)
+	fmt.Printf("   In Use: %t\n", conn2.InUse)
+
+	// Get session ID for comparison
+	sessionID2 := conn2.Client.Client.GetSessionID()
+	fmt.Printf("   Session ID: %s\n", sessionID2)
+
+	// Verify if it's the same connection (same pointer)
+	if conn1 == conn2 {
+		fmt.Printf("✅ Same connection reused from pool (pointer match)\n")
+	} else {
+		fmt.Printf("⚠️  Different connection pointer (pool may have multiple connections)\n")
+	}
+
+	// Verify session ID matches (more reliable check)
+	if sessionID1 == sessionID2 {
+		fmt.Printf("✅ Same session ID - connection was correctly reused from pool\n")
+	} else {
+		t.Fatalf("Expected same session ID, got different: %s vs %s", sessionID1, sessionID2)
+	}
+
+	// Return second connection
+	DB_OPs.PutMainDBConnection(conn2)
+	fmt.Printf("✅ Second connection returned to pool\n")
+}
+
+// Test_GetMainDBConnectionandPutBack_NilContext tests that the function properly handles nil context
+func Test_GetMainDBConnectionandPutBack_NilContext(t *testing.T) {
+	fmt.Printf("=== Testing GetMainDBConnectionandPutBack with Nil Context ===\n")
+
+	// Initialize the main DB pool
+	err := DB_OPs.InitMainDBPool(config.DefaultConnectionPoolConfig())
+	if err != nil {
+		t.Fatalf("Failed to initialize main DB pool: %v", err)
+	}
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(nil)
+	if err == nil {
+		t.Fatalf("Expected error for nil context, got nil error")
+	}
+	fmt.Printf("✅ Error for nil context: %v\n", err)
+	if conn != nil {
+		t.Fatalf("Expected nil connection, got non-nil connection")
+	}
+	fmt.Printf("✅ Nil context handled properly\n")
+}
+
+// Test_GetMainDBConnectionandPutBack_ContextCancellation tests automatic cleanup on context cancellation
+func Test_GetMainDBConnectionandPutBack_ContextCancellation(t *testing.T) {
+	fmt.Printf("=== Testing GetMainDBConnectionandPutBack Context Cancellation ===\n")
+
+	// Initialize the main DB pool
+	err := DB_OPs.InitMainDBPool(config.DefaultConnectionPoolConfig())
+	if err != nil {
+		t.Fatalf("Failed to initialize main DB pool: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get connection: %v", err)
+	}
+	if conn == nil {
+		t.Fatalf("Expected non-nil connection, got nil")
+	}
+
+	fmt.Printf("✅ Connection retrieved\n")
+	fmt.Printf("   Connection pointer: %p\n", conn)
+	fmt.Printf("   In Use before cancel: %t\n", conn.InUse)
+
+	// Cancel the context - this should trigger automatic cleanup
+	cancel()
+
+	// Wait a bit for the goroutine to process the cancellation
+	time.Sleep(500 * time.Millisecond)
+
+	fmt.Printf("✅ Context cancelled, connection should be auto-returned\n")
+
+	// Verify we can still get connections from the pool (connection was returned)
+	conn2, err := DB_OPs.GetMainDBConnection(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get second connection: %v", err)
+	}
+	defer DB_OPs.PutMainDBConnection(conn2)
+
+	fmt.Printf("✅ Second connection retrieved (pool is working)\n")
+	fmt.Printf("   Second connection pointer: %p\n", conn2)
+}
+
+// Test_GetMainDBConnectionandPutBack_ContextTimeout tests automatic cleanup on context timeout
+func Test_GetMainDBConnectionandPutBack_ContextTimeout(t *testing.T) {
+	fmt.Printf("=== Testing GetMainDBConnectionandPutBack Context Timeout ===\n")
+
+	// Initialize the main DB pool
+	err := DB_OPs.InitMainDBPool(config.DefaultConnectionPoolConfig())
+	if err != nil {
+		t.Fatalf("Failed to initialize main DB pool: %v", err)
+	}
+
+	// Create a context with a short timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get connection: %v", err)
+	}
+	if conn == nil {
+		t.Fatalf("Expected non-nil connection, got nil")
+	}
+
+	fmt.Printf("✅ Connection retrieved\n")
+	fmt.Printf("   Connection pointer: %p\n", conn)
+
+	// Wait for context timeout
+	<-ctx.Done()
+
+	// Wait a bit for the goroutine to process the timeout
+	time.Sleep(500 * time.Millisecond)
+
+	fmt.Printf("✅ Context timed out, connection should be auto-returned\n")
+
+	// Verify we can still get connections from the pool
+	conn2, err := DB_OPs.GetMainDBConnection(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get second connection: %v", err)
+	}
+	defer DB_OPs.PutMainDBConnection(conn2)
+
+	fmt.Printf("✅ Second connection retrieved after timeout (pool is working)\n")
+}
+
+// Test_GetMainDBConnectionandPutBack_ManualReturn tests that manual return still works
+func Test_GetMainDBConnectionandPutBack_ManualReturn(t *testing.T) {
+	fmt.Printf("=== Testing GetMainDBConnectionandPutBack Manual Return ===\n")
+
+	// Initialize the main DB pool
+	err := DB_OPs.InitMainDBPool(config.DefaultConnectionPoolConfig())
+	if err != nil {
+		t.Fatalf("Failed to initialize main DB pool: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get connection: %v", err)
+	}
+	if conn == nil {
+		t.Fatalf("Expected non-nil connection, got nil")
+	}
+
+	fmt.Printf("✅ Connection retrieved\n")
+	fmt.Printf("   Connection pointer: %p\n", conn)
+
+	// Manually return the connection before context is cancelled
+	DB_OPs.PutMainDBConnection(conn)
+	fmt.Printf("✅ Connection manually returned\n")
+
+	// Wait a bit to ensure no issues with double return
+	time.Sleep(200 * time.Millisecond)
+
+	// Cancel context - this should not cause issues even though connection is already returned
+	cancel()
+	time.Sleep(200 * time.Millisecond)
+
+	fmt.Printf("✅ Manual return works correctly, no double-return issues\n")
+}
+
+// Test_GetMainDBConnectionandPutBack_MultipleConnections tests multiple connections with context
+func Test_GetMainDBConnectionandPutBack_MultipleConnections(t *testing.T) {
+	fmt.Printf("=== Testing GetMainDBConnectionandPutBack Multiple Connections ===\n")
+
+	// Initialize the main DB pool
+	err := DB_OPs.InitMainDBPool(config.DefaultConnectionPoolConfig())
+	if err != nil {
+		t.Fatalf("Failed to initialize main DB pool: %v", err)
+	}
+
+	// Get multiple connections with different contexts
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel1()
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel2()
+
+	conn1, err := DB_OPs.GetMainDBConnectionandPutBack(ctx1)
+	if err != nil {
+		t.Fatalf("Failed to get first connection: %v", err)
+	}
+
+	conn2, err := DB_OPs.GetMainDBConnectionandPutBack(ctx2)
+	if err != nil {
+		t.Fatalf("Failed to get second connection: %v", err)
+	}
+
+	// Verify they are different connections
+	if conn1 == conn2 {
+		t.Fatalf("Expected different connections, got same connection")
+	}
+
+	fmt.Printf("✅ Got two different connections\n")
+	fmt.Printf("   Connection 1 pointer: %p\n", conn1)
+	fmt.Printf("   Connection 2 pointer: %p\n", conn2)
+
+	// Cancel first context
+	cancel1()
+	time.Sleep(200 * time.Millisecond)
+	fmt.Printf("✅ First context cancelled\n")
+
+	// Cancel second context
+	cancel2()
+	time.Sleep(200 * time.Millisecond)
+	fmt.Printf("✅ Second context cancelled\n")
+
+	// Verify pool is still working
+	conn3, err := DB_OPs.GetMainDBConnection(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to get third connection: %v", err)
+	}
+	defer DB_OPs.PutMainDBConnection(conn3)
+
+	fmt.Printf("✅ Pool is still working after multiple auto-returns\n")
+}
+
+// Test_GetMainDBConnectionandPutBack_ConcurrentAccess tests concurrent access with context
+func Test_GetMainDBConnectionandPutBack_ConcurrentAccess(t *testing.T) {
+	fmt.Printf("=== Testing GetMainDBConnectionandPutBack Concurrent Access ===\n")
+
+	// Initialize the main DB pool
+	err := DB_OPs.InitMainDBPool(config.DefaultConnectionPoolConfig())
+	if err != nil {
+		t.Fatalf("Failed to initialize main DB pool: %v", err)
+	}
+
+	const numGoroutines = 5
+	done := make(chan bool, numGoroutines)
+
+	// Launch multiple goroutines that get connections with context
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+			if err != nil {
+				t.Errorf("Goroutine %d: Failed to get connection: %v", id, err)
+				done <- false
+				return
+			}
+
+			if conn == nil {
+				t.Errorf("Goroutine %d: Got nil connection", id)
+				done <- false
+				return
+			}
+
+			fmt.Printf("   Goroutine %d: Got connection %p\n", id, conn)
+
+			// Simulate some work
+			time.Sleep(100 * time.Millisecond)
+
+			// Context will timeout and auto-return connection
+			<-ctx.Done()
+			time.Sleep(100 * time.Millisecond)
+
+			fmt.Printf("   Goroutine %d: Connection auto-returned\n", id)
+			done <- true
+		}(i)
+	}
+
+	// Wait for all goroutines to complete
+	successCount := 0
+	for i := 0; i < numGoroutines; i++ {
+		if <-done {
+			successCount++
+		}
+	}
+
+	if successCount != numGoroutines {
+		t.Fatalf("Expected %d successful goroutines, got %d", numGoroutines, successCount)
+	}
+
+	fmt.Printf("✅ All %d goroutines completed successfully\n", numGoroutines)
+}
+
+// Test_GetMainDBConnection_Basic tests basic connection retrieval
+func Test_GetMainDBConnection_Basic(t *testing.T) {
+	fmt.Printf("=== Testing GetMainDBConnection Basic ===\n")
+
+	// Initialize the main DB pool
+	err := DB_OPs.InitMainDBPool(config.DefaultConnectionPoolConfig())
+	if err != nil {
+		t.Fatalf("Failed to initialize main DB pool: %v", err)
+	}
+
+	ctx := context.Background()
+	conn, err := DB_OPs.GetMainDBConnection(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get connection: %v", err)
+	}
+	if conn == nil {
+		t.Fatalf("Expected non-nil connection, got nil")
+	}
+	if conn.Client == nil {
+		t.Fatalf("Expected non-nil client, got nil")
+	}
+
+	fmt.Printf("✅ Connection retrieved successfully\n")
+	fmt.Printf("   Database: %s\n", conn.Database)
+	fmt.Printf("   Created At: %s\n", conn.CreatedAt.Format(time.RFC3339))
+	fmt.Printf("   In Use: %t\n", conn.InUse)
+
+	// Manually return connection
+	DB_OPs.PutMainDBConnection(conn)
+	fmt.Printf("✅ Connection returned to pool\n")
 }

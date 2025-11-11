@@ -1,6 +1,7 @@
 package DB_OPs
 
 import (
+	"context"
 	"fmt"
 	"gossipnode/config"
 	"gossipnode/logging"
@@ -14,8 +15,12 @@ func GetTransactionsOfBlock(mainDBClient *config.PooledConnection, blockNumber u
 	var err error
 	var shouldReturnConnection bool = false
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnection()
+		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
 		}

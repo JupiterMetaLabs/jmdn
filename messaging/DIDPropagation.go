@@ -58,7 +58,8 @@ func InitDIDPropagation(existingClient *config.PooledConnection) error {
 			log.Info().Msg("DID propagation system initialized with existing database client")
 		} else {
 			// Create accounts database client if none provided
-			client, err := DB_OPs.GetAccountsConnection()
+			ctx := context.Background()
+			client, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 			if err != nil {
 				initErr = fmt.Errorf("failed to create accounts database client: %w", err)
 				return
@@ -161,7 +162,7 @@ func updateDIDSet(client *config.PooledConnection, did string) error {
 
 	// Try to get the current set
 	var didSet map[string]bool
-	err := DB_OPs.ReadJSON(client, setKey, &didSet)
+	err := DB_OPs.ReadJSON(setKey, &didSet)
 
 	// If not found or error, start with empty set
 	if err != nil {

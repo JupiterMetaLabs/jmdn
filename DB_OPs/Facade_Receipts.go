@@ -1,6 +1,7 @@
 package DB_OPs
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"gossipnode/config"
@@ -17,9 +18,13 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 	var err error
 	var shouldReturnConnection bool = false
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	// Get connection if not provided
 	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnection()
+		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
 		}
@@ -259,8 +264,12 @@ func MakeReceiptRoot(mainDBClient *config.PooledConnection, receipts []*config.R
 	var err error
 	var shouldReturnConnection bool = false
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnection()
+		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
 		}
@@ -320,8 +329,12 @@ func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint6
 	var err error
 	var shouldReturnConnection bool = false
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnection()
+		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
 		}
