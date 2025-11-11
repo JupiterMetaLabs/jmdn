@@ -1049,7 +1049,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 			Prefix:  prefix,
 			Limit:   uint64(batchSize),
 			SeekKey: lastKey,
-			Desc:    false,
+			Desc:    true, // latest accounts first
 		}
 		ReadCtx, ReadCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer ReadCancel()
@@ -1263,86 +1263,171 @@ func isTransactionInvolvingAccount(tx config.Transaction, accountAddr *common.Ad
 	return false
 }
 
-// GetTransactionHashes retrieves transaction hashes with pagination
+// GetTransactionHashes retrieves transaction hashes with pagination (DEPRECATED - use GetTransactionsPaginated)
+// This function is kept for backward compatibility but loads all hashes into memory
 func GetTransactionHashes(PooledConnection *config.PooledConnection, offset, limit int) ([]string, int, error) {
-	var err error
-	var shouldReturnConnection bool = false
-
-	// Define Function wide context for timeout
-	ctx := context.Background()
-	// End the context.Background()
-	defer ctx.Done()
-
-	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to get connection from pool: %w - GetTransactionHashes", err)
-		}
-		shouldReturnConnection = true
-		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
-			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.GetTransactionHashes"),
-		)
-	}
-	mainDBClient := PooledConnection.Client
-
-	if shouldReturnConnection {
-		defer func() {
-			mainDBClient.Logger.Logger.Info("Client Connection is returned to the Pool",
-				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.GetTransactionHashes"),
-			)
-			PutAccountsConnection(PooledConnection)
-		}()
-	}
-
-	// Get total count first
-	allHashes, err := getAllTransactionHashes(PooledConnection)
+	// Use the new database-level pagination function
+	transactions, total, err := GetTransactionsPaginated(PooledConnection, offset, limit)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	total := len(allHashes)
-
-	// Apply pagination
-	if offset >= total {
-		return []string{}, total, nil
+	// Extract hashes from transactions
+	hashes := make([]string, len(transactions))
+	for i, tx := range transactions {
+		hashes[i] = tx.Hash.Hex() // Convert common.Hash to hex string
 	}
 
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-
-	return allHashes[offset:end], total, nil
+	return hashes, total, nil
 }
 
-// getAllTransactionHashes gets all transaction hashes (cached)
-func getAllTransactionHashes(mainDBClient *config.PooledConnection) ([]string, error) {
-	// Use the existing GetAllKeys helper for robustness
-	keys, err := GetAllKeys(mainDBClient, DEFAULT_PREFIX_TX)
-	if err != nil {
-		return nil, err
-	}
+// GetTransactionsPaginated retrieves transactions with database-level pagination
+// This uses ImmuDB Scan with SeekKey to paginate at the database level, avoiding loading all transactions into memory
+func GetTransactionsPaginated(PooledConnection *config.PooledConnection, offset, limit int) ([]*config.Transaction, int, error) {
+	var err error
+	var shouldReturnConnection bool = false
 
-	// Extract just the transaction hashes from the keys
-	var hashes []string
-	for _, key := range keys {
-		// Key is in format "tx:<hash>", so we take everything after "tx:"
-		if len(key) > 3 {
-			hashes = append(hashes, key[3:])
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Transactions are stored in MAIN database, not accounts DB
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to get main DB connection from pool: %w - GetTransactionsPaginated", err)
 		}
+		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetTransactionsPaginated"),
+		)
+	}
+	ic := PooledConnection.Client
+
+	if shouldReturnConnection {
+		defer func() {
+			ic.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetTransactionsPaginated"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
 	}
 
-	return hashes, nil
+	// Get total count efficiently (without loading all transactions)
+	// Use the existing CountTransactions function from immuclient.go
+	total, err := CountTransactions(PooledConnection)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count transactions: %w", err)
+	}
+
+	// If offset is beyond total, return empty result
+	if offset >= total {
+		return []*config.Transaction{}, total, nil
+	}
+
+	// Scan for transactions with database-level pagination
+	prefix := []byte(DEFAULT_PREFIX_TX) // "tx:"
+	var transactions []*config.Transaction
+	batchSize := 1000 // Scan in batches
+	keysScanned := 0
+	var lastKey []byte
+
+	for len(transactions) < limit {
+		// Get a batch of keys from database
+		scanReq := &schema.ScanRequest{
+			Prefix:  prefix,
+			Limit:   uint64(batchSize),
+			SeekKey: lastKey,
+			Desc:    true, // latest transactions first
+		}
+
+		scanCtx, scanCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		scanResult, err := ic.Client.Scan(scanCtx, scanReq)
+		scanCancel()
+
+		if err != nil {
+			ic.Logger.Logger.Error("Failed to scan for transactions",
+				zap.Error(err),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetTransactionsPaginated"),
+			)
+			return nil, 0, fmt.Errorf("failed to scan for transactions: %w", err)
+		}
+
+		if len(scanResult.Entries) == 0 {
+			break // No more keys
+		}
+
+		// Process the batch
+		for _, entry := range scanResult.Entries {
+			if keysScanned >= offset {
+				// Extract transaction hash from key (format: "tx:<hash>")
+				keyStr := string(entry.Key)
+				if len(keyStr) > len(DEFAULT_PREFIX_TX) {
+					txHash := keyStr[len(DEFAULT_PREFIX_TX):]
+
+					// Fetch the full transaction
+					tx, err := GetTransactionByHash(PooledConnection, txHash)
+					if err != nil {
+						ic.Logger.Logger.Warn("Skipping transaction due to fetch error",
+							zap.Error(err),
+							zap.String("txHash", txHash),
+							zap.String(logging.Connection_database, config.DBName),
+							zap.Time(logging.Created_at, time.Now().UTC()),
+							zap.String(logging.Log_file, LOG_FILE),
+							zap.String(logging.Topic, TOPIC),
+							zap.String(logging.Loki_url, LOKI_URL),
+							zap.String(logging.Function, "DB_OPs.GetTransactionsPaginated"),
+						)
+						keysScanned++
+						continue
+					}
+
+					transactions = append(transactions, tx)
+					if len(transactions) >= limit {
+						break
+					}
+				}
+			}
+			keysScanned++
+		}
+
+		if len(scanResult.Entries) < batchSize {
+			break // No more keys to fetch
+		}
+
+		// Prepare for next batch
+		lastKey = scanResult.Entries[len(scanResult.Entries)-1].Key
+	}
+
+	ic.Logger.Logger.Info("Successfully retrieved paginated transactions",
+		zap.Int(logging.Count, len(transactions)),
+		zap.Int("requested_limit", limit),
+		zap.Int("offset", offset),
+		zap.Int("total", total),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetTransactionsPaginated"),
+	)
+
+	return transactions, total, nil
 }
 
 // ensureAccountsDBSelected makes sure we're using the accounts database
