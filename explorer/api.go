@@ -1,6 +1,7 @@
 package explorer
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"time"
@@ -31,12 +32,12 @@ type ImmuDBServer struct {
 // NewImmuDBServer creates a new ImmuDB API server
 func NewImmuDBServer(enableExplorer bool) (*ImmuDBServer, error) {
 	// Create ImmuDB client
-	defaultdb, err := DB_OPs.GetMainDBConnection()
+	defaultdb, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 	if err != nil {
 		return nil, err
 	}
 
-	accountsdb, err := DB_OPs.GetAccountsConnection()
+	accountsdb, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -56,6 +57,12 @@ func NewImmuDBServer(enableExplorer bool) (*ImmuDBServer, error) {
 	server.setupRoutes()
 
 	return server, nil
+}
+
+func CloseImmuDBServer(server *ImmuDBServer) {
+	DB_OPs.PutMainDBConnection(&server.defaultdb)
+	DB_OPs.PutAccountsConnection(&server.accountsdb)
+	server.Close()
 }
 
 // setupRoutes configures the API routes

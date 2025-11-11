@@ -9,6 +9,7 @@ import (
 	"gossipnode/metrics"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -82,18 +83,21 @@ func InitAccountsPoolWithLoki(enableLoki bool, username, password string) error 
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.InitAccountsPool"),
 		)
-		metrics.InitlizeAccountsDBConnectionPoolCount(poolCfg.MinConnections)
+		metrics.NewAccountsDBMetricsBuilder().WithFunction("DB_OPs.InitAccountsPool").SetTotal(accountsPool.Config.MaxConnections)
+		metrics.NewAccountsDBMetricsBuilder().WithFunction("DB_OPs.InitAccountsPool").SetActive(0)
+		metrics.NewAccountsDBMetricsBuilder().WithFunction("DB_OPs.InitAccountsPool").SetIdle(accountsPool.Config.MaxConnections)
 	})
 	return initErr
 }
 
-// GetAccountsConnection retrieves a connection from the accounts database pool.
+// GetAccountsConnections retrieves a connection from the accounts database pool.
 // Callers are responsible for returning the connection using PutAccountsConnection.
-func GetAccountsConnection() (*config.PooledConnection, error) {
+// The context parameter is accepted for future use but is not currently used by the pool.
+func GetAccountsConnections(ctx context.Context) (*config.PooledConnection, error) {
 	if accountsPool == nil {
 		return nil, errors.New("accounts connection pool is not initialized. Call InitAccountsPool first")
 	}
-	accountsPool.Logger.Logger.Info("Getting accounts connection: %s",
+	accountsPool.Logger.Logger.Info("Getting accounts connection",
 		zap.String(logging.Connection_database, config.AccountsDBName),
 		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
@@ -107,11 +111,14 @@ func GetAccountsConnection() (*config.PooledConnection, error) {
 	}
 
 	// Update metrics with current pool state
-	metrics.UpdateAccountsDBConnectionPoolMetrics(
-		accountsPool.GetPoolSize(),
-		accountsPool.GetActiveConnections(),
-		accountsPool.GetIdleConnections(),
-	)
+	pc, _, _, ok := runtime.Caller(1)
+	if ok {
+		fn := runtime.FuncForPC(pc)
+		metrics.NewAccountsDBMetricsBuilder().WithFunction(fn.Name()).ConnectionTaken()
+	} else {
+		metrics.NewAccountsDBMetricsBuilder().WithFunction("unknown").ConnectionTaken()
+		fmt.Println("Failed to get caller information")
+	}
 
 	return conn, nil
 }
@@ -130,11 +137,14 @@ func PutAccountsConnection(conn *config.PooledConnection) {
 		accountsPool.Put(conn)
 
 		// Update metrics with current pool state
-		metrics.UpdateAccountsDBConnectionPoolMetrics(
-			accountsPool.GetPoolSize(),
-			accountsPool.GetActiveConnections(),
-			accountsPool.GetIdleConnections(),
-		)
+		pc, _, _, ok := runtime.Caller(1)
+		if ok {
+			fn := runtime.FuncForPC(pc)
+			metrics.NewAccountsDBMetricsBuilder().WithFunction(fn.Name()).ConnectionReturned()
+		} else {
+			metrics.NewAccountsDBMetricsBuilder().WithFunction("unknown").ConnectionReturned()
+			fmt.Println("Failed to get caller information")
+		}
 	}
 }
 
@@ -165,7 +175,7 @@ func ensureAccountsDBExists(username, password string) error {
 		WithAddress(config.DBAddress).
 		WithPort(config.DBPort).
 		WithDir(stateDir).
-		WithMaxRecvMsgSize(1024 * 1024 * 20). // 20MB message size
+		WithMaxRecvMsgSize(1024 * 1024 * 200). // 20MB message size
 		WithDisableIdentityCheck(false).
 		WithMTLsOptions(
 			client.MTLsOptions{}.WithCertificate(certFile).WithPkey(keyFile).WithClientCAs(caFile).WithServername(config.DBAddress),
@@ -301,4 +311,82 @@ func EnsureDBConnection(accountsPool *config.PooledConnection) error {
 
 	// If we got here, all retries failed
 	return fmt.Errorf("failed to establish database connection after %d attempts: %w", maxRetries, lastErr)
+}
+
+/* GetAccountConnectionandPutBack retrieves a connection from the accounts database pool
+and automatically returns it to the pool when the context is cancelled or done.
+
+This factory method ensures proper connection cleanup without requiring explicit PutAccountsConnection calls.
+
+Important: The connection will be automatically returned when:
+   - The context is cancelled (via cancel() or timeout)
+   - The context's Done channel is closed
+
+If you need to return the connection earlier, you can still call PutAccountsConnection manually.
+The PutAccountsConnection function is safe to call multiple times.
+
+Usage:
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel() // This will trigger automatic connection return
+	conn, err := GetAccountConnectionandPutBack(ctx)
+	if err != nil {
+	    return err
+	}
+	- Use conn - it will be automatically returned when ctx is cancelled.
+	- Optionally return early: PutAccountsConnection(conn)
+*/
+
+func GetAccountConnectionandPutBack(ctx context.Context) (*config.PooledConnection, error) {
+	if ctx == nil {
+		return nil, errors.New("context cannot be nil - GetAccountConnectionandPutBack")
+	}
+	conn, err := GetAccountsConnections(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get accounts connection: %w - GetAccountConnectionandPutBack", err)
+	}
+
+	// Log successful connection retrieval
+	conn.Client.Logger.Logger.Info("Got accounts connection",
+		zap.String(logging.Connection_database, config.AccountsDBName),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetAccountConnectionandPutBack"),
+	)
+
+	// Set up automatic cleanup when context is done
+	// Use a goroutine to monitor context cancellation
+	go func() {
+		<-ctx.Done()
+		// Context was cancelled or timed out, return connection to pool
+		// Only return if connection is still in use (not already manually returned)
+		if conn != nil && conn.Client != nil && conn.InUse {
+			conn.Client.Logger.Logger.Info("Auto-returning accounts connection due to context cancellation",
+				zap.String(logging.Connection_database, config.AccountsDBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetAccountConnectionandPutBack"),
+				zap.String("context_error", ctx.Err().Error()),
+			)
+			// Debugging
+			fmt.Printf("Auto-returning accounts connection due to context cancellation: %s\n", conn.Client.Ctx)
+			PutAccountsConnection(conn)
+		} else if conn != nil && conn.Client != nil && !conn.InUse {
+			// Connection was already manually returned, no need to return again
+			conn.Client.Logger.Logger.Info("Connection already returned, skipping auto-return",
+				zap.String(logging.Connection_database, config.AccountsDBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetAccountConnectionandPutBack"),
+			)
+		}
+	}()
+
+	return conn, nil
 }

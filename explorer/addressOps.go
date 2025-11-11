@@ -135,7 +135,7 @@ func (s *ImmuDBServer) getAddressDetails(c *gin.Context) {
 	}
 
 	// Get transaction count for this address
-	transactionCount, err := DB_OPs.CountTransactionsByAccount(&s.defaultdb, &address)
+	transactionCount, err := DB_OPs.CountTransactionsByAccount(&address)
 	if err != nil {
 		// Log error but don't fail the request
 		s.defaultdb.Client.Logger.Logger.Warn("Failed to get transaction count",

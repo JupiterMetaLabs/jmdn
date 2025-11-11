@@ -1,6 +1,7 @@
 package gETH
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -17,12 +18,12 @@ type immuDBServer struct {
 }
 
 func initDBs() (immuDBServer, error) {
-	defaultdb, err := DB_OPs.GetMainDBConnection()
+	defaultdb, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 	if err != nil {
 		return immuDBServer{}, err
 	}
 
-	accountsdb, err := DB_OPs.GetAccountsConnection()
+	accountsdb, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
 	if err != nil {
 		return immuDBServer{}, err
 	}
@@ -111,7 +112,6 @@ func ConvertZKBlockToETHBlock(zkblock *config.ZKBlock) (*proto.Block, error) {
 }
 
 func ConvertConfigTxnToETHTransaction(Txn *config.Transaction) (*proto.Transaction, error) {
-
 
 	// convert BigInt to bytes
 	rBytes := Txn.R.Bytes()

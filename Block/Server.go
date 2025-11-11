@@ -1,6 +1,7 @@
 package Block
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -116,7 +117,9 @@ func SubmitRawTransaction(tx *config.Transaction) (string, error) {
 
 	// Basic transaction validation
 	if tx.Value.Cmp(big.NewInt(0)) == 0 || tx.Value.String() == "" {
-		return "", errors.New("invalid transaction: value is 0 or empty")
+		if len(tx.Data) == 0 || tx.Data == nil {
+			return "", errors.New("invalid transaction: value is 0/empty AND data is 0/empty")
+		}
 	}
 	// Debugging
 	fmt.Println("Basic Transaction Validation: ", tx.Value)
@@ -353,6 +356,8 @@ func processZKBlock(c *gin.Context) {
 
 func processZKBlockNoConsensus(c *gin.Context) {
 	fmt.Println("=== DEBUG: processZKBlock API called ===")
+	ctx, cancel := context.WithTimeout(context.Background(), 14*time.Second)
+	defer cancel()
 
 	// Parse the block data from the request
 	var block config.ZKBlock
@@ -387,7 +392,7 @@ func processZKBlockNoConsensus(c *gin.Context) {
 
 	fmt.Println("DEBUG: Getting database connections...")
 	// Create DB clients for processing
-	mainDBClient, err := DB_OPs.GetMainDBConnection()
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
 		fmt.Printf("DEBUG: Failed to get main DB connection: %v\n", err)
 		txLogger.Error().Err(err).Msg("Failed to get main DB connection")
@@ -400,7 +405,7 @@ func processZKBlockNoConsensus(c *gin.Context) {
 		DB_OPs.PutMainDBConnection(mainDBClient)
 	}()
 
-	accountsClient, err := DB_OPs.GetAccountsConnection()
+	accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 	if err != nil {
 		fmt.Printf("DEBUG: Failed to get accounts DB connection: %v\n", err)
 		txLogger.Error().Err(err).Msg("Failed to get accounts DB connection")
@@ -488,7 +493,9 @@ func getBlockByNumber(c *gin.Context) {
 		return
 	}
 
-	mainDBClient, err := DB_OPs.GetMainDBConnection()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
 		return
@@ -522,7 +529,10 @@ func getBlockByNumber(c *gin.Context) {
 func getBlockByHash(c *gin.Context) {
 	blockHash := c.Param("hash")
 
-	mainDBClient, err := DB_OPs.GetMainDBConnection()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
 		return
@@ -545,8 +555,11 @@ func getBlockByHash(c *gin.Context) {
 // getTransactionInfo gets detailed information about a transaction
 func getTransactionInfo(c *gin.Context) {
 	txHash := c.Param("hash")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
 
-	mainDBClient, err := DB_OPs.GetMainDBConnection()
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
 		return
@@ -585,7 +598,11 @@ func getTransactionInfo(c *gin.Context) {
 
 // getLatestBlock returns information about the latest block
 func getLatestBlock(c *gin.Context) {
-	mainDBClient, err := DB_OPs.GetMainDBConnection()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
 		return
