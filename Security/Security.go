@@ -2,6 +2,7 @@ package Security
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -89,8 +90,10 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	return true, nil
 }
 func ThreeChecks(tx *config.Transaction) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	// Initilize the Accounts DB connection pool
-	Conn, err := DB_OPs.GetAccountsConnection()
+	Conn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -248,7 +251,6 @@ func CheckSignature(tx *config.Transaction) (bool, error) {
 	if tx.From == nil || tx.To == nil || tx.V == nil || tx.R == nil || tx.S == nil {
 		return false, errors.New("transaction missing required signature fields (From, To, V, R, or S)")
 	}
-
 
 	var ethTx *types.Transaction
 	var signer types.Signer

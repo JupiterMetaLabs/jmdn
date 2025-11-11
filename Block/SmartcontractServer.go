@@ -1,6 +1,7 @@
 package Block
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"gossipnode/DB_OPs"
@@ -104,7 +105,7 @@ func deployContract(c *gin.Context) {
 	}
 
 	// Connect to DB
-	mainDBClient, err := DB_OPs.GetMainDBConnection()
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
 		return
@@ -187,7 +188,7 @@ func executeContract(c *gin.Context) {
 	}
 
 	// Connect to DB
-	mainDBClient, err := DB_OPs.GetMainDBConnection()
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
 		return

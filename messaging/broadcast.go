@@ -649,21 +649,19 @@ func ProcessBlockLocally(block *config.ZKBlock) error {
 		Msg("Processing block locally")
 
 	// Create DB clients for processing
-	mainDBClient, err := DB_OPs.GetMainDBConnection()
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get main DB connection")
 		return fmt.Errorf("failed to get main DB connection: %w", err)
 	}
-	defer func() {
-		DB_OPs.PutMainDBConnection(mainDBClient)
-	}()
 
-	accountsClient, err := DB_OPs.GetAccountsConnection()
+	accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get accounts DB connection")
 		return fmt.Errorf("failed to get accounts DB connection: %w", err)
 	}
 	defer func() {
+		DB_OPs.PutMainDBConnection(mainDBClient)
 		DB_OPs.PutAccountsConnection(accountsClient)
 	}()
 
