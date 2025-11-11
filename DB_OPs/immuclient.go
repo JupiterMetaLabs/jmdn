@@ -625,7 +625,10 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 	}
 
 	batchNum := 0
-	for {
+	lastSeenKey := ""    // Track the last key we've seen to detect infinite loops
+	maxBatches := 100000 // Safety limit to prevent infinite loops (100M keys max)
+
+	for batchNum < maxBatches {
 		batchNum++
 		// Create a batch request
 		fmt.Printf(">>> [DB] Getting batch %d for prefix '%s' (current count: %d keys)...\n", batchNum, prefix, len(allKeys))
@@ -684,15 +687,37 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 		// Use uniqueKeys for the rest of the logic
 		keys := uniqueKeys
 
+		// Check if we're stuck in a loop - if the first key is the same as lastSeenKey, we're not advancing
+		if len(keys) > 0 && lastSeenKey != "" && keys[0] == lastSeenKey {
+			fmt.Printf(">>> [DB] WARNING: Detected infinite loop - first key '%s' matches last seen key. Stopping.\n", keys[0])
+			fmt.Printf(">>> [DB] This may indicate a pagination issue with SeekKey. Returning keys collected so far.\n")
+			break
+		}
+
 		// If we got fewer than batch size, we're done
 		if len(keys) < batchSize {
 			fmt.Printf(">>> [DB] Got fewer than batch size (%d < %d), stopping\n", len(keys), batchSize)
 			break
 		}
 
-		// Set last key for next iteration
-		lastKey = []byte(keys[len(keys)-1])
-		fmt.Printf(">>> [DB] Continuing to next batch for prefix '%s'...\n", prefix)
+		// Set last key for next iteration - use the last key from this batch
+		newLastKey := keys[len(keys)-1]
+
+		// Check if we're stuck - if the last key hasn't changed, we're in a loop
+		if lastSeenKey != "" && newLastKey == lastSeenKey {
+			fmt.Printf(">>> [DB] WARNING: LastKey hasn't changed between batches ('%s'). Stopping to prevent infinite loop.\n", newLastKey)
+			break
+		}
+
+		lastKey = []byte(newLastKey)
+		lastSeenKey = newLastKey // Track for loop detection
+
+		fmt.Printf(">>> [DB] Continuing to next batch for prefix '%s' (lastKey: %s)...\n", prefix, string(lastKey))
+	}
+
+	if batchNum >= maxBatches {
+		fmt.Printf(">>> [DB] WARNING: Reached maximum batch limit (%d). Stopping to prevent infinite loop.\n", maxBatches)
+		fmt.Printf(">>> [DB] Collected %d keys so far. This may indicate a pagination issue.\n", len(allKeys))
 	}
 	// Debugging output with a newline for clarity
 	fmt.Printf("Total keys found: %d with Prefix: %s\n", len(allKeys), prefix)
