@@ -117,7 +117,9 @@ func SubmitRawTransaction(tx *config.Transaction) (string, error) {
 
 	// Basic transaction validation
 	if tx.Value.Cmp(big.NewInt(0)) == 0 || tx.Value.String() == "" {
-		return "", errors.New("invalid transaction: value is 0 or empty")
+		if len(tx.Data) == 0 || tx.Data == nil {
+			return "", errors.New("invalid transaction: value is 0/empty AND data is 0/empty")
+		}
 	}
 	// Debugging
 	fmt.Println("Basic Transaction Validation: ", tx.Value)
