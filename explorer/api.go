@@ -113,7 +113,7 @@ func (s *ImmuDBServer) setupRoutes() {
 		api.GET("/latest", s.getLatestBlock)
 
 		// Get all the transactions based on the pagination
-		api.GET("/transactions/all", s.listTransactions)
+		// api.GET("/transactions/all", s.listTransactions)
 	}
 
 	// Add a new group for Ethereum JSON-RPC
@@ -148,6 +148,16 @@ func (s *ImmuDBServer) setupRoutes() {
 	{
 		// Get transactions for a specific address
 		addresses.GET("/transactions/:address", s.getAddressTransactions)
+	}
+
+	// tramsactions endpoint
+	transactions := s.router.Group("/api/transactions")
+	{
+		// Get all the transactions based on the pagination
+		transactions.GET("/all", s.listTransactions)
+
+		// Get the transactions based on the block numbers from last
+		transactions.GET("/blocks/all", s.listTransactions_fromLastBlock)
 	}
 
 	// Websockets to stream realtime blocks
