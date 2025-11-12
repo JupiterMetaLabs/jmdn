@@ -403,3 +403,161 @@ func (s *ImmuDBServer) listTransactions(c *gin.Context) {
 		},
 	})
 }
+
+// From last block number - go in reverse order and get the transactions in the block
+// Returns paginated transactions from multiple blocks starting from the latest block going backwards
+func (s *ImmuDBServer) listTransactions_fromLastBlock(c *gin.Context) {
+	// Get and validate pagination parameters
+	pageStr := c.DefaultQuery("page", "1")
+	limitStr := c.DefaultQuery("limit", "20")
+
+	page, err := strconv.Atoi(pageStr)
+	if err != nil || page < 1 {
+		page = 1
+	}
+
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit < 1 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100 // Maximum limit to prevent excessive memory usage
+	}
+
+	// Get the last block number
+	lastBlockNumber, err := DB_OPs.GetLatestBlockNumber(&s.defaultdb)
+	if err != nil {
+		s.defaultdb.Client.Logger.Logger.Error("Failed to get last block number",
+			zap.Error(err),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Explorer.listTransactions_fromLastBlock"),
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get last block number"})
+		return
+	}
+
+	// Calculate how many transactions we need to collect
+	// We need enough for the current page: (page - 1) * limit + limit = page * limit
+	transactionsNeeded := page * limit
+
+	// Collect transactions from blocks starting from latest, going backwards
+	var allTransactions []*config.Transaction
+	currentBlock := lastBlockNumber
+	maxBlocksToScan := uint64(1000) // Safety limit to prevent infinite loops
+	blocksScanned := uint64(0)
+
+	// Collect transactions until we have enough for the requested page
+	for len(allTransactions) < transactionsNeeded && currentBlock > 0 && blocksScanned < maxBlocksToScan {
+		blockTransactions, err := DB_OPs.GetTransactionsOfBlock(&s.defaultdb, currentBlock)
+		if err != nil {
+			// Log error but continue to next block
+			s.defaultdb.Client.Logger.Logger.Warn("Failed to get transactions from block, skipping",
+				zap.Error(err),
+				zap.Uint64("block_number", currentBlock),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, config.LOKI_URL),
+				zap.String(logging.Function, "Explorer.listTransactions_fromLastBlock"),
+			)
+			currentBlock--
+			blocksScanned++
+			continue
+		}
+
+		// Append transactions from this block (they're already in order from the block)
+		allTransactions = append(allTransactions, blockTransactions...)
+		currentBlock--
+		blocksScanned++
+	}
+
+	// If no transactions found
+	if len(allTransactions) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"latest_block_number": lastBlockNumber,
+			"transactions":        []*config.Transaction{},
+			"pagination": gin.H{
+				"current_page": page,
+				"per_page":     limit,
+				"total_pages":  0,
+				"total_items":  0,
+				"has_next":     false,
+				"has_prev":     false,
+			},
+		})
+		return
+	}
+
+	// Calculate total transactions across all blocks for accurate pagination
+	// We need to count all transactions from all blocks (or at least estimate)
+	// For now, we'll use the count of transactions we've collected as an estimate
+	// A more accurate approach would scan all blocks, but that's expensive
+	total := len(allTransactions)
+
+	// If we haven't reached the end, we need to count remaining transactions
+	// For efficiency, we'll estimate based on blocks scanned
+	// If we hit the limit, there might be more transactions
+	hasMoreBlocks := currentBlock > 0
+	if hasMoreBlocks {
+		// Estimate: if we scanned blocks and got transactions, estimate there are more
+		// For accurate count, we'd need to scan all blocks (expensive operation)
+		// For now, we'll indicate there might be more by checking if we hit the scan limit
+		if blocksScanned >= maxBlocksToScan {
+			// We hit the safety limit, so there are likely more transactions
+			// Set total to a value that indicates "more available"
+			total = len(allTransactions) + 1 // Indicate there's at least one more
+		}
+	}
+
+	totalPages := int(math.Ceil(float64(total) / float64(limit)))
+	offset := (page - 1) * limit
+
+	// Ensure offset is within bounds
+	if offset >= len(allTransactions) {
+		// Requested page is beyond available transactions
+		c.JSON(http.StatusOK, gin.H{
+			"latest_block_number": lastBlockNumber,
+			"transactions":        []*config.Transaction{},
+			"pagination": gin.H{
+				"current_page": page,
+				"per_page":     limit,
+				"total_pages":  totalPages,
+				"total_items":  len(allTransactions),
+				"has_next":     false,
+				"has_prev":     page > 1,
+			},
+		})
+		return
+	}
+
+	// Extract paginated slice
+	var paginatedTransactions []*config.Transaction
+	if offset < len(allTransactions) {
+		end := offset + limit
+		if end > len(allTransactions) {
+			end = len(allTransactions)
+		}
+		paginatedTransactions = allTransactions[offset:end]
+	}
+
+	// Determine if there are more pages
+	hasNext := offset+limit < len(allTransactions) || hasMoreBlocks
+
+	// Return paginated response
+	c.JSON(http.StatusOK, gin.H{
+		"latest_block_number": lastBlockNumber,
+		"blocks_scanned":      blocksScanned,
+		"transactions":        paginatedTransactions,
+		"pagination": gin.H{
+			"current_page": page,
+			"per_page":     limit,
+			"total_pages":  totalPages,
+			"total_items":  len(allTransactions),
+			"has_next":     hasNext,
+			"has_prev":     page > 1,
+		},
+	})
+}

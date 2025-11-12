@@ -157,14 +157,21 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 
 			// Create new account with zero balance
 			// We need to provide a DID address, so we'll use the address as DID for now
-			didAddress := fmt.Sprintf("did:%s:%s", network, address.Hex())
+			didAddress := fmt.Sprintf("%s:%s:%s", DB_OPs.DIDPrefix, network, address.Hex())
 
-			// Save the new account to database
-			if createErr := DB_OPs.CreateAccount(nil, didAddress, address, nil); createErr != nil {
-				if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance failed to create account: %v", createErr), "Balance", -1); logErr != nil {
-					fmt.Printf("Failed to log Balance account creation error: %v\n", logErr)
+			// Create the Utils.DIDDoc
+			didDoc := Utils.DIDDoc{
+				Address: address,
+				DIDAddress: didAddress,
+				Metadata: nil,
+			}
+
+			// Create the account and propagate the DID
+			if err := Utils.CreateAccountandPropagateDID(didDoc); err != nil {
+				if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance failed to create account and propagate DID: %v", err), "Balance", -1); logErr != nil {
+					fmt.Printf("Failed to log Balance account creation and propagation error: %v\n", logErr)
 				}
-				return nil, createErr
+				return nil, err
 			}
 
 			// Log account creation
