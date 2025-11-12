@@ -141,36 +141,6 @@ var (
 		},
 		[]string{"level", "component"},
 	)
-
-	MainDBConnectionPoolCount = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "p2p_main_db_connection_pool_count",
-		Help: "The total number of main database connections in the pool",
-	})
-
-	MainDBConnectionPoolActive = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "p2p_main_db_connection_pool_active",
-		Help: "The number of active (in-use) main database connections",
-	})
-
-	MainDBConnectionPoolIdle = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "p2p_main_db_connection_pool_idle",
-		Help: "The number of idle main database connections",
-	})
-
-	AccountsDBConnectionPoolCount = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "p2p_accounts_db_connection_pool_count",
-		Help: "The total number of accounts database connections in the pool",
-	})
-
-	AccountsDBConnectionPoolActive = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "p2p_accounts_db_connection_pool_active",
-		Help: "The number of active (in-use) accounts database connections",
-	})
-
-	AccountsDBConnectionPoolIdle = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "p2p_accounts_db_connection_pool_idle",
-		Help: "The number of idle accounts database connections",
-	})
 )
 
 var PeerRemovedCounter = promauto.NewCounterVec(
@@ -190,43 +160,4 @@ func StartMetricsServer(addr string) {
 			fmt.Printf("Error starting metrics server: %v\n", err)
 		}
 	}()
-}
-
-// UpdateMainDBConnectionPoolMetrics updates all main DB connection pool metrics
-func UpdateMainDBConnectionPoolMetrics(total, active, idle int) {
-	MainDBConnectionPoolCount.Set(float64(total))
-	MainDBConnectionPoolActive.Set(float64(active))
-	MainDBConnectionPoolIdle.Set(float64(idle))
-}
-
-// UpdateAccountsDBConnectionPoolMetrics updates all accounts DB connection pool metrics
-func UpdateAccountsDBConnectionPoolMetrics(total, active, idle int) {
-	AccountsDBConnectionPoolCount.Set(float64(total))
-	AccountsDBConnectionPoolActive.Set(float64(active))
-	AccountsDBConnectionPoolIdle.Set(float64(idle))
-}
-
-// Legacy functions for backward compatibility (deprecated)
-func InitlizeMainDBConnectionPoolCount(count int) {
-	MainDBConnectionPoolCount.Set(float64(count))
-}
-
-func InitlizeAccountsDBConnectionPoolCount(count int) {
-	AccountsDBConnectionPoolCount.Set(float64(count))
-}
-
-func IncrementMainDBConnectionPoolCount() {
-	MainDBConnectionPoolCount.Inc()
-}
-
-func DecrementMainDBConnectionPoolCount() {
-	MainDBConnectionPoolCount.Dec()
-}
-
-func IncrementAccountsDBConnectionPoolCount() {
-	AccountsDBConnectionPoolCount.Inc()
-}
-
-func DecrementAccountsDBConnectionPoolCount() {
-	AccountsDBConnectionPoolCount.Dec()
 }

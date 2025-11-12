@@ -59,7 +59,7 @@ JMDN_ARGS=(
   -facade 8545
   -ws 8546
   -chainID 7000700
-  -mempool 34.174.94.172:18001
+  -mempool 34.174.252.23:18001
   -explorer
   -blockgrpc 15055
   -alias "$(hostname)"

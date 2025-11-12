@@ -332,3 +332,7 @@ func GetPeerIDFromJSON() string {
 	fmt.Println("Peer ID from peer.json:", config.PeerID)
 	return config.PeerID
 }
+
+func GetHost() host.Host {
+	return localNode.Host
+}

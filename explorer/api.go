@@ -1,6 +1,7 @@
 package explorer
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"time"
@@ -31,12 +32,12 @@ type ImmuDBServer struct {
 // NewImmuDBServer creates a new ImmuDB API server
 func NewImmuDBServer(enableExplorer bool) (*ImmuDBServer, error) {
 	// Create ImmuDB client
-	defaultdb, err := DB_OPs.GetMainDBConnection()
+	defaultdb, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 	if err != nil {
 		return nil, err
 	}
 
-	accountsdb, err := DB_OPs.GetAccountsConnection()
+	accountsdb, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -56,6 +57,12 @@ func NewImmuDBServer(enableExplorer bool) (*ImmuDBServer, error) {
 	server.setupRoutes()
 
 	return server, nil
+}
+
+func CloseImmuDBServer(server *ImmuDBServer) {
+	DB_OPs.PutMainDBConnection(&server.defaultdb)
+	DB_OPs.PutAccountsConnection(&server.accountsdb)
+	server.Close()
 }
 
 // setupRoutes configures the API routes
@@ -103,10 +110,10 @@ func (s *ImmuDBServer) setupRoutes() {
 		api.GET("/health", s.healthCheck)
 
 		// Get Latest Blocks by count using pagination - max 100 blocks at a time
-		api.GET("/latest/:count", s.getLatestBlock)
+		api.GET("/latest", s.getLatestBlock)
 
 		// Get all the transactions based on the pagination
-		api.GET("/transactions/all", s.listTransactions)
+		// api.GET("/transactions/all", s.listTransactions)
 	}
 
 	// Add a new group for Ethereum JSON-RPC
@@ -131,20 +138,26 @@ func (s *ImmuDBServer) setupRoutes() {
 	// stats api
 	stats := s.router.Group("/api/stats")
 	{
+		stats.GET("/block/latest", s.getLatestBlockStats)
+
 		stats.GET("/", s.getStats)
 	}
 
 	// Address and balance endpoints
 	addresses := s.router.Group("/api/addresses")
 	{
-		// List all addresses with balances
-		addresses.GET("/", s.listAddresses)
-
-		// Get specific address details and balance
-		addresses.GET("/:address", s.getAddressDetails)
-
 		// Get transactions for a specific address
-		addresses.GET("/:address/transactions", s.getAddressTransactions)
+		addresses.GET("/transactions/:address", s.getAddressTransactions)
+	}
+
+	// tramsactions endpoint
+	transactions := s.router.Group("/api/transactions")
+	{
+		// Get all the transactions based on the pagination
+		transactions.GET("/all", s.listTransactions)
+
+		// Get the transactions based on the block numbers from last
+		transactions.GET("/blocks/all", s.listTransactions_fromLastBlock)
 	}
 
 	// Websockets to stream realtime blocks

@@ -81,30 +81,28 @@ type PhaseResult struct {
 
 // Config contains BFT configuration
 type Config struct {
-	MinBuddies         int
-	MaxBuddies         int
-	ByzantineTolerance int
-	PrepareTimeout     time.Duration
-	CommitTimeout      time.Duration
-	RequireSignatures  bool
-	ValidateProofs     bool
-	MaxProofSize       int // cap proof length per commit
+	MinBuddies int
+	MaxBuddies int // unused currently
+	// Note: ByzantineTolerance is auto calc from actual buddy count using ByzantineTolerance(buddyCount) in math.go
+	PrepareTimeout    time.Duration
+	CommitTimeout     time.Duration
+	RequireSignatures bool
+	ValidateProofs    bool
+	MaxProofSize      int // cap proof length per commit
 	// ✅ ADD THESE TWO FIELDS
 	InactivityTimeout time.Duration // How long to wait for new messages before proceeding
-	MinimumVotesRatio float64
 }
 
 // DefaultConfig returns production config
 func DefaultConfig() Config {
 	return Config{
-		MinBuddies:         4,
-		MaxBuddies:         1000,
-		ByzantineTolerance: 0, // Auto-calc
-		PrepareTimeout:     8 * time.Second,
-		CommitTimeout:      8 * time.Second,
-		RequireSignatures:  false,
-		ValidateProofs:     true,
-		MaxProofSize:       256,
+		MinBuddies:        DefaultCommitteeSize,
+		MaxBuddies:        1000,
+		PrepareTimeout:    DefaultPrepareTimeout,
+		CommitTimeout:     DefaultCommitTimeout,
+		RequireSignatures: false,
+		ValidateProofs:    true,
+		MaxProofSize:      MaxPrepareProofSize,
 	}
 }
 

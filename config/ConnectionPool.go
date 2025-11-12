@@ -312,8 +312,8 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 		WithAddress(cp.Address).
 		WithPort(cp.Port).
 		WithDir(State_Path_Hidden).
-		WithMaxRecvMsgSize(1024 * 1024 * 20). // 20MB message size
-		WithDisableIdentityCheck(false).      // Disable identity file to prevent 24-hour expiration
+		WithMaxRecvMsgSize(1024 * 1024 * 200). // 20MB message size
+		WithDisableIdentityCheck(false).       // Disable identity file to prevent 24-hour expiration
 		WithMTLsOptions(
 			client.MTLsOptions{}.WithCertificate(certFile).WithPkey(keyFile).WithClientCAs(caFile).WithServername(cp.Address),
 		)
@@ -398,6 +398,8 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 }
 
 // Put returns a connection to the pool
+// It is safe to call multiple times - if the connection is already in the pool (InUse == false),
+// it will be a no-op to prevent duplicate entries.
 func (p *ConnectionPool) Put(conn *PooledConnection) {
 	if conn == nil {
 		fmt.Println("ConnectionPool.Put() called with nil connection")
@@ -413,6 +415,43 @@ func (p *ConnectionPool) Put(conn *PooledConnection) {
 		return
 	}
 
+	// Check if connection is already in the pool (already returned)
+	// If InUse is false, the connection is already available in the pool
+	if !conn.InUse {
+		// Connection is already in the pool, just update LastUsed
+		conn.LastUsed = time.Now().UTC()
+		p.Logger.Logger.Info("Connection already in pool, updating LastUsed",
+			zap.String(logging.Connection_id, conn.Token),
+			zap.String(logging.Connection_database, conn.Database),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "config.Put"),
+		)
+		return
+	}
+
+	// Check if connection is already in the Connections slice to prevent duplicates
+	for _, existingConn := range p.Connections {
+		if existingConn == conn {
+			// Connection already in pool, just mark as not in use
+			conn.InUse = false
+			conn.LastUsed = time.Now().UTC()
+			p.Logger.Logger.Info("Connection already in pool slice, marking as not in use",
+				zap.String(logging.Connection_id, conn.Token),
+				zap.String(logging.Connection_database, conn.Database),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "config.Put"),
+			)
+			return
+		}
+	}
+
+	// Connection is not in pool, add it
 	conn.InUse = false
 	conn.LastUsed = time.Now().UTC()
 

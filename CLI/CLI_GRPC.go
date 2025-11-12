@@ -8,13 +8,11 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/helper"
-	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	"gossipnode/node"
 	"gossipnode/seed"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 )
@@ -293,57 +291,87 @@ func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 	}, nil
 }
 
+func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStats, error) {
+	if peeraddr == "" {
+		return SyncStats{}, fmt.Errorf("Usage: firstsync <peer_multiaddr> <server|client>")
+	}
+
+	if mode == "" {
+		return SyncStats{}, fmt.Errorf("Usage: firstsync <peer_multiaddr> <server|client>")
+	}
+
+	err := h.checkDBClient()
+	if err != nil {
+		return SyncStats{}, fmt.Errorf("Database client not initialized: %v", err)
+	}
+
+	err = h.checkDIDClient()
+	if err != nil {
+		return SyncStats{}, fmt.Errorf("DID database client not initialized: %v", err)
+	}
+
+	// Parse the multiaddr
+	addr, err := ma.NewMultiaddr(peeraddr)
+	if err != nil {
+		return SyncStats{}, fmt.Errorf("Invalid multiaddress: %v", err)
+	}
+
+	// Extract peer ID from multiaddr
+	addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
+	if err != nil {
+		return SyncStats{}, fmt.Errorf("Failed to extract peer info: %v", err)
+	}
+
+	modeLower := strings.ToLower(mode)
+	if modeLower != "server" && modeLower != "client" {
+		return SyncStats{}, fmt.Errorf("Invalid mode: %s. Must be 'server' or 'client'", mode)
+	}
+
+	fmt.Printf("Starting first sync with peer %s (mode: %s)\n", addrInfo.ID.String(), modeLower)
+	startTime := time.Now().UTC()
+
+	var syncErr error
+	if modeLower == "server" {
+		// Server mode: export and send all data
+		fmt.Println(">>> Running in SERVER mode - exporting all data...")
+		syncErr = h.FastSyncer.FirstSyncServer(addrInfo.ID)
+	} else {
+		// Client mode: receive and load all data
+		fmt.Println(">>> Running in CLIENT mode - receiving all data...")
+		syncErr = h.FastSyncer.FirstSyncClient(addrInfo.ID)
+	}
+
+	if syncErr != nil {
+		return SyncStats{}, fmt.Errorf("First sync failed: %v", syncErr)
+	}
+
+	// Get post-sync states
+	newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+	if err != nil {
+		return SyncStats{}, fmt.Errorf("Failed to get main database state after sync: %v", err)
+	}
+
+	newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
+	if err != nil {
+		return SyncStats{}, fmt.Errorf("Failed to get accounts database state after sync: %v", err)
+	}
+
+	return SyncStats{
+		TimeTaken:     time.Since(startTime),
+		MainState:     *newMainState,
+		AccountsState: *newAccountsState,
+	}, nil
+}
+
 func (h *CommandHandler) HandleGetDID(did string) (*DB_OPs.Account, error) {
 	if did == "" {
 		return nil, fmt.Errorf("Usage: getDID <did>")
 	}
 
-	// It can take DID or Address
-	// if prefix is DID: then its a DID else Account
-	var doc *DB_OPs.Account
-	var err error
-	if strings.HasPrefix(did, DB_OPs.DIDPrefix) {
-		doc, err = DB_OPs.GetAccountByDID(h.DIDClient, did)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to retrieve DID %s: %v", did, err)
-		}
-	} else {
-		addr := common.HexToAddress(did)
-		doc, err = DB_OPs.GetAccount(h.DIDClient, addr)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to retrieve Address %s: %v", did, err)
-		}
+	doc, err := DB_OPs.GetAccountByDID(h.MainClient, did)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to retrieve DID %s: %v", did, err)
 	}
 
 	return doc, nil
-}
-
-func (h *CommandHandler) HandlePropagateDID(did, publicKey, balance string) error {
-	if did == "" || publicKey == "" {
-		return fmt.Errorf("Usage: propagateDID <did> <public_key> [balance]")
-	}
-
-	// Default balance is "0" if not provided
-	if balance == "" {
-		balance = "0"
-	}
-
-	// First create document then propagate
-	err := DB_OPs.CreateAccount(nil, did, common.HexToAddress(publicKey), nil)
-	if err != nil {
-		return fmt.Errorf("Failed to create account: %v", err)
-	}
-
-	Document, err := DB_OPs.GetAccount(nil, common.HexToAddress(publicKey))
-	if err != nil {
-		return fmt.Errorf("Failed to get account: %v", err)
-	}
-
-	// Propagate the DID
-	err = messaging.PropagateDID(h.Node.Host, Document)
-	if err != nil {
-		return fmt.Errorf("Failed to propagate DID: %v", err)
-	}
-
-	return nil
 }

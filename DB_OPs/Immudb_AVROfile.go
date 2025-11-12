@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	hashmap "gossipnode/crdt/HashMap"
@@ -128,6 +129,21 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 
 	var recordsBatch []interface{}
 	processed := 0
+	blockKeysInHashMap := 0
+	blockKeysBackedUp := 0
+	latestBlockInHashMap := false
+	latestBlockBackedUp := false
+	failedBlockKeys := 0
+	failedLatestBlock := false
+
+	// Count block keys in HashMap first
+	for _, key := range keys {
+		if strings.HasPrefix(key, "block:") {
+			blockKeysInHashMap++
+		} else if key == "latest_block" {
+			latestBlockInHashMap = true
+		}
+	}
 
 	for i := 0; i < totalKeys; i += readBatchSize {
 		end := i + readBatchSize
@@ -140,11 +156,34 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 
 		// Process batch of keys
 		for _, key := range batchKeys {
+			isBlockKey := strings.HasPrefix(key, "block:")
+			isLatestBlock := (key == "latest_block")
+
 			resp, err := client.Get(apiCtx, &schema.KeyRequest{Key: []byte(key)})
 			if err != nil {
-				log.Printf("[WARN] Get(%s): %v", key, err)
+				if isBlockKey {
+					failedBlockKeys++
+					log.Printf("[ERROR] Failed to get block key '%s': %v - BLOCK KEY SKIPPED!", key, err)
+				} else if isLatestBlock {
+					failedLatestBlock = true
+					log.Printf("[ERROR] Failed to get latest_block key: %v - latest_block SKIPPED!", err)
+				} else {
+					log.Printf("[WARN] Get(%s): %v", key, err)
+				}
 				continue
 			}
+
+			if isBlockKey {
+				blockKeysBackedUp++
+				if blockKeysBackedUp <= 20 || blockKeysBackedUp%100 == 0 {
+					log.Printf("[INFO] Successfully retrieved block key '%s' (value length: %d) [%d/%d blocks]",
+						key, len(resp.Value), blockKeysBackedUp, blockKeysInHashMap)
+				}
+			} else if isLatestBlock {
+				latestBlockBackedUp = true
+				log.Printf("[INFO] Successfully retrieved latest_block key (value length: %d)", len(resp.Value))
+			}
+
 			record := map[string]interface{}{
 				"Key":      key,
 				"Value":    string(resp.Value),
@@ -177,5 +216,23 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 	}
 
 	log.Printf("Avro export complete. Processed %d/%d keys", processed, totalKeys)
+
+	// Block keys summary
+	if blockKeysInHashMap > 0 || latestBlockInHashMap {
+		log.Printf("=== BLOCK KEYS SUMMARY ===")
+		log.Printf("Block keys in HashMap: %d", blockKeysInHashMap)
+		log.Printf("Block keys successfully backed up: %d", blockKeysBackedUp)
+		log.Printf("Block keys failed/skipped: %d", failedBlockKeys)
+		log.Printf("latest_block in HashMap: %v", latestBlockInHashMap)
+		log.Printf("latest_block successfully backed up: %v", latestBlockBackedUp)
+		log.Printf("latest_block failed/skipped: %v", failedLatestBlock)
+
+		if blockKeysBackedUp < blockKeysInHashMap || (latestBlockInHashMap && !latestBlockBackedUp) {
+			log.Printf("WARNING: Some block keys were not backed up! This will cause blocks to not sync.")
+			log.Printf("Missing: %d block keys, latest_block: %v",
+				blockKeysInHashMap-blockKeysBackedUp, latestBlockInHashMap && !latestBlockBackedUp)
+		}
+	}
+
 	return nil
 }

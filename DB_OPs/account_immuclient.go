@@ -18,24 +18,6 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-const (
-	Prefix    = "address:"
-	DIDPrefix = "did:"
-)
-
-// LOKI_URL will be set conditionally based on whether Loki is enabled
-var LOKI_URL string
-
-const (
-	LOG_FILE        = "ImmuDB.log"
-	LOG_DIR         = "logs"
-	LOKI_BATCH_SIZE = 128 * 1024
-	LOKI_BATCH_WAIT = 1 * time.Second
-	LOKI_TIMEOUT    = 5 * time.Second
-	KEEP_LOGS       = true
-	TOPIC           = "ImmuDB_ImmuClient"
-)
-
 func LoggingStruct() *logging.Logging {
 	return LoggingStructWithLoki(true)
 }
@@ -109,11 +91,15 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 		return fmt.Errorf("DIDAddress and Address cannot be empty")
 	}
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	// Check if we need to get a connection
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to get accounts connection: %w - CreateAccount", err)
 		}
 		shouldReturnConnection = true // We acquired the connection, so we should return it
 
@@ -180,6 +166,10 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 	var AccountDoc *Account
 	var shouldReturnConnection bool = false
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	defer cancel()
+
 	if KeyDoc == nil {
 		return fmt.Errorf("Key document cannot be nil")
 	}
@@ -190,9 +180,9 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 
 	// Try to use connection pool if available, otherwise fall back to traditional approach
 	if PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to get accounts connection: %w - StoreAccount", err)
 		}
 		shouldReturnConnection = true // We acquired the connection, so we should return it
 
@@ -244,7 +234,7 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 
 	// Ensure we're using the accounts database
 	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
-		return fmt.Errorf("failed to ensure accounts database is selected: %w", err)
+		return fmt.Errorf("failed to ensure accounts database is selected: %w - StoreAccount", err)
 	}
 
 	// Marshal the account document
@@ -274,10 +264,6 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 			BoundRef:      true,
 		}}},
 	}
-
-	// Create a fresh context with a timeout (not based on ctx which might be canceled)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	// Execute all operations atomically
 	status, err := ic.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops})
@@ -320,12 +306,17 @@ func BatchCreateAccountsOrdered(PooledConnection *config.PooledConnection, entri
 	if len(entries) == 0 {
 		return fmt.Errorf("entries cannot be empty")
 	}
+
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	var err error
 	var shouldReturnConnection bool
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to get accounts connection: %w", err)
+			return fmt.Errorf("failed to get accounts connection: %w - BatchCreateAccountsOrdered", err)
 		}
 		shouldReturnConnection = true
 	}
@@ -333,7 +324,7 @@ func BatchCreateAccountsOrdered(PooledConnection *config.PooledConnection, entri
 		defer PutAccountsConnection(PooledConnection)
 	}
 	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
-		return fmt.Errorf("failed to select accounts database: %w", err)
+		return fmt.Errorf("failed to select accounts database: %w - BatchCreateAccountsOrdered", err)
 	}
 	ops := make([]*schema.Op, 0, len(entries))
 	for _, e := range entries {
@@ -342,11 +333,9 @@ func BatchCreateAccountsOrdered(PooledConnection *config.PooledConnection, entri
 		}
 		ops = append(ops, &schema.Op{Operation: &schema.Op_Kv{Kv: &schema.KeyValue{Key: []byte(e.Key), Value: e.Value}}})
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	_, err = PooledConnection.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops})
 	if err != nil {
-		return fmt.Errorf("accounts batch operation failed: %w", err)
+		return fmt.Errorf("accounts batch operation failed: %w - BatchCreateAccountsOrdered", err)
 	}
 	return nil
 }
@@ -362,10 +351,17 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 	}
 	var err error
 	var shouldReturnConnection bool
+
+	// Define Function wide context for timeout
+	ctx := context.Background()
+
+	// End the context.Background()
+	defer ctx.Done()
+
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to get accounts connection: %w", err)
+			return fmt.Errorf("failed to get accounts connection: %w - BatchRestoreAccounts", err)
 		}
 		shouldReturnConnection = true
 	}
@@ -373,7 +369,7 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		defer PutAccountsConnection(PooledConnection)
 	}
 	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
-		return fmt.Errorf("failed to select accounts database: %w", err)
+		return fmt.Errorf("failed to select accounts database: %w - BatchRestoreAccounts", err)
 	}
 
 	// Separate address: and did: keys to ensure proper ordering
@@ -403,97 +399,67 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		addressKeysInBatch[e.Key] = true
 	}
 
-	// Build a map of did: entries by their target address key for efficient lookup
+	// Build a map of DID entries grouped by their address key
 	didEntriesByAddress := make(map[string][]struct {
 		Key   string
 		Value []byte
 	})
 	for _, e := range didEntries {
 		var acc Account
-		if err := json.Unmarshal(e.Value, &acc); err != nil {
-			continue
+		if err := json.Unmarshal(e.Value, &acc); err == nil {
+			addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
+			didEntriesByAddress[addrKey] = append(didEntriesByAddress[addrKey], e)
 		}
-		addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
-		didEntriesByAddress[addrKey] = append(didEntriesByAddress[addrKey], e)
 	}
 
 	ops := make([]*schema.Op, 0, len(entries))
 
-	// Process address: keys and create corresponding did: references in the same transaction
+	// Process address: keys first (with LWW logic)
 	for _, e := range addressEntries {
+		var shouldWrite bool = true
 		var incoming Account
-		shouldWrite := true
-
-		// Unmarshal incoming account data from AVRO backup
-		if err := json.Unmarshal(e.Value, &incoming); err != nil {
-			// If unmarshal fails, log and skip this entry
-			PooledConnection.Client.Logger.Logger.Warn("Failed to unmarshal incoming account, skipping",
-				zap.Error(err),
-				zap.String("key", e.Key),
-				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
-			)
-			// Remove from batch map and skip writing
-			delete(addressKeysInBatch, e.Key)
-			continue
-		}
-
-		// Try read existing account for LWW comparison
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		entry, getErr := PooledConnection.Client.Client.Get(ctx, []byte(e.Key))
-		cancel()
-
-		if getErr == nil && entry != nil && len(entry.Value) > 0 {
-			var existing Account
-			if jsonErr := json.Unmarshal(entry.Value, &existing); jsonErr == nil {
-				// LWW: If existing is newer, skip writing to preserve newer balance
-				if existing.UpdatedAt > incoming.UpdatedAt {
-					// Existing is newer - preserve it
-					PooledConnection.Client.Logger.Logger.Info("Skipping account update - existing is newer (LWW)",
-						zap.String("key", e.Key),
-						zap.Int64("existing_updated_at", existing.UpdatedAt),
-						zap.Int64("incoming_updated_at", incoming.UpdatedAt),
-						zap.String("existing_balance", existing.Balance),
-						zap.String("incoming_balance", incoming.Balance),
-						zap.String(logging.Connection_database, config.AccountsDBName),
-						zap.Time(logging.Created_at, time.Now().UTC()),
-						zap.String(logging.Log_file, LOG_FILE),
-						zap.String(logging.Topic, TOPIC),
-						zap.String(logging.Loki_url, LOKI_URL),
-						zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
-					)
-					delete(addressKeysInBatch, e.Key)
-					shouldWrite = false
-				} else if existing.UpdatedAt == incoming.UpdatedAt {
-					// Same timestamp - check if data differs
-					if existing.Balance == incoming.Balance {
-						// Same timestamp and balance - skip to avoid unnecessary write
+		if err := json.Unmarshal(e.Value, &incoming); err == nil {
+			// Try read existing account
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			entry, getErr := PooledConnection.Client.Client.Get(ctx, []byte(e.Key))
+			cancel()
+			if getErr == nil && entry != nil && len(entry.Value) > 0 {
+				var existing Account
+				if jsonErr := json.Unmarshal(entry.Value, &existing); jsonErr == nil {
+					// If existing is newer, skip writing to preserve newer balance
+					if existing.UpdatedAt > incoming.UpdatedAt {
+						// Remove from batch map since we're not writing it
 						delete(addressKeysInBatch, e.Key)
 						shouldWrite = false
+					} else if existing.UpdatedAt == incoming.UpdatedAt {
+						// If timestamps are equal, only update if incoming has different balance
+						// This handles race conditions where sync happens during local update
+						if existing.Balance == incoming.Balance {
+							// Same timestamp and balance - skip to avoid unnecessary write
+							delete(addressKeysInBatch, e.Key)
+							shouldWrite = false
+						}
+						// Same timestamp but different balance - write it (takes newer data)
 					}
-					// Same timestamp but different balance - write it (takes newer data)
-				} else {
 					// incoming.UpdatedAt > existing.UpdatedAt - we write the newer data
-					PooledConnection.Client.Logger.Logger.Info("Updating account - incoming is newer (LWW)",
-						zap.String("key", e.Key),
-						zap.Int64("existing_updated_at", existing.UpdatedAt),
-						zap.Int64("incoming_updated_at", incoming.UpdatedAt),
-						zap.String("existing_balance", existing.Balance),
-						zap.String("incoming_balance", incoming.Balance),
-						zap.String(logging.Connection_database, config.AccountsDBName),
-						zap.Time(logging.Created_at, time.Now().UTC()),
-						zap.String(logging.Log_file, LOG_FILE),
-						zap.String(logging.Topic, TOPIC),
-						zap.String(logging.Loki_url, LOKI_URL),
-						zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
-					)
+					if shouldWrite && existing.UpdatedAt < incoming.UpdatedAt {
+						PooledConnection.Client.Logger.Logger.Info("Updating account - incoming is newer (LWW)",
+							zap.String("key", e.Key),
+							zap.Int64("existing_updated_at", existing.UpdatedAt),
+							zap.Int64("incoming_updated_at", incoming.UpdatedAt),
+							zap.String("existing_balance", existing.Balance),
+							zap.String("incoming_balance", incoming.Balance),
+							zap.String(logging.Connection_database, config.AccountsDBName),
+							zap.Time(logging.Created_at, time.Now().UTC()),
+							zap.String(logging.Log_file, LOG_FILE),
+							zap.String(logging.Topic, TOPIC),
+							zap.String(logging.Loki_url, LOKI_URL),
+							zap.String(logging.Function, "DB_OPs.BatchRestoreAccounts"),
+						)
+					}
 				}
+				// If existing unmarshal fails, proceed with write (shouldWrite = true)
 			}
-			// If existing unmarshal fails, proceed with write (shouldWrite = true)
 		} else {
 			// Account doesn't exist yet - we'll create it
 			PooledConnection.Client.Logger.Logger.Info("Creating new account during sync",
@@ -556,6 +522,48 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		}
 		// If addressKeysInBatch[addrKey] is true, we already processed it above
 	}
+
+	// Process did: keys after address: keys are updated
+	for _, e := range didEntries {
+		// For DID keys, create a reference to the address key
+		var acc Account
+		if err := json.Unmarshal(e.Value, &acc); err != nil {
+			// If payload is not an Account, skip creating ref to avoid corrupt data
+			continue
+		}
+		addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
+
+		// Check if address key is being written in this batch OR already exists in DB
+		// This ensures references are only created for valid address keys
+		shouldCreateRef := false
+		if addressKeysInBatch[addrKey] {
+			// Address key is being written in this batch - safe to create reference
+			shouldCreateRef = true
+		} else {
+			// Check if address key exists in database
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
+			cancel()
+			if getErr == nil {
+				// Address key exists in database - safe to create reference
+				shouldCreateRef = true
+			}
+		}
+
+		if !shouldCreateRef {
+			// Address key doesn't exist - skip creating reference
+			// This can happen if address: key was skipped due to LWW or was never synced
+			continue
+		}
+
+		didKey := []byte(e.Key)
+		ops = append(ops, &schema.Op{Operation: &schema.Op_Ref{Ref: &schema.ReferenceRequest{
+			Key:           didKey,
+			ReferencedKey: []byte(addrKey),
+			AtTx:          0,
+			BoundRef:      true,
+		}}})
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if len(ops) == 0 {
@@ -614,8 +622,12 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 	ic := PooledConnection.Client
 	var shouldReturnConnection bool = false
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get connection from pool: %w", err)
 		}
@@ -647,10 +659,6 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
 		return nil, fmt.Errorf("failed to select accounts DB: %w", err)
 	}
-
-	// Create a fresh context for the read operation
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	entry, err := ic.Client.Get(ctx, key) // Get follows references automatically
 	if err != nil {
@@ -700,10 +708,14 @@ func GetAccountByDID(PooledConnection *config.PooledConnection, did string) (*Ac
 	var err error
 	var shouldReturnConnection bool = false
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get connection from pool: %w", err)
+			return nil, fmt.Errorf("failed to get connection from pool: %w - GetAccountByDID", err)
 		}
 		shouldReturnConnection = true
 	}
@@ -730,10 +742,14 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 	var err error
 	var shouldReturnConnection bool = false
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get connection from pool: %w - GetAccount", err)
 		}
 		shouldReturnConnection = true
 	}
@@ -752,7 +768,6 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 	}
 
 	key := []byte(fmt.Sprintf("%s%s", Prefix, address))
-
 	return loadAccountByKey(PooledConnection, key, "DB_OPs.GetAccount")
 }
 
@@ -760,14 +775,18 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 func UpdateAccountBalance(PooledConnection *config.PooledConnection, address common.Address, newBalance string) error {
 	fmt.Printf("=== DEBUG: UpdateAccountBalance called for address %s with balance %s ===\n", address.Hex(), newBalance)
 
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	var err error
 	var shouldReturnConnection bool = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		fmt.Println("DEBUG: PooledConnection is nil, getting new connection from pool")
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
 			fmt.Printf("DEBUG: Failed to get connection from pool: %v\n", err)
-			return fmt.Errorf("failed to get connection from pool: %w", err)
+			return fmt.Errorf("failed to get connection from pool: %w - UpdateAccountBalance", err)
 		}
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
@@ -856,12 +875,17 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*Account, error) {
 	var err error
 	var shouldReturnConnection bool = false
+
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
 	// Try to use connection pool if available, otherwise fall back to traditional approach
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		// Get a connection from the pool
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get connection from pool: %w", err)
+			return nil, fmt.Errorf("failed to get connection from pool: %w - ListAllAccounts", err)
 		}
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
@@ -899,7 +923,7 @@ func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*A
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.ListAllAccounts"),
 		)
-		return nil, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
+		return nil, fmt.Errorf("failed to ensure accounts database is selected: %w - ListAllAccounts", err)
 	}
 
 	// Get all keys with "account:" prefix
@@ -965,10 +989,16 @@ func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*A
 func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, offset int, extendedPrefix string) ([]*Account, error) {
 	var err error
 	var shouldReturnConnection bool = false
+
+	// Define Function wide context for timeout
+	ctx := context.Background()
+	// End the context.Background()
+	defer ctx.Done()
+
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get connection from pool: %w", err)
+			return nil, fmt.Errorf("failed to get connection from pool: %w - ListAccountsPaginated", err)
 		}
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
@@ -996,7 +1026,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 	ic := PooledConnection.Client
 	// Ensure we're using the accounts database
 	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
-		return nil, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
+		return nil, fmt.Errorf("failed to ensure accounts database is selected: %w - ListAccountsPaginated", err)
 	}
 
 	// Scan for address: keys instead of did: keys
@@ -1019,11 +1049,11 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 			Prefix:  prefix,
 			Limit:   uint64(batchSize),
 			SeekKey: lastKey,
-			Desc:    false,
+			Desc:    true, // latest accounts first
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		scanResult, err := ic.Client.Scan(ctx, scanReq)
+		ReadCtx, ReadCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ReadCancel()
+		scanResult, err := ic.Client.Scan(ReadCtx, scanReq)
 		if err != nil {
 			PooledConnection.Client.Logger.Logger.Error("Failed to scan for accounts",
 				zap.Error(err),
@@ -1034,7 +1064,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 				zap.String(logging.Loki_url, LOKI_URL),
 				zap.String(logging.Function, "DB_OPs.ListAccountsPaginated"),
 			)
-			return nil, fmt.Errorf("failed to scan for accounts: %w", err)
+			return nil, fmt.Errorf("failed to scan for accounts: %w - ListAccountsPaginated", err)
 		}
 
 		if len(scanResult.Entries) == 0 {
@@ -1101,60 +1131,11 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 // CountAccounts returns the total number of Accounts in the database.
 // This implementation scans keys without loading them all into memory.
 func CountAccounts(PooledConnection *config.PooledConnection) (int, error) {
-	// Ensure we're using the accounts database, which also handles reconnections.
-	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
-		return 0, fmt.Errorf("failed to ensure accounts database is selected: %w", err)
+	count, err := CountBuilder{}.GetAccountsDBCount(Prefix)
+	if err != nil {
+		return 0, err
 	}
-	ic := PooledConnection.Client
-	var totalKeys int
-	batchSize := 1000 // How many keys to fetch from the DB at a time
-	var lastKey []byte
-
-	for {
-		// Create a fresh context for the scan operation
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		req := &schema.ScanRequest{
-			Prefix:  []byte(Prefix),
-			Limit:   uint64(batchSize),
-			SeekKey: lastKey,
-			Desc:    false,
-		}
-		scanResult, err := ic.Client.Scan(ctx, req)
-		cancel()
-
-		if err != nil {
-			ic.Logger.Logger.Error("Failed to scan for Accounts count",
-				zap.Error(err),
-				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.CountAccounts"),
-			)
-			return 0, fmt.Errorf("failed to scan for Accounts count: %w", err)
-		}
-
-		count := len(scanResult.Entries)
-		totalKeys += count
-
-		if count < batchSize {
-			break // Reached the end of the keys.
-		}
-
-		// Prepare for the next batch scan.
-		lastKey = scanResult.Entries[count-1].Key
-	}
-	ic.Logger.Logger.Info("Successfully retrieved Accounts count",
-		zap.Int(logging.Count, totalKeys),
-		zap.String(logging.Connection_database, config.AccountsDBName),
-		zap.Time(logging.Created_at, time.Now().UTC()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, LOKI_URL),
-		zap.String(logging.Function, "DB_OPs.CountAccounts"),
-	)
-	return totalKeys, nil
+	return count, nil
 }
 
 // GetTransactionsByDID retrieves all transactions associated with a given DID
@@ -1165,11 +1146,16 @@ func CountAccounts(PooledConnection *config.PooledConnection) (int, error) {
 func GetTransactionsByAccount(PooledConnection *config.PooledConnection, accountAddr *common.Address) ([]*config.Transaction, error) {
 	var err error
 	var shouldReturnConnection bool = false
+
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		// Use MAIN database connection since transactions are stored in main DB
-		PooledConnection, err = GetMainDBConnection()
+		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get main DB connection from pool: %w", err)
+			return nil, fmt.Errorf("failed to get main DB connection from pool: %w - GetTransactionsByAccount", err)
 		}
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
@@ -1277,80 +1263,171 @@ func isTransactionInvolvingAccount(tx config.Transaction, accountAddr *common.Ad
 	return false
 }
 
-// GetTransactionHashes retrieves transaction hashes with pagination
+// GetTransactionHashes retrieves transaction hashes with pagination (DEPRECATED - use GetTransactionsPaginated)
+// This function is kept for backward compatibility but loads all hashes into memory
 func GetTransactionHashes(PooledConnection *config.PooledConnection, offset, limit int) ([]string, int, error) {
-	var err error
-	var shouldReturnConnection bool = false
-	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountsConnection()
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to get connection from pool: %w", err)
-		}
-		shouldReturnConnection = true
-		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
-			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.GetTransactionHashes"),
-		)
-	}
-	mainDBClient := PooledConnection.Client
-
-	if shouldReturnConnection {
-		defer func() {
-			mainDBClient.Logger.Logger.Info("Client Connection is returned to the Pool",
-				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.GetTransactionHashes"),
-			)
-			PutAccountsConnection(PooledConnection)
-		}()
-	}
-
-	// Get total count first
-	allHashes, err := getAllTransactionHashes(PooledConnection)
+	// Use the new database-level pagination function
+	transactions, total, err := GetTransactionsPaginated(PooledConnection, offset, limit)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	total := len(allHashes)
-
-	// Apply pagination
-	if offset >= total {
-		return []string{}, total, nil
+	// Extract hashes from transactions
+	hashes := make([]string, len(transactions))
+	for i, tx := range transactions {
+		hashes[i] = tx.Hash.Hex() // Convert common.Hash to hex string
 	}
 
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-
-	return allHashes[offset:end], total, nil
+	return hashes, total, nil
 }
 
-// getAllTransactionHashes gets all transaction hashes (cached)
-func getAllTransactionHashes(mainDBClient *config.PooledConnection) ([]string, error) {
-	// Use the existing GetAllKeys helper for robustness
-	keys, err := GetAllKeys(mainDBClient, DEFAULT_PREFIX_TX)
-	if err != nil {
-		return nil, err
-	}
+// GetTransactionsPaginated retrieves transactions with database-level pagination
+// This uses ImmuDB Scan with SeekKey to paginate at the database level, avoiding loading all transactions into memory
+func GetTransactionsPaginated(PooledConnection *config.PooledConnection, offset, limit int) ([]*config.Transaction, int, error) {
+	var err error
+	var shouldReturnConnection bool = false
 
-	// Extract just the transaction hashes from the keys
-	var hashes []string
-	for _, key := range keys {
-		// Key is in format "tx:<hash>", so we take everything after "tx:"
-		if len(key) > 3 {
-			hashes = append(hashes, key[3:])
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Transactions are stored in MAIN database, not accounts DB
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to get main DB connection from pool: %w - GetTransactionsPaginated", err)
 		}
+		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetTransactionsPaginated"),
+		)
+	}
+	ic := PooledConnection.Client
+
+	if shouldReturnConnection {
+		defer func() {
+			ic.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetTransactionsPaginated"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
 	}
 
-	return hashes, nil
+	// Get total count efficiently (without loading all transactions)
+	// Use the existing CountTransactions function from immuclient.go
+	total, err := CountTransactions(PooledConnection)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count transactions: %w", err)
+	}
+
+	// If offset is beyond total, return empty result
+	if offset >= total {
+		return []*config.Transaction{}, total, nil
+	}
+
+	// Scan for transactions with database-level pagination
+	prefix := []byte(DEFAULT_PREFIX_TX) // "tx:"
+	var transactions []*config.Transaction
+	batchSize := 1000 // Scan in batches
+	keysScanned := 0
+	var lastKey []byte
+
+	for len(transactions) < limit {
+		// Get a batch of keys from database
+		scanReq := &schema.ScanRequest{
+			Prefix:  prefix,
+			Limit:   uint64(batchSize),
+			SeekKey: lastKey,
+			Desc:    true, // latest transactions first
+		}
+
+		scanCtx, scanCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		scanResult, err := ic.Client.Scan(scanCtx, scanReq)
+		scanCancel()
+
+		if err != nil {
+			ic.Logger.Logger.Error("Failed to scan for transactions",
+				zap.Error(err),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetTransactionsPaginated"),
+			)
+			return nil, 0, fmt.Errorf("failed to scan for transactions: %w", err)
+		}
+
+		if len(scanResult.Entries) == 0 {
+			break // No more keys
+		}
+
+		// Process the batch
+		for _, entry := range scanResult.Entries {
+			if keysScanned >= offset {
+				// Extract transaction hash from key (format: "tx:<hash>")
+				keyStr := string(entry.Key)
+				if len(keyStr) > len(DEFAULT_PREFIX_TX) {
+					txHash := keyStr[len(DEFAULT_PREFIX_TX):]
+
+					// Fetch the full transaction
+					tx, err := GetTransactionByHash(PooledConnection, txHash)
+					if err != nil {
+						ic.Logger.Logger.Warn("Skipping transaction due to fetch error",
+							zap.Error(err),
+							zap.String("txHash", txHash),
+							zap.String(logging.Connection_database, config.DBName),
+							zap.Time(logging.Created_at, time.Now().UTC()),
+							zap.String(logging.Log_file, LOG_FILE),
+							zap.String(logging.Topic, TOPIC),
+							zap.String(logging.Loki_url, LOKI_URL),
+							zap.String(logging.Function, "DB_OPs.GetTransactionsPaginated"),
+						)
+						keysScanned++
+						continue
+					}
+
+					transactions = append(transactions, tx)
+					if len(transactions) >= limit {
+						break
+					}
+				}
+			}
+			keysScanned++
+		}
+
+		if len(scanResult.Entries) < batchSize {
+			break // No more keys to fetch
+		}
+
+		// Prepare for next batch
+		lastKey = scanResult.Entries[len(scanResult.Entries)-1].Key
+	}
+
+	ic.Logger.Logger.Info("Successfully retrieved paginated transactions",
+		zap.Int(logging.Count, len(transactions)),
+		zap.Int("requested_limit", limit),
+		zap.Int("offset", offset),
+		zap.Int("total", total),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetTransactionsPaginated"),
+	)
+
+	return transactions, total, nil
 }
 
 // ensureAccountsDBSelected makes sure we're using the accounts database
@@ -1442,7 +1519,7 @@ func reconnectToAccountsDB(PooledConnection *config.PooledConnection) error {
 	opts := client.DefaultOptions().
 		WithAddress(config.DBAddress).
 		WithPort(config.DBPort).
-		WithMaxRecvMsgSize(1024 * 1024 * 20) // 20MB message size
+		WithMaxRecvMsgSize(1024 * 1024 * 200) // 20MB message size
 
 	// Create context with timeout for the connection attempt
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

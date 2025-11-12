@@ -52,9 +52,6 @@ func NewBuddyService(
 ) *BuddyService {
 
 	config := DefaultConfig()
-	// Extend timeouts slightly for real network latency
-	config.PrepareTimeout = 10 * time.Second
-	config.CommitTimeout = 10 * time.Second
 
 	return &BuddyService{
 		buddyID:      buddyID,
