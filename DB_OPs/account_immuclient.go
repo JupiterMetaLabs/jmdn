@@ -1263,6 +1263,157 @@ func isTransactionInvolvingAccount(tx config.Transaction, accountAddr *common.Ad
 	return false
 }
 
+// GetTransactionsByAccountPaginated retrieves paginated transactions for a given account address
+// This implementation scans blocks in reverse order (latest first) and stops early once it has
+// collected enough transactions for the requested page, making it much faster than GetTransactionsByAccount
+// for accounts with many transactions.
+// Returns: transactions for the requested page, total count (if available), and error
+func GetTransactionsByAccountPaginated(PooledConnection *config.PooledConnection, accountAddr *common.Address, offset, limit int) ([]*config.Transaction, int, error) {
+	var err error
+	var shouldReturnConnection bool = false
+
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		// Use MAIN database connection since transactions are stored in main DB
+		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to get main DB connection from pool: %w - GetTransactionsByAccountPaginated", err)
+		}
+		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetTransactionsByAccountPaginated"),
+		)
+	}
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetTransactionsByAccountPaginated"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
+
+	ic := PooledConnection.Client
+
+	// Get the latest block number
+	latestBlockNumber, err := GetLatestBlockNumber(PooledConnection)
+	if err != nil {
+		ic.Logger.Logger.Error("Failed to get latest block number",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetTransactionsByAccountPaginated"),
+		)
+		return nil, 0, fmt.Errorf("failed to get latest block number: %w", err)
+	}
+
+	// Calculate how many transactions we need to collect
+	// We need: offset + limit transactions total
+	transactionsNeeded := offset + limit
+
+	var allMatchingTxs []*config.Transaction
+	batchSize := uint64(100)         // Process 100 blocks at a time
+	maxBlocksToScan := uint64(10000) // Safety limit
+	blocksScanned := uint64(0)
+
+	// Start from latest block and go backwards (reverse order)
+	// This ensures we get the most recent transactions first
+	for currentBlock := latestBlockNumber; currentBlock > 0 && len(allMatchingTxs) < transactionsNeeded && blocksScanned < maxBlocksToScan; {
+		// Determine the batch range (going backwards)
+		var startBlock uint64
+		if currentBlock >= batchSize {
+			startBlock = currentBlock - batchSize + 1
+		} else {
+			startBlock = 0
+		}
+
+		// Process current batch of blocks (in reverse order)
+		for i := currentBlock; i >= startBlock && len(allMatchingTxs) < transactionsNeeded; i-- {
+			block, err := GetZKBlockByNumber(PooledConnection, i)
+			if err != nil {
+				ic.Logger.Logger.Warn("Error retrieving block, skipping",
+					zap.Uint64("block_number", i),
+					zap.Error(err),
+					zap.String(logging.Connection_database, config.DBName),
+					zap.Time(logging.Created_at, time.Now().UTC()),
+					zap.String(logging.Log_file, LOG_FILE),
+					zap.String(logging.Topic, TOPIC),
+					zap.String(logging.Loki_url, LOKI_URL),
+					zap.String(logging.Function, "DB_OPs.GetTransactionsByAccountPaginated"),
+				)
+				continue
+			}
+
+			// Check each transaction in the current block (in reverse order within block)
+			// Process transactions in reverse to maintain chronological order (newest first)
+			for j := len(block.Transactions) - 1; j >= 0 && len(allMatchingTxs) < transactionsNeeded; j-- {
+				tx := block.Transactions[j]
+				// Check if the transaction involves the given account
+				if isTransactionInvolvingAccount(tx, accountAddr) {
+					// Create a copy of the transaction to avoid referencing the loop variable
+					txCopy := tx
+					allMatchingTxs = append(allMatchingTxs, &txCopy)
+				}
+			}
+
+			blocksScanned++
+		}
+
+		// Move to next batch (going backwards)
+		if currentBlock >= batchSize {
+			currentBlock = currentBlock - batchSize
+		} else {
+			break
+		}
+	}
+
+	// If we don't have enough transactions, we've reached the end
+	total := len(allMatchingTxs)
+
+	// Extract only the transactions for the requested page
+	var paginatedTxs []*config.Transaction
+	if offset < total {
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		paginatedTxs = allMatchingTxs[offset:end]
+	}
+
+	ic.Logger.Logger.Info("Successfully retrieved paginated transactions for account",
+		zap.String("account", accountAddr.Hex()),
+		zap.Int("returned_count", len(paginatedTxs)),
+		zap.Int("total_found", total),
+		zap.Int("offset", offset),
+		zap.Int("limit", limit),
+		zap.Uint64("blocks_scanned", blocksScanned),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetTransactionsByAccountPaginated"),
+	)
+
+	return paginatedTxs, total, nil
+}
+
 // GetTransactionHashes retrieves transaction hashes with pagination (DEPRECATED - use GetTransactionsPaginated)
 // This function is kept for backward compatibility but loads all hashes into memory
 func GetTransactionHashes(PooledConnection *config.PooledConnection, offset, limit int) ([]string, int, error) {
