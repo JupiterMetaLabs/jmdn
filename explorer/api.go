@@ -139,20 +139,15 @@ func (s *ImmuDBServer) setupRoutes() {
 	stats := s.router.Group("/api/stats")
 	{
 		stats.GET("/block/latest", s.getLatestBlockStats)
+
 		stats.GET("/", s.getStats)
 	}
 
 	// Address and balance endpoints
 	addresses := s.router.Group("/api/addresses")
 	{
-		// List all addresses with balances
-		addresses.GET("/", s.listAddresses)
-
-		// Get specific address details and balance
-		addresses.GET("/:address", s.getAddressDetails)
-
 		// Get transactions for a specific address
-		addresses.GET("/:address/transactions", s.getAddressTransactions)
+		addresses.GET("/transactions/:address", s.getAddressTransactions)
 	}
 
 	// Websockets to stream realtime blocks
