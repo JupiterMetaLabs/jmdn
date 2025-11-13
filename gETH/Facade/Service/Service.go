@@ -157,13 +157,13 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 
 			// Create new account with zero balance
 			// We need to provide a DID address, so we'll use the address as DID for now
-			didAddress := fmt.Sprintf("%s:%s:%s", DB_OPs.DIDPrefix, network, address.Hex())
+			didAddress := fmt.Sprintf("%s%s:%s", DB_OPs.DIDPrefix, network, address.Hex())
 
 			// Create the Utils.DIDDoc
 			didDoc := Utils.DIDDoc{
-				Address: address,
+				Address:    address,
 				DIDAddress: didAddress,
-				Metadata: nil,
+				Metadata:   nil,
 			}
 
 			// Create the account and propagate the DID

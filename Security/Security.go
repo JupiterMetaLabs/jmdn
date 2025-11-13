@@ -510,10 +510,7 @@ func CheckBalance(tx *config.Transaction, Conn *config.PooledConnection) (bool, 
 	if !ok {
 		return false, fmt.Errorf("failed to convert From balance from string to big.Int: invalid big.Int %q (base 10)", From.Balance)
 	}
-
-	// Multiply by 10^9 to convert to wei if needed
-	multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(9), nil)
-	FromBalance = new(big.Int).Mul(FromBalance, multiplier)
+	fmt.Println("From Balance: ", FromBalance)
 
 	gasLimit, ok := new(big.Int).SetString(strconv.FormatUint(tx.GasLimit, 10), 10)
 	if !ok {

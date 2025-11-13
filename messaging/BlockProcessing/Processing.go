@@ -407,7 +407,6 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 
 	// Calculate gas fee (gasLimit * gasPrice / 1,000,000,000)
 	gasFeeToDeduct := new(big.Int).Mul(gasLimit, parsedTx.EffectiveGasFee)
-	gasFeeToDeduct = new(big.Int).Div(gasFeeToDeduct, big.NewInt(1000000000000000000))
 
 	// Transaction value should remain in Wei for balance calculations
 	// parsedTx.ValueBig is already in Wei, no conversion needed
@@ -416,7 +415,12 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	totalDeduction := new(big.Int).Add(parsedTx.ValueBig, gasFeeToDeduct)
 	fmt.Println("Total deduction: ", totalDeduction.String())
 	// Split the gas fee between coinbase and ZKVM
+	// Calculate half and remainder to avoid losing 1 wei in corner cases
 	halfGasFee := new(big.Int).Div(gasFeeToDeduct, big.NewInt(2))
+	remainder := new(big.Int).Mod(gasFeeToDeduct, big.NewInt(2))
+	// coinbase gets halfGasFee, ZKVM gets halfGasFee + remainder (to account for odd wei)
+	zkvmGasFee := new(big.Int).Set(halfGasFee)
+	coinbaseGasFee := new(big.Int).Add(halfGasFee, remainder)
 
 	accountsClient.Client.Logger.Logger.Info("Transaction Amount Calculated",
 		zap.Time(logging.Created_at, time.Now().UTC()),
@@ -517,10 +521,10 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	}
 
 	// Debugging
-	fmt.Println(">>>>>> Added amount to recipient:", halfGasFee.String(), "with address", tx.To.Hex())
+	fmt.Println(">>>>>> Added amount to recipient:", parsedTx.ValueBig.String(), "with address", tx.To.Hex())
 
 	// 3. Split gas fee between coinbase and ZKVM
-	if err := addToRecipient(coinbaseAddr, halfGasFee.String(), accountsClient); err != nil {
+	if err := addToRecipient(coinbaseAddr, coinbaseGasFee.String(), accountsClient); err != nil {
 		// Rollback previous operations
 		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
 		for _, accounts := range rollbackAccounts {
@@ -553,9 +557,9 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	}
 
 	// Debugging
-	fmt.Println(">>>>>> Added amount to Coinbase:", halfGasFee.String(), "with address", coinbaseAddr.Hex())
+	fmt.Println(">>>>>> Added amount to Coinbase:", coinbaseGasFee.String(), "with address", coinbaseAddr.Hex())
 
-	if err := addToRecipient(zkvmAddr, halfGasFee.String(), accountsClient); err != nil {
+	if err := addToRecipient(zkvmAddr, zkvmGasFee.String(), accountsClient); err != nil {
 		// Rollback previous operations
 		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
 		for _, accounts := range rollbackAccounts {
@@ -588,7 +592,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	}
 
 	// Debugging
-	fmt.Println(">>>>>> Added amount to ZKVM:", halfGasFee.String(), "with address", zkvmAddr.Hex())
+	fmt.Println(">>>>>> Added amount to ZKVM:", zkvmGasFee.String(), "with address", zkvmAddr.Hex())
 
 	// Mark transaction as fully processed - this is the key that prevents double processing
 	if err := DB_OPs.Create(accountsClient, txKey, time.Now().UTC().Unix()); err != nil {
