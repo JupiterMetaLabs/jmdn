@@ -60,111 +60,37 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 		normalizedHash = "0x" + hash
 	}
 
-	// FIRST: Try to get the receipt/transaction (Transaction found case)
-	// Try to get the receipt directly from storage
-	receiptKey := fmt.Sprintf("%s%s", DEFAULT_PREFIX_TX, normalizedHash)
-	receiptBytes, err := Read(mainDBClient, receiptKey)
-	if err == nil && len(receiptBytes) > 0 {
-		// Receipt exists, unmarshal it
-		var receipt config.Receipt
-		if err := json.Unmarshal(receiptBytes, &receipt); err != nil {
-			mainDBClient.Client.Logger.Logger.Error("Failed to unmarshal receipt",
+	// FIRST: Check if transaction exists (similar to TxByHash pattern)
+	// Get the transaction to verify it exists
+	tx, err := GetTransactionByHash(mainDBClient, normalizedHash)
+	if err == nil && tx != nil {
+		// Transaction found - get the block and generate receipt
+		block, err := GetTransactionBlock(mainDBClient, normalizedHash)
+		if err != nil {
+			mainDBClient.Client.Logger.Logger.Error("Failed to get block for receipt generation",
 				zap.Error(err),
 				zap.String("txHash", normalizedHash),
 				zap.String(logging.Connection_database, config.DBName),
 				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Log_file, "ImmuDB.log"),
+				zap.String(logging.Topic, "ImmuDB_ImmuClient"),
+				zap.String(logging.Loki_url, logging.GetLokiURL()),
 				zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
 			)
-			return nil, fmt.Errorf("failed to unmarshal receipt: %w", err)
+			return nil, fmt.Errorf("failed to get block for receipt generation: %w", err)
 		}
 
-		mainDBClient.Client.Logger.Logger.Info("Successfully retrieved receipt from storage",
-			zap.String("txHash", normalizedHash),
-			zap.Uint64("blockNumber", receipt.BlockNumber),
-			zap.Uint64("status", receipt.Status),
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, "ImmuDB.log"),
-			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
-			zap.String(logging.Loki_url, logging.GetLokiURL()),
-			zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
-		)
-		return &receipt, nil
-	}
-
-	// Receipt doesn't exist in storage, try to generate it from transaction data
-	mainDBClient.Client.Logger.Logger.Info("Receipt not found in storage, generating from transaction data",
-		zap.String("txHash", normalizedHash),
-		zap.Time(logging.Created_at, time.Now().UTC()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, LOKI_URL),
-		zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
-	)
-
-	// Get the block containing this transaction (similar to eth_getTransactionByHash)
-	// We get the block once and find both the transaction and its index in a single iteration
-	block, err := GetTransactionBlock(mainDBClient, normalizedHash)
-	if err == nil {
-		// Block found - find transaction and its index in a single pass
-		var tx *config.Transaction
+		// Find transaction index in the block
 		var txIndex uint64 = 0
 		for i, blockTx := range block.Transactions {
 			if blockTx.Hash.Hex() == normalizedHash {
-				tx = &blockTx
 				txIndex = uint64(i)
 				break
 			}
 		}
 
-		if tx == nil {
-			mainDBClient.Client.Logger.Logger.Error("Transaction not found in block",
-				zap.String("txHash", normalizedHash),
-				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, "ImmuDB.log"),
-				zap.String(logging.Topic, "ImmuDB_ImmuClient"),
-				zap.String(logging.Loki_url, logging.GetLokiURL()),
-				zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
-			)
-			return nil, fmt.Errorf("transaction not found")
-		}
-
 		// Generate receipt from transaction and block data
 		receipt := generateReceiptFromTransaction(tx, block, txIndex)
-
-		// Store the generated receipt for future use
-		receiptBytes, err = json.Marshal(receipt)
-		if err != nil {
-			mainDBClient.Client.Logger.Logger.Error("Failed to marshal generated receipt",
-				zap.Error(err),
-				zap.String("txHash", normalizedHash),
-				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, "ImmuDB.log"),
-				zap.String(logging.Topic, "ImmuDB_ImmuClient"),
-				zap.String(logging.Loki_url, logging.GetLokiURL()),
-				zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
-			)
-			// Don't fail the operation, just log the error
-		} else {
-			// Store the receipt
-			if err := Create(mainDBClient, receiptKey, receiptBytes); err != nil {
-				mainDBClient.Client.Logger.Logger.Error("Failed to store generated receipt",
-					zap.Error(err),
-					zap.String("txHash", normalizedHash),
-					zap.String(logging.Connection_database, config.DBName),
-					zap.Time(logging.Created_at, time.Now().UTC()),
-					zap.String(logging.Log_file, LOG_FILE),
-					zap.String(logging.Topic, TOPIC),
-					zap.String(logging.Loki_url, LOKI_URL),
-					zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
-				)
-				// Don't fail the operation, just log the error
-			}
-		}
 
 		mainDBClient.Client.Logger.Logger.Info("Successfully generated and returned receipt",
 			zap.String("txHash", normalizedHash),
