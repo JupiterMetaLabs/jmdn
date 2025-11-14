@@ -60,10 +60,30 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 		normalizedHash = "0x" + hash
 	}
 
-	// First, check if transaction is currently processing
+	// First, check if transaction is currently processing and read its value
 	processingKey := fmt.Sprintf("tx_processing:%s", normalizedHash)
 	processing, err := Exists(mainDBClient, processingKey)
 	if err == nil && processing {
+		// Read the value to check if it's -1
+		processingValueBytes, readErr := Read(mainDBClient, processingKey)
+		if readErr == nil && len(processingValueBytes) > 0 {
+			var processingValue int64
+			if jsonErr := json.Unmarshal(processingValueBytes, &processingValue); jsonErr == nil {
+				if processingValue == -1 {
+					mainDBClient.Client.Logger.Logger.Info("Transaction processing status is -1, returning null result",
+						zap.String("txHash", normalizedHash),
+						zap.Int64("processingValue", processingValue),
+						zap.Time(logging.Created_at, time.Now().UTC()),
+						zap.String(logging.Log_file, LOG_FILE),
+						zap.String(logging.Topic, TOPIC),
+						zap.String(logging.Loki_url, LOKI_URL),
+						zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
+					)
+					// Return nil receipt to indicate result should be null
+					return nil, nil
+				}
+			}
+		}
 		mainDBClient.Client.Logger.Logger.Info("Transaction is currently processing, receipt not available yet",
 			zap.String("txHash", normalizedHash),
 			zap.Time(logging.Created_at, time.Now().UTC()),
@@ -119,10 +139,10 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 		zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
 	)
 
-	// Get the transaction to generate receipt
+	// Get the transaction to generate receipt (similar to eth_getTransactionByHash)
 	tx, err := GetTransactionByHash(mainDBClient, normalizedHash)
 	if err != nil {
-		mainDBClient.Client.Logger.Logger.Error("Failed to get transaction for receipt generation",
+		mainDBClient.Client.Logger.Logger.Error("Transaction not found",
 			zap.Error(err),
 			zap.String("txHash", normalizedHash),
 			zap.String(logging.Connection_database, config.DBName),
@@ -132,7 +152,8 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 			zap.String(logging.Loki_url, logging.GetLokiURL()),
 			zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
 		)
-		return nil, fmt.Errorf("failed to get transaction for receipt generation: %w", err)
+		// Return error that will be formatted as "transaction not found" in JSON-RPC
+		return nil, fmt.Errorf("transaction not found")
 	}
 
 	// Get the block containing this transaction

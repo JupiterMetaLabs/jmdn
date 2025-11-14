@@ -374,37 +374,88 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 	// Get the receipt from the database
 	receipt, err := DB_OPs.GetReceiptByHash(nil, hash)
 	if err != nil {
+		// Check if error is "transaction not found"
+		if err.Error() == "transaction not found" {
+			if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash: transaction not found: %s", hash), "ReceiptByHash", -1); logErr != nil {
+				fmt.Printf("Failed to log ReceiptByHash error: %v\n", logErr)
+			}
+			// Return error that will be formatted as JSON-RPC error with code -32000
+			return nil, fmt.Errorf("transaction not found")
+		}
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash failed: %v", err), "ReceiptByHash", -1); logErr != nil {
 			fmt.Printf("Failed to log ReceiptByHash error: %v\n", logErr)
 		}
 		return nil, err
 	}
 
-	// Convert the receipt to a map for JSON serialization
+	// If receipt is nil and no error, it means tx_processing was -1
+	// Return nil to indicate result should be null in JSON-RPC response
+	if receipt == nil {
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash: tx_processing=-1 for %s, returning null", hash), "ReceiptByHash", 1); logErr != nil {
+			fmt.Printf("Failed to log ReceiptByHash: %v\n", logErr)
+		}
+		return nil, nil
+	}
+
+	// Get the transaction to extract from and to addresses
+	tx, txErr := DB_OPs.GetTransactionByHash(nil, hash)
+	if txErr != nil {
+		// Log but don't fail - we can still return receipt without from/to
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash: failed to get transaction for from/to: %v", txErr), "ReceiptByHash", -1); logErr != nil {
+			fmt.Printf("Failed to log: %v\n", logErr)
+		}
+	}
+
+	// Convert logs to JSON-RPC format
+	logs := make([]map[string]any, len(receipt.Logs))
+	for i, log := range receipt.Logs {
+		topics := make([]string, len(log.Topics))
+		for j, topic := range log.Topics {
+			topics[j] = topic.Hex() // Already has 0x prefix
+		}
+
+		logs[i] = map[string]any{
+			"address":          log.Address.Hex(), // Already has 0x prefix
+			"topics":           topics,
+			"data":             "0x" + fmt.Sprintf("%x", log.Data),
+			"blockNumber":      "0x" + fmt.Sprintf("%x", log.BlockNumber),
+			"transactionHash":  log.TxHash.Hex(), // Already has 0x prefix
+			"transactionIndex": "0x" + fmt.Sprintf("%x", log.TxIndex),
+			"blockHash":        log.BlockHash.Hex(), // Already has 0x prefix
+			"logIndex":         "0x" + fmt.Sprintf("%x", log.LogIndex),
+			"removed":          log.Removed,
+		}
+	}
+
+	// Convert the receipt to a map for JSON serialization in JSON-RPC format
 	receiptMap := map[string]any{
-		"transactionHash":   receipt.TxHash.Hex(),
-		"blockHash":         receipt.BlockHash.Hex(),
-		"blockNumber":       fmt.Sprintf("%x", receipt.BlockNumber),
-		"transactionIndex":  fmt.Sprintf("%x", receipt.TransactionIndex),
-		"status":            fmt.Sprintf("%x", receipt.Status),
-		"type":              fmt.Sprintf("%x", receipt.Type),
-		"gasUsed":           fmt.Sprintf("%x", receipt.GasUsed),
-		"cumulativeGasUsed": fmt.Sprintf("%x", receipt.CumulativeGasUsed),
-		"logs":              Utils.ConvertLogsToMap(receipt.Logs),
-		"logsBloom":         fmt.Sprintf("%x", receipt.LogsBloom),
+		"transactionHash":   receipt.TxHash.Hex(), // Already has 0x prefix
+		"transactionIndex":  "0x" + fmt.Sprintf("%x", receipt.TransactionIndex),
+		"blockHash":         receipt.BlockHash.Hex(), // Already has 0x prefix
+		"blockNumber":       "0x" + fmt.Sprintf("%x", receipt.BlockNumber),
+		"cumulativeGasUsed": "0x" + fmt.Sprintf("%x", receipt.CumulativeGasUsed),
+		"gasUsed":           "0x" + fmt.Sprintf("%x", receipt.GasUsed),
+		"contractAddress":   nil,
+		"logs":              logs,
+		"logsBloom":         "0x" + fmt.Sprintf("%x", receipt.LogsBloom),
+		"status":            "0x" + fmt.Sprintf("%x", receipt.Status),
+	}
+
+	// Add from and to addresses from transaction
+	if tx != nil {
+		if tx.From != nil {
+			receiptMap["from"] = tx.From.Hex() // Already has 0x prefix
+		}
+		if tx.To != nil {
+			receiptMap["to"] = tx.To.Hex() // Already has 0x prefix
+		} else {
+			receiptMap["to"] = nil
+		}
 	}
 
 	// Add contract address if present
 	if receipt.ContractAddress != nil {
-		receiptMap["contractAddress"] = receipt.ContractAddress.Hex()
-	}
-
-	// Add ZK-specific fields
-	if len(receipt.ZKProof) > 0 {
-		receiptMap["zkProof"] = fmt.Sprintf("%x", receipt.ZKProof)
-	}
-	if receipt.ZKStatus != "" {
-		receiptMap["zkStatus"] = receipt.ZKStatus
+		receiptMap["contractAddress"] = receipt.ContractAddress.Hex() // Already has 0x prefix
 	}
 
 	// Log success
