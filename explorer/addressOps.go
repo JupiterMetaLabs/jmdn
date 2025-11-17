@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"gossipnode/DB_OPs"
@@ -65,11 +66,11 @@ func (s *ImmuDBServer) getAddressTransactions(c *gin.Context) {
 		limit = 100 // Maximum limit to prevent excessive memory usage
 	}
 
-	// Get transactions for this address using the main database connection
-	// GetTransactionsByAccount scans all blocks to find transactions involving this account
-	transactions, err := DB_OPs.GetTransactionsByAccount(&s.defaultdb, &address)
+	// Count total transactions via the address index prefix for pagination metadata
+	addressPrefix := DB_OPs.PREFIX_ADDR_TX + strings.ToLower(address.Hex()) + ":"
+	total, err := DB_OPs.CountBuilder{}.GetMainDBCount(addressPrefix)
 	if err != nil {
-		s.defaultdb.Client.Logger.Logger.Error("Failed to get transactions for address",
+		s.defaultdb.Client.Logger.Logger.Error("Failed to count transactions for address",
 			zap.Error(err),
 			zap.String("address", addressParam),
 			zap.Time(logging.Created_at, time.Now().UTC()),
@@ -78,12 +79,10 @@ func (s *ImmuDBServer) getAddressTransactions(c *gin.Context) {
 			zap.String(logging.Loki_url, config.LOKI_URL),
 			zap.String(logging.Function, "Explorer.getAddressTransactions"),
 		)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch transactions"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count transactions"})
 		return
 	}
 
-	// Apply pagination to the results
-	total := len(transactions)
 	if total == 0 {
 		c.JSON(http.StatusOK, gin.H{
 			"transactions": []*config.Transaction{},
@@ -99,25 +98,48 @@ func (s *ImmuDBServer) getAddressTransactions(c *gin.Context) {
 		return
 	}
 
+	// Determine how many indexed entries need to be fetched to satisfy this page
+	required := page * limit
+	if required > total {
+		required = total
+	}
+	if required < limit {
+		required = limit
+	}
+
+	transactions, err := DB_OPs.GetTransactionsByAddressIndexed(&s.defaultdb, address, required)
+	if err != nil {
+		s.defaultdb.Client.Logger.Logger.Error("Failed to get transactions for address",
+			zap.Error(err),
+			zap.String("address", addressParam),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Explorer.getAddressTransactions"),
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch transactions"})
+		return
+	}
+
 	totalPages := int(math.Ceil(float64(total) / float64(limit)))
 	offset := (page - 1) * limit
 
 	// Ensure offset is within bounds
-	if offset >= total {
-		offset = total - 1
-		if offset < 0 {
-			offset = 0
-		}
+	if offset >= len(transactions) {
+		offset = len(transactions)
 	}
 
 	// Extract paginated slice
 	var paginatedTransactions []*config.Transaction
-	if offset < total {
+	if offset < len(transactions) {
 		end := offset + limit
-		if end > total {
-			end = total
+		if end > len(transactions) {
+			end = len(transactions)
 		}
 		paginatedTransactions = transactions[offset:end]
+	} else {
+		paginatedTransactions = []*config.Transaction{}
 	}
 
 	// Return paginated response
