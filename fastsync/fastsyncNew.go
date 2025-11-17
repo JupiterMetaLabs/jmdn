@@ -159,8 +159,8 @@ func (fs *FastSync) getKeysBatchIncremental(db *config.PooledConnection, prefix 
 		SeekKey: seekKey,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := context.Background()
+	defer ctx.Done()
 
 	scanResult, err := ic.Client.Scan(ctx, scanReq)
 	if err != nil {

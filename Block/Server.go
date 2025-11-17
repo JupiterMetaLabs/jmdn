@@ -356,7 +356,7 @@ func processZKBlock(c *gin.Context) {
 
 func processZKBlockNoConsensus(c *gin.Context) {
 	fmt.Println("=== DEBUG: processZKBlock API called ===")
-	ctx, cancel := context.WithTimeout(context.Background(), 14*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	// Parse the block data from the request
@@ -493,7 +493,7 @@ func getBlockByNumber(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
@@ -529,7 +529,7 @@ func getBlockByNumber(c *gin.Context) {
 func getBlockByHash(c *gin.Context) {
 	blockHash := c.Param("hash")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
@@ -555,7 +555,7 @@ func getBlockByHash(c *gin.Context) {
 // getTransactionInfo gets detailed information about a transaction
 func getTransactionInfo(c *gin.Context) {
 	txHash := c.Param("hash")
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
@@ -598,7 +598,7 @@ func getTransactionInfo(c *gin.Context) {
 
 // getLatestBlock returns information about the latest block
 func getLatestBlock(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
