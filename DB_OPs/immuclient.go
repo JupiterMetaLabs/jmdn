@@ -1907,8 +1907,9 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 		return fmt.Errorf("failed to update latest block: %w", err)
 	}
 
-	// Store each transaction hash -> block number mapping for lookups
-	for _, tx := range block.Transactions {
+	// Store each transaction hash -> block number mapping for lookups alongside address index entries
+	for txIndex := range block.Transactions {
+		tx := block.Transactions[txIndex]
 		txKey := fmt.Sprintf("%s%s", DEFAULT_PREFIX_TX, tx.Hash)
 		mainDBClient.Client.Logger.Logger.Info("Storing tx mapping",
 			zap.String("txkey", txKey),
@@ -1922,6 +1923,20 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 
 		if err := Create(mainDBClient, txKey, block.BlockNumber); err != nil {
 			return fmt.Errorf("failed to store tx mapping for %s: %w", tx.Hash, err)
+		}
+
+		// Create address-scoped pointers for faster address queries
+		if err := indexTransactionAddresses(mainDBClient, block.BlockNumber, &block.Transactions[txIndex], txIndex); err != nil {
+			mainDBClient.Client.Logger.Logger.Error("Failed to index transaction for address lookup",
+				zap.Error(err),
+				zap.String("txhash", tx.Hash.Hex()),
+				zap.Uint64("blockNumber", block.BlockNumber),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Function, "DB_OPs.StoreZKBlock"),
+			)
+			return fmt.Errorf("failed to index transaction %s for addresses: %w", tx.Hash.Hex(), err)
 		}
 	}
 
