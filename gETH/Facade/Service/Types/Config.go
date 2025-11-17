@@ -1,8 +1,8 @@
 package Types
 
 import (
-	"math/big"
 	"gossipnode/config"
+	"math/big"
 )
 
 // Withdrawal represents EIP-4895 withdrawal
@@ -14,13 +14,13 @@ type Withdrawal struct {
 }
 
 type Block struct {
-	Header          *BlockHeader   `json:"header"`
-	Transactions    []*Tx		   `json:"transactions"`
-	Ommers          [][]byte       `json:"ommers"`
-	WithdrawalsRoot []byte         `json:"withdrawalsroot"`
-	Withdrawals     []*Withdrawal  `json:"withdrawals"`
-	BlobGasUsed     []byte         `json:"blobgasused"`
-	ExcessBlobGas   []byte         `json:"excessblobgas"`
+	Header          *BlockHeader  `json:"header"`
+	Transactions    []*Tx         `json:"transactions"`
+	Ommers          [][]byte      `json:"ommers"`
+	WithdrawalsRoot []byte        `json:"withdrawalsroot"`
+	Withdrawals     []*Withdrawal `json:"withdrawals"`
+	BlobGasUsed     []byte        `json:"blobgasused"`
+	ExcessBlobGas   []byte        `json:"excessblobgas"`
 }
 
 type BlockHeader struct {
@@ -35,31 +35,35 @@ type BlockHeader struct {
 	Timestamp           uint64 `json:"timestamp"`
 	MixHashOrPrevRandao []byte `json:"mixhashorprevrandao"` // nil
 	BaseFee             []byte `json:"basefee"`
-	BlobGasUsedField    uint64 `json:"blobgasusedfield"` // nil
+	BlobGasUsedField    uint64 `json:"blobgasusedfield"`   // nil
 	ExcessBlobGasField  uint64 `json:"excessblobgasfield"` // nil
 	ExtraData           []byte `json:"extradata"`
-	Hash                []byte `json:"hash"` 
+	Hash                []byte `json:"hash"`
 }
 
 type Tx struct {
-	Hash                 []byte      `json:"hash"`
-	From                 []byte      `json:"from"`
-	To                   []byte      `json:"to"`
-	Input                []byte      `json:"input"`
-	Nonce                uint64      `json:"nonce"`
-	Value                []byte      `json:"value"`
-	Gas                  uint64      `json:"gas"`
-	GasPrice             []byte      `json:"gasprice"`
-	Type                 uint32      `json:"type"`
-	R                    []byte      `json:"r"`
-	S                    []byte      `json:"s"`
-	V                    uint32      `json:"v"`
+	Hash                 []byte             `json:"hash"`
+	From                 []byte             `json:"from"`
+	To                   []byte             `json:"to"`
+	Input                []byte             `json:"input"`
+	Nonce                uint64             `json:"nonce"`
+	Value                []byte             `json:"value"`
+	Gas                  uint64             `json:"gas"`
+	GasPrice             []byte             `json:"gasprice"`
+	Type                 uint32             `json:"type"`
+	R                    []byte             `json:"r"`
+	S                    []byte             `json:"s"`
+	V                    uint32             `json:"v"`
 	AccessList           *config.AccessList `json:"accesslist"`
-	MaxFeePerGas         []byte      `json:"maxfeepergas"`
-	MaxPriorityFeePerGas []byte      `json:"maxpriorityfeepergas"`
-	MaxFeePerBlobGas     []byte      `json:"maxfeeperblobgas"`
-	BlobVersionedHashes  [][]byte    `json:"blobversionedhashes"`
+	MaxFeePerGas         []byte             `json:"maxfeepergas"`
+	MaxPriorityFeePerGas []byte             `json:"maxpriorityfeepergas"`
+	MaxFeePerBlobGas     []byte             `json:"maxfeeperblobgas"`
+	BlobVersionedHashes  [][]byte           `json:"blobversionedhashes"`
+	BlockNumber          *uint64            `json:"blocknumber,omitempty"`
+	BlockHash            []byte             `json:"blockhash,omitempty"`
+	TransactionIndex     *uint64            `json:"transactionindex,omitempty"`
 }
+
 // Log represents an Ethereum log with complete fields
 type Log struct {
 	Address     []byte   `json:"address"`

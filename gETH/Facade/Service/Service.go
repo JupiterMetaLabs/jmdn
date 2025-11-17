@@ -340,8 +340,23 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Pass the context to the database operation
-	ZKTx, err := DB_OPs.GetTransactionByHash(nil, hash)
+	// Normalize the hash (remove 0x prefix if present)
+	normalizedHash := hash
+	if len(hash) >= 2 && hash[0:2] == "0x" {
+		normalizedHash = hash[2:]
+	}
+
+	// Get the block containing this transaction
+	block, err := DB_OPs.GetTransactionBlock(nil, normalizedHash)
+	if err != nil {
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash failed to get block: %v", err), "TxByHash", -1); logErr != nil {
+			fmt.Printf("Failed to log TxByHash error: %v\n", logErr)
+		}
+		return nil, err
+	}
+
+	// Get the transaction
+	ZKTx, err := DB_OPs.GetTransactionByHash(nil, normalizedHash)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash failed: %v", err), "TxByHash", -1); logErr != nil {
 			fmt.Printf("Failed to log TxByHash error: %v\n", logErr)
@@ -357,6 +372,28 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 		}
 		return nil, err
 	}
+
+	// Find the transaction index in the block
+	var txIndex *uint64
+	for i := range block.Transactions {
+		TempBlockHash := block.Transactions[i].Hash.String()
+		// Normalize the block hash for comparison (remove 0x prefix if present)
+		normalizedBlockHash := TempBlockHash
+		if len(TempBlockHash) >= 2 && TempBlockHash[0:2] == "0x" {
+			normalizedBlockHash = TempBlockHash[2:]
+		}
+		if normalizedBlockHash == normalizedHash {
+			idx := uint64(i)
+			txIndex = &idx
+			break
+		}
+	}
+
+	// Populate block information
+	blockNumber := block.BlockNumber
+	tx.BlockNumber = &blockNumber
+	tx.BlockHash = block.BlockHash.Bytes()
+	tx.TransactionIndex = txIndex
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash returned to the client: %s", hash), "TxByHash", 1); logErr != nil {
@@ -439,6 +476,31 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 		"logs":              logs,
 		"logsBloom":         "0x" + fmt.Sprintf("%x", receipt.LogsBloom),
 		"status":            "0x" + fmt.Sprintf("%x", receipt.Status),
+	}
+
+	// Add transaction type (from receipt or transaction, default to "0x0")
+	txType := receipt.Type
+	if txType == 0 && tx != nil {
+		txType = uint8(tx.Type)
+	}
+	receiptMap["type"] = "0x" + fmt.Sprintf("%x", txType)
+
+	// Add effectiveGasPrice from transaction
+	if tx != nil {
+		var effectiveGasPrice *big.Int
+		if tx.GasPrice != nil {
+			// For legacy (Type 0) and EIP-2930 (Type 1), use GasPrice
+			effectiveGasPrice = tx.GasPrice
+		} else if tx.MaxFee != nil {
+			// For EIP-1559 (Type 2), use MaxFee as effectiveGasPrice
+			// In a full implementation, this would be min(MaxFee, baseFee + MaxPriorityFee)
+			// but for simplicity, we use MaxFee
+			effectiveGasPrice = tx.MaxFee
+		}
+
+		if effectiveGasPrice != nil {
+			receiptMap["effectiveGasPrice"] = "0x" + effectiveGasPrice.Text(16)
+		}
 	}
 
 	// Add from and to addresses from transaction
