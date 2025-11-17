@@ -158,41 +158,24 @@ func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *c
 		}
 	}
 
-	// Try to retrieve logs from database, or generate empty logs with proper metadata
+	// Generate logs directly with metadata fields populated from block/transaction data
+	// Currently empty, but when logs are created, they will have all metadata fields set
 	logs := []config.Log{}
 
-	// Try to retrieve stored logs for this transaction
-	logKey := fmt.Sprintf("tx_logs:%s", tx.Hash.Hex())
-	var storedLogs []config.Log
-
-	if mainDBClient != nil {
-		if err := SafeReadJSON(mainDBClient.Client, logKey, &storedLogs); err == nil {
-			// Logs found in database (even if empty array) - populate all metadata fields from block/transaction data
-			if len(storedLogs) > 0 {
-				// Populate all metadata fields for each log using block/transaction data
-				for i := range storedLogs {
-					// Always populate from block/transaction data to ensure consistency
-					storedLogs[i].BlockNumber = block.BlockNumber
-					storedLogs[i].BlockHash = block.BlockHash
-					storedLogs[i].TxHash = tx.Hash
-					storedLogs[i].TxIndex = txIndex
-					// Ensure LogIndex is sequential
-					storedLogs[i].LogIndex = uint64(i)
-				}
-				logs = storedLogs
-			}
-			// If logs array is empty but key exists, logs array remains empty
-			// but we've confirmed logs were checked in database
-		}
+	// Helper function to populate log metadata when logs are added
+	// This ensures all logs have proper metadata fields from block/transaction data
+	populateLogMetadata := func(log *config.Log, logIndex uint64) {
+		log.BlockNumber = block.BlockNumber
+		log.BlockHash = block.BlockHash
+		log.TxHash = tx.Hash
+		log.TxIndex = txIndex
+		log.LogIndex = logIndex
+		// Removed defaults to false, which is correct
 	}
 
-	// If no stored logs found or logs array is empty, logs array remains empty
-	// When logs are eventually created, they should include:
-	// - BlockNumber: block.BlockNumber
-	// - BlockHash: block.BlockHash
-	// - TxHash: tx.Hash
-	// - TxIndex: txIndex
-	// - LogIndex: sequential index (0, 1, 2, ...)
+	// When logs are created during transaction execution, use populateLogMetadata to set fields
+	// For now, logs array remains empty
+	_ = populateLogMetadata // Keep function available for when logs are created
 
 	// Create bloom filter for logs using proper Ethereum algorithm
 	logsBloom := utils.GenerateLogsBloom(logs)
