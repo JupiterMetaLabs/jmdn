@@ -90,15 +90,16 @@ func (s *ServiceImpl) GetTransactionCount(ctx context.Context, addr string, bloc
 	defer cancel()
 
 	// Return the transaction count for the given address of latest block
-	address := Utils.ConvertAddress(addr)
-	Transactions, err := DB_OPs.GetTransactionsByAccount(nil, &address)
+	Transactions, err := DB_OPs.CountTransactions(nil)
 	if err != nil {
 		return nil, err
 	}
 
 	// fmt.Println("Transactions: ", Transactions)
+	// Convert the Transactions to big.Int
+	TransactionsBigInt := big.NewInt(int64(Transactions))
 
-	return big.NewInt(int64(len(Transactions))), nil
+	return TransactionsBigInt, nil
 }
 
 func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error) {

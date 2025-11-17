@@ -736,7 +736,43 @@ func CountTransactionsByAccount(accountAddr *common.Address) (int64, error) {
 }
 
 // CountTransactions counts the total number of transactions in the database.
-func CountTransactions(mainDBClient *config.PooledConnection) (int, error) {
+func CountTransactions(PooledConnection *config.PooledConnection) (int, error) {
+
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var err error
+	var shouldReturnConnection bool = false
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		// If no connection then quickly pull connection from the pool
+		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
+		if err != nil {
+			return -1, fmt.Errorf("failed to get database connection: %w - CountTransactions", err)
+		}
+		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.CountTransactions"),
+		)
+	}
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.CountTransactions"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
 	// This function will scan for keys with the "tx:" prefix and count them.
 	// It's more efficient than fetching all keys.
 	count, err := CountBuilder{}.GetMainDBCount(DEFAULT_PREFIX_TX)

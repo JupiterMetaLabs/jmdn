@@ -55,7 +55,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 	case "eth_getTransactionCount":
 		if len(req.Params) < 2 {
 			resp, _ := invalidParams(req, "missing address and block tag")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			// log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 			return resp, nil
 		}
 		addr, _ := req.Params[0].(string)
@@ -63,11 +63,12 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		count, err := handler.service.GetTransactionCount(ctx, addr, block)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			// log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+count.Text(16), nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		fmt.Println("Called RPC Call -- eth_getTransactionCount")
+		// log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
 	case "eth_getBlockByNumber":
