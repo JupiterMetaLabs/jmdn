@@ -1263,6 +1263,195 @@ func isTransactionInvolvingAccount(tx config.Transaction, accountAddr *common.Ad
 	return false
 }
 
+// CheckNonceDuplicate checks if a transaction with the same (from, nonce) already exists
+// Returns true if a duplicate is found, false otherwise
+// This function checks confirmed transactions in blocks
+func CheckNonceDuplicate(PooledConnection *config.PooledConnection, fromAddr *common.Address, nonce uint64) (bool, error) {
+	var err error
+	var shouldReturnConnection bool = false
+
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		// Use MAIN database connection since transactions are stored in main DB
+		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
+		if err != nil {
+			return false, fmt.Errorf("failed to get main DB connection from pool: %w - CheckNonceDuplicate", err)
+		}
+		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.CheckNonceDuplicate"),
+		)
+	}
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.CheckNonceDuplicate"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
+
+	ic := PooledConnection.Client
+
+	// Get all transactions for the from address
+	transactions, err := GetTransactionsByAccount(PooledConnection, fromAddr)
+	if err != nil {
+		ic.Logger.Logger.Error("Failed to get transactions for nonce check",
+			zap.Error(err),
+			zap.String("from_address", fromAddr.Hex()),
+			zap.Uint64("nonce", nonce),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.CheckNonceDuplicate"),
+		)
+		return false, fmt.Errorf("failed to get transactions for nonce check: %w", err)
+	}
+
+	// Check if any transaction has the same nonce and from address
+	for _, tx := range transactions {
+		if tx.From != nil && *tx.From == *fromAddr && tx.Nonce == nonce {
+			ic.Logger.Logger.Warn("Duplicate nonce found",
+				zap.String("from_address", fromAddr.Hex()),
+				zap.Uint64("nonce", nonce),
+				zap.String("existing_tx_hash", tx.Hash.Hex()),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.CheckNonceDuplicate"),
+			)
+			return true, nil
+		}
+	}
+
+	ic.Logger.Logger.Info("No duplicate nonce found",
+		zap.String("from_address", fromAddr.Hex()),
+		zap.Uint64("nonce", nonce),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.CheckNonceDuplicate"),
+	)
+
+	return false, nil
+}
+
+// GetLatestNonce retrieves the latest (highest) nonce for a given account address
+// Returns the latest nonce and an error if any
+// If no transactions exist for the account, returns 0 (indicating first transaction)
+func GetLatestNonce(PooledConnection *config.PooledConnection, fromAddr *common.Address) (uint64, error) {
+	var err error
+	var shouldReturnConnection bool = false
+
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		// Use MAIN database connection since transactions are stored in main DB
+		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get main DB connection from pool: %w - GetLatestNonce", err)
+		}
+		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetLatestNonce"),
+		)
+	}
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetLatestNonce"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
+
+	ic := PooledConnection.Client
+
+	// Get all transactions for the from address
+	transactions, err := GetTransactionsByAccount(PooledConnection, fromAddr)
+	if err != nil {
+		ic.Logger.Logger.Error("Failed to get transactions for latest nonce check",
+			zap.Error(err),
+			zap.String("from_address", fromAddr.Hex()),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetLatestNonce"),
+		)
+		return 0, fmt.Errorf("failed to get transactions for latest nonce check: %w", err)
+	}
+
+	// If no transactions exist, return 0 (first transaction will have nonce 0 or 1)
+	if len(transactions) == 0 {
+		ic.Logger.Logger.Info("No transactions found for account, returning 0 as latest nonce",
+			zap.String("from_address", fromAddr.Hex()),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetLatestNonce"),
+		)
+		return 0, nil
+	}
+
+	// Find the maximum nonce among transactions from this address
+	var latestNonce uint64 = 0
+	for _, tx := range transactions {
+		if tx.From != nil && *tx.From == *fromAddr {
+			if tx.Nonce > latestNonce {
+				latestNonce = tx.Nonce
+			}
+		}
+	}
+
+	ic.Logger.Logger.Info("Successfully retrieved latest nonce for account",
+		zap.String("from_address", fromAddr.Hex()),
+		zap.Uint64("latest_nonce", latestNonce),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.GetLatestNonce"),
+	)
+
+	return latestNonce, nil
+}
+
 // GetTransactionsByAccountPaginated retrieves paginated transactions for a given account address
 // This implementation scans blocks in reverse order (latest first) and stops early once it has
 // collected enough transactions for the requested page, making it much faster than GetTransactionsByAccount
