@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 )
 
@@ -158,24 +159,25 @@ func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *c
 		}
 	}
 
-	// Generate logs directly with metadata fields populated from block/transaction data
-	// Currently empty, but when logs are created, they will have all metadata fields set
+	// Generate logs directly when function is called
+	// Logs are generated with metadata populated from block/transaction data
 	logs := []config.Log{}
 
-	// Helper function to populate log metadata when logs are added
-	// This ensures all logs have proper metadata fields from block/transaction data
-	populateLogMetadata := func(log *config.Log, logIndex uint64) {
-		log.BlockNumber = block.BlockNumber
-		log.BlockHash = block.BlockHash
-		log.TxHash = tx.Hash
-		log.TxIndex = txIndex
-		log.LogIndex = logIndex
-		// Removed defaults to false, which is correct
+	// Create a log entry with all required fields populated
+	if tx.From != nil {
+		log := config.Log{
+			BlockNumber: block.BlockNumber,
+			BlockHash:   block.BlockHash,
+			TxHash:      tx.Hash,
+			TxIndex:     txIndex,
+			LogIndex:    txIndex,
+			Data:        []byte{0},
+			Topics:      []common.Hash{},
+			Removed:     false,
+			Address:     *tx.From,
+		}
+		logs = append(logs, log)
 	}
-
-	// When logs are created during transaction execution, use populateLogMetadata to set fields
-	// For now, logs array remains empty
-	_ = populateLogMetadata // Keep function available for when logs are created
 
 	// Create bloom filter for logs using proper Ethereum algorithm
 	logsBloom := utils.GenerateLogsBloom(logs)
