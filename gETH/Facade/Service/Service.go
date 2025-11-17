@@ -96,7 +96,7 @@ func (s *ServiceImpl) GetTransactionCount(ctx context.Context, addr string, bloc
 		return nil, err
 	}
 
-	fmt.Println("Transactions: ", Transactions)
+	// fmt.Println("Transactions: ", Transactions)
 
 	return big.NewInt(int64(len(Transactions))), nil
 }
