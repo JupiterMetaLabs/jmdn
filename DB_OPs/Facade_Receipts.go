@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 )
 
@@ -90,7 +91,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 		}
 
 		// Generate receipt from transaction and block data
-		receipt := generateReceiptFromTransaction(tx, block, txIndex)
+		receipt := generateReceiptFromTransaction(mainDBClient, tx, block, txIndex)
 
 		mainDBClient.Client.Logger.Logger.Info("Successfully generated and returned receipt",
 			zap.String("txHash", normalizedHash),
@@ -147,7 +148,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 }
 
 // generateReceiptFromTransaction creates a receipt from transaction and block data
-func generateReceiptFromTransaction(tx *config.Transaction, block *config.ZKBlock, txIndex uint64) *config.Receipt {
+func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *config.Transaction, block *config.ZKBlock, txIndex uint64) *config.Receipt {
 	// Calculate cumulative gas used up to this transaction using actual gas consumption
 	var cumulativeGasUsed uint64 = 0
 	for i := uint64(0); i <= txIndex; i++ {
@@ -158,8 +159,44 @@ func generateReceiptFromTransaction(tx *config.Transaction, block *config.ZKBloc
 		}
 	}
 
-	// Generate logs (empty for now, but could be populated from contract execution)
+	// Try to retrieve logs from database, or generate empty logs with proper metadata
 	logs := []config.Log{}
+
+	// Try to retrieve stored logs for this transaction
+	logKey := fmt.Sprintf("tx_logs:%s", tx.Hash.Hex())
+	var storedLogs []config.Log
+	if mainDBClient != nil {
+		if err := SafeReadJSON(mainDBClient.Client, logKey, &storedLogs); err == nil && len(storedLogs) > 0 {
+			// Logs found in database - populate missing metadata fields
+			for i := range storedLogs {
+				// Ensure all metadata fields are populated from block/transaction data
+				if storedLogs[i].BlockNumber == 0 {
+					storedLogs[i].BlockNumber = block.BlockNumber
+				}
+				if (storedLogs[i].BlockHash == common.Hash{}) {
+					storedLogs[i].BlockHash = block.BlockHash
+				}
+				if (storedLogs[i].TxHash == common.Hash{}) {
+					storedLogs[i].TxHash = tx.Hash
+				}
+				if storedLogs[i].TxIndex == 0 {
+					storedLogs[i].TxIndex = txIndex
+				}
+				// LogIndex should already be set, but ensure it's sequential
+				if storedLogs[i].LogIndex == 0 {
+					storedLogs[i].LogIndex = uint64(i)
+				}
+			}
+			logs = storedLogs
+		}
+	}
+	// If no stored logs found, logs array remains empty
+	// When logs are eventually created, they should include:
+	// - BlockNumber: block.BlockNumber
+	// - BlockHash: block.BlockHash
+	// - TxHash: tx.Hash
+	// - TxIndex: txIndex
+	// - LogIndex: sequential index (0, 1, 2, ...)
 
 	// Create bloom filter for logs using proper Ethereum algorithm
 	logsBloom := utils.GenerateLogsBloom(logs)
