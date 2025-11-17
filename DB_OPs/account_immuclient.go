@@ -1271,8 +1271,8 @@ func CheckNonceDuplicate(PooledConnection *config.PooledConnection, fromAddr *co
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := context.Background()
+	defer ctx.Done()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		// Use MAIN database connection since transactions are stored in main DB

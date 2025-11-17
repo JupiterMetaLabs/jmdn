@@ -90,8 +90,8 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	return true, nil
 }
 func ThreeChecks(tx *config.Transaction) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := context.Background()
+	defer ctx.Done()
 	// Initilize the Accounts DB connection pool
 	Conn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 	if err != nil {
@@ -232,10 +232,7 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 	}
 
 	// Fourth Check Nonce Validation
-	// Get main DB connection for nonce check (transactions are stored in main DB)
-	ctxMain, cancelMain := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelMain()
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctxMain)
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
 		Conn.Client.Logger.Logger.Error("Failed to get main DB connection for nonce check",
 			zap.Error(err),
