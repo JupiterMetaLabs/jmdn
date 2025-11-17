@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 )
 
@@ -165,32 +164,29 @@ func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *c
 	// Try to retrieve stored logs for this transaction
 	logKey := fmt.Sprintf("tx_logs:%s", tx.Hash.Hex())
 	var storedLogs []config.Log
+
 	if mainDBClient != nil {
-		if err := SafeReadJSON(mainDBClient.Client, logKey, &storedLogs); err == nil && len(storedLogs) > 0 {
-			// Logs found in database - populate missing metadata fields
-			for i := range storedLogs {
-				// Ensure all metadata fields are populated from block/transaction data
-				if storedLogs[i].BlockNumber == 0 {
+		if err := SafeReadJSON(mainDBClient.Client, logKey, &storedLogs); err == nil {
+			// Logs found in database (even if empty array) - populate all metadata fields from block/transaction data
+			if len(storedLogs) > 0 {
+				// Populate all metadata fields for each log using block/transaction data
+				for i := range storedLogs {
+					// Always populate from block/transaction data to ensure consistency
 					storedLogs[i].BlockNumber = block.BlockNumber
-				}
-				if (storedLogs[i].BlockHash == common.Hash{}) {
 					storedLogs[i].BlockHash = block.BlockHash
-				}
-				if (storedLogs[i].TxHash == common.Hash{}) {
 					storedLogs[i].TxHash = tx.Hash
-				}
-				if storedLogs[i].TxIndex == 0 {
 					storedLogs[i].TxIndex = txIndex
-				}
-				// LogIndex should already be set, but ensure it's sequential
-				if storedLogs[i].LogIndex == 0 {
+					// Ensure LogIndex is sequential
 					storedLogs[i].LogIndex = uint64(i)
 				}
+				logs = storedLogs
 			}
-			logs = storedLogs
+			// If logs array is empty but key exists, logs array remains empty
+			// but we've confirmed logs were checked in database
 		}
 	}
-	// If no stored logs found, logs array remains empty
+
+	// If no stored logs found or logs array is empty, logs array remains empty
 	// When logs are eventually created, they should include:
 	// - BlockNumber: block.BlockNumber
 	// - BlockHash: block.BlockHash
