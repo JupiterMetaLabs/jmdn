@@ -340,10 +340,10 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Normalize the hash (remove 0x prefix if present)
+	// Normalize hash - ensure it has 0x prefix (keys are stored with 0x prefix)
 	normalizedHash := hash
-	if len(hash) >= 2 && hash[0:2] == "0x" {
-		normalizedHash = hash[2:]
+	if !strings.HasPrefix(strings.ToLower(hash), "0x") {
+		normalizedHash = "0x" + hash
 	}
 
 	// Get the block containing this transaction
@@ -376,13 +376,8 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 	// Find the transaction index in the block
 	var txIndex *uint64
 	for i := range block.Transactions {
-		TempBlockHash := block.Transactions[i].Hash.String()
-		// Normalize the block hash for comparison (remove 0x prefix if present)
-		normalizedBlockHash := TempBlockHash
-		if len(TempBlockHash) >= 2 && TempBlockHash[0:2] == "0x" {
-			normalizedBlockHash = TempBlockHash[2:]
-		}
-		if normalizedBlockHash == normalizedHash {
+		TempBlockHash := block.Transactions[i].Hash.Hex() // Hex() returns with 0x prefix
+		if TempBlockHash == normalizedHash {
 			idx := uint64(i)
 			txIndex = &idx
 			break
