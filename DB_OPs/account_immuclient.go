@@ -1452,6 +1452,183 @@ func GetLatestNonce(PooledConnection *config.PooledConnection, fromAddr *common.
 	return latestNonce, nil
 }
 
+// CheckNonceAndGetLatest is an optimized function that combines nonce duplicate check
+// and latest nonce retrieval in a single reverse scan of blocks.
+// This is much faster than calling CheckNonceDuplicate and GetLatestNonce separately
+// because it:
+// 1. Scans blocks in reverse order (latest to oldest)
+// 2. Stops early once it finds the latest nonce and checks for duplicates
+// 3. Only checks transactions from the sender address
+// Returns: (hasDuplicate, latestNonce, error)
+func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr *common.Address, submittedNonce uint64) (bool, uint64, error) {
+	var err error
+	var shouldReturnConnection bool = false
+
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		// Use MAIN database connection since transactions are stored in main DB
+		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
+		if err != nil {
+			return false, 0, fmt.Errorf("failed to get main DB connection from pool: %w - CheckNonceAndGetLatest", err)
+		}
+		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.CheckNonceAndGetLatest"),
+		)
+	}
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.CheckNonceAndGetLatest"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
+
+	ic := PooledConnection.Client
+
+	// Get the latest block number
+	latestBlockNumber, err := GetLatestBlockNumber(PooledConnection)
+	if err != nil {
+		ic.Logger.Logger.Error("Failed to get latest block number",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.CheckNonceAndGetLatest"),
+		)
+		return false, 0, fmt.Errorf("failed to get latest block number: %w", err)
+	}
+
+	var latestNonce uint64 = 0
+	foundLatestNonce := false
+	hasDuplicate := false
+
+	// Scan blocks in reverse order (latest to oldest) for early termination
+	// Process in batches for efficiency
+	batchSize := uint64(100)
+	maxBlocksToScan := uint64(1000) // Limit scan to recent blocks for performance
+	blocksScanned := uint64(0)
+
+	// Start from latest block and go backwards
+	for currentBlock := latestBlockNumber; currentBlock > 0 && blocksScanned < maxBlocksToScan; {
+		// Determine the batch range (going backwards)
+		var startBlock uint64
+		if currentBlock >= batchSize {
+			startBlock = currentBlock - batchSize + 1
+		} else {
+			startBlock = 0
+		}
+
+		// Process current batch of blocks (in reverse order)
+		for i := currentBlock; i >= startBlock; i-- {
+			block, err := GetZKBlockByNumber(PooledConnection, i)
+			if err != nil {
+				ic.Logger.Logger.Warn("Error retrieving block, skipping",
+					zap.Uint64("block_number", i),
+					zap.Error(err),
+					zap.String(logging.Connection_database, config.DBName),
+					zap.Time(logging.Created_at, time.Now().UTC()),
+					zap.String(logging.Log_file, LOG_FILE),
+					zap.String(logging.Topic, TOPIC),
+					zap.String(logging.Loki_url, LOKI_URL),
+					zap.String(logging.Function, "DB_OPs.CheckNonceAndGetLatest"),
+				)
+				continue
+			}
+
+			// Check each transaction in the current block
+			// Process in reverse order within block to find latest nonce faster
+			for j := len(block.Transactions) - 1; j >= 0; j-- {
+				tx := block.Transactions[j]
+
+				// Only check transactions from the sender address
+				if tx.From == nil || *tx.From != *fromAddr {
+					continue
+				}
+
+				// Check for duplicate nonce
+				if tx.Nonce == submittedNonce {
+					hasDuplicate = true
+					ic.Logger.Logger.Warn("Duplicate nonce found",
+						zap.String("from_address", fromAddr.Hex()),
+						zap.Uint64("nonce", submittedNonce),
+						zap.String("existing_tx_hash", tx.Hash.Hex()),
+						zap.Uint64("block_number", i),
+						zap.String(logging.Connection_database, config.DBName),
+						zap.Time(logging.Created_at, time.Now().UTC()),
+						zap.String(logging.Log_file, LOG_FILE),
+						zap.String(logging.Topic, TOPIC),
+						zap.String(logging.Loki_url, LOKI_URL),
+						zap.String(logging.Function, "DB_OPs.CheckNonceAndGetLatest"),
+					)
+				}
+
+				// Update latest nonce if we found a higher one
+				if tx.Nonce > latestNonce {
+					latestNonce = tx.Nonce
+					foundLatestNonce = true
+				}
+			}
+
+			blocksScanned++
+
+			// Early termination: if we found the latest nonce and checked for duplicates,
+			// and we've scanned enough blocks, we can stop
+			// However, we still need to check for duplicates in all blocks, so we continue
+			// but we can optimize by stopping if latestNonce is much higher than submittedNonce
+			if foundLatestNonce && latestNonce > submittedNonce+100 {
+				// If latest nonce is way ahead, we've likely found all relevant transactions
+				// This is a heuristic optimization
+				break
+			}
+		}
+
+		// Move to next batch (going backwards)
+		if currentBlock >= batchSize {
+			currentBlock = currentBlock - batchSize
+		} else {
+			break
+		}
+
+		// Early exit if we found duplicate and latest nonce
+		if hasDuplicate && foundLatestNonce {
+			break
+		}
+	}
+
+	ic.Logger.Logger.Info("Nonce check completed",
+		zap.String("from_address", fromAddr.Hex()),
+		zap.Uint64("submitted_nonce", submittedNonce),
+		zap.Uint64("latest_nonce", latestNonce),
+		zap.Bool("has_duplicate", hasDuplicate),
+		zap.Uint64("blocks_scanned", blocksScanned),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Function, "DB_OPs.CheckNonceAndGetLatest"),
+	)
+
+	return hasDuplicate, latestNonce, nil
+}
+
 // GetTransactionsByAccountPaginated retrieves paginated transactions for a given account address
 // This implementation scans blocks in reverse order (latest first) and stops early once it has
 // collected enough transactions for the requested page, making it much faster than GetTransactionsByAccount

@@ -231,7 +231,8 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 		return false, errors.New("insufficient funds for transaction")
 	}
 
-	// Fourth Check Nonce Validation
+	// Fourth Check Nonce Validation (Optimized)
+	// Use optimized combined function that checks duplicate and gets latest nonce in a single reverse scan
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
 		Conn.Client.Logger.Logger.Error("Failed to get main DB connection for nonce check",
@@ -247,11 +248,13 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 	}
 	defer DB_OPs.PutMainDBConnection(mainDBClient)
 
-	// Check for duplicate nonce
-	hasDuplicate, err := DB_OPs.CheckNonceDuplicate(mainDBClient, tx.From, tx.Nonce)
+	// Combined optimized check: duplicate nonce and latest nonce in a single reverse scan
+	hasDuplicate, latestNonce, err := DB_OPs.CheckNonceAndGetLatest(mainDBClient, tx.From, tx.Nonce)
 	if err != nil {
-		Conn.Client.Logger.Logger.Error("Failed to check nonce duplicate",
+		Conn.Client.Logger.Logger.Error("Failed to check nonce",
 			zap.Error(err),
+			zap.String("from_address", tx.From.Hex()),
+			zap.Uint64("nonce", tx.Nonce),
 			zap.String(logging.Connection_database, config.AccountsDBName),
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
@@ -261,6 +264,7 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 		)
 		return false, fmt.Errorf("nonce check failed with error: %w", err)
 	}
+
 	if hasDuplicate {
 		Conn.Client.Logger.Logger.Error("Duplicate nonce detected",
 			zap.String("from_address", tx.From.Hex()),
@@ -273,22 +277,6 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Function, "Security.ThreeChecks"),
 		)
 		return false, fmt.Errorf("transaction with same nonce already exists for address %s", tx.From.Hex())
-	}
-
-	// Check if submitted nonce is greater than the latest nonce
-	latestNonce, err := DB_OPs.GetLatestNonce(mainDBClient, tx.From)
-	if err != nil {
-		Conn.Client.Logger.Logger.Error("Failed to get latest nonce",
-			zap.Error(err),
-			zap.String("from_address", tx.From.Hex()),
-			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.ThreeChecks"),
-		)
-		return false, fmt.Errorf("failed to get latest nonce: %w", err)
 	}
 
 	if tx.Nonce <= latestNonce {

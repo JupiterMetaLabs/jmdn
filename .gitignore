@@ -37,3 +37,4 @@ SIM/__pycache__/testZKBlock.cpython-313.pyc
 immudb
 .env
 SIM/TxSIM/submitRawTxn.py
+SIM/TxSIM/requirements.txt
