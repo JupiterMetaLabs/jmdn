@@ -131,12 +131,21 @@ func SubmitRawTransaction(tx *config.Transaction) (string, error) {
 		return "", errors.New("invalid transaction: To and From address are the same")
 	}
 
-	// Make transaction hash
-	rawTxBytes, err := json.Marshal(tx)
-	if err != nil {
-		return "", err
+	// Use transaction hash if already set (from RLP parsing), otherwise compute from JSON
+	// Note: RLP-encoded transactions will have hash set from convertEthTxToConfigTx
+	var txHash string
+	if tx.Hash != (common.Hash{}) {
+		// Hash already set (from RLP-encoded transaction)
+		txHash = tx.Hash.Hex()
+	} else {
+		// Fallback: compute hash from JSON (for JSON-only transactions)
+		// WARNING: This produces a different hash than standard Ethereum RLP hash
+		rawTxBytes, err := json.Marshal(tx)
+		if err != nil {
+			return "", err
+		}
+		txHash = crypto.Keccak256Hash(rawTxBytes).Hex()
 	}
-	txHash := crypto.Keccak256Hash(rawTxBytes).Hex()
 	// Debugging
 	fmt.Println("Transaction Hash: ", txHash)
 	// Asynchronously submit to mempool with context
