@@ -365,7 +365,7 @@ func GetMainDBConnectionandPutBack(ctx context.Context) (*config.PooledConnectio
 				zap.String("context_error", ctx.Err().Error()),
 			)
 			// Debugging
-			fmt.Printf("Auto-returning main database connection due to context cancellation: %s\n", conn.Client.Ctx)
+			// fmt.Printf("Auto-returning main database connection due to context cancellation: %s\n", conn.Client.Ctx)
 			PutMainDBConnection(conn)
 		} else if conn != nil && conn.Client != nil && !conn.InUse {
 			// Connection was already manually returned, no need to return again
