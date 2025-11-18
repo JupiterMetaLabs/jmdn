@@ -30,7 +30,7 @@ type AddressTxPointer struct {
 }
 
 // indexTransactionAddresses stores address-scoped entries for a given transaction
-func indexTransactionAddresses(mainDBClient *config.PooledConnection, blockNumber uint64, tx *config.Transaction, txIndex int) error {
+func IndexTransactionAddresses(mainDBClient *config.PooledConnection, blockNumber uint64, tx *config.Transaction, txIndex int) error {
 	if tx == nil || mainDBClient == nil {
 		return fmt.Errorf("invalid arguments to indexTransactionAddresses")
 	}

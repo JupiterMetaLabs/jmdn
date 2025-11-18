@@ -1926,7 +1926,7 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 		}
 
 		// Create address-scoped pointers for faster address queries
-		if err := indexTransactionAddresses(mainDBClient, block.BlockNumber, &block.Transactions[txIndex], txIndex); err != nil {
+		if err := IndexTransactionAddresses(mainDBClient, block.BlockNumber, &block.Transactions[txIndex], txIndex); err != nil {
 			mainDBClient.Client.Logger.Logger.Error("Failed to index transaction for address lookup",
 				zap.Error(err),
 				zap.String("txhash", tx.Hash.Hex()),
