@@ -1459,8 +1459,10 @@ func GetLatestNonce(PooledConnection *config.PooledConnection, fromAddr *common.
 // 1. Scans blocks in reverse order (latest to oldest)
 // 2. Stops early once it finds the latest nonce and checks for duplicates
 // 3. Only checks transactions from the sender address
-// Returns: (hasDuplicate, latestNonce, error)
-func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr *common.Address, submittedNonce uint64) (bool, uint64, error) {
+// Returns: (hasDuplicate, latestNonce, hasAnyTransactions, error)
+// hasAnyTransactions indicates if any transactions were found (needed to distinguish
+// between "no transactions" (nonce 0 valid) vs "latest transaction has nonce 0" (next should be 1))
+func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr *common.Address, submittedNonce uint64) (bool, uint64, bool, error) {
 	var err error
 	var shouldReturnConnection bool = false
 
@@ -1472,7 +1474,7 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 		// Use MAIN database connection since transactions are stored in main DB
 		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
-			return false, 0, fmt.Errorf("failed to get main DB connection from pool: %w - CheckNonceAndGetLatest", err)
+			return false, 0, false, fmt.Errorf("failed to get main DB connection from pool: %w - CheckNonceAndGetLatest", err)
 		}
 		shouldReturnConnection = true
 		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
@@ -1512,7 +1514,7 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.CheckNonceAndGetLatest"),
 		)
-		return false, 0, fmt.Errorf("failed to get latest block number: %w", err)
+		return false, 0, false, fmt.Errorf("failed to get latest block number: %w", err)
 	}
 
 	var latestNonce uint64 = 0
@@ -1617,6 +1619,7 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 		zap.Uint64("submitted_nonce", submittedNonce),
 		zap.Uint64("latest_nonce", latestNonce),
 		zap.Bool("has_duplicate", hasDuplicate),
+		zap.Bool("has_any_transactions", foundLatestNonce),
 		zap.Uint64("blocks_scanned", blocksScanned),
 		zap.String(logging.Connection_database, config.DBName),
 		zap.Time(logging.Created_at, time.Now().UTC()),
@@ -1626,7 +1629,7 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 		zap.String(logging.Function, "DB_OPs.CheckNonceAndGetLatest"),
 	)
 
-	return hasDuplicate, latestNonce, nil
+	return hasDuplicate, latestNonce, foundLatestNonce, nil
 }
 
 // GetTransactionsByAccountPaginated retrieves paginated transactions for a given account address
