@@ -281,10 +281,13 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 
 	// Validate nonce: must be exactly latestNonce + 1
 	// Special case: if no transactions exist (hasAnyTransactions = false), nonce 0 is valid
-	expectedNonce := latestNonce + 1
-	if !hasAnyTransactions && tx.Nonce == 0 {
-		// First transaction with nonce 0 is valid
+	var expectedNonce uint64
+	if !hasAnyTransactions {
+		// First transaction from this address should have nonce 0
 		expectedNonce = 0
+	} else {
+		// For subsequent transactions, nonce must be latestNonce + 1
+		expectedNonce = latestNonce + 1
 	}
 
 	if tx.Nonce != expectedNonce {
