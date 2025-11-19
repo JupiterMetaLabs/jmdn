@@ -279,22 +279,27 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 		return false, fmt.Errorf("transaction with same nonce already exists for address %s", tx.From.Hex())
 	}
 
-	// Validate nonce: must be exactly latestNonce + 1
-	// Special case: if no transactions exist (hasAnyTransactions = false), nonce 0 is valid
-	var expectedNonce uint64
+	// Validate nonce: must be >= latestNonce + 1
+	// Allow nonces >= latestNonce + 1 to handle cases where:
+	// - Failed/pending transactions caused wallet (e.g., MetaMask) to increment nonce
+	// - Transactions were sent but not yet included in blocks
+	// - Wallet's internal nonce counter is ahead of blockchain state
+	// Duplicate nonce check is already performed above, so we just need to ensure nonce is not too low
+	var minAllowedNonce uint64
 	if !hasAnyTransactions {
-		// First transaction from this address should have nonce 0
-		expectedNonce = 0
+		// First transaction from this address should have nonce >= 0
+		minAllowedNonce = 0
 	} else {
-		// For subsequent transactions, nonce must be latestNonce + 1
-		expectedNonce = latestNonce + 1
+		// For accounts with existing transactions, nonce must be >= latestNonce + 1
+		minAllowedNonce = latestNonce + 1
 	}
 
-	if tx.Nonce != expectedNonce {
-		Conn.Client.Logger.Logger.Error("Nonce is not the expected value",
+	if tx.Nonce < minAllowedNonce {
+		expectedNonce := minAllowedNonce
+		Conn.Client.Logger.Logger.Error("Nonce is too low",
 			zap.String("from_address", tx.From.Hex()),
 			zap.Uint64("submitted_nonce", tx.Nonce),
-			zap.Uint64("expected_nonce", expectedNonce),
+			zap.Uint64("minimum_allowed_nonce", minAllowedNonce),
 			zap.Uint64("latest_nonce", latestNonce),
 			zap.Bool("has_any_transactions", hasAnyTransactions),
 			zap.String(logging.Connection_database, config.AccountsDBName),
@@ -304,7 +309,7 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Loki_url, config.LOKI_URL),
 			zap.String(logging.Function, "Security.ThreeChecks"),
 		)
-		return false, fmt.Errorf("submitted nonce %d is not the expected nonce %d (latest: %d) for address %s", tx.Nonce, expectedNonce, latestNonce, tx.From.Hex())
+		return false, fmt.Errorf("submitted nonce %d is too low, must be >= %d (latest: %d) for address %s", tx.Nonce, expectedNonce, latestNonce, tx.From.Hex())
 	}
 
 	Conn.Client.Logger.Logger.Info("Transaction is valid",
