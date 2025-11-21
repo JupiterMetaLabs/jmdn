@@ -138,6 +138,8 @@ func storeAccountInDB(msg DIDMessage) {
 			AccountType: msg.Account.AccountType,
 			UpdatedAt:   time.Now().UTC().Unix(),
 		}
+		
+		
 
 		// Store Account document
 		err := DB_OPs.StoreAccount(client, accountDoc)

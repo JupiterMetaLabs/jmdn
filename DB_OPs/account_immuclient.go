@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"gossipnode/config"
+	GC "gossipnode/config/Context"
 	"gossipnode/logging"
 	"strings"
-
 	"sync/atomic"
 	"time"
 
@@ -75,7 +75,7 @@ type Account struct {
 // Get the Nonce of a account - NTF
 var counter uint64
 
-func PutNonceofAccount() (uint64, error) {
+func GenerateNonce() (uint64, error) {
 	ts := uint64(time.Now().UTC().UnixNano())
 	c := atomic.AddUint64(&counter, 1)
 	return ts<<16 | (c & 0xFFFF), nil // embed counter in low bits
@@ -92,8 +92,13 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 	}
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// Create child context from global context
+	childCtx, childCancel := GC.GetGlobalContext().NewChildContext()
+	defer childCancel() // Always cancel child context when function exits
+
+	// Add timeout to the child context
+	ctx, cancel := context.WithTimeout(childCtx, 5*time.Second)
+	defer cancel() // Cancel timeout context
 
 	// Check if we need to get a connection
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -129,7 +134,7 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 	}
 
 	// Create a Nonce First
-	Nonce, err := PutNonceofAccount()
+	Nonce, err := GenerateNonce()
 	if err != nil {
 		return err
 	}
@@ -161,25 +166,28 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 }
 
 // StoreAccount stores a Key document in the accounts database and creates a DID reference
+// It first checks if the account already exists, and only creates it if it doesn't exist.
 func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) error {
 	var err error
 	var AccountDoc *Account
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	// Create child context from app context
+	appCtx := GC.GetAppContext("accountsdb")
+	ctx, cancel := appCtx.NewChildContextWithTimeout(12*time.Second)
 	defer cancel()
 
 	if KeyDoc == nil {
-		return fmt.Errorf("Key document cannot be nil")
+		return fmt.Errorf("key document cannot be nil")
 	}
 
 	if KeyDoc.DIDAddress == "" || KeyDoc.Address == (common.Address{}) {
-		return fmt.Errorf("DIDAddress and Address cannot be empty")
+		return fmt.Errorf("DIDAddress and address cannot be empty")
 	}
 
 	// Try to use connection pool if available, otherwise fall back to traditional approach
-	if PooledConnection.Client == nil {
+	if PooledConnection == nil || PooledConnection.Client == nil {
 		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get accounts connection: %w - StoreAccount", err)
@@ -212,6 +220,28 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 			)
 			PutAccountsConnection(PooledConnection)
 		}()
+	}
+
+	// Check if account already exists before creating
+	existingAccount, err := GetAccount(PooledConnection, KeyDoc.Address)
+	if err != nil && err != ErrNotFound {
+		// If it's not a "not found" error, return the error
+		return fmt.Errorf("failed to check if account exists: %w - StoreAccount", err)
+	}
+	if existingAccount != nil {
+		// Account already exists, return error with log
+		ic.Logger.Logger.Error("Account already exists",
+			zap.String(logging.Address, KeyDoc.Address.Hex()),
+			zap.String(logging.DID, KeyDoc.DIDAddress),
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.StoreAccount"),
+		)
+		fmt.Println("Account already exists, returning successfully so response would be nil and no error")
+		return nil
 	}
 
 	// Create the account document
