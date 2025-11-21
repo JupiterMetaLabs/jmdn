@@ -214,6 +214,28 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 		}()
 	}
 
+	// Check if account already exists before creating
+	existingAccount, err := GetAccount(PooledConnection, KeyDoc.Address)
+	if err != nil && err != ErrNotFound {
+		// If it's not a "not found" error, return the error
+		return fmt.Errorf("failed to check if account exists: %w - StoreAccount", err)
+	}
+	if existingAccount != nil {
+		// Account already exists, return error with log
+		ic.Logger.Logger.Error("Account already exists",
+			zap.String(logging.Address, KeyDoc.Address.Hex()),
+			zap.String(logging.DID, KeyDoc.DIDAddress),
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.StoreAccount"),
+		)
+		fmt.Println("Account already exists, returning successfully so response would be nil and no error")
+		return nil
+	}
+
 	// Create the account document
 	AccountDoc = &Account{
 		DIDAddress:  KeyDoc.DIDAddress,
