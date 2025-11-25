@@ -808,8 +808,9 @@ func (consensus *Consensus) PrintCRDTState() error {
 				fmt.Printf("✅ Broadcasted block with %d BLS results\n", len(blsResults))
 
 				// Only process block locally if consensus was reached
+				// Pass BLS results for validation (ProcessBlockLocally will verify consensus)
 				if consensusReached {
-					if err := messaging.ProcessBlockLocally(block); err != nil {
+					if err := messaging.ProcessBlockLocally(block, blsResults); err != nil {
 						fmt.Printf("❌ Failed to process block locally after broadcast: %v\n", err)
 					} else {
 						fmt.Printf("✅ Processed block locally - account balances updated\n")

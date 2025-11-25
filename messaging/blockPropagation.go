@@ -300,30 +300,36 @@ func HandleBlockStream(stream network.Stream) {
 				DB_OPs.PutAccountsConnection(accountsClient)
 			}()
 
+			// Store the block in main DB FIRST to ensure it's valid before processing transactions
+			// This prevents balance updates for invalid blocks that fail to store
 			log.Info().
 				Str("block_hash", msg.Block.BlockHash.Hex()).
 				Uint64("block_number", msg.Block.BlockNumber).
-				Msg("Processing block transactions")
+				Msg("Storing block in main DB before processing transactions")
 
-			// Process all transactions in the block atomically with rollback capability
-			if err := BlockProcessing.ProcessBlockTransactions(msg.Block, accountsClient); err != nil {
+			if err := DB_OPs.StoreZKBlock(mainDBClient, msg.Block); err != nil {
 				log.Error().
 					Err(err).
 					Str("block_hash", msg.Block.BlockHash.Hex()).
-					Msg("Block processing failed - not storing block")
+					Uint64("block_number", msg.Block.BlockNumber).
+					Msg("Failed to store block in database - skipping transaction processing")
 				return
 			}
 
 			log.Info().
 				Str("block_hash", msg.Block.BlockHash.Hex()).
-				Msg("All transactions processed successfully - storing block")
+				Uint64("block_number", msg.Block.BlockNumber).
+				Msg("Block stored successfully - processing transactions")
 
-			// Store the validated and processed block in main DB
-			if err := DB_OPs.StoreZKBlock(mainDBClient, msg.Block); err != nil {
+			// Only process transactions if block storage succeeded
+			// This ensures balance updates only happen for valid, stored blocks
+			if err := BlockProcessing.ProcessBlockTransactions(msg.Block, accountsClient); err != nil {
 				log.Error().
 					Err(err).
 					Str("block_hash", msg.Block.BlockHash.Hex()).
-					Msg("Failed to store block in database")
+					Msg("Block transaction processing failed after block storage")
+				// Note: Block is already stored, but transactions failed
+				// This is a separate issue that may need rollback handling in the future
 				return
 			}
 
