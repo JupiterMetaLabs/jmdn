@@ -16,6 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/rlp"
 	"go.uber.org/zap"
 
 	"gossipnode/DB_OPs"
@@ -77,7 +78,16 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 		}
 	}
 
-	// 2. Check the ZKBlock.Hash validation - this is the hash of all transaction's hashes
+	// 2. Check the transaction hashes
+	status, err := CheckTransactionHashes(&zkBlock.Transactions)
+	if err != nil {
+		return false, err
+	}
+	if !status {
+		return false, errors.New("transaction hashes validation failed")
+	}
+
+	// 3. Check the ZKBlock.Hash validation - this is the hash of all transaction's hashes
 	// First compute the hash of all transaction's hashes
 	transactionHashes := make([][]byte, len(zkBlock.Transactions))
 	for i, tx := range zkBlock.Transactions {
@@ -89,6 +99,30 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	}
 	return true, nil
 }
+
+// Check the hashes of the transaciton in the block
+func CheckTransactionHashes(txs *[]config.Transaction) (bool, error) {
+	if txs == nil {
+		return false, errors.New("transaction list is nil")
+	}
+	for _, tx := range *txs {
+
+		tempTX := tx
+		tempTX.Hash = common.Hash{}
+
+		encodedTx, err := rlp.EncodeToBytes(tempTX)
+		if err != nil {
+			return false, err
+		}
+		
+		txHash := crypto.Keccak256Hash(encodedTx)
+		if txHash != tx.Hash {
+			return false, errors.New("transaction hash validation failed")
+		}
+	}
+	return true, nil
+}
+
 func ThreeChecks(tx *config.Transaction) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

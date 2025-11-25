@@ -20,6 +20,7 @@ type ContextInterface interface {
 	Init() context.Context
 	Get() context.Context
 	Shutdown()
+	Done(ctx context.Context)
 	NewChildContext() (context.Context, context.CancelFunc)
 	NewChildContextWithTimeout(timeout time.Duration) (context.Context, context.CancelFunc)
 	SetAppName(app string)

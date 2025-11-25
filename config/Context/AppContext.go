@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"gossipnode/metrics"
 )
 
 type AppContext struct {
@@ -64,6 +66,12 @@ func (ac *AppContext) Init() context.Context {
 	appContexts[ac.App] = appCtx
 	appCancels[ac.App] = appCancel
 
+	// Track metrics: app context initialized and active
+	metrics.NewContextMetricsBuilder().
+		WithApp(ac.App).
+		AppContextInitialized().
+		AppContextActive()
+
 	fmt.Printf("Initialized app-level context for: %s\n", ac.App)
 	return appCtx
 }
@@ -91,15 +99,55 @@ func (ac *AppContext) Shutdown() {
 		cancel()
 		delete(appCancels, ac.App)
 		delete(appContexts, ac.App)
+
+		// Track metrics: app context uninitialized and inactive
+		metrics.NewContextMetricsBuilder().
+			WithApp(ac.App).
+			AppContextUninitialized().
+			AppContextInactive()
 	}
+}
+
+func (ac *AppContext) Done(ctx context.Context) {
+	// Close that particular background context
+	ctx.Done()
+
+	// Track metrics: app context uninitialized and inactive
+	metrics.NewContextMetricsBuilder().
+		WithApp(ac.App).
+		ChildContextCancelled()
 }
 
 // NewChildContextForAppWithTimeout creates a child context with timeout from the app-level context.
 func (ac *AppContext) NewChildContextWithTimeout(timeout time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ac.Get(), timeout)
+	// Track metrics: app child context created with timeout
+	metrics.NewContextMetricsBuilder().
+		WithApp(ac.App).
+		ChildContextCreatedWithTimeout()
+
+	ctx, cancel := context.WithTimeout(ac.Get(), timeout)
+	// Wrap cancel to track cancellation
+	return ctx, func() {
+		metrics.NewContextMetricsBuilder().
+			WithApp(ac.App).
+			ChildContextCancelled()
+		cancel()
+	}
 }
 
 // NewChildContextForApp creates a child context derived from the app-level context.
 func (ac *AppContext) NewChildContext() (context.Context, context.CancelFunc) {
-	return context.WithCancel(ac.Get())
+	// Track metrics: app child context created
+	metrics.NewContextMetricsBuilder().
+		WithApp(ac.App).
+		ChildContextCreated()
+
+	ctx, cancel := context.WithCancel(ac.Get())
+	// Wrap cancel to track cancellation
+	return ctx, func() {
+		metrics.NewContextMetricsBuilder().
+			WithApp(ac.App).
+			ChildContextCancelled()
+		cancel()
+	}
 }

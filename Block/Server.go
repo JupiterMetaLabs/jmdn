@@ -22,6 +22,7 @@ import (
 	// "gossipnode/messaging"
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
+	GC "gossipnode/config/Context"
 
 	// "gossipnode/PubSubMessages"
 
@@ -356,7 +357,7 @@ func processZKBlock(c *gin.Context) {
 
 func processZKBlockNoConsensus(c *gin.Context) {
 	fmt.Println("=== DEBUG: processZKBlock API called ===")
-	ctx, cancel := context.WithTimeout(context.Background(), 14*time.Second)
+	ctx, cancel := context.WithTimeout(GC.GetGlobalContext().Get(), 14*time.Second)
 	defer cancel()
 
 	// Parse the block data from the request

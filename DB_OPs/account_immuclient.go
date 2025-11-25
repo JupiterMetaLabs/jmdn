@@ -1,11 +1,10 @@
 package DB_OPs
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"gossipnode/config"
-	GC "gossipnode/config/Context"
+	AppContext "gossipnode/config/Context"
 	"gossipnode/logging"
 	"strings"
 	"sync/atomic"
@@ -93,12 +92,8 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 
 	// Define Function wide context for timeout
 	// Create child context from global context
-	childCtx, childCancel := GC.GetGlobalContext().NewChildContext()
-	defer childCancel() // Always cancel child context when function exits
-
-	// Add timeout to the child context
-	ctx, cancel := context.WithTimeout(childCtx, 5*time.Second)
-	defer cancel() // Cancel timeout context
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(5 * time.Second)
+	defer cancel() // Always cancel child context when function exits
 
 	// Check if we need to get a connection
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -141,7 +136,6 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 
 	// Create A CreatedAt and UpdatedAt
 	CreatedAt := time.Now().UTC().UnixNano()
-	UpdatedAt := time.Now().UTC().UnixNano()
 
 	// Create the account document
 	AccountDoc = &Account{
@@ -151,7 +145,7 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 		Nonce:       Nonce,
 		AccountType: "user",
 		CreatedAt:   CreatedAt,
-		UpdatedAt:   UpdatedAt,
+		UpdatedAt:   CreatedAt,
 		Metadata:    metadata,
 	}
 	// Debugging
@@ -174,8 +168,7 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 
 	// Define Function wide context for timeout
 	// Create child context from app context
-	appCtx := GC.GetAppContext("accountsdb")
-	ctx, cancel := appCtx.NewChildContextWithTimeout(12*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(12*time.Second)
 	defer cancel()
 
 	if KeyDoc == nil {
@@ -338,7 +331,7 @@ func BatchCreateAccountsOrdered(PooledConnection *config.PooledConnection, entri
 	}
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	var err error
@@ -382,11 +375,9 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 	var err error
 	var shouldReturnConnection bool
 
-	// Define Function wide context for timeout
-	ctx := context.Background()
-
-	// End the context.Background()
-	defer ctx.Done()
+	// Define Function wide context without timeout
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContext()
+	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
@@ -449,10 +440,8 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		var shouldWrite bool = true
 		var incoming Account
 		if err := json.Unmarshal(e.Value, &incoming); err == nil {
-			// Try read existing account
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// Try read account using exisitng context
 			entry, getErr := PooledConnection.Client.Client.Get(ctx, []byte(e.Key))
-			cancel()
 			if getErr == nil && entry != nil && len(entry.Value) > 0 {
 				var existing Account
 				if jsonErr := json.Unmarshal(entry.Value, &existing); jsonErr == nil {
@@ -535,9 +524,7 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		// If address key was in batch but skipped, or not in batch at all
 		if !addressKeysInBatch[addrKey] {
 			// Check if address key exists in database
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
-			cancel()
 			if getErr == nil {
 				// Address key exists in DB - create reference
 				didKey := []byte(e.Key)
@@ -571,9 +558,7 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 			shouldCreateRef = true
 		} else {
 			// Check if address key exists in database
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
-			cancel()
 			if getErr == nil {
 				// Address key exists in database - safe to create reference
 				shouldCreateRef = true
@@ -594,8 +579,7 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 			BoundRef:      true,
 		}}})
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+
 	if len(ops) == 0 {
 		// Nothing to apply (e.g., all entries skipped by LWW) -> treat as success
 		PooledConnection.Client.Logger.Logger.Info("No operations to apply in batch restore (all skipped by LWW)",
@@ -653,7 +637,7 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -739,7 +723,7 @@ func GetAccountByDID(PooledConnection *config.PooledConnection, did string) (*Ac
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -773,7 +757,7 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -806,7 +790,7 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 	fmt.Printf("=== DEBUG: UpdateAccountBalance called for address %s with balance %s ===\n", address.Hex(), newBalance)
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 
 	var err error
@@ -907,7 +891,7 @@ func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*A
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(15*time.Second)
 	defer cancel()
 
 	// Try to use connection pool if available, otherwise fall back to traditional approach
@@ -1021,9 +1005,9 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx := context.Background()
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContext()
 	// End the context.Background()
-	defer ctx.Done()
+	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
@@ -1081,7 +1065,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 			SeekKey: lastKey,
 			Desc:    true, // latest accounts first
 		}
-		ReadCtx, ReadCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ReadCtx, ReadCancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(10*time.Second)
 		defer ReadCancel()
 		scanResult, err := ic.Client.Scan(ReadCtx, scanReq)
 		if err != nil {
@@ -1178,7 +1162,7 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(8*time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -1318,7 +1302,7 @@ func GetTransactionsPaginated(PooledConnection *config.PooledConnection, offset,
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	// Transactions are stored in MAIN database, not accounts DB
@@ -1381,7 +1365,7 @@ func GetTransactionsPaginated(PooledConnection *config.PooledConnection, offset,
 			Desc:    true, // latest transactions first
 		}
 
-		scanCtx, scanCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		scanCtx, scanCancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(10*time.Second)
 		scanResult, err := ic.Client.Scan(scanCtx, scanReq)
 		scanCancel()
 
@@ -1468,7 +1452,7 @@ func ensureAccountsDBSelected(PooledConnection *config.PooledConnection) error {
 	}
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 
 	// Use the stored token
@@ -1552,7 +1536,7 @@ func reconnectToAccountsDB(PooledConnection *config.PooledConnection) error {
 		WithMaxRecvMsgSize(1024 * 1024 * 200) // 20MB message size
 
 	// Create context with timeout for the connection attempt
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(30*time.Second)
 	defer cancel()
 
 	// Create new client

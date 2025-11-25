@@ -2,13 +2,14 @@ package Context
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
+
+	"gossipnode/metrics"
 )
 
 type GlobalContext struct{}
@@ -29,7 +30,6 @@ func (gc *GlobalContext) Init() context.Context {
 	defer ctxMu.Unlock()
 
 	if globalContext != nil && globalContext.Err() == nil {
-		fmt.Println("Global context already initialized")
 		return globalContext
 	}
 
@@ -42,6 +42,11 @@ func (gc *GlobalContext) Init() context.Context {
 	if appCancels == nil {
 		appCancels = make(map[string]context.CancelFunc)
 	}
+
+	// Track metrics: global context initialized and active
+	metrics.NewContextMetricsBuilder().
+		GlobalContextInitialized().
+		GlobalContextActive()
 
 	gc.setupSignalHandler()
 	return globalContext
@@ -58,6 +63,15 @@ func (gc *GlobalContext) Get() context.Context {
 		return ctx
 	}
 	return gc.Init()
+}
+
+func (gc *GlobalContext) Done(ctx context.Context) {
+	// Close that particular background context
+	ctx.Done()
+
+	// Track metrics: global context child context cancelled
+	metrics.NewContextMetricsBuilder().
+		GlobalChildContextCancelled()
 }
 
 // Shutdown triggers the cancellation of the global context and all app-level contexts.
@@ -83,16 +97,37 @@ func (gc *GlobalContext) Shutdown() {
 	globalContext = nil
 	isInitialized = false
 	signalOnce = sync.Once{}
+
+	// Track metrics: global context uninitialized and inactive
+	metrics.NewContextMetricsBuilder().
+		GlobalContextUninitialized().
+		GlobalContextInactive()
 }
 
 // NewChildContext creates a child context derived from the global context.
 func (gc *GlobalContext) NewChildContext() (context.Context, context.CancelFunc) {
-	return context.WithCancel(gc.Get())
+	// Track metrics: global child context created
+	metrics.NewContextMetricsBuilder().GlobalChildContextCreated()
+
+	ctx, cancel := context.WithCancel(gc.Get())
+	// Wrap cancel to track cancellation
+	return ctx, func() {
+		metrics.NewContextMetricsBuilder().GlobalChildContextCancelled()
+		cancel()
+	}
 }
 
 // NewChildContextWithTimeout creates a child context with timeout from the global context.
 func (gc *GlobalContext) NewChildContextWithTimeout(timeout time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(gc.Get(), timeout)
+	// Track metrics: global child context created
+	metrics.NewContextMetricsBuilder().GlobalChildContextCreated()
+
+	ctx, cancel := context.WithTimeout(gc.Get(), timeout)
+	// Wrap cancel to track cancellation
+	return ctx, func() {
+		metrics.NewContextMetricsBuilder().GlobalChildContextCancelled()
+		cancel()
+	}
 }
 
 // ListActiveApps returns a list of all apps with active contexts.

@@ -34,6 +34,15 @@ const (
 	TOPIC           = "ImmuDB_ImmuClient"
 )
 
+// DB APP Contexts Constants
+const (
+	MainDBAppContext = "maindb"
+	AccountsDBAppContext = "accountsdb"
+	BlockLogsAppContext = "DB_OPs.blocklogs"
+	FacadeReceiptsAppContext = "DB_OPs.facadereceipts"
+	AVROFileAppContext = "DB_OPs.avrofile"
+)
+
 // Custom errors
 var (
 	ErrEmptyKey        = errors.New("key cannot be empty")

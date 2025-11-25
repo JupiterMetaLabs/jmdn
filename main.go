@@ -2,7 +2,6 @@ package main
 
 import (
 	// "bufio"
-	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -21,6 +20,7 @@ import (
 	"gossipnode/Pubsub"
 	"gossipnode/Sequencer"
 	"gossipnode/config"
+	"gossipnode/config/Context"
 	"gossipnode/explorer"
 	fastsync "gossipnode/fastsync"
 	"gossipnode/gETH"
@@ -58,6 +58,11 @@ var (
 	mainDBPool     *config.ConnectionPool // Main database connection pool
 	accountsDBPool *config.ConnectionPool // Accounts/DID database connection pool
 )
+
+func initGlobalContext() {
+	gc := Context.GetGlobalContext()
+	gc.Init()
+}
 
 func StartFacadeServer(port int, chainID int) {
 	go func() {
@@ -425,7 +430,10 @@ func StartAPIServer(address string, enableExplorer bool) error {
 
 // Update this function:
 func startDIDServer(h host.Host, address string) error {
-	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
+	gc := Context.GetGlobalContext()
+	ctx, cancel := gc.NewChildContext()
+	defer cancel()
+	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 	if err != nil {
 		//Debugging
 		fmt.Println("Failed to get DID database client", err)
@@ -443,12 +451,14 @@ func startDIDServer(h host.Host, address string) error {
 }
 
 // initYggdrasilMessaging initializes the Yggdrasil messaging system
-func initYggdrasilMessaging(ctx context.Context) {
+func initYggdrasilMessaging(gc *Context.GlobalContext) {
+	ctx, cancel := gc.NewChildContext()
+	defer cancel()
 	directMSG.StartYggdrasilListener(ctx)
 	// Assign yggdraisl address to the config.Yggdrasil_Address
 
 	fmt.Println(config.ColorGreen+"Yggdrasil messaging service started on port:"+config.ColorReset, directMSG.YggdrasilPort)
-}
+}	
 
 // Initialize main database connection pool
 func initMainDBPool(enableLoki bool, username, password string) error {
@@ -568,8 +578,7 @@ func main() {
 	defer Logger.Close()
 
 	// Create a cancellable context for clean shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	gc := Context.GetGlobalContext()
 
 	// Handle signals for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
@@ -577,7 +586,7 @@ func main() {
 	go func() {
 		<-sigCh
 		fmt.Println("\nShutdown signal received, closing connections...")
-		cancel() // Cancel the context
+		gc.Shutdown() // Cancel the context
 		// Give some time for cleanup
 		time.Sleep(500 * time.Millisecond)
 		os.Exit(1)
@@ -643,7 +652,9 @@ func main() {
 	})
 
 	// Initialize database clients using the pools
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
+	MainDBCtx, cancel := gc.NewChildContext()
+	defer cancel()
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(MainDBCtx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to get main database connection from pool")
 	}
@@ -656,26 +667,19 @@ func main() {
 	// Debugging
 	// fmt.Println("Getting accounts database connection from pool")
 
-	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
+	DidDBCtx, cancel := gc.NewChildContext()
+	defer cancel()
+	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(DidDBCtx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to get accounts database connection from pool")
-	}
-
-	// Debugging
-	// fmt.Println("Got accounts database connection from pool", didDBClient)
-
-	defer func() {
-		if didDBClient != nil {
-			DB_OPs.PutAccountsConnection(didDBClient)
-		}
-	}()
+	}	
 
 	// Initialize FastSync service
 	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
 
 	// Initialize Yggdrasil messaging if enabled
 	if *enableYggdrasil {
-		initYggdrasilMessaging(ctx)
+		initYggdrasilMessaging(gc.(*Context.GlobalContext))
 		log.Info().Msgf("Yggdrasil messaging enabled on port %d", directMSG.YggdrasilPort)
 	}
 

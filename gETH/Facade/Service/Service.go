@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
 )
@@ -372,7 +373,7 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 	defer cancel()
 
 	// Get the receipt from the database
-	receipt, err := DB_OPs.GetReceiptByHash(nil, hash)
+	receipt, err := DB_OPs.GetReceiptByHash(nil, common.HexToHash(hash))
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash failed: %v", err), "ReceiptByHash", -1); logErr != nil {
 			fmt.Printf("Failed to log ReceiptByHash error: %v\n", logErr)

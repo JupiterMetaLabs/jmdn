@@ -1,26 +1,29 @@
 package DB_OPs
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"gossipnode/config"
+	AppContext "gossipnode/config/Context"
 	"gossipnode/config/utils"
 	"gossipnode/logging"
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 )
 
 // GetReceiptByHash retrieves a transaction receipt by its hash
-func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*config.Receipt, error) {
+func GetReceiptByHash(mainDBClient *config.PooledConnection, commonhash common.Hash) (*config.Receipt, error) {
+	hash := commonhash.Hex()
 	var err error
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(FacadeReceiptsAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
+
 
 	// Get connection if not provided
 	if mainDBClient == nil {
@@ -59,9 +62,13 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 	if !strings.HasPrefix(strings.ToLower(hash), "0x") {
 		normalizedHash = "0x" + hash
 	}
+	// Debugging 
+	fmt.Println("DEBUG: normalizedHash", normalizedHash)
 
 	// First, check if transaction is currently processing
 	processingKey := fmt.Sprintf("tx_processing:%s", normalizedHash)
+
+	fmt.Println("DEBUG: processingKey", processingKey)
 	processing, err := Exists(mainDBClient, processingKey)
 	if err == nil && processing {
 		mainDBClient.Client.Logger.Logger.Info("Transaction is currently processing, receipt not available yet",
@@ -78,6 +85,8 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 
 	// Try to get the receipt directly from storage
 	receiptKey := fmt.Sprintf("%s%s", DEFAULT_PREFIX_RECEIPT, normalizedHash)
+	// Debugging
+	fmt.Println("DEBUG: receiptKey", receiptKey)
 	receiptBytes, err := Read(mainDBClient, receiptKey)
 	if err == nil && len(receiptBytes) > 0 {
 		// Receipt exists, unmarshal it
@@ -223,6 +232,8 @@ func generateReceiptFromTransaction(tx *config.Transaction, block *config.ZKBloc
 	// Generate logs (empty for now, but could be populated from contract execution)
 	logs := []config.Log{}
 
+
+
 	// Create bloom filter for logs using proper Ethereum algorithm
 	logsBloom := utils.GenerateLogsBloom(logs)
 
@@ -265,7 +276,7 @@ func MakeReceiptRoot(mainDBClient *config.PooledConnection, receipts []*config.R
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(FacadeReceiptsAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	if mainDBClient == nil {
@@ -330,7 +341,7 @@ func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint6
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(FacadeReceiptsAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	if mainDBClient == nil {
@@ -380,7 +391,7 @@ func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint6
 
 	receipts := make([]*config.Receipt, len(transactions))
 	for i, tx := range transactions {
-		receipt, err := GetReceiptByHash(mainDBClient, tx.Hash.Hex())
+		receipt, err := GetReceiptByHash(mainDBClient, tx.Hash)
 		if err != nil {
 			mainDBClient.Client.Logger.Logger.Error("Failed to get receipt by hash",
 				zap.Error(err),
