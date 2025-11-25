@@ -10,7 +10,6 @@ import (
 
 	"syscall"
 	"time"
-
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Block"
 	"gossipnode/CA/ImmuDB_CA"
@@ -39,6 +38,11 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog/log"
+)
+
+const(
+	YggdrasilAppContext = "main.yggdrasil"
+	MainAppContext = "main"
 )
 
 // Simple helper to print the CLI prompt in color
@@ -451,8 +455,8 @@ func startDIDServer(h host.Host, address string) error {
 }
 
 // initYggdrasilMessaging initializes the Yggdrasil messaging system
-func initYggdrasilMessaging(gc *Context.GlobalContext) {
-	ctx, cancel := gc.NewChildContext()
+func initYggdrasilMessaging() {
+	ctx, cancel := Context.GetAppContext(YggdrasilAppContext).NewChildContext()
 	defer cancel()
 	directMSG.StartYggdrasilListener(ctx)
 	// Assign yggdraisl address to the config.Yggdrasil_Address
@@ -533,6 +537,15 @@ func main() {
 	}
 	fmt.Println("ImmuDB TLS assets generated.")
 
+	// Initialize the global context
+	initGlobalContext()
+	fmt.Println("Global context initialized")
+	
+	// Initialize the app context
+	appContext, cancel := Context.GetAppContext(MainAppContext).NewChildContext()
+	defer cancel()
+	fmt.Println("App context initialized")
+
 	// Command-line flags for node configuration
 	seedNodeURL := flag.String("seednode", "", "Seed node gRPC URL for peer registration (e.g., localhost:9090)")
 	peerAlias := flag.String("alias", "", "Peer alias for registration with seed node")
@@ -577,16 +590,13 @@ func main() {
 	// Clean up any leftover temp files from a previous run
 	defer Logger.Close()
 
-	// Create a cancellable context for clean shutdown
-	gc := Context.GetGlobalContext()
-
 	// Handle signals for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
 		fmt.Println("\nShutdown signal received, closing connections...")
-		gc.Shutdown() // Cancel the context
+		Context.GetGlobalContext().Shutdown() // Cancel the context
 		// Give some time for cleanup
 		time.Sleep(500 * time.Millisecond)
 		os.Exit(1)
@@ -652,9 +662,7 @@ func main() {
 	})
 
 	// Initialize database clients using the pools
-	MainDBCtx, cancel := gc.NewChildContext()
-	defer cancel()
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(MainDBCtx)
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(appContext)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to get main database connection from pool")
 	}
@@ -662,25 +670,29 @@ func main() {
 		if mainDBClient != nil {
 			DB_OPs.PutMainDBConnection(mainDBClient)
 		}
+		defer cancel()
 	}()
 
 	// Debugging
 	// fmt.Println("Getting accounts database connection from pool")
-
-	DidDBCtx, cancel := gc.NewChildContext()
-	defer cancel()
-	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(DidDBCtx)
+	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(appContext)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to get accounts database connection from pool")
 	}	
+	defer func() {
+		if didDBClient != nil {
+			DB_OPs.PutAccountsConnection(didDBClient)
+		}
+		defer cancel()
+	}()
 
 	// Initialize FastSync service
 	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
 
 	// Initialize Yggdrasil messaging if enabled
 	if *enableYggdrasil {
-		initYggdrasilMessaging(gc.(*Context.GlobalContext))
-		log.Info().Msgf("Yggdrasil messaging enabled on port %d", directMSG.YggdrasilPort)
+		initYggdrasilMessaging()
+		log.Info().Msgf("YggdrasilContextInterface messaging enabled on port %d", directMSG.YggdrasilPort)
 	}
 
 	// Display node identity

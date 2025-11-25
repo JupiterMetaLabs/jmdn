@@ -585,6 +585,7 @@ func GetKeys(PooledConnection *config.PooledConnection, prefix string, limit int
 }
 
 func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]string, error) {
+
 	var allKeys []string
 	batchSize := 1000
 	// Define Function wide context for timeout
