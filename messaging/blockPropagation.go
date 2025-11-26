@@ -2,7 +2,7 @@ package messaging
 
 import (
 	"bufio"
-	"context"
+	AppContext "gossipnode/config/Context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -38,6 +38,10 @@ var (
 	immuClient       *config.PooledConnection
 	immuClientOnce   sync.Once
 	globalHost       host.Host // Add this line
+)
+
+const (
+	BlockPropagationAppContext = "blockpropagation"
 )
 
 func init() {
@@ -281,8 +285,8 @@ func HandleBlockStream(stream network.Stream) {
 				}
 			}
 
-			ctx := context.Background()
-
+			ctx, cancel := AppContext.GetAppContext(BlockPropagationAppContext).NewChildContext()
+			defer cancel()
 			// Create DB clients for processing
 			mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 			if err != nil {
@@ -382,7 +386,7 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 		go func(peer peer.ID) {
 			defer wg.Done()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := AppContext.GetAppContext(BlockPropagationAppContext).NewChildContextWithTimeout(5*time.Second)
 			defer cancel()
 
 			stream, err := h.NewStream(ctx, peer, config.BlockPropagationProtocol)
@@ -544,7 +548,7 @@ func PropagateZKBlock(h host.Host, block *PubSubMessages.ConsensusMessage) error
 		go func(peer peer.ID) {
 			defer wg.Done()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := AppContext.GetAppContext(BlockPropagationAppContext).NewChildContextWithTimeout(5*time.Second)
 			defer cancel()
 
 			// Use the correct protocol ID from constants

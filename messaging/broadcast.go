@@ -2,7 +2,7 @@ package messaging
 
 import (
 	"bufio"
-	"context"
+	AppContext "gossipnode/config/Context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -23,6 +23,10 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog/log"
+)
+
+const (
+	BroadcastAppContext = "broadcast"
 )
 
 // BroadcastMessage represents a message that is broadcast through the network
@@ -200,7 +204,7 @@ func forwardBroadcast(h host.Host, msg BroadcastMessageStruct) {
 		}
 
 		// Open a stream to the peer
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := AppContext.GetAppContext(BroadcastAppContext).NewChildContextWithTimeout(5*time.Second)
 		stream, err := h.NewStream(ctx, peerID, config.BroadcastProtocol)
 		cancel()
 
@@ -277,7 +281,7 @@ func BroadcastMessage(h host.Host, content string) error {
 			defer wg.Done()
 
 			// Open stream to peer with timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := AppContext.GetAppContext(BroadcastAppContext).NewChildContextWithTimeout(5*time.Second)
 			defer cancel()
 
 			stream, err := h.NewStream(ctx, peer, config.BroadcastProtocol)
@@ -489,7 +493,7 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 			defer wg.Done()
 
 			// Open stream to peer with timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := AppContext.GetAppContext(BroadcastAppContext).NewChildContextWithTimeout(5*time.Second)
 			defer cancel()
 
 			stream, err := h.NewStream(ctx, peer, config.BroadcastProtocol)
@@ -606,7 +610,7 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 		wg.Add(1)
 		go func(peer peer.ID) {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := AppContext.GetAppContext(BlockPropagationAppContext).NewChildContextWithTimeout(5*time.Second)
 			defer cancel()
 			stream, err := h.NewStream(ctx, peer, config.BlockPropagationProtocol)
 			if err != nil {
@@ -647,15 +651,16 @@ func ProcessBlockLocally(block *config.ZKBlock) error {
 		Str("block_hash", block.BlockHash.Hex()).
 		Uint64("block_number", block.BlockNumber).
 		Msg("Processing block locally")
-
+	ctx, cancel := AppContext.GetAppContext(BroadcastAppContext).NewChildContext()
+	defer cancel()
 	// Create DB clients for processing
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get main DB connection")
 		return fmt.Errorf("failed to get main DB connection: %w", err)
 	}
 
-	accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
+	accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get accounts DB connection")
 		return fmt.Errorf("failed to get accounts DB connection: %w", err)

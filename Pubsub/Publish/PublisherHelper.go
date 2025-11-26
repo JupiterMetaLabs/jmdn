@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gossipnode/config"
+	AppContext "gossipnode/config/Context"
 	"gossipnode/config/PubSubMessages"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -153,7 +154,8 @@ func PublishBatchEnhanced(gps *PubSubMessages.GossipPubSub, topicName string, me
 	}
 
 	enhancedPublisher := NewEnhancedPublisher(topic, gps)
-	return enhancedPublisher.publishBatch(context.Background(), messages, metadata)
+	ctx, _ := AppContext.GetAppContext(PublishAppContext).NewChildContext()
+	return enhancedPublisher.publishBatch(ctx, messages, metadata)
 }
 
 // publishBatch publishes multiple messages in a batch

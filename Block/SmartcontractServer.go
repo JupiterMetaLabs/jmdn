@@ -1,11 +1,11 @@
 package Block
 
 import (
-	"context"
 	"encoding/hex"
 	"encoding/json"
 	"gossipnode/DB_OPs"
 	"gossipnode/SmartContract"
+	AppContext "gossipnode/config/Context"
 	"io/ioutil"
 	"math/big"
 	"net/http"
@@ -15,6 +15,10 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
+)
+
+const (
+	SmartcontractServerAppContext = "block.smartcontract.server"
 )
 
 // Add new types for contract compilation requests
@@ -105,7 +109,9 @@ func deployContract(c *gin.Context) {
 	}
 
 	// Connect to DB
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
+	ctx, cancel := AppContext.GetAppContext(SmartcontractServerAppContext).NewChildContext()
+	defer cancel()
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
 		return
@@ -188,7 +194,9 @@ func executeContract(c *gin.Context) {
 	}
 
 	// Connect to DB
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
+	ctx, cancel := AppContext.GetAppContext(SmartcontractServerAppContext).NewChildContext()
+	defer cancel()
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
 		return

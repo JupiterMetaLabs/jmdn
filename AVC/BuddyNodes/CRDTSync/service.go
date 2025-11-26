@@ -8,10 +8,15 @@ import (
 	"time"
 
 	"gossipnode/config"
+	AppContext "gossipnode/config/Context"
 	"gossipnode/crdt"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
+)
+
+const (
+	SyncServiceAppContext = "avc.crdtsync.service"
 )
 
 // SyncService provides CRDT synchronization for buddy nodes
@@ -63,7 +68,7 @@ func NewSyncService(
 	topic *pubsub.Topic,
 	config *SyncConfig,
 ) *SyncService {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := AppContext.GetAppContext(SyncServiceAppContext).NewChildContext()
 
 	return &SyncService{
 		nodeID:   host.ID().String(),
@@ -193,7 +198,7 @@ func (s *SyncService) syncCRDTState() error {
 // receiveCRDTMessage receives and processes CRDT messages
 func (s *SyncService) receiveCRDTMessage() error {
 	// Create a context with timeout to avoid blocking indefinitely
-	ctx, cancel := context.WithTimeout(s.ctx, 1*time.Second)
+	ctx, cancel := AppContext.GetAppContext(SyncServiceAppContext).NewChildContextWithTimeout(1*time.Second)
 	defer cancel()
 
 	msg, err := s.sub.Next(ctx)

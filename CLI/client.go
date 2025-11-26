@@ -1,16 +1,20 @@
 package CLI
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"time"
 
 	pb "gossipnode/CLI/proto"
+	AppContext "gossipnode/config/Context"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
+)
+
+const(
+	CLIClinetAppContext = "cli.client"
 )
 
 // Client wraps the gRPC CLI client
@@ -21,7 +25,7 @@ type Client struct {
 
 // NewClient creates a new CLI client connecting to the specified address
 func NewClient(addr string) (*Client, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 
 	grpcConn, err := grpc.DialContext(ctx, addr,
@@ -44,35 +48,35 @@ func (c *Client) Close() error {
 
 // ListPeers returns a list of managed peers
 func (c *Client) ListPeers() (*pb.PeerList, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 	return c.conn.ListPeers(ctx, &emptypb.Empty{})
 }
 
 // AddPeer adds a peer to the managed peer list
 func (c *Client) AddPeer(peerAddr string) (*pb.OperationResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 	return c.conn.AddPeer(ctx, &pb.PeerRequest{Peer: peerAddr})
 }
 
 // RemovePeer removes a peer from the managed peer list
 func (c *Client) RemovePeer(peerID string) (*pb.OperationResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 	return c.conn.RemovePeer(ctx, &pb.PeerRequest{Peer: peerID})
 }
 
 // CleanPeers removes offline peers from the managed peer list
 func (c *Client) CleanPeers() (*pb.CleanPeersResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 	return c.conn.CleanPeers(ctx, &emptypb.Empty{})
 }
 
 // SendMessage sends a message to a specific peer
 func (c *Client) SendMessage(target, message string) (*pb.OperationResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContextWithTimeout(30*time.Second)
 	defer cancel()
 	return c.conn.SendMessage(ctx, &pb.MessageRequest{
 		Target:  target,
@@ -82,7 +86,7 @@ func (c *Client) SendMessage(target, message string) (*pb.OperationResponse, err
 
 // SendYggdrasilMessage sends a message via Yggdrasil
 func (c *Client) SendYggdrasilMessage(target, message string) (*pb.OperationResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContextWithTimeout(30*time.Second)
 	defer cancel()
 	return c.conn.SendYggdrasilMessage(ctx, &pb.MessageRequest{
 		Target:  target,
@@ -92,7 +96,7 @@ func (c *Client) SendYggdrasilMessage(target, message string) (*pb.OperationResp
 
 // SendFile sends a file to a peer
 func (c *Client) SendFile(peer, filepath, remoteFilename string) (*pb.OperationResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContext()
 	defer cancel()
 	return c.conn.SendFile(ctx, &pb.FileRequest{
 		Peer:           peer,
@@ -103,28 +107,28 @@ func (c *Client) SendFile(peer, filepath, remoteFilename string) (*pb.OperationR
 
 // BroadcastMessage broadcasts a message to all connected peers
 func (c *Client) BroadcastMessage(message string) (*pb.OperationResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContextWithTimeout(30*time.Second)
 	defer cancel()
 	return c.conn.BroadcastMessage(ctx, &pb.MessageRequest{Message: message})
 }
 
 // GetMessageStats returns messaging statistics
 func (c *Client) GetMessageStats() (*pb.MessageStats, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 	return c.conn.GetMessageStats(ctx, &emptypb.Empty{})
 }
 
 // GetDID retrieves a DID document
 func (c *Client) GetDID(did string) (*pb.DIDDocument, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 	return c.conn.GetDID(ctx, &pb.DIDRequest{Did: did})
 }
 
 // PropagateDID propagates a DID to the network
 func (c *Client) PropagateDID(did, publicKey, balance string) (*pb.OperationResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContextWithTimeout(30*time.Second)
 	defer cancel()
 	return c.conn.PropagateDID(ctx, &pb.DIDPropagationRequest{
 		Did:       did,
@@ -135,14 +139,14 @@ func (c *Client) PropagateDID(did, publicKey, balance string) (*pb.OperationResp
 
 // FastSync performs fast synchronization with a peer
 func (c *Client) FastSync(peerAddr string) (*pb.SyncStats, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContext()
 	defer cancel()
 	return c.conn.FastSync(ctx, &pb.PeerRequest{Peer: peerAddr})
 }
 
 // FirstSync performs first synchronization with a peer (server or client mode)
 func (c *Client) FirstSync(peerAddr string, mode string) (*pb.SyncStats, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContext()
 	defer cancel()
 	return c.conn.FirstSync(ctx, &pb.FirstSyncRequest{
 		Peer: peerAddr,
@@ -152,14 +156,14 @@ func (c *Client) FirstSync(peerAddr string, mode string) (*pb.SyncStats, error) 
 
 // GetDatabaseState returns the current database state
 func (c *Client) GetDatabaseState() (*pb.DatabaseStates, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 	return c.conn.GetDatabaseState(ctx, &emptypb.Empty{})
 }
 
 // ReturnAddrs returns all addresses for this node
 func (c *Client) ReturnAddrs() (*pb.Addrs, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 	return c.conn.ReturnAddrs(ctx, &emptypb.Empty{})
 }

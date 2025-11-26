@@ -23,7 +23,7 @@ import (
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
 	GC "gossipnode/config/Context"
-
+	AppContext "gossipnode/config/Context"
 	// "gossipnode/PubSubMessages"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -34,6 +34,10 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"go.uber.org/zap"
+)
+
+const (
+	BlockServerAppContext = "block.server"
 )
 
 type APIAccessTuple struct {
@@ -494,7 +498,7 @@ func getBlockByNumber(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(8*time.Second)
 	defer cancel()
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
@@ -530,7 +534,7 @@ func getBlockByNumber(c *gin.Context) {
 func getBlockByHash(c *gin.Context) {
 	blockHash := c.Param("hash")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(8*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
@@ -556,7 +560,7 @@ func getBlockByHash(c *gin.Context) {
 // getTransactionInfo gets detailed information about a transaction
 func getTransactionInfo(c *gin.Context) {
 	txHash := c.Param("hash")
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(8*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
@@ -599,7 +603,7 @@ func getTransactionInfo(c *gin.Context) {
 
 // getLatestBlock returns information about the latest block
 func getLatestBlock(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(8*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)

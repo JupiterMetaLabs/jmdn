@@ -1,7 +1,7 @@
 package Publish
 
 import (
-	"context"
+	AppContext "gossipnode/config/Context"
 	"encoding/json"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
@@ -12,6 +12,10 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
+)
+
+const(
+	PublishAppContext = "pubsub.publish"
 )
 
 // Publish publishes a message to a topic (now uses enhanced implementation)
@@ -182,7 +186,8 @@ func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 
 // sendToPeer sends a message to a specific peer
 func sendToPeer(gps *PubSubMessages.GossipPubSub, peerID peer.ID, messageBytes []byte) error {
-	stream, err := gps.Host.NewStream(context.Background(), peerID, gps.Protocol)
+	ctx, _ := AppContext.GetAppContext(PublishAppContext).NewChildContext()
+	stream, err := gps.Host.NewStream(ctx, peerID, gps.Protocol)
 	if err != nil {
 		return err
 	}
@@ -213,7 +218,8 @@ func publishViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, mes
 	}
 
 	// Publish the message
-	err = topic.Publish(context.Background(), messageBytes)
+	ctx, _ := AppContext.GetAppContext(PublishAppContext).NewChildContext()
+	err = topic.Publish(ctx, messageBytes)
 	if err != nil {
 		return fmt.Errorf("failed to publish message to topic %s: %w", topicName, err)
 	}

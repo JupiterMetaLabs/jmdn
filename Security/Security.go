@@ -2,7 +2,7 @@ package Security
 
 import (
 	"bytes"
-	"context"
+	AppContext "gossipnode/config/Context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -29,6 +29,10 @@ const (
 	LOKI_BATCH_WAIT = 1 * time.Second
 	LOKI_TIMEOUT    = 5 * time.Second
 	KEEP_LOGS       = true
+)
+
+const(
+	SecurityAppContext = "security"
 )
 
 // expectedChainID holds the node's configured chain ID for validation.
@@ -124,7 +128,7 @@ func CheckTransactionHashes(txs *[]config.Transaction) (bool, error) {
 }
 
 func ThreeChecks(tx *config.Transaction) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(SecurityAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 	// Initilize the Accounts DB connection pool
 	Conn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)

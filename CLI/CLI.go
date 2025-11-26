@@ -2,7 +2,7 @@ package CLI
 
 import (
 	"bufio"
-	"context"
+	AppContext "gossipnode/config/Context"
 	"fmt"
 	"log"
 	"os"
@@ -24,6 +24,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
+)
+
+const(
+	CLIAppContext = "cli"
 )
 
 // formatTimestamp handles both Unix seconds and nanoseconds formats
@@ -117,7 +121,7 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 	fmt.Printf("Starting CLI with gRPC port: %d\n", grpcPort)
 
 	// Create a context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := AppContext.GetAppContext(CLIAppContext).NewChildContext()
 	defer cancel()
 
 	// Channel to signal when we should exit
@@ -380,7 +384,7 @@ func (h *CommandHandler) handleSeedNodeStats(parts []string) {
 	latencyStats := h.measureLatency(client)
 
 	// Test health check
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 
 	err = client.HealthCheck(ctx)
@@ -474,7 +478,7 @@ func (h *CommandHandler) handleMempoolStats(parts []string) {
 		fmt.Printf("❌ Mempool client not available: %v\n", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 	// Get mempool statistics
 	// Get fee statistics
@@ -950,7 +954,7 @@ func (h *CommandHandler) measureLatency(client *seednode.Client) LatencyStats {
 		start := time.Now().UTC()
 
 		// Use a short timeout for each ping
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := AppContext.GetAppContext(CLIAppContext).NewChildContextWithTimeout(2*time.Second)
 		err := client.HealthCheck(ctx)
 		cancel()
 

@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"log"
 	"time"
-
+	AppContext "gossipnode/config/Context"
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/Pubsub"
 	"gossipnode/crdt"
 
 	"github.com/libp2p/go-libp2p/core/host"
+)
+
+const (
+	BuddyNodeSyncServiceAppContext = "avc.crdtsync.integration.service"
 )
 
 // BuddyNodeSyncService provides CRDT sync functionality for individual buddy nodes
@@ -27,7 +31,7 @@ type BuddyNodeSyncService struct {
 
 // NewBuddyNodeSyncService creates a new sync service for a buddy node
 func NewBuddyNodeSyncService(host host.Host, config *SyncConfig) *BuddyNodeSyncService {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := AppContext.GetAppContext(BuddyNodeSyncServiceAppContext).NewChildContext()
 
 	return &BuddyNodeSyncService{
 		nodeID:        host.ID().String(),
@@ -194,7 +198,7 @@ func (gsm *GlobalSyncManager) TriggerGlobalSync() error {
 func (gsm *GlobalSyncManager) WaitForGlobalSyncCompletion(timeout time.Duration) error {
 	log.Printf("⏳ Waiting for global CRDT sync completion (timeout: %v)...", timeout)
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := AppContext.GetAppContext(BuddyNodeSyncServiceAppContext).NewChildContextWithTimeout(timeout)
 	defer cancel()
 
 	// Check sync completion every 500ms

@@ -2,6 +2,7 @@ package DID
 
 import (
 	"context"
+	AppContext "gossipnode/config/Context"
 	"encoding/json"
 	"fmt"
 	"gossipnode/logging"
@@ -30,6 +31,7 @@ import (
 const (
 	LOG_FILE = "DID.log"
 	TOPIC    = "DID"
+	AccountsDBAppContext = "did"
 )
 
 // dbOps defines the interface for database operations that AccountServer depends on.
@@ -59,7 +61,8 @@ func (r *realDbOps) CreateAccount(conn *config.PooledConnection, DIDAddress stri
 }
 
 func (r *realDbOps) GetAccountsConnection() (*config.PooledConnection, error) {
-	return DB_OPs.GetAccountConnectionandPutBack(context.Background())
+	ctx, _ := AppContext.GetAppContext(AccountsDBAppContext).NewChildContext()
+	return DB_OPs.GetAccountConnectionandPutBack(ctx)
 }
 
 func (r *realDbOps) PutAccountsConnection(conn *config.PooledConnection) {
