@@ -636,24 +636,6 @@ func (consensus *Consensus) PrintCRDTState() error {
 			fmt.Printf("✅ Sufficient participation: %d/%d minimum required for consensus\n", len(buddyInputs), config.MaxMainPeers)
 		}
 
-		// BFT := bft.New(bft.Config{
-		// 	MinBuddies:         config.MaxMainPeers,
-		// 	ByzantineTolerance: 4,
-		// 	PrepareTimeout:     10 * time.Second,
-		// 	CommitTimeout:      10 * time.Second,
-		// })
-
-		// adapter, err := bft.NewBFTPubSubAdapter(context.Background(), consensus.gossipnode.GetGossipPubSub(), BFT, config.PubSub_ConsensusChannel)
-		// if err != nil {
-		// 	fmt.Printf("❌ Failed to create BFT adapter: %v\n", err)
-		// }
-		// messenger := bft.Return_pubsubMessenger(adapter, consensus.ZKBlockData.GetZKBlock().BlockHash.String())
-
-		// result, err := BFT.RunConsensus(context.Background(), 1, consensus.ZKBlockData.GetZKBlock().BlockHash.String(), listenerNode.PeerID.String(), buddyInputs, messenger, nil)
-		// if err != nil {
-		// 	fmt.Printf("❌ Failed to run BFT consensus: %v\n", err)
-		// }
-
 		// Request vote aggregation results from all buddy nodes
 		fmt.Println("Requesting vote results from all buddy nodes:", listenerNode.BuddyNodes.Buddies_Nodes)
 

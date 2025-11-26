@@ -1,7 +1,6 @@
 package rpc
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"time"
