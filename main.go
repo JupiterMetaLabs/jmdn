@@ -8,8 +8,6 @@ import (
 	"os/signal"
 	"strings"
 
-	"syscall"
-	"time"
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Block"
 	"gossipnode/CA/ImmuDB_CA"
@@ -33,6 +31,8 @@ import (
 	"gossipnode/node"
 	"gossipnode/seednode"
 	"gossipnode/transfer"
+	"syscall"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -40,9 +40,9 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-const(
+const (
 	YggdrasilAppContext = "main.yggdrasil"
-	MainAppContext = "main"
+	MainAppContext      = "main"
 )
 
 // Simple helper to print the CLI prompt in color
@@ -434,9 +434,8 @@ func StartAPIServer(address string, enableExplorer bool) error {
 
 // Update this function:
 func startDIDServer(h host.Host, address string) error {
-	gc := Context.GetGlobalContext()
-	ctx, cancel := gc.NewChildContext()
-	defer cancel()
+	ctx, _ := Context.GetAppContext(MainAppContext).NewChildContext()
+
 	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 	if err != nil {
 		//Debugging
@@ -462,7 +461,7 @@ func initYggdrasilMessaging() {
 	// Assign yggdraisl address to the config.Yggdrasil_Address
 
 	fmt.Println(config.ColorGreen+"Yggdrasil messaging service started on port:"+config.ColorReset, directMSG.YggdrasilPort)
-}	
+}
 
 // Initialize main database connection pool
 func initMainDBPool(enableLoki bool, username, password string) error {
@@ -540,7 +539,7 @@ func main() {
 	// Initialize the global context
 	initGlobalContext()
 	fmt.Println("Global context initialized")
-	
+
 	// Initialize the app context
 	appContext, cancel := Context.GetAppContext(MainAppContext).NewChildContext()
 	defer cancel()
@@ -597,9 +596,6 @@ func main() {
 		<-sigCh
 		fmt.Println("\nShutdown signal received, closing connections...")
 		Context.GetGlobalContext().Shutdown() // Cancel the context
-		// Give some time for cleanup
-		time.Sleep(500 * time.Millisecond)
-		os.Exit(1)
 	}()
 
 	// Initialize database connection pools FIRST
@@ -678,7 +674,7 @@ func main() {
 	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(appContext)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to get accounts database connection from pool")
-	}	
+	}
 	defer func() {
 		if didDBClient != nil {
 			DB_OPs.PutAccountsConnection(didDBClient)

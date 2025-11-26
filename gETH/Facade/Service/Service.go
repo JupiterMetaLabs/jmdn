@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	AppContext "gossipnode/config/Context"
 	block "gossipnode/Block"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
@@ -18,6 +19,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
+)
+
+const(
+	ServiceAppContext = "gETH.facade.service"
 )
 
 // ServiceImpl implements the Service interface
@@ -34,7 +39,7 @@ func NewService(chainID int) Service {
 
 func (s *ServiceImpl) ChainID(ctx context.Context) (*big.Int, error) {
 	// Create a new context with timeout for this operation
-	opCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	opCtx, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(3*time.Second)
 	defer cancel()
 
 	// Log the operation
@@ -48,7 +53,7 @@ func (s *ServiceImpl) ChainID(ctx context.Context) (*big.Int, error) {
 
 func (s *ServiceImpl) ClientVersion(ctx context.Context) (string, error) {
 	// Create a new context with timeout for this operation
-	opCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	opCtx, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(3*time.Second)
 	defer cancel()
 
 	ClientVersion := "JMDT/v1.0.0"
@@ -64,7 +69,7 @@ func (s *ServiceImpl) ClientVersion(ctx context.Context) (string, error) {
 
 func (s *ServiceImpl) BlockNumber(ctx context.Context) (*big.Int, error) {
 	// Create a new context with timeout for this operation
-	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	opCtx, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	// Pass the context to the database operation
@@ -87,7 +92,7 @@ func (s *ServiceImpl) BlockNumber(ctx context.Context) (*big.Int, error) {
 
 func (s *ServiceImpl) GetTransactionCount(ctx context.Context, addr string, block string) (*big.Int, error) {
 	// Create a new context with timeout for this operation
-	_, cancel := context.WithTimeout(ctx, 10*time.Second)
+	_, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	address := Utils.ConvertAddress(addr)
@@ -108,7 +113,7 @@ func (s *ServiceImpl) GetTransactionCount(ctx context.Context, addr string, bloc
 
 func (s *ServiceImpl) GetTransactionCountFrom(ctx context.Context, addr string, block string) (*big.Int, error) {
 	// Create a new context with timeout for this operation
-	_, cancel := context.WithTimeout(ctx, 10*time.Second)
+	_, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	address := Utils.ConvertAddress(addr)
@@ -130,7 +135,7 @@ func (s *ServiceImpl) GetTransactionCountFrom(ctx context.Context, addr string, 
 
 func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error) {
 	// Create a new context with timeout for this operation
-	opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	opCtx, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(8*time.Second)
 	defer cancel()
 
 	ZKBlock, err := DB_OPs.GetZKBlockByNumber(nil, num.Uint64())
@@ -166,7 +171,7 @@ func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bo
 // Need to add more functionality to this
 func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, network string) (*big.Int, error) {
 
-	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	opCtx, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	// Lets assume block is the latest - so we will get the balance from the latest block
@@ -246,7 +251,7 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 	// Debugging
 	// fmt.Println(">>>>>> SendRawTx received: ", rawHex)
 	// Create a new context with timeout for this operation
-	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	opCtx, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(15*time.Second)
 	defer cancel()
 
 	// Remove 0x prefix if present
@@ -364,7 +369,7 @@ func convertEthTxToConfigTx(ethTx *types.Transaction) config.Transaction {
 
 func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, error) {
 	// Create a new context with timeout for this operation
-	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	opCtx, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	// Normalize hash - ensure it has 0x prefix (keys are stored with 0x prefix)
@@ -427,7 +432,7 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 
 func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[string]any, error) {
 	// Create a new context with timeout for this operation
-	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	opCtx, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	// Get the receipt from the database
@@ -552,7 +557,7 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 
 func (s *ServiceImpl) GetLogs(ctx context.Context, q Types.FilterQuery) ([]Types.Log, error) {
 	// Create a new context with timeout for this operation
-	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	opCtx, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	// Get the logs from the database
@@ -576,34 +581,11 @@ func (s *ServiceImpl) Call(ctx context.Context, msg Types.CallMsg, block *big.In
 // EstimateGas UNITS!! implements the Service interface - estimates gas needed for a transaction
 func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint64, error) {
 	// Create a new context with timeout for this operation
-	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	opCtx, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	// Base gas cost for any transaction
 	baseGas := uint64(21000)
-
-	// // Get fee statistics from routing service to adjust base gas estimate
-	// feeStats, err := block.GetFeeStatisticsFromRouting()
-	// if err == nil && feeStats != nil {
-	// 	fmt.Printf("📊 Fee stats from routing service:\n")
-	// 	fmt.Printf("   MeanFee: %d wei (%.9f gwei)\n", feeStats.MeanFee, float64(feeStats.MeanFee)/1000000000.0)
-	// 	fmt.Printf("   Standard: %d wei (%.9f gwei)\n", feeStats.RecommendedFees.Standard, float64(feeStats.RecommendedFees.Standard)/1000000000.0)
-	// 	fmt.Printf("   Min: %d wei, Max: %d wei, Median: %d wei\n", feeStats.MinFee, feeStats.MaxFee, feeStats.MedianFee)
-
-	// 	if feeStats.MeanFee > 0 {
-	// 		// Use mean fee from routing service to adjust base gas
-	// 		// Higher fees typically correlate with more complex transactions requiring more gas
-	// 		feeMultiplier := float64(feeStats.MeanFee) / 35000000000.0 // Normalize against 35 gwei
-	// 		if feeMultiplier > 1.0 {
-	// 			fmt.Printf("💰 Applying fee multiplier: %.4f (MeanFee exceeds 35 gwei threshold)\n", feeMultiplier)
-	// 			baseGas = uint64(float64(baseGas) * feeMultiplier)
-	// 		} else {
-	// 			fmt.Printf("✅ Fee multiplier not applied (MeanFee=%.9f gwei < 35 gwei threshold)\n", float64(feeStats.MeanFee)/1000000000.0)
-	// 		}
-	// 	}
-	// } else if err != nil {
-	// 	fmt.Printf("⚠️ Failed to get fee statistics from routing service: %v\n", err)
-	// }
 
 	// Additional gas for contract deployment
 	if msg.To == "" {
@@ -645,7 +627,7 @@ func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint6
 // GasPrice implements the Service interface - gets gas price from routing service
 func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
 	// Create a new context with timeout for this operation
-	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	opCtx, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	// Get fee statistics directly from routing service
@@ -680,7 +662,7 @@ func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
 // GetCode implements the Service interface - retrieves contract code at a specific address and block
 func (s *ServiceImpl) GetCode(ctx context.Context, addr string, block *big.Int) (string, error) {
 	// Create a new context with timeout for this operation
-	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	opCtx, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	// Log the operation
@@ -706,7 +688,7 @@ func (s *ServiceImpl) GetCode(ctx context.Context, addr string, block *big.Int) 
 // FeeHistory implements the Service interface - retrieves fee history for the last N blocks
 func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest *big.Int, perc []float64) (map[string]any, error) {
 	// Create a new context with timeout for this operation
-	opCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	opCtx, cancel := AppContext.GetAppContext(ServiceAppContext).NewChildContextWithTimeout(30*time.Second)
 	defer cancel()
 
 	// Determine the newest block number

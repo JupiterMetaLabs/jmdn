@@ -86,7 +86,6 @@ func (consensus *Consensus) GetOnlyPeerIDs(buddies []PubSubMessages.Buddy_PeerMu
 }
 
 func (consensus *Consensus) AddBuddyNodesToPeerList(zkBlock *config.ZKBlock, buddies []PubSubMessages.Buddy_PeerMultiaddr) (*PubSubMessages.ConsensusMessage, error) {
-
 	ZKBlock := Metadata.ZKBlockMetadata(zkBlock, buddies).SetEndTimeoutMetadata(time.Now().UTC().Add(config.ConsensusTimeout)).SetStartTimeMetadata(time.Now().UTC())
 	if ZKBlock == nil {
 		return nil, fmt.Errorf("failed to create ZKBlock metadata")

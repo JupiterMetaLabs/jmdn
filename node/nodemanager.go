@@ -366,7 +366,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 		fmt.Printf("Peer %s exists but appears offline. Attempting reconnection...\n", peerInfo.ID)
 
 		// Try to connect immediately
-		ctx, cancel := context.WithTimeout(nm.ctx, 10 * time.Second)
+		ctx, cancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContextWithTimeout(10 * time.Second)
 		defer cancel()
 
 		if err := nm.host.Connect(ctx, *peerInfo); err != nil {
@@ -440,7 +440,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 	metrics.ActivePeersGauge.Inc() // New peer starts as active
 
 	// Try to connect immediately
-	ctx, cancel := context.WithTimeout(nm.ctx, 10 * time.Second)
+	ctx, cancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContextWithTimeout(10 * time.Second)
 	defer cancel()
 
 	if err := nm.host.Connect(ctx, *peerInfo); err != nil {
@@ -705,7 +705,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 	}
 
 	// Try to connect if not connected
-	ctx, cancel := context.WithTimeout(nm.ctx, 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 
 	nm.Logger.Logger.Debug("Attempting to connect",

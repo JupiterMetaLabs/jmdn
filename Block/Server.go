@@ -1,7 +1,6 @@
 package Block
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,12 +18,9 @@ import (
 	"gossipnode/config"
 	"gossipnode/logging"
 
-	// "gossipnode/messaging"
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
-	GC "gossipnode/config/Context"
 	AppContext "gossipnode/config/Context"
-	// "gossipnode/PubSubMessages"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -320,27 +316,6 @@ func processZKBlock(c *gin.Context) {
 		return
 	}
 
-	// // Start block propagation as a new goroutine after consensus setup
-	// // This propagates the block to peers for voting
-	// go func() {
-	// 	// Create consensus message from the consensus data
-	// 	consensusMessage := consensus.ZKBlockData
-	// 	if consensusMessage == nil {
-	// 		log.Error().Msg("Consensus message is nil, cannot propagate block")
-	// 		return
-	// 	}
-
-	// 	// if err := messaging.PropagateZKBlock(globalHost, consensusMessage); err != nil {
-	// 	// 	log.Error().
-	// 	// 		Err(err).
-	// 	// 		Str("block_hash", block.BlockHash.Hex()).
-	// 	// 		Msg("Failed to propagate block after consensus setup")
-	// 	// } else {
-	// 	// 	log.Info().
-	// 	// 		Str("block_hash", block.BlockHash.Hex()).
-	// 	// 		Msg("Block propagated successfully after consensus setup")
-	// 	// }
-	// }()
 
 	for _, tx := range block.Transactions {
 		LogTransaction(
@@ -370,7 +345,7 @@ func processZKBlock(c *gin.Context) {
 
 func processZKBlockNoConsensus(c *gin.Context) {
 	fmt.Println("=== DEBUG: processZKBlock API called ===")
-	ctx, cancel := context.WithTimeout(GC.GetGlobalContext().Get(), 14*time.Second)
+	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(14*time.Second)
 	defer cancel()
 
 	// Parse the block data from the request

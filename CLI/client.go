@@ -2,7 +2,6 @@ package CLI
 
 import (
 	"fmt"
-	"log"
 	"time"
 
 	pb "gossipnode/CLI/proto"
@@ -166,35 +165,4 @@ func (c *Client) ReturnAddrs() (*pb.Addrs, error) {
 	ctx, cancel := AppContext.GetAppContext(CLIClinetAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 	return c.conn.ReturnAddrs(ctx, &emptypb.Empty{})
-}
-
-// Example usage:
-func exampleUsage() {
-	// Connect to the gRPC server
-	client, err := NewClient("localhost:15053")
-	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	// List peers
-	peers, err := client.ListPeers()
-	if err != nil {
-		log.Fatalf("Failed to list peers: %v", err)
-	}
-	fmt.Printf("Found %d peers\n", len(peers.Peers))
-
-	// Get node addresses
-	addrs, err := client.ReturnAddrs()
-	if err != nil {
-		log.Fatalf("Failed to get addresses: %v", err)
-	}
-	fmt.Printf("Node addresses: %v\n", addrs.Peers)
-
-	// Get database state
-	dbState, err := client.GetDatabaseState()
-	if err != nil {
-		log.Fatalf("Failed to get database state: %v", err)
-	}
-	fmt.Printf("Main DB TxID: %d\n", dbState.MainDb.TxId)
 }
