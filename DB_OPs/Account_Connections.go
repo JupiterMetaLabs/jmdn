@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"gossipnode/config"
+	AppContext "gossipnode/config/Context"
 	"gossipnode/logging"
 	"gossipnode/metrics"
 	"os"
@@ -187,7 +188,7 @@ func ensureAccountsDBExists(username, password string) error {
 	}
 	defer c.Disconnect()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(30*time.Second)
 	defer cancel()
 
 	// Login with admin credentials
@@ -282,7 +283,7 @@ func EnsureDBConnection(accountsPool *config.PooledConnection) error {
 	for i := 0; i < maxRetries; i++ {
 
 		// Try to get current state
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(10*time.Second)
 		defer cancel()
 
 		_, err := accountsPool.Client.Client.CurrentState(ctx)

@@ -9,11 +9,16 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	AppContext "gossipnode/config/Context"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/client"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/metadata"
+)
+
+const (
+	ConnectionPoolAppContext = "config.connectionpool"
 )
 
 // LOKI_URL will be set conditionally based on whether Loki is enabled
@@ -142,7 +147,8 @@ func NewAsyncLoggerWithLoki(enableLoki bool) (*logging.AsyncLogger, error) {
 // GetContext returns a new background context with the connection's authentication token.
 // Callers should use this to create contexts for their database operations.
 func (pc *PooledConnection) GetContext() context.Context {
-	return metadata.NewOutgoingContext(context.Background(),
+	ctx, _ := AppContext.GetAppContext(ConnectionPoolAppContext).NewChildContext()
+	return metadata.NewOutgoingContext(ctx,
 		metadata.Pairs("authorization", pc.Token))
 }
 
@@ -329,7 +335,7 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 	fmt.Println("ImmuDB client created successfully", c.SessionID)
 
 	// login + select database as before
-	ctx, cancel := context.WithTimeout(context.Background(), cp.Config.ConnectionTimeout)
+	ctx, cancel := AppContext.GetAppContext(ConnectionPoolAppContext).NewChildContextWithTimeout(cp.Config.ConnectionTimeout)
 	defer cancel()
 
 	cp.Logger.Logger.Info("Authenticating with ImmuDB as user '%s'",
@@ -362,12 +368,12 @@ func (cp *ConnectionPool) createConnection() (*PooledConnection, error) {
 		c.Disconnect()
 		return nil, fmt.Errorf("failed to use database %s: %w", cp.Database, err)
 	}
-
+	longCTX, _ := AppContext.GetAppContext(ConnectionPoolAppContext).NewChildContext()
 	Immuclient := ImmuClient{
 		Client:      c,
-		Ctx:         ctx,
+		Ctx:         longCTX,
 		Cancel:      cancel,
-		BaseCtx:     context.Background(),
+		BaseCtx:     longCTX,
 		Database:    cp.Database,
 		RetryLimit:  3,
 		IsConnected: true,

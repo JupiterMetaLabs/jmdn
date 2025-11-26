@@ -108,7 +108,7 @@ func NewNodeManagerWithLoki(node *config.Node, enableLoki bool) (*NodeManager, e
 		node.DB.Instance = db
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContext()
 
 	// Set initial metrics
 	metricsLogger, err := logging.ReturnDefaultLoggerWithLoki("metrics.log", "metrics", enableLoki)

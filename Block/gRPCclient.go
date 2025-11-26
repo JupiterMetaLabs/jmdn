@@ -1,7 +1,6 @@
 package Block
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"math/big"
@@ -88,7 +87,7 @@ func (m *MempoolClient) Close() error {
 
 // SubmitTransaction submits a transaction to the mempool
 func (m *MempoolClient) SubmitTransaction(tx *config.Transaction, txHash string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MempoolClientAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	// Convert the transaction to the protobuf format
@@ -133,7 +132,7 @@ func (m *MempoolClient) SubmitTransaction(tx *config.Transaction, txHash string)
 
 // SubmitTransactions submits a batch of transactions to the mempool
 func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.BatchSubmitResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) // Longer timeout for batches
+	ctx, cancel := AppContext.GetAppContext(MempoolClientAppContext).NewChildContextWithTimeout(15*time.Second) // Longer timeout for batches
 	defer cancel()
 
 	// Log batch submission
@@ -270,7 +269,7 @@ func GetFeeStatisticsFromRouting() (*GasFeeStats, error) {
 
 // GetFeeStatistics gets detailed fee statistics from the mempool
 func (m *MempoolClient) GetFeeStatistics() (*pb.FeeStatistics, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MempoolClientAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 
 	RoutingClient, err := GetRoutingClient()

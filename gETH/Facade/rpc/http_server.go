@@ -7,8 +7,12 @@ import (
 	"time"
 
 	"gossipnode/gETH/Facade/Service/Logger"
-
+	AppContext "gossipnode/config/Context"
 	"github.com/gin-gonic/gin"
+)
+
+const(
+	HTTPServerAppContext = "geth.http.server"
 )
 
 type HTTPServer struct {
@@ -55,7 +59,8 @@ func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
 		write(c, RespErr(nil, -32700, "Parse error"))
 		return
 	}
-	resp, _ := s.h.Handle(context.Background(), req)
+	longCTX, _ := AppContext.GetAppContext(HTTPServerAppContext).NewChildContext()
+	resp, _ := s.h.Handle(longCTX, req)
 	write(c, resp)
 }
 
