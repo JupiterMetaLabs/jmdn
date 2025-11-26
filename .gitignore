@@ -34,3 +34,6 @@ test
 immudb
 data/  
 SIM/__pycache__/testZKBlock.cpython-313.pyc
+.env
+SIM/*
+

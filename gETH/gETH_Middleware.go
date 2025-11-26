@@ -125,10 +125,23 @@ func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error
 		return nil, err
 	}
 
-	// Sort the Txns by nonce
-	Txns = SortTransactionsByNonce(Txns)
-	// Now pick the last nonce
-	nonce := Txns[len(Txns)-1].Nonce
+	// Filter to only transactions SENT FROM this address
+	// Nonce only increases for outbound transactions, not inbound
+	sentTxns := make([]*config.Transaction, 0)
+	for _, tx := range Txns {
+		if tx.From != nil && *tx.From == addr {
+			sentTxns = append(sentTxns, tx)
+		}
+	}
+
+	// If no sent transactions, nonce is 0
+	var nonce uint64 = 0
+	if len(sentTxns) > 0 {
+		// Sort the sent transactions by nonce
+		sentTxns = SortTransactionsByNonce(sentTxns)
+		// Now pick the last nonce (highest)
+		nonce = sentTxns[len(sentTxns)-1].Nonce
+	}
 
 	// Create hash of all transactions
 	txHash, err := HashTransactions(Txns)

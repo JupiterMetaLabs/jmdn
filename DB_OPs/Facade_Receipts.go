@@ -65,160 +65,94 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, commonhash common.H
 	// Debugging 
 	fmt.Println("DEBUG: normalizedHash", normalizedHash)
 
-	// First, check if transaction is currently processing
-	processingKey := fmt.Sprintf("tx_processing:%s", normalizedHash)
+	// FIRST: Check if transaction exists (similar to TxByHash pattern)
+	// Get the transaction to verify it exists
+	tx, err := GetTransactionByHash(mainDBClient, normalizedHash)
+	if err == nil && tx != nil {
+		// Transaction found - get the block and generate receipt
+		block, err := GetTransactionBlock(mainDBClient, normalizedHash)
+		if err != nil {
+			mainDBClient.Client.Logger.Logger.Error("Failed to get block for receipt generation",
+				zap.Error(err),
+				zap.String("txHash", normalizedHash),
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, "ImmuDB.log"),
+				zap.String(logging.Topic, "ImmuDB_ImmuClient"),
+				zap.String(logging.Loki_url, logging.GetLokiURL()),
+				zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
+			)
+			return nil, fmt.Errorf("failed to get block for receipt generation: %w", err)
+		}
 
-	fmt.Println("DEBUG: processingKey", processingKey)
-	processing, err := Exists(mainDBClient, processingKey)
-	if err == nil && processing {
-		mainDBClient.Client.Logger.Logger.Info("Transaction is currently processing, receipt not available yet",
+		// Find transaction index in the block
+		var txIndex uint64 = 0
+		for i, blockTx := range block.Transactions {
+			if blockTx.Hash.Hex() == normalizedHash {
+				txIndex = uint64(i)
+				break
+			}
+		}
+
+		// Generate receipt from transaction and block data
+		receipt := generateReceiptFromTransaction(mainDBClient, tx, block, txIndex)
+
+		mainDBClient.Client.Logger.Logger.Info("Successfully generated and returned receipt",
 			zap.String("txHash", normalizedHash),
+			zap.Uint64("blockNumber", receipt.BlockNumber),
+			zap.Uint64("status", receipt.Status),
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, LOKI_URL),
 			zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
 		)
-		// Return nil to indicate receipt not available yet (transaction still processing)
-		return nil, ErrNotFound
+
+		return receipt, nil
 	}
 
-	// Try to get the receipt directly from storage
-	receiptKey := fmt.Sprintf("%s%s", DEFAULT_PREFIX_RECEIPT, normalizedHash)
-	// Debugging
-	fmt.Println("DEBUG: receiptKey", receiptKey)
-	receiptBytes, err := Read(mainDBClient, receiptKey)
-	if err == nil && len(receiptBytes) > 0 {
-		// Receipt exists, unmarshal it
-		var receipt config.Receipt
-		if err := json.Unmarshal(receiptBytes, &receipt); err != nil {
-			mainDBClient.Client.Logger.Logger.Error("Failed to unmarshal receipt",
-				zap.Error(err),
-				zap.String("txHash", normalizedHash),
-				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
-			)
-			return nil, fmt.Errorf("failed to unmarshal receipt: %w", err)
+	// Transaction not found - SECOND: Check if tx_processing = -1
+	processingKey := fmt.Sprintf("tx_processing:%s", normalizedHash)
+	processing, err := Exists(mainDBClient, processingKey)
+	if err == nil && processing {
+		// Read the value to check if it's -1
+		processingValueBytes, readErr := Read(mainDBClient, processingKey)
+		if readErr == nil && len(processingValueBytes) > 0 {
+			var processingValue int64
+			if jsonErr := json.Unmarshal(processingValueBytes, &processingValue); jsonErr == nil {
+				if processingValue == -1 {
+					mainDBClient.Client.Logger.Logger.Info("Transaction processing status is -1, returning null result",
+						zap.String("txHash", normalizedHash),
+						zap.Int64("processingValue", processingValue),
+						zap.Time(logging.Created_at, time.Now().UTC()),
+						zap.String(logging.Log_file, LOG_FILE),
+						zap.String(logging.Topic, TOPIC),
+						zap.String(logging.Loki_url, LOKI_URL),
+						zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
+					)
+					// Return nil receipt to indicate result should be null
+					return nil, nil
+				}
+			}
 		}
-
-		mainDBClient.Client.Logger.Logger.Info("Successfully retrieved receipt from storage",
-			zap.String("txHash", normalizedHash),
-			zap.Uint64("blockNumber", receipt.BlockNumber),
-			zap.Uint64("status", receipt.Status),
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, "ImmuDB.log"),
-			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
-			zap.String(logging.Loki_url, logging.GetLokiURL()),
-			zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
-		)
-		return &receipt, nil
 	}
 
-	// Receipt doesn't exist in storage, generate it from transaction data
-	mainDBClient.Client.Logger.Logger.Info("Receipt not found in storage, generating from transaction data",
+	// THIRD: Transaction not found and tx_processing is not -1 (or doesn't exist)
+	mainDBClient.Client.Logger.Logger.Error("Transaction not found",
 		zap.String("txHash", normalizedHash),
+		zap.String(logging.Connection_database, config.DBName),
 		zap.Time(logging.Created_at, time.Now().UTC()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, LOKI_URL),
+		zap.String(logging.Log_file, "ImmuDB.log"),
+		zap.String(logging.Topic, "ImmuDB_ImmuClient"),
+		zap.String(logging.Loki_url, logging.GetLokiURL()),
 		zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
 	)
-
-	// Get the transaction to generate receipt
-	tx, err := GetTransactionByHash(mainDBClient, normalizedHash)
-	if err != nil {
-		mainDBClient.Client.Logger.Logger.Error("Failed to get transaction for receipt generation",
-			zap.Error(err),
-			zap.String("txHash", normalizedHash),
-			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, "ImmuDB.log"),
-			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
-			zap.String(logging.Loki_url, logging.GetLokiURL()),
-			zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
-		)
-		return nil, fmt.Errorf("failed to get transaction for receipt generation: %w", err)
-	}
-
-	// Get the block containing this transaction
-	block, err := GetTransactionBlock(mainDBClient, normalizedHash)
-	if err != nil {
-		mainDBClient.Client.Logger.Logger.Error("Failed to get block for receipt generation",
-			zap.Error(err),
-			zap.String("txHash", normalizedHash),
-			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, "ImmuDB.log"),
-			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
-			zap.String(logging.Loki_url, logging.GetLokiURL()),
-			zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
-		)
-		return nil, fmt.Errorf("failed to get block for receipt generation: %w", err)
-	}
-
-	// Find transaction index in the block
-	var txIndex uint64 = 0
-	for i, blockTx := range block.Transactions {
-		if blockTx.Hash.Hex() == normalizedHash {
-			txIndex = uint64(i)
-			break
-		}
-	}
-
-	// Generate receipt from transaction and block data
-	receipt := generateReceiptFromTransaction(tx, block, txIndex)
-
-	// Store the generated receipt for future use
-	receiptBytes, err = json.Marshal(receipt)
-	if err != nil {
-		mainDBClient.Client.Logger.Logger.Error("Failed to marshal generated receipt",
-			zap.Error(err),
-			zap.String("txHash", normalizedHash),
-			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, "ImmuDB.log"),
-			zap.String(logging.Topic, "ImmuDB_ImmuClient"),
-			zap.String(logging.Loki_url, logging.GetLokiURL()),
-			zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
-		)
-		// Don't fail the operation, just log the error
-	} else {
-		// Store the receipt
-		if err := Create(mainDBClient, receiptKey, receiptBytes); err != nil {
-			mainDBClient.Client.Logger.Logger.Error("Failed to store generated receipt",
-				zap.Error(err),
-				zap.String("txHash", normalizedHash),
-				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
-			)
-			// Don't fail the operation, just log the error
-		}
-	}
-
-	mainDBClient.Client.Logger.Logger.Info("Successfully generated and returned receipt",
-		zap.String("txHash", normalizedHash),
-		zap.Uint64("blockNumber", receipt.BlockNumber),
-		zap.Uint64("status", receipt.Status),
-		zap.Time(logging.Created_at, time.Now().UTC()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, LOKI_URL),
-		zap.String(logging.Function, "DB_OPs.GetReceiptByHash"),
-	)
-
-	return receipt, nil
+	// Return error that will be formatted as "transaction not found" in JSON-RPC
+	return nil, fmt.Errorf("transaction not found")
 }
 
 // generateReceiptFromTransaction creates a receipt from transaction and block data
-func generateReceiptFromTransaction(tx *config.Transaction, block *config.ZKBlock, txIndex uint64) *config.Receipt {
+func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *config.Transaction, block *config.ZKBlock, txIndex uint64) *config.Receipt {
 	// Calculate cumulative gas used up to this transaction using actual gas consumption
 	var cumulativeGasUsed uint64 = 0
 	for i := uint64(0); i <= txIndex; i++ {
@@ -229,10 +163,25 @@ func generateReceiptFromTransaction(tx *config.Transaction, block *config.ZKBloc
 		}
 	}
 
-	// Generate logs (empty for now, but could be populated from contract execution)
+	// Generate logs directly when function is called
+	// Logs are generated with metadata populated from block/transaction data
 	logs := []config.Log{}
 
-
+	// Create a log entry with all required fields populated
+	if tx.From != nil {
+		log := config.Log{
+			BlockNumber: block.BlockNumber,
+			BlockHash:   block.BlockHash,
+			TxHash:      tx.Hash,
+			TxIndex:     txIndex,
+			LogIndex:    txIndex,
+			Data:        []byte{0},
+			Topics:      []common.Hash{},
+			Removed:     false,
+			Address:     *tx.From,
+		}
+		logs = append(logs, log)
+	}
 
 	// Create bloom filter for logs using proper Ethereum algorithm
 	logsBloom := utils.GenerateLogsBloom(logs)

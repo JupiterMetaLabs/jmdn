@@ -136,12 +136,21 @@ func SubmitRawTransaction(tx *config.Transaction) (string, error) {
 		return "", errors.New("invalid transaction: To and From address are the same")
 	}
 
-	// Make transaction hash
-	rawTxBytes, err := json.Marshal(tx)
-	if err != nil {
-		return "", err
+	// Use transaction hash if already set (from RLP parsing), otherwise compute from JSON
+	// Note: RLP-encoded transactions will have hash set from convertEthTxToConfigTx
+	var txHash string
+	if tx.Hash != (common.Hash{}) {
+		// Hash already set (from RLP-encoded transaction)
+		txHash = tx.Hash.Hex()
+	} else {
+		// Fallback: compute hash from JSON (for JSON-only transactions)
+		// WARNING: This produces a different hash than standard Ethereum RLP hash
+		rawTxBytes, err := json.Marshal(tx)
+		if err != nil {
+			return "", err
+		}
+		txHash = crypto.Keccak256Hash(rawTxBytes).Hex()
 	}
-	txHash := crypto.Keccak256Hash(rawTxBytes).Hex()
 	// Debugging
 	fmt.Println("Transaction Hash: ", txHash)
 	// Asynchronously submit to mempool with context
@@ -498,7 +507,7 @@ func getBlockByNumber(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(8*time.Second)
+	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(15*time.Second)
 	defer cancel()
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
@@ -534,7 +543,7 @@ func getBlockByNumber(c *gin.Context) {
 func getBlockByHash(c *gin.Context) {
 	blockHash := c.Param("hash")
 
-	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(8*time.Second)
+	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(15*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
@@ -560,7 +569,7 @@ func getBlockByHash(c *gin.Context) {
 // getTransactionInfo gets detailed information about a transaction
 func getTransactionInfo(c *gin.Context) {
 	txHash := c.Param("hash")
-	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(8*time.Second)
+	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(15*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
@@ -603,7 +612,7 @@ func getTransactionInfo(c *gin.Context) {
 
 // getLatestBlock returns information about the latest block
 func getLatestBlock(c *gin.Context) {
-	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(8*time.Second)
+	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(15*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)

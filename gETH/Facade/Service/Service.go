@@ -90,21 +90,47 @@ func (s *ServiceImpl) GetTransactionCount(ctx context.Context, addr string, bloc
 	_, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	address := Utils.ConvertAddress(addr)
+	Transactions, err := DB_OPs.GetTransactionsByAccount(nil, &address)
 	// Return the transaction count for the given address of latest block
+	// Transactions, err := DB_OPs.CountTransactions(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// fmt.Println("Transactions: ", Transactions)
+	// Convert the Transactions to big.Int
+	// TransactionsBigInt := big.NewInt(int64(Transactions))
+
+	// return TransactionsBigInt, nil
+	return big.NewInt(int64(len(Transactions))), nil
+}
+
+func (s *ServiceImpl) GetTransactionCountFrom(ctx context.Context, addr string, block string) (*big.Int, error) {
+	// Create a new context with timeout for this operation
+	_, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
 	address := Utils.ConvertAddress(addr)
 	Transactions, err := DB_OPs.GetTransactionsByAccount(nil, &address)
 	if err != nil {
 		return nil, err
 	}
 
-	fmt.Println("Transactions: ", Transactions)
+	// Filter transactions where the address is in the From field
+	fromTransactionCount := 0
+	for _, tx := range Transactions {
+		if tx.From != nil && *tx.From == address {
+			fromTransactionCount++
+		}
+	}
 
-	return big.NewInt(int64(len(Transactions))), nil
+	return big.NewInt(int64(fromTransactionCount)), nil
 }
 
 func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error) {
 	// Create a new context with timeout for this operation
-	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
 	ZKBlock, err := DB_OPs.GetZKBlockByNumber(nil, num.Uint64())
@@ -158,13 +184,13 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 
 			// Create new account with zero balance
 			// We need to provide a DID address, so we'll use the address as DID for now
-			didAddress := fmt.Sprintf("%s:%s:%s", DB_OPs.DIDPrefix, network, address.Hex())
+			didAddress := fmt.Sprintf("%s%s:%s", DB_OPs.DIDPrefix, network, address.Hex())
 
 			// Create the Utils.DIDDoc
 			didDoc := Utils.DIDDoc{
-				Address: address,
+				Address:    address,
 				DIDAddress: didAddress,
-				Metadata: nil,
+				Metadata:   nil,
 			}
 
 			// Create the account and propagate the DID
@@ -341,8 +367,23 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Pass the context to the database operation
-	ZKTx, err := DB_OPs.GetTransactionByHash(nil, hash)
+	// Normalize hash - ensure it has 0x prefix (keys are stored with 0x prefix)
+	normalizedHash := hash
+	if !strings.HasPrefix(strings.ToLower(hash), "0x") {
+		normalizedHash = "0x" + hash
+	}
+
+	// Get the block containing this transaction
+	block, err := DB_OPs.GetTransactionBlock(nil, normalizedHash)
+	if err != nil {
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash failed to get block: %v", err), "TxByHash", -1); logErr != nil {
+			fmt.Printf("Failed to log TxByHash error: %v\n", logErr)
+		}
+		return nil, err
+	}
+
+	// Get the transaction
+	ZKTx, err := DB_OPs.GetTransactionByHash(nil, normalizedHash)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash failed: %v", err), "TxByHash", -1); logErr != nil {
 			fmt.Printf("Failed to log TxByHash error: %v\n", logErr)
@@ -358,6 +399,23 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 		}
 		return nil, err
 	}
+
+	// Find the transaction index in the block
+	var txIndex *uint64
+	for i := range block.Transactions {
+		TempBlockHash := block.Transactions[i].Hash.Hex() // Hex() returns with 0x prefix
+		if TempBlockHash == normalizedHash {
+			idx := uint64(i)
+			txIndex = &idx
+			break
+		}
+	}
+
+	// Populate block information
+	blockNumber := block.BlockNumber
+	tx.BlockNumber = &blockNumber
+	tx.BlockHash = block.BlockHash.Bytes()
+	tx.TransactionIndex = txIndex
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash returned to the client: %s", hash), "TxByHash", 1); logErr != nil {
@@ -375,37 +433,113 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 	// Get the receipt from the database
 	receipt, err := DB_OPs.GetReceiptByHash(nil, common.HexToHash(hash))
 	if err != nil {
+		// Check if error is "transaction not found"
+		if err.Error() == "transaction not found" {
+			if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash: transaction not found: %s", hash), "ReceiptByHash", -1); logErr != nil {
+				fmt.Printf("Failed to log ReceiptByHash error: %v\n", logErr)
+			}
+			// Return error that will be formatted as JSON-RPC error with code -32000
+			return nil, fmt.Errorf("transaction not found")
+		}
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash failed: %v", err), "ReceiptByHash", -1); logErr != nil {
 			fmt.Printf("Failed to log ReceiptByHash error: %v\n", logErr)
 		}
 		return nil, err
 	}
 
-	// Convert the receipt to a map for JSON serialization
+	// If receipt is nil and no error, it means tx_processing was -1
+	// Return nil to indicate result should be null in JSON-RPC response
+	if receipt == nil {
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash: tx_processing=-1 for %s, returning null", hash), "ReceiptByHash", 1); logErr != nil {
+			fmt.Printf("Failed to log ReceiptByHash: %v\n", logErr)
+		}
+		return nil, nil
+	}
+
+	// Get the transaction to extract from and to addresses
+	tx, txErr := DB_OPs.GetTransactionByHash(nil, hash)
+	if txErr != nil {
+		// Log but don't fail - we can still return receipt without from/to
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash: failed to get transaction for from/to: %v", txErr), "ReceiptByHash", -1); logErr != nil {
+			fmt.Printf("Failed to log: %v\n", logErr)
+		}
+	}
+
+	// Convert logs to JSON-RPC format
+	logs := make([]map[string]any, len(receipt.Logs))
+	for i, log := range receipt.Logs {
+		topics := make([]string, len(log.Topics))
+		for j, topic := range log.Topics {
+			topics[j] = topic.Hex() // Already has 0x prefix
+		}
+
+		logs[i] = map[string]any{
+			"address":          log.Address.Hex(), // Already has 0x prefix
+			"topics":           topics,
+			"data":             "0x" + fmt.Sprintf("%x", log.Data),
+			"blockNumber":      "0x" + fmt.Sprintf("%x", log.BlockNumber),
+			"transactionHash":  log.TxHash.Hex(), // Already has 0x prefix
+			"transactionIndex": "0x" + fmt.Sprintf("%x", log.TxIndex),
+			"blockHash":        log.BlockHash.Hex(), // Already has 0x prefix
+			"logIndex":         "0x" + fmt.Sprintf("%x", log.LogIndex),
+			"removed":          log.Removed,
+		}
+	}
+
+	// Convert the receipt to a map for JSON serialization in JSON-RPC format
 	receiptMap := map[string]any{
-		"transactionHash":   receipt.TxHash.Hex(),
-		"blockHash":         receipt.BlockHash.Hex(),
-		"blockNumber":       fmt.Sprintf("%x", receipt.BlockNumber),
-		"transactionIndex":  fmt.Sprintf("%x", receipt.TransactionIndex),
-		"status":            fmt.Sprintf("%x", receipt.Status),
-		"type":              fmt.Sprintf("%x", receipt.Type),
-		"gasUsed":           fmt.Sprintf("%x", receipt.GasUsed),
-		"cumulativeGasUsed": fmt.Sprintf("%x", receipt.CumulativeGasUsed),
-		"logs":              Utils.ConvertLogsToMap(receipt.Logs),
-		"logsBloom":         fmt.Sprintf("%x", receipt.LogsBloom),
+		"transactionHash":   receipt.TxHash.Hex(), // Already has 0x prefix
+		"transactionIndex":  "0x" + fmt.Sprintf("%x", receipt.TransactionIndex),
+		"blockHash":         receipt.BlockHash.Hex(), // Already has 0x prefix
+		"blockNumber":       "0x" + fmt.Sprintf("%x", receipt.BlockNumber),
+		"cumulativeGasUsed": "0x" + fmt.Sprintf("%x", receipt.CumulativeGasUsed),
+		"gasUsed":           "0x" + fmt.Sprintf("%x", receipt.GasUsed),
+		"contractAddress":   nil,
+		"logs":              logs,
+		"logsBloom":         "0x" + fmt.Sprintf("%x", receipt.LogsBloom),
+		"status":            "0x" + fmt.Sprintf("%x", receipt.Status),
+	}
+
+	// Add transaction type (from receipt or transaction, default to "0x0")
+	txType := receipt.Type
+	if txType == 0 && tx != nil {
+		txType = uint8(tx.Type)
+	}
+	receiptMap["type"] = "0x" + fmt.Sprintf("%x", txType)
+
+	// Add effectiveGasPrice from transaction
+	if tx != nil {
+		var effectiveGasPrice *big.Int
+		if tx.GasPrice != nil {
+			// For legacy (Type 0) and EIP-2930 (Type 1), use GasPrice
+			effectiveGasPrice = tx.GasPrice
+		} else if tx.MaxFee != nil {
+			// For EIP-1559 (Type 2), use MaxFee as effectiveGasPrice
+			// In a full implementation, this would be min(MaxFee, baseFee + MaxPriorityFee)
+			// but for simplicity, we use MaxFee
+			effectiveGasPrice = tx.MaxFee
+		}
+
+		if effectiveGasPrice != nil {
+			receiptMap["effectiveGasPrice"] = "0x" + effectiveGasPrice.Text(16)
+		}
+	}
+
+	// Add from and to addresses from transaction
+	if tx != nil {
+		if tx.From != nil {
+			receiptMap["from"] = tx.From.Hex() // Already has 0x prefix
+		}
+		if tx.To != nil {
+			receiptMap["to"] = tx.To.Hex() // Already has 0x prefix
+		} else {
+			receiptMap["to"] = nil
+		}
 	}
 
 	// Add contract address if present
 	if receipt.ContractAddress != nil {
-		receiptMap["contractAddress"] = receipt.ContractAddress.Hex()
-	}
-
-	// Add ZK-specific fields
-	if len(receipt.ZKProof) > 0 {
-		receiptMap["zkProof"] = fmt.Sprintf("%x", receipt.ZKProof)
-	}
-	if receipt.ZKStatus != "" {
-		receiptMap["zkStatus"] = receipt.ZKStatus
+		receiptMap["contractAddress"] = receipt.ContractAddress.Hex() // Already has 0x prefix
 	}
 
 	// Log success

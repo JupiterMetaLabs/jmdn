@@ -8,6 +8,7 @@ import (
 	"gossipnode/AVC/BFT/bft"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
+	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/AVC/NodeSelection/Router"
@@ -744,6 +745,42 @@ func (consensus *Consensus) PrintCRDTState() error {
 		wg.Wait()
 		fmt.Printf("✅ Collected vote results from all buddy nodes\n")
 
+		// Verify consensus: Check BLS signatures and ensure majority agree before processing
+		consensusReached := false
+		if len(blsResults) > 0 {
+			validYes := 0
+			validTotal := 0
+			for _, r := range blsResults {
+				// Verify signature for stated vote (+1 if Agree else -1)
+				vote := int8(-1)
+				if r.Agree {
+					vote = 1
+				}
+				if err := BLS_Verifier.Verify(r, vote); err != nil {
+					fmt.Printf("⚠️ BLS verification failed for peer %s: %v\n", r.PeerID, err)
+					continue
+				}
+				validTotal++
+				if vote == 1 {
+					validYes++
+				}
+			}
+
+			if validTotal == 0 {
+				fmt.Printf("❌ No valid BLS signatures - consensus failed, skipping block processing\n")
+			} else {
+				needed := (validTotal / 2) + 1
+				if validYes >= needed {
+					consensusReached = true
+					fmt.Printf("✅ Consensus reached: %d/%d votes in favor (needed: %d)\n", validYes, validTotal, needed)
+				} else {
+					fmt.Printf("❌ Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\n", validYes, validTotal, needed)
+				}
+			}
+		} else {
+			fmt.Printf("⚠️ No BLS results collected - cannot verify consensus, skipping block processing\n")
+		}
+
 		// After collecting votes, broadcast block with attached BLS results
 		if consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
 			block := consensus.ZKBlockData.GetZKBlock()
@@ -752,11 +789,16 @@ func (consensus *Consensus) PrintCRDTState() error {
 			} else {
 				fmt.Printf("✅ Broadcasted block with %d BLS results\n", len(blsResults))
 
-				// Process block locally after successful broadcast to update account balances
-				if err := messaging.ProcessBlockLocally(block); err != nil {
-					fmt.Printf("❌ Failed to process block locally after broadcast: %v\n", err)
+				// Only process block locally if consensus was reached
+				// Pass BLS results for validation (ProcessBlockLocally will verify consensus)
+				if consensusReached {
+					if err := messaging.ProcessBlockLocally(block, blsResults); err != nil {
+						fmt.Printf("❌ Failed to process block locally after broadcast: %v\n", err)
+					} else {
+						fmt.Printf("✅ Processed block locally - account balances updated\n")
+					}
 				} else {
-					fmt.Printf("✅ Processed block locally - account balances updated\n")
+					fmt.Printf("⚠️ Skipping local block processing - consensus not reached\n")
 				}
 			}
 		} else {

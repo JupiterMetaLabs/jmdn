@@ -55,19 +55,20 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 	case "eth_getTransactionCount":
 		if len(req.Params) < 2 {
 			resp, _ := invalidParams(req, "missing address and block tag")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			// log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 			return resp, nil
 		}
 		addr, _ := req.Params[0].(string)
 		block, _ := req.Params[1].(string)
-		count, err := handler.service.GetTransactionCount(ctx, addr, block)
+		count, err := handler.service.GetTransactionCountFrom(ctx, addr, block)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			// log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+count.Text(16), nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		fmt.Println("Called RPC Call -- eth_getTransactionCount")
+		// log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
 	case "eth_getBlockByNumber":
@@ -533,6 +534,17 @@ func marshalTx(tx *Types.Tx) map[string]any {
 	}
 	if tx.V > 0 {
 		result["v"] = "0x" + new(big.Int).SetUint64(uint64(tx.V)).Text(16)
+	}
+
+	// Add block information if available
+	if tx.BlockNumber != nil {
+		result["blockNumber"] = "0x" + new(big.Int).SetUint64(*tx.BlockNumber).Text(16)
+	}
+	if len(tx.BlockHash) > 0 {
+		result["blockHash"] = "0x" + hex.EncodeToString(tx.BlockHash)
+	}
+	if tx.TransactionIndex != nil {
+		result["transactionIndex"] = "0x" + new(big.Int).SetUint64(*tx.TransactionIndex).Text(16)
 	}
 
 	return result

@@ -159,7 +159,7 @@ func (fs *FastSync) getKeysBatchIncremental(db *config.PooledConnection, prefix 
 		SeekKey: seekKey,
 	}
 
-	ctx, cancel := AppContext.GetAppContext(FastsyncAppContext).NewChildContextWithTimeout(30*time.Second)
+	ctx, cancel := AppContext.GetAppContext(FastsyncAppContext).NewChildContext()
 	defer cancel()
 
 	scanResult, err := ic.Client.Scan(ctx, scanReq)

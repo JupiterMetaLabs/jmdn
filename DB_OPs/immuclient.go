@@ -1,6 +1,7 @@
 package DB_OPs
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -229,7 +230,7 @@ func Create(PooledConnection *config.PooledConnection, key string, value interfa
 	var ic *config.ImmuClient
 	var shouldReturnConnection bool = false
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(8*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(8 * time.Second)
 	defer cancel()
 	if key == "" {
 		return ErrEmptyKey
@@ -348,7 +349,7 @@ func Read(PooledConnection *config.PooledConnection, key string) ([]byte, error)
 		return nil, ErrEmptyKey
 	}
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10 * time.Second)
 	defer cancel()
 
 	var entryValue []byte
@@ -480,7 +481,7 @@ func GetKeys(PooledConnection *config.PooledConnection, prefix string, limit int
 	}
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(12*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(12 * time.Second)
 	defer cancel()
 
 	var keys []string
@@ -536,7 +537,7 @@ func GetKeys(PooledConnection *config.PooledConnection, prefix string, limit int
 		}
 
 		// Create a fresh context for the scan operation
-		ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10*time.Second)
+		ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10 * time.Second)
 		defer cancel()
 
 		scanResult, err := PooledConnection.Client.Client.Scan(ctx, scanReq)
@@ -589,7 +590,7 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 	var allKeys []string
 	batchSize := 1000
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(20*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(20 * time.Second)
 	defer cancel()
 
 	var lastKey []byte
@@ -627,7 +628,10 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 	}
 
 	batchNum := 0
-	for {
+	lastSeenKey := ""    // Track the last key we've seen to detect infinite loops
+	maxBatches := 100000 // Safety limit to prevent infinite loops (100M keys max)
+
+	for batchNum < maxBatches {
 		batchNum++
 		// Create a batch request
 		fmt.Printf(">>> [DB] Getting batch %d for prefix '%s' (current count: %d keys)...\n", batchNum, prefix, len(allKeys))
@@ -686,15 +690,37 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 		// Use uniqueKeys for the rest of the logic
 		keys := uniqueKeys
 
+		// Check if we're stuck in a loop - if the first key is the same as lastSeenKey, we're not advancing
+		if len(keys) > 0 && lastSeenKey != "" && keys[0] == lastSeenKey {
+			fmt.Printf(">>> [DB] WARNING: Detected infinite loop - first key '%s' matches last seen key. Stopping.\n", keys[0])
+			fmt.Printf(">>> [DB] This may indicate a pagination issue with SeekKey. Returning keys collected so far.\n")
+			break
+		}
+
 		// If we got fewer than batch size, we're done
 		if len(keys) < batchSize {
 			fmt.Printf(">>> [DB] Got fewer than batch size (%d < %d), stopping\n", len(keys), batchSize)
 			break
 		}
 
-		// Set last key for next iteration
-		lastKey = []byte(keys[len(keys)-1])
-		fmt.Printf(">>> [DB] Continuing to next batch for prefix '%s'...\n", prefix)
+		// Set last key for next iteration - use the last key from this batch
+		newLastKey := keys[len(keys)-1]
+
+		// Check if we're stuck - if the last key hasn't changed, we're in a loop
+		if lastSeenKey != "" && newLastKey == lastSeenKey {
+			fmt.Printf(">>> [DB] WARNING: LastKey hasn't changed between batches ('%s'). Stopping to prevent infinite loop.\n", newLastKey)
+			break
+		}
+
+		lastKey = []byte(newLastKey)
+		lastSeenKey = newLastKey // Track for loop detection
+
+		fmt.Printf(">>> [DB] Continuing to next batch for prefix '%s' (lastKey: %s)...\n", prefix, string(lastKey))
+	}
+
+	if batchNum >= maxBatches {
+		fmt.Printf(">>> [DB] WARNING: Reached maximum batch limit (%d). Stopping to prevent infinite loop.\n", maxBatches)
+		fmt.Printf(">>> [DB] Collected %d keys so far. This may indicate a pagination issue.\n", len(allKeys))
 	}
 	// Debugging output with a newline for clarity
 	fmt.Printf("Total keys found: %d with Prefix: %s\n", len(allKeys), prefix)
@@ -713,7 +739,43 @@ func CountTransactionsByAccount(accountAddr *common.Address) (int64, error) {
 }
 
 // CountTransactions counts the total number of transactions in the database.
-func CountTransactions(mainDBClient *config.PooledConnection) (int, error) {
+func CountTransactions(PooledConnection *config.PooledConnection) (int, error) {
+	// TODO: fix count for both main and accounts db
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var err error
+	var shouldReturnConnection bool = false
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		// If no connection then quickly pull connection from the pool
+		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
+		if err != nil {
+			return -1, fmt.Errorf("failed to get database connection: %w - CountTransactions", err)
+		}
+		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.CountTransactions"),
+		)
+	}
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.CountTransactions"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
 	// This function will scan for keys with the "tx:" prefix and count them.
 	// It's more efficient than fetching all keys.
 	count, err := CountBuilder{}.GetMainDBCount(DEFAULT_PREFIX_TX)
@@ -730,7 +792,7 @@ func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limi
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(15*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(15 * time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -786,7 +848,7 @@ func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limi
 		)
 
 		fmt.Printf(">>> [DB] Executing Scan for prefix '%s' (limit: %d, seekKey: %v)...\n", prefix, limit, len(seekKey) > 0)
-		ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(30*time.Second) // Increased timeout for large datasets
+		ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(30 * time.Second) // Increased timeout for large datasets
 		defer cancel()
 
 		scanResult, err := ic.Client.Scan(ctx, scanReq)
@@ -844,7 +906,7 @@ func BatchCreate(PooledConnection *config.PooledConnection, entries map[string]i
 		return ErrEmptyBatch
 	}
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10 * time.Second)
 	defer cancel()
 
 	var err error
@@ -1025,7 +1087,7 @@ func GetMerkleRoot(PooledConnection *config.PooledConnection) ([]byte, error) {
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5 * time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -1092,7 +1154,7 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10 * time.Second)
 	defer cancel()
 
 	// If ic is nil, we need to determine which database to use based on context
@@ -1220,7 +1282,7 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10 * time.Second)
 	defer cancel()
 
 	// Handle nil or invalid connection
@@ -1394,7 +1456,7 @@ func GetHistory(ic *config.ImmuClient, key string, limit int) ([]*schema.Entry, 
 	}
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(12*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(12 * time.Second)
 	defer cancel()
 
 	var entries []*schema.Entry
@@ -1519,7 +1581,7 @@ func GetDatabaseState(ic *config.ImmuClient) (*schema.ImmutableState, error) {
 	shouldReturnConnection := false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5 * time.Second)
 	defer cancel()
 
 	// Handle nil or invalid connection
@@ -1673,7 +1735,7 @@ func Transaction(ic *config.ImmuClient, fn func(tx *config.ImmuTransaction) erro
 			zap.String(logging.Function, "DB_OPs.Transaction"),
 		)
 
-		ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10*time.Second)
+		ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10 * time.Second)
 		defer cancel()
 
 		_, err := ic.Client.ExecAll(ctx, &schema.ExecAllRequest{
@@ -1734,7 +1796,7 @@ func IsHealthy(ic *config.ImmuClient) bool {
 	}
 
 	// Try to get current state as a health check
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10 * time.Second)
 	defer cancel()
 
 	_, err := ic.Client.CurrentState(ctx)
@@ -1760,7 +1822,7 @@ func Ping(ic *config.ImmuClient) error {
 
 	// Execute the ping with retry logic
 	err := withRetry(ic, "Ping", func() error {
-		ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10*time.Second)
+		ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10 * time.Second)
 		defer cancel()
 		_, err := ic.Client.CurrentState(ctx)
 		if err != nil {
@@ -1818,7 +1880,7 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 	}
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(7*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(7 * time.Second)
 	defer cancel()
 
 	if mainDBClient == nil {
@@ -1948,7 +2010,7 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 	blockKey := fmt.Sprintf("%s%d", PREFIX_BLOCK, blockNumber)
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5 * time.Second)
 	defer cancel()
 
 	block := new(config.ZKBlock)
@@ -2004,7 +2066,7 @@ func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (
 	var err error
 	hashKey := fmt.Sprintf("%s%s", PREFIX_BLOCK_HASH, blockHash)
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5 * time.Second)
 	defer cancel()
 	if mainDBClient == nil {
 		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
@@ -2083,7 +2145,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5 * time.Second)
 	defer cancel()
 
 	if mainDBClient == nil {
@@ -2173,7 +2235,7 @@ func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5 * time.Second)
 	defer cancel()
 
 	if mainDBClient == nil {
@@ -2244,7 +2306,7 @@ func GetTransactionByHash(mainDBClient *config.PooledConnection, txHash string) 
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5 * time.Second)
 	defer cancel()
 
 	if mainDBClient == nil {
@@ -2336,7 +2398,7 @@ func GetTransactionsBatch(mainDBClient *config.PooledConnection, hashes []string
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5 * time.Second)
 	defer cancel()
 
 	if mainDBClient == nil {
@@ -2411,7 +2473,7 @@ func GetAllBlocks(mainDBClient *config.PooledConnection) ([]*config.ZKBlock, err
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5 * time.Second)
 	defer cancel()
 
 	if mainDBClient == nil {
@@ -2468,7 +2530,7 @@ func BatchCreateOrdered(PooledConnection *config.PooledConnection, entries []str
 	var err error
 	var shouldReturnConnection bool = false
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10 * time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -2505,7 +2567,7 @@ func ensureConnectionDatabaseSelected(pc *config.PooledConnection) error {
 	if pc == nil || pc.Client == nil || pc.Client.Client == nil {
 		return fmt.Errorf("invalid pooled connection")
 	}
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(5 * time.Second)
 	defer cancel()
 	_, err := pc.Client.Client.UseDatabase(ctx, &schema.Database{DatabaseName: pc.Database})
 	return err
