@@ -1286,8 +1286,8 @@ func CheckNonceDuplicate(PooledConnection *config.PooledConnection, fromAddr *co
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx := context.Background()
-	defer ctx.Done()
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContext()
+	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		// Use MAIN database connection since transactions are stored in main DB
@@ -1378,7 +1378,7 @@ func GetLatestNonce(PooledConnection *config.PooledConnection, fromAddr *common.
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -1482,7 +1482,7 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -1657,7 +1657,7 @@ func GetTransactionsByAccountPaginated(PooledConnection *config.PooledConnection
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(15*time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
