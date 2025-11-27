@@ -453,6 +453,11 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 	return nil
 }
 
+// GetHost returns the libp2p host instance for connection verification
+func (nm *NodeManager) GetHost() host.Host {
+	return nm.host
+}
+
 // RemovePeer removes a peer from management
 func (nm *NodeManager) RemovePeer(peerIDStr string) error {
 	peerID, err := peer.Decode(peerIDStr)
@@ -705,7 +710,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 	}
 
 	// Try to connect if not connected
-	ctx, cancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContextWithTimeout(5 * time.Second)
 	defer cancel()
 
 	nm.Logger.Logger.Debug("Attempting to connect",
@@ -1000,7 +1005,7 @@ func (nm *NodeManager) PingMultiaddrWithRetries(multiAddr string, attempts int) 
 	nm.host.Peerstore().AddAddrs(peerInfo.ID, peerInfo.Addrs, peerstore.TempAddrTTL)
 
 	// Connect first
-	ctx, cancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContextWithTimeout(10 * time.Second)
 	defer cancel()
 
 	if err := nm.host.Connect(ctx, *peerInfo); err != nil {
@@ -1020,7 +1025,7 @@ func (nm *NodeManager) PingMultiaddrWithRetries(multiAddr string, attempts int) 
 	successCount := 0
 
 	for i := 0; i < attempts; i++ {
-		pingCtx, pingCancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContextWithTimeout(3*time.Second)
+		pingCtx, pingCancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContextWithTimeout(3 * time.Second)
 		responseChan := pingService.Ping(pingCtx, peerInfo.ID)
 
 		select {
