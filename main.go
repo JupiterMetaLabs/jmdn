@@ -545,6 +545,13 @@ func main() {
 	immudbPassword := flag.String("immudb-pass", "immudb", "ImmuDB password")
 	command := flag.String("cmd", "", "Execute a CLI command (e.g., listpeers, addrs, stats, dbstate)")
 	flag.Parse()
+	
+
+	// Update the global immudb username and password if provided via command-line
+	if *immudbUsername != "" && *immudbPassword != "" {
+		config.DBUsername = *immudbUsername
+		config.DBPassword = *immudbPassword
+	}
 
 	// Handle command execution mode - if -cmd is provided, execute command via gRPC and exit
 	if *command != "" {
