@@ -24,7 +24,7 @@ const BLSFile = "./config/bls.json"
 
 const (
 	MaxMainPeers     = 5  // Production size for buddy node committees
-	MaxBackupPeers   = 10 // Backup peers to handle failures of main nodes
+	MaxBackupPeers   = 5 // Backup peers to handle failures of main nodes
 	ConsensusTimeout = 90 * time.Second
 )
 
