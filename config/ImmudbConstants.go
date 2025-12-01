@@ -13,8 +13,7 @@ const (
 	// Database connection settings
 	DBAddress         = "localhost"
 	DBPort            = 3322
-	DBUsername        = "immudb"
-	DBPassword        = "immudb"
+
 	DBName            = "defaultdb"
 	State_Path_Hidden = "./.immudb_state"
 
@@ -25,7 +24,10 @@ const (
 	DefaultScanLimit = 100
 	RequestTimeout   = 10 * time.Second
 )
-
+var (
+	DBUsername        = "immudb"
+	DBPassword        = "immudb"
+)
 // ImmuClient provides a simplified interface for ImmuDB operations
 type ImmuClient struct {
 	Client      client.ImmuClient
