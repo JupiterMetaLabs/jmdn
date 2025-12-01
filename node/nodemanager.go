@@ -448,6 +448,11 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 	return nil
 }
 
+// GetHost returns the libp2p host instance for connection verification
+func (nm *NodeManager) GetHost() host.Host {
+	return nm.host
+}
+
 // RemovePeer removes a peer from management
 func (nm *NodeManager) RemovePeer(peerIDStr string) error {
 	peerID, err := peer.Decode(peerIDStr)
