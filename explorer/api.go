@@ -4,9 +4,11 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/zerolog/log"
 	"go.uber.org/zap"
 
@@ -20,6 +22,9 @@ const (
 	LOG_FILE = LOG_DIR + "/explorer.log"
 	TOPIC    = "explorer"
 )
+
+// JWT token expiration time (24 hours)
+const JWT_EXPIRATION = 1 * time.Hour
 
 // ImmuDBServer represents the ImmuDB API server
 type ImmuDBServer struct {
@@ -79,14 +84,18 @@ func (s *ImmuDBServer) setupRoutes() {
 	// Add CORS middleware
 	s.router.Use(cors())
 
+	// Public endpoint for token generation (using API key)
+	s.router.POST("/api/auth/token", s.generateToken)
+
 	// Serve static HTML frontend only if explorer is enabled
 	if s.enableExplorer {
 		s.router.StaticFile("/", "./explorer/index.html")
 		s.router.StaticFile("/explorer", "./explorer/index.html")
 	}
 
-	// API routes
+	// API routes - protected with JWT
 	api := s.router.Group("/api/block")
+	api.Use(s.jwtAuthMiddleware())
 	{
 		// Get specific block by ID
 		api.GET("/id/:id", s.getBlock)
@@ -119,8 +128,9 @@ func (s *ImmuDBServer) setupRoutes() {
 	// Add a new group for Ethereum JSON-RPC
 	// s.router.POST("/rpc", s.handleJsonRpc)
 
-	// API routes for DID
+	// API routes for DID - protected with JWT
 	did := s.router.Group("/api/did")
+	did.Use(s.jwtAuthMiddleware())
 	{
 		// Get all dids by pagination
 		did.GET("/all/", s.listDIDs)
@@ -135,23 +145,26 @@ func (s *ImmuDBServer) setupRoutes() {
 		did.GET("/health", s.didHealthCheck)
 	}
 
-	// stats api
+	// stats api - protected with JWT
 	stats := s.router.Group("/api/stats")
+	stats.Use(s.jwtAuthMiddleware())
 	{
 		stats.GET("/block/latest", s.getLatestBlockStats)
 
 		stats.GET("/", s.getStats)
 	}
 
-	// Address and balance endpoints
+	// Address and balance endpoints - protected with JWT
 	addresses := s.router.Group("/api/addresses")
+	addresses.Use(s.jwtAuthMiddleware())
 	{
 		// Get transactions for a specific address
 		addresses.GET("/transactions/:address", s.getAddressTransactions)
 	}
 
-	// tramsactions endpoint
+	// transactions endpoint - protected with JWT
 	transactions := s.router.Group("/api/transactions")
+	transactions.Use(s.jwtAuthMiddleware())
 	{
 		// Get all the transactions based on the pagination
 		transactions.GET("/all", s.listTransactions)
@@ -160,8 +173,9 @@ func (s *ImmuDBServer) setupRoutes() {
 		transactions.GET("/blocks/all", s.listTransactions_fromLastBlock)
 	}
 
-	// Websockets to stream realtime blocks
+	// Websockets to stream realtime blocks - protected with JWT
 	sockets := s.router.Group("/api/sockets")
+	sockets.Use(s.jwtAuthMiddleware())
 	{
 		sockets.GET("/blocks", s.streamBlocks)
 	}
@@ -241,4 +255,91 @@ func cors() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// jwtAuthMiddleware validates JWT tokens in the Authorization header
+func (s *ImmuDBServer) jwtAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})
+			c.Abort()
+			return
+		}
+
+		parts := strings.Split(authHeader, " ")
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization header format. Expected: Bearer <token>"})
+			c.Abort()
+			return
+		}
+
+		tokenString := parts[1]
+
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			// Validate signing method
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, jwt.ErrSignatureInvalid
+			}
+			return []byte(config.JWT_SECRET), nil
+		})
+
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token", "details": err.Error()})
+			c.Abort()
+			return
+		}
+
+		if !token.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			c.Abort()
+			return
+		}
+
+		if claims, ok := token.Claims.(jwt.MapClaims); ok {
+			c.Set("token_claims", claims)
+		}
+
+		c.Next()
+	}
+}
+
+// generateToken creates a JWT token when provided with a valid API key
+func (s *ImmuDBServer) generateToken(c *gin.Context) {
+	var req struct {
+		APIKey string `json:"api_key" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "API key required"})
+		return
+	}
+
+	if req.APIKey != config.EXPLORER_API_KEY {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid API key"})
+		return
+	}
+
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"api_key": req.APIKey,
+		"iat":     now.Unix(),
+		"exp":     now.Add(JWT_EXPIRATION).Unix(),
+		"type":    "explorer_api",
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(config.JWT_SECRET))
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to generate JWT token")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"token":      tokenString,
+		"type":       "Bearer",
+		"expires_in": int(JWT_EXPIRATION.Seconds()),
+		"expires_at": now.Add(JWT_EXPIRATION).Unix(),
+	})
 }
