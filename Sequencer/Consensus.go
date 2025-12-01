@@ -42,6 +42,10 @@ type Consensus struct {
 	ResponseHandler  *ResponseHandler
 	DiscoveryService *Service.NodeDiscoveryService
 	ZKBlockData      *PubSubMessages.ConsensusMessage
+	// Guards to prevent infinite loops
+	voteProcessingMu   sync.Mutex
+	isProcessingVotes  bool
+	processedBlockHash string
 }
 
 func NewConsensus(peerList PeerList, host host.Host) *Consensus {
@@ -540,11 +544,21 @@ func (consensus *Consensus) BroadcastVoteTrigger() error {
 
 // PrintCRDTState prints the current state of the CRDT
 func (consensus *Consensus) PrintCRDTState() error {
-	// Get the listener node
+	// Get the listener node first to validate
 	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
 	if listenerNode == nil || listenerNode.CRDTLayer == nil {
 		return fmt.Errorf("listener node or CRDT layer not initialized")
 	}
+
+	// Guard against concurrent calls for the same block
+	currentBlockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.String()
+	consensus.voteProcessingMu.Lock()
+	if consensus.isProcessingVotes && consensus.processedBlockHash == currentBlockHash {
+		consensus.voteProcessingMu.Unlock()
+		fmt.Printf("⚠️ PrintCRDTState: Vote processing already in progress for block %s - skipping duplicate call\n", currentBlockHash)
+		return nil
+	}
+	consensus.voteProcessingMu.Unlock()
 
 	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
 	fmt.Printf("║             CRDT STATE - SEQUENCER                         ║\n")
@@ -611,7 +625,27 @@ func (consensus *Consensus) PrintCRDTState() error {
 
 	// Collect vote aggregation results from buddy nodes
 	// Note: Votes are stored on buddy nodes' CRDTs, not on the sequencer
+
+	// Guard against multiple concurrent executions for the same block
+	currentBlockHash = consensus.ZKBlockData.GetZKBlock().BlockHash.String()
+	consensus.voteProcessingMu.Lock()
+	if consensus.isProcessingVotes && consensus.processedBlockHash == currentBlockHash {
+		consensus.voteProcessingMu.Unlock()
+		fmt.Printf("⚠️ Vote processing already in progress for block %s - skipping duplicate call\n", currentBlockHash)
+		return nil
+	}
+	consensus.isProcessingVotes = true
+	consensus.processedBlockHash = currentBlockHash
+	consensus.voteProcessingMu.Unlock()
+
 	go func() {
+		// Ensure we unlock even if goroutine panics
+		defer func() {
+			consensus.voteProcessingMu.Lock()
+			consensus.isProcessingVotes = false
+			consensus.voteProcessingMu.Unlock()
+		}()
+
 		// Get all vote results from Triggers
 		voteResults := Maps.GetAllVoteResults()
 		fmt.Printf("📊 Vote results from buddy nodes: %v\n", voteResults)
@@ -657,24 +691,6 @@ func (consensus *Consensus) PrintCRDTState() error {
 		} else {
 			fmt.Printf("✅ Sufficient participation: %d/%d minimum required for consensus\n", len(buddyInputs), config.MaxMainPeers)
 		}
-
-		// BFT := bft.New(bft.Config{
-		// 	MinBuddies:         config.MaxMainPeers,
-		// 	ByzantineTolerance: 4,
-		// 	PrepareTimeout:     10 * time.Second,
-		// 	CommitTimeout:      10 * time.Second,
-		// })
-
-		// adapter, err := bft.NewBFTPubSubAdapter(context.Background(), consensus.gossipnode.GetGossipPubSub(), BFT, config.PubSub_ConsensusChannel)
-		// if err != nil {
-		// 	fmt.Printf("❌ Failed to create BFT adapter: %v\n", err)
-		// }
-		// messenger := bft.Return_pubsubMessenger(adapter, consensus.ZKBlockData.GetZKBlock().BlockHash.String())
-
-		// result, err := BFT.RunConsensus(context.Background(), 1, consensus.ZKBlockData.GetZKBlock().BlockHash.String(), listenerNode.PeerID.String(), buddyInputs, messenger, nil)
-		// if err != nil {
-		// 	fmt.Printf("❌ Failed to run BFT consensus: %v\n", err)
-		// }
 
 		// Request vote aggregation results from all buddy nodes
 		fmt.Println("Requesting vote results from all buddy nodes:", listenerNode.BuddyNodes.Buddies_Nodes)
