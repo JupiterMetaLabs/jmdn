@@ -543,6 +543,8 @@ func main() {
 	chainID := flag.Int("chainID", 7000700, "Chain ID for the blockchain network")
 	immudbUsername := flag.String("immudb-user", "immudb", "ImmuDB username")
 	immudbPassword := flag.String("immudb-pass", "immudb", "ImmuDB password")
+	explorerAPIKey := flag.String("explorer-api-key", "", "Explorer API key")
+	jwtSecret := flag.String("jwt-secret", "", "JWT secret")
 	command := flag.String("cmd", "", "Execute a CLI command (e.g., listpeers, addrs, stats, dbstate)")
 	flag.Parse()
 	
@@ -553,6 +555,14 @@ func main() {
 		config.DBPassword = *immudbPassword
 	}
 
+	if *explorerAPIKey != "" {
+		config.EXPLORER_API_KEY = *explorerAPIKey
+		fmt.Println("Explorer API key set successfully")
+	}
+	if *jwtSecret != "" {
+		config.JWT_SECRET = *jwtSecret
+		fmt.Println("JWT secret set successfully")
+	}
 	// Handle command execution mode - if -cmd is provided, execute command via gRPC and exit
 	if *command != "" {
 		runCommand(*command, flag.Args(), *cliGRPC)

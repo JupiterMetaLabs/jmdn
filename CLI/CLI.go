@@ -283,10 +283,6 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleDBState()
 	case "gethstatus":
 		h.handleGethStatus()
-	case "setexplorerapikey":
-		h.handleSetExplorerAPIKey(parts)
-	case "setjwtsecret":
-		h.handleSetJWTSecret(parts)
 	default:
 		fmt.Println("Unknown command")
 	}
@@ -1073,24 +1069,4 @@ func (h *CommandHandler) handleGethStatus() {
 		fmt.Printf("WebSocket Server: %sDisabled%s\n",
 			config.ColorYellow, config.ColorReset)
 	}
-}
-
-func (h *CommandHandler) handleSetExplorerAPIKey(parts []string) {
-	if len(parts) != 2 {
-		fmt.Println("Usage: setexplorerapikey <api_key>")
-		return
-	}
-	apiKey := parts[1]
-	config.EXPLORER_API_KEY = apiKey
-	fmt.Println("Explorer API key set successfully")
-}
-
-func (h *CommandHandler) handleSetJWTSecret(parts []string) {
-	if len(parts) != 2 {
-		fmt.Println("Usage: setjwtsecret <jwt_secret>")
-		return
-	}
-	jwtSecret := parts[1]
-	config.JWT_SECRET = jwtSecret
-	fmt.Println("JWT secret set successfully")
 }
