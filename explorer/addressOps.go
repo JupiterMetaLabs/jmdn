@@ -4,6 +4,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"gossipnode/DB_OPs"
@@ -71,7 +72,7 @@ func (s *ImmuDBServer) getAddressTransactions(c *gin.Context) {
 	// This function scans blocks in reverse order and stops early once it has enough transactions
 	transactions, total, err := DB_OPs.GetTransactionsByAccountPaginated(&s.defaultdb, &address, offset, limit)
 	if err != nil {
-		s.defaultdb.Client.Logger.Logger.Error("Failed to get transactions for address",
+		s.defaultdb.Client.Logger.Logger.Error("Failed to count transactions for address",
 			zap.Error(err),
 			zap.String("address", addressParam),
 			zap.Time(logging.Created_at, time.Now().UTC()),
@@ -80,7 +81,7 @@ func (s *ImmuDBServer) getAddressTransactions(c *gin.Context) {
 			zap.String(logging.Loki_url, config.LOKI_URL),
 			zap.String(logging.Function, "Explorer.getAddressTransactions"),
 		)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch transactions"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count transactions"})
 		return
 	}
 

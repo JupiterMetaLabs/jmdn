@@ -1965,6 +1965,153 @@ func GetTransactionsPaginated(PooledConnection *config.PooledConnection, offset,
 	return transactions, total, nil
 }
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// GetTransactionsByAddressIndexed retrieves transactions related to an address using the address index
+func GetTransactionsByAddressIndexed(PooledConnection *config.PooledConnection, address common.Address, limit int) ([]*config.Transaction, error) {
+	var err error
+	var shouldReturnConnection bool
+
+	if limit <= 0 {
+		limit = config.DefaultScanLimit
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get main DB connection: %w - GetTransactionsByAddressIndexed", err)
+		}
+		shouldReturnConnection = true
+		PooledConnection.Client.Logger.Logger.Info("Main DB connection retrieved for address indexed query",
+			zap.String(logging.Connection_database, config.DBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, LOKI_URL),
+			zap.String(logging.Function, "DB_OPs.GetTransactionsByAddressIndexed"),
+		)
+	}
+
+	if shouldReturnConnection {
+		defer func() {
+			PooledConnection.Client.Logger.Logger.Info("Main DB connection returned to pool after address indexed query",
+				zap.String(logging.Connection_database, config.DBName),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "DB_OPs.GetTransactionsByAddressIndexed"),
+			)
+			PutMainDBConnection(PooledConnection)
+		}()
+	}
+
+	if err := ensureMainDBSelected(PooledConnection); err != nil {
+		return nil, fmt.Errorf("failed to ensure main database selected: %w - GetTransactionsByAddressIndexed", err)
+	}
+
+	normalizedAddr := normalizeAddress(address)
+	prefix := fmt.Sprintf("%s%s:", PREFIX_ADDR_TX, normalizedAddr)
+
+	transactions := make([]*config.Transaction, 0, limit)
+	blockCache := make(map[uint64]*config.ZKBlock)
+	batchSize := min(limit, 512)
+	var lastKey []byte
+
+	for len(transactions) < limit {
+		scanCtx, scanCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		scanReq := &schema.ScanRequest{
+			Prefix:  []byte(prefix),
+			Limit:   uint64(batchSize),
+			SeekKey: lastKey,
+			Desc:    true,
+		}
+
+		scanResult, scanErr := PooledConnection.Client.Client.Scan(scanCtx, scanReq)
+		scanCancel()
+		if scanErr != nil {
+			return nil, fmt.Errorf("failed to scan address index: %w - GetTransactionsByAddressIndexed", scanErr)
+		}
+
+		if len(scanResult.Entries) == 0 {
+			break
+		}
+
+		for _, entry := range scanResult.Entries {
+			var pointer AddressTxPointer
+			if err := json.Unmarshal(entry.Value, &pointer); err != nil {
+				PooledConnection.Client.Logger.Logger.Warn("Failed to decode address pointer",
+					zap.Error(err),
+					zap.String("address", normalizedAddr),
+					zap.String(logging.Connection_database, config.DBName),
+					zap.Time(logging.Created_at, time.Now().UTC()),
+					zap.String(logging.Function, "DB_OPs.GetTransactionsByAddressIndexed"),
+				)
+				continue
+			}
+
+			block, ok := blockCache[pointer.BlockNumber]
+			if !ok {
+				block, err = GetZKBlockByNumber(PooledConnection, pointer.BlockNumber)
+				if err != nil {
+					PooledConnection.Client.Logger.Logger.Warn("Failed to fetch block for address pointer",
+						zap.Error(err),
+						zap.Uint64("blockNumber", pointer.BlockNumber),
+						zap.String(logging.Connection_database, config.DBName),
+						zap.Time(logging.Created_at, time.Now().UTC()),
+						zap.String(logging.Function, "DB_OPs.GetTransactionsByAddressIndexed"),
+					)
+					continue
+				}
+				blockCache[pointer.BlockNumber] = block
+			}
+
+			if pointer.TxIndex < 0 || pointer.TxIndex >= len(block.Transactions) {
+				PooledConnection.Client.Logger.Logger.Warn("Invalid transaction index in pointer",
+					zap.Int("txIndex", pointer.TxIndex),
+					zap.Uint64("blockNumber", pointer.BlockNumber),
+					zap.String(logging.Connection_database, config.DBName),
+					zap.Time(logging.Created_at, time.Now().UTC()),
+					zap.String(logging.Function, "DB_OPs.GetTransactionsByAddressIndexed"),
+				)
+				continue
+			}
+
+			tx := block.Transactions[pointer.TxIndex]
+			copyTx := tx // make copy to avoid referencing loop variable
+			transactions = append(transactions, &copyTx)
+
+			if len(transactions) >= limit {
+				break
+			}
+		}
+
+		if len(scanResult.Entries) < batchSize {
+			break
+		}
+
+		lastKey = scanResult.Entries[len(scanResult.Entries)-1].Key
+	}
+
+	PooledConnection.Client.Logger.Logger.Info("Retrieved transactions via address index",
+		zap.Int("transactionCount", len(transactions)),
+		zap.String("address", normalizedAddr),
+		zap.String(logging.Connection_database, config.DBName),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Function, "DB_OPs.GetTransactionsByAddressIndexed"),
+	)
+
+	return transactions, nil
+}
+
 // ensureAccountsDBSelected makes sure we're using the accounts database
 // This helps prevent the "please select a database first" error and ensures we're using the correct database
 func ensureAccountsDBSelected(PooledConnection *config.PooledConnection) error {
