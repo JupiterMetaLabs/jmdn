@@ -115,12 +115,6 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 		return false, errors.New("invalid transaction: chain ID is missing or invalid")
 	}
 
-	// Debug: Print ChainID details for troubleshooting
-	if tx.ChainID != nil {
-		fmt.Printf("DEBUG ChainID - String(): %s, Uint64(): %d, Bytes: %x\n",
-			tx.ChainID.String(), tx.ChainID.Uint64(), tx.ChainID.Bytes())
-	}
-
 	// Log ChainID for debugging (temporarily)
 	if tx.ChainID != nil && expectedChainID != nil {
 		if tx.ChainID.Cmp(expectedChainID) != 0 {
@@ -137,7 +131,9 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 				zap.String(logging.Function, "Security.ThreeChecks"),
 			)
 			fmt.Printf("WARN: ChainID mismatch (validation disabled) - Got: %s (uint64: %d), Expected: %s (uint64: %d)\n",
-				tx.ChainID.String(), tx.ChainID.Uint64(), expectedChainID.String(), expectedChainID.Uint64())
+			tx.ChainID.String(), tx.ChainID.Uint64(), expectedChainID.String(), expectedChainID.Uint64())
+			// Return false, errors.New("chain ID mismatch")
+			return false, errors.New("chain ID mismatch")
 		}
 	}
 
