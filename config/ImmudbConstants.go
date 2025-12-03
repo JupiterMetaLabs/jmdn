@@ -2,8 +2,9 @@ package config
 
 import (
 	"context"
-	"gossipnode/logging"
 	"time"
+
+	"gossipnode/logging"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/client"
@@ -11,8 +12,8 @@ import (
 
 const (
 	// Database connection settings
-	DBAddress         = "localhost"
-	DBPort            = 3322
+	DBAddress = "localhost"
+	DBPort    = 3322
 
 	DBName            = "defaultdb"
 	State_Path_Hidden = "./.immudb_state"
@@ -24,10 +25,19 @@ const (
 	DefaultScanLimit = 100
 	RequestTimeout   = 10 * time.Second
 )
+
 var (
-	DBUsername        = "immudb"
-	DBPassword        = "immudb"
+	DBUsername = "immudb"
+	DBPassword = "immudb"
 )
+
+// Explorer API authentication values used at runtime.
+// These are set at runtime (e.g. via CLI handlers) and intentionally have no hard-coded defaults in the codebase.
+var (
+	EXPLORER_API_KEY string
+	JWT_SECRET       string
+)
+
 // ImmuClient provides a simplified interface for ImmuDB operations
 type ImmuClient struct {
 	Client      client.ImmuClient
