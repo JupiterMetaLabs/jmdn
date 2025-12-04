@@ -1,15 +1,35 @@
 package gETH
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/gETH/proto"
 	"sort"
 )
 
+type immuDBServer struct {
+	defaultdb  config.PooledConnection
+	accountsdb config.PooledConnection
+}
+
+func initDBs() (immuDBServer, error) {
+	defaultdb, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
+	if err != nil {
+		return immuDBServer{}, err
+	}
+
+	accountsdb, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
+	if err != nil {
+		return immuDBServer{}, err
+	}
+
+	return immuDBServer{defaultdb: *defaultdb, accountsdb: *accountsdb}, nil
+}
 
 func ConvertZKTransactiontoETHTransaction(zktransactions []config.Transaction) ([]*proto.Transaction, error) {
 	var transactions []*proto.Transaction

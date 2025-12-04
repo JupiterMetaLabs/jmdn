@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"gossipnode/config"
-	AppContext "gossipnode/config/Context"
 	"gossipnode/config/PubSubMessages"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -41,7 +40,6 @@ func NewEnhancedPublisher(topic *pubsub.Topic, gps *PubSubMessages.GossipPubSub)
 
 // PublishEnhanced publishes a message using the enhanced publisher
 func PublishEnhanced(gps *PubSubMessages.GossipPubSub, topic string, message *PubSubMessages.Message, metadata map[string]string) error {
-	ctx,_ := AppContext.GetAppContext(PublishAppContext).NewChildContext()
 	// Validate input parameters
 	if gps == nil {
 		return fmt.Errorf("GossipPubSub cannot be nil")
@@ -95,7 +93,7 @@ func PublishEnhanced(gps *PubSubMessages.GossipPubSub, topic string, message *Pu
 		}
 
 		enhancedPublisher := NewEnhancedPublisher(topic, gps)
-		return enhancedPublisher.publishWithRetry(ctx, messageBytes, 3)
+		return enhancedPublisher.publishWithRetry(context.Background(), messageBytes, 3)
 	} else {
 		// Fall back to custom gossip
 		GossipMessage(gps, messageBytes)
@@ -155,8 +153,7 @@ func PublishBatchEnhanced(gps *PubSubMessages.GossipPubSub, topicName string, me
 	}
 
 	enhancedPublisher := NewEnhancedPublisher(topic, gps)
-	ctx, _ := AppContext.GetAppContext(PublishAppContext).NewChildContext()
-	return enhancedPublisher.publishBatch(ctx, messages, metadata)
+	return enhancedPublisher.publishBatch(context.Background(), messages, metadata)
 }
 
 // publishBatch publishes multiple messages in a batch

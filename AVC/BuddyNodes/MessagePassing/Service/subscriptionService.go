@@ -11,17 +11,12 @@ import (
 	"gossipnode/AVC/BuddyNodes/Types"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
-	AppContext "gossipnode/config/Context"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
-)
-
-const(
-	SubscriptionServiceAppContext = "avc.buddynodes.messagepassing.subscriptionService"
 )
 
 // Decision represents a BFT vote decision (avoid importing bft package)
@@ -639,11 +634,9 @@ func (s *SubscriptionService) handleBFTRequest(msg *AVCStruct.GossipMessage) err
 		zap.String("function", "SubscriptionService.handleBFTRequest"))
 
 	go func() {
-		ctx, _ := AppContext.GetAppContext(SubscriptionServiceAppContext).NewChildContext()
-
 		if s.bftAdapter == nil {
 			adapter, err := s.adapterFactory(
-				ctx,
+				context.Background(),
 				s.pubSub,
 				reqData.GossipsubTopic,
 			)
@@ -654,8 +647,9 @@ func (s *SubscriptionService) handleBFTRequest(msg *AVCStruct.GossipMessage) err
 			}
 			s.bftAdapter = adapter
 		}
+
 		result, err := s.bftAdapter.ProposeConsensus(
-			ctx,
+			context.Background(),
 			reqData.Round,
 			reqData.BlockHash,
 			myBuddyID,
@@ -778,8 +772,7 @@ func sendVoteResultToSequencer(listenerNode *AVCStruct.BuddyNode, result int8) {
 		SetACK(ackMessage)
 
 	// Open a stream to the sequencer
-	ctx, _ := AppContext.GetAppContext(SubscriptionServiceAppContext).NewChildContext()
-	stream, err := host.NewStream(ctx, sequencerPeerID, config.SubmitMessageProtocol)
+	stream, err := host.NewStream(context.Background(), sequencerPeerID, config.SubmitMessageProtocol)
 	if err != nil {
 		fmt.Printf("❌ Failed to open stream to sequencer: %v\n", err)
 		return

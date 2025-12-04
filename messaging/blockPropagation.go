@@ -2,7 +2,7 @@ package messaging
 
 import (
 	"bufio"
-	AppContext "gossipnode/config/Context"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -38,10 +38,6 @@ var (
 	immuClient       *config.PooledConnection
 	immuClientOnce   sync.Once
 	globalHost       host.Host // Add this line
-)
-
-const (
-	BlockPropagationAppContext = "blockpropagation"
 )
 
 func init() {
@@ -285,8 +281,8 @@ func HandleBlockStream(stream network.Stream) {
 				}
 			}
 
-			ctx, cancel := AppContext.GetAppContext(BlockPropagationAppContext).NewChildContext()
-			defer cancel()
+			ctx := context.Background()
+
 			// Create DB clients for processing
 			mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 			if err != nil {
@@ -304,36 +300,30 @@ func HandleBlockStream(stream network.Stream) {
 				DB_OPs.PutAccountsConnection(accountsClient)
 			}()
 
-			// Store the block in main DB FIRST to ensure it's valid before processing transactions
-			// This prevents balance updates for invalid blocks that fail to store
 			log.Info().
 				Str("block_hash", msg.Block.BlockHash.Hex()).
 				Uint64("block_number", msg.Block.BlockNumber).
-				Msg("Storing block in main DB before processing transactions")
+				Msg("Processing block transactions")
 
-			if err := DB_OPs.StoreZKBlock(mainDBClient, msg.Block); err != nil {
+			// Process all transactions in the block atomically with rollback capability
+			if err := BlockProcessing.ProcessBlockTransactions(msg.Block, accountsClient); err != nil {
 				log.Error().
 					Err(err).
 					Str("block_hash", msg.Block.BlockHash.Hex()).
-					Uint64("block_number", msg.Block.BlockNumber).
-					Msg("Failed to store block in database - skipping transaction processing")
+					Msg("Block processing failed - not storing block")
 				return
 			}
 
 			log.Info().
 				Str("block_hash", msg.Block.BlockHash.Hex()).
-				Uint64("block_number", msg.Block.BlockNumber).
-				Msg("Block stored successfully - processing transactions")
+				Msg("All transactions processed successfully - storing block")
 
-			// Only process transactions if block storage succeeded
-			// This ensures balance updates only happen for valid, stored blocks
-			if err := BlockProcessing.ProcessBlockTransactions(msg.Block, accountsClient); err != nil {
+			// Store the validated and processed block in main DB
+			if err := DB_OPs.StoreZKBlock(mainDBClient, msg.Block); err != nil {
 				log.Error().
 					Err(err).
 					Str("block_hash", msg.Block.BlockHash.Hex()).
-					Msg("Block transaction processing failed after block storage")
-				// Note: Block is already stored, but transactions failed
-				// This is a separate issue that may need rollback handling in the future
+					Msg("Failed to store block in database")
 				return
 			}
 
@@ -392,7 +382,7 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 		go func(peer peer.ID) {
 			defer wg.Done()
 
-			ctx, cancel := AppContext.GetAppContext(BlockPropagationAppContext).NewChildContextWithTimeout(5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
 			stream, err := h.NewStream(ctx, peer, config.BlockPropagationProtocol)
@@ -554,7 +544,7 @@ func PropagateZKBlock(h host.Host, block *PubSubMessages.ConsensusMessage) error
 		go func(peer peer.ID) {
 			defer wg.Done()
 
-			ctx, cancel := AppContext.GetAppContext(BlockPropagationAppContext).NewChildContextWithTimeout(5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
 			// Use the correct protocol ID from constants

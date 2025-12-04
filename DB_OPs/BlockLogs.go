@@ -1,9 +1,9 @@
 package DB_OPs
 
 import (
+	"context"
 	"fmt"
 	"gossipnode/config"
-	AppContext "gossipnode/config/Context"
 	"gossipnode/config/utils"
 	"gossipnode/gETH/Facade/Service/Types"
 	"gossipnode/logging"
@@ -18,7 +18,7 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(BlockLogsAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Get connection if not provided
@@ -143,7 +143,7 @@ func GetLogsFromBlock(mainDBClient *config.PooledConnection, block *config.ZKBlo
 	// Iterate through all transactions in the block
 	for _, tx := range block.Transactions {
 		// Get receipt for this transaction
-		receipt, err := GetReceiptByHash(mainDBClient, tx.Hash)
+		receipt, err := GetReceiptByHash(mainDBClient, tx.Hash.Hex())
 		if err != nil {
 			// If receipt doesn't exist, skip this transaction
 			continue
@@ -167,6 +167,7 @@ func GetLogsFromBlock(mainDBClient *config.PooledConnection, block *config.ZKBlo
 					continue
 				}
 			}
+
 			// Apply topic filters
 			if len(filterQuery.Topics) > 0 {
 				if !utils.MatchesTopicFilter(filterQuery.Topics, utils.ConvertHashesToStrings(log.Topics)) {

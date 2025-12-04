@@ -1,19 +1,15 @@
 package MessagePassing
 
 import (
-		"fmt"
+	"context"
+	"fmt"
 	"gossipnode/config"
-	AppContext "gossipnode/config/Context"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-)
-
-const(
-	StreamcacheBuilderAppContext = "avc.buddynames.messagepassing.streamcachebuilder"
 )
 
 // <-- Use Builder Pattern Here -->
@@ -82,8 +78,7 @@ func (sc *StructStreamCache) GetSubmitMessageStream(peerID peer.ID) (network.Str
 	defer sc.StreamCache.Mutex.Unlock()
 
 	// Create new stream using SubmitMessageProtocol
-	ctx, _ := AppContext.GetAppContext(StreamcacheBuilderAppContext).NewChildContext()
-	stream, err := sc.StreamCache.Host.NewStream(ctx, peerID, config.SubmitMessageProtocol)
+	stream, err := sc.StreamCache.Host.NewStream(context.Background(), peerID, config.SubmitMessageProtocol)
 	if err != nil {
 		return nil, err
 	}
@@ -119,8 +114,7 @@ func (sc *StructStreamCache) GetStream(peerID peer.ID) (network.Stream, error) {
 	}
 
 	// Create new stream
-	ctx, _ := AppContext.GetAppContext(StreamcacheBuilderAppContext).NewChildContext()
-	stream, err := sc.StreamCache.Host.NewStream(ctx, peerID, config.BuddyNodesMessageProtocol)
+	stream, err := sc.StreamCache.Host.NewStream(context.Background(), peerID, config.BuddyNodesMessageProtocol)
 	if err != nil {
 		return nil, err
 	}

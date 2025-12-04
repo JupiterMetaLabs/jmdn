@@ -1,6 +1,7 @@
 package Block
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,9 +19,11 @@ import (
 	"gossipnode/config"
 	"gossipnode/logging"
 
+	// "gossipnode/messaging"
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
-	AppContext "gossipnode/config/Context"
+
+	// "gossipnode/PubSubMessages"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -30,10 +33,6 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"go.uber.org/zap"
-)
-
-const (
-	BlockServerAppContext = "block.server"
 )
 
 type APIAccessTuple struct {
@@ -132,21 +131,12 @@ func SubmitRawTransaction(tx *config.Transaction) (string, error) {
 		return "", errors.New("invalid transaction: To and From address are the same")
 	}
 
-	// Use transaction hash if already set (from RLP parsing), otherwise compute from JSON
-	// Note: RLP-encoded transactions will have hash set from convertEthTxToConfigTx
-	var txHash string
-	if tx.Hash != (common.Hash{}) {
-		// Hash already set (from RLP-encoded transaction)
-		txHash = tx.Hash.Hex()
-	} else {
-		// Fallback: compute hash from JSON (for JSON-only transactions)
-		// WARNING: This produces a different hash than standard Ethereum RLP hash
-		rawTxBytes, err := json.Marshal(tx)
-		if err != nil {
-			return "", err
-		}
-		txHash = crypto.Keccak256Hash(rawTxBytes).Hex()
+	// Make transaction hash
+	rawTxBytes, err := json.Marshal(tx)
+	if err != nil {
+		return "", err
 	}
+	txHash := crypto.Keccak256Hash(rawTxBytes).Hex()
 	// Debugging
 	fmt.Println("Transaction Hash: ", txHash)
 	// Asynchronously submit to mempool with context
@@ -316,6 +306,27 @@ func processZKBlock(c *gin.Context) {
 		return
 	}
 
+	// // Start block propagation as a new goroutine after consensus setup
+	// // This propagates the block to peers for voting
+	// go func() {
+	// 	// Create consensus message from the consensus data
+	// 	consensusMessage := consensus.ZKBlockData
+	// 	if consensusMessage == nil {
+	// 		log.Error().Msg("Consensus message is nil, cannot propagate block")
+	// 		return
+	// 	}
+
+	// 	// if err := messaging.PropagateZKBlock(globalHost, consensusMessage); err != nil {
+	// 	// 	log.Error().
+	// 	// 		Err(err).
+	// 	// 		Str("block_hash", block.BlockHash.Hex()).
+	// 	// 		Msg("Failed to propagate block after consensus setup")
+	// 	// } else {
+	// 	// 	log.Info().
+	// 	// 		Str("block_hash", block.BlockHash.Hex()).
+	// 	// 		Msg("Block propagated successfully after consensus setup")
+	// 	// }
+	// }()
 
 	for _, tx := range block.Transactions {
 		LogTransaction(
@@ -345,7 +356,7 @@ func processZKBlock(c *gin.Context) {
 
 func processZKBlockNoConsensus(c *gin.Context) {
 	fmt.Println("=== DEBUG: processZKBlock API called ===")
-	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(14*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	// Parse the block data from the request
@@ -482,7 +493,7 @@ func getBlockByNumber(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
@@ -518,7 +529,7 @@ func getBlockByNumber(c *gin.Context) {
 func getBlockByHash(c *gin.Context) {
 	blockHash := c.Param("hash")
 
-	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
@@ -544,7 +555,7 @@ func getBlockByHash(c *gin.Context) {
 // getTransactionInfo gets detailed information about a transaction
 func getTransactionInfo(c *gin.Context) {
 	txHash := c.Param("hash")
-	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
@@ -587,7 +598,7 @@ func getTransactionInfo(c *gin.Context) {
 
 // getLatestBlock returns information about the latest block
 func getLatestBlock(c *gin.Context) {
-	ctx, cancel := AppContext.GetAppContext(BlockServerAppContext).NewChildContextWithTimeout(15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)

@@ -8,18 +8,12 @@ import (
 	"sync"
 	"time"
 
-	AppContext "gossipnode/config/Context"
-
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 var (
 	Once      sync.Once
 	CRDTLayer *Types.Controller
-)
-
-const (
-	CRDTLayerAppContext = "avc.crdtlayer"
 )
 
 // NewCRDTLayer creates a new CRDT layer with the provided engine
@@ -39,35 +33,35 @@ func GetCRDTLayer() *Types.Controller {
 }
 
 func Add(controller *Types.Controller, nodeID peer.ID, key string, value string) error {
-	_, cancel := AppContext.GetAppContext(CRDTLayerAppContext).NewChildContextWithTimeout(4*time.Second)
+	_, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	// Use the CRDT Engine to add to LWW Set
 	return controller.CRDTLayer.LWWAdd(nodeID.String(), key, value, nil)
 }
 
 func Remove(controller *Types.Controller, nodeID peer.ID, key string, value string) error {
-	_, cancel := AppContext.GetAppContext(CRDTLayerAppContext).NewChildContextWithTimeout(4*time.Second)
+	_, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	// Use the CRDT Engine to remove from LWW Set
 	return controller.CRDTLayer.LWWRemove(nodeID.String(), key, value, nil)
 }
 
 func GetSet(controller *Types.Controller, key string) ([]string, bool) {
-	_, cancel := AppContext.GetAppContext(CRDTLayerAppContext).NewChildContextWithTimeout(4*time.Second)
+	_, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	// Get all elements from the LWW Set
 	return controller.CRDTLayer.GetSet(key)
 }
 
 func CounterInc(controller *Types.Controller, nodeID peer.ID, key string, value uint64) error {
-	_, cancel := AppContext.GetAppContext(CRDTLayerAppContext).NewChildContextWithTimeout(4*time.Second)
+	_, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	// Increment a counter
 	return controller.CRDTLayer.CounterInc(nodeID.String(), key, value, nil)
 }
 
 func GetCounter(controller *Types.Controller, key string) (uint64, bool) {
-	_, cancel := AppContext.GetAppContext(CRDTLayerAppContext).NewChildContextWithTimeout(4*time.Second)
+	_, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	// Get counter value
 	return controller.CRDTLayer.GetCounter(key)

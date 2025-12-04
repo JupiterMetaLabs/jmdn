@@ -1,7 +1,7 @@
 package MessagePassing
 
 import (
-	AppContext "gossipnode/config/Context"
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -18,10 +18,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
-)
-
-const (
-	CRDTSyncHandlerAppContext = "avc.crdtsync.handler"
 )
 
 // TriggerCRDTSyncForBuddyNode triggers CRDT synchronization for a buddy node
@@ -499,7 +495,7 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 	fmt.Printf("🔌 Connecting to %d buddy nodes for CRDT sync...\n", len(buddyTargets))
 
 	connectedCount := 0
-	ctx, cancel := AppContext.GetAppContext(CRDTSyncHandlerAppContext).NewChildContextWithTimeout(30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Connect to each buddy node

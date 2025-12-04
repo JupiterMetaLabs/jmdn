@@ -1,22 +1,18 @@
 package Sequencer
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Sequencer/Router"
 	"gossipnode/config"
-	AppContext "gossipnode/config/Context"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
-)
-
-const(
-	SequencerAppContext = "sequencer"
 )
 
 // ResponseHandler manages ACK responses from peers
@@ -378,7 +374,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 			// defer responseHandler.UnregisterPeer(peerID)
 
 			// Create context with timeout
-			ctx, cancel := AppContext.GetAppContext(SequencerAppContext).NewChildContextWithTimeout(10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
 			// Create proper message with ACK for subscription request

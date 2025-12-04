@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"context"
 	"encoding/json"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
@@ -8,13 +9,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
-	AppContext "gossipnode/config/Context"
 
 	"github.com/gorilla/websocket"
-)
-
-const(
-	WSServerAppContext = "geth.ws.server"
 )
 
 type WSServer struct {
@@ -49,7 +45,7 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	ctx, cancel := AppContext.GetAppContext(WSServerAppContext).NewChildContext()
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	subs := map[string]*sub{}

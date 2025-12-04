@@ -1,9 +1,9 @@
 package DB_OPs
 
 import (
+	"context"
 	"fmt"
 	"gossipnode/config"
-	AppContext "gossipnode/config/Context"
 	"gossipnode/logging"
 	"time"
 
@@ -16,7 +16,7 @@ func GetTransactionsOfBlock(mainDBClient *config.PooledConnection, blockNumber u
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if mainDBClient == nil {

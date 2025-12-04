@@ -3,6 +3,7 @@ package MessagePassing
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -19,16 +20,11 @@ import (
 	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/config"
-	AppContext "gossipnode/config/Context"
 	AVCStruct "gossipnode/config/PubSubMessages"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
-)
-
-const(
-	BFTPubSubAdapterAppContext = "avc.buddynodes.messagepassing.listenerhandler"
 )
 
 // BFTContext holds the context for a BFT consensus round
@@ -344,7 +340,7 @@ func (lh *ListenerHandler) runBFTConsensusFlow(contextKey string) {
 	bftEngine := bft.New(bftConfig)
 
 	// Create BFT adapter
-	ctx, _ := AppContext.GetAppContext(BFTPubSubAdapterAppContext).NewChildContext()
+	ctx := context.Background()
 	adapter, err := bft.NewBFTPubSubAdapter(
 		ctx,
 		pubSubNode.PubSub,
@@ -493,11 +489,9 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		return
 	}
 
-	ctx, _ := AppContext.GetAppContext(BFTPubSubAdapterAppContext).NewChildContext()
-
 	// Open stream to Sequencer
 	stream, err := listenerNode.Host.NewStream(
-		ctx,
+		context.Background(),
 		sequencerPeerID,
 		config.BuddyNodesMessageProtocol,
 	)
@@ -1083,8 +1077,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 		go func(peerID peer.ID) {
 			defer wg.Done()
 			// Use SubmitMessageProtocol because HandleSubmitMessageStream routes Type_VoteResult
-			ctx, _ := AppContext.GetAppContext(BFTPubSubAdapterAppContext).NewChildContext()
-			stream, err := listenerNode.Host.NewStream(ctx, peerID, config.SubmitMessageProtocol)
+			stream, err := listenerNode.Host.NewStream(context.Background(), peerID, config.SubmitMessageProtocol)
 			if err != nil {
 				fmt.Printf("❌ Failed to open stream to %s: %v\n", peerID, err)
 				responseCh <- false

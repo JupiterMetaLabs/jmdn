@@ -1,19 +1,15 @@
 package CRDTSync
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
 
 	"gossipnode/Pubsub"
-	AppContext "gossipnode/config/Context"
 	"gossipnode/crdt"
 
 	"github.com/libp2p/go-libp2p/core/host"
-)
-
-const (
-	ConsensusSyncManagerAppContext = "avc.crdtsync.consensus.integration"
 )
 
 // ConsensusSyncManager manages CRDT synchronization for consensus operations
@@ -123,7 +119,7 @@ func (csm *ConsensusSyncManager) GetSyncStats() map[string]interface{} {
 func (csm *ConsensusSyncManager) WaitForSyncCompletion(timeout time.Duration) error {
 	log.Printf("⏳ Waiting for CRDT sync completion (timeout: %v)...", timeout)
 
-	ctx, cancel := AppContext.GetAppContext(ConsensusSyncManagerAppContext).NewChildContextWithTimeout(timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	// Check sync completion every 500ms

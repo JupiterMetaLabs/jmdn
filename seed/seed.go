@@ -2,7 +2,7 @@ package seed
 
 import (
 	"bufio"
-	AppContext "gossipnode/config/Context"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -14,10 +14,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-)
-
-const(
-	SeedAppContext = "seed"
 )
 
 // PeerRequest represents a request for peer information
@@ -294,7 +290,7 @@ func RequestPeers(h host.Host, seedAddr string, maxPeers int, peerType string) (
 	}
 
 	// Connect to the seed node
-	ctx, cancel := AppContext.GetAppContext(SeedAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := h.Connect(ctx, *addr); err != nil {

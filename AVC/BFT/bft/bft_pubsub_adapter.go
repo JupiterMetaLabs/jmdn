@@ -11,7 +11,6 @@ import (
 	"gossipnode/Pubsub"
 	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/config"
-	AppContext "gossipnode/config/Context"
 	"gossipnode/config/PubSubMessages"
 
 	"github.com/google/uuid"
@@ -33,10 +32,6 @@ type BFTPubSubAdapter struct {
 	cancel context.CancelFunc
 }
 
-const (
-	BFTPubSubAdapterAppContext = "avc.bft.pubsub.adapter"
-)
-
 // NewBFTPubSubAdapter creates adapter
 func NewBFTPubSubAdapter(
 	ctx context.Context,
@@ -45,7 +40,7 @@ func NewBFTPubSubAdapter(
 	channelName string,
 ) (*BFTPubSubAdapter, error) {
 
-	adapterCtx, cancel := AppContext.GetAppContext(BFTPubSubAdapterAppContext).NewChildContext()
+	adapterCtx, cancel := context.WithCancel(ctx)
 
 	adapter := &BFTPubSubAdapter{
 		gps:          gps,

@@ -1,7 +1,7 @@
 package explorer
 
 import (
-	AppContext "gossipnode/config/Context"
+	"context"
 	"net/http"
 	"os"
 	"time"
@@ -21,10 +21,6 @@ const (
 	TOPIC    = "explorer"
 )
 
-const(
-	ExplorerAppContext = "explorer"
-)
-
 // ImmuDBServer represents the ImmuDB API server
 type ImmuDBServer struct {
 	defaultdb      config.PooledConnection
@@ -35,17 +31,13 @@ type ImmuDBServer struct {
 
 // NewImmuDBServer creates a new ImmuDB API server
 func NewImmuDBServer(enableExplorer bool) (*ImmuDBServer, error) {
-
 	// Create ImmuDB client
-	ctx, cancel := AppContext.GetAppContext(ExplorerAppContext).NewChildContext()
-	defer cancel()
-
-	defaultdb, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	defaultdb, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 	if err != nil {
 		return nil, err
 	}
 
-	accountsdb, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
+	accountsdb, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +112,8 @@ func (s *ImmuDBServer) setupRoutes() {
 		// Get Latest Blocks by count using pagination - max 100 blocks at a time
 		api.GET("/latest", s.getLatestBlock)
 
+		// Get all the transactions based on the pagination
+		// api.GET("/transactions/all", s.listTransactions)
 	}
 
 	// Add a new group for Ethereum JSON-RPC

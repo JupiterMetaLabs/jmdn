@@ -2,7 +2,7 @@ package messaging
 
 import (
 	"bufio"
-	AppContext "gossipnode/config/Context"
+	"context"
 	"fmt"
 	"gossipnode/metrics"
 	"time"
@@ -13,9 +13,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 )
-const(
-	MessageAppContext = "message"
-)
+
 // HandleMessageStream processes incoming messages (TCP)
 func HandleMessageStream(s network.Stream) {
 	defer s.Close()
@@ -52,14 +50,12 @@ func SendMessage(n *config.Node, target string, message string) error {
 	}
 
 	// Connect to the peer
-	ctx, cancel := AppContext.GetAppContext(MessageAppContext).NewChildContext()
-	defer cancel()
-	if err := n.Host.Connect(ctx, *peerInfo); err != nil {
+	if err := n.Host.Connect(context.Background(), *peerInfo); err != nil {
 		return fmt.Errorf("connection failed: %v", err)
 	}
 
 	// Open a stream with MessageProtocol (TCP)
-	s, err := n.Host.NewStream(ctx, peerInfo.ID, config.MessageProtocol)
+	s, err := n.Host.NewStream(context.Background(), peerInfo.ID, config.MessageProtocol)
 	if err != nil {
 		return fmt.Errorf("stream failed: %v", err)
 	}

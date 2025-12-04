@@ -4,15 +4,10 @@ import (
 	"context"
 	"fmt"
 	"gossipnode/logging"
-	AppContext "gossipnode/config/Context"
 	"sync"
 	"time"
 
 	"go.uber.org/zap"
-)
-
-const(
-	LoggerAppContext = "gETH.facade.service.logger"
 )
 
 // intilize the async logger from gossipnode/logging package using sync.Once reuse the same logger for the whole application
@@ -52,7 +47,7 @@ func GetLogger() *logging.AsyncLogger {
 
 func LogData(ctx context.Context, Message string, Function string, status int) error {
 	// Create a new context with timeout for logging operation
-	logCtx, cancel := AppContext.GetAppContext(LoggerAppContext).NewChildContextWithTimeout(3*time.Second)
+	logCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
 	tempLogger := GetLogger()
