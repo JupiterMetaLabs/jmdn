@@ -282,7 +282,7 @@ func Test_Account_Nonce_Generation(t *testing.T) {
 	fmt.Printf("=== Testing Account Nonce Generation ===\n")
 
 	// Test the nonce generation function
-	nonce1, err := DB_OPs.GenerateNonce()
+	nonce1, err := DB_OPs.PutNonceofAccount()
 	if err != nil {
 		t.Fatalf("Failed to generate nonce 1: %v", err)
 	}
@@ -290,19 +290,19 @@ func Test_Account_Nonce_Generation(t *testing.T) {
 	// Wait a bit to ensure different timestamps
 	// time.Sleep(1 * time.Millisecond)
 
-	nonce2, err := DB_OPs.GenerateNonce()
+	nonce2, err := DB_OPs.PutNonceofAccount()
 	if err != nil {
 		t.Fatalf("Failed to generate nonce 2: %v", err)
 	}
 
-	nonce3, err := DB_OPs.GenerateNonce()
+	nonce3, err := DB_OPs.PutNonceofAccount()
 	if err != nil {
 		t.Fatalf("Failed to generate nonce 3: %v", err)
 	}
 
 	time.Sleep(1 * time.Millisecond)
 
-	nonce4, err := DB_OPs.GenerateNonce()
+	nonce4, err := DB_OPs.PutNonceofAccount()
 	if err != nil {
 		t.Fatalf("Failed to generate nonce 4: %v", err)
 	}

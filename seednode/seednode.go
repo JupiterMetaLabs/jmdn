@@ -2,7 +2,6 @@ package seednode
 
 import (
 	"context"
-	AppContext "gossipnode/config/Context"
 	"crypto/tls"
 	"fmt"
 	peerpb "gossipnode/seednode/proto"
@@ -23,10 +22,6 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
-)
-
-const(
-	SeedNodeAppContext = "seednode"
 )
 
 // ManagedPeer represents a peer being manually managed (local copy to avoid circular imports)
@@ -156,7 +151,7 @@ func (c *Client) ListPeers(ctx context.Context, request *peerpb.PeerListRequest)
 }
 
 func (c *Client) ListWeightsofPeers() (map[string]float64, error) {
-	ctx, cancel := AppContext.GetAppContext(SeedNodeAppContext).NewChildContextWithTimeout(15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	// Get all peers from the seed node
@@ -179,7 +174,7 @@ func (c *Client) ListWeightsofPeers() (map[string]float64, error) {
 
 // GetPeer retrieves a peer record by peer ID
 func (c *Client) GetPeer(peerID string) (*peerpb.SignedPeerRecord, error) {
-	ctx, cancel := AppContext.GetAppContext(SeedNodeAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	request := &peerpb.GetPeerRequest{
@@ -200,7 +195,7 @@ func (c *Client) GetPeer(peerID string) (*peerpb.SignedPeerRecord, error) {
 
 // GetPeerByAlias retrieves a peer record by alias
 func (c *Client) GetPeerByAlias(alias string) (*peerpb.SignedPeerRecord, error) {
-	ctx, cancel := AppContext.GetAppContext(SeedNodeAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	request := &peerpb.GetPeerByAliasRequest{
@@ -236,7 +231,7 @@ func (c *Client) GetAliasByPeerID(peerID string) (string, error) {
 
 // GetNeighbors retrieves neighbors for a given peer
 func (c *Client) GetNeighbors(peerID string) ([]*peerpb.PeerNeighbor, error) {
-	ctx, cancel := AppContext.GetAppContext(SeedNodeAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	request := &peerpb.GetNeighborsRequest{
@@ -257,7 +252,7 @@ func (c *Client) GetNeighbors(peerID string) ([]*peerpb.PeerNeighbor, error) {
 
 // AllocateNeighbors requests new neighbors from the seed node
 func (c *Client) AllocateNeighbors(peerID string, forceRefresh bool) ([]*peerpb.PeerNeighbor, error) {
-	ctx, cancel := AppContext.GetAppContext(SeedNodeAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	request := &peerpb.AllocateNeighborsRequest{
@@ -279,7 +274,7 @@ func (c *Client) AllocateNeighbors(peerID string, forceRefresh bool) ([]*peerpb.
 
 // AddNeighbor adds a neighbor relationship to the seed node
 func (c *Client) AddNeighbor(neighbor *peerpb.PeerNeighbor) error {
-	ctx, cancel := AppContext.GetAppContext(SeedNodeAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	request := &peerpb.AddNeighborRequest{
@@ -486,7 +481,7 @@ func (c *Client) DiscoverAndAddNeighbors(h host.Host, nodeManager interface{}) e
 
 // UpdatePeer updates an existing peer record
 func (c *Client) UpdatePeer(peerRecord *peerpb.SignedPeerRecord) error {
-	ctx, cancel := AppContext.GetAppContext(SeedNodeAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Create peer record update
@@ -522,7 +517,7 @@ func (c *Client) UpdatePeer(peerRecord *peerpb.SignedPeerRecord) error {
 
 // CreateAlias creates an alias for an existing peer
 func (c *Client) CreateAlias(alias *peerpb.PeerAlias) error {
-	ctx, cancel := AppContext.GetAppContext(SeedNodeAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	request := &peerpb.CreateAliasRequest{
@@ -575,7 +570,7 @@ func (c *Client) RegisterPeerWithAlias(h host.Host, alias string) error {
 
 // registerNewPeerWithAlias registers a completely new peer with an alias
 func (c *Client) registerNewPeerWithAlias(h host.Host, alias string) error {
-	ctx, cancel := AppContext.GetAppContext(SeedNodeAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Get peer addresses - try to use public IP first
@@ -806,7 +801,7 @@ func (c *Client) updateExistingPeerWithAlias(h host.Host, alias string, existing
 
 // RegisterPeer registers this peer with the seed node
 func (c *Client) RegisterPeer(h host.Host) error {
-	ctx, cancel := AppContext.GetAppContext(SeedNodeAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Get peer addresses - try to use public IP first
@@ -908,7 +903,7 @@ func (c *Client) RegisterPeer(h host.Host) error {
 
 // SendHeartbeat sends a heartbeat to the seed node
 func (c *Client) SendHeartbeat(h host.Host) error {
-	ctx, cancel := AppContext.GetAppContext(SeedNodeAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// Get peer addresses
@@ -954,7 +949,7 @@ func (c *Client) SendHeartbeat(h host.Host) error {
 
 // GetPeers retrieves a list of peers from the seed node
 func (c *Client) GetPeers(limit int32, status peerpb.PeerStatus) ([]*peerpb.SignedPeerRecord, error) {
-	ctx, cancel := AppContext.GetAppContext(SeedNodeAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Create peer list request
@@ -1180,7 +1175,7 @@ func (c *Client) ListAllPeers(ctx context.Context) ([]selection.Node, error) {
 	totalFetched := 0
 
 	for {
-		reqCtx, cancel := AppContext.GetAppContext(SeedNodeAppContext).NewChildContextWithTimeout(10*time.Second)
+		reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 
 		req := &peerpb.PeerListRequest{
 			AfterPeerId: afterPeerID,

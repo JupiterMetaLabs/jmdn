@@ -1,17 +1,14 @@
 package rpc
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"time"
 
 	"gossipnode/gETH/Facade/Service/Logger"
-	AppContext "gossipnode/config/Context"
-	"github.com/gin-gonic/gin"
-)
 
-const(
-	HTTPServerAppContext = "geth.http.server"
+	"github.com/gin-gonic/gin"
 )
 
 type HTTPServer struct {
@@ -58,8 +55,7 @@ func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
 		write(c, RespErr(nil, -32700, "Parse error"))
 		return
 	}
-	longCTX, _ := AppContext.GetAppContext(HTTPServerAppContext).NewChildContext()
-	resp, _ := s.h.Handle(longCTX, req)
+	resp, _ := s.h.Handle(context.Background(), req)
 	write(c, resp)
 }
 

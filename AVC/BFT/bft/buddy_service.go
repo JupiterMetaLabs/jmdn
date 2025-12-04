@@ -12,17 +12,12 @@ import (
 	"net"
 	"time"
 
-	AppContext "gossipnode/config/Context"
 	"gossipnode/config/PubSubMessages"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
-)
-
-const (
-	BuddyServiceAppContext = "avc.bft.buddy.service"
 )
 
 // =============================================================================
@@ -102,9 +97,7 @@ func (s *BuddyService) InitiateBFT(
 	}
 
 	// Run the consensus asynchronously (non-blocking)
-	ctx, cancel := AppContext.GetAppContext(BuddyServiceAppContext).NewChildContext()
-	defer cancel()
-	go s.runBFTConsensus(ctx, req)
+	go s.runBFTConsensus(context.Background(), req)
 
 	return resp, nil
 }
@@ -226,7 +219,7 @@ func (s *BuddyService) reportResult(req *pb.BFTRequest, result *Result) {
 		FailureReason: result.FailureReason,
 	}
 
-	ctx, cancel := AppContext.GetAppContext(BuddyServiceAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	ack, err := client.ReportResult(ctx, pbResult)
@@ -265,7 +258,7 @@ func (s *BuddyService) reportFailure(req *pb.BFTRequest, reason string) {
 		FailureReason: reason,
 	}
 
-	ctx, cancel := AppContext.GetAppContext(BuddyServiceAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, _ = client.ReportResult(ctx, pbResult)
 }

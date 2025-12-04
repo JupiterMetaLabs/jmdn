@@ -2,7 +2,6 @@ package Subscription
 
 import (
 	"context"
-	AppContext "gossipnode/config/Context"
 	"encoding/json"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
@@ -13,7 +12,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
 )
-
 
 // Subscribe subscribes to a topic with access control (now uses enhanced implementation)
 func Subscribe(gps *PubSubMessages.GossipPubSub, topic string, handler func(*PubSubMessages.GossipMessage)) error {
@@ -111,8 +109,9 @@ func subscribeViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, h
 	}
 	fmt.Printf("Subscribe returned successfully for %s\n", topicName)
 	// Start a goroutine to handle incoming messages with proper context
-	ctx, cancel := AppContext.GetAppContext(SubscriptionAppContext).NewChildContext()
-
+	ctx, cancel := context.WithCancel(context.Background())
+	// Store cancel function for cleanup (in a real implementation, you'd track this)
+	_ = cancel
 	fmt.Printf("Context set for %s\n", topicName)
 	go func() {
 		defer cancel()

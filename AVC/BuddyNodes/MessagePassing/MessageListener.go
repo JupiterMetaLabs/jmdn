@@ -2,11 +2,11 @@ package MessagePassing
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/config"
-	AppContext "gossipnode/config/Context"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/seednode"
 	"os"
@@ -16,10 +16,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 	"go.uber.org/zap"
-)
-
-const(
-	MessageListenerAppContext = "avc.buddynodes.messagepassing.messagelistener"
 )
 
 type StructListener struct {
@@ -343,14 +339,14 @@ func (StructListenerNode *StructListener) sendViaSeedNode(peerID peer.ID, messag
 	if err != nil {
 		return fmt.Errorf("failed to get peer info from seed node: %v", err)
 	}
-	ctx, _ := AppContext.GetAppContext(MessageListenerAppContext).NewChildContext()
+
 	// Connect directly to the peer
-	if err := StructListenerNode.ListenerBuddyNode.Host.Connect(ctx, *peerInfo); err != nil {
+	if err := StructListenerNode.ListenerBuddyNode.Host.Connect(context.Background(), *peerInfo); err != nil {
 		return fmt.Errorf("failed to connect to peer %s: %v", peerID, err)
 	}
 
 	// Open stream and send message using SubmitMessageProtocol
-	stream, err := StructListenerNode.ListenerBuddyNode.Host.NewStream(ctx, peerID, config.SubmitMessageProtocol)
+	stream, err := StructListenerNode.ListenerBuddyNode.Host.NewStream(context.Background(), peerID, config.SubmitMessageProtocol)
 	if err != nil {
 		return fmt.Errorf("failed to create stream to %s: %v", peerID, err)
 	}

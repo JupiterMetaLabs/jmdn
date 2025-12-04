@@ -1,12 +1,13 @@
 package DB_OPs
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"gossipnode/config"
-	AppContext "gossipnode/config/Context"
 	"gossipnode/logging"
 	"strings"
+
 	"sync/atomic"
 	"time"
 
@@ -74,7 +75,7 @@ type Account struct {
 // Get the Nonce of a account - NTF
 var counter uint64
 
-func GenerateNonce() (uint64, error) {
+func PutNonceofAccount() (uint64, error) {
 	ts := uint64(time.Now().UTC().UnixNano())
 	c := atomic.AddUint64(&counter, 1)
 	return ts<<16 | (c & 0xFFFF), nil // embed counter in low bits
@@ -91,9 +92,8 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 	}
 
 	// Define Function wide context for timeout
-	// Create child context from global context
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(5 * time.Second)
-	defer cancel() // Always cancel child context when function exits
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	// Check if we need to get a connection
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -129,13 +129,14 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 	}
 
 	// Create a Nonce First
-	Nonce, err := GenerateNonce()
+	Nonce, err := PutNonceofAccount()
 	if err != nil {
 		return err
 	}
 
 	// Create A CreatedAt and UpdatedAt
 	CreatedAt := time.Now().UTC().UnixNano()
+	UpdatedAt := time.Now().UTC().UnixNano()
 
 	// Create the account document
 	AccountDoc = &Account{
@@ -145,7 +146,7 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 		Nonce:       Nonce,
 		AccountType: "user",
 		CreatedAt:   CreatedAt,
-		UpdatedAt:   CreatedAt,
+		UpdatedAt:   UpdatedAt,
 		Metadata:    metadata,
 	}
 	// Debugging
@@ -160,27 +161,25 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 }
 
 // StoreAccount stores a Key document in the accounts database and creates a DID reference
-// It first checks if the account already exists, and only creates it if it doesn't exist.
 func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) error {
 	var err error
 	var AccountDoc *Account
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	// Create child context from app context
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(12*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 
 	if KeyDoc == nil {
-		return fmt.Errorf("key document cannot be nil")
+		return fmt.Errorf("Key document cannot be nil")
 	}
 
 	if KeyDoc.DIDAddress == "" || KeyDoc.Address == (common.Address{}) {
-		return fmt.Errorf("DIDAddress and address cannot be empty")
+		return fmt.Errorf("DIDAddress and Address cannot be empty")
 	}
 
 	// Try to use connection pool if available, otherwise fall back to traditional approach
-	if PooledConnection == nil || PooledConnection.Client == nil {
+	if PooledConnection.Client == nil {
 		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get accounts connection: %w - StoreAccount", err)
@@ -213,28 +212,6 @@ func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 			)
 			PutAccountsConnection(PooledConnection)
 		}()
-	}
-
-	// Check if account already exists before creating
-	existingAccount, err := GetAccount(PooledConnection, KeyDoc.Address)
-	if err != nil && err != ErrNotFound {
-		// If it's not a "not found" error, return the error
-		return fmt.Errorf("failed to check if account exists: %w - StoreAccount", err)
-	}
-	if existingAccount != nil {
-		// Account already exists, return error with log
-		ic.Logger.Logger.Error("Account already exists",
-			zap.String(logging.Address, KeyDoc.Address.Hex()),
-			zap.String(logging.DID, KeyDoc.DIDAddress),
-			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.StoreAccount"),
-		)
-		fmt.Println("Account already exists, returning successfully so response would be nil and no error")
-		return nil
 	}
 
 	// Create the account document
@@ -331,7 +308,7 @@ func BatchCreateAccountsOrdered(PooledConnection *config.PooledConnection, entri
 	}
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	var err error
@@ -375,9 +352,11 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 	var err error
 	var shouldReturnConnection bool
 
-	// Define Function wide context without timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContext()
-	defer cancel()
+	// Define Function wide context for timeout
+	ctx := context.Background()
+
+	// End the context.Background()
+	defer ctx.Done()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
@@ -440,8 +419,10 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		var shouldWrite bool = true
 		var incoming Account
 		if err := json.Unmarshal(e.Value, &incoming); err == nil {
-			// Try read account using exisitng context
+			// Try read existing account
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			entry, getErr := PooledConnection.Client.Client.Get(ctx, []byte(e.Key))
+			cancel()
 			if getErr == nil && entry != nil && len(entry.Value) > 0 {
 				var existing Account
 				if jsonErr := json.Unmarshal(entry.Value, &existing); jsonErr == nil {
@@ -524,7 +505,9 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		// If address key was in batch but skipped, or not in batch at all
 		if !addressKeysInBatch[addrKey] {
 			// Check if address key exists in database
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
+			cancel()
 			if getErr == nil {
 				// Address key exists in DB - create reference
 				didKey := []byte(e.Key)
@@ -558,7 +541,9 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 			shouldCreateRef = true
 		} else {
 			// Check if address key exists in database
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
+			cancel()
 			if getErr == nil {
 				// Address key exists in database - safe to create reference
 				shouldCreateRef = true
@@ -579,7 +564,8 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 			BoundRef:      true,
 		}}})
 	}
-
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	if len(ops) == 0 {
 		// Nothing to apply (e.g., all entries skipped by LWW) -> treat as success
 		PooledConnection.Client.Logger.Logger.Info("No operations to apply in batch restore (all skipped by LWW)",
@@ -637,7 +623,7 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -723,7 +709,7 @@ func GetAccountByDID(PooledConnection *config.PooledConnection, did string) (*Ac
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -757,7 +743,7 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -790,7 +776,7 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 	fmt.Printf("=== DEBUG: UpdateAccountBalance called for address %s with balance %s ===\n", address.Hex(), newBalance)
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var err error
@@ -891,7 +877,7 @@ func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*A
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	// Try to use connection pool if available, otherwise fall back to traditional approach
@@ -1005,9 +991,9 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContext()
+	ctx := context.Background()
 	// End the context.Background()
-	defer cancel()
+	defer ctx.Done()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
@@ -1065,7 +1051,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 			SeekKey: lastKey,
 			Desc:    true, // latest accounts first
 		}
-		ReadCtx, ReadCancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(10*time.Second)
+		ReadCtx, ReadCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer ReadCancel()
 		scanResult, err := ic.Client.Scan(ReadCtx, scanReq)
 		if err != nil {
@@ -1162,7 +1148,7 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -1277,7 +1263,6 @@ func isTransactionInvolvingAccount(tx config.Transaction, accountAddr *common.Ad
 	return false
 }
 
-//TODO: fix ctx
 // CheckNonceDuplicate checks if a transaction with the same (from, nonce) already exists
 // Returns true if a duplicate is found, false otherwise
 // This function checks confirmed transactions in blocks
@@ -1286,8 +1271,8 @@ func CheckNonceDuplicate(PooledConnection *config.PooledConnection, fromAddr *co
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContext()
-	defer cancel()
+	ctx := context.Background()
+	defer ctx.Done()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		// Use MAIN database connection since transactions are stored in main DB
@@ -1378,7 +1363,7 @@ func GetLatestNonce(PooledConnection *config.PooledConnection, fromAddr *common.
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -1467,186 +1452,6 @@ func GetLatestNonce(PooledConnection *config.PooledConnection, fromAddr *common.
 	return latestNonce, nil
 }
 
-// CheckNonceAndGetLatest is an optimized function that combines nonce duplicate check
-// and latest nonce retrieval in a single reverse scan of blocks.
-// This is much faster than calling CheckNonceDuplicate and GetLatestNonce separately
-// because it:
-// 1. Scans blocks in reverse order (latest to oldest)
-// 2. Stops early once it finds the latest nonce and checks for duplicates
-// 3. Only checks transactions from the sender address
-// Returns: (hasDuplicate, latestNonce, hasAnyTransactions, error)
-// hasAnyTransactions indicates if any transactions were found (needed to distinguish
-// between "no transactions" (nonce 0 valid) vs "latest transaction has nonce 0" (next should be 1))
-func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr *common.Address, submittedNonce uint64) (bool, uint64, bool, error) {
-	var err error
-	var shouldReturnConnection bool = false
-
-	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(5*time.Second)
-	defer cancel()
-
-	if PooledConnection == nil || PooledConnection.Client == nil {
-		// Use MAIN database connection since transactions are stored in main DB
-		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return false, 0, false, fmt.Errorf("failed to get main DB connection from pool: %w - CheckNonceAndGetLatest", err)
-		}
-		shouldReturnConnection = true
-		PooledConnection.Client.Logger.Logger.Info("Client Connection is Nil, so Pulled up quick connection from the Pool",
-			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.CheckNonceAndGetLatest"),
-		)
-	}
-	if shouldReturnConnection {
-		defer func() {
-			PooledConnection.Client.Logger.Logger.Info("Client Connection is returned to the Pool",
-				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.CheckNonceAndGetLatest"),
-			)
-			PutMainDBConnection(PooledConnection)
-		}()
-	}
-
-	ic := PooledConnection.Client
-
-	// Get the latest block number
-	latestBlockNumber, err := GetLatestBlockNumber(PooledConnection)
-	if err != nil {
-		ic.Logger.Logger.Error("Failed to get latest block number",
-			zap.Error(err),
-			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.CheckNonceAndGetLatest"),
-		)
-		return false, 0, false, fmt.Errorf("failed to get latest block number: %w", err)
-	}
-
-	var latestNonce uint64 = 0
-	foundLatestNonce := false
-	hasDuplicate := false
-
-	// Scan blocks in reverse order (latest to oldest) for early termination
-	// Process in batches for efficiency
-	batchSize := uint64(100)
-	maxBlocksToScan := uint64(1000) // Limit scan to recent blocks for performance
-	blocksScanned := uint64(0)
-
-	// Start from latest block and go backwards
-	for currentBlock := latestBlockNumber; currentBlock > 0 && blocksScanned < maxBlocksToScan; {
-		// Determine the batch range (going backwards)
-		var startBlock uint64
-		if currentBlock >= batchSize {
-			startBlock = currentBlock - batchSize + 1
-		} else {
-			startBlock = 0
-		}
-
-		// Process current batch of blocks (in reverse order)
-		for i := currentBlock; i >= startBlock; i-- {
-			block, err := GetZKBlockByNumber(PooledConnection, i)
-			if err != nil {
-				ic.Logger.Logger.Warn("Error retrieving block, skipping",
-					zap.Uint64("block_number", i),
-					zap.Error(err),
-					zap.String(logging.Connection_database, config.DBName),
-					zap.Time(logging.Created_at, time.Now().UTC()),
-					zap.String(logging.Log_file, LOG_FILE),
-					zap.String(logging.Topic, TOPIC),
-					zap.String(logging.Loki_url, LOKI_URL),
-					zap.String(logging.Function, "DB_OPs.CheckNonceAndGetLatest"),
-				)
-				continue
-			}
-
-			// Check each transaction in the current block
-			// Process in reverse order within block to find latest nonce faster
-			for j := len(block.Transactions) - 1; j >= 0; j-- {
-				tx := block.Transactions[j]
-
-				// Only check transactions from the sender address
-				if tx.From == nil || *tx.From != *fromAddr {
-					continue
-				}
-
-				// Check for duplicate nonce
-				if tx.Nonce == submittedNonce {
-					hasDuplicate = true
-					ic.Logger.Logger.Warn("Duplicate nonce found",
-						zap.String("from_address", fromAddr.Hex()),
-						zap.Uint64("nonce", submittedNonce),
-						zap.String("existing_tx_hash", tx.Hash.Hex()),
-						zap.Uint64("block_number", i),
-						zap.String(logging.Connection_database, config.DBName),
-						zap.Time(logging.Created_at, time.Now().UTC()),
-						zap.String(logging.Log_file, LOG_FILE),
-						zap.String(logging.Topic, TOPIC),
-						zap.String(logging.Loki_url, LOKI_URL),
-						zap.String(logging.Function, "DB_OPs.CheckNonceAndGetLatest"),
-					)
-				}
-
-				// Update latest nonce if we found a higher one
-				if tx.Nonce > latestNonce {
-					latestNonce = tx.Nonce
-					foundLatestNonce = true
-				}
-			}
-
-			blocksScanned++
-
-			// Early termination: if we found the latest nonce and checked for duplicates,
-			// and we've scanned enough blocks, we can stop
-			// However, we still need to check for duplicates in all blocks, so we continue
-			// but we can optimize by stopping if latestNonce is much higher than submittedNonce
-			if foundLatestNonce && latestNonce > submittedNonce+100 {
-				// If latest nonce is way ahead, we've likely found all relevant transactions
-				// This is a heuristic optimization
-				break
-			}
-		}
-
-		// Move to next batch (going backwards)
-		if currentBlock >= batchSize {
-			currentBlock = currentBlock - batchSize
-		} else {
-			break
-		}
-
-		// Early exit if we found duplicate and latest nonce
-		if hasDuplicate && foundLatestNonce {
-			break
-		}
-	}
-
-	ic.Logger.Logger.Info("Nonce check completed",
-		zap.String("from_address", fromAddr.Hex()),
-		zap.Uint64("submitted_nonce", submittedNonce),
-		zap.Uint64("latest_nonce", latestNonce),
-		zap.Bool("has_duplicate", hasDuplicate),
-		zap.Bool("has_any_transactions", foundLatestNonce),
-		zap.Uint64("blocks_scanned", blocksScanned),
-		zap.String(logging.Connection_database, config.DBName),
-		zap.Time(logging.Created_at, time.Now().UTC()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, LOKI_URL),
-		zap.String(logging.Function, "DB_OPs.CheckNonceAndGetLatest"),
-	)
-
-	return hasDuplicate, latestNonce, foundLatestNonce, nil
-}
-
 // GetTransactionsByAccountPaginated retrieves paginated transactions for a given account address
 // This implementation scans blocks in reverse order (latest first) and stops early once it has
 // collected enough transactions for the requested page, making it much faster than GetTransactionsByAccount
@@ -1657,7 +1462,7 @@ func GetTransactionsByAccountPaginated(PooledConnection *config.PooledConnection
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -1823,7 +1628,7 @@ func GetTransactionsPaginated(PooledConnection *config.PooledConnection, offset,
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Transactions are stored in MAIN database, not accounts DB
@@ -1886,7 +1691,7 @@ func GetTransactionsPaginated(PooledConnection *config.PooledConnection, offset,
 			Desc:    true, // latest transactions first
 		}
 
-		scanCtx, scanCancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(10*time.Second)
+		scanCtx, scanCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		scanResult, err := ic.Client.Scan(scanCtx, scanReq)
 		scanCancel()
 
@@ -1965,153 +1770,6 @@ func GetTransactionsPaginated(PooledConnection *config.PooledConnection, offset,
 	return transactions, total, nil
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// GetTransactionsByAddressIndexed retrieves transactions related to an address using the address index
-func GetTransactionsByAddressIndexed(PooledConnection *config.PooledConnection, address common.Address, limit int) ([]*config.Transaction, error) {
-	var err error
-	var shouldReturnConnection bool
-
-	if limit <= 0 {
-		limit = config.DefaultScanLimit
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get main DB connection: %w - GetTransactionsByAddressIndexed", err)
-		}
-		shouldReturnConnection = true
-		PooledConnection.Client.Logger.Logger.Info("Main DB connection retrieved for address indexed query",
-			zap.String(logging.Connection_database, config.DBName),
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.String(logging.Function, "DB_OPs.GetTransactionsByAddressIndexed"),
-		)
-	}
-
-	if shouldReturnConnection {
-		defer func() {
-			PooledConnection.Client.Logger.Logger.Info("Main DB connection returned to pool after address indexed query",
-				zap.String(logging.Connection_database, config.DBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.GetTransactionsByAddressIndexed"),
-			)
-			PutMainDBConnection(PooledConnection)
-		}()
-	}
-
-	if err := ensureMainDBSelected(PooledConnection); err != nil {
-		return nil, fmt.Errorf("failed to ensure main database selected: %w - GetTransactionsByAddressIndexed", err)
-	}
-
-	normalizedAddr := normalizeAddress(address)
-	prefix := fmt.Sprintf("%s%s:", PREFIX_ADDR_TX, normalizedAddr)
-
-	transactions := make([]*config.Transaction, 0, limit)
-	blockCache := make(map[uint64]*config.ZKBlock)
-	batchSize := min(limit, 512)
-	var lastKey []byte
-
-	for len(transactions) < limit {
-		scanCtx, scanCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		scanReq := &schema.ScanRequest{
-			Prefix:  []byte(prefix),
-			Limit:   uint64(batchSize),
-			SeekKey: lastKey,
-			Desc:    true,
-		}
-
-		scanResult, scanErr := PooledConnection.Client.Client.Scan(scanCtx, scanReq)
-		scanCancel()
-		if scanErr != nil {
-			return nil, fmt.Errorf("failed to scan address index: %w - GetTransactionsByAddressIndexed", scanErr)
-		}
-
-		if len(scanResult.Entries) == 0 {
-			break
-		}
-
-		for _, entry := range scanResult.Entries {
-			var pointer AddressTxPointer
-			if err := json.Unmarshal(entry.Value, &pointer); err != nil {
-				PooledConnection.Client.Logger.Logger.Warn("Failed to decode address pointer",
-					zap.Error(err),
-					zap.String("address", normalizedAddr),
-					zap.String(logging.Connection_database, config.DBName),
-					zap.Time(logging.Created_at, time.Now().UTC()),
-					zap.String(logging.Function, "DB_OPs.GetTransactionsByAddressIndexed"),
-				)
-				continue
-			}
-
-			block, ok := blockCache[pointer.BlockNumber]
-			if !ok {
-				block, err = GetZKBlockByNumber(PooledConnection, pointer.BlockNumber)
-				if err != nil {
-					PooledConnection.Client.Logger.Logger.Warn("Failed to fetch block for address pointer",
-						zap.Error(err),
-						zap.Uint64("blockNumber", pointer.BlockNumber),
-						zap.String(logging.Connection_database, config.DBName),
-						zap.Time(logging.Created_at, time.Now().UTC()),
-						zap.String(logging.Function, "DB_OPs.GetTransactionsByAddressIndexed"),
-					)
-					continue
-				}
-				blockCache[pointer.BlockNumber] = block
-			}
-
-			if pointer.TxIndex < 0 || pointer.TxIndex >= len(block.Transactions) {
-				PooledConnection.Client.Logger.Logger.Warn("Invalid transaction index in pointer",
-					zap.Int("txIndex", pointer.TxIndex),
-					zap.Uint64("blockNumber", pointer.BlockNumber),
-					zap.String(logging.Connection_database, config.DBName),
-					zap.Time(logging.Created_at, time.Now().UTC()),
-					zap.String(logging.Function, "DB_OPs.GetTransactionsByAddressIndexed"),
-				)
-				continue
-			}
-
-			tx := block.Transactions[pointer.TxIndex]
-			copyTx := tx // make copy to avoid referencing loop variable
-			transactions = append(transactions, &copyTx)
-
-			if len(transactions) >= limit {
-				break
-			}
-		}
-
-		if len(scanResult.Entries) < batchSize {
-			break
-		}
-
-		lastKey = scanResult.Entries[len(scanResult.Entries)-1].Key
-	}
-
-	PooledConnection.Client.Logger.Logger.Info("Retrieved transactions via address index",
-		zap.Int("transactionCount", len(transactions)),
-		zap.String("address", normalizedAddr),
-		zap.String(logging.Connection_database, config.DBName),
-		zap.Time(logging.Created_at, time.Now().UTC()),
-		zap.String(logging.Function, "DB_OPs.GetTransactionsByAddressIndexed"),
-	)
-
-	return transactions, nil
-}
-
 // ensureAccountsDBSelected makes sure we're using the accounts database
 // This helps prevent the "please select a database first" error and ensures we're using the correct database
 func ensureAccountsDBSelected(PooledConnection *config.PooledConnection) error {
@@ -2120,7 +1778,7 @@ func ensureAccountsDBSelected(PooledConnection *config.PooledConnection) error {
 	}
 
 	// Create context with timeout
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// Use the stored token
@@ -2204,7 +1862,7 @@ func reconnectToAccountsDB(PooledConnection *config.PooledConnection) error {
 		WithMaxRecvMsgSize(1024 * 1024 * 200) // 20MB message size
 
 	// Create context with timeout for the connection attempt
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Create new client

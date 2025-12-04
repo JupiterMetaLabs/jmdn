@@ -1,6 +1,7 @@
 package Pubsub
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	Channel "gossipnode/Pubsub/DataProcessing/Channel"
@@ -8,7 +9,6 @@ import (
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
 	"gossipnode/config/PubSubMessages"
-	AppContext "gossipnode/config/Context"
 	"log"
 	"time"
 
@@ -16,10 +16,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
-)
-
-const(
-	PubsubAppContext = "pubsub"
 )
 
 type StructGossipPubSub struct {
@@ -290,7 +286,7 @@ func HandlePeerFound(gps *PubSubMessages.GossipPubSub, pi peer.AddrInfo) {
 	gps.Mutex.Unlock()
 
 	// Connect to the discovered peer
-	ctx, cancel := AppContext.GetAppContext(PubsubAppContext).NewChildContextWithTimeout(10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := gps.Host.Connect(ctx, pi); err != nil {

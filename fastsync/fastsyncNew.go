@@ -30,11 +30,11 @@ package fastsync
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
-	AppContext "gossipnode/config/Context"
 	"gossipnode/crdt"
 	hashmap "gossipnode/crdt/HashMap"
 	"io"
@@ -159,8 +159,8 @@ func (fs *FastSync) getKeysBatchIncremental(db *config.PooledConnection, prefix 
 		SeekKey: seekKey,
 	}
 
-	ctx, cancel := AppContext.GetAppContext(FastsyncAppContext).NewChildContext()
-	defer cancel()
+	ctx := context.Background()
+	defer ctx.Done()
 
 	scanResult, err := ic.Client.Scan(ctx, scanReq)
 	if err != nil {
@@ -1434,7 +1434,7 @@ func (fs *FastSync) handleHashMapExchangeSYNC(peerID peer.ID, msg *SyncMessage) 
 }
 
 func returnStream(fs *FastSync, peerID peer.ID) (network.Stream, error) {
-	ctx, cancel := AppContext.GetAppContext(FastsyncAppContext).NewChildContextWithTimeout(RequestTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 	defer cancel()
 	stream, err := fs.host.NewStream(ctx, peerID, SyncProtocolID)
 	if err != nil {

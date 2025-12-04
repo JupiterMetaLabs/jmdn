@@ -1,6 +1,7 @@
 package explorer
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"math"
@@ -11,7 +12,6 @@ import (
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
-	AppContext "gossipnode/config/Context"
 	"gossipnode/logging"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
@@ -218,9 +218,8 @@ func (s *ImmuDBServer) listTransactions_inBlock(c *gin.Context) {
 // Get default db stats
 func (s *ImmuDBServer) getStats(c *gin.Context) {
 	// Create a context with 60 second timeout
-	_, cancel := AppContext.GetAppContext(ExplorerAppContext).NewChildContextWithTimeout(60*time.Second)
+	_, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
-
 
 	var stats stats
 	var wg sync.WaitGroup

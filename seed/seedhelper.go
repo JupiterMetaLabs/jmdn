@@ -1,7 +1,7 @@
 package seed
 
 import (
-	AppContext "gossipnode/config/Context"
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -30,9 +30,7 @@ type SeedNode struct {
 }
 
 // Define HeartbeatProtocol if not already defined elsewhere
-const (
-	SeedHelperAppContext = "seed.seedhelper"
-)
+const ()
 
 // For functions that you reference without implementation:
 func (sn *SeedNode) GetAllPeers() ([]string, error) {
@@ -215,7 +213,7 @@ func (sn *SeedNode) PingPeer(peerAddr string) (bool, error) {
 	}
 
 	// Set a timeout for the ping operation
-	ctx, cancel := AppContext.GetAppContext(SeedAppContext).NewChildContextWithTimeout(5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// Try to connect to the peer

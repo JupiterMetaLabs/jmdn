@@ -1,10 +1,10 @@
 package DB_OPs
 
 import (
+	"context"
 	"fmt"
 	"gossipnode/config"
 	"gossipnode/logging"
-	AppContext "gossipnode/config/Context"
 	"time"
 
 	"go.uber.org/zap"
@@ -18,7 +18,7 @@ const (
 func GetImmuClient() (*config.PooledConnection, error) {
 	var err error
 	var PooledConnection *config.PooledConnection
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(4*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
@@ -54,7 +54,7 @@ func CloseImmuClient(PooledConnection *config.PooledConnection) error {
 func GetAccountsImmuClient() (*config.PooledConnection, error) {
 	var err error
 	var PooledConnection *config.PooledConnection
-	ctx, cancel := AppContext.GetAppContext(AccountsDBAppContext).NewChildContextWithTimeout(4*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 	if err != nil {
@@ -154,7 +154,7 @@ func GetCountofRecords(PooledConnection *config.PooledConnection, ConnType int, 
 		}
 	}
 
-	ctx, cancel := AppContext.GetAppContext(MainDBAppContext).NewChildContextWithTimeout(30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Use immudb Count API — much faster and simpler

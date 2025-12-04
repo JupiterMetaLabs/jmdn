@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"gossipnode/DB_OPs/sqlops"
 	"gossipnode/config"
-	AppContext "gossipnode/config/Context"
 	"gossipnode/logging"
 	"gossipnode/metrics"
 
@@ -26,10 +25,6 @@ import (
 const (
 	LOG_FILE = "node.log"
 	TOPIC    = "node"
-)
-
-const (
-	NodeManagerAppContext = "nodemanager"
 )
 
 // NodeManager manages connections to manually specified nodes
@@ -108,7 +103,7 @@ func NewNodeManagerWithLoki(node *config.Node, enableLoki bool) (*NodeManager, e
 		node.DB.Instance = db
 	}
 
-	ctx, cancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContext()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	// Set initial metrics
 	metricsLogger, err := logging.ReturnDefaultLoggerWithLoki("metrics.log", "metrics", enableLoki)
@@ -366,7 +361,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 		fmt.Printf("Peer %s exists but appears offline. Attempting reconnection...\n", peerInfo.ID)
 
 		// Try to connect immediately
-		ctx, cancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContextWithTimeout(10 * time.Second)
+		ctx, cancel := context.WithTimeout(nm.ctx, 10*time.Second)
 		defer cancel()
 
 		if err := nm.host.Connect(ctx, *peerInfo); err != nil {
@@ -440,7 +435,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 	metrics.ActivePeersGauge.Inc() // New peer starts as active
 
 	// Try to connect immediately
-	ctx, cancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContextWithTimeout(10 * time.Second)
+	ctx, cancel := context.WithTimeout(nm.ctx, 10*time.Second)
 	defer cancel()
 
 	if err := nm.host.Connect(ctx, *peerInfo); err != nil {
@@ -451,11 +446,6 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 	}
 
 	return nil
-}
-
-// GetHost returns the libp2p host instance for connection verification
-func (nm *NodeManager) GetHost() host.Host {
-	return nm.host
 }
 
 // RemovePeer removes a peer from management
@@ -710,7 +700,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 	}
 
 	// Try to connect if not connected
-	ctx, cancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContextWithTimeout(5 * time.Second)
+	ctx, cancel := context.WithTimeout(nm.ctx, 5*time.Second)
 	defer cancel()
 
 	nm.Logger.Logger.Debug("Attempting to connect",
@@ -1005,7 +995,7 @@ func (nm *NodeManager) PingMultiaddrWithRetries(multiAddr string, attempts int) 
 	nm.host.Peerstore().AddAddrs(peerInfo.ID, peerInfo.Addrs, peerstore.TempAddrTTL)
 
 	// Connect first
-	ctx, cancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContextWithTimeout(10 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := nm.host.Connect(ctx, *peerInfo); err != nil {
@@ -1025,7 +1015,7 @@ func (nm *NodeManager) PingMultiaddrWithRetries(multiAddr string, attempts int) 
 	successCount := 0
 
 	for i := 0; i < attempts; i++ {
-		pingCtx, pingCancel := AppContext.GetAppContext(NodeManagerAppContext).NewChildContextWithTimeout(3 * time.Second)
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		responseChan := pingService.Ping(pingCtx, peerInfo.ID)
 
 		select {

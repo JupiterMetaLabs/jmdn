@@ -70,7 +70,6 @@ Transaction-related operations:
 - `GetTransactionByHash()`: Get transaction by hash
 - `GetTransactionsByAccount()`: Get transactions for account
 - `GetTransactionsByBlock()`: Get transactions in block
-- `GetTransactionsByAddressIndexed()`: Fast address scans via `address:<addr>:<blockNumber>:<txHash>` keys
 
 ### 6. Receipt Operations
 **File:** `Facade_Receipts.go`
@@ -204,11 +203,8 @@ err := DB_OPs.StoreTransaction(mainClient, &tx)
 // Get transaction by hash
 tx, err := DB_OPs.GetTransactionByHash(mainClient, txHash)
 
-// Get transactions by account (legacy scan)
+// Get transactions by account
 txns, err := DB_OPs.GetTransactionsByAccount(mainClient, &address)
-
-// Get the latest 50 transactions involving an address using the index
-indexedTxs, err := DB_OPs.GetTransactionsByAddressIndexed(mainClient, address, 50)
 ```
 
 ### Basic CRUD Operations

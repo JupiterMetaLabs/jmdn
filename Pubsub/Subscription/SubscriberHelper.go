@@ -2,7 +2,6 @@ package Subscription
 
 import (
 	"context"
-	AppContext "gossipnode/config/Context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -15,10 +14,6 @@ import (
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
-)
-
-const(
-	SubscriptionAppContext = "pubsub.subscription"
 )
 
 // EnhancedSubscriberMetrics holds metrics for the enhanced subscriber
@@ -113,7 +108,8 @@ func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName s
 	enhancedSubscriber := NewEnhancedSubscriber(sub, gps, handler)
 
 	// Start enhanced message processing
-	ctx, _ := AppContext.GetAppContext(SubscriptionAppContext).NewChildContext()
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = cancel // Store cancel function for cleanup
 
 	fmt.Printf("Context set for %s\n", topicName)
 	go enhancedSubscriber.runEnhanced(ctx)

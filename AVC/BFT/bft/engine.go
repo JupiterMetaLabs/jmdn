@@ -5,11 +5,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-	AppContext "gossipnode/config/Context"
-)
-
-const (
-	EngineAppContext = "avc.bft.engine"
 )
 
 type engine struct {
@@ -48,7 +43,7 @@ func (e *engine) runPrepare(ctx context.Context, messenger Messenger) (*PhaseRes
 		return nil, err
 	}
 
-	timeoutCtx, cancel := AppContext.GetAppContext(EngineAppContext).NewChildContextWithTimeout(e.config.PrepareTimeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, e.config.PrepareTimeout)
 	defer cancel()
 
 	go func() {
@@ -94,7 +89,7 @@ func (e *engine) runCommit(ctx context.Context, messenger Messenger, prepareDeci
 		return nil, err
 	}
 
-	timeoutCtx, cancel := AppContext.GetAppContext(EngineAppContext).NewChildContextWithTimeout(e.config.CommitTimeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, e.config.CommitTimeout)
 	defer cancel()
 
 	go func() {

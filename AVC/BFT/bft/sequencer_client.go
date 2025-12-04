@@ -11,13 +11,8 @@ import (
 	"time"
 
 	pb "gossipnode/AVC/BFT/proto"
-	AppContext "gossipnode/config/Context"
 
 	"google.golang.org/grpc"
-)
-
-const (
-	SequencerClientAppContext = "avc.bft.sequencer.client"
 )
 
 // SequencerBFTClient handles BFT initiation from Sequencer side
@@ -142,7 +137,7 @@ func (s *SequencerBFTClient) sendBFTRequest(
 	client := pb.NewBFTServiceClient(conn)
 
 	// Send request with timeout
-	callCtx, cancel := AppContext.GetAppContext(SequencerClientAppContext).NewChildContextWithTimeout(10*time.Second)
+	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	response, err := client.InitiateBFT(callCtx, request)

@@ -1,20 +1,16 @@
 package Utils
 
 import (
+	"context"
 	"gossipnode/DB_OPs"
 	"gossipnode/messaging"
 	"gossipnode/node"
 	"time"
-	AppContext "gossipnode/config/Context"
-)
-
-const(
-	DBUtilsAppContext = "geth.facade.service.utils.dbutils"
 )
 
 func CreateAccountandPropagateDID(Document DIDDoc) error {
 
-	opCtx, cancel := AppContext.GetAppContext(DBUtilsAppContext).NewChildContextWithTimeout(15*time.Second)
+	opCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	// Pull one connection from the db
