@@ -12,6 +12,13 @@ import (
 	"syscall"
 	"time"
 
+
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/app"
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
+	"gossipnode/config/GRO"
+
+
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Block"
 	"gossipnode/CA/ImmuDB_CA"
@@ -41,6 +48,10 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+var (
+	MainAM *interfaces.AppGoroutineManagerInterface
+)
+
 // Simple helper to print the CLI prompt in color
 func printPrompt() {
 	fmt.Printf(config.ColorGreen + ">>> " + config.ColorReset)
@@ -58,6 +69,16 @@ var (
 	mainDBPool     *config.ConnectionPool // Main database connection pool
 	accountsDBPool *config.ConnectionPool // Accounts/DID database connection pool
 )
+
+func initGlobalGRO() {
+	// This is the creation an setting of the global GRO manager
+	tempGRO := global.NewGlobalManager()
+	GRO.GlobalGRO = &tempGRO
+
+	// Also pull up new app manager - main for the main package
+	MainAM = &app.NewAppManager(GRO.MainAM)
+	MainAM.CreateApp()
+}
 
 func StartFacadeServer(port int, chainID int) {
 	go func() {
@@ -516,6 +537,9 @@ func initPubSub(n *config.Node) (*Pubsub.StructGossipPubSub, error) {
 }
 
 func main() {
+	// Initialize Global Go Routine Orchestrator first
+	initGlobalGRO()
+
 	var nodeManager *node.NodeManager
 	if err := ImmuDB_CA.EnsureTLSAssets(".immudb_state"); err != nil {
 		fmt.Printf("Failed to ensure TLS assets: %v\n", err)
