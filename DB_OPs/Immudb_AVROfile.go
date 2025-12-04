@@ -1,7 +1,7 @@
 package DB_OPs
 
 import (
-	"context"
+	AppContext "gossipnode/config/Context"
 	"fmt"
 	"log"
 	"os"
@@ -35,7 +35,7 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 	// ———————————————————————————————————————————————
 	// 1. Dial & login
 	// ———————————————————————————————————————————————
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(AVROFileAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 	conn, err := grpc.DialContext(ctx, cfg.Address,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -47,7 +47,10 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 	defer conn.Close()
 
 	client := schema.NewImmuServiceClient(conn)
-	apiCtx := context.Background()
+	
+	apiCtx, cancel := AppContext.GetAppContext(AVROFileAppContext).NewChildContext()
+	defer cancel()
+
 	login, err := client.Login(apiCtx, &schema.LoginRequest{
 		User:     []byte(cfg.Username),
 		Password: []byte(cfg.Password),

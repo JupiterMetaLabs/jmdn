@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 )
@@ -86,7 +87,6 @@ func (consensus *Consensus) GetOnlyPeerIDs(buddies []PubSubMessages.Buddy_PeerMu
 }
 
 func (consensus *Consensus) AddBuddyNodesToPeerList(zkBlock *config.ZKBlock, buddies []PubSubMessages.Buddy_PeerMultiaddr) (*PubSubMessages.ConsensusMessage, error) {
-
 	ZKBlock := Metadata.ZKBlockMetadata(zkBlock, buddies).SetEndTimeoutMetadata(time.Now().UTC().Add(config.ConsensusTimeout)).SetStartTimeMetadata(time.Now().UTC())
 	if ZKBlock == nil {
 		return nil, fmt.Errorf("failed to create ZKBlock metadata")
@@ -255,34 +255,54 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		return fmt.Errorf("failed to connect to final buddy nodes: %v", err)
 	}
 
-	// 7. Set final buddy nodes - these are the only peers we use (no backup peers)
-	finalPeerIDs := make([]peer.ID, 0, len(finalBuddyNodes))
+	// 6.5. Verify actual connections after ConnectToTemporaryPeers
+	// This ensures we have exactly MaxMainPeers actually connected peers
+	actuallyConnectedPeers := make([]peer.ID, 0, config.MaxMainPeers)
 	for _, buddy := range finalBuddyNodes {
-		finalPeerIDs = append(finalPeerIDs, buddy.PeerID)
-	}
-
-	consensus.PeerList.MainPeers = finalPeerIDs
-	consensus.PeerList.BackupPeers = make([]peer.ID, 0) // No backup peers - only final 4 count
-
-	log.Printf("✅ Final buddy nodes: %d connected peers (these are responsible for votes, CRDT sync, pubsub sync, vote aggregation)",
-		len(finalBuddyNodes))
-
-	// 8. Build final buddies list for ConsensusMessage (using connected peers with cached multiaddrs)
-	reachableBuddies := make([]PubSubMessages.Buddy_PeerMultiaddr, 0, len(finalBuddyNodes))
-	for _, buddy := range finalBuddyNodes {
-		// Use the multiaddr from cache (it's the one that successfully connected)
-		if cachedAddr := Cache.GetPeer(buddy.PeerID); cachedAddr != nil {
-			reachableBuddies = append(reachableBuddies, PubSubMessages.Buddy_PeerMultiaddr{
-				PeerID:    buddy.PeerID,
-				Multiaddr: cachedAddr,
-			})
+		connectedness := consensus.Host.Network().Connectedness(buddy.PeerID)
+		if connectedness == network.Connected {
+			actuallyConnectedPeers = append(actuallyConnectedPeers, buddy.PeerID)
+			log.Printf("✅ Verified connection to buddy node %s", buddy.PeerID.String()[:16])
 		} else {
-			// Fallback to original multiaddr if not in cache
-			reachableBuddies = append(reachableBuddies, buddy)
+			log.Printf("❌ Buddy node %s not actually connected (status: %v)", buddy.PeerID.String()[:16], connectedness)
 		}
 	}
 
-	log.Printf("Built final buddies list: %d peers (all connected and ready for consensus)", len(reachableBuddies))
+	// Verify we have exactly MaxMainPeers actually connected peers
+	if len(actuallyConnectedPeers) < config.MaxMainPeers {
+		return fmt.Errorf("insufficient actually connected peers: got %d, need exactly %d (MaxMainPeers). Pinged: %d, Reachable: %d",
+			len(actuallyConnectedPeers), config.MaxMainPeers, len(finalBuddyNodes), len(reachablePeers))
+	}
+
+	// 7. Set final buddy nodes - these are the only peers we use (no backup peers)
+	// Use only the actually connected peers
+	consensus.PeerList.MainPeers = actuallyConnectedPeers
+	consensus.PeerList.BackupPeers = make([]peer.ID, 0) // No backup peers - only final 4 count
+
+	log.Printf("✅ Final buddy nodes: %d actually connected peers (these are responsible for votes, CRDT sync, pubsub sync, vote aggregation)",
+		len(actuallyConnectedPeers))
+
+	// 8. Build final buddies list for ConsensusMessage (using ONLY actually connected peers)
+	reachableBuddies := make([]PubSubMessages.Buddy_PeerMultiaddr, 0, len(actuallyConnectedPeers))
+	for _, peerID := range actuallyConnectedPeers {
+		// Use the multiaddr from cache (it's the one that successfully connected)
+		if cachedAddr := Cache.GetPeer(peerID); cachedAddr != nil {
+			reachableBuddies = append(reachableBuddies, PubSubMessages.Buddy_PeerMultiaddr{
+				PeerID:    peerID,
+				Multiaddr: cachedAddr,
+			})
+		} else {
+			// Find the original buddy to get its multiaddr
+			for _, buddy := range finalBuddyNodes {
+				if buddy.PeerID == peerID {
+					reachableBuddies = append(reachableBuddies, buddy)
+					break
+				}
+			}
+		}
+	}
+
+	log.Printf("Built final buddies list: %d peers (all actually connected and ready for consensus)", len(reachableBuddies))
 
 	// 8. Create ConsensusMessage with ONLY the final connected buddy nodes
 	consensus.ZKBlockData, errMSG = consensus.AddBuddyNodesToPeerList(zkblock, reachableBuddies)
@@ -637,24 +657,6 @@ func (consensus *Consensus) PrintCRDTState() error {
 			fmt.Printf("✅ Sufficient participation: %d/%d minimum required for consensus\n", len(buddyInputs), config.MaxMainPeers)
 		}
 
-		// BFT := bft.New(bft.Config{
-		// 	MinBuddies:         config.MaxMainPeers,
-		// 	ByzantineTolerance: 4,
-		// 	PrepareTimeout:     10 * time.Second,
-		// 	CommitTimeout:      10 * time.Second,
-		// })
-
-		// adapter, err := bft.NewBFTPubSubAdapter(context.Background(), consensus.gossipnode.GetGossipPubSub(), BFT, config.PubSub_ConsensusChannel)
-		// if err != nil {
-		// 	fmt.Printf("❌ Failed to create BFT adapter: %v\n", err)
-		// }
-		// messenger := bft.Return_pubsubMessenger(adapter, consensus.ZKBlockData.GetZKBlock().BlockHash.String())
-
-		// result, err := BFT.RunConsensus(context.Background(), 1, consensus.ZKBlockData.GetZKBlock().BlockHash.String(), listenerNode.PeerID.String(), buddyInputs, messenger, nil)
-		// if err != nil {
-		// 	fmt.Printf("❌ Failed to run BFT consensus: %v\n", err)
-		// }
-
 		// Request vote aggregation results from all buddy nodes
 		fmt.Println("Requesting vote results from all buddy nodes:", listenerNode.BuddyNodes.Buddies_Nodes)
 
@@ -808,8 +810,9 @@ func (consensus *Consensus) PrintCRDTState() error {
 				fmt.Printf("✅ Broadcasted block with %d BLS results\n", len(blsResults))
 
 				// Only process block locally if consensus was reached
+				// Pass BLS results for validation (ProcessBlockLocally will verify consensus)
 				if consensusReached {
-					if err := messaging.ProcessBlockLocally(block); err != nil {
+					if err := messaging.ProcessBlockLocally(block, blsResults); err != nil {
 						fmt.Printf("❌ Failed to process block locally after broadcast: %v\n", err)
 					} else {
 						fmt.Printf("✅ Processed block locally - account balances updated\n")

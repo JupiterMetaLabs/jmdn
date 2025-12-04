@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	AppContext "gossipnode/config/Context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +48,9 @@ const (
 	ResponseTimeout = 60 * time.Second // Reduced to 60s since we chunk HashMaps (100 keys per chunk)
 	RetryDelay      = 500 * time.Millisecond
 )
-
+const(
+	FastsyncAppContext = "fastsync"
+)
 // DatabaseType specifies which database to operate on
 type DatabaseType int
 
@@ -832,7 +835,9 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 				time.Sleep(time.Second * time.Duration(attempt+1))
 
 				// Try to create a new stream
-				newStream, err := fs.host.NewStream(context.Background(), peerID, stream.Protocol())
+                ctx, cancel := AppContext.GetAppContext(FastsyncAppContext).NewChildContext()
+				defer cancel()
+				newStream, err := fs.host.NewStream(ctx, peerID, stream.Protocol())
 				if err != nil {
 					log.Error().Err(err).Msg("Failed to create new stream for retry")
 					continue
@@ -887,6 +892,8 @@ func (fs *FastSync) batchCreateWithRetry(entriesMap map[string]interface{}, dbTy
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		ctx, cancel := AppContext.GetAppContext(FastsyncAppContext).NewChildContext()
+		defer cancel()
 		// Get the current client for this attempt
 		var dbClient *config.PooledConnection
 		switch dbType {
@@ -917,15 +924,16 @@ func (fs *FastSync) batchCreateWithRetry(entriesMap map[string]interface{}, dbTy
 			var newClient *config.PooledConnection
 			var clientErr error
 
-			if dbType == MainDB {
-				newClient, clientErr = DB_OPs.GetMainDBConnectionandPutBack(context.Background())
+			switch dbType {
+			case MainDB:
+				newClient, clientErr = DB_OPs.GetMainDBConnectionandPutBack(ctx)
 				if clientErr == nil {
 					DB_OPs.Close(fs.mainDB.Client) // Close the old, invalid client
 					DB_OPs.PutMainDBConnection(fs.mainDB)
 					fs.mainDB = newClient // Replace with the new, valid client
 				}
-			} else if dbType == AccountsDB {
-				newClient, clientErr = DB_OPs.GetAccountConnectionandPutBack(context.Background())
+			case AccountsDB:
+				newClient, clientErr = DB_OPs.GetAccountConnectionandPutBack(ctx)
 				if clientErr == nil {
 					DB_OPs.Close(fs.accountsDB.Client)
 					DB_OPs.PutAccountsConnection(fs.accountsDB)
@@ -955,6 +963,9 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 	fmt.Printf(">>> [DB] batchCreateOrderedWithRetry: %d entries for %s\n", len(entries), dbTypeToString(dbType))
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		ctx, cancel := AppContext.GetAppContext(FastsyncAppContext).NewChildContext()
+		defer cancel()
+		
 		var dbClient *config.PooledConnection
 		switch dbType {
 		case MainDB:
@@ -1012,15 +1023,16 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 		if strings.Contains(lastErr.Error(), "invalid token") {
 			var newClient *config.PooledConnection
 			var clientErr error
-			if dbType == MainDB {
-				newClient, clientErr = DB_OPs.GetMainDBConnectionandPutBack(context.Background())
+			switch dbType {
+			case MainDB:
+				newClient, clientErr = DB_OPs.GetMainDBConnectionandPutBack(ctx)
 				if clientErr == nil {
 					DB_OPs.Close(fs.mainDB.Client)
 					DB_OPs.PutMainDBConnection(fs.mainDB)
 					fs.mainDB = newClient
 				}
-			} else {
-				newClient, clientErr = DB_OPs.GetAccountConnectionandPutBack(context.Background())
+			case AccountsDB:
+				newClient, clientErr = DB_OPs.GetAccountConnectionandPutBack(ctx)
 				if clientErr == nil {
 					DB_OPs.Close(fs.accountsDB.Client)
 					DB_OPs.PutAccountsConnection(fs.accountsDB)

@@ -2,10 +2,10 @@ package DID
 
 import (
 	"context"
+	AppContext "gossipnode/config/Context"
 	"encoding/json"
 	"fmt"
 	"gossipnode/logging"
-	"math/big"
 	"net"
 	"strings"
 	"sync"
@@ -19,7 +19,6 @@ import (
 
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 
 	"gossipnode/DB_OPs"
 	pb "gossipnode/DID/proto"
@@ -32,6 +31,7 @@ import (
 const (
 	LOG_FILE = "DID.log"
 	TOPIC    = "DID"
+	AccountsDBAppContext = "did"
 )
 
 // dbOps defines the interface for database operations that AccountServer depends on.
@@ -52,6 +52,7 @@ func (r *realDbOps) GetAccount(conn *config.PooledConnection, address common.Add
 }
 
 func (r *realDbOps) ListAllAccounts(conn *config.PooledConnection, limit int) ([]*DB_OPs.Account, error) {
+
 	return DB_OPs.ListAllAccounts(conn, limit)
 }
 
@@ -60,7 +61,8 @@ func (r *realDbOps) CreateAccount(conn *config.PooledConnection, DIDAddress stri
 }
 
 func (r *realDbOps) GetAccountsConnection() (*config.PooledConnection, error) {
-	return DB_OPs.GetAccountConnectionandPutBack(context.Background())
+	ctx, _ := AppContext.GetAppContext(AccountsDBAppContext).NewChildContext()
+	return DB_OPs.GetAccountConnectionandPutBack(ctx)
 }
 
 func (r *realDbOps) PutAccountsConnection(conn *config.PooledConnection) {
@@ -205,6 +207,7 @@ func (s *AccountServer) getAccount(AccountID string) (*DB_OPs.Account, error) {
 
 // listAccounts retrieves all Accounts either from the database or memory
 func (s *AccountServer) listAccounts(limit int) ([]*DB_OPs.Account, error) {
+
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
@@ -454,82 +457,6 @@ func (s *AccountServer) ListDIDs(ctx context.Context, req *pb.ListDIDsRequest) (
 	}, nil
 }
 
-// GetAccountStats retrieves current Account system statistics
-func (s *AccountServer) GetAccountStats(ctx context.Context, _ *emptypb.Empty) (*pb.DIDStats, error) {
-	s.mutex.RLock()
-	statsAge := s.statsAge
-	stats := s.stats
-	s.mutex.RUnlock()
-
-	// Always refresh stats on first call (statsAge == 0) or if older than 60 seconds
-	if statsAge == 0 || time.Now().UTC().Unix()-statsAge > 60 {
-		// Force refresh stats synchronously if they're empty
-		s.refreshStats()
-
-		// Read the refreshed stats
-		s.mutex.RLock()
-		stats = s.stats
-		s.mutex.RUnlock()
-
-		// If still empty after refresh, there might be a database issue
-		if stats.TotalDids == 0 {
-			log.Warn().Msg("DID stats still empty after refresh - possible database connection issue")
-
-			// Try to diagnose the problem
-			if s.standalone {
-				log.Info().Msg("Running in standalone mode, expected empty stats if no DIDs created locally")
-			} else if s.accountsClient == nil {
-				log.Warn().Msg("Account client is nil despite not being in standalone mode")
-			}
-		}
-	}
-
-	return stats, nil
-}
-
-// refreshStats refreshes the DID statistics
-func (s *AccountServer) refreshStats() {
-	log.Debug().Msg("Refreshing DID statistics...")
-
-	// Get all DIDs
-	dids, err := s.listAccounts(10000)
-	if err != nil {
-		log.Error().
-			Err(err).
-			Bool("standalone", s.standalone).
-			Bool("hasAccountsClient", s.accountsClient != nil).
-			Msg("Failed to get DIDs for stats calculation")
-		return
-	}
-
-	log.Debug().Int("count", len(dids)).Msg("Successfully retrieved DIDs for stats")
-
-	// Calculate total balance
-	totalBalance := big.NewInt(0)
-	for _, did := range dids {
-		if did.Balance != "" {
-			balance, ok := new(big.Int).SetString(did.Balance, 10)
-			if ok {
-				totalBalance.Add(totalBalance, balance)
-			}
-		}
-	}
-
-	// Update stats
-	s.mutex.Lock()
-	s.stats = &pb.DIDStats{
-		TotalDids:    int32(len(dids)),
-		TotalBalance: totalBalance.String(),
-		LastUpdate:   time.Now().UTC().Unix(),
-	}
-	s.statsAge = time.Now().UTC().Unix()
-	s.mutex.Unlock()
-
-	log.Info().
-		Int32("total_dids", s.stats.TotalDids).
-		Str("total_balance", s.stats.TotalBalance).
-		Msg("DID statistics updated successfully")
-}
 
 // StartDIDServer starts the DID gRPC server
 func StartDIDServer(h host.Host, address string, existingClient *config.PooledConnection) error {
@@ -566,13 +493,6 @@ func StartDIDServer(h host.Host, address string, existingClient *config.PooledCo
 		Bool("standalone", server.standalone).
 		Msg("Starting DID gRPC server")
 
-	// In StartDIDServer function, add after server initialization:
-	go func() {
-		// Give the server a moment to fully initialize
-		time.Sleep(2 * time.Second)
-		server.refreshStats()
-		log.Info().Msg("Initial DID statistics refresh completed")
-	}()
 
 	return grpcServer.Serve(lis)
 }

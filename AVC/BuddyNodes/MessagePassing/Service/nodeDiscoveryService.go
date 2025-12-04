@@ -1,6 +1,7 @@
 package Service
 
 import (
+	AppContext "gossipnode/config/Context"
 	"context"
 	"fmt"
 	"sync"
@@ -13,6 +14,10 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
+)
+
+const (
+	NodeDiscoveryServiceAppContext = "avc.node.discovery.service"
 )
 
 // NodeDiscoveryService handles peer discovery and CRDT synchronization
@@ -220,7 +225,7 @@ func (nds *NodeDiscoveryService) syncLoop() {
 		case <-nds.stopChan:
 			return
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := AppContext.GetAppContext(NodeDiscoveryServiceAppContext).NewChildContextWithTimeout(30*time.Second)
 			if err := nds.SyncWithAllPeers(ctx); err != nil {
 				log.LogConsensusError(fmt.Sprintf("Periodic sync failed: %v", err), err,
 					zap.String("topic", log.Consensus_TOPIC),

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
+	AppContext "gossipnode/config/Context"
 	Publisher "gossipnode/Pubsub/Publish"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
@@ -14,6 +15,10 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
+)
+
+const (
+	SubscriptionServiceAppContext = "avc.subscription.service"
 )
 
 // BFTMessageHandler defines the interface for BFT message handling
@@ -476,7 +481,8 @@ func (s *SubscriptionService) getBFTHandler(channelName string) (BFTMessageHandl
 		return nil, fmt.Errorf("BFT factory not configured")
 	}
 
-	handler, err := s.bftFactory(context.Background(), s.pubSub, channelName)
+	ctx, _ := AppContext.GetAppContext(SubscriptionServiceAppContext).NewChildContext()
+	handler, err := s.bftFactory(ctx, s.pubSub, channelName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create BFT handler: %w", err)
 	}
@@ -557,7 +563,7 @@ func (s *SubscriptionService) handleBFTRequest(msg *AVCStruct.GossipMessage) err
 
 	// Start consensus process in a goroutine
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := AppContext.GetAppContext(SubscriptionServiceAppContext).NewChildContextWithTimeout(30*time.Second)
 		defer cancel()
 
 		log.LogConsensusInfo(fmt.Sprintf("Starting consensus for round %d, block %s", reqData.Round, reqData.BlockHash),

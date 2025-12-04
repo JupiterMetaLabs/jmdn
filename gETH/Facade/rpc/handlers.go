@@ -60,7 +60,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		}
 		addr, _ := req.Params[0].(string)
 		block, _ := req.Params[1].(string)
-		count, err := handler.service.GetTransactionCount(ctx, addr, block)
+		count, err := handler.service.GetTransactionCountFrom(ctx, addr, block)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
 			// log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)

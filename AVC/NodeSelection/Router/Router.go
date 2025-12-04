@@ -1,7 +1,7 @@
 package Router
 
 import (
-	"context"
+	AppContext "gossipnode/config/Context"
 	"fmt"
 	"gossipnode/AVC/NodeSelection/pkg/selection"
 	"gossipnode/config"
@@ -15,6 +15,10 @@ import (
 
 type NodeselectionRouter struct{}
 
+const (
+	NodeselectionRouterAppContext = "avc.node.selection.router"
+)
+
 const mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 const networkSalt = "test-salt"
 
@@ -23,7 +27,7 @@ func NewNodeselectionRouter() *NodeselectionRouter {
 }
 
 func (r *NodeselectionRouter) GetBuddyNodes(number int) ([]*selection.BuddyNode, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(NodeselectionRouterAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	_, privateKey, err := selection.GenerateKeysFromMnemonic(mnemonic)

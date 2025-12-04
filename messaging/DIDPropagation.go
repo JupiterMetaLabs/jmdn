@@ -2,7 +2,6 @@ package messaging
 
 import (
 	"bufio"
-	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -11,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	AppContext "gossipnode/config/Context"
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -41,6 +41,10 @@ var (
 	accountOnce    sync.Once
 )
 
+const (
+	DIDPropagationAppContext = "didpropagation"
+)
+
 // InitDIDPropagation initializes the DID propagation system
 func InitDIDPropagation(existingClient *config.PooledConnection) error {
 	fmt.Println("Initializing DID propagation system...")
@@ -58,7 +62,8 @@ func InitDIDPropagation(existingClient *config.PooledConnection) error {
 			log.Info().Msg("DID propagation system initialized with existing database client")
 		} else {
 			// Create accounts database client if none provided
-			ctx := context.Background()
+			ctx, cancel := AppContext.GetAppContext(DIDPropagationAppContext).NewChildContext()
+			defer cancel()
 			client, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 			if err != nil {
 				initErr = fmt.Errorf("failed to create accounts database client: %w", err)
@@ -138,6 +143,8 @@ func storeAccountInDB(msg DIDMessage) {
 			AccountType: msg.Account.AccountType,
 			UpdatedAt:   time.Now().UTC().Unix(),
 		}
+		
+		
 
 		// Store Account document
 		err := DB_OPs.StoreAccount(client, accountDoc)
@@ -292,7 +299,7 @@ func forwardDID(h host.Host, msg DIDMessage) {
 			defer wg.Done()
 
 			// Open a stream to the peer
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := AppContext.GetAppContext(DIDPropagationAppContext).NewChildContextWithTimeout(5*time.Second)
 			defer cancel()
 
 			stream, err := h.NewStream(ctx, peer, config.DIDPropagationProtocol)
@@ -399,7 +406,7 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 			defer wg.Done()
 
 			// Open stream to peer with timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := AppContext.GetAppContext(DIDPropagationAppContext).NewChildContextWithTimeout(5*time.Second)
 			defer cancel()
 
 			stream, err := h.NewStream(ctx, peer, config.DIDPropagationProtocol)

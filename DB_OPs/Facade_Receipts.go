@@ -1,10 +1,10 @@
 package DB_OPs
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"gossipnode/config"
+	AppContext "gossipnode/config/Context"
 	"gossipnode/config/utils"
 	"gossipnode/logging"
 	"strings"
@@ -15,13 +15,15 @@ import (
 )
 
 // GetReceiptByHash retrieves a transaction receipt by its hash
-func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*config.Receipt, error) {
+func GetReceiptByHash(mainDBClient *config.PooledConnection, commonhash common.Hash) (*config.Receipt, error) {
+	hash := commonhash.Hex()
 	var err error
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(FacadeReceiptsAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
+
 
 	// Get connection if not provided
 	if mainDBClient == nil {
@@ -60,6 +62,8 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 	if !strings.HasPrefix(strings.ToLower(hash), "0x") {
 		normalizedHash = "0x" + hash
 	}
+	// Debugging 
+	fmt.Println("DEBUG: normalizedHash", normalizedHash)
 
 	// FIRST: Check if transaction exists (similar to TxByHash pattern)
 	// Get the transaction to verify it exists
@@ -221,7 +225,7 @@ func MakeReceiptRoot(mainDBClient *config.PooledConnection, receipts []*config.R
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(FacadeReceiptsAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	if mainDBClient == nil {
@@ -286,7 +290,7 @@ func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint6
 	var shouldReturnConnection bool = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(FacadeReceiptsAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	if mainDBClient == nil {
@@ -336,7 +340,7 @@ func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint6
 
 	receipts := make([]*config.Receipt, len(transactions))
 	for i, tx := range transactions {
-		receipt, err := GetReceiptByHash(mainDBClient, tx.Hash.Hex())
+		receipt, err := GetReceiptByHash(mainDBClient, tx.Hash)
 		if err != nil {
 			mainDBClient.Client.Logger.Logger.Error("Failed to get receipt by hash",
 				zap.Error(err),

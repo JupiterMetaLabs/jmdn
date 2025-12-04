@@ -2,7 +2,7 @@ package CLI
 
 import (
 	"bufio"
-	"context"
+	AppContext "gossipnode/config/Context"
 	"fmt"
 	"log"
 	"os"
@@ -24,6 +24,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
+)
+
+const(
+	CLIAppContext = "cli"
 )
 
 // formatTimestamp handles both Unix seconds and nanoseconds formats
@@ -117,7 +121,7 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 	fmt.Printf("Starting CLI with gRPC port: %d\n", grpcPort)
 
 	// Create a context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := AppContext.GetAppContext(CLIAppContext).NewChildContext()
 	defer cancel()
 
 	// Channel to signal when we should exit
@@ -287,7 +291,23 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		fmt.Println("Unknown command")
 	}
 }
+// To get the dbstate
+func (h *CommandHandler) handleDBState() {
+	dbState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+	if err != nil {
+		fmt.Printf("Failed to get database state: %v\n", err)
+		return
+	}
+	fmt.Printf("Database state: %v\n", dbState)
 
+	dbState, err = DB_OPs.GetDatabaseState(h.DIDClient.Client)
+	if err != nil {
+		fmt.Printf("Failed to get database state: %v\n", err)
+		return
+	}
+	fmt.Printf("Database state: %v\n", dbState)
+
+}
 // Individual command handlers
 func (h *CommandHandler) handleSendMessage(parts []string) {
 	if len(parts) != 3 {
@@ -364,7 +384,7 @@ func (h *CommandHandler) handleSeedNodeStats(parts []string) {
 	latencyStats := h.measureLatency(client)
 
 	// Test health check
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 
 	err = client.HealthCheck(ctx)
@@ -458,7 +478,7 @@ func (h *CommandHandler) handleMempoolStats(parts []string) {
 		fmt.Printf("❌ Mempool client not available: %v\n", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(CLIAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 	// Get mempool statistics
 	// Get fee statistics
@@ -815,64 +835,7 @@ func (h *CommandHandler) handleGetDID(parts []string) {
 	fmt.Printf("  Metadata: %s\n", doc.Metadata)
 }
 
-func (h *CommandHandler) handleDBState() {
 
-	err := h.checkDBClient()
-	if err != nil {
-		fmt.Printf("Database client not initialized: %v\n", err)
-		return
-	}
-
-	err = h.checkDIDClient()
-	if err != nil {
-		fmt.Printf("DID database client not initialized: %v\n", err)
-		return
-	}
-
-	// Debugging
-	// fmt.Println("Got DB Client and DID Client", h.MainClient.Client, h.DIDClient.Client)
-
-	state, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
-	if err != nil {
-		fmt.Printf("Failed to get database state: %v\n", err)
-		return
-	}
-
-	fmt.Println("Current ImmuDB State:")
-	fmt.Printf("  Transaction ID: %d\n", state.TxId)
-	fmt.Printf("  Merkle Root: %x\n", state.TxHash)
-
-	// Count entries in the database using pagination
-	const maxKeysPerBatch = 2000 // Staying well under the 2500 limit
-	var totalKeys int
-	var lastKey string
-	var hasMoreKeys = true
-
-	for hasMoreKeys {
-		keys, err := DB_OPs.GetAllKeys(h.MainClient, lastKey)
-		if err != nil {
-			fmt.Printf("Failed to count database entries: %v\n", err)
-			hasMoreKeys = false
-			continue
-		}
-
-		count := len(keys)
-		totalKeys += count
-
-		// If we got fewer keys than our limit, we've reached the end
-		if count < maxKeysPerBatch {
-			hasMoreKeys = false
-		} else if count > 0 {
-			// Set the last key for the next batch
-			lastKey = keys[count-1]
-		} else {
-			hasMoreKeys = false
-		}
-	}
-
-	fmt.Printf("  Total Keys: %d\n", totalKeys)
-	printDashes()
-}
 
 // handleListAliases shows the alias of the current node
 func (h *CommandHandler) handleListAliases() {
@@ -991,7 +954,7 @@ func (h *CommandHandler) measureLatency(client *seednode.Client) LatencyStats {
 		start := time.Now().UTC()
 
 		// Use a short timeout for each ping
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := AppContext.GetAppContext(CLIAppContext).NewChildContextWithTimeout(2*time.Second)
 		err := client.HealthCheck(ctx)
 		cancel()
 

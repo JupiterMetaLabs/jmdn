@@ -1,16 +1,17 @@
 package ServiceLayer
 
 import (
-	"context"
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
+	AppContext "gossipnode/config/Context"
 	"sync"
 )
 
 var (
-	Once              sync.Once
-	ServiceController *Types.Controller
+	Once               sync.Once
+	ServiceController  *Types.Controller
+	ServiceLayerAppContext = "avc.buddynodes.servicelayer"
 )
 
 func InitService(controller *Types.Controller) {
@@ -35,7 +36,8 @@ func Controller(controller *Types.Controller, OP *Types.OP) interface{} {
 		// For sync, we need to get the remote controller from the network
 		// Use the node discovery service to find and sync with the remote peer
 		remoteController := DataLayer.GetCRDTLayer() // Get remote node's controller
-		return DataLayer.SyncWithNode(context.Background(), controller, remoteController, "local", OP.NodeID.String())
+		ctx, _ := AppContext.GetAppContext(ServiceLayerAppContext).NewChildContext()
+		return DataLayer.SyncWithNode(ctx, controller, remoteController, "local", OP.NodeID.String())
 	}
 	return fmt.Errorf("invalid operation type: %d", OP.OpType)
 }

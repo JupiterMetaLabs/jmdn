@@ -1,6 +1,7 @@
 package Service
 
 import (
+	AppContext "gossipnode/config/Context"
 	"context"
 	"fmt"
 	"gossipnode/DB_OPs"
@@ -8,6 +9,10 @@ import (
 	Utils "gossipnode/gETH/Facade/Service/utils"
 	"sync"
 	"time"
+)
+
+const(
+	ServiceWSAppContext = "gETH.facade.service.ws"
 )
 
 // Global subscription manager for new heads
@@ -39,7 +44,7 @@ func (s *ServiceImpl) SubscribeNewHeads(ctx context.Context) (<-chan *Types.Bloc
 	subscriptionID := fmt.Sprintf("newheads_%d", time.Now().UTC().UnixNano())
 
 	// Create context with cancellation
-	subCtx, cancel := context.WithCancel(ctx)
+	subCtx, cancel := AppContext.GetAppContext(ServiceWSAppContext).NewChildContext()
 
 	// Create subscription
 	subscription := &NewHeadsSubscription{

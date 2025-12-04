@@ -18,6 +18,7 @@ const (
 	PREFIX_BLOCK           = "block:"
 	PREFIX_BLOCK_HASH      = "block:hash:"
 	DEFAULT_PREFIX_RECEIPT = "receipt:"
+	PREFIX_ADDR_TX         = "account:"
 )
 
 // LOKI_URL will be set conditionally based on whether Loki is enabled
@@ -32,6 +33,15 @@ const (
 	LOKI_TIMEOUT    = 5 * time.Second
 	KEEP_LOGS       = true
 	TOPIC           = "ImmuDB_ImmuClient"
+)
+
+// DB APP Contexts Constants
+const (
+	MainDBAppContext = "maindb"
+	AccountsDBAppContext = "accountsdb"
+	BlockLogsAppContext = "DB_OPs.blocklogs"
+	FacadeReceiptsAppContext = "DB_OPs.facadereceipts"
+	AVROFileAppContext = "DB_OPs.avrofile"
 )
 
 // Custom errors

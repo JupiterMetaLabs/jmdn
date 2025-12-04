@@ -1,7 +1,6 @@
 package Block
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"math/big"
@@ -12,11 +11,13 @@ import (
 	"gossipnode/logging"
 
 	"github.com/ethereum/go-ethereum/common"
-	// "github.com/golang/protobuf/ptypes/empty"
+	AppContext "gossipnode/config/Context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
-
+const (
+	MempoolClientAppContext = "mempool.client"
+)
 const (
 	FILENAME   = "mempool.log"
 	TOPIC      = "mempool"
@@ -86,7 +87,7 @@ func (m *MempoolClient) Close() error {
 
 // SubmitTransaction submits a transaction to the mempool
 func (m *MempoolClient) SubmitTransaction(tx *config.Transaction, txHash string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MempoolClientAppContext).NewChildContextWithTimeout(10*time.Second)
 	defer cancel()
 
 	// Convert the transaction to the protobuf format
@@ -131,7 +132,7 @@ func (m *MempoolClient) SubmitTransaction(tx *config.Transaction, txHash string)
 
 // SubmitTransactions submits a batch of transactions to the mempool
 func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.BatchSubmitResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second) // Longer timeout for batches
+	ctx, cancel := AppContext.GetAppContext(MempoolClientAppContext).NewChildContextWithTimeout(15*time.Second) // Longer timeout for batches
 	defer cancel()
 
 	// Log batch submission
@@ -177,7 +178,7 @@ func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.Batch
 
 // GetTransaction retrieves a specific transaction from the mempool by its hash
 func (m *MempoolClient) GetTransaction(hash string) (*pb.Transaction, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MempoolClientAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 
 	req := &pb.GetTransactionRequest{Hash: hash}
@@ -195,8 +196,9 @@ func (m *MempoolClient) GetTransaction(hash string) (*pb.Transaction, error) {
 
 // GetPendingTransactions retrieves a list of pending transactions from the mempool
 func (m *MempoolClient) GetPendingTransactions(limit int32) (*pb.TransactionBatch, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MempoolClientAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
+
 
 	req := &pb.GetPendingRequest{Limit: limit}
 	RoutingClient, err := GetRoutingClient()
@@ -213,8 +215,9 @@ func (m *MempoolClient) GetPendingTransactions(limit int32) (*pb.TransactionBatc
 
 // GetMempoolStats gets the current mempool statistics
 func (m *MempoolClient) GetMempoolStats() (*pb.MREStats, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MempoolClientAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
+
 
 	RoutingClient, err := GetRoutingClient()
 	if err != nil {
@@ -241,8 +244,9 @@ type GasFeeStats struct {
 // GetFeeStatisticsFromRouting gets fee statistics directly from routing service
 // This is the recommended way to access routing service functionality
 func GetFeeStatisticsFromRouting() (*GasFeeStats, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MempoolClientAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
+
 
 	routingClient, err := GetRoutingClient()
 	if err != nil {
@@ -265,7 +269,7 @@ func GetFeeStatisticsFromRouting() (*GasFeeStats, error) {
 
 // GetFeeStatistics gets detailed fee statistics from the mempool
 func (m *MempoolClient) GetFeeStatistics() (*pb.FeeStatistics, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MempoolClientAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
 
 	RoutingClient, err := GetRoutingClient()
@@ -283,8 +287,9 @@ func (m *MempoolClient) GetFeeStatistics() (*pb.FeeStatistics, error) {
 
 // Wrapper function for getting FeeStatistics from mempool service
 func (m *MempoolClient) WrapperGetFeeStatistics() (*GasFeeStats, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MempoolClientAppContext).NewChildContextWithTimeout(5*time.Second)
 	defer cancel()
+
 
 	RoutingClient, err := GetRoutingClient()
 	if err != nil {

@@ -176,7 +176,7 @@ def send_eth_test():
     try:
         signature = sign_transaction_with_keypair(
             private_key_hex=private_key_hex,
-            from_address="",
+            from_address=from_address,
             to_address=to_address,
             value_wei=amount_wei,
             chain_id=chain_id,

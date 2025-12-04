@@ -1,10 +1,14 @@
 package PubSubMessages
 
 import (
-	"context"
+	AppContext "gossipnode/config/Context"
 	"fmt"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+)
+
+const (
+	PubSubMessagesAppContext = "pubsub.messages"
 )
 
 // InitGossipSub initializes libp2p GossipSub for the GossipPubSub instance
@@ -14,7 +18,9 @@ func (gps *GossipPubSub) InitGossipSub() error {
 	}
 
 	// Initialize GossipSub instance
-	gossipSub, err := pubsub.NewGossipSub(context.Background(), gps.Host)
+
+	longCTX, _ := AppContext.GetAppContext(PubSubMessagesAppContext).NewChildContext()
+	gossipSub, err := pubsub.NewGossipSub(longCTX, gps.Host)
 	if err != nil {
 		return fmt.Errorf("failed to create GossipSub: %w", err)
 	}

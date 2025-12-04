@@ -2,7 +2,6 @@ package main
 
 import (
 	// "bufio"
-	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -26,6 +25,7 @@ import (
 	"gossipnode/Pubsub"
 	"gossipnode/Sequencer"
 	"gossipnode/config"
+	"gossipnode/config/Context"
 	"gossipnode/explorer"
 	fastsync "gossipnode/fastsync"
 	"gossipnode/gETH"
@@ -39,11 +39,18 @@ import (
 	"gossipnode/node"
 	"gossipnode/seednode"
 	"gossipnode/transfer"
+	"syscall"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog/log"
+)
+
+const (
+	YggdrasilAppContext = "main.yggdrasil"
+	MainAppContext      = "main"
 )
 
 var (
@@ -68,6 +75,11 @@ var (
 	mainDBPool     *config.ConnectionPool // Main database connection pool
 	accountsDBPool *config.ConnectionPool // Accounts/DID database connection pool
 )
+
+func initGlobalContext() {
+	gc := Context.GetGlobalContext()
+	gc.Init()
+}
 
 func initGlobalGRO() {
 	// This is the creation an setting of the global GRO manager
@@ -470,7 +482,9 @@ func StartAPIServer(address string, enableExplorer bool) error {
 
 // Update this function:
 func startDIDServer(h host.Host, address string) error {
-	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
+	ctx, _ := Context.GetAppContext(MainAppContext).NewChildContext()
+
+	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 	if err != nil {
 		//Debugging
 		fmt.Println("Failed to get DID database client", err)
@@ -488,7 +502,9 @@ func startDIDServer(h host.Host, address string) error {
 }
 
 // initYggdrasilMessaging initializes the Yggdrasil messaging system
-func initYggdrasilMessaging(ctx context.Context) {
+func initYggdrasilMessaging() {
+	ctx, cancel := Context.GetAppContext(YggdrasilAppContext).NewChildContext()
+	defer cancel()
 	directMSG.StartYggdrasilListener(ctx)
 	// Assign yggdraisl address to the config.Yggdrasil_Address
 
@@ -572,6 +588,15 @@ func main() {
 	}
 	fmt.Println("ImmuDB TLS assets generated.")
 
+	// Initialize the global context
+	initGlobalContext()
+	fmt.Println("Global context initialized")
+
+	// Initialize the app context
+	appContext, cancel := Context.GetAppContext(MainAppContext).NewChildContext()
+	defer cancel()
+	fmt.Println("App context initialized")
+
 	// Command-line flags for node configuration
 	seedNodeURL := flag.String("seednode", "", "Seed node gRPC URL for peer registration (e.g., localhost:9090)")
 	peerAlias := flag.String("alias", "", "Peer alias for registration with seed node")
@@ -616,10 +641,6 @@ func main() {
 	// Clean up any leftover temp files from a previous run
 	defer Logger.Close()
 
-	// Create a cancellable context for clean shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	// Handle signals for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -628,6 +649,8 @@ func main() {
 		<-sigCh
 
 		fmt.Println("\nShutdown signal received, closing connections...")
+		Context.GetGlobalContext().Shutdown() // Cancel the context
+	}()
 		shutdown()		
 		return nil
 	})
@@ -692,7 +715,7 @@ func main() {
 	})
 
 	// Initialize database clients using the pools
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(appContext)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to get main database connection from pool")
 	}
@@ -700,23 +723,20 @@ func main() {
 		if mainDBClient != nil {
 			DB_OPs.PutMainDBConnection(mainDBClient)
 		}
+		defer cancel()
 	}()
 
 	// Debugging
 	// fmt.Println("Getting accounts database connection from pool")
-
-	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
+	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(appContext)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to get accounts database connection from pool")
 	}
-
-	// Debugging
-	// fmt.Println("Got accounts database connection from pool", didDBClient)
-
 	defer func() {
 		if didDBClient != nil {
 			DB_OPs.PutAccountsConnection(didDBClient)
 		}
+		defer cancel()
 	}()
 
 	// Initialize FastSync service
@@ -724,8 +744,8 @@ func main() {
 
 	// Initialize Yggdrasil messaging if enabled
 	if *enableYggdrasil {
-		initYggdrasilMessaging(ctx)
-		log.Info().Msgf("Yggdrasil messaging enabled on port %d", directMSG.YggdrasilPort)
+		initYggdrasilMessaging()
+		log.Info().Msgf("YggdrasilContextInterface messaging enabled on port %d", directMSG.YggdrasilPort)
 	}
 
 	// Display node identity

@@ -2,7 +2,6 @@ package transfer
 
 import (
 	"bufio"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -18,9 +17,11 @@ import (
 
 	"gossipnode/config"
 	"gossipnode/metrics"
+	AppContext "gossipnode/config/Context"
 )
 
 const (
+	TransferAppContext = "transfer"
 	// Constants for buffer sizing algorithm
 	minBufferSize     = 32 * 1024        // 32KB minimum buffer
 	maxBufferSize     = 16 * 1024 * 1024 // 16MB maximum buffer
@@ -440,7 +441,9 @@ func SendFile(h host.Host, peerID peer.ID, filePath, remotePath string) error {
 		filePath, peerIDStr, filename, initialBuffer/1024)
 
 	// Open a stream with FileProtocol (QUIC)
-	s, err := h.NewStream(context.Background(), peerID, config.FileProtocol)
+	ctx, cancel := AppContext.GetAppContext(TransferAppContext).NewChildContextWithTimeout(30*time.Second)
+	defer cancel()
+	s, err := h.NewStream(ctx, peerID, config.FileProtocol)
 	if err != nil {
 		return fmt.Errorf("stream failed: %v", err)
 	}

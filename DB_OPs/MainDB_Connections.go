@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gossipnode/config"
+	AppContext "gossipnode/config/Context"
 	"gossipnode/logging"
 	"gossipnode/metrics"
 
@@ -23,6 +24,10 @@ import (
 var (
 	mainDBPool     *config.ConnectionPool
 	mainDBPoolOnce sync.Once
+)
+
+const(
+	MainDBAppConnectionPoolContext = "db_ops.maindb.connectionpool"
 )
 
 // GetMainDBConnection retrieves a connection from the main database pool.
@@ -167,7 +172,7 @@ func ensureMainDBSelected(conn *config.PooledConnection) error {
 		zap.String(logging.Function, "DB_OPs.ensureMainDBSelected"),
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppConnectionPoolContext).NewChildContextWithTimeout(30*time.Second)
 	defer cancel()
 
 	// Re-select database to get database-specific token
@@ -230,7 +235,7 @@ func connectToMainDB(username, password string) error {
 	}
 	defer c.Disconnect()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := AppContext.GetAppContext(MainDBAppConnectionPoolContext).NewChildContextWithTimeout(30*time.Second)
 	defer cancel()
 
 	// Login with admin credentials
@@ -365,7 +370,7 @@ func GetMainDBConnectionandPutBack(ctx context.Context) (*config.PooledConnectio
 				zap.String("context_error", ctx.Err().Error()),
 			)
 			// Debugging
-			fmt.Printf("Auto-returning main database connection due to context cancellation: %s\n", conn.Client.Ctx)
+			// fmt.Printf("Auto-returning main database connection due to context cancellation: %s\n", conn.Client.Ctx)
 			PutMainDBConnection(conn)
 		} else if conn != nil && conn.Client != nil && !conn.InUse {
 			// Connection was already manually returned, no need to return again

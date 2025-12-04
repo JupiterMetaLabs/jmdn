@@ -3,6 +3,7 @@ package Triggers
 import (
 	"bufio"
 	"context"
+	AppContext "gossipnode/config/Context"
 	"encoding/json"
 	"fmt"
 	"gossipnode/AVC/BFT/bft"
@@ -22,6 +23,10 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+)
+
+const(
+	TriggersAppContext = "sequencer.Triggers"
 )
 
 // This trigger is used to trigger the Close the accepting messages from the nodes for listener protocol
@@ -255,7 +260,9 @@ func ReleaseBuddyNodesTrigger() {
 			log.Printf("ReleaseBuddyNodesTrigger: Failed to create seed node client: %v", err)
 			return
 		}
-		err = client.RemoveAllBuddies(context.Background())
+		ctx, cancel := AppContext.GetAppContext(TriggersAppContext).NewChildContextWithTimeout(30*time.Second)
+		defer cancel()
+		err = client.RemoveAllBuddies(ctx)
 		if err != nil {
 			log.Printf("ReleaseBuddyNodesTrigger: Failed to remove all buddies: %v", err)
 			return
@@ -279,7 +286,7 @@ func BFTTrigger() {
 		}
 
 		// Create consensus context with timeout
-		_, consensusCancel = context.WithTimeout(context.Background(), 30*time.Second)
+		_, consensusCancel = AppContext.GetAppContext(TriggersAppContext).NewChildContextWithTimeout(30*time.Second)
 		defer consensusCancel()
 
 		// Start BFT consensus process
@@ -352,7 +359,9 @@ func RequestVoteResultsFromBuddies() error {
 	// Request vote results from each buddy node
 	for _, peerID := range filteredBuddies {
 		go func(pid peer.ID) {
-			stream, err := listenerNode.Host.NewStream(context.Background(), pid, config.SubmitMessageProtocol)
+			ctx, cancel := AppContext.GetAppContext(TriggersAppContext).NewChildContextWithTimeout(30*time.Second)
+			defer cancel()
+			stream, err := listenerNode.Host.NewStream(ctx, pid, config.SubmitMessageProtocol)
 			if err != nil {
 				log.Printf("RequestVoteResultsFromBuddies: Failed to open stream to %s: %v", pid, err)
 				return
@@ -465,9 +474,12 @@ func StartBFTConsensus() error {
 	cfg.MinBuddies = config.MaxMainPeers
 	BFTInstance := bft.New(cfg)
 
+	ctx, cancel := AppContext.GetAppContext(TriggersAppContext).NewChildContextWithTimeout(30*time.Second)
+	defer cancel()
+
 	// Create BFT adapter
 	adapter, err := bft.NewBFTPubSubAdapter(
-		context.Background(),
+		ctx,
 		buddyNode.PubSub,
 		BFTInstance,
 		config.PubSub_ConsensusChannel,
@@ -487,7 +499,7 @@ func StartBFTConsensus() error {
 
 	log.Printf("StartBFTConsensus: Running BFT consensus with %d buddies", len(allBuddies))
 	result, err := BFTInstance.RunConsensus(
-		context.Background(),
+		ctx,
 		round,
 		blockHash,
 		myBuddyID,

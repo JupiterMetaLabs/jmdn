@@ -1,7 +1,7 @@
 package node
 
 import (
-	"context"
+	AppContext "gossipnode/config/Context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -23,6 +23,10 @@ import (
 	quic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	tcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	ma "github.com/multiformats/go-multiaddr"
+)
+
+const(
+	NodeAppContext = "node"
 )
 
 var localNode config.Node
@@ -253,7 +257,9 @@ func SendMessage(n *config.Node, target string, message string) error {
 	fmt.Println("Connected to peer:", isConnected)
 
 	// Connect to the peer
-	if err := n.Host.Connect(context.Background(), *peerInfo); err != nil {
+	ctx, cancel := AppContext.GetAppContext(NodeAppContext).NewChildContext()
+	defer cancel()
+	if err := n.Host.Connect(ctx, *peerInfo); err != nil {
 		return fmt.Errorf("connection failed: %v", err)
 	}
 
@@ -269,7 +275,9 @@ func SendFile(n *config.Node, target string, filepath string, destination string
 
 	fmt.Println("Connected to peer:", isConnected)
 	// Connect to the peer
-	if err := n.Host.Connect(context.Background(), *peerInfo); err != nil {
+	ctx, cancel := AppContext.GetAppContext(NodeAppContext).NewChildContext()
+	defer cancel()
+	if err := n.Host.Connect(ctx, *peerInfo); err != nil {
 		return fmt.Errorf("connection failed: %v", err)
 	}
 
