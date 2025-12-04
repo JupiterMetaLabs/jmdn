@@ -12,12 +12,10 @@ import (
 	"syscall"
 	"time"
 
-
-	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
-	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/app"
-	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"gossipnode/config/GRO"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Block"
@@ -49,7 +47,8 @@ import (
 )
 
 var (
-	MainAM *interfaces.AppGoroutineManagerInterface
+	MainAM interfaces.AppGoroutineManagerInterface
+	MainLM interfaces.LocalGoroutineManagerInterface
 )
 
 // Simple helper to print the CLI prompt in color
@@ -72,28 +71,48 @@ var (
 
 func initGlobalGRO() {
 	// This is the creation an setting of the global GRO manager
-	tempGRO := global.NewGlobalManager()
-	GRO.GlobalGRO = &tempGRO
+	GRO.GlobalGRO = global.NewGlobalManager()
+}
 
+func initAppandLocalGRO() {
+	if GRO.GlobalGRO == nil {
+		initGlobalGRO()
+	}
+	var err error
 	// Also pull up new app manager - main for the main package
-	MainAM = &app.NewAppManager(GRO.MainAM)
-	MainAM.CreateApp()
+	MainAM, err = GRO.GlobalGRO.NewAppManager(GRO.MainAM)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to create app manager")
+	}
+
+	MainLM, err = MainAM.NewLocalManager(GRO.MainLM)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to create local manager")
+	}
 }
 
 func StartFacadeServer(port int, chainID int) {
-	go func() {
+	if MainLM == nil {
+		log.Fatal().Msg("MainLM not initialized. Call initAppandLocalGRO() first")
+	}
+
+	MainLM.Go(GRO.FacadeThread, func(ctx context.Context) error {
 		log.Info().Msg("Starting facade server")
-		// Get the Http Server
-		HTTPServer := rpc.NewHandlers(Service.NewService(chainID))
-		httpServer := rpc.NewHTTPServer(HTTPServer)
-		if err := httpServer.Serve(fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
-			log.Error().Err(err).Msg("Failed to start facade server")
+
+		handler := rpc.NewHandlers(Service.NewService(chainID))
+		httpServer := rpc.NewHTTPServer(handler)
+
+		addr := fmt.Sprintf("0.0.0.0:%d", port)
+		if err := httpServer.Serve(addr); err != nil {
+			log.Error().Err(err).Str("addr", addr).Msg("Facade server stopped")
+			return fmt.Errorf("facade server failed: %w", err)
 		}
-	}()
+		return nil
+	})
 }
 
 func StartWSServer(port int, chainID int) {
-	go func() {
+	MainLM.Go(GRO.WSServerThread, func(ctx context.Context) error {
 		log.Info().Msg("Starting WSServer")
 		// Get the Http Server
 		HTTPServer := rpc.NewHandlers(Service.NewService(chainID))
@@ -101,8 +120,10 @@ func StartWSServer(port int, chainID int) {
 		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService(chainID))
 		if err := WSServer.Serve(fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
 			log.Error().Err(err).Msg("Failed to start WSServer")
+			return fmt.Errorf("WSServer failed: %w", err)
 		}
-	}()
+		return nil
+	})
 }
 
 // GetMainDBPool returns the global main database connection pool
@@ -438,7 +459,10 @@ func StartAPIServer(address string, enableExplorer bool) error {
 		return fmt.Errorf("failed to create ImmuDB API server: %w", err)
 	}
 
-	go explorer.StartBlockPoller(server, 7*time.Second)
+	MainLM.Go(GRO.BlockPollerThread, func(ctx context.Context) error {
+		explorer.StartBlockPoller(server, 7*time.Second)
+		return nil
+	})
 
 	log.Info().Str("address", address).Msg("Starting ImmuDB API server")
 	return server.Start(address)
@@ -539,6 +563,7 @@ func initPubSub(n *config.Node) (*Pubsub.StructGossipPubSub, error) {
 func main() {
 	// Initialize Global Go Routine Orchestrator first
 	initGlobalGRO()
+	initAppandLocalGRO()
 
 	var nodeManager *node.NodeManager
 	if err := ImmuDB_CA.EnsureTLSAssets(".immudb_state"); err != nil {
@@ -598,14 +623,14 @@ func main() {
 	// Handle signals for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
+
+	MainLM.Go(GRO.ShutdownThread, func(ctx context.Context) error {
 		<-sigCh
+
 		fmt.Println("\nShutdown signal received, closing connections...")
-		cancel() // Cancel the context
-		// Give some time for cleanup
-		time.Sleep(500 * time.Millisecond)
-		os.Exit(1)
-	}()
+		shutdown()		
+		return nil
+	})
 
 	// Initialize database connection pools FIRST
 	fmt.Println("Initializing main database pool...")
@@ -758,30 +783,33 @@ func main() {
 	}
 
 	// We'll initialize the DID system in the DID server to avoid blocking main
-	go func() {
+	MainLM.Go(GRO.DIDThread, func(ctx context.Context) error {
 		log.Info().Str("address", *DIDgRPC).Msg("Starting DID gRPC server")
 		if err := startDIDServer(n.Host, *DIDgRPC); err != nil {
 			fmt.Println("Failed to start DID gRPC server:", err)
 			log.Error().Err(err).Msg("Failed to start DID gRPC server")
 		}
-	}()
+		return nil
+	})
 
 	if *blockgen > 0 {
-		go func() {
+		MainLM.Go(GRO.BlockgenThread, func(ctx context.Context) error {
 			log.Info().Msgf("Starting block generator on port %d", *blockgen)
 			fmt.Printf("\nBlock generator available at http://localhost:%d\n", *blockgen)
 			Block.Startserver(*blockgen, n.Host, *chainID)
-		}()
+			return nil
+		})
 	}
 
 	if *blockgRPC > 0 {
-		go func() {
+		MainLM.Go(GRO.BlockgRPCThread, func(ctx context.Context) error {
 			log.Info().Int("port", *blockgRPC).Msg("Starting block gRPC server")
 			fmt.Printf("\nBlock gRPC server available at localhost:%d\n", *blockgRPC)
 			if err := Block.StartGRPCServer(*blockgRPC, n.Host, *chainID); err != nil {
 				log.Error().Err(err).Msg("Failed to start block gRPC server")
 			}
-		}()
+			return nil
+		})
 	}
 
 	// Register with seed node gRPC if URL is provided
@@ -830,16 +858,17 @@ func main() {
 	}
 
 	if *gETHgRPC > 0 {
-		go func() {
+		MainLM.Go(GRO.GETHgRPCThread, func(ctx context.Context) error {
 			fmt.Printf("Starting gETH gRPC server on port %d\n", *gETHgRPC)
 			if err := gETH.StartGRPC(*gETHgRPC, *chainID); err != nil {
 				log.Error().Err(err).Msg("gETH gRPC server error")
 			}
-		}()
+			return nil
+		})
 	}
 
 	if *apiPort > 0 {
-		go func() {
+		MainLM.Go(GRO.ExplorerThread, func(ctx context.Context) error {
 			log.Info().Msgf("Starting ImmuDB API on port %d", *apiPort)
 			fmt.Printf("\nImmuDB API available at http://localhost:%d/api\n", *apiPort)
 
@@ -854,7 +883,8 @@ func main() {
 			if err := StartAPIServer(apiAddr, *enableExplorer); err != nil {
 				log.Error().Err(err).Msg("Failed to start API server")
 			}
-		}()
+			return nil
+		})
 	}
 
 	cmdHandler := &cli.CommandHandler{
@@ -895,9 +925,10 @@ func main() {
 
 	// Start CLI without timeout - run indefinitely
 	done := make(chan error, 1)
-	go func() {
+	MainLM.Go(GRO.CLIThread, func(ctx context.Context) error {
 		done <- cmdHandler.StartCLI(*cliGRPC)
-	}()
+		return nil
+	})
 
 	// Wait for CLI to complete or error
 	if err := <-done; err != nil {
