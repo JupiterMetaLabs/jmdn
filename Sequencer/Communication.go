@@ -463,9 +463,9 @@ func ValidateConsensusConfiguration(consensus *Consensus) error {
 
 	// Backup peers are now optional/empty - they're only used during selection, not stored separately
 	// Allow empty backup peers since final buddy nodes are all in MainPeers after selection
-	if len(consensus.PeerList.BackupPeers) > 0 && len(consensus.PeerList.BackupPeers) != config.MaxBackupPeers {
-		return fmt.Errorf("if backup peers are set, count must be exactly %d, got %d", config.MaxBackupPeers, len(consensus.PeerList.BackupPeers))
-	}
+	// if len(consensus.PeerList.BackupPeers) > 0 && len(consensus.PeerList.BackupPeers) != config.MaxBackupPeers {
+	// 	return fmt.Errorf("if backup peers are set, count must be exactly %d, got %d", config.MaxBackupPeers, len(consensus.PeerList.BackupPeers))
+	// }
 
 	// Check for duplicate peer IDs within main peers
 	if err := checkForDuplicatePeerIDs(consensus.PeerList.MainPeers); err != nil {
