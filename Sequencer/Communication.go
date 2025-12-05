@@ -174,13 +174,13 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 
 	responseHandler := NewResponseHandler()
 
-	// First, try main peers (up to 13)
+	// First, try main peers (MaxMainPeers)
 	mainAccepted, mainTotal := askPeersForSubscription(Listener, topic, consensus.PeerList.MainPeers, responseHandler, "main")
 	mainFailed := mainTotal - mainAccepted
 
 	log.Printf("Main peers results: %d accepted, %d failed out of %d", mainAccepted, mainFailed, mainTotal)
 
-	// If we have exactly 13 main peers, we're done
+	// If we have exactly MaxMainPeers main peers, we're done
 	if mainAccepted == config.MaxMainPeers {
 		log.Printf("Perfect! Got exactly %d main peers for consensus (1 creator + 13 subscribers = 14 total)", config.MaxMainPeers)
 		// Verify with global tracker
