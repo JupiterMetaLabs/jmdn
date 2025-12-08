@@ -165,8 +165,7 @@ func cleanupResponseHandler(rh *ResponseHandler) {
 }
 
 // AskForSubscription asks peers for subscription with backup node fallback
-// Ensures: 1 creator + 13 subscribers = 14 total nodes
-// Maximum 3 main nodes can fail, use backup nodes as replacements
+// Ensures: 1 creator + MaxMainPeers subscribers = MaxMainPeers + 1 total nodes
 func AskForSubscription(Listener *MessagePassing.StructListener, topic string, consensus *Consensus) error {
 	// Reset the global tracker at the start
 	tracker := PubSubMessages.GetSubscriptionTracker()
@@ -174,37 +173,29 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 
 	responseHandler := NewResponseHandler()
 
-	// First, try main peers (MaxMainPeers)
-	mainAccepted, mainTotal := askPeersForSubscription(Listener, topic, consensus.PeerList.MainPeers, responseHandler, "main")
-	mainFailed := mainTotal - mainAccepted
+	// get count of main peers and backup peers from consensus peerlist
+	mainPeersCount := len(consensus.PeerList.MainPeers)
+	backupPeersCount := len(consensus.PeerList.BackupPeers)
 
-	log.Printf("Main peers results: %d accepted, %d failed out of %d", mainAccepted, mainFailed, mainTotal)
+	if mainPeersCount+backupPeersCount < config.MaxMainPeers {
+		return fmt.Errorf("not enough peers to achieve consensus: got %d main + %d backup = %d total, need at least %d (MaxMainPeers)", mainPeersCount, backupPeersCount, mainPeersCount+backupPeersCount, config.MaxMainPeers)
+	}
+
+	// First, try main peers (MaxMainPeers)
+	mainAccepted, mainPeersCount := askPeersForSubscription(Listener, topic, consensus.PeerList.MainPeers, responseHandler, "main")
+	mainFailed := mainPeersCount - mainAccepted
+
+	log.Printf("Main peers results: %d accepted, %d failed out of %d", mainAccepted, mainFailed, mainPeersCount)
 
 	// If we have exactly MaxMainPeers main peers, we're done
 	if mainAccepted == config.MaxMainPeers {
-		log.Printf("Perfect! Got exactly %d main peers for consensus (1 creator + 13 subscribers = 14 total)", config.MaxMainPeers)
+		log.Printf("Perfect! Got exactly %d main peers for consensus (1 creator + MaxMainPeers subscribers = MaxMainPeers + 1 total)", config.MaxMainPeers)
 		// Verify with global tracker
 		if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
 			log.Printf("Global tracker confirms: %d active subscriptions", tracker.GetActiveCount())
 			cleanupResponseHandler(responseHandler)
 			return nil
 		}
-	}
-
-	// Check if too many main nodes failed
-	// If we have backup peers, we need fewer main peers to accept (allows for replacement)
-	// If no backup peers, we need ALL main peers to be accepted
-	var minMainRequired int
-	if config.MaxBackupPeers > 0 {
-		minMainRequired = config.MaxMainPeers - config.MaxBackupPeers
-	} else {
-		// No backup peers available - require all main peers
-		minMainRequired = config.MaxMainPeers
-	}
-
-	if mainAccepted < minMainRequired {
-		cleanupResponseHandler(responseHandler)
-		return fmt.Errorf("too many main nodes failed: got %d, need at least %d (configured with %d main peers and %d backup peers)", mainAccepted, minMainRequired, config.MaxMainPeers, config.MaxBackupPeers)
 	}
 
 	// If we have less than required main peers, use backup peers as replacements
@@ -217,23 +208,52 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 			log.Printf("No backup peers available to replace failed main nodes")
 		}
 
-		// Limit backup peers to only what we need
-		backupPeersToTry := consensus.PeerList.BackupPeers
-		if len(backupPeersToTry) > needed {
-			backupPeersToTry = backupPeersToTry[:needed]
+		// Retry loop: keep trying backup peers until we have enough or run out
+		backupPeersIndex := 0
+		backupAccepted := 0
+		stillNeeded := needed
+		allBackupPeers := consensus.PeerList.BackupPeers
+
+		for stillNeeded > 0 && backupPeersIndex < len(allBackupPeers) {
+			// Calculate how many backup peers to try in this iteration
+			// Try at least 'stillNeeded' peers, but don't exceed available peers
+			peersToTryCount := stillNeeded
+			if backupPeersIndex+peersToTryCount > len(allBackupPeers) {
+				peersToTryCount = len(allBackupPeers) - backupPeersIndex
+			}
+
+			// Get the next batch of backup peers to try
+			backupPeersToTry := allBackupPeers[backupPeersIndex : backupPeersIndex+peersToTryCount]
+			log.Printf("Trying %d backup peers (index %d to %d), still need %d more",
+				peersToTryCount, backupPeersIndex, backupPeersIndex+peersToTryCount-1, stillNeeded)
+
+			// Ask this batch for subscription
+			batchAccepted, batchTotal := askPeersForSubscription(Listener, topic, backupPeersToTry, responseHandler, "backup")
+			log.Printf("Backup batch results: %d accepted out of %d tried", batchAccepted, batchTotal)
+
+			// Update counters
+			backupAccepted += batchAccepted
+			backupPeersIndex += peersToTryCount
+			stillNeeded -= batchAccepted
+
+			// If we got some acceptances, log progress
+			if batchAccepted > 0 {
+				log.Printf("Progress: %d backup peers accepted so far, %d still needed", backupAccepted, stillNeeded)
+			}
+
+			// If we've exhausted all backup peers and still don't have enough, break
+			if backupPeersIndex >= len(allBackupPeers) && stillNeeded > 0 {
+				log.Printf("Exhausted all %d backup peers, still need %d more subscribers", len(allBackupPeers), stillNeeded)
+				break
+			}
 		}
 
-		backupAccepted, backupTotal := askPeersForSubscription(Listener, topic, backupPeersToTry, responseHandler, "backup")
-
-		log.Printf("Backup peers results: %d accepted out of %d tried", backupAccepted, backupTotal)
-
 		totalAccepted := mainAccepted + backupAccepted
-
 		log.Printf("Final subscription results: %d main + %d backup = %d total subscribers", mainAccepted, backupAccepted, totalAccepted)
 
-		// Ensure we have exactly 13 subscribers (1 creator + 13 subscribers = 14 total)
+		// Ensure we have exactly MaxMainPeers subscribers (1 creator + MaxMainPeers subscribers = MaxMainPeers + 1 total)
 		if totalAccepted != config.MaxMainPeers {
-			return fmt.Errorf("insufficient subscribers for consensus: got %d, need exactly %d (1 creator + 13 subscribers = 14 total)", totalAccepted, config.MaxMainPeers)
+			return fmt.Errorf("insufficient subscribers for consensus: got %d, need exactly %d (1 creator + MaxMainPeers subscribers = MaxMainPeers + 1 total)", totalAccepted, config.MaxMainPeers)
 		}
 
 		log.Printf("Successfully achieved consensus: 1 creator + %d subscribers = 14 total nodes", totalAccepted)

@@ -36,7 +36,10 @@ func GetBuddyNodes(
 	// fmt.Printf("Debugging 2\n")
 	// allNodes := make([]Node, 0)
 	allNodes, err := peerClient.ListBuddyPeers(ctx)
-	fmt.Println("⚠️ WARNING  Failed to fetch buddy peers, falling back to all active peers:", err)
+	if err != nil {
+		fmt.Println("⚠️ WARNING  Failed to fetch buddy peers:", err)
+		return nil, err
+	}
 
 	// TODO: not needed -- ListBuddyPeers seems to be returning all nodes already
 	// if err != nil || len(allNodes) == 0 {
