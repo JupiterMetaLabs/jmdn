@@ -2,7 +2,6 @@ package Block
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,7 +25,6 @@ import (
 	// "gossipnode/PubSubMessages"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gin-gonic/gin"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -99,21 +97,20 @@ func submitRawTransaction(c *gin.Context) {
 // SubmitRawTransaction handles pre-signed raw transactions with security validations
 func SubmitRawTransaction(tx *config.Transaction) (string, error) {
 	// Debugging
-	fmt.Println("Transaction: ", tx)
-	if tx.ChainID != nil {
-		fmt.Printf("Transaction ChainID - String(): %s, Uint64(): %d, Bytes: %x\n",
-			tx.ChainID.String(), tx.ChainID.Uint64(), tx.ChainID.Bytes())
-	} else {
-		fmt.Println("Transaction ChainID: nil")
+	fmt.Println("[DEBUG] Transaction: ", tx)
+
+	// Transaction hash must be present - it should be provided by the client
+	if tx.Hash == (common.Hash{}) {
+		return "", errors.New("invalid transaction: hash is required and must be provided by the client")
 	}
 
-	// Run security checks
-	status, err := Security.ThreeChecks(tx)
+	// Run security checks (includes hash validation)
+	status, err := Security.AllChecks(tx)
 	if !status || err != nil {
 		return "", err
 	}
 	// Debugging
-	fmt.Println("Security Checks: ", status)
+	fmt.Println("[DEBUG] Security Checks: ", status)
 
 	// Basic transaction validation
 	if tx.Value.Cmp(big.NewInt(0)) == 0 || tx.Value.String() == "" {
@@ -122,32 +119,17 @@ func SubmitRawTransaction(tx *config.Transaction) (string, error) {
 		}
 	}
 	// Debugging
-	fmt.Println("Basic Transaction Validation: ", tx.Value)
+	fmt.Println("[DEBUG] Basic Transaction Validation: ", tx.Value)
 
-	// Check the To and From addresses
-	if tx.To == nil || tx.From == nil {
-		return "", errors.New("invalid transaction: missing To or From address")
-	} else if tx.To == tx.From {
+	// Check that To and From addresses are not the same (not checked in security checks)
+	if tx.To == tx.From {
 		return "", errors.New("invalid transaction: To and From address are the same")
 	}
 
-	// Use transaction hash if already set (from RLP parsing), otherwise compute from JSON
-	// Note: RLP-encoded transactions will have hash set from convertEthTxToConfigTx
-	var txHash string
-	if tx.Hash != (common.Hash{}) {
-		// Hash already set (from RLP-encoded transaction)
-		txHash = tx.Hash.Hex()
-	} else {
-		// Fallback: compute hash from JSON (for JSON-only transactions)
-		// WARNING: This produces a different hash than standard Ethereum RLP hash
-		rawTxBytes, err := json.Marshal(tx)
-		if err != nil {
-			return "", err
-		}
-		txHash = crypto.Keccak256Hash(rawTxBytes).Hex()
-	}
+	txHash := tx.Hash.Hex()
 	// Debugging
 	fmt.Println("Transaction Hash: ", txHash)
+
 	// Asynchronously submit to mempool with context
 	go func() {
 		if err := SubmitToMempool(tx, txHash); err != nil {

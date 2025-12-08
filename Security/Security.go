@@ -68,7 +68,7 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 
 	// 1. Check the ZKBlock validation for Transactions in the ZKBlokc
 	for _, tx := range zkBlock.Transactions {
-		status, err := ThreeChecks(&tx)
+		status, err := AllChecks(&tx)
 		if err != nil {
 			return false, err
 		}
@@ -89,7 +89,8 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	}
 	return true, nil
 }
-func ThreeChecks(tx *config.Transaction) (bool, error) {
+
+func AllChecks(tx *config.Transaction) (bool, error) {
 	ctx := context.Background()
 	defer ctx.Done()
 	// Initilize the Accounts DB connection pool
@@ -100,82 +101,87 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 	// Ensure connection is returned to pool when function exits
 	defer DB_OPs.PutAccountsConnection(Conn)
 
-	// Preliminary Check: Chain ID must be present and valid (> 0)
+	// ------------------------------------------------------------
+	// 1. ChainID validation
+	// 1.1. ChainID validation: expected chain ID must be configured first
+	if expectedChainID == nil {
+		Conn.Client.Logger.Logger.Error("Expected chain ID not configured",
+			zap.Error(errors.New("expected chain ID is not set")),
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.AllChecks"),
+		)
+		return false, errors.New("expected chain ID is not configured")
+	}
+
+	// 1.2. Transaction and its ChainID must be present
 	if tx == nil || tx.ChainID == nil {
-		// || tx.ChainID.Sign() <= 0
-		Conn.Client.Logger.Logger.Error("Invalid or missing ChainID",
-			zap.Error(errors.New("transaction chain ID is missing or invalid")),
+		Conn.Client.Logger.Logger.Error("Transaction or ChainID is missing",
+			zap.Error(errors.New("transaction or chain ID is missing")),
 			zap.String(logging.Connection_database, config.AccountsDBName),
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.ThreeChecks"),
+			zap.String(logging.Function, "Security.AllChecks"),
 		)
-		return false, errors.New("invalid transaction: chain ID is missing or invalid")
+		return false, errors.New("transaction or chain ID is missing")
 	}
 
-	// Log ChainID for debugging (temporarily)
-	if tx.ChainID != nil && expectedChainID != nil {
-		if tx.ChainID.Cmp(expectedChainID) != 0 {
-			Conn.Client.Logger.Logger.Warn("chain id mismatch (validation temporarily disabled)",
-				zap.String("tx_chain_id", tx.ChainID.String()),
-				zap.Uint64("tx_chain_id_uint64", tx.ChainID.Uint64()),
-				zap.String("expected_chain_id", expectedChainID.String()),
-				zap.Uint64("expected_chain_id_uint64", expectedChainID.Uint64()),
-				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, config.LOKI_URL),
-				zap.String(logging.Function, "Security.ThreeChecks"),
-			)
-			fmt.Printf("WARN: ChainID mismatch (validation disabled) - Got: %s (uint64: %d), Expected: %s (uint64: %d)\n",
+	// 1.3. Transaction ChainID must match expected ChainID
+	if tx.ChainID.Cmp(expectedChainID) != 0 {
+		Conn.Client.Logger.Logger.Error("Chain ID mismatch",
+			zap.String("tx_chain_id", tx.ChainID.String()),
+			zap.Uint64("tx_chain_id_uint64", tx.ChainID.Uint64()),
+			zap.String("expected_chain_id", expectedChainID.String()),
+			zap.Uint64("expected_chain_id_uint64", expectedChainID.Uint64()),
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.AllChecks"),
+		)
+		return false, fmt.Errorf("chain ID mismatch: got %s (uint64: %d), expected %s (uint64: %d)",
 			tx.ChainID.String(), tx.ChainID.Uint64(), expectedChainID.String(), expectedChainID.Uint64())
-			// Return false, errors.New("chain ID mismatch")
-			return false, errors.New("chain ID mismatch")
-		}
 	}
 
-	// First Check Accounts exist
-	status, err := CheckAddressExist(tx, Conn)
+	// ------------------------------------------------------------
+	// 2. Transaction hash validation
+	// 2.1. Recompute and verify transaction hash
+	status, err := checkTransactionHash(tx)
 	if err != nil {
-		Conn.Client.Logger.Logger.Error("Failed to check Address Exist",
+		Conn.Client.Logger.Logger.Error("Failed to verify transaction hash",
 			zap.Error(err),
+			zap.String("provided_hash", tx.Hash.Hex()),
 			zap.String(logging.Connection_database, config.AccountsDBName),
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.ThreeChecks"),
+			zap.String(logging.Function, "Security.AllChecks"),
 		)
-		return false, fmt.Errorf("DID check failed with DB error: %w", err)
+		return false, fmt.Errorf("transaction hash validation failed: %w", err)
 	}
 	if !status {
-		Conn.Client.Logger.Logger.Error("Sender or receiver DID not found",
+		Conn.Client.Logger.Logger.Error("Transaction hash mismatch",
+			zap.String("provided_hash", tx.Hash.Hex()),
 			zap.String(logging.Connection_database, config.AccountsDBName),
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.ThreeChecks"),
+			zap.String(logging.Function, "Security.AllChecks"),
 		)
-		return false, errors.New("sender or receiver DID not found")
+		return false, errors.New("transaction hash mismatch: computed hash does not match provided hash")
 	}
 
-	Conn.Client.Logger.Logger.Info("DID Check: ",
-		zap.Bool("DID Check", status),
-		zap.Time(logging.Created_at, time.Now().UTC()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.ThreeChecks"),
-	)
-
-	// Debugging
-	fmt.Println("DID Check: ", status)
-
-	// Second Check Signature
+	// ------------------------------------------------------------
+	// 3. Signature validation
+	// 3.1. Check Signature
 	status, err = CheckSignature(tx)
 	if err != nil {
 		Conn.Client.Logger.Logger.Error("Failed to check Signature",
@@ -185,7 +191,7 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.ThreeChecks"),
+			zap.String(logging.Function, "Security.AllChecks"),
 		)
 		return false, fmt.Errorf("signature recovery failed: %w", err)
 	}
@@ -196,12 +202,54 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.ThreeChecks"),
+			zap.String(logging.Function, "Security.AllChecks"),
 		)
 		return false, errors.New("invalid signature")
 	}
 
-	// Third Check Balance
+	// ------------------------------------------------------------
+	// 4. Accounts exist
+	// 4.1. First Check Accounts exist
+	status, err = CheckAddressExist(tx, Conn)
+	if err != nil {
+		Conn.Client.Logger.Logger.Error("Failed to check Address Exist",
+			zap.Error(err),
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.AllChecks"),
+		)
+		return false, fmt.Errorf("DID check failed with DB error: %w", err)
+	}
+	if !status {
+		Conn.Client.Logger.Logger.Error("Sender or receiver DID not found",
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.AllChecks"),
+		)
+		return false, errors.New("sender or receiver DID not found")
+	}
+
+	Conn.Client.Logger.Logger.Info("DID Check: ",
+		zap.Bool("DID Check", status),
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, config.LOKI_URL),
+		zap.String(logging.Function, "Security.AllChecks"),
+	)
+
+	// Debugging
+	fmt.Println("DID Check: ", status)
+
+	// ------------------------------------------------------------
+	// 5. Balance validation
+	// 5.1. Check Balance
 	status, err = CheckBalance(tx, Conn)
 	if err != nil {
 		Conn.Client.Logger.Logger.Error("Failed to check Balance",
@@ -211,7 +259,7 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.ThreeChecks"),
+			zap.String(logging.Function, "Security.AllChecks"),
 		)
 		return false, fmt.Errorf("balance check failed with error: %w", err)
 	}
@@ -222,13 +270,12 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.ThreeChecks"),
+			zap.String(logging.Function, "Security.AllChecks"),
 		)
 		return false, errors.New("insufficient funds for transaction")
 	}
 
-	// Fourth Check Nonce Validation (Optimized)
-	// Use optimized combined function that checks duplicate and gets latest nonce in a single reverse scan
+	// get main DB connection
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
 		Conn.Client.Logger.Logger.Error("Failed to get main DB connection for nonce check",
@@ -238,13 +285,15 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.ThreeChecks"),
+			zap.String(logging.Function, "Security.AllChecks"),
 		)
 		return false, fmt.Errorf("failed to get main DB connection for nonce check: %w", err)
 	}
 	defer DB_OPs.PutMainDBConnection(mainDBClient)
 
-	// Combined optimized check: duplicate nonce and latest nonce in a single reverse scan
+	// ------------------------------------------------------------
+	// 6. Nonce validation
+	// 6.1. Combined Nonce check (optimized): duplicate nonce and latest nonce in a single reverse scan
 	hasDuplicate, latestNonce, hasAnyTransactions, err := DB_OPs.CheckNonceAndGetLatest(mainDBClient, tx.From, tx.Nonce)
 	if err != nil {
 		Conn.Client.Logger.Logger.Error("Failed to check nonce",
@@ -256,7 +305,7 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.ThreeChecks"),
+			zap.String(logging.Function, "Security.AllChecks"),
 		)
 		return false, fmt.Errorf("nonce check failed with error: %w", err)
 	}
@@ -270,7 +319,7 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.ThreeChecks"),
+			zap.String(logging.Function, "Security.AllChecks"),
 		)
 		return false, fmt.Errorf("transaction with same nonce already exists for address %s", tx.From.Hex())
 	}
@@ -303,7 +352,7 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.ThreeChecks"),
+			zap.String(logging.Function, "Security.AllChecks"),
 		)
 		return false, fmt.Errorf("submitted nonce %d is too low, must be >= %d (latest: %d) for address %s", tx.Nonce, expectedNonce, latestNonce, tx.From.Hex())
 	}
@@ -314,7 +363,7 @@ func ThreeChecks(tx *config.Transaction) (bool, error) {
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.ThreeChecks"),
+		zap.String(logging.Function, "Security.AllChecks"),
 	)
 	return true, nil
 }
@@ -680,4 +729,79 @@ func toGethAccessList(accessList config.AccessList) types.AccessList {
 		})
 	}
 	return result
+}
+
+// ------------------------------------------------------------
+// 2. Transaction hash validation
+// 2.1. Recompute transaction hash and verify it matches the provided hash
+func checkTransactionHash(tx *config.Transaction) (bool, error) {
+	if tx == nil {
+		return false, errors.New("transaction cannot be nil")
+	}
+
+	// Construct the transaction the same way as CheckSignature does
+	var ethTx *types.Transaction
+
+	switch {
+	case tx.MaxFee != nil && tx.MaxPriorityFee != nil:
+		// EIP-1559 (Type 2)
+		inner := &types.DynamicFeeTx{
+			ChainID:    tx.ChainID,
+			Nonce:      tx.Nonce,
+			To:         tx.To,
+			Value:      tx.Value,
+			GasTipCap:  tx.MaxPriorityFee,
+			GasFeeCap:  tx.MaxFee,
+			Gas:        tx.GasLimit,
+			Data:       tx.Data,
+			AccessList: toGethAccessList(tx.AccessList),
+			V:          tx.V,
+			R:          tx.R,
+			S:          tx.S,
+		}
+		ethTx = types.NewTx(inner)
+
+	case len(tx.AccessList) > 0:
+		// EIP-2930 (Type 1)
+		inner := &types.AccessListTx{
+			ChainID:    tx.ChainID,
+			Nonce:      tx.Nonce,
+			To:         tx.To,
+			Value:      tx.Value,
+			GasPrice:   tx.GasPrice,
+			Gas:        tx.GasLimit,
+			Data:       tx.Data,
+			AccessList: toGethAccessList(tx.AccessList),
+			V:          tx.V,
+			R:          tx.R,
+			S:          tx.S,
+		}
+		ethTx = types.NewTx(inner)
+
+	default:
+		// Legacy (Type 0)
+		inner := &types.LegacyTx{
+			Nonce:    tx.Nonce,
+			To:       tx.To,
+			Value:    tx.Value,
+			GasPrice: tx.GasPrice,
+			Gas:      tx.GasLimit,
+			Data:     tx.Data,
+			V:        tx.V,
+			R:        tx.R,
+			S:        tx.S,
+		}
+		ethTx = types.NewTx(inner)
+	}
+
+	// Compute the hash from the constructed transaction
+	computedHash := ethTx.Hash()
+
+	// Compare with the provided hash
+	if computedHash != tx.Hash {
+		return false, fmt.Errorf("transaction hash mismatch: computed %s, provided %s",
+			computedHash.Hex(), tx.Hash.Hex())
+	}
+
+	return true, nil
 }
