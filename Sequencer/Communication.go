@@ -7,11 +7,13 @@ import (
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Sequencer/Router"
 	"gossipnode/config"
+	GRO "gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"log"
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -351,7 +353,6 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 	initialCount := tracker.GetActiveCount()
 
 	accepted := make(map[string]bool)
-	var wg sync.WaitGroup
 	var mu sync.Mutex
 
 	log.Printf("Asking %d %s peers for subscription to topic: %s", len(peerAddrs), peerType, topic)
@@ -362,19 +363,29 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 
 	// Response handler is now set up in the buddy nodes themselves
 	// No need to set up additional handlers here
+	wg, err := LocalGRO.NewFunctionWaitGroup(context.Background(), GRO.SequencerConsensusThread)
+	if err != nil {
+		log.Printf("Failed to create waitgroup: %v", err)
+		return 0, 0
+	}
+
+	// Track how many goroutines we successfully spawned
+	spawnedCount := 0
 
 	for _, peerID := range peerAddrs {
 		// Register peer for response tracking
 		responseChan := responseHandler.RegisterPeer(peerID, peerType)
 
-		wg.Add(1)
-		go func(peerID peer.ID) {
-			defer wg.Done()
+		// Capture variables in closure to avoid race condition
+		peerID := peerID
+		// responseChan is already a new variable per iteration, but capture explicitly for clarity
+		chanForGoroutine := responseChan
+		if err := LocalGRO.Go(GRO.SequencerConsensusThread, func(ctx context.Context) error {
 			// DON'T unregister here - keep the role stored for HandleResponse
 			// defer responseHandler.UnregisterPeer(peerID)
 
-			// Create context with timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			// Create context with timeout derived from parent context
+			timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 
 			// Create proper message with ACK for subscription request
@@ -392,7 +403,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 				mu.Lock()
 				accepted[peerID.String()] = false
 				mu.Unlock()
-				return
+				return fmt.Errorf("failed to marshal subscription request message: %v", err)
 			}
 
 			// Send subscription request via SubmitMessageProtocol using existing function
@@ -401,16 +412,16 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 				mu.Lock()
 				accepted[peerID.String()] = false
 				mu.Unlock()
-				return
+				return fmt.Errorf("failed to send subscription request to %s %s: %v", peerType, peerID, err)
 			}
 
 			log.Printf("Sent subscription request to %s peer: %s, waiting for ACK...", peerType, peerID)
 			fmt.Printf("=== askPeersForSubscription: Waiting for response from peer: %s ===\n", peerID)
-			fmt.Printf("=== askPeersForSubscription: Response channel: %p for peer: %s ===\n", responseChan, peerID)
+			fmt.Printf("=== askPeersForSubscription: Response channel: %p for peer: %s ===\n", chanForGoroutine, peerID)
 
 			// Wait for response with timeout
 			select {
-			case response := <-responseChan:
+			case response := <-chanForGoroutine:
 				fmt.Printf("=== askPeersForSubscription: Received response from peer: %s (accepted: %t) ===\n", peerID, response)
 				mu.Lock()
 				accepted[peerID.String()] = response
@@ -421,7 +432,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 				} else {
 					log.Printf("%s peer %s rejected subscription", peerType, peerID)
 				}
-			case <-ctx.Done():
+			case <-timeoutCtx.Done():
 				fmt.Printf("=== askPeersForSubscription: TIMEOUT waiting for response from peer: %s ===\n", peerID)
 				fmt.Printf("=== askPeersForSubscription: Timeout context done for peer: %s ===\n", peerID)
 				log.Printf("Timeout waiting for ACK from %s peer: %s", peerType, peerID)
@@ -429,13 +440,22 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 				accepted[peerID.String()] = false
 				mu.Unlock()
 			}
-		}(peerID)
+			return nil
+		}, local.AddToWaitGroup(GRO.SequencerConsensusThread)); err != nil {
+			log.Printf("Failed to spawn goroutine for peer %s: %v", peerID, err)
+			// Mark as not accepted if we couldn't even spawn the goroutine
+			mu.Lock()
+			accepted[peerID.String()] = false
+			mu.Unlock()
+			continue
+		}
+		spawnedCount++
 	}
 
 	// Wait for all goroutines to complete
 	wg.Wait()
 
-	log.Printf("All goroutines completed for %s peers", peerType)
+	log.Printf("All %d goroutines completed for %s peers", spawnedCount, peerType)
 
 	// Give some time for late-arriving responses to be processed
 	time.Sleep(500 * time.Millisecond)

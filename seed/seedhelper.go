@@ -6,15 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"gossipnode/config"
+	"gossipnode/config/GRO"
 	"strings"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 )
-
+var LocalGRO interfaces.LocalGoroutineManagerInterface
 type PeerStatus struct {
 	PeerID      string `json:"peerId"`
 	PublicAddr  string `json:"publicAddr"`
@@ -293,17 +295,33 @@ func (sn *SeedNode) ListPeers() ([]*PeerStatus, error) {
 
 // SetupPeerMaintenanceRoutine starts a goroutine that periodically checks peer status
 func (sn *SeedNode) SetupPeerMaintenanceRoutine(checkInterval time.Duration) {
-	go func() {
+	// Get app
+	AppGRO := GRO.GetApp(GRO.SeedApp)
+	if AppGRO == nil {
+		return
+	}
+
+	var err error
+
+	LocalGRO, err = AppGRO.NewLocalManager(GRO.SeedLocal)
+	if err != nil {
+		return
+	}
+
+	LocalGRO.Go(GRO.SeedThread, func(ctx context.Context) error {
 		ticker := time.NewTicker(checkInterval)
 		defer ticker.Stop()
 
 		for {
 			select {
+			case <-ctx.Done():
+				fmt.Printf("Peer maintenance routine stopped via context cancellation\n")
+				return ctx.Err()
 			case <-ticker.C:
 				sn.performPeerMaintenance()
 			}
 		}
-	}()
+	})
 	fmt.Printf("Peer maintenance routine started with interval %v\n", checkInterval)
 }
 

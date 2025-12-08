@@ -14,7 +14,6 @@ import (
 
 	"gossipnode/config/GRO"
 
-	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
@@ -71,19 +70,16 @@ var (
 
 func initGlobalGRO() {
 	// This is the creation an setting of the global GRO manager
-	GRO.GlobalGRO = global.NewGlobalManager()
+	GRO.InitGlobal()
 }
 
 func initAppandLocalGRO() {
-	if GRO.GlobalGRO == nil {
-		initGlobalGRO()
-	}
+
 	var err error
 	// Also pull up new app manager - main for the main package
-	MainAM, err = GRO.GlobalGRO.NewAppManager(GRO.MainAM)
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to create app manager")
-	}
+	GRO.EagerLoading()
+
+	MainAM = GRO.GetApp(GRO.MainAM)
 
 	MainLM, err = MainAM.NewLocalManager(GRO.MainLM)
 	if err != nil {

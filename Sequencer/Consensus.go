@@ -16,6 +16,7 @@ import (
 	"gossipnode/Sequencer/Metadata"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/config"
+	GRO "gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/PubSubMessages/Cache"
 	"gossipnode/messaging"
@@ -23,10 +24,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 )
+
+var LocalGRO interfaces.LocalGoroutineManagerInterface
 
 type PeerList struct {
 	MainPeers   []peer.ID
@@ -125,6 +129,19 @@ func (consensus *Consensus) pingAndAddToCache(buddy PubSubMessages.Buddy_PeerMul
 }
 
 func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
+	AppGRO := GRO.GetApp(GRO.SequencerApp)
+	if AppGRO == nil {
+		return fmt.Errorf("app manager not available")
+	}
+
+	var consensuserr error
+	if LocalGRO == nil {
+		LocalGRO, consensuserr = AppGRO.NewLocalManager(GRO.SequencerConsensusLocal)
+		if consensuserr != nil {
+			return fmt.Errorf("failed to create consensus local manager: %v", consensuserr)
+		}
+	}
+
 	// Validate consensus configuration
 	if consensus.Host == nil {
 		return fmt.Errorf("consensus host is nil - call SetHostInstance() first")
@@ -380,7 +397,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	}
 
 	// Start vote trigger in a goroutine with 5-second delay
-	go func() {
+	LocalGRO.Go(GRO.SequencerConsensusThread, func(ctx context.Context) error {
 		fmt.Printf("=== [Consensus.Start] Starting vote trigger goroutine with 5-second delay ===\n")
 		time.Sleep(5 * time.Second)
 
@@ -393,11 +410,12 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		} else {
 			fmt.Printf("=== [Consensus.Start] BroadcastVoteTrigger completed successfully ===\n")
 		}
-	}()
+		return nil
+	})
 
 	// Start CRDT print trigger in a goroutine with 15-second delay after broadcast trigger
 	// This gives time for votes to propagate through the network
-	go func() {
+	LocalGRO.Go(GRO.SequencerConsensusThread, func(ctx context.Context) error {
 		fmt.Printf("=== [Consensus.Start] Starting CRDT print trigger goroutine with 15-second delay ===\n")
 		time.Sleep(15 * time.Second)
 
@@ -405,11 +423,12 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		if err := consensus.PrintCRDTState(); err != nil {
 			fmt.Printf("=== [CRDT PRINT TRIGGER] Failed to print CRDT state: %v ===\n", err)
 		}
-	}()
+		return nil
+	})
 
 	// Verify that nodes are actually subscribed (non-blocking, with delay to allow subscription)
 	// Buddy nodes need time to receive subscription request, subscribe to channel, and be ready
-	go func() {
+	LocalGRO.Go(GRO.SequencerConsensusThread, func(ctx context.Context) error {
 		fmt.Printf("=== [Consensus.Start] Starting subscription verification goroutine with 3-second delay ===\n")
 		time.Sleep(3 * time.Second) // Give buddy nodes time to subscribe
 
@@ -421,7 +440,8 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		} else {
 			fmt.Printf("=== [Consensus.Start] VerifySubscriptions PASSED ===\n")
 		}
-	}()
+		return nil
+	})
 
 	return nil
 }
@@ -590,7 +610,7 @@ func (consensus *Consensus) PrintCRDTState() error {
 
 	// Collect vote aggregation results from buddy nodes
 	// Note: Votes are stored on buddy nodes' CRDTs, not on the sequencer
-	go func() {
+	LocalGRO.Go(GRO.SequencerConsensusThread, func(ctx context.Context) error {
 		// Get all vote results from Triggers
 		voteResults := Maps.GetAllVoteResults()
 		fmt.Printf("📊 Vote results from buddy nodes: %v\n", voteResults)
@@ -664,12 +684,14 @@ func (consensus *Consensus) PrintCRDTState() error {
 		blsResults := make([]BLS_Signer.BLSresponse, 0, config.MaxMainPeers)
 		for _, buddyID := range listenerNode.BuddyNodes.Buddies_Nodes {
 			wg.Add(1)
-			go func(peerID peer.ID) {
+			// Capture buddyID in closure to avoid race condition
+			buddyID := buddyID
+			LocalGRO.Go(GRO.SequencerConsensusThread, func(ctx context.Context) error {
 				defer wg.Done()
-				stream, err := consensus.Host.NewStream(context.Background(), peerID, config.SubmitMessageProtocol)
+				stream, err := consensus.Host.NewStream(context.Background(), buddyID, config.SubmitMessageProtocol)
 				if err != nil {
-					fmt.Printf("❌ Failed to open stream to %s: %v\n", peerID, err)
-					return
+					fmt.Printf("❌ Failed to open stream to %s: %v\n", buddyID, err)
+					return fmt.Errorf("failed to open stream to %s: %v", buddyID, err)
 				}
 				defer stream.Close()
 
@@ -683,32 +705,33 @@ func (consensus *Consensus) PrintCRDTState() error {
 
 				reqData, _ := json.Marshal(reqMsg)
 				stream.Write([]byte(string(reqData) + string(rune(config.Delimiter))))
-				fmt.Printf("📨 Sent vote result request to %s\n", peerID)
+				fmt.Printf("📨 Sent vote result request to %s\n", buddyID)
 
 				// Read the result with timeout
 				responseCh := make(chan string, 1)
 				errCh := make(chan error, 1)
 				reader := bufio.NewReader(stream)
 
-				go func() {
+				LocalGRO.Go(GRO.SequencerConsensusThread, func(ctx context.Context) error {
 					response, err := reader.ReadString(config.Delimiter)
 					if err != nil {
 						errCh <- err
-						return
+						return fmt.Errorf("failed to read response from %s: %v", buddyID, err)
 					}
 					responseCh <- response
-				}()
+					return nil
+				})
 
 				var response string
 				select {
 				case resp := <-responseCh:
 					response = resp
 				case err := <-errCh:
-					fmt.Printf("⚠️ Failed to read response from %s: %v\n", peerID, err)
-					return
+					fmt.Printf("⚠️ Failed to read response from %s: %v\n", buddyID, err)
+					return fmt.Errorf("failed to read response from %s: %v", buddyID, err)
 				case <-time.After(20 * time.Second):
-					fmt.Printf("⏱️ Timeout waiting for response from %s\n", peerID)
-					return
+					fmt.Printf("⏱️ Timeout waiting for response from %s\n", buddyID)
+					return fmt.Errorf("timeout waiting for response from %s", buddyID)
 				}
 
 				responseMsg := PubSubMessages.NewMessageBuilder(nil).DeferenceMessage(response)
@@ -717,13 +740,13 @@ func (consensus *Consensus) PrintCRDTState() error {
 					if err := json.Unmarshal([]byte(responseMsg.Message), &resultData); err == nil {
 						// Pretty print full payload for debugging (includes BLS if present)
 						if pretty, err := json.MarshalIndent(resultData, "", "  "); err == nil {
-							fmt.Printf("📦 Full vote payload from %s:\n%s\n", peerID, string(pretty))
+							fmt.Printf("📦 Full vote payload from %s:\n%s\n", buddyID, string(pretty))
 						}
 
 						// Extract and store numeric vote
 						if result, ok := resultData["result"].(float64); ok {
-							Maps.StoreVoteResult(peerID.String(), int8(result))
-							fmt.Printf("✅ Received vote result from %s: %d\n", peerID, int8(result))
+							Maps.StoreVoteResult(buddyID.String(), int8(result))
+							fmt.Printf("✅ Received vote result from %s: %d\n", buddyID, int8(result))
 						}
 
 						// If BLS present, log key fields
@@ -744,7 +767,7 @@ func (consensus *Consensus) PrintCRDTState() error {
 							if v, ok := blsAny["PeerID"].(string); ok {
 								pid = v
 							}
-							fmt.Printf("🔐 BLS from %s | peer=%s agree=%t pubkey_len=%d sig_len=%d\n", peerID, pid, agree, len(pub), len(sig))
+							fmt.Printf("🔐 BLS from %s | peer=%s agree=%t pubkey_len=%d sig_len=%d\n", buddyID, pid, agree, len(pub), len(sig))
 
 							// append typed response
 							blsResultsMu.Lock()
@@ -758,7 +781,8 @@ func (consensus *Consensus) PrintCRDTState() error {
 						}
 					}
 				}
-			}(buddyID)
+				return nil
+			})
 		}
 		wg.Wait()
 		fmt.Printf("✅ Collected vote results from all buddy nodes\n")
@@ -821,8 +845,8 @@ func (consensus *Consensus) PrintCRDTState() error {
 		} else {
 			fmt.Printf("⚠️ Cannot broadcast block: ZKBlockData missing\n")
 		}
-	}()
-
+		return nil
+	})
 	// Get metadata from the global listener node
 	return nil
 }

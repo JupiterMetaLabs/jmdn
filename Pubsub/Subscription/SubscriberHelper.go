@@ -5,34 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"gossipnode/config"
+	"gossipnode/config/GRO"
 	"gossipnode/config/PubSubMessages"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
-
-// EnhancedSubscriberMetrics holds metrics for the enhanced subscriber
-type EnhancedSubscriberMetrics struct {
-	MessagesReceived int64
-	ReceiveErrors    int64
-	ValidationErrors int64
-	lastReceiveTime  int64 // Unix nano
-	uniquePeersMu    sync.RWMutex
-	uniquePeers      map[string]int64
-}
-
-// EnhancedSubscriber represents an enhanced message subscriber
-type EnhancedSubscriber struct {
-	subscription *pubsub.Subscription
-	metrics      *EnhancedSubscriberMetrics
-	gps          *PubSubMessages.GossipPubSub
-	handler      func(*PubSubMessages.GossipMessage)
-}
 
 // NewEnhancedSubscriber creates a new EnhancedSubscriber instance
 func NewEnhancedSubscriber(subscription *pubsub.Subscription, gps *PubSubMessages.GossipPubSub, handler func(*PubSubMessages.GossipMessage)) *EnhancedSubscriber {
@@ -108,11 +90,11 @@ func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName s
 	enhancedSubscriber := NewEnhancedSubscriber(sub, gps, handler)
 
 	// Start enhanced message processing
-	ctx, cancel := context.WithCancel(context.Background())
-	_ = cancel // Store cancel function for cleanup
-
 	fmt.Printf("Context set for %s\n", topicName)
-	go enhancedSubscriber.runEnhanced(ctx)
+	LocalGRO.Go(GRO.PubsubSubscriptionThread, func(ctx context.Context) error {
+		enhancedSubscriber.runEnhanced(ctx)
+		return nil
+	})
 
 	fmt.Printf("subscribeEnhancedViaGossipSub returned successfully for %s\n", topicName)
 	return nil

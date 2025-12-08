@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"gossipnode/DB_OPs/sqlops"
 	"gossipnode/config"
+	"gossipnode/config/GRO"
 	"gossipnode/logging"
 	"gossipnode/metrics"
 
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -294,17 +296,17 @@ func (nm *NodeManager) StartHeartbeat(intervalSeconds int) {
 	interval := time.Duration(intervalSeconds) * time.Second
 	nm.heartbeatTicker = time.NewTicker(interval)
 
-	go func() {
+	LocalGRO.Go(GRO.NodeThread, func(ctx context.Context) error {
 		fmt.Printf("Starting heartbeat process with interval of %v\n", interval)
 		for {
 			select {
 			case <-nm.ctx.Done():
-				return
+				return nil
 			case <-nm.heartbeatTicker.C:
 				nm.performHeartbeat()
 			}
 		}
-	}()
+	})
 }
 
 // StopHeartbeat stops the heartbeat process
@@ -810,11 +812,22 @@ func (nm *NodeManager) performHeartbeat() {
 	}
 	nm.mutex.RUnlock()
 
-	var wg sync.WaitGroup
+	wg, err := LocalGRO.NewFunctionWaitGroup(context.Background(), GRO.NodeManagerWG)
+	if err != nil {
+		nm.Logger.Logger.Error("Failed to create waitgroup",
+			zap.Error(err),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Function, "node.performHeartbeat"),
+		)
+		return
+	}
+
 	for _, peerID := range peers {
-		wg.Add(1)
-		go func(id peer.ID) {
-			defer wg.Done()
+		// Capture peerID in closure to avoid race condition
+		peerID := peerID
+		LocalGRO.Go(GRO.NodeThread, func(ctx context.Context) error {
 
 			nm.Logger.Logger.Debug("Sending heartbeat",
 				zap.Time(logging.Created_at, time.Now().UTC()),
@@ -824,7 +837,7 @@ func (nm *NodeManager) performHeartbeat() {
 			)
 
 			nm.mutex.RLock()
-			peer := nm.trackedPeers[id]
+			peer := nm.trackedPeers[peerID]
 			failCount := peer.HeartbeatFail
 			nm.mutex.RUnlock()
 
@@ -837,7 +850,7 @@ func (nm *NodeManager) performHeartbeat() {
 
 			// Record start time for latency measurement
 			startTime := time.Now().UTC()
-			success, err := nm.sendHeartbeat(id)
+			success, err := nm.sendHeartbeat(peerID)
 			latency := time.Since(startTime).Seconds()
 
 			if err != nil {
@@ -863,11 +876,11 @@ func (nm *NodeManager) performHeartbeat() {
 				)
 
 				failCount = 0
-				metrics.HeartbeatLatency.WithLabelValues(id.String()).Observe(latency)
+				metrics.HeartbeatLatency.WithLabelValues(peerID.String()).Observe(latency)
 			}
 
 			// Update peer status
-			err = nm.UpdatePeerStatus(id, success, failCount)
+			err = nm.UpdatePeerStatus(peerID, success, failCount)
 			if err != nil {
 				nm.Logger.Logger.Error("Failed to update peer status",
 					zap.Error(err),
@@ -886,6 +899,7 @@ func (nm *NodeManager) performHeartbeat() {
 					zap.String(logging.Log_file, LOG_FILE),
 					zap.String(logging.Topic, TOPIC),
 					zap.String(logging.Function, "node.performHeartbeat"),
+					zap.String("peer", peerID.String()),
 				)
 			}
 
@@ -897,10 +911,11 @@ func (nm *NodeManager) performHeartbeat() {
 					zap.String(logging.Log_file, LOG_FILE),
 					zap.String(logging.Topic, TOPIC),
 					zap.String(logging.Function, "node.performHeartbeat"),
+					zap.String("peer", peerID.String()),
 				)
 
 				// Remove the peer from management
-				if err := nm.RemovePeer(id.String()); err != nil {
+				if err := nm.RemovePeer(peerID.String()); err != nil {
 					nm.Logger.Logger.Error("Failed to remove unreachable peer",
 						zap.Error(err),
 						zap.Time(logging.Created_at, time.Now().UTC()),
@@ -920,7 +935,8 @@ func (nm *NodeManager) performHeartbeat() {
 					metrics.PeerRemovedCounter.WithLabelValues("excessive_failures").Inc()
 				}
 			}
-		}(peerID)
+			return nil
+		}, local.AddToWaitGroup(GRO.NodeManagerWG))
 	}
 
 	wg.Wait()
