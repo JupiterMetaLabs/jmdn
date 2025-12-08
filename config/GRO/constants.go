@@ -42,6 +42,10 @@ const (
 	MetricsLocal = "local:metrics"
 
 	BFTLocal = "local:bft"
+
+	CRDTSyncLocal = "local:crdt:sync"
+
+	HandleBFTRequestLocal = "local:bft:request"
 )
 
 const (
@@ -85,6 +89,10 @@ const (
 	BFTPrepareThread = "thread:bft:prepare"
 	BFTCommitThread = "thread:bft:commit"
 	BFTSendRequestThread = "thread:bft:send:request"
+
+	CRDTSyncThread = "thread:crdt:sync"
+
+	StreamCacheParallelCleanUpRoutineThread = "thread:stream:cache:parallel:clean:up:routine"
 )
 
 // Apps
@@ -98,6 +106,7 @@ const (
 	DIDPropagationApp = "app:did:propagation"
 	MetricsApp        = "app:metrics"
 	BFTApp            = "app:bft"
+	CRDTSyncApp       = "app:crdt:sync"
 )
 
 var (
