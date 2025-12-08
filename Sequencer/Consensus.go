@@ -408,8 +408,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 }
 
 // RequestSubscriptionPermission asks all buddy nodes for permission to subscribe to the consensus channel
-// Ensures: 1 creator + 13 subscribers = 14 total nodes
-// Maximum 3 main nodes can fail, use backup nodes as replacements
+// Ensures: 1 creator + MaxMainPeers subscribers = MaxMainPeers + 1 total nodes
 func (consensus *Consensus) RequestSubscriptionPermission() error {
 	if consensus.gossipnode == nil {
 		return fmt.Errorf("GossipPubSub not initialized")
@@ -428,7 +427,7 @@ func (consensus *Consensus) RequestSubscriptionPermission() error {
 		return fmt.Errorf("failed to get subscription permission: %w", err)
 	}
 
-	log.Printf("Successfully obtained subscription permission: 1 creator + 13 subscribers = 14 total nodes")
+	log.Printf("Successfully obtained subscription permission: 1 creator + MaxMainPeers subscribers = MaxMainPeers + 1 total nodes")
 	return nil
 }
 
