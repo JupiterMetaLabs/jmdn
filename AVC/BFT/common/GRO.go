@@ -1,4 +1,4 @@
-package Channel
+package common
 
 import (
 	"fmt"
@@ -11,9 +11,9 @@ var (
 	LocalGRO interfaces.LocalGoroutineManagerInterface
 )
 
-func InitializeGRO() (interfaces.LocalGoroutineManagerInterface, error) {
+func InitializeGRO(local string) (interfaces.LocalGoroutineManagerInterface, error) {
 	var err error
-	LocalGRO, err = GRO.GetApp(GRO.PubsubApp).NewLocalManager(GRO.PubsubChannelLocal)
+	LocalGRO, err = GRO.GetApp(GRO.BFTApp).NewLocalManager(local)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create local manager: %w", err)
 	}

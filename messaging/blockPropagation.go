@@ -12,11 +12,14 @@ import (
 	"sync"
 	"time"
 
+	"gossipnode/config/GRO"
+	GROHelper "gossipnode/messaging/common"
+
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog/log"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
@@ -41,8 +44,19 @@ var (
 )
 
 func init() {
+	if BlockPropagationLocalGRO == nil {
+		var err error
+		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
+			return
+		}
+	}
 	messageFilter = bloom.NewWithEstimates(10000, 0.01)
-	go cleanupPeerTimeouts()
+	BlockPropagationLocalGRO.Go(GRO.BlockPropagationPeersCleanupThread, func(ctx context.Context) error {
+		cleanupPeerTimeouts()
+		return nil
+	})
 }
 
 // Initialize the host when starting the node
@@ -173,6 +187,14 @@ func getMessageIDForBloomFilter(msg config.BlockMessage) string {
 // HandleBlockStream processes incoming block propagation messages
 // Priority: FORWARD FIRST, then PROCESS/VALIDATE before STORING
 func HandleBlockStream(stream network.Stream) {
+	if BlockPropagationLocalGRO == nil {
+		var err error
+		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
+			return
+		}
+	}
 	defer stream.Close()
 
 	remotePeer := stream.Conn().RemotePeer().String()
@@ -228,14 +250,17 @@ func HandleBlockStream(stream network.Stream) {
 					Msg("Forwarding ZK block to peers")
 
 				// Don't wait for forwarding to complete
-				go forwardBlock(globalHost, msg)
+				BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
+					forwardBlock(globalHost, msg)
+					return nil
+				})
 			} else {
 				log.Error().Msg("Cannot forward block: global host not initialized")
 			}
 		}
 
 		// STEP 2: PROCESS AND VALIDATE BLOCK AFTERWARD
-		go func() {
+		BlockPropagationLocalGRO.Go(GRO.BlockPropagationProcessAndValidateThread, func(ctx context.Context) error {
 			// Verify buddy BLS signatures if provided; require majority to continue
 			if blsJSON, ok := msg.Data["bls_results"]; ok && len(blsJSON) > 0 {
 				var blsResponses []BLS_Signer.BLSresponse
@@ -262,7 +287,7 @@ func HandleBlockStream(stream network.Stream) {
 					}
 					if validTotal == 0 {
 						log.Error().Msg("No valid BLS signatures - skipping block processing (irrelevant block)")
-						return
+						return fmt.Errorf("no valid BLS signatures - skipping block processing (irrelevant block)")
 					}
 					needed := (validTotal / 2) + 1
 					if validYes < needed {
@@ -271,7 +296,7 @@ func HandleBlockStream(stream network.Stream) {
 							Int("needed", needed).
 							Int("valid_total", validTotal).
 							Msg("BLS majority not in favor (+1) - skipping block processing (irrelevant block)")
-						return
+						return fmt.Errorf("BLS majority not in favor (+1) - skipping block processing (irrelevant block)")
 					}
 					log.Info().
 						Int("valid_yes", validYes).
@@ -281,19 +306,17 @@ func HandleBlockStream(stream network.Stream) {
 				}
 			}
 
-			ctx := context.Background()
-
 			// Create DB clients for processing
 			mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to create main DB client")
-				return
+				return fmt.Errorf("failed to create main DB client: %w", err)
 			}
 
 			accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to create accounts DB client")
-				return
+				return fmt.Errorf("failed to create accounts DB client: %w", err)
 			}
 			defer func() {
 				DB_OPs.PutMainDBConnection(mainDBClient)
@@ -311,7 +334,7 @@ func HandleBlockStream(stream network.Stream) {
 					Err(err).
 					Str("block_hash", msg.Block.BlockHash.Hex()).
 					Msg("Block processing failed - not storing block")
-				return
+				return fmt.Errorf("block processing failed - not storing block: %w", err)
 			}
 
 			log.Info().
@@ -324,7 +347,7 @@ func HandleBlockStream(stream network.Stream) {
 					Err(err).
 					Str("block_hash", msg.Block.BlockHash.Hex()).
 					Msg("Failed to store block in database")
-				return
+				return fmt.Errorf("failed to store block in database: %w", err)
 			}
 
 			// Store block message metadata
@@ -336,7 +359,8 @@ func HandleBlockStream(stream network.Stream) {
 				Str("block_hash", msg.Block.BlockHash.Hex()).
 				Uint64("block_number", msg.Block.BlockNumber).
 				Msg("Block processed and stored successfully")
-		}()
+			return nil
+		})
 
 		// Print to console
 		fmt.Printf("\n[ZKBLOCK from %s] Block #%d, Hash: %s, Txns: %d\n>>> ",
@@ -346,7 +370,10 @@ func HandleBlockStream(stream network.Stream) {
 		// Handle other message types (not our focus)
 		if msg.Hops < config.MaxHops {
 			msg.Hops++
-			go forwardBlock(globalHost, msg)
+			BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
+				forwardBlock(globalHost, msg)
+				return nil
+			})
 		}
 	}
 
@@ -356,6 +383,14 @@ func HandleBlockStream(stream network.Stream) {
 
 // forwardBlock sends the block message to all connected peers
 func forwardBlock(h host.Host, msg config.BlockMessage) {
+	if BlockPropagationLocalGRO == nil {
+		var err error
+		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
+			return
+		}
+	}
 	peers := h.Network().Peers()
 
 	// Convert message to JSON
@@ -369,7 +404,11 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 	// Track forwarding metrics
 	var successCount int
 	var successMutex sync.Mutex
-	var wg sync.WaitGroup
+	wg, err := BlockPropagationLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.BlockPropagationForwardWG)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create waitgroup for block forwarding")
+		return
+	}
 
 	// Send to each peer concurrently
 	for _, peerID := range peers {
@@ -378,31 +417,30 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 			continue
 		}
 
-		wg.Add(1)
-		go func(peer peer.ID) {
-			defer wg.Done()
+		peerIDForGoroutine := peerID // Capture peerID in closure to avoid race condition
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			stream, err := h.NewStream(ctx, peer, config.BlockPropagationProtocol)
+		if err := BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
+			stream, err := h.NewStream(ctx, peerIDForGoroutine, config.BlockPropagationProtocol)
 			if err != nil {
-				log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to open stream")
-				return
+				log.Debug().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open stream")
+				return err
 			}
 			defer stream.Close()
 
 			if _, err := stream.Write(msgBytes); err != nil {
-				log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to write message")
-				return
+				log.Debug().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to write message")
+				return err
 			}
 
 			successMutex.Lock()
 			successCount++
 			successMutex.Unlock()
 
-			metrics.MessagesSentCounter.WithLabelValues(msg.Type, peer.String()).Inc()
-		}(peerID)
+			metrics.MessagesSentCounter.WithLabelValues(msg.Type, peerIDForGoroutine.String()).Inc()
+			return nil
+		}, local.AddToWaitGroup(GRO.BlockPropagationForwardWG)); err != nil {
+			log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to start goroutine for block forwarding")
+		}
 	}
 
 	wg.Wait()
@@ -414,8 +452,16 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 		Msg("Block forwarded to peers")
 }
 
-// This function is called by Server.go when receiving a new block via API
+// This function is called by Server.go- when receiving a new block via API
 func PropagateZKBlock(h host.Host, block *PubSubMessages.ConsensusMessage) error {
+	if BlockPropagationLocalGRO == nil {
+		var err error
+		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
+			return fmt.Errorf("failed to initialize BlockPropagationLocalGRO: %w", err)
+		}
+	}
 	log.Info().
 		Str("block_hash", block.GetZKBlock().BlockHash.Hex()).
 		Uint64("block_number", block.GetZKBlock().BlockNumber).
@@ -432,40 +478,42 @@ func PropagateZKBlock(h host.Host, block *PubSubMessages.ConsensusMessage) error
 	consensusMessage.SetGloalVarCacheConsensusMessage()
 
 	// Step 3: Submit to voting process asynchronously (don't wait for response)
-	go func() {
+	BlockPropagationLocalGRO.Go(GRO.BlockPropagationZKBlockThread, func(ctx context.Context) error {
 		if notTimeout, err := submitZKBlockToVoting(consensusMessage); notTimeout {
 			log.Info().
 				Str("block_hash", block.GetZKBlock().BlockHash.Hex()).
 				Msg("ZK block submitted to voting process successfully")
-			return
+			return nil
 		} else {
 			log.Error().
 				Str("error", err.Error()).
 				Str("block_hash", block.GetZKBlock().BlockHash.Hex()).
 				Msg("ZK block timed out, not submitting to voting process")
-			return
+			return fmt.Errorf("ZK block timed out, not submitting to voting process")
 		}
-	}()
+	})
 
 	// Step 3.5: Start consensus monitoring asynchronously (only if not timed out)
-	go func() {
+	BlockPropagationLocalGRO.Go(GRO.BlockPropagationZKBlockThread, func(ctx context.Context) error {
 		// Check if consensus message is still valid before monitoring
 		if consensusMessage.CheckTimeOut() {
-			log.Info().
+			log.Error().
 				Str("block_hash", block.GetZKBlock().BlockHash.Hex()).
 				Msg("Consensus already timed out - skipping monitoring")
-			return
+			return fmt.Errorf("consensus already timed out - skipping monitoring")
 		}
 
 		// Wait for consensus result with extended timeout
 		consensusTimeout := config.ConsensusTimeout + 10*time.Second // Add buffer
 		if err := WaitForConsensusResult(block.GetZKBlock().BlockHash.Hex(), consensusTimeout); err != nil {
-			log.Info().
+			log.Error().
 				Err(err).
 				Str("block_hash", block.GetZKBlock().BlockHash.Hex()).
 				Msg("Consensus monitoring completed (timeout expected)")
+			return fmt.Errorf("consensus monitoring completed (timeout expected)")
 		}
-	}()
+		return nil
+	})
 
 	// Step 4: Continue with block propagation (don't wait for consensus)
 	log.Info().
@@ -535,37 +583,44 @@ func PropagateZKBlock(h host.Host, block *PubSubMessages.ConsensusMessage) error
 	}
 
 	// Send to all peers concurrently
-	var wg sync.WaitGroup
+	wg, err := BlockPropagationLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.BlockPropagationZKBlockWG)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create waitgroup for block forwarding")
+		return fmt.Errorf("failed to create waitgroup for block forwarding: %w", err)
+	}
 	var successCount int
 	var successMutex sync.Mutex
 
 	for _, peerID := range peers {
-		wg.Add(1)
-		go func(peer peer.ID) {
+		peerIDForGoroutine := peerID // Capture peerID in closure to avoid race condition
+		if err := BlockPropagationLocalGRO.Go(GRO.BlockPropagationZKBlockThread, func(ctx context.Context) error {
 			defer wg.Done()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
 			// Use the correct protocol ID from constants
-			stream, err := h.NewStream(ctx, peer, config.BlockPropagationProtocol)
+			stream, err := h.NewStream(ctx, peerIDForGoroutine, config.BlockPropagationProtocol)
 			if err != nil {
-				log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to open stream")
-				return
+				log.Debug().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open stream")
+				return err
 			}
 			defer stream.Close()
 
 			if _, err := stream.Write(msgBytes); err != nil {
-				log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to write message")
-				return
+				log.Debug().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to write message")
+				return err
 			}
 
 			successMutex.Lock()
 			successCount++
 			successMutex.Unlock()
 
-			metrics.MessagesSentCounter.WithLabelValues("zkblock", peer.String()).Inc()
-		}(peerID)
+			metrics.MessagesSentCounter.WithLabelValues("zkblock", peerIDForGoroutine.String()).Inc()
+			return nil
+		}, local.AddToWaitGroup(GRO.BlockPropagationZKBlockWG)); err != nil {
+			log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to start goroutine for block forwarding")
+		}
 	}
 
 	wg.Wait()
@@ -656,40 +711,59 @@ func submitZKBlockToVoting(consensusMessage *PubSubMessages.ConsensusMessage) (b
 
 // WaitForConsensusResult waits for consensus result and handles final storage
 func WaitForConsensusResult(blockHash string, timeout time.Duration) error {
+	if BlockPropagationLocalGRO == nil {
+		var err error
+		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
+			return fmt.Errorf("failed to initialize BlockPropagationLocalGRO: %w", err)
+		}
+	}
 	// Create a channel to receive consensus result
 	resultChan := make(chan error, 1)
-
-	// Start goroutine to monitor consensus
-	go func() {
+	BlockPropagationLocalGRO.Go(GRO.BlockPropagationWaitForConsensusResultThread, func(ctx context.Context) error {
 		startTime := time.Now().UTC()
-		for time.Since(startTime) < timeout {
-			// Check if consensus is complete
-			consensusMessage := PubSubMessages.NewConsensusMessageBuilder(nil)
-			consensusMessage.SetZKBlock(&config.ZKBlock{BlockHash: common.HexToHash(blockHash)})
-			cachedMessage := consensusMessage.GetGloalVarCacheConsensusMessage()
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
 
-			if cachedMessage != nil {
-				// Check if consensus timeout has passed
-				if time.Now().UTC().After(cachedMessage.GetEndTimeout()) {
-					// Consensus window closed, check results
-					resultChan <- handleConsensusResult(cachedMessage)
-					return
+		for {
+			// Check if context is cancelled
+			select {
+			case <-ctx.Done():
+				resultChan <- ctx.Err()
+				return ctx.Err()
+			case <-ticker.C:
+				// Check if timeout reached
+				if time.Since(startTime) >= timeout {
+					resultChan <- fmt.Errorf("consensus timeout reached for block %s (expected)", blockHash)
+					return nil
+				}
+
+				// Check if consensus is complete
+				consensusMessage := PubSubMessages.NewConsensusMessageBuilder(nil)
+				consensusMessage.SetZKBlock(&config.ZKBlock{BlockHash: common.HexToHash(blockHash)})
+				cachedMessage := consensusMessage.GetGloalVarCacheConsensusMessage()
+
+				if cachedMessage != nil {
+					// Check if consensus timeout has passed
+					if time.Now().UTC().After(cachedMessage.GetEndTimeout()) {
+						// Consensus window closed, check results
+						resultChan <- handleConsensusResult(cachedMessage)
+						return nil
+					}
 				}
 			}
-
-			// Wait a bit before checking again
-			time.Sleep(1 * time.Second)
 		}
-
-		// Timeout reached - this is expected behavior
-		resultChan <- fmt.Errorf("consensus timeout reached for block %s (expected)", blockHash)
-	}()
+	})
 
 	// Wait for result or timeout
+	timeoutTimer := time.NewTimer(timeout)
+	defer timeoutTimer.Stop()
+
 	select {
 	case result := <-resultChan:
 		return result
-	case <-time.After(timeout):
+	case <-timeoutTimer.C:
 		return fmt.Errorf("consensus monitoring timeout for block %s", blockHash)
 	}
 }

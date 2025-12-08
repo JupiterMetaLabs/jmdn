@@ -1,12 +1,21 @@
 package metrics
 
 import (
+	"context"
 	"fmt"
+	"gossipnode/config/GRO"
+	"gossipnode/metrics/common"
 	"net/http"
+	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+var (
+	LocalGRO interfaces.LocalGoroutineManagerInterface
 )
 
 // DefaultRegistry is the default Prometheus registry used by the application
@@ -151,13 +160,55 @@ var PeerRemovedCounter = promauto.NewCounterVec(
 	[]string{"reason"},
 )
 
+// THIS NEED TO BE REVIEWED ONCE - REVIEW
 // StartMetricsServer starts the HTTP server for Prometheus metrics
 func StartMetricsServer(addr string) {
+	if LocalGRO == nil {
+		var err error
+		LocalGRO, err = common.InitializeGRO(GRO.MetricsLocal)
+		if err != nil {
+			fmt.Printf("Error initializing LocalGRO: %v\n", err)
+			return
+		}
+	}
 	// Use our custom registry instead of the default one
 	http.Handle("/metrics", promhttp.HandlerFor(DefaultRegistry, promhttp.HandlerOpts{}))
-	go func() {
-		if err := http.ListenAndServe(addr, nil); err != nil {
-			fmt.Printf("Error starting metrics server: %v\n", err)
+
+	server := &http.Server{Addr: addr}
+
+	serverErr := make(chan error, 1)
+
+	// Start server in a separate goroutine managed by orchestrator
+	LocalGRO.Go(GRO.MetricsServerThread, func(ctx context.Context) error {
+		err := server.ListenAndServe()
+		select {
+		case serverErr <- err:
+		case <-ctx.Done():
+			// Context cancelled, channel receiver may be gone
 		}
-	}()
+		return nil
+	})
+
+	// Monitor context cancellation and server errors
+	LocalGRO.Go(GRO.RecordMetricsThread, func(ctx context.Context) error {
+		select {
+		case <-ctx.Done():
+			// Context cancelled - shutdown gracefully with timeout
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			server.Shutdown(shutdownCtx)
+			// Drain the error channel if server sent one
+			select {
+			case <-serverErr:
+			default:
+			}
+			return ctx.Err()
+		case err := <-serverErr:
+			// Server stopped (error or normal shutdown)
+			if err != nil && err != http.ErrServerClosed {
+				return err
+			}
+			return nil
+		}
+	})
 }

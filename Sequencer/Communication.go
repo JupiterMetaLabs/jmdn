@@ -412,7 +412,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 				mu.Lock()
 				accepted[peerID.String()] = false
 				mu.Unlock()
-				return fmt.Errorf("failed to send subscription request to %s %s: %v", peerType, peerID, err)
+				return fmt.Errorf("failed to send subscription request to %s %s: %v", peerType, peerID, err)	
 			}
 
 			log.Printf("Sent subscription request to %s peer: %s, waiting for ACK...", peerType, peerID)

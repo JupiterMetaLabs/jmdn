@@ -801,6 +801,14 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 
 // Update the performHeartbeat function to include auto-removal logic
 func (nm *NodeManager) performHeartbeat() {
+	if LocalGRO == nil {
+		var err error
+		LocalGRO, err = InitializeNode()
+		if err != nil {
+			fmt.Println("Error initializing LocalGRO:", err)
+			return
+		}
+	}
 	// Update metrics
 	metrics.ConnectedPeersGauge.Set(float64(len(nm.host.Network().Peers())))
 	metrics.ManagedPeersGauge.Set(float64(len(nm.trackedPeers)))

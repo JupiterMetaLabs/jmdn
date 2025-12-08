@@ -21,7 +21,7 @@ var (
 func AppendMessage(message *PubSubMessages.GossipMessage) {
 	if LocalGRO == nil {
 		var err error
-		LocalGRO, err = InitializeChannel()
+		LocalGRO, err = InitializeGRO()
 		if err != nil {
 			fmt.Println("Error initializing LocalGRO:", err)
 			return
@@ -30,7 +30,7 @@ func AppendMessage(message *PubSubMessages.GossipMessage) {
 	mu.Lock()
 	if !isStarted {
 		isStarted = true
-		go LocalGRO.Go(GRO.PubsubChannelThread, func(ctx context.Context) error {
+		LocalGRO.Go(GRO.PubsubChannelThread, func(ctx context.Context) error {
 			startMessageListener()
 			return nil
 		})

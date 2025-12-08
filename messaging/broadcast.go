@@ -11,6 +11,9 @@ import (
 	"sync"
 	"time"
 
+	GRO "gossipnode/config/GRO"
+	GROHelper "gossipnode/messaging/common"
+
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/DB_OPs"
 	"gossipnode/Vote"
@@ -19,6 +22,7 @@ import (
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -68,7 +72,18 @@ func cleanupOldMessages() {
 
 // Start message cleanup in background
 func init() {
-	go cleanupOldMessages()
+	if BroadcastLocalGRO == nil {
+		var err error
+		BroadcastLocalGRO, err = GROHelper.InitializeGRO(GRO.BroadcastLocal)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize LocalGRO")
+			return
+		}
+	}
+	BroadcastLocalGRO.Go(GRO.MessageCleanerThread, func(ctx context.Context) error {
+		cleanupOldMessages()
+		return nil
+	})
 }
 
 // isMessageSeen checks if we've seen this message before
@@ -233,6 +248,14 @@ func forwardBroadcast(h host.Host, msg BroadcastMessageStruct) {
 
 // BroadcastMessage sends a message to all connected peers
 func BroadcastMessage(h host.Host, content string) error {
+	if BroadcastLocalGRO == nil {
+		var err error
+		BroadcastLocalGRO, err = GROHelper.InitializeGRO(GRO.BroadcastLocal)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize LocalGRO")
+			return fmt.Errorf("failed to initialize LocalGRO: %w", err)
+		}
+	}
 	// Create a new broadcast message
 	now := time.Now().UTC().Unix()
 	msg := BroadcastMessageStruct{
@@ -267,31 +290,32 @@ func BroadcastMessage(h host.Host, content string) error {
 		Msg("Starting broadcast to peers")
 
 	// Send message to all peers
-	var wg sync.WaitGroup
+	// Create waitgroup for tracking goroutines
+	wg, err := BroadcastLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.MessageBroadcastThread)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create waitgroup for broadcast")
+		return fmt.Errorf("failed to create waitgroup for broadcast: %w", err)
+	}
 	var successCount int
 	var successMutex sync.Mutex
 
 	for _, peerID := range peers {
-		wg.Add(1)
-		go func(peer peer.ID) {
-			defer wg.Done()
+		// Closure for peerID
+		peerIDForGoroutine := peerID
 
-			// Open stream to peer with timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			stream, err := h.NewStream(ctx, peer, config.BroadcastProtocol)
+		if err := BroadcastLocalGRO.Go(GRO.MessageBroadcastThread, func(ctx context.Context) error {
+			stream, err := h.NewStream(ctx, peerIDForGoroutine, config.BroadcastProtocol)
 			if err != nil {
-				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open broadcast stream")
-				return
+				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open broadcast stream")
+				return err
 			}
 			defer stream.Close()
 
 			// Send the message
 			_, err = stream.Write(msgBytes)
 			if err != nil {
-				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to send broadcast message")
-				return
+				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to send broadcast message")
+				return err
 			}
 
 			// Record success
@@ -300,8 +324,11 @@ func BroadcastMessage(h host.Host, content string) error {
 			successMutex.Unlock()
 
 			// Record metrics
-			metrics.MessagesSentCounter.WithLabelValues("broadcast", peer.String()).Inc()
-		}(peerID)
+			metrics.MessagesSentCounter.WithLabelValues("broadcast", peerIDForGoroutine.String()).Inc()
+			return nil
+		}, local.AddToWaitGroup(GRO.MessageBroadcastWG)); err != nil {
+			log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to start goroutine for broadcast")
+		}
 	}
 
 	// Wait for all sends to complete
@@ -421,6 +448,15 @@ func handleVoteTriggerBroadcast(msg BroadcastMessageStruct) {
 
 // BroadcastVoteTrigger sends a vote trigger message to all connected peers
 func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.ConsensusMessage) error {
+	if BroadcastLocalGRO == nil {
+		var err error
+		BroadcastLocalGRO, err = GROHelper.InitializeGRO(GRO.BroadcastLocal)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize LocalGRO")
+			return fmt.Errorf("failed to initialize LocalGRO: %w", err)
+		}
+	}
+
 	if consensusMessage == nil {
 		return fmt.Errorf("consensus message cannot be nil")
 	}
@@ -479,31 +515,32 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 		Msg("Starting vote trigger broadcast to peers")
 
 	// Send message to all peers
-	var wg sync.WaitGroup
+	// Create waitgroup for tracking goroutines
+	wg, err := BroadcastLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.VoteBroadcastWG)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create waitgroup for broadcast")
+		return fmt.Errorf("failed to create waitgroup for broadcast: %w", err)
+	}
 	var successCount int
 	var successMutex sync.Mutex
 
 	for _, peerID := range peers {
-		wg.Add(1)
-		go func(peer peer.ID) {
-			defer wg.Done()
 
-			// Open stream to peer with timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+		peerIDForGoroutine := peerID
+		if err := BroadcastLocalGRO.Go(GRO.VoteBroadcastThread, func(ctx context.Context) error {
 
-			stream, err := h.NewStream(ctx, peer, config.BroadcastProtocol)
+			stream, err := h.NewStream(ctx, peerIDForGoroutine, config.BroadcastProtocol)
 			if err != nil {
-				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open broadcast stream for vote trigger")
-				return
+				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open broadcast stream for vote trigger")
+				return err
 			}
 			defer stream.Close()
 
 			// Send the message
 			_, err = stream.Write(msgBytes)
 			if err != nil {
-				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to send vote trigger broadcast message")
-				return
+				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to send vote trigger broadcast message")
+				return err
 			}
 
 			// Record success
@@ -512,8 +549,11 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 			successMutex.Unlock()
 
 			// Record metrics
-			metrics.MessagesSentCounter.WithLabelValues("broadcast", peer.String()).Inc()
-		}(peerID)
+			metrics.MessagesSentCounter.WithLabelValues("broadcast", peerIDForGoroutine.String()).Inc()
+			return nil
+		}, local.AddToWaitGroup(GRO.VoteBroadcastWG)); err != nil {
+			log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to start goroutine for vote trigger broadcast")
+		}
 	}
 
 	// Wait for all sends to complete
@@ -536,6 +576,14 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 // BroadcastBlockToEveryNodeWithExtraData sends a block to all connected peers and attaches extra metadata.
 // The extra map will be merged into msg.Data. Keys in extra override existing keys.
 func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, result bool, extra map[string]string, bls []BLS_Signer.BLSresponse) error {
+	if BroadcastLocalGRO == nil {
+		var err error
+		BroadcastLocalGRO, err = GROHelper.InitializeGRO(GRO.BroadcastLocal)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize LocalGRO")
+			return fmt.Errorf("failed to initialize LocalGRO: %w", err)
+		}
+	}
 	log.Info().
 		Str("block_hash", block.BlockHash.Hex()).
 		Uint64("block_number", block.BlockNumber).
@@ -598,31 +646,42 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 	}
 	msgBytes = append(msgBytes, '\n')
 
-	var wg sync.WaitGroup
+	// Create waitgroup for tracking goroutines
+	wg, err := BroadcastLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.BroadcastBlockWG)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create waitgroup for block broadcast")
+		return fmt.Errorf("failed to create waitgroup for block broadcast: %w", err)
+	}
+
 	var successCount int
 	var successMutex sync.Mutex
 
 	for _, peerID := range peers {
-		wg.Add(1)
-		go func(peer peer.ID) {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			stream, err := h.NewStream(ctx, peer, config.BlockPropagationProtocol)
+		// Closure for peerID
+		peerIDForGoroutine := peerID
+		if err := BroadcastLocalGRO.Go(GRO.BroadcastBlockThread, func(ctx context.Context) error {
+			// Open stream to peer
+			stream, err := h.NewStream(ctx, peerIDForGoroutine, config.BlockPropagationProtocol)
 			if err != nil {
-				log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to open stream")
-				return
+				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open stream for block broadcast")
+				return err
 			}
 			defer stream.Close()
+			// Write the message
 			if _, err := stream.Write(msgBytes); err != nil {
-				log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to write message")
-				return
+				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to write message for block broadcast")
+				return err
 			}
+			// Record success
 			successMutex.Lock()
 			successCount++
 			successMutex.Unlock()
-			metrics.MessagesSentCounter.WithLabelValues("zkblock", peer.String()).Inc()
-		}(peerID)
+			metrics.MessagesSentCounter.WithLabelValues("zkblock", peerIDForGoroutine.String()).Inc()
+			return nil
+		}, local.AddToWaitGroup(GRO.BroadcastBlockWG)); err != nil {
+			fmt.Printf("Failed to start goroutine for block broadcast: %v\n", err)
+			log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to start goroutine for block broadcast")
+		}
 	}
 
 	wg.Wait()

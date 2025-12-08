@@ -64,5 +64,6 @@ func getAllAppNames() []string {
 		SequencerApp,
 		SeedApp,
 		PubsubApp,
+		NodeApp,
 	}
 }
