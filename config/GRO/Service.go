@@ -15,7 +15,7 @@ func InitGlobal() {
 	if GlobalGRO == nil {
 		GlobalGRO = global.NewGlobalManager()
 	}
-    if apps == nil {
+	if apps == nil {
 		apps = &appmanager{
 			Apps: make(map[string]interfaces.AppGoroutineManagerInterface),
 		}
@@ -38,6 +38,9 @@ func EagerLoading() error {
 }
 
 func GetApp(appName string) interfaces.AppGoroutineManagerInterface {
+	if apps == nil {
+		EagerLoading()
+	}
 	if apps.Apps[appName] == nil {
 		return nil
 	}
@@ -65,5 +68,9 @@ func getAllAppNames() []string {
 		SeedApp,
 		PubsubApp,
 		NodeApp,
+		MessagingApp,
+		DIDPropagationApp,
+		MetricsApp,
+		BFTApp,
 	}
 }

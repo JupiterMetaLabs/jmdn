@@ -77,7 +77,10 @@ func initAppandLocalGRO() {
 
 	var err error
 	// Also pull up new app manager - main for the main package
-	GRO.EagerLoading()
+	err = GRO.EagerLoading()
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to eager load GRO")
+	}
 
 	MainAM = GRO.GetApp(GRO.MainAM)
 
