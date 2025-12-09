@@ -214,22 +214,41 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 			len(MainCandidates), config.MaxMainPeers, len(MainCandidates), len(BackupCandidates))
 	}
 
-	// 6. Now connect to all final buddy nodes at once using AddPeerCache's ConnectToTemporaryPeers
-	// This uses the existing connection logic that handles already-connected peers gracefully
-	reachablePeers := make(map[peer.ID]multiaddr.Multiaddr, len(MainCandidates)+len(BackupCandidates))
+	// 6. Now connect to final buddy nodes - ONLY main candidates first, backup only if needed
+	// This prevents excessive connections to backup nodes when we already have enough main peers
+	reachablePeers := make(map[peer.ID]multiaddr.Multiaddr, config.MaxMainPeers)
 
-	for _, candidates := range [][]PubSubMessages.Buddy_PeerMultiaddr{MainCandidates, BackupCandidates} {
-		for _, buddy := range candidates {
-			connectedness := consensus.Host.Network().Connectedness(buddy.PeerID)
-			if connectedness == network.Connected {
-				reachablePeers[buddy.PeerID] = buddy.Multiaddr
-				log.Printf("✅ Buddy node %s is actually connected (status: %v)", buddy.PeerID.String()[:16], connectedness)
-			}
+	// First, try to connect to only MainCandidates (up to MaxMainPeers)
+	for _, buddy := range MainCandidates {
+		if len(reachablePeers) >= config.MaxMainPeers {
+			break // We have enough main peers, no need to check more
+		}
+		connectedness := consensus.Host.Network().Connectedness(buddy.PeerID)
+		if connectedness == network.Connected {
+			reachablePeers[buddy.PeerID] = buddy.Multiaddr
+			log.Printf("✅ Main buddy node %s is actually connected (status: %v)", buddy.PeerID.String()[:16], connectedness)
 		}
 	}
 
+	// Only if we don't have enough main peers, try backup candidates
+	if len(reachablePeers) < config.MaxMainPeers {
+		log.Printf("⚠️ Only %d/%d main peers connected, trying backup candidates...", len(reachablePeers), config.MaxMainPeers)
+		for _, buddy := range BackupCandidates {
+			if len(reachablePeers) >= config.MaxMainPeers {
+				break // We have enough peers now
+			}
+			connectedness := consensus.Host.Network().Connectedness(buddy.PeerID)
+			if connectedness == network.Connected {
+				reachablePeers[buddy.PeerID] = buddy.Multiaddr
+				log.Printf("✅ Backup buddy node %s is actually connected (status: %v)", buddy.PeerID.String()[:16], connectedness)
+			}
+		}
+	} else {
+		log.Printf("✅ Have enough main peers (%d/%d), skipping backup candidates", len(reachablePeers), config.MaxMainPeers)
+	}
+
 	// Post consensus we have to clear this cache to avoid any memory leaks
-	log.Printf("Connecting to %d final buddy nodes via AddPeerCache...", len(reachablePeers))
+	log.Printf("Connecting to %d final buddy nodes via AddPeerCache (only main peers, no backup unless needed)...", len(reachablePeers))
 
 	if err := Cache.ConnectToTemporaryPeers(reachablePeers); err != nil {
 		return fmt.Errorf("failed to connect to final buddy nodes: %v", err)
@@ -237,8 +256,8 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	// Verify we have exactly MaxMainPeers actually connected peers
 	if len(reachablePeers) < config.MaxMainPeers {
-		return fmt.Errorf("insufficient actually connected peers: got %d, need exactly %d (MaxMainPeers). Pinged: %d, Reachable: %d",
-			len(reachablePeers), config.MaxMainPeers, len(MainCandidates), len(reachablePeers))
+		return fmt.Errorf("insufficient actually connected peers: got %d, need exactly %d (MaxMainPeers). Main candidates: %d, Backup candidates: %d",
+			len(reachablePeers), config.MaxMainPeers, len(MainCandidates), len(BackupCandidates))
 	}
 
 	// 7. Set final buddy nodes - these are the only peers we use (no backup peers)
