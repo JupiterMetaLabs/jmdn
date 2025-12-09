@@ -295,18 +295,21 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		return fmt.Errorf("invalid consensus configuration: %w", err)
 	}
 
-	// 9. Create allowed peers list (1 creator + MaxMainPeers final buddy nodes)
-	// No backup peers - only the final 4 connected peers
-	allowedPeers := make([]peer.ID, 0, config.MaxMainPeers+1)
+	// 9. Create allowed peers list (1 creator + MaxMainPeers main peers + backup peers for fallback)
+	// Include backup peers so they can subscribe if main peers fail to respond
+	allowedPeers := make([]peer.ID, 0, config.MaxMainPeers+config.MaxBackupPeers+1)
 
 	// Add the creator (host) to the allowed list
 	allowedPeers = append(allowedPeers, consensus.Host.ID())
 
-	// Add final buddy nodes (the connected ones)
+	// Add main buddy nodes (primary subscribers)
 	allowedPeers = append(allowedPeers, consensus.PeerList.MainPeers...)
 
-	log.Printf("Creating pubsub channel with %d allowed peers (1 creator + %d buddy nodes)",
-		len(allowedPeers), len(consensus.PeerList.MainPeers))
+	// Add backup buddy nodes (fallback subscribers - will be used if main peers don't respond)
+	allowedPeers = append(allowedPeers, consensus.PeerList.BackupPeers...)
+
+	log.Printf("Creating pubsub channel with %d allowed peers (1 creator + %d main + %d backup buddy nodes)",
+		len(allowedPeers), len(consensus.PeerList.MainPeers), len(consensus.PeerList.BackupPeers))
 
 	// First create the pubsub channel
 	var err error
