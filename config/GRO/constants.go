@@ -13,17 +13,6 @@ var (
 const (
 	// main.go
 	MainLM            = "local:main"
-	FacadeWG          = "waitgroup:facade"
-	FacadeThread      = "thread:facade"
-	WSServerThread    = "thread:ws"
-	CLIThread         = "thread:cli"
-	ExplorerThread    = "thread:explorer"
-	GETHgRPCThread    = "thread:geth:grpc"
-	BlockgRPCThread   = "thread:block:grpc"
-	BlockgenThread    = "thread:block:gen"
-	DIDThread         = "thread:did"
-	ShutdownThread    = "thread:shutdown"
-	BlockPollerThread = "thread:block:poller"
 
 	// Sequencer/Triggers/Triggers.go
 	SequencerTriggerLocal   = "local:sequencer:trigger"
@@ -46,9 +35,23 @@ const (
 	CRDTSyncLocal = "local:crdt:sync"
 
 	HandleBFTRequestLocal = "local:bft:request"
+	StreamCacheParallelCleanUpRoutineLocal = "local:stream:cache:parallel:clean:up:routine"
+
+	NodeDiscoveryLocal = "local:node:discovery"
 )
 
 const (
+	FacadeThread      = "thread:facade"
+	WSServerThread    = "thread:ws"
+	CLIThread         = "thread:cli"
+	ExplorerThread    = "thread:explorer"
+	GETHgRPCThread    = "thread:geth:grpc"
+	BlockgRPCThread   = "thread:block:grpc"
+	BlockgenThread    = "thread:block:gen"
+	DIDThread         = "thread:did"
+	ShutdownThread    = "thread:shutdown"
+	BlockPollerThread = "thread:block:poller"
+
 	SequencerTriggerThread   = "thread:sequencer:trigger"
 	SequencerConsensusThread = "thread:sequencer:consensus"
 	SeedThread               = "thread:seed:maintenance"
@@ -93,6 +96,11 @@ const (
 	CRDTSyncThread = "thread:crdt:sync"
 
 	StreamCacheParallelCleanUpRoutineThread = "thread:stream:cache:parallel:clean:up:routine"
+	StreamCacheMessageListenerThread = "thread:stream:cache:message:listener"
+	BuddyNodesMessageProtocolThread = "thread:buddy:nodes:message:protocol"
+
+	NodeDiscoveryDiscoveryLoopThread = "thread:node:discovery:discovery:loop"
+	NodeDiscoverySyncLoopThread = "thread:node:discovery:sync:loop"
 )
 
 // Apps
@@ -110,6 +118,8 @@ const (
 )
 
 var (
+	FacadeWG          = "waitgroup:facade"
+
 	// Waitgroup for the node manager
 	NodeManagerWG      = "waitgroup:node:manager"
 	DIDForwardWG       = "waitgroup:did:forward"

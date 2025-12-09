@@ -24,16 +24,12 @@ import (
 	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 
-	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
-	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
+		"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
 )
 
-var (
-	ListenerHandlerLocal interfaces.LocalGoroutineManagerInterface
-)
 
 // BFTContext holds the context for a BFT consensus round
 type BFTContext struct {
