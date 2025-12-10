@@ -961,48 +961,24 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 	result, err := Structs.ProcessVotesFromCRDT(listenerNode, targetBlockHash)
 	if err != nil {
 		fmt.Printf("❌ Failed to process votes from CRDT: %v\n", err)
-		// Send error response instead of returning early
-		// This ensures sequencer doesn't timeout waiting for response
-		resultData := map[string]interface{}{
-			"result": 0,
-			"error":  err.Error(),
-		}
-		resultJSON, _ := json.Marshal(resultData)
-		ackMessage := AVCStruct.NewACKBuilder().False_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
-		response := AVCStruct.NewMessageBuilder(nil).
-			SetSender(listenerNode.PeerID).
-			SetMessage(string(resultJSON)).
-			SetTimestamp(time.Now().UTC().Unix()).
-			SetACK(ackMessage)
-		responseBytes, _ := json.Marshal(response)
-		_, _ = s.Write([]byte(string(responseBytes) + string(rune(config.Delimiter))))
-		fmt.Printf("⚠️ Sent error response to sequencer: %v\n", err)
 		return
 	}
 
-	// Generate BLS signature for the vote result
 	blsResp, status, err := BLS_Signer.SignMessage(result)
-	hasBLS := false
 	if err != nil || status == false {
 		fmt.Printf("⚠️ Failed to create BLS signature for BFT result: %v\n", err)
-		// Continue without BLS - sequencer will handle missing BLS
-		hasBLS = false
 	} else {
 		fmt.Printf("✅ BLS signature created successfully: %v\n", blsResp)
-		// Attach local PeerID into BLS payload
-		blsResp.SetPeerID(listenerNode.PeerID.String())
-		hasBLS = true
 	}
+	// Attach local PeerID into BLS payload
+	blsResp.SetPeerID(listenerNode.PeerID.String())
 
 	fmt.Printf("📊 Vote aggregation result: %d\n", result)
 
 	// Send the result back
 	resultData := map[string]interface{}{
 		"result": result,
-	}
-	// Only include BLS if it was successfully created
-	if hasBLS {
-		resultData["bls"] = blsResp
+		"bls":    blsResp,
 	}
 
 	resultJSON, _ := json.Marshal(resultData)
