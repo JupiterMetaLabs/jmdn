@@ -26,5 +26,11 @@ const (
 	AlertConsensusBLSFailure          = "Consensus BLS Signature Failure"
 	AlertConsensusTimeout             = "Consensus Timeout"
 	AlertConsensusInitFailure         = "Consensus Initialization Failed"
+	AlertConsensusInitSuccess         = "Consensus Initialization Success"
 	AlertConsensusSubscriptionFailure = "Consensus Subscription Failed"
+	AlertConsensusSubscriptionSuccess = "Consensus Subscription Success"
+	AlertConsensusConnectionSuccess   = "Consensus Connection Success"
+	AlertConsensusCRDTSyncFailure     = "Consensus CRDT Sync Failure"
+	AlertConsensusCRDTSyncSuccess     = "Consensus CRDT Sync Success"
+	AlertConsensusBroadcastFailure    = "Consensus Broadcast Failure"
 )

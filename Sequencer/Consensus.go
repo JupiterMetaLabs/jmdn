@@ -302,17 +302,29 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	log.Printf("✅ Final buddy nodes: %d actually connected peers (these are responsible for votes, CRDT sync, pubsub sync, vote aggregation)",
 		len(consensus.PeerList.MainPeers))
-
+	// ALERTS_TODO: Remove alert after monitoring period (temporary)
+	// Send the success alert
+	if consensus.AlertHandlers != nil {
+		consensus.AlertHandlers.SendConnectionSuccess(context.Background(), fmt.Sprintf("Final buddy nodes: %d actually connected peers (these are responsible for votes, CRDT sync, pubsub sync, vote aggregation)", len(consensus.PeerList.MainPeers)))
+	}
 	log.Printf("Built final buddies list: %d peers (all actually connected and ready for consensus)", len(consensus.PeerList.MainPeers))
 
 	// 8. Create ConsensusMessage with ONLY the final connected buddy nodes
 	consensus.ZKBlockData, errMSG = consensus.AddBuddyNodesToPeerList(zkblock, MainCandidates)
 	if errMSG != nil {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendInitFailure(context.Background(), fmt.Sprintf("failed to add buddy nodes to peer list: %v", errMSG))
+		}
 		return fmt.Errorf("failed to add buddy nodes to peer list: %v", errMSG)
 	}
 
 	// Validate consensus configuration
 	if err := ValidateConsensusConfiguration(consensus); err != nil {
+		// ALERTS_TODO
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendInitFailure(context.Background(), fmt.Sprintf("invalid consensus configuration: %v", err))
+		}
 		return fmt.Errorf("invalid consensus configuration: %w", err)
 	}
 
@@ -336,11 +348,19 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	var err error
 	consensus.gossipnode, err = Pubsub.NewGossipPubSub(consensus.Host, config.PubSub_ConsensusChannel)
 	if err != nil {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendInitFailure(context.Background(), fmt.Sprintf("failed to create pubsub: %v", err))
+		}
 		return fmt.Errorf("failed to create pubsub: %v", err)
 	}
 
 	// Create the consensus channel for message passing
 	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.PubSub_ConsensusChannel, false, allowedPeers); err != nil {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendInitFailure(context.Background(), fmt.Sprintf("failed to create pubsub channel: %v", err))
+		}
 		return fmt.Errorf("failed to create pubsub channel: %v", err)
 	}
 
@@ -350,12 +370,22 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// This channel is restricted to only the final connected buddy nodes
 	// Regular network nodes cannot join - only the 4 buddy nodes performing vote aggregation can access it
 	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.Pubsub_CRDTSync, false, allowedPeers); err != nil {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendCRDTSyncFailure(context.Background(), fmt.Sprintf("failed to create CRDT sync channel: %v", err))
+		}
 		if err.Error() != fmt.Sprintf("channel %s already exists", config.Pubsub_CRDTSync) {
 			log.Printf("⚠️ Failed to create CRDT sync channel: %v (continuing anyway)", err)
 		} else {
 			log.Printf("✅ CRDT sync channel already exists: %s", config.Pubsub_CRDTSync)
 		}
 	} else {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		// Send the success alert
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendCRDTSyncSuccess(context.Background(), fmt.Sprintf("Successfully created CRDT sync channel: %s (private, %d allowed peers - sequencer + %d buddy nodes only)",
+				config.Pubsub_CRDTSync, len(allowedPeers), len(consensus.PeerList.MainPeers)))
+		}
 		log.Printf("✅ Successfully created CRDT sync channel: %s (private, %d allowed peers - sequencer + %d buddy nodes only)",
 			config.Pubsub_CRDTSync, len(allowedPeers), len(consensus.PeerList.MainPeers))
 	}
@@ -375,9 +405,17 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Now subscribe to the channel
 	service := Service.NewSubscriptionService(consensus.gossipnode.GetGossipPubSub())
 	if err := service.HandleStreamSubscriptionRequest(config.PubSub_ConsensusChannel); err != nil {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendSubscriptionFailure(context.Background(), fmt.Sprintf("failed to subscribe sequencer to consensus channel: %v", err))
+		}
 		log.Printf("⚠️ Failed to subscribe sequencer to consensus channel: %v", err)
 	} else {
-		log.Printf("✅ Sequencer subscribed to consensus channel for vote collection")
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendSubscriptionSuccess(context.Background(), "Successfully subscribed to consensus channel for vote collection")
+		}
+		log.Printf("✅ Successfully subscribed to consensus channel for vote collection")
 	}
 
 	// Initialize listener node for vote collection
@@ -417,6 +455,10 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 		// Broadcast vote trigger to all subscribed peers
 		if err := consensus.BroadcastVoteTrigger(); err != nil {
+			// ALERTS_TODO: Remove alert after monitoring period (temporary)
+			if consensus.AlertHandlers != nil {
+				consensus.AlertHandlers.SendBroadcastVoteTriggerFailure(context.Background(), fmt.Sprintf("failed to broadcast vote trigger: %v", err))
+			}
 			fmt.Printf("=== [Consensus.Start] BroadcastVoteTrigger FAILED: %v ===\n", err)
 		} else {
 			fmt.Printf("=== [Consensus.Start] BroadcastVoteTrigger completed successfully ===\n")
@@ -482,6 +524,10 @@ func (consensus *Consensus) RequestSubscriptionPermission() error {
 // This method now uses the new pubsub-based verification system
 func (consensus *Consensus) VerifySubscriptions() error {
 	if consensus.gossipnode == nil {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendSubscriptionFailure(context.Background(), "GossipPubSub not initialized for consensus")
+		}
 		return fmt.Errorf("GossipPubSub not initialized for consensus")
 	}
 
@@ -490,6 +536,10 @@ func (consensus *Consensus) VerifySubscriptions() error {
 	// Use the new VerifySubscriptions function from Communication.go
 	verifiedPeerIDs, err := VerifySubscriptions(consensus.gossipnode.GetGossipPubSub(), consensus)
 	if err != nil {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendSubscriptionFailure(context.Background(), fmt.Sprintf("failed to verify subscriptions: %v", err))
+		}
 		return fmt.Errorf("failed to verify subscriptions: %v", err)
 	}
 
@@ -498,6 +548,10 @@ func (consensus *Consensus) VerifySubscriptions() error {
 
 	// Verify that we have the expected number of subscribers (13)
 	if len(verifiedPeerIDs) != config.MaxMainPeers {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendSubscriptionFailure(context.Background(), fmt.Sprintf("incorrect number of verified peers: got %d, expected %d", len(verifiedPeerIDs), config.MaxMainPeers))
+		}
 		return fmt.Errorf("incorrect number of verified peers: got %d, expected %d", len(verifiedPeerIDs), config.MaxMainPeers)
 	}
 
@@ -536,6 +590,10 @@ func (consensus *Consensus) BroadcastVoteTrigger() error {
 	// Use the messaging.BroadcastVoteTrigger function to broadcast the vote trigger
 	if err := messaging.BroadcastVoteTrigger(consensus.Host, consensus.ZKBlockData); err != nil {
 		fmt.Printf("=== [BroadcastVoteTrigger] messaging.BroadcastVoteTrigger FAILED: %v ===\n", err)
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendBroadcastVoteTriggerFailure(context.Background(), fmt.Sprintf("failed to broadcast vote trigger: %v", err))
+		}
 		return fmt.Errorf("failed to broadcast vote trigger: %w", err)
 	}
 
@@ -623,6 +681,10 @@ func (consensus *Consensus) PrintCRDTState() error {
 	blockHashForProcessing := consensus.ZKBlockData.GetZKBlock().BlockHash.String()
 	_, err := Structs.ProcessVotesFromCRDT(listenerNode, blockHashForProcessing)
 	if err != nil {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendBroadcastVoteTriggerFailure(context.Background(), fmt.Sprintf("failed to process votes from CRDT: %v", err))
+		}
 		fmt.Printf("❌ Failed to process votes from CRDT: %v\n", err)
 	}
 
@@ -713,6 +775,10 @@ func (consensus *Consensus) PrintCRDTState() error {
 				defer wg.Done()
 				stream, err := consensus.Host.NewStream(context.Background(), peerID, config.SubmitMessageProtocol)
 				if err != nil {
+					// ALERTS_TODO: Remove alert after monitoring period (temporary)
+					if consensus.AlertHandlers != nil {
+						consensus.AlertHandlers.SendBroadcastVoteTriggerFailure(context.Background(), fmt.Sprintf("failed to open stream to %s: %v", peerID, err))
+					}
 					fmt.Printf("❌ Failed to open stream to %s: %v\n", peerID, err)
 					return
 				}

@@ -92,6 +92,15 @@ func (h *ConsensusAlertHandlers) SendInitFailure(
 		"Consensus initialization failed", SeverityCritical, errorMsg)
 }
 
+// SendInitSuccess sends an alert when consensus initialization succeeds
+func (h *ConsensusAlertHandlers) SendInitSuccess(
+	ctx context.Context,
+	message string,
+) {
+	h.service.SendAlert(ctx, AlertConsensusInitSuccess,
+		"Consensus initialization succeeded", SeverityInfo, message)
+}
+
 // SendSubscriptionFailure sends an alert when subscription to consensus channel fails
 func (h *ConsensusAlertHandlers) SendSubscriptionFailure(
 	ctx context.Context,
@@ -99,4 +108,49 @@ func (h *ConsensusAlertHandlers) SendSubscriptionFailure(
 ) {
 	h.service.SendAlert(ctx, AlertConsensusSubscriptionFailure,
 		"Failed to subscribe to consensus channel", SeverityCritical, errorMsg)
+}
+
+// SendSubscriptionSuccess sends an alert when subscription succeeds
+func (h *ConsensusAlertHandlers) SendSubscriptionSuccess(
+	ctx context.Context,
+	message string,
+) {
+	h.service.SendAlert(ctx, AlertConsensusSubscriptionSuccess,
+		"Consensus subscription succeeded", SeverityInfo, message)
+}
+
+// SendConnectionSuccess sends an alert when connection to consensus channel is successful
+func (h *ConsensusAlertHandlers) SendConnectionSuccess(
+	ctx context.Context,
+	successMsg string,
+) {
+	h.service.SendAlert(ctx, AlertConsensusConnectionSuccess,
+		"Connection to consensus channel successful", SeverityInfo, successMsg)
+}
+
+// SendCRDTSyncFailure sends an alert when CRDT sync channel creation fails
+func (h *ConsensusAlertHandlers) SendCRDTSyncFailure(
+	ctx context.Context,
+	errorMsg string,
+) {
+	h.service.SendAlert(ctx, AlertConsensusCRDTSyncFailure,
+		"CRDT sync channel failure", SeverityCritical, errorMsg)
+}
+
+// SendCRDTSyncSuccess sends an alert when CRDT sync channel creation succeeds
+func (h *ConsensusAlertHandlers) SendCRDTSyncSuccess(
+	ctx context.Context,
+	message string,
+) {
+	h.service.SendAlert(ctx, AlertConsensusCRDTSyncSuccess,
+		"CRDT sync channel created", SeverityInfo, message)
+}
+
+// SendBroadcastVoteTriggerFailure sends an alert when broadcasting vote trigger fails
+func (h *ConsensusAlertHandlers) SendBroadcastVoteTriggerFailure(
+	ctx context.Context,
+	errorMsg string,
+) {
+	h.service.SendAlert(ctx, AlertConsensusBroadcastFailure,
+		"Broadcast vote trigger failed", SeverityWarning, errorMsg)
 }
