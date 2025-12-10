@@ -184,20 +184,31 @@ func PrintCRDTState(listenerNode *PubSubMessages.BuddyNode) error {
 	return nil
 }
 
-// ProcessVotesFromCRDT extracts votes from CRDT, processes them through votemodule, and returns the result
-func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) {
+// ProcessVotesFromCRDT extracts votes from CRDT, filters them by block hash,
+// processes them through votemodule, and returns the aggregated result.
+// targetBlockHash is required - votes without matching block_hash are skipped.
+func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode, targetBlockHash string) (int8, error) {
 	if listenerNode == nil || listenerNode.CRDTLayer == nil {
 		return 0, fmt.Errorf("listener node or CRDT layer not initialized")
 	}
 
+	if targetBlockHash == "" {
+		return 0, fmt.Errorf("targetBlockHash is required for vote processing to avoid mixing votes from different blocks")
+	}
+
 	fmt.Printf("\n=== Processing votes from CRDT for voting ===\n")
+	fmt.Printf("🎯 Target block hash: %s\n", targetBlockHash)
 
 	// Get all CRDTs to find all keys that might contain votes
 	allCRDTs := listenerNode.CRDTLayer.CRDTLayer.GetAllCRDTs()
 	fmt.Printf("DEBUG: Found %d CRDT keys in storage\n", len(allCRDTs))
 
-	// Map to store peer_id -> vote value
-	voteData := make(map[string]int8)
+	// Map to store peer_id -> vote value and the block hash it applies to
+	type peerVote struct {
+		vote      int8
+		blockHash string
+	}
+	voteData := make(map[string]peerVote)
 
 	// Iterate through all CRDT keys
 	for key := range allCRDTs {
@@ -228,12 +239,27 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) 
 				continue
 			}
 
-			// Use the key (which is the peer ID) to store the vote
-			voteData[key] = int8(voteValue)
-			fmt.Printf("DEBUG: Added vote for peer %s: %d\n", key, int8(voteValue))
+			blockHashRaw, hasBlockHash := voteDataObj["block_hash"]
+			blockHash, blockHashOK := blockHashRaw.(string)
+
+			// Require matching block hash (targetBlockHash is always required now)
+			if !hasBlockHash || !blockHashOK {
+				fmt.Printf("DEBUG: Skipping peer %s vote without block_hash while targeting %s\n", key, targetBlockHash)
+				continue
+			}
+			if blockHash != targetBlockHash {
+				fmt.Printf("DEBUG: Skipping peer %s vote for block_hash=%s (target=%s)\n", key, blockHash, targetBlockHash)
+				continue
+			}
+
+			// Use the key (which is the peer ID) to store the latest vote for that block
+			voteData[key] = peerVote{
+				vote:      int8(voteValue),
+				blockHash: blockHash,
+			}
+			fmt.Printf("DEBUG: Added vote for peer %s: %d (block_hash=%s)\n", key, int8(voteValue), blockHash)
 		}
 	}
-
 
 	if len(voteData) == 0 {
 		fmt.Printf("⚠️ No votes found in CRDT to process\n")
@@ -253,15 +279,14 @@ func ProcessVotesFromCRDT(listenerNode *PubSubMessages.BuddyNode) (int8, error) 
 		return 0, fmt.Errorf("failed to get peer weights: %v", err)
 	}
 
-	
 	// Filter weights to only include peers that voted
 	filteredWeights := make(map[string]float64)
 	filteredVoteData := make(map[string]int8)
 	for peerID, vote := range voteData {
 		if weight, exists := weights[peerID]; exists {
-			filteredVoteData[peerID] = vote
+			filteredVoteData[peerID] = vote.vote
 			filteredWeights[peerID] = weight
-			fmt.Printf("DEBUG: Peer %s has weight %f and vote %d\n", peerID, weight, vote)
+			fmt.Printf("DEBUG: Peer %s has weight %f and vote %d (block_hash=%s)\n", peerID, weight, vote.vote, vote.blockHash)
 		} else {
 			fmt.Printf("DEBUG: Peer %s not found in weights, skipping\n", peerID)
 		}

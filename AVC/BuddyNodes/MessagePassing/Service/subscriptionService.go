@@ -289,6 +289,13 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 		}
 
 		if _, exists := voteData["vote"]; exists {
+			// Extract block hash from vote for proper scoping
+			blockHashRaw, hasBlockHash := voteData["block_hash"]
+			blockHash, _ := blockHashRaw.(string)
+			if !hasBlockHash || blockHash == "" {
+				fmt.Printf("⚠️ Vote missing block_hash; skipping vote processing trigger\n")
+				blockHash = "" // Will cause processVotesAndTriggerBFT to skip processing
+			}
 
 			// Use the sender's peer ID as the CRDT set key to separate votes by sender
 			OP := &Types.OP{
@@ -310,6 +317,9 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 			fmt.Printf("═══════════════════════════════════════════════════════════\n")
 			fmt.Printf("✅ Vote successfully added to CRDT from sender: %s\n", msg.Data.Sender.String())
 			fmt.Printf("✅ Stored under key: %s\n", msg.Data.Sender.String())
+			if blockHash != "" {
+				fmt.Printf("✅ Block hash: %s\n", blockHash)
+			}
 			fmt.Printf("═══════════════════════════════════════════════════════════\n\n")
 
 			// Only trigger vote processing once (check if already triggered)
@@ -320,7 +330,7 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 				// Trigger vote processing after a delay to collect more votes
 				go func() {
 					time.Sleep(10 * time.Second) // Wait 10 seconds to collect more votes
-					processVotesAndTriggerBFT(listenerNode)
+					processVotesAndTriggerBFT(listenerNode, blockHash)
 					voteProcessingMutex.Lock()
 					voteProcessingTriggered = false // Reset flag after processing
 					voteProcessingMutex.Unlock()
@@ -673,18 +683,25 @@ func (s *SubscriptionService) handleBFTRequest(msg *AVCStruct.GossipMessage) err
 }
 
 // processVotesAndTriggerBFT processes votes from CRDT and triggers BFT consensus
-func processVotesAndTriggerBFT(listenerNode *AVCStruct.BuddyNode) {
+// If blockHash is empty, processing is skipped to avoid mixing votes from different blocks
+func processVotesAndTriggerBFT(listenerNode *AVCStruct.BuddyNode, blockHash string) {
 	if listenerNode == nil || listenerNode.CRDTLayer == nil {
 		fmt.Printf("❌ Cannot process votes - listener node or CRDT layer not initialized\n")
 		return
 	}
 
-	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║  PROCESSING VOTES AND TRIGGERING BFT - BUDDY NODE       ║\n")
-	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+	if blockHash == "" {
+		fmt.Printf("⚠️ Skipping vote processing - block hash not available (cannot scope votes)\n")
+		return
+	}
 
-	// Process votes from CRDT
-	result, err := Structs.ProcessVotesFromCRDT(listenerNode)
+	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  PROCESSING VOTES AND TRIGGERING BFT - BUDDY NODE          ║\n")
+	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+	fmt.Printf("🎯 Processing votes for block hash: %s\n", blockHash)
+
+	// Process votes from CRDT with block hash filtering
+	result, err := Structs.ProcessVotesFromCRDT(listenerNode, blockHash)
 	if err != nil {
 		fmt.Printf("❌ Failed to process votes from CRDT: %v\n", err)
 		return
