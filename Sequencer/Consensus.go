@@ -13,6 +13,7 @@ import (
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/AVC/NodeSelection/Router"
 	"gossipnode/Pubsub"
+	"gossipnode/Sequencer/Alerts"
 	"gossipnode/Sequencer/Metadata"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/config"
@@ -42,6 +43,7 @@ type Consensus struct {
 	ResponseHandler  *ResponseHandler
 	DiscoveryService *Service.NodeDiscoveryService
 	ZKBlockData      *PubSubMessages.ConsensusMessage
+	AlertHandlers    *Alerts.ConsensusAlertHandlers
 	// Guards to prevent infinite loops
 	voteProcessingMu   sync.Mutex
 	isProcessingVotes  bool
@@ -55,6 +57,7 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 		Host:            host,
 		Channel:         config.PubSub_ConsensusChannel,
 		ResponseHandler: responseHandler,
+		AlertHandlers:   Alerts.NewConsensusAlertHandlers(),
 	}
 }
 
@@ -156,6 +159,10 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// 1. Pull the buddies from the NodeSelectionRouter (all candidates)
 	buddies, errMSG := consensus.QueryBuddyNodes()
 	if errMSG != nil {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendInitFailure(context.Background(), fmt.Sprintf("failed to query buddy nodes: %v", errMSG))
+		}
 		return fmt.Errorf("failed to query buddy nodes: %v", errMSG)
 	}
 
@@ -210,6 +217,11 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	// 5. Verify we have exactly MaxMainPeers reachable buddy nodes
 	if len(MainCandidates) < config.MaxMainPeers {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendInitFailure(context.Background(), fmt.Sprintf("not enough reachable peers: got %d, need exactly %d (MaxMainPeers). Main candidates: %d, Backup candidates: %d",
+				len(MainCandidates), config.MaxMainPeers, len(MainCandidates), len(BackupCandidates)))
+		}
 		return fmt.Errorf("not enough reachable peers: got %d, need exactly %d (MaxMainPeers). Main candidates: %d, Backup candidates: %d",
 			len(MainCandidates), config.MaxMainPeers, len(MainCandidates), len(BackupCandidates))
 	}
@@ -251,11 +263,20 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	log.Printf("Connecting to %d final buddy nodes via AddPeerCache (only main peers, no backup unless needed)...", len(reachablePeers))
 
 	if err := Cache.ConnectToTemporaryPeers(reachablePeers); err != nil {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendInitFailure(context.Background(), fmt.Sprintf("failed to connect to final buddy nodes: %v", err))
+		}
 		return fmt.Errorf("failed to connect to final buddy nodes: %v", err)
 	}
 
 	// Verify we have exactly MaxMainPeers actually connected peers
 	if len(reachablePeers) < config.MaxMainPeers {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendInitFailure(context.Background(), fmt.Sprintf("insufficient actually connected peers: got %d, need exactly %d (MaxMainPeers). Main candidates: %d, Backup candidates: %d",
+				len(reachablePeers), config.MaxMainPeers, len(MainCandidates), len(BackupCandidates)))
+		}
 		return fmt.Errorf("insufficient actually connected peers: got %d, need exactly %d (MaxMainPeers). Main candidates: %d, Backup candidates: %d",
 			len(reachablePeers), config.MaxMainPeers, len(MainCandidates), len(BackupCandidates))
 	}
@@ -379,6 +400,10 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	// After creating the channel, ask peers to subscribe to the channel
 	if err := consensus.RequestSubscriptionPermission(); err != nil {
+		// ALERTS_TODO: Remove alert after monitoring period (temporary)
+		if consensus.AlertHandlers != nil {
+			consensus.AlertHandlers.SendSubscriptionFailure(context.Background(), fmt.Sprintf("failed to request subscription permission: %v", err))
+		}
 		return fmt.Errorf("failed to request subscription permission: %v", err)
 	}
 
@@ -665,6 +690,11 @@ func (consensus *Consensus) PrintCRDTState() error {
 			fmt.Printf("   1. Increasing backup peers (MaxBackupPeers)\n")
 			fmt.Printf("   2. Checking network connectivity\n")
 			fmt.Printf("   3. Extending timeout for vote collection\n")
+			// ALERTS_TODO: Remove alert after monitoring period (temporary)
+			if consensus.AlertHandlers != nil && consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
+				blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.String()
+				consensus.AlertHandlers.SendInsufficientParticipation(context.Background(), len(buddyInputs), config.MaxMainPeers, blockHash)
+			}
 			// Note: We continue anyway, but BFT may fail
 		} else {
 			fmt.Printf("✅ Sufficient participation: %d/%d minimum required for consensus\n", len(buddyInputs), config.MaxMainPeers)
@@ -807,17 +837,39 @@ func (consensus *Consensus) PrintCRDTState() error {
 
 			if validTotal == 0 {
 				fmt.Printf("❌ No valid BLS signatures - consensus failed, skipping block processing\n")
+				// ALERTS_TODO: Remove alert after monitoring period (temporary)
+				if consensus.AlertHandlers != nil && consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
+					blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.String()
+					consensus.AlertHandlers.SendBLSFailure(context.Background(), blockHash, "No valid BLS signatures")
+				}
 			} else {
 				needed := (validTotal / 2) + 1
+				validNo := validTotal - validYes
 				if validYes >= needed {
 					consensusReached = true
 					fmt.Printf("✅ Consensus reached: %d/%d votes in favor (needed: %d)\n", validYes, validTotal, needed)
+					// ALERTS_TODO: Remove alert after monitoring period (temporary)
+					if consensus.AlertHandlers != nil && consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
+						blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.String()
+						consensus.AlertHandlers.SendConsensusReachedAccept(context.Background(), blockHash, validYes, validNo, validTotal)
+					}
 				} else {
 					fmt.Printf("❌ Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\n", validYes, validTotal, needed)
+					// ALERTS_TODO: Remove alert after monitoring period (temporary)
+					if consensus.AlertHandlers != nil && consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
+						blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.String()
+						errMsg := fmt.Sprintf("Block %s: Only %d/%d votes in favor (needed: %d)", blockHash, validYes, validTotal, needed)
+						consensus.AlertHandlers.SendConsensusFailed(context.Background(), errMsg)
+					}
 				}
 			}
 		} else {
 			fmt.Printf("⚠️ No BLS results collected - cannot verify consensus, skipping block processing\n")
+			// ALERTS_TODO: Remove alert after monitoring period (temporary)
+			if consensus.AlertHandlers != nil && consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
+				blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.String()
+				consensus.AlertHandlers.SendBLSFailure(context.Background(), blockHash, "No BLS results collected")
+			}
 		}
 
 		// After collecting votes, broadcast block with attached BLS results
