@@ -37,6 +37,10 @@ func (vt *VoteTrigger) setVote(Vote *PubSubMessages.Vote) error {
 		return fmt.Errorf("invalid vote")
 	}
 
+	if Vote.BlockHash == "" {
+		return fmt.Errorf("block hash required for vote")
+	}
+
 	vt.Vote = Vote
 	return nil
 }
@@ -110,7 +114,9 @@ func (vt *VoteTrigger) SubmitVote() error {
 		}
 
 		// Send the message to the listener node
-		err := MessagePassing.NewListenerStruct(listenerNode).SendMessageToPeer(NodeToSendTo.PeerID, string(messageBytes))
+		err := MessagePassing.NewListenerStruct(listenerNode).
+			SendMessageToPeer(NodeToSendTo.PeerID, string(messageBytes))
+
 		if err != nil {
 			// If this is not the last attempt, try again
 			if attempt < maxAttempts-1 {

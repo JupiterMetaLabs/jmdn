@@ -595,7 +595,8 @@ func (consensus *Consensus) PrintCRDTState() error {
 	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
 
 	// Process votes from CRDT and call processVoteData
-	_, err := Structs.ProcessVotesFromCRDT(listenerNode)
+	blockHashForProcessing := consensus.ZKBlockData.GetZKBlock().BlockHash.String()
+	_, err := Structs.ProcessVotesFromCRDT(listenerNode, blockHashForProcessing)
 	if err != nil {
 		fmt.Printf("❌ Failed to process votes from CRDT: %v\n", err)
 	}
@@ -689,9 +690,15 @@ func (consensus *Consensus) PrintCRDTState() error {
 
 				// Request vote aggregation result from this buddy node
 				reqAck := PubSubMessages.NewACKBuilder().True_ACK_Message(consensus.Host.ID(), config.Type_VoteResult)
+				// Include block hash to scope vote aggregation
+				requestPayload := map[string]string{
+					"block_hash": consensus.ZKBlockData.GetZKBlock().BlockHash.String(),
+				}
+				requestPayloadBytes, _ := json.Marshal(requestPayload)
+
 				reqMsg := PubSubMessages.NewMessageBuilder(nil).
 					SetSender(consensus.Host.ID()).
-					SetMessage("RequestForVoteAggregationResult").
+					SetMessage(string(requestPayloadBytes)).
 					SetTimestamp(time.Now().UTC().Unix()).
 					SetACK(reqAck)
 
