@@ -305,8 +305,9 @@ func TriggerCRDTSyncForBuddyNode(listenerNode *AVCStruct.BuddyNode) error {
 	}
 
 	// Wait for sync messages from all buddy nodes and merge them
-	// Keep the pubsub channel open for full 10 seconds to ensure all nodes sync
-	syncDuration := 10 * time.Second
+	// Keep the pubsub channel open for full 30 seconds to ensure all nodes sync
+	// Increased from 10s to 30s to handle network delays
+	syncDuration := 30 * time.Second
 	fmt.Printf("⏳ Waiting for CRDT sync messages from %d buddy nodes\n", totalBuddyNodes)
 	fmt.Printf("   Pubsub channel will stay open for %v to ensure complete synchronization\n", syncDuration)
 

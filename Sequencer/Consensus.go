@@ -382,10 +382,10 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		return fmt.Errorf("failed to request subscription permission: %v", err)
 	}
 
-	// Start vote trigger in a goroutine with 5-second delay
+	// Start vote trigger in a goroutine with 15-second delay (increased from 5s to handle network delays)
 	go func() {
-		fmt.Printf("=== [Consensus.Start] Starting vote trigger goroutine with 5-second delay ===\n")
-		time.Sleep(5 * time.Second)
+		fmt.Printf("=== [Consensus.Start] Starting vote trigger goroutine with 15-second delay ===\n")
+		time.Sleep(15 * time.Second)
 
 		fmt.Printf("=== [Consensus.Start] About to call BroadcastVoteTrigger ===\n")
 		fmt.Printf("=== [Consensus.Start] consensus.ZKBlockData: %+v ===\n", consensus.ZKBlockData)
@@ -398,13 +398,14 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		}
 	}()
 
-	// Start CRDT print trigger in a goroutine with 15-second delay after broadcast trigger
-	// This gives time for votes to propagate through the network
+	// Start CRDT print trigger in a goroutine with 60-second delay after broadcast trigger
+	// This gives time for votes to propagate, be collected, processed, and CRDT synced
+	// Increased from 15s to 60s to handle network delays and ensure all operations complete
 	go func() {
-		fmt.Printf("=== [Consensus.Start] Starting CRDT print trigger goroutine with 15-second delay ===\n")
-		time.Sleep(15 * time.Second)
+		fmt.Printf("=== [Consensus.Start] Starting CRDT print trigger goroutine with 60-second delay ===\n")
+		time.Sleep(60 * time.Second)
 
-		fmt.Printf("\n=== [CRDT PRINT TRIGGER] Printing CRDT state after 15 seconds ===\n")
+		fmt.Printf("\n=== [CRDT PRINT TRIGGER] Printing CRDT state after 60 seconds ===\n")
 		if err := consensus.PrintCRDTState(); err != nil {
 			fmt.Printf("=== [CRDT PRINT TRIGGER] Failed to print CRDT state: %v ===\n", err)
 		}
@@ -412,9 +413,10 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	// Verify that nodes are actually subscribed (non-blocking, with delay to allow subscription)
 	// Buddy nodes need time to receive subscription request, subscribe to channel, and be ready
+	// Increased from 3s to 10s to handle network delays
 	go func() {
-		fmt.Printf("=== [Consensus.Start] Starting subscription verification goroutine with 3-second delay ===\n")
-		time.Sleep(3 * time.Second) // Give buddy nodes time to subscribe
+		fmt.Printf("=== [Consensus.Start] Starting subscription verification goroutine with 10-second delay ===\n")
+		time.Sleep(10 * time.Second) // Give buddy nodes time to subscribe
 
 		fmt.Printf("=== [Consensus.Start] About to verify subscriptions ===\n")
 		if err := consensus.VerifySubscriptions(); err != nil {
@@ -727,7 +729,7 @@ func (consensus *Consensus) PrintCRDTState() error {
 				case err := <-errCh:
 					fmt.Printf("⚠️ Failed to read response from %s: %v\n", peerID, err)
 					return
-				case <-time.After(20 * time.Second):
+				case <-time.After(45 * time.Second):
 					fmt.Printf("⏱️ Timeout waiting for response from %s\n", peerID)
 					return
 				}

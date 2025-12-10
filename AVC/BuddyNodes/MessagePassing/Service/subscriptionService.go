@@ -328,8 +328,9 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 				voteProcessingTriggered = true
 				voteProcessingMutex.Unlock()
 				// Trigger vote processing after a delay to collect more votes
+				// Increased from 10s to 30s to handle network delays and ensure votes are collected
 				go func() {
-					time.Sleep(10 * time.Second) // Wait 10 seconds to collect more votes
+					time.Sleep(30 * time.Second) // Wait 30 seconds to collect more votes
 					processVotesAndTriggerBFT(listenerNode, blockHash)
 					voteProcessingMutex.Lock()
 					voteProcessingTriggered = false // Reset flag after processing
