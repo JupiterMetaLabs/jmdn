@@ -829,56 +829,80 @@ func (consensus *Consensus) PrintCRDTState() error {
 				}
 
 				responseMsg := PubSubMessages.NewMessageBuilder(nil).DeferenceMessage(response)
-				if responseMsg != nil {
-					var resultData map[string]interface{}
-					if err := json.Unmarshal([]byte(responseMsg.Message), &resultData); err == nil {
-						// Pretty print full payload for debugging (includes BLS if present)
-						if pretty, err := json.MarshalIndent(resultData, "", "  "); err == nil {
-							fmt.Printf("📦 Full vote payload from %s:\n%s\n", peerID, string(pretty))
-						}
+				if responseMsg == nil {
+					fmt.Printf("⚠️ Failed to parse response message from %s\n", peerID)
+					return
+				}
 
-						// Extract and store numeric vote
-						if result, ok := resultData["result"].(float64); ok {
-							Maps.StoreVoteResult(peerID.String(), int8(result))
-							fmt.Printf("✅ Received vote result from %s: %d\n", peerID, int8(result))
-						}
+				var resultData map[string]interface{}
+				if err := json.Unmarshal([]byte(responseMsg.Message), &resultData); err != nil {
+					fmt.Printf("⚠️ Failed to unmarshal response from %s: %v\n", peerID, err)
+					fmt.Printf("⚠️ Raw response message: %s\n", responseMsg.Message)
+					return
+				}
 
-						// If BLS present, log key fields
-						if blsAny, ok := resultData["bls"].(map[string]interface{}); ok {
-							sig := ""
-							if v, ok := blsAny["Signature"].(string); ok {
-								sig = v
-							}
-							agree := false
-							if v, ok := blsAny["Agree"].(bool); ok {
-								agree = v
-							}
-							pub := ""
-							if v, ok := blsAny["PubKey"].(string); ok {
-								pub = v
-							}
-							pid := ""
-							if v, ok := blsAny["PeerID"].(string); ok {
-								pid = v
-							}
-							fmt.Printf("🔐 BLS from %s | peer=%s agree=%t pubkey_len=%d sig_len=%d\n", peerID, pid, agree, len(pub), len(sig))
+				// Check for error in response
+				if errMsg, hasError := resultData["error"].(string); hasError {
+					fmt.Printf("❌ Error response from %s: %s\n", peerID, errMsg)
+					// Still try to extract result if present
+				}
 
-							// append typed response
-							blsResultsMu.Lock()
-							blsResults = append(blsResults, *BLS_Signer.NewBLSresponseBuilder(nil).
-								SetSignature(sig).
-								SetAgree(agree).
-								SetPubKey(pub).
-								SetPeerID(pid).
-								Build())
-							blsResultsMu.Unlock()
-						}
+				// Pretty print full payload for debugging (includes BLS if present)
+				if pretty, err := json.MarshalIndent(resultData, "", "  "); err == nil {
+					fmt.Printf("📦 Full vote payload from %s:\n%s\n", peerID, string(pretty))
+				}
+
+				// Extract and store numeric vote
+				if result, ok := resultData["result"].(float64); ok {
+					Maps.StoreVoteResult(peerID.String(), int8(result))
+					fmt.Printf("✅ Received vote result from %s: %d\n", peerID, int8(result))
+				} else {
+					fmt.Printf("⚠️ No vote result in response from %s\n", peerID)
+				}
+
+				// If BLS present, log key fields and add to results
+				if blsAny, ok := resultData["bls"].(map[string]interface{}); ok {
+					sig := ""
+					if v, ok := blsAny["Signature"].(string); ok {
+						sig = v
 					}
+					agree := false
+					if v, ok := blsAny["Agree"].(bool); ok {
+						agree = v
+					}
+					pub := ""
+					if v, ok := blsAny["PubKey"].(string); ok {
+						pub = v
+					}
+					pid := ""
+					if v, ok := blsAny["PeerID"].(string); ok {
+						pid = v
+					}
+					fmt.Printf("🔐 BLS from %s | peer=%s agree=%t pubkey_len=%d sig_len=%d\n", peerID, pid, agree, len(pub), len(sig))
+
+					// Validate BLS fields before adding
+					if sig != "" && pub != "" && pid != "" {
+						// append typed response
+						blsResultsMu.Lock()
+						blsResults = append(blsResults, *BLS_Signer.NewBLSresponseBuilder(nil).
+							SetSignature(sig).
+							SetAgree(agree).
+							SetPubKey(pub).
+							SetPeerID(pid).
+							Build())
+						blsResultsMu.Unlock()
+						fmt.Printf("✅ Added BLS result from %s to collection\n", peerID)
+					} else {
+						fmt.Printf("⚠️ Incomplete BLS data from %s (missing fields)\n", peerID)
+					}
+				} else {
+					fmt.Printf("⚠️ No BLS signature in response from %s\n", peerID)
 				}
 			}(buddyID)
 		}
 		wg.Wait()
 		fmt.Printf("✅ Collected vote results from all buddy nodes\n")
+		fmt.Printf("📊 BLS Results Summary: %d BLS signatures collected from %d buddy nodes\n", len(blsResults), len(listenerNode.BuddyNodes.Buddies_Nodes))
 
 		// Verify consensus: Check BLS signatures and ensure majority agree before processing
 		consensusReached := false
@@ -931,10 +955,16 @@ func (consensus *Consensus) PrintCRDTState() error {
 			}
 		} else {
 			fmt.Printf("⚠️ No BLS results collected - cannot verify consensus, skipping block processing\n")
+			fmt.Printf("⚠️ Possible reasons:\n")
+			fmt.Printf("   1. Buddy nodes failed to process votes from CRDT\n")
+			fmt.Printf("   2. BLS signature generation failed on buddy nodes\n")
+			fmt.Printf("   3. Network connectivity issues preventing responses\n")
+			fmt.Printf("   4. Timeout waiting for responses from buddy nodes\n")
+			fmt.Printf("   5. Vote processing errors on buddy nodes (check buddy node logs)\n")
 			// ALERTS_TODO: Remove alert after monitoring period (temporary)
 			if consensus.AlertHandlers != nil && consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
 				blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.String()
-				consensus.AlertHandlers.SendBLSFailure(context.Background(), blockHash, "No BLS results collected")
+				consensus.AlertHandlers.SendBLSFailure(context.Background(), blockHash, fmt.Sprintf("No BLS results collected from %d buddy nodes", len(listenerNode.BuddyNodes.Buddies_Nodes)))
 			}
 		}
 
