@@ -257,14 +257,14 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 			// Get accepted peer IDs from tracker
 			acceptedPeers := tracker.GetBuddyNodes()
 
-			// Format peer IDs as a comma-separated string
+			// Format peer IDs with each on a new line (same format as Consensus.go for easy copy-paste)
 			var peerIDStrings []string
-			for peerID, role := range acceptedPeers {
-				peerIDStrings = append(peerIDStrings, fmt.Sprintf("%s (%s)", peerID, role))
+			for peerID := range acceptedPeers {
+				peerIDStrings = append(peerIDStrings, fmt.Sprintf("  - %s", peerID.String()))
 			}
-			peerIDsStr := strings.Join(peerIDStrings, ", ")
+			peerIDsStr := strings.Join(peerIDStrings, "\n")
 
-			return fmt.Errorf("insufficient subscribers for consensus: got %d, need exactly %d MaxMainPeers (1 creator + MaxMainPeers subscribers). Accepted peer IDs: [%s]", totalAccepted, config.MaxMainPeers, peerIDsStr)
+			return fmt.Errorf("insufficient subscribers for consensus: got %d, need exactly %d MaxMainPeers (1 creator + MaxMainPeers subscribers).\nAccepted peer IDs:\n%s", totalAccepted, config.MaxMainPeers, peerIDsStr)
 		}
 
 		log.Printf("Successfully achieved consensus: 1 creator + %d MaxMainPeers subscribers", totalAccepted)

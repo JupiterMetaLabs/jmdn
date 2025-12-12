@@ -142,10 +142,10 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// add apeer ids, to message
 	peerIDs := make([]string, 0, len(consensus.PeerList.MainPeers))
 	for _, peerID := range consensus.PeerList.MainPeers {
-		peerIDs = append(peerIDs, peerID.String())
+		peerIDs = append(peerIDs, fmt.Sprintf("  - %s", peerID.String()))
 	}
-	msg := fmt.Sprintf("Final buddy nodes: %d MaxMainPeers actually connected peers with peerids: [%s]",
-		len(consensus.PeerList.MainPeers), strings.Join(peerIDs, ", "))
+	msg := fmt.Sprintf("Final buddy nodes: %d MaxMainPeers actually connected peers with peerids:\n%s",
+		len(consensus.PeerList.MainPeers), strings.Join(peerIDs, "\n"))
 
 	Alerts.NewAlertBuilder(alert_ctx).
 		AlertName(helper.Alert_Consensus_BuiltFinalBuddiesList).
