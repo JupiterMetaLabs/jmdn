@@ -1,7 +1,6 @@
 package BLS_Signer
 
 // Builder functions for the BLSresponse struct
-
 func NewBLSresponseBuilder(blsresponse *BLSresponse) *BLSresponse {
 	if blsresponse != nil {
 		return &BLSresponse{
@@ -39,7 +38,6 @@ func (blsresponse *BLSresponse) Build() *BLSresponse {
 }
 
 // Get functions for the BLSresponse struct
-
 func (blsresponse *BLSresponse) GetSignature() string {
 	return blsresponse.Signature
 }
