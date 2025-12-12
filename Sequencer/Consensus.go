@@ -10,6 +10,7 @@ import (
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/Pubsub"
+	"gossipnode/Sequencer/Alerts"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/Sequencer/helper"
 	"gossipnode/config"
@@ -49,6 +50,10 @@ func (consensus *Consensus) ConnectedNessCheck(candidates []PubSubMessages.Buddy
 }
 
 func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
+	// Context for the alerts
+	alert_ctx := context.Background()
+	defer alert_ctx.Done()
+
 	// Warmup the consensus
 	/*
 		What it does:
@@ -103,8 +108,18 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	}
 
 	if len(MainCandidates) < config.MaxMainPeers {
-		return fmt.Errorf("CONSENSUSERROR.POPULATEPEERLIST: insufficient actually connected peers: got %d, need exactly %d (MaxMainPeers). Connected: %d, Unreachable: %d",
+
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.POPULATEPEERLIST: insufficient actually connected peers: got %d, need exactly %d (MaxMainPeers). Connected: %d, Unreachable: %d",
 			len(MainCandidates), config.MaxMainPeers, len(reachablePeers), len(stats.GetUnreachablePeers()))
+
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_InsufficientPeers).
+			Status(Alerts.AlertStatusFiring).
+			Severity(Alerts.SeverityCritical).
+			Description(ErrorMessage).
+			Send()
+
+		return fmt.Errorf("%s", ErrorMessage)
 	}
 
 	log.Printf("Split into %d main candidates and %d backup candidates",
@@ -113,23 +128,51 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Populate consensus.PeerList directly from MainCandidates and BackupCandidates
 	errMSG = consensus.PopulatePeerList(MainCandidates, BackupCandidates)
 	if errMSG != nil {
-		return fmt.Errorf("failed to populate peer list: %v", errMSG)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.POPULATEPEERLIST: failed to populate peer list: %v", errMSG)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToPopulatePeerList).
+			Status(Alerts.AlertStatusFiring).
+			Severity(Alerts.SeverityCritical).
+			Description(ErrorMessage).
+			Send()
+		return fmt.Errorf("%s", ErrorMessage)
 	}
 
-	log.Printf("✅ Final buddy nodes: %d actually connected peers (these are responsible for votes, CRDT sync, pubsub sync, vote aggregation)",
+	msg := fmt.Sprintf("✅ Final buddy nodes: %d actually connected peers (these are responsible for votes, CRDT sync, pubsub sync, vote aggregation)",
 		len(consensus.PeerList.MainPeers))
 
-	log.Printf("Built final buddies list: %d peers (all actually connected and ready for consensus)", len(consensus.PeerList.MainPeers))
+	Alerts.NewAlertBuilder(alert_ctx).
+		AlertName(helper.Alert_Consensus_BuiltFinalBuddiesList).
+		Status(Alerts.AlertStatusInfo).
+		Severity(Alerts.SeverityCritical).
+		Description(msg).
+		Send()
+
+	log.Printf("%s", msg)
 
 	// Create ConsensusMessage with ONLY the final connected buddy nodes
 	errMSG = consensus.SetZKBlockData(zkblock, MainCandidates)
 	if errMSG != nil {
-		return fmt.Errorf("CONSENSUSERROR.SETZKBLOCKDATA: failed to set zkblock data: %v", errMSG)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.SETZKBLOCKDATA: failed to set zkblock data: %v", errMSG)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToSetZKBlockData).
+			Status(Alerts.AlertStatusFiring).
+			Severity(Alerts.SeverityCritical).
+			Description(ErrorMessage).
+			Send()
+		return fmt.Errorf("%s", ErrorMessage)
 	}
 
 	// Validate consensus configuration
 	if err := ValidateConsensusConfiguration(consensus); err != nil {
-		return fmt.Errorf("CONSENSUSERROR.VALIDATECONSENSUSCONFIGURATION: invalid consensus configuration: %w", err)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.VALIDATECONSENSUSCONFIGURATION: invalid consensus configuration: %w", err)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToValidateConsensusConfiguration).
+			Status(Alerts.AlertStatusFiring).
+			Severity(Alerts.SeverityCritical).
+			Description(ErrorMessage).
+			Send()
+		return fmt.Errorf("%s", ErrorMessage)
 	}
 
 	// Create allowed peers list (1 creator + MaxMainPeers main peers + backup peers for fallback)
@@ -144,11 +187,25 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	err := consensus.SetGossipnode(config.PubSub_ConsensusChannel)
 	if err != nil {
-		return fmt.Errorf("CONSENSUSERROR.SETGOSSIPNODE: failed to set gossipnode: %v", err)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.SETGOSSIPNODE: failed to set gossipnode: %v", err)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToSetGossipnode).
+			Status(Alerts.AlertStatusFiring).
+			Severity(Alerts.SeverityCritical).
+			Description(ErrorMessage).
+			Send()
+		return fmt.Errorf("%s", ErrorMessage)
 	}
 
 	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.PubSub_ConsensusChannel, false, allowedPeers); err != nil {
-		return fmt.Errorf("CONSENSUSERROR.CREATECHANNEL: failed to create pubsub channel: %v", err)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.CREATECHANNEL: failed to create pubsub channel: %v", err)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToCreatePubsubChannel).
+			Status(Alerts.AlertStatusFiring).
+			Severity(Alerts.SeverityCritical).
+			Description(ErrorMessage).
+			Send()
+		return fmt.Errorf("%s", ErrorMessage)
 	}
 	log.Printf("Successfully created pubsub channel: %s", config.PubSub_ConsensusChannel)
 
@@ -239,12 +296,23 @@ func (consensus *Consensus) RequestSubscriptionPermission() error {
 // Flow: Request subscriptions → Verify subscriptions → Broadcast vote trigger → Process CRDT
 // This eliminates race conditions by ensuring each step completes before the next begins
 func (consensus *Consensus) startEventDrivenFlow() {
+	// Context for the alerts
+	alert_ctx := context.Background()
+	defer alert_ctx.Done()
+
 	log.Printf("=== [Event-Driven Flow] Starting consensus flow ===\n")
 
 	// Step 1: Request subscription permission from peers
 	log.Printf("=== [Event-Driven Flow] Step 1: Requesting subscription permission ===\n")
 	if err := consensus.RequestSubscriptionPermission(); err != nil {
-		log.Printf("=== [Event-Driven Flow] ERROR: Failed to request subscription permission: %v ===\n", err)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.REQUESTSUBSCRIPTIONPERMISSION: Failed to request subscription permission: %v", err)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToRequestSubscriptionPermission).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(ErrorMessage).
+			Send()
+		log.Printf("%s", ErrorMessage)
 		return
 	}
 	log.Printf("=== [Event-Driven Flow] Step 1: Subscription permission requested successfully ===\n")
@@ -274,12 +342,28 @@ func (consensus *Consensus) startEventDrivenFlow() {
 	// Step 3: Broadcast vote trigger (only after subscriptions are verified/attempted)
 	log.Printf("=== [Event-Driven Flow] Step 3: Broadcasting vote trigger ===\n")
 	if consensus.ZKBlockData == nil {
-		log.Printf("=== [Event-Driven Flow] ERROR: ZKBlockData not set, cannot broadcast vote trigger ===\n")
+		ErrorMessage := "CONSENSUSERROR.BROADCASTVOTETRIGGER: ZKBlockData not set, cannot broadcast vote trigger"
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToBroadcastVoteTrigger).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(ErrorMessage).
+			Send()
+
+		log.Printf("%s", ErrorMessage)
 		return
 	}
 
 	if err := consensus.BroadcastVoteTrigger(); err != nil {
-		log.Printf("=== [Event-Driven Flow] ERROR: BroadcastVoteTrigger failed: %v ===\n", err)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.BROADCASTVOTETRIGGER: BroadcastVoteTrigger failed: %v", err)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToBroadcastVoteTrigger).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(ErrorMessage).
+			Send()
+		log.Printf("%s", ErrorMessage)
+
 		return
 	}
 	log.Printf("=== [Event-Driven Flow] Step 3: Vote trigger broadcast successfully ===\n")

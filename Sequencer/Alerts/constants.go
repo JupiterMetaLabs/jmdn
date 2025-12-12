@@ -15,6 +15,9 @@ const (
 	SeverityCritical = "critical"
 	SeverityWarning  = "warning"
 	SeverityInfo     = "info"
+	SeveritySuccess  = "success"
+	SeverityUnknown  = "unknown"
+	SeverityError    = "error"
 )
 
 // Alert Statuses
@@ -22,22 +25,10 @@ const (
 	AlertStatusFiring   = "firing"
 	AlertStatusResolved = "resolved"
 	AlertStatusUnknown  = "unknown"
+	AlertStatusInfo     = "info"
+	AlertStatusError    = "error"
+	AlertStatusWarning  = "warning"
 )
 
 // Alert names for consensus-related alerts
-const (
-	AlertConsensusReachedAccept       = "Consensus Reached (ACCEPT)"
-	AlertConsensusReachedReject       = "Consensus Reached (REJECT)"
-	AlertConsensusFailed              = "Consensus Failed"
-	AlertConsensusInsufficientPeers   = "Consensus Insufficient Participation"
-	AlertConsensusBLSFailure          = "Consensus BLS Signature Failure"
-	AlertConsensusTimeout             = "Consensus Timeout"
-	AlertConsensusInitFailure         = "Consensus Initialization Failed"
-	AlertConsensusInitSuccess         = "Consensus Initialization Success"
-	AlertConsensusSubscriptionFailure = "Consensus Subscription Failed"
-	AlertConsensusSubscriptionSuccess = "Consensus Subscription Success"
-	AlertConsensusConnectionSuccess   = "Consensus Connection Success"
-	AlertConsensusCRDTSyncFailure     = "Consensus CRDT Sync Failure"
-	AlertConsensusCRDTSyncSuccess     = "Consensus CRDT Sync Success"
-	AlertConsensusBroadcastFailure    = "Consensus Broadcast Failure"
-)
+const ()
