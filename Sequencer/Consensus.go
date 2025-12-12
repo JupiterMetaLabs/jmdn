@@ -17,6 +17,7 @@ import (
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/messaging"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -138,8 +139,13 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		return fmt.Errorf("%s", ErrorMessage)
 	}
 
-	msg := fmt.Sprintf("✅ Final buddy nodes: %d actually connected peers (these are responsible for votes, CRDT sync, pubsub sync, vote aggregation)",
-		len(consensus.PeerList.MainPeers))
+	// add apeer ids, to message
+	peerIDs := make([]string, 0, len(consensus.PeerList.MainPeers))
+	for _, peerID := range consensus.PeerList.MainPeers {
+		peerIDs = append(peerIDs, peerID.String())
+	}
+	msg := fmt.Sprintf("Final buddy nodes: %d MaxMainPeers actually connected peers with peerids: [%s]",
+		len(consensus.PeerList.MainPeers), strings.Join(peerIDs, ", "))
 
 	Alerts.NewAlertBuilder(alert_ctx).
 		AlertName(helper.Alert_Consensus_BuiltFinalBuddiesList).
@@ -288,7 +294,7 @@ func (consensus *Consensus) RequestSubscriptionPermission() error {
 		return fmt.Errorf("failed to get subscription permission: %w", err)
 	}
 
-	log.Printf("Successfully obtained subscription permission: 1 creator + MaxMainPeers subscribers = MaxMainPeers + 1 total nodes")
+	log.Printf("Successfully obtained subscription permission: 1 creator + %d MaxMainPeers subscribers", config.MaxMainPeers)
 	return nil
 }
 
