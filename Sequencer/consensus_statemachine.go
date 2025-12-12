@@ -226,7 +226,7 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 			fmt.Printf("%s", ErrorMessage)
 			return fmt.Errorf("failed to process block locally after broadcast: %v, error: %s", err, ErrorMessage)
 		}
-		msg := "✅ Processed block locally - account balances updated"
+		msg := fmt.Sprintf("✅ Processed block locally - account balances updated\nBlock #%d\n(hash: %s)", block.BlockNumber, block.BlockHash.Hex())
 		fmt.Printf("%s", msg)
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_ProcessBlockSuccess_BlockProcessedLocally).
@@ -235,7 +235,7 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 			Description(msg).
 			Send()
 	} else {
-		msg := "CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Consensus not reached"
+		msg := fmt.Sprintf("CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Consensus not reached\nBlock #%d\n(hash: %s)", block.BlockNumber, block.BlockHash.Hex())
 		fmt.Printf("%s", msg)
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_ProcessBlockFailed_ConsensusNotReached).
