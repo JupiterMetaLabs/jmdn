@@ -691,6 +691,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 
 	validYes := 0
 	validTotal := 0
+	var votedPeers []string // Track peer IDs with their votes
 
 	for _, r := range blsResults {
 		vote := int8(-1)
@@ -702,6 +703,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 			continue
 		}
 		validTotal++
+		votedPeers = append(votedPeers, fmt.Sprintf("  - %s (vote: %d)", r.PeerID, vote))
 		if vote == 1 {
 			validYes++
 		}
@@ -714,13 +716,15 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	}
 
 	needed := (validTotal / 2) + 1
+	peerVotesStr := strings.Join(votedPeers, "\n")
+
 	if validYes >= needed {
-		msg := fmt.Sprintf("✅ BFT Consensus Reached: %d/%d votes in favor (needed: %d)", validYes, validTotal, needed)
+		msg := fmt.Sprintf("✅ BFT Consensus Reached: %d/%d votes in favor (needed: %d)\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
 		fmt.Printf("%s", msg)
 		return true
 	}
 
-	msg := fmt.Sprintf("❌ Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing", validYes, validTotal, needed)
+	msg := fmt.Sprintf("❌ Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
 	fmt.Printf("%s", msg)
 	return false
 }
