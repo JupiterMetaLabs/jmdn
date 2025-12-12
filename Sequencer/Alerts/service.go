@@ -38,10 +38,6 @@ func (s *alertService) sendAlert(
 		fullDescription = fmt.Sprintf("%s: %s", description, errorMsg)
 	}
 
-	if status == "" {
-		status = AlertStatusFiring
-	}
-
 	// Build labels map starting with required labels
 	alertLabels := map[string]interface{}{
 		"alertname": alertName,
