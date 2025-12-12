@@ -17,6 +17,13 @@ const (
 	SeverityInfo     = "info"
 )
 
+// Alert Statuses
+const (
+	AlertStatusFiring   = "firing"
+	AlertStatusResolved = "resolved"
+	AlertStatusUnknown  = "unknown"
+)
+
 // Alert names for consensus-related alerts
 const (
 	AlertConsensusReachedAccept       = "Consensus Reached (ACCEPT)"

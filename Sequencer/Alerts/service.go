@@ -11,41 +11,54 @@ import (
 	"time"
 )
 
-// AlertService handles sending alerts to the monitoring API
-type AlertService struct {
+// alertService handles sending alerts to the monitoring API
+type alertService struct {
 	url    string
 	apiKey string
 	chatID string
 }
 
-// NewAlertService creates a new alert service instance
-func NewAlertService() *AlertService {
-	return &AlertService{
+// newAlertService creates a new alert service instance
+func newAlertService() *alertService {
+	return &alertService{
 		url:    AlertURL,
 		apiKey: AlertAPIKey,
 		chatID: ChatID,
 	}
 }
 
-// SendAlert sends an alert to the monitoring API
-func (s *AlertService) SendAlert(
+// sendAlert sends an alert to the monitoring API
+func (s *alertService) sendAlert(
 	ctx context.Context,
-	alertName, description, severity, errorMsg string,
+	alertName, status, severity, description, errorMsg string,
+	labels map[string]string,
 ) {
 	fullDescription := description
 	if errorMsg != "" {
 		fullDescription = fmt.Sprintf("%s: %s", description, errorMsg)
 	}
 
+	if status == "" {
+		status = AlertStatusFiring
+	}
+
+	// Build labels map starting with required labels
+	alertLabels := map[string]interface{}{
+		"alertname": alertName,
+		"severity":  severity,
+	}
+
+	// Merge optional labels
+	for k, v := range labels {
+		alertLabels[k] = v
+	}
+
 	alertPayload := map[string]interface{}{
 		"chat_ids": []string{s.chatID},
 		"alerts": []map[string]interface{}{
 			{
-				"status": "firing",
-				"labels": map[string]interface{}{
-					"alertname": alertName,
-					"severity":  severity,
-				},
+				"status": status,
+				"labels": alertLabels,
 				"annotations": map[string]interface{}{
 					"description": fullDescription,
 				},
