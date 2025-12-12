@@ -697,9 +697,6 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 
 // parseVoteResultResponse parses vote result response and extracts BLS result
 func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer.ID) *BLS_Signer.BLSresponse {
-	// Context for the alerts
-	alert_ctx := context.Background()
-	defer alert_ctx.Done()
 
 	responseMsg := PubSubMessages.NewMessageBuilder(nil).DeferenceMessage(response)
 	if responseMsg == nil {
@@ -742,13 +739,6 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 		}
 		msg := fmt.Sprintf("🔐 BLS from %s | peer=%s agree=%t pubkey_len=%d sig_len=%d", peerID, pid, agree, len(pub), len(sig))
 		fmt.Printf("%s", msg)
-
-		Alerts.NewAlertBuilder(alert_ctx).
-			AlertName(helper.Alert_Consensus_ReceivedBLSResult).
-			Status(Alerts.AlertStatusInfo).
-			Severity(Alerts.SeverityInfo).
-			Description(msg).
-			Send()
 
 		return BLS_Signer.NewBLSresponseBuilder(nil).
 			SetSignature(sig).
