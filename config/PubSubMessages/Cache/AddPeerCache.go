@@ -18,6 +18,14 @@ var (
 	AddPeersCacheMu sync.Mutex // protect global cache
 )
 
+type Stats struct {
+	mu               *sync.RWMutex
+	TotalPeers       int
+	ReachablePeers   map[peer.ID]multiaddr.Multiaddr
+	UnreachablePeers map[peer.ID]multiaddr.Multiaddr
+	TimeTaken        time.Duration
+}
+
 func NewAddPeersCache() map[peer.ID]multiaddr.Multiaddr { return make(map[peer.ID]multiaddr.Multiaddr) }
 
 func AddPeer(peerID peer.ID, addr multiaddr.Multiaddr) {
@@ -120,29 +128,28 @@ func FallbackConnectionFunction(peerID peer.ID, multiaddrs []string) {
 	}
 }
 
-// AddPeersTemporary: concurrent reachability check, stops at 4 reachable peers
-func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) {
+// AddPeersTemporary: concurrent reachability check, adds all reachable peers
+// Returns statistics about reachability checks and connections
+func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) Stats {
+	startTime := time.Now()
+	stats := NewStatsBuilder(nil)
+	stats.SetTotalPeers(len(peers))
+
 	AddPeersCacheMu.Lock()
 	if AddPeersCache == nil {
 		AddPeersCache = make(map[peer.ID]multiaddr.Multiaddr)
 	}
 	AddPeersCacheMu.Unlock()
 
-	const targetPeers = config.MaxMainPeers
-
 	var wg sync.WaitGroup
-	var found sync.Mutex
-	foundCount := 0
-	done := make(chan struct{})
-
-	reachablePeers := make(map[peer.ID]multiaddr.Multiaddr)
 
 	fmt.Println("---- Starting concurrent reachability checks ----")
 
 	nm := GetNodeManager()
 	if nm == nil {
 		fmt.Println("NodeManager not available")
-		return
+		stats.TimeTaken = time.Since(startTime)
+		return *stats
 	}
 
 	for idx, buddy := range peers {
@@ -150,66 +157,54 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) {
 		go func(peerID peer.ID, maddr multiaddr.Multiaddr, index int) {
 			defer wg.Done()
 
-			// Check if we already found enough peers
-			select {
-			case <-done:
-				return
-			default:
-			}
-
 			addrStr := maddr.String()
 			fmt.Printf("[Thread %d] Checking peer %s at %s\n", index, peerID, addrStr)
 
 			if nm == nil {
 				fmt.Printf("[%s] NodeManager not available\n", peerID)
+				stats.AddUnreachablePeer(peerID, maddr)
 				return
 			}
 
 			reachable, timeTaken, err := nm.PingMultiaddrWithRetries(addrStr, 3)
 			if err != nil {
 				fmt.Printf("[%s] Error: %v\n", peerID, err)
+				stats.AddUnreachablePeer(peerID, maddr)
 				return
 			}
 
 			fmt.Printf("[%s] Time: %v, Reachable: %v\n", peerID, timeTaken, reachable)
 
 			if reachable {
-				found.Lock()
-				if foundCount < targetPeers {
-					reachablePeers[peerID] = maddr
-					AddPeer(peerID, maddr)
-					foundCount++
-					fmt.Printf("✓ Peer %s added (%d/%d)\n", peerID, foundCount, targetPeers)
-
-					if foundCount >= targetPeers {
-						close(done)
-					}
-				}
-				found.Unlock()
+				stats.AddReachablePeer(peerID, maddr)
+				AddPeer(peerID, maddr)
+				fmt.Printf("✓ Peer %s added\n", peerID)
+			} else {
+				stats.AddUnreachablePeer(peerID, maddr)
 			}
 		}(buddy.PeerID, buddy.Multiaddr, idx)
 	}
 
 	wg.Wait()
 
-	// Ensure done channel is closed
-	select {
-	case <-done:
-	default:
-		close(done)
-	}
+	reachablePeers := stats.GetReachablePeers()
+	unreachablePeers := stats.GetUnreachablePeers()
 
-	fmt.Printf("\n---- Found %d/%d reachable peers ----\n", len(reachablePeers), targetPeers)
+	fmt.Printf("\n---- Found %d reachable peers (unreachable: %d) ----\n",
+		len(reachablePeers), len(unreachablePeers))
 
 	if len(reachablePeers) > 0 {
 		if err := ConnectToTemporaryPeers(reachablePeers); err != nil {
 			fmt.Printf("Connection failed: %v\n", err)
-			return
+		} else {
+			fmt.Printf("Connected to %d peers\n", len(reachablePeers))
 		}
-		fmt.Printf("Connected to %d peers\n", len(reachablePeers))
 	} else {
 		fmt.Println("No reachable peers found")
 	}
+
+	stats.TimeTaken = time.Since(startTime)
+	return *stats
 }
 
 func GetNodeManager() *node.NodeManager {
