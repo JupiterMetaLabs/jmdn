@@ -172,7 +172,15 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 	tracker := PubSubMessages.GetSubscriptionTracker()
 	tracker.Reset()
 
-	responseHandler := NewResponseHandler()
+	// IMPORTANT:
+	// Use the consensus-level response handler that the Listener is wired to.
+	// Creating a new handler here would mean ACKs get delivered to a different handler,
+	// and the waits below will time out even if peers responded.
+	responseHandler := consensus.ResponseHandler
+	if responseHandler == nil {
+		responseHandler = NewResponseHandler()
+		consensus.ResponseHandler = responseHandler
+	}
 
 	// get count of main peers and backup peers from consensus peerlist
 	mainPeersCount := len(consensus.PeerList.MainPeers)

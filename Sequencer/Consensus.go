@@ -171,7 +171,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	// Validate consensus configuration
 	if err := ValidateConsensusConfiguration(consensus); err != nil {
-		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.VALIDATECONSENSUSCONFIGURATION: invalid consensus configuration: %w", err)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.VALIDATECONSENSUSCONFIGURATION: invalid consensus configuration: %v", err)
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_FailedToValidateConsensusConfiguration).
 			Status(Alerts.AlertStatusError).
