@@ -83,7 +83,7 @@ func (b *AlertBuilder) doSend() {
 	if b.severity == "" {
 		b.severity = SeverityError
 	}
-	if b.description == "" || b.errorMsg == "" {
+	if b.description == "" && b.errorMsg == "" {
 		b.description = "No description or error message provided"
 	}
 	if b.labels == nil {
