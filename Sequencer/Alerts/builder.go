@@ -78,7 +78,19 @@ func (b *AlertBuilder) Labels(labels map[string]string) *AlertBuilder {
 // doSend sends the alert with default status if not set
 func (b *AlertBuilder) doSend() {
 	if b.status == "" {
-		b.status = AlertStatusFiring
+		b.status = AlertStatusError
+	}
+	if b.severity == "" {
+		b.severity = SeverityError
+	}
+	if b.description == "" {
+		b.description = "No description provided"
+	}
+	if b.errorMsg == "" {
+		b.errorMsg = "No error message provided"
+	}
+	if b.labels == nil {
+		b.labels = make(map[string]string)
 	}
 	b.service.sendAlert(
 		b.ctx,
@@ -89,30 +101,6 @@ func (b *AlertBuilder) doSend() {
 		b.errorMsg,
 		b.labels,
 	)
-}
-
-// Critical sets severity to critical and sends the alert
-func (b *AlertBuilder) Critical() {
-	b.severity = SeverityCritical
-	b.doSend()
-}
-
-// Warning sets severity to warning and sends the alert
-func (b *AlertBuilder) Warning() {
-	b.severity = SeverityWarning
-	b.doSend()
-}
-
-// Info sets severity to info and sends the alert
-func (b *AlertBuilder) Info() {
-	b.severity = SeverityInfo
-	b.doSend()
-}
-
-// Success sets severity to info (for success alerts) and sends the alert
-func (b *AlertBuilder) Success() {
-	b.severity = SeverityInfo
-	b.doSend()
 }
 
 // Send sends the alert with the configured values

@@ -114,8 +114,8 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_InsufficientPeers).
-			Status(Alerts.AlertStatusFiring).
-			Severity(Alerts.SeverityCritical).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
 			Description(ErrorMessage).
 			Send()
 
@@ -131,8 +131,8 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.POPULATEPEERLIST: failed to populate peer list: %v", errMSG)
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_FailedToPopulatePeerList).
-			Status(Alerts.AlertStatusFiring).
-			Severity(Alerts.SeverityCritical).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
 			Description(ErrorMessage).
 			Send()
 		return fmt.Errorf("%s", ErrorMessage)
@@ -144,7 +144,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	Alerts.NewAlertBuilder(alert_ctx).
 		AlertName(helper.Alert_Consensus_BuiltFinalBuddiesList).
 		Status(Alerts.AlertStatusInfo).
-		Severity(Alerts.SeverityCritical).
+		Severity(Alerts.SeverityInfo).
 		Description(msg).
 		Send()
 
@@ -156,8 +156,8 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.SETZKBLOCKDATA: failed to set zkblock data: %v", errMSG)
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_FailedToSetZKBlockData).
-			Status(Alerts.AlertStatusFiring).
-			Severity(Alerts.SeverityCritical).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
 			Description(ErrorMessage).
 			Send()
 		return fmt.Errorf("%s", ErrorMessage)
@@ -168,8 +168,8 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.VALIDATECONSENSUSCONFIGURATION: invalid consensus configuration: %w", err)
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_FailedToValidateConsensusConfiguration).
-			Status(Alerts.AlertStatusFiring).
-			Severity(Alerts.SeverityCritical).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
 			Description(ErrorMessage).
 			Send()
 		return fmt.Errorf("%s", ErrorMessage)
@@ -190,8 +190,8 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.SETGOSSIPNODE: failed to set gossipnode: %v", err)
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_FailedToSetGossipnode).
-			Status(Alerts.AlertStatusFiring).
-			Severity(Alerts.SeverityCritical).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
 			Description(ErrorMessage).
 			Send()
 		return fmt.Errorf("%s", ErrorMessage)
@@ -201,8 +201,8 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.CREATECHANNEL: failed to create pubsub channel: %v", err)
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_FailedToCreatePubsubChannel).
-			Status(Alerts.AlertStatusFiring).
-			Severity(Alerts.SeverityCritical).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
 			Description(ErrorMessage).
 			Send()
 		return fmt.Errorf("%s", ErrorMessage)
@@ -344,7 +344,7 @@ func (consensus *Consensus) startEventDrivenFlow() {
 	if consensus.ZKBlockData == nil {
 		ErrorMessage := "CONSENSUSERROR.BROADCASTVOTETRIGGER: ZKBlockData not set, cannot broadcast vote trigger"
 		Alerts.NewAlertBuilder(alert_ctx).
-			AlertName(helper.Alert_Consensus_FailedToBroadcastVoteTrigger).
+			AlertName(helper.Alert_Consensus_ZKBlockDataNotSet).
 			Status(Alerts.AlertStatusError).
 			Severity(Alerts.SeverityError).
 			Description(ErrorMessage).
@@ -583,7 +583,9 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 
 		// Step 3: Broadcast and process block (state-changing operation)
 		if err := consensus.BroadcastAndProcessBlock(blsResults, consensusReached); err != nil {
-			fmt.Printf("❌ Failed to broadcast and process block: %v\n", err)
+			ErrorMessage := fmt.Sprintf("CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Failed to broadcast and process block: %v", err)
+			fmt.Printf("%s", ErrorMessage)
+			return
 		}
 	}()
 
@@ -695,6 +697,10 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 
 // parseVoteResultResponse parses vote result response and extracts BLS result
 func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer.ID) *BLS_Signer.BLSresponse {
+	// Context for the alerts
+	alert_ctx := context.Background()
+	defer alert_ctx.Done()
+
 	responseMsg := PubSubMessages.NewMessageBuilder(nil).DeferenceMessage(response)
 	if responseMsg == nil {
 		return nil
@@ -734,7 +740,15 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 		if v, ok := blsAny["PeerID"].(string); ok {
 			pid = v
 		}
-		fmt.Printf("🔐 BLS from %s | peer=%s agree=%t pubkey_len=%d sig_len=%d\n", peerID, pid, agree, len(pub), len(sig))
+		msg := fmt.Sprintf("🔐 BLS from %s | peer=%s agree=%t pubkey_len=%d sig_len=%d", peerID, pid, agree, len(pub), len(sig))
+		fmt.Printf("%s", msg)
+
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_ReceivedBLSResult).
+			Status(Alerts.AlertStatusInfo).
+			Severity(Alerts.SeverityInfo).
+			Description(msg).
+			Send()
 
 		return BLS_Signer.NewBLSresponseBuilder(nil).
 			SetSignature(sig).
@@ -750,6 +764,10 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 // VerifyConsensusWithBLS verifies BLS signatures and determines if consensus was reached
 // Returns true if consensus reached (majority agree), false otherwise
 func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSresponse) bool {
+	// Context for the alerts
+	alert_ctx := context.Background()
+	defer alert_ctx.Done()
+
 	if len(blsResults) == 0 {
 		fmt.Printf("⚠️ No BLS results collected - cannot verify consensus, skipping block processing\n")
 		return false
@@ -774,17 +792,38 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	}
 
 	if validTotal == 0 {
-		fmt.Printf("❌ No valid BLS signatures - consensus failed, skipping block processing\n")
+		msg := "❌ No valid BLS signatures - consensus failed, skipping block processing - No BLS results collected"
+		fmt.Printf("%s", msg)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_BFT_Consensus_NoBLSResultsCollected).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(msg).
+			Send()
 		return false
 	}
 
 	needed := (validTotal / 2) + 1
 	if validYes >= needed {
-		fmt.Printf("✅ Consensus reached: %d/%d votes in favor (needed: %d)\n", validYes, validTotal, needed)
+		msg := fmt.Sprintf("✅ BFT Consensus Reached: %d/%d votes in favor (needed: %d)", validYes, validTotal, needed)
+		fmt.Printf("%s", msg)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_BFT_Consensus_Reached).
+			Status(Alerts.AlertStatusInfo).
+			Severity(Alerts.SeverityInfo).
+			Description(msg).
+			Send()
 		return true
 	}
 
-	fmt.Printf("❌ Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\n", validYes, validTotal, needed)
+	msg := fmt.Sprintf("❌ Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing", validYes, validTotal, needed)
+	fmt.Printf("%s", msg)
+	Alerts.NewAlertBuilder(alert_ctx).
+		AlertName(helper.Alert_BFT_Consensus_Failed).
+		Status(Alerts.AlertStatusError).
+		Severity(Alerts.SeverityError).
+		Description(msg).
+		Send()
 	return false
 }
 

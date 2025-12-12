@@ -12,22 +12,18 @@ const (
 
 // Alert severity levels
 const (
-	SeverityCritical = "critical"
-	SeverityWarning  = "warning"
-	SeverityInfo     = "info"
-	SeveritySuccess  = "success"
-	SeverityUnknown  = "unknown"
-	SeverityError    = "error"
+	SeverityInfo    = "info"
+	SeverityWarning = "warning"
+	SeverityError   = "error"
+	SeveritySuccess = "success"
 )
 
 // Alert Statuses
 const (
-	AlertStatusFiring   = "firing"
-	AlertStatusResolved = "resolved"
-	AlertStatusUnknown  = "unknown"
-	AlertStatusInfo     = "info"
-	AlertStatusError    = "error"
-	AlertStatusWarning  = "warning"
+	AlertStatusInfo    = "info"
+	AlertStatusWarning = "warning"
+	AlertStatusError   = "error"
+	AlertStatusSuccess = "success"
 )
 
 // Alert names for consensus-related alerts
