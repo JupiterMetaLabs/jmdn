@@ -188,7 +188,8 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 	defer consensus.mu.Unlock()
 
 	if consensus.ZKBlockData == nil || consensus.ZKBlockData.GetZKBlock() == nil {
-		return fmt.Errorf("ZKBlockData not initialized")
+		ErrorMessage := "CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: ZKBlockData not initialized"
+		return fmt.Errorf("ZKBlockData not initialized, error: %s", ErrorMessage)
 	}
 
 	block := consensus.ZKBlockData.GetZKBlock()
@@ -203,11 +204,16 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 	// Only process block locally if consensus was reached
 	if consensusReached {
 		if err := messaging.ProcessBlockLocally(block, blsResults); err != nil {
-			return fmt.Errorf("failed to process block locally after broadcast: %v", err)
+			ErrorMessage := fmt.Sprintf("CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Failed to process block locally after broadcast: %v", err)
+			fmt.Printf("%s", ErrorMessage)
+			return fmt.Errorf("failed to process block locally after broadcast: %v, error: %s", err, ErrorMessage)
 		}
-		fmt.Printf("✅ Processed block locally - account balances updated\n")
+		msg := "✅ Processed block locally - account balances updated"
+		fmt.Printf("%s", msg)
 	} else {
-		fmt.Printf("⚠️ Skipping local block processing - consensus not reached\n")
+		msg := "CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Consensus not reached"
+		fmt.Printf("%s", msg)
+		return fmt.Errorf("consensus not reached, error: %s", msg)
 	}
 
 	return nil

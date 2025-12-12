@@ -16,6 +16,7 @@ import (
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/messaging"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,8 +104,9 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	}
 
 	if len(MainCandidates) < config.MaxMainPeers {
-		return fmt.Errorf("CONSENSUSERROR.POPULATEPEERLIST: insufficient actually connected peers: got %d, need exactly %d (MaxMainPeers). Connected: %d, Unreachable: %d",
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.POPULATEPEERLIST: insufficient actually connected peers: got %d, need exactly %d (MaxMainPeers). Connected: %d, Unreachable: %d",
 			len(MainCandidates), config.MaxMainPeers, len(reachablePeers), len(stats.GetUnreachablePeers()))
+		return fmt.Errorf("%s", ErrorMessage)
 	}
 
 	log.Printf("Split into %d main candidates and %d backup candidates",
@@ -113,23 +115,30 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Populate consensus.PeerList directly from MainCandidates and BackupCandidates
 	errMSG = consensus.PopulatePeerList(MainCandidates, BackupCandidates)
 	if errMSG != nil {
-		return fmt.Errorf("failed to populate peer list: %v", errMSG)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.POPULATEPEERLIST: failed to populate peer list: %v", errMSG)
+		return fmt.Errorf("%s", ErrorMessage)
 	}
 
-	log.Printf("✅ Final buddy nodes: %d actually connected peers (these are responsible for votes, CRDT sync, pubsub sync, vote aggregation)",
-		len(consensus.PeerList.MainPeers))
-
-	log.Printf("Built final buddies list: %d peers (all actually connected and ready for consensus)", len(consensus.PeerList.MainPeers))
+	// add apeer ids, to message
+	peerIDs := make([]string, 0, len(consensus.PeerList.MainPeers))
+	for _, peerID := range consensus.PeerList.MainPeers {
+		peerIDs = append(peerIDs, fmt.Sprintf("  - %s", peerID.String()))
+	}
+	msg := fmt.Sprintf("Final buddy nodes: %d MaxMainPeers actually connected peers with peerids:\n%s",
+		len(consensus.PeerList.MainPeers), strings.Join(peerIDs, "\n"))
+	log.Printf("%s", msg)
 
 	// Create ConsensusMessage with ONLY the final connected buddy nodes
 	errMSG = consensus.SetZKBlockData(zkblock, MainCandidates)
 	if errMSG != nil {
-		return fmt.Errorf("CONSENSUSERROR.SETZKBLOCKDATA: failed to set zkblock data: %v", errMSG)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.SETZKBLOCKDATA: failed to set zkblock data: %v", errMSG)
+		return fmt.Errorf("%s", ErrorMessage)
 	}
 
 	// Validate consensus configuration
 	if err := ValidateConsensusConfiguration(consensus); err != nil {
-		return fmt.Errorf("CONSENSUSERROR.VALIDATECONSENSUSCONFIGURATION: invalid consensus configuration: %w", err)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.VALIDATECONSENSUSCONFIGURATION: invalid consensus configuration: %w", err)
+		return fmt.Errorf("%s", ErrorMessage)
 	}
 
 	// Create allowed peers list (1 creator + MaxMainPeers main peers + backup peers for fallback)
@@ -144,11 +153,13 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	err := consensus.SetGossipnode(config.PubSub_ConsensusChannel)
 	if err != nil {
-		return fmt.Errorf("CONSENSUSERROR.SETGOSSIPNODE: failed to set gossipnode: %v", err)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.SETGOSSIPNODE: failed to set gossipnode: %v", err)
+		return fmt.Errorf("%s", ErrorMessage)
 	}
 
 	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.PubSub_ConsensusChannel, false, allowedPeers); err != nil {
-		return fmt.Errorf("CONSENSUSERROR.CREATECHANNEL: failed to create pubsub channel: %v", err)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.CREATECHANNEL: failed to create pubsub channel: %v", err)
+		return fmt.Errorf("%s", ErrorMessage)
 	}
 	log.Printf("Successfully created pubsub channel: %s", config.PubSub_ConsensusChannel)
 
@@ -183,7 +194,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	if err := service.HandleStreamSubscriptionRequest(config.PubSub_ConsensusChannel); err != nil {
 		log.Printf("⚠️ Failed to subscribe sequencer to consensus channel: %v", err)
 	} else {
-		log.Printf("✅ Sequencer subscribed to consensus channel for vote collection")
+		log.Printf("✅ Successfully subscribed to consensus channel for vote collection")
 	}
 
 	// Initialize listener node for vote collection
@@ -231,7 +242,7 @@ func (consensus *Consensus) RequestSubscriptionPermission() error {
 		return fmt.Errorf("failed to get subscription permission: %w", err)
 	}
 
-	log.Printf("Successfully obtained subscription permission: 1 creator + MaxMainPeers subscribers = MaxMainPeers + 1 total nodes")
+	log.Printf("Successfully obtained subscription permission: 1 creator + %d MaxMainPeers subscribers", config.MaxMainPeers)
 	return nil
 }
 
@@ -244,7 +255,8 @@ func (consensus *Consensus) startEventDrivenFlow() {
 	// Step 1: Request subscription permission from peers
 	log.Printf("=== [Event-Driven Flow] Step 1: Requesting subscription permission ===\n")
 	if err := consensus.RequestSubscriptionPermission(); err != nil {
-		log.Printf("=== [Event-Driven Flow] ERROR: Failed to request subscription permission: %v ===\n", err)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.REQUESTSUBSCRIPTIONPERMISSION: Failed to request subscription permission: %v", err)
+		log.Printf("%s", ErrorMessage)
 		return
 	}
 	log.Printf("=== [Event-Driven Flow] Step 1: Subscription permission requested successfully ===\n")
@@ -274,12 +286,15 @@ func (consensus *Consensus) startEventDrivenFlow() {
 	// Step 3: Broadcast vote trigger (only after subscriptions are verified/attempted)
 	log.Printf("=== [Event-Driven Flow] Step 3: Broadcasting vote trigger ===\n")
 	if consensus.ZKBlockData == nil {
-		log.Printf("=== [Event-Driven Flow] ERROR: ZKBlockData not set, cannot broadcast vote trigger ===\n")
+		ErrorMessage := "CONSENSUSERROR.BROADCASTVOTETRIGGER: ZKBlockData not set, cannot broadcast vote trigger"
+		log.Printf("%s", ErrorMessage)
 		return
 	}
 
 	if err := consensus.BroadcastVoteTrigger(); err != nil {
-		log.Printf("=== [Event-Driven Flow] ERROR: BroadcastVoteTrigger failed: %v ===\n", err)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.BROADCASTVOTETRIGGER: BroadcastVoteTrigger failed: %v", err)
+		log.Printf("%s", ErrorMessage)
+
 		return
 	}
 	log.Printf("=== [Event-Driven Flow] Step 3: Vote trigger broadcast successfully ===\n")
@@ -499,7 +514,9 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 
 		// Step 3: Broadcast and process block (state-changing operation)
 		if err := consensus.BroadcastAndProcessBlock(blsResults, consensusReached); err != nil {
-			fmt.Printf("❌ Failed to broadcast and process block: %v\n", err)
+			ErrorMessage := fmt.Sprintf("CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Failed to broadcast and process block: %v", err)
+			fmt.Printf("%s", ErrorMessage)
+			return
 		}
 	}()
 
@@ -650,7 +667,8 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 		if v, ok := blsAny["PeerID"].(string); ok {
 			pid = v
 		}
-		fmt.Printf("🔐 BLS from %s | peer=%s agree=%t pubkey_len=%d sig_len=%d\n", peerID, pid, agree, len(pub), len(sig))
+		msg := fmt.Sprintf("🔐 BLS from %s | peer=%s agree=%t pubkey_len=%d sig_len=%d", peerID, pid, agree, len(pub), len(sig))
+		fmt.Printf("%s", msg)
 
 		return BLS_Signer.NewBLSresponseBuilder(nil).
 			SetSignature(sig).
@@ -690,17 +708,20 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	}
 
 	if validTotal == 0 {
-		fmt.Printf("❌ No valid BLS signatures - consensus failed, skipping block processing\n")
+		msg := "❌ No valid BLS signatures - consensus failed, skipping block processing - No BLS results collected"
+		fmt.Printf("%s", msg)
 		return false
 	}
 
 	needed := (validTotal / 2) + 1
 	if validYes >= needed {
-		fmt.Printf("✅ Consensus reached: %d/%d votes in favor (needed: %d)\n", validYes, validTotal, needed)
+		msg := fmt.Sprintf("✅ BFT Consensus Reached: %d/%d votes in favor (needed: %d)", validYes, validTotal, needed)
+		fmt.Printf("%s", msg)
 		return true
 	}
 
-	fmt.Printf("❌ Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\n", validYes, validTotal, needed)
+	msg := fmt.Sprintf("❌ Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing", validYes, validTotal, needed)
+	fmt.Printf("%s", msg)
 	return false
 }
 

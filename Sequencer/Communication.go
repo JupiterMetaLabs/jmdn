@@ -9,6 +9,7 @@ import (
 	"gossipnode/config"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -189,7 +190,7 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 
 	// If we have exactly MaxMainPeers main peers, we're done
 	if mainAccepted == config.MaxMainPeers {
-		log.Printf("Perfect! Got exactly %d main peers for consensus (1 creator + MaxMainPeers subscribers = MaxMainPeers + 1 total)", config.MaxMainPeers)
+		log.Printf("Perfect! Got exactly %d MaxMainPeers for consensus (1 creator + MaxMainPeers subscribers)", config.MaxMainPeers)
 		// Verify with global tracker
 		if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
 			log.Printf("Global tracker confirms: %d active subscriptions", tracker.GetActiveCount())
@@ -251,12 +252,22 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 		totalAccepted := mainAccepted + backupAccepted
 		log.Printf("Final subscription results: %d main + %d backup = %d total subscribers", mainAccepted, backupAccepted, totalAccepted)
 
-		// Ensure we have exactly MaxMainPeers subscribers (1 creator + MaxMainPeers subscribers = MaxMainPeers + 1 total)
+		// Ensure we have exactly MaxMainPeers subscribers
 		if totalAccepted != config.MaxMainPeers {
-			return fmt.Errorf("insufficient subscribers for consensus: got %d, need exactly %d (1 creator + MaxMainPeers subscribers = MaxMainPeers + 1 total)", totalAccepted, config.MaxMainPeers)
+			// Get accepted peer IDs from tracker
+			acceptedPeers := tracker.GetBuddyNodes()
+
+			// Format peer IDs with each on a new line (same format as Consensus.go for easy copy-paste)
+			var peerIDStrings []string
+			for peerID := range acceptedPeers {
+				peerIDStrings = append(peerIDStrings, fmt.Sprintf("  - %s", peerID.String()))
+			}
+			peerIDsStr := strings.Join(peerIDStrings, "\n")
+
+			return fmt.Errorf("insufficient subscribers for consensus: got %d, need exactly %d MaxMainPeers (1 creator + MaxMainPeers subscribers).\nAccepted peer IDs:\n%s", totalAccepted, config.MaxMainPeers, peerIDsStr)
 		}
 
-		log.Printf("Successfully achieved consensus: 1 creator + %d subscribers = 14 total nodes", totalAccepted)
+		log.Printf("Successfully achieved consensus: 1 creator + %d MaxMainPeers subscribers", totalAccepted)
 
 		// Verify with global tracker
 		if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
