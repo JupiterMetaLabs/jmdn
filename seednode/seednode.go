@@ -155,10 +155,7 @@ func (c *Client) ListWeightsofPeers() (map[string]float64, error) {
 	defer cancel()
 
 	// Get all peers from the seed node
-	peers, err := c.ListPeers(ctx, &peerpb.PeerListRequest{
-		Limit:  1000,
-		Status: peerpb.PeerStatus_PEER_STATUS_ACTIVE,
-	})
+	peers, err := c.ListBuddy(ctx, &peerpb.ListBuddyRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list peers: %w", err)
 	}
@@ -1128,8 +1125,9 @@ func convertBuddyPeerRecordToNode(peer *peerpb.BuddyPeerRecord) selection.Node {
 	}
 }
 
-func (c *Client) ListBuddy(ctx context.Context) (*peerpb.ListBuddyResponse, error) {
-	return c.client.ListBuddy(ctx, &peerpb.ListBuddyRequest{})
+// ListBuddyPeers lists buddy peers from the seed node (lists all candidates for buddy selection)
+func (c *Client) ListBuddy(ctx context.Context, request *peerpb.ListBuddyRequest) (*peerpb.ListBuddyResponse, error) {
+	return c.client.ListBuddy(ctx, request)
 }
 
 func (c *Client) UpdateBuddy(ctx context.Context, peerIDs []string) (*peerpb.UpdateBuddyResponse, error) {
@@ -1155,7 +1153,7 @@ func (c *Client) UpdateBuddies(ctx context.Context, peerIDs []string) error {
 
 // Add conversion functions
 func (c *Client) ListBuddyPeers(ctx context.Context) ([]selection.Node, error) {
-	resp, err := c.ListBuddy(ctx)
+	resp, err := c.ListBuddy(ctx, &peerpb.ListBuddyRequest{})
 	if err != nil {
 		return nil, err
 	}
