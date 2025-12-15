@@ -296,10 +296,8 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 	// 6.1. Combined Nonce check (optimized): duplicate nonce and latest nonce in a single reverse scan
 	hasDuplicate, latestNonce, hasAnyTransactions, err := DB_OPs.CheckNonceAndGetLatest(mainDBClient, tx.From, tx.Nonce)
 	if err != nil {
-		Conn.Client.Logger.Logger.Error("Failed to check nonce",
+		Conn.Client.Logger.Logger.Error("Failed to check nonce duplicate",
 			zap.Error(err),
-			zap.String("from_address", tx.From.Hex()),
-			zap.Uint64("nonce", tx.Nonce),
 			zap.String(logging.Connection_database, config.AccountsDBName),
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
@@ -309,7 +307,6 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 		)
 		return false, fmt.Errorf("nonce check failed with error: %w", err)
 	}
-
 	if hasDuplicate {
 		Conn.Client.Logger.Logger.Error("Duplicate nonce detected",
 			zap.String("from_address", tx.From.Hex()),
@@ -324,29 +321,27 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 		return false, fmt.Errorf("transaction with same nonce already exists for address %s", tx.From.Hex())
 	}
 
-	// Validate nonce: must be >= latestNonce + 1
-	// Allow nonces >= latestNonce + 1 to handle cases where:
-	// - Failed/pending transactions caused wallet (e.g., MetaMask) to increment nonce
-	// - Transactions were sent but not yet included in blocks
-	// - Wallet's internal nonce counter is ahead of blockchain state
-	// Duplicate nonce check is already performed above, so we just need to ensure nonce is not too low
-	var minAllowedNonce uint64
-	if !hasAnyTransactions {
-		// First transaction from this address should have nonce >= 0
-		minAllowedNonce = 0
-	} else {
-		// For accounts with existing transactions, nonce must be >= latestNonce + 1
-		minAllowedNonce = latestNonce + 1
+	// Check if submitted nonce is greater than the latest nonce
+	latestNonce, err := DB_OPs.GetLatestNonce(mainDBClient, tx.From)
+	if err != nil {
+		Conn.Client.Logger.Logger.Error("Failed to get latest nonce",
+			zap.Error(err),
+			zap.String("from_address", tx.From.Hex()),
+			zap.String(logging.Connection_database, config.AccountsDBName),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Security.ThreeChecks"),
+		)
+		return false, fmt.Errorf("failed to get latest nonce: %w", err)
 	}
 
-	if tx.Nonce < minAllowedNonce {
-		expectedNonce := minAllowedNonce
-		Conn.Client.Logger.Logger.Error("Nonce is too low",
+	if tx.Nonce <= latestNonce {
+		Conn.Client.Logger.Logger.Error("Nonce is not greater than latest nonce",
 			zap.String("from_address", tx.From.Hex()),
 			zap.Uint64("submitted_nonce", tx.Nonce),
-			zap.Uint64("minimum_allowed_nonce", minAllowedNonce),
 			zap.Uint64("latest_nonce", latestNonce),
-			zap.Bool("has_any_transactions", hasAnyTransactions),
 			zap.String(logging.Connection_database, config.AccountsDBName),
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
@@ -354,7 +349,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Loki_url, config.LOKI_URL),
 			zap.String(logging.Function, "Security.AllChecks"),
 		)
-		return false, fmt.Errorf("submitted nonce %d is too low, must be >= %d (latest: %d) for address %s", tx.Nonce, expectedNonce, latestNonce, tx.From.Hex())
+		return false, fmt.Errorf("submitted nonce %d is not greater than latest nonce %d for address %s", tx.Nonce, latestNonce, tx.From.Hex())
 	}
 
 	Conn.Client.Logger.Logger.Info("Transaction is valid",

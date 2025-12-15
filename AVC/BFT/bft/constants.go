@@ -3,7 +3,11 @@
 // =============================================================================
 package bft
 
-import "time"
+import (
+	"time"
+
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
+)
 
 const (
 	PrepareVersionV1 = "PREPARE_V1"
@@ -38,4 +42,8 @@ const (
 	// DefaultCommitteeSize is the production size for buddy node committees
 	// This equals 13 buddies for BFT consensus (threshold = 2f+1 = 9 votes)
 	DefaultCommitteeSize = 13
+)
+
+var(
+	BFTLocal interfaces.LocalGoroutineManagerInterface
 )

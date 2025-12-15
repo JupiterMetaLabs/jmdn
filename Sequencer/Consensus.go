@@ -14,6 +14,7 @@ import (
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/Sequencer/helper"
 	"gossipnode/config"
+	GRO "gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/messaging"
 	"log"

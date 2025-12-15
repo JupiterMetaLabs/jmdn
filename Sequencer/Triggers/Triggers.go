@@ -9,22 +9,26 @@ import (
 	"gossipnode/AVC/BuddyNodes/CRDTSync"
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service/PubSubConnector"
+
 	"gossipnode/AVC/BuddyNodes/Types"
 	voteaggregation "gossipnode/AVC/VoteModule"
 	"gossipnode/Pubsub"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/config"
+	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/seednode"
 	"log"
 	"strings"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // This trigger is used to trigger the Close the accepting messages from the nodes for listener protocol
+var LocalGRO interfaces.LocalGoroutineManagerInterface
 const ListeningTriggerMessage = "ListeningTrigger"
 const ListeningTriggerBufferTime = 20 * time.Second
 const CRDTDataSubmitBufferTime = 25 * time.Second
@@ -292,6 +296,19 @@ func BFTTrigger(blockhash string) {
 // RequestVoteResultsFromBuddies requests vote results from all buddy nodes
 func RequestVoteResultsFromBuddies(blockhash string) error {
 	log.Printf("RequestVoteResultsFromBuddies: Requesting vote results from all buddy nodes")
+	var err error
+	// Create a new AppGRO for Sequencer.Maps.Trigger
+	AppGRO := GRO.GetApp(GRO.SequencerApp)
+	if AppGRO == nil {
+		return fmt.Errorf("app manager not available")
+	}
+
+	if LocalGRO == nil {
+		LocalGRO, err = AppGRO.NewLocalManager(GRO.SequencerTriggerLocal)
+		if err != nil {
+			return fmt.Errorf("failed to create local manager: %v", err)
+		}
+	}
 
 	// Get the listener node
 	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
@@ -355,11 +372,11 @@ func RequestVoteResultsFromBuddies(blockhash string) error {
 
 	// Request vote results from each buddy node
 	for _, peerID := range filteredBuddies {
-		go func(pid peer.ID) {
-			stream, err := listenerNode.Host.NewStream(context.Background(), pid, config.SubmitMessageProtocol)
+		LocalGRO.Go(GRO.SequencerTriggerLocal, func(ctx context.Context) error {
+			stream, err := listenerNode.Host.NewStream(context.Background(), peerID, config.SubmitMessageProtocol)
 			if err != nil {
-				log.Printf("RequestVoteResultsFromBuddies: Failed to open stream to %s: %v", pid, err)
-				return
+				log.Printf("RequestVoteResultsFromBuddies: Failed to open stream to %s: %v", peerID, err)
+				return err
 			}
 			defer stream.Close()
 
@@ -381,18 +398,18 @@ func RequestVoteResultsFromBuddies(blockhash string) error {
 			reqData = append(reqData, byte(config.Delimiter))
 
 			if _, err := stream.Write(reqData); err != nil {
-				log.Printf("RequestVoteResultsFromBuddies: Failed to send request to %s: %v", pid, err)
-				return
+				log.Printf("RequestVoteResultsFromBuddies: Failed to send request to %s: %v", peerID, err)
+				return err
 			}
 
-			log.Printf("RequestVoteResultsFromBuddies: Sent request to %s", pid)
+			log.Printf("RequestVoteResultsFromBuddies: Sent request to %s", peerID)
 
 			// Read response
 			reader := bufio.NewReader(stream)
 			response, err := reader.ReadString(config.Delimiter)
 			if err != nil {
-				log.Printf("RequestVoteResultsFromBuddies: Failed to read response from %s: %v", pid, err)
-				return
+				log.Printf("RequestVoteResultsFromBuddies: Failed to read response from %s: %v", peerID, err)
+				return err
 			}
 
 			// Parse and store vote result
@@ -401,12 +418,13 @@ func RequestVoteResultsFromBuddies(blockhash string) error {
 				var resultData map[string]interface{}
 				if err := json.Unmarshal([]byte(responseMsg.Message), &resultData); err == nil {
 					if result, ok := resultData["result"].(float64); ok {
-						Maps.StoreVoteResult(pid.String(), int8(result))
-						log.Printf("RequestVoteResultsFromBuddies: Stored vote result from %s: %d", pid, int8(result))
+						Maps.StoreVoteResult(peerID.String(), int8(result))
+						log.Printf("RequestVoteResultsFromBuddies: Stored vote result from %s: %d", peerID, int8(result))
 					}
 				}
 			}
-		}(peerID)
+			return nil
+		})
 	}
 
 	return nil

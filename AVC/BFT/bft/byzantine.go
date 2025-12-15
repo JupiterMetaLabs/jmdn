@@ -4,8 +4,10 @@
 package bft
 
 import (
+	"context"
 	"sync"
 	"time"
+	"gossipnode/config/GRO"
 )
 
 type byzantineEntry struct {
@@ -24,7 +26,10 @@ func newByzantineDetector() *byzantineDetector {
 		byzantine:  make(map[string]byzantineEntry),
 		defaultTTL: 5 * time.Minute,
 	}
-	go b.cleaner()
+	BFTLocal.Go(GRO.BFTByzantineDetectorThread, func(ctx context.Context) error {
+		b.cleaner()
+		return nil
+	})
 	return b
 }
 

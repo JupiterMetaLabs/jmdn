@@ -6,6 +6,7 @@ import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/config"
+	"gossipnode/config/GRO"
 	"gossipnode/config/PubSubMessages"
 	"time"
 
@@ -95,6 +96,15 @@ func Unsubscribe(gps *PubSubMessages.GossipPubSub, topic string) error {
 
 // subscribeViaGossipSub subscribes to a topic using libp2p GossipSub
 func subscribeViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, handler func(*PubSubMessages.GossipMessage)) error {
+
+	if LocalGRO == nil {
+		var err error
+		LocalGRO, err = GRO.GetApp(GRO.PubsubApp).NewLocalManager(GRO.PubsubSubscribeLocal)
+		if err != nil {
+			return fmt.Errorf("failed to create local manager: %w", err)
+		}
+	}
+
 	fmt.Printf("About to call GetOrJoinTopic for %s\n", topicName)
 	// Get or join the topic
 	topic, err := gps.GetOrJoinTopic(topicName)
@@ -109,12 +119,7 @@ func subscribeViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, h
 	}
 	fmt.Printf("Subscribe returned successfully for %s\n", topicName)
 	// Start a goroutine to handle incoming messages with proper context
-	ctx, cancel := context.WithCancel(context.Background())
-	// Store cancel function for cleanup (in a real implementation, you'd track this)
-	_ = cancel
-	fmt.Printf("Context set for %s\n", topicName)
-	go func() {
-		defer cancel()
+	LocalGRO.Go(GRO.PubsubSubscriptionThread, func(ctx context.Context) error {
 		for {
 			fmt.Printf("About to call Next for %s\n", topicName)
 			msg, err := sub.Next(ctx)
@@ -125,7 +130,7 @@ func subscribeViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, h
 				} else {
 					fmt.Printf("Error reading message from GossipSub: %v\n", err)
 				}
-				return
+				return err
 			}
 			fmt.Printf("Next returned successfully for %s\n", topicName)
 			// Parse the actual message data from raw bytes
@@ -165,7 +170,7 @@ func subscribeViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, h
 				handler(gossipMsg)
 			}
 		}
-	}()
+	})
 	fmt.Printf("subscribeViaGossipSub returned successfully for %s\n", topicName)
 	return nil
 }

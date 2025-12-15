@@ -17,15 +17,19 @@ import (
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	ServiceLayer "gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
+	"gossipnode/AVC/BuddyNodes/common"
 	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/config"
+	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 
+		"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
 )
+
 
 // BFTContext holds the context for a BFT consensus round
 type BFTContext struct {
@@ -151,6 +155,14 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 
 // handleBFTRequest processes BFT consensus request from Sequencer
 func (lh *ListenerHandler) handleBFTRequest(s network.Stream, message *AVCStruct.Message) {
+	if ListenerHandlerLocal == nil {
+		var err error
+		ListenerHandlerLocal, err = common.InitializeGRO(GRO.HandleBFTRequestLocal)
+		if err != nil {
+			fmt.Printf("❌ Failed to initialize ListenerHandler local manager: %v\n", err)
+			return
+		}
+	}
 	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
 	fmt.Printf("║          RECEIVED BFT REQUEST FROM SEQUENCER               ║\n")
 	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
@@ -251,7 +263,10 @@ func (lh *ListenerHandler) handleBFTRequest(s network.Stream, message *AVCStruct
 	lh.sendBFTAcknowledgment(s, requestData.Round, requestData.BlockHash, true)
 
 	// Start BFT consensus in background
-	go lh.runBFTConsensusFlow(contextKey)
+	ListenerHandlerLocal.Go(GRO.BFTConsensusThread, func(ctx context.Context) error {
+		lh.runBFTConsensusFlow(contextKey)
+		return nil
+	})
 }
 
 // sendBFTAcknowledgment sends ACK back to Sequencer
@@ -1013,6 +1028,14 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 }
 
 func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message *AVCStruct.Message, buddies []peer.ID) {
+	if ListenerHandlerLocal == nil {
+		var err error
+		ListenerHandlerLocal, err = common.InitializeGRO(GRO.HandleBFTRequestLocal)
+		if err != nil {
+			fmt.Printf("❌ Failed to initialize ListenerHandler local manager: %v\n", err)
+			return
+		}
+	}
 	defer s.Close()
 
 	fmt.Println("📩 Received BFT trigger from Sequencer:", message)
@@ -1120,22 +1143,25 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 	var responsesMutex sync.Mutex
 
 	responseCh := make(chan bool, len(filteredBuddies))
-	var wg sync.WaitGroup
+	wg, err := ListenerHandlerLocal.NewFunctionWaitGroup(context.Background(), GRO.BFTWaitGroup)
+	if err != nil {
+		fmt.Printf("❌ Failed to create waitgroup: %v\n", err)
+		return
+	}
 
 	for _, b := range filteredBuddies {
-		wg.Add(1)
-		go func(peerID peer.ID) {
-			defer wg.Done()
+		buddyID := b
+		if err := ListenerHandlerLocal.Go(GRO.BFTSendRequestThread, func(ctx context.Context) error {
 			// Use SubmitMessageProtocol because HandleSubmitMessageStream routes Type_VoteResult
-			stream, err := listenerNode.Host.NewStream(context.Background(), peerID, config.SubmitMessageProtocol)
+			stream, err := listenerNode.Host.NewStream(ctx, buddyID, config.SubmitMessageProtocol)
 			if err != nil {
-				fmt.Printf("❌ Failed to open stream to %s: %v\n", peerID, err)
+				fmt.Printf("❌ Failed to open stream to %s: %v\n", buddyID, err)
 				responseCh <- false
-				return
+				return nil
 			}
 			defer func() {
 				stream.Close()
-				fmt.Printf("🔌 Closed stream to %s\n", peerID)
+				fmt.Printf("🔌 Closed stream to %s\n", buddyID)
 			}()
 
 			reqAck := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
@@ -1148,20 +1174,24 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 			reqData, _ := json.Marshal(reqMsg)
 			reqData = append(reqData, byte(config.Delimiter))
 			if _, err := stream.Write(reqData); err != nil {
-				fmt.Printf("❌ Failed to send RequestForVoteResult to %s: %v\n", peerID, err)
+				fmt.Printf("❌ Failed to send RequestForVoteResult to %s: %v\n", buddyID, err)
 				responseCh <- false
-				return
+				return nil
 			}
-			fmt.Printf("📨 Sent RequestForVoteResult to %s\n", peerID)
+			fmt.Printf("📨 Sent RequestForVoteResult to %s\n", buddyID)
 
 			// Wait for the vote result
 			readCh := make(chan []byte, 1)
+			readErrCh := make(chan error, 1)
+
+			// Read from stream in a goroutine (can't use LocalGRO here as it's a blocking read)
 			go func() {
 				buf := make([]byte, 0)
 				tmp := make([]byte, 1024)
 				for {
 					n, err := stream.Read(tmp)
 					if err != nil {
+						readErrCh <- err
 						close(readCh)
 						return
 					}
@@ -1173,20 +1203,27 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 				}
 			}()
 
+			timeoutTimer := time.NewTimer(5 * time.Second)
+			defer timeoutTimer.Stop()
+
 			select {
+			case <-ctx.Done():
+				fmt.Printf("⏳ Context cancelled while waiting for vote result from %s\n", buddyID)
+				responseCh <- false
+				return ctx.Err()
 			case payload := <-readCh:
 				if payload == nil {
-					fmt.Printf("⚠️ No response from %s (nil payload)\n", peerID)
+					fmt.Printf("⚠️ No response from %s (nil payload)\n", buddyID)
 					responseCh <- false
-					return
+					return nil
 				}
 
-				fmt.Printf("📥 Received payload from %s: %d bytes\n", peerID, len(payload))
+				fmt.Printf("📥 Received payload from %s: %d bytes\n", buddyID, len(payload))
 				fmt.Printf("📝 Payload content: %s\n", string(payload))
 
 				var msg AVCStruct.Message
 				if err := json.Unmarshal(payload, &msg); err == nil {
-					fmt.Printf("✅ Parsed vote result message from %s\n", peerID)
+					fmt.Printf("✅ Parsed vote result message from %s\n", buddyID)
 					fmt.Printf("   Message content: %s\n", msg.Message)
 
 					// Parse and store the vote result directly
@@ -1194,8 +1231,8 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 					if err := json.Unmarshal([]byte(msg.Message), &resultData); err == nil {
 						if result, ok := resultData["result"].(float64); ok {
 							voteResult := int8(result)
-							Maps.StoreVoteResult(peerID.String(), voteResult)
-							fmt.Printf("✅ Stored vote result for peer %s: %d\n", peerID.String(), voteResult)
+							Maps.StoreVoteResult(buddyID.String(), voteResult)
+							fmt.Printf("✅ Stored vote result for peer %s: %d\n", buddyID.String(), voteResult)
 							responsesMutex.Lock()
 							responsesReceived++
 							count := responsesReceived
@@ -1206,27 +1243,31 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 								fmt.Printf("✅ Reached minimum requirement: %d/%d responses\n", count, config.MaxMainPeers)
 							}
 							responseCh <- true
-							return
+							return nil
 						}
 					}
-					fmt.Printf("⚠️ Failed to parse vote result from %s\n", peerID)
+					fmt.Printf("⚠️ Failed to parse vote result from %s\n", buddyID)
 					responseCh <- false
 				} else {
-					fmt.Printf("⚠️ Invalid response from %s: %s\n", peerID, string(payload))
+					fmt.Printf("⚠️ Invalid response from %s: %s\n", buddyID, string(payload))
 					responseCh <- false
 				}
-			case <-time.After(5 * time.Second):
-				fmt.Printf("⏳ Timeout waiting for vote result from %s\n", peerID)
+			case <-readErrCh:
+				fmt.Printf("⚠️ Error reading from stream for %s\n", buddyID)
+				responseCh <- false
+			case <-timeoutTimer.C:
+				fmt.Printf("⏳ Timeout waiting for vote result from %s\n", buddyID)
 				responseCh <- false
 			}
-		}(b)
+			return nil
+		}, local.AddToWaitGroup(GRO.BFTWaitGroup)); err != nil {
+			fmt.Printf("❌ Failed to start goroutine for buddy %s: %v\n", buddyID, err)
+		}
 	}
 
 	// Wait for all goroutines to complete
-	go func() {
-		wg.Wait()
-		close(responseCh)
-	}()
+	wg.Wait()
+	close(responseCh)
 
 	// Wait for responses and check if we have enough
 	for success := range responseCh {

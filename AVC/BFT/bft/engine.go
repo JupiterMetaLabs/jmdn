@@ -3,6 +3,8 @@ package bft
 import (
 	"context"
 	"fmt"
+	"gossipnode/AVC/BFT/common"
+	"gossipnode/config/GRO"
 	"sync"
 	"time"
 )
@@ -27,6 +29,13 @@ type engine struct {
 }
 
 func (e *engine) runPrepare(ctx context.Context, messenger Messenger) (*PhaseResult, error) {
+	if BFTLocal == nil {
+		var err error
+		BFTLocal, err = common.InitializeGRO(GRO.BFTLocal)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize BFT local manager: %w", err)
+		}
+	}
 	myPrepare := &PrepareMessage{
 		Version:   PrepareVersionV1,
 		Seq:       e.ensureSeqForSelf(),
@@ -46,11 +55,11 @@ func (e *engine) runPrepare(ctx context.Context, messenger Messenger) (*PhaseRes
 	timeoutCtx, cancel := context.WithTimeout(ctx, e.config.PrepareTimeout)
 	defer cancel()
 
-	go func() {
+	BFTLocal.Go(GRO.BFTPrepareThread, func(ctx context.Context) error {
 		for {
 			select {
 			case <-timeoutCtx.Done():
-				return
+				return timeoutCtx.Err()
 			case msg := <-messenger.ReceivePrepare():
 				if msg == nil {
 					continue
@@ -60,7 +69,8 @@ func (e *engine) runPrepare(ctx context.Context, messenger Messenger) (*PhaseRes
 				}
 			}
 		}
-	}()
+		return nil
+	})
 
 	decision, err := e.waitForPrepareThreshold(timeoutCtx)
 	if err != nil {
@@ -78,6 +88,13 @@ func (e *engine) runPrepare(ctx context.Context, messenger Messenger) (*PhaseRes
 }
 
 func (e *engine) runCommit(ctx context.Context, messenger Messenger, prepareDecision Decision) (*PhaseResult, error) {
+	if BFTLocal == nil {
+		var err error
+		BFTLocal, err = common.InitializeGRO(GRO.BFTLocal)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize BFT local manager: %w", err)
+		}
+	}
 	myCommit, err := e.createCommit(prepareDecision)
 	if err != nil {
 		return nil, err
@@ -92,11 +109,11 @@ func (e *engine) runCommit(ctx context.Context, messenger Messenger, prepareDeci
 	timeoutCtx, cancel := context.WithTimeout(ctx, e.config.CommitTimeout)
 	defer cancel()
 
-	go func() {
+	BFTLocal.Go(GRO.BFTCommitThread, func(ctx context.Context) error {
 		for {
 			select {
 			case <-timeoutCtx.Done():
-				return
+				return timeoutCtx.Err()
 			case msg := <-messenger.ReceiveCommit():
 				if msg == nil {
 					continue
@@ -113,7 +130,7 @@ func (e *engine) runCommit(ctx context.Context, messenger Messenger, prepareDeci
 				e.addCommitMsg(msg)
 			}
 		}
-	}()
+	})
 
 	decision, err := e.waitForCommitThreshold(timeoutCtx)
 	if err != nil {

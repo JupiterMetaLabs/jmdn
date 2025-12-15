@@ -10,6 +10,7 @@ import (
 
 	database "gossipnode/DB_OPs/sqlops"
 	"gossipnode/config"
+	"gossipnode/config/GRO"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -70,7 +71,10 @@ func RegisterAsSeed(node *config.Node) error {
 		})
 
 	// Start routine to cleanup stale peers
-	go runPeerCleanup(node)
+	LocalGRO.Go(GRO.SeedLocal, func(ctx context.Context) error {
+		runPeerCleanup(node)
+		return nil
+	})
 
 	fmt.Println("Node registered as seed node")
 	return nil
