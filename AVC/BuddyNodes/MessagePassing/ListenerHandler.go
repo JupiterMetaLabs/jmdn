@@ -592,6 +592,30 @@ func (lh *ListenerHandler) handleSubmitVote(s network.Stream, message *AVCStruct
 		return
 	}
 
+	// Validate sender authenticity
+	if message.Sender != s.Conn().RemotePeer() {
+		fmt.Printf("❌ Sender mismatch: declared %s, connection %s. Dropping vote.\n", message.Sender, s.Conn().RemotePeer())
+		return
+	}
+
+	// Validate vote payload fields
+	voteValueRaw, hasVote := voteData["vote"]
+	blockHashRaw, hasBlockHash := voteData["block_hash"]
+	if !hasVote || !hasBlockHash {
+		fmt.Printf("❌ Missing vote or block_hash in payload; dropping vote\n")
+		return
+	}
+	voteValue, ok := voteValueRaw.(float64)
+	if !ok || (voteValue != 1 && voteValue != -1) {
+		fmt.Printf("❌ Invalid vote value: %v; dropping vote\n", voteValueRaw)
+		return
+	}
+	blockHash, ok := blockHashRaw.(string)
+	if !ok || blockHash == "" {
+		fmt.Printf("❌ Invalid block_hash: %v; dropping vote\n", blockHashRaw)
+		return
+	}
+
 	if _, exists := voteData["vote"]; exists {
 		OP := &Types.OP{
 			NodeID: message.Sender,
@@ -866,7 +890,7 @@ func (lh *ListenerHandler) handleVoteResult(s network.Stream, message *AVCStruct
 func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AVCStruct.Message) {
 	fmt.Printf("\n\n\n🎯🎯🎯 RECEIVED VOTE RESULT REQUEST FROM SEQUENCER 🎯🎯🎯\n\n\n")
 	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║       REQUEST FOR VOTE AGGREGATION RESULT                 ║\n")
+	fmt.Printf("║       REQUEST FOR VOTE AGGREGATION RESULT                  ║\n")
 	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
 	fmt.Printf("📨 Request from: %s\n", s.Conn().RemotePeer().String())
 	fmt.Printf("📋 Message: %s\n", message.Message)
@@ -874,6 +898,32 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
 	if listenerNode == nil || listenerNode.CRDTLayer == nil {
 		fmt.Printf("❌ Listener node or CRDT layer not initialized\n")
+		return
+	}
+
+	// Parse optional request payload (e.g., block hash scoping)
+	var targetBlockHash string
+	var voteResultReq struct {
+		BlockHash string `json:"block_hash"`
+	}
+	// functions which retuning the response should return the same format
+	if err := json.Unmarshal([]byte(message.Message), &voteResultReq); err == nil {
+		targetBlockHash = voteResultReq.BlockHash
+		if targetBlockHash != "" {
+			fmt.Printf("🎯 Target block hash from request: %s\n", targetBlockHash)
+		}
+	} else {
+		fmt.Printf("DEBUG: Vote result request payload not JSON or missing block_hash: %v\n", err)
+		// If no valid JSON payload, reject to avoid mixing blocks
+		ackMessage := AVCStruct.NewACKBuilder().False_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
+		response := AVCStruct.NewMessageBuilder(nil).
+			SetSender(listenerNode.PeerID).
+			SetMessage(fmt.Sprintf(`{"error":"invalid vote result request: %v"}`, err)).
+			SetTimestamp(time.Now().UTC().Unix()).
+			SetACK(ackMessage)
+		responseBytes, _ := json.Marshal(response)
+		_, _ = s.Write([]byte(string(responseBytes) + string(rune(config.Delimiter))))
+		fmt.Printf("❌ Invalid vote result request payload; rejecting\n")
 		return
 	}
 
@@ -923,7 +973,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 	}
 
 	// Process votes from CRDT
-	result, err := Structs.ProcessVotesFromCRDT(listenerNode)
+	result, err := Structs.ProcessVotesFromCRDT(listenerNode, targetBlockHash)
 	if err != nil {
 		fmt.Printf("❌ Failed to process votes from CRDT: %v\n", err)
 		return

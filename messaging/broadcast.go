@@ -461,6 +461,10 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 		return fmt.Errorf("consensus message cannot be nil")
 	}
 
+	if consensusMessage.GetZKBlock().BlockHash.String() == "" {
+		return fmt.Errorf("consensus message ZKBlock block hash is empty")
+	}
+
 	fmt.Printf("Consensus message: %+v\n", consensusMessage)
 
 	// Set the voting timer when broadcast starts

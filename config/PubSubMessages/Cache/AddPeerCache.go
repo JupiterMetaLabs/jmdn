@@ -6,7 +6,9 @@ import (
 	"gossipnode/config/PubSubMessages"
 	"gossipnode/node"
 	"sync"
+	"time"
 
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 )
@@ -15,6 +17,14 @@ var (
 	AddPeersCache   map[peer.ID]multiaddr.Multiaddr
 	AddPeersCacheMu sync.Mutex // protect global cache
 )
+
+type Stats struct {
+	mu               *sync.RWMutex
+	TotalPeers       int
+	ReachablePeers   map[peer.ID]multiaddr.Multiaddr
+	UnreachablePeers map[peer.ID]multiaddr.Multiaddr
+	TimeTaken        time.Duration
+}
 
 func NewAddPeersCache() map[peer.ID]multiaddr.Multiaddr { return make(map[peer.ID]multiaddr.Multiaddr) }
 
@@ -118,96 +128,83 @@ func FallbackConnectionFunction(peerID peer.ID, multiaddrs []string) {
 	}
 }
 
-// AddPeersTemporary: concurrent reachability check, stops at 4 reachable peers
-func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) {
+// AddPeersTemporary: concurrent reachability check, adds all reachable peers
+// Returns statistics about reachability checks and connections
+func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) Stats {
+	startTime := time.Now()
+	stats := NewStatsBuilder(nil)
+	stats.SetTotalPeers(len(peers))
+
 	AddPeersCacheMu.Lock()
 	if AddPeersCache == nil {
 		AddPeersCache = make(map[peer.ID]multiaddr.Multiaddr)
 	}
 	AddPeersCacheMu.Unlock()
 
-	const targetPeers = config.MaxMainPeers
-	
 	var wg sync.WaitGroup
-	var found sync.Mutex
-	foundCount := 0
-	done := make(chan struct{})
-	
-	reachablePeers := make(map[peer.ID]multiaddr.Multiaddr)
-	
+
 	fmt.Println("---- Starting concurrent reachability checks ----")
 
 	nm := GetNodeManager()
 	if nm == nil {
 		fmt.Println("NodeManager not available")
-		return
+		stats.TimeTaken = time.Since(startTime)
+		return *stats
 	}
 
 	for idx, buddy := range peers {
 		wg.Add(1)
 		go func(peerID peer.ID, maddr multiaddr.Multiaddr, index int) {
 			defer wg.Done()
-			
-			// Check if we already found enough peers
-			select {
-			case <-done:
-				return
-			default:
-			}
 
 			addrStr := maddr.String()
 			fmt.Printf("[Thread %d] Checking peer %s at %s\n", index, peerID, addrStr)
 
 			if nm == nil {
 				fmt.Printf("[%s] NodeManager not available\n", peerID)
+				stats.AddUnreachablePeer(peerID, maddr)
 				return
 			}
 
 			reachable, timeTaken, err := nm.PingMultiaddrWithRetries(addrStr, 3)
 			if err != nil {
 				fmt.Printf("[%s] Error: %v\n", peerID, err)
+				stats.AddUnreachablePeer(peerID, maddr)
 				return
 			}
 
 			fmt.Printf("[%s] Time: %v, Reachable: %v\n", peerID, timeTaken, reachable)
-			
+
 			if reachable {
-				found.Lock()
-				if foundCount < targetPeers {
-					reachablePeers[peerID] = maddr
-					AddPeer(peerID, maddr)
-					foundCount++
-					fmt.Printf("✓ Peer %s added (%d/%d)\n", peerID, foundCount, targetPeers)
-					
-					if foundCount >= targetPeers {
-						close(done)
-					}
-				}
-				found.Unlock()
+				stats.AddReachablePeer(peerID, maddr)
+				AddPeer(peerID, maddr)
+				fmt.Printf("✓ Peer %s added\n", peerID)
+			} else {
+				stats.AddUnreachablePeer(peerID, maddr)
 			}
 		}(buddy.PeerID, buddy.Multiaddr, idx)
 	}
 
 	wg.Wait()
-	
-	// Ensure done channel is closed
-	select {
-	case <-done:
-	default:
-		close(done)
-	}
 
-	fmt.Printf("\n---- Found %d/%d reachable peers ----\n", len(reachablePeers), targetPeers)
-	
+	reachablePeers := stats.GetReachablePeers()
+	unreachablePeers := stats.GetUnreachablePeers()
+
+	fmt.Printf("\n---- Found %d reachable peers (unreachable: %d) ----\n",
+		len(reachablePeers), len(unreachablePeers))
+
 	if len(reachablePeers) > 0 {
 		if err := ConnectToTemporaryPeers(reachablePeers); err != nil {
 			fmt.Printf("Connection failed: %v\n", err)
-			return
+		} else {
+			fmt.Printf("Connected to %d peers\n", len(reachablePeers))
 		}
-		fmt.Printf("Connected to %d peers\n", len(reachablePeers))
 	} else {
 		fmt.Println("No reachable peers found")
 	}
+
+	stats.TimeTaken = time.Since(startTime)
+	return *stats
 }
 
 func GetNodeManager() *node.NodeManager {
@@ -221,23 +218,74 @@ func ConnectToTemporaryPeers(peers map[peer.ID]multiaddr.Multiaddr) error {
 	}
 
 	var connectedCount, failedCount int
+	connectedPeers := make(map[peer.ID]bool)
 
 	for peerID, addr := range peers {
 		addrStr := addr.String()
 		fmt.Printf("Adding temporary peer for consensus: %s at %s\n", peerID, addrStr)
 
 		if err := nodeManager.AddPeer(addrStr); err != nil {
-			fmt.Printf("Failed to add peer %s: %v\n", peerID, err)
-			failedCount++
+			// Check if error is because peer is already connected (this is OK)
+			if err.Error() == fmt.Sprintf("peer %s is already connected and managed", peerID) {
+				fmt.Printf("Peer %s already connected (OK)\n", peerID)
+				connectedCount++
+				connectedPeers[peerID] = true
+			} else {
+				fmt.Printf("Failed to add peer %s: %v\n", peerID, err)
+				failedCount++
+			}
 		} else {
 			fmt.Printf("Peer %s added to NodeManager for consensus\n", peerID)
 			connectedCount++
+			connectedPeers[peerID] = true
 		}
 	}
 
-	fmt.Printf("Temporary peer connection summary: %d added to NodeManager, %d failed\n", connectedCount, failedCount)
-	if failedCount > 0 {
-		fmt.Printf("Warning: %d peers failed to be added to NodeManager\n", failedCount)
+	// Verify actual libp2p connections (not just NodeManager tracking)
+	// Get the host from NodeManager to check actual connections
+	host := nodeManager.GetHost()
+	if host == nil {
+		return fmt.Errorf("cannot verify connections: host not available")
+	}
+
+	// Wait a moment for connections to establish
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify each peer is actually connected
+	actuallyConnected := 0
+	for peerID := range connectedPeers {
+		connectedness := host.Network().Connectedness(peerID)
+		if connectedness == network.Connected {
+			actuallyConnected++
+			fmt.Printf("✅ Verified connection to peer %s\n", peerID.String()[:16])
+		} else {
+			fmt.Printf("❌ Peer %s not actually connected (status: %v)\n", peerID.String()[:16], connectedness)
+			// Remove from connectedPeers map
+			delete(connectedPeers, peerID)
+		}
+	}
+
+	fmt.Printf("Temporary peer connection summary: %d added to NodeManager, %d failed, %d actually connected\n",
+		connectedCount, failedCount, actuallyConnected)
+
+	// Return error if we don't have enough actually connected peers
+	if actuallyConnected < config.MaxMainPeers {
+		return fmt.Errorf("insufficient connected peers: got %d actually connected, need exactly %d (MaxMainPeers). Added to NodeManager: %d, Failed: %d",
+			actuallyConnected, config.MaxMainPeers, connectedCount, failedCount)
+	}
+
+	return nil
+}
+
+// DisconnectFromTemporaryPeers: disconnect from temporary peers - Should be called when consensus is done
+func DisconnectFromTemporaryPeers(peers map[peer.ID]multiaddr.Multiaddr) error {
+	nodeManager := GetNodeManager()
+	if nodeManager == nil {
+		return fmt.Errorf("NodeManager not available")
+	}
+
+	for peerID := range peers {
+		nodeManager.RemovePeer(peerID.String())
 	}
 	return nil
 }

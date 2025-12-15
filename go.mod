@@ -10,6 +10,7 @@ require (
 	github.com/dgraph-io/badger/v4 v4.5.0
 	github.com/ethereum/go-ethereum v1.14.7
 	github.com/gin-gonic/gin v1.9.1
+	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/grafana/loki-client-go v0.0.0-20240913122146-e119d400c3a5
 	github.com/holiman/uint256 v1.3.2
 	github.com/imxyb/solc-go v0.0.0-20221118052323-46126dce43fa

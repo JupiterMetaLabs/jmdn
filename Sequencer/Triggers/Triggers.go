@@ -228,7 +228,7 @@ func CRDTDataSubmitTrigger() {
 	})
 }
 
-func ListeningTrigger() {
+func ListeningTrigger(blockhash string) {
 	time.AfterFunc(ListeningTriggerBufferTime, func() {
 		log.Printf("ListeningTrigger: Closing listener protocol after %v", ListeningTriggerBufferTime)
 
@@ -241,7 +241,7 @@ func ListeningTrigger() {
 		}
 
 		// Trigger BFT consensus after listening period
-		BFTTrigger()
+		BFTTrigger(blockhash)
 	})
 }
 
@@ -270,7 +270,7 @@ func ReleaseBuddyNodesTrigger() {
 	}
 }
 
-func BFTTrigger() {
+func BFTTrigger(blockhash string) {
 	log.Printf("BFTTrigger: Starting BFT consensus after %v", BFTTriggerBufferTime)
 
 	time.AfterFunc(BFTTriggerBufferTime, func() {
@@ -287,14 +287,14 @@ func BFTTrigger() {
 		defer consensusCancel()
 
 		// Start BFT consensus process
-		if err := StartBFTConsensus(); err != nil {
+		if err := StartBFTConsensus(blockhash); err != nil {
 			log.Printf("BFTTrigger: Failed to start BFT consensus: %v", err)
 		}
 	})
 }
 
 // RequestVoteResultsFromBuddies requests vote results from all buddy nodes
-func RequestVoteResultsFromBuddies() error {
+func RequestVoteResultsFromBuddies(blockhash string) error {
 	log.Printf("RequestVoteResultsFromBuddies: Requesting vote results from all buddy nodes")
 	var err error
 	// Create a new AppGRO for Sequencer.Maps.Trigger
@@ -366,6 +366,10 @@ func RequestVoteResultsFromBuddies() error {
 
 	log.Printf("RequestVoteResultsFromBuddies: Filtered to %d valid buddy nodes", len(filteredBuddies))
 
+	// TODO - Level 5
+	// Resolve block hash from cached consensus messages (best effort)
+	// blockHash := getCachedBlockHash()
+
 	// Request vote results from each buddy node
 	for _, peerID := range filteredBuddies {
 		LocalGRO.Go(GRO.SequencerTriggerLocal, func(ctx context.Context) error {
@@ -378,9 +382,15 @@ func RequestVoteResultsFromBuddies() error {
 
 			// Create vote result request message
 			reqAck := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
+			// Include block hash to scope vote aggregation
+			requestPayload := map[string]string{
+				"block_hash": blockhash,
+			}
+			requestPayloadBytes, _ := json.Marshal(requestPayload)
+
 			reqMsg := AVCStruct.NewMessageBuilder(nil).
 				SetSender(listenerNode.PeerID).
-				SetMessage("RequestForVoteResult").
+				SetMessage(string(requestPayloadBytes)).
 				SetTimestamp(time.Now().UTC().Unix()).
 				SetACK(reqAck)
 
@@ -420,7 +430,7 @@ func RequestVoteResultsFromBuddies() error {
 	return nil
 }
 
-func StartBFTConsensus() error {
+func StartBFTConsensus(blockhash string) error {
 	log.Printf("StartBFTConsensus: Initiating BFT consensus process")
 
 	if subscriptionService == nil {
@@ -428,7 +438,7 @@ func StartBFTConsensus() error {
 	}
 
 	// First, request vote results from all buddy nodes
-	if err := RequestVoteResultsFromBuddies(); err != nil {
+	if err := RequestVoteResultsFromBuddies(blockhash); err != nil {
 		log.Printf("StartBFTConsensus: Failed to request vote results: %v", err)
 	}
 
@@ -500,14 +510,13 @@ func StartBFTConsensus() error {
 
 	// Run BFT consensus
 	round := uint64(1)
-	blockHash := "consensus_block_hash" // TODO: Get actual block hash
 	myBuddyID := buddyNode.PeerID.String()
 
 	log.Printf("StartBFTConsensus: Running BFT consensus with %d buddies", len(allBuddies))
 	result, err := BFTInstance.RunConsensus(
 		context.Background(),
 		round,
-		blockHash,
+		blockhash,
 		myBuddyID,
 		allBuddies,
 		messenger,

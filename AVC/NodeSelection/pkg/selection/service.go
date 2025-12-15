@@ -34,20 +34,23 @@ func GetBuddyNodes(
 
 	// 2. Fetch buddy-eligible peers (excludes recent buddies)
 	// fmt.Printf("Debugging 2\n")
-	// allNodes := make([]Node, 0) 
+	// allNodes := make([]Node, 0)
 	allNodes, err := peerClient.ListBuddyPeers(ctx)
-	// fmt.Printf("Debugging 3\n")
-
-
-	if err != nil || len(allNodes) == 0 {
-		fmt.Println("⚠️  Failed to fetch buddy peers, falling back to all active peers:", err)
-		// Fallback to all active peers
-		allNodes, err = peerClient.ListAllPeers(ctx)
-		fmt.Printf("allNodes --  fallback: %+v\n", allNodes)
-		if err != nil {
-			return nil, err
-		}
+	if err != nil {
+		fmt.Println("⚠️ WARNING  Failed to fetch buddy peers:", err)
+		return nil, err
 	}
+
+	// TODO: not needed -- ListBuddyPeers seems to be returning all nodes already
+	// if err != nil || len(allNodes) == 0 {
+	// 	fmt.Println("⚠️  Failed to fetch buddy peers, falling back to all active peers:", err)
+	// 	// Fallback to all active peers
+	// 	allNodes, err = peerClient.ListAllPeers(ctx)
+	// 	fmt.Printf("allNodes --  fallback: %+v\n", allNodes)
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
+	// }
 
 	// Display first node in detail
 	if len(allNodes) > 0 {
@@ -70,13 +73,13 @@ func GetBuddyNodes(
 		selectedIDs[i] = buddy.Node.ID
 	}
 
-	err = peerClient.UpdateBuddies(ctx, selectedIDs)
-	if err != nil {
-		fmt.Println("⚠️  Failed to update buddy list on peer directory:", err)
-		// Non-fatal - we still return the selected buddies
-	} else {
-		fmt.Println("✅ Updated buddy list on peer directory")
-	}
+	// err = peerClient.UpdateBuddies(ctx, selectedIDs)
+	// if err != nil {
+	// 	fmt.Println("⚠️  Failed to update buddy list on peer directory:", err)
+	// 	// Non-fatal - we still return the selected buddies
+	// } else {
+	// 	fmt.Println("✅ Updated buddy list on peer directory")
+	// }
 
 	return buddies, nil
 }
