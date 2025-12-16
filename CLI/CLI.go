@@ -8,12 +8,15 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"gossipnode/Block"
+	CLICommon "gossipnode/CLI/common"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/config/GRO"
 	"gossipnode/fastsync"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
@@ -112,28 +115,43 @@ func PrintFuncs() {
 	printDashes()
 }
 
-func (h *CommandHandler) StartCLI(grpcPort int) error {
+func (h *CommandHandler) StartCLI(ctx context.Context, grpcPort int) error {
+	if CLICommon.LocalGRO == nil {
+		var err error
+		CLICommon.LocalGRO, err = CLICommon.InitializeGRO(GRO.CLILocal)
+		if err != nil {
+			return fmt.Errorf("failed to initialize local gro: %v", err)
+		}
+	}
+
 	PrintFuncs()
 	fmt.Printf("Starting CLI with gRPC port: %d\n", grpcPort)
 
-	// Create a context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	// Channel to signal when we should exit
 	exitChan := make(chan struct{})
+	var exitOnce sync.Once
+	signalExit := func() {
+		exitOnce.Do(func() { close(exitChan) })
+	}
 
-	// Start gRPC server
+	// Best-effort: unblock stdin scanner on shutdown.
 	go func() {
-		fmt.Printf("Starting gRPC server on port %d...\n", grpcPort)
-		log.Println("Starting gRPC server on port ", grpcPort)
-		if err := StartGRPCServer(h, grpcPort); err != nil {
-			log.Printf("gRPC server error: %v", err)
-		}
+		<-ctx.Done()
+		_ = os.Stdin.Close()
 	}()
 
+	// Start gRPC server
+	CLICommon.LocalGRO.Go(GRO.CLIThread, func(ctx context.Context) error {
+		fmt.Printf("Starting gRPC server on port %d...\n", grpcPort)
+		log.Println("Starting gRPC server on port ", grpcPort)
+		if err := StartGRPCServerWithContext(ctx, h, grpcPort); err != nil {
+			log.Printf("gRPC server error: %v", err)
+		}
+		return nil
+	})
+
 	// Command-line input loop
-	go func() {
+	CLICommon.LocalGRO.Go(GRO.CLIThread, func(ctx context.Context) error {
 		// Check if stdin is available (interactive mode)
 		if !isInteractive() {
 			fmt.Println("Running in non-interactive mode - CLI will run with gRPC server only")
@@ -143,11 +161,11 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 			select {
 			case sig := <-sigCh:
 				fmt.Printf("Received signal: %v\n", sig)
-				close(exitChan)
+				signalExit()
 			case <-ctx.Done():
-				close(exitChan)
+				signalExit()
 			}
-			return
+			return nil
 		}
 
 		// Interactive mode: read from stdin
@@ -169,19 +187,19 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 			select {
 			case sig := <-sigCh:
 				fmt.Printf("Received signal: %v\n", sig)
-				close(exitChan)
+				signalExit()
 			case <-ctx.Done():
-				close(exitChan)
+				signalExit()
 			}
-			return
+			return nil
 		}
 
 		// Process first input
 		input := strings.TrimSpace(scanner.Text())
 		if input == "stopService" {
 			fmt.Println("Exiting...")
-			close(exitChan)
-			return
+			signalExit()
+			return nil
 		}
 
 		parts := strings.SplitN(input, " ", 4)
@@ -196,8 +214,8 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 			input := strings.TrimSpace(scanner.Text())
 			if input == "stopService" {
 				fmt.Println("Exiting...")
-				close(exitChan)
-				return
+				signalExit()
+				return nil
 			}
 
 			parts := strings.SplitN(input, " ", 4)
@@ -220,11 +238,12 @@ func (h *CommandHandler) StartCLI(grpcPort int) error {
 		select {
 		case sig := <-sigCh:
 			fmt.Printf("Received signal: %v\n", sig)
-			close(exitChan)
+			signalExit()
 		case <-ctx.Done():
-			close(exitChan)
+			signalExit()
 		}
-	}()
+		return nil
+	})
 
 	// Wait for exit signal
 	select {

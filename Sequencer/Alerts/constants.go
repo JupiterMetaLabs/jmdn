@@ -6,7 +6,7 @@ import "time"
 const (
 	AlertURL    = "https://tg.jmdt.io/multi-channel"
 	AlertAPIKey = "jmdt-node-alerts"
-	ChatID      = "-1003376278459"
+	ChatID      = "-1003528850144"
 	HTTPTimeout = 10 * time.Second
 )
 

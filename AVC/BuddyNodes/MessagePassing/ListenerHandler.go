@@ -1185,7 +1185,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 			readErrCh := make(chan error, 1)
 
 			// Read from stream in a goroutine (can't use LocalGRO here as it's a blocking read)
-			go func() {
+			ListenerHandlerLocal.Go(GRO.BFTSendRequestThread, func(ctx context.Context) error {
 				buf := make([]byte, 0)
 				tmp := make([]byte, 1024)
 				for {
@@ -1193,15 +1193,15 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 					if err != nil {
 						readErrCh <- err
 						close(readCh)
-						return
+						return nil
 					}
 					buf = append(buf, tmp[:n]...)
 					if bytes.Contains(buf, []byte{byte(config.Delimiter)}) {
 						readCh <- bytes.TrimSuffix(buf, []byte{byte(config.Delimiter)})
-						return
+						return nil
 					}
 				}
-			}()
+			})
 
 			timeoutTimer := time.NewTimer(5 * time.Second)
 			defer timeoutTimer.Stop()

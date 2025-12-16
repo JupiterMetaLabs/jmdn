@@ -256,6 +256,11 @@ func convertMetadataToString(metadata map[string]interface{}) string {
 
 // StartGRPCServer starts the gRPC server
 func StartGRPCServer(handler *CommandHandler, port int) error {
+	return StartGRPCServerWithContext(context.Background(), handler, port)
+}
+
+// StartGRPCServerWithContext starts the gRPC server and gracefully stops it when ctx is cancelled.
+func StartGRPCServerWithContext(ctx context.Context, handler *CommandHandler, port int) error {
 	fmt.Printf("Attempting to listen on port %d...\n", port)
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -270,10 +275,24 @@ func StartGRPCServer(handler *CommandHandler, port int) error {
 
 	fmt.Printf("gRPC server configured, starting to serve...\n")
 	log.Printf("Starting gRPC server on port %d", port)
-	if err := grpcServer.Serve(lis); err != nil {
-		fmt.Printf("gRPC server failed to serve: %v\n", err)
-		return fmt.Errorf("failed to serve: %v", err)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- grpcServer.Serve(lis)
+	}()
+
+	select {
+	case <-ctx.Done():
+		go func() {
+			grpcServer.GracefulStop()
+		}()
+		_ = lis.Close()
+		return nil
+	case err := <-errCh:
+		if err != nil {
+			fmt.Printf("gRPC server failed to serve: %v\n", err)
+			return fmt.Errorf("failed to serve: %v", err)
+		}
+		return nil
 	}
 
-	return nil
 }

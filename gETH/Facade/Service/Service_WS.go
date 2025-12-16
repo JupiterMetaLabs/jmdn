@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"gossipnode/DB_OPs"
+	"gossipnode/config/GRO"
 	"gossipnode/gETH/Facade/Service/Types"
 	Utils "gossipnode/gETH/Facade/Service/utils"
+	"gossipnode/gETH/common"
+	"log"
 	"sync"
 	"time"
 )
@@ -78,6 +81,11 @@ func (s *ServiceImpl) SubscribeNewHeads(ctx context.Context) (<-chan *Types.Bloc
 
 // startBlockPollerIfNeeded starts the block polling goroutine if it's not already running
 func startBlockPollerIfNeeded() {
+	BlockPoller, err := common.InitializeGRO(GRO.FacadeLocal)
+	if err != nil {
+		log.Printf("❌ Failed to initialize local gro: %v", err)
+		return
+	}
 	// Check if we already have subscribers and polling is needed
 	newHeadsSubscriptions.RLock()
 	hasSubscribers := len(newHeadsSubscriptions.subscribers) > 0
@@ -85,7 +93,10 @@ func startBlockPollerIfNeeded() {
 
 	if hasSubscribers {
 		// Start polling in a separate goroutine
-		go pollForNewBlocks()
+		BlockPoller.Go(GRO.BlockPollerThread, func(ctx context.Context) error {
+			pollForNewBlocks()
+			return nil
+		})
 	}
 }
 

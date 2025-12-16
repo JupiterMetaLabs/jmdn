@@ -102,7 +102,7 @@ func StartFacadeServer(port int, chainID int) {
 		httpServer := rpc.NewHTTPServer(handler)
 
 		addr := fmt.Sprintf("0.0.0.0:%d", port)
-		if err := httpServer.Serve(addr); err != nil {
+		if err := httpServer.ServeWithContext(ctx, addr); err != nil {
 			log.Error().Err(err).Str("addr", addr).Msg("Facade server stopped")
 			return fmt.Errorf("facade server failed: %w", err)
 		}
@@ -117,7 +117,7 @@ func StartWSServer(port int, chainID int) {
 		HTTPServer := rpc.NewHandlers(Service.NewService(chainID))
 
 		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService(chainID))
-		if err := WSServer.Serve(fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
+		if err := WSServer.ServeWithContext(ctx, fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
 			log.Error().Err(err).Msg("Failed to start WSServer")
 			return fmt.Errorf("WSServer failed: %w", err)
 		}
@@ -451,7 +451,7 @@ func runCommand(command string, args []string, grpcPort int) {
 	}
 }
 
-func StartAPIServer(address string, enableExplorer bool) error {
+func StartAPIServer(ctx context.Context, address string, enableExplorer bool) error {
 	// Create ImmuDB API server
 	server, err := explorer.NewImmuDBServer(enableExplorer)
 	if err != nil {
@@ -459,17 +459,17 @@ func StartAPIServer(address string, enableExplorer bool) error {
 	}
 
 	MainLM.Go(GRO.BlockPollerThread, func(ctx context.Context) error {
-		explorer.StartBlockPoller(server, 7*time.Second)
+		explorer.StartBlockPoller(ctx, server, 7*time.Second)
 		return nil
 	})
 
 	log.Info().Str("address", address).Msg("Starting ImmuDB API server")
-	return server.Start(address)
+	return server.StartWithContext(ctx, address)
 }
 
 // Update this function:
-func startDIDServer(h host.Host, address string) error {
-	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
+func startDIDServer(ctx context.Context, h host.Host, address string) error {
+	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 	if err != nil {
 		//Debugging
 		fmt.Println("Failed to get DID database client", err)
@@ -483,7 +483,7 @@ func startDIDServer(h host.Host, address string) error {
 		log.Info().Msg("DID propagation initialized successfully")
 	}
 	// Start the DID server with our existing client
-	return DID.StartDIDServer(h, address, didDBClient)
+	return DID.StartDIDServerWithContext(ctx, h, address, didDBClient)
 }
 
 // initYggdrasilMessaging initializes the Yggdrasil messaging system
@@ -595,7 +595,6 @@ func main() {
 	jwtSecret := flag.String("jwt-secret", "", "JWT secret")
 	command := flag.String("cmd", "", "Execute a CLI command (e.g., listpeers, addrs, stats, dbstate)")
 	flag.Parse()
-	
 
 	// Update the global immudb username and password if provided via command-line
 	if *immudbUsername != "" && *immudbPassword != "" {
@@ -644,7 +643,7 @@ func main() {
 		<-sigCh
 
 		fmt.Println("\nShutdown signal received, closing connections...")
-		shutdown()		
+		shutdown()
 		return nil
 	})
 
@@ -801,7 +800,7 @@ func main() {
 	// We'll initialize the DID system in the DID server to avoid blocking main
 	MainLM.Go(GRO.DIDThread, func(ctx context.Context) error {
 		log.Info().Str("address", *DIDgRPC).Msg("Starting DID gRPC server")
-		if err := startDIDServer(n.Host, *DIDgRPC); err != nil {
+		if err := startDIDServer(ctx, n.Host, *DIDgRPC); err != nil {
 			fmt.Println("Failed to start DID gRPC server:", err)
 			log.Error().Err(err).Msg("Failed to start DID gRPC server")
 		}
@@ -812,7 +811,9 @@ func main() {
 		MainLM.Go(GRO.BlockgenThread, func(ctx context.Context) error {
 			log.Info().Msgf("Starting block generator on port %d", *blockgen)
 			fmt.Printf("\nBlock generator available at http://localhost:%d\n", *blockgen)
-			Block.Startserver(*blockgen, n.Host, *chainID)
+			if err := Block.StartserverWithContext(ctx, *blockgen, n.Host, *chainID); err != nil {
+				log.Error().Err(err).Msg("Block generator server stopped")
+			}
 			return nil
 		})
 	}
@@ -896,7 +897,7 @@ func main() {
 
 			// Initialize API server
 			apiAddr := fmt.Sprintf(":%d", *apiPort)
-			if err := StartAPIServer(apiAddr, *enableExplorer); err != nil {
+			if err := StartAPIServer(ctx, apiAddr, *enableExplorer); err != nil {
 				log.Error().Err(err).Msg("Failed to start API server")
 			}
 			return nil
@@ -942,7 +943,7 @@ func main() {
 	// Start CLI without timeout - run indefinitely
 	done := make(chan error, 1)
 	MainLM.Go(GRO.CLIThread, func(ctx context.Context) error {
-		done <- cmdHandler.StartCLI(*cliGRPC)
+		done <- cmdHandler.StartCLI(ctx, *cliGRPC)
 		return nil
 	})
 

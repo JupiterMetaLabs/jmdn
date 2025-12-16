@@ -12,6 +12,7 @@ import (
 	"gossipnode/Pubsub"
 	"gossipnode/Sequencer/Alerts"
 	"gossipnode/Sequencer/Triggers/Maps"
+	"gossipnode/Sequencer/common"
 	"gossipnode/Sequencer/helper"
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
@@ -22,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
@@ -52,6 +54,13 @@ func (consensus *Consensus) ConnectedNessCheck(candidates []PubSubMessages.Buddy
 }
 
 func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
+	if common.LocalGRO == nil {
+		var err error
+		common.LocalGRO, err = common.InitializeGRO(GRO.SequencerConsensusLocal)
+		if err != nil {
+			return fmt.Errorf("CONSENSUSERROR.START: failed to initialize local gro: %v", err)
+		}
+	}
 	// Context for the alerts
 	alert_ctx := context.Background()
 	defer alert_ctx.Done()
@@ -270,7 +279,10 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	// Event-driven flow: Request subscriptions → Verify → Broadcast votes → Process CRDT
 	// This avoids race conditions by ensuring each step completes before the next starts
-	go consensus.startEventDrivenFlow()
+	common.LocalGRO.Go(GRO.SequencerConsensusThread, func(ctx context.Context) error {
+		consensus.startEventDrivenFlow()
+		return nil
+	})
 
 	return nil
 }
@@ -303,6 +315,14 @@ func (consensus *Consensus) RequestSubscriptionPermission() error {
 // Flow: Request subscriptions → Verify subscriptions → Broadcast vote trigger → Process CRDT
 // This eliminates race conditions by ensuring each step completes before the next begins
 func (consensus *Consensus) startEventDrivenFlow() {
+	if common.LocalGRO == nil {
+		var err error
+		common.LocalGRO, err = common.InitializeGRO(GRO.SequencerConsensusLocal)
+		if err != nil {
+			log.Printf("CONSENSUSERROR.START: failed to initialize local gro: %v", err)
+			return
+		}
+	}
 	// Context for the alerts
 	alert_ctx := context.Background()
 	defer alert_ctx.Done()
@@ -383,7 +403,7 @@ func (consensus *Consensus) startEventDrivenFlow() {
 
 	// TODO: Replace this with actual event-driven trigger from vote collection completion
 	// For now, use a delay but log that it should be event-driven
-	go func() {
+	common.LocalGRO.Go(GRO.SequencerRequestEventDrivenFlowThread, func(ctx context.Context) error {
 		// Wait for votes to be collected (this should be replaced with event-driven trigger)
 		time.Sleep(30 * time.Second)
 		log.Printf("=== [Event-Driven Flow] Step 4a: Triggering CRDT state print ===\n")
@@ -399,7 +419,8 @@ func (consensus *Consensus) startEventDrivenFlow() {
 		} else {
 			log.Printf("=== [Event-Driven Flow] Step 4b: Vote collection and processing initiated successfully ===\n")
 		}
-	}()
+		return nil
+	})
 }
 
 // VerifySubscriptions checks if nodes are actually subscribed to the pubsub channel
@@ -551,6 +572,14 @@ func (consensus *Consensus) printCRDTFooter() {
 // ProcessVoteCollection orchestrates the vote collection and processing flow
 // This manages the state flag and coordinates vote collection, verification, and block processing
 func (consensus *Consensus) ProcessVoteCollection() error {
+	if common.LocalGRO == nil {
+		var err error
+		common.LocalGRO, err = common.InitializeGRO(GRO.SequencerConsensusLocal)
+		if err != nil {
+			log.Printf("CONSENSUSERROR.PROCESSVOTECOLLECTION: failed to initialize local gro: %v", err)
+			return fmt.Errorf("CONSENSUSERROR.PROCESSVOTECOLLECTION: failed to initialize local gro: %v", err)
+		}
+	}
 	if consensus.ZKBlockData == nil || consensus.ZKBlockData.GetZKBlock() == nil {
 		return fmt.Errorf("ZKBlockData not initialized")
 	}
@@ -575,11 +604,11 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 	}()
 
 	// Process vote collection asynchronously
-	go func() {
+	common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
 		listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
 		if listenerNode == nil {
 			fmt.Printf("❌ Listener node not available for vote collection\n")
-			return
+			return nil
 		}
 
 		// Step 1: Collect vote results from buddy nodes
@@ -592,9 +621,10 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 		if err := consensus.BroadcastAndProcessBlock(blsResults, consensusReached); err != nil {
 			ErrorMessage := fmt.Sprintf("CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Failed to broadcast and process block: %v", err)
 			fmt.Printf("%s", ErrorMessage)
-			return
+			return nil
 		}
-	}()
+		return nil
+	})
 
 	return nil
 }
@@ -602,23 +632,35 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 // CollectVoteResultsFromBuddies collects vote aggregation results from all buddy nodes
 // Returns BLS results from buddy nodes
 func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMessages.BuddyNode) []BLS_Signer.BLSresponse {
+	if common.LocalGRO == nil {
+		var err error
+		common.LocalGRO, err = common.InitializeGRO(GRO.SequencerConsensusLocal)
+		if err != nil {
+			log.Printf("CONSENSUSERROR.COLLECTVOTERESULTSFROMBUDDIES: failed to initialize local gro: %v", err)
+			return nil
+		}
+	}
 	log.Printf("Requesting vote aggregation results from %d buddy nodes", len(listenerNode.BuddyNodes.Buddies_Nodes))
 
-	var wg sync.WaitGroup
+	wg, err := common.LocalGRO.NewFunctionWaitGroup(context.Background(), GRO.SequencerVoteCollectionWaitGroup)
+	if err != nil {
+		log.Printf("CONSENSUSERROR.COLLECTVOTERESULTSFROMBUDDIES: failed to create function wait group: %v", err)
+		return nil
+	}
+
 	var blsResultsMu sync.Mutex
 	blsResults := make([]BLS_Signer.BLSresponse, 0, config.MaxMainPeers)
 
 	for _, buddyID := range listenerNode.BuddyNodes.Buddies_Nodes {
-		wg.Add(1)
-		go func(peerID peer.ID) {
-			defer wg.Done()
-			blsResult := consensus.requestVoteResultFromBuddy(peerID)
+		common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
+			blsResult := consensus.requestVoteResultFromBuddy(buddyID)
 			if blsResult != nil {
 				blsResultsMu.Lock()
 				blsResults = append(blsResults, *blsResult)
 				blsResultsMu.Unlock()
 			}
-		}(buddyID)
+			return nil
+		}, local.AddToWaitGroup(GRO.SequencerVoteCollectionWaitGroup))
 	}
 
 	wg.Wait()
@@ -677,18 +719,27 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 
 // readVoteResultResponse reads vote result response from stream with timeout
 func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID peer.ID) string {
+	if common.LocalGRO == nil {
+		var err error
+		common.LocalGRO, err = common.InitializeGRO(GRO.SequencerConsensusLocal)
+		if err != nil {
+			log.Printf("CONSENSUSERROR.READVOTERESULTRESPONSE: failed to initialize local gro: %v", err)
+			return ""
+		}
+	}
 	responseCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 	reader := bufio.NewReader(stream)
 
-	go func() {
+	common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
 		response, err := reader.ReadString(config.Delimiter)
 		if err != nil {
 			errCh <- err
-			return
+			return err
 		}
 		responseCh <- response
-	}()
+		return nil
+	})
 
 	select {
 	case resp := <-responseCh:

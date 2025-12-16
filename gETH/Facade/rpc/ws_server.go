@@ -3,15 +3,20 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"gossipnode/config/GRO"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
+	"gossipnode/gETH/common"
 	"log"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/gorilla/websocket"
 )
+
+var FacadeLocalGRO interfaces.LocalGoroutineManagerInterface
 
 type WSServer struct {
 	h   *Handlers
@@ -27,10 +32,27 @@ func NewWSServer(h *Handlers, be Service.Service) *WSServer {
 }
 
 func (s *WSServer) Serve(addr string) error {
+	return s.ServeWithContext(context.Background(), addr)
+}
+
+func (s *WSServer) ServeWithContext(ctx context.Context, addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleWS)
 	srv := &http.Server{Addr: addr, Handler: mux}
-	return srv.ListenAndServe()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+		return nil
+	case err := <-errCh:
+		return err
+	}
 }
 
 type sub struct {
@@ -39,6 +61,14 @@ type sub struct {
 }
 
 func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
+	if FacadeLocalGRO == nil {
+		var err error
+		FacadeLocalGRO, err = common.InitializeGRO(GRO.FacadeLocal)
+		if err != nil {
+			log.Printf("❌ Failed to initialize local gro: %v", err)
+			return
+		}
+	}
 	conn, err := s.upg.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -85,7 +115,10 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 				}
 				storeSub(subs, &mu, sid, stop)
 				_ = conn.WriteJSON(RespOK(req.ID, sid))
-				go forwardBlocks(conn, sid, ch)
+				FacadeLocalGRO.Go(GRO.FacadeThread, func(ctx context.Context) error {
+					forwardBlocks(conn, sid, ch)
+					return nil
+				})
 
 			case "logs":
 				var q Types.FilterQuery
@@ -101,7 +134,10 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 				}
 				storeSub(subs, &mu, sid, stop)
 				_ = conn.WriteJSON(RespOK(req.ID, sid))
-				go forwardLogs(conn, sid, ch)
+				FacadeLocalGRO.Go(GRO.FacadeThread, func(ctx context.Context) error {
+					forwardLogs(conn, sid, ch)
+					return nil
+				})
 
 			case "newPendingTransactions":
 				ch, stop, err := s.be.SubscribePendingTxs(ctx)
@@ -111,7 +147,10 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 				}
 				storeSub(subs, &mu, sid, stop)
 				_ = conn.WriteJSON(RespOK(req.ID, sid))
-				go forwardPending(conn, sid, ch)
+				FacadeLocalGRO.Go(GRO.FacadeThread, func(ctx context.Context) error {
+					forwardPending(conn, sid, ch)
+					return nil
+				})
 
 			default:
 				_ = conn.WriteJSON(RespErr(req.ID, -32602, "unsupported subscription"))

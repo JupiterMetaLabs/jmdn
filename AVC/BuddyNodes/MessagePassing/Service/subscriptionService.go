@@ -9,15 +9,19 @@ import (
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
+	common "gossipnode/AVC/BuddyNodes/common"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
+	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
 )
+var LocalGRO interfaces.LocalGoroutineManagerInterface
 
 // Decision represents a BFT vote decision (avoid importing bft package)
 type Decision string
@@ -169,6 +173,14 @@ func (s *SubscriptionService) HandleEndPubSub(gossipMessage *AVCStruct.GossipMes
 
 // handleReceivedMessage processes received pubsub messages
 func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage) error {
+	if LocalGRO == nil {
+		var err error
+		LocalGRO, err = common.InitializeGRO(GRO.CRDTSyncLocal)
+		if err != nil {
+			return fmt.Errorf("failed to initialize local gro: %v", err)
+		}
+	}
+
 	log.LogConsensusInfo("Processing received pubsub message",
 		zap.String("topic", config.PubSub_ConsensusChannel),
 		zap.String("message_id", msg.ID),
@@ -329,13 +341,14 @@ func (s *SubscriptionService) handleReceivedMessage(msg *AVCStruct.GossipMessage
 				voteProcessingMutex.Unlock()
 				// Trigger vote processing after a delay to collect more votes
 				// Increased from 10s to 30s to handle network delays and ensure votes are collected
-				go func() {
+				LocalGRO.Go(GRO.BuddyNodesMessageProtocolThread, func(ctx context.Context) error {
 					time.Sleep(30 * time.Second) // Wait 30 seconds to collect more votes
 					processVotesAndTriggerBFT(listenerNode, blockHash)
 					voteProcessingMutex.Lock()
 					voteProcessingTriggered = false // Reset flag after processing
 					voteProcessingMutex.Unlock()
-				}()
+					return nil
+				})
 			} else {
 				voteProcessingMutex.Unlock()
 			}
@@ -644,7 +657,7 @@ func (s *SubscriptionService) handleBFTRequest(msg *AVCStruct.GossipMessage) err
 		zap.String("round", fmt.Sprintf("%d", reqData.Round)),
 		zap.String("function", "SubscriptionService.handleBFTRequest"))
 
-	go func() {
+	LocalGRO.Go(GRO.BuddyNodesMessageProtocolThread, func(ctx context.Context) error {
 		if s.bftAdapter == nil {
 			adapter, err := s.adapterFactory(
 				context.Background(),
@@ -654,7 +667,7 @@ func (s *SubscriptionService) handleBFTRequest(msg *AVCStruct.GossipMessage) err
 			if err != nil {
 				log.LogConsensusError("Failed to create BFT adapter", err,
 					zap.String("function", "SubscriptionService.handleBFTRequest"))
-				return
+				return fmt.Errorf("failed to create BFT adapter: %v", err)
 			}
 			s.bftAdapter = adapter
 		}
@@ -678,7 +691,8 @@ func (s *SubscriptionService) handleBFTRequest(msg *AVCStruct.GossipMessage) err
 				zap.Bool("accepted", result.BlockAccepted),
 				zap.String("function", "SubscriptionService.handleBFTRequest"))
 		}
-	}()
+		return err
+	})
 
 	return nil
 }

@@ -2,13 +2,17 @@
 package logging
 
 import (
+	"context"
 	"fmt"
+	"gossipnode/AVC/BFT/common"
+	"gossipnode/config/GRO"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/grafana/loki-client-go/loki"
 	"github.com/grafana/loki-client-go/pkg/backoff"
 	"github.com/grafana/loki-client-go/pkg/urlutil"
@@ -16,6 +20,8 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
+
+var LoggingLocalGRO interfaces.LocalGoroutineManagerInterface
 
 const (
 	defaultLokiURL = "http://localhost:3100/loki/api/v1/push"
@@ -245,11 +251,12 @@ func getenvOr(k, def string) string {
 // ---------- Async file writer (non-blocking) ----------
 
 type asyncWriteSyncer struct {
-	ws      zapcore.WriteSyncer
-	ch      chan []byte
-	wg      sync.WaitGroup
-	closed  chan struct{}
-	flushEv chan struct{}
+	ws        zapcore.WriteSyncer
+	ch        chan []byte
+	wg        sync.WaitGroup
+	closed    chan struct{}
+	flushEv   chan struct{}
+	closeOnce sync.Once
 
 	batchSize     int
 	flushInterval time.Duration
@@ -265,7 +272,26 @@ func newAsyncWriteSyncer(ws zapcore.WriteSyncer, batchSize int, flushInterval ti
 		flushInterval: flushInterval,
 	}
 	a.wg.Add(1)
-	go a.loop()
+
+	// Prefer orchestrator-managed goroutine, but fall back to a plain goroutine if unavailable.
+	if LoggingLocalGRO == nil {
+		var err error
+		LoggingLocalGRO, err = common.InitializeGRO(GRO.LoggingLocal)
+		if err != nil {
+			// Do not return nil: logging should degrade gracefully.
+			fmt.Printf("❌ Failed to initialize local gro: %v", err)
+		}
+	}
+
+	if LoggingLocalGRO != nil {
+		LoggingLocalGRO.Go(GRO.LoggingThread, func(ctx context.Context) error {
+			a.loop(ctx)
+			return nil
+		})
+	} else {
+		go a.loop(context.Background())
+	}
+
 	return a
 }
 
@@ -299,7 +325,7 @@ func (a *asyncWriteSyncer) Sync() error {
 	return nil
 }
 
-func (a *asyncWriteSyncer) loop() {
+func (a *asyncWriteSyncer) loop(ctx context.Context) {
 	defer a.wg.Done()
 
 	t := time.NewTicker(a.flushInterval)
@@ -323,6 +349,9 @@ func (a *asyncWriteSyncer) loop() {
 		case <-a.closed:
 			flush()
 			return
+		case <-ctx.Done():
+			flush()
+			return
 		case <-t.C:
 			flush()
 		case <-a.flushEv:
@@ -340,7 +369,9 @@ func (a *asyncWriteSyncer) loop() {
 }
 
 func (a *asyncWriteSyncer) Close() {
-	close(a.closed)
+	a.closeOnce.Do(func() {
+		close(a.closed)
+	})
 	a.wg.Wait()
 	_ = a.ws.Sync()
 }

@@ -54,7 +54,7 @@ func init() {
 	}
 	messageFilter = bloom.NewWithEstimates(10000, 0.01)
 	BlockPropagationLocalGRO.Go(GRO.BlockPropagationPeersCleanupThread, func(ctx context.Context) error {
-		cleanupPeerTimeouts()
+		cleanupPeerTimeouts(ctx)
 		return nil
 	})
 }
@@ -80,17 +80,26 @@ func generateBlockMessageID(sender, nonce string, timestamp int64) string {
 	return hash[:16] // Return first 16 chars for brevity
 }
 
-// cleanupPeerTimeouts periodically removes expired peer timeouts
-func cleanupPeerTimeouts() {
+// cleanupPeerTimeouts periodically removes expired peer timeouts.
+// It stops when ctx is cancelled.
+func cleanupPeerTimeouts(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
 	for {
-		time.Sleep(10 * time.Second)
-		peerTimeoutMutex.Lock()
-		for peerID, until := range peerTimeouts {
-			if time.Now().UTC().After(until) {
-				delete(peerTimeouts, peerID)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			peerTimeoutMutex.Lock()
+			now := time.Now().UTC()
+			for peerID, until := range peerTimeouts {
+				if now.After(until) {
+					delete(peerTimeouts, peerID)
+				}
 			}
+			peerTimeoutMutex.Unlock()
 		}
-		peerTimeoutMutex.Unlock()
 	}
 }
 

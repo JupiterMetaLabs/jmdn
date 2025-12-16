@@ -72,5 +72,14 @@ func getAllAppNames() []string {
 		DIDPropagationApp,
 		MetricsApp,
 		BFTApp,
+		CRDTSyncApp,
+		BlockApp,
+		CLIApp,
+		ConfigApp,
+		PubSubMessagesApp,
+		DB_OPsApp,
+		ExplorerApp,
+		GETHApp,
+		LoggingApp,
 	}
 }

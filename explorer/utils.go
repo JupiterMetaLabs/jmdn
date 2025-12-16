@@ -1,6 +1,7 @@
 package explorer
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"gossipnode/DB_OPs"
@@ -23,8 +24,9 @@ func ConvertStringToUint64(str string) (uint64, error) {
 	return strconv.ParseUint(str, 10, 64)
 }
 
-// StartBlockPoller starts a background goroutine that polls for new blocks
-func StartBlockPoller(DBclient *ImmuDBServer, pollInterval time.Duration) {
+// StartBlockPoller starts a background loop that polls for new blocks.
+// It stops when ctx is cancelled.
+func StartBlockPoller(ctx context.Context, DBclient *ImmuDBServer, pollInterval time.Duration) {
 	// Initialize with the current latest block
 	if lastBlockNumber == 0 {
 		latest, err := DB_OPs.GetLatestBlockNumber(&DBclient.defaultdb)
@@ -38,8 +40,13 @@ func StartBlockPoller(DBclient *ImmuDBServer, pollInterval time.Duration) {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		checkForNewBlocks(DBclient)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			checkForNewBlocks(DBclient)
+		}
 	}
 }
 

@@ -2,6 +2,10 @@
 package logging
 
 import (
+	"context"
+	"fmt"
+	"gossipnode/AVC/BFT/common"
+	GRO "gossipnode/config/GRO"
 	"sync"
 	"time"
 
@@ -12,11 +16,13 @@ import (
 // lokiWriteSyncer implements zapcore.WriteSyncer for Loki.
 // It leverages the internal batching of the official loki-client-go.
 type lokiWriteSyncer struct {
-	client *loki.Client
-	labels model.LabelSet
-	ch     chan []byte
-	wg     sync.WaitGroup
-	closed chan struct{}
+	client    *loki.Client
+	labels    model.LabelSet
+	ch        chan []byte
+	wg        sync.WaitGroup
+	closed    chan struct{}
+	closeOnce sync.Once
+	stopOnce  sync.Once
 }
 
 // newLokiWriteSyncer creates a new WriteSyncer for Loki.
@@ -29,7 +35,26 @@ func newLokiWriteSyncer(client *loki.Client, labels model.LabelSet) *lokiWriteSy
 		closed: make(chan struct{}),
 	}
 	lws.wg.Add(1)
-	go lws.processLogs()
+
+	// Prefer orchestrator-managed goroutine, but fall back to a plain goroutine if unavailable.
+	if LoggingLocalGRO == nil {
+		var err error
+		LoggingLocalGRO, err = common.InitializeGRO(GRO.LoggingLocal)
+		if err != nil {
+			// Logging should degrade gracefully.
+			fmt.Printf("❌ Failed to initialize local gro: %v", err)
+		}
+	}
+
+	if LoggingLocalGRO != nil {
+		LoggingLocalGRO.Go(GRO.LoggingLokiThread, func(ctx context.Context) error {
+			lws.processLogs(ctx)
+			return nil
+		})
+	} else {
+		go lws.processLogs(context.Background())
+	}
+
 	return lws
 }
 
@@ -53,7 +78,7 @@ func (l *lokiWriteSyncer) Write(p []byte) (int, error) {
 
 // processLogs processes log entries from the channel in a separate goroutine.
 // This prevents any blocking in the Write method.
-func (l *lokiWriteSyncer) processLogs() {
+func (l *lokiWriteSyncer) processLogs(ctx context.Context) {
 	defer l.wg.Done()
 
 	for {
@@ -65,6 +90,17 @@ func (l *lokiWriteSyncer) processLogs() {
 				case p := <-l.ch:
 					_ = l.client.Handle(l.labels, time.Now().UTC(), string(p))
 				default:
+					return
+				}
+			}
+		case <-ctx.Done():
+			// Best-effort drain and stop to avoid leaking background work on shutdown.
+			for {
+				select {
+				case p := <-l.ch:
+					_ = l.client.Handle(l.labels, time.Now().UTC(), string(p))
+				default:
+					l.stopOnce.Do(func() { l.client.Stop() })
 					return
 				}
 			}
@@ -88,7 +124,9 @@ func (l *lokiWriteSyncer) Sync() error {
 // Close stops the Loki client, which flushes any remaining buffered entries.
 // This should be called on application shutdown.
 func (l *lokiWriteSyncer) Close() {
-	close(l.closed)
+	l.closeOnce.Do(func() {
+		close(l.closed)
+	})
 	l.wg.Wait()
-	l.client.Stop()
+	l.stopOnce.Do(func() { l.client.Stop() })
 }

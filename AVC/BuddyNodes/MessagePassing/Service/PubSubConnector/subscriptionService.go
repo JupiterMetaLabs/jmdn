@@ -8,13 +8,17 @@ import (
 	Publisher "gossipnode/Pubsub/Publish"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
+	"gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
 )
+
+var LocalGRO interfaces.LocalGoroutineManagerInterface
 
 // BFTMessageHandler defines the interface for BFT message handling
 type BFTMessageHandler interface {
@@ -556,18 +560,24 @@ func (s *SubscriptionService) handleBFTRequest(msg *AVCStruct.GossipMessage) err
 	}
 
 	// Start consensus process in a goroutine
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	LocalGRO.Go(GRO.BuddyNodesMessageProtocolThread, func(ctx context.Context) error {
+		ctxWithTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 
 		log.LogConsensusInfo(fmt.Sprintf("Starting consensus for round %d, block %s", reqData.Round, reqData.BlockHash),
 			zap.String("topic", log.Consensus_TOPIC))
 
-		result, err := handler.ProposeConsensus(ctx, reqData.Round, reqData.BlockHash, s.myBuddyID, allBuddies)
+		result, err := handler.ProposeConsensus(
+			ctxWithTimeout,
+			reqData.Round,
+			reqData.BlockHash,
+			s.myBuddyID,
+			allBuddies,
+		)
 		if err != nil {
 			log.LogConsensusError(fmt.Sprintf("Consensus failed: %v", err), err,
 				zap.String("topic", log.Consensus_TOPIC))
-			return
+			return fmt.Errorf("failed to propose consensus: %v", err)
 		}
 
 		log.LogConsensusInfo(fmt.Sprintf("Consensus completed - Success: %v, Decision: %s, BlockAccepted: %v",
@@ -578,7 +588,8 @@ func (s *SubscriptionService) handleBFTRequest(msg *AVCStruct.GossipMessage) err
 		if s.OnConsensusComplete != nil {
 			s.OnConsensusComplete(result)
 		}
-	}()
+		return nil
+	})
 
 	return nil
 }

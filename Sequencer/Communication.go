@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Sequencer/Router"
+	"gossipnode/Sequencer/common"
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
@@ -267,7 +268,7 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 			// Get accepted peer IDs from tracker
 			acceptedPeers := tracker.GetBuddyNodes()
 
-			// Format peer IDs with each on a new line (same format as Consensus.go for easy copy-paste)
+			// Format peer IDs with each on a new line (same format as Consensus.go, for easy copy-paste)
 			var peerIDStrings []string
 			for peerID := range acceptedPeers {
 				peerIDStrings = append(peerIDStrings, fmt.Sprintf("  - %s", peerID.String()))
@@ -402,7 +403,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 
 	// Response handler is now set up in the buddy nodes themselves
 	// No need to set up additional handlers here
-	wg, err := LocalGRO.NewFunctionWaitGroup(context.Background(), GRO.SequencerConsensusThread)
+	wg, err := common.LocalGRO.NewFunctionWaitGroup(context.Background(), GRO.SequencerConsensusThread)
 	if err != nil {
 		log.Printf("Failed to create waitgroup: %v", err)
 		return 0, 0
@@ -419,7 +420,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 		peerID := peerID
 		// responseChan is already a new variable per iteration, but capture explicitly for clarity
 		chanForGoroutine := responseChan
-		if err := LocalGRO.Go(GRO.SequencerConsensusThread, func(ctx context.Context) error {
+		if err := common.LocalGRO.Go(GRO.SequencerConsensusThread, func(ctx context.Context) error {
 			// DON'T unregister here - keep the role stored for HandleResponse
 			// defer responseHandler.UnregisterPeer(peerID)
 
