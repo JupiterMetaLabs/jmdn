@@ -281,7 +281,8 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 
 		if err != nil {
 			fmt.Printf("❌ SendMessageToPeer: Failed to read response from %s: %v (deadline was %v)\n", peerID, err, deadline)
-			// Don't return error here - the response might come via pubsub or the connection might be closing
+			// Return error so caller knows something went wrong, rather than assuming success and waiting
+			return fmt.Errorf("failed to read response from %s: %w", peerID, err)
 		} else if responseMsg != "" {
 			fmt.Printf("✅ SendMessageToPeer: Received response from %s: %s\n", peerID, responseMsg)
 			fmt.Printf("📊 Stream state after receiving response:\n")
