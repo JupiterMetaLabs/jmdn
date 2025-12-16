@@ -201,18 +201,14 @@ func (s *VRFSelector) SelectMultipleBuddies(
 }
 
 // selectWithRegionDiversity selects k nodes ensuring region diversity with selection score priority
+// NOTE: nodes passed here are already pre-filtered by FilterEligible (score >= config.MinSelectionScore)
 func (s *VRFSelector) selectWithRegionDiversity(nodes []Node, k int, seed uint64) []Node {
 	if k >= len(nodes) {
 		return nodes
 	}
 
-	// Filter nodes: only 0.5 <= score < 1.0
-	eligibleNodes := make([]Node, 0, len(nodes))
-	for _, node := range nodes {
-		if node.SelectionScore >= 0.5 && node.SelectionScore < 1.0 {
-			eligibleNodes = append(eligibleNodes, node)
-		}
-	}
+	// Use the already-filtered nodes directly (no redundant filtering)
+	eligibleNodes := nodes
 
 	if len(eligibleNodes) == 0 {
 		return []Node{}
