@@ -1020,13 +1020,13 @@ func convertProtoToNode(peer *peerpb.SignedPeerRecord) selection.Node {
 		fmt.Sscanf(peer.Labels["selection_score"], "%f", &selectionScore)
 	} else if peer.Weights > 0 {
 		selectionScore = float64(peer.Weights)
-		// Clamp to valid range [0.5, 1.0)
-		if selectionScore < 0.5 {
-			selectionScore = 0.5
-		}
-		if selectionScore >= 1.0 {
-			selectionScore = 0.99
-		}
+	}
+	// Clamp to valid mathematical range [0.0, 1.0) - let filter.go enforce minimum threshold
+	if selectionScore < 0.0 {
+		selectionScore = 0.0
+	}
+	if selectionScore >= 1.0 {
+		selectionScore = 0.99
 	}
 
 	return selection.Node{
@@ -1088,17 +1088,17 @@ func convertBuddyPeerRecordToNode(peer *peerpb.BuddyPeerRecord) selection.Node {
 		capacity = 100
 	}
 
-	// Buddy peers get default selection score of 0.8 (high priority)
-	selectionScore := 0.8
-	if peer.Weights > 0 && peer.Weights < 1.0 {
+	// Use peer's weight as selection score, with 0.4 as default for unweighted peers
+	selectionScore := 0.4 // Default for peers without explicit weight
+	if peer.Weights > 0 {
 		selectionScore = float64(peer.Weights)
-		// Clamp to valid range [0.5, 1.0)
-		if selectionScore < 0.5 {
-			selectionScore = 0.5
-		}
-		if selectionScore >= 1.0 {
-			selectionScore = 0.99
-		}
+	}
+	// Clamp to valid mathematical range [0.0, 1.0) - let filter.go enforce minimum threshold
+	if selectionScore < 0.0 {
+		selectionScore = 0.0
+	}
+	if selectionScore >= 1.0 {
+		selectionScore = 0.99
 	}
 
 	return selection.Node{
