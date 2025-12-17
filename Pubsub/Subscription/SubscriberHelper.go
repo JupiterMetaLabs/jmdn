@@ -68,6 +68,16 @@ func SubscribeEnhanced(gps *PubSubMessages.GossipPubSub, topic string, handler f
 
 // subscribeEnhancedViaGossipSub subscribes to a topic using enhanced libp2p GossipSub
 func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, handler func(*PubSubMessages.GossipMessage)) error {
+	// Ensure we have a local manager for subscription goroutines (fallback to plain goroutine if unavailable).
+	if LocalGRO == nil {
+		if app := GRO.GetApp(GRO.PubsubApp); app != nil {
+			lm, err := app.NewLocalManager(GRO.PubsubSubscribeLocal)
+			if err == nil {
+				LocalGRO = lm
+			}
+		}
+	}
+
 	fmt.Printf("About to call GetOrJoinTopic for %s\n", topicName)
 
 	// Get or join the topic
@@ -86,15 +96,50 @@ func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName s
 
 	fmt.Printf("Subscribe returned successfully for %s\n", topicName)
 
+	// Store subscription and cancellation so Unsubscribe can stop the underlying subscription/goroutine.
+	gps.Mutex.Lock()
+	if gps.Subscriptions == nil {
+		gps.Subscriptions = make(map[string]*pubsub.Subscription)
+	}
+	if gps.SubscriptionCancels == nil {
+		gps.SubscriptionCancels = make(map[string]context.CancelFunc)
+	}
+	// Replace any existing subscription to avoid leaks.
+	if oldSub, ok := gps.Subscriptions[topicName]; ok && oldSub != nil {
+		oldSub.Cancel()
+	}
+	if oldCancel, ok := gps.SubscriptionCancels[topicName]; ok && oldCancel != nil {
+		oldCancel()
+	}
+	subCtx, cancel := context.WithCancel(context.Background())
+	gps.Subscriptions[topicName] = sub
+	gps.SubscriptionCancels[topicName] = cancel
+	gps.Mutex.Unlock()
+
 	// Create enhanced subscriber
 	enhancedSubscriber := NewEnhancedSubscriber(sub, gps, handler)
 
 	// Start enhanced message processing
 	fmt.Printf("Context set for %s\n", topicName)
-	LocalGRO.Go(GRO.PubsubSubscriptionThread, func(ctx context.Context) error {
-		enhancedSubscriber.runEnhanced(ctx)
+	run := func(ctx context.Context) error {
+		ctxNext, cancelNext := context.WithCancel(ctx)
+		defer cancelNext()
+		go func() {
+			select {
+			case <-subCtx.Done():
+				cancelNext()
+			case <-ctx.Done():
+			}
+		}()
+
+		enhancedSubscriber.runEnhanced(ctxNext)
 		return nil
-	})
+	}
+	if LocalGRO != nil {
+		LocalGRO.Go(GRO.PubsubSubscriptionThread, run)
+	} else {
+		go func() { _ = run(context.Background()) }()
+	}
 
 	fmt.Printf("subscribeEnhancedViaGossipSub returned successfully for %s\n", topicName)
 	return nil
@@ -211,7 +256,6 @@ func (es *EnhancedSubscriber) processMessageEnhanced(msg *pubsub.Message) error 
 	if es.handler != nil {
 		es.handler(gossipMsg)
 	}
-
 
 	return nil
 }

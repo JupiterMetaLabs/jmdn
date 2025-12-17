@@ -22,7 +22,7 @@ var (
 var DefaultRegistry = prometheus.NewRegistry()
 
 // Create a factory that uses our DefaultRegistry
-var factory = promauto.With(prometheus.WrapRegistererWithPrefix("p2p_", DefaultRegistry))
+var factory = promauto.With(DefaultRegistry)
 
 // GetLibp2pRegisterer returns a registerer suitable for libp2p metrics
 func GetLibp2pRegisterer() prometheus.Registerer {
@@ -32,38 +32,38 @@ func GetLibp2pRegisterer() prometheus.Registerer {
 
 var (
 	// Node connection metrics
-	ConnectedPeersGauge = promauto.NewGauge(prometheus.GaugeOpts{
+	ConnectedPeersGauge = factory.NewGauge(prometheus.GaugeOpts{
 		Name: "p2p_connected_peers_total",
 		Help: "The total number of currently connected peers",
 	})
 
-	ManagedPeersGauge = promauto.NewGauge(prometheus.GaugeOpts{
+	ManagedPeersGauge = factory.NewGauge(prometheus.GaugeOpts{
 		Name: "p2p_managed_peers_total",
 		Help: "The total number of managed peers",
 	})
 
-	ActivePeersGauge = promauto.NewGauge(prometheus.GaugeOpts{
+	ActivePeersGauge = factory.NewGauge(prometheus.GaugeOpts{
 		Name: "p2p_active_peers_total",
 		Help: "The number of active (responding) peers",
 	})
 
 	// Heartbeat metrics
-	HeartbeatSentCounter = promauto.NewCounter(prometheus.CounterOpts{
+	HeartbeatSentCounter = factory.NewCounter(prometheus.CounterOpts{
 		Name: "p2p_heartbeats_sent_total",
 		Help: "The total number of heartbeats sent",
 	})
 
-	HeartbeatReceivedCounter = promauto.NewCounter(prometheus.CounterOpts{
+	HeartbeatReceivedCounter = factory.NewCounter(prometheus.CounterOpts{
 		Name: "p2p_heartbeats_received_total",
 		Help: "The total number of heartbeats received",
 	})
 
-	HeartbeatFailedCounter = promauto.NewCounter(prometheus.CounterOpts{
+	HeartbeatFailedCounter = factory.NewCounter(prometheus.CounterOpts{
 		Name: "p2p_heartbeats_failed_total",
 		Help: "The total number of failed heartbeats",
 	})
 
-	HeartbeatLatency = promauto.NewHistogramVec(
+	HeartbeatLatency = factory.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "p2p_heartbeat_latency_seconds",
 			Help:    "Latency of heartbeat responses in seconds",
@@ -73,7 +73,7 @@ var (
 	)
 
 	// Message metrics
-	MessagesSentCounter = promauto.NewCounterVec(
+	MessagesSentCounter = factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "p2p_messages_sent_total",
 			Help: "The total number of messages sent",
@@ -81,7 +81,7 @@ var (
 		[]string{"protocol", "peer_id"},
 	)
 
-	MessagesReceivedCounter = promauto.NewCounterVec(
+	MessagesReceivedCounter = factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "p2p_messages_received_total",
 			Help: "The total number of messages received",
@@ -89,7 +89,7 @@ var (
 		[]string{"protocol", "peer_id"},
 	)
 
-	MessageSizeHistogram = promauto.NewHistogramVec(
+	MessageSizeHistogram = factory.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "p2p_message_size_bytes",
 			Help:    "Size of messages in bytes",
@@ -99,7 +99,7 @@ var (
 	)
 
 	// File transfer metrics
-	FileTransferBytesCounter = promauto.NewCounterVec(
+	FileTransferBytesCounter = factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "p2p_file_transfer_bytes_total",
 			Help: "The total number of bytes transferred for files",
@@ -107,7 +107,7 @@ var (
 		[]string{"direction", "peer_id"},
 	)
 
-	FileTransferDuration = promauto.NewHistogramVec(
+	FileTransferDuration = factory.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "p2p_file_transfer_duration_seconds",
 			Help:    "Duration of file transfers in seconds",
@@ -116,7 +116,7 @@ var (
 		[]string{"direction", "peer_id"},
 	)
 
-	FileTransferSpeedMBPS = promauto.NewHistogramVec(
+	FileTransferSpeedMBPS = factory.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "file_transfer_speed_mbps",
 			Help:    "File transfer speed in MB/s",
@@ -126,7 +126,7 @@ var (
 	)
 
 	// Database metrics
-	DatabaseOperations = promauto.NewCounterVec(
+	DatabaseOperations = factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "p2p_database_operations_total",
 			Help: "The total number of database operations",
@@ -134,7 +134,7 @@ var (
 		[]string{"operation", "result"},
 	)
 
-	DatabaseLatency = promauto.NewHistogramVec(
+	DatabaseLatency = factory.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "p2p_database_operation_latency_seconds",
 			Help:    "Latency of database operations in seconds",
@@ -143,7 +143,7 @@ var (
 		[]string{"operation"},
 	)
 
-	LogEntries = promauto.NewCounterVec(
+	LogEntries = factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "p2p_log_entries_total",
 			Help: "Total number of log entries",
@@ -152,7 +152,7 @@ var (
 	)
 )
 
-var PeerRemovedCounter = promauto.NewCounterVec(
+var PeerRemovedCounter = factory.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "p2p_peers_removed_total",
 		Help: "Total number of peers removed by reason",
@@ -179,7 +179,7 @@ func StartMetricsServer(addr string) {
 	serverErr := make(chan error, 1)
 
 	// Start server in a separate goroutine managed by orchestrator
-	LocalGRO.Go(GRO.MetricsServerThread, func(ctx context.Context) error {
+	_ = GoTracked(LocalGRO, GRO.MetricsApp, GRO.MetricsLocal, GRO.MetricsServerThread, func(ctx context.Context) error {
 		err := server.ListenAndServe()
 		select {
 		case serverErr <- err:
@@ -190,7 +190,7 @@ func StartMetricsServer(addr string) {
 	})
 
 	// Monitor context cancellation and server errors
-	LocalGRO.Go(GRO.RecordMetricsThread, func(ctx context.Context) error {
+	_ = GoTracked(LocalGRO, GRO.MetricsApp, GRO.MetricsLocal, GRO.RecordMetricsThread, func(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			// Context cancelled - shutdown gracefully with timeout

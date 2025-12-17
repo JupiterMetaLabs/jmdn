@@ -20,7 +20,17 @@ func (gps *GossipPubSub) InitGossipSub() error {
 	}
 
 	gps.GossipSubPS = gossipSub
-	gps.TopicsMap = make(map[string]*pubsub.Topic)
+	gps.Mutex.Lock()
+	if gps.TopicsMap == nil {
+		gps.TopicsMap = make(map[string]*pubsub.Topic)
+	}
+	if gps.Subscriptions == nil {
+		gps.Subscriptions = make(map[string]*pubsub.Subscription)
+	}
+	if gps.SubscriptionCancels == nil {
+		gps.SubscriptionCancels = make(map[string]context.CancelFunc)
+	}
+	gps.Mutex.Unlock()
 
 	return nil
 }
@@ -32,9 +42,12 @@ func (gps *GossipPubSub) GetOrJoinTopic(topicName string) (*pubsub.Topic, error)
 	}
 
 	// Check if topic already exists
+	gps.Mutex.RLock()
 	if topic, exists := gps.TopicsMap[topicName]; exists {
+		gps.Mutex.RUnlock()
 		return topic, nil
 	}
+	gps.Mutex.RUnlock()
 
 	// Join the topic
 	topic, err := gps.GossipSubPS.Join(topicName)
@@ -42,15 +55,31 @@ func (gps *GossipPubSub) GetOrJoinTopic(topicName string) (*pubsub.Topic, error)
 		return nil, fmt.Errorf("failed to join topic %s: %w", topicName, err)
 	}
 
+	gps.Mutex.Lock()
+	if gps.TopicsMap == nil {
+		gps.TopicsMap = make(map[string]*pubsub.Topic)
+	}
+	// Another goroutine may have joined concurrently.
+	if existing, exists := gps.TopicsMap[topicName]; exists {
+		gps.Mutex.Unlock()
+		_ = topic.Close()
+		return existing, nil
+	}
 	gps.TopicsMap[topicName] = topic
+	gps.Mutex.Unlock()
 	return topic, nil
 }
 
 // CloseTopic closes a topic
 func (gps *GossipPubSub) CloseTopic(topicName string) error {
-	if topic, exists := gps.TopicsMap[topicName]; exists {
-		topic.Close()
+	gps.Mutex.Lock()
+	topic, exists := gps.TopicsMap[topicName]
+	if exists {
 		delete(gps.TopicsMap, topicName)
+	}
+	gps.Mutex.Unlock()
+	if exists {
+		_ = topic.Close()
 	}
 	return nil
 }

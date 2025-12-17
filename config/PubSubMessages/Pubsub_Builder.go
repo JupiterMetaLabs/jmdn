@@ -1,8 +1,10 @@
 package PubSubMessages
 
 import (
+	"context"
 	"fmt"
 
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -19,17 +21,24 @@ func NewGossipPubSubBuilder(GossipPubSubInput *GossipPubSub) *GossipPubSub {
 			ChannelAccess: GossipPubSubInput.ChannelAccess,
 			Peers:         GossipPubSubInput.Peers,
 			Protocol:      GossipPubSubInput.Protocol,
+			TopicsMap:     GossipPubSubInput.TopicsMap,
+
+			Subscriptions:       GossipPubSubInput.Subscriptions,
+			SubscriptionCancels: GossipPubSubInput.SubscriptionCancels,
 		}
 	}
 	return &GossipPubSub{
-		Host:             nil,
-		Topics:           make(map[string]bool),
-		Handlers:         make(map[string]func(*GossipMessage)),
-		MessageCache:     make(map[string]bool),
-		ChannelAccess:    make(map[string]*ChannelAccess),
-		Peers:            make([]peer.ID, 0),
-		TopicSubscribers: make(map[string]map[peer.ID]bool),
-		Protocol:         "",
+		Host:                nil,
+		Topics:              make(map[string]bool),
+		Handlers:            make(map[string]func(*GossipMessage)),
+		MessageCache:        make(map[string]bool),
+		ChannelAccess:       make(map[string]*ChannelAccess),
+		Peers:               make([]peer.ID, 0),
+		TopicSubscribers:    make(map[string]map[peer.ID]bool),
+		TopicsMap:           make(map[string]*pubsub.Topic),
+		Subscriptions:       make(map[string]*pubsub.Subscription),
+		SubscriptionCancels: make(map[string]context.CancelFunc),
+		Protocol:            "",
 	}
 }
 
