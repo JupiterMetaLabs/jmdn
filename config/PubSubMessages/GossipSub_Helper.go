@@ -37,6 +37,9 @@ func (gps *GossipPubSub) InitGossipSub() error {
 
 // GetOrJoinTopic gets an existing topic or joins a new one (thread-safe)
 func (gps *GossipPubSub) GetOrJoinTopic(topicName string) (*pubsub.Topic, error) {
+	gps.Mutex.Lock()
+	defer gps.Mutex.Unlock()
+
 	if gps.GossipSubPS == nil {
 		return nil, fmt.Errorf("GossipSub not initialized")
 	}
