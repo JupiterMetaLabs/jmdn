@@ -93,7 +93,14 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	// Now connect to final buddy nodes - ONLY main candidates first, backup only if needed
 	// This prevents excessive connections to backup nodes when we already have enough main peers
-	reachablePeers, errMSG := consensus.ConnectedNessCheck(helper.ConvertMapToSlice(stats.GetReachablePeers()), config.MaxMainPeers)
+	// IMPORTANT: We must also discover backup candidates. If we only check up to
+	// `MaxMainPeers`, `BackupCandidates` will always be empty and the subscription
+	// fallback will log "No backup peers available" even when extra candidates exist.
+	maxPeersToCheck := config.MaxMainPeers + config.MaxBackupPeers
+	reachablePeers, errMSG := consensus.ConnectedNessCheck(
+		helper.ConvertMapToSlice(stats.GetReachablePeers()),
+		maxPeersToCheck,
+	)
 	if errMSG != nil {
 		return fmt.Errorf("CONSENSUSERROR.CONNECTEDNESSCHECK: failed to verify connectedness: %v", errMSG)
 	}
@@ -279,8 +286,22 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	// Event-driven flow: Request subscriptions → Verify → Broadcast votes → Process CRDT
 	// This avoids race conditions by ensuring each step completes before the next starts
+	// Step 1 MUST be synchronous so upstream APIs can return 500 on failure instead
+	// of returning 200 while consensus fails asynchronously.
+	if err := consensus.RequestSubscriptionPermission(); err != nil {
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.REQUESTSUBSCRIPTIONPERMISSION: Failed to request subscription permission: %v", err)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToRequestSubscriptionPermission).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(ErrorMessage).
+			Send()
+		log.Printf("%s", ErrorMessage)
+		return fmt.Errorf("%s", ErrorMessage)
+	}
+
 	common.LocalGRO.Go(GRO.SequencerConsensusThread, func(ctx context.Context) error {
-		consensus.startEventDrivenFlow()
+		consensus.startEventDrivenFlowAfterSubscriptionPermission()
 		return nil
 	})
 
@@ -311,10 +332,11 @@ func (consensus *Consensus) RequestSubscriptionPermission() error {
 	return nil
 }
 
-// startEventDrivenFlow orchestrates the consensus flow in an event-driven manner
-// Flow: Request subscriptions → Verify subscriptions → Broadcast vote trigger → Process CRDT
-// This eliminates race conditions by ensuring each step completes before the next begins
-func (consensus *Consensus) startEventDrivenFlow() {
+// startEventDrivenFlowAfterSubscriptionPermission orchestrates the consensus flow after
+// subscription permission has already been granted.
+//
+// Flow: Verify subscriptions → Broadcast vote trigger → Process CRDT
+func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission() {
 	if common.LocalGRO == nil {
 		var err error
 		common.LocalGRO, err = common.InitializeGRO(GRO.SequencerConsensusLocal)
@@ -328,21 +350,6 @@ func (consensus *Consensus) startEventDrivenFlow() {
 	defer alert_ctx.Done()
 
 	log.Printf("=== [Event-Driven Flow] Starting consensus flow ===\n")
-
-	// Step 1: Request subscription permission from peers
-	log.Printf("=== [Event-Driven Flow] Step 1: Requesting subscription permission ===\n")
-	if err := consensus.RequestSubscriptionPermission(); err != nil {
-		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.REQUESTSUBSCRIPTIONPERMISSION: Failed to request subscription permission: %v", err)
-		Alerts.NewAlertBuilder(alert_ctx).
-			AlertName(helper.Alert_Consensus_FailedToRequestSubscriptionPermission).
-			Status(Alerts.AlertStatusError).
-			Severity(Alerts.SeverityError).
-			Description(ErrorMessage).
-			Send()
-		log.Printf("%s", ErrorMessage)
-		return
-	}
-	log.Printf("=== [Event-Driven Flow] Step 1: Subscription permission requested successfully ===\n")
 
 	// Step 2: Verify subscriptions (with retry mechanism)
 	log.Printf("=== [Event-Driven Flow] Step 2: Verifying subscriptions ===\n")

@@ -19,6 +19,16 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+var (
+	// subscriptionAckTimeout is the maximum time we wait for a peer's subscription ACK.
+	// Kept as a var so tests can shorten it.
+	subscriptionAckTimeout = 10 * time.Second
+
+	// subscriptionLateResponseBuffer allows late-arriving responses to be processed.
+	// Kept as a var so tests can reduce test runtime.
+	subscriptionLateResponseBuffer = 500 * time.Millisecond
+)
+
 // ResponseHandler manages ACK responses from peers
 type ResponseHandler struct {
 	responses map[peer.ID]chan bool
@@ -194,25 +204,32 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 	}
 
 	// First, try main peers (MaxMainPeers)
-	mainAccepted, mainPeersCount := askPeersForSubscription(Listener, topic, consensus.PeerList.MainPeers, responseHandler, "main")
-	mainFailed := mainPeersCount - mainAccepted
+	mainAcceptedCount, mainTotalCount, mainAcceptedPeers := askPeersForSubscription(
+		Listener,
+		topic,
+		consensus.PeerList.MainPeers,
+		responseHandler,
+		"main",
+	)
+	mainFailed := mainTotalCount - mainAcceptedCount
 
-	log.Printf("Main peers results: %d accepted, %d failed out of %d", mainAccepted, mainFailed, mainPeersCount)
+	log.Printf("Main peers results: %d accepted, %d failed out of %d", mainAcceptedCount, mainFailed, mainTotalCount)
 
 	// If we have exactly MaxMainPeers main peers, we're done
-	if mainAccepted == config.MaxMainPeers {
+	if mainAcceptedCount == config.MaxMainPeers {
 		log.Printf("Perfect! Got exactly %d MaxMainPeers for consensus (1 creator + MaxMainPeers subscribers)", config.MaxMainPeers)
 		// Verify with global tracker
 		if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
 			log.Printf("Global tracker confirms: %d active subscriptions", tracker.GetActiveCount())
+			setFinalConsensusPeers(consensus, mainAcceptedPeers)
 			cleanupResponseHandler(responseHandler)
 			return nil
 		}
 	}
 
 	// If we have less than required main peers, use backup peers as replacements
-	if mainAccepted < config.MaxMainPeers && config.MaxBackupPeers > 0 {
-		needed := config.MaxMainPeers - mainAccepted
+	if mainAcceptedCount < config.MaxMainPeers && config.MaxBackupPeers > 0 {
+		needed := config.MaxMainPeers - mainAcceptedCount
 		log.Printf("Need %d backup nodes as replacements for failed main nodes", needed)
 
 		// Check if we have backup peers available
@@ -222,7 +239,8 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 
 		// Retry loop: keep trying backup peers until we have enough or run out
 		backupPeersIndex := 0
-		backupAccepted := 0
+		backupAcceptedCount := 0
+		backupAcceptedPeers := make([]peer.ID, 0, needed)
 		stillNeeded := needed
 		allBackupPeers := consensus.PeerList.BackupPeers
 
@@ -240,17 +258,28 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 				peersToTryCount, backupPeersIndex, backupPeersIndex+peersToTryCount-1, stillNeeded)
 
 			// Ask this batch for subscription
-			batchAccepted, batchTotal := askPeersForSubscription(Listener, topic, backupPeersToTry, responseHandler, "backup")
-			log.Printf("Backup batch results: %d accepted out of %d tried", batchAccepted, batchTotal)
+			batchAcceptedCount, batchTotalCount, batchAcceptedPeers := askPeersForSubscription(
+				Listener,
+				topic,
+				backupPeersToTry,
+				responseHandler,
+				"backup",
+			)
+			log.Printf("Backup batch results: %d accepted out of %d tried", batchAcceptedCount, batchTotalCount)
 
 			// Update counters
-			backupAccepted += batchAccepted
+			backupAcceptedCount += batchAcceptedCount
+			backupAcceptedPeers = append(backupAcceptedPeers, batchAcceptedPeers...)
 			backupPeersIndex += peersToTryCount
-			stillNeeded -= batchAccepted
+			stillNeeded -= batchAcceptedCount
 
 			// If we got some acceptances, log progress
-			if batchAccepted > 0 {
-				log.Printf("Progress: %d backup peers accepted so far, %d still needed", backupAccepted, stillNeeded)
+			if batchAcceptedCount > 0 {
+				log.Printf(
+					"Progress: %d backup peers accepted so far, %d still needed",
+					backupAcceptedCount,
+					stillNeeded,
+				)
 			}
 
 			// If we've exhausted all backup peers and still don't have enough, break
@@ -260,8 +289,14 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 			}
 		}
 
-		totalAccepted := mainAccepted + backupAccepted
-		log.Printf("Final subscription results: %d main + %d backup = %d total subscribers", mainAccepted, backupAccepted, totalAccepted)
+		finalPeers := append(append([]peer.ID{}, mainAcceptedPeers...), backupAcceptedPeers...)
+		totalAccepted := len(finalPeers)
+		log.Printf(
+			"Final subscription results: %d main + %d backup = %d total subscribers",
+			mainAcceptedCount,
+			backupAcceptedCount,
+			totalAccepted,
+		)
 
 		// Ensure we have exactly MaxMainPeers subscribers
 		if totalAccepted != config.MaxMainPeers {
@@ -279,6 +314,7 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 		}
 
 		log.Printf("Successfully achieved consensus: 1 creator + %d MaxMainPeers subscribers", totalAccepted)
+		setFinalConsensusPeers(consensus, finalPeers)
 
 		// Verify with global tracker
 		if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
@@ -292,12 +328,13 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 	}
 
 	// Check if we got exactly the required number of main peers (no backups needed)
-	if mainAccepted == config.MaxMainPeers {
-		log.Printf("Successfully achieved consensus with %d main peers (no backups needed)", mainAccepted)
+	if mainAcceptedCount == config.MaxMainPeers {
+		log.Printf("Successfully achieved consensus with %d main peers (no backups needed)", mainAcceptedCount)
 
 		// Verify with global tracker
 		if tracker.HasRequiredSubscriptions(config.MaxMainPeers) {
 			log.Printf("Global tracker confirms: %d active subscriptions", tracker.GetActiveCount())
+			setFinalConsensusPeers(consensus, mainAcceptedPeers)
 			cleanupResponseHandler(responseHandler)
 			return nil
 		}
@@ -307,6 +344,25 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 	cleanupResponseHandler(responseHandler)
 
 	return fmt.Errorf("global tracker validation failed: got %d, need %d", tracker.GetActiveCount(), config.MaxMainPeers)
+}
+
+func setFinalConsensusPeers(consensus *Consensus, finalPeers []peer.ID) {
+	if consensus == nil {
+		return
+	}
+	if len(finalPeers) != config.MaxMainPeers {
+		// Defensive: only set when we have the exact final committee size.
+		return
+	}
+
+	if consensus.mu != nil {
+		consensus.mu.Lock()
+		defer consensus.mu.Unlock()
+	}
+
+	consensus.PeerList.MainPeers = append([]peer.ID{}, finalPeers...)
+	// Keep BackupPeers as-is (they're still allowed peers for the channel), but the
+	// "committee" used for later verification must be exactly MainPeers.
 }
 
 // VerifySubscriptions publishes a verification message to the pubsub channel and collects ACK responses
@@ -381,11 +437,17 @@ func GetVerificationStatsWithRouter(gps *PubSubMessages.GossipPubSub) map[string
 }
 
 // askPeersForSubscription asks a list of peers for subscription
-func askPeersForSubscription(Listener *MessagePassing.StructListener, topic string, peerAddrs []peer.ID, responseHandler *ResponseHandler, peerType string) (int, int) {
+func askPeersForSubscription(
+	Listener *MessagePassing.StructListener,
+	topic string,
+	peerAddrs []peer.ID,
+	responseHandler *ResponseHandler,
+	peerType string,
+) (int, int, []peer.ID) {
 	fmt.Println("askPeersForSubscription", peerAddrs)
 	if len(peerAddrs) == 0 {
 		log.Printf("No %s peers to ask for subscription", peerType)
-		return 0, 0
+		return 0, 0, nil
 	}
 
 	// Get initial tracker count before this call
@@ -406,7 +468,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 	wg, err := common.LocalGRO.NewFunctionWaitGroup(context.Background(), GRO.SequencerConsensusThread)
 	if err != nil {
 		log.Printf("Failed to create waitgroup: %v", err)
-		return 0, 0
+		return 0, 0, nil
 	}
 
 	// Track how many goroutines we successfully spawned
@@ -425,7 +487,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 			// defer responseHandler.UnregisterPeer(peerID)
 
 			// Create context with timeout derived from parent context
-			timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			timeoutCtx, cancel := context.WithTimeout(ctx, subscriptionAckTimeout)
 			defer cancel()
 
 			// Create proper message with ACK for subscription request
@@ -452,7 +514,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 				mu.Lock()
 				accepted[peerID.String()] = false
 				mu.Unlock()
-				return fmt.Errorf("failed to send subscription request to %s %s: %v", peerType, peerID, err)	
+				return fmt.Errorf("failed to send subscription request to %s %s: %v", peerType, peerID, err)
 			}
 
 			log.Printf("Sent subscription request to %s peer: %s, waiting for ACK...", peerType, peerID)
@@ -498,7 +560,7 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 	log.Printf("All %d goroutines completed for %s peers", spawnedCount, peerType)
 
 	// Give some time for late-arriving responses to be processed
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(subscriptionLateResponseBuffer)
 
 	// Calculate how many NEW peers were accepted in this call
 	finalCount := tracker.GetActiveCount()
@@ -506,9 +568,17 @@ func askPeersForSubscription(Listener *MessagePassing.StructListener, topic stri
 
 	log.Printf("Tracker count: %d -> %d (new: %d) for %s peers", initialCount, finalCount, newAccepted, peerType)
 
+	// Collect accepted peers in a stable order (same order as peerAddrs).
+	acceptedPeers := make([]peer.ID, 0, len(peerAddrs))
+	for _, pid := range peerAddrs {
+		if accepted[pid.String()] {
+			acceptedPeers = append(acceptedPeers, pid)
+		}
+	}
+
 	// Note: Don't cleanup channels here - they're still being used
 	// Cleanup will happen when the next batch starts or when consensus completes
-	return newAccepted, len(peerAddrs)
+	return newAccepted, len(peerAddrs), acceptedPeers
 }
 
 // ValidateConsensusConfiguration validates that the consensus configuration is correct
