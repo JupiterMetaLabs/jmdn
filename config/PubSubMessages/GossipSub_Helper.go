@@ -37,40 +37,44 @@ func (gps *GossipPubSub) InitGossipSub() error {
 
 // GetOrJoinTopic gets an existing topic or joins a new one (thread-safe)
 func (gps *GossipPubSub) GetOrJoinTopic(topicName string) (*pubsub.Topic, error) {
-	gps.Mutex.Lock()
-	defer gps.Mutex.Unlock()
-
-	if gps.GossipSubPS == nil {
-		return nil, fmt.Errorf("GossipSub not initialized")
+	if topicName == "" {
+		return nil, fmt.Errorf("topic name must not be empty")
 	}
 
-	// Check if topic already exists
+	// Fast path: read lock to check for existing topic + capture GossipSub pointer.
 	gps.Mutex.RLock()
-	if topic, exists := gps.TopicsMap[topicName]; exists {
-		gps.Mutex.RUnlock()
-		return topic, nil
+	ps := gps.GossipSubPS
+	if gps.TopicsMap != nil {
+		if topic, exists := gps.TopicsMap[topicName]; exists && topic != nil {
+			gps.Mutex.RUnlock()
+			return topic, nil
+		}
 	}
 	gps.Mutex.RUnlock()
 
-	// Join the topic
-	topic, err := gps.GossipSubPS.Join(topicName)
+	if ps == nil {
+		return nil, fmt.Errorf("GossipSub not initialized")
+	}
+
+	// Join can do non-trivial work; do it outside locks to avoid deadlocks.
+	joinedTopic, err := ps.Join(topicName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to join topic %s: %w", topicName, err)
 	}
 
+	// Store under write lock (double-check to handle concurrent Join).
 	gps.Mutex.Lock()
+	defer gps.Mutex.Unlock()
+
 	if gps.TopicsMap == nil {
 		gps.TopicsMap = make(map[string]*pubsub.Topic)
 	}
-	// Another goroutine may have joined concurrently.
-	if existing, exists := gps.TopicsMap[topicName]; exists {
-		gps.Mutex.Unlock()
-		_ = topic.Close()
+	if existing, exists := gps.TopicsMap[topicName]; exists && existing != nil {
+		_ = joinedTopic.Close()
 		return existing, nil
 	}
-	gps.TopicsMap[topicName] = topic
-	gps.Mutex.Unlock()
-	return topic, nil
+	gps.TopicsMap[topicName] = joinedTopic
+	return joinedTopic, nil
 }
 
 // CloseTopic closes a topic

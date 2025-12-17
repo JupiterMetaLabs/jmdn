@@ -51,6 +51,35 @@ var (
 	MainLM interfaces.LocalGoroutineManagerInterface
 )
 
+var groTrackingEnabled bool
+
+func shouldEnableGROTracking(grotrack bool, metricsPort string) bool {
+	if !grotrack {
+		return false
+	}
+	if metricsPort == "" || metricsPort == "0" {
+		return false
+	}
+	return true
+}
+
+func goMaybeTracked(
+	localMgr interfaces.LocalGoroutineManagerInterface,
+	appName string,
+	localName string,
+	threadName string,
+	fn func(ctx context.Context) error,
+	opts ...interfaces.GoroutineOption,
+) error {
+	if localMgr == nil {
+		return fmt.Errorf("local manager is nil (thread=%s)", threadName)
+	}
+	if groTrackingEnabled {
+		return metrics.GoTracked(localMgr, appName, localName, threadName, fn, opts...)
+	}
+	return localMgr.Go(threadName, fn, opts...)
+}
+
 // Simple helper to print the CLI prompt in color
 func printPrompt() {
 	fmt.Printf(config.ColorGreen + ">>> " + config.ColorReset)
@@ -109,7 +138,7 @@ func StartFacadeServer(port int, chainID int) {
 		log.Fatal().Msg("MainLM not initialized. Call initAppandLocalGRO() first")
 	}
 
-	if err := metrics.GoTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.FacadeThread, func(ctx context.Context) error {
+	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.FacadeThread, func(ctx context.Context) error {
 		log.Info().Msg("Starting facade server")
 
 		handler := rpc.NewHandlers(Service.NewService(chainID))
@@ -127,7 +156,7 @@ func StartFacadeServer(port int, chainID int) {
 }
 
 func StartWSServer(port int, chainID int) {
-	if err := metrics.GoTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.WSServerThread, func(ctx context.Context) error {
+	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.WSServerThread, func(ctx context.Context) error {
 		log.Info().Msg("Starting WSServer")
 		// Get the Http Server
 		HTTPServer := rpc.NewHandlers(Service.NewService(chainID))
@@ -476,7 +505,7 @@ func StartAPIServer(ctx context.Context, address string, enableExplorer bool) er
 		return fmt.Errorf("failed to create ImmuDB API server: %w", err)
 	}
 
-	if err := metrics.GoTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockPollerThread, func(ctx context.Context) error {
+	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockPollerThread, func(ctx context.Context) error {
 		explorer.StartBlockPoller(ctx, server, 7*time.Second)
 		return nil
 	}); err != nil {
@@ -596,7 +625,8 @@ func main() {
 	peerAlias := flag.String("alias", "", "Peer alias for registration with seed node")
 	enableLoki := flag.Bool("loki", false, "Enable Loki logging (default: false)")
 	heartbeatInterval := flag.Int("heartbeat", 120, "Heartbeat interval in seconds (default: 300)")
-	metricsPort := flag.String("metrics", "8081", "Port for Prometheus metrics")
+	metricsPort := flag.String("metrics", "", "Port for Prometheus metrics (empty disables metrics server)")
+	grotrack := flag.Bool("grotrack", false, "Track GRO goroutines in Prometheus/Grafana (requires -metrics)")
 	enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
 	apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
 	enableExplorer := flag.Bool("explorer", false, "Enable blockchain explorer UI (default: false)")
@@ -651,14 +681,20 @@ func main() {
 	// Clean up any leftover temp files from a previous run
 	defer Logger.Close()
 
-	// Start metrics server early so Prometheus can scrape during startup.
+	groTrackingEnabled = shouldEnableGROTracking(*grotrack, *metricsPort)
+
+	// Start metrics server only when a metrics port is provided.
 	// Default: http://localhost:8081/metrics (port set by -metrics flag).
-	metricsAddr := ":" + *metricsPort
-	metrics.StartMetricsServer(metricsAddr)
-	fmt.Printf(
-		config.ColorGreen+"\nMetrics available at "+config.ColorReset+"http://localhost%s/metrics\n",
-		metricsAddr,
-	)
+	if *metricsPort != "" && *metricsPort != "0" {
+		metricsAddr := ":" + *metricsPort
+		metrics.StartMetricsServer(metricsAddr)
+		fmt.Printf(
+			config.ColorGreen+"\nMetrics available at "+config.ColorReset+"http://localhost%s/metrics\n",
+			metricsAddr,
+		)
+	} else if *grotrack {
+		log.Warn().Msg("grotrack enabled but metrics port is not set; GRO tracking disabled")
+	}
 
 	// Create a cancellable context for clean shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -668,7 +704,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	if err := metrics.GoTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.ShutdownThread, func(ctx context.Context) error {
+	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.ShutdownThread, func(ctx context.Context) error {
 		<-sigCh
 
 		fmt.Println("\nShutdown signal received, closing connections...")
@@ -824,7 +860,7 @@ func main() {
 	}
 
 	// We'll initialize the DID system in the DID server to avoid blocking main
-	if err := metrics.GoTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.DIDThread, func(ctx context.Context) error {
+	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.DIDThread, func(ctx context.Context) error {
 		log.Info().Str("address", *DIDgRPC).Msg("Starting DID gRPC server")
 		if err := startDIDServer(ctx, n.Host, *DIDgRPC); err != nil {
 			fmt.Println("Failed to start DID gRPC server:", err)
@@ -836,7 +872,7 @@ func main() {
 	}
 
 	if *blockgen > 0 {
-		if err := metrics.GoTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockgenThread, func(ctx context.Context) error {
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockgenThread, func(ctx context.Context) error {
 			log.Info().Msgf("Starting block generator on port %d", *blockgen)
 			fmt.Printf("\nBlock generator available at http://localhost:%d\n", *blockgen)
 			if err := Block.StartserverWithContext(ctx, *blockgen, n.Host, *chainID); err != nil {
@@ -849,7 +885,7 @@ func main() {
 	}
 
 	if *blockgRPC > 0 {
-		if err := metrics.GoTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockgRPCThread, func(ctx context.Context) error {
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockgRPCThread, func(ctx context.Context) error {
 			log.Info().Int("port", *blockgRPC).Msg("Starting block gRPC server")
 			fmt.Printf("\nBlock gRPC server available at localhost:%d\n", *blockgRPC)
 			if err := Block.StartGRPCServer(*blockgRPC, n.Host, *chainID); err != nil {
@@ -907,7 +943,7 @@ func main() {
 	}
 
 	if *gETHgRPC > 0 {
-		if err := metrics.GoTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.GETHgRPCThread, func(ctx context.Context) error {
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.GETHgRPCThread, func(ctx context.Context) error {
 			fmt.Printf("Starting gETH gRPC server on port %d\n", *gETHgRPC)
 			if err := gETH.StartGRPC(*gETHgRPC, *chainID); err != nil {
 				log.Error().Err(err).Msg("gETH gRPC server error")
@@ -919,7 +955,7 @@ func main() {
 	}
 
 	if *apiPort > 0 {
-		if err := metrics.GoTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.ExplorerThread, func(ctx context.Context) error {
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.ExplorerThread, func(ctx context.Context) error {
 			log.Info().Msgf("Starting ImmuDB API on port %d", *apiPort)
 			fmt.Printf("\nImmuDB API available at http://localhost:%d/api\n", *apiPort)
 
@@ -978,7 +1014,7 @@ func main() {
 
 	// Start CLI without timeout - run indefinitely
 	done := make(chan error, 1)
-	if err := metrics.GoTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.CLIThread, func(ctx context.Context) error {
+	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.CLIThread, func(ctx context.Context) error {
 		done <- cmdHandler.StartCLI(ctx, *cliGRPC)
 		return nil
 	}); err != nil {
