@@ -137,12 +137,7 @@ func SubmitRawTransaction(tx *config.Transaction) (string, error) {
 		return "", errors.New("invalid transaction: To and From address are the same")
 	}
 
-	// Make transaction hash
-	rawTxBytes, err := json.Marshal(tx)
-	if err != nil {
-		return "", err
-	}
-	txHash := crypto.Keccak256Hash(rawTxBytes).Hex()
+	txHash := tx.Hash.Hex()
 	// Debugging
 	fmt.Println("Transaction Hash: ", txHash)
 
