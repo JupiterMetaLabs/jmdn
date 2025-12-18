@@ -24,12 +24,11 @@ import (
 	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 
-		"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
 )
-
 
 // BFTContext holds the context for a BFT consensus round
 type BFTContext struct {
@@ -703,14 +702,23 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 	topicToSubscribe := config.PubSub_ConsensusChannel
 	fmt.Printf("Subscribing to GossipSub topic: %s\n", topicToSubscribe)
 
-	// Create GossipPubSub using Pubsub_Builder.go
-	gps := AVCStruct.NewGossipPubSubBuilder(nil).
-		SetHost(listenerNode.Host).
-		SetProtocol(config.BuddyNodesMessageProtocol).
-		Build()
+	// CRITICAL FIX: Reuse existing GossipNode/PubSub if available
+	// Creating a new GossipPubSub for every request creates a new subscription to libp2p
+	// without cancelling the old one, leading to a resource leak (thousands of goroutines).
+	var gps *AVCStruct.GossipPubSub
+	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
 
-	// Initialize PubSub BuddyNode if not already done
-	if AVCStruct.NewGlobalVariables().Get_PubSubNode() == nil {
+	if pubSubNode != nil && pubSubNode.PubSub != nil {
+		fmt.Println("♻️ Reusing existing GossipPubSub instance")
+		gps = pubSubNode.PubSub
+	} else {
+		fmt.Println("🆕 Creating NEW GossipPubSub instance (First time initialization)")
+		// Create GossipPubSub using Pubsub_Builder.go
+		gps = AVCStruct.NewGossipPubSubBuilder(nil).
+			SetHost(listenerNode.Host).
+			SetProtocol(config.BuddyNodesMessageProtocol).
+			Build()
+
 		// Create default Buddies instance
 		defaultBuddies := AVCStruct.NewBuddiesBuilder(nil)
 		buddy := NewBuddyNode(listenerNode.Host, defaultBuddies, nil, gps)
