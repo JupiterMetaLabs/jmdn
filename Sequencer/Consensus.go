@@ -715,7 +715,10 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		return false
 	}
 
-	needed := (validTotal / 2) + 1
+	// Enforce quorum based on the fixed committee size (MaxMainPeers = 5)
+	// We need a majority of the EXPECTED committee, regardless of how many responded.
+	// For 5 peers, strict majority is 3.
+	needed := (config.MaxMainPeers / 2) + 1
 	peerVotesStr := strings.Join(votedPeers, "\n")
 
 	if validYes >= needed {
