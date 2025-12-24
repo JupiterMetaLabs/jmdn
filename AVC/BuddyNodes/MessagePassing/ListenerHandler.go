@@ -137,7 +137,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 		lh.handleSubscriptionResponse(s, message)
 		defer s.Close()
 	case config.Type_VoteResult:
-		fmt.Println("\n🚨🚨🚨 HANDLING Type_VoteResult - VOTE RESULT REQUEST 🚨🚨🚨\n")
+		fmt.Println("🚨🚨🚨 HANDLING Type_VoteResult - VOTE RESULT REQUEST 🚨🚨🚨")
 		lh.handleVoteResultRequest(s, message)
 		defer s.Close()
 	default:

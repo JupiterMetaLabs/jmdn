@@ -246,12 +246,15 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 		log.LogConsensusInfo(fmt.Sprintf("Direct connection failed, using seed node fallback for %s", peerID), zap.String("peer", peerID.String()), zap.String("function", "SendMessageToPeer"))
 		return StructListenerNode.sendViaSeedNode(peerID, message)
 	}
+	// Always close+evict submit streams when we're done (or on any error).
+	// SubmitMessageProtocol is request/response oriented and peers may close/reset immediately after replying.
+	defer StreamCache.CloseSubmitMessageStream(peerID)
 
 	// Send the message
 	_, err = stream.Write([]byte(message + string(rune(config.Delimiter))))
 	if err != nil {
-		// If write fails, the stream might be invalid, close it and try fallback
-		StreamCache.CloseStream(peerID)
+		// If write fails, the stream might be invalid; evict and try fallback.
+		StreamCache.CloseSubmitMessageStream(peerID)
 		log.LogConsensusInfo(fmt.Sprintf("Stream write failed, using seed node fallback for %s", peerID), zap.String("peer", peerID.String()), zap.String("function", "SendMessageToPeer"))
 		return StructListenerNode.sendViaSeedNode(peerID, message)
 	}
@@ -281,7 +284,9 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 
 		if err != nil {
 			fmt.Printf("❌ SendMessageToPeer: Failed to read response from %s: %v (deadline was %v)\n", peerID, err, deadline)
-			// Return error so caller knows something went wrong, rather than assuming success and waiting
+			// Evict the submit stream so we don't keep reusing a broken/reset stream.
+			StreamCache.CloseSubmitMessageStream(peerID)
+			// Return error so caller knows something went wrong, rather than assuming success and waiting.
 			return fmt.Errorf("failed to read response from %s: %w", peerID, err)
 		} else if responseMsg != "" {
 			fmt.Printf("✅ SendMessageToPeer: Received response from %s: %s\n", peerID, responseMsg)
@@ -308,17 +313,12 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 					}
 				}
 
-				// IMPORTANT: Close the stream after receiving the response
-				// to prevent hanging on the next read when the receiver has already closed their end
-				fmt.Printf("🔒 Closing stream after receiving response from %s\n", peerID)
-				stream.Close()
-				fmt.Printf("✅ Stream closed successfully\n")
+				// Stream will be closed+evicted by the deferred CloseSubmitMessageStream.
 			}
 		}
 	} else {
-		// For votes, just close the stream without waiting for response
-		fmt.Printf("📤 Vote submitted - no response expected, closing stream\n")
-		stream.Close()
+		// For votes, no response expected. Stream will be closed+evicted by the deferred CloseSubmitMessageStream.
+		fmt.Printf("📤 Vote submitted - no response expected\n")
 	}
 
 	// Update metadata

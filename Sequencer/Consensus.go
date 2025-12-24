@@ -32,12 +32,15 @@ import (
 // ConnectedNessCheck checks connectedness of candidates and returns connected peers
 // It stops checking once it has found enough peers (maxPeers), or after checking all candidates
 func (consensus *Consensus) ConnectedNessCheck(candidates []PubSubMessages.Buddy_PeerMultiaddr, maxPeers int) (map[peer.ID]multiaddr.Multiaddr, error) {
+
 	if candidates == nil {
 		return nil, fmt.Errorf("CONNECTEDNESSCHECK: candidates are nil")
 	}
 	if maxPeers <= 0 {
 		return nil, fmt.Errorf("CONNECTEDNESSCHECK: maxPeers must be greater than 0")
 	}
+
+	log.Printf("CONNECTEDNESSCHECK: checking connectedness of %d candidates : %v", len(candidates), maxPeers)
 
 	reachablePeers := make(map[peer.ID]multiaddr.Multiaddr, maxPeers)
 	for _, candidate := range candidates {

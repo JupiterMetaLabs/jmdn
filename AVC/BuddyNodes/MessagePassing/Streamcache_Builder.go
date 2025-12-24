@@ -19,6 +19,13 @@ type StructStreamCache struct {
 	StreamCache *AVCStruct.StreamCache
 }
 
+const submitMessageStreamKeySuffix = "_submit"
+
+func submitMessageStreamKey(peerID peer.ID) peer.ID {
+	// NOTE: peer.ID is a typed string; concatenating an untyped string constant yields peer.ID.
+	return peerID + submitMessageStreamKeySuffix
+}
+
 func NewStreamCacheBuilder(streamcache *AVCStruct.StreamCache) *StructStreamCache {
 	if streamcache == nil {
 		return &StructStreamCache{
@@ -79,6 +86,20 @@ func (sc *StructStreamCache) GetSubmitMessageStream(peerID peer.ID) (network.Str
 	sc.StreamCache.Mutex.Lock()
 	defer sc.StreamCache.Mutex.Unlock()
 
+	key := submitMessageStreamKey(peerID)
+
+	// Reuse existing submit stream when valid
+	if entry, exists := sc.StreamCache.Streams[key]; exists && entry != nil && entry.Stream != nil {
+		if entry.Stream.Conn().Stat().Direction != network.DirUnknown {
+			entry.LastUsed = time.Now().UTC()
+			entry.AccessCount++
+			sc.moveToEnd(key)
+			return entry.Stream, nil
+		}
+		// Stream invalid; remove it
+		sc.removeEntry(key)
+	}
+
 	// Create new stream using SubmitMessageProtocol
 	stream, err := sc.StreamCache.Host.NewStream(context.Background(), peerID, config.SubmitMessageProtocol)
 	if err != nil {
@@ -86,12 +107,13 @@ func (sc *StructStreamCache) GetSubmitMessageStream(peerID peer.ID) (network.Str
 	}
 
 	// Add to cache with a unique key for SubmitMessageProtocol
-	submitKey := peerID + "_submit"
-	sc.StreamCache.Streams[submitKey] = &AVCStruct.StreamEntry{
+	sc.StreamCache.Streams[key] = &AVCStruct.StreamEntry{
 		Stream:      stream,
 		LastUsed:    time.Now().UTC(),
 		AccessCount: 1,
 	}
+	// Track in LRU order so submit streams can be evicted/cleaned like other cached streams.
+	sc.moveToEnd(key)
 
 	return stream, nil
 }
@@ -184,6 +206,18 @@ func (sc *StructStreamCache) CloseStream(peerID peer.ID) {
 	sc.StreamCache.Mutex.Lock()
 	defer sc.StreamCache.Mutex.Unlock()
 	sc.removeEntry(peerID)
+}
+
+// CloseSubmitMessageStream closes and removes a SubmitMessageProtocol stream from the cache.
+// This is required because submit streams are stored under a different cache key than normal
+// BuddyNodesMessageProtocol streams.
+func (sc *StructStreamCache) CloseSubmitMessageStream(peerID peer.ID) {
+	if sc == nil || sc.StreamCache == nil {
+		return
+	}
+	sc.StreamCache.Mutex.Lock()
+	defer sc.StreamCache.Mutex.Unlock()
+	sc.removeEntry(submitMessageStreamKey(peerID))
 }
 
 // CloseAll closes all streams in the cache
