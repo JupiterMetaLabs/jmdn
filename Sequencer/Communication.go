@@ -204,6 +204,7 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 	}
 
 	// First, try main peers (MaxMainPeers)
+	log.Printf("🔵 [MAIN PEERS] Starting subscription request for %d main peers: %v", len(consensus.PeerList.MainPeers), consensus.PeerList.MainPeers)
 	mainAcceptedCount, mainTotalCount, mainAcceptedPeers := askPeersForSubscription(
 		Listener,
 		topic,
@@ -213,7 +214,7 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 	)
 	mainFailed := mainTotalCount - mainAcceptedCount
 
-	log.Printf("Main peers results: %d accepted, %d failed out of %d", mainAcceptedCount, mainFailed, mainTotalCount)
+	log.Printf("🔵 [MAIN PEERS] Results: %d accepted, %d failed out of %d (accepted peers: %v)", mainAcceptedCount, mainFailed, mainTotalCount, mainAcceptedPeers)
 
 	// If we have exactly MaxMainPeers main peers, we're done
 	if mainAcceptedCount == config.MaxMainPeers {
@@ -557,7 +558,10 @@ func askPeersForSubscription(
 	// Wait for all goroutines to complete
 	wg.Wait()
 
-	log.Printf("All %d goroutines completed for %s peers", spawnedCount, peerType)
+	log.Printf("All %d goroutines completed for %s peers (requested %d peers)", spawnedCount, peerType, len(peerAddrs))
+	if spawnedCount != len(peerAddrs) {
+		log.Printf("⚠️ WARNING: Spawned %d goroutines but requested %d peers for %s - some peers may have been skipped", spawnedCount, len(peerAddrs), peerType)
+	}
 
 	// Give some time for late-arriving responses to be processed
 	time.Sleep(subscriptionLateResponseBuffer)
@@ -566,20 +570,32 @@ func askPeersForSubscription(
 	// Late responses may have updated the tracker but not the accepted map (if they
 	// arrived after the goroutine timed out). Use tracker as single source of truth.
 	trackerPeers := tracker.GetBuddyNodes()
+	syncedCount := 0
 	for _, pid := range peerAddrs {
 		// If tracker says this peer was accepted, ensure it's in the accepted map
 		if role, exists := trackerPeers[pid]; exists && role == peerType {
 			mu.Lock()
-			accepted[pid.String()] = true
+			if !accepted[pid.String()] {
+				accepted[pid.String()] = true
+				syncedCount++
+				log.Printf("🔄 [SYNC] Synced late response: peer %s (role: %s) was accepted in tracker but missing from accepted map", pid, role)
+			}
 			mu.Unlock()
 		}
+	}
+	if syncedCount > 0 {
+		log.Printf("🔄 [SYNC] Synced %d late responses from tracker for %s peers", syncedCount, peerType)
 	}
 
 	// Calculate how many NEW peers were accepted in this call
 	finalCount := tracker.GetActiveCount()
 	newAccepted := finalCount - initialCount
 
+	// Debug: Show all peers in tracker and their roles
+	trackerPeersDebug := tracker.GetBuddyNodes()
 	log.Printf("Tracker count: %d -> %d (new: %d) for %s peers", initialCount, finalCount, newAccepted, peerType)
+	log.Printf("🔍 [DEBUG] Tracker has %d total peers: %v", len(trackerPeersDebug), trackerPeersDebug)
+	log.Printf("🔍 [DEBUG] Requested %d %s peers: %v", len(peerAddrs), peerType, peerAddrs)
 
 	// Collect accepted peers in a stable order (same order as peerAddrs).
 	// Now synced with tracker, so includes late responses.

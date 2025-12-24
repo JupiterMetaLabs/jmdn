@@ -43,16 +43,47 @@ func (consensus *Consensus) ConnectedNessCheck(candidates []PubSubMessages.Buddy
 	log.Printf("CONNECTEDNESSCHECK: checking connectedness of %d candidates : %v", len(candidates), maxPeers)
 
 	reachablePeers := make(map[peer.ID]multiaddr.Multiaddr, maxPeers)
+	protocolFilteredCount := 0
 	for _, candidate := range candidates {
 		if len(reachablePeers) >= maxPeers {
 			break // We have enough peers
 		}
 		connectedness := consensus.Host.Network().Connectedness(candidate.PeerID)
 		if connectedness == network.Connected {
+			// CRITICAL: Check if peer supports SubmitMessageProtocol before selecting as main candidate
+			// Connectedness doesn't guarantee protocol support - peers may be connected but not support the protocol
+			protocols, err := consensus.Host.Peerstore().GetProtocols(candidate.PeerID)
+			if err != nil {
+				log.Printf("⚠️ Failed to get protocols for peer %s: %v (skipping)", candidate.PeerID.String()[:16], err)
+				protocolFilteredCount++
+				continue
+			}
+
+			supportsProtocol := false
+			for _, protocol := range protocols {
+				if protocol == config.SubmitMessageProtocol {
+					supportsProtocol = true
+					break
+				}
+			}
+
+			if !supportsProtocol {
+				log.Printf("⚠️ Buddy node %s is connected but does NOT support protocol %s (has: %v) - skipping",
+					candidate.PeerID.String()[:16], config.SubmitMessageProtocol, protocols)
+				protocolFilteredCount++
+				continue
+			}
+
 			reachablePeers[candidate.PeerID] = candidate.Multiaddr
-			log.Printf("✅ Buddy node %s is actually connected (status: %v)", candidate.PeerID.String()[:16], connectedness)
+			log.Printf("✅ Buddy node %s is actually connected (status: %v) and supports protocol %s",
+				candidate.PeerID.String()[:16], connectedness, config.SubmitMessageProtocol)
 		}
 	}
+
+	if protocolFilteredCount > 0 {
+		log.Printf("⚠️ Filtered out %d connected peers that don't support %s protocol", protocolFilteredCount, config.SubmitMessageProtocol)
+	}
+
 	return reachablePeers, nil
 }
 
@@ -281,6 +312,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// If we request vote results from backup/non-committee peers, we'll see timeouts or
 	// stream resets (they may not run vote aggregation or even have the handler enabled).
 	allPeerIDs := append([]peer.ID{}, consensus.PeerList.MainPeers...)
+	allPeerIDs = append(allPeerIDs, consensus.PeerList.BackupPeers...)
 
 	// Update the global listener node with buddy nodes
 	globalListenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
