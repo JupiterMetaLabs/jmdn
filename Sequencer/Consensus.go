@@ -860,7 +860,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		return false
 	}
 
-	needed := (validTotal / 2) + 1
+	needed := (config.MaxMainPeers / 2) + 1
 	peerVotesStr := strings.Join(votedPeers, "\n")
 
 	if validYes >= needed {
