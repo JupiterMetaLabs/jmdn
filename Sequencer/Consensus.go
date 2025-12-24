@@ -275,16 +275,19 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	log.Printf("SubmitMessageProtocol handler is already set up by NewListenerNode()")
 
 	// Populate buddy nodes list for the global listener node
-	allPeerIDs := make([]peer.ID, 0, len(consensus.PeerList.MainPeers)+len(consensus.PeerList.BackupPeers))
-	allPeerIDs = append(allPeerIDs, consensus.PeerList.MainPeers...)
-	allPeerIDs = append(allPeerIDs, consensus.PeerList.BackupPeers...)
+	// IMPORTANT:
+	// Vote aggregation is performed by the final committee (MainPeers) only.
+	// Backup peers are only used as replacements during subscription selection.
+	// If we request vote results from backup/non-committee peers, we'll see timeouts or
+	// stream resets (they may not run vote aggregation or even have the handler enabled).
+	allPeerIDs := append([]peer.ID{}, consensus.PeerList.MainPeers...)
 
 	// Update the global listener node with buddy nodes
 	globalListenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
 	if globalListenerNode != nil {
 		globalListenerNode.BuddyNodes.Buddies_Nodes = allPeerIDs
-		log.Printf("Populated listener node with %d buddy nodes (%d main + %d backup)",
-			len(allPeerIDs), len(consensus.PeerList.MainPeers), len(consensus.PeerList.BackupPeers))
+		log.Printf("Populated listener node with %d vote-aggregating buddy nodes (main committee only)",
+			len(allPeerIDs))
 	}
 
 	// Event-driven flow: Request subscriptions → Verify → Broadcast votes → Process CRDT
@@ -650,7 +653,18 @@ func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMe
 			return nil
 		}
 	}
-	log.Printf("Requesting vote aggregation results from %d buddy nodes", len(listenerNode.BuddyNodes.Buddies_Nodes))
+	// Prefer the consensus committee (MainPeers) when available; fall back to listenerNode list.
+	buddyIDs := make([]peer.ID, 0, config.MaxMainPeers)
+	if len(consensus.PeerList.MainPeers) > 0 {
+		buddyIDs = append(buddyIDs, consensus.PeerList.MainPeers...)
+	} else if listenerNode != nil {
+		buddyIDs = append(buddyIDs, listenerNode.BuddyNodes.Buddies_Nodes...)
+	}
+	if len(buddyIDs) > config.MaxMainPeers {
+		buddyIDs = buddyIDs[:config.MaxMainPeers]
+	}
+
+	log.Printf("Requesting vote aggregation results from %d buddy nodes", len(buddyIDs))
 
 	wg, err := common.LocalGRO.NewFunctionWaitGroup(context.Background(), GRO.SequencerVoteCollectionWaitGroup)
 	if err != nil {
@@ -661,7 +675,7 @@ func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMe
 	var blsResultsMu sync.Mutex
 	blsResults := make([]BLS_Signer.BLSresponse, 0, config.MaxMainPeers)
 
-	for _, buddyID := range listenerNode.BuddyNodes.Buddies_Nodes {
+	for _, buddyID := range buddyIDs {
 		common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
 			blsResult := consensus.requestVoteResultFromBuddy(buddyID)
 			if blsResult != nil {
