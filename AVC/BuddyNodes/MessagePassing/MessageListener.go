@@ -419,29 +419,49 @@ func (StructListenerNode *StructListener) sendViaSeedNode(peerID peer.ID, messag
 		return fmt.Errorf("failed to send message to %s: %v", peerID, err)
 	}
 
-	// Read response after sending (for subscription requests)
+	// Determine if a response is expected (votes do not expect responses).
+	var outMsg map[string]interface{}
+	_ = json.Unmarshal([]byte(message), &outMsg)
+	outStage := ""
+	if ack, ok := outMsg["ACK"].(map[string]interface{}); ok {
+		if ackStage, ok := ack["stage"].(string); ok {
+			outStage = ackStage
+		}
+	}
+	if outStage == config.Type_SubmitVote {
+		// Vote submission: no response expected.
+		return nil
+	}
+
+	// Read response after sending (e.g., subscription requests). If we can't read the response,
+	// return an error so callers don't block waiting for an ACK that will never arrive.
 	reader := bufio.NewReader(stream)
 	deadline := time.Now().UTC().Add(20 * time.Second)
 	stream.SetReadDeadline(deadline)
 	responseMsg, err := reader.ReadString(config.Delimiter)
-	if err == nil && responseMsg != "" {
-		fmt.Printf("=== sendViaSeedNode: Received response from %s: %s ===\n", peerID, responseMsg)
+	if err != nil {
+		return fmt.Errorf("failed to read response from %s via seed node fallback: %w", peerID, err)
+	}
+	if responseMsg == "" {
+		return fmt.Errorf("empty response from %s via seed node fallback", peerID)
+	}
 
-		// Parse the response message
-		responseMessage := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(responseMsg)
-		if responseMessage != nil && responseMessage.GetACK() != nil {
-			// Process the subscription response directly
-			if responseMessage.GetACK().GetStage() == config.Type_SubscriptionResponse {
-				fmt.Printf("=== sendViaSeedNode: Processing subscription response from %s ===\n", peerID)
+	fmt.Printf("=== sendViaSeedNode: Received response from %s: %s ===\n", peerID, responseMsg)
 
-				// Route the response to ResponseHandler if available
-				if StructListenerNode.ResponseHandler != nil {
-					accepted := responseMessage.GetACK().GetStatus() == "ACK_TRUE"
-					fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", peerID, accepted)
+	// Parse the response message
+	responseMessage := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(responseMsg)
+	if responseMessage != nil && responseMessage.GetACK() != nil {
+		// Process the subscription response directly
+		if responseMessage.GetACK().GetStage() == config.Type_SubscriptionResponse {
+			fmt.Printf("=== sendViaSeedNode: Processing subscription response from %s ===\n", peerID)
 
-					StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted, "main")
-					fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
-				}
+			// Route the response to ResponseHandler if available
+			if StructListenerNode.ResponseHandler != nil {
+				accepted := responseMessage.GetACK().GetStatus() == "ACK_TRUE"
+				fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", peerID, accepted)
+
+				StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted, "main")
+				fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
 			}
 		}
 	}
