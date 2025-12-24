@@ -683,18 +683,6 @@ func (lh *ListenerHandler) handleAskForSubscription(s network.Stream, message *A
 		zap.String("topic", config.PubSub_ConsensusChannel),
 		zap.String("function", "ListenerHandler.handleAskForSubscription"))
 
-	// Defer panic recovery to ensure stream is closed properly
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Printf("❌ PANIC in handleAskForSubscription: %v\n", r)
-			log.LogMessagesError("PANIC in handleAskForSubscription",
-				fmt.Errorf("%v", r),
-				zap.String("peer", s.Conn().RemotePeer().String()),
-				zap.String("function", "ListenerHandler.handleAskForSubscription"))
-			lh.sendSubscriptionResponse(s, false)
-		}
-	}()
-
 	// Check if ForListner is initialized
 	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
 	if listenerNode == nil || listenerNode.Host == nil {
@@ -812,7 +800,7 @@ func (lh *ListenerHandler) sendSubscriptionResponse(s network.Stream, accepted b
 		SetTimestamp(time.Now().UTC().Unix()).
 		SetACK(ackBuilder)
 
-	responseBytes, err := json.Marshal(message)
+	messageBytes, err := json.Marshal(message)
 	if err != nil {
 		fmt.Printf("❌ Failed to marshal response: %v\n", err)
 		log.LogMessagesError(fmt.Sprintf("Failed to marshal response: %v", err), err)
@@ -820,10 +808,10 @@ func (lh *ListenerHandler) sendSubscriptionResponse(s network.Stream, accepted b
 		return
 	}
 
-	fmt.Printf("Response message: %s\n", string(responseBytes))
+	fmt.Printf("Response message: %s\n", string(messageBytes))
 
 	// Send response back through the SAME stream (SubmitMessageProtocol)
-	bytesWritten, err := s.Write([]byte(string(responseBytes) + string(rune(config.Delimiter))))
+	bytesWritten, err := s.Write([]byte(string(messageBytes) + string(rune(config.Delimiter))))
 	if err != nil {
 		fmt.Printf("❌ Failed to write response: %v (wrote %d bytes)\n", err, bytesWritten)
 		log.LogMessagesError(fmt.Sprintf("Failed to send response: %v", err), err)
