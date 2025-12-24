@@ -458,8 +458,9 @@ func askPeersForSubscription(
 	accepted := make(map[string]bool)
 	var mu sync.Mutex
 
-	log.Printf("Asking %d %s peers for subscription to topic: %s", len(peerAddrs), peerType, topic)
-	log.Printf("Initial tracker count: %d", initialCount)
+	log.Printf("🔵 [%s PEERS] Asking %d peers for subscription to topic: %s", strings.ToUpper(peerType), len(peerAddrs), topic)
+	log.Printf("🔵 [%s PEERS] Peer list: %v", strings.ToUpper(peerType), peerAddrs)
+	log.Printf("🔵 [%s PEERS] Initial tracker count: %d", strings.ToUpper(peerType), initialCount)
 
 	// Get host from GossipPubSub (not create BuddyNode yet)
 	host := Listener.ListenerBuddyNode.Host
@@ -511,7 +512,17 @@ func askPeersForSubscription(
 
 			// Send subscription request via SubmitMessageProtocol using existing function
 			if err := Listener.SendMessageToPeer(peerID, string(messageBytes)); err != nil {
-				log.Printf("Failed to send subscription request to %s %s: %v", peerType, peerID, err)
+				// Check if error is due to protocol not supported (stream reset)
+				errStr := strings.ToLower(err.Error())
+				isProtocolError := strings.Contains(errStr, "stream reset") ||
+					strings.Contains(errStr, "protocol not supported") ||
+					strings.Contains(errStr, "no protocol")
+
+				if isProtocolError {
+					log.Printf("⚠️ [PROTOCOL] %s peer %s does not support %s protocol: %v", peerType, peerID, config.SubmitMessageProtocol, err)
+				} else {
+					log.Printf("❌ Failed to send subscription request to %s %s: %v", peerType, peerID, err)
+				}
 				mu.Lock()
 				accepted[peerID.String()] = false
 				mu.Unlock()

@@ -43,46 +43,22 @@ func (consensus *Consensus) ConnectedNessCheck(candidates []PubSubMessages.Buddy
 	log.Printf("CONNECTEDNESSCHECK: checking connectedness of %d candidates : %v", len(candidates), maxPeers)
 
 	reachablePeers := make(map[peer.ID]multiaddr.Multiaddr, maxPeers)
-	protocolFilteredCount := 0
 	for _, candidate := range candidates {
 		if len(reachablePeers) >= maxPeers {
 			break // We have enough peers
 		}
 		connectedness := consensus.Host.Network().Connectedness(candidate.PeerID)
 		if connectedness == network.Connected {
-			// CRITICAL: Check if peer supports SubmitMessageProtocol before selecting as main candidate
-			// Connectedness doesn't guarantee protocol support - peers may be connected but not support the protocol
-			protocols, err := consensus.Host.Peerstore().GetProtocols(candidate.PeerID)
-			if err != nil {
-				log.Printf("⚠️ Failed to get protocols for peer %s: %v (skipping)", candidate.PeerID.String()[:16], err)
-				protocolFilteredCount++
-				continue
-			}
-
-			supportsProtocol := false
-			for _, protocol := range protocols {
-				if protocol == config.SubmitMessageProtocol {
-					supportsProtocol = true
-					break
-				}
-			}
-
-			if !supportsProtocol {
-				log.Printf("⚠️ Buddy node %s is connected but does NOT support protocol %s (has: %v) - skipping",
-					candidate.PeerID.String()[:16], config.SubmitMessageProtocol, protocols)
-				protocolFilteredCount++
-				continue
-			}
-
 			reachablePeers[candidate.PeerID] = candidate.Multiaddr
-			log.Printf("✅ Buddy node %s is actually connected (status: %v) and supports protocol %s",
-				candidate.PeerID.String()[:16], connectedness, config.SubmitMessageProtocol)
+			log.Printf("✅ Buddy node %s is actually connected (status: %v)", candidate.PeerID.String()[:16], connectedness)
 		}
 	}
 
-	if protocolFilteredCount > 0 {
-		log.Printf("⚠️ Filtered out %d connected peers that don't support %s protocol", protocolFilteredCount, config.SubmitMessageProtocol)
-	}
+	// NOTE: We don't filter by protocol support here because:
+	// 1. Peerstore().GetProtocols() may not have protocol info until after negotiation
+	// 2. Protocol support will be determined during subscription request (stream creation)
+	// 3. If a peer doesn't support the protocol, the subscription request will fail gracefully
+	//    with a stream reset, and we'll fall back to backup peers
 
 	return reachablePeers, nil
 }
