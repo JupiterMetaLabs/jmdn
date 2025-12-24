@@ -984,25 +984,6 @@ func (lh *ListenerHandler) handleVoteResultRequest(s network.Stream, message *AV
 	result, err := Structs.ProcessVotesFromCRDT(listenerNode, targetBlockHash)
 	if err != nil {
 		fmt.Printf("❌ Failed to process votes from CRDT: %v\n", err)
-
-		// Send error response instead of resetting stream
-		errorData := map[string]interface{}{
-			"result": 0,
-			"error":  fmt.Sprintf("failed to process votes: %v", err),
-		}
-		resultJSON, _ := json.Marshal(errorData)
-
-		ackMessage := AVCStruct.NewACKBuilder().False_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
-		response := AVCStruct.NewMessageBuilder(nil).
-			SetSender(listenerNode.PeerID).
-			SetMessage(string(resultJSON)).
-			SetTimestamp(time.Now().UTC().Unix()).
-			SetACK(ackMessage)
-
-		responseBytes, _ := json.Marshal(response)
-		// Write response with delimiter
-		responseWithDelimiter := string(responseBytes) + string(rune(config.Delimiter))
-		s.Write([]byte(responseWithDelimiter))
 		return
 	}
 
