@@ -61,6 +61,19 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 	// Note: Stream closure is handled by the caller to allow response reading
 	fmt.Println("=== StructListener.HandleSubmitMessageStream CALLED ===")
 	fmt.Printf("Received stream from: %s\n", s.Conn().RemotePeer())
+	defer func() {
+		if r := recover(); r != nil {
+			// Prevent abrupt stream resets caused by panics.
+			log.LogMessagesError(
+				fmt.Sprintf("Panic in StructListener.HandleSubmitMessageStream: %v", r),
+				nil,
+				zap.String("peer", s.Conn().RemotePeer().String()),
+				zap.String("topic", log.Messages_TOPIC),
+				zap.String("function", "StructListener.HandleSubmitMessageStream"),
+			)
+			_ = s.Close()
+		}
+	}()
 
 	reader := bufio.NewReader(s)
 	msg, err := reader.ReadString(config.Delimiter)

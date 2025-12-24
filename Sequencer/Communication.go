@@ -22,11 +22,11 @@ import (
 var (
 	// subscriptionAckTimeout is the maximum time we wait for a peer's subscription ACK.
 	// Kept as a var so tests can shorten it.
-	subscriptionAckTimeout = 10 * time.Second
+	subscriptionAckTimeout = 30 * time.Second
 
 	// subscriptionLateResponseBuffer allows late-arriving responses to be processed.
 	// Kept as a var so tests can reduce test runtime.
-	subscriptionLateResponseBuffer = 500 * time.Millisecond
+	subscriptionLateResponseBuffer = 2 * time.Second
 )
 
 // ResponseHandler manages ACK responses from peers

@@ -68,6 +68,19 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 	fmt.Println("=== ListenerHandler.HandleSubmitMessageStream CALLED ===")
 	fmt.Printf("Received stream from: %s\n", s.Conn().RemotePeer())
 	fmt.Printf("🔄 STREAM RECEIVED FROM REMOTE PEER\n")
+	defer func() {
+		if r := recover(); r != nil {
+			// Prevent abrupt stream resets caused by panics.
+			log.LogMessagesError(
+				fmt.Sprintf("Panic in ListenerHandler.HandleSubmitMessageStream: %v", r),
+				nil,
+				zap.String("peer", s.Conn().RemotePeer().String()),
+				zap.String("topic", log.Messages_TOPIC),
+				zap.String("function", "ListenerHandler.HandleSubmitMessageStream"),
+			)
+			_ = s.Close()
+		}
+	}()
 
 	reader := bufio.NewReader(s)
 	msg, err := reader.ReadString(config.Delimiter)
