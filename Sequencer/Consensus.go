@@ -402,51 +402,31 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission() {
 	}
 	log.Printf("=== [Event-Driven Flow] Step 3: Vote trigger broadcast successfully ===\n")
 
-	// Step 4: Poll for consensus until timeout
-	log.Printf("=== [Event-Driven Flow] Step 4: Starting consensus polling loop (Timeout: %v) ===\n", config.ConsensusTimeout)
+	// Step 4: Wait for votes to be collected and processed, then print CRDT state and process votes
+	// This is triggered after vote collection completes (handled by vote collection mechanism)
+	// For now, we'll use a reasonable delay but this should ideally be event-driven from vote collection
+	log.Printf("=== [Event-Driven Flow] Step 4: Waiting for votes to be collected and processed ===\n")
+	log.Printf("=== [Event-Driven Flow] Note: CRDT print and vote processing will be triggered after vote collection completes ===\n")
 
+	// TODO: Replace this with actual event-driven trigger from vote collection completion
+	// For now, use a delay but log that it should be event-driven
 	common.LocalGRO.Go(GRO.SequencerRequestEventDrivenFlowThread, func(ctx context.Context) error {
-		timeout := time.After(config.ConsensusTimeout)
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-timeout:
-				log.Printf("=== [Event-Driven Flow] ❌ Consensus polling timed out after %v ===\n", config.ConsensusTimeout)
-
-				Alerts.NewAlertBuilder(alert_ctx).
-					AlertName(helper.Alert_Consensus_Timeout).
-					Status(Alerts.AlertStatusError).
-					Severity(Alerts.SeverityError).
-					Description("Consensus polling timed out").
-					Send()
-
-				return nil
-
-			case <-ticker.C:
-				log.Printf("=== [Event-Driven Flow] Polling attempt... ===\n")
-
-				// Print CRDT state for debugging (optional, can be noisy)
-				if err := consensus.PrintCRDTState(); err != nil {
-					log.Printf("=== [Event-Driven Flow] Warning: PrintCRDTState failed: %v ===\n", err)
-				}
-
-				success, err := consensus.AttemptConsensus()
-				if err != nil {
-					log.Printf("=== [Event-Driven Flow] AttemptConsensus failed with error: %v ===\n", err)
-					// Continue polling
-					continue
-				}
-
-				if success {
-					log.Printf("=== [Event-Driven Flow] ✅ Consensus reached and processed successfully! ===\n")
-					return nil // Exit loop on success
-				}
-
-				log.Printf("=== [Event-Driven Flow] Consensus not reached yet, retrying... ===\n")
-			}
+		// Wait for votes to be collected (this should be replaced with event-driven trigger)
+		time.Sleep(30 * time.Second)
+		log.Printf("=== [Event-Driven Flow] Step 4a: Triggering CRDT state print ===\n")
+		if err := consensus.PrintCRDTState(); err != nil {
+			log.Printf("=== [Event-Driven Flow] ERROR: PrintCRDTState failed: %v ===\n", err)
+		} else {
+			log.Printf("=== [Event-Driven Flow] Step 4a: CRDT state printed successfully ===\n")
 		}
+
+		log.Printf("=== [Event-Driven Flow] Step 4b: Triggering vote collection and processing ===\n")
+		if err := consensus.ProcessVoteCollection(); err != nil {
+			log.Printf("=== [Event-Driven Flow] ERROR: ProcessVoteCollection failed: %v ===\n", err)
+		} else {
+			log.Printf("=== [Event-Driven Flow] Step 4b: Vote collection and processing initiated successfully ===\n")
+		}
+		return nil
 	})
 }
 
@@ -596,19 +576,19 @@ func (consensus *Consensus) printCRDTFooter() {
 	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
 }
 
-// AttemptConsensus attempts to collect votes, verify consensus, and process the block.
-// Returns true if consensus was successfully reached and processed.
-func (consensus *Consensus) AttemptConsensus() (bool, error) {
+// ProcessVoteCollection orchestrates the vote collection and processing flow
+// This manages the state flag and coordinates vote collection, verification, and block processing
+func (consensus *Consensus) ProcessVoteCollection() error {
 	if common.LocalGRO == nil {
 		var err error
 		common.LocalGRO, err = common.InitializeGRO(GRO.SequencerConsensusLocal)
 		if err != nil {
-			log.Printf("CONSENSUSERROR.ATTEMPTCONSENSUS: failed to initialize local gro: %v", err)
-			return false, fmt.Errorf("CONSENSUSERROR.ATTEMPTCONSENSUS: failed to initialize local gro: %v", err)
+			log.Printf("CONSENSUSERROR.PROCESSVOTECOLLECTION: failed to initialize local gro: %v", err)
+			return fmt.Errorf("CONSENSUSERROR.PROCESSVOTECOLLECTION: failed to initialize local gro: %v", err)
 		}
 	}
 	if consensus.ZKBlockData == nil || consensus.ZKBlockData.GetZKBlock() == nil {
-		return false, fmt.Errorf("ZKBlockData not initialized")
+		return fmt.Errorf("ZKBlockData not initialized")
 	}
 
 	// Guard against concurrent calls for the same block (single atomic check)
@@ -616,8 +596,8 @@ func (consensus *Consensus) AttemptConsensus() (bool, error) {
 	consensus.mu.Lock()
 	if consensus.isProcessingVotes && consensus.processedBlockHash == currentBlockHash {
 		consensus.mu.Unlock()
-		fmt.Printf("⚠️ AttemptConsensus: Vote processing already in progress for block %s - skipping concurrent call\n", currentBlockHash)
-		return false, nil
+		fmt.Printf("⚠️ ProcessVoteCollection: Vote processing already in progress for block %s - skipping duplicate call\n", currentBlockHash)
+		return nil
 	}
 	consensus.isProcessingVotes = true
 	consensus.processedBlockHash = currentBlockHash
@@ -630,33 +610,30 @@ func (consensus *Consensus) AttemptConsensus() (bool, error) {
 		consensus.mu.Unlock()
 	}()
 
-	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
-	if listenerNode == nil {
-		fmt.Printf("❌ Listener node not available for vote collection\n")
-		return false, fmt.Errorf("listener node not available")
-	}
+	// Process vote collection asynchronously
+	common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
+		listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
+		if listenerNode == nil {
+			fmt.Printf("❌ Listener node not available for vote collection\n")
+			return nil
+		}
 
-	// Step 1: Collect vote results from buddy nodes
-	blsResults := consensus.CollectVoteResultsFromBuddies(listenerNode)
+		// Step 1: Collect vote results from buddy nodes
+		blsResults := consensus.CollectVoteResultsFromBuddies(listenerNode)
 
-	// Step 2: Verify consensus with BLS signatures
-	consensusReached := consensus.VerifyConsensusWithBLS(blsResults)
+		// Step 2: Verify consensus with BLS signatures
+		consensusReached := consensus.VerifyConsensusWithBLS(blsResults)
 
-	if !consensusReached {
-		return false, nil
-	}
+		// Step 3: Broadcast and process block (state-changing operation)
+		if err := consensus.BroadcastAndProcessBlock(blsResults, consensusReached); err != nil {
+			ErrorMessage := fmt.Sprintf("CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Failed to broadcast and process block: %v", err)
+			fmt.Printf("%s", ErrorMessage)
+			return nil
+		}
+		return nil
+	})
 
-	// Step 3: Broadcast and process block (state-changing operation)
-	if err := consensus.BroadcastAndProcessBlock(blsResults, consensusReached); err != nil {
-		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Failed to broadcast and process block: %v", err)
-		fmt.Printf("%s", ErrorMessage)
-		// We reached consensus but failed to process?
-		// We still return true to stop polling essentially, or false to retry processing?
-		// If processing failed (db error?), retrying might help.
-		return false, fmt.Errorf("failed to broadcast and process block: %v", err)
-	}
-
-	return true, nil
+	return nil
 }
 
 // CollectVoteResultsFromBuddies collects vote aggregation results from all buddy nodes
