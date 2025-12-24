@@ -127,12 +127,12 @@ func TestSubscriptionFlow(t *testing.T) {
 	}
 
 	// Validate the response
-	if response.GetACK().GetStage() != config.Type_AskForSubscription {
-		t.Fatalf("Expected ACK stage %s, got %s", config.Type_AskForSubscription, response.GetACK().GetStage())
+	if response.GetACK().GetStage() != config.Type_SubscriptionResponse {
+		t.Fatalf("Expected ACK stage %s, got %s", config.Type_SubscriptionResponse, response.GetACK().GetStage())
 	}
 
-	if response.GetACK().GetStatus() != "true" {
-		t.Fatalf("Expected ACK status to be 'true', got %s", response.GetACK().GetStatus())
+	if response.GetACK().GetStatus() != config.Type_ACK_True {
+		t.Fatalf("Expected ACK status to be '%s', got %s", config.Type_ACK_True, response.GetACK().GetStatus())
 	}
 
 	fmt.Printf("✅ Subscription response validated successfully!\n")
@@ -180,6 +180,21 @@ func testPubSubFunctionality(t *testing.T, pubSubNode *AVCStruct.BuddyNode) {
 	topicName := "test-topic"
 	messageReceived := make(chan bool, 1)
 
+	// Allow subscribing to this test topic by creating a local public channel entry.
+	// Subscription.CanSubscribe requires ChannelAccess to exist.
+	gps.Mutex.Lock()
+	if gps.ChannelAccess == nil {
+		gps.ChannelAccess = make(map[string]*AVCStruct.ChannelAccess)
+	}
+	gps.ChannelAccess[topicName] = &AVCStruct.ChannelAccess{
+		ChannelName:  topicName,
+		AllowedPeers: map[peer.ID]bool{gps.Host.ID(): true},
+		IsPublic:     true,
+		Creator:      gps.Host.ID(),
+		CreatedAt:    time.Now().UTC().Unix(),
+	}
+	gps.Mutex.Unlock()
+
 	err := Subscription.Subscribe(gps, topicName, func(msg *AVCStruct.GossipMessage) {
 		fmt.Printf("📨 Received test message: %s\n", msg.ID)
 		messageReceived <- true
@@ -200,7 +215,7 @@ func testPubSubFunctionality(t *testing.T, pubSubNode *AVCStruct.BuddyNode) {
 func TestSingleNodeSubscription(t *testing.T) {
 	fmt.Println("🔬 Testing Single Node Subscription...")
 
-	// Create a single host
+	// Create server host
 	host, err := libp2p.New()
 	if err != nil {
 		t.Fatalf("Failed to create host: %v", err)
@@ -240,17 +255,31 @@ func TestSingleNodeSubscription(t *testing.T) {
 		listener.HandleSubmitMessageStream(s)
 	})
 
+	// Create client host to avoid dialing self
+	clientHost, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("Failed to create client host: %v", err)
+	}
+	defer clientHost.Close()
+
+	if err := clientHost.Connect(context.Background(), peer.AddrInfo{
+		ID:    host.ID(),
+		Addrs: host.Addrs(),
+	}); err != nil {
+		t.Fatalf("Failed to connect client to host: %v", err)
+	}
+
 	// Create subscription request
-	subscriptionRequest := createSubscriptionRequest(host.ID())
+	subscriptionRequest := createSubscriptionRequest(clientHost.ID())
 	requestBytes, err := json.Marshal(subscriptionRequest)
 	if err != nil {
 		t.Fatalf("Failed to marshal subscription request: %v", err)
 	}
 
-	// Send request to self (single node test)
-	stream, err := host.NewStream(context.Background(), host.ID(), config.SubmitMessageProtocol)
+	// Send request from client to server
+	stream, err := clientHost.NewStream(context.Background(), host.ID(), config.SubmitMessageProtocol)
 	if err != nil {
-		t.Fatalf("Failed to create self-stream: %v", err)
+		t.Fatalf("Failed to create stream: %v", err)
 	}
 	defer stream.Close()
 
@@ -282,8 +311,8 @@ func TestSingleNodeSubscription(t *testing.T) {
 		t.Fatalf("Self-response has nil ACK")
 	}
 
-	if response.GetACK().GetStatus() != "true" {
-		t.Fatalf("Self-response ACK status should be 'true', got %s", response.GetACK().GetStatus())
+	if response.GetACK().GetStatus() != config.Type_ACK_True {
+		t.Fatalf("Self-response ACK status should be '%s', got %s", config.Type_ACK_True, response.GetACK().GetStatus())
 	}
 
 	fmt.Printf("✅ Single node subscription test completed!\n")
@@ -295,7 +324,7 @@ func TestSingleNodeSubscription(t *testing.T) {
 func TestSubscriptionWithMockPubSub(t *testing.T) {
 	fmt.Println("🎭 Testing Subscription with Mock PubSub...")
 
-	// Create host
+	// Create server host
 	host, err := libp2p.New()
 	if err != nil {
 		t.Fatalf("Failed to create host: %v", err)
@@ -333,13 +362,26 @@ func TestSubscriptionWithMockPubSub(t *testing.T) {
 	})
 
 	// Create and send subscription request
-	subscriptionRequest := createSubscriptionRequest(host.ID())
+	clientHost, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("Failed to create client host: %v", err)
+	}
+	defer clientHost.Close()
+
+	if err := clientHost.Connect(context.Background(), peer.AddrInfo{
+		ID:    host.ID(),
+		Addrs: host.Addrs(),
+	}); err != nil {
+		t.Fatalf("Failed to connect client to host: %v", err)
+	}
+
+	subscriptionRequest := createSubscriptionRequest(clientHost.ID())
 	requestBytes, err := json.Marshal(subscriptionRequest)
 	if err != nil {
 		t.Fatalf("Failed to marshal subscription request: %v", err)
 	}
 
-	stream, err := host.NewStream(context.Background(), host.ID(), config.SubmitMessageProtocol)
+	stream, err := clientHost.NewStream(context.Background(), host.ID(), config.SubmitMessageProtocol)
 	if err != nil {
 		t.Fatalf("Failed to create stream: %v", err)
 	}
@@ -362,7 +404,7 @@ func TestSubscriptionWithMockPubSub(t *testing.T) {
 
 	// Validate
 	response := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(responseStr)
-	if response == nil || response.GetACK() == nil || response.GetACK().GetStatus() != "true" {
+	if response == nil || response.GetACK() == nil || response.GetACK().GetStatus() != config.Type_ACK_True {
 		t.Fatalf("Mock subscription test failed")
 	}
 
@@ -489,12 +531,12 @@ func TestSubscriptionWithSpecificPeer(t *testing.T) {
 	}
 
 	// Validate the response
-	if response.GetACK().GetStage() != config.Type_AskForSubscription {
-		t.Fatalf("Expected ACK stage %s, got %s", config.Type_AskForSubscription, response.GetACK().GetStage())
+	if response.GetACK().GetStage() != config.Type_SubscriptionResponse {
+		t.Fatalf("Expected ACK stage %s, got %s", config.Type_SubscriptionResponse, response.GetACK().GetStage())
 	}
 
-	if response.GetACK().GetStatus() != "true" {
-		t.Fatalf("Expected ACK status to be 'true', got %s", response.GetACK().GetStatus())
+	if response.GetACK().GetStatus() != config.Type_ACK_True {
+		t.Fatalf("Expected ACK status to be '%s', got %s", config.Type_ACK_True, response.GetACK().GetStatus())
 	}
 
 	fmt.Printf("✅ Subscription response validated successfully!\n")
@@ -531,6 +573,20 @@ func testPubSubWithSpecificPeer(t *testing.T, pubSubNode *AVCStruct.BuddyNode, p
 	// Test subscription with peer-specific topic
 	topicName := fmt.Sprintf("peer-%s-topic", peerID.String())
 	messageReceived := make(chan bool, 1)
+
+	// Allow subscribing to this test topic by creating a local public channel entry.
+	gps.Mutex.Lock()
+	if gps.ChannelAccess == nil {
+		gps.ChannelAccess = make(map[string]*AVCStruct.ChannelAccess)
+	}
+	gps.ChannelAccess[topicName] = &AVCStruct.ChannelAccess{
+		ChannelName:  topicName,
+		AllowedPeers: map[peer.ID]bool{gps.Host.ID(): true},
+		IsPublic:     true,
+		Creator:      gps.Host.ID(),
+		CreatedAt:    time.Now().UTC().Unix(),
+	}
+	gps.Mutex.Unlock()
 
 	err := Subscription.Subscribe(gps, topicName, func(msg *AVCStruct.GossipMessage) {
 		fmt.Printf("📨 Received message for peer %s: %s\n", peerID, msg.ID)
@@ -598,15 +654,28 @@ func TestSubscriptionFlowWithRealPeerID(t *testing.T) {
 		listener.HandleSubmitMessageStream(s)
 	})
 
-	// Create subscription request with real peer ID
-	subscriptionRequest := createSubscriptionRequest(peerID)
+	// Create subscription request (sender is the client host)
+	clientHost, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("Failed to create client host: %v", err)
+	}
+	defer clientHost.Close()
+
+	if err := clientHost.Connect(context.Background(), peer.AddrInfo{
+		ID:    host.ID(),
+		Addrs: host.Addrs(),
+	}); err != nil {
+		t.Fatalf("Failed to connect client to host: %v", err)
+	}
+
+	subscriptionRequest := createSubscriptionRequest(clientHost.ID())
 	requestBytes, err := json.Marshal(subscriptionRequest)
 	if err != nil {
 		t.Fatalf("Failed to marshal subscription request: %v", err)
 	}
 
-	// Send request to self (simulating the real peer)
-	stream, err := host.NewStream(context.Background(), host.ID(), config.SubmitMessageProtocol)
+	// Send request from client to server
+	stream, err := clientHost.NewStream(context.Background(), host.ID(), config.SubmitMessageProtocol)
 	if err != nil {
 		t.Fatalf("Failed to create stream: %v", err)
 	}
@@ -617,7 +686,7 @@ func TestSubscriptionFlowWithRealPeerID(t *testing.T) {
 		t.Fatalf("Failed to send subscription request: %v", err)
 	}
 
-	fmt.Printf("📤 Sent subscription request for real peer: %s\n", peerID)
+	fmt.Printf("📤 Sent subscription request (real peer id referenced in test): %s\n", peerID)
 
 	// Read response
 	responseBytes := make([]byte, 1024)
@@ -639,8 +708,8 @@ func TestSubscriptionFlowWithRealPeerID(t *testing.T) {
 		t.Fatalf("Response has nil ACK")
 	}
 
-	if response.GetACK().GetStatus() != "true" {
-		t.Fatalf("Expected ACK status to be 'true', got %s", response.GetACK().GetStatus())
+	if response.GetACK().GetStatus() != config.Type_ACK_True {
+		t.Fatalf("Expected ACK status to be '%s', got %s", config.Type_ACK_True, response.GetACK().GetStatus())
 	}
 
 	fmt.Printf("✅ Real peer subscription test completed!\n")
@@ -769,12 +838,12 @@ func TestSimpleSubscriptionFlow(t *testing.T) {
 	}
 
 	// Validate the response
-	if response.GetACK().GetStage() != config.Type_AskForSubscription {
-		t.Fatalf("Expected ACK stage %s, got %s", config.Type_AskForSubscription, response.GetACK().GetStage())
+	if response.GetACK().GetStage() != config.Type_SubscriptionResponse {
+		t.Fatalf("Expected ACK stage %s, got %s", config.Type_SubscriptionResponse, response.GetACK().GetStage())
 	}
 
-	if response.GetACK().GetStatus() != "true" {
-		t.Fatalf("Expected ACK status to be 'true', got %s", response.GetACK().GetStatus())
+	if response.GetACK().GetStatus() != config.Type_ACK_True {
+		t.Fatalf("Expected ACK status to be '%s', got %s", config.Type_ACK_True, response.GetACK().GetStatus())
 	}
 
 	fmt.Printf("✅ Subscription response validated successfully!\n")
