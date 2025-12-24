@@ -131,6 +131,9 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(s network.Stream) {
 		defer s.Close()
 	case config.Type_AskForSubscription:
 		fmt.Println("Handling Type_AskForSubscription")
+		// Ensure the stream is closed after we write the subscription response.
+		// Closing is handled here (not in sendSubscriptionResponse) to avoid close races.
+		defer s.Close()
 		lh.handleAskForSubscription(s, message)
 	case config.Type_SubscriptionResponse:
 		fmt.Println("Handling Type_SubscriptionResponse")
@@ -823,12 +826,11 @@ func (lh *ListenerHandler) sendSubscriptionResponse(s network.Stream, accepted b
 	fmt.Printf("✅ Successfully sent subscription response: %s\n", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted])
 	log.LogMessagesInfo(fmt.Sprintf("Sent subscription response: %s", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted]))
 
-	// Give a small delay to ensure the data is sent before closing
-	time.Sleep(50 * time.Millisecond)
-
-	fmt.Printf("Closing stream now...\n")
-	s.Close()
-	fmt.Printf("Stream closed\n")
+	// Gracefully close the write side to reduce the chance of transport-level resets.
+	// The caller (HandleSubmitMessageStream) closes the stream after this returns.
+	if err := s.CloseWrite(); err != nil {
+		fmt.Printf("⚠️ Failed to close write side: %v\n", err)
+	}
 }
 
 // GetResponseHandler returns the current ResponseHandler

@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/seednode"
+	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
@@ -21,6 +24,30 @@ import (
 type StructListener struct {
 	ListenerBuddyNode *AVCStruct.BuddyNode
 	ResponseHandler   AVCStruct.ResponseHandler
+}
+
+func isRetryableStreamReadErr(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Deadline/timeout errors are often transient (peer busy / slow / handshake delay).
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+
+	// libp2p transport errors are frequently wrapped; fall back to string checks.
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "stream reset") ||
+		strings.Contains(msg, "reset by remote") ||
+		strings.Contains(msg, "deadline") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "eof")
 }
 
 func NewListenerStruct(listner *AVCStruct.BuddyNode) *StructListener {
@@ -263,10 +290,14 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 	var voteMessage map[string]interface{}
 	json.Unmarshal([]byte(message), &voteMessage)
 
+	stage := ""
 	var isVote bool
 	if ack, ok := voteMessage["ACK"].(map[string]interface{}); ok {
-		if stage, ok := ack["stage"].(string); ok && stage == config.Type_SubmitVote {
-			isVote = true
+		if ackStage, ok := ack["stage"].(string); ok {
+			stage = ackStage
+			if ackStage == config.Type_SubmitVote {
+				isVote = true
+			}
 		}
 	}
 
@@ -286,6 +317,22 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 			fmt.Printf("❌ SendMessageToPeer: Failed to read response from %s: %v (deadline was %v)\n", peerID, err, deadline)
 			// Evict the submit stream so we don't keep reusing a broken/reset stream.
 			StreamCache.CloseSubmitMessageStream(peerID)
+
+			// For subscription handshake, retry once via seed node fallback on retryable read errors.
+			if stage == config.Type_AskForSubscription && isRetryableStreamReadErr(err) {
+				fmt.Printf("🔁 Retrying subscription request via seed-node fallback for %s...\n", peerID)
+				if fallbackErr := StructListenerNode.sendViaSeedNode(peerID, message); fallbackErr == nil {
+					return nil
+				} else {
+					return fmt.Errorf(
+						"failed to read response from %s: %w (seed fallback failed: %v)",
+						peerID,
+						err,
+						fallbackErr,
+					)
+				}
+			}
+
 			// Return error so caller knows something went wrong, rather than assuming success and waiting.
 			return fmt.Errorf("failed to read response from %s: %w", peerID, err)
 		} else if responseMsg != "" {
@@ -361,6 +408,8 @@ func (StructListenerNode *StructListener) sendViaSeedNode(peerID peer.ID, messag
 
 	// Read response after sending (for subscription requests)
 	reader := bufio.NewReader(stream)
+	deadline := time.Now().UTC().Add(20 * time.Second)
+	stream.SetReadDeadline(deadline)
 	responseMsg, err := reader.ReadString(config.Delimiter)
 	if err == nil && responseMsg != "" {
 		fmt.Printf("=== sendViaSeedNode: Received response from %s: %s ===\n", peerID, responseMsg)

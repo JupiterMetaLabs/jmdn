@@ -417,8 +417,11 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission() {
 	// TODO: Replace this with actual event-driven trigger from vote collection completion
 	// For now, use a delay but log that it should be event-driven
 	common.LocalGRO.Go(GRO.SequencerRequestEventDrivenFlowThread, func(ctx context.Context) error {
-		// Wait for votes to be collected (this should be replaced with event-driven trigger)
-		time.Sleep(30 * time.Second)
+		// Wait (bounded) for votes to land in CRDT instead of using a fixed delay.
+		requiredVotes := config.MaxMainPeers
+		if err := consensus.waitForCRDTVotes(ctx, requiredVotes, 500*time.Millisecond, 2*time.Minute); err != nil {
+			log.Printf("=== [Event-Driven Flow] WARN: waitForCRDTVotes: %v ===\n", err)
+		}
 		log.Printf("=== [Event-Driven Flow] Step 4a: Triggering CRDT state print ===\n")
 		if err := consensus.PrintCRDTState(); err != nil {
 			log.Printf("=== [Event-Driven Flow] ERROR: PrintCRDTState failed: %v ===\n", err)
@@ -520,6 +523,42 @@ func (consensus *Consensus) PrintCRDTState() error {
 	return nil
 }
 
+func (consensus *Consensus) waitForCRDTVotes(
+	ctx context.Context,
+	required int,
+	pollInterval time.Duration,
+	timeout time.Duration,
+) error {
+	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
+	if listenerNode == nil || listenerNode.CRDTLayer == nil {
+		return fmt.Errorf("listener node or CRDT layer not initialized")
+	}
+	if required <= 0 {
+		return fmt.Errorf("required votes must be > 0")
+	}
+
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		votes, _ := MessagePassing.GetVotesFromCRDT(listenerNode.CRDTLayer, "vote")
+		if len(votes) >= required {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while waiting for votes: %w", ctx.Err())
+		case <-deadline.C:
+			return fmt.Errorf("timed out waiting for %d votes (got %d)", required, len(votes))
+		case <-ticker.C:
+		}
+	}
+}
+
 // printCRDTHeader prints the header information for CRDT state
 func (consensus *Consensus) printCRDTHeader(listenerNode *PubSubMessages.BuddyNode) {
 	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
@@ -599,25 +638,15 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 
 	// Guard against concurrent calls for the same block (single atomic check)
 	currentBlockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.String()
-	consensus.mu.Lock()
-	if consensus.isProcessingVotes && consensus.processedBlockHash == currentBlockHash {
-		consensus.mu.Unlock()
+	if !consensus.tryStartVoteProcessing(currentBlockHash) {
 		fmt.Printf("⚠️ ProcessVoteCollection: Vote processing already in progress for block %s - skipping duplicate call\n", currentBlockHash)
 		return nil
 	}
-	consensus.isProcessingVotes = true
-	consensus.processedBlockHash = currentBlockHash
-	consensus.mu.Unlock()
-
-	// Ensure we unlock even if function returns early
-	defer func() {
-		consensus.mu.Lock()
-		consensus.isProcessingVotes = false
-		consensus.mu.Unlock()
-	}()
 
 	// Process vote collection asynchronously
 	common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
+		defer consensus.finishVoteProcessing(currentBlockHash)
+
 		listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
 		if listenerNode == nil {
 			fmt.Printf("❌ Listener node not available for vote collection\n")
@@ -640,6 +669,28 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 	})
 
 	return nil
+}
+
+func (consensus *Consensus) tryStartVoteProcessing(blockHash string) bool {
+	consensus.mu.Lock()
+	defer consensus.mu.Unlock()
+
+	if consensus.isProcessingVotes && consensus.processedBlockHash == blockHash {
+		return false
+	}
+	consensus.isProcessingVotes = true
+	consensus.processedBlockHash = blockHash
+	return true
+}
+
+func (consensus *Consensus) finishVoteProcessing(blockHash string) {
+	consensus.mu.Lock()
+	defer consensus.mu.Unlock()
+
+	// Only clear if we are still processing the same block.
+	if consensus.processedBlockHash == blockHash {
+		consensus.isProcessingVotes = false
+	}
 }
 
 // CollectVoteResultsFromBuddies collects vote aggregation results from all buddy nodes

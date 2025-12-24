@@ -103,6 +103,9 @@ func NewListenerNode(h host.Host, responseHandler AVCStruct.ResponseHandler) *St
 			zap.String("peer", stream.Conn().RemotePeer().String()),
 			zap.String("protocol", string(config.SubmitMessageProtocol)))
 		StreamCacheLocal.Go(GRO.StreamCacheMessageListenerThread, func(ctx context.Context) error {
+			// Always close the stream after the handler finishes to prevent leaks and
+			// reduce the chance of transport-level resets from half-open streams.
+			defer stream.Close()
 			listener.HandleSubmitMessageStream(stream)
 			return nil
 		})
