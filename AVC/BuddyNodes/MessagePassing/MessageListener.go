@@ -71,6 +71,25 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 				zap.String("topic", log.Messages_TOPIC),
 				zap.String("function", "StructListener.HandleSubmitMessageStream"),
 			)
+
+			// Attempt to send a graceful error response before closing
+			// This prevents the "stream reset" error on the client side
+			// We construct a generic failure/false ACK
+			host := s.Conn().LocalPeer()
+			ackBuilder := AVCStruct.NewACKBuilder().False_ACK_Message(host, "PANIC_RECOVERY")
+			message := AVCStruct.NewMessageBuilder(nil).
+				SetSender(host).
+				SetMessage(fmt.Sprintf("Internal Server Error (Panic): %v", r)).
+				SetTimestamp(time.Now().UTC().Unix()).
+				SetACK(ackBuilder)
+
+			if msgBytes, err := json.Marshal(message); err == nil {
+				_, _ = s.Write([]byte(string(msgBytes) + string(rune(config.Delimiter))))
+			}
+
+			_ = s.Close()
+		} else {
+			// Happy path: Always close the stream when handler returns to prevent leaks
 			_ = s.Close()
 		}
 	}()

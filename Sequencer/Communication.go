@@ -562,6 +562,19 @@ func askPeersForSubscription(
 	// Give some time for late-arriving responses to be processed
 	time.Sleep(subscriptionLateResponseBuffer)
 
+	// CRITICAL FIX: Sync accepted map with tracker after late response buffer.
+	// Late responses may have updated the tracker but not the accepted map (if they
+	// arrived after the goroutine timed out). Use tracker as single source of truth.
+	trackerPeers := tracker.GetBuddyNodes()
+	for _, pid := range peerAddrs {
+		// If tracker says this peer was accepted, ensure it's in the accepted map
+		if role, exists := trackerPeers[pid]; exists && role == peerType {
+			mu.Lock()
+			accepted[pid.String()] = true
+			mu.Unlock()
+		}
+	}
+
 	// Calculate how many NEW peers were accepted in this call
 	finalCount := tracker.GetActiveCount()
 	newAccepted := finalCount - initialCount
@@ -569,10 +582,23 @@ func askPeersForSubscription(
 	log.Printf("Tracker count: %d -> %d (new: %d) for %s peers", initialCount, finalCount, newAccepted, peerType)
 
 	// Collect accepted peers in a stable order (same order as peerAddrs).
+	// Now synced with tracker, so includes late responses.
 	acceptedPeers := make([]peer.ID, 0, len(peerAddrs))
 	for _, pid := range peerAddrs {
 		if accepted[pid.String()] {
 			acceptedPeers = append(acceptedPeers, pid)
+		}
+	}
+
+	// Verify consistency: acceptedPeers count should match tracker delta
+	if len(acceptedPeers) != newAccepted {
+		log.Printf("⚠️ WARNING: acceptedPeers count (%d) != tracker delta (%d) for %s peers - using tracker as source of truth", len(acceptedPeers), newAccepted, peerType)
+		// Rebuild acceptedPeers from tracker to ensure consistency
+		acceptedPeers = make([]peer.ID, 0, newAccepted)
+		for _, pid := range peerAddrs {
+			if role, exists := trackerPeers[pid]; exists && role == peerType {
+				acceptedPeers = append(acceptedPeers, pid)
+			}
 		}
 	}
 
