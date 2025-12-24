@@ -7,6 +7,8 @@ const (
 	Alert_Consensus_FailedToSetZKBlockData                 = "Failed to Set ZK Block Data"
 	Alert_Consensus_FailedToValidateConsensusConfiguration = "Failed to Validate Consensus Configuration"
 	Alert_Consensus_FailedToSetGossipnode                  = "Failed to Set Gossipnode"
+	Alert_Consensus_FailedToAddPeersToCache                = "Failed to add peers to cache"
+	Alert_Consensus_Timeout                                = "Consensus Timeout"
 	Alert_Consensus_FailedToCreatePubsubChannel            = "Failed to Create Pubsub Channel"
 	Alert_Consensus_FailedToRequestSubscriptionPermission  = "Failed to Request Subscription Permission"
 	Alert_Consensus_ZKBlockDataNotSet                      = "Failed: ZK Block Data Not Set"

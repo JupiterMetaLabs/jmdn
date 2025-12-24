@@ -29,6 +29,7 @@ import (
 
 // This trigger is used to trigger the Close the accepting messages from the nodes for listener protocol
 var LocalGRO interfaces.LocalGoroutineManagerInterface
+
 const ListeningTriggerMessage = "ListeningTrigger"
 const ListeningTriggerBufferTime = 20 * time.Second
 const CRDTDataSubmitBufferTime = 25 * time.Second
@@ -650,7 +651,7 @@ func TriggerCRDTSyncBeforeVoteAggregation() error {
 	}
 
 	// Wait for sync completion with timeout
-	if err := globalSyncManager.WaitForGlobalSyncCompletion(5 * time.Second); err != nil {
+	if err := globalSyncManager.WaitForGlobalSyncCompletion(15 * time.Second); err != nil {
 		log.Printf("⚠️ Global CRDT sync timeout: %v", err)
 		return triggerSimplifiedCRDTSync(listenerNode, crdtLayer)
 	}
