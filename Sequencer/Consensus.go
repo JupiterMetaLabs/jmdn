@@ -32,15 +32,12 @@ import (
 // ConnectedNessCheck checks connectedness of candidates and returns connected peers
 // It stops checking once it has found enough peers (maxPeers), or after checking all candidates
 func (consensus *Consensus) ConnectedNessCheck(candidates []PubSubMessages.Buddy_PeerMultiaddr, maxPeers int) (map[peer.ID]multiaddr.Multiaddr, error) {
-
 	if candidates == nil {
 		return nil, fmt.Errorf("CONNECTEDNESSCHECK: candidates are nil")
 	}
 	if maxPeers <= 0 {
 		return nil, fmt.Errorf("CONNECTEDNESSCHECK: maxPeers must be greater than 0")
 	}
-
-	log.Printf("CONNECTEDNESSCHECK: checking connectedness of %d candidates : %v", len(candidates), maxPeers)
 
 	reachablePeers := make(map[peer.ID]multiaddr.Multiaddr, maxPeers)
 	for _, candidate := range candidates {
@@ -53,13 +50,6 @@ func (consensus *Consensus) ConnectedNessCheck(candidates []PubSubMessages.Buddy
 			log.Printf("✅ Buddy node %s is actually connected (status: %v)", candidate.PeerID.String()[:16], connectedness)
 		}
 	}
-
-	// NOTE: We don't filter by protocol support here because:
-	// 1. Peerstore().GetProtocols() may not have protocol info until after negotiation
-	// 2. Protocol support will be determined during subscription request (stream creation)
-	// 3. If a peer doesn't support the protocol, the subscription request will fail gracefully
-	//    with a stream reset, and we'll fall back to backup peers
-
 	return reachablePeers, nil
 }
 
@@ -282,20 +272,16 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	log.Printf("SubmitMessageProtocol handler is already set up by NewListenerNode()")
 
 	// Populate buddy nodes list for the global listener node
-	// IMPORTANT:
-	// Vote aggregation is performed by the final committee (MainPeers) only.
-	// Backup peers are only used as replacements during subscription selection.
-	// If we request vote results from backup/non-committee peers, we'll see timeouts or
-	// stream resets (they may not run vote aggregation or even have the handler enabled).
-	allPeerIDs := append([]peer.ID{}, consensus.PeerList.MainPeers...)
+	allPeerIDs := make([]peer.ID, 0, len(consensus.PeerList.MainPeers)+len(consensus.PeerList.BackupPeers))
+	allPeerIDs = append(allPeerIDs, consensus.PeerList.MainPeers...)
 	allPeerIDs = append(allPeerIDs, consensus.PeerList.BackupPeers...)
 
 	// Update the global listener node with buddy nodes
 	globalListenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
 	if globalListenerNode != nil {
 		globalListenerNode.BuddyNodes.Buddies_Nodes = allPeerIDs
-		log.Printf("Populated listener node with %d vote-aggregating buddy nodes (main committee only)",
-			len(allPeerIDs))
+		log.Printf("Populated listener node with %d buddy nodes (%d main + %d backup)",
+			len(allPeerIDs), len(consensus.PeerList.MainPeers), len(consensus.PeerList.BackupPeers))
 	}
 
 	// Event-driven flow: Request subscriptions → Verify → Broadcast votes → Process CRDT
@@ -425,11 +411,8 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission() {
 	// TODO: Replace this with actual event-driven trigger from vote collection completion
 	// For now, use a delay but log that it should be event-driven
 	common.LocalGRO.Go(GRO.SequencerRequestEventDrivenFlowThread, func(ctx context.Context) error {
-		// Wait (bounded) for votes to land in CRDT instead of using a fixed delay.
-		requiredVotes := config.MaxMainPeers
-		if err := consensus.waitForCRDTVotes(ctx, requiredVotes, 500*time.Millisecond, 2*time.Minute); err != nil {
-			log.Printf("=== [Event-Driven Flow] WARN: waitForCRDTVotes: %v ===\n", err)
-		}
+		// Wait for votes to be collected (this should be replaced with event-driven trigger)
+		time.Sleep(30 * time.Second)
 		log.Printf("=== [Event-Driven Flow] Step 4a: Triggering CRDT state print ===\n")
 		if err := consensus.PrintCRDTState(); err != nil {
 			log.Printf("=== [Event-Driven Flow] ERROR: PrintCRDTState failed: %v ===\n", err)
@@ -531,42 +514,6 @@ func (consensus *Consensus) PrintCRDTState() error {
 	return nil
 }
 
-func (consensus *Consensus) waitForCRDTVotes(
-	ctx context.Context,
-	required int,
-	pollInterval time.Duration,
-	timeout time.Duration,
-) error {
-	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
-	if listenerNode == nil || listenerNode.CRDTLayer == nil {
-		return fmt.Errorf("listener node or CRDT layer not initialized")
-	}
-	if required <= 0 {
-		return fmt.Errorf("required votes must be > 0")
-	}
-
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		votes, _ := MessagePassing.GetVotesFromCRDT(listenerNode.CRDTLayer, "vote")
-		if len(votes) >= required {
-			return nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("context cancelled while waiting for votes: %w", ctx.Err())
-		case <-deadline.C:
-			return fmt.Errorf("timed out waiting for %d votes (got %d)", required, len(votes))
-		case <-ticker.C:
-		}
-	}
-}
-
 // printCRDTHeader prints the header information for CRDT state
 func (consensus *Consensus) printCRDTHeader(listenerNode *PubSubMessages.BuddyNode) {
 	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
@@ -646,15 +593,25 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 
 	// Guard against concurrent calls for the same block (single atomic check)
 	currentBlockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.String()
-	if !consensus.tryStartVoteProcessing(currentBlockHash) {
+	consensus.mu.Lock()
+	if consensus.isProcessingVotes && consensus.processedBlockHash == currentBlockHash {
+		consensus.mu.Unlock()
 		fmt.Printf("⚠️ ProcessVoteCollection: Vote processing already in progress for block %s - skipping duplicate call\n", currentBlockHash)
 		return nil
 	}
+	consensus.isProcessingVotes = true
+	consensus.processedBlockHash = currentBlockHash
+	consensus.mu.Unlock()
+
+	// Ensure we unlock even if function returns early
+	defer func() {
+		consensus.mu.Lock()
+		consensus.isProcessingVotes = false
+		consensus.mu.Unlock()
+	}()
 
 	// Process vote collection asynchronously
 	common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
-		defer consensus.finishVoteProcessing(currentBlockHash)
-
 		listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
 		if listenerNode == nil {
 			fmt.Printf("❌ Listener node not available for vote collection\n")
@@ -679,28 +636,6 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 	return nil
 }
 
-func (consensus *Consensus) tryStartVoteProcessing(blockHash string) bool {
-	consensus.mu.Lock()
-	defer consensus.mu.Unlock()
-
-	if consensus.isProcessingVotes && consensus.processedBlockHash == blockHash {
-		return false
-	}
-	consensus.isProcessingVotes = true
-	consensus.processedBlockHash = blockHash
-	return true
-}
-
-func (consensus *Consensus) finishVoteProcessing(blockHash string) {
-	consensus.mu.Lock()
-	defer consensus.mu.Unlock()
-
-	// Only clear if we are still processing the same block.
-	if consensus.processedBlockHash == blockHash {
-		consensus.isProcessingVotes = false
-	}
-}
-
 // CollectVoteResultsFromBuddies collects vote aggregation results from all buddy nodes
 // Returns BLS results from buddy nodes
 func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMessages.BuddyNode) []BLS_Signer.BLSresponse {
@@ -712,18 +647,7 @@ func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMe
 			return nil
 		}
 	}
-	// Prefer the consensus committee (MainPeers) when available; fall back to listenerNode list.
-	buddyIDs := make([]peer.ID, 0, config.MaxMainPeers)
-	if len(consensus.PeerList.MainPeers) > 0 {
-		buddyIDs = append(buddyIDs, consensus.PeerList.MainPeers...)
-	} else if listenerNode != nil {
-		buddyIDs = append(buddyIDs, listenerNode.BuddyNodes.Buddies_Nodes...)
-	}
-	if len(buddyIDs) > config.MaxMainPeers {
-		buddyIDs = buddyIDs[:config.MaxMainPeers]
-	}
-
-	log.Printf("Requesting vote aggregation results from %d buddy nodes", len(buddyIDs))
+	log.Printf("Requesting vote aggregation results from %d buddy nodes", len(listenerNode.BuddyNodes.Buddies_Nodes))
 
 	wg, err := common.LocalGRO.NewFunctionWaitGroup(context.Background(), GRO.SequencerVoteCollectionWaitGroup)
 	if err != nil {
@@ -734,7 +658,7 @@ func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMe
 	var blsResultsMu sync.Mutex
 	blsResults := make([]BLS_Signer.BLSresponse, 0, config.MaxMainPeers)
 
-	for _, buddyID := range buddyIDs {
+	for _, buddyID := range listenerNode.BuddyNodes.Buddies_Nodes {
 		common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
 			blsResult := consensus.requestVoteResultFromBuddy(buddyID)
 			if blsResult != nil {
@@ -936,7 +860,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		return false
 	}
 
-	needed := (config.MaxMainPeers / 2) + 1
+	needed := (validTotal / 2) + 1
 	peerVotesStr := strings.Join(votedPeers, "\n")
 
 	if validYes >= needed {

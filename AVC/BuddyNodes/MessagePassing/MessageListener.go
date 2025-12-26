@@ -4,15 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/config"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/seednode"
-	"net"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
@@ -26,30 +23,6 @@ type StructListener struct {
 	ResponseHandler   AVCStruct.ResponseHandler
 }
 
-func isRetryableStreamReadErr(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	// Deadline/timeout errors are often transient (peer busy / slow / handshake delay).
-	if errors.Is(err, os.ErrDeadlineExceeded) {
-		return true
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return true
-	}
-
-	// libp2p transport errors are frequently wrapped; fall back to string checks.
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "stream reset") ||
-		strings.Contains(msg, "reset by remote") ||
-		strings.Contains(msg, "deadline") ||
-		strings.Contains(msg, "timeout") ||
-		strings.Contains(msg, "i/o timeout") ||
-		strings.Contains(msg, "eof")
-}
-
 func NewListenerStruct(listner *AVCStruct.BuddyNode) *StructListener {
 	return &StructListener{
 		ListenerBuddyNode: listner,
@@ -61,38 +34,6 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(s network.St
 	// Note: Stream closure is handled by the caller to allow response reading
 	fmt.Println("=== StructListener.HandleSubmitMessageStream CALLED ===")
 	fmt.Printf("Received stream from: %s\n", s.Conn().RemotePeer())
-	defer func() {
-		if r := recover(); r != nil {
-			// Prevent abrupt stream resets caused by panics.
-			log.LogMessagesError(
-				fmt.Sprintf("Panic in StructListener.HandleSubmitMessageStream: %v", r),
-				nil,
-				zap.String("peer", s.Conn().RemotePeer().String()),
-				zap.String("topic", log.Messages_TOPIC),
-				zap.String("function", "StructListener.HandleSubmitMessageStream"),
-			)
-
-			// Attempt to send a graceful error response before closing
-			// This prevents the "stream reset" error on the client side
-			// We construct a generic failure/false ACK
-			host := s.Conn().LocalPeer()
-			ackBuilder := AVCStruct.NewACKBuilder().False_ACK_Message(host, "PANIC_RECOVERY")
-			message := AVCStruct.NewMessageBuilder(nil).
-				SetSender(host).
-				SetMessage(fmt.Sprintf("Internal Server Error (Panic): %v", r)).
-				SetTimestamp(time.Now().UTC().Unix()).
-				SetACK(ackBuilder)
-
-			if msgBytes, err := json.Marshal(message); err == nil {
-				_, _ = s.Write([]byte(string(msgBytes) + string(rune(config.Delimiter))))
-			}
-
-			_ = s.Close()
-		} else {
-			// Happy path: Always close the stream when handler returns to prevent leaks
-			_ = s.Close()
-		}
-	}()
 
 	reader := bufio.NewReader(s)
 	msg, err := reader.ReadString(config.Delimiter)
@@ -305,15 +246,12 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 		log.LogConsensusInfo(fmt.Sprintf("Direct connection failed, using seed node fallback for %s", peerID), zap.String("peer", peerID.String()), zap.String("function", "SendMessageToPeer"))
 		return StructListenerNode.sendViaSeedNode(peerID, message)
 	}
-	// Always close+evict submit streams when we're done (or on any error).
-	// SubmitMessageProtocol is request/response oriented and peers may close/reset immediately after replying.
-	defer StreamCache.CloseSubmitMessageStream(peerID)
 
 	// Send the message
 	_, err = stream.Write([]byte(message + string(rune(config.Delimiter))))
 	if err != nil {
-		// If write fails, the stream might be invalid; evict and try fallback.
-		StreamCache.CloseSubmitMessageStream(peerID)
+		// If write fails, the stream might be invalid, close it and try fallback
+		StreamCache.CloseStream(peerID)
 		log.LogConsensusInfo(fmt.Sprintf("Stream write failed, using seed node fallback for %s", peerID), zap.String("peer", peerID.String()), zap.String("function", "SendMessageToPeer"))
 		return StructListenerNode.sendViaSeedNode(peerID, message)
 	}
@@ -322,14 +260,10 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 	var voteMessage map[string]interface{}
 	json.Unmarshal([]byte(message), &voteMessage)
 
-	stage := ""
 	var isVote bool
 	if ack, ok := voteMessage["ACK"].(map[string]interface{}); ok {
-		if ackStage, ok := ack["stage"].(string); ok {
-			stage = ackStage
-			if ackStage == config.Type_SubmitVote {
-				isVote = true
-			}
+		if stage, ok := ack["stage"].(string); ok && stage == config.Type_SubmitVote {
+			isVote = true
 		}
 	}
 
@@ -347,25 +281,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 
 		if err != nil {
 			fmt.Printf("❌ SendMessageToPeer: Failed to read response from %s: %v (deadline was %v)\n", peerID, err, deadline)
-			// Evict the submit stream so we don't keep reusing a broken/reset stream.
-			StreamCache.CloseSubmitMessageStream(peerID)
-
-			// For subscription handshake, retry once via seed node fallback on retryable read errors.
-			if stage == config.Type_AskForSubscription && isRetryableStreamReadErr(err) {
-				fmt.Printf("🔁 Retrying subscription request via seed-node fallback for %s...\n", peerID)
-				if fallbackErr := StructListenerNode.sendViaSeedNode(peerID, message); fallbackErr == nil {
-					return nil
-				} else {
-					return fmt.Errorf(
-						"failed to read response from %s: %w (seed fallback failed: %v)",
-						peerID,
-						err,
-						fallbackErr,
-					)
-				}
-			}
-
-			// Return error so caller knows something went wrong, rather than assuming success and waiting.
+			// Return error so caller knows something went wrong, rather than assuming success and waiting
 			return fmt.Errorf("failed to read response from %s: %w", peerID, err)
 		} else if responseMsg != "" {
 			fmt.Printf("✅ SendMessageToPeer: Received response from %s: %s\n", peerID, responseMsg)
@@ -392,12 +308,17 @@ func (StructListenerNode *StructListener) SendMessageToPeer(peerID peer.ID, mess
 					}
 				}
 
-				// Stream will be closed+evicted by the deferred CloseSubmitMessageStream.
+				// IMPORTANT: Close the stream after receiving the response
+				// to prevent hanging on the next read when the receiver has already closed their end
+				fmt.Printf("🔒 Closing stream after receiving response from %s\n", peerID)
+				stream.Close()
+				fmt.Printf("✅ Stream closed successfully\n")
 			}
 		}
 	} else {
-		// For votes, no response expected. Stream will be closed+evicted by the deferred CloseSubmitMessageStream.
-		fmt.Printf("📤 Vote submitted - no response expected\n")
+		// For votes, just close the stream without waiting for response
+		fmt.Printf("📤 Vote submitted - no response expected, closing stream\n")
+		stream.Close()
 	}
 
 	// Update metadata
@@ -438,49 +359,27 @@ func (StructListenerNode *StructListener) sendViaSeedNode(peerID peer.ID, messag
 		return fmt.Errorf("failed to send message to %s: %v", peerID, err)
 	}
 
-	// Determine if a response is expected (votes do not expect responses).
-	var outMsg map[string]interface{}
-	_ = json.Unmarshal([]byte(message), &outMsg)
-	outStage := ""
-	if ack, ok := outMsg["ACK"].(map[string]interface{}); ok {
-		if ackStage, ok := ack["stage"].(string); ok {
-			outStage = ackStage
-		}
-	}
-	if outStage == config.Type_SubmitVote {
-		// Vote submission: no response expected.
-		return nil
-	}
-
-	// Read response after sending (e.g., subscription requests). If we can't read the response,
-	// return an error so callers don't block waiting for an ACK that will never arrive.
+	// Read response after sending (for subscription requests)
 	reader := bufio.NewReader(stream)
-	deadline := time.Now().UTC().Add(20 * time.Second)
-	stream.SetReadDeadline(deadline)
 	responseMsg, err := reader.ReadString(config.Delimiter)
-	if err != nil {
-		return fmt.Errorf("failed to read response from %s via seed node fallback: %w", peerID, err)
-	}
-	if responseMsg == "" {
-		return fmt.Errorf("empty response from %s via seed node fallback", peerID)
-	}
+	if err == nil && responseMsg != "" {
+		fmt.Printf("=== sendViaSeedNode: Received response from %s: %s ===\n", peerID, responseMsg)
 
-	fmt.Printf("=== sendViaSeedNode: Received response from %s: %s ===\n", peerID, responseMsg)
+		// Parse the response message
+		responseMessage := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(responseMsg)
+		if responseMessage != nil && responseMessage.GetACK() != nil {
+			// Process the subscription response directly
+			if responseMessage.GetACK().GetStage() == config.Type_SubscriptionResponse {
+				fmt.Printf("=== sendViaSeedNode: Processing subscription response from %s ===\n", peerID)
 
-	// Parse the response message
-	responseMessage := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(responseMsg)
-	if responseMessage != nil && responseMessage.GetACK() != nil {
-		// Process the subscription response directly
-		if responseMessage.GetACK().GetStage() == config.Type_SubscriptionResponse {
-			fmt.Printf("=== sendViaSeedNode: Processing subscription response from %s ===\n", peerID)
+				// Route the response to ResponseHandler if available
+				if StructListenerNode.ResponseHandler != nil {
+					accepted := responseMessage.GetACK().GetStatus() == "ACK_TRUE"
+					fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", peerID, accepted)
 
-			// Route the response to ResponseHandler if available
-			if StructListenerNode.ResponseHandler != nil {
-				accepted := responseMessage.GetACK().GetStatus() == "ACK_TRUE"
-				fmt.Printf("Routing response to ResponseHandler: %s (accepted: %t)\n", peerID, accepted)
-
-				StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted, "main")
-				fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
+					StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted, "main")
+					fmt.Printf("Successfully routed subscription response to ResponseHandler\n")
+				}
 			}
 		}
 	}

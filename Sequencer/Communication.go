@@ -22,11 +22,11 @@ import (
 var (
 	// subscriptionAckTimeout is the maximum time we wait for a peer's subscription ACK.
 	// Kept as a var so tests can shorten it.
-	subscriptionAckTimeout = 30 * time.Second
+	subscriptionAckTimeout = 10 * time.Second
 
 	// subscriptionLateResponseBuffer allows late-arriving responses to be processed.
 	// Kept as a var so tests can reduce test runtime.
-	subscriptionLateResponseBuffer = 2 * time.Second
+	subscriptionLateResponseBuffer = 500 * time.Millisecond
 )
 
 // ResponseHandler manages ACK responses from peers
@@ -204,7 +204,6 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 	}
 
 	// First, try main peers (MaxMainPeers)
-	log.Printf("🔵 [MAIN PEERS] Starting subscription request for %d main peers: %v", len(consensus.PeerList.MainPeers), consensus.PeerList.MainPeers)
 	mainAcceptedCount, mainTotalCount, mainAcceptedPeers := askPeersForSubscription(
 		Listener,
 		topic,
@@ -214,7 +213,7 @@ func AskForSubscription(Listener *MessagePassing.StructListener, topic string, c
 	)
 	mainFailed := mainTotalCount - mainAcceptedCount
 
-	log.Printf("🔵 [MAIN PEERS] Results: %d accepted, %d failed out of %d (accepted peers: %v)", mainAcceptedCount, mainFailed, mainTotalCount, mainAcceptedPeers)
+	log.Printf("Main peers results: %d accepted, %d failed out of %d", mainAcceptedCount, mainFailed, mainTotalCount)
 
 	// If we have exactly MaxMainPeers main peers, we're done
 	if mainAcceptedCount == config.MaxMainPeers {
@@ -458,9 +457,8 @@ func askPeersForSubscription(
 	accepted := make(map[string]bool)
 	var mu sync.Mutex
 
-	log.Printf("🔵 [%s PEERS] Asking %d peers for subscription to topic: %s", strings.ToUpper(peerType), len(peerAddrs), topic)
-	log.Printf("🔵 [%s PEERS] Peer list: %v", strings.ToUpper(peerType), peerAddrs)
-	log.Printf("🔵 [%s PEERS] Initial tracker count: %d", strings.ToUpper(peerType), initialCount)
+	log.Printf("Asking %d %s peers for subscription to topic: %s", len(peerAddrs), peerType, topic)
+	log.Printf("Initial tracker count: %d", initialCount)
 
 	// Get host from GossipPubSub (not create BuddyNode yet)
 	host := Listener.ListenerBuddyNode.Host
@@ -512,17 +510,7 @@ func askPeersForSubscription(
 
 			// Send subscription request via SubmitMessageProtocol using existing function
 			if err := Listener.SendMessageToPeer(peerID, string(messageBytes)); err != nil {
-				// Check if error is due to protocol not supported (stream reset)
-				errStr := strings.ToLower(err.Error())
-				isProtocolError := strings.Contains(errStr, "stream reset") ||
-					strings.Contains(errStr, "protocol not supported") ||
-					strings.Contains(errStr, "no protocol")
-
-				if isProtocolError {
-					log.Printf("⚠️ [PROTOCOL] %s peer %s does not support %s protocol: %v", peerType, peerID, config.SubmitMessageProtocol, err)
-				} else {
-					log.Printf("❌ Failed to send subscription request to %s %s: %v", peerType, peerID, err)
-				}
+				log.Printf("Failed to send subscription request to %s %s: %v", peerType, peerID, err)
 				mu.Lock()
 				accepted[peerID.String()] = false
 				mu.Unlock()
@@ -569,63 +557,22 @@ func askPeersForSubscription(
 	// Wait for all goroutines to complete
 	wg.Wait()
 
-	log.Printf("All %d goroutines completed for %s peers (requested %d peers)", spawnedCount, peerType, len(peerAddrs))
-	if spawnedCount != len(peerAddrs) {
-		log.Printf("⚠️ WARNING: Spawned %d goroutines but requested %d peers for %s - some peers may have been skipped", spawnedCount, len(peerAddrs), peerType)
-	}
+	log.Printf("All %d goroutines completed for %s peers", spawnedCount, peerType)
 
 	// Give some time for late-arriving responses to be processed
 	time.Sleep(subscriptionLateResponseBuffer)
-
-	// CRITICAL FIX: Sync accepted map with tracker after late response buffer.
-	// Late responses may have updated the tracker but not the accepted map (if they
-	// arrived after the goroutine timed out). Use tracker as single source of truth.
-	trackerPeers := tracker.GetBuddyNodes()
-	syncedCount := 0
-	for _, pid := range peerAddrs {
-		// If tracker says this peer was accepted, ensure it's in the accepted map
-		if role, exists := trackerPeers[pid]; exists && role == peerType {
-			mu.Lock()
-			if !accepted[pid.String()] {
-				accepted[pid.String()] = true
-				syncedCount++
-				log.Printf("🔄 [SYNC] Synced late response: peer %s (role: %s) was accepted in tracker but missing from accepted map", pid, role)
-			}
-			mu.Unlock()
-		}
-	}
-	if syncedCount > 0 {
-		log.Printf("🔄 [SYNC] Synced %d late responses from tracker for %s peers", syncedCount, peerType)
-	}
 
 	// Calculate how many NEW peers were accepted in this call
 	finalCount := tracker.GetActiveCount()
 	newAccepted := finalCount - initialCount
 
-	// Debug: Show all peers in tracker and their roles
-	trackerPeersDebug := tracker.GetBuddyNodes()
 	log.Printf("Tracker count: %d -> %d (new: %d) for %s peers", initialCount, finalCount, newAccepted, peerType)
-	log.Printf("🔍 [DEBUG] Tracker has %d total peers: %v", len(trackerPeersDebug), trackerPeersDebug)
-	log.Printf("🔍 [DEBUG] Requested %d %s peers: %v", len(peerAddrs), peerType, peerAddrs)
 
 	// Collect accepted peers in a stable order (same order as peerAddrs).
-	// Now synced with tracker, so includes late responses.
 	acceptedPeers := make([]peer.ID, 0, len(peerAddrs))
 	for _, pid := range peerAddrs {
 		if accepted[pid.String()] {
 			acceptedPeers = append(acceptedPeers, pid)
-		}
-	}
-
-	// Verify consistency: acceptedPeers count should match tracker delta
-	if len(acceptedPeers) != newAccepted {
-		log.Printf("⚠️ WARNING: acceptedPeers count (%d) != tracker delta (%d) for %s peers - using tracker as source of truth", len(acceptedPeers), newAccepted, peerType)
-		// Rebuild acceptedPeers from tracker to ensure consistency
-		acceptedPeers = make([]peer.ID, 0, newAccepted)
-		for _, pid := range peerAddrs {
-			if role, exists := trackerPeers[pid]; exists && role == peerType {
-				acceptedPeers = append(acceptedPeers, pid)
-			}
 		}
 	}
 
