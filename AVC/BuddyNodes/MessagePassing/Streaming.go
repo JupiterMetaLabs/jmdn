@@ -67,7 +67,8 @@ func NewListenerNode(h host.Host, responseHandler AVCStruct.ResponseHandler) *St
 			return nil
 		}
 	}
-	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
+	// Reduced TTL from 5 minutes to 2 minutes for faster cleanup of stale streams
+	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(2 * time.Minute).SetAccessOrder().Build()
 	if err != nil {
 		panic(fmt.Sprintf("failed to create stream cache: %v", err))
 	}
@@ -132,7 +133,8 @@ func NewBuddyNode(h host.Host, buddies *AVCStruct.Buddies, responseHandler AVCSt
 		fmt.Printf("NewBuddyNode: pubsub parameter is valid, Host: %s\n", pubsub.Host.ID())
 	}
 
-	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
+	// Reduced TTL from 5 minutes to 2 minutes for faster cleanup of stale streams
+	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(2 * time.Minute).SetAccessOrder().Build()
 	if err != nil {
 		panic(fmt.Sprintf("failed to create stream cache: %v", err))
 	}

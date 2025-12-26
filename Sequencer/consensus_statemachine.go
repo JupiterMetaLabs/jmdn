@@ -7,6 +7,7 @@ import (
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/Pubsub"
+	"gossipnode/Pubsub/Subscription"
 	"gossipnode/Sequencer/Alerts"
 	"gossipnode/Sequencer/Triggers/Maps"
 	"gossipnode/Sequencer/helper"
@@ -184,11 +185,16 @@ What it does:
 - Broadcasts block with attached BLS results to all nodes
 - Processes block locally (updates account balances) if consensus was reached
 - This is a state-changing operation as it modifies the blockchain state
+- IMPORTANT: Cleans up subscriptions after processing to prevent resource leaks
 */
 func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLSresponse, consensusReached bool) error {
 	// Context for the alerts
 	alert_ctx := context.Background()
 	defer alert_ctx.Done()
+
+	// CRITICAL FIX: Clean up subscriptions when consensus round completes (success or failure)
+	// This prevents subscription accumulation over long-running consensus operations
+	defer consensus.CleanupSubscriptions()
 
 	consensus.mu.Lock()
 	defer consensus.mu.Unlock()
@@ -247,4 +253,30 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 	}
 
 	return nil
+}
+
+// CleanupSubscriptions unsubscribes from consensus-related topics to prevent resource leaks
+// This should be called after each consensus round completes (success or failure)
+func (consensus *Consensus) CleanupSubscriptions() {
+	if consensus.gossipnode == nil {
+		return
+	}
+
+	gps := consensus.gossipnode.GetGossipPubSub()
+	if gps == nil {
+		return
+	}
+
+	// Unsubscribe from consensus channel
+	if err := Subscription.Unsubscribe(gps, config.PubSub_ConsensusChannel); err != nil {
+		log.Printf("⚠️ Failed to unsubscribe from consensus channel: %v", err)
+	} else {
+		log.Printf("✅ Cleaned up consensus channel subscription")
+	}
+
+	// Unsubscribe from CRDT sync channel
+	if err := Subscription.Unsubscribe(gps, config.Pubsub_CRDTSync); err != nil {
+		// This may fail if we never subscribed - that's OK
+		log.Printf("⚠️ Failed to unsubscribe from CRDT sync channel: %v (may not have been subscribed)", err)
+	}
 }

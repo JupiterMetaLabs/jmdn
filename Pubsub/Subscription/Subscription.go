@@ -231,7 +231,10 @@ func subscribeViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, h
 	if LocalGRO != nil {
 		LocalGRO.Go(GRO.PubsubSubscriptionThread, run)
 	} else {
-		go func() { _ = run(context.Background()) }()
+		// CRITICAL FIX: Use subCtx instead of context.Background() to ensure
+		// the goroutine can be cancelled when Unsubscribe() is called.
+		// This prevents goroutine leaks over long-running consensus operations.
+		go func() { _ = run(subCtx) }()
 	}
 	fmt.Printf("subscribeViaGossipSub returned successfully for %s\n", topicName)
 	return nil
