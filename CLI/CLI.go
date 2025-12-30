@@ -302,9 +302,18 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleDBState()
 	case "gethstatus":
 		h.handleGethStatus()
+	case "version":
+		h.handleVersion()
 	default:
 		fmt.Println("Unknown command")
 	}
+}
+
+// handleVersion prints the current binary version
+func (h *CommandHandler) handleVersion() {
+	fmt.Println("Local Binary Version:")
+	fmt.Println(config.VersionString())
+	printDashes()
 }
 
 // Individual command handlers
