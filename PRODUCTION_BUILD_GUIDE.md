@@ -143,7 +143,16 @@ After installing prerequisites:
 go mod download
 
 # Build the application with production optimizations
-go build -ldflags='-linkmode=external -w -s' -o jmdn .
+# Build the application with production optimizations and version injection
+# Note: Replace GIT_TAG, GIT_COMMIT, etc. with actual values or use the variables as shown
+git_commit=$(git rev-parse --short HEAD)
+git_branch=$(git rev-parse --abbrev-ref HEAD)
+git_tag=$(git describe --tags --always --dirty)
+build_time=$(date -u '+%Y-%m-%d_%H:%M:%S')
+
+LDFLAGS="-X 'gossipnode/config.GitCommit=${git_commit}' -X 'gossipnode/config.GitBranch=${git_branch}' -X 'gossipnode/config.GitTag=${git_tag}' -X 'gossipnode/config.BuildTime=${build_time}' -linkmode=external -w -s"
+
+go build -ldflags="${LDFLAGS}" -o jmdn .
 ```
 
 **Build Flags Explanation:**
@@ -194,7 +203,15 @@ RUN apk add --no-cache git gcc musl-dev
 
 # Build the application
 RUN go mod download
-RUN go build -ldflags='-linkmode=external -w -s' -o jmdn .
+# Build the application
+RUN go mod download
+
+# Inject version information
+RUN GIT_COMMIT=$(git rev-parse --short HEAD) && \
+    GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD) && \
+    GIT_TAG=$(git describe --tags --always --dirty) && \
+    BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S') && \
+    go build -ldflags="-X 'gossipnode/config.GitCommit=${GIT_COMMIT}' -X 'gossipnode/config.GitBranch=${GIT_BRANCH}' -X 'gossipnode/config.GitTag=${GIT_TAG}' -X 'gossipnode/config.BuildTime=${BUILD_TIME}' -linkmode=external -w -s" -o jmdn .
 
 FROM alpine:latest
 
