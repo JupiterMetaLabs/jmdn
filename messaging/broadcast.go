@@ -78,7 +78,8 @@ func cleanupOldMessages(ctx context.Context) {
 }
 
 // Start message cleanup in background
-func init() {
+// StartBroadcastCleanup initializes the GRO and starts the cleanup thread.
+func StartBroadcastCleanup() {
 	if BroadcastLocalGRO == nil {
 		var err error
 		BroadcastLocalGRO, err = GROHelper.InitializeGRO(GRO.BroadcastLocal)

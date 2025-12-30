@@ -675,6 +675,10 @@ func main() {
 	initGlobalGRO()
 	initAppandLocalGRO()
 
+	// Initialize messaging cleanup routines
+	messaging.StartBlockPropagationCleanup()
+	messaging.StartBroadcastCleanup()
+
 	var nodeManager *node.NodeManager
 	if err := ImmuDB_CA.EnsureTLSAssets(".immudb_state"); err != nil {
 		fmt.Printf("Failed to ensure TLS assets: %v\n", err)
