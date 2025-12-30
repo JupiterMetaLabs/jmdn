@@ -15,6 +15,7 @@ import (
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -285,6 +286,7 @@ func StartGRPCServerWithContext(ctx context.Context, handler *CommandHandler, po
 	grpcServer := grpc.NewServer()
 	cliServer := NewCLIServer(handler)
 	cliServer.Register(grpcServer)
+	reflection.Register(grpcServer)
 
 	fmt.Printf("gRPC server configured, starting to serve...\n")
 	log.Printf("Starting gRPC server on port %d", port)
