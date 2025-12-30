@@ -34,7 +34,18 @@ if ! command -v gcc >/dev/null 2>&1; then
 fi
 
 info "Building JMDN binary..."
-CGO_ENABLED=1 go build -ldflags='-linkmode=external -w -s' -o jmdn . || exit 1
+
+# Capture version info
+GIT_COMMIT=$(git rev-parse --short HEAD)
+GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+GIT_TAG=$(git describe --tags --always --dirty 2>/dev/null || echo "unknown")
+BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
+
+info "Version: ${GIT_TAG} (${GIT_COMMIT}) on ${GIT_BRANCH}"
+
+LDFLAGS="-X 'gossipnode/config.GitCommit=${GIT_COMMIT}' -X 'gossipnode/config.GitBranch=${GIT_BRANCH}' -X 'gossipnode/config.GitTag=${GIT_TAG}' -X 'gossipnode/config.BuildTime=${BUILD_TIME}' -linkmode=external -w -s"
+
+CGO_ENABLED=1 go build -ldflags="${LDFLAGS}" -o jmdn . || exit 1
 
 # Check if service is running and stop it before installing new binary
 SERVICE_WAS_RUNNING=false

@@ -122,6 +122,31 @@ func formatTimestamp(t time.Time) string {
 
 // runCommand executes a CLI command via gRPC to the running service
 func runCommand(command string, args []string, grpcPort int) {
+	// Special handling for version command - we want it to work even if node is offline
+	if command == "version" {
+		fmt.Println("Local Binary Version:")
+		fmt.Println(config.VersionString())
+		fmt.Println("----------------------------------------")
+
+		client, err := cli.NewClient(fmt.Sprintf("localhost:%d", grpcPort))
+		if err == nil {
+			defer client.Close()
+			v, err := client.GetVersion()
+			if err == nil {
+				fmt.Println("Remote Node Version (Running):")
+				fmt.Printf("Tag: %s, Branch: %s, Commit: %s, Built: %s, Go: %s\n",
+					v.GitTag, v.GitBranch, v.GitCommit, v.BuildTime, v.GoVersion)
+			} else {
+				// Connected but call failed
+				fmt.Printf("Could not fetch remote version: %v\n", err)
+			}
+		} else {
+			// Could not connect
+			fmt.Println("Could not connect to running node (Offline?).")
+		}
+		os.Exit(0)
+	}
+
 	client, err := cli.NewClient(fmt.Sprintf("localhost:%d", grpcPort))
 	if err != nil {
 		fmt.Printf("Error connecting to gRPC server: %v\n", err)
@@ -131,6 +156,7 @@ func runCommand(command string, args []string, grpcPort int) {
 	defer client.Close()
 
 	switch command {
+
 	case "help":
 		fmt.Println("\nAvailable CLI Commands:")
 		fmt.Println("  listpeers, list     - List all managed peers")
@@ -521,7 +547,7 @@ func main() {
 		fmt.Printf("Failed to ensure TLS assets: %v\n", err)
 		log.Fatal()
 	}
-	fmt.Println("ImmuDB TLS assets generated.")
+	// fmt.Println("ImmuDB TLS assets generated.")
 
 	// Command-line flags for node configuration
 	seedNodeURL := flag.String("seednode", "", "Seed node gRPC URL for peer registration (e.g., localhost:9090)")
@@ -546,8 +572,13 @@ func main() {
 	explorerAPIKey := flag.String("explorer-api-key", "", "Explorer API key")
 	jwtSecret := flag.String("jwt-secret", "", "JWT secret")
 	command := flag.String("cmd", "", "Execute a CLI command (e.g., listpeers, addrs, stats, dbstate)")
+	versionFlag := flag.Bool("version", false, "Print version information and exit")
 	flag.Parse()
-	
+
+	if *versionFlag {
+		fmt.Println(config.VersionString())
+		return
+	}
 
 	// Update the global immudb username and password if provided via command-line
 	if *immudbUsername != "" && *immudbPassword != "" {
@@ -583,6 +614,9 @@ func main() {
 	}
 	// Clean up any leftover temp files from a previous run
 	defer Logger.Close()
+
+	// Log version on startup
+	log.Info().Str("version", config.VersionString()).Msg("Starting JMDN node")
 
 	// Create a cancellable context for clean shutdown
 	ctx, cancel := context.WithCancel(context.Background())
