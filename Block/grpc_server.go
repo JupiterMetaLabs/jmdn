@@ -11,9 +11,12 @@ import (
 	"syscall"
 
 	pb "gossipnode/Block/proto"
+	BlockCommon "gossipnode/Block/common"
 	"gossipnode/Sequencer"
+	GRO "gossipnode/config/GRO"
 	"gossipnode/config"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -26,7 +29,7 @@ import (
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 )
-
+var LocalGRO interfaces.LocalGoroutineManagerInterface
 // BlockServer implements the gRPC BlockService
 type BlockServer struct {
 	pb.UnimplementedBlockServiceServer
@@ -133,6 +136,13 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 
 // StartGRPCServer starts the gRPC server on the specified port
 func StartGRPCServer(port int, h host.Host, chainID int) error {
+	if LocalGRO == nil {
+		var err error
+		LocalGRO, err = BlockCommon.InitializeGRO(GRO.BlockGRPCServerLocal)
+		if err != nil {
+			return fmt.Errorf("failed to initialize local gro: %v", err)
+		}
+	}
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
@@ -157,12 +167,13 @@ func StartGRPCServer(port int, h host.Host, chainID int) error {
 	reflection.Register(grpcServer)
 
 	// Start the server in a goroutine
-	go func() {
+	LocalGRO.Go(GRO.BlockGRPCServerThread, func(ctx context.Context) error {
 		log.Info().Int("port", port).Msg("Block gRPC server starting")
 		if err := grpcServer.Serve(lis); err != nil {
 			log.Fatal().Err(err).Msg("Failed to serve Block gRPC")
 		}
-	}()
+		return nil
+	})
 
 	// Set up graceful shutdown
 	stop := make(chan os.Signal, 1)

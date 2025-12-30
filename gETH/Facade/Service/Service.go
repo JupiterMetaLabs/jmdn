@@ -89,47 +89,22 @@ func (s *ServiceImpl) GetTransactionCount(ctx context.Context, addr string, bloc
 	_, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	address := Utils.ConvertAddress(addr)
-	Transactions, err := DB_OPs.GetTransactionsByAccount(nil, &address)
 	// Return the transaction count for the given address of latest block
-	// Transactions, err := DB_OPs.CountTransactions(nil)
+	Transactions, err := DB_OPs.CountTransactions(nil)
 	if err != nil {
 		return nil, err
 	}
 
 	// fmt.Println("Transactions: ", Transactions)
 	// Convert the Transactions to big.Int
-	// TransactionsBigInt := big.NewInt(int64(Transactions))
+	TransactionsBigInt := big.NewInt(int64(Transactions))
 
-	// return TransactionsBigInt, nil
-	return big.NewInt(int64(len(Transactions))), nil
-}
-
-func (s *ServiceImpl) GetTransactionCountFrom(ctx context.Context, addr string, block string) (*big.Int, error) {
-	// Create a new context with timeout for this operation
-	_, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	address := Utils.ConvertAddress(addr)
-	Transactions, err := DB_OPs.GetTransactionsByAccount(nil, &address)
-	if err != nil {
-		return nil, err
-	}
-
-	// Filter transactions where the address is in the From field
-	fromTransactionCount := 0
-	for _, tx := range Transactions {
-		if tx.From != nil && *tx.From == address {
-			fromTransactionCount++
-		}
-	}
-
-	return big.NewInt(int64(fromTransactionCount)), nil
+	return TransactionsBigInt, nil
 }
 
 func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error) {
 	// Create a new context with timeout for this operation
-	opCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
 	ZKBlock, err := DB_OPs.GetZKBlockByNumber(nil, num.Uint64())

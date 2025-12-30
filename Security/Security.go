@@ -73,7 +73,8 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 
 	// Get connections ONCE for all transaction validations
 	// This reduces connection usage from N×2 to just 2 per block validation
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	accountsConn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 	if err != nil {

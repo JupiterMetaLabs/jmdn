@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"gossipnode/DB_OPs/common"
 	"gossipnode/config"
+	GRO "gossipnode/config/GRO"
 	"gossipnode/logging"
 	"gossipnode/metrics"
 	"os"
@@ -13,11 +15,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/client"
 	"github.com/rs/zerolog/log"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/metadata"
+)
+
+var (
+	DB_OPsLocalGRO interfaces.LocalGoroutineManagerInterface
 )
 
 var (
@@ -338,6 +345,13 @@ Usage:
 */
 
 func GetAccountConnectionandPutBack(ctx context.Context) (*config.PooledConnection, error) {
+	if DB_OPsLocalGRO == nil {
+		var err error
+		DB_OPsLocalGRO, err = common.InitializeGRO(GRO.DB_OPsLocal)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize local gro: %v", err)
+		}
+	}
 	if ctx == nil {
 		return nil, errors.New("context cannot be nil - GetAccountConnectionandPutBack")
 	}
@@ -358,35 +372,39 @@ func GetAccountConnectionandPutBack(ctx context.Context) (*config.PooledConnecti
 
 	// Set up automatic cleanup when context is done
 	// Use a goroutine to monitor context cancellation
-	go func() {
-		<-ctx.Done()
-		// Context was cancelled or timed out, return connection to pool
-		// Only return if connection is still in use (not already manually returned)
-		if conn != nil && conn.Client != nil && conn.InUse {
-			conn.Client.Logger.Logger.Info("Auto-returning accounts connection due to context cancellation",
+	callerCtx := ctx
+	DB_OPsLocalGRO.Go(GRO.DB_OPsAccountsThread, func(groCtx context.Context) error {
+		select {
+		case <-callerCtx.Done():
+			// caller context cancelled/timed out
+		case <-groCtx.Done():
+			// goroutine manager is shutting down; still best-effort return the conn
+		}
+
+		if conn == nil || conn.Client == nil {
+			return nil
+		}
+
+		// Put is designed to be idempotent; avoid unsynchronized reads of conn.InUse here.
+		err := callerCtx.Err()
+		if err == nil {
+			err = groCtx.Err()
+		}
+		if err != nil {
+			conn.Client.Logger.Logger.Info("Auto-returning accounts connection due to context completion",
 				zap.String(logging.Connection_database, config.AccountsDBName),
 				zap.Time(logging.Created_at, time.Now().UTC()),
 				zap.String(logging.Log_file, LOG_FILE),
 				zap.String(logging.Topic, TOPIC),
 				zap.String(logging.Loki_url, LOKI_URL),
 				zap.String(logging.Function, "DB_OPs.GetAccountConnectionandPutBack"),
-				zap.String("context_error", ctx.Err().Error()),
-			)
-			// Debugging
-			fmt.Printf("Auto-returning accounts connection due to context cancellation: %s\n", conn.Client.Ctx)
-			PutAccountsConnection(conn)
-		} else if conn != nil && conn.Client != nil && !conn.InUse {
-			// Connection was already manually returned, no need to return again
-			conn.Client.Logger.Logger.Info("Connection already returned, skipping auto-return",
-				zap.String(logging.Connection_database, config.AccountsDBName),
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, LOKI_URL),
-				zap.String(logging.Function, "DB_OPs.GetAccountConnectionandPutBack"),
+				zap.String("context_error", err.Error()),
 			)
 		}
-	}()
+
+		PutAccountsConnection(conn)
+		return nil
+	})
 
 	return conn, nil
 }

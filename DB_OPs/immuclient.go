@@ -9,15 +9,22 @@ import (
 	"gossipnode/config"
 	"gossipnode/logging"
 
+	DB_OPs_common "gossipnode/DB_OPs/common"
+	GRO "gossipnode/config/GRO"
+
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/status"
 )
+
+var ImmuclientLocalGRO interfaces.LocalGoroutineManagerInterface
 
 // isConnectionError determines if an error is related to connection issues
 func isConnectionError(err error) bool {
@@ -2390,6 +2397,13 @@ func GetTransactionByHash(mainDBClient *config.PooledConnection, txHash string) 
 
 // GetTransactionsBatch fetches multiple transactions by their hashes in a single batch
 func GetTransactionsBatch(mainDBClient *config.PooledConnection, hashes []string) ([]*config.Transaction, error) {
+	if ImmuclientLocalGRO == nil {
+		var err error
+		ImmuclientLocalGRO, err = DB_OPs_common.InitializeGRO(GRO.DB_OPsImmuclientLocal)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize local gro: %v", err)
+		}
+	}
 	var transactions []*config.Transaction
 	var err error
 	var shouldReturnConnection bool = false
@@ -2435,25 +2449,27 @@ func GetTransactionsBatch(mainDBClient *config.PooledConnection, hashes []string
 		}
 
 		batch := hashes[i:end]
-		var wg sync.WaitGroup
+		wg, err := ImmuclientLocalGRO.NewFunctionWaitGroup(ctx, GRO.DB_OPsImmuclientWG)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create function wait group: %w - GetTransactionsBatch", err)
+		}
 		var mu sync.Mutex
 		var batchErr error
 
 		for _, hash := range batch {
-			wg.Add(1)
-			go func(h string) {
-				defer wg.Done()
+			ImmuclientLocalGRO.Go(GRO.DB_OPsImmuclientThread, func(ctx context.Context) error {
 
-				tx, err := GetTransactionByHash(mainDBClient, h)
+				tx, err := GetTransactionByHash(mainDBClient, hash)
 				if err != nil {
-					batchErr = fmt.Errorf("failed to fetch transaction %s: %w", h, err)
-					return
+					batchErr = fmt.Errorf("failed to fetch transaction %s: %w", hash, err)
+					return fmt.Errorf("failed to fetch transaction %s: %w", hash, err)
 				}
 
 				mu.Lock()
 				transactions = append(transactions, tx)
 				mu.Unlock()
-			}(hash)
+				return nil
+			}, local.AddToWaitGroup(GRO.DB_OPsImmuclientWG))
 		}
 
 		wg.Wait()

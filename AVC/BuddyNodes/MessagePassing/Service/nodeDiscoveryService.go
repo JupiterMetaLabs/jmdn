@@ -9,8 +9,9 @@ import (
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/AVC/BuddyNodes/Types"
+	"gossipnode/AVC/BuddyNodes/common"
 	PubSubMessages "gossipnode/config/PubSubMessages"
-
+	GRO "gossipnode/config/GRO"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
 )
@@ -44,12 +45,26 @@ func NewNodeDiscoveryService(buddyNode *PubSubMessages.BuddyNode) *NodeDiscovery
 
 // StartDiscovery starts the peer discovery process
 func (nds *NodeDiscoveryService) StartDiscovery() {
+	if NodeDiscoveryLocal == nil {
+		var err error
+		NodeDiscoveryLocal, err = common.InitializeGRO(GRO.NodeDiscoveryLocal)
+		if err != nil {
+			fmt.Printf("❌ Failed to initialize NodeDiscovery local manager: %v\n", err)
+			return
+		}
+	}
 	log.LogConsensusInfo("Starting node discovery service",
 		zap.String("topic", log.Consensus_TOPIC),
 		zap.String("function", "NodeDiscoveryService.StartDiscovery"))
 
-	go nds.discoveryLoop()
-	go nds.syncLoop()
+	NodeDiscoveryLocal.Go(GRO.NodeDiscoveryDiscoveryLoopThread, func(ctx context.Context) error {
+		nds.discoveryLoop()
+		return nil
+	})
+	NodeDiscoveryLocal.Go(GRO.NodeDiscoverySyncLoopThread, func(ctx context.Context) error {
+		nds.syncLoop()
+		return nil
+	})
 }
 
 // StopDiscovery stops the peer discovery process

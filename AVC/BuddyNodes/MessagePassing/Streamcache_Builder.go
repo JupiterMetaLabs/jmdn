@@ -3,7 +3,9 @@ package MessagePassing
 import (
 	"context"
 	"fmt"
+	"gossipnode/AVC/BuddyNodes/common"
 	"gossipnode/config"
+	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"time"
 
@@ -236,10 +238,18 @@ func (sc *StructStreamCache) GetStats() map[string]interface{} {
 
 // <-- Singleton process - make sure it is only called once --> if called more than once, just continue
 func (sc *StructStreamCache) ParallelCleanUpRoutine() {
+	if ListenerHandlerLocal == nil {
+		var err error
+		ListenerHandlerLocal, err = common.InitializeGRO(GRO.HandleBFTRequestLocal)
+		if err != nil {
+			fmt.Printf("❌ Failed to initialize ListenerHandler local manager: %v\n", err)
+			return
+		}
+	}
 	if sc.StreamCache.ParallelCleanUpRoutine {
 		return
 	}
-	go func() {
+	ListenerHandlerLocal.Go(GRO.StreamCacheParallelCleanUpRoutineThread, func(ctx context.Context) error {
 		sc.StreamCache.ParallelCleanUpRoutine = true
 		defer func() {
 			sc.StreamCache.ParallelCleanUpRoutine = false
@@ -248,5 +258,5 @@ func (sc *StructStreamCache) ParallelCleanUpRoutine() {
 			sc.CleanupExpiredStreams()
 			time.Sleep(5 * time.Second)
 		}
-	}()
+	})
 }

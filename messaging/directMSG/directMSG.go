@@ -11,8 +11,16 @@ import (
 	"sync"
 	"time"
 
+	"gossipnode/config/GRO"
+	"gossipnode/messaging/common"
+
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+)
+
+var (
+	LocalGRO interfaces.LocalGoroutineManagerInterface
 )
 
 const (
@@ -61,6 +69,15 @@ var (
 
 // StartYggdrasilListener starts a TCP listener for direct Yggdrasil messages
 func StartYggdrasilListener(ctx context.Context) {
+	if LocalGRO == nil {
+		var err error
+		LocalGRO, err = common.InitializeGRO(GRO.MessagingLocal)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize LocalGRO")
+			return
+		}
+	}
+
 	// Listen on all interfaces (both regular and Yggdrasil)
 	listener, err := net.Listen("tcp6", fmt.Sprintf(":%d", YggdrasilPort))
 	if err != nil {
@@ -71,9 +88,12 @@ func StartYggdrasilListener(ctx context.Context) {
 	log.Info().Int("port", YggdrasilPort).Msg("Started Yggdrasil message listener")
 
 	// Start the connection pool cleaner
-	go cleanConnectionPool(ctx)
+	LocalGRO.Go(GRO.YGGMessageCleanerThread, func(ctx context.Context) error {
+		cleanConnectionPool(ctx)
+		return nil
+	})
 
-	go func() {
+	LocalGRO.Go(GRO.MessageListenerThread, func(ctx context.Context) error {
 		defer func() {
 			log.Info().Msg("Closing Yggdrasil listener")
 			listener.Close()
@@ -82,7 +102,7 @@ func StartYggdrasilListener(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
-				return
+				return ctx.Err()
 			default:
 				// Set accept deadline to make context cancellation responsive
 				if deadline, ok := ctx.Deadline(); ok {
@@ -102,7 +122,7 @@ func StartYggdrasilListener(ctx context.Context) {
 
 					// If context is done, this is expected
 					if ctx.Err() != nil {
-						return
+						return ctx.Err()
 					}
 
 					log.Error().Err(err).Msg("Error accepting Yggdrasil connection")
@@ -111,10 +131,18 @@ func StartYggdrasilListener(ctx context.Context) {
 				}
 
 				// Handle each connection in a goroutine
-				go handleYggdrasilConnection(conn)
+				// Capture conn in closure to avoid race condition
+				connForGoroutine := conn
+				if err := LocalGRO.Go(GRO.MessageYggdrasilThread, func(ctx context.Context) error {
+					handleYggdrasilConnection(connForGoroutine)
+					return nil
+				}); err != nil {
+					log.Error().Err(err).Msg("Failed to start goroutine for Yggdrasil connection")
+					connForGoroutine.Close() // Close connection if we can't handle it
+				}
 			}
 		}
-	}()
+	})
 }
 
 // handleYggdrasilConnection processes incoming Yggdrasil messages

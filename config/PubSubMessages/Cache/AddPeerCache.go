@@ -1,17 +1,24 @@
 package Cache
 
 import (
+	"context"
 	"fmt"
 	"gossipnode/config"
+	GRO "gossipnode/config/GRO"
 	"gossipnode/config/PubSubMessages"
+	"gossipnode/config/common"
 	"gossipnode/node"
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 )
+
+var AddPeersCacheLocalGRO interfaces.LocalGoroutineManagerInterface
 
 var (
 	AddPeersCache   map[peer.ID]multiaddr.Multiaddr
@@ -131,6 +138,14 @@ func FallbackConnectionFunction(peerID peer.ID, multiaddrs []string) {
 // AddPeersTemporary: concurrent reachability check, adds all reachable peers
 // Returns statistics about reachability checks and connections
 func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) Stats {
+	if AddPeersCacheLocalGRO == nil {
+		var err error
+		AddPeersCacheLocalGRO, err = common.InitializeGRO(GRO.AddPeersCacheLocal)
+		if err != nil {
+			fmt.Printf("failed to initialize local gro: %v", err)
+		}
+	}
+
 	startTime := time.Now()
 	stats := NewStatsBuilder(nil)
 	stats.SetTotalPeers(len(peers))
@@ -141,8 +156,13 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) Stats {
 	}
 	AddPeersCacheMu.Unlock()
 
-	var wg sync.WaitGroup
-
+	wg, err := AddPeersCacheLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.AddPeersCacheWaitGroup)
+	if err != nil {
+		fmt.Printf("failed to create function wait group: %v", err)
+		stats.TimeTaken = time.Since(startTime)
+		return *stats
+	}
+	
 	fmt.Println("---- Starting concurrent reachability checks ----")
 
 	nm := GetNodeManager()
@@ -153,36 +173,38 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) Stats {
 	}
 
 	for idx, buddy := range peers {
-		wg.Add(1)
-		go func(peerID peer.ID, maddr multiaddr.Multiaddr, index int) {
-			defer wg.Done()
+		AddPeersCacheLocalGRO.Go(GRO.AddPeersCacheThread, func(ctx context.Context) error {
 
-			addrStr := maddr.String()
+			addrStr := buddy.Multiaddr.String()
+			peerID := buddy.PeerID
+			index := idx
 			fmt.Printf("[Thread %d] Checking peer %s at %s\n", index, peerID, addrStr)
 
 			if nm == nil {
 				fmt.Printf("[%s] NodeManager not available\n", peerID)
-				stats.AddUnreachablePeer(peerID, maddr)
-				return
+				stats.AddUnreachablePeer(peerID, buddy.Multiaddr)
+				return fmt.Errorf("NodeManager not available")
 			}
 
 			reachable, timeTaken, err := nm.PingMultiaddrWithRetries(addrStr, 3)
 			if err != nil {
 				fmt.Printf("[%s] Error: %v\n", peerID, err)
-				stats.AddUnreachablePeer(peerID, maddr)
-				return
+				stats.AddUnreachablePeer(peerID, buddy.Multiaddr)
+				return fmt.Errorf("Error: %v", err)
 			}
 
 			fmt.Printf("[%s] Time: %v, Reachable: %v\n", peerID, timeTaken, reachable)
 
 			if reachable {
-				stats.AddReachablePeer(peerID, maddr)
-				AddPeer(peerID, maddr)
+				stats.AddReachablePeer(peerID, buddy.Multiaddr)
+				AddPeer(peerID, buddy.Multiaddr)
 				fmt.Printf("✓ Peer %s added\n", peerID)
 			} else {
-				stats.AddUnreachablePeer(peerID, maddr)
+				stats.AddUnreachablePeer(peerID, buddy.Multiaddr)
+				return fmt.Errorf("Peer %s not reachable", peerID)
 			}
-		}(buddy.PeerID, buddy.Multiaddr, idx)
+			return nil
+		}, local.AddToWaitGroup(GRO.AddPeersCacheWaitGroup))
 	}
 
 	wg.Wait()

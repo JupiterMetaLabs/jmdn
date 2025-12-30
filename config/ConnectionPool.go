@@ -4,17 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"gossipnode/config/GRO"
+	"gossipnode/config/common"
 	"gossipnode/logging"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/client"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/metadata"
 )
+
+var ConnectionPoolLocalGRO interfaces.LocalGoroutineManagerInterface
 
 // LOKI_URL will be set conditionally based on whether Loki is enabled
 var LOKI_URL string
@@ -148,6 +153,13 @@ func (pc *PooledConnection) GetContext() context.Context {
 
 // NewConnectionPool creates a new connection pool
 func NewConnectionPool(config *ConnectionPoolConfig, logger *logging.AsyncLogger, poolingConfig *PoolingConfig) *ConnectionPool {
+	if ConnectionPoolLocalGRO == nil {
+		var err error
+		ConnectionPoolLocalGRO, err = common.InitializeGRO(GRO.ConnectionPoolLocal)
+		if err != nil {
+			fmt.Printf("failed to initialize local gro: %v", err)
+		}
+	}
 	pool := &ConnectionPool{
 		Config:        config,
 		Connections:   make([]*PooledConnection, 0, config.MaxConnections),
@@ -162,7 +174,15 @@ func NewConnectionPool(config *ConnectionPoolConfig, logger *logging.AsyncLogger
 	}
 
 	// Start background cleanup
-	go pool.cleanupRoutine()
+	if ConnectionPoolLocalGRO != nil {
+		ConnectionPoolLocalGRO.Go(GRO.ConnectionPoolThread, func(ctx context.Context) error {
+			pool.cleanupRoutine(ctx)
+			return nil
+		})
+	} else {
+		go pool.cleanupRoutine(context.Background())
+		fmt.Println("ConnectionPoolLocalGRO is nil, starting cleanup routine in main thread")
+	}
 	logger.Logger.Info("New Connection Pool Created",
 		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
@@ -515,8 +535,9 @@ func (p *ConnectionPool) closeConnection(conn *PooledConnection) {
 	)
 }
 
-// cleanupRoutine periodically cleans up idle connections
-func (p *ConnectionPool) cleanupRoutine() {
+// cleanupRoutine periodically cleans up idle connections.
+// It stops when ctx is cancelled or StopCleanup is closed.
+func (p *ConnectionPool) cleanupRoutine(ctx context.Context) {
 	p.Logger.Logger.Info("Starting connection pool cleanup routine",
 		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
@@ -526,6 +547,15 @@ func (p *ConnectionPool) cleanupRoutine() {
 	)
 	for {
 		select {
+		case <-ctx.Done():
+			p.Logger.Logger.Info("Stopping connection pool cleanup routine (ctx cancelled)",
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, LOKI_URL),
+				zap.String(logging.Function, "config.cleanupRoutine"),
+			)
+			return
 		case <-p.CleanupTicker.C:
 			p.cleanupIdleConnections()
 		case <-p.StopCleanup:

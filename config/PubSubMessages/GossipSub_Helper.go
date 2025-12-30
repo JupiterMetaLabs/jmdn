@@ -20,40 +20,73 @@ func (gps *GossipPubSub) InitGossipSub() error {
 	}
 
 	gps.GossipSubPS = gossipSub
-	gps.TopicsMap = make(map[string]*pubsub.Topic)
+	gps.Mutex.Lock()
+	if gps.TopicsMap == nil {
+		gps.TopicsMap = make(map[string]*pubsub.Topic)
+	}
+	if gps.Subscriptions == nil {
+		gps.Subscriptions = make(map[string]*pubsub.Subscription)
+	}
+	if gps.SubscriptionCancels == nil {
+		gps.SubscriptionCancels = make(map[string]context.CancelFunc)
+	}
+	gps.Mutex.Unlock()
 
 	return nil
 }
 
 // GetOrJoinTopic gets an existing topic or joins a new one (thread-safe)
 func (gps *GossipPubSub) GetOrJoinTopic(topicName string) (*pubsub.Topic, error) {
-	gps.Mutex.Lock()
-	defer gps.Mutex.Unlock()
+	if topicName == "" {
+		return nil, fmt.Errorf("topic name must not be empty")
+	}
 
-	if gps.GossipSubPS == nil {
+	// Fast path: read lock to check for existing topic + capture GossipSub pointer.
+	gps.Mutex.RLock()
+	ps := gps.GossipSubPS
+	if gps.TopicsMap != nil {
+		if topic, exists := gps.TopicsMap[topicName]; exists && topic != nil {
+			gps.Mutex.RUnlock()
+			return topic, nil
+		}
+	}
+	gps.Mutex.RUnlock()
+
+	if ps == nil {
 		return nil, fmt.Errorf("GossipSub not initialized")
 	}
 
-	// Check if topic already exists
-	if topic, exists := gps.TopicsMap[topicName]; exists {
-		return topic, nil
-	}
-
-	// Join the topic
-	topic, err := gps.GossipSubPS.Join(topicName)
+	// Join can do non-trivial work; do it outside locks to avoid deadlocks.
+	joinedTopic, err := ps.Join(topicName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to join topic %s: %w", topicName, err)
 	}
 
-	gps.TopicsMap[topicName] = topic
-	return topic, nil
+	// Store under write lock (double-check to handle concurrent Join).
+	gps.Mutex.Lock()
+	defer gps.Mutex.Unlock()
+
+	if gps.TopicsMap == nil {
+		gps.TopicsMap = make(map[string]*pubsub.Topic)
+	}
+	if existing, exists := gps.TopicsMap[topicName]; exists && existing != nil {
+		_ = joinedTopic.Close()
+		return existing, nil
+	}
+	gps.TopicsMap[topicName] = joinedTopic
+	return joinedTopic, nil
 }
 
 // CloseTopic closes a topic
 func (gps *GossipPubSub) CloseTopic(topicName string) error {
-	if topic, exists := gps.TopicsMap[topicName]; exists {
-		topic.Close()
+	gps.Mutex.Lock()
+	topic, exists := gps.TopicsMap[topicName]
+	if exists {
 		delete(gps.TopicsMap, topicName)
+	}
+	gps.Mutex.Unlock()
+	if exists {
+		_ = topic.Close()
 	}
 	return nil
 }

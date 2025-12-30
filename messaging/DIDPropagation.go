@@ -7,21 +7,24 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"gossipnode/config/GRO"
+	GROHelper "gossipnode/messaging/common"
 	"io"
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog/log"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/metrics"
 )
+
 
 // DIDMessage represents a message for DID propagation
 type DIDMessage struct {
@@ -107,6 +110,14 @@ func markAccountMessageProcessed(messageID string) {
 
 // storeAccountInDB stores the Account document in the accounts database
 func storeAccountInDB(msg DIDMessage) {
+	if DIDLocalGRO == nil {
+		var err error
+		DIDLocalGRO, err = GROHelper.InitializeGRO(GRO.DIDPropagationLocal)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize LocalGRO")
+			return
+		}
+	}
 	// Check if Account data is present
 	if msg.Account == nil {
 		log.Warn().
@@ -117,12 +128,12 @@ func storeAccountInDB(msg DIDMessage) {
 	}
 
 	// Store in accounts database in a separate goroutine to prevent blocking
-	go func() {
+	DIDLocalGRO.Go(GRO.DIDStoreThread, func(ctx context.Context) error {
 		accountsMutex.RLock()
 		if accountsClient == nil {
 			log.Error().Msg("Accounts client not initialized")
 			accountsMutex.RUnlock()
-			return
+			return fmt.Errorf("accounts client not initialized")
 		}
 		client := accountsClient
 		accountsMutex.RUnlock()
@@ -143,7 +154,7 @@ func storeAccountInDB(msg DIDMessage) {
 		err := DB_OPs.StoreAccount(client, accountDoc)
 		if err != nil {
 			log.Error().Err(err).Str("Account", msg.Account.DIDAddress).Msg("Failed to store Account in database")
-			return
+			return err
 		}
 
 		log.Info().Str("Account", msg.Account.DIDAddress).Msg("Successfully stored DID in database")
@@ -153,7 +164,8 @@ func storeAccountInDB(msg DIDMessage) {
 		// if err != nil {
 		//     log.Error().Err(err).Str("did", msg.DID).Msg("Failed to update DID set")
 		// }
-	}()
+		return nil
+	})
 }
 
 // updateDIDSet adds a DID to the grow-only set in accounts database
@@ -178,6 +190,14 @@ func updateDIDSet(client *config.PooledConnection, did string) error {
 
 // HandleDIDStream processes incoming DID propagation messages
 func HandleDIDStream(stream network.Stream) {
+	if DIDLocalGRO == nil {
+		var err error
+		DIDLocalGRO, err = GROHelper.InitializeGRO(GRO.DIDPropagationLocal)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize LocalGRO")
+			return
+		}
+	}
 	defer stream.Close()
 
 	// Get the remote peer
@@ -239,7 +259,10 @@ func HandleDIDStream(stream network.Stream) {
 
 		// Forward the message to other peers
 		if hostInstance := getHostInstance(); hostInstance != nil {
-			go forwardDID(hostInstance, msg)
+			DIDLocalGRO.Go(GRO.DIDPropagationStreamThread, func(ctx context.Context) error {
+				forwardDID(hostInstance, msg)
+				return nil
+			})
 		} else {
 			log.Error().Msg("Cannot access host instance for forwarding DID message")
 		}
@@ -278,7 +301,13 @@ func forwardDID(h host.Host, msg DIDMessage) {
 	// Track how many peers we successfully broadcasted to
 	var successCount int
 	var successMutex sync.Mutex
-	var wg sync.WaitGroup
+
+	// Create waitgroup for tracking goroutines
+	wg, err := DIDLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.DIDForwardThread)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create waitgroup for DID forwarding")
+		return
+	}
 
 	// Send to each peer (except original sender) concurrently
 	for _, peerID := range peers {
@@ -287,35 +316,35 @@ func forwardDID(h host.Host, msg DIDMessage) {
 			continue
 		}
 
-		wg.Add(1)
-		go func(peer peer.ID) {
-			defer wg.Done()
-
-			// Open a stream to the peer
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			stream, err := h.NewStream(ctx, peer, config.DIDPropagationProtocol)
+		// Capture peerID in closure to avoid race condition
+		peerIDForGoroutine := peerID
+		if err := DIDLocalGRO.Go(GRO.DIDForwardThread, func(ctx context.Context) error {
+			stream, err := h.NewStream(ctx, peerIDForGoroutine, config.DIDPropagationProtocol)
 			if err != nil {
-				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open DID stream")
-				return
+				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open DID stream")
+				return err
 			}
 			defer stream.Close()
 
 			// Write the message
 			_, err = stream.Write(msgBytes)
 			if err != nil {
-				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to write DID message")
-				return
+				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to write DID message")
+				return err
 			}
 
+			// Increment success count and record metrics
 			successMutex.Lock()
 			successCount++
 			successMutex.Unlock()
 
 			// Record metrics
-			metrics.MessagesSentCounter.WithLabelValues("did", peer.String()).Inc()
-		}(peerID)
+			metrics.MessagesSentCounter.WithLabelValues("did", peerIDForGoroutine.String()).Inc()
+
+			return nil
+		}, local.AddToWaitGroup(GRO.DIDForwardWG)); err != nil {
+			log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to start goroutine for DID forwarding")
+		}
 	}
 
 	// Wait for all sends to complete
@@ -332,6 +361,14 @@ func forwardDID(h host.Host, msg DIDMessage) {
 
 // PropagateDID creates and propagates a DID message to the network
 func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
+	if DIDLocalGRO == nil {
+		var err error
+		DIDLocalGRO, err = GROHelper.InitializeGRO(GRO.DIDPropagationLocal)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize LocalGRO")
+			return fmt.Errorf("failed to initialize LocalGRO: %w", err)
+		}
+	}
 	if doc == nil {
 		return fmt.Errorf("DID document cannot be nil")
 	}
@@ -389,31 +426,34 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 		Msg("Starting DID propagation to peers")
 
 	// Send message to all peers
-	var wg sync.WaitGroup
+	// Create waitgroup for tracking goroutines
+	wg, err := DIDLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.DIDForwardThread)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create waitgroup for DID forwarding")
+		return fmt.Errorf("failed to create waitgroup for DID forwarding: %w", err)
+	}
 	var successCount int
 	var successMutex sync.Mutex
 
 	for _, peerID := range peers {
-		wg.Add(1)
-		go func(peer peer.ID) {
-			defer wg.Done()
-
-			// Open stream to peer with timeout
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// make closure for peerID
+		peerIDForGoroutine := peerID
+		if err := DIDLocalGRO.Go(GRO.DIDPropagationThread, func(ctx context.Context) error {
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
-
-			stream, err := h.NewStream(ctx, peer, config.DIDPropagationProtocol)
+			// Open stream to peer
+			stream, err := h.NewStream(ctx, peerIDForGoroutine, config.DIDPropagationProtocol)
 			if err != nil {
-				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open stream for DID")
-				return
+				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open stream for DID")
+				return err
 			}
 			defer stream.Close()
 
 			// Send the message
 			_, err = stream.Write(msgBytes)
 			if err != nil {
-				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to send DID message")
-				return
+				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to send DID message")
+				return err
 			}
 
 			// Record success
@@ -422,8 +462,11 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 			successMutex.Unlock()
 
 			// Record metrics
-			metrics.MessagesSentCounter.WithLabelValues("did", peer.String()).Inc()
-		}(peerID)
+			metrics.MessagesSentCounter.WithLabelValues("did", peerIDForGoroutine.String()).Inc()
+			return nil
+		}, local.AddToWaitGroup(GRO.DIDForwardWG)); err != nil {
+			log.Error().Err(err).Str("peer", peerID.String()).Msg("Failed to start goroutine for DID propagation")
+		}
 	}
 
 	// Wait for all sends to complete

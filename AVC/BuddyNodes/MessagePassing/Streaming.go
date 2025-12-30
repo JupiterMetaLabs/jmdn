@@ -1,12 +1,15 @@
 package MessagePassing
 
 import (
+	"context"
 	"fmt"
 	"gossipnode/AVC/BuddyNodes/DataLayer"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	ServiceLayer "gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
+	"gossipnode/AVC/BuddyNodes/common"
 	"gossipnode/config"
+	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/logging"
 	"time"
@@ -56,7 +59,16 @@ func Init_Loggers(loki bool) {
 }
 
 func NewListenerNode(h host.Host, responseHandler AVCStruct.ResponseHandler) *StructListener {
-	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
+	if StreamCacheLocal == nil {
+		var err error
+		StreamCacheLocal, err = common.InitializeGRO(GRO.StreamCacheParallelCleanUpRoutineLocal)
+		if err != nil {
+			fmt.Printf("❌ Failed to initialize StreamCache local manager: %v\n", err)
+			return nil
+		}
+	}
+	// Reduced TTL from 5 minutes to 2 minutes for faster cleanup of stale streams
+	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(2 * time.Minute).SetAccessOrder().Build()
 	if err != nil {
 		panic(fmt.Sprintf("failed to create stream cache: %v", err))
 	}
@@ -91,7 +103,10 @@ func NewListenerNode(h host.Host, responseHandler AVCStruct.ResponseHandler) *St
 		log.LogMessagesInfo("New submit message connection received",
 			zap.String("peer", stream.Conn().RemotePeer().String()),
 			zap.String("protocol", string(config.SubmitMessageProtocol)))
-		go listener.HandleSubmitMessageStream(stream)
+		StreamCacheLocal.Go(GRO.StreamCacheMessageListenerThread, func(ctx context.Context) error {
+			listener.HandleSubmitMessageStream(stream)
+			return nil
+		})
 	})
 
 	log.LogConsensusInfo(fmt.Sprintf("ListenerNode initialized with ID: %s", h.ID()), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewListenerNode"))
@@ -102,6 +117,14 @@ func NewListenerNode(h host.Host, responseHandler AVCStruct.ResponseHandler) *St
 
 // NewBuddyNode creates a new BuddyNode instance from an existing host
 func NewBuddyNode(h host.Host, buddies *AVCStruct.Buddies, responseHandler AVCStruct.ResponseHandler, pubsub *AVCStruct.GossipPubSub) *AVCStruct.BuddyNode {
+	if StreamCacheLocal == nil {
+		var err error
+		StreamCacheLocal, err = common.InitializeGRO(GRO.StreamCacheParallelCleanUpRoutineLocal)
+		if err != nil {
+			fmt.Printf("❌ Failed to initialize StreamCache local manager: %v\n", err)
+			return nil
+		}
+	}
 	// Debug logging
 	fmt.Printf("NewBuddyNode: Creating buddy node for peer %s\n", h.ID())
 	if pubsub == nil {
@@ -110,7 +133,8 @@ func NewBuddyNode(h host.Host, buddies *AVCStruct.Buddies, responseHandler AVCSt
 		fmt.Printf("NewBuddyNode: pubsub parameter is valid, Host: %s\n", pubsub.Host.ID())
 	}
 
-	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(5 * time.Minute).SetAccessOrder().Build()
+	// Reduced TTL from 5 minutes to 2 minutes for faster cleanup of stale streams
+	streamCache, err := NewStreamCacheBuilder(nil).SetHost(h).SetMaxStreams(20).SetTTL(2 * time.Minute).SetAccessOrder().Build()
 	if err != nil {
 		panic(fmt.Sprintf("failed to create stream cache: %v", err))
 	}
@@ -141,7 +165,10 @@ func NewBuddyNode(h host.Host, buddies *AVCStruct.Buddies, responseHandler AVCSt
 		log.LogConsensusInfo("New buddy nodes connection received",
 			zap.String("peer", stream.Conn().RemotePeer().String()),
 			zap.String("protocol", string(config.BuddyNodesMessageProtocol)))
-		go buddyStream.HandleBuddyNodesMessageStream(h, stream)
+		StreamCacheLocal.Go(GRO.BuddyNodesMessageProtocolThread, func(ctx context.Context) error {
+			buddyStream.HandleBuddyNodesMessageStream(h, stream)
+			return nil
+		})
 	})
 
 	log.LogConsensusInfo(fmt.Sprintf("BuddyNode initialized with ID: %s", h.ID()), zap.String("peer", h.ID().String()), zap.String("topic", log.Consensus_TOPIC), zap.String("function", "NewBuddyNode"))

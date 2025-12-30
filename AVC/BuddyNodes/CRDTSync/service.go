@@ -7,7 +7,9 @@ import (
 	"log"
 	"time"
 
+	"gossipnode/AVC/BuddyNodes/common"
 	"gossipnode/config"
+	"gossipnode/config/GRO"
 	"gossipnode/crdt"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -79,6 +81,13 @@ func NewSyncService(
 
 // Start begins the synchronization process
 func (s *SyncService) Start() error {
+	if CRDTSyncLocal == nil {
+		var err error
+		CRDTSyncLocal, err = common.InitializeGRO(GRO.CRDTSyncLocal)
+		if err != nil {
+			return fmt.Errorf("failed to initialize CRDTSync local manager: %w", err)
+		}
+	}
 	// Subscribe to topic
 	sub, err := s.topic.Subscribe()
 	if err != nil {
@@ -87,7 +96,10 @@ func (s *SyncService) Start() error {
 	s.sub = sub
 
 	// Start subscriber goroutine
-	go s.startSubscriber()
+	CRDTSyncLocal.Go(GRO.CRDTSyncThread, func(ctx context.Context) error {
+		s.startSubscriber()
+		return nil
+	})
 
 	// Send initial sync request
 	if err := s.sendSyncRequest(); err != nil {

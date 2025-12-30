@@ -6,9 +6,11 @@ import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/config"
+	"gossipnode/config/GRO"
 	"gossipnode/config/PubSubMessages"
 	"time"
 
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.uber.org/zap"
 )
@@ -89,12 +91,44 @@ func Unsubscribe(gps *PubSubMessages.GossipPubSub, topic string) error {
 	delete(gps.Topics, topic)
 	delete(gps.Handlers, topic)
 
+	// Remove from subscriber set
+	if gps.TopicSubscribers != nil && gps.TopicSubscribers[topic] != nil && gps.Host != nil {
+		delete(gps.TopicSubscribers[topic], gps.Host.ID())
+		if len(gps.TopicSubscribers[topic]) == 0 {
+			delete(gps.TopicSubscribers, topic)
+		}
+	}
+
+	// Cancel underlying GossipSub subscription + consumer goroutine (prevents leaks)
+	if gps.Subscriptions != nil {
+		if sub, ok := gps.Subscriptions[topic]; ok && sub != nil {
+			sub.Cancel()
+			delete(gps.Subscriptions, topic)
+		}
+	}
+	if gps.SubscriptionCancels != nil {
+		if cancel, ok := gps.SubscriptionCancels[topic]; ok && cancel != nil {
+			cancel()
+			delete(gps.SubscriptionCancels, topic)
+		}
+	}
+
 	log.LogConsensusInfo(fmt.Sprintf("Unsubscribed from topic: %s", topic), zap.String("topic", topic), zap.String("function", "Subscription.Unsubscribe"))
 	return nil
 }
 
 // subscribeViaGossipSub subscribes to a topic using libp2p GossipSub
 func subscribeViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, handler func(*PubSubMessages.GossipMessage)) error {
+
+	if LocalGRO == nil {
+		if app := GRO.GetApp(GRO.PubsubApp); app != nil {
+			lm, err := app.NewLocalManager(GRO.PubsubSubscribeLocal)
+			if err == nil {
+				LocalGRO = lm
+			}
+		}
+	}
+
 	fmt.Printf("About to call GetOrJoinTopic for %s\n", topicName)
 	// Get or join the topic
 	topic, err := gps.GetOrJoinTopic(topicName)
@@ -108,24 +142,51 @@ func subscribeViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, h
 		return fmt.Errorf("failed to subscribe to topic %s: %w", topicName, err)
 	}
 	fmt.Printf("Subscribe returned successfully for %s\n", topicName)
+
+	// Store subscription and cancellation so Unsubscribe can stop the underlying subscription/goroutine.
+	gps.Mutex.Lock()
+	if gps.Subscriptions == nil {
+		gps.Subscriptions = make(map[string]*pubsub.Subscription)
+	}
+	if gps.SubscriptionCancels == nil {
+		gps.SubscriptionCancels = make(map[string]context.CancelFunc)
+	}
+	// Replace any existing subscription to avoid leaks.
+	if oldSub, ok := gps.Subscriptions[topicName]; ok && oldSub != nil {
+		oldSub.Cancel()
+	}
+	if oldCancel, ok := gps.SubscriptionCancels[topicName]; ok && oldCancel != nil {
+		oldCancel()
+	}
+	subCtx, cancel := context.WithCancel(context.Background())
+	gps.Subscriptions[topicName] = sub
+	gps.SubscriptionCancels[topicName] = cancel
+	gps.Mutex.Unlock()
+
 	// Start a goroutine to handle incoming messages with proper context
-	ctx, cancel := context.WithCancel(context.Background())
-	// Store cancel function for cleanup (in a real implementation, you'd track this)
-	_ = cancel
-	fmt.Printf("Context set for %s\n", topicName)
-	go func() {
-		defer cancel()
+	run := func(ctx context.Context) error {
+		// ctx controls shutdown of the local manager; subCtx allows per-topic unsubscribe.
+		ctxNext, cancelNext := context.WithCancel(ctx)
+		defer cancelNext()
+		go func() {
+			select {
+			case <-subCtx.Done():
+				cancelNext()
+			case <-ctx.Done():
+			}
+		}()
+
 		for {
 			fmt.Printf("About to call Next for %s\n", topicName)
-			msg, err := sub.Next(ctx)
+			msg, err := sub.Next(ctxNext)
 			if err != nil {
 				// Check if context was cancelled
-				if err == context.Canceled || err == context.DeadlineExceeded {
+				if ctxNext.Err() != nil || err == context.Canceled || err == context.DeadlineExceeded {
 					fmt.Printf("GossipSub subscription cancelled for topic: %s\n", topicName)
-				} else {
-					fmt.Printf("Error reading message from GossipSub: %v\n", err)
+					return nil
 				}
-				return
+				fmt.Printf("Error reading message from GossipSub: %v\n", err)
+				return err
 			}
 			fmt.Printf("Next returned successfully for %s\n", topicName)
 			// Parse the actual message data from raw bytes
@@ -165,7 +226,16 @@ func subscribeViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, h
 				handler(gossipMsg)
 			}
 		}
-	}()
+	}
+
+	if LocalGRO != nil {
+		LocalGRO.Go(GRO.PubsubSubscriptionThread, run)
+	} else {
+		// CRITICAL FIX: Use subCtx instead of context.Background() to ensure
+		// the goroutine can be cancelled when Unsubscribe() is called.
+		// This prevents goroutine leaks over long-running consensus operations.
+		go func() { _ = run(subCtx) }()
+	}
 	fmt.Printf("subscribeViaGossipSub returned successfully for %s\n", topicName)
 	return nil
 }
