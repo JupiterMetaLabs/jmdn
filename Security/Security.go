@@ -66,9 +66,32 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 		return false, errors.New("zkBlock cannot be nil")
 	}
 
-	// 1. Check the ZKBlock validation for Transactions in the ZKBlokc
+	// Early return if no transactions
+	if len(zkBlock.Transactions) == 0 {
+		return false, errors.New("zkBlock has no transactions")
+	}
+
+	// Get connections ONCE for all transaction validations
+	// This reduces connection usage from N×2 to just 2 per block validation
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	accountsConn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
+	if err != nil {
+		return false, fmt.Errorf("failed to get accounts connection for ZKBlock validation: %w", err)
+	}
+	defer DB_OPs.PutAccountsConnection(accountsConn)
+
+	mainDBConn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		return false, fmt.Errorf("failed to get main DB connection for ZKBlock validation: %w", err)
+	}
+	defer DB_OPs.PutMainDBConnection(mainDBConn)
+
+	// 1. Check the ZKBlock validation for Transactions in the ZKBlock
+	// Reuse the same connections for all transactions
 	for _, tx := range zkBlock.Transactions {
-		status, err := AllChecks(&tx)
+		status, err := allChecksWithConn(&tx, accountsConn, mainDBConn)
 		if err != nil {
 			return false, err
 		}
@@ -90,16 +113,43 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	return true, nil
 }
 
+// AllChecks validates a single transaction by acquiring its own connections.
+// This is a backward-compatible wrapper for standalone transaction validation.
+// For batch validation (e.g., ZKBlock), use allChecksWithConn for better performance.
 func AllChecks(tx *config.Transaction) (bool, error) {
-	ctx := context.Background()
-	defer ctx.Done()
-	// Initilize the Accounts DB connection pool
-	Conn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get connections for single transaction validation
+	accountsConn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("failed to get accounts connection: %w", err)
 	}
-	// Ensure connection is returned to pool when function exits
-	defer DB_OPs.PutAccountsConnection(Conn)
+	defer DB_OPs.PutAccountsConnection(accountsConn)
+
+	mainDBConn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		return false, fmt.Errorf("failed to get main DB connection: %w", err)
+	}
+	defer DB_OPs.PutMainDBConnection(mainDBConn)
+
+	return allChecksWithConn(tx, accountsConn, mainDBConn)
+}
+
+// allChecksWithConn validates a transaction using provided database connections.
+// This internal function enables connection reuse for batch validation (e.g., ZKBlock).
+// Connection lifecycle is managed by the caller.
+func allChecksWithConn(tx *config.Transaction, accountsConn, mainDBConn *config.PooledConnection) (bool, error) {
+	// Validate connections are provided
+	if accountsConn == nil || accountsConn.Client == nil {
+		return false, errors.New("accounts connection is nil or invalid")
+	}
+	if mainDBConn == nil || mainDBConn.Client == nil {
+		return false, errors.New("main DB connection is nil or invalid")
+	}
+
+	// Use accountsConn for logging throughout
+	Conn := accountsConn
 
 	// ------------------------------------------------------------
 	// 1. ChainID validation
@@ -112,7 +162,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
+			zap.String(logging.Function, "Security.allChecksWithConn"),
 		)
 		return false, errors.New("expected chain ID is not configured")
 	}
@@ -126,7 +176,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
+			zap.String(logging.Function, "Security.allChecksWithConn"),
 		)
 		return false, errors.New("transaction or chain ID is missing")
 	}
@@ -143,7 +193,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
+			zap.String(logging.Function, "Security.allChecksWithConn"),
 		)
 		return false, fmt.Errorf("chain ID mismatch: got %s (uint64: %d), expected %s (uint64: %d)",
 			tx.ChainID.String(), tx.ChainID.Uint64(), expectedChainID.String(), expectedChainID.Uint64())
@@ -162,7 +212,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
+			zap.String(logging.Function, "Security.allChecksWithConn"),
 		)
 		return false, fmt.Errorf("transaction hash validation failed: %w", err)
 	}
@@ -174,7 +224,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
+			zap.String(logging.Function, "Security.allChecksWithConn"),
 		)
 		return false, errors.New("transaction hash mismatch: computed hash does not match provided hash")
 	}
@@ -191,7 +241,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
+			zap.String(logging.Function, "Security.allChecksWithConn"),
 		)
 		return false, fmt.Errorf("signature recovery failed: %w", err)
 	}
@@ -202,7 +252,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
+			zap.String(logging.Function, "Security.allChecksWithConn"),
 		)
 		return false, errors.New("invalid signature")
 	}
@@ -219,7 +269,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
+			zap.String(logging.Function, "Security.allChecksWithConn"),
 		)
 		return false, fmt.Errorf("DID check failed with DB error: %w", err)
 	}
@@ -230,7 +280,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
+			zap.String(logging.Function, "Security.allChecksWithConn"),
 		)
 		return false, errors.New("sender or receiver DID not found")
 	}
@@ -241,7 +291,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.AllChecks"),
+		zap.String(logging.Function, "Security.allChecksWithConn"),
 	)
 
 	// Debugging
@@ -259,7 +309,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
+			zap.String(logging.Function, "Security.allChecksWithConn"),
 		)
 		return false, fmt.Errorf("balance check failed with error: %w", err)
 	}
@@ -270,31 +320,15 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
+			zap.String(logging.Function, "Security.allChecksWithConn"),
 		)
 		return false, errors.New("insufficient funds for transaction")
 	}
 
-	// get main DB connection
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		Conn.Client.Logger.Logger.Error("Failed to get main DB connection for nonce check",
-			zap.Error(err),
-			zap.String(logging.Connection_database, config.AccountsDBName),
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
-		)
-		return false, fmt.Errorf("failed to get main DB connection for nonce check: %w", err)
-	}
-	defer DB_OPs.PutMainDBConnection(mainDBClient)
-
 	// ------------------------------------------------------------
-	// 6. Nonce validation
+	// 6. Nonce validation (using pre-acquired mainDBConn)
 	// 6.1. Combined Nonce check (optimized): duplicate nonce and latest nonce in a single reverse scan
-	hasDuplicate, latestNonce, hasAnyTransactions, err := DB_OPs.CheckNonceAndGetLatest(mainDBClient, tx.From, tx.Nonce)
+	hasDuplicate, latestNonce, hasAnyTransactions, err := DB_OPs.CheckNonceAndGetLatest(mainDBConn, tx.From, tx.Nonce)
 	if err != nil {
 		Conn.Client.Logger.Logger.Error("Failed to check nonce",
 			zap.Error(err),
@@ -305,7 +339,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
+			zap.String(logging.Function, "Security.allChecksWithConn"),
 		)
 		return false, fmt.Errorf("nonce check failed with error: %w", err)
 	}
@@ -319,7 +353,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
+			zap.String(logging.Function, "Security.allChecksWithConn"),
 		)
 		return false, fmt.Errorf("transaction with same nonce already exists for address %s", tx.From.Hex())
 	}
@@ -352,7 +386,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.AllChecks"),
+			zap.String(logging.Function, "Security.allChecksWithConn"),
 		)
 		return false, fmt.Errorf("submitted nonce %d is too low, must be >= %d (latest: %d) for address %s", tx.Nonce, expectedNonce, latestNonce, tx.From.Hex())
 	}
@@ -363,7 +397,7 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "Security.AllChecks"),
+		zap.String(logging.Function, "Security.allChecksWithConn"),
 	)
 	return true, nil
 }
