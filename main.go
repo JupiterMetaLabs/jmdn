@@ -635,17 +635,6 @@ func initPubSub(n *config.Node) (*Pubsub.StructGossipPubSub, error) {
 }
 
 func main() {
-	// Initialize Global Go Routine Orchestrator first
-	initGlobalGRO()
-	initAppandLocalGRO()
-
-	var nodeManager *node.NodeManager
-	if err := ImmuDB_CA.EnsureTLSAssets(".immudb_state"); err != nil {
-		fmt.Printf("Failed to ensure TLS assets: %v\n", err)
-		log.Fatal()
-	}
-	// fmt.Println("ImmuDB TLS assets generated.")
-
 	// Command-line flags for node configuration
 	seedNodeURL := flag.String("seednode", "", "Seed node gRPC URL for peer registration (e.g., localhost:9090)")
 	peerAlias := flag.String("alias", "", "Peer alias for registration with seed node")
@@ -671,12 +660,31 @@ func main() {
 	jwtSecret := flag.String("jwt-secret", "", "JWT secret")
 	command := flag.String("cmd", "", "Execute a CLI command (e.g., listpeers, addrs, stats, dbstate)")
 	versionFlag := flag.Bool("version", false, "Print version information and exit")
+
+	// Parse flags
 	flag.Parse()
 
+	// Exit immediately if version flag is set, before ANY initialization
+	// This prevents any side effects from package imports or init() functions
 	if *versionFlag {
 		fmt.Println(config.VersionString())
 		return
 	}
+
+	// Initialize Global Go Routine Orchestrator first
+	initGlobalGRO()
+	initAppandLocalGRO()
+
+	// Initialize messaging cleanup routines
+	messaging.StartBlockPropagationCleanup()
+	messaging.StartBroadcastCleanup()
+
+	var nodeManager *node.NodeManager
+	if err := ImmuDB_CA.EnsureTLSAssets(".immudb_state"); err != nil {
+		fmt.Printf("Failed to ensure TLS assets: %v\n", err)
+		log.Fatal()
+	}
+	// fmt.Println("ImmuDB TLS assets generated.")
 
 	// Update the global immudb username and password if provided via command-line
 	if *immudbUsername != "" && *immudbPassword != "" {

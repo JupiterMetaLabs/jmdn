@@ -644,7 +644,7 @@ func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) 
 					fmt.Printf("⚠️ Failed to add vote element to CRDT for peer %s: %v\n", votePeerIDStr[:8], err)
 				} else {
 					if len(element) > 50 {
-						fmt.Printf("  ✅ Added vote element from peer %s: %s...\n", votePeerIDStr[:8], element[:50])
+						fmt.Printf("  ✅ Added vote element from peer ...%s: %s...\n", votePeerIDStr[8:], element[:50])
 					} else {
 						fmt.Printf("  ✅ Added vote element from peer %s: %s\n", votePeerIDStr[:8], element)
 					}

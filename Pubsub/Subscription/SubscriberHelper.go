@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -159,10 +160,12 @@ func (es *EnhancedSubscriber) runEnhanced(ctx context.Context) {
 			return
 		default:
 			if err := es.receiveMessageEnhanced(ctx); err != nil {
-				if ctx.Err() != nil {
-					// Context cancelled, exit gracefully
+				// Check if error is due to cancellation (normal shutdown scenario)
+				if err == context.Canceled || ctx.Err() != nil {
+					// Context or subscription cancelled, exit gracefully without logging as error
 					return
 				}
+				// Only log actual errors, not cancellations
 				log.Printf("❌ Enhanced subscription error: %v", err)
 				atomic.AddInt64(&es.metrics.ReceiveErrors, 1)
 
@@ -177,6 +180,19 @@ func (es *EnhancedSubscriber) runEnhanced(ctx context.Context) {
 func (es *EnhancedSubscriber) receiveMessageEnhanced(ctx context.Context) error {
 	msg, err := es.subscription.Next(ctx)
 	if err != nil {
+		// Check if error is due to cancellation (normal shutdown scenario)
+		// This happens when subscription is cancelled via sub.Cancel() or context is cancelled
+		errStr := strings.ToLower(err.Error())
+		isCancelled := ctx.Err() != nil ||
+			err == context.Canceled ||
+			err == context.DeadlineExceeded ||
+			strings.Contains(errStr, "cancelled") ||
+			strings.Contains(errStr, "cancel")
+
+		if isCancelled {
+			// Return a special error that indicates graceful cancellation
+			return context.Canceled
+		}
 		return fmt.Errorf("failed to receive message: %w", err)
 	}
 

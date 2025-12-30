@@ -43,7 +43,8 @@ var (
 	globalHost       host.Host // Add this line
 )
 
-func init() {
+// StartBlockPropagationCleanup initializes the GRO and starts the cleanup thread.
+func StartBlockPropagationCleanup() {
 	if BlockPropagationLocalGRO == nil {
 		var err error
 		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
@@ -52,7 +53,9 @@ func init() {
 			return
 		}
 	}
-	messageFilter = bloom.NewWithEstimates(10000, 0.01)
+	if messageFilter == nil {
+		messageFilter = bloom.NewWithEstimates(10000, 0.01)
+	}
 	BlockPropagationLocalGRO.Go(GRO.BlockPropagationPeersCleanupThread, func(ctx context.Context) error {
 		cleanupPeerTimeouts(ctx)
 		return nil
