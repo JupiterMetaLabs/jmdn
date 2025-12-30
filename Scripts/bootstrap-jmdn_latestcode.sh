@@ -171,7 +171,18 @@ fi
 section
 info "Building JMDN binary..."
 cd "${PROJECT_DIR}" || exit 1
-CGO_ENABLED=1 go build -ldflags='-linkmode=external -w -s' -o jmdn .
+
+# Capture version info
+GIT_COMMIT=$(git rev-parse --short HEAD)
+GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+GIT_TAG=$(git describe --tags --always --dirty 2>/dev/null || echo "unknown")
+BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
+
+info "Version: ${GIT_TAG} (${GIT_COMMIT}) on ${GIT_BRANCH}"
+
+LDFLAGS="-X 'gossipnode/config.GitCommit=${GIT_COMMIT}' -X 'gossipnode/config.GitBranch=${GIT_BRANCH}' -X 'gossipnode/config.GitTag=${GIT_TAG}' -X 'gossipnode/config.BuildTime=${BUILD_TIME}' -linkmode=external -w -s"
+
+CGO_ENABLED=1 go build -ldflags="${LDFLAGS}" -o jmdn .
 
 if [ ! -f "./jmdn" ]; then
   error "Build failed - binary not found"

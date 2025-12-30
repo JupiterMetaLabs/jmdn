@@ -1336,7 +1336,7 @@ const file_CLI_proto_Connection_proto_rawDesc = "" +
 	"\x11DiscoverNeighbors\x12\x16.google.protobuf.Empty\x1a\x16.cli.OperationResponse\"\x00\x127\n" +
 	"\vListAliases\x12\x16.google.protobuf.Empty\x1a\x0e.cli.AliasList\"\x00\x128\n" +
 	"\n" +
-	"GetVersion\x12\x16.google.protobuf.Empty\x1a\x10.cli.VersionInfo\"\x00B\x16Z\x14gossipnode/CLI/protob\x06proto3"
+	"GetVersion\x12\x16.google.protobuf.Empty\x1a\x10.cli.VersionInfo\"\x00B\tZ\a./protob\x06proto3"
 
 var (
 	file_CLI_proto_Connection_proto_rawDescOnce sync.Once
