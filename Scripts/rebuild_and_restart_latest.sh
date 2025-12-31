@@ -55,7 +55,7 @@ BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
 
 info "Version: ${GIT_TAG} (${GIT_COMMIT}) on ${GIT_BRANCH}"
 
-LDFLAGS="-X gossipnode/config.GitCommit=${GIT_COMMIT} -X gossipnode/config.GitBranch=${GIT_BRANCH} -X gossipnode/config.GitTag=${GIT_TAG} -X gossipnode/config.BuildTime=${BUILD_TIME} -linkmode=external -w -s"
+LDFLAGS="-X gossipnode/config/version.gitCommit=${GIT_COMMIT} -X gossipnode/config/version.gitBranch=${GIT_BRANCH} -X gossipnode/config/version.gitTag=${GIT_TAG} -X gossipnode/config/version.buildTime=${BUILD_TIME} -linkmode=external -w -s"
 
 CGO_ENABLED=1 go build -ldflags="${LDFLAGS}" -o jmdn . || exit 1
 

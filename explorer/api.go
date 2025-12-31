@@ -15,6 +15,7 @@ import (
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/config/version"
 	"gossipnode/logging"
 )
 
@@ -87,6 +88,41 @@ func (s *ImmuDBServer) setupRoutes() {
 
 	// Public endpoint for token generation (using API key)
 	s.router.POST("/api/auth/token", s.generateToken)
+
+	// -------------------------------------------------------------------------
+	// API Versioning Strategy
+	// -------------------------------------------------------------------------
+	// The API is transitioning to a versioned structure (e.g., /api/v1/).
+	// Existing unversioned routes (legacy) are maintained for backward compatibility.
+	// New endpoints should be added to the appropriate version group.
+	//
+	// Future: To add V2, create a new group: v2 := s.router.Group("/api/v2")
+	//
+	// The /api/v1 group serves as the foundation for modern, versioned endpoints.
+	// It supports both:
+	// 1. Open/Public endpoints (no authentication).
+	// 2. Protected/Secured endpoints (JWT authentication).
+
+	v1 := s.router.Group("/api/v1")
+	{
+		// [A] Open Endpoints
+		// Place routes here that do not require authentication.
+		// -----------------------------------------------------
+		// Example: v1.GET("/public", s.getPublicData)
+		v1.GET("/node/version", s.getVersion)
+
+		// [B] Protected Endpoints
+		// Place routes here that require valid JWT Authentication.
+		// A middleware wrapper is applied to this subgroup.
+		// -----------------------------------------------------
+		protected := v1.Group("/")
+		protected.Use(s.jwtAuthMiddleware())
+		{
+			// Example: protected.GET("/users", s.getUsers)
+			// protected.GET("/node/version", s.getVersion)
+		}
+	}
+	// -------------------------------------------------------------------------
 
 	// Serve static HTML frontend only if explorer is enabled
 	if s.enableExplorer {
@@ -365,4 +401,9 @@ func (s *ImmuDBServer) generateToken(c *gin.Context) {
 		"expires_in": int(JWT_EXPIRATION.Seconds()),
 		"expires_at": now.Add(JWT_EXPIRATION).Unix(),
 	})
+}
+
+// getVersion returns the current version information
+func (s *ImmuDBServer) getVersion(c *gin.Context) {
+	c.JSON(http.StatusOK, version.GetVersionInfo())
 }

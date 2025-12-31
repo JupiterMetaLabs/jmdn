@@ -6,11 +6,10 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"runtime"
 	"time"
 
 	pb "gossipnode/CLI/proto"
-	"gossipnode/config"
+	"gossipnode/config/version"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"google.golang.org/grpc"
@@ -109,13 +108,14 @@ func (s *CLIServer) CleanPeers(ctx context.Context, _ *emptypb.Empty) (*pb.Clean
 }
 
 // Version
-func (s *CLIServer) GetVersion(ctx context.Context, _ *emptypb.Empty) (*pb.VersionInfo, error) {
+func (s *CLIServer) GetNodeVersion(ctx context.Context, _ *emptypb.Empty) (*pb.VersionInfo, error) {
+	v := version.GetVersionInfo()
 	return &pb.VersionInfo{
-		GitCommit: config.GitCommit,
-		GitBranch: config.GitBranch,
-		GitTag:    config.GitTag,
-		BuildTime: config.BuildTime,
-		GoVersion: runtime.Version(),
+		GitTag:    v.GitTag,
+		GitBranch: v.GitBranch,
+		GitCommit: v.GitCommit,
+		BuildTime: v.BuildTime,
+		GoVersion: v.GoVersion,
 	}, nil
 }
 

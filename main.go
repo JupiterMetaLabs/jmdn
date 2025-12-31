@@ -26,6 +26,7 @@ import (
 	"gossipnode/Pubsub"
 	"gossipnode/Sequencer"
 	"gossipnode/config"
+	"gossipnode/config/version"
 	"gossipnode/explorer"
 	fastsync "gossipnode/fastsync"
 	"gossipnode/gETH"
@@ -213,13 +214,13 @@ func runCommand(command string, args []string, grpcPort int) {
 	// Special handling for version command - we want it to work even if node is offline
 	if command == "version" {
 		fmt.Println("Local Binary Version:")
-		fmt.Println(config.VersionString())
+		fmt.Println(version.String())
 		fmt.Println("----------------------------------------")
 
 		client, err := cli.NewClient(fmt.Sprintf("localhost:%d", grpcPort))
 		if err == nil {
 			defer client.Close()
-			v, err := client.GetVersion()
+			v, err := client.GetNodeVersion()
 			if err == nil {
 				fmt.Println("Remote Node Version (Running):")
 				fmt.Printf("Tag: %s, Branch: %s, Commit: %s, Built: %s, Go: %s\n",
@@ -667,7 +668,7 @@ func main() {
 	// Exit immediately if version flag is set, before ANY initialization
 	// This prevents any side effects from package imports or init() functions
 	if *versionFlag {
-		fmt.Println(config.VersionString())
+		fmt.Println(version.String())
 		return
 	}
 
@@ -736,7 +737,7 @@ func main() {
 		log.Warn().Msg("grotrack enabled but metrics port is not set; GRO tracking disabled")
 	}
 	// Log version on startup
-	log.Info().Str("version", config.VersionString()).Msg("Starting JMDN node")
+	log.Info().Str("version", version.String()).Msg("Starting JMDN node")
 
 	// Create a cancellable context for clean shutdown
 	ctx, cancel := context.WithCancel(context.Background())

@@ -62,9 +62,9 @@ message Addrs {
 }
 
 message VersionInfo {
-    string git_commit = 1;
+    string git_tag = 1;
     string git_branch = 2;
-    string git_tag = 3;
+    string git_commit = 3;
     string build_time = 4;
     string go_version = 5;
 }
@@ -104,7 +104,7 @@ service CLIService {
     rpc ListAliases(google.protobuf.Empty) returns (AliasList) {}
 
     // Version
-    rpc GetVersion(google.protobuf.Empty) returns (VersionInfo) {}
+    rpc GetNodeVersion(google.protobuf.Empty) returns (VersionInfo) {}
 }
 
 // Request/Response messages
