@@ -12,10 +12,12 @@ import (
 	"sync"
 	"time"
 
+	BlockCommon "gossipnode/Block/common"
 	"gossipnode/DB_OPs"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
 	"gossipnode/config"
+	GRO "gossipnode/config/GRO"
 	"gossipnode/logging"
 
 	// "gossipnode/messaging"
@@ -25,7 +27,7 @@ import (
 	// "gossipnode/PubSubMessages"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/gin-gonic/gin"
+		"github.com/gin-gonic/gin"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog"
@@ -96,6 +98,13 @@ func submitRawTransaction(c *gin.Context) {
 
 // SubmitRawTransaction handles pre-signed raw transactions with security validations
 func SubmitRawTransaction(tx *config.Transaction) (string, error) {
+	if LocalGRO == nil {
+		var err error
+		LocalGRO, err = BlockCommon.InitializeGRO(GRO.BlockGRPCServerLocal)
+		if err != nil {
+			return "", fmt.Errorf("failed to initialize local gro: %v", err)
+		}
+	}
 	// Debugging
 	fmt.Println("[DEBUG] Transaction: ", tx)
 
@@ -131,7 +140,7 @@ func SubmitRawTransaction(tx *config.Transaction) (string, error) {
 	fmt.Println("Transaction Hash: ", txHash)
 
 	// Asynchronously submit to mempool with context
-	go func() {
+	LocalGRO.Go(GRO.SubmitRawTransactionThread, func(ctx context.Context) error {
 		if err := SubmitToMempool(tx, txHash); err != nil {
 			log.Error().Err(err).
 				Str("txHash", txHash).
@@ -145,7 +154,8 @@ func SubmitRawTransaction(tx *config.Transaction) (string, error) {
 				Str("to", tx.To.String()).
 				Msg("Raw transaction successfully submitted to mempool")
 		}
-	}()
+		return nil
+	})
 
 	// Return success response
 	return txHash, nil
@@ -163,16 +173,21 @@ func SetHostInstance(h host.Host) {
 }
 
 func Startserver(port int, h host.Host, chainID int) {
+	_ = StartserverWithContext(context.Background(), port, h, chainID)
+}
+
+// StartserverWithContext starts the transaction/block API server and shuts it down when ctx is cancelled.
+func StartserverWithContext(ctx context.Context, port int, h host.Host, chainID int) error {
 	// Create logs directory if it doesn't exist
 	if err := os.MkdirAll("logs", 0755); err != nil {
-		log.Fatal().Err(err).Msg("Failed to create logs directory")
+		return fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
 	// Set up transaction logger
 	txLogPath := "logs/transactions.log"
 	txLogFile, err := os.OpenFile(txLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		log.Fatal().Err(err).Str("path", txLogPath).Msg("Failed to open transaction log file")
+		return fmt.Errorf("failed to open transaction log file %s: %w", txLogPath, err)
 	}
 
 	// Configure zerolog for transactions
@@ -257,8 +272,28 @@ func Startserver(port int, h host.Host, chainID int) {
 	portStr := fmt.Sprintf(":%d", port)
 	txLogger.Info().Int("port", port).Msg("Starting transaction generator API")
 
-	if err := router.Run(portStr); err != nil {
-		txLogger.Fatal().Err(err).Str("port", portStr).Msg("Failed to start server")
+	srv := &http.Server{
+		Addr:              portStr,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+		return nil
+	case err := <-errCh:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
 	}
 }
 
@@ -296,28 +331,6 @@ func processZKBlock(c *gin.Context) {
 		})
 		return
 	}
-
-	// // Start block propagation as a new goroutine after consensus setup
-	// // This propagates the block to peers for voting
-	// go func() {
-	// 	// Create consensus message from the consensus data
-	// 	consensusMessage := consensus.ZKBlockData
-	// 	if consensusMessage == nil {
-	// 		log.Error().Msg("Consensus message is nil, cannot propagate block")
-	// 		return
-	// 	}
-
-	// 	// if err := messaging.PropagateZKBlock(globalHost, consensusMessage); err != nil {
-	// 	// 	log.Error().
-	// 	// 		Err(err).
-	// 	// 		Str("block_hash", block.BlockHash.Hex()).
-	// 	// 		Msg("Failed to propagate block after consensus setup")
-	// 	// } else {
-	// 	// 	log.Info().
-	// 	// 		Str("block_hash", block.BlockHash.Hex()).
-	// 	// 		Msg("Block propagated successfully after consensus setup")
-	// 	// }
-	// }()
 
 	for _, tx := range block.Transactions {
 		LogTransaction(

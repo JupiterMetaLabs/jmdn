@@ -12,6 +12,11 @@ import (
 	"syscall"
 	"time"
 
+	"gossipnode/config/GRO"
+
+	orchestratorGlobal "github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
+
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Block"
 	"gossipnode/CA/ImmuDB_CA"
@@ -42,6 +47,40 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+var (
+	MainAM interfaces.AppGoroutineManagerInterface
+	MainLM interfaces.LocalGoroutineManagerInterface
+)
+
+var groTrackingEnabled bool
+
+func shouldEnableGROTracking(grotrack bool, metricsPort string) bool {
+	if !grotrack {
+		return false
+	}
+	if metricsPort == "" || metricsPort == "0" {
+		return false
+	}
+	return true
+}
+
+func goMaybeTracked(
+	localMgr interfaces.LocalGoroutineManagerInterface,
+	appName string,
+	localName string,
+	threadName string,
+	fn func(ctx context.Context) error,
+	opts ...interfaces.GoroutineOption,
+) error {
+	if localMgr == nil {
+		return fmt.Errorf("local manager is nil (thread=%s)", threadName)
+	}
+	if groTrackingEnabled {
+		return metrics.GoTracked(localMgr, appName, localName, threadName, fn, opts...)
+	}
+	return localMgr.Go(threadName, fn, opts...)
+}
+
 // Simple helper to print the CLI prompt in color
 func printPrompt() {
 	fmt.Printf(config.ColorGreen + ">>> " + config.ColorReset)
@@ -60,29 +99,78 @@ var (
 	accountsDBPool *config.ConnectionPool // Accounts/DID database connection pool
 )
 
+func initGlobalGRO() {
+	// This is the creation an setting of the global GRO manager
+	GRO.InitGlobal()
+
+	// Ensure global manager is initialized before we mutate metadata.
+	if _, err := GRO.GlobalGRO.Init(); err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize global GRO manager")
+	}
+
+	// Set the global shutdown timeout to 10 seconds.
+	if _, err := GRO.GlobalGRO.UpdateMetadata(
+		orchestratorGlobal.SET_SHUTDOWN_TIMEOUT,
+		10*time.Second,
+	); err != nil {
+		log.Fatal().Err(err).Msg("Failed to set GRO shutdown timeout metadata")
+	}
+}
+
+func initAppandLocalGRO() {
+
+	var err error
+	// Also pull up new app manager - main for the main package
+	err = GRO.EagerLoading()
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to eager load GRO")
+	}
+
+	MainAM = GRO.GetApp(GRO.MainAM)
+
+	MainLM, err = MainAM.NewLocalManager(GRO.MainLM)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to create local manager")
+	}
+}
+
 func StartFacadeServer(port int, chainID int) {
-	go func() {
+	if MainLM == nil {
+		log.Fatal().Msg("MainLM not initialized. Call initAppandLocalGRO() first")
+	}
+
+	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.FacadeThread, func(ctx context.Context) error {
 		log.Info().Msg("Starting facade server")
-		// Get the Http Server
-		HTTPServer := rpc.NewHandlers(Service.NewService(chainID))
-		httpServer := rpc.NewHTTPServer(HTTPServer)
-		if err := httpServer.Serve(fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
-			log.Error().Err(err).Msg("Failed to start facade server")
+
+		handler := rpc.NewHandlers(Service.NewService(chainID))
+		httpServer := rpc.NewHTTPServer(handler)
+
+		addr := fmt.Sprintf("0.0.0.0:%d", port)
+		if err := httpServer.ServeWithContext(ctx, addr); err != nil {
+			log.Error().Err(err).Str("addr", addr).Msg("Facade server stopped")
+			return fmt.Errorf("facade server failed: %w", err)
 		}
-	}()
+		return nil
+	}); err != nil {
+		log.Error().Err(err).Str("thread", GRO.FacadeThread).Msg("Failed to start GRO goroutine")
+	}
 }
 
 func StartWSServer(port int, chainID int) {
-	go func() {
+	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.WSServerThread, func(ctx context.Context) error {
 		log.Info().Msg("Starting WSServer")
 		// Get the Http Server
 		HTTPServer := rpc.NewHandlers(Service.NewService(chainID))
 
 		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService(chainID))
-		if err := WSServer.Serve(fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
+		if err := WSServer.ServeWithContext(ctx, fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
 			log.Error().Err(err).Msg("Failed to start WSServer")
+			return fmt.Errorf("WSServer failed: %w", err)
 		}
-	}()
+		return nil
+	}); err != nil {
+		log.Error().Err(err).Str("thread", GRO.WSServerThread).Msg("Failed to start GRO goroutine")
+	}
 }
 
 // GetMainDBPool returns the global main database connection pool
@@ -437,22 +525,27 @@ func runCommand(command string, args []string, grpcPort int) {
 	}
 }
 
-func StartAPIServer(address string, enableExplorer bool) error {
+func StartAPIServer(ctx context.Context, address string, enableExplorer bool) error {
 	// Create ImmuDB API server
 	server, err := explorer.NewImmuDBServer(enableExplorer)
 	if err != nil {
 		return fmt.Errorf("failed to create ImmuDB API server: %w", err)
 	}
 
-	go explorer.StartBlockPoller(server, 7*time.Second)
+	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockPollerThread, func(ctx context.Context) error {
+		explorer.StartBlockPoller(ctx, server, 7*time.Second)
+		return nil
+	}); err != nil {
+		log.Error().Err(err).Str("thread", GRO.BlockPollerThread).Msg("Failed to start GRO goroutine")
+	}
 
 	log.Info().Str("address", address).Msg("Starting ImmuDB API server")
-	return server.Start(address)
+	return server.StartWithContext(ctx, address)
 }
 
 // Update this function:
-func startDIDServer(h host.Host, address string) error {
-	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
+func startDIDServer(ctx context.Context, h host.Host, address string) error {
+	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 	if err != nil {
 		//Debugging
 		fmt.Println("Failed to get DID database client", err)
@@ -466,7 +559,7 @@ func startDIDServer(h host.Host, address string) error {
 		log.Info().Msg("DID propagation initialized successfully")
 	}
 	// Start the DID server with our existing client
-	return DID.StartDIDServer(h, address, didDBClient)
+	return DID.StartDIDServerWithContext(ctx, h, address, didDBClient)
 }
 
 // initYggdrasilMessaging initializes the Yggdrasil messaging system
@@ -543,19 +636,13 @@ func initPubSub(n *config.Node) (*Pubsub.StructGossipPubSub, error) {
 }
 
 func main() {
-	var nodeManager *node.NodeManager
-	if err := ImmuDB_CA.EnsureTLSAssets(".immudb_state"); err != nil {
-		fmt.Printf("Failed to ensure TLS assets: %v\n", err)
-		log.Fatal()
-	}
-	// fmt.Println("ImmuDB TLS assets generated.")
-
 	// Command-line flags for node configuration
 	seedNodeURL := flag.String("seednode", "", "Seed node gRPC URL for peer registration (e.g., localhost:9090)")
 	peerAlias := flag.String("alias", "", "Peer alias for registration with seed node")
 	enableLoki := flag.Bool("loki", false, "Enable Loki logging (default: false)")
 	heartbeatInterval := flag.Int("heartbeat", 120, "Heartbeat interval in seconds (default: 300)")
-	metricsPort := flag.String("metrics", "8081", "Port for Prometheus metrics")
+	metricsPort := flag.String("metrics", "", "Port for Prometheus metrics (empty disables metrics server)")
+	grotrack := flag.Bool("grotrack", false, "Track GRO goroutines in Prometheus/Grafana (requires -metrics)")
 	enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
 	apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
 	enableExplorer := flag.Bool("explorer", false, "Enable blockchain explorer UI (default: false)")
@@ -574,12 +661,31 @@ func main() {
 	jwtSecret := flag.String("jwt-secret", "", "JWT secret")
 	command := flag.String("cmd", "", "Execute a CLI command (e.g., listpeers, addrs, stats, dbstate)")
 	versionFlag := flag.Bool("version", false, "Print version information and exit")
+
+	// Parse flags
 	flag.Parse()
 
+	// Exit immediately if version flag is set, before ANY initialization
+	// This prevents any side effects from package imports or init() functions
 	if *versionFlag {
 		fmt.Println(version.String())
 		return
 	}
+
+	// Initialize Global Go Routine Orchestrator first
+	initGlobalGRO()
+	initAppandLocalGRO()
+
+	// Initialize messaging cleanup routines
+	messaging.StartBlockPropagationCleanup()
+	messaging.StartBroadcastCleanup()
+
+	var nodeManager *node.NodeManager
+	if err := ImmuDB_CA.EnsureTLSAssets(".immudb_state"); err != nil {
+		fmt.Printf("Failed to ensure TLS assets: %v\n", err)
+		log.Fatal()
+	}
+	// fmt.Println("ImmuDB TLS assets generated.")
 
 	// Update the global immudb username and password if provided via command-line
 	if *immudbUsername != "" && *immudbPassword != "" {
@@ -616,6 +722,20 @@ func main() {
 	// Clean up any leftover temp files from a previous run
 	defer Logger.Close()
 
+	groTrackingEnabled = shouldEnableGROTracking(*grotrack, *metricsPort)
+
+	// Start metrics server only when a metrics port is provided.
+	// Default: http://localhost:8081/metrics (port set by -metrics flag).
+	if *metricsPort != "" && *metricsPort != "0" {
+		metricsAddr := ":" + *metricsPort
+		metrics.StartMetricsServer(metricsAddr)
+		fmt.Printf(
+			config.ColorGreen+"\nMetrics available at "+config.ColorReset+"http://localhost%s/metrics\n",
+			metricsAddr,
+		)
+	} else if *grotrack {
+		log.Warn().Msg("grotrack enabled but metrics port is not set; GRO tracking disabled")
+	}
 	// Log version on startup
 	log.Info().Str("version", version.String()).Msg("Starting JMDN node")
 
@@ -626,14 +746,16 @@ func main() {
 	// Handle signals for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
+
+	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.ShutdownThread, func(ctx context.Context) error {
 		<-sigCh
+
 		fmt.Println("\nShutdown signal received, closing connections...")
-		cancel() // Cancel the context
-		// Give some time for cleanup
-		time.Sleep(500 * time.Millisecond)
-		os.Exit(1)
-	}()
+		shutdown()
+		return nil
+	}); err != nil {
+		log.Error().Err(err).Str("thread", GRO.ShutdownThread).Msg("Failed to start GRO goroutine")
+	}
 
 	// Initialize database connection pools FIRST
 	fmt.Println("Initializing main database pool...")
@@ -759,11 +881,6 @@ func main() {
 		log.Printf("Routing client initialized successfully")
 	}
 
-	// Start metrics server (just once)
-	metricsAddr := ":" + *metricsPort
-	metrics.StartMetricsServer(metricsAddr)
-	fmt.Printf(config.ColorGreen+"\nMetrics available at "+config.ColorReset+"http://localhost%s/metrics\n", metricsAddr)
-
 	// Initialize node manager
 	nodeManager, err = node.NewNodeManagerWithLoki(n, *enableLoki)
 	if err != nil {
@@ -786,30 +903,41 @@ func main() {
 	}
 
 	// We'll initialize the DID system in the DID server to avoid blocking main
-	go func() {
+	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.DIDThread, func(ctx context.Context) error {
 		log.Info().Str("address", *DIDgRPC).Msg("Starting DID gRPC server")
-		if err := startDIDServer(n.Host, *DIDgRPC); err != nil {
+		if err := startDIDServer(ctx, n.Host, *DIDgRPC); err != nil {
 			fmt.Println("Failed to start DID gRPC server:", err)
 			log.Error().Err(err).Msg("Failed to start DID gRPC server")
 		}
-	}()
+		return nil
+	}); err != nil {
+		log.Error().Err(err).Str("thread", GRO.DIDThread).Msg("Failed to start GRO goroutine")
+	}
 
 	if *blockgen > 0 {
-		go func() {
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockgenThread, func(ctx context.Context) error {
 			log.Info().Msgf("Starting block generator on port %d", *blockgen)
 			fmt.Printf("\nBlock generator available at http://localhost:%d\n", *blockgen)
-			Block.Startserver(*blockgen, n.Host, *chainID)
-		}()
+			if err := Block.StartserverWithContext(ctx, *blockgen, n.Host, *chainID); err != nil {
+				log.Error().Err(err).Msg("Block generator server stopped")
+			}
+			return nil
+		}); err != nil {
+			log.Error().Err(err).Str("thread", GRO.BlockgenThread).Msg("Failed to start GRO goroutine")
+		}
 	}
 
 	if *blockgRPC > 0 {
-		go func() {
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockgRPCThread, func(ctx context.Context) error {
 			log.Info().Int("port", *blockgRPC).Msg("Starting block gRPC server")
 			fmt.Printf("\nBlock gRPC server available at localhost:%d\n", *blockgRPC)
 			if err := Block.StartGRPCServer(*blockgRPC, n.Host, *chainID); err != nil {
 				log.Error().Err(err).Msg("Failed to start block gRPC server")
 			}
-		}()
+			return nil
+		}); err != nil {
+			log.Error().Err(err).Str("thread", GRO.BlockgRPCThread).Msg("Failed to start GRO goroutine")
+		}
 	}
 
 	// Register with seed node gRPC if URL is provided
@@ -858,16 +986,19 @@ func main() {
 	}
 
 	if *gETHgRPC > 0 {
-		go func() {
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.GETHgRPCThread, func(ctx context.Context) error {
 			fmt.Printf("Starting gETH gRPC server on port %d\n", *gETHgRPC)
 			if err := gETH.StartGRPC(*gETHgRPC, *chainID); err != nil {
 				log.Error().Err(err).Msg("gETH gRPC server error")
 			}
-		}()
+			return nil
+		}); err != nil {
+			log.Error().Err(err).Str("thread", GRO.GETHgRPCThread).Msg("Failed to start GRO goroutine")
+		}
 	}
 
 	if *apiPort > 0 {
-		go func() {
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.ExplorerThread, func(ctx context.Context) error {
 			log.Info().Msgf("Starting ImmuDB API on port %d", *apiPort)
 			fmt.Printf("\nImmuDB API available at http://localhost:%d/api\n", *apiPort)
 
@@ -879,10 +1010,13 @@ func main() {
 
 			// Initialize API server
 			apiAddr := fmt.Sprintf(":%d", *apiPort)
-			if err := StartAPIServer(apiAddr, *enableExplorer); err != nil {
+			if err := StartAPIServer(ctx, apiAddr, *enableExplorer); err != nil {
 				log.Error().Err(err).Msg("Failed to start API server")
 			}
-		}()
+			return nil
+		}); err != nil {
+			log.Error().Err(err).Str("thread", GRO.ExplorerThread).Msg("Failed to start GRO goroutine")
+		}
 	}
 
 	cmdHandler := &cli.CommandHandler{
@@ -923,9 +1057,13 @@ func main() {
 
 	// Start CLI without timeout - run indefinitely
 	done := make(chan error, 1)
-	go func() {
-		done <- cmdHandler.StartCLI(*cliGRPC)
-	}()
+	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.CLIThread, func(ctx context.Context) error {
+		done <- cmdHandler.StartCLI(ctx, *cliGRPC)
+		return nil
+	}); err != nil {
+		log.Error().Err(err).Str("thread", GRO.CLIThread).Msg("Failed to start GRO goroutine")
+		done <- err
+	}
 
 	// Wait for CLI to complete or error
 	if err := <-done; err != nil {

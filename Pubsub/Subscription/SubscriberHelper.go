@@ -5,34 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"sync"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"gossipnode/config"
+	"gossipnode/config/GRO"
 	"gossipnode/config/PubSubMessages"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
-
-// EnhancedSubscriberMetrics holds metrics for the enhanced subscriber
-type EnhancedSubscriberMetrics struct {
-	MessagesReceived int64
-	ReceiveErrors    int64
-	ValidationErrors int64
-	lastReceiveTime  int64 // Unix nano
-	uniquePeersMu    sync.RWMutex
-	uniquePeers      map[string]int64
-}
-
-// EnhancedSubscriber represents an enhanced message subscriber
-type EnhancedSubscriber struct {
-	subscription *pubsub.Subscription
-	metrics      *EnhancedSubscriberMetrics
-	gps          *PubSubMessages.GossipPubSub
-	handler      func(*PubSubMessages.GossipMessage)
-}
 
 // NewEnhancedSubscriber creates a new EnhancedSubscriber instance
 func NewEnhancedSubscriber(subscription *pubsub.Subscription, gps *PubSubMessages.GossipPubSub, handler func(*PubSubMessages.GossipMessage)) *EnhancedSubscriber {
@@ -86,6 +69,16 @@ func SubscribeEnhanced(gps *PubSubMessages.GossipPubSub, topic string, handler f
 
 // subscribeEnhancedViaGossipSub subscribes to a topic using enhanced libp2p GossipSub
 func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName string, handler func(*PubSubMessages.GossipMessage)) error {
+	// Ensure we have a local manager for subscription goroutines (fallback to plain goroutine if unavailable).
+	if LocalGRO == nil {
+		if app := GRO.GetApp(GRO.PubsubApp); app != nil {
+			lm, err := app.NewLocalManager(GRO.PubsubSubscribeLocal)
+			if err == nil {
+				LocalGRO = lm
+			}
+		}
+	}
+
 	fmt.Printf("About to call GetOrJoinTopic for %s\n", topicName)
 
 	// Get or join the topic
@@ -104,15 +97,53 @@ func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName s
 
 	fmt.Printf("Subscribe returned successfully for %s\n", topicName)
 
+	// Store subscription and cancellation so Unsubscribe can stop the underlying subscription/goroutine.
+	gps.Mutex.Lock()
+	if gps.Subscriptions == nil {
+		gps.Subscriptions = make(map[string]*pubsub.Subscription)
+	}
+	if gps.SubscriptionCancels == nil {
+		gps.SubscriptionCancels = make(map[string]context.CancelFunc)
+	}
+	// Replace any existing subscription to avoid leaks.
+	if oldSub, ok := gps.Subscriptions[topicName]; ok && oldSub != nil {
+		oldSub.Cancel()
+	}
+	if oldCancel, ok := gps.SubscriptionCancels[topicName]; ok && oldCancel != nil {
+		oldCancel()
+	}
+	subCtx, cancel := context.WithCancel(context.Background())
+	gps.Subscriptions[topicName] = sub
+	gps.SubscriptionCancels[topicName] = cancel
+	gps.Mutex.Unlock()
+
 	// Create enhanced subscriber
 	enhancedSubscriber := NewEnhancedSubscriber(sub, gps, handler)
 
 	// Start enhanced message processing
-	ctx, cancel := context.WithCancel(context.Background())
-	_ = cancel // Store cancel function for cleanup
-
 	fmt.Printf("Context set for %s\n", topicName)
-	go enhancedSubscriber.runEnhanced(ctx)
+	run := func(ctx context.Context) error {
+		ctxNext, cancelNext := context.WithCancel(ctx)
+		defer cancelNext()
+		go func() {
+			select {
+			case <-subCtx.Done():
+				cancelNext()
+			case <-ctx.Done():
+			}
+		}()
+
+		enhancedSubscriber.runEnhanced(ctxNext)
+		return nil
+	}
+	if LocalGRO != nil {
+		LocalGRO.Go(GRO.PubsubSubscriptionThread, run)
+	} else {
+		// CRITICAL FIX: Use subCtx instead of context.Background() to ensure
+		// the goroutine can be cancelled when Unsubscribe() is called.
+		// This prevents goroutine leaks over long-running consensus operations.
+		go func() { _ = run(subCtx) }()
+	}
 
 	fmt.Printf("subscribeEnhancedViaGossipSub returned successfully for %s\n", topicName)
 	return nil
@@ -129,10 +160,12 @@ func (es *EnhancedSubscriber) runEnhanced(ctx context.Context) {
 			return
 		default:
 			if err := es.receiveMessageEnhanced(ctx); err != nil {
-				if ctx.Err() != nil {
-					// Context cancelled, exit gracefully
+				// Check if error is due to cancellation (normal shutdown scenario)
+				if err == context.Canceled || ctx.Err() != nil {
+					// Context or subscription cancelled, exit gracefully without logging as error
 					return
 				}
+				// Only log actual errors, not cancellations
 				log.Printf("❌ Enhanced subscription error: %v", err)
 				atomic.AddInt64(&es.metrics.ReceiveErrors, 1)
 
@@ -147,6 +180,19 @@ func (es *EnhancedSubscriber) runEnhanced(ctx context.Context) {
 func (es *EnhancedSubscriber) receiveMessageEnhanced(ctx context.Context) error {
 	msg, err := es.subscription.Next(ctx)
 	if err != nil {
+		// Check if error is due to cancellation (normal shutdown scenario)
+		// This happens when subscription is cancelled via sub.Cancel() or context is cancelled
+		errStr := strings.ToLower(err.Error())
+		isCancelled := ctx.Err() != nil ||
+			err == context.Canceled ||
+			err == context.DeadlineExceeded ||
+			strings.Contains(errStr, "cancelled") ||
+			strings.Contains(errStr, "cancel")
+
+		if isCancelled {
+			// Return a special error that indicates graceful cancellation
+			return context.Canceled
+		}
 		return fmt.Errorf("failed to receive message: %w", err)
 	}
 
@@ -229,7 +275,6 @@ func (es *EnhancedSubscriber) processMessageEnhanced(msg *pubsub.Message) error 
 	if es.handler != nil {
 		es.handler(gossipMsg)
 	}
-
 
 	return nil
 }

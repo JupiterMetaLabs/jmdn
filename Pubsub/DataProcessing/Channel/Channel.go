@@ -1,8 +1,10 @@
-package Pubsub
+package Channel
 
 import (
+	"context"
 	"fmt"
 	Router "gossipnode/Pubsub/Router"
+	"gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"sync"
 	"time"
@@ -17,10 +19,21 @@ var (
 // AppendMessage is used by producers to push a message into the shared channel.
 // It auto-starts the listener if not already running.
 func AppendMessage(message *PubSubMessages.GossipMessage) {
+	if LocalGRO == nil {
+		var err error
+		LocalGRO, err = InitializeGRO()
+		if err != nil {
+			fmt.Println("Error initializing LocalGRO:", err)
+			return
+		}
+	}
 	mu.Lock()
 	if !isStarted {
 		isStarted = true
-		go startMessageListener()
+		LocalGRO.Go(GRO.PubsubChannelThread, func(ctx context.Context) error {
+			startMessageListener()
+			return nil
+		})
 	}
 	mu.Unlock()
 

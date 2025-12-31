@@ -1,6 +1,7 @@
 package PubSubMessages
 
 import (
+	"context"
 	"sync"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -43,6 +44,13 @@ type GossipPubSub struct {
 	Protocol         protocol.ID                     // Protocol ID
 	GossipSubPS      *pubsub.PubSub                  // libp2p GossipSub instance (NEW)
 	TopicsMap        map[string]*pubsub.Topic        // Topic name -> GossipSub topic (NEW)
+
+	// Subscriptions holds active GossipSub subscriptions per topic.
+	// Unsubscribe must Cancel() these to avoid leaking goroutines.
+	Subscriptions map[string]*pubsub.Subscription
+
+	// SubscriptionCancels allows cancelling the message-consumer goroutine per topic.
+	SubscriptionCancels map[string]context.CancelFunc
 }
 
 // Message represents the data payload of a gossip message

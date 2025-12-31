@@ -6,6 +6,7 @@ import (
 	"fmt"
 	log "gossipnode/AVC/BuddyNodes/MessagePassing/Logger"
 	"gossipnode/config"
+	"gossipnode/config/GRO"
 	"gossipnode/config/PubSubMessages"
 	"time"
 
@@ -109,6 +110,14 @@ func publishOriginal(gps *PubSubMessages.GossipPubSub, topic string, message *Pu
 
 // gossipMessage forwards a message to connected peers
 func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
+	if LocalGRO == nil {
+		var err error
+		LocalGRO, err = GRO.GetApp(GRO.PubsubApp).NewLocalManager(GRO.PubsubPublishLocal)
+		if err != nil {
+			log.LogConsensusError(fmt.Sprintf("Failed to create local manager: %v", err), err, zap.String("function", "Publish.GossipMessage"))
+			return
+		}
+	}
 	fmt.Printf("=== Publish.GossipMessage CALLED ===\n")
 	fmt.Printf("Message Bytes: %s\n", string(messageBytes))
 	fmt.Printf("From Peer: %s\n", gps.Host.ID())
@@ -136,6 +145,12 @@ func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 	connectedPeers := gps.Host.Network().Peers()
 	fmt.Printf("Connected Peers: %v\n", connectedPeers)
 
+	// Build connected peer map once for efficient lookup
+	connectedPeerMap := make(map[peer.ID]bool)
+	for _, cp := range connectedPeers {
+		connectedPeerMap[cp] = true
+	}
+
 	// Determine which peers to send to
 	peersToSend := make([]peer.ID, 0)
 	if len(topicSubscribers) > 0 {
@@ -143,10 +158,6 @@ func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 		for peerID := range topicSubscribers {
 			if peerID != gps.Host.ID() {
 				// Check if peer is actually connected
-				connectedPeerMap := make(map[peer.ID]bool)
-				for _, cp := range connectedPeers {
-					connectedPeerMap[cp] = true
-				}
 				if connectedPeerMap[peerID] {
 					peersToSend = append(peersToSend, peerID)
 				}
@@ -167,16 +178,21 @@ func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 
 	// Send to filtered peers
 	for _, peerID := range peersToSend {
-		go func(p peer.ID) {
-			fmt.Printf("=== Publish.GossipMessage Sending to Peer: %s ===\n", p)
+		// Capture peerID in closure to avoid race condition
+		peerID := peerID
+		if err := LocalGRO.Go(GRO.PubsubPublishThread, func(ctx context.Context) error {
+			fmt.Printf("=== Publish.GossipMessage Sending to Peer: %s ===\n", peerID)
 
-			if err := sendToPeer(gps, p, messageBytes); err != nil {
-				fmt.Printf("=== Publish.GossipMessage Failed to send to Peer: %s ===\n", p)
-				log.LogConsensusError(fmt.Sprintf("Failed to gossip message to %s: %v", p, err), err, zap.String("peer", p.String()), zap.String("topic", topic), zap.String("message", string(messageBytes)), zap.String("function", "Subscription.gossipMessage"))
+			if err := sendToPeer(gps, peerID, messageBytes); err != nil {
+				fmt.Printf("=== Publish.GossipMessage Failed to send to Peer: %s ===\n", peerID)
+				log.LogConsensusError(fmt.Sprintf("Failed to gossip message to %s: %v", peerID, err), err, zap.String("peer", peerID.String()), zap.String("topic", topic), zap.String("message", string(messageBytes)), zap.String("function", "Publish.GossipMessage"))
 			} else {
-				fmt.Printf("=== Publish.GossipMessage Sent to Peer: %s ===\n", p)
+				fmt.Printf("=== Publish.GossipMessage Sent to Peer: %s ===\n", peerID)
 			}
-		}(peerID)
+			return nil
+		}); err != nil {
+			log.LogConsensusError(fmt.Sprintf("Failed to start goroutine for peer %s: %v", peerID, err), err, zap.String("peer", peerID.String()), zap.String("function", "Publish.GossipMessage"))
+		}
 	}
 }
 

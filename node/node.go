@@ -8,6 +8,7 @@ import (
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/config"
+	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/messaging"
 	"gossipnode/metrics"
@@ -113,6 +114,15 @@ func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
 
 // NewNode creates and starts a libp2p node
 func NewNode() (*config.Node, error) {
+	// Initialize LocalGRO if not already initialized
+	if LocalGRO == nil {
+		var err error
+		LocalGRO, err = InitializeNode()
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize LocalGRO: %w", err)
+		}
+	}
+
 	// Load or create Peer ID
 	fmt.Println("Loading or creating private key...")
 	privKey, peerID, err := loadOrCreatePrivateKey()
@@ -232,13 +242,21 @@ func NewNode() (*config.Node, error) {
 
 		// Create a clear listener handler for handling subscription requests, votes, and responses
 		listenerHandler := MessagePassing.NewListenerHandler(nil)
-		go func(stream network.Stream) {
+		// Capture stream in closure to avoid race condition
+		stream := s
+		LocalGRO.Go(GRO.NodeStreamThread, func(ctx context.Context) error {
 			defer stream.Close()
 			listenerHandler.HandleSubmitMessageStream(stream)
-		}(s)
+			return nil
+		})
 	})
 
-	go StartDiscovery(h)
+	// Capture host in closure
+	host := h
+	LocalGRO.Go(GRO.NodeDiscoveryThread, func(ctx context.Context) error {
+		StartDiscovery(host)
+		return nil
+	})
 
 	return &localNode, nil
 }

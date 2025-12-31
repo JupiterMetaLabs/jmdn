@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -26,6 +27,10 @@ func NewHTTPServer(h *Handlers) *HTTPServer {
 }
 
 func (s *HTTPServer) Serve(addr string) error {
+	return s.ServeWithContext(context.Background(), addr)
+}
+
+func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 	// Set GIN mode to release for production
 	gin.SetMode(gin.ReleaseMode)
 
@@ -46,7 +51,23 @@ func (s *HTTPServer) Serve(addr string) error {
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	return srv.ListenAndServe()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+		return nil
+	case err := <-errCh:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
 }
 
 func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
@@ -55,7 +76,7 @@ func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
 		write(c, RespErr(nil, -32700, "Parse error"))
 		return
 	}
-	resp, _ := s.h.Handle(context.Background(), req)
+	resp, _ := s.h.Handle(c.Request.Context(), req)
 	write(c, resp)
 }
 

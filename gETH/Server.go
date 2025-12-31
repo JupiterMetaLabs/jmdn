@@ -8,8 +8,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"gossipnode/gETH/common"
+	"gossipnode/config/GRO"
 	"gossipnode/gETH/proto"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/cockroachdb/errors/grpc/status"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
@@ -18,7 +21,7 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 )
-
+var LocalGRO interfaces.LocalGoroutineManagerInterface
 // Server implements the gRPC Chain service
 type Server struct {
 	proto.UnimplementedChainServer
@@ -27,6 +30,13 @@ type Server struct {
 
 // StartGRPC starts the gRPC server on the specified port
 func StartGRPC(port int, chainID int) error {
+	if LocalGRO == nil {
+		var err error
+		LocalGRO, err = common.InitializeGRO(GRO.GETHLocal)
+		if err != nil {
+			return fmt.Errorf("failed to initialize local gro: %v", err)
+		}
+	}
 	// Create a listener on the specified port
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -53,12 +63,14 @@ func StartGRPC(port int, chainID int) error {
 	reflection.Register(grpcServer)
 
 	// Start the server in a goroutine
-	go func() {
+	LocalGRO.Go(GRO.GETHgRPCThread, func(ctx context.Context) error {
 		log.Info().Int("port", port).Msg("gRPC server starting")
 		if err := grpcServer.Serve(lis); err != nil {
 			log.Fatal().Err(err).Msg("Failed to serve gRPC")
+			return fmt.Errorf("failed to serve gRPC: %w", err)
 		}
-	}()
+		return nil
+	})
 
 	// Set up graceful shutdown
 	stop := make(chan os.Signal, 1)

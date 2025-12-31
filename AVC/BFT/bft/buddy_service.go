@@ -7,11 +7,13 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"gossipnode/AVC/BFT/common"
 	pb "gossipnode/AVC/BFT/proto"
 	"log"
 	"net"
 	"time"
 
+	"gossipnode/config/GRO"
 	"gossipnode/config/PubSubMessages"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -74,6 +76,13 @@ func (s *BuddyService) InitiateBFT(
 	ctx context.Context,
 	req *pb.BFTRequest,
 ) (*pb.BFTResponse, error) {
+	if BFTLocal == nil {
+		var err error
+		BFTLocal, err = common.InitializeGRO(GRO.BFTLocal)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize BFT local manager: %w", err)
+		}
+	}
 
 	log.Printf("🚀 [%s] Received BFT request for round %d", s.buddyID, req.Round)
 	log.Printf("   Block: %s", req.BlockHash)
@@ -97,7 +106,10 @@ func (s *BuddyService) InitiateBFT(
 	}
 
 	// Run the consensus asynchronously (non-blocking)
-	go s.runBFTConsensus(context.Background(), req)
+	BFTLocal.Go(GRO.BFTConsensusThread, func(ctx context.Context) error {
+		s.runBFTConsensus(ctx, req)
+		return nil
+	})
 
 	return resp, nil
 }

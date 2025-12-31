@@ -12,13 +12,20 @@ import (
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/config/GRO"
 	"gossipnode/logging"
 
+	explorer_common "gossipnode/explorer/common"
+
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
+
+var BlockOpsLocalGRO interfaces.LocalGoroutineManagerInterface
 
 type stats struct {
 	DBState           *schema.ImmutableState
@@ -217,12 +224,24 @@ func (s *ImmuDBServer) listTransactions_inBlock(c *gin.Context) {
 
 // Get default db stats
 func (s *ImmuDBServer) getStats(c *gin.Context) {
+	if BlockOpsLocalGRO == nil {
+		var err error
+		BlockOpsLocalGRO, err = explorer_common.InitializeGRO(GRO.ExplorerBlockOpsLocal)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Errorf("failed to initialize local gro: %v", err)})
+			return
+		}
+	}
 	// Create a context with 60 second timeout
-	_, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	ctxWithTimeout, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
 
 	var stats stats
-	var wg sync.WaitGroup
+	wg, err := BlockOpsLocalGRO.NewFunctionWaitGroup(ctxWithTimeout, GRO.ExplorerBlockOpsWaitGroup)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Errorf("failed to create function wait group: %w", err)})
+		return
+	}
 	var mu sync.Mutex
 
 	// Channel to collect errors from goroutines
@@ -239,42 +258,38 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 	}
 
 	// Get database status in a goroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
 		tempClient := s.defaultdb.Client
 		status, err := DB_OPs.GetDatabaseState(tempClient)
 		if err != nil {
 			handleErr(fmt.Errorf("failed to get database state: %w", err))
-			return
+			return nil
 		}
 		mu.Lock()
 		stats.DBState = status
 		mu.Unlock()
-	}()
+		return nil
+	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))
 
 	// Get merkle root in a goroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
 		merkleroot, err := DB_OPs.GetMerkleRoot(&s.defaultdb)
 		if err != nil {
 			handleErr(fmt.Errorf("failed to get merkle root: %w", err))
-			return
+			return fmt.Errorf("failed to get merkle root: %w", err)
 		}
 		mu.Lock()
 		stats.MerkleRoot = hex.EncodeToString(merkleroot)
 		mu.Unlock()
-	}()
+		return nil
+	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))
 
 	// Get latest block number and total blocks in a goroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
 		latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(&s.defaultdb)
 		if err != nil {
 			handleErr(fmt.Errorf("failed to get latest block number: %w", err))
-			return
+			return fmt.Errorf("failed to get latest block number: %w", err)
 		}
 		mu.Lock()
 		stats.LatestBlockNumber = latestBlockNumber
@@ -285,32 +300,42 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 		totalTx, err := DB_OPs.CountTransactions(&s.defaultdb)
 		if err != nil {
 			handleErr(fmt.Errorf("failed to count transactions: %w", err))
-			return
+			return fmt.Errorf("failed to count transactions: %w", err)
 		}
 		mu.Lock()
 		stats.TotalTransactions = int64(totalTx)
 		mu.Unlock()
-	}()
+		return nil
+	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))
 
 	// Get total DIDs in a goroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
 		totalDIDs, err := DB_OPs.CountAccounts(&s.accountsdb)
 		if err != nil {
 			handleErr(fmt.Errorf("failed to list DIDs: %w", err))
-			return
+			return fmt.Errorf("failed to list DIDs: %w", err)
 		}
 		mu.Lock()
 		stats.TotalDIDs = int64(totalDIDs)
 		mu.Unlock()
-	}()
+		return nil
+	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))
 
-	// Wait for all goroutines to complete
+	// Wait for completion OR timeout. Avoid writing responses from goroutines.
+	done := make(chan struct{})
 	go func() {
 		wg.Wait()
-		close(errChan)
+		close(done)
 	}()
+
+	select {
+	case <-done:
+		// All work finished; safe to close and drain errChan.
+		close(errChan)
+	case <-ctxWithTimeout.Done():
+		c.JSON(http.StatusGatewayTimeout, gin.H{"error": ctxWithTimeout.Err().Error()})
+		return
+	}
 
 	// Check for any errors
 	for err := range errChan {

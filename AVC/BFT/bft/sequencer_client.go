@@ -11,7 +11,9 @@ import (
 	"time"
 
 	pb "gossipnode/AVC/BFT/proto"
+	"gossipnode/config/GRO"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"google.golang.org/grpc"
 )
 
@@ -74,16 +76,22 @@ func (s *SequencerBFTClient) InitiateBFTRound(
 	s.mu.Unlock()
 
 	// Send request to all buddies in parallel
-	var wg sync.WaitGroup
+	wg, err := BFTLocal.NewFunctionWaitGroup(context.Background(), GRO.BFTWaitGroup)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create wait group: %w", err)
+	}
+
 	responses := make(chan *BuddyResponse, len(buddies))
 
 	for _, buddy := range buddies {
-		wg.Add(1)
-		go func(b BuddyInfo) {
-			defer wg.Done()
-			response := s.sendBFTRequest(ctx, b, request)
+		buddyForGoroutine := buddy
+		if err := BFTLocal.Go(GRO.BFTSendRequestThread, func(ctx context.Context) error {
+			response := s.sendBFTRequest(ctx, buddyForGoroutine, request)
 			responses <- response
-		}(buddy)
+			return nil
+		}, local.AddToWaitGroup(GRO.BFTWaitGroup)); err != nil {
+			return nil, fmt.Errorf("failed to start goroutine: %w", err)
+		}
 	}
 
 	// Wait for all requests to complete

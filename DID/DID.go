@@ -454,6 +454,11 @@ func (s *AccountServer) ListDIDs(ctx context.Context, req *pb.ListDIDsRequest) (
 
 // StartDIDServer starts the DID gRPC server
 func StartDIDServer(h host.Host, address string, existingClient *config.PooledConnection) error {
+	return StartDIDServerWithContext(context.Background(), h, address, existingClient)
+}
+
+// StartDIDServerWithContext starts the DID gRPC server and gracefully stops it when ctx is cancelled.
+func StartDIDServerWithContext(ctx context.Context, h host.Host, address string, existingClient *config.PooledConnection) error {
 	lis, err := net.Listen("tcp", address)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", address, err)
@@ -487,6 +492,20 @@ func StartDIDServer(h host.Host, address string, existingClient *config.PooledCo
 		Bool("standalone", server.standalone).
 		Msg("Starting DID gRPC server")
 
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- grpcServer.Serve(lis)
+	}()
 
-	return grpcServer.Serve(lis)
+	select {
+	case <-ctx.Done():
+		// Stop accepting new connections and unblock Serve().
+		go func() {
+			grpcServer.GracefulStop()
+		}()
+		_ = lis.Close()
+		return nil
+	case err := <-errCh:
+		return err
+	}
 }

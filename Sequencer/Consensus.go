@@ -10,9 +10,12 @@ import (
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/Pubsub"
+	"gossipnode/Sequencer/Alerts"
 	"gossipnode/Sequencer/Triggers/Maps"
+	"gossipnode/Sequencer/common"
 	"gossipnode/Sequencer/helper"
 	"gossipnode/config"
+	GRO "gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/messaging"
 	"log"
@@ -20,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
@@ -50,6 +54,17 @@ func (consensus *Consensus) ConnectedNessCheck(candidates []PubSubMessages.Buddy
 }
 
 func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
+	if common.LocalGRO == nil {
+		var err error
+		common.LocalGRO, err = common.InitializeGRO(GRO.SequencerConsensusLocal)
+		if err != nil {
+			return fmt.Errorf("CONSENSUSERROR.START: failed to initialize local gro: %v", err)
+		}
+	}
+	// Context for the alerts
+	alert_ctx := context.Background()
+	defer alert_ctx.Done()
+
 	// Warmup the consensus
 	/*
 		What it does:
@@ -78,7 +93,14 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	// Now connect to final buddy nodes - ONLY main candidates first, backup only if needed
 	// This prevents excessive connections to backup nodes when we already have enough main peers
-	reachablePeers, errMSG := consensus.ConnectedNessCheck(helper.ConvertMapToSlice(stats.GetReachablePeers()), config.MaxMainPeers)
+	// IMPORTANT: We must also discover backup candidates. If we only check up to
+	// `MaxMainPeers`, `BackupCandidates` will always be empty and the subscription
+	// fallback will log "No backup peers available" even when extra candidates exist.
+	maxPeersToCheck := config.MaxMainPeers + config.MaxBackupPeers
+	reachablePeers, errMSG := consensus.ConnectedNessCheck(
+		helper.ConvertMapToSlice(stats.GetReachablePeers()),
+		maxPeersToCheck,
+	)
 	if errMSG != nil {
 		return fmt.Errorf("CONSENSUSERROR.CONNECTEDNESSCHECK: failed to verify connectedness: %v", errMSG)
 	}
@@ -104,8 +126,17 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	}
 
 	if len(MainCandidates) < config.MaxMainPeers {
+
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.POPULATEPEERLIST: insufficient actually connected peers: got %d, need exactly %d (MaxMainPeers). Connected: %d, Unreachable: %d",
 			len(MainCandidates), config.MaxMainPeers, len(reachablePeers), len(stats.GetUnreachablePeers()))
+
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_InsufficientPeers).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(ErrorMessage).
+			Send()
+
 		return fmt.Errorf("%s", ErrorMessage)
 	}
 
@@ -116,6 +147,12 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	errMSG = consensus.PopulatePeerList(MainCandidates, BackupCandidates)
 	if errMSG != nil {
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.POPULATEPEERLIST: failed to populate peer list: %v", errMSG)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToPopulatePeerList).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(ErrorMessage).
+			Send()
 		return fmt.Errorf("%s", ErrorMessage)
 	}
 
@@ -126,18 +163,38 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	}
 	msg := fmt.Sprintf("Final buddy nodes: %d MaxMainPeers actually connected peers with peerids:\n%s",
 		len(consensus.PeerList.MainPeers), strings.Join(peerIDs, "\n"))
+
+	Alerts.NewAlertBuilder(alert_ctx).
+		AlertName(helper.Alert_Consensus_BuiltFinalBuddiesList).
+		Status(Alerts.AlertStatusInfo).
+		Severity(Alerts.SeverityInfo).
+		Description(msg).
+		Send()
+
 	log.Printf("%s", msg)
 
 	// Create ConsensusMessage with ONLY the final connected buddy nodes
 	errMSG = consensus.SetZKBlockData(zkblock, MainCandidates)
 	if errMSG != nil {
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.SETZKBLOCKDATA: failed to set zkblock data: %v", errMSG)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToSetZKBlockData).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(ErrorMessage).
+			Send()
 		return fmt.Errorf("%s", ErrorMessage)
 	}
 
 	// Validate consensus configuration
 	if err := ValidateConsensusConfiguration(consensus); err != nil {
-		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.VALIDATECONSENSUSCONFIGURATION: invalid consensus configuration: %w", err)
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.VALIDATECONSENSUSCONFIGURATION: invalid consensus configuration: %v", err)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToValidateConsensusConfiguration).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(ErrorMessage).
+			Send()
 		return fmt.Errorf("%s", ErrorMessage)
 	}
 
@@ -154,11 +211,23 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	err := consensus.SetGossipnode(config.PubSub_ConsensusChannel)
 	if err != nil {
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.SETGOSSIPNODE: failed to set gossipnode: %v", err)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToSetGossipnode).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(ErrorMessage).
+			Send()
 		return fmt.Errorf("%s", ErrorMessage)
 	}
 
 	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.PubSub_ConsensusChannel, false, allowedPeers); err != nil {
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.CREATECHANNEL: failed to create pubsub channel: %v", err)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToCreatePubsubChannel).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(ErrorMessage).
+			Send()
 		return fmt.Errorf("%s", ErrorMessage)
 	}
 	log.Printf("Successfully created pubsub channel: %s", config.PubSub_ConsensusChannel)
@@ -217,7 +286,24 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 
 	// Event-driven flow: Request subscriptions → Verify → Broadcast votes → Process CRDT
 	// This avoids race conditions by ensuring each step completes before the next starts
-	go consensus.startEventDrivenFlow()
+	// Step 1 MUST be synchronous so upstream APIs can return 500 on failure instead
+	// of returning 200 while consensus fails asynchronously.
+	if err := consensus.RequestSubscriptionPermission(); err != nil {
+		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.REQUESTSUBSCRIPTIONPERMISSION: Failed to request subscription permission: %v", err)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToRequestSubscriptionPermission).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(ErrorMessage).
+			Send()
+		log.Printf("%s", ErrorMessage)
+		return fmt.Errorf("%s", ErrorMessage)
+	}
+
+	common.LocalGRO.Go(GRO.SequencerConsensusThread, func(ctx context.Context) error {
+		consensus.startEventDrivenFlowAfterSubscriptionPermission()
+		return nil
+	})
 
 	return nil
 }
@@ -246,20 +332,24 @@ func (consensus *Consensus) RequestSubscriptionPermission() error {
 	return nil
 }
 
-// startEventDrivenFlow orchestrates the consensus flow in an event-driven manner
-// Flow: Request subscriptions → Verify subscriptions → Broadcast vote trigger → Process CRDT
-// This eliminates race conditions by ensuring each step completes before the next begins
-func (consensus *Consensus) startEventDrivenFlow() {
-	log.Printf("=== [Event-Driven Flow] Starting consensus flow ===\n")
-
-	// Step 1: Request subscription permission from peers
-	log.Printf("=== [Event-Driven Flow] Step 1: Requesting subscription permission ===\n")
-	if err := consensus.RequestSubscriptionPermission(); err != nil {
-		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.REQUESTSUBSCRIPTIONPERMISSION: Failed to request subscription permission: %v", err)
-		log.Printf("%s", ErrorMessage)
-		return
+// startEventDrivenFlowAfterSubscriptionPermission orchestrates the consensus flow after
+// subscription permission has already been granted.
+//
+// Flow: Verify subscriptions → Broadcast vote trigger → Process CRDT
+func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission() {
+	if common.LocalGRO == nil {
+		var err error
+		common.LocalGRO, err = common.InitializeGRO(GRO.SequencerConsensusLocal)
+		if err != nil {
+			log.Printf("CONSENSUSERROR.START: failed to initialize local gro: %v", err)
+			return
+		}
 	}
-	log.Printf("=== [Event-Driven Flow] Step 1: Subscription permission requested successfully ===\n")
+	// Context for the alerts
+	alert_ctx := context.Background()
+	defer alert_ctx.Done()
+
+	log.Printf("=== [Event-Driven Flow] Starting consensus flow ===\n")
 
 	// Step 2: Verify subscriptions (with retry mechanism)
 	log.Printf("=== [Event-Driven Flow] Step 2: Verifying subscriptions ===\n")
@@ -287,12 +377,25 @@ func (consensus *Consensus) startEventDrivenFlow() {
 	log.Printf("=== [Event-Driven Flow] Step 3: Broadcasting vote trigger ===\n")
 	if consensus.ZKBlockData == nil {
 		ErrorMessage := "CONSENSUSERROR.BROADCASTVOTETRIGGER: ZKBlockData not set, cannot broadcast vote trigger"
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_ZKBlockDataNotSet).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(ErrorMessage).
+			Send()
+
 		log.Printf("%s", ErrorMessage)
 		return
 	}
 
 	if err := consensus.BroadcastVoteTrigger(); err != nil {
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.BROADCASTVOTETRIGGER: BroadcastVoteTrigger failed: %v", err)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_Consensus_FailedToBroadcastVoteTrigger).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(ErrorMessage).
+			Send()
 		log.Printf("%s", ErrorMessage)
 
 		return
@@ -307,7 +410,7 @@ func (consensus *Consensus) startEventDrivenFlow() {
 
 	// TODO: Replace this with actual event-driven trigger from vote collection completion
 	// For now, use a delay but log that it should be event-driven
-	go func() {
+	common.LocalGRO.Go(GRO.SequencerRequestEventDrivenFlowThread, func(ctx context.Context) error {
 		// Wait for votes to be collected (this should be replaced with event-driven trigger)
 		time.Sleep(30 * time.Second)
 		log.Printf("=== [Event-Driven Flow] Step 4a: Triggering CRDT state print ===\n")
@@ -323,7 +426,8 @@ func (consensus *Consensus) startEventDrivenFlow() {
 		} else {
 			log.Printf("=== [Event-Driven Flow] Step 4b: Vote collection and processing initiated successfully ===\n")
 		}
-	}()
+		return nil
+	})
 }
 
 // VerifySubscriptions checks if nodes are actually subscribed to the pubsub channel
@@ -475,6 +579,14 @@ func (consensus *Consensus) printCRDTFooter() {
 // ProcessVoteCollection orchestrates the vote collection and processing flow
 // This manages the state flag and coordinates vote collection, verification, and block processing
 func (consensus *Consensus) ProcessVoteCollection() error {
+	if common.LocalGRO == nil {
+		var err error
+		common.LocalGRO, err = common.InitializeGRO(GRO.SequencerConsensusLocal)
+		if err != nil {
+			log.Printf("CONSENSUSERROR.PROCESSVOTECOLLECTION: failed to initialize local gro: %v", err)
+			return fmt.Errorf("CONSENSUSERROR.PROCESSVOTECOLLECTION: failed to initialize local gro: %v", err)
+		}
+	}
 	if consensus.ZKBlockData == nil || consensus.ZKBlockData.GetZKBlock() == nil {
 		return fmt.Errorf("ZKBlockData not initialized")
 	}
@@ -499,11 +611,11 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 	}()
 
 	// Process vote collection asynchronously
-	go func() {
+	common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
 		listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
 		if listenerNode == nil {
 			fmt.Printf("❌ Listener node not available for vote collection\n")
-			return
+			return nil
 		}
 
 		// Step 1: Collect vote results from buddy nodes
@@ -516,9 +628,10 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 		if err := consensus.BroadcastAndProcessBlock(blsResults, consensusReached); err != nil {
 			ErrorMessage := fmt.Sprintf("CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Failed to broadcast and process block: %v", err)
 			fmt.Printf("%s", ErrorMessage)
-			return
+			return nil
 		}
-	}()
+		return nil
+	})
 
 	return nil
 }
@@ -526,23 +639,35 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 // CollectVoteResultsFromBuddies collects vote aggregation results from all buddy nodes
 // Returns BLS results from buddy nodes
 func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMessages.BuddyNode) []BLS_Signer.BLSresponse {
+	if common.LocalGRO == nil {
+		var err error
+		common.LocalGRO, err = common.InitializeGRO(GRO.SequencerConsensusLocal)
+		if err != nil {
+			log.Printf("CONSENSUSERROR.COLLECTVOTERESULTSFROMBUDDIES: failed to initialize local gro: %v", err)
+			return nil
+		}
+	}
 	log.Printf("Requesting vote aggregation results from %d buddy nodes", len(listenerNode.BuddyNodes.Buddies_Nodes))
 
-	var wg sync.WaitGroup
+	wg, err := common.LocalGRO.NewFunctionWaitGroup(context.Background(), GRO.SequencerVoteCollectionWaitGroup)
+	if err != nil {
+		log.Printf("CONSENSUSERROR.COLLECTVOTERESULTSFROMBUDDIES: failed to create function wait group: %v", err)
+		return nil
+	}
+
 	var blsResultsMu sync.Mutex
 	blsResults := make([]BLS_Signer.BLSresponse, 0, config.MaxMainPeers)
 
 	for _, buddyID := range listenerNode.BuddyNodes.Buddies_Nodes {
-		wg.Add(1)
-		go func(peerID peer.ID) {
-			defer wg.Done()
-			blsResult := consensus.requestVoteResultFromBuddy(peerID)
+		common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
+			blsResult := consensus.requestVoteResultFromBuddy(buddyID)
 			if blsResult != nil {
 				blsResultsMu.Lock()
 				blsResults = append(blsResults, *blsResult)
 				blsResultsMu.Unlock()
 			}
-		}(buddyID)
+			return nil
+		}, local.AddToWaitGroup(GRO.SequencerVoteCollectionWaitGroup))
 	}
 
 	wg.Wait()
@@ -601,18 +726,27 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 
 // readVoteResultResponse reads vote result response from stream with timeout
 func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID peer.ID) string {
+	if common.LocalGRO == nil {
+		var err error
+		common.LocalGRO, err = common.InitializeGRO(GRO.SequencerConsensusLocal)
+		if err != nil {
+			log.Printf("CONSENSUSERROR.READVOTERESULTRESPONSE: failed to initialize local gro: %v", err)
+			return ""
+		}
+	}
 	responseCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 	reader := bufio.NewReader(stream)
 
-	go func() {
+	common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
 		response, err := reader.ReadString(config.Delimiter)
 		if err != nil {
 			errCh <- err
-			return
+			return err
 		}
 		responseCh <- response
-	}()
+		return nil
+	})
 
 	select {
 	case resp := <-responseCh:
@@ -628,6 +762,7 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 
 // parseVoteResultResponse parses vote result response and extracts BLS result
 func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer.ID) *BLS_Signer.BLSresponse {
+
 	responseMsg := PubSubMessages.NewMessageBuilder(nil).DeferenceMessage(response)
 	if responseMsg == nil {
 		return nil
@@ -684,6 +819,10 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 // VerifyConsensusWithBLS verifies BLS signatures and determines if consensus was reached
 // Returns true if consensus reached (majority agree), false otherwise
 func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSresponse) bool {
+	// Context for the alerts
+	alert_ctx := context.Background()
+	defer alert_ctx.Done()
+
 	if len(blsResults) == 0 {
 		fmt.Printf("⚠️ No BLS results collected - cannot verify consensus, skipping block processing\n")
 		return false
@@ -712,6 +851,12 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	if validTotal == 0 {
 		msg := "❌ No valid BLS signatures - consensus failed, skipping block processing - No BLS results collected"
 		fmt.Printf("%s", msg)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_BFT_Consensus_NoBLSResultsCollected).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(msg).
+			Send()
 		return false
 	}
 
@@ -724,11 +869,23 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	if validYes >= needed {
 		msg := fmt.Sprintf("✅ BFT Consensus Reached: %d/%d votes in favor (needed: %d)\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
 		fmt.Printf("%s", msg)
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_BFT_Consensus_Reached).
+			Status(Alerts.AlertStatusInfo).
+			Severity(Alerts.SeverityInfo).
+			Description(msg).
+			Send()
 		return true
 	}
 
 	msg := fmt.Sprintf("❌ Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
 	fmt.Printf("%s", msg)
+	Alerts.NewAlertBuilder(alert_ctx).
+		AlertName(helper.Alert_BFT_Consensus_Failed).
+		Status(Alerts.AlertStatusError).
+		Severity(Alerts.SeverityError).
+		Description(msg).
+		Send()
 	return false
 }
 
