@@ -14,6 +14,7 @@ import (
 	"gossipnode/Block"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/config/version"
 	"gossipnode/fastsync"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
@@ -108,6 +109,7 @@ func PrintFuncs() {
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
 	fmt.Println("  syncinfo                          - Show FastSync configuration")
 	fmt.Println("  gethstatus                        - Show gETH server status (chain ID, ports)")
+	fmt.Println("  version                           - Show current binary version")
 	fmt.Println("  stopService                       - Stop the service")
 	printDashes()
 }
@@ -293,7 +295,7 @@ func (h *CommandHandler) handleCommand(parts []string) {
 // handleVersion prints the current binary version
 func (h *CommandHandler) handleVersion() {
 	fmt.Println("Local Binary Version:")
-	fmt.Println(config.VersionString())
+	fmt.Println(version.String())
 	printDashes()
 }
 

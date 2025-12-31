@@ -166,11 +166,11 @@ func (c *Client) ReturnAddrs() (*pb.Addrs, error) {
 	return c.conn.ReturnAddrs(ctx, &emptypb.Empty{})
 }
 
-// GetVersion returns the version information of the remote node
-func (c *Client) GetVersion() (*pb.VersionInfo, error) {
+// GetNodeVersion returns the version information of the remote node
+func (c *Client) GetNodeVersion() (*pb.VersionInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return c.conn.GetVersion(ctx, &emptypb.Empty{})
+	return c.conn.GetNodeVersion(ctx, &emptypb.Empty{})
 }
 
 // Example usage:

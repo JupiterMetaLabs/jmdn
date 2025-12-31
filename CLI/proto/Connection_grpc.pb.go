@@ -39,7 +39,7 @@ const (
 	CLIService_GetGethStatus_FullMethodName        = "/cli.CLIService/GetGethStatus"
 	CLIService_DiscoverNeighbors_FullMethodName    = "/cli.CLIService/DiscoverNeighbors"
 	CLIService_ListAliases_FullMethodName          = "/cli.CLIService/ListAliases"
-	CLIService_GetVersion_FullMethodName           = "/cli.CLIService/GetVersion"
+	CLIService_GetNodeVersion_FullMethodName       = "/cli.CLIService/GetNodeVersion"
 )
 
 // CLIServiceClient is the client API for CLIService service.
@@ -74,7 +74,7 @@ type CLIServiceClient interface {
 	DiscoverNeighbors(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*OperationResponse, error)
 	ListAliases(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*AliasList, error)
 	// Version
-	GetVersion(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*VersionInfo, error)
+	GetNodeVersion(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*VersionInfo, error)
 }
 
 type cLIServiceClient struct {
@@ -275,10 +275,10 @@ func (c *cLIServiceClient) ListAliases(ctx context.Context, in *emptypb.Empty, o
 	return out, nil
 }
 
-func (c *cLIServiceClient) GetVersion(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*VersionInfo, error) {
+func (c *cLIServiceClient) GetNodeVersion(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*VersionInfo, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(VersionInfo)
-	err := c.cc.Invoke(ctx, CLIService_GetVersion_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, CLIService_GetNodeVersion_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +317,7 @@ type CLIServiceServer interface {
 	DiscoverNeighbors(context.Context, *emptypb.Empty) (*OperationResponse, error)
 	ListAliases(context.Context, *emptypb.Empty) (*AliasList, error)
 	// Version
-	GetVersion(context.Context, *emptypb.Empty) (*VersionInfo, error)
+	GetNodeVersion(context.Context, *emptypb.Empty) (*VersionInfo, error)
 	mustEmbedUnimplementedCLIServiceServer()
 }
 
@@ -385,8 +385,8 @@ func (UnimplementedCLIServiceServer) DiscoverNeighbors(context.Context, *emptypb
 func (UnimplementedCLIServiceServer) ListAliases(context.Context, *emptypb.Empty) (*AliasList, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListAliases not implemented")
 }
-func (UnimplementedCLIServiceServer) GetVersion(context.Context, *emptypb.Empty) (*VersionInfo, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetVersion not implemented")
+func (UnimplementedCLIServiceServer) GetNodeVersion(context.Context, *emptypb.Empty) (*VersionInfo, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetNodeVersion not implemented")
 }
 func (UnimplementedCLIServiceServer) mustEmbedUnimplementedCLIServiceServer() {}
 func (UnimplementedCLIServiceServer) testEmbeddedByValue()                    {}
@@ -751,20 +751,20 @@ func _CLIService_ListAliases_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
-func _CLIService_GetVersion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _CLIService_GetNodeVersion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(emptypb.Empty)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(CLIServiceServer).GetVersion(ctx, in)
+		return srv.(CLIServiceServer).GetNodeVersion(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: CLIService_GetVersion_FullMethodName,
+		FullMethod: CLIService_GetNodeVersion_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CLIServiceServer).GetVersion(ctx, req.(*emptypb.Empty))
+		return srv.(CLIServiceServer).GetNodeVersion(ctx, req.(*emptypb.Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -853,8 +853,8 @@ var CLIService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _CLIService_ListAliases_Handler,
 		},
 		{
-			MethodName: "GetVersion",
-			Handler:    _CLIService_GetVersion_Handler,
+			MethodName: "GetNodeVersion",
+			Handler:    _CLIService_GetNodeVersion_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
