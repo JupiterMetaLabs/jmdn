@@ -27,8 +27,6 @@ Thumbs.db
 *.swo
 *.out
 *.test
-fastsync/
-/fastsync
 jmzk-node
 test
 immudb
