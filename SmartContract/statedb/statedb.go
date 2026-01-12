@@ -1,4 +1,4 @@
-package SmartContract
+package statedb
 
 import (
 	"encoding/json"
@@ -177,6 +177,12 @@ func NewImmuStateDB(client *config.PooledConnection) vm.StateDB {
 		witness:          witness,
 		witnessMutex:     sync.RWMutex{},
 	}
+}
+
+// NewInMemoryStateDB creates a state database with no redundant storage
+// It is useful for testing or ephemeral operations
+func NewInMemoryStateDB() vm.StateDB {
+	return NewImmuStateDB(nil)
 }
 
 // DB Access Helper Methods

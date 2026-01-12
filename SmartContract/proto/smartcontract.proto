@@ -1,0 +1,201 @@
+syntax = "proto3";
+package smartcontract;
+
+option go_package = "gossipnode/SmartContract/proto";
+
+// ============================================================================
+// Common Types
+// ============================================================================
+
+message Address {
+    bytes value = 1; // 20-byte Ethereum address
+}
+
+message Hash {
+    bytes value = 1; // 32-byte hash
+}
+
+message Empty {}
+
+// ============================================================================
+// Smart Contract Types
+// ============================================================================
+
+message CompiledContract {
+    string bytecode = 1;              // Hex-encoded deployment bytecode with 0x prefix
+    string abi = 2;                   // JSON-encoded ABI
+    string deployed_bytecode = 3;     // Hex-encoded runtime bytecode
+    string name = 4;                  // Contract name
+    string source_path = 5;           // Source file path (optional)
+    repeated string errors = 6;       // Compilation errors (if any)
+}
+
+message ExecutionResult {
+    bytes return_data = 1;            // Return data from execution
+    uint64 gas_used = 2;              // Gas consumed
+    bytes contract_address = 3;       // Contract address (for deployments)
+    string error = 4;                 // Error message (if failed)
+    bool success = 5;                 // Execution success status
+}
+
+message ContractMetadata {
+    bytes address = 1;                // Contract address
+    string name = 2;                  // Contract name
+    uint64 deploy_block = 3;          // Block number where deployed
+    bytes deployer = 4;               // Address that deployed the contract
+    uint64 timestamp = 5;             // Deploy timestamp
+}
+
+// ============================================================================
+// Request/Response Messages
+// ============================================================================
+
+// Compilation
+message CompileRequest {
+    string source_code = 1;           // Solidity source code
+    string compiler_version = 2;      // Solidity version (optional, default: 0.8.28)
+    bool optimize = 3;                // Enable optimizer
+    uint32 optimize_runs = 4;         // Optimizer runs (default: 200)
+}
+
+message CompileResponse {
+    CompiledContract contract = 1;    // Compiled contract
+    string compiler_version = 2;      // Compiler version used
+    string error = 3;                 // Error message (if compilation failed)
+}
+
+// Deployment
+message DeployContractRequest {
+    bytes caller = 1;                 // Address deploying the contract
+    string bytecode = 2;              // Hex-encoded contract bytecode
+    bytes value = 3;                  // ETH value to send (wei as bytes)
+    uint64 gas_limit = 4;             // Gas limit
+    bytes constructor_args = 5;       // ABI-encoded constructor arguments (optional)
+}
+
+message DeployContractResponse {
+    ExecutionResult result = 1;       // Execution result with contract address
+}
+
+// Contract Execution
+message ExecuteContractRequest {
+    bytes caller = 1;                 // Address calling the contract
+    bytes contract_address = 2;       // Contract address
+    bytes input = 3;                  // ABI-encoded function call data
+    bytes value = 4;                  // ETH value to send (wei as bytes)
+    uint64 gas_limit = 5;             // Gas limit
+}
+
+message ExecuteContractResponse {
+    ExecutionResult result = 1;       // Execution result
+}
+
+// Contract Call (read-only, doesn't modify state)
+message CallContractRequest {
+    bytes caller = 1;                 // Address making the call
+    bytes contract_address = 2;       // Contract address
+    bytes input = 3;                  // ABI-encoded function call data
+    uint64 block_number = 4;          // Block number (0 for latest)
+}
+
+message CallContractResponse {
+    bytes return_data = 1;            // Function return data
+    string error = 2;                 // Error message (if failed)
+}
+
+// Get Contract Code
+message GetContractCodeRequest {
+    bytes contract_address = 1;       // Contract address
+}
+
+message GetContractCodeResponse {
+    bytes code = 1;                   // Contract bytecode
+    string abi = 2;                   // ABI (if available)
+    ContractMetadata metadata = 3;    // Contract metadata (if available)
+}
+
+// Get Contract Storage
+message GetStorageRequest {
+    bytes contract_address = 1;       // Contract address
+    bytes storage_key = 2;            // Storage slot (32 bytes)
+}
+
+message GetStorageResponse {
+    bytes value = 1;                  // Storage value (32 bytes)
+}
+
+// Gas Estimation
+message EstimateGasRequest {
+    bytes caller = 1;                 // Address making the call
+    bytes contract_address = 2;       // Contract address (empty for deployment)
+    bytes input = 3;                  // Transaction data
+    bytes value = 4;                  // ETH value
+}
+
+message EstimateGasResponse {
+    uint64 gas_estimate = 1;          // Estimated gas
+    string error = 2;                 // Error message (if failed)
+}
+
+// Encode Function Call
+message EncodeFunctionCallRequest {
+    string abi_json = 1;              // Contract ABI JSON
+    string function_name = 2;         // Function name
+    repeated bytes args = 3;          // ABI-encoded arguments
+}
+
+message EncodeFunctionCallResponse {
+    bytes encoded_data = 1;           // ABI-encoded function call data
+    string error = 2;                 // Error message (if failed)
+}
+
+// Decode Function Output
+message DecodeFunctionOutputRequest {
+    string abi_json = 1;              // Contract ABI JSON
+    string function_name = 2;         // Function name
+    bytes output_data = 3;            // Output data to decode
+}
+
+message DecodeFunctionOutputResponse {
+    repeated bytes decoded_values = 1; // Decoded values
+    string error = 2;                  // Error message (if failed)
+}
+
+// List Contracts
+message ListContractsRequest {
+    uint64 from_block = 1;            // Start block (0 for all)
+    uint64 to_block = 2;              // End block (0 for latest)
+    uint32 limit = 3;                 // Max results (0 for no limit)
+}
+
+message ListContractsResponse {
+    repeated ContractMetadata contracts = 1; // List of contracts
+}
+
+// ============================================================================
+// SmartContract Service Definition
+// ============================================================================
+
+service SmartContractService {
+    // Compilation
+    rpc CompileContract(CompileRequest) returns (CompileResponse);
+    
+    // Deployment
+    rpc DeployContract(DeployContractRequest) returns (DeployContractResponse);
+    
+    // Execution (state-changing)
+    rpc ExecuteContract(ExecuteContractRequest) returns (ExecuteContractResponse);
+    
+    // Call (read-only)
+    rpc CallContract(CallContractRequest) returns (CallContractResponse);
+    
+    // Contract Information
+    rpc GetContractCode(GetContractCodeRequest) returns (GetContractCodeResponse);
+    rpc GetStorage(GetStorageRequest) returns (GetStorageResponse);
+    rpc ListContracts(ListContractsRequest) returns (ListContractsResponse);
+    
+    // Utilities
+    rpc EstimateGas(EstimateGasRequest) returns (EstimateGasResponse);
+    rpc EncodeFunctionCall(EncodeFunctionCallRequest) returns (EncodeFunctionCallResponse);
+    rpc DecodeFunctionOutput(DecodeFunctionOutputRequest) returns (DecodeFunctionOutputResponse);
+}
