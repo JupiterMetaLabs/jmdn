@@ -309,9 +309,11 @@ type ContractMetadata struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Address       []byte                 `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`                             // Contract address
 	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`                                   // Contract name
-	DeployBlock   uint64                 `protobuf:"varint,3,opt,name=deploy_block,json=deployBlock,proto3" json:"deploy_block,omitempty"` // Block number where deployed
+	BlockNumber   uint64                 `protobuf:"varint,3,opt,name=block_number,json=blockNumber,proto3" json:"block_number,omitempty"` // Block number where deployed
 	Deployer      []byte                 `protobuf:"bytes,4,opt,name=deployer,proto3" json:"deployer,omitempty"`                           // Address that deployed the contract
-	Timestamp     uint64                 `protobuf:"varint,5,opt,name=timestamp,proto3" json:"timestamp,omitempty"`                        // Deploy timestamp
+	TxHash        []byte                 `protobuf:"bytes,5,opt,name=tx_hash,json=txHash,proto3" json:"tx_hash,omitempty"`                 // Deployment transaction hash
+	Timestamp     uint64                 `protobuf:"varint,6,opt,name=timestamp,proto3" json:"timestamp,omitempty"`                        // Deploy timestamp
+	Abi           string                 `protobuf:"bytes,7,opt,name=abi,proto3" json:"abi,omitempty"`                                     // Contract ABI JSON
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -360,9 +362,9 @@ func (x *ContractMetadata) GetName() string {
 	return ""
 }
 
-func (x *ContractMetadata) GetDeployBlock() uint64 {
+func (x *ContractMetadata) GetBlockNumber() uint64 {
 	if x != nil {
-		return x.DeployBlock
+		return x.BlockNumber
 	}
 	return 0
 }
@@ -374,11 +376,25 @@ func (x *ContractMetadata) GetDeployer() []byte {
 	return nil
 }
 
+func (x *ContractMetadata) GetTxHash() []byte {
+	if x != nil {
+		return x.TxHash
+	}
+	return nil
+}
+
 func (x *ContractMetadata) GetTimestamp() uint64 {
 	if x != nil {
 		return x.Timestamp
 	}
 	return 0
+}
+
+func (x *ContractMetadata) GetAbi() string {
+	if x != nil {
+		return x.Abi
+	}
+	return ""
 }
 
 // Compilation
@@ -1551,13 +1567,15 @@ const file_SmartContract_proto_smartcontract_proto_rawDesc = "" +
 	"\bgas_used\x18\x02 \x01(\x04R\agasUsed\x12)\n" +
 	"\x10contract_address\x18\x03 \x01(\fR\x0fcontractAddress\x12\x14\n" +
 	"\x05error\x18\x04 \x01(\tR\x05error\x12\x18\n" +
-	"\asuccess\x18\x05 \x01(\bR\asuccess\"\x9d\x01\n" +
+	"\asuccess\x18\x05 \x01(\bR\asuccess\"\xc8\x01\n" +
 	"\x10ContractMetadata\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\fR\aaddress\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12!\n" +
-	"\fdeploy_block\x18\x03 \x01(\x04R\vdeployBlock\x12\x1a\n" +
-	"\bdeployer\x18\x04 \x01(\fR\bdeployer\x12\x1c\n" +
-	"\ttimestamp\x18\x05 \x01(\x04R\ttimestamp\"\x9d\x01\n" +
+	"\fblock_number\x18\x03 \x01(\x04R\vblockNumber\x12\x1a\n" +
+	"\bdeployer\x18\x04 \x01(\fR\bdeployer\x12\x17\n" +
+	"\atx_hash\x18\x05 \x01(\fR\x06txHash\x12\x1c\n" +
+	"\ttimestamp\x18\x06 \x01(\x04R\ttimestamp\x12\x10\n" +
+	"\x03abi\x18\a \x01(\tR\x03abi\"\x9d\x01\n" +
 	"\x0eCompileRequest\x12\x1f\n" +
 	"\vsource_code\x18\x01 \x01(\tR\n" +
 	"sourceCode\x12)\n" +

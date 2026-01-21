@@ -41,9 +41,11 @@ message ExecutionResult {
 message ContractMetadata {
     bytes address = 1;                // Contract address
     string name = 2;                  // Contract name
-    uint64 deploy_block = 3;          // Block number where deployed
+    uint64 block_number = 3;          // Block number where deployed
     bytes deployer = 4;               // Address that deployed the contract
-    uint64 timestamp = 5;             // Deploy timestamp
+    bytes tx_hash = 5;                // Deployment transaction hash
+    uint64 timestamp = 6;             // Deploy timestamp
+    string abi = 7;                   // Contract ABI JSON
 }
 
 // ============================================================================
