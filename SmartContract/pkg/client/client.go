@@ -54,6 +54,7 @@ func (c *Client) CompileContract(ctx context.Context, sourceCode string) (*proto
 type DeployOptions struct {
 	GasLimit uint64
 	Value    []byte // BigInt bytes
+	ABI      string // Contract ABI JSON
 }
 
 // DeployContract deploys a compiled contract
@@ -79,6 +80,9 @@ func (c *Client) DeployContract(ctx context.Context, caller []byte, bytecode []b
 		}
 		if len(opts.Value) > 0 {
 			req.Value = opts.Value
+		}
+		if opts.ABI != "" {
+			req.Abi = opts.ABI
 		}
 	}
 

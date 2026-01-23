@@ -35,3 +35,11 @@ SIM/__pycache__/testZKBlock.cpython-313.pyc
 immudb
 .env
 SIM/TxSIM/submitRawTxn.py
+
+# SmartContract Local Storage
+contract_storage_pebble/
+main
+
+# Testing Artifacts
+SmartContract/cmd/cmd
+SmartContract/contracts.db

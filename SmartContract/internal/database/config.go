@@ -21,6 +21,9 @@ const (
 
 	// DBTypeInMemory represents in-memory database (for testing)
 	DBTypeInMemory DBType = "memory"
+
+	// DBTypePebble represents PebbleDB database
+	DBTypePebble DBType = "pebble"
 )
 
 // Config holds database configuration
@@ -34,6 +37,9 @@ type Config struct {
 	Database string
 	Username string
 	Password string
+
+	// Storage path for embedded databases (Pebble, ImmuDB)
+	Path string
 
 	// Connection pool settings
 	MinConnections int

@@ -7,14 +7,18 @@ import (
 	"os/signal"
 	"syscall"
 
-	"gossipnode/SmartContract/internal/database"
 	"gossipnode/SmartContract/internal/contract_registry"
+	"gossipnode/SmartContract/internal/database"
 	"gossipnode/SmartContract/internal/router"
 	"gossipnode/SmartContract/internal/state"
-	"gossipnode/config"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
+	"gossipnode/SmartContract/internal/storage"
+	pb "gossipnode/gETH/proto"
 )
 
 func main() {
@@ -33,66 +37,52 @@ func main() {
 	dbConfig := database.LoadConfigFromEnv()
 	fmt.Printf("   DB Type: %s\n", dbConfig.Type)
 
-	// 2. Initialize Registry (Layer 2)
+	// 2. Initialize Shared KVStore (Pebble/Memory)
+	fmt.Printf("   Initializing Shared Storage (%s)...\n", dbConfig.Type)
+	storeConfig := storage.ConfigFromEnv(dbConfig)
+	kvStore, err := storage.NewKVStore(storeConfig)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize KVStore")
+	}
+	defer kvStore.Close()
+
+	// 3. Initialize Registry (Layer 2)
 	fmt.Println("   Initializing Registry...")
 	registryFactory, err := contract_registry.NewRegistryFactory(dbConfig)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create registry factory")
 	}
 
-	reg, err := registryFactory.CreateRegistryDB()
+	// Inject shared store into Registry
+	reg, err := registryFactory.CreateRegistryDB(kvStore)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create registry")
 	}
 	defer reg.Close()
 
-	// 3. Initialize StateDB (Layer 6)
-	var stateDB *state.ImmuStateDB
+	// 4. Initialize ContractDB (State Layer)
+	fmt.Printf("   Initializing ContractDB...\n")
 
-	if dbConfig.Type == database.DBTypeImmuDB {
-		fmt.Println("   State: Persistent (ImmuDB)")
-		// reuse connection pool from registry factory logic or get new one
-		// Since we want to key off the same config
-		conn, err := database.GetOrCreateContractsDBPool(dbConfig)
-		if err != nil {
-			log.Fatal().Err(err).Msg("Failed to get DB connection for StateDB")
-		}
-		// Note: We don't close conn here directly as Pool manages it, but we could return it?
-		// Pool logic in internal/database/pool.go says "GetOrCreate".
-
-		stateDB = state.NewImmuStateDB(conn)
-	} else {
-		fmt.Println("   State: In-Memory")
-		stateDB = state.NewInMemoryStateDB()
+	// ... gETH client initialization ...
+	gethURL := "localhost:9090"
+	conn, err := grpc.Dial(gethURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to connect to gETH node")
 	}
+	defer conn.Close()
+
+	chainClient := pb.NewChainClient(conn)
+
+	stateDB := state.NewContractDB(chainClient, kvStore)
 
 	// 4. Initialize Router (Layer 3)
 	fmt.Println("   Initializing Router...")
-	// We need to pass the connection for the Router if it needs direct DB access later,
-	// though currently it uses stateDB and contract_registry.
-	// Passing the pool connection if available.
-	var dbConn *config.PooledConnection
-	if dbConfig.Type == database.DBTypeImmuDB {
-		// This cast works because internal/database imports gossipnode/config
-		// actually wait, database.PooledConnection might be type alias or struct
-		// Let's check imports. database package imports "gossipnode/config"
-		// and GetOrCreate returns *config.PooledConnection.
-		// internal/router/router.go imports "gossipnode/SmartContract/internal/database"
-		// implementation: type PooledConnection = config.PooledConnection (in database package?)
-		// No, database package imports "gossipnode/config".
 
-		// Checking internal/database/pool.go content...
-		// It imports "gossipnode/config".
-		// GetOrCreateContractsDBPool returns (*config.PooledConnection, error).
+	// Router expects vm.StateDB interface likely?
+	// router.NewRouter signature needs checking if it took specific *ImmuStateDB or interface.
+	// Assuming it takes StateDB interface.
 
-		var err error
-		dbConn, err = database.GetOrCreateContractsDBPool(dbConfig)
-		if err != nil {
-			log.Fatal().Err(err).Msg("Failed to get DB connection")
-		}
-	}
-
-	smartRouter := router.NewRouter(chainID, stateDB, reg, dbConn)
+	smartRouter := router.NewRouter(chainID, stateDB, reg, nil)
 	defer smartRouter.Close()
 
 	// 5. Start Server

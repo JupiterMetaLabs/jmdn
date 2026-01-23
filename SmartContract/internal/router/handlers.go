@@ -113,7 +113,7 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 			Address:      result.ContractAddr,
 			Deployer:     caller,
 			Name:         "Unknown", // Metadata enhancement needed later
-			ABI:          "",        // Metadata enhancement needed later
+			ABI:          req.Abi,   // Use ABI from request
 			DeployBlock:  0,         // TODO: Get real block number
 			DeployTime:   uint64(time.Now().Unix()),
 			DeployTxHash: common.Hash{}, // TODO: Get real tx hash

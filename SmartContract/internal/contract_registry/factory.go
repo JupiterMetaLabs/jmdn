@@ -3,9 +3,11 @@ package contract_registry
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"gossipnode/SmartContract/internal/database"
+	"gossipnode/SmartContract/internal/storage"
 )
 
 // Global singleton registry factory instance
@@ -47,12 +49,32 @@ func DefaultRegistryFactory() (*RegistryFactory, error) {
 }
 
 // CreateRegistryDB creates a RegistryDB implementation based on configuration
-func (f *RegistryFactory) CreateRegistryDB() (RegistryDB, error) {
+func (f *RegistryFactory) CreateRegistryDB(sharedStore storage.KVStore) (RegistryDB, error) {
+	// If shared store is provided, prefer that for Pebble
+	if sharedStore != nil && f.config.Type == database.DBTypePebble {
+		return NewKVStoreRegistry(sharedStore), nil
+	}
+
 	switch f.config.Type {
-	case database.DBTypeImmuDB:
-		return f.createImmuRegistryDB()
 	case database.DBTypeInMemory:
-		return f.createInMemoryRegistryDB()
+		return NewInMemoryRegistryDB(), nil
+	case database.DBTypePebble:
+		// Fallback create new store if not provided (though main.go should provide it)
+		// We use a separate path suffix if we are force-creating it here to avoid lock
+		// But ideally this path shouldn't be hit if main.go does its job
+		path := "contract_registry_pebble"
+		if f.config.Path != "" {
+			path = strings.TrimSuffix(f.config.Path, "/") + "_registry"
+		}
+
+		store, err := storage.NewKVStore(storage.Config{
+			Type: storage.StoreTypePebble,
+			Path: path,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return NewKVStoreRegistry(store), nil
 	default:
 		return nil, fmt.Errorf("unsupported database type for RegistryDB: %s", f.config.Type)
 	}
@@ -60,13 +82,8 @@ func (f *RegistryFactory) CreateRegistryDB() (RegistryDB, error) {
 
 // createImmuRegistryDB creates an ImmuDB-backed RegistryDB
 func (f *RegistryFactory) createImmuRegistryDB() (RegistryDB, error) {
-	// Get connection from database pool
-	conn, err := database.GetOrCreateContractsDBPool(f.config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get contractsdb connection: %w", err)
-	}
-
-	return NewImmuRegistryDB(conn), nil
+	// deprecated
+	return nil, fmt.Errorf("immudb deprecated")
 }
 
 // createInMemoryRegistryDB creates an in-memory RegistryDB
@@ -89,6 +106,6 @@ type ContextualRegistryFactory struct {
 }
 
 // CreateRegistryDB creates a RegistryDB with the bound context
-func (cf *ContextualRegistryFactory) CreateRegistryDB() (RegistryDB, error) {
-	return cf.factory.CreateRegistryDB()
+func (cf *ContextualRegistryFactory) CreateRegistryDB(sharedStore storage.KVStore) (RegistryDB, error) {
+	return cf.factory.CreateRegistryDB(sharedStore)
 }

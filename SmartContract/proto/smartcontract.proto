@@ -73,6 +73,7 @@ message DeployContractRequest {
     bytes value = 3;                  // ETH value to send (wei as bytes)
     uint64 gas_limit = 4;             // Gas limit
     bytes constructor_args = 5;       // ABI-encoded constructor arguments (optional)
+    string abi = 6;                   // Contract ABI JSON (optional but recommended for registry)
 }
 
 message DeployContractResponse {
