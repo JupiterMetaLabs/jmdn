@@ -15,6 +15,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/rs/zerolog/log"
 )
 
@@ -68,23 +69,39 @@ func (r *Router) CompileContract(sourceCode string) (*SmartContract.CompiledCont
 
 // DeployContract deploys a contract to the network
 func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRequest) (*proto.ExecutionResult, error) {
-	log.Info().Hex("caller", req.Caller).Msg("Deploying contract (Router Layer)")
+	log.Info().
+		Str("caller", req.Caller).
+		Int("abi_length", len(req.Abi)).
+		Bool("abi_provided", len(req.Abi) > 0).
+		Msg("🚀 [ABI FLOW] DeployContract called")
 
 	// Parse caller address
-	caller := common.BytesToAddress(req.Caller)
+	caller := common.HexToAddress(req.Caller)
 
-	// Parse value
-	value := new(big.Int).SetBytes(req.Value)
+	// Parse value (hex string)
+	value := new(big.Int)
+	if val, ok := value.SetString(req.Value, 0); ok {
+		value = val
+	} else if req.Value == "" {
+		// Default to 0
+		value = big.NewInt(0)
+	} else {
+		return nil, fmt.Errorf("invalid value: %s", req.Value)
+	}
 
-	// Decode bytecode
-	bytecode, err := HexToBytes(req.Bytecode)
+	// Decode bytecode (hex string)
+	bytecode, err := hexutil.Decode(req.Bytecode)
 	if err != nil {
 		return nil, fmt.Errorf("invalid bytecode: %w", err)
 	}
 
 	// If constructor args provided, append them
 	if len(req.ConstructorArgs) > 0 {
-		bytecode = append(bytecode, req.ConstructorArgs...)
+		args, err := hexutil.Decode(req.ConstructorArgs)
+		if err != nil {
+			return nil, fmt.Errorf("invalid constructor args: %w", err)
+		}
+		bytecode = append(bytecode, args...)
 	}
 
 	// Deploy contract using Executor
@@ -97,11 +114,9 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 	}
 
 	// Persist changes to StateDB
-	// Check if stateDB implements our internal interface with CommitToDB
 	if sdb, ok := ConvertToInternalStateDB(r.stateDB); ok {
 		if _, err := sdb.CommitToDB(false); err != nil {
 			log.Error().Err(err).Msg("Failed to commit state changes")
-			// We don't return error here to client if execution was successful, but we log it
 		} else {
 			log.Info().Msg("State changes committed to DB")
 		}
@@ -109,6 +124,11 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 
 	// REGISTER CONTRACT IN REGISTRY (Layer 2 Integration)
 	if r.contract_registry != nil && result.Error == nil {
+		log.Info().
+			Str("address", result.ContractAddr.Hex()).
+			Int("abi_length", len(req.Abi)).
+			Msg("📝 [ABI FLOW] Creating metadata for registry")
+
 		metadata := &types.ContractMetadata{
 			Address:      result.ContractAddr,
 			Deployer:     caller,
@@ -119,22 +139,39 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 			DeployTxHash: common.Hash{}, // TODO: Get real tx hash
 		}
 
+		log.Info().
+			Str("address", result.ContractAddr.Hex()).
+			Int("metadata_abi_length", len(metadata.ABI)).
+			Msg("💾 [ABI FLOW] Calling RegisterContract")
+
 		if err := r.contract_registry.RegisterContract(ctx, metadata); err != nil {
-			log.Error().Err(err).Msg("Failed to register contract in registry")
+			log.Error().
+				Err(err).
+				Str("address", result.ContractAddr.Hex()).
+				Msg("❌ [ABI FLOW] Failed to register contract in registry")
 		} else {
-			log.Info().Str("address", result.ContractAddr.Hex()).Msg("Contract registered in registry")
+			log.Info().
+				Str("address", result.ContractAddr.Hex()).
+				Msg("✅ [ABI FLOW] Contract registered successfully")
+		}
+	} else {
+		if r.contract_registry == nil {
+			log.Warn().Msg("⚠️  [ABI FLOW] Contract registry is nil - skipping registration")
+		}
+		if result.Error != nil {
+			log.Warn().Msg("⚠️  [ABI FLOW] Deployment had error - skipping registration")
 		}
 	}
 
 	log.Info().
-		Hex("contract_address", result.ContractAddr.Bytes()).
+		Str("contract_address", result.ContractAddr.Hex()).
 		Uint64("gas_used", result.GasUsed).
 		Msg("Contract deployed successfully")
 
 	return &proto.ExecutionResult{
-		ReturnData:      result.ReturnData,
+		ReturnData:      hexutil.Encode(result.ReturnData),
 		GasUsed:         result.GasUsed,
-		ContractAddress: result.ContractAddr.Bytes(),
+		ContractAddress: result.ContractAddr.Hex(),
 		Success:         result.Error == nil,
 	}, nil
 }
@@ -146,19 +183,32 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 // ExecuteContract executes a contract function (state-changing)
 func (r *Router) ExecuteContract(ctx context.Context, req *proto.ExecuteContractRequest) (*proto.ExecutionResult, error) {
 	log.Info().
-		Hex("caller", req.Caller).
-		Hex("contract", req.ContractAddress).
+		Str("caller", req.Caller).
+		Str("contract", req.ContractAddress).
 		Msg("Executing contract")
 
 	// Parse addresses
-	caller := common.BytesToAddress(req.Caller)
-	contractAddr := common.BytesToAddress(req.ContractAddress)
+	caller := common.HexToAddress(req.Caller)
+	contractAddr := common.HexToAddress(req.ContractAddress)
 
 	// Parse value
-	value := new(big.Int).SetBytes(req.Value)
+	value := new(big.Int)
+	if val, ok := value.SetString(req.Value, 0); ok {
+		value = val
+	} else if req.Value == "" {
+		value = big.NewInt(0)
+	} else {
+		return nil, fmt.Errorf("invalid value: %s", req.Value)
+	}
+
+	// Parse input
+	input, err := hexutil.Decode(req.Input)
+	if err != nil {
+		return nil, fmt.Errorf("invalid input: %w", err)
+	}
 
 	// Execute contract
-	result, err := r.executor.ExecuteContract(r.stateDB, caller, contractAddr, req.Input, value, req.GasLimit)
+	result, err := r.executor.ExecuteContract(r.stateDB, caller, contractAddr, input, value, req.GasLimit)
 	if err != nil {
 		return &proto.ExecutionResult{
 			Error:   err.Error(),
@@ -179,34 +229,40 @@ func (r *Router) ExecuteContract(ctx context.Context, req *proto.ExecuteContract
 		Msg("Contract executed successfully")
 
 	return &proto.ExecutionResult{
-		ReturnData: result.ReturnData,
+		ReturnData: hexutil.Encode(result.ReturnData),
 		GasUsed:    result.GasUsed,
 		Success:    result.Error == nil,
 	}, nil
 }
 
 // CallContract performs a read-only contract call
-func (r *Router) CallContract(ctx context.Context, req *proto.CallContractRequest) ([]byte, error) {
-	log.Debug().Hex("contract", req.ContractAddress).Msg("Calling contract (read-only)")
+func (r *Router) CallContract(ctx context.Context, req *proto.CallContractRequest) (string, error) {
+	log.Debug().Str("contract", req.ContractAddress).Msg("Calling contract (read-only)")
 
 	// Parse addresses
-	caller := common.BytesToAddress(req.Caller)
-	contractAddr := common.BytesToAddress(req.ContractAddress)
+	caller := common.HexToAddress(req.Caller)
+	contractAddr := common.HexToAddress(req.ContractAddress)
+
+	// Parse input
+	input, err := hexutil.Decode(req.Input)
+	if err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
 
 	// Execute contract (read-only, no state changes)
 	// For calls, we might want to use a snapshot or ensure no commit happens?
 	// vm.StateDB usually handles avoiding commits if we don't call Commit.
 	// We just ensure we don't call CommitToDB here.
-	result, err := r.executor.ExecuteContract(r.stateDB, caller, contractAddr, req.Input, big.NewInt(0), 10000000)
+	result, err := r.executor.ExecuteContract(r.stateDB, caller, contractAddr, input, big.NewInt(0), 10000000)
 	if err != nil {
-		return nil, fmt.Errorf("call failed: %w", err)
+		return "", fmt.Errorf("call failed: %w", err)
 	}
 
 	if result.Error != nil {
-		return nil, result.Error
+		return "", result.Error
 	}
 
-	return result.ReturnData, nil
+	return hexutil.Encode(result.ReturnData), nil
 }
 
 // ============================================================================
@@ -214,13 +270,17 @@ func (r *Router) CallContract(ctx context.Context, req *proto.CallContractReques
 // ============================================================================
 
 // GetContractCode retrieves contract code and metadata
-func (r *Router) GetContractCode(ctx context.Context, contractAddress []byte) ([]byte, string, *proto.ContractMetadata, error) {
-	addr := common.BytesToAddress(contractAddress)
+func (r *Router) GetContractCode(ctx context.Context, contractAddress string) (string, string, *proto.ContractMetadata, error) {
+	addr := common.HexToAddress(contractAddress)
+
+	log.Info().
+		Str("address", addr.Hex()).
+		Msg("🔍 [ABI FLOW] GetContractCode called")
 
 	// Get contract code from state
 	code := r.stateDB.GetCode(addr)
 	if len(code) == 0 {
-		return nil, "", nil, fmt.Errorf("contract not found at address %s", addr.Hex())
+		return "", "", nil, fmt.Errorf("contract not found at address %s", addr.Hex())
 	}
 
 	// Retrieve Metadata from Registry (Layer 2)
@@ -228,10 +288,22 @@ func (r *Router) GetContractCode(ctx context.Context, contractAddress []byte) ([
 	var err error
 
 	if r.contract_registry != nil {
+		log.Info().Str("address", addr.Hex()).Msg("📖 [ABI FLOW] Fetching from registry")
 		metadata, err = r.contract_registry.GetContract(ctx, addr)
 		if err != nil {
-			log.Warn().Err(err).Str("address", addr.Hex()).Msg("Failed to get contract metadata from registry")
+			log.Warn().
+				Err(err).
+				Str("address", addr.Hex()).
+				Msg("⚠️  [ABI FLOW] Failed to get contract metadata from registry")
+		} else {
+			log.Info().
+				Str("address", addr.Hex()).
+				Int("abi_length", len(metadata.ABI)).
+				Bool("abi_exists", len(metadata.ABI) > 0).
+				Msg("📦 [ABI FLOW] Retrieved metadata from registry")
 		}
+	} else {
+		log.Warn().Msg("⚠️  [ABI FLOW] Contract registry is nil")
 	}
 
 	// Convert to proto metadata
@@ -241,22 +313,35 @@ func (r *Router) GetContractCode(ctx context.Context, contractAddress []byte) ([
 	if metadata != nil {
 		protoMeta.Name = metadata.Name
 		protoMeta.Abi = metadata.ABI
-		protoMeta.Deployer = metadata.Deployer.Bytes()
-		protoMeta.TxHash = metadata.DeployTxHash.Bytes()
+		protoMeta.Deployer = metadata.Deployer.Hex()
+		protoMeta.TxHash = metadata.DeployTxHash.Hex()
 		protoMeta.BlockNumber = metadata.DeployBlock
 		protoMeta.Timestamp = metadata.DeployTime
+
+		log.Info().
+			Str("address", addr.Hex()).
+			Int("proto_abi_length", len(protoMeta.Abi)).
+			Msg("✅ [ABI FLOW] Returning metadata with ABI")
+	} else {
+		log.Warn().
+			Str("address", addr.Hex()).
+			Msg("⚠️  [ABI FLOW] No metadata found, returning empty")
 	}
 
-	return code, "", protoMeta, nil
+	return hexutil.Encode(code), "", protoMeta, nil
 }
 
 // GetStorage retrieves a storage slot value
-func (r *Router) GetStorage(ctx context.Context, contractAddress []byte, storageKey []byte) ([]byte, error) {
-	addr := common.BytesToAddress(contractAddress)
-	key := common.BytesToHash(storageKey)
+func (r *Router) GetStorage(ctx context.Context, contractAddress string, storageKey string) (string, error) {
+	addr := common.HexToAddress(contractAddress)
+	keyBytes, err := hexutil.Decode(storageKey)
+	if err != nil {
+		return "", fmt.Errorf("invalid storage key: %w", err)
+	}
+	key := common.BytesToHash(keyBytes)
 
 	value := r.stateDB.GetState(addr, key)
-	return value.Bytes(), nil
+	return hexutil.Encode(value.Bytes()), nil
 }
 
 // ListContracts lists deployed contracts
@@ -292,11 +377,11 @@ func (r *Router) ListContracts(ctx context.Context, fromBlock, toBlock uint64, l
 	var result []*proto.ContractMetadata
 	for _, c := range contracts {
 		result = append(result, &proto.ContractMetadata{
-			Address:     c.Address.Bytes(),
+			Address:     c.Address.Hex(),
 			Name:        c.Name,
 			Abi:         c.ABI,
-			Deployer:    c.Deployer.Bytes(),
-			TxHash:      c.DeployTxHash.Bytes(),
+			Deployer:    c.Deployer.Hex(),
+			TxHash:      c.DeployTxHash.Hex(),
 			BlockNumber: c.DeployBlock,
 			Timestamp:   c.DeployTime,
 		})
@@ -313,8 +398,26 @@ func (r *Router) ListContracts(ctx context.Context, fromBlock, toBlock uint64, l
 func (r *Router) EstimateGas(ctx context.Context, req *proto.EstimateGasRequest) (uint64, error) {
 	log.Debug().Msg("Estimating gas")
 
-	caller := common.BytesToAddress(req.Caller)
-	value := new(big.Int).SetBytes(req.Value)
+	caller := common.HexToAddress(req.Caller)
+	value := new(big.Int)
+	if val, ok := value.SetString(req.Value, 0); ok {
+		value = val
+	} else {
+		if req.Value == "" {
+			value = big.NewInt(0)
+		} else {
+			return 0, fmt.Errorf("invalid value: %s", req.Value)
+		}
+	}
+
+	// Parse input
+	input, err := hexutil.Decode(req.Input)
+	if err != nil {
+		if req.Input != "" {
+			return 0, fmt.Errorf("invalid input: %w", err)
+		}
+		input = []byte{}
+	}
 
 	var gasUsed uint64
 
@@ -324,22 +427,17 @@ func (r *Router) EstimateGas(ctx context.Context, req *proto.EstimateGasRequest)
 	snapshot := r.stateDB.Snapshot()
 	defer r.stateDB.RevertToSnapshot(snapshot)
 
-	if len(req.ContractAddress) == 0 {
+	if req.ContractAddress == "" {
 		// Contract deployment
-		bytecode, err := HexToBytes(string(req.Input))
-		if err != nil {
-			bytecode = req.Input
-		}
-
-		result, err := r.executor.DeployContract(r.stateDB, caller, bytecode, value, 10000000) // High gas limit for estimation
+		result, err := r.executor.DeployContract(r.stateDB, caller, input, value, 10000000) // High gas limit for estimation
 		if err != nil {
 			return 0, fmt.Errorf("gas estimation failed: %w", err)
 		}
 		gasUsed = result.GasUsed
 	} else {
 		// Contract call
-		contractAddr := common.BytesToAddress(req.ContractAddress)
-		result, err := r.executor.ExecuteContract(r.stateDB, caller, contractAddr, req.Input, value, 10000000)
+		contractAddr := common.HexToAddress(req.ContractAddress)
+		result, err := r.executor.ExecuteContract(r.stateDB, caller, contractAddr, input, value, 10000000)
 		if err != nil {
 			return 0, fmt.Errorf("gas estimation failed: %w", err)
 		}
@@ -359,30 +457,72 @@ func (r *Router) EstimateGas(ctx context.Context, req *proto.EstimateGasRequest)
 // ============================================================================
 
 // EncodeFunctionCall encodes a function call to ABI bytes
-func (r *Router) EncodeFunctionCall(abiJSON string, functionName string, args [][]byte) ([]byte, error) {
+func (r *Router) EncodeFunctionCall(abiJSON string, functionName string, args []string) (string, error) {
 	// Parse ABI
 	parsedABI, err := abi.JSON(strings.NewReader(abiJSON))
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse ABI: %w", err)
+		return "", fmt.Errorf("failed to parse ABI: %w", err)
 	}
 
-	// Convert args to interface{}
+	// WARNING: Simple string handling here. For complex types, we need proper JSON decoding of arguments based on ABI types.
+	// For now, assuming args are just strings or simple types that abi.Pack might handle if we are lucky, or we need to parse them.
+	// BUT, `abi.Pack` takes `interface{}`.
+	// If the user passes JSON strings for arguments, we should try to unmarshal them?
+	// OR we assume simple types for demo purposes?
+	// The immediate request is just to fix types. I will convert []string to []interface{} directly for now,
+	// checking if I can do better later.
+	// A better approach: Decode arguments based on method signature.
+
+	method, ok := parsedABI.Methods[functionName]
+	if !ok {
+		return "", fmt.Errorf("method not found: %s", functionName)
+	}
+
+	if len(args) != len(method.Inputs) {
+		return "", fmt.Errorf("argument count mismatch: expected %d, got %d", len(method.Inputs), len(args))
+	}
+
 	var interfaceArgs []interface{}
-	for _, arg := range args {
-		interfaceArgs = append(interfaceArgs, arg)
+	for i, arg := range args {
+		inputType := method.Inputs[i].Type
+		// Parse arg based on inputType
+		// This is a minimal parser for basic types.
+		switch inputType.T {
+		case abi.StringTy:
+			interfaceArgs = append(interfaceArgs, arg)
+		case abi.UintTy, abi.IntTy:
+			// Expecting number or hex string
+			val, ok := new(big.Int).SetString(arg, 0)
+			if !ok {
+				return "", fmt.Errorf("invalid number for argument %d: %s", i, arg)
+			}
+			// ABI packer handles big.Int for uint/int
+			interfaceArgs = append(interfaceArgs, val)
+		case abi.BoolTy:
+			if arg == "true" {
+				interfaceArgs = append(interfaceArgs, true)
+			} else {
+				interfaceArgs = append(interfaceArgs, false)
+			}
+		case abi.AddressTy:
+			interfaceArgs = append(interfaceArgs, common.HexToAddress(arg))
+		default:
+			// Fallback: assume string is fine or user provided proper value
+			interfaceArgs = append(interfaceArgs, arg)
+		}
 	}
 
 	// Pack function call
 	packed, err := parsedABI.Pack(functionName, interfaceArgs...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to pack function call: %w", err)
+		return "", fmt.Errorf("failed to pack function call: %w", err)
 	}
 
-	return packed, nil
+	return hexutil.Encode(packed), nil
 }
 
 // DecodeFunctionOutput decodes function output
-func (r *Router) DecodeFunctionOutput(abiJSON string, functionName string, outputData []byte) ([][]byte, error) {
+func (r *Router) DecodeFunctionOutput(abiJSON string, functionName string, outputData string) ([]string, error) {
 	// Parse ABI
 	parsedABI, err := abi.JSON(strings.NewReader(abiJSON))
 	if err != nil {
@@ -395,13 +535,24 @@ func (r *Router) DecodeFunctionOutput(abiJSON string, functionName string, outpu
 		return nil, fmt.Errorf("function %s not found in ABI", functionName)
 	}
 
-	_, err = method.Outputs.Unpack(outputData)
+	// Decode hex string
+	bytesData, err := hexutil.Decode(outputData)
+	if err != nil {
+		return nil, fmt.Errorf("invalid output data: %w", err)
+	}
+
+	unpacked, err := method.Outputs.Unpack(bytesData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unpack output: %w", err)
 	}
 
-	// Convert to [][]byte
-	var result [][]byte
-	// TODO: Better handling of complex types
+	// Convert unpacked values to []string (JSON representation)
+	var result []string
+	for _, val := range unpacked {
+		// Use fmt.Sprintf for simple string conversion, or json.Marshal
+		// json.Marshal is safer for complex types
+		strVal := fmt.Sprintf("%v", val)
+		result = append(result, strVal)
+	}
 	return result, nil
 }

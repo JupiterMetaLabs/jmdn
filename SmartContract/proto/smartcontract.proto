@@ -31,19 +31,19 @@ message CompiledContract {
 }
 
 message ExecutionResult {
-    bytes return_data = 1;            // Return data from execution
+    string return_data = 1;           // Return data from execution (hex-encoded with 0x prefix)
     uint64 gas_used = 2;              // Gas consumed
-    bytes contract_address = 3;       // Contract address (for deployments)
+    string contract_address = 3;      // Contract address (hex-encoded with 0x prefix)
     string error = 4;                 // Error message (if failed)
     bool success = 5;                 // Execution success status
 }
 
 message ContractMetadata {
-    bytes address = 1;                // Contract address
+    string address = 1;               // Contract address (hex-encoded with 0x prefix)
     string name = 2;                  // Contract name
     uint64 block_number = 3;          // Block number where deployed
-    bytes deployer = 4;               // Address that deployed the contract
-    bytes tx_hash = 5;                // Deployment transaction hash
+    string deployer = 4;              // Address that deployed the contract (hex-encoded with 0x prefix)
+    string tx_hash = 5;               // Deployment transaction hash (hex-encoded with 0x prefix)
     uint64 timestamp = 6;             // Deploy timestamp
     string abi = 7;                   // Contract ABI JSON
 }
@@ -68,11 +68,11 @@ message CompileResponse {
 
 // Deployment
 message DeployContractRequest {
-    bytes caller = 1;                 // Address deploying the contract
-    string bytecode = 2;              // Hex-encoded contract bytecode
-    bytes value = 3;                  // ETH value to send (wei as bytes)
+    string caller = 1;                // Address deploying the contract (hex-encoded with 0x prefix)
+    string bytecode = 2;              // Hex-encoded contract bytecode with 0x prefix
+    string value = 3;                 // ETH value to send in wei (hex-encoded with 0x prefix)
     uint64 gas_limit = 4;             // Gas limit
-    bytes constructor_args = 5;       // ABI-encoded constructor arguments (optional)
+    string constructor_args = 5;      // ABI-encoded constructor arguments (hex-encoded with 0x prefix, optional)
     string abi = 6;                   // Contract ABI JSON (optional but recommended for registry)
 }
 
@@ -82,10 +82,10 @@ message DeployContractResponse {
 
 // Contract Execution
 message ExecuteContractRequest {
-    bytes caller = 1;                 // Address calling the contract
-    bytes contract_address = 2;       // Contract address
-    bytes input = 3;                  // ABI-encoded function call data
-    bytes value = 4;                  // ETH value to send (wei as bytes)
+    string caller = 1;                // Address calling the contract (hex-encoded with 0x prefix)
+    string contract_address = 2;      // Contract address (hex-encoded with 0x prefix)
+    string input = 3;                 // ABI-encoded function call data (hex-encoded with 0x prefix)
+    string value = 4;                 // ETH value to send in wei (hex-encoded with 0x prefix)
     uint64 gas_limit = 5;             // Gas limit
 }
 
@@ -95,44 +95,44 @@ message ExecuteContractResponse {
 
 // Contract Call (read-only, doesn't modify state)
 message CallContractRequest {
-    bytes caller = 1;                 // Address making the call
-    bytes contract_address = 2;       // Contract address
-    bytes input = 3;                  // ABI-encoded function call data
+    string caller = 1;                // Address making the call (hex-encoded with 0x prefix)
+    string contract_address = 2;      // Contract address (hex-encoded with 0x prefix)
+    string input = 3;                 // ABI-encoded function call data (hex-encoded with 0x prefix)
     uint64 block_number = 4;          // Block number (0 for latest)
 }
 
 message CallContractResponse {
-    bytes return_data = 1;            // Function return data
+    string return_data = 1;           // Function return data (hex-encoded with 0x prefix)
     string error = 2;                 // Error message (if failed)
 }
 
 // Get Contract Code
 message GetContractCodeRequest {
-    bytes contract_address = 1;       // Contract address
+    string contract_address = 1;      // Contract address (hex-encoded with 0x prefix)
 }
 
 message GetContractCodeResponse {
-    bytes code = 1;                   // Contract bytecode
+    string code = 1;                  // Contract bytecode (hex-encoded with 0x prefix)
     string abi = 2;                   // ABI (if available)
     ContractMetadata metadata = 3;    // Contract metadata (if available)
 }
 
 // Get Contract Storage
 message GetStorageRequest {
-    bytes contract_address = 1;       // Contract address
-    bytes storage_key = 2;            // Storage slot (32 bytes)
+    string contract_address = 1;      // Contract address (hex-encoded with 0x prefix)
+    string storage_key = 2;           // Storage slot (hex-encoded with 0x prefix, 32 bytes)
 }
 
 message GetStorageResponse {
-    bytes value = 1;                  // Storage value (32 bytes)
+    string value = 1;                 // Storage value (hex-encoded with 0x prefix, 32 bytes)
 }
 
 // Gas Estimation
 message EstimateGasRequest {
-    bytes caller = 1;                 // Address making the call
-    bytes contract_address = 2;       // Contract address (empty for deployment)
-    bytes input = 3;                  // Transaction data
-    bytes value = 4;                  // ETH value
+    string caller = 1;                // Address making the call (hex-encoded with 0x prefix)
+    string contract_address = 2;      // Contract address (empty for deployment, hex-encoded with 0x prefix)
+    string input = 3;                 // Transaction data (hex-encoded with 0x prefix)
+    string value = 4;                 // ETH value in wei (hex-encoded with 0x prefix)
 }
 
 message EstimateGasResponse {
@@ -144,11 +144,11 @@ message EstimateGasResponse {
 message EncodeFunctionCallRequest {
     string abi_json = 1;              // Contract ABI JSON
     string function_name = 2;         // Function name
-    repeated bytes args = 3;          // ABI-encoded arguments
+    repeated string args = 3;         // JSON-encoded arguments
 }
 
 message EncodeFunctionCallResponse {
-    bytes encoded_data = 1;           // ABI-encoded function call data
+    string encoded_data = 1;          // ABI-encoded function call data (hex-encoded with 0x prefix)
     string error = 2;                 // Error message (if failed)
 }
 
@@ -156,11 +156,11 @@ message EncodeFunctionCallResponse {
 message DecodeFunctionOutputRequest {
     string abi_json = 1;              // Contract ABI JSON
     string function_name = 2;         // Function name
-    bytes output_data = 3;            // Output data to decode
+    string output_data = 3;           // Output data to decode (hex-encoded with 0x prefix)
 }
 
 message DecodeFunctionOutputResponse {
-    repeated bytes decoded_values = 1; // Decoded values
+    repeated string decoded_values = 1; // Decoded values (JSON-encoded)
     string error = 2;                  // Error message (if failed)
 }
 

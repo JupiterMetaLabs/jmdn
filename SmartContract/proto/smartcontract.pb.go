@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.33.1
-// source: SmartContract/proto/smartcontract.proto
+// source: proto/smartcontract.proto
 
 package proto
 
@@ -30,7 +30,7 @@ type Address struct {
 
 func (x *Address) Reset() {
 	*x = Address{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[0]
+	mi := &file_proto_smartcontract_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -42,7 +42,7 @@ func (x *Address) String() string {
 func (*Address) ProtoMessage() {}
 
 func (x *Address) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[0]
+	mi := &file_proto_smartcontract_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -55,7 +55,7 @@ func (x *Address) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Address.ProtoReflect.Descriptor instead.
 func (*Address) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{0}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *Address) GetValue() []byte {
@@ -74,7 +74,7 @@ type Hash struct {
 
 func (x *Hash) Reset() {
 	*x = Hash{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[1]
+	mi := &file_proto_smartcontract_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -86,7 +86,7 @@ func (x *Hash) String() string {
 func (*Hash) ProtoMessage() {}
 
 func (x *Hash) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[1]
+	mi := &file_proto_smartcontract_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -99,7 +99,7 @@ func (x *Hash) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Hash.ProtoReflect.Descriptor instead.
 func (*Hash) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{1}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *Hash) GetValue() []byte {
@@ -117,7 +117,7 @@ type Empty struct {
 
 func (x *Empty) Reset() {
 	*x = Empty{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[2]
+	mi := &file_proto_smartcontract_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -129,7 +129,7 @@ func (x *Empty) String() string {
 func (*Empty) ProtoMessage() {}
 
 func (x *Empty) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[2]
+	mi := &file_proto_smartcontract_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -142,7 +142,7 @@ func (x *Empty) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Empty.ProtoReflect.Descriptor instead.
 func (*Empty) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{2}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{2}
 }
 
 type CompiledContract struct {
@@ -159,7 +159,7 @@ type CompiledContract struct {
 
 func (x *CompiledContract) Reset() {
 	*x = CompiledContract{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[3]
+	mi := &file_proto_smartcontract_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -171,7 +171,7 @@ func (x *CompiledContract) String() string {
 func (*CompiledContract) ProtoMessage() {}
 
 func (x *CompiledContract) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[3]
+	mi := &file_proto_smartcontract_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -184,7 +184,7 @@ func (x *CompiledContract) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompiledContract.ProtoReflect.Descriptor instead.
 func (*CompiledContract) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{3}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *CompiledContract) GetBytecode() string {
@@ -231,9 +231,9 @@ func (x *CompiledContract) GetErrors() []string {
 
 type ExecutionResult struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	ReturnData      []byte                 `protobuf:"bytes,1,opt,name=return_data,json=returnData,proto3" json:"return_data,omitempty"`                // Return data from execution
+	ReturnData      string                 `protobuf:"bytes,1,opt,name=return_data,json=returnData,proto3" json:"return_data,omitempty"`                // Return data from execution (hex-encoded with 0x prefix)
 	GasUsed         uint64                 `protobuf:"varint,2,opt,name=gas_used,json=gasUsed,proto3" json:"gas_used,omitempty"`                        // Gas consumed
-	ContractAddress []byte                 `protobuf:"bytes,3,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"` // Contract address (for deployments)
+	ContractAddress string                 `protobuf:"bytes,3,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"` // Contract address (hex-encoded with 0x prefix)
 	Error           string                 `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`                                            // Error message (if failed)
 	Success         bool                   `protobuf:"varint,5,opt,name=success,proto3" json:"success,omitempty"`                                       // Execution success status
 	unknownFields   protoimpl.UnknownFields
@@ -242,7 +242,7 @@ type ExecutionResult struct {
 
 func (x *ExecutionResult) Reset() {
 	*x = ExecutionResult{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[4]
+	mi := &file_proto_smartcontract_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -254,7 +254,7 @@ func (x *ExecutionResult) String() string {
 func (*ExecutionResult) ProtoMessage() {}
 
 func (x *ExecutionResult) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[4]
+	mi := &file_proto_smartcontract_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -267,14 +267,14 @@ func (x *ExecutionResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecutionResult.ProtoReflect.Descriptor instead.
 func (*ExecutionResult) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{4}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *ExecutionResult) GetReturnData() []byte {
+func (x *ExecutionResult) GetReturnData() string {
 	if x != nil {
 		return x.ReturnData
 	}
-	return nil
+	return ""
 }
 
 func (x *ExecutionResult) GetGasUsed() uint64 {
@@ -284,11 +284,11 @@ func (x *ExecutionResult) GetGasUsed() uint64 {
 	return 0
 }
 
-func (x *ExecutionResult) GetContractAddress() []byte {
+func (x *ExecutionResult) GetContractAddress() string {
 	if x != nil {
 		return x.ContractAddress
 	}
-	return nil
+	return ""
 }
 
 func (x *ExecutionResult) GetError() string {
@@ -307,11 +307,11 @@ func (x *ExecutionResult) GetSuccess() bool {
 
 type ContractMetadata struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Address       []byte                 `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`                             // Contract address
+	Address       string                 `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`                             // Contract address (hex-encoded with 0x prefix)
 	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`                                   // Contract name
 	BlockNumber   uint64                 `protobuf:"varint,3,opt,name=block_number,json=blockNumber,proto3" json:"block_number,omitempty"` // Block number where deployed
-	Deployer      []byte                 `protobuf:"bytes,4,opt,name=deployer,proto3" json:"deployer,omitempty"`                           // Address that deployed the contract
-	TxHash        []byte                 `protobuf:"bytes,5,opt,name=tx_hash,json=txHash,proto3" json:"tx_hash,omitempty"`                 // Deployment transaction hash
+	Deployer      string                 `protobuf:"bytes,4,opt,name=deployer,proto3" json:"deployer,omitempty"`                           // Address that deployed the contract (hex-encoded with 0x prefix)
+	TxHash        string                 `protobuf:"bytes,5,opt,name=tx_hash,json=txHash,proto3" json:"tx_hash,omitempty"`                 // Deployment transaction hash (hex-encoded with 0x prefix)
 	Timestamp     uint64                 `protobuf:"varint,6,opt,name=timestamp,proto3" json:"timestamp,omitempty"`                        // Deploy timestamp
 	Abi           string                 `protobuf:"bytes,7,opt,name=abi,proto3" json:"abi,omitempty"`                                     // Contract ABI JSON
 	unknownFields protoimpl.UnknownFields
@@ -320,7 +320,7 @@ type ContractMetadata struct {
 
 func (x *ContractMetadata) Reset() {
 	*x = ContractMetadata{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[5]
+	mi := &file_proto_smartcontract_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -332,7 +332,7 @@ func (x *ContractMetadata) String() string {
 func (*ContractMetadata) ProtoMessage() {}
 
 func (x *ContractMetadata) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[5]
+	mi := &file_proto_smartcontract_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -345,14 +345,14 @@ func (x *ContractMetadata) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContractMetadata.ProtoReflect.Descriptor instead.
 func (*ContractMetadata) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{5}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *ContractMetadata) GetAddress() []byte {
+func (x *ContractMetadata) GetAddress() string {
 	if x != nil {
 		return x.Address
 	}
-	return nil
+	return ""
 }
 
 func (x *ContractMetadata) GetName() string {
@@ -369,18 +369,18 @@ func (x *ContractMetadata) GetBlockNumber() uint64 {
 	return 0
 }
 
-func (x *ContractMetadata) GetDeployer() []byte {
+func (x *ContractMetadata) GetDeployer() string {
 	if x != nil {
 		return x.Deployer
 	}
-	return nil
+	return ""
 }
 
-func (x *ContractMetadata) GetTxHash() []byte {
+func (x *ContractMetadata) GetTxHash() string {
 	if x != nil {
 		return x.TxHash
 	}
-	return nil
+	return ""
 }
 
 func (x *ContractMetadata) GetTimestamp() uint64 {
@@ -410,7 +410,7 @@ type CompileRequest struct {
 
 func (x *CompileRequest) Reset() {
 	*x = CompileRequest{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[6]
+	mi := &file_proto_smartcontract_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -422,7 +422,7 @@ func (x *CompileRequest) String() string {
 func (*CompileRequest) ProtoMessage() {}
 
 func (x *CompileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[6]
+	mi := &file_proto_smartcontract_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -435,7 +435,7 @@ func (x *CompileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompileRequest.ProtoReflect.Descriptor instead.
 func (*CompileRequest) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{6}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CompileRequest) GetSourceCode() string {
@@ -477,7 +477,7 @@ type CompileResponse struct {
 
 func (x *CompileResponse) Reset() {
 	*x = CompileResponse{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[7]
+	mi := &file_proto_smartcontract_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -489,7 +489,7 @@ func (x *CompileResponse) String() string {
 func (*CompileResponse) ProtoMessage() {}
 
 func (x *CompileResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[7]
+	mi := &file_proto_smartcontract_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -502,7 +502,7 @@ func (x *CompileResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompileResponse.ProtoReflect.Descriptor instead.
 func (*CompileResponse) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{7}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *CompileResponse) GetContract() *CompiledContract {
@@ -529,11 +529,11 @@ func (x *CompileResponse) GetError() string {
 // Deployment
 type DeployContractRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	Caller          []byte                 `protobuf:"bytes,1,opt,name=caller,proto3" json:"caller,omitempty"`                                          // Address deploying the contract
-	Bytecode        string                 `protobuf:"bytes,2,opt,name=bytecode,proto3" json:"bytecode,omitempty"`                                      // Hex-encoded contract bytecode
-	Value           []byte                 `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`                                            // ETH value to send (wei as bytes)
+	Caller          string                 `protobuf:"bytes,1,opt,name=caller,proto3" json:"caller,omitempty"`                                          // Address deploying the contract (hex-encoded with 0x prefix)
+	Bytecode        string                 `protobuf:"bytes,2,opt,name=bytecode,proto3" json:"bytecode,omitempty"`                                      // Hex-encoded contract bytecode with 0x prefix
+	Value           string                 `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`                                            // ETH value to send in wei (hex-encoded with 0x prefix)
 	GasLimit        uint64                 `protobuf:"varint,4,opt,name=gas_limit,json=gasLimit,proto3" json:"gas_limit,omitempty"`                     // Gas limit
-	ConstructorArgs []byte                 `protobuf:"bytes,5,opt,name=constructor_args,json=constructorArgs,proto3" json:"constructor_args,omitempty"` // ABI-encoded constructor arguments (optional)
+	ConstructorArgs string                 `protobuf:"bytes,5,opt,name=constructor_args,json=constructorArgs,proto3" json:"constructor_args,omitempty"` // ABI-encoded constructor arguments (hex-encoded with 0x prefix, optional)
 	Abi             string                 `protobuf:"bytes,6,opt,name=abi,proto3" json:"abi,omitempty"`                                                // Contract ABI JSON (optional but recommended for registry)
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
@@ -541,7 +541,7 @@ type DeployContractRequest struct {
 
 func (x *DeployContractRequest) Reset() {
 	*x = DeployContractRequest{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[8]
+	mi := &file_proto_smartcontract_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -553,7 +553,7 @@ func (x *DeployContractRequest) String() string {
 func (*DeployContractRequest) ProtoMessage() {}
 
 func (x *DeployContractRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[8]
+	mi := &file_proto_smartcontract_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -566,14 +566,14 @@ func (x *DeployContractRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeployContractRequest.ProtoReflect.Descriptor instead.
 func (*DeployContractRequest) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{8}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{8}
 }
 
-func (x *DeployContractRequest) GetCaller() []byte {
+func (x *DeployContractRequest) GetCaller() string {
 	if x != nil {
 		return x.Caller
 	}
-	return nil
+	return ""
 }
 
 func (x *DeployContractRequest) GetBytecode() string {
@@ -583,11 +583,11 @@ func (x *DeployContractRequest) GetBytecode() string {
 	return ""
 }
 
-func (x *DeployContractRequest) GetValue() []byte {
+func (x *DeployContractRequest) GetValue() string {
 	if x != nil {
 		return x.Value
 	}
-	return nil
+	return ""
 }
 
 func (x *DeployContractRequest) GetGasLimit() uint64 {
@@ -597,11 +597,11 @@ func (x *DeployContractRequest) GetGasLimit() uint64 {
 	return 0
 }
 
-func (x *DeployContractRequest) GetConstructorArgs() []byte {
+func (x *DeployContractRequest) GetConstructorArgs() string {
 	if x != nil {
 		return x.ConstructorArgs
 	}
-	return nil
+	return ""
 }
 
 func (x *DeployContractRequest) GetAbi() string {
@@ -620,7 +620,7 @@ type DeployContractResponse struct {
 
 func (x *DeployContractResponse) Reset() {
 	*x = DeployContractResponse{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[9]
+	mi := &file_proto_smartcontract_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -632,7 +632,7 @@ func (x *DeployContractResponse) String() string {
 func (*DeployContractResponse) ProtoMessage() {}
 
 func (x *DeployContractResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[9]
+	mi := &file_proto_smartcontract_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -645,7 +645,7 @@ func (x *DeployContractResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeployContractResponse.ProtoReflect.Descriptor instead.
 func (*DeployContractResponse) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{9}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *DeployContractResponse) GetResult() *ExecutionResult {
@@ -658,10 +658,10 @@ func (x *DeployContractResponse) GetResult() *ExecutionResult {
 // Contract Execution
 type ExecuteContractRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	Caller          []byte                 `protobuf:"bytes,1,opt,name=caller,proto3" json:"caller,omitempty"`                                          // Address calling the contract
-	ContractAddress []byte                 `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"` // Contract address
-	Input           []byte                 `protobuf:"bytes,3,opt,name=input,proto3" json:"input,omitempty"`                                            // ABI-encoded function call data
-	Value           []byte                 `protobuf:"bytes,4,opt,name=value,proto3" json:"value,omitempty"`                                            // ETH value to send (wei as bytes)
+	Caller          string                 `protobuf:"bytes,1,opt,name=caller,proto3" json:"caller,omitempty"`                                          // Address calling the contract (hex-encoded with 0x prefix)
+	ContractAddress string                 `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"` // Contract address (hex-encoded with 0x prefix)
+	Input           string                 `protobuf:"bytes,3,opt,name=input,proto3" json:"input,omitempty"`                                            // ABI-encoded function call data (hex-encoded with 0x prefix)
+	Value           string                 `protobuf:"bytes,4,opt,name=value,proto3" json:"value,omitempty"`                                            // ETH value to send in wei (hex-encoded with 0x prefix)
 	GasLimit        uint64                 `protobuf:"varint,5,opt,name=gas_limit,json=gasLimit,proto3" json:"gas_limit,omitempty"`                     // Gas limit
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
@@ -669,7 +669,7 @@ type ExecuteContractRequest struct {
 
 func (x *ExecuteContractRequest) Reset() {
 	*x = ExecuteContractRequest{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[10]
+	mi := &file_proto_smartcontract_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -681,7 +681,7 @@ func (x *ExecuteContractRequest) String() string {
 func (*ExecuteContractRequest) ProtoMessage() {}
 
 func (x *ExecuteContractRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[10]
+	mi := &file_proto_smartcontract_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -694,35 +694,35 @@ func (x *ExecuteContractRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteContractRequest.ProtoReflect.Descriptor instead.
 func (*ExecuteContractRequest) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{10}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{10}
 }
 
-func (x *ExecuteContractRequest) GetCaller() []byte {
+func (x *ExecuteContractRequest) GetCaller() string {
 	if x != nil {
 		return x.Caller
 	}
-	return nil
+	return ""
 }
 
-func (x *ExecuteContractRequest) GetContractAddress() []byte {
+func (x *ExecuteContractRequest) GetContractAddress() string {
 	if x != nil {
 		return x.ContractAddress
 	}
-	return nil
+	return ""
 }
 
-func (x *ExecuteContractRequest) GetInput() []byte {
+func (x *ExecuteContractRequest) GetInput() string {
 	if x != nil {
 		return x.Input
 	}
-	return nil
+	return ""
 }
 
-func (x *ExecuteContractRequest) GetValue() []byte {
+func (x *ExecuteContractRequest) GetValue() string {
 	if x != nil {
 		return x.Value
 	}
-	return nil
+	return ""
 }
 
 func (x *ExecuteContractRequest) GetGasLimit() uint64 {
@@ -741,7 +741,7 @@ type ExecuteContractResponse struct {
 
 func (x *ExecuteContractResponse) Reset() {
 	*x = ExecuteContractResponse{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[11]
+	mi := &file_proto_smartcontract_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -753,7 +753,7 @@ func (x *ExecuteContractResponse) String() string {
 func (*ExecuteContractResponse) ProtoMessage() {}
 
 func (x *ExecuteContractResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[11]
+	mi := &file_proto_smartcontract_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -766,7 +766,7 @@ func (x *ExecuteContractResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteContractResponse.ProtoReflect.Descriptor instead.
 func (*ExecuteContractResponse) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{11}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ExecuteContractResponse) GetResult() *ExecutionResult {
@@ -779,9 +779,9 @@ func (x *ExecuteContractResponse) GetResult() *ExecutionResult {
 // Contract Call (read-only, doesn't modify state)
 type CallContractRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	Caller          []byte                 `protobuf:"bytes,1,opt,name=caller,proto3" json:"caller,omitempty"`                                          // Address making the call
-	ContractAddress []byte                 `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"` // Contract address
-	Input           []byte                 `protobuf:"bytes,3,opt,name=input,proto3" json:"input,omitempty"`                                            // ABI-encoded function call data
+	Caller          string                 `protobuf:"bytes,1,opt,name=caller,proto3" json:"caller,omitempty"`                                          // Address making the call (hex-encoded with 0x prefix)
+	ContractAddress string                 `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"` // Contract address (hex-encoded with 0x prefix)
+	Input           string                 `protobuf:"bytes,3,opt,name=input,proto3" json:"input,omitempty"`                                            // ABI-encoded function call data (hex-encoded with 0x prefix)
 	BlockNumber     uint64                 `protobuf:"varint,4,opt,name=block_number,json=blockNumber,proto3" json:"block_number,omitempty"`            // Block number (0 for latest)
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
@@ -789,7 +789,7 @@ type CallContractRequest struct {
 
 func (x *CallContractRequest) Reset() {
 	*x = CallContractRequest{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[12]
+	mi := &file_proto_smartcontract_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -801,7 +801,7 @@ func (x *CallContractRequest) String() string {
 func (*CallContractRequest) ProtoMessage() {}
 
 func (x *CallContractRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[12]
+	mi := &file_proto_smartcontract_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -814,28 +814,28 @@ func (x *CallContractRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CallContractRequest.ProtoReflect.Descriptor instead.
 func (*CallContractRequest) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{12}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{12}
 }
 
-func (x *CallContractRequest) GetCaller() []byte {
+func (x *CallContractRequest) GetCaller() string {
 	if x != nil {
 		return x.Caller
 	}
-	return nil
+	return ""
 }
 
-func (x *CallContractRequest) GetContractAddress() []byte {
+func (x *CallContractRequest) GetContractAddress() string {
 	if x != nil {
 		return x.ContractAddress
 	}
-	return nil
+	return ""
 }
 
-func (x *CallContractRequest) GetInput() []byte {
+func (x *CallContractRequest) GetInput() string {
 	if x != nil {
 		return x.Input
 	}
-	return nil
+	return ""
 }
 
 func (x *CallContractRequest) GetBlockNumber() uint64 {
@@ -847,7 +847,7 @@ func (x *CallContractRequest) GetBlockNumber() uint64 {
 
 type CallContractResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	ReturnData    []byte                 `protobuf:"bytes,1,opt,name=return_data,json=returnData,proto3" json:"return_data,omitempty"` // Function return data
+	ReturnData    string                 `protobuf:"bytes,1,opt,name=return_data,json=returnData,proto3" json:"return_data,omitempty"` // Function return data (hex-encoded with 0x prefix)
 	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`                             // Error message (if failed)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -855,7 +855,7 @@ type CallContractResponse struct {
 
 func (x *CallContractResponse) Reset() {
 	*x = CallContractResponse{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[13]
+	mi := &file_proto_smartcontract_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -867,7 +867,7 @@ func (x *CallContractResponse) String() string {
 func (*CallContractResponse) ProtoMessage() {}
 
 func (x *CallContractResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[13]
+	mi := &file_proto_smartcontract_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -880,14 +880,14 @@ func (x *CallContractResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CallContractResponse.ProtoReflect.Descriptor instead.
 func (*CallContractResponse) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{13}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{13}
 }
 
-func (x *CallContractResponse) GetReturnData() []byte {
+func (x *CallContractResponse) GetReturnData() string {
 	if x != nil {
 		return x.ReturnData
 	}
-	return nil
+	return ""
 }
 
 func (x *CallContractResponse) GetError() string {
@@ -900,14 +900,14 @@ func (x *CallContractResponse) GetError() string {
 // Get Contract Code
 type GetContractCodeRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	ContractAddress []byte                 `protobuf:"bytes,1,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"` // Contract address
+	ContractAddress string                 `protobuf:"bytes,1,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"` // Contract address (hex-encoded with 0x prefix)
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
 
 func (x *GetContractCodeRequest) Reset() {
 	*x = GetContractCodeRequest{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[14]
+	mi := &file_proto_smartcontract_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -919,7 +919,7 @@ func (x *GetContractCodeRequest) String() string {
 func (*GetContractCodeRequest) ProtoMessage() {}
 
 func (x *GetContractCodeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[14]
+	mi := &file_proto_smartcontract_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -932,19 +932,19 @@ func (x *GetContractCodeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetContractCodeRequest.ProtoReflect.Descriptor instead.
 func (*GetContractCodeRequest) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{14}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{14}
 }
 
-func (x *GetContractCodeRequest) GetContractAddress() []byte {
+func (x *GetContractCodeRequest) GetContractAddress() string {
 	if x != nil {
 		return x.ContractAddress
 	}
-	return nil
+	return ""
 }
 
 type GetContractCodeResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Code          []byte                 `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`         // Contract bytecode
+	Code          string                 `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`         // Contract bytecode (hex-encoded with 0x prefix)
 	Abi           string                 `protobuf:"bytes,2,opt,name=abi,proto3" json:"abi,omitempty"`           // ABI (if available)
 	Metadata      *ContractMetadata      `protobuf:"bytes,3,opt,name=metadata,proto3" json:"metadata,omitempty"` // Contract metadata (if available)
 	unknownFields protoimpl.UnknownFields
@@ -953,7 +953,7 @@ type GetContractCodeResponse struct {
 
 func (x *GetContractCodeResponse) Reset() {
 	*x = GetContractCodeResponse{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[15]
+	mi := &file_proto_smartcontract_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -965,7 +965,7 @@ func (x *GetContractCodeResponse) String() string {
 func (*GetContractCodeResponse) ProtoMessage() {}
 
 func (x *GetContractCodeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[15]
+	mi := &file_proto_smartcontract_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -978,14 +978,14 @@ func (x *GetContractCodeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetContractCodeResponse.ProtoReflect.Descriptor instead.
 func (*GetContractCodeResponse) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{15}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{15}
 }
 
-func (x *GetContractCodeResponse) GetCode() []byte {
+func (x *GetContractCodeResponse) GetCode() string {
 	if x != nil {
 		return x.Code
 	}
-	return nil
+	return ""
 }
 
 func (x *GetContractCodeResponse) GetAbi() string {
@@ -1005,15 +1005,15 @@ func (x *GetContractCodeResponse) GetMetadata() *ContractMetadata {
 // Get Contract Storage
 type GetStorageRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	ContractAddress []byte                 `protobuf:"bytes,1,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"` // Contract address
-	StorageKey      []byte                 `protobuf:"bytes,2,opt,name=storage_key,json=storageKey,proto3" json:"storage_key,omitempty"`                // Storage slot (32 bytes)
+	ContractAddress string                 `protobuf:"bytes,1,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"` // Contract address (hex-encoded with 0x prefix)
+	StorageKey      string                 `protobuf:"bytes,2,opt,name=storage_key,json=storageKey,proto3" json:"storage_key,omitempty"`                // Storage slot (hex-encoded with 0x prefix, 32 bytes)
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
 
 func (x *GetStorageRequest) Reset() {
 	*x = GetStorageRequest{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[16]
+	mi := &file_proto_smartcontract_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1025,7 +1025,7 @@ func (x *GetStorageRequest) String() string {
 func (*GetStorageRequest) ProtoMessage() {}
 
 func (x *GetStorageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[16]
+	mi := &file_proto_smartcontract_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1038,33 +1038,33 @@ func (x *GetStorageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStorageRequest.ProtoReflect.Descriptor instead.
 func (*GetStorageRequest) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{16}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{16}
 }
 
-func (x *GetStorageRequest) GetContractAddress() []byte {
+func (x *GetStorageRequest) GetContractAddress() string {
 	if x != nil {
 		return x.ContractAddress
 	}
-	return nil
+	return ""
 }
 
-func (x *GetStorageRequest) GetStorageKey() []byte {
+func (x *GetStorageRequest) GetStorageKey() string {
 	if x != nil {
 		return x.StorageKey
 	}
-	return nil
+	return ""
 }
 
 type GetStorageResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Value         []byte                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"` // Storage value (32 bytes)
+	Value         string                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"` // Storage value (hex-encoded with 0x prefix, 32 bytes)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetStorageResponse) Reset() {
 	*x = GetStorageResponse{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[17]
+	mi := &file_proto_smartcontract_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1076,7 +1076,7 @@ func (x *GetStorageResponse) String() string {
 func (*GetStorageResponse) ProtoMessage() {}
 
 func (x *GetStorageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[17]
+	mi := &file_proto_smartcontract_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1089,30 +1089,30 @@ func (x *GetStorageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStorageResponse.ProtoReflect.Descriptor instead.
 func (*GetStorageResponse) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{17}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{17}
 }
 
-func (x *GetStorageResponse) GetValue() []byte {
+func (x *GetStorageResponse) GetValue() string {
 	if x != nil {
 		return x.Value
 	}
-	return nil
+	return ""
 }
 
 // Gas Estimation
 type EstimateGasRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	Caller          []byte                 `protobuf:"bytes,1,opt,name=caller,proto3" json:"caller,omitempty"`                                          // Address making the call
-	ContractAddress []byte                 `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"` // Contract address (empty for deployment)
-	Input           []byte                 `protobuf:"bytes,3,opt,name=input,proto3" json:"input,omitempty"`                                            // Transaction data
-	Value           []byte                 `protobuf:"bytes,4,opt,name=value,proto3" json:"value,omitempty"`                                            // ETH value
+	Caller          string                 `protobuf:"bytes,1,opt,name=caller,proto3" json:"caller,omitempty"`                                          // Address making the call (hex-encoded with 0x prefix)
+	ContractAddress string                 `protobuf:"bytes,2,opt,name=contract_address,json=contractAddress,proto3" json:"contract_address,omitempty"` // Contract address (empty for deployment, hex-encoded with 0x prefix)
+	Input           string                 `protobuf:"bytes,3,opt,name=input,proto3" json:"input,omitempty"`                                            // Transaction data (hex-encoded with 0x prefix)
+	Value           string                 `protobuf:"bytes,4,opt,name=value,proto3" json:"value,omitempty"`                                            // ETH value in wei (hex-encoded with 0x prefix)
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
 
 func (x *EstimateGasRequest) Reset() {
 	*x = EstimateGasRequest{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[18]
+	mi := &file_proto_smartcontract_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1124,7 +1124,7 @@ func (x *EstimateGasRequest) String() string {
 func (*EstimateGasRequest) ProtoMessage() {}
 
 func (x *EstimateGasRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[18]
+	mi := &file_proto_smartcontract_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1137,35 +1137,35 @@ func (x *EstimateGasRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateGasRequest.ProtoReflect.Descriptor instead.
 func (*EstimateGasRequest) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{18}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{18}
 }
 
-func (x *EstimateGasRequest) GetCaller() []byte {
+func (x *EstimateGasRequest) GetCaller() string {
 	if x != nil {
 		return x.Caller
 	}
-	return nil
+	return ""
 }
 
-func (x *EstimateGasRequest) GetContractAddress() []byte {
+func (x *EstimateGasRequest) GetContractAddress() string {
 	if x != nil {
 		return x.ContractAddress
 	}
-	return nil
+	return ""
 }
 
-func (x *EstimateGasRequest) GetInput() []byte {
+func (x *EstimateGasRequest) GetInput() string {
 	if x != nil {
 		return x.Input
 	}
-	return nil
+	return ""
 }
 
-func (x *EstimateGasRequest) GetValue() []byte {
+func (x *EstimateGasRequest) GetValue() string {
 	if x != nil {
 		return x.Value
 	}
-	return nil
+	return ""
 }
 
 type EstimateGasResponse struct {
@@ -1178,7 +1178,7 @@ type EstimateGasResponse struct {
 
 func (x *EstimateGasResponse) Reset() {
 	*x = EstimateGasResponse{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[19]
+	mi := &file_proto_smartcontract_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1190,7 +1190,7 @@ func (x *EstimateGasResponse) String() string {
 func (*EstimateGasResponse) ProtoMessage() {}
 
 func (x *EstimateGasResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[19]
+	mi := &file_proto_smartcontract_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1203,7 +1203,7 @@ func (x *EstimateGasResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstimateGasResponse.ProtoReflect.Descriptor instead.
 func (*EstimateGasResponse) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{19}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *EstimateGasResponse) GetGasEstimate() uint64 {
@@ -1225,14 +1225,14 @@ type EncodeFunctionCallRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AbiJson       string                 `protobuf:"bytes,1,opt,name=abi_json,json=abiJson,proto3" json:"abi_json,omitempty"`                // Contract ABI JSON
 	FunctionName  string                 `protobuf:"bytes,2,opt,name=function_name,json=functionName,proto3" json:"function_name,omitempty"` // Function name
-	Args          [][]byte               `protobuf:"bytes,3,rep,name=args,proto3" json:"args,omitempty"`                                     // ABI-encoded arguments
+	Args          []string               `protobuf:"bytes,3,rep,name=args,proto3" json:"args,omitempty"`                                     // JSON-encoded arguments
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EncodeFunctionCallRequest) Reset() {
 	*x = EncodeFunctionCallRequest{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[20]
+	mi := &file_proto_smartcontract_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1244,7 +1244,7 @@ func (x *EncodeFunctionCallRequest) String() string {
 func (*EncodeFunctionCallRequest) ProtoMessage() {}
 
 func (x *EncodeFunctionCallRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[20]
+	mi := &file_proto_smartcontract_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1257,7 +1257,7 @@ func (x *EncodeFunctionCallRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EncodeFunctionCallRequest.ProtoReflect.Descriptor instead.
 func (*EncodeFunctionCallRequest) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{20}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *EncodeFunctionCallRequest) GetAbiJson() string {
@@ -1274,7 +1274,7 @@ func (x *EncodeFunctionCallRequest) GetFunctionName() string {
 	return ""
 }
 
-func (x *EncodeFunctionCallRequest) GetArgs() [][]byte {
+func (x *EncodeFunctionCallRequest) GetArgs() []string {
 	if x != nil {
 		return x.Args
 	}
@@ -1283,7 +1283,7 @@ func (x *EncodeFunctionCallRequest) GetArgs() [][]byte {
 
 type EncodeFunctionCallResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	EncodedData   []byte                 `protobuf:"bytes,1,opt,name=encoded_data,json=encodedData,proto3" json:"encoded_data,omitempty"` // ABI-encoded function call data
+	EncodedData   string                 `protobuf:"bytes,1,opt,name=encoded_data,json=encodedData,proto3" json:"encoded_data,omitempty"` // ABI-encoded function call data (hex-encoded with 0x prefix)
 	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`                                // Error message (if failed)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1291,7 +1291,7 @@ type EncodeFunctionCallResponse struct {
 
 func (x *EncodeFunctionCallResponse) Reset() {
 	*x = EncodeFunctionCallResponse{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[21]
+	mi := &file_proto_smartcontract_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1303,7 +1303,7 @@ func (x *EncodeFunctionCallResponse) String() string {
 func (*EncodeFunctionCallResponse) ProtoMessage() {}
 
 func (x *EncodeFunctionCallResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[21]
+	mi := &file_proto_smartcontract_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1316,14 +1316,14 @@ func (x *EncodeFunctionCallResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EncodeFunctionCallResponse.ProtoReflect.Descriptor instead.
 func (*EncodeFunctionCallResponse) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{21}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{21}
 }
 
-func (x *EncodeFunctionCallResponse) GetEncodedData() []byte {
+func (x *EncodeFunctionCallResponse) GetEncodedData() string {
 	if x != nil {
 		return x.EncodedData
 	}
-	return nil
+	return ""
 }
 
 func (x *EncodeFunctionCallResponse) GetError() string {
@@ -1338,14 +1338,14 @@ type DecodeFunctionOutputRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AbiJson       string                 `protobuf:"bytes,1,opt,name=abi_json,json=abiJson,proto3" json:"abi_json,omitempty"`                // Contract ABI JSON
 	FunctionName  string                 `protobuf:"bytes,2,opt,name=function_name,json=functionName,proto3" json:"function_name,omitempty"` // Function name
-	OutputData    []byte                 `protobuf:"bytes,3,opt,name=output_data,json=outputData,proto3" json:"output_data,omitempty"`       // Output data to decode
+	OutputData    string                 `protobuf:"bytes,3,opt,name=output_data,json=outputData,proto3" json:"output_data,omitempty"`       // Output data to decode (hex-encoded with 0x prefix)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DecodeFunctionOutputRequest) Reset() {
 	*x = DecodeFunctionOutputRequest{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[22]
+	mi := &file_proto_smartcontract_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1357,7 +1357,7 @@ func (x *DecodeFunctionOutputRequest) String() string {
 func (*DecodeFunctionOutputRequest) ProtoMessage() {}
 
 func (x *DecodeFunctionOutputRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[22]
+	mi := &file_proto_smartcontract_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1370,7 +1370,7 @@ func (x *DecodeFunctionOutputRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecodeFunctionOutputRequest.ProtoReflect.Descriptor instead.
 func (*DecodeFunctionOutputRequest) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{22}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *DecodeFunctionOutputRequest) GetAbiJson() string {
@@ -1387,16 +1387,16 @@ func (x *DecodeFunctionOutputRequest) GetFunctionName() string {
 	return ""
 }
 
-func (x *DecodeFunctionOutputRequest) GetOutputData() []byte {
+func (x *DecodeFunctionOutputRequest) GetOutputData() string {
 	if x != nil {
 		return x.OutputData
 	}
-	return nil
+	return ""
 }
 
 type DecodeFunctionOutputResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	DecodedValues [][]byte               `protobuf:"bytes,1,rep,name=decoded_values,json=decodedValues,proto3" json:"decoded_values,omitempty"` // Decoded values
+	DecodedValues []string               `protobuf:"bytes,1,rep,name=decoded_values,json=decodedValues,proto3" json:"decoded_values,omitempty"` // Decoded values (JSON-encoded)
 	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`                                      // Error message (if failed)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1404,7 +1404,7 @@ type DecodeFunctionOutputResponse struct {
 
 func (x *DecodeFunctionOutputResponse) Reset() {
 	*x = DecodeFunctionOutputResponse{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[23]
+	mi := &file_proto_smartcontract_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1416,7 +1416,7 @@ func (x *DecodeFunctionOutputResponse) String() string {
 func (*DecodeFunctionOutputResponse) ProtoMessage() {}
 
 func (x *DecodeFunctionOutputResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[23]
+	mi := &file_proto_smartcontract_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1429,10 +1429,10 @@ func (x *DecodeFunctionOutputResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecodeFunctionOutputResponse.ProtoReflect.Descriptor instead.
 func (*DecodeFunctionOutputResponse) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{23}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{23}
 }
 
-func (x *DecodeFunctionOutputResponse) GetDecodedValues() [][]byte {
+func (x *DecodeFunctionOutputResponse) GetDecodedValues() []string {
 	if x != nil {
 		return x.DecodedValues
 	}
@@ -1458,7 +1458,7 @@ type ListContractsRequest struct {
 
 func (x *ListContractsRequest) Reset() {
 	*x = ListContractsRequest{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[24]
+	mi := &file_proto_smartcontract_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1470,7 +1470,7 @@ func (x *ListContractsRequest) String() string {
 func (*ListContractsRequest) ProtoMessage() {}
 
 func (x *ListContractsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[24]
+	mi := &file_proto_smartcontract_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1483,7 +1483,7 @@ func (x *ListContractsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListContractsRequest.ProtoReflect.Descriptor instead.
 func (*ListContractsRequest) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{24}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ListContractsRequest) GetFromBlock() uint64 {
@@ -1516,7 +1516,7 @@ type ListContractsResponse struct {
 
 func (x *ListContractsResponse) Reset() {
 	*x = ListContractsResponse{}
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[25]
+	mi := &file_proto_smartcontract_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1528,7 +1528,7 @@ func (x *ListContractsResponse) String() string {
 func (*ListContractsResponse) ProtoMessage() {}
 
 func (x *ListContractsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_SmartContract_proto_smartcontract_proto_msgTypes[25]
+	mi := &file_proto_smartcontract_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1541,7 +1541,7 @@ func (x *ListContractsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListContractsResponse.ProtoReflect.Descriptor instead.
 func (*ListContractsResponse) Descriptor() ([]byte, []int) {
-	return file_SmartContract_proto_smartcontract_proto_rawDescGZIP(), []int{25}
+	return file_proto_smartcontract_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ListContractsResponse) GetContracts() []*ContractMetadata {
@@ -1551,11 +1551,11 @@ func (x *ListContractsResponse) GetContracts() []*ContractMetadata {
 	return nil
 }
 
-var File_SmartContract_proto_smartcontract_proto protoreflect.FileDescriptor
+var File_proto_smartcontract_proto protoreflect.FileDescriptor
 
-const file_SmartContract_proto_smartcontract_proto_rawDesc = "" +
+const file_proto_smartcontract_proto_rawDesc = "" +
 	"\n" +
-	"'SmartContract/proto/smartcontract.proto\x12\rsmartcontract\"\x1f\n" +
+	"\x19proto/smartcontract.proto\x12\rsmartcontract\"\x1f\n" +
 	"\aAddress\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\fR\x05value\"\x1c\n" +
 	"\x04Hash\x12\x14\n" +
@@ -1570,18 +1570,18 @@ const file_SmartContract_proto_smartcontract_proto_rawDesc = "" +
 	"sourcePath\x12\x16\n" +
 	"\x06errors\x18\x06 \x03(\tR\x06errors\"\xa8\x01\n" +
 	"\x0fExecutionResult\x12\x1f\n" +
-	"\vreturn_data\x18\x01 \x01(\fR\n" +
+	"\vreturn_data\x18\x01 \x01(\tR\n" +
 	"returnData\x12\x19\n" +
 	"\bgas_used\x18\x02 \x01(\x04R\agasUsed\x12)\n" +
-	"\x10contract_address\x18\x03 \x01(\fR\x0fcontractAddress\x12\x14\n" +
+	"\x10contract_address\x18\x03 \x01(\tR\x0fcontractAddress\x12\x14\n" +
 	"\x05error\x18\x04 \x01(\tR\x05error\x12\x18\n" +
 	"\asuccess\x18\x05 \x01(\bR\asuccess\"\xc8\x01\n" +
 	"\x10ContractMetadata\x12\x18\n" +
-	"\aaddress\x18\x01 \x01(\fR\aaddress\x12\x12\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12!\n" +
 	"\fblock_number\x18\x03 \x01(\x04R\vblockNumber\x12\x1a\n" +
-	"\bdeployer\x18\x04 \x01(\fR\bdeployer\x12\x17\n" +
-	"\atx_hash\x18\x05 \x01(\fR\x06txHash\x12\x1c\n" +
+	"\bdeployer\x18\x04 \x01(\tR\bdeployer\x12\x17\n" +
+	"\atx_hash\x18\x05 \x01(\tR\x06txHash\x12\x1c\n" +
 	"\ttimestamp\x18\x06 \x01(\x04R\ttimestamp\x12\x10\n" +
 	"\x03abi\x18\a \x01(\tR\x03abi\"\x9d\x01\n" +
 	"\x0eCompileRequest\x12\x1f\n" +
@@ -1595,65 +1595,65 @@ const file_SmartContract_proto_smartcontract_proto_rawDesc = "" +
 	"\x10compiler_version\x18\x02 \x01(\tR\x0fcompilerVersion\x12\x14\n" +
 	"\x05error\x18\x03 \x01(\tR\x05error\"\xbb\x01\n" +
 	"\x15DeployContractRequest\x12\x16\n" +
-	"\x06caller\x18\x01 \x01(\fR\x06caller\x12\x1a\n" +
+	"\x06caller\x18\x01 \x01(\tR\x06caller\x12\x1a\n" +
 	"\bbytecode\x18\x02 \x01(\tR\bbytecode\x12\x14\n" +
-	"\x05value\x18\x03 \x01(\fR\x05value\x12\x1b\n" +
+	"\x05value\x18\x03 \x01(\tR\x05value\x12\x1b\n" +
 	"\tgas_limit\x18\x04 \x01(\x04R\bgasLimit\x12)\n" +
-	"\x10constructor_args\x18\x05 \x01(\fR\x0fconstructorArgs\x12\x10\n" +
+	"\x10constructor_args\x18\x05 \x01(\tR\x0fconstructorArgs\x12\x10\n" +
 	"\x03abi\x18\x06 \x01(\tR\x03abi\"P\n" +
 	"\x16DeployContractResponse\x126\n" +
 	"\x06result\x18\x01 \x01(\v2\x1e.smartcontract.ExecutionResultR\x06result\"\xa4\x01\n" +
 	"\x16ExecuteContractRequest\x12\x16\n" +
-	"\x06caller\x18\x01 \x01(\fR\x06caller\x12)\n" +
-	"\x10contract_address\x18\x02 \x01(\fR\x0fcontractAddress\x12\x14\n" +
-	"\x05input\x18\x03 \x01(\fR\x05input\x12\x14\n" +
-	"\x05value\x18\x04 \x01(\fR\x05value\x12\x1b\n" +
+	"\x06caller\x18\x01 \x01(\tR\x06caller\x12)\n" +
+	"\x10contract_address\x18\x02 \x01(\tR\x0fcontractAddress\x12\x14\n" +
+	"\x05input\x18\x03 \x01(\tR\x05input\x12\x14\n" +
+	"\x05value\x18\x04 \x01(\tR\x05value\x12\x1b\n" +
 	"\tgas_limit\x18\x05 \x01(\x04R\bgasLimit\"Q\n" +
 	"\x17ExecuteContractResponse\x126\n" +
 	"\x06result\x18\x01 \x01(\v2\x1e.smartcontract.ExecutionResultR\x06result\"\x91\x01\n" +
 	"\x13CallContractRequest\x12\x16\n" +
-	"\x06caller\x18\x01 \x01(\fR\x06caller\x12)\n" +
-	"\x10contract_address\x18\x02 \x01(\fR\x0fcontractAddress\x12\x14\n" +
-	"\x05input\x18\x03 \x01(\fR\x05input\x12!\n" +
+	"\x06caller\x18\x01 \x01(\tR\x06caller\x12)\n" +
+	"\x10contract_address\x18\x02 \x01(\tR\x0fcontractAddress\x12\x14\n" +
+	"\x05input\x18\x03 \x01(\tR\x05input\x12!\n" +
 	"\fblock_number\x18\x04 \x01(\x04R\vblockNumber\"M\n" +
 	"\x14CallContractResponse\x12\x1f\n" +
-	"\vreturn_data\x18\x01 \x01(\fR\n" +
+	"\vreturn_data\x18\x01 \x01(\tR\n" +
 	"returnData\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"C\n" +
 	"\x16GetContractCodeRequest\x12)\n" +
-	"\x10contract_address\x18\x01 \x01(\fR\x0fcontractAddress\"|\n" +
+	"\x10contract_address\x18\x01 \x01(\tR\x0fcontractAddress\"|\n" +
 	"\x17GetContractCodeResponse\x12\x12\n" +
-	"\x04code\x18\x01 \x01(\fR\x04code\x12\x10\n" +
+	"\x04code\x18\x01 \x01(\tR\x04code\x12\x10\n" +
 	"\x03abi\x18\x02 \x01(\tR\x03abi\x12;\n" +
 	"\bmetadata\x18\x03 \x01(\v2\x1f.smartcontract.ContractMetadataR\bmetadata\"_\n" +
 	"\x11GetStorageRequest\x12)\n" +
-	"\x10contract_address\x18\x01 \x01(\fR\x0fcontractAddress\x12\x1f\n" +
-	"\vstorage_key\x18\x02 \x01(\fR\n" +
+	"\x10contract_address\x18\x01 \x01(\tR\x0fcontractAddress\x12\x1f\n" +
+	"\vstorage_key\x18\x02 \x01(\tR\n" +
 	"storageKey\"*\n" +
 	"\x12GetStorageResponse\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\fR\x05value\"\x83\x01\n" +
+	"\x05value\x18\x01 \x01(\tR\x05value\"\x83\x01\n" +
 	"\x12EstimateGasRequest\x12\x16\n" +
-	"\x06caller\x18\x01 \x01(\fR\x06caller\x12)\n" +
-	"\x10contract_address\x18\x02 \x01(\fR\x0fcontractAddress\x12\x14\n" +
-	"\x05input\x18\x03 \x01(\fR\x05input\x12\x14\n" +
-	"\x05value\x18\x04 \x01(\fR\x05value\"N\n" +
+	"\x06caller\x18\x01 \x01(\tR\x06caller\x12)\n" +
+	"\x10contract_address\x18\x02 \x01(\tR\x0fcontractAddress\x12\x14\n" +
+	"\x05input\x18\x03 \x01(\tR\x05input\x12\x14\n" +
+	"\x05value\x18\x04 \x01(\tR\x05value\"N\n" +
 	"\x13EstimateGasResponse\x12!\n" +
 	"\fgas_estimate\x18\x01 \x01(\x04R\vgasEstimate\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"o\n" +
 	"\x19EncodeFunctionCallRequest\x12\x19\n" +
 	"\babi_json\x18\x01 \x01(\tR\aabiJson\x12#\n" +
 	"\rfunction_name\x18\x02 \x01(\tR\ffunctionName\x12\x12\n" +
-	"\x04args\x18\x03 \x03(\fR\x04args\"U\n" +
+	"\x04args\x18\x03 \x03(\tR\x04args\"U\n" +
 	"\x1aEncodeFunctionCallResponse\x12!\n" +
-	"\fencoded_data\x18\x01 \x01(\fR\vencodedData\x12\x14\n" +
+	"\fencoded_data\x18\x01 \x01(\tR\vencodedData\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"~\n" +
 	"\x1bDecodeFunctionOutputRequest\x12\x19\n" +
 	"\babi_json\x18\x01 \x01(\tR\aabiJson\x12#\n" +
 	"\rfunction_name\x18\x02 \x01(\tR\ffunctionName\x12\x1f\n" +
-	"\voutput_data\x18\x03 \x01(\fR\n" +
+	"\voutput_data\x18\x03 \x01(\tR\n" +
 	"outputData\"[\n" +
 	"\x1cDecodeFunctionOutputResponse\x12%\n" +
-	"\x0edecoded_values\x18\x01 \x03(\fR\rdecodedValues\x12\x14\n" +
+	"\x0edecoded_values\x18\x01 \x03(\tR\rdecodedValues\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"f\n" +
 	"\x14ListContractsRequest\x12\x1d\n" +
 	"\n" +
@@ -1676,19 +1676,19 @@ const file_SmartContract_proto_smartcontract_proto_rawDesc = "" +
 	"\x14DecodeFunctionOutput\x12*.smartcontract.DecodeFunctionOutputRequest\x1a+.smartcontract.DecodeFunctionOutputResponseB Z\x1egossipnode/SmartContract/protob\x06proto3"
 
 var (
-	file_SmartContract_proto_smartcontract_proto_rawDescOnce sync.Once
-	file_SmartContract_proto_smartcontract_proto_rawDescData []byte
+	file_proto_smartcontract_proto_rawDescOnce sync.Once
+	file_proto_smartcontract_proto_rawDescData []byte
 )
 
-func file_SmartContract_proto_smartcontract_proto_rawDescGZIP() []byte {
-	file_SmartContract_proto_smartcontract_proto_rawDescOnce.Do(func() {
-		file_SmartContract_proto_smartcontract_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_SmartContract_proto_smartcontract_proto_rawDesc), len(file_SmartContract_proto_smartcontract_proto_rawDesc)))
+func file_proto_smartcontract_proto_rawDescGZIP() []byte {
+	file_proto_smartcontract_proto_rawDescOnce.Do(func() {
+		file_proto_smartcontract_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_smartcontract_proto_rawDesc), len(file_proto_smartcontract_proto_rawDesc)))
 	})
-	return file_SmartContract_proto_smartcontract_proto_rawDescData
+	return file_proto_smartcontract_proto_rawDescData
 }
 
-var file_SmartContract_proto_smartcontract_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
-var file_SmartContract_proto_smartcontract_proto_goTypes = []any{
+var file_proto_smartcontract_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_proto_smartcontract_proto_goTypes = []any{
 	(*Address)(nil),                      // 0: smartcontract.Address
 	(*Hash)(nil),                         // 1: smartcontract.Hash
 	(*Empty)(nil),                        // 2: smartcontract.Empty
@@ -1716,7 +1716,7 @@ var file_SmartContract_proto_smartcontract_proto_goTypes = []any{
 	(*ListContractsRequest)(nil),         // 24: smartcontract.ListContractsRequest
 	(*ListContractsResponse)(nil),        // 25: smartcontract.ListContractsResponse
 }
-var file_SmartContract_proto_smartcontract_proto_depIdxs = []int32{
+var file_proto_smartcontract_proto_depIdxs = []int32{
 	3,  // 0: smartcontract.CompileResponse.contract:type_name -> smartcontract.CompiledContract
 	4,  // 1: smartcontract.DeployContractResponse.result:type_name -> smartcontract.ExecutionResult
 	4,  // 2: smartcontract.ExecuteContractResponse.result:type_name -> smartcontract.ExecutionResult
@@ -1749,26 +1749,26 @@ var file_SmartContract_proto_smartcontract_proto_depIdxs = []int32{
 	0,  // [0:5] is the sub-list for field type_name
 }
 
-func init() { file_SmartContract_proto_smartcontract_proto_init() }
-func file_SmartContract_proto_smartcontract_proto_init() {
-	if File_SmartContract_proto_smartcontract_proto != nil {
+func init() { file_proto_smartcontract_proto_init() }
+func file_proto_smartcontract_proto_init() {
+	if File_proto_smartcontract_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_SmartContract_proto_smartcontract_proto_rawDesc), len(file_SmartContract_proto_smartcontract_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_smartcontract_proto_rawDesc), len(file_proto_smartcontract_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_SmartContract_proto_smartcontract_proto_goTypes,
-		DependencyIndexes: file_SmartContract_proto_smartcontract_proto_depIdxs,
-		MessageInfos:      file_SmartContract_proto_smartcontract_proto_msgTypes,
+		GoTypes:           file_proto_smartcontract_proto_goTypes,
+		DependencyIndexes: file_proto_smartcontract_proto_depIdxs,
+		MessageInfos:      file_proto_smartcontract_proto_msgTypes,
 	}.Build()
-	File_SmartContract_proto_smartcontract_proto = out.File
-	file_SmartContract_proto_smartcontract_proto_goTypes = nil
-	file_SmartContract_proto_smartcontract_proto_depIdxs = nil
+	File_proto_smartcontract_proto = out.File
+	file_proto_smartcontract_proto_goTypes = nil
+	file_proto_smartcontract_proto_depIdxs = nil
 }

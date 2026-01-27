@@ -36,6 +36,10 @@ type ContractDB struct {
 	code      map[common.Address][]byte
 	codeDirty map[common.Address]struct{}
 
+	// Nonce cache and dirty set (for local persistence)
+	nonces     map[common.Address]uint64
+	nonceDirty map[common.Address]struct{}
+
 	// Pending Logs (Events emitted by contracts)
 	logs []*types.Log
 
@@ -68,6 +72,7 @@ var _ StateDB = (*ContractDB)(nil)
 var (
 	PrefixCode    = []byte("code:")
 	PrefixStorage = []byte("storage:")
+	PrefixNonce   = []byte("nonce:")
 )
 
 // NewContractDB creates a new database interface for Smart Contracts
@@ -79,6 +84,8 @@ func NewContractDB(client pb.ChainClient, db storage.KVStore) *ContractDB {
 		storageDirty: make(map[common.Address]map[common.Hash]struct{}),
 		code:         make(map[common.Address][]byte),
 		codeDirty:    make(map[common.Address]struct{}),
+		nonces:       make(map[common.Address]uint64),
+		nonceDirty:   make(map[common.Address]struct{}),
 		logs:         make([]*types.Log, 0),
 		snapshots:    make([]ContractSnapshot, 0),
 		accessList:   newAccessList(),
@@ -123,16 +130,40 @@ func (c *ContractDB) GetBalance(addr common.Address) *uint256.Int {
 }
 
 func (c *ContractDB) GetNonce(addr common.Address) uint64 {
-	req := &pb.GetAccountStateReq{Address: addr.Bytes()}
-	resp, err := c.client.GetAccountState(context.Background(), req)
-	if err != nil || len(resp.Nonce) == 0 {
-		return 0
+	c.lock.RLock()
+	// Check local cache first
+	if nonce, ok := c.nonces[addr]; ok {
+		c.lock.RUnlock()
+		return nonce
 	}
-	return new(big.Int).SetBytes(resp.Nonce).Uint64()
+	c.lock.RUnlock()
+
+	// Check persistent DB
+	key := makeNonceKey(addr)
+	val, err := c.db.Get(key)
+	if err == nil && len(val) > 0 {
+		return new(big.Int).SetBytes(val).Uint64()
+	}
+
+	// Fallback to gETH if available
+	if c.client != nil {
+		req := &pb.GetAccountStateReq{Address: addr.Bytes()}
+		resp, err := c.client.GetAccountState(context.Background(), req)
+		if err == nil && len(resp.Nonce) > 0 {
+			return new(big.Int).SetBytes(resp.Nonce).Uint64()
+		}
+	}
+
+	// Default to 0 for new accounts
+	return 0
 }
 
 func (c *ContractDB) SetNonce(addr common.Address, nonce uint64) {
-	// Local cache/noop
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	c.nonces[addr] = nonce
+	c.nonceDirty[addr] = struct{}{}
 }
 
 func (c *ContractDB) GetCodeHash(addr common.Address) common.Hash {
@@ -273,8 +304,19 @@ func (c *ContractDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 		}
 	}
 	// Clear code dirty map.
-	// We re-allocate to clear it safely while lock is held (defer unlock).
 	c.codeDirty = make(map[common.Address]struct{})
+
+	// Commit Nonces
+	for addr := range c.nonceDirty {
+		nonce := c.nonces[addr]
+		dbKey := makeNonceKey(addr)
+		nonceBytes := new(big.Int).SetUint64(nonce).Bytes()
+		if err := batch.Set(dbKey, nonceBytes); err != nil {
+			return common.Hash{}, err
+		}
+	}
+	// Clear nonce dirty map
+	c.nonceDirty = make(map[common.Address]struct{})
 
 	if err := batch.Commit(); err != nil {
 		return common.Hash{}, err
@@ -385,6 +427,10 @@ func makeStorageKey(addr common.Address, key common.Hash) []byte {
 
 func makeCodeKey(addr common.Address) []byte {
 	return append(PrefixCode, addr.Bytes()...)
+}
+
+func makeNonceKey(addr common.Address) []byte {
+	return append(PrefixNonce, addr.Bytes()...)
 }
 
 func copyCode(src map[common.Address][]byte) map[common.Address][]byte {
