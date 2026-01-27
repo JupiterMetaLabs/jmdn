@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	pbdid "gossipnode/DID/proto"
 	"gossipnode/SmartContract/internal/storage"
 	pb "gossipnode/gETH/proto"
 )
@@ -64,16 +65,25 @@ func main() {
 	fmt.Printf("   Initializing ContractDB...\n")
 
 	// ... gETH client initialization ...
+	// ... gETH client initialization (Code/Storage) ...
 	gethURL := "localhost:9090"
 	conn, err := grpc.Dial(gethURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to connect to gETH node")
 	}
 	defer conn.Close()
-
 	chainClient := pb.NewChainClient(conn)
 
-	stateDB := state.NewContractDB(chainClient, kvStore)
+	// ... DID client initialization (Balance/Nonce) ...
+	didURL := "localhost:15052"
+	didConn, err := grpc.Dial(didURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to connect to DID Service")
+	}
+	defer didConn.Close()
+	didClient := pbdid.NewDIDServiceClient(didConn)
+
+	stateDB := state.NewContractDB(chainClient, didClient, kvStore)
 
 	// 4. Initialize Router (Layer 3)
 	fmt.Println("   Initializing Router...")

@@ -80,6 +80,7 @@ contract SimpleStorage {
 		GasLimit:        3000000,
 		Value:           []byte{0},
 		ConstructorArgs: initVal,
+		Abi:             compileResp.Contract.Abi, // ✅ Include ABI for registry storage
 	})
 	if err != nil {
 		log.Fatalf("DeployContract failed: %v", err)

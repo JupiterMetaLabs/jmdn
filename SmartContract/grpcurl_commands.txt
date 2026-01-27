@@ -1,0 +1,222 @@
+================================================================================
+GRPCURL COMMANDS FOR SMARTCONTRACT SERVICE
+================================================================================
+
+Server: localhost:15055
+Note: Replace placeholder values (YOUR_XXX) with actual values from compile response
+
+================================================================================
+1. COMPILE CONTRACT
+================================================================================
+
+grpcurl -plaintext \
+  -d '{
+    "source_code": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\ncontract HelloWorld {\n    string public message;\n    \n    constructor() {\n        message = \"Hello, World!\";\n    }\n    \n    function setMessage(string memory _newMessage) public {\n        message = _newMessage;\n    }\n    \n    function getMessage() public view returns (string memory) {\n        return message;\n    }\n}",
+    "optimize": true,
+    "optimize_runs": 200
+  }' \
+  localhost:15055 \
+  smartcontract.SmartContractService/CompileContract
+
+# Save the output! You'll need:
+# - contract.bytecode
+# - contract.abi
+
+================================================================================
+2. DEPLOY CONTRACT (WITH ABI) ✅
+================================================================================
+
+grpcurl -plaintext \
+  -d '{
+    "caller": "0x1234567890123456789012345678901234567890",
+    "bytecode": "0x60c0604052600d60809081526c48656c6c6f2c20576f726c642160981b60a05260009061002c90826100eb565b5034801561003957600080fd5b506101ad565b634e487b7160e01b600052604160045260246000fd5b600181811c9082168061006957607f821691505b60208210810361008957634e487b7160e01b600052602260045260246000fd5b50919050565b601f8211156100e657828211156100e657806000526020600020601f840160051c60208510156100bd575060005b90810190601f840160051c0360005b818110156100e2576000838201556001016100cc565b5050505b505050565b81516001600160401b038111156101045761010461003f565b610118816101128454610055565b8461008f565b6020601f82116001811461014c57600083156101345750848201515b600019600385901b1c1916600184901b1784556101a6565b600084815260208120601f198516915b8281101561017c578785015182556020948501946001909201910161015c565b508482101561019a5786840151600019600387901b60f8161c191681555b505060018360011b0184555b5050505050565b6103b8806101bc6000396000f3fe608060405234801561001057600080fd5b50600436106100365760003560e01c8063368b87721461003b578063e21f37ce14610050575b600080fd5b61004e610049366004610122565b61006e565b005b61005861007e565b60405161006591906101db565b60405180910390f35b600061007a82826102bf565b5050565b6000805461008b90610229565b80601f01602080910402602001604051908101604052809291908181526020018280546100b790610229565b80156101045780601f106100d957610100808354040283529160200191610104565b820191906000526020600020905b8154815290600101906020018083116100e757829003601f168201915b505050505081565b634e487b7160e01b600052604160045260246000fd5b60006020828403121561013457600080fd5b813567ffffffffffffffff81111561014b57600080fd5b8201601f8101841361015c57600080fd5b803567ffffffffffffffff8111156101765761017661010c565b604051601f8201601f19908116603f0116810167ffffffffffffffff811182821017156101a5576101a561010c565b6040528181528282016020018610156101bd57600080fd5b81602084016020830137600091810160200191909152949350505050565b602081526000825180602084015260005b8181101561020957602081860181015160408684010152016101ec565b506000604082850101526040601f19601f83011684010191505092915050565b600181811c9082168061023d57607f821691505b60208210810361025d57634e487b7160e01b600052602260045260246000fd5b50919050565b601f8211156102ba57828211156102ba57806000526020600020601f840160051c6020851015610291575060005b90810190601f840160051c0360005b818110156102b6576000838201556001016102a0565b5050505b505050565b815167ffffffffffffffff8111156102d9576102d961010c565b6102ed816102e78454610229565b84610263565b6020601f82116001811461032157600083156103095750848201515b600019600385901b1c1916600184901b17845561037b565b600084815260208120601f198516915b828110156103515787850151825560209485019460019092019101610331565b508482101561036f5786840151600019600387901b60f8161c191681555b505060018360011b0184555b505050505056fea264697066735822122012dc9712a4b698eb11dffca54c662ccddf19d93ae7424860535beb686c85895864736f6c63430008210033",
+    "abi": "YOUR_ABI_JSON_FROM_COMPILE",
+    "gas_limit": 3000000,
+    "value": "0x00"
+  }' \
+  localhost:15055 \
+  smartcontract.SmartContractService/DeployContract
+
+# Example with actual values:
+# "caller": "0x1234567890123456789012345678901234567890"
+# "bytecode": "0x60c0604052600d60809081526c48656c6c6f2c20..."
+# "abi": "[{\"inputs\":[],\"name\":\"message\",\"outputs\":[{\"internalType\":\"string\",\"name\":\"\",\"type\":\"string\"}],\"stateMutability\":\"view\",\"type\":\"function\"}]"
+
+# Save the response! You'll need:
+# - result.contract_address
+
+================================================================================
+3. GET CONTRACT CODE (Verify ABI was stored)
+================================================================================
+
+grpcurl -plaintext \
+  -d '{
+    "contract_address": "YOUR_CONTRACT_ADDRESS_FROM_DEPLOY"
+  }' \
+  localhost:15055 \
+  smartcontract.SmartContractService/GetContractCode
+
+# Example:
+# "contract_address": "0x5a443704dd4B594B382c22a083e2BD3090A6feF3"
+
+# This should return:
+# - code (runtime bytecode)
+# - metadata.abi (the ABI you stored!)
+# - metadata.deployed_at
+
+================================================================================
+4. CALL CONTRACT (Read-only, no state change)
+================================================================================
+
+# First, encode the function call
+grpcurl -plaintext \
+  -d '{
+    "abi_json": "YOUR_CONTRACT_ABI",
+    "function_name": "getMessage",
+    "args": []
+  }' \
+  localhost:15055 \
+  smartcontract.SmartContractService/EncodeFunctionCall
+
+# Then use the encoded data to call
+grpcurl -plaintext \
+  -d '{
+    "caller": "0x0000000000000000000000000000000000000000",
+    "contract_address": "YOUR_CONTRACT_ADDRESS",
+    "input": "ENCODED_DATA_FROM_ABOVE"
+  }' \
+  localhost:15055 \
+  smartcontract.SmartContractService/CallContract
+
+# Then decode the output
+grpcurl -plaintext \
+  -d '{
+    "abi_json": "YOUR_CONTRACT_ABI",
+    "function_name": "getMessage",
+    "output_data": "RETURN_DATA_FROM_CALL"
+  }' \
+  localhost:15055 \
+  smartcontract.SmartContractService/DecodeFunctionOutput
+
+================================================================================
+5. EXECUTE CONTRACT (State-changing transaction)
+================================================================================
+
+# First, encode the function call
+grpcurl -plaintext \
+  -d '{
+    "abi_json": "YOUR_CONTRACT_ABI",
+    "function_name": "setMessage",
+    "args": ["YOUR_STRING_ARG_IN_JSON"]
+  }' \
+  localhost:15055 \
+  smartcontract.SmartContractService/EncodeFunctionCall
+
+# Example args for setMessage("Hello Jupiter"):
+# "args": ["{\"type\":\"string\",\"value\":\"Hello Jupiter\"}"]
+
+# Then execute the transaction
+grpcurl -plaintext \
+  -d '{
+    "caller": "YOUR_CALLER_ADDRESS",
+    "contract_address": "YOUR_CONTRACT_ADDRESS",
+    "input": "ENCODED_DATA_FROM_ABOVE",
+    "gas_limit": 300000,
+    "value": "0x00"
+  }' \
+  localhost:15055 \
+  smartcontract.SmartContractService/ExecuteContract
+
+================================================================================
+6. GET STORAGE (Read raw storage slot)
+================================================================================
+
+grpcurl -plaintext \
+  -d '{
+    "contract_address": "YOUR_CONTRACT_ADDRESS",
+    "storage_key": "0x0000000000000000000000000000000000000000000000000000000000000000"
+  }' \
+  localhost:15055 \
+  smartcontract.SmartContractService/GetStorage
+
+# Storage slots:
+# Slot 0: Usually the first state variable
+# Slot 1: Second state variable, etc.
+
+================================================================================
+7. LIST ALL CONTRACTS
+================================================================================
+
+grpcurl -plaintext \
+  -d '{
+    "limit": 100,
+    "offset": 0
+  }' \
+  localhost:15055 \
+  smartcontract.SmartContractService/ListContracts
+
+================================================================================
+8. ESTIMATE GAS
+================================================================================
+
+# For deployment:
+grpcurl -plaintext \
+  -d '{
+    "caller": "YOUR_CALLER_ADDRESS",
+    "input": "YOUR_BYTECODE",
+    "value": "0x00"
+  }' \
+  localhost:15055 \
+  smartcontract.SmartContractService/EstimateGas
+
+# For execution (include contract_address):
+grpcurl -plaintext \
+  -d '{
+    "caller": "YOUR_CALLER_ADDRESS",
+    "contract_address": "YOUR_CONTRACT_ADDRESS",
+    "input": "YOUR_ENCODED_FUNCTION_DATA",
+    "value": "0x00"
+  }' \
+  localhost:15055 \
+  smartcontract.SmartContractService/EstimateGas
+
+================================================================================
+TIPS:
+================================================================================
+
+1. Use jq for pretty output:
+   grpcurl ... | jq '.'
+
+2. Save compile output to file:
+   grpcurl ... > compile_output.json
+
+3. Extract specific fields with jq:
+   cat compile_output.json | jq -r '.contract.abi'
+
+4. Check server methods:
+   grpcurl -plaintext localhost:15055 list
+
+5. Describe a method:
+   grpcurl -plaintext localhost:15055 describe smartcontract.SmartContractService.DeployContract
+
+================================================================================
+COMPLETE WORKFLOW EXAMPLE:
+================================================================================
+
+# Step 1: Compile
+grpcurl -plaintext -d '{"source_code":"..."}' localhost:15055 smartcontract.SmartContractService/CompileContract > compile.json
+
+# Step 2: Extract values
+BYTECODE=$(cat compile.json | jq -r '.contract.bytecode')
+ABI=$(cat compile.json | jq -r '.contract.abi')
+
+# Step 3: Deploy with ABI
+grpcurl -plaintext -d "{\"caller\":\"0x123...\",\"bytecode\":\"$BYTECODE\",\"abi\":\"$ABI\",\"gas_limit\":3000000,\"value\":\"0x00\"}" localhost:15055 smartcontract.SmartContractService/DeployContract > deploy.json
+
+# Step 4: Get contract address
+CONTRACT_ADDR=$(cat deploy.json | jq -r '.result.contract_address')
+
+# Step 5: Verify ABI stored
+grpcurl -plaintext -d "{\"contract_address\":\"$CONTRACT_ADDR\"}" localhost:15055 smartcontract.SmartContractService/GetContractCode
+
+================================================================================

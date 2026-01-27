@@ -154,6 +154,7 @@ func main() {
 		Bytecode: contract.Bytecode,
 		Value:    big.NewInt(0).Bytes(),
 		GasLimit: estimateResp.GasEstimate,
+		Abi:      contract.Abi, // ✅ Include ABI for registry storage
 	})
 	if err != nil {
 		log.Fatalf("Deployment failed: %v", err)

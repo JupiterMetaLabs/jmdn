@@ -18,6 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/trie/utils"
 	"github.com/holiman/uint256"
 
+	pbdid "gossipnode/DID/proto"
 	pb "gossipnode/gETH/proto"
 )
 
@@ -25,8 +26,9 @@ import (
 // and storing contract state locally in PebbleDB.
 // It is specifically designed for the SmartContract module to manage contract data.
 type ContractDB struct {
-	client pb.ChainClient
-	db     storage.KVStore
+	client    pb.ChainClient
+	didClient pbdid.DIDServiceClient // DID Client for Balance/Nonce
+	db        storage.KVStore
 
 	// Caches and Dirty sets for Contract Storage
 	storage      map[common.Address]map[common.Hash]common.Hash
@@ -76,9 +78,10 @@ var (
 )
 
 // NewContractDB creates a new database interface for Smart Contracts
-func NewContractDB(client pb.ChainClient, db storage.KVStore) *ContractDB {
+func NewContractDB(client pb.ChainClient, didClient pbdid.DIDServiceClient, db storage.KVStore) *ContractDB {
 	return &ContractDB{
 		client:       client,
+		didClient:    didClient,
 		db:           db,
 		storage:      make(map[common.Address]map[common.Hash]common.Hash),
 		storageDirty: make(map[common.Address]map[common.Hash]struct{}),
@@ -115,16 +118,27 @@ func (c *ContractDB) AddBalance(addr common.Address, amount *uint256.Int, reason
 }
 
 func (c *ContractDB) GetBalance(addr common.Address) *uint256.Int {
-	req := &pb.GetAccountStateReq{Address: addr.Bytes()}
-	resp, err := c.client.GetAccountState(context.Background(), req)
+	// Use DID Service for Balance
+	req := &pbdid.GetDIDRequest{Did: addr.Hex()}
+	resp, err := c.didClient.GetDID(context.Background(), req)
 	if err != nil {
-		fmt.Printf("Error fetching balance for %s: %v\n", addr.Hex(), err)
+		fmt.Printf("Error fetching DID balance for %s: %v\n", addr.Hex(), err)
+		return uint256.NewInt(0)
+	}
+
+	if resp.DidInfo == nil || resp.DidInfo.Balance == "" {
 		return uint256.NewInt(0)
 	}
 
 	bal := new(uint256.Int)
-	if len(resp.Balance) > 0 {
-		bal.SetBytes(resp.Balance)
+	// Parse balance string (handle hex or decimal)
+	// assuming 0x prefix if hex, or raw decimal
+	bigBal := new(big.Int)
+	if val, ok := bigBal.SetString(resp.DidInfo.Balance, 0); ok {
+		bal.SetFromBig(val)
+	} else {
+		// Parsing failed, default to 0
+		return uint256.NewInt(0)
 	}
 	return bal
 }
@@ -145,12 +159,15 @@ func (c *ContractDB) GetNonce(addr common.Address) uint64 {
 		return new(big.Int).SetBytes(val).Uint64()
 	}
 
-	// Fallback to gETH if available
-	if c.client != nil {
-		req := &pb.GetAccountStateReq{Address: addr.Bytes()}
-		resp, err := c.client.GetAccountState(context.Background(), req)
-		if err == nil && len(resp.Nonce) > 0 {
-			return new(big.Int).SetBytes(resp.Nonce).Uint64()
+	// Fallback to DID Service for Nonce
+	if c.didClient != nil {
+		req := &pbdid.GetDIDRequest{Did: addr.Hex()}
+		resp, err := c.didClient.GetDID(context.Background(), req)
+		if err == nil && resp.DidInfo != nil && resp.DidInfo.Nonce != "" {
+			nonceBig := new(big.Int)
+			if val, ok := nonceBig.SetString(resp.DidInfo.Nonce, 0); ok {
+				return val.Uint64()
+			}
 		}
 	}
 

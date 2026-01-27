@@ -87,6 +87,7 @@ func main() {
 		Caller:   caller.Bytes(),
 		Bytecode: compileResp.Contract.Bytecode,
 		GasLimit: 3000000,
+		Abi:      compileResp.Contract.Abi, // ✅ Include ABI for registry storage
 	})
 	if err != nil || !deployResp.Result.Success {
 		log.Fatalf("Deployment failed: %v %s", err, deployResp.Result.Error)

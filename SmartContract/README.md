@@ -2,293 +2,121 @@
 
 ## Overview
 
-The SmartContract module provides smart contract compilation and execution capabilities for the JMZK network. It supports Solidity compilation, EVM execution, and state management for smart contracts.
+The SmartContract module provides smart contract compilation and execution capabilities for the JMZK network. It acts as an execution layer that interfaces with:
 
-## Purpose
+1.  **gETH Service** (Port 9090): For Chain Data (Code, Blocks).
+2.  **DID Service** (Port 15052): For Identity Data (Balances, Nonces).
 
-The SmartContract module enables:
+It supports Solidity compilation, EVM execution, and state management using updated **Hex String APIs**.
 
-- Solidity contract compilation
-- EVM contract execution
-- Contract deployment
-- Contract state management
-- ABI encoding and decoding
-- Gas estimation
+## Key Features
 
-## Key Components
+- **Dual-Client Architecture**: Bridges Chain data and Identity data.
+- **Hex String API**: All byte fields (Addresses, Data, Hashes) are JSON-friendly Hex strings (`0x...`).
+- **Remote Compilation**: Compile Solidity source code directly via gRPC.
+- **State Management**: Supports Pebble and SQLite backends.
 
-### 0. Router & gRPC API
+## gRPC Endpoints
 
-**Files:** `Router/Router.go`, `Router/Server.go`, `proto/smartcontract.proto`
+All endpoints receive and return Hex-encoded strings (`0x...`).
 
-SmartContract gRPC API service:
+### Core Operations
 
-- `Router.go`: Business logic orchestration layer
-- `Server.go`: gRPC service implementation
-- `smartcontract.proto`: Protocol Buffer service definitions
-- 11 RPC endpoints for compilation, deployment, and execution
-- Full protobuf-based gRPC service (like gETH module)
+- `rpc CompileContract(CompileRequest) returns (CompileResponse)`
+- `rpc DeployContract(DeployContractRequest) returns (DeployContractResponse)`
+- `rpc ExecuteContract(ExecuteContractRequest) returns (ExecuteContractResponse)`
+- `rpc CallContract(CallContractRequest) returns (CallContractResponse)`
 
-### 1. Compiler
+### Information
 
-**File:** `compiler.go`
+- `rpc GetContractCode(GetContractCodeRequest) returns (GetContractCodeResponse)`
+- `rpc GetStorage(GetStorageRequest) returns (GetStorageResponse)`
+- `rpc ListContracts(ListContractsRequest) returns (ListContractsResponse)`
 
-Solidity contract compilation:
+### Utilities
 
-- `CompileSolidity`: Compile Solidity source files
-- `CompiledContract`: Compiled contract structure
-- Standard JSON input/output format
-- Optimizer configuration
+- `rpc EstimateGas(EstimateGasRequest) returns (EstimateGasResponse)`
+- `rpc EncodeFunctionCall(EncodeFunctionCallRequest) returns (EncodeFunctionCallResponse)`
+- `rpc DecodeFunctionOutput(DecodeFunctionOutputRequest) returns (DecodeFunctionOutputResponse)`
 
-### 2. EVM Executor
+## Setup and Running (No Consensus / Local Execution)
 
-**File:** `evm.go`
+To run the SmartContract service locally without a full consensus node, follow these steps:
 
-EVM execution environment:
+### 1. Prerequisites
 
-- `EVMExecutor`: EVM execution manager
-- `NewEVMExecutor`: Create new EVM executor
-- `DeployContract`: Deploy smart contract
-- `ExecuteContract`: Execute contract function
-- `ExecutionResult`: Execution result structure
+- **gETH Node**: Running on `localhost:9090`.
+- **DID Service**: Running on `localhost:15052` (Validation of Balances).
+- **Go**: Version 1.22+.
 
-### 3. State Database
+### 2. Configuration
 
-**File:** `statedb.go`
+The service connects to `localhost:9090` and `localhost:15052` by default.
+Storage configuration is controlled via environment variables.
 
-Contract state management:
+### 3. Run Service
 
-- State database implementation
-- Account balance management
-- Storage management
-- Nonce management
+```bash
+# Run with Pebble DB (recommended)
+DB_TYPE=pebble go run cmd/main.go
 
-### 4. State Database Helper
-
-**File:** `statedbHelper.go`
-
-State database utilities:
-
-- Helper functions for state operations
-- Account management
-- Storage operations
-
-### 5. EVM Helper
-
-**File:** `EVMHelper.go`
-
-EVM utility functions:
-
-- Hash function implementation
-- Block context management
-- Transaction context management
-
-## Key Functions
-
-### Compile Solidity
-
-```go
-// Compile Solidity contract
-func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
-    // Read source code
-    // Create standard JSON input
-    // Run solc compiler
-    // Parse output
-    // Return compiled contracts
-}
+# Or with SQLite
+DB_TYPE=sqlite go run cmd/main.go
 ```
 
-### Deploy Contract
+The server will start on port **15055**.
 
-```go
-// Deploy smart contract
-func (e *EVMExecutor) DeployContract(state vm.StateDB, caller common.Address,
-    code []byte, value *big.Int, gasLimit uint64) (*ExecutionResult, error) {
-    // Create EVM instance
-    // Deploy contract
-    // Return execution result
-}
+## End-to-End Usage (Helper Scripts)
+
+We provide helper scripts to automate the workflow.
+
+### Compile and Deploy
+
+Use `compile_and_deploy.sh` to compile a Solidity contract and deploy it immediately.
+
+```bash
+# Ensure hello_world.sol exists
+./compile_and_deploy.sh
 ```
 
-### Execute Contract
+This script demonstrates:
 
-```go
-// Execute contract function
-func (e *EVMExecutor) ExecuteContract(state vm.StateDB, caller common.Address,
-    contractAddr common.Address, input []byte, value *big.Int, gasLimit uint64) (*ExecutionResult, error) {
-    // Create EVM instance
-    // Call contract function
-    // Return execution result
-}
+1.  **compilation**: Sends source to `CompileContract`.
+2.  **deployment**: Sends bytecode to `DeployContract`.
+3.  **interaction**: Calls `CallContract` (Read) and `ExecuteContract` (Write).
+
+### Manual Deployment
+
+Use `deploy_contract.sh` to deploy pre-compiled bytecode.
+
+```bash
+./deploy_contract.sh
 ```
 
-## Usage
-
-### Compile Contract
+## API Usage Example (Go)
 
 ```go
-import "gossipnode/SmartContract"
+import "gossipnode/SmartContract/proto"
 
-// Compile Solidity contract
-contracts, err := SmartContract.CompileSolidity("./SmartContract/example/SimpleToken.sol")
-if err != nil {
-    log.Fatal(err)
-}
-
-// Access compiled contract
-contract := contracts["SimpleToken"]
-fmt.Printf("Bytecode: %s\n", contract.Bytecode)
-fmt.Printf("ABI: %s\n", contract.ABI)
-```
-
-### Deploy Contract
-
-```go
-import "gossipnode/SmartContract"
-
-// Create EVM executor
-executor := SmartContract.NewEVMExecutor(chainID)
-
-// Deploy contract
-result, err := executor.DeployContract(state, caller, code, value, gasLimit)
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Printf("Contract deployed at: %s\n", result.ContractAddr.Hex())
-```
-
-### Execute Contract
-
-```go
-// Execute contract function
-result, err := executor.ExecuteContract(state, caller, contractAddr, input, value, gasLimit)
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Printf("Return data: %x\n", result.ReturnData)
-fmt.Printf("Gas used: %d\n", result.GasUsed)
-```
-
-### Using gRPC API
-
-```go
-import (
-    "context"
-    "gossipnode/SmartContract/proto"
-    "google.golang.org/grpc"
-)
-
-// Connect to SmartContract gRPC server
-conn, _ := grpc.Dial("localhost:15055", grpc.WithInsecure())
 client := proto.NewSmartContractServiceClient(conn)
 
-// Compile contract
-compileResp, _ := client.CompileContract(context.Background(), &proto.CompileRequest{
-    SourceCode: sourceCode,
-    Optimize:   true,
+// 1. Compile
+compileResp, _ := client.CompileContract(ctx, &proto.CompileRequest{
+    SourceCode: "contract A { ... }",
 })
 
-// Deploy contract
-deployResp, _ := client.DeployContract(context.Background(), &proto.DeployContractRequest{
-    Caller:   callerAddress,
-    Bytecode: compileResp.Contract.Bytecode,
-    GasLimit: 3000000,
+// 2. Deploy (using Hex Strings)
+deployResp, _ := client.DeployContract(ctx, &proto.DeployContractRequest{
+    Caller:   "0xf302...", // Hex String
+    Bytecode: compileResp.Contract.Bytecode, // "0x6080..."
+    Value:    "0x0",       // Hex String (wei)
 })
 
-// Execute contract function
-execResp, _ := client.ExecuteContract(context.Background(), &proto.ExecuteContractRequest{
-    Caller:          callerAddress,
-    ContractAddress: deployResp.Result.ContractAddress,
-    Input:           encodedFunctionData,
-    GasLimit:        100000,
-})
-
-fmt.Printf("Contract address: %x\n", deployResp.Result.ContractAddress)
-fmt.Printf("Execution success: %v\n", execResp.Result.Success)
+fmt.Printf("Contract Address: %s\n", deployResp.Result.ContractAddress)
 ```
 
-For detailed API documentation, see [SMARTCONTRACT_API.md](../documentation/SMARTCONTRACT_API.md).
+## Architecture Notes
 
-## Integration Points
-
-### Block Module
-
-- Executes smart contracts in blocks
-- Processes contract transactions
-
-### gETH Module
-
-- Provides contract execution via gRPC
-- Handles contract calls
-
-### Database (DB_OPs)
-
-- Stores contract state
-- Manages contract accounts
-
-### Config Module
-
-- Uses chain ID configuration
-- Accesses transaction structures
-
-## Configuration
-
-Smart contract configuration:
-
-- Solidity compiler path (default: `solc`)
-- Optimizer settings (default: enabled, 200 runs)
-- EVM version (default: london)
-- Artifacts directory (default: `./SmartContract/artifacts`)
-
-## Error Handling
-
-The module includes comprehensive error handling:
-
-- Compilation errors
-- Execution errors
-- State errors
-- Gas estimation errors
-
-## Logging
-
-Smart contract operations are logged to:
-
-- Application logs
-- Compilation logs
-- Execution logs
-
-## Security
-
-- Contract validation
-- Gas limit enforcement
-- State isolation
-- Input sanitization
-
-## Performance
-
-- Efficient EVM execution
-- Optimized state management
-- Fast compilation
-- Gas optimization
-
-## Testing
-
-Test files:
-
-- `SmartContract_test.go`: Smart contract tests
-- Compilation tests
-- Execution tests
-
-## Example Contract
-
-See `SmartContract/example/SimpleToken.sol` for an example Solidity contract.
-
-## Future Enhancements
-
-- Enhanced compiler support
-- Improved EVM execution
-- Better gas estimation
-- Performance optimizations
-- Additional contract languages
+- **Balance Check**: When a transaction is received, `SmartContract` checks the Caller's balance by querying the **DID Service**.
+- **Nonce Check**: Nonces are also validated against the **DID Service**.
+- **Code Retrieval**: If a contract interacts with another contract, code is fetched from **gETH**.
