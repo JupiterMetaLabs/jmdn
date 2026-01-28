@@ -2,20 +2,26 @@ package router
 
 import (
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"os"
 	"strings"
 	"time"
 
+	"gossipnode/DB_OPs"
 	"gossipnode/SmartContract"
 	"gossipnode/SmartContract/internal/contract_registry"
+	"gossipnode/SmartContract/internal/transaction"
 	"gossipnode/SmartContract/pkg/types"
 	"gossipnode/SmartContract/proto"
+	pb "gossipnode/gETH/proto"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/rs/zerolog/log"
 )
 
@@ -67,13 +73,13 @@ func (r *Router) CompileContract(sourceCode string) (*SmartContract.CompiledCont
 // Deployment
 // ============================================================================
 
-// DeployContract deploys a contract to the network
+// DeployContract submits a contract deployment transaction to the network
 func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRequest) (*proto.ExecutionResult, error) {
 	log.Info().
 		Str("caller", req.Caller).
 		Int("abi_length", len(req.Abi)).
 		Bool("abi_provided", len(req.Abi) > 0).
-		Msg("🚀 [ABI FLOW] DeployContract called")
+		Msg("🚀 [CONSENSUS FLOW] DeployContract - Submitting transaction to network")
 
 	// Parse caller address
 	caller := common.HexToAddress(req.Caller)
@@ -104,75 +110,102 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 		bytecode = append(bytecode, args...)
 	}
 
-	// Deploy contract using Executor
-	result, err := r.executor.DeployContract(r.stateDB, caller, bytecode, value, req.GasLimit)
+	// User Request: Use the specific account nonce from the DB (even if huge)
+	// to allow transactions from accounts with timestamp-based nonces.
+	//TODO: Fix with proper nonce fetching on mainnet
+	var nonce uint64
+	acc, err := DB_OPs.GetAccount(nil, caller)
+	if err == nil && acc != nil {
+		nonce = acc.Nonce
+		log.Info().Uint64("account_nonce", nonce).Msg("Using specific account nonce from DB")
+	} else {
+		// Fallback: Get actual nonce from DID service count
+		txCount, err := DB_OPs.CountTransactionsByAccount(&caller)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to get transaction count for nonce")
+			return nil, fmt.Errorf("failed to get nonce: %w", err)
+		}
+		nonce = uint64(txCount)
+	}
+	// Create and build contract deployment transaction
+	// This helper handles both the internal config.Transaction creation and the Geth-compatible hash calculation
+	tx, _, err := transaction.BuildContractCreationTx(
+		big.NewInt(int64(r.chainID)),
+		caller,
+		nonce,
+		value,
+		bytecode,
+		req.GasLimit,
+		big.NewInt(1000000000), // MaxFee: 1 Gwei
+		big.NewInt(1000000000), // MaxPriorityFee: 1 Gwei
+	)
 	if err != nil {
+		return nil, fmt.Errorf("failed to build transaction: %w", err)
+	}
+
+	// JSON marshal the transaction for the gRPC facade (gETH facade expects JSON)
+	jsonData, err := json.Marshal(tx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal transaction: %w", err)
+	}
+
+	// Submit via gRPC to the main node's gETH facade
+	resp, err := r.chainClient.SendRawTransaction(ctx, &pb.SendRawTxReq{
+		SignedTx: jsonData,
+	})
+
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to submit deployment transaction via gRPC")
 		return &proto.ExecutionResult{
-			Error:   err.Error(),
+			Error:   fmt.Sprintf("Failed to submit transaction: %v", err),
 			Success: false,
 		}, nil
 	}
 
-	// Persist changes to StateDB
-	if sdb, ok := ConvertToInternalStateDB(r.stateDB); ok {
-		if _, err := sdb.CommitToDB(false); err != nil {
-			log.Error().Err(err).Msg("Failed to commit state changes")
-		} else {
-			log.Info().Msg("State changes committed to DB")
-		}
-	}
-
-	// REGISTER CONTRACT IN REGISTRY (Layer 2 Integration)
-	if r.contract_registry != nil && result.Error == nil {
-		log.Info().
-			Str("address", result.ContractAddr.Hex()).
-			Int("abi_length", len(req.Abi)).
-			Msg("📝 [ABI FLOW] Creating metadata for registry")
-
-		metadata := &types.ContractMetadata{
-			Address:      result.ContractAddr,
-			Deployer:     caller,
-			Name:         "Unknown", // Metadata enhancement needed later
-			ABI:          req.Abi,   // Use ABI from request
-			DeployBlock:  0,         // TODO: Get real block number
-			DeployTime:   uint64(time.Now().Unix()),
-			DeployTxHash: common.Hash{}, // TODO: Get real tx hash
-		}
-
-		log.Info().
-			Str("address", result.ContractAddr.Hex()).
-			Int("metadata_abi_length", len(metadata.ABI)).
-			Msg("💾 [ABI FLOW] Calling RegisterContract")
-
-		if err := r.contract_registry.RegisterContract(ctx, metadata); err != nil {
-			log.Error().
-				Err(err).
-				Str("address", result.ContractAddr.Hex()).
-				Msg("❌ [ABI FLOW] Failed to register contract in registry")
-		} else {
-			log.Info().
-				Str("address", result.ContractAddr.Hex()).
-				Msg("✅ [ABI FLOW] Contract registered successfully")
-		}
-	} else {
-		if r.contract_registry == nil {
-			log.Warn().Msg("⚠️  [ABI FLOW] Contract registry is nil - skipping registration")
-		}
-		if result.Error != nil {
-			log.Warn().Msg("⚠️  [ABI FLOW] Deployment had error - skipping registration")
-		}
+	txHash := hex.EncodeToString(resp.TxHash)
+	if !strings.HasPrefix(txHash, "0x") {
+		txHash = "0x" + txHash
 	}
 
 	log.Info().
-		Str("contract_address", result.ContractAddr.Hex()).
-		Uint64("gas_used", result.GasUsed).
-		Msg("Contract deployed successfully")
+		Str("tx_hash", txHash).
+		Msg(" Contract deployment transaction submitted successfully")
+
+	// Note: Contract metadata (including ABI) will be registered by Processing.go
+	// after consensus confirms the deployment.
+	// HOWEVER, we should store it optimistically now so it's available immediately for lookups
+	// or if Processing.go doesn't have the ABI in the payload.
+	contractAddr := crypto.CreateAddress(caller, nonce)
+	contractAddrHex := contractAddr.Hex()
+
+	if len(req.Abi) > 0 {
+		log.Info().
+			Str("contract_address", contractAddrHex).
+			Str("abi_size", fmt.Sprintf("%d bytes", len(req.Abi))).
+			Msg("💾 [ABI FLOW] Optimistically registering contract ABI")
+
+		// Create metadata
+		metadata := &types.ContractMetadata{
+			Address:      contractAddr,
+			ABI:          req.Abi,
+			Deployer:     caller,
+			DeployTxHash: common.HexToHash(txHash),
+			DeployTime:   uint64(time.Now().Unix()),
+			DeployBlock:  0, // Pending
+		}
+
+		// Save to registry
+		if err := r.contract_registry.RegisterContract(ctx, metadata); err != nil {
+			log.Warn().Err(err).Msg("⚠️ Failed to register contract metadata optimistically")
+			// Don't fail the request, just warn
+		}
+	}
 
 	return &proto.ExecutionResult{
-		ReturnData:      hexutil.Encode(result.ReturnData),
-		GasUsed:         result.GasUsed,
-		ContractAddress: result.ContractAddr.Hex(),
-		Success:         result.Error == nil,
+		ReturnData:      txHash,          // Return tx hash
+		GasUsed:         0,               // Will be populated after consensus
+		ContractAddress: contractAddrHex, // Address is generated optimistically
+		Success:         true,
 	}, nil
 }
 

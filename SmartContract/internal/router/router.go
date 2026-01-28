@@ -7,6 +7,7 @@ import (
 	"gossipnode/SmartContract/internal/evm"
 	"gossipnode/SmartContract/internal/state"
 	"gossipnode/config"
+	pb "gossipnode/gETH/proto"
 
 	"github.com/ethereum/go-ethereum/core/vm"
 )
@@ -17,16 +18,18 @@ type Router struct {
 	stateDB           state.StateDB
 	contract_registry contract_registry.RegistryDB
 	dbConn            *config.PooledConnection
+	chainClient       pb.ChainClient
 	chainID           int
 }
 
 // NewRouter creates a new Smart Contract Router
-func NewRouter(chainID int, stateDB state.StateDB, reg contract_registry.RegistryDB, dbConn *config.PooledConnection) *Router {
+func NewRouter(chainID int, stateDB state.StateDB, reg contract_registry.RegistryDB, dbConn *config.PooledConnection, chainClient pb.ChainClient) *Router {
 	return &Router{
 		executor:          evm.NewEVMExecutor(chainID),
 		stateDB:           stateDB,
 		contract_registry: reg,
 		dbConn:            dbConn,
+		chainClient:       chainClient,
 		chainID:           chainID,
 	}
 }

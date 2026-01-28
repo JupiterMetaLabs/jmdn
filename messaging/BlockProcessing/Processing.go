@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"gossipnode/DB_OPs"
+	"gossipnode/SmartContract"
 	"gossipnode/config"
 	"gossipnode/logging"
 	"math/big"
@@ -33,7 +34,16 @@ var (
 	DefaultGasLimit       = int64(21000)
 	DefaultGasPrice       = int64(1000000000) // 1 Gwei
 	CreateMissingAccounts = true              // Set to false to disable automatic DID creation
+
+	// Smart Contract Configuration
+	// This ChainID must be set via SetChainID() from main.go
+	GlobalChainID = 0
 )
+
+// SetChainID sets the global network chain ID for transaction processing
+func SetChainID(chainID int) {
+	GlobalChainID = chainID
+}
 
 // ClearProcessedTransactions clears the processed transactions map
 // This should be called at the start of processing a new block
@@ -87,7 +97,10 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 	// First, collect all affected DIDs from the block
 	for _, tx := range block.Transactions {
 		affectedAccounts[*tx.From] = true
-		affectedAccounts[*tx.To] = true
+		// Smart contracts should be type 2 transactions and their To address is the contract address that will be generated while processing
+		if tx.To != nil && tx.Type == 2 {
+			affectedAccounts[*tx.To] = true
+		}
 	}
 	affectedAccounts[*block.CoinbaseAddr] = true
 	affectedAccounts[*block.ZKVMAddr] = true
@@ -141,9 +154,9 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 
 		// Process the transaction
 		fmt.Printf("DEBUG: Calling processTransaction for tx %s\n", tx.Hash.Hex())
-		Process_err := processTransaction(tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient)
-		if Process_err != nil {
-			fmt.Printf("DEBUG: processTransaction failed for tx %s: %v\n", tx.Hash.Hex(), Process_err)
+		// Process transaction
+		if err := processTransaction(tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient); err != nil {
+			fmt.Printf("DEBUG: processTransaction failed for tx %s: %v\n", tx.Hash.Hex(), err)
 			// If any transaction fails, roll back all affected DIDs
 			accountsClient.Client.Logger.Logger.Error("Transaction failed, rolling back block",
 				zap.Time(logging.Created_at, time.Now().UTC()),
@@ -152,7 +165,7 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 				zap.String(logging.Loki_url, config.LOKI_URL),
 				zap.String(logging.Function, "messaging.ProcessBlockTransactions"),
 				zap.String("tx_hash", tx.Hash.Hex()),
-				zap.Error(Process_err),
+				zap.Error(err),
 			)
 			rollbackError := rollbackBalances(originalBalances, accountsClient)
 			if rollbackError != nil {
@@ -170,7 +183,7 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 			// Clean up any processing markers for failed transactions
 			cleanupProcessingMarkers(accountsClient, tx.Hash.Hex())
 
-			return fmt.Errorf("block processing failed: %w", Process_err)
+			return fmt.Errorf("block processing failed: %w", err)
 		}
 	}
 
@@ -268,6 +281,96 @@ func rollbackBalances(originalBalances map[common.Address]string, accountsClient
 
 // ProcessTransaction handles a single transaction's balance updates
 func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection) error {
+	// ========== SMART CONTRACT DETECTION ==========
+	// Check if this is a contract deployment (To == nil)
+	if tx.To == nil && tx.Type == 2 {
+		log.Info().
+			Str("tx_hash", tx.Hash.Hex()).
+			Str("from", tx.From.Hex()).
+			Msg("🚀 [CONSENSUS] CONTRACT DEPLOYMENT detected - calling EVM executor")
+
+		// Call SmartContract module's deployment processor
+		result, err := SmartContract.ProcessContractDeployment(&tx, accountsClient, GlobalChainID)
+		if err != nil {
+			log.Error().
+				Err(err).
+				Str("tx_hash", tx.Hash.Hex()).
+				Msg("❌ [CONSENSUS] Contract deployment failed")
+			return fmt.Errorf("contract deployment failed: %w", err)
+		}
+
+		if !result.Success {
+			log.Error().
+				Str("tx_hash", tx.Hash.Hex()).
+				Str("error", result.Error.Error()).
+				Msg("❌ [CONSENSUS] Contract deployment unsuccessful")
+			return result.Error
+		}
+
+		log.Info().
+			Str("contract_address", result.ContractAddress.Hex()).
+			Uint64("gas_used", result.GasUsed).
+			Msg("✅ [CONSENSUS] Contract deployed successfully - now handling gas fees")
+
+		// Handle gas fees (deduct from sender, pay validators)
+		// Gas fee calculation
+		parsedTx, err := parseTransaction(tx)
+		if err != nil {
+			return fmt.Errorf("failed to parse transaction for gas: %w", err)
+		}
+
+		gasLimit := big.NewInt(int64(tx.GasLimit))
+		gasFeeToDeduct := new(big.Int).Mul(gasLimit, parsedTx.EffectiveGasFee)
+
+		// Split gas fee between coinbase and ZKVM
+		halfGasFee := new(big.Int).Div(gasFeeToDeduct, big.NewInt(2))
+		remainder := new(big.Int).Mod(gasFeeToDeduct, big.NewInt(2))
+		zkvmGasFee := new(big.Int).Set(halfGasFee)
+		coinbaseGasFee := new(big.Int).Add(halfGasFee, remainder)
+
+		// // Deduct gas from sender
+		// if err := deductFromSender(*tx.From, gasFeeToDeduct.String(), accountsClient); err != nil {
+		// 	return fmt.Errorf("failed to deduct gas fee from deployer: %w", err)
+		// }
+
+		totalDeduction := new(big.Int).Add(gasFeeToDeduct, parsedTx.ValueBig)
+		// Deduct Value and Gas fromsender
+		if err := deductFromSender(*tx.From, totalDeduction.String(), accountsClient); err != nil {
+			return fmt.Errorf("failed to deduct gas fee from deployer: %w", err)
+		}
+
+		// Fill contract balance
+		if err := addToRecipient(result.ContractAddress, parsedTx.ValueBig.String(), accountsClient); err != nil {
+			return fmt.Errorf("failed to fill contract balance: %w", err)
+		}
+
+		// Pay validators
+		if err := addToRecipient(coinbaseAddr, coinbaseGasFee.String(), accountsClient); err != nil {
+			return fmt.Errorf("failed to pay coinbase gas fee: %w", err)
+		}
+		if err := addToRecipient(zkvmAddr, zkvmGasFee.String(), accountsClient); err != nil {
+			return fmt.Errorf("failed to pay ZKVM gas fee: %w", err)
+		}
+
+		log.Info().
+			Str("contract", result.ContractAddress.Hex()).
+			Msg("💰 Gas fees processed for deployment")
+
+		return nil
+	}
+
+	// TODO: Check if To address has contract code (requires StateDB access)
+	// if len(stateDB.GetCode(*tx.To)) > 0 {
+	//     log.Info().Msg("⚙️  CONTRACT EXECUTION detected")
+	//     result, err := evm.ProcessContractExecution(&tx, accountsClient, GlobalChainID)
+	//     if err != nil {
+	//         return fmt.Errorf("contract execution failed: %w", err)
+	//     }
+	//     // Handle gas fees similar to deployment
+	//     return nil
+	// }
+
+	// ========== REGULAR TRANSFER PROCESSING ==========
 	// Enhanced logging at start
 	// First check the connection
 	if accountsClient == nil {

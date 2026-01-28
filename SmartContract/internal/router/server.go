@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
-	"os/signal"
-	"syscall"
 
 	"gossipnode/SmartContract/proto"
 
@@ -37,7 +34,7 @@ func NewServer(router *Router) (*Server, error) {
 }
 
 // StartGRPC starts the SmartContract gRPC server
-func StartGRPC(port int, router *Router) error {
+func StartGRPC(ctx context.Context, port int, router *Router) error {
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
@@ -64,30 +61,24 @@ func StartGRPC(port int, router *Router) error {
 	// Enable reflection for debugging
 	reflection.Register(grpcServer)
 
-	// Start server in goroutine
+	// Handle shutdown when context is cancelled
 	go func() {
-		if err := grpcServer.Serve(lis); err != nil {
-			log.Error().Err(err).Msg("gRPC server error")
-		}
+		<-ctx.Done()
+		log.Info().Msg("Shutting down SmartContract gRPC server...")
+		grpcServer.GracefulStop()
+		healthServer.Shutdown()
+		log.Info().Msg("SmartContract gRPC server stopped")
 	}()
 
 	log.Info().Msg("SmartContract gRPC server started successfully")
 
-	// Wait for shutdown signal
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-
-	<-stop
-	log.Info().Msg("Shutting down SmartContract gRPC server...")
-
-	// Close router resources (db connections etc)
-	if err := router.Close(); err != nil {
-		log.Error().Err(err).Msg("Error closing router")
+	if err := grpcServer.Serve(lis); err != nil {
+		// Ignore error if it's due to shutdown
+		if ctx.Err() == nil {
+			log.Error().Err(err).Msg("gRPC server error")
+			return err
+		}
 	}
-
-	grpcServer.GracefulStop()
-	healthServer.Shutdown()
-	log.Info().Msg("SmartContract gRPC server stopped")
 
 	return nil
 }
