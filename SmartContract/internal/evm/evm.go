@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"gossipnode/helper"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/holiman/uint256"
 )
 
 // EVMExecutor manages EVM execution
@@ -16,11 +19,21 @@ type EVMExecutor struct {
 	VMConfig    vm.Config
 }
 
+var canTransferFn vm.CanTransferFunc = func(db vm.StateDB, addr common.Address, amount *uint256.Int) bool {
+	balance := db.GetBalance(addr)
+	return balance.Cmp(amount) >= 0
+}
+
+var transferFn vm.TransferFunc = func(db vm.StateDB, sender, recipient common.Address, amount *uint256.Int) {
+	db.SubBalance(sender, amount, tracing.BalanceChangeTransfer)
+	db.AddBalance(recipient, amount, tracing.BalanceChangeTransfer)
+}
+
 // NewEVMExecutor creates a new EVM execution environment
 func NewEVMExecutor(chainID int) *EVMExecutor {
 	return &EVMExecutor{
-		ChainConfig: NewChainConfig(chainID),
-		VMConfig:    NewVMConfig(),
+		ChainConfig: NewChainConfig(chainID), // Use the properly configured ChainConfig
+		VMConfig:    NewVMConfig(),           // Use the properly configured VMConfig
 	}
 }
 
@@ -32,14 +45,25 @@ func (e *EVMExecutor) DeployContract(state vm.StateDB, caller common.Address, co
 		return nil, fmt.Errorf("Overflow occurred during value conversion")
 	}
 
-	blockCtx := DefaultBlockContext(gasLimit)
+	blockCtx := vm.BlockContext{
+		CanTransfer: canTransferFn,
+		Transfer:    transferFn,
+		GetHash:     GetHashFn,
+		Coinbase:    common.Address{},
+		BlockNumber: new(big.Int).SetUint64(1),
+		Time:        uint64(time.Now().UTC().Unix()),
+		Difficulty:  big.NewInt(0),
+		GasLimit:    30_000_000,
+		BaseFee:     big.NewInt(1000000000), // 1 gwei - must be non-zero for EIP-1559
+	}
 
 	// Try to update with real blockchain info
 	if err := UpdateBlockContext(&blockCtx); err != nil {
 		// Log the error but continue with default values
-		// fmt.Printf("Warning: Using default block context: %v\n", err)
+		fmt.Printf("Warning: Using default block context: %v\n", err)
 	}
 
+	// Rest of the function remains the same...
 	txCtx := vm.TxContext{
 		Origin:   caller,
 		GasPrice: big.NewInt(0),
@@ -48,19 +72,7 @@ func (e *EVMExecutor) DeployContract(state vm.StateDB, caller common.Address, co
 	evm := vm.NewEVM(blockCtx, txCtx, state, e.ChainConfig, e.VMConfig)
 
 	// Create contract
-	// contractAddr := CreateAddress(caller, state.GetNonce(caller)) // crypto.CreateAddress does this inside evm.Create? No, Create returns the address.
-	// Actually, evm.Create handles address generation and nonce increment internally?
-	// Let's check original code:
 	// contractAddr := crypto.CreateAddress(caller, state.GetNonce(caller))
-	// state.SetNonce(caller, state.GetNonce(caller)+1)
-	// ret, contractAddr, leftOverGas, err := evm.Create(contractRef, code, gasLimit, value256)
-
-	// Wait, standard vm.EVM.Create does NOT increment the nonce of the caller automatically?
-	// It depends on the implementation of vm.Create.
-	// The original code MANUALLY calculated address and incremented nonce.
-	// But evm.Create calculates the address too.
-	// Let's follow the original implementation logic to be safe, but utilize our new structure.
-
 	state.SetNonce(caller, state.GetNonce(caller)+1)
 
 	// Initialize memory and stack for execution
@@ -68,6 +80,16 @@ func (e *EVMExecutor) DeployContract(state vm.StateDB, caller common.Address, co
 
 	// Execute the deployment code
 	ret, contractAddr, leftOverGas, err := evm.Create(contractRef, code, gasLimit, value256)
+
+	// Check for gas overflow before calculating gasUsed
+	if leftOverGas > gasLimit {
+		return &ExecutionResult{
+			ReturnData:   ret,
+			GasUsed:      0,
+			Error:        fmt.Errorf("gas uint64 overflow: leftOverGas=%d exceeds gasLimit=%d", leftOverGas, gasLimit),
+			ContractAddr: contractAddr,
+		}, fmt.Errorf("gas uint64 overflow: leftOverGas=%d exceeds gasLimit=%d", leftOverGas, gasLimit)
+	}
 
 	result := &ExecutionResult{
 		ReturnData:   ret,
@@ -89,12 +111,21 @@ func (e *EVMExecutor) ExecuteContract(state vm.StateDB, caller common.Address, c
 	}
 
 	// Create EVM instance
-	blockCtx := DefaultBlockContext(gasLimit)
-
+	blockCtx := vm.BlockContext{
+		CanTransfer: canTransferFn,
+		Transfer:    transferFn,
+		GetHash:     GetHashFn,
+		Coinbase:    common.Address{},
+		BlockNumber: new(big.Int).SetUint64(1),
+		Time:        uint64(time.Now().UTC().Unix()),
+		Difficulty:  big.NewInt(0),
+		GasLimit:    gasLimit,
+		BaseFee:     big.NewInt(0),
+	}
 	// Try to update with real blockchain info
 	if err := UpdateBlockContext(&blockCtx); err != nil {
 		// Log the error but continue with default values
-		// fmt.Printf("Warning: Using default block context: %v\n", err)
+		fmt.Printf("Warning: Using default block context: %v\n", err)
 	}
 
 	txCtx := vm.TxContext{
@@ -117,4 +148,25 @@ func (e *EVMExecutor) ExecuteContract(state vm.StateDB, caller common.Address, c
 	}
 
 	return result, err
+}
+
+// CanTransfer checks if the account has enough balance to transfer the specified amount
+func CanTransfer(db vm.StateDB, addr common.Address, amount *big.Int) bool {
+	balance := db.GetBalance(addr)
+
+	uintAmount, overflow := uint256.FromBig(amount)
+	if overflow {
+		return false
+	}
+	return balance.Cmp(uintAmount) >= 0
+}
+
+func Transfer(db vm.StateDB, sender, recipient common.Address, amount *big.Int) {
+	amount256, overflow := helper.ConvertBigToUint256(amount)
+	if !overflow {
+		db.SubBalance(sender, amount256, tracing.BalanceChangeTransfer)
+		db.AddBalance(recipient, amount256, tracing.BalanceChangeTransfer)
+	} else {
+		panic("Overflow occurred during transfer")
+	}
 }

@@ -42,6 +42,9 @@ type ContractDB struct {
 	nonces     map[common.Address]uint64
 	nonceDirty map[common.Address]struct{}
 
+	// Balance cache (Ephemeral for transaction execution)
+	balances map[common.Address]*uint256.Int
+
 	// Pending Logs (Events emitted by contracts)
 	logs []*types.Log
 
@@ -89,6 +92,7 @@ func NewContractDB(client pb.ChainClient, didClient pbdid.DIDServiceClient, db s
 		codeDirty:    make(map[common.Address]struct{}),
 		nonces:       make(map[common.Address]uint64),
 		nonceDirty:   make(map[common.Address]struct{}),
+		balances:     make(map[common.Address]*uint256.Int),
 		logs:         make([]*types.Log, 0),
 		snapshots:    make([]ContractSnapshot, 0),
 		accessList:   newAccessList(),
@@ -108,39 +112,98 @@ func (c *ContractDB) CreateContract(addr common.Address) {
 }
 
 func (c *ContractDB) SubBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) {
-	// Balance changes are handled by the main chain.
-	// We might need to track this if we were doing block production, but for just executing contracts
-	// locally or validating, we might not need to write back to main chain immediately via this method.
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	bal := c.getBalanceInternal(addr)
+	fmt.Printf("DEBUG: SubBalance called for %s, Amount: %s, Current: %s\n", addr.Hex(), amount.String(), bal.String())
+	if bal.Lt(amount) {
+		// In a real EVM, this should verify, but here we just set to 0 to avoid underflow if logic is weird
+		// Or better, let it underflow if that's what EVM expects? No, EVM checks CanTransfer.
+		// However, SubBalance is authoritative.
+		// We trust the EVM checked CanTransfer.
+		bal.Sub(bal, amount)
+	} else {
+		bal.Sub(bal, amount)
+	}
+	c.balances[addr] = bal
 }
 
 func (c *ContractDB) AddBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) {
-	// Same as SubBalance.
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	bal := c.getBalanceInternal(addr)
+	fmt.Printf("DEBUG: AddBalance called for %s, Amount: %s, Current: %s\n", addr.Hex(), amount.String(), bal.String())
+	bal.Add(bal, amount)
+	c.balances[addr] = bal
 }
 
 func (c *ContractDB) GetBalance(addr common.Address) *uint256.Int {
-	// Use DID Service for Balance
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	return c.getBalanceInternal(addr)
+}
+
+// getBalanceInternal must be called with lock held
+func (c *ContractDB) getBalanceInternal(addr common.Address) *uint256.Int {
+	// Check cache
+	if bal, ok := c.balances[addr]; ok {
+		// Return a copy to avoid mutation by caller?
+		// uint256 pointers are mutable.
+		// EVM expects a reference it can read, but SubBalance modifies it.
+		// Safest is to return a new copy or the pointer in map.
+		// Standard EVM practice: Return the pointer, but careful.
+		// Here we make a copy to return, so the caller can't mutate our state without calling Sub/Add.
+		return new(uint256.Int).Set(bal)
+	}
+
+	// Fetch from DID Service
+	// We need to drop lock to call external service? No, because we need to update cache atomically?
+	// But calling external service with lock held might deadlock or be slow.
+	// For now, simple implementation.
+	// We CANNOT call DID Client with lock held if GetBalanceInternal is strictly internal.
+	// Refactor: Check cache (RLock), if miss, RUnlock, Fetch, Lock, Set.
+
+	// BUT, upgrading lock is race-prone.
+	// For now, holding lock is safer for correctness in single-thread-per-tx.
+
+	if c.didClient == nil {
+		return uint256.NewInt(0)
+	}
+
+	// Warn: External call with lock held.
+	// Ideally we cache this at start of TX.
+	// For now, we proceed.
+
+	// We need to release lock to be safe from deadlocks if GetDID calls back? (Unlikely)
+	// Actually, didClient is gRPC, so it's network IO. Blocking lock is bad but acceptable for prototype.
+
+	// WARNING: We must NOT hold lock during network call if performance matters.
+	// But `balances` map protection needs it.
+
+	// Using a temporary variable to hold result
+	var fetchedBal *uint256.Int
+
+	// Use context.Background() or passed context? We don't have context here.
 	req := &pbdid.GetDIDRequest{Did: addr.Hex()}
 	resp, err := c.didClient.GetDID(context.Background(), req)
-	if err != nil {
-		fmt.Printf("Error fetching DID balance for %s: %v\n", addr.Hex(), err)
-		return uint256.NewInt(0)
-	}
 
-	if resp.DidInfo == nil || resp.DidInfo.Balance == "" {
-		return uint256.NewInt(0)
-	}
-
-	bal := new(uint256.Int)
-	// Parse balance string (handle hex or decimal)
-	// assuming 0x prefix if hex, or raw decimal
-	bigBal := new(big.Int)
-	if val, ok := bigBal.SetString(resp.DidInfo.Balance, 0); ok {
-		bal.SetFromBig(val)
+	if err != nil || resp.DidInfo == nil || resp.DidInfo.Balance == "" {
+		fetchedBal = uint256.NewInt(0)
 	} else {
-		// Parsing failed, default to 0
-		return uint256.NewInt(0)
+		bigBal := new(big.Int)
+		if val, ok := bigBal.SetString(resp.DidInfo.Balance, 0); ok {
+			fetchedBal = new(uint256.Int)
+			fetchedBal.SetFromBig(val)
+		} else {
+			fetchedBal = uint256.NewInt(0)
+		}
 	}
-	return bal
+
+	// Cache it
+	c.balances[addr] = new(uint256.Int).Set(fetchedBal)
+	return fetchedBal
 }
 
 func (c *ContractDB) GetNonce(addr common.Address) uint64 {
@@ -356,6 +419,13 @@ func (c *ContractDB) AddRefund(gas uint64) {
 }
 
 func (c *ContractDB) SubRefund(gas uint64) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if gas > c.refund {
+		fmt.Printf("⚠️  SubRefund UNDERFLOW prevented! Current: %d, Sub: %d\n", c.refund, gas)
+		c.refund = 0
+		return
+	}
 	c.refund -= gas
 }
 

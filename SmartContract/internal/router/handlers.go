@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"gossipnode/DB_OPs"
-	"gossipnode/SmartContract"
 	"gossipnode/SmartContract/internal/contract_registry"
 	"gossipnode/SmartContract/internal/transaction"
+	"gossipnode/SmartContract/pkg/compiler"
 	"gossipnode/SmartContract/pkg/types"
 	"gossipnode/SmartContract/proto"
 	pb "gossipnode/gETH/proto"
@@ -30,7 +30,7 @@ import (
 // ============================================================================
 
 // CompileContract compiles Solidity source code
-func (r *Router) CompileContract(sourceCode string) (*SmartContract.CompiledContract, error) {
+func (r *Router) CompileContract(sourceCode string) (*compiler.CompiledContract, error) {
 	log.Debug().Msg("Compiling Solidity contract")
 
 	// Write source to temp file
@@ -45,8 +45,8 @@ func (r *Router) CompileContract(sourceCode string) (*SmartContract.CompiledCont
 	}
 	tmpFile.Close()
 
-	// Use SmartContract.CompileSolidity - NO broken dependencies!
-	contracts, err := SmartContract.CompileSolidity(tmpFile.Name())
+	// Use compiler.CompileSolidity - NO broken dependencies!
+	contracts, err := compiler.CompileSolidity(tmpFile.Name())
 	if err != nil {
 		return nil, fmt.Errorf("compilation failed: %w", err)
 	}
@@ -56,7 +56,7 @@ func (r *Router) CompileContract(sourceCode string) (*SmartContract.CompiledCont
 	}
 
 	// Get first contract
-	var contract *SmartContract.CompiledContract
+	var contract *compiler.CompiledContract
 	for _, c := range contracts {
 		contract = c
 		break
@@ -119,13 +119,16 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 		nonce = acc.Nonce
 		log.Info().Uint64("account_nonce", nonce).Msg("Using specific account nonce from DB")
 	} else {
-		// Fallback: Get actual nonce from DID service count
-		txCount, err := DB_OPs.CountTransactionsByAccount(&caller)
+		// Fetch the account to get the nonce directly (O(1)) instead of counting transactions (O(N))
+		account, err := DB_OPs.GetAccount(nil, caller)
 		if err != nil {
-			log.Error().Err(err).Msg("Failed to get transaction count for nonce")
-			return nil, fmt.Errorf("failed to get nonce: %w", err)
+			// If account not found, nonce is 0
+			nonce = 0
+			log.Debug().Msgf("Account %s not found in DB, assuming nonce 0", caller.Hex())
+		} else {
+			nonce = account.Nonce
+			log.Debug().Msgf("Account %s found in DB, nonce: %d", caller.Hex(), nonce)
 		}
-		nonce = uint64(txCount)
 	}
 	// Create and build contract deployment transaction
 	// This helper handles both the internal config.Transaction creation and the Geth-compatible hash calculation

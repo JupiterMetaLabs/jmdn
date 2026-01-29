@@ -60,7 +60,7 @@ type Config struct {
 // Uses ImmuDB with standard settings
 func DefaultConfig() *Config {
 	return &Config{
-		Type:           DBTypeImmuDB,
+		Type:           DBTypePebble,
 		Host:           "localhost",
 		Port:           3322,
 		Database:       "contractsdb",

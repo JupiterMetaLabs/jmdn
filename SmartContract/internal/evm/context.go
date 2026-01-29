@@ -130,8 +130,15 @@ func (m *BlockHashManager) UpdateBlockContext(blockCtx *vm.BlockContext) error {
 	}
 
 	// Update block context with real values
+	fmt.Printf("DEBUG: UpdateBlockContext fetching from API... GasLimit from API: %d\n", response.Block.GasLimit)
 	blockCtx.BlockNumber = new(big.Int).SetUint64(response.Block.BlockNumber)
-	blockCtx.Time = response.Block.Timestamp
+	// Only update time if the API returns a valid timestamp (>0).
+	// If it returns 0 (e.g. genesis), we keep the default time.Now() to ensure Shanghai is active.
+	if response.Block.Timestamp > 0 {
+		blockCtx.Time = response.Block.Timestamp
+	} else {
+		fmt.Printf("DEBUG: API returned Timestamp 0, keeping default time: %d\n", blockCtx.Time)
+	}
 	blockCtx.GasLimit = response.Block.GasLimit
 
 	if response.Block.CoinbaseAddr != "" {
@@ -144,14 +151,14 @@ func (m *BlockHashManager) UpdateBlockContext(blockCtx *vm.BlockContext) error {
 // DefaultBlockContext returns a safe default block context
 func DefaultBlockContext(gasLimit uint64) vm.BlockContext {
 	return vm.BlockContext{
-		CanTransfer: CanTransfer,
-		Transfer:    Transfer,
+		CanTransfer: canTransferFn,
+		Transfer:    transferFn,
 		GetHash:     GetHashFn,
 		Coinbase:    common.Address{},
 		BlockNumber: new(big.Int).SetUint64(1),
 		Time:        uint64(time.Now().UTC().Unix()),
 		Difficulty:  big.NewInt(0),
-		GasLimit:    gasLimit,
+		GasLimit:    30_000_000, // Fixed high limit for simulated block
 		BaseFee:     big.NewInt(0),
 	}
 }

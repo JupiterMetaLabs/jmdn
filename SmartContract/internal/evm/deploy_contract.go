@@ -32,6 +32,8 @@ func ProcessContractDeployment(
 	accountsClient *config.PooledConnection,
 	chainID int,
 ) (*DeploymentResult, error) {
+	fmt.Println("=== [DEBUG] ProcessContractDeployment CALLED ===")
+
 	log.Info().
 		Str("tx_hash", tx.Hash.Hex()).
 		Str("from", tx.From.Hex()).
@@ -40,13 +42,14 @@ func ProcessContractDeployment(
 	// Calculate the contract address (deterministic)
 	contractAddr := crypto.CreateAddress(*tx.From, tx.Nonce)
 
-	// Initialize State DB for EVM execution
+	// Use ContractDB (Pebble) - Reverted as per user request
+	// This uses the previous StateDB implementation with local storage
+	fmt.Println("=== [DEBUG] Initializing ContractDB (Pebble) ===")
+	log.Info().Msg("📊 [EVM] Initializing ContractDB (Pebble)")
 	stateDB, err := InitializeStateDB(chainID)
 	if err != nil {
-		return &DeploymentResult{
-			Success: false,
-			Error:   fmt.Errorf("failed to initialize state DB: %w", err),
-		}, err
+		log.Error().Err(err).Msg("Failed to initialize ContractDB")
+		return nil, fmt.Errorf("failed to initialize state DB: %w", err)
 	}
 
 	// Create EVM executor
@@ -124,6 +127,15 @@ func ProcessContractDeployment(
 	}, nil
 }
 
+// sharedKVStore is a singleton instance of the KVStore to prevent multiple resource locks
+var sharedKVStore storage.KVStore
+
+// SetSharedKVStore sets the global keys-value store instance
+// This should be called by the main process (jmdn) initialization
+func SetSharedKVStore(store storage.KVStore) {
+	sharedKVStore = store
+}
+
 // InitializeStateDB creates a StateDB instance for EVM execution
 // Uses existing connection pools and storage infrastructure
 func InitializeStateDB(chainID int) (state.StateDB, error) {
@@ -138,7 +150,7 @@ func InitializeStateDB(chainID int) (state.StateDB, error) {
 	// Initialize gRPC connection to gETH service
 	// TODO: Get address from config.GETH_SERVICE_ADDRESS
 	gethConn, err := grpc.NewClient(
-		"localhost:50051", // FIXME: Make configurable
+		"localhost:15054", // FIXME: Make configurable
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
@@ -150,7 +162,7 @@ func InitializeStateDB(chainID int) (state.StateDB, error) {
 	// Initialize gRPC connection to DID service
 	// TODO: Get address from config.DID_SERVICE_ADDRESS
 	didConn, err := grpc.NewClient(
-		"localhost:50052", // FIXME: Make configurable
+		"localhost:15052", // FIXME: Make configurable
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
@@ -159,15 +171,23 @@ func InitializeStateDB(chainID int) (state.StateDB, error) {
 
 	didClient := pbdid.NewDIDServiceClient(didConn)
 
-	// Use storage factory to get KV store (uses singleton pattern internally)
-	storageConfig := storage.Config{
-		Type: storage.StoreTypePebble,
-		Path: "./contract_storage_pebble",
-	}
+	var storageDB storage.KVStore
 
-	storageDB, err := storage.NewKVStore(storageConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize contract storage: %w", err)
+	// Use shared store if available, otherwise create new one
+	if sharedKVStore != nil {
+		storageDB = sharedKVStore
+		log.Debug().Msg("📊 [EVM] Using shared KVStore")
+	} else {
+		// Use storage factory to get KV store (uses singleton pattern internally)
+		storageConfig := storage.Config{
+			Type: storage.StoreTypePebble,
+			Path: "./contract_storage_pebble",
+		}
+
+		storageDB, err = storage.NewKVStore(storageConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize contract storage: %w", err)
+		}
 	}
 
 	// Create StateDB that proxies to gETH for account state and uses local storage for contracts
