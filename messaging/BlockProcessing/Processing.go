@@ -271,7 +271,24 @@ func cleanupProcessingMarkers(accountsClient *config.PooledConnection, txHash st
 // rollbackBalances restores original balances for all affected DIDs
 func rollbackBalances(originalBalances map[common.Address]string, accountsClient *config.PooledConnection) error {
 	for did, balance := range originalBalances {
+		// Optimization: If original balance is "0", checking if account exists first can avoid "key not found" error
+		// when trying to update a non-existent account (e.g. 0x...02 or new contract)
+		if balance == "0" {
+			_, err := DB_OPs.GetAccount(accountsClient, did)
+			if err != nil {
+				// If account doesn't exist and we want to roll it back to 0, just do nothing (it's effectively 0)
+				// avoiding the "key not found" error on UpdateAccountBalance
+				log.Info().Str("did", did.String()).Msg("Skipping rollback for non-existent account (original balance was 0)")
+				continue
+			}
+		}
+
 		if err := DB_OPs.UpdateAccountBalance(accountsClient, did, balance); err != nil {
+			// If key not found (and we didn't catch it above), log warning but continue rolling back others
+			if strings.Contains(err.Error(), "key not found") {
+				log.Warn().Str("did", did.String()).Msg("Skipping rollback for non-existent account (key not found)")
+				continue
+			}
 			return fmt.Errorf("failed to restore balance for %s: %w", did, err)
 		}
 		log.Info().Str("did", did.String()).Str("balance", balance).Msg("Rolled back balance to original value")
@@ -281,9 +298,35 @@ func rollbackBalances(originalBalances map[common.Address]string, accountsClient
 
 // ProcessTransaction handles a single transaction's balance updates
 func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection) error {
+	// Enhanced logging at start
+	// First check the connection
+	if accountsClient == nil {
+		fmt.Println("DEBUG: accountsClient is nil!")
+		log.Error().Msg("Function: messaging.processTransaction - accountsClient is nil")
+		return fmt.Errorf("accountsClient is nil")
+	}
+	fmt.Println("DEBUG: accountsClient is not nil")
+
+	// Confirm the DB connection
+	fmt.Println("DEBUG: Ensuring DB connection...")
+	err := DB_OPs.EnsureDBConnection(accountsClient)
+	if err != nil {
+		fmt.Printf("DEBUG: Failed to establish database connection: %v\n", err)
+		log.Error().Err(err).Msg("Failed to establish database connection")
+		return fmt.Errorf("failed to establish database connection: %w", err)
+	}
+	fmt.Println("DEBUG: Database connection check successful")
+	accountsClient.Client.Logger.Logger.Info("Database connection check successful",
+		zap.Time(logging.Created_at, time.Now().UTC()),
+		zap.String(logging.Log_file, LOG_FILE),
+		zap.String(logging.Topic, TOPIC),
+		zap.String(logging.Loki_url, config.LOKI_URL),
+		zap.String(logging.Function, "messaging.processTransaction"),
+	)
 	// ========== SMART CONTRACT DETECTION ==========
 	// Check if this is a contract deployment (To == nil)
 	if tx.To == nil && tx.Type == 2 {
+		fmt.Printf("🚀 [CONSENSUS] CONTRACT DEPLOYMENT detected - TxHash: %s\n", tx.Hash.Hex())
 		log.Info().
 			Str("tx_hash", tx.Hash.Hex()).
 			Str("from", tx.From.Hex()).
@@ -319,19 +362,22 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 			return fmt.Errorf("failed to parse transaction for gas: %w", err)
 		}
 
-		gasLimit := big.NewInt(int64(tx.GasLimit))
-		gasFeeToDeduct := new(big.Int).Mul(gasLimit, parsedTx.EffectiveGasFee)
+		// Calculate actual gas fee based on usage
+		gasUsed := big.NewInt(int64(result.GasUsed))
+		gasFeeToDeduct := new(big.Int).Mul(gasUsed, parsedTx.EffectiveGasFee)
+
+		log.Info().
+			Uint64("gas_limit", tx.GasLimit).
+			Uint64("gas_used", result.GasUsed).
+			Str("gas_price", parsedTx.EffectiveGasFee.String()).
+			Str("total_fee", gasFeeToDeduct.String()).
+			Msg("⛽ [CONSENSUS] Calculating gas fee based on actual usage")
 
 		// Split gas fee between coinbase and ZKVM
 		halfGasFee := new(big.Int).Div(gasFeeToDeduct, big.NewInt(2))
 		remainder := new(big.Int).Mod(gasFeeToDeduct, big.NewInt(2))
 		zkvmGasFee := new(big.Int).Set(halfGasFee)
 		coinbaseGasFee := new(big.Int).Add(halfGasFee, remainder)
-
-		// // Deduct gas from sender
-		// if err := deductFromSender(*tx.From, gasFeeToDeduct.String(), accountsClient); err != nil {
-		// 	return fmt.Errorf("failed to deduct gas fee from deployer: %w", err)
-		// }
 
 		totalDeduction := new(big.Int).Add(gasFeeToDeduct, parsedTx.ValueBig)
 		// Deduct Value and Gas fromsender
@@ -371,31 +417,6 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// }
 
 	// ========== REGULAR TRANSFER PROCESSING ==========
-	// Enhanced logging at start
-	// First check the connection
-	if accountsClient == nil {
-		fmt.Println("DEBUG: accountsClient is nil!")
-		log.Error().Msg("Function: messaging.processTransaction - accountsClient is nil")
-		return fmt.Errorf("accountsClient is nil")
-	}
-	fmt.Println("DEBUG: accountsClient is not nil")
-
-	// Confirm the DB connection
-	fmt.Println("DEBUG: Ensuring DB connection...")
-	err := DB_OPs.EnsureDBConnection(accountsClient)
-	if err != nil {
-		fmt.Printf("DEBUG: Failed to establish database connection: %v\n", err)
-		log.Error().Err(err).Msg("Failed to establish database connection")
-		return fmt.Errorf("failed to establish database connection: %w", err)
-	}
-	fmt.Println("DEBUG: Database connection check successful")
-	accountsClient.Client.Logger.Logger.Info("Database connection check successful",
-		zap.Time(logging.Created_at, time.Now().UTC()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "messaging.processTransaction"),
-	)
 
 	// Check if transaction was already processed (from previous blocks)
 	txLock := getTransactionLock(tx.Hash.String())
@@ -876,8 +897,22 @@ func addToRecipient(ToAddress common.Address, amount string, accountsClient *con
 	// Get the current DID document using the provided accounts client
 	didDoc, err := DB_OPs.GetAccount(accountsClient, ToAddress)
 	if err != nil {
-		// If DID doesn't exist,
-		return fmt.Errorf("failed to retrieve recipient DID %s: %w", ToAddress, err)
+		// If DID doesn't exist, try to create it if it's a "key not found" error
+		if strings.Contains(err.Error(), "key not found") {
+			// Create new account
+			did := fmt.Sprintf("did:ethr:%s", ToAddress.Hex())
+			if createErr := DB_OPs.CreateAccount(accountsClient, did, ToAddress, nil); createErr != nil {
+				return fmt.Errorf("failed to create new recipient account %s: %w", ToAddress, createErr)
+			}
+			// Use default empty account structure for subsequent logic
+			didDoc = &DB_OPs.Account{
+				Address:    ToAddress,
+				Balance:    "0",
+				DIDAddress: did,
+			}
+		} else {
+			return fmt.Errorf("failed to retrieve recipient DID %s: %w", ToAddress, err)
+		}
 	}
 
 	// Parse current balance
