@@ -24,7 +24,6 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/DID"
 	"gossipnode/Pubsub"
-	"gossipnode/Sequencer"
 	"gossipnode/config"
 	"gossipnode/config/version"
 	"gossipnode/explorer"
@@ -35,6 +34,7 @@ import (
 	"gossipnode/helper"
 	"gossipnode/logging"
 	"gossipnode/messaging"
+	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/messaging/directMSG"
 	"gossipnode/metrics"
 	"gossipnode/node"
@@ -45,6 +45,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog/log"
+
+	"gossipnode/SmartContract"
 )
 
 var (
@@ -648,12 +650,12 @@ func main() {
 	enableExplorer := flag.Bool("explorer", false, "Enable blockchain explorer UI (default: false)")
 	blockgen := flag.Int("blockgen", 0, "Run Block creator API on specified port (0 = disabled)")
 	blockgRPC := flag.Int("blockgrpc", 0, "Run Block gRPC server on specified port (0 = disabled)")
-	mempoolgRPC := flag.String("mempool", "localhost:15051", "Mempool gRPC server address")
 	cliGRPC := flag.Int("cli", 15053, "CLI gRPC server address")
 	DIDgRPC := flag.String("did", "localhost:15052", "DID gRPC server address")
 	gETHgRPC := flag.Int("geth", 15054, "gETH gRPC server address")
 	gETHFacade := flag.Int("facade", 8545, "gETH Facade server address")
 	gETHWSServer := flag.Int("ws", 8546, "gETH WSServer address")
+	smartRPC := flag.Int("smart", 15056, "Smart Contract gRPC server address")
 	chainID := flag.Int("chainID", 7000700, "Chain ID for the blockchain network")
 	immudbUsername := flag.String("immudb-user", "immudb", "ImmuDB username")
 	immudbPassword := flag.String("immudb-pass", "immudb", "ImmuDB password")
@@ -664,6 +666,10 @@ func main() {
 
 	// Parse flags
 	flag.Parse()
+
+	// Set global ChainID for BlockProcessing (used by EVM)
+	// This avoids passing chainID through every function call
+	BlockProcessing.SetChainID(*chainID)
 
 	// Exit immediately if version flag is set, before ANY initialization
 	// This prevents any side effects from package imports or init() functions
@@ -751,7 +757,7 @@ func main() {
 		<-sigCh
 
 		fmt.Println("\nShutdown signal received, closing connections...")
-		shutdown()
+		cancel()
 		return nil
 	}); err != nil {
 		log.Error().Err(err).Str("thread", GRO.ShutdownThread).Msg("Failed to start GRO goroutine")
@@ -766,6 +772,15 @@ func main() {
 
 	if err := initAccountsDBPool(*enableLoki, *immudbUsername, *immudbPassword); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
+	}
+
+	// =========================================================================
+	// Smart Contract Service Integration
+	// =========================================================================
+	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, "SmartContractServer", func(ctx context.Context) error {
+		return SmartContract.StartIntegratedServer(ctx, *smartRPC, *chainID, *gETHgRPC, *DIDgRPC)
+	}); err != nil {
+		log.Error().Err(err).Msg("Failed to start SmartContractServer goroutine")
 	}
 
 	// Discover Yggdrasil address BEFORE creating the node
@@ -791,9 +806,9 @@ func main() {
 	// Set the host instance for broadcast messaging
 	messaging.SetHostInstance(n.Host)
 
-	// Initialize the listener node for handling submit message protocol
-	// This sets up the SubmitMessageProtocol handler for vote submission
-	listener := MessagePassing.NewListenerNode(n.Host, Sequencer.NewResponseHandler())
+	// Initialize the listener node (minimal listener for block propagation)
+	// We no longer need Sequencer response handlers
+	listener := MessagePassing.NewListenerNode(n.Host, nil)
 	fmt.Printf("✅ Message listener initialized with ID: %s\n", listener.ListenerBuddyNode.PeerID.String())
 
 	// Initialize PubSub system
@@ -860,25 +875,6 @@ func main() {
 	fmt.Println("Addresses:")
 	for _, addr := range n.Host.Addrs() {
 		fmt.Printf("  %s/p2p/%s\n", addr, n.Host.ID().String())
-	}
-
-	if mempoolgRPC == nil {
-		log.Printf("No mempool gRPC address provided; cannot proceed.")
-		return
-	}
-
-	address := *mempoolgRPC
-	if err := Block.InitMempoolClient(address); err != nil {
-		log.Printf("Failed to connect to mempool: %v", err)
-	}
-	defer Block.CloseMempoolClient()
-
-	// Initialize routing client to the same address as mempool
-	_, err = Block.NewRoutingServiceClient(address)
-	if err != nil {
-		log.Printf("Failed to connect to routing service: %v", err)
-	} else {
-		log.Printf("Routing client initialized successfully")
 	}
 
 	// Initialize node manager

@@ -102,7 +102,7 @@ func main() {
 	defer didConn.Close()
 	didClient := pbdid.NewDIDServiceClient(didConn)
 
-	stateDB := state.NewContractDB(chainClient, didClient, kvStore)
+	stateDB := state.NewContractDB(didClient, kvStore)
 
 	// 4. Initialize Router (Layer 3)
 	fmt.Println("   Initializing Router...")
