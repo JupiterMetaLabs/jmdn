@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/tracing"
+	"github.com/holiman/uint256"
 	"github.com/rs/zerolog/log"
 	"go.uber.org/zap"
 )
@@ -73,9 +75,13 @@ func cleanupTransactionLock(txHash string) {
 }
 
 // ProcessBlockTransactions processes all transactions in a block atomically
-// If any transaction fails, all are rolled back
-func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.PooledConnection) error {
-	fmt.Printf("=== DEBUG: ProcessBlockTransactions called for block %d ===\n", block.BlockNumber)
+// If any transaction fails, all are rolled back.
+// If commitToDB is true, state changes are persisted to the database.
+func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.PooledConnection, commitToDB bool) error {
+	fmt.Printf("=== DEBUG: ProcessBlockTransactions called for block %d (Commit: %v) ===\n", block.BlockNumber, commitToDB)
+
+	// Note: StateDB is NOT initialized here for regular transactions
+	// It will be created on-demand inside processTransaction() only for smart contract transactions
 
 	// Check if block was already processed
 	blockKey := fmt.Sprintf("block_processed:%s", block.BlockHash.Hex())
@@ -152,10 +158,8 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 			continue
 		}
 
-		// Process the transaction
-		fmt.Printf("DEBUG: Calling processTransaction for tx %s\n", tx.Hash.Hex())
-		// Process transaction
-		if err := processTransaction(tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient); err != nil {
+		// Process transaction (State DB created inside if it's a smart contract)
+		if err := processTransaction(tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient, commitToDB); err != nil {
 			fmt.Printf("DEBUG: processTransaction failed for tx %s: %v\n", tx.Hash.Hex(), err)
 			// If any transaction fails, roll back all affected DIDs
 			accountsClient.Client.Logger.Logger.Error("Transaction failed, rolling back block",
@@ -203,7 +207,7 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 		}
 	}
 
-	// Mark the block as processed
+	// Mark the block as processed (regular transactions already committed via DB_OPs)
 	if err := DB_OPs.Create(accountsClient, blockKey, time.Now().UTC().Unix()); err != nil {
 		log.Warn().Err(err).Str("block_hash", block.BlockHash.Hex()).Msg("Failed to mark block as processed")
 	}
@@ -296,8 +300,10 @@ func rollbackBalances(originalBalances map[common.Address]string, accountsClient
 	return nil
 }
 
-// ProcessTransaction handles a single transaction's balance updates
-func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection) error {
+// ProcessTransaction handles a single transaction's balance updates.
+// For smart contracts, a StateDB is created and changes are committed based on commitToDB flag.
+// For regular transfers, DB_OPs is used directly (always commits).
+func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection, commitToDB bool) error {
 	// Enhanced logging at start
 	// First check the connection
 	if accountsClient == nil {
@@ -305,118 +311,190 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		log.Error().Msg("Function: messaging.processTransaction - accountsClient is nil")
 		return fmt.Errorf("accountsClient is nil")
 	}
-	fmt.Println("DEBUG: accountsClient is not nil")
 
 	// Confirm the DB connection
-	fmt.Println("DEBUG: Ensuring DB connection...")
 	err := DB_OPs.EnsureDBConnection(accountsClient)
 	if err != nil {
-		fmt.Printf("DEBUG: Failed to establish database connection: %v\n", err)
 		log.Error().Err(err).Msg("Failed to establish database connection")
 		return fmt.Errorf("failed to establish database connection: %w", err)
 	}
-	fmt.Println("DEBUG: Database connection check successful")
-	accountsClient.Client.Logger.Logger.Info("Database connection check successful",
-		zap.Time(logging.Created_at, time.Now().UTC()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "messaging.processTransaction"),
-	)
-	// ========== SMART CONTRACT DETECTION ==========
-	// Check if this is a contract deployment (To == nil)
-	if tx.To == nil && tx.Type == 2 {
-		fmt.Printf("🚀 [CONSENSUS] CONTRACT DEPLOYMENT detected - TxHash: %s\n", tx.Hash.Hex())
-		log.Info().
-			Str("tx_hash", tx.Hash.Hex()).
-			Str("from", tx.From.Hex()).
-			Msg("🚀 [CONSENSUS] CONTRACT DEPLOYMENT detected - calling EVM executor")
 
-		// Call SmartContract module's deployment processor
-		result, err := SmartContract.ProcessContractDeployment(&tx, accountsClient, GlobalChainID)
+	// ========== SMART CONTRACT DETECTION ==========
+	// Check if this is a contract deployment (To == nil) or execution (code exists at To)
+	isContract := (tx.To == nil && tx.Type == 2)
+	if !isContract && tx.To != nil {
+		// Need to check if To address has code (is a contract)
+		// For now, we'll create StateDB to check, but this could be optimized
+		tempStateDB, err := SmartContract.NewStateDB(GlobalChainID)
+		if err == nil {
+			isContract = tempStateDB.GetCodeSize(*tx.To) > 0
+		}
+	}
+	// Declare StateDB and snapshot variables (used by both smart contracts and regular transfers)
+	var stateDB SmartContract.StateDB
+	var snapshot int
+
+	// Only create StateDB for smart contracts (variables declared below in regular transfer section)
+	if isContract {
+		stateDB, err = SmartContract.NewStateDB(GlobalChainID)
 		if err != nil {
-			log.Error().
-				Err(err).
-				Str("tx_hash", tx.Hash.Hex()).
-				Msg("❌ [CONSENSUS] Contract deployment failed")
+			return fmt.Errorf("failed to initialize StateDB for contract: %w", err)
+		}
+		snapshot = stateDB.Snapshot()
+	}
+
+	// ========== CONTRACT DEPLOYMENT ==========
+	if tx.To == nil && tx.Type == 2 {
+
+		log.Info().Str("tx_hash", tx.Hash.Hex()).Msg("🚀 [CONSENSUS] CONTRACT DEPLOYMENT detected")
+
+		// Call SmartContract module's deployment processor with StateDB
+		result, err := SmartContract.ProcessContractDeployment(&tx, stateDB, GlobalChainID)
+		if err != nil {
+			stateDB.RevertToSnapshot(snapshot) // Rollback
+			log.Error().Err(err).Str("tx_hash", tx.Hash.Hex()).Msg("❌ [CONSENSUS] Contract deployment failed")
+			cleanupProcessingMarkers(accountsClient, tx.Hash.Hex())
 			return fmt.Errorf("contract deployment failed: %w", err)
 		}
 
 		if !result.Success {
-			log.Error().
-				Str("tx_hash", tx.Hash.Hex()).
-				Str("error", result.Error.Error()).
-				Msg("❌ [CONSENSUS] Contract deployment unsuccessful")
+			stateDB.RevertToSnapshot(snapshot) // Rollback
+			log.Error().Str("tx_hash", tx.Hash.Hex()).Msg("❌ [CONSENSUS] Contract deployment unsuccessful")
 			return result.Error
 		}
 
-		log.Info().
-			Str("contract_address", result.ContractAddress.Hex()).
-			Uint64("gas_used", result.GasUsed).
-			Msg("✅ [CONSENSUS] Contract deployed successfully - now handling gas fees")
-
-		// Handle gas fees (deduct from sender, pay validators)
-		// Gas fee calculation
+		// Handle gas fees
 		parsedTx, err := parseTransaction(tx)
 		if err != nil {
+			stateDB.RevertToSnapshot(snapshot)
 			return fmt.Errorf("failed to parse transaction for gas: %w", err)
 		}
 
-		// Calculate actual gas fee based on usage
 		gasUsed := big.NewInt(int64(result.GasUsed))
 		gasFeeToDeduct := new(big.Int).Mul(gasUsed, parsedTx.EffectiveGasFee)
 
-		log.Info().
-			Uint64("gas_limit", tx.GasLimit).
-			Uint64("gas_used", result.GasUsed).
-			Str("gas_price", parsedTx.EffectiveGasFee.String()).
-			Str("total_fee", gasFeeToDeduct.String()).
-			Msg("⛽ [CONSENSUS] Calculating gas fee based on actual usage")
-
-		// Split gas fee between coinbase and ZKVM
+		// Split gas fee between validators
 		halfGasFee := new(big.Int).Div(gasFeeToDeduct, big.NewInt(2))
 		remainder := new(big.Int).Mod(gasFeeToDeduct, big.NewInt(2))
 		zkvmGasFee := new(big.Int).Set(halfGasFee)
 		coinbaseGasFee := new(big.Int).Add(halfGasFee, remainder)
 
-		totalDeduction := new(big.Int).Add(gasFeeToDeduct, parsedTx.ValueBig)
-		// Deduct Value and Gas fromsender
-		if err := deductFromSender(*tx.From, totalDeduction.String(), accountsClient); err != nil {
-			return fmt.Errorf("failed to deduct gas fee from deployer: %w", err)
+		// Deduct ONLY gas fee from sender (EVM handles value transfer via transferFn)
+		// EVM's Create() method automatically transfers parsedTx.Value from sender to contract
+		gasDeductAmount, overflow := uint256.FromBig(gasFeeToDeduct)
+		if overflow {
+			stateDB.RevertToSnapshot(snapshot)
+			return fmt.Errorf("gas fee amount overflow")
 		}
+		stateDB.SubBalance(*tx.From, gasDeductAmount, tracing.BalanceChangeTransfer)
 
-		// Fill contract balance
-		if err := addToRecipient(result.ContractAddress, parsedTx.ValueBig.String(), accountsClient); err != nil {
-			return fmt.Errorf("failed to fill contract balance: %w", err)
-		}
+		// Note: Value transfer to contract is handled by EVM's Create() via transferFn
+		// No manual transfer needed here to avoid double-counting
 
-		// Pay validators
-		if err := addToRecipient(coinbaseAddr, coinbaseGasFee.String(), accountsClient); err != nil {
-			return fmt.Errorf("failed to pay coinbase gas fee: %w", err)
+		// Pay coinbase their share of gas fees
+		coinbaseAmount, overflow := uint256.FromBig(coinbaseGasFee)
+		if overflow {
+			stateDB.RevertToSnapshot(snapshot)
+			return fmt.Errorf("coinbase gas fee overflow")
 		}
-		if err := addToRecipient(zkvmAddr, zkvmGasFee.String(), accountsClient); err != nil {
-			return fmt.Errorf("failed to pay ZKVM gas fee: %w", err)
-		}
+		stateDB.AddBalance(coinbaseAddr, coinbaseAmount, tracing.BalanceChangeTransfer)
 
-		log.Info().
-			Str("contract", result.ContractAddress.Hex()).
-			Msg("💰 Gas fees processed for deployment")
+		// Pay ZKVM their share of gas fees
+		zkvmAmount, overflow := uint256.FromBig(zkvmGasFee)
+		if overflow {
+			stateDB.RevertToSnapshot(snapshot)
+			return fmt.Errorf("zkvm gas fee overflow")
+		}
+		stateDB.AddBalance(zkvmAddr, zkvmAmount, tracing.BalanceChangeTransfer)
+
+		log.Info().Str("contract", result.ContractAddress.Hex()).Msg("💰 Gas fees processed for deployment")
+
+		// Commit StateDB changes if requested
+		if commitToDB {
+			log.Info().Msg("💾 Committing contract deployment state to database")
+			if _, err := stateDB.CommitToDB(false); err != nil {
+				return fmt.Errorf("failed to commit contract deployment state: %w", err)
+			}
+		} else {
+			log.Info().Msg("🚫 Skipping state commit (verification mode)")
+		}
 
 		return nil
 	}
 
-	// TODO: Check if To address has contract code (requires StateDB access)
-	// if len(stateDB.GetCode(*tx.To)) > 0 {
-	//     log.Info().Msg("⚙️  CONTRACT EXECUTION detected")
-	//     result, err := evm.ProcessContractExecution(&tx, accountsClient, GlobalChainID)
-	//     if err != nil {
-	//         return fmt.Errorf("contract execution failed: %w", err)
-	//     }
-	//     // Handle gas fees similar to deployment
-	//     return nil
-	// }
+	// ========== SMART CONTRACT EXECUTION DETECTION ==========
+	// Check if this is a transaction to an existing contract (To != nil and has code)
+	// We use stateDB.GetCodeSize to check if the target address is a contract
+	if tx.To != nil && stateDB.GetCodeSize(*tx.To) > 0 {
+		log.Info().Str("tx_hash", tx.Hash.Hex()).Msg("⚙️ [CONSENSUS] CONTRACT EXECUTION detected")
 
-	// ========== REGULAR TRANSFER PROCESSING ==========
+		// Call SmartContract module's execution processor with StateDB
+		result, err := SmartContract.ProcessContractExecution(&tx, stateDB, GlobalChainID)
+		if err != nil {
+			stateDB.RevertToSnapshot(snapshot) // Rollback
+			log.Error().Err(err).Str("tx_hash", tx.Hash.Hex()).Msg("❌ [CONSENSUS] Contract execution failed")
+			cleanupProcessingMarkers(accountsClient, tx.Hash.Hex())
+			return fmt.Errorf("contract execution failed: %w", err)
+		}
+
+		// Handle gas fees
+		parsedTx, err := parseTransaction(tx)
+		if err != nil {
+			stateDB.RevertToSnapshot(snapshot)
+			return fmt.Errorf("failed to parse transaction for gas: %w", err)
+		}
+
+		gasUsed := big.NewInt(int64(result.GasUsed))
+		gasFeeToDeduct := new(big.Int).Mul(gasUsed, parsedTx.EffectiveGasFee)
+
+		// Split gas fee between validators
+		halfGasFee := new(big.Int).Div(gasFeeToDeduct, big.NewInt(2))
+		remainder := new(big.Int).Mod(gasFeeToDeduct, big.NewInt(2))
+		zkvmGasFee := new(big.Int).Set(halfGasFee)
+		coinbaseGasFee := new(big.Int).Add(halfGasFee, remainder)
+
+		// Deduct ONLY gas fee from sender (EVM handles value transfer via transferFn)
+		// EVM's Call() method automatically transfers parsedTx.Value from sender to contract
+		gasDeductAmount, overflow := uint256.FromBig(gasFeeToDeduct)
+		if overflow {
+			stateDB.RevertToSnapshot(snapshot)
+			return fmt.Errorf("gas fee amount overflow")
+		}
+		stateDB.SubBalance(*tx.From, gasDeductAmount, tracing.BalanceChangeTransfer)
+
+		// Note: Value transfer to contract is handled by EVM's Call() via transferFn
+		// No manual transfer needed here to avoid double-counting
+
+		// Pay coinbase their share of gas fees
+		coinbaseExecAmount, overflow := uint256.FromBig(coinbaseGasFee)
+		if overflow {
+			stateDB.RevertToSnapshot(snapshot)
+			return fmt.Errorf("coinbase gas fee overflow")
+		}
+		stateDB.AddBalance(coinbaseAddr, coinbaseExecAmount, tracing.BalanceChangeTransfer)
+
+		// Pay ZKVM their share of gas fees
+		zkvmExecAmount, overflow := uint256.FromBig(zkvmGasFee)
+		if overflow {
+			stateDB.RevertToSnapshot(snapshot)
+			return fmt.Errorf("zkvm gas fee overflow")
+		}
+		stateDB.AddBalance(zkvmAddr, zkvmExecAmount, tracing.BalanceChangeTransfer)
+
+		log.Info().Str("contract", tx.To.Hex()).Msg("💰 Gas fees processed for execution")
+
+		// Commit StateDB changes if requested
+		if commitToDB {
+			log.Info().Msg("💾 Committing contract execution state to database")
+			if _, err := stateDB.CommitToDB(false); err != nil {
+				return fmt.Errorf("failed to commit contract execution state: %w", err)
+			}
+		} else {
+			log.Info().Msg("🚫 Skipping state commit (verification mode)")
+		}
+
+		return nil
+	}
 
 	// Check if transaction was already processed (from previous blocks)
 	txLock := getTransactionLock(tx.Hash.String())
@@ -595,8 +673,16 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	}
 	fmt.Println("Recipient exists: ", recipientExists) // Debugging
 
+	// ========== REGULAR TRANSFER: Create StateDB ==========
+	// All transactions now use StateDB for Ethereum-style verification
+	stateDB, err = SmartContract.NewStateDB(GlobalChainID)
+	if err != nil {
+		return fmt.Errorf("failed to create StateDB for regular transfer: %w", err)
+	}
+	snapshot = stateDB.Snapshot()
+
 	// 1. Deduct from sender
-	if err := deductFromSender(*tx.From, totalDeduction.String(), accountsClient); err != nil {
+	if err := deductFromSender(*tx.From, totalDeduction.String(), stateDB, accountsClient); err != nil {
 		accountsClient.Client.Logger.Logger.Error("Failed to deduct from sender",
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
@@ -615,31 +701,18 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	fmt.Println(">>>>>> Deducted amount from sender: ", totalDeduction.String())
 
 	// 2. Add amount to recipient
-	if err := addToRecipient(*tx.To, parsedTx.ValueBig.String(), accountsClient); err != nil {
-		// Rollback sender deduction on failure
-		if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, *tx.From, originalBalances[*tx.From]); rollbackErr != nil {
-			accountsClient.Client.Logger.Logger.Error("Failed to rollback sender balance",
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, config.LOKI_URL),
-				zap.String(logging.Function, "messaging.processTransaction"),
-				zap.String("tx_hash", tx.Hash.Hex()),
-				zap.String("from", tx.From.Hex()),
-				zap.String("original_balance", originalBalances[*tx.From]),
-			)
-		} else {
-			accountsClient.Client.Logger.Logger.Info("Rolled back sender balance due to recipient update failure",
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, config.LOKI_URL),
-				zap.String(logging.Function, "messaging.processTransaction"),
-				zap.String("tx_hash", tx.Hash.Hex()),
-				zap.String("from", tx.From.Hex()),
-				zap.String("original_balance", originalBalances[*tx.From]),
-			)
-		}
+	if err := addToRecipient(*tx.To, parsedTx.ValueBig.String(), stateDB, accountsClient); err != nil {
+		// Rollback using StateDB snapshot
+		accountsClient.Client.Logger.Logger.Error("Failed to add to recipient",
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "messaging.processTransaction"),
+			zap.String("tx_hash", tx.Hash.Hex()),
+			zap.String("to", tx.To.Hex()),
+		)
+		stateDB.RevertToSnapshot(snapshot)
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
 		return fmt.Errorf("failed to add to recipient: %w", err)
 	}
@@ -648,34 +721,18 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	fmt.Println(">>>>>> Added amount to recipient:", parsedTx.ValueBig.String(), "with address", tx.To.Hex())
 
 	// 3. Split gas fee between coinbase and ZKVM
-	if err := addToRecipient(coinbaseAddr, coinbaseGasFee.String(), accountsClient); err != nil {
-		// Rollback previous operations
-		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
-		for _, accounts := range rollbackAccounts {
-			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
-				accountsClient.Client.Logger.Logger.Error("Failed to rollback balance",
-					zap.Time(logging.Created_at, time.Now().UTC()),
-					zap.String(logging.Log_file, LOG_FILE),
-					zap.String(logging.Topic, TOPIC),
-					zap.String(logging.Loki_url, config.LOKI_URL),
-					zap.String(logging.Function, "messaging.processTransaction"),
-					zap.String("tx_hash", tx.Hash.Hex()),
-					zap.String("from", tx.From.Hex()),
-					zap.String("original_balance", originalBalances[*tx.From]),
-				)
-			} else {
-				accountsClient.Client.Logger.Logger.Info("Rolled back balance due to gas fee update failure",
-					zap.Time(logging.Created_at, time.Now().UTC()),
-					zap.String(logging.Log_file, LOG_FILE),
-					zap.String(logging.Topic, TOPIC),
-					zap.String(logging.Loki_url, config.LOKI_URL),
-					zap.String(logging.Function, "messaging.processTransaction"),
-					zap.String("tx_hash", tx.Hash.Hex()),
-					zap.String("from", tx.From.Hex()),
-					zap.String("original_balance", originalBalances[*tx.From]),
-				)
-			}
-		}
+	if err := addToRecipient(coinbaseAddr, coinbaseGasFee.String(), stateDB, accountsClient); err != nil {
+		// Rollback using StateDB snapshot
+		accountsClient.Client.Logger.Logger.Error("Failed to add gas fee to coinbase",
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "messaging.processTransaction"),
+			zap.String("tx_hash", tx.Hash.Hex()),
+			zap.String("coinbase", coinbaseAddr.Hex()),
+		)
+		stateDB.RevertToSnapshot(snapshot)
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
 		return fmt.Errorf("failed to add gas fee to coinbase: %w", err)
 	}
@@ -683,40 +740,34 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// Debugging
 	fmt.Println(">>>>>> Added amount to Coinbase:", coinbaseGasFee.String(), "with address", coinbaseAddr.Hex())
 
-	if err := addToRecipient(zkvmAddr, zkvmGasFee.String(), accountsClient); err != nil {
-		// Rollback previous operations
-		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
-		for _, accounts := range rollbackAccounts {
-			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
-				accountsClient.Client.Logger.Logger.Error("Failed to rollback balance",
-					zap.Time(logging.Created_at, time.Now().UTC()),
-					zap.String(logging.Log_file, LOG_FILE),
-					zap.String(logging.Topic, TOPIC),
-					zap.String(logging.Loki_url, config.LOKI_URL),
-					zap.String(logging.Function, "messaging.processTransaction"),
-					zap.String("tx_hash", tx.Hash.Hex()),
-					zap.String("from", tx.From.Hex()),
-					zap.String("original_balance", originalBalances[*tx.From]),
-				)
-			} else {
-				accountsClient.Client.Logger.Logger.Info("Rolled back balance due to gas fee update failure",
-					zap.Time(logging.Created_at, time.Now().UTC()),
-					zap.String(logging.Log_file, LOG_FILE),
-					zap.String(logging.Topic, TOPIC),
-					zap.String(logging.Loki_url, config.LOKI_URL),
-					zap.String(logging.Function, "messaging.processTransaction"),
-					zap.String("tx_hash", tx.Hash.Hex()),
-					zap.String("from", tx.From.Hex()),
-					zap.String("original_balance", originalBalances[*tx.From]),
-				)
-			}
-		}
+	if err := addToRecipient(zkvmAddr, zkvmGasFee.String(), stateDB, accountsClient); err != nil {
+		// Rollback using StateDB snapshot
+		accountsClient.Client.Logger.Logger.Error("Failed to add gas fee to ZKVM",
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, LOG_FILE),
+			zap.String(logging.Topic, TOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "messaging.processTransaction"),
+			zap.String("tx_hash", tx.Hash.Hex()),
+			zap.String("zkvm", zkvmAddr.Hex()),
+		)
+		stateDB.RevertToSnapshot(snapshot)
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
 		return fmt.Errorf("failed to add gas fee to ZKVM: %w", err)
 	}
 
 	// Debugging
 	fmt.Println(">>>>>> Added amount to ZKVM:", zkvmGasFee.String(), "with address", zkvmAddr.Hex())
+
+	// Commit StateDB if requested (Ethereum-style)
+	if commitToDB {
+		log.Info().Msg("💾 Committing regular transfer state to database")
+		if _, err := stateDB.CommitToDB(false); err != nil {
+			return fmt.Errorf("failed to commit regular transfer state: %w", err)
+		}
+	} else {
+		log.Info().Msg("🚫 Skipping state commit for regular transfer (verification mode)")
+	}
 
 	// Mark transaction as fully processed - this is the key that prevents double processing
 	if err := DB_OPs.Create(accountsClient, txKey, time.Now().UTC().Unix()); err != nil {
@@ -845,104 +896,70 @@ func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error
 	return parsed, nil
 }
 
-// deductFromSender deducts an amount from a sender's DID account
-func deductFromSender(fromDID common.Address, amount string, accountsClient *config.PooledConnection) error {
-	// Get the current DID document using the provided accounts client
-	didDoc, err := DB_OPs.GetAccount(accountsClient, fromDID)
-	if err != nil {
-		return fmt.Errorf("failed to retrieve sender DID %s: %w", fromDID, err)
-	}
-
-	// Parse current balance
-	currentBalance, ok := new(big.Int).SetString(didDoc.Balance, 10)
-	if !ok {
-		return fmt.Errorf("invalid balance format for DID %s: %s", fromDID, didDoc.Balance)
-	}
-
+// deductFromSender deducts an amount from a sender's DID account using StateDB
+func deductFromSender(fromDID common.Address, amount string, stateDB SmartContract.StateDB, accountsClient *config.PooledConnection) error {
 	// Parse amount to deduct
 	deductAmount, ok := new(big.Int).SetString(amount, 10)
 	if !ok {
 		return fmt.Errorf("invalid deduction amount: %s", amount)
 	}
 
-	// Check if sufficient balance
-	if currentBalance.Cmp(deductAmount) < 0 {
+	// Convert to uint256
+	amt, overflow := uint256.FromBig(deductAmount)
+	if overflow {
+		return fmt.Errorf("deduction amount overflow")
+	}
+
+	// Check balance using StateDB
+	currentBalance := stateDB.GetBalance(fromDID)
+	if currentBalance.Cmp(amt) < 0 {
 		return fmt.Errorf("insufficient balance for DID %s: has %s, needs %s",
-			fromDID, currentBalance.String(), deductAmount.String())
+			fromDID.Hex(), currentBalance.String(), amt.String())
 	}
 
-	// Calculate new balance
-	newBalance := new(big.Int).Sub(currentBalance, deductAmount)
+	// Deduct using StateDB
+	stateDB.SubBalance(fromDID, amt, tracing.BalanceChangeTransfer)
 
-	// Update the balance in the database using the provided accounts client
-	if err := DB_OPs.UpdateAccountBalance(accountsClient, fromDID, newBalance.String()); err != nil {
-		return fmt.Errorf("failed to update sender balance: %w", err)
-	}
-
+	// Log the deduction with original format
 	accountsClient.Client.Logger.Logger.Info("Deducted amount from sender",
 		zap.String(logging.Account, fromDID.String()),
-		zap.String(logging.Connection_database, config.AccountsDBName),
+		zap.String(logging.Connection_database, "StateDB"),
 		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "DB_OPs.UpdateAccountBalance"),
+		zap.String(logging.Function, "StateDB.SubBalance"),
 	)
 
 	return nil
 }
 
-// addToRecipient adds an amount to a recipient's DID account
-func addToRecipient(ToAddress common.Address, amount string, accountsClient *config.PooledConnection) error {
-	// Get the current DID document using the provided accounts client
-	didDoc, err := DB_OPs.GetAccount(accountsClient, ToAddress)
-	if err != nil {
-		// If DID doesn't exist, try to create it if it's a "key not found" error
-		if strings.Contains(err.Error(), "key not found") {
-			// Create new account
-			did := fmt.Sprintf("did:ethr:%s", ToAddress.Hex())
-			if createErr := DB_OPs.CreateAccount(accountsClient, did, ToAddress, nil); createErr != nil {
-				return fmt.Errorf("failed to create new recipient account %s: %w", ToAddress, createErr)
-			}
-			// Use default empty account structure for subsequent logic
-			didDoc = &DB_OPs.Account{
-				Address:    ToAddress,
-				Balance:    "0",
-				DIDAddress: did,
-			}
-		} else {
-			return fmt.Errorf("failed to retrieve recipient DID %s: %w", ToAddress, err)
-		}
-	}
-
-	// Parse current balance
-	currentBalance, ok := new(big.Int).SetString(didDoc.Balance, 10)
-	if !ok {
-		return fmt.Errorf("invalid balance format for DID %s: %s", ToAddress, didDoc.Balance)
-	}
-
+// addToRecipient adds an amount to a recipient's DID account using StateDB
+func addToRecipient(ToAddress common.Address, amount string, stateDB SmartContract.StateDB, accountsClient *config.PooledConnection) error {
 	// Parse amount to add
 	addAmount, ok := new(big.Int).SetString(amount, 10)
 	if !ok {
 		return fmt.Errorf("invalid addition amount: %s", amount)
 	}
 
-	// Calculate new balance
-	newBalance := new(big.Int).Add(currentBalance, addAmount)
-
-	// Update the balance in the database using the provided accounts client
-	if err := DB_OPs.UpdateAccountBalance(accountsClient, ToAddress, newBalance.String()); err != nil {
-		return fmt.Errorf("failed to update recipient balance: %w", err)
+	// Convert to uint256
+	amt, overflow := uint256.FromBig(addAmount)
+	if overflow {
+		return fmt.Errorf("addition amount overflow")
 	}
 
+	// Add using StateDB (automatically creates account if needed)
+	stateDB.AddBalance(ToAddress, amt, tracing.BalanceChangeTransfer)
+
+	// Log the addition with original format
 	accountsClient.Client.Logger.Logger.Info("Added amount to recipient",
 		zap.String(logging.Account, ToAddress.String()),
-		zap.String(logging.Connection_database, config.AccountsDBName),
+		zap.String(logging.Connection_database, "StateDB"),
 		zap.Time(logging.Created_at, time.Now().UTC()),
 		zap.String(logging.Log_file, LOG_FILE),
 		zap.String(logging.Topic, TOPIC),
 		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "DB_OPs.UpdateAccountBalance"),
+		zap.String(logging.Function, "StateDB.AddBalance"),
 	)
 
 	return nil

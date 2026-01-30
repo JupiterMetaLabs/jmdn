@@ -2,13 +2,11 @@ package evm
 
 import (
 	"fmt"
-	"gossipnode/DB_OPs"
 	"gossipnode/SmartContract/internal/state"
 	"gossipnode/SmartContract/internal/storage"
 	"gossipnode/config"
 
 	pbdid "gossipnode/DID/proto"
-	pb "gossipnode/gETH/proto"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -27,9 +25,11 @@ type DeploymentResult struct {
 
 // ProcessContractDeployment handles contract deployment during block processing
 // This is called from messaging/BlockProcessing when a deployment transaction is encountered
+// ProcessContractDeployment handles contract deployment during block processing
+// This is called from messaging/BlockProcessing when a deployment transaction is encountered
 func ProcessContractDeployment(
 	tx *config.Transaction,
-	accountsClient *config.PooledConnection,
+	stateDB state.StateDB,
 	chainID int,
 ) (*DeploymentResult, error) {
 	fmt.Println("=== [DEBUG] ProcessContractDeployment CALLED ===")
@@ -42,15 +42,8 @@ func ProcessContractDeployment(
 	// Calculate the contract address (deterministic)
 	contractAddr := crypto.CreateAddress(*tx.From, tx.Nonce)
 
-	// Use ContractDB (Pebble) - Reverted as per user request
-	// This uses the previous StateDB implementation with local storage
-	fmt.Println("=== [DEBUG] Initializing ContractDB (Pebble) ===")
-	log.Info().Msg("📊 [EVM] Initializing ContractDB (Pebble)")
-	stateDB, err := InitializeStateDB(chainID)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to initialize ContractDB")
-		return nil, fmt.Errorf("failed to initialize state DB: %w", err)
-	}
+	// StateDB is now injected, so we don't initialize it here
+	// This supports the atomic execution flow required by consensus
 
 	// Create EVM executor
 	executor := NewEVMExecutor(chainID)
@@ -81,38 +74,16 @@ func ProcessContractDeployment(
 		}, err
 	}
 
-	// Commit state changes to persistent storage
-	if contractDB, ok := stateDB.(*state.ContractDB); ok {
-		if _, err := contractDB.CommitToDB(false); err != nil {
-			log.Error().
-				Err(err).
-				Str("contract", contractAddr.Hex()).
-				Msg("❌ [EVM] Failed to commit state changes")
-			return &DeploymentResult{
-				ContractAddress: contractAddr,
-				GasUsed:         result.GasUsed,
-				Success:         false,
-				Error:           fmt.Errorf("failed to commit state: %w", err),
-			}, err
-		}
-	}
+	// State changes are NOT committed here anymore.
+	// They are kept in the injected StateDB and committed by the caller (BlockProcessing)
+	// after all transactions are processed (and consensus is reached).
 
-	// Create the account in the Account DB
+	// Create the contract account in the StateDB
 	// This ensures the account exists for value transfers and future interactions
-	log.Debug().Msg("👤 [EVM] Creating contract account in DB")
-	err = DB_OPs.CreateAccount(accountsClient, contractAddr.Hex(), contractAddr, nil)
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("contract", contractAddr.Hex()).
-			Msg("❌ [EVM] Failed to create contract account in DB")
-		return &DeploymentResult{
-			ContractAddress: contractAddr,
-			GasUsed:         result.GasUsed,
-			Success:         false,
-			Error:           fmt.Errorf("failed to create contract account: %w", err),
-		}, err
-	}
+	log.Debug().Msg("👤 [EVM] Creating contract account in StateDB")
+	stateDB.CreateAccount(contractAddr)
+	// Note: No need to call DB_OPs.CreateAccount directly as calling CreateAccount on StateDB
+	// and then Commiting StateDB will handle persistence.
 
 	log.Info().
 		Str("contract_address", contractAddr.Hex()).
@@ -147,18 +118,6 @@ func InitializeStateDB(chainID int) (state.StateDB, error) {
 	// to use dependency injection with pre-initialized clients
 	log.Warn().Msg("⚠️  [EVM] State DB initialization needs refactoring - currently creates new gRPC conns")
 
-	// Initialize gRPC connection to gETH service
-	// TODO: Get address from config.GETH_SERVICE_ADDRESS
-	gethConn, err := grpc.NewClient(
-		"localhost:15054", // FIXME: Make configurable
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to gETH service: %w", err)
-	}
-
-	gethClient := pb.NewChainClient(gethConn)
-
 	// Initialize gRPC connection to DID service
 	// TODO: Get address from config.DID_SERVICE_ADDRESS
 	didConn, err := grpc.NewClient(
@@ -191,16 +150,17 @@ func InitializeStateDB(chainID int) (state.StateDB, error) {
 	}
 
 	// Create StateDB that proxies to gETH for account state and uses local storage for contracts
-	stateDB := state.NewContractDB(gethClient, didClient, storageDB)
+	stateDB := state.NewContractDB(didClient, storageDB)
 
 	log.Debug().Msg("📊 [EVM] State DB initialized")
 	return stateDB, nil
 }
 
 // ProcessContractExecution handles contract function calls during block processing
+// This is called from messaging/BlockProcessing when a contract execution transaction is encountered
 func ProcessContractExecution(
 	tx *config.Transaction,
-	accountsClient *config.PooledConnection,
+	stateDB state.StateDB,
 	chainID int,
 ) (*ExecutionResult, error) {
 	log.Info().
@@ -209,11 +169,7 @@ func ProcessContractExecution(
 		Str("to", tx.To.Hex()).
 		Msg("⚙️  [EVM] Processing contract execution")
 
-	// Initialize State DB
-	stateDB, err := InitializeStateDB(chainID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize state DB: %w", err)
-	}
+	// StateDB is now injected, eliminating split-brain issues
 
 	// Create EVM executor
 	executor := NewEVMExecutor(chainID)
@@ -236,16 +192,8 @@ func ProcessContractExecution(
 		return nil, err
 	}
 
-	// Commit state changes
-	if contractDB, ok := stateDB.(*state.ContractDB); ok {
-		if _, err := contractDB.CommitToDB(false); err != nil {
-			log.Error().
-				Err(err).
-				Str("contract", tx.To.Hex()).
-				Msg("❌ [EVM] Failed to commit state changes")
-			return nil, fmt.Errorf("failed to commit state: %w", err)
-		}
-	}
+	// State changes are NOT committed here.
+	// They are kept in the injected StateDB and committed by the caller (BlockProcessing)
 
 	log.Info().
 		Str("contract", tx.To.Hex()).

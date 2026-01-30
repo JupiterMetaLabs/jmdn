@@ -20,11 +20,11 @@ type DeploymentResult struct {
 // This is the function that messaging/BlockProcessing can call
 func ProcessContractDeployment(
 	tx *config.Transaction,
-	accountsClient *config.PooledConnection,
+	stateDB StateDB,
 	chainID int,
 ) (*DeploymentResult, error) {
 	// Call the internal implementation
-	result, err := evm.ProcessContractDeployment(tx, accountsClient, chainID)
+	result, err := evm.ProcessContractDeployment(tx, stateDB.(state.StateDB), chainID)
 	if err != nil {
 		return &DeploymentResult{
 			Success: false,
@@ -43,10 +43,10 @@ func ProcessContractDeployment(
 // ProcessContractExecution is a public wrapper for contract execution
 func ProcessContractExecution(
 	tx *config.Transaction,
-	accountsClient *config.PooledConnection,
+	stateDB StateDB,
 	chainID int,
 ) (*evm.ExecutionResult, error) {
-	return evm.ProcessContractExecution(tx, accountsClient, chainID)
+	return evm.ProcessContractExecution(tx, stateDB.(state.StateDB), chainID)
 }
 
 // ============================================================================
@@ -63,6 +63,6 @@ func NewEVMExecutor(chainID int) *EVMExecutor {
 
 // NewStateDB creates a new StateDB instance with default configuration
 // utilizing the underlying infrastructure (PebbleDB + gRPC clients)
-func NewStateDB(chainID int) (state.StateDB, error) {
+func NewStateDB(chainID int) (StateDB, error) {
 	return evm.InitializeStateDB(chainID)
 }
