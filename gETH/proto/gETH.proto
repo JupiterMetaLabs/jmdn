@@ -184,6 +184,16 @@ message LogsSubReq {
     repeated bytes topics = 2;
 }
 
+message GetCodeReq {
+    bytes address = 1;
+    bytes block_numer = 2;
+}
+
+message GetCodeResp {
+    string code = 1;
+}
+
+
 // Chain service definition
 service Chain {
     // Block operations
@@ -206,6 +216,7 @@ service Chain {
     // Contract interaction
     rpc Call(CallReq) returns (CallResp); //
     rpc EstimateGas(CallReq) returns (EstimateResp); //
+    rpc GetCode(GetCodeReq) returns (GetCodeResp); //
     
     // Transaction submission
     rpc SendRawTransaction(SendRawTxReq) returns (SendRawTxResp);

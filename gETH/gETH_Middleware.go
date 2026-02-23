@@ -128,7 +128,10 @@ func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error
 	// Sort the Txns by nonce
 	Txns = SortTransactionsByNonce(Txns)
 	// Now pick the last nonce
-	nonce := Txns[len(Txns)-1].Nonce
+	var nonce uint64
+	if len(Txns) > 0 {
+		nonce = Txns[len(Txns)-1].Nonce
+	}
 
 	// Create hash of all transactions
 	txHash, err := HashTransactions(Txns)

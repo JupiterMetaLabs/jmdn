@@ -27,4 +27,5 @@ type StateDB interface {
 	AddBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason)
 	SubBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason)
 	GetBalance(addr common.Address) *uint256.Int
+	GetBalanceChanges() map[common.Address]*uint256.Int
 }

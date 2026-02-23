@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/trie/utils"
+	"github.com/holiman/uint256"
 
 	pbdid "gossipnode/DID/proto"
 )
@@ -40,6 +42,10 @@ type ContractDB struct {
 	// Access list (EIP-2930)
 	accessList *accessList
 
+	// Context for storage metadata
+	currentTxHash common.Hash
+	currentBlock  uint64
+
 	// Mutex for thread safety
 	lock sync.RWMutex
 }
@@ -50,9 +56,12 @@ var _ StateDB = (*ContractDB)(nil)
 
 // Prefixes for database keys
 var (
-	PrefixCode    = []byte("code:")
-	PrefixStorage = []byte("storage:")
-	PrefixNonce   = []byte("nonce:")
+	PrefixCode         = []byte("code:")
+	PrefixStorage      = []byte("storage:")
+	PrefixNonce        = []byte("nonce:")
+	PrefixContractMeta = []byte("meta:contract:")
+	PrefixReceipt      = []byte("receipt:")
+	PrefixStorageMeta  = []byte("meta:storage:")
 )
 
 // NewContractDB creates a new database interface for Smart Contracts.
@@ -64,7 +73,16 @@ func NewContractDB(didClient pbdid.DIDServiceClient, db storage.KVStore) *Contra
 		journal:      newJournal(),
 		logs:         make([]*types.Log, 0),
 		accessList:   newAccessList(),
+		currentBlock: 0, // Default
 	}
+}
+
+// SetTxContext sets the current transaction context for storage metadata tracking.
+func (c *ContractDB) SetTxContext(txHash common.Hash, blockNumber uint64) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.currentTxHash = txHash
+	c.currentBlock = blockNumber
 }
 
 // ============================================================================
@@ -106,16 +124,36 @@ func (c *ContractDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 		}
 
 		// Commit storage changes
-		toWrite, toDelete := obj.finalizeStorage()
+		toWrite, toDelete, metaUpdates := obj.finalizeStorage()
 		for key, value := range toWrite {
 			dbKey := makeStorageKey(addr, key)
 			if err := batch.Set(dbKey, value[:]); err != nil {
 				return common.Hash{}, err
 			}
 		}
+
+		// Commit storage metadata
+		for key, meta := range metaUpdates {
+			metaKey := append(PrefixStorageMeta, append(addr.Bytes(), key.Bytes()...)...)
+			data, err := json.Marshal(meta)
+			if err != nil {
+				return common.Hash{}, fmt.Errorf("failed to marshal storage metadata: %w", err)
+			}
+			if err := batch.Set(metaKey, data); err != nil {
+				return common.Hash{}, err
+			}
+		}
+
 		for _, key := range toDelete {
 			dbKey := makeStorageKey(addr, key)
 			if err := batch.Delete(dbKey); err != nil {
+				return common.Hash{}, err
+			}
+
+			// Also delete metadata
+			metaKey := append(PrefixStorageMeta, append(addr.Bytes(), key.Bytes()...)...)
+			// We try to delete, but ignore error if it doesn't exist? No, better to be clean
+			if err := batch.Delete(metaKey); err != nil {
 				return common.Hash{}, err
 			}
 		}
@@ -124,6 +162,7 @@ func (c *ContractDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 		if obj.dirtyCode {
 			code := obj.getCode()
 			codeKey := makeCodeKey(addr)
+			fmt.Printf("DEBUG(contractsdb): CommitToDB handling dirtyCode for %s, len=%d\n", addr.Hex(), len(code))
 			if len(code) == 0 {
 				if err := batch.Delete(codeKey); err != nil {
 					return common.Hash{}, err
@@ -156,6 +195,28 @@ func (c *ContractDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 
 	// We don't calculate state root for now
 	return common.Hash{}, nil
+}
+
+// GetBalanceChanges returns a map of all addresses that have had their balances modified
+func (c *ContractDB) GetBalanceChanges() map[common.Address]*uint256.Int {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+
+	changes := make(map[common.Address]*uint256.Int)
+	for addr, obj := range c.stateObjects {
+		if !obj.isDirty() {
+			continue
+		}
+
+		if obj.data.Balance == nil || obj.originAccount.Balance == nil {
+			continue
+		}
+
+		if obj.data.Balance.Cmp(obj.originAccount.Balance) != 0 {
+			changes[addr] = new(uint256.Int).Set(obj.data.Balance)
+		}
+	}
+	return changes
 }
 
 // Finalise is called after transaction execution to finalize state changes.
@@ -297,4 +358,80 @@ func makeCodeKey(addr common.Address) []byte {
 
 func makeNonceKey(addr common.Address) []byte {
 	return append(PrefixNonce, addr.Bytes()...)
+}
+
+// ============================================================================
+// Metadata & Receipt Persistence
+// ============================================================================
+
+// SetContractMetadata stores the metadata for a deployed contract
+func (c *ContractDB) SetContractMetadata(addr common.Address, meta ContractMetadata) error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("failed to marshal contract metadata: %w", err)
+	}
+
+	key := append(PrefixContractMeta, addr.Bytes()...)
+	return c.db.Set(key, data)
+}
+
+// GetContractMetadata retrieves the metadata for a contract
+func (c *ContractDB) GetContractMetadata(addr common.Address) (*ContractMetadata, error) {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+
+	key := append(PrefixContractMeta, addr.Bytes()...)
+	data, err := c.db.Get(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil // Not found
+	}
+
+	var meta ContractMetadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal contract metadata: %w", err)
+	}
+
+	return &meta, nil
+}
+
+// WriteReceipt stores the transaction receipt
+func (c *ContractDB) WriteReceipt(receipt TransactionReceipt) error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	data, err := json.Marshal(receipt)
+	if err != nil {
+		return fmt.Errorf("failed to marshal receipt: %w", err)
+	}
+
+	key := append(PrefixReceipt, receipt.TxHash.Bytes()...)
+	return c.db.Set(key, data)
+}
+
+// GetReceipt retrieves a transaction receipt by hash
+func (c *ContractDB) GetReceipt(txHash common.Hash) (*TransactionReceipt, error) {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+
+	key := append(PrefixReceipt, txHash.Bytes()...)
+	data, err := c.db.Get(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	var receipt TransactionReceipt
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal receipt: %w", err)
+	}
+
+	return &receipt, nil
 }

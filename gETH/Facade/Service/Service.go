@@ -15,19 +15,30 @@ import (
 	"strings"
 	"time"
 
+	"gossipnode/SmartContract/pkg/client"
+
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
 // ServiceImpl implements the Service interface
 type ServiceImpl struct {
-	ChainIDValue int
+	ChainIDValue      int
+	SmartContractPort int
+	scClient          *client.Client
 }
 
 // NewService creates a new service implementation
-func NewService(chainID int) Service {
+func NewService(chainID int, smartRPC int) Service {
+	scClient, err := client.NewClient(fmt.Sprintf("localhost:%d", smartRPC))
+	if err != nil {
+		fmt.Printf("Failed to connect to SmartContract gRPC server: %v\n", err)
+	}
 	return &ServiceImpl{
-		ChainIDValue: chainID,
+		ChainIDValue:      chainID,
+		SmartContractPort: smartRPC,
+		scClient:          scClient,
 	}
 }
 
@@ -541,10 +552,25 @@ func (s *ServiceImpl) GetLogs(ctx context.Context, q Types.FilterQuery) ([]Types
 	return logs, nil
 }
 
-// Call implements the Service interface - placeholder implementation
+// Call implements the Service interface - calls smart contract via gRPC
 func (s *ServiceImpl) Call(ctx context.Context, msg Types.CallMsg, block *big.Int) ([]byte, error) {
-	// TODO: Implement contract call functionality
-	return nil, fmt.Errorf("Call method not yet implemented")
+	if s.scClient == nil {
+		return nil, fmt.Errorf("SmartContract client not initialized")
+	}
+
+	caller := common.FromHex(msg.From)
+	contractAddr := common.FromHex(msg.To)
+
+	resp, err := s.scClient.CallContract(ctx, caller, contractAddr, msg.Data)
+	if err != nil {
+		return nil, fmt.Errorf("smart contract call failed: %v", err)
+	}
+
+	if resp.Error != "" {
+		return nil, fmt.Errorf("smart contract execution error: %s", resp.Error)
+	}
+
+	return common.FromHex(resp.ReturnData), nil
 }
 
 // EstimateGas UNITS!! implements the Service interface - estimates gas needed for a transaction
@@ -662,19 +688,27 @@ func (s *ServiceImpl) GetCode(ctx context.Context, addr string, block *big.Int) 
 		fmt.Printf("Failed to log GetCode operation: %v\n", err)
 	}
 
-	// For now, return "0x" as there's no contract code storage implemented yet
-	// TODO: Implement actual contract code retrieval from state/storage
-	// This would typically involve:
-	// 1. Getting the state at the specified block
-	// 2. Looking up the account at the given address
-	// 3. Returning the code field (empty for EOAs, bytecode for contracts)
+	if s.scClient == nil {
+		return "0x", fmt.Errorf("SmartContract client not initialized")
+	}
+
+	contractAddr := common.FromHex(addr)
+	resp, err := s.scClient.GetContractCode(opCtx, contractAddr)
+	if err != nil {
+		// Just return 0x for now if it fails
+		return "0x", nil
+	}
 
 	// Log success
-	if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetCode returned 0x for address: %s", addr), "GetCode", 1); logErr != nil {
+	if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetCode returned for address: %s", addr), "GetCode", 1); logErr != nil {
 		fmt.Printf("Failed to log GetCode success: %v\n", logErr)
 	}
 
-	return "0x", nil
+	if resp.Code == "" {
+		return "0x", nil
+	}
+
+	return resp.Code, nil
 }
 
 // FeeHistory implements the Service interface - retrieves fee history for the last N blocks

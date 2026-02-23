@@ -22,8 +22,15 @@ import (
 // StartIntegratedServer initializes and starts the Smart Contract gRPC server
 // within the context of the main node (jmdn).
 // It ensures that the database lock is shared with the existing consensus logic.
-func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort int, didAddr string) error {
+func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort int, didAddr string, blockgenPort int) error {
 	log.Info().Msg("Initializing Smart Contract Service...")
+
+	// Configure EVM Block API endpoint if provided
+	if blockgenPort > 0 {
+		evmEndpoint := fmt.Sprintf("http://localhost:%d", blockgenPort)
+		evm.SetAPIEndpoint(evmEndpoint)
+		log.Info().Str("endpoint", evmEndpoint).Msg("Configured EVM Block API endpoint")
+	}
 
 	// 1. Initialize Shared Storage (Singleton for process)
 	dbConfig := database.LoadConfigFromEnv()

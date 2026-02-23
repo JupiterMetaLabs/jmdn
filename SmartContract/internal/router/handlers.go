@@ -315,6 +315,7 @@ func (r *Router) GetContractCode(ctx context.Context, contractAddress string) (s
 
 	// Get contract code from state
 	code := r.stateDB.GetCode(addr)
+	log.Info().Str("address", addr.Hex()).Int("code_len", len(code)).Msg("🔍 [ABI FLOW] Checked StateDB for Code")
 	if len(code) == 0 {
 		return "", "", nil, fmt.Errorf("contract not found at address %s", addr.Hex())
 	}

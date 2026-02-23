@@ -130,37 +130,33 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 	case "eth_call":
-		// Log incoming payload for eth_call
-		// log.Printf("📥 eth_call payload: %+v", req.Params)
-		// if len(req.Params) < 1 {
-		// 	resp, _ := invalidParams(req, "missing call object")
-		// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		// 	return resp, nil
-		// }
-		// msg, err := toCallMsg(req.Params[0])
-		// if err != nil {
-		// 	resp, _ := finish(req, nil, err)
-		// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		// 	return resp, err
-		// }
-		// var num *big.Int
-		// if len(req.Params) > 1 {
-		// 	num, err = parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
-		// 	if err != nil {
-		// 		resp, _ := finish(req, nil, err)
-		// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		// 		return resp, err
-		// 	}
-		// }
-		// out, err := handler.service.Call(ctx, msg, num)
-		// if err != nil {
-		// 	resp, _ := finish(req, nil, err)
-		// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		// 	return resp, err
-		// }
-		// resp, _ := finish(req, "0x"+hex.EncodeToString(out), nil)
-		// Explicitly disabled for security/compliance
-		resp := RespErr(req.ID, -32601, "eth_call disabled")
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing call object")
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, nil
+		}
+		msg, err := toCallMsg(req.Params[0])
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		var num *big.Int
+		if len(req.Params) > 1 {
+			num, err = parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
+			if err != nil {
+				resp, _ := finish(req, nil, err)
+				log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+				return resp, err
+			}
+		}
+		out, err := handler.service.Call(ctx, msg, num)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		resp, _ := finish(req, "0x"+hex.EncodeToString(out), nil)
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
@@ -255,28 +251,28 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
-	// case "eth_getCode":
-	// 	if len(req.Params) < 2 {
-	// 		resp, _ := invalidParams(req, "missing address and block tag")
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, nil
-	// 	}
-	// 	addr, _ := req.Params[0].(string)
-	// 	num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
-	// 	if err != nil {
-	// 		resp, _ := finish(req, nil, err)
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, err
-	// 	}
-	// 	code, err := handler.service.GetCode(ctx, addr, num)
-	// 	if err != nil {
-	// 		resp, _ := finish(req, nil, err)
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, err
-	// 	}
-	// 	resp, _ := finish(req, code, nil)
-	// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 	return resp, nil
+	case "eth_getCode":
+		if len(req.Params) < 2 {
+			resp, _ := invalidParams(req, "missing address and block tag")
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, nil
+		}
+		addr, _ := req.Params[0].(string)
+		num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		code, err := handler.service.GetCode(ctx, addr, num)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		resp, _ := finish(req, code, nil)
+		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		return resp, nil
 
 	// case "eth_feeHistory":
 	// 	if len(req.Params) < 2 {

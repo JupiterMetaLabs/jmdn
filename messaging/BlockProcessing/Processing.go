@@ -412,6 +412,14 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		// Commit StateDB changes if requested
 		if commitToDB {
 			log.Info().Msg("💾 Committing contract deployment state to database")
+
+			// Update balances in DID service before committing StateDB
+			for addr, balance := range stateDB.GetBalanceChanges() {
+				if err := DB_OPs.UpdateAccountBalance(accountsClient, addr, balance.String()); err != nil {
+					return fmt.Errorf("failed to update DID service balance for %s: %w", addr.Hex(), err)
+				}
+			}
+
 			if _, err := stateDB.CommitToDB(false); err != nil {
 				return fmt.Errorf("failed to commit contract deployment state: %w", err)
 			}
@@ -486,6 +494,14 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		// Commit StateDB changes if requested
 		if commitToDB {
 			log.Info().Msg("💾 Committing contract execution state to database")
+
+			// Update balances in DID service before committing StateDB
+			for addr, balance := range stateDB.GetBalanceChanges() {
+				if err := DB_OPs.UpdateAccountBalance(accountsClient, addr, balance.String()); err != nil {
+					return fmt.Errorf("failed to update DID service balance for %s: %w", addr.Hex(), err)
+				}
+			}
+
 			if _, err := stateDB.CommitToDB(false); err != nil {
 				return fmt.Errorf("failed to commit contract execution state: %w", err)
 			}
@@ -762,6 +778,14 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// Commit StateDB if requested (Ethereum-style)
 	if commitToDB {
 		log.Info().Msg("💾 Committing regular transfer state to database")
+
+		// Update balances in DID service before committing StateDB
+		for addr, balance := range stateDB.GetBalanceChanges() {
+			if err := DB_OPs.UpdateAccountBalance(accountsClient, addr, balance.String()); err != nil {
+				return fmt.Errorf("failed to update DID service balance for %s: %w", addr.Hex(), err)
+			}
+		}
+
 		if _, err := stateDB.CommitToDB(false); err != nil {
 			return fmt.Errorf("failed to commit regular transfer state: %w", err)
 		}

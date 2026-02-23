@@ -3,9 +3,11 @@ package state
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"math/big"
 
 	"gossipnode/SmartContract/internal/storage"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -29,8 +31,9 @@ type stateObject struct {
 	// Storage Caching
 	// Origin: Value at start of Tx
 	// Dirty: Value currently changed to
-	originStorage map[common.Hash]common.Hash
-	dirtyStorage  map[common.Hash]common.Hash
+	originStorage    map[common.Hash]common.Hash
+	dirtyStorage     map[common.Hash]common.Hash
+	dirtyStorageMeta map[common.Hash]StorageMetadata // Metadata for changed slots
 
 	// Code
 	code []byte
@@ -52,13 +55,14 @@ func newStateObject(db *ContractDB, addr common.Address, origin *AccountData) *s
 	}
 
 	return &stateObject{
-		address:       addr,
-		addrHash:      crypto.Keccak256Hash(addr[:]),
-		originAccount: origin,
-		data:          origin.Copy(),
-		originStorage: make(map[common.Hash]common.Hash),
-		dirtyStorage:  make(map[common.Hash]common.Hash),
-		db:            db,
+		address:          addr,
+		addrHash:         crypto.Keccak256Hash(addr[:]),
+		originAccount:    origin,
+		data:             origin.Copy(),
+		originStorage:    make(map[common.Hash]common.Hash),
+		dirtyStorage:     make(map[common.Hash]common.Hash),
+		dirtyStorageMeta: make(map[common.Hash]StorageMetadata),
+		db:               db,
 	}
 }
 
@@ -112,15 +116,14 @@ func (s *stateObject) getCode() []byte {
 		return s.code
 	}
 
-	// Lazy load from DB
-	if len(s.data.CodeHash) == 0 || bytes.Equal(s.data.CodeHash, emptyCodeHash) {
-		return nil
-	}
-
-	// Load from PebbleDB
+	// Load from PebbleDB because CodeHash might not be initialized
+	// when the account data is first loaded from the generalized DID service
 	key := makeCodeKey(s.address)
-	if val, err := s.db.db.Get(key); err == nil && len(val) > 0 {
+	val, err := s.db.db.Get(key)
+	fmt.Printf("DEBUG(state_object): PebbleDB Get(CodeKey=%x) -> len=%d, err=%v\n", key, len(val), err)
+	if err == nil && len(val) > 0 {
 		s.code = val
+		s.data.CodeHash = crypto.Keccak256(val)
 		return s.code
 	}
 
@@ -129,6 +132,7 @@ func (s *stateObject) getCode() []byte {
 
 // setCode updates the contract code and marks the object as dirty.
 func (s *stateObject) setCode(code []byte) {
+	fmt.Printf("DEBUG(state_object): setCode called for %s with len %d\n", s.address.Hex(), len(code))
 	s.code = code
 	s.data.CodeHash = crypto.Keccak256(code)
 	s.dirtyCode = true
@@ -137,8 +141,11 @@ func (s *stateObject) setCode(code []byte) {
 
 // getCodeHash returns the code hash.
 func (s *stateObject) getCodeHash() []byte {
-	if len(s.data.CodeHash) == 0 {
-		return emptyCodeHash
+	if len(s.data.CodeHash) == 0 || bytes.Equal(s.data.CodeHash, emptyCodeHash) {
+		// Attempt to load code to hydrate CodeHash correctly
+		if code := s.getCode(); code == nil {
+			return emptyCodeHash
+		}
 	}
 	return s.data.CodeHash
 }
@@ -173,6 +180,19 @@ func (s *stateObject) getState(key common.Hash) common.Hash {
 // setState updates a storage slot and marks it as dirty.
 func (s *stateObject) setState(key, value common.Hash) {
 	s.dirtyStorage[key] = value
+
+	// Track metadata
+	// Note: We access db fields directly here assuming lock is held by caller (EVM usually is single-threaded per tx)
+	// or relies on StateDB lock. However, stateObject methods are generally called under StateDB lock.
+	s.dirtyStorageMeta[key] = StorageMetadata{
+		ContractAddress:   s.address,
+		StorageKey:        key,
+		ValueHash:         crypto.Keccak256Hash(value.Bytes()),
+		LastModifiedBlock: s.db.currentBlock,
+		LastModifiedTx:    s.db.currentTxHash,
+		UpdatedAt:         time.Now().UTC().Unix(),
+	}
+
 	s.markDirty()
 }
 
@@ -218,7 +238,7 @@ func (s *stateObject) isDirty() bool {
 func (s *stateObject) isEmpty() bool {
 	return s.data.Nonce == 0 &&
 		s.data.Balance.Sign() == 0 &&
-		bytes.Equal(s.data.CodeHash, emptyCodeHash)
+		bytes.Equal(s.getCodeHash(), emptyCodeHash)
 }
 
 // suicide marks the account for deletion.
@@ -232,10 +252,11 @@ func (s *stateObject) suicide() {
 // ============================================================================
 
 // finalizeStorage prepares storage changes for persistence.
-// Returns a map of storage keys to write and a list of keys to delete.
-func (s *stateObject) finalizeStorage() (toWrite map[common.Hash]common.Hash, toDelete []common.Hash) {
+// Returns map of storage keys to write, list of keys to delete, and map of metadata updates.
+func (s *stateObject) finalizeStorage() (toWrite map[common.Hash]common.Hash, toDelete []common.Hash, metaUpdates map[common.Hash]StorageMetadata) {
 	toWrite = make(map[common.Hash]common.Hash)
 	toDelete = make([]common.Hash, 0)
+	metaUpdates = make(map[common.Hash]StorageMetadata)
 
 	for key, value := range s.dirtyStorage {
 		if value == (common.Hash{}) {
@@ -243,10 +264,13 @@ func (s *stateObject) finalizeStorage() (toWrite map[common.Hash]common.Hash, to
 			toDelete = append(toDelete, key)
 		} else {
 			toWrite[key] = value
+			if meta, ok := s.dirtyStorageMeta[key]; ok {
+				metaUpdates[key] = meta
+			}
 		}
 	}
 
-	return toWrite, toDelete
+	return toWrite, toDelete, metaUpdates
 }
 
 // commitStorage moves dirty storage to origin storage and clears dirty map.
@@ -255,6 +279,7 @@ func (s *stateObject) commitStorage() {
 		s.originStorage[key] = value
 	}
 	s.dirtyStorage = make(map[common.Hash]common.Hash)
+	s.dirtyStorageMeta = make(map[common.Hash]StorageMetadata)
 }
 
 // commitCode clears the dirty code flag after persistence.

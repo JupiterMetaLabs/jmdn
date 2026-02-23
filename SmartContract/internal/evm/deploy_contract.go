@@ -8,7 +8,10 @@ import (
 
 	pbdid "gossipnode/DID/proto"
 
+	"time"
+
 	"github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
@@ -39,11 +42,20 @@ func ProcessContractDeployment(
 		Str("from", tx.From.Hex()).
 		Msg("🚀 [EVM] Processing contract deployment")
 
-	// Calculate the contract address (deterministic)
-	contractAddr := crypto.CreateAddress(*tx.From, tx.Nonce)
-
 	// StateDB is now injected, so we don't initialize it here
 	// This supports the atomic execution flow required by consensus
+
+	// Calculate the contract address (deterministic)
+	// We MUST use the internal StateDB nonce which represents the actual current
+	// number of executed transactions for this account in this block,
+	// rather than the incoming tx.Nonce which may be outdated or duplicated
+	currentNonce := stateDB.GetNonce(*tx.From)
+	contractAddr := crypto.CreateAddress(*tx.From, currentNonce)
+
+	log.Info().
+		Str("contract_address", contractAddr.Hex()).
+		Uint64("sender_nonce", currentNonce).
+		Msg("🔥 [EVM] Calculated deterministic contract address based on StateDB nonce")
 
 	// Create EVM executor
 	executor := NewEVMExecutor(chainID)
@@ -89,6 +101,48 @@ func ProcessContractDeployment(
 		Str("contract_address", contractAddr.Hex()).
 		Uint64("gas_used", result.GasUsed).
 		Msg("✅ [EVM] Contract deployed successfully")
+
+	// ============================================================================
+	// Persistence (Metadata & Receipt)
+	// ============================================================================
+
+	// 1. Save Contract Metadata
+	contractMeta := state.ContractMetadata{
+		ContractAddress:  contractAddr,
+		CodeHash:         crypto.Keccak256Hash(tx.Data), // Approximate (should be runtime code hash, but init code hash is fine for now)
+		CodeSize:         uint64(len(tx.Data)),          // Init code size
+		DeployerAddress:  *tx.From,
+		DeploymentTxHash: tx.Hash,
+		DeploymentBlock:  uint64(0), // FIXME: Pass block number from context
+		CreatedAt:        time.Now().UTC().Unix(),
+	}
+
+	if contractDB, ok := stateDB.(*state.ContractDB); ok {
+		if err := contractDB.SetContractMetadata(contractAddr, contractMeta); err != nil {
+			log.Error().Err(err).Msg("❌ Failed to save contract metadata")
+			// We don't fail the transaction for metadata errors, just log it
+		}
+	}
+
+	// 2. Save Transaction Receipt
+	receipt := state.TransactionReceipt{
+		TxHash:          tx.Hash,
+		BlockNumber:     uint64(0), // FIXME: Pass block number
+		TxIndex:         uint64(0), // FIXME: Pass tx index
+		Status:          1,         // Success
+		GasUsed:         result.GasUsed,
+		ContractAddress: contractAddr,
+		Logs:            nil, // Deployments typically don't emit logs unless init code does
+		CreatedAt:       time.Now().UTC().Unix(),
+	}
+
+	if contractDB, ok := stateDB.(*state.ContractDB); ok {
+		if err := contractDB.WriteReceipt(receipt); err != nil {
+			log.Error().Err(err).Msg("❌ Failed to save transaction receipt")
+		} else {
+			log.Info().Str("tx_hash", tx.Hash.Hex()).Msg("🧾 Receipt stored successfully")
+		}
+	}
 
 	return &DeploymentResult{
 		ContractAddress: contractAddr,
@@ -199,6 +253,39 @@ func ProcessContractExecution(
 		Str("contract", tx.To.Hex()).
 		Uint64("gas_used", result.GasUsed).
 		Msg("✅ [EVM] Contract executed successfully")
+
+	// ============================================================================
+	// Persistence (Receipt & Logs)
+	// ============================================================================
+
+	var logs []*ethtypes.Log
+	if contractDB, ok := stateDB.(*state.ContractDB); ok {
+		// Capture logs before they might be cleared (though they persist in StateDB until next block/tx reset)
+		logs = contractDB.Logs()
+	}
+
+	// Save Transaction Receipt
+	receipt := state.TransactionReceipt{
+		TxHash:          tx.Hash,
+		BlockNumber:     uint64(0), // FIXME: Pass block number
+		TxIndex:         uint64(0), // FIXME: Pass tx index
+		Status:          1,         // Success
+		GasUsed:         result.GasUsed,
+		ContractAddress: *tx.To, // The contract we called
+		Logs:            logs,
+		CreatedAt:       time.Now().UTC().Unix(),
+	}
+
+	if contractDB, ok := stateDB.(*state.ContractDB); ok {
+		if err := contractDB.WriteReceipt(receipt); err != nil {
+			log.Error().Err(err).Msg("❌ Failed to save execution receipt")
+		} else {
+			log.Info().
+				Str("tx_hash", tx.Hash.Hex()).
+				Int("log_count", len(logs)).
+				Msg("🧾 Receipt & Logs stored successfully")
+		}
+	}
 
 	return result, nil
 }
