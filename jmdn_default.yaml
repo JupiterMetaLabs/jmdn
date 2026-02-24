@@ -1,0 +1,181 @@
+# JMDN Node Configuration
+# Place at ./jmdn.yaml or /etc/jmdn/jmdn.yaml
+# Env vars override with JMDN_ prefix (e.g. JMDN_NODE_CHAIN_ID=7000700)
+
+# ── Node Identity ────────────────────────────────────────
+node:
+  alias: ""
+
+# ── Networking ───────────────────────────────────────────
+network:
+  chain_id: 8000800
+  seednode: ""
+  mempool: ""
+  yggdrasil: true
+  heartbeat_interval: 10  # seconds
+
+# ── Ports ────────────────────────────────────────────────
+ports:
+  api: 0           # Disabled by default (use -api 8090 to enable)
+  blockgen: 0      # Disabled by default (use -blockgen 15050 to enable)
+  blockgrpc: 0     # Disabled by default (use -blockgrpc 15055 to enable)
+  cli: 0
+  did: 15052
+  facade: 8545
+  ws: 8546
+  metrics: 0       # Disabled by default (use -metrics 8081 to enable)
+  profiler: 0      # Disabled by default (use -profiler 6060 to enable)
+
+binds:
+  api: "127.0.0.1"
+  blockgen: "127.0.0.1"  # Admin - Block generation
+  blockgrpc: "127.0.0.1"   # P2P - Block propagation
+  cli: "127.0.0.1"       # Admin - CLI control
+  did: "0.0.0.0"
+  facade: "0.0.0.0"
+  ws: "0.0.0.0"
+  metrics: "127.0.0.1"
+  profiler: "127.0.0.1"  # Debugging - STRICTLY LOCALHOST
+
+# ── Database (ImmuDB) ───────────────────────────────────
+database:
+  username: ""
+  password: ""
+
+# ── Logging (Ion) ────────────────────────────────────────
+# Maps directly to Ion's config struct. All env vars like
+# OTEL_EXPORTER_OTLP_ENDPOINT are replaced by this section.
+logging:
+  level: "warn"              # debug, info, warn, error
+  development: false
+  service_name: "jmdn"
+
+  console:
+    enabled: true
+    format: "systemd"        # json, pretty, systemd
+    color: true
+    errors_to_stderr: true
+
+  file:
+    enabled: false
+    path: ""
+    max_size_mb: 100
+    max_age_days: 7
+    max_backups: 5
+    compress: true
+
+  otel:
+    enabled: false
+    endpoint: ""             # e.g. "collector.example.com:4317"
+    protocol: "grpc"
+    insecure: false
+    username: ""             # Prefer env: JMDN_LOGGING_OTEL_USERNAME
+    password: ""             # Prefer env: JMDN_LOGGING_OTEL_PASSWORD
+    batch_size: 512
+    export_interval: "5s"
+
+  tracing:
+    enabled: false
+    sampler: "ratio:0.2"        # always, never, ratio:0.5
+
+# ── Features ────────────────────────────────────────────
+features:
+  explorer: false
+  use_legacy_bft: false
+  grotrack: false            # Requires ports.metrics > 0
+
+# ── Security ────────────────────────────────────────────
+# ── Security ────────────────────────────────────────────
+# Enterprise Security Module (Gatekeeper)
+# Prefer env vars for secrets: JMDN_SECURITY_EXPLORER_API_KEY, JMDN_SECURITY_JWT_SECRET
+security:
+  enabled: true
+  cert_dir: "certs"
+  ip_cache_size: 10000
+
+  # Layer 1: Aggregate per-IP rate limit across all services (DDoS defense)
+  global_rate_limit: 200  # 200 RPS total per IP
+  global_burst: 400
+
+  # Cloud Native / Load Balancer Support
+  trust_forwarded_headers: true   # Enable for Cloudflare/GCP LB
+  trusted_proxies: []             # Optional: ["10.0.0.0/8"]
+
+  # Legacy Secrets (Moved here for unification)
+  explorer_api_key: ""
+  jwt_secret: ""
+
+  # Service Policies (Granular Control)
+  services:
+    # 1. Explorer API (Public - Secure - Hybrid Auth)
+    explorer_api:
+      tls: true             # User req: "must be true"
+      auth_type: "hybrid"   # Prefer mTLS, fallback to Token
+      token_env: "EXPLORER_API_KEY"
+      rate_limit: 100.0     # "More flexible"
+      burst: 200
+
+    # 2. JSON-RPC (Public - Rate Limited)
+    eth_rpc:
+      tls: false            # Public endpoint
+      auth_type: "none"
+      rate_limit: 30.0      # "Solid" limit
+      burst: 60
+
+    # 3. Block Ingest/Sequencer (Internal - Token Auth)
+    block_ingest_http:
+      tls: false
+      auth_type: "token"
+      token_env: "SEQUENCER_TOKEN"
+      rate_limit: 100.0
+      burst: 200
+
+    # 4. Validator P2P (Internal/Critical - Strict mTLS)
+    block_ingest_grpc:
+      tls: true
+      auth_type: "mtls"     # Zero Trust - mTLS ONLY
+      rate_limit: 1000.0
+      burst: 2000
+
+    # 5. CLI Admin (Localhost - Strict mTLS)
+    cli_admin:
+      tls: true
+      auth_type: "mtls"
+      rate_limit: 10.0
+      burst: 20
+
+    # 6. DID Service (Public - Hybrid)
+    did_service:
+      tls: true
+      auth_type: "hybrid"
+      token_env: "DID_AUTH_TOKEN"
+      rate_limit: 50.0
+      burst: 100
+
+    # 7. Mempool (P2P - Standard TLS)
+    mempool_service:
+      tls: true             # "At least standard TLS"
+      auth_type: "none"
+      rate_limit: 1000.0
+      burst: 2000
+
+    # 8. gETH gRPC (Internal - Sensitive - mTLS)
+    eth_grpc:
+      tls: true
+      auth_type: "mtls"     # "Definitely mTLS"
+      rate_limit: 500.0
+      burst: 1000
+
+    # 8. BFT Buddy (Internal - mTLS, NO rate limit to avoid liveness risk)
+    bft_buddy:
+      tls: true
+      auth_type: "mtls"
+      rate_limit: 0         # NEVER rate-limit BFT consensus
+      burst: 0
+
+    # 9. BFT Sequencer (Internal - mTLS, NO rate limit)
+    bft_sequencer:
+      tls: true
+      auth_type: "mtls"
+      rate_limit: 0         # NEVER rate-limit BFT consensus
+      burst: 0

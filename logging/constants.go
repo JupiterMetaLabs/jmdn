@@ -1,0 +1,27 @@
+package logging
+
+const (
+	SubscriptionService          = "log:SubscriptionService"
+	BuddyNodesService            = "log:BuddyNodesService"
+	MessagePassing_StructService = "log:MessagePassing_StructService"
+	MessagePassing               = "log:MessagePassing"
+	BlockProcessing              = "log:BlockProcessing"
+	Config                       = "log:Config"
+	DB_OPs_AccountConnectionPool = "log:DB_OPs_AccountConnectionPool"
+	Explorer                     = "log:Explorer"
+	Facade                       = "log:Facade"
+	Publish                      = "log:Publish"
+	Subscription                 = "log:Subscription"
+	Sequencer                    = "log:Sequencer"
+	Security                     = "log:Security"
+	MainDB_Connections           = "log:MainDB_Connections"
+	Voting                       = "log:Voting"
+	BFT                          = "log:BFT"
+	Block                        = "log:Block"
+	RateLimit                    = "log:RateLimit"
+	AuthGin                      = "log:AuthGin"
+	AuthGRPC                     = "log:AuthGRPC"
+	AuthHTTP                     = "log:AuthHTTP"
+	JSONRPC                      = "log:JSONRPC"
+	DID                          = "log:DID"
+)

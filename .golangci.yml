@@ -1,0 +1,65 @@
+version: "2"
+
+# ── Run Options ─────────────────────────────────────────────────────────────
+run:
+  timeout: 5m
+  tests: false
+
+  # Prevents golangci-lint from modifying go.mod when loading packages.
+  # Equivalent to running with -mod=readonly. Important in CI.
+  modules-download-mode: readonly
+
+  # Resolve relative paths relative to the go.mod root.
+  # Produces cleaner, consistent output in CI and locally.
+  relative-path-mode: gomod
+
+# ── Linters ──────────────────────────────────────────────────────────────────
+linters:
+  # Explicitly opt in to only the linters below.
+  # All others are disabled. Plug-and-play: uncomment a linter here
+  # and CI will enforce it on the next push — no changes to ci.yml needed.
+  default: none
+
+  enable:
+    - govet        # compiler-level checks (printf mismatches, unreachable code, etc.)
+    - ineffassign  # detects assignments that are immediately overwritten
+    - unused       # flags unused exported identifiers
+    - nolintlint   # enforces correct usage of //nolint directives (no stale suppressions)
+
+    # ── Staged for re-enablement once backlog is cleared ──────────────────
+    # Uncomment one at a time, clean the violations, commit, repeat.
+    #
+    # - staticcheck # full staticcheck suite (SA, ST, QF rules)
+    # - errcheck    # unhandled errors (229 violations in current backlog)
+    # - gosec       # security analysis (192 violations in current backlog)
+
+  settings:
+    nolintlint:
+      # Require a reason to be provided with every //nolint directive.
+      require-explanation: true
+      # Disallow blanket //nolint with no specific linter named.
+      allow-no-explanation: []
+      require-specific: true
+
+# ── Formatters ───────────────────────────────────────────────────────────────
+formatters:
+  # Driven by `golangci-lint fmt --diff` in CI.
+  # Adding a formatter here is the only change needed to enforce it everywhere.
+  disable-all: true
+  enable:
+    - gofmt
+    - goimports
+
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - gossipnode
+
+# ── Issues ────────────────────────────────────────────────────────────────────
+issues:
+  # Show every violation — never hide duplicates or cap per-linter counts.
+  # Developers should see the full picture in one run, not whack-a-mole.
+  max-issues-per-linter: 0
+  max-same-issues: 0

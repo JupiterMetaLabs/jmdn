@@ -1,0 +1,170 @@
+syntax = "proto3";
+
+package cli;
+
+option go_package = "gossipnode/CLI/proto";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// Peer information
+message Peer {
+    string id = 1;
+    string multiaddr = 2;
+    int32 heartbeat_fail = 3;
+    bool is_alive = 4;
+    string status = 5;
+    string last_seen = 6;
+}
+
+message PeerList {
+    repeated Peer peers = 1;
+}
+
+// Message statistics
+message MessageStats {
+    int64 messages_sent = 1;
+    int64 messages_received = 2;
+    int64 messages_failed = 3;
+}
+
+// Database state
+message DatabaseState {
+    uint64 tx_id = 1;
+    bytes tx_hash = 2;
+    string database = 3;
+}
+
+// DID Document
+message DIDDocument {
+    string did = 1;
+    string public_key = 2;
+    string balance = 3;
+    string type = 4;
+    int64 nonce = 5;
+    string metadata = 6;
+    google.protobuf.Timestamp created_at = 7;
+    google.protobuf.Timestamp updated_at = 8;
+}
+
+// Sync statistics
+message SyncStats {
+    int64 time_taken = 1;
+    DatabaseState main_state = 2;
+    DatabaseState accounts_state = 3;
+    string error = 4;
+}
+
+message Addrs {
+    int32 total = 1;
+    repeated string peers = 2;
+    string error = 3;
+}
+
+message VersionInfo {
+    string git_tag = 1;
+    string git_branch = 2;
+    string git_commit = 3;
+    string build_time = 4;
+    string go_version = 5;
+}
+
+// Service definition
+service CLIService {
+    // Peer management
+    rpc ListPeers(google.protobuf.Empty) returns (PeerList) {}
+    rpc AddPeer(PeerRequest) returns (OperationResponse) {}
+    rpc RemovePeer(PeerRequest) returns (OperationResponse) {}
+    rpc CleanPeers(google.protobuf.Empty) returns (CleanPeersResponse) {}
+
+    // Messaging
+    rpc SendMessage(MessageRequest) returns (OperationResponse) {}
+    rpc SendYggdrasilMessage(MessageRequest) returns (OperationResponse) {}
+    rpc SendFile(FileRequest) returns (OperationResponse) {}
+    rpc BroadcastMessage(MessageRequest) returns (OperationResponse) {}
+    rpc GetMessageStats(google.protobuf.Empty) returns (MessageStats) {}
+
+    // DID Operations
+    rpc GetDID(DIDRequest) returns (DIDDocument) {}
+    rpc PropagateDID(DIDPropagationRequest) returns (OperationResponse) {}
+
+
+    // Database Operations
+    rpc FastSync(PeerRequest) returns (SyncStats) {}
+    rpc FirstSync(FirstSyncRequest) returns (SyncStats) {}
+    rpc GetDatabaseState(google.protobuf.Empty) returns (DatabaseStates) {}
+
+    // Node Operations
+    rpc ReturnAddrs(google.protobuf.Empty) returns (Addrs) {}
+    rpc GetSyncInfo(google.protobuf.Empty) returns (SyncInfo) {}
+    rpc GetGethStatus(google.protobuf.Empty) returns (GethStatus) {}
+
+    // Discovery
+    rpc DiscoverNeighbors(google.protobuf.Empty) returns (OperationResponse) {}
+    rpc ListAliases(google.protobuf.Empty) returns (AliasList) {}
+
+    // Version
+    rpc GetNodeVersion(google.protobuf.Empty) returns (VersionInfo) {}
+}
+
+// Request/Response messages
+message PeerRequest {
+    string peer = 1;
+}
+
+message MessageRequest {
+    string target = 1;
+    string message = 2;
+}
+
+message FileRequest {
+    string peer = 1;
+    string filepath = 2;
+    string remote_filename = 3;
+}
+
+message DIDRequest {
+    string did = 1;
+}
+
+message DIDPropagationRequest {
+    string did = 1;
+    string public_key = 2;
+    string balance = 3;
+}
+
+message FirstSyncRequest {
+    string peer = 1;
+    string mode = 2;  // "server" or "client"
+}
+
+message SyncInfo {
+    int64 batch_size = 1;
+    int64 request_timeout_sec = 2;
+    int64 response_timeout_sec = 3;
+}
+
+message GethStatus {
+    int32 chain_id = 1;
+    int32 facade_port = 2;
+    int32 ws_port = 3;
+}
+
+message AliasList {
+    repeated string aliases = 1;
+}
+
+message OperationResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message CleanPeersResponse {
+    int32 cleaned_count = 1;
+    string error = 2;
+}
+
+message DatabaseStates {
+    DatabaseState main_db = 1;
+    DatabaseState accounts_db = 2;
+}

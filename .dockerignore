@@ -1,0 +1,28 @@
+# Binary
+jmdn
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+
+# Reports and docs (not needed for build)
+*.pdf
+*.docx
+*.md
+!README.md
+!DEPLOY_GUIDE.md
+
+# Test artifacts
+*_test.go
+gosec_report.txt
+go_vet_report.txt
+
+# Grafana dashboards (not needed in container)
+grafana/

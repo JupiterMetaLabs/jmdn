@@ -1,0 +1,46 @@
+jmdn
+jmdn.exe
+gossipnode.exe
+gossipnode
+gossipnode.exe.sig
+logs/*.log
+config/peer.json
+config/bls.json
+DB/*.db
+yggdrasil
+Account.json
+.immudb_state/*
+.identity*
+.state*
+.vscode
+*.avro
+/data
+test-cli
+immudb_mac
+/immu
+*.exe
+immuclient
+.DS_Store
+cloudgrafana.txt
+# *.pb.go
+# *_grpc.pb.go
+Thumbs.db
+*.swp
+*.swo
+*.out
+*.test
+JMDT-node
+test
+immudb
+# data/ (already ignored above)
+SIM/__pycache__/testZKBlock.cpython-313.pyc
+.env
+SIM/TxSIM/submitRawTxn.py
+Scripts/restore_tags.sh
+temp/
+coverage.out
+__debug_bin
+*.key
+*.pem
+*.crt
+vendor/
