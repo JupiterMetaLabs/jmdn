@@ -80,7 +80,6 @@ logging:
 
 # ── Features ────────────────────────────────────────────
 features:
-  explorer: false
   use_legacy_bft: false
   grotrack: false            # Requires ports.metrics > 0
 
@@ -94,8 +93,8 @@ security:
   ip_cache_size: 10000
 
   # Layer 1: Aggregate per-IP rate limit across all services (DDoS defense)
-  global_rate_limit: 200  # 200 RPS total per IP
-  global_burst: 400
+  global_rate_limit: 0
+  global_burst: 0
 
   # Cloud Native / Load Balancer Support
   trust_forwarded_headers: true   # Enable for Cloudflare/GCP LB
@@ -112,59 +111,59 @@ security:
       tls: true             # User req: "must be true"
       auth_type: "hybrid"   # Prefer mTLS, fallback to Token
       token_env: "EXPLORER_API_KEY"
-      rate_limit: 100.0     # "More flexible"
-      burst: 200
+      rate_limit: 0
+      burst: 0
 
     # 2. JSON-RPC (Public - Rate Limited)
     eth_rpc:
       tls: false            # Public endpoint
       auth_type: "none"
-      rate_limit: 30.0      # "Solid" limit
-      burst: 60
+      rate_limit: 0
+      burst: 0
 
     # 3. Block Ingest/Sequencer (Internal - Token Auth)
     block_ingest_http:
       tls: false
       auth_type: "token"
       token_env: "SEQUENCER_TOKEN"
-      rate_limit: 100.0
-      burst: 200
+      rate_limit: 0
+      burst: 0
 
     # 4. Validator P2P (Internal/Critical - Strict mTLS)
     block_ingest_grpc:
       tls: true
       auth_type: "mtls"     # Zero Trust - mTLS ONLY
-      rate_limit: 1000.0
-      burst: 2000
+      rate_limit: 0
+      burst: 0
 
     # 5. CLI Admin (Localhost - Strict mTLS)
     cli_admin:
       tls: true
       auth_type: "mtls"
-      rate_limit: 10.0
-      burst: 20
+      rate_limit: 0
+      burst: 0
 
     # 6. DID Service (Public - Hybrid)
     did_service:
       tls: true
       auth_type: "hybrid"
       token_env: "DID_AUTH_TOKEN"
-      rate_limit: 50.0
-      burst: 100
+      rate_limit: 0
+      burst: 0
 
     # 7. Mempool (P2P - Standard TLS)
     mempool_service:
       tls: true             # "At least standard TLS"
       auth_type: "none"
-      rate_limit: 1000.0
-      burst: 2000
+      rate_limit: 0
+      burst: 0
 
     # 8. gETH gRPC (Internal - Sensitive - mTLS)
     eth_grpc:
       tls: true
       auth_type: "mtls"     # "Definitely mTLS"
-      rate_limit: 500.0
-      burst: 1000
+      rate_limit: 0
+      burst: 0
 
     # 8. BFT Buddy (Internal - mTLS, NO rate limit to avoid liveness risk)
     bft_buddy:

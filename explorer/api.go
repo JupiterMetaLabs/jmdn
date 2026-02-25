@@ -34,16 +34,15 @@ const JWT_EXPIRATION = 1 * time.Hour
 
 // ImmuDBServer represents the ImmuDB API server
 type ImmuDBServer struct {
-	defaultdb      config.PooledConnection
-	accountsdb     config.PooledConnection
-	router         *gin.Engine
-	enableExplorer bool
-	gatekeeper     *gatekeeper.GinMiddleware
-	tlsLoader      *gatekeeper.TLSLoader
+	defaultdb  config.PooledConnection
+	accountsdb config.PooledConnection
+	router     *gin.Engine
+	gatekeeper *gatekeeper.GinMiddleware
+	tlsLoader  *gatekeeper.TLSLoader
 }
 
 // NewImmuDBServer creates a new ImmuDB API server
-func NewImmuDBServer(enableExplorer bool) (*ImmuDBServer, error) {
+func NewImmuDBServer() (*ImmuDBServer, error) {
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -67,7 +66,6 @@ func NewImmuDBServer(enableExplorer bool) (*ImmuDBServer, error) {
 	defer span.End()
 
 	span.SetAttributes(
-		attribute.Bool("enable_explorer", enableExplorer),
 		attribute.String("database", config.DBName),
 		attribute.String("accounts_database", config.AccountsDBName),
 	)
@@ -93,12 +91,11 @@ func NewImmuDBServer(enableExplorer bool) (*ImmuDBServer, error) {
 
 	// Create server instance
 	server := &ImmuDBServer{
-		defaultdb:      *defaultdb,
-		accountsdb:     *accountsdb,
-		router:         router,
-		enableExplorer: enableExplorer,
-		gatekeeper:     middleware,
-		tlsLoader:      tlsLoader,
+		defaultdb:  *defaultdb,
+		accountsdb: *accountsdb,
+		router:     router,
+		gatekeeper: middleware,
+		tlsLoader:  tlsLoader,
 	}
 
 	// Set up routes
@@ -108,7 +105,6 @@ func NewImmuDBServer(enableExplorer bool) (*ImmuDBServer, error) {
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
 
 	defaultdb.Client.Logger.Info(spanCtx, "ImmuDB API server created successfully",
-		ion.Bool("enable_explorer", enableExplorer),
 		ion.String("database", config.DBName),
 		ion.String("accounts_database", config.AccountsDBName),
 		ion.Float64("duration", duration),
@@ -172,11 +168,8 @@ func (s *ImmuDBServer) setupRoutes() {
 	}
 	// -------------------------------------------------------------------------
 
-	// Serve static HTML frontend only if explorer is enabled
-	if s.enableExplorer {
-		s.router.StaticFile("/", "./explorer/index.html")
-		s.router.StaticFile("/explorer", "./explorer/index.html")
-	}
+	// Root health check — lightweight, unauthenticated
+	s.router.GET("/", s.rootHealth)
 
 	// API routes - protected with JWT
 	api := s.router.Group("/api/block")
@@ -294,12 +287,10 @@ func (s *ImmuDBServer) StartWithContext(ctx context.Context, addr string) error 
 
 	span.SetAttributes(
 		attribute.String("bind_address", bindAddr),
-		attribute.Bool("enable_explorer", s.enableExplorer),
 	)
 
 	s.defaultdb.Client.Logger.Info(spanCtx, "Starting ImmuDB API server",
 		ion.String("bind_address", bindAddr),
-		ion.Bool("enable_explorer", s.enableExplorer),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
@@ -537,4 +528,14 @@ func (s *ImmuDBServer) getVersion(c *gin.Context) {
 		ion.String("function", "ExplorerAPI.getVersion"))
 
 	c.JSON(http.StatusOK, versionInfo)
+}
+
+// rootHealth is a lightweight, unauthenticated health endpoint served at GET /.
+// It intentionally exposes minimal information — just enough to confirm the node is alive.
+func (s *ImmuDBServer) rootHealth(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"service": "jmdn",
+		"version": version.GetVersionInfo(),
+	})
 }

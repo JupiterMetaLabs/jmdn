@@ -140,7 +140,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("logging.tracing.sampler", d.Logging.Tracing.Sampler)
 
 	// Features
-	v.SetDefault("features.explorer", d.Features.Explorer)
 	v.SetDefault("features.use_legacy_bft", d.Features.UseLegacyBFT)
 	v.SetDefault("features.grotrack", d.Features.GROTrack)
 

@@ -73,7 +73,6 @@ func DefaultConfig() NodeConfig {
 			},
 		},
 		Features: FeatureSettings{
-			Explorer:     false,
 			UseLegacyBFT: false,
 			GROTrack:     false,
 		},

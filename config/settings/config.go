@@ -119,7 +119,6 @@ type LogTracingSettings struct {
 
 // FeatureSettings toggles optional node features.
 type FeatureSettings struct {
-	Explorer     bool `mapstructure:"explorer"       yaml:"explorer"`
 	UseLegacyBFT bool `mapstructure:"use_legacy_bft" yaml:"use_legacy_bft"`
 	GROTrack     bool `mapstructure:"grotrack"        yaml:"grotrack"`
 }
