@@ -1,9 +1,11 @@
 package gatekeeper
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net/http"
+	"time"
 
 	"gossipnode/config/settings"
 
@@ -44,7 +46,8 @@ func NewSecureGRPCServer(
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create rate limiter for %s: %w", serviceName, err)
 	}
-	gk := NewGrpcMiddleware(secCfg, rl)
+	obs := NewObsLimiter(context.Background(), rl, 30*time.Second) // ROLLOUT-OBS: remove obs line + change obs→rl below
+	gk := NewGrpcMiddleware(secCfg, obs)
 
 	// 3. Interceptors
 	opts = append(opts, grpc.UnaryInterceptor(gk.UnaryInterceptor(serviceName)))
@@ -76,9 +79,10 @@ func ConfigureHTTPServer(
 	if err != nil {
 		return false, nil, fmt.Errorf("failed to init rate limiter for %s: %w", serviceName, err)
 	}
+	obs := NewObsLimiter(context.Background(), rl, 30*time.Second) // ROLLOUT-OBS: remove obs line + change obs→rl below
 
 	// 2. Gin Middleware
-	middleware = NewGinMiddleware(secCfg, rl, logger)
+	middleware = NewGinMiddleware(secCfg, obs, logger)
 
 	// 3. TLS
 	tlsLoader := NewTLSLoader(secCfg, logger)
@@ -103,4 +107,43 @@ func ServeHTTP(srv *http.Server, tlsEnabled bool) error {
 		return srv.ListenAndServeTLS("", "")
 	}
 	return srv.ListenAndServe()
+}
+
+// ConfigureNetHTTPServer is the net/http equivalent of ConfigureHTTPServer.
+// Use this when the HTTP server uses http.ServeMux (not Gin) — e.g. gorilla/websocket servers.
+// The caller must wire the returned middleware:
+//
+//	srv.Handler = middleware.Wrap(serviceName, existingMux)
+//
+// This ensures rate limiting fires on every HTTP request (including WS upgrade requests)
+// before the handler runs.
+func ConfigureNetHTTPServer(
+	srv *http.Server,
+	serviceName string,
+	secCfg *settings.SecurityConfig,
+	l *ion.Ion,
+) (tlsEnabled bool, middleware *NetHTTPMiddleware, err error) {
+	// 1. Rate Limiter
+	rl, err := NewRateLimiter(secCfg, secCfg.IPCacheSize)
+	if err != nil {
+		return false, nil, fmt.Errorf("failed to init rate limiter for %s: %w", serviceName, err)
+	}
+	obs := NewObsLimiter(context.Background(), rl, 30*time.Second) // ROLLOUT-OBS: remove obs line + change obs→rl below
+
+	// 2. net/http Middleware
+	middleware = NewNetHTTPMiddleware(secCfg, obs, l)
+
+	// 3. TLS
+	tlsLoader := NewTLSLoader(secCfg, l)
+	tlsConfig, err := tlsLoader.LoadServerTLS(serviceName)
+	if err != nil {
+		return false, nil, fmt.Errorf("failed to load TLS for %s: %w", serviceName, err)
+	}
+
+	if tlsConfig != nil {
+		srv.TLSConfig = tlsConfig
+		return true, middleware, nil
+	}
+
+	return false, middleware, nil
 }

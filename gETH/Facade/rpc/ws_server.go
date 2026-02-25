@@ -50,10 +50,12 @@ func (s *WSServer) ServeWithContext(ctx context.Context, addr string) error {
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	tlsEnabled, _, err := gatekeeper.ConfigureHTTPServer(srv, settings.ServiceEthRPC, secCfg, nil)
+	tlsEnabled, httpMW, err := gatekeeper.ConfigureNetHTTPServer(srv, settings.ServiceEthRPC, secCfg, nil)
 	if err != nil {
 		return fmt.Errorf("failed to configure secure WS server: %w", err)
 	}
+	// Wrap the mux: rate limiting fires on every HTTP upgrade request before gorilla upgrades the connection.
+	srv.Handler = httpMW.Wrap(settings.ServiceEthRPC, mux)
 	if tlsEnabled {
 		log.Printf("🔐 gETH WS server starting with TLS enabled")
 	} else {
