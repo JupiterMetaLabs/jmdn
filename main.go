@@ -520,9 +520,9 @@ func runCommand(command string, args []string, grpcPort int) {
 	}
 }
 
-func StartAPIServer(ctx context.Context, address string, enableExplorer bool) error {
+func StartAPIServer(ctx context.Context, address string) error {
 	// Create ImmuDB API server
-	server, err := explorer.NewImmuDBServer(enableExplorer)
+	server, err := explorer.NewImmuDBServer()
 	if err != nil {
 		return fmt.Errorf("failed to create ImmuDB API server: %w", err)
 	}
@@ -656,7 +656,6 @@ func main() {
 	grotrack := flag.Bool("grotrack", false, "Track GRO goroutines in Prometheus/Grafana (requires -metrics)")
 	enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
 	apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
-	enableExplorer := flag.Bool("explorer", false, "Enable blockchain explorer UI (default: false)")
 	blockgen := flag.Int("blockgen", 0, "Run Block creator API on specified port (0 = disabled)")
 	blockgRPC := flag.Int("blockgrpc", 0, "Run Block gRPC server on specified port (0 = disabled)")
 	mempoolgRPC := flag.String("mempool", "localhost:15051", "Mempool gRPC server address")
@@ -710,8 +709,6 @@ func main() {
 			cfg.Network.Yggdrasil = *enableYggdrasil
 		case "api":
 			cfg.Ports.API = *apiPort
-		case "explorer":
-			cfg.Features.Explorer = *enableExplorer
 		case "blockgen":
 			cfg.Ports.BlockGen = *blockgen
 		case "blockgrpc":
@@ -1075,15 +1072,9 @@ func main() {
 			log.Info().Msgf("Starting ImmuDB API on port %d", cfg.Ports.API)
 			fmt.Printf("\nImmuDB API available at http://localhost:%d/api\n", cfg.Ports.API)
 
-			if cfg.Features.Explorer {
-				fmt.Printf("🌐 Blockchain Explorer UI available at http://localhost:%d\n", cfg.Ports.API)
-			} else {
-				fmt.Printf("ℹ️  Blockchain Explorer UI disabled (use --explorer flag to enable)\n")
-			}
-
 			// Initialize API server
 			apiAddr := fmt.Sprintf("%s:%d", cfg.Binds.API, cfg.Ports.API)
-			if err := StartAPIServer(ctx, apiAddr, cfg.Features.Explorer); err != nil {
+			if err := StartAPIServer(ctx, apiAddr); err != nil {
 				log.Error().Err(err).Msg("Failed to start API server")
 			}
 			return nil
