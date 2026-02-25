@@ -17,6 +17,10 @@ import (
 // Middleware uses this to send 429 + Retry-After instead of a generic 403.
 var errRateLimited = errors.New("rate limit exceeded")
 
+// errUnknownService is returned when no security policy exists for the given service name.
+// Both GinMiddleware and NetHTTPMiddleware use this sentinel to return 403.
+var errUnknownService = errors.New("internal security error")
+
 // GinMiddleware provides security middleware for Gin servers
 type GinMiddleware struct {
 	config      *settings.SecurityConfig
