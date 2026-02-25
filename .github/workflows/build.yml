@@ -1,12 +1,9 @@
 name: Build
 
-# TEMPORARILY DISABLED — re-enable by restoring the commented block below
-# on:
-#   push:
-#     branches:
-#       - main
 on:
-  workflow_dispatch: # manual trigger only
+  push:
+    branches:
+      - main
 
 
 jobs:
