@@ -190,7 +190,7 @@ func ensureAccountsDBExists(username, password string) error {
 
 	// ensure our state dir exists
 	stateDir := config.State_Path_Hidden
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+	if err := os.MkdirAll(stateDir, 0o750); err != nil {
 		loggerInstance.Error(loggerCtx, "Failed to create state directory",
 			err,
 			ion.String("state_dir", stateDir),

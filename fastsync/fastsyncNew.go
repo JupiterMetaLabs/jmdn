@@ -2172,7 +2172,7 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 	}
 
 	// 2. Ensure the temporary backup directory exists.
-	if err := os.MkdirAll(AVRO_FILE_PATH, os.ModePerm); err != nil {
+	if err := os.MkdirAll(AVRO_FILE_PATH, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
@@ -2335,7 +2335,7 @@ func (fs *FastSync) FirstSyncServer(peerID peer.ID) error {
 	}
 
 	// Ensure the temporary directory exists
-	if err := os.MkdirAll(AVRO_FILE_PATH, os.ModePerm); err != nil {
+	if err := os.MkdirAll(AVRO_FILE_PATH, 0o750); err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
 
@@ -2505,7 +2505,7 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 	}
 
 	// Ensure the temp directory exists
-	if err := os.MkdirAll(AVRO_FILE_PATH, os.ModePerm); err != nil {
+	if err := os.MkdirAll(AVRO_FILE_PATH, 0o750); err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
 

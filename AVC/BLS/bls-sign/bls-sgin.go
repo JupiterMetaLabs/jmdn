@@ -122,7 +122,7 @@ func GenerateBLSKeyPair() ([]byte, []byte, error) {
 	}
 
 	// 3) Persist to config/bls.json (best-effort)
-	_ = os.MkdirAll(filepath.Dir(config.BLSFile), 0o755)
+	_ = os.MkdirAll(filepath.Dir(config.BLSFile), 0o750)
 	// Try to read peer_id from peer.json (optional)
 	type peerFile struct {
 		PeerID string `json:"peer_id"`

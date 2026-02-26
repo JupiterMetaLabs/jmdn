@@ -285,7 +285,7 @@ func HandleFileStream(s network.Stream, outputPath string) {
 	}
 
 	// Create parent directories if they don't exist
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0750); err != nil {
 		fmt.Println("Error creating directories:", err)
 		return
 	}
