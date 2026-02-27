@@ -175,7 +175,7 @@ func StartMetricsServer(addr string) {
 	// Use our custom registry instead of the default one
 	http.Handle("/metrics", promhttp.HandlerFor(DefaultRegistry, promhttp.HandlerOpts{}))
 
-	server := &http.Server{Addr: addr}
+	server := &http.Server{Addr: addr, ReadHeaderTimeout: 10 * time.Second}
 
 	serverErr := make(chan error, 1)
 

@@ -94,7 +94,7 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 
 	var avroFile *os.File
 	if exists {
-		avroFile, err = os.OpenFile(cfg.OutputPath, os.O_APPEND|os.O_RDWR, 0644)
+		avroFile, err = os.OpenFile(cfg.OutputPath, os.O_APPEND|os.O_RDWR, 0600)
 	} else {
 		avroFile, err = os.Create(cfg.OutputPath)
 	}
