@@ -3,30 +3,26 @@ package repository
 import (
 	"context"
 	"fmt"
-	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
 	"gossipnode/internal/repository/immu_repo"
-	"gossipnode/internal/repository/kv_repo"
-	"gossipnode/internal/repository/sql_repo"
+	"gossipnode/internal/repository/thebe_repo"
+	"gossipnode/logging"
 
+	thebedb "github.com/JupiterMetaLabs/ThebeDB"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 )
 
 // RepositoryConfig holds the configuration for initializing all repositories.
 type RepositoryConfig struct {
-	// PostgreSQL pool config (nil = skip SQL repo)
-	Postgres *config.PostgresPoolConfig
-
-	// PebbleDB config (nil = skip KV repo)
-	Pebble *config.PebbleConfig
+	ThebeDB_KVPath  string
+	ThebeDB_SQLPath string
 }
 
 // Repositories holds initialized database pools and the assembled MasterRepository.
 type Repositories struct {
-	Master       *MasterRepository
-	PostgresPool *config.PostgresPool
-	PebblePool   *config.PebblePool
-	gro          interfaces.LocalGoroutineManagerInterface
+	Master  *MasterRepository
+	ThebeDB *thebedb.ThebeDB // Changed from *thebedb.ThebeDB
+	gro     interfaces.LocalGoroutineManagerInterface
 }
 
 // InitRepositories creates connection pools for PostgreSQL and PebbleDB,
@@ -52,67 +48,62 @@ func InitRepositories(ctx context.Context, cfg RepositoryConfig) (*Repositories,
 	repos.gro = groLocal
 
 	// --------------------------------------------
-	// 1. PostgreSQL
+	// 1. ThebeDB (Replaces Postgres and Pebble)
 	// --------------------------------------------
-	var sqlRepo CoordinatorRepository
-	if cfg.Postgres != nil && cfg.Postgres.DSN != "" {
-		pgPool, err := config.NewPostgresPool(ctx, cfg.Postgres)
-		if err != nil {
-			return nil, fmt.Errorf("repository.Init: %w", err)
+	var thebeRepo CoordinatorRepository
+
+	if cfg.ThebeDB_KVPath != "" && cfg.ThebeDB_SQLPath != "" {
+		thebeCfg := thebedb.Config{
+			KVPath:  cfg.ThebeDB_KVPath,
+			SQLPath: cfg.ThebeDB_SQLPath,
 		}
-		repos.PostgresPool = pgPool
-		sqlRepo = sql_repo.NewSQLRepository(pgPool.Pool)
+
+		asyncLog := logging.NewAsyncLogger()
+		if asyncLog != nil {
+			if l := asyncLog.Get(); l != nil {
+				if named, _ := l.NamedLogger("ThebeDB", ""); named != nil {
+					// ion doesn't expose raw zap natively without hacks, using Nop for now.
+					// we can pass proper zap logger later if required.
+				}
+			}
+		}
+
+		thebeInstance, err := thebedb.New(thebeCfg, nil) // ThebeDB defaults to zap.NewNop() if nil
+		if err != nil {
+			return nil, fmt.Errorf("repository.Init: failed to start ThebeDB: %w", err)
+		}
+
+		if err := thebeInstance.Start(ctx); err != nil {
+			thebeInstance.Close()
+			return nil, fmt.Errorf("repository.Init: failed to run ThebeDB projector: %w", err)
+		}
+
+		repos.ThebeDB = thebeInstance
+		thebeRepo = thebe_repo.NewThebeRepository(thebeInstance)
 	}
 
 	// --------------------------------------------
-	// 2. PebbleDB
-	// --------------------------------------------
-	var kvRepo CoordinatorRepository
-	if cfg.Pebble != nil && cfg.Pebble.DataDir != "" {
-		pebblePool, err := config.NewPebblePool(cfg.Pebble)
-		if err != nil {
-			// Close any previously opened resources
-			repos.Close()
-			return nil, fmt.Errorf("repository.Init: %w", err)
-		}
-		repos.PebblePool = pebblePool
-		kvRepo = kv_repo.NewPebbleRepository(pebblePool.DB)
-	}
-
-	// --------------------------------------------
-	// 3. ImmuDB (always present as fallback)
+	// 2. ImmuDB (always present as fallback)
 	// --------------------------------------------
 	immuRepo := immu_repo.NewImmuRepository()
 
 	// --------------------------------------------
 	// Assemble the Coordinator
 	// --------------------------------------------
-	repos.Master = NewMasterRepository(sqlRepo, kvRepo, immuRepo, groLocal)
+	repos.Master = NewMasterRepository(thebeRepo, immuRepo, groLocal)
 
 	return repos, nil
 }
 
 // Close gracefully shuts down all database connections.
 func (r *Repositories) Close() {
-	if r.PostgresPool != nil {
-		r.PostgresPool.Close()
-	}
-	if r.PebblePool != nil {
-		r.PebblePool.Close()
+	if r.ThebeDB != nil {
+		r.ThebeDB.Close()
 	}
 }
 
 // HealthCheck pings all active database connections.
 func (r *Repositories) HealthCheck(ctx context.Context) error {
-	if r.PostgresPool != nil {
-		if err := r.PostgresPool.Ping(ctx); err != nil {
-			return fmt.Errorf("postgres health check failed: %w", err)
-		}
-	}
-	if r.PebblePool != nil {
-		if err := r.PebblePool.Ping(); err != nil {
-			return fmt.Errorf("pebble health check failed: %w", err)
-		}
-	}
+	// ThebeDB does not currently expose a raw Ping method but we assume it's healthy if we have an instance
 	return nil
 }

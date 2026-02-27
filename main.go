@@ -846,19 +846,21 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
 	}
 
-	// Initialize Postgres + PebbleDB repositories (dual-write layer)
-	fmt.Println("Initializing repository layer (Postgres + PebbleDB)...")
-	repoCfg := repository.RepositoryConfig{}
-	if cfg.Database.PostgresDSN != "" {
-		pgCfg := config.DefaultPostgresPoolConfig()
-		pgCfg.DSN = cfg.Database.PostgresDSN
-		repoCfg.Postgres = pgCfg
+	// Initialize ThebeDB repository (dual-write layer)
+	fmt.Println("Initializing repository layer (ThebeDB)...")
+	repoCfg := repository.RepositoryConfig{
+		ThebeDB_KVPath:  cfg.Database.PebbleDataDir,          // Reuse PebbleDataDir config as base directory for KV
+		ThebeDB_SQLPath: cfg.Database.PebbleDataDir + "_sql", // Or derive a new path
 	}
-	if cfg.Database.PebbleDataDir != "" {
-		pebbleCfg := config.DefaultPebbleConfig()
-		pebbleCfg.DataDir = cfg.Database.PebbleDataDir
-		repoCfg.Pebble = pebbleCfg
+
+	// Better yet, just hardcode practical default paths for this transition if config isn't explicitly split
+	if repoCfg.ThebeDB_KVPath == "" {
+		repoCfg.ThebeDB_KVPath = "./.thebedata/kv"
+		repoCfg.ThebeDB_SQLPath = "./.thebedata/sql.db"
+	} else {
+		repoCfg.ThebeDB_SQLPath = repoCfg.ThebeDB_KVPath + "/../thebesql.db"
 	}
+
 	repos, err := repository.InitRepositories(ctx, repoCfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize repository layer")

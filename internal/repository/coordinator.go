@@ -24,21 +24,19 @@ import (
 //
 // Read strategy: try fastest source first (KV), then fall back to ImmuDB.
 type MasterRepository struct {
-	SQL  CoordinatorRepository
-	KV   CoordinatorRepository
-	Immu CoordinatorRepository
-	gro  interfaces.LocalGoroutineManagerInterface
+	Thebe CoordinatorRepository
+	Immu  CoordinatorRepository
+	gro   interfaces.LocalGoroutineManagerInterface
 }
 
 // NewMasterRepository creates a new MasterRepository.
 // gro is the GRO local manager for tracking secondary write goroutines.
 // If gro is nil, secondary writes will use untracked goroutines as a fallback.
-func NewMasterRepository(sql, kv, immu CoordinatorRepository, gro interfaces.LocalGoroutineManagerInterface) *MasterRepository {
+func NewMasterRepository(thebe, immu CoordinatorRepository, gro interfaces.LocalGoroutineManagerInterface) *MasterRepository {
 	return &MasterRepository{
-		SQL:  sql,
-		KV:   kv,
-		Immu: immu,
-		gro:  gro,
+		Thebe: thebe,
+		Immu:  immu,
+		gro:   gro,
 	}
 }
 
@@ -138,14 +136,9 @@ func (m *MasterRepository) StoreAccount(ctx context.Context, account *DB_OPs.Acc
 	}
 
 	// 2. Secondary — async fire-and-forget via GRO
-	if m.SQL != nil {
-		m.writeSecondary(ctx, "sql", "StoreAccount", func(ctx context.Context) error {
-			return m.SQL.StoreAccount(ctx, account)
-		})
-	}
-	if m.KV != nil {
-		m.writeSecondary(ctx, "kv", "StoreAccount", func(ctx context.Context) error {
-			return m.KV.StoreAccount(ctx, account)
+	if m.Thebe != nil {
+		m.writeSecondary(ctx, "thebe", "StoreAccount", func(ctx context.Context) error {
+			return m.Thebe.StoreAccount(ctx, account)
 		})
 	}
 
@@ -168,10 +161,10 @@ func (m *MasterRepository) GetAccount(ctx context.Context, address common.Addres
 		span.SetAttributes(attribute.String("address", address.Hex()))
 	}
 
-	if m.KV != nil {
-		if acc, err := m.KV.GetAccount(ctx, address); err == nil && acc != nil {
+	if m.Thebe != nil {
+		if acc, err := m.Thebe.GetAccount(ctx, address); err == nil && acc != nil {
 			if span != nil {
-				span.SetAttributes(attribute.String("read_source", "kv_hit"))
+				span.SetAttributes(attribute.String("read_source", "thebe_hit"))
 			}
 			return acc, nil
 		}
@@ -227,14 +220,9 @@ func (m *MasterRepository) UpdateAccountBalance(ctx context.Context, address com
 	}
 
 	// 2. Secondary — async
-	if m.SQL != nil {
-		m.writeSecondary(ctx, "sql", "UpdateAccountBalance", func(ctx context.Context) error {
-			return m.SQL.UpdateAccountBalance(ctx, address, newBalance)
-		})
-	}
-	if m.KV != nil {
-		m.writeSecondary(ctx, "kv", "UpdateAccountBalance", func(ctx context.Context) error {
-			return m.KV.UpdateAccountBalance(ctx, address, newBalance)
+	if m.Thebe != nil {
+		m.writeSecondary(ctx, "thebe", "UpdateAccountBalance", func(ctx context.Context) error {
+			return m.Thebe.UpdateAccountBalance(ctx, address, newBalance)
 		})
 	}
 
@@ -282,14 +270,9 @@ func (m *MasterRepository) StoreZKBlock(ctx context.Context, block *config.ZKBlo
 	}
 
 	// 2. Secondary — async
-	if m.SQL != nil {
-		m.writeSecondary(ctx, "sql", "StoreZKBlock", func(ctx context.Context) error {
-			return m.SQL.StoreZKBlock(ctx, block)
-		})
-	}
-	if m.KV != nil {
-		m.writeSecondary(ctx, "kv", "StoreZKBlock", func(ctx context.Context) error {
-			return m.KV.StoreZKBlock(ctx, block)
+	if m.Thebe != nil {
+		m.writeSecondary(ctx, "thebe", "StoreZKBlock", func(ctx context.Context) error {
+			return m.Thebe.StoreZKBlock(ctx, block)
 		})
 	}
 
@@ -312,10 +295,10 @@ func (m *MasterRepository) GetZKBlockByNumber(ctx context.Context, number uint64
 		span.SetAttributes(attribute.Int64("block_number", int64(number)))
 	}
 
-	if m.KV != nil {
-		if b, err := m.KV.GetZKBlockByNumber(ctx, number); err == nil && b != nil {
+	if m.Thebe != nil {
+		if b, err := m.Thebe.GetZKBlockByNumber(ctx, number); err == nil && b != nil {
 			if span != nil {
-				span.SetAttributes(attribute.String("read_source", "kv_hit"))
+				span.SetAttributes(attribute.String("read_source", "thebe_hit"))
 			}
 			return b, nil
 		}
@@ -339,10 +322,10 @@ func (m *MasterRepository) GetZKBlockByHash(ctx context.Context, hash string) (*
 		span.SetAttributes(attribute.String("block_hash", hash))
 	}
 
-	if m.KV != nil {
-		if b, err := m.KV.GetZKBlockByHash(ctx, hash); err == nil && b != nil {
+	if m.Thebe != nil {
+		if b, err := m.Thebe.GetZKBlockByHash(ctx, hash); err == nil && b != nil {
 			if span != nil {
-				span.SetAttributes(attribute.String("read_source", "kv_hit"))
+				span.SetAttributes(attribute.String("read_source", "thebe_hit"))
 			}
 			return b, nil
 		}
@@ -365,11 +348,11 @@ func (m *MasterRepository) GetLatestBlockNumber(ctx context.Context) (uint64, er
 		defer span.End()
 	}
 
-	if m.KV != nil {
-		if max, err := m.KV.GetLatestBlockNumber(ctx); err == nil && max > 0 {
+	if m.Thebe != nil {
+		if max, err := m.Thebe.GetLatestBlockNumber(ctx); err == nil && max > 0 {
 			if span != nil {
 				span.SetAttributes(
-					attribute.String("read_source", "kv_hit"),
+					attribute.String("read_source", "thebe_hit"),
 					attribute.Int64("block_number", int64(max)),
 				)
 			}
@@ -397,11 +380,11 @@ func (m *MasterRepository) GetLogs(ctx context.Context, filterQuery Types.Filter
 		defer span.End()
 	}
 
-	if m.SQL != nil {
-		if logs, err := m.SQL.GetLogs(ctx, filterQuery); err == nil {
+	if m.Thebe != nil {
+		if logs, err := m.Thebe.GetLogs(ctx, filterQuery); err == nil {
 			if span != nil {
 				span.SetAttributes(
-					attribute.String("read_source", "sql_hit"),
+					attribute.String("read_source", "thebe_hit"),
 					attribute.Int("log_count", len(logs)),
 				)
 			}
@@ -447,14 +430,9 @@ func (m *MasterRepository) StoreTransaction(ctx context.Context, tx interface{})
 	}
 
 	// 2. Secondary — async
-	if m.SQL != nil {
-		m.writeSecondary(ctx, "sql", "StoreTransaction", func(ctx context.Context) error {
-			return m.SQL.StoreTransaction(ctx, tx)
-		})
-	}
-	if m.KV != nil {
-		m.writeSecondary(ctx, "kv", "StoreTransaction", func(ctx context.Context) error {
-			return m.KV.StoreTransaction(ctx, tx)
+	if m.Thebe != nil {
+		m.writeSecondary(ctx, "thebe", "StoreTransaction", func(ctx context.Context) error {
+			return m.Thebe.StoreTransaction(ctx, tx)
 		})
 	}
 
@@ -477,10 +455,10 @@ func (m *MasterRepository) GetTransactionByHash(ctx context.Context, hash string
 		span.SetAttributes(attribute.String("tx_hash", hash))
 	}
 
-	if m.KV != nil {
-		if tx, err := m.KV.GetTransactionByHash(ctx, hash); err == nil && tx != nil {
+	if m.Thebe != nil {
+		if tx, err := m.Thebe.GetTransactionByHash(ctx, hash); err == nil && tx != nil {
 			if span != nil {
-				span.SetAttributes(attribute.String("read_source", "kv_hit"))
+				span.SetAttributes(attribute.String("read_source", "thebe_hit"))
 			}
 			return tx, nil
 		}
