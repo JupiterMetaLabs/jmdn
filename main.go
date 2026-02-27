@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"gossipnode/config/GRO"
+	"gossipnode/internal/repository"
 	"gossipnode/logging"
 	"gossipnode/shutdown"
 
@@ -844,6 +845,27 @@ func main() {
 	if err := initAccountsDBPool(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
 	}
+
+	// Initialize Postgres + PebbleDB repositories (dual-write layer)
+	fmt.Println("Initializing repository layer (Postgres + PebbleDB)...")
+	repoCfg := repository.RepositoryConfig{}
+	if cfg.Database.PostgresDSN != "" {
+		pgCfg := config.DefaultPostgresPoolConfig()
+		pgCfg.DSN = cfg.Database.PostgresDSN
+		repoCfg.Postgres = pgCfg
+	}
+	if cfg.Database.PebbleDataDir != "" {
+		pebbleCfg := config.DefaultPebbleConfig()
+		pebbleCfg.DataDir = cfg.Database.PebbleDataDir
+		repoCfg.Pebble = pebbleCfg
+	}
+	repos, err := repository.InitRepositories(ctx, repoCfg)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize repository layer")
+	}
+	defer repos.Close()
+	DB_OPs.GlobalRepo = repos.Master
+	fmt.Println("Repository layer initialized successfully")
 
 	// Discover Yggdrasil address BEFORE creating the node
 	fmt.Println("Discovering Yggdrasil address...")

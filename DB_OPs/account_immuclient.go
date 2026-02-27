@@ -136,7 +136,7 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 	// Debugging
 	// fmt.Println("AccountDoc: ", AccountDoc)
 	// Store the account document
-	err = storeAccount(PooledConnection, AccountDoc)
+	err = StoreAccount(PooledConnection, AccountDoc)
 	if err != nil {
 		return err
 	}
@@ -145,7 +145,25 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 }
 
 // StoreAccount stores a Key document in the accounts database and creates a DID reference
-func storeAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) error {
+func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) error {
+
+	// DEFINE NEW GLOBAL REPO USAGE:
+	// If GlobalRepo is initialized (meaning the new DB architecture is activated),
+	// route this request through the coordinator interfaces instead of standard ImmuDB.
+	if repo, ok := GlobalRepo.(interface {
+		StoreAccount(context.Context, *Account) error
+	}); ok {
+		// Create a generous context for the distributed transaction
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		return repo.StoreAccount(ctx, KeyDoc)
+	}
+
+	// ==========================================
+	// LEGACY IMMUDB OPERATION FALLBACK
+	// ==========================================
+
 	var err error
 	var AccountDoc *Account
 	var shouldReturnConnection bool = false
@@ -163,7 +181,7 @@ func storeAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 	}
 
 	// Try to use connection pool if available, otherwise fall back to traditional approach
-	if PooledConnection.Client == nil {
+	if PooledConnection == nil || PooledConnection.Client == nil {
 		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get accounts connection: %w - StoreAccount", err)
@@ -698,6 +716,20 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 }
 
 func GetAccountByDID(PooledConnection *config.PooledConnection, did string) (*Account, error) {
+
+	// DEFINE NEW GLOBAL REPO USAGE:
+	if repo, ok := GlobalRepo.(interface {
+		GetAccountByDID(context.Context, string) (*Account, error)
+	}); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		acc, err := repo.GetAccountByDID(ctx, did)
+		if err == nil && acc != nil {
+			return acc, nil
+		}
+		// If custom repo fails, we fall through to ImmuDB as a safety mechanism during migration
+	}
+
 	var err error
 	var shouldReturnConnection bool = false
 
@@ -732,6 +764,20 @@ func GetAccountByDID(PooledConnection *config.PooledConnection, did string) (*Ac
 }
 
 func GetAccount(PooledConnection *config.PooledConnection, address common.Address) (*Account, error) {
+
+	// DEFINE NEW GLOBAL REPO USAGE:
+	if repo, ok := GlobalRepo.(interface {
+		GetAccount(context.Context, common.Address) (*Account, error)
+	}); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		acc, err := repo.GetAccount(ctx, address)
+		if err == nil && acc != nil {
+			return acc, nil
+		}
+		// If custom repo fails, we fall through to ImmuDB as a safety mechanism during migration
+	}
+
 	var err error
 	var shouldReturnConnection bool = false
 
@@ -767,6 +813,21 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 
 // UpdateAccountBalance updates the balance for a Account
 func UpdateAccountBalance(PooledConnection *config.PooledConnection, address common.Address, newBalance string) error {
+
+	// DEFINE NEW GLOBAL REPO USAGE:
+	if repo, ok := GlobalRepo.(interface {
+		UpdateAccountBalance(context.Context, common.Address, string) error
+	}); ok {
+		// Use generous timeout for distributed tx across DBs
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return repo.UpdateAccountBalance(ctx, address, newBalance)
+	}
+
+	// ==========================================
+	// LEGACY IMMUDB OPERATION FALLBACK
+	// ==========================================
+
 	fmt.Printf("=== DEBUG: UpdateAccountBalance called for address %s with balance %s ===\n", address.Hex(), newBalance)
 
 	// Define Function wide context for timeout

@@ -45,3 +45,7 @@ var (
 	ErrTokenExpired    = errors.New("authentication token expired")
 	ErrNoAvailableConn = errors.New("no available connections in pool")
 )
+
+// GlobalRepo is the centralized Coordinator interface for all data operations.
+// It will be initialized at node startup.
+var GlobalRepo interface{}

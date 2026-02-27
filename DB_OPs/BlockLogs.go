@@ -14,6 +14,20 @@ import (
 
 // GetLogs retrieves logs based on filter criteria
 func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuery) ([]Types.Log, error) {
+
+	// DEFINE NEW GLOBAL REPO USAGE:
+	if repo, ok := GlobalRepo.(interface {
+		GetLogs(context.Context, Types.FilterQuery) ([]Types.Log, error)
+	}); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		logs, err := repo.GetLogs(ctx, filterQuery)
+		if err == nil {
+			return logs, nil
+		}
+		// If custom repo fails, fall through to legacy logic
+	}
+
 	var err error
 	var shouldReturnConnection bool = false
 

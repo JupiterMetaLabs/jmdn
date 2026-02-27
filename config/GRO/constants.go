@@ -46,8 +46,9 @@ const (
 	ConnectionPoolLocal = "local:connection:pool"
 	AddPeersCacheLocal  = "local:add:peers:cache"
 
-	DB_OPsLocal           = "local:db:ops"
-	DB_OPsImmuclientLocal = "local:db:ops:immuclient"
+	DB_OPsLocal            = "local:db:ops"
+	DB_OPsImmuclientLocal  = "local:db:ops:immuclient"
+	DB_OPsCoordinatorLocal = "local:db:ops:coordinator"
 
 	ExplorerBlockOpsLocal = "local:explorer:block:ops"
 
@@ -134,6 +135,7 @@ const (
 	DB_OPsAccountsThread          = "thread:db:ops:accounts"
 	DB_OPsImmuclientThread        = "thread:db:ops:immuclient"
 	DB_OPsMainDBConnectionsThread = "thread:db:ops:main:db:connections"
+	DB_OPsCoordinatorWriteThread  = "thread:db:ops:coordinator:secondary:write"
 	ExplorerBlockOpsThread        = "thread:explorer:block:ops"
 
 	LoggingThread     = "thread:logging"

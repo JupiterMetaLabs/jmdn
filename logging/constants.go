@@ -24,4 +24,5 @@ const (
 	AuthHTTP                     = "log:AuthHTTP"
 	JSONRPC                      = "log:JSONRPC"
 	DID                          = "log:DID"
+	DBCoordinator                = "log:DBCoordinator"
 )
