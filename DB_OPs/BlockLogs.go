@@ -15,7 +15,7 @@ import (
 // GetLogs retrieves logs based on filter criteria
 func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuery) ([]Types.Log, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

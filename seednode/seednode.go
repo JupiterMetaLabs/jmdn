@@ -316,7 +316,7 @@ func (c *Client) DiscoverAndAddNeighbors(h host.Host, nodeManager interface{}) e
 
 	// Step 2: Check current managed peers using listpeers command
 	fmt.Println("📋 Checking current managed peers...")
-	var currentPeerIDs map[string]bool = make(map[string]bool)
+	var currentPeerIDs = make(map[string]bool)
 
 	// Get current managed peers from node manager using reflection
 	peerCount := 0

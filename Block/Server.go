@@ -216,7 +216,7 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 
 	// Check that To and From addresses are not the same (not checked in security checks)
 	if tx.To == tx.From {
-		span.RecordError(errors.New("To and From address are the same"))
+		span.RecordError(errors.New("invalid transaction: To and From address are the same"))
 		span.SetAttributes(attribute.String("status", "validation_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))

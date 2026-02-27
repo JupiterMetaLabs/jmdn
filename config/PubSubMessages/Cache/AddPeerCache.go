@@ -184,14 +184,14 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) Stats {
 			if nm == nil {
 				fmt.Printf("[%s] NodeManager not available\n", peerID)
 				stats.AddUnreachablePeer(peerID, buddy.Multiaddr)
-				return fmt.Errorf("NodeManager not available")
+				return fmt.Errorf("nodeManager not available")
 			}
 
 			reachable, timeTaken, err := nm.PingMultiaddrWithRetries(addrStr, 3)
 			if err != nil {
 				fmt.Printf("[%s] Error: %v\n", peerID, err)
 				stats.AddUnreachablePeer(peerID, buddy.Multiaddr)
-				return fmt.Errorf("Error: %v", err)
+				return fmt.Errorf("error: %v", err)
 			}
 
 			fmt.Printf("[%s] Time: %v, Reachable: %v\n", peerID, timeTaken, reachable)
@@ -202,7 +202,7 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) Stats {
 				fmt.Printf("✓ Peer %s added\n", peerID)
 			} else {
 				stats.AddUnreachablePeer(peerID, buddy.Multiaddr)
-				return fmt.Errorf("Peer %s not reachable", peerID)
+				return fmt.Errorf("peer %s not reachable", peerID)
 			}
 			return nil
 		}, local.AddToWaitGroup(GRO.AddPeersCacheWaitGroup))

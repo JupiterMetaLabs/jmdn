@@ -93,7 +93,7 @@ func SubmitMessage(logger_ctx context.Context, msg *PubSubMessages.Message, PubS
 		if err := json.Unmarshal([]byte(msg.Message), OP); err != nil {
 			logger().NamedLogger.Error(logger_ctx, "Failed to unmarshal message", err,
 				ion.String("function", "Structs.SubmitMessage"))
-			return errors.New("failed to unmarshal message: " + err.(error).Error())
+			return errors.New("failed to unmarshal message: " + err.Error())
 		}
 
 		// Adding data to the CRDT First - Before PubSub
@@ -224,16 +224,16 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 	// Get peer weights from seed node
 	client, err := seednode.NewClient(settings.Get().Network.SeedNode)
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to create seed node client", err.(error),
+		logger().NamedLogger.Error(logger_ctx, "Failed to create seed node client", err,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, errors.New("failed to create seed node client: " + err.(error).Error())
+		return 0, errors.New("failed to create seed node client: " + err.Error())
 	}
 
 	weights, err := client.ListWeightsofPeers()
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to get peer weights", err.(error),
+		logger().NamedLogger.Error(logger_ctx, "Failed to get peer weights", err,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, errors.New("failed to get peer weights: " + err.(error).Error())
+		return 0, errors.New("failed to get peer weights: " + err.Error())
 	}
 
 	// Filter weights to only include peers that voted
@@ -265,9 +265,9 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 	// Call votemodule.VoteAggregation with filtered maps
 	result, err := voteaggregation.VoteAggregation(filteredWeights, filteredVoteData)
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to aggregate votes", err.(error),
+		logger().NamedLogger.Error(logger_ctx, "Failed to aggregate votes", err,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, errors.New("failed to aggregate votes: " + err.(error).Error())
+		return 0, errors.New("failed to aggregate votes: " + err.Error())
 	}
 
 	logger().NamedLogger.Debug(logger_ctx, "Vote aggregation result",
