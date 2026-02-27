@@ -25,7 +25,7 @@ func EnsureTLSAssets(dir string) error {
 	srvCertFile := filepath.Join(dir, "server.cert.pem")
 
 	// 1) Make dir
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("mkdir %q: %w", dir, err)
 	}
 

@@ -295,7 +295,7 @@ func Startserver(bindAddr string, port int, h host.Host, chainID int) {
 // StartserverWithContext starts the transaction/block API server and shuts it down when ctx is cancelled.
 func StartserverWithContext(ctx context.Context, bindAddr string, port int, h host.Host, chainID int) error {
 	// Create logs directory if it doesn't exist
-	if err := os.MkdirAll("logs", 0755); err != nil {
+	if err := os.MkdirAll("logs", 0750); err != nil {
 		return fmt.Errorf("failed to create logs directory: %w", err)
 	}
 

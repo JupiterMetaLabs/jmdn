@@ -222,7 +222,7 @@ func connectToMainDB(username, password string) error {
 
 	// ensure our state dir exists
 	stateDir := config.State_Path_Hidden
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+	if err := os.MkdirAll(stateDir, 0o750); err != nil {
 		return fmt.Errorf("could not create state dir: %w", err)
 	}
 

@@ -355,7 +355,7 @@ func (cp *ConnectionPool) createConnection(logger_ctx context.Context) (*PooledC
 		ion.String("function", "ConnectionPool.createConnection"))
 
 	// ensure our state dir exists
-	if err := os.MkdirAll(State_Path_Hidden, 0o755); err != nil {
+	if err := os.MkdirAll(State_Path_Hidden, 0o750); err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "state_dir_failed"))
 		duration := time.Since(startTime).Seconds()
