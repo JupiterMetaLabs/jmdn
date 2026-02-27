@@ -5,11 +5,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"time"
+
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/gETH/Facade/Service/Types"
 	log "gossipnode/logging"
-	"time"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/cockroachdb/pebble"
