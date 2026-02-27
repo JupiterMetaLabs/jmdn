@@ -126,7 +126,8 @@ func GetCountofRecords(PooledConnection *config.PooledConnection, ConnType int, 
 	// Use the Native ImmuDB Count API to efficiently count keys with the given prefix
 
 	// Ensure the appropriate database is selected based on connection type
-	if ConnType == MainImmuConn {
+	switch ConnType {
+	case MainImmuConn:
 		if err := ensureMainDBSelected(PooledConnection); err != nil {
 			loggerCtx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -139,7 +140,7 @@ func GetCountofRecords(PooledConnection *config.PooledConnection, ConnType int, 
 				ion.String("function", "DB_OPs.GetCountofRecords"))
 			return 0, fmt.Errorf("failed to ensure main database is selected: %w", err)
 		}
-	} else if ConnType == AccountsImmuConn {
+	case AccountsImmuConn:
 		if err := ensureAccountsDBSelected(PooledConnection); err != nil {
 			loggerCtx, cancel := context.WithCancel(context.Background())
 			defer cancel()

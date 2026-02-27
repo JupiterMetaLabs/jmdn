@@ -1326,9 +1326,10 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		avroDB, _ := recordMap["Database"].(string)
 		if avroDB != "" {
 			var expectedDB string
-			if dbType == MainDB {
+			switch dbType {
+			case MainDB:
 				expectedDB = config.DBName
-			} else if dbType == AccountsDB {
+			case AccountsDB:
 				expectedDB = config.AccountsDBName
 			}
 			if expectedDB != "" && avroDB != expectedDB {

@@ -160,7 +160,7 @@ func looksBase64(s string) bool {
 		return false
 	}
 	for _, r := range s {
-		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '+' || r == '/' || r == '=') {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '+' && r != '/' && r != '=' {
 			return false
 		}
 	}

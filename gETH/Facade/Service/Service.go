@@ -327,7 +327,7 @@ func convertEthTxToConfigTx(ethTx *types.Transaction) config.Transaction {
 	fmt.Println("GasPrice: ", tx.GasPrice.String())
 	fmt.Println("MaxFee: ", tx.MaxFee.String())
 	fmt.Println("MaxPriorityFee: ", tx.MaxPriorityFee.String())
-	fmt.Println("Data: ", tx.Data)
+	fmt.Println("Data: ", string(tx.Data))
 	fmt.Println("AccessList: ", tx.AccessList)
 	fmt.Println("V: ", tx.V.String())
 	fmt.Println("R: ", tx.R.String())

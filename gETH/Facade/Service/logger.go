@@ -74,7 +74,8 @@ func (l *ServiceLogger) LogData(ctx context.Context, message string, functionNam
 	)
 
 	// Determine log level based on status
-	if status == -1 {
+	switch status {
+	case -1:
 		// Error case
 		span.SetAttributes(attribute.String("log_level", "error"))
 		span.RecordError(fmt.Errorf("%s", message))
@@ -85,7 +86,7 @@ func (l *ServiceLogger) LogData(ctx context.Context, message string, functionNam
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 		)
-	} else if status == 1 {
+	case 1:
 		// Success case
 		span.SetAttributes(attribute.String("log_level", "info"), attribute.String("status", "success"))
 		duration := time.Since(startTime).Seconds()
@@ -97,7 +98,7 @@ func (l *ServiceLogger) LogData(ctx context.Context, message string, functionNam
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 		)
-	} else {
+	default:
 		// Info case
 		span.SetAttributes(attribute.String("log_level", "info"))
 		duration := time.Since(startTime).Seconds()

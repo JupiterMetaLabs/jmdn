@@ -1502,7 +1502,8 @@ func (fs *FastSync) requestReconciliation(peerID peer.ID, stream network.Stream,
 		return false, fmt.Errorf("unexpected response type: %s", respMsg.Type)
 	}
 
-	if reconType == ReconTypeMerkle {
+	switch reconType {
+	case ReconTypeMerkle:
 		// Verify Merkle Roots (TxHash)
 		mainConn, err := DB_OPs.GetMainDBConnection(context.Background())
 		if err != nil {
@@ -1546,7 +1547,7 @@ func (fs *FastSync) requestReconciliation(peerID peer.ID, stream network.Stream,
 
 		return mainMatch && acctsMatch, nil
 
-	} else if reconType == ReconTypeHashMap {
+	case ReconTypeHashMap:
 		// content-based verification using Fingerprints
 		serverMainChecksum := respMsg.HashMap_MetaData.Main_HashMap_MetaData.Checksum
 		serverAcctsChecksum := respMsg.HashMap_MetaData.Accounts_HashMap_MetaData.Checksum
@@ -1589,7 +1590,8 @@ func (fs *FastSync) handleReconciliation(peerID peer.ID, msg *SyncMessage, strea
 		Success:            true,
 	}
 
-	if msg.ReconciliationType == ReconTypeMerkle {
+	switch msg.ReconciliationType {
+	case ReconTypeMerkle:
 		// Fetch current MainDB Merkle Root
 		mainConn, err := DB_OPs.GetMainDBConnection(context.Background())
 		if err != nil {
@@ -1625,7 +1627,7 @@ func (fs *FastSync) handleReconciliation(peerID peer.ID, msg *SyncMessage, strea
 			}
 		}
 
-	} else if msg.ReconciliationType == ReconTypeHashMap {
+	case ReconTypeHashMap:
 		// Compute fingerprints on-demand (expensive but thorough)
 		fmt.Println(">>> [SERVER] Computing on-demand HashMap fingerprints for reconciliation...")
 

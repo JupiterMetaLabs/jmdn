@@ -74,7 +74,7 @@ func InitBlockPropagation(h host.Host) error {
 // generateBlockMessageID creates a unique ID for a block message
 func generateBlockMessageID(sender, nonce string, timestamp int64) string {
 	hasher := sha256.New()
-	hasher.Write([]byte(fmt.Sprintf("%s-%s-%d", sender, nonce, timestamp)))
+	fmt.Fprintf(hasher, "%s-%s-%d", sender, nonce, timestamp)
 	hash := base64.URLEncoding.EncodeToString(hasher.Sum(nil))
 	return hash[:16] // Return first 16 chars for brevity
 }

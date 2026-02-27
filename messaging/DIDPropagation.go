@@ -81,7 +81,7 @@ func InitDIDPropagation(existingClient *config.PooledConnection) error {
 // generateAccountMessageID creates a unique ID for a Account message
 func generateAccountMessageID(sender string, Account common.Address) string {
 	hasher := sha256.New()
-	hasher.Write([]byte(fmt.Sprintf("%s-%s", sender, Account.Hex())))
+	fmt.Fprintf(hasher, "%s-%s", sender, Account.Hex())
 	hash := base64.URLEncoding.EncodeToString(hasher.Sum(nil))
 	return hash[:16] // Return first 16 chars for brevity
 }
