@@ -1589,7 +1589,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	)
 
 	blsResp, status, err := BLS_Signer.SignMessage(result)
-	if err != nil || status == false {
+	if err != nil || !status {
 		voteResultSpan.RecordError(err)
 		voteResultSpan.SetAttributes(attribute.String("bls_signature_status", "failed"))
 		logger().NamedLogger.Warn(voteResultSpanCtx, "Failed to create BLS signature for BFT result",

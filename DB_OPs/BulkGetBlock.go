@@ -28,7 +28,7 @@ func GetBlocksRange(mainDBClient *config.PooledConnection, startBlock, endBlock 
 	defer cancel()
 
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	if mainDBClient == nil {
 		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)

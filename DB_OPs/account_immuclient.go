@@ -69,7 +69,7 @@ func PutNonceofAccount() (uint64, error) {
 func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string, Address common.Address, metadata map[string]interface{}) error {
 	var err error
 	var AccountDoc *Account
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	if DIDAddress == "" || Address == (common.Address{}) {
 		return fmt.Errorf("DIDAddress and Address cannot be empty")
@@ -148,14 +148,14 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 func storeAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) error {
 	var err error
 	var AccountDoc *Account
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 
 	if KeyDoc == nil {
-		return fmt.Errorf("Key document cannot be nil")
+		return fmt.Errorf("key document cannot be nil")
 	}
 
 	if KeyDoc.DIDAddress == "" || KeyDoc.Address == (common.Address{}) {
@@ -409,7 +409,7 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 
 	// Process address: keys first (with LWW logic)
 	for _, e := range addressEntries {
-		var shouldWrite bool = true
+		var shouldWrite = true
 		var incoming Account
 		if err := json.Unmarshal(e.Value, &incoming); err == nil {
 			// Try read existing account
@@ -613,7 +613,7 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, logFn string) (*Account, error) {
 	var err error
 	ic := PooledConnection.Client
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -699,7 +699,7 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 
 func GetAccountByDID(PooledConnection *config.PooledConnection, did string) (*Account, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -733,7 +733,7 @@ func GetAccountByDID(PooledConnection *config.PooledConnection, did string) (*Ac
 
 func GetAccount(PooledConnection *config.PooledConnection, address common.Address) (*Account, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -774,7 +774,7 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 	defer cancel()
 
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		fmt.Println("DEBUG: PooledConnection is nil, getting new connection from pool")
 		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
@@ -869,7 +869,7 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 // ListAllAccounts retrieves all Accounts with a limit
 func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*Account, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -983,7 +983,7 @@ func ListAllAccounts(PooledConnection *config.PooledConnection, limit int) ([]*A
 // ListAccountsPaginated retrieves a paginated list of accounts
 func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, offset int, extendedPrefix string) ([]*Account, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx := context.Background()
@@ -1149,7 +1149,7 @@ func CountAccounts(PooledConnection *config.PooledConnection) (int, error) {
 // This implementation uses the MAIN database connection pool (not accounts) since transactions are stored in main DB
 func GetTransactionsByAccount(PooledConnection *config.PooledConnection, accountAddr *common.Address) ([]*config.Transaction, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -1272,7 +1272,7 @@ func isTransactionInvolvingAccount(tx config.Transaction, accountAddr *common.Ad
 // This function checks confirmed transactions in blocks
 func CheckNonceDuplicate(PooledConnection *config.PooledConnection, fromAddr *common.Address, nonce uint64) (bool, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx := context.Background()
@@ -1364,7 +1364,7 @@ func CheckNonceDuplicate(PooledConnection *config.PooledConnection, fromAddr *co
 // If no transactions exist for the account, returns 0 (indicating first transaction)
 func GetLatestNonce(PooledConnection *config.PooledConnection, fromAddr *common.Address) (uint64, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1463,7 +1463,7 @@ func GetLatestNonce(PooledConnection *config.PooledConnection, fromAddr *common.
 // Returns: transactions for the requested page, total count (if available), and error
 func GetTransactionsByAccountPaginated(PooledConnection *config.PooledConnection, accountAddr *common.Address, offset, limit int) ([]*config.Transaction, int, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -1629,7 +1629,7 @@ func GetTransactionHashes(PooledConnection *config.PooledConnection, offset, lim
 // This uses ImmuDB Scan with SeekKey to paginate at the database level, avoiding loading all transactions into memory
 func GetTransactionsPaginated(PooledConnection *config.PooledConnection, offset, limit int) ([]*config.Transaction, int, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1942,7 +1942,7 @@ func reconnectToAccountsDB(PooledConnection *config.PooledConnection) error {
 // between "no transactions" (nonce 0 valid) vs "latest transaction has nonce 0" (next should be 1))
 func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr *common.Address, submittedNonce uint64) (bool, uint64, bool, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

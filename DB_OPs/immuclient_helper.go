@@ -13,7 +13,7 @@ import (
 // Get all the transactions of a block
 func GetTransactionsOfBlock(mainDBClient *config.PooledConnection, blockNumber uint64) ([]*config.Transaction, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

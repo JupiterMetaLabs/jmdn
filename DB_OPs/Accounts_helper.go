@@ -91,7 +91,7 @@ func CloseAccountsImmuClient(PooledConnection *config.PooledConnection) error {
 // Get the count of accounts uisng immudb native apis
 func GetCountofRecords(PooledConnection *config.PooledConnection, ConnType int, prefix string) (int, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	switch ConnType {
 	case MainImmuConn:

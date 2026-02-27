@@ -221,7 +221,7 @@ func withRetry(ic *config.ImmuClient, operation string, fn func() error) error {
 // Create stores a value with the given key using the connection pool
 func Create(PooledConnection *config.PooledConnection, key string, value interface{}) error {
 	var ic *config.ImmuClient
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
@@ -338,7 +338,7 @@ func Read(PooledConnection *config.PooledConnection, key string) ([]byte, error)
 
 	var entryValue []byte
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Handle nil or invalid connection
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -466,7 +466,7 @@ func GetKeys(PooledConnection *config.PooledConnection, prefix string, limit int
 
 	var keys []string
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		// If no connection then quickly pull connection from the pool
 		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
@@ -566,7 +566,7 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 
 	var lastKey []byte
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		// If no connection then quickly pull connection from the pool
 		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
@@ -765,7 +765,7 @@ func CountTransactions(PooledConnection *config.PooledConnection) (int, error) {
 	defer cancel()
 
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		// If no connection then quickly pull connection from the pool
 		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
@@ -804,7 +804,7 @@ func CountTransactions(PooledConnection *config.PooledConnection) (int, error) {
 func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limit int, seekKey []byte) ([]string, error) {
 	var keys []string
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -921,7 +921,7 @@ func BatchCreate(PooledConnection *config.PooledConnection, entries map[string]i
 	defer cancel()
 
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Handle nil or invalid connection
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -1087,7 +1087,7 @@ func Close(ic *config.ImmuClient) error {
 // GetMerkleRoot returns the current database Merkle root
 func GetMerkleRoot(PooledConnection *config.PooledConnection) ([]byte, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// Define Function wide context for timeout
@@ -1155,7 +1155,7 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 
 	var err error
 	var PooledConnection *config.PooledConnection
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1192,7 +1192,7 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 	if key == "" {
 
 		PooledConnection.Client.Logger.Error(loggerCtx, "Empty key provided",
-			errors.New("Empty key provided"),
+			errors.New("empty key provided"),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
@@ -1204,7 +1204,7 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 	// Check for nil value
 	if value == nil {
 		PooledConnection.Client.Logger.Error(loggerCtx, "Nil value provided",
-			errors.New("Nil value provided"),
+			errors.New("nil value provided"),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
@@ -1283,7 +1283,7 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 	var entryValue []byte
 	var PooledConnection *config.PooledConnection
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1690,7 +1690,7 @@ func Exists(PooledConnection *config.PooledConnection, key string) (bool, error)
 		}
 
 		PooledConnection.Client.Logger.Error(loggerCtx, "Failed to read key",
-			errors.New("Failed to read key"),
+			errors.New("failed to read key"),
 			ion.String("key", key),
 			ion.String("database", config.DBName),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1873,7 +1873,7 @@ func Ping(ic *config.ImmuClient) error {
 // StoreZKBlock stores a complete ZK block in the main database (UNCHANGED)
 func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) error {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 	// Create a unique key for the block
 	blockKey := fmt.Sprintf("%s%d", PREFIX_BLOCK, block.BlockNumber)
 
@@ -2010,7 +2010,7 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 
 // GetZKBlockByNumber retrieves a ZK block by its number (UNCHANGED)
 func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint64) (*config.ZKBlock, error) {
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 	var err error
 	blockKey := fmt.Sprintf("%s%d", PREFIX_BLOCK, blockNumber)
 
@@ -2086,7 +2086,7 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 // GetZKBlockByHash retrieves a ZK block by its hash (UNCHANGED)
 func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (*config.ZKBlock, error) {
 	// First get the block number from the hash
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 	var err error
 	hashKey := fmt.Sprintf("%s%s", PREFIX_BLOCK_HASH, blockHash)
 	loggerCtx, cancel := context.WithCancel(context.Background())
@@ -2167,7 +2167,7 @@ func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (
 // GetLatestBlockNumber returns the latest block number (UNCHANGED)
 func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2258,7 +2258,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 // GetTransactionBlock returns the block containing a specific transaction (UNCHANGED)
 func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (*config.ZKBlock, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2330,7 +2330,7 @@ func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (
 func GetTransactionByHash(mainDBClient *config.PooledConnection, txHash string) (*config.Transaction, error) {
 	// Get the block that contains the transaction.
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2433,7 +2433,7 @@ func GetTransactionsBatch(mainDBClient *config.PooledConnection, hashes []string
 	defer cancel()
 	var transactions []*config.Transaction
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2510,7 +2510,7 @@ func GetTransactionsBatch(mainDBClient *config.PooledConnection, hashes []string
 
 func GetAllBlocks(mainDBClient *config.PooledConnection) ([]*config.ZKBlock, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2569,7 +2569,7 @@ func BatchCreateOrdered(PooledConnection *config.PooledConnection, entries []str
 		return ErrEmptyBatch
 	}
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

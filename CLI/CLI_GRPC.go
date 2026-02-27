@@ -74,7 +74,7 @@ func (h *CommandHandler) ReturnAddrs() (HandleAddrs, error) {
 // Individual command handlers
 func (h *CommandHandler) HandleSendMessage(peer string, message string) (bool, error) {
 	if peer == "" || message == "" {
-		return false, fmt.Errorf("Usage: msg <peer_multiaddr> <message>")
+		return false, fmt.Errorf("usage: msg <peer_multiaddr> <message>")
 	}
 	err := node.SendMessage(h.Node, peer, message)
 	if err != nil {
@@ -85,10 +85,10 @@ func (h *CommandHandler) HandleSendMessage(peer string, message string) (bool, e
 
 func (h *CommandHandler) HandleYggdrasilMessage(peer string, message string) (bool, error) {
 	if !h.EnableYggdrasil {
-		return false, fmt.Errorf("Yggdrasil messaging is disabled. Start with -ygg flag to enable.")
+		return false, fmt.Errorf("yggdrasil messaging is disabled. Start with -ygg flag to enable")
 	}
 	if peer == "" || message == "" {
-		return false, fmt.Errorf("Usage: ygg <peer_multiaddr|ygg_ipv6> <message>")
+		return false, fmt.Errorf("usage: ygg <peer_multiaddr|ygg_ipv6> <message>")
 	}
 	err := directMSG.SendYggdrasilMessage(peer, message)
 	if err != nil {
@@ -99,7 +99,7 @@ func (h *CommandHandler) HandleYggdrasilMessage(peer string, message string) (bo
 
 func (h *CommandHandler) HandleSendFile(peer string, filepath string, remote_filename string) (bool, error) {
 	if peer == "" || filepath == "" || remote_filename == "" {
-		return false, fmt.Errorf("Usage: file <peer_multiaddr> <filepath>")
+		return false, fmt.Errorf("usage: file <peer_multiaddr> <filepath>")
 	}
 	err := node.SendFile(h.Node, peer, filepath, remote_filename)
 	if err != nil {
@@ -110,7 +110,7 @@ func (h *CommandHandler) HandleSendFile(peer string, filepath string, remote_fil
 
 func (h *CommandHandler) HandleRequestPeers_fromSeeds(seedNode string) (bool, []config.PeerInfo, error) {
 	if seedNode == "" {
-		return false, nil, fmt.Errorf("No seed node specified. Use -connect flag to specify a seed node.")
+		return false, nil, fmt.Errorf("no seed node specified. Use -connect flag to specify a seed node")
 	}
 
 	peers, err := seed.RequestPeers(h.Node.Host, seedNode, 20, "")
@@ -123,7 +123,7 @@ func (h *CommandHandler) HandleRequestPeers_fromSeeds(seedNode string) (bool, []
 
 func (h *CommandHandler) HandleAddPeer(peer string) (bool, error) {
 	if peer == "" {
-		return false, fmt.Errorf("Usage: addpeer <peer_multiaddr>")
+		return false, fmt.Errorf("usage: addpeer <peer_multiaddr>")
 	}
 	err := h.NodeManager.AddPeer(peer)
 	if err != nil {
@@ -135,7 +135,7 @@ func (h *CommandHandler) HandleAddPeer(peer string) (bool, error) {
 
 func (h *CommandHandler) HandleRemovePeer(peer string) (bool, error) {
 	if peer == "" {
-		return false, fmt.Errorf("Usage: removepeer <peer_id>")
+		return false, fmt.Errorf("usage: removepeer <peer_id>")
 	}
 	err := h.NodeManager.RemovePeer(peer)
 	if err != nil {
@@ -192,13 +192,13 @@ func (h *CommandHandler) HandleShowStats() (HandleShowStats, error) {
 			MessagesFailed:   stats["messages_failed"],
 		}, nil
 	} else {
-		return HandleShowStats{}, fmt.Errorf("Yggdrasil messaging is disabled.")
+		return HandleShowStats{}, fmt.Errorf("yggdrasil messaging is disabled")
 	}
 }
 
 func (h *CommandHandler) HandleBroadcast(message string) (bool, error) {
 	if message == "" {
-		return false, fmt.Errorf("Usage: broadcast <message>")
+		return false, fmt.Errorf("usage: broadcast <message>")
 	}
 	err := node.BroadcastMessage(h.Node, message)
 	if err != nil {
@@ -212,41 +212,41 @@ func (h *CommandHandler) CheckDBStats() (*schema.ImmutableState, *schema.Immutab
 	// Get both database states before sync
 	mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to get main database state: %v", err)
+		return nil, nil, fmt.Errorf("failed to get main database state: %v", err)
 	}
 
 	accountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to get accounts database state: %v", err)
+		return nil, nil, fmt.Errorf("failed to get accounts database state: %v", err)
 	}
 	return mainState, accountsState, nil
 }
 
 func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 	if peeraddr == "" {
-		return SyncStats{}, fmt.Errorf("Usage: fastsync <peer_multiaddr>")
+		return SyncStats{}, fmt.Errorf("usage: fastsync <peer_multiaddr>")
 	}
 
 	err := h.checkDBClient()
 	if err != nil {
-		return SyncStats{}, fmt.Errorf("Database client not initialized: %v", err)
+		return SyncStats{}, fmt.Errorf("database client not initialized: %v", err)
 	}
 
 	err = h.checkDIDClient()
 	if err != nil {
-		return SyncStats{}, fmt.Errorf("DID database client not initialized: %v", err)
+		return SyncStats{}, fmt.Errorf("database client (DID) not initialized: %v", err)
 	}
 
 	// Parse the multiaddr
 	addr, err := ma.NewMultiaddr(peeraddr)
 	if err != nil {
-		return SyncStats{}, fmt.Errorf("Invalid multiaddress: %v", err)
+		return SyncStats{}, fmt.Errorf("invalid multiaddress: %v", err)
 	}
 
 	// Extract peer ID from multiaddr
 	addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
 	if err != nil {
-		return SyncStats{}, fmt.Errorf("Failed to extract peer info: %v", err)
+		return SyncStats{}, fmt.Errorf("failed to extract peer info: %v", err)
 	}
 
 	fmt.Printf("Starting blockchain sync with peer %s\n", addrInfo.ID.String())
@@ -270,18 +270,18 @@ func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 	}
 
 	if syncErr != nil {
-		return SyncStats{}, fmt.Errorf("Sync failed after %d attempts: %v", maxRetries, syncErr)
+		return SyncStats{}, fmt.Errorf("sync failed after %d attempts: %v", maxRetries, syncErr)
 	}
 
 	// Get post-sync states
 	newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
 	if err != nil {
-		return SyncStats{}, fmt.Errorf("Failed to get main database state after sync: %v", err)
+		return SyncStats{}, fmt.Errorf("failed to get main database state after sync: %v", err)
 	}
 
 	newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
 	if err != nil {
-		return SyncStats{}, fmt.Errorf("Failed to get accounts database state after sync: %v", err)
+		return SyncStats{}, fmt.Errorf("failed to get accounts database state after sync: %v", err)
 	}
 
 	return SyncStats{
@@ -293,38 +293,38 @@ func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 
 func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStats, error) {
 	if peeraddr == "" {
-		return SyncStats{}, fmt.Errorf("Usage: firstsync <peer_multiaddr> <server|client>")
+		return SyncStats{}, fmt.Errorf("usage: firstsync <peer_multiaddr> <server|client>")
 	}
 
 	if mode == "" {
-		return SyncStats{}, fmt.Errorf("Usage: firstsync <peer_multiaddr> <server|client>")
+		return SyncStats{}, fmt.Errorf("usage: firstsync <peer_multiaddr> <server|client>")
 	}
 
 	err := h.checkDBClient()
 	if err != nil {
-		return SyncStats{}, fmt.Errorf("Database client not initialized: %v", err)
+		return SyncStats{}, fmt.Errorf("database client not initialized: %v", err)
 	}
 
 	err = h.checkDIDClient()
 	if err != nil {
-		return SyncStats{}, fmt.Errorf("DID database client not initialized: %v", err)
+		return SyncStats{}, fmt.Errorf("database client (DID) not initialized: %v", err)
 	}
 
 	// Parse the multiaddr
 	addr, err := ma.NewMultiaddr(peeraddr)
 	if err != nil {
-		return SyncStats{}, fmt.Errorf("Invalid multiaddress: %v", err)
+		return SyncStats{}, fmt.Errorf("invalid multiaddress: %v", err)
 	}
 
 	// Extract peer ID from multiaddr
 	addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
 	if err != nil {
-		return SyncStats{}, fmt.Errorf("Failed to extract peer info: %v", err)
+		return SyncStats{}, fmt.Errorf("failed to extract peer info: %v", err)
 	}
 
 	modeLower := strings.ToLower(mode)
 	if modeLower != "server" && modeLower != "client" {
-		return SyncStats{}, fmt.Errorf("Invalid mode: %s. Must be 'server' or 'client'", mode)
+		return SyncStats{}, fmt.Errorf("invalid mode: %s. Must be 'server' or 'client'", mode)
 	}
 
 	fmt.Printf("Starting first sync with peer %s (mode: %s)\n", addrInfo.ID.String(), modeLower)
@@ -342,18 +342,18 @@ func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStat
 	}
 
 	if syncErr != nil {
-		return SyncStats{}, fmt.Errorf("First sync failed: %v", syncErr)
+		return SyncStats{}, fmt.Errorf("first sync failed: %v", syncErr)
 	}
 
 	// Get post-sync states
 	newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
 	if err != nil {
-		return SyncStats{}, fmt.Errorf("Failed to get main database state after sync: %v", err)
+		return SyncStats{}, fmt.Errorf("failed to get main database state after sync: %v", err)
 	}
 
 	newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
 	if err != nil {
-		return SyncStats{}, fmt.Errorf("Failed to get accounts database state after sync: %v", err)
+		return SyncStats{}, fmt.Errorf("failed to get accounts database state after sync: %v", err)
 	}
 
 	return SyncStats{
@@ -365,12 +365,12 @@ func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStat
 
 func (h *CommandHandler) HandleGetDID(did string) (*DB_OPs.Account, error) {
 	if did == "" {
-		return nil, fmt.Errorf("Usage: getDID <did>")
+		return nil, fmt.Errorf("usage: getDID <did>")
 	}
 
 	doc, err := DB_OPs.GetAccountByDID(h.MainClient, did)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to retrieve DID %s: %v", did, err)
+		return nil, fmt.Errorf("failed to retrieve DID %s: %v", did, err)
 	}
 
 	return doc, nil
