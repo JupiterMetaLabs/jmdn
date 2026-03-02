@@ -118,6 +118,112 @@ var (
 	sqlCountConnectedPeersStmt = fmt.Sprintf(`SELECT COUNT(*) FROM %s`, config.ConnectedPeers)
 )
 
+// Pre-built SQL query strings using constant table names.
+// Constructing queries at package initialisation (rather than inside each
+// database function) removes dynamic fmt.Sprintf calls from SQL execution
+// paths and eliminates the CWE-89 / SonarQube S3649 pattern while keeping
+// the config-driven table-name abstraction intact.
+var (
+	// Schema DDL
+	sqlCreatePeersTableStmt = fmt.Sprintf(`
+    CREATE TABLE IF NOT EXISTS %s (
+        peerID TEXT PRIMARY KEY,
+        publicaddr TEXT NOT NULL,
+        connections INTEGER DEFAULT 0,
+        last_seen INTEGER DEFAULT 0,
+        capabilities TEXT
+    );`, config.PeersTable)
+
+	sqlCreateKeyValueTableStmt = fmt.Sprintf(`
+    CREATE TABLE IF NOT EXISTS %s (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        timestamp INTEGER DEFAULT 0
+    );`, config.KeyValueTable)
+
+	sqlCreateMerkleTableStmt = fmt.Sprintf(`
+    CREATE TABLE IF NOT EXISTS %s (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key TEXT NOT NULL,
+        value_hash TEXT NOT NULL,
+        timestamp INTEGER DEFAULT 0
+    );`, config.MerkleTable)
+
+	// Peers DML
+	sqlAddPeerStmt = fmt.Sprintf(`
+        INSERT INTO %s (peerID, publicaddr, connections, last_seen, capabilities)
+        VALUES (?, ?, ?, strftime('%%s','now'), ?)
+        ON CONFLICT(peerID) DO UPDATE SET
+            publicaddr = ?,
+            connections = ?,
+            last_seen = strftime('%%s','now'),
+            capabilities = ?
+    `, config.PeersTable)
+
+	sqlGetPeerStmt = fmt.Sprintf(
+		`SELECT publicaddr, connections, capabilities, last_seen FROM %s WHERE peerID = ?`,
+		config.PeersTable)
+
+	sqlDeletePeerStmt = fmt.Sprintf(`DELETE FROM %s WHERE peerID = ?`, config.PeersTable)
+
+	sqlGetPeersStmt = fmt.Sprintf(`
+        SELECT publicaddr FROM %s
+        WHERE connections < ?
+        ORDER BY last_seen DESC
+        LIMIT ?
+    `, config.PeersTable)
+
+	sqlGetAllPeersStmt = fmt.Sprintf(`SELECT publicaddr FROM %s`, config.PeersTable)
+
+	sqlUpdatePeerConnectionsStmt = fmt.Sprintf(`
+        UPDATE %s
+        SET connections = ?,
+            last_seen = strftime('%%s','now')
+        WHERE peerID = ?
+    `, config.PeersTable)
+
+	// KeyValue DML
+	sqlStoreKeyValueStmt = fmt.Sprintf(`
+        INSERT INTO %s (key, value, timestamp)
+        VALUES (?, ?, strftime('%%s','now'))
+        ON CONFLICT(key) DO UPDATE SET
+            value = ?,
+            timestamp = strftime('%%s','now')
+    `, config.KeyValueTable)
+
+	sqlGetKeyValueStmt     = fmt.Sprintf(`SELECT value FROM %s WHERE key = ?`, config.KeyValueTable)
+	sqlDeleteKeyValueStmt  = fmt.Sprintf(`DELETE FROM %s WHERE key = ?`, config.KeyValueTable)
+	sqlGetAllKeyValuesStmt = fmt.Sprintf(`SELECT key, value FROM %s`, config.KeyValueTable)
+
+	// Merkle DML
+	sqlStoreMerkleHashStmt = fmt.Sprintf(`
+        INSERT INTO %s (key, value_hash, timestamp)
+        VALUES (?, ?, strftime('%%s','now'))
+    `, config.MerkleTable)
+
+	sqlGetAllMerkleHashesStmt = fmt.Sprintf(`SELECT key, value_hash FROM %s`, config.MerkleTable)
+
+	// ConnectedPeers DDL + DML (also referenced from sqlops_test.go)
+	// sqlCreateConnectedPeersTableStmt = fmt.Sprintf(`
+	// CREATE TABLE IF NOT EXISTS %s (
+	//     peer_id TEXT PRIMARY KEY,
+	//     multiaddr TEXT NOT NULL,
+	//     last_seen INTEGER NOT NULL,
+	//     heartbeat_fail INTEGER DEFAULT 0,
+	//     is_alive BOOLEAN DEFAULT 1
+	// )`, config.ConnectedPeers)
+
+	// sqlInsertConnectedPeerStmt = fmt.Sprintf(
+	// 	`INSERT INTO %s (peer_id, multiaddr, last_seen, heartbeat_fail, is_alive) VALUES (?, ?, ?, ?, ?)`,
+	// 	config.ConnectedPeers)
+
+	sqlPragmaTableInfoConnectedPeers = fmt.Sprintf("PRAGMA table_info(%s)", config.ConnectedPeers)
+	sqlSelectConnectedPeersStmt      = fmt.Sprintf(
+		`SELECT peer_id, multiaddr, last_seen, heartbeat_fail, is_alive FROM %s`,
+		config.ConnectedPeers)
+	sqlCountConnectedPeersStmt = fmt.Sprintf(`SELECT COUNT(*) FROM %s`, config.ConnectedPeers)
+)
+
 // UnifiedDB is a wrapper for SQLite database
 type UnifiedDB struct {
 	DB    *sql.DB
