@@ -7,7 +7,7 @@ import (
 	"math/big"
 	"strings"
 
-	peerpb "gossipnode/seednode/proto"
+	peerpb "jmdn/seednode/proto"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/config/GRO"
+	"jmdn/config/GRO"
 )
 
 type byzantineEntry struct {

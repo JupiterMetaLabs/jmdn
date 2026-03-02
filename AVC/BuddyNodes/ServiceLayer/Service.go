@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	"gossipnode/AVC/BuddyNodes/DataLayer"
-	"gossipnode/AVC/BuddyNodes/Types"
+	"jmdn/AVC/BuddyNodes/DataLayer"
+	"jmdn/AVC/BuddyNodes/Types"
 )
 
 var (

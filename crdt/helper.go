@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"gossipnode/DB_OPs"
+	"jmdn/DB_OPs"
 )
 
 // validateInput validates common input parameters for set operations

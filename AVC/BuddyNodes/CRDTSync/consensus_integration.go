@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	"gossipnode/Pubsub"
-	"gossipnode/crdt"
+	"jmdn/Pubsub"
+	"jmdn/crdt"
 
 	"github.com/libp2p/go-libp2p/core/host"
 )

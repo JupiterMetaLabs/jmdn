@@ -8,11 +8,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"gossipnode/config/GRO"
-	"gossipnode/config/settings"
-	"gossipnode/gETH/common"
-	"gossipnode/gETH/proto"
-	"gossipnode/pkg/gatekeeper"
+	"jmdn/config/GRO"
+	"jmdn/config/settings"
+	"jmdn/gETH/common"
+	"jmdn/gETH/proto"
+	"jmdn/pkg/gatekeeper"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/rs/zerolog/log"

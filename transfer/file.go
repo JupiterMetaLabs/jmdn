@@ -16,8 +16,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"gossipnode/config"
-	"gossipnode/metrics"
+	"jmdn/config"
+	"jmdn/metrics"
 )
 
 const (

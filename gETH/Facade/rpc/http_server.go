@@ -9,9 +9,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"gossipnode/config/settings"
-	"gossipnode/logging"
-	"gossipnode/pkg/gatekeeper"
+	"jmdn/config/settings"
+	"jmdn/logging"
+	"jmdn/pkg/gatekeeper"
 
 	"github.com/JupiterMetaLabs/ion"
 )

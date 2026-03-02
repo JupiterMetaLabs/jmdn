@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"math/big"
 
-	"gossipnode/config"
+	"jmdn/config"
 
 	"time"
 
@@ -18,7 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"go.opentelemetry.io/otel/attribute"
 
-	"gossipnode/DB_OPs"
+	"jmdn/DB_OPs"
 )
 
 const (

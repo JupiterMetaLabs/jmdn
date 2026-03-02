@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"gossipnode/crdt"
+	"jmdn/crdt"
 )
 
 // Message represents a message sent over PubSub for CRDT synchronization

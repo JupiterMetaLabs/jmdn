@@ -3,7 +3,7 @@ package gatekeeper
 import (
 	"testing"
 
-	"gossipnode/config/settings"
+	"jmdn/config/settings"
 )
 
 func TestValidateAuthHeader_EmptyHeader(t *testing.T) {

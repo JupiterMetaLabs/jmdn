@@ -7,13 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 
-	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
-	"gossipnode/Security"
+	MessagePassing "jmdn/AVC/BuddyNodes/MessagePassing"
+	"jmdn/Security"
 
 	"time"
 
-	"gossipnode/config"
-	"gossipnode/config/PubSubMessages"
+	"jmdn/config"
+	"jmdn/config/PubSubMessages"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"

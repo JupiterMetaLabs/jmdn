@@ -8,10 +8,10 @@ import (
 	"net"
 	"time"
 
-	pb "gossipnode/CLI/proto"
-	"gossipnode/config/settings"
-	"gossipnode/config/version"
-	"gossipnode/pkg/gatekeeper"
+	pb "jmdn/CLI/proto"
+	"jmdn/config/settings"
+	"jmdn/config/version"
+	"jmdn/pkg/gatekeeper"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/codenotary/immudb/pkg/api/schema"

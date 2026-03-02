@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
+	"jmdn/DB_OPs"
+	"jmdn/config"
 )
 
 // Test_Create_Read_Update tests the basic CRUD operations

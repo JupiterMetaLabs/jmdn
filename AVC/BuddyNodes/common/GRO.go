@@ -3,7 +3,7 @@ package common
 import (
 	"fmt"
 
-	"gossipnode/config/GRO"
+	"jmdn/config/GRO"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 )

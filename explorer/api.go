@@ -14,11 +14,11 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/zerolog/log"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-	"gossipnode/config/settings"
-	"gossipnode/config/version"
-	"gossipnode/pkg/gatekeeper"
+	"jmdn/DB_OPs"
+	"jmdn/config"
+	"jmdn/config/settings"
+	"jmdn/config/version"
+	"jmdn/pkg/gatekeeper"
 
 	"go.opentelemetry.io/otel/attribute"
 )

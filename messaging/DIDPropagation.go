@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/config/GRO"
-	GROHelper "gossipnode/messaging/common"
+	"jmdn/config/GRO"
+	GROHelper "jmdn/messaging/common"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/bits-and-blooms/bloom/v3"
@@ -21,9 +21,9 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/rs/zerolog/log"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-	"gossipnode/metrics"
+	"jmdn/DB_OPs"
+	"jmdn/config"
+	"jmdn/metrics"
 )
 
 // DIDMessage represents a message for DID propagation

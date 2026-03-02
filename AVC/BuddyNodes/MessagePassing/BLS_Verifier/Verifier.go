@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strconv"
 
-	blssign "gossipnode/AVC/BLS/bls-sign"
-	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
+	blssign "jmdn/AVC/BLS/bls-sign"
+	BLS_Signer "jmdn/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 )
 
 // messageForVote returns the canonical message bytes used for signing a vote

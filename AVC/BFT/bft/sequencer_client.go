@@ -10,15 +10,15 @@ import (
 	"sync"
 	"time"
 
-	pb "gossipnode/AVC/BFT/proto"
-	"gossipnode/config/GRO"
+	pb "jmdn/AVC/BFT/proto"
+	"jmdn/config/GRO"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
-	"gossipnode/config/settings"
-	"gossipnode/pkg/gatekeeper"
+	"jmdn/config/settings"
+	"jmdn/pkg/gatekeeper"
 )
 
 // SequencerBFTClient handles BFT initiation from Sequencer side

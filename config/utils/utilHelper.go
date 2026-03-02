@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode"
 
-	"gossipnode/config"
+	"jmdn/config"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"

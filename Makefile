@@ -13,7 +13,7 @@ GIT_TAG=$(shell git describe --tags --always --dirty | tr -d '`' 2>/dev/null || 
 BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 
 # Linker flags
-LDFLAGS=-ldflags "-X 'gossipnode/config/version.gitCommit=${GIT_COMMIT}' -X 'gossipnode/config/version.gitBranch=${GIT_BRANCH}' -X 'gossipnode/config/version.gitTag=${GIT_TAG}' -X 'gossipnode/config/version.buildTime=${BUILD_TIME}' -linkmode=external -w -s"
+LDFLAGS=-ldflags "-X 'jmdn/config/version.gitCommit=${GIT_COMMIT}' -X 'jmdn/config/version.gitBranch=${GIT_BRANCH}' -X 'jmdn/config/version.gitTag=${GIT_TAG}' -X 'jmdn/config/version.buildTime=${BUILD_TIME}' -linkmode=external -w -s"
 
 .PHONY: all build clean run test fmt lint lint-fix version deploy
 

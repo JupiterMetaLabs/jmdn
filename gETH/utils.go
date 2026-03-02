@@ -8,8 +8,8 @@ import (
 
 	"sort"
 
-	"gossipnode/config"
-	"gossipnode/gETH/proto"
+	"jmdn/config"
+	"jmdn/gETH/proto"
 )
 
 func ConvertZKTransactiontoETHTransaction(zktransactions []config.Transaction) ([]*proto.Transaction, error) {

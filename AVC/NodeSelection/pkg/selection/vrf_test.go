@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	seednodetypes "gossipnode/seednode/types"
+	seednodetypes "jmdn/seednode/types"
 )
 
 // TestVRF_BasicSelection tests basic VRF selection

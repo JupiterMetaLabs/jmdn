@@ -1,8 +1,8 @@
 package explorer
 
 import (
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
+	"jmdn/DB_OPs"
+	"jmdn/config"
 )
 
 func GetLatesBlockNumber(DBclient *ImmuDBServer) (uint64, error) {

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	database "gossipnode/DB_OPs/sqlops"
-	"gossipnode/config"
-	"gossipnode/config/GRO"
+	database "jmdn/DB_OPs/sqlops"
+	"jmdn/config"
+	"jmdn/config/GRO"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"

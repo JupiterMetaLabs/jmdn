@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"gossipnode/config/settings"
+	"jmdn/config/settings"
 
 	"github.com/JupiterMetaLabs/ion"
 	"google.golang.org/grpc"

@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"gossipnode/DB_OPs"
+	"jmdn/DB_OPs"
 
 	"github.com/gin-gonic/gin"
 )

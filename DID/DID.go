@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	// log "gossipnode/logging"
+	// log "jmdn/logging"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
@@ -19,13 +19,13 @@ import (
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 
-	"gossipnode/DB_OPs"
-	pb "gossipnode/DID/proto"
-	"gossipnode/config"
-	"gossipnode/config/settings"
-	"gossipnode/logging"
-	"gossipnode/messaging"
-	"gossipnode/pkg/gatekeeper"
+	"jmdn/DB_OPs"
+	pb "jmdn/DID/proto"
+	"jmdn/config"
+	"jmdn/config/settings"
+	"jmdn/logging"
+	"jmdn/messaging"
+	"jmdn/pkg/gatekeeper"
 )
 
 // Returns nil if the logger system is not yet initialized (safe: callers must nil-check

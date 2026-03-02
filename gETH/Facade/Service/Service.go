@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	block "gossipnode/Block"
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-	"gossipnode/gETH/Facade/Service/Types"
-	Utils "gossipnode/gETH/Facade/Service/utils"
+	block "jmdn/Block"
+	"jmdn/DB_OPs"
+	"jmdn/config"
+	"jmdn/gETH/Facade/Service/Types"
+	Utils "jmdn/gETH/Facade/Service/utils"
 
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"

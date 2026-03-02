@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	sharedselection "gossipnode/shared/selection"
+	sharedselection "jmdn/shared/selection"
 )
 
 // Re-export types from shared package for convenience

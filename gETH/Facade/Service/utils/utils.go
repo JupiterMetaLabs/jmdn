@@ -5,10 +5,10 @@ import (
 	"math/big"
 	"strings"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-	"gossipnode/config/utils"
-	"gossipnode/gETH/Facade/Service/Types"
+	"jmdn/DB_OPs"
+	"jmdn/config"
+	"jmdn/config/utils"
+	"jmdn/gETH/Facade/Service/Types"
 
 	"github.com/ethereum/go-ethereum/common"
 )

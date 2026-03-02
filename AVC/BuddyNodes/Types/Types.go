@@ -1,7 +1,7 @@
 package Types
 
 import (
-	"gossipnode/crdt"
+	"jmdn/crdt"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )

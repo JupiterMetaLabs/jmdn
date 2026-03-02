@@ -1,4 +1,4 @@
-module gossipnode
+module jmdn
 
 go 1.25.0
 

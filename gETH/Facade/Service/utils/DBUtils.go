@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/messaging"
-	"gossipnode/node"
+	"jmdn/DB_OPs"
+	"jmdn/messaging"
+	"jmdn/node"
 )
 
 func CreateAccountandPropagateDID(Document DIDDoc) error {

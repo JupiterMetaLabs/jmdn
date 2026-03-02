@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"math/big"
 
-	"gossipnode/config"
+	"jmdn/config"
 
 	"github.com/holiman/uint256"
 	"github.com/rs/zerolog/log"

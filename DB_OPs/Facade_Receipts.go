@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"gossipnode/config"
-	"gossipnode/config/utils"
+	"jmdn/config"
+	"jmdn/config/utils"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"

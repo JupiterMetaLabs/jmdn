@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/AVC/BuddyNodes/Types"
-	"gossipnode/crdt"
+	"jmdn/AVC/BuddyNodes/Types"
+	"jmdn/crdt"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )

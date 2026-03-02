@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"gossipnode/config"
+	"jmdn/config"
 
 	"go.dedis.ch/dela/crypto"
 	"go.dedis.ch/dela/crypto/bls"

@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	Publisher "gossipnode/Pubsub/Publish"
-	Connector "gossipnode/Pubsub/Subscription"
-	"gossipnode/config"
-	PubSubMessages "gossipnode/config/PubSubMessages"
+	Publisher "jmdn/Pubsub/Publish"
+	Connector "jmdn/Pubsub/Subscription"
+	"jmdn/config"
+	PubSubMessages "jmdn/config/PubSubMessages"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"gossipnode/config/settings"
+	"jmdn/config/settings"
 
 	"github.com/JupiterMetaLabs/ion"
 )

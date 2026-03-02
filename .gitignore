@@ -44,3 +44,8 @@ __debug_bin
 *.pem
 *.crt
 vendor/
+remediation_report.pdf
+remediation_report.docx
+*.pdf
+*.docx
+*.html

@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	Channel "gossipnode/Pubsub/DataProcessing/Channel"
-	Publisher "gossipnode/Pubsub/Publish"
-	Connector "gossipnode/Pubsub/Subscription"
-	"gossipnode/config"
-	"gossipnode/config/GRO"
-	"gossipnode/config/PubSubMessages"
+	Channel "jmdn/Pubsub/DataProcessing/Channel"
+	Publisher "jmdn/Pubsub/Publish"
+	Connector "jmdn/Pubsub/Subscription"
+	"jmdn/config"
+	"jmdn/config/GRO"
+	"jmdn/config/PubSubMessages"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/libp2p/go-libp2p/core/host"

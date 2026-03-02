@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 
-	"gossipnode/AVC/BuddyNodes/ServiceLayer"
-	"gossipnode/AVC/BuddyNodes/Types"
-	PubSubMessages "gossipnode/config/PubSubMessages"
+	"jmdn/AVC/BuddyNodes/ServiceLayer"
+	"jmdn/AVC/BuddyNodes/Types"
+	PubSubMessages "jmdn/config/PubSubMessages"
 
 	"github.com/JupiterMetaLabs/ion"
 )

@@ -7,12 +7,12 @@ import (
 	"errors"
 	"fmt"
 
-	Router "gossipnode/Pubsub/Router"
+	Router "jmdn/Pubsub/Router"
 
 	"time"
 
-	"gossipnode/config"
-	AVCStruct "gossipnode/config/PubSubMessages"
+	"jmdn/config"
+	AVCStruct "jmdn/config/PubSubMessages"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"

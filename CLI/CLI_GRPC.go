@@ -5,12 +5,12 @@ import (
 	"strings"
 	"time"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-	"gossipnode/helper"
-	"gossipnode/messaging/directMSG"
-	"gossipnode/node"
-	"gossipnode/seed"
+	"jmdn/DB_OPs"
+	"jmdn/config"
+	"jmdn/helper"
+	"jmdn/messaging/directMSG"
+	"jmdn/node"
+	"jmdn/seed"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/libp2p/go-libp2p/core/peer"

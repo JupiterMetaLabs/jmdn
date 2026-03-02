@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/AVC/BuddyNodes/MessagePassing"
-	"gossipnode/Sequencer/Router"
-	"gossipnode/Sequencer/common"
-	"gossipnode/config"
-	GRO "gossipnode/config/GRO"
-	PubSubMessages "gossipnode/config/PubSubMessages"
+	"jmdn/AVC/BuddyNodes/MessagePassing"
+	"jmdn/Sequencer/Router"
+	"jmdn/Sequencer/common"
+	"jmdn/config"
+	GRO "jmdn/config/GRO"
+	PubSubMessages "jmdn/config/PubSubMessages"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/libp2p/go-libp2p/core/peer"

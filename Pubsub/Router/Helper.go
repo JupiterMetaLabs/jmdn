@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	PubSubMessages "gossipnode/config/PubSubMessages"
+	PubSubMessages "jmdn/config/PubSubMessages"
 )
 
 // Take the input as a json string and return the message as a Pubsub.GossipMessage and also convert GossipMessage.Data from interface to MessagePassing.Message

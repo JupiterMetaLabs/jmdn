@@ -1,7 +1,7 @@
 package utils
 
 import (
-	"gossipnode/config"
+	"jmdn/config"
 
 	"github.com/ethereum/go-ethereum/crypto"
 )

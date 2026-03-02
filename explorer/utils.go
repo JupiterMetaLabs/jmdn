@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/DB_OPs"
+	"jmdn/DB_OPs"
 
 	"github.com/JupiterMetaLabs/ion"
 	"go.opentelemetry.io/otel/attribute"

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	log "gossipnode/logging"
+	log "jmdn/logging"
 
 	"github.com/JupiterMetaLabs/ion"
 	"go.opentelemetry.io/otel/attribute"

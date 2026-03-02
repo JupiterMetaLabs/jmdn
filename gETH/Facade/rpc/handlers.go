@@ -11,8 +11,8 @@ import (
 	"encoding/json"
 	"log"
 
-	"gossipnode/gETH/Facade/Service"
-	"gossipnode/gETH/Facade/Service/Types"
+	"jmdn/gETH/Facade/Service"
+	"jmdn/gETH/Facade/Service/Types"
 )
 
 type Handlers struct{ service Service.Service }

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	Service "gossipnode/AVC/BuddyNodes/MessagePassing/Service"
-	PubSubMessages "gossipnode/config/PubSubMessages"
+	Service "jmdn/AVC/BuddyNodes/MessagePassing/Service"
+	PubSubMessages "jmdn/config/PubSubMessages"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )

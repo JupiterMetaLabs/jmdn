@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/AVC/BFT/common"
-	"gossipnode/config/GRO"
+	"jmdn/AVC/BFT/common"
+	"jmdn/config/GRO"
 )
 
 type engine struct {

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"sync"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
+	"jmdn/DB_OPs"
+	"jmdn/config"
 
 	"github.com/gin-gonic/gin"
 )

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/config/GRO"
-	"gossipnode/logging"
-	groMetrics "gossipnode/metrics/gro"
+	"jmdn/config/GRO"
+	"jmdn/logging"
+	groMetrics "jmdn/metrics/gro"
 )
 
 const gracefulShutdownTimeout = 10 * time.Second

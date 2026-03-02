@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"gossipnode/AVC/BuddyNodes/Types"
-	AVCStruct "gossipnode/config/PubSubMessages"
+	"jmdn/AVC/BuddyNodes/Types"
+	AVCStruct "jmdn/config/PubSubMessages"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"

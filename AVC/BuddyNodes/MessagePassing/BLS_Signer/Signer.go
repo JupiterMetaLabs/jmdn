@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"sync"
 
-	blssign "gossipnode/AVC/BLS/bls-sign"
+	blssign "jmdn/AVC/BLS/bls-sign"
 )
 
 type BLSresponse struct {

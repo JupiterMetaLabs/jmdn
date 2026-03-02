@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"gossipnode/config"
-	"gossipnode/config/settings"
+	"jmdn/config"
+	"jmdn/config/settings"
 
 	"sync/atomic"
 	"time"

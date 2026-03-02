@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"gossipnode/config"
+	"jmdn/config"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )

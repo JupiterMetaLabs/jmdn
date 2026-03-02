@@ -8,10 +8,10 @@ import (
 	"errors"
 	"fmt"
 
-	"gossipnode/config"
+	"jmdn/config"
 
-	DB_OPs_common "gossipnode/DB_OPs/common"
-	GRO "gossipnode/config/GRO"
+	DB_OPs_common "jmdn/DB_OPs/common"
+	GRO "jmdn/config/GRO"
 
 	"strings"
 	"sync"

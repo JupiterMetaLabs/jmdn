@@ -1,7 +1,7 @@
 package CLI
 
 import (
-	"gossipnode/logging"
+	"jmdn/logging"
 
 	"github.com/JupiterMetaLabs/ion"
 )

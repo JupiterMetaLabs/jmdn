@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"gossipnode/logging/otelsetup"
+	"jmdn/logging/otelsetup"
 
 	"github.com/JupiterMetaLabs/ion"
 )

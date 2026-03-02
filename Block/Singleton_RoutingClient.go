@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	pb "gossipnode/Mempool/proto"
-	"gossipnode/config/settings"
-	"gossipnode/pkg/gatekeeper"
+	pb "jmdn/Mempool/proto"
+	"jmdn/config/settings"
+	"jmdn/pkg/gatekeeper"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/golang/protobuf/ptypes/empty"

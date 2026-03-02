@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/config/GRO"
-	"gossipnode/gETH/Facade/Service/Types"
-	Utils "gossipnode/gETH/Facade/Service/utils"
-	"gossipnode/gETH/common"
+	"jmdn/DB_OPs"
+	"jmdn/config/GRO"
+	"jmdn/gETH/Facade/Service/Types"
+	Utils "jmdn/gETH/Facade/Service/utils"
+	"jmdn/gETH/common"
 )
 
 // Global subscription manager for new heads

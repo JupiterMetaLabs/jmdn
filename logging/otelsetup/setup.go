@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"gossipnode/config/settings"
-	"gossipnode/config/version"
+	"jmdn/config/settings"
+	"jmdn/config/version"
 
 	"github.com/JupiterMetaLabs/ion"
 )

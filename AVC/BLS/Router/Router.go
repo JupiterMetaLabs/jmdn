@@ -3,7 +3,7 @@ package Router
 import (
 	"fmt"
 
-	blssign "gossipnode/AVC/BLS/bls-sign"
+	blssign "jmdn/AVC/BLS/bls-sign"
 )
 
 type BLSRouter struct {

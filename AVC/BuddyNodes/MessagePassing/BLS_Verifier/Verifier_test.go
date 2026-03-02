@@ -3,7 +3,7 @@ package BLS_Verifier
 import (
 	"testing"
 
-	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
+	BLS_Signer "jmdn/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 )
 
 // Test end-to-end: sign then verify for positive and negative votes

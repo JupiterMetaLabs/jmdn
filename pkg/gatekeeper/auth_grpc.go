@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	log "gossipnode/logging"
+	log "jmdn/logging"
 
-	"gossipnode/config/settings"
+	"jmdn/config/settings"
 
 	"github.com/JupiterMetaLabs/ion"
 	"google.golang.org/grpc"

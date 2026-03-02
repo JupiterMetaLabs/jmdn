@@ -3,7 +3,7 @@ package PubSubMessages
 import (
 	"encoding/json"
 
-	"gossipnode/config"
+	"jmdn/config"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )

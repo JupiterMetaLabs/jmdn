@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/DB_OPs/sqlops"
-	"gossipnode/config"
-	"gossipnode/config/GRO"
-	log "gossipnode/logging"
-	"gossipnode/metrics"
+	"jmdn/DB_OPs/sqlops"
+	"jmdn/config"
+	"jmdn/config/GRO"
+	log "jmdn/logging"
+	"jmdn/metrics"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/JupiterMetaLabs/ion"

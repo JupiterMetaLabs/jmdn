@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	pb "gossipnode/CLI/proto"
-	"gossipnode/config/settings"
-	"gossipnode/pkg/gatekeeper"
+	pb "jmdn/CLI/proto"
+	"jmdn/config/settings"
+	"jmdn/pkg/gatekeeper"
 
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"

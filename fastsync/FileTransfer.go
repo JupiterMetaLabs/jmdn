@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"gossipnode/transfer"
+	"jmdn/transfer"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"

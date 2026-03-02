@@ -3,7 +3,7 @@ package helper
 import (
 	"fmt"
 
-	PubSubMessages "gossipnode/config/PubSubMessages"
+	PubSubMessages "jmdn/config/PubSubMessages"
 )
 
 // @static function

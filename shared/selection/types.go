@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	seednodetypes "gossipnode/seednode/types"
+	seednodetypes "jmdn/seednode/types"
 )
 
 // Node wraps types.Node with selection score

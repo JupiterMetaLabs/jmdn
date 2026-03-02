@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"gossipnode/config"
-	"gossipnode/config/GRO"
+	"jmdn/config"
+	"jmdn/config/GRO"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/libp2p/go-libp2p/core/host"

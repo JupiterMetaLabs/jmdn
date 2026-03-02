@@ -10,11 +10,11 @@ import (
 	"strings"
 	"syscall"
 
-	BlockCommon "gossipnode/Block/common"
-	pb "gossipnode/Block/proto"
-	"gossipnode/Sequencer"
-	"gossipnode/config"
-	GRO "gossipnode/config/GRO"
+	BlockCommon "jmdn/Block/common"
+	pb "jmdn/Block/proto"
+	"jmdn/Sequencer"
+	"jmdn/config"
+	GRO "jmdn/config/GRO"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/ethereum/go-ethereum/common"
@@ -29,8 +29,8 @@ import (
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 
-	"gossipnode/config/settings"
-	"gossipnode/pkg/gatekeeper"
+	"jmdn/config/settings"
+	"jmdn/pkg/gatekeeper"
 )
 
 var LocalGRO interfaces.LocalGoroutineManagerInterface

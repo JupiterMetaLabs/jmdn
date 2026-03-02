@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	hashmap "gossipnode/crdt/HashMap"
+	hashmap "jmdn/crdt/HashMap"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/linkedin/goavro/v2"

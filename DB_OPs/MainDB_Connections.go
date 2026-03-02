@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	DB_OPs_common "gossipnode/DB_OPs/common"
-	"gossipnode/config"
-	GRO "gossipnode/config/GRO"
-	"gossipnode/config/settings"
-	"gossipnode/logging"
-	"gossipnode/metrics"
+	DB_OPs_common "jmdn/DB_OPs/common"
+	"jmdn/config"
+	GRO "jmdn/config/GRO"
+	"jmdn/config/settings"
+	"jmdn/logging"
+	"jmdn/metrics"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"

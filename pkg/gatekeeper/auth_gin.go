@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"gossipnode/config/settings"
-	log "gossipnode/logging"
+	"jmdn/config/settings"
+	log "jmdn/logging"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/gin-gonic/gin"

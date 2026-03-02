@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"time"
 
-	"gossipnode/config"
-	AVCStruct "gossipnode/config/PubSubMessages"
-	"gossipnode/config/settings"
-	"gossipnode/seednode"
+	"jmdn/config"
+	AVCStruct "jmdn/config/PubSubMessages"
+	"jmdn/config/settings"
+	"jmdn/seednode"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/network"

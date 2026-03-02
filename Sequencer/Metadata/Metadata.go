@@ -3,8 +3,8 @@ package Metadata
 import (
 	"time"
 
-	"gossipnode/config"
-	"gossipnode/config/PubSubMessages"
+	"jmdn/config"
+	"jmdn/config/PubSubMessages"
 )
 
 type ConsensusMetadataRouter struct {

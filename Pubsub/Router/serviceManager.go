@@ -1,9 +1,9 @@
 package Router
 
 import (
-	Service "gossipnode/AVC/BuddyNodes/MessagePassing/Service"
-	PubSubConnector "gossipnode/AVC/BuddyNodes/MessagePassing/Service/PubSubConnector"
-	AVCStruct "gossipnode/config/PubSubMessages"
+	Service "jmdn/AVC/BuddyNodes/MessagePassing/Service"
+	PubSubConnector "jmdn/AVC/BuddyNodes/MessagePassing/Service/PubSubConnector"
+	AVCStruct "jmdn/config/PubSubMessages"
 )
 
 // ServiceManager coordinates all services

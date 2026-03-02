@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/config/GRO"
-	"gossipnode/config/settings"
-	"gossipnode/gETH/Facade/Service"
-	"gossipnode/gETH/Facade/Service/Types"
-	"gossipnode/gETH/common"
-	"gossipnode/pkg/gatekeeper"
+	"jmdn/config/GRO"
+	"jmdn/config/settings"
+	"jmdn/gETH/Facade/Service"
+	"jmdn/gETH/Facade/Service/Types"
+	"jmdn/gETH/common"
+	"jmdn/pkg/gatekeeper"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/gorilla/websocket"

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"gossipnode/config"
-	"gossipnode/config/utils"
-	"gossipnode/gETH/Facade/Service/Types"
+	"jmdn/config"
+	"jmdn/config/utils"
+	"jmdn/gETH/Facade/Service/Types"
 
 	"github.com/JupiterMetaLabs/ion"
 )

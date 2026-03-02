@@ -3,7 +3,7 @@ package Subscription
 import (
 	"sync"
 
-	"gossipnode/config/PubSubMessages"
+	"jmdn/config/PubSubMessages"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"

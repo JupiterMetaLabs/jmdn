@@ -6,11 +6,11 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/config"
-	GRO "gossipnode/config/GRO"
-	"gossipnode/config/PubSubMessages"
-	"gossipnode/config/common"
-	"gossipnode/node"
+	"jmdn/config"
+	GRO "jmdn/config/GRO"
+	"jmdn/config/PubSubMessages"
+	"jmdn/config/common"
+	"jmdn/node"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"

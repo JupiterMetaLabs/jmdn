@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"gossipnode/config/settings"
+	"jmdn/config/settings"
 
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"

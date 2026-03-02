@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/config/settings"
+	"jmdn/DB_OPs"
+	"jmdn/config/settings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"

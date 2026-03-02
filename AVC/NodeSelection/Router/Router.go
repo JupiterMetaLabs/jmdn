@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"gossipnode/AVC/NodeSelection/pkg/selection"
-	"gossipnode/config/PubSubMessages"
-	"gossipnode/config/settings"
-	"gossipnode/node"
+	"jmdn/AVC/NodeSelection/pkg/selection"
+	"jmdn/config/PubSubMessages"
+	"jmdn/config/settings"
+	"jmdn/node"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"

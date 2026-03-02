@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"math"
 
-	log "gossipnode/logging"
+	log "jmdn/logging"
 
-	"gossipnode/config/settings"
+	"jmdn/config/settings"
 
 	"github.com/JupiterMetaLabs/ion"
 	lru "github.com/hashicorp/golang-lru/v2"

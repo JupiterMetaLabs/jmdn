@@ -1,7 +1,7 @@
 package Security
 
 import (
-	log "gossipnode/logging"
+	log "jmdn/logging"
 
 	"github.com/JupiterMetaLabs/ion"
 )

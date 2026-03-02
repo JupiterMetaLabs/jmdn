@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"gossipnode/config/settings"
-	log "gossipnode/logging" // Import the app's logging package
+	"jmdn/config/settings"
+	log "jmdn/logging" // Import the app's logging package
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"

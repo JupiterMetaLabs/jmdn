@@ -6,11 +6,11 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/AVC/BuddyNodes/DataLayer"
-	"gossipnode/AVC/BuddyNodes/Types"
-	"gossipnode/AVC/BuddyNodes/common"
-	GRO "gossipnode/config/GRO"
-	PubSubMessages "gossipnode/config/PubSubMessages"
+	"jmdn/AVC/BuddyNodes/DataLayer"
+	"jmdn/AVC/BuddyNodes/Types"
+	"jmdn/AVC/BuddyNodes/common"
+	GRO "jmdn/config/GRO"
+	PubSubMessages "jmdn/config/PubSubMessages"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"

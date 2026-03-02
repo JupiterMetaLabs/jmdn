@@ -9,9 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gossipnode/config"
-	"gossipnode/config/GRO"
-	"gossipnode/config/PubSubMessages"
+	"jmdn/config"
+	"jmdn/config/GRO"
+	"jmdn/config/PubSubMessages"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"

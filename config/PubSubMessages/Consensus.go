@@ -3,7 +3,7 @@ package PubSubMessages
 import (
 	"time"
 
-	"gossipnode/config"
+	"jmdn/config"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/AVC/BuddyNodes/Types"
+	"jmdn/AVC/BuddyNodes/Types"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"

@@ -9,9 +9,9 @@ import (
 	"log"
 	"net"
 
-	pb "gossipnode/AVC/BFT/proto"
-	"gossipnode/config/settings"
-	"gossipnode/pkg/gatekeeper"
+	pb "jmdn/AVC/BFT/proto"
+	"jmdn/config/settings"
+	"jmdn/pkg/gatekeeper"
 )
 
 // SequencerServer implements the gRPC server to receive results from buddies

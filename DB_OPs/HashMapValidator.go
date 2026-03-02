@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"log"
 
-	"gossipnode/config"
-	hashmap "gossipnode/crdt/HashMap"
+	"jmdn/config"
+	hashmap "jmdn/crdt/HashMap"
 )
 
 // ValidateHashMapKeys checks that all keys in the HashMap actually exist in the database

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"math"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
+	"jmdn/DB_OPs"
+	"jmdn/config"
 
 	"github.com/JupiterMetaLabs/JMDN_Merkletree/merkletree"
 	"github.com/JupiterMetaLabs/ion"

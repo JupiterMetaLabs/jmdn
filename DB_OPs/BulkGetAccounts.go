@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"gossipnode/config"
+	"jmdn/config"
 
 	"github.com/JupiterMetaLabs/ion"
 )

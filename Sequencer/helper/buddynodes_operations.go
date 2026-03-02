@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"time"
 
-	"gossipnode/Sequencer/Metadata"
-	"gossipnode/config"
-	PubSubMessages "gossipnode/config/PubSubMessages"
-	"gossipnode/config/PubSubMessages/Cache"
+	"jmdn/Sequencer/Metadata"
+	"jmdn/config"
+	PubSubMessages "jmdn/config/PubSubMessages"
+	"jmdn/config/PubSubMessages/Cache"
 )
 
 // @static function

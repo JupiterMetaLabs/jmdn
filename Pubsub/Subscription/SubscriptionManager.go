@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/config"
-	"gossipnode/config/GRO"
-	"gossipnode/config/PubSubMessages"
+	"jmdn/config"
+	"jmdn/config/GRO"
+	"jmdn/config/PubSubMessages"
 
 	"github.com/JupiterMetaLabs/ion"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"gossipnode/DB_OPs"
+	"jmdn/DB_OPs"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"

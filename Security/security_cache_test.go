@@ -6,10 +6,10 @@ import (
 	"math/big"
 	"testing"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/Security"
-	"gossipnode/config"
-	"gossipnode/config/settings"
+	"jmdn/DB_OPs"
+	"jmdn/Security"
+	"jmdn/config"
+	"jmdn/config/settings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/stretchr/testify/assert"

@@ -31,10 +31,10 @@ import (
 	"github.com/linkedin/goavro/v2"
 	"github.com/rs/zerolog/log"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-	"gossipnode/crdt"
-	hashmap "gossipnode/crdt/HashMap"
+	"jmdn/DB_OPs"
+	"jmdn/config"
+	"jmdn/crdt"
+	hashmap "jmdn/crdt/HashMap"
 )
 
 // Constants for FastSync

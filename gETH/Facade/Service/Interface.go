@@ -4,7 +4,7 @@ import (
 	"context"
 	"math/big"
 
-	"gossipnode/gETH/Facade/Service/Types"
+	"jmdn/gETH/Facade/Service/Types"
 )
 
 type Service interface {

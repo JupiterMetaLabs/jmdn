@@ -1,7 +1,7 @@
 package PubSubConnector
 
 import (
-	log "gossipnode/logging"
+	log "jmdn/logging"
 )
 
 // Zero allocation logger - its already allocated in the asynclogger

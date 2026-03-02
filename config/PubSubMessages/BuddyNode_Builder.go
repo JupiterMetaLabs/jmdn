@@ -3,8 +3,8 @@ package PubSubMessages
 import (
 	"sync"
 
-	"gossipnode/AVC/BuddyNodes/Types"
-	"gossipnode/config"
+	"jmdn/AVC/BuddyNodes/Types"
+	"jmdn/config"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"

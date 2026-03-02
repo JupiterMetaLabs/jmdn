@@ -3,7 +3,7 @@ package CRDTSync
 import (
 	"log"
 
-	"gossipnode/AVC/BuddyNodes/DataLayer"
+	"jmdn/AVC/BuddyNodes/DataLayer"
 )
 
 // PrintCurrentCRDTContent prints all CRDT elements after sync

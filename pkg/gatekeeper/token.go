@@ -3,7 +3,7 @@ package gatekeeper
 import (
 	"crypto/subtle"
 
-	"gossipnode/config/settings"
+	"jmdn/config/settings"
 
 	"github.com/golang-jwt/jwt/v5"
 )

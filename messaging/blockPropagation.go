@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/config/GRO"
-	GROHelper "gossipnode/messaging/common"
+	"jmdn/config/GRO"
+	GROHelper "jmdn/messaging/common"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/bits-and-blooms/bloom/v3"
@@ -20,13 +20,13 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/rs/zerolog/log"
 
-	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
-	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-	"gossipnode/helper"
-	"gossipnode/messaging/BlockProcessing"
-	"gossipnode/metrics"
+	BLS_Signer "jmdn/AVC/BuddyNodes/MessagePassing/BLS_Signer"
+	BLS_Verifier "jmdn/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
+	"jmdn/DB_OPs"
+	"jmdn/config"
+	"jmdn/helper"
+	"jmdn/messaging/BlockProcessing"
+	"jmdn/metrics"
 )
 
 // Global variables for block propagation

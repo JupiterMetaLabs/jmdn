@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"gossipnode/config/GRO"
-	"gossipnode/metrics/common"
+	"jmdn/config/GRO"
+	"jmdn/metrics/common"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/prometheus/client_golang/prometheus"

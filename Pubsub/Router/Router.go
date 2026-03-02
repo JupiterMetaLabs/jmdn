@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"gossipnode/config"
-	AVCStruct "gossipnode/config/PubSubMessages"
+	"jmdn/config"
+	AVCStruct "jmdn/config/PubSubMessages"
 )
 
 // Router routes messages to appropriate services based on message type

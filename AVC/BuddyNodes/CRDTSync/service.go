@@ -7,10 +7,10 @@ import (
 	"log"
 	"time"
 
-	"gossipnode/AVC/BuddyNodes/common"
-	"gossipnode/config"
-	"gossipnode/config/GRO"
-	"gossipnode/crdt"
+	"jmdn/AVC/BuddyNodes/common"
+	"jmdn/config"
+	"jmdn/config/GRO"
+	"jmdn/crdt"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"

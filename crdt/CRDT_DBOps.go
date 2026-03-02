@@ -2,7 +2,7 @@ package crdt
 
 import (
 	"time"
-	// "gossipnode/config"
+	// "jmdn/config"
 )
 
 type Engine struct {

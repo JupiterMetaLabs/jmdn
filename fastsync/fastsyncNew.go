@@ -42,11 +42,11 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-	"gossipnode/config/settings"
-	"gossipnode/crdt"
-	hashmap "gossipnode/crdt/HashMap"
+	"jmdn/DB_OPs"
+	"jmdn/config"
+	"jmdn/config/settings"
+	"jmdn/crdt"
+	hashmap "jmdn/crdt/HashMap"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/codenotary/immudb/pkg/api/schema"

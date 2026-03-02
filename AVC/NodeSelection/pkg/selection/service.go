@@ -5,7 +5,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 
-	seednode "gossipnode/seednode"
+	seednode "jmdn/seednode"
 )
 
 // GetBuddyNodes is the MAIN function that external code will call

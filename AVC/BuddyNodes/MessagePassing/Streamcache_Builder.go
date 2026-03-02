@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/AVC/BuddyNodes/common"
-	"gossipnode/config"
-	GRO "gossipnode/config/GRO"
-	AVCStruct "gossipnode/config/PubSubMessages"
+	"jmdn/AVC/BuddyNodes/common"
+	"jmdn/config"
+	GRO "jmdn/config/GRO"
+	AVCStruct "jmdn/config/PubSubMessages"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"

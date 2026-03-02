@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gossipnode/config"
-	"gossipnode/config/PubSubMessages"
+	"jmdn/config"
+	"jmdn/config/PubSubMessages"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 )

@@ -18,7 +18,7 @@ import (
 	"context"
 	"time"
 
-	log "gossipnode/logging"
+	log "jmdn/logging"
 
 	"github.com/JupiterMetaLabs/ion"
 )

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"testing"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/merkletree"
-	"gossipnode/config"
+	"jmdn/DB_OPs"
+	"jmdn/DB_OPs/merkletree"
+	"jmdn/config"
 
 	"github.com/stretchr/testify/assert"
 )

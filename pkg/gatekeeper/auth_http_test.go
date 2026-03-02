@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"gossipnode/config/settings"
+	"jmdn/config/settings"
 )
 
 // nextOK is a trivial http.Handler that always returns 200 — used to verify

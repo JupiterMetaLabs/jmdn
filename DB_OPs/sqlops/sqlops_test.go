@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"gossipnode/config"
+	"jmdn/config"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
@@ -417,7 +417,7 @@ func TestUnifiedDB(t *testing.T) {
 //     "os"
 //     "path/filepath"
 //     "testing"
-//     "gossipnode/config"
+//     "jmdn/config"
 //     _ "github.com/mattn/go-sqlite3"
 //     "github.com/stretchr/testify/assert"
 // )

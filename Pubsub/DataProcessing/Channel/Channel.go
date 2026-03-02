@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	Router "gossipnode/Pubsub/Router"
-	"gossipnode/config/GRO"
-	PubSubMessages "gossipnode/config/PubSubMessages"
+	Router "jmdn/Pubsub/Router"
+	"jmdn/config/GRO"
+	PubSubMessages "jmdn/config/PubSubMessages"
 )
 
 var (

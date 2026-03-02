@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	peerpb "gossipnode/seednode/proto"
-	seednodetypes "gossipnode/seednode/types"
-	selection "gossipnode/shared/selection"
+	peerpb "jmdn/seednode/proto"
+	seednodetypes "jmdn/seednode/types"
+	selection "jmdn/shared/selection"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"

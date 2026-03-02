@@ -6,10 +6,10 @@ import (
 	"math/big"
 	"time"
 
-	pb "gossipnode/Mempool/proto"
-	"gossipnode/config"
-	"gossipnode/config/settings"
-	"gossipnode/pkg/gatekeeper"
+	pb "jmdn/Mempool/proto"
+	"jmdn/config"
+	"jmdn/config/settings"
+	"jmdn/pkg/gatekeeper"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"

@@ -11,13 +11,13 @@ import (
 	"net"
 	"time"
 
-	"gossipnode/AVC/BFT/common"
-	pb "gossipnode/AVC/BFT/proto"
-	"gossipnode/pkg/gatekeeper"
+	"jmdn/AVC/BFT/common"
+	pb "jmdn/AVC/BFT/proto"
+	"jmdn/pkg/gatekeeper"
 
-	"gossipnode/config/GRO"
-	"gossipnode/config/PubSubMessages"
-	"gossipnode/config/settings"
+	"jmdn/config/GRO"
+	"jmdn/config/PubSubMessages"
+	"jmdn/config/settings"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"google.golang.org/grpc"

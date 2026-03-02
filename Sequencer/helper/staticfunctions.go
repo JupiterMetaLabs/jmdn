@@ -3,9 +3,9 @@ package helper
 import (
 	"fmt"
 
-	"gossipnode/AVC/NodeSelection/Router"
-	"gossipnode/config"
-	PubSubMessages "gossipnode/config/PubSubMessages"
+	"jmdn/AVC/NodeSelection/Router"
+	"jmdn/config"
+	PubSubMessages "jmdn/config/PubSubMessages"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"gossipnode/config"
-	AVCStruct "gossipnode/config/PubSubMessages"
+	"jmdn/config"
+	AVCStruct "jmdn/config/PubSubMessages"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/network"

@@ -1,7 +1,7 @@
 package DB_OPs
 
 import (
-	log "gossipnode/logging"
+	log "jmdn/logging"
 
 	"github.com/JupiterMetaLabs/ion"
 )

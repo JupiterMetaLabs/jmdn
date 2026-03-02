@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	Publisher "gossipnode/Pubsub/Publish"
-	Connector "gossipnode/Pubsub/Subscription"
-	"gossipnode/config"
-	"gossipnode/config/GRO"
-	AVCStruct "gossipnode/config/PubSubMessages"
-	log "gossipnode/logging"
+	Publisher "jmdn/Pubsub/Publish"
+	Connector "jmdn/Pubsub/Subscription"
+	"jmdn/config"
+	"jmdn/config/GRO"
+	AVCStruct "jmdn/config/PubSubMessages"
+	log "jmdn/logging"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/JupiterMetaLabs/ion"

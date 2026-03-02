@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/config"
+	"jmdn/config"
 )
 
 // Pre-built SQL query strings using constant table names.

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/config/GRO"
-	"gossipnode/config/common"
-	"gossipnode/logging"
+	"jmdn/config/GRO"
+	"jmdn/config/common"
+	"jmdn/logging"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/JupiterMetaLabs/ion"

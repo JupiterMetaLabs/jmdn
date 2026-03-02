@@ -6,9 +6,9 @@ import (
 	"log"
 	"time"
 
-	"gossipnode/AVC/BuddyNodes/DataLayer"
-	"gossipnode/Pubsub"
-	"gossipnode/crdt"
+	"jmdn/AVC/BuddyNodes/DataLayer"
+	"jmdn/Pubsub"
+	"jmdn/crdt"
 
 	"github.com/libp2p/go-libp2p/core/host"
 )

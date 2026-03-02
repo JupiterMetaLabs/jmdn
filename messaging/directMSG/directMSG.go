@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/config/GRO"
-	"gossipnode/messaging/common"
+	"jmdn/config/GRO"
+	"jmdn/messaging/common"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/rs/zerolog"

@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
-	"gossipnode/Pubsub"
-	Publisher "gossipnode/Pubsub/Publish"
-	Subscription "gossipnode/Pubsub/Subscription"
-	"gossipnode/config"
-	"gossipnode/config/PubSubMessages"
+	"jmdn/Pubsub"
+	Publisher "jmdn/Pubsub/Publish"
+	Subscription "jmdn/Pubsub/Subscription"
+	"jmdn/config"
+	"jmdn/config/PubSubMessages"
 
 	"github.com/google/uuid"
 	"github.com/libp2p/go-libp2p/core/peer"

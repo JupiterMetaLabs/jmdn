@@ -3,7 +3,7 @@ package PubSubMessages
 import (
 	"time"
 
-	"gossipnode/config"
+	"jmdn/config"
 )
 
 func NewConsensusMessageBuilder(consensusMessage *ConsensusMessage) *ConsensusMessage {

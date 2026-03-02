@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"gossipnode/config/settings"
+	"jmdn/config/settings"
 )
 
 func TestGetClientIPFromRequest_DirectIP(t *testing.T) {

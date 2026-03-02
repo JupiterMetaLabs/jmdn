@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	block "gossipnode/Block"
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-	"gossipnode/gETH/proto"
+	block "jmdn/Block"
+	"jmdn/DB_OPs"
+	"jmdn/config"
+	"jmdn/gETH/proto"
 
 	"github.com/ethereum/go-ethereum/common"
 )

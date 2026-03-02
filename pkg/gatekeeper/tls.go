@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	"gossipnode/config/settings"
-	log "gossipnode/logging"
+	"jmdn/config/settings"
+	log "jmdn/logging"
 
 	"github.com/JupiterMetaLabs/ion"
 	"google.golang.org/grpc/credentials"
