@@ -943,7 +943,11 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 					log.Error().Err(err).Msg("Failed to create new stream for retry")
 					continue
 				}
-				defer newStream.Close()
+				defer func() {
+					if closeErr := newStream.Close(); closeErr != nil {
+						log.Error().Err(closeErr).Msg("Failed to close new transfer stream")
+					}
+				}()
 
 				// Update the stream and its reader/writer
 				stream = newStream
@@ -1128,14 +1132,18 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 			if dbType == MainDB {
 				newClient, clientErr = DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 				if clientErr == nil {
-					DB_OPs.Close(fs.mainDB.Client)
+					if closeErr := DB_OPs.Close(fs.mainDB.Client); closeErr != nil {
+						log.Error().Err(closeErr).Msg("Failed to close expired mainDB client")
+					}
 					DB_OPs.PutMainDBConnection(fs.mainDB)
 					fs.mainDB = newClient
 				}
 			} else {
 				newClient, clientErr = DB_OPs.GetAccountConnectionandPutBack(context.Background())
 				if clientErr == nil {
-					DB_OPs.Close(fs.accountsDB.Client)
+					if closeErr := DB_OPs.Close(fs.accountsDB.Client); closeErr != nil {
+						log.Error().Err(closeErr).Msg("Failed to close expired accountsDB client")
+					}
 					DB_OPs.PutAccountsConnection(fs.accountsDB)
 					fs.accountsDB = newClient
 				}
@@ -1255,7 +1263,11 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 	if err != nil {
 		return fmt.Errorf("failed to open avro file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Msg("Failed to close avro file")
+		}
+	}()
 
 	startTime := time.Now()
 	fmt.Printf(">>> [DB] Starting database restore from AVRO: %s (DB: %s)\n", filepath.Base(dbPath), dbTypeToString(dbType))

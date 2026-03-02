@@ -25,7 +25,11 @@ func GetBuddyNodes(
 		return nil, err
 	}
 	// fmt.Printf("Debugging 1\n")
-	defer peerClient.Close()
+	defer func() {
+		if closeErr := peerClient.Close(); closeErr != nil {
+			fmt.Println("⚠️ Failed to close peer client:", closeErr)
+		}
+	}()
 
 	fmt.Println("📡 Connected to peer directory at", peerDirAddress)
 

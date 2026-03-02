@@ -1561,7 +1561,14 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 			ion.String("function", "Consensus.requestVoteResultFromBuddy"))
 		return nil
 	}
-	defer stream.Close()
+	defer func() {
+		if closeErr := stream.Close(); closeErr != nil {
+			logger().NamedLogger.Error(logger_ctx, "Failed to close stream",
+				closeErr,
+				ion.String("peer_id", peerID.String()),
+				ion.String("function", "Consensus.requestVoteResultFromBuddy"))
+		}
+	}()
 
 	// Build request message
 	reqAck := PubSubMessages.NewACKBuilder().True_ACK_Message(consensus.Host.ID(), config.Type_VoteResult)

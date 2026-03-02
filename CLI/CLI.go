@@ -364,7 +364,11 @@ func (h *CommandHandler) handleSeedNodeStats(parts []string) {
 		fmt.Println("💡 Check if the seed node is running and accessible.")
 		return
 	}
-	defer client.Close()
+	defer func() {
+		if closeErr := client.Close(); closeErr != nil {
+			fmt.Printf("⚠️  Failed to close seed node client: %v\n", closeErr)
+		}
+	}()
 
 	fmt.Println("✅ Successfully connected to seed node!")
 
@@ -898,7 +902,11 @@ func (h *CommandHandler) handleListAliases() {
 		fmt.Printf("❌ Failed to connect to seed node: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() {
+		if closeErr := client.Close(); closeErr != nil {
+			fmt.Printf("⚠️  Failed to close client: %v\n", closeErr)
+		}
+	}()
 
 	// Get current node's peer ID
 	currentPeerID := h.Node.Host.ID().String()
@@ -960,7 +968,11 @@ func (h *CommandHandler) handleDiscoverNeighbors() {
 		fmt.Printf("❌ Failed to connect to seed node: %v\n", err)
 		return
 	}
-	defer client.Close()
+	defer func() {
+		if closeErr := client.Close(); closeErr != nil {
+			fmt.Printf("⚠️  Failed to close client: %v\n", closeErr)
+		}
+	}()
 
 	// Perform neighbor discovery
 	err = client.DiscoverAndAddNeighbors(h.Node.Host, h.NodeManager)

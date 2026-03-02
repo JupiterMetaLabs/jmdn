@@ -214,7 +214,11 @@ func runCommand(command string, args []string, grpcPort int) {
 
 		client, err := cli.NewClient(fmt.Sprintf("localhost:%d", grpcPort))
 		if err == nil {
-			defer client.Close()
+			defer func() {
+				if err := client.Close(); err != nil {
+					fmt.Printf("Error closing client: %v\n", err)
+				}
+			}()
 			v, err := client.GetNodeVersion()
 			if err == nil {
 				fmt.Println("Remote Node Version (Running):")
@@ -237,7 +241,11 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("Make sure the service is running.")
 		os.Exit(1)
 	}
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			fmt.Printf("Error closing client: %v\n", err)
+		}
+	}()
 
 	switch command {
 
@@ -862,7 +870,11 @@ func main() {
 		fmt.Println("Error starting node:", err)
 		return
 	}
-	defer n.Host.Close()
+	defer func() {
+		if err := n.Host.Close(); err != nil {
+			fmt.Printf("Failed to close node host: %v\n", err)
+		}
+	}()
 	fmt.Println("Node created successfully")
 
 	// Set the host instance for broadcast messaging
@@ -1030,7 +1042,11 @@ func main() {
 			fmt.Printf("Failed to create seed node client: %v\n", err)
 			log.Error().Err(err).Msg("Failed to create seed node client")
 		} else {
-			defer seedClient.Close()
+			defer func() {
+				if err := seedClient.Close(); err != nil {
+					log.Error().Err(err).Msg("Failed to close seed client")
+				}
+			}()
 
 			// Register this peer with the seed node (with or without alias)
 			if cfg.Node.Alias != "" {

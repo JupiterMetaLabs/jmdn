@@ -88,7 +88,11 @@ func (s *alertService) sendAlert(
 		log.Printf("❌ [ALERT] Failed to send %s alert: %v", alertName, err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Printf("❌ [ALERT] Failed to close response body: %v", closeErr)
+		}
+	}()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		log.Printf("✅ [ALERT] Successfully sent %s alert (status: %d)", alertName, resp.StatusCode)

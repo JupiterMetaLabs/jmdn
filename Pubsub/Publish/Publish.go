@@ -354,7 +354,14 @@ func sendToPeer(gps *PubSubMessages.GossipPubSub, peerID peer.ID, messageBytes [
 			ion.String("function", "Publish.sendToPeer"))
 		return err
 	}
-	defer stream.Close()
+	defer func() {
+		if closeErr := stream.Close(); closeErr != nil {
+			logger().NamedLogger.Error(trace_ctx, "Failed to close stream to peer",
+				closeErr,
+				ion.String("peer", peerID.String()),
+				ion.String("function", "Publish.sendToPeer"))
+		}
+	}()
 
 	err = writeMessage(stream, messageBytes)
 	if err != nil {

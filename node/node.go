@@ -44,7 +44,11 @@ func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to open peer.json: %v", err)
 		}
-		defer file.Close()
+		defer func() {
+			if closeErr := file.Close(); closeErr != nil {
+				fmt.Printf("Failed to close peer.json: %v\n", closeErr)
+			}
+		}()
 
 		if err := json.NewDecoder(file).Decode(&config); err != nil {
 			return nil, "", fmt.Errorf("failed to decode peer.json: %v", err)
@@ -104,7 +108,11 @@ func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create peer.json: %v", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			fmt.Printf("Failed to close peer.json: %v\n", closeErr)
+		}
+	}()
 
 	if err := json.NewEncoder(file).Encode(config); err != nil {
 		return nil, "", fmt.Errorf("failed to write peer.json: %v", err)
@@ -248,7 +256,11 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 		// Capture stream in closure to avoid race condition
 		stream := s
 		LocalGRO.Go(GRO.NodeStreamThread, func(ctx context.Context) error {
-			defer stream.Close()
+			defer func() {
+				if closeErr := stream.Close(); closeErr != nil {
+					fmt.Printf("Failed to close incoming stream: %v\n", closeErr)
+				}
+			}()
 			listenerHandler.HandleSubmitMessageStream(logger_ctx, stream)
 			return nil
 		})
@@ -341,7 +353,11 @@ func GetPeerIDFromJSON() string {
 		fmt.Println("Failed to open peer.json:", err)
 		return ""
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			fmt.Printf("Failed to close peer.json: %v\n", closeErr)
+		}
+	}()
 
 	// Decode JSON
 	var config config.PeerConfig

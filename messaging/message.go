@@ -17,7 +17,11 @@ import (
 
 // HandleMessageStream processes incoming messages (TCP)
 func HandleMessageStream(s network.Stream) {
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			fmt.Println("Error closing message stream:", err)
+		}
+	}()
 	reader := bufio.NewReader(s)
 	msg, err := reader.ReadString('\n')
 	if err != nil {
@@ -60,7 +64,11 @@ func SendMessage(n *config.Node, target string, message string) error {
 	if err != nil {
 		return fmt.Errorf("stream failed: %v", err)
 	}
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			fmt.Println("Error closing stream:", closeErr)
+		}
+	}()
 
 	// Record message metrics
 	metrics.MessagesSentCounter.WithLabelValues("message", peerInfo.ID.String()).Inc()

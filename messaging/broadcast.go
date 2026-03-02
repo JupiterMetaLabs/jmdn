@@ -111,7 +111,11 @@ func markMessageSeen(msgID string) {
 
 // HandleBroadcastStream processes incoming broadcast messages
 func HandleBroadcastStream(stream network.Stream) {
-	defer stream.Close()
+	defer func() {
+		if err := stream.Close(); err != nil {
+			log.Error().Err(err).Str("peer", stream.Conn().RemotePeer().String()).Msg("Failed to close broadcast incoming stream")
+		}
+	}()
 
 	// Record metrics
 	metrics.MessagesReceivedCounter.WithLabelValues("broadcast", stream.Conn().RemotePeer().String()).Inc()
@@ -236,12 +240,16 @@ func forwardBroadcast(h host.Host, msg BroadcastMessageStruct) {
 		_, err = stream.Write(msgBytes)
 		if err != nil {
 			log.Error().Err(err).Str("peer", peerID.String()).Msg("Failed to write broadcast message")
-			stream.Close()
+			if closeErr := stream.Close(); closeErr != nil {
+				log.Error().Err(closeErr).Str("peer", peerID.String()).Msg("Failed to close broadcast stream")
+			}
 			continue
 		}
 
 		// Close the stream
-		stream.Close()
+		if closeErr := stream.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Str("peer", peerID.String()).Msg("Failed to close broadcast stream")
+		}
 		successCount++
 
 		// Record metrics
@@ -319,7 +327,11 @@ func BroadcastMessage(h host.Host, content string) error {
 				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open broadcast stream")
 				return err
 			}
-			defer stream.Close()
+			defer func() {
+				if closeErr := stream.Close(); closeErr != nil {
+					log.Error().Err(closeErr).Str("peer", peer.String()).Msg("Failed to close broadcast stream")
+				}
+			}()
 
 			// Send the message
 			_, err = stream.Write(msgBytes)
@@ -538,7 +550,11 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open broadcast stream for vote trigger")
 				return err
 			}
-			defer stream.Close()
+			defer func() {
+				if closeErr := stream.Close(); closeErr != nil {
+					log.Error().Err(closeErr).Str("peer", peer.String()).Msg("Failed to close broadcast stream for vote trigger")
+				}
+			}()
 
 			// Send the message
 			_, err = stream.Write(msgBytes)
@@ -671,7 +687,11 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 				log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to open stream")
 				return err
 			}
-			defer stream.Close()
+			defer func() {
+				if closeErr := stream.Close(); closeErr != nil {
+					log.Debug().Err(closeErr).Str("peer", peer.String()).Msg("Failed to close stream")
+				}
+			}()
 			if _, err := stream.Write(msgBytes); err != nil {
 				log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to write message")
 				return err

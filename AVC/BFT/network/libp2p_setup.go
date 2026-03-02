@@ -31,7 +31,9 @@ func SetupLibp2pHost(ctx context.Context, port int) (host.Host, *pubsub.PubSub, 
 	// Create GossipSub
 	ps, err := pubsub.NewGossipSub(ctx, h)
 	if err != nil {
-		h.Close()
+		if closeErr := h.Close(); closeErr != nil {
+			fmt.Printf("❌ Failed to close libp2p host: %v\n", closeErr)
+		}
 		return nil, nil, fmt.Errorf("failed to create gossipsub: %w", err)
 	}
 

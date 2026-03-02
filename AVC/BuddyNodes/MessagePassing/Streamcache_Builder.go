@@ -154,7 +154,9 @@ func (sc *StructStreamCache) addEntry(peerID peer.ID, stream network.Stream) {
 // removeEntry removes a stream entry from the cache
 func (sc *StructStreamCache) removeEntry(peerID peer.ID) {
 	if entry, exists := sc.StreamCache.Streams[peerID]; exists {
-		entry.Stream.Close()
+		if err := entry.Stream.Close(); err != nil {
+			fmt.Printf("Failed to close stream for peer %s: %v\n", peerID, err)
+		}
 		delete(sc.StreamCache.Streams, peerID)
 		sc.removeFromOrder(peerID)
 	}

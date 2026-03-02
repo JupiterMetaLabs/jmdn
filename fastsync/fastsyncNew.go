@@ -1068,7 +1068,9 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 				Msg("PANIC in handleStream - recovering and closing stream")
 			fmt.Printf(">>> [SERVER] PANIC in handleStream: %v\n", r)
 		}
-		stream.Close()
+		if closeErr := stream.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Msg("Failed to close sync stream")
+		}
 	}()
 
 	peerID := stream.Conn().RemotePeer()
@@ -1749,7 +1751,11 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 		shouldAbort := false
 		// Use a closure to ensure stream is closed BEFORE Phase 1 (avoid idle timeout)
 		func() {
-			defer preStream.Close()
+			defer func() {
+				if closeErr := preStream.Close(); closeErr != nil {
+					log.Error().Err(closeErr).Msg("Failed to close pre-sync stream")
+				}
+			}()
 			preReader := bufio.NewReader(preStream)
 			preWriter := bufio.NewWriter(preStream)
 
@@ -1793,7 +1799,11 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer (stream).Close()
+	defer func() {
+		if closeErr := stream.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Msg("Failed to close main sync stream")
+		}
+	}()
 
 	reader := bufio.NewReader(stream)
 	writer := bufio.NewWriter(stream)
@@ -1969,7 +1979,11 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	postStream, err := returnStream(fs, peerID)
 	if err == nil {
 		func() {
-			defer postStream.Close()
+			defer func() {
+				if closeErr := postStream.Close(); closeErr != nil {
+					log.Error().Err(closeErr).Msg("Failed to close post-sync stream")
+				}
+			}()
 			postReader := bufio.NewReader(postStream)
 			postWriter := bufio.NewWriter(postStream)
 
@@ -2470,7 +2484,11 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 	if err == nil {
 		shouldAbort := false
 		func() {
-			defer preStream.Close()
+			defer func() {
+				if closeErr := preStream.Close(); closeErr != nil {
+					log.Error().Err(closeErr).Msg("Failed to close first-sync pre stream")
+				}
+			}()
 			preReader := bufio.NewReader(preStream)
 			preWriter := bufio.NewWriter(preStream)
 
@@ -2625,7 +2643,11 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 	postStream, err := returnStream(fs, peerID)
 	if err == nil {
 		func() {
-			defer postStream.Close()
+			defer func() {
+				if closeErr := postStream.Close(); closeErr != nil {
+					log.Error().Err(closeErr).Msg("Failed to close first-sync post stream")
+				}
+			}()
 			postReader := bufio.NewReader(postStream)
 			postWriter := bufio.NewWriter(postStream)
 
@@ -2664,7 +2686,11 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 		contentStream, err := returnStream(fs, peerID)
 		if err == nil {
 			func() {
-				defer contentStream.Close()
+				defer func() {
+					if closeErr := contentStream.Close(); closeErr != nil {
+						log.Error().Err(closeErr).Msg("Failed to close first-sync content stream")
+					}
+				}()
 				cw := bufio.NewWriter(contentStream)
 				cr := bufio.NewReader(contentStream)
 

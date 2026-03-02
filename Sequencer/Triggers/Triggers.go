@@ -382,7 +382,11 @@ func RequestVoteResultsFromBuddies(blockhash string) error {
 				log.Printf("RequestVoteResultsFromBuddies: Failed to open stream to %s: %v", peerID, err)
 				return err
 			}
-			defer stream.Close()
+			defer func() {
+				if closeErr := stream.Close(); closeErr != nil {
+					log.Printf("RequestVoteResultsFromBuddies: Failed to close stream to %s: %v", peerID, closeErr)
+				}
+			}()
 
 			// Create vote result request message
 			reqAck := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)

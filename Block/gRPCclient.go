@@ -882,7 +882,9 @@ func InitMempoolClient(logger_ctx context.Context, address string) error {
 // CloseMempoolClient closes the global mempool client
 func CloseMempoolClient() {
 	if globalMempoolClient != nil {
-		globalMempoolClient.Close()
+		if err := globalMempoolClient.Close(); err != nil {
+			fmt.Printf("Failed to close global mempool client: %v\n", err)
+		}
 		globalMempoolClient = nil
 	}
 }

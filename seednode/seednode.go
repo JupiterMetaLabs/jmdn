@@ -44,7 +44,11 @@ func getPublicIP() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to get public IP: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			fmt.Printf("Failed to close public IP response body: %v\n", closeErr)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("unexpected status code: %d", resp.StatusCode)

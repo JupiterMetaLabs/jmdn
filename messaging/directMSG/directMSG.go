@@ -96,7 +96,9 @@ func StartYggdrasilListener(ctx context.Context) {
 	LocalGRO.Go(GRO.MessageListenerThread, func(ctx context.Context) error {
 		defer func() {
 			log.Info().Msg("Closing Yggdrasil listener")
-			listener.Close()
+			if err := listener.Close(); err != nil {
+				log.Error().Err(err).Msg("Failed to close Yggdrasil listener")
+			}
 		}()
 
 		for {
@@ -138,7 +140,9 @@ func StartYggdrasilListener(ctx context.Context) {
 					return nil
 				}); err != nil {
 					log.Error().Err(err).Msg("Failed to start goroutine for Yggdrasil connection")
-					connForGoroutine.Close() // Close connection if we can't handle it
+					if closeErr := connForGoroutine.Close(); closeErr != nil {
+						log.Error().Err(closeErr).Msg("Failed to close Yggdrasil connection")
+					}
 				}
 			}
 		}
@@ -147,7 +151,11 @@ func StartYggdrasilListener(ctx context.Context) {
 
 // handleYggdrasilConnection processes incoming Yggdrasil messages
 func handleYggdrasilConnection(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Error().Err(err).Msg("Failed to close Yggdrasil connection")
+		}
+	}()
 
 	// Get remote address for display and logging
 	remoteAddr := conn.RemoteAddr().String()
@@ -373,7 +381,9 @@ func getConnection(targetAddr string) (net.Conn, error) {
 			return pooled.conn, nil
 		}
 		// Connection expired, close it
-		pooled.conn.Close()
+		if closeErr := pooled.conn.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Msg("Failed to close pooled connection")
+		}
 		delete(connectionPool, targetAddr)
 	}
 
@@ -403,7 +413,9 @@ func removeConnection(targetAddr string) {
 	defer connectionPoolLock.Unlock()
 
 	if pooled, exists := connectionPool[targetAddr]; exists {
-		pooled.conn.Close()
+		if closeErr := pooled.conn.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Msg("Failed to close pooled connection")
+		}
 		delete(connectionPool, targetAddr)
 	}
 }
@@ -422,7 +434,9 @@ func cleanConnectionPool(ctx context.Context) {
 
 			for addr, conn := range connectionPool {
 				if now.After(conn.expiresAt) {
-					conn.conn.Close()
+					if closeErr := conn.conn.Close(); closeErr != nil {
+						log.Error().Err(closeErr).Msg("Failed to close expired pooled connection")
+					}
 					delete(connectionPool, addr)
 				}
 			}

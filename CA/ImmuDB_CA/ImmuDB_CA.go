@@ -204,6 +204,10 @@ func writePEM(path, blockType string, derBytes []byte) error {
 	if err != nil {
 		return fmt.Errorf("open %q: %w", path, err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			fmt.Printf("Error closing PEM file %q: %v\n", path, closeErr)
+		}
+	}()
 	return pem.Encode(f, &pem.Block{Type: blockType, Bytes: derBytes})
 }

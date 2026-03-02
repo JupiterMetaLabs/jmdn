@@ -75,7 +75,11 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 		attribute.String("remote_peer_id", remotePeer.String()),
 	)
 	// Ensure stream is closed to prevent resource leaks
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			logger().NamedLogger.Error(logger_ctx, "Failed to close SubmitMessageStream", err)
+		}
+	}()
 
 	logger().NamedLogger.Info(spanCtx, "ListenerHandler.HandleSubmitMessageStream CALLED",
 		ion.String("remote_peer_id", remotePeer.String()),
@@ -173,7 +177,11 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.HandleSubmitMessageStream"))
 		lh.handleBFTRequest(spanCtx, s, message)
-		defer s.Close()
+		defer func() {
+			if err := s.Close(); err != nil {
+				logger().NamedLogger.Error(logger_ctx, "Failed to close SubmitMessageStream", err)
+			}
+		}()
 	case config.Type_SubmitVote:
 		logger().NamedLogger.Info(spanCtx, "Handling Type_SubmitVote",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -181,7 +189,11 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.HandleSubmitMessageStream"))
 		lh.handleSubmitVote(spanCtx, s, message)
-		defer s.Close()
+		defer func() {
+			if err := s.Close(); err != nil {
+				logger().NamedLogger.Error(logger_ctx, "Failed to close SubmitMessageStream", err)
+			}
+		}()
 	case config.Type_AskForSubscription:
 		logger().NamedLogger.Info(spanCtx, "Handling Type_AskForSubscription",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -196,7 +208,11 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.HandleSubmitMessageStream"))
 		lh.handleSubscriptionResponse(spanCtx, s, message)
-		defer s.Close()
+		defer func() {
+			if err := s.Close(); err != nil {
+				logger().NamedLogger.Error(logger_ctx, "Failed to close SubmitMessageStream", err)
+			}
+		}()
 	case config.Type_VoteResult:
 		logger().NamedLogger.Info(spanCtx, "Handling Type_VoteResult",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -204,7 +220,11 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.HandleSubmitMessageStream"))
 		lh.handleVoteResultRequest(spanCtx, s, message)
-		defer s.Close()
+		defer func() {
+			if err := s.Close(); err != nil {
+				logger().NamedLogger.Error(logger_ctx, "Failed to close SubmitMessageStream", err)
+			}
+		}()
 	default:
 		span.SetAttributes(attribute.String("status", "unknown_message_type"))
 		logger().NamedLogger.Error(spanCtx, "Unknown message type",
@@ -215,7 +235,11 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.HandleSubmitMessageStream"))
-		defer s.Close()
+		defer func() {
+			if err := s.Close(); err != nil {
+				logger().NamedLogger.Error(logger_ctx, "Failed to close SubmitMessageStream", err)
+			}
+		}()
 	}
 
 	duration := time.Since(startTime).Seconds()
@@ -608,7 +632,11 @@ func (lh *ListenerHandler) runBFTConsensusFlow(logger_ctx context.Context, conte
 		lh.sendBFTResultToSequencer(consensusSpanCtx, bftCtx.Round, bftCtx.BlockHash, myBuddyID, false, "REJECT", fmt.Sprintf("Failed to create adapter: %v", err))
 		return
 	}
-	defer adapter.Close()
+	defer func() {
+		if err := adapter.Close(); err != nil {
+			logger().NamedLogger.Error(logger_ctx, "Failed to close BFT adapter", err)
+		}
+	}()
 
 	logger().NamedLogger.Info(consensusSpanCtx, "BFT adapter created successfully",
 		ion.String("context_key", contextKey),
@@ -865,7 +893,11 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 			ion.String("function", "MessagePassing.sendBFTResultToSequencer"))
 		return
 	}
-	defer stream.Close()
+	defer func() {
+		if err := stream.Close(); err != nil {
+			logger().NamedLogger.Error(logger_ctx, "Failed to close stream to Sequencer", err)
+		}
+	}()
 
 	// Send message
 	messageBytes, err := json.Marshal(message)
@@ -1400,7 +1432,9 @@ func (lh *ListenerHandler) sendSubscriptionResponse(logger_ctx context.Context, 
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.sendSubscriptionResponse"))
-		s.Close()
+		if err := s.Close(); err != nil {
+			logger().NamedLogger.Warn(logger_ctx, "Failed to close stream", ion.String("error", err.Error()))
+		}
 		return
 	}
 
@@ -1419,7 +1453,9 @@ func (lh *ListenerHandler) sendSubscriptionResponse(logger_ctx context.Context, 
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.sendSubscriptionResponse"))
-		s.Close()
+		if err := s.Close(); err != nil {
+			logger().NamedLogger.Warn(logger_ctx, "Failed to close stream", ion.String("error", err.Error()))
+		}
 		return
 	}
 
@@ -1432,7 +1468,9 @@ func (lh *ListenerHandler) sendSubscriptionResponse(logger_ctx context.Context, 
 				ion.String("error", err.Error()),
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("function", "MessagePassing.sendSubscriptionResponse"))
-			s.Close()
+			if err := s.Close(); err != nil {
+				logger().NamedLogger.Warn(logger_ctx, "Failed to close stream", ion.String("error", err.Error()))
+			}
 			return
 		}
 	}
@@ -1442,7 +1480,9 @@ func (lh *ListenerHandler) sendSubscriptionResponse(logger_ctx context.Context, 
 	// This is critical for preventing stream reset errors after prolonged runtime
 	time.Sleep(200 * time.Millisecond)
 
-	s.Close()
+	if err := s.Close(); err != nil {
+		logger().NamedLogger.Warn(logger_ctx, "Failed to close stream", ion.String("error", err.Error()))
+	}
 
 	duration := time.Since(startTime).Seconds()
 	sendSpan.SetAttributes(attribute.Float64("duration", duration), attribute.Int("bytes_written", bytesWritten), attribute.String("status", "success"))
@@ -1709,7 +1749,11 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 			return
 		}
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			fmt.Printf("Failed to close stream: %v\n", err)
+		}
+	}()
 
 	fmt.Println("📩 Received BFT trigger from Sequencer:", message)
 
@@ -1833,7 +1877,9 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 				return nil
 			}
 			defer func() {
-				stream.Close()
+				if err := stream.Close(); err != nil {
+					fmt.Printf("Failed to close stream to %s: %v\n", buddyID, err)
+				}
 				fmt.Printf("🔌 Closed stream to %s\n", buddyID)
 			}()
 

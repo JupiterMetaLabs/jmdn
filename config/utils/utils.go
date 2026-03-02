@@ -34,7 +34,11 @@ func loadPrivateKeyFromFile() (crypto.PrivKey, peer.ID, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to open peer.json: %v", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			fmt.Printf("Failed to close peer.json: %v\n", closeErr)
+		}
+	}()
 
 	// Decode JSON
 	var cfg config.PeerConfig
