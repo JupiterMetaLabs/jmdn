@@ -29,7 +29,7 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 	}
 
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

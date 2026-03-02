@@ -17,7 +17,7 @@ import (
 // GetReceiptByHash retrieves a transaction receipt by its hash
 func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*config.Receipt, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -219,7 +219,7 @@ func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *c
 
 func MakeReceiptRoot(mainDBClient *config.PooledConnection, receipts []*config.Receipt) ([]byte, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -284,7 +284,7 @@ func MakeReceiptRoot(mainDBClient *config.PooledConnection, receipts []*config.R
 
 func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint64) ([]*config.Receipt, error) {
 	var err error
-	var shouldReturnConnection bool = false
+	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

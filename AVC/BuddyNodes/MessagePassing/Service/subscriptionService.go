@@ -693,7 +693,7 @@ func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *
 // If blockHash is empty, processing is skipped to avoid mixing votes from different blocks
 func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStruct.BuddyNode, blockHash string) {
 	if listenerNode == nil || listenerNode.CRDTLayer == nil {
-		err := errors.New("Cannot process votes - listener node or CRDT layer not initialized")
+		err := errors.New("cannot process votes - listener node or CRDT layer not initialized")
 		logger().NamedLogger.Error(logger_ctx, err.Error(),
 			err,
 			ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
@@ -702,7 +702,7 @@ func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStru
 
 	if blockHash == "" {
 		logger().NamedLogger.Error(logger_ctx, "Cannot Scope Votes",
-			errors.New("Skipping vote processing - block hash not available (cannot scope votes)"),
+			errors.New("skipping vote processing - block hash not available (cannot scope votes)"),
 			ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 		return
 	}

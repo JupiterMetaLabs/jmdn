@@ -252,7 +252,7 @@ func SendViaYggdrasil(target string, message string) error {
 			Error:     err.Error(),
 		})
 		incrementMessagesFailed()
-		return fmt.Errorf("Yggdrasil connection failed: %v", err)
+		return fmt.Errorf("yggdrasil connection failed: %v", err)
 	}
 
 	// Format message with protocol signature and trailing newline

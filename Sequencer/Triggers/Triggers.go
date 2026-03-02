@@ -478,7 +478,7 @@ func StartBFTConsensus(blockhash string) error {
 		voteResult := allVoteResults[peerID.String()]
 
 		// Convert vote result to decision: >0 = Accept, <=0 = Reject
-		var decision bft.Decision = bft.Reject
+		var decision = bft.Reject
 		if voteResult > 0 {
 			decision = bft.Accept
 		}

@@ -58,7 +58,7 @@ func (al *AsyncLogger) NamedLogger(topic string, fileName string) (*Logging, err
 	if al.Logging[topic].NamedLogger != nil {
 		namedLogger, ok := al.Logging[topic]
 		if !ok {
-			return nil, fmt.Errorf("Something went wrong inside duplicate check '%s' not found - this should not happen", topic)
+			return nil, fmt.Errorf("something went wrong inside duplicate check '%s' not found - this should not happen", topic)
 		}
 		return &namedLogger, nil
 	}
@@ -80,7 +80,7 @@ func (al *AsyncLogger) NamedLogger(topic string, fileName string) (*Logging, err
 	}
 	namedLogger, ok := al.Logging[topic]
 	if !ok {
-		return nil, fmt.Errorf("Something went wrong '%s' not found - this should not happen", topic)
+		return nil, fmt.Errorf("something went wrong '%s' not found - this should not happen", topic)
 	}
 	return &namedLogger, nil
 }
@@ -93,7 +93,7 @@ func (al *AsyncLogger) GetNamedLogger(topic string) (*Logging, error) {
 	// Get the named logger instance
 	namedLogger, ok := al.Logging[topic]
 	if !ok {
-		return nil, fmt.Errorf("Named logger for topic '%s' not found", topic)
+		return nil, fmt.Errorf("named logger for topic '%s' not found", topic)
 	}
 	return &namedLogger, nil
 }

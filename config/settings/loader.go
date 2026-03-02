@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -42,10 +43,27 @@ func Load() (*NodeConfig, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	v.AutomaticEnv()
 
-	// 5. Unmarshal into struct
+	// 6. Unmarshal into struct
 	cfg := DefaultConfig()
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshalling config: %w", err)
+	}
+
+	// 7. Generic Map Merge for Services
+	// Fix Viper's map unmarshaling bug: it replaces map values entirely instead of deep merging.
+	// We use reflection to generically merge any zero-valued fields in the user config
+	// with the values from the default config.
+	defaultCfg := DefaultConfig()
+	if cfg.Security.Services == nil {
+		cfg.Security.Services = make(map[string]Policy)
+	}
+	for svcName, defaultPolicy := range defaultCfg.Security.Services {
+		userPolicy, exists := cfg.Security.Services[svcName]
+		if exists {
+			cfg.Security.Services[svcName] = mergeStructs(userPolicy, defaultPolicy)
+		} else {
+			cfg.Security.Services[svcName] = defaultPolicy
+		}
 	}
 
 	// Eagerly resolve token env vars so the hot path never calls os.Getenv
@@ -146,4 +164,19 @@ func setDefaults(v *viper.Viper) {
 	// Security
 	v.SetDefault("security.explorer_api_key", d.Security.ExplorerAPIKey)
 	v.SetDefault("security.jwt_secret", d.Security.JWTSecret)
+}
+
+// mergeStructs merges src into dest generically.
+// If a field in dest is its zero value, it takes the value from src.
+func mergeStructs[T any](dest, src T) T {
+	vDest := reflect.ValueOf(&dest).Elem()
+	vSrc := reflect.ValueOf(src)
+
+	for i := 0; i < vDest.NumField(); i++ {
+		field := vDest.Field(i)
+		if field.CanSet() && field.IsZero() {
+			field.Set(vSrc.Field(i))
+		}
+	}
+	return dest
 }
