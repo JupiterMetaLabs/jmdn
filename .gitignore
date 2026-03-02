@@ -49,3 +49,5 @@ remediation_report.docx
 *.pdf
 *.docx
 *.html
+bls.json
+*.log
