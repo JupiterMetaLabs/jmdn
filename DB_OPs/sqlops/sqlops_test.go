@@ -65,7 +65,7 @@ func setupTestDB(t *testing.T) *UnifiedDB {
 	for _, table := range tables {
 		var count int
 		// Check if table exists by counting rows
-		err := db.DB.QueryRow(fmt.Sprintf("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='%s'", table)).Scan(&count)
+		err := db.DB.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count)
 		if err != nil {
 			logger.Printf("ERROR checking if table %s exists: %v", table, err)
 		} else if count > 0 {
@@ -527,14 +527,15 @@ func TestGetConnectedPeers(t *testing.T) {
 	if !tableExists {
 		t.Logf("Table %s does not exist in the database", config.ConnectedPeers)
 		// Create the table for testing
-		_, err = db.Exec(fmt.Sprintf(`
-            CREATE TABLE IF NOT EXISTS %s (
-                peer_id TEXT PRIMARY KEY,
-                multiaddr TEXT NOT NULL,
-                last_seen INTEGER NOT NULL,
-                heartbeat_fail INTEGER DEFAULT 0,
-                is_alive BOOLEAN DEFAULT 1
-            )`, config.ConnectedPeers))
+		createStmt := fmt.Sprintf(`
+    CREATE TABLE IF NOT EXISTS %s (
+        peer_id TEXT PRIMARY KEY,
+        multiaddr TEXT NOT NULL,
+        last_seen INTEGER NOT NULL,
+        heartbeat_fail INTEGER DEFAULT 0,
+        is_alive BOOLEAN DEFAULT 1
+    )`, config.ConnectedPeers)
+		_, err = db.Exec(createStmt)
 		if err != nil {
 			t.Fatalf("Failed to create table: %v", err)
 		}
@@ -542,9 +543,10 @@ func TestGetConnectedPeers(t *testing.T) {
 
 		// Add a test peer
 		now := time.Now().UTC().Unix()
-		_, err = db.Exec(fmt.Sprintf(
+		insertStmt := fmt.Sprintf(
 			"INSERT INTO %s (peer_id, multiaddr, last_seen, heartbeat_fail, is_alive) VALUES (?, ?, ?, ?, ?)",
-			config.ConnectedPeers),
+			config.ConnectedPeers)
+		_, err = db.Exec(insertStmt,
 			"12D3KooWTestPeerID123456789ABCDEF",
 			"/ip6/2001:db8::1/tcp/15000/p2p/12D3KooWTestPeerID123456789ABCDEF",
 			now,
@@ -559,7 +561,7 @@ func TestGetConnectedPeers(t *testing.T) {
 
 	// Get row count
 	var count int
-	err = db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", config.ConnectedPeers)).Scan(&count)
+	err = db.QueryRow(sqlCountConnectedPeersStmt).Scan(&count)
 	if err != nil {
 		t.Errorf("Failed to count rows: %v", err)
 	}
