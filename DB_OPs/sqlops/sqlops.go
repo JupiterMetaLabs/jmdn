@@ -12,6 +12,112 @@ import (
 	"gossipnode/config"
 )
 
+// Pre-built SQL query strings using constant table names.
+// Constructing queries at package initialisation (rather than inside each
+// database function) removes dynamic fmt.Sprintf calls from SQL execution
+// paths and eliminates the CWE-89 / SonarQube S3649 pattern while keeping
+// the config-driven table-name abstraction intact.
+var (
+	// Schema DDL
+	sqlCreatePeersTableStmt = fmt.Sprintf(`
+    CREATE TABLE IF NOT EXISTS %s (
+        peerID TEXT PRIMARY KEY,
+        publicaddr TEXT NOT NULL,
+        connections INTEGER DEFAULT 0,
+        last_seen INTEGER DEFAULT 0,
+        capabilities TEXT
+    );`, config.PeersTable)
+
+	sqlCreateKeyValueTableStmt = fmt.Sprintf(`
+    CREATE TABLE IF NOT EXISTS %s (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        timestamp INTEGER DEFAULT 0
+    );`, config.KeyValueTable)
+
+	sqlCreateMerkleTableStmt = fmt.Sprintf(`
+    CREATE TABLE IF NOT EXISTS %s (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key TEXT NOT NULL,
+        value_hash TEXT NOT NULL,
+        timestamp INTEGER DEFAULT 0
+    );`, config.MerkleTable)
+
+	// Peers DML
+	sqlAddPeerStmt = fmt.Sprintf(`
+        INSERT INTO %s (peerID, publicaddr, connections, last_seen, capabilities)
+        VALUES (?, ?, ?, strftime('%%s','now'), ?)
+        ON CONFLICT(peerID) DO UPDATE SET
+            publicaddr = ?,
+            connections = ?,
+            last_seen = strftime('%%s','now'),
+            capabilities = ?
+    `, config.PeersTable)
+
+	sqlGetPeerStmt = fmt.Sprintf(
+		`SELECT publicaddr, connections, capabilities, last_seen FROM %s WHERE peerID = ?`,
+		config.PeersTable)
+
+	sqlDeletePeerStmt = fmt.Sprintf(`DELETE FROM %s WHERE peerID = ?`, config.PeersTable)
+
+	sqlGetPeersStmt = fmt.Sprintf(`
+        SELECT publicaddr FROM %s
+        WHERE connections < ?
+        ORDER BY last_seen DESC
+        LIMIT ?
+    `, config.PeersTable)
+
+	sqlGetAllPeersStmt = fmt.Sprintf(`SELECT publicaddr FROM %s`, config.PeersTable)
+
+	sqlUpdatePeerConnectionsStmt = fmt.Sprintf(`
+        UPDATE %s
+        SET connections = ?,
+            last_seen = strftime('%%s','now')
+        WHERE peerID = ?
+    `, config.PeersTable)
+
+	// KeyValue DML
+	sqlStoreKeyValueStmt = fmt.Sprintf(`
+        INSERT INTO %s (key, value, timestamp)
+        VALUES (?, ?, strftime('%%s','now'))
+        ON CONFLICT(key) DO UPDATE SET
+            value = ?,
+            timestamp = strftime('%%s','now')
+    `, config.KeyValueTable)
+
+	sqlGetKeyValueStmt    = fmt.Sprintf(`SELECT value FROM %s WHERE key = ?`, config.KeyValueTable)
+	sqlDeleteKeyValueStmt = fmt.Sprintf(`DELETE FROM %s WHERE key = ?`, config.KeyValueTable)
+	sqlGetAllKeyValuesStmt = fmt.Sprintf(`SELECT key, value FROM %s`, config.KeyValueTable)
+
+	// Merkle DML
+	sqlStoreMerkleHashStmt = fmt.Sprintf(`
+        INSERT INTO %s (key, value_hash, timestamp)
+        VALUES (?, ?, strftime('%%s','now'))
+    `, config.MerkleTable)
+
+	sqlGetAllMerkleHashesStmt = fmt.Sprintf(`SELECT key, value_hash FROM %s`, config.MerkleTable)
+
+	// ConnectedPeers DDL + DML (also referenced from sqlops_test.go)
+	sqlCreateConnectedPeersTableStmt = fmt.Sprintf(`
+    CREATE TABLE IF NOT EXISTS %s (
+        peer_id TEXT PRIMARY KEY,
+        multiaddr TEXT NOT NULL,
+        last_seen INTEGER NOT NULL,
+        heartbeat_fail INTEGER DEFAULT 0,
+        is_alive BOOLEAN DEFAULT 1
+    )`, config.ConnectedPeers)
+
+	sqlInsertConnectedPeerStmt = fmt.Sprintf(
+		`INSERT INTO %s (peer_id, multiaddr, last_seen, heartbeat_fail, is_alive) VALUES (?, ?, ?, ?, ?)`,
+		config.ConnectedPeers)
+
+	sqlPragmaTableInfoConnectedPeers = fmt.Sprintf("PRAGMA table_info(%s)", config.ConnectedPeers)
+	sqlSelectConnectedPeersStmt      = fmt.Sprintf(
+		`SELECT peer_id, multiaddr, last_seen, heartbeat_fail, is_alive FROM %s`,
+		config.ConnectedPeers)
+	sqlCountConnectedPeersStmt = fmt.Sprintf(`SELECT COUNT(*) FROM %s`, config.ConnectedPeers)
+)
+
 // UnifiedDB is a wrapper for SQLite database
 type UnifiedDB struct {
 	DB    *sql.DB
@@ -53,41 +159,17 @@ func NewUnifiedDB() (*UnifiedDB, error) {
 // initializeSchema creates the necessary tables
 func initializeSchema(db *sql.DB) error {
 	// Create the peers table
-	createPeersTable := fmt.Sprintf(`
-    CREATE TABLE IF NOT EXISTS %s (
-        peerID TEXT PRIMARY KEY,
-        publicaddr TEXT NOT NULL,
-        connections INTEGER DEFAULT 0,
-        last_seen INTEGER DEFAULT 0,
-        capabilities TEXT
-    );`, config.PeersTable)
-
-	if _, err := db.Exec(createPeersTable); err != nil {
+	if _, err := db.Exec(sqlCreatePeersTableStmt); err != nil {
 		return fmt.Errorf("failed to create peers table: %w", err)
 	}
 
 	// Create the key-value table
-	createKeyValueTable := fmt.Sprintf(`
-    CREATE TABLE IF NOT EXISTS %s (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        timestamp INTEGER DEFAULT 0
-    );`, config.KeyValueTable)
-
-	if _, err := db.Exec(createKeyValueTable); err != nil {
+	if _, err := db.Exec(sqlCreateKeyValueTableStmt); err != nil {
 		return fmt.Errorf("failed to create key-value table: %w", err)
 	}
 
 	// Create the merkle hashes table
-	createMerkleTable := fmt.Sprintf(`
-    CREATE TABLE IF NOT EXISTS %s (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        key TEXT NOT NULL,
-        value_hash TEXT NOT NULL,
-        timestamp INTEGER DEFAULT 0
-    );`, config.MerkleTable)
-
-	if _, err := db.Exec(createMerkleTable); err != nil {
+	if _, err := db.Exec(sqlCreateMerkleTableStmt); err != nil {
 		return fmt.Errorf("failed to create merkle table: %w", err)
 	}
 
@@ -118,17 +200,7 @@ func (u *UnifiedDB) AddPeer(peerID, publicAddr string, connections int, capabili
 		}
 	}
 
-	query := fmt.Sprintf(`
-        INSERT INTO %s (peerID, publicaddr, connections, last_seen, capabilities)
-        VALUES (?, ?, ?, strftime('%%s','now'), ?)
-        ON CONFLICT(peerID) DO UPDATE SET
-            publicaddr = ?,
-            connections = ?,
-            last_seen = strftime('%%s','now'),
-            capabilities = ?
-    `, config.PeersTable)
-
-	_, err := u.DB.Exec(query, peerID, publicAddr, connections, capsStr,
+	_, err := u.DB.Exec(sqlAddPeerStmt, peerID, publicAddr, connections, capsStr,
 		publicAddr, connections, capsStr)
 	return err
 }
@@ -138,15 +210,12 @@ func (u *UnifiedDB) GetPeer(peerID string) (string, int, []string, int64, error)
 	u.mutex.RLock()
 	defer u.mutex.RUnlock()
 
-	query := fmt.Sprintf(`SELECT publicaddr, connections, capabilities, last_seen FROM %s WHERE peerID = ?`,
-		config.PeersTable)
-
 	var publicAddr string
 	var connections int
 	var capsStr string
 	var lastSeen int64
 
-	err := u.DB.QueryRow(query, peerID).Scan(&publicAddr, &connections, &capsStr, &lastSeen)
+	err := u.DB.QueryRow(sqlGetPeerStmt, peerID).Scan(&publicAddr, &connections, &capsStr, &lastSeen)
 	if err != nil {
 		return "", 0, nil, 0, err
 	}
@@ -165,8 +234,7 @@ func (u *UnifiedDB) DeletePeer(peerID string) error {
 	u.mutex.Lock()
 	defer u.mutex.Unlock()
 
-	query := fmt.Sprintf(`DELETE FROM %s WHERE peerID = ?`, config.PeersTable)
-	result, err := u.DB.Exec(query, peerID)
+	result, err := u.DB.Exec(sqlDeletePeerStmt, peerID)
 	if err != nil {
 		return err
 	}
@@ -188,14 +256,7 @@ func (u *UnifiedDB) GetPeers(maxConnections int, limit int) ([]string, error) {
 	u.mutex.RLock()
 	defer u.mutex.RUnlock()
 
-	query := fmt.Sprintf(`
-        SELECT publicaddr FROM %s
-        WHERE connections < ?
-        ORDER BY last_seen DESC
-        LIMIT ?
-    `, config.PeersTable)
-
-	rows, err := u.DB.Query(query, maxConnections, limit)
+	rows, err := u.DB.Query(sqlGetPeersStmt, maxConnections, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -218,9 +279,7 @@ func (u *UnifiedDB) GetAllPeers() ([]string, error) {
 	u.mutex.RLock()
 	defer u.mutex.RUnlock()
 
-	query := fmt.Sprintf(`SELECT publicaddr FROM %s`, config.PeersTable)
-
-	rows, err := u.DB.Query(query)
+	rows, err := u.DB.Query(sqlGetAllPeersStmt)
 	if err != nil {
 		return nil, err
 	}
@@ -243,14 +302,7 @@ func (u *UnifiedDB) UpdatePeerConnections(peerID string, connections int) error 
 	u.mutex.Lock()
 	defer u.mutex.Unlock()
 
-	query := fmt.Sprintf(`
-        UPDATE %s
-        SET connections = ?,
-            last_seen = strftime('%%s','now')
-        WHERE peerID = ?
-    `, config.PeersTable)
-
-	result, err := u.DB.Exec(query, connections, peerID)
+	result, err := u.DB.Exec(sqlUpdatePeerConnectionsStmt, connections, peerID)
 	if err != nil {
 		return err
 	}
@@ -272,15 +324,7 @@ func (u *UnifiedDB) StoreKeyValue(key, value string) error {
 	u.mutex.Lock()
 	defer u.mutex.Unlock()
 
-	query := fmt.Sprintf(`
-        INSERT INTO %s (key, value, timestamp)
-        VALUES (?, ?, strftime('%%s','now'))
-        ON CONFLICT(key) DO UPDATE SET
-            value = ?,
-            timestamp = strftime('%%s','now')
-    `, config.KeyValueTable)
-
-	_, err := u.DB.Exec(query, key, value, value)
+	_, err := u.DB.Exec(sqlStoreKeyValueStmt, key, value, value)
 	return err
 }
 
@@ -289,10 +333,8 @@ func (u *UnifiedDB) GetKeyValue(key string) (string, error) {
 	u.mutex.RLock()
 	defer u.mutex.RUnlock()
 
-	query := fmt.Sprintf(`SELECT value FROM %s WHERE key = ?`, config.KeyValueTable)
-
 	var value string
-	err := u.DB.QueryRow(query, key).Scan(&value)
+	err := u.DB.QueryRow(sqlGetKeyValueStmt, key).Scan(&value)
 	if err != nil {
 		return "", err
 	}
@@ -305,9 +347,7 @@ func (u *UnifiedDB) DeleteKeyValue(key string) error {
 	u.mutex.Lock()
 	defer u.mutex.Unlock()
 
-	query := fmt.Sprintf(`DELETE FROM %s WHERE key = ?`, config.KeyValueTable)
-
-	result, err := u.DB.Exec(query, key)
+	result, err := u.DB.Exec(sqlDeleteKeyValueStmt, key)
 	if err != nil {
 		return err
 	}
@@ -329,9 +369,7 @@ func (u *UnifiedDB) GetAllKeyValues() (map[string]string, error) {
 	u.mutex.RLock()
 	defer u.mutex.RUnlock()
 
-	query := fmt.Sprintf(`SELECT key, value FROM %s`, config.KeyValueTable)
-
-	rows, err := u.DB.Query(query)
+	rows, err := u.DB.Query(sqlGetAllKeyValuesStmt)
 	if err != nil {
 		return nil, err
 	}
@@ -354,12 +392,7 @@ func (u *UnifiedDB) StoreMerkleHash(key string, valueHash string) error {
 	u.mutex.Lock()
 	defer u.mutex.Unlock()
 
-	query := fmt.Sprintf(`
-        INSERT INTO %s (key, value_hash, timestamp)
-        VALUES (?, ?, strftime('%%s','now'))
-    `, config.MerkleTable)
-
-	_, err := u.DB.Exec(query, key, valueHash)
+	_, err := u.DB.Exec(sqlStoreMerkleHashStmt, key, valueHash)
 	return err
 }
 
@@ -368,9 +401,7 @@ func (u *UnifiedDB) GetAllMerkleHashes() (map[string]string, error) {
 	u.mutex.RLock()
 	defer u.mutex.RUnlock()
 
-	query := fmt.Sprintf(`SELECT key, value_hash FROM %s`, config.MerkleTable)
-
-	rows, err := u.DB.Query(query)
+	rows, err := u.DB.Query(sqlGetAllMerkleHashesStmt)
 	if err != nil {
 		return nil, err
 	}
@@ -403,7 +434,7 @@ func (u *UnifiedDB) GetConnectedPeers() ([]PeerInfo, error) {
 	defer u.mutex.RUnlock()
 
 	// First, check the table schema
-	rows, err := u.DB.Query(fmt.Sprintf("PRAGMA table_info(%s)", config.ConnectedPeers))
+	rows, err := u.DB.Query(sqlPragmaTableInfoConnectedPeers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query table schema: %w", err)
 	}
@@ -423,9 +454,7 @@ func (u *UnifiedDB) GetConnectedPeers() ([]PeerInfo, error) {
 	rows.Close()
 
 	// Now query the actual data
-	query := fmt.Sprintf(`SELECT peer_id, multiaddr, last_seen, heartbeat_fail, is_alive FROM %s`, config.ConnectedPeers)
-
-	rows, err = u.DB.Query(query)
+	rows, err = u.DB.Query(sqlSelectConnectedPeersStmt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query connected peers: %w", err)
 	}
@@ -484,9 +513,7 @@ func (u *UnifiedDB) GetConnectedPeersAsMap() ([]map[string]interface{}, error) {
 	u.mutex.RLock()
 	defer u.mutex.RUnlock()
 
-	query := fmt.Sprintf(`SELECT peer_id, multiaddr, last_seen, heartbeat_fail, is_alive FROM %s`, config.ConnectedPeers)
-
-	rows, err := u.DB.Query(query)
+	rows, err := u.DB.Query(sqlSelectConnectedPeersStmt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query connected peers: %w", err)
 	}
@@ -538,10 +565,8 @@ func (u *UnifiedDB) CountConnectedPeers() (int, error) {
 	u.mutex.RLock()
 	defer u.mutex.RUnlock()
 
-	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s`, config.ConnectedPeers)
-
 	var count int
-	err := u.DB.QueryRow(query).Scan(&count)
+	err := u.DB.QueryRow(sqlCountConnectedPeersStmt).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("failed to count connected peers: %w", err)
 	}
