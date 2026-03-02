@@ -2,12 +2,11 @@ package repository
 
 import (
 	"context"
-	"time"
-
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
 	"gossipnode/gETH/Facade/Service/Types"
+	"time"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/JupiterMetaLabs/ion"
@@ -30,15 +29,25 @@ type MasterRepository struct {
 	gro   interfaces.LocalGoroutineManagerInterface
 }
 
+// Global instance of MasterRepository to be used across the application
+var globalMasterRepo *MasterRepository
+
+// GetMasterRepository returns the global initialized MasterRepository instance.
+func GetMasterRepository() *MasterRepository {
+	return globalMasterRepo
+}
+
 // NewMasterRepository creates a new MasterRepository.
 // gro is the GRO local manager for tracking secondary write goroutines.
 // If gro is nil, secondary writes will use untracked goroutines as a fallback.
 func NewMasterRepository(thebe, immu CoordinatorRepository, gro interfaces.LocalGoroutineManagerInterface) *MasterRepository {
-	return &MasterRepository{
+	repo := &MasterRepository{
 		Thebe: thebe,
 		Immu:  immu,
 		gro:   gro,
 	}
+	globalMasterRepo = repo // Set global instance
+	return repo
 }
 
 // secondaryWriteTimeout is the maximum time a secondary (async) write is

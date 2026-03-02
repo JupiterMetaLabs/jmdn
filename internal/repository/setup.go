@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"fmt"
-
 	GRO "gossipnode/config/GRO"
 	"gossipnode/internal/repository/immu_repo"
 	"gossipnode/internal/repository/thebe_repo"
@@ -56,7 +55,7 @@ func InitRepositories(ctx context.Context, cfg RepositoryConfig) (*Repositories,
 	if cfg.ThebeDB_KVPath != "" && cfg.ThebeDB_SQLPath != "" {
 		thebeCfg := thebedb.Config{
 			KVPath:  cfg.ThebeDB_KVPath,
-			SQLPath: cfg.ThebeDB_SQLPath,
+			SQLPath: cfg.ThebeDB_KVPath + "/thebe_internal.db", // ThebeDB requires a SQLite file path
 		}
 
 		asyncLog := logging.NewAsyncLogger()

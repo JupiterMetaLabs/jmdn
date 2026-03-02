@@ -25,6 +25,7 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/helper"
+	"gossipnode/internal/repository"
 	"gossipnode/messaging/BlockProcessing"
 	"gossipnode/metrics"
 )
@@ -34,9 +35,9 @@ var (
 	peerTimeouts     = make(map[string]time.Time)
 	peerTimeoutMutex sync.RWMutex
 	messageFilter    *bloom.BloomFilter
-	// immuClient       *config.PooledConnection // unused: declared but never assigned or read
-	immuClientOnce sync.Once
-	globalHost     host.Host // Add this line
+	immuClient       *config.PooledConnection
+	immuClientOnce   sync.Once
+	globalHost       host.Host // Add this line
 )
 
 // StartBlockPropagationCleanup initializes the GRO and starts the cleanup thread.
@@ -345,8 +346,15 @@ func HandleBlockStream(stream network.Stream) {
 				Uint64("block_number", msg.Block.BlockNumber).
 				Msg("Processing block transactions")
 
+			// Get the global MasterRepository instance
+			repo := repository.GetMasterRepository()
+			if repo == nil {
+				log.Error().Msg("MasterRepository is not initialized")
+				return fmt.Errorf("MasterRepository is not initialized")
+			}
+
 			// Process all transactions in the block atomically with rollback capability
-			if err := BlockProcessing.ProcessBlockTransactions(ctx, msg.Block, accountsClient); err != nil {
+			if err := BlockProcessing.ProcessBlockTransactions(ctx, msg.Block, accountsClient, repo); err != nil {
 				log.Error().
 					Err(err).
 					Str("block_hash", msg.Block.BlockHash.Hex()).
