@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260205071446-8f82a580b49a
-	github.com/JupiterMetaLabs/ThebeDB v0.0.0-00010101000000-000000000000
+	github.com/JupiterMetaLabs/ThebeDB v0.1.0
 	github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5
 	github.com/JupiterMetaLabs/ion v0.3.5
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
@@ -220,5 +220,3 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
-
-replace github.com/JupiterMetaLabs/ThebeDB => /Users/dog/Documents/JupiterMeta/JMOrgRepos/ThebeDB
