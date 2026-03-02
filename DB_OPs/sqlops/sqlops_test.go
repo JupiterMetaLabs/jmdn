@@ -527,7 +527,15 @@ func TestGetConnectedPeers(t *testing.T) {
 	if !tableExists {
 		t.Logf("Table %s does not exist in the database", config.ConnectedPeers)
 		// Create the table for testing
-		_, err = db.Exec(sqlCreateConnectedPeersTableStmt)
+		createStmt := fmt.Sprintf(`
+    CREATE TABLE IF NOT EXISTS %s (
+        peer_id TEXT PRIMARY KEY,
+        multiaddr TEXT NOT NULL,
+        last_seen INTEGER NOT NULL,
+        heartbeat_fail INTEGER DEFAULT 0,
+        is_alive BOOLEAN DEFAULT 1
+    )`, config.ConnectedPeers)
+		_, err = db.Exec(createStmt)
 		if err != nil {
 			t.Fatalf("Failed to create table: %v", err)
 		}
@@ -535,7 +543,10 @@ func TestGetConnectedPeers(t *testing.T) {
 
 		// Add a test peer
 		now := time.Now().UTC().Unix()
-		_, err = db.Exec(sqlInsertConnectedPeerStmt,
+		insertStmt := fmt.Sprintf(
+			"INSERT INTO %s (peer_id, multiaddr, last_seen, heartbeat_fail, is_alive) VALUES (?, ?, ?, ?, ?)",
+			config.ConnectedPeers)
+		_, err = db.Exec(insertStmt,
 			"12D3KooWTestPeerID123456789ABCDEF",
 			"/ip6/2001:db8::1/tcp/15000/p2p/12D3KooWTestPeerID123456789ABCDEF",
 			now,

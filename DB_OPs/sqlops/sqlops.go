@@ -98,18 +98,18 @@ var (
 	sqlGetAllMerkleHashesStmt = fmt.Sprintf(`SELECT key, value_hash FROM %s`, config.MerkleTable)
 
 	// ConnectedPeers DDL + DML (also referenced from sqlops_test.go)
-	sqlCreateConnectedPeersTableStmt = fmt.Sprintf(`
-    CREATE TABLE IF NOT EXISTS %s (
-        peer_id TEXT PRIMARY KEY,
-        multiaddr TEXT NOT NULL,
-        last_seen INTEGER NOT NULL,
-        heartbeat_fail INTEGER DEFAULT 0,
-        is_alive BOOLEAN DEFAULT 1
-    )`, config.ConnectedPeers)
+	// sqlCreateConnectedPeersTableStmt = fmt.Sprintf(`
+	// CREATE TABLE IF NOT EXISTS %s (
+	//     peer_id TEXT PRIMARY KEY,
+	//     multiaddr TEXT NOT NULL,
+	//     last_seen INTEGER NOT NULL,
+	//     heartbeat_fail INTEGER DEFAULT 0,
+	//     is_alive BOOLEAN DEFAULT 1
+	// )`, config.ConnectedPeers)
 
-	sqlInsertConnectedPeerStmt = fmt.Sprintf(
-		`INSERT INTO %s (peer_id, multiaddr, last_seen, heartbeat_fail, is_alive) VALUES (?, ?, ?, ?, ?)`,
-		config.ConnectedPeers)
+	// sqlInsertConnectedPeerStmt = fmt.Sprintf(
+	// 	`INSERT INTO %s (peer_id, multiaddr, last_seen, heartbeat_fail, is_alive) VALUES (?, ?, ?, ?, ?)`,
+	// 	config.ConnectedPeers)
 
 	sqlPragmaTableInfoConnectedPeers = fmt.Sprintf("PRAGMA table_info(%s)", config.ConnectedPeers)
 	sqlSelectConnectedPeersStmt      = fmt.Sprintf(
