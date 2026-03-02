@@ -85,8 +85,8 @@ var (
             timestamp = strftime('%%s','now')
     `, config.KeyValueTable)
 
-	sqlGetKeyValueStmt    = fmt.Sprintf(`SELECT value FROM %s WHERE key = ?`, config.KeyValueTable)
-	sqlDeleteKeyValueStmt = fmt.Sprintf(`DELETE FROM %s WHERE key = ?`, config.KeyValueTable)
+	sqlGetKeyValueStmt     = fmt.Sprintf(`SELECT value FROM %s WHERE key = ?`, config.KeyValueTable)
+	sqlDeleteKeyValueStmt  = fmt.Sprintf(`DELETE FROM %s WHERE key = ?`, config.KeyValueTable)
 	sqlGetAllKeyValuesStmt = fmt.Sprintf(`SELECT key, value FROM %s`, config.KeyValueTable)
 
 	// Merkle DML
