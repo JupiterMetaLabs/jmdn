@@ -59,6 +59,33 @@ var (
 	nodeManagerOnce      sync.Once
 )
 
+// Pre-built SQL query strings for the connected_peers table.
+// See sqlops/sqlops.go for the rationale: constructing these at package
+// initialisation eliminates dynamic fmt.Sprintf calls inside database
+// operation functions (CWE-89 / SonarQube S3649).
+var (
+	sqlNodeCreateConnectedPeersTable = fmt.Sprintf(`
+    CREATE TABLE IF NOT EXISTS %s (
+        peer_id TEXT PRIMARY KEY,
+        multiaddr TEXT NOT NULL,
+        last_seen INTEGER NOT NULL,
+        heartbeat_fail INTEGER DEFAULT 0,
+        is_alive BOOLEAN DEFAULT 1
+    )`, config.ConnectedPeers)
+
+	sqlNodeUpdateConnectedPeerStmt = fmt.Sprintf(`
+        UPDATE %s
+        SET last_seen = ?, heartbeat_fail = ?, is_alive = ?
+        WHERE peer_id = ?`, config.ConnectedPeers)
+
+	sqlNodeInsertConnectedPeerStmt = fmt.Sprintf(`
+    INSERT INTO %s (peer_id, multiaddr, last_seen, heartbeat_fail, is_alive)
+    VALUES (?, ?, ?, ?, ?)`, config.ConnectedPeers)
+
+	sqlNodeDeleteConnectedPeerStmt = fmt.Sprintf(
+		"DELETE FROM %s WHERE peer_id = ?", config.ConnectedPeers)
+)
+
 func setNodeManagerInterface(nodeManager *NodeManager) {
 	nodeManagerMutex.Lock()
 	defer nodeManagerMutex.Unlock()
@@ -222,16 +249,7 @@ func (nm *NodeManager) initConnectedPeersTable(logger_ctx context.Context) error
 	defer span.End()
 
 	startTime := time.Now().UTC()
-	query := fmt.Sprintf(`
-    CREATE TABLE IF NOT EXISTS %s (
-        peer_id TEXT PRIMARY KEY,
-        multiaddr TEXT NOT NULL,
-        last_seen INTEGER NOT NULL,
-        heartbeat_fail INTEGER DEFAULT 0,
-        is_alive BOOLEAN DEFAULT 1
-    )`, config.ConnectedPeers)
-
-	_, err := nm.db.Exec(query)
+	_, err := nm.db.Exec(sqlNodeCreateConnectedPeersTable)
 	// Record database operation metrics
 	duration := time.Since(startTime).Seconds()
 
@@ -458,12 +476,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 		span.SetAttributes(attribute.Float64("connection_duration", time.Since(connectStart).Seconds()))
 
 		// Update in database
-		query := fmt.Sprintf(`
-        UPDATE %s 
-        SET last_seen = ?, heartbeat_fail = ?, is_alive = ?
-        WHERE peer_id = ?`, config.ConnectedPeers)
-
-		_, err = nm.db.Exec(query, now, 0, 1, peerInfo.ID.String())
+		_, err = nm.db.Exec(sqlNodeUpdateConnectedPeerStmt, now, 0, 1, peerInfo.ID.String())
 		if err != nil {
 			// Database update failed, but connection was successful
 			span.RecordError(err)
@@ -500,11 +513,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 	}
 	nm.trackedPeers[peerInfo.ID] = managedPeer
 
-	query := fmt.Sprintf(`
-    INSERT INTO %s (peer_id, multiaddr, last_seen, heartbeat_fail, is_alive)
-    VALUES (?, ?, ?, ?, ?)`, config.ConnectedPeers)
-
-	_, err = nm.db.Exec(query, peerInfo.ID.String(), multiAddr, now, 0, 1)
+	_, err = nm.db.Exec(sqlNodeInsertConnectedPeerStmt, peerInfo.ID.String(), multiAddr, now, 0, 1)
 
 	if err != nil {
 		span.RecordError(err)
@@ -597,8 +606,7 @@ func (nm *NodeManager) RemovePeer(peerIDStr string) error {
 	delete(nm.trackedPeers, peerID)
 
 	// Remove from database
-	query := fmt.Sprintf("DELETE FROM %s WHERE peer_id = ?", config.ConnectedPeers)
-	_, err = nm.db.Exec(query, peerIDStr)
+	_, err = nm.db.Exec(sqlNodeDeleteConnectedPeerStmt, peerIDStr)
 
 	// Record database metrics
 	if err != nil {
@@ -672,12 +680,7 @@ func (nm *NodeManager) UpdatePeerStatus(peerID peer.ID, isAlive bool, failCount 
 
 	// Update in database
 	startTime := time.Now().UTC()
-	query := fmt.Sprintf(`
-    UPDATE %s 
-    SET last_seen = ?, heartbeat_fail = ?, is_alive = ?
-    WHERE peer_id = ?`, config.ConnectedPeers)
-
-	_, err := nm.db.Exec(query, now, failCount, boolToInt(isAlive), peerID.String())
+	_, err := nm.db.Exec(sqlNodeUpdateConnectedPeerStmt, now, failCount, boolToInt(isAlive), peerID.String())
 
 	// Record database metrics
 	duration := time.Since(startTime).Seconds()
@@ -784,12 +787,7 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 			span.SetAttributes(attribute.Bool("was_alive", existingPeer.IsAlive))
 
 			// Update in DB
-			query := fmt.Sprintf(`
-        UPDATE %s 
-        SET last_seen = ?, heartbeat_fail = ?, is_alive = ?
-        WHERE peer_id = ?`, config.ConnectedPeers)
-
-			_, err = nm.db.Exec(query, now, 0, 1, remotePeer.String())
+			_, err = nm.db.Exec(sqlNodeUpdateConnectedPeerStmt, now, 0, 1, remotePeer.String())
 			if err != nil {
 				span.RecordError(err)
 				span.SetAttributes(attribute.String("db_update_status", "failed"))
