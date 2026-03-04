@@ -171,18 +171,18 @@ func (m *MasterRepository) GetAccount(ctx context.Context, address common.Addres
 		span.SetAttributes(attribute.String("address", address.Hex()))
 	}
 
-	if m.Thebe != nil {
-		if acc, err := m.Thebe.GetAccount(ctx, address); err == nil && acc != nil {
+	if m.Immu != nil {
+		if acc, err := m.Immu.GetAccount(ctx, address); err == nil && acc != nil {
 			if span != nil {
-				span.SetAttributes(attribute.String("read_source", "thebe_hit"))
+				span.SetAttributes(attribute.String("read_source", "immu_hit"))
 			}
 			return acc, nil
 		}
 	}
-	if m.Immu != nil {
-		acc, err := m.Immu.GetAccount(ctx, address)
+	if m.Thebe != nil {
+		acc, err := m.Thebe.GetAccount(ctx, address)
 		if span != nil {
-			span.SetAttributes(attribute.String("read_source", "immu_fallback"))
+			span.SetAttributes(attribute.String("read_source", "thebe_fallback"))
 		}
 		return acc, err
 	}
@@ -305,18 +305,18 @@ func (m *MasterRepository) GetZKBlockByNumber(ctx context.Context, number uint64
 		span.SetAttributes(attribute.Int64("block_number", int64(number)))
 	}
 
-	if m.Thebe != nil {
-		if b, err := m.Thebe.GetZKBlockByNumber(ctx, number); err == nil && b != nil {
+	if m.Immu != nil {
+		if b, err := m.Immu.GetZKBlockByNumber(ctx, number); err == nil && b != nil {
 			if span != nil {
-				span.SetAttributes(attribute.String("read_source", "thebe_hit"))
+				span.SetAttributes(attribute.String("read_source", "immu_hit"))
 			}
 			return b, nil
 		}
 	}
-	if m.Immu != nil {
-		b, err := m.Immu.GetZKBlockByNumber(ctx, number)
+	if m.Thebe != nil {
+		b, err := m.Thebe.GetZKBlockByNumber(ctx, number)
 		if span != nil {
-			span.SetAttributes(attribute.String("read_source", "immu_fallback"))
+			span.SetAttributes(attribute.String("read_source", "thebe_fallback"))
 		}
 		return b, err
 	}
@@ -332,18 +332,18 @@ func (m *MasterRepository) GetZKBlockByHash(ctx context.Context, hash string) (*
 		span.SetAttributes(attribute.String("block_hash", hash))
 	}
 
-	if m.Thebe != nil {
-		if b, err := m.Thebe.GetZKBlockByHash(ctx, hash); err == nil && b != nil {
+	if m.Immu != nil {
+		if b, err := m.Immu.GetZKBlockByHash(ctx, hash); err == nil && b != nil {
 			if span != nil {
-				span.SetAttributes(attribute.String("read_source", "thebe_hit"))
+				span.SetAttributes(attribute.String("read_source", "immu_hit"))
 			}
 			return b, nil
 		}
 	}
-	if m.Immu != nil {
-		b, err := m.Immu.GetZKBlockByHash(ctx, hash)
+	if m.Thebe != nil {
+		b, err := m.Thebe.GetZKBlockByHash(ctx, hash)
 		if span != nil {
-			span.SetAttributes(attribute.String("read_source", "immu_fallback"))
+			span.SetAttributes(attribute.String("read_source", "thebe_fallback"))
 		}
 		return b, err
 	}
@@ -358,22 +358,22 @@ func (m *MasterRepository) GetLatestBlockNumber(ctx context.Context) (uint64, er
 		defer span.End()
 	}
 
-	if m.Thebe != nil {
-		if max, err := m.Thebe.GetLatestBlockNumber(ctx); err == nil && max > 0 {
+	if m.Immu != nil {
+		if max, err := m.Immu.GetLatestBlockNumber(ctx); err == nil && max > 0 {
 			if span != nil {
 				span.SetAttributes(
-					attribute.String("read_source", "thebe_hit"),
+					attribute.String("read_source", "immu_hit"),
 					attribute.Int64("block_number", int64(max)),
 				)
 			}
 			return max, nil
 		}
 	}
-	if m.Immu != nil {
-		num, err := m.Immu.GetLatestBlockNumber(ctx)
+	if m.Thebe != nil {
+		num, err := m.Thebe.GetLatestBlockNumber(ctx)
 		if span != nil {
 			span.SetAttributes(
-				attribute.String("read_source", "immu_fallback"),
+				attribute.String("read_source", "thebe_fallback"),
 				attribute.Int64("block_number", int64(num)),
 			)
 		}
@@ -390,21 +390,21 @@ func (m *MasterRepository) GetLogs(ctx context.Context, filterQuery Types.Filter
 		defer span.End()
 	}
 
-	if m.Thebe != nil {
-		if logs, err := m.Thebe.GetLogs(ctx, filterQuery); err == nil {
+	if m.Immu != nil {
+		if logs, err := m.Immu.GetLogs(ctx, filterQuery); err == nil {
 			if span != nil {
 				span.SetAttributes(
-					attribute.String("read_source", "thebe_hit"),
+					attribute.String("read_source", "immu_hit"),
 					attribute.Int("log_count", len(logs)),
 				)
 			}
 			return logs, nil
 		}
 	}
-	if m.Immu != nil {
-		logs, err := m.Immu.GetLogs(ctx, filterQuery)
+	if m.Thebe != nil {
+		logs, err := m.Thebe.GetLogs(ctx, filterQuery)
 		if span != nil {
-			span.SetAttributes(attribute.String("read_source", "immu_fallback"))
+			span.SetAttributes(attribute.String("read_source", "thebe_fallback"))
 		}
 		return logs, err
 	}
@@ -465,18 +465,18 @@ func (m *MasterRepository) GetTransactionByHash(ctx context.Context, hash string
 		span.SetAttributes(attribute.String("tx_hash", hash))
 	}
 
-	if m.Thebe != nil {
-		if tx, err := m.Thebe.GetTransactionByHash(ctx, hash); err == nil && tx != nil {
+	if m.Immu != nil {
+		if tx, err := m.Immu.GetTransactionByHash(ctx, hash); err == nil && tx != nil {
 			if span != nil {
-				span.SetAttributes(attribute.String("read_source", "thebe_hit"))
+				span.SetAttributes(attribute.String("read_source", "immu_hit"))
 			}
 			return tx, nil
 		}
 	}
-	if m.Immu != nil {
-		tx, err := m.Immu.GetTransactionByHash(ctx, hash)
+	if m.Thebe != nil {
+		tx, err := m.Thebe.GetTransactionByHash(ctx, hash)
 		if span != nil {
-			span.SetAttributes(attribute.String("read_source", "immu_fallback"))
+			span.SetAttributes(attribute.String("read_source", "thebe_fallback"))
 		}
 		return tx, err
 	}
