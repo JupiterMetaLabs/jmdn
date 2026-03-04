@@ -1,9 +1,18 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-# ------------------------------------------------------------------------------
-# setup_certs.sh
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# setup_certs.sh - Cross-Platform TLS Certificate Generator for JMDN
+# ==============================================================================
+#
+# CHANGELOG:
+#   v2.0.0 (2026-03-02):
+#     - Changed shebang to #!/usr/bin/env bash for better portability
+#     - Added sourcing of lib/platform.sh for cross-platform utilities
+#     - Replaced inline IP detection with detect_local_ip function from platform.sh
+#     - Changed process substitution to temporary file for broader shell compatibility
+#     - Ensures full cross-platform support (Linux, macOS, FreeBSD)
+#
 # PURPOSE:
 #   Generates a local Certificate Authority (CA) and issues TLS certificates
 #   for JMDN services. Designed for LOCAL DEVELOPMENT and TESTING.
@@ -15,7 +24,16 @@ set -euo pipefail
 #   ./Scripts/setup_certs.sh [output_dir]
 #
 #   Default output: ./certs
-# ------------------------------------------------------------------------------
+#
+# REQUIREMENTS:
+#   - bash (sh-compatible via #!/usr/bin/env bash)
+#   - openssl
+#   - Platform detection library (lib/platform.sh in same parent directory)
+# ==============================================================================
+
+# Source the platform detection library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/platform.sh"
 
 # 1. Configuration
 CERT_DIR="${1:-certs}"
@@ -34,17 +52,8 @@ SERVICES=(
     "explorer_client"     # Python Backend Identity
 )
 
-# Detect Local IP (Best Effort for Mac/Linux)
-LOCAL_IP="127.0.0.1"
-if command -v ip >/dev/null; then
-    # Linux
-    DETECTED=$(ip route get 1 | awk '{print $7;exit}')
-    [ -n "$DETECTED" ] && LOCAL_IP=$DETECTED
-elif command -v ifconfig >/dev/null; then
-    # Mac (en0 usually)
-    DETECTED=$(ifconfig en0 2>/dev/null | grep inet | grep -v inet6 | awk '{print $2}')
-    [ -n "$DETECTED" ] && LOCAL_IP=$DETECTED
-fi
+# Detect Local IP using cross-platform helper
+LOCAL_IP=$(detect_local_ip)
 
 echo "Detected Local IP: ${LOCAL_IP}"
 
@@ -66,6 +75,8 @@ generate_ca() {
 
 generate_cert() {
     local name=$1
+    local tmpfile
+
     if [[ -f "$CERT_DIR/$name.crt" && -f "$CERT_DIR/$name.key" ]]; then
         echo "✅ Certificate for $name already exists"
         return
@@ -84,10 +95,16 @@ generate_cert() {
         -addext "subjectAltName = DNS:localhost,IP:127.0.0.1,IP:${LOCAL_IP}" 2>/dev/null
 
     # 3. Sign
+    # Create temporary file for extensions (cross-platform compatible)
+    tmpfile=$(mktemp) || { echo "ERROR: mktemp failed for $name"; return 1; }
+    trap "rm -f '$tmpfile'" RETURN
+
+    printf "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:${LOCAL_IP}" > "$tmpfile"
+
     openssl x509 -req -in "$CERT_DIR/$name.csr" \
         -CA "$CERT_DIR/ca.crt" -CAkey "$CERT_DIR/ca.key" -CAcreateserial \
         -out "$CERT_DIR/$name.crt" -days 365 -sha256 \
-        -extfile <(printf "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:${LOCAL_IP}") 2>/dev/null
+        -extfile "$tmpfile" 2>/dev/null
 
     # Cleanup CSR
     rm "$CERT_DIR/$name.csr"
