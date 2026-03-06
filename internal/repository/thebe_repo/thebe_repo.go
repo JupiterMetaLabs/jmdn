@@ -23,7 +23,17 @@ const tracerNameThebe = "ThebeRepo"
 
 // thebeLogger returns the *ion.Ion instance for ThebeDB repo tracing.
 func thebeLogger() *ion.Ion {
-	l, err := log.NewAsyncLogger().Get().NamedLogger(log.DBCoordinator, "")
+	asyncLogger := log.NewAsyncLogger()
+	if asyncLogger == nil {
+		return nil
+	}
+
+	loggerState := asyncLogger.Get()
+	if loggerState == nil {
+		return nil
+	}
+
+	l, err := loggerState.NamedLogger(log.DBCoordinator, "")
 	if err != nil {
 		return nil
 	}
@@ -218,7 +228,7 @@ func (r *ThebeRepository) StoreZKBlock(ctx context.Context, block *config.ZKBloc
 		INSERT INTO blocks (
 			block_number, block_hash, parent_hash, timestamp, txns_root, state_root, 
 			logs_bloom, coinbase_addr, zkvm_addr, gas_limit, gas_used, status, extra_data
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		) VALUES ($1, $2, $3, to_timestamp($4), $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT DO NOTHING
 	`
 	b.ExecuteSQL(blockQuery,

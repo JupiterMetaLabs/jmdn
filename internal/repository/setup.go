@@ -92,6 +92,20 @@ func InitRepositories(ctx context.Context, cfg RepositoryConfig) (*Repositories,
 	// --------------------------------------------
 	repos.Master = NewMasterRepository(thebeRepo, immuRepo, groLocal)
 
+	// --------------------------------------------
+	// Start Auto-Backfill Daemon (Zero-Downtime Migration)
+	// --------------------------------------------
+	if repos.ThebeDB != nil {
+		worker := NewBackfillWorker(
+			immuRepo,
+			thebeRepo,
+			repos.ThebeDB,
+			DefaultConfig(), // Production-safe defaults defined in migration_config.go
+		)
+		// Run in background without blocking node startup
+		go worker.Run(context.Background())
+	}
+
 	return repos, nil
 }
 
