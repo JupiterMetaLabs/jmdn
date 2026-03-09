@@ -80,9 +80,8 @@ Details and reward tiers will be published at [jmdt.io](https://jmdt.io) once th
 
 | Version | Supported |
 |---------|-----------|
-| Latest release (`main` branch) | ✅ Yes |
-| Previous minor release | Security fixes only |
-| Older versions | ❌ No |
+| v1.1.x | ✅ Active development |
+| v1.0.x | ❌ No |
 
 ## Contact
 

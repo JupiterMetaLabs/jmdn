@@ -44,3 +44,6 @@ __debug_bin
 *.pem
 *.crt
 vendor/
+
+# Internal team references
+docs/SONARQUBE_SETUP_GUIDE.md
