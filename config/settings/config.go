@@ -18,6 +18,7 @@ type NodeConfig struct {
 	Logging  LoggingSettings  `mapstructure:"logging"`
 	Features FeatureSettings  `mapstructure:"features"`
 	Security SecurityConfig   `mapstructure:"security"`
+	Alerts   AlertsConfig     `mapstructure:"alerts"`
 }
 
 // NodeSettings defines the identity of this node.
