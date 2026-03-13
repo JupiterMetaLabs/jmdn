@@ -164,6 +164,12 @@ func setDefaults(v *viper.Viper) {
 	// Security
 	v.SetDefault("security.explorer_api_key", d.Security.ExplorerAPIKey)
 	v.SetDefault("security.jwt_secret", d.Security.JWTSecret)
+
+	// Alerts
+	v.SetDefault("alerts.url", d.Alerts.URL)
+	v.SetDefault("alerts.api_key", d.Alerts.APIKey)
+	v.SetDefault("alerts.chat_id", d.Alerts.ChatID)
+	v.SetDefault("alerts.http_timeout", d.Alerts.HTTPTimeout)
 }
 
 // mergeStructs merges src into dest generically.
