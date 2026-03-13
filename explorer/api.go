@@ -82,10 +82,8 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	obs := gatekeeper.NewObsLimiter(context.Background(), rl, 30*time.Second) // ROLLOUT-OBS: remove obs line + change obs→rl below
-
 	// Middleware
-	middleware := gatekeeper.NewGinMiddleware(secCfg, obs, logger)
+	middleware := gatekeeper.NewGinMiddleware(secCfg, rl, logger)
 
 	// TLS Loader
 	tlsLoader := gatekeeper.NewTLSLoader(secCfg, logger)
