@@ -386,9 +386,8 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 		logger().NamedLogger.Error(ctx, "Failed to init rate limiter", err)
 		return err
 	} else {
-		obs := gatekeeper.NewObsLimiter(ctx, rl, 30*time.Second) // ROLLOUT-OBS: remove obs line + change obs→rl below
 		// Middleware
-		middleware := gatekeeper.NewGinMiddleware(secCfg, obs, logger().NamedLogger)
+		middleware := gatekeeper.NewGinMiddleware(secCfg, rl, logger().NamedLogger)
 		// Apply Gatekeeper Middleware
 		router.Use(middleware.Middleware(settings.ServiceBlockIngestHTTP))
 	}
