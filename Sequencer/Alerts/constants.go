@@ -5,8 +5,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/spf13/viper"
-
 	"gossipnode/config/settings"
 )
 
@@ -39,11 +37,8 @@ var (
 // Alerts silently no-op if url or apiKey are empty.
 func Configure() {
 	once.Do(func() {
-		// Read directly from Viper configuration
-		var alertsConf settings.AlertsConfig
-		if err := viper.UnmarshalKey("alerts", &alertsConf); err != nil {
-			return
-		}
+		// Read directly from Centralized configuration
+		alertsConf := settings.Get().Alerts
 
 		if alertsConf.URL == "" || alertsConf.APIKey == "" {
 			return
