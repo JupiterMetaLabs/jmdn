@@ -108,6 +108,12 @@ security:
   trust_forwarded_headers: true   # Enable for Cloudflare/GCP LB
   trusted_proxies: []             # Optional: ["10.0.0.0/8"]
 
+  # Trusted Clients — IPs/CIDRs that bypass rate limiting entirely.
+  # For co-located services (orchestrator) and VPC-internal node peers.
+  # Does NOT bypass authentication — only rate limiting.
+  # Distinct from trusted_proxies (which controls header trust).
+  trusted_clients: []             # e.g. ["127.0.0.1", "::1", "10.128.0.0/16"]
+
   # Legacy Secrets (Moved here for unification)
   explorer_api_key: ""
   jwt_secret: ""
