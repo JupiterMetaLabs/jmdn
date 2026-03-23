@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
@@ -28,6 +29,7 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/DID"
 	"gossipnode/Pubsub"
+	"gossipnode/Security"
 	"gossipnode/Sequencer"
 	"gossipnode/config"
 	"gossipnode/config/settings"
@@ -739,6 +741,19 @@ func main() {
 	// RE-RESOLVE TOKENS: CLI flags might have updated secrets (ExplorerAPIKey, JWTSecret).
 	// We must refresh the token cache so GetResolvedToken() returns the correct values.
 	cfg.Security.ResolveTokens()
+
+	// Chain ID global initialization — must happen before any Security validation.
+	// Previously this was only set inside Block/Server.go (gated behind BlockGen > 0),
+	// which left expectedChainID nil on non-sequencer nodes. All nodes need it because
+	// Security.allChecksWithConn validates chain ID on both direct tx submission
+	// (Block/Server.go:188 → AllChecks) and broadcast vote triggers
+	// (node/node.go:199 → messaging.HandleBroadcastStream → Vote.SubmitVote → CheckZKBlockValidation).
+	if cfg.Network.ChainID <= 0 {
+		fmt.Printf("FATAL: invalid chain_id %d in config — must be a positive integer\n", cfg.Network.ChainID)
+		os.Exit(1)
+	}
+	Security.SetExpectedChainIDBig(big.NewInt(int64(cfg.Network.ChainID)))
+	fmt.Printf("Global expected chain ID configured: %d\n", cfg.Network.ChainID)
 
 	// Initialize Global Go Routine Orchestrator first
 	initGlobalGRO()

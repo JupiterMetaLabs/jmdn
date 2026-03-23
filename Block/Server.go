@@ -317,9 +317,8 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 
 	router := gin.Default()
 	SetHostInstance(h)
-	// Also set expected chain ID in Security module for tx validation
-	Security.SetExpectedChainIDBig(big.NewInt(int64(chainID)))
-	fmt.Printf("Expected Chain ID: %d - Type: %T\n", chainID, chainID)
+	// expectedChainID is now set globally in main.go at startup,
+	// independent of whether BlockGen is active. See main.go after ResolveTokens().
 
 	// Add logging middleware
 	router.Use(func(c *gin.Context) {
