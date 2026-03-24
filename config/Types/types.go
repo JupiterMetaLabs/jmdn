@@ -37,6 +37,7 @@ type CompiledContract struct {
 	DeployedBytecode string `json:"deployed_bytecode"`
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func NewCompiledContract(compiledContract *CompiledContract) *CompiledContract {
 	if compiledContract == nil {
 		return &CompiledContract{}
@@ -48,28 +49,34 @@ func NewCompiledContract(compiledContract *CompiledContract) *CompiledContract {
 	}
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *CompiledContract) SetBytecode(bytecode string) *CompiledContract {
 	c.Bytecode = bytecode
 	return c
 }
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *CompiledContract) SetABI(abi string) *CompiledContract {
 	c.ABI = abi
 	return c
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *CompiledContract) SetDeployedBytecode(deployedBytecode string) *CompiledContract {
 	c.DeployedBytecode = deployedBytecode
 	return c
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *CompiledContract) GetBytecode() string {
 	return c.Bytecode
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *CompiledContract) GetABI() string {
 	return c.ABI
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (c *CompiledContract) GetDeployedBytecode() string {
 	return c.DeployedBytecode
 }

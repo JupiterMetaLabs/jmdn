@@ -50,6 +50,7 @@ type FullTxn struct {
 var accountMutex sync.Mutex
 
 // Convert API AccessTuple to Block.AccessList
+// __DEAD_CODE_AUDIT__
 func toBlockAccessList(apiList []APIAccessTuple) config.AccessList {
 	if len(apiList) == 0 {
 		return config.AccessList{}
@@ -288,6 +289,7 @@ func SetHostInstance(h host.Host) {
 	globalHost = h // Uncommented - host is needed for consensus
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func Startserver(bindAddr string, port int, h host.Host, chainID int) {
 	_ = StartserverWithContext(context.Background(), bindAddr, port, h, chainID)
 }

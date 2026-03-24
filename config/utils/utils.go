@@ -86,6 +86,7 @@ func ReturnPublicKey() (crypto.PubKey, error) {
 	return cachedPubKey, err
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func ReturnPublicKeyString() (string, error) {
 	pubKey, err := ReturnPublicKey()
 	if err != nil {

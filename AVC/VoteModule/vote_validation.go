@@ -33,6 +33,7 @@ func VoteAggregation(weights map[string]float64, votes map[string]int8) (bool, e
 	return false, nil
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func WeightAggregation(weight float64, correct bool, alpha float64, beta float64) float64 {
 	if alpha == 0 {
 		alpha = 0.3

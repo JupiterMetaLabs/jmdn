@@ -183,6 +183,7 @@ func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error
 }
 
 /* UNUSED
+// __DEAD_CODE_AUDIT__
 func _EstimateGas(req *proto.CallReq) (*proto.EstimateResp, error) {
 	// Get the Mempool Client
 	RoutingClient, err := block.ReturnMempoolObject()

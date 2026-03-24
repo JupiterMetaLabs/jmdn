@@ -134,6 +134,7 @@ func ConvertTrabsactionToTx(tx *config.Transaction) *Types.Tx {
 }
 
 // Convert the address string to common.Address
+// __DEAD_CODE_AUDIT_PUBLIC__
 func ConvertAddress(address string) common.Address {
 	return common.HexToAddress(address)
 }
@@ -173,6 +174,7 @@ func ConvertBalance(balance string) (*big.Int, error) {
 }
 
 // convertLogsToMap converts receipt logs to a map format suitable for JSON serialization
+// __DEAD_CODE_AUDIT_PUBLIC__
 func ConvertLogsToMap(logs []config.Log) []map[string]any {
 	logMaps := make([]map[string]any, len(logs))
 	for i, log := range logs {

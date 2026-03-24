@@ -83,6 +83,7 @@ func (s *SecurityCache) SubBalance(address common.Address, wei *big.Int) {
 	}
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (s *SecurityCache) UpdateNonce(address common.Address, newNonce uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -92,6 +93,7 @@ func (s *SecurityCache) UpdateNonce(address common.Address, newNonce uint64) {
 	}
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (s *SecurityCache) GetNonce(address common.Address) uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

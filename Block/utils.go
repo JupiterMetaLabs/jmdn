@@ -10,6 +10,7 @@ import (
 
 /* UNUSED
 // Helper function to convert our AccessList type to go-ethereum's types.AccessList
+// __DEAD_CODE_AUDIT__
 func convertAccessList(accessList config.AccessList) types.AccessList {
 	result := make(types.AccessList, len(accessList))
 	for i, tuple := range accessList {

@@ -25,6 +25,7 @@ type MerkleProofInterface interface {
 	PutMainDBConnection()
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func NewMerkleProof() MerkleProofInterface {
 	return &MerkleProof{}
 }

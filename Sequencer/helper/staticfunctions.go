@@ -40,6 +40,7 @@ Takes a slice of Buddy_PeerMultiaddr objects (buddies)
 Extracts unique peer IDs from them, avoiding duplicates
 Returns a slice of unique peer.ID values
 */
+// __DEAD_CODE_AUDIT_PUBLIC__
 func GetUniquePeerIDs(buddies []PubSubMessages.Buddy_PeerMultiaddr) ([]peer.ID, error) {
 	peerIDs := make([]peer.ID, 0)
 	seenPeers := make(map[string]bool) // Track seen peer IDs to avoid duplicates

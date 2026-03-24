@@ -39,6 +39,7 @@ func NewStreamCacheBuilder(streamcache *StreamCache) *StreamCache {
 	return &StreamCache{}
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (streamcache *StreamCache) SetStreams(streams map[peer.ID]*StreamEntry) *StreamCache {
 	streamcache.Streams = streams
 	return streamcache
@@ -64,6 +65,7 @@ func (streamcache *StreamCache) SetHost(host host.Host) *StreamCache {
 	return streamcache
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (streamcache *StreamCache) SetParallelCleanUpRoutine(parallelCleanUpRoutine bool) *StreamCache {
 	streamcache.ParallelCleanUpRoutine = parallelCleanUpRoutine
 	return streamcache
@@ -77,14 +79,17 @@ func (streamcache *StreamCache) GetStreams() map[peer.ID]*StreamEntry {
 	return streamcache.Streams
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (streamcache *StreamCache) GetAccessOrder() []peer.ID {
 	return streamcache.AccessOrder
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (streamcache *StreamCache) GetMaxStreams() int {
 	return streamcache.MaxStreams
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (streamcache *StreamCache) GetTTL() time.Duration {
 	return streamcache.TTL
 }
@@ -93,6 +98,7 @@ func (streamcache *StreamCache) GetHost() host.Host {
 	return streamcache.Host
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (streamcache *StreamCache) GetParallelCleanUpRoutine() bool {
 	return streamcache.ParallelCleanUpRoutine
 }

@@ -359,6 +359,7 @@ func (m *MultiSigManager) Threshold() int {
 }
 
 // Helper to build a stable key for the message map (sha256 hex of the message).
+// __DEAD_CODE_AUDIT_PUBLIC__
 func MessageKey(message []byte) string {
 	sum := sha256.Sum256(message)
 	return hex.EncodeToString(sum[:])

@@ -101,6 +101,7 @@ type ConnectionPool struct {
 }
 
 // Callers should use this to create contexts for their database operations.
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (pc *PooledConnection) GetContext() context.Context {
 	return metadata.NewOutgoingContext(context.Background(),
 		metadata.Pairs("authorization", pc.Token))

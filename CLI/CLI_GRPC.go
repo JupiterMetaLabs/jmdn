@@ -108,6 +108,7 @@ func (h *CommandHandler) HandleSendFile(peer string, filepath string, remote_fil
 	return true, nil
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (h *CommandHandler) HandleRequestPeers_fromSeeds(seedNode string) (bool, []config.PeerInfo, error) {
 	if seedNode == "" {
 		return false, nil, fmt.Errorf("no seed node specified. Use -connect flag to specify a seed node")

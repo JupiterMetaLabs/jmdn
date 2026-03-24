@@ -994,6 +994,7 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 }
 
 /* UNUSED
+// __DEAD_CODE_AUDIT__
 func (fs *FastSync) batchCreateWithRetry(entriesMap map[string]interface{}, dbType DatabaseType) error {
 	const maxRetries = 3
 	var lastErr error

@@ -38,14 +38,17 @@ func (blsresponse *BLSresponse) Build() *BLSresponse {
 }
 
 // Get functions for the BLSresponse struct
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (blsresponse *BLSresponse) GetSignature() string {
 	return blsresponse.Signature
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (blsresponse *BLSresponse) GetAgree() bool {
 	return blsresponse.Agree
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (blsresponse *BLSresponse) GetPubKey() string {
 	return blsresponse.PubKey
 }

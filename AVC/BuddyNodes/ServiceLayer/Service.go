@@ -14,6 +14,7 @@ var (
 	ServiceController *Types.Controller
 )
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func InitService(controller *Types.Controller) {
 	DataLayer.GetCRDTLayer()
 }

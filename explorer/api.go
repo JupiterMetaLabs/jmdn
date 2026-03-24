@@ -115,6 +115,7 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 	return server, nil
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func CloseImmuDBServer(server *ImmuDBServer) {
 	DB_OPs.PutMainDBConnection(&server.defaultdb)
 	DB_OPs.PutAccountsConnection(&server.accountsdb)

@@ -218,6 +218,7 @@ func GenerateReceiptRootAsHash(receipts []*config.Receipt) (common.Hash, error) 
 }
 
 // Get the Multiaddr of the host
+// __DEAD_CODE_AUDIT_PUBLIC__
 func GetMultiAddrs(host host.Host) []multiaddr.Multiaddr {
 	list := make([]multiaddr.Multiaddr, 0)
 	for _, addr := range host.Addrs() {

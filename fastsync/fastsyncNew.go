@@ -1657,6 +1657,7 @@ func (fs *FastSync) handleReconciliation(peerID peer.ID, msg *SyncMessage, strea
 
 /* UNUSED
 // Legacy handler kept for backward compatibility
+// __DEAD_CODE_AUDIT__
 func (fs *FastSync) handleHashMapExchangeSYNC(peerID peer.ID, msg *SyncMessage) (*SyncMessage, error) {
 	// This is now handled by handleHashMapExchangeSYNCChunked
 	return nil, fmt.Errorf("use handleHashMapExchangeSYNCChunked instead")

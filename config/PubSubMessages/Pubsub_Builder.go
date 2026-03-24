@@ -52,6 +52,7 @@ func (gps *GossipPubSub) GetHost() host.Host {
 	return gps.Host
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (gps *GossipPubSub) SetTopics(topics map[string]bool) *GossipPubSub {
 	gps.Topics = topics
 	return gps
@@ -61,33 +62,40 @@ func (gps *GossipPubSub) GetTopics() map[string]bool {
 	return gps.Topics
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (gps *GossipPubSub) SetHandlers(handlers map[string]func(*GossipMessage)) *GossipPubSub {
 	gps.Handlers = handlers
 	return gps
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (gps *GossipPubSub) GetHandlers() map[string]func(*GossipMessage) {
 	return gps.Handlers
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (gps *GossipPubSub) SetMessageCache(messageCache map[string]time.Time) *GossipPubSub {
 	gps.MessageCache = messageCache
 	return gps
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (gps *GossipPubSub) GetMessageCache() map[string]time.Time {
 	return gps.MessageCache
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (gps *GossipPubSub) SetChannelAccess(channelAccess map[string]*ChannelAccess) *GossipPubSub {
 	gps.ChannelAccess = channelAccess
 	return gps
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (gps *GossipPubSub) GetChannelAccess() map[string]*ChannelAccess {
 	return gps.ChannelAccess
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (gps *GossipPubSub) SetPeers(peers []peer.ID) *GossipPubSub {
 	gps.Peers = peers
 	return gps
@@ -102,6 +110,7 @@ func (gps *GossipPubSub) SetProtocol(protocol protocol.ID) *GossipPubSub {
 	return gps
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (gps *GossipPubSub) GetProtocol() protocol.ID {
 	return gps.Protocol
 }

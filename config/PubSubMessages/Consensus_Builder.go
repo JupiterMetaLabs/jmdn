@@ -25,15 +25,18 @@ func (consensusMessage *ConsensusMessage) SetInteriumTime(interiumTime time.Time
 	return consensusMessage
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (consensusMessage *ConsensusMessage) GetInteriumTime() time.Time {
 	return consensusMessage.InteriumTime
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (consensusMessage *ConsensusMessage) SetTotalNodes(totalNodes int) *ConsensusMessage {
 	consensusMessage.TotalNodes = totalNodes
 	return consensusMessage
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (consensusMessage *ConsensusMessage) GetTotalNodes() int {
 	return consensusMessage.TotalNodes
 }
@@ -103,15 +106,18 @@ func (consensusMessage *ConsensusMessage) SetGloalVarCacheConsensusMessage() *Co
 	return consensusMessage
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (consensusMessage *ConsensusMessage) GetGloalVarCacheConsensusMessage() *ConsensusMessage {
 	return CacheConsensuMessage[consensusMessage.ZKBlock.BlockHash.String()]
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (consensusMessage *ConsensusMessage) RemoveGloalVarCacheConsensusMessage() *ConsensusMessage {
 	delete(CacheConsensuMessage, consensusMessage.ZKBlock.BlockHash.String())
 	return consensusMessage
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (consensusMessage *ConsensusMessage) ClearGloalVarCacheConsensusMessage() *ConsensusMessage {
 	CacheConsensuMessage = make(map[string]*ConsensusMessage)
 	return consensusMessage

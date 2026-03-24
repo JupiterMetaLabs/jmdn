@@ -8,6 +8,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func NewVoteBuilder(vote *Vote) *Vote {
 	if vote != nil {
 		return &Vote{
@@ -18,6 +19,7 @@ func NewVoteBuilder(vote *Vote) *Vote {
 	return &Vote{}
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (vote *Vote) SetVote(voteInput int8) *Vote {
 	vote.Vote = voteInput
 	return vote
@@ -27,11 +29,13 @@ func (vote *Vote) GetVote() int8 {
 	return vote.Vote
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (vote *Vote) SetBlockHash(blockHash string) *Vote {
 	vote.BlockHash = blockHash
 	return vote
 }
 
+// __DEAD_CODE_AUDIT_PUBLIC__
 func (vote *Vote) GetBlockHash() string {
 	return vote.BlockHash
 }
