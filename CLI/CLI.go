@@ -15,6 +15,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	"gossipnode/config/version"
+	"gossipnode/FastsyncV2"
 	"gossipnode/fastsync"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
@@ -52,6 +53,7 @@ type CommandHandler struct {
 	Node            *config.Node
 	NodeManager     *node.NodeManager
 	FastSyncer      *fastsync.FastSync
+	FastSyncerV2    *FastsyncV2.FastsyncV2
 	MainClient      *config.PooledConnection
 	DIDClient       *config.PooledConnection
 	SeedNode        string
@@ -104,7 +106,8 @@ func PrintFuncs() {
 	fmt.Println("  mempoolStats                      - Show mempool statistics")
 	fmt.Println("  stats                             - Show messaging statistics")
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
-	fmt.Println("  fastsync <peer_multiaddr>        - Fast sync blockchain data with a peer")
+	fmt.Println("  fastsync <peer_multiaddr>        - Fast sync blockchain data with a peer (V1)")
+	fmt.Println("  fastsyncv2 <peer_multiaddr>      - Fast sync blockchain data with a peer (V2)")
 	fmt.Println("  firstsync <peer_multiaddr> <server|client> - First sync: get all data from peer (server) or receive all data (client)")
 	fmt.Println("  dbstate                           - Show current ImmuDB database state")
 	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
@@ -265,6 +268,8 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleBroadcast(parts)
 	case "fastsync":
 		h.handleFastSync(parts)
+	case "fastsyncv2":
+		h.handleFastSyncV2(parts)
 	case "firstsync":
 		h.handleFirstSync(parts)
 	case "propagateDID":
@@ -659,6 +664,38 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 	fmt.Printf("Sync completed in %v\n", time.Since(startTime))
 	fmt.Printf("New main DB state: TxID=%d, Root=%x\n", newMainState.TxId, newMainState.TxHash)
 	fmt.Printf("New accounts DB state: TxID=%d, Root=%x\n", newAccountsState.TxId, newAccountsState.TxHash)
+	printDashes()
+}
+
+func (h *CommandHandler) handleFastSyncV2(parts []string) {
+	if len(parts) != 2 {
+		fmt.Println("Usage: fastsyncv2 <peer_multiaddr>")
+		return
+	}
+
+	// Parse the multiaddr
+	addr, err := ma.NewMultiaddr(parts[1])
+	if err != nil {
+		fmt.Printf("Invalid multiaddress: %v\n", err)
+		return
+	}
+
+	// Extract peer ID from multiaddr
+	addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
+	if err != nil {
+		fmt.Printf("Failed to extract peer info: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Starting V2 blockchain fastsync with peer %s\n", addrInfo.ID.String())
+
+	startTime := time.Now().UTC()
+	syncErr := h.FastSyncerV2.HandleSync(parts[1])
+	if syncErr != nil {
+		fmt.Printf("First sync failed: %v\n", syncErr)
+		return
+	}
+	fmt.Printf("FastsyncV2 completed completely in %v\n", time.Since(startTime))
 	printDashes()
 }
 

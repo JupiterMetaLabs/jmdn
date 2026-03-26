@@ -35,6 +35,7 @@ import (
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
 	"gossipnode/explorer"
+	"gossipnode/FastsyncV2"
 	fastsync "gossipnode/fastsync"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/rpc"
@@ -90,6 +91,7 @@ func goMaybeTracked(
 // Global variables for easier access
 var (
 	fastSyncer *fastsync.FastSync
+	fastSyncerV2 *FastsyncV2.FastsyncV2
 	// immuClient   *config.ImmuClient // unused: declared but never assigned or read
 	globalPubSub *Pubsub.StructGossipPubSub
 )
@@ -257,6 +259,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
 		fmt.Println("  fastsync <peer>      - Fast sync with peer")
+		fmt.Println("  fastsyncv2 <peer>    - Fast sync with peer using JMDN-FastSync V2 engine")
 		fmt.Println("  firstsync <peer> <server|client> - First sync: get all data from peer (server) or receive all data (client)")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
@@ -517,6 +520,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  fastsync <peer>      - Fast sync with peer")
+		fmt.Println("  fastsyncv2 <peer>    - Fast sync with peer using V2 Engine")
 		fmt.Println("  firstsync <peer> <server|client> - First sync: get all data from peer (server) or receive all data (client)")
 		os.Exit(1)
 	}
@@ -623,6 +627,17 @@ func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsC
 
 	fs := fastsync.NewFastSync(n.Host, mainClient, accountsClient, ionLogger)
 	log.Info().Msg("FastSync service initialized - will get connections when needed")
+	return fs
+}
+
+// initFastsyncV2 initializes the FastSync V2 service
+func initFastsyncV2(n *config.Node) *FastsyncV2.FastsyncV2 {
+	fs, err := FastsyncV2.NewFastsyncV2(n.Host)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
+		return nil
+	}
+	log.Info().Msg("FastsyncV2 service initialized")
 	return fs
 }
 
@@ -939,6 +954,7 @@ func main() {
 
 	// Initialize FastSync service
 	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
+	fastSyncerV2 = initFastsyncV2(n)
 
 	// Initialize Yggdrasil messaging if enabled
 	if cfg.Network.Yggdrasil {
@@ -1102,6 +1118,7 @@ func main() {
 		Node:            n,
 		NodeManager:     nodeManager,
 		FastSyncer:      fastSyncer,
+		FastSyncerV2:    fastSyncerV2,
 		SeedNode:        cfg.Network.SeedNode,
 		EnableYggdrasil: cfg.Network.Yggdrasil,
 		ChainID:         cfg.Network.ChainID,
