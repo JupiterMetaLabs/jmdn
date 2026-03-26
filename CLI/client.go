@@ -152,8 +152,13 @@ func (c *Client) PropagateDID(did, publicKey, balance string) (*pb.OperationResp
 // FastSync performs fast synchronization with a peer
 func (c *Client) FastSync(peerAddr string) (*pb.SyncStats, error) {
 	ctx := context.Background()
-	defer ctx.Done()
 	return c.conn.FastSync(ctx, &pb.PeerRequest{Peer: peerAddr})
+}
+
+// FastSyncV2 performs fast sync using the V2 engine
+func (c *Client) FastSyncV2(peerAddr string) (*pb.SyncStats, error) {
+	ctx := context.Background()
+	return c.conn.FastSyncV2(ctx, &pb.PeerRequest{Peer: peerAddr})
 }
 
 // FirstSync performs first synchronization with a peer (server or client mode)
