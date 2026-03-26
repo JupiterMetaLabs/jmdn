@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"gossipnode/DB_OPs/Nodeinfo"
+	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/WAL"
 	availabilitypb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/availability"
@@ -31,7 +31,7 @@ import (
 
 const (
 	protocolVersion = 1
-	checksumVersion = 1
+	checksumVersion = 2
 	commsVersion    = 2
 )
 
@@ -92,10 +92,10 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 	potsRouter := pots.NewPoTS()
 
 	// Set generic SyncVars
-	priorRouter.SetSyncVars(ctx, protocolVersion, checksumVersion, *nodeinfo, h, wal)
+	priorRouter.SetSyncVars(ctx, 2, checksumVersion, *nodeinfo, h, wal)
 	headerRouter.SetSyncVars(ctx, protocolVersion, *nodeinfo, h, wal)
 	dataRouter.SetSyncVars(ctx, protocolVersion, *nodeinfo, h, wal)
-	
+
 	syncVars := priorRouter.GetSyncVars()
 	availRouter.SetSyncVarsConfig(ctx, *syncVars)
 	reconRouter.SetSyncVarsConfig(ctx, *syncVars)
@@ -106,7 +106,7 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 
 	// 5. Wire Network Handlers for Server features
 	availability.FastsyncReady().IAmAvailable()
-	
+
 	go func() {
 		log.Printf("FastsyncV2 starting PriorSync handler...")
 		if err := priorRouter.SetupNetworkHandlers(true); err != nil && err != context.Canceled {
