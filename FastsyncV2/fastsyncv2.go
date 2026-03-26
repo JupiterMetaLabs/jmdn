@@ -151,7 +151,15 @@ func (fs *FastsyncV2) HandleSync(targetPeer string) error {
 
 	// PHASE 1: Availability Check
 	log.Printf("[FastsyncV2] Sending Availability Request to %s", info.ID)
-	availResp, err := fs.AvailRouter.SendAvailabilityRequest(ctx, fs.PriorRouter.GetSyncVars(), *fs.NodeInfo, 0, math.MaxUint64)
+
+	// Construct Target Node Info
+	targetNodeInfo := &types.Nodeinfo{
+		PeerID:    info.ID,
+		Multiaddr: info.Addrs,
+		Version:   commsVersion,
+	}
+
+	availResp, err := fs.AvailRouter.SendAvailabilityRequest(ctx, fs.PriorRouter.GetSyncVars(), *targetNodeInfo, 0, math.MaxUint64)
 	if err != nil || !availResp.IsAvailable || availResp.Auth == nil || availResp.Auth.UUID == "" {
 		return fmt.Errorf("target node unavailable or lack auth: %v", err)
 	}
@@ -160,7 +168,7 @@ func (fs *FastsyncV2) HandleSync(targetPeer string) error {
 	// PHASE 2: PriorSync
 	localBlocknumber := fs.blockInfoAdapter.GetBlockDetails().Blocknumber
 	log.Printf("[FastsyncV2] Sending PriorSync. Local block: %d", localBlocknumber)
-	resp, err := fs.PriorRouter.PriorSync(0, localBlocknumber, 0, math.MaxUint64, fs.NodeInfo, availResp.Auth)
+	resp, err := fs.PriorRouter.PriorSync(0, localBlocknumber, 0, math.MaxUint64, targetNodeInfo, availResp.Auth)
 	if err != nil {
 		return fmt.Errorf("priorsync failed: %w", err)
 	}
@@ -213,7 +221,7 @@ func (fs *FastsyncV2) HandleSync(targetPeer string) error {
 		AddAuth(availResp.Auth).
 		Build()
 
-	potsResp, err := fs.PoTSRouter.SendPoTSRequest(ctx, potsReq, *fs.NodeInfo)
+	potsResp, err := fs.PoTSRouter.SendPoTSRequest(ctx, potsReq, *targetNodeInfo)
 	if err != nil {
 		return fmt.Errorf("PoTS sync request failed: %w", err)
 	}
