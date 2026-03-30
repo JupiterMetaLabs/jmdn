@@ -55,6 +55,8 @@ const (
 	// V1 = TCP only, V2 = TCP + QUIC.
 	commsVersion = 2
 
+	priorsyncVersion = 1
+
 	// syncTimeout is the maximum wall-clock time for a complete sync operation.
 	syncTimeout = 15 * time.Minute
 )
@@ -125,10 +127,14 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 	potsRouter := pots.NewPoTS()
 
 	// --- 5. Configure routers with shared sync variables ---
-	// PriorSync takes both protocol version AND checksum version (unique among routers).
-	priorRouter.SetSyncVars(ctx, protocolVersion, checksumVersion, *nodeinfo, h, wal)
-	headerRouter.SetSyncVars(ctx, protocolVersion, *nodeinfo, h, wal)
-	dataRouter.SetSyncVars(ctx, protocolVersion, *nodeinfo, h, wal)
+	// The first version parameter to SetSyncVars controls transport selection in the
+	// Communication layer (V1=TCP-only, V2=TCP+QUIC). Since JMDN nodes listen on both
+	// TCP and QUIC, we must use commsVersion (2) so server-side bisection callbacks
+	// can reach peers that connected over QUIC.
+	// PriorSync takes both comms version AND checksum version (unique among routers).
+	priorRouter.SetSyncVars(ctx, priorsyncVersion, checksumVersion, *nodeinfo, h, wal)
+	headerRouter.SetSyncVars(ctx, commsVersion, *nodeinfo, h, wal)
+	dataRouter.SetSyncVars(ctx, commsVersion, *nodeinfo, h, wal)
 
 	// Availability and Reconciliation share the same SyncVars derived from PriorSync.
 	syncVars := priorRouter.GetSyncVars()
