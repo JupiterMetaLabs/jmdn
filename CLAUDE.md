@@ -1,8 +1,58 @@
-# JMDN Project Guide
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-JMDN is a blockchain node implementation using **ImmuDB** (append-only, tamper-proof database) as its backing store. The system supports cryptographic verification via `VerifiedSet`/`VerifiedGet`.
+JMDN is a Layer 2 blockchain node implementation in Go. It uses **ImmuDB** (append-only, tamper-proof database) as its backing store and supports cryptographic verification via `VerifiedSet`/`VerifiedGet`. The module name is `gossipnode`.
+
+## Commands
+
+```bash
+# Build
+make build                  # Produces ./jmdn binary (CGO_ENABLED=1 required)
+
+# Test
+make test                   # go test ./... (requires live ImmuDB + seed node)
+
+# Lint & Format
+make lint                   # Full codebase lint (golangci-lint)
+make lint-new               # Lint only changed files
+make fmt                    # Auto-fix formatting
+make fmt-check              # Check formatting without modifying
+
+# Run a single test
+go test ./DB_OPs/Tests/... -run TestName -v
+```
+
+Tests require live infrastructure (ImmuDB + seed node) and are disabled in CI. The CI pipeline runs: `go mod verify` → `go build ./...` → format check → lint.
+
+## High-Level Architecture
+
+```
+main.go (orchestrator)
+├── DB_OPs/          — ImmuDB abstraction (two-DB design: mainDB + accountsDB)
+├── gETH/            — Ethereum-compatible gRPC interface
+├── Block/           — Block/transaction processing, HTTP API
+├── CLI/             — CLI gRPC server for node management
+├── FastsyncV2/      — Blockchain synchronization engine
+├── messaging/       — P2P (libp2p + Yggdrasil + gossip protocol)
+├── AVC/             — Asynchronous Validation Consensus (BFT/BLS/VRF)
+├── DID/             — Decentralized Identity (W3C-compliant)
+├── crdt/            — CRDTs (LWW-Set, Counter, HashMap, IBLT)
+├── Mempool/         — Transaction mempool
+└── metrics/         — Prometheus metrics + GRO tracking
+```
+
+**Startup sequence in `main.go`:**
+1. GRO (Goroutine Orchestrator) initialization
+2. DB connection pools init (main + accounts)
+3. libp2p host creation
+4. gRPC servers: DID (`:15052`), CLI (`:15053`), gETH (`:15054`), Block generator
+5. FastSync/FastsyncV2 setup
+6. Messaging layer (Yggdrasil + libp2p)
+7. Prometheus metrics server (default `:8080`)
+8. CLI command loop
 
 ## Architecture: DB_OPs Layer
 
@@ -107,10 +157,25 @@ Receipts are generated **on-the-fly**, not stored:
 6. **LWW for sync** — simple, deterministic conflict resolution for distributed account sync.
 7. **Existence check before account creation** — prevents overwriting existing accounts with fake balances.
 
-## Excluded from Analysis
+## FastSync V2
 
-The following DB_OPs subdirectories/files were not analyzed and may have their own patterns:
-- `sqlops/` — SQL operations layer
-- `Tests/` — Test files
-- `merkletree/` — Merkle tree implementation
-- `common/` — Shared types and utilities
+`FastsyncV2/` implements the blockchain sync engine used when a new node joins or falls behind:
+1. Exchange Merkle roots to identify divergence
+2. Compute CRDT HashMaps to find missing keys
+3. Batch-transfer missing blocks/accounts via gRPC (`FastSyncV2` endpoint)
+4. Verify consistency after transfer
+
+Data is serialized in **Avro OCF format with Snappy compression** (`DB_OPs/Immudb_AVROfile.go`).
+
+## Proto / gRPC
+
+Proto definitions live in `proto/`. The gRPC services are:
+- **DID service** — identity registration and propagation
+- **CLI service** — remote node management commands
+- **gETH service** — Ethereum-compatible RPC (blocks, txs, accounts, events)
+- **Block generator service** — block creation API
+- **FastSync V2 service** — sync protocol
+
+## Linter Notes
+
+Active linters: `govet`, `ineffassign`, `unused`, `nolintlint`. `staticcheck`, `errcheck`, and `gosec` are disabled pending backlog cleanup — do not re-enable them in a PR without addressing existing violations first.

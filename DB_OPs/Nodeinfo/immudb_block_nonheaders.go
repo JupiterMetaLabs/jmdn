@@ -2,6 +2,7 @@ package NodeInfo
 
 import (
 	"context"
+	"encoding/binary"
 	"time"
 
 	blockpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/block"
@@ -63,7 +64,7 @@ func convertZKBlockToNonHeaders(b *config.ZKBlock) *blockpb.NonHeaders {
 		BlockNumber: b.BlockNumber,
 		Snapshot: &blockpb.SnapshotRecord{
 			BlockHash: b.BlockHash[:],
-			CreatedAt: time.Now().UnixNano(),
+			CreatedAt: b.Timestamp,
 		},
 	}
 
@@ -71,17 +72,15 @@ func convertZKBlockToNonHeaders(b *config.ZKBlock) *blockpb.NonHeaders {
 		nh.ZkProof = &blockpb.ZKProof{
 			ProofHash:  b.ProofHash,
 			StarkProof: b.StarkProof,
-			Commitment: nil, // If applicable, marshall b.Commitment
+			Commitment: commitmentToBytes(b.Commitment),
 		}
 	}
-
-	// L1Finality conversion - DB_OPs usually syncs this independently or as part of block
-	nh.L1Finality = &blockpb.L1Finality{} 
 
 	for idx, tx := range b.Transactions {
 		pbTx := &blockpb.Transaction{
 			Hash:     tx.Hash[:],
 			Type:     uint32(tx.Type),
+			Nonce:    tx.Nonce,
 			GasLimit: tx.GasLimit,
 			Data:     tx.Data,
 		}
@@ -94,6 +93,15 @@ func convertZKBlockToNonHeaders(b *config.ZKBlock) *blockpb.NonHeaders {
 		if tx.Value != nil {
 			pbTx.Value = tx.Value.Bytes()
 		}
+		if tx.GasPrice != nil {
+			pbTx.GasPrice = tx.GasPrice.Bytes()
+		}
+		if tx.MaxFee != nil {
+			pbTx.MaxFee = tx.MaxFee.Bytes()
+		}
+		if tx.MaxPriorityFee != nil {
+			pbTx.MaxPriorityFee = tx.MaxPriorityFee.Bytes()
+		}
 		if tx.V != nil {
 			pbTx.V = tx.V.Bytes()
 		}
@@ -103,12 +111,38 @@ func convertZKBlockToNonHeaders(b *config.ZKBlock) *blockpb.NonHeaders {
 		if tx.S != nil {
 			pbTx.S = tx.S.Bytes()
 		}
-		
+
 		nh.Transactions = append(nh.Transactions, &blockpb.DBTransaction{
 			Tx:        pbTx,
 			TxIndex:   uint32(idx),
-			CreatedAt: time.Now().UnixNano(),
+			CreatedAt: b.Timestamp,
 		})
 	}
 	return nh
+}
+
+// commitmentToBytes encodes a []uint32 commitment to raw bytes (4 bytes per element, little-endian).
+// This matches the block_nonheader.proto ZKProof.commitment (bytes) field.
+func commitmentToBytes(c []uint32) []byte {
+	if len(c) == 0 {
+		return nil
+	}
+	buf := make([]byte, len(c)*4)
+	for i, v := range c {
+		binary.LittleEndian.PutUint32(buf[i*4:], v)
+	}
+	return buf
+}
+
+// bytesToCommitment decodes raw bytes back to []uint32 (4 bytes per element, little-endian).
+func bytesToCommitment(b []byte) []uint32 {
+	if len(b) == 0 {
+		return nil
+	}
+	count := len(b) / 4
+	result := make([]uint32, count)
+	for i := 0; i < count; i++ {
+		result[i] = binary.LittleEndian.Uint32(b[i*4:])
+	}
+	return result
 }

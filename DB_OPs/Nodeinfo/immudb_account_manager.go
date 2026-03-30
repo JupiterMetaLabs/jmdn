@@ -30,11 +30,11 @@ func (am *account_manager) GetTransactionsForAccount(accountAddress string) ([]t
 		return nil, fmt.Errorf("failed to get transactions by account: %w", err)
 	}
 
-	// Note: We cast/map config.Transaction to types.DBTransaction here.
-	// Since types.DBTransaction structure isn't entirely matched here, we serialize via JSON roughly or adapt fields.
+	// Serialize and deserialize to map config.Transaction to types.DBTransaction.
+	// The JSON tags match between config.Transaction and types.Transaction (embedded in DBTransaction),
+	// so core fields are preserved. DB-specific fields (BlockNumber, TxIndex, CreatedAt) will be zero-valued.
 	var result []types.DBTransaction
 	for _, tx := range cfgTxs {
-		// Serialize and deserialize to map config.Transaction to types.DBTransaction if they are field-compatible
 		b, err := json.Marshal(tx)
 		if err == nil {
 			var dbTx types.DBTransaction
@@ -67,7 +67,7 @@ func (am *account_manager) GetAccountBalance(accountAddress string) (*big.Int, u
 	return balance, acc.Nonce, nil
 }
 
-// Time Complexity: O(1)
+// Time Complexity: O(1) — read-modify-write to update both balance and nonce atomically.
 func (am *account_manager) UpdateAccountBalance(accountAddress string, balance *big.Int, nonce uint64) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -78,15 +78,21 @@ func (am *account_manager) UpdateAccountBalance(accountAddress string, balance *
 	}
 
 	addr := common.HexToAddress(accountAddress)
-	
-	// FastSync may require updating the nonce inside this method. The DB_OPs UpdateAccountBalance does not accept nonce.
-	// However, we can use DB_OPs.UpdateAccountBalance for balance, and rely on FastSync or next tx to sync nonce,
-	// or perform a BatchRestoreAccounts with updated Account.
-	err = DB_OPs.UpdateAccountBalance(conn, addr, balance.String())
+
+	doc, err := DB_OPs.GetAccount(conn, addr)
 	if err != nil {
-		return fmt.Errorf("failed to update account balance: %w", err)
+		return fmt.Errorf("failed to get account for update: %w", err)
 	}
-	
+
+	doc.Balance = balance.String()
+	doc.Nonce = nonce
+	doc.UpdatedAt = time.Now().UTC().UnixNano()
+
+	key := fmt.Sprintf("%s%s", DB_OPs.Prefix, addr)
+	if err := DB_OPs.SafeCreate(conn.Client, key, doc); err != nil {
+		return fmt.Errorf("failed to write updated account: %w", err)
+	}
+
 	return nil
 }
 
@@ -101,24 +107,34 @@ func (am *account_manager) CreateAccount(accountAddress string, balance *big.Int
 	}
 
 	addr := common.HexToAddress(accountAddress)
-	
-	// Minimal metadata
+
+	// CreateAccount atomically writes the address: KV entry AND the did: reference via ExecAll.
+	// It generates its own nonce internally, so we correct it afterwards.
 	meta := make(map[string]interface{})
-	err = DB_OPs.CreateAccount(conn, accountAddress, addr, meta)
-	if err != nil {
+	if err := DB_OPs.CreateAccount(conn, accountAddress, addr, meta); err != nil {
 		return fmt.Errorf("failed to create account: %w", err)
 	}
 
-	// Then update the balance if necessary
-	if balance.Cmp(big.NewInt(0)) > 0 {
-		_ = DB_OPs.UpdateAccountBalance(conn, addr, balance.String())
+	// Read-modify-write to set the caller-provided balance and nonce.
+	doc, err := DB_OPs.GetAccount(conn, addr)
+	if err != nil {
+		return fmt.Errorf("failed to read back created account: %w", err)
 	}
+
+	doc.Balance = balance.String()
+	doc.Nonce = nonce
+	doc.UpdatedAt = time.Now().UTC().UnixNano()
+
+	key := fmt.Sprintf("%s%s", DB_OPs.Prefix, addr)
+	if err := DB_OPs.SafeCreate(conn.Client, key, doc); err != nil {
+		return fmt.Errorf("failed to write account with correct balance/nonce: %w", err)
+	}
+
 	return nil
 }
 
 // Time Complexity: O(N) where N is the number of updates
 func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) error {
-	// DB_OPs has BatchRestoreAccounts
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -142,10 +158,16 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 			AccountType: "user",
 			UpdatedAt:   time.Now().UTC().UnixNano(),
 		}
-		
-		val, _ := json.Marshal(acc)
-		entries = append(entries, struct{Key string; Value []byte}{
-			Key:   "address:" + addr.Hex(),
+
+		val, err := json.Marshal(acc)
+		if err != nil {
+			return fmt.Errorf("failed to marshal account %s: %w", u.Address, err)
+		}
+		entries = append(entries, struct {
+			Key   string
+			Value []byte
+		}{
+			Key:   DB_OPs.Prefix + addr.Hex(),
 			Value: val,
 		})
 	}
