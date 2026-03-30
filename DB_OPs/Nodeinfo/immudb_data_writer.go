@@ -38,11 +38,11 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			continue
 		}
 
-		// FastSync splits blocks into Headers and NonHeaders. During WriteData, the block header usually exists already in DB.
-		// We fetch it, append non-headers, and overwrite. DB_OPs.StoreZKBlock uses SafeCreate with KV serialization.
+		// FastSync splits blocks into Headers and NonHeaders. During WriteData, the block header
+		// usually exists already in DB from WriteHeaders. We fetch it, merge non-header data, and overwrite.
 		b, err := DB_OPs.GetZKBlockByNumber(conn, nh.BlockNumber)
 		if err != nil {
-			// If not found, create a new Empty block and populate it to satisfy ImmuDB StoreZKBlock constraints
+			// Block header not yet written — create a minimal block to attach non-header data.
 			b = &config.ZKBlock{
 				BlockNumber: nh.BlockNumber,
 			}
@@ -54,6 +54,7 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 		if nh.ZkProof != nil {
 			b.ProofHash = nh.ZkProof.ProofHash
 			b.StarkProof = nh.ZkProof.StarkProof
+			b.Commitment = bytesToCommitment(nh.ZkProof.Commitment)
 		}
 
 		var txs []config.Transaction
@@ -65,6 +66,7 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 
 			cfgTx := config.Transaction{
 				Type:     uint8(tx.Type),
+				Nonce:    tx.Nonce,
 				GasLimit: tx.GasLimit,
 				Data:     tx.Data,
 			}
@@ -83,6 +85,15 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			if len(tx.Value) > 0 {
 				cfgTx.Value = new(big.Int).SetBytes(tx.Value)
 			}
+			if len(tx.GasPrice) > 0 {
+				cfgTx.GasPrice = new(big.Int).SetBytes(tx.GasPrice)
+			}
+			if len(tx.MaxFee) > 0 {
+				cfgTx.MaxFee = new(big.Int).SetBytes(tx.MaxFee)
+			}
+			if len(tx.MaxPriorityFee) > 0 {
+				cfgTx.MaxPriorityFee = new(big.Int).SetBytes(tx.MaxPriorityFee)
+			}
 			if len(tx.V) > 0 {
 				cfgTx.V = new(big.Int).SetBytes(tx.V)
 			}
@@ -96,13 +107,11 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			txs = append(txs, cfgTx)
 		}
 
-		// Reattach new transactions
 		if len(txs) > 0 {
 			b.Transactions = txs
 		}
 
-		err = DB_OPs.StoreZKBlock(conn, b)
-		if err != nil {
+		if err := DB_OPs.StoreZKBlock(conn, b); err != nil {
 			return err
 		}
 	}

@@ -10,7 +10,7 @@ import (
 	"gossipnode/DB_OPs"
 )
 
-const ChecksumVersion = 1
+const ChecksumVersion = 2
 
 type sync_struct struct{}
 
