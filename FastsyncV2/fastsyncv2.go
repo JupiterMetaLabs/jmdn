@@ -55,7 +55,7 @@ const (
 	// V1 = TCP only, V2 = TCP + QUIC.
 	commsVersion = 2
 
-	priorsyncVersion = 1
+	priorsyncVersion = 2
 
 	// syncTimeout is the maximum wall-clock time for a complete sync operation.
 	syncTimeout = 15 * time.Minute
