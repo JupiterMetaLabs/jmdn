@@ -2,6 +2,8 @@ package NodeInfo
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/block"
@@ -64,7 +66,23 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 		
 		err := DB_OPs.StoreZKBlock(conn, b)
 		if err != nil {
-			return err
+			if strings.Contains(err.Error(), "already exists") {
+				blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, b.BlockNumber)
+				if err2 := DB_OPs.Update(blockKey, b); err2 != nil {
+					return fmt.Errorf("force update block %d failed: %w", b.BlockNumber, err2)
+				}
+
+				hashKey := fmt.Sprintf("%s%s", DB_OPs.PREFIX_BLOCK_HASH, b.BlockHash.Hex())
+				if err2 := DB_OPs.Update(hashKey, blockKey); err2 != nil {
+					return fmt.Errorf("force update hash mapping failed: %w", err2)
+				}
+
+				if err2 := DB_OPs.Update("latest_block", b.BlockNumber); err2 != nil {
+					return fmt.Errorf("force update latest block failed: %w", err2)
+				}
+			} else {
+				return err
+			}
 		}
 	}
 	
