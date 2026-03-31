@@ -20,9 +20,10 @@ type RepositoryConfig struct {
 
 // Repositories holds initialized database pools and the assembled MasterRepository.
 type Repositories struct {
-	Master  *MasterRepository
-	ThebeDB *thebedb.ThebeDB // Changed from *thebedb.ThebeDB
-	gro     interfaces.LocalGoroutineManagerInterface
+	Master   *MasterRepository
+	ThebeDB  *thebedb.ThebeDB
+	Manager  *BackfillManager // nil if ThebeDB is not configured
+	gro      interfaces.LocalGoroutineManagerInterface
 }
 
 // InitRepositories creates connection pools for PostgreSQL and PebbleDB,
@@ -55,7 +56,7 @@ func InitRepositories(ctx context.Context, cfg RepositoryConfig) (*Repositories,
 	if cfg.ThebeDB_KVPath != "" && cfg.ThebeDB_SQLPath != "" {
 		thebeCfg := thebedb.Config{
 			KVPath:  cfg.ThebeDB_KVPath,
-			SQLPath: cfg.ThebeDB_KVPath + "/thebe_internal.db", // ThebeDB requires a SQLite file path
+			SQLPath: cfg.ThebeDB_SQLPath, // PostgreSQL DSN e.g. "postgres://user@host:5432/dbname?sslmode=disable"
 		}
 
 		asyncLog := logging.NewAsyncLogger()
@@ -68,7 +69,7 @@ func InitRepositories(ctx context.Context, cfg RepositoryConfig) (*Repositories,
 			}
 		}
 
-		thebeInstance, err := thebedb.New(thebeCfg, nil) // ThebeDB defaults to zap.NewNop() if nil
+		thebeInstance, err := thebedb.Open(thebeCfg, nil) // Open uses shared instance pool; New creates a fresh instance every time
 		if err != nil {
 			return nil, fmt.Errorf("repository.Init: failed to start ThebeDB: %w", err)
 		}
@@ -93,17 +94,16 @@ func InitRepositories(ctx context.Context, cfg RepositoryConfig) (*Repositories,
 	repos.Master = NewMasterRepository(thebeRepo, immuRepo, groLocal)
 
 	// --------------------------------------------
-	// Start Auto-Backfill Daemon (Zero-Downtime Migration)
+	// Backfill Manager (explicit lifecycle control)
 	// --------------------------------------------
 	if repos.ThebeDB != nil {
-		worker := NewBackfillWorker(
-			immuRepo,
-			thebeRepo,
-			repos.ThebeDB,
-			DefaultConfig(), // Production-safe defaults defined in migration_config.go
-		)
-		// Run in background without blocking node startup
-		go worker.Run(context.Background())
+		repos.Manager = NewBackfillManager(immuRepo, thebeRepo, repos.ThebeDB, ConfigFromEnv())
+		// Auto-start only when BACKFILL_ENABLED=true; otherwise trigger via admin API.
+		if ConfigFromEnv().Enabled {
+			if err := repos.Manager.Start(ctx); err != nil {
+				fmt.Printf("[Migration Warning] Failed to auto-start backfill: %v\n", err)
+			}
+		}
 	}
 
 	return repos, nil
