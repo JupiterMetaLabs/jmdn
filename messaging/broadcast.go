@@ -575,6 +575,116 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 	return nil
 }
 
+// BroadcastVoteTriggerToCommittee sends a vote trigger message only to the specified committee peers
+// instead of broadcasting to all connected peers. This prevents non-committee nodes from receiving
+// the trigger and submitting votes that go nowhere.
+func BroadcastVoteTriggerToCommittee(h host.Host, consensusMessage *PubSubMessages.ConsensusMessage, committeePeers []peer.ID) error {
+	if BroadcastLocalGRO == nil {
+		var err error
+		BroadcastLocalGRO, err = GROHelper.InitializeGRO(GRO.BroadcastLocal)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize BroadcastLocalGRO")
+			return err
+		}
+	}
+
+	if consensusMessage == nil {
+		return fmt.Errorf("consensus message cannot be nil")
+	}
+
+	if consensusMessage.GetZKBlock().BlockHash.String() == "" {
+		return fmt.Errorf("consensus message ZKBlock block hash is empty")
+	}
+
+	if len(committeePeers) == 0 {
+		return fmt.Errorf("no committee peers to broadcast vote trigger to")
+	}
+
+	// Set the voting timer when broadcast starts
+	now := time.Now().UTC()
+	consensusMessage.SetStartTime(now)
+	consensusMessage.SetEndTimeout(now.Add(config.ConsensusTimeout))
+
+	// Marshal the consensus message to JSON
+	consensusData, err := json.Marshal(consensusMessage)
+	if err != nil {
+		return fmt.Errorf("failed to marshal consensus message: %w", err)
+	}
+
+	// Create a vote trigger broadcast message
+	msg := BroadcastMessageStruct{
+		Sender:    h.ID().String(),
+		Content:   "Vote trigger broadcast - initiate voting process",
+		Timestamp: now.Unix(),
+		Hops:      0,
+		Type:      "vote_trigger",
+		Data:      string(consensusData),
+	}
+
+	msg.ID = generateMessageID(msg.Sender, msg.Content, now.Unix())
+	markMessageSeen(msg.ID)
+
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal vote trigger broadcast message: %w", err)
+	}
+	msgBytes = append(msgBytes, '\n')
+
+	log.Info().
+		Str("msg_id", msg.ID).
+		Int("committee_peers", len(committeePeers)).
+		Msg("Starting targeted vote trigger broadcast to committee peers")
+
+	wg, err := BroadcastLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.BroadcastVoteTriggerWG)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create waitgroup for committee broadcast vote trigger")
+		return fmt.Errorf("failed to create waitgroup for committee broadcast vote trigger: %w", err)
+	}
+	var successCount int
+	var successMutex sync.Mutex
+
+	for _, peerID := range committeePeers {
+		BroadcastLocalGRO.Go(GRO.BroadcastVoteTriggerThread, func(ctx context.Context) error {
+			peer := peerID
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			stream, err := h.NewStream(ctx, peer, config.BroadcastProtocol)
+			if err != nil {
+				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open broadcast stream for committee vote trigger")
+				return err
+			}
+			defer stream.Close()
+
+			_, err = stream.Write(msgBytes)
+			if err != nil {
+				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to send committee vote trigger message")
+				return err
+			}
+
+			successMutex.Lock()
+			successCount++
+			successMutex.Unlock()
+
+			metrics.MessagesSentCounter.WithLabelValues("broadcast", peer.String()).Inc()
+			return nil
+		}, local.AddToWaitGroup(GRO.BroadcastVoteTriggerWG))
+	}
+
+	wg.Wait()
+
+	if successCount == 0 {
+		return fmt.Errorf("failed to broadcast vote trigger to any committee peers")
+	}
+
+	log.Info().
+		Str("msg_id", msg.ID).
+		Int("success", successCount).
+		Int("total", len(committeePeers)).
+		Msg("Committee vote trigger broadcast complete")
+	return nil
+}
+
 // BroadcastBlockToEveryNodeWithExtraData sends a block to all connected peers and attaches extra metadata.
 // The extra map will be merged into msg.Data. Keys in extra override existing keys.
 func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, result bool, extra map[string]string, bls []BLS_Signer.BLSresponse) error {
