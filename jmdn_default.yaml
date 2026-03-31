@@ -37,10 +37,11 @@ binds:
   metrics: "127.0.0.1"
   profiler: "127.0.0.1"  # Debugging - STRICTLY LOCALHOST
 
-# ── Database (ImmuDB) ───────────────────────────────────
+# ── Database ────────────────────────────────────────────
 database:
-  username: ""
-  password: ""
+  username: ""      # ImmuDB username
+  password: ""      # ImmuDB password
+  postgres_dsn: ""  # PostgreSQL DSN for ThebeDB. Default: postgres://postgres:postgres@127.0.0.1:5432/jmdn_thebe?sslmode=disable
 
 # ── Logging (Ion) ────────────────────────────────────────
 # Maps directly to Ion's config struct. All env vars like

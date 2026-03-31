@@ -40,8 +40,9 @@ func DefaultConfig() NodeConfig {
 			Profiler:  "127.0.0.1", // Debugging - STRICTLY LOCALHOST
 		},
 		Database: DatabaseSettings{
-			Username: "",
-			Password: "",
+			Username:    "",
+			Password:    "",
+			PostgresDSN: "postgres://postgres:postgres@127.0.0.1:5432/jmdn_thebe?sslmode=disable",
 		},
 		Logging: LoggingSettings{
 			Level:       "warn",
