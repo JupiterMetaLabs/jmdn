@@ -51,7 +51,18 @@ func (r *ImmuRepository) StoreAccount(ctx context.Context, account *DB_OPs.Accou
 	}
 
 	start := time.Now()
-	err := DB_OPs.CreateAccount(nil, account.DIDAddress, account.Address, account.Metadata)
+	// Acquire an explicit connection so legacy DB_OPs.StoreAccount/StoreZKBlock
+	// paths never see a nil pooled connection.
+	accConn, err := DB_OPs.GetAccountsConnections(ctx)
+	if err != nil {
+		if span != nil {
+			span.RecordError(err)
+		}
+		return err
+	}
+	defer DB_OPs.PutAccountsConnection(accConn)
+
+	err = DB_OPs.CreateAccount(accConn, account.DIDAddress, account.Address, account.Metadata)
 
 	if span != nil {
 		span.SetAttributes(attribute.Float64("duration_ms", float64(time.Since(start).Milliseconds())))
@@ -147,7 +158,16 @@ func (r *ImmuRepository) StoreZKBlock(ctx context.Context, block *config.ZKBlock
 	}
 
 	start := time.Now()
-	err := DB_OPs.StoreZKBlock(nil, block)
+	mainConn, err := DB_OPs.GetMainDBConnection(ctx)
+	if err != nil {
+		if span != nil {
+			span.RecordError(err)
+		}
+		return err
+	}
+	defer DB_OPs.PutMainDBConnection(mainConn)
+
+	err = DB_OPs.StoreZKBlock(mainConn, block)
 
 	if span != nil {
 		span.SetAttributes(attribute.Float64("duration_ms", float64(time.Since(start).Milliseconds())))

@@ -11,7 +11,9 @@ import (
 
 const (
 	// Database connection settings
-	DBAddress = "localhost"
+	// Prefer IPv4 loopback for local integration tests. On macOS, `localhost`
+	// may resolve to IPv6 `::1` first, while ImmuDB is typically bound to IPv4.
+	DBAddress = "127.0.0.1"
 	DBPort    = 3322
 
 	DBName            = "defaultdb"
