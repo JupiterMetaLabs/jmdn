@@ -189,6 +189,36 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 //  5. Reconciliation — recompute and commit account balances.
 //  6. PoTS — catch up on blocks produced during steps 2–5.
 func (fs *FastsyncV2) HandleSync(targetPeer string) error {
+	return fs.handleSyncInternal(targetPeer, 0)
+}
+
+// HandleStartupSync syncs from an already-connected peer, starting from the local
+// latest block number. This is used on node startup/restart to catch up on blocks
+// missed while offline, without re-syncing the entire chain.
+func (fs *FastsyncV2) HandleStartupSync(peerID peer.ID, addrs []multiaddr.Multiaddr) error {
+	if len(addrs) == 0 {
+		return fmt.Errorf("no addresses for peer %s", peerID)
+	}
+
+	// Build the full multiaddr string with embedded peer ID (required by handleSyncInternal)
+	targetMultiaddr := fmt.Sprintf("%s/p2p/%s", addrs[0].String(), peerID.String())
+
+	// Start from the local latest block so we only sync missing blocks
+	localBlockNum := fs.blockInfoAdapter.GetBlockDetails().Blocknumber
+	startBlock := localBlockNum
+	if startBlock == 0 {
+		// Fresh node with no blocks — do a full sync
+		log.Printf("[FastsyncV2] StartupSync: fresh node (block 0), performing full sync")
+	} else {
+		log.Printf("[FastsyncV2] StartupSync: resuming from block %d", startBlock)
+	}
+
+	return fs.handleSyncInternal(targetMultiaddr, startBlock)
+}
+
+// handleSyncInternal is the core sync engine. startBlock controls where PriorSync
+// begins comparing: 0 for a full sync, or localBlockNum for incremental startup sync.
+func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) error {
 	syncStart := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
 	defer cancel()
@@ -223,7 +253,7 @@ func (fs *FastsyncV2) HandleSync(targetPeer string) error {
 	log.Printf("[FastsyncV2] Phase 1: Checking availability of peer %s", info.ID)
 
 	availResp, err := fs.AvailRouter.SendAvailabilityRequest(
-		ctx, fs.PriorRouter.GetSyncVars(), *targetNodeInfo, 0, math.MaxUint64,
+		ctx, fs.PriorRouter.GetSyncVars(), *targetNodeInfo, startBlock, math.MaxUint64,
 	)
 	if err != nil {
 		return fmt.Errorf("availability request failed: %w", err)
@@ -240,13 +270,13 @@ func (fs *FastsyncV2) HandleSync(targetPeer string) error {
 	// PHASE 2: PriorSync — identify divergent block ranges via Merkle comparison
 	// =========================================================================
 	localBlockNum := fs.blockInfoAdapter.GetBlockDetails().Blocknumber
-	log.Printf("[FastsyncV2] Phase 2: PriorSync (local latest block: %d)", localBlockNum)
+	log.Printf("[FastsyncV2] Phase 2: PriorSync (local latest block: %d, start: %d)", localBlockNum, startBlock)
 
-	// Request range [0, localBlockNum] locally vs [0, MaxUint64] on remote.
-	// The remote builds a Merkle tree for its blocks and uses TreeDiff to find
-	// all divergent ranges. Returns a Tag (list of block numbers + ranges).
+	// Compare [startBlock, localBlockNum] locally vs [startBlock, MaxUint64] on remote.
+	// startBlock=0 → full sync (compare entire chain)
+	// startBlock=N → incremental sync (only compare from block N onward)
 	resp, err := fs.PriorRouter.PriorSync(
-		0, localBlockNum, 0, math.MaxUint64, targetNodeInfo, availResp.Auth,
+		startBlock, localBlockNum, startBlock, math.MaxUint64, targetNodeInfo, availResp.Auth,
 	)
 	if err != nil {
 		return fmt.Errorf("priorsync failed: %w", err)

@@ -68,6 +68,7 @@ const (
 	DIDThread         = "thread:did"
 	ShutdownThread    = "thread:shutdown"
 	BlockPollerThread = "thread:block:poller"
+	StartupSyncThread = "thread:startup:sync"
 
 	// SequencerTriggerThread   = "thread:sequencer:trigger"
 	SequencerConsensusThread              = "thread:sequencer:consensus"
