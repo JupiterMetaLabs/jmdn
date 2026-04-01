@@ -12,6 +12,7 @@ import (
 	block "gossipnode/Block"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/config/version"
 	"gossipnode/gETH/Facade/Service/Types"
 	Utils "gossipnode/gETH/Facade/Service/utils"
 
@@ -50,7 +51,7 @@ func (s *ServiceImpl) ClientVersion(ctx context.Context) (string, error) {
 	opCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	ClientVersion := "JMDT/v1.0.0"
+	clientVersion := version.ClientVersion()
 
 	// Log the operation
 	if err := Logger.LogData(opCtx, "ClientVersion returned to the client", "ClientVersion", 1); err != nil {
@@ -58,7 +59,7 @@ func (s *ServiceImpl) ClientVersion(ctx context.Context) (string, error) {
 		fmt.Printf("Failed to log ClientVersion operation: %v\n", err)
 	}
 
-	return ClientVersion, nil
+	return clientVersion, nil
 }
 
 func (s *ServiceImpl) BlockNumber(ctx context.Context) (*big.Int, error) {
