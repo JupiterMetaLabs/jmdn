@@ -2076,8 +2076,13 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 			startBlock = 0
 		}
 
-		// Process current batch of blocks (in reverse order)
-		for i := currentBlock; i >= startBlock; i-- {
+		// Process current batch of blocks (in reverse order).
+		// Loop is written as a top-decrement to avoid uint64 underflow: if startBlock
+		// is 0 and the condition were checked as "i >= startBlock" after decrement,
+		// i would wrap to uint64 max on the iteration where i==0, causing an infinite
+		// loop that attempts to fetch non-existent blocks near ^uint64(0).
+		for i := currentBlock + 1; i > startBlock; {
+			i--
 			block, err := GetZKBlockByNumber(PooledConnection, i)
 			if err != nil {
 				loggerCtx, cancel := context.WithCancel(context.Background())
