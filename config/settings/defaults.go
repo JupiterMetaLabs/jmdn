@@ -42,7 +42,7 @@ func DefaultConfig() NodeConfig {
 		Database: DatabaseSettings{
 			Username:    "",
 			Password:    "",
-			PostgresDSN: "postgres://postgres:postgres@127.0.0.1:5432/jmdn_thebe?sslmode=disable",
+			PostgresDSN: "postgres://postgres:postgres@127.0.0.1:5433/jmdn_thebe?sslmode=disable",
 		},
 		Logging: LoggingSettings{
 			Level:       "warn",

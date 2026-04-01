@@ -508,14 +508,15 @@ _install_yggdrasil_manual() {
 #
 # Goal: same zero-config UX as ImmuDB.
 # After this runs, the node connects with the defaults in main.go:
-#   postgres://postgres:postgres@127.0.0.1:5432/jmdn_thebe?sslmode=disable
+#   postgres://postgres:postgres@127.0.0.1:5433/jmdn_thebe?sslmode=disable
+# Note: port 5433 is used because ImmuDB occupies 5432 with its PG wire protocol.
 ################################################################################
 
 # Credentials — override with env vars before running the script.
 JMDN_PG_USER="${JMDN_PG_USER:-postgres}"
 JMDN_PG_PASS="${JMDN_PG_PASS:-postgres}"
 JMDN_PG_DB="${JMDN_PG_DB:-jmdn_thebe}"
-JMDN_PG_PORT="${JMDN_PG_PORT:-5432}"
+JMDN_PG_PORT="${JMDN_PG_PORT:-5433}"  # 5433 avoids conflict with ImmuDB's built-in PG wire protocol on 5432
 
 # Returns the OS service name for PostgreSQL on this platform.
 _postgres_service_name() {
@@ -692,7 +693,24 @@ install_postgres() {
 	# ── 2. Init data directory (no-op on Debian/Ubuntu) ─────────────────────
 	_postgres_init_datadir
 
-	# ── 3. Start the service ─────────────────────────────────────────────────
+	# ── 3. Set the port in postgresql.conf before starting the service ───────
+	# ImmuDB occupies port 5432 (PG wire protocol). We use 5433 to avoid the
+	# conflict. Patch postgresql.conf before the first start so the port is
+	# set before any connections are attempted.
+	local pg_conf
+	pg_conf=$(find /etc/postgresql /var/lib/pgsql /var/lib/postgres /var/lib/postgresql /var/db/postgres /usr/local/var/postgres \
+		-name "postgresql.conf" 2>/dev/null | head -1 || true)
+	if [[ -n "${pg_conf}" && -f "${pg_conf}" ]]; then
+		log_info "Setting PostgreSQL port to ${JMDN_PG_PORT} in ${pg_conf}..."
+		if grep -qE '^#?[[:space:]]*port[[:space:]]*=' "${pg_conf}"; then
+			sed_inplace "s|^#*[[:space:]]*port[[:space:]]*=.*|port = ${JMDN_PG_PORT}|" "${pg_conf}"
+		else
+			echo "port = ${JMDN_PG_PORT}" >> "${pg_conf}"
+		fi
+		log_ok "Port set to ${JMDN_PG_PORT}"
+	fi
+
+	# ── 4. Start the service ─────────────────────────────────────────────────
 	log_info "Starting PostgreSQL service..."
 	case "${PKG_MANAGER}" in
 	brew)
