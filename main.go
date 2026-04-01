@@ -956,6 +956,44 @@ func main() {
 	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
 	fastSyncerV2 = initFastsyncV2(n)
 
+	// Startup sync: catch up on blocks missed while offline
+	if fastSyncerV2 != nil {
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.StartupSyncThread, func(ctx context.Context) error {
+			// Wait for peer connections to establish after node startup
+			time.Sleep(5 * time.Second)
+
+			peers := n.Host.Network().Peers()
+			if len(peers) == 0 {
+				// TODO: Query seed node for available sync peers when no direct peers are connected
+				log.Info().Msg("[StartupSync] No peers connected, skipping startup sync")
+				return nil
+			}
+
+			log.Info().Int("peers", len(peers)).Msg("[StartupSync] Attempting startup sync with connected peers")
+
+			for _, peerID := range peers {
+				addrs := n.Host.Peerstore().Addrs(peerID)
+				if len(addrs) == 0 {
+					continue
+				}
+
+				log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Trying peer")
+				if err := fastSyncerV2.HandleStartupSync(peerID, addrs); err != nil {
+					log.Warn().Err(err).Str("peer", peerID.String()).Msg("[StartupSync] Failed, trying next peer")
+					continue
+				}
+
+				log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Sync completed successfully")
+				return nil
+			}
+
+			log.Warn().Msg("[StartupSync] Failed to sync with any connected peer")
+			return nil
+		}); err != nil {
+			log.Error().Err(err).Str("thread", GRO.StartupSyncThread).Msg("Failed to start startup sync goroutine")
+		}
+	}
+
 	// Initialize Yggdrasil messaging if enabled
 	if cfg.Network.Yggdrasil {
 		initYggdrasilMessaging(ctx)
