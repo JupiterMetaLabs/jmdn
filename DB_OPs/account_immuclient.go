@@ -715,20 +715,9 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 	return &acc, nil
 }
 
+// GetAccountByDID retrieves an account by DID directly from ImmuDB.
+// Read routing (ImmuDB → ThebeDB fallback) is handled at the MasterRepository level.
 func GetAccountByDID(PooledConnection *config.PooledConnection, did string) (*Account, error) {
-
-	// DEFINE NEW GLOBAL REPO USAGE:
-	if repo, ok := GlobalRepo.(interface {
-		GetAccountByDID(context.Context, string) (*Account, error)
-	}); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		acc, err := repo.GetAccountByDID(ctx, did)
-		if err == nil && acc != nil {
-			return acc, nil
-		}
-		// If custom repo fails, we fall through to ImmuDB as a safety mechanism during migration
-	}
 
 	var err error
 	var shouldReturnConnection = false
@@ -763,20 +752,9 @@ func GetAccountByDID(PooledConnection *config.PooledConnection, did string) (*Ac
 	return loadAccountByKey(PooledConnection, didKey, "DB_OPs.GetAccountByDID")
 }
 
+// GetAccount retrieves an account by address directly from ImmuDB.
+// Read routing (ImmuDB → ThebeDB fallback) is handled at the MasterRepository level.
 func GetAccount(PooledConnection *config.PooledConnection, address common.Address) (*Account, error) {
-
-	// DEFINE NEW GLOBAL REPO USAGE:
-	if repo, ok := GlobalRepo.(interface {
-		GetAccount(context.Context, common.Address) (*Account, error)
-	}); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		acc, err := repo.GetAccount(ctx, address)
-		if err == nil && acc != nil {
-			return acc, nil
-		}
-		// If custom repo fails, we fall through to ImmuDB as a safety mechanism during migration
-	}
 
 	var err error
 	var shouldReturnConnection = false
@@ -811,21 +789,29 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 	return loadAccountByKey(PooledConnection, key, "DB_OPs.GetAccount")
 }
 
-// UpdateAccountBalance updates the balance for a Account
+// UpdateAccountBalance updates the balance. If GlobalRepo (MasterRepository) is set
+// it delegates there so that all stores (ImmuDB + ThebeDB async) are updated.
+// Falls back to UpdateAccountBalanceImmu when GlobalRepo is not yet initialised.
 func UpdateAccountBalance(PooledConnection *config.PooledConnection, address common.Address, newBalance string) error {
-
-	// DEFINE NEW GLOBAL REPO USAGE:
 	if repo, ok := GlobalRepo.(interface {
 		UpdateAccountBalance(context.Context, common.Address, string) error
 	}); ok {
-		// Use generous timeout for distributed tx across DBs
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return repo.UpdateAccountBalance(ctx, address, newBalance)
 	}
+	return UpdateAccountBalanceImmu(PooledConnection, address, newBalance)
+}
+
+// UpdateAccountBalanceImmu updates the balance directly in ImmuDB, bypassing GlobalRepo.
+// Called by ImmuRepository.UpdateAccountBalance to avoid the circular call:
+//
+//	ImmuRepository → DB_OPs.UpdateAccountBalance → GlobalRepo (MasterRepository)
+//	→ ImmuRepository → … (stack overflow)
+func UpdateAccountBalanceImmu(PooledConnection *config.PooledConnection, address common.Address, newBalance string) error {
 
 	// ==========================================
-	// LEGACY IMMUDB OPERATION FALLBACK
+	// IMMUDB DIRECT WRITE
 	// ==========================================
 
 	fmt.Printf("=== DEBUG: UpdateAccountBalance called for address %s with balance %s ===\n", address.Hex(), newBalance)

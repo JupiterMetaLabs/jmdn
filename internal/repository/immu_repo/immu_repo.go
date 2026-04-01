@@ -128,7 +128,7 @@ func (r *ImmuRepository) UpdateAccountBalance(ctx context.Context, address commo
 	}
 
 	start := time.Now()
-	err := DB_OPs.UpdateAccountBalance(nil, address, newBalance)
+	err := DB_OPs.UpdateAccountBalanceImmu(nil, address, newBalance)
 
 	if span != nil {
 		span.SetAttributes(attribute.Float64("duration_ms", float64(time.Since(start).Milliseconds())))
@@ -167,7 +167,7 @@ func (r *ImmuRepository) StoreZKBlock(ctx context.Context, block *config.ZKBlock
 	}
 	defer DB_OPs.PutMainDBConnection(mainConn)
 
-	err = DB_OPs.StoreZKBlock(mainConn, block)
+	err = DB_OPs.StoreZKBlockImmu(mainConn, block)
 
 	if span != nil {
 		span.SetAttributes(attribute.Float64("duration_ms", float64(time.Since(start).Milliseconds())))

@@ -1870,21 +1870,29 @@ func Ping(ic *config.ImmuClient) error {
 	return nil
 }
 
-// StoreZKBlock stores a complete ZK block in the main database
+// StoreZKBlock stores a ZK block. If GlobalRepo (MasterRepository) is set it
+// delegates there so that all stores (ImmuDB + ThebeDB async) are written.
+// Falls back to StoreZKBlockImmu when GlobalRepo is not yet initialised.
 func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) error {
-
-	// DEFINE NEW GLOBAL REPO USAGE:
 	if repo, ok := GlobalRepo.(interface {
 		StoreZKBlock(context.Context, *config.ZKBlock) error
 	}); ok {
-		// generous timeout for distributed tx across DBs
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return repo.StoreZKBlock(ctx, block)
 	}
+	return StoreZKBlockImmu(mainDBClient, block)
+}
+
+// StoreZKBlockImmu writes a block directly to ImmuDB, bypassing GlobalRepo.
+// Called by ImmuRepository.StoreZKBlock to avoid the circular call:
+//
+//	ImmuRepository → DB_OPs.StoreZKBlock → GlobalRepo (MasterRepository)
+//	→ ImmuRepository → … (stack overflow)
+func StoreZKBlockImmu(mainDBClient *config.PooledConnection, block *config.ZKBlock) error {
 
 	// ==========================================
-	// LEGACY IMMUDB OPERATION FALLBACK
+	// IMMUDB DIRECT WRITE
 	// ==========================================
 
 	var err error
@@ -2023,21 +2031,9 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 	return nil
 }
 
-// GetZKBlockByNumber retrieves a ZK block by its number
+// GetZKBlockByNumber retrieves a ZK block by its number directly from ImmuDB.
+// Read routing (ImmuDB → ThebeDB fallback) is handled at the MasterRepository level.
 func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint64) (*config.ZKBlock, error) {
-
-	// DEFINE NEW GLOBAL REPO USAGE:
-	if repo, ok := GlobalRepo.(interface {
-		GetZKBlockByNumber(context.Context, uint64) (*config.ZKBlock, error)
-	}); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		block, err := repo.GetZKBlockByNumber(ctx, blockNumber)
-		if err == nil && block != nil {
-			return block, nil
-		}
-		// If custom repo fails, fall through to ImmuDB
-	}
 
 	var shouldReturnConnection bool = false
 	var err error
@@ -2112,21 +2108,9 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 	return block, nil
 }
 
-// GetZKBlockByHash retrieves a ZK block by its hash
+// GetZKBlockByHash retrieves a ZK block by its hash directly from ImmuDB.
+// Read routing (ImmuDB → ThebeDB fallback) is handled at the MasterRepository level.
 func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (*config.ZKBlock, error) {
-
-	// DEFINE NEW GLOBAL REPO USAGE:
-	if repo, ok := GlobalRepo.(interface {
-		GetZKBlockByHash(context.Context, string) (*config.ZKBlock, error)
-	}); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		block, err := repo.GetZKBlockByHash(ctx, blockHash)
-		if err == nil && block != nil {
-			return block, nil
-		}
-		// If custom repo fails, fall through to ImmuDB
-	}
 
 	// First get the block number from the hash
 	var shouldReturnConnection = false
@@ -2207,21 +2191,9 @@ func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (
 	return block, nil
 }
 
-// GetLatestBlockNumber returns the latest block number
+// GetLatestBlockNumber returns the latest block number directly from ImmuDB.
+// Read routing (ImmuDB → ThebeDB fallback) is handled at the MasterRepository level.
 func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error) {
-
-	// DEFINE NEW GLOBAL REPO USAGE:
-	if repo, ok := GlobalRepo.(interface {
-		GetLatestBlockNumber(context.Context) (uint64, error)
-	}); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		num, err := repo.GetLatestBlockNumber(ctx)
-		if err == nil && num > 0 {
-			return num, nil
-		}
-		// If custom repo fails, fall through to ImmuDB
-	}
 
 	var err error
 	var shouldReturnConnection = false
@@ -2383,21 +2355,9 @@ func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (
 	return GetZKBlockByNumber(mainDBClient, blockNumber)
 }
 
-// Get Transaction by hash
+// GetTransactionByHash retrieves a transaction by hash directly from ImmuDB.
+// Read routing (ImmuDB → ThebeDB fallback) is handled at the MasterRepository level.
 func GetTransactionByHash(mainDBClient *config.PooledConnection, txHash string) (*config.Transaction, error) {
-
-	// DEFINE NEW GLOBAL REPO USAGE:
-	if repo, ok := GlobalRepo.(interface {
-		GetTransactionByHash(context.Context, string) (*config.Transaction, error)
-	}); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		tx, err := repo.GetTransactionByHash(ctx, txHash)
-		if err == nil && tx != nil {
-			return tx, nil
-		}
-		// If custom repo fails, fall through to ImmuDB
-	}
 
 	// Get the block that contains the transaction.
 	var err error
