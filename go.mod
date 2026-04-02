@@ -3,7 +3,7 @@ module gossipnode
 go 1.25.0
 
 require (
-	github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260303175904-869ab7d63ad2
+	github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260401065006-cee589d6c547
 	github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260213044906-5629a60edea4
 	github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5
 	github.com/JupiterMetaLabs/ion v0.3.5
@@ -208,5 +208,3 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
-
-replace github.com/JupiterMetaLabs/JMDN-FastSync => ../JMDN-FastSync
