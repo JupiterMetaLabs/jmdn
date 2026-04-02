@@ -136,7 +136,7 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 	// Debugging
 	// fmt.Println("AccountDoc: ", AccountDoc)
 	// Store the account document
-	err = storeAccount(PooledConnection, AccountDoc)
+	err = StoreAccount(PooledConnection, AccountDoc)
 	if err != nil {
 		return err
 	}
@@ -145,7 +145,25 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 }
 
 // StoreAccount stores a Key document in the accounts database and creates a DID reference
-func storeAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) error {
+func StoreAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) error {
+
+	// DEFINE NEW GLOBAL REPO USAGE:
+	// If GlobalRepo is initialized (meaning the new DB architecture is activated),
+	// route this request through the coordinator interfaces instead of standard ImmuDB.
+	if repo, ok := GlobalRepo.(interface {
+		StoreAccount(context.Context, *Account) error
+	}); ok {
+		// Create a generous context for the distributed transaction
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		return repo.StoreAccount(ctx, KeyDoc)
+	}
+
+	// ==========================================
+	// LEGACY IMMUDB OPERATION FALLBACK
+	// ==========================================
+
 	var err error
 	var AccountDoc *Account
 	var shouldReturnConnection = false
@@ -163,7 +181,7 @@ func storeAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 	}
 
 	// Try to use connection pool if available, otherwise fall back to traditional approach
-	if PooledConnection.Client == nil {
+	if PooledConnection == nil || PooledConnection.Client == nil {
 		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get accounts connection: %w - StoreAccount", err)
@@ -697,7 +715,10 @@ func loadAccountByKey(PooledConnection *config.PooledConnection, key []byte, log
 	return &acc, nil
 }
 
+// GetAccountByDID retrieves an account by DID directly from ImmuDB.
+// Read routing (ImmuDB → ThebeDB fallback) is handled at the MasterRepository level.
 func GetAccountByDID(PooledConnection *config.PooledConnection, did string) (*Account, error) {
+
 	var err error
 	var shouldReturnConnection = false
 
@@ -731,7 +752,10 @@ func GetAccountByDID(PooledConnection *config.PooledConnection, did string) (*Ac
 	return loadAccountByKey(PooledConnection, didKey, "DB_OPs.GetAccountByDID")
 }
 
+// GetAccount retrieves an account by address directly from ImmuDB.
+// Read routing (ImmuDB → ThebeDB fallback) is handled at the MasterRepository level.
 func GetAccount(PooledConnection *config.PooledConnection, address common.Address) (*Account, error) {
+
 	var err error
 	var shouldReturnConnection = false
 
@@ -765,8 +789,31 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 	return loadAccountByKey(PooledConnection, key, "DB_OPs.GetAccount")
 }
 
-// UpdateAccountBalance updates the balance for a Account
+// UpdateAccountBalance updates the balance. If GlobalRepo (MasterRepository) is set
+// it delegates there so that all stores (ImmuDB + ThebeDB async) are updated.
+// Falls back to UpdateAccountBalanceImmu when GlobalRepo is not yet initialised.
 func UpdateAccountBalance(PooledConnection *config.PooledConnection, address common.Address, newBalance string) error {
+	if repo, ok := GlobalRepo.(interface {
+		UpdateAccountBalance(context.Context, common.Address, string) error
+	}); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return repo.UpdateAccountBalance(ctx, address, newBalance)
+	}
+	return UpdateAccountBalanceImmu(PooledConnection, address, newBalance)
+}
+
+// UpdateAccountBalanceImmu updates the balance directly in ImmuDB, bypassing GlobalRepo.
+// Called by ImmuRepository.UpdateAccountBalance to avoid the circular call:
+//
+//	ImmuRepository → DB_OPs.UpdateAccountBalance → GlobalRepo (MasterRepository)
+//	→ ImmuRepository → … (stack overflow)
+func UpdateAccountBalanceImmu(PooledConnection *config.PooledConnection, address common.Address, newBalance string) error {
+
+	// ==========================================
+	// IMMUDB DIRECT WRITE
+	// ==========================================
+
 	fmt.Printf("=== DEBUG: UpdateAccountBalance called for address %s with balance %s ===\n", address.Hex(), newBalance)
 
 	// Define Function wide context for timeout
@@ -2015,8 +2062,13 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 			startBlock = 0
 		}
 
-		// Process current batch of blocks (in reverse order)
-		for i := currentBlock; i >= startBlock; i-- {
+		// Process current batch of blocks (in reverse order).
+		// Loop is written as a top-decrement to avoid uint64 underflow: if startBlock
+		// is 0 and the condition were checked as "i >= startBlock" after decrement,
+		// i would wrap to uint64 max on the iteration where i==0, causing an infinite
+		// loop that attempts to fetch non-existent blocks near ^uint64(0).
+		for i := currentBlock + 1; i > startBlock; {
+			i--
 			block, err := GetZKBlockByNumber(PooledConnection, i)
 			if err != nil {
 				loggerCtx, cancel := context.WithCancel(context.Background())

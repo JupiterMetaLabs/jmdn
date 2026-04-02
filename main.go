@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gossipnode/config/GRO"
+	"gossipnode/internal/repository"
 	"gossipnode/logging"
 	"gossipnode/shutdown"
 
@@ -196,6 +197,14 @@ func GetGlobalPubSub() *Pubsub.StructGossipPubSub {
 		log.Warn().Msg("Global PubSub not initialized - PubSub features may be limited")
 	}
 	return globalPubSub
+}
+
+// envOrDefault returns the value of the environment variable key, or fallback if unset/empty.
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // formatTimestamp formats a time.Time as "DD-MM-YYYY HH:MM:SS" (readable format)
@@ -666,8 +675,9 @@ func main() {
 	gETHFacade := flag.Int("facade", 8545, "gETH Facade server address")
 	gETHWSServer := flag.Int("ws", 8546, "gETH WSServer address")
 	chainID := flag.Int("chainID", 7000700, "Chain ID for the blockchain network")
-	immudbUsername := flag.String("immudb-user", "", "ImmuDB username")
-	immudbPassword := flag.String("immudb-pass", "", "ImmuDB password")
+	immudbUsername := flag.String("immudb-user", "immudb", "ImmuDB username")
+	immudbPassword := flag.String("immudb-pass", "immudb", "ImmuDB password")
+	thebeDSN := flag.String("thebe-dsn", "", "PostgreSQL DSN for ThebeDB (overrides config)")
 	explorerAPIKey := flag.String("explorer-api-key", "", "Explorer API key")
 	jwtSecret := flag.String("jwt-secret", "", "JWT secret")
 	command := flag.String("cmd", "", "Execute a CLI command (e.g., listpeers, addrs, stats, dbstate)")
@@ -731,6 +741,8 @@ func main() {
 			cfg.Database.Username = *immudbUsername
 		case "immudb-pass":
 			cfg.Database.Password = *immudbPassword
+		case "thebe-dsn":
+			cfg.Database.PostgresDSN = *thebeDSN
 		case "explorer-api-key":
 			cfg.Security.ExplorerAPIKey = *explorerAPIKey
 		case "jwt-secret":
@@ -858,6 +870,45 @@ func main() {
 
 	if err := initAccountsDBPool(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
+	}
+
+	// Initialize ThebeDB repository (dual-write layer)
+	fmt.Println("Initializing repository layer (ThebeDB)...")
+	repoCfg := repository.RepositoryConfig{
+		ThebeDB_KVPath: cfg.Database.PebbleDataDir,
+		ThebeDB_SQLPath: cfg.Database.PostgresDSN,
+	}
+	if repoCfg.ThebeDB_KVPath == "" {
+		repoCfg.ThebeDB_KVPath = "./.thebedata/kv"
+	}
+
+	repos, err := repository.InitRepositories(ctx, repoCfg)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize repository layer")
+	}
+	defer repos.Close()
+	DB_OPs.GlobalRepo = repos.Master
+	fmt.Println("Repository layer initialized successfully")
+
+	// Start admin HTTP server if ADMIN_PORT is set.
+	// Endpoints: POST /admin/backfill/start, POST /admin/backfill/stop, GET /admin/backfill/status
+	// Secure with ADMIN_TOKEN env var (required in production).
+	if adminPort := envOrDefault("ADMIN_PORT", ""); adminPort != "" && repos.Manager != nil {
+		adminAddr := "127.0.0.1:" + adminPort
+		adminSrv := &http.Server{
+			Addr:    adminAddr,
+			Handler: repository.NewAdminHandler(ctx, repos.Manager),
+		}
+		go func() {
+			fmt.Printf("[Admin] Backfill admin API on http://%s\n", adminAddr)
+			if err := adminSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Error().Err(err).Msg("Admin server error")
+			}
+		}()
+		go func() {
+			<-ctx.Done()
+			adminSrv.Shutdown(context.Background())
+		}()
 	}
 
 	// Discover Yggdrasil address BEFORE creating the node

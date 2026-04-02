@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gossipnode/DB_OPs"
+	"gossipnode/config"
+	"gossipnode/internal/repository"
 	"math/big"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
@@ -66,7 +66,7 @@ func cleanupTransactionLock(txHash string) {
 
 // ProcessBlockTransactions processes all transactions in a block atomically
 // If any transaction fails, all are rolled back
-func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock, accountsClient *config.PooledConnection) error {
+func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock, accountsClient *config.PooledConnection, repo repository.CoordinatorRepository) error {
 	// Record trace span and close it
 	span_ctx, span := logger().NamedLogger.Tracer("BlockProcessing").Start(logger_ctx, "BlockProcessing.ProcessBlockTransactions")
 	defer span.End()
@@ -113,7 +113,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 
 	// Fetch and store original balances BEFORE any processing
 	for accounts := range affectedAccounts {
-		doc, err := DB_OPs.GetAccount(accountsClient, accounts)
+		doc, err := repo.GetAccount(span_ctx, accounts)
 		if err == nil {
 			originalBalances[accounts] = doc.Balance
 		} else {
@@ -172,7 +172,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		}
 
 		// Process the transaction with span context
-		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient)
+		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient, repo)
 		if Process_err != nil {
 			// ATOMICITY: If any transaction fails, roll back ALL affected accounts
 			span.RecordError(Process_err)
@@ -190,7 +190,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 			)
 
 			// Rollback all balances to original state
-			rollbackError := rollbackBalances(span_ctx, originalBalances, accountsClient)
+			rollbackError := rollbackBalances(span_ctx, originalBalances, repo)
 			if rollbackError != nil {
 				span.RecordError(rollbackError)
 				logger().NamedLogger.Error(span_ctx, "Failed to rollback balances after transaction failure",
@@ -259,7 +259,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 			)
 			// Rollback balances since transaction marking failed
-			rollbackBalances(span_ctx, originalBalances, accountsClient)
+			rollbackBalances(span_ctx, originalBalances, repo)
 			// Clean up processing markers (they weren't committed due to transaction failure)
 			for _, txHash := range successfullyProcessedTxs {
 				cleanupProcessingMarkers(span_ctx, accountsClient, txHash)
@@ -355,7 +355,7 @@ func cleanupProcessingMarkers(span_ctx context.Context, accountsClient *config.P
 }
 
 // rollbackBalances restores original balances for all affected DIDs
-func rollbackBalances(span_ctx context.Context, originalBalances map[common.Address]string, accountsClient *config.PooledConnection) error {
+func rollbackBalances(span_ctx context.Context, originalBalances map[common.Address]string, repo repository.CoordinatorRepository) error {
 	rollbackSpanCtx, rollbackSpan := logger().NamedLogger.Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.rollbackBalances")
 	defer rollbackSpan.End()
 
@@ -364,7 +364,7 @@ func rollbackBalances(span_ctx context.Context, originalBalances map[common.Addr
 
 	rollbackCount := 0
 	for did, balance := range originalBalances {
-		if err := DB_OPs.UpdateAccountBalance(accountsClient, did, balance); err != nil {
+		if err := repo.UpdateAccountBalance(span_ctx, did, balance); err != nil {
 			rollbackSpan.RecordError(err)
 			rollbackSpan.SetAttributes(attribute.String("status", "partial_failure"), attribute.String("failed_account", did.Hex()))
 			logger().NamedLogger.Error(rollbackSpanCtx, "Failed to restore balance during rollback",
@@ -405,7 +405,7 @@ func rollbackBalances(span_ctx context.Context, originalBalances map[common.Addr
 }
 
 // ProcessTransaction handles a single transaction's balance updates
-func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection) error {
+func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection, repo repository.CoordinatorRepository) error {
 	// Record trace span and close it
 	txSpanCtx, txSpan := logger().NamedLogger.Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.processTransaction")
 	defer txSpan.End()
@@ -526,10 +526,10 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	affectedDIDs := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
 
 	for _, did := range affectedDIDs {
-		doc, err := DB_OPs.GetAccount(accountsClient, did)
+		doc, err := repo.GetAccount(txSpanCtx, did)
 		if err == nil {
 			originalBalances[did] = doc.Balance
-		} else if err == DB_OPs.ErrNotFound || strings.Contains(err.Error(), "key not found") {
+		} else if err == DB_OPs.ErrNotFound || strings.Contains(err.Error(), "key not found") || strings.Contains(err.Error(), "not found") {
 			originalBalances[did] = "0"
 		} else {
 			txSpan.RecordError(err)
@@ -615,7 +615,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	)
 
 	// Check if sender exists before attempting deduction
-	senderExists, _ := accountExists(tx.From, accountsClient)
+	senderExists, _ := accountExists(txSpanCtx, tx.From, repo)
 	txSpan.SetAttributes(attribute.Bool("sender_exists", senderExists))
 	if !senderExists {
 		txSpan.RecordError(errors.New("sender DID does not exist"))
@@ -635,7 +635,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	}
 
 	// Check if recipient exists (for better error reporting)
-	recipientExists, _ := accountExists(tx.To, accountsClient)
+	recipientExists, _ := accountExists(txSpanCtx, tx.To, repo)
 	txSpan.SetAttributes(attribute.Bool("recipient_exists", recipientExists))
 	if !recipientExists && !CreateMissingAccounts {
 		txSpan.RecordError(errors.New("recipient DID does not exist"))
@@ -655,7 +655,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	}
 
 	// 1. Deduct from sender
-	if err := deductFromSender(txSpanCtx, *tx.From, totalDeduction.String(), accountsClient); err != nil {
+	if err := deductFromSender(txSpanCtx, *tx.From, totalDeduction.String(), repo); err != nil {
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "deduction_failed"), attribute.String("failed_step", "deduct_from_sender"))
 		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
@@ -676,11 +676,11 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	txSpan.SetAttributes(attribute.String("deduction_step", "completed"))
 
 	// 2. Add amount to recipient
-	if err := addToRecipient(txSpanCtx, *tx.To, parsedTx.ValueBig.String(), accountsClient); err != nil {
+	if err := addToRecipient(txSpanCtx, *tx.To, parsedTx.ValueBig.String(), repo); err != nil {
 		// Rollback sender deduction on failure
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "recipient_add_failed"), attribute.String("failed_step", "add_to_recipient"))
-		if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, *tx.From, originalBalances[*tx.From]); rollbackErr != nil {
+		if rollbackErr := repo.UpdateAccountBalance(txSpanCtx, *tx.From, originalBalances[*tx.From]); rollbackErr != nil {
 			txSpan.RecordError(rollbackErr)
 			logger().NamedLogger.Error(txSpanCtx, "Failed to rollback sender balance",
 				rollbackErr,
@@ -710,13 +710,13 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	txSpan.SetAttributes(attribute.String("recipient_add_step", "completed"))
 
 	// 3. Split gas fee between coinbase and ZKVM
-	if err := addToRecipient(txSpanCtx, coinbaseAddr, coinbaseGasFee.String(), accountsClient); err != nil {
+	if err := addToRecipient(txSpanCtx, coinbaseAddr, coinbaseGasFee.String(), repo); err != nil {
 		// Rollback previous operations
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "coinbase_gas_fee_failed"), attribute.String("failed_step", "add_to_coinbase"))
 		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
 		for _, accounts := range rollbackAccounts {
-			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
+			if rollbackErr := repo.UpdateAccountBalance(txSpanCtx, accounts, originalBalances[accounts]); rollbackErr != nil {
 				txSpan.RecordError(rollbackErr)
 				logger().NamedLogger.Error(txSpanCtx, "Failed to rollback balance",
 					rollbackErr,
@@ -744,13 +744,13 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	txSpan.SetAttributes(attribute.String("coinbase_gas_fee_step", "completed"))
 
-	if err := addToRecipient(txSpanCtx, zkvmAddr, zkvmGasFee.String(), accountsClient); err != nil {
+	if err := addToRecipient(txSpanCtx, zkvmAddr, zkvmGasFee.String(), repo); err != nil {
 		// Rollback previous operations
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "zkvm_gas_fee_failed"), attribute.String("failed_step", "add_to_zkvm"))
 		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
 		for _, accounts := range rollbackAccounts {
-			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
+			if rollbackErr := repo.UpdateAccountBalance(txSpanCtx, accounts, originalBalances[accounts]); rollbackErr != nil {
 				txSpan.RecordError(rollbackErr)
 				logger().NamedLogger.Error(txSpanCtx, "Failed to rollback balance",
 					rollbackErr,
@@ -808,9 +808,9 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 }
 
 // accountExists checks if an account exists in the database
-func accountExists(account *common.Address, accountsClient *config.PooledConnection) (bool, error) {
+func accountExists(ctx context.Context, account *common.Address, repo repository.CoordinatorRepository) (bool, error) {
 	fmt.Println("Checking if account exists: ", account.Hex()) // Debugging
-	_, err := DB_OPs.GetAccount(accountsClient, *account)
+	_, err := repo.GetAccount(ctx, *account)
 	if err != nil {
 		if err == DB_OPs.ErrNotFound || strings.Contains(err.Error(), "key not found") {
 			fmt.Println("Account does not exist: ", account.Hex()) // Debugging
@@ -907,9 +907,9 @@ func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error
 }
 
 // deductFromSender deducts an amount from a sender's DID account
-func deductFromSender(span_ctx context.Context, fromDID common.Address, amount string, accountsClient *config.PooledConnection) error {
+func deductFromSender(span_ctx context.Context, fromDID common.Address, amount string, repo repository.CoordinatorRepository) error {
 	// Get the current DID document using the provided accounts client
-	didDoc, err := DB_OPs.GetAccount(accountsClient, fromDID)
+	didDoc, err := repo.GetAccount(span_ctx, fromDID)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve sender DID %s: %w", fromDID, err)
 	}
@@ -936,7 +936,7 @@ func deductFromSender(span_ctx context.Context, fromDID common.Address, amount s
 	newBalance := new(big.Int).Sub(currentBalance, deductAmount)
 
 	// Update the balance in the database using the provided accounts client
-	if err := DB_OPs.UpdateAccountBalance(accountsClient, fromDID, newBalance.String()); err != nil {
+	if err := repo.UpdateAccountBalance(span_ctx, fromDID, newBalance.String()); err != nil {
 		return fmt.Errorf("failed to update sender balance: %w", err)
 	}
 
@@ -954,9 +954,9 @@ func deductFromSender(span_ctx context.Context, fromDID common.Address, amount s
 }
 
 // addToRecipient adds an amount to a recipient's DID account
-func addToRecipient(span_ctx context.Context, ToAddress common.Address, amount string, accountsClient *config.PooledConnection) error {
+func addToRecipient(span_ctx context.Context, ToAddress common.Address, amount string, repo repository.CoordinatorRepository) error {
 	// Get the current DID document using the provided accounts client
-	didDoc, err := DB_OPs.GetAccount(accountsClient, ToAddress)
+	didDoc, err := repo.GetAccount(span_ctx, ToAddress)
 	if err != nil {
 		// If DID doesn't exist,
 		return fmt.Errorf("failed to retrieve recipient DID %s: %w", ToAddress, err)
@@ -978,7 +978,7 @@ func addToRecipient(span_ctx context.Context, ToAddress common.Address, amount s
 	newBalance := new(big.Int).Add(currentBalance, addAmount)
 
 	// Update the balance in the database using the provided accounts client
-	if err := DB_OPs.UpdateAccountBalance(accountsClient, ToAddress, newBalance.String()); err != nil {
+	if err := repo.UpdateAccountBalance(span_ctx, ToAddress, newBalance.String()); err != nil {
 		return fmt.Errorf("failed to update recipient balance: %w", err)
 	}
 

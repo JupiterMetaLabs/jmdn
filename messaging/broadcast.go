@@ -18,6 +18,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
+	"gossipnode/internal/repository"
 	"gossipnode/messaging/BlockProcessing"
 	GROHelper "gossipnode/messaging/common"
 	"gossipnode/metrics"
@@ -801,7 +802,8 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 	// This ensures balance updates only happen for valid, stored blocks
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := BlockProcessing.ProcessBlockTransactions(ctx, block, accountsClient); err != nil {
+	repo := repository.GetMasterRepository()
+	if err := BlockProcessing.ProcessBlockTransactions(ctx, block, accountsClient, repo); err != nil {
 		log.Error().
 			Err(err).
 			Str("block_hash", block.BlockHash.Hex()).

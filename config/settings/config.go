@@ -62,10 +62,19 @@ type BindSettings struct {
 	Profiler  string `mapstructure:"profiler"  yaml:"profiler"`
 }
 
-// DatabaseSettings controls ImmuDB connection parameters.
+// DatabaseSettings controls database connection parameters.
 type DatabaseSettings struct {
+	// ImmuDB credentials (existing)
 	Username string `mapstructure:"username" yaml:"username"`
 	Password string `mapstructure:"password" yaml:"password"`
+
+	// PostgreSQL connection string (e.g. "postgres://user:pass@localhost:5432/jmdn?sslmode=disable")
+	// Leave empty to disable SQL writes.
+	PostgresDSN string `mapstructure:"postgres_dsn" yaml:"postgres_dsn"`
+
+	// PebbleDB data directory (e.g. "./data/pebbledb")
+	// Leave empty to disable KV writes.
+	PebbleDataDir string `mapstructure:"pebble_data_dir" yaml:"pebble_data_dir"`
 }
 
 // LoggingSettings mirrors Ion's Config struct so jmdn.yaml can fully configure

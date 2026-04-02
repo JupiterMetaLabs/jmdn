@@ -2,14 +2,21 @@
 ################################################################################
 # setup_dependencies.sh - JMDN Cross-Platform Dependency Installer
 #
-# Installs JMDN dependencies: Go, ImmuDB, Yggdrasil, GCC/build tools
+# Installs JMDN dependencies: Go, ImmuDB, Yggdrasil, PostgreSQL, GCC/build tools
 #
 # Usage: sudo ./setup_dependencies.sh [options]
 # Options:
 #   --go          Install Go
 #   --immudb      Install ImmuDB
 #   --yggdrasil   Install Yggdrasil
+#   --postgres    Install and configure PostgreSQL for ThebeDB
 #   --all         Install all dependencies (default if no flags provided)
+#
+# PostgreSQL defaults (override via environment variables):
+#   JMDN_PG_USER  (default: postgres)
+#   JMDN_PG_PASS  (default: postgres)
+#   JMDN_PG_DB    (default: jmdn_thebe)
+#   JMDN_PG_PORT  (default: 5432)
 #
 # Supported Platforms:
 #   - Linux (Debian/Ubuntu, RHEL/CentOS, Arch, Alpine)
@@ -23,6 +30,7 @@
 #   - 2025-03-02: Added FreeBSD Go and ImmuDB installation
 #   - 2025-03-02: Enhanced Yggdrasil with multiple installation methods
 #   - 2025-03-02: Use JMDN_BIN for binary installation paths
+#   - 2026-03-31: Added PostgreSQL setup with default credentials for ThebeDB
 ################################################################################
 
 set -euo pipefail
@@ -101,6 +109,7 @@ esac
 INSTALL_GO=false
 INSTALL_IMMUDB=false
 INSTALL_YGG=false
+INSTALL_POSTGRES=false
 
 if [ $# -eq 0 ]; then
 	log_warn "No arguments provided."
@@ -109,6 +118,7 @@ if [ $# -eq 0 ]; then
 	echo "  --go          Install Go"
 	echo "  --immudb      Install ImmuDB"
 	echo "  --yggdrasil   Install Yggdrasil"
+	echo "  --postgres    Install and configure PostgreSQL for ThebeDB"
 	echo "  --all         Install all dependencies"
 	exit 1
 else
@@ -123,10 +133,14 @@ else
 		--yggdrasil)
 			INSTALL_YGG=true
 			;;
+		--postgres)
+			INSTALL_POSTGRES=true
+			;;
 		--all)
 			INSTALL_GO=true
 			INSTALL_IMMUDB=true
 			INSTALL_YGG=true
+			INSTALL_POSTGRES=true
 			;;
 		*)
 			log_die "Unknown argument: $arg"
@@ -490,6 +504,308 @@ _install_yggdrasil_manual() {
 }
 
 ################################################################################
+# 5. PostgreSQL Installation
+#
+# Goal: same zero-config UX as ImmuDB.
+# After this runs, the node connects with the defaults in main.go:
+#   postgres://postgres:postgres@127.0.0.1:5433/jmdn_thebe?sslmode=disable
+# Note: port 5433 is used because ImmuDB occupies 5432 with its PG wire protocol.
+################################################################################
+
+# Credentials — override with env vars before running the script.
+JMDN_PG_USER="${JMDN_PG_USER:-postgres}"
+JMDN_PG_PASS="${JMDN_PG_PASS:-postgres}"
+JMDN_PG_DB="${JMDN_PG_DB:-jmdn_thebe}"
+JMDN_PG_PORT="${JMDN_PG_PORT:-5433}"  # 5433 avoids conflict with ImmuDB's built-in PG wire protocol on 5432
+
+# Returns the OS service name for PostgreSQL on this platform.
+_postgres_service_name() {
+	case "${PKG_MANAGER}" in
+	apt)
+		echo "postgresql"
+		;;
+	dnf | yum)
+		# RHEL/CentOS: may be versioned (postgresql-16) or generic
+		if systemctl list-unit-files 2>/dev/null | grep -q "postgresql-[0-9]"; then
+			systemctl list-unit-files 2>/dev/null | grep "postgresql-[0-9]" | awk '{print $1}' | sed 's/\.service//' | head -1
+		else
+			echo "postgresql"
+		fi
+		;;
+	pacman | apk)
+		echo "postgresql"
+		;;
+	pkg)
+		# FreeBSD: versioned service (postgresql16)
+		local ver
+		ver=$(pkg info -x 'postgresql[0-9]+-server' 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1)
+		echo "postgresql${ver:-}"
+		;;
+	*)
+		echo "postgresql"
+		;;
+	esac
+}
+
+# Initialize the PostgreSQL data directory on distros that require an explicit
+# initdb step (Debian/Ubuntu handle this automatically during package install).
+_postgres_init_datadir() {
+	case "${PKG_MANAGER}" in
+	apt)
+		# No-op: Debian/Ubuntu run initdb automatically
+		;;
+	dnf | yum)
+		log_info "Initializing PostgreSQL data directory..."
+		if check_command postgresql-setup; then
+			postgresql-setup --initdb 2>/dev/null || true
+		elif check_command pg_ctl; then
+			su -c "initdb --pgdata=/var/lib/pgsql/data" postgres 2>/dev/null || true
+		fi
+		;;
+	pacman)
+		log_info "Initializing PostgreSQL data directory (Arch)..."
+		su -c "initdb --locale=en_US.UTF-8 -E UTF8 -D /var/lib/postgres/data" postgres 2>/dev/null || true
+		;;
+	apk)
+		log_info "Initializing PostgreSQL data directory (Alpine)..."
+		su -c "initdb -D /var/lib/postgresql/data" postgres 2>/dev/null || true
+		;;
+	pkg)
+		log_info "Initializing PostgreSQL data directory (FreeBSD)..."
+		local data_dir="/var/db/postgres/data16"
+		if [[ ! -f "${data_dir}/PG_VERSION" ]]; then
+			mkdir -p "${data_dir}"
+			chown postgres "${data_dir}"
+			su -m pgsql -c "initdb -D ${data_dir}" 2>/dev/null || true
+			echo 'postgresql_enable="YES"' >> /etc/rc.conf
+		fi
+		;;
+	esac
+}
+
+# Find the pg_hba.conf path by querying the running postgres instance.
+# Falls back to common known paths if the query fails.
+_postgres_find_hba_conf() {
+	# Ask postgres directly — most reliable
+	local hba
+	hba=$(su -c "psql -tA -c 'SHOW hba_file;'" postgres 2>/dev/null | tr -d '[:space:]')
+	if [[ -n "${hba}" && -f "${hba}" ]]; then
+		echo "${hba}"
+		return 0
+	fi
+
+	# Fallback: scan common locations (glob-expanded one at a time)
+	local dirs=(
+		"/etc/postgresql"
+		"/var/lib/pgsql"
+		"/var/lib/postgres"
+		"/var/lib/postgresql"
+		"/var/db/postgres"
+		"/usr/local/var/postgres"
+	)
+	for d in "${dirs[@]}"; do
+		local f
+		f=$(find "${d}" -name "pg_hba.conf" 2>/dev/null | head -1)
+		if [[ -n "${f}" ]]; then
+			echo "${f}"
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+# Patch pg_hba.conf so TCP connections from localhost accept password (md5) auth.
+# Replaces any existing method on the 127.0.0.1/32 and ::1/128 host lines,
+# or appends fresh lines if they are absent.
+_postgres_configure_tcp_auth() {
+	local hba_conf="$1"
+	log_info "Patching ${hba_conf} for TCP md5 auth..."
+
+	# IPv4 loopback
+	if grep -qE '^host[[:space:]]+all[[:space:]]+all[[:space:]]+127\.0\.0\.1/32' "${hba_conf}"; then
+		sed_inplace \
+			's|^\(host[[:space:]]*all[[:space:]]*all[[:space:]]*127\.0\.0\.1/32\).*|\1            md5|' \
+			"${hba_conf}"
+	else
+		echo "host    all             all             127.0.0.1/32            md5" >> "${hba_conf}"
+	fi
+
+	# IPv6 loopback
+	if grep -qE '^host[[:space:]]+all[[:space:]]+all[[:space:]]+::1/128' "${hba_conf}"; then
+		sed_inplace \
+			's|^\(host[[:space:]]*all[[:space:]]*all[[:space:]]*::1/128\).*|\1                 md5|' \
+			"${hba_conf}"
+	else
+		echo "host    all             all             ::1/128                 md5" >> "${hba_conf}"
+	fi
+
+	log_ok "pg_hba.conf updated"
+}
+
+install_postgres() {
+	log_info "Checking PostgreSQL (user=${JMDN_PG_USER}, db=${JMDN_PG_DB}, port=${JMDN_PG_PORT})..."
+
+	# If already fully configured, skip everything.
+	if check_command psql; then
+		if PGPASSWORD="${JMDN_PG_PASS}" psql \
+			-h 127.0.0.1 -p "${JMDN_PG_PORT}" \
+			-U "${JMDN_PG_USER}" -d "${JMDN_PG_DB}" \
+			-c "SELECT 1;" &>/dev/null 2>&1; then
+			log_ok "PostgreSQL already configured — skipping setup"
+			return 0
+		fi
+	fi
+
+	# ── 1. Install packages ──────────────────────────────────────────────────
+	log_info "Installing PostgreSQL packages..."
+	case "${PKG_MANAGER}" in
+	apt)
+		apt-get update
+		pkg_install postgresql postgresql-contrib
+		;;
+	dnf)
+		pkg_install postgresql-server postgresql-contrib
+		;;
+	yum)
+		pkg_install postgresql-server postgresql-contrib
+		;;
+	pacman)
+		pkg_install postgresql
+		;;
+	apk)
+		pkg_install postgresql postgresql-contrib
+		;;
+	brew)
+		brew install postgresql@16 || brew install postgresql
+		brew link --force postgresql@16 2>/dev/null || true
+		;;
+	pkg)
+		pkg_install postgresql16-server postgresql16-client || \
+			pkg_install postgresql-server
+		;;
+	*)
+		log_die "PostgreSQL installation not supported for package manager: ${PKG_MANAGER}"
+		;;
+	esac
+	log_ok "PostgreSQL packages installed"
+
+	# ── 2. Init data directory (no-op on Debian/Ubuntu) ─────────────────────
+	_postgres_init_datadir
+
+	# ── 3. Set the port in postgresql.conf before starting the service ───────
+	# ImmuDB occupies port 5432 (PG wire protocol). We use 5433 to avoid the
+	# conflict. Patch postgresql.conf before the first start so the port is
+	# set before any connections are attempted.
+	local pg_conf
+	pg_conf=$(find /etc/postgresql /var/lib/pgsql /var/lib/postgres /var/lib/postgresql /var/db/postgres /usr/local/var/postgres \
+		-name "postgresql.conf" 2>/dev/null | head -1 || true)
+	if [[ -n "${pg_conf}" && -f "${pg_conf}" ]]; then
+		log_info "Setting PostgreSQL port to ${JMDN_PG_PORT} in ${pg_conf}..."
+		if grep -qE '^#?[[:space:]]*port[[:space:]]*=' "${pg_conf}"; then
+			sed_inplace "s|^#*[[:space:]]*port[[:space:]]*=.*|port = ${JMDN_PG_PORT}|" "${pg_conf}"
+		else
+			echo "port = ${JMDN_PG_PORT}" >> "${pg_conf}"
+		fi
+		log_ok "Port set to ${JMDN_PG_PORT}"
+	fi
+
+	# ── 4. Start the service ─────────────────────────────────────────────────
+	log_info "Starting PostgreSQL service..."
+	case "${PKG_MANAGER}" in
+	brew)
+		brew services start postgresql@16 2>/dev/null || \
+			brew services start postgresql
+		;;
+	pkg)
+		service "$(_postgres_service_name)" start || true
+		;;
+	*)
+		local svc
+		svc=$(_postgres_service_name)
+		svc_reload_daemon
+		svc_start "${svc}"
+		svc_enable "${svc}"
+		;;
+	esac
+
+	# Wait for postgres to accept connections (up to 30s)
+	log_info "Waiting for PostgreSQL to be ready..."
+	local retries=30
+	until su -c "pg_isready -q" postgres &>/dev/null 2>&1 || \
+		  pg_isready -h 127.0.0.1 -p "${JMDN_PG_PORT}" -q 2>/dev/null; do
+		sleep 1
+		retries=$((retries - 1))
+		if [[ ${retries} -eq 0 ]]; then
+			log_die "PostgreSQL did not become ready — check service logs"
+		fi
+	done
+	log_ok "PostgreSQL is ready"
+
+	# ── 4. Set password for the postgres user ────────────────────────────────
+	log_info "Setting password for user '${JMDN_PG_USER}'..."
+	case "${PKG_MANAGER}" in
+	brew)
+		# On macOS, postgres runs as the current user — connect directly
+		psql postgres -c "ALTER USER ${JMDN_PG_USER} WITH PASSWORD '${JMDN_PG_PASS}';" 2>/dev/null || \
+			psql -c "ALTER USER ${JMDN_PG_USER} WITH PASSWORD '${JMDN_PG_PASS}';"
+		;;
+	*)
+		su -c "psql -c \"ALTER USER ${JMDN_PG_USER} WITH PASSWORD '${JMDN_PG_PASS}';\"" postgres
+		;;
+	esac
+	log_ok "Password set"
+
+	# ── 5. Configure TCP password auth in pg_hba.conf ────────────────────────
+	local hba_conf
+	hba_conf=$(_postgres_find_hba_conf) || \
+		log_die "Could not locate pg_hba.conf — is the data directory initialised?"
+	_postgres_configure_tcp_auth "${hba_conf}"
+
+	# ── 6. Restart to apply pg_hba.conf ──────────────────────────────────────
+	log_info "Restarting PostgreSQL to apply auth config..."
+	case "${PKG_MANAGER}" in
+	brew)
+		brew services restart postgresql@16 2>/dev/null || \
+			brew services restart postgresql
+		;;
+	pkg)
+		service "$(_postgres_service_name)" restart || true
+		;;
+	*)
+		svc_restart "$(_postgres_service_name)"
+		;;
+	esac
+	sleep 2
+
+	# ── 7. Create the jmdn_thebe database ────────────────────────────────────
+	log_info "Creating database '${JMDN_PG_DB}'..."
+	if PGPASSWORD="${JMDN_PG_PASS}" psql \
+		-h 127.0.0.1 -p "${JMDN_PG_PORT}" \
+		-U "${JMDN_PG_USER}" \
+		-tc "SELECT 1 FROM pg_database WHERE datname='${JMDN_PG_DB}';" \
+		2>/dev/null | grep -q 1; then
+		log_ok "Database '${JMDN_PG_DB}' already exists"
+	else
+		PGPASSWORD="${JMDN_PG_PASS}" createdb \
+			-h 127.0.0.1 -p "${JMDN_PG_PORT}" \
+			-U "${JMDN_PG_USER}" "${JMDN_PG_DB}"
+		log_ok "Database '${JMDN_PG_DB}' created"
+	fi
+
+	# ── 8. Verify end-to-end ─────────────────────────────────────────────────
+	if PGPASSWORD="${JMDN_PG_PASS}" psql \
+		-h 127.0.0.1 -p "${JMDN_PG_PORT}" \
+		-U "${JMDN_PG_USER}" -d "${JMDN_PG_DB}" \
+		-c "SELECT 1;" &>/dev/null; then
+		log_ok "PostgreSQL setup complete"
+		log_ok "DSN: postgres://${JMDN_PG_USER}:${JMDN_PG_PASS}@127.0.0.1:${JMDN_PG_PORT}/${JMDN_PG_DB}?sslmode=disable"
+	else
+		log_die "PostgreSQL connection test failed — check pg_hba.conf and service logs"
+	fi
+}
+
+################################################################################
 # Main Execution
 ################################################################################
 
@@ -506,6 +822,10 @@ fi
 
 if [[ "${INSTALL_YGG}" == true ]]; then
 	install_yggdrasil
+fi
+
+if [[ "${INSTALL_POSTGRES}" == true ]]; then
+	install_postgres
 fi
 
 log_ok "Dependencies setup complete!"
