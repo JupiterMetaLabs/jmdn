@@ -136,7 +136,7 @@ func initAppandLocalGRO() {
 	}
 }
 
-func StartFacadeServer(port int, chainID int) {
+func StartFacadeServer(port int, chainID int, smartRPC int) {
 	if MainLM == nil {
 		log.Fatal().Msg("MainLM not initialized. Call initAppandLocalGRO() first")
 	}
@@ -144,7 +144,7 @@ func StartFacadeServer(port int, chainID int) {
 	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.FacadeThread, func(ctx context.Context) error {
 		log.Info().Msg("Starting facade server")
 
-		handler := rpc.NewHandlers(Service.NewService(chainID))
+		handler := rpc.NewHandlers(Service.NewService(chainID, smartRPC))
 		httpServer := rpc.NewHTTPServer(handler)
 
 		addr := fmt.Sprintf("0.0.0.0:%d", port)
@@ -158,13 +158,13 @@ func StartFacadeServer(port int, chainID int) {
 	}
 }
 
-func StartWSServer(port int, chainID int) {
+func StartWSServer(port int, chainID int, smartRPC int) {
 	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.WSServerThread, func(ctx context.Context) error {
 		log.Info().Msg("Starting WSServer")
 		// Get the Http Server
-		HTTPServer := rpc.NewHandlers(Service.NewService(chainID))
+		HTTPServer := rpc.NewHandlers(Service.NewService(chainID, smartRPC))
 
-		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService(chainID))
+		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService(chainID, smartRPC))
 		if err := WSServer.ServeWithContext(ctx, fmt.Sprintf("0.0.0.0:%d", port)); err != nil {
 			log.Error().Err(err).Msg("Failed to start WSServer")
 			return fmt.Errorf("WSServer failed: %w", err)
@@ -778,7 +778,7 @@ func main() {
 	// Smart Contract Service Integration
 	// =========================================================================
 	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, "SmartContractServer", func(ctx context.Context) error {
-		return SmartContract.StartIntegratedServer(ctx, *smartRPC, *chainID, *gETHgRPC, *DIDgRPC)
+		return SmartContract.StartIntegratedServer(ctx, *smartRPC, *chainID, *gETHgRPC, *DIDgRPC, *blockgen)
 	}); err != nil {
 		log.Error().Err(err).Msg("Failed to start SmartContractServer goroutine")
 	}
@@ -1043,12 +1043,12 @@ func main() {
 
 	if *gETHFacade > 0 {
 		fmt.Printf("Starting gETH Facade server on port %d\n", *gETHFacade)
-		StartFacadeServer(*gETHFacade, *chainID)
+		StartFacadeServer(*gETHFacade, *chainID, *smartRPC)
 	}
 
 	if *gETHWSServer > 0 {
 		fmt.Printf("Starting gETH WSServer on port %d\n", *gETHWSServer)
-		StartWSServer(*gETHWSServer, *chainID)
+		StartWSServer(*gETHWSServer, *chainID, *smartRPC)
 	}
 
 	// Start CLI without timeout - run indefinitely

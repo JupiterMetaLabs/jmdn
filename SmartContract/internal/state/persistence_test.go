@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"gossipnode/SmartContract/internal/repository"
 	"gossipnode/SmartContract/internal/storage"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -36,7 +37,8 @@ func TestPersistence(t *testing.T) {
 	defer kvStore.Close()
 
 	// Initialize ContractDB
-	contractDB := NewContractDB(nil, kvStore) // nil DID client is fine for this test
+	repo := repository.NewPebbleAdapter(kvStore)
+	contractDB := NewContractDB(nil, repo) // nil DID client is fine for this test
 
 	// Test 1: Contract Metadata Persistence
 	t.Run("ContractMetadata", func(t *testing.T) {

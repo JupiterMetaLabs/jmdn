@@ -94,7 +94,7 @@ func TestClientIntegration(t *testing.T) {
 	t.Logf("Deployed contract at: 0x%x", contractAddr)
 
 	// 4. Get Code
-	codeResp, err := c.GetContractCode(ctx, contractAddr)
+	codeResp, err := c.GetContractCode(ctx, common.FromHex(contractAddr))
 	require.NoError(t, err, "GetContractCode failed")
 	require.NotEmpty(t, codeResp.Code, "Contract code should exist on chain")
 
@@ -106,10 +106,10 @@ func TestClientIntegration(t *testing.T) {
 
 	// Let's use GetStorage for simpler verification without ABI packing if possible
 	// storedData is slot 0
-	storageResp, err := c.GetStorage(ctx, contractAddr, common.Hash{}.Bytes()) // Slot 0
+	storageResp, err := c.GetStorage(ctx, common.FromHex(contractAddr), common.Hash{}.Bytes()) // Slot 0
 	require.NoError(t, err, "GetStorage failed")
 
-	val := new(big.Int).SetBytes(storageResp.Value)
+	val := new(big.Int).SetBytes(common.FromHex(storageResp.Value))
 	require.Equal(t, int64(100), val.Int64(), "Initial storage value mismatch")
 	t.Logf("Initial storedData: %d", val.Int64())
 

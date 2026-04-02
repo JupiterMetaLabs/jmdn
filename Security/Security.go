@@ -408,8 +408,8 @@ func CheckSignature(tx *config.Transaction) (bool, error) {
 		return false, errors.New("transaction cannot be nil")
 	}
 
-	if tx.From == nil || tx.To == nil || tx.V == nil || tx.R == nil || tx.S == nil {
-		return false, errors.New("transaction missing required signature fields (From, To, V, R, or S)")
+	if tx.From == nil || tx.V == nil || tx.R == nil || tx.S == nil {
+		return false, errors.New("transaction missing required signature fields (From, V, R, or S)")
 	}
 
 	var ethTx *types.Transaction
@@ -537,19 +537,22 @@ func CheckAddressExist(tx *config.Transaction, Conn *config.PooledConnection) (b
 		)
 		return false, errors.New("transaction cannot be nil")
 	}
-	if tx.From == nil || tx.To == nil {
-		Conn.Client.Logger.Logger.Error("From or To address is empty",
-			zap.Error(errors.New("From or To address is empty")),
+	if tx.From == nil {
+		Conn.Client.Logger.Logger.Error("From address is empty",
+			zap.Error(errors.New("From address is empty")),
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
 			zap.String(logging.Function, "Security.CheckAddressExist"),
 		)
-		return false, errors.New("From or To address is empty")
+		return false, errors.New("From address is empty")
 	}
 
-	// check if the db have From DID and To DID
+	// For contract creation (To == nil is valid)
+	isContractCreation := tx.To == nil
+
+	// check if the db have From DID
 	From, err := DB_OPs.GetAccount(Conn, *tx.From)
 	if err != nil {
 		Conn.Client.Logger.Logger.Error("Failed to get From DID from DB",
@@ -563,30 +566,36 @@ func CheckAddressExist(tx *config.Transaction, Conn *config.PooledConnection) (b
 		return false, errors.New("failed to get From DID from DB -> " + err.Error())
 	}
 
-	To, err := DB_OPs.GetAccount(Conn, *tx.To)
-	if err != nil {
-		Conn.Client.Logger.Logger.Error("Failed to get the Account",
-			zap.Error(errors.New("failed to get To DID from DB -> "+err.Error())),
-			zap.String("Target Function", "DB_OPs.GetAccount"),
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "Security.CheckAddressExist"),
-		)
-		return false, errors.New("failed to get To DID from DB -> " + err.Error())
+	var To *DB_OPs.Account
+	if !isContractCreation {
+		To, err = DB_OPs.GetAccount(Conn, *tx.To)
+		if err != nil {
+			Conn.Client.Logger.Logger.Error("Failed to get the Account",
+				zap.Error(errors.New("failed to get To DID from DB -> "+err.Error())),
+				zap.String("Target Function", "DB_OPs.GetAccount"),
+				zap.Time(logging.Created_at, time.Now().UTC()),
+				zap.String(logging.Log_file, LOG_FILE),
+				zap.String(logging.Topic, TOPIC),
+				zap.String(logging.Loki_url, config.LOKI_URL),
+				zap.String(logging.Function, "Security.CheckAddressExist"),
+			)
+			return false, errors.New("failed to get To DID from DB -> " + err.Error())
+		}
+	} else {
+		// Virtual account for contract creation
+		To = &DB_OPs.Account{}
 	}
 
-	if From == nil || To == nil {
-		Conn.Client.Logger.Logger.Error("From or To address is empty",
-			zap.Error(errors.New("From or To address is empty")),
+	if From == nil || (To == nil && !isContractCreation) {
+		Conn.Client.Logger.Logger.Error("From or To address not found",
+			zap.Error(errors.New("From or To address not found")),
 			zap.Time(logging.Created_at, time.Now().UTC()),
 			zap.String(logging.Log_file, LOG_FILE),
 			zap.String(logging.Topic, TOPIC),
 			zap.String(logging.Loki_url, config.LOKI_URL),
 			zap.String(logging.Function, "Security.CheckAddressExist"),
 		)
-		return false, errors.New("From or To address not found in database")
+		return false, errors.New("sender or receiver DID not found in database")
 	}
 
 	Conn.Client.Logger.Logger.Info("Successfully checked the From and To address",

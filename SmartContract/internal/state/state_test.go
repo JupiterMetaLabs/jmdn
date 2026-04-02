@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"testing"
 
+	"gossipnode/SmartContract/internal/repository"
 	"gossipnode/SmartContract/internal/storage"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -73,7 +74,8 @@ func TestBalanceUpdates(t *testing.T) {
 	// Setup
 	kvStore := storage.NewMemKVStore()
 	mockDID := newMockDIDClient()
-	db := NewContractDB(mockDID, kvStore)
+	repo := repository.NewPebbleAdapter(kvStore)
+	db := NewContractDB(mockDID, repo)
 
 	addr := common.HexToAddress("0x1234567890123456789012345678901234567890")
 
@@ -100,7 +102,8 @@ func TestBalanceUpdates(t *testing.T) {
 
 	t.Run("Balance changes are in-memory only before commit", func(t *testing.T) {
 		// Create new DB instance to verify nothing persisted
-		db2 := NewContractDB(mockDID, kvStore)
+		repo := repository.NewPebbleAdapter(kvStore)
+		db2 := NewContractDB(mockDID, repo)
 		balance := db2.GetBalance(addr)
 		assert.Equal(t, uint256.NewInt(1000), balance, "Should still see original balance before commit")
 	})
@@ -110,7 +113,8 @@ func TestBalanceUpdates(t *testing.T) {
 func TestJournalSnapshotRevert(t *testing.T) {
 	kvStore := storage.NewMemKVStore()
 	mockDID := newMockDIDClient()
-	db := NewContractDB(mockDID, kvStore)
+	repo := repository.NewPebbleAdapter(kvStore)
+	db := NewContractDB(mockDID, repo)
 
 	addr := common.HexToAddress("0xABCDEF1234567890ABCDEF1234567890ABCDEF12")
 	mockDID.setBalance(addr, big.NewInt(1000))
@@ -142,7 +146,8 @@ func TestJournalSnapshotRevert(t *testing.T) {
 
 	t.Run("Nested snapshots", func(t *testing.T) {
 		// Reset
-		db = NewContractDB(mockDID, kvStore)
+		repo := repository.NewPebbleAdapter(kvStore)
+		db = NewContractDB(mockDID, repo)
 		mockDID.setBalance(addr, big.NewInt(1000))
 
 		// Snapshot 1
@@ -173,7 +178,8 @@ func TestJournalSnapshotRevert(t *testing.T) {
 func TestStorageCodePersistence(t *testing.T) {
 	kvStore := storage.NewMemKVStore()
 	mockDID := newMockDIDClient()
-	db := NewContractDB(mockDID, kvStore)
+	repo := repository.NewPebbleAdapter(kvStore)
+	db := NewContractDB(mockDID, repo)
 
 	contractAddr := common.HexToAddress("0xCONTRACT1234567890123456789012345678")
 
@@ -196,7 +202,8 @@ func TestStorageCodePersistence(t *testing.T) {
 	require.NoError(t, err)
 
 	// Load in new instance
-	db2 := NewContractDB(mockDID, kvStore)
+	repo2 := repository.NewPebbleAdapter(kvStore)
+	db2 := NewContractDB(mockDID, repo2)
 	assert.Equal(t, value, db2.GetState(contractAddr, key), "Storage should persist")
 	assert.Equal(t, code, db2.GetCode(contractAddr), "Code should persist")
 }

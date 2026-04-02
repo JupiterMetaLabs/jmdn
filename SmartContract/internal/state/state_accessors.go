@@ -35,7 +35,7 @@ func (c *ContractDB) getStateObject(addr common.Address) *stateObject {
 	accountData := loadAccountFromDID(c.didClient, addr)
 
 	// Merge with any locally cached nonce
-	localData := loadAccountFromLocalDB(c.db, addr)
+	localData := loadAccountFromLocalDB(c.repo, addr)
 	if localData.Nonce > accountData.Nonce {
 		accountData.Nonce = localData.Nonce
 	}
@@ -266,9 +266,9 @@ func (c *ContractDB) Snapshot() int {
 
 // RevertToSnapshot reverts all state changes made since the given snapshot.
 func (c *ContractDB) RevertToSnapshot(snapshot int) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-
+	// Do NOT hold c.lock here.
+	// Journal revert callbacks call getStateObject, which acquires the same RWMutex.
+	// Holding the write lock would deadlock (RWMutex is not re-entrant).
 	c.journal.revert(c, snapshot)
 }
 

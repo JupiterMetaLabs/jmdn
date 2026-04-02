@@ -1,12 +1,11 @@
 package state
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"math/big"
+	"gossipnode/SmartContract/internal/repository"
 	"sync"
-
-	"gossipnode/SmartContract/internal/storage"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/stateless"
@@ -24,8 +23,8 @@ import (
 // This enables atomic transaction processing with journal-based reverts.
 type ContractDB struct {
 	// Database connections
-	didClient pbdid.DIDServiceClient // DID Client for Balance/Nonce
-	db        storage.KVStore        // PebbleDB for code/storage
+	didClient pbdid.DIDServiceClient     // DID Client for Balance/Nonce
+	repo      repository.StateRepository // Generic Repository for code/storage
 
 	// State object cache (one per address accessed)
 	stateObjects map[common.Address]*stateObject
@@ -65,10 +64,10 @@ var (
 )
 
 // NewContractDB creates a new database interface for Smart Contracts.
-func NewContractDB(didClient pbdid.DIDServiceClient, db storage.KVStore) *ContractDB {
+func NewContractDB(didClient pbdid.DIDServiceClient, repo repository.StateRepository) *ContractDB {
 	return &ContractDB{
 		didClient:    didClient,
-		db:           db,
+		repo:         repo,
 		stateObjects: make(map[common.Address]*stateObject),
 		journal:      newJournal(),
 		logs:         make([]*types.Log, 0),
@@ -94,7 +93,7 @@ func (c *ContractDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	batch := c.db.NewBatch()
+	batch := c.repo.NewBatch()
 	defer batch.Close()
 
 	// Iterate through all dirty state objects
@@ -106,19 +105,16 @@ func (c *ContractDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 		// Handle deleted/suicided accounts
 		if deleteEmptyObjects && (obj.deleted || (obj.suicided && obj.isEmpty())) {
 			// Delete code
-			codeKey := makeCodeKey(addr)
-			batch.Delete(codeKey)
+			batch.DeleteCode(addr)
 
 			// Delete all storage (this is simplified - in production we'd track all keys)
 			// For now, we only delete what's in dirtyStorage
 			for key := range obj.dirtyStorage {
-				storageKey := makeStorageKey(addr, key)
-				batch.Delete(storageKey)
+				batch.DeleteStorage(addr, key)
 			}
 
 			// Delete nonce
-			nonceKey := makeNonceKey(addr)
-			batch.Delete(nonceKey)
+			batch.DeleteNonce(addr)
 
 			continue
 		}
@@ -126,34 +122,33 @@ func (c *ContractDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 		// Commit storage changes
 		toWrite, toDelete, metaUpdates := obj.finalizeStorage()
 		for key, value := range toWrite {
-			dbKey := makeStorageKey(addr, key)
-			if err := batch.Set(dbKey, value[:]); err != nil {
+			if err := batch.SaveStorage(addr, key, value); err != nil {
 				return common.Hash{}, err
 			}
 		}
 
 		// Commit storage metadata
 		for key, meta := range metaUpdates {
-			metaKey := append(PrefixStorageMeta, append(addr.Bytes(), key.Bytes()...)...)
-			data, err := json.Marshal(meta)
-			if err != nil {
-				return common.Hash{}, fmt.Errorf("failed to marshal storage metadata: %w", err)
+			// Convert state.StorageMetadata to repository.StorageMetadata
+			repoMeta := repository.StorageMetadata{
+				ContractAddress:   meta.ContractAddress,
+				StorageKey:        meta.StorageKey,
+				ValueHash:         meta.ValueHash,
+				LastModifiedBlock: meta.LastModifiedBlock,
+				LastModifiedTx:    meta.LastModifiedTx,
+				UpdatedAt:         meta.UpdatedAt,
 			}
-			if err := batch.Set(metaKey, data); err != nil {
+			if err := batch.SaveStorageMetadata(addr, key, repoMeta); err != nil {
 				return common.Hash{}, err
 			}
 		}
 
 		for _, key := range toDelete {
-			dbKey := makeStorageKey(addr, key)
-			if err := batch.Delete(dbKey); err != nil {
+			if err := batch.DeleteStorage(addr, key); err != nil {
 				return common.Hash{}, err
 			}
 
-			// Also delete metadata
-			metaKey := append(PrefixStorageMeta, append(addr.Bytes(), key.Bytes()...)...)
-			// We try to delete, but ignore error if it doesn't exist? No, better to be clean
-			if err := batch.Delete(metaKey); err != nil {
+			if err := batch.DeleteStorageMetadata(addr, key); err != nil {
 				return common.Hash{}, err
 			}
 		}
@@ -161,23 +156,20 @@ func (c *ContractDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 		// Commit code if dirty
 		if obj.dirtyCode {
 			code := obj.getCode()
-			codeKey := makeCodeKey(addr)
 			fmt.Printf("DEBUG(contractsdb): CommitToDB handling dirtyCode for %s, len=%d\n", addr.Hex(), len(code))
 			if len(code) == 0 {
-				if err := batch.Delete(codeKey); err != nil {
+				if err := batch.DeleteCode(addr); err != nil {
 					return common.Hash{}, err
 				}
 			} else {
-				if err := batch.Set(codeKey, code); err != nil {
+				if err := batch.SaveCode(addr, code); err != nil {
 					return common.Hash{}, err
 				}
 			}
 		}
 
 		// Commit nonce (always save to local DB for consistency)
-		nonceKey := makeNonceKey(addr)
-		nonceBytes := new(big.Int).SetUint64(obj.getNonce()).Bytes()
-		if err := batch.Set(nonceKey, nonceBytes); err != nil {
+		if err := batch.SaveNonce(addr, obj.getNonce()); err != nil {
 			return common.Hash{}, err
 		}
 
@@ -348,17 +340,10 @@ func (c *ContractDB) GetSelfDestruction(addr common.Address) bool { return false
 // Internal Helpers
 // ============================================================================
 
-func makeStorageKey(addr common.Address, key common.Hash) []byte {
-	return append(PrefixStorage, append(addr.Bytes(), key.Bytes()...)...)
-}
-
-func makeCodeKey(addr common.Address) []byte {
-	return append(PrefixCode, addr.Bytes()...)
-}
-
-func makeNonceKey(addr common.Address) []byte {
-	return append(PrefixNonce, addr.Bytes()...)
-}
+// ============================================================================
+// Internal Helpers - Deprecated
+// ============================================================================
+// DB keys are now handled by the repository adapters.
 
 // ============================================================================
 // Metadata & Receipt Persistence
@@ -373,9 +358,14 @@ func (c *ContractDB) SetContractMetadata(addr common.Address, meta ContractMetad
 	if err != nil {
 		return fmt.Errorf("failed to marshal contract metadata: %w", err)
 	}
+	// We must use a StateBatch to save to the database now
+	batch := c.repo.NewBatch()
+	defer batch.Close()
 
-	key := append(PrefixContractMeta, addr.Bytes()...)
-	return c.db.Set(key, data)
+	if err := batch.SaveContractMetadata(addr, data); err != nil {
+		return err
+	}
+	return batch.Commit()
 }
 
 // GetContractMetadata retrieves the metadata for a contract
@@ -383,8 +373,7 @@ func (c *ContractDB) GetContractMetadata(addr common.Address) (*ContractMetadata
 	c.lock.RLock()
 	defer c.lock.RUnlock()
 
-	key := append(PrefixContractMeta, addr.Bytes()...)
-	data, err := c.db.Get(key)
+	data, err := c.repo.GetContractMetadata(context.Background(), addr)
 	if err != nil {
 		return nil, err
 	}
@@ -410,8 +399,13 @@ func (c *ContractDB) WriteReceipt(receipt TransactionReceipt) error {
 		return fmt.Errorf("failed to marshal receipt: %w", err)
 	}
 
-	key := append(PrefixReceipt, receipt.TxHash.Bytes()...)
-	return c.db.Set(key, data)
+	batch := c.repo.NewBatch()
+	defer batch.Close()
+
+	if err := batch.SaveReceipt(receipt.TxHash, data); err != nil {
+		return err
+	}
+	return batch.Commit()
 }
 
 // GetReceipt retrieves a transaction receipt by hash
@@ -419,8 +413,7 @@ func (c *ContractDB) GetReceipt(txHash common.Hash) (*TransactionReceipt, error)
 	c.lock.RLock()
 	defer c.lock.RUnlock()
 
-	key := append(PrefixReceipt, txHash.Bytes()...)
-	data, err := c.db.Get(key)
+	data, err := c.repo.GetReceipt(context.Background(), txHash)
 	if err != nil {
 		return nil, err
 	}

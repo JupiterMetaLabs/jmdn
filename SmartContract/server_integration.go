@@ -13,6 +13,7 @@ import (
 	"gossipnode/SmartContract/internal/contract_registry"
 	"gossipnode/SmartContract/internal/database"
 	"gossipnode/SmartContract/internal/evm"
+	"gossipnode/SmartContract/internal/repository"
 	"gossipnode/SmartContract/internal/router"
 	"gossipnode/SmartContract/internal/state"
 	"gossipnode/SmartContract/internal/storage"
@@ -88,7 +89,8 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 	}
 	didClient := pbdid.NewDIDServiceClient(didClientConn)
 
-	stateDB := state.NewContractDB(didClient, kvStore)
+	repo := repository.NewPebbleAdapter(kvStore)
+	stateDB := state.NewContractDB(didClient, repo)
 
 	// 4. Initialize Router
 	smartRouter := router.NewRouter(chainID, stateDB, reg, nil, chainClient)

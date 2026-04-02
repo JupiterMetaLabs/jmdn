@@ -2,6 +2,7 @@ package evm
 
 import (
 	"fmt"
+	"gossipnode/SmartContract/internal/repository"
 	"gossipnode/SmartContract/internal/state"
 	"gossipnode/SmartContract/internal/storage"
 	"gossipnode/config"
@@ -204,7 +205,8 @@ func InitializeStateDB(chainID int) (state.StateDB, error) {
 	}
 
 	// Create StateDB that proxies to gETH for account state and uses local storage for contracts
-	stateDB := state.NewContractDB(didClient, storageDB)
+	repo := repository.NewPebbleAdapter(storageDB)
+	stateDB := state.NewContractDB(didClient, repo)
 
 	log.Debug().Msg("📊 [EVM] State DB initialized")
 	return stateDB, nil

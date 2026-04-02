@@ -17,6 +17,7 @@ import (
 	"gossipnode/Security"
 	"gossipnode/SmartContract/internal/contract_registry"
 	"gossipnode/SmartContract/internal/database"
+	"gossipnode/SmartContract/internal/repository"
 	"gossipnode/SmartContract/internal/router"
 	"gossipnode/SmartContract/internal/state"
 	"gossipnode/SmartContract/internal/storage"
@@ -102,7 +103,8 @@ func main() {
 	defer didConn.Close()
 	didClient := pbdid.NewDIDServiceClient(didConn)
 
-	stateDB := state.NewContractDB(didClient, kvStore)
+	repo := repository.NewPebbleAdapter(kvStore)
+	stateDB := state.NewContractDB(didClient, repo)
 
 	// 4. Initialize Router (Layer 3)
 	fmt.Println("   Initializing Router...")

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/big"
 
-	"gossipnode/SmartContract/internal/storage"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -14,6 +13,7 @@ import (
 	"github.com/holiman/uint256"
 
 	pbdid "gossipnode/DID/proto"
+	"gossipnode/SmartContract/internal/repository"
 )
 
 // stateObject represents a single Ethereum account.
@@ -116,11 +116,10 @@ func (s *stateObject) getCode() []byte {
 		return s.code
 	}
 
-	// Load from PebbleDB because CodeHash might not be initialized
+	// Load from repository because CodeHash might not be initialized
 	// when the account data is first loaded from the generalized DID service
-	key := makeCodeKey(s.address)
-	val, err := s.db.db.Get(key)
-	fmt.Printf("DEBUG(state_object): PebbleDB Get(CodeKey=%x) -> len=%d, err=%v\n", key, len(val), err)
+	val, err := s.db.repo.GetCode(context.Background(), s.address)
+	fmt.Printf("DEBUG(state_object): repo GetCode -> len=%d, err=%v\n", len(val), err)
 	if err == nil && len(val) > 0 {
 		s.code = val
 		s.data.CodeHash = crypto.Keccak256(val)
@@ -211,12 +210,11 @@ func (s *stateObject) getCommittedState(key common.Hash) common.Hash {
 
 // loadStorage loads a storage value from the database.
 func (s *stateObject) loadStorage(key common.Hash) common.Hash {
-	dbKey := makeStorageKey(s.address, key)
-	val, err := s.db.db.Get(dbKey)
-	if err != nil || len(val) == 0 {
+	val, err := s.db.repo.GetStorage(context.Background(), s.address, key)
+	if err != nil {
 		return common.Hash{}
 	}
-	return common.BytesToHash(val)
+	return val
 }
 
 // ============================================================================
@@ -335,15 +333,14 @@ func loadAccountFromDID(didClient pbdid.DIDServiceClient, addr common.Address) *
 	return account
 }
 
-// loadAccountFromLocalDB loads account data from the local PebbleDB.
+// loadAccountFromLocalDB loads account data from the local repository.
 // This checks for locally cached nonce values.
-func loadAccountFromLocalDB(db storage.KVStore, addr common.Address) *AccountData {
+func loadAccountFromLocalDB(repo repository.StateRepository, addr common.Address) *AccountData {
 	account := NewAccountData()
 
 	// Load nonce from local DB if available
-	nonceKey := makeNonceKey(addr)
-	if val, err := db.Get(nonceKey); err == nil && len(val) > 0 {
-		account.Nonce = new(big.Int).SetBytes(val).Uint64()
+	if nonce, err := repo.GetNonce(context.Background(), addr); err == nil && nonce > 0 {
+		account.Nonce = nonce
 	}
 
 	// Note: We don't load balance from local DB, as it's managed by DID service
