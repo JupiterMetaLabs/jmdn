@@ -12,6 +12,55 @@ import (
 	"google.golang.org/grpc/peer"
 )
 
+// ── Shared CIDR helpers ─────────────────────────────────────────
+// Used by IPExtractor (proxy trust) and RateLimiter (client trust)
+// to avoid duplicating CIDR parsing and matching logic.
+
+// ParseCIDRList parses a mixed list of CIDR notations ("10.0.0.0/8")
+// and bare IPs ("10.0.0.1" → /32 or /128) into a slice of *net.IPNet.
+// Invalid entries are silently skipped (logged at the call site if needed).
+func ParseCIDRList(entries []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(entries))
+	for _, entry := range entries {
+		// Try CIDR first ("10.0.0.0/8")
+		_, ipNet, err := net.ParseCIDR(entry)
+		if err == nil {
+			nets = append(nets, ipNet)
+			continue
+		}
+		// Try single IP ("10.0.0.1" → "10.0.0.1/32")
+		ip := net.ParseIP(entry)
+		if ip != nil {
+			mask := net.CIDRMask(128, 128)
+			if ip.To4() != nil {
+				mask = net.CIDRMask(32, 32)
+			}
+			nets = append(nets, &net.IPNet{IP: ip, Mask: mask})
+		}
+	}
+	return nets
+}
+
+// MatchesAnyNet reports whether ip belongs to any of the given networks.
+// Returns false for empty nets or unparseable IPs (safe default).
+func MatchesAnyNet(nets []*net.IPNet, ip string) bool {
+	if len(nets) == 0 {
+		return false
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	for _, cidrNet := range nets {
+		if cidrNet.Contains(parsed) {
+			return true
+		}
+	}
+	return false
+}
+
+// ── IPExtractor ─────────────────────────────────────────────────
+
 // IPExtractor handles the logic of resolving the True Client IP
 // while defending against X-Forwarded-For spoofing.
 type IPExtractor struct {
@@ -21,25 +70,10 @@ type IPExtractor struct {
 
 // NewIPExtractor creates a new extractor with pre-parsed trusted proxy CIDRs.
 func NewIPExtractor(cfg *settings.SecurityConfig) *IPExtractor {
-	var nets []*net.IPNet
-	for _, cidr := range cfg.TrustedProxies {
-		// Try CIDR first ("10.0.0.0/8")
-		_, ipNet, err := net.ParseCIDR(cidr)
-		if err == nil {
-			nets = append(nets, ipNet)
-			continue
-		}
-		// Try single IP ("10.0.0.1" → "10.0.0.1/32")
-		ip := net.ParseIP(cidr)
-		if ip != nil {
-			mask := net.CIDRMask(128, 128)
-			if ip.To4() != nil {
-				mask = net.CIDRMask(32, 32)
-			}
-			nets = append(nets, &net.IPNet{IP: ip, Mask: mask})
-		}
+	return &IPExtractor{
+		config:      cfg,
+		trustedNets: ParseCIDRList(cfg.TrustedProxies),
 	}
-	return &IPExtractor{config: cfg, trustedNets: nets}
 }
 
 // headerGetter is a function that retrieves a header value by name.
@@ -125,17 +159,5 @@ func (e *IPExtractor) resolveForwardedIP(directIP string, getHeader headerGetter
 // IsTrustedProxy checks if an IP belongs to the trusted proxy list using CIDR matching.
 // If TrustedProxies is empty, returns false (trust nobody — safe default).
 func (e *IPExtractor) IsTrustedProxy(ip string) bool {
-	if len(e.trustedNets) == 0 {
-		return false // Empty list = trust nobody
-	}
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return false
-	}
-	for _, cidrNet := range e.trustedNets {
-		if cidrNet.Contains(parsed) {
-			return true
-		}
-	}
-	return false
+	return MatchesAnyNet(e.trustedNets, ip)
 }

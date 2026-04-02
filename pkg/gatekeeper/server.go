@@ -1,11 +1,9 @@
 package gatekeeper
 
 import (
-	"context"
 	"crypto/tls"
 	"fmt"
 	"net/http"
-	"time"
 
 	"gossipnode/config/settings"
 
@@ -46,8 +44,7 @@ func NewSecureGRPCServer(
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create rate limiter for %s: %w", serviceName, err)
 	}
-	obs := NewObsLimiter(context.Background(), rl, 30*time.Second) // ROLLOUT-OBS: remove obs line + change obs→rl below
-	gk := NewGrpcMiddleware(secCfg, obs)
+	gk := NewGrpcMiddleware(secCfg, rl)
 
 	// 3. Interceptors
 	opts = append(opts, grpc.UnaryInterceptor(gk.UnaryInterceptor(serviceName)))
@@ -79,10 +76,9 @@ func ConfigureHTTPServer(
 	if err != nil {
 		return false, nil, fmt.Errorf("failed to init rate limiter for %s: %w", serviceName, err)
 	}
-	obs := NewObsLimiter(context.Background(), rl, 30*time.Second) // ROLLOUT-OBS: remove obs line + change obs→rl below
 
 	// 2. Gin Middleware
-	middleware = NewGinMiddleware(secCfg, obs, logger)
+	middleware = NewGinMiddleware(secCfg, rl, logger)
 
 	// 3. TLS
 	tlsLoader := NewTLSLoader(secCfg, logger)
@@ -128,10 +124,9 @@ func ConfigureNetHTTPServer(
 	if err != nil {
 		return false, nil, fmt.Errorf("failed to init rate limiter for %s: %w", serviceName, err)
 	}
-	obs := NewObsLimiter(context.Background(), rl, 30*time.Second) // ROLLOUT-OBS: remove obs line + change obs→rl below
 
 	// 2. net/http Middleware
-	middleware = NewNetHTTPMiddleware(secCfg, obs, l)
+	middleware = NewNetHTTPMiddleware(secCfg, rl, l)
 
 	// 3. TLS
 	tlsLoader := NewTLSLoader(secCfg, l)

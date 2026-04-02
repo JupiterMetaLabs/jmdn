@@ -82,10 +82,8 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	obs := gatekeeper.NewObsLimiter(context.Background(), rl, 30*time.Second) // ROLLOUT-OBS: remove obs line + change obs→rl below
-
 	// Middleware
-	middleware := gatekeeper.NewGinMiddleware(secCfg, obs, logger)
+	middleware := gatekeeper.NewGinMiddleware(secCfg, rl, logger)
 
 	// TLS Loader
 	tlsLoader := gatekeeper.NewTLSLoader(secCfg, logger)
@@ -532,11 +530,13 @@ func (s *ImmuDBServer) getVersion(c *gin.Context) {
 }
 
 // rootHealth is a lightweight, unauthenticated health endpoint served at GET /.
-// It intentionally exposes minimal information — just enough to confirm the node is alive.
+// Returns the Ethereum-standard client version string (e.g. "JMDN/v1.1.0/linux-amd64/go1.25.1")
+// rather than the full VersionInfo struct — health probes need "alive + identity", not build metadata.
+// For detailed build info (commit, branch, build time), use GET /api/v1/node/version.
 func (s *ImmuDBServer) rootHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "ok",
 		"service": "jmdn",
-		"version": version.GetVersionInfo(),
+		"version": version.ClientVersion(),
 	})
 }

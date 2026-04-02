@@ -175,6 +175,147 @@ func TestRetryAfterSeconds_ReturnsExpectedValues(t *testing.T) {
 	}
 }
 
+// --- Trusted client bypass tests (Layer 0) ---
+
+func TestAllow_TrustedClient_BypassesAllLimits(t *testing.T) {
+	cfg := testConfig()
+	cfg.GlobalRateLimit = 1
+	cfg.GlobalBurst = 1
+	policy := cfg.Services[settings.ServiceEthRPC]
+	policy.RateLimit = 1
+	policy.Burst = 1
+	cfg.Services[settings.ServiceEthRPC] = policy
+	cfg.TrustedClients = []string{"127.0.0.1", "::1"}
+
+	rl, err := NewRateLimiter(cfg, 100)
+	if err != nil {
+		t.Fatalf("NewRateLimiter: %v", err)
+	}
+
+	// Trusted client should never be denied, even after burst is exhausted
+	for i := 0; i < 50; i++ {
+		if !rl.Allow(context.Background(), settings.ServiceEthRPC, "127.0.0.1") {
+			t.Fatalf("trusted client 127.0.0.1 denied on request %d", i)
+		}
+	}
+}
+
+func TestAllow_TrustedClient_IPv6Loopback(t *testing.T) {
+	cfg := testConfig()
+	cfg.GlobalRateLimit = 1
+	cfg.GlobalBurst = 1
+	cfg.TrustedClients = []string{"::1"}
+
+	rl, err := NewRateLimiter(cfg, 100)
+	if err != nil {
+		t.Fatalf("NewRateLimiter: %v", err)
+	}
+
+	for i := 0; i < 10; i++ {
+		if !rl.Allow(context.Background(), settings.ServiceEthRPC, "::1") {
+			t.Fatalf("trusted client ::1 denied on request %d", i)
+		}
+	}
+}
+
+func TestAllow_TrustedClient_CIDRMatch(t *testing.T) {
+	cfg := testConfig()
+	cfg.GlobalRateLimit = 1
+	cfg.GlobalBurst = 1
+	cfg.TrustedClients = []string{"10.128.0.0/16"}
+
+	rl, err := NewRateLimiter(cfg, 100)
+	if err != nil {
+		t.Fatalf("NewRateLimiter: %v", err)
+	}
+
+	// 10.128.x.x should be trusted
+	for i := 0; i < 20; i++ {
+		if !rl.Allow(context.Background(), settings.ServiceEthRPC, "10.128.0.3") {
+			t.Fatalf("trusted CIDR client denied on request %d", i)
+		}
+	}
+
+	// 10.200.0.1 should NOT be trusted — still rate limited
+	rl.Allow(context.Background(), settings.ServiceEthRPC, "10.200.0.1") // consume burst
+	if rl.Allow(context.Background(), settings.ServiceEthRPC, "10.200.0.1") {
+		t.Error("untrusted IP 10.200.0.1 should be rate limited")
+	}
+}
+
+func TestAllow_TrustedClient_EmptyList_NoBypass(t *testing.T) {
+	cfg := testConfig()
+	cfg.GlobalRateLimit = 1
+	cfg.GlobalBurst = 1
+	// TrustedClients not set — empty
+
+	rl, err := NewRateLimiter(cfg, 100)
+	if err != nil {
+		t.Fatalf("NewRateLimiter: %v", err)
+	}
+
+	// Even localhost should be rate limited when TrustedClients is empty
+	rl.Allow(context.Background(), settings.ServiceEthRPC, "127.0.0.1")
+	if rl.Allow(context.Background(), settings.ServiceEthRPC, "127.0.0.1") {
+		t.Error("127.0.0.1 should be rate limited when TrustedClients is empty")
+	}
+}
+
+func TestAllow_TrustedClient_DoesNotAffectUntrustedIPs(t *testing.T) {
+	cfg := testConfig()
+	cfg.GlobalRateLimit = 1
+	cfg.GlobalBurst = 1
+	cfg.TrustedClients = []string{"127.0.0.1"}
+
+	rl, err := NewRateLimiter(cfg, 100)
+	if err != nil {
+		t.Fatalf("NewRateLimiter: %v", err)
+	}
+
+	// Trusted: unlimited
+	for i := 0; i < 20; i++ {
+		if !rl.Allow(context.Background(), settings.ServiceEthRPC, "127.0.0.1") {
+			t.Fatalf("trusted client denied on request %d", i)
+		}
+	}
+
+	// Untrusted: still rate limited
+	rl.Allow(context.Background(), settings.ServiceEthRPC, "8.8.8.8")
+	if rl.Allow(context.Background(), settings.ServiceEthRPC, "8.8.8.8") {
+		t.Error("untrusted IP should still be rate limited")
+	}
+}
+
+// --- Shared CIDR helper tests ---
+
+func TestParseCIDRList_MixedEntries(t *testing.T) {
+	nets := ParseCIDRList([]string{"10.0.0.0/8", "192.168.1.1", "invalid", "::1"})
+	// Should parse 3 valid entries, skip "invalid"
+	if len(nets) != 3 {
+		t.Errorf("ParseCIDRList returned %d nets, want 3", len(nets))
+	}
+}
+
+func TestParseCIDRList_Empty(t *testing.T) {
+	nets := ParseCIDRList(nil)
+	if len(nets) != 0 {
+		t.Errorf("ParseCIDRList(nil) returned %d nets, want 0", len(nets))
+	}
+}
+
+func TestMatchesAnyNet_EmptyNets(t *testing.T) {
+	if MatchesAnyNet(nil, "127.0.0.1") {
+		t.Error("MatchesAnyNet should return false for empty nets")
+	}
+}
+
+func TestMatchesAnyNet_InvalidIP(t *testing.T) {
+	nets := ParseCIDRList([]string{"10.0.0.0/8"})
+	if MatchesAnyNet(nets, "not-an-ip") {
+		t.Error("MatchesAnyNet should return false for invalid IP")
+	}
+}
+
 func TestNewRateLimiter_DefaultCacheSize(t *testing.T) {
 	cfg := testConfig()
 	rl, err := NewRateLimiter(cfg, 0) // 0 should default to 1000

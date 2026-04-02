@@ -61,6 +61,11 @@ type SecurityConfig struct {
 	TrustForwardedHeaders bool     `mapstructure:"trust_forwarded_headers" yaml:"trust_forwarded_headers"` // Helper to enable X-Forwarded-For logic
 	TrustedProxies        []string `mapstructure:"trusted_proxies" yaml:"trusted_proxies"`                 // List of IP/CIDR to trust for headers (e.g. LB IPs)
 
+	// Trusted Clients — IPs/CIDRs that bypass rate limiting entirely.
+	// Use for co-located internal services (e.g. orchestrator on localhost, VPC peers).
+	// Conceptually distinct from TrustedProxies (which controls header trust, not rate-limit bypass).
+	TrustedClients []string `mapstructure:"trusted_clients" yaml:"trusted_clients"`
+
 	// Legacy Secrets (Moved here for unification)
 	ExplorerAPIKey string `mapstructure:"explorer_api_key" yaml:"explorer_api_key"`
 	JWTSecret      string `mapstructure:"jwt_secret" yaml:"jwt_secret"`

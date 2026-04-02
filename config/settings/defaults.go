@@ -78,5 +78,6 @@ func DefaultConfig() NodeConfig {
 			GROTrack:     false,
 		},
 		Security: DefaultSecurityConfig(),
+		Alerts:   DefaultAlertsConfig(),
 	}
 }

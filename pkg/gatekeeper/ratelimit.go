@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net"
 
 	log "gossipnode/logging"
 
@@ -28,6 +29,7 @@ type Limiter interface {
 
 // RateLimiter implements two-layer rate limiting:
 //
+//	Layer 0 (Trusted bypass):  IPs in TrustedClients skip all limiting → internal services
 //	Layer 1 (Global per-IP):   aggregate cap across all services → DDoS defense
 //	Layer 2 (Per-IP per-Svc):  per-service cap per IP → fairness / policy enforcement
 //
@@ -35,6 +37,10 @@ type Limiter interface {
 // Implements the Limiter interface.
 type RateLimiter struct {
 	config *settings.SecurityConfig
+
+	// Layer 0: pre-parsed CIDRs from TrustedClients — bypass all rate limiting.
+	// Parsed once at startup via ParseCIDRList (shared with IPExtractor).
+	trustedNets []*net.IPNet
 
 	// Layer 1: global per-IP limiter ("1.2.3.4" → aggregate limiter)
 	perIP *lru.Cache[string, *rate.Limiter]
@@ -66,10 +72,11 @@ func NewRateLimiter(cfg *settings.SecurityConfig, cacheSize int) (*RateLimiter, 
 	}
 
 	return &RateLimiter{
-		config:   cfg,
-		perIP:    perIP,
-		perIPSvc: perIPSvc,
-		logger:   logger(log.RateLimit),
+		config:      cfg,
+		trustedNets: ParseCIDRList(cfg.TrustedClients),
+		perIP:       perIP,
+		perIPSvc:    perIPSvc,
+		logger:      logger(log.RateLimit),
 	}, nil
 }
 
@@ -79,6 +86,13 @@ func NewRateLimiter(cfg *settings.SecurityConfig, cacheSize int) (*RateLimiter, 
 // Layer 1 (global per-IP) runs first; if it denies, the request is rejected immediately.
 // Layer 2 (per-service per-IP) runs second to enforce per-service limits.
 func (rl *RateLimiter) Allow(ctx context.Context, serviceName string, ip string) bool {
+	// --- Layer 0: Trusted client bypass ---
+	// Internal services (orchestrator, VPC peers) skip all rate limiting.
+	// Auth enforcement is unaffected — handled separately by middleware.
+	if MatchesAnyNet(rl.trustedNets, ip) {
+		return true
+	}
+
 	// --- Layer 1: Global per-IP cap ---
 	if rl.config.GlobalRateLimit > 0 {
 		limiter := rl.getOrCreate(rl.perIP, ip, rl.config.GlobalRateLimit, rl.config.GlobalBurst)

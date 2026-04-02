@@ -84,7 +84,15 @@ features:
   use_legacy_bft: false
   grotrack: false            # Requires ports.metrics > 0
 
-# ── Security ────────────────────────────────────────────
+# ── Alerts ─────────────────────────────────────────────
+# External alerting service (Telegram via tg.jmdt.io).
+# Prefer env vars for secrets: JMDN_ALERTS_API_KEY, JMDN_ALERTS_CHAT_ID
+alerts:
+  url: ""                    # e.g. "https://tg.jmdt.io/multi-channel"
+  api_key: ""                # Prefer env: JMDN_ALERTS_API_KEY
+  chat_id: ""                # Prefer env: JMDN_ALERTS_CHAT_ID
+  http_timeout: 10s
+
 # ── Security ────────────────────────────────────────────
 # Enterprise Security Module (Gatekeeper)
 # Prefer env vars for secrets: JMDN_SECURITY_EXPLORER_API_KEY, JMDN_SECURITY_JWT_SECRET
@@ -100,6 +108,12 @@ security:
   # Cloud Native / Load Balancer Support
   trust_forwarded_headers: true   # Enable for Cloudflare/GCP LB
   trusted_proxies: []             # Optional: ["10.0.0.0/8"]
+
+  # Trusted Clients — IPs/CIDRs that bypass rate limiting entirely.
+  # For co-located services (orchestrator) and VPC-internal node peers.
+  # Does NOT bypass authentication — only rate limiting.
+  # Distinct from trusted_proxies (which controls header trust).
+  trusted_clients: []             # e.g. ["127.0.0.1", "::1", "10.128.0.0/16"]
 
   # Legacy Secrets (Moved here for unification)
   explorer_api_key: ""
