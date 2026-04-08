@@ -130,6 +130,19 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 				if err2 := DB_OPs.Update("latest_block", b.BlockNumber); err2 != nil {
 					return fmt.Errorf("force update latest block failed: %w", err2)
 				}
+
+				// Write tx:<hash> → blockNumber index for each transaction.
+				// WriteHeaders stores blocks without transactions, so StoreZKBlock's tx
+				// indexing loop runs 0 times there. This is the only place those index
+				// entries get written — required for GetTransactionByHash to work.
+				for _, tx := range b.Transactions {
+					txKey := fmt.Sprintf("%s%s", DB_OPs.DEFAULT_PREFIX_TX, tx.Hash)
+					if err2 := DB_OPs.Create(conn, txKey, b.BlockNumber); err2 != nil {
+						if !strings.Contains(err2.Error(), "already exists") {
+							return fmt.Errorf("store tx index for %s: %w", tx.Hash, err2)
+						}
+					}
+				}
 			} else {
 				return err
 			}
