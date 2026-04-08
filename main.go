@@ -445,6 +445,37 @@ func runCommand(command string, args []string, grpcPort int) {
 			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
 		}
 
+	case "fastsyncv2":
+		if len(args) < 1 {
+			fmt.Println("Usage: jmdn -cmd fastsyncv2 <peer_multiaddr>")
+			os.Exit(1)
+		}
+		fmt.Println("Starting FastSync V2...")
+		stats, err := client.FastSyncV2(args[0])
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if stats == nil {
+			fmt.Println("FastSyncV2 returned no stats. The target peer may be unreachable.")
+			os.Exit(1)
+		}
+		if stats.Error != "" {
+			fmt.Printf("FastSyncV2 failed: %s\n", stats.Error)
+			os.Exit(1)
+		}
+		fmt.Printf("Sync completed in %ds\n", stats.TimeTaken)
+		if stats.MainState == nil {
+			fmt.Println("  Main DB TxID: unavailable")
+		} else {
+			fmt.Printf("  Main DB TxID: %d\n", stats.MainState.TxId)
+		}
+		if stats.AccountsState == nil {
+			fmt.Println("  Accounts DB TxID: unavailable")
+		} else {
+			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
+		}
+
 	case "firstsync":
 		if len(args) < 2 {
 			fmt.Println("Usage: jmdn -cmd firstsync <peer_multiaddr> <server|client>")

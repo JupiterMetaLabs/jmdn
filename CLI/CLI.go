@@ -673,6 +673,11 @@ func (h *CommandHandler) handleFastSyncV2(parts []string) {
 		return
 	}
 
+	if h.FastSyncerV2 == nil {
+		fmt.Println("Error: FastsyncV2 engine is not initialized")
+		return
+	}
+
 	// Parse the multiaddr
 	addr, err := ma.NewMultiaddr(parts[1])
 	if err != nil {
@@ -687,15 +692,36 @@ func (h *CommandHandler) handleFastSyncV2(parts []string) {
 		return
 	}
 
+	// Show pre-sync DB state if clients are available
+	if h.MainClient != nil && h.DIDClient != nil {
+		mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+		if err == nil {
+			fmt.Printf("Pre-sync main DB state: TxID=%d, Root=%x\n", mainState.TxId, mainState.TxHash)
+		}
+	}
+
 	fmt.Printf("Starting V2 blockchain fastsync with peer %s\n", addrInfo.ID.String())
 
 	startTime := time.Now().UTC()
 	syncErr := h.FastSyncerV2.HandleSync(parts[1])
 	if syncErr != nil {
-		fmt.Printf("First sync failed: %v\n", syncErr)
+		fmt.Printf("FastsyncV2 failed: %v\n", syncErr)
 		return
 	}
-	fmt.Printf("FastsyncV2 completed completely in %v\n", time.Since(startTime))
+
+	// Show post-sync DB state if clients are available
+	if h.MainClient != nil && h.DIDClient != nil {
+		newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+		if err == nil {
+			fmt.Printf("Post-sync main DB state: TxID=%d, Root=%x\n", newMainState.TxId, newMainState.TxHash)
+		}
+		newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
+		if err == nil {
+			fmt.Printf("Post-sync accounts DB state: TxID=%d, Root=%x\n", newAccountsState.TxId, newAccountsState.TxHash)
+		}
+	}
+
+	fmt.Printf("FastsyncV2 completed in %v\n", time.Since(startTime))
 	printDashes()
 }
 

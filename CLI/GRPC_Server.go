@@ -269,6 +269,9 @@ func (s *CLIServer) GetDatabaseState(ctx context.Context, _ *emptypb.Empty) (*pb
 
 // Helper function to convert database state
 func convertDBState(state *schema.ImmutableState) *pb.DatabaseState {
+	if state == nil {
+		return &pb.DatabaseState{}
+	}
 	return &pb.DatabaseState{
 		TxId:     state.TxId,
 		TxHash:   state.TxHash,
