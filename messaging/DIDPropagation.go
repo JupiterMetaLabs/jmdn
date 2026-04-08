@@ -200,7 +200,11 @@ func HandleDIDStream(stream network.Stream) {
 			return
 		}
 	}
-	defer stream.Close()
+	defer func() {
+		if err := stream.Close(); err != nil {
+			log.Error().Err(err).Msg("Failed to close DID incoming stream")
+		}
+	}()
 
 	// Get the remote peer
 	remotePeer := stream.Conn().RemotePeer().String()
@@ -326,7 +330,11 @@ func forwardDID(h host.Host, msg DIDMessage) {
 				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open DID stream")
 				return err
 			}
-			defer stream.Close()
+			defer func() {
+				if closeErr := stream.Close(); closeErr != nil {
+					log.Error().Err(closeErr).Str("peer", peerIDForGoroutine.String()).Msg("Failed to close DID stream")
+				}
+			}()
 
 			// Write the message
 			_, err = stream.Write(msgBytes)
@@ -449,7 +457,11 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open stream for DID")
 				return err
 			}
-			defer stream.Close()
+			defer func() {
+				if closeErr := stream.Close(); closeErr != nil {
+					log.Error().Err(closeErr).Str("peer", peerIDForGoroutine.String()).Msg("Failed to close stream for DID")
+				}
+			}()
 
 			// Send the message
 			_, err = stream.Write(msgBytes)

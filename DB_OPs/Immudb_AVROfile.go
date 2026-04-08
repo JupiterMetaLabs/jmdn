@@ -44,7 +44,11 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 	if err != nil {
 		return fmt.Errorf("dial failed: %w", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			log.Printf("Failed to close grpc connection: %v", closeErr)
+		}
+	}()
 
 	client := schema.NewImmuServiceClient(conn)
 	apiCtx := context.Background()
@@ -101,7 +105,11 @@ func BackupFromHashMap(cfg Config, MAP *hashmap.HashMap) error {
 	if err != nil {
 		return fmt.Errorf("open avro file: %w", err)
 	}
-	defer avroFile.Close()
+	defer func() {
+		if closeErr := avroFile.Close(); closeErr != nil {
+			log.Printf("Failed to close avro file: %v", closeErr)
+		}
+	}()
 
 	ocfWriter, err := goavro.NewOCFWriter(goavro.OCFConfig{
 		W:               avroFile,

@@ -44,7 +44,11 @@ func (sn *SeedNode) GetAllPeers() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			fmt.Printf("Error closing rows: %v\n", closeErr)
+		}
+	}()
 
 	var peers []string
 	for rows.Next() {
@@ -64,7 +68,11 @@ func (sn *SeedNode) GetPeers() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			fmt.Printf("Error closing rows: %v\n", closeErr)
+		}
+	}()
 
 	var peers []string
 	for rows.Next() {
@@ -233,7 +241,11 @@ func (sn *SeedNode) PingPeer(peerAddr string) (bool, error) {
 		fmt.Printf("Failed to open heartbeat stream to %s: %v\n", peerInfo.ID, err)
 		return false, nil // Not an error, just offline
 	}
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			fmt.Printf("Error closing heartbeat stream: %v\n", closeErr)
+		}
+	}()
 
 	// Update last seen time in database
 	_, err = sn.db.Exec("UPDATE peers SET connections = connections + 1 WHERE peerID = ?", peerInfo.ID.String())
@@ -278,7 +290,11 @@ func (sn *SeedNode) ListPeers() ([]*PeerStatus, error) {
 	if err != nil {
 		return nil, fmt.Errorf("database error listing peers: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			fmt.Printf("Error closing rows: %v\n", closeErr)
+		}
+	}()
 
 	var peers []*PeerStatus
 	for rows.Next() {
@@ -401,7 +417,11 @@ func (sn *SeedNode) performPeerMaintenance() {
 
 // RegisterPeer is called by a peer to register itself with the seed node
 func (sn *SeedNode) RegisterPeer(stream network.Stream) {
-	defer stream.Close()
+	defer func() {
+		if closeErr := stream.Close(); closeErr != nil {
+			fmt.Printf("Error closing registration stream: %v\n", closeErr)
+		}
+	}()
 
 	// Get the peer's info
 	remotePeer := stream.Conn().RemotePeer()

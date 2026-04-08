@@ -246,7 +246,11 @@ func calculateSpeedTrend(samples []float64) float64 {
 // HandleFileStream processes incoming files with adaptive buffer sizing
 // If outputPath is empty, defaults to "received_<peerID>_<timestamp>"
 func HandleFileStream(s network.Stream, outputPath string) {
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			fmt.Println("Error closing stream:", closeErr)
+		}
+	}()
 	startTime := time.Now().UTC()
 	peerID := s.Conn().RemotePeer().String()
 
@@ -301,7 +305,11 @@ func HandleFileStream(s network.Stream, outputPath string) {
 		fmt.Println("Error creating file:", err)
 		return
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			fmt.Println("Error closing file:", closeErr)
+		}
+	}()
 
 	// Use buffered reader with initial buffer size
 	bufferSize := initialBuffer
@@ -432,7 +440,11 @@ func SendFile(h host.Host, peerID peer.ID, filePath, remotePath string) error {
 	if err != nil {
 		return fmt.Errorf("file open failed: %v", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			fmt.Println("Error closing file:", closeErr)
+		}
+	}()
 
 	// Get initial buffer size
 	initialBuffer := getOptimalBufferSize(peerIDStr)
@@ -444,7 +456,11 @@ func SendFile(h host.Host, peerID peer.ID, filePath, remotePath string) error {
 	if err != nil {
 		return fmt.Errorf("stream failed: %v", err)
 	}
-	defer s.Close()
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			fmt.Println("Error closing stream:", closeErr)
+		}
+	}()
 
 	// Send file metadata (size and filename)
 	header := make([]byte, 16+1024) // 16 bytes for size + 1024 for filename

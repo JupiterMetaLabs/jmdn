@@ -218,7 +218,11 @@ func RemovePeerFromChannel(gps *PubSubMessages.GossipPubSub, channelName string,
 
 // handleGossipStream handles incoming gossip messages
 func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			log.Printf("Error closing gossip stream: %v", err)
+		}
+	}()
 
 	// Read message using delimiter
 	messageBytes, err := readMessage(s)

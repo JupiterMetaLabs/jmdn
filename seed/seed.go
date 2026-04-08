@@ -83,7 +83,11 @@ func RegisterAsSeed(node *config.Node) error {
 // handleSeedRequest handles general seed node requests
 func handleSeedRequest(stream network.Stream, node *config.Node) {
 	// Basic handler for seed protocol
-	defer stream.Close()
+	defer func() {
+		if closeErr := stream.Close(); closeErr != nil {
+			fmt.Printf("Error closing stream: %v\n", closeErr)
+		}
+	}()
 
 	// Read the request
 	reader := bufio.NewReader(stream)
@@ -104,7 +108,11 @@ func handleSeedRequest(stream network.Stream, node *config.Node) {
 
 // handlePeerDiscoveryRequest processes requests for peer discovery
 func handlePeerDiscoveryRequest(stream network.Stream, node *config.Node) {
-	defer stream.Close()
+	defer func() {
+		if closeErr := stream.Close(); closeErr != nil {
+			fmt.Printf("Error closing stream: %v\n", closeErr)
+		}
+	}()
 
 	if !node.IsSeed {
 		stream.Write([]byte("{\"error\": \"Not a seed node\"}\n"))
@@ -203,7 +211,11 @@ func handlePeerDiscoveryRequest(stream network.Stream, node *config.Node) {
 
 // handleRegisterRequest handles peer registration
 func handleRegisterRequest(stream network.Stream, node *config.Node) {
-	defer stream.Close()
+	defer func() {
+		if closeErr := stream.Close(); closeErr != nil {
+			fmt.Printf("Error closing stream: %v\n", closeErr)
+		}
+	}()
 
 	if !node.IsSeed {
 		stream.Write([]byte("{\"error\": \"Not a seed node\"}\n"))
@@ -306,7 +318,11 @@ func RequestPeers(h host.Host, seedAddr string, maxPeers int, peerType string) (
 	if err != nil {
 		return nil, fmt.Errorf("failed to open peer discovery stream: %v", err)
 	}
-	defer stream.Close()
+	defer func() {
+		if closeErr := stream.Close(); closeErr != nil {
+			fmt.Printf("Error closing stream: %v\n", closeErr)
+		}
+	}()
 
 	// Send request
 	request := PeerRequest{

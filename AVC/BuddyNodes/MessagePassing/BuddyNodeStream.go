@@ -53,7 +53,11 @@ func NewStructBuddyNode(buddy *AVCStruct.BuddyNode) *StructBuddyNode {
 
 // HandleBuddyNodesMessageStream handles incoming messages on the buddy nodes protocol
 func (StructBuddyNode *StructBuddyNode) HandleBuddyNodesMessageStream(host host.Host, s network.Stream) {
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			logger().NamedLogger.Error(context.Background(), "Failed to close buddy nodes stream", err)
+		}
+	}()
 
 	// Create context for this stream handler
 	spanCtx := StructBuddyNode.logger_ctx

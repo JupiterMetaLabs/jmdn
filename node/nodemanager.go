@@ -178,7 +178,9 @@ func createNodeManager(node *config.Node) (*NodeManager, error) {
 
 		// Ping to ensure connection is valid
 		if err := db.Ping(); err != nil {
-			db.Close()
+			if closeErr := db.Close(); closeErr != nil {
+				fmt.Printf("Failed to close node manager DB on ping error: %v\n", closeErr)
+			}
 			return nil, errors.New("database ping failed: " + err.Error())
 		}
 
@@ -695,7 +697,11 @@ func (nm *NodeManager) UpdatePeerStatus(peerID peer.ID, isAlive bool, failCount 
 }
 
 func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
-	defer stream.Close()
+	defer func() {
+		if closeErr := stream.Close(); closeErr != nil {
+			logger().NamedLogger.Error(context.Background(), "Failed to close heartbeat stream", closeErr)
+		}
+	}()
 
 	// Record trace span and close it
 	span_ctx, span := logger().NamedLogger.Tracer("NodeManager").Start(nm.ctx, "NodeManager.handleHeartbeat")
@@ -945,7 +951,11 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 		)
 		return false, errors.New("failed to open heartbeat stream: " + err.Error())
 	}
-	defer stream.Close()
+	defer func() {
+		if closeErr := stream.Close(); closeErr != nil {
+			logger().NamedLogger.Error(span_ctx, "Failed to close send heartbeat stream", closeErr)
+		}
+	}()
 
 	span.SetAttributes(attribute.String("stream_opened", "true"))
 

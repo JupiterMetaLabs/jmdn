@@ -96,7 +96,11 @@ func (s *alertService) send(p alertPayload) {
 		log.Printf("[ALERT] Failed to send %s: %v", p.alertName, err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Printf("❌ [ALERT] Failed to close response body: %v", closeErr)
+		}
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)

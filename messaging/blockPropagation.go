@@ -204,7 +204,11 @@ func HandleBlockStream(stream network.Stream) {
 			return
 		}
 	}
-	defer stream.Close()
+	defer func() {
+		if err := stream.Close(); err != nil {
+			log.Error().Err(err).Msg("Failed to close block stream")
+		}
+	}()
 
 	remotePeer := stream.Conn().RemotePeer().String()
 	if isPeerTimedOut(remotePeer) {
@@ -442,7 +446,11 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 				log.Debug().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open stream")
 				return err
 			}
-			defer stream.Close()
+			defer func() {
+				if closeErr := stream.Close(); closeErr != nil {
+					log.Debug().Err(closeErr).Str("peer", peerIDForGoroutine.String()).Msg("Failed to close stream")
+				}
+			}()
 
 			if _, err := stream.Write(msgBytes); err != nil {
 				log.Debug().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to write message")

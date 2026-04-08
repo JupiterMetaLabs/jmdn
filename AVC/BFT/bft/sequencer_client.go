@@ -165,7 +165,11 @@ func (s *SequencerBFTClient) sendBFTRequest(
 			Message:  fmt.Sprintf("connection failed: %v", err),
 		}
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("❌ [Sequencer] Failed to close connection to %s: %v", buddy.ID, err)
+		}
+	}()
 
 	client := pb.NewBFTServiceClient(conn)
 

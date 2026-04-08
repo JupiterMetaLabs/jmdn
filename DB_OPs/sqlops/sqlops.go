@@ -140,13 +140,17 @@ func NewUnifiedDB() (*UnifiedDB, error) {
 
 	// Check connection
 	if err := db.Ping(); err != nil {
-		db.Close()
+		if closeErr := db.Close(); closeErr != nil {
+			fmt.Printf("Error closing db during init ping: %v\n", closeErr)
+		}
 		return nil, fmt.Errorf("database ping failed: %w", err)
 	}
 
 	// Initialize the database schema
 	if err := initializeSchema(db); err != nil {
-		db.Close()
+		if closeErr := db.Close(); closeErr != nil {
+			fmt.Printf("Error closing db during schema init: %v\n", closeErr)
+		}
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
@@ -260,7 +264,11 @@ func (u *UnifiedDB) GetPeers(maxConnections int, limit int) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			fmt.Printf("Error closing rows in GetPeers: %v\n", err)
+		}
+	}()
 
 	var peers []string
 	for rows.Next() {
@@ -283,7 +291,11 @@ func (u *UnifiedDB) GetAllPeers() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			fmt.Printf("Error closing rows in GetAllPeers: %v\n", err)
+		}
+	}()
 
 	var peers []string
 	for rows.Next() {
@@ -373,7 +385,11 @@ func (u *UnifiedDB) GetAllKeyValues() (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			fmt.Printf("Error closing rows in GetAllKeyValues: %v\n", err)
+		}
+	}()
 
 	data := make(map[string]string)
 	for rows.Next() {
@@ -405,7 +421,11 @@ func (u *UnifiedDB) GetAllMerkleHashes() (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			fmt.Printf("Error closing rows in GetAllMerkleHashes: %v\n", err)
+		}
+	}()
 
 	data := make(map[string]string)
 	for rows.Next() {
@@ -446,19 +466,27 @@ func (u *UnifiedDB) GetConnectedPeers() ([]PeerInfo, error) {
 		var dfltValue interface{}
 
 		if err := rows.Scan(&cid, &name, &typeName, &notNull, &dfltValue, &pk); err != nil {
-			rows.Close()
+			if closeErr := rows.Close(); closeErr != nil {
+				fmt.Printf("Error closing rows after scan failure: %v\n", closeErr)
+			}
 			return nil, fmt.Errorf("failed to scan column info: %w", err)
 		}
 
 	}
-	rows.Close()
+	if err := rows.Close(); err != nil {
+		fmt.Printf("Error closing PRAGMA rows: %v\n", err)
+	}
 
 	// Now query the actual data
 	rows, err = u.DB.Query(sqlSelectConnectedPeersStmt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query connected peers: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			fmt.Printf("Error closing connected peers rows: %v\n", err)
+		}
+	}()
 
 	var peers []PeerInfo
 	for rows.Next() {
@@ -517,7 +545,11 @@ func (u *UnifiedDB) GetConnectedPeersAsMap() ([]map[string]interface{}, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to query connected peers: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			fmt.Printf("Error closing connected peers map rows: %v\n", err)
+		}
+	}()
 
 	var result []map[string]interface{}
 

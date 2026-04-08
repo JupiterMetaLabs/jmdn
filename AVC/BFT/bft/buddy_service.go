@@ -149,7 +149,11 @@ func (s *BuddyService) runBFTConsensus(ctx context.Context, req *pb.BFTRequest) 
 		s.reportFailure(req, fmt.Sprintf("failed to create BFT adapter: %v", err))
 		return
 	}
-	defer adapter.Close()
+	defer func() {
+		if err := adapter.Close(); err != nil {
+			log.Printf("⚠️ [%s] Failed to close BFT adapter: %v", s.buddyID, err)
+		}
+	}()
 
 	log.Printf("✅ [%s] BFT adapter initialized on channel: %s", s.buddyID, req.GossipsubTopic)
 
@@ -211,7 +215,11 @@ func (s *BuddyService) reportResult(req *pb.BFTRequest, result *Result) {
 		log.Printf("❌ [%s] Failed to connect to sequencer: %v", s.buddyID, err)
 		return
 	}
-	defer conn.Close()
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			log.Printf("⚠️ [%s] Failed to close sequencer connection: %v", s.buddyID, closeErr)
+		}
+	}()
 
 	client := pb.NewBFTServiceClient(conn)
 
@@ -255,7 +263,11 @@ func (s *BuddyService) reportFailure(req *pb.BFTRequest, reason string) {
 		log.Printf("❌ [%s] Failed to connect to sequencer: %v", s.buddyID, err)
 		return
 	}
-	defer conn.Close()
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			log.Printf("⚠️ [%s] Failed to close sequencer connection: %v", s.buddyID, closeErr)
+		}
+	}()
 
 	client := pb.NewBFTServiceClient(conn)
 	pbResult := &pb.BFTResult{

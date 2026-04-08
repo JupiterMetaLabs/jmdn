@@ -40,7 +40,11 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 	remotePeer := s.Conn().RemotePeer()
 	span.SetAttributes(attribute.String("remote_peer_id", remotePeer.String()))
 	// Ensure stream is closed to prevent resource leaks
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			logger().NamedLogger.Error(logger_ctx, "Failed to close message stream", err)
+		}
+	}()
 
 	logger().NamedLogger.Info(spanCtx, "StructListener.HandleSubmitMessageStream called",
 		ion.String("remote_peer_id", remotePeer.String()),
@@ -471,7 +475,11 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 	}
 	// CRITICAL FIX: Ensure stream is always closed to prevent file descriptor leaks
 	// particularly when read timeouts occur (lines 503-517)
-	defer stream.Close()
+	defer func() {
+		if err := stream.Close(); err != nil {
+			logger().NamedLogger.Error(logger_ctx, "Failed to close SubmitMessageStream", err)
+		}
+	}()
 
 	sendSpan.SetAttributes(attribute.String("connection_method", "direct"))
 
@@ -681,7 +689,11 @@ func (StructListenerNode *StructListener) sendViaSeedNode(logger_ctx context.Con
 		seedSpan.SetAttributes(attribute.Float64("duration", duration))
 		return fmt.Errorf("failed to create stream to %s: %v", peerID, err)
 	}
-	defer stream.Close()
+	defer func() {
+		if err := stream.Close(); err != nil {
+			logger().NamedLogger.Error(logger_ctx, "Failed to close SubmitMessageStream via seed node", err)
+		}
+	}()
 
 	// Send the message
 	_, err = stream.Write([]byte(message + string(rune(config.Delimiter))))
@@ -790,7 +802,11 @@ func (StructListenerNode *StructListener) getPeerInfoFromSeedNode(logger_ctx con
 		peerInfoSpan.SetAttributes(attribute.Float64("duration", duration))
 		return nil, fmt.Errorf("failed to create seed node client: %v", err)
 	}
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			logger().NamedLogger.Error(logger_ctx, "Failed to close seed node client", err)
+		}
+	}()
 
 	// Get peer record from seed node
 	peerRecord, err := client.GetPeer(peerID.String())
