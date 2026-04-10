@@ -102,52 +102,47 @@ func main() {
 	// Sort by nonce for deterministic output
 	sort.Slice(dupes, func(i, j int) bool { return dupes[i].nonce < dupes[j].nonce })
 
+	// --- Print all accounts ---
+	fmt.Println("=== All accounts ===")
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ADDRESS\tNONCE\tCREATED_AT\tNOTE")
+	fmt.Fprintln(tw, "-------\t-----\t----------\t----")
+
+	// Sort accounts by nonce for readability
+	sort.Slice(accounts, func(i, j int) bool { return accounts[i].Nonce < accounts[j].Nonce })
+
+	for _, acc := range accounts {
+		createdAt := time.Unix(0, acc.CreatedAt).UTC().Format(time.RFC3339)
+		note := ""
+		if len(nonceMap[acc.Nonce]) > 1 {
+			note = fmt.Sprintf("DUPLICATE NONCE (shared by %d accounts)", len(nonceMap[acc.Nonce]))
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n", acc.Address.Hex(), acc.Nonce, createdAt, note)
+	}
+	tw.Flush()
+
+	// --- Duplicate summary ---
+	fmt.Println()
 	if len(dupes) == 0 {
 		fmt.Println("No duplicate nonces found.")
 	} else {
-		fmt.Printf("Found %d nonce value(s) shared by multiple accounts:\n\n", len(dupes))
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "NONCE\tADDRESS\tBALANCE\tTYPE\tUPDATED_AT")
-		fmt.Fprintln(tw, "-----\t-------\t-------\t----\t----------")
+		fmt.Printf("=== Duplicate nonces (%d) ===\n", len(dupes))
+		tw2 := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw2, "NONCE\tADDRESS\tCREATED_AT")
+		fmt.Fprintln(tw2, "-----\t-------\t----------")
 		for _, d := range dupes {
 			for i, acc := range d.accounts {
 				nStr := fmt.Sprintf("%d", d.nonce)
 				if i > 0 {
-					nStr = "  ↑ same"
+					nStr = "  (same)"
 				}
-				updated := time.Unix(0, acc.UpdatedAt).UTC().Format(time.RFC3339)
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-					nStr, acc.Address.Hex(), acc.Balance, acc.AccountType, updated)
+				createdAt := time.Unix(0, acc.CreatedAt).UTC().Format(time.RFC3339)
+				fmt.Fprintf(tw2, "%s\t%s\t%s\n", nStr, acc.Address.Hex(), createdAt)
 			}
-			fmt.Fprintln(tw, "\t\t\t\t")
+			fmt.Fprintln(tw2, "")
 		}
-		tw.Flush()
+		tw2.Flush()
 	}
-
-	// --- Summary: nonce distribution ---
-	fmt.Println("\n=== Nonce distribution (top 20) ===")
-	type nonceCount struct {
-		nonce uint64
-		count int
-	}
-	var dist []nonceCount
-	for n, accs := range nonceMap {
-		dist = append(dist, nonceCount{n, len(accs)})
-	}
-	sort.Slice(dist, func(i, j int) bool { return dist[i].count > dist[j].count })
-	if len(dist) > 20 {
-		dist = dist[:20]
-	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NONCE\tACCOUNTS_WITH_THIS_NONCE")
-	for _, d := range dist {
-		flag := ""
-		if d.count > 1 {
-			flag = " ← DUPLICATE"
-		}
-		fmt.Fprintf(tw, "%d\t%d%s\n", d.nonce, d.count, flag)
-	}
-	tw.Flush()
 }
 
 // scanAllAccounts pages through all keys with the given prefix and returns parsed accounts.
