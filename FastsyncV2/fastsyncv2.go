@@ -44,9 +44,6 @@ import (
 )
 
 const (
-	// protocolVersion is the FastSync wire protocol version. All routers must agree on this.
-	protocolVersion = 1
-
 	// checksumVersion is the checksum format used by PriorSync to validate block metadata.
 	// Must match the version used by the NodeInfo adapter (DB_OPs/Nodeinfo.ChecksumVersion).
 	checksumVersion = 2
@@ -142,7 +139,8 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 	reconRouter.SetSyncVarsConfig(ctx, *syncVars)
 
 	// PoTS uses its own isolated WAL for live block buffering.
-	potsRouter.SetSyncVars(ctx, protocolVersion, *nodeinfo, h)
+	// commsVersion (2) enables QUIC transport with TCP fallback, matching the other routers.
+	potsRouter.SetSyncVars(ctx, commsVersion, *nodeinfo, h)
 	potsRouter.SetWAL(ctx, potsWAL)
 
 	// --- 6. Mark this node as available for sync and start server-side handlers ---
@@ -238,12 +236,20 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 	}
 	log.Printf("[FastsyncV2] Connected to peer %s", info.ID)
 
+	// After connecting, fetch all addresses the peer advertises from the peerstore.
+	// info.Addrs only contains the single address from the user-supplied multiaddr,
+	// which may be QUIC-only. PoTS V1 requires TCP; the peerstore will have both.
+	peerAddrs := fs.Host.Peerstore().Addrs(info.ID)
+	if len(peerAddrs) == 0 {
+		peerAddrs = info.Addrs
+	}
+
 	// Construct the target's NodeInfo for all subsequent protocol calls.
 	// BlockInfo is nil because we don't need to query the remote's DB locally — the
 	// routers communicate with the remote via libp2p streams.
 	targetNodeInfo := &types.Nodeinfo{
 		PeerID:    info.ID,
-		Multiaddr: info.Addrs,
+		Multiaddr: peerAddrs,
 		Version:   commsVersion,
 	}
 
