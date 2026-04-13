@@ -47,3 +47,4 @@ vendor/
 
 # Internal team references
 docs/SONARQUBE_SETUP_GUIDE.md
+ADR-001-JMDT-Native-EVM-Smart-Contracts.docx
