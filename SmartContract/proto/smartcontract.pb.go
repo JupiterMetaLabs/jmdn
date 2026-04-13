@@ -535,6 +535,7 @@ type DeployContractRequest struct {
 	GasLimit        uint64                 `protobuf:"varint,4,opt,name=gas_limit,json=gasLimit,proto3" json:"gas_limit,omitempty"`                     // Gas limit
 	ConstructorArgs string                 `protobuf:"bytes,5,opt,name=constructor_args,json=constructorArgs,proto3" json:"constructor_args,omitempty"` // ABI-encoded constructor arguments (hex-encoded with 0x prefix, optional)
 	Abi             string                 `protobuf:"bytes,6,opt,name=abi,proto3" json:"abi,omitempty"`                                                // Contract ABI JSON (optional but recommended for registry)
+	PrivateKey      string                 `protobuf:"bytes,7,opt,name=private_key,json=privateKey,proto3" json:"private_key,omitempty"`                // Hex-encoded deployer private key (0x-prefixed) for signing the deployment tx
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -607,6 +608,13 @@ func (x *DeployContractRequest) GetConstructorArgs() string {
 func (x *DeployContractRequest) GetAbi() string {
 	if x != nil {
 		return x.Abi
+	}
+	return ""
+}
+
+func (x *DeployContractRequest) GetPrivateKey() string {
+	if x != nil {
+		return x.PrivateKey
 	}
 	return ""
 }

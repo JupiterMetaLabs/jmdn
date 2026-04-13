@@ -146,6 +146,24 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 		return nil, fmt.Errorf("failed to build transaction: %w", err)
 	}
 
+	// Sign the transaction with the deployer's private key.
+	// private_key must be a 0x-prefixed 32-byte hex-encoded ECDSA key.
+	if req.PrivateKey == "" {
+		return nil, fmt.Errorf("private_key is required to sign the deployment transaction")
+	}
+	privKeyHex := strings.TrimPrefix(req.PrivateKey, "0x")
+	privKey, err := crypto.HexToECDSA(privKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid private_key: %w", err)
+	}
+	if err := transaction.SignTransaction(tx, privKey); err != nil {
+		return nil, fmt.Errorf("failed to sign deployment transaction: %w", err)
+	}
+	// Recompute hash after signing (V/R/S are now populated)
+	log.Info().
+		Str("tx_hash", tx.Hash.Hex()).
+		Msg("📝 Deployment transaction signed successfully")
+
 	// JSON marshal the transaction for the gRPC facade (gETH facade expects JSON)
 	jsonData, err := json.Marshal(tx)
 	if err != nil {
