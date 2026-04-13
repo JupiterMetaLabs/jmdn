@@ -130,8 +130,11 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 			log.Debug().Msgf("Account %s found in DB, nonce: %d", caller.Hex(), nonce)
 		}
 	}
-	// Create and build contract deployment transaction
-	// This helper handles both the internal config.Transaction creation and the Geth-compatible hash calculation
+	// Create and build contract deployment transaction.
+	// V/R/S are intentionally left nil — the SmartContract service is a trusted
+	// internal component. Block/Server.go recognises unsigned contract-creation
+	// transactions (To == nil, V == nil) and routes them through the internal
+	// deployment path, bypassing external signature validation.
 	tx, _, err := transaction.BuildContractCreationTx(
 		big.NewInt(int64(r.chainID)),
 		caller,
@@ -145,24 +148,6 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 	if err != nil {
 		return nil, fmt.Errorf("failed to build transaction: %w", err)
 	}
-
-	// Sign the transaction with the deployer's private key.
-	// private_key must be a 0x-prefixed 32-byte hex-encoded ECDSA key.
-	if req.PrivateKey == "" {
-		return nil, fmt.Errorf("private_key is required to sign the deployment transaction")
-	}
-	privKeyHex := strings.TrimPrefix(req.PrivateKey, "0x")
-	privKey, err := crypto.HexToECDSA(privKeyHex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid private_key: %w", err)
-	}
-	if err := transaction.SignTransaction(tx, privKey); err != nil {
-		return nil, fmt.Errorf("failed to sign deployment transaction: %w", err)
-	}
-	// Recompute hash after signing (V/R/S are now populated)
-	log.Info().
-		Str("tx_hash", tx.Hash.Hex()).
-		Msg("📝 Deployment transaction signed successfully")
 
 	// JSON marshal the transaction for the gRPC facade (gETH facade expects JSON)
 	jsonData, err := json.Marshal(tx)

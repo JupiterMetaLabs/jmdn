@@ -74,7 +74,6 @@ message DeployContractRequest {
     uint64 gas_limit = 4;             // Gas limit
     string constructor_args = 5;      // ABI-encoded constructor arguments (hex-encoded with 0x prefix, optional)
     string abi = 6;                   // Contract ABI JSON (optional but recommended for registry)
-    string private_key = 7;           // Hex-encoded deployer private key (0x-prefixed) — used to sign the deployment tx
 }
 
 message DeployContractResponse {
