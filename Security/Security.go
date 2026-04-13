@@ -258,10 +258,14 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 	startTime := time.Now().UTC()
 
 	if tx != nil {
+		toAttr := "<contract creation>"
+		if tx.To != nil {
+			toAttr = tx.To.Hex()
+		}
 		span.SetAttributes(
 			attribute.String("tx_hash", tx.Hash.Hex()),
 			attribute.String("from_address", tx.From.Hex()),
-			attribute.String("to_address", tx.To.Hex()),
+			attribute.String("to_address", toAttr),
 			attribute.Int64("nonce", int64(tx.Nonce)),
 		)
 	}
@@ -351,10 +355,14 @@ func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, ma
 	}
 
 	if tx != nil {
+		toAttr := "<contract creation>"
+		if tx.To != nil {
+			toAttr = tx.To.Hex()
+		}
 		span.SetAttributes(
 			attribute.String("tx_hash", tx.Hash.Hex()),
 			attribute.String("from_address", tx.From.Hex()),
-			attribute.String("to_address", tx.To.Hex()),
+			attribute.String("to_address", toAttr),
 			attribute.Int64("nonce", int64(tx.Nonce)),
 		)
 	}
@@ -594,8 +602,9 @@ func CheckSignature(tx *config.Transaction, traceCtx context.Context) (bool, err
 		span.SetAttributes(attribute.String("to_address", tx.To.Hex()))
 	}
 
-	if tx.From == nil || tx.To == nil || tx.V == nil || tx.R == nil || tx.S == nil {
-		err := errors.New("transaction missing required signature fields (From, To, V, R, or S)")
+	// tx.To is intentionally nil for contract creation transactions; do not require it here.
+	if tx.From == nil || tx.V == nil || tx.R == nil || tx.S == nil {
+		err := errors.New("transaction missing required signature fields (From, V, R, or S)")
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "validation_failed"))
 		logger().Error(spanCtx, "Transaction missing required signature fields", err,
