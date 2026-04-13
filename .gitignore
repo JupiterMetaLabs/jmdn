@@ -48,3 +48,16 @@ vendor/
 # Internal team references
 docs/SONARQUBE_SETUP_GUIDE.md
 ADR-001-JMDT-Native-EVM-Smart-Contracts.docx
+jmdn.yaml
+contract_storage_pebble/000004.log
+*.log
+*.logs
+*.db
+*.db-wal
+contract_storage_pebble/CURRENT
+contract_storage_pebble/LOCK
+contract_storage_pebble/MANIFEST-000001
+contract_storage_pebble/MANIFEST-000005
+contract_storage_pebble/*
+SmartContract/artifacts/*
+SmartContract/artifacts/HelloWorld.json

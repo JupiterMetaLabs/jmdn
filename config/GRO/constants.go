@@ -126,6 +126,7 @@ const (
 	SeedThread = "thread:seed"
 
 	BlockGRPCServerThread      = "thread:block:grpc:server"
+	SmartContractThread        = "thread:smart:contract"
 	SubmitRawTransactionThread = "thread:block:submit:raw:transaction"
 
 	ConnectionPoolThread = "thread:connection:pool"
