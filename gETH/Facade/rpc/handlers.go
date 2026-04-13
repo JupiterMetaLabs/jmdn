@@ -30,6 +30,30 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		resp, _ := finish(req, v, err)
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, err
+	case "solc_compile":
+		// Expected params[0]: { "source": "...", "optimize": true, "runs": 200 }
+		if len(req.Params) == 0 {
+			resp, _ := invalidParams(req, "missing params")
+			return resp, nil
+		}
+		var compileReq struct {
+			Source   string `json:"source"`
+			Optimize bool   `json:"optimize"`
+			Runs     uint32 `json:"runs"`
+		}
+		// Marshal the any type back to JSON and then unmarshal into our struct
+		paramJSON, _ := json.Marshal(req.Params[0])
+		if err := json.Unmarshal(paramJSON, &compileReq); err != nil {
+			resp, _ := invalidParams(req, "invalid params: "+err.Error())
+			return resp, nil
+		}
+		if compileReq.Runs == 0 {
+			compileReq.Runs = 200
+		}
+		result, err := handler.service.CompileSolidity(ctx, compileReq.Source, compileReq.Optimize, compileReq.Runs)
+		resp, _ := finish(req, result, err)
+		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		return resp, err
 	case "net_version":
 		id, err := handler.service.ChainID(ctx)
 		resp, _ := finish(req, id.String(), err)

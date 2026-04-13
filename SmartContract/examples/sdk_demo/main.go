@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gossipnode/SmartContract/pkg/client"
+	"gossipnode/SmartContract/proto"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -48,7 +49,9 @@ func main() {
 	// 3. Compile
 	fmt.Println("\n[1] Compiling Empty Contract...")
 	var bytecode []byte
-	compileResp, err := c.CompileContract(context.Background(), helloWorldSource)
+	compileResp, err := c.CompileContract(context.Background(), &proto.CompileRequest{
+		SourceCode: helloWorldSource,
+	})
 	if err != nil {
 		log.Fatalf("❌ Compilation failed (gRPC error): %v", err)
 	}

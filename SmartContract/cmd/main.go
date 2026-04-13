@@ -55,12 +55,12 @@ func main() {
 	fmt.Println("   Initializing DB_OPs Pool...")
 	poolConfig := config.DefaultConnectionPoolConfig()
 	// Assuming default immudb/immudb credentials for local dev
-	if err := DB_OPs.InitMainDBPoolWithLoki(poolConfig, false, dbConfig.Username, dbConfig.Password); err != nil {
+	if err := DB_OPs.InitMainDBPool(poolConfig); err != nil {
 		log.Warn().Err(err).Msg("Failed to initialize DB_OPs pool - Nonce retrieval might fail")
 	}
 
 	fmt.Println("   Initializing Accounts Pool...")
-	if err := DB_OPs.InitAccountsPoolWithLoki(false, dbConfig.Username, dbConfig.Password); err != nil {
+	if err := DB_OPs.InitAccountsPool(); err != nil {
 		log.Warn().Err(err).Msg("Failed to initialize Accounts pool - DID checks might fail")
 	}
 

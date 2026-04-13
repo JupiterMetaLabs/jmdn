@@ -35,4 +35,16 @@ type Service interface {
 	SubscribeLogs(ctx context.Context, q *Types.FilterQuery) (<-chan Types.Log, func(), error)
 	// This is to get the pending transactions - It will be implemented once MRE is ready - // Future
 	SubscribePendingTxs(ctx context.Context) (<-chan string, func(), error)
+
+	// Solidity Compiler
+	CompileSolidity(ctx context.Context, source string, optimize bool, runs uint32) (*SolcCompileResult, error)
+}
+
+// SolcCompileResult holds compilation results for JSON-RPC
+type SolcCompileResult struct {
+	ABI              string   `json:"abi"`
+	Bytecode         string   `json:"bytecode"`
+	DeployedBytecode string   `json:"deployedBytecode"`
+	Errors           []string `json:"errors"`
+	Warnings         []string `json:"warnings"`
 }

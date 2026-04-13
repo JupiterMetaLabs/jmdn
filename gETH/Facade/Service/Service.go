@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gossipnode/SmartContract/pkg/client"
+	smartcontractpb "gossipnode/SmartContract/proto"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -54,6 +55,43 @@ func (s *ServiceImpl) ChainID(ctx context.Context) (*big.Int, error) {
 	}
 
 	return big.NewInt(int64(s.ChainIDValue)), nil
+}
+
+func (s *ServiceImpl) CompileSolidity(ctx context.Context, source string, optimize bool, runs uint32) (*SolcCompileResult, error) {
+	resp, err := s.scClient.CompileContract(ctx, &smartcontractpb.CompileRequest{
+		SourceCode:   source,
+		Optimize:     optimize,
+		OptimizeRuns: runs,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// If the compiler returned errors in the contract object, return them
+	if resp.Contract != nil && len(resp.Contract.Errors) > 0 {
+		return &SolcCompileResult{
+			Errors: resp.Contract.Errors,
+		}, nil
+	}
+
+	// Check if top-level error exists
+	if resp.Error != "" {
+		return &SolcCompileResult{
+			Errors: []string{resp.Error},
+		}, nil
+	}
+
+	if resp.Contract == nil {
+		return nil, fmt.Errorf("compilation failed: no contract produced")
+	}
+
+	return &SolcCompileResult{
+		ABI:              resp.Contract.Abi,
+		Bytecode:         resp.Contract.Bytecode,
+		DeployedBytecode: resp.Contract.DeployedBytecode,
+		Errors:           resp.Contract.Errors,
+		// Warnings would be added if available in proto
+	}, nil
 }
 
 func (s *ServiceImpl) ClientVersion(ctx context.Context) (string, error) {

@@ -45,10 +45,8 @@ func (c *Client) CheckConnectivity(ctx context.Context) error {
 }
 
 // CompileContract compiles Solidity source code
-func (c *Client) CompileContract(ctx context.Context, sourceCode string) (*proto.CompileResponse, error) {
-	return c.remote.CompileContract(ctx, &proto.CompileRequest{
-		SourceCode: sourceCode,
-	})
+func (c *Client) CompileContract(ctx context.Context, req *proto.CompileRequest) (*proto.CompileResponse, error) {
+	return c.remote.CompileContract(ctx, req)
 }
 
 // DeployOptions handles optional parameters for deployment

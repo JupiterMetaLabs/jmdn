@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gossipnode/SmartContract/pkg/client"
+	"gossipnode/SmartContract/proto"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/stretchr/testify/require"
@@ -63,7 +64,9 @@ func TestClientIntegration(t *testing.T) {
 	}
 
 	// 2. Compile
-	compileResp, err := c.CompileContract(ctx, sourceCode)
+	compileResp, err := c.CompileContract(ctx, &proto.CompileRequest{
+		SourceCode: sourceCode,
+	})
 	require.NoError(t, err, "Compilation failed")
 	require.NotEmpty(t, compileResp.Contract.Bytecode, "Bytecode should not be empty")
 	t.Logf("Compiled contract: %s (len: %d)", compileResp.Contract.Name, len(compileResp.Contract.Bytecode))
