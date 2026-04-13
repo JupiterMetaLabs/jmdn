@@ -13,15 +13,14 @@ import (
 	pb "gossipnode/Block/proto"
 	BlockCommon "gossipnode/Block/common"
 	"gossipnode/Sequencer"
-	GRO "gossipnode/config/GRO"
 	"gossipnode/config"
+	GRO "gossipnode/config/GRO"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
@@ -35,59 +34,53 @@ type BlockServer struct {
 	pb.UnimplementedBlockServiceServer
 	host    host.Host
 	chainID int
-	logger  zerolog.Logger
+	logger  *ion.Ion
 }
 
 // NewBlockServer creates a new BlockServer instance
 func NewBlockServer(h host.Host, chainID int) *BlockServer {
-	// Create logs directory if it doesn't exist
-	if err := os.MkdirAll("logs", 0755); err != nil {
-		log.Fatal().Err(err).Msg("Failed to create logs directory")
+	var ionLogger *ion.Ion
+	if l := logger(); l != nil {
+		ionLogger = l.NamedLogger
 	}
-
-	// Set up gRPC server logger
-	logPath := "logs/block-grpc.log"
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		log.Fatal().Err(err).Str("path", logPath).Msg("Failed to open gRPC log file")
-	}
-
-	// Configure zerolog for gRPC server
-	grpcLogger := zerolog.New(logFile).With().
-		Timestamp().
-		Str("component", "block-grpc").
-		Logger()
 
 	return &BlockServer{
 		host:    h,
 		chainID: chainID,
-		logger:  grpcLogger,
+		logger:  ionLogger,
 	}
 }
 
 // ProcessBlock handles the gRPC ProcessBlock request
 func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequest) (*pb.ProcessBlockResponse, error) {
-	s.logger.Info().
-		Uint64("block_number", req.Block.BlockNumber).
-		Str("block_hash", common.Bytes2Hex(req.Block.BlockHash)).
-		Int("tx_count", len(req.Block.Transactions)).
-		Msg("gRPC: ProcessBlock request received")
+	if s.logger != nil {
+		s.logger.Info(ctx, "gRPC: ProcessBlock request received",
+			ion.Uint64("block_number", req.Block.BlockNumber),
+			ion.String("block_hash", common.Bytes2Hex(req.Block.BlockHash)),
+			ion.Int("tx_count", len(req.Block.Transactions)))
+	}
 
 	// Convert proto block to config.ZKBlock
 	block, err := s.convertProtoToZKBlock(req.Block)
 	if err != nil {
-		s.logger.Error().Err(err).Msg("gRPC: Failed to convert proto block to ZKBlock")
+		if s.logger != nil {
+			s.logger.Error(ctx, "gRPC: Failed to convert proto block to ZKBlock", err)
+		}
 		return nil, status.Errorf(codes.InvalidArgument, "invalid block data: %v", err)
 	}
 
 	// Validate block data
 	if len(block.Transactions) == 0 {
-		s.logger.Error().Msg("gRPC: Block contains no transactions")
+		if s.logger != nil {
+			s.logger.Error(ctx, "gRPC: Block contains no transactions", nil)
+		}
 		return nil, status.Errorf(codes.InvalidArgument, "block contains no transactions")
 	}
 
 	if block.Status != "verified" {
-		s.logger.Error().Str("status", block.Status).Msg("gRPC: Block not verified")
+		if s.logger != nil {
+			s.logger.Error(ctx, "gRPC: Block not verified", nil, ion.String("status", block.Status))
+		}
 		return nil, status.Errorf(codes.InvalidArgument, "block has not been verified by ZKVM")
 	}
 
@@ -101,10 +94,10 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 	fmt.Printf("Consensus: %+v\n", consensus)
 	if err := consensus.Start(block); err != nil {
 		fmt.Printf("Error starting consensus process: %+v\n", err)
-		s.logger.Error().
-			Err(err).
-			Str("block_hash", block.BlockHash.Hex()).
-			Msg("gRPC: Failed to start consensus process")
+		if s.logger != nil {
+			s.logger.Error(ctx, "gRPC: Failed to start consensus process", err,
+				ion.String("block_hash", block.BlockHash.Hex()))
+		}
 		return nil, status.Errorf(codes.Internal, "failed to start consensus process: %v", err)
 	}
 
@@ -119,11 +112,12 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 		)
 	}
 
-	s.logger.Info().
-		Uint64("block_number", block.BlockNumber).
-		Str("block_hash", block.BlockHash.Hex()).
-		Int("tx_count", len(block.Transactions)).
-		Msg("gRPC: Block processed successfully")
+	if s.logger != nil {
+		s.logger.Info(ctx, "gRPC: Block processed successfully",
+			ion.Uint64("block_number", block.BlockNumber),
+			ion.String("block_hash", block.BlockHash.Hex()),
+			ion.Int("tx_count", len(block.Transactions)))
+	}
 
 	// Return success response
 	return &pb.ProcessBlockResponse{
@@ -168,9 +162,14 @@ func StartGRPCServer(port int, h host.Host, chainID int) error {
 
 	// Start the server in a goroutine
 	LocalGRO.Go(GRO.BlockGRPCServerThread, func(ctx context.Context) error {
-		log.Info().Int("port", port).Msg("Block gRPC server starting")
+		if l := logger(); l != nil {
+			l.NamedLogger.Info(ctx, "Block gRPC server starting", ion.Int("port", port))
+		}
 		if err := grpcServer.Serve(lis); err != nil {
-			log.Fatal().Err(err).Msg("Failed to serve Block gRPC")
+			if l := logger(); l != nil {
+				l.NamedLogger.Error(ctx, "Failed to serve Block gRPC", err)
+			}
+			os.Exit(1)
 		}
 		return nil
 	})
@@ -181,12 +180,16 @@ func StartGRPCServer(port int, h host.Host, chainID int) error {
 
 	// Block until we receive a shutdown signal
 	<-stop
-	log.Info().Msg("Shutting down Block gRPC server...")
+	if l := logger(); l != nil {
+		l.NamedLogger.Info(context.Background(), "Shutting down Block gRPC server...")
+	}
 
 	// Gracefully stop the server
 	grpcServer.GracefulStop()
 	healthServer.Shutdown()
-	log.Info().Msg("Block gRPC server stopped")
+	if l := logger(); l != nil {
+		l.NamedLogger.Info(context.Background(), "Block gRPC server stopped")
+	}
 
 	return nil
 }
