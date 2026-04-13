@@ -61,3 +61,5 @@ contract_storage_pebble/MANIFEST-000005
 contract_storage_pebble/*
 SmartContract/artifacts/*
 SmartContract/artifacts/HelloWorld.json
+/SmartContract/artifacts
+SmartContract/artifacts/HelloWorld.json
