@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gossipnode/config"
+	"gossipnode/logging"
 )
 
 var (
@@ -28,7 +29,7 @@ func GetOrCreateContractsDBPool(cfg *Config) (*config.PooledConnection, error) {
 	}
 
 	// Get connection from pool
-	conn, err := pool.Get()
+	conn, err := pool.Get(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection from pool: %w", err)
 	}
@@ -67,7 +68,8 @@ func getOrCreateContractsPool(cfg *Config) (*config.ConnectionPool, error) {
 	}
 
 	// Create async logger for the pool
-	logger, err := config.NewAsyncLogger()
+	asyncLog := logging.NewAsyncLogger()
+	logger, err := asyncLog.NamedLogger("ContractsDB", "contracts_db.log")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create logger: %w", err)
 	}
@@ -84,7 +86,7 @@ func getOrCreateContractsPool(cfg *Config) (*config.ConnectionPool, error) {
 	}
 
 	// Create the pool
-	pool := config.NewConnectionPool(poolConfig, logger, poolingConfig)
+	pool := config.NewConnectionPool(context.Background(), poolConfig, logger.NamedLogger, poolingConfig)
 
 	// Store in registry
 	contractsDBPools[poolKey] = pool
@@ -105,7 +107,7 @@ func ReturnContractsDBConnection(conn *config.PooledConnection) {
 	// Find the pool by database name
 	for _, pool := range contractsDBPools {
 		// Return connection to pool
-		pool.Put(conn)
+		pool.Put(context.Background(), conn)
 		return
 	}
 }
@@ -118,7 +120,7 @@ func CloseAllPools() error {
 	var errors []error
 
 	for key, pool := range contractsDBPools {
-		pool.Close()
+		pool.Close(context.Background())
 		delete(contractsDBPools, key)
 	}
 

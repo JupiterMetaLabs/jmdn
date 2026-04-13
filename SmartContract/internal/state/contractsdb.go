@@ -11,8 +11,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/stateless"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/trie/utils"
 	"github.com/holiman/uint256"
 
 	pbdid "gossipnode/DID/proto"
@@ -281,6 +281,9 @@ func (c *ContractDB) Logs() []*types.Log {
 // Witness returns the witness for stateless execution.
 func (c *ContractDB) Witness() *stateless.Witness { return nil }
 
+// AccessEvents returns the state access events for the transaction.
+func (c *ContractDB) AccessEvents() *state.AccessEvents { return nil }
+
 // Prepare handles the preparation of access lists for EIP-2929/2930.
 func (c *ContractDB) Prepare(rules params.Rules, sender, coinbase common.Address, dest *common.Address, precompiles []common.Address, txAccesses types.AccessList) {
 	// Initialize access lists if needed
@@ -327,8 +330,7 @@ func (c *ContractDB) GetTransientState(addr common.Address, key common.Hash) com
 // SetTransientState sets the transient storage value (EIP-1153).
 func (c *ContractDB) SetTransientState(addr common.Address, key, value common.Hash) {}
 
-// PointCache returns the point cache (for verkle trees).
-func (c *ContractDB) PointCache() *utils.PointCache { return nil }
+
 
 // GetStorageRoot returns the storage root for an address.
 func (c *ContractDB) GetStorageRoot(addr common.Address) common.Hash { return common.Hash{} }

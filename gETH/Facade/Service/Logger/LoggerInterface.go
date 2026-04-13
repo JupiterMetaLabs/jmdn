@@ -7,42 +7,36 @@ import (
 	"sync"
 	"time"
 
-	"go.uber.org/zap"
+	"github.com/JupiterMetaLabs/ion"
 )
 
-// intilize the async logger from gossipnode/logging package using sync.Once reuse the same logger for the whole application
 var Once sync.Once
 var Logger *logging.AsyncLogger
 
 const (
-	LOG_FILE  = "gETH.log"
-	TOPIC     = "gETH"
-	LOKI_URL  = "" // Disabled by default
-	DIR       = "logs"
-	BatchSize = 128 * 1024
+	LOG_FILE = "gETH.log"
+	TOPIC    = "gETH"
+	DIR      = "logs"
 )
 
 func InitLogger() error {
 	var err error
-	Logger, err = logging.NewAsyncLogger(&logging.Logging{
-		FileName: LOG_FILE,
-		Topic:    TOPIC,
-		URL:      "", // Disable Loki by default
-		Metadata: logging.LoggingMetadata{
-			DIR:       DIR,
-			BatchSize: BatchSize,
-			BatchWait: 2 * time.Second,
-			Timeout:   10 * time.Second,
-		},
+	Once.Do(func() {
+		Logger = logging.NewAsyncLogger()
+		_, err = Logger.NamedLogger(TOPIC, LOG_FILE)
 	})
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
-func GetLogger() *logging.AsyncLogger {
-	return Logger
+func GetLogger() *logging.Logging {
+	if Logger == nil {
+		return nil
+	}
+	logger, err := Logger.GetNamedLogger(TOPIC)
+	if err != nil {
+		return nil
+	}
+	return logger
 }
 
 func LogData(ctx context.Context, Message string, Function string, status int) error {
@@ -50,39 +44,35 @@ func LogData(ctx context.Context, Message string, Function string, status int) e
 	logCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	tempLogger := GetLogger()
-	if tempLogger == nil || tempLogger.Logger == nil {
+	logger := GetLogger()
+	if logger == nil || logger.NamedLogger == nil {
 		return fmt.Errorf("logger is not initialized")
 	}
+
+	spanCtx, span := logger.NamedLogger.Tracer("gETH").Start(logCtx, "gETH."+Function)
+	defer span.End()
 
 	switch status {
 	case 1:
 		// Success
-		tempLogger.Logger.Info(Message,
-			zap.String(logging.Function, Function),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.Time(logging.Created_at, time.Now().UTC()),
+		logger.NamedLogger.Info(spanCtx, Message,
+			ion.String("function", Function),
+			ion.String("log_file", LOG_FILE),
+			ion.String("topic", TOPIC),
+			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		)
 	case -1:
 		// Error
-		tempLogger.Logger.Error(Message,
-			zap.String(logging.Function, Function),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, LOKI_URL),
-			zap.Time(logging.Created_at, time.Now().UTC()),
+		logger.NamedLogger.Error(spanCtx, Message,
+			fmt.Errorf("gETH error logged"),
+			ion.String("function", Function),
+			ion.String("log_file", LOG_FILE),
+			ion.String("topic", TOPIC),
+			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		)
 	default:
 		return fmt.Errorf("invalid status code: %d", status)
 	}
 
-	// Check if context was cancelled
-	select {
-	case <-logCtx.Done():
-		return logCtx.Err()
-	default:
-		return nil
-	}
+	return nil
 }

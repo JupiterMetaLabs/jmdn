@@ -11,9 +11,9 @@ import (
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/trie/utils"
 	"github.com/holiman/uint256"
 )
 
@@ -131,7 +131,7 @@ func (m *MockStateDB) GetTransientState(addr common.Address, key common.Hash) co
 	return common.Hash{}
 }
 func (m *MockStateDB) SetTransientState(addr common.Address, key, value common.Hash) {}
-func (m *MockStateDB) PointCache() *utils.PointCache                                 { return nil }
+
 func (m *MockStateDB) SelfDestruct(addr common.Address)                              {}
 func (m *MockStateDB) HasSelfDestructed(addr common.Address) bool                    { return false }
 func (m *MockStateDB) Selfdestruct6780(addr common.Address)                          {}
@@ -139,6 +139,7 @@ func (m *MockStateDB) CreateContract(addr common.Address)                       
 func (m *MockStateDB) GetStorageRoot(addr common.Address) common.Hash                { return common.Hash{} }
 func (m *MockStateDB) GetSelfDestruction(addr common.Address) bool                   { return false }
 func (m *MockStateDB) Witness() *stateless.Witness                                   { return nil }
+func (m *MockStateDB) AccessEvents() *state.AccessEvents                             { return nil }
 
 type witness interface {
 	Witness() *stateless.Witness
