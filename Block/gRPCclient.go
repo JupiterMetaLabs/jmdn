@@ -45,23 +45,7 @@ func NewMempoolClient(address string) (*MempoolClient, error) {
 	client := pb.NewMempoolServiceClient(conn)
 
 	// Make logging client
-	Logger, err := logging.NewAsyncLogger(
-		&logging.Logging{
-			FileName: FILENAME,
-			URL:      "", // Disable Loki by default
-			Metadata: logging.LoggingMetadata{
-				DIR:       config.LOG_DIR,
-				BatchSize: BATCH_SIZE,
-				BatchWait: BATCH_WAIT,
-				Timeout:   TIMEOUT,
-				KeepLogs:  true,
-			},
-			Topic: TOPIC,
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create logger: %v", err)
-	}
+	Logger := logging.NewAsyncLogger()
 
 	return &MempoolClient{
 		client: client,
@@ -74,7 +58,7 @@ func NewMempoolClient(address string) (*MempoolClient, error) {
 func (m *MempoolClient) Close() error {
 	// Close the Logger first
 	if m.logger != nil {
-		m.logger.Close()
+		m.logger.Close("")
 	}
 
 	// Close the gRPC connection

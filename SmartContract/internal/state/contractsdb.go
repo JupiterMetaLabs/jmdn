@@ -322,6 +322,19 @@ func (c *ContractDB) ForEachStorage(addr common.Address, cb func(key, value comm
 	return nil
 }
 
+
+
+// GetStateAndCommittedState returns both the current and committed state in a single call.
+func (c *ContractDB) GetStateAndCommittedState(addr common.Address, key common.Hash) (common.Hash, common.Hash) {
+	return c.GetState(addr, key), c.GetCommittedState(addr, key)
+}
+
+// IsNewContract returns true if the contract was created in this transaction.
+func (c *ContractDB) IsNewContract(addr common.Address) bool {
+	// Not implemented tracking for this yet.
+	return false
+}
+
 // GetTransientState returns the transient storage value (EIP-1153).
 func (c *ContractDB) GetTransientState(addr common.Address, key common.Hash) common.Hash {
 	return common.Hash{}

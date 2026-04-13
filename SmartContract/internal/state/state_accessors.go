@@ -91,10 +91,10 @@ func (c *ContractDB) CreateContract(addr common.Address) {
 }
 
 // SubBalance subtracts amount from the account's balance.
-func (c *ContractDB) SubBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) {
+func (c *ContractDB) SubBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
 	obj := c.getStateObject(addr)
 	if obj == nil {
-		return
+		return uint256.Int{}
 	}
 
 	// Record previous balance in journal
@@ -109,13 +109,14 @@ func (c *ContractDB) SubBalance(addr common.Address, amount *uint256.Int, reason
 
 	fmt.Printf("DEBUG: SubBalance called for %s, Amount: %s, New Balance: %s\n",
 		addr.Hex(), amount.String(), obj.getBalance().String())
+	return *obj.getBalance()
 }
 
 // AddBalance adds amount to the account's balance.
-func (c *ContractDB) AddBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) {
+func (c *ContractDB) AddBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
 	obj := c.getStateObject(addr)
 	if obj == nil {
-		return
+		return uint256.Int{}
 	}
 
 	// Record previous balance in journal
@@ -130,6 +131,7 @@ func (c *ContractDB) AddBalance(addr common.Address, amount *uint256.Int, reason
 
 	fmt.Printf("DEBUG: AddBalance called for %s, Amount: %s, New Balance: %s\n",
 		addr.Hex(), amount.String(), obj.getBalance().String())
+	return *obj.getBalance()
 }
 
 // GetBalance returns the balance of the given account.
@@ -151,7 +153,7 @@ func (c *ContractDB) GetNonce(addr common.Address) uint64 {
 }
 
 // SetNonce sets the nonce of the given account.
-func (c *ContractDB) SetNonce(addr common.Address, nonce uint64) {
+func (c *ContractDB) SetNonce(addr common.Address, nonce uint64, reason tracing.NonceChangeReason) {
 	obj := c.getOrNewStateObject(addr)
 	if obj == nil {
 		return
@@ -186,10 +188,10 @@ func (c *ContractDB) GetCode(addr common.Address) []byte {
 }
 
 // SetCode sets the code of the given account.
-func (c *ContractDB) SetCode(addr common.Address, code []byte) {
+func (c *ContractDB) SetCode(addr common.Address, code []byte, reason tracing.CodeChangeReason) []byte {
 	obj := c.getOrNewStateObject(addr)
 	if obj == nil {
-		return
+		return nil
 	}
 
 	// Record previous code in journal
@@ -201,6 +203,7 @@ func (c *ContractDB) SetCode(addr common.Address, code []byte) {
 
 	// Update code
 	obj.setCode(code)
+	return code
 }
 
 // GetCodeSize returns the size of the code of the given account.
@@ -226,10 +229,10 @@ func (c *ContractDB) GetState(addr common.Address, key common.Hash) common.Hash 
 }
 
 // SetState sets the value of a storage slot.
-func (c *ContractDB) SetState(addr common.Address, key common.Hash, value common.Hash) {
+func (c *ContractDB) SetState(addr common.Address, key common.Hash, value common.Hash) common.Hash {
 	obj := c.getOrNewStateObject(addr)
 	if obj == nil {
-		return
+		return common.Hash{}
 	}
 
 	// Record previous value in journal
@@ -241,6 +244,7 @@ func (c *ContractDB) SetState(addr common.Address, key common.Hash, value common
 
 	// Update storage
 	obj.setState(key, value)
+	return value
 }
 
 // GetCommittedState returns the committed value of a storage slot.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	pb "gossipnode/Mempool/proto"
-	"gossipnode/config"
 	"gossipnode/logging"
 
 	"github.com/golang/protobuf/ptypes/empty"
@@ -36,23 +35,7 @@ func NewRoutingServiceClient(address string) (*RoutingClient, error) {
 	}
 	client := pb.NewRoutingServiceClient(conn)
 
-	Logger, err := logging.NewAsyncLogger(
-		&logging.Logging{
-			FileName: FILENAME,
-			URL:      "", // Disable Loki by default
-			Metadata: logging.LoggingMetadata{
-				DIR:       config.LOG_DIR,
-				BatchSize: BATCH_SIZE,
-				BatchWait: BATCH_WAIT,
-				Timeout:   TIMEOUT,
-				KeepLogs:  true,
-			},
-			Topic: TOPIC,
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create logger: %v", err)
-	}
+	Logger := logging.NewAsyncLogger()
 
 	// Create new routing client and assign to singleton
 	routingclient = &RoutingClient{

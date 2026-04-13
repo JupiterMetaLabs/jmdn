@@ -6,7 +6,6 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/SmartContract"
 	"gossipnode/config"
-	"gossipnode/logging"
 	"math/big"
 	"sort"
 	"strings"
@@ -17,7 +16,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/holiman/uint256"
 	"github.com/rs/zerolog/log"
-	"go.uber.org/zap"
 )
 
 const (
@@ -147,14 +145,6 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 		alreadyProcessed, err := DB_OPs.Exists(accountsClient, txKey)
 		if err == nil && alreadyProcessed {
 			fmt.Printf("DEBUG: Transaction %s already processed in previous block, skipping\n", tx.Hash.Hex())
-			accountsClient.Client.Logger.Logger.Warn("Transaction already processed in previous block, skipping",
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, config.LOKI_URL),
-				zap.String(logging.Function, "messaging.BlockProcessing.ProcessBlockTransactions"),
-				zap.String("tx_hash", tx.Hash.Hex()),
-			)
 			continue
 		}
 
@@ -162,26 +152,8 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 		if err := processTransaction(tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient, commitToDB); err != nil {
 			fmt.Printf("DEBUG: processTransaction failed for tx %s: %v\n", tx.Hash.Hex(), err)
 			// If any transaction fails, roll back all affected DIDs
-			accountsClient.Client.Logger.Logger.Error("Transaction failed, rolling back block",
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, config.LOKI_URL),
-				zap.String(logging.Function, "messaging.ProcessBlockTransactions"),
-				zap.String("tx_hash", tx.Hash.Hex()),
-				zap.Error(err),
-			)
 			rollbackError := rollbackBalances(originalBalances, accountsClient)
 			if rollbackError != nil {
-				accountsClient.Client.Logger.Logger.Error("Failed to rollback balances after transaction failure",
-					zap.Time(logging.Created_at, time.Now().UTC()),
-					zap.String(logging.Log_file, LOG_FILE),
-					zap.String(logging.Topic, TOPIC),
-					zap.String(logging.Loki_url, config.LOKI_URL),
-					zap.String(logging.Function, "messaging.ProcessBlockTransactions"),
-					zap.String("tx_hash", tx.Hash.Hex()),
-					zap.Error(rollbackError),
-				)
 			}
 
 			// Clean up any processing markers for failed transactions
@@ -256,15 +228,6 @@ func cleanupProcessingMarkers(accountsClient *config.PooledConnection, txHash st
 	processingKey := fmt.Sprintf("tx_processing:%s", txHash)
 	if exists, _ := DB_OPs.Exists(accountsClient, processingKey); exists {
 		if err := DB_OPs.Create(accountsClient, processingKey, int64(-1)); err != nil {
-			accountsClient.Client.Logger.Logger.Warn("Failed to clean up processing marker",
-				zap.Time(logging.Created_at, time.Now().UTC()),
-				zap.String(logging.Log_file, LOG_FILE),
-				zap.String(logging.Topic, TOPIC),
-				zap.String(logging.Loki_url, config.LOKI_URL),
-				zap.String(logging.Function, "messaging.cleanupProcessingMarkers"),
-				zap.String("tx_hash", txHash),
-				zap.Error(err),
-			)
 		}
 	}
 
@@ -541,24 +504,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 			var timestamp int64
 			if err := json.Unmarshal(valueBytes, &timestamp); err == nil {
 				if time.Now().UTC().Unix()-timestamp > 300 {
-					accountsClient.Client.Logger.Logger.Warn("Found stale processing marker, continuing with transaction",
-						zap.Time(logging.Created_at, time.Now().UTC()),
-						zap.String(logging.Log_file, LOG_FILE),
-						zap.String(logging.Topic, TOPIC),
-						zap.String(logging.Loki_url, config.LOKI_URL),
-						zap.String(logging.Function, "messaging.processTransaction"),
-						zap.String("tx_hash", tx.Hash.Hex()),
-						zap.Int64("stale_timestamp", timestamp),
-					)
 				} else {
-					accountsClient.Client.Logger.Logger.Warn("Transaction is already being processed, possible duplicate",
-						zap.Time(logging.Created_at, time.Now().UTC()),
-						zap.String(logging.Log_file, LOG_FILE),
-						zap.String(logging.Topic, TOPIC),
-						zap.String(logging.Loki_url, config.LOKI_URL),
-						zap.String(logging.Function, "messaging.processTransaction"),
-						zap.String("tx_hash", tx.Hash.Hex()),
-					)
 					// We have the lock, so continue processing anyway as previous attempt might have failed
 				} // We have the lock, so continue processing anyway as previous attempt might have failed
 			}
@@ -567,15 +513,6 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 
 	// Mark transaction as being processed
 	if err := DB_OPs.Create(accountsClient, txProcessingKey, time.Now().UTC().Unix()); err != nil {
-		accountsClient.Client.Logger.Logger.Warn("Failed to mark transaction as processing",
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "messaging.processTransaction"),
-			zap.String("tx_hash", tx.Hash.Hex()),
-			zap.Error(err),
-		)
 		// Continue processing since this is just a precaution
 	}
 
@@ -602,15 +539,6 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	var parsedTx *config.ParsedZKTransaction
 	parsedTx, err = parseTransaction(tx)
 	if err != nil {
-		accountsClient.Client.Logger.Logger.Error("Failed to parse transaction",
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "messaging.processTransaction"),
-			zap.String("tx_hash", tx.Hash.Hex()),
-			zap.Error(err),
-		)
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
 		return fmt.Errorf("failed to parse transaction: %w", err)
 	}
@@ -640,33 +568,9 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	zkvmGasFee := new(big.Int).Set(halfGasFee)
 	coinbaseGasFee := new(big.Int).Add(halfGasFee, remainder)
 
-	accountsClient.Client.Logger.Logger.Info("Transaction Amount Calculated",
-		zap.Time(logging.Created_at, time.Now().UTC()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "messaging.processTransaction"),
-		zap.String("tx_hash", tx.Hash.Hex()),
-		zap.String("from", tx.From.Hex()),
-		zap.String("to", tx.To.Hex()),
-		zap.String("value", parsedTx.ValueBig.String()),
-		zap.String("gas_limit", gasLimit.String()),
-		zap.String("gas_fee", gasFeeToDeduct.String()),
-		zap.String("total_deduction", totalDeduction.String()),
-	)
-
 	// Check if sender exists before attempting deduction
 	senderExists, _ := accountExists(tx.From, accountsClient)
 	if !senderExists {
-		accountsClient.Client.Logger.Logger.Error("Sender DID does not exist",
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "messaging.processTransaction"),
-			zap.String("tx_hash", tx.Hash.Hex()),
-			zap.String("from", tx.From.Hex()),
-		)
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
 		return fmt.Errorf("sender DID %s does not exist", tx.From)
 	}
@@ -675,15 +579,6 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// Check if recipient exists (for better error reporting)
 	recipientExists, _ := accountExists(tx.To, accountsClient)
 	if !recipientExists && !CreateMissingAccounts {
-		accountsClient.Client.Logger.Logger.Error("Recipient DID does not exist",
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "messaging.processTransaction"),
-			zap.String("tx_hash", tx.Hash.Hex()),
-			zap.String("to", tx.To.Hex()),
-		)
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
 		return fmt.Errorf("recipient DID %s does not exist and automatic creation is disabled", tx.To)
 	}
@@ -699,16 +594,6 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 
 	// 1. Deduct from sender
 	if err := deductFromSender(*tx.From, totalDeduction.String(), stateDB, accountsClient); err != nil {
-		accountsClient.Client.Logger.Logger.Error("Failed to deduct from sender",
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "messaging.processTransaction"),
-			zap.String("tx_hash", tx.Hash.Hex()),
-			zap.String("from", tx.From.Hex()),
-			zap.String("amount", totalDeduction.String()),
-		)
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
 		return categorizeDeductionError(err)
 	}
@@ -719,15 +604,6 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// 2. Add amount to recipient
 	if err := addToRecipient(*tx.To, parsedTx.ValueBig.String(), stateDB, accountsClient); err != nil {
 		// Rollback using StateDB snapshot
-		accountsClient.Client.Logger.Logger.Error("Failed to add to recipient",
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "messaging.processTransaction"),
-			zap.String("tx_hash", tx.Hash.Hex()),
-			zap.String("to", tx.To.Hex()),
-		)
 		stateDB.RevertToSnapshot(snapshot)
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
 		return fmt.Errorf("failed to add to recipient: %w", err)
@@ -739,15 +615,6 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// 3. Split gas fee between coinbase and ZKVM
 	if err := addToRecipient(coinbaseAddr, coinbaseGasFee.String(), stateDB, accountsClient); err != nil {
 		// Rollback using StateDB snapshot
-		accountsClient.Client.Logger.Logger.Error("Failed to add gas fee to coinbase",
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "messaging.processTransaction"),
-			zap.String("tx_hash", tx.Hash.Hex()),
-			zap.String("coinbase", coinbaseAddr.Hex()),
-		)
 		stateDB.RevertToSnapshot(snapshot)
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
 		return fmt.Errorf("failed to add gas fee to coinbase: %w", err)
@@ -758,15 +625,6 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 
 	if err := addToRecipient(zkvmAddr, zkvmGasFee.String(), stateDB, accountsClient); err != nil {
 		// Rollback using StateDB snapshot
-		accountsClient.Client.Logger.Logger.Error("Failed to add gas fee to ZKVM",
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "messaging.processTransaction"),
-			zap.String("tx_hash", tx.Hash.Hex()),
-			zap.String("zkvm", zkvmAddr.Hex()),
-		)
 		stateDB.RevertToSnapshot(snapshot)
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
 		return fmt.Errorf("failed to add gas fee to ZKVM: %w", err)
@@ -795,28 +653,11 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 
 	// Mark transaction as fully processed - this is the key that prevents double processing
 	if err := DB_OPs.Create(accountsClient, txKey, time.Now().UTC().Unix()); err != nil {
-		accountsClient.Client.Logger.Logger.Error("Failed to mark transaction as processed",
-			zap.Time(logging.Created_at, time.Now().UTC()),
-			zap.String(logging.Log_file, LOG_FILE),
-			zap.String(logging.Topic, TOPIC),
-			zap.String(logging.Loki_url, config.LOKI_URL),
-			zap.String(logging.Function, "messaging.processTransaction"),
-			zap.String("tx_hash", tx.Hash.String()),
-		)
 		// Still continue as the transaction was processed successfully
 	}
 
 	// Clean up the processing marker
 	cleanupProcessingMarkers(accountsClient, tx.Hash.String())
-
-	accountsClient.Client.Logger.Logger.Info("Transaction processed successfully",
-		zap.String("tx_hash", tx.Hash.String()),
-		zap.Time(logging.Created_at, time.Now().UTC()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "messaging.processTransaction"),
-	)
 
 	return nil
 }
@@ -945,15 +786,6 @@ func deductFromSender(fromDID common.Address, amount string, stateDB SmartContra
 	stateDB.SubBalance(fromDID, amt, tracing.BalanceChangeTransfer)
 
 	// Log the deduction with original format
-	accountsClient.Client.Logger.Logger.Info("Deducted amount from sender",
-		zap.String(logging.Account, fromDID.String()),
-		zap.String(logging.Connection_database, "StateDB"),
-		zap.Time(logging.Created_at, time.Now().UTC()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "StateDB.SubBalance"),
-	)
 
 	return nil
 }
@@ -976,15 +808,6 @@ func addToRecipient(ToAddress common.Address, amount string, stateDB SmartContra
 	stateDB.AddBalance(ToAddress, amt, tracing.BalanceChangeTransfer)
 
 	// Log the addition with original format
-	accountsClient.Client.Logger.Logger.Info("Added amount to recipient",
-		zap.String(logging.Account, ToAddress.String()),
-		zap.String(logging.Connection_database, "StateDB"),
-		zap.Time(logging.Created_at, time.Now().UTC()),
-		zap.String(logging.Log_file, LOG_FILE),
-		zap.String(logging.Topic, TOPIC),
-		zap.String(logging.Loki_url, config.LOKI_URL),
-		zap.String(logging.Function, "StateDB.AddBalance"),
-	)
 
 	return nil
 }

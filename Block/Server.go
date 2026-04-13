@@ -250,7 +250,7 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 		asyncCtx, asyncSpan := logger().NamedLogger.Tracer("BlockServer").Start(context.Background(), "AsyncSubmitRawTransaction", ion.WithLinks(link))
 		defer asyncSpan.End()
 
-		if err := SubmitToMempool(asyncCtx, tx, txHash); err != nil {
+		if err := SubmitToMempool(tx, txHash); err != nil {
 			logger().NamedLogger.Error(asyncCtx, "Error submitting raw transaction to mempool",
 				err,
 				ion.String("tx_hash", txHash),

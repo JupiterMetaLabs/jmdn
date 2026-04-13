@@ -41,6 +41,7 @@ import (
 	"gossipnode/seednode"
 	"gossipnode/transfer"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	_ "github.com/mattn/go-sqlite3"
@@ -529,7 +530,7 @@ func runCommand(command string, args []string, grpcPort int) {
 
 func StartAPIServer(ctx context.Context, address string, enableExplorer bool) error {
 	// Create ImmuDB API server
-	server, err := explorer.NewImmuDBServer(enableExplorer)
+	server, err := explorer.NewImmuDBServer()
 	if err != nil {
 		return fmt.Errorf("failed to create ImmuDB API server: %w", err)
 	}
@@ -583,8 +584,8 @@ func initMainDBPool(enableLoki bool, username, password string) error {
 	}
 
 	// Initialize the global pool
-	config.InitGlobalPoolWithLoki(poolingConfig, enableLoki)
-	mainDBPool = config.GetGlobalPool()
+	config.InitGlobalPoolWithLoki(poolingConfig)
+	mainDBPool = config.GetGlobalPool(context.Background())
 
 	// Also initialize the DB_OPs main pool
 	fmt.Println("Initializing DB_OPs main pool...")
@@ -602,7 +603,7 @@ func initMainDBPool(enableLoki bool, username, password string) error {
 func initAccountsDBPool(enableLoki bool, username, password string) error {
 	// Use the DB_OPs package to initialize the accounts pool
 	// This ensures the database exists and the pool is properly configured
-	if err := DB_OPs.InitAccountsPoolWithLoki(enableLoki, username, password); err != nil {
+	if err := DB_OPs.InitAccountsPool(); err != nil {
 		return fmt.Errorf("failed to initialize accounts database pool: %w", err)
 	}
 
@@ -611,9 +612,9 @@ func initAccountsDBPool(enableLoki bool, username, password string) error {
 }
 
 // initFastSync initializes the FastSync service
-func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsClient *config.PooledConnection) *fastsync.FastSync {
+func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsClient *config.PooledConnection, ionLogger *ion.Ion) *fastsync.FastSync {
 
-	fs := fastsync.NewFastSync(n.Host, mainClient, accountsClient)
+	fs := fastsync.NewFastSync(n.Host, mainClient, accountsClient, ionLogger)
 	log.Info().Msg("FastSync service initialized - will get connections when needed")
 	return fs
 }
@@ -659,8 +660,7 @@ func main() {
 	chainID := flag.Int("chainID", 7000700, "Chain ID for the blockchain network")
 	immudbUsername := flag.String("immudb-user", "immudb", "ImmuDB username")
 	immudbPassword := flag.String("immudb-pass", "immudb", "ImmuDB password")
-	explorerAPIKey := flag.String("explorer-api-key", "", "Explorer API key")
-	jwtSecret := flag.String("jwt-secret", "", "JWT secret")
+
 	command := flag.String("cmd", "", "Execute a CLI command (e.g., listpeers, addrs, stats, dbstate)")
 	versionFlag := flag.Bool("version", false, "Print version information and exit")
 
@@ -693,20 +693,7 @@ func main() {
 	}
 	// fmt.Println("ImmuDB TLS assets generated.")
 
-	// Update the global immudb username and password if provided via command-line
-	if *immudbUsername != "" && *immudbPassword != "" {
-		config.DBUsername = *immudbUsername
-		config.DBPassword = *immudbPassword
-	}
 
-	if *explorerAPIKey != "" {
-		config.EXPLORER_API_KEY = *explorerAPIKey
-		fmt.Println("Explorer API key set successfully")
-	}
-	if *jwtSecret != "" {
-		config.JWT_SECRET = *jwtSecret
-		fmt.Println("JWT secret set successfully")
-	}
 	// Handle command execution mode - if -cmd is provided, execute command via gRPC and exit
 	if *command != "" {
 		runCommand(*command, flag.Args(), *cliGRPC)
@@ -720,7 +707,8 @@ func main() {
 
 	// Initialize logger
 	logFileName := "p2p-node.log"
-	Logger, err := logging.ReturnDefaultLoggerWithLoki(logFileName, "p2p-node", *enableLoki)
+	asyncLogger := logging.NewAsyncLogger()
+	Logger, err := asyncLogger.NamedLogger("p2p-node", logFileName)
 	if err != nil {
 		fmt.Printf("Failed to initialize logger: %v\n", err)
 		return
@@ -795,7 +783,7 @@ func main() {
 
 	// Start the node
 	fmt.Println("Creating libp2p node...")
-	n, err := node.NewNode()
+	n, err := node.NewNode(ctx)
 	if err != nil {
 		fmt.Println("Error starting node:", err)
 		return
@@ -808,7 +796,7 @@ func main() {
 
 	// Initialize the listener node (minimal listener for block propagation)
 	// We no longer need Sequencer response handlers
-	listener := MessagePassing.NewListenerNode(n.Host, nil)
+	listener := MessagePassing.NewListenerNode(ctx, n.Host, nil)
 	fmt.Printf("✅ Message listener initialized with ID: %s\n", listener.ListenerBuddyNode.PeerID.String())
 
 	// Initialize PubSub system
@@ -860,7 +848,7 @@ func main() {
 	}()
 
 	// Initialize FastSync service
-	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
+	fastSyncer = initFastSync(n, mainDBClient, didDBClient, Logger.GetNamedLogger())
 
 	// Initialize Yggdrasil messaging if enabled
 	if *enableYggdrasil {
@@ -878,7 +866,7 @@ func main() {
 	}
 
 	// Initialize node manager
-	nodeManager, err = node.NewNodeManagerWithLoki(n, *enableLoki)
+	nodeManager, err = node.NewNodeManagerWithLogger(n)
 	if err != nil {
 		fmt.Printf("Failed to initialize node manager: %v\n", err)
 		return
@@ -914,7 +902,7 @@ func main() {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockgenThread, func(ctx context.Context) error {
 			log.Info().Msgf("Starting block generator on port %d", *blockgen)
 			fmt.Printf("\nBlock generator available at http://localhost:%d\n", *blockgen)
-			if err := Block.StartserverWithContext(ctx, *blockgen, n.Host, *chainID); err != nil {
+			if err := Block.StartserverWithContext(ctx, "0.0.0.0", *blockgen, n.Host, *chainID); err != nil {
 				log.Error().Err(err).Msg("Block generator server stopped")
 			}
 			return nil
@@ -1054,7 +1042,9 @@ func main() {
 	// Start CLI without timeout - run indefinitely
 	done := make(chan error, 1)
 	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.CLIThread, func(ctx context.Context) error {
-		done <- cmdHandler.StartCLI(ctx, *cliGRPC)
+		if err := cmdHandler.StartCLI(ctx, "0.0.0.0", *cliGRPC); err != nil {
+			done <- err
+		}
 		return nil
 	}); err != nil {
 		log.Error().Err(err).Str("thread", GRO.CLIThread).Msg("Failed to start GRO goroutine")

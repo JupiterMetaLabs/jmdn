@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"gossipnode/config"
 	"gossipnode/config/utils"
-	"gossipnode/logging"
 	"strings"
 	"time"
 
@@ -29,13 +28,13 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
 		}
 		shouldReturnConnection = true
-		)
+
 	}
 
 	// Return connection to pool when done
 	if shouldReturnConnection {
 		defer func() {
-			)
+
 			PutMainDBConnection(mainDBClient)
 		}()
 	}
@@ -53,7 +52,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 		// Transaction found - get the block and generate receipt
 		block, err := GetTransactionBlock(mainDBClient, normalizedHash)
 		if err != nil {
-			)
+
 			return nil, fmt.Errorf("failed to get block for receipt generation: %w", err)
 		}
 
@@ -69,8 +68,6 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 		// Generate receipt from transaction and block data
 		receipt := generateReceiptFromTransaction(mainDBClient, tx, block, txIndex)
 
-		)
-
 		return receipt, nil
 	}
 
@@ -84,7 +81,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 			var processingValue int64
 			if jsonErr := json.Unmarshal(processingValueBytes, &processingValue); jsonErr == nil {
 				if processingValue == -1 {
-					)
+
 					// Return nil receipt to indicate result should be null
 					return nil, nil
 				}
@@ -93,7 +90,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 	}
 
 	// THIRD: Transaction not found and tx_processing is not -1 (or doesn't exist)
-	)
+
 	// Return error that will be formatted as "transaction not found" in JSON-RPC
 	return nil, fmt.Errorf("transaction not found")
 }
@@ -181,23 +178,21 @@ func MakeReceiptRoot(mainDBClient *config.PooledConnection, receipts []*config.R
 			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
 		}
 		shouldReturnConnection = true
-		)
+
 	}
 
 	receiptRoot, err := utils.GenerateReceiptRoot(receipts)
 	if err != nil {
-		)
+
 		return nil, fmt.Errorf("failed to generate receipt root: %w", err)
 	}
 
 	if shouldReturnConnection {
 		defer func() {
-			)
+
 			PutMainDBConnection(mainDBClient)
 		}()
 	}
-
-	)
 
 	return receiptRoot, nil
 
@@ -217,12 +212,12 @@ func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint6
 			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
 		}
 		shouldReturnConnection = true
-		)
+
 	}
 
 	if shouldReturnConnection {
 		defer func() {
-			)
+
 			PutMainDBConnection(mainDBClient)
 		}()
 	}
@@ -230,7 +225,7 @@ func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint6
 	// Get Transactions of block and then get receipts for each transaction
 	transactions, err := GetTransactionsOfBlock(mainDBClient, blockNumber)
 	if err != nil {
-		)
+
 		return nil, fmt.Errorf("failed to get transactions of block: %w", err)
 	}
 
@@ -238,12 +233,11 @@ func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint6
 	for i, tx := range transactions {
 		receipt, err := GetReceiptByHash(mainDBClient, tx.Hash.Hex())
 		if err != nil {
-			)
+
 			return nil, fmt.Errorf("failed to get receipt by hash: %w", err)
 		}
 		receipts[i] = receipt
 	}
 
-	)
 	return receipts, nil
 }

@@ -8,7 +8,6 @@ import (
 	block "gossipnode/Block"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
-	"gossipnode/gETH/Facade/Service/Logger"
 	"gossipnode/gETH/Facade/Service/Types"
 	Utils "gossipnode/gETH/Facade/Service/utils"
 	"math/big"
@@ -271,7 +270,7 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 		fmt.Println(">>>>>> JSON transaction parsed: ", tx)
 	}
 
-	hash, err := block.SubmitRawTransaction(&tx)
+	hash, err := block.SubmitRawTransaction(context.Background(), &tx)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed: %v", err), "SendRawTx", -1); logErr != nil {
 			fmt.Printf("Failed to log SendRawTx error: %v\n", logErr)

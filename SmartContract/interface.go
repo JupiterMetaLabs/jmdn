@@ -2,7 +2,6 @@ package SmartContract
 
 import (
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/holiman/uint256"
 )
@@ -22,10 +21,6 @@ type StateDB interface {
 	Finalise(deleteEmptyObjects bool)
 
 	// Additional methods needed by BlockProcessing
-	SetNonce(addr common.Address, nonce uint64)
-	GetNonce(addr common.Address) uint64
-	AddBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason)
-	SubBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason)
-	GetBalance(addr common.Address) *uint256.Int
+
 	GetBalanceChanges() map[common.Address]*uint256.Int
 }

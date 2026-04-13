@@ -66,20 +66,18 @@ func (e *EVMExecutor) DeployContract(state vm.StateDB, caller common.Address, co
 	// Rest of the function remains the same...
 	txCtx := vm.TxContext{
 		Origin:   caller,
-		GasPrice: big.NewInt(0),
+		GasPrice: uint256.NewInt(0),
 	}
 
-	evm := vm.NewEVM(blockCtx, txCtx, state, e.ChainConfig, e.VMConfig)
+	evm := vm.NewEVM(blockCtx, state, e.ChainConfig, e.VMConfig)
+	evm.SetTxContext(txCtx)
 
 	// Create contract
 	// contractAddr := crypto.CreateAddress(caller, state.GetNonce(caller))
-	state.SetNonce(caller, state.GetNonce(caller)+1)
-
-	// Initialize memory and stack for execution
-	contractRef := vm.AccountRef(caller)
+	state.SetNonce(caller, state.GetNonce(caller)+1, tracing.NonceChangeReason(0))
 
 	// Execute the deployment code
-	ret, contractAddr, leftOverGas, err := evm.Create(contractRef, code, gasLimit, value256)
+	ret, contractAddr, leftOverGas, err := evm.Create(caller, code, gasLimit, value256)
 
 	// Check for gas overflow before calculating gasUsed
 	if leftOverGas > gasLimit {
@@ -130,16 +128,14 @@ func (e *EVMExecutor) ExecuteContract(state vm.StateDB, caller common.Address, c
 
 	txCtx := vm.TxContext{
 		Origin:   caller,
-		GasPrice: big.NewInt(0),
+		GasPrice: uint256.NewInt(0),
 	}
 
-	evm := vm.NewEVM(blockCtx, txCtx, state, e.ChainConfig, e.VMConfig)
-
-	// Initialize references for execution
-	callerRef := vm.AccountRef(caller)
+	evm := vm.NewEVM(blockCtx, state, e.ChainConfig, e.VMConfig)
+	evm.SetTxContext(txCtx)
 
 	// Call the contract
-	ret, leftOverGas, err := evm.Call(callerRef, contractAddr, input, gasLimit, value256)
+	ret, leftOverGas, err := evm.Call(caller, contractAddr, input, gasLimit, value256)
 
 	result := &ExecutionResult{
 		ReturnData: ret,

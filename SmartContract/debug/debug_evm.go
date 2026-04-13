@@ -38,16 +38,20 @@ func NewMockStateDB() *MockStateDB {
 }
 
 func (m *MockStateDB) CreateAccount(addr common.Address) {}
-func (m *MockStateDB) SubBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) {
+func (m *MockStateDB) SubBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
 	if bal, ok := m.balances[addr]; ok {
 		bal.Sub(bal, amount)
+		return *bal
 	}
+	return uint256.Int{}
 }
-func (m *MockStateDB) AddBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) {
+func (m *MockStateDB) AddBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
 	if bal, ok := m.balances[addr]; ok {
 		bal.Add(bal, amount)
+		return *bal
 	} else {
 		m.balances[addr] = new(uint256.Int).Set(amount)
+		return *m.balances[addr]
 	}
 }
 func (m *MockStateDB) GetBalance(addr common.Address) *uint256.Int {
@@ -59,21 +63,16 @@ func (m *MockStateDB) GetBalance(addr common.Address) *uint256.Int {
 func (m *MockStateDB) GetNonce(addr common.Address) uint64 {
 	return m.nonces[addr]
 }
-func (m *MockStateDB) SetNonce(addr common.Address, nonce uint64) {
+func (m *MockStateDB) SetNonce(addr common.Address, nonce uint64, reason tracing.NonceChangeReason) {
 	m.nonces[addr] = nonce
 }
-func (m *MockStateDB) GetCodeHash(addr common.Address) common.Hash {
-	return crypto.Keccak256Hash(m.code[addr])
-}
-func (m *MockStateDB) GetCode(addr common.Address) []byte {
-	return m.code[addr]
-}
-func (m *MockStateDB) SetCode(addr common.Address, code []byte) {
+func (m *MockStateDB) GetCodeHash(addr common.Address) common.Hash     { return common.Hash{} }
+func (m *MockStateDB) GetCode(addr common.Address) []byte              { return m.code[addr] }
+func (m *MockStateDB) SetCode(addr common.Address, code []byte, reason tracing.CodeChangeReason) []byte {
 	m.code[addr] = code
+	return code
 }
-func (m *MockStateDB) GetCodeSize(addr common.Address) int {
-	return len(m.code[addr])
-}
+func (m *MockStateDB) GetCodeSize(addr common.Address) int { return len(m.code[addr]) }
 func (m *MockStateDB) AddRefund(gas uint64) {
 	m.refund += gas
 }
@@ -86,17 +85,24 @@ func (m *MockStateDB) GetRefund() uint64 {
 func (m *MockStateDB) GetCommittedState(addr common.Address, key common.Hash) common.Hash {
 	return m.GetState(addr, key)
 }
+func (m *MockStateDB) GetStateAndCommittedState(addr common.Address, key common.Hash) (common.Hash, common.Hash) {
+	return m.GetState(addr, key), m.GetCommittedState(addr, key)
+}
+func (m *MockStateDB) IsNewContract(addr common.Address) bool {
+	return false
+}
 func (m *MockStateDB) GetState(addr common.Address, key common.Hash) common.Hash {
 	if storage, ok := m.storage[addr]; ok {
 		return storage[key]
 	}
 	return common.Hash{}
 }
-func (m *MockStateDB) SetState(addr common.Address, key common.Hash, value common.Hash) {
+func (m *MockStateDB) SetState(addr common.Address, key, value common.Hash) common.Hash {
 	if _, ok := m.storage[addr]; !ok {
 		m.storage[addr] = make(map[common.Hash]common.Hash)
 	}
 	m.storage[addr][key] = value
+	return value
 }
 func (m *MockStateDB) Suicide(addr common.Address) bool     { return true }
 func (m *MockStateDB) HasSuicided(addr common.Address) bool { return false }

@@ -1,6 +1,7 @@
 package gETH
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -173,7 +174,7 @@ func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error
 	fmt.Println("Transaction Type: ", tx.Type)
 	fmt.Println("Gas Fee Type: ", tx.GasPrice)
 	fmt.Println("Gas Fee: ", tx.GasPrice)
-	hash, err := block.SubmitRawTransaction(&tx)
+	hash, err := block.SubmitRawTransaction(context.Background(), &tx)
 	if err != nil {
 		return nil, err
 	}

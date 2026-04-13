@@ -35,7 +35,6 @@ func NewChainConfig(chainID int) *params.ChainConfig {
 		GrayGlacierBlock:              zero,
 		MergeNetsplitBlock:            zero,          // The Merge
 		TerminalTotalDifficulty:       big.NewInt(0), // Required for Merge to be active at genesis
-		TerminalTotalDifficultyPassed: true,          // Explicitly signal that TTD is passed
 		ShanghaiTime:                  &zeroTime,     // Enable Shanghai (PUSH0)
 		CancunTime:                    nil,           // Disable Cancun to avoid blob gas issues
 	}
