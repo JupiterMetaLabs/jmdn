@@ -10,11 +10,11 @@ import (
 	"strings"
 	"syscall"
 
-	BlockCommon "gossipnode/Block/common"
 	pb "gossipnode/Block/proto"
+	BlockCommon "gossipnode/Block/common"
 	"gossipnode/Sequencer"
-	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
+	"gossipnode/config"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/ethereum/go-ethereum/common"
@@ -28,13 +28,8 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
-
-	"gossipnode/config/settings"
-	"gossipnode/pkg/gatekeeper"
 )
-
 var LocalGRO interfaces.LocalGoroutineManagerInterface
-
 // BlockServer implements the gRPC BlockService
 type BlockServer struct {
 	pb.UnimplementedBlockServiceServer
@@ -45,8 +40,20 @@ type BlockServer struct {
 
 // NewBlockServer creates a new BlockServer instance
 func NewBlockServer(h host.Host, chainID int) *BlockServer {
-	// Configure zerolog for gRPC server to log to stdout
-	grpcLogger := zerolog.New(os.Stdout).With().
+	// Create logs directory if it doesn't exist
+	if err := os.MkdirAll("logs", 0755); err != nil {
+		log.Fatal().Err(err).Msg("Failed to create logs directory")
+	}
+
+	// Set up gRPC server logger
+	logPath := "logs/block-grpc.log"
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatal().Err(err).Str("path", logPath).Msg("Failed to open gRPC log file")
+	}
+
+	// Configure zerolog for gRPC server
+	grpcLogger := zerolog.New(logFile).With().
 		Timestamp().
 		Str("component", "block-grpc").
 		Logger()
@@ -128,7 +135,7 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 }
 
 // StartGRPCServer starts the gRPC server on the specified port
-func StartGRPCServer(bindAddr string, port int, h host.Host, chainID int) error {
+func StartGRPCServer(port int, h host.Host, chainID int) error {
 	if LocalGRO == nil {
 		var err error
 		LocalGRO, err = BlockCommon.InitializeGRO(GRO.BlockGRPCServerLocal)
@@ -136,31 +143,16 @@ func StartGRPCServer(bindAddr string, port int, h host.Host, chainID int) error 
 			return fmt.Errorf("failed to initialize local gro: %v", err)
 		}
 	}
-	addr := fmt.Sprintf("%s:%d", bindAddr, port)
-	lis, err := net.Listen("tcp", addr)
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
 
-	// Load Security Configuration
-	secCfg := &settings.Get().Security
-
-	// Create secure gRPC server via gatekeeper helper
-	// Block server needs stream interceptor + large message sizes for block data
-	grpcServer, serverTLS, err := gatekeeper.NewSecureGRPCServer(
-		settings.ServiceBlockIngestGRPC, secCfg, nil,
-		true,                              // includeStreamInterceptor — Block uses streaming RPCs
+	// Create a new gRPC server with increased max message size for blocks
+	grpcServer := grpc.NewServer(
 		grpc.MaxRecvMsgSize(50*1024*1024), // 50MB max message size for blocks
 		grpc.MaxSendMsgSize(50*1024*1024), // 50MB max send size
 	)
-	if err != nil {
-		return fmt.Errorf("failed to create secure gRPC server: %w", err)
-	}
-	if serverTLS != nil {
-		log.Info().Msg("BlockGRPC server using mTLS/TLS")
-	} else {
-		log.Warn().Msg("BlockGRPC server starting INSECUREly (TLS disabled in policy)")
-	}
 
 	// Create and register the BlockServer
 	server := NewBlockServer(h, chainID)

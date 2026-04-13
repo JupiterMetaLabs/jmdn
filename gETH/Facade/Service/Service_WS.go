@@ -3,15 +3,14 @@ package Service
 import (
 	"context"
 	"fmt"
-	"log"
-	"sync"
-	"time"
-
 	"gossipnode/DB_OPs"
 	"gossipnode/config/GRO"
 	"gossipnode/gETH/Facade/Service/Types"
 	Utils "gossipnode/gETH/Facade/Service/utils"
 	"gossipnode/gETH/common"
+	"log"
+	"sync"
+	"time"
 )
 
 // Global subscription manager for new heads

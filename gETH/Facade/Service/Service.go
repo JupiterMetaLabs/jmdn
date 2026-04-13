@@ -5,30 +5,41 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	block "gossipnode/Block"
+	"gossipnode/DB_OPs"
+	"gossipnode/config"
+	"gossipnode/gETH/Facade/Service/Logger"
+	"gossipnode/gETH/Facade/Service/Types"
+	Utils "gossipnode/gETH/Facade/Service/utils"
 	"math/big"
 	"strings"
 	"time"
 
-	block "gossipnode/Block"
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-	"gossipnode/config/version"
-	"gossipnode/gETH/Facade/Service/Types"
-	Utils "gossipnode/gETH/Facade/Service/utils"
+	"gossipnode/SmartContract/pkg/client"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
 // ServiceImpl implements the Service interface
 type ServiceImpl struct {
-	ChainIDValue int
+	ChainIDValue      int
+	SmartContractPort int
+	scClient          *client.Client
 }
 
 // NewService creates a new service implementation
-func NewService(chainID int) Service {
+func NewService(chainID int, smartRPC int) Service {
+	scClient, err := client.NewClient(fmt.Sprintf("localhost:%d", smartRPC))
+	if err != nil {
+		fmt.Printf("Failed to connect to SmartContract gRPC server: %v\n", err)
+	}
 	return &ServiceImpl{
-		ChainIDValue: chainID,
+		ChainIDValue:      chainID,
+		SmartContractPort: smartRPC,
+		scClient:          scClient,
 	}
 }
 
@@ -51,7 +62,7 @@ func (s *ServiceImpl) ClientVersion(ctx context.Context) (string, error) {
 	opCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	clientVersion := version.ClientVersion()
+	ClientVersion := "JMDT/v1.0.0"
 
 	// Log the operation
 	if err := Logger.LogData(opCtx, "ClientVersion returned to the client", "ClientVersion", 1); err != nil {
@@ -59,7 +70,7 @@ func (s *ServiceImpl) ClientVersion(ctx context.Context) (string, error) {
 		fmt.Printf("Failed to log ClientVersion operation: %v\n", err)
 	}
 
-	return clientVersion, nil
+	return ClientVersion, nil
 }
 
 func (s *ServiceImpl) BlockNumber(ctx context.Context) (*big.Int, error) {
@@ -260,7 +271,7 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 		fmt.Println(">>>>>> JSON transaction parsed: ", tx)
 	}
 
-	hash, err := block.SubmitRawTransaction(opCtx, &tx)
+	hash, err := block.SubmitRawTransaction(&tx)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed: %v", err), "SendRawTx", -1); logErr != nil {
 			fmt.Printf("Failed to log SendRawTx error: %v\n", logErr)
@@ -542,10 +553,25 @@ func (s *ServiceImpl) GetLogs(ctx context.Context, q Types.FilterQuery) ([]Types
 	return logs, nil
 }
 
-// Call implements the Service interface - placeholder implementation
+// Call implements the Service interface - calls smart contract via gRPC
 func (s *ServiceImpl) Call(ctx context.Context, msg Types.CallMsg, block *big.Int) ([]byte, error) {
-	// TODO: Implement contract call functionality
-	return nil, fmt.Errorf("Call method not yet implemented")
+	if s.scClient == nil {
+		return nil, fmt.Errorf("SmartContract client not initialized")
+	}
+
+	caller := common.FromHex(msg.From)
+	contractAddr := common.FromHex(msg.To)
+
+	resp, err := s.scClient.CallContract(ctx, caller, contractAddr, msg.Data)
+	if err != nil {
+		return nil, fmt.Errorf("smart contract call failed: %v", err)
+	}
+
+	if resp.Error != "" {
+		return nil, fmt.Errorf("smart contract execution error: %s", resp.Error)
+	}
+
+	return common.FromHex(resp.ReturnData), nil
 }
 
 // EstimateGas UNITS!! implements the Service interface - estimates gas needed for a transaction
@@ -624,7 +650,7 @@ func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
 	defer cancel()
 
 	// Get fee statistics directly from routing service
-	feeStats, err := block.GetFeeStatisticsFromRouting(opCtx)
+	feeStats, err := block.GetFeeStatisticsFromRouting()
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GasPrice failed to get fee statistics: %v", err), "GasPrice", -1); logErr != nil {
 			fmt.Printf("Failed to log GasPrice error: %v\n", logErr)
@@ -663,19 +689,27 @@ func (s *ServiceImpl) GetCode(ctx context.Context, addr string, block *big.Int) 
 		fmt.Printf("Failed to log GetCode operation: %v\n", err)
 	}
 
-	// For now, return "0x" as there's no contract code storage implemented yet
-	// TODO: Implement actual contract code retrieval from state/storage
-	// This would typically involve:
-	// 1. Getting the state at the specified block
-	// 2. Looking up the account at the given address
-	// 3. Returning the code field (empty for EOAs, bytecode for contracts)
+	if s.scClient == nil {
+		return "0x", fmt.Errorf("SmartContract client not initialized")
+	}
+
+	contractAddr := common.FromHex(addr)
+	resp, err := s.scClient.GetContractCode(opCtx, contractAddr)
+	if err != nil {
+		// Just return 0x for now if it fails
+		return "0x", nil
+	}
 
 	// Log success
-	if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetCode returned 0x for address: %s", addr), "GetCode", 1); logErr != nil {
+	if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetCode returned for address: %s", addr), "GetCode", 1); logErr != nil {
 		fmt.Printf("Failed to log GetCode success: %v\n", logErr)
 	}
 
-	return "0x", nil
+	if resp.Code == "" {
+		return "0x", nil
+	}
+
+	return resp.Code, nil
 }
 
 // FeeHistory implements the Service interface - retrieves fee history for the last N blocks
@@ -782,4 +816,44 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 	}
 
 	return result, nil
+}
+
+func (s *ServiceImpl) GetStorageAt(ctx context.Context, address string, slot string, blockNum string) (string, error) {
+	if s.scClient == nil {
+		return "0x0000000000000000000000000000000000000000000000000000000000000000", nil
+	}
+	resp, err := s.scClient.GetStorage(ctx, common.HexToAddress(address).Bytes(), common.HexToHash(slot).Bytes())
+	if err != nil {
+		return "0x0000000000000000000000000000000000000000000000000000000000000000", nil
+	}
+	return resp.Value, nil
+}
+
+func (s *ServiceImpl) GetGasPrice(ctx context.Context) (string, error) {
+	return hexutil.EncodeBig(config.DefaultGasPrice), nil
+}
+
+func (s *ServiceImpl) GetFeeHistory(ctx context.Context, blockCount int, newestBlock string, rewardPercentiles []float64) (interface{}, error) {
+	history, err := s.FeeHistory(ctx, uint64(blockCount), nil, rewardPercentiles)
+	if err != nil || len(history) == 0 {
+		return map[string]interface{}{
+			"oldestBlock": "0x0",
+			"baseFeePerGas": []string{hexutil.EncodeBig(config.DefaultGasPrice)},
+			"gasUsedRatio": []float64{0.0},
+			"reward": [][]string{},
+		}, nil
+	}
+	return history, nil
+}
+
+func (s *ServiceImpl) GetMaxPriorityFeePerGas(ctx context.Context) (string, error) {
+	return hexutil.EncodeBig(config.DefaultPriorityFeePerGas), nil
+}
+
+func (s *ServiceImpl) IsListening(ctx context.Context) (bool, error) {
+	return true, nil
+}
+
+func (s *ServiceImpl) GetPeerCount(ctx context.Context) (string, error) {
+	return "0x1", nil
 }

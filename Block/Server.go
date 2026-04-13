@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	BlockCommon "gossipnode/Block/common"
@@ -16,18 +17,22 @@ import (
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
 	"gossipnode/config"
-	"gossipnode/config/GRO"
-	"gossipnode/config/settings"
-	"gossipnode/metrics"
-	"gossipnode/pkg/gatekeeper"
+	GRO "gossipnode/config/GRO"
+	"gossipnode/logging"
 
-	"github.com/JupiterMetaLabs/ion"
+	// "gossipnode/messaging"
+	"gossipnode/messaging/BlockProcessing"
+	"gossipnode/metrics"
+
+	// "gossipnode/PubSubMessages"
+
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/gin-gonic/gin"
+		"github.com/gin-gonic/gin"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/rs/zerolog"
-	"go.opentelemetry.io/otel/attribute"
+	"github.com/rs/zerolog/log"
+	"go.uber.org/zap"
 )
 
 type APIAccessTuple struct {
@@ -45,7 +50,6 @@ type FullTxn struct {
 	TransactionHash string              `json:"transaction_hash"`
 }
 
-/* UNUSED
 // Global mutex to protect account access
 var accountMutex sync.Mutex
 
@@ -69,76 +73,21 @@ func toBlockAccessList(apiList []APIAccessTuple) config.AccessList {
 	}
 	return result
 }
-*/
 
 func submitRawTransaction(c *gin.Context) {
-	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.submitRawTransaction")
-	defer span.End()
-
-	startTime := time.Now().UTC()
-	span.SetAttributes(
-		attribute.String("client_ip", c.ClientIP()),
-		attribute.String("method", c.Request.Method),
-		attribute.String("path", c.Request.URL.Path),
-	)
-
-	logger().NamedLogger.Info(spanCtx, "Received submit raw transaction request",
-		ion.String("client_ip", c.ClientIP()),
-		ion.String("method", c.Request.Method),
-		ion.String("path", c.Request.URL.Path),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockServer.submitRawTransaction"))
-
 	var tx config.Transaction
 
 	// 1. Bind and validate request
 	if err := c.ShouldBindJSON(&tx); err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "bind_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Invalid transaction format",
-			err,
-			ion.String("client_ip", c.ClientIP()),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockServer.submitRawTransaction"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid transaction format: " + err.Error()})
 		return
 	}
 
-	txHash, err := SubmitRawTransaction(spanCtx, &tx)
+	txHash, err := SubmitRawTransaction(&tx)
 	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "validation_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Transaction validation failed",
-			err,
-			ion.String("client_ip", c.ClientIP()),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockServer.submitRawTransaction"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Transaction validation failed: " + err.Error()})
 		return
 	}
-
-	span.SetAttributes(attribute.String("tx_hash", txHash))
-	duration := time.Since(startTime).Seconds()
-	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(spanCtx, "Transaction submitted successfully",
-		ion.String("tx_hash", txHash),
-		ion.String("client_ip", c.ClientIP()),
-		ion.Float64("duration", duration),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockServer.submitRawTransaction"))
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":           "success",
@@ -148,133 +97,65 @@ func submitRawTransaction(c *gin.Context) {
 }
 
 // SubmitRawTransaction handles pre-signed raw transactions with security validations
-func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (string, error) {
-	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(logger_ctx, "BlockServer.SubmitRawTransaction")
-	defer span.End()
-
-	startTime := time.Now().UTC()
-
+func SubmitRawTransaction(tx *config.Transaction) (string, error) {
 	if LocalGRO == nil {
 		var err error
 		LocalGRO, err = BlockCommon.InitializeGRO(GRO.BlockGRPCServerLocal)
 		if err != nil {
-			span.RecordError(err)
-			span.SetAttributes(attribute.String("status", "gro_init_failed"))
-			duration := time.Since(startTime).Seconds()
-			span.SetAttributes(attribute.Float64("duration", duration))
 			return "", fmt.Errorf("failed to initialize local gro: %v", err)
 		}
 	}
-
-	logger().NamedLogger.Info(spanCtx, "Processing raw transaction",
-		ion.String("from", tx.From.Hex()),
-		ion.String("to", tx.To.Hex()),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockServer.SubmitRawTransaction"))
+	// Debugging
+	fmt.Println("[DEBUG] Transaction: ", tx)
 
 	// Transaction hash must be present - it should be provided by the client
 	if tx.Hash == (common.Hash{}) {
-		span.RecordError(errors.New("hash is required"))
-		span.SetAttributes(attribute.String("status", "hash_missing"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
 		return "", errors.New("invalid transaction: hash is required and must be provided by the client")
 	}
 
 	// Run security checks (includes hash validation)
 	status, err := Security.AllChecks(tx)
 	if !status || err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "security_check_failed"), attribute.Bool("security_status", status))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Security checks failed",
-			err,
-			ion.Bool("security_status", status),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockServer.SubmitRawTransaction"))
 		return "", err
 	}
-
-	span.SetAttributes(attribute.Bool("security_checks_passed", true))
+	// Debugging
+	fmt.Println("[DEBUG] Security Checks: ", status)
 
 	// Basic transaction validation
 	if tx.Value.Cmp(big.NewInt(0)) == 0 || tx.Value.String() == "" {
 		if len(tx.Data) == 0 || tx.Data == nil {
-			span.RecordError(errors.New("value is 0/empty AND data is 0/empty"))
-			span.SetAttributes(attribute.String("status", "validation_failed"))
-			duration := time.Since(startTime).Seconds()
-			span.SetAttributes(attribute.Float64("duration", duration))
 			return "", errors.New("invalid transaction: value is 0/empty AND data is 0/empty")
 		}
 	}
+	// Debugging
+	fmt.Println("[DEBUG] Basic Transaction Validation: ", tx.Value)
 
 	// Check that To and From addresses are not the same (not checked in security checks)
 	if tx.To == tx.From {
-		span.RecordError(errors.New("invalid transaction: To and From address are the same"))
-		span.SetAttributes(attribute.String("status", "validation_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
 		return "", errors.New("invalid transaction: To and From address are the same")
 	}
 
 	txHash := tx.Hash.Hex()
-	span.SetAttributes(
-		attribute.String("tx_hash", txHash),
-		attribute.String("from", tx.From.Hex()),
-		attribute.String("to", tx.To.Hex()),
-		attribute.String("value", tx.Value.String()),
-		attribute.Int("tx_type", int(tx.Type)),
-	)
-
-	logger().NamedLogger.Info(spanCtx, "Transaction validated, submitting to mempool",
-		ion.String("tx_hash", txHash),
-		ion.String("from", tx.From.Hex()),
-		ion.String("to", tx.To.Hex()),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockServer.SubmitRawTransaction"))
+	// Debugging
+	fmt.Println("Transaction Hash: ", txHash)
 
 	// Asynchronously submit to mempool with context
-	// Create a link to the current span to preserve the trace chain
-	link := ion.LinkFromContext(spanCtx)
-
-	LocalGRO.Go(GRO.SubmitRawTransactionThread, func(_ context.Context) error {
-		// Use a fresh context background but link it to the original request
-		asyncCtx, asyncSpan := logger().NamedLogger.Tracer("BlockServer").Start(context.Background(), "AsyncSubmitRawTransaction", ion.WithLinks(link))
-		defer asyncSpan.End()
-
-		if err := SubmitToMempool(asyncCtx, tx, txHash); err != nil {
-			logger().NamedLogger.Error(asyncCtx, "Error submitting raw transaction to mempool",
-				err,
-				ion.String("tx_hash", txHash),
-				ion.String("from", tx.From.Hex()),
-				ion.String("to", tx.To.Hex()),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", FILENAME),
-				ion.String("topic", TOPIC),
-				ion.String("function", "BlockServer.SubmitRawTransaction"))
+	LocalGRO.Go(GRO.SubmitRawTransactionThread, func(ctx context.Context) error {
+		if err := SubmitToMempool(tx, txHash); err != nil {
+			log.Error().Err(err).
+				Str("txHash", txHash).
+				Str("from", tx.From.String()).
+				Str("to", tx.To.String()).
+				Msg("Error submitting raw transaction to mempool")
 		} else {
-			logger().NamedLogger.Info(asyncCtx, "Raw transaction successfully submitted to mempool",
-				ion.String("tx_hash", txHash),
-				ion.String("from", tx.From.Hex()),
-				ion.String("to", tx.To.Hex()),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", FILENAME),
-				ion.String("topic", TOPIC),
-				ion.String("function", "BlockServer.SubmitRawTransaction"))
+			log.Info().
+				Str("txHash", txHash).
+				Str("from", tx.From.String()).
+				Str("to", tx.To.String()).
+				Msg("Raw transaction successfully submitted to mempool")
 		}
 		return nil
 	})
-
-	duration := time.Since(startTime).Seconds()
-	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
 
 	// Return success response
 	return txHash, nil
@@ -283,31 +164,41 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 // Global host variable to store the libp2p host instance for network operations
 var globalHost host.Host
 
+// Global chainID variable to store the chain ID for smart contract operations
+var globalChainID int
+
 // SetHostInstance sets the global host instance for transaction propagation
 func SetHostInstance(h host.Host) {
 	globalHost = h // Uncommented - host is needed for consensus
 }
 
-func Startserver(bindAddr string, port int, h host.Host, chainID int) {
-	_ = StartserverWithContext(context.Background(), bindAddr, port, h, chainID)
+func Startserver(port int, h host.Host, chainID int) {
+	_ = StartserverWithContext(context.Background(), port, h, chainID)
 }
 
 // StartserverWithContext starts the transaction/block API server and shuts it down when ctx is cancelled.
-func StartserverWithContext(ctx context.Context, bindAddr string, port int, h host.Host, chainID int) error {
+func StartserverWithContext(ctx context.Context, port int, h host.Host, chainID int) error {
 	// Create logs directory if it doesn't exist
-	if err := os.MkdirAll("logs", 0750); err != nil {
+	if err := os.MkdirAll("logs", 0755); err != nil {
 		return fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
+	// Set up transaction logger
+	txLogPath := "logs/transactions.log"
+	txLogFile, err := os.OpenFile(txLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open transaction log file %s: %w", txLogPath, err)
+	}
+
 	// Configure zerolog for transactions
-	txLogger := zerolog.New(os.Stdout).With().
+	txLogger := zerolog.New(txLogFile).With().
 		Timestamp().
 		Str("component", "transactions").
 		Logger()
 
 	// Set up Gin to use our transaction logger
-	gin.DefaultWriter = io.MultiWriter(os.Stdout)
-	gin.DefaultErrorWriter = io.MultiWriter(os.Stderr)
+	gin.DefaultWriter = io.MultiWriter(txLogFile, os.Stdout)
+	gin.DefaultErrorWriter = io.MultiWriter(txLogFile, os.Stderr)
 
 	// Configure global logger
 	SetLogger(txLogger)
@@ -317,8 +208,10 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 
 	router := gin.Default()
 	SetHostInstance(h)
-	// expectedChainID is now set globally in main.go at startup,
-	// independent of whether BlockGen is active. See main.go after ResolveTokens().
+	globalChainID = chainID
+	// Also set expected chain ID in Security module for tx validation
+	Security.SetExpectedChainIDBig(big.NewInt(int64(chainID)))
+	fmt.Printf("Expected Chain ID: %d - Type: %T\n", chainID, chainID)
 
 	// Add logging middleware
 	router.Use(func(c *gin.Context) {
@@ -335,16 +228,6 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 		// Start timing
 		start := time.Now().UTC()
 		path := c.Request.URL.Path
-		clientIP := c.ClientIP()
-		method := c.Request.Method
-
-		// Create span for request
-		spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.HTTPRequest")
-		span.SetAttributes(
-			attribute.String("client_ip", clientIP),
-			attribute.String("method", method),
-			attribute.String("path", path),
-		)
 
 		// Process request
 		c.Next()
@@ -352,44 +235,21 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 		// Log after request with structured data
 		latency := time.Since(start)
 		statusCode := c.Writer.Status()
-
-		span.SetAttributes(
-			attribute.Int("status_code", statusCode),
-			attribute.Float64("latency_seconds", latency.Seconds()),
-		)
+		clientIP := c.ClientIP()
+		method := c.Request.Method
 
 		// Count requests for Prometheus
 		metrics.DatabaseOperations.WithLabelValues("api_request", fmt.Sprintf("%d", statusCode)).Inc()
 
-		// Log request details with structured format
-		logger().NamedLogger.Info(spanCtx, "API Request",
-			ion.String("client_ip", clientIP),
-			ion.String("method", method),
-			ion.String("path", path),
-			ion.Int("status", statusCode),
-			ion.Float64("latency_seconds", latency.Seconds()),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockServer.HTTPRequest"))
-
-		span.End()
+		// Log request details with structured format for Loki/Grafana
+		txLogger.Info().
+			Str("client_ip", clientIP).
+			Str("method", method).
+			Str("path", path).
+			Int("status", statusCode).
+			Dur("latency", latency).
+			Msg("API Request")
 	})
-
-	// Initialize Security Components
-	secCfg := &settings.Get().Security
-
-	// Rate Limiter
-	rl, err := gatekeeper.NewRateLimiter(secCfg, secCfg.IPCacheSize)
-	if err != nil {
-		logger().NamedLogger.Error(ctx, "Failed to init rate limiter", err)
-		return err
-	} else {
-		// Middleware
-		middleware := gatekeeper.NewGinMiddleware(secCfg, rl, logger().NamedLogger)
-		// Apply Gatekeeper Middleware
-		router.Use(middleware.Middleware(settings.ServiceBlockIngestHTTP))
-	}
 
 	// Transaction endpoints
 	router.POST("/api/submit-raw-tx", submitRawTransaction)
@@ -409,13 +269,8 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 	})
 
 	// Start server
-	portStr := fmt.Sprintf("%s:%d", bindAddr, port)
-	logger().NamedLogger.Info(ctx, "Starting transaction generator API",
-		ion.Int("port", port),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockServer.StartserverWithContext"))
+	portStr := fmt.Sprintf(":%d", port)
+	txLogger.Info().Int("port", port).Msg("Starting transaction generator API")
 
 	srv := &http.Server{
 		Addr:              portStr,
@@ -423,28 +278,9 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// --- TLS CONFIGURATION ---
-	tlsLoader := gatekeeper.NewTLSLoader(secCfg, logger().NamedLogger)
-	// Configure TLS if enabled
-	tlsConfig, err := tlsLoader.LoadServerTLS(settings.ServiceBlockIngestHTTP)
-	if err != nil {
-		// FAIL HARD: If TLS is enabled in policy but fails to load, we must not start insecurely.
-		logger().NamedLogger.Error(ctx, "Failed to load TLS config for Sequencer", err)
-		return fmt.Errorf("failed to load TLS config for Sequencer: %w", err)
-	}
-
-	if tlsConfig != nil {
-		srv.TLSConfig = tlsConfig
-		logger().NamedLogger.Info(ctx, "TLS Enabled for Sequencer API")
-	}
-
 	errCh := make(chan error, 1)
 	go func() {
-		if tlsConfig != nil {
-			errCh <- srv.ListenAndServeTLS("", "")
-		} else {
-			errCh <- srv.ListenAndServe()
-		}
+		errCh <- srv.ListenAndServe()
 	}()
 
 	select {
@@ -462,78 +298,23 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 }
 
 func processZKBlock(c *gin.Context) {
-	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.processZKBlock")
-	defer span.End()
-
-	startTime := time.Now().UTC()
-	span.SetAttributes(
-		attribute.String("client_ip", c.ClientIP()),
-		attribute.String("method", c.Request.Method),
-		attribute.String("path", c.Request.URL.Path),
-	)
-
-	logger().NamedLogger.Info(spanCtx, "Received process ZK block request",
-		ion.String("client_ip", c.ClientIP()),
-		ion.String("method", c.Request.Method),
-		ion.String("path", c.Request.URL.Path),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", BLOCKTOPIC),
-		ion.String("function", "BlockServer.processZKBlock"))
-
 	// Parse the block data from the request
 	var block config.ZKBlock
 	if err := c.ShouldBindJSON(&block); err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "parse_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Invalid block data",
-			err,
-			ion.String("client_ip", c.ClientIP()),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.processZKBlock"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid block data: %v", err)})
 		return
 	}
 
-	span.SetAttributes(
-		attribute.Int64("block_number", int64(block.BlockNumber)),
-		attribute.String("block_hash", block.BlockHash.Hex()),
-		attribute.Int("tx_count", len(block.Transactions)),
-		attribute.String("block_status", block.Status),
-	)
-
 	// Validate block data
 	if len(block.Transactions) == 0 {
-		span.RecordError(errors.New("block contains no transactions"))
-		span.SetAttributes(attribute.String("status", "validation_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "block contains no transactions"})
 		return
 	}
 
 	if block.Status != "verified" {
-		span.RecordError(fmt.Errorf("block status is %s, not verified", block.Status))
-		span.SetAttributes(attribute.String("status", "validation_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "block has not been verified by ZKVM"})
 		return
 	}
-
-	logger().NamedLogger.Info(spanCtx, "Block validated, starting consensus process",
-		ion.Int64("block_number", int64(block.BlockNumber)),
-		ion.String("block_hash", block.BlockHash.Hex()),
-		ion.Int("tx_count", len(block.Transactions)),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", BLOCKTOPIC),
-		ion.String("function", "BlockServer.processZKBlock"))
 
 	// Create consensus instance and start consensus process
 	peerList := Sequencer.PeerList{
@@ -541,32 +322,15 @@ func processZKBlock(c *gin.Context) {
 		BackupPeers: []peer.ID{},
 	}
 	consensus := Sequencer.NewConsensus(peerList, globalHost)
-
-	consensusStartTime := time.Now().UTC()
+	// Debugging
+	fmt.Printf("Consensus: %+v\n", consensus)
 	if err := consensus.Start(&block); err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "consensus_failed"))
-		consensusDuration := time.Since(consensusStartTime).Seconds()
-		span.SetAttributes(attribute.Float64("consensus_duration", consensusDuration))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Failed to start consensus process",
-			err,
-			ion.Int64("block_number", int64(block.BlockNumber)),
-			ion.String("block_hash", block.BlockHash.Hex()),
-			ion.Float64("consensus_duration", consensusDuration),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.processZKBlock"))
+		fmt.Printf("Error starting consensus process: %+v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("failed to start consensus process: %v", err),
 		})
 		return
 	}
-
-	consensusDuration := time.Since(consensusStartTime).Seconds()
-	span.SetAttributes(attribute.Float64("consensus_duration", consensusDuration))
 
 	for _, tx := range block.Transactions {
 		LogTransaction(
@@ -578,18 +342,11 @@ func processZKBlock(c *gin.Context) {
 		)
 	}
 
-	duration := time.Since(startTime).Seconds()
-	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(spanCtx, "Block processed successfully",
-		ion.Int64("block_number", int64(block.BlockNumber)),
-		ion.String("block_hash", block.BlockHash.Hex()),
-		ion.Int("tx_count", len(block.Transactions)),
-		ion.Float64("consensus_duration", consensusDuration),
-		ion.Float64("total_duration", duration),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", BLOCKTOPIC),
-		ion.String("function", "BlockServer.processZKBlock"))
+	txLogger.Info().
+		Uint64("block_number", block.BlockNumber).
+		Str("block_hash", block.BlockHash.Hex()).
+		Int("tx_count", len(block.Transactions)).
+		Msg("Block processed")
 
 	// Return success
 	c.JSON(http.StatusOK, gin.H{
@@ -601,143 +358,186 @@ func processZKBlock(c *gin.Context) {
 	})
 }
 
+func processZKBlockNoConsensus(c *gin.Context) {
+	fmt.Println("=== DEBUG: processZKBlock API called ===")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Parse the block data from the request
+	var block config.ZKBlock
+	if err := c.ShouldBindJSON(&block); err != nil {
+		fmt.Printf("DEBUG: Failed to parse block data: %v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid block data: %v", err)})
+		return
+	}
+	fmt.Printf("DEBUG: Successfully parsed block data - Block #%d, Hash: %s, Txns: %d\n",
+		block.BlockNumber, block.BlockHash.Hex(), len(block.Transactions))
+
+	// Validate block data
+	if len(block.Transactions) == 0 {
+		fmt.Println("DEBUG: Block contains no transactions")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "block contains no transactions"})
+		return
+	}
+
+	if block.Status != "verified" {
+		fmt.Printf("DEBUG: Block status is '%s', not 'verified'\n", block.Status)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "block has not been verified by ZKVM"})
+		return
+	}
+	fmt.Println("DEBUG: Block validation passed")
+
+	// Skip consensus for testing - directly process the block
+	txLogger.Info().
+		Uint64("block_number", block.BlockNumber).
+		Str("block_hash", block.BlockHash.Hex()).
+		Int("tx_count", len(block.Transactions)).
+		Msg("Processing block directly (consensus bypassed for testing)")
+
+	fmt.Println("DEBUG: Getting database connections...")
+	// Create DB clients for processing
+	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		fmt.Printf("DEBUG: Failed to get main DB connection: %v\n", err)
+		txLogger.Error().Err(err).Msg("Failed to get main DB connection")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get main DB connection"})
+		return
+	}
+	fmt.Println("DEBUG: Successfully got main DB connection")
+	defer func() {
+		fmt.Println("DEBUG: Returning main DB connection to pool")
+		DB_OPs.PutMainDBConnection(mainDBClient)
+	}()
+
+	accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
+	if err != nil {
+		fmt.Printf("DEBUG: Failed to get accounts DB connection: %v\n", err)
+		txLogger.Error().Err(err).Msg("Failed to get accounts DB connection")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get accounts DB connection"})
+		return
+	}
+	fmt.Println("DEBUG: Successfully got accounts DB connection")
+	defer func() {
+		fmt.Println("DEBUG: Returning accounts DB connection to pool")
+		DB_OPs.PutAccountsConnection(accountsClient)
+	}()
+
+	fmt.Println("DEBUG: Starting transaction processing...")
+	// Process all transactions in the block atomically with rollback capability
+	if err := BlockProcessing.ProcessBlockTransactions(&block, accountsClient, true); err != nil {
+		fmt.Printf("DEBUG: Block processing failed: %v\n", err)
+		txLogger.Error().
+			Err(err).
+			Str("block_hash", block.BlockHash.Hex()).
+			Msg("Block processing failed")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("failed to process block transactions: %v", err),
+		})
+		return
+	}
+	fmt.Println("DEBUG: All transactions processed successfully")
+
+	txLogger.Info().
+		Str("block_hash", block.BlockHash.Hex()).
+		Msg("All transactions processed successfully - storing block")
+
+	fmt.Println("DEBUG: Storing block in main DB...")
+	// Store the validated and processed block in main DB
+	if err := DB_OPs.StoreZKBlock(mainDBClient, &block); err != nil {
+		fmt.Printf("DEBUG: Failed to store block: %v\n", err)
+		txLogger.Error().
+			Err(err).
+			Str("block_hash", block.BlockHash.Hex()).
+			Msg("Failed to store block in database")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("failed to store block: %v", err),
+		})
+		return
+	}
+	fmt.Println("DEBUG: Block stored successfully")
+
+	// Log transactions
+	fmt.Println("DEBUG: Logging transaction details...")
+	for i, tx := range block.Transactions {
+		fmt.Printf("DEBUG: Transaction %d - Hash: %s, From: %s, To: %s, Value: %s\n",
+			i+1, tx.Hash.Hex(), tx.From.Hex(), tx.To.Hex(), tx.Value.String())
+		LogTransaction(
+			tx.Hash.Hex(),
+			tx.From.Hex(),
+			tx.To.Hex(),
+			tx.Value.String(),
+			fmt.Sprintf("%d", tx.Type),
+		)
+	}
+
+	txLogger.Info().
+		Uint64("block_number", block.BlockNumber).
+		Str("block_hash", block.BlockHash.Hex()).
+		Int("tx_count", len(block.Transactions)).
+		Msg("Block processed and stored successfully")
+
+	fmt.Println("DEBUG: Returning success response")
+	// Return success
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"message": fmt.Sprintf("Block %d with %d transactions processed and stored successfully (consensus bypassed)",
+			block.BlockNumber, len(block.Transactions)),
+		"block_hash":   block.BlockHash.Hex(),
+		"block_number": block.BlockNumber,
+	})
+	fmt.Println("=== DEBUG: processZKBlock API completed successfully ===")
+}
+
 // getBlockByNumber retrieves a block by its number
 func getBlockByNumber(c *gin.Context) {
-	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.getBlockByNumber")
-	defer span.End()
-
-	startTime := time.Now().UTC()
-	span.SetAttributes(
-		attribute.String("client_ip", c.ClientIP()),
-		attribute.String("method", c.Request.Method),
-		attribute.String("path", c.Request.URL.Path),
-	)
-
 	blockNumberStr := c.Param("number")
 	blockNumber, err := strconv.ParseUint(blockNumberStr, 10, 64)
 	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "parse_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Invalid block number",
-			err,
-			ion.String("block_number_str", blockNumberStr),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getBlockByNumber"))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid block number"})
 		return
 	}
 
-	span.SetAttributes(attribute.Int64("block_number", int64(blockNumber)))
-
-	logger().NamedLogger.Info(spanCtx, "Getting block by number",
-		ion.Int64("block_number", int64(blockNumber)),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", BLOCKTOPIC),
-		ion.String("function", "BlockServer.getBlockByNumber"))
-
-	ctx, cancel := context.WithTimeout(spanCtx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "db_connection_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Database connection failed",
-			err,
-			ion.Int64("block_number", int64(blockNumber)),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getBlockByNumber"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
 		return
 	}
 	defer func() {
-		logger().NamedLogger.Info(spanCtx, "Putting database connection back to pool",
-			ion.String("database", "MainDB Connection"),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getBlockByNumber"))
+		mainDBClient.Client.Logger.Logger.Info("Putting database connection back to pool",
+			zap.String(logging.Connection_database, "MainDB Connection"),
+			zap.Time(logging.Created_at, time.Now().UTC()),
+			zap.String(logging.Log_file, FILENAME),
+			zap.String(logging.Topic, BLOCKTOPIC),
+			zap.String(logging.Loki_url, config.LOKI_URL),
+			zap.String(logging.Function, "Block.getBlockByNumber"),
+		)
 		DB_OPs.PutMainDBConnection(mainDBClient)
 	}()
 
 	block, err := DB_OPs.GetZKBlockByNumber(mainDBClient, blockNumber)
 	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "block_not_found"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Block not found",
-			err,
-			ion.Int64("block_number", int64(blockNumber)),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getBlockByNumber"))
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("block not found: %v", err)})
 		return
 	}
 
-	duration := time.Since(startTime).Seconds()
-	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(spanCtx, "Block lookup by number successful",
-		ion.Int64("block_number", int64(blockNumber)),
-		ion.String("block_hash", block.BlockHash.Hex()),
-		ion.Float64("duration", duration),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", BLOCKTOPIC),
-		ion.String("function", "BlockServer.getBlockByNumber"))
+	txLogger.Info().
+		Uint64("block_number", blockNumber).
+		Msg("Block lookup by number")
 
 	c.JSON(http.StatusOK, block)
 }
 
 // getBlockByHash retrieves a block by its hash
 func getBlockByHash(c *gin.Context) {
-	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.getBlockByHash")
-	defer span.End()
-
-	startTime := time.Now().UTC()
 	blockHash := c.Param("hash")
-	span.SetAttributes(
-		attribute.String("client_ip", c.ClientIP()),
-		attribute.String("method", c.Request.Method),
-		attribute.String("path", c.Request.URL.Path),
-		attribute.String("block_hash", blockHash),
-	)
 
-	logger().NamedLogger.Info(spanCtx, "Getting block by hash",
-		ion.String("block_hash", blockHash),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", BLOCKTOPIC),
-		ion.String("function", "BlockServer.getBlockByHash"))
-
-	ctx, cancel := context.WithTimeout(spanCtx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "db_connection_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Database connection failed",
-			err,
-			ion.String("block_hash", blockHash),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getBlockByHash"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
 		return
 	}
@@ -745,73 +545,26 @@ func getBlockByHash(c *gin.Context) {
 
 	block, err := DB_OPs.GetZKBlockByHash(mainDBClient, blockHash)
 	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "block_not_found"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Block not found",
-			err,
-			ion.String("block_hash", blockHash),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getBlockByHash"))
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("block not found: %v", err)})
 		return
 	}
 
-	duration := time.Since(startTime).Seconds()
-	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(spanCtx, "Block lookup by hash successful",
-		ion.String("block_hash", blockHash),
-		ion.Int64("block_number", int64(block.BlockNumber)),
-		ion.Float64("duration", duration),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", BLOCKTOPIC),
-		ion.String("function", "BlockServer.getBlockByHash"))
+	txLogger.Info().
+		Str("block_hash", blockHash).
+		Msg("Block lookup by hash")
 
 	c.JSON(http.StatusOK, block)
 }
 
 // getTransactionInfo gets detailed information about a transaction
 func getTransactionInfo(c *gin.Context) {
-	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.getTransactionInfo")
-	defer span.End()
-
-	startTime := time.Now().UTC()
 	txHash := c.Param("hash")
-	span.SetAttributes(
-		attribute.String("client_ip", c.ClientIP()),
-		attribute.String("method", c.Request.Method),
-		attribute.String("path", c.Request.URL.Path),
-		attribute.String("tx_hash", txHash),
-	)
-
-	logger().NamedLogger.Info(spanCtx, "Getting transaction info",
-		ion.String("tx_hash", txHash),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockServer.getTransactionInfo"))
-
-	ctx, cancel := context.WithTimeout(spanCtx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+
 	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "db_connection_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Database connection failed",
-			err,
-			ion.String("tx_hash", txHash),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockServer.getTransactionInfo"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
 		return
 	}
@@ -819,17 +572,6 @@ func getTransactionInfo(c *gin.Context) {
 
 	block, err := DB_OPs.GetTransactionBlock(mainDBClient, txHash)
 	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "transaction_not_found"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Transaction not found",
-			err,
-			ion.String("tx_hash", txHash),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockServer.getTransactionInfo"))
 		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("transaction not found: %v", err)})
 		return
 	}
@@ -844,37 +586,9 @@ func getTransactionInfo(c *gin.Context) {
 	}
 
 	if foundTx == nil {
-		span.RecordError(errors.New("transaction found in block but details missing"))
-		span.SetAttributes(attribute.String("status", "transaction_details_missing"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Transaction found in block but details missing",
-			fmt.Errorf("transaction found in block but details missing"),
-			ion.String("tx_hash", txHash),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockServer.getTransactionInfo"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "transaction found in block but details missing"})
 		return
 	}
-
-	span.SetAttributes(
-		attribute.Int64("block_number", int64(block.BlockNumber)),
-		attribute.String("block_hash", block.BlockHash.Hex()),
-	)
-
-	duration := time.Since(startTime).Seconds()
-	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(spanCtx, "Transaction info retrieved successfully",
-		ion.String("tx_hash", txHash),
-		ion.Int64("block_number", int64(block.BlockNumber)),
-		ion.String("block_hash", block.BlockHash.Hex()),
-		ion.Float64("duration", duration),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockServer.getTransactionInfo"))
 
 	// Return transaction with block details
 	c.JSON(http.StatusOK, gin.H{
@@ -888,38 +602,12 @@ func getTransactionInfo(c *gin.Context) {
 
 // getLatestBlock returns information about the latest block
 func getLatestBlock(c *gin.Context) {
-	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.getLatestBlock")
-	defer span.End()
-
-	startTime := time.Now().UTC()
-	span.SetAttributes(
-		attribute.String("client_ip", c.ClientIP()),
-		attribute.String("method", c.Request.Method),
-		attribute.String("path", c.Request.URL.Path),
-	)
-
-	logger().NamedLogger.Info(spanCtx, "Getting latest block",
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", BLOCKTOPIC),
-		ion.String("function", "BlockServer.getLatestBlock"))
-
-	ctx, cancel := context.WithTimeout(spanCtx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+
 	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "db_connection_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Database connection failed",
-			err,
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getLatestBlock"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
 		return
 	}
@@ -927,62 +615,24 @@ func getLatestBlock(c *gin.Context) {
 
 	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(mainDBClient)
 	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "get_latest_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Failed to get latest block number",
-			err,
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getLatestBlock"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get latest block: %v", err)})
 		return
 	}
 
 	if latestBlockNumber == 0 {
-		span.SetAttributes(attribute.String("status", "no_blocks"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Info(spanCtx, "No blocks in chain yet",
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getLatestBlock"))
 		c.JSON(http.StatusOK, gin.H{"message": "no blocks in the chain yet"})
 		return
 	}
 
-	span.SetAttributes(attribute.Int64("latest_block_number", int64(latestBlockNumber)))
-
 	block, err := DB_OPs.GetZKBlockByNumber(mainDBClient, latestBlockNumber)
 	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "get_block_data_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Failed to get latest block data",
-			err,
-			ion.Int64("latest_block_number", int64(latestBlockNumber)),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getLatestBlock"))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get latest block data: %v", err)})
 		return
 	}
 
-	duration := time.Since(startTime).Seconds()
-	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(spanCtx, "Latest block lookup successful",
-		ion.Int64("latest_block_number", int64(latestBlockNumber)),
-		ion.String("block_hash", block.BlockHash.Hex()),
-		ion.Float64("duration", duration),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", FILENAME),
-		ion.String("topic", BLOCKTOPIC),
-		ion.String("function", "BlockServer.getLatestBlock"))
+	txLogger.Info().
+		Uint64("latest_block", latestBlockNumber).
+		Msg("Latest block lookup")
 
 	c.JSON(http.StatusOK, block)
 }

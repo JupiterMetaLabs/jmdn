@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math/big"
 	"sync"
 	"time"
 
@@ -23,11 +24,7 @@ const PeerFile = "./config/peer.json"
 const BLSFile = "./config/bls.json"
 
 const (
-	DefaultProfilerPort = "6060" // Default port for the profiler server
-)
-
-const (
-	MaxMainPeers     = 5 // Production size for buddy node committees
+	MaxMainPeers     = 5  // Production size for buddy node committees
 	MaxBackupPeers   = 5 // Backup peers to handle failures of main nodes
 	ConsensusTimeout = 90 * time.Second
 )
@@ -38,6 +35,23 @@ const (
 	MessageRejectionWindow = 20 * time.Second // Reject messages after 20 seconds
 	MessageBufferTime      = 5 * time.Second  // 5-second buffer between windows
 )
+
+var (
+	DefaultGasPrice          = big.NewInt(1_000_000_000) // 1 gwei
+	DefaultPriorityFeePerGas = big.NewInt(1_000_000_000) // 1 gwei
+)
+
+var SeedNodeURL string = "" // Default seed node URL, can be updated via SetSeedNodeURL
+
+// SetSeedNodeURL sets the seed node URL for the application
+func SetSeedNodeURL(url string) {
+	SeedNodeURL = url
+}
+
+// GetSeedNodeURL returns the current seed node URL
+func GetSeedNodeURL() string {
+	return SeedNodeURL
+}
 
 // Protocol IDs for message and file sharing
 const (

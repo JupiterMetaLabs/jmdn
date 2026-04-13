@@ -2,9 +2,8 @@ package Service
 
 import (
 	"context"
-	"math/big"
-
 	"gossipnode/gETH/Facade/Service/Types"
+	"math/big"
 )
 
 type Service interface {
@@ -25,6 +24,12 @@ type Service interface {
 	FeeHistory(ctx context.Context, blockCount uint64, newest *big.Int, perc []float64) (map[string]any, error)
 
 	// Streaming (for WS subscriptions)
+	GetStorageAt(ctx context.Context, address string, slot string, blockNum string) (string, error)
+	GetGasPrice(ctx context.Context) (string, error)
+	GetFeeHistory(ctx context.Context, blockCount int, newestBlock string, rewardPercentiles []float64) (interface{}, error)
+	GetMaxPriorityFeePerGas(ctx context.Context) (string, error)
+	IsListening(ctx context.Context) (bool, error)
+	GetPeerCount(ctx context.Context) (string, error)
 	SubscribeNewHeads(ctx context.Context) (<-chan *Types.Block, func(), error)
 	// SubscribeLogs is used to subscribe to logs - Its used by Smartcontracts so it can be skipped for some time - // Future
 	SubscribeLogs(ctx context.Context, q *Types.FilterQuery) (<-chan Types.Log, func(), error)
