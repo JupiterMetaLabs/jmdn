@@ -60,7 +60,6 @@ func (m *MempoolClient) Close() error {
 	if m.logger != nil {
 		m.logger.Close("")
 	}
-
 	// Close the gRPC connection
 	if m.conn != nil {
 		return m.conn.Close()

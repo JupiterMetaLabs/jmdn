@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math/big"
 	"net/http"
 	"os"
 	"strconv"
 	"time"
+
+	"gossipnode/SmartContract/pkg/compiler"
 
 	BlockCommon "gossipnode/Block/common"
 	"gossipnode/DB_OPs"
@@ -399,9 +402,9 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 	router.GET("/api/tx/:hash", getTransactionInfo)
 	router.GET("/api/latest-block", getLatestBlock)
 
-	// router.POST("/api/contract/compile", compileContract)
-	// router.POST("/api/contract/deploy", deployContract)
-	// router.POST("/api/contract/execute", executeContract)
+	router.POST("/api/contract/compile", compileContract)
+	router.POST("/api/contract/deploy", deployContract)
+	router.POST("/api/contract/execute", executeContract)
 
 	// Add a health check endpoint
 	router.GET("/health", func(c *gin.Context) {
@@ -985,4 +988,102 @@ func getLatestBlock(c *gin.Context) {
 		ion.String("function", "BlockServer.getLatestBlock"))
 
 	c.JSON(http.StatusOK, block)
+}
+
+func compileContract(c *gin.Context) {
+	// Record trace span
+	_, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.compileContract")
+	defer span.End()
+
+	var req struct {
+		SourceCode string `json:"source_code"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	// Create temp file for Solidity source
+	tmpFile, err := ioutil.TempFile("", "contract-*.sol")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create temp file: " + err.Error()})
+		return
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(req.SourceCode); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to write source to temp file: " + err.Error()})
+		return
+	}
+	tmpFile.Close()
+
+	// Compile
+	contracts, err := compiler.CompileSolidity(tmpFile.Name())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Compilation failed: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "success",
+		"contracts": contracts,
+	})
+}
+
+func deployContract(c *gin.Context) {
+	// Record trace span
+	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.deployContract")
+	defer span.End()
+
+	var tx config.Transaction
+	if err := c.ShouldBindJSON(&tx); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid transaction format: " + err.Error()})
+		return
+	}
+
+	// For deployment, 'To' must be nil
+	tx.To = nil
+
+	txHash, err := SubmitRawTransaction(spanCtx, &tx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Deployment submission failed: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":           "success",
+		"transaction_hash": txHash,
+		"message":          "Contract deployment submitted successfully",
+	})
+}
+
+func executeContract(c *gin.Context) {
+	// Record trace span
+	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.executeContract")
+	defer span.End()
+
+	var tx config.Transaction
+	if err := c.ShouldBindJSON(&tx); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid transaction format: " + err.Error()})
+		return
+	}
+
+	// Ensure 'To' is not nil for execution
+	if tx.To == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Target address ('to') is required for contract execution"})
+		return
+	}
+
+	txHash, err := SubmitRawTransaction(spanCtx, &tx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Execution submission failed: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":           "success",
+		"transaction_hash": txHash,
+		"message":          "Contract execution submitted successfully",
+	})
 }
