@@ -33,6 +33,15 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+// addrHex safely converts a *common.Address to its hex string.
+// Returns the fallback string when the pointer is nil (e.g. contract creation has To == nil).
+func addrHex(addr *common.Address, fallback string) string {
+	if addr == nil {
+		return fallback
+	}
+	return addr.Hex()
+}
+
 type APIAccessTuple struct {
 	Address     string   `json:"address"`
 	StorageKeys []string `json:"storage_keys"`
@@ -171,8 +180,8 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 	}
 
 	logger().NamedLogger.Info(spanCtx, "Processing raw transaction",
-		ion.String("from", tx.From.Hex()),
-		ion.String("to", tx.To.Hex()),
+		ion.String("from", addrHex(tx.From, "<nil>")),
+		ion.String("to", addrHex(tx.To, "<contract creation>")),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", FILENAME),
 		ion.String("topic", TOPIC),
@@ -229,16 +238,16 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 	txHash := tx.Hash.Hex()
 	span.SetAttributes(
 		attribute.String("tx_hash", txHash),
-		attribute.String("from", tx.From.Hex()),
-		attribute.String("to", tx.To.Hex()),
+		attribute.String("from", addrHex(tx.From, "<nil>")),
+		attribute.String("to", addrHex(tx.To, "<contract creation>")),
 		attribute.String("value", tx.Value.String()),
 		attribute.Int("tx_type", int(tx.Type)),
 	)
 
 	logger().NamedLogger.Info(spanCtx, "Transaction validated, submitting to mempool",
 		ion.String("tx_hash", txHash),
-		ion.String("from", tx.From.Hex()),
-		ion.String("to", tx.To.Hex()),
+		ion.String("from", addrHex(tx.From, "<nil>")),
+		ion.String("to", addrHex(tx.To, "<contract creation>")),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", FILENAME),
 		ion.String("topic", TOPIC),
@@ -257,8 +266,8 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 			logger().NamedLogger.Error(asyncCtx, "Error submitting raw transaction to mempool",
 				err,
 				ion.String("tx_hash", txHash),
-				ion.String("from", tx.From.Hex()),
-				ion.String("to", tx.To.Hex()),
+				ion.String("from", addrHex(tx.From, "<nil>")),
+				ion.String("to", addrHex(tx.To, "<contract creation>")),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", FILENAME),
 				ion.String("topic", TOPIC),
@@ -266,8 +275,8 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 		} else {
 			logger().NamedLogger.Info(asyncCtx, "Raw transaction successfully submitted to mempool",
 				ion.String("tx_hash", txHash),
-				ion.String("from", tx.From.Hex()),
-				ion.String("to", tx.To.Hex()),
+				ion.String("from", addrHex(tx.From, "<nil>")),
+				ion.String("to", addrHex(tx.To, "<contract creation>")),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", FILENAME),
 				ion.String("topic", TOPIC),
@@ -574,8 +583,8 @@ func processZKBlock(c *gin.Context) {
 	for _, tx := range block.Transactions {
 		LogTransaction(
 			tx.Hash.Hex(),
-			tx.From.Hex(),
-			tx.To.Hex(),
+			addrHex(tx.From, "<nil>"),
+			addrHex(tx.To, "<contract creation>"),
 			tx.Value.String(),
 			fmt.Sprintf("%d", tx.Type),
 		)
