@@ -259,9 +259,9 @@ func StartserverWithContext(ctx context.Context, port int, h host.Host, chainID 
 	router.GET("/api/tx/:hash", getTransactionInfo)
 	router.GET("/api/latest-block", getLatestBlock)
 
-	router.POST("/api/contract/compile", compileContract)
-	router.POST("/api/contract/deploy", deployContract)
-	router.POST("/api/contract/execute", executeContract)
+	// router.POST("/api/contract/compile", compileContract)
+	// router.POST("/api/contract/deploy", deployContract)
+	// router.POST("/api/contract/execute", executeContract)
 
 	// Add a health check endpoint
 	router.GET("/health", func(c *gin.Context) {
@@ -424,7 +424,7 @@ func processZKBlockNoConsensus(c *gin.Context) {
 
 	fmt.Println("DEBUG: Starting transaction processing...")
 	// Process all transactions in the block atomically with rollback capability
-	if err := BlockProcessing.ProcessBlockTransactions(&block, accountsClient); err != nil {
+	if err := BlockProcessing.ProcessBlockTransactions(&block, accountsClient, true); err != nil {
 		fmt.Printf("DEBUG: Block processing failed: %v\n", err)
 		txLogger.Error().
 			Err(err).

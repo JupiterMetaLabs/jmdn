@@ -182,11 +182,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
-	case "eth_gasPrice":
-		p, err := handler.service.GasPrice(ctx)
-		resp, _ := finish(req, "0x"+p.Text(16), err)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		return resp, err
+
 
 	case "eth_sendRawTransaction":
 		if len(req.Params) < 1 {
@@ -274,69 +270,80 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
-	// case "eth_feeHistory":
-	// 	if len(req.Params) < 2 {
-	// 		resp, _ := invalidParams(req, "missing blockCount and newestBlock")
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, nil
-	// 	}
+	case "eth_getStorageAt":
+		if len(req.Params) < 2 {
+			resp, _ := invalidParams(req, "missing address and slot")
+			return resp, nil
+		}
+		address, _ := req.Params[0].(string)
+		slot, _ := req.Params[1].(string)
+		blockNum := "latest"
+		if len(req.Params) > 2 {
+			if b, ok := req.Params[2].(string); ok {
+				blockNum = b
+			}
+		}
+		result, err := handler.service.GetStorageAt(ctx, address, slot, blockNum)
+		resp, _ := finish(req, result, err)
+		return resp, err
 
-	// 	// Parse blockCount (can be string hex or number)
-	// 	var blockCount uint64
-	// 	switch v := req.Params[0].(type) {
-	// 	case string:
-	// 		if strings.HasPrefix(v, "0x") {
-	// 			bigVal := new(big.Int)
-	// 			bigVal.SetString(v[2:], 16)
-	// 			blockCount = bigVal.Uint64()
-	// 		} else {
-	// 			fmt.Sscanf(v, "%d", &blockCount)
-	// 		}
-	// 	case float64:
-	// 		blockCount = uint64(v)
-	// 	case int:
-	// 		blockCount = uint64(v)
-	// 	default:
-	// 		resp, _ := invalidParams(req, "invalid blockCount type")
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, nil
-	// 	}
+	case "eth_gasPrice":
+		result, err := handler.service.GetGasPrice(ctx)
+		resp, _ := finish(req, result, err)
+		return resp, err
 
-	// 	// Parse newestBlock (block tag)
-	// 	newestBlock, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
-	// 	if err != nil {
-	// 		resp, _ := finish(req, nil, err)
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, err
-	// 	}
+	case "eth_feeHistory":
+		if len(req.Params) < 2 {
+			resp, _ := invalidParams(req, "missing blockCount and newestBlock")
+			return resp, nil
+		}
+		var blockCount int
+		switch v := req.Params[0].(type) {
+		case string:
+			if strings.HasPrefix(v, "0x") {
+				var count uint64
+				fmt.Sscanf(v[2:], "%x", &count)
+				blockCount = int(count)
+			} else {
+				fmt.Sscanf(v, "%d", &blockCount)
+			}
+		case float64:
+			blockCount = int(v)
+		case int:
+			blockCount = v
+		}
 
-	// 	// Parse rewardPercentiles (optional, third parameter)
-	// 	var rewardPercentiles []float64
-	// 	if len(req.Params) > 2 {
-	// 		if percArray, ok := req.Params[2].([]any); ok {
-	// 			rewardPercentiles = make([]float64, 0, len(percArray))
-	// 			for _, p := range percArray {
-	// 				switch v := p.(type) {
-	// 				case float64:
-	// 					rewardPercentiles = append(rewardPercentiles, v)
-	// 				case string:
-	// 					var val float64
-	// 					fmt.Sscanf(v, "%f", &val)
-	// 					rewardPercentiles = append(rewardPercentiles, val)
-	// 				}
-	// 			}
-	// 		}
-	// 	}
+		newestBlock, _ := req.Params[1].(string)
 
-	// 	history, err := handler.service.FeeHistory(ctx, blockCount, newestBlock, rewardPercentiles)
-	// 	if err != nil {
-	// 		resp, _ := finish(req, nil, err)
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, err
-	// 	}
-	// 	resp, _ := finish(req, history, nil)
-	// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 	return resp, nil
+		var rewardPercentiles []float64
+		if len(req.Params) > 2 {
+			if arr, ok := req.Params[2].([]any); ok {
+				for _, val := range arr {
+					if f, ok := val.(float64); ok {
+						rewardPercentiles = append(rewardPercentiles, f)
+					}
+				}
+			}
+		}
+
+		result, err := handler.service.GetFeeHistory(ctx, blockCount, newestBlock, rewardPercentiles)
+		resp, _ := finish(req, result, err)
+		return resp, err
+
+	case "eth_maxPriorityFeePerGas":
+		result, err := handler.service.GetMaxPriorityFeePerGas(ctx)
+		resp, _ := finish(req, result, err)
+		return resp, err
+
+	case "net_listening":
+		result, err := handler.service.IsListening(ctx)
+		resp, _ := finish(req, result, err)
+		return resp, err
+
+	case "net_peerCount":
+		result, err := handler.service.GetPeerCount(ctx)
+		resp, _ := finish(req, result, err)
+		return resp, err
 
 	default:
 		resp := RespErr(req.ID, -32601, "Method not found")

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math/big"
 	"sync"
 	"time"
 
@@ -33,6 +34,11 @@ const (
 	MessageListeningWindow = 15 * time.Second // Nodes listen for 15 seconds
 	MessageRejectionWindow = 20 * time.Second // Reject messages after 20 seconds
 	MessageBufferTime      = 5 * time.Second  // 5-second buffer between windows
+)
+
+var (
+	DefaultGasPrice          = big.NewInt(1_000_000_000) // 1 gwei
+	DefaultPriorityFeePerGas = big.NewInt(1_000_000_000) // 1 gwei
 )
 
 var SeedNodeURL string = "" // Default seed node URL, can be updated via SetSeedNodeURL

@@ -799,7 +799,7 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 
 	// Only process transactions if block storage succeeded
 	// This ensures balance updates only happen for valid, stored blocks
-	if err := BlockProcessing.ProcessBlockTransactions(block, accountsClient); err != nil {
+	if err := BlockProcessing.ProcessBlockTransactions(block, accountsClient, true); err != nil {
 		log.Error().
 			Err(err).
 			Str("block_hash", block.BlockHash.Hex()).

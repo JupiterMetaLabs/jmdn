@@ -341,7 +341,7 @@ func HandleBlockStream(stream network.Stream) {
 				Msg("Processing block transactions")
 
 			// Process all transactions in the block atomically with rollback capability
-			if err := BlockProcessing.ProcessBlockTransactions(msg.Block, accountsClient); err != nil {
+			if err := BlockProcessing.ProcessBlockTransactions(msg.Block, accountsClient, true); err != nil {
 				log.Error().
 					Err(err).
 					Str("block_hash", msg.Block.BlockHash.Hex()).

@@ -43,3 +43,4 @@ main
 # Testing Artifacts
 SmartContract/cmd/cmd
 SmartContract/contracts.db
+ADR-001-JMDT-Native-EVM-Smart-Contracts.docx

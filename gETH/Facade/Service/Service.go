@@ -18,8 +18,11 @@ import (
 	"gossipnode/SmartContract/pkg/client"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
+
+	smartcontractpb "gossipnode/SmartContract/proto"
 )
 
 // ServiceImpl implements the Service interface
@@ -815,4 +818,44 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 	}
 
 	return result, nil
+}
+
+func (s *ServiceImpl) GetStorageAt(ctx context.Context, address string, slot string, blockNum string) (string, error) {
+	if s.scClient == nil {
+		return "0x0000000000000000000000000000000000000000000000000000000000000000", nil
+	}
+	resp, err := s.scClient.GetStorage(ctx, common.HexToAddress(address).Bytes(), common.HexToHash(slot).Bytes())
+	if err != nil {
+		return "0x0000000000000000000000000000000000000000000000000000000000000000", nil
+	}
+	return resp.Value, nil
+}
+
+func (s *ServiceImpl) GetGasPrice(ctx context.Context) (string, error) {
+	return hexutil.EncodeBig(config.DefaultGasPrice), nil
+}
+
+func (s *ServiceImpl) GetFeeHistory(ctx context.Context, blockCount int, newestBlock string, rewardPercentiles []float64) (interface{}, error) {
+	history, err := s.FeeHistory(ctx, uint64(blockCount), nil, rewardPercentiles)
+	if err != nil || len(history) == 0 {
+		return map[string]interface{}{
+			"oldestBlock": "0x0",
+			"baseFeePerGas": []string{hexutil.EncodeBig(config.DefaultGasPrice)},
+			"gasUsedRatio": []float64{0.0},
+			"reward": [][]string{},
+		}, nil
+	}
+	return history, nil
+}
+
+func (s *ServiceImpl) GetMaxPriorityFeePerGas(ctx context.Context) (string, error) {
+	return hexutil.EncodeBig(config.DefaultPriorityFeePerGas), nil
+}
+
+func (s *ServiceImpl) IsListening(ctx context.Context) (bool, error) {
+	return true, nil
+}
+
+func (s *ServiceImpl) GetPeerCount(ctx context.Context) (string, error) {
+	return "0x1", nil
 }

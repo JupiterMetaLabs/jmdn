@@ -31,6 +31,7 @@ type TransactionReceipt struct {
 	GasUsed         uint64         `json:"gas_used"`
 	ContractAddress common.Address `json:"contract_address,omitempty"` // For deployments
 	Logs            []*types.Log   `json:"logs"`
+	RevertReason    string         `json:"revert_reason,omitempty"`
 	CreatedAt       int64          `json:"created_at"`
 }
 
