@@ -37,14 +37,13 @@ func ProcessContractDeployment(
 		Str("from", tx.From.Hex()).
 		Msg("🚀 [EVM] Processing contract deployment")
 
-	// Deterministic address: use the StateDB nonce (tracks actual executions this block).
+	// Log the pre-increment nonce for debugging. The actual deployed address is
+	// determined by evm.Create() which uses the nonce AFTER DeployContract increments it.
 	currentNonce := stateDB.GetNonce(*tx.From)
-	contractAddr := crypto.CreateAddress(*tx.From, currentNonce)
 
 	log.Info().
-		Str("contract_address", contractAddr.Hex()).
-		Uint64("sender_nonce", currentNonce).
-		Msg("🔥 [EVM] Calculated deterministic contract address")
+		Uint64("sender_nonce_before", currentNonce).
+		Msg("🔥 [EVM] Starting contract deployment (EVM will derive final address)")
 
 	executor := NewEVMExecutor(chainID)
 
@@ -60,7 +59,12 @@ func ProcessContractDeployment(
 	var revertReason string
 	var gasUsed uint64
 
+	// The authoritative contract address comes from the EVM result, not a local calculation.
+	// evm.DeployContract increments the nonce before calling evm.Create, so the address is
+	// derived from nonce+1.  Any local pre-compute using currentNonce would be off by one.
+	var contractAddr common.Address
 	if result != nil {
+		contractAddr = result.ContractAddr
 		gasUsed = result.GasUsed
 		if !success && len(result.ReturnData) > 0 {
 			revertReason = fmt.Sprintf("0x%x", result.ReturnData)
@@ -73,7 +77,8 @@ func ProcessContractDeployment(
 			Str("tx_hash", tx.Hash.Hex()).
 			Msg("❌ [EVM] Deployment failed")
 	} else {
-		stateDB.CreateAccount(contractAddr)
+		// evm.Create already called CreateAccount/CreateContract and SetCode internally.
+		// No need to call CreateAccount again — doing so can interfere with the stateObject.
 
 		log.Info().
 			Str("contract_address", contractAddr.Hex()).
