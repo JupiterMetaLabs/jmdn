@@ -23,22 +23,48 @@ func NewSyncStruct() types.BlockInfo {
 // Time Complexity: O(1) mostly, bounded by network round trip to ImmuDB.
 // GetBlockNumber retrieves the latest block number from the main ImmuDB.
 func (sync *sync_struct) GetBlockNumber() uint64 {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Increased timeout
 	defer cancel()
 
 	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
-		log.Printf("Error getting main DB connection for latest block number: %v", err)
+		log.Printf("[NodeInfo] ERROR: Failed to get main DB connection for block number: %v", err)
 		return 0
 	}
 
 	num, err := DB_OPs.GetLatestBlockNumber(conn)
 	if err != nil {
-		log.Printf("Error getting latest block number from ImmuDB: %v", err)
+		log.Printf("[NodeInfo] ERROR: GetLatestBlockNumber failed: %v. Attempting manual reconciliation.", err)
+		// Try reconciliation as a fallback if GetLatestBlockNumber didn't already trigger it or failed
+		reconciled, recErr := DB_OPs.ReconcileLatestBlockNumber(conn)
+		if recErr != nil {
+			log.Printf("[NodeInfo] CRITICAL: Reconciliation also failed: %v", recErr)
+			return 0
+		}
+		return reconciled
+	}
+	return num
+}
+
+// ReconcileBlockNumber manually triggers a scan to find and update the latest block marker.
+func (sync *sync_struct) ReconcileBlockNumber() uint64 {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		log.Printf("[NodeInfo] ERROR: Failed to get connection for reconciliation: %v", err)
+		return 0
+	}
+
+	num, err := DB_OPs.ReconcileLatestBlockNumber(conn)
+	if err != nil {
+		log.Printf("[NodeInfo] ERROR: Reconciliation failed: %v", err)
 		return 0
 	}
 	return num
 }
+
 
 // Time Complexity: O(1) bounded by single block DB lookup
 // GetBlockDetails fetches the latest block headers and returns a checksum wrapped in a PriorSync struct.

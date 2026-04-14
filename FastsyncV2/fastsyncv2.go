@@ -201,7 +201,8 @@ func (fs *FastsyncV2) HandleStartupSync(peerID peer.ID, addrs []multiaddr.Multia
 	// Build the full multiaddr string with embedded peer ID (required by handleSyncInternal)
 	targetMultiaddr := fmt.Sprintf("%s/p2p/%s", addrs[0].String(), peerID.String())
 
-	// Start from the local latest block so we only sync missing blocks
+	// Ensure local marker is up to date before determining start block
+	fs.reconcileLocalLatestBlock()
 	localBlockNum := fs.blockInfoAdapter.GetBlockDetails().Blocknumber
 	startBlock := localBlockNum
 	if startBlock == 0 {
@@ -220,6 +221,12 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 	syncStart := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
 	defer cancel()
+
+	// --- 0. Pre-sync reconciliation ---
+	// Ensure our local block marker is accurate before starting
+	log.Printf("[FastsyncV2] Reconciling local block marker before sync...")
+	fs.reconcileLocalLatestBlock()
+
 
 	// --- Parse and connect to the target peer ---
 	maddr, err := multiaddr.NewMultiaddr(targetPeer)
@@ -332,6 +339,11 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 		return fmt.Errorf("datasync failed: %w", err)
 	}
 	log.Println("[FastsyncV2] Phase 4 complete: block data synchronized")
+
+	// After DataSync, ensure our latest block marker is updated to reflect the new blocks
+	// so that Reconciliation and PoTS work with the correct state.
+	fs.reconcileLocalLatestBlock()
+
 
 	// =========================================================================
 	// PHASE 5: Reconciliation — recompute and commit account balances
@@ -651,4 +663,25 @@ func commitmentToBytes(c []uint32) []byte {
 		buf[i*4+3] = byte(v >> 24)
 	}
 	return buf
+}
+
+// reconcileLocalLatestBlock ensures the local database marker ("latest_block") matches
+// the actual highest block key present in the database. This fixes "stuck" syncs
+// caused by failing or outdated markers.
+func (fs *FastsyncV2) reconcileLocalLatestBlock() uint64 {
+	// We use the specialized ReconcileBlockNumber method if available on the adapter
+	type blockReconciler interface {
+		ReconcileBlockNumber() uint64
+	}
+
+	if reconciler, ok := fs.blockInfoAdapter.(blockReconciler); ok {
+		num := reconciler.ReconcileBlockNumber()
+		log.Printf("[FastsyncV2] Local block reconciliation complete: latest block is %d", num)
+		return num
+	}
+
+	// Fallback to standard GetBlockNumber if reconciliation is not supported
+	num := fs.blockInfoAdapter.GetBlockNumber()
+	log.Printf("[FastsyncV2] Fallback block lookup complete: latest block is %d", num)
+	return num
 }
