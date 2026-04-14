@@ -206,6 +206,8 @@ func SetSharedDIDClient(client pbdid.DIDServiceClient) {
 // It reuses the process-wide singletons set by SetSharedDIDClient and
 // SetSharedKVStore, so no new connections or storage handles are opened.
 func InitializeStateDB(chainID int) (state.StateDB, error) {
+	var err error
+
 	// Use the shared DID client injected at startup.
 	// If it is nil the integrated server was not initialised correctly.
 	var didClient pbdid.DIDServiceClient
@@ -220,12 +222,12 @@ func InitializeStateDB(chainID int) (state.StateDB, error) {
 			didAddr = addr
 		}
 		log.Warn().Str("did_addr", didAddr).Msg("⚠️  [EVM] No shared DID client — dialling fallback address")
-		didConn, err := grpc.NewClient(
+		didConn, connErr := grpc.NewClient(
 			didAddr,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to connect to DID service at %s: %w", didAddr, err)
+		if connErr != nil {
+			return nil, fmt.Errorf("failed to connect to DID service at %s: %w", didAddr, connErr)
 		}
 		didClient = pbdid.NewDIDServiceClient(didConn)
 	}
