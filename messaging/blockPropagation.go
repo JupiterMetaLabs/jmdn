@@ -345,8 +345,9 @@ func HandleBlockStream(stream network.Stream) {
 				Uint64("block_number", msg.Block.BlockNumber).
 				Msg("Processing block transactions")
 
-			// Process all transactions in the block atomically with rollback capability
-			if err := BlockProcessing.ProcessBlockTransactions(msg.Block, accountsClient, true); err != nil {
+			// Process all transactions in the block atomically with rollback capability.
+			// Receiver nodes discard the deployments slice — only the sequencer propagates contracts.
+			if _, err := BlockProcessing.ProcessBlockTransactions(msg.Block, accountsClient, true); err != nil {
 				log.Error().
 					Err(err).
 					Str("block_hash", msg.Block.BlockHash.Hex()).

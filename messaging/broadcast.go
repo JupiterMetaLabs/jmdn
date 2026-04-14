@@ -598,7 +598,14 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 		if result {
 			// Only process locally if we have BLS results indicating consensus
 			if len(bls) > 0 {
-				return ProcessBlockLocally(block, bls)
+				deployments, err := ProcessBlockLocally(block, bls)
+				if err != nil {
+					return err
+				}
+				if len(deployments) > 0 {
+					go PropagateContractDeployments(h, deployments)
+				}
+				return nil
 			}
 			log.Warn().Msg("Cannot process block locally without BLS results - consensus not verified")
 		}
@@ -696,18 +703,26 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 		log.Info().Str("block_hash", block.BlockHash.Hex()).Msg("Positive result - processing block locally")
 		// Only process locally if we have BLS results indicating consensus
 		if len(bls) > 0 {
-			return ProcessBlockLocally(block, bls)
+			deployments, err := ProcessBlockLocally(block, bls)
+			if err != nil {
+				return err
+			}
+			// Sequencer-only: gossip each deployed contract to all peers.
+			// Fire-and-forget — propagation failure must not roll back the block.
+			if len(deployments) > 0 {
+				go PropagateContractDeployments(h, deployments)
+			}
+			return nil
 		}
 		log.Warn().Str("block_hash", block.BlockHash.Hex()).Msg("Cannot process block locally without BLS results - consensus not verified")
 	}
 	return nil
 }
 
-// ProcessBlockLocally processes a block locally (similar to processZKBlockNoConsensus)
-// This function processes all transactions in the block and updates account balances.
-// If BLS results are provided, it validates consensus before processing.
-// blsResults can be nil if consensus was already verified externally (e.g., by sequencer).
-func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSresponse) error {
+// ProcessBlockLocally processes a block locally after consensus is verified.
+// Returns the list of contracts deployed in the block so the sequencer can propagate them.
+// blsResults must be non-empty; consensus is verified before any state changes are made.
+func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSresponse) ([]BlockProcessing.ContractDeploymentInfo, error) {
 	log.Info().
 		Str("block_hash", block.BlockHash.Hex()).
 		Uint64("block_number", block.BlockNumber).
@@ -739,7 +754,7 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 			log.Error().
 				Str("block_hash", block.BlockHash.Hex()).
 				Msg("No valid BLS signatures - skipping block processing (invalid consensus)")
-			return fmt.Errorf("no valid BLS signatures for block %s", block.BlockHash.Hex())
+			return nil, fmt.Errorf("no valid BLS signatures for block %s", block.BlockHash.Hex())
 		}
 
 		needed := (validTotal / 2) + 1
@@ -750,7 +765,7 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 				Int("needed", needed).
 				Int("valid_total", validTotal).
 				Msg("BLS majority not in favor (+1) - skipping block processing (consensus not reached)")
-			return fmt.Errorf("consensus not reached for block %s: %d/%d votes in favor (needed: %d)",
+			return nil, fmt.Errorf("consensus not reached for block %s: %d/%d votes in favor (needed: %d)",
 				block.BlockHash.Hex(), validYes, validTotal, needed)
 		}
 
@@ -766,20 +781,20 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		log.Error().
 			Str("block_hash", block.BlockHash.Hex()).
 			Msg("No BLS results provided - cannot verify consensus, refusing to process block")
-		return fmt.Errorf("cannot process block %s without BLS results to verify consensus", block.BlockHash.Hex())
+		return nil, fmt.Errorf("cannot process block %s without BLS results to verify consensus", block.BlockHash.Hex())
 	}
 
 	// Create DB clients for processing
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get main DB connection")
-		return fmt.Errorf("failed to get main DB connection: %w", err)
+		return nil, fmt.Errorf("failed to get main DB connection: %w", err)
 	}
 
 	accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get accounts DB connection")
-		return fmt.Errorf("failed to get accounts DB connection: %w", err)
+		return nil, fmt.Errorf("failed to get accounts DB connection: %w", err)
 	}
 	defer func() {
 		DB_OPs.PutMainDBConnection(mainDBClient)
@@ -794,26 +809,28 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 			Str("block_hash", block.BlockHash.Hex()).
 			Uint64("block_number", block.BlockNumber).
 			Msg("Failed to store block in database - skipping transaction processing")
-		return fmt.Errorf("failed to store block in database: %w", err)
+		return nil, fmt.Errorf("failed to store block in database: %w", err)
 	}
 
 	// Only process transactions if block storage succeeded
 	// This ensures balance updates only happen for valid, stored blocks
-	if err = BlockProcessing.ProcessBlockTransactions(block, accountsClient, true); err != nil {
+	deployments, err := BlockProcessing.ProcessBlockTransactions(block, accountsClient, true)
+	if err != nil {
 		log.Error().
 			Err(err).
 			Str("block_hash", block.BlockHash.Hex()).
 			Msg("Block transaction processing failed after block storage")
 		// Note: Block is already stored, but transactions failed
 		// This is a separate issue that may need rollback handling in the future
-		return fmt.Errorf("failed to process block transactions: %w", err)
+		return nil, fmt.Errorf("failed to process block transactions: %w", err)
 	}
 
 	log.Info().
 		Uint64("block_number", block.BlockNumber).
 		Str("block_hash", block.BlockHash.Hex()).
 		Int("tx_count", len(block.Transactions)).
+		Int("contract_deployments", len(deployments)).
 		Msg("Block processed and stored successfully")
 
-	return nil
+	return deployments, nil
 }

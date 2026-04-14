@@ -72,25 +72,32 @@ func cleanupTransactionLock(txHash string) {
 	delete(txProcessingLocks, txHash)
 }
 
-// ProcessBlockTransactions processes all transactions in a block atomically
+// ContractDeploymentInfo carries the essential details of a contract deployed
+// within a block.  Returned by ProcessBlockTransactions so the sequencer can
+// propagate the contract to the rest of the network post-consensus.
+type ContractDeploymentInfo struct {
+	ContractAddress common.Address
+	Deployer        common.Address
+	TxHash          common.Hash
+	BlockNumber     uint64
+	GasUsed         uint64
+}
+
+// ProcessBlockTransactions processes all transactions in a block atomically.
 // If any transaction fails, all are rolled back.
 // If commitToDB is true, state changes are persisted to the database.
-func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.PooledConnection, commitToDB bool) error {
-	fmt.Printf("=== DEBUG: ProcessBlockTransactions called for block %d (Commit: %v) ===\n", block.BlockNumber, commitToDB)
-
+// Returns a slice of ContractDeploymentInfo for every successfully deployed contract.
+func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.PooledConnection, commitToDB bool) ([]ContractDeploymentInfo, error) {
 	// Note: StateDB is NOT initialized here for regular transactions
 	// It will be created on-demand inside processTransaction() only for smart contract transactions
 
 	// Check if block was already processed
 	blockKey := fmt.Sprintf("block_processed:%s", block.BlockHash.Hex())
-	fmt.Printf("DEBUG: Checking if block already processed with key: %s\n", blockKey)
 	processed, err := DB_OPs.Exists(accountsClient, blockKey)
 	if err == nil && processed {
-		fmt.Printf("DEBUG: Block %s already processed, skipping\n", block.BlockHash.Hex())
 		log.Info().Str("block_hash", block.BlockHash.Hex()).Msg("Block already processed, skipping")
-		return nil
+		return nil, nil
 	}
-	fmt.Printf("DEBUG: Block not previously processed, continuing...\n")
 
 	ClearProcessedTransactions()
 
@@ -122,16 +129,15 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 
 	// Sort transactions by nonce if available to ensure proper ordering
 	sortedTxs := sortTransactionsByNonce(block.Transactions)
-	fmt.Printf("DEBUG: Found %d transactions to process\n", len(sortedTxs))
+
+	// Accumulate contract deployments so the sequencer can propagate them.
+	var deployments []ContractDeploymentInfo
 
 	// Process all transactions
-	for i, tx := range sortedTxs {
-		fmt.Printf("DEBUG: Processing transaction %d/%d - Hash: %s\n", i+1, len(sortedTxs), tx.Hash.Hex())
-
+	for _, tx := range sortedTxs {
 		// Check if this transaction was already processed within this block
 		processedTxsMutex.Lock()
 		if processedTxs[tx.Hash.Hex()] {
-			fmt.Printf("DEBUG: Transaction %s already processed in this block, skipping\n", tx.Hash.Hex())
 			log.Warn().Str("tx_hash", tx.Hash.Hex()).Msg("Duplicate transaction in block, skipping")
 			processedTxsMutex.Unlock()
 			continue
@@ -141,16 +147,15 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 
 		// Check if this transaction was already processed in a previous block
 		txKey := fmt.Sprintf("tx_processed:%s", tx.Hash)
-		fmt.Printf("DEBUG: Checking if transaction already processed with key: %s\n", txKey)
 		alreadyProcessed, err := DB_OPs.Exists(accountsClient, txKey)
 		if err == nil && alreadyProcessed {
-			fmt.Printf("DEBUG: Transaction %s already processed in previous block, skipping\n", tx.Hash.Hex())
 			continue
 		}
 
 		// Process transaction (State DB created inside if it's a smart contract)
-		if err := processTransaction(tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient, commitToDB); err != nil {
-			fmt.Printf("DEBUG: processTransaction failed for tx %s: %v\n", tx.Hash.Hex(), err)
+		info, err := processTransaction(tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient, commitToDB)
+		if err != nil {
+			log.Error().Err(err).Str("tx_hash", tx.Hash.Hex()).Msg("processTransaction failed")
 			// If any transaction fails, roll back all affected DIDs
 			rollbackError := rollbackBalances(originalBalances, accountsClient)
 			if rollbackError != nil {
@@ -159,7 +164,11 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 			// Clean up any processing markers for failed transactions
 			cleanupProcessingMarkers(accountsClient, tx.Hash.Hex())
 
-			return fmt.Errorf("block processing failed: %w", err)
+			return nil, fmt.Errorf("block processing failed: %w", err)
+		}
+		if info != nil {
+			info.BlockNumber = block.BlockNumber
+			deployments = append(deployments, *info)
 		}
 	}
 
@@ -184,7 +193,7 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 		log.Warn().Err(err).Str("block_hash", block.BlockHash.Hex()).Msg("Failed to mark block as processed")
 	}
 
-	return nil
+	return deployments, nil
 }
 
 // sortTransactionsByNonce sorts transactions by their nonce value if available
@@ -266,20 +275,18 @@ func rollbackBalances(originalBalances map[common.Address]string, accountsClient
 // ProcessTransaction handles a single transaction's balance updates.
 // For smart contracts, a StateDB is created and changes are committed based on commitToDB flag.
 // For regular transfers, DB_OPs is used directly (always commits).
-func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection, commitToDB bool) error {
-	// Enhanced logging at start
+func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection, commitToDB bool) (*ContractDeploymentInfo, error) {
 	// First check the connection
 	if accountsClient == nil {
-		fmt.Println("DEBUG: accountsClient is nil!")
 		log.Error().Msg("Function: messaging.processTransaction - accountsClient is nil")
-		return fmt.Errorf("accountsClient is nil")
+		return nil, fmt.Errorf("accountsClient is nil")
 	}
 
 	// Confirm the DB connection
 	err := DB_OPs.EnsureDBConnection(accountsClient)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to establish database connection")
-		return fmt.Errorf("failed to establish database connection: %w", err)
+		return nil, fmt.Errorf("failed to establish database connection: %w", err)
 	}
 
 	// ========== SMART CONTRACT DETECTION ==========
@@ -297,7 +304,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	if isContract {
 		stateDB, err = SmartContract.NewStateDB(GlobalChainID)
 		if err != nil {
-			return fmt.Errorf("failed to initialize StateDB for contract: %w", err)
+			return nil, fmt.Errorf("failed to initialize StateDB for contract: %w", err)
 		}
 		snapshot = stateDB.Snapshot()
 	}
@@ -313,20 +320,20 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 			stateDB.RevertToSnapshot(snapshot) // Rollback
 			log.Error().Err(err).Str("tx_hash", tx.Hash.Hex()).Msg("❌ [CONSENSUS] Contract deployment failed")
 			cleanupProcessingMarkers(accountsClient, tx.Hash.Hex())
-			return fmt.Errorf("contract deployment failed: %w", err)
+			return nil, fmt.Errorf("contract deployment failed: %w", err)
 		}
 
 		if !result.Success {
 			stateDB.RevertToSnapshot(snapshot) // Rollback
 			log.Error().Str("tx_hash", tx.Hash.Hex()).Msg("❌ [CONSENSUS] Contract deployment unsuccessful")
-			return result.Error
+			return nil, result.Error
 		}
 
 		// Handle gas fees
 		parsedTx, err := parseTransaction(tx)
 		if err != nil {
 			stateDB.RevertToSnapshot(snapshot)
-			return fmt.Errorf("failed to parse transaction for gas: %w", err)
+			return nil, fmt.Errorf("failed to parse transaction for gas: %w", err)
 		}
 
 		gasUsed := big.NewInt(int64(result.GasUsed))
@@ -343,7 +350,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		gasDeductAmount, overflow := uint256.FromBig(gasFeeToDeduct)
 		if overflow {
 			stateDB.RevertToSnapshot(snapshot)
-			return fmt.Errorf("gas fee amount overflow")
+			return nil, fmt.Errorf("gas fee amount overflow")
 		}
 		stateDB.SubBalance(*tx.From, gasDeductAmount, tracing.BalanceChangeTransfer)
 
@@ -354,7 +361,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		coinbaseAmount, overflow := uint256.FromBig(coinbaseGasFee)
 		if overflow {
 			stateDB.RevertToSnapshot(snapshot)
-			return fmt.Errorf("coinbase gas fee overflow")
+			return nil, fmt.Errorf("coinbase gas fee overflow")
 		}
 		stateDB.AddBalance(coinbaseAddr, coinbaseAmount, tracing.BalanceChangeTransfer)
 
@@ -362,7 +369,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		zkvmAmount, overflow := uint256.FromBig(zkvmGasFee)
 		if overflow {
 			stateDB.RevertToSnapshot(snapshot)
-			return fmt.Errorf("zkvm gas fee overflow")
+			return nil, fmt.Errorf("zkvm gas fee overflow")
 		}
 		stateDB.AddBalance(zkvmAddr, zkvmAmount, tracing.BalanceChangeTransfer)
 
@@ -375,18 +382,26 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 			// Update balances in DID service before committing StateDB
 			for addr, balance := range stateDB.GetBalanceChanges() {
 				if err := DB_OPs.UpdateAccountBalance(accountsClient, addr, balance.String()); err != nil {
-					return fmt.Errorf("failed to update DID service balance for %s: %w", addr.Hex(), err)
+					return nil, fmt.Errorf("failed to update DID service balance for %s: %w", addr.Hex(), err)
 				}
 			}
 
 			if _, err := stateDB.CommitToDB(false); err != nil {
-				return fmt.Errorf("failed to commit contract deployment state: %w", err)
+				return nil, fmt.Errorf("failed to commit contract deployment state: %w", err)
 			}
-		} else {
-			log.Info().Msg("🚫 Skipping state commit (verification mode)")
+
+			// Return deployment info so sequencer can propagate via gossip.
+			return &ContractDeploymentInfo{
+				ContractAddress: result.ContractAddress,
+				Deployer:        *tx.From,
+				TxHash:          tx.Hash,
+				GasUsed:         result.GasUsed,
+				// BlockNumber is filled in by the caller (ProcessBlockTransactions)
+			}, nil
 		}
 
-		return nil
+		log.Info().Msg("🚫 Skipping state commit (verification mode)")
+		return nil, nil
 	}
 
 	// ========== SMART CONTRACT EXECUTION DETECTION ==========
@@ -401,14 +416,14 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 			stateDB.RevertToSnapshot(snapshot) // Rollback
 			log.Error().Err(err).Str("tx_hash", tx.Hash.Hex()).Msg("❌ [CONSENSUS] Contract execution failed")
 			cleanupProcessingMarkers(accountsClient, tx.Hash.Hex())
-			return fmt.Errorf("contract execution failed: %w", err)
+			return nil, fmt.Errorf("contract execution failed: %w", err)
 		}
 
 		// Handle gas fees
 		parsedTx, err := parseTransaction(tx)
 		if err != nil {
 			stateDB.RevertToSnapshot(snapshot)
-			return fmt.Errorf("failed to parse transaction for gas: %w", err)
+			return nil, fmt.Errorf("failed to parse transaction for gas: %w", err)
 		}
 
 		gasUsed := big.NewInt(int64(result.GasUsed))
@@ -425,7 +440,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		gasDeductAmount, overflow := uint256.FromBig(gasFeeToDeduct)
 		if overflow {
 			stateDB.RevertToSnapshot(snapshot)
-			return fmt.Errorf("gas fee amount overflow")
+			return nil, fmt.Errorf("gas fee amount overflow")
 		}
 		stateDB.SubBalance(*tx.From, gasDeductAmount, tracing.BalanceChangeTransfer)
 
@@ -436,7 +451,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		coinbaseExecAmount, overflow := uint256.FromBig(coinbaseGasFee)
 		if overflow {
 			stateDB.RevertToSnapshot(snapshot)
-			return fmt.Errorf("coinbase gas fee overflow")
+			return nil, fmt.Errorf("coinbase gas fee overflow")
 		}
 		stateDB.AddBalance(coinbaseAddr, coinbaseExecAmount, tracing.BalanceChangeTransfer)
 
@@ -444,7 +459,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		zkvmExecAmount, overflow := uint256.FromBig(zkvmGasFee)
 		if overflow {
 			stateDB.RevertToSnapshot(snapshot)
-			return fmt.Errorf("zkvm gas fee overflow")
+			return nil, fmt.Errorf("zkvm gas fee overflow")
 		}
 		stateDB.AddBalance(zkvmAddr, zkvmExecAmount, tracing.BalanceChangeTransfer)
 
@@ -457,18 +472,18 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 			// Update balances in DID service before committing StateDB
 			for addr, balance := range stateDB.GetBalanceChanges() {
 				if err := DB_OPs.UpdateAccountBalance(accountsClient, addr, balance.String()); err != nil {
-					return fmt.Errorf("failed to update DID service balance for %s: %w", addr.Hex(), err)
+					return nil, fmt.Errorf("failed to update DID service balance for %s: %w", addr.Hex(), err)
 				}
 			}
 
 			if _, err := stateDB.CommitToDB(false); err != nil {
-				return fmt.Errorf("failed to commit contract execution state: %w", err)
+				return nil, fmt.Errorf("failed to commit contract execution state: %w", err)
 			}
 		} else {
 			log.Info().Msg("🚫 Skipping state commit (verification mode)")
 		}
 
-		return nil
+		return nil, nil
 	}
 
 	// Check if transaction was already processed (from previous blocks)
@@ -487,7 +502,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	processed, err := DB_OPs.Exists(accountsClient, txKey)
 	if err == nil && processed {
 		log.Info().Str("tx_hash", tx.Hash.Hex()).Msg("Transaction already processed in previous block, skipping")
-		return nil
+		return nil, nil
 	}
 
 	// Check if we're currently processing this transaction
@@ -517,17 +532,13 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	affectedDIDs := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
 
 	for _, did := range affectedDIDs {
-		fmt.Println("Getting account for: ", did.Hex()) // Debugging
 		doc, err := DB_OPs.GetAccount(accountsClient, did)
 		if err == nil {
-			fmt.Println("Account found, balance: ", doc.Balance) // Debugging
 			originalBalances[did] = doc.Balance
 		} else if err == DB_OPs.ErrNotFound || strings.Contains(err.Error(), "key not found") {
-			fmt.Println("Account not found, using 0 balance for: ", did.Hex()) // Debugging
 			originalBalances[did] = "0"
 		} else {
-			fmt.Println("Error retrieving account for: ", did.Hex(), "Error: ", err.Error()) // Debugging
-			return fmt.Errorf("failed to retrieve original balance for %s: %w", did.Hex(), err)
+			return nil, fmt.Errorf("failed to retrieve original balance for %s: %w", did.Hex(), err)
 		}
 	}
 
@@ -536,7 +547,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	parsedTx, err = parseTransaction(tx)
 	if err != nil {
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
-		return fmt.Errorf("failed to parse transaction: %w", err)
+		return nil, fmt.Errorf("failed to parse transaction: %w", err)
 	}
 
 	// Gas Limit is already a bigInt
@@ -555,7 +566,6 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 
 	// Calculate total amount to deduct from sender (amount + gas fee)
 	totalDeduction := new(big.Int).Add(parsedTx.ValueBig, gasFeeToDeduct)
-	fmt.Println("Total deduction: ", totalDeduction.String())
 	// Split the gas fee between coinbase and ZKVM
 	// Calculate half and remainder to avoid losing 1 wei in corner cases
 	halfGasFee := new(big.Int).Div(gasFeeToDeduct, big.NewInt(2))
@@ -568,66 +578,49 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	senderExists, _ := accountExists(tx.From, accountsClient)
 	if !senderExists {
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
-		return fmt.Errorf("sender DID %s does not exist", tx.From)
+		return nil, fmt.Errorf("sender DID %s does not exist", tx.From)
 	}
-	fmt.Println("Sender exists: ", senderExists) // Debugging
 
 	// Check if recipient exists (for better error reporting)
 	recipientExists, _ := accountExists(tx.To, accountsClient)
 	if !recipientExists && !CreateMissingAccounts {
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
-		return fmt.Errorf("recipient DID %s does not exist and automatic creation is disabled", tx.To)
+		return nil, fmt.Errorf("recipient DID %s does not exist and automatic creation is disabled", tx.To)
 	}
-	fmt.Println("Recipient exists: ", recipientExists) // Debugging
 
 	// ========== REGULAR TRANSFER: Create StateDB ==========
 	// All transactions now use StateDB for Ethereum-style verification
 	stateDB, err = SmartContract.NewStateDB(GlobalChainID)
 	if err != nil {
-		return fmt.Errorf("failed to create StateDB for regular transfer: %w", err)
+		return nil, fmt.Errorf("failed to create StateDB for regular transfer: %w", err)
 	}
 	snapshot = stateDB.Snapshot()
 
 	// 1. Deduct from sender
 	if err := deductFromSender(*tx.From, totalDeduction.String(), stateDB, accountsClient); err != nil {
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
-		return categorizeDeductionError(err)
+		return nil, categorizeDeductionError(err)
 	}
-
-	// Debugging
-	fmt.Println(">>>>>> Deducted amount from sender: ", totalDeduction.String())
 
 	// 2. Add amount to recipient
 	if err := addToRecipient(*tx.To, parsedTx.ValueBig.String(), stateDB, accountsClient); err != nil {
-		// Rollback using StateDB snapshot
 		stateDB.RevertToSnapshot(snapshot)
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
-		return fmt.Errorf("failed to add to recipient: %w", err)
+		return nil, fmt.Errorf("failed to add to recipient: %w", err)
 	}
-
-	// Debugging
-	fmt.Println(">>>>>> Added amount to recipient:", parsedTx.ValueBig.String(), "with address", tx.To.Hex())
 
 	// 3. Split gas fee between coinbase and ZKVM
 	if err := addToRecipient(coinbaseAddr, coinbaseGasFee.String(), stateDB, accountsClient); err != nil {
-		// Rollback using StateDB snapshot
 		stateDB.RevertToSnapshot(snapshot)
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
-		return fmt.Errorf("failed to add gas fee to coinbase: %w", err)
+		return nil, fmt.Errorf("failed to add gas fee to coinbase: %w", err)
 	}
-
-	// Debugging
-	fmt.Println(">>>>>> Added amount to Coinbase:", coinbaseGasFee.String(), "with address", coinbaseAddr.Hex())
 
 	if err := addToRecipient(zkvmAddr, zkvmGasFee.String(), stateDB, accountsClient); err != nil {
-		// Rollback using StateDB snapshot
 		stateDB.RevertToSnapshot(snapshot)
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
-		return fmt.Errorf("failed to add gas fee to ZKVM: %w", err)
+		return nil, fmt.Errorf("failed to add gas fee to ZKVM: %w", err)
 	}
-
-	// Debugging
-	fmt.Println(">>>>>> Added amount to ZKVM:", zkvmGasFee.String(), "with address", zkvmAddr.Hex())
 
 	// Commit StateDB if requested (Ethereum-style)
 	if commitToDB {
@@ -636,12 +629,12 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		// Update balances in DID service before committing StateDB
 		for addr, balance := range stateDB.GetBalanceChanges() {
 			if err := DB_OPs.UpdateAccountBalance(accountsClient, addr, balance.String()); err != nil {
-				return fmt.Errorf("failed to update DID service balance for %s: %w", addr.Hex(), err)
+				return nil, fmt.Errorf("failed to update DID service balance for %s: %w", addr.Hex(), err)
 			}
 		}
 
 		if _, err := stateDB.CommitToDB(false); err != nil {
-			return fmt.Errorf("failed to commit regular transfer state: %w", err)
+			return nil, fmt.Errorf("failed to commit regular transfer state: %w", err)
 		}
 	} else {
 		log.Info().Msg("🚫 Skipping state commit for regular transfer (verification mode)")
@@ -655,22 +648,18 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// Clean up the processing marker
 	cleanupProcessingMarkers(accountsClient, tx.Hash.String())
 
-	return nil
+	return nil, nil
 }
 
 // accountExists checks if an account exists in the database
 func accountExists(account *common.Address, accountsClient *config.PooledConnection) (bool, error) {
-	fmt.Println("Checking if account exists: ", account.Hex()) // Debugging
 	_, err := DB_OPs.GetAccount(accountsClient, *account)
 	if err != nil {
 		if err == DB_OPs.ErrNotFound || strings.Contains(err.Error(), "key not found") {
-			fmt.Println("Account does not exist: ", account.Hex()) // Debugging
 			return false, nil
 		}
-		fmt.Println("Error checking account existence: ", account.Hex(), "Error: ", err.Error()) // Debugging
 		return false, err
 	}
-	fmt.Println("Account exists: ", account.Hex()) // Debugging
 	return true, nil
 }
 

@@ -25,5 +25,7 @@ func ProcessSingleTransaction(
 	accountsClient *config.PooledConnection,
 	commitToDB bool,
 ) error {
-	return processTransaction(*tx, coinbaseAddr, zkvmAddr, accountsClient, commitToDB)
+	// Discard the ContractDeploymentInfo — buddy-node verification paths don't propagate.
+	_, err := processTransaction(*tx, coinbaseAddr, zkvmAddr, accountsClient, commitToDB)
+	return err
 }
