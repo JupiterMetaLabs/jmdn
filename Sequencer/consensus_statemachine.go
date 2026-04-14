@@ -230,7 +230,8 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 
 	// Only process block locally if consensus was reached
 	if consensusReached {
-		if err := messaging.ProcessBlockLocally(block, blsResults); err != nil {
+		deployments, err := messaging.ProcessBlockLocally(block, blsResults)
+		if err != nil {
 			ErrorMessage := fmt.Sprintf("CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Failed to process block locally after broadcast: %v", err)
 			Alerts.NewAlertBuilder(alert_ctx).
 				AlertName(helper.Alert_Consensus_ProcessBlockFailed_FailedToProcessBlockLocally).
@@ -240,6 +241,10 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 				Send()
 			fmt.Printf("%s", ErrorMessage)
 			return fmt.Errorf("failed to process block locally after broadcast: %v, error: %s", err, ErrorMessage)
+		}
+		// Propagate any newly-deployed contracts to peers (sequencer-only, fire-and-forget).
+		if len(deployments) > 0 {
+			go messaging.PropagateContractDeployments(consensus.Host, deployments)
 		}
 		msg := fmt.Sprintf("✅ Processed block locally - account balances updated\nBlock #%d\n(hash: %s)", block.BlockNumber, block.BlockHash.Hex())
 		fmt.Printf("%s", msg)
