@@ -89,6 +89,11 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 	}
 	didClient := pbdid.NewDIDServiceClient(didClientConn)
 
+	// Share the DID client with the EVM package so InitializeStateDB never
+	// needs to dial a new connection or reference a hardcoded address.
+	evm.SetSharedDIDClient(didClient)
+	log.Info().Str("did_addr", didAddr).Msg("Shared DID client registered for EVM state initialization.")
+
 	repo := repository.NewPebbleAdapter(kvStore)
 	stateDB := state.NewContractDB(didClient, repo)
 

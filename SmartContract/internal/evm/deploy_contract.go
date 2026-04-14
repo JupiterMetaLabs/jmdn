@@ -2,6 +2,8 @@ package evm
 
 import (
 	"fmt"
+	"os"
+	"gossipnode/DB_OPs"
 	"gossipnode/SmartContract/internal/repository"
 	"gossipnode/SmartContract/internal/state"
 	"gossipnode/SmartContract/internal/storage"
@@ -18,6 +20,15 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+// getEnvOrDefault returns the value of the environment variable named by key,
+// or fallback if the variable is unset or empty.
+func getEnvOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
 
 // DeploymentResult contains the result of a contract deployment
 type DeploymentResult struct {
@@ -121,6 +132,18 @@ func ProcessContractDeployment(
 		}
 	}
 
+	// Capture any logs emitted by the init code and push to the live log pipeline.
+	// Deployment init code can emit events; we capture them here non-fatally.
+	var deployLogs []*ethtypes.Log
+	if contractDB, ok := stateDB.(*state.ContractDB); ok {
+		deployLogs = contractDB.Logs()
+	}
+	if len(deployLogs) > 0 {
+		if err := DB_OPs.GlobalLogWriter.Write(deployLogs); err != nil {
+			log.Error().Err(err).Msg("❌ [EVM] failed to write deploy logs to LogWriter")
+		}
+	}
+
 	// 2. Save Transaction Receipt
 	status := uint64(0)
 	if success {
@@ -133,7 +156,7 @@ func ProcessContractDeployment(
 		TxIndex:         uint64(0), // FIXME: Pass tx index
 		Status:          status,
 		GasUsed:         gasUsed,
-		Logs:            nil, // Deployments typically don't emit logs unless init code does
+		Logs:            deployLogs, // Capture logs emitted by init code
 		CreatedAt:       time.Now().UTC().Unix(),
 	}
 
@@ -162,34 +185,50 @@ func ProcessContractDeployment(
 // sharedKVStore is a singleton instance of the KVStore to prevent multiple resource locks
 var sharedKVStore storage.KVStore
 
-// SetSharedKVStore sets the global keys-value store instance
-// This should be called by the main process (jmdn) initialization
+// SetSharedKVStore sets the global keys-value store instance.
+// Must be called once at startup (server_integration.go) before any block processing.
 func SetSharedKVStore(store storage.KVStore) {
 	sharedKVStore = store
 }
 
-// InitializeStateDB creates a StateDB instance for EVM execution
-// Uses existing connection pools and storage infrastructure
+// sharedDIDClient is a singleton gRPC client for the DID service.
+// Reusing one connection avoids dialling a fresh connection per deployment.
+var sharedDIDClient pbdid.DIDServiceClient
+
+// SetSharedDIDClient stores the process-wide DID gRPC client.
+// Must be called once at startup (server_integration.go) with the already-dialled
+// client so that InitializeStateDB never needs to hardcode an address.
+func SetSharedDIDClient(client pbdid.DIDServiceClient) {
+	sharedDIDClient = client
+}
+
+// InitializeStateDB creates a StateDB instance for EVM execution.
+// It reuses the process-wide singletons set by SetSharedDIDClient and
+// SetSharedKVStore, so no new connections or storage handles are opened.
 func InitializeStateDB(chainID int) (state.StateDB, error) {
-	// TODO: Get gRPC clients from a global service registry instead of creating new connections
-	// For now, use simplified initialization
-	// The proper fix is to pass pre-initialized clients from the calling context
-
-	// FIXME: This still creates new gRPC connections - needs to be refactored
-	// to use dependency injection with pre-initialized clients
-	log.Warn().Msg("⚠️  [EVM] State DB initialization needs refactoring - currently creates new gRPC conns")
-
-	// Initialize gRPC connection to DID service
-	// TODO: Get address from config.DID_SERVICE_ADDRESS
-	didConn, err := grpc.NewClient(
-		"localhost:15052", // FIXME: Make configurable
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to DID service: %w", err)
+	// Use the shared DID client injected at startup.
+	// If it is nil the integrated server was not initialised correctly.
+	var didClient pbdid.DIDServiceClient
+	if sharedDIDClient != nil {
+		didClient = sharedDIDClient
+		log.Debug().Msg("📊 [EVM] Using shared DID client")
+	} else {
+		// Fallback for standalone / test use: read address from env or use default.
+		// In production the integrated server always calls SetSharedDIDClient first.
+		didAddr := "localhost:15052"
+		if addr := getEnvOrDefault("JMDN_PORTS_DID_ADDR", ""); addr != "" {
+			didAddr = addr
+		}
+		log.Warn().Str("did_addr", didAddr).Msg("⚠️  [EVM] No shared DID client — dialling fallback address")
+		didConn, err := grpc.NewClient(
+			didAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to DID service at %s: %w", didAddr, err)
+		}
+		didClient = pbdid.NewDIDServiceClient(didConn)
 	}
-
-	didClient := pbdid.NewDIDServiceClient(didConn)
 
 	var storageDB storage.KVStore
 
@@ -270,6 +309,13 @@ func ProcessContractExecution(
 	if contractDB, ok := stateDB.(*state.ContractDB); ok {
 		// Capture logs before they might be cleared (though they persist in StateDB until next block/tx reset)
 		logs = contractDB.Logs()
+	}
+
+	// Push logs to the live event pipeline (non-fatal — must not fail the tx)
+	if len(logs) > 0 {
+		if writeErr := DB_OPs.GlobalLogWriter.Write(logs); writeErr != nil {
+			log.Error().Err(writeErr).Msg("❌ [EVM] failed to write execution logs to LogWriter")
+		}
 	}
 
 	// Save Transaction Receipt
