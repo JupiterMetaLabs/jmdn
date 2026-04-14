@@ -206,7 +206,7 @@ func forwardBlocks(conn *websocket.Conn, sid string, ch <-chan *Types.Block) {
 }
 func forwardLogs(conn *websocket.Conn, sid string, ch <-chan Types.Log) {
 	for l := range ch {
-		msg := subMsg{Jsonrpc: "2.o", Method: "eth_subscription"}
+		msg := subMsg{Jsonrpc: "2.0", Method: "eth_subscription"}
 		msg.Params.Subscription = sid
 		msg.Params.Result = marshalLogs([]Types.Log{l})[0]
 		_ = conn.WriteJSON(msg)

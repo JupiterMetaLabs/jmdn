@@ -14,12 +14,13 @@ import (
 	"strings"
 	"time"
 
+	scTracer "gossipnode/SmartContract/pkg/tracer"
 	"gossipnode/SmartContract/pkg/client"
 	smartcontractpb "gossipnode/SmartContract/proto"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/core/types"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -292,7 +293,7 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 		fmt.Println(">>>>>> JSON parsing failed, trying RLP parsing")
 
 		// Parse RLP-encoded transaction
-		var ethTx types.Transaction
+		var ethTx ethtypes.Transaction
 		err = rlp.DecodeBytes(rawBytes, &ethTx)
 		if err != nil {
 			if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed to parse RLP transaction: %v", err), "SendRawTx", -1); logErr != nil {
@@ -329,9 +330,9 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 }
 
 // convertEthTxToConfigTx converts an Ethereum transaction to our config.Transaction format
-func convertEthTxToConfigTx(ethTx *types.Transaction) config.Transaction {
+func convertEthTxToConfigTx(ethTx *ethtypes.Transaction) config.Transaction {
 	// Get the sender address
-	from, _ := types.Sender(types.NewEIP155Signer(ethTx.ChainId()), ethTx)
+	from, _ := ethtypes.Sender(ethtypes.NewEIP155Signer(ethTx.ChainId()), ethTx)
 
 	// Convert to our transaction format
 	tx := config.Transaction{
@@ -348,11 +349,11 @@ func convertEthTxToConfigTx(ethTx *types.Transaction) config.Transaction {
 	}
 
 	// Set gas price based on transaction type
-	if ethTx.Type() == types.LegacyTxType {
+	if ethTx.Type() == ethtypes.LegacyTxType {
 		tx.GasPrice = ethTx.GasPrice()
-	} else if ethTx.Type() == types.AccessListTxType {
+	} else if ethTx.Type() == ethtypes.AccessListTxType {
 		tx.GasPrice = ethTx.GasPrice()
-	} else if ethTx.Type() == types.DynamicFeeTxType {
+	} else if ethTx.Type() == ethtypes.DynamicFeeTxType {
 		tx.MaxFee = ethTx.GasFeeCap()
 		tx.MaxPriorityFee = ethTx.GasTipCap()
 	}
@@ -893,4 +894,72 @@ func (s *ServiceImpl) IsListening(ctx context.Context) (bool, error) {
 
 func (s *ServiceImpl) GetPeerCount(ctx context.Context) (string, error) {
 	return "0x1", nil
+}
+
+// TraceTransaction implements debug_traceTransaction.
+//
+// KNOWN LIMITATION (Phase 5): This implementation re-executes the call
+// against the CURRENT StateDB, not a historical snapshot of the pre-execution
+// state.  For read-only / view calls the gas usage and return value are
+// accurate.  For state-mutating calls the opcode trace may differ from the
+// original execution if storage has changed since the transaction landed.
+//
+// Full historical tracing (fetching the Pebble snapshot at the parent block's
+// stateRoot) is deferred to Phase 5.  Until then, Foundry users should pass
+// --no-storage-caching to forge script/test when replay accuracy is required.
+func (s *ServiceImpl) TraceTransaction(ctx context.Context, txHash string) (json.RawMessage, error) {
+	_, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Normalise hash
+	if !strings.HasPrefix(strings.ToLower(txHash), "0x") {
+		txHash = "0x" + txHash
+	}
+
+	// Fetch the original transaction from ImmuDB
+	zkTx, err := DB_OPs.GetTransactionByHash(nil, txHash)
+	if err != nil {
+		return nil, fmt.Errorf("TraceTransaction: tx not found: %w", err)
+	}
+	if zkTx == nil {
+		return nil, fmt.Errorf("TraceTransaction: tx not found")
+	}
+
+	// Derive call parameters
+	var from common.Address
+	if zkTx.From != nil {
+		from = *zkTx.From
+	}
+
+	var to *common.Address
+	if zkTx.To != nil {
+		addr := *zkTx.To
+		to = &addr
+	}
+
+	value := zkTx.Value
+	if value == nil {
+		value = new(big.Int)
+	}
+
+	gasLimit := zkTx.GasLimit
+	if gasLimit == 0 {
+		gasLimit = 3_000_000 // sensible default
+	}
+
+	// Initialise a best-effort current StateDB
+	// NOTE: This uses the live state, not the historical pre-tx snapshot.
+	traceResult, err := scTracer.TraceTransaction(
+		from,
+		to,
+		zkTx.Data,
+		value,
+		gasLimit,
+		s.ChainIDValue,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return traceResult, nil
 }

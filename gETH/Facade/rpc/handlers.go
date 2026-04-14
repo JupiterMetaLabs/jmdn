@@ -369,6 +369,23 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		resp, _ := finish(req, result, err)
 		return resp, err
 
+	case "debug_traceTransaction":
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing tx hash")
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, nil
+		}
+		txHash, _ := req.Params[0].(string)
+		result, err := handler.service.TraceTransaction(ctx, txHash)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		resp, _ := finish(req, result, nil)
+		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		return resp, nil
+
 	default:
 		resp := RespErr(req.ID, -32601, "Method not found")
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)

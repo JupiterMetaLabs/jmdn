@@ -2,6 +2,7 @@ package Service
 
 import (
 	"context"
+	"encoding/json"
 	"gossipnode/gETH/Facade/Service/Types"
 	"math/big"
 )
@@ -38,6 +39,12 @@ type Service interface {
 
 	// Solidity Compiler
 	CompileSolidity(ctx context.Context, source string, optimize bool, runs uint32) (*SolcCompileResult, error)
+
+	// debug_traceTransaction — re-executes the transaction with a StructLogger.
+	// Returns the raw JSON payload from StructLogger.GetResult() so it can be
+	// forwarded verbatim to the caller in the standard Geth debug format.
+	// NOTE: best-effort against current state; historical pre-state is Phase 5.
+	TraceTransaction(ctx context.Context, txHash string) (json.RawMessage, error)
 }
 
 // SolcCompileResult holds compilation results for JSON-RPC
