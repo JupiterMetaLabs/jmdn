@@ -1,20 +1,18 @@
 package evm
 
 import (
-	"fmt"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 )
 
-// NewChainConfig returns a standard chain configuration
-// In a real system, this might load from a config file or genesis block
+// NewChainConfig returns a standard chain configuration for the JMDN EVM.
+// All forks up to Shanghai are enabled at genesis (block/time 0); Cancun is
+// disabled to avoid blob-gas complexity until we're ready to support it.
 func NewChainConfig(chainID int) *params.ChainConfig {
-	// Explicitly enable all forks from genesis (Time/Block 0) to support modern opcodes (PUSH0, etc.)
 	zero := big.NewInt(0)
 	zeroTime := uint64(0)
-	fmt.Printf("DEBUG: NewChainConfig called for ChainID %d. ShanghaiTime: %d, CancunTime: %v\n", chainID, zeroTime, nil)
 
 	return &params.ChainConfig{
 		ChainID:                       big.NewInt(int64(chainID)),
@@ -41,9 +39,7 @@ func NewChainConfig(chainID int) *params.ChainConfig {
 }
 
 // NewVMConfig returns the VM configuration
-// NewVMConfig returns the VM configuration
 func NewVMConfig() vm.Config {
-	fmt.Println("DEBUG: NewVMConfig called")
 	return vm.Config{
 		NoBaseFee: true,        // Disable EIP-1559 base fee checks
 		ExtraEips: []int{3855}, // Force enable EIP-3855 (PUSH0)

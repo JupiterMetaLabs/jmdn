@@ -61,6 +61,13 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to create gETH client connection (SmartContract)")
 	}
+	if gethClientConn != nil {
+		defer func() {
+			if closeErr := gethClientConn.Close(); closeErr != nil {
+				log.Warn().Err(closeErr).Msg("Failed to close gETH client connection")
+			}
+		}()
+	}
 	chainClient := pb.NewChainClient(gethClientConn)
 
 	// 4. DID gRPC client
@@ -70,6 +77,13 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 	)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to create DID client connection (SmartContract)")
+	}
+	if didClientConn != nil {
+		defer func() {
+			if closeErr := didClientConn.Close(); closeErr != nil {
+				log.Warn().Err(closeErr).Msg("Failed to close DID client connection")
+			}
+		}()
 	}
 	didClient := pbdid.NewDIDServiceClient(didClientConn)
 

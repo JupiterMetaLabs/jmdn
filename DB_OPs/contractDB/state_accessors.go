@@ -1,8 +1,9 @@
 package contractDB
 
 import (
-	"fmt"
+	"context"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/holiman/uint256"
@@ -90,7 +91,13 @@ func (c *ContractDB) SubBalance(addr common.Address, amount *uint256.Int, reason
 	prev := obj.getBalance()
 	c.journal.append(balanceChange{account: &addr, prev: prev})
 	obj.subBalance(amount)
-	fmt.Printf("DEBUG: SubBalance %s amount=%s new=%s\n", addr.Hex(), amount.String(), obj.getBalance().String())
+	if l := logger(); l != nil {
+		l.Debug(context.Background(), "SubBalance",
+			ion.String("addr", addr.Hex()),
+			ion.String("amount", amount.String()),
+			ion.String("new_balance", obj.getBalance().String()),
+		)
+	}
 	return *obj.getBalance()
 }
 
@@ -102,7 +109,13 @@ func (c *ContractDB) AddBalance(addr common.Address, amount *uint256.Int, reason
 	prev := obj.getBalance()
 	c.journal.append(balanceChange{account: &addr, prev: prev})
 	obj.addBalance(amount)
-	fmt.Printf("DEBUG: AddBalance %s amount=%s new=%s\n", addr.Hex(), amount.String(), obj.getBalance().String())
+	if l := logger(); l != nil {
+		l.Debug(context.Background(), "AddBalance",
+			ion.String("addr", addr.Hex()),
+			ion.String("amount", amount.String()),
+			ion.String("new_balance", obj.getBalance().String()),
+		)
+	}
 	return *obj.getBalance()
 }
 
@@ -212,8 +225,8 @@ func (c *ContractDB) GetCommittedState(addr common.Address, key common.Hash) com
 // ============================================================================
 
 func (c *ContractDB) Snapshot() int {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	c.lock.RLock()
+	defer c.lock.RUnlock()
 	return c.journal.length()
 }
 

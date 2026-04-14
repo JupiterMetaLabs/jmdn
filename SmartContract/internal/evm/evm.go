@@ -1,11 +1,13 @@
 package evm
 
 import (
+	"context"
 	"fmt"
 	"gossipnode/helper"
 	"math/big"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/vm"
@@ -60,7 +62,9 @@ func (e *EVMExecutor) DeployContract(state vm.StateDB, caller common.Address, co
 	// Try to update with real blockchain info
 	if err := UpdateBlockContext(&blockCtx); err != nil {
 		// Log the error but continue with default values
-		fmt.Printf("Warning: Using default block context: %v\n", err)
+		if l := evmLogger(); l != nil {
+			l.Warn(context.Background(), "UpdateBlockContext failed, using defaults", ion.String("err", err.Error()))
+		}
 	}
 
 	// Rest of the function remains the same...
@@ -72,12 +76,16 @@ func (e *EVMExecutor) DeployContract(state vm.StateDB, caller common.Address, co
 	evm := vm.NewEVM(blockCtx, state, e.ChainConfig, e.VMConfig)
 	evm.SetTxContext(txCtx)
 
-	// Create contract
-	// contractAddr := crypto.CreateAddress(caller, state.GetNonce(caller))
-	state.SetNonce(caller, state.GetNonce(caller)+1, tracing.NonceChangeReason(0))
-
-	// Execute the deployment code
+	// Execute the deployment code.
+	// NOTE: The contract address is derived from crypto.CreateAddress(caller, current_nonce)
+	// BEFORE the nonce is incremented.  We increment AFTER Create so that all callers
+	// (deploy_contract.go, handlers.go, etc.) can predict the deployed address using the
+	// nonce they read before calling DeployContract — no off-by-one adjustments needed.
 	ret, contractAddr, leftOverGas, err := evm.Create(caller, code, gasLimit, value256)
+
+	// Increment the caller's nonce now that the deployment has been attempted
+	// (mirrors standard Ethereum: nonce counts committed transactions, successful or not).
+	state.SetNonce(caller, state.GetNonce(caller)+1, tracing.NonceChangeReason(0))
 
 	// Check for gas overflow before calculating gasUsed
 	if leftOverGas > gasLimit {
@@ -123,7 +131,9 @@ func (e *EVMExecutor) ExecuteContract(state vm.StateDB, caller common.Address, c
 	// Try to update with real blockchain info
 	if err := UpdateBlockContext(&blockCtx); err != nil {
 		// Log the error but continue with default values
-		fmt.Printf("Warning: Using default block context: %v\n", err)
+		if l := evmLogger(); l != nil {
+			l.Warn(context.Background(), "UpdateBlockContext failed, using defaults", ion.String("err", err.Error()))
+		}
 	}
 
 	txCtx := vm.TxContext{
@@ -157,12 +167,15 @@ func CanTransfer(db vm.StateDB, addr common.Address, amount *big.Int) bool {
 	return balance.Cmp(uintAmount) >= 0
 }
 
-func Transfer(db vm.StateDB, sender, recipient common.Address, amount *big.Int) {
+// Transfer moves amount from sender to recipient.
+// Returns an error if the amount overflows uint256 — callers should handle this
+// rather than the process crashing.
+func Transfer(db vm.StateDB, sender, recipient common.Address, amount *big.Int) error {
 	amount256, overflow := helper.ConvertBigToUint256(amount)
-	if !overflow {
-		db.SubBalance(sender, amount256, tracing.BalanceChangeTransfer)
-		db.AddBalance(recipient, amount256, tracing.BalanceChangeTransfer)
-	} else {
-		panic("Overflow occurred during transfer")
+	if overflow {
+		return fmt.Errorf("transfer amount overflow: sender=%s amount=%s", sender.Hex(), amount.String())
 	}
+	db.SubBalance(sender, amount256, tracing.BalanceChangeTransfer)
+	db.AddBalance(recipient, amount256, tracing.BalanceChangeTransfer)
+	return nil
 }

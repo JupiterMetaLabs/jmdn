@@ -65,11 +65,11 @@ func (p *PebbleAdapter) GetBalance(ctx context.Context, addr common.Address) (*u
 }
 
 func (p *PebbleAdapter) GetContractMetadata(ctx context.Context, addr common.Address) ([]byte, error) {
-	return p.db.Get(append(PrefixContractMeta, addr.Bytes()...))
+	return p.db.Get(makeContractMetaKey(addr))
 }
 
 func (p *PebbleAdapter) GetReceipt(ctx context.Context, txHash common.Hash) ([]byte, error) {
-	return p.db.Get(append(PrefixReceipt, txHash.Bytes()...))
+	return p.db.Get(makeReceiptKey(txHash))
 }
 
 // ============================================================================
@@ -122,32 +122,62 @@ func (b *PebbleBatch) DeleteNonce(addr common.Address) error {
 }
 
 func (b *PebbleBatch) SaveContractMetadata(addr common.Address, data []byte) error {
-	return b.batch.Set(append(PrefixContractMeta, addr.Bytes()...), data)
+	return b.batch.Set(makeContractMetaKey(addr), data)
 }
 
 func (b *PebbleBatch) SaveReceipt(txHash common.Hash, data []byte) error {
-	return b.batch.Set(append(PrefixReceipt, txHash.Bytes()...), data)
+	return b.batch.Set(makeReceiptKey(txHash), data)
 }
 
 func (b *PebbleBatch) Commit() error { return b.batch.Commit() }
 func (b *PebbleBatch) Close() error  { return b.batch.Close() }
 
 // ============================================================================
-// Key helpers (shared with contractdb.go)
+// Key helpers
+// Each function allocates a fresh slice to avoid mutating the shared prefix
+// constant's backing array (Go's append can overwrite capacity beyond len).
 // ============================================================================
 
 func makeCodeKey(addr common.Address) []byte {
-	return append(PrefixCode, addr.Bytes()...)
+	key := make([]byte, len(PrefixCode)+common.AddressLength)
+	copy(key, PrefixCode)
+	copy(key[len(PrefixCode):], addr[:])
+	return key
 }
 
-func makeStorageKey(addr common.Address, key common.Hash) []byte {
-	return append(PrefixStorage, append(addr.Bytes(), key.Bytes()...)...)
+func makeStorageKey(addr common.Address, slot common.Hash) []byte {
+	key := make([]byte, len(PrefixStorage)+common.AddressLength+common.HashLength)
+	copy(key, PrefixStorage)
+	copy(key[len(PrefixStorage):], addr[:])
+	copy(key[len(PrefixStorage)+common.AddressLength:], slot[:])
+	return key
 }
 
-func makeStorageMetaKey(addr common.Address, key common.Hash) []byte {
-	return append(PrefixStorageMeta, append(addr.Bytes(), key.Bytes()...)...)
+func makeStorageMetaKey(addr common.Address, slot common.Hash) []byte {
+	key := make([]byte, len(PrefixStorageMeta)+common.AddressLength+common.HashLength)
+	copy(key, PrefixStorageMeta)
+	copy(key[len(PrefixStorageMeta):], addr[:])
+	copy(key[len(PrefixStorageMeta)+common.AddressLength:], slot[:])
+	return key
 }
 
 func makeNonceKey(addr common.Address) []byte {
-	return append(PrefixNonce, addr.Bytes()...)
+	key := make([]byte, len(PrefixNonce)+common.AddressLength)
+	copy(key, PrefixNonce)
+	copy(key[len(PrefixNonce):], addr[:])
+	return key
+}
+
+func makeContractMetaKey(addr common.Address) []byte {
+	key := make([]byte, len(PrefixContractMeta)+common.AddressLength)
+	copy(key, PrefixContractMeta)
+	copy(key[len(PrefixContractMeta):], addr[:])
+	return key
+}
+
+func makeReceiptKey(txHash common.Hash) []byte {
+	key := make([]byte, len(PrefixReceipt)+common.HashLength)
+	copy(key, PrefixReceipt)
+	copy(key[len(PrefixReceipt):], txHash[:])
+	return key
 }

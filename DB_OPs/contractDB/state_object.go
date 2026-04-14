@@ -3,10 +3,10 @@ package contractDB
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"math/big"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
@@ -35,10 +35,11 @@ type stateObject struct {
 	code []byte
 
 	// Flags
-	dirtyCode bool
-	dirty     bool
-	suicided  bool
-	deleted   bool
+	dirtyCode  bool
+	dirtyNonce bool // set when SetNonce is called; lets CommitToDB skip no-op SaveNonce writes
+	dirty      bool
+	suicided   bool
+	deleted    bool
 
 	// Reference to the parent ContractDB for lazy DB loads.
 	db *ContractDB
@@ -89,6 +90,7 @@ func (s *stateObject) getNonce() uint64 { return s.data.Nonce }
 
 func (s *stateObject) setNonce(nonce uint64) {
 	s.data.Nonce = nonce
+	s.dirtyNonce = true
 	s.markDirty()
 }
 
@@ -102,7 +104,13 @@ func (s *stateObject) getCode() []byte {
 		return s.code
 	}
 	val, err := s.db.repo.GetCode(context.Background(), s.address)
-	fmt.Printf("DEBUG(state_object): repo GetCode -> len=%d, err=%v\n", len(val), err)
+	if l := logger(); l != nil {
+		l.Debug(context.Background(), "getCode lazy-load",
+			ion.String("addr", s.address.Hex()),
+			ion.Int("code_len", len(val)),
+			ion.Bool("found", err == nil && len(val) > 0),
+		)
+	}
 	if err == nil && len(val) > 0 {
 		s.code = val
 		s.data.CodeHash = crypto.Keccak256(val)
@@ -112,7 +120,12 @@ func (s *stateObject) getCode() []byte {
 }
 
 func (s *stateObject) setCode(code []byte) {
-	fmt.Printf("DEBUG(state_object): setCode called for %s with len %d\n", s.address.Hex(), len(code))
+	if l := logger(); l != nil {
+		l.Debug(context.Background(), "setCode",
+			ion.String("addr", s.address.Hex()),
+			ion.Int("code_len", len(code)),
+		)
+	}
 	s.code = code
 	s.data.CodeHash = crypto.Keccak256(code)
 	s.dirtyCode = true
@@ -230,6 +243,7 @@ func (s *stateObject) commitState() {
 	s.commitStorage()
 	s.commitCode()
 	s.dirty = false
+	s.dirtyNonce = false
 	s.originAccount = s.data.Copy()
 }
 

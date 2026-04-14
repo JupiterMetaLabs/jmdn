@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gossipnode/DB_OPs"
+	contractDB "gossipnode/DB_OPs/contractDB"
 	"gossipnode/SmartContract/internal/contract_registry"
 	"gossipnode/SmartContract/internal/transaction"
 	"gossipnode/SmartContract/pkg/compiler"
@@ -110,25 +111,21 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 		bytecode = append(bytecode, args...)
 	}
 
-	// User Request: Use the specific account nonce from the DB (even if huge)
-	// to allow transactions from accounts with timestamp-based nonces.
-	//TODO: Fix with proper nonce fetching on mainnet
+	// EIP-3860: initcode (bytecode + constructor args) must not exceed 2 × MAX_CODE_SIZE (49152 bytes).
+	const maxInitcodeSize = 2 * 24576 // 49152 bytes
+	if len(bytecode) > maxInitcodeSize {
+		return nil, fmt.Errorf("initcode too large: %d bytes (max %d per EIP-3860)", len(bytecode), maxInitcodeSize)
+	}
+
+	// Resolve the caller's current nonce in a single DB lookup.
 	var nonce uint64
 	acc, err := DB_OPs.GetAccount(nil, caller)
 	if err == nil && acc != nil {
 		nonce = acc.Nonce
-		log.Info().Uint64("account_nonce", nonce).Msg("Using specific account nonce from DB")
+		log.Info().Uint64("account_nonce", nonce).Msg("Using account nonce from DB")
 	} else {
-		// Fetch the account to get the nonce directly (O(1)) instead of counting transactions (O(N))
-		account, err := DB_OPs.GetAccount(nil, caller)
-		if err != nil {
-			// If account not found, nonce is 0
-			nonce = 0
-			log.Debug().Msgf("Account %s not found in DB, assuming nonce 0", caller.Hex())
-		} else {
-			nonce = account.Nonce
-			log.Debug().Msgf("Account %s found in DB, nonce: %d", caller.Hex(), nonce)
-		}
+		nonce = 0
+		log.Debug().Str("caller", caller.Hex()).Msg("Account not found in DB, assuming nonce 0")
 	}
 	// Create and build contract deployment transaction.
 	// V/R/S are intentionally left nil — the SmartContract service is a trusted
@@ -219,12 +216,21 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 // Execution
 // ============================================================================
 
-// ExecuteContract executes a contract function (state-changing)
+// ExecuteContract executes a contract function (state-changing).
+// Each call gets its own fresh StateDB so concurrent requests don't race on shared state.
 func (r *Router) ExecuteContract(ctx context.Context, req *proto.ExecuteContractRequest) (*proto.ExecutionResult, error) {
 	log.Info().
 		Str("caller", req.Caller).
 		Str("contract", req.ContractAddress).
 		Msg("Executing contract")
+
+	// Per-request StateDB — prevents concurrent calls from corrupting shared in-memory state.
+	// All instances share the same underlying PebbleDB via sharedKVStore, so committed writes
+	// from one call are visible to subsequent calls.
+	stateDB, err := contractDB.InitializeStateDB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize state: %w", err)
+	}
 
 	// Parse addresses
 	caller := common.HexToAddress(req.Caller)
@@ -246,8 +252,13 @@ func (r *Router) ExecuteContract(ctx context.Context, req *proto.ExecuteContract
 		return nil, fmt.Errorf("invalid input: %w", err)
 	}
 
+	gasLimit := req.GasLimit
+	if gasLimit == 0 {
+		gasLimit = 10_000_000
+	}
+
 	// Execute contract
-	result, err := r.executor.ExecuteContract(r.stateDB, caller, contractAddr, input, value, req.GasLimit)
+	result, err := r.executor.ExecuteContract(stateDB, caller, contractAddr, input, value, gasLimit)
 	if err != nil {
 		return &proto.ExecutionResult{
 			Error:   err.Error(),
@@ -255,11 +266,9 @@ func (r *Router) ExecuteContract(ctx context.Context, req *proto.ExecuteContract
 		}, nil
 	}
 
-	// Persist changes to StateDB
-	if sdb, ok := ConvertToInternalStateDB(r.stateDB); ok {
-		if _, err := sdb.CommitToDB(false); err != nil {
-			log.Error().Err(err).Msg("Failed to commit state changes")
-		}
+	// Persist changes
+	if _, err := stateDB.CommitToDB(false); err != nil {
+		log.Error().Err(err).Msg("Failed to commit state changes")
 	}
 
 	log.Info().
@@ -274,13 +283,30 @@ func (r *Router) ExecuteContract(ctx context.Context, req *proto.ExecuteContract
 	}, nil
 }
 
-// CallContract performs a read-only contract call
+// CallContract performs a read-only contract call.
+// Each call gets its own fresh StateDB (no commit at the end) so concurrent callers
+// don't race on the shared in-memory stateObjects map.
 func (r *Router) CallContract(ctx context.Context, req *proto.CallContractRequest) (string, error) {
 	log.Debug().Str("contract", req.ContractAddress).Msg("Calling contract (read-only)")
+
+	// Validate input
+	if req.ContractAddress == "" {
+		return "", fmt.Errorf("contract_address is required")
+	}
+
+	// Per-request read-only StateDB — backed by the shared PebbleDB so code is visible.
+	// No CommitToDB call means no state mutations escape this function.
+	stateDB, err := contractDB.InitializeStateDB()
+	if err != nil {
+		return "", fmt.Errorf("failed to initialize state: %w", err)
+	}
 
 	// Parse addresses
 	caller := common.HexToAddress(req.Caller)
 	contractAddr := common.HexToAddress(req.ContractAddress)
+
+	// CallContractRequest has no GasLimit field in the proto — use a generous default.
+	const gasLimit uint64 = 10_000_000
 
 	// Parse input
 	input, err := hexutil.Decode(req.Input)
@@ -288,11 +314,7 @@ func (r *Router) CallContract(ctx context.Context, req *proto.CallContractReques
 		return "", fmt.Errorf("invalid input: %w", err)
 	}
 
-	// Execute contract (read-only, no state changes)
-	// For calls, we might want to use a snapshot or ensure no commit happens?
-	// vm.StateDB usually handles avoiding commits if we don't call Commit.
-	// We just ensure we don't call CommitToDB here.
-	result, err := r.executor.ExecuteContract(r.stateDB, caller, contractAddr, input, big.NewInt(0), 10000000)
+	result, err := r.executor.ExecuteContract(stateDB, caller, contractAddr, input, big.NewInt(0), gasLimit)
 	if err != nil {
 		return "", fmt.Errorf("call failed: %w", err)
 	}
@@ -461,23 +483,23 @@ func (r *Router) EstimateGas(ctx context.Context, req *proto.EstimateGasRequest)
 
 	var gasUsed uint64
 
-	// Clone stateDB for estimation?
-	// Ideally we should use a snapshot or a read-only view to avoid contaminating state.
-	// Snapshotting:
-	snapshot := r.stateDB.Snapshot()
-	defer r.stateDB.RevertToSnapshot(snapshot)
+	// Per-request StateDB for estimation — no CommitToDB means no state mutations persist.
+	estimateDB, err := contractDB.InitializeStateDB()
+	if err != nil {
+		return 0, fmt.Errorf("failed to initialize state for estimation: %w", err)
+	}
 
 	if req.ContractAddress == "" {
-		// Contract deployment
-		result, err := r.executor.DeployContract(r.stateDB, caller, input, value, 10000000) // High gas limit for estimation
+		// Contract deployment estimation
+		result, err := r.executor.DeployContract(estimateDB, caller, input, value, 10_000_000)
 		if err != nil {
 			return 0, fmt.Errorf("gas estimation failed: %w", err)
 		}
 		gasUsed = result.GasUsed
 	} else {
-		// Contract call
+		// Contract call estimation
 		contractAddr := common.HexToAddress(req.ContractAddress)
-		result, err := r.executor.ExecuteContract(r.stateDB, caller, contractAddr, input, value, 10000000)
+		result, err := r.executor.ExecuteContract(estimateDB, caller, contractAddr, input, value, 10_000_000)
 		if err != nil {
 			return 0, fmt.Errorf("gas estimation failed: %w", err)
 		}

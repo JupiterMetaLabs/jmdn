@@ -30,8 +30,6 @@ func ProcessContractDeployment(
 	stateDB contractDB.StateDB,
 	chainID int,
 ) (*DeploymentResult, error) {
-	fmt.Println("=== [DEBUG] ProcessContractDeployment CALLED ===")
-
 	log.Info().
 		Str("tx_hash", tx.Hash.Hex()).
 		Str("from", tx.From.Hex()).
@@ -59,9 +57,9 @@ func ProcessContractDeployment(
 	var revertReason string
 	var gasUsed uint64
 
-	// The authoritative contract address comes from the EVM result, not a local calculation.
-	// evm.DeployContract increments the nonce before calling evm.Create, so the address is
-	// derived from nonce+1.  Any local pre-compute using currentNonce would be off by one.
+	// The authoritative contract address comes from the EVM result.
+	// evm.Create derives the address from the caller's nonce at call-time (before the
+	// post-call increment in DeployContract), so result.ContractAddr == crypto.CreateAddress(from, currentNonce).
 	var contractAddr common.Address
 	if result != nil {
 		contractAddr = result.ContractAddr

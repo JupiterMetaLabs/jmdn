@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -8,10 +9,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 )
+
+// blockHashCacheMaxSize is the maximum number of entries kept in the BlockHashManager
+// cache.  When the limit is reached the entire cache is cleared to prevent unbounded
+// memory growth (a simple eviction strategy sufficient for a rolling block window).
+const blockHashCacheMaxSize = 256
 
 // BlockHashManager manages block hash retrieval and caching
 type BlockHashManager struct {
@@ -52,8 +59,11 @@ func (m *BlockHashManager) GetHash(n uint64) common.Hash {
 	// Not in cache, try to fetch from API
 	hash, err := m.fetchBlockHashFromAPI(n)
 	if err == nil {
-		// Cache the result
+		// Cache the result; evict the whole map if the size cap is reached.
 		m.cacheMutex.Lock()
+		if len(m.cache) >= blockHashCacheMaxSize {
+			m.cache = make(map[uint64]common.Hash, blockHashCacheMaxSize)
+		}
 		m.cache[n] = hash
 		m.cacheMutex.Unlock()
 		return hash
@@ -130,14 +140,18 @@ func (m *BlockHashManager) UpdateBlockContext(blockCtx *vm.BlockContext) error {
 	}
 
 	// Update block context with real values
-	fmt.Printf("DEBUG: UpdateBlockContext fetching from API... GasLimit from API: %d\n", response.Block.GasLimit)
+	if l := evmLogger(); l != nil {
+		l.Debug(context.Background(), "UpdateBlockContext from API",
+			ion.Uint64("block_number", response.Block.BlockNumber),
+			ion.Uint64("gas_limit", response.Block.GasLimit),
+			ion.Uint64("timestamp", response.Block.Timestamp),
+		)
+	}
 	blockCtx.BlockNumber = new(big.Int).SetUint64(response.Block.BlockNumber)
 	// Only update time if the API returns a valid timestamp (>0).
 	// If it returns 0 (e.g. genesis), we keep the default time.Now() to ensure Shanghai is active.
 	if response.Block.Timestamp > 0 {
 		blockCtx.Time = response.Block.Timestamp
-	} else {
-		fmt.Printf("DEBUG: API returned Timestamp 0, keeping default time: %d\n", blockCtx.Time)
 	}
 	blockCtx.GasLimit = response.Block.GasLimit
 

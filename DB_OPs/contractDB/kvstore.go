@@ -218,7 +218,7 @@ func (m *MemKVStore) Get(key []byte) ([]byte, error) {
 	defer m.mu.RUnlock()
 	val, ok := m.data[string(key)]
 	if !ok {
-		return nil, errors.New("key not found")
+		return nil, nil // nil, nil matches the KVStore interface contract (not-found = nil, nil)
 	}
 	result := make([]byte, len(val))
 	copy(result, val)

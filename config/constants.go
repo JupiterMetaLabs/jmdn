@@ -128,8 +128,10 @@ const (
 )
 
 const (
-	DIDPropagationProtocol protocol.ID = "/gossipnode/did/1.0.0"
-	MaxAccountHops         int         = 7
+	DIDPropagationProtocol      protocol.ID = "/gossipnode/did/1.0.0"
+	MaxAccountHops              int         = 7
+	ContractPropagationProtocol protocol.ID = "/gossipnode/contract/1.0.0"
+	MaxContractHops             int         = 7
 )
 
 // Network addresses

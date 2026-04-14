@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/stateless"
@@ -145,7 +146,12 @@ func (c *ContractDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 
 		if obj.dirtyCode {
 			code := obj.getCode()
-			fmt.Printf("DEBUG(contractdb): CommitToDB dirtyCode for %s, len=%d\n", addr.Hex(), len(code))
+			if l := logger(); l != nil {
+				l.Debug(context.Background(), "CommitToDB: writing code",
+					ion.String("addr", addr.Hex()),
+					ion.Int("code_len", len(code)),
+				)
+			}
 			if len(code) == 0 {
 				if err := batch.DeleteCode(addr); err != nil {
 					return common.Hash{}, err
@@ -157,8 +163,10 @@ func (c *ContractDB) CommitToDB(deleteEmptyObjects bool) (common.Hash, error) {
 			}
 		}
 
-		if err := batch.SaveNonce(addr, obj.getNonce()); err != nil {
-			return common.Hash{}, err
+		if obj.dirtyNonce {
+			if err := batch.SaveNonce(addr, obj.getNonce()); err != nil {
+				return common.Hash{}, err
+			}
 		}
 
 		obj.commitState()
@@ -286,7 +294,12 @@ func (c *ContractDB) SubRefund(gas uint64) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if gas > c.refund {
-		fmt.Printf("⚠️  SubRefund underflow prevented! current=%d sub=%d\n", c.refund, gas)
+		if l := logger(); l != nil {
+			l.Warn(context.Background(), "SubRefund underflow prevented, clamping to 0",
+				ion.Uint64("current_refund", c.refund),
+				ion.Uint64("sub_amount", gas),
+			)
+		}
 		c.refund = 0
 		return
 	}
@@ -363,6 +376,21 @@ func (c *ContractDB) GetTransientState(_ common.Address, _ common.Hash) common.H
 func (c *ContractDB) SetTransientState(_ common.Address, _, _ common.Hash)          {}
 func (c *ContractDB) GetStorageRoot(_ common.Address) common.Hash   { return common.Hash{} }
 func (c *ContractDB) GetSelfDestruction(_ common.Address) bool      { return false }
+
+// ============================================================================
+// Lightweight helpers (use shared singletons directly — no full StateDB needed)
+// ============================================================================
+
+// HasCode returns true if the given address has contract bytecode stored in the
+// shared KVStore.  This is a cheap read-only check that avoids the overhead of
+// spinning up a full ContractDB / StateDB.  Returns false on any error.
+func HasCode(addr common.Address) bool {
+	if sharedKVStore == nil {
+		return false
+	}
+	val, err := sharedKVStore.Get(makeCodeKey(addr))
+	return err == nil && len(val) > 0
+}
 
 // ============================================================================
 // Process-wide singletons (set at startup by server_integration.go / cmd/main.go)

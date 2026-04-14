@@ -1,11 +1,13 @@
 package evm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/eth/tracers/logger"
@@ -75,7 +77,9 @@ func TraceTransaction(
 	}
 	// Try to refresh with real chain state
 	if err := UpdateBlockContext(&blockCtx); err != nil {
-		fmt.Printf("[tracer] using default block context: %v\n", err)
+		if l := evmLogger(); l != nil {
+			l.Warn(context.Background(), "tracer using default block context", ion.String("err", err.Error()))
+		}
 	}
 
 	// TxContext

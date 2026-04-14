@@ -4,14 +4,18 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 
 	"gossipnode/SmartContract/proto"
 
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
 )
 
 // Server implements the SmartContract gRPC service
@@ -33,6 +37,27 @@ func NewServer(router *Router) (*Server, error) {
 	}, nil
 }
 
+// loopbackOnlyInterceptor rejects any request whose peer address is not a
+// loopback address (127.x.x.x or ::1).  The SmartContract service is
+// internal-only; exposing it to remote hosts would be a security risk.
+func loopbackOnlyInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.PermissionDenied, "no peer info")
+	}
+	host, _, err := net.SplitHostPort(p.Addr.String())
+	if err != nil {
+		// Fallback: treat the whole string as host
+		host = p.Addr.String()
+	}
+	// Accept 127.x.x.x, ::1, and the abstract UDS path ("")
+	if host != "" && !strings.HasPrefix(host, "127.") && host != "::1" && host != "localhost" {
+		log.Warn().Str("peer", p.Addr.String()).Msg("SmartContract: rejected non-loopback connection")
+		return nil, status.Errorf(codes.PermissionDenied, "SmartContract service is only accessible from localhost")
+	}
+	return handler(ctx, req)
+}
+
 // StartGRPC starts the SmartContract gRPC server
 func StartGRPC(ctx context.Context, port int, router *Router) error {
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
@@ -43,7 +68,8 @@ func StartGRPC(ctx context.Context, port int, router *Router) error {
 	log.Info().Int("port", port).Msg("Starting SmartContract gRPC server")
 
 	grpcServer := grpc.NewServer(
-		grpc.MaxRecvMsgSize(10 * 1024 * 1024), // 10MB max message size
+		grpc.MaxRecvMsgSize(10*1024*1024), // 10MB max message size
+		grpc.UnaryInterceptor(loopbackOnlyInterceptor),
 	)
 
 	server, err := NewServer(router)

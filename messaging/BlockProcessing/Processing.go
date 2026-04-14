@@ -286,12 +286,8 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// Check if this is a contract deployment (To == nil) or execution (code exists at To)
 	isContract := (tx.To == nil && tx.Type == 2)
 	if !isContract && tx.To != nil {
-		// Need to check if To address has code (is a contract)
-		// For now, we'll create StateDB to check, but this could be optimized
-		tempStateDB, err := SmartContract.NewStateDB(GlobalChainID)
-		if err == nil {
-			isContract = tempStateDB.GetCodeSize(*tx.To) > 0
-		}
+		// Lightweight code-presence check — avoids allocating a full StateDB.
+		isContract = SmartContract.HasCode(*tx.To)
 	}
 	// Declare StateDB and snapshot variables (used by both smart contracts and regular transfers)
 	var stateDB SmartContract.StateDB

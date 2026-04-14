@@ -8,6 +8,13 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+// HasCode returns true if the given address has contract bytecode persisted.
+// Uses the shared KVStore directly — no full StateDB allocation needed.
+// Safe to call from BlockProcessing hot paths.
+func HasCode(addr common.Address) bool {
+	return contractDB.HasCode(addr)
+}
+
 // DeploymentResult contains the result of a contract deployment.
 type DeploymentResult struct {
 	ContractAddress common.Address
