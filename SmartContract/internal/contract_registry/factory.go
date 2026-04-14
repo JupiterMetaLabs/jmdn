@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
+	contractDB "gossipnode/DB_OPs/contractDB"
 	"gossipnode/SmartContract/internal/database"
-	"gossipnode/SmartContract/internal/storage"
 )
 
 // Global singleton registry factory instance
@@ -49,7 +49,7 @@ func DefaultRegistryFactory() (*RegistryFactory, error) {
 }
 
 // CreateRegistryDB creates a RegistryDB implementation based on configuration
-func (f *RegistryFactory) CreateRegistryDB(sharedStore storage.KVStore) (RegistryDB, error) {
+func (f *RegistryFactory) CreateRegistryDB(sharedStore contractDB.KVStore) (RegistryDB, error) {
 	// If shared store is provided, prefer that for Pebble
 	if sharedStore != nil && f.config.Type == database.DBTypePebble {
 		return NewKVStoreRegistry(sharedStore), nil
@@ -67,8 +67,8 @@ func (f *RegistryFactory) CreateRegistryDB(sharedStore storage.KVStore) (Registr
 			path = strings.TrimSuffix(f.config.Path, "/") + "_registry"
 		}
 
-		store, err := storage.NewKVStore(storage.Config{
-			Type: storage.StoreTypePebble,
+		store, err := contractDB.NewKVStore(contractDB.Config{
+			Type: contractDB.StoreTypePebble,
 			Path: path,
 		})
 		if err != nil {
@@ -106,6 +106,6 @@ type ContextualRegistryFactory struct {
 }
 
 // CreateRegistryDB creates a RegistryDB with the bound context
-func (cf *ContextualRegistryFactory) CreateRegistryDB(sharedStore storage.KVStore) (RegistryDB, error) {
+func (cf *ContextualRegistryFactory) CreateRegistryDB(sharedStore contractDB.KVStore) (RegistryDB, error) {
 	return cf.factory.CreateRegistryDB(sharedStore)
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"gossipnode/SmartContract/internal/storage"
+	contractDB "gossipnode/DB_OPs/contractDB"
 	"gossipnode/SmartContract/pkg/types"
 	"sync"
 
@@ -14,12 +14,12 @@ import (
 
 // KVStoreRegistry implements RegistryDB using the generic KVStore interface.
 type KVStoreRegistry struct {
-	db storage.KVStore
+	db contractDB.KVStore
 	mu sync.RWMutex
 }
 
 // NewKVStoreRegistry creates a new registry instance.
-func NewKVStoreRegistry(db storage.KVStore) *KVStoreRegistry {
+func NewKVStoreRegistry(db contractDB.KVStore) *KVStoreRegistry {
 	return &KVStoreRegistry{
 		db: db,
 	}
