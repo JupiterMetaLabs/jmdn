@@ -90,6 +90,25 @@ func GetContractABI(addr common.Address) (string, bool) {
 	return meta.ABI, meta.ABI != ""
 }
 
+// GetContractMeta returns the full registry metadata for a contract.
+// Returns (meta, true) when found, (nil, false) otherwise.
+// Used by the pull-on-demand responder to populate a ContractPullResponse.
+func GetContractMeta(addr common.Address) (*types.ContractMetadata, bool) {
+	sharedRegistryMu.RLock()
+	reg := sharedRegistry
+	sharedRegistryMu.RUnlock()
+
+	if reg == nil {
+		return nil, false
+	}
+
+	meta, err := reg.GetContract(context.Background(), addr)
+	if err != nil || meta == nil {
+		return nil, false
+	}
+	return meta, true
+}
+
 // HasCode returns true if the given address has contract bytecode persisted.
 // Uses the shared KVStore directly — no full StateDB allocation needed.
 // Safe to call from BlockProcessing hot paths.

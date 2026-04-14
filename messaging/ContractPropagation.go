@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -327,4 +328,211 @@ func forwardContract(h host.Host, msg ContractMessage) {
 		Str("contract", msg.ContractAddress.Hex()).
 		Int("peers_forwarded", successCount).
 		Msg("ContractPropagation: message forwarded")
+}
+
+// ============================================================================
+// Phase 2: Pull-on-demand
+// ============================================================================
+
+// ContractPullRequest is the payload written by a node that needs contract
+// metadata it never received via gossip.
+type ContractPullRequest struct {
+	ContractAddress common.Address `json:"contract_address"`
+}
+
+// ContractPullResponse is the payload returned by a peer that has the contract.
+type ContractPullResponse struct {
+	Found           bool           `json:"found"`
+	ContractAddress common.Address `json:"contract_address"`
+	Deployer        common.Address `json:"deployer"`
+	TxHash          common.Hash    `json:"tx_hash"`
+	BlockNumber     uint64         `json:"block_number"`
+	ABI             string         `json:"abi,omitempty"`
+	Error           string         `json:"error,omitempty"`
+}
+
+// HandleContractPullStream is the libp2p stream handler registered on every
+// node for ContractPullProtocol.  It answers pull requests from peers that
+// missed the original gossip message.
+func HandleContractPullStream(stream network.Stream) {
+	defer stream.Close()
+
+	remotePeer := stream.Conn().RemotePeer().String()
+
+	// Read request (single JSON line).
+	reader := bufio.NewReader(stream)
+	reqBytes, err := reader.ReadBytes('\n')
+	if err != nil {
+		if err != io.EOF {
+			log.Error().Err(err).Str("peer", remotePeer).Msg("ContractPull: error reading request")
+		}
+		return
+	}
+
+	var req ContractPullRequest
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		log.Error().Err(err).Msg("ContractPull: failed to unmarshal request")
+		respondPullError(stream, req.ContractAddress, "bad request")
+		return
+	}
+
+	log.Debug().
+		Str("contract", req.ContractAddress.Hex()).
+		Str("peer", remotePeer).
+		Msg("ContractPull: received pull request")
+
+	resp := buildPullResponse(req.ContractAddress)
+
+	respBytes, err := json.Marshal(resp)
+	if err != nil {
+		log.Error().Err(err).Msg("ContractPull: failed to marshal response")
+		return
+	}
+	respBytes = append(respBytes, '\n')
+
+	if _, err := stream.Write(respBytes); err != nil {
+		log.Error().Err(err).Str("peer", remotePeer).Msg("ContractPull: failed to write response")
+	}
+}
+
+// buildPullResponse constructs a ContractPullResponse from local state.
+func buildPullResponse(addr common.Address) ContractPullResponse {
+	resp := ContractPullResponse{ContractAddress: addr}
+
+	// Bytecode must be present — otherwise we can't help the requester.
+	if !SmartContract.HasCode(addr) {
+		return resp // Found=false
+	}
+	resp.Found = true
+
+	// Enrich with registry metadata when available.
+	if abi, ok := SmartContract.GetContractABI(addr); ok {
+		resp.ABI = abi
+	}
+
+	// Retrieve full metadata from the registry.
+	if meta, ok := SmartContract.GetContractMeta(addr); ok {
+		resp.Deployer = meta.Deployer
+		resp.TxHash = meta.DeployTxHash
+		resp.BlockNumber = meta.DeployBlock
+	}
+
+	return resp
+}
+
+// respondPullError writes a minimal error response when request parsing fails.
+func respondPullError(stream network.Stream, addr common.Address, msg string) {
+	resp := ContractPullResponse{Found: false, ContractAddress: addr, Error: msg}
+	b, _ := json.Marshal(resp)
+	b = append(b, '\n')
+	_, _ = stream.Write(b)
+}
+
+// PullContractIfMissing fetches contract metadata from a peer and stores it
+// locally.  Returns true if the contract is already present (HasCode) or was
+// successfully fetched.  Returns false when no peer has the contract.
+//
+// The call is synchronous — callers should wrap it in a goroutine if they
+// don't want to block.
+func PullContractIfMissing(ctx context.Context, h host.Host, addr common.Address) bool {
+	// Fast path — already have it.
+	if SmartContract.HasCode(addr) {
+		return true
+	}
+
+	peers := h.Network().Peers()
+	if len(peers) == 0 {
+		log.Warn().Str("contract", addr.Hex()).Msg("ContractPull: no peers available for pull")
+		return false
+	}
+
+	// Copy and shuffle so we don't always hammer the same peer.
+	order := make([]int, len(peers))
+	for i := range order {
+		order[i] = i
+	}
+	rand.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
+
+	reqBytes, err := json.Marshal(ContractPullRequest{ContractAddress: addr})
+	if err != nil {
+		return false
+	}
+	reqBytes = append(reqBytes, '\n')
+
+	for _, idx := range order {
+		p := peers[idx]
+
+		pullCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		stream, err := h.NewStream(pullCtx, p, config.ContractPullProtocol)
+		cancel()
+		if err != nil {
+			log.Debug().Err(err).Str("peer", p.String()).Msg("ContractPull: stream open failed")
+			continue
+		}
+
+		var resp ContractPullResponse
+		func() {
+			defer stream.Close()
+			if _, err := stream.Write(reqBytes); err != nil {
+				log.Debug().Err(err).Str("peer", p.String()).Msg("ContractPull: write failed")
+				return
+			}
+			reader := bufio.NewReader(stream)
+			respBytes, err := reader.ReadBytes('\n')
+			if err != nil && err != io.EOF {
+				log.Debug().Err(err).Str("peer", p.String()).Msg("ContractPull: read failed")
+				return
+			}
+			if err := json.Unmarshal(respBytes, &resp); err != nil {
+				log.Debug().Err(err).Msg("ContractPull: unmarshal response failed")
+			}
+		}()
+
+		if !resp.Found {
+			continue
+		}
+
+		// Store the fetched metadata locally.
+		storeErr := SmartContract.RegisterContractFromGossip(
+			ctx,
+			resp.ContractAddress,
+			resp.Deployer,
+			resp.TxHash,
+			resp.BlockNumber,
+			resp.ABI,
+		)
+		if storeErr != nil {
+			log.Error().Err(storeErr).Str("contract", addr.Hex()).Msg("ContractPull: failed to store pulled contract")
+		}
+
+		log.Info().
+			Str("contract", addr.Hex()).
+			Str("peer", p.String()).
+			Uint64("block", resp.BlockNumber).
+			Msg("ContractPull: contract metadata fetched from peer")
+		return true
+	}
+
+	log.Warn().Str("contract", addr.Hex()).Msg("ContractPull: no peer had the contract")
+	return false
+}
+
+// PrefetchMissingContracts scans block transactions and pulls metadata for
+// any contract-call addresses whose bytecode isn't in the local KV store.
+// Called by HandleBlockStream before ProcessBlockTransactions so that missed
+// gossip doesn't cause contract executions to fall through to the regular
+// transfer path.
+func PrefetchMissingContracts(ctx context.Context, h host.Host, txs []config.Transaction) {
+	for _, tx := range txs {
+		if tx.To == nil || tx.Type != 2 {
+			continue // not a contract call
+		}
+		if SmartContract.HasCode(*tx.To) {
+			continue // already present
+		}
+		log.Info().
+			Str("contract", tx.To.Hex()).
+			Msg("ContractPull: pre-fetching missing contract before block processing")
+		PullContractIfMissing(ctx, h, *tx.To)
+	}
 }

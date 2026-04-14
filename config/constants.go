@@ -132,6 +132,7 @@ const (
 	MaxAccountHops              int         = 7
 	ContractPropagationProtocol protocol.ID = "/gossipnode/contract/1.0.0"
 	MaxContractHops             int         = 7
+	ContractPullProtocol        protocol.ID = "/gossipnode/contract/pull/1.0.0"
 )
 
 // Network addresses

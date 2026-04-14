@@ -345,6 +345,13 @@ func HandleBlockStream(stream network.Stream) {
 				Uint64("block_number", msg.Block.BlockNumber).
 				Msg("Processing block transactions")
 
+			// Pull-on-demand: ensure contract metadata is present before execution.
+			// This handles the case where the ContractMessage gossip was missed
+			// (e.g. sequencer went offline before propagation completed).
+			if h := getHostInstance(); h != nil {
+				PrefetchMissingContracts(ctx, h, msg.Block.Transactions)
+			}
+
 			// Process all transactions in the block atomically with rollback capability.
 			// Receiver nodes discard the deployments slice — only the sequencer propagates contracts.
 			if _, err := BlockProcessing.ProcessBlockTransactions(msg.Block, accountsClient, true); err != nil {

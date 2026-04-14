@@ -1005,6 +1005,8 @@ func main() {
 
 	// Initialize Contract propagation handler (ADR-001)
 	n.Host.SetStreamHandler(config.ContractPropagationProtocol, messaging.HandleContractStream)
+	// Pull-on-demand: peers can request missed contract metadata from us
+	n.Host.SetStreamHandler(config.ContractPullProtocol, messaging.HandleContractPullStream)
 
 	if err := messaging.InitContractPropagation(); err != nil {
 		log.Error().Err(err).Msg("Failed to initialize contract propagation")
