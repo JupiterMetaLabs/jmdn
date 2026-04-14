@@ -1,11 +1,9 @@
 package router
 
 import (
-
-	// For compiler only now
+	contractDB "gossipnode/DB_OPs/contractDB"
 	"gossipnode/SmartContract/internal/contract_registry"
 	"gossipnode/SmartContract/internal/evm"
-	"gossipnode/SmartContract/internal/state"
 	"gossipnode/config"
 	pb "gossipnode/gETH/proto"
 
@@ -15,7 +13,7 @@ import (
 // Router handles Smart Contract gRPC requests
 type Router struct {
 	executor          evm.Executor
-	stateDB           state.StateDB
+	stateDB           contractDB.StateDB
 	contract_registry contract_registry.RegistryDB
 	dbConn            *config.PooledConnection
 	chainClient       pb.ChainClient
@@ -23,7 +21,7 @@ type Router struct {
 }
 
 // NewRouter creates a new Smart Contract Router
-func NewRouter(chainID int, stateDB state.StateDB, reg contract_registry.RegistryDB, dbConn *config.PooledConnection, chainClient pb.ChainClient) *Router {
+func NewRouter(chainID int, stateDB contractDB.StateDB, reg contract_registry.RegistryDB, dbConn *config.PooledConnection, chainClient pb.ChainClient) *Router {
 	return &Router{
 		executor:          evm.NewEVMExecutor(chainID),
 		stateDB:           stateDB,

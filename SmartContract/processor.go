@@ -1,14 +1,14 @@
 package SmartContract
 
 import (
+	contractDB "gossipnode/DB_OPs/contractDB"
 	"gossipnode/SmartContract/internal/evm"
-	"gossipnode/SmartContract/internal/state"
 	"gossipnode/config"
 
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// DeploymentResult contains the result of a contract deployment
+// DeploymentResult contains the result of a contract deployment.
 type DeploymentResult struct {
 	ContractAddress common.Address
 	GasUsed         uint64
@@ -16,22 +16,17 @@ type DeploymentResult struct {
 	Error           error
 }
 
-// ProcessContractDeployment is a public wrapper that calls the internal deployment logic
-// This is the function that messaging/BlockProcessing can call
+// ProcessContractDeployment is the public entry point for contract deployment.
+// Called by messaging/BlockProcessing after receiving a deployment transaction.
 func ProcessContractDeployment(
 	tx *config.Transaction,
 	stateDB StateDB,
 	chainID int,
 ) (*DeploymentResult, error) {
-	// Call the internal implementation
-	result, err := evm.ProcessContractDeployment(tx, stateDB.(state.StateDB), chainID)
+	result, err := evm.ProcessContractDeployment(tx, stateDB.(contractDB.StateDB), chainID)
 	if err != nil {
-		return &DeploymentResult{
-			Success: false,
-			Error:   err,
-		}, err
+		return &DeploymentResult{Success: false, Error: err}, err
 	}
-
 	return &DeploymentResult{
 		ContractAddress: result.ContractAddress,
 		GasUsed:         result.GasUsed,
@@ -40,13 +35,13 @@ func ProcessContractDeployment(
 	}, nil
 }
 
-// ProcessContractExecution is a public wrapper for contract execution
+// ProcessContractExecution is the public entry point for contract execution.
 func ProcessContractExecution(
 	tx *config.Transaction,
 	stateDB StateDB,
 	chainID int,
 ) (*evm.ExecutionResult, error) {
-	return evm.ProcessContractExecution(tx, stateDB.(state.StateDB), chainID)
+	return evm.ProcessContractExecution(tx, stateDB.(contractDB.StateDB), chainID)
 }
 
 // ============================================================================

@@ -12,28 +12,22 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	contractDB "gossipnode/DB_OPs/contractDB"
 	"gossipnode/DB_OPs"
 	pbdid "gossipnode/DID/proto"
 	"gossipnode/Security"
 	"gossipnode/SmartContract/internal/contract_registry"
 	"gossipnode/SmartContract/internal/database"
-	"gossipnode/SmartContract/internal/evm"
-	"gossipnode/SmartContract/internal/repository"
 	"gossipnode/SmartContract/internal/router"
-	"gossipnode/SmartContract/internal/state"
-	"gossipnode/SmartContract/internal/storage"
 	"gossipnode/config"
 	"gossipnode/config/settings"
 	pb "gossipnode/gETH/proto"
 )
 
 func main() {
-	// Configure logging
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
-	// Load unified node config (jmdn.yaml → env vars → defaults).
-	// This gives us the same port/bind values as the integrated server.
 	cfg, err := settings.Load()
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to load jmdn.yaml — using defaults")
@@ -52,19 +46,18 @@ func main() {
 	fmt.Printf("   gETH     : %s\n", gethAddr)
 	fmt.Printf("   DID      : %s\n", didAddr)
 
-	// 1. Initialize Database Configuration
+	// 1. Database config (used by contract registry)
 	dbConfig := database.LoadConfigFromEnv()
 	fmt.Printf("   DB Type  : %s\n", dbConfig.Type)
 
-	// 2. Initialize Shared KVStore (Pebble/Memory)
-	storeConfig := storage.ConfigFromEnv(dbConfig)
-	kvStore, err := storage.NewKVStore(storeConfig)
+	// 2. Shared KVStore
+	kvStore, err := contractDB.NewKVStore(contractDB.DefaultConfig())
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize KVStore")
 	}
-	evm.SetSharedKVStore(kvStore)
+	contractDB.SetSharedKVStore(kvStore)
 
-	// 3. Initialize DB_OPs pools (for nonce/account lookups)
+	// 3. DB_OPs connection pools (for nonce / account lookups)
 	poolConfig := config.DefaultConnectionPoolConfig()
 	if err := DB_OPs.InitMainDBPool(poolConfig); err != nil {
 		log.Warn().Err(err).Msg("Failed to initialize DB_OPs pool — nonce retrieval might fail")
@@ -73,7 +66,7 @@ func main() {
 		log.Warn().Err(err).Msg("Failed to initialize Accounts pool — DID checks might fail")
 	}
 
-	// 4. Initialize Registry
+	// 4. Contract registry
 	registryFactory, err := contract_registry.NewRegistryFactory(dbConfig)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create registry factory")
@@ -99,21 +92,18 @@ func main() {
 	}
 	defer didConn.Close()
 	didClient := pbdid.NewDIDServiceClient(didConn)
+	contractDB.SetSharedDIDClient(didClient)
 
-	// Share DID client with EVM package so InitializeStateDB reuses this connection.
-	evm.SetSharedDIDClient(didClient)
+	// 7. ContractDB (StateDB)
+	repo := contractDB.NewPebbleAdapter(kvStore)
+	stateDB := contractDB.NewContractDB(didClient, repo)
 
-	// 7. Initialize ContractDB (StateDB)
-	repo := repository.NewPebbleAdapter(kvStore)
-	stateDB := state.NewContractDB(didClient, repo)
-
-	// 8. Initialize Router
+	// 8. Router
 	smartRouter := router.NewRouter(chainID, stateDB, reg, nil, chainClient)
 	defer smartRouter.Close()
 
 	fmt.Printf("✅ Server ready on localhost:%d\n\n", port)
 
-	// Create context that cancels on interrupt
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
