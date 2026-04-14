@@ -63,3 +63,4 @@ SmartContract/artifacts/*
 SmartContract/artifacts/HelloWorld.json
 /SmartContract/artifacts
 SmartContract/artifacts/HelloWorld.json
+docs/refactor-contractDBOps.md
