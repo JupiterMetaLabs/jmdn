@@ -91,6 +91,10 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 	contractDB.SetSharedDIDClient(didClient)
 	log.Info().Str("did_addr", didAddr).Msg("Shared DID client registered.")
 
+	// Share the contract registry so gossip receivers can persist contract metadata.
+	SetSharedRegistry(reg)
+	log.Info().Msg("Shared contract registry registered.")
+
 	// 5. ContractDB (State Layer)
 	repo := contractDB.NewPebbleAdapter(kvStore)
 	stateDB := contractDB.NewContractDB(didClient, repo)

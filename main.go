@@ -1003,6 +1003,13 @@ func main() {
 		log.Error().Err(err).Msg("Failed to initialize DID propagation")
 	}
 
+	// Initialize Contract propagation handler (ADR-001)
+	n.Host.SetStreamHandler(config.ContractPropagationProtocol, messaging.HandleContractStream)
+
+	if err := messaging.InitContractPropagation(); err != nil {
+		log.Error().Err(err).Msg("Failed to initialize contract propagation")
+	}
+
 	// We'll initialize the DID system in the DID server to avoid blocking main
 	// Start DID server only when port > 0 (optional on non-resolver nodes)
 	if cfg.Ports.DID > 0 {

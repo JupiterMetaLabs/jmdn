@@ -1,12 +1,94 @@
 package SmartContract
 
 import (
+	"context"
+	"sync"
+	"time"
+
 	contractDB "gossipnode/DB_OPs/contractDB"
+	"gossipnode/SmartContract/internal/contract_registry"
 	"gossipnode/SmartContract/internal/evm"
+	"gossipnode/SmartContract/pkg/types"
 	"gossipnode/config"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/rs/zerolog/log"
 )
+
+// ============================================================================
+// Shared Registry — process-wide singleton used by gossip receive path
+// ============================================================================
+
+var (
+	sharedRegistry   contract_registry.RegistryDB
+	sharedRegistryMu sync.RWMutex
+)
+
+// SetSharedRegistry wires the process-wide contract registry so that gossip
+// messages received over ContractPropagationProtocol can persist metadata.
+// Called once during server initialisation (server_integration.go).
+func SetSharedRegistry(reg contract_registry.RegistryDB) {
+	sharedRegistryMu.Lock()
+	sharedRegistry = reg
+	sharedRegistryMu.Unlock()
+}
+
+// RegisterContractFromGossip stores contract metadata received via gossip into
+// the local registry.  Idempotent — if the contract already exists the call is
+// a no-op (the registry records the address; bytecode is already in PebbleDB
+// from EVM execution during block processing).
+func RegisterContractFromGossip(
+	ctx context.Context,
+	addr common.Address,
+	deployer common.Address,
+	txHash common.Hash,
+	blockNumber uint64,
+	abi string,
+) error {
+	sharedRegistryMu.RLock()
+	reg := sharedRegistry
+	sharedRegistryMu.RUnlock()
+
+	if reg == nil {
+		log.Warn().Str("contract", addr.Hex()).Msg("SmartContract: registry not initialised, skipping gossip registration")
+		return nil
+	}
+
+	// Already registered — nothing to do.
+	if exists, err := reg.ContractExists(ctx, addr); err == nil && exists {
+		return nil
+	}
+
+	meta := &types.ContractMetadata{
+		Address:      addr,
+		Deployer:     deployer,
+		DeployTxHash: txHash,
+		DeployBlock:  blockNumber,
+		DeployTime:   uint64(time.Now().UTC().Unix()),
+		ABI:          abi,
+		State:        "active",
+	}
+	return reg.RegisterContract(ctx, meta)
+}
+
+// GetContractABI retrieves the ABI string for a deployed contract from the
+// local registry.  Returns ("", false) when the registry is uninitialised or
+// the contract is not found.  Used by the sequencer to populate ContractMessage.
+func GetContractABI(addr common.Address) (string, bool) {
+	sharedRegistryMu.RLock()
+	reg := sharedRegistry
+	sharedRegistryMu.RUnlock()
+
+	if reg == nil {
+		return "", false
+	}
+
+	meta, err := reg.GetContract(context.Background(), addr)
+	if err != nil || meta == nil {
+		return "", false
+	}
+	return meta.ABI, meta.ABI != ""
+}
 
 // HasCode returns true if the given address has contract bytecode persisted.
 // Uses the shared KVStore directly — no full StateDB allocation needed.
