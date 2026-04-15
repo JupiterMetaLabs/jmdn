@@ -7,10 +7,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	"github.com/JupiterMetaLabs/ion"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"gossipnode/logging"
 
 	contractDB "gossipnode/DB_OPs/contractDB"
 	"gossipnode/DB_OPs"
@@ -25,12 +25,11 @@ import (
 )
 
 func main() {
-	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	ctx := context.Background()
 
 	cfg, err := settings.Load()
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to load jmdn.yaml — using defaults")
+		logger().Warn(ctx, "Failed to load jmdn.yaml — using defaults", ion.Err(err))
 		defaultCfg := settings.DefaultConfig()
 		cfg = &defaultCfg
 	}
@@ -53,34 +52,39 @@ func main() {
 	// 2. Shared KVStore
 	kvStore, err := contractDB.NewKVStore(contractDB.DefaultConfig())
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize KVStore")
+		logger().Error(ctx, "Failed to initialize KVStore", err)
+		os.Exit(1)
 	}
 	contractDB.SetSharedKVStore(kvStore)
 
 	// 3. DB_OPs connection pools (for nonce / account lookups)
 	poolConfig := config.DefaultConnectionPoolConfig()
 	if err := DB_OPs.InitMainDBPool(poolConfig); err != nil {
-		log.Warn().Err(err).Msg("Failed to initialize DB_OPs pool — nonce retrieval might fail")
+		logger().Warn(ctx, "Failed to initialize DB_OPs pool — nonce retrieval might fail", ion.Err(err))
 	}
 	if err := DB_OPs.InitAccountsPool(); err != nil {
-		log.Warn().Err(err).Msg("Failed to initialize Accounts pool — DID checks might fail")
+		logger().Warn(ctx, "Failed to initialize Accounts pool — DID checks might fail", ion.Err(err))
 	}
 
 	// 4. Contract registry
 	registryFactory, err := contract_registry.NewRegistryFactory(dbConfig)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to create registry factory")
+		logger().Error(ctx, "Failed to create registry factory", err)
+		os.Exit(1)
 	}
 	Security.SetExpectedChainID(chainID)
 	reg, err := registryFactory.CreateRegistryDB(kvStore)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to create registry")
+		logger().Error(ctx, "Failed to create registry", err)
+		os.Exit(1)
 	}
 
 	// 5. gETH gRPC client
 	gethConn, err := grpc.NewClient(gethAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatal().Err(err).Str("addr", gethAddr).Msg("Failed to connect to gETH node")
+		logger().Error(ctx, "Failed to connect to gETH node", err,
+			ion.String("addr", gethAddr))
+		os.Exit(1)
 	}
 	defer gethConn.Close()
 	chainClient := pb.NewChainClient(gethConn)
@@ -88,7 +92,9 @@ func main() {
 	// 6. DID gRPC client
 	didConn, err := grpc.NewClient(didAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatal().Err(err).Str("addr", didAddr).Msg("Failed to connect to DID service")
+		logger().Error(ctx, "Failed to connect to DID service", err,
+			ion.String("addr", didAddr))
+		os.Exit(1)
 	}
 	defer didConn.Close()
 	didClient := pbdid.NewDIDServiceClient(didConn)
@@ -104,7 +110,7 @@ func main() {
 
 	fmt.Printf("✅ Server ready on localhost:%d\n\n", port)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctxWithCancel, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	go func() {
@@ -115,7 +121,17 @@ func main() {
 		cancel()
 	}()
 
-	if err := router.StartGRPC(ctx, port, smartRouter); err != nil {
-		log.Fatal().Err(err).Msg("Server failed")
+	if err := router.StartGRPC(ctxWithCancel, port, smartRouter); err != nil {
+		logger().Error(ctx, "Server failed", err)
+		os.Exit(1)
 	}
+}
+
+// logger returns the named ion logger for the main package.
+func logger() *ion.Ion {
+	logInstance, err := logging.NewAsyncLogger().Get().NamedLogger(logging.SmartContract, "")
+	if err != nil {
+		return nil
+	}
+	return logInstance.GetNamedLogger()
 }

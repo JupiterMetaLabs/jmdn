@@ -23,7 +23,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/rs/zerolog/log"
+	"github.com/JupiterMetaLabs/ion"
 )
 
 // ============================================================================
@@ -32,7 +32,7 @@ import (
 
 // CompileContract compiles Solidity source code
 func (r *Router) CompileContract(sourceCode string) (*compiler.CompiledContract, error) {
-	log.Debug().Msg("Compiling Solidity contract")
+	logger().Debug(context.Background(), "Compiling Solidity contract")
 
 	// Write source to temp file
 	tmpFile, err := os.CreateTemp("", "contract-*.sol")
@@ -63,9 +63,8 @@ func (r *Router) CompileContract(sourceCode string) (*compiler.CompiledContract,
 		break
 	}
 
-	log.Info().
-		Str("bytecode_size", fmt.Sprintf("%d bytes", len(contract.Bytecode))).
-		Msg("Contract compiled successfully")
+	logger().Info(context.Background(), "Contract compiled successfully",
+		ion.String("bytecode_size", fmt.Sprintf("%d bytes", len(contract.Bytecode))))
 
 	return contract, nil
 }
@@ -76,11 +75,10 @@ func (r *Router) CompileContract(sourceCode string) (*compiler.CompiledContract,
 
 // DeployContract submits a contract deployment transaction to the network
 func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRequest) (*proto.ExecutionResult, error) {
-	log.Info().
-		Str("caller", req.Caller).
-		Int("abi_length", len(req.Abi)).
-		Bool("abi_provided", len(req.Abi) > 0).
-		Msg("🚀 [CONSENSUS FLOW] DeployContract - Submitting transaction to network")
+	logger().Info(ctx, "🚀 [CONSENSUS FLOW] DeployContract - Submitting transaction to network",
+		ion.String("caller", req.Caller),
+		ion.Int("abi_length", len(req.Abi)),
+		ion.Bool("abi_provided", len(req.Abi) > 0))
 
 	// Parse caller address
 	caller := common.HexToAddress(req.Caller)
@@ -122,10 +120,12 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 	acc, err := DB_OPs.GetAccount(nil, caller)
 	if err == nil && acc != nil {
 		nonce = acc.Nonce
-		log.Info().Uint64("account_nonce", nonce).Msg("Using account nonce from DB")
+		logger().Info(ctx, "Using account nonce from DB",
+			ion.Uint64("account_nonce", nonce))
 	} else {
 		nonce = 0
-		log.Debug().Str("caller", caller.Hex()).Msg("Account not found in DB, assuming nonce 0")
+		logger().Debug(ctx, "Account not found in DB, assuming nonce 0",
+			ion.String("caller", caller.Hex()))
 	}
 	// Create and build contract deployment transaction.
 	// V/R/S are intentionally left nil — the SmartContract service is a trusted
@@ -158,7 +158,7 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 	})
 
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to submit deployment transaction via gRPC")
+		logger().Error(ctx, "Failed to submit deployment transaction via gRPC", err)
 		return &proto.ExecutionResult{
 			Error:   fmt.Sprintf("Failed to submit transaction: %v", err),
 			Success: false,
@@ -170,9 +170,8 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 		txHash = "0x" + txHash
 	}
 
-	log.Info().
-		Str("tx_hash", txHash).
-		Msg(" Contract deployment transaction submitted successfully")
+	logger().Info(ctx, "Contract deployment transaction submitted successfully",
+		ion.String("tx_hash", txHash))
 
 	// Note: Contract metadata (including ABI) will be registered by Processing.go
 	// after consensus confirms the deployment.
@@ -182,10 +181,9 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 	contractAddrHex := contractAddr.Hex()
 
 	if len(req.Abi) > 0 {
-		log.Info().
-			Str("contract_address", contractAddrHex).
-			Str("abi_size", fmt.Sprintf("%d bytes", len(req.Abi))).
-			Msg("💾 [ABI FLOW] Optimistically registering contract ABI")
+		logger().Info(ctx, "💾 [ABI FLOW] Optimistically registering contract ABI",
+			ion.String("contract_address", contractAddrHex),
+			ion.String("abi_size", fmt.Sprintf("%d bytes", len(req.Abi))))
 
 		// Create metadata
 		metadata := &types.ContractMetadata{
@@ -199,7 +197,7 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 
 		// Save to registry
 		if err := r.contract_registry.RegisterContract(ctx, metadata); err != nil {
-			log.Warn().Err(err).Msg("⚠️ Failed to register contract metadata optimistically")
+			logger().Warn(ctx, "⚠️ Failed to register contract metadata optimistically", ion.Err(err))
 			// Don't fail the request, just warn
 		}
 	}
@@ -219,10 +217,9 @@ func (r *Router) DeployContract(ctx context.Context, req *proto.DeployContractRe
 // ExecuteContract executes a contract function (state-changing).
 // Each call gets its own fresh StateDB so concurrent requests don't race on shared state.
 func (r *Router) ExecuteContract(ctx context.Context, req *proto.ExecuteContractRequest) (*proto.ExecutionResult, error) {
-	log.Info().
-		Str("caller", req.Caller).
-		Str("contract", req.ContractAddress).
-		Msg("Executing contract")
+	logger().Info(ctx, "Executing contract",
+		ion.String("caller", req.Caller),
+		ion.String("contract", req.ContractAddress))
 
 	// Per-request StateDB — prevents concurrent calls from corrupting shared in-memory state.
 	// All instances share the same underlying PebbleDB via sharedKVStore, so committed writes
@@ -268,13 +265,12 @@ func (r *Router) ExecuteContract(ctx context.Context, req *proto.ExecuteContract
 
 	// Persist changes
 	if _, err := stateDB.CommitToDB(false); err != nil {
-		log.Error().Err(err).Msg("Failed to commit state changes")
+		logger().Error(ctx, "Failed to commit state changes", err)
 	}
 
-	log.Info().
-		Uint64("gas_used", result.GasUsed).
-		Int("return_data_size", len(result.ReturnData)).
-		Msg("Contract executed successfully")
+	logger().Info(ctx, "Contract executed successfully",
+		ion.Uint64("gas_used", result.GasUsed),
+		ion.Int("return_data_size", len(result.ReturnData)))
 
 	return &proto.ExecutionResult{
 		ReturnData: hexutil.Encode(result.ReturnData),
@@ -287,7 +283,8 @@ func (r *Router) ExecuteContract(ctx context.Context, req *proto.ExecuteContract
 // Each call gets its own fresh StateDB (no commit at the end) so concurrent callers
 // don't race on the shared in-memory stateObjects map.
 func (r *Router) CallContract(ctx context.Context, req *proto.CallContractRequest) (string, error) {
-	log.Debug().Str("contract", req.ContractAddress).Msg("Calling contract (read-only)")
+	logger().Debug(ctx, "Calling contract (read-only)",
+		ion.String("contract", req.ContractAddress))
 
 	// Validate input
 	if req.ContractAddress == "" {
@@ -334,13 +331,14 @@ func (r *Router) CallContract(ctx context.Context, req *proto.CallContractReques
 func (r *Router) GetContractCode(ctx context.Context, contractAddress string) (string, string, *proto.ContractMetadata, error) {
 	addr := common.HexToAddress(contractAddress)
 
-	log.Info().
-		Str("address", addr.Hex()).
-		Msg("🔍 [ABI FLOW] GetContractCode called")
+	logger().Info(ctx, "🔍 [ABI FLOW] GetContractCode called",
+		ion.String("address", addr.Hex()))
 
 	// Get contract code from state
 	code := r.stateDB.GetCode(addr)
-	log.Info().Str("address", addr.Hex()).Int("code_len", len(code)).Msg("🔍 [ABI FLOW] Checked StateDB for Code")
+	logger().Info(ctx, "🔍 [ABI FLOW] Checked StateDB for Code",
+		ion.String("address", addr.Hex()),
+		ion.Int("code_len", len(code)))
 	if len(code) == 0 {
 		return "", "", nil, fmt.Errorf("contract not found at address %s", addr.Hex())
 	}
@@ -350,22 +348,20 @@ func (r *Router) GetContractCode(ctx context.Context, contractAddress string) (s
 	var err error
 
 	if r.contract_registry != nil {
-		log.Info().Str("address", addr.Hex()).Msg("📖 [ABI FLOW] Fetching from registry")
+		logger().Info(ctx, "📖 [ABI FLOW] Fetching from registry",
+			ion.String("address", addr.Hex()))
 		metadata, err = r.contract_registry.GetContract(ctx, addr)
 		if err != nil {
-			log.Warn().
-				Err(err).
-				Str("address", addr.Hex()).
-				Msg("⚠️  [ABI FLOW] Failed to get contract metadata from registry")
+			logger().Warn(ctx, "⚠️  [ABI FLOW] Failed to get contract metadata from registry", ion.Err(err),
+				ion.String("address", addr.Hex()))
 		} else {
-			log.Info().
-				Str("address", addr.Hex()).
-				Int("abi_length", len(metadata.ABI)).
-				Bool("abi_exists", len(metadata.ABI) > 0).
-				Msg("📦 [ABI FLOW] Retrieved metadata from registry")
+			logger().Info(ctx, "📦 [ABI FLOW] Retrieved metadata from registry",
+				ion.String("address", addr.Hex()),
+				ion.Int("abi_length", len(metadata.ABI)),
+				ion.Bool("abi_exists", len(metadata.ABI) > 0))
 		}
 	} else {
-		log.Warn().Msg("⚠️  [ABI FLOW] Contract registry is nil")
+		logger().Warn(ctx, "⚠️  [ABI FLOW] Contract registry is nil", ion.Err(fmt.Errorf("registry is nil")))
 	}
 
 	// Convert to proto metadata
@@ -380,14 +376,13 @@ func (r *Router) GetContractCode(ctx context.Context, contractAddress string) (s
 		protoMeta.BlockNumber = metadata.DeployBlock
 		protoMeta.Timestamp = metadata.DeployTime
 
-		log.Info().
-			Str("address", addr.Hex()).
-			Int("proto_abi_length", len(protoMeta.Abi)).
-			Msg("✅ [ABI FLOW] Returning metadata with ABI")
+		logger().Info(ctx, "✅ [ABI FLOW] Returning metadata with ABI",
+			ion.String("address", addr.Hex()),
+			ion.Int("proto_abi_length", len(protoMeta.Abi)))
 	} else {
-		log.Warn().
-			Str("address", addr.Hex()).
-			Msg("⚠️  [ABI FLOW] No metadata found, returning empty")
+		logger().Warn(ctx, "⚠️  [ABI FLOW] No metadata found, returning empty",
+			ion.Err(fmt.Errorf("no metadata found")),
+			ion.String("address", addr.Hex()))
 	}
 
 	return hexutil.Encode(code), "", protoMeta, nil
@@ -458,7 +453,7 @@ func (r *Router) ListContracts(ctx context.Context, fromBlock, toBlock uint64, l
 
 // EstimateGas estimates gas for a transaction
 func (r *Router) EstimateGas(ctx context.Context, req *proto.EstimateGasRequest) (uint64, error) {
-	log.Debug().Msg("Estimating gas")
+	logger().Debug(ctx, "Estimating gas")
 
 	caller := common.HexToAddress(req.Caller)
 	value := new(big.Int)
@@ -509,7 +504,9 @@ func (r *Router) EstimateGas(ctx context.Context, req *proto.EstimateGasRequest)
 	// Add 20% buffer for safety
 	estimatedGas := gasUsed + (gasUsed / 5)
 
-	log.Debug().Uint64("gas_used", gasUsed).Uint64("estimated_gas", estimatedGas).Msg("Gas estimated")
+	logger().Debug(ctx, "Gas estimated",
+		ion.Uint64("gas_used", gasUsed),
+		ion.Uint64("estimated_gas", estimatedGas))
 
 	return estimatedGas, nil
 }

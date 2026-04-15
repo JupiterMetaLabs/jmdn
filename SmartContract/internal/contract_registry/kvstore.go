@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/rs/zerolog/log"
+	"github.com/JupiterMetaLabs/ion"
 )
 
 // KVStoreRegistry implements RegistryDB using the generic KVStore interface.
@@ -33,10 +33,9 @@ func (r *KVStoreRegistry) RegisterContract(ctx context.Context, metadata *types.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	log.Info().
-		Str("address", metadata.Address.Hex()).
-		Int("abi_length", len(metadata.ABI)).
-		Msg("🗄️  [ABI FLOW - REGISTRY] RegisterContract called")
+	logger().Info(ctx, "🗄️  [ABI FLOW - REGISTRY] RegisterContract called",
+		ion.String("address", metadata.Address.Hex()),
+		ion.Int("abi_length", len(metadata.ABI)))
 
 	key := makeRegistryKey(metadata.Address)
 	existing, err := r.db.Get(key)
@@ -53,24 +52,20 @@ func (r *KVStoreRegistry) RegisterContract(ctx context.Context, metadata *types.
 		return fmt.Errorf("failed to marshal contract metadata: %w", err)
 	}
 
-	log.Info().
-		Str("address", metadata.Address.Hex()).
-		Int("serialized_size", len(data)).
-		Msg("💾 [ABI FLOW - REGISTRY] Saving to PebbleDB")
+	logger().Info(ctx, "💾 [ABI FLOW - REGISTRY] Saving to PebbleDB",
+		ion.String("address", metadata.Address.Hex()),
+		ion.Int("serialized_size", len(data)))
 
 	// Save
 	err = r.db.Set(key, data)
 	if err != nil {
-		log.Error().
-			Err(err).
-			Str("address", metadata.Address.Hex()).
-			Msg("❌ [ABI FLOW - REGISTRY] Failed to save to DB")
+		logger().Error(ctx, "❌ [ABI FLOW - REGISTRY] Failed to save to DB", err,
+			ion.String("address", metadata.Address.Hex()))
 		return err
 	}
 
-	log.Info().
-		Str("address", metadata.Address.Hex()).
-		Msg("✅ [ABI FLOW - REGISTRY] Successfully saved to PebbleDB")
+	logger().Info(ctx, "✅ [ABI FLOW - REGISTRY] Successfully saved to PebbleDB",
+		ion.String("address", metadata.Address.Hex()))
 
 	return nil
 }
@@ -80,45 +75,38 @@ func (r *KVStoreRegistry) GetContract(ctx context.Context, address common.Addres
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	log.Info().
-		Str("address", address.Hex()).
-		Msg("🔍 [ABI FLOW - REGISTRY] GetContract called")
+	logger().Info(ctx, "🔍 [ABI FLOW - REGISTRY] GetContract called",
+		ion.String("address", address.Hex()))
 
 	key := makeRegistryKey(address)
 	data, err := r.db.Get(key)
 	if err != nil {
-		log.Error().
-			Err(err).
-			Str("address", address.Hex()).
-			Msg("❌ [ABI FLOW - REGISTRY] DB Get failed")
+		logger().Error(ctx, "❌ [ABI FLOW - REGISTRY] DB Get failed", err,
+			ion.String("address", address.Hex()))
 		return nil, err
 	}
 	if data == nil {
-		log.Warn().
-			Str("address", address.Hex()).
-			Msg("⚠️  [ABI FLOW - REGISTRY] Contract not found in DB")
+		logger().Warn(ctx, "⚠️  [ABI FLOW - REGISTRY] Contract not found in DB",
+			ion.Err(fmt.Errorf("contract not found at address %s", address.Hex())),
+			ion.String("address", address.Hex()))
 		return nil, fmt.Errorf("contract not found at address %s", address.Hex())
 	}
 
-	log.Info().
-		Str("address", address.Hex()).
-		Int("data_size", len(data)).
-		Msg("📦 [ABI FLOW - REGISTRY] Retrieved data from PebbleDB")
+	logger().Info(ctx, "📦 [ABI FLOW - REGISTRY] Retrieved data from PebbleDB",
+		ion.String("address", address.Hex()),
+		ion.Int("data_size", len(data)))
 
 	var metadata types.ContractMetadata
 	if err := json.Unmarshal(data, &metadata); err != nil {
-		log.Error().
-			Err(err).
-			Str("address", address.Hex()).
-			Msg("❌ [ABI FLOW - REGISTRY] Failed to unmarshal data")
+		logger().Error(ctx, "❌ [ABI FLOW - REGISTRY] Failed to unmarshal data", err,
+			ion.String("address", address.Hex()))
 		return nil, fmt.Errorf("failed to unmarshal contract data: %w", err)
 	}
 
-	log.Info().
-		Str("address", address.Hex()).
-		Int("abi_length", len(metadata.ABI)).
-		Bool("abi_exists", len(metadata.ABI) > 0).
-		Msg("✅ [ABI FLOW - REGISTRY] Successfully retrieved metadata")
+	logger().Info(ctx, "✅ [ABI FLOW - REGISTRY] Successfully retrieved metadata",
+		ion.String("address", address.Hex()),
+		ion.Int("abi_length", len(metadata.ABI)),
+		ion.Bool("abi_exists", len(metadata.ABI) > 0))
 
 	return &metadata, nil
 }

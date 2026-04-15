@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"gossipnode/helper"
@@ -11,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/rs/zerolog/log"
+	"github.com/JupiterMetaLabs/ion"
 )
 
 // CompiledContract holds compilation results
@@ -26,7 +27,8 @@ type CompiledContract struct {
 
 // CompileSolidity compiles Solidity source files
 func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
-	log.Info().Str("source", sourcePath).Msg("Compiling Solidity contract")
+	logger().Info(context.Background(), "Compiling Solidity contract",
+		ion.String("source", sourcePath))
 
 	// Make sure the artifacts directory exists
 	artifactsDir := "./SmartContract/artifacts"
@@ -81,7 +83,8 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
 	cmd := exec.Command("solc", "--standard-json", inputFile.Name())
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Error().Str("output", string(output)).Err(err).Msg("Solc execution failed")
+		logger().Error(context.Background(), "Solc execution failed", err,
+			ion.String("output", string(output)))
 		return nil, fmt.Errorf("solc compilation failed: %s - %w", output, err)
 	}
 
@@ -137,7 +140,8 @@ func CompileSolidity(sourcePath string) (map[string]*CompiledContract, error) {
 			artifactPath := filepath.Join(artifactsDir, contractName+".json")
 			artifactData, _ := json.MarshalIndent(contracts[contractName], "", "  ")
 			if err := ioutil.WriteFile(artifactPath, artifactData, 0644); err != nil {
-				log.Error().Err(err).Str("path", artifactPath).Msg("Failed to write contract artifact")
+				logger().Error(context.Background(), "Failed to write contract artifact", err,
+					ion.String("path", artifactPath))
 			}
 		}
 	}

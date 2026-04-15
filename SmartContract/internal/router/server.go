@@ -8,7 +8,7 @@ import (
 
 	"gossipnode/SmartContract/proto"
 
-	"github.com/rs/zerolog/log"
+	"github.com/JupiterMetaLabs/ion"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
@@ -52,7 +52,9 @@ func loopbackOnlyInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerIn
 	}
 	// Accept 127.x.x.x, ::1, and the abstract UDS path ("")
 	if host != "" && !strings.HasPrefix(host, "127.") && host != "::1" && host != "localhost" {
-		log.Warn().Str("peer", p.Addr.String()).Msg("SmartContract: rejected non-loopback connection")
+		logger().Warn(ctx, "SmartContract: rejected non-loopback connection",
+			ion.Err(fmt.Errorf("non-loopback peer: %s", p.Addr.String())),
+			ion.String("peer", p.Addr.String()))
 		return nil, status.Errorf(codes.PermissionDenied, "SmartContract service is only accessible from localhost")
 	}
 	return handler(ctx, req)
@@ -65,7 +67,8 @@ func StartGRPC(ctx context.Context, port int, router *Router) error {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
 
-	log.Info().Int("port", port).Msg("Starting SmartContract gRPC server")
+	logger().Info(ctx, "Starting SmartContract gRPC server",
+		ion.Int("port", port))
 
 	grpcServer := grpc.NewServer(
 		grpc.MaxRecvMsgSize(10*1024*1024), // 10MB max message size
@@ -90,18 +93,18 @@ func StartGRPC(ctx context.Context, port int, router *Router) error {
 	// Handle shutdown when context is cancelled
 	go func() {
 		<-ctx.Done()
-		log.Info().Msg("Shutting down SmartContract gRPC server...")
+		logger().Info(context.Background(), "Shutting down SmartContract gRPC server...")
 		grpcServer.GracefulStop()
 		healthServer.Shutdown()
-		log.Info().Msg("SmartContract gRPC server stopped")
+		logger().Info(context.Background(), "SmartContract gRPC server stopped")
 	}()
 
-	log.Info().Msg("SmartContract gRPC server started successfully")
+	logger().Info(ctx, "SmartContract gRPC server started successfully")
 
 	if err := grpcServer.Serve(lis); err != nil {
 		// Ignore error if it's due to shutdown
 		if ctx.Err() == nil {
-			log.Error().Err(err).Msg("gRPC server error")
+			logger().Error(ctx, "gRPC server error", err)
 			return err
 		}
 	}
@@ -115,11 +118,12 @@ func StartGRPC(ctx context.Context, port int, router *Router) error {
 
 // CompileContract compiles Solidity source code
 func (s *Server) CompileContract(ctx context.Context, req *proto.CompileRequest) (*proto.CompileResponse, error) {
-	log.Info().Str("compiler_version", req.CompilerVersion).Msg("Compiling contract")
+	logger().Info(ctx, "Compiling contract",
+		ion.String("compiler_version", req.CompilerVersion))
 
 	contract, err := s.router.CompileContract(req.SourceCode)
 	if err != nil {
-		log.Error().Err(err).Msg("Compilation failed")
+		logger().Error(ctx, "Compilation failed", err)
 		return &proto.CompileResponse{
 			Error: err.Error(),
 		}, nil
@@ -140,7 +144,7 @@ func (s *Server) CompileContract(ctx context.Context, req *proto.CompileRequest)
 func (s *Server) DeployContract(ctx context.Context, req *proto.DeployContractRequest) (*proto.DeployContractResponse, error) {
 	result, err := s.router.DeployContract(ctx, req)
 	if err != nil {
-		log.Error().Err(err).Msg("Deployment failed")
+		logger().Error(ctx, "Deployment failed", err)
 		return nil, err
 	}
 
@@ -153,7 +157,7 @@ func (s *Server) DeployContract(ctx context.Context, req *proto.DeployContractRe
 func (s *Server) ExecuteContract(ctx context.Context, req *proto.ExecuteContractRequest) (*proto.ExecuteContractResponse, error) {
 	result, err := s.router.ExecuteContract(ctx, req)
 	if err != nil {
-		log.Error().Err(err).Msg("Execution failed")
+		logger().Error(ctx, "Execution failed", err)
 		return nil, err
 	}
 
@@ -166,7 +170,7 @@ func (s *Server) ExecuteContract(ctx context.Context, req *proto.ExecuteContract
 func (s *Server) CallContract(ctx context.Context, req *proto.CallContractRequest) (*proto.CallContractResponse, error) {
 	returnData, err := s.router.CallContract(ctx, req)
 	if err != nil {
-		log.Error().Err(err).Msg("Call failed")
+		logger().Error(ctx, "Call failed", err)
 		return &proto.CallContractResponse{
 			Error: err.Error(),
 		}, nil
@@ -181,7 +185,7 @@ func (s *Server) CallContract(ctx context.Context, req *proto.CallContractReques
 func (s *Server) GetContractCode(ctx context.Context, req *proto.GetContractCodeRequest) (*proto.GetContractCodeResponse, error) {
 	code, abi, metadata, err := s.router.GetContractCode(ctx, req.ContractAddress)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to get contract code")
+		logger().Error(ctx, "Failed to get contract code", err)
 		return &proto.GetContractCodeResponse{}, err
 	}
 
@@ -196,7 +200,7 @@ func (s *Server) GetContractCode(ctx context.Context, req *proto.GetContractCode
 func (s *Server) GetStorage(ctx context.Context, req *proto.GetStorageRequest) (*proto.GetStorageResponse, error) {
 	value, err := s.router.GetStorage(ctx, req.ContractAddress, req.StorageKey)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to get storage")
+		logger().Error(ctx, "Failed to get storage", err)
 		return &proto.GetStorageResponse{}, err
 	}
 
@@ -209,7 +213,7 @@ func (s *Server) GetStorage(ctx context.Context, req *proto.GetStorageRequest) (
 func (s *Server) EstimateGas(ctx context.Context, req *proto.EstimateGasRequest) (*proto.EstimateGasResponse, error) {
 	gasEstimate, err := s.router.EstimateGas(ctx, req)
 	if err != nil {
-		log.Error().Err(err).Msg("Gas estimation failed")
+		logger().Error(ctx, "Gas estimation failed", err)
 		return &proto.EstimateGasResponse{
 			Error: err.Error(),
 		}, nil
@@ -224,7 +228,7 @@ func (s *Server) EstimateGas(ctx context.Context, req *proto.EstimateGasRequest)
 func (s *Server) EncodeFunctionCall(ctx context.Context, req *proto.EncodeFunctionCallRequest) (*proto.EncodeFunctionCallResponse, error) {
 	encoded, err := s.router.EncodeFunctionCall(req.AbiJson, req.FunctionName, req.Args)
 	if err != nil {
-		log.Error().Err(err).Msg("Encoding failed")
+		logger().Error(ctx, "Encoding failed", err)
 		return &proto.EncodeFunctionCallResponse{
 			Error: err.Error(),
 		}, nil
@@ -239,7 +243,7 @@ func (s *Server) EncodeFunctionCall(ctx context.Context, req *proto.EncodeFuncti
 func (s *Server) DecodeFunctionOutput(ctx context.Context, req *proto.DecodeFunctionOutputRequest) (*proto.DecodeFunctionOutputResponse, error) {
 	decoded, err := s.router.DecodeFunctionOutput(req.AbiJson, req.FunctionName, req.OutputData)
 	if err != nil {
-		log.Error().Err(err).Msg("Decoding failed")
+		logger().Error(ctx, "Decoding failed", err)
 		return &proto.DecodeFunctionOutputResponse{
 			Error: err.Error(),
 		}, nil
@@ -254,7 +258,7 @@ func (s *Server) DecodeFunctionOutput(ctx context.Context, req *proto.DecodeFunc
 func (s *Server) ListContracts(ctx context.Context, req *proto.ListContractsRequest) (*proto.ListContractsResponse, error) {
 	contracts, err := s.router.ListContracts(ctx, req.FromBlock, req.ToBlock, req.Limit)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to list contracts")
+		logger().Error(ctx, "Failed to list contracts", err)
 		return &proto.ListContractsResponse{}, err
 	}
 

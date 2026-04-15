@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/rs/zerolog/log"
+	"github.com/JupiterMetaLabs/ion"
 
 	"gossipnode/DB_OPs"
 )
@@ -30,18 +31,16 @@ func ProcessContractDeployment(
 	stateDB contractDB.StateDB,
 	chainID int,
 ) (*DeploymentResult, error) {
-	log.Info().
-		Str("tx_hash", tx.Hash.Hex()).
-		Str("from", tx.From.Hex()).
-		Msg("🚀 [EVM] Processing contract deployment")
+	evmLogger().Info(context.Background(), "🚀 [EVM] Processing contract deployment",
+		ion.String("tx_hash", tx.Hash.Hex()),
+		ion.String("from", tx.From.Hex()))
 
 	// Log the pre-increment nonce for debugging. The actual deployed address is
 	// determined by evm.Create() which uses the nonce AFTER DeployContract increments it.
 	currentNonce := stateDB.GetNonce(*tx.From)
 
-	log.Info().
-		Uint64("sender_nonce_before", currentNonce).
-		Msg("🔥 [EVM] Starting contract deployment (EVM will derive final address)")
+	evmLogger().Info(context.Background(), "🔥 [EVM] Starting contract deployment (EVM will derive final address)",
+		ion.Uint64("sender_nonce_before", currentNonce))
 
 	executor := NewEVMExecutor(chainID)
 
@@ -70,18 +69,15 @@ func ProcessContractDeployment(
 	}
 
 	if !success {
-		log.Error().
-			Err(err).
-			Str("tx_hash", tx.Hash.Hex()).
-			Msg("❌ [EVM] Deployment failed")
+		evmLogger().Error(context.Background(), "❌ [EVM] Deployment failed", err,
+			ion.String("tx_hash", tx.Hash.Hex()))
 	} else {
 		// evm.Create already called CreateAccount/CreateContract and SetCode internally.
 		// No need to call CreateAccount again — doing so can interfere with the stateObject.
 
-		log.Info().
-			Str("contract_address", contractAddr.Hex()).
-			Uint64("gas_used", gasUsed).
-			Msg("✅ [EVM] Contract deployed successfully")
+		evmLogger().Info(context.Background(), "✅ [EVM] Contract deployed successfully",
+			ion.String("contract_address", contractAddr.Hex()),
+			ion.Uint64("gas_used", gasUsed))
 
 		// Save contract metadata.
 		meta := contractDB.ContractMetadata{
@@ -96,7 +92,7 @@ func ProcessContractDeployment(
 
 		if cdb, ok := stateDB.(*contractDB.ContractDB); ok {
 			if err := cdb.SetContractMetadata(contractAddr, meta); err != nil {
-				log.Error().Err(err).Msg("❌ Failed to save contract metadata")
+				evmLogger().Error(context.Background(), "❌ Failed to save contract metadata", err)
 			}
 		}
 	}
@@ -108,7 +104,7 @@ func ProcessContractDeployment(
 	}
 	if len(deployLogs) > 0 {
 		if err := DB_OPs.GlobalLogWriter.Write(deployLogs); err != nil {
-			log.Error().Err(err).Msg("❌ [EVM] failed to write deploy logs")
+			evmLogger().Error(context.Background(), "❌ [EVM] failed to write deploy logs", err)
 		}
 	}
 
@@ -136,9 +132,10 @@ func ProcessContractDeployment(
 
 	if cdb, ok := stateDB.(*contractDB.ContractDB); ok {
 		if err := cdb.WriteReceipt(receipt); err != nil {
-			log.Error().Err(err).Msg("❌ Failed to save transaction receipt")
+			evmLogger().Error(context.Background(), "❌ Failed to save transaction receipt", err)
 		} else {
-			log.Info().Str("tx_hash", tx.Hash.Hex()).Msg("🧾 Receipt stored successfully")
+			evmLogger().Info(context.Background(), "🧾 Receipt stored successfully",
+				ion.String("tx_hash", tx.Hash.Hex()))
 		}
 	}
 
@@ -156,11 +153,10 @@ func ProcessContractExecution(
 	stateDB contractDB.StateDB,
 	chainID int,
 ) (*ExecutionResult, error) {
-	log.Info().
-		Str("tx_hash", tx.Hash.Hex()).
-		Str("from", tx.From.Hex()).
-		Str("to", tx.To.Hex()).
-		Msg("⚙️  [EVM] Processing contract execution")
+	evmLogger().Info(context.Background(), "⚙️  [EVM] Processing contract execution",
+		ion.String("tx_hash", tx.Hash.Hex()),
+		ion.String("from", tx.From.Hex()),
+		ion.String("to", tx.To.Hex()))
 
 	executor := NewEVMExecutor(chainID)
 
@@ -174,7 +170,8 @@ func ProcessContractExecution(
 	)
 
 	if err != nil {
-		log.Error().Err(err).Str("tx_hash", tx.Hash.Hex()).Msg("❌ [EVM] Contract execution failed")
+		evmLogger().Error(context.Background(), "❌ [EVM] Contract execution failed", err,
+			ion.String("tx_hash", tx.Hash.Hex()))
 		return nil, err
 	}
 
@@ -185,7 +182,7 @@ func ProcessContractExecution(
 
 	if len(logs) > 0 {
 		if writeErr := DB_OPs.GlobalLogWriter.Write(logs); writeErr != nil {
-			log.Error().Err(writeErr).Msg("❌ [EVM] failed to write execution logs")
+			evmLogger().Error(context.Background(), "❌ [EVM] failed to write execution logs", writeErr)
 		}
 	}
 
@@ -202,19 +199,17 @@ func ProcessContractExecution(
 
 	if cdb, ok := stateDB.(*contractDB.ContractDB); ok {
 		if err := cdb.WriteReceipt(receipt); err != nil {
-			log.Error().Err(err).Msg("❌ Failed to save execution receipt")
+			evmLogger().Error(context.Background(), "❌ Failed to save execution receipt", err)
 		} else {
-			log.Info().
-				Str("tx_hash", tx.Hash.Hex()).
-				Int("log_count", len(logs)).
-				Msg("🧾 Receipt & Logs stored successfully")
+			evmLogger().Info(context.Background(), "🧾 Receipt & Logs stored successfully",
+				ion.String("tx_hash", tx.Hash.Hex()),
+				ion.Int("log_count", len(logs)))
 		}
 	}
 
-	log.Info().
-		Str("contract", tx.To.Hex()).
-		Uint64("gas_used", result.GasUsed).
-		Msg("✅ [EVM] Contract executed successfully")
+	evmLogger().Info(context.Background(), "✅ [EVM] Contract executed successfully",
+		ion.String("contract", tx.To.Hex()),
+		ion.Uint64("gas_used", result.GasUsed))
 
 	return result, nil
 }
