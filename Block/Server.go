@@ -325,18 +325,9 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 		return fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
-	// Configure zerolog for transactions
-	txLogger := zerolog.New(os.Stdout).With().
-		Timestamp().
-		Str("component", "transactions").
-		Logger()
-
-	// Set up Gin to use our transaction logger
+	// Set up Gin writers
 	gin.DefaultWriter = io.MultiWriter(os.Stdout)
 	gin.DefaultErrorWriter = io.MultiWriter(os.Stderr)
-
-	// Configure global logger
-	SetLogger(txLogger)
 
 	// Configure metrics for Prometheus
 	metrics.DatabaseOperations.WithLabelValues("init", "success").Inc()
