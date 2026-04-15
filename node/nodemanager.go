@@ -12,7 +12,6 @@ import (
 	"gossipnode/DB_OPs/sqlops"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
-	log "gossipnode/logging"
 	"gossipnode/metrics"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
@@ -40,7 +39,7 @@ type NodeManager struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	mutex           sync.RWMutex
-	Logger          *log.Logging
+	Logger          *ion.Ion
 }
 
 // ManagedPeer represents a peer being manually managed

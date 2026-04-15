@@ -99,7 +99,7 @@ func NewAccountServer(h host.Host) *AccountServer {
 	// Test connection but don't hold it
 	conn, err := AccountServer.Initialize()
 	if err != nil {
-		logger().Warn(context.Background(), "Failed to initialize Account server database. Running in standalone mode.", err)
+		logger().Warn(context.Background(), "Failed to initialize Account server database. Running in standalone mode.", ion.Err(err))
 		AccountServer.standalone = true
 		return AccountServer
 	} else {
@@ -122,7 +122,7 @@ func (s *AccountServer) Initialize() (config.PooledConnection, error) {
 	// Just test the connection to verify we can connect
 	conn, err := s.db.GetAccountsConnection()
 	if err != nil {
-		logger().Warn(context.Background(), "Failed to get accounts database connection. Running in standalone mode.", err)
+		logger().Warn(context.Background(), "Failed to get accounts database connection. Running in standalone mode.", ion.Err(err))
 		s.standalone = true
 		return config.PooledConnection{}, err
 	}
@@ -480,7 +480,7 @@ func StartDIDServerWithContext(ctx context.Context, h host.Host, address string,
 		// Try to initialize a new client
 		conn, err := server.Initialize()
 		if err != nil {
-			logger().Warn(ctx, "Failed to initialize DID server database. Running in standalone mode.", err)
+			logger().Warn(ctx, "Failed to initialize DID server database. Running in standalone mode.", ion.Err(err))
 			return err
 		}
 		server.accountsClient = &conn
