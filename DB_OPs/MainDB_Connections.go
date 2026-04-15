@@ -14,7 +14,7 @@ import (
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
 	"gossipnode/config/settings"
-	"gossipnode/logging"
+	log "gossipnode/logging"
 	"gossipnode/metrics"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
@@ -105,7 +105,7 @@ func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki 
 		defer cancel()
 
 		// Get the async logger instance
-		asyncLogger := logging.NewAsyncLogger()
+		asyncLogger := log.NewAsyncLogger()
 		if asyncLogger == nil || asyncLogger.GlobalLogger == nil {
 			logger(log.MainDB_Connections).Error(context.Background(), "Failed to get async logger", fmt.Errorf("logger init failed"))
 			initErr = fmt.Errorf("failed to get async logger for main DB pool")
@@ -206,11 +206,11 @@ func connectToMainDB(username, password string) error {
 	defer cancel()
 
 	// Get the async logger instance
-	asyncLogger := logging.NewAsyncLogger()
+	asyncLogger := log.NewAsyncLogger()
 	if asyncLogger == nil || asyncLogger.GlobalLogger == nil {
 		return fmt.Errorf("failed to get async logger for DB setup")
 	}
-	logger := asyncLogger.GlobalLogger
+	ionLogger := asyncLogger.GlobalLogger
 
 	// defer func() {
 	// 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -274,7 +274,7 @@ func connectToMainDB(username, password string) error {
 		}
 	}
 
-	logger.Debug(loggerCtx, "Main database check completed",
+	ionLogger.Debug(loggerCtx, "Main database check completed",
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
@@ -282,7 +282,7 @@ func connectToMainDB(username, password string) error {
 
 	// Create accounts database if it doesn't exist
 	if !databaseExists {
-		logger.Debug(loggerCtx, "Creating main database",
+		ionLogger.Debug(loggerCtx, "Creating main database",
 			ion.String("database", config.DBName),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -294,20 +294,20 @@ func connectToMainDB(username, password string) error {
 		if err != nil {
 			return fmt.Errorf("failed to create main database: %w", err)
 		}
-		logger.Debug(loggerCtx, "Main database created successfully",
+		ionLogger.Debug(loggerCtx, "Main database created successfully",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "DB_OPs.ensureMainDBSelected"))
 	} else {
-		logger.Debug(loggerCtx, "Main database already exists",
+		ionLogger.Debug(loggerCtx, "Main database already exists",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "DB_OPs.ensureMainDBSelected"))
 	}
 
-	logger.Debug(loggerCtx, "Main database setup completed",
+	ionLogger.Debug(loggerCtx, "Main database setup completed",
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),

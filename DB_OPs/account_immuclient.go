@@ -8,6 +8,7 @@ import (
 
 	"gossipnode/config"
 	"gossipnode/config/settings"
+	log "gossipnode/logging"
 
 	"sync/atomic"
 	"time"
