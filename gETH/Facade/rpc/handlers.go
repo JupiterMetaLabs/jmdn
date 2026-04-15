@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/hex"
 
+	log "gossipnode/logging"
+
 	"github.com/JupiterMetaLabs/ion"
 	"errors"
 	"fmt"
