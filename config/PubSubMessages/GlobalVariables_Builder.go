@@ -1,9 +1,12 @@
 package PubSubMessages
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
+	log "gossipnode/logging"
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -41,7 +44,14 @@ func (st *SubscriptionTracker) MarkPeerAccepted(peerID peer.ID, role string) {
 		st.AcceptedPeers[peerID] = true
 		st.ActiveCount++
 		st.BuddyNodes[peerID] = role
-		fmt.Printf("=== SubscriptionTracker: Marked peer %s as accepted (role: %s, count: %d) ===\n", peerID, role, st.ActiveCount)
+		ctx := context.Background()
+		logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.Config, "")
+		if err == nil && logInstance != nil {
+			logInstance.GetNamedLogger().Debug(ctx, "SubscriptionTracker: Marked peer as accepted",
+				ion.String("peer_id", peerID.String()),
+				ion.String("role", role),
+				ion.Int("count", st.ActiveCount))
+		}
 	}
 }
 
@@ -124,7 +134,11 @@ func (globalvar *GlobalVariables) Set_PubSubNode(pubsub *BuddyNode) {
 
 func (globalvar *GlobalVariables) Get_PubSubNode() *BuddyNode {
 	if PubSub_BuddyNode == nil {
-		fmt.Println("PubSub_BuddyNode is nil - not initialized")
+		ctx := context.Background()
+		logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.Config, "")
+		if err == nil && logInstance != nil {
+			logInstance.GetNamedLogger().Warn(ctx, "PubSub_BuddyNode is nil - not initialized")
+		}
 		return nil
 	}
 	return PubSub_BuddyNode

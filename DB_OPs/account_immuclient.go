@@ -767,7 +767,7 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 
 // UpdateAccountBalance updates the balance for a Account
 func UpdateAccountBalance(PooledConnection *config.PooledConnection, address common.Address, newBalance string) error {
-	fmt.Printf("=== DEBUG: UpdateAccountBalance called for address %s with balance %s ===\n", address.Hex(), newBalance)
+	logger(log.DB_OPs_AccountConnectionPool).Debug(context.Background(), "UpdateAccountBalance called", ion.String("address", address.Hex()), ion.String("balance", newBalance))
 
 	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -776,10 +776,10 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 	var err error
 	var shouldReturnConnection = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		fmt.Println("DEBUG: PooledConnection is nil, getting new connection from pool")
+		logger(log.DB_OPs_AccountConnectionPool).Debug(context.Background(), "PooledConnection is nil, getting new connection from pool")
 		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			fmt.Printf("DEBUG: Failed to get connection from pool: %v\n", err)
+			logger(log.DB_OPs_AccountConnectionPool).Error(context.Background(), "Failed to get connection from pool", err)
 			return fmt.Errorf("failed to get connection from pool: %w - UpdateAccountBalance", err)
 		}
 		shouldReturnConnection = true
@@ -792,12 +792,12 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 			ion.String("topic", TOPIC),
 			ion.String("function", "DB_OPs.UpdateAccountBalance"))
 	} else {
-		fmt.Println("DEBUG: Using provided PooledConnection")
+		logger(log.DB_OPs_AccountConnectionPool).Debug(context.Background(), "Using provided PooledConnection")
 	}
 
 	if shouldReturnConnection {
 		defer func() {
-			fmt.Println("DEBUG: Returning connection to pool")
+			logger(log.DB_OPs_AccountConnectionPool).Debug(context.Background(), "Returning connection to pool")
 			loggerCtx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			PooledConnection.Client.Logger.Debug(loggerCtx, "Client Connection is returned to the Pool",
@@ -812,32 +812,32 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 
 	// Ensure we're using the accounts database
 	if PooledConnection != nil {
-		fmt.Println("DEBUG: Ensuring accounts database is selected")
+		logger(log.DB_OPs_AccountConnectionPool).Debug(context.Background(), "Ensuring accounts database is selected")
 		if err := ensureAccountsDBSelected(PooledConnection); err != nil {
-			fmt.Printf("DEBUG: Failed to ensure accounts database is selected: %v\n", err)
+			logger(log.DB_OPs_AccountConnectionPool).Error(context.Background(), "Failed to ensure accounts database is selected", err)
 			return fmt.Errorf("failed to ensure accounts database is selected: %w", err)
 		}
-		fmt.Println("DEBUG: Accounts database selection confirmed")
+		logger(log.DB_OPs_AccountConnectionPool).Debug(context.Background(), "Accounts database selection confirmed")
 	}
 
-	fmt.Printf("DEBUG: Getting account for address %s\n", address.Hex())
+	logger(log.DB_OPs_AccountConnectionPool).Debug(context.Background(), "Getting account for address", ion.String("address", address.Hex()))
 	doc, err := GetAccount(PooledConnection, address)
 	if err != nil {
-		fmt.Printf("DEBUG: Failed to get account: %v\n", err)
+		logger(log.DB_OPs_AccountConnectionPool).Error(context.Background(), "Failed to get account", err)
 		return err
 	}
-	fmt.Printf("DEBUG: Retrieved account - Current balance: %s, UpdatedAt: %d\n", doc.Balance, doc.UpdatedAt)
+	logger(log.DB_OPs_AccountConnectionPool).Debug(context.Background(), "Retrieved account", ion.String("balance", doc.Balance), ion.Int("updated_at", int(doc.UpdatedAt)))
 
 	doc.Balance = newBalance
 	doc.UpdatedAt = time.Now().UTC().UnixNano()
-	fmt.Printf("DEBUG: Updated account document - New balance: %s, New UpdatedAt: %d\n", doc.Balance, doc.UpdatedAt)
+	logger(log.DB_OPs_AccountConnectionPool).Debug(context.Background(), "Updated account document", ion.String("balance", doc.Balance), ion.Int("updated_at", int(doc.UpdatedAt)))
 
 	// Safe Write to the DB with the same key
 	key := fmt.Sprintf("%s%s", Prefix, address)
-	fmt.Printf("DEBUG: Writing to database with key: %s\n", key)
+	logger(log.DB_OPs_AccountConnectionPool).Debug(context.Background(), "Writing to database", ion.String("key", key))
 	err = SafeCreate(PooledConnection.Client, key, doc)
 	if err != nil {
-		fmt.Printf("DEBUG: SafeCreate failed: %v\n", err)
+		logger(log.DB_OPs_AccountConnectionPool).Error(context.Background(), "SafeCreate failed", err)
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		PooledConnection.Client.Logger.Error(loggerCtx, "Failed to update DID balance",
@@ -850,7 +850,7 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 			ion.String("function", "DB_OPs.UpdateAccountBalance"))
 		return err
 	}
-	fmt.Println("DEBUG: SafeCreate completed successfully")
+	logger(log.DB_OPs_AccountConnectionPool).Debug(context.Background(), "SafeCreate completed successfully")
 
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -862,7 +862,7 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
 		ion.String("function", "DB_OPs.UpdateAccountBalance"))
-	fmt.Printf("=== DEBUG: UpdateAccountBalance completed successfully for address %s ===\n", address.Hex())
+	logger(log.DB_OPs_AccountConnectionPool).Info(context.Background(), "UpdateAccountBalance completed successfully", ion.String("address", address.Hex()))
 	return nil
 }
 

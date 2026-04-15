@@ -2,11 +2,13 @@ package DB_OPs
 
 import (
 	"context"
+	log "gossipnode/logging"
 	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -102,14 +104,14 @@ func (lw *LogWriter) Write(logs []*ethtypes.Log) error {
 		addrKey := fmt.Sprintf("logaddr:%s:%d:%d", l.Address.Hex(), l.BlockNumber, l.Index)
 		if err := Create(pc, addrKey, value); err != nil {
 			// Non-fatal — index write; log but continue
-			fmt.Printf("LogWriter.Write: addr index store warning: %v\n", err)
+			logger(log.DB_OPs_LogWriter).Warn(context.Background(), "LogWriter.Write: addr index store warning", ion.Err(err))
 		}
 
 		// 3. By-topic index (one entry per topic position)
 		for _, topic := range l.Topics {
 			topicKey := fmt.Sprintf("logtopic:%s:%d:%d", topic.Hex(), l.BlockNumber, l.Index)
 			if err := Create(pc, topicKey, value); err != nil {
-				fmt.Printf("LogWriter.Write: topic index store warning: %v\n", err)
+				logger(log.DB_OPs_LogWriter).Warn(context.Background(), "LogWriter.Write: topic index store warning", ion.Err(err))
 			}
 		}
 

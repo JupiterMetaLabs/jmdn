@@ -1,11 +1,14 @@
 package utils
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"sort"
 
+	log "gossipnode/logging"
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 )
@@ -35,6 +38,10 @@ func ConsistantHashing(Peers map[int]multiaddr.Multiaddr, peerID *peer.AddrInfo)
 	selectedKey := keys[index]
 
 	// Debugging
-	fmt.Println("Selected peer:", selectedKey)
+	ctx := context.Background()
+	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.Config, "")
+	if err == nil && logInstance != nil {
+		logInstance.GetNamedLogger().Debug(ctx, "Selected peer", ion.Int("key", selectedKey))
+	}
 	return Peers[selectedKey]
 }

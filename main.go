@@ -52,7 +52,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -108,7 +107,10 @@ func initGlobalGRO() {
 
 	// Ensure global manager is initialized before we mutate metadata.
 	if _, err := GRO.GlobalGRO.Init(); err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize global GRO manager")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to initialize global GRO manager", err)
+		}
+		os.Exit(1)
 	}
 
 	// Set the global shutdown timeout to 10 seconds.
@@ -116,7 +118,10 @@ func initGlobalGRO() {
 		orchestratorGlobal.SET_SHUTDOWN_TIMEOUT,
 		10*time.Second,
 	); err != nil {
-		log.Fatal().Err(err).Msg("Failed to set GRO shutdown timeout metadata")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to set GRO shutdown timeout metadata", err)
+		}
+		os.Exit(1)
 	}
 }
 
@@ -126,60 +131,84 @@ func initAppandLocalGRO() {
 	// Also pull up new app manager - main for the main package
 	err = GRO.EagerLoading()
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to eager load GRO")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to eager load GRO", err)
+		}
+		os.Exit(1)
 	}
 
 	MainAM = GRO.GetApp(GRO.MainAM)
 
 	MainLM, err = MainAM.NewLocalManager(GRO.MainLM)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to create local manager")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to create local manager", err)
+		}
+		os.Exit(1)
 	}
 }
 
 func StartFacadeServer(bindAddr string, port int, chainID int, smartRPC int) {
 	if MainLM == nil {
-		log.Fatal().Msg("MainLM not initialized. Call initAppandLocalGRO() first")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "MainLM not initialized. Call initAppandLocalGRO() first", nil)
+		}
+		os.Exit(1)
 	}
 
 	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.FacadeThread, func(ctx context.Context) error {
-		log.Info().Msg("Starting facade server")
+		if logger := mainLogger(); logger != nil {
+			logger.Info(ctx, "Starting facade server")
+		}
 
 		handler := rpc.NewHandlers(Service.NewService(chainID, smartRPC))
 		httpServer := rpc.NewHTTPServer(handler)
 
 		addr := fmt.Sprintf("%s:%d", bindAddr, port)
 		if err := httpServer.ServeWithContext(ctx, addr); err != nil {
-			log.Error().Err(err).Str("addr", addr).Msg("Facade server stopped")
+			if logger := mainLogger(); logger != nil {
+				logger.Error(ctx, "Facade server stopped", err, ion.String("addr", addr))
+			}
 			return fmt.Errorf("facade server failed: %w", err)
 		}
 		return nil
 	}); err != nil {
-		log.Error().Err(err).Str("thread", GRO.FacadeThread).Msg("Failed to start GRO goroutine")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.FacadeThread))
+		}
 	}
 }
 
 func StartWSServer(bindAddr string, port int, chainID int, smartRPC int) {
 	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.WSServerThread, func(ctx context.Context) error {
-		log.Info().Msg("Starting WSServer")
+		if logger := mainLogger(); logger != nil {
+			logger.Info(ctx, "Starting WSServer")
+		}
 		// Get the Http Server
 		HTTPServer := rpc.NewHandlers(Service.NewService(chainID, smartRPC))
 
 		WSServer := rpc.NewWSServer(HTTPServer, Service.NewService(chainID, smartRPC))
 		if err := WSServer.ServeWithContext(ctx, fmt.Sprintf("%s:%d", bindAddr, port)); err != nil {
-			log.Error().Err(err).Msg("Failed to start WSServer")
+			if logger := mainLogger(); logger != nil {
+				logger.Error(ctx, "Failed to start WSServer", err)
+			}
 			return fmt.Errorf("WSServer failed: %w", err)
 		}
 		return nil
 	}); err != nil {
-		log.Error().Err(err).Str("thread", GRO.WSServerThread).Msg("Failed to start GRO goroutine")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.WSServerThread))
+		}
 	}
 }
 
 // GetMainDBPool returns the global main database connection pool
 func GetMainDBPool() *config.ConnectionPool {
 	if mainDBPool == nil {
-		log.Fatal().Msg("Main DB pool not initialized. Call initMainDBPool first")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Main DB pool not initialized. Call initMainDBPool first", nil)
+		}
+		os.Exit(1)
 	}
 	return mainDBPool
 }
@@ -187,7 +216,10 @@ func GetMainDBPool() *config.ConnectionPool {
 // GetAccountsDBPool returns the global accounts database connection pool
 func GetAccountsDBPool() *config.ConnectionPool {
 	if accountsDBPool == nil {
-		log.Fatal().Msg("Accounts DB pool not initialized. Call initAccountsDBPool first")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Accounts DB pool not initialized. Call initAccountsDBPool first", nil)
+		}
+		os.Exit(1)
 	}
 	return accountsDBPool
 }
@@ -195,7 +227,9 @@ func GetAccountsDBPool() *config.ConnectionPool {
 // GetGlobalPubSub returns the global PubSub instance
 func GetGlobalPubSub() *Pubsub.StructGossipPubSub {
 	if globalPubSub == nil {
-		log.Warn().Msg("Global PubSub not initialized - PubSub features may be limited")
+		if logger := mainLogger(); logger != nil {
+			logger.Warn(context.Background(), "Global PubSub not initialized - PubSub features may be limited")
+		}
 	}
 	return globalPubSub
 }
@@ -535,10 +569,14 @@ func StartAPIServer(ctx context.Context, address string) error {
 		explorer.StartBlockPoller(ctx, server, 7*time.Second)
 		return nil
 	}); err != nil {
-		log.Error().Err(err).Str("thread", GRO.BlockPollerThread).Msg("Failed to start GRO goroutine")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.BlockPollerThread))
+		}
 	}
 
-	log.Info().Str("address", address).Msg("Starting ImmuDB API server")
+	if logger := mainLogger(); logger != nil {
+		logger.Info(context.Background(), "Starting ImmuDB API server", ion.String("address", address))
+	}
 	return server.StartWithContext(ctx, address)
 }
 
@@ -547,9 +585,13 @@ func startDIDServer(ctx context.Context, h host.Host, address string) error {
 	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 	if err != nil {
 		//Debugging
-		fmt.Println("Failed to get DID database client", err)
+		if logger := mainLogger(); logger != nil {
+			logger.Warn(context.Background(), "Failed to get DID database client", ion.Err(err))
+		}
 
-		log.Warn().Err(err).Msg("Failed to initialize DID propagation with ImmuDB. Starting in standalone mode.")
+		if logger := mainLogger(); logger != nil {
+			logger.Warn(context.Background(), "Failed to initialize DID propagation with ImmuDB. Starting in standalone mode.", ion.Err(err))
+		}
 		// We'll continue with a standalone server
 	} else {
 		//Debugging
@@ -585,14 +627,20 @@ func initMainDBPool(logger_ctx context.Context, enableLoki bool, username, passw
 	mainDBPool = config.GetGlobalPool(logger_ctx)
 
 	// Also initialize the DB_OPs main pool
-	fmt.Println("Initializing DB_OPs main pool...")
+	if logger := mainLogger(); logger != nil {
+		logger.Debug(context.Background(), "Initializing DB_OPs main pool...")
+	}
 	poolConfig := config.DefaultConnectionPoolConfig()
 	if err := DB_OPs.InitMainDBPoolWithLoki(poolConfig, enableLoki, username, password); err != nil {
 		return fmt.Errorf("failed to initialize DB_OPs main pool: %w", err)
 	}
-	fmt.Println("DB_OPs main pool initialized successfully")
+	if logger := mainLogger(); logger != nil {
+		logger.Debug(context.Background(), "DB_OPs main pool initialized successfully")
+	}
 
-	log.Info().Str("database", config.DBName).Msg("Main database connection pool initialized")
+	if logger := mainLogger(); logger != nil {
+		logger.Info(context.Background(), "Main database connection pool initialized", ion.String("database", config.DBName))
+	}
 	return nil
 }
 
@@ -604,7 +652,9 @@ func initAccountsDBPool() error {
 		return fmt.Errorf("failed to initialize accounts database pool: %w", err)
 	}
 
-	log.Info().Str("database", config.AccountsDBName).Msg("Accounts database connection pool initialized")
+	if logger := mainLogger(); logger != nil {
+		logger.Info(context.Background(), "Accounts database connection pool initialized", ion.String("database", config.AccountsDBName))
+	}
 	return nil
 }
 
@@ -617,14 +667,18 @@ func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsC
 	var ionLogger *ion.Ion
 
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to create FastSync logger - falling back to nil logger")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to create FastSync logger - falling back to nil logger", err)
+		}
 		// We still proceed, just without the detailed ion logger
 	} else if fsLogger != nil && fsLogger.NamedLogger != nil {
 		ionLogger = fsLogger.NamedLogger
 	}
 
 	fs := fastsync.NewFastSync(n.Host, mainClient, accountsClient, ionLogger)
-	log.Info().Msg("FastSync service initialized - will get connections when needed")
+	if logger := mainLogger(); logger != nil {
+		logger.Info(context.Background(), "FastSync service initialized - will get connections when needed")
+	}
 	return fs
 }
 
@@ -773,8 +827,10 @@ func main() {
 
 	var nodeManager *node.NodeManager
 	if err := ImmuDB_CA.EnsureTLSAssets(".immudb_state"); err != nil {
-		fmt.Printf("Failed to ensure TLS assets: %v\n", err)
-		log.Fatal()
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to ensure TLS assets", err)
+		}
+		os.Exit(1)
 	}
 	// fmt.Println("ImmuDB TLS assets generated.")
 
@@ -796,7 +852,9 @@ func main() {
 			cfg.Ports.Metrics,
 		)
 	} else if cfg.Features.GROTrack {
-		log.Warn().Msg("grotrack enabled but metrics port is not set; GRO tracking disabled")
+		if logger := mainLogger(); logger != nil {
+			logger.Warn(context.Background(), "grotrack enabled but metrics port is not set; GRO tracking disabled")
+		}
 	}
 
 	// Start profiler server only when a profiler port is explicitly set (> 0).
@@ -816,7 +874,9 @@ func main() {
 	}
 
 	// Log version on startup
-	log.Info().Str("version", version.String()).Msg("Starting JMDN node")
+	if logger := mainLogger(); logger != nil {
+		logger.Info(context.Background(), "Starting JMDN node", ion.String("version", version.String()))
+	}
 
 	// Create a cancellable context for clean shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -836,14 +896,20 @@ func main() {
 
 		// 2. Shutdown profiler concurrently with other cleanups (with timeout)
 		if profilerServer != nil {
-			log.Info().Msg("Shutting down profiler server...")
+			if logger := mainLogger(); logger != nil {
+				logger.Info(ctx, "Shutting down profiler server...")
+			}
 			// Give it 5 seconds to finish active profiles/requests
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer shutdownCancel()
 			if err := profilerServer.Shutdown(shutdownCtx); err != nil {
-				log.Error().Err(err).Msg("Profiler server forced to shutdown")
+				if logger := mainLogger(); logger != nil {
+					logger.Error(ctx, "Profiler server forced to shutdown", err)
+				}
 			} else {
-				log.Info().Msg("Profiler server stopped gracefully")
+				if logger := mainLogger(); logger != nil {
+					logger.Info(ctx, "Profiler server stopped gracefully")
+				}
 			}
 		}
 
@@ -854,7 +920,9 @@ func main() {
 		}
 		return nil
 	}); err != nil {
-		log.Error().Err(err).Str("thread", GRO.ShutdownThread).Msg("Failed to start GRO goroutine")
+		if logger := mainLogger(); logger != nil {
+			logger.Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.ShutdownThread))
+		}
 	}
 
 	// Initialize database connection pools FIRST
@@ -873,7 +941,7 @@ func main() {
 	ipv6, err := helper.GetTun0GlobalIPv6()
 	if err != nil || ipv6 == "" {
 		ipv6 = "?"
-		log.Printf("Error getting Yggdrasil IPv6 address: %v", err)
+		if logger := mainLogger(); logger != nil { logger.Debug(context.Background(), "Error getting Yggdrasil IPv6 address: %v", err) }
 	}
 	config.Yggdrasil_Address = ipv6
 	fmt.Println(config.ColorGreen+"Yggdrasil Global IPv6 Address:"+config.ColorReset, ipv6)
@@ -964,22 +1032,22 @@ func main() {
 	}
 
 	if cfg.Network.Mempool == "" {
-		log.Printf("No mempool gRPC address provided; cannot proceed.")
+		if logger := mainLogger(); logger != nil { logger.Debug(context.Background(), "No mempool gRPC address provided; cannot proceed.") }
 		return
 	}
 
 	address := cfg.Network.Mempool
 	if err := Block.InitMempoolClient(address); err != nil {
-		log.Printf("Failed to connect to mempool: %v", err)
+		if logger := mainLogger(); logger != nil { logger.Debug(context.Background(), "Failed to connect to mempool: %v", err) }
 	}
 	defer Block.CloseMempoolClient()
 
 	// Initialize routing client to the same address as mempool
 	_, err = Block.NewRoutingServiceClient(address)
 	if err != nil {
-		log.Printf("Failed to connect to routing service: %v", err)
+		if logger := mainLogger(); logger != nil { logger.Debug(context.Background(), "Failed to connect to routing service: %v", err) }
 	} else {
-		log.Printf("Routing client initialized successfully")
+		if logger := mainLogger(); logger != nil { logger.Debug(context.Background(), "Routing client initialized successfully") }
 	}
 
 	// Initialize node manager

@@ -60,7 +60,7 @@ func GetMainDBConnection(ctx context.Context) (*config.PooledConnection, error) 
 		metrics.NewMainDBMetricsBuilder().WithFunction(fn.Name()).ConnectionTaken()
 	} else {
 		metrics.NewMainDBMetricsBuilder().WithFunction("unknown").ConnectionTaken()
-		fmt.Println("Failed to get caller information")
+		logger(log.MainDB_Connections).Debug(context.Background(), "Failed to get caller information")
 	}
 
 	return conn, nil
@@ -86,7 +86,7 @@ func PutMainDBConnection(conn *config.PooledConnection) {
 			metrics.NewMainDBMetricsBuilder().WithFunction(fn.Name()).ConnectionReturned()
 		} else {
 			metrics.NewMainDBMetricsBuilder().WithFunction("unknown").ConnectionReturned()
-			fmt.Println("Failed to get caller information")
+			logger(log.MainDB_Connections).Debug(context.Background(), "Failed to get caller information")
 		}
 	}
 }
@@ -100,28 +100,28 @@ func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki 
 	var initErr error
 
 	mainDBPoolOnce.Do(func() {
-		fmt.Println("Getting async logger for main DB pool...")
+		logger(log.MainDB_Connections).Debug(context.Background(), "Getting async logger for main DB pool")
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
 		// Get the async logger instance
 		asyncLogger := logging.NewAsyncLogger()
 		if asyncLogger == nil || asyncLogger.GlobalLogger == nil {
-			fmt.Printf("Failed to get async logger\n")
+			logger(log.MainDB_Connections).Error(context.Background(), "Failed to get async logger", fmt.Errorf("logger init failed"))
 			initErr = fmt.Errorf("failed to get async logger for main DB pool")
 			return
 		}
 		ionLogger := asyncLogger.GlobalLogger
-		fmt.Println("Async logger retrieved successfully")
+		logger(log.MainDB_Connections).Info(context.Background(), "Async logger retrieved successfully")
 
 		ionLogger.Debug(loggerCtx, "Initializing main database connection pool",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "DB_OPs.InitMainDBPool"))
-		fmt.Println("Connecting to main DB...")
+		logger(log.MainDB_Connections).Debug(context.Background(), "Connecting to main DB")
 		if err := connectToMainDB(username, password); err != nil {
-			fmt.Printf("Failed to connect to main DB: %v\n", err)
+			logger(log.MainDB_Connections).Error(context.Background(), "Failed to connect to main DB", err)
 			initErr = fmt.Errorf("failed to ensure main DB selected: %w", err)
 			ionLogger.Error(loggerCtx, "Main DB setup failed",
 				err,
@@ -131,7 +131,7 @@ func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki 
 				ion.String("function", "DB_OPs.InitMainDBPool"))
 			return
 		}
-		fmt.Println("Connected to main DB successfully")
+		logger(log.MainDB_Connections).Info(context.Background(), "Connected to main DB successfully")
 
 		// Now that the DB exists, initialize a dedicated pool for it.
 		poolCfg := config.DefaultConnectionPoolConfig()
@@ -230,7 +230,7 @@ func connectToMainDB(username, password string) error {
 	certFile := filepath.Join(stateDir, "server.cert.pem")
 	keyFile := filepath.Join(stateDir, "server.key.pem")
 	caFile := filepath.Join(stateDir, "ca.cert.pem")
-	fmt.Println("Certificate paths built successfully")
+	logger(log.MainDB_Connections).Debug(context.Background(), "Certificate paths built successfully")
 
 	// Configure the client - disable mTLS for local development
 	opts := client.DefaultOptions().

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -253,7 +254,7 @@ func HandleFileStream(s network.Stream, outputPath string) {
 	// Read file metadata (size and filename)
 	header := make([]byte, 16+1024) // 16 bytes for size + 1024 for filename
 	if _, err := io.ReadFull(s, header[:16]); err != nil {
-		fmt.Println("Error reading size header:", err)
+		if l := logger(); l != nil { l.Error(context.Background(), "Error reading size header", err) }
 		return
 	}
 
@@ -264,7 +265,7 @@ func HandleFileStream(s network.Stream, outputPath string) {
 	var filename string
 	if filenameLen > 0 {
 		if _, err := io.ReadFull(s, header[16:16+filenameLen]); err != nil {
-			fmt.Println("Error reading filename:", err)
+			if l := logger(); l != nil { l.Error(context.Background(), "Error reading filename:", err) }
 			return
 		}
 		filename = string(header[16 : 16+filenameLen])
@@ -286,7 +287,7 @@ func HandleFileStream(s network.Stream, outputPath string) {
 
 	// Create parent directories if they don't exist
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0750); err != nil {
-		fmt.Println("Error creating directories:", err)
+		if l := logger(); l != nil { l.Error(context.Background(), "Error creating directories:", err) }
 		return
 	}
 
@@ -298,7 +299,7 @@ func HandleFileStream(s network.Stream, outputPath string) {
 	// Create output file
 	file, err := os.Create(outputPath)
 	if err != nil {
-		fmt.Println("Error creating file:", err)
+		if l := logger(); l != nil { l.Error(context.Background(), "Error creating file:", err) }
 		return
 	}
 	defer file.Close()
@@ -374,7 +375,7 @@ func HandleFileStream(s network.Stream, outputPath string) {
 		n, err := io.ReadFull(reader, buffer[:toRead])
 
 		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-			fmt.Println("Error receiving file:", err)
+			if l := logger(); l != nil { l.Error(context.Background(), "Error receiving file:", err) }
 			return
 		}
 

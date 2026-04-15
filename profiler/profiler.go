@@ -1,6 +1,7 @@
 package profiler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
@@ -10,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/rs/zerolog/log"
 )
 
 var globalHost host.Host
@@ -44,18 +45,24 @@ func StartProfiler(bindAddr string, port string) *http.Server {
 	}
 
 	go func() {
+		ctx := context.Background()
 		defer func() {
 			if r := recover(); r != nil {
-				log.Error().Interface("panic", r).Msg("Profiler server panic")
+				logger().Error(ctx, "Profiler server panic",
+					ion.String("panic", fmt.Sprintf("%v", r)))
 			}
 		}()
 
-		log.Info().Str("addr", fmt.Sprintf("http://%s:%s/debug/pprof/", bindAddr, port)).Msg("Starting profiler server")
-		log.Info().Str("addr", fmt.Sprintf("http://%s:%s/debug/fds", bindAddr, port)).Msg("FD Monitor available")
-		log.Info().Str("addr", fmt.Sprintf("http://%s:%s/debug/streams", bindAddr, port)).Msg("Stream Monitor available")
+		logger().Info(ctx, "Starting profiler server",
+			ion.String("addr", fmt.Sprintf("http://%s:%s/debug/pprof/", bindAddr, port)))
+		logger().Info(ctx, "FD Monitor available",
+			ion.String("addr", fmt.Sprintf("http://%s:%s/debug/fds", bindAddr, port)))
+		logger().Info(ctx, "Stream Monitor available",
+			ion.String("addr", fmt.Sprintf("http://%s:%s/debug/streams", bindAddr, port)))
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Error().Err(err).Str("addr", addr).Msg("Profiler server error")
+			logger().Error(ctx, "Profiler server error", err,
+				ion.String("addr", addr))
 		}
 	}()
 
