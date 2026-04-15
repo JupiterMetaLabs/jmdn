@@ -816,10 +816,6 @@ func NewFastSync(h host.Host, mainDB, accountsDB *config.PooledConnection, logge
 		fs.Logger.Info(context.Background(), "FastSync service initialized with CRDT engine",
 			ion.String("protocol_id", string(SyncProtocolID)),
 			ion.Int("crdt_memory_limit_mb", 50))
-	} else {
-		// Fallback if logger is nil
-		logger().Debug(context.Background(), "FastSync service initialized with CRDT engine",
-			ion.String("protocol_id", string(SyncProtocolID)))
 	}
 
 	return fs
@@ -963,7 +959,7 @@ func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, err
 		if time.Since(lastDeadlineUpdate) > 30*time.Second {
 			deadline = time.Now().UTC().Add(extendedTimeout)
 			if err := stream.SetReadDeadline(deadline); err != nil {
-				logger().Warn(context.Background(), "Failed to extend read deadline, continuing", err)
+				logger().Warn(context.Background(), "Failed to extend read deadline, continuing", ion.Err(err))
 			} else {
 				lastDeadlineUpdate = time.Now().UTC()
 				logger().Debug(context.Background(), "Extended read deadline for large message",
@@ -1906,7 +1902,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 			if fs.Logger != nil {
 				fs.Logger.Debug(context.Background(), "Retrying HashMap exchange",
 					ion.String("peer", peerID.String()),
-					ion, ion.Int("attempt", i+1))
+					ion.Int("attempt", i+1))
 			}
 			Phase2, MainChecksum, AccountChecksum, err = fs.Phase2_Sync(Phase1, peerID, stream, writer, reader)
 			if err == nil &&

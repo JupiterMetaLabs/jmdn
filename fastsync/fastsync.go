@@ -739,7 +739,7 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 	logger().Info(context.Background(), ">>> [CLIENT] Waiting for HashMap metadata from server (this may take time for large datasets)...")
 	// Extend read deadline for HashMap computation phase - 30 minutes for debugging
 	if err := stream.SetReadDeadline(time.Now().UTC().Add(30 * time.Minute)); err != nil {
-		logger().Warn(context.Background(), ">>> [CLIENT] WARNING: Failed to extend read deadline", err)
+		logger().Warn(context.Background(), ">>> [CLIENT] WARNING: Failed to extend read deadline", ion.Err(err))
 	}
 	logger().Info(context.Background(), ">>> [CLIENT] Extended read deadline to 30 minutes for HashMap computation")
 	metadataMsg, err := readMessage(reader, stream)
@@ -784,7 +784,7 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		if time.Since(lastDeadlineUpdate) > 30*time.Second {
 			newDeadline := time.Now().UTC().Add(30 * time.Minute)
 			if err := stream.SetReadDeadline(newDeadline); err != nil {
-				logger().Warn(context.Background(), ">>> [CLIENT] WARNING: Failed to extend read deadline", err)
+				logger().Warn(context.Background(), ">>> [CLIENT] WARNING: Failed to extend read deadline", ion.Err(err))
 			} else {
 				lastDeadlineUpdate = time.Now().UTC()
 				logger().Info(context.Background(), ">>> [CLIENT] Extended read deadline", ion.Int("chunk", receivedChunks+1), ion.Int("total", totalChunks))
@@ -955,7 +955,7 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 		// 3. Wait for the server's response
 		// Extend deadline significantly as server needs to create AVRO files
 		if err := stream.SetReadDeadline(time.Now().UTC().Add(30 * time.Minute)); err != nil {
-			logger().Warn(context.Background(), "Failed to extend read deadline for file transfer response", err)
+			logger().Warn(context.Background(), "Failed to extend read deadline for file transfer response", ion.Err(err))
 		}
 
 		response, err := readMessage(reader, stream)
@@ -1284,14 +1284,14 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 	for ocfReader.Scan() {
 		record, err := ocfReader.Read()
 		if err != nil {
-			logger().Warn(context.Background(), "Failed to read AVRO record", err)
+			logger().Warn(context.Background(), "Failed to read AVRO record", ion.Err(err))
 			continue
 		}
 		recordsRead++
 
 		recordMap, ok := record.(map[string]interface{})
 		if !ok {
-			logger().Warn(context.Background(), "Unexpected avro record type", nil)
+			logger().Warn(context.Background(), "Unexpected avro record type")
 			continue
 		}
 
@@ -1331,7 +1331,7 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		}
 
 		if !keyOk || !valueOk {
-			logger().Warn(context.Background(), "avro record has missing or invalid Key/Value fields", nil)
+			logger().Warn(context.Background(), "avro record has missing or invalid Key/Value fields")
 			continue
 		}
 
@@ -1390,7 +1390,7 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		if err := fs.batchCreateOrderedWithRetry(entriesOrdered, dbType); err != nil {
 			// If batch is too large, try splitting it into smaller chunks
 			if strings.Contains(err.Error(), "max number of entries per tx exceeded") || strings.Contains(err.Error(), "message larger than max") {
-				logger().Warn(context.Background(), ">>> [DB] WARNING: Final batch too large, splitting into smaller chunks", nil)
+				logger().Warn(context.Background(), ">>> [DB] WARNING: Final batch too large, splitting into smaller chunks")
 				// Split into smaller batches of 50 to avoid message size limits
 				chunkSize := 50
 				for i := 0; i < len(entriesOrdered); i += chunkSize {
