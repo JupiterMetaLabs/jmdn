@@ -928,12 +928,14 @@ func main() {
 	// Initialize database connection pools FIRST
 	fmt.Println("Initializing main database pool...")
 	if err := initMainDBPool(logger_ctx, false, cfg.Database.Username, cfg.Database.Password); err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize main database pool")
+		mainLogger().Critical(context.Background(), "Failed to initialize main database pool", err)
+	os.Exit(1)
 	}
 	fmt.Println("Main database pool initialized successfully")
 
 	if err := initAccountsDBPool(); err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
+		mainLogger().Critical(context.Background(), "Failed to initialize accounts database pool", err)
+	os.Exit(1)
 	}
 
 	// Discover Yggdrasil address BEFORE creating the node
@@ -941,7 +943,7 @@ func main() {
 	ipv6, err := helper.GetTun0GlobalIPv6()
 	if err != nil || ipv6 == "" {
 		ipv6 = "?"
-		if logger := mainLogger(); logger != nil { logger.Debug(context.Background(), "Error getting Yggdrasil IPv6 address: %v", err) }
+		if logger := mainLogger(); logger != nil { logger.Debug(context.Background(), "Error getting Yggdrasil IPv6 address", ion.Err(err)) }
 	}
 	config.Yggdrasil_Address = ipv6
 	fmt.Println(config.ColorGreen+"Yggdrasil Global IPv6 Address:"+config.ColorReset, ipv6)
@@ -988,7 +990,8 @@ func main() {
 	// Initialize database clients using the pools
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to get main database connection from pool")
+		mainLogger().Critical(context.Background(), "Failed to get main database connection from pool", err)
+		os.Exit(1)
 	}
 	defer func() {
 		if mainDBClient != nil {
@@ -1001,7 +1004,8 @@ func main() {
 
 	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to get accounts database connection from pool")
+		mainLogger().Critical(context.Background(), "Failed to get accounts database connection from pool", err)
+		os.Exit(1)
 	}
 
 	// Debugging
@@ -1038,14 +1042,14 @@ func main() {
 
 	address := cfg.Network.Mempool
 	if err := Block.InitMempoolClient(address); err != nil {
-		if logger := mainLogger(); logger != nil { logger.Debug(context.Background(), "Failed to connect to mempool: %v", err) }
+		if logger := mainLogger(); logger != nil { logger.Debug(context.Background(), "Failed to connect to mempool", ion.Err(err)) }
 	}
 	defer Block.CloseMempoolClient()
 
 	// Initialize routing client to the same address as mempool
 	_, err = Block.NewRoutingServiceClient(address)
 	if err != nil {
-		if logger := mainLogger(); logger != nil { logger.Debug(context.Background(), "Failed to connect to routing service: %v", err) }
+		if logger := mainLogger(); logger != nil { logger.Debug(context.Background(), "Failed to connect to routing service", ion.Err(err)) }
 	} else {
 		if logger := mainLogger(); logger != nil { logger.Debug(context.Background(), "Routing client initialized successfully") }
 	}
