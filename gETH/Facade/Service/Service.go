@@ -18,6 +18,7 @@ import (
 	"gossipnode/SmartContract/pkg/client"
 	smartcontractpb "gossipnode/SmartContract/proto"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -35,7 +36,7 @@ type ServiceImpl struct {
 func NewService(chainID int, smartRPC int) Service {
 	scClient, err := client.NewClient(fmt.Sprintf("localhost:%d", smartRPC))
 	if err != nil {
-		fmt.Printf("Failed to connect to SmartContract gRPC server: %v\n", err)
+		logger().Error(context.Background(), "Failed to connect to SmartContract gRPC server", err)
 	}
 	return &ServiceImpl{
 		ChainIDValue:      chainID,
@@ -52,7 +53,7 @@ func (s *ServiceImpl) ChainID(ctx context.Context) (*big.Int, error) {
 	// Log the operation
 	if err := Logger.LogData(opCtx, "ChainID returned to the client", "ChainID", 1); err != nil {
 		// Log error but don't fail the operation
-		fmt.Printf("Failed to log ChainID operation: %v\n", err)
+		logger().Error(opCtx, "Failed to log ChainID operation", err)
 	}
 
 	return big.NewInt(int64(s.ChainIDValue)), nil
@@ -105,7 +106,7 @@ func (s *ServiceImpl) ClientVersion(ctx context.Context) (string, error) {
 	// Log the operation
 	if err := Logger.LogData(opCtx, "ClientVersion returned to the client", "ClientVersion", 1); err != nil {
 		// Log error but don't fail the operation
-		fmt.Printf("Failed to log ClientVersion operation: %v\n", err)
+		logger().Error(opCtx, "Failed to log ClientVersion operation", err)
 	}
 
 	return ClientVersion, nil
@@ -121,14 +122,14 @@ func (s *ServiceImpl) BlockNumber(ctx context.Context) (*big.Int, error) {
 	if err != nil {
 		// Log error
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("BlockNumber failed: %v", err), "BlockNumber", -1); logErr != nil {
-			fmt.Printf("Failed to log BlockNumber error: %v\n", logErr)
+			logger().Error(opCtx, "Failed to log BlockNumber error", logErr)
 		}
 		return nil, err
 	}
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("BlockNumber returned to the client: %d", BlockNumber), "BlockNumber", 1); logErr != nil {
-		fmt.Printf("Failed to log BlockNumber success: %v\n", logErr)
+		logger().Error(opCtx, "Failed to log BlockNumber success", logErr)
 	}
 
 	return big.NewInt(int64(BlockNumber)), nil
@@ -160,28 +161,28 @@ func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bo
 	ZKBlock, err := DB_OPs.GetZKBlockByNumber(nil, num.Uint64())
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("BlockByNumber failed: %v", err), "BlockByNumber", -1); logErr != nil {
-			fmt.Printf("Failed to log BlockByNumber error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log BlockByNumber error", logErr)
 		}
 		return nil, err
 	}
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("BlockByNumber returned to the client: %d", ZKBlock.BlockNumber), "BlockByNumber", 1); logErr != nil {
-		fmt.Printf("Failed to log BlockByNumber success: %v\n", logErr)
+		logger().Error(opCtx, "Failed to log BlockByNumber success", logErr)
 	}
 
 	// Convert the ZKBlock from GetZKBlockByNumber to Block
 	block := Utils.ConvertZKBlockToBlock(ZKBlock)
 	if block == nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("BlockByNumber failed: %v", err), "BlockByNumber", -1); logErr != nil {
-			fmt.Printf("Failed to log BlockByNumber error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log BlockByNumber error", logErr)
 		}
 		return nil, err
 	}
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("BlockByNumber returned to the client: %d", ZKBlock.BlockNumber), "BlockByNumber", 1); logErr != nil {
-		fmt.Printf("Failed to log BlockByNumber success: %v\n", logErr)
+		logger().Error(opCtx, "Failed to log BlockByNumber success", logErr)
 	}
 
 	return block, nil
@@ -196,11 +197,10 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 	// Lets assume block is the latest - so we will get the balance from the latest block
 	// Future we will add the balance retrival based on the particular block.
 	convertedAddr := Utils.ConvertAddressCaseInsensitive(addr)
-	fmt.Printf("DEBUG: Original address: %s, Converted address: %s\n", addr, convertedAddr.Hex())
+	logger().Debug(opCtx, "Address conversion", ion.String("original", addr), ion.String("converted", convertedAddr.Hex()))
 	AccountDetails, err := DB_OPs.GetAccount(nil, convertedAddr)
 	if err != nil {
-		fmt.Printf("DEBUG: GetAccount error: %v\n", err)
-		fmt.Printf("DEBUG: Error type: %T\n", err)
+	logger().Error(opCtx, "GetAccount error", err)
 		// If account not found, create a new account with zero balance
 		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
 			// Convert address to common.Address using case-insensitive conversion
@@ -220,14 +220,14 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 			// Create the account and propagate the DID
 			if err := Utils.CreateAccountandPropagateDID(didDoc); err != nil {
 				if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance failed to create account and propagate DID: %v", err), "Balance", -1); logErr != nil {
-					fmt.Printf("Failed to log Balance account creation and propagation error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log Balance account creation error", logErr)
 				}
 				return nil, err
 			}
 
 			// Log account creation
 			if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance created new account for address: %s", addr), "Balance", 1); logErr != nil {
-				fmt.Printf("Failed to log Balance account creation: %v\n", logErr)
+				logger().Error(opCtx, "Failed to log Balance account creation", logErr)
 			}
 
 			// Return zero balance for new account
@@ -236,31 +236,31 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 
 		// For other errors, log and return
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance failed: %v", err), "Balance", -1); logErr != nil {
-			fmt.Printf("Failed to log Balance error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log Balance error", logErr)
 		}
 		return nil, err
 	}
 
 	// Debug: Print account details
-	fmt.Printf("DEBUG: Account found - Balance: %s, Address: %s, DID: %s\n", AccountDetails.Balance, AccountDetails.Address.Hex(), AccountDetails.DIDAddress)
+	logger().Debug(opCtx, "Account found", ion.String("balance", AccountDetails.Balance), ion.String("address", AccountDetails.Address.Hex()), ion.String("did", AccountDetails.DIDAddress))
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance returned to the client: %s", AccountDetails.Balance), "Balance", 1); logErr != nil {
-		fmt.Printf("Failed to log Balance success: %v\n", logErr)
+		logger().Error(opCtx, "Failed to log Balance success", logErr)
 	}
 
 	// Convert the balance from string to big.Int
 	balance, err := Utils.ConvertBalance(AccountDetails.Balance)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance failed: %v", err), "Balance", -1); logErr != nil {
-			fmt.Printf("Failed to log Balance error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log Balance error", logErr)
 		}
 		return nil, err
 	}
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance returned to the client: %s", AccountDetails.Balance), "Balance", 1); logErr != nil {
-		fmt.Printf("Failed to log Balance success: %v\n", logErr)
+		logger().Error(opCtx, "Failed to log Balance success", logErr)
 	}
 
 	return balance, nil
@@ -280,7 +280,7 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 	rawBytes, err := hex.DecodeString(rawHex)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed to decode hex: %v", err), "SendRawTx", -1); logErr != nil {
-			fmt.Printf("Failed to log SendRawTx hex decode error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log SendRawTx hex decode error", logErr)
 		}
 		return "", fmt.Errorf("failed to decode hex string: %w", err)
 	}
@@ -290,41 +290,41 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 	err = json.Unmarshal(rawBytes, &tx)
 	if err != nil {
 		// If JSON parsing fails, try to parse as RLP-encoded transaction
-		fmt.Println(">>>>>> JSON parsing failed, trying RLP parsing")
+	logger().Debug(opCtx, "JSON parsing failed, trying RLP parsing")
 
 		// Parse RLP-encoded transaction
 		var ethTx ethtypes.Transaction
 		err = rlp.DecodeBytes(rawBytes, &ethTx)
 		if err != nil {
 			if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed to parse RLP transaction: %v", err), "SendRawTx", -1); logErr != nil {
-				fmt.Printf("Failed to log SendRawTx RLP parse error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log SendRawTx RLP parse error", logErr)
 			}
 			return "", fmt.Errorf("failed to parse RLP transaction: %w", err)
 		}
 
 		// Convert Ethereum transaction to our config.Transaction format
 		tx = convertEthTxToConfigTx(&ethTx)
-		fmt.Println(">>>>>> Converted RLP transaction: ", tx)
+	logger().Debug(opCtx, "Converted RLP transaction")
 	} else {
-		fmt.Println(">>>>>> JSON transaction parsed: ", tx)
+	logger().Debug(opCtx, "JSON transaction parsed")
 	}
 
 	hash, err := block.SubmitRawTransaction(context.Background(), &tx)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed: %v", err), "SendRawTx", -1); logErr != nil {
-			fmt.Printf("Failed to log SendRawTx error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log SendRawTx error", logErr)
 		}
 		// Debugging
-		fmt.Println(">>>>>> SubmitRawTransaction failed: ", err)
+	logger().Error(opCtx, "SubmitRawTransaction failed", err)
 		return "", err
 	}
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx returned to the client: %s", hash), "SendRawTx", 1); logErr != nil {
-		fmt.Printf("Failed to log SendRawTx success: %v\n", logErr)
+		logger().Error(opCtx, "Failed to log SendRawTx success", logErr)
 	}
 	// Debugging
-	fmt.Println(">>>>>> SubmitRawTransaction success: ", hash)
+	logger().Info(opCtx, "SubmitRawTransaction success", ion.String("hash", hash))
 
 	return hash, nil
 }
@@ -365,23 +365,23 @@ func convertEthTxToConfigTx(ethTx *ethtypes.Transaction) config.Transaction {
 	tx.S = s
 
 	// Debugging
-	fmt.Println("Hash: ", tx.Hash.Hex())
-	fmt.Println("From: ", tx.From.Hex())
-	fmt.Println("To: ", tx.To.Hex())
-	fmt.Println("Value: ", tx.Value.String())
-	fmt.Println("Type: ", tx.Type)
-	fmt.Println("Timestamp: ", tx.Timestamp)
-	fmt.Println("ChainID: ", tx.ChainID.String())
-	fmt.Println("Nonce: ", tx.Nonce)
-	fmt.Println("GasLimit: ", tx.GasLimit)
-	fmt.Println("GasPrice: ", tx.GasPrice.String())
-	fmt.Println("MaxFee: ", tx.MaxFee.String())
-	fmt.Println("MaxPriorityFee: ", tx.MaxPriorityFee.String())
-	fmt.Println("Data: ", tx.Data)
-	fmt.Println("AccessList: ", tx.AccessList)
-	fmt.Println("V: ", tx.V.String())
-	fmt.Println("R: ", tx.R.String())
-	fmt.Println("S: ", tx.S.String())
+	logger().Debug(opCtx, "Transaction details", ion.String("hash", tx.Hash.Hex()))
+	logger().Debug(opCtx, "Transaction sender", ion.String("from", tx.From.Hex()))
+	logger().Debug(opCtx, "Transaction recipient", ion.String("to", tx.To.Hex()))
+	logger().Debug(opCtx, "Transaction value", ion.String("value", tx.Value.String()))
+	logger().Debug(opCtx, "Transaction type", ion.Int("type", int(tx.Type)))
+	logger().Debug(opCtx, "Transaction timestamp", ion.Int("timestamp", int(tx.Timestamp)))
+	logger().Debug(opCtx, "Chain ID", ion.String("chain_id", tx.ChainID.String()))
+	logger().Debug(opCtx, "Transaction nonce", ion.Int("nonce", int(tx.Nonce)))
+	logger().Debug(opCtx, "Gas limit", ion.Int("gas_limit", int(tx.GasLimit)))
+	logger().Debug(opCtx, "Gas price", ion.String("gas_price", tx.GasPrice.String()))
+	logger().Debug(opCtx, "Max fee", ion.String("max_fee", tx.MaxFee.String()))
+	logger().Debug(opCtx, "Max priority fee", ion.String("max_priority_fee", tx.MaxPriorityFee.String()))
+	logger().Debug(opCtx, "Transaction data length", ion.Int("data_len", len(tx.Data)))
+	logger().Debug(opCtx, "Access list present")
+	logger().Debug(opCtx, "Transaction V", ion.String("v", tx.V.String()))
+	logger().Debug(opCtx, "Transaction R", ion.String("r", tx.R.String()))
+	logger().Debug(opCtx, "Transaction S", ion.String("s", tx.S.String()))
 
 	return tx
 }
@@ -401,7 +401,7 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 	block, err := DB_OPs.GetTransactionBlock(nil, normalizedHash)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash failed to get block: %v", err), "TxByHash", -1); logErr != nil {
-			fmt.Printf("Failed to log TxByHash error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log TxByHash error", logErr)
 		}
 		return nil, err
 	}
@@ -410,7 +410,7 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 	ZKTx, err := DB_OPs.GetTransactionByHash(nil, normalizedHash)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash failed: %v", err), "TxByHash", -1); logErr != nil {
-			fmt.Printf("Failed to log TxByHash error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log TxByHash error", logErr)
 		}
 		return nil, err
 	}
@@ -419,7 +419,7 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 	tx := Utils.ConvertTrabsactionToTx(ZKTx)
 	if tx == nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash failed: %v", err), "TxByHash", -1); logErr != nil {
-			fmt.Printf("Failed to log TxByHash error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log TxByHash error", logErr)
 		}
 		return nil, err
 	}
@@ -443,7 +443,7 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash returned to the client: %s", hash), "TxByHash", 1); logErr != nil {
-		fmt.Printf("Failed to log TxByHash success: %v\n", logErr)
+		logger().Error(opCtx, "Failed to log TxByHash success", logErr)
 	}
 
 	return tx, nil
@@ -460,13 +460,13 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 		// Check if error is "transaction not found"
 		if err.Error() == "transaction not found" {
 			if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash: transaction not found: %s", hash), "ReceiptByHash", -1); logErr != nil {
-				fmt.Printf("Failed to log ReceiptByHash error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log ReceiptByHash error", logErr)
 			}
 			// Return error that will be formatted as JSON-RPC error with code -32000
 			return nil, fmt.Errorf("transaction not found")
 		}
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash failed: %v", err), "ReceiptByHash", -1); logErr != nil {
-			fmt.Printf("Failed to log ReceiptByHash error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log ReceiptByHash error", logErr)
 		}
 		return nil, err
 	}
@@ -475,7 +475,7 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 	// Return nil to indicate result should be null in JSON-RPC response
 	if receipt == nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash: tx_processing=-1 for %s, returning null", hash), "ReceiptByHash", 1); logErr != nil {
-			fmt.Printf("Failed to log ReceiptByHash: %v\n", logErr)
+			logger().Error(opCtx, "Failed to log ReceiptByHash", logErr)
 		}
 		return nil, nil
 	}
@@ -485,7 +485,7 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 	if txErr != nil {
 		// Log but don't fail - we can still return receipt without from/to
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash: failed to get transaction for from/to: %v", txErr), "ReceiptByHash", -1); logErr != nil {
-			fmt.Printf("Failed to log: %v\n", logErr)
+			logger().Error(opCtx, "Failed to log", logErr)
 		}
 	}
 
@@ -568,7 +568,7 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash returned to the client: %s", hash), "ReceiptByHash", 1); logErr != nil {
-		fmt.Printf("Failed to log ReceiptByHash success: %v\n", logErr)
+		logger().Error(opCtx, "Failed to log ReceiptByHash success", logErr)
 	}
 
 	return receiptMap, nil
@@ -583,7 +583,7 @@ func (s *ServiceImpl) GetLogs(ctx context.Context, q Types.FilterQuery) ([]Types
 	logs, err := DB_OPs.GetLogs(nil, q)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetLogs failed: %v", err), "GetLogs", -1); logErr != nil {
-			fmt.Printf("Failed to log GetLogs error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log GetLogs error", logErr)
 		}
 		return nil, err
 	}
@@ -675,7 +675,7 @@ func (s *ServiceImpl) EstimateGas(ctx context.Context, msg Types.CallMsg) (uint6
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("EstimateGas returned to client: %d", estimatedGas), "EstimateGas", 1); logErr != nil {
-		fmt.Printf("Failed to log EstimateGas success: %v\n", logErr)
+		logger().Error(opCtx, "Failed to log EstimateGas success", logErr)
 	}
 
 	return estimatedGas, nil
@@ -691,7 +691,7 @@ func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
 	feeStats, err := block.GetFeeStatisticsFromRouting()
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GasPrice failed to get fee statistics: %v", err), "GasPrice", -1); logErr != nil {
-			fmt.Printf("Failed to log GasPrice error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log GasPrice error", logErr)
 		}
 		// Return fallback value on error (use 35 gwei minimum)
 		return big.NewInt(35000000000), nil
@@ -710,7 +710,7 @@ func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("GasPrice returned to client: %s", gasPrice.String()), "GasPrice", 1); logErr != nil {
-		fmt.Printf("Failed to log GasPrice success: %v\n", logErr)
+		logger().Error(opCtx, "Failed to log GasPrice success", logErr)
 	}
 
 	return gasPrice, nil
@@ -724,7 +724,7 @@ func (s *ServiceImpl) GetCode(ctx context.Context, addr string, block *big.Int) 
 
 	// Log the operation
 	if err := Logger.LogData(opCtx, fmt.Sprintf("GetCode called for address: %s, block: %s", addr, block.String()), "GetCode", 1); err != nil {
-		fmt.Printf("Failed to log GetCode operation: %v\n", err)
+		logger().Error(opCtx, "Failed to log GetCode operation", err)
 	}
 
 	if s.scClient == nil {
@@ -740,7 +740,7 @@ func (s *ServiceImpl) GetCode(ctx context.Context, addr string, block *big.Int) 
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetCode returned for address: %s", addr), "GetCode", 1); logErr != nil {
-		fmt.Printf("Failed to log GetCode success: %v\n", logErr)
+		logger().Error(opCtx, "Failed to log GetCode success", logErr)
 	}
 
 	if resp.Code == "" {
@@ -765,7 +765,7 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 		latest, err := s.BlockNumber(ctx)
 		if err != nil {
 			if logErr := Logger.LogData(opCtx, fmt.Sprintf("FeeHistory failed to get latest block: %v", err), "FeeHistory", -1); logErr != nil {
-				fmt.Printf("Failed to log FeeHistory error: %v\n", logErr)
+	logger().Error(opCtx, "Failed to log FeeHistory error", logErr)
 			}
 			return nil, err
 		}
@@ -850,7 +850,7 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 
 	// Log success
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("FeeHistory returned for blockCount: %d, newest: %s", blockCount, newestNum.String()), "FeeHistory", 1); logErr != nil {
-		fmt.Printf("Failed to log FeeHistory success: %v\n", logErr)
+		logger().Error(opCtx, "Failed to log FeeHistory success", logErr)
 	}
 
 	return result, nil

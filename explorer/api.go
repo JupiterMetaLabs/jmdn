@@ -12,7 +12,6 @@ import (
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/rs/zerolog/log"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
@@ -295,7 +294,8 @@ func (s *ImmuDBServer) StartWithContext(ctx context.Context, addr string) error 
 		ion.String("topic", TOPIC),
 		ion.String("function", "ExplorerAPI.StartWithContext"))
 
-	log.Info().Str("addr", bindAddr).Msg("Starting ImmuDB API server")
+	s.defaultdb.Client.Logger.Info(spanCtx, "Starting ImmuDB API server (zerolog fallback)",
+		ion.String("bind_address", bindAddr))
 
 	// Use http.Server for explicit control over binding
 	srv := &http.Server{
@@ -480,7 +480,6 @@ func (s *ImmuDBServer) generateToken(c *gin.Context) {
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "ExplorerAPI.generateToken"))
-		log.Error().Err(err).Msg("Failed to generate JWT token")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}

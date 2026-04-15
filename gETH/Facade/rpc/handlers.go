@@ -2,6 +2,8 @@ package rpc
 
 import (
 	"context"
+	log "gossipnode/logging"
+	"github.com/JupiterMetaLabs/ion"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -91,7 +93,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+count.Text(16), nil)
-		fmt.Println("Called RPC Call -- eth_getTransactionCount")
+		logger().Debug(ctx, "Called RPC Call", ion.String("method", "eth_getTransactionCount"))
 		// log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
@@ -102,7 +104,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 			return resp, nil
 		}
-		fmt.Println("req.Params: ", req.Params)
+		logger().Debug(ctx, "Request parameters", ion.String("method", "eth_getBlockByNumber"))
 		tag, _ := req.Params[0].(string)
 		full := false
 
@@ -216,7 +218,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		}
 		raw, _ := req.Params[0].(string)
 		// Debugging
-		fmt.Println(">>>>>> eth_sendRawTransaction received: ", raw)
+		logger().Debug(ctx, "eth_sendRawTransaction received", ion.String("raw_tx_length", fmt.Sprintf("%d", len(raw))))
 		txh, err := handler.service.SendRawTx(ctx, raw)
 		resp, _ := finish(req, txh, err)
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
@@ -616,4 +618,13 @@ func marshalLogs(logs []Types.Log) []map[string]any {
 		}
 	}
 	return result
+}
+
+// logger returns the ion logger instance for the Facade package
+func logger() *ion.Ion {
+	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.Facade, "")
+	if err != nil {
+		return nil
+	}
+	return logInstance.GetNamedLogger()
 }

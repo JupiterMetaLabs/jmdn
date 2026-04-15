@@ -11,6 +11,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/gETH/proto"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -170,10 +171,9 @@ func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error
 		return nil, err
 	}
 	// Debugging
-	fmt.Println("Transaction: ", tx)
-	fmt.Println("Transaction Type: ", tx.Type)
-	fmt.Println("Gas Fee Type: ", tx.GasPrice)
-	fmt.Println("Gas Fee: ", tx.GasPrice)
+	logger().Debug(context.Background(), "Transaction details",
+		ion.String("type", fmt.Sprintf("%d", tx.Type)),
+		ion.String("gas_price", tx.GasPrice.String()))
 	hash, err := block.SubmitRawTransaction(context.Background(), &tx)
 	if err != nil {
 		return nil, err

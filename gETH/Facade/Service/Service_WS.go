@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -65,7 +66,7 @@ func (s *ServiceImpl) SubscribeNewHeads(ctx context.Context) (<-chan *Types.Bloc
 	startBlockPollerIfNeeded()
 
 	// Log subscription creation
-	fmt.Printf("New heads subscription created: %s\n", subscriptionID)
+	logger().Info(context.Background(), "New heads subscription created", ion.String("subscription_id", subscriptionID))
 
 	// Return channel and cleanup function
 	cleanup := func() {
@@ -76,7 +77,7 @@ func (s *ServiceImpl) SubscribeNewHeads(ctx context.Context) (<-chan *Types.Bloc
 		cancel()
 		close(subscription.Channel)
 
-		fmt.Printf("New heads subscription closed: %s\n", subscriptionID)
+		logger().Info(context.Background(), "New heads subscription closed", ion.String("subscription_id", subscriptionID))
 	}
 
 	return subscription.Channel, cleanup, nil
@@ -123,7 +124,7 @@ func pollForNewBlocks() {
 		latestBlock, err := DB_OPs.GetLatestBlockNumber(nil)
 		if err != nil {
 			// Log error but continue polling
-			fmt.Printf("Failed to get latest block number: %v\n", err)
+			logger().Error(context.Background(), "Failed to get latest block number", err)
 			continue
 		}
 
@@ -137,7 +138,7 @@ func pollForNewBlocks() {
 				block, err := getBlockForSubscription(blockNum)
 				if err != nil {
 					// Log error but continue with other blocks
-					fmt.Printf("Failed to get block %d: %v\n", blockNum, err)
+					logger().Error(context.Background(), "Failed to get block", err, ion.Int("block_num", int(blockNum)))
 					continue
 				}
 
@@ -185,7 +186,7 @@ func notifyNewBlock(block *Types.Block) {
 			default:
 				// Channel is full, subscriber is too slow
 				// We could close the subscription here, but for now just skip
-				fmt.Printf("Subscriber %s channel full, skipping block %d\n", subscription.ID, block.Header.Number)
+				logger().Warn(context.Background(), "Subscriber channel full, skipping block", ion.String("subscriber_id", subscription.ID), ion.Int("block_number", int(block.Header.Number)))
 			}
 		}
 	}

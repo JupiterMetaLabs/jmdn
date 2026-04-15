@@ -41,7 +41,7 @@ type BlockServer struct {
 func NewBlockServer(h host.Host, chainID int) *BlockServer {
 	var ionLogger *ion.Ion
 	if l := logger(); l != nil {
-		ionLogger = l.NamedLogger
+		ionLogger = l
 	}
 
 	return &BlockServer{
@@ -91,9 +91,10 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 	}
 	consensus := Sequencer.NewConsensus(peerList, s.host)
 	// Debugging
-	fmt.Printf("Consensus: %+v\n", consensus)
+	if s.logger != nil {
+		s.logger.Debug(ctx, "Consensus instance created")
+	}
 	if err := consensus.Start(block); err != nil {
-		fmt.Printf("Error starting consensus process: %+v\n", err)
 		if s.logger != nil {
 			s.logger.Error(ctx, "gRPC: Failed to start consensus process", err,
 				ion.String("block_hash", block.BlockHash.Hex()))
@@ -163,11 +164,11 @@ func StartGRPCServer(port int, h host.Host, chainID int) error {
 	// Start the server in a goroutine
 	LocalGRO.Go(GRO.BlockGRPCServerThread, func(ctx context.Context) error {
 		if l := logger(); l != nil {
-			l.NamedLogger.Info(ctx, "Block gRPC server starting", ion.Int("port", port))
+			l.Info(ctx, "Block gRPC server starting", ion.Int("port", port))
 		}
 		if err := grpcServer.Serve(lis); err != nil {
 			if l := logger(); l != nil {
-				l.NamedLogger.Error(ctx, "Failed to serve Block gRPC", err)
+				l.Error(ctx, "Failed to serve Block gRPC", err)
 			}
 			os.Exit(1)
 		}
@@ -181,14 +182,14 @@ func StartGRPCServer(port int, h host.Host, chainID int) error {
 	// Block until we receive a shutdown signal
 	<-stop
 	if l := logger(); l != nil {
-		l.NamedLogger.Info(context.Background(), "Shutting down Block gRPC server...")
+		l.Info(context.Background(), "Shutting down Block gRPC server...")
 	}
 
 	// Gracefully stop the server
 	grpcServer.GracefulStop()
 	healthServer.Shutdown()
 	if l := logger(); l != nil {
-		l.NamedLogger.Info(context.Background(), "Block gRPC server stopped")
+		l.Info(context.Background(), "Block gRPC server stopped")
 	}
 
 	return nil
@@ -326,28 +327,42 @@ func newIntFromBytes(b []byte) *big.Int {
 	// This handles cases where big.Int was serialized as a string in JSON/protobuf
 	if isASCIIString(b) {
 		chainIDStr := strings.TrimSpace(string(b))
-		// Debug: print the bytes and string representation
-		fmt.Printf("DEBUG newIntFromBytes: bytes (hex): %x, bytes (ASCII): %s\n", b, chainIDStr)
+		// Debug: log the bytes and string representation
+		if l := logger(); l != nil {
+			l.Debug(context.Background(), "newIntFromBytes: attempting string parse",
+				ion.String("bytes_ascii", chainIDStr))
+		}
 		// Try parsing as decimal string first
 		result := new(big.Int)
 		if _, ok := result.SetString(chainIDStr, 10); ok {
-			fmt.Printf("DEBUG newIntFromBytes: parsed as decimal string: %s -> %s\n", chainIDStr, result.String())
+			if l := logger(); l != nil {
+				l.Debug(context.Background(), "newIntFromBytes: parsed as decimal string",
+					ion.String("value", result.String()))
+			}
 			return result
 		}
 		// If decimal fails, try hex (with or without 0x prefix)
 		chainIDStr = strings.TrimPrefix(chainIDStr, "0x")
 		if _, ok := result.SetString(chainIDStr, 16); ok {
-			fmt.Printf("DEBUG newIntFromBytes: parsed as hex string: %s -> %s\n", chainIDStr, result.String())
+			if l := logger(); l != nil {
+				l.Debug(context.Background(), "newIntFromBytes: parsed as hex string",
+					ion.String("value", result.String()))
+			}
 			return result
 		}
-		fmt.Printf("DEBUG newIntFromBytes: failed to parse as string, falling back to byte interpretation\n")
+		if l := logger(); l != nil {
+			l.Debug(context.Background(), "newIntFromBytes: failed to parse as string, falling back to byte interpretation")
+		}
 		// If both fail, fall through to byte interpretation
 	}
 
 	// Default: interpret as big-endian integer bytes
 	result := new(big.Int)
 	result.SetBytes(b)
-	fmt.Printf("DEBUG newIntFromBytes: interpreted as big-endian bytes: %x -> %s\n", b, result.String())
+	if l := logger(); l != nil {
+		l.Debug(context.Background(), "newIntFromBytes: interpreted as big-endian bytes",
+			ion.String("value", result.String()))
+	}
 	return result
 }
 

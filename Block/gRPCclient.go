@@ -3,7 +3,6 @@ package Block
 import (
 	"context"
 	"fmt"
-	"log"
 	"math/big"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"gossipnode/logging"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/JupiterMetaLabs/ion"
 	// "github.com/golang/protobuf/ptypes/empty"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -74,41 +74,44 @@ func (m *MempoolClient) SubmitTransaction(tx *config.Transaction, txHash string)
 
 	// Convert the transaction to the protobuf format
 	pbTx := convertToPbTransaction(tx, txHash)
-	log.Printf("Submitting transaction to mempool: %+v", pbTx)
+	logger().Debug(ctx, "Submitting transaction to mempool", ion.String("tx_hash", txHash))
 
 	// Submit the transaction to the routing service
-	log.Printf("Getting routing client...")
+	logger().Debug(ctx, "Getting routing client")
 	RoutingClient, err := GetRoutingClient()
 	if err != nil {
-		log.Printf("Failed to get routing client: %v", err)
+		logger().Error(ctx, "Failed to get routing client", err)
 		return fmt.Errorf("routing client connection failed: %v", err)
 	}
-	log.Printf("Routing client obtained successfully")
-	log.Printf("Calling SubmitTransaction on routing client (timeout: 10s)...")
+	logger().Debug(ctx, "Routing client obtained successfully")
+	logger().Debug(ctx, "Calling SubmitTransaction on routing client", ion.String("timeout", "10s"))
 	start := time.Now().UTC()
 	resp, err := RoutingClient.client.SubmitTransaction(ctx, pbTx)
 	duration := time.Since(start)
 
 	if err != nil {
-		log.Printf("Failed to submit transaction to mempool after %v: %v", duration, err)
+		logger().Error(ctx, "Failed to submit transaction to mempool", err, ion.Duration("duration", duration))
 		return fmt.Errorf("failed to submit transaction to mempool: %v", err)
 	}
-	log.Printf("SubmitTransaction call completed successfully in %v", duration)
+	logger().Debug(ctx, "SubmitTransaction call completed successfully", ion.Duration("duration", duration))
 
 	// Log the full response
-	log.Printf("Mempool response: success=%t, hash=%s, error=%s, mempool_node=%s, total_replicas=%d",
-		resp.Success, resp.Hash, resp.Error, resp.MempoolNode, resp.TotalReplicas)
+	logger().Debug(ctx, "Mempool response",
+		ion.Bool("success", resp.Success),
+		ion.String("hash", resp.Hash),
+		ion.String("mempool_node", resp.MempoolNode),
+		ion.Int("total_replicas", int(resp.TotalReplicas)))
 
 	if len(resp.ReplicaMempools) > 0 {
-		log.Printf("Replica mempools: %v", resp.ReplicaMempools)
+		logger().Debug(ctx, "Replica mempools found", ion.Int("count", len(resp.ReplicaMempools)))
 	}
 
 	if !resp.Success {
-		log.Printf("Mempool rejected transaction %s: %s", resp.Hash, resp.Error)
+		logger().Warn(ctx, "Mempool rejected transaction", ion.Err(fmt.Errorf(resp.Error)), ion.String("hash", resp.Hash))
 		return fmt.Errorf("mempool rejected transaction: %s", resp.Error)
 	}
 
-	log.Printf("Transaction %s successfully submitted to mempool", resp.Hash)
+	logger().Debug(ctx, "Transaction successfully submitted to mempool", ion.String("hash", resp.Hash))
 	return nil
 }
 
@@ -118,7 +121,7 @@ func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.Batch
 	defer cancel()
 
 	// Log batch submission
-	fmt.Printf("Submitting %d transactions to mempool\n", len(txs))
+	logger().Debug(ctx, "Submitting transactions to mempool", ion.Int("count", len(txs)))
 
 	pbTxs := make([]*pb.Transaction, len(txs))
 	for i, tx := range txs {
@@ -138,23 +141,24 @@ func (m *MempoolClient) SubmitTransactions(txs []*config.Transaction) (*pb.Batch
 		return nil, err
 	}
 
-	log.Printf("Calling SubmitTransactions on routing client (timeout: 15s)...")
+	logger().Debug(ctx, "Calling SubmitTransactions on routing client", ion.String("timeout", "15s"))
 	start := time.Now().UTC()
 	resp, err := RoutingClient.client.SubmitTransactions(ctx, batch)
 	duration := time.Since(start)
 
 	if err != nil {
-		log.Printf("Failed to submit transactions to mempool after %v: %v", duration, err)
+		logger().Error(ctx, "Failed to submit transactions to mempool", err, ion.Duration("duration", duration))
 		return nil, fmt.Errorf("routing client could not submit transactions: %s", err)
 	}
-	log.Printf("SubmitTransactions call completed successfully in %v", duration)
+	logger().Debug(ctx, "SubmitTransactions call completed successfully", ion.Duration("duration", duration))
 
 	if !resp.Success {
 		// The response itself is returned to allow the caller to inspect partial successes if applicable.
+		logger().Warn(ctx, "Mempool rejected transaction batch", ion.Err(fmt.Errorf(resp.Error)))
 		return resp, fmt.Errorf("mempool rejected transaction batch: %s", resp.Error)
 	}
 
-	log.Printf("%d transactions successfully submitted to mempool", resp.Count)
+	logger().Debug(ctx, "Transactions successfully submitted to mempool", ion.Int("count", int(resp.Count)))
 	return resp, nil
 }
 
@@ -393,7 +397,7 @@ func InitMempoolClient(address string) error {
 	globalMempoolClient = client
 	// Don't verify connection here since GetMempoolStats depends on routing client
 	// which is initialized later in main.go
-	fmt.Println("Mempool client initialized successfully")
+	logger().Info(context.Background(), "Mempool client initialized successfully")
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -20,7 +21,7 @@ func NewHTTPServer(h *Handlers) *HTTPServer {
 	Logger.Once.Do(func() {
 		if err := Logger.InitLogger(); err != nil {
 			// Log error but don't panic - continue without logger
-			fmt.Printf("Warning: failed to initialize logger: %v\n", err)
+			log.Printf("Warning: failed to initialize logger: %v\n", err)
 		}
 	})
 	return &HTTPServer{h: h}
