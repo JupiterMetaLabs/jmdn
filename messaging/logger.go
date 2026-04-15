@@ -12,7 +12,7 @@ func contractLogger() *ion.Ion {
 	if err != nil {
 		return nil
 	}
-	return logInstance.NamedLogger
+	return logInstance.GetNamedLogger()
 }
 
 // broadcastLogger returns the named ion logger for the broadcast / block-propagation subsystem.
@@ -21,6 +21,6 @@ func broadcastLogger() *ion.Ion {
 	if err != nil {
 		return nil
 	}
-	return logInstance.NamedLogger
+	return logInstance.GetNamedLogger()
 }
 

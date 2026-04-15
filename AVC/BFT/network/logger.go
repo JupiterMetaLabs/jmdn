@@ -1,4 +1,4 @@
-package MessagePassing
+package network
 
 import (
 	log "gossipnode/logging"
@@ -8,7 +8,7 @@ import (
 
 // Zero allocation logger - its already allocated in the asynclogger
 func logger() *ion.Ion {
-	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.MessagePassing, "")
+	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.BFTNetwork, "")
 	if err != nil {
 		return nil
 	}

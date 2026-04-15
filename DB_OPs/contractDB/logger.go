@@ -13,5 +13,5 @@ func logger() *ion.Ion {
 	if err != nil || logInstance == nil {
 		return nil
 	}
-	return logInstance.NamedLogger
+	return logInstance.GetNamedLogger()
 }

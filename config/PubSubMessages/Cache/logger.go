@@ -1,4 +1,4 @@
-package MessagePassing
+package Cache
 
 import (
 	log "gossipnode/logging"
@@ -7,8 +7,8 @@ import (
 )
 
 // Zero allocation logger - its already allocated in the asynclogger
-func logger() *ion.Ion {
-	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.MessagePassing, "")
+func cacheLogger() *ion.Ion {
+	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.Config, "")
 	if err != nil {
 		return nil
 	}
