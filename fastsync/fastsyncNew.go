@@ -1985,7 +1985,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 		logger().Debug(context.Background(), "Pushing Main DB data from AVRO file",
 			ion.Int("keys", Phase2.HashMap.MAIN_HashMap.Size()))
 		if err := fs.PushDataToDB(Phase2, MainDB, "fastsync/.temp/defaultdb.avro"); err != nil {
-			logger().Debug(context.Background(), "Failed to push Main DB transactions", err)
+			logger().Debug(context.Background(), "Failed to push Main DB transactions", ion.Err(err))
 			return nil, fmt.Errorf("failed to push Main DB transactions: %w", err)
 		}
 		logger().Info(context.Background(), "Successfully pushed Main DB transactions")
@@ -2515,8 +2515,8 @@ func (fs *FastSync) FirstSyncServer(peerID peer.ID) error {
 	if fs.Logger != nil {
 		fs.Logger.Info(context.Background(), "First sync server completed successfully",
 			ion.String("peer", peerID.String()),
-			ion, ion.Int("main_keys", mainHashMap.Size()),
-			ion, ion.Int("accounts_keys", accountsHashMap.Size()))
+			ion.Int("main_keys", mainHashMap.Size()),
+			ion.Int("accounts_keys", accountsHashMap.Size()))
 	} else {
 		logger().Info(context.Background(), ">>> [FIRST_SYNC_SERVER] ✓ First sync server completed successfully")
 		logger().Info(context.Background(), "First sync server completed successfully", ion.String("peer", peerID.String()), ion.Int("main_keys", mainHashMap.Size()), ion.Int("accounts_keys", accountsHashMap.Size()))
