@@ -3,7 +3,6 @@ package selection
 import (
 	"context"
 	"crypto/ed25519"
-	"fmt"
 
 	"github.com/JupiterMetaLabs/ion"
 	seednode "gossipnode/seednode"
@@ -52,11 +51,10 @@ func GetBuddyNodes(
 
 	// Display first node in detail
 	if len(allNodes) > 0 {
-		// fmt.Println("🔍 Inspecting first node in detail:", allNodes[0])
-		logger().Info(context.Background(), "%+v", allNodes[0])
+		logger().Info(context.Background(), "First node detail", ion.String("node_id", allNodes[0].ID))
 	}
 
-	logger().Info(context.Background(), "📋 Fetched %d eligible peers", len(allNodes))
+	logger().Info(context.Background(), "Fetched eligible peers", ion.Int("count", len(allNodes)))
 
 	// 3. Use the nodes to select buddies
 	// The selection score is already calculated in seednode.go
@@ -96,7 +94,7 @@ func GetBuddyNodesWithNodes(
 	}
 
 	// logger().Info(context.Background(), "Debugging 7\n")
-	logger().Info(context.Background(), "nodes: %+v", len(nodes))
+	logger().Info(context.Background(), "Candidate node count", ion.Int("count", len(nodes)))
 
 	// logger().Info(context.Background(), "🔍 Filtering %d nodes for eligibility", len(nodes))
 
@@ -110,7 +108,7 @@ func GetBuddyNodesWithNodes(
 
 	// logger().Info(context.Background(), "✅ %d eligible nodes after filtering", len(eligible))
 	// logger().Info(context.Background(), "Debugging 8\n")
-	logger().Info(context.Background(), "eligible: %+v", len(eligible))
+	logger().Info(context.Background(), "Eligible nodes after filtering", ion.Int("count", len(eligible)))
 	// 2. Create VRF selector
 	vrfConfig := &VRFConfig{
 		NetworkSalt: networkSalt,
@@ -125,6 +123,6 @@ func GetBuddyNodesWithNodes(
 	vrfSelector := selector.(*VRFSelector)
 
 	// 3. Select buddies using VRF algorithm
-	logger().Info(context.Background(), "🎲 Selecting %d buddies using VRF", numBuddies)
+	logger().Info(context.Background(), "Selecting buddies using VRF", ion.Int("num_buddies", numBuddies))
 	return vrfSelector.SelectMultipleBuddies(ctx, nodeID, eligible, numBuddies)
 }

@@ -49,7 +49,8 @@ func StartProfiler(bindAddr string, port string) *http.Server {
 		defer func() {
 			if r := recover(); r != nil {
 				logger().Error(ctx, "Profiler server panic",
-					ion.String("panic", fmt.Sprintf("%v", r)))
+					fmt.Errorf("%v", r),
+					ion.String("recovered", fmt.Sprintf("%v", r)))
 			}
 		}()
 

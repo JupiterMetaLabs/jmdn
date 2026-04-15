@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 
@@ -30,7 +31,9 @@ func ConvertBigToUint256(b *big.Int) (*uint256.Int, bool) {
 	u, overflow := uint256.FromBig(b)
 	if overflow {
 		// Note: Using context.Background() for conversion errors without context
-		logger().Error(context.Background(), "Overflow occurred while converting big.Int to uint256")
+		logger().Error(context.Background(), "Overflow occurred while converting big.Int to uint256",
+			errors.New("uint256 overflow"),
+			ion.String("value", b.String()))
 		return nil, true
 	}
 	return u, overflow

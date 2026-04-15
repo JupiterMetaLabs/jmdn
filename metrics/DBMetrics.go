@@ -43,7 +43,6 @@
 package metrics
 
 import (
-	"fmt"
 	"log"
 	"sync"
 )

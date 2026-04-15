@@ -3,7 +3,6 @@ package selection
 import (
 	"context"
 	"github.com/JupiterMetaLabs/ion"
-	"fmt"
 	"time"
 )
 

@@ -48,4 +48,6 @@ const (
 	SmartContractServer          = "log:SmartContractServer"
 	BFTNetwork                   = "log:BFTNetwork"
 	TOPIC                        = "log:TOPIC"
+	VoteModule                   = "log:VoteModule"
+	DB_OPs_SqlOps                = "log:DB_OPs_SqlOps"
 )
