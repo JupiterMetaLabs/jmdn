@@ -392,6 +392,33 @@ func HasCode(addr common.Address) bool {
 	return err == nil && len(val) > 0
 }
 
+// GetCodeBytes returns the raw bytecode for a contract from the shared KVStore.
+// Returns (nil, false) when the KVStore is uninitialised or no code is found.
+// Used by the pull-on-demand responder to transfer bytecode to requesting nodes.
+func GetCodeBytes(addr common.Address) ([]byte, bool) {
+	if sharedKVStore == nil {
+		return nil, false
+	}
+	val, err := sharedKVStore.Get(makeCodeKey(addr))
+	if err != nil || len(val) == 0 {
+		return nil, false
+	}
+	return val, true
+}
+
+// StoreCodeBytes writes raw bytecode for a contract into the shared KVStore.
+// Used by the pull-on-demand client to persist bytecode received from a peer.
+// No-op if the KVStore is uninitialised.
+func StoreCodeBytes(addr common.Address, code []byte) error {
+	if sharedKVStore == nil {
+		return fmt.Errorf("contractDB: KVStore not initialised, cannot store code for %s", addr.Hex())
+	}
+	if len(code) == 0 {
+		return nil
+	}
+	return sharedKVStore.Set(makeCodeKey(addr), code)
+}
+
 // ============================================================================
 // Process-wide singletons (set at startup by server_integration.go / cmd/main.go)
 // ============================================================================

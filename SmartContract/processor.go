@@ -2,6 +2,7 @@ package SmartContract
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -12,7 +13,6 @@ import (
 	"gossipnode/config"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/rs/zerolog/log"
 )
 
 // ============================================================================
@@ -50,8 +50,7 @@ func RegisterContractFromGossip(
 	sharedRegistryMu.RUnlock()
 
 	if reg == nil {
-		log.Warn().Str("contract", addr.Hex()).Msg("SmartContract: registry not initialised, skipping gossip registration")
-		return nil
+		return fmt.Errorf("SmartContract: registry not initialised, contract %s dropped — call SetSharedRegistry at startup", addr.Hex())
 	}
 
 	// Already registered — nothing to do.
@@ -114,6 +113,20 @@ func GetContractMeta(addr common.Address) (*types.ContractMetadata, bool) {
 // Safe to call from BlockProcessing hot paths.
 func HasCode(addr common.Address) bool {
 	return contractDB.HasCode(addr)
+}
+
+// GetCodeBytes returns the raw EVM bytecode stored for a contract address.
+// Returns (nil, false) when no bytecode is found.
+// Used by the pull-on-demand server to include bytecode in ContractPullResponse.
+func GetCodeBytes(addr common.Address) ([]byte, bool) {
+	return contractDB.GetCodeBytes(addr)
+}
+
+// StoreCodeBytes persists raw EVM bytecode for a contract address into the
+// local KVStore.  Called by the pull-on-demand client after receiving bytecode
+// from a peer so that HasCode returns true and contract execution can proceed.
+func StoreCodeBytes(addr common.Address, code []byte) error {
+	return contractDB.StoreCodeBytes(addr, code)
 }
 
 // DeploymentResult contains the result of a contract deployment.
