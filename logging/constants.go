@@ -50,4 +50,7 @@ const (
 	TOPIC                        = "log:TOPIC"
 	VoteModule                   = "log:VoteModule"
 	DB_OPs_SqlOps                = "log:DB_OPs_SqlOps"
+	DB_OPs_LogWriter             = "log:DB_OPs_LogWriter"
+	CRDTLayer                    = "log:CRDTLayer"
+	DB_OPs_MerkleTree            = "log:DB_OPs_MerkleTree"
 )
