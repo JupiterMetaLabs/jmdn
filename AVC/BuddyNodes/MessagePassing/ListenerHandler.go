@@ -1715,7 +1715,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 
 	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
 	if listenerNode == nil {
-		logger().Error(context.Background(), "Listener node not initialized", fmt.Errorf("not initialized")
+		logger().Error(context.Background(), "Listener node not initialized", fmt.Errorf("not initialized"))
 		return
 	}
 
@@ -1905,7 +1905,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 						if result, ok := resultData["result"].(float64); ok {
 							voteResult := int8(result)
 							Maps.StoreVoteResult(buddyID.String(), voteResult)
-							logger().Info(context.Background(), "✅ Stored vote result for peer %s: %d"), voteResult)
+							logger().Info(context.Background(), fmt.Sprintf("✅ Stored vote result for peer %s: %d", buddyID.String(), voteResult))
 							responsesMutex.Lock()
 							responsesReceived++
 							count := responsesReceived
