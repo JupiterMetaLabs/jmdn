@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"math/rand"
 	"sync"
@@ -19,11 +20,11 @@ import (
 	"gossipnode/metrics"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/rs/zerolog/log"
 )
 
 // ContractMessage is the gossip payload for a confirmed contract deployment.
@@ -49,6 +50,11 @@ var (
 	contractFilter     *bloom.BloomFilter
 	contractFilterOnce sync.Once
 	contractFilterMu   sync.RWMutex
+
+	// contractGROOnce ensures ContractLocalGRO is initialised exactly once,
+	// regardless of how many concurrent goroutines reach the lazy-init path.
+	contractGROOnce    sync.Once
+	contractGROInitErr error
 )
 
 // InitContractPropagation initialises the Bloom filter used for deduplication.
@@ -57,8 +63,21 @@ func InitContractPropagation() error {
 	contractFilterOnce.Do(func() {
 		contractFilter = bloom.NewWithEstimates(100_000, 0.01)
 	})
-	log.Info().Msg("Contract propagation system initialised")
+	// Also pre-initialise the GRO so the first incoming stream doesn't race.
+	if err := ensureContractLocalGRO(); err != nil {
+		return err
+	}
+	contractLogger().Info(context.Background(), "Contract propagation system initialised")
 	return nil
+}
+
+// ensureContractLocalGRO initialises ContractLocalGRO exactly once.
+// Safe for concurrent callers.
+func ensureContractLocalGRO() error {
+	contractGROOnce.Do(func() {
+		ContractLocalGRO, contractGROInitErr = GROHelper.InitializeGRO(GRO.ContractPropagationLocal)
+	})
+	return contractGROInitErr
 }
 
 // generateContractMessageID creates a deterministic, short ID for a contract gossip message.
@@ -96,18 +115,14 @@ func markContractMessageProcessed(id string) {
 // gossips it to every currently-connected peer.
 // Called as a goroutine (fire-and-forget) exclusively from the sequencer path.
 func PropagateContractDeployments(h host.Host, deployments []BlockProcessing.ContractDeploymentInfo) {
-	if ContractLocalGRO == nil {
-		var err error
-		ContractLocalGRO, err = GROHelper.InitializeGRO(GRO.ContractPropagationLocal)
-		if err != nil {
-			log.Error().Err(err).Msg("ContractPropagation: failed to initialize LocalGRO")
-			return
-		}
+	if err := ensureContractLocalGRO(); err != nil {
+		contractLogger().Error(context.Background(), "ContractPropagation: failed to initialize LocalGRO", err)
+		return
 	}
 
 	peers := h.Network().Peers()
 	if len(peers) == 0 {
-		log.Warn().Msg("ContractPropagation: no peers to propagate to")
+		contractLogger().Warn(context.Background(), "ContractPropagation: no peers to propagate to")
 		return
 	}
 
@@ -137,14 +152,15 @@ func PropagateContractDeployments(h host.Host, deployments []BlockProcessing.Con
 
 		msgBytes, err := json.Marshal(msg)
 		if err != nil {
-			log.Error().Err(err).Str("contract", dep.ContractAddress.Hex()).Msg("ContractPropagation: failed to marshal message")
+			contractLogger().Error(context.Background(), "ContractPropagation: failed to marshal message", err,
+				ion.String("contract", dep.ContractAddress.Hex()))
 			continue
 		}
 		msgBytes = append(msgBytes, '\n')
 
 		wg, err := ContractLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.ContractForwardWG)
 		if err != nil {
-			log.Error().Err(err).Msg("ContractPropagation: failed to create wait group")
+			contractLogger().Error(context.Background(), "ContractPropagation: failed to create wait group", err)
 			continue
 		}
 
@@ -158,12 +174,14 @@ func PropagateContractDeployments(h host.Host, deployments []BlockProcessing.Con
 				defer cancel()
 				stream, err := h.NewStream(ctxT, p, config.ContractPropagationProtocol)
 				if err != nil {
-					log.Debug().Err(err).Str("peer", p.String()).Msg("ContractPropagation: failed to open stream")
+					contractLogger().Debug(ctx, "ContractPropagation: failed to open stream",
+						ion.Err(err), ion.String("peer", p.String()))
 					return err
 				}
 				defer stream.Close()
 				if _, err := stream.Write(msgBytes); err != nil {
-					log.Debug().Err(err).Str("peer", p.String()).Msg("ContractPropagation: failed to write message")
+					contractLogger().Debug(ctx, "ContractPropagation: failed to write message",
+						ion.Err(err), ion.String("peer", p.String()))
 					return err
 				}
 				successMu.Lock()
@@ -172,18 +190,18 @@ func PropagateContractDeployments(h host.Host, deployments []BlockProcessing.Con
 				metrics.MessagesSentCounter.WithLabelValues("contract", p.String()).Inc()
 				return nil
 			}, local.AddToWaitGroup(GRO.ContractForwardWG)); err != nil {
-				log.Error().Err(err).Str("peer", p.String()).Msg("ContractPropagation: failed to start goroutine")
+				contractLogger().Error(context.Background(), "ContractPropagation: failed to start goroutine", err,
+				ion.String("peer", p.String()))
 			}
 		}
 
 		wg.Wait()
 
-		log.Info().
-			Str("contract", dep.ContractAddress.Hex()).
-			Uint64("block", dep.BlockNumber).
-			Int("peers_sent", successCount).
-			Int("peers_total", len(peers)).
-			Msg("Contract deployment propagated")
+		contractLogger().Info(context.Background(), "Contract deployment propagated",
+			ion.String("contract", dep.ContractAddress.Hex()),
+			ion.Uint64("block", dep.BlockNumber),
+			ion.Int("peers_sent", successCount),
+			ion.Int("peers_total", len(peers)))
 	}
 }
 
@@ -191,36 +209,38 @@ func PropagateContractDeployments(h host.Host, deployments []BlockProcessing.Con
 // the ContractPropagationProtocol.  It deduplicates via Bloom filter, writes the
 // contract metadata to the local registry, and hop-limits re-forwarding.
 func HandleContractStream(stream network.Stream) {
-	if ContractLocalGRO == nil {
-		var err error
-		ContractLocalGRO, err = GROHelper.InitializeGRO(GRO.ContractPropagationLocal)
-		if err != nil {
-			log.Error().Err(err).Msg("ContractPropagation: failed to initialize LocalGRO")
-			return
-		}
+	if err := ensureContractLocalGRO(); err != nil {
+		contractLogger().Error(context.Background(), "ContractPropagation: failed to initialize LocalGRO", err)
+		stream.Close()
+		return
 	}
 	defer stream.Close()
 
 	remotePeer := stream.Conn().RemotePeer().String()
 	metrics.MessagesReceivedCounter.WithLabelValues("contract", remotePeer).Inc()
 
-	reader := bufio.NewReader(stream)
+	// Cap incoming message size to prevent an OOM attack from a malicious peer.
+	const maxPushBytes = 4 * 1024 * 1024 // 4 MB — well above any legitimate ContractMessage
+	reader := bufio.NewReader(io.LimitReader(stream, maxPushBytes))
 	msgBytes, err := reader.ReadBytes('\n')
-	if err != nil {
-		if err != io.EOF {
-			log.Error().Err(err).Str("peer", remotePeer).Msg("ContractPropagation: error reading stream")
-		}
+	if err != nil && err != io.EOF {
+		contractLogger().Error(context.Background(), "ContractPropagation: error reading stream", err,
+			ion.String("peer", remotePeer))
+		return
+	}
+	if len(msgBytes) == 0 {
 		return
 	}
 
 	var msg ContractMessage
 	if err := json.Unmarshal(msgBytes, &msg); err != nil {
-		log.Error().Err(err).Msg("ContractPropagation: failed to unmarshal message")
+		contractLogger().Error(context.Background(), "ContractPropagation: failed to unmarshal message", err)
 		return
 	}
 
 	if isContractMessageProcessed(msg.ID) {
-		log.Debug().Str("msg_id", msg.ID).Msg("ContractPropagation: duplicate message, dropping")
+		contractLogger().Debug(context.Background(), "ContractPropagation: duplicate message, dropping",
+			ion.String("msg_id", msg.ID))
 		return
 	}
 	markContractMessageProcessed(msg.ID)
@@ -237,18 +257,24 @@ func HandleContractStream(stream network.Stream) {
 				return nil
 			})
 		} else {
-			log.Error().Msg("ContractPropagation: host instance unavailable for forwarding")
+			contractLogger().Error(context.Background(), "ContractPropagation: host instance unavailable for forwarding",
+				errors.New("getHostInstance returned nil"))
 		}
 	} else {
-		log.Debug().
-			Str("msg_id", msg.ID).
-			Int("hops", msg.Hops).
-			Msg("ContractPropagation: max hops reached, not re-forwarding")
+		contractLogger().Debug(context.Background(), "ContractPropagation: max hops reached, not re-forwarding",
+			ion.String("msg_id", msg.ID),
+			ion.Int("hops", msg.Hops))
 	}
 }
 
 // storeContractFromGossip persists a received ContractMessage to the local registry.
 func storeContractFromGossip(msg ContractMessage) {
+	if ContractLocalGRO == nil {
+		contractLogger().Error(context.Background(), "ContractPropagation: storeContractFromGossip called before GRO initialised",
+			errors.New("ContractLocalGRO is nil"),
+			ion.String("contract", msg.ContractAddress.Hex()))
+		return
+	}
 	ContractLocalGRO.Go(GRO.ContractStoreThread, func(ctx context.Context) error {
 		err := SmartContract.RegisterContractFromGossip(
 			ctx,
@@ -259,16 +285,13 @@ func storeContractFromGossip(msg ContractMessage) {
 			msg.ABI,
 		)
 		if err != nil {
-			log.Error().
-				Err(err).
-				Str("contract", msg.ContractAddress.Hex()).
-				Msg("ContractPropagation: failed to register contract from gossip")
+			contractLogger().Error(ctx, "ContractPropagation: failed to register contract from gossip", err,
+				ion.String("contract", msg.ContractAddress.Hex()))
 			return err
 		}
-		log.Info().
-			Str("contract", msg.ContractAddress.Hex()).
-			Uint64("block", msg.BlockNumber).
-			Msg("ContractPropagation: contract registered from gossip")
+		contractLogger().Info(ctx, "ContractPropagation: contract registered from gossip",
+			ion.String("contract", msg.ContractAddress.Hex()),
+			ion.Uint64("block", msg.BlockNumber))
 		return nil
 	})
 }
@@ -278,7 +301,7 @@ func storeContractFromGossip(msg ContractMessage) {
 func forwardContract(h host.Host, msg ContractMessage) {
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
-		log.Error().Err(err).Msg("ContractPropagation: failed to marshal message for forwarding")
+		contractLogger().Error(context.Background(), "ContractPropagation: failed to marshal message for forwarding", err)
 		return
 	}
 	msgBytes = append(msgBytes, '\n')
@@ -287,7 +310,7 @@ func forwardContract(h host.Host, msg ContractMessage) {
 
 	wg, err := ContractLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.ContractForwardWG)
 	if err != nil {
-		log.Error().Err(err).Msg("ContractPropagation: failed to create wait group for forwarding")
+		contractLogger().Error(context.Background(), "ContractPropagation: failed to create wait group for forwarding", err)
 		return
 	}
 
@@ -304,7 +327,8 @@ func forwardContract(h host.Host, msg ContractMessage) {
 			defer cancel()
 			stream, err := h.NewStream(ctxT, p, config.ContractPropagationProtocol)
 			if err != nil {
-				log.Debug().Err(err).Str("peer", p.String()).Msg("ContractPropagation: forward stream failed")
+				contractLogger().Debug(ctx, "ContractPropagation: forward stream failed",
+					ion.Err(err), ion.String("peer", p.String()))
 				return err
 			}
 			defer stream.Close()
@@ -317,17 +341,17 @@ func forwardContract(h host.Host, msg ContractMessage) {
 			metrics.MessagesSentCounter.WithLabelValues("contract", p.String()).Inc()
 			return nil
 		}, local.AddToWaitGroup(GRO.ContractForwardWG)); err != nil {
-			log.Error().Err(err).Str("peer", p.String()).Msg("ContractPropagation: failed to start forwarding goroutine")
+			contractLogger().Error(context.Background(), "ContractPropagation: failed to start forwarding goroutine", err,
+			ion.String("peer", p.String()))
 		}
 	}
 
 	wg.Wait()
 
-	log.Info().
-		Str("msg_id", msg.ID).
-		Str("contract", msg.ContractAddress.Hex()).
-		Int("peers_forwarded", successCount).
-		Msg("ContractPropagation: message forwarded")
+	contractLogger().Info(context.Background(), "ContractPropagation: message forwarded",
+		ion.String("msg_id", msg.ID),
+		ion.String("contract", msg.ContractAddress.Hex()),
+		ion.Int("peers_forwarded", successCount))
 }
 
 // ============================================================================
@@ -341,6 +365,8 @@ type ContractPullRequest struct {
 }
 
 // ContractPullResponse is the payload returned by a peer that has the contract.
+// Bytecode is included so the requester can write it to its local KVStore and
+// pass the HasCode check before block processing begins.
 type ContractPullResponse struct {
 	Found           bool           `json:"found"`
 	ContractAddress common.Address `json:"contract_address"`
@@ -348,7 +374,9 @@ type ContractPullResponse struct {
 	TxHash          common.Hash    `json:"tx_hash"`
 	BlockNumber     uint64         `json:"block_number"`
 	ABI             string         `json:"abi,omitempty"`
-	Error           string         `json:"error,omitempty"`
+	// Bytecode holds the raw EVM contract bytecode.  base64-encoded by JSON.
+	Bytecode []byte `json:"bytecode,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 // HandleContractPullStream is the libp2p stream handler registered on every
@@ -359,51 +387,58 @@ func HandleContractPullStream(stream network.Stream) {
 
 	remotePeer := stream.Conn().RemotePeer().String()
 
-	// Read request (single JSON line).
-	reader := bufio.NewReader(stream)
+	// Read request (single JSON line). Cap size to prevent a malicious peer from OOMing us.
+	const maxPullReqBytes = 512 // ContractPullRequest is tiny — just a 20-byte address
+	reader := bufio.NewReader(io.LimitReader(stream, maxPullReqBytes))
 	reqBytes, err := reader.ReadBytes('\n')
-	if err != nil {
-		if err != io.EOF {
-			log.Error().Err(err).Str("peer", remotePeer).Msg("ContractPull: error reading request")
-		}
+	if err != nil && err != io.EOF {
+		contractLogger().Error(context.Background(), "ContractPull: error reading request", err,
+			ion.String("peer", remotePeer))
+		return
+	}
+	if len(reqBytes) == 0 {
 		return
 	}
 
 	var req ContractPullRequest
 	if err := json.Unmarshal(reqBytes, &req); err != nil {
-		log.Error().Err(err).Msg("ContractPull: failed to unmarshal request")
+		contractLogger().Error(context.Background(), "ContractPull: failed to unmarshal request", err)
 		respondPullError(stream, req.ContractAddress, "bad request")
 		return
 	}
 
-	log.Debug().
-		Str("contract", req.ContractAddress.Hex()).
-		Str("peer", remotePeer).
-		Msg("ContractPull: received pull request")
+	contractLogger().Debug(context.Background(), "ContractPull: received pull request",
+		ion.String("contract", req.ContractAddress.Hex()),
+		ion.String("peer", remotePeer))
 
 	resp := buildPullResponse(req.ContractAddress)
 
 	respBytes, err := json.Marshal(resp)
 	if err != nil {
-		log.Error().Err(err).Msg("ContractPull: failed to marshal response")
+		contractLogger().Error(context.Background(), "ContractPull: failed to marshal response", err)
 		return
 	}
 	respBytes = append(respBytes, '\n')
 
 	if _, err := stream.Write(respBytes); err != nil {
-		log.Error().Err(err).Str("peer", remotePeer).Msg("ContractPull: failed to write response")
+		contractLogger().Error(context.Background(), "ContractPull: failed to write response", err,
+			ion.String("peer", remotePeer))
 	}
 }
 
 // buildPullResponse constructs a ContractPullResponse from local state.
+// Bytecode is always included when available so the requester can write it to
+// its own KVStore and satisfy HasCode checks before block processing begins.
 func buildPullResponse(addr common.Address) ContractPullResponse {
 	resp := ContractPullResponse{ContractAddress: addr}
 
 	// Bytecode must be present — otherwise we can't help the requester.
-	if !SmartContract.HasCode(addr) {
+	code, hasCode := SmartContract.GetCodeBytes(addr)
+	if !hasCode {
 		return resp // Found=false
 	}
 	resp.Found = true
+	resp.Bytecode = code
 
 	// Enrich with registry metadata when available.
 	if abi, ok := SmartContract.GetContractABI(addr); ok {
@@ -442,7 +477,8 @@ func PullContractIfMissing(ctx context.Context, h host.Host, addr common.Address
 
 	peers := h.Network().Peers()
 	if len(peers) == 0 {
-		log.Warn().Str("contract", addr.Hex()).Msg("ContractPull: no peers available for pull")
+		contractLogger().Warn(ctx, "ContractPull: no peers available for pull",
+			ion.String("contract", addr.Hex()))
 		return false
 	}
 
@@ -466,7 +502,8 @@ func PullContractIfMissing(ctx context.Context, h host.Host, addr common.Address
 		stream, err := h.NewStream(pullCtx, p, config.ContractPullProtocol)
 		cancel()
 		if err != nil {
-			log.Debug().Err(err).Str("peer", p.String()).Msg("ContractPull: stream open failed")
+			contractLogger().Debug(ctx, "ContractPull: stream open failed",
+				ion.Err(err), ion.String("peer", p.String()))
 			continue
 		}
 
@@ -474,17 +511,22 @@ func PullContractIfMissing(ctx context.Context, h host.Host, addr common.Address
 		func() {
 			defer stream.Close()
 			if _, err := stream.Write(reqBytes); err != nil {
-				log.Debug().Err(err).Str("peer", p.String()).Msg("ContractPull: write failed")
+				contractLogger().Debug(ctx, "ContractPull: write failed",
+					ion.Err(err), ion.String("peer", p.String()))
 				return
 			}
-			reader := bufio.NewReader(stream)
+			// ContractPullResponse includes bytecode — cap at 25 MB (EVM max contract size is 24.576 KB, but be generous).
+			const maxPullRespBytes = 25 * 1024 * 1024
+			reader := bufio.NewReader(io.LimitReader(stream, maxPullRespBytes))
 			respBytes, err := reader.ReadBytes('\n')
 			if err != nil && err != io.EOF {
-				log.Debug().Err(err).Str("peer", p.String()).Msg("ContractPull: read failed")
+				contractLogger().Debug(ctx, "ContractPull: read failed",
+					ion.Err(err), ion.String("peer", p.String()))
 				return
 			}
 			if err := json.Unmarshal(respBytes, &resp); err != nil {
-				log.Debug().Err(err).Msg("ContractPull: unmarshal response failed")
+				contractLogger().Debug(ctx, "ContractPull: unmarshal response failed",
+					ion.Err(err))
 			}
 		}()
 
@@ -492,28 +534,44 @@ func PullContractIfMissing(ctx context.Context, h host.Host, addr common.Address
 			continue
 		}
 
-		// Store the fetched metadata locally.
-		storeErr := SmartContract.RegisterContractFromGossip(
+		// Write bytecode into the local KVStore first so that HasCode returns
+		// true and contract execution can proceed during block processing.
+		if len(resp.Bytecode) > 0 {
+			if codeErr := SmartContract.StoreCodeBytes(resp.ContractAddress, resp.Bytecode); codeErr != nil {
+				contractLogger().Error(ctx, "ContractPull: failed to store pulled bytecode", codeErr,
+					ion.String("contract", addr.Hex()))
+				// Continue to next peer — bytecode write failure means we can't use this response.
+				continue
+			}
+		} else {
+			contractLogger().Warn(ctx, "ContractPull: peer returned found=true but sent no bytecode, skipping",
+				ion.String("contract", addr.Hex()), ion.String("peer", p.String()))
+			continue
+		}
+
+		// Store registry metadata (deployer, ABI, etc.) — best-effort.
+		if regErr := SmartContract.RegisterContractFromGossip(
 			ctx,
 			resp.ContractAddress,
 			resp.Deployer,
 			resp.TxHash,
 			resp.BlockNumber,
 			resp.ABI,
-		)
-		if storeErr != nil {
-			log.Error().Err(storeErr).Str("contract", addr.Hex()).Msg("ContractPull: failed to store pulled contract")
+		); regErr != nil {
+			contractLogger().Warn(ctx, "ContractPull: failed to register contract metadata (bytecode stored successfully)",
+				ion.Err(regErr), ion.String("contract", addr.Hex()))
 		}
 
-		log.Info().
-			Str("contract", addr.Hex()).
-			Str("peer", p.String()).
-			Uint64("block", resp.BlockNumber).
-			Msg("ContractPull: contract metadata fetched from peer")
+		contractLogger().Info(ctx, "ContractPull: contract bytecode and metadata fetched from peer",
+			ion.String("contract", addr.Hex()),
+			ion.String("peer", p.String()),
+			ion.Uint64("block", resp.BlockNumber),
+			ion.Int("bytecode_bytes", len(resp.Bytecode)))
 		return true
 	}
 
-	log.Warn().Str("contract", addr.Hex()).Msg("ContractPull: no peer had the contract")
+	contractLogger().Warn(ctx, "ContractPull: no peer had the contract",
+		ion.String("contract", addr.Hex()))
 	return false
 }
 
@@ -530,9 +588,8 @@ func PrefetchMissingContracts(ctx context.Context, h host.Host, txs []config.Tra
 		if SmartContract.HasCode(*tx.To) {
 			continue // already present
 		}
-		log.Info().
-			Str("contract", tx.To.Hex()).
-			Msg("ContractPull: pre-fetching missing contract before block processing")
+		contractLogger().Info(ctx, "ContractPull: pre-fetching missing contract before block processing",
+			ion.String("contract", tx.To.Hex()))
 		PullContractIfMissing(ctx, h, *tx.To)
 	}
 }

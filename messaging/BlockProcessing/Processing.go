@@ -1,7 +1,9 @@
 package BlockProcessing
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"gossipnode/DB_OPs"
 	"gossipnode/SmartContract"
@@ -12,10 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/holiman/uint256"
-	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -95,7 +97,7 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 	blockKey := fmt.Sprintf("block_processed:%s", block.BlockHash.Hex())
 	processed, err := DB_OPs.Exists(accountsClient, blockKey)
 	if err == nil && processed {
-		log.Info().Str("block_hash", block.BlockHash.Hex()).Msg("Block already processed, skipping")
+		logger().Info(context.Background(), "Block already processed, skipping", ion.String("block_hash", block.BlockHash.Hex()))
 		return nil, nil
 	}
 
@@ -138,7 +140,7 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 		// Check if this transaction was already processed within this block
 		processedTxsMutex.Lock()
 		if processedTxs[tx.Hash.Hex()] {
-			log.Warn().Str("tx_hash", tx.Hash.Hex()).Msg("Duplicate transaction in block, skipping")
+			logger().Warn(context.Background(), "Duplicate transaction in block, skipping", ion.Err(errors.New("duplicate transaction")), ion.String("tx_hash", tx.Hash.Hex()))
 			processedTxsMutex.Unlock()
 			continue
 		}
@@ -155,7 +157,7 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 		// Process transaction (State DB created inside if it's a smart contract)
 		info, err := processTransaction(tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient, commitToDB)
 		if err != nil {
-			log.Error().Err(err).Str("tx_hash", tx.Hash.Hex()).Msg("processTransaction failed")
+			logger().Error(context.Background(), "processTransaction failed", err, ion.String("tx_hash", tx.Hash.Hex()))
 			// If any transaction fails, roll back all affected DIDs
 			rollbackError := rollbackBalances(originalBalances, accountsClient)
 			if rollbackError != nil {
@@ -176,21 +178,21 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 	for txHash := range processedTxs {
 		txKey := fmt.Sprintf("tx_processed:%s", txHash)
 		if err := DB_OPs.Create(accountsClient, txKey, time.Now().UTC().Unix()); err != nil {
-			log.Warn().Err(err).Str("tx_hash", txHash).Msg("Failed to mark transaction as processed")
+			logger().Warn(context.Background(), "Failed to mark transaction as processed", ion.Err(err), ion.String("tx_hash", txHash))
 		}
 
 		// Clean up the processing key
 		processingKey := fmt.Sprintf("tx_processing:%s", txHash)
 		if exists, _ := DB_OPs.Exists(accountsClient, processingKey); exists {
 			if err := DB_OPs.Create(accountsClient, processingKey, int64(-1)); err != nil {
-				log.Warn().Err(err).Str("tx_hash", txHash).Msg("Failed to clean up processing marker")
+				logger().Warn(context.Background(), "Failed to clean up processing marker", ion.Err(err), ion.String("tx_hash", txHash))
 			}
 		}
 	}
 
 	// Mark the block as processed (regular transactions already committed via DB_OPs)
 	if err := DB_OPs.Create(accountsClient, blockKey, time.Now().UTC().Unix()); err != nil {
-		log.Warn().Err(err).Str("block_hash", block.BlockHash.Hex()).Msg("Failed to mark block as processed")
+		logger().Warn(context.Background(), "Failed to mark block as processed", ion.Err(err), ion.String("block_hash", block.BlockHash.Hex()))
 	}
 
 	return deployments, nil
@@ -254,7 +256,7 @@ func rollbackBalances(originalBalances map[common.Address]string, accountsClient
 			if err != nil {
 				// If account doesn't exist and we want to roll it back to 0, just do nothing (it's effectively 0)
 				// avoiding the "key not found" error on UpdateAccountBalance
-				log.Info().Str("did", did.String()).Msg("Skipping rollback for non-existent account (original balance was 0)")
+				logger().Info(context.Background(), "Skipping rollback for non-existent account (original balance was 0)", ion.String("did", did.String()))
 				continue
 			}
 		}
@@ -262,12 +264,12 @@ func rollbackBalances(originalBalances map[common.Address]string, accountsClient
 		if err := DB_OPs.UpdateAccountBalance(accountsClient, did, balance); err != nil {
 			// If key not found (and we didn't catch it above), log warning but continue rolling back others
 			if strings.Contains(err.Error(), "key not found") {
-				log.Warn().Str("did", did.String()).Msg("Skipping rollback for non-existent account (key not found)")
+				logger().Warn(context.Background(), "Skipping rollback for non-existent account (key not found)", ion.Err(errors.New("key not found")), ion.String("did", did.String()))
 				continue
 			}
 			return fmt.Errorf("failed to restore balance for %s: %w", did, err)
 		}
-		log.Info().Str("did", did.String()).Str("balance", balance).Msg("Rolled back balance to original value")
+		logger().Info(context.Background(), "Rolled back balance to original value", ion.String("did", did.String()), ion.String("balance", balance))
 	}
 	return nil
 }
@@ -278,14 +280,14 @@ func rollbackBalances(originalBalances map[common.Address]string, accountsClient
 func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection, commitToDB bool) (*ContractDeploymentInfo, error) {
 	// First check the connection
 	if accountsClient == nil {
-		log.Error().Msg("Function: messaging.processTransaction - accountsClient is nil")
+		logger().Error(context.Background(), "Function: messaging.processTransaction - accountsClient is nil", errors.New("accountsClient is nil"))
 		return nil, fmt.Errorf("accountsClient is nil")
 	}
 
 	// Confirm the DB connection
 	err := DB_OPs.EnsureDBConnection(accountsClient)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to establish database connection")
+		logger().Error(context.Background(), "Failed to establish database connection", err)
 		return nil, fmt.Errorf("failed to establish database connection: %w", err)
 	}
 
@@ -312,20 +314,20 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// ========== CONTRACT DEPLOYMENT ==========
 	if tx.To == nil && tx.Type == 2 {
 
-		log.Info().Str("tx_hash", tx.Hash.Hex()).Msg("🚀 [CONSENSUS] CONTRACT DEPLOYMENT detected")
+		logger().Info(context.Background(), "🚀 [CONSENSUS] CONTRACT DEPLOYMENT detected", ion.String("tx_hash", tx.Hash.Hex()))
 
 		// Call SmartContract module's deployment processor with StateDB
 		result, err := SmartContract.ProcessContractDeployment(&tx, stateDB, GlobalChainID)
 		if err != nil {
 			stateDB.RevertToSnapshot(snapshot) // Rollback
-			log.Error().Err(err).Str("tx_hash", tx.Hash.Hex()).Msg("❌ [CONSENSUS] Contract deployment failed")
+			logger().Error(context.Background(), "❌ [CONSENSUS] Contract deployment failed", err, ion.String("tx_hash", tx.Hash.Hex()))
 			cleanupProcessingMarkers(accountsClient, tx.Hash.Hex())
 			return nil, fmt.Errorf("contract deployment failed: %w", err)
 		}
 
 		if !result.Success {
 			stateDB.RevertToSnapshot(snapshot) // Rollback
-			log.Error().Str("tx_hash", tx.Hash.Hex()).Msg("❌ [CONSENSUS] Contract deployment unsuccessful")
+			logger().Error(context.Background(), "❌ [CONSENSUS] Contract deployment unsuccessful", errors.New("deployment unsuccessful"), ion.String("tx_hash", tx.Hash.Hex()))
 			return nil, result.Error
 		}
 
@@ -373,11 +375,11 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		}
 		stateDB.AddBalance(zkvmAddr, zkvmAmount, tracing.BalanceChangeTransfer)
 
-		log.Info().Str("contract", result.ContractAddress.Hex()).Msg("💰 Gas fees processed for deployment")
+		logger().Info(context.Background(), "💰 Gas fees processed for deployment", ion.String("contract", result.ContractAddress.Hex()))
 
 		// Commit StateDB changes if requested
 		if commitToDB {
-			log.Info().Msg("💾 Committing contract deployment state to database")
+			logger().Info(context.Background(), "💾 Committing contract deployment state to database")
 
 			// Update balances in DID service before committing StateDB
 			for addr, balance := range stateDB.GetBalanceChanges() {
@@ -400,7 +402,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 			}, nil
 		}
 
-		log.Info().Msg("🚫 Skipping state commit (verification mode)")
+		logger().Info(context.Background(), "🚫 Skipping state commit (verification mode)")
 		return nil, nil
 	}
 
@@ -408,13 +410,13 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// Check if this is a transaction to an existing contract (To != nil and has code)
 	// We use stateDB.GetCodeSize to check if the target address is a contract
 	if tx.To != nil && stateDB.GetCodeSize(*tx.To) > 0 {
-		log.Info().Str("tx_hash", tx.Hash.Hex()).Msg("⚙️ [CONSENSUS] CONTRACT EXECUTION detected")
+		logger().Info(context.Background(), "⚙️ [CONSENSUS] CONTRACT EXECUTION detected", ion.String("tx_hash", tx.Hash.Hex()))
 
 		// Call SmartContract module's execution processor with StateDB
 		result, err := SmartContract.ProcessContractExecution(&tx, stateDB, GlobalChainID)
 		if err != nil {
 			stateDB.RevertToSnapshot(snapshot) // Rollback
-			log.Error().Err(err).Str("tx_hash", tx.Hash.Hex()).Msg("❌ [CONSENSUS] Contract execution failed")
+			logger().Error(context.Background(), "❌ [CONSENSUS] Contract execution failed", err, ion.String("tx_hash", tx.Hash.Hex()))
 			cleanupProcessingMarkers(accountsClient, tx.Hash.Hex())
 			return nil, fmt.Errorf("contract execution failed: %w", err)
 		}
@@ -463,11 +465,11 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 		}
 		stateDB.AddBalance(zkvmAddr, zkvmExecAmount, tracing.BalanceChangeTransfer)
 
-		log.Info().Str("contract", tx.To.Hex()).Msg("💰 Gas fees processed for execution")
+		logger().Info(context.Background(), "💰 Gas fees processed for execution", ion.String("contract", tx.To.Hex()))
 
 		// Commit StateDB changes if requested
 		if commitToDB {
-			log.Info().Msg("💾 Committing contract execution state to database")
+			logger().Info(context.Background(), "💾 Committing contract execution state to database")
 
 			// Update balances in DID service before committing StateDB
 			for addr, balance := range stateDB.GetBalanceChanges() {
@@ -480,7 +482,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 				return nil, fmt.Errorf("failed to commit contract execution state: %w", err)
 			}
 		} else {
-			log.Info().Msg("🚫 Skipping state commit (verification mode)")
+			logger().Info(context.Background(), "🚫 Skipping state commit (verification mode)")
 		}
 
 		return nil, nil
@@ -501,7 +503,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	// Check if already completed
 	processed, err := DB_OPs.Exists(accountsClient, txKey)
 	if err == nil && processed {
-		log.Info().Str("tx_hash", tx.Hash.Hex()).Msg("Transaction already processed in previous block, skipping")
+		logger().Info(context.Background(), "Transaction already processed in previous block, skipping", ion.String("tx_hash", tx.Hash.Hex()))
 		return nil, nil
 	}
 
@@ -624,7 +626,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 
 	// Commit StateDB if requested (Ethereum-style)
 	if commitToDB {
-		log.Info().Msg("💾 Committing regular transfer state to database")
+		logger().Info(context.Background(), "💾 Committing regular transfer state to database")
 
 		// Update balances in DID service before committing StateDB
 		for addr, balance := range stateDB.GetBalanceChanges() {
@@ -637,7 +639,7 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 			return nil, fmt.Errorf("failed to commit regular transfer state: %w", err)
 		}
 	} else {
-		log.Info().Msg("🚫 Skipping state commit for regular transfer (verification mode)")
+		logger().Info(context.Background(), "🚫 Skipping state commit for regular transfer (verification mode)")
 	}
 
 	// Mark transaction as fully processed - this is the key that prevents double processing
