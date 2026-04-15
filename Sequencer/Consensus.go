@@ -1224,9 +1224,8 @@ func (consensus *Consensus) PrintCRDTState(logger_ctx context.Context) error {
 
 // printCRDTHeader prints the header information for CRDT state
 func (consensus *Consensus) printCRDTHeader(listenerNode *PubSubMessages.BuddyNode) {
-	logger().Info(ctx, "CRDT State - Sequencer - Start")
-	logger().Info(ctx, "CRDT State", ion.String("peer_id", listenerNode.PeerID.String()), ion.String("timestamp", time.Now().UTC().Format(time.RFC3339)), ion.String("block_hash", consensus.ZKBlockData.GetZKBlock().BlockHash.String()))
-	logger().Debug(ctx, "Message stats", ion.Int("received", receivedCount), ion.Int("sent", sentCount), ion.Int("total", receivedCount+sentCount))
+	logger().Info(context.Background(), "CRDT State - Sequencer - Start")
+	logger().Info(context.Background(), "CRDT State", ion.String("peer_id", listenerNode.PeerID.String()), ion.String("timestamp", time.Now().UTC().Format(time.RFC3339)), ion.String("block_hash", consensus.ZKBlockData.GetZKBlock().BlockHash.String()))
 }
 
 // printCRDTVotes prints vote information from CRDT
@@ -1245,14 +1244,14 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 			attribute.Int("votes_count", 0),
 			attribute.Bool("votes_exist", false),
 		)
-	logger().Info(ctx, "Votes in CRDT", ion.Int("vote_count", 0))
+	logger().Info(trace_ctx, "Votes in CRDT", ion.Int("vote_count", 0))
 		logger().Info(trace_ctx, "No votes in CRDT yet",
 			ion.String("function", "Consensus.printCRDTVotes"))
 		return
 	}
 
 	span.SetAttributes(attribute.Int("votes_count", len(votes)))
-	logger().Info(ctx, "Total votes in CRDT", ion.Int("vote_count", len(votes)))
+	logger().Info(trace_ctx, "Total votes in CRDT", ion.Int("vote_count", len(votes)))
 
 	yesVotes := 0
 	noVotes := 0
@@ -1265,7 +1264,7 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 				ion.Err(err),
 				ion.Int("vote_index", i+1),
 				ion.String("function", "Consensus.printCRDTVotes"))
-			logger().Error(ctx, "Vote parsing error", fmt.Errorf("invalid vote"), ion.Int("vote_index", i+1))
+			logger().Error(trace_ctx, "Vote parsing error", fmt.Errorf("invalid vote"), ion.Int("vote_index", i+1))
 			continue
 		}
 
@@ -1278,9 +1277,9 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 			noVotes++
 		}
 
-			logger().Debug(ctx, "Processing vote", ion.Int("vote_index", i+1))
-			logger().Debug(ctx, "Vote value", ion.String("value", fmt.Sprintf("%v", voteValue)))
-			logger().Debug(ctx, "Vote block hash", ion.String("block_hash", fmt.Sprintf("%v", blockHash)))
+			logger().Debug(trace_ctx, "Processing vote", ion.Int("vote_index", i+1))
+			logger().Debug(trace_ctx, "Vote value", ion.String("value", fmt.Sprintf("%v", voteValue)))
+			logger().Debug(trace_ctx, "Vote block hash", ion.String("block_hash", fmt.Sprintf("%v", blockHash)))
 		if i < len(votes)-1 {
 		}
 	}
@@ -1290,7 +1289,7 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 		attribute.Int("no_votes", noVotes),
 	)
 
-	logger().Info(ctx, "Vote summary", ion.Int("yes_votes", yesVotes), ion.Int("no_votes", noVotes), ion.Int("total_votes", len(votes)))
+	logger().Info(trace_ctx, "Vote summary", ion.Int("yes_votes", yesVotes), ion.Int("no_votes", noVotes), ion.Int("total_votes", len(votes)))
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(
@@ -1307,7 +1306,7 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 
 // printCRDTFooter prints the footer for CRDT state
 func (consensus *Consensus) printCRDTFooter() {
-	logger().Info(ctx, "CRDT State - Sequencer - End")
+	logger().Info(context.Background(), "CRDT State - Sequencer - End")
 }
 
 // ProcessVoteCollection orchestrates the vote collection and processing flow
