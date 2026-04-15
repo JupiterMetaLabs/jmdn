@@ -481,7 +481,7 @@ func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *b
 		return fmt.Errorf("verification failed: database hashes don't match")
 	}
 
-	log.Info().Msg("Sync completed successfully")
+	logger().Info(context.Background(), "Sync completed successfully")
 	return nil
 }
 */

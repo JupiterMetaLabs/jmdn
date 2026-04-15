@@ -597,7 +597,7 @@ func startDIDServer(ctx context.Context, h host.Host, address string) error {
 		//Debugging
 		// fmt.Println("Got DID database client successfully", didDBClient)
 
-		log.Info().Msg("DID propagation initialized successfully")
+		mainLogger().Info(context.Background(), "DID propagation initialized successfully")
 	}
 	// Start the DID server with our existing client
 	return DID.StartDIDServerWithContext(ctx, h, address, didDBClient)
@@ -969,11 +969,11 @@ func main() {
 	globalPubSub, err := initPubSub(n)
 	if err != nil {
 		fmt.Printf("Failed to initialize PubSub system: %v\n", err)
-		log.Error().Err(err).Msg("Failed to initialize PubSub system")
+		mainLogger().Error(context.Background(), "Failed to initialize PubSub system", err)
 		// Continue without PubSub - some features may be limited
 	} else {
 		fmt.Println("✅ PubSub system ready for consensus and messaging")
-		log.Info().Msg("PubSub system initialized successfully")
+		mainLogger().Info(context.Background(), "PubSub system initialized successfully")
 		// Store reference for later use
 		_ = globalPubSub // Mark as used to avoid linting error
 	}
@@ -1019,7 +1019,7 @@ func main() {
 	// Initialize Yggdrasil messaging if enabled
 	if cfg.Network.Yggdrasil {
 		initYggdrasilMessaging(ctx)
-		log.Info().Msgf("Yggdrasil messaging enabled on port %d", directMSG.YggdrasilPort)
+		mainLogger().Info(context.Background(), fmt.Sprintf("Yggdrasil messaging enabled on port %d", directMSG.YggdrasilPort))
 	}
 
 	// Display node identity
@@ -1068,7 +1068,7 @@ func main() {
 	// Initialize DID propagation system
 	if err := messaging.InitDIDPropagation(nil); err != nil {
 		fmt.Printf("Failed to initialize DID propagation: %v\n", err)
-		log.Error().Err(err).Msg("Failed to initialize DID propagation")
+		mainLogger().Error(context.Background(), "Failed to initialize DID propagation", err)
 	}
 
 	// Initialize Contract propagation handler (ADR-001)
@@ -1077,7 +1077,7 @@ func main() {
 	n.Host.SetStreamHandler(config.ContractPullProtocol, messaging.HandleContractPullStream)
 
 	if err := messaging.InitContractPropagation(); err != nil {
-		log.Error().Err(err).Msg("Failed to initialize contract propagation")
+		mainLogger().Error(context.Background(), "Failed to initialize contract propagation", err)
 	}
 
 	// We'll initialize the DID system in the DID server to avoid blocking main
@@ -1085,67 +1085,67 @@ func main() {
 	if cfg.Ports.DID > 0 {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.DIDThread, func(ctx context.Context) error {
 			didAddr := fmt.Sprintf("%s:%d", cfg.Binds.DID, cfg.Ports.DID)
-			log.Info().Str("address", didAddr).Msg("Starting DID gRPC server")
+			mainLogger().Info(context.Background(), "Starting DID gRPC server", ion.String("address", didAddr))
 			if err := startDIDServer(ctx, n.Host, didAddr); err != nil {
 				fmt.Println("Failed to start DID gRPC server:", err)
-				log.Error().Err(err).Msg("Failed to start DID gRPC server")
+				mainLogger().Error(context.Background(), "Failed to start DID gRPC server", err)
 			}
 			return nil
 		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.DIDThread).Msg("Failed to start GRO goroutine")
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.DIDThread))
 		}
 	}
 
 	if cfg.Ports.BlockGen > 0 {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockgenThread, func(ctx context.Context) error {
-			log.Info().Msgf("Starting block generator on port %d", cfg.Ports.BlockGen)
+			mainLogger().Info(context.Background(), fmt.Sprintf("Starting block generator on port %d", cfg.Ports.BlockGen))
 			fmt.Printf("\nBlock generator available at http://localhost:%d\n", cfg.Ports.BlockGen)
 			if err := Block.StartserverWithContext(ctx, cfg.Binds.BlockGen, cfg.Ports.BlockGen, n.Host, cfg.Network.ChainID); err != nil {
-				log.Error().Err(err).Msg("Block generator server stopped")
+				mainLogger().Error(context.Background(), "Block generator server stopped", err)
 			}
 			return nil
 		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.BlockgenThread).Msg("Failed to start GRO goroutine")
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.BlockgenThread))
 		}
 	}
 
 	if cfg.Ports.BlockGRPC > 0 {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockgRPCThread, func(ctx context.Context) error {
-			log.Info().Int("port", cfg.Ports.BlockGRPC).Msg("Starting block gRPC server")
+			mainLogger().Info(context.Background(), "Starting block gRPC server", ion.Int("port", cfg.Ports.BlockGRPC))
 			fmt.Printf("\nBlock gRPC server available at localhost:%d\n", cfg.Ports.BlockGRPC)
 			if err := Block.StartGRPCServer(cfg.Ports.BlockGRPC, n.Host, cfg.Network.ChainID); err != nil {
-				log.Error().Err(err).Msg("Failed to start block gRPC server")
+				mainLogger().Error(context.Background(), "Failed to start block gRPC server", err)
 			}
 			return nil
 		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.BlockgRPCThread).Msg("Failed to start GRO goroutine")
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.BlockgRPCThread))
 		}
 	}
 
 	// Start internal gETH server if port > 0
 	if cfg.Ports.Geth > 0 {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.GETHgRPCThread, func(ctx context.Context) error {
-			log.Info().Int("port", cfg.Ports.Geth).Msg("Starting internal gETH gRPC server")
+			mainLogger().Info(context.Background(), "Starting internal gETH gRPC server", ion.Int("port", cfg.Ports.Geth))
 			if err := gETH.StartGRPC(cfg.Ports.Geth, cfg.Network.ChainID); err != nil {
-				log.Error().Err(err).Msg("Failed to start gETH gRPC server")
+				mainLogger().Error(context.Background(), "Failed to start gETH gRPC server", err)
 			}
 			return nil
 		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.GETHgRPCThread).Msg("Failed to start GRO goroutine")
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.GETHgRPCThread))
 		}
 	}
 
 	// Start integrated Smart Contract server if port > 0
 	if cfg.Ports.Smart > 0 {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.SmartContractThread, func(ctx context.Context) error {
-			log.Info().Int("port", cfg.Ports.Smart).Msg("Starting integrated Smart Contract gRPC server")
+			mainLogger().Info(context.Background(), "Starting integrated Smart Contract gRPC server", ion.Int("port", cfg.Ports.Smart))
 			didAddr := fmt.Sprintf("%s:%d", cfg.Binds.DID, cfg.Ports.DID)
 			if err := SmartContract.StartIntegratedServer(ctx, cfg.Ports.Smart, cfg.Network.ChainID, cfg.Ports.Geth, didAddr, cfg.Ports.BlockGen); err != nil {
-				log.Error().Err(err).Msg("Failed to start Smart Contract integrated server")
+				mainLogger().Error(context.Background(), "Failed to start Smart Contract integrated server", err)
 			}
 			return nil
 		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.SmartContractThread).Msg("Failed to start GRO goroutine")
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.SmartContractThread))
 		}
 	}
 
@@ -1155,7 +1155,7 @@ func main() {
 		seedClient, err := seednode.NewClient(cfg.Network.SeedNode)
 		if err != nil {
 			fmt.Printf("Failed to create seed node client: %v\n", err)
-			log.Error().Err(err).Msg("Failed to create seed node client")
+			mainLogger().Error(context.Background(), "Failed to create seed node client", err)
 		} else {
 			defer seedClient.Close()
 
@@ -1165,19 +1165,19 @@ func main() {
 				err = seedClient.RegisterPeerWithAlias(n.Host, cfg.Node.Alias)
 				if err != nil {
 					fmt.Printf("Failed to register with seed node using alias: %v\n", err)
-					log.Error().Err(err).Msg("Failed to register with seed node using alias")
+					mainLogger().Error(context.Background(), "Failed to register with seed node using alias", err)
 				} else {
 					fmt.Printf("Successfully registered with seed node using alias '%s'\n", cfg.Node.Alias)
-					log.Info().Str("alias", cfg.Node.Alias).Msg("Successfully registered with seed node using alias")
+					mainLogger().Info(context.Background(), "Successfully registered with seed node using alias", ion.String("alias", cfg.Node.Alias))
 				}
 			} else {
 				err = seedClient.RegisterPeer(n.Host)
 				if err != nil {
 					fmt.Printf("Failed to register with seed node: %v\n", err)
-					log.Error().Err(err).Msg("Failed to register with seed node")
+					mainLogger().Error(context.Background(), "Failed to register with seed node", err)
 				} else {
 					fmt.Println("Successfully registered with seed node")
-					log.Info().Msg("Successfully registered with seed node")
+					mainLogger().Info(context.Background(), "Successfully registered with seed node")
 				}
 			}
 
@@ -1186,27 +1186,27 @@ func main() {
 			err = seedClient.DiscoverAndAddNeighbors(n.Host, nodeManager)
 			if err != nil {
 				fmt.Printf("⚠️  Neighbor discovery failed: %v\n", err)
-				log.Error().Err(err).Msg("Neighbor discovery failed")
+				mainLogger().Error(context.Background(), "Neighbor discovery failed", err)
 			} else {
 				fmt.Println("✅ Neighbor discovery completed successfully")
-				log.Info().Msg("Neighbor discovery completed successfully")
+				mainLogger().Info(context.Background(), "Neighbor discovery completed successfully")
 			}
 		}
 	}
 
 	if cfg.Ports.API > 0 {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.ExplorerThread, func(ctx context.Context) error {
-			log.Info().Msgf("Starting ImmuDB API on port %d", cfg.Ports.API)
+			mainLogger().Info(context.Background(), fmt.Sprintf("Starting ImmuDB API on port %d", cfg.Ports.API))
 			fmt.Printf("\nImmuDB API available at http://localhost:%d/api\n", cfg.Ports.API)
 
 			// Initialize API server
 			apiAddr := fmt.Sprintf("%s:%d", cfg.Binds.API, cfg.Ports.API)
 			if err := StartAPIServer(ctx, apiAddr); err != nil {
-				log.Error().Err(err).Msg("Failed to start API server")
+				mainLogger().Error(context.Background(), "Failed to start API server", err)
 			}
 			return nil
 		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.ExplorerThread).Msg("Failed to start GRO goroutine")
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.ExplorerThread))
 		}
 	}
 
@@ -1254,16 +1254,16 @@ func main() {
 			done <- cmdHandler.StartCLI(ctx, cfg.Binds.CLI, cfg.Ports.CLI)
 			return nil
 		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.CLIThread).Msg("Failed to start GRO goroutine")
+			mainLogger().Error(context.Background(), "Failed to start GRO goroutine", err, ion.String("thread", GRO.CLIThread))
 			done <- err
 		}
 
 		// Wait for CLI to complete or error
 		if err := <-done; err != nil {
-			log.Error().Err(err).Msg("Failed to start CLI")
+			mainLogger().Error(context.Background(), "Failed to start CLI", err)
 		}
 	} else {
-		log.Info().Msg("CLI server disabled (port = 0)")
+		mainLogger().Info(context.Background(), "CLI server disabled (port = 0)")
 		// Keep the node running even without CLI
 		select {}
 	}
