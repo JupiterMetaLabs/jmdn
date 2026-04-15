@@ -1517,14 +1517,14 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			SetACK(ackMessage)
 		responseBytes, _ := json.Marshal(response)
 		_, _ = s.Write([]byte(string(responseBytes) + string(rune(config.Delimiter))))
-		logger().Info(context.Background(), "❌ Invalid vote result request payload; rejecting")g
+		logger().Info(context.Background(), "❌ Invalid vote result request payload; rejecting")
 		return
 	}
 
 	// Ensure buddy nodes are populated from the cached consensus message
 	// This guards cases where the broadcast handler didn't run yet on this node
 	if len(listenerNode.BuddyNodes.Buddies_Nodes) == 0 {
-		logger().Info(context.Background(), "⚠️ Buddy list empty at vote result request; attempting to populate from consensus cache")g
+		logger().Info(context.Background(), "⚠️ Buddy list empty at vote result request; attempting to populate from consensus cache")
 		buddyIDs := make([]peer.ID, 0, config.MaxMainPeers)
 		count := 0
 		for _, consensusMsg := range AVCStruct.CacheConsensuMessage {
@@ -1548,20 +1548,20 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		}
 		if len(buddyIDs) > 0 {
 			listenerNode.BuddyNodes.Buddies_Nodes = buddyIDs
-			logger().Info(context.Background(), "✅ Populated buddy nodes from cache: %d peers (MaxMainPeers=%d)"), config.MaxMainPeers)
+			logger().Info(context.Background(), fmt.Sprintf("✅ Populated buddy nodes from cache: %d peers (MaxMainPeers=%d)", len(buddyIDs), config.MaxMainPeers))
 		} else {
-			logger().Info(context.Background(), "⚠️ Could not populate buddy nodes from cache")g
+			logger().Info(context.Background(), "⚠️ Could not populate buddy nodes from cache")
 		}
 	}
 	logger().Info(context.Background(), "✅ Buddy nodes populated: %v")
 
 	// 🔄 CRDT SYNC: Sync CRDT data before processing votes
-	logger().Info(context.Background(), "🔄 Triggering CRDT sync before processing votes...")g
+	logger().Info(context.Background(), "🔄 Triggering CRDT sync before processing votes...")
 	if err := TriggerCRDTSyncForBuddyNode(logger_ctx, listenerNode); err != nil {
 		logger().Info(context.Background(), "⚠️ CRDT sync failed, continuing with existing data: %v")
 		// Don't fail the vote processing, just log the warning
 	} else {
-		logger().Info(context.Background(), "✅ CRDT sync completed successfully")g
+		logger().Info(context.Background(), "✅ CRDT sync completed successfully")
 		// Print CRDT content after sync
 		CRDTSync.PrintCurrentCRDTContent()
 	}
@@ -1715,7 +1715,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 
 	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
 	if listenerNode == nil {
-		logger().Error(context.Background(), "Listener node not initialized", fmt.Errorf("not initialized"))
+		logger().Error(context.Background(), "Listener node not initialized", fmt.Errorf("not initialized")
 		return
 	}
 
@@ -1725,9 +1725,9 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 		return
 	}
 
-	logger().Info(context.Background(), "🚀 Triggering BFT across %d buddy nodes"))
-	logger().Info(context.Background(), "📍 Listener PeerID: %s"))
-	logger().Info(context.Background(), "📍 Listener Host ID: %s").String())
+	logger().Info(context.Background(), "🚀 Triggering BFT across %d buddy nodes")
+	logger().Info(context.Background(), "📍 Listener PeerID: %s")
+	logger().Info(context.Background(), "📍 Listener Host ID: %s")
 	logger().Info(context.Background(), "📋 All buddies received: %v")
 
 	// Filter out self from buddies to avoid "dial to self attempted" error
@@ -1744,7 +1744,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 		currentPeerIDStr = currentPeerID.String()
 		logger().Info(context.Background(), "📍 PubSub PeerID: %s")
 		if pubSubNode.Host != nil {
-			logger().Info(context.Background(), "📍 PubSub Host ID: %s").String())
+			logger().Info(context.Background(), "📍 PubSub Host ID: %s")
 		}
 	} else {
 		currentPeerID = listenerNode.PeerID
@@ -1797,7 +1797,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 		return
 	}
 
-	logger().Info(context.Background(), "📊 Filtered to %d valid buddy nodes (excluding self)"))
+	logger().Info(context.Background(), "📊 Filtered to %d valid buddy nodes (excluding self)")
 
 	// Send acknowledgment to sequencer
 	ack := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_SubmitVote)
@@ -1891,8 +1891,8 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 					return nil
 				}
 
-				logger().Info(context.Background(), "📥 Received payload from %s: %d bytes"))
-				logger().Info(context.Background(), "📝 Payload content: %s"))
+				logger().Info(context.Background(), "📥 Received payload from %s: %d bytes")
+				logger().Info(context.Background(), "📝 Payload content: %s")
 
 				var msg AVCStruct.Message
 				if err := json.Unmarshal(payload, &msg); err == nil {
@@ -1922,7 +1922,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 					logger().Info(context.Background(), "⚠️ Failed to parse vote result from %s")
 					responseCh <- false
 				} else {
-					logger().Info(context.Background(), "⚠️ Invalid response from %s: %s"))
+					logger().Info(context.Background(), "⚠️ Invalid response from %s: %s")
 					responseCh <- false
 				}
 			case <-readErrCh:
@@ -1953,11 +1953,11 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 	finalCount := responsesReceived
 	responsesMutex.Unlock()
 
-	logger().Info(context.Background(), "✅ Collected vote results from %d/%d nodes"))
+	logger().Info(context.Background(), "✅ Collected vote results from %d/%d nodes")
 
 	// Check if we have enough responses for consensus
 	if finalCount < config.MaxMainPeers {
 		logger().Info(context.Background(), "⚠️ WARNING: Only received %d responses, but need at least %d for consensus")
-		logger().Info(context.Background(), "⚠️ This may cause consensus failures. Consider increasing backup nodes.")g
+		logger().Info(context.Background(), "⚠️ This may cause consensus failures. Consider increasing backup nodes.")
 	}
 }

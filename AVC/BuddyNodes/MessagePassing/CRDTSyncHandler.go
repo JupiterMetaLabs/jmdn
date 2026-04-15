@@ -136,7 +136,7 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 
 	totalBuddyNodes := len(allBuddyNodes)
 	if totalBuddyNodes == 0 {
-		logger().Info(context.Background(), "⚠️ No other buddy nodes found (expected", ion.String("args", fmt.Sprintf("⚠️ No other buddy nodes found (expected %d) - skipping CRDT sync", expectedBuddyCount))))
+		logger().Info(context.Background(), "⚠️ No other buddy nodes found (expected", ion.String("args", fmt.Sprintf("⚠️ No other buddy nodes found (expected %d) - skipping CRDT sync", expectedBuddyCount)))
 		return nil
 	}
 
@@ -247,7 +247,7 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 
 	// Publish our own CRDT state ONCE to the pubsub channel
 	allCRDTs := listenerNode.CRDTLayer.CRDTLayer.GetAllCRDTs()
-		logger().Info(context.Background(), "📤 Publishing local CRDT state (", ion.String("args", fmt.Sprintf("📤 Publishing local CRDT state (%d objects) to pubsub channel: %s", len(allCRDTs), topicName))))
+		logger().Info(context.Background(), "📤 Publishing local CRDT state (", ion.String("args", fmt.Sprintf("📤 Publishing local CRDT state (%d objects) to pubsub channel: %s", len(allCRDTs), topicName)))
 
 	if len(allCRDTs) > 0 {
 		syncData := make(map[string]json.RawMessage)
@@ -469,7 +469,7 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 			}
 		}
 		if len(fallbackIDs) == 0 {
-		logger().Info(context.Background(), "⚠️ No buddy nodes found from any source (expected", ion.String("args", fmt.Sprintf("⚠️ No buddy nodes found from any source (expected %d MaxMainPeers)", expectedBuddyCount))))
+		logger().Info(context.Background(), "⚠️ No buddy nodes found from any source (expected", ion.String("args", fmt.Sprintf("⚠️ No buddy nodes found from any source (expected %d MaxMainPeers)", expectedBuddyCount)))
 		logger().Info(context.Background(), "⚠️ Cannot connect to other nodes for CRDT sync")
 			return nil
 		}
