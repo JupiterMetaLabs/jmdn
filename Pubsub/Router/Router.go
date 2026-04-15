@@ -42,7 +42,7 @@ func Router(message *AVCStruct.GossipMessage) error {
 	serviceManager := NewServiceManager(PubSub, GossipNode)
 	logger().Debug(logger_ctx, "Router: Processing message",
 		ion.String("stage", message.Data.ACK.Stage),
-		ion.String("sender", message.Sender))
+		ion.String("sender", message.Sender.String()))
 	logger().Debug(logger_ctx, "Router: GossipNode info",
 		ion.String("peer_id", GossipNode.PeerID.String()),
 		ion.String("host", PubSub.Host.ID().String()))

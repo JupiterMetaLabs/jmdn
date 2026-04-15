@@ -2029,8 +2029,6 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 		logger().Info(context.Background(), "Skipping Accounts DB push - no data to push",
 			ion.Bool("hashmap_nil", acctMapNil),
 			ion.Int("hashmap_size", acctSize))
-			}()).
-			Msg("Skipping Accounts DB push - no data to push")
 	}
 
 	logger().Info(context.Background(), "Phase4 completed successfully")
@@ -2172,14 +2170,6 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize batch data: %w", err)
 	}
-
-	logger().Info(context.Background(),.
-		Str("peer", peerID.String()).
-		Int("batch", msg.BatchNumber).
-		Int("entries", len(entries)).
-		Int("crdts", len(crdts)).
-		Str("db", dbTypeToString(msg.DBType)).
-		Msg("Sending batch data")
 
 	logger().Debug(context.Background(), "Sending batch data",
 		ion.String("peer", peerID.String()),
@@ -2416,9 +2406,7 @@ func (fs *FastSync) FirstSyncServer(peerID peer.ID) error {
 			ion.String("peer", peerID.String()))
 	} else {
 		logger().Info(context.Background(), ">>> [FIRST_SYNC_SERVER] Starting first sync - exporting all data from both databases")
-		logger().Info(context.Background(),.
-			Str("peer", peerID.String()).
-			Msg("Starting first sync server - exporting all data")
+		logger().Info(context.Background(), "Starting first sync server - exporting all data", ion.String("peer", peerID.String()))
 	}
 
 	// Ensure the temporary directory exists
@@ -2523,10 +2511,7 @@ func (fs *FastSync) FirstSyncServer(peerID peer.ID) error {
 			return fmt.Errorf("failed to transfer AccountsDB file: %w", err)
 		}
 		logger().Info(context.Background(), ">>> [FIRST_SYNC_SERVER] ✓ AccountsDB file transferred successfully")
-		logger().Info(context.Background(),.
-			Str("peer", peerID.String()).
-			Int("keys", accountsHashMap.Size()).
-			Msg("AccountsDB file transferred successfully")
+		logger().Info(context.Background(), "AccountsDB file transferred successfully", ion.String("peer", peerID.String()), ion.Int("keys", accountsHashMap.Size()))
 	} else {
 		logger().Info(context.Background(), ">>> [FIRST_SYNC_SERVER] AccountsDB is empty, skipping AVRO file creation")
 	}
@@ -2538,11 +2523,7 @@ func (fs *FastSync) FirstSyncServer(peerID peer.ID) error {
 			ion, ion.Int("accounts_keys", accountsHashMap.Size()))
 	} else {
 		logger().Info(context.Background(), ">>> [FIRST_SYNC_SERVER] ✓ First sync server completed successfully")
-		logger().Info(context.Background(),.
-			Str("peer", peerID.String()).
-			Int("main_keys", mainHashMap.Size()).
-			Int("accounts_keys", accountsHashMap.Size()).
-			Msg("First sync server completed successfully")
+		logger().Info(context.Background(), "First sync server completed successfully", ion.String("peer", peerID.String()), ion.Int("main_keys", mainHashMap.Size()), ion.Int("accounts_keys", accountsHashMap.Size()))
 	}
 
 	return nil
@@ -2592,9 +2573,7 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 			ion.String("peer", peerID.String()))
 	} else {
 		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] Starting first sync client - waiting for data from server")
-		logger().Info(context.Background(),.
-			Str("peer", peerID.String()).
-			Msg("Starting first sync client - waiting for data")
+		logger().Info(context.Background(), "Starting first sync client - waiting for data", ion.String("peer", peerID.String()))
 	}
 
 	// Ensure the temp directory exists
@@ -2662,10 +2641,7 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 			return fmt.Errorf("failed to load MainDB data: %w", err)
 		}
 		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] ✓ MainDB data loaded successfully")
-		logger().Info(context.Background(),.
-			Str("peer", peerID.String()).
-			Str("file", mainDBPath).
-			Msg("MainDB data loaded successfully")
+		logger().Info(context.Background(), "MainDB data loaded successfully", ion.String("peer", peerID.String()), ion.String("file", mainDBPath))
 	} else {
 		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] MainDB file not received, skipping")
 	}
@@ -2685,10 +2661,7 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 			return fmt.Errorf("failed to load AccountsDB data: %w", err)
 		}
 		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] ✓ AccountsDB data loaded successfully")
-		logger().Info(context.Background(),.
-			Str("peer", peerID.String()).
-			Str("file", accountsDBPath).
-			Msg("AccountsDB data loaded successfully")
+		logger().Info(context.Background(), "AccountsDB data loaded successfully", ion.String("peer", peerID.String()), ion.String("file", accountsDBPath))
 	} else {
 		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] AccountsDB file not received, skipping")
 	}
@@ -2700,11 +2673,7 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 			ion.Bool("accounts_loaded", accountsFileExists))
 	} else {
 		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] ✓ First sync client completed successfully")
-		logger().Info(context.Background(),.
-			Str("peer", peerID.String()).
-			Bool("main_loaded", mainFileExists).
-			Bool("accounts_loaded", accountsFileExists).
-			Msg("First sync client completed successfully")
+		logger().Info(context.Background(), "First sync client completed successfully", ion.String("peer", peerID.String()), ion.Bool("main_loaded", mainFileExists), ion.Bool("accounts_loaded", accountsFileExists))
 	}
 
 	// Post-Sync Verification: Dual-Check (Merkle + Content)
