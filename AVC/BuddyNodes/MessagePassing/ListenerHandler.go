@@ -66,7 +66,7 @@ func NewListenerHandler(responseHandler AVCStruct.ResponseHandler) *ListenerHand
 // Note: Stream is explicitly closed via defer to prevent resource leaks (MaxStream exhaustion).
 func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context, s network.Stream) {
 	// Record trace span and close it
-	spanCtx, span := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.HandleSubmitMessageStream")
+	spanCtx, span := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.HandleSubmitMessageStream")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -77,7 +77,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 	// Ensure stream is closed to prevent resource leaks
 	defer s.Close()
 
-	logger().NamedLogger.Info(spanCtx, "ListenerHandler.HandleSubmitMessageStream CALLED",
+	logger().Info(spanCtx, "ListenerHandler.HandleSubmitMessageStream CALLED",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -91,7 +91,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 		span.SetAttributes(attribute.String("status", "read_error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Error reading message from peer",
+		logger().Error(spanCtx, "Error reading message from peer",
 			err,
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("message", msg),
@@ -104,7 +104,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 
 	span.SetAttributes(attribute.String("message_received", "true"), attribute.Int("message_length", len(msg)))
 
-	logger().NamedLogger.Info(spanCtx, "Raw message received",
+	logger().Info(spanCtx, "Raw message received",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("message", msg),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -118,7 +118,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 		span.SetAttributes(attribute.String("status", "parse_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Failed to parse message - malformed JSON or invalid structure",
+		logger().Error(spanCtx, "Failed to parse message - malformed JSON or invalid structure",
 			fmt.Errorf("failed to parse message"),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("message", msg),
@@ -129,7 +129,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 		return
 	}
 
-	logger().NamedLogger.Info(spanCtx, "Received submit message from peer",
+	logger().Info(spanCtx, "Received submit message from peer",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("message", msg),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -143,7 +143,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 		span.SetAttributes(attribute.String("status", "nil_ack"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(spanCtx, "Received message with nil ACK",
+		logger().Error(spanCtx, "Received message with nil ACK",
 			fmt.Errorf("received message with nil ACK"),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("message", msg),
@@ -157,7 +157,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 	ackStage := message.GetACK().GetStage()
 	span.SetAttributes(attribute.String("ack_stage", ackStage))
 
-	logger().NamedLogger.Info(spanCtx, "ACK Stage",
+	logger().Info(spanCtx, "ACK Stage",
 		ion.String("stage", ackStage),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -167,7 +167,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 	// Route message based on ACK stage
 	switch ackStage {
 	case config.Type_BFTRequest:
-		logger().NamedLogger.Info(spanCtx, "Handling Type_BFTRequest",
+		logger().Info(spanCtx, "Handling Type_BFTRequest",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
@@ -175,7 +175,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 		lh.handleBFTRequest(spanCtx, s, message)
 		defer s.Close()
 	case config.Type_SubmitVote:
-		logger().NamedLogger.Info(spanCtx, "Handling Type_SubmitVote",
+		logger().Info(spanCtx, "Handling Type_SubmitVote",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
@@ -183,14 +183,14 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 		lh.handleSubmitVote(spanCtx, s, message)
 		defer s.Close()
 	case config.Type_AskForSubscription:
-		logger().NamedLogger.Info(spanCtx, "Handling Type_AskForSubscription",
+		logger().Info(spanCtx, "Handling Type_AskForSubscription",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.HandleSubmitMessageStream"))
 		lh.handleAskForSubscription(spanCtx, s, message)
 	case config.Type_SubscriptionResponse:
-		logger().NamedLogger.Info(spanCtx, "Handling Type_SubscriptionResponse",
+		logger().Info(spanCtx, "Handling Type_SubscriptionResponse",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
@@ -198,7 +198,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 		lh.handleSubscriptionResponse(spanCtx, s, message)
 		defer s.Close()
 	case config.Type_VoteResult:
-		logger().NamedLogger.Info(spanCtx, "Handling Type_VoteResult",
+		logger().Info(spanCtx, "Handling Type_VoteResult",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
@@ -207,7 +207,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 		defer s.Close()
 	default:
 		span.SetAttributes(attribute.String("status", "unknown_message_type"))
-		logger().NamedLogger.Error(spanCtx, "Unknown message type",
+		logger().Error(spanCtx, "Unknown message type",
 			fmt.Errorf("unknown message type: %s", ackStage),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("ack_stage", ackStage),
@@ -225,7 +225,7 @@ func (lh *ListenerHandler) HandleSubmitMessageStream(logger_ctx context.Context,
 // handleBFTRequest processes BFT consensus request from Sequencer
 func (lh *ListenerHandler) handleBFTRequest(logger_ctx context.Context, s network.Stream, message *AVCStruct.Message) {
 	// Record trace span and close it
-	bftRequestSpanCtx, bftRequestSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.handleBFTRequest")
+	bftRequestSpanCtx, bftRequestSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.handleBFTRequest")
 	defer bftRequestSpan.End()
 
 	startTime := time.Now().UTC()
@@ -240,7 +240,7 @@ func (lh *ListenerHandler) handleBFTRequest(logger_ctx context.Context, s networ
 			bftRequestSpan.SetAttributes(attribute.String("status", "init_failed"))
 			duration := time.Since(startTime).Seconds()
 			bftRequestSpan.SetAttributes(attribute.Float64("duration", duration))
-			logger().NamedLogger.Error(bftRequestSpanCtx, "Failed to initialize ListenerHandler local manager",
+			logger().Error(bftRequestSpanCtx, "Failed to initialize ListenerHandler local manager",
 				err,
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -250,7 +250,7 @@ func (lh *ListenerHandler) handleBFTRequest(logger_ctx context.Context, s networ
 		}
 	}
 
-	logger().NamedLogger.Info(bftRequestSpanCtx, "Received BFT request from Sequencer",
+	logger().Info(bftRequestSpanCtx, "Received BFT request from Sequencer",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("message", message.Message),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -281,7 +281,7 @@ func (lh *ListenerHandler) handleBFTRequest(logger_ctx context.Context, s networ
 		bftRequestSpan.SetAttributes(attribute.String("status", "parse_failed"))
 		duration := time.Since(startTime).Seconds()
 		bftRequestSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(bftRequestSpanCtx, "Failed to parse BFT request",
+		logger().Error(bftRequestSpanCtx, "Failed to parse BFT request",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -304,7 +304,7 @@ func (lh *ListenerHandler) handleBFTRequest(logger_ctx context.Context, s networ
 		bftRequestSpan.SetAttributes(attribute.String("status", "node_not_initialized"))
 		duration := time.Since(startTime).Seconds()
 		bftRequestSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(bftRequestSpanCtx, "Listener node not initialized",
+		logger().Error(bftRequestSpanCtx, "Listener node not initialized",
 			fmt.Errorf("listener node not initialized"),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -337,7 +337,7 @@ func (lh *ListenerHandler) handleBFTRequest(logger_ctx context.Context, s networ
 			amIaBuddy = true
 			buddyInput.PrivateKey = buddy.PrivateKey
 			bftRequestSpan.SetAttributes(attribute.String("my_decision", string(decision)))
-			logger().NamedLogger.Info(bftRequestSpanCtx, "I am in the buddy list! My decision",
+			logger().Info(bftRequestSpanCtx, "I am in the buddy list! My decision",
 				ion.String("decision", string(decision)),
 				ion.String("my_buddy_id", myBuddyID),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -355,7 +355,7 @@ func (lh *ListenerHandler) handleBFTRequest(logger_ctx context.Context, s networ
 		bftRequestSpan.SetAttributes(attribute.String("status", "not_in_buddy_list"))
 		duration := time.Since(startTime).Seconds()
 		bftRequestSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(bftRequestSpanCtx, "I'm not in the buddy list for this round - skipping",
+		logger().Error(bftRequestSpanCtx, "I'm not in the buddy list for this round - skipping",
 			fmt.Errorf("not in buddy list"),
 			ion.String("my_buddy_id", myBuddyID),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -377,7 +377,7 @@ func (lh *ListenerHandler) handleBFTRequest(logger_ctx context.Context, s networ
 	}
 	lh.bftContextMutex.Unlock()
 
-	logger().NamedLogger.Info(bftRequestSpanCtx, "BFT context stored for round",
+	logger().Info(bftRequestSpanCtx, "BFT context stored for round",
 		ion.Int64("round", int64(requestData.Round)),
 		ion.String("block_hash", requestData.BlockHash),
 		ion.String("context_key", contextKey),
@@ -401,7 +401,7 @@ func (lh *ListenerHandler) handleBFTRequest(logger_ctx context.Context, s networ
 
 // sendBFTAcknowledgment sends ACK back to Sequencer
 func (lh *ListenerHandler) sendBFTAcknowledgment(logger_ctx context.Context, s network.Stream, round uint64, blockHash string, accepted bool) {
-	ackSpanCtx, ackSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.sendBFTAcknowledgment")
+	ackSpanCtx, ackSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.sendBFTAcknowledgment")
 	defer ackSpan.End()
 
 	startTime := time.Now().UTC()
@@ -459,7 +459,7 @@ func (lh *ListenerHandler) sendBFTAcknowledgment(logger_ctx context.Context, s n
 
 	duration := time.Since(startTime).Seconds()
 	ackSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(ackSpanCtx, "Sent BFT acknowledgment to Sequencer",
+	logger().Info(ackSpanCtx, "Sent BFT acknowledgment to Sequencer",
 		ion.Int64("round", int64(round)),
 		ion.String("block_hash", blockHash),
 		ion.Bool("accepted", accepted),
@@ -473,13 +473,13 @@ func (lh *ListenerHandler) sendBFTAcknowledgment(logger_ctx context.Context, s n
 // runBFTConsensusFlow executes the full BFT consensus flow
 func (lh *ListenerHandler) runBFTConsensusFlow(logger_ctx context.Context, contextKey string) {
 	// Record trace span and close it
-	consensusSpanCtx, consensusSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.runBFTConsensusFlow")
+	consensusSpanCtx, consensusSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.runBFTConsensusFlow")
 	defer consensusSpan.End()
 
 	startTime := time.Now().UTC()
 	consensusSpan.SetAttributes(attribute.String("context_key", contextKey))
 
-	logger().NamedLogger.Info(consensusSpanCtx, "Starting BFT consensus flow",
+	logger().Info(consensusSpanCtx, "Starting BFT consensus flow",
 		ion.String("context_key", contextKey),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -496,7 +496,7 @@ func (lh *ListenerHandler) runBFTConsensusFlow(logger_ctx context.Context, conte
 		consensusSpan.SetAttributes(attribute.String("status", "context_not_found"))
 		duration := time.Since(startTime).Seconds()
 		consensusSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(consensusSpanCtx, "BFT context not found for key",
+		logger().Error(consensusSpanCtx, "BFT context not found for key",
 			fmt.Errorf("BFT context not found for key: %s", contextKey),
 			ion.String("context_key", contextKey),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -514,7 +514,7 @@ func (lh *ListenerHandler) runBFTConsensusFlow(logger_ctx context.Context, conte
 		attribute.String("sequencer_peer_id", bftCtx.SequencerPeerID),
 	)
 
-	logger().NamedLogger.Info(consensusSpanCtx, "BFT context retrieved",
+	logger().Info(consensusSpanCtx, "BFT context retrieved",
 		ion.Int64("round", int64(bftCtx.Round)),
 		ion.String("block_hash", bftCtx.BlockHash),
 		ion.Int("buddy_count", len(bftCtx.AllBuddies)),
@@ -531,7 +531,7 @@ func (lh *ListenerHandler) runBFTConsensusFlow(logger_ctx context.Context, conte
 		consensusSpan.SetAttributes(attribute.String("status", "node_not_initialized"))
 		duration := time.Since(startTime).Seconds()
 		consensusSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(consensusSpanCtx, "Listener node not initialized",
+		logger().Error(consensusSpanCtx, "Listener node not initialized",
 			fmt.Errorf("listener node not initialized"),
 			ion.String("context_key", contextKey),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -548,7 +548,7 @@ func (lh *ListenerHandler) runBFTConsensusFlow(logger_ctx context.Context, conte
 		consensusSpan.SetAttributes(attribute.String("status", "pubsub_not_initialized"))
 		duration := time.Since(startTime).Seconds()
 		consensusSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(consensusSpanCtx, "PubSub node not initialized",
+		logger().Error(consensusSpanCtx, "PubSub node not initialized",
 			fmt.Errorf("pubsub node not initialized"),
 			ion.String("context_key", contextKey),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -573,7 +573,7 @@ func (lh *ListenerHandler) runBFTConsensusFlow(logger_ctx context.Context, conte
 		attribute.Float64("inactivity_timeout_seconds", bftConfig.InactivityTimeout.Seconds()),
 	)
 
-	logger().NamedLogger.Info(consensusSpanCtx, "BFT Config",
+	logger().Info(consensusSpanCtx, "BFT Config",
 		ion.Float64("prepare_timeout_seconds", bftConfig.PrepareTimeout.Seconds()),
 		ion.Float64("commit_timeout_seconds", bftConfig.CommitTimeout.Seconds()),
 		ion.Float64("inactivity_timeout_seconds", bftConfig.InactivityTimeout.Seconds()),
@@ -597,7 +597,7 @@ func (lh *ListenerHandler) runBFTConsensusFlow(logger_ctx context.Context, conte
 		consensusSpan.SetAttributes(attribute.String("status", "adapter_creation_failed"))
 		duration := time.Since(startTime).Seconds()
 		consensusSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(consensusSpanCtx, "Failed to create BFT adapter",
+		logger().Error(consensusSpanCtx, "Failed to create BFT adapter",
 			err,
 			ion.String("context_key", contextKey),
 			ion.String("gossipsub_topic", bftCtx.GossipsubTopic),
@@ -610,7 +610,7 @@ func (lh *ListenerHandler) runBFTConsensusFlow(logger_ctx context.Context, conte
 	}
 	defer adapter.Close()
 
-	logger().NamedLogger.Info(consensusSpanCtx, "BFT adapter created successfully",
+	logger().Info(consensusSpanCtx, "BFT adapter created successfully",
 		ion.String("context_key", contextKey),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -621,7 +621,7 @@ func (lh *ListenerHandler) runBFTConsensusFlow(logger_ctx context.Context, conte
 	time.Sleep(2 * time.Second)
 
 	// Run BFT consensus
-	logger().NamedLogger.Info(consensusSpanCtx, "Running BFT consensus",
+	logger().Info(consensusSpanCtx, "Running BFT consensus",
 		ion.String("context_key", contextKey),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -644,7 +644,7 @@ func (lh *ListenerHandler) runBFTConsensusFlow(logger_ctx context.Context, conte
 		consensusSpan.SetAttributes(attribute.Float64("consensus_duration", consensusDuration))
 		duration := time.Since(startTime).Seconds()
 		consensusSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(consensusSpanCtx, "BFT consensus failed",
+		logger().Error(consensusSpanCtx, "BFT consensus failed",
 			err,
 			ion.String("context_key", contextKey),
 			ion.Float64("consensus_duration", consensusDuration),
@@ -671,7 +671,7 @@ func (lh *ListenerHandler) runBFTConsensusFlow(logger_ctx context.Context, conte
 		consensusSpan.SetAttributes(attribute.String("byzantine_nodes", fmt.Sprintf("%v", result.ByzantineDetected)))
 	}
 
-	logger().NamedLogger.Info(consensusSpanCtx, "BFT consensus completed successfully",
+	logger().Info(consensusSpanCtx, "BFT consensus completed successfully",
 		ion.Bool("success", result.Success),
 		ion.String("decision", string(result.Decision)),
 		ion.Bool("block_accepted", result.BlockAccepted),
@@ -716,7 +716,7 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 	failureReason string,
 ) {
 	// Record trace span and close it
-	resultSpanCtx, resultSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.sendBFTResultToSequencer")
+	resultSpanCtx, resultSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.sendBFTResultToSequencer")
 	defer resultSpan.End()
 
 	startTime := time.Now().UTC()
@@ -732,7 +732,7 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		resultSpan.SetAttributes(attribute.String("failure_reason", failureReason))
 	}
 
-	logger().NamedLogger.Info(resultSpanCtx, "Sending BFT result to Sequencer",
+	logger().Info(resultSpanCtx, "Sending BFT result to Sequencer",
 		ion.Int64("round", int64(round)),
 		ion.String("block_hash", blockHash),
 		ion.String("buddy_id", buddyID),
@@ -751,7 +751,7 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		resultSpan.SetAttributes(attribute.String("status", "node_not_initialized"))
 		duration := time.Since(startTime).Seconds()
 		resultSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(resultSpanCtx, "Listener node not initialized",
+		logger().Error(resultSpanCtx, "Listener node not initialized",
 			fmt.Errorf("listener node not initialized"),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -770,7 +770,7 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		resultSpan.SetAttributes(attribute.String("status", "sequencer_id_not_found"))
 		duration := time.Since(startTime).Seconds()
 		resultSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(resultSpanCtx, "Sequencer peer ID not found",
+		logger().Error(resultSpanCtx, "Sequencer peer ID not found",
 			fmt.Errorf("sequencer peer ID not found"),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -806,7 +806,7 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		resultSpan.SetAttributes(attribute.String("status", "marshal_failed"))
 		duration := time.Since(startTime).Seconds()
 		resultSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(resultSpanCtx, "Failed to marshal result",
+		logger().Error(resultSpanCtx, "Failed to marshal result",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -835,7 +835,7 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		resultSpan.SetAttributes(attribute.String("status", "decode_failed"))
 		duration := time.Since(startTime).Seconds()
 		resultSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(resultSpanCtx, "Failed to decode sequencer peer ID",
+		logger().Error(resultSpanCtx, "Failed to decode sequencer peer ID",
 			err,
 			ion.String("sequencer_peer_id", sequencerPeerIDStr),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -856,7 +856,7 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		resultSpan.SetAttributes(attribute.String("status", "stream_open_failed"))
 		duration := time.Since(startTime).Seconds()
 		resultSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(resultSpanCtx, "Failed to open stream to Sequencer",
+		logger().Error(resultSpanCtx, "Failed to open stream to Sequencer",
 			err,
 			ion.String("sequencer_peer_id", sequencerPeerIDStr),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -883,7 +883,7 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 		resultSpan.SetAttributes(attribute.String("status", "write_failed"))
 		duration := time.Since(startTime).Seconds()
 		resultSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(resultSpanCtx, "Failed to send result to Sequencer",
+		logger().Error(resultSpanCtx, "Failed to send result to Sequencer",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -894,7 +894,7 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 
 	duration := time.Since(startTime).Seconds()
 	resultSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(resultSpanCtx, "Successfully sent BFT result to Sequencer",
+	logger().Info(resultSpanCtx, "Successfully sent BFT result to Sequencer",
 		ion.Int64("round", int64(round)),
 		ion.String("decision", decision),
 		ion.Bool("success", success),
@@ -908,14 +908,14 @@ func (lh *ListenerHandler) sendBFTResultToSequencer(
 // handleSubmitVote processes vote submission messages
 func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s network.Stream, message *AVCStruct.Message) {
 	// Record trace span and close it
-	voteSpanCtx, voteSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.handleSubmitVote")
+	voteSpanCtx, voteSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.handleSubmitVote")
 	defer voteSpan.End()
 
 	startTime := time.Now().UTC()
 	remotePeer := s.Conn().RemotePeer()
 	voteSpan.SetAttributes(attribute.String("remote_peer_id", remotePeer.String()))
 
-	logger().NamedLogger.Info(voteSpanCtx, "Received submit vote from peer",
+	logger().Info(voteSpanCtx, "Received submit vote from peer",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("message", message.Message),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -929,7 +929,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 
 	// Initialize PubSub node if not already done
 	if pubSubNode == nil || pubSubNode.PubSub == nil {
-		logger().NamedLogger.Info(voteSpanCtx, "Initializing PubSub_BuddyNode for vote submission",
+		logger().Info(voteSpanCtx, "Initializing PubSub_BuddyNode for vote submission",
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -941,7 +941,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 			voteSpan.SetAttributes(attribute.String("status", "listener_not_initialized"))
 			duration := time.Since(startTime).Seconds()
 			voteSpan.SetAttributes(attribute.Float64("duration", duration))
-			logger().NamedLogger.Error(voteSpanCtx, "ForListner not initialized - cannot process vote",
+			logger().Error(voteSpanCtx, "ForListner not initialized - cannot process vote",
 				fmt.Errorf("ForListner not initialized"),
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -961,7 +961,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 		pubSubBuddyNode := NewBuddyNode(voteSpanCtx, listenerNode.Host, &listenerNode.BuddyNodes, nil, gps)
 		AVCStruct.NewGlobalVariables().Set_PubSubNode(pubSubBuddyNode)
 		pubSubNode = pubSubBuddyNode
-		logger().NamedLogger.Info(voteSpanCtx, "PubSub_BuddyNode initialized successfully",
+		logger().Info(voteSpanCtx, "PubSub_BuddyNode initialized successfully",
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -974,7 +974,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 		voteSpan.SetAttributes(attribute.String("status", "listener_not_initialized"))
 		duration := time.Since(startTime).Seconds()
 		voteSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(voteSpanCtx, "ForListner not initialized - cannot process vote",
+		logger().Error(voteSpanCtx, "ForListner not initialized - cannot process vote",
 			fmt.Errorf("ForListner not initialized"),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -992,7 +992,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 		voteSpan.SetAttributes(attribute.String("status", "unmarshal_failed"))
 		duration := time.Since(startTime).Seconds()
 		voteSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(voteSpanCtx, "Failed to unmarshal vote message",
+		logger().Error(voteSpanCtx, "Failed to unmarshal vote message",
 			err,
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("message", message.Message),
@@ -1009,7 +1009,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 		voteSpan.SetAttributes(attribute.String("status", "sender_mismatch"))
 		duration := time.Since(startTime).Seconds()
 		voteSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(voteSpanCtx, "Sender mismatch - dropping vote",
+		logger().Error(voteSpanCtx, "Sender mismatch - dropping vote",
 			fmt.Errorf("sender mismatch: declared %s, connection %s", message.Sender, s.Conn().RemotePeer()),
 			ion.String("declared_sender", message.Sender.String()),
 			ion.String("connection_peer", s.Conn().RemotePeer().String()),
@@ -1028,7 +1028,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 		voteSpan.SetAttributes(attribute.String("status", "invalid_payload"))
 		duration := time.Since(startTime).Seconds()
 		voteSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(voteSpanCtx, "Missing vote or block_hash in payload - dropping vote",
+		logger().Error(voteSpanCtx, "Missing vote or block_hash in payload - dropping vote",
 			fmt.Errorf("missing vote or block_hash"),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1043,7 +1043,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 		voteSpan.SetAttributes(attribute.String("status", "invalid_vote_value"))
 		duration := time.Since(startTime).Seconds()
 		voteSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(voteSpanCtx, "Invalid vote value - dropping vote",
+		logger().Error(voteSpanCtx, "Invalid vote value - dropping vote",
 			fmt.Errorf("invalid vote value: %v", voteValueRaw),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("vote_value", fmt.Sprintf("%v", voteValueRaw)),
@@ -1059,7 +1059,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 		voteSpan.SetAttributes(attribute.String("status", "invalid_block_hash"))
 		duration := time.Since(startTime).Seconds()
 		voteSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(voteSpanCtx, "Invalid block_hash - dropping vote",
+		logger().Error(voteSpanCtx, "Invalid block_hash - dropping vote",
 			fmt.Errorf("invalid block_hash: %v", blockHashRaw),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("block_hash", fmt.Sprintf("%v", blockHashRaw)),
@@ -1091,7 +1091,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 			voteSpan.SetAttributes(attribute.String("status", "crdt_add_failed"))
 			duration := time.Since(startTime).Seconds()
 			voteSpan.SetAttributes(attribute.Float64("duration", duration))
-			logger().NamedLogger.Error(voteSpanCtx, "Failed to add vote to CRDT",
+			logger().Error(voteSpanCtx, "Failed to add vote to CRDT",
 				err,
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1101,7 +1101,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 			return
 		}
 
-		logger().NamedLogger.Info(voteSpanCtx, "Successfully added vote to CRDT",
+		logger().Info(voteSpanCtx, "Successfully added vote to CRDT",
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("block_hash", blockHash),
 			ion.Float64("vote_value", voteValue),
@@ -1112,7 +1112,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 
 		// Now publish the vote to pubsub so ALL other buddy nodes can receive it
 		if pubSubNode != nil && pubSubNode.PubSub != nil {
-			logger().NamedLogger.Info(voteSpanCtx, "Republishing vote to pubsub for all buddy nodes",
+			logger().Info(voteSpanCtx, "Republishing vote to pubsub for all buddy nodes",
 				ion.String("republisher_peer_id", listenerNode.PeerID.String()),
 				ion.String("original_sender", message.Sender.String()),
 				ion.String("channel", config.PubSub_ConsensusChannel),
@@ -1127,7 +1127,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 			if err := Publisher.Publish(voteSpanCtx, pubSubNode.PubSub, config.PubSub_ConsensusChannel, message, map[string]string{}); err != nil {
 				voteSpan.RecordError(err)
 				voteSpan.SetAttributes(attribute.String("status", "republish_failed"))
-				logger().NamedLogger.Error(voteSpanCtx, "Failed to republish vote to pubsub",
+				logger().Error(voteSpanCtx, "Failed to republish vote to pubsub",
 					err,
 					ion.String("remote_peer_id", remotePeer.String()),
 					ion.String("channel", config.PubSub_ConsensusChannel),
@@ -1137,7 +1137,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 					ion.String("function", "MessagePassing.handleSubmitVote"))
 			} else {
 				voteSpan.SetAttributes(attribute.String("republish_status", "success"))
-				logger().NamedLogger.Info(voteSpanCtx, "Successfully republished vote to pubsub",
+				logger().Info(voteSpanCtx, "Successfully republished vote to pubsub",
 					ion.String("remote_peer_id", remotePeer.String()),
 					ion.String("channel", config.PubSub_ConsensusChannel),
 					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1147,7 +1147,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 			}
 		} else {
 			voteSpan.SetAttributes(attribute.String("status", "pubsub_not_available"))
-			logger().NamedLogger.Warn(voteSpanCtx, "Cannot republish vote - pubSubNode or pubSubNode.PubSub is nil",
+			logger().Warn(voteSpanCtx, "Cannot republish vote - pubSubNode or pubSubNode.PubSub is nil",
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -1158,7 +1158,7 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 
 	duration := time.Since(startTime).Seconds()
 	voteSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(voteSpanCtx, "Successfully processed vote from peer",
+	logger().Info(voteSpanCtx, "Successfully processed vote from peer",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1176,14 +1176,14 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 // handleAskForSubscription processes subscription request messages
 func (lh *ListenerHandler) handleAskForSubscription(logger_ctx context.Context, s network.Stream, message *AVCStruct.Message) {
 	// Record trace span and close it
-	subSpanCtx, subSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.handleAskForSubscription")
+	subSpanCtx, subSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.handleAskForSubscription")
 	defer subSpan.End()
 
 	startTime := time.Now().UTC()
 	remotePeer := s.Conn().RemotePeer()
 	subSpan.SetAttributes(attribute.String("remote_peer_id", remotePeer.String()))
 
-	logger().NamedLogger.Info(subSpanCtx, "Received subscription request from peer",
+	logger().Info(subSpanCtx, "Received subscription request from peer",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("message", message.Message),
 		ion.String("ack_stage", message.GetACK().GetStage()),
@@ -1199,7 +1199,7 @@ func (lh *ListenerHandler) handleAskForSubscription(logger_ctx context.Context, 
 		subSpan.SetAttributes(attribute.String("status", "listener_not_initialized"))
 		duration := time.Since(startTime).Seconds()
 		subSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(subSpanCtx, "ForListner not initialized - sending rejection response",
+		logger().Error(subSpanCtx, "ForListner not initialized - sending rejection response",
 			fmt.Errorf("ForListner not initialized"),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1210,7 +1210,7 @@ func (lh *ListenerHandler) handleAskForSubscription(logger_ctx context.Context, 
 		return
 	}
 
-	logger().NamedLogger.Info(subSpanCtx, "ForListner is initialized - processing subscription request",
+	logger().Info(subSpanCtx, "ForListner is initialized - processing subscription request",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -1221,7 +1221,7 @@ func (lh *ListenerHandler) handleAskForSubscription(logger_ctx context.Context, 
 	topicToSubscribe := config.PubSub_ConsensusChannel
 	subSpan.SetAttributes(attribute.String("topic_to_subscribe", topicToSubscribe))
 
-	logger().NamedLogger.Info(subSpanCtx, "Subscribing to GossipSub topic",
+	logger().Info(subSpanCtx, "Subscribing to GossipSub topic",
 		ion.String("topic", topicToSubscribe),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -1235,14 +1235,14 @@ func (lh *ListenerHandler) handleAskForSubscription(logger_ctx context.Context, 
 	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
 
 	if pubSubNode != nil && pubSubNode.PubSub != nil {
-		logger().NamedLogger.Info(subSpanCtx, "Reusing existing GossipPubSub instance",
+		logger().Info(subSpanCtx, "Reusing existing GossipPubSub instance",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.handleAskForSubscription"))
 		gps = pubSubNode.PubSub
 	} else {
-		logger().NamedLogger.Info(subSpanCtx, "Creating NEW GossipPubSub instance (First time initialization)",
+		logger().Info(subSpanCtx, "Creating NEW GossipPubSub instance (First time initialization)",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
@@ -1269,7 +1269,7 @@ func (lh *ListenerHandler) handleAskForSubscription(logger_ctx context.Context, 
 		subSpan.SetAttributes(attribute.String("status", "subscription_failed"))
 		duration := time.Since(startTime).Seconds()
 		subSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(subSpanCtx, "Failed to subscribe to consensus channel via SubscriptionService",
+		logger().Error(subSpanCtx, "Failed to subscribe to consensus channel via SubscriptionService",
 			err,
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("topic", topicToSubscribe),
@@ -1281,7 +1281,7 @@ func (lh *ListenerHandler) handleAskForSubscription(logger_ctx context.Context, 
 		return
 	}
 
-	logger().NamedLogger.Info(subSpanCtx, "Successfully subscribed to consensus channel via SubscriptionService",
+	logger().Info(subSpanCtx, "Successfully subscribed to consensus channel via SubscriptionService",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("topic", topicToSubscribe),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1300,14 +1300,14 @@ func (lh *ListenerHandler) handleAskForSubscription(logger_ctx context.Context, 
 // handleSubscriptionResponse processes subscription response messages
 func (lh *ListenerHandler) handleSubscriptionResponse(logger_ctx context.Context, s network.Stream, message *AVCStruct.Message) {
 	// Record trace span and close it
-	responseSpanCtx, responseSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.handleSubscriptionResponse")
+	responseSpanCtx, responseSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.handleSubscriptionResponse")
 	defer responseSpan.End()
 
 	startTime := time.Now().UTC()
 	remotePeer := s.Conn().RemotePeer()
 	responseSpan.SetAttributes(attribute.String("remote_peer_id", remotePeer.String()))
 
-	logger().NamedLogger.Info(responseSpanCtx, "Received subscription response from peer",
+	logger().Info(responseSpanCtx, "Received subscription response from peer",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("message", message.Message),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1318,7 +1318,7 @@ func (lh *ListenerHandler) handleSubscriptionResponse(logger_ctx context.Context
 	accepted := message.GetACK().GetStatus() == "ACK_TRUE"
 	responseSpan.SetAttributes(attribute.Bool("accepted", accepted))
 
-	logger().NamedLogger.Info(responseSpanCtx, "Subscription response from peer",
+	logger().Info(responseSpanCtx, "Subscription response from peer",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.Bool("accepted", accepted),
 		ion.String("status", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted]),
@@ -1331,7 +1331,7 @@ func (lh *ListenerHandler) handleSubscriptionResponse(logger_ctx context.Context
 	if lh.responseHandler != nil {
 		lh.responseHandler.HandleResponse(s.Conn().RemotePeer(), accepted, "main")
 		responseSpan.SetAttributes(attribute.String("response_handler", "routed"))
-		logger().NamedLogger.Info(responseSpanCtx, "Successfully routed subscription response to ResponseHandler",
+		logger().Info(responseSpanCtx, "Successfully routed subscription response to ResponseHandler",
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -1339,7 +1339,7 @@ func (lh *ListenerHandler) handleSubscriptionResponse(logger_ctx context.Context
 			ion.String("function", "MessagePassing.handleSubscriptionResponse"))
 	} else {
 		responseSpan.SetAttributes(attribute.String("response_handler", "none"))
-		logger().NamedLogger.Info(responseSpanCtx, "No ResponseHandler set - subscription response logged only",
+		logger().Info(responseSpanCtx, "No ResponseHandler set - subscription response logged only",
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -1354,7 +1354,7 @@ func (lh *ListenerHandler) handleSubscriptionResponse(logger_ctx context.Context
 // sendSubscriptionResponse sends ACK response for subscription requests
 func (lh *ListenerHandler) sendSubscriptionResponse(logger_ctx context.Context, s network.Stream, accepted bool) {
 	// Record trace span and close it
-	sendSpanCtx, sendSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.sendSubscriptionResponse")
+	sendSpanCtx, sendSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.sendSubscriptionResponse")
 	defer sendSpan.End()
 
 	startTime := time.Now().UTC()
@@ -1364,7 +1364,7 @@ func (lh *ListenerHandler) sendSubscriptionResponse(logger_ctx context.Context, 
 		attribute.Bool("accepted", accepted),
 	)
 
-	logger().NamedLogger.Info(sendSpanCtx, "Sending subscription response",
+	logger().Info(sendSpanCtx, "Sending subscription response",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.Bool("accepted", accepted),
 		ion.String("status", map[bool]string{true: "ACCEPTED", false: "REJECTED"}[accepted]),
@@ -1393,7 +1393,7 @@ func (lh *ListenerHandler) sendSubscriptionResponse(logger_ctx context.Context, 
 		sendSpan.SetAttributes(attribute.String("status", "marshal_failed"))
 		duration := time.Since(startTime).Seconds()
 		sendSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(sendSpanCtx, "Failed to marshal response",
+		logger().Error(sendSpanCtx, "Failed to marshal response",
 			err,
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1411,7 +1411,7 @@ func (lh *ListenerHandler) sendSubscriptionResponse(logger_ctx context.Context, 
 		sendSpan.SetAttributes(attribute.String("status", "write_failed"), attribute.Int("bytes_written", bytesWritten))
 		duration := time.Since(startTime).Seconds()
 		sendSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(sendSpanCtx, "Failed to write response",
+		logger().Error(sendSpanCtx, "Failed to write response",
 			err,
 			ion.Int("bytes_written", bytesWritten),
 			ion.String("remote_peer_id", remotePeer.String()),
@@ -1428,7 +1428,7 @@ func (lh *ListenerHandler) sendSubscriptionResponse(logger_ctx context.Context, 
 	if closeWriter, ok := s.(interface{ CloseWrite() error }); ok {
 		if err := closeWriter.CloseWrite(); err != nil {
 			// If CloseWrite fails, log and close the whole stream
-			logger().NamedLogger.Warn(sendSpanCtx, "CloseWrite failed, closing stream directly",
+			logger().Warn(sendSpanCtx, "CloseWrite failed, closing stream directly",
 				ion.String("error", err.Error()),
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("function", "MessagePassing.sendSubscriptionResponse"))
@@ -1446,7 +1446,7 @@ func (lh *ListenerHandler) sendSubscriptionResponse(logger_ctx context.Context, 
 
 	duration := time.Since(startTime).Seconds()
 	sendSpan.SetAttributes(attribute.Float64("duration", duration), attribute.Int("bytes_written", bytesWritten), attribute.String("status", "success"))
-	logger().NamedLogger.Info(sendSpanCtx, "Successfully sent subscription response",
+	logger().Info(sendSpanCtx, "Successfully sent subscription response",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.Bool("accepted", accepted),
 		ion.Int("bytes_written", bytesWritten),
@@ -1465,14 +1465,14 @@ func (lh *ListenerHandler) GetResponseHandler() AVCStruct.ResponseHandler {
 // handleVoteResultRequest handles request for vote aggregation result from a buddy node
 func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s network.Stream, message *AVCStruct.Message) {
 	// Record trace span and close it
-	voteResultSpanCtx, voteResultSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.handleVoteResultRequest")
+	voteResultSpanCtx, voteResultSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.handleVoteResultRequest")
 	defer voteResultSpan.End()
 
 	startTime := time.Now().UTC()
 	remotePeer := s.Conn().RemotePeer()
 	voteResultSpan.SetAttributes(attribute.String("remote_peer_id", remotePeer.String()))
 
-	logger().NamedLogger.Info(voteResultSpanCtx, "Received vote result request from Sequencer",
+	logger().Info(voteResultSpanCtx, "Received vote result request from Sequencer",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("message", message.Message),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1486,7 +1486,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		voteResultSpan.SetAttributes(attribute.String("status", "node_not_initialized"))
 		duration := time.Since(startTime).Seconds()
 		voteResultSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(voteResultSpanCtx, "Listener node or CRDT layer not initialized",
+		logger().Error(voteResultSpanCtx, "Listener node or CRDT layer not initialized",
 			fmt.Errorf("listener node or CRDT layer not initialized"),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -1504,10 +1504,10 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	if err := json.Unmarshal([]byte(message.Message), &voteResultReq); err == nil {
 		targetBlockHash = voteResultReq.BlockHash
 		if targetBlockHash != "" {
-			fmt.Printf("🎯 Target block hash from request: %s\n", targetBlockHash)
+			logger().Info(context.Background(), "🎯 Target block hash from request: %s")
 		}
 	} else {
-		fmt.Printf("DEBUG: Vote result request payload not JSON or missing block_hash: %v\n", err)
+		logger().Info(context.Background(), "DEBUG: Vote result request payload not JSON or missing block_hash: %v")
 		// If no valid JSON payload, reject to avoid mixing blocks
 		ackMessage := AVCStruct.NewACKBuilder().False_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
 		response := AVCStruct.NewMessageBuilder(nil).
@@ -1517,14 +1517,14 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			SetACK(ackMessage)
 		responseBytes, _ := json.Marshal(response)
 		_, _ = s.Write([]byte(string(responseBytes) + string(rune(config.Delimiter))))
-		fmt.Printf("❌ Invalid vote result request payload; rejecting\n")
+		logger().Info(context.Background(), "❌ Invalid vote result request payload; rejecting")g
 		return
 	}
 
 	// Ensure buddy nodes are populated from the cached consensus message
 	// This guards cases where the broadcast handler didn't run yet on this node
 	if len(listenerNode.BuddyNodes.Buddies_Nodes) == 0 {
-		fmt.Printf("⚠️ Buddy list empty at vote result request; attempting to populate from consensus cache\n")
+		logger().Info(context.Background(), "⚠️ Buddy list empty at vote result request; attempting to populate from consensus cache")g
 		buddyIDs := make([]peer.ID, 0, config.MaxMainPeers)
 		count := 0
 		for _, consensusMsg := range AVCStruct.CacheConsensuMessage {
@@ -1548,20 +1548,20 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		}
 		if len(buddyIDs) > 0 {
 			listenerNode.BuddyNodes.Buddies_Nodes = buddyIDs
-			fmt.Printf("✅ Populated buddy nodes from cache: %d peers (MaxMainPeers=%d)\n", len(buddyIDs), config.MaxMainPeers)
+			logger().Info(context.Background(), "✅ Populated buddy nodes from cache: %d peers (MaxMainPeers=%d)"), config.MaxMainPeers)
 		} else {
-			fmt.Printf("⚠️ Could not populate buddy nodes from cache\n")
+			logger().Info(context.Background(), "⚠️ Could not populate buddy nodes from cache")g
 		}
 	}
-	fmt.Printf("✅ Buddy nodes populated: %v\n", listenerNode.BuddyNodes.Buddies_Nodes)
+	logger().Info(context.Background(), "✅ Buddy nodes populated: %v")
 
 	// 🔄 CRDT SYNC: Sync CRDT data before processing votes
-	fmt.Printf("🔄 Triggering CRDT sync before processing votes...\n")
+	logger().Info(context.Background(), "🔄 Triggering CRDT sync before processing votes...")g
 	if err := TriggerCRDTSyncForBuddyNode(logger_ctx, listenerNode); err != nil {
-		fmt.Printf("⚠️ CRDT sync failed, continuing with existing data: %v\n", err)
+		logger().Info(context.Background(), "⚠️ CRDT sync failed, continuing with existing data: %v")
 		// Don't fail the vote processing, just log the warning
 	} else {
-		fmt.Printf("✅ CRDT sync completed successfully\n")
+		logger().Info(context.Background(), "✅ CRDT sync completed successfully")g
 		// Print CRDT content after sync
 		CRDTSync.PrintCurrentCRDTContent()
 	}
@@ -1573,7 +1573,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		voteResultSpan.SetAttributes(attribute.String("status", "process_votes_failed"))
 		duration := time.Since(startTime).Seconds()
 		voteResultSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(voteResultSpanCtx, "Failed to process votes from CRDT",
+		logger().Error(voteResultSpanCtx, "Failed to process votes from CRDT",
 			err,
 			ion.String("target_block_hash", targetBlockHash),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1592,7 +1592,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	if err != nil || !status {
 		voteResultSpan.RecordError(err)
 		voteResultSpan.SetAttributes(attribute.String("bls_signature_status", "failed"))
-		logger().NamedLogger.Warn(voteResultSpanCtx, "Failed to create BLS signature for BFT result",
+		logger().Warn(voteResultSpanCtx, "Failed to create BLS signature for BFT result",
 			ion.String("error", err.Error()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -1600,7 +1600,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			ion.String("function", "MessagePassing.handleVoteResultRequest"))
 	} else {
 		voteResultSpan.SetAttributes(attribute.String("bls_signature_status", "success"))
-		logger().NamedLogger.Info(voteResultSpanCtx, "BLS signature created successfully",
+		logger().Info(voteResultSpanCtx, "BLS signature created successfully",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
@@ -1609,7 +1609,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	// Attach local PeerID into BLS payload
 	blsResp.SetPeerID(listenerNode.PeerID.String())
 
-	logger().NamedLogger.Info(voteResultSpanCtx, "Vote aggregation result",
+	logger().Info(voteResultSpanCtx, "Vote aggregation result",
 		ion.Int("result", int(result)),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -1628,7 +1628,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		voteResultSpan.SetAttributes(attribute.String("status", "marshal_failed"))
 		duration := time.Since(startTime).Seconds()
 		voteResultSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(voteResultSpanCtx, "Failed to marshal result data",
+		logger().Error(voteResultSpanCtx, "Failed to marshal result data",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -1650,7 +1650,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		voteResultSpan.SetAttributes(attribute.String("status", "response_marshal_failed"))
 		duration := time.Since(startTime).Seconds()
 		voteResultSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(voteResultSpanCtx, "Failed to marshal response",
+		logger().Error(voteResultSpanCtx, "Failed to marshal response",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -1667,7 +1667,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		voteResultSpan.SetAttributes(attribute.String("status", "write_failed"))
 		duration := time.Since(startTime).Seconds()
 		voteResultSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(voteResultSpanCtx, "Failed to write response",
+		logger().Error(voteResultSpanCtx, "Failed to write response",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -1679,7 +1679,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	// Force flush the stream
 	if err := s.CloseWrite(); err != nil {
 		voteResultSpan.RecordError(err)
-		logger().NamedLogger.Warn(voteResultSpanCtx, "Failed to close write side",
+		logger().Warn(voteResultSpanCtx, "Failed to close write side",
 			ion.String("error", err.Error()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -1689,7 +1689,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 
 	duration := time.Since(startTime).Seconds()
 	voteResultSpan.SetAttributes(attribute.Float64("duration", duration), attribute.Int("bytes_written", n), attribute.String("status", "success"))
-	logger().NamedLogger.Info(voteResultSpanCtx, "Successfully sent vote result to Sequencer",
+	logger().Info(voteResultSpanCtx, "Successfully sent vote result to Sequencer",
 		ion.Int("result", int(result)),
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.Int("bytes_written", n),
@@ -1705,30 +1705,30 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 		var err error
 		ListenerHandlerLocal, err = common.InitializeGRO(GRO.HandleBFTRequestLocal)
 		if err != nil {
-			fmt.Printf("❌ Failed to initialize ListenerHandler local manager: %v\n", err)
+			logger().Info(context.Background(), "❌ Failed to initialize ListenerHandler local manager: %v")
 			return
 		}
 	}
 	defer s.Close()
 
-	fmt.Println("📩 Received BFT trigger from Sequencer:", message)
+	logger().Info(context.Background(), "Received BFT trigger from Sequencer", ion.String("message", fmt.Sprintf("%v", message)))
 
 	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
 	if listenerNode == nil {
-		fmt.Println("❌ Listener node not initialized")
+		logger().Error(context.Background(), "Listener node not initialized", fmt.Errorf("not initialized"))
 		return
 	}
 
 	// Get buddy list from global config or BFT context
 	if len(buddies) == 0 {
-		fmt.Println("⚠️ No buddies found to request vote results")
+		logger().Warn(context.Background(), "No buddies found to request vote results")
 		return
 	}
 
-	fmt.Printf("🚀 Triggering BFT across %d buddy nodes\n", len(buddies))
-	fmt.Printf("📍 Listener PeerID: %s\n", listenerNode.PeerID.String())
-	fmt.Printf("📍 Listener Host ID: %s\n", listenerNode.Host.ID().String())
-	fmt.Printf("📋 All buddies received: %v\n", buddies)
+	logger().Info(context.Background(), "🚀 Triggering BFT across %d buddy nodes"))
+	logger().Info(context.Background(), "📍 Listener PeerID: %s"))
+	logger().Info(context.Background(), "📍 Listener Host ID: %s").String())
+	logger().Info(context.Background(), "📋 All buddies received: %v")
 
 	// Filter out self from buddies to avoid "dial to self attempted" error
 	filteredBuddies := make([]peer.ID, 0, len(buddies))
@@ -1742,9 +1742,9 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 	if pubSubNode != nil {
 		currentPeerID = pubSubNode.PeerID
 		currentPeerIDStr = currentPeerID.String()
-		fmt.Printf("📍 PubSub PeerID: %s\n", currentPeerIDStr)
+		logger().Info(context.Background(), "📍 PubSub PeerID: %s")
 		if pubSubNode.Host != nil {
-			fmt.Printf("📍 PubSub Host ID: %s\n", pubSubNode.Host.ID().String())
+			logger().Info(context.Background(), "📍 PubSub Host ID: %s").String())
 		}
 	} else {
 		currentPeerID = listenerNode.PeerID
@@ -1767,9 +1767,9 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 
 			if !isPubSubHost {
 				filteredBuddies = append(filteredBuddies, b)
-				fmt.Printf("✅ Including buddy: %s\n", buddyIDStr)
+				logger().Info(context.Background(), "✅ Including buddy: %s")
 			} else {
-				fmt.Printf("⚠️ Filtering out self: %s (matches PubSub host)\n", buddyIDStr)
+				logger().Info(context.Background(), "⚠️ Filtering out self: %s (matches PubSub host)")
 			}
 		} else {
 			matched := ""
@@ -1788,16 +1788,16 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 				}
 				matched += "pubsub"
 			}
-			fmt.Printf("⚠️ Filtering out self: %s (matches %s)\n", buddyIDStr, matched)
+			logger().Info(context.Background(), "⚠️ Filtering out self: %s (matches %s)")
 		}
 	}
 
 	if len(filteredBuddies) == 0 {
-		fmt.Println("⚠️ No valid buddy nodes (all are self)")
+		logger().Warn(context.Background(), "No valid buddy nodes - all are self")
 		return
 	}
 
-	fmt.Printf("📊 Filtered to %d valid buddy nodes (excluding self)\n", len(filteredBuddies))
+	logger().Info(context.Background(), "📊 Filtered to %d valid buddy nodes (excluding self)"))
 
 	// Send acknowledgment to sequencer
 	ack := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_SubmitVote)
@@ -1818,7 +1818,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 	responseCh := make(chan bool, len(filteredBuddies))
 	wg, err := ListenerHandlerLocal.NewFunctionWaitGroup(context.Background(), GRO.BFTWaitGroup)
 	if err != nil {
-		fmt.Printf("❌ Failed to create waitgroup: %v\n", err)
+		logger().Info(context.Background(), "❌ Failed to create waitgroup: %v")
 		return
 	}
 
@@ -1828,13 +1828,13 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 			// Use SubmitMessageProtocol because HandleSubmitMessageStream routes Type_VoteResult
 			stream, err := listenerNode.Host.NewStream(ctx, buddyID, config.SubmitMessageProtocol)
 			if err != nil {
-				fmt.Printf("❌ Failed to open stream to %s: %v\n", buddyID, err)
+				logger().Info(context.Background(), "❌ Failed to open stream to %s: %v")
 				responseCh <- false
 				return nil
 			}
 			defer func() {
 				stream.Close()
-				fmt.Printf("🔌 Closed stream to %s\n", buddyID)
+				logger().Info(context.Background(), "🔌 Closed stream to %s")
 			}()
 
 			reqAck := AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
@@ -1847,11 +1847,11 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 			reqData, _ := json.Marshal(reqMsg)
 			reqData = append(reqData, byte(config.Delimiter))
 			if _, err := stream.Write(reqData); err != nil {
-				fmt.Printf("❌ Failed to send RequestForVoteResult to %s: %v\n", buddyID, err)
+				logger().Info(context.Background(), "❌ Failed to send RequestForVoteResult to %s: %v")
 				responseCh <- false
 				return nil
 			}
-			fmt.Printf("📨 Sent RequestForVoteResult to %s\n", buddyID)
+			logger().Info(context.Background(), "📨 Sent RequestForVoteResult to %s")
 
 			// Wait for the vote result
 			readCh := make(chan []byte, 1)
@@ -1881,23 +1881,23 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 
 			select {
 			case <-ctx.Done():
-				fmt.Printf("⏳ Context cancelled while waiting for vote result from %s\n", buddyID)
+				logger().Info(context.Background(), "⏳ Context cancelled while waiting for vote result from %s")
 				responseCh <- false
 				return ctx.Err()
 			case payload := <-readCh:
 				if payload == nil {
-					fmt.Printf("⚠️ No response from %s (nil payload)\n", buddyID)
+					logger().Info(context.Background(), "⚠️ No response from %s (nil payload)")
 					responseCh <- false
 					return nil
 				}
 
-				fmt.Printf("📥 Received payload from %s: %d bytes\n", buddyID, len(payload))
-				fmt.Printf("📝 Payload content: %s\n", string(payload))
+				logger().Info(context.Background(), "📥 Received payload from %s: %d bytes"))
+				logger().Info(context.Background(), "📝 Payload content: %s"))
 
 				var msg AVCStruct.Message
 				if err := json.Unmarshal(payload, &msg); err == nil {
-					fmt.Printf("✅ Parsed vote result message from %s\n", buddyID)
-					fmt.Printf("   Message content: %s\n", msg.Message)
+					logger().Info(context.Background(), "✅ Parsed vote result message from %s")
+					logger().Info(context.Background(), "Message content: %s")
 
 					// Parse and store the vote result directly
 					var resultData map[string]interface{}
@@ -1905,7 +1905,7 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 						if result, ok := resultData["result"].(float64); ok {
 							voteResult := int8(result)
 							Maps.StoreVoteResult(buddyID.String(), voteResult)
-							fmt.Printf("✅ Stored vote result for peer %s: %d\n", buddyID.String(), voteResult)
+							logger().Info(context.Background(), "✅ Stored vote result for peer %s: %d"), voteResult)
 							responsesMutex.Lock()
 							responsesReceived++
 							count := responsesReceived
@@ -1913,28 +1913,28 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 
 							// Check if we've reached the minimum requirement
 							if count >= config.MaxMainPeers {
-								fmt.Printf("✅ Reached minimum requirement: %d/%d responses\n", count, config.MaxMainPeers)
+								logger().Info(context.Background(), "✅ Reached minimum requirement: %d/%d responses")
 							}
 							responseCh <- true
 							return nil
 						}
 					}
-					fmt.Printf("⚠️ Failed to parse vote result from %s\n", buddyID)
+					logger().Info(context.Background(), "⚠️ Failed to parse vote result from %s")
 					responseCh <- false
 				} else {
-					fmt.Printf("⚠️ Invalid response from %s: %s\n", buddyID, string(payload))
+					logger().Info(context.Background(), "⚠️ Invalid response from %s: %s"))
 					responseCh <- false
 				}
 			case <-readErrCh:
-				fmt.Printf("⚠️ Error reading from stream for %s\n", buddyID)
+				logger().Info(context.Background(), "⚠️ Error reading from stream for %s")
 				responseCh <- false
 			case <-timeoutTimer.C:
-				fmt.Printf("⏳ Timeout waiting for vote result from %s\n", buddyID)
+				logger().Info(context.Background(), "⏳ Timeout waiting for vote result from %s")
 				responseCh <- false
 			}
 			return nil
 		}, local.AddToWaitGroup(GRO.BFTWaitGroup)); err != nil {
-			fmt.Printf("❌ Failed to start goroutine for buddy %s: %v\n", buddyID, err)
+			logger().Info(context.Background(), "❌ Failed to start goroutine for buddy %s: %v")
 		}
 	}
 
@@ -1953,11 +1953,11 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 	finalCount := responsesReceived
 	responsesMutex.Unlock()
 
-	fmt.Printf("✅ Collected vote results from %d/%d nodes\n", finalCount, len(filteredBuddies))
+	logger().Info(context.Background(), "✅ Collected vote results from %d/%d nodes"))
 
 	// Check if we have enough responses for consensus
 	if finalCount < config.MaxMainPeers {
-		fmt.Printf("⚠️ WARNING: Only received %d responses, but need at least %d for consensus\n", finalCount, config.MaxMainPeers)
-		fmt.Printf("⚠️ This may cause consensus failures. Consider increasing backup nodes.\n")
+		logger().Info(context.Background(), "⚠️ WARNING: Only received %d responses, but need at least %d for consensus")
+		logger().Info(context.Background(), "⚠️ This may cause consensus failures. Consider increasing backup nodes.")g
 	}
 }

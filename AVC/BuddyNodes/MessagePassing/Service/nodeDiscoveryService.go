@@ -57,7 +57,7 @@ func (nds *NodeDiscoveryService) StartDiscovery() {
 
 	// Start a trace span for the entire service lifecycle
 	// The span will be ended in StopDiscovery() when the service shuts down
-	tracer := logger().NamedLogger.Tracer("NodeDiscoveryService")
+	tracer := logger().Tracer("NodeDiscoveryService")
 	nds.discoveryLoggerContext.discovery_logger_ctx, nds.discoveryLoggerContext.discovery_span = tracer.Start(
 		nds.discoveryLoggerContext.discovery_logger_ctx,
 		"NodeDiscoveryService.StartDiscovery",
@@ -67,7 +67,8 @@ func (nds *NodeDiscoveryService) StartDiscovery() {
 		var err error
 		NodeDiscoveryLocal, err = common.InitializeGRO(GRO.NodeDiscoveryLocal)
 		if err != nil {
-			fmt.Printf("❌ Failed to initialize NodeDiscovery local manager: %v\n", err)
+			logger().Error(context.Background(), "Failed to initialize NodeDiscovery local manager", err,
+				ion.String("function", "NodeDiscoveryService.StartDiscovery"))
 			// End span if initialization fails
 			if nds.discoveryLoggerContext.discovery_span != nil {
 				nds.discoveryLoggerContext.discovery_span.End()
@@ -75,7 +76,7 @@ func (nds *NodeDiscoveryService) StartDiscovery() {
 			return
 		}
 	}
-	logger().NamedLogger.Info(nds.discoveryLoggerContext.discovery_logger_ctx, "Starting node discovery service",
+	logger().Info(nds.discoveryLoggerContext.discovery_logger_ctx, "Starting node discovery service",
 		ion.String("topic", "NodeDiscoveryService"),
 		ion.String("description", "Starting node discovery service"),
 		ion.String("function", "NodeDiscoveryService.StartDiscovery"))
@@ -98,7 +99,7 @@ func (nds *NodeDiscoveryService) StopDiscovery() {
 	}
 	defer nds.discoveryLoggerContext.discovery_logger_cancel()
 	close(nds.stopChan)
-	logger().NamedLogger.Info(nds.discoveryLoggerContext.discovery_logger_ctx, "Stopped node discovery service",
+	logger().Info(nds.discoveryLoggerContext.discovery_logger_ctx, "Stopped node discovery service",
 		ion.String("topic", "NodeDiscoveryService"),
 		ion.String("description", "Stopped node discovery service"),
 		ion.String("function", "NodeDiscoveryService.StopDiscovery"))
@@ -117,7 +118,7 @@ func (nds *NodeDiscoveryService) AddPeer(logger_ctx context.Context, peerID peer
 			CRDTState:   nil, // Will be populated during sync
 		}
 
-		logger().NamedLogger.Info(logger_ctx, "Added new peer to discovery",
+		logger().Info(logger_ctx, "Added new peer to discovery",
 			ion.String("topic", "NodeDiscoveryService"),
 			ion.String("peer", peerID.String()),
 			ion.String("function", "NodeDiscoveryService.AddPeer"))
@@ -131,7 +132,7 @@ func (nds *NodeDiscoveryService) RemovePeer(logger_ctx context.Context, peerID p
 
 	if peerInfo, exists := nds.knownPeers[peerID]; exists {
 		peerInfo.IsConnected = false
-		logger().NamedLogger.Info(logger_ctx, "Marked peer as disconnected",
+		logger().Info(logger_ctx, "Marked peer as disconnected",
 			ion.String("topic", "NodeDiscoveryService"),
 			ion.String("peer", peerID.String()),
 			ion.String("function", "NodeDiscoveryService.RemovePeer"))
@@ -176,7 +177,7 @@ func (nds *NodeDiscoveryService) SyncWithPeer(logger_ctx context.Context, ctx co
 		return fmt.Errorf("peer %s not found or not connected", peerID)
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Starting CRDT sync with peer",
+	logger().Info(logger_ctx, "Starting CRDT sync with peer",
 		ion.String("topic", "NodeDiscoveryService"),
 		ion.String("peer", peerID.String()),
 		ion.String("function", "NodeDiscoveryService.SyncWithPeer"))
@@ -198,7 +199,7 @@ func (nds *NodeDiscoveryService) SyncWithPeer(logger_ctx context.Context, ctx co
 	peerInfo.LastSeen = time.Now().UTC()
 	nds.peerMutex.Unlock()
 
-	logger().NamedLogger.Info(logger_ctx, "Successfully synced with peer",
+	logger().Info(logger_ctx, "Successfully synced with peer",
 		ion.String("topic", "NodeDiscoveryService"),
 		ion.String("peer", peerID.String()),
 		ion.String("function", "NodeDiscoveryService.SyncWithPeer"))
@@ -211,13 +212,13 @@ func (nds *NodeDiscoveryService) SyncWithAllPeers(logger_ctx context.Context, ct
 	connectedPeers := nds.GetConnectedPeers()
 
 	if len(connectedPeers) == 0 {
-		logger().NamedLogger.Info(logger_ctx, "No connected peers to sync with",
+		logger().Info(logger_ctx, "No connected peers to sync with",
 			ion.String("topic", "NodeDiscoveryService"),
 			ion.String("function", "NodeDiscoveryService.SyncWithAllPeers"))
 		return nil
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Starting sync with peers",
+	logger().Info(logger_ctx, "Starting sync with peers",
 		ion.Int("peers_count", len(connectedPeers)),
 		ion.String("topic", "NodeDiscoveryService"),
 		ion.String("function", "NodeDiscoveryService.SyncWithAllPeers"))
@@ -233,7 +234,7 @@ func (nds *NodeDiscoveryService) SyncWithAllPeers(logger_ctx context.Context, ct
 		return fmt.Errorf("sync completed with %d errors: %v", len(syncErrors), syncErrors)
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Successfully synced with all peers",
+	logger().Info(logger_ctx, "Successfully synced with all peers",
 		ion.String("topic", "NodeDiscoveryService"),
 		ion.String("function", "NodeDiscoveryService.SyncWithAllPeers"))
 
@@ -248,7 +249,7 @@ func (nds *NodeDiscoveryService) discoveryLoop() {
 	link := ion.LinkFromContext(nds.discoveryLoggerContext.discovery_logger_ctx)
 
 	//start the trace as the child trace of the parent trace
-	tracer := logger().NamedLogger.Tracer("NodeDiscoveryService")
+	tracer := logger().Tracer("NodeDiscoveryService")
 	logger_ctx, span := tracer.Start(nds.discoveryLoggerContext.discovery_logger_ctx,
 		"NodeDiscoveryService.StartDiscovery.discoveryLoop",
 		ion.WithLinks(link))
@@ -260,7 +261,7 @@ func (nds *NodeDiscoveryService) discoveryLoop() {
 	for {
 		select {
 		case <-nds.stopChan:
-			logger().NamedLogger.Info(logger_ctx, "Node discovery service stopped",
+			logger().Info(logger_ctx, "Node discovery service stopped",
 				ion.String("topic", "NodeDiscoveryService"),
 				ion.String("description", "Node discovery service stopped"),
 				ion.String("function", "NodeDiscoveryService.discoveryLoop"))
@@ -282,7 +283,7 @@ func (nds *NodeDiscoveryService) syncLoop() {
 	link := ion.LinkFromContext(nds.discoveryLoggerContext.discovery_logger_ctx)
 
 	//start the trace as the child trace of the parent trace
-	tracer := logger().NamedLogger.Tracer("NodeDiscoveryService")
+	tracer := logger().Tracer("NodeDiscoveryService")
 	logger_ctx, span := tracer.Start(nds.discoveryLoggerContext.discovery_logger_ctx,
 		"NodeDiscoveryService.StartDiscovery.syncLoop",
 		ion.WithLinks(link))
@@ -295,7 +296,7 @@ func (nds *NodeDiscoveryService) syncLoop() {
 		case <-ticker.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			if err := nds.SyncWithAllPeers(logger_ctx, ctx); err != nil {
-				logger().NamedLogger.Error(logger_ctx, "Periodic sync failed",
+				logger().Error(logger_ctx, "Periodic sync failed",
 					err,
 					ion.String("topic", "NodeDiscoveryService"),
 					ion.String("function", "NodeDiscoveryService.syncLoop"))
@@ -313,7 +314,7 @@ func (nds *NodeDiscoveryService) discoverNewPeers(logger_ctx context.Context) {
 	for _, peerID := range connectedPeers {
 		if peerID != nds.buddyNode.PeerID {
 			nds.AddPeer(logger_ctx, peerID)
-			logger().NamedLogger.Info(logger_ctx, "Added new peer to discovery",
+			logger().Info(logger_ctx, "Added new peer to discovery",
 				ion.String("topic", "NodeDiscoveryService"),
 				ion.String("peer", peerID.String()),
 				ion.String("function", "NodeDiscoveryService.discoverNewPeers"))

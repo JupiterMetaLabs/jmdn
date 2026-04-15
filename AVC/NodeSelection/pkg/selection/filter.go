@@ -1,6 +1,8 @@
 package selection
 
 import (
+	"context"
+	"github.com/JupiterMetaLabs/ion"
 	"fmt"
 	"time"
 )
@@ -43,36 +45,36 @@ func FilterEligible(myNodeID string, nodes []Node, config FilterConfig) []Node {
 
 		// Skip self
 		if node.PeerId == myNodeID {
-			fmt.Println("⚠️  Skipping node due to timeout:", -1)
+			logger().Warn(context.Background(), "Skipping node due to timeout", ion.Int("timeout", -1))
 			continue
 		}
 
 		// // Check if node is active
 		if !node.IsActive {
-			fmt.Println("⚠️  Skipping node due to timeout:", 0)
+			logger().Warn(context.Background(), "Skipping node due to timeout", ion.Int("timeout", 0))
 			continue
 		}
 
 		// Check selection score (CRITICAL: 0.5 <= score < 1.0)
 		if node.SelectionScore < config.MinSelectionScore {
-			fmt.Println("⚠️  Skipping node due to timeout:", 4)
+			logger().Warn(context.Background(), "Skipping node due to timeout", ion.Int("timeout", 4))
 			continue
 		}
 
 		if node.SelectionScore >= config.MaxSelectionScore {
-			fmt.Println("⚠️  Skipping node due to timeout:", 3)
+			logger().Warn(context.Background(), "Skipping node due to timeout", ion.Int("timeout", 3))
 			continue
 		}
 
 		// Check reputation score (optional filter)
 		if config.MinReputationScore > 0 && node.ReputationScore < config.MinReputationScore {
-			fmt.Println("⚠️  Skipping node due to timeout:", 2)
+			logger().Warn(context.Background(), "Skipping node due to timeout", ion.Int("timeout", 2))
 			continue
 		}
 
 		// // Check if node is online (within timeout window)
 		// if now.Sub(node.LastSeen) > timeoutDuration {
-		// 	fmt.Println("⚠️  Skipping node due to timeout:", 1)
+		// 	logger().Warn(context.Background(), "Skipping node due to timeout", ion.Int("timeout", 1))
 		// 	continue
 		// }
 
