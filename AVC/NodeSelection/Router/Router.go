@@ -2,10 +2,10 @@ package Router
 
 import (
 	"context"
-	"github.com/JupiterMetaLabs/ion"
-	"context"
 	"fmt"
 	"time"
+
+	"github.com/JupiterMetaLabs/ion"
 
 	"gossipnode/AVC/NodeSelection/pkg/selection"
 	"gossipnode/config/PubSubMessages"
