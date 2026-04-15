@@ -1224,16 +1224,9 @@ func (consensus *Consensus) PrintCRDTState(logger_ctx context.Context) error {
 
 // printCRDTHeader prints the header information for CRDT state
 func (consensus *Consensus) printCRDTHeader(listenerNode *PubSubMessages.BuddyNode) {
-	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║             CRDT STATE - SEQUENCER                         ║\n")
-	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
-	fmt.Printf("Peer ID: %s\n", listenerNode.PeerID.String())
-	fmt.Printf("Timestamp: %s\n", time.Now().UTC().Format(time.RFC3339))
-	fmt.Printf("Block Hash: %s\n", consensus.ZKBlockData.GetZKBlock().BlockHash.String())
-	fmt.Printf("Messages Received: %d | Sent: %d | Total: %d\n",
-		listenerNode.MetaData.Received,
-		listenerNode.MetaData.Sent,
-		listenerNode.MetaData.Total)
+	logger().Info(ctx, "CRDT State - Sequencer - Start")
+	logger().Info(ctx, "CRDT State", ion.String("peer_id", listenerNode.PeerID.String()), ion.String("timestamp", time.Now().UTC().Format(time.RFC3339)), ion.String("block_hash", consensus.ZKBlockData.GetZKBlock().BlockHash.String()))
+	logger().Debug(ctx, "Message stats", ion.Int("received", receivedCount), ion.Int("sent", sentCount), ion.Int("total", receivedCount+sentCount))
 }
 
 // printCRDTVotes prints vote information from CRDT
@@ -1252,15 +1245,14 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 			attribute.Int("votes_count", 0),
 			attribute.Bool("votes_exist", false),
 		)
-		fmt.Printf("\n📊 Votes in CRDT: 0 (no votes collected yet)\n")
+	logger().Info(ctx, "Votes in CRDT", ion.Int("vote_count", 0))
 		logger().Info(trace_ctx, "No votes in CRDT yet",
 			ion.String("function", "Consensus.printCRDTVotes"))
 		return
 	}
 
 	span.SetAttributes(attribute.Int("votes_count", len(votes)))
-	fmt.Printf("\n📊 Total Votes in CRDT: %d\n", len(votes))
-	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	logger().Info(ctx, "Total votes in CRDT", ion.Int("vote_count", len(votes)))
 
 	yesVotes := 0
 	noVotes := 0
@@ -1273,7 +1265,7 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 				ion.Err(err),
 				ion.Int("vote_index", i+1),
 				ion.String("function", "Consensus.printCRDTVotes"))
-			fmt.Printf("  Vote %d: [PARSING ERROR] %s\n", i+1, vote)
+			logger().Error(ctx, "Vote parsing error", fmt.Errorf("invalid vote"), ion.Int("vote_index", i+1))
 			continue
 		}
 
@@ -1286,11 +1278,10 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 			noVotes++
 		}
 
-		fmt.Printf("  ✓ Vote %d:\n", i+1)
-		fmt.Printf("    - Value: %v\n", voteValue)
-		fmt.Printf("    - Block Hash: %v\n", blockHash)
+			logger().Debug(ctx, "Processing vote", ion.Int("vote_index", i+1))
+			logger().Debug(ctx, "Vote value", ion.String("value", fmt.Sprintf("%v", voteValue)))
+			logger().Debug(ctx, "Vote block hash", ion.String("block_hash", fmt.Sprintf("%v", blockHash)))
 		if i < len(votes)-1 {
-			fmt.Printf("    ─────────────────────────────────────────────\n")
 		}
 	}
 
@@ -1299,8 +1290,7 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 		attribute.Int("no_votes", noVotes),
 	)
 
-	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	fmt.Printf("📊 Vote Summary: YES=%d, NO=%d, Total=%d\n", yesVotes, noVotes, len(votes))
+	logger().Info(ctx, "Vote summary", ion.Int("yes_votes", yesVotes), ion.Int("no_votes", noVotes), ion.Int("total_votes", len(votes)))
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(
@@ -1317,8 +1307,7 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 
 // printCRDTFooter prints the footer for CRDT state
 func (consensus *Consensus) printCRDTFooter() {
-	fmt.Printf("╔════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
+	logger().Info(ctx, "CRDT State - Sequencer - End")
 }
 
 // ProcessVoteCollection orchestrates the vote collection and processing flow

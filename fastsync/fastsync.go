@@ -26,10 +26,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/linkedin/goavro/v2"
-	"github.com/rs/zerolog/log"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
@@ -400,7 +400,7 @@ func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *b
 		// Calculate batches
 		batchCount := calculateBatchCount(ourState.TxId, dbState.TxID)
 		if batchCount == 0 {
-			fmt.Printf("No batches needed for %s\n", dbTypeToString(dbState.Type))
+			logger().Info(context.Background(), "No batches needed for %s\n", ion.String("value", fmt.Sprintf("%v", dbTypeToString(dbState.Type))))
 			continue
 		}
 
@@ -524,52 +524,53 @@ func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, wr
 	}
 
 	// Print raw response details to terminal
-	fmt.Printf("BATCH RECEIVED [%d]: Size=%d bytes, Type=%s, DB=%s\n",
-		batchResp.BatchNumber,
-		len(batchResp.Data),
-		batchResp.Type,
-		dbTypeToString(dbType))
+	logger().Debug(context.Background(), "BATCH RECEIVED",
+		ion.Int("number", int(batchResp.BatchNumber)),
+		ion.Int("size", len(batchResp.Data)),
+		ion.String("type", batchResp.Type),
+		ion.String("db", dbTypeToString(dbType)))
 
 	// Check for abort message
 	if batchResp.Type == TypeSyncAbort {
-		fmt.Printf("BATCH ERROR: Peer aborted sync: %s\n", batchResp.ErrorMessage)
+		logger().Info(context.Background(), "BATCH ERROR: Peer aborted sync: %s\n", ion.String("value", fmt.Sprintf("%v", batchResp.ErrorMessage)))
 		return fmt.Errorf("peer aborted sync: %s", batchResp.ErrorMessage)
 	}
 
 	// Check response
 	if batchResp.Type != TypeBatchData {
-		fmt.Printf("BATCH ERROR: Unexpected response type: %s\n", batchResp.Type)
+		logger().Info(context.Background(), "BATCH ERROR: Unexpected response type: %s\n", ion.String("value", fmt.Sprintf("%v", batchResp.Type)))
 		return fmt.Errorf("unexpected response type: %s", batchResp.Type)
 	}
 
 	// Parse batch data
 	var batchData BatchData
 	if err := json.Unmarshal(batchResp.Data, &batchData); err != nil {
-		// Print error details for debugging
+		// Log error details for debugging
 		if len(batchResp.Data) > 100 {
-			fmt.Printf("BATCH PARSE ERROR: %v\nData starts with: %s...\n",
-				err, string(batchResp.Data[:100]))
+			logger().Error(context.Background(), "BATCH PARSE ERROR",
+				ion.String("data_preview", string(batchResp.Data[:100])), err)
 		} else {
-			fmt.Printf("BATCH PARSE ERROR: %v\nFull data: %s\n",
-				err, string(batchResp.Data))
+			logger().Error(context.Background(), "BATCH PARSE ERROR",
+				ion.String("data", string(batchResp.Data)), err)
 		}
 		return fmt.Errorf("failed to parse batch data: %w", err)
 	}
 
-	// Print detailed batch contents to terminal
-	fmt.Printf("BATCH PARSED [%d]: %d entries, %d CRDTs, DB=%s\n",
-		batchResp.BatchNumber,
-		len(batchData.Entries),
-		len(batchData.CRDTs),
-		dbTypeToString(batchData.DBType))
+	// Log detailed batch contents
+	logger().Debug(context.Background(), "BATCH PARSED",
+		ion.Int("number", int(batchResp.BatchNumber)),
+		ion.Int("entries", len(batchData.Entries)),
+		ion.Int("crdts", len(batchData.CRDTs)),
+		ion.String("db", dbTypeToString(batchData.DBType)))
 
 	if len(batchData.Entries) > 0 {
-		// Print sample of first few keys
-		fmt.Printf("BATCH ENTRIES SAMPLE: ")
+		// Log sample of first few keys
+		var keys []string
 		for i := 0; i < min(3, len(batchData.Entries)); i++ {
-			fmt.Printf("%s, ", string(batchData.Entries[i].Key))
+			keys = append(keys, string(batchData.Entries[i].Key))
 		}
-		fmt.Println("...")
+		logger().Debug(context.Background(), "BATCH ENTRIES SAMPLE",
+			ion.String("keys", fmt.Sprintf("%v", keys)))
 	}
 
 	// Get database and CRDT engine
@@ -577,18 +578,18 @@ func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, wr
 
 	// Process data
 	if err := fs.storeEntries(db, batchData.Entries); err != nil {
-		fmt.Printf("BATCH ERROR: Failed to store entries: %v\n", err)
+		logger().Info(context.Background(), "BATCH ERROR: Failed to store entries: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
 		return fmt.Errorf("failed to store entries: %w", err)
 	}
 
 	// UPDATED: Process CRDTs using the new CRDT engine during batch processing
 	// This ensures CRDT operations are properly synchronized without conflicts
 	if err := fs.storeCRDTs(fs.crdtEngine, batchData.CRDTs); err != nil {
-		fmt.Printf("BATCH ERROR: Failed to store CRDTs: %v\n", err)
+		logger().Info(context.Background(), "BATCH ERROR: Failed to store CRDTs: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
 		return fmt.Errorf("failed to store CRDTs: %w", err)
 	}
 
-	fmt.Printf("BATCH PROCESSED [%d] successfully\n", batchResp.BatchNumber)
+	logger().Info(context.Background(), "BATCH PROCESSED [%d] successfully\n", ion.String("value", fmt.Sprintf("%v", batchResp.BatchNumber)))
 
 	// Send acknowledgement
 	ackMsg := SyncMessage{
@@ -623,7 +624,7 @@ func dbTypeToString(dbType DatabaseType) string {
 func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network.Stream, writer *bufio.Writer, reader *bufio.Reader) (*SyncMessage, string, string, error) {
 	// Got all the data in - msg *SyncMessage
 	// Send the Client_HashMap to the server to get the SYNC_HashMap
-	fmt.Println(">>> [CLIENT] Starting Phase2_Sync - sending HashMap exchange request (CHUNKED)")
+	logger().Info(context.Background(), ">>> [CLIENT] Starting Phase2_Sync - sending HashMap exchange request (CHUNKED)")
 
 	// Extract HashMaps from the message
 	mainMap := msg.HashMap.MAIN_HashMap
@@ -650,14 +651,14 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		// HashMap field is nil to keep message small
 	}
 
-	fmt.Printf(">>> [CLIENT] Sending HashMap exchange HEADER (Total Keys: %d, Total Chunks: %d)...\n", totalKeys, sendTotalChunks)
+	logger().Info(context.Background(), ">>> [CLIENT] Sending HashMap exchange HEADER (Total Keys: %d, Total Chunks: %d)...\n", ion.String("value", fmt.Sprintf("%v", totalKeys, sendTotalChunks)))
 
 	// Debug: Check header size
 	headerBytes, _ := json.Marshal(headerMsg)
-	fmt.Printf(">>> [CLIENT] DEBUG: Header message size: %d bytes\n", len(headerBytes))
+	logger().Info(context.Background(), ">>> [CLIENT] DEBUG: Header message size: %d bytes\n", ion.String("value", fmt.Sprintf("%v", len(headerBytes))))
 
 	if err := writeMessage(writer, stream, headerMsg); err != nil {
-		fmt.Printf(">>> [CLIENT] ERROR: Failed to write Phase2_Sync header: %v\n", err)
+		logger().Info(context.Background(), ">>> [CLIENT] ERROR: Failed to write Phase2_Sync header: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
 		log.Error().Err(err).Msg("Failed to write Phase2_Sync header")
 		return nil, "", "", err
 	}
@@ -698,7 +699,7 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		}
 
 		if chunkNum%50 == 0 {
-			fmt.Printf(">>> [CLIENT] Sent chunk %d/%d (%.1f%%)...\n", chunkNum, sendTotalChunks, float64(chunkNum)/float64(sendTotalChunks)*100)
+			logger().Info(context.Background(), ">>> [CLIENT] Sent chunk %d/%d (%.1f%%)...\n", ion.String("value", fmt.Sprintf("%v", chunkNum, sendTotalChunks, float64(chunkNum)))/float64(sendTotalChunks)*100)
 		}
 		return nil
 	}
@@ -732,28 +733,28 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		Timestamp: time.Now().UTC().Unix(),
 		Success:   true,
 	}
-	fmt.Printf(">>> [CLIENT] Sending HashMap exchange COMPLETE...\n")
+	logger().Info(context.Background(), ">>> [CLIENT] Sending HashMap exchange COMPLETE")
 	if err := writeMessage(writer, stream, completeMsg); err != nil {
-		fmt.Printf(">>> [CLIENT] ERROR: Failed to write Phase2_Sync complete: %v\n", err)
+		logger().Info(context.Background(), ">>> [CLIENT] ERROR: Failed to write Phase2_Sync complete: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
 		return nil, "", "", err
 	}
 
-	fmt.Println(">>> [CLIENT] ✓ Phase2_Sync chunks sent, waiting for server response...")
+	logger().Info(context.Background(), ">>> [CLIENT] ✓ Phase2_Sync chunks sent, waiting for server response...")
 	log.Info().Msg("Phase2_Sync chunks sent successfully, waiting for server metadata...")
 
 	// Receive metadata first - extend timeout for HashMap computation (server may take time)
-	fmt.Println(">>> [CLIENT] Waiting for HashMap metadata from server (this may take time for large datasets)...")
+	logger().Info(context.Background(), ">>> [CLIENT] Waiting for HashMap metadata from server (this may take time for large datasets)...")
 	// Extend read deadline for HashMap computation phase - 30 minutes for debugging
 	if err := stream.SetReadDeadline(time.Now().UTC().Add(30 * time.Minute)); err != nil {
-		fmt.Printf(">>> [CLIENT] WARNING: Failed to extend read deadline: %v\n", err)
+		logger().Info(context.Background(), ">>> [CLIENT] WARNING: Failed to extend read deadline: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
 	}
-	fmt.Println(">>> [CLIENT] Extended read deadline to 30 minutes for HashMap computation")
+	logger().Info(context.Background(), ">>> [CLIENT] Extended read deadline to 30 minutes for HashMap computation")
 	metadataMsg, err := readMessage(reader, stream)
 	if err != nil {
-		fmt.Printf(">>> [CLIENT] ERROR: Failed to read HashMap metadata: %v\n", err)
+		logger().Info(context.Background(), ">>> [CLIENT] ERROR: Failed to read HashMap metadata: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
 		return nil, "", "", fmt.Errorf("failed to read HashMap metadata: %w", err)
 	}
-	fmt.Println(">>> [CLIENT] ✓ Received HashMap metadata from server")
+	logger().Info(context.Background(), ">>> [CLIENT] ✓ Received HashMap metadata from server")
 
 	if metadataMsg.Type != TypeHashMapExchangeSYNC {
 		return nil, "", "", fmt.Errorf("unexpected message type: %s", metadataMsg.Type)
@@ -769,7 +770,7 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 	mainKeysCount := metadataMsg.HashMap_MetaData.Main_HashMap_MetaData.KeysCount
 	accountsKeysCount := metadataMsg.HashMap_MetaData.Accounts_HashMap_MetaData.KeysCount
 
-	fmt.Printf(">>> [CLIENT] Metadata received - Total chunks: %d, Main keys: %d, Accounts keys: %d\n", totalChunks, mainKeysCount, accountsKeysCount)
+	logger().Info(context.Background(), ">>> [CLIENT] Metadata received - Total chunks: %d, Main keys: %d, Accounts keys: %d\n", ion.String("value", fmt.Sprintf("%v", totalChunks, mainKeysCount, accountsKeysCount)))
 	log.Info().
 		Int("total_chunks", totalChunks).
 		Int("main_keys", mainKeysCount).
@@ -777,7 +778,7 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		Msg("Received HashMap metadata, receiving chunks...")
 
 	// Reassemble HashMap from chunks
-	fmt.Printf(">>> [CLIENT] Starting to receive chunks (expecting %d chunks)...\n", totalChunks)
+	logger().Info(context.Background(), ">>> [CLIENT] Starting to receive chunks (expecting %d chunks)...\n", ion.String("value", fmt.Sprintf("%v", totalChunks)))
 	var allKeys []string
 	receivedChunks := 0
 	lastDeadlineUpdate := time.Now().UTC()
@@ -788,28 +789,28 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		if time.Since(lastDeadlineUpdate) > 30*time.Second {
 			newDeadline := time.Now().UTC().Add(30 * time.Minute)
 			if err := stream.SetReadDeadline(newDeadline); err != nil {
-				fmt.Printf(">>> [CLIENT] WARNING: Failed to extend read deadline: %v\n", err)
+				logger().Info(context.Background(), ">>> [CLIENT] WARNING: Failed to extend read deadline: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
 			} else {
 				lastDeadlineUpdate = time.Now().UTC()
-				fmt.Printf(">>> [CLIENT] Extended read deadline (receiving chunk %d/%d)...\n", receivedChunks+1, totalChunks)
+				logger().Info(context.Background(), ">>> [CLIENT] Extended read deadline (receiving chunk %d/%d)...\n", ion.String("value", fmt.Sprintf("%v", receivedChunks+1, totalChunks)))
 			}
 		}
 
-		fmt.Printf(">>> [CLIENT] Waiting for chunk %d/%d...\n", receivedChunks+1, totalChunks)
+		logger().Info(context.Background(), ">>> [CLIENT] Waiting for chunk %d/%d...\n", ion.String("value", fmt.Sprintf("%v", receivedChunks+1, totalChunks)))
 		chunkMsg, err := readMessage(reader, stream)
 		if err != nil {
-			fmt.Printf(">>> [CLIENT] ERROR: Failed to read chunk %d: %v\n", receivedChunks+1, err)
+			logger().Info(context.Background(), ">>> [CLIENT] ERROR: Failed to read chunk %d: %v\n", ion.String("value", fmt.Sprintf("%v", receivedChunks+1, err)))
 			return nil, "", "", fmt.Errorf("failed to read chunk %d: %w", receivedChunks+1, err)
 		}
 
 		if chunkMsg.Type == TypeHashMapChunkComplete {
-			fmt.Println(">>> [CLIENT] ✓ Received chunk complete message")
+			logger().Info(context.Background(), ">>> [CLIENT] ✓ Received chunk complete message")
 			log.Info().Msg("Received chunk complete message")
 			break
 		}
 
 		if chunkMsg.Type != TypeHashMapChunk {
-			fmt.Printf(">>> [CLIENT] ERROR: Unexpected message type: %s (expected HASHMAP_CHUNK)\n", chunkMsg.Type)
+			logger().Info(context.Background(), ">>> [CLIENT] ERROR: Unexpected message type: %s (expected HASHMAP_CHUNK)\n", ion.String("value", fmt.Sprintf("%v", chunkMsg.Type)))
 			return nil, "", "", fmt.Errorf("unexpected message type: %s", chunkMsg.Type)
 		}
 
@@ -817,7 +818,7 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		allKeys = append(allKeys, chunkMsg.ChunkKeys...)
 		receivedChunks++
 
-		fmt.Printf(">>> [CLIENT] ✓ Received chunk %d/%d (%d keys, total collected: %d keys)\n",
+		logger().Debug(context.Background(), ">>> [CLIENT] Received chunk",
 			chunkMsg.ChunkNumber, totalChunks, len(chunkMsg.ChunkKeys), len(allKeys))
 		log.Debug().
 			Int("chunk", chunkMsg.ChunkNumber).
@@ -827,7 +828,7 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 			Msg("Received chunk")
 
 		// Send ACK for this chunk
-		fmt.Printf(">>> [CLIENT] Sending ACK for chunk %d...\n", chunkMsg.ChunkNumber)
+		logger().Info(context.Background(), ">>> [CLIENT] Sending ACK for chunk %d...\n", ion.String("value", fmt.Sprintf("%v", chunkMsg.ChunkNumber)))
 		ackMsg := &SyncMessage{
 			Type:        TypeHashMapChunkAck,
 			SenderID:    fs.host.ID().String(),
@@ -837,37 +838,37 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		}
 
 		if err := writeMessage(writer, stream, ackMsg); err != nil {
-			fmt.Printf(">>> [CLIENT] ERROR: Failed to send chunk ACK: %v\n", err)
+			logger().Info(context.Background(), ">>> [CLIENT] ERROR: Failed to send chunk ACK: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
 			return nil, "", "", fmt.Errorf("failed to send chunk ACK: %w", err)
 		}
-		fmt.Printf(">>> [CLIENT] ✓ ACK sent for chunk %d (progress: %.1f%%)\n", chunkMsg.ChunkNumber, float64(receivedChunks)/float64(totalChunks)*100)
+		logger().Info(context.Background(), ">>> [CLIENT] ✓ ACK sent for chunk %d (progress: %.1f%%)\n", ion.String("value", fmt.Sprintf("%v", chunkMsg.ChunkNumber, float64(receivedChunks)))/float64(totalChunks)*100)
 	}
 
 	// Split keys back into Main and Accounts
-	fmt.Printf(">>> [CLIENT] Reassembling HashMaps from %d received chunks...\n", receivedChunks)
+	logger().Info(context.Background(), ">>> [CLIENT] Reassembling HashMaps from %d received chunks...\n", ion.String("value", fmt.Sprintf("%v", receivedChunks)))
 	SYNC_Keys_Main := allKeys[:mainKeysCount]
 	SYNC_Keys_Accounts := allKeys[mainKeysCount:]
 
 	// Rebuild HashMaps
-	fmt.Printf(">>> [CLIENT] Rebuilding Main HashMap (%d keys)...\n", len(SYNC_Keys_Main))
+	logger().Info(context.Background(), ">>> [CLIENT] Rebuilding Main HashMap (%d keys)...\n", ion.String("value", fmt.Sprintf("%v", len(SYNC_Keys_Main))))
 	SYNC_HashMap_MAIN := hashmap.New()
 	for _, key := range SYNC_Keys_Main {
 		SYNC_HashMap_MAIN.Insert(key)
 	}
-	fmt.Println(">>> [CLIENT] ✓ Main HashMap rebuilt")
+	logger().Info(context.Background(), ">>> [CLIENT] ✓ Main HashMap rebuilt")
 
-	fmt.Printf(">>> [CLIENT] Rebuilding Accounts HashMap (%d keys)...\n", len(SYNC_Keys_Accounts))
+	logger().Info(context.Background(), ">>> [CLIENT] Rebuilding Accounts HashMap (%d keys)...\n", ion.String("value", fmt.Sprintf("%v", len(SYNC_Keys_Accounts))))
 	SYNC_HashMap_Accounts := hashmap.New()
 	for _, key := range SYNC_Keys_Accounts {
 		SYNC_HashMap_Accounts.Insert(key)
 	}
-	fmt.Println(">>> [CLIENT] ✓ Accounts HashMap rebuilt")
+	logger().Info(context.Background(), ">>> [CLIENT] ✓ Accounts HashMap rebuilt")
 
 	// Compute checksums
-	fmt.Println(">>> [CLIENT] Computing checksums...")
+	logger().Info(context.Background(), ">>> [CLIENT] Computing checksums...")
 	MainChecksum := SYNC_HashMap_MAIN.Fingerprint()
 	AccountChecksum := SYNC_HashMap_Accounts.Fingerprint()
-	fmt.Println(">>> [CLIENT] ✓ Checksums computed")
+	logger().Info(context.Background(), ">>> [CLIENT] ✓ Checksums computed")
 
 	log.Info().
 		Int("total_chunks", receivedChunks).
@@ -875,7 +876,7 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		Int("accounts_keys", len(SYNC_Keys_Accounts)).
 		Msg("Reassembled HashMap from chunks")
 
-	fmt.Printf(">>> [CLIENT] ✓ Phase2_Sync completed successfully - Main: %d keys, Accounts: %d keys\n", len(SYNC_Keys_Main), len(SYNC_Keys_Accounts))
+	logger().Info(context.Background(), ">>> [CLIENT] ✓ Phase2_Sync completed successfully - Main: %d keys, Accounts: %d keys\n", ion.String("value", fmt.Sprintf("%v", len(SYNC_Keys_Main))), len(SYNC_Keys_Accounts))
 
 	// Extract server's full state fingerprints from metadata for post-sync verification
 	serverMainFingerprint := metadataMsg.HashMap_MetaData.Main_HashMap_MetaData.Checksum
@@ -1065,7 +1066,7 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 }, dbType DatabaseType) error {
 	const maxRetries = 3
 	var lastErr error
-	fmt.Printf(">>> [DB] batchCreateOrderedWithRetry: %d entries for %s\n", len(entries), dbTypeToString(dbType))
+	logger().Info(context.Background(), ">>> [DB] batchCreateOrderedWithRetry: %d entries for %s\n", ion.String("value", fmt.Sprintf("%v", len(entries))), dbTypeToString(dbType))
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		var dbClient *config.PooledConnection
@@ -1073,10 +1074,10 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 		case MainDB:
 			dbClient = fs.mainDB
 			if dbClient == nil {
-				fmt.Printf(">>> [DB] ERROR: MainDB client is nil\n")
+				logger().Error(context.Background(), ">>> [DB] ERROR: MainDB client is nil", nil)
 				return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
 			}
-			fmt.Printf(">>> [DB] MainDB client: %v, database: %s\n", dbClient != nil, func() string {
+			logger().Info(context.Background(), ">>> [DB] MainDB client: %v, database: %s\n", ion.String("value", fmt.Sprintf("%v", dbClient != nil, func())) string {
 				if dbClient != nil && dbClient.Client != nil {
 					return dbClient.Database
 				}
@@ -1085,10 +1086,10 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 		case AccountsDB:
 			dbClient = fs.accountsDB
 			if dbClient == nil {
-				fmt.Printf(">>> [DB] ERROR: AccountsDB client is nil\n")
+				logger().Error(context.Background(), ">>> [DB] ERROR: AccountsDB client is nil", nil)
 				return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
 			}
-			fmt.Printf(">>> [DB] AccountsDB client: %v, database: %s\n", dbClient != nil, func() string {
+			logger().Info(context.Background(), ">>> [DB] AccountsDB client: %v, database: %s\n", ion.String("value", fmt.Sprintf("%v", dbClient != nil, func())) string {
 				if dbClient != nil && dbClient.Client != nil {
 					return dbClient.Database
 				}
@@ -1101,27 +1102,27 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 		var err error
 		switch dbType {
 		case MainDB:
-			fmt.Printf(">>> [DB] Calling BatchCreateOrdered for MainDB with %d entries...\n", len(entries))
+			logger().Info(context.Background(), ">>> [DB] Calling BatchCreateOrdered for MainDB with %d entries...\n", ion.String("value", fmt.Sprintf("%v", len(entries))))
 			err = DB_OPs.BatchCreateOrdered(dbClient, entries)
 			if err != nil {
-				fmt.Printf(">>> [DB] ERROR: BatchCreateOrdered failed for MainDB: %v\n", err)
+				logger().Info(context.Background(), ">>> [DB] ERROR: BatchCreateOrdered failed for MainDB: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
 			} else {
-				fmt.Printf(">>> [DB] ✓ BatchCreateOrdered succeeded for MainDB (%d entries)\n", len(entries))
+				logger().Info(context.Background(), ">>> [DB] ✓ BatchCreateOrdered succeeded for MainDB (%d entries)\n", ion.String("value", fmt.Sprintf("%v", len(entries))))
 			}
 		case AccountsDB:
-			fmt.Printf(">>> [DB] Calling BatchRestoreAccounts for AccountsDB with %d entries...\n", len(entries))
+			logger().Info(context.Background(), ">>> [DB] Calling BatchRestoreAccounts for AccountsDB with %d entries...\n", ion.String("value", fmt.Sprintf("%v", len(entries))))
 			err = DB_OPs.BatchRestoreAccounts(dbClient, entries)
 			if err != nil {
-				fmt.Printf(">>> [DB] ERROR: BatchRestoreAccounts failed for AccountsDB: %v\n", err)
+				logger().Info(context.Background(), ">>> [DB] ERROR: BatchRestoreAccounts failed for AccountsDB: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
 			} else {
-				fmt.Printf(">>> [DB] ✓ BatchRestoreAccounts succeeded for AccountsDB (%d entries)\n", len(entries))
+				logger().Info(context.Background(), ">>> [DB] ✓ BatchRestoreAccounts succeeded for AccountsDB (%d entries)\n", ion.String("value", fmt.Sprintf("%v", len(entries))))
 			}
 		}
 		if err == nil {
 			return nil
 		}
 		lastErr = err
-		fmt.Printf(">>> [DB] Attempt %d/%d failed: %v\n", attempt+1, maxRetries, err)
+		logger().Info(context.Background(), ">>> [DB] Attempt %d/%d failed: %v\n", ion.String("value", fmt.Sprintf("%v", attempt+1, maxRetries, err)))
 		if strings.Contains(lastErr.Error(), "invalid token") {
 			var newClient *config.PooledConnection
 			var clientErr error
@@ -1151,7 +1152,7 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 }
 
 func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath string) error {
-	fmt.Printf(">>> [DB] PushDataToDB called for %s, file: %s\n", dbTypeToString(dbType), dbPath)
+	logger().Info(context.Background(), ">>> [DB] PushDataToDB called for %s, file: %s\n", ion.String("value", fmt.Sprintf("%v", dbTypeToString(dbType))), dbPath)
 
 	// Get the appropriate database client
 	var dbClient *config.PooledConnection
@@ -1159,24 +1160,24 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 	case MainDB:
 		dbClient = fs.mainDB
 		if dbClient == nil {
-			fmt.Printf(">>> [DB] ERROR: MainDB client is nil!\n")
+			logger().Error(context.Background(), ">>> [DB] ERROR: MainDB client is nil!", nil)
 		} else {
-			fmt.Printf(">>> [DB] MainDB client OK, database: %s\n", dbClient.Database)
+			logger().Info(context.Background(), ">>> [DB] MainDB client OK, database: %s\n", ion.String("value", fmt.Sprintf("%v", dbClient.Database)))
 		}
 		log.Info().Str("db_type", "defaultDB").Msg("Using defaultDB client for restoration")
 	case AccountsDB:
 		dbClient = fs.accountsDB
 		if dbClient == nil {
-			fmt.Printf(">>> [DB] ERROR: AccountsDB client is nil!\n")
+			logger().Error(context.Background(), ">>> [DB] ERROR: AccountsDB client is nil!", nil)
 		} else {
-			fmt.Printf(">>> [DB] AccountsDB client OK, database: %s\n", dbClient.Database)
+			logger().Info(context.Background(), ">>> [DB] AccountsDB client OK, database: %s\n", ion.String("value", fmt.Sprintf("%v", dbClient.Database)))
 		}
 		log.Info().Str("db_type", "AccountsDB").Msg("Using AccountsDB client for restoration")
 	default:
 		return fmt.Errorf("invalid database type: %v", dbType)
 	}
 	if dbClient == nil {
-		fmt.Printf(">>> [DB] ERROR: Database client for %s is nil\n", dbTypeToString(dbType))
+		logger().Info(context.Background(), ">>> [DB] ERROR: Database client for %s is nil\n", ion.String("value", fmt.Sprintf("%v", dbTypeToString(dbType))))
 		log.Error().
 			Str("db_type", dbTypeToString(dbType)).
 			Msg("Database client is nil")
@@ -1258,7 +1259,7 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 	defer file.Close()
 
 	startTime := time.Now()
-	fmt.Printf(">>> [DB] Starting database restore from AVRO: %s (DB: %s)\n", filepath.Base(dbPath), dbTypeToString(dbType))
+	logger().Info(context.Background(), ">>> [DB] Starting database restore from AVRO: %s (DB: %s)\n", ion.String("value", fmt.Sprintf("%v", filepath.Base(dbPath))), dbTypeToString(dbType))
 	log.Info().
 		Str("db", dbTypeToString(dbType)).
 		Str("file", filepath.Base(dbPath)).
@@ -1282,14 +1283,14 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 	blockKeysCount := 0
 	latestBlockCount := 0
 
-	fmt.Printf(">>> [DB] Using batch size: %d entries per transaction\n", batchSize)
+	logger().Info(context.Background(), ">>> [DB] Using batch size: %d entries per transaction\n", ion.String("value", fmt.Sprintf("%v", batchSize)))
 
 	// Read records from the Avro file
 	recordsRead := 0
 	for ocfReader.Scan() {
 		record, err := ocfReader.Read()
 		if err != nil {
-			fmt.Printf(">>> [DB] WARNING: Failed to read AVRO record: %v\n", err)
+			logger().Info(context.Background(), ">>> [DB] WARNING: Failed to read AVRO record: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
 			log.Warn().Err(err).Msg("failed to read avro record")
 			continue
 		}
@@ -1308,18 +1309,18 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		isBlockKey := keyOk && strings.HasPrefix(key, "block:")
 		isLatestBlock := keyOk && key == "latest_block"
 		if isBlockKey || isLatestBlock {
-			fmt.Printf(">>> [DB] Found %s key in AVRO: %s (value length: %d)\n",
-				func() string {
-					if isLatestBlock {
-						return "latest_block"
-					}
-					return "block"
-				}(), key, func() int {
-					if valueOk {
-						return len(value)
-					}
-					return 0
-				}())
+			keyType := "block"
+			if isLatestBlock {
+				keyType = "latest_block"
+			}
+			valueLen := 0
+			if valueOk {
+				valueLen = len(value)
+			}
+			logger().Debug(context.Background(), ">>> [DB] Found key in AVRO",
+				ion.String("type", keyType),
+				ion.String("key", key),
+				ion.Int("value_length", valueLen))
 		}
 
 		// Optional Database field for origin validation
@@ -1349,18 +1350,18 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		// Track block keys added to batch
 		if isBlockKey {
 			blockKeysCount++
-			fmt.Printf(">>> [DB] Added block key to restore batch: %s (total blocks: %d)\n", key, blockKeysCount)
+			logger().Info(context.Background(), ">>> [DB] Added block key to restore batch: %s (total blocks: %d)\n", ion.String("value", fmt.Sprintf("%v", key, blockKeysCount)))
 		} else if isLatestBlock {
 			latestBlockCount++
-			fmt.Printf(">>> [DB] Added latest_block to restore batch (count: %d)\n", latestBlockCount)
+			logger().Info(context.Background(), ">>> [DB] Added latest_block to restore batch (count: %d)\n", ion.String("value", fmt.Sprintf("%v", latestBlockCount)))
 		}
 
 		if len(entriesOrdered) >= batchSize {
-			fmt.Printf(">>> [DB] Processing batch of %d entries for %s...\n", len(entriesOrdered), dbTypeToString(dbType))
+			logger().Info(context.Background(), ">>> [DB] Processing batch of %d entries for %s...\n", ion.String("value", fmt.Sprintf("%v", len(entriesOrdered))), dbTypeToString(dbType))
 			if err := fs.batchCreateOrderedWithRetry(entriesOrdered, dbType); err != nil {
 				// If batch is too large, try splitting it into smaller chunks
 				if strings.Contains(err.Error(), "max number of entries per tx exceeded") || strings.Contains(err.Error(), "message larger than max") {
-					fmt.Printf(">>> [DB] WARNING: Batch too large, splitting into smaller chunks...\n")
+					logger().Warn(context.Background(), ">>> [DB] WARNING: Batch too large, splitting into smaller chunks")
 					// Split into smaller batches of 50 to avoid message size limits
 					chunkSize := 50
 					for i := 0; i < len(entriesOrdered); i += chunkSize {
@@ -1369,7 +1370,7 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 							end = len(entriesOrdered)
 						}
 						chunk := entriesOrdered[i:end]
-						fmt.Printf(">>> [DB] Processing chunk %d-%d (%d entries)...\n", i, end, len(chunk))
+						logger().Info(context.Background(), ">>> [DB] Processing chunk %d-%d (%d entries)...\n", ion.String("value", fmt.Sprintf("%v", i, end, len(chunk))))
 						if err := fs.batchCreateOrderedWithRetry(chunk, dbType); err != nil {
 							return fmt.Errorf("failed to push chunk to DB: %w", err)
 						}
@@ -1383,23 +1384,20 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 			}
 			entriesOrdered = nil
 
-			fmt.Printf(">>> [DB] Restore progress: %d entries processed for %s (elapsed: %v)\n",
-				totalEntries, dbTypeToString(dbType), time.Since(startTime))
-			log.Info().
-				Int("entries_processed", totalEntries).
-				Dur("elapsed", time.Since(startTime)).
-				Str("db", dbTypeToString(dbType)).
-				Msg("Restore in progress")
+			logger().Info(context.Background(), ">>> [DB] Restore in progress",
+				ion.Int("entries_processed", totalEntries),
+				ion.Duration("elapsed", time.Since(startTime)),
+				ion.String("db", dbTypeToString(dbType)))
 		}
 	}
 
 	// Process any remaining entries in the last batch
 	if len(entriesOrdered) > 0 {
-		fmt.Printf(">>> [DB] Processing final batch of %d entries for %s...\n", len(entriesOrdered), dbTypeToString(dbType))
+		logger().Info(context.Background(), ">>> [DB] Processing final batch of %d entries for %s...\n", ion.String("value", fmt.Sprintf("%v", len(entriesOrdered))), dbTypeToString(dbType))
 		if err := fs.batchCreateOrderedWithRetry(entriesOrdered, dbType); err != nil {
 			// If batch is too large, try splitting it into smaller chunks
 			if strings.Contains(err.Error(), "max number of entries per tx exceeded") || strings.Contains(err.Error(), "message larger than max") {
-				fmt.Printf(">>> [DB] WARNING: Final batch too large, splitting into smaller chunks...\n")
+				logger().Warn(context.Background(), ">>> [DB] WARNING: Final batch too large, splitting into smaller chunks")
 				// Split into smaller batches of 50 to avoid message size limits
 				chunkSize := 50
 				for i := 0; i < len(entriesOrdered); i += chunkSize {
@@ -1408,7 +1406,7 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 						end = len(entriesOrdered)
 					}
 					chunk := entriesOrdered[i:end]
-					fmt.Printf(">>> [DB] Processing final chunk %d-%d (%d entries)...\n", i, end, len(chunk))
+					logger().Info(context.Background(), ">>> [DB] Processing final chunk %d-%d (%d entries)...\n", ion.String("value", fmt.Sprintf("%v", i, end, len(chunk))))
 					if err := fs.batchCreateOrderedWithRetry(chunk, dbType); err != nil {
 						return fmt.Errorf("failed to push final chunk to DB: %w", err)
 					}
@@ -1422,30 +1420,25 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		}
 	}
 
-	fmt.Printf(">>> [DB] ✓ Database restore completed: %d total entries processed, %d records read from AVRO for %s (time: %v)\n",
-		totalEntries, recordsRead, dbTypeToString(dbType), time.Since(startTime))
+	logger().Info(context.Background(), ">>> [DB] Database restore completed",
+		ion.Int("total_entries", totalEntries),
+		ion.Int("records_read", recordsRead),
+		ion.String("db", dbTypeToString(dbType)),
+		ion.Duration("time", time.Since(startTime)))
 
 	if dbType == MainDB {
-		fmt.Printf(">>> [DB] Block keys summary: %d block keys processed, latest_block: %d\n", blockKeysCount, latestBlockCount)
+		logger().Info(context.Background(), ">>> [DB] Block keys summary",
+			ion.Int("block_keys_processed", blockKeysCount),
+			ion.Int("latest_block_count", latestBlockCount))
 		if blockKeysCount == 0 && latestBlockCount == 0 {
-			fmt.Printf(">>> [DB] WARNING: No block keys or latest_block were processed! This might indicate:\n")
-			fmt.Printf(">>> [DB]   1. AVRO file doesn't contain block keys\n")
-			fmt.Printf(">>> [DB]   2. Block keys were filtered out during processing\n")
-			fmt.Printf(">>> [DB]   3. HashMap didn't include block keys for sync\n")
+			logger().Warn(context.Background(), ">>> [DB] WARNING: No block keys or latest_block were processed")
 		}
 	}
 
 	if totalEntries == 0 {
-		fmt.Printf(">>> [DB] WARNING: No entries were written to %s! This might indicate:\n", dbTypeToString(dbType))
-		fmt.Printf(">>> [DB]   1. AVRO file is empty or corrupted\n")
-		fmt.Printf(">>> [DB]   2. All entries were filtered out\n")
-		fmt.Printf(">>> [DB]   3. Database write operations failed silently\n")
+		logger().Warn(context.Background(), ">>> [DB] WARNING: No entries were written",
+			ion.String("db", dbTypeToString(dbType)))
 	}
-	log.Info().
-		Int("total_entries", totalEntries).
-		Dur("total_time", time.Since(startTime)).
-		Str("db", dbTypeToString(dbType)).
-		Msg("Database restore from AVRO completed successfully")
 
 	return nil
 }
