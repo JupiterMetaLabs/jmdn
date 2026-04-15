@@ -1,14 +1,17 @@
 package BlockProcessing
 
 import (
-	log "gossipnode/logging"
+	"gossipnode/logging"
+
+	"github.com/JupiterMetaLabs/ion"
 )
 
-// Zero allocation logger - its already allocated in the asynclogger
-func logger() *log.Logging {
-	logger, err := log.NewAsyncLogger().Get().NamedLogger(log.BlockProcessing, "")
+// Zero allocation logger — already allocated in the asynclogger singleton.
+func logger() *ion.Ion {
+	logInstance, err := logging.NewAsyncLogger().Get().NamedLogger(logging.BlockProcessing, "")
 	if err != nil {
 		return nil
 	}
-	return logger
+	return logInstance.NamedLogger
 }
+

@@ -1,14 +1,17 @@
 package Sequencer
 
 import (
-	log "gossipnode/logging"
+	"gossipnode/logging"
+
+	"github.com/JupiterMetaLabs/ion"
 )
 
-// Zero allocation logger - its already allocated in the asynclogger
-func logger() *log.Logging {
-	logger, err := log.NewAsyncLogger().Get().NamedLogger(log.Sequencer, "")
+// Zero allocation logger — already allocated in the asynclogger singleton.
+func logger() *ion.Ion {
+	logInstance, err := logging.NewAsyncLogger().Get().NamedLogger(logging.Sequencer, "")
 	if err != nil {
 		return nil
 	}
-	return logger
+	return logInstance.NamedLogger
 }
+

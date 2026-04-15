@@ -26,4 +26,6 @@ const (
 	DID                          = "log:DID"
 	SmartContract                = "log:SmartContract"
 	ContractDB                   = "log:ContractDB"
+	ContractPropagation          = "log:ContractPropagation"
+	Broadcast                    = "log:Broadcast"
 )
