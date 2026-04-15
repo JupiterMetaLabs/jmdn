@@ -276,8 +276,10 @@ func (fs *FastSync) getAllUniquePrefixes(db *config.PooledConnection, dbType Dat
 			totalKeysScanned += len(keys)
 
 			if batchNum%10 == 0 {
-    logger().Debug(context.Background(), ">>> [SERVER] Prefix discovery progress: batch %d, scanned %d keys, found %d unique prefixes...")
-					batchNum, totalKeysScanned, len(prefixSet))
+				logger().Debug(context.Background(), "Prefix discovery progress",
+					ion.Int("batch", batchNum),
+					ion.Int("keys_scanned", totalKeysScanned),
+					ion.Int("unique_prefixes", len(prefixSet)))
 			}
 
 			// If we got fewer than batch size, we're done

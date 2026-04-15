@@ -122,7 +122,7 @@ func SyncAllNodes(ctx context.Context, nodes map[string]*Types.Controller) error
 		for j := i + 1; j < len(nodeIDs); j++ {
 			node1ID := nodeIDs[i]
 			node2ID := nodeIDs[j]
-			logger(log.CRDTLayer).Debug(context.Background(), "Syncing CRDT nodes", ion.String("node1", node1ID.String()), ion.String("node2", node2ID.String()))
+			logger(log.CRDTLayer).Debug(context.Background(), "Syncing CRDT nodes", ion.String("node1", node1ID), ion.String("node2", node2ID))
 			if err := SyncWithNode(ctx, nodes[node1ID], nodes[node2ID], node1ID, node2ID); err != nil {
 				return fmt.Errorf("failed to sync %s with %s: %v", node1ID, node2ID, err)
 			}

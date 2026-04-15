@@ -127,14 +127,13 @@ func (fs *FastSync) handleBatchData(peerID peer.ID, msg *SyncMessage) (*SyncMess
 	progress := float64(state.completed) / float64(state.batches) * 100
 	fs.mutex.Unlock()
 
-	log.Info().
-		Str("peer", peerID.String()).
-		Int("batch", msg.BatchNumber).
-		Int("completed", state.completed).
-		Int("total", state.batches).
-		Float64("progress", progress).
-		Str("db", dbTypeToString(batchData.DBType)).
-		Msg("Processed batch data")
+	logger().Info(context.Background(), "Processed batch data",
+		ion.String("peer", peerID.String()),
+		ion.Int("batch", msg.BatchNumber),
+		ion.Int("completed", state.completed),
+		ion.Int("total", state.batches),
+		ion.Float64("progress", progress),
+		ion.String("db", dbTypeToString(batchData.DBType)))
 
 	// Check if we've completed all batches
 	var response *SyncMessage
@@ -186,31 +185,31 @@ func (fs *FastSync) storeCRDTs(crdtEngine *crdt.Engine, crdtData []json.RawMessa
 
 	// NEW: Check if CRDT engine is available
 	if crdtEngine == nil {
-		log.Warn().Msg("No CRDT engine provided, skipping CRDT processing during sync")
+		logger().Warn(context.Background(), "No CRDT engine provided, skipping CRDT processing during sync")
 		return nil
 	}
 
-	log.Info().Int("count", len(crdtData)).Msg("Processing CRDTs during sync")
+	logger().Info(context.Background(), "Processing CRDTs during sync", ion.Int("count", len(crdtData)))
 
 	for _, crdtBytes := range crdtData {
 		// Parse wrapper containing CRDT metadata
 		var wrapper map[string]json.RawMessage
 		if err := json.Unmarshal(crdtBytes, &wrapper); err != nil {
-			log.Error().Err(err).Msg("Failed to unmarshal CRDT wrapper")
+			logger().Error(context.Background(), "Failed to unmarshal CRDT wrapper", err)
 			continue
 		}
 
 		// Extract CRDT type (lww-set, counter, etc.)
 		var crdtType string
 		if err := json.Unmarshal(wrapper["type"], &crdtType); err != nil {
-			log.Error().Err(err).Msg("Failed to unmarshal CRDT type")
+			logger().Error(context.Background(), "Failed to unmarshal CRDT type", err)
 			continue
 		}
 
 		// Extract CRDT key for identification
 		var key string
 		if err := json.Unmarshal(wrapper["key"], &key); err != nil {
-			log.Error().Err(err).Msg("Failed to unmarshal CRDT key")
+			logger().Error(context.Background(), "Failed to unmarshal CRDT key", err)
 			continue
 		}
 
@@ -222,13 +221,13 @@ func (fs *FastSync) storeCRDTs(crdtEngine *crdt.Engine, crdtData []json.RawMessa
 		case "counter":
 			crdtValue = crdt.NewCounter(key)
 		default:
-			log.Error().Str("type", crdtType).Msg("Unknown CRDT type during sync")
+			logger().Error(context.Background(), "Unknown CRDT type during sync", nil, ion.String("type", crdtType))
 			continue
 		}
 
 		// Unmarshal CRDT data into the created instance
 		if err := json.Unmarshal(wrapper["data"], crdtValue); err != nil {
-			log.Error().Err(err).Str("type", crdtType).Str("key", key).Msg("Failed to unmarshal CRDT data")
+			logger().Error(context.Background(), "Failed to unmarshal CRDT data", err, ion.String("type", crdtType), ion.String("key", key))
 			continue
 		}
 
@@ -245,9 +244,9 @@ func (fs *FastSync) storeCRDTs(crdtEngine *crdt.Engine, crdtData []json.RawMessa
 						// This preserves the operation semantics and enables proper conflict resolution
 						err := crdtEngine.LWWAdd("sync-node", key, element, crdt.VectorClock{})
 						if err != nil {
-							log.Error().Err(err).Str("key", key).Str("element", element).Msg("Failed to add element to LWW set during sync")
+							logger().Error(context.Background(), "Failed to add element to LWW set during sync", err, ion.String("key", key), ion.String("element", element))
 						} else {
-							log.Debug().Str("key", key).Str("element", element).Msg("Added element to LWW set during sync")
+							logger().Debug(context.Background(), "Added element to LWW set during sync", ion.String("key", key), ion.String("element", element))
 						}
 					}
 				}
@@ -261,22 +260,19 @@ func (fs *FastSync) storeCRDTs(crdtEngine *crdt.Engine, crdtData []json.RawMessa
 						// This ensures proper counter semantics and prevents conflicts
 						err := crdtEngine.CounterInc(nodeID, key, value, crdt.VectorClock{})
 						if err != nil {
-							log.Error().Err(err).Str("key", key).Str("node", nodeID).Uint64("value", value).Msg("Failed to increment counter during sync")
+							logger().Error(context.Background(), "Failed to increment counter during sync", err, ion.String("key", key), ion.String("node", nodeID), ion.Uint64("value", value))
 						} else {
-							log.Debug().Str("key", key).Str("node", nodeID).Uint64("value", value).Msg("Incremented counter during sync")
+							logger().Debug(context.Background(), "Incremented counter during sync", ion.String("key", key), ion.String("node", nodeID), ion.Uint64("value", value))
 						}
 					}
 				}
 			}
 		}
 
-		log.Info().
-			Str("type", crdtType).
-			Str("key", key).
-			Msg("Successfully processed CRDT during sync")
+		logger().Info(context.Background(), "Successfully processed CRDT during sync", ion.String("type", crdtType), ion.String("key", key))
 	}
 
-	log.Info().Int("processed", len(crdtData)).Msg("Completed CRDT processing during sync")
+	logger().Info(context.Background(), "Completed CRDT processing during sync", ion.Int("processed", len(crdtData)))
 	return nil
 }
 
@@ -312,11 +308,10 @@ func (fs *FastSync) handleVerification(peerID peer.ID) (*SyncMessage, error) {
 		return nil, fmt.Errorf("failed to marshal DB states: %w", err)
 	}
 
-	log.Info().
-		Str("peer", peerID.String()).
-		Uint64("main_tx_id", mainState.TxId).
-		Uint64("accounts_tx_id", accountsState.TxId).
-		Msg("Sending verification data")
+	logger().Info(context.Background(), "Sending verification data",
+		ion.String("peer", peerID.String()),
+		ion.Uint64("main_tx_id", mainState.TxId),
+		ion.Uint64("accounts_tx_id", accountsState.TxId))
 
 	return &SyncMessage{
 		Type:       TypeVerificationResult,
@@ -391,16 +386,14 @@ func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *b
 
 		// Skip if we're already up to date
 		if ourState.TxId >= dbState.TxID {
-			log.Info().
-				Str("db", dbTypeToString(dbState.Type)).
-				Msg("Already up to date for this database")
+			logger().Info(context.Background(), "Already up to date for this database", ion.String("db", dbTypeToString(dbState.Type)))
 			continue
 		}
 
 		// Calculate batches
 		batchCount := calculateBatchCount(ourState.TxId, dbState.TxID)
 		if batchCount == 0 {
-			logger().Info(context.Background(), "No batches needed for %s\n", ion.String("value", fmt.Sprintf("%v", dbTypeToString(dbState.Type))))
+			logger().Info(context.Background(), "No batches needed", ion.String("db_type", dbTypeToString(dbState.Type)))
 			continue
 		}
 
@@ -418,12 +411,11 @@ func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *b
 					i, dbTypeToString(dbState.Type), err)
 			}
 
-			log.Info().
-				Int("batch", i+1).
-				Int("total", batchCount).
-				Str("db", dbTypeToString(dbState.Type)).
-				Float64("progress", float64(i+1)/float64(batchCount)*100).
-				Msg("Batch processed")
+			logger().Info(context.Background(), "Batch processed",
+				ion.Int("batch", i+1),
+				ion.Int("total", batchCount),
+				ion.String("db", dbTypeToString(dbState.Type)),
+				ion.Float64("progress", float64(i+1)/float64(batchCount)*100))
 		}
 	}
 
@@ -469,10 +461,9 @@ func (fs *FastSync) processSync(peerID peer.ID, stream network.Stream, reader *b
 	mainMatch := bytes.Equal(mainState.TxHash, verifyStates[0].MerkleRoot)
 	accountsMatch := bytes.Equal(accountsState.TxHash, verifyStates[1].MerkleRoot)
 
-	log.Info().
-		Bool("main_match", mainMatch).
-		Bool("accounts_match", accountsMatch).
-		Msg("Sync verification completed")
+	logger().Info(context.Background(), "Sync verification completed",
+		ion.Bool("main_match", mainMatch),
+		ion.Bool("accounts_match", accountsMatch))
 
 	// Send completion
 	completeMsg := SyncMessage{
@@ -532,13 +523,13 @@ func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, wr
 
 	// Check for abort message
 	if batchResp.Type == TypeSyncAbort {
-		logger().Info(context.Background(), "BATCH ERROR: Peer aborted sync: %s\n", ion.String("value", fmt.Sprintf("%v", batchResp.ErrorMessage)))
+		logger().Warn(context.Background(), "Peer aborted sync", ion.String("error_message", batchResp.ErrorMessage))
 		return fmt.Errorf("peer aborted sync: %s", batchResp.ErrorMessage)
 	}
 
 	// Check response
 	if batchResp.Type != TypeBatchData {
-		logger().Info(context.Background(), "BATCH ERROR: Unexpected response type: %s\n", ion.String("value", fmt.Sprintf("%v", batchResp.Type)))
+		logger().Warn(context.Background(), "Unexpected batch response type", ion.String("type", string(batchResp.Type)))
 		return fmt.Errorf("unexpected response type: %s", batchResp.Type)
 	}
 
@@ -578,18 +569,18 @@ func (fs *FastSync) requestBatch(stream network.Stream, reader *bufio.Reader, wr
 
 	// Process data
 	if err := fs.storeEntries(db, batchData.Entries); err != nil {
-		logger().Info(context.Background(), "BATCH ERROR: Failed to store entries: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
+		logger().Error(context.Background(), "Failed to store batch entries", err)
 		return fmt.Errorf("failed to store entries: %w", err)
 	}
 
 	// UPDATED: Process CRDTs using the new CRDT engine during batch processing
 	// This ensures CRDT operations are properly synchronized without conflicts
 	if err := fs.storeCRDTs(fs.crdtEngine, batchData.CRDTs); err != nil {
-		logger().Info(context.Background(), "BATCH ERROR: Failed to store CRDTs: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
+		logger().Error(context.Background(), "Failed to store batch CRDTs", err)
 		return fmt.Errorf("failed to store CRDTs: %w", err)
 	}
 
-	logger().Info(context.Background(), "BATCH PROCESSED [%d] successfully\n", ion.String("value", fmt.Sprintf("%v", batchResp.BatchNumber)))
+	logger().Info(context.Background(), "Batch processed successfully", ion.Int("batch_number", int(batchResp.BatchNumber)))
 
 	// Send acknowledgement
 	ackMsg := SyncMessage{
@@ -651,15 +642,14 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		// HashMap field is nil to keep message small
 	}
 
-	logger().Info(context.Background(), ">>> [CLIENT] Sending HashMap exchange HEADER (Total Keys: %d, Total Chunks: %d)...\n", ion.String("value", fmt.Sprintf("%v", totalKeys, sendTotalChunks)))
+	logger().Info(context.Background(), "Sending HashMap exchange header", ion.Int("total_keys", totalKeys), ion.Int("total_chunks", sendTotalChunks))
 
 	// Debug: Check header size
 	headerBytes, _ := json.Marshal(headerMsg)
-	logger().Info(context.Background(), ">>> [CLIENT] DEBUG: Header message size: %d bytes\n", ion.String("value", fmt.Sprintf("%v", len(headerBytes))))
+	logger().Debug(context.Background(), "Header message size", ion.Int("bytes", len(headerBytes)))
 
 	if err := writeMessage(writer, stream, headerMsg); err != nil {
-		logger().Info(context.Background(), ">>> [CLIENT] ERROR: Failed to write Phase2_Sync header: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
-		log.Error().Err(err).Msg("Failed to write Phase2_Sync header")
+		logger().Error(context.Background(), "Failed to write Phase2_Sync header", err)
 		return nil, "", "", err
 	}
 
@@ -699,7 +689,10 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		}
 
 		if chunkNum%50 == 0 {
-			logger().Info(context.Background(), ">>> [CLIENT] Sent chunk %d/%d (%.1f%%)...\n", ion.String("value", fmt.Sprintf("%v", chunkNum, sendTotalChunks, float64(chunkNum)))/float64(sendTotalChunks)*100)
+			logger().Info(context.Background(), "Sent chunk",
+				ion.Int("chunk", chunkNum),
+				ion.Int("total", sendTotalChunks),
+				ion.Float64("pct", float64(chunkNum)/float64(sendTotalChunks)*100))
 		}
 		return nil
 	}
@@ -735,23 +728,23 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 	}
 	logger().Info(context.Background(), ">>> [CLIENT] Sending HashMap exchange COMPLETE")
 	if err := writeMessage(writer, stream, completeMsg); err != nil {
-		logger().Info(context.Background(), ">>> [CLIENT] ERROR: Failed to write Phase2_Sync complete: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
+		logger().Error(context.Background(), ">>> [CLIENT] ERROR: Failed to write Phase2_Sync complete", err)
 		return nil, "", "", err
 	}
 
 	logger().Info(context.Background(), ">>> [CLIENT] ✓ Phase2_Sync chunks sent, waiting for server response...")
-	log.Info().Msg("Phase2_Sync chunks sent successfully, waiting for server metadata...")
+	logger().Info(context.Background(), "Phase2_Sync chunks sent successfully, waiting for server metadata...")
 
 	// Receive metadata first - extend timeout for HashMap computation (server may take time)
 	logger().Info(context.Background(), ">>> [CLIENT] Waiting for HashMap metadata from server (this may take time for large datasets)...")
 	// Extend read deadline for HashMap computation phase - 30 minutes for debugging
 	if err := stream.SetReadDeadline(time.Now().UTC().Add(30 * time.Minute)); err != nil {
-		logger().Info(context.Background(), ">>> [CLIENT] WARNING: Failed to extend read deadline: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
+		logger().Warn(context.Background(), ">>> [CLIENT] WARNING: Failed to extend read deadline", err)
 	}
 	logger().Info(context.Background(), ">>> [CLIENT] Extended read deadline to 30 minutes for HashMap computation")
 	metadataMsg, err := readMessage(reader, stream)
 	if err != nil {
-		logger().Info(context.Background(), ">>> [CLIENT] ERROR: Failed to read HashMap metadata: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
+		logger().Error(context.Background(), ">>> [CLIENT] ERROR: Failed to read HashMap metadata", err)
 		return nil, "", "", fmt.Errorf("failed to read HashMap metadata: %w", err)
 	}
 	logger().Info(context.Background(), ">>> [CLIENT] ✓ Received HashMap metadata from server")
@@ -770,15 +763,17 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 	mainKeysCount := metadataMsg.HashMap_MetaData.Main_HashMap_MetaData.KeysCount
 	accountsKeysCount := metadataMsg.HashMap_MetaData.Accounts_HashMap_MetaData.KeysCount
 
-	logger().Info(context.Background(), ">>> [CLIENT] Metadata received - Total chunks: %d, Main keys: %d, Accounts keys: %d\n", ion.String("value", fmt.Sprintf("%v", totalChunks, mainKeysCount, accountsKeysCount)))
-	log.Info().
-		Int("total_chunks", totalChunks).
-		Int("main_keys", mainKeysCount).
-		Int("accounts_keys", accountsKeysCount).
-		Msg("Received HashMap metadata, receiving chunks...")
+	logger().Info(context.Background(), "Metadata received",
+		ion.Int("total_chunks", totalChunks),
+		ion.Int("main_keys", mainKeysCount),
+		ion.Int("accounts_keys", accountsKeysCount))
+	logger().Info(context.Background(), ">>> [CLIENT] Metadata received - Total chunks: %d, Main keys: %d, Accounts keys: %d\n",
+		ion.Int("total_chunks", totalChunks),
+		ion.Int("main_keys", mainKeysCount),
+		ion.Int("accounts_keys", accountsKeysCount))
 
 	// Reassemble HashMap from chunks
-	logger().Info(context.Background(), ">>> [CLIENT] Starting to receive chunks (expecting %d chunks)...\n", ion.String("value", fmt.Sprintf("%v", totalChunks)))
+	logger().Info(context.Background(), ">>> [CLIENT] Starting to receive chunks", ion.Int("expected_chunks", totalChunks))
 	var allKeys []string
 	receivedChunks := 0
 	lastDeadlineUpdate := time.Now().UTC()
@@ -789,28 +784,28 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		if time.Since(lastDeadlineUpdate) > 30*time.Second {
 			newDeadline := time.Now().UTC().Add(30 * time.Minute)
 			if err := stream.SetReadDeadline(newDeadline); err != nil {
-				logger().Info(context.Background(), ">>> [CLIENT] WARNING: Failed to extend read deadline: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
+				logger().Warn(context.Background(), ">>> [CLIENT] WARNING: Failed to extend read deadline", err)
 			} else {
 				lastDeadlineUpdate = time.Now().UTC()
-				logger().Info(context.Background(), ">>> [CLIENT] Extended read deadline (receiving chunk %d/%d)...\n", ion.String("value", fmt.Sprintf("%v", receivedChunks+1, totalChunks)))
+				logger().Info(context.Background(), ">>> [CLIENT] Extended read deadline", ion.Int("chunk", receivedChunks+1), ion.Int("total", totalChunks))
 			}
 		}
 
-		logger().Info(context.Background(), ">>> [CLIENT] Waiting for chunk %d/%d...\n", ion.String("value", fmt.Sprintf("%v", receivedChunks+1, totalChunks)))
+		logger().Info(context.Background(), ">>> [CLIENT] Waiting for chunk", ion.Int("chunk", receivedChunks+1), ion.Int("total", totalChunks))
 		chunkMsg, err := readMessage(reader, stream)
 		if err != nil {
-			logger().Info(context.Background(), ">>> [CLIENT] ERROR: Failed to read chunk %d: %v\n", ion.String("value", fmt.Sprintf("%v", receivedChunks+1, err)))
+			logger().Error(context.Background(), ">>> [CLIENT] ERROR: Failed to read chunk", err, ion.Int("chunk", receivedChunks+1))
 			return nil, "", "", fmt.Errorf("failed to read chunk %d: %w", receivedChunks+1, err)
 		}
 
 		if chunkMsg.Type == TypeHashMapChunkComplete {
 			logger().Info(context.Background(), ">>> [CLIENT] ✓ Received chunk complete message")
-			log.Info().Msg("Received chunk complete message")
+			logger().Info(context.Background(), "Received chunk complete message")
 			break
 		}
 
 		if chunkMsg.Type != TypeHashMapChunk {
-			logger().Info(context.Background(), ">>> [CLIENT] ERROR: Unexpected message type: %s (expected HASHMAP_CHUNK)\n", ion.String("value", fmt.Sprintf("%v", chunkMsg.Type)))
+			logger().Error(context.Background(), ">>> [CLIENT] ERROR: Unexpected message type (expected HASHMAP_CHUNK)", nil, ion.String("type", chunkMsg.Type))
 			return nil, "", "", fmt.Errorf("unexpected message type: %s", chunkMsg.Type)
 		}
 
@@ -819,16 +814,18 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		receivedChunks++
 
 		logger().Debug(context.Background(), ">>> [CLIENT] Received chunk",
-			chunkMsg.ChunkNumber, totalChunks, len(chunkMsg.ChunkKeys), len(allKeys))
-		log.Debug().
-			Int("chunk", chunkMsg.ChunkNumber).
-			Int("total", totalChunks).
-			Int("keys_in_chunk", len(chunkMsg.ChunkKeys)).
-			Int("total_keys_collected", len(allKeys)).
-			Msg("Received chunk")
+			ion.Int("chunk_number", chunkMsg.ChunkNumber),
+			ion.Int("total_chunks", totalChunks),
+			ion.Int("keys_in_chunk", len(chunkMsg.ChunkKeys)),
+			ion.Int("total_keys_collected", len(allKeys)))
+		logger().Debug(context.Background(), "Received chunk",
+			ion.Int("chunk", chunkMsg.ChunkNumber),
+			ion.Int("total", totalChunks),
+			ion.Int("keys_in_chunk", len(chunkMsg.ChunkKeys)),
+			ion.Int("total_keys_collected", len(allKeys)))
 
 		// Send ACK for this chunk
-		logger().Info(context.Background(), ">>> [CLIENT] Sending ACK for chunk %d...\n", ion.String("value", fmt.Sprintf("%v", chunkMsg.ChunkNumber)))
+		logger().Info(context.Background(), ">>> [CLIENT] Sending ACK for chunk", ion.Int("chunk_number", chunkMsg.ChunkNumber))
 		ackMsg := &SyncMessage{
 			Type:        TypeHashMapChunkAck,
 			SenderID:    fs.host.ID().String(),
@@ -838,26 +835,27 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 		}
 
 		if err := writeMessage(writer, stream, ackMsg); err != nil {
-			logger().Info(context.Background(), ">>> [CLIENT] ERROR: Failed to send chunk ACK: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
+			logger().Error(context.Background(), ">>> [CLIENT] ERROR: Failed to send chunk ACK", err)
 			return nil, "", "", fmt.Errorf("failed to send chunk ACK: %w", err)
 		}
-		logger().Info(context.Background(), ">>> [CLIENT] ✓ ACK sent for chunk %d (progress: %.1f%%)\n", ion.String("value", fmt.Sprintf("%v", chunkMsg.ChunkNumber, float64(receivedChunks)))/float64(totalChunks)*100)
+		progress := float64(receivedChunks) / float64(totalChunks) * 100
+		logger().Info(context.Background(), ">>> [CLIENT] ACK sent for chunk", ion.Int("chunk_number", chunkMsg.ChunkNumber), ion.Float64("progress_percent", progress))
 	}
 
 	// Split keys back into Main and Accounts
-	logger().Info(context.Background(), ">>> [CLIENT] Reassembling HashMaps from %d received chunks...\n", ion.String("value", fmt.Sprintf("%v", receivedChunks)))
+	logger().Info(context.Background(), ">>> [CLIENT] Reassembling HashMaps", ion.Int("chunks_received", receivedChunks))
 	SYNC_Keys_Main := allKeys[:mainKeysCount]
 	SYNC_Keys_Accounts := allKeys[mainKeysCount:]
 
 	// Rebuild HashMaps
-	logger().Info(context.Background(), ">>> [CLIENT] Rebuilding Main HashMap (%d keys)...\n", ion.String("value", fmt.Sprintf("%v", len(SYNC_Keys_Main))))
+	logger().Info(context.Background(), ">>> [CLIENT] Rebuilding Main HashMap", ion.Int("keys_count", len(SYNC_Keys_Main)))
 	SYNC_HashMap_MAIN := hashmap.New()
 	for _, key := range SYNC_Keys_Main {
 		SYNC_HashMap_MAIN.Insert(key)
 	}
-	logger().Info(context.Background(), ">>> [CLIENT] ✓ Main HashMap rebuilt")
+	logger().Info(context.Background(), ">>> [CLIENT] Main HashMap rebuilt")
 
-	logger().Info(context.Background(), ">>> [CLIENT] Rebuilding Accounts HashMap (%d keys)...\n", ion.String("value", fmt.Sprintf("%v", len(SYNC_Keys_Accounts))))
+	logger().Info(context.Background(), ">>> [CLIENT] Rebuilding Accounts HashMap", ion.Int("keys_count", len(SYNC_Keys_Accounts)))
 	SYNC_HashMap_Accounts := hashmap.New()
 	for _, key := range SYNC_Keys_Accounts {
 		SYNC_HashMap_Accounts.Insert(key)
@@ -870,13 +868,14 @@ func (fs *FastSync) Phase2_Sync(msg *SyncMessage, peerID peer.ID, stream network
 	AccountChecksum := SYNC_HashMap_Accounts.Fingerprint()
 	logger().Info(context.Background(), ">>> [CLIENT] ✓ Checksums computed")
 
-	log.Info().
-		Int("total_chunks", receivedChunks).
-		Int("main_keys", len(SYNC_Keys_Main)).
-		Int("accounts_keys", len(SYNC_Keys_Accounts)).
-		Msg("Reassembled HashMap from chunks")
+	logger().Info(context.Background(), "Reassembled HashMap from chunks",
+		ion.Int("total_chunks", receivedChunks),
+		ion.Int("main_keys", len(SYNC_Keys_Main)),
+		ion.Int("accounts_keys", len(SYNC_Keys_Accounts)))
 
-	logger().Info(context.Background(), ">>> [CLIENT] ✓ Phase2_Sync completed successfully - Main: %d keys, Accounts: %d keys\n", ion.String("value", fmt.Sprintf("%v", len(SYNC_Keys_Main))), len(SYNC_Keys_Accounts))
+	logger().Info(context.Background(), ">>> [CLIENT] Phase2_Sync completed successfully",
+		ion.Int("main_keys", len(SYNC_Keys_Main)),
+		ion.Int("accounts_keys", len(SYNC_Keys_Accounts)))
 
 	// Extract server's full state fingerprints from metadata for post-sync verification
 	serverMainFingerprint := metadataMsg.HashMap_MetaData.Main_HashMap_MetaData.Checksum
@@ -913,10 +912,9 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Log the attempt
-		log.Info().
-			Str("peer", peerID.String()).
-			Int("attempt", attempt+1).
-			Msg("Initiating AVRO file transfer request")
+		logger().Info(context.Background(), "Initiating AVRO file transfer request",
+			ion.String("peer", peerID.String()),
+			ion.Int("attempt", attempt+1))
 
 		// 1. Create a new message for the request
 		requestMsg := &SyncMessage{
@@ -932,7 +930,7 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 		if err := writeMessage(writer, stream, requestMsg); err != nil {
 			lastErr = fmt.Errorf("failed to send file transfer request (attempt %d/%d): %w",
 				attempt+1, maxRetries, err)
-			log.Error().Err(lastErr).Msg("File transfer request failed")
+			logger().Error(context.Background(), "File transfer request failed", lastErr)
 
 			// If we can't write to the stream, we need to create a new one
 			if attempt < maxRetries-1 {
@@ -941,7 +939,7 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 				// Try to create a new stream
 				newStream, err := fs.host.NewStream(context.Background(), peerID, stream.Protocol())
 				if err != nil {
-					log.Error().Err(err).Msg("Failed to create new stream for retry")
+					logger().Error(context.Background(), "Failed to create new stream for retry", err)
 					continue
 				}
 				defer newStream.Close()
@@ -957,14 +955,14 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 		// 3. Wait for the server's response
 		// Extend deadline significantly as server needs to create AVRO files
 		if err := stream.SetReadDeadline(time.Now().UTC().Add(30 * time.Minute)); err != nil {
-			log.Warn().Err(err).Msg("Failed to extend read deadline for file transfer response")
+			logger().Warn(context.Background(), "Failed to extend read deadline for file transfer response", err)
 		}
 
 		response, err := readMessage(reader, stream)
 		if err != nil {
 			lastErr = fmt.Errorf("failed to read response (attempt %d/%d): %w",
 				attempt+1, maxRetries, err)
-			log.Error().Err(lastErr).Msg("Failed to read file transfer response")
+			logger().Error(context.Background(), "Failed to read file transfer response", lastErr)
 
 			if attempt < maxRetries-1 {
 				time.Sleep(time.Second * time.Duration(attempt+1))
@@ -974,16 +972,15 @@ func (fs *FastSync) Phase3_FileRequest(msg *SyncMessage, peerID peer.ID, stream 
 
 		// 4. Check the response
 		if response.Type == TypeSyncComplete && response.Success {
-			log.Info().
-				Str("peer", peerID.String()).
-				Msg("Server successfully initiated file transfers. Sync complete.")
+			logger().Info(context.Background(), "Server successfully initiated file transfers. Sync complete.",
+				ion.String("peer", peerID.String()))
 			return nil
 		}
 
 		// If we get here, the server responded but with an error or unexpected message
 		lastErr = fmt.Errorf("unexpected response after file request (attempt %d/%d): type=%s, success=%t, err=%s",
 			attempt+1, maxRetries, response.Type, response.Success, response.ErrorMessage)
-		log.Error().Err(lastErr).Msg("Unexpected response from server")
+		logger().Error(context.Background(), "Unexpected response from server", lastErr)
 
 		if attempt < maxRetries-1 {
 			time.Sleep(time.Second * time.Duration(attempt+1))
@@ -1022,10 +1019,9 @@ func (fs *FastSync) batchCreateWithRetry(entriesMap map[string]interface{}, dbTy
 
 		// Check for the specific "invalid token" error from immudb
 		if strings.Contains(err.Error(), "invalid token") {
-			log.Warn().
-				Str("db", dbTypeToString(dbType)).
-				Int("attempt", attempt+1).
-				Msg("Authentication token expired. Re-authenticating and retrying.")
+			logger().Warn(context.Background(), "Authentication token expired. Re-authenticating and retrying.",
+				ion.String("db", dbTypeToString(dbType)),
+				ion.Int("attempt", attempt+1))
 
 			var newClient *config.PooledConnection
 			var clientErr error
@@ -1066,7 +1062,7 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 }, dbType DatabaseType) error {
 	const maxRetries = 3
 	var lastErr error
-	logger().Info(context.Background(), ">>> [DB] batchCreateOrderedWithRetry: %d entries for %s\n", ion.String("value", fmt.Sprintf("%v", len(entries))), dbTypeToString(dbType))
+	logger().Info(context.Background(), ">>> [DB] batchCreateOrderedWithRetry", ion.Int("entries_count", len(entries)), ion.String("db_type", dbTypeToString(dbType)))
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		var dbClient *config.PooledConnection
@@ -1077,24 +1073,28 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 				logger().Error(context.Background(), ">>> [DB] ERROR: MainDB client is nil", nil)
 				return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
 			}
-			logger().Info(context.Background(), ">>> [DB] MainDB client: %v, database: %s\n", ion.String("value", fmt.Sprintf("%v", dbClient != nil, func())) string {
-				if dbClient != nil && dbClient.Client != nil {
-					return dbClient.Database
-				}
-				return "unknown"
-			}())
+			dbName := "unknown"
+			if dbClient != nil && dbClient.Client != nil {
+				dbName = dbClient.Database
+			}
+			logger().Info(context.Background(), "DB client ready",
+				ion.Bool("connected", dbClient != nil),
+				ion.String("database", dbName),
+				ion.String("type", "MainDB"))
 		case AccountsDB:
 			dbClient = fs.accountsDB
 			if dbClient == nil {
 				logger().Error(context.Background(), ">>> [DB] ERROR: AccountsDB client is nil", nil)
 				return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
 			}
-			logger().Info(context.Background(), ">>> [DB] AccountsDB client: %v, database: %s\n", ion.String("value", fmt.Sprintf("%v", dbClient != nil, func())) string {
-				if dbClient != nil && dbClient.Client != nil {
-					return dbClient.Database
-				}
-				return "unknown"
-			}())
+			dbName := "unknown"
+			if dbClient != nil && dbClient.Client != nil {
+				dbName = dbClient.Database
+			}
+			logger().Info(context.Background(), "DB client ready",
+				ion.Bool("connected", dbClient != nil),
+				ion.String("database", dbName),
+				ion.String("type", "AccountsDB"))
 		default:
 			return fmt.Errorf("invalid database type: %v", dbType)
 		}
@@ -1102,27 +1102,27 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 		var err error
 		switch dbType {
 		case MainDB:
-			logger().Info(context.Background(), ">>> [DB] Calling BatchCreateOrdered for MainDB with %d entries...\n", ion.String("value", fmt.Sprintf("%v", len(entries))))
+			logger().Info(context.Background(), "Calling BatchCreateOrdered for MainDB", ion.Int("entries", len(entries)))
 			err = DB_OPs.BatchCreateOrdered(dbClient, entries)
 			if err != nil {
-				logger().Info(context.Background(), ">>> [DB] ERROR: BatchCreateOrdered failed for MainDB: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
+				logger().Error(context.Background(), "BatchCreateOrdered failed for MainDB", err, ion.Int("entries", len(entries)))
 			} else {
-				logger().Info(context.Background(), ">>> [DB] ✓ BatchCreateOrdered succeeded for MainDB (%d entries)\n", ion.String("value", fmt.Sprintf("%v", len(entries))))
+				logger().Info(context.Background(), "BatchCreateOrdered succeeded for MainDB", ion.Int("entries", len(entries)))
 			}
 		case AccountsDB:
-			logger().Info(context.Background(), ">>> [DB] Calling BatchRestoreAccounts for AccountsDB with %d entries...\n", ion.String("value", fmt.Sprintf("%v", len(entries))))
+			logger().Info(context.Background(), "Calling BatchRestoreAccounts for AccountsDB", ion.Int("entries", len(entries)))
 			err = DB_OPs.BatchRestoreAccounts(dbClient, entries)
 			if err != nil {
-				logger().Info(context.Background(), ">>> [DB] ERROR: BatchRestoreAccounts failed for AccountsDB: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
+				logger().Error(context.Background(), "BatchRestoreAccounts failed for AccountsDB", err, ion.Int("entries", len(entries)))
 			} else {
-				logger().Info(context.Background(), ">>> [DB] ✓ BatchRestoreAccounts succeeded for AccountsDB (%d entries)\n", ion.String("value", fmt.Sprintf("%v", len(entries))))
+				logger().Info(context.Background(), "BatchRestoreAccounts succeeded for AccountsDB", ion.Int("entries", len(entries)))
 			}
 		}
 		if err == nil {
 			return nil
 		}
 		lastErr = err
-		logger().Info(context.Background(), ">>> [DB] Attempt %d/%d failed: %v\n", ion.String("value", fmt.Sprintf("%v", attempt+1, maxRetries, err)))
+		logger().Warn(context.Background(), "DB write attempt failed", ion.Int("attempt", attempt+1), ion.Int("max_retries", maxRetries), ion.Err(err))
 		if strings.Contains(lastErr.Error(), "invalid token") {
 			var newClient *config.PooledConnection
 			var clientErr error
@@ -1152,7 +1152,7 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 }
 
 func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath string) error {
-	logger().Info(context.Background(), ">>> [DB] PushDataToDB called for %s, file: %s\n", ion.String("value", fmt.Sprintf("%v", dbTypeToString(dbType))), dbPath)
+	logger().Info(context.Background(), ">>> [DB] PushDataToDB called", ion.String("db_type", dbTypeToString(dbType)), ion.String("file", dbPath))
 
 	// Get the appropriate database client
 	var dbClient *config.PooledConnection
@@ -1162,32 +1162,28 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		if dbClient == nil {
 			logger().Error(context.Background(), ">>> [DB] ERROR: MainDB client is nil!", nil)
 		} else {
-			logger().Info(context.Background(), ">>> [DB] MainDB client OK, database: %s\n", ion.String("value", fmt.Sprintf("%v", dbClient.Database)))
+			logger().Info(context.Background(), ">>> [DB] MainDB client OK", ion.String("database", dbClient.Database))
 		}
-		log.Info().Str("db_type", "defaultDB").Msg("Using defaultDB client for restoration")
+		logger().Info(context.Background(), "Using defaultDB client for restoration", ion.String("db_type", "defaultDB"))
 	case AccountsDB:
 		dbClient = fs.accountsDB
 		if dbClient == nil {
 			logger().Error(context.Background(), ">>> [DB] ERROR: AccountsDB client is nil!", nil)
 		} else {
-			logger().Info(context.Background(), ">>> [DB] AccountsDB client OK, database: %s\n", ion.String("value", fmt.Sprintf("%v", dbClient.Database)))
+			logger().Info(context.Background(), ">>> [DB] AccountsDB client OK", ion.String("database", dbClient.Database))
 		}
-		log.Info().Str("db_type", "AccountsDB").Msg("Using AccountsDB client for restoration")
+		logger().Info(context.Background(), "Using AccountsDB client for restoration", ion.String("db_type", "AccountsDB"))
 	default:
 		return fmt.Errorf("invalid database type: %v", dbType)
 	}
 	if dbClient == nil {
-		logger().Info(context.Background(), ">>> [DB] ERROR: Database client for %s is nil\n", ion.String("value", fmt.Sprintf("%v", dbTypeToString(dbType))))
-		log.Error().
-			Str("db_type", dbTypeToString(dbType)).
-			Msg("Database client is nil")
+		logger().Error(context.Background(), "Database client is nil", nil, ion.String("db_type", dbTypeToString(dbType)))
 		return fmt.Errorf("database client for type %s is not initialized", dbTypeToString(dbType))
 	}
 
-	log.Info().
-		Str("db_type", dbTypeToString(dbType)).
-		Str("file_path", dbPath).
-		Msg("Starting database restoration")
+	logger().Info(context.Background(), "Starting database restoration",
+		ion.String("db_type", dbTypeToString(dbType)),
+		ion.String("file_path", dbPath))
 
 	// Ensure the backup file exists
 	fileInfo, err := os.Stat(dbPath)
@@ -1217,11 +1213,11 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 					fileInfo = fi2
 					err = nil
 				} else {
-					log.Info().Str("path", dbPath).Msg("AVRO file does not exist (and legacy not found), skipping restore.")
+					logger().Info(context.Background(), "AVRO file does not exist (and legacy not found), skipping restore.", ion.String("path", dbPath))
 					return nil
 				}
 			} else {
-				log.Info().Str("path", dbPath).Msg("AVRO file does not exist, skipping restore.")
+				logger().Info(context.Background(), "AVRO file does not exist, skipping restore.", ion.String("path", dbPath))
 				return nil
 			}
 		}
@@ -1230,7 +1226,7 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		return fmt.Errorf("failed to stat avro file %s: %w", dbPath, err)
 	}
 	if fileInfo.Size() == 0 {
-		log.Info().Str("path", dbPath).Msg("AVRO file is empty, skipping restore.")
+		logger().Info(context.Background(), "AVRO file is empty, skipping restore.", ion.String("path", dbPath))
 		return nil
 	}
 
@@ -1259,11 +1255,9 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 	defer file.Close()
 
 	startTime := time.Now()
-	logger().Info(context.Background(), ">>> [DB] Starting database restore from AVRO: %s (DB: %s)\n", ion.String("value", fmt.Sprintf("%v", filepath.Base(dbPath))), dbTypeToString(dbType))
-	log.Info().
-		Str("db", dbTypeToString(dbType)).
-		Str("file", filepath.Base(dbPath)).
-		Msg("Starting database restore from AVRO backup")
+	logger().Info(context.Background(), "Starting database restore from AVRO backup",
+		ion.String("db", dbTypeToString(dbType)),
+		ion.String("file", filepath.Base(dbPath)))
 
 	// Create an OCF reader for the Avro file
 	ocfReader, err := goavro.NewOCFReader(file)
@@ -1283,22 +1277,21 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 	blockKeysCount := 0
 	latestBlockCount := 0
 
-	logger().Info(context.Background(), ">>> [DB] Using batch size: %d entries per transaction\n", ion.String("value", fmt.Sprintf("%v", batchSize)))
+	logger().Info(context.Background(), "Using batch size", ion.Int("batch_size", batchSize))
 
 	// Read records from the Avro file
 	recordsRead := 0
 	for ocfReader.Scan() {
 		record, err := ocfReader.Read()
 		if err != nil {
-			logger().Info(context.Background(), ">>> [DB] WARNING: Failed to read AVRO record: %v\n", ion.String("value", fmt.Sprintf("%v", err)))
-			log.Warn().Err(err).Msg("failed to read avro record")
+			logger().Warn(context.Background(), "Failed to read AVRO record", err)
 			continue
 		}
 		recordsRead++
 
 		recordMap, ok := record.(map[string]interface{})
 		if !ok {
-			log.Warn().Msgf("unexpected avro record type: %T", record)
+			logger().Warn(context.Background(), "Unexpected avro record type", nil)
 			continue
 		}
 
@@ -1338,7 +1331,7 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		}
 
 		if !keyOk || !valueOk {
-			log.Warn().Msg("avro record has missing or invalid Key/Value fields")
+			logger().Warn(context.Background(), "avro record has missing or invalid Key/Value fields", nil)
 			continue
 		}
 
@@ -1350,14 +1343,14 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 		// Track block keys added to batch
 		if isBlockKey {
 			blockKeysCount++
-			logger().Info(context.Background(), ">>> [DB] Added block key to restore batch: %s (total blocks: %d)\n", ion.String("value", fmt.Sprintf("%v", key, blockKeysCount)))
+			logger().Info(context.Background(), ">>> [DB] Added block key to restore batch", ion.String("key", key), ion.Int("total_blocks", blockKeysCount))
 		} else if isLatestBlock {
 			latestBlockCount++
-			logger().Info(context.Background(), ">>> [DB] Added latest_block to restore batch (count: %d)\n", ion.String("value", fmt.Sprintf("%v", latestBlockCount)))
+			logger().Info(context.Background(), ">>> [DB] Added latest_block to restore batch", ion.Int("count", latestBlockCount))
 		}
 
 		if len(entriesOrdered) >= batchSize {
-			logger().Info(context.Background(), ">>> [DB] Processing batch of %d entries for %s...\n", ion.String("value", fmt.Sprintf("%v", len(entriesOrdered))), dbTypeToString(dbType))
+			logger().Info(context.Background(), ">>> [DB] Processing batch", ion.Int("entries_count", len(entriesOrdered)), ion.String("db_type", dbTypeToString(dbType)))
 			if err := fs.batchCreateOrderedWithRetry(entriesOrdered, dbType); err != nil {
 				// If batch is too large, try splitting it into smaller chunks
 				if strings.Contains(err.Error(), "max number of entries per tx exceeded") || strings.Contains(err.Error(), "message larger than max") {
@@ -1370,7 +1363,7 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 							end = len(entriesOrdered)
 						}
 						chunk := entriesOrdered[i:end]
-						logger().Info(context.Background(), ">>> [DB] Processing chunk %d-%d (%d entries)...\n", ion.String("value", fmt.Sprintf("%v", i, end, len(chunk))))
+						logger().Info(context.Background(), ">>> [DB] Processing chunk", ion.Int("start", i), ion.Int("end", end), ion.Int("entries_count", len(chunk)))
 						if err := fs.batchCreateOrderedWithRetry(chunk, dbType); err != nil {
 							return fmt.Errorf("failed to push chunk to DB: %w", err)
 						}
@@ -1393,11 +1386,11 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 
 	// Process any remaining entries in the last batch
 	if len(entriesOrdered) > 0 {
-		logger().Info(context.Background(), ">>> [DB] Processing final batch of %d entries for %s...\n", ion.String("value", fmt.Sprintf("%v", len(entriesOrdered))), dbTypeToString(dbType))
+		logger().Info(context.Background(), ">>> [DB] Processing final batch", ion.Int("entries_count", len(entriesOrdered)), ion.String("db_type", dbTypeToString(dbType)))
 		if err := fs.batchCreateOrderedWithRetry(entriesOrdered, dbType); err != nil {
 			// If batch is too large, try splitting it into smaller chunks
 			if strings.Contains(err.Error(), "max number of entries per tx exceeded") || strings.Contains(err.Error(), "message larger than max") {
-				logger().Warn(context.Background(), ">>> [DB] WARNING: Final batch too large, splitting into smaller chunks")
+				logger().Warn(context.Background(), ">>> [DB] WARNING: Final batch too large, splitting into smaller chunks", nil)
 				// Split into smaller batches of 50 to avoid message size limits
 				chunkSize := 50
 				for i := 0; i < len(entriesOrdered); i += chunkSize {
@@ -1406,7 +1399,7 @@ func (fs *FastSync) PushDataToDB(msg *SyncMessage, dbType DatabaseType, dbPath s
 						end = len(entriesOrdered)
 					}
 					chunk := entriesOrdered[i:end]
-					logger().Info(context.Background(), ">>> [DB] Processing final chunk %d-%d (%d entries)...\n", ion.String("value", fmt.Sprintf("%v", i, end, len(chunk))))
+					logger().Info(context.Background(), ">>> [DB] Processing final chunk", ion.Int("start", i), ion.Int("end", end), ion.Int("entries_count", len(chunk)))
 					if err := fs.batchCreateOrderedWithRetry(chunk, dbType); err != nil {
 						return fmt.Errorf("failed to push final chunk to DB: %w", err)
 					}

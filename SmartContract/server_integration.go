@@ -60,7 +60,7 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to create gETH client connection (SmartContract)")
+		logger().Warn(context.Background(), "Failed to create gETH client connection", ion.Err(err))
 	}
 	if gethClientConn != nil {
 		defer func() {
@@ -77,7 +77,7 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to create DID client connection (SmartContract)")
+		logger().Warn(context.Background(), "Failed to create DID client connection", ion.Err(err))
 	}
 	if didClientConn != nil {
 		defer func() {

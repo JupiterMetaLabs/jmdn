@@ -2,7 +2,6 @@ package PubSubMessages
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	log "gossipnode/logging"
