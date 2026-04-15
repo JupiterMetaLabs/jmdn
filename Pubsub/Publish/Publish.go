@@ -221,7 +221,7 @@ func GossipMessage(gps *PubSubMessages.GossipPubSub, messageBytes []byte) {
 		ion.String("message_bytes", string(messageBytes)),
 		ion.String("from_peer", gps.Host.ID().String()),
 		ion.Int("message_id", int(gps.MessageID)),
-		ion.String("protocol", gps.Protocol))
+		ion.String("protocol", string(gps.Protocol)))
 
 	// Parse the message to get the topic
 	var gossipMsg PubSubMessages.GossipMessage
