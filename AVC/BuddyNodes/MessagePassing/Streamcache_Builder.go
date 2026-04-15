@@ -287,7 +287,7 @@ func (sc *StructStreamCache) ParallelCleanUpRoutine() {
 		var err error
 		ListenerHandlerLocal, err = common.InitializeGRO(GRO.HandleBFTRequestLocal)
 		if err != nil {
-			logger().Info(context.Background(), "❌ Failed to initialize ListenerHandler local manager: %v", err)
+			logger().Info(context.Background(), "❌ Failed to initialize ListenerHandler local manager", ion.Err(err))
 			return
 		}
 	}
