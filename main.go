@@ -18,6 +18,10 @@ import (
 	"gossipnode/logging"
 	"gossipnode/shutdown"
 
+	thebedb "github.com/JupiterMetaLabs/ThebeDB"
+	thebecfg "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 	orchestratorGlobal "github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	ion "github.com/JupiterMetaLabs/ion"
@@ -27,7 +31,10 @@ import (
 	"gossipnode/CA/ImmuDB_CA"
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/cassata"
+	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/DID"
+	"gossipnode/FastsyncV2"
 	"gossipnode/Pubsub"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
@@ -35,7 +42,6 @@ import (
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
 	"gossipnode/explorer"
-	"gossipnode/FastsyncV2"
 	fastsync "gossipnode/fastsync"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/rpc"
@@ -52,6 +58,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog/log"
+	"go.uber.org/zap"
 )
 
 var (
@@ -90,7 +97,7 @@ func goMaybeTracked(
 
 // Global variables for easier access
 var (
-	fastSyncer *fastsync.FastSync
+	fastSyncer   *fastsync.FastSync
 	fastSyncerV2 *FastsyncV2.FastsyncV2
 	// immuClient   *config.ImmuClient // unused: declared but never assigned or read
 	globalPubSub *Pubsub.StructGossipPubSub
@@ -100,6 +107,7 @@ var (
 var (
 	mainDBPool     *config.ConnectionPool // Main database connection pool
 	accountsDBPool *config.ConnectionPool // Accounts/DID database connection pool
+	cas            *cassata.Cassata
 )
 
 func initGlobalGRO() {
@@ -838,6 +846,24 @@ func main() {
 
 	if err := initAccountsDBPool(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
+	}
+
+	// Initialize ThebeDB + JMDN profile only when feature-flagged.
+	if cfg.Thebe.Enabled {
+		reg := profile.NewRegistry()
+		reg.Register(thebeprofile.New())
+
+		db, err := thebedb.NewFromConfig(thebedb.Config{
+			KV:       kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath},
+			SQL:      thebecfg.SQL{DSN: cfg.Thebe.SQLDSN},
+			Profiles: reg,
+		})
+		if err != nil {
+			log.Fatal().Err(err).Msg("thebedb init failed")
+		}
+		defer db.Close()
+		cas = cassata.New(db, zap.NewNop())
+		log.Info().Msg("ThebeDB Cassata middleware enabled")
 	}
 
 	// Discover Yggdrasil address BEFORE creating the node
