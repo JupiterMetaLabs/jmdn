@@ -65,3 +65,6 @@ SmartContract/artifacts/HelloWorld.json
 SmartContract/artifacts/HelloWorld.json
 docs/refactor-contractDBOps.md
 internal/WAL/.tmp/*
+.claude/*
+.code-review-graph/*
+.cursor/*

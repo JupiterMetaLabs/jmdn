@@ -919,10 +919,15 @@ func main() {
 
 	// Initialize FastSync service
 	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
-	fastSyncerV2 = initFastsyncV2(n)
+	if cfg.FastSync.Enabled {
+		fastSyncerV2 = initFastsyncV2(n)
+	} else {
+		log.Info().Msg("[FastSync] disabled by config — protocol handlers not registered")
+	}
 
-	// Startup sync: catch up on blocks missed while offline
-	if fastSyncerV2 != nil {
+	// Startup sync: catch up on blocks missed while offline.
+	// Only runs if both the engine is up and this node is configured to sync.
+	if fastSyncerV2 != nil && cfg.FastSync.Sync && cfg.FastSync.StartupSync {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.StartupSyncThread, func(ctx context.Context) error {
 			// Wait for peer connections to establish after node startup
 			time.Sleep(5 * time.Second)
@@ -937,6 +942,21 @@ func main() {
 			log.Info().Int("peers", len(peers)).Msg("[StartupSync] Attempting startup sync with connected peers")
 
 			for _, peerID := range peers {
+				// Honour allowed_peers whitelist if configured
+				if len(cfg.FastSync.AllowedPeers) > 0 {
+					allowed := false
+					for _, ap := range cfg.FastSync.AllowedPeers {
+						if ap == peerID.String() {
+							allowed = true
+							break
+						}
+					}
+					if !allowed {
+						log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Skipping peer not in allowed_peers")
+						continue
+					}
+				}
+
 				addrs := n.Host.Peerstore().Addrs(peerID)
 				if len(addrs) == 0 {
 					continue
@@ -957,6 +977,8 @@ func main() {
 		}); err != nil {
 			log.Error().Err(err).Str("thread", GRO.StartupSyncThread).Msg("Failed to start startup sync goroutine")
 		}
+	} else if fastSyncerV2 != nil && !cfg.FastSync.Sync {
+		log.Info().Msg("[FastSync] sync=false — this node serves data only, local DB will not be updated")
 	}
 
 	// Initialize Yggdrasil messaging if enabled
