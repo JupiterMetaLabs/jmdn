@@ -859,6 +859,7 @@ func main() {
 		defer db.Close()
 		cas = cassata.New(db, zap.NewNop())
 		_ = thebeprofile.New()
+		_ = cas
 		log.Info().Msg("ThebeDB Cassata middleware enabled")
 	}
 
