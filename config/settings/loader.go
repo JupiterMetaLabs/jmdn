@@ -42,6 +42,13 @@ func Load() (*NodeConfig, error) {
 	v.SetEnvPrefix("JMDN")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	v.AutomaticEnv()
+	// Explicitly support non-prefixed Thebe env vars.
+	if err := v.BindEnv("thebe.sql_dsn", "THEBE_SQL_DSN"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_SQL_DSN: %w", err)
+	}
+	if err := v.BindEnv("thebe.redis_url", "THEBE_REDIS_URL"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_REDIS_URL: %w", err)
+	}
 
 	// 6. Unmarshal into struct
 	cfg := DefaultConfig()

@@ -46,8 +46,8 @@ database:
 thebe:
   enabled: false
   kv_path: "./data/thebe-kv"
-  sql_dsn: ""
-  redis_url: ""
+  sql_dsn: ""                  # Optional env override: THEBE_SQL_DSN
+  redis_url: ""                # Optional env override: THEBE_REDIS_URL
   stream_name: "jmdt.thebedb.events"
 
 # ── Logging (Ion) ────────────────────────────────────────
