@@ -3,8 +3,6 @@ package thebeprofile
 import (
 	"database/sql"
 	"fmt"
-
-	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 )
 
 const ProfileName = "jmdn"
@@ -12,8 +10,6 @@ const ProfileName = "jmdn"
 var namespaces = []string{"account", "block", "tx", "zk", "snapshot"}
 
 type JMDNProfile struct{}
-
-var _ profile.Profile = (*JMDNProfile)(nil)
 
 func New() *JMDNProfile { return &JMDNProfile{} }
 

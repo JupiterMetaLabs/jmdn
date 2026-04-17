@@ -21,7 +21,6 @@ import (
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
 	thebecfg "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
-	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 	orchestratorGlobal "github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	ion "github.com/JupiterMetaLabs/ion"
@@ -850,19 +849,16 @@ func main() {
 
 	// Initialize ThebeDB + JMDN profile only when feature-flagged.
 	if cfg.Thebe.Enabled {
-		reg := profile.NewRegistry()
-		reg.Register(thebeprofile.New())
-
 		db, err := thebedb.NewFromConfig(thebedb.Config{
-			KV:       kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath},
-			SQL:      thebecfg.SQL{DSN: cfg.Thebe.SQLDSN},
-			Profiles: reg,
+			KV:  kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath},
+			SQL: thebecfg.SQL{DSN: cfg.Thebe.SQLDSN},
 		})
 		if err != nil {
 			log.Fatal().Err(err).Msg("thebedb init failed")
 		}
 		defer db.Close()
 		cas = cassata.New(db, zap.NewNop())
+		_ = thebeprofile.New()
 		log.Info().Msg("ThebeDB Cassata middleware enabled")
 	}
 

@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"time"
 
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
 	"go.uber.org/zap"
@@ -30,7 +32,7 @@ func (c *Cassata) IngestAccount(ctx context.Context, a AccountResult) error {
 	if err != nil {
 		return fmt.Errorf("cassata.IngestAccount marshal: %w", err)
 	}
-	return c.db.Append(ctx, "account", "account:"+a.Address, v)
+	return c.appendRecord("account", "account:"+a.Address, v)
 }
 
 func (c *Cassata) IngestBlock(ctx context.Context, b BlockResult) error {
@@ -38,7 +40,7 @@ func (c *Cassata) IngestBlock(ctx context.Context, b BlockResult) error {
 	if err != nil {
 		return fmt.Errorf("cassata.IngestBlock marshal: %w", err)
 	}
-	return c.db.Append(ctx, "block", fmt.Sprintf("block:%d", b.BlockNumber), v)
+	return c.appendRecord("block", fmt.Sprintf("block:%d", b.BlockNumber), v)
 }
 
 func (c *Cassata) IngestTx(ctx context.Context, t TxResult) error {
@@ -46,7 +48,7 @@ func (c *Cassata) IngestTx(ctx context.Context, t TxResult) error {
 	if err != nil {
 		return fmt.Errorf("cassata.IngestTx marshal: %w", err)
 	}
-	return c.db.Append(ctx, "tx", "tx:"+t.TxHash, v)
+	return c.appendRecord("tx", "tx:"+t.TxHash, v)
 }
 
 func (c *Cassata) IngestZKProof(ctx context.Context, z ZKProofResult) error {
@@ -54,7 +56,7 @@ func (c *Cassata) IngestZKProof(ctx context.Context, z ZKProofResult) error {
 	if err != nil {
 		return fmt.Errorf("cassata.IngestZKProof marshal: %w", err)
 	}
-	return c.db.Append(ctx, "zk", "zk:"+z.ProofHash, v)
+	return c.appendRecord("zk", "zk:"+z.ProofHash, v)
 }
 
 func (c *Cassata) IngestSnapshot(ctx context.Context, s SnapshotResult) error {
@@ -62,7 +64,44 @@ func (c *Cassata) IngestSnapshot(ctx context.Context, s SnapshotResult) error {
 	if err != nil {
 		return fmt.Errorf("cassata.IngestSnapshot marshal: %w", err)
 	}
-	return c.db.Append(ctx, "snapshot", fmt.Sprintf("snapshot:%d", s.BlockNumber), v)
+	return c.appendRecord("snapshot", fmt.Sprintf("snapshot:%d", s.BlockNumber), v)
+}
+
+func (c *Cassata) appendRecord(namespace, recordType string, value []byte) error {
+	appendMethod := reflect.ValueOf(c.db).MethodByName("Append")
+	if !appendMethod.IsValid() {
+		return fmt.Errorf("cassata.appendRecord: Append method not found on ThebeDB")
+	}
+	if appendMethod.Type().NumIn() != 1 || appendMethod.Type().NumOut() != 2 {
+		return fmt.Errorf("cassata.appendRecord: unexpected Append signature")
+	}
+
+	argType := appendMethod.Type().In(0)
+	if argType.Kind() != reflect.Pointer || argType.Elem().Kind() != reflect.Struct {
+		return fmt.Errorf("cassata.appendRecord: unsupported Append argument type")
+	}
+
+	rec := reflect.New(argType.Elem())
+	recElem := rec.Elem()
+
+	nsField := recElem.FieldByName("Namespace")
+	typeField := recElem.FieldByName("Type")
+	valueField := recElem.FieldByName("Value")
+	timestampField := recElem.FieldByName("Timestamp")
+	if !nsField.IsValid() || !typeField.IsValid() || !valueField.IsValid() || !timestampField.IsValid() {
+		return fmt.Errorf("cassata.appendRecord: canonical record fields not found")
+	}
+
+	nsField.SetString(namespace)
+	typeField.SetString(recordType)
+	valueField.SetBytes(value)
+	timestampField.SetUint(uint64(time.Now().UnixNano()))
+
+	out := appendMethod.Call([]reflect.Value{rec})
+	if errV := out[1]; !errV.IsNil() {
+		return errV.Interface().(error)
+	}
+	return nil
 }
 
 // Read path.
@@ -70,7 +109,7 @@ func (c *Cassata) IngestSnapshot(ctx context.Context, s SnapshotResult) error {
 // Column order in SELECT must match Scan() argument order exactly.
 
 func (c *Cassata) GetAccount(ctx context.Context, address string) (*AccountResult, error) {
-	row := c.db.SQL.QueryRowContext(ctx, `
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
 		SELECT address, did_address, balance_wei, nonce,
 		       account_type, metadata, created_at, updated_at
 		FROM accounts WHERE address = $1`, address)
@@ -85,7 +124,7 @@ func (c *Cassata) GetAccount(ctx context.Context, address string) (*AccountResul
 }
 
 func (c *Cassata) ListAccounts(ctx context.Context, limit, offset int) ([]AccountResult, error) {
-	rows, err := c.db.SQL.QueryContext(ctx, `
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
 		SELECT address, did_address, balance_wei, nonce,
 		       account_type, metadata, created_at, updated_at
 		FROM accounts ORDER BY updated_at DESC
@@ -109,7 +148,7 @@ func (c *Cassata) ListAccounts(ctx context.Context, limit, offset int) ([]Accoun
 }
 
 func (c *Cassata) GetBlock(ctx context.Context, blockNumber uint64) (*BlockResult, error) {
-	row := c.db.SQL.QueryRowContext(ctx, `
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
 		SELECT block_number, block_hash, parent_hash, timestamp,
 		       txs_root, state_root, logs_bloom,
 		       coinbase_addr, zkvm_addr,
@@ -128,7 +167,7 @@ func (c *Cassata) GetBlock(ctx context.Context, blockNumber uint64) (*BlockResul
 }
 
 func (c *Cassata) ListBlocks(ctx context.Context, limit, offset int) ([]BlockResult, error) {
-	rows, err := c.db.SQL.QueryContext(ctx, `
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
 		SELECT block_number, block_hash, parent_hash, timestamp,
 		       txs_root, state_root, logs_bloom,
 		       coinbase_addr, zkvm_addr,
@@ -156,7 +195,7 @@ func (c *Cassata) ListBlocks(ctx context.Context, limit, offset int) ([]BlockRes
 }
 
 func (c *Cassata) GetTransaction(ctx context.Context, txHash string) (*TxResult, error) {
-	row := c.db.SQL.QueryRowContext(ctx, `
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
 		SELECT tx_hash, block_number, tx_index, from_addr, to_addr,
 		       value_wei, nonce, type,
 		       gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
@@ -175,7 +214,7 @@ func (c *Cassata) GetTransaction(ctx context.Context, txHash string) (*TxResult,
 }
 
 func (c *Cassata) ListTransactionsByBlock(ctx context.Context, blockNumber uint64) ([]TxResult, error) {
-	rows, err := c.db.SQL.QueryContext(ctx, `
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
 		SELECT tx_hash, block_number, tx_index, from_addr, to_addr,
 		       value_wei, nonce, type,
 		       gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
@@ -203,7 +242,7 @@ func (c *Cassata) ListTransactionsByBlock(ctx context.Context, blockNumber uint6
 }
 
 func (c *Cassata) GetZKProof(ctx context.Context, proofHash string) (*ZKProofResult, error) {
-	row := c.db.SQL.QueryRowContext(ctx, `
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
 		SELECT proof_hash, block_number, stark_proof, commitment, created_at
 		FROM zk_proofs WHERE proof_hash = $1`, proofHash)
 	var z ZKProofResult
@@ -214,7 +253,7 @@ func (c *Cassata) GetZKProof(ctx context.Context, proofHash string) (*ZKProofRes
 }
 
 func (c *Cassata) GetZKProofByBlock(ctx context.Context, blockNumber uint64) (*ZKProofResult, error) {
-	row := c.db.SQL.QueryRowContext(ctx, `
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
 		SELECT proof_hash, block_number, stark_proof, commitment, created_at
 		FROM zk_proofs WHERE block_number = $1`, blockNumber)
 	var z ZKProofResult
@@ -225,7 +264,7 @@ func (c *Cassata) GetZKProofByBlock(ctx context.Context, blockNumber uint64) (*Z
 }
 
 func (c *Cassata) GetSnapshot(ctx context.Context, blockNumber uint64) (*SnapshotResult, error) {
-	row := c.db.SQL.QueryRowContext(ctx, `
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
 		SELECT snapshot_id, block_number, block_hash, prev_snapshot_id, created_at
 		FROM snapshots WHERE block_number = $1`, blockNumber)
 	var s SnapshotResult
@@ -236,7 +275,7 @@ func (c *Cassata) GetSnapshot(ctx context.Context, blockNumber uint64) (*Snapsho
 }
 
 func (c *Cassata) ListSnapshots(ctx context.Context, limit, offset int) ([]SnapshotResult, error) {
-	rows, err := c.db.SQL.QueryContext(ctx, `
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
 		SELECT snapshot_id, block_number, block_hash, prev_snapshot_id, created_at
 		FROM snapshots ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2`, limit, offset)
