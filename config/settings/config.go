@@ -10,16 +10,17 @@ import (
 // NodeConfig is the top-level configuration for a JMDN node.
 // Each section maps to a YAML key in jmdn.yaml.
 type NodeConfig struct {
-	Node      NodeSettings      `mapstructure:"node"`
-	Network   NetworkSettings   `mapstructure:"network"`
-	Ports     PortSettings      `mapstructure:"ports"`
-	Binds     BindSettings      `mapstructure:"binds"`
-	Database  DatabaseSettings  `mapstructure:"database"`
-	Logging   LoggingSettings   `mapstructure:"logging"`
-	Features  FeatureSettings   `mapstructure:"features"`
-	Security  SecurityConfig    `mapstructure:"security"`
-	Alerts    AlertsConfig      `mapstructure:"alerts"`
-	FastSync  FastSyncSettings  `mapstructure:"fastsync"`
+	Node     NodeSettings     `mapstructure:"node"`
+	Network  NetworkSettings  `mapstructure:"network"`
+	Ports    PortSettings     `mapstructure:"ports"`
+	Binds    BindSettings     `mapstructure:"binds"`
+	Database DatabaseSettings `mapstructure:"database"`
+	Thebe    ThebeConfig      `mapstructure:"thebe"`
+	Logging  LoggingSettings  `mapstructure:"logging"`
+	Features FeatureSettings  `mapstructure:"features"`
+	Security SecurityConfig   `mapstructure:"security"`
+	Alerts   AlertsConfig     `mapstructure:"alerts"`
+	FastSync FastSyncSettings `mapstructure:"fastsync"`
 }
 
 // NodeSettings defines the identity of this node.
@@ -67,6 +68,15 @@ type BindSettings struct {
 type DatabaseSettings struct {
 	Username string `mapstructure:"username" yaml:"username"`
 	Password string `mapstructure:"password" yaml:"password"`
+}
+
+// ThebeConfig controls optional ThebeDB integration.
+type ThebeConfig struct {
+	Enabled    bool   `mapstructure:"enabled" yaml:"enabled"`         // default false
+	KVPath     string `mapstructure:"kv_path" yaml:"kv_path"`         // default "./data/thebe-kv"
+	SQLDSN     string `mapstructure:"sql_dsn" yaml:"sql_dsn"`         // reads THEBE_SQL_DSN env var
+	RedisURL   string `mapstructure:"redis_url" yaml:"redis_url"`     // optional, reads THEBE_REDIS_URL
+	StreamName string `mapstructure:"stream_name" yaml:"stream_name"` // optional, default "jmdt.thebedb.events"
 }
 
 // LoggingSettings mirrors Ion's Config struct so jmdn.yaml can fully configure
@@ -129,9 +139,9 @@ type FeatureSettings struct {
 //
 // Serving vs syncing are independent:
 //   - enabled=true  → this node registers FastSync protocol handlers and serves
-//                     block/account data to any peer that requests it.
+//     block/account data to any peer that requests it.
 //   - sync=true     → this node is allowed to pull data from peers and update
-//                     its own local database (HeaderSync, DataSync, Reconciliation).
+//     its own local database (HeaderSync, DataSync, Reconciliation).
 //
 // A sequencer should set sync=false so it never overwrites its own authoritative
 // state, while keeping enabled=true so other nodes can still sync from it.

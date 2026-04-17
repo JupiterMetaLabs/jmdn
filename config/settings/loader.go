@@ -124,6 +124,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.username", d.Database.Username)
 	v.SetDefault("database.password", d.Database.Password)
 
+	// Thebe
+	v.SetDefault("thebe.enabled", d.Thebe.Enabled)
+	v.SetDefault("thebe.kv_path", d.Thebe.KVPath)
+	v.SetDefault("thebe.sql_dsn", d.Thebe.SQLDSN)
+	v.SetDefault("thebe.redis_url", d.Thebe.RedisURL)
+	v.SetDefault("thebe.stream_name", d.Thebe.StreamName)
+
 	// Logging
 	v.SetDefault("logging.level", d.Logging.Level)
 	v.SetDefault("logging.development", d.Logging.Development)

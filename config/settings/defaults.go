@@ -43,6 +43,13 @@ func DefaultConfig() NodeConfig {
 			Username: "",
 			Password: "",
 		},
+		Thebe: ThebeConfig{
+			Enabled:    false,
+			KVPath:     "./data/thebe-kv",
+			SQLDSN:     "",
+			RedisURL:   "",
+			StreamName: "jmdt.thebedb.events",
+		},
 		Logging: LoggingSettings{
 			Level:       "warn",
 			Development: false,

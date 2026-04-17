@@ -42,6 +42,14 @@ database:
   username: ""
   password: ""
 
+# ── ThebeDB ──────────────────────────────────────────────
+thebe:
+  enabled: false
+  kv_path: "./data/thebe-kv"
+  sql_dsn: ""
+  redis_url: ""
+  stream_name: "jmdt.thebedb.events"
+
 # ── Logging (Ion) ────────────────────────────────────────
 # Maps directly to Ion's config struct. All env vars like
 # OTEL_EXPORTER_OTLP_ENDPOINT are replaced by this section.
