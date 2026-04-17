@@ -78,6 +78,16 @@ logging:
     enabled: false
     sampler: "ratio:0.2"        # always, never, ratio:0.5
 
+# ── FastSync V2 ─────────────────────────────────────────
+fastsync:
+  enabled: true          # Register protocol handlers and serve data to peers
+  sync: true             # Allow this node to pull data and update its local DB
+                         # Set false for sequencers/authoritative nodes that must
+                         # never overwrite their own state (they still serve data)
+  startup_sync: true     # Catch up on missed blocks automatically on node restart
+  sync_timeout: 10m      # Max wall-clock time for a single full sync operation
+  allowed_peers: []      # Whitelist of peer IDs to sync FROM (empty = any peer)
+
 # ── Features ────────────────────────────────────────────
 features:
   use_legacy_bft: false
