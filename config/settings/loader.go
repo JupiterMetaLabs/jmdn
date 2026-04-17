@@ -162,11 +162,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("features.grotrack", d.Features.GROTrack)
 
 	// FastSync
-	v.SetDefault("fastsync.enabled", true)
-	v.SetDefault("fastsync.sync", true)
-	v.SetDefault("fastsync.startup_sync", true)
-	v.SetDefault("fastsync.sync_timeout", "10m")
-	v.SetDefault("fastsync.allowed_peers", []string{})
+	v.SetDefault("fastsync.enabled", d.FastSync.Enabled)
+	v.SetDefault("fastsync.sync", d.FastSync.Sync)
+	v.SetDefault("fastsync.startup_sync", d.FastSync.StartupSync)
+	v.SetDefault("fastsync.sync_timeout", d.FastSync.SyncTimeout)
+	v.SetDefault("fastsync.allowed_peers", d.FastSync.AllowedPeers)
 
 	// Security
 	v.SetDefault("security.explorer_api_key", d.Security.ExplorerAPIKey)
