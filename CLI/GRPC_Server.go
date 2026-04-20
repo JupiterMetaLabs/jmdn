@@ -9,12 +9,12 @@ import (
 	"time"
 
 	pb "gossipnode/CLI/proto"
+	"gossipnode/DB_OPs/thebestatus"
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
 	"gossipnode/pkg/gatekeeper"
 
 	"github.com/JupiterMetaLabs/ion"
-	"github.com/codenotary/immudb/pkg/api/schema"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
@@ -254,14 +254,16 @@ func (s *CLIServer) GetDatabaseState(ctx context.Context, _ *emptypb.Empty) (*pb
 }
 
 // Helper function to convert database state
-func convertDBState(state *schema.ImmutableState) *pb.DatabaseState {
+func convertDBState(state *thebestatus.Status) *pb.DatabaseState {
 	if state == nil {
 		return &pb.DatabaseState{}
 	}
+	// Keep protobuf contract stable while replacing immudb ImmutableState semantics.
+	txHash := []byte(fmt.Sprintf("sql:%d lag:%d mode:%s", state.SQLProjected, state.Lag, state.Mode))
 	return &pb.DatabaseState{
-		TxId:     state.TxId,
-		TxHash:   state.TxHash,
-		Database: state.Db,
+		TxId:     state.KVHead,
+		TxHash:   txHash,
+		Database: "thebedb",
 	}
 }
 

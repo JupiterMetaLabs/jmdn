@@ -1,17 +1,22 @@
 package CLI
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/cassata"
+	"gossipnode/DB_OPs/thebestatus"
 	"gossipnode/config"
 	"gossipnode/helper"
 	"gossipnode/messaging/directMSG"
 	"gossipnode/node"
 	"gossipnode/seed"
 
-	"github.com/codenotary/immudb/pkg/api/schema"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -39,8 +44,8 @@ type HandleShowStats struct {
 
 type SyncStats struct {
 	TimeTaken     time.Duration
-	MainState     *schema.ImmutableState
-	AccountsState *schema.ImmutableState
+	MainState     *thebestatus.Status
+	AccountsState *thebestatus.Status
 	Error         string
 }
 
@@ -206,17 +211,15 @@ func (h *CommandHandler) HandleBroadcast(message string) (bool, error) {
 	}
 }
 
-func (h *CommandHandler) CheckDBStats() (*schema.ImmutableState, *schema.ImmutableState, error) {
-	// Get both database states before sync
-	mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+func (h *CommandHandler) CheckDBStats() (*thebestatus.Status, *thebestatus.Status, error) {
+	// Status now comes from ThebeDB chain/projection heads.
+	mainState, err := h.currentThebeStatus()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get main database state: %v", err)
 	}
 
-	accountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get accounts database state: %v", err)
-	}
+	// JMDN no longer uses a separate accountsdb immutable state model in Thebe mode.
+	accountsState := mainState
 	return mainState, accountsState, nil
 }
 
@@ -238,13 +241,9 @@ func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
 
 	// Re-fetch DB states to report. FastsyncV2 doesn't require MainClient/DIDClient
 	// for the sync itself, so guard against nil before querying.
-	var newMainState, newAccountsState *schema.ImmutableState
-	if h.MainClient != nil {
-		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient.Client)
-	}
-	if h.DIDClient != nil {
-		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
-	}
+	var newMainState, newAccountsState *thebestatus.Status
+	newMainState, _ = h.currentThebeStatus()
+	newAccountsState = newMainState
 
 	return SyncStats{
 		TimeTaken:     time.Since(startTime),
@@ -253,9 +252,26 @@ func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
 	}, nil
 }
 
+func (h *CommandHandler) currentThebeStatus() (*thebestatus.Status, error) {
+	st, err := thebestatus.StatusFromCurrentDB(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return &st, nil
+}
+
 func (h *CommandHandler) HandleGetDID(did string) (*DB_OPs.Account, error) {
 	if did == "" {
 		return nil, fmt.Errorf("usage: getDID <did>")
+	}
+
+	if h.Cassata != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		acc, err := h.Cassata.GetAccountByDID(ctx, did)
+		if err == nil {
+			return cassataAccountToDomain(acc)
+		}
 	}
 
 	doc, err := DB_OPs.GetAccountByDID(h.MainClient, did)
@@ -264,4 +280,43 @@ func (h *CommandHandler) HandleGetDID(did string) (*DB_OPs.Account, error) {
 	}
 
 	return doc, nil
+}
+
+func cassataAccountToDomain(a *cassata.AccountResult) (*DB_OPs.Account, error) {
+	if a == nil {
+		return nil, fmt.Errorf("nil account result")
+	}
+
+	nonce, err := strconv.ParseUint(a.Nonce, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parse nonce: %w", err)
+	}
+
+	metadata := map[string]interface{}{}
+	if len(a.Metadata) > 0 {
+		if err := json.Unmarshal(a.Metadata, &metadata); err != nil {
+			return nil, fmt.Errorf("decode metadata: %w", err)
+		}
+	}
+
+	did := ""
+	if a.DIDAddress != nil {
+		did = *a.DIDAddress
+	}
+
+	accountType := "publickey"
+	if a.AccountType != 0 {
+		accountType = "contract"
+	}
+
+	return &DB_OPs.Account{
+		Address:     common.HexToAddress(a.Address),
+		DIDAddress:  did,
+		Balance:     a.BalanceWei,
+		Nonce:       nonce,
+		AccountType: accountType,
+		Metadata:    metadata,
+		CreatedAt:   a.CreatedAt.Unix(),
+		UpdatedAt:   a.UpdatedAt.Unix(),
+	}, nil
 }

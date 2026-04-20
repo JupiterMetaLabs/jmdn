@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/thebestatus"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 
@@ -19,7 +20,6 @@ import (
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/JupiterMetaLabs/ion"
-	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/attribute"
@@ -28,7 +28,7 @@ import (
 var BlockOpsLocalGRO interfaces.LocalGoroutineManagerInterface
 
 type stats struct {
-	DBState           *schema.ImmutableState
+	DBState           *thebestatus.Status
 	MerkleRoot        string
 	LatestBlockNumber uint64
 	TotalBlocks       uint64
@@ -566,14 +566,13 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 
 	// Get database status in a goroutine
 	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
-		tempClient := s.defaultdb.Client
-		status, err := DB_OPs.GetDatabaseState(tempClient)
+		status, err := thebestatus.StatusFromCurrentDB(ctx)
 		if err != nil {
 			handleErr(fmt.Errorf("failed to get database state: %w", err))
 			return nil
 		}
 		mu.Lock()
-		stats.DBState = status
+		stats.DBState = &status
 		mu.Unlock()
 		return nil
 	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))

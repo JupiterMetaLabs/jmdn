@@ -73,3 +73,7 @@ AVC/BLS/Router/config/bls.json
 AVC/BuddyNodes/MessagePassing/BLS_Signer/config/bls.json
 security-audit/SHUTDOWN_AND_LIFECYCLE_AUDIT.md
 security-audit/prev/ENGINEERING_AUDIT.md
+DB_OPs/sqlops/test.db
+*.db
+*.db-wal
+*.db-shm

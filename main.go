@@ -30,6 +30,7 @@ import (
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/cassata"
+	"gossipnode/DB_OPs/thebestatus"
 	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/DID"
 	"gossipnode/FastsyncV2"
@@ -841,6 +842,11 @@ func main() {
 		}
 		defer db.Close()
 		cas = cassata.New(db, zap.NewNop())
+		runMode := "production"
+		if cfg.Logging.Development {
+			runMode = "debug"
+		}
+		thebestatus.Register(db, runMode)
 		log.Info().Msg("ThebeDB Cassata middleware enabled")
 	}
 
@@ -1145,6 +1151,7 @@ func main() {
 		Node:            n,
 		NodeManager:     nodeManager,
 		FastSyncerV2:    fastSyncerV2,
+		Cassata:         cas,
 		SeedNode:        cfg.Network.SeedNode,
 		EnableYggdrasil: cfg.Network.Yggdrasil,
 		ChainID:         cfg.Network.ChainID,

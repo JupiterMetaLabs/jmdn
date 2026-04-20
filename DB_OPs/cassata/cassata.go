@@ -125,6 +125,21 @@ func (c *Cassata) GetAccount(ctx context.Context, address string) (*AccountResul
 	return &a, nil
 }
 
+func (c *Cassata) GetAccountByDID(ctx context.Context, did string) (*AccountResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, did_address, balance_wei, nonce,
+		       account_type, metadata, created_at, updated_at
+		FROM accounts WHERE did_address = $1`, did)
+	var a AccountResult
+	if err := row.Scan(
+		&a.Address, &a.DIDAddress, &a.BalanceWei, &a.Nonce,
+		&a.AccountType, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetAccountByDID: %w", err)
+	}
+	return &a, nil
+}
+
 func (c *Cassata) ListAccounts(ctx context.Context, limit, offset int) ([]AccountResult, error) {
 	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
 		SELECT address, did_address, balance_wei, nonce,

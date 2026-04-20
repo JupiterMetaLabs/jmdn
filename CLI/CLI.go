@@ -12,6 +12,8 @@ import (
 	"gossipnode/Block"
 	CLICommon "gossipnode/CLI/common"
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/cassata"
+	"gossipnode/DB_OPs/thebestatus"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	"gossipnode/config/version"
@@ -52,6 +54,7 @@ type CommandHandler struct {
 	Node            *config.Node
 	NodeManager     *node.NodeManager
 	FastSyncerV2    *FastsyncV2.FastsyncV2
+	Cassata         *cassata.Cassata
 	MainClient      *config.PooledConnection
 	DIDClient       *config.PooledConnection
 	SeedNode        string
@@ -106,7 +109,7 @@ func PrintFuncs() {
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
 	fmt.Println("  fastsync <peer_multiaddr>        - Fast sync blockchain data with a peer (V2 Engine)")
 	fmt.Println("  fastsyncv2 <peer_multiaddr>      - Alias for fastsync")
-	fmt.Println("  dbstate                           - Show current ImmuDB database state")
+	fmt.Println("  dbstate                           - Show current ThebeDB database state")
 	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
 	fmt.Println("  syncinfo                          - Show FastSync configuration")
@@ -594,12 +597,9 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 		return
 	}
 
-	// Show pre-sync DB state if clients are available
-	if h.MainClient != nil && h.DIDClient != nil {
-		mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
-		if err == nil {
-			fmt.Printf("Pre-sync main DB state: TxID=%d, Root=%x\n", mainState.TxId, mainState.TxHash)
-		}
+	// Show pre-sync Thebe state if available.
+	if st, err := thebestatus.StatusFromCurrentDB(context.Background()); err == nil {
+		fmt.Printf("Pre-sync Thebe state: KVHead=%d SQLProjected=%d Lag=%d Mode=%s\n", st.KVHead, st.SQLProjected, st.Lag, st.Mode)
 	}
 
 	fmt.Printf("Starting blockchain fastsyncv2 engine with peer %s\n", addrInfo.ID.String())
@@ -611,16 +611,8 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 		return
 	}
 
-	// Show post-sync DB state if clients are available
-	if h.MainClient != nil && h.DIDClient != nil {
-		newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
-		if err == nil {
-			fmt.Printf("Post-sync main DB state: TxID=%d, Root=%x\n", newMainState.TxId, newMainState.TxHash)
-		}
-		newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
-		if err == nil {
-			fmt.Printf("Post-sync accounts DB state: TxID=%d, Root=%x\n", newAccountsState.TxId, newAccountsState.TxHash)
-		}
+	if st, err := thebestatus.StatusFromCurrentDB(context.Background()); err == nil {
+		fmt.Printf("Post-sync Thebe state: KVHead=%d SQLProjected=%d Lag=%d Mode=%s\n", st.KVHead, st.SQLProjected, st.Lag, st.Mode)
 	}
 
 	fmt.Printf("Fastsync completed in %v\n", time.Since(startTime))
@@ -686,7 +678,7 @@ func (h *CommandHandler) handleGetDID(parts []string) {
 	var doc *DB_OPs.Account
 	var err error
 	if strings.HasPrefix(did, DB_OPs.DIDPrefix) {
-		doc, err = DB_OPs.GetAccountByDID(h.DIDClient, did)
+		doc, err = h.HandleGetDID(did)
 		if err != nil {
 			fmt.Printf("Failed to retrieve DID %s: %v\n", did, err)
 			return
@@ -728,15 +720,18 @@ func (h *CommandHandler) handleDBState() {
 	// Debugging
 	// fmt.Println("Got DB Client and DID Client", h.MainClient.Client, h.DIDClient.Client)
 
-	state, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+	state, err := thebestatus.StatusFromCurrentDB(context.Background())
 	if err != nil {
 		fmt.Printf("Failed to get database state: %v\n", err)
 		return
 	}
 
-	fmt.Println("Current ImmuDB State:")
-	fmt.Printf("  Transaction ID: %d\n", state.TxId)
-	fmt.Printf("  Merkle Root: %x\n", state.TxHash)
+	fmt.Println("Current ThebeDB State:")
+	fmt.Printf("  KV Head: %d\n", state.KVHead)
+	fmt.Printf("  SQL Projected: %d\n", state.SQLProjected)
+	fmt.Printf("  Projection Lag: %d\n", state.Lag)
+	fmt.Printf("  Mode: %s\n", state.Mode)
+	fmt.Printf("  Uptime: %s\n", state.Uptime)
 
 	// Count entries in the database using pagination
 	const maxKeysPerBatch = 2000 // Staying well under the 2500 limit
