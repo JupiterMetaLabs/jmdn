@@ -68,3 +68,6 @@ internal/WAL/.tmp/*
 .claude/*
 .code-review-graph/*
 .cursor/*
+AVC/BLS/Router/config/bls.json
+AVC/BuddyNodes/MessagePassing/BLS_Signer/config/bls.json
+AVC/BuddyNodes/MessagePassing/BLS_Verifier/config/bls.json
