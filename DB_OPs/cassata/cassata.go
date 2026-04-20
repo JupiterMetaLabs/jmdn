@@ -241,6 +241,36 @@ func (c *Cassata) ListTransactionsByBlock(ctx context.Context, blockNumber uint6
 	return out, rows.Err()
 }
 
+func (c *Cassata) ListTransactionsByAddress(ctx context.Context, address string, limit, offset int) ([]TxResult, error) {
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
+		SELECT tx_hash, block_number, tx_index, from_addr, to_addr,
+		       value_wei, nonce, type,
+		       gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
+		       data, access_list, sig_v, sig_r, sig_s, created_at
+		FROM transactions
+		WHERE from_addr = $1 OR to_addr = $1
+		ORDER BY block_number DESC, tx_index ASC
+		LIMIT $2 OFFSET $3`, address, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("cassata.ListTransactionsByAddress: %w", err)
+	}
+	defer rows.Close()
+	var out []TxResult
+	for rows.Next() {
+		var t TxResult
+		if err := rows.Scan(
+			&t.TxHash, &t.BlockNumber, &t.TxIndex, &t.FromAddr, &t.ToAddr,
+			&t.ValueWei, &t.Nonce, &t.Type,
+			&t.GasLimit, &t.GasPriceWei, &t.MaxFeeWei, &t.MaxPriorityFeeWei,
+			&t.Data, &t.AccessList, &t.SigV, &t.SigR, &t.SigS, &t.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 func (c *Cassata) GetZKProof(ctx context.Context, proofHash string) (*ZKProofResult, error) {
 	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
 		SELECT proof_hash, block_number, stark_proof, commitment, created_at

@@ -11,6 +11,7 @@ import (
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/gin-gonic/gin"
 
+	"gossipnode/DB_OPs/cassata"
 	"gossipnode/DB_OPs/dualdb"
 	"gossipnode/config/settings"
 	"gossipnode/logging"
@@ -18,9 +19,10 @@ import (
 )
 
 type HTTPServer struct {
-	h      *Handlers
-	dualDB *dualdb.DualDB
-	logger *ion.Ion // Add logger
+	h       *Handlers
+	dualDB  *dualdb.DualDB
+	cassata *cassata.Cassata // optional: Postgres projection reads when Thebe is enabled
+	logger  *ion.Ion        // Add logger
 }
 
 func NewHTTPServer(h *Handlers) *HTTPServer {
@@ -32,6 +34,12 @@ func NewHTTPServer(h *Handlers) *HTTPServer {
 
 func (s *HTTPServer) WithDualDB(d *dualdb.DualDB) *HTTPServer {
 	s.dualDB = d
+	return s
+}
+
+// WithCassata wires read-only Thebe projection APIs (see registerThebeReadRoutes).
+func (s *HTTPServer) WithCassata(c *cassata.Cassata) *HTTPServer {
+	s.cassata = c
 	return s
 }
 
@@ -69,6 +77,7 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 	// Add JSON-RPC handler
 	router.Any("/", s.handleJSONRPC)
 	router.GET("/debug/dualdb/report", s.DualDBReport)
+	s.registerThebeReadRoutes(router)
 
 	errCh := make(chan error, 1)
 	go func() {

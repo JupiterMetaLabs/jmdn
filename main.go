@@ -21,6 +21,7 @@ import (
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
 	thebecfg "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 	orchestratorGlobal "github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	ion "github.com/JupiterMetaLabs/ion"
@@ -154,6 +155,9 @@ func StartFacadeServer(bindAddr string, port int, chainID int) {
 
 		handler := rpc.NewHandlers(Service.NewService(chainID))
 		httpServer := rpc.NewHTTPServer(handler)
+		if cas != nil {
+			httpServer = httpServer.WithCassata(cas)
+		}
 
 		addr := fmt.Sprintf("%s:%d", bindAddr, port)
 		if err := httpServer.ServeWithContext(ctx, addr); err != nil {
@@ -849,17 +853,18 @@ func main() {
 
 	// Initialize ThebeDB + JMDN profile only when feature-flagged.
 	if cfg.Thebe.Enabled {
+		reg := profile.NewRegistry()
+		reg.Register(thebeprofile.New())
 		db, err := thebedb.NewFromConfig(thebedb.Config{
-			KV:  kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath},
-			SQL: thebecfg.SQL{DSN: cfg.Thebe.SQLDSN},
+			KV:       kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath},
+			SQL:      thebecfg.SQL{DSN: cfg.Thebe.SQLDSN},
+			Profiles: reg,
 		})
 		if err != nil {
 			log.Fatal().Err(err).Msg("thebedb init failed")
 		}
 		defer db.Close()
 		cas = cassata.New(db, zap.NewNop())
-		_ = thebeprofile.New()
-		_ = cas
 		log.Info().Msg("ThebeDB Cassata middleware enabled")
 	}
 
