@@ -287,8 +287,13 @@ func blockToCassata(b *config.ZKBlock) cassata.BlockResult {
 		zkvm = &s
 	}
 
-	gasLimit := strconv.FormatUint(b.GasLimit, 10)
-	gasUsed := strconv.FormatUint(b.GasUsed, 10)
+	// Thebe blocks.chk_block_gas_used_within_limit requires gas_used <= gas_limit.
+	gasLimitU, gasUsedU := b.GasLimit, b.GasUsed
+	if gasUsedU > gasLimitU {
+		gasLimitU = gasUsedU
+	}
+	gasLimit := strconv.FormatUint(gasLimitU, 10)
+	gasUsed := strconv.FormatUint(gasUsedU, 10)
 	extra, _ := json.Marshal(map[string]string{"extra_data": b.ExtraData})
 	stateRoot := b.StateRoot.Hex()
 	txRoot := b.TxnsRoot
