@@ -322,9 +322,12 @@ func thebeParseUint64Param(c *gin.Context, name string) (uint64, bool) {
 
 func normalizeHexAddress(s string) string {
 	s = strings.TrimSpace(s)
-	s = strings.ToLower(s)
-	if !strings.HasPrefix(s, "0x") && len(s) == 40 {
+	if !strings.HasPrefix(strings.ToLower(s), "0x") && len(s) == 40 {
 		s = "0x" + s
+	}
+	// Canonicalize to go-ethereum checksum format used by ingest path.
+	if common.IsHexAddress(s) {
+		return common.HexToAddress(s).Hex()
 	}
 	return s
 }
