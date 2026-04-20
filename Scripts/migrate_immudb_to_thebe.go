@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	DB_OPs "gossipnode/DB_OPs"
@@ -19,6 +21,7 @@ import (
 	thebecfg "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 func main() {
@@ -105,6 +108,9 @@ func main() {
 	if err := migrateAccounts(ctx, shadow); err != nil {
 		log.Fatalf("migrate accounts: %v", err)
 	}
+	if err := ensureTxParticipantAccounts(ctx, cas, fromBlock, toBlock); err != nil {
+		log.Fatalf("ensure tx participant accounts: %v", err)
+	}
 	if err := migrateBlocks(ctx, shadow, fromBlock, toBlock); err != nil {
 		log.Fatalf("migrate blocks: %v", err)
 	}
@@ -134,6 +140,82 @@ func migrateAccounts(ctx context.Context, shadow *dualdb.ShadowAdapter) error {
 	}
 	log.Printf("accounts migrated total: %d", migrated)
 	_ = ctx
+	return nil
+}
+
+// accountAddressesFromImmu returns lower-hex keys (no 0x) for addresses already in immudb accounts.
+func accountAddressesFromImmu() (map[string]struct{}, error) {
+	accounts, err := DB_OPs.ListAllAccounts(nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]struct{}, len(accounts))
+	for _, a := range accounts {
+		if a == nil {
+			continue
+		}
+		out[strings.TrimPrefix(strings.ToLower(a.Address.Hex()), "0x")] = struct{}{}
+	}
+	return out, nil
+}
+
+func ensureTxParticipantAccounts(ctx context.Context, cas *cassata.Cassata, fromBlock, toBlock uint64) error {
+	latest, err := DB_OPs.GetLatestBlockNumber(nil)
+	if err != nil {
+		return fmt.Errorf("get latest block number: %w", err)
+	}
+	if toBlock == 0 || toBlock > latest {
+		toBlock = latest
+	}
+	if fromBlock > toBlock {
+		return nil
+	}
+
+	known, err := accountAddressesFromImmu()
+	if err != nil {
+		return err
+	}
+
+	addrs := make(map[string]struct{})
+	for n := fromBlock; n <= toBlock; n++ {
+		block, err := DB_OPs.GetZKBlockByNumber(nil, n)
+		if err != nil {
+			continue
+		}
+		for _, tx := range block.Transactions {
+			if tx.From != nil {
+				addrs[strings.TrimPrefix(strings.ToLower(tx.From.Hex()), "0x")] = struct{}{}
+			}
+			if tx.To != nil {
+				addrs[strings.TrimPrefix(strings.ToLower(tx.To.Hex()), "0x")] = struct{}{}
+			}
+		}
+	}
+
+	var stubs int
+	for hexKey := range addrs {
+		if _, ok := known[hexKey]; ok {
+			continue
+		}
+		addr := common.HexToAddress("0x" + hexKey)
+		stub := cassata.AccountResult{
+			Address:     addr.Hex(),
+			BalanceWei:  "0",
+			Nonce:       "0",
+			AccountType: 0,
+			Metadata:    json.RawMessage(`{"migrated_stub":true}`),
+			CreatedAt:   time.Now().UTC(),
+			UpdatedAt:   time.Now().UTC(),
+		}
+		if err := cas.IngestAccount(ctx, stub); err != nil {
+			return fmt.Errorf("stub account %s: %w", addr.Hex(), err)
+		}
+		known[hexKey] = struct{}{}
+		stubs++
+	}
+	if stubs > 0 {
+		log.Printf("ingested stub accounts for tx participants: %d", stubs)
+	}
 	return nil
 }
 

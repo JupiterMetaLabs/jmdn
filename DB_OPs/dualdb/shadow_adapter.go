@@ -85,21 +85,28 @@ func (s *ShadowAdapter) StoreZKBlock(_ *config.PooledConnection, block *config.Z
 		return err
 	}
 
+	stark := block.StarkProof
+	if stark == nil {
+		stark = []byte{}
+	}
 	if err := s.cas.IngestZKProof(ctx, cassata.ZKProofResult{
 		ProofHash:   block.ProofHash,
 		BlockNumber: block.BlockNumber,
-		StarkProof:  block.StarkProof,
+		StarkProof:  stark,
 		Commitment:  uint32SliceToBytes(block.Commitment),
 		CreatedAt:   time.Now().UTC(),
 	}); err != nil {
 		return err
 	}
 
+	// prev_snapshot_id must reference snapshots.snapshot_id (IDENTITY), not block
+	// numbers. We do not have the prior row id here without a DB read, so leave
+	// chain unset (NULL). Snapshot rows remain keyed by block_number / block_hash.
 	if err := s.cas.IngestSnapshot(ctx, cassata.SnapshotResult{
 		SnapshotID:     int64(block.BlockNumber),
 		BlockNumber:    block.BlockNumber,
 		BlockHash:      block.BlockHash.Hex(),
-		PrevSnapshotID: previousSnapshotID(block.BlockNumber),
+		PrevSnapshotID: nil,
 		CreatedAt:      time.Now().UTC(),
 	}); err != nil {
 		return err
@@ -407,14 +414,6 @@ func normalizeTxFeesForThebeSchema(t *cassata.TxResult) {
 			t.GasPriceWei = &z
 		}
 	}
-}
-
-func previousSnapshotID(blockNumber uint64) *int64 {
-	if blockNumber == 0 {
-		return nil
-	}
-	v := int64(blockNumber - 1)
-	return &v
 }
 
 func uint32SliceToBytes(in []uint32) []byte {
