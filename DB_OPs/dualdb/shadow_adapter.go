@@ -11,6 +11,7 @@ import (
 	DB_OPs "gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/cassata"
 	"gossipnode/config"
+	"gossipnode/config/settings"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -43,12 +44,16 @@ func (s *ShadowAdapter) BatchCreate(_ *config.PooledConnection, entries map[stri
 }
 
 func (s *ShadowAdapter) CreateAccount(_ *config.PooledConnection, didAddress string, address common.Address, metadata map[string]interface{}) error {
-	meta, err := json.Marshal(metadata)
-	if err != nil {
-		return fmt.Errorf("shadow adapter: marshal account metadata: %w", err)
+	meta := json.RawMessage(`{}`)
+	if metadata != nil {
+		raw, err := json.Marshal(metadata)
+		if err != nil {
+			return fmt.Errorf("shadow adapter: marshal account metadata: %w", err)
+		}
+		meta = raw
 	}
 
-	did := didAddress
+	did := normalizeDIDAddress(didAddress, address)
 	account := cassata.AccountResult{
 		Address:     address.Hex(),
 		DIDAddress:  &did,
@@ -254,10 +259,16 @@ func decodeSnapshot(v interface{}) (cassata.SnapshotResult, bool) {
 func accountToCassata(a *DB_OPs.Account) cassata.AccountResult {
 	var did *string
 	if a.DIDAddress != "" {
-		did = &a.DIDAddress
+		s := normalizeDIDAddress(a.DIDAddress, a.Address)
+		did = &s
 	}
 
-	meta, _ := json.Marshal(a.Metadata)
+	meta := json.RawMessage(`{}`)
+	if a.Metadata != nil {
+		if raw, err := json.Marshal(a.Metadata); err == nil {
+			meta = raw
+		}
+	}
 	return cassata.AccountResult{
 		Address:     a.Address.Hex(),
 		DIDAddress:  did,
@@ -268,6 +279,38 @@ func accountToCassata(a *DB_OPs.Account) cassata.AccountResult {
 		CreatedAt:   time.Unix(0, a.CreatedAt).UTC(),
 		UpdatedAt:   time.Unix(0, a.UpdatedAt).UTC(),
 	}
+}
+
+func normalizeDIDAddress(raw string, address common.Address) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	network := strconv.Itoa(settings.Get().Network.ChainID)
+	lowerAddr := strings.ToLower(address.Hex())
+	prefix := "did:jmdt:" + network + ":"
+
+	// Legacy records sometimes store DIDAddress as plain 0x address.
+	if common.IsHexAddress(raw) {
+		return prefix + strings.ToLower(common.HexToAddress(raw).Hex())
+	}
+
+	// Legacy did:jmdt:0x... form (without network segment).
+	lowerRaw := strings.ToLower(raw)
+	if strings.HasPrefix(lowerRaw, "did:jmdt:") {
+		parts := strings.Split(raw, ":")
+		if len(parts) == 3 && common.IsHexAddress(parts[2]) {
+			return prefix + strings.ToLower(common.HexToAddress(parts[2]).Hex())
+		}
+		if len(parts) >= 4 && common.IsHexAddress(parts[len(parts)-1]) {
+			parts[len(parts)-1] = strings.ToLower(common.HexToAddress(parts[len(parts)-1]).Hex())
+			return strings.Join(parts, ":")
+		}
+	}
+
+	// Fallback: keep original token but ensure address suffix exists and is canonical.
+	return prefix + lowerAddr
 }
 
 func blockToCassata(b *config.ZKBlock) cassata.BlockResult {

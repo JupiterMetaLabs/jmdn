@@ -5,8 +5,10 @@ package cassata
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"reflect"
 	"time"
 
@@ -269,6 +271,33 @@ func (c *Cassata) ListTransactionsByAddress(ctx context.Context, address string,
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// GetNextNonceByAddress returns latest sent-tx nonce + 1 for the given address.
+// If no sent transactions exist for the address, it returns "0".
+func (c *Cassata) GetNextNonceByAddress(ctx context.Context, address string) (string, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT nonce
+		FROM transactions
+		WHERE from_addr = $1
+		ORDER BY block_number DESC, tx_index DESC
+		LIMIT 1`, address)
+
+	var nonce string
+	if err := row.Scan(&nonce); err != nil {
+		// No transactions from this sender => start at nonce 0.
+		if err == sql.ErrNoRows {
+			return "0", nil
+		}
+		return "", fmt.Errorf("cassata.GetNextNonceByAddress: %w", err)
+	}
+
+	n, ok := new(big.Int).SetString(nonce, 10)
+	if !ok {
+		return "", fmt.Errorf("cassata.GetNextNonceByAddress: invalid nonce %q", nonce)
+	}
+	n.Add(n, big.NewInt(1))
+	return n.String(), nil
 }
 
 func (c *Cassata) GetZKProof(ctx context.Context, proofHash string) (*ZKProofResult, error) {

@@ -97,18 +97,14 @@ func (s *HTTPServer) thebeGetAccountNonce(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
-	a, err := s.cassata.GetAccount(ctx, addr)
+	nonce, err := s.cassata.GetNextNonceByAddress(ctx, addr)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) || strings.Contains(err.Error(), "no rows") {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"address": a.Address,
-		"nonce":   a.Nonce,
+		"address": addr,
+		"nonce":   nonce,
 	})
 }
 
