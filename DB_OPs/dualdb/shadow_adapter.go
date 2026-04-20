@@ -313,7 +313,8 @@ func blockToCassata(b *config.ZKBlock) cassata.BlockResult {
 
 func txToCassata(block *config.ZKBlock, idx int) cassata.TxResult {
 	tx := block.Transactions[idx]
-	from := ""
+	// from_addr is NOT NULL + FK to accounts; nil From must not become "".
+	from := (common.Address{}).Hex()
 	if tx.From != nil {
 		from = tx.From.Hex()
 	}

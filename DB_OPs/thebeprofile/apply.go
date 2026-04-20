@@ -108,7 +108,7 @@ func applyBlock(tx *sql.Tx, value []byte) error {
 	if extra == nil {
 		extra = json.RawMessage(`{}`)
 	}
-	_, err := tx.Exec(`
+	return insertIgnoreUnique(tx, "m_blk", `
 		INSERT INTO blocks
 		    (block_number, block_hash, parent_hash, timestamp,
 		     txs_root, state_root, logs_bloom,
@@ -120,10 +120,6 @@ func applyBlock(tx *sql.Tx, value []byte) error {
 		p.CoinbaseAddr, p.ZKVMAddr,
 		p.GasLimit, p.GasUsed, p.Status, extra,
 	)
-	if err != nil && !isUniqueViolation(err) {
-		return err
-	}
-	return nil
 }
 
 func applyTx(tx *sql.Tx, value []byte) error {
@@ -135,7 +131,7 @@ func applyTx(tx *sql.Tx, value []byte) error {
 	if al == nil {
 		al = json.RawMessage(`[]`)
 	}
-	_, err := tx.Exec(`
+	return insertIgnoreUnique(tx, "m_tx", `
 		INSERT INTO transactions
 		    (tx_hash, block_number, tx_index, from_addr, to_addr,
 		     value_wei, nonce, type,
@@ -147,10 +143,6 @@ func applyTx(tx *sql.Tx, value []byte) error {
 		p.GasLimit, p.GasPriceWei, p.MaxFeeWei, p.MaxPriorityFeeWei,
 		p.Data, al, p.SigV, p.SigR, p.SigS,
 	)
-	if err != nil && !isUniqueViolation(err) {
-		return err
-	}
-	return nil
 }
 
 func applyZKProof(tx *sql.Tx, value []byte) error {
@@ -158,16 +150,12 @@ func applyZKProof(tx *sql.Tx, value []byte) error {
 	if err := json.Unmarshal(value, &p); err != nil {
 		return err
 	}
-	_, err := tx.Exec(`
+	return insertIgnoreUnique(tx, "m_zk", `
 		INSERT INTO zk_proofs
 		    (proof_hash, block_number, stark_proof, commitment)
 		VALUES ($1,$2,$3,$4)`,
 		p.ProofHash, p.BlockNumber, p.StarkProof, p.Commitment,
 	)
-	if err != nil && !isUniqueViolation(err) {
-		return err
-	}
-	return nil
 }
 
 func applySnapshot(tx *sql.Tx, value []byte) error {
@@ -175,16 +163,33 @@ func applySnapshot(tx *sql.Tx, value []byte) error {
 	if err := json.Unmarshal(value, &p); err != nil {
 		return err
 	}
-	_, err := tx.Exec(`
+	return insertIgnoreUnique(tx, "m_sn", `
 		INSERT INTO snapshots
 		    (block_number, block_hash, prev_snapshot_id)
 		VALUES ($1,$2,$3)`,
 		p.BlockNumber, p.BlockHash, p.PrevSnapshotID,
 	)
-	if err != nil && !isUniqueViolation(err) {
+}
+
+// insertIgnoreUnique runs INSERT under a SAVEPOINT so a duplicate key (23505)
+// does not abort the whole transaction — required because we cannot use
+// ON CONFLICT on tables that have append-only RULEs.
+func insertIgnoreUnique(tx *sql.Tx, savepoint, query string, args ...any) error {
+	if _, err := tx.Exec("SAVEPOINT " + savepoint); err != nil {
 		return err
 	}
-	return nil
+	_, err := tx.Exec(query, args...)
+	if err != nil {
+		if _, rbErr := tx.Exec("ROLLBACK TO SAVEPOINT " + savepoint); rbErr != nil {
+			return rbErr
+		}
+		if isUniqueViolation(err) {
+			return nil
+		}
+		return err
+	}
+	_, err = tx.Exec("RELEASE SAVEPOINT " + savepoint)
+	return err
 }
 
 // isUniqueViolation reports duplicate-key violations for idempotent inserts.

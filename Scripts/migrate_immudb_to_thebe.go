@@ -177,6 +177,8 @@ func ensureTxParticipantAccounts(ctx context.Context, cas *cassata.Cassata, from
 	}
 
 	addrs := make(map[string]struct{})
+	// Burn / placeholder address used when ZK txs omit `from`.
+	addrs[strings.TrimPrefix(strings.ToLower(common.Address{}.Hex()), "0x")] = struct{}{}
 	for n := fromBlock; n <= toBlock; n++ {
 		block, err := DB_OPs.GetZKBlockByNumber(nil, n)
 		if err != nil {
