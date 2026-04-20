@@ -14,10 +14,10 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/cassata"
 	"gossipnode/DB_OPs/thebestatus"
+	"gossipnode/FastsyncV2"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	"gossipnode/config/version"
-	"gossipnode/FastsyncV2"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	groMetrics "gossipnode/metrics/gro"
@@ -618,7 +618,6 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 	fmt.Printf("Fastsync completed in %v\n", time.Since(startTime))
 	printDashes()
 }
-
 
 func (h *CommandHandler) handlePropagateDID(parts []string) {
 	if len(parts) < 3 || len(parts) > 4 {
