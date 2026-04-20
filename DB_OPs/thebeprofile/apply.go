@@ -3,7 +3,10 @@ package thebeprofile
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // Payload types are the internal KV serialisation format.
@@ -111,14 +114,16 @@ func applyBlock(tx *sql.Tx, value []byte) error {
 		     txs_root, state_root, logs_bloom,
 		     coinbase_addr, zkvm_addr,
 		     gas_limit, gas_used, status, extra_data)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-		ON CONFLICT DO NOTHING`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 		p.BlockNumber, p.BlockHash, p.ParentHash, p.Timestamp,
 		p.TxsRoot, p.StateRoot, p.LogsBloom,
 		p.CoinbaseAddr, p.ZKVMAddr,
 		p.GasLimit, p.GasUsed, p.Status, extra,
 	)
-	return err
+	if err != nil && !isUniqueViolation(err) {
+		return err
+	}
+	return nil
 }
 
 func applyTx(tx *sql.Tx, value []byte) error {
@@ -136,14 +141,16 @@ func applyTx(tx *sql.Tx, value []byte) error {
 		     value_wei, nonce, type,
 		     gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
 		     data, access_list, sig_v, sig_r, sig_s)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
-		ON CONFLICT DO NOTHING`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		p.TxHash, p.BlockNumber, p.TxIndex, p.FromAddr, p.ToAddr,
 		p.ValueWei, p.Nonce, p.Type,
 		p.GasLimit, p.GasPriceWei, p.MaxFeeWei, p.MaxPriorityFeeWei,
 		p.Data, al, p.SigV, p.SigR, p.SigS,
 	)
-	return err
+	if err != nil && !isUniqueViolation(err) {
+		return err
+	}
+	return nil
 }
 
 func applyZKProof(tx *sql.Tx, value []byte) error {
@@ -154,11 +161,13 @@ func applyZKProof(tx *sql.Tx, value []byte) error {
 	_, err := tx.Exec(`
 		INSERT INTO zk_proofs
 		    (proof_hash, block_number, stark_proof, commitment)
-		VALUES ($1,$2,$3,$4)
-		ON CONFLICT DO NOTHING`,
+		VALUES ($1,$2,$3,$4)`,
 		p.ProofHash, p.BlockNumber, p.StarkProof, p.Commitment,
 	)
-	return err
+	if err != nil && !isUniqueViolation(err) {
+		return err
+	}
+	return nil
 }
 
 func applySnapshot(tx *sql.Tx, value []byte) error {
@@ -169,9 +178,20 @@ func applySnapshot(tx *sql.Tx, value []byte) error {
 	_, err := tx.Exec(`
 		INSERT INTO snapshots
 		    (block_number, block_hash, prev_snapshot_id)
-		VALUES ($1,$2,$3)
-		ON CONFLICT DO NOTHING`,
+		VALUES ($1,$2,$3)`,
 		p.BlockNumber, p.BlockHash, p.PrevSnapshotID,
 	)
-	return err
+	if err != nil && !isUniqueViolation(err) {
+		return err
+	}
+	return nil
+}
+
+// isUniqueViolation reports duplicate-key violations for idempotent inserts.
+// We cannot use INSERT ... ON CONFLICT on blocks/transactions/zk_proofs/snapshots
+// because those tables have PostgreSQL RULEs (append-only); Postgres rejects
+// ON CONFLICT when INSERT or UPDATE rules exist on the table.
+func isUniqueViolation(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "23505"
 }

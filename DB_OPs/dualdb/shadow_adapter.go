@@ -361,7 +361,7 @@ func txToCassata(block *config.ZKBlock, idx int) cassata.TxResult {
 	}
 
 	accessList, _ := json.Marshal(tx.AccessList)
-	return cassata.TxResult{
+	out := cassata.TxResult{
 		TxHash:            tx.Hash.Hex(),
 		BlockNumber:       block.BlockNumber,
 		TxIndex:           idx,
@@ -380,6 +380,32 @@ func txToCassata(block *config.ZKBlock, idx int) cassata.TxResult {
 		SigR:              sigR,
 		SigS:              sigS,
 		CreatedAt:         time.Now().UTC(),
+	}
+	normalizeTxFeesForThebeSchema(&out)
+	return out
+}
+
+// normalizeTxFeesForThebeSchema enforces thebeprofile chk_txn_fee_model, which
+// requires gas_price_wei for type 0/1 and max_fee + max_priority for type 2.
+// ZK/immudb payloads may omit fee fields that were not persisted on the block tx.
+func normalizeTxFeesForThebeSchema(t *cassata.TxResult) {
+	z := "0"
+	switch t.Type {
+	case 0, 1:
+		if t.GasPriceWei == nil {
+			t.GasPriceWei = &z
+		}
+	case 2:
+		if t.MaxFeeWei == nil {
+			t.MaxFeeWei = &z
+		}
+		if t.MaxPriorityFeeWei == nil {
+			t.MaxPriorityFeeWei = &z
+		}
+	default:
+		if t.GasPriceWei == nil {
+			t.GasPriceWei = &z
+		}
 	}
 }
 
