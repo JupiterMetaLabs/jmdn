@@ -2,22 +2,24 @@ package rpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/gin-gonic/gin"
 
+	"gossipnode/DB_OPs/dualdb"
 	"gossipnode/config/settings"
 	"gossipnode/logging"
 	"gossipnode/pkg/gatekeeper"
-
-	"github.com/JupiterMetaLabs/ion"
 )
 
 type HTTPServer struct {
 	h      *Handlers
+	dualDB *dualdb.DualDB
 	logger *ion.Ion // Add logger
 }
 
@@ -26,6 +28,11 @@ func NewHTTPServer(h *Handlers) *HTTPServer {
 	l, _ := logging.NewAsyncLogger().Get().NamedLogger("JSONRPC", "")
 
 	return &HTTPServer{h: h, logger: l.NamedLogger}
+}
+
+func (s *HTTPServer) WithDualDB(d *dualdb.DualDB) *HTTPServer {
+	s.dualDB = d
+	return s
 }
 
 func (s *HTTPServer) Serve(addr string) error {
@@ -61,6 +68,7 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 
 	// Add JSON-RPC handler
 	router.Any("/", s.handleJSONRPC)
+	router.GET("/debug/dualdb/report", s.DualDBReport)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -78,6 +86,19 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 			return nil
 		}
 		return err
+	}
+}
+
+func (s *HTTPServer) DualDBReport(c *gin.Context) {
+	if s.dualDB == nil {
+		c.String(http.StatusServiceUnavailable, "dualdb not enabled")
+		return
+	}
+
+	c.Header("Content-Type", "application/json")
+	if err := json.NewEncoder(c.Writer).Encode(s.dualDB.Report()); err != nil {
+		c.String(http.StatusInternalServerError, "failed to encode dualdb report")
+		return
 	}
 }
 
