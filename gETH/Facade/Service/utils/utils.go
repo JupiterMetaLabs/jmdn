@@ -212,11 +212,9 @@ func ConvertZKBlockToblockheader(ZKBlock config.ZKBlock) Types.BlockHeader {
 
 	LogsBloom := utils.GenerateBlockLogsBloom(Receipts)
 
-	// TODO (migration): EIP-1559 requires a persistent `BaseFee` field in the `ZKBlock` struct
-	// populated by the ZKVM during execution and stored in ImmuDB, in order to avoid
-	// O(N^2) backward recursive database lookups.
-	// For now, since the sequencer only accepts Type 0 (Legacy) transactions which do not burn BaseFee,
-	// we return a constant 35 Gwei to satisfy downstream JSON-RPC wallets (MetaMask) without triggering OOM node crashes.
+	// EIP-1559 requires a persistent `BaseFee` field in `ZKBlock`.
+	// Until that field is populated by execution, return a constant 35 Gwei
+	// to keep downstream JSON-RPC clients compatible.
 	baseFee := big.NewInt(35000000000).Bytes()
 
 	return Types.BlockHeader{

@@ -1,3 +1,6 @@
+//go:build archive
+// +build archive
+
 package main
 
 import (

@@ -37,11 +37,6 @@ binds:
   metrics: "127.0.0.1"
   profiler: "127.0.0.1"  # Debugging - STRICTLY LOCALHOST
 
-# ── Database (ImmuDB) ───────────────────────────────────
-database:
-  username: ""
-  password: ""
-
 # ── ThebeDB ──────────────────────────────────────────────
 thebe:
   enabled: false

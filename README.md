@@ -43,7 +43,7 @@ The system is built on a modular architecture combining several advanced distrib
     - Zero-Knowledge Proof Integration
     - Gossip Protocol & Bloom Filters
     - CRDT-based Conflict Resolution
-    - ImmuDB Append-Only Ledger
+    - ThebeDB + Cassata append-only ingestion
 
 ## JMDN - Decentralized Node Operation
 
@@ -62,7 +62,7 @@ Run a node to participate in the JMDT network.
 - **Go 1.25+**: Programming language runtime
 - **Docker & Docker Compose**: Containerization platform
 - **Yggdrasil**: Decentralized mesh networking protocol
-- **ImmuDB**: Tamper-proof database (installed automatically)
+- **PostgreSQL + Redis**: ThebeDB backing services
 
 ### Quick Setup
 
@@ -73,10 +73,14 @@ The easiest way to set up the environment is using the provided setup script:
 sudo ./Scripts/setup_dependencies.sh
 ```
 
-This script will automatically install all prerequisites:
+When run without flags, the script prompts for storage setup type:
+- local native PostgreSQL + Redis
+- Docker-based PostgreSQL + Redis
+- skip storage setup
+
+This script will automatically install host prerequisites:
 1. **Go Programming Language**
-2. **ImmuDB**
-3. **Yggdrasil Network**
+2. **Yggdrasil Network**
 
 ### Manual Installation
 
@@ -87,15 +91,31 @@ If you prefer to install dependencies manually or need to install them individua
 sudo ./Scripts/setup_dependencies.sh --go
 ```
 
-#### 2. Install ImmuDB
-```bash
-sudo ./Scripts/setup_dependencies.sh --immudb
-```
-
-#### 3. Install Yggdrasil
+#### 2. Install Yggdrasil
 ```bash
 sudo ./Scripts/setup_dependencies.sh --yggdrasil
 ```
+
+#### 3. Install storage dependencies (choose one)
+```bash
+sudo ./Scripts/setup_dependencies.sh --storage-local
+sudo ./Scripts/setup_dependencies.sh --storage-docker
+```
+
+### Storage Setup (ThebeDB)
+
+Bring up local backing services:
+
+```bash
+docker compose up -d
+```
+
+This starts:
+- PostgreSQL
+- Redis
+- pgAdmin (optional)
+
+ThebeDB wiring details are documented in `docs/INTEGRATION_CONTEXT.md`.
 
 ### Build the Application
 
@@ -136,7 +156,7 @@ Alternatively, you can configure via flags (see `jmdn --help` or `docs/CONFIG.md
 | `-console`             | Log to console                       | `false` |
 | `-ygg`                 | Enable Yggdrasil messaging           | `true`  |
 | `-explorer <port>`     | Run blockchain explorer (0=disabled) | 0         |
-| `-api <port>`          | Run ImmuDB API (0=disabled)          | 0         |
+| `-api <port>`          | Run explorer API (0=disabled)        | 0         |
 
 ### Available Commands
 
@@ -152,7 +172,7 @@ Alternatively, you can configure via flags (see `jmdn --help` or `docs/CONFIG.md
 | `stats`                                   | Show messaging statistics             |
 | `broadcast <message>`                     | Broadcast to all connected peers      |
 | `fastsyncv2 <peer_multiaddr>`             | Fast sync blockchain data with a peer |
-| `dbstate`                                 | Show current ImmuDB database state    |
+| `dbstate`                                 | Show current database state           |
 | `exit`                                    | Exit the program                      |
 
 ---

@@ -29,7 +29,7 @@ jobs:
 
       # ── Coverage ─────────────────────────────────────────────────────
       # Generate cover.out for SonarQube to consume.
-      # NOTE: Some test packages require live infrastructure (ImmuDB,
+      # NOTE: Some test packages require live infrastructure (
       # seed node). If specific packages fail, exclude them here and
       # track via a separate integration test workflow.
       #

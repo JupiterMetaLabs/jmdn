@@ -634,8 +634,6 @@ func main() {
 	gETHFacade := flag.Int("facade", 8545, "gETH Facade server address")
 	gETHWSServer := flag.Int("ws", 8546, "gETH WSServer address")
 	chainID := flag.Int("chainID", 7000700, "Chain ID for the blockchain network")
-	immudbUsername := flag.String("immudb-user", "", "ImmuDB username")
-	immudbPassword := flag.String("immudb-pass", "", "ImmuDB password")
 	explorerAPIKey := flag.String("explorer-api-key", "", "Explorer API key")
 	jwtSecret := flag.String("jwt-secret", "", "JWT secret")
 	command := flag.String("cmd", "", "Execute a CLI command (e.g., listpeers, addrs, stats, dbstate)")
@@ -695,10 +693,6 @@ func main() {
 			cfg.Ports.WS = *gETHWSServer
 		case "chainID":
 			cfg.Network.ChainID = *chainID
-		case "immudb-user":
-			cfg.Database.Username = *immudbUsername
-		case "immudb-pass":
-			cfg.Database.Password = *immudbPassword
 		case "explorer-api-key":
 			cfg.Security.ExplorerAPIKey = *explorerAPIKey
 		case "jwt-secret":
@@ -819,7 +813,7 @@ func main() {
 
 	// Initialize database connection pools FIRST
 	fmt.Println("Initializing main database pool...")
-	if err := initMainDBPool(logger_ctx, false, cfg.Database.Username, cfg.Database.Password); err != nil {
+	if err := initMainDBPool(logger_ctx, false, "", ""); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize main database pool")
 	}
 	fmt.Println("Main database pool initialized successfully")

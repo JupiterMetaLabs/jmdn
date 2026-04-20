@@ -1,5 +1,3 @@
-//go:build integration
-
 package cassata_test
 
 import (
@@ -14,6 +12,7 @@ import (
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 
+	DB_OPs "gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/cassata"
 	"gossipnode/DB_OPs/thebeprofile"
 )
@@ -47,14 +46,61 @@ func newTestCassata(t *testing.T) (*cassata.Cassata, func()) {
 // fixture helpers - all field types match schema exactly
 
 func testAccount(addr string) cassata.AccountResult {
+	did := "did:jmdt:8000800:" + addr
 	return cassata.AccountResult{
 		Address:     addr,
+		DIDAddress:  &did,
 		BalanceWei:  "1000000000000000000", // 1 ETH as NUMERIC(78,0) string
 		Nonce:       "0",
 		AccountType: 0, // int16: 0=EOA
 		Metadata:    json.RawMessage(`{}`),
 		CreatedAt:   time.Now().UTC(),
 		UpdatedAt:   time.Now().UTC(),
+	}
+}
+
+func TestCassata_GetAccountByDID(t *testing.T) {
+	c, cleanup := newTestCassata(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	acct := testAccount("0x1111111111111111111111111111111111111111")
+	if err := c.IngestAccount(ctx, acct); err != nil {
+		t.Fatalf("IngestAccount: %v", err)
+	}
+
+	got, err := c.GetAccountByDID(ctx, *acct.DIDAddress)
+	if err != nil {
+		t.Fatalf("GetAccountByDID: %v", err)
+	}
+	if got.Address != acct.Address {
+		t.Fatalf("address mismatch: want %s got %s", acct.Address, got.Address)
+	}
+}
+
+func TestCassata_ListAccounts(t *testing.T) {
+	c, cleanup := newTestCassata(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	addresses := []string{
+		"0x7777777777777777777777777777777777777777",
+		"0x8888888888888888888888888888888888888888",
+		"0x9999999999999999999999999999999999999998",
+	}
+	for i, addr := range addresses {
+		acct := testAccount(addr)
+		if err := c.IngestAccount(ctx, acct); err != nil {
+			t.Fatalf("IngestAccount %d: %v", i, err)
+		}
+	}
+
+	got, err := c.ListAccounts(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListAccounts: %v", err)
+	}
+	if len(got) < 3 {
+		t.Fatalf("expected at least 3 accounts, got %d", len(got))
 	}
 }
 
@@ -277,6 +323,14 @@ func TestCassata_ZKProofIngestAndRead(t *testing.T) {
 	if string(got.StarkProof) != string(zk.StarkProof) {
 		t.Errorf("stark_proof mismatch")
 	}
+
+	gotByHash, err := c.GetZKProof(ctx, zk.ProofHash)
+	if err != nil {
+		t.Fatalf("GetZKProof: %v", err)
+	}
+	if gotByHash.BlockNumber != zk.BlockNumber {
+		t.Fatalf("proof block mismatch: want %d got %d", zk.BlockNumber, gotByHash.BlockNumber)
+	}
 }
 
 // Test: snapshot ingest + read (with chain)
@@ -318,6 +372,14 @@ func TestCassata_SnapshotIngestAndRead(t *testing.T) {
 	if got.SnapshotID == 0 {
 		t.Error("snapshot_id should be auto-generated and non-zero")
 	}
+
+	snaps, err := c.ListSnapshots(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	if len(snaps) == 0 {
+		t.Fatal("expected at least one snapshot")
+	}
 }
 
 // Test: ListBlocks pagination
@@ -350,5 +412,134 @@ func TestCassata_ListBlocks(t *testing.T) {
 	// ListBlocks orders by block_number DESC
 	if blocks[0].BlockNumber < blocks[len(blocks)-1].BlockNumber {
 		t.Error("ListBlocks should return DESC order")
+	}
+}
+
+func TestCassata_TransactionReadPaths(t *testing.T) {
+	c, cleanup := newTestCassata(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	fromAddr := "0x2222222222222222222222222222222222222222"
+	toAddr := "0x3333333333333333333333333333333333333333"
+	if err := c.IngestAccount(ctx, testAccount(fromAddr)); err != nil {
+		t.Fatalf("IngestAccount(from): %v", err)
+	}
+	if err := c.IngestAccount(ctx, testAccount(toAddr)); err != nil {
+		t.Fatalf("IngestAccount(to): %v", err)
+	}
+	if err := c.IngestBlock(ctx, testBlock(
+		200,
+		"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00",
+		"0x0000000000000000000000000000000000000000000000000000000000000000",
+	)); err != nil {
+		t.Fatalf("IngestBlock: %v", err)
+	}
+
+	to := toAddr
+	gasPrice := "21000000000"
+	tx := cassata.TxResult{
+		TxHash:      "0x9999999999999999999999999999999999999999999999999999999999999999",
+		BlockNumber: 200,
+		TxIndex:     0,
+		FromAddr:    fromAddr,
+		ToAddr:      &to,
+		ValueWei:    "1",
+		Nonce:       "7",
+		Type:        0,
+		GasPriceWei: &gasPrice,
+		AccessList:  json.RawMessage(`[]`),
+	}
+	if err := c.IngestTx(ctx, tx); err != nil {
+		t.Fatalf("IngestTx: %v", err)
+	}
+
+	byBlock, err := c.ListTransactionsByBlock(ctx, 200)
+	if err != nil {
+		t.Fatalf("ListTransactionsByBlock: %v", err)
+	}
+	if len(byBlock) == 0 {
+		t.Fatal("expected transactions by block")
+	}
+
+	byAddr, err := c.ListTransactionsByAddress(ctx, fromAddr, 10, 0)
+	if err != nil {
+		t.Fatalf("ListTransactionsByAddress: %v", err)
+	}
+	if len(byAddr) == 0 {
+		t.Fatal("expected transactions by address")
+	}
+
+	nextNonce, err := c.GetNextNonceByAddress(ctx, fromAddr)
+	if err != nil {
+		t.Fatalf("GetNextNonceByAddress: %v", err)
+	}
+	if nextNonce != "8" {
+		t.Fatalf("next nonce mismatch: want 8 got %s", nextNonce)
+	}
+}
+
+func TestCassata_BatchWritePath_WithShadowAdapter(t *testing.T) {
+	c, cleanup := newTestCassata(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	adapter := cassata.NewShadowAdapter(c)
+	addr1 := "0x4444444444444444444444444444444444444444"
+	addr2 := "0x5555555555555555555555555555555555555555"
+	a1 := testAccount(addr1)
+	a2 := testAccount(addr2)
+
+	entries := map[string]interface{}{
+		DB_OPs.Prefix + addr1: a1,
+		DB_OPs.Prefix + addr2: a2,
+	}
+	if err := adapter.BatchCreate(nil, entries); err != nil {
+		t.Fatalf("BatchCreate: %v", err)
+	}
+
+	if _, err := c.GetAccount(ctx, addr1); err != nil {
+		t.Fatalf("GetAccount addr1: %v", err)
+	}
+	if _, err := c.GetAccount(ctx, addr2); err != nil {
+		t.Fatalf("GetAccount addr2: %v", err)
+	}
+}
+
+func TestImmutabilityConstraints(t *testing.T) {
+	c, cleanup := newTestCassata(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Immutable path: duplicate block insert should be ignored (append-only semantics).
+	block := testBlock(
+		900,
+		"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa90",
+		"0x0000000000000000000000000000000000000000000000000000000000000000",
+	)
+	if err := c.IngestBlock(ctx, block); err != nil {
+		t.Fatalf("first IngestBlock: %v", err)
+	}
+	if err := c.IngestBlock(ctx, block); err != nil {
+		t.Fatalf("second IngestBlock should not fail: %v", err)
+	}
+
+	// Mutable path: account updates must remain allowed.
+	addr := "0x6666666666666666666666666666666666666666"
+	acct := testAccount(addr)
+	if err := c.IngestAccount(ctx, acct); err != nil {
+		t.Fatalf("IngestAccount initial: %v", err)
+	}
+	acct.BalanceWei = "42"
+	acct.Nonce = "2"
+	if err := c.IngestAccount(ctx, acct); err != nil {
+		t.Fatalf("IngestAccount update: %v", err)
+	}
+	got, err := c.GetAccount(ctx, addr)
+	if err != nil {
+		t.Fatalf("GetAccount after update: %v", err)
+	}
+	if got.BalanceWei != "42" || got.Nonce != "2" {
+		t.Fatalf("mutable account update failed: balance=%s nonce=%s", got.BalanceWei, got.Nonce)
 	}
 }

@@ -64,7 +64,7 @@ jobs:
         run: go build ./...
 
       # ── Tests ───────────────────────────────────────────────────────────
-      # Tests require live infrastructure (ImmuDB pool, seed node) unavailable
+      # Tests require live infrastructure (seed node and network peers) unavailable
       # in CI. Enable once a test environment or proper mocks are in place.
       # - name: Test
       #   run: go test ./...

@@ -39,10 +39,6 @@ func DefaultConfig() NodeConfig {
 			Metrics:   "127.0.0.1", // Metrics scraping (usually internal network)
 			Profiler:  "127.0.0.1", // Debugging - STRICTLY LOCALHOST
 		},
-		Database: DatabaseSettings{
-			Username: "",
-			Password: "",
-		},
 		Thebe: ThebeConfig{
 			Enabled:    false,
 			KVPath:     "./data/thebe-kv",

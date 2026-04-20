@@ -127,10 +127,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("binds.metrics", d.Binds.Metrics)
 	v.SetDefault("binds.profiler", d.Binds.Profiler)
 
-	// Database
-	v.SetDefault("database.username", d.Database.Username)
-	v.SetDefault("database.password", d.Database.Password)
-
 	// Thebe
 	v.SetDefault("thebe.enabled", d.Thebe.Enabled)
 	v.SetDefault("thebe.kv_path", d.Thebe.KVPath)

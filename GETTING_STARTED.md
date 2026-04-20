@@ -26,8 +26,9 @@ Before you begin, ensure your machine meets the following requirements.
 | **Git** | Any | Required to clone the repo |
 | **Go** | 1.25+ | Installed automatically by `setup_dependencies.sh` |
 | **GCC** | Any | Required for CGO build (`gcc` package) |
-| **ImmuDB** | Latest | Installed automatically |
 | **Yggdrasil** | Latest | Installed automatically |
+| **PostgreSQL** | 15+ | Required by ThebeDB |
+| **Redis** | 7+ | Required by ThebeDB |
 
 ---
 
@@ -63,11 +64,16 @@ git checkout v2.5.0  # replace with target version
 
 ## Step 3 — Install Dependencies
 
-Run the unified setup script. This installs Go, ImmuDB, and Yggdrasil.
+Run the unified setup script. This installs Go and Yggdrasil.
 
 ```bash
 sudo ./Scripts/setup_dependencies.sh
 ```
+
+When run without flags, the script will prompt for PostgreSQL/Redis installation type:
+- local native services
+- Docker-based services
+- skip storage setup
 
 > **Note:** After Go is installed, restart your shell or run `source ~/.bashrc` (or `~/.zshrc`) to update your `PATH`.
 
@@ -75,8 +81,15 @@ To install dependencies individually:
 
 ```bash
 sudo ./Scripts/setup_dependencies.sh --go         # Go runtime only
-sudo ./Scripts/setup_dependencies.sh --immudb     # ImmuDB only
 sudo ./Scripts/setup_dependencies.sh --yggdrasil  # Yggdrasil only
+sudo ./Scripts/setup_dependencies.sh --storage-local   # Local PostgreSQL + Redis
+sudo ./Scripts/setup_dependencies.sh --storage-docker  # Docker-based PostgreSQL + Redis
+```
+
+Start local storage services for ThebeDB:
+
+```bash
+docker compose up -d
 ```
 
 ---
@@ -115,7 +128,7 @@ Follow the prompts to set your **Node Alias** and configure ports. For all avail
 
 ## Step 6 — Install and Start Services
 
-Install the binary to `/usr/local/bin/` and register systemd services (`jmdn` and `immudb`):
+Install the binary to `/usr/local/bin/` and register systemd service (`jmdn`):
 
 ```bash
 sudo ./Scripts/install_services.sh
@@ -123,17 +136,15 @@ sudo ./Scripts/install_services.sh
 
 > Before opening firewall rules, review **[PORTS.md](./PORTS.md)** for the full security posture of each port and recommended cloud firewall rules.
 
-Start the services:
+Start the service:
 
 ```bash
-sudo systemctl start immudb
 sudo systemctl start jmdn
 ```
 
-Enable them to start automatically on reboot:
+Enable it to start automatically on reboot:
 
 ```bash
-sudo systemctl enable immudb
 sudo systemctl enable jmdn
 ```
 
@@ -161,11 +172,8 @@ To run the node directly without systemd — useful for local development or deb
 ./jmdn -config /etc/jmdn/config.env
 ```
 
-> **Important:** ImmuDB must be running before starting `jmdn`.
-> Either start it via systemd (`sudo systemctl start immudb`) or manually:
-> ```bash
-> immudb --dir /opt/jmdn/data
-> ```
+> **Important:** PostgreSQL and Redis must be reachable before starting `jmdn`.
+> Use `docker compose up -d` for local development.
 
 ---
 
@@ -189,21 +197,7 @@ This script builds a new binary, performs an atomic swap, restarts the service, 
 sudo journalctl -u jmdn -n 100 --no-pager
 ```
 
-Check for: missing config file, ImmuDB not running, or port conflicts.
-
-### ImmuDB connection errors
-
-Ensure ImmuDB is running and accessible:
-
-```bash
-sudo systemctl status immudb
-```
-
-If you see `server state is older than the client one`, ImmuDB's state is ahead of the local client cache. This typically resolves after a clean restart:
-
-```bash
-sudo systemctl restart immudb && sudo systemctl restart jmdn
-```
+Check for: missing config file, PostgreSQL/Redis connectivity, or port conflicts.
 
 ### Minimal logs on Raspberry Pi
 

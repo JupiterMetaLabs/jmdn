@@ -10,16 +10,15 @@ import (
 // NodeConfig is the top-level configuration for a JMDN node.
 // Each section maps to a YAML key in jmdn.yaml.
 type NodeConfig struct {
-	Node     NodeSettings     `mapstructure:"node"`
-	Network  NetworkSettings  `mapstructure:"network"`
-	Ports    PortSettings     `mapstructure:"ports"`
-	Binds    BindSettings     `mapstructure:"binds"`
-	Database DatabaseSettings `mapstructure:"database"`
-	Thebe    ThebeConfig      `mapstructure:"thebe"`
-	Logging  LoggingSettings  `mapstructure:"logging"`
-	Features FeatureSettings  `mapstructure:"features"`
-	Security SecurityConfig   `mapstructure:"security"`
-	Alerts   AlertsConfig     `mapstructure:"alerts"`
+	Node       NodeSettings     `mapstructure:"node"`
+	Network    NetworkSettings  `mapstructure:"network"`
+	Ports      PortSettings     `mapstructure:"ports"`
+	Binds      BindSettings     `mapstructure:"binds"`
+	Thebe      ThebeConfig      `mapstructure:"thebe"`
+	Logging    LoggingSettings  `mapstructure:"logging"`
+	Features   FeatureSettings  `mapstructure:"features"`
+	Security   SecurityConfig   `mapstructure:"security"`
+	Alerts     AlertsConfig     `mapstructure:"alerts"`
 	FastSyncV2 FastSyncSettings `mapstructure:"fastsyncv2"`
 }
 
@@ -62,12 +61,6 @@ type BindSettings struct {
 	WS        string `mapstructure:"ws"        yaml:"ws"`
 	Metrics   string `mapstructure:"metrics"   yaml:"metrics"`
 	Profiler  string `mapstructure:"profiler"  yaml:"profiler"`
-}
-
-// DatabaseSettings controls ImmuDB connection parameters.
-type DatabaseSettings struct {
-	Username string `mapstructure:"username" yaml:"username"`
-	Password string `mapstructure:"password" yaml:"password"`
 }
 
 // ThebeConfig controls optional ThebeDB integration.
