@@ -2,7 +2,6 @@ package CLI
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"gossipnode/DB_OPs"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/libp2p/go-libp2p/core/peer"
-	ma "github.com/multiformats/go-multiaddr"
 )
 
 type HandlePeers struct {
@@ -222,75 +220,6 @@ func (h *CommandHandler) CheckDBStats() (*schema.ImmutableState, *schema.Immutab
 	return mainState, accountsState, nil
 }
 
-func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
-	if peeraddr == "" {
-		return SyncStats{}, fmt.Errorf("usage: fastsync <peer_multiaddr>")
-	}
-
-	err := h.checkDBClient()
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("database client not initialized: %v", err)
-	}
-
-	err = h.checkDIDClient()
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("database client (DID) not initialized: %v", err)
-	}
-
-	// Parse the multiaddr
-	addr, err := ma.NewMultiaddr(peeraddr)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("invalid multiaddress: %v", err)
-	}
-
-	// Extract peer ID from multiaddr
-	addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("failed to extract peer info: %v", err)
-	}
-
-	fmt.Printf("Starting blockchain sync with peer %s\n", addrInfo.ID.String())
-
-	// Start the sync process
-	startTime := time.Now().UTC()
-
-	maxRetries := 3
-	var syncErr error
-
-	for retry := 0; retry < maxRetries; retry++ {
-		if retry > 0 {
-			fmt.Printf("Retry %d/%d after error: %v\n", retry+1, maxRetries, syncErr)
-			time.Sleep(2 * time.Second)
-		}
-
-		_, syncErr = h.FastSyncer.HandleSync(addrInfo.ID)
-		if syncErr == nil {
-			break
-		}
-	}
-
-	if syncErr != nil {
-		return SyncStats{}, fmt.Errorf("sync failed after %d attempts: %v", maxRetries, syncErr)
-	}
-
-	// Get post-sync states
-	newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("failed to get main database state after sync: %v", err)
-	}
-
-	newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("failed to get accounts database state after sync: %v", err)
-	}
-
-	return SyncStats{
-		TimeTaken:     time.Since(startTime),
-		MainState:     newMainState,
-		AccountsState: newAccountsState,
-	}, nil
-}
-
 func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
 	if peeraddr == "" {
 		return SyncStats{}, fmt.Errorf("usage: fastsyncv2 <peer_multiaddr>")
@@ -315,78 +244,6 @@ func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
 	}
 	if h.DIDClient != nil {
 		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
-	}
-
-	return SyncStats{
-		TimeTaken:     time.Since(startTime),
-		MainState:     newMainState,
-		AccountsState: newAccountsState,
-	}, nil
-}
-
-func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStats, error) {
-	if peeraddr == "" {
-		return SyncStats{}, fmt.Errorf("usage: firstsync <peer_multiaddr> <server|client>")
-	}
-
-	if mode == "" {
-		return SyncStats{}, fmt.Errorf("usage: firstsync <peer_multiaddr> <server|client>")
-	}
-
-	err := h.checkDBClient()
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("database client not initialized: %v", err)
-	}
-
-	err = h.checkDIDClient()
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("database client (DID) not initialized: %v", err)
-	}
-
-	// Parse the multiaddr
-	addr, err := ma.NewMultiaddr(peeraddr)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("invalid multiaddress: %v", err)
-	}
-
-	// Extract peer ID from multiaddr
-	addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("failed to extract peer info: %v", err)
-	}
-
-	modeLower := strings.ToLower(mode)
-	if modeLower != "server" && modeLower != "client" {
-		return SyncStats{}, fmt.Errorf("invalid mode: %s. Must be 'server' or 'client'", mode)
-	}
-
-	fmt.Printf("Starting first sync with peer %s (mode: %s)\n", addrInfo.ID.String(), modeLower)
-	startTime := time.Now().UTC()
-
-	var syncErr error
-	if modeLower == "server" {
-		// Server mode: export and send all data
-		fmt.Println(">>> Running in SERVER mode - exporting all data...")
-		syncErr = h.FastSyncer.FirstSyncServer(addrInfo.ID)
-	} else {
-		// Client mode: receive and load all data
-		fmt.Println(">>> Running in CLIENT mode - receiving all data...")
-		syncErr = h.FastSyncer.FirstSyncClient(addrInfo.ID)
-	}
-
-	if syncErr != nil {
-		return SyncStats{}, fmt.Errorf("first sync failed: %v", syncErr)
-	}
-
-	// Get post-sync states
-	newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("failed to get main database state after sync: %v", err)
-	}
-
-	newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("failed to get accounts database state after sync: %v", err)
 	}
 
 	return SyncStats{

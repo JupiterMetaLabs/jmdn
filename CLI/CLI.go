@@ -16,7 +16,6 @@ import (
 	"gossipnode/config/GRO"
 	"gossipnode/config/version"
 	"gossipnode/FastsyncV2"
-	"gossipnode/fastsync"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	groMetrics "gossipnode/metrics/gro"
@@ -52,7 +51,6 @@ func formatTimestamp(timestamp int64) string {
 type CommandHandler struct {
 	Node            *config.Node
 	NodeManager     *node.NodeManager
-	FastSyncer      *fastsync.FastSync
 	FastSyncerV2    *FastsyncV2.FastsyncV2
 	MainClient      *config.PooledConnection
 	DIDClient       *config.PooledConnection
@@ -107,6 +105,7 @@ func PrintFuncs() {
 	fmt.Println("  stats                             - Show messaging statistics")
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
 	fmt.Println("  fastsync <peer_multiaddr>        - Fast sync blockchain data with a peer (V2 Engine)")
+	fmt.Println("  fastsyncv2 <peer_multiaddr>      - Alias for fastsync")
 	fmt.Println("  dbstate                           - Show current ImmuDB database state")
 	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
@@ -264,7 +263,7 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleShowStats()
 	case "broadcast":
 		h.handleBroadcast(parts)
-	case "fastsync", "fastsyncv2", "firstsync":
+	case "fastsync", "fastsyncv2":
 		h.handleFastSync(parts)
 	case "propagateDID":
 		h.handlePropagateDID(parts)
@@ -603,7 +602,7 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 		}
 	}
 
-	fmt.Printf("Starting blockchain fastsync (V2 Engine) with peer %s\n", addrInfo.ID.String())
+	fmt.Printf("Starting blockchain fastsyncv2 engine with peer %s\n", addrInfo.ID.String())
 
 	startTime := time.Now().UTC()
 	syncErr := h.FastSyncerV2.HandleSync(parts[1])
@@ -670,9 +669,8 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
 
 func (h *CommandHandler) handleSyncInfo() {
 	fmt.Println("FastSync Configuration:")
-	fmt.Printf("  Batch Size: %d\n", fastsync.SyncBatchSize)
-	fmt.Printf("  Request Timeout: %v\n", fastsync.RequestTimeout)
-	fmt.Printf("  Response Timeout: %v\n", fastsync.ResponseTimeout)
+	fmt.Println("  Engine: FastsyncV2")
+	fmt.Println("  Parameters: configured by FastsyncV2 internals")
 	printDashes()
 }
 

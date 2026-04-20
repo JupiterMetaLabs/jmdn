@@ -92,7 +92,7 @@ features:
   grotrack: false            # Requires ports.metrics > 0
 
 # ── FastSync V2 ─────────────────────────────────────────
-fastsync:
+fastsyncv2:
   enabled: true          # Register protocol handlers and serve data to peers
   sync: true             # Allow this node to pull data and update its local DB
                          # Set false for sequencers/authoritative nodes that must

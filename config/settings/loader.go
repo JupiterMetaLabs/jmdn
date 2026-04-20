@@ -175,12 +175,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("features.use_legacy_bft", d.Features.UseLegacyBFT)
 	v.SetDefault("features.grotrack", d.Features.GROTrack)
 
-	// FastSync
-	v.SetDefault("fastsync.enabled", d.FastSync.Enabled)
-	v.SetDefault("fastsync.sync", d.FastSync.Sync)
-	v.SetDefault("fastsync.startup_sync", d.FastSync.StartupSync)
-	v.SetDefault("fastsync.sync_timeout", d.FastSync.SyncTimeout)
-	v.SetDefault("fastsync.allowed_peers", d.FastSync.AllowedPeers)
+	// FastSyncV2
+	v.SetDefault("fastsyncv2.enabled", d.FastSyncV2.Enabled)
+	v.SetDefault("fastsyncv2.sync", d.FastSyncV2.Sync)
+	v.SetDefault("fastsyncv2.startup_sync", d.FastSyncV2.StartupSync)
+	v.SetDefault("fastsyncv2.sync_timeout", d.FastSyncV2.SyncTimeout)
+	v.SetDefault("fastsyncv2.allowed_peers", d.FastSyncV2.AllowedPeers)
 
 	// Security
 	v.SetDefault("security.explorer_api_key", d.Security.ExplorerAPIKey)

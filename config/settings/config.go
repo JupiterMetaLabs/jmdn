@@ -20,7 +20,7 @@ type NodeConfig struct {
 	Features FeatureSettings  `mapstructure:"features"`
 	Security SecurityConfig   `mapstructure:"security"`
 	Alerts   AlertsConfig     `mapstructure:"alerts"`
-	FastSync FastSyncSettings `mapstructure:"fastsync"`
+	FastSyncV2 FastSyncSettings `mapstructure:"fastsyncv2"`
 }
 
 // NodeSettings defines the identity of this node.

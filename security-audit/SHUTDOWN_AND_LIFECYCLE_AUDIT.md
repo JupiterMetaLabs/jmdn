@@ -216,7 +216,7 @@ Called from `main.go:531`: `explorer.StartBlockPoller(ctx, server, 7*time.Second
 **Source:** `docs/SHUTDOWN_REVIEW.md §3`, `docs/CONTEXT_IMPACT.md §3`
 **Original claim:** FastSync workers launched on `context.Background()`; no cancellation hook.
 
-**Verified code (`fastsync/fastsync.go`):**
+**Verified code (`FastsyncV2/fastsyncv2.go`):**
 ```
 line 941:  fs.host.NewStream(context.Background(), ...)
 line 1033: DB_OPs.GetMainDBConnectionandPutBack(context.Background())
@@ -380,7 +380,7 @@ Same issue as §7.2. Fatal on serve error bypasses GRO shutdown.
 | 3.3 | Explorer API `CloseImmuDBServer` never called | ❌ | 🟡 | `main.go:523-538` |
 | 3.4 | Metrics no handle | ❌ | ❌ | `metrics/metrics.go` |
 | 4.1 | Block poller no ticker.Stop/ctx | ❌ | ✅ | `explorer/utils.go:28-79` |
-| 4.2 | FastSync `context.Background()` | ❌ | ❌ | `fastsync/fastsync.go:941,1033,1040,1129,1136` |
+| 4.2 | FastSync `context.Background()` | ❌ | ❌ | `FastsyncV2/fastsyncv2.go` |
 | 4.3 | PubSub no `Close()` | ❌ | ❌ | `Pubsub/Pubsub.go` |
 | 4.4 | Node manager defer skip | 🟡 | 🟡 | `main.go` (defer path) |
 | 4.5 | Yggdrasil cancel skip | 🟡 | 🟡 | `main.go:676-679` |
@@ -405,7 +405,7 @@ Same issue as §7.2. Fatal on serve error bypasses GRO shutdown.
 ### P1 — High impact, do next sprint
 
 5. **`DB_OPs/immuclient.go`** — Thread caller context into all DB helpers. Eliminate `context.WithTimeout(context.Background(), ...)`. The 60-minute timeout at line 561 is a blocker for any clean shutdown.
-6. **`fastsync/fastsync.go:941,1033,1040,1129,1136`** — Replace `context.Background()` with propagated caller context.
+6. **`FastsyncV2/fastsyncv2.go`** — Replace `context.Background()` with propagated caller context.
 7. **`Pubsub/Pubsub.go`** — Add `Close()` method to deregister stream handlers.
 
 ### P2 — Lifecycle completeness

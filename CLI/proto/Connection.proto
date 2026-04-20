@@ -89,10 +89,8 @@ service CLIService {
     rpc PropagateDID(DIDPropagationRequest) returns (OperationResponse) {}
 
 
-    // Database Operations
+    // Database Operations (FastSync V2)
     rpc FastSync(PeerRequest) returns (SyncStats) {}
-    rpc FastSyncV2(PeerRequest) returns (SyncStats) {}
-    rpc FirstSync(FirstSyncRequest) returns (SyncStats) {}
     rpc GetDatabaseState(google.protobuf.Empty) returns (DatabaseStates) {}
 
     // Node Operations
@@ -132,11 +130,6 @@ message DIDPropagationRequest {
     string did = 1;
     string public_key = 2;
     string balance = 3;
-}
-
-message FirstSyncRequest {
-    string peer = 1;
-    string mode = 2;  // "server" or "client"
 }
 
 message SyncInfo {

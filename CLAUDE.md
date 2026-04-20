@@ -27,6 +27,46 @@ go test ./DB_OPs/Tests/... -run TestName -v
 
 Tests require live infrastructure (ImmuDB + seed node) and are disabled in CI. The CI pipeline runs: `go mod verify` → `go build ./...` → format check → lint.
 
+## Recent Thebe / DualDB Updates (Apr 2026)
+
+The following behavior is now part of this repo and should be preserved when editing related code:
+
+1. **Facade debug APIs for Thebe reads**
+   - Added in `gETH/Facade/rpc/thebe_read_routes.go`.
+   - Routes under `/debug/thebe/*` read from Cassata/Postgres projection.
+   - Includes:
+     - status, accounts list/get, blocks list/get, tx-by-hash,
+     - block txs/zkproof/snapshot,
+     - account nonce, account transactions.
+
+2. **Nonce API semantics**
+   - `GET /debug/thebe/accounts/:address/nonce` returns:
+   - `latest sent tx nonce + 1` from `transactions.from_addr = address`.
+   - If no sent tx exists, returns `"0"`.
+   - Implemented via `cassata.GetNextNonceByAddress`.
+
+3. **Address canonicalization for read APIs**
+   - Incoming address params are canonicalized using `common.HexToAddress(...).Hex()`
+     before SQL lookups to match ingest format.
+
+4. **Migration hardening in `DB_OPs/dualdb/shadow_adapter.go`**
+   - Enforce block gas constraint compatibility: `gas_limit >= gas_used`.
+   - Normalize tx fees for Thebe schema checks (`chk_txn_fee_model`).
+   - Use zero address when tx `from` is nil to satisfy NOT NULL/FK.
+   - Ensure `stark_proof` is non-nil (`[]byte{}` fallback).
+   - Snapshot `PrevSnapshotID` intentionally left `nil` (not block_number-1).
+   - Tx `created_at` currently uses ingest time (`time.Now().UTC()`), not chain block time.
+
+5. **DID/metadata normalization on account ingest**
+   - `DIDAddress` normalization supports legacy forms and emits canonical:
+   - `did:jmdt:<chain_id>:<lowercase-address>`.
+   - Missing account metadata is stored as `{}` (not `null`).
+
+6. **Thebe init in `main.go`**
+   - ThebeDB is initialized with a profile registry that registers `thebeprofile.New()`
+     when `thebe.enabled` is true.
+   - Facade server wires Cassata via `WithCassata(...)` so `/debug/thebe/*` works.
+
 ## High-Level Architecture
 
 ```

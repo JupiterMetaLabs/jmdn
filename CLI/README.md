@@ -39,7 +39,7 @@ Provides an interactive command-line interface with the following commands:
 **Network Operations:**
 - `stats`: Show messaging statistics
 - `dbstate`: Show database state
-- `fastsync <peer_multiaddr>`: Fast sync with peer
+- `fastsyncv2 <peer_multiaddr>`: Fast sync with peer
 - `syncinfo`: Show FastSync configuration
 
 **DID Operations:**
@@ -146,7 +146,7 @@ Execute commands directly via command-line flag:
 ./jmdn -cmd getdid did:jmdt:0x1234...
 
 # Fast sync
-./jmdn -cmd fastsync /ip4/192.168.1.100/tcp/15000/p2p/Qm...
+./jmdn -cmd fastsyncv2 /ip4/192.168.1.100/tcp/15000/p2p/Qm...
 ```
 
 ### gRPC API
@@ -187,7 +187,7 @@ CLI server port can be configured via command-line flag:
 - Accesses `node.Node` for network operations
 
 ### FastSync Module
-- Uses `fastsync.FastSync` for synchronization
+- Uses `FastsyncV2.FastsyncV2` for synchronization
 - Manages sync operations
 
 ### Database (DB_OPs)
@@ -295,7 +295,7 @@ Test files:
 ### Synchronization
 ```bash
 # Fast sync with peer
->>> fastsync /ip4/192.168.1.100/tcp/15000/p2p/QmPeerID
+>>> fastsyncv2 /ip4/192.168.1.100/tcp/15000/p2p/QmPeerID
 
 # Show sync info
 >>> syncinfo

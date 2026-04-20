@@ -150,7 +150,7 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 	// SetupNetworkHandlers registers libp2p stream handlers for all sync protocols:
 	//   /priorsync/v1, /priorsync/v1/headersync, /priorsync/v1/datasync,
 	//   /priorsync/v1/availability, /priorsync/v1/merkle, /priorsync/v1/pots,
-	//   /fastsync/v1/pubsub/blocks
+	//   /sync/v1/pubsub/blocks
 	// It blocks until the context is cancelled, so run in a goroutine.
 	go func() {
 		log.Printf("[FastsyncV2] Server handlers started on peer %s", h.ID().String())

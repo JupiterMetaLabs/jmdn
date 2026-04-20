@@ -83,7 +83,7 @@ func DefaultConfig() NodeConfig {
 			UseLegacyBFT: false,
 			GROTrack:     false,
 		},
-		FastSync: FastSyncSettings{
+		FastSyncV2: FastSyncSettings{
 			Enabled:      true,
 			Sync:         true,
 			StartupSync:  true,

@@ -142,7 +142,7 @@ The JMDT Decentralized Network is a sophisticated peer-to-peer blockchain system
 - Add idempotency keys for block processing
 - Implement request context with timeouts
 
-### 2.5 FastSync Component (`fastsync/`) - **MEDIUM RISK**
+### 2.5 FastSync Component (`FastsyncV2/`) - **MEDIUM RISK**
 
 **Risks:**
 - Large file transfers without size limits
@@ -393,7 +393,7 @@ DBPassword = "immudb"
    - No tests for ZK-block validation
    - **Risk:** Transaction processing bugs may reach production
 
-3. **FastSync** (`fastsync/`)
+3. **FastSync** (`FastsyncV2/`)
    - No integration tests for sync operations
    - No tests for error recovery
    - **Risk:** Sync failures may corrupt blockchain state

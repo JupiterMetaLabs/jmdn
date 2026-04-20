@@ -155,24 +155,6 @@ func (c *Client) FastSync(peerAddr string) (*pb.SyncStats, error) {
 	return c.conn.FastSync(ctx, &pb.PeerRequest{Peer: peerAddr})
 }
 
-// FastSyncV2 performs fast sync using the V2 engine
-func (c *Client) FastSyncV2(peerAddr string) (*pb.SyncStats, error) {
-	ctx := context.Background()
-	return c.conn.FastSyncV2(ctx, &pb.PeerRequest{Peer: peerAddr})
-}
-
-// FirstSync performs first synchronization with a peer (server or client mode)
-func (c *Client) FirstSync(peerAddr string, mode string) (*pb.SyncStats, error) {
-	// ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
-	// defer cancel()
-	ctx := context.Background()
-	defer ctx.Done()
-	return c.conn.FirstSync(ctx, &pb.FirstSyncRequest{
-		Peer: peerAddr,
-		Mode: mode,
-	})
-}
-
 // GetDatabaseState returns the current database state
 func (c *Client) GetDatabaseState() (*pb.DatabaseStates, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

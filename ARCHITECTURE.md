@@ -109,19 +109,18 @@ Command-line interface and gRPC server for node management:
 - `peers`: Request updated peer list from seed
 - `stats`: Show messaging statistics
 - `broadcast <message>`: Broadcast to all connected peers
-- `fastsync <peer_multiaddr>`: Fast sync blockchain data
+- `fastsyncv2 <peer_multiaddr>`: Fast sync blockchain data
 - `dbstate`: Show current ImmuDB database state
 - `propagateDID <did> <public_key>`: Propagate DID to network
 - `getDID <did>`: Get DID document from network
 - `syncinfo`: Show FastSync configuration
 
-### 5. FastSync Component (`fastsync/`)
+### 5. FastSync Component (`FastsyncV2/`)
 
 High-performance blockchain synchronization system with CRDT support:
 
 **Key Files:**
-- `fastsync.go`: Main FastSync implementation
-- `fastsyncNew.go`: Enhanced version with HashMap-based synchronization
+- `fastsyncv2.go`: Main FastSync V2 implementation
 - `FileTransfer.go`: File transfer utilities for large data sync
 
 **Synchronization Process:**

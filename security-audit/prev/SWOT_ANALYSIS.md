@@ -28,7 +28,7 @@ This SWOT analysis evaluates the JMDN codebase across four dimensions to assess 
 | **Sequencer/** | Consensus orchestration | `Consensus.go`, `Communication.go` | AVC, PubSub |
 | **gETH/** | Ethereum-compatible RPC | `Facade/Service/`, `Server.go` | Block, DB_OPs |
 | **DB_OPs/** | ImmuDB operations | `immuclient.go`, `ConnectionPool.go` | config |
-| **fastsync/** | Blockchain synchronization | `fastsync.go`, `fastsyncNew.go` | CRDT, HashMap |
+| **FastsyncV2/** | Blockchain synchronization | `fastsyncv2.go` | PriorSync, HeaderSync, DataSync, PoTS |
 | **crdt/** | Conflict-free data types | `crdt.go`, `HashMap/`, `IBLT/` | - |
 | **node/** | libp2p node management | `node.go`, `nodemanager.go` | libp2p |
 | **messaging/** | P2P communication | `blockPropagation.go`, `directMSG/` | node |
@@ -257,7 +257,7 @@ go func() {
 ```go
 // main.go:50-60
 var (
-    fastSyncer   *fastsync.FastSync
+    fastSyncerV2 *FastsyncV2.FastsyncV2
     immuClient   *config.ImmuClient
     globalPubSub *Pubsub.StructGossipPubSub
     mainDBPool     *config.ConnectionPool

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"gossipnode/config/GRO"
-	"gossipnode/logging"
 	"gossipnode/shutdown"
 
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
@@ -24,7 +23,6 @@ import (
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 	orchestratorGlobal "github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
-	ion "github.com/JupiterMetaLabs/ion"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Block"
@@ -42,7 +40,6 @@ import (
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
 	"gossipnode/explorer"
-	fastsync "gossipnode/fastsync"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/rpc"
 	"gossipnode/helper"
@@ -97,7 +94,6 @@ func goMaybeTracked(
 
 // Global variables for easier access
 var (
-	fastSyncer   *fastsync.FastSync
 	fastSyncerV2 *FastsyncV2.FastsyncV2
 	// immuClient   *config.ImmuClient // unused: declared but never assigned or read
 	globalPubSub *Pubsub.StructGossipPubSub
@@ -269,7 +265,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
-		fmt.Println("  fastsync <peer>      - Fast sync with peer (V2 Engine)")
+		fmt.Println("  fastsyncv2 <peer>    - Fast sync with peer (V2 Engine)")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
 		fmt.Println("are only available in interactive mode.")
@@ -426,13 +422,13 @@ func runCommand(command string, args []string, grpcPort int) {
 			os.Exit(1)
 		}
 
-	case "fastsync", "fastsyncv2", "firstsync":
+	case "fastsync", "fastsyncv2":
 		if len(args) < 1 {
 			fmt.Println("Usage: jmdn -cmd fastsync <peer_multiaddr>")
 			os.Exit(1)
 		}
 		fmt.Println("Starting FastSync (V2 Engine)...")
-		stats, err := client.FastSyncV2(args[0])
+		stats, err := client.FastSync(args[0])
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
@@ -584,26 +580,6 @@ func initAccountsDBPool() error {
 
 	log.Info().Str("database", config.AccountsDBName).Msg("Accounts database connection pool initialized")
 	return nil
-}
-
-// initFastSync initializes the FastSync service
-// initFastSync initializes the FastSync service
-func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsClient *config.PooledConnection) *fastsync.FastSync {
-	// Initialize named logger for FastSync
-	// This uses the global AsyncLogger instance to create a structured logger
-	fsLogger, err := logging.NewAsyncLogger().NamedLogger("FastSync", "")
-	var ionLogger *ion.Ion
-
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to create FastSync logger - falling back to nil logger")
-		// We still proceed, just without the detailed ion logger
-	} else if fsLogger != nil && fsLogger.NamedLogger != nil {
-		ionLogger = fsLogger.NamedLogger
-	}
-
-	fs := fastsync.NewFastSync(n.Host, mainClient, accountsClient, ionLogger)
-	log.Info().Msg("FastSync service initialized - will get connections when needed")
-	return fs
 }
 
 // initFastsyncV2 initializes the FastSync V2 service
@@ -910,7 +886,7 @@ func main() {
 		_ = globalPubSub // Mark as used to avoid linting error
 	}
 
-	// Set the stream handler for receiving files for fastsync. This is crucial
+	// Set the stream handler for receiving files used during sync transfers.
 	// for the final phase of the sync process.
 	n.Host.SetStreamHandler(config.FileProtocol, func(s network.Stream) {
 		// Use an empty string for outputPath to use the default path in HandleFileStream
@@ -945,9 +921,7 @@ func main() {
 		}
 	}()
 
-	// Initialize FastSync service
-	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
-	if cfg.FastSync.Enabled {
+	if cfg.FastSyncV2.Enabled {
 		fastSyncerV2 = initFastsyncV2(n)
 	} else {
 		log.Info().Msg("[FastSync] disabled by config — protocol handlers not registered")
@@ -955,7 +929,7 @@ func main() {
 
 	// Startup sync: catch up on blocks missed while offline.
 	// Only runs if both the engine is up and this node is configured to sync.
-	if fastSyncerV2 != nil && cfg.FastSync.Sync && cfg.FastSync.StartupSync {
+	if fastSyncerV2 != nil && cfg.FastSyncV2.Sync && cfg.FastSyncV2.StartupSync {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.StartupSyncThread, func(ctx context.Context) error {
 			// Wait for peer connections to establish after node startup
 			time.Sleep(5 * time.Second)
@@ -971,9 +945,9 @@ func main() {
 
 			for _, peerID := range peers {
 				// Honour allowed_peers whitelist if configured
-				if len(cfg.FastSync.AllowedPeers) > 0 {
+				if len(cfg.FastSyncV2.AllowedPeers) > 0 {
 					allowed := false
-					for _, ap := range cfg.FastSync.AllowedPeers {
+					for _, ap := range cfg.FastSyncV2.AllowedPeers {
 						if ap == peerID.String() {
 							allowed = true
 							break
@@ -1005,7 +979,7 @@ func main() {
 		}); err != nil {
 			log.Error().Err(err).Str("thread", GRO.StartupSyncThread).Msg("Failed to start startup sync goroutine")
 		}
-	} else if fastSyncerV2 != nil && !cfg.FastSync.Sync {
+	} else if fastSyncerV2 != nil && !cfg.FastSyncV2.Sync {
 		log.Info().Msg("[FastSync] sync=false — this node serves data only, local DB will not be updated")
 	}
 
@@ -1170,7 +1144,6 @@ func main() {
 	cmdHandler := &cli.CommandHandler{
 		Node:            n,
 		NodeManager:     nodeManager,
-		FastSyncer:      fastSyncer,
 		FastSyncerV2:    fastSyncerV2,
 		SeedNode:        cfg.Network.SeedNode,
 		EnableYggdrasil: cfg.Network.Yggdrasil,

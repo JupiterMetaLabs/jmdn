@@ -151,7 +151,7 @@ Alternatively, you can configure via flags (see `jmdn --help` or `docs/CONFIG.md
 | `peers`                                   | Request updated peer list from seed   |
 | `stats`                                   | Show messaging statistics             |
 | `broadcast <message>`                     | Broadcast to all connected peers      |
-| `fastsync <peer_multiaddr>`               | Fast sync blockchain data with a peer |
+| `fastsyncv2 <peer_multiaddr>`             | Fast sync blockchain data with a peer |
 | `dbstate`                                 | Show current ImmuDB database state    |
 | `exit`                                    | Exit the program                      |
 

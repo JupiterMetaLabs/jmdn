@@ -129,13 +129,13 @@ Example:
 
 #### Fast Sync
 ```bash
-./jmdn -cmd fastsync <peer_multiaddr>
+./jmdn -cmd fastsyncv2 <peer_multiaddr>
 ```
 Performs fast synchronization with a peer.
 
 Example:
 ```bash
-./jmdn -cmd fastsync /ip4/192.168.1.1/tcp/15000/p2p/12D3KooW...
+./jmdn -cmd fastsyncv2 /ip4/192.168.1.1/tcp/15000/p2p/12D3KooW...
 ```
 
 ### DID Operations
@@ -242,7 +242,7 @@ Stops the running service and exits the program (interactive mode only).
 
 **Blockchain:**
 ```bash
-./jmdn -cmd fastsync <peer>  # Sync with peer
+./jmdn -cmd fastsyncv2 <peer>  # Sync with peer
 ./jmdn -cmd getdid <did>      # Get DID document
 ```
 
