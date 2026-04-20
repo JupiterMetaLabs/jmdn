@@ -1,4 +1,4 @@
-package dualdb
+package cassata
 
 import (
 	"context"
@@ -9,21 +9,17 @@ import (
 	"time"
 
 	DB_OPs "gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/cassata"
 	"gossipnode/config"
-	"gossipnode/config/settings"
 
 	"github.com/ethereum/go-ethereum/common"
 )
 
 // ShadowAdapter translates immudb write payloads into cassata typed ingest calls.
 type ShadowAdapter struct {
-	cas *cassata.Cassata
+	cas *Cassata
 }
 
-func NewShadowAdapter(cas *cassata.Cassata) *ShadowAdapter {
-	return &ShadowAdapter{cas: cas}
-}
+func NewShadowAdapter(cas *Cassata) *ShadowAdapter { return &ShadowAdapter{cas: cas} }
 
 func (s *ShadowAdapter) Create(_ *config.PooledConnection, key string, value interface{}) error {
 	return s.ingestKV(context.Background(), key, value)
@@ -54,7 +50,7 @@ func (s *ShadowAdapter) CreateAccount(_ *config.PooledConnection, didAddress str
 	}
 
 	did := normalizeDIDAddress(didAddress, address)
-	account := cassata.AccountResult{
+	account := AccountResult{
 		Address:     address.Hex(),
 		DIDAddress:  &did,
 		BalanceWei:  "0",
@@ -68,7 +64,7 @@ func (s *ShadowAdapter) CreateAccount(_ *config.PooledConnection, didAddress str
 }
 
 func (s *ShadowAdapter) UpdateAccountBalance(_ *config.PooledConnection, address common.Address, newBalance string) error {
-	account := cassata.AccountResult{
+	account := AccountResult{
 		Address:     address.Hex(),
 		BalanceWei:  newBalance,
 		Nonce:       "0",
@@ -94,7 +90,7 @@ func (s *ShadowAdapter) StoreZKBlock(_ *config.PooledConnection, block *config.Z
 	if stark == nil {
 		stark = []byte{}
 	}
-	if err := s.cas.IngestZKProof(ctx, cassata.ZKProofResult{
+	if err := s.cas.IngestZKProof(ctx, ZKProofResult{
 		ProofHash:   block.ProofHash,
 		BlockNumber: block.BlockNumber,
 		StarkProof:  stark,
@@ -104,10 +100,7 @@ func (s *ShadowAdapter) StoreZKBlock(_ *config.PooledConnection, block *config.Z
 		return err
 	}
 
-	// prev_snapshot_id must reference snapshots.snapshot_id (IDENTITY), not block
-	// numbers. We do not have the prior row id here without a DB read, so leave
-	// chain unset (NULL). Snapshot rows remain keyed by block_number / block_hash.
-	if err := s.cas.IngestSnapshot(ctx, cassata.SnapshotResult{
+	if err := s.cas.IngestSnapshot(ctx, SnapshotResult{
 		SnapshotID:     int64(block.BlockNumber),
 		BlockNumber:    block.BlockNumber,
 		BlockHash:      block.BlockHash.Hex(),
@@ -122,7 +115,6 @@ func (s *ShadowAdapter) StoreZKBlock(_ *config.PooledConnection, block *config.Z
 			return err
 		}
 	}
-
 	return nil
 }
 
@@ -138,28 +130,24 @@ func (s *ShadowAdapter) ingestKV(ctx context.Context, key string, value interfac
 			return nil
 		}
 		return s.cas.IngestAccount(ctx, accountToCassata(acc))
-
 	case strings.HasPrefix(key, DB_OPs.PREFIX_BLOCK):
 		block, ok := decodeBlock(value)
 		if !ok {
 			return nil
 		}
 		return s.StoreZKBlock(nil, block)
-
 	case strings.HasPrefix(key, DB_OPs.DEFAULT_PREFIX_TX):
 		tx, ok := decodeTx(value)
 		if !ok {
 			return nil
 		}
 		return s.cas.IngestTx(ctx, tx)
-
 	case strings.HasPrefix(key, "zk:"):
 		zk, ok := decodeZKProof(value)
 		if !ok {
 			return nil
 		}
 		return s.cas.IngestZKProof(ctx, zk)
-
 	case strings.HasPrefix(key, "snapshot:"):
 		snap, ok := decodeSnapshot(value)
 		if !ok {
@@ -167,7 +155,6 @@ func (s *ShadowAdapter) ingestKV(ctx context.Context, key string, value interfac
 		}
 		return s.cas.IngestSnapshot(ctx, snap)
 	}
-
 	return nil
 }
 
@@ -223,53 +210,52 @@ func decodeBlock(v interface{}) (*config.ZKBlock, bool) {
 	}
 }
 
-func decodeTx(v interface{}) (cassata.TxResult, bool) {
+func decodeTx(v interface{}) (TxResult, bool) {
 	switch t := v.(type) {
-	case cassata.TxResult:
+	case TxResult:
 		return t, true
-	case *cassata.TxResult:
+	case *TxResult:
 		return *t, true
 	default:
-		return cassata.TxResult{}, false
+		return TxResult{}, false
 	}
 }
 
-func decodeZKProof(v interface{}) (cassata.ZKProofResult, bool) {
+func decodeZKProof(v interface{}) (ZKProofResult, bool) {
 	switch t := v.(type) {
-	case cassata.ZKProofResult:
+	case ZKProofResult:
 		return t, true
-	case *cassata.ZKProofResult:
+	case *ZKProofResult:
 		return *t, true
 	default:
-		return cassata.ZKProofResult{}, false
+		return ZKProofResult{}, false
 	}
 }
 
-func decodeSnapshot(v interface{}) (cassata.SnapshotResult, bool) {
+func decodeSnapshot(v interface{}) (SnapshotResult, bool) {
 	switch t := v.(type) {
-	case cassata.SnapshotResult:
+	case SnapshotResult:
 		return t, true
-	case *cassata.SnapshotResult:
+	case *SnapshotResult:
 		return *t, true
 	default:
-		return cassata.SnapshotResult{}, false
+		return SnapshotResult{}, false
 	}
 }
 
-func accountToCassata(a *DB_OPs.Account) cassata.AccountResult {
+func accountToCassata(a *DB_OPs.Account) AccountResult {
 	var did *string
 	if a.DIDAddress != "" {
 		s := normalizeDIDAddress(a.DIDAddress, a.Address)
 		did = &s
 	}
-
 	meta := json.RawMessage(`{}`)
 	if a.Metadata != nil {
 		if raw, err := json.Marshal(a.Metadata); err == nil {
 			meta = raw
 		}
 	}
-	return cassata.AccountResult{
+	return AccountResult{
 		Address:     a.Address.Hex(),
 		DIDAddress:  did,
 		BalanceWei:  a.Balance,
@@ -281,44 +267,19 @@ func accountToCassata(a *DB_OPs.Account) cassata.AccountResult {
 	}
 }
 
-func normalizeDIDAddress(raw string, address common.Address) string {
+func normalizeDIDAddress(raw string, _ common.Address) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
 	}
-
-	network := strconv.Itoa(settings.Get().Network.ChainID)
-	lowerAddr := strings.ToLower(address.Hex())
-	prefix := "did:jmdt:" + network + ":"
-
-	// Legacy records sometimes store DIDAddress as plain 0x address.
-	if common.IsHexAddress(raw) {
-		return prefix + strings.ToLower(common.HexToAddress(raw).Hex())
-	}
-
-	// Legacy did:jmdt:0x... form (without network segment).
-	lowerRaw := strings.ToLower(raw)
-	if strings.HasPrefix(lowerRaw, "did:jmdt:") {
-		parts := strings.Split(raw, ":")
-		if len(parts) == 3 && common.IsHexAddress(parts[2]) {
-			return prefix + strings.ToLower(common.HexToAddress(parts[2]).Hex())
-		}
-		if len(parts) >= 4 && common.IsHexAddress(parts[len(parts)-1]) {
-			parts[len(parts)-1] = strings.ToLower(common.HexToAddress(parts[len(parts)-1]).Hex())
-			return strings.Join(parts, ":")
-		}
-	}
-
-	// Fallback: keep original token but ensure address suffix exists and is canonical.
-	return prefix + lowerAddr
+	return raw
 }
 
-func blockToCassata(b *config.ZKBlock) cassata.BlockResult {
+func blockToCassata(b *config.ZKBlock) BlockResult {
 	status := int16(0)
 	if strings.EqualFold(b.Status, "confirmed") || strings.EqualFold(b.Status, "finalized") {
 		status = 1
 	}
-
 	var coinbase *string
 	if b.CoinbaseAddr != nil {
 		s := b.CoinbaseAddr.Hex()
@@ -329,8 +290,6 @@ func blockToCassata(b *config.ZKBlock) cassata.BlockResult {
 		s := b.ZKVMAddr.Hex()
 		zkvm = &s
 	}
-
-	// Thebe blocks.chk_block_gas_used_within_limit requires gas_used <= gas_limit.
 	gasLimitU, gasUsedU := b.GasLimit, b.GasUsed
 	if gasUsedU > gasLimitU {
 		gasLimitU = gasUsedU
@@ -341,7 +300,7 @@ func blockToCassata(b *config.ZKBlock) cassata.BlockResult {
 	stateRoot := b.StateRoot.Hex()
 	txRoot := b.TxnsRoot
 
-	return cassata.BlockResult{
+	return BlockResult{
 		BlockNumber:  b.BlockNumber,
 		BlockHash:    b.BlockHash.Hex(),
 		ParentHash:   b.PrevHash.Hex(),
@@ -359,9 +318,8 @@ func blockToCassata(b *config.ZKBlock) cassata.BlockResult {
 	}
 }
 
-func txToCassata(block *config.ZKBlock, idx int) cassata.TxResult {
+func txToCassata(block *config.ZKBlock, idx int) TxResult {
 	tx := block.Transactions[idx]
-	// from_addr is NOT NULL + FK to accounts; nil From must not become "".
 	from := (common.Address{}).Hex()
 	if tx.From != nil {
 		from = tx.From.Hex()
@@ -371,14 +329,12 @@ func txToCassata(block *config.ZKBlock, idx int) cassata.TxResult {
 		s := tx.To.Hex()
 		to = &s
 	}
-
 	gasLimit := strconv.FormatUint(tx.GasLimit, 10)
 	value := "0"
 	if tx.Value != nil {
 		value = tx.Value.String()
 	}
 	nonce := strconv.FormatUint(tx.Nonce, 10)
-
 	var gasPrice *string
 	if tx.GasPrice != nil {
 		s := tx.GasPrice.String()
@@ -415,9 +371,8 @@ func txToCassata(block *config.ZKBlock, idx int) cassata.TxResult {
 		}
 		sigS = &s
 	}
-
 	accessList, _ := json.Marshal(tx.AccessList)
-	out := cassata.TxResult{
+	out := TxResult{
 		TxHash:            tx.Hash.Hex(),
 		BlockNumber:       block.BlockNumber,
 		TxIndex:           idx,
@@ -441,10 +396,7 @@ func txToCassata(block *config.ZKBlock, idx int) cassata.TxResult {
 	return out
 }
 
-// normalizeTxFeesForThebeSchema enforces thebeprofile chk_txn_fee_model, which
-// requires gas_price_wei for type 0/1 and max_fee + max_priority for type 2.
-// ZK/immudb payloads may omit fee fields that were not persisted on the block tx.
-func normalizeTxFeesForThebeSchema(t *cassata.TxResult) {
+func normalizeTxFeesForThebeSchema(t *TxResult) {
 	z := "0"
 	switch t.Type {
 	case 0, 1:

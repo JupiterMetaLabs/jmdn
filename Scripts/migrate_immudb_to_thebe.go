@@ -12,7 +12,6 @@ import (
 
 	DB_OPs "gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/cassata"
-	"gossipnode/DB_OPs/dualdb"
 	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/config"
 	"gossipnode/config/settings"
@@ -102,7 +101,7 @@ func main() {
 	defer thebe.Close()
 
 	cas := cassata.New(thebe, nil)
-	shadow := dualdb.NewShadowAdapter(cas)
+	shadow := cassata.NewShadowAdapter(cas)
 	ctx := context.Background()
 
 	if err := migrateAccounts(ctx, shadow); err != nil {
@@ -118,7 +117,7 @@ func main() {
 	log.Printf("migration completed in %s", time.Since(start).Round(time.Millisecond))
 }
 
-func migrateAccounts(ctx context.Context, shadow *dualdb.ShadowAdapter) error {
+func migrateAccounts(ctx context.Context, shadow *cassata.ShadowAdapter) error {
 	accounts, err := DB_OPs.ListAllAccounts(nil, 0)
 	if err != nil {
 		return fmt.Errorf("list accounts: %w", err)
@@ -221,7 +220,7 @@ func ensureTxParticipantAccounts(ctx context.Context, cas *cassata.Cassata, from
 	return nil
 }
 
-func migrateBlocks(_ context.Context, shadow *dualdb.ShadowAdapter, fromBlock, toBlock uint64) error {
+func migrateBlocks(_ context.Context, shadow *cassata.ShadowAdapter, fromBlock, toBlock uint64) error {
 	latest, err := DB_OPs.GetLatestBlockNumber(nil)
 	if err != nil {
 		return fmt.Errorf("get latest block number: %w", err)

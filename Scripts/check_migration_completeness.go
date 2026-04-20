@@ -3,53 +3,100 @@ package main
 import (
 	"context"
 	"database/sql"
+	"flag"
 	"fmt"
 	"log"
-	"math"
+	"math/big"
 	"math/rand"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	DB_OPs "gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/cassata"
+	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/config"
 	"gossipnode/config/settings"
 
+	thebedb "github.com/JupiterMetaLabs/ThebeDB"
+	thebecfg "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 	_ "github.com/lib/pq"
 )
 
 const (
-	sampleSize          = 10
-	maxAllowedDivergPct = 0.001 // 0.1%
+	defaultSample = 1000
+	defaultDrift  = 0
 )
 
-type checkResult struct {
-	name        string
-	immuCount   int
-	thebeCount  int
-	countMatch  bool
-	samplesOK   bool
-	missingKeys []string
+type report struct {
+	blockCountImmu    int
+	blockCountThebe   int
+	blockCountDelta   int
+	blockSampleMism   []string
+	accountCountImmu  int
+	accountCountThebe int
+	accountCountDelta int
+	accountFieldMism  []string
+}
+
+type blockRow struct {
+	BlockHash string
+}
+
+type accountRow struct {
+	Address    string
+	DIDAddress sql.NullString
+	BalanceWei string
+	Nonce      string
 }
 
 func main() {
 	start := time.Now().UTC()
+	var sample int
+	var drift int
+	flag.IntVar(&sample, "sample", defaultSample, "sample size for blocks and accounts")
+	flag.IntVar(&drift, "drift", defaultDrift, "allowed absolute account count drift")
+	flag.Parse()
+	if sample <= 0 {
+		log.Fatal("--sample must be > 0")
+	}
+	if drift < 0 {
+		log.Fatal("--drift must be >= 0")
+	}
 
 	cfg, err := settings.Load()
 	if err != nil {
 		log.Fatalf("load settings: %v", err)
 	}
 
-	dsn := os.Getenv("TEST_THEBE_SQL_DSN")
-	if dsn == "" {
-		log.Fatal("missing TEST_THEBE_SQL_DSN")
+	sqlDSN := os.Getenv("THEBE_SQL_DSN")
+	if sqlDSN == "" {
+		log.Fatal("missing THEBE_SQL_DSN")
+	}
+	kvPath := os.Getenv("THEBE_KV_PATH")
+	if kvPath == "" {
+		log.Fatal("missing THEBE_KV_PATH")
 	}
 
-	if cfg.Database.Username == "" || cfg.Database.Password == "" {
-		log.Fatal("missing immudb credentials in settings")
+	immuUser := os.Getenv("IMMUDB_USER")
+	immuPass := os.Getenv("IMMUDB_PASS")
+	if immuUser == "" {
+		immuUser = cfg.Database.Username
+	}
+	if immuPass == "" {
+		immuPass = cfg.Database.Password
+	}
+	if immuUser == "" || immuPass == "" {
+		log.Fatal("missing immudb credentials: IMMUDB_USER / IMMUDB_PASS")
+	}
+	if addr := os.Getenv("IMMUDB_ADDR"); addr != "" && addr != "localhost:3322" {
+		log.Fatalf("IMMUDB_ADDR=%q is not supported by current pool wiring (expected localhost:3322)", addr)
 	}
 
-	if err := DB_OPs.InitMainDBPoolWithLoki(config.DefaultConnectionPoolConfig(), false, cfg.Database.Username, cfg.Database.Password); err != nil {
+	if err := DB_OPs.InitMainDBPoolWithLoki(config.DefaultConnectionPoolConfig(), false, immuUser, immuPass); err != nil {
 		log.Fatalf("init main immudb pool: %v", err)
 	}
 	if err := DB_OPs.InitAccountsPool(); err != nil {
@@ -57,152 +104,137 @@ func main() {
 	}
 	defer DB_OPs.CloseMainDBPool()
 
-	sqlDB, err := sql.Open("postgres", dsn)
+	sqlDB, err := sql.Open("postgres", sqlDSN)
 	if err != nil {
 		log.Fatalf("open postgres: %v", err)
 	}
 	defer sqlDB.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	if err := sqlDB.PingContext(ctx); err != nil {
 		log.Fatalf("ping postgres: %v", err)
 	}
 
+	reg := profile.NewRegistry()
+	reg.Register(thebeprofile.New())
+	thebe, err := thebedb.NewFromConfig(thebedb.Config{
+		KV:       kv.Config{Backend: kv.BackendBadger, Path: kvPath},
+		SQL:      thebecfg.SQL{DSN: sqlDSN},
+		Profiles: reg,
+	})
+	if err != nil {
+		log.Fatalf("init thebedb: %v", err)
+	}
+	defer thebe.Close()
+	cas := cassata.New(thebe, nil)
+
 	rng := rand.New(rand.NewSource(time.Now().UTC().UnixNano()))
-
-	blocks, err := checkBlocks(ctx, sqlDB, rng)
+	rep, err := runChecks(ctx, sqlDB, cas, rng, sample)
 	if err != nil {
-		log.Fatalf("check blocks: %v", err)
-	}
-	transactions, err := checkTransactions(ctx, sqlDB, rng)
-	if err != nil {
-		log.Fatalf("check transactions: %v", err)
-	}
-	accounts, err := checkAccounts(ctx, sqlDB, rng)
-	if err != nil {
-		log.Fatalf("check accounts: %v", err)
+		log.Fatalf("run checks: %v", err)
 	}
 
-	results := []checkResult{blocks, transactions, accounts}
-	for _, r := range results {
-		match := "no"
-		if r.countMatch && r.samplesOK {
-			match = "yes"
-		}
-		fmt.Printf("%-13s immudb=%d  thebe=%d  match=%s\n", r.name+":", r.immuCount, r.thebeCount, match)
-	}
-
-	var failed bool
-	for _, r := range results {
-		if !r.countMatch || !r.samplesOK {
-			failed = true
-			if len(r.missingKeys) > 0 {
-				fmt.Printf("missing %s keys (%d): %s\n", r.name, len(r.missingKeys), strings.Join(r.missingKeys, ", "))
-			}
-		}
-	}
+	printReport(rep, drift)
 
 	fmt.Printf("completed in %s\n", time.Since(start).Round(time.Millisecond))
-	if failed {
+	if !accept(rep, drift) {
 		os.Exit(1)
 	}
 }
 
-func checkBlocks(ctx context.Context, db *sql.DB, rng *rand.Rand) (checkResult, error) {
-	immuCount, err := DB_OPs.CountBuilder{}.GetMainDBCount(DB_OPs.PREFIX_BLOCK_HASH)
+func runChecks(ctx context.Context, sqlDB *sql.DB, cas *cassata.Cassata, rng *rand.Rand, sample int) (*report, error) {
+	rep := &report{}
+	var err error
+
+	rep.blockCountImmu, err = DB_OPs.CountBuilder{}.GetMainDBCount(DB_OPs.PREFIX_BLOCK_HASH)
 	if err != nil {
-		return checkResult{}, err
+		return nil, fmt.Errorf("immudb block count: %w", err)
 	}
-	thebeCount, err := sqlCount(ctx, db, "SELECT COUNT(*) FROM blocks")
+	rep.blockCountThebe, err = sqlCount(ctx, sqlDB, "SELECT COUNT(*) FROM blocks")
 	if err != nil {
-		return checkResult{}, err
+		return nil, fmt.Errorf("thebe block count: %w", err)
+	}
+	rep.blockCountDelta = rep.blockCountThebe - rep.blockCountImmu
+
+	latest, err := DB_OPs.GetLatestBlockNumber(nil)
+	if err != nil {
+		return nil, fmt.Errorf("latest block: %w", err)
+	}
+	for _, n := range randomBlockNumbers(latest, sample, rng) {
+		immuBlock, getErr := DB_OPs.GetZKBlockByNumber(nil, n)
+		if getErr != nil || immuBlock == nil {
+			rep.blockSampleMism = append(rep.blockSampleMism, fmt.Sprintf("block %d missing in immudb read", n))
+			continue
+		}
+		tb, getErr := cas.GetBlock(ctx, n)
+		if getErr != nil || tb == nil {
+			rep.blockSampleMism = append(rep.blockSampleMism, fmt.Sprintf("block %d missing in thebe", n))
+			continue
+		}
+		immuHash := strings.ToLower(immuBlock.BlockHash.Hex())
+		thebeHash := strings.ToLower(tb.BlockHash)
+		if immuHash != thebeHash {
+			rep.blockSampleMism = append(rep.blockSampleMism, fmt.Sprintf("block %d hash immudb=%s thebe=%s", n, immuHash, thebeHash))
+		}
+		txs, txErr := cas.ListTransactionsByBlock(ctx, n)
+		if txErr != nil {
+			rep.blockSampleMism = append(rep.blockSampleMism, fmt.Sprintf("block %d thebe tx fetch error: %v", n, txErr))
+			continue
+		}
+		if len(immuBlock.Transactions) != len(txs) {
+			rep.blockSampleMism = append(rep.blockSampleMism, fmt.Sprintf("block %d tx_count immudb=%d thebe=%d", n, len(immuBlock.Transactions), len(txs)))
+		}
 	}
 
-	keys, err := DB_OPs.GetAllKeys(nil, DB_OPs.PREFIX_BLOCK_HASH)
+	rep.accountCountImmu, err = DB_OPs.CountBuilder{}.GetAccountsDBCount(DB_OPs.Prefix)
 	if err != nil {
-		return checkResult{}, err
+		return nil, fmt.Errorf("immudb account count: %w", err)
 	}
-	samples := pickRandom(keys, sampleSize, rng)
-	missing, err := missingSamples(ctx, db, samples, DB_OPs.PREFIX_BLOCK_HASH, "SELECT EXISTS(SELECT 1 FROM blocks WHERE lower(block_hash)=lower($1))")
+	rep.accountCountThebe, err = sqlCount(ctx, sqlDB, "SELECT COUNT(*) FROM accounts")
 	if err != nil {
-		return checkResult{}, err
+		return nil, fmt.Errorf("thebe account count: %w", err)
+	}
+	rep.accountCountDelta = rep.accountCountThebe - rep.accountCountImmu
+
+	accounts, err := DB_OPs.ListAllAccounts(nil, 0)
+	if err != nil {
+		return nil, fmt.Errorf("list immudb accounts: %w", err)
+	}
+	for _, i := range randomIndexes(len(accounts), sample, rng) {
+		ia := accounts[i]
+		if ia == nil {
+			rep.accountFieldMism = append(rep.accountFieldMism, fmt.Sprintf("account[%d] nil in immudb list", i))
+			continue
+		}
+		ta, getErr := cas.GetAccount(ctx, ia.Address.Hex())
+		if getErr != nil || ta == nil {
+			rep.accountFieldMism = append(rep.accountFieldMism, fmt.Sprintf("missing account %s in thebe", ia.Address.Hex()))
+			continue
+		}
+		immuAddr := strings.ToLower(ia.Address.Hex())
+		if immuAddr != strings.ToLower(ta.Address) {
+			rep.accountFieldMism = append(rep.accountFieldMism, fmt.Sprintf("address mismatch %s vs %s", ia.Address.Hex(), ta.Address))
+		}
+
+		immuDID := ia.DIDAddress
+		thebeDID := ""
+		if ta.DIDAddress != nil {
+			thebeDID = *ta.DIDAddress
+		}
+		if immuDID != thebeDID {
+			rep.accountFieldMism = append(rep.accountFieldMism, fmt.Sprintf("did mismatch %s immudb=%q thebe=%q", ia.Address.Hex(), immuDID, thebeDID))
+		}
+
+		if !numericEqual(ia.Balance, ta.BalanceWei) {
+			rep.accountFieldMism = append(rep.accountFieldMism, fmt.Sprintf("balance mismatch %s immudb=%s thebe=%s", ia.Address.Hex(), ia.Balance, ta.BalanceWei))
+		}
+		if !numericEqual(strconv.FormatUint(ia.Nonce, 10), ta.Nonce) {
+			rep.accountFieldMism = append(rep.accountFieldMism, fmt.Sprintf("nonce mismatch %s immudb=%d thebe=%s", ia.Address.Hex(), ia.Nonce, ta.Nonce))
+		}
 	}
 
-	return checkResult{
-		name:        "blocks",
-		immuCount:   immuCount,
-		thebeCount:  thebeCount,
-		countMatch:  withinThreshold(immuCount, thebeCount),
-		samplesOK:   len(missing) == 0,
-		missingKeys: missing,
-	}, nil
-}
-
-func checkTransactions(ctx context.Context, db *sql.DB, rng *rand.Rand) (checkResult, error) {
-	immuCount, err := DB_OPs.CountBuilder{}.GetMainDBCount(DB_OPs.DEFAULT_PREFIX_TX)
-	if err != nil {
-		return checkResult{}, err
-	}
-	thebeCount, err := sqlCount(ctx, db, "SELECT COUNT(*) FROM transactions")
-	if err != nil {
-		return checkResult{}, err
-	}
-
-	keys, err := DB_OPs.GetAllKeys(nil, DB_OPs.DEFAULT_PREFIX_TX)
-	if err != nil {
-		return checkResult{}, err
-	}
-	samples := pickRandom(keys, sampleSize, rng)
-	missing, err := missingSamples(ctx, db, samples, DB_OPs.DEFAULT_PREFIX_TX, "SELECT EXISTS(SELECT 1 FROM transactions WHERE lower(tx_hash)=lower($1))")
-	if err != nil {
-		return checkResult{}, err
-	}
-
-	return checkResult{
-		name:        "transactions",
-		immuCount:   immuCount,
-		thebeCount:  thebeCount,
-		countMatch:  withinThreshold(immuCount, thebeCount),
-		samplesOK:   len(missing) == 0,
-		missingKeys: missing,
-	}, nil
-}
-
-func checkAccounts(ctx context.Context, db *sql.DB, rng *rand.Rand) (checkResult, error) {
-	immuCount, err := DB_OPs.CountBuilder{}.GetAccountsDBCount(DB_OPs.Prefix)
-	if err != nil {
-		return checkResult{}, err
-	}
-	thebeCount, err := sqlCount(ctx, db, "SELECT COUNT(*) FROM accounts")
-	if err != nil {
-		return checkResult{}, err
-	}
-
-	accConn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-	if err != nil {
-		return checkResult{}, err
-	}
-	defer DB_OPs.PutAccountsConnection(accConn)
-
-	keys, err := DB_OPs.GetAllKeys(accConn, DB_OPs.Prefix)
-	if err != nil {
-		return checkResult{}, err
-	}
-	samples := pickRandom(keys, sampleSize, rng)
-	missing, err := missingSamples(ctx, db, samples, DB_OPs.Prefix, "SELECT EXISTS(SELECT 1 FROM accounts WHERE lower(address)=lower($1))")
-	if err != nil {
-		return checkResult{}, err
-	}
-
-	return checkResult{
-		name:        "accounts",
-		immuCount:   immuCount,
-		thebeCount:  thebeCount,
-		countMatch:  withinThreshold(immuCount, thebeCount),
-		samplesOK:   len(missing) == 0,
-		missingKeys: missing,
-	}, nil
+	return rep, nil
 }
 
 func sqlCount(ctx context.Context, db *sql.DB, q string) (int, error) {
@@ -213,36 +245,88 @@ func sqlCount(ctx context.Context, db *sql.DB, q string) (int, error) {
 	return n, nil
 }
 
-func pickRandom(keys []string, n int, rng *rand.Rand) []string {
-	if len(keys) <= n {
-		return append([]string{}, keys...)
+func randomBlockNumbers(max uint64, sample int, rng *rand.Rand) []uint64 {
+	if max == 0 {
+		return []uint64{0}
 	}
-	out := append([]string{}, keys...)
+	out := make([]uint64, int(max)+1)
+	for i := uint64(0); i <= max; i++ {
+		out[i] = i
+	}
 	rng.Shuffle(len(out), func(i, j int) {
 		out[i], out[j] = out[j], out[i]
 	})
-	return out[:n]
+	if sample > len(out) {
+		sample = len(out)
+	}
+	return out[:sample]
 }
 
-func missingSamples(ctx context.Context, db *sql.DB, sampled []string, prefix, existsQuery string) ([]string, error) {
-	missing := make([]string, 0)
-	for _, k := range sampled {
-		v := strings.TrimPrefix(k, prefix)
-		var exists bool
-		if err := db.QueryRowContext(ctx, existsQuery, v).Scan(&exists); err != nil {
-			return nil, err
-		}
-		if !exists {
-			missing = append(missing, v)
-		}
+func randomIndexes(total, sample int, rng *rand.Rand) []int {
+	if total == 0 {
+		return nil
 	}
-	return missing, nil
+	idx := make([]int, total)
+	for i := range idx {
+		idx[i] = i
+	}
+	rng.Shuffle(len(idx), func(i, j int) {
+		idx[i], idx[j] = idx[j], idx[i]
+	})
+	if sample > len(idx) {
+		sample = len(idx)
+	}
+	return idx[:sample]
 }
 
-func withinThreshold(immuCount, thebeCount int) bool {
-	if immuCount == 0 {
-		return thebeCount == 0
+func numericEqual(a, b string) bool {
+	ai, okA := new(big.Int).SetString(strings.TrimSpace(a), 10)
+	bi, okB := new(big.Int).SetString(strings.TrimSpace(b), 10)
+	if !okA || !okB {
+		return strings.TrimSpace(a) == strings.TrimSpace(b)
 	}
-	diff := math.Abs(float64(immuCount - thebeCount))
-	return (diff / float64(immuCount)) <= maxAllowedDivergPct
+	return ai.Cmp(bi) == 0
+}
+
+func printReport(rep *report, drift int) {
+	fmt.Printf("blocks:   immudb=%d  thebe=%d  delta=%d  required=0\n", rep.blockCountImmu, rep.blockCountThebe, rep.blockCountDelta)
+	fmt.Printf("accounts: immudb=%d  thebe=%d  delta=%d  allowed_drift=%d\n", rep.accountCountImmu, rep.accountCountThebe, rep.accountCountDelta, drift)
+	fmt.Printf("block hash/tx_count sample mismatches: %d\n", len(rep.blockSampleMism))
+	fmt.Printf("account field mismatches: %d\n", len(rep.accountFieldMism))
+
+	if len(rep.blockSampleMism) > 0 {
+		fmt.Println("block sample mismatch details:")
+		for _, m := range rep.blockSampleMism {
+			fmt.Printf("  - %s\n", m)
+		}
+	}
+	if len(rep.accountFieldMism) > 0 {
+		fmt.Println("account mismatch details:")
+		for _, m := range rep.accountFieldMism {
+			fmt.Printf("  - %s\n", m)
+		}
+	}
+}
+
+func accept(rep *report, drift int) bool {
+	if rep.blockCountDelta != 0 {
+		return false
+	}
+	if len(rep.blockSampleMism) != 0 {
+		return false
+	}
+	if abs(rep.accountCountDelta) > drift {
+		return false
+	}
+	if len(rep.accountFieldMism) != 0 {
+		return false
+	}
+	return true
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
