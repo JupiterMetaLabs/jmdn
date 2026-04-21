@@ -5,9 +5,10 @@ import (
 	"log"
 	"time"
 
+	"gossipnode/DB_OPs"
+
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/checksum/checksum_priorsync"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
-	"gossipnode/DB_OPs"
 )
 
 const ChecksumVersion = 2
@@ -35,36 +36,10 @@ func (sync *sync_struct) GetBlockNumber() uint64 {
 	num, err := DB_OPs.GetLatestBlockNumber(conn)
 	if err != nil {
 		log.Printf("[NodeInfo] ERROR: GetLatestBlockNumber failed: %v. Attempting manual reconciliation.", err)
-		// Try reconciliation as a fallback if GetLatestBlockNumber didn't already trigger it or failed
-		reconciled, recErr := DB_OPs.ReconcileLatestBlockNumber(conn)
-		if recErr != nil {
-			log.Printf("[NodeInfo] CRITICAL: Reconciliation also failed: %v", recErr)
-			return 0
-		}
-		return reconciled
-	}
-	return num
-}
-
-// ReconcileBlockNumber manually triggers a scan to find and update the latest block marker.
-func (sync *sync_struct) ReconcileBlockNumber() uint64 {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		log.Printf("[NodeInfo] ERROR: Failed to get connection for reconciliation: %v", err)
-		return 0
-	}
-
-	num, err := DB_OPs.ReconcileLatestBlockNumber(conn)
-	if err != nil {
-		log.Printf("[NodeInfo] ERROR: Reconciliation failed: %v", err)
 		return 0
 	}
 	return num
 }
-
 
 // Time Complexity: O(1) bounded by single block DB lookup
 // GetBlockDetails fetches the latest block headers and returns a checksum wrapped in a PriorSync struct.
