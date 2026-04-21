@@ -5,9 +5,10 @@ import (
 	"log"
 	"time"
 
+	"gossipnode/DB_OPs"
+
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/checksum/checksum_priorsync"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
-	"gossipnode/DB_OPs"
 )
 
 const ChecksumVersion = 2
@@ -23,18 +24,18 @@ func NewSyncStruct() types.BlockInfo {
 // Time Complexity: O(1) mostly, bounded by network round trip to ImmuDB.
 // GetBlockNumber retrieves the latest block number from the main ImmuDB.
 func (sync *sync_struct) GetBlockNumber() uint64 {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Increased timeout
 	defer cancel()
 
 	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
-		log.Printf("Error getting main DB connection for latest block number: %v", err)
+		log.Printf("[NodeInfo] ERROR: Failed to get main DB connection for block number: %v", err)
 		return 0
 	}
 
 	num, err := DB_OPs.GetLatestBlockNumber(conn)
 	if err != nil {
-		log.Printf("Error getting latest block number from ImmuDB: %v", err)
+		log.Printf("[NodeInfo] ERROR: GetLatestBlockNumber failed: %v. Attempting manual reconciliation.", err)
 		return 0
 	}
 	return num

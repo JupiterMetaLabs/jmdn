@@ -1,6 +1,8 @@
 cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
 cloud.google.com/go v0.34.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
+github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260421120217-e464cfd68005 h1:91xXMwpNz/zpkVVdS5uIxb/rlq7q07ClekUgeEBcNq4=
+github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260421120217-e464cfd68005/go.mod h1:8NMjQKQ9vvtWdugaGsyp2IGeplpB1xITYtgVguotcQE=
 github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260213044906-5629a60edea4 h1:L8laR48CLdrTsV8mfxaBfpVR+/U22tQyIxbP25i2d90=
 github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260213044906-5629a60edea4/go.mod h1:9AvHMXXjd0dSPiPmsjKRfgUPTIyxRyoUC0RtVPIVVlc=
 github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5 h1:S9+s6JeWSrGJ6ooYb4f8iRlJxwPUZ8X/EA4EgxKS3zc=

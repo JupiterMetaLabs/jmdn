@@ -2,14 +2,17 @@ package NodeInfo
 
 import (
 	"context"
+	"fmt"
 	"math/big"
+	"strings"
 	"time"
+
+	"gossipnode/DB_OPs"
+	"gossipnode/config"
 
 	blockpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/block"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
 	"github.com/ethereum/go-ethereum/common"
-	"gossipnode/config"
-	"gossipnode/DB_OPs"
 )
 
 type DataWriter struct{}
@@ -112,7 +115,37 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 		}
 
 		if err := DB_OPs.StoreZKBlock(conn, b); err != nil {
-			return err
+			// if err not nill, then force write or update
+			if strings.Contains(err.Error(), "already exists") {
+				blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, b.BlockNumber)
+				if err2 := DB_OPs.Update(blockKey, b); err2 != nil {
+					return fmt.Errorf("force update block %d failed: %w", b.BlockNumber, err2)
+				}
+
+				hashKey := fmt.Sprintf("%s%s", DB_OPs.PREFIX_BLOCK_HASH, b.BlockHash.Hex())
+				if err2 := DB_OPs.Update(hashKey, blockKey); err2 != nil {
+					return fmt.Errorf("force update hash mapping failed: %w", err2)
+				}
+
+				if err2 := DB_OPs.Update("latest_block", b.BlockNumber); err2 != nil {
+					return fmt.Errorf("force update latest block failed: %w", err2)
+				}
+
+				// Write tx:<hash> → blockNumber index for each transaction.
+				// WriteHeaders stores blocks without transactions, so StoreZKBlock's tx
+				// indexing loop runs 0 times there. This is the only place those index
+				// entries get written — required for GetTransactionByHash to work.
+				for _, tx := range b.Transactions {
+					txKey := fmt.Sprintf("%s%s", DB_OPs.DEFAULT_PREFIX_TX, tx.Hash)
+					if err2 := DB_OPs.Create(conn, txKey, b.BlockNumber); err2 != nil {
+						if !strings.Contains(err2.Error(), "already exists") {
+							return fmt.Errorf("store tx index for %s: %w", tx.Hash, err2)
+						}
+					}
+				}
+			} else {
+				return err
+			}
 		}
 	}
 

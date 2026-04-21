@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
@@ -59,6 +60,9 @@ func (am *account_manager) GetAccountBalance(accountAddress string) (*big.Int, u
 	addr := common.HexToAddress(accountAddress)
 	acc, err := DB_OPs.GetAccount(conn, addr)
 	if err != nil {
+		if strings.Contains(err.Error(), "key not found") {
+			return big.NewInt(0), 0, nil
+		}
 		return nil, 0, fmt.Errorf("failed to get account: %w", err)
 	}
 
@@ -81,6 +85,9 @@ func (am *account_manager) UpdateAccountBalance(accountAddress string, balance *
 
 	doc, err := DB_OPs.GetAccount(conn, addr)
 	if err != nil {
+		if strings.Contains(err.Error(), "key not found") {
+			return am.CreateAccount(accountAddress, balance, nonce)
+		}
 		return fmt.Errorf("failed to get account for update: %w", err)
 	}
 

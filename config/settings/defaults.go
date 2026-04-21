@@ -76,6 +76,13 @@ func DefaultConfig() NodeConfig {
 			UseLegacyBFT: false,
 			GROTrack:     false,
 		},
+		FastSync: FastSyncSettings{
+			Enabled:      true,
+			Sync:         true,
+			StartupSync:  true,
+			SyncTimeout:  10 * time.Minute,
+			AllowedPeers: []string{},
+		},
 		Security: DefaultSecurityConfig(),
 		Alerts:   DefaultAlertsConfig(),
 	}

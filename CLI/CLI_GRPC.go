@@ -307,9 +307,15 @@ func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
 		return SyncStats{}, fmt.Errorf("FastsyncV2 failed: %w", err)
 	}
 
-	// Re-fetch states to report
-	newMainState, _ := DB_OPs.GetDatabaseState(h.MainClient.Client)
-	newAccountsState, _ := DB_OPs.GetDatabaseState(h.DIDClient.Client)
+	// Re-fetch DB states to report. FastsyncV2 doesn't require MainClient/DIDClient
+	// for the sync itself, so guard against nil before querying.
+	var newMainState, newAccountsState *schema.ImmutableState
+	if h.MainClient != nil {
+		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient.Client)
+	}
+	if h.DIDClient != nil {
+		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
+	}
 
 	return SyncStats{
 		TimeTaken:     time.Since(startTime),

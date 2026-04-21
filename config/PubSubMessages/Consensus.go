@@ -18,6 +18,8 @@ type ConsensusMessage struct {
 	StartTime    time.Time
 	InteriumTime time.Time
 	TotalNodes   int
+	SequencerID  string // Peer ID of the consensus creator (sequencer) so voters know where to send votes
+	RoundID      string // Unique round identifier (block hash) for vote scoping
 }
 
 type Buddy_PeerMultiaddr struct {

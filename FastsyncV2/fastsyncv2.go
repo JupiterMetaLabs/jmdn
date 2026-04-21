@@ -44,9 +44,6 @@ import (
 )
 
 const (
-	// protocolVersion is the FastSync wire protocol version. All routers must agree on this.
-	protocolVersion = 1
-
 	// checksumVersion is the checksum format used by PriorSync to validate block metadata.
 	// Must match the version used by the NodeInfo adapter (DB_OPs/Nodeinfo.ChecksumVersion).
 	checksumVersion = 2
@@ -54,6 +51,8 @@ const (
 	// commsVersion identifies this node's communication capabilities.
 	// V1 = TCP only, V2 = TCP + QUIC.
 	commsVersion = 2
+
+	priorsyncVersion = 2
 
 	// syncTimeout is the maximum wall-clock time for a complete sync operation.
 	syncTimeout = 15 * time.Minute
@@ -125,10 +124,14 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 	potsRouter := pots.NewPoTS()
 
 	// --- 5. Configure routers with shared sync variables ---
-	// PriorSync takes both protocol version AND checksum version (unique among routers).
-	priorRouter.SetSyncVars(ctx, protocolVersion, checksumVersion, *nodeinfo, h, wal)
-	headerRouter.SetSyncVars(ctx, protocolVersion, *nodeinfo, h, wal)
-	dataRouter.SetSyncVars(ctx, protocolVersion, *nodeinfo, h, wal)
+	// The first version parameter to SetSyncVars controls transport selection in the
+	// Communication layer (V1=TCP-only, V2=TCP+QUIC). Since JMDN nodes listen on both
+	// TCP and QUIC, we must use commsVersion (2) so server-side bisection callbacks
+	// can reach peers that connected over QUIC.
+	// PriorSync takes both comms version AND checksum version (unique among routers).
+	priorRouter.SetSyncVars(ctx, priorsyncVersion, checksumVersion, *nodeinfo, h, wal)
+	headerRouter.SetSyncVars(ctx, commsVersion, *nodeinfo, h, wal)
+	dataRouter.SetSyncVars(ctx, commsVersion, *nodeinfo, h, wal)
 
 	// Availability and Reconciliation share the same SyncVars derived from PriorSync.
 	syncVars := priorRouter.GetSyncVars()
@@ -136,7 +139,8 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 	reconRouter.SetSyncVarsConfig(ctx, *syncVars)
 
 	// PoTS uses its own isolated WAL for live block buffering.
-	potsRouter.SetSyncVars(ctx, protocolVersion, *nodeinfo, h)
+	// commsVersion (2) enables QUIC transport with TCP fallback, matching the other routers.
+	potsRouter.SetSyncVars(ctx, commsVersion, *nodeinfo, h)
 	potsRouter.SetWAL(ctx, potsWAL)
 
 	// --- 6. Mark this node as available for sync and start server-side handlers ---
@@ -183,9 +187,46 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 //  5. Reconciliation — recompute and commit account balances.
 //  6. PoTS — catch up on blocks produced during steps 2–5.
 func (fs *FastsyncV2) HandleSync(targetPeer string) error {
+	return fs.handleSyncInternal(targetPeer, 0)
+}
+
+// HandleStartupSync syncs from an already-connected peer, starting from the local
+// latest block number. This is used on node startup/restart to catch up on blocks
+// missed while offline, without re-syncing the entire chain.
+func (fs *FastsyncV2) HandleStartupSync(peerID peer.ID, addrs []multiaddr.Multiaddr) error {
+	if len(addrs) == 0 {
+		return fmt.Errorf("no addresses for peer %s", peerID)
+	}
+
+	// Build the full multiaddr string with embedded peer ID (required by handleSyncInternal)
+	targetMultiaddr := fmt.Sprintf("%s/p2p/%s", addrs[0].String(), peerID.String())
+
+	// Ensure local marker is up to date before determining start block
+	fs.reconcileLocalLatestBlock()
+	localBlockNum := fs.blockInfoAdapter.GetBlockDetails().Blocknumber
+	startBlock := localBlockNum
+	if startBlock == 0 {
+		// Fresh node with no blocks — do a full sync
+		log.Printf("[FastsyncV2] StartupSync: fresh node (block 0), performing full sync")
+	} else {
+		log.Printf("[FastsyncV2] StartupSync: resuming from block %d", startBlock)
+	}
+
+	return fs.handleSyncInternal(targetMultiaddr, startBlock)
+}
+
+// handleSyncInternal is the core sync engine. startBlock controls where PriorSync
+// begins comparing: 0 for a full sync, or localBlockNum for incremental startup sync.
+func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) error {
 	syncStart := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
 	defer cancel()
+
+	// --- 0. Pre-sync reconciliation ---
+	// Ensure our local block marker is accurate before starting
+	log.Printf("[FastsyncV2] Reconciling local block marker before sync...")
+	fs.reconcileLocalLatestBlock()
+
 
 	// --- Parse and connect to the target peer ---
 	maddr, err := multiaddr.NewMultiaddr(targetPeer)
@@ -202,12 +243,20 @@ func (fs *FastsyncV2) HandleSync(targetPeer string) error {
 	}
 	log.Printf("[FastsyncV2] Connected to peer %s", info.ID)
 
+	// After connecting, fetch all addresses the peer advertises from the peerstore.
+	// info.Addrs only contains the single address from the user-supplied multiaddr,
+	// which may be QUIC-only. PoTS V1 requires TCP; the peerstore will have both.
+	peerAddrs := fs.Host.Peerstore().Addrs(info.ID)
+	if len(peerAddrs) == 0 {
+		peerAddrs = info.Addrs
+	}
+
 	// Construct the target's NodeInfo for all subsequent protocol calls.
 	// BlockInfo is nil because we don't need to query the remote's DB locally — the
 	// routers communicate with the remote via libp2p streams.
 	targetNodeInfo := &types.Nodeinfo{
 		PeerID:    info.ID,
-		Multiaddr: info.Addrs,
+		Multiaddr: peerAddrs,
 		Version:   commsVersion,
 	}
 
@@ -217,7 +266,7 @@ func (fs *FastsyncV2) HandleSync(targetPeer string) error {
 	log.Printf("[FastsyncV2] Phase 1: Checking availability of peer %s", info.ID)
 
 	availResp, err := fs.AvailRouter.SendAvailabilityRequest(
-		ctx, fs.PriorRouter.GetSyncVars(), *targetNodeInfo, 0, math.MaxUint64,
+		ctx, fs.PriorRouter.GetSyncVars(), *targetNodeInfo, startBlock, math.MaxUint64,
 	)
 	if err != nil {
 		return fmt.Errorf("availability request failed: %w", err)
@@ -234,13 +283,13 @@ func (fs *FastsyncV2) HandleSync(targetPeer string) error {
 	// PHASE 2: PriorSync — identify divergent block ranges via Merkle comparison
 	// =========================================================================
 	localBlockNum := fs.blockInfoAdapter.GetBlockDetails().Blocknumber
-	log.Printf("[FastsyncV2] Phase 2: PriorSync (local latest block: %d)", localBlockNum)
+	log.Printf("[FastsyncV2] Phase 2: PriorSync (local latest block: %d, start: %d)", localBlockNum, startBlock)
 
-	// Request range [0, localBlockNum] locally vs [0, MaxUint64] on remote.
-	// The remote builds a Merkle tree for its blocks and uses TreeDiff to find
-	// all divergent ranges. Returns a Tag (list of block numbers + ranges).
+	// Compare [startBlock, localBlockNum] locally vs [startBlock, MaxUint64] on remote.
+	// startBlock=0 → full sync (compare entire chain)
+	// startBlock=N → incremental sync (only compare from block N onward)
 	resp, err := fs.PriorRouter.PriorSync(
-		0, localBlockNum, 0, math.MaxUint64, targetNodeInfo, availResp.Auth,
+		startBlock, localBlockNum, startBlock, math.MaxUint64, targetNodeInfo, availResp.Auth,
 	)
 	if err != nil {
 		return fmt.Errorf("priorsync failed: %w", err)
@@ -290,6 +339,11 @@ func (fs *FastsyncV2) HandleSync(targetPeer string) error {
 		return fmt.Errorf("datasync failed: %w", err)
 	}
 	log.Println("[FastsyncV2] Phase 4 complete: block data synchronized")
+
+	// After DataSync, ensure our latest block marker is updated to reflect the new blocks
+	// so that Reconciliation and PoTS work with the correct state.
+	fs.reconcileLocalLatestBlock()
+
 
 	// =========================================================================
 	// PHASE 5: Reconciliation — recompute and commit account balances
@@ -609,4 +663,25 @@ func commitmentToBytes(c []uint32) []byte {
 		buf[i*4+3] = byte(v >> 24)
 	}
 	return buf
+}
+
+// reconcileLocalLatestBlock ensures the local database marker ("latest_block") matches
+// the actual highest block key present in the database. This fixes "stuck" syncs
+// caused by failing or outdated markers.
+func (fs *FastsyncV2) reconcileLocalLatestBlock() uint64 {
+	// We use the specialized ReconcileBlockNumber method if available on the adapter
+	type blockReconciler interface {
+		ReconcileBlockNumber() uint64
+	}
+
+	if reconciler, ok := fs.blockInfoAdapter.(blockReconciler); ok {
+		num := reconciler.ReconcileBlockNumber()
+		log.Printf("[FastsyncV2] Local block reconciliation complete: latest block is %d", num)
+		return num
+	}
+
+	// Fallback to standard GetBlockNumber if reconciliation is not supported
+	num := fs.blockInfoAdapter.GetBlockNumber()
+	log.Printf("[FastsyncV2] Fallback block lookup complete: latest block is %d", num)
+	return num
 }
