@@ -551,6 +551,11 @@ postgres_exec() {
 	local sql="$1"
 	local primary_port="${PG_APP_PORT}"
 	local fallback_port="5432"
+	local detected_cluster_port=""
+
+	if [[ "${PKG_MANAGER}" == "apt" ]] && command -v pg_lsclusters >/dev/null 2>&1; then
+		detected_cluster_port="$(pg_lsclusters --no-header 2>/dev/null | awk 'NR==1 {print $3}')"
+	fi
 
 	_postgres_exec_with_port() {
 		local target_port="$1"
@@ -565,6 +570,13 @@ postgres_exec() {
 	# PostgreSQL port to support first-run migrations.
 	if _postgres_exec_with_port "${primary_port}"; then
 		return 0
+	fi
+
+	# Debian/Ubuntu clusters can run on non-default ports (e.g. 5433).
+	if [[ -n "${detected_cluster_port}" ]] && [[ "${detected_cluster_port}" != "${primary_port}" ]]; then
+		if _postgres_exec_with_port "${detected_cluster_port}"; then
+			return 0
+		fi
 	fi
 
 	if [[ "${primary_port}" != "${fallback_port}" ]]; then
