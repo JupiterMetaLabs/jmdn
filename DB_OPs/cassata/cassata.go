@@ -70,6 +70,13 @@ func (c *Cassata) IngestSnapshot(ctx context.Context, s SnapshotResult) error {
 }
 
 func (c *Cassata) appendRecord(namespace, recordType string, value []byte) error {
+	if c.logger != nil {
+		c.logger.Debug("cassata append",
+			zap.String("namespace", namespace),
+			zap.String("record_type", recordType),
+			zap.Int("value_bytes", len(value)))
+	}
+
 	appendMethod := reflect.ValueOf(c.db).MethodByName("Append")
 	if !appendMethod.IsValid() {
 		return fmt.Errorf("cassata.appendRecord: Append method not found on ThebeDB")

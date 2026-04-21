@@ -2005,6 +2005,17 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 		ion.String("function", "DB_OPs.StoreZKBlock"),
 	)
 
+	// Best-effort Thebe fanout: keeps immudb primary behavior unchanged while
+	// mirroring committed blocks into Thebe/Cassata (which calls ThebeDB.Append).
+	if shadow := getThebeShadowWriter(); shadow != nil {
+		if shadowErr := shadow.StoreZKBlock(mainDBClient, block); shadowErr != nil {
+			mainDBClient.Client.Logger.Warn(loggerCtx, "Thebe shadow block fanout failed",
+				ion.String("error", shadowErr.Error()),
+				ion.String("blockkey", blockKey),
+				ion.String("function", "DB_OPs.StoreZKBlock"))
+		}
+	}
+
 	return nil
 }
 
@@ -2324,7 +2335,6 @@ func ReconcileLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, 
 
 	return reconciledNum, nil
 }
-
 
 // GetTransactionBlock returns the block containing a specific transaction (UNCHANGED)
 func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (*config.ZKBlock, error) {

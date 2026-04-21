@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -33,6 +34,7 @@ import (
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/cassata"
+	"gossipnode/DB_OPs/dualdb"
 	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/DID"
 	"gossipnode/FastsyncV2"
@@ -218,6 +220,41 @@ func formatTimestamp(t time.Time) string {
 	// Convert UTC to local time
 	localTime := t.Local()
 	return localTime.Format("02-01-2006 15:04:05")
+}
+
+func maskDSN(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<invalid>"
+	}
+	if u.User != nil {
+		username := u.User.Username()
+		if username != "" {
+			u.User = url.UserPassword(username, "***")
+		} else {
+			u.User = url.UserPassword("***", "***")
+		}
+	}
+	return u.String()
+}
+
+func maskRedisURL(raw string) string {
+	return maskDSN(raw)
+}
+
+func buildThebeEventsConfig(cfg settings.ThebeConfig) *events.Config {
+	if strings.TrimSpace(cfg.RedisURL) == "" {
+		return nil
+	}
+	return &events.Config{
+		RedisURL:   cfg.RedisURL,
+		StreamName: cfg.StreamName,
+		MaxLen:     cfg.MaxLen,
+		GroupName:  cfg.GroupName,
+	}
 }
 
 // runCommand executes a CLI command via gRPC to the running service
@@ -734,6 +771,16 @@ func main() {
 	// We must refresh the token cache so GetResolvedToken() returns the correct values.
 	cfg.Security.ResolveTokens()
 
+	log.Info().
+		Bool("enabled", cfg.Thebe.Enabled).
+		Str("kv_path", cfg.Thebe.KVPath).
+		Str("sql_dsn", maskDSN(cfg.Thebe.SQLDSN)).
+		Str("redis_url", maskRedisURL(cfg.Thebe.RedisURL)).
+		Str("stream_name", cfg.Thebe.StreamName).
+		Int64("max_len", cfg.Thebe.MaxLen).
+		Str("group_name", cfg.Thebe.GroupName).
+		Msg("Resolved Thebe config")
+
 	// Chain ID global initialization — must happen before any Security validation.
 	// Previously this was only set inside Block/Server.go (gated behind BlockGen > 0),
 	// which left expectedChainID nil on non-sequencer nodes. All nodes need it because
@@ -857,14 +904,9 @@ func main() {
 		reg := profile.NewRegistry()
 		reg.Register(thebeprofile.New())
 		db, err := thebedb.NewFromConfig(thebedb.Config{
-			KV:  kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath},
-			SQL: thebecfg.SQL{DSN: cfg.Thebe.SQLDSN},
-			Events: &events.Config{
-				RedisURL:   cfg.Thebe.RedisURL,
-				StreamName: cfg.Thebe.StreamName,
-				MaxLen:     cfg.Thebe.MaxLen,
-				GroupName:  cfg.Thebe.GroupName,
-			},
+			KV:       kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath},
+			SQL:      thebecfg.SQL{DSN: cfg.Thebe.SQLDSN},
+			Events:   buildThebeEventsConfig(cfg.Thebe),
 			Profiles: reg,
 		})
 		if err != nil {
@@ -872,6 +914,7 @@ func main() {
 		}
 		defer db.Close()
 		cas = cassata.New(db, zap.NewNop())
+		DB_OPs.SetThebeShadowWriter(dualdb.NewShadowAdapter(cas))
 		log.Info().Msg("ThebeDB Cassata middleware enabled")
 	}
 
