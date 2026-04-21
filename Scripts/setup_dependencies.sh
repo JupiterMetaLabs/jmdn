@@ -577,8 +577,35 @@ postgres_exec() {
 
 restart_postgres_service() {
 	case "${PKG_MANAGER}" in
-	apt | dnf | yum | pacman)
-		systemctl restart postgresql || true
+	apt)
+		# Debian/Ubuntu use cluster services (postgresql@<ver>-<name>), while
+		# postgresql.service is often only an "active (exited)" wrapper unit.
+		if command -v pg_lsclusters >/dev/null 2>&1 && command -v pg_ctlcluster >/dev/null 2>&1; then
+			local clusters
+			clusters="$(pg_lsclusters --no-header 2>/dev/null || true)"
+			if [[ -n "${clusters}" ]]; then
+				while IFS= read -r line; do
+					local ver name status
+					ver="$(awk '{print $1}' <<<"${line}")"
+					name="$(awk '{print $2}' <<<"${line}")"
+					status="$(awk '{print $4}' <<<"${line}")"
+					if [[ -n "${ver}" && -n "${name}" ]]; then
+						if [[ "${status}" == "online" ]]; then
+							pg_ctlcluster "${ver}" "${name}" restart >/dev/null 2>&1 || true
+						else
+							pg_ctlcluster "${ver}" "${name}" start >/dev/null 2>&1 || true
+						fi
+					fi
+				done <<<"${clusters}"
+			else
+				systemctl restart postgresql || systemctl start postgresql || true
+			fi
+		else
+			systemctl restart postgresql || systemctl start postgresql || true
+		fi
+		;;
+	dnf | yum | pacman)
+		systemctl restart postgresql || systemctl start postgresql || true
 		;;
 	apk)
 		rc-service postgresql restart || rc-service postgresql start || true
@@ -606,9 +633,14 @@ configure_postgres_local() {
 
 	# Ensure postgres service is reachable before attempting SQL setup.
 	if ! postgres_exec "SELECT 1;" >/dev/null 2>&1; then
-		log_warn "PostgreSQL service is not reachable as postgres user. Skipping DB bootstrap."
-		log_warn "Start PostgreSQL and re-run with --storage-local to apply user/database setup."
-		return 0
+		log_warn "PostgreSQL is not reachable yet; attempting service restart..."
+		restart_postgres_service
+		if ! postgres_exec "SELECT 1;" >/dev/null 2>&1; then
+			log_warn "PostgreSQL service is not reachable as postgres user. Skipping DB bootstrap."
+			log_warn "Start PostgreSQL and re-run with --storage-local to apply user/database setup."
+			log_warn "Quick check: sudo -u postgres psql -p ${PG_APP_PORT} -c 'SELECT 1;'"
+			return 0
+		fi
 	fi
 
 	local current_port
