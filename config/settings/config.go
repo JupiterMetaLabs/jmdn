@@ -76,7 +76,9 @@ type ThebeConfig struct {
 	KVPath     string `mapstructure:"kv_path" yaml:"kv_path"`         // default "./data/thebe-kv"
 	SQLDSN     string `mapstructure:"sql_dsn" yaml:"sql_dsn"`         // reads THEBE_SQL_DSN env var
 	RedisURL   string `mapstructure:"redis_url" yaml:"redis_url"`     // optional, reads THEBE_REDIS_URL
-	StreamName string `mapstructure:"stream_name" yaml:"stream_name"` // optional, default "jmdt.thebedb.events"
+	StreamName string `mapstructure:"stream_name" yaml:"stream_name"` // optional, default "thebedb.events"
+	MaxLen     int64  `mapstructure:"max_len" yaml:"max_len"`         // optional, default 1000
+	GroupName  string `mapstructure:"group_name" yaml:"group_name"`   // optional, default "projector"
 }
 
 // LoggingSettings mirrors Ion's Config struct so jmdn.yaml can fully configure

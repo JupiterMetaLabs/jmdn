@@ -49,12 +49,22 @@ func Load() (*NodeConfig, error) {
 	if err := v.BindEnv("thebe.redis_url", "THEBE_REDIS_URL"); err != nil {
 		return nil, fmt.Errorf("binding THEBE_REDIS_URL: %w", err)
 	}
+	if err := v.BindEnv("thebe.stream_name", "THEBE_STREAM_NAME"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_STREAM_NAME: %w", err)
+	}
+	if err := v.BindEnv("thebe.max_len", "THEBE_MAX_LEN"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_MAX_LEN: %w", err)
+	}
+	if err := v.BindEnv("thebe.group_name", "THEBE_GROUP_NAME"); err != nil {
+		return nil, fmt.Errorf("binding THEBE_GROUP_NAME: %w", err)
+	}
 
 	// 6. Unmarshal into struct
 	cfg := DefaultConfig()
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshalling config: %w", err)
 	}
+	normalizeThebeConfig(&cfg)
 
 	// 7. Generic Map Merge for Services
 	// Fix Viper's map unmarshaling bug: it replaces map values entirely instead of deep merging.
@@ -137,6 +147,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("thebe.sql_dsn", d.Thebe.SQLDSN)
 	v.SetDefault("thebe.redis_url", d.Thebe.RedisURL)
 	v.SetDefault("thebe.stream_name", d.Thebe.StreamName)
+	v.SetDefault("thebe.max_len", d.Thebe.MaxLen)
+	v.SetDefault("thebe.group_name", d.Thebe.GroupName)
 
 	// Logging
 	v.SetDefault("logging.level", d.Logging.Level)
@@ -206,4 +218,21 @@ func mergeStructs[T any](dest, src T) T {
 		}
 	}
 	return dest
+}
+
+func normalizeThebeConfig(cfg *NodeConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.Thebe.StreamName = strings.TrimSpace(cfg.Thebe.StreamName)
+	if cfg.Thebe.StreamName == "" {
+		cfg.Thebe.StreamName = "thebedb.events"
+	}
+	cfg.Thebe.GroupName = strings.TrimSpace(cfg.Thebe.GroupName)
+	if cfg.Thebe.GroupName == "" {
+		cfg.Thebe.GroupName = "projector"
+	}
+	if cfg.Thebe.MaxLen <= 0 {
+		cfg.Thebe.MaxLen = 1000
+	}
 }

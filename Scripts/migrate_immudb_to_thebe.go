@@ -19,6 +19,7 @@ import (
 
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
 	thebecfg "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/events"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 	"github.com/ethereum/go-ethereum/common"
@@ -92,8 +93,14 @@ func main() {
 	reg := profile.NewRegistry()
 	reg.Register(thebeprofile.New())
 	thebe, err := thebedb.NewFromConfig(thebedb.Config{
-		KV:       kv.Config{Backend: kv.BackendBadger, Path: thebeKV},
-		SQL:      thebecfg.SQL{DSN: thebeDSN},
+		KV:  kv.Config{Backend: kv.BackendBadger, Path: thebeKV},
+		SQL: thebecfg.SQL{DSN: thebeDSN},
+		Events: &events.Config{
+			RedisURL:   cfg.Thebe.RedisURL,
+			StreamName: cfg.Thebe.StreamName,
+			MaxLen:     cfg.Thebe.MaxLen,
+			GroupName:  cfg.Thebe.GroupName,
+		},
 		Profiles: reg,
 	})
 	if err != nil {

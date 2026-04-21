@@ -46,9 +46,11 @@ database:
 thebe:
   enabled: false
   kv_path: "./data/thebe-kv"
-  sql_dsn: ""                  # Optional env override: THEBE_SQL_DSN
-  redis_url: ""                # Optional env override: THEBE_REDIS_URL
-  stream_name: "jmdt.thebedb.events"
+  sql_dsn: ""                  # Env: THEBE_SQL_DSN
+  redis_url: ""                # Env: THEBE_REDIS_URL
+  stream_name: "thebedb.events" # Env: THEBE_STREAM_NAME
+  max_len: 1000                # Env: THEBE_MAX_LEN
+  group_name: "projector"      # Env: THEBE_GROUP_NAME
 
 # ── Logging (Ion) ────────────────────────────────────────
 # Maps directly to Ion's config struct. All env vars like

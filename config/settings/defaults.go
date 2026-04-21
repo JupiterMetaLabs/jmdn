@@ -48,7 +48,9 @@ func DefaultConfig() NodeConfig {
 			KVPath:     "./data/thebe-kv",
 			SQLDSN:     "",
 			RedisURL:   "",
-			StreamName: "jmdt.thebedb.events",
+			StreamName: "thebedb.events",
+			MaxLen:     1000,
+			GroupName:  "projector",
 		},
 		Logging: LoggingSettings{
 			Level:       "warn",

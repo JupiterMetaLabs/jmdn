@@ -20,6 +20,7 @@ import (
 
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
 	thebecfg "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/events"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 	orchestratorGlobal "github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
@@ -856,8 +857,14 @@ func main() {
 		reg := profile.NewRegistry()
 		reg.Register(thebeprofile.New())
 		db, err := thebedb.NewFromConfig(thebedb.Config{
-			KV:       kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath},
-			SQL:      thebecfg.SQL{DSN: cfg.Thebe.SQLDSN},
+			KV:  kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath},
+			SQL: thebecfg.SQL{DSN: cfg.Thebe.SQLDSN},
+			Events: &events.Config{
+				RedisURL:   cfg.Thebe.RedisURL,
+				StreamName: cfg.Thebe.StreamName,
+				MaxLen:     cfg.Thebe.MaxLen,
+				GroupName:  cfg.Thebe.GroupName,
+			},
 			Profiles: reg,
 		})
 		if err != nil {
