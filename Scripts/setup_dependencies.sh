@@ -46,7 +46,8 @@ GO_FALLBACK_VER="1.25.3"
 YGG_FALLBACK_VER="0.5.12"
 PG_APP_USER="${PG_APP_USER:-thebedb}"
 PG_APP_PASSWORD="${PG_APP_PASSWORD:-thebedb}"
-PG_APP_DB="${PG_APP_DB:-thebedb_test}"
+PG_APP_DB="${PG_APP_DB:-thebedb}"
+PG_APP_PORT="${PG_APP_PORT:-5430}"
 
 ################################################################################
 # Helper: Version Comparison
@@ -173,6 +174,7 @@ prompt_storage_credentials() {
 	echo "PostgreSQL setup values (press Enter to keep defaults):"
 	read -r -p "Database name [${PG_APP_DB}]: " input_db
 	read -r -p "Username [${PG_APP_USER}]: " input_user
+	read -r -p "Port [${PG_APP_PORT}]: " input_port
 	read -r -s -p "Password [hidden]: " input_pass
 	echo ""
 
@@ -181,6 +183,13 @@ prompt_storage_credentials() {
 	fi
 	if [[ -n "${input_user}" ]]; then
 		PG_APP_USER="${input_user}"
+	fi
+	if [[ -n "${input_port}" ]]; then
+		if [[ "${input_port}" =~ ^[0-9]+$ ]] && ((input_port >= 1 && input_port <= 65535)); then
+			PG_APP_PORT="${input_port}"
+		else
+			log_warn "Invalid port '${input_port}', keeping default/current port ${PG_APP_PORT}."
+		fi
 	fi
 	if [[ -n "${input_pass}" ]]; then
 		PG_APP_PASSWORD="${input_pass}"
@@ -540,11 +549,50 @@ install_storage_local() {
 
 postgres_exec() {
 	local sql="$1"
-	if command -v runuser >/dev/null 2>&1; then
-		runuser -u postgres -- psql -v ON_ERROR_STOP=1 -tAc "$sql"
-	else
-		su - postgres -c "psql -v ON_ERROR_STOP=1 -tAc \"$sql\""
+	local primary_port="${PG_APP_PORT}"
+	local fallback_port="5432"
+
+	_postgres_exec_with_port() {
+		local target_port="$1"
+		if command -v runuser >/dev/null 2>&1; then
+			runuser -u postgres -- psql -p "${target_port}" -v ON_ERROR_STOP=1 -tAc "$sql"
+		else
+			su - postgres -c "psql -p ${target_port} -v ON_ERROR_STOP=1 -tAc \"$sql\""
+		fi
+	}
+
+	# Prefer configured app port, but allow one-time fallback to default
+	# PostgreSQL port to support first-run migrations.
+	if _postgres_exec_with_port "${primary_port}"; then
+		return 0
 	fi
+
+	if [[ "${primary_port}" != "${fallback_port}" ]]; then
+		_postgres_exec_with_port "${fallback_port}"
+		return $?
+	fi
+
+	return 1
+}
+
+restart_postgres_service() {
+	case "${PKG_MANAGER}" in
+	apt | dnf | yum | pacman)
+		systemctl restart postgresql || true
+		;;
+	apk)
+		rc-service postgresql restart || rc-service postgresql start || true
+		;;
+	brew)
+		brew services restart postgresql@15 || brew services start postgresql@15 || true
+		;;
+	pkg)
+		service postgresql restart || service postgresql start || true
+		;;
+	*)
+		log_warn "Unknown package manager for PostgreSQL restart; restart service manually."
+		;;
+	esac
 }
 
 configure_postgres_local() {
@@ -561,6 +609,20 @@ configure_postgres_local() {
 		log_warn "PostgreSQL service is not reachable as postgres user. Skipping DB bootstrap."
 		log_warn "Start PostgreSQL and re-run with --storage-local to apply user/database setup."
 		return 0
+	fi
+
+	local current_port
+	current_port="$(postgres_exec "SHOW port;" | tr -d '[:space:]' || true)"
+	if [[ -n "${current_port}" ]] && [[ "${current_port}" != "${PG_APP_PORT}" ]]; then
+		log_info "Updating PostgreSQL port from ${current_port} to ${PG_APP_PORT}..."
+		postgres_exec "ALTER SYSTEM SET port = '${PG_APP_PORT}';" >/dev/null
+		restart_postgres_service
+		if ! postgres_exec "SELECT 1;" >/dev/null 2>&1; then
+			log_warn "PostgreSQL did not become reachable on port ${PG_APP_PORT} after restart."
+			log_warn "Please verify local PostgreSQL config and service logs."
+			return 0
+		fi
+		log_ok "PostgreSQL is now configured on port ${PG_APP_PORT}"
 	fi
 
 	# Create role if missing.
@@ -637,6 +699,7 @@ install_storage_docker() {
 				POSTGRES_USER="${PG_APP_USER}" \
 				POSTGRES_PASSWORD="${PG_APP_PASSWORD}" \
 				POSTGRES_DB="${PG_APP_DB}" \
+				POSTGRES_PORT="${PG_APP_PORT}" \
 				docker compose up -d postgres redis
 		)
 		log_ok "Docker-based PostgreSQL/Redis services started."
@@ -682,7 +745,7 @@ fi
 
 if [[ "${INSTALL_STORAGE}" == true ]] && [[ "${STORAGE_MODE:-docker}" != "none" ]]; then
 	log_info "Thebe SQL DSN:"
-	echo "postgres://${PG_APP_USER}:${PG_APP_PASSWORD}@localhost:5432/${PG_APP_DB}?sslmode=disable"
+	echo "postgres://${PG_APP_USER}:${PG_APP_PASSWORD}@localhost:${PG_APP_PORT}/${PG_APP_DB}?sslmode=disable"
 fi
 
 log_ok "Dependencies setup complete!"
