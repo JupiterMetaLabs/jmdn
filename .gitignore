@@ -64,6 +64,11 @@ SmartContract/artifacts/HelloWorld.json
 /SmartContract/artifacts
 SmartContract/artifacts/HelloWorld.json
 docs/refactor-contractDBOps.md
+internal/WAL/*
+docs/ADR-001-code-review.md
+AVC/BLS/Router/config/bls.json
+AVC/BuddyNodes/MessagePassing/BLS_Signer/config/bls.json
+AVC/BuddyNodes/MessagePassing/BLS_Verifier/config/bls.json
 internal/WAL/.tmp/*
 .claude/*
 .code-review-graph/*
