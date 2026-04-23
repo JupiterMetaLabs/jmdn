@@ -8,6 +8,7 @@
 # Options:
 #   --go          Install Go
 #   --yggdrasil   Install Yggdrasil
+#   --solidity    Install Solidity compiler (solc)
 #   --all         Install all dependencies (default if no flags provided)
 #   --storage-local   Install PostgreSQL + Redis as native services
 #   --storage-docker  Install Docker tooling and run PostgreSQL + Redis via compose
@@ -57,11 +58,6 @@ ver_lt() {
 	[ "$1" = "$2" ] && return 1 || [ "$1" = "$(printf "%s\n%s" "$1" "$2" | sort -V | head -n1)" ]
 }
 
-################################################################################
-# Root check and platform validation
-################################################################################
-require_root
-
 # Map platform names for Go downloads
 case "${PLATFORM}" in
 linux)
@@ -99,11 +95,21 @@ esac
 ################################################################################
 INSTALL_GO=false
 INSTALL_YGG=false
+INSTALL_SOLIDITY=false
 INSTALL_STORAGE=false
 STORAGE_MODE="" # local | docker | none
 INTERACTIVE=false
 
 if [ $# -eq 0 ]; then
+	log_warn "No arguments provided."
+	echo "Usage: sudo $0 [options]"
+	echo "Options:"
+	echo "  --go          Install Go"
+	echo "  --immudb      Install ImmuDB"
+	echo "  --yggdrasil   Install Yggdrasil"
+	echo "  --solidity    Install Solidity compiler (solc)"
+	echo "  --all         Install all dependencies"
+	exit 1
 	INTERACTIVE=true
 	INSTALL_GO=true
 	INSTALL_YGG=true
@@ -114,12 +120,18 @@ else
 		--go)
 			INSTALL_GO=true
 			;;
+		--immudb)
+			INSTALL_IMMUDB=true
+			;;
+		--solidity)
+			INSTALL_SOLIDITY=true
 		--yggdrasil)
 			INSTALL_YGG=true
 			;;
 		--all)
 			INSTALL_GO=true
 			INSTALL_YGG=true
+			INSTALL_SOLIDITY=true
 			INSTALL_STORAGE=true
 			;;
 		--storage-local)
@@ -200,6 +212,9 @@ prompt_storage_credentials() {
 # 1. System Dependencies (GCC/Build Essentials)
 ################################################################################
 install_sys_deps() {
+	if [[ "${PLATFORM}" != "macos" ]]; then
+		require_root
+	fi
 	log_info "Checking system build dependencies..."
 
 	local gcc_missing=false
@@ -273,6 +288,7 @@ install_sys_deps() {
 # 2. Go Installation
 ################################################################################
 install_go() {
+	require_root
 	local target_ver="go${GO_FALLBACK_VER}"
 
 	log_info "Checking Go (Target: ${target_ver})..."
@@ -322,9 +338,71 @@ install_go() {
 }
 
 ################################################################################
+# 3. ImmuDB Installation
+################################################################################
+install_immudb() {
+	require_root
+	local target_ver="v${IMMUDB_FALLBACK_VER}"
+
+	log_info "Checking ImmuDB (Target: ${target_ver})..."
+	if check_command immudb; then
+		# Output: immudb 1.10.0
+		local installed_raw
+		installed_raw=$(immudb version 2>/dev/null | head -n1 | awk '{print $2}')
+		local installed_ver="v${installed_raw}"
+
+		# Clean versions for comparison (remove v)
+		local v_inst="${installed_raw}"
+		local v_targ="${target_ver#v}"
+
+		if ver_lt "$v_inst" "$v_targ"; then
+			log_warn "ImmuDB version is old (${installed_ver}). Upgrading to ${target_ver}..."
+		else
+			log_ok "ImmuDB is up-to-date or newer: ${installed_ver} (Target: ${target_ver})"
+			return 0
+		fi
+	fi
+
+	# Strip 'v' for filename construction
+	local clean_ver="${target_ver#v}"
+	local filename="immudb-v${clean_ver}-${OS_IMMU}-${ARCH_IMMU}"
+	local url="https://github.com/codenotary/immudb/releases/download/${target_ver}/${filename}"
+
+	log_info "Downloading ImmuDB ${target_ver}..."
+
+	# Ensure JMDN_BIN directory exists
+	if [[ ! -d "${JMDN_BIN}" ]]; then
+		log_info "Creating binary directory: ${JMDN_BIN}"
+		mkdir -p "${JMDN_BIN}"
+	fi
+
+	local tmp_dir
+	tmp_dir=$(mktemp -d)
+
+	if curl -L -o "$tmp_dir/immudb" "$url"; then
+		chmod +x "$tmp_dir/immudb"
+		mv "$tmp_dir/immudb" "${JMDN_BIN}/immudb"
+		rm -rf "$tmp_dir"
+		log_ok "ImmuDB installed to ${JMDN_BIN}/immudb"
+	else
+		rm -rf "$tmp_dir"
+		if [[ "${PLATFORM}" == "freebsd" ]]; then
+			log_warn "Failed to download ImmuDB binary for FreeBSD from $url"
+			log_warn "ImmuDB may not have official FreeBSD binaries."
+			log_warn "Consider building from source: https://github.com/codenotary/immudb"
+			return 1
+		else
+			log_die "Failed to download ImmuDB from $url"
+		fi
+	fi
+}
+
+################################################################################
+# 4. Yggdrasil Installation
 # 3. Yggdrasil Installation
 ################################################################################
 install_yggdrasil() {
+	require_root
 	log_info "Checking Yggdrasil (Target: ${YGG_FALLBACK_VER})..."
 
 	if check_command yggdrasil; then
@@ -487,6 +565,95 @@ _install_yggdrasil_manual() {
 		rm -rf "$tmp_dir"
 		log_error "Failed to download Yggdrasil binary"
 		log_info "Please visit: https://github.com/yggdrasil-network/yggdrasil-go/releases"
+		return 1
+	fi
+}
+
+################################################################################
+# 5. Solidity (solc) Installation
+################################################################################
+install_solidity() {
+	if [[ "${PLATFORM}" != "macos" ]]; then
+		require_root
+	fi
+	log_info "Checking Solidity compiler (solc)..."
+
+	if check_command solc; then
+		log_ok "Solidity compiler is already installed: $(solc --version | grep Version | awk '{print $2}')"
+		return 0
+	fi
+
+	case "${PLATFORM}" in
+	linux)
+		case "${PKG_MANAGER}" in
+		apt)
+			log_info "Installing solc via apt (PPA)..."
+			# We need software-properties-common for add-apt-repository
+			pkg_install software-properties-common
+			add-apt-repository -y ppa:ethereum/ethereum
+			apt-get update
+			pkg_install solc
+			;;
+		dnf | yum)
+			log_info "Installing solc via ${PKG_MANAGER} (COPR)..."
+			if [[ "${PKG_MANAGER}" == "dnf" ]]; then
+				dnf copr enable @ethereum/solidity -y
+				dnf install -y solidity
+			else
+				yum install -y yum-plugin-copr
+				yum copr enable @ethereum/solidity -y
+				yum install -y solidity
+			fi
+			;;
+		pacman)
+			log_info "Installing solc via pacman..."
+			pacman -Sy --noconfirm solidity
+			;;
+		apk)
+			log_info "Installing solc via apk..."
+			apk add --no-cache solidity --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community
+			;;
+		*)
+			log_error "Unknown package manager for Linux: ${PKG_MANAGER}. Please install solc manually."
+			return 1
+			;;
+		esac
+		;;
+	macos)
+		log_info "Installing solc via Homebrew..."
+		if check_command brew; then
+			brew install solidity
+		else
+			log_error "Homebrew not found. Cannot install solidity."
+			return 1
+		fi
+		;;
+	windows)
+		case "${PKG_MANAGER}" in
+		choco)
+			log_info "Installing solc via Chocolatey..."
+			choco install solidity -y
+			;;
+		scoop)
+			log_info "Installing solc via Scoop..."
+			scoop install solidity
+			;;
+		*)
+			log_error "No supported Windows package manager (choco/scoop) found."
+			return 1
+			;;
+		esac
+		;;
+	*)
+		log_error "Solidity installation not supported on ${PLATFORM}"
+		return 1
+		;;
+	esac
+
+	if check_command solc; then
+		log_ok "Solidity compiler installed successfully: $(solc --version | grep Version | awk '{print $2}')"
+	else
+		log_error "Solidity installation appeared to succeed but 'solc' not found in PATH."
 		return 1
 	fi
 }
@@ -765,6 +932,10 @@ fi
 
 if [[ "${INSTALL_YGG}" == true ]]; then
 	install_yggdrasil
+fi
+
+if [[ "${INSTALL_SOLIDITY}" == true ]]; then
+	install_solidity
 fi
 
 if [[ "${INSTALL_STORAGE}" == true ]]; then

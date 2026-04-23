@@ -24,6 +24,8 @@ func DefaultConfig() NodeConfig {
 			DID:       15052,
 			Facade:    8545,
 			WS:        8546,
+			Geth:      15054,
+			Smart:     15056,
 
 			Metrics:  0, // disabled
 			Profiler: 0, // disabled
@@ -36,12 +38,14 @@ func DefaultConfig() NodeConfig {
 			DID:       "0.0.0.0",   // Identity Service
 			Facade:    "0.0.0.0",   // Public RPC
 			WS:        "0.0.0.0",   // Public WS
+			Geth:      "127.0.0.1", // Internal gRPC
+			Smart:     "127.0.0.1", // Internal gRPC
 			Metrics:   "127.0.0.1", // Metrics scraping (usually internal network)
 			Profiler:  "127.0.0.1", // Debugging - STRICTLY LOCALHOST
 		},
 		Database: DatabaseSettings{
-			Username: "",
-			Password: "",
+			Username: "immudb",
+			Password: "immudb",
 		},
 		Thebe: ThebeConfig{
 			Enabled:    false,

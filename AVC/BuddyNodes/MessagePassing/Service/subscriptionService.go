@@ -119,7 +119,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		}
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Processing received pubsub message",
+	logger().Info(logger_ctx, "Processing received pubsub message",
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("message_id", msg.ID),
 		ion.String("sender", string(msg.Sender)),
@@ -129,13 +129,13 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 	if msg.Data == nil {
 		return errors.New("received message has no data")
 	}
-	logger().NamedLogger.Info(logger_ctx, "Message",
+	logger().Info(logger_ctx, "Message",
 		ion.String("message", string(msg.Data.Message)),
 		ion.String("function", "SubscriptionService.handleReceivedMessage"))
 
 	// Attach ACK if missing
 	if msg.Data.ACK == nil {
-		logger().NamedLogger.Error(logger_ctx,
+		logger().Error(logger_ctx,
 			"Received message with nil ACK - attaching default ACK",
 			nil,
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -147,7 +147,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 			if err := json.Unmarshal([]byte(msg.Data.Message), &voteData); err == nil {
 				if _, isVote := voteData["vote"]; isVote {
 					ackStage = config.Type_SubmitVote
-					logger().NamedLogger.Info(logger_ctx, "Detected vote message - setting ACK stage to Type_SubmitVote",
+					logger().Info(logger_ctx, "Detected vote message - setting ACK stage to Type_SubmitVote",
 						ion.String("topic", config.PubSub_ConsensusChannel),
 						ion.String("function", "SubscriptionService.handleReceivedMessage"))
 				}
@@ -166,13 +166,13 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 
 	// ========== BFT CONSENSUS MESSAGES ==========
 	case config.Type_BFTRequest:
-		logger().NamedLogger.Info(logger_ctx, "Processing BFT_REQUEST from pubsub",
+		logger().Info(logger_ctx, "Processing BFT_REQUEST from pubsub",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
 		return s.handleBFTRequest(logger_ctx, msg)
 
 	case config.Type_StartPubSub:
-		logger().NamedLogger.Info(logger_ctx, "Processing START_PUBSUB from pubsub",
+		logger().Info(logger_ctx, "Processing START_PUBSUB from pubsub",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("round_id", msg.Data.RoundID),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -183,7 +183,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		return nil
 
 	case config.Type_EndPubSub:
-		logger().NamedLogger.Info(logger_ctx, "Processing END_PUBSUB from pubsub",
+		logger().Info(logger_ctx, "Processing END_PUBSUB from pubsub",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("round_id", msg.Data.RoundID),
 			ion.Bool("success", msg.Data.ConsensusSuccess),
@@ -192,13 +192,13 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		// CRITICAL FIX: Always unsubscribe when receiving END_PUBSUB to prevent resource accumulation
 		// This MUST happen regardless of whether bftAdapter exists
 		if err := Connector.Unsubscribe(s.pubSub, config.PubSub_ConsensusChannel); err != nil {
-			logger().NamedLogger.Warn(logger_ctx, "Failed to unsubscribe from consensus channel (non-fatal)",
+			logger().Warn(logger_ctx, "Failed to unsubscribe from consensus channel (non-fatal)",
 				ion.String("error", err.Error()),
 				ion.String("topic", config.PubSub_ConsensusChannel),
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))
 			// Don't return error - cleanup failure shouldn't stop processing
 		} else {
-			logger().NamedLogger.Info(logger_ctx, "Successfully unsubscribed from consensus channel",
+			logger().Info(logger_ctx, "Successfully unsubscribed from consensus channel",
 				ion.String("topic", config.PubSub_ConsensusChannel),
 				ion.String("round_id", msg.Data.RoundID),
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -210,7 +210,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		return nil
 
 	case config.Type_SubmitVote:
-		logger().NamedLogger.Info(logger_ctx, "Processing SUBMIT_VOTE from pubsub",
+		logger().Info(logger_ctx, "Processing SUBMIT_VOTE from pubsub",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("round_id", msg.Data.RoundID),
 			ion.String("phase", msg.Data.Phase),
@@ -221,7 +221,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		listenerNode := globalVars.Get_ForListner()
 
 		if listenerNode != nil && msg.Data.Sender == listenerNode.PeerID {
-			logger().NamedLogger.Info(logger_ctx, "Skipping own vote (self-loop prevention)",
+			logger().Info(logger_ctx, "Skipping own vote (self-loop prevention)",
 				ion.String("topic", config.PubSub_ConsensusChannel),
 				ion.String("vote_from", msg.Data.Sender.String()),
 				ion.String("vote_message", msg.Data.Message),
@@ -229,7 +229,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 			return nil // Don't process own vote from pubsub
 		}
 
-		logger().NamedLogger.Info(logger_ctx, "Received vote message via pubsub",
+		logger().Info(logger_ctx, "Received vote message via pubsub",
 			ion.String("to_buddy_node", listenerNode.PeerID.String()),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("message_id", msg.ID),
@@ -240,7 +240,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 
 		// listenerNode was already retrieved above for self-loop check
 		if listenerNode == nil || listenerNode.CRDTLayer == nil {
-			logger().NamedLogger.Error(logger_ctx, "Listener node or CRDT layer not initialized", nil,
+			logger().Error(logger_ctx, "Listener node or CRDT layer not initialized", nil,
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))
 			return errors.New("listener node or CRDT layer not initialized")
 		}
@@ -248,7 +248,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		// Add vote to CRDT directly
 		voteData := make(map[string]interface{})
 		if err := json.Unmarshal([]byte(msg.Data.Message), &voteData); err != nil {
-			logger().NamedLogger.Error(logger_ctx, "Failed to unmarshal vote message", err,
+			logger().Error(logger_ctx, "Failed to unmarshal vote message", err,
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))
 			return errors.New("failed to unmarshal vote message: " + err.Error())
 		}
@@ -258,7 +258,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 			blockHashRaw, hasBlockHash := voteData["block_hash"]
 			blockHash, _ := blockHashRaw.(string)
 			if !hasBlockHash || blockHash == "" {
-				logger().NamedLogger.Error(logger_ctx, "Vote missing block_hash; skipping vote processing trigger", nil,
+				logger().Error(logger_ctx, "Vote missing block_hash; skipping vote processing trigger", nil,
 					ion.String("function", "SubscriptionService.handleReceivedMessage"))
 				blockHash = "" // Will cause processVotesAndTriggerBFT to skip processing
 			}
@@ -275,12 +275,12 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 
 			result := ServiceLayer.Controller(listenerNode.CRDTLayer, OP)
 			if err, ok := result.(error); ok && err != nil {
-				logger().NamedLogger.Error(logger_ctx, "Failed to add vote to CRDT", err,
+				logger().Error(logger_ctx, "Failed to add vote to CRDT", err,
 					ion.String("function", "SubscriptionService.handleReceivedMessage"))
 				return errors.New("failed to add vote to local CRDT Engine: " + err.Error())
 			}
 
-			logger().NamedLogger.Info(logger_ctx, "Successfully added vote to CRDT",
+			logger().Info(logger_ctx, "Successfully added vote to CRDT",
 				ion.String("topic", config.PubSub_ConsensusChannel),
 				ion.String("sender", msg.Data.Sender.String()),
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -310,7 +310,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 	case config.Type_Publish:
 		// Check if it's a BFT vote (has Phase and RoundID)
 		if msg.Data.Phase != "" && msg.Data.RoundID != "" {
-			logger().NamedLogger.Info(logger_ctx, "Processing BFT vote via PUBLISH",
+			logger().Info(logger_ctx, "Processing BFT vote via PUBLISH",
 				ion.String("topic", config.PubSub_ConsensusChannel),
 				ion.String("round_id", msg.Data.RoundID),
 				ion.String("phase", msg.Data.Phase),
@@ -320,21 +320,21 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		}
 
 		// Regular publish message
-		logger().NamedLogger.Info(logger_ctx, "Processing publish message from pubsub",
+		logger().Info(logger_ctx, "Processing publish message from pubsub",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
 
 		return nil
 
 	case config.Type_AskForSubscription:
-		logger().NamedLogger.Info(logger_ctx, "Processing subscription request from pubsub",
+		logger().Info(logger_ctx, "Processing subscription request from pubsub",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
 
 		return s.handleSubscriptionRequest(logger_ctx, msg)
 
 	case config.Type_ToBeProcessed:
-		logger().NamedLogger.Info(logger_ctx, "Processing TO_BE_PROCESSED message",
+		logger().Info(logger_ctx, "Processing TO_BE_PROCESSED message",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("message_id", msg.ID),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -354,7 +354,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 			return nil
 		}
 
-		logger().NamedLogger.Info(logger_ctx, "Processing verify subscription request from pubsub",
+		logger().Info(logger_ctx, "Processing verify subscription request from pubsub",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("sender", msg.Sender.String()),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -363,7 +363,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 
 	default:
 		// Debugging in the default case
-		logger().NamedLogger.Info(logger_ctx, "Received message with unknown stage",
+		logger().Info(logger_ctx, "Received message with unknown stage",
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -375,7 +375,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 
 func (s *SubscriptionService) handleVoteSubmission(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	if s.bftAdapter == nil {
-		logger().NamedLogger.Info(logger_ctx, "BFT adapter not set, ignoring vote",
+		logger().Info(logger_ctx, "BFT adapter not set, ignoring vote",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleVoteSubmission"))
 		return nil
@@ -389,7 +389,7 @@ func (s *SubscriptionService) handleVoteSubmission(logger_ctx context.Context, m
 		return s.handleCommitVote(logger_ctx, msg)
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Unknown vote phase",
+	logger().Info(logger_ctx, "Unknown vote phase",
 		ion.String("phase", msg.Data.Phase),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("function", "SubscriptionService.handleVoteSubmission"))
@@ -397,7 +397,7 @@ func (s *SubscriptionService) handleVoteSubmission(logger_ctx context.Context, m
 }
 
 func (s *SubscriptionService) handlePrepareVote(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
-	logger().NamedLogger.Info(logger_ctx, "Processing PREPARE vote",
+	logger().Info(logger_ctx, "Processing PREPARE vote",
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("round_id", msg.Data.RoundID),
 		ion.String("sender", msg.Sender.String()),
@@ -411,7 +411,7 @@ func (s *SubscriptionService) handlePrepareVote(logger_ctx context.Context, msg 
 }
 
 func (s *SubscriptionService) handleCommitVote(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
-	logger().NamedLogger.Info(logger_ctx, "Processing COMMIT vote",
+	logger().Info(logger_ctx, "Processing COMMIT vote",
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("round_id", msg.Data.RoundID),
 		ion.String("sender", msg.Sender.String()),
@@ -427,7 +427,7 @@ func (s *SubscriptionService) handleCommitVote(logger_ctx context.Context, msg *
 // ========== EXISTING METHODS ==========
 // handleSubscriptionRequest processes subscription requests from other nodes
 func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
-	logger().NamedLogger.Info(logger_ctx, "Handling subscription request from pubsub",
+	logger().Info(logger_ctx, "Handling subscription request from pubsub",
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("sender", string(msg.Sender)),
 		ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
@@ -439,7 +439,7 @@ func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Conte
 	// 4. Send a response back to the requesting node
 
 	// For now, we'll just log the request
-	logger().NamedLogger.Info(logger_ctx, "Subscription request received from",
+	logger().Info(logger_ctx, "Subscription request received from",
 		ion.String("sender", string(msg.Sender)),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
@@ -452,7 +452,7 @@ func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Conte
 func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context.Context, channelName string) error {
 	if s.pubSub == nil {
 		err := errors.New("SubscriptionService.HandleStreamSubscriptionRequest - pubsub not available")
-		logger().NamedLogger.Error(logger_ctx, err.Error(),
+		logger().Error(logger_ctx, err.Error(),
 			err,
 			ion.String("channel", channelName),
 			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
@@ -460,11 +460,11 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 	}
 
 	// start trace
-	tracer := logger().NamedLogger.Tracer("SubscriptionService")
+	tracer := logger().Tracer("SubscriptionService")
 	logger_ctx, span := tracer.Start(logger_ctx, "SubscriptionService.HandleStreamSubscriptionRequest")
 	defer span.End()
 
-	logger().NamedLogger.Info(logger_ctx, "Handling stream subscription request",
+	logger().Info(logger_ctx, "Handling stream subscription request",
 		ion.String("channel", channelName),
 		ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 
@@ -482,7 +482,7 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 			Creator:      s.pubSub.Host.ID(),
 		}
 
-		logger().NamedLogger.Info(logger_ctx, "Created channel locally for peer",
+		logger().Info(logger_ctx, "Created channel locally for peer",
 			ion.String("channel", channelName),
 			ion.String("peer", s.pubSub.Host.ID().String()),
 			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
@@ -491,18 +491,18 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 
 	// Use the Connector.Subscribe to handle the subscription properly with GossipSub
 	// This ensures messages are received via GossipSub
-	logger().NamedLogger.Info(logger_ctx, "About to call Connector.Subscribe for",
+	logger().Info(logger_ctx, "About to call Connector.Subscribe for",
 		ion.String("channel", channelName),
 		ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 	err := Connector.Subscribe(logger_ctx, s.pubSub, channelName, func(msg *AVCStruct.GossipMessage) {
-		logger().NamedLogger.Info(logger_ctx, "Received message on consensus channel",
+		logger().Info(logger_ctx, "Received message on consensus channel",
 			ion.String("channel", channelName),
 			ion.String("message_id", msg.ID),
 			ion.String("sender", msg.Sender.String()),
 			ion.String("topic", msg.Topic),
 			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 
-		logger().NamedLogger.Info(logger_ctx, "Received message on consensus channel",
+		logger().Info(logger_ctx, "Received message on consensus channel",
 			ion.String("channel", channelName),
 			ion.String("message_id", msg.ID),
 			ion.String("sender", msg.Sender.String()),
@@ -510,7 +510,7 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 
 		// Handle the received message by processing it through the message router
 		if err := s.handleReceivedMessage(logger_ctx, msg); err != nil {
-			logger().NamedLogger.Error(logger_ctx, "Failed to handle received message", err,
+			logger().Error(logger_ctx, "Failed to handle received message", err,
 				ion.String("channel", channelName),
 				ion.String("message_id", msg.ID),
 				ion.String("sender", msg.Sender.String()),
@@ -520,13 +520,13 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 	})
 
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to subscribe to consensus channel", err,
+		logger().Error(logger_ctx, "Failed to subscribe to consensus channel", err,
 			ion.String("channel", channelName),
 			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 		return errors.New("failed to subscribe to " + channelName + ": " + err.Error())
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Successfully subscribed to consensus channel",
+	logger().Info(logger_ctx, "Successfully subscribed to consensus channel",
 		ion.String("channel", channelName),
 		ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 
@@ -596,7 +596,7 @@ func (s *SubscriptionService) GetMyBuddyID() string {
 func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	// If no factory is set, just log and return
 	if s.adapterFactory == nil {
-		logger().NamedLogger.Info(logger_ctx, "BFT adapter factory not configured, ignoring BFT request",
+		logger().Info(logger_ctx, "BFT adapter factory not configured, ignoring BFT request",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleBFTRequest"))
 		return nil
@@ -639,13 +639,13 @@ func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *
 	}
 
 	if !amIaBuddy {
-		logger().NamedLogger.Info(logger_ctx, "Not in buddy list, skipping consensus",
+		logger().Info(logger_ctx, "Not in buddy list, skipping consensus",
 			ion.Int64("round", int64(reqData.Round)),
 			ion.String("function", "SubscriptionService.handleBFTRequest"))
 		return nil
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "I'm a buddy! Starting consensus",
+	logger().Info(logger_ctx, "I'm a buddy! Starting consensus",
 		ion.Int64("round", int64(reqData.Round)),
 		ion.String("function", "SubscriptionService.handleBFTRequest"))
 
@@ -657,7 +657,7 @@ func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *
 				reqData.GossipsubTopic,
 			)
 			if err != nil {
-				logger().NamedLogger.Error(logger_ctx, "Failed to create BFT adapter", err,
+				logger().Error(logger_ctx, "Failed to create BFT adapter", err,
 					ion.String("function", "SubscriptionService.handleBFTRequest"))
 				return errors.New("failed to create BFT adapter: " + err.Error())
 			}
@@ -673,11 +673,11 @@ func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *
 		)
 
 		if err != nil {
-			logger().NamedLogger.Error(logger_ctx, "Consensus failed", err,
+			logger().Error(logger_ctx, "Consensus failed", err,
 				ion.Int64("round", int64(reqData.Round)),
 				ion.String("function", "SubscriptionService.handleBFTRequest"))
 		} else {
-			logger().NamedLogger.Info(logger_ctx, "Consensus completed successfully",
+			logger().Info(logger_ctx, "Consensus completed successfully",
 				ion.Int64("round", int64(reqData.Round)),
 				ion.String("decision", string(result.Decision)),
 				ion.Bool("accepted", result.BlockAccepted),
@@ -694,27 +694,27 @@ func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *
 func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStruct.BuddyNode, blockHash string) {
 	if listenerNode == nil || listenerNode.CRDTLayer == nil {
 		err := errors.New("cannot process votes - listener node or CRDT layer not initialized")
-		logger().NamedLogger.Error(logger_ctx, err.Error(),
+		logger().Error(logger_ctx, err.Error(),
 			err,
 			ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 		return
 	}
 
 	if blockHash == "" {
-		logger().NamedLogger.Error(logger_ctx, "Cannot Scope Votes",
+		logger().Error(logger_ctx, "Cannot Scope Votes",
 			errors.New("skipping vote processing - block hash not available (cannot scope votes)"),
 			ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 		return
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Processing votes and triggering BFT",
+	logger().Info(logger_ctx, "Processing votes and triggering BFT",
 		ion.String("block_hash", blockHash),
 		ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 
 	// Process votes from CRDT with block hash filtering
 	result, err := Structs.ProcessVotesFromCRDT(logger_ctx, listenerNode, blockHash)
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to process votes from CRDT", err,
+		logger().Error(logger_ctx, "Failed to process votes from CRDT", err,
 			ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 		return
 	}
@@ -727,7 +727,7 @@ func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStru
 
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Vote Result from VoteAggregation",
+	logger().Info(logger_ctx, "Vote Result from VoteAggregation",
 		ion.Int64("result", int64(result)),
 		ion.String("bft_decision", bftDecision),
 		ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
@@ -736,20 +736,20 @@ func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStru
 	// sendVoteResultToSequencer(listenerNode, result)
 
 	// BFT will be triggered elsewhere (from ListenerHandler)
-	logger().NamedLogger.Info(logger_ctx, "Vote processing completed, BFT will be triggered",
+	logger().Info(logger_ctx, "Vote processing completed, BFT will be triggered",
 		ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 }
 
 /* UNUSED
 // sendVoteResultToSequencer sends the vote result back to the sequencer via SubmitMessageProtocol
 func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStruct.BuddyNode, result int8) {
-	logger().NamedLogger.Info(logger_ctx, "Sending vote result to sequencer",
+	logger().Info(logger_ctx, "Sending vote result to sequencer",
 		ion.String("listener_node", listenerNode.PeerID.String()),
 		ion.Int64("result", int64(result)),
 		ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 
 	if listenerNode == nil || listenerNode.PeerID == "" {
-		logger().NamedLogger.Error(logger_ctx, "Cannot send vote result - listener node not initialized",
+		logger().Error(logger_ctx, "Cannot send vote result - listener node not initialized",
 			errors.New("Cannot send vote result - listener node not initialized"),
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
@@ -757,7 +757,7 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 
 	// Get the host from the current buddy node
 	if listenerNode.Host == nil {
-		logger().NamedLogger.Error(logger_ctx, "Cannot send vote result - buddy node host not initialized",
+		logger().Error(logger_ctx, "Cannot send vote result - buddy node host not initialized",
 			errors.New("Cannot send vote result - buddy node host not initialized"),
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
@@ -767,7 +767,7 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 	// The sequencer is the first peer in the cache (from when we subscribed)
 	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
 	if pubSubNode == nil || len(pubSubNode.BuddyNodes.Buddies_Nodes) == 0 {
-		logger().NamedLogger.Error(logger_ctx, "Cannot send vote result - no sequencer peer found",
+		logger().Error(logger_ctx, "Cannot send vote result - no sequencer peer found",
 			errors.New("Cannot send vote result - no sequencer peer found"),
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
@@ -782,7 +782,7 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 	for _, peerID := range pubSubNode.BuddyNodes.Buddies_Nodes {
 		// Skip if this is our own peer ID
 		if peerID == currentPeerID || peerID == currentHostID {
-			logger().NamedLogger.Info(logger_ctx, "Skipping self-peer",
+			logger().Info(logger_ctx, "Skipping self-peer",
 				ion.String("peer_id", peerID.String()),
 				ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 			continue
@@ -793,7 +793,7 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 	}
 
 	if !found {
-		logger().NamedLogger.Error(logger_ctx, "Cannot send vote result - no valid sequencer peer found (all are self)",
+		logger().Error(logger_ctx, "Cannot send vote result - no valid sequencer peer found (all are self)",
 			errors.New("Cannot send vote result - no valid sequencer peer found (all are self)"),
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
@@ -801,7 +801,7 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 
 	host := listenerNode.Host
 
-	logger().NamedLogger.Info(logger_ctx, "Sending vote result",
+	logger().Info(logger_ctx, "Sending vote result",
 		ion.Int64("result", int64(result)),
 		ion.String("sequencer_peer_id", sequencerPeerID.String()),
 		ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
@@ -814,7 +814,7 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 	})
 
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to marshal result message", err,
+		logger().Error(logger_ctx, "Failed to marshal result message", err,
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
 	}
@@ -831,7 +831,7 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 	// Open a stream to the sequencer
 	stream, err := host.NewStream(context.Background(), sequencerPeerID, config.SubmitMessageProtocol)
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to open stream to sequencer", err,
+		logger().Error(logger_ctx, "Failed to open stream to sequencer", err,
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
 	}
@@ -840,7 +840,7 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 	// Serialize and send the message
 	messageBytes, err := json.Marshal(message)
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to marshal message", err,
+		logger().Error(logger_ctx, "Failed to marshal message", err,
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
 	}
@@ -848,19 +848,19 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 	writer := bufio.NewWriter(stream)
 	_, err = writer.WriteString(string(messageBytes) + string(rune(config.Delimiter)))
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to write message", err,
+		logger().Error(logger_ctx, "Failed to write message", err,
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
 	}
 
 	err = writer.Flush()
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to flush message", err,
+		logger().Error(logger_ctx, "Failed to flush message", err,
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Vote result sent to sequencer successfully",
+	logger().Info(logger_ctx, "Vote result sent to sequencer successfully",
 		ion.Int64("result", int64(result)),
 		ion.String("message", resultMessage),
 		ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
@@ -869,7 +869,7 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 
 // handleVerifySubscriptionRequest processes verification requests from the sequencer
 func (s *SubscriptionService) handleVerifySubscriptionRequest(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
-	logger().NamedLogger.Info(logger_ctx, "Handling verify subscription request from sequencer",
+	logger().Info(logger_ctx, "Handling verify subscription request from sequencer",
 		ion.String("sender", msg.Sender.String()),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("function", "SubscriptionService.handleVerifySubscriptionRequest"))
@@ -890,13 +890,13 @@ func (s *SubscriptionService) handleVerifySubscriptionRequest(logger_ctx context
 		SetACK(ack)
 
 	// Publish the response back to the channel
-	logger().NamedLogger.Info(logger_ctx, "Sending verification response",
+	logger().Info(logger_ctx, "Sending verification response",
 		ion.String("sender", s.pubSub.Host.ID().String()),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("function", "SubscriptionService.handleVerifySubscriptionRequest"))
 
 	if err := Publisher.Publish(logger_ctx, s.pubSub, config.PubSub_ConsensusChannel, responseMsg, nil); err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to publish verification response", err,
+		logger().Error(logger_ctx, "Failed to publish verification response", err,
 			ion.String("function", "SubscriptionService.handleVerifySubscriptionRequest"))
 		return err
 	}

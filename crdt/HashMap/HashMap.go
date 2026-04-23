@@ -1,10 +1,13 @@
 package HashMap
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sort"
+
+	log "gossipnode/logging"
 )
 
 // HashMap represents a wrapper around a standard Go map[string]bool for public key or DID reconciliation.
@@ -42,7 +45,11 @@ func (hm *HashMap) Subtract(other *HashMap) []string {
 			diff = append(diff, key)
 		}
 	}
-	fmt.Println("Compute - Diff: ", diff)
+	ctx := context.Background()
+	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.CRDT, "")
+	if err == nil && logInstance != nil {
+		logInstance.GetNamedLogger().Debug(ctx, "Compute - Diff computed")
+	}
 	return diff
 }
 

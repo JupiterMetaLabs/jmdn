@@ -22,7 +22,7 @@ type HTTPServer struct {
 	h       *Handlers
 	dualDB  *dualdb.DualDB
 	cassata *cassata.Cassata // optional: Postgres projection reads when Thebe is enabled
-	logger  *ion.Ion        // Add logger
+	logger  *ion.Ion         // Add logger
 }
 
 func NewHTTPServer(h *Handlers) *HTTPServer {
@@ -59,8 +59,10 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 	router.Use(gin.Recovery())
 	router.Use(withCORS())
 
-	// Initialize Security via gatekeeper helper
-	secCfg := &settings.Get().Security
+	// Add JSON-RPC handler
+	router.Any("/", s.handleJSONRPC)
+
+	// Create HTTP server with GIN router
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           router,
@@ -81,7 +83,7 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- gatekeeper.ServeHTTP(srv, tlsEnabled)
+		errCh <- srv.ListenAndServe()
 	}()
 
 	select {
