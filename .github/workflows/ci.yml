@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "release/**"]
+  pull_request:
+    branches: ["main", "release/**"]
+
+# Cancel any in-progress run for the same branch when a new push arrives.
+# This avoids wasting runner minutes on stale commits.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Single source of truth for the linter version.
+  # Update here when you upgrade golangci-lint locally.
+  GOLANGCI_LINT_VERSION: v2.10.1
+
+jobs:
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Reads the `go` directive directly from go.mod — no version duplication.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Install golangci-lint once. Both the format check and lint step below
+      # will use this binary, so it is only installed once.
+      - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b $(go env GOPATH)/bin ${{ env.GOLANGCI_LINT_VERSION }}
+
+      # ── Dependency Integrity ────────────────────────────────────────────
+      # Verifies downloaded packages match their expected checksums in go.sum.
+      - name: Verify module checksums
+        run: go mod verify
+
+      # Ensures go.mod and go.sum are not out of sync with the source tree.
+      # Catches the "developer forgot to run go mod tidy" case.
+      - name: Check go.mod / go.sum are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum || {
+            echo ""
+            echo "❌  go.mod or go.sum is out of sync."
+            echo "    Run 'go mod tidy' locally and commit the result."
+            exit 1
+          }
+
+      # ── Compilation ─────────────────────────────────────────────────────
+      # Full compile of every package. Catches broken imports and type errors
+      # before the linter runs (cheaper feedback loop).
+      - name: Build
+        run: go build ./...
+
+      # ── Tests ───────────────────────────────────────────────────────────
+      # Tests require live infrastructure (ImmuDB pool, seed node) unavailable
+      # in CI. Enable once a test environment or proper mocks are in place.
+      # - name: Test
+      #   run: go test ./...
+
+      # ── Formatting ──────────────────────────────────────────────────────
+      # Driven entirely by the `formatters:` block in .golangci.yml.
+      # Adding or removing a formatter in .golangci.yml automatically
+      # changes what this step enforces — no changes needed here.
+      - name: Format check
+        run: |
+          golangci-lint fmt --diff || {
+            echo ""
+            echo "❌  Formatting issues found."
+            echo "    Run 'golangci-lint fmt' locally and commit the result."
+            exit 1
+          }
+
+      # ── Linting ─────────────────────────────────────────────────────────
+      # Driven entirely by the `linters:` block in .golangci.yml.
+      # Plug-and-play: enable or disable a linter in .golangci.yml and
+      # CI automatically picks it up on the next push — no changes needed here.
+      #
+      # ┌─ CHOOSE ONE MODE ──────────────────────────────────────────────────┐
+      #
+      # MODE A — Full enforcement (clean codebase, zero backlog tolerated)
+      # Use this when the entire codebase is lint-clean.
+      # Every violation in every file fails the build.
+      #
+      # MODE B — Diff-only enforcement (backlog exists, protect going forward)
+      # Use this to block NEW lint issues without being blocked by old ones.
+      # --new-from-rev=HEAD~1 compares the PR diff against its parent commit.
+      # Only violations introduced by THIS commit will fail the build.
+      # Switch to Mode A once the backlog is cleared.
+      #
+      # └────────────────────────────────────────────────────────────────────┘
+      - name: Lint
+        run: |
+          # MODE A: uncomment the line below and comment out MODE B to enforce the full codebase.
+          golangci-lint run
+
+          # MODE B: uncomment the line below and comment out MODE A to enforce diff-only.
+          # golangci-lint run --new-from-rev=HEAD~1

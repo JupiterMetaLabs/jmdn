@@ -1,0 +1,61 @@
+name: SonarQube
+
+on:
+  push:
+    branches: ["main", "release/**"]
+  pull_request:
+    branches: ["main", "release/**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sonarqube:
+    name: SonarQube Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # ── Coverage ─────────────────────────────────────────────────────
+      # Generate cover.out for SonarQube to consume.
+      # NOTE: Some test packages require live infrastructure (ImmuDB,
+      # seed node). If specific packages fail, exclude them here and
+      # track via a separate integration test workflow.
+      #
+      # Uncomment when test infrastructure is available in CI:
+      # - name: Run tests with coverage
+      #   run: |
+      #     go test ./... \
+      #       -coverprofile=cover.out \
+      #       -covermode=atomic \
+      #       -timeout=5m
+
+      # ── SonarQube Scan ───────────────────────────────────────────────
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        with:
+          args: >
+            -Dsonar.projectVersion=${{ github.sha }}
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      # ── Quality Gate ─────────────────────────────────────────────────
+      # Fails the workflow if the SonarQube quality gate is red.
+      # Combined with GitHub branch protection, this blocks PR merges.
+      - name: Quality Gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
