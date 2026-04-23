@@ -1,11 +1,8 @@
 package helper
 
 import (
-	"context"
 	"fmt"
 	"net"
-
-	"github.com/JupiterMetaLabs/ion"
 )
 
 // GetTun0GlobalIPv6 retrieves the global IPv6 address for Yggdrasil interface
@@ -36,20 +33,14 @@ func GetTun0GlobalIPv6() (string, error) {
 
 			// Check if it's a global IPv6 address (first few characters indicate global scope)
 			if ipNet.IP.To16() != nil && !ipNet.IP.IsLoopback() && !ipNet.IP.IsLinkLocalUnicast() {
-				if l := logger(); l != nil {
-					l.Debug(context.Background(), "Found Yggdrasil IPv6 address",
-						ion.String("address", ipNet.IP.String()),
-						ion.String("interface", ifaceName))
-				}
+				fmt.Printf("Found Yggdrasil IPv6 address %s on interface %s\n", ipNet.IP.String(), ifaceName)
 				return ipNet.IP.String(), nil
 			}
 		}
 	}
 
 	// If none of the common interface names worked, try scanning all interfaces
-	if l := logger(); l != nil {
-		l.Debug(context.Background(), "Common interface names failed, scanning all interfaces for Yggdrasil addresses...")
-	}
+	fmt.Printf("Common interface names failed, scanning all interfaces for Yggdrasil addresses...\n")
 	return scanAllInterfacesForYggdrasil()
 }
 
@@ -82,11 +73,7 @@ func scanAllInterfacesForYggdrasil() (string, error) {
 				// Check if this looks like a Yggdrasil address (starts with 200: or 203:)
 				ipStr := ipNet.IP.String()
 				if len(ipStr) >= 4 && (ipStr[:4] == "200:" || ipStr[:4] == "203:") {
-					if l := logger(); l != nil {
-						l.Debug(context.Background(), "Found potential Yggdrasil IPv6 address",
-							ion.String("address", ipStr),
-							ion.String("interface", iface.Name))
-					}
+					fmt.Printf("Found potential Yggdrasil IPv6 address %s on interface %s\n", ipStr, iface.Name)
 					return ipStr, nil
 				}
 			}

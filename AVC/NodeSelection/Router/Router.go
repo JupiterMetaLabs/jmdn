@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/JupiterMetaLabs/ion"
-
 	"gossipnode/AVC/NodeSelection/pkg/selection"
 	"gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
@@ -36,7 +34,7 @@ func (r *NodeselectionRouter) GetBuddyNodes(number int) ([]*selection.BuddyNode,
 	var peerID string
 	peerID = node.GetPeerID()
 	if peerID == "" {
-		logger().Debug(context.Background(), "No peer ID found, falling back to reading from peer.json")
+		fmt.Println("No peer ID found, falling back to reading from peer.json")
 		// Fallback to reading from peer.json
 		peerID = node.GetPeerIDFromJSON()
 		if peerID == "" {
@@ -44,7 +42,7 @@ func (r *NodeselectionRouter) GetBuddyNodes(number int) ([]*selection.BuddyNode,
 		}
 	}
 
-	logger().Debug(context.Background(), "PeerID loaded", ion.String("peer_id", peerID))
+	fmt.Println("peerID:", peerID)
 
 	// Get the seednode URL from config
 	seedNodeURL := settings.Get().Network.SeedNode
@@ -68,7 +66,7 @@ func (r *NodeselectionRouter) GetBuddyNodes(number int) ([]*selection.BuddyNode,
 
 	// Debugging
 	for _, buddy := range filteredBuddies {
-		logger().Debug(context.Background(), "Processing buddy node", ion.String("buddy_peer_id", buddy.Node.PeerId))
+		fmt.Println("buddy", buddy.Node.PeerId)
 	}
 
 	return filteredBuddies, nil

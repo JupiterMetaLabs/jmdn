@@ -1,35 +1,16 @@
 package gETH
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"gossipnode/DB_OPs"
+
+	"sort"
+
 	"gossipnode/config"
 	"gossipnode/gETH/proto"
-	"sort"
 )
-
-type immuDBServer struct {
-	defaultdb  config.PooledConnection
-	accountsdb config.PooledConnection
-}
-
-func initDBs() (immuDBServer, error) {
-	defaultdb, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
-	if err != nil {
-		return immuDBServer{}, err
-	}
-
-	accountsdb, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
-	if err != nil {
-		return immuDBServer{}, err
-	}
-
-	return immuDBServer{defaultdb: *defaultdb, accountsdb: *accountsdb}, nil
-}
 
 func ConvertZKTransactiontoETHTransaction(zktransactions []config.Transaction) ([]*proto.Transaction, error) {
 	var transactions []*proto.Transaction
@@ -40,16 +21,10 @@ func ConvertZKTransactiontoETHTransaction(zktransactions []config.Transaction) (
 		typebytes[0] = zktransaction.Type
 
 		// convert BigInt to bytes
-		var rBytes []byte
-		if zktransaction.R != nil {
-			rBytes = zktransaction.R.Bytes()
-		}
+		rBytes := zktransaction.R.Bytes()
 
 		// Convert BigInt to bytes
-		var sBytes []byte
-		if zktransaction.S != nil {
-			sBytes = zktransaction.S.Bytes()
-		}
+		sBytes := zktransaction.S.Bytes()
 
 		// Convert AccessList to []accesslist
 		var accessTuples []*proto.AccessTuple
@@ -69,44 +44,24 @@ func ConvertZKTransactiontoETHTransaction(zktransactions []config.Transaction) (
 			})
 		}
 
-		var valueBytes []byte
-		if zktransaction.Value != nil {
-			valueBytes = zktransaction.Value.Bytes()
-		}
-
-		var gasPriceBytes []byte
-		if zktransaction.MaxFee != nil {
-			gasPriceBytes = zktransaction.MaxFee.Bytes()
-		}
-
-		var maxPriorityFeeBytes []byte
-		if zktransaction.MaxPriorityFee != nil {
-			maxPriorityFeeBytes = zktransaction.MaxPriorityFee.Bytes()
-		}
-
-		var v uint32
-		if zktransaction.V != nil {
-			v = uint32(zktransaction.V.Uint64())
-		}
-
 		transactions = append(transactions, &proto.Transaction{
 			Hash:     zktransaction.Hash.Bytes(),
 			From:     zktransaction.From.Bytes(),
 			To:       zktransaction.To.Bytes(),
 			Input:    []byte(zktransaction.Data),
 			Nonce:    zktransaction.Nonce,
-			Value:    valueBytes,
+			Value:    zktransaction.Value.Bytes(),
 			Gas:      zktransaction.GasLimit,
-			GasPrice: gasPriceBytes,
+			GasPrice: zktransaction.MaxFee.Bytes(),
 			Type:     uint32(zktransaction.Type),
 			R:        rBytes,
 			S:        sBytes,
-			V:        v,
+			V:        uint32(zktransaction.V.Uint64()),
 			AccessList: &proto.AccessList{
 				AccessTuples: accessTuples,
 			},
-			MaxFeePerGas:         gasPriceBytes,
-			MaxPriorityFeePerGas: maxPriorityFeeBytes,
+			MaxFeePerGas:         zktransaction.MaxFee.Bytes(),
+			MaxPriorityFeePerGas: zktransaction.MaxPriorityFee.Bytes(),
 		})
 	}
 
@@ -140,43 +95,22 @@ func ConvertZKBlockToETHBlock(zkblock *config.ZKBlock) (*proto.Block, error) {
 func ConvertConfigTxnToETHTransaction(Txn *config.Transaction) (*proto.Transaction, error) {
 
 	// convert BigInt to bytes
-	var rBytes []byte
-	if Txn.R != nil {
-		rBytes = Txn.R.Bytes()
-	}
+	rBytes := Txn.R.Bytes()
 
 	// Convert BigInt to bytes
-	var sBytes []byte
-	if Txn.S != nil {
-		sBytes = Txn.S.Bytes()
-	}
-
-	var valueBytes []byte
-	if Txn.Value != nil {
-		valueBytes = Txn.Value.Bytes()
-	}
-
-	var gasPriceBytes []byte
-	if Txn.GasPrice != nil {
-		gasPriceBytes = Txn.GasPrice.Bytes()
-	}
-
-	var v uint32
-	if Txn.V != nil {
-		v = uint32(Txn.V.Uint64())
-	}
+	sBytes := Txn.S.Bytes()
 
 	return &proto.Transaction{
 		From:     Txn.From.Bytes(),
 		To:       Txn.To.Bytes(),
 		Input:    []byte(Txn.Data),
 		Nonce:    Txn.Nonce,
-		Value:    valueBytes,
+		Value:    Txn.Value.Bytes(),
 		Gas:      Txn.GasLimit,
-		GasPrice: gasPriceBytes,
+		GasPrice: Txn.GasPrice.Bytes(),
 		R:        rBytes,
 		S:        sBytes,
-		V:        v,
+		V:        uint32(Txn.V.Uint64()),
 		Type:     0,
 		AccessList: &proto.AccessList{
 			AccessTuples: nil,

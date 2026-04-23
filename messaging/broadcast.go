@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -24,10 +23,10 @@ import (
 	"gossipnode/metrics"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/rs/zerolog/log"
 )
 
 // BroadcastMessage represents a message that is broadcast through the network
@@ -85,7 +84,7 @@ func StartBroadcastCleanup() {
 		var err error
 		BroadcastLocalGRO, err = GROHelper.InitializeGRO(GRO.BroadcastLocal)
 		if err != nil {
-			broadcastLogger().Error(context.Background(), "Failed to initialize BroadcastLocalGRO", err)
+			log.Error().Err(err).Msg("Failed to initialize BroadcastLocalGRO")
 			return
 		}
 	}
@@ -122,8 +121,8 @@ func HandleBroadcastStream(stream network.Stream) {
 	messageBytes, err := reader.ReadBytes('\n')
 	if err != nil {
 		if err != io.EOF {
-			broadcastLogger().Error(context.Background(), "Error reading broadcast message", err,
-				ion.String("peer", stream.Conn().RemotePeer().String()))
+			log.Error().Err(err).Str("peer", stream.Conn().RemotePeer().String()).
+				Msg("Error reading broadcast message")
 		}
 		return
 	}
@@ -131,7 +130,7 @@ func HandleBroadcastStream(stream network.Stream) {
 	// Parse the message
 	var msg BroadcastMessageStruct
 	if err := json.Unmarshal(messageBytes, &msg); err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to unmarshal broadcast message", err)
+		log.Error().Err(err).Msg("Failed to unmarshal broadcast message")
 		return
 	}
 
@@ -144,9 +143,8 @@ func HandleBroadcastStream(stream network.Stream) {
 	// Mark as seen to avoid reprocessing
 	markMessageSeen(msg.ID)
 
-	broadcastLogger().Info(context.Background(), "Broadcast received",
-		ion.String("sender", msg.Sender),
-		ion.String("content", msg.Content))
+	// Print the received broadcast
+	fmt.Printf("\n[BROADCAST from %s] %s\n>>> ", msg.Sender, msg.Content)
 
 	// Handle different message types
 	if msg.Type == "vote_trigger" {
@@ -158,11 +156,12 @@ func HandleBroadcastStream(stream network.Stream) {
 		// Forward to our peers
 		msg.Hops++
 		localPeer := stream.Conn().LocalPeer().String()
-		broadcastLogger().Info(context.Background(), "Rebroadcasting message",
-			ion.String("msg_id", msg.ID),
-			ion.String("origin", msg.Sender),
-			ion.String("via", localPeer),
-			ion.Int("hops", msg.Hops))
+		log.Info().
+			Str("msg_id", msg.ID).
+			Str("origin", msg.Sender).
+			Str("via", localPeer).
+			Int("hops", msg.Hops).
+			Msg("Rebroadcasting message")
 
 		// Instead of trying to get the host from the connection,
 		// get it from the stored node instance
@@ -170,13 +169,13 @@ func HandleBroadcastStream(stream network.Stream) {
 		if hostInstance := getHostInstance(); hostInstance != nil {
 			forwardBroadcast(hostInstance, msg)
 		} else {
-			broadcastLogger().Error(context.Background(), "Cannot access host instance for forwarding broadcast",
-				errors.New("getHostInstance returned nil"))
+			log.Error().Msg("Cannot access host instance for forwarding broadcast")
 		}
 	} else {
-		broadcastLogger().Info(context.Background(), "Max hops reached, not rebroadcasting",
-			ion.String("msg_id", msg.ID),
-			ion.Int("hops", msg.Hops))
+		log.Info().
+			Str("msg_id", msg.ID).
+			Int("hops", msg.Hops).
+			Msg("Max hops reached, not rebroadcasting")
 	}
 }
 
@@ -208,7 +207,7 @@ func forwardBroadcast(h host.Host, msg BroadcastMessageStruct) {
 	// Convert message to JSON
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to marshal broadcast message", err)
+		log.Error().Err(err).Msg("Failed to marshal broadcast message")
 		return
 	}
 	msgBytes = append(msgBytes, '\n')
@@ -229,18 +228,14 @@ func forwardBroadcast(h host.Host, msg BroadcastMessageStruct) {
 		cancel()
 
 		if err != nil {
-			broadcastLogger().Warn(context.Background(), "Failed to open broadcast stream",
-				ion.Err(err),
-				ion.String("peer", peerID.String()))
+			log.Error().Err(err).Str("peer", peerID.String()).Msg("Failed to open broadcast stream")
 			continue
 		}
 
 		// Write the message
 		_, err = stream.Write(msgBytes)
 		if err != nil {
-			broadcastLogger().Warn(context.Background(), "Failed to write broadcast message",
-				ion.Err(err),
-				ion.String("peer", peerID.String()))
+			log.Error().Err(err).Str("peer", peerID.String()).Msg("Failed to write broadcast message")
 			stream.Close()
 			continue
 		}
@@ -253,9 +248,10 @@ func forwardBroadcast(h host.Host, msg BroadcastMessageStruct) {
 		metrics.MessagesSentCounter.WithLabelValues("broadcast", peerID.String()).Inc()
 	}
 
-	broadcastLogger().Info(context.Background(), "Broadcast forwarded to peers",
-		ion.String("msg_id", msg.ID),
-		ion.Int("peers", successCount))
+	log.Info().
+		Str("msg_id", msg.ID).
+		Int("peers", successCount).
+		Msg("Broadcast forwarded to peers")
 }
 
 // BroadcastMessage sends a message to all connected peers
@@ -264,7 +260,7 @@ func BroadcastMessage(h host.Host, content string) error {
 		var err error
 		BroadcastLocalGRO, err = GROHelper.InitializeGRO(GRO.BroadcastLocal)
 		if err != nil {
-			broadcastLogger().Error(context.Background(), "Failed to initialize BroadcastLocalGRO", err)
+			log.Error().Err(err).Msg("Failed to initialize BroadcastLocalGRO")
 			return err
 		}
 	}
@@ -296,14 +292,15 @@ func BroadcastMessage(h host.Host, content string) error {
 		return fmt.Errorf("no connected peers to broadcast to")
 	}
 
-	broadcastLogger().Info(context.Background(), "Starting broadcast to peers",
-		ion.String("msg_id", msg.ID),
-		ion.Int("peers", len(peers)))
+	log.Info().
+		Str("msg_id", msg.ID).
+		Int("peers", len(peers)).
+		Msg("Starting broadcast to peers")
 
 	// Send message to all peers
 	wg, err := BroadcastLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.BroadcastForwardWG)
 	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to create waitgroup for broadcast forwarding", err)
+		log.Error().Err(err).Msg("Failed to create waitgroup for broadcast forwarding")
 		return fmt.Errorf("failed to create waitgroup for broadcast forwarding: %w", err)
 	}
 	var successCount int
@@ -319,9 +316,7 @@ func BroadcastMessage(h host.Host, content string) error {
 
 			stream, err := h.NewStream(ctx, peer, config.BroadcastProtocol)
 			if err != nil {
-				broadcastLogger().Warn(context.Background(), "Failed to open broadcast stream",
-					ion.Err(err),
-					ion.String("peer", peer.String()))
+				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open broadcast stream")
 				return err
 			}
 			defer stream.Close()
@@ -329,9 +324,7 @@ func BroadcastMessage(h host.Host, content string) error {
 			// Send the message
 			_, err = stream.Write(msgBytes)
 			if err != nil {
-				broadcastLogger().Warn(context.Background(), "Failed to send broadcast message",
-					ion.Err(err),
-					ion.String("peer", peer.String()))
+				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to send broadcast message")
 				return err
 			}
 
@@ -353,40 +346,53 @@ func BroadcastMessage(h host.Host, content string) error {
 		return fmt.Errorf("failed to broadcast message to any peers")
 	}
 
-	broadcastLogger().Info(context.Background(), "Broadcast complete",
-		ion.String("msg_id", msg.ID),
-		ion.Int("success", successCount),
-		ion.Int("total", len(peers)))
+	log.Info().
+		Str("msg_id", msg.ID).
+		Int("success", successCount).
+		Int("total", len(peers)).
+		Msg("Broadcast complete")
 
 	return nil
 }
 
 // handleVoteTriggerBroadcast processes vote trigger broadcast messages
 func handleVoteTriggerBroadcast(msg BroadcastMessageStruct) {
-	broadcastLogger().Info(context.Background(), "Processing vote trigger broadcast",
-		ion.String("msg_id", msg.ID),
-		ion.String("sender", msg.Sender),
-		ion.String("type", msg.Type))
+	log.Info().
+		Str("msg_id", msg.ID).
+		Str("sender", msg.Sender).
+		Str("type", msg.Type).
+		Msg("Processing vote trigger broadcast")
+
+	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║  PROCESSING VOTE TRIGGER BROADCAST                        ║\n")
+	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
+	fmt.Printf("📩 Received vote trigger broadcast\n")
+	fmt.Printf("🆔 Message ID: %s\n", msg.ID)
+	fmt.Printf("📤 From: %s\n", msg.Sender)
+	fmt.Printf("═══════════════════════════════════════════════════════════\n")
 
 	// Parse the consensus message data
 	var consensusMessage PubSubMessages.ConsensusMessage
 	if err := json.Unmarshal([]byte(msg.Data), &consensusMessage); err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to unmarshal consensus message from vote trigger", err,
-			ion.String("msg_id", msg.ID))
+		log.Error().Err(err).Msg("Failed to unmarshal consensus message from vote trigger")
+		fmt.Printf("❌ Failed to unmarshal consensus message: %v\n", err)
 		return
 	}
 
 	// Check if ForListner is initialized
 	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
 	if listenerNode == nil {
-		broadcastLogger().Error(context.Background(), "ForListner not initialized - cannot submit vote",
-			errors.New("ForListner is nil"),
-			ion.String("msg_id", msg.ID))
+		// Initialize the listener node
+		log.Error().Msg("ForListner not initialized - cannot submit vote")
+		fmt.Printf("❌ ForListner not initialized - this node cannot vote yet\n")
+		fmt.Printf("   This node may not have accepted subscription requests yet\n")
+		fmt.Printf("═══════════════════════════════════════════════════════════\n\n")
 		return
 	}
 
-	broadcastLogger().Debug(context.Background(), "ForListner initialized",
-		ion.String("node_id", listenerNode.PeerID.String()))
+	fmt.Printf("✅ ForListner initialized\n")
+	fmt.Printf("📊 Node: %s\n", listenerNode.PeerID.String())
+	fmt.Printf("═══════════════════════════════════════════════════════════\n")
 
 	// IMPORTANT: Populate buddy nodes list from consensus message
 	// Extract ONLY the final connected buddy nodes (MaxMainPeers) from consensus message's Buddies map
@@ -410,36 +416,42 @@ func handleVoteTriggerBroadcast(msg BroadcastMessageStruct) {
 	// Populate listener node's buddy list with the final connected buddy nodes (MaxMainPeers)
 	if len(buddyPeerIDs) > 0 {
 		listenerNode.BuddyNodes.Buddies_Nodes = buddyPeerIDs
-		broadcastLogger().Info(context.Background(), "Populated buddy nodes list from consensus message",
-			ion.Int("buddy_count", len(buddyPeerIDs)),
-			ion.Int("max_main_peers", config.MaxMainPeers))
+		fmt.Printf("📋 Populated buddy nodes list from consensus message: %d buddy nodes (MaxMainPeers=%d)\n",
+			len(buddyPeerIDs), config.MaxMainPeers)
+		for i, pid := range buddyPeerIDs {
+			fmt.Printf("   Buddy %d: %s\n", i+1, pid.String()[:16])
+		}
 	} else {
-		broadcastLogger().Warn(context.Background(), "No buddy nodes found in consensus message - CRDT sync may fail",
-			ion.String("msg_id", msg.ID))
+		fmt.Printf("⚠️ No buddy nodes found in consensus message - CRDT sync may fail\n")
 	}
 
 	// Store consensus message in global cache (needed for CRDT sync multiaddr lookup)
 	consensusMessage.SetGloalVarCacheConsensusMessage()
-	broadcastLogger().Debug(context.Background(), "Stored consensus message in cache for multiaddr lookup",
-		ion.String("msg_id", msg.ID))
+	fmt.Printf("✅ Stored consensus message in cache for multiaddr lookup\n")
 
 	// Create vote trigger and submit vote
 	voteTrigger := Vote.NewVoteTrigger()
 	voteTrigger.SetConsensusMessage(&consensusMessage)
 
-	broadcastLogger().Debug(context.Background(), "Submitting vote",
-		ion.String("msg_id", msg.ID))
+	fmt.Printf("📝 Submitting vote...\n")
 
 	// Submit the vote (this will send Type_SubmitVote message via SubmitMessageProtocol)
 	if err := voteTrigger.SubmitVote(); err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to submit vote from broadcast trigger", err,
-			ion.String("msg_id", msg.ID))
+		log.Error().Err(err).Msg("Failed to submit vote from broadcast trigger")
+		fmt.Printf("❌ Failed to submit vote: %v\n", err)
+		fmt.Printf("═══════════════════════════════════════════════════════════\n\n")
 		return
 	}
 
-	broadcastLogger().Info(context.Background(), "Vote submitted - waiting for consensus confirmation broadcast",
-		ion.String("msg_id", msg.ID),
-		ion.String("block_hash", consensusMessage.GetZKBlock().BlockHash.Hex()))
+	fmt.Printf("✅ Vote submitted successfully\n")
+	fmt.Printf("⏳ Waiting for consensus confirmation (block with BLS results)...\n")
+	fmt.Printf("   Block will be processed after sequencer confirms majority votes\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════\n\n")
+
+	log.Info().
+		Str("msg_id", msg.ID).
+		Str("block_hash", consensusMessage.GetZKBlock().BlockHash.Hex()).
+		Msg("Vote submitted - waiting for consensus confirmation broadcast")
 }
 
 // BroadcastVoteTrigger sends a vote trigger message to all connected peers
@@ -452,18 +464,18 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 		return fmt.Errorf("consensus message ZKBlock block hash is empty")
 	}
 
-	broadcastLogger().Debug(context.Background(), "BroadcastVoteTrigger called",
-		ion.String("block_hash", consensusMessage.GetZKBlock().BlockHash.Hex()))
+	fmt.Printf("Consensus message: %+v\n", consensusMessage)
 
 	// Set the voting timer when broadcast starts
 	now := time.Now().UTC()
 	consensusMessage.SetStartTime(now)
 	consensusMessage.SetEndTimeout(now.Add(config.ConsensusTimeout))
 
-	broadcastLogger().Info(context.Background(), "Voting timer set - broadcast vote trigger started",
-		ion.String("start_time", now.Format(time.RFC3339)),
-		ion.String("end_time", now.Add(config.ConsensusTimeout).Format(time.RFC3339)),
-		ion.Duration("timeout_duration", config.ConsensusTimeout))
+	log.Info().
+		Str("start_time", now.Format(time.RFC3339)).
+		Str("end_time", now.Add(config.ConsensusTimeout).Format(time.RFC3339)).
+		Dur("timeout_duration", config.ConsensusTimeout).
+		Msg("Voting timer set - broadcast vote trigger started")
 
 	// Marshal the consensus message to JSON
 	consensusData, err := json.Marshal(consensusMessage)
@@ -483,10 +495,7 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 
 	// Generate a unique ID based on content and timestamp
 	msg.ID = generateMessageID(msg.Sender, msg.Content, now.Unix())
-	broadcastLogger().Debug(context.Background(), "Vote trigger broadcast message prepared",
-		ion.String("msg_id", msg.ID),
-		ion.String("sender", msg.Sender))
-
+	fmt.Printf("Vote trigger broadcast message: %+v\n", msg)
 	// Remember this message so we don't process it if we receive it back
 	markMessageSeen(msg.ID)
 
@@ -503,14 +512,15 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 		return fmt.Errorf("no connected peers to broadcast vote trigger to")
 	}
 
-	broadcastLogger().Info(context.Background(), "Starting vote trigger broadcast to peers",
-		ion.String("msg_id", msg.ID),
-		ion.Int("peers", len(peers)))
+	log.Info().
+		Str("msg_id", msg.ID).
+		Int("peers", len(peers)).
+		Msg("Starting vote trigger broadcast to peers")
 
 	// Send message to all peers
 	wg, err := BroadcastLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.BroadcastVoteTriggerWG)
 	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to create waitgroup for broadcast vote trigger", err)
+		log.Error().Err(err).Msg("Failed to create waitgroup for broadcast vote trigger")
 		return fmt.Errorf("failed to create waitgroup for broadcast vote trigger: %w", err)
 	}
 	var successCount int
@@ -525,9 +535,7 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 
 			stream, err := h.NewStream(ctx, peer, config.BroadcastProtocol)
 			if err != nil {
-				broadcastLogger().Warn(context.Background(), "Failed to open broadcast stream for vote trigger",
-					ion.Err(err),
-					ion.String("peer", peer.String()))
+				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open broadcast stream for vote trigger")
 				return err
 			}
 			defer stream.Close()
@@ -535,9 +543,7 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 			// Send the message
 			_, err = stream.Write(msgBytes)
 			if err != nil {
-				broadcastLogger().Warn(context.Background(), "Failed to send vote trigger broadcast message",
-					ion.Err(err),
-					ion.String("peer", peer.String()))
+				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to send vote trigger broadcast message")
 				return err
 			}
 
@@ -556,14 +562,16 @@ func BroadcastVoteTrigger(h host.Host, consensusMessage *PubSubMessages.Consensu
 	wg.Wait()
 
 	if successCount == 0 {
+		fmt.Printf("Failed to broadcast vote trigger message to any peers\n")
 		return fmt.Errorf("failed to broadcast vote trigger message to any peers")
 	}
 
-	broadcastLogger().Info(context.Background(), "Vote trigger broadcast complete",
-		ion.String("msg_id", msg.ID),
-		ion.Int("success", successCount),
-		ion.Int("total", len(peers)))
-
+	log.Info().
+		Str("msg_id", msg.ID).
+		Int("success", successCount).
+		Int("total", len(peers)).
+		Msg("Vote trigger broadcast complete")
+	fmt.Printf("Vote trigger broadcast complete\n")
 	return nil
 }
 
@@ -684,18 +692,26 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 		var err error
 		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
 		if err != nil {
-			broadcastLogger().Error(context.Background(), "Failed to initialize BlockPropagationLocalGRO", err)
+			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
 			return err
 		}
 	}
-	broadcastLogger().Info(context.Background(), "Broadcasting block to all nodes (with extra data)",
-		ion.String("block_hash", block.BlockHash.Hex()),
-		ion.Uint64("block_number", block.BlockNumber),
-		ion.Bool("process_result", result))
+	log.Info().
+		Str("block_hash", block.BlockHash.Hex()).
+		Uint64("block_number", block.BlockNumber).
+		Bool("process_result", result).
+		Msg("Broadcasting block to all nodes (with extra data)")
 
 	peers := h.Network().Peers()
 	if len(peers) == 0 {
-		broadcastLogger().Warn(context.Background(), "No connected peers to broadcast block to — skipping broadcast, caller handles local processing")
+		log.Warn().Msg("No connected peers to broadcast block to")
+		if result {
+			// Only process locally if we have BLS results indicating consensus
+			if len(bls) > 0 {
+				return ProcessBlockLocally(block, bls)
+			}
+			log.Warn().Msg("Cannot process block locally without BLS results - consensus not verified")
+		}
 		return nil
 	}
 
@@ -748,7 +764,7 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 
 	wg, err := BlockPropagationLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.BlockPropagationForwardWG)
 	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to create waitgroup for block propagation forwarding", err)
+		log.Error().Err(err).Msg("Failed to create waitgroup for block propagation forwarding")
 		return fmt.Errorf("failed to create waitgroup for block propagation forwarding: %w", err)
 	}
 
@@ -762,16 +778,12 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 			defer cancel()
 			stream, err := h.NewStream(ctxWithTimeout, peer, config.BlockPropagationProtocol)
 			if err != nil {
-				broadcastLogger().Debug(context.Background(), "Failed to open stream",
-					ion.Err(err),
-					ion.String("peer", peer.String()))
+				log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to open stream")
 				return err
 			}
 			defer stream.Close()
 			if _, err := stream.Write(msgBytes); err != nil {
-				broadcastLogger().Debug(context.Background(), "Failed to write message",
-					ion.Err(err),
-					ion.String("peer", peer.String()))
+				log.Debug().Err(err).Str("peer", peer.String()).Msg("Failed to write message")
 				return err
 			}
 			successMutex.Lock()
@@ -784,22 +796,33 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 
 	wg.Wait()
 
-	broadcastLogger().Info(context.Background(), "Block broadcast complete (with extra data)",
-		ion.String("block_hash", block.BlockHash.Hex()),
-		ion.Int("success", successCount),
-		ion.Int("total", len(peers)))
+	log.Info().
+		Str("block_hash", block.BlockHash.Hex()).
+		Int("success", successCount).
+		Int("total", len(peers)).
+		Msg("Block broadcast complete (with extra data)")
 
+	if result {
+		log.Info().Str("block_hash", block.BlockHash.Hex()).Msg("Positive result - processing block locally")
+		// Only process locally if we have BLS results indicating consensus
+		if len(bls) > 0 {
+			return ProcessBlockLocally(block, bls)
+		}
+		log.Warn().Str("block_hash", block.BlockHash.Hex()).Msg("Cannot process block locally without BLS results - consensus not verified")
+	}
 	return nil
 }
 
-// ProcessBlockLocally processes a block locally after consensus is verified.
-// Returns the list of contracts deployed in the block so the sequencer can propagate them.
-// blsResults must be non-empty; consensus is verified before any state changes are made.
-func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSresponse) ([]BlockProcessing.ContractDeploymentInfo, error) {
-	broadcastLogger().Info(context.Background(), "Processing block locally",
-		ion.String("block_hash", block.BlockHash.Hex()),
-		ion.Uint64("block_number", block.BlockNumber),
-		ion.Int("bls_results_count", len(blsResults)))
+// ProcessBlockLocally processes a block locally (similar to processZKBlockNoConsensus)
+// This function processes all transactions in the block and updates account balances.
+// If BLS results are provided, it validates consensus before processing.
+// blsResults can be nil if consensus was already verified externally (e.g., by sequencer).
+func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSresponse) error {
+	log.Info().
+		Str("block_hash", block.BlockHash.Hex()).
+		Uint64("block_number", block.BlockNumber).
+		Int("bls_results_count", len(blsResults)).
+		Msg("Processing block locally")
 
 	// Validate BLS/consensus if results are provided
 	// This ensures we only process blocks that have reached consensus
@@ -813,9 +836,7 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 				vote = 1
 			}
 			if err := BLS_Verifier.Verify(r, vote); err != nil {
-				broadcastLogger().Warn(context.Background(), "BLS verification failed for buddy response",
-					ion.Err(err),
-					ion.String("peer", r.PeerID))
+				log.Warn().Err(err).Str("peer", r.PeerID).Msg("BLS verification failed for buddy response")
 				continue
 			}
 			validTotal++
@@ -825,49 +846,50 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		}
 
 		if validTotal == 0 {
-			broadcastLogger().Error(context.Background(), "No valid BLS signatures - skipping block processing (invalid consensus)",
-				errors.New("no valid BLS signatures"),
-				ion.String("block_hash", block.BlockHash.Hex()))
-			return nil, fmt.Errorf("no valid BLS signatures for block %s", block.BlockHash.Hex())
+			log.Error().
+				Str("block_hash", block.BlockHash.Hex()).
+				Msg("No valid BLS signatures - skipping block processing (invalid consensus)")
+			return fmt.Errorf("no valid BLS signatures for block %s", block.BlockHash.Hex())
 		}
 
 		needed := (validTotal / 2) + 1
 		if validYes < needed {
-			broadcastLogger().Error(context.Background(), "BLS majority not in favor (+1) - skipping block processing (consensus not reached)",
-				errors.New("consensus not reached"),
-				ion.String("block_hash", block.BlockHash.Hex()),
-				ion.Int("valid_yes", validYes),
-				ion.Int("needed", needed),
-				ion.Int("valid_total", validTotal))
-			return nil, fmt.Errorf("consensus not reached for block %s: %d/%d votes in favor (needed: %d)",
+			log.Error().
+				Str("block_hash", block.BlockHash.Hex()).
+				Int("valid_yes", validYes).
+				Int("needed", needed).
+				Int("valid_total", validTotal).
+				Msg("BLS majority not in favor (+1) - skipping block processing (consensus not reached)")
+			return fmt.Errorf("consensus not reached for block %s: %d/%d votes in favor (needed: %d)",
 				block.BlockHash.Hex(), validYes, validTotal, needed)
 		}
 
-		broadcastLogger().Info(context.Background(), "BLS majority in favor verified - consensus reached",
-			ion.String("block_hash", block.BlockHash.Hex()),
-			ion.Int("valid_yes", validYes),
-			ion.Int("needed", needed),
-			ion.Int("valid_total", validTotal))
+		log.Info().
+			Str("block_hash", block.BlockHash.Hex()).
+			Int("valid_yes", validYes).
+			Int("needed", needed).
+			Int("valid_total", validTotal).
+			Msg("BLS majority in favor verified - consensus reached")
 	} else {
 		// BLS results are required to ensure consensus was reached
 		// If no BLS results are provided, we cannot verify consensus and should not process
-		broadcastLogger().Error(context.Background(), "No BLS results provided - cannot verify consensus, refusing to process block",
-			errors.New("empty BLS results"),
-			ion.String("block_hash", block.BlockHash.Hex()))
-		return nil, fmt.Errorf("cannot process block %s without BLS results to verify consensus", block.BlockHash.Hex())
+		log.Error().
+			Str("block_hash", block.BlockHash.Hex()).
+			Msg("No BLS results provided - cannot verify consensus, refusing to process block")
+		return fmt.Errorf("cannot process block %s without BLS results to verify consensus", block.BlockHash.Hex())
 	}
 
 	// Create DB clients for processing
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
 	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to get main DB connection", err)
-		return nil, fmt.Errorf("failed to get main DB connection: %w", err)
+		log.Error().Err(err).Msg("Failed to get main DB connection")
+		return fmt.Errorf("failed to get main DB connection: %w", err)
 	}
 
 	accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
 	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to get accounts DB connection", err)
-		return nil, fmt.Errorf("failed to get accounts DB connection: %w", err)
+		log.Error().Err(err).Msg("Failed to get accounts DB connection")
+		return fmt.Errorf("failed to get accounts DB connection: %w", err)
 	}
 	defer func() {
 		DB_OPs.PutMainDBConnection(mainDBClient)
@@ -877,28 +899,33 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 	// Store the block in main DB FIRST to ensure it's valid before processing transactions
 	// This prevents balance updates for invalid blocks that fail to store
 	if err := DB_OPs.StoreZKBlock(mainDBClient, block); err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to store block in database - skipping transaction processing", err,
-			ion.String("block_hash", block.BlockHash.Hex()),
-			ion.Uint64("block_number", block.BlockNumber))
-		return nil, fmt.Errorf("failed to store block in database: %w", err)
+		log.Error().
+			Err(err).
+			Str("block_hash", block.BlockHash.Hex()).
+			Uint64("block_number", block.BlockNumber).
+			Msg("Failed to store block in database - skipping transaction processing")
+		return fmt.Errorf("failed to store block in database: %w", err)
 	}
 
 	// Only process transactions if block storage succeeded
 	// This ensures balance updates only happen for valid, stored blocks
-	deployments, err := BlockProcessing.ProcessBlockTransactions(block, accountsClient, true)
-	if err != nil {
-		broadcastLogger().Error(context.Background(), "Block transaction processing failed after block storage", err,
-			ion.String("block_hash", block.BlockHash.Hex()))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := BlockProcessing.ProcessBlockTransactions(ctx, block, accountsClient); err != nil {
+		log.Error().
+			Err(err).
+			Str("block_hash", block.BlockHash.Hex()).
+			Msg("Block transaction processing failed after block storage")
 		// Note: Block is already stored, but transactions failed
 		// This is a separate issue that may need rollback handling in the future
-		return nil, fmt.Errorf("failed to process block transactions: %w", err)
+		return fmt.Errorf("failed to process block transactions: %w", err)
 	}
 
-	broadcastLogger().Info(context.Background(), "Block processed and stored successfully",
-		ion.Uint64("block_number", block.BlockNumber),
-		ion.String("block_hash", block.BlockHash.Hex()),
-		ion.Int("tx_count", len(block.Transactions)),
-		ion.Int("contract_deployments", len(deployments)))
+	log.Info().
+		Uint64("block_number", block.BlockNumber).
+		Str("block_hash", block.BlockHash.Hex()).
+		Int("tx_count", len(block.Transactions)).
+		Msg("Block processed and stored successfully")
 
-	return deployments, nil
+	return nil
 }

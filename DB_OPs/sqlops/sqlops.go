@@ -1,7 +1,6 @@
 package sqlops
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -11,9 +10,6 @@ import (
 	"time"
 
 	"gossipnode/config"
-	log "gossipnode/logging"
-
-	"github.com/JupiterMetaLabs/ion"
 )
 
 // Pre-built SQL query strings using constant table names.
@@ -496,7 +492,7 @@ func (u *UnifiedDB) GetConnectedPeers() ([]PeerInfo, error) {
 			s := string(v)
 			peer.IsAlive = s == "true" || s == "1"
 		default:
-			logger(log.DB_OPs_SqlOps).Warn(context.Background(), "Unexpected type for isAlive", ion.String("type", fmt.Sprintf("%T", v)))
+			fmt.Printf("Unexpected type for isAlive: %T\n", v)
 			// Default to false
 			peer.IsAlive = false
 		}
@@ -576,14 +572,4 @@ func (u *UnifiedDB) CountConnectedPeers() (int, error) {
 	}
 
 	return count, nil
-}
-
-
-// logger returns the ion logger instance for sqlops package
-func logger(namedLogger string) *ion.Ion {
-	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(namedLogger, "")
-	if err != nil {
-		return nil
-	}
-	return logInstance.GetNamedLogger()
 }

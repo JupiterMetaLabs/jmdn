@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -16,11 +15,11 @@ import (
 	GROHelper "gossipnode/messaging/common"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/rs/zerolog/log"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
@@ -47,6 +46,7 @@ var (
 
 // InitDIDPropagation initializes the DID propagation system
 func InitDIDPropagation(existingClient *config.PooledConnection) error {
+	fmt.Println("Initializing DID propagation system...")
 	var initErr error
 
 	accountOnce.Do(func() {
@@ -58,7 +58,7 @@ func InitDIDPropagation(existingClient *config.PooledConnection) error {
 			accountsMutex.Lock()
 			accountsClient = existingClient
 			accountsMutex.Unlock()
-			broadcastLogger().Info(context.Background(), "DID propagation system initialized with existing database client")
+			log.Info().Msg("DID propagation system initialized with existing database client")
 		} else {
 			// Create accounts database client if none provided
 			ctx := context.Background()
@@ -71,7 +71,7 @@ func InitDIDPropagation(existingClient *config.PooledConnection) error {
 			accountsMutex.Lock()
 			accountsClient = client
 			accountsMutex.Unlock()
-			broadcastLogger().Info(context.Background(), "DID propagation system initialized with new database client")
+			log.Info().Msg("DID propagation system initialized with new database client")
 		}
 	})
 
@@ -114,16 +114,16 @@ func storeAccountInDB(msg DIDMessage) {
 		var err error
 		DIDLocalGRO, err = GROHelper.InitializeGRO(GRO.DIDPropagationLocal)
 		if err != nil {
-			broadcastLogger().Error(context.Background(), "Failed to initialize LocalGRO", err)
+			log.Error().Err(err).Msg("Failed to initialize LocalGRO")
 			return
 		}
 	}
 	// Check if Account data is present
 	if msg.Account == nil {
-		broadcastLogger().Warn(context.Background(), "Received DID message with no account data, skipping storage",
-			ion.Err(errors.New("no account data")),
-			ion.String("msg_id", msg.ID),
-			ion.String("sender", msg.Sender))
+		log.Warn().
+			Str("msg_id", msg.ID).
+			Str("sender", msg.Sender).
+			Msg("Received DID message with no account data, skipping storage")
 		return
 	}
 
@@ -131,7 +131,7 @@ func storeAccountInDB(msg DIDMessage) {
 	DIDLocalGRO.Go(GRO.DIDStoreThread, func(ctx context.Context) error {
 		accountsMutex.RLock()
 		if accountsClient == nil {
-			broadcastLogger().Error(ctx, "Accounts client not initialized", errors.New("accounts client not initialized"))
+			log.Error().Msg("Accounts client not initialized")
 			accountsMutex.RUnlock()
 			return fmt.Errorf("accounts client not initialized")
 		}
@@ -153,11 +153,11 @@ func storeAccountInDB(msg DIDMessage) {
 		// Store Account document
 		err := DB_OPs.CreateAccount(client, msg.Account.DIDAddress, msg.Account.Address, nil)
 		if err != nil {
-			broadcastLogger().Error(ctx, "Failed to store Account in database", err, ion.String("Account", msg.Account.DIDAddress))
+			log.Error().Err(err).Str("Account", msg.Account.DIDAddress).Msg("Failed to store Account in database")
 			return err
 		}
 
-		broadcastLogger().Info(ctx, "Successfully stored DID in database", ion.String("Account", msg.Account.DIDAddress))
+		log.Info().Str("Account", msg.Account.DIDAddress).Msg("Successfully stored DID in database")
 
 		// Also update the DID set (CRDT)
 		// err = updateDIDSet(client, msg.DID)
@@ -196,7 +196,7 @@ func HandleDIDStream(stream network.Stream) {
 		var err error
 		DIDLocalGRO, err = GROHelper.InitializeGRO(GRO.DIDPropagationLocal)
 		if err != nil {
-			broadcastLogger().Error(context.Background(), "Failed to initialize LocalGRO", err)
+			log.Error().Err(err).Msg("Failed to initialize LocalGRO")
 			return
 		}
 	}
@@ -213,7 +213,8 @@ func HandleDIDStream(stream network.Stream) {
 	messageBytes, err := reader.ReadBytes('\n')
 	if err != nil {
 		if err != io.EOF {
-			broadcastLogger().Error(context.Background(), "Error reading DID message", err, ion.String("peer", remotePeer))
+			log.Error().Err(err).Str("peer", remotePeer).
+				Msg("Error reading DID message")
 		}
 		return
 	}
@@ -221,13 +222,13 @@ func HandleDIDStream(stream network.Stream) {
 	// Parse the message
 	var msg DIDMessage
 	if err := json.Unmarshal(messageBytes, &msg); err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to unmarshal DID message", err)
+		log.Error().Err(err).Msg("Failed to unmarshal DID message")
 		return
 	}
 
 	// Check if we've already processed this message
 	if isAccountMessageProcessed(msg.ID) {
-		broadcastLogger().Debug(context.Background(), "Duplicate Account message received", ion.String("message_id", msg.ID))
+		log.Debug().Str("message_id", msg.ID).Msg("Duplicate Account message received")
 		return
 	}
 
@@ -249,13 +250,14 @@ func HandleDIDStream(stream network.Stream) {
 		// Forward to our peers
 		msg.Hops++
 		localPeer := stream.Conn().LocalPeer().String()
-		broadcastLogger().Info(context.Background(), "Propagating Account message",
-			ion.String("msg_id", msg.ID),
-			ion.String("type", msg.Type),
-			ion.String("origin", msg.Sender),
-			ion.String("via", localPeer),
-			ion.String("account", msg.Account.Address.Hex()),
-			ion.Int("hops", msg.Hops))
+		log.Info().
+			Str("msg_id", msg.ID).
+			Str("type", msg.Type).
+			Str("origin", msg.Sender).
+			Str("via", localPeer).
+			Str("account", msg.Account.Address.Hex()).
+			Int("hops", msg.Hops).
+			Msg("Propagating Account message")
 
 		// Forward the message to other peers
 		if hostInstance := getHostInstance(); hostInstance != nil {
@@ -264,20 +266,23 @@ func HandleDIDStream(stream network.Stream) {
 				return nil
 			})
 		} else {
-			broadcastLogger().Error(context.Background(), "Cannot access host instance for forwarding DID message", errors.New("host instance not available"))
+			log.Error().Msg("Cannot access host instance for forwarding DID message")
 		}
 	} else if msg.Account != nil {
-		broadcastLogger().Info(context.Background(), "Max hops reached, not propagating Account message",
-			ion.String("msg_id", msg.ID),
-			ion.String("type", msg.Type),
-			ion.String("account", msg.Account.Address.Hex()),
-			ion.Int("hops", msg.Hops))
+		log.Info().
+			Str("msg_id", msg.ID).
+			Str("type", msg.Type).
+			Str("account", msg.Account.Address.Hex()).
+			Int("hops", msg.Hops).
+			Msg("Max hops reached, not propagating Account message")
 	} else {
 		if msg.Account == nil {
-			broadcastLogger().Info(context.Background(), "Account data is nil, not propagating Account message",
-				ion.String("msg_id", msg.ID),
-				ion.String("type", msg.Type),
-				ion.Int("hops", msg.Hops))
+			log.Info().
+				Str("msg_id", msg.ID).
+				Str("type", msg.Type).
+				Int("hops", msg.Hops).
+				Msg("Account data is nil, not propagating Account message")
+			fmt.Printf("MessageID:%s, Type:%s, Hops:%d : Account data is nil, not propagating Account message\n", msg.ID, msg.Type, msg.Hops)
 		}
 	}
 }
@@ -290,7 +295,7 @@ func forwardDID(h host.Host, msg DIDMessage) {
 	// Convert message to JSON
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to marshal DID message", err)
+		log.Error().Err(err).Msg("Failed to marshal DID message")
 		return
 	}
 	msgBytes = append(msgBytes, '\n')
@@ -302,7 +307,7 @@ func forwardDID(h host.Host, msg DIDMessage) {
 	// Create waitgroup for tracking goroutines
 	wg, err := DIDLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.DIDForwardThread)
 	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to create waitgroup for DID forwarding", err)
+		log.Error().Err(err).Msg("Failed to create waitgroup for DID forwarding")
 		return
 	}
 
@@ -318,7 +323,7 @@ func forwardDID(h host.Host, msg DIDMessage) {
 		if err := DIDLocalGRO.Go(GRO.DIDForwardThread, func(ctx context.Context) error {
 			stream, err := h.NewStream(ctx, peerIDForGoroutine, config.DIDPropagationProtocol)
 			if err != nil {
-				broadcastLogger().Error(ctx, "Failed to open DID stream", err, ion.String("peer", peerIDForGoroutine.String()))
+				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open DID stream")
 				return err
 			}
 			defer stream.Close()
@@ -326,7 +331,7 @@ func forwardDID(h host.Host, msg DIDMessage) {
 			// Write the message
 			_, err = stream.Write(msgBytes)
 			if err != nil {
-				broadcastLogger().Error(ctx, "Failed to write DID message", err, ion.String("peer", peerIDForGoroutine.String()))
+				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to write DID message")
 				return err
 			}
 
@@ -340,19 +345,20 @@ func forwardDID(h host.Host, msg DIDMessage) {
 
 			return nil
 		}, local.AddToWaitGroup(GRO.DIDForwardWG)); err != nil {
-			broadcastLogger().Error(context.Background(), "Failed to start goroutine for DID forwarding", err, ion.String("peer", peerIDForGoroutine.String()))
+			log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to start goroutine for DID forwarding")
 		}
 	}
 
 	// Wait for all sends to complete
 	wg.Wait()
 
-	broadcastLogger().Info(context.Background(), "Account message propagated to peers",
-		ion.String("msg_id", msg.ID),
-		ion.String("type", msg.Type),
-		ion.String("address", msg.Account.Address.Hex()),
-		ion.Int("hops", msg.Hops),
-		ion.Int("peers", successCount))
+	log.Info().
+		Str("msg_id", msg.ID).
+		Str("type", msg.Type).
+		Str("address", msg.Account.Address.Hex()).
+		Int("hops", msg.Hops).
+		Int("peers", successCount).
+		Msg("Account message propagated to peers")
 }
 
 // PropagateDID creates and propagates a DID message to the network
@@ -361,7 +367,7 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 		var err error
 		DIDLocalGRO, err = GROHelper.InitializeGRO(GRO.DIDPropagationLocal)
 		if err != nil {
-			broadcastLogger().Error(context.Background(), "Failed to initialize LocalGRO", err)
+			log.Error().Err(err).Msg("Failed to initialize LocalGRO")
 			return fmt.Errorf("failed to initialize LocalGRO: %w", err)
 		}
 	}
@@ -405,26 +411,27 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 	// Get all connected peers
 	peers := h.Network().Peers()
 	if len(peers) == 0 {
-		broadcastLogger().Warn(context.Background(), "No connected peers to propagate DID to",
-			ion.Err(errors.New("no peers")),
-			ion.String("did", doc.DIDAddress),
-			ion.String("type", msgType))
+		log.Warn().
+			Str("did", doc.DIDAddress).
+			Str("type", msgType).
+			Msg("No connected peers to propagate DID to")
 		return nil // Not an error, just no one to tell
 	}
 
-	broadcastLogger().Info(context.Background(), "Starting DID propagation to peers",
-		ion.String("msg_id", msg.ID),
-		ion.String("did", doc.DIDAddress),
-		ion.String("public_key", doc.Address.Hex()),
-		ion.String("balance", doc.Balance),
-		ion.String("type", msgType),
-		ion.Int("peers", len(peers)))
+	log.Info().
+		Str("msg_id", msg.ID).
+		Str("did", doc.DIDAddress).
+		Str("public_key", doc.Address.Hex()).
+		Str("balance", doc.Balance).
+		Str("type", msgType).
+		Int("peers", len(peers)).
+		Msg("Starting DID propagation to peers")
 
 	// Send message to all peers
 	// Create waitgroup for tracking goroutines
 	wg, err := DIDLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.DIDForwardThread)
 	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to create waitgroup for DID forwarding", err)
+		log.Error().Err(err).Msg("Failed to create waitgroup for DID forwarding")
 		return fmt.Errorf("failed to create waitgroup for DID forwarding: %w", err)
 	}
 	var successCount int
@@ -439,7 +446,7 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 			// Open stream to peer
 			stream, err := h.NewStream(ctx, peerIDForGoroutine, config.DIDPropagationProtocol)
 			if err != nil {
-				broadcastLogger().Error(ctx, "Failed to open stream for DID", err, ion.String("peer", peerIDForGoroutine.String()))
+				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open stream for DID")
 				return err
 			}
 			defer stream.Close()
@@ -447,7 +454,7 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 			// Send the message
 			_, err = stream.Write(msgBytes)
 			if err != nil {
-				broadcastLogger().Error(ctx, "Failed to send DID message", err, ion.String("peer", peerIDForGoroutine.String()))
+				log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to send DID message")
 				return err
 			}
 
@@ -460,21 +467,22 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 			metrics.MessagesSentCounter.WithLabelValues("did", peerIDForGoroutine.String()).Inc()
 			return nil
 		}, local.AddToWaitGroup(GRO.DIDForwardWG)); err != nil {
-			broadcastLogger().Error(context.Background(), "Failed to start goroutine for DID propagation", err, ion.String("peer", peerID.String()))
+			log.Error().Err(err).Str("peer", peerID.String()).Msg("Failed to start goroutine for DID propagation")
 		}
 	}
 
 	// Wait for all sends to complete
 	wg.Wait()
 
-	broadcastLogger().Info(context.Background(), "DID propagation complete",
-		ion.String("msg_id", msg.ID),
-		ion.String("did", doc.DIDAddress),
-		ion.String("public_key", doc.Address.Hex()),
-		ion.String("balance", doc.Balance),
-		ion.String("type", msgType),
-		ion.Int("success", successCount),
-		ion.Int("total", len(peers)))
+	log.Info().
+		Str("msg_id", msg.ID).
+		Str("did", doc.DIDAddress).
+		Str("public_key", doc.Address.Hex()).
+		Str("balance", doc.Balance).
+		Str("type", msgType).
+		Int("success", successCount).
+		Int("total", len(peers)).
+		Msg("DID propagation complete")
 
 	return nil
 }

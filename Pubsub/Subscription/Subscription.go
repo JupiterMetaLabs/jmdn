@@ -14,7 +14,7 @@ import (
 // Subscribe subscribes to a topic with access control (now uses SubscriptionManager)
 func Subscribe(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, topic string, handler func(*PubSubMessages.GossipMessage)) error {
 	// Start trace span
-	tracer := logger().Tracer("Subscription")
+	tracer := logger().NamedLogger.Tracer("Subscription")
 	trace_ctx, span := tracer.Start(logger_ctx, "Subscription.Subscribe")
 	defer span.End()
 
@@ -24,7 +24,7 @@ func Subscribe(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, top
 		attribute.String("peer_id", gps.Host.ID().String()),
 	)
 
-	logger().Info(trace_ctx, "Subscribing to topic via SubscriptionManager",
+	logger().NamedLogger.Info(trace_ctx, "Subscribing to topic via SubscriptionManager",
 		ion.String("topic", topic),
 		ion.String("peer_id", gps.Host.ID().String()),
 		ion.String("function", "Subscription.Subscribe"))
@@ -38,7 +38,7 @@ func Subscribe(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, top
 		span.SetAttributes(attribute.String("status", "failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(trace_ctx, "Failed to subscribe to topic",
+		logger().NamedLogger.Error(trace_ctx, "Failed to subscribe to topic",
 			err,
 			ion.String("topic", topic),
 			ion.Float64("duration", duration),
@@ -48,7 +48,7 @@ func Subscribe(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, top
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().Info(trace_ctx, "Successfully subscribed to topic",
+	logger().NamedLogger.Info(trace_ctx, "Successfully subscribed to topic",
 		ion.String("topic", topic),
 		ion.Float64("duration", duration),
 		ion.String("function", "Subscription.Subscribe"))
@@ -59,7 +59,7 @@ func Subscribe(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, top
 // CanSubscribe checks if a peer can subscribe to a channel
 func CanSubscribe(gps *PubSubMessages.GossipPubSub, channelName string, peerID peer.ID) bool {
 	logger_ctx := context.Background()
-	tracer := logger().Tracer("Subscription")
+	tracer := logger().NamedLogger.Tracer("Subscription")
 	trace_ctx, span := tracer.Start(logger_ctx, "Subscription.CanSubscribe")
 	defer span.End()
 
@@ -74,7 +74,7 @@ func CanSubscribe(gps *PubSubMessages.GossipPubSub, channelName string, peerID p
 	access, exists := gps.ChannelAccess[channelName]
 	if !exists {
 		span.SetAttributes(attribute.Bool("can_subscribe", false), attribute.String("reason", "channel_not_exists"))
-		logger().Info(trace_ctx, "Channel does not exist",
+		logger().NamedLogger.Info(trace_ctx, "Channel does not exist",
 			ion.String("channel", channelName),
 			ion.String("function", "Subscription.CanSubscribe"))
 		return false // Channel doesn't exist
@@ -83,7 +83,7 @@ func CanSubscribe(gps *PubSubMessages.GossipPubSub, channelName string, peerID p
 	// Public channels allow anyone
 	if access.IsPublic {
 		span.SetAttributes(attribute.Bool("can_subscribe", true), attribute.String("reason", "public_channel"))
-		logger().Info(trace_ctx, "Public channel - access granted",
+		logger().NamedLogger.Info(trace_ctx, "Public channel - access granted",
 			ion.String("channel", channelName),
 			ion.String("function", "Subscription.CanSubscribe"))
 		return true
@@ -93,13 +93,13 @@ func CanSubscribe(gps *PubSubMessages.GossipPubSub, channelName string, peerID p
 	canSubscribe := access.AllowedPeers[peerID]
 	if canSubscribe {
 		span.SetAttributes(attribute.Bool("can_subscribe", true), attribute.String("reason", "peer_in_allowed_list"))
-		logger().Info(trace_ctx, "Peer in allowed list - access granted",
+		logger().NamedLogger.Info(trace_ctx, "Peer in allowed list - access granted",
 			ion.String("channel", channelName),
 			ion.String("peer_id", peerID.String()),
 			ion.String("function", "Subscription.CanSubscribe"))
 	} else {
 		span.SetAttributes(attribute.Bool("can_subscribe", false), attribute.String("reason", "peer_not_in_allowed_list"))
-		logger().Info(trace_ctx, "Peer not in allowed list - access denied",
+		logger().NamedLogger.Info(trace_ctx, "Peer not in allowed list - access denied",
 			ion.String("channel", channelName),
 			ion.String("peer_id", peerID.String()),
 			ion.String("function", "Subscription.CanSubscribe"))
@@ -110,7 +110,7 @@ func CanSubscribe(gps *PubSubMessages.GossipPubSub, channelName string, peerID p
 // Unsubscribe unsubscribes from a topic (now uses SubscriptionManager)
 func Unsubscribe(gps *PubSubMessages.GossipPubSub, topic string) error {
 	logger_ctx := context.Background()
-	tracer := logger().Tracer("Subscription")
+	tracer := logger().NamedLogger.Tracer("Subscription")
 	trace_ctx, span := tracer.Start(logger_ctx, "Subscription.Unsubscribe")
 	defer span.End()
 
@@ -120,7 +120,7 @@ func Unsubscribe(gps *PubSubMessages.GossipPubSub, topic string) error {
 		attribute.String("peer_id", gps.Host.ID().String()),
 	)
 
-	logger().Info(trace_ctx, "Unsubscribing from topic via SubscriptionManager",
+	logger().NamedLogger.Info(trace_ctx, "Unsubscribing from topic via SubscriptionManager",
 		ion.String("topic", topic),
 		ion.String("function", "Subscription.Unsubscribe"))
 
@@ -133,7 +133,7 @@ func Unsubscribe(gps *PubSubMessages.GossipPubSub, topic string) error {
 		span.SetAttributes(attribute.String("status", "failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(trace_ctx, "Failed to unsubscribe from topic",
+		logger().NamedLogger.Error(trace_ctx, "Failed to unsubscribe from topic",
 			err,
 			ion.String("topic", topic),
 			ion.Float64("duration", duration),
@@ -143,7 +143,7 @@ func Unsubscribe(gps *PubSubMessages.GossipPubSub, topic string) error {
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().Info(trace_ctx, "Successfully unsubscribed from topic",
+	logger().NamedLogger.Info(trace_ctx, "Successfully unsubscribed from topic",
 		ion.String("topic", topic),
 		ion.Float64("duration", duration),
 		ion.String("function", "Subscription.Unsubscribe"))

@@ -9,9 +9,12 @@ import (
 	"sync"
 	"time"
 
+	// log "gossipnode/logging"
+
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
@@ -99,7 +102,7 @@ func NewAccountServer(h host.Host) *AccountServer {
 	// Test connection but don't hold it
 	conn, err := AccountServer.Initialize()
 	if err != nil {
-		logger().Warn(context.Background(), "Failed to initialize Account server database. Running in standalone mode.", ion.Err(err))
+		log.Warn().Err(err).Msg("Failed to initialize Account server database. Running in standalone mode.")
 		AccountServer.standalone = true
 		return AccountServer
 	} else {
@@ -122,7 +125,7 @@ func (s *AccountServer) Initialize() (config.PooledConnection, error) {
 	// Just test the connection to verify we can connect
 	conn, err := s.db.GetAccountsConnection()
 	if err != nil {
-		logger().Warn(context.Background(), "Failed to get accounts database connection. Running in standalone mode.", ion.Err(err))
+		log.Warn().Err(err).Msg("Failed to get accounts database connection. Running in standalone mode.")
 		s.standalone = true
 		return config.PooledConnection{}, err
 	}
@@ -480,7 +483,7 @@ func StartDIDServerWithContext(ctx context.Context, h host.Host, address string,
 		// Try to initialize a new client
 		conn, err := server.Initialize()
 		if err != nil {
-			logger().Warn(ctx, "Failed to initialize DID server database. Running in standalone mode.", ion.Err(err))
+			log.Warn().Err(err).Msg("Failed to initialize DID server database. Running in standalone mode.")
 			return err
 		}
 		server.accountsClient = &conn
@@ -511,9 +514,10 @@ func StartDIDServerWithContext(ctx context.Context, h host.Host, address string,
 	// Register reflection service
 	reflection.Register(grpcServer)
 
-	logger().Info(ctx, "Starting DID gRPC server",
-		ion.String("address", address),
-		ion.Bool("standalone", server.standalone))
+	log.Info().
+		Str("address", address).
+		Bool("standalone", server.standalone).
+		Msg("Starting DID gRPC server")
 
 	errCh := make(chan error, 1)
 	go func() {

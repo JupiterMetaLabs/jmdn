@@ -14,7 +14,7 @@ import (
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
 	"gossipnode/config/settings"
-	log "gossipnode/logging"
+	"gossipnode/logging"
 	"gossipnode/metrics"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
@@ -60,7 +60,7 @@ func GetMainDBConnection(ctx context.Context) (*config.PooledConnection, error) 
 		metrics.NewMainDBMetricsBuilder().WithFunction(fn.Name()).ConnectionTaken()
 	} else {
 		metrics.NewMainDBMetricsBuilder().WithFunction("unknown").ConnectionTaken()
-		logger(log.MainDB_Connections).Debug(context.Background(), "Failed to get caller information")
+		fmt.Println("Failed to get caller information")
 	}
 
 	return conn, nil
@@ -86,7 +86,7 @@ func PutMainDBConnection(conn *config.PooledConnection) {
 			metrics.NewMainDBMetricsBuilder().WithFunction(fn.Name()).ConnectionReturned()
 		} else {
 			metrics.NewMainDBMetricsBuilder().WithFunction("unknown").ConnectionReturned()
-			logger(log.MainDB_Connections).Debug(context.Background(), "Failed to get caller information")
+			fmt.Println("Failed to get caller information")
 		}
 	}
 }
@@ -100,28 +100,28 @@ func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki 
 	var initErr error
 
 	mainDBPoolOnce.Do(func() {
-		logger(log.MainDB_Connections).Debug(context.Background(), "Getting async logger for main DB pool")
+		fmt.Println("Getting async logger for main DB pool...")
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
 		// Get the async logger instance
-		asyncLogger := log.NewAsyncLogger()
+		asyncLogger := logging.NewAsyncLogger()
 		if asyncLogger == nil || asyncLogger.GlobalLogger == nil {
-			logger(log.MainDB_Connections).Error(context.Background(), "Failed to get async logger", fmt.Errorf("logger init failed"))
+			fmt.Printf("Failed to get async logger\n")
 			initErr = fmt.Errorf("failed to get async logger for main DB pool")
 			return
 		}
 		ionLogger := asyncLogger.GlobalLogger
-		logger(log.MainDB_Connections).Info(context.Background(), "Async logger retrieved successfully")
+		fmt.Println("Async logger retrieved successfully")
 
 		ionLogger.Debug(loggerCtx, "Initializing main database connection pool",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "DB_OPs.InitMainDBPool"))
-		logger(log.MainDB_Connections).Debug(context.Background(), "Connecting to main DB")
+		fmt.Println("Connecting to main DB...")
 		if err := connectToMainDB(username, password); err != nil {
-			logger(log.MainDB_Connections).Error(context.Background(), "Failed to connect to main DB", err)
+			fmt.Printf("Failed to connect to main DB: %v\n", err)
 			initErr = fmt.Errorf("failed to ensure main DB selected: %w", err)
 			ionLogger.Error(loggerCtx, "Main DB setup failed",
 				err,
@@ -131,7 +131,7 @@ func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki 
 				ion.String("function", "DB_OPs.InitMainDBPool"))
 			return
 		}
-		logger(log.MainDB_Connections).Info(context.Background(), "Connected to main DB successfully")
+		fmt.Println("Connected to main DB successfully")
 
 		// Now that the DB exists, initialize a dedicated pool for it.
 		poolCfg := config.DefaultConnectionPoolConfig()
@@ -206,11 +206,11 @@ func connectToMainDB(username, password string) error {
 	defer cancel()
 
 	// Get the async logger instance
-	asyncLogger := log.NewAsyncLogger()
+	asyncLogger := logging.NewAsyncLogger()
 	if asyncLogger == nil || asyncLogger.GlobalLogger == nil {
 		return fmt.Errorf("failed to get async logger for DB setup")
 	}
-	ionLogger := asyncLogger.GlobalLogger
+	logger := asyncLogger.GlobalLogger
 
 	// defer func() {
 	// 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -230,7 +230,7 @@ func connectToMainDB(username, password string) error {
 	certFile := filepath.Join(stateDir, "server.cert.pem")
 	keyFile := filepath.Join(stateDir, "server.key.pem")
 	caFile := filepath.Join(stateDir, "ca.cert.pem")
-	logger(log.MainDB_Connections).Debug(context.Background(), "Certificate paths built successfully")
+	fmt.Println("Certificate paths built successfully")
 
 	// Configure the client - disable mTLS for local development
 	opts := client.DefaultOptions().
@@ -274,7 +274,7 @@ func connectToMainDB(username, password string) error {
 		}
 	}
 
-	ionLogger.Debug(loggerCtx, "Main database check completed",
+	logger.Debug(loggerCtx, "Main database check completed",
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
@@ -282,7 +282,7 @@ func connectToMainDB(username, password string) error {
 
 	// Create accounts database if it doesn't exist
 	if !databaseExists {
-		ionLogger.Debug(loggerCtx, "Creating main database",
+		logger.Debug(loggerCtx, "Creating main database",
 			ion.String("database", config.DBName),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -294,20 +294,20 @@ func connectToMainDB(username, password string) error {
 		if err != nil {
 			return fmt.Errorf("failed to create main database: %w", err)
 		}
-		ionLogger.Debug(loggerCtx, "Main database created successfully",
+		logger.Debug(loggerCtx, "Main database created successfully",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "DB_OPs.ensureMainDBSelected"))
 	} else {
-		ionLogger.Debug(loggerCtx, "Main database already exists",
+		logger.Debug(loggerCtx, "Main database already exists",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "DB_OPs.ensureMainDBSelected"))
 	}
 
-	ionLogger.Debug(loggerCtx, "Main database setup completed",
+	logger.Debug(loggerCtx, "Main database setup completed",
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),

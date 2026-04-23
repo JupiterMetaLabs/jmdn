@@ -10,77 +10,77 @@ import (
 	"strings"
 	"syscall"
 
-	pb "gossipnode/Block/proto"
 	BlockCommon "gossipnode/Block/common"
+	pb "gossipnode/Block/proto"
 	"gossipnode/Sequencer"
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
+
+	"gossipnode/config/settings"
+	"gossipnode/pkg/gatekeeper"
 )
+
 var LocalGRO interfaces.LocalGoroutineManagerInterface
+
 // BlockServer implements the gRPC BlockService
 type BlockServer struct {
 	pb.UnimplementedBlockServiceServer
 	host    host.Host
 	chainID int
-	logger  *ion.Ion
+	logger  zerolog.Logger
 }
 
 // NewBlockServer creates a new BlockServer instance
 func NewBlockServer(h host.Host, chainID int) *BlockServer {
-	var ionLogger *ion.Ion
-	if l := logger(); l != nil {
-		ionLogger = l
-	}
+	// Configure zerolog for gRPC server to log to stdout
+	grpcLogger := zerolog.New(os.Stdout).With().
+		Timestamp().
+		Str("component", "block-grpc").
+		Logger()
 
 	return &BlockServer{
 		host:    h,
 		chainID: chainID,
-		logger:  ionLogger,
+		logger:  grpcLogger,
 	}
 }
 
 // ProcessBlock handles the gRPC ProcessBlock request
 func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequest) (*pb.ProcessBlockResponse, error) {
-	if s.logger != nil {
-		s.logger.Info(ctx, "gRPC: ProcessBlock request received",
-			ion.Uint64("block_number", req.Block.BlockNumber),
-			ion.String("block_hash", common.Bytes2Hex(req.Block.BlockHash)),
-			ion.Int("tx_count", len(req.Block.Transactions)))
-	}
+	s.logger.Info().
+		Uint64("block_number", req.Block.BlockNumber).
+		Str("block_hash", common.Bytes2Hex(req.Block.BlockHash)).
+		Int("tx_count", len(req.Block.Transactions)).
+		Msg("gRPC: ProcessBlock request received")
 
 	// Convert proto block to config.ZKBlock
 	block, err := s.convertProtoToZKBlock(req.Block)
 	if err != nil {
-		if s.logger != nil {
-			s.logger.Error(ctx, "gRPC: Failed to convert proto block to ZKBlock", err)
-		}
+		s.logger.Error().Err(err).Msg("gRPC: Failed to convert proto block to ZKBlock")
 		return nil, status.Errorf(codes.InvalidArgument, "invalid block data: %v", err)
 	}
 
 	// Validate block data
 	if len(block.Transactions) == 0 {
-		if s.logger != nil {
-			s.logger.Error(ctx, "gRPC: Block contains no transactions", nil)
-		}
+		s.logger.Error().Msg("gRPC: Block contains no transactions")
 		return nil, status.Errorf(codes.InvalidArgument, "block contains no transactions")
 	}
 
 	if block.Status != "verified" {
-		if s.logger != nil {
-			s.logger.Error(ctx, "gRPC: Block not verified", nil, ion.String("status", block.Status))
-		}
+		s.logger.Error().Str("status", block.Status).Msg("gRPC: Block not verified")
 		return nil, status.Errorf(codes.InvalidArgument, "block has not been verified by ZKVM")
 	}
 
@@ -91,14 +91,13 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 	}
 	consensus := Sequencer.NewConsensus(peerList, s.host)
 	// Debugging
-	if s.logger != nil {
-		s.logger.Debug(ctx, "Consensus instance created")
-	}
+	fmt.Printf("Consensus: %+v\n", consensus)
 	if err := consensus.Start(block); err != nil {
-		if s.logger != nil {
-			s.logger.Error(ctx, "gRPC: Failed to start consensus process", err,
-				ion.String("block_hash", block.BlockHash.Hex()))
-		}
+		fmt.Printf("Error starting consensus process: %+v\n", err)
+		s.logger.Error().
+			Err(err).
+			Str("block_hash", block.BlockHash.Hex()).
+			Msg("gRPC: Failed to start consensus process")
 		return nil, status.Errorf(codes.Internal, "failed to start consensus process: %v", err)
 	}
 
@@ -113,12 +112,11 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 		)
 	}
 
-	if s.logger != nil {
-		s.logger.Info(ctx, "gRPC: Block processed successfully",
-			ion.Uint64("block_number", block.BlockNumber),
-			ion.String("block_hash", block.BlockHash.Hex()),
-			ion.Int("tx_count", len(block.Transactions)))
-	}
+	s.logger.Info().
+		Uint64("block_number", block.BlockNumber).
+		Str("block_hash", block.BlockHash.Hex()).
+		Int("tx_count", len(block.Transactions)).
+		Msg("gRPC: Block processed successfully")
 
 	// Return success response
 	return &pb.ProcessBlockResponse{
@@ -130,7 +128,7 @@ func (s *BlockServer) ProcessBlock(ctx context.Context, req *pb.ProcessBlockRequ
 }
 
 // StartGRPCServer starts the gRPC server on the specified port
-func StartGRPCServer(port int, h host.Host, chainID int) error {
+func StartGRPCServer(bindAddr string, port int, h host.Host, chainID int) error {
 	if LocalGRO == nil {
 		var err error
 		LocalGRO, err = BlockCommon.InitializeGRO(GRO.BlockGRPCServerLocal)
@@ -138,16 +136,31 @@ func StartGRPCServer(port int, h host.Host, chainID int) error {
 			return fmt.Errorf("failed to initialize local gro: %v", err)
 		}
 	}
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	addr := fmt.Sprintf("%s:%d", bindAddr, port)
+	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
 
-	// Create a new gRPC server with increased max message size for blocks
-	grpcServer := grpc.NewServer(
+	// Load Security Configuration
+	secCfg := &settings.Get().Security
+
+	// Create secure gRPC server via gatekeeper helper
+	// Block server needs stream interceptor + large message sizes for block data
+	grpcServer, serverTLS, err := gatekeeper.NewSecureGRPCServer(
+		settings.ServiceBlockIngestGRPC, secCfg, nil,
+		true,                              // includeStreamInterceptor — Block uses streaming RPCs
 		grpc.MaxRecvMsgSize(50*1024*1024), // 50MB max message size for blocks
 		grpc.MaxSendMsgSize(50*1024*1024), // 50MB max send size
 	)
+	if err != nil {
+		return fmt.Errorf("failed to create secure gRPC server: %w", err)
+	}
+	if serverTLS != nil {
+		log.Info().Msg("BlockGRPC server using mTLS/TLS")
+	} else {
+		log.Warn().Msg("BlockGRPC server starting INSECUREly (TLS disabled in policy)")
+	}
 
 	// Create and register the BlockServer
 	server := NewBlockServer(h, chainID)
@@ -163,14 +176,9 @@ func StartGRPCServer(port int, h host.Host, chainID int) error {
 
 	// Start the server in a goroutine
 	LocalGRO.Go(GRO.BlockGRPCServerThread, func(ctx context.Context) error {
-		if l := logger(); l != nil {
-			l.Info(ctx, "Block gRPC server starting", ion.Int("port", port))
-		}
+		log.Info().Int("port", port).Msg("Block gRPC server starting")
 		if err := grpcServer.Serve(lis); err != nil {
-			if l := logger(); l != nil {
-				l.Error(ctx, "Failed to serve Block gRPC", err)
-			}
-			os.Exit(1)
+			log.Fatal().Err(err).Msg("Failed to serve Block gRPC")
 		}
 		return nil
 	})
@@ -181,16 +189,12 @@ func StartGRPCServer(port int, h host.Host, chainID int) error {
 
 	// Block until we receive a shutdown signal
 	<-stop
-	if l := logger(); l != nil {
-		l.Info(context.Background(), "Shutting down Block gRPC server...")
-	}
+	log.Info().Msg("Shutting down Block gRPC server...")
 
 	// Gracefully stop the server
 	grpcServer.GracefulStop()
 	healthServer.Shutdown()
-	if l := logger(); l != nil {
-		l.Info(context.Background(), "Block gRPC server stopped")
-	}
+	log.Info().Msg("Block gRPC server stopped")
 
 	return nil
 }
@@ -327,42 +331,28 @@ func newIntFromBytes(b []byte) *big.Int {
 	// This handles cases where big.Int was serialized as a string in JSON/protobuf
 	if isASCIIString(b) {
 		chainIDStr := strings.TrimSpace(string(b))
-		// Debug: log the bytes and string representation
-		if l := logger(); l != nil {
-			l.Debug(context.Background(), "newIntFromBytes: attempting string parse",
-				ion.String("bytes_ascii", chainIDStr))
-		}
+		// Debug: print the bytes and string representation
+		fmt.Printf("DEBUG newIntFromBytes: bytes (hex): %x, bytes (ASCII): %s\n", b, chainIDStr)
 		// Try parsing as decimal string first
 		result := new(big.Int)
 		if _, ok := result.SetString(chainIDStr, 10); ok {
-			if l := logger(); l != nil {
-				l.Debug(context.Background(), "newIntFromBytes: parsed as decimal string",
-					ion.String("value", result.String()))
-			}
+			fmt.Printf("DEBUG newIntFromBytes: parsed as decimal string: %s -> %s\n", chainIDStr, result.String())
 			return result
 		}
 		// If decimal fails, try hex (with or without 0x prefix)
 		chainIDStr = strings.TrimPrefix(chainIDStr, "0x")
 		if _, ok := result.SetString(chainIDStr, 16); ok {
-			if l := logger(); l != nil {
-				l.Debug(context.Background(), "newIntFromBytes: parsed as hex string",
-					ion.String("value", result.String()))
-			}
+			fmt.Printf("DEBUG newIntFromBytes: parsed as hex string: %s -> %s\n", chainIDStr, result.String())
 			return result
 		}
-		if l := logger(); l != nil {
-			l.Debug(context.Background(), "newIntFromBytes: failed to parse as string, falling back to byte interpretation")
-		}
+		fmt.Printf("DEBUG newIntFromBytes: failed to parse as string, falling back to byte interpretation\n")
 		// If both fail, fall through to byte interpretation
 	}
 
 	// Default: interpret as big-endian integer bytes
 	result := new(big.Int)
 	result.SetBytes(b)
-	if l := logger(); l != nil {
-		l.Debug(context.Background(), "newIntFromBytes: interpreted as big-endian bytes",
-			ion.String("value", result.String()))
-	}
+	fmt.Printf("DEBUG newIntFromBytes: interpreted as big-endian bytes: %x -> %s\n", b, result.String())
 	return result
 }
 

@@ -53,6 +53,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -186,9 +187,7 @@ func (fs *FastSync) getKeysBatchIncremental(db *config.PooledConnection, prefix 
 			keys = append(keys, key)
 		} else {
 			// If we get a key that doesn't match the prefix, we've gone past the prefix range
-			logger().Debug(context.Background(), "Stopping scan after key outside prefix range",
-				ion.String("key", key),
-				ion.String("prefix", prefix))
+			fmt.Printf(">>> [SERVER] Key '%s' doesn't match prefix '%s' - stopping scan\n", key, prefix)
 			break
 		}
 	}
@@ -200,7 +199,7 @@ func (fs *FastSync) getKeysBatchIncremental(db *config.PooledConnection, prefix 
 // A prefix is defined as everything before the first colon (:) or the entire key if no colon exists
 // Uses a more efficient approach: sample keys from different prefixes instead of scanning all keys
 func (fs *FastSync) getAllUniquePrefixes(db *config.PooledConnection, dbType DatabaseType) ([]string, error) {
-	logger().Debug(context.Background(), "Discovering prefixes by sampling keys from database")
+	fmt.Printf(">>> [SERVER] Discovering prefixes by sampling keys from database...\n")
 
 	prefixSet := make(map[string]bool)
 	batchSize := 20
@@ -235,8 +234,7 @@ func (fs *FastSync) getAllUniquePrefixes(db *config.PooledConnection, dbType Dat
 	// If we still haven't found many prefixes, do a limited full scan as fallback
 	// But with strict limits to prevent infinite loops
 	if len(prefixSet) < 3 && totalKeysScanned < maxKeysToScan {
-		logger().Debug(context.Background(), "Sampling from common prefixes, doing limited full scan",
-			ion.Int("prefixes_found", len(prefixSet)))
+		fmt.Printf(">>> [SERVER] Sampling from common prefixes found %d prefixes, doing limited full scan...\n", len(prefixSet))
 
 		var lastKey []byte
 		batchNum := 0
@@ -246,9 +244,7 @@ func (fs *FastSync) getAllUniquePrefixes(db *config.PooledConnection, dbType Dat
 			batchNum++
 			keys, err := fs.getKeysBatchIncremental(db, "", batchSize, lastKey)
 			if err != nil {
-				logger().Debug(context.Background(), "Failed to scan batch",
-					ion.Int("batch_num", batchNum),
-					ion.Err(err))
+				fmt.Printf(">>> [SERVER] ERROR: Failed to scan batch %d: %v\n", batchNum, err)
 				break
 			}
 
@@ -274,18 +270,15 @@ func (fs *FastSync) getAllUniquePrefixes(db *config.PooledConnection, dbType Dat
 
 			// If all keys in this batch were duplicates, we're in a loop - stop
 			if allDuplicates && batchNum > 1 {
-				logger().Debug(context.Background(), "Detected duplicate keys, stopping scan",
-					ion.Int("batch_num", batchNum))
+				fmt.Printf(">>> [SERVER] Detected duplicate keys (loop), stopping scan at batch %d\n", batchNum)
 				break
 			}
 
 			totalKeysScanned += len(keys)
 
 			if batchNum%10 == 0 {
-				logger().Debug(context.Background(), "Prefix discovery progress",
-					ion.Int("batch", batchNum),
-					ion.Int("keys_scanned", totalKeysScanned),
-					ion.Int("unique_prefixes", len(prefixSet)))
+				fmt.Printf(">>> [SERVER] Prefix discovery progress: batch %d, scanned %d keys, found %d unique prefixes...\n",
+					batchNum, totalKeysScanned, len(prefixSet))
 			}
 
 			// If we got fewer than batch size, we're done
@@ -298,7 +291,7 @@ func (fs *FastSync) getAllUniquePrefixes(db *config.PooledConnection, dbType Dat
 
 			// Check if lastKey is the same as before (loop detection)
 			if lastKey != nil && string(newLastKey) == string(lastKey) {
-				logger().Debug(context.Background(), "Detected same last key, stopping scan")
+				fmt.Printf(">>> [SERVER] Detected same last key (loop), stopping scan\n")
 				break
 			}
 
@@ -315,9 +308,8 @@ func (fs *FastSync) getAllUniquePrefixes(db *config.PooledConnection, dbType Dat
 	// Sort prefixes for consistent output
 	sort.Strings(prefixes)
 
-	logger().Debug(context.Background(), "Prefix discovery complete",
-		ion.Int("keys_scanned", totalKeysScanned),
-		ion.Int("unique_prefixes", len(prefixes)))
+	fmt.Printf(">>> [SERVER] ✓ Prefix discovery complete: scanned %d keys, found %d unique prefixes: %v\n",
+		totalKeysScanned, len(prefixes), prefixes)
 
 	return prefixes, nil
 }
@@ -330,17 +322,16 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 	serverFullState := hashmap.New()
 
 	// Dynamically discover all prefixes in the database instead of hardcoding
-	dbTypeStr := "AccountsDB"
-	if dbType == MainDB {
-		dbTypeStr = "MainDB"
-	}
-	logger().Debug(context.Background(), "Discovering prefixes dynamically",
-		ion.String("db_type", dbTypeStr))
+	fmt.Printf(">>> [SERVER] Discovering prefixes dynamically for %s...\n", func() string {
+		if dbType == MainDB {
+			return "MainDB"
+		}
+		return "AccountsDB"
+	}())
 
 	discoveredPrefixes, err := fs.getAllUniquePrefixes(db, dbType)
 	if err != nil {
-		logger().Debug(context.Background(), "Failed to discover prefixes dynamically, falling back to hardcoded",
-			ion.Err(err))
+		fmt.Printf(">>> [SERVER] WARNING: Failed to discover prefixes dynamically: %v, falling back to hardcoded prefixes\n", err)
 		// Fallback to hardcoded prefixes if discovery fails
 		if dbType == MainDB {
 			prefixes = []string{"block:", "tx:", "tx_processed:", "tx_processing:"}
@@ -348,8 +339,7 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 			prefixes = []string{"address:", "did:"}
 		}
 	} else {
-		logger().Debug(context.Background(), "Discovered prefixes",
-			ion.Int("count", len(discoveredPrefixes)))
+		fmt.Printf(">>> [SERVER] Discovered %d prefixes: %v\n", len(discoveredPrefixes), discoveredPrefixes)
 		prefixes = discoveredPrefixes
 		// Filter out latest_block from prefixes (it's handled separately)
 		filteredPrefixes := make([]string, 0, len(prefixes))
@@ -360,6 +350,9 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 		}
 		prefixes = filteredPrefixes
 
+		// Log which prefixes will be processed
+		fmt.Printf(">>> [SERVER] Prefixes to process (after filtering latest_block): %v\n", prefixes)
+
 		// Check if tx_processing is in the list
 		hasTxProcessing := false
 		for _, prefix := range prefixes {
@@ -369,8 +362,9 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 			}
 		}
 		if !hasTxProcessing && dbType == MainDB {
-			logger().Debug(context.Background(), "tx_processing prefix not found, adding manually")
+			fmt.Printf(">>> [SERVER] WARNING: tx_processing: prefix not found in discovered prefixes! Adding it manually...\n")
 			prefixes = append(prefixes, "tx_processing:")
+			fmt.Printf(">>> [SERVER] Updated prefixes: %v\n", prefixes)
 		}
 	}
 
@@ -391,8 +385,7 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 						// Client doesn't have latest_block, include it
 						syncKeys = append(syncKeys, "latest_block")
 						serverFullState.Insert("latest_block")
-						logger().Debug(context.Background(), "latest_block will be included",
-							ion.Uint64("server_block", serverLatestBlock))
+						fmt.Printf(">>> [SERVER] ✓ latest_block will be included (client doesn't have it, server: %d)\n", serverLatestBlock)
 					} else {
 						// Client has latest_block, need to check if we can get its value from HashMap
 						// Note: HashMap only stores keys, not values, so we can't directly compare
@@ -405,9 +398,7 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 							// Include latest_block to sync it
 							syncKeys = append(syncKeys, "latest_block")
 							serverFullState.Insert("latest_block")
-							logger().Debug(context.Background(), "latest_block will be included",
-								ion.Uint64("server_block", serverLatestBlock),
-								ion.String("missing_client_block", clientBlockKey))
+							fmt.Printf(">>> [SERVER] ✓ latest_block will be included (server: %d, client missing block:%d)\n", serverLatestBlock, serverLatestBlock)
 						} else {
 							// Client has the block corresponding to server's latest_block
 							// Check if client might have newer blocks by checking for higher block numbers
@@ -422,37 +413,33 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 
 							if clientHasNewerBlock {
 								// Client has newer blocks than server, DON'T include latest_block to avoid downgrading
-								logger().Debug(context.Background(), "Skipping latest_block - client has newer blocks",
-									ion.Uint64("server_block", serverLatestBlock))
+								fmt.Printf(">>> [SERVER] ⚠ SKIPPING latest_block (server: %d, client has newer blocks - would downgrade)\n", serverLatestBlock)
 							} else {
 								// Client has same or older blocks, include latest_block for safety
 								syncKeys = append(syncKeys, "latest_block")
 								serverFullState.Insert("latest_block")
-								logger().Debug(context.Background(), "latest_block will be included",
-									ion.Uint64("server_block", serverLatestBlock))
+								fmt.Printf(">>> [SERVER] ✓ latest_block will be included (server: %d, client likely same or older)\n", serverLatestBlock)
 							}
 						}
 					}
 				} else {
-					logger().Debug(context.Background(), "Failed to parse server's latest_block value",
-						ion.Err(err))
+					fmt.Printf(">>> [SERVER] WARNING: Failed to parse server's latest_block value: %v\n", err)
 				}
 			} else {
-				logger().Debug(context.Background(), "Failed to read server's latest_block",
-					ion.Err(err))
+				fmt.Printf(">>> [SERVER] WARNING: Failed to read server's latest_block: %v\n", err)
 			}
 		} else {
-			logger().Debug(context.Background(), "Server does not have latest_block key")
+			fmt.Printf(">>> [SERVER] WARNING: Server does not have latest_block key (exists: %v, err: %v)\n", exists, err)
 		}
 	}
 
-	clientHashMapSize := 0
-	if clientHashMap != nil {
-		clientHashMapSize = clientHashMap.Size()
-	}
-	logger().Debug(context.Background(), "Checking prefixes for SYNC keys",
-		ion.Int("prefixes", len(prefixes)),
-		ion.Int("client_hashmap_size", clientHashMapSize))
+	fmt.Printf(">>> [SERVER] Checking %d prefixes for SYNC keys (incremental approach)...\n", len(prefixes))
+	fmt.Printf(">>> [SERVER] Client HashMap size: %d\n", func() int {
+		if clientHashMap != nil {
+			return clientHashMap.Size()
+		}
+		return 0
+	}())
 
 	// Track block key statistics across all prefixes
 	totalBlockKeysChecked := 0
@@ -461,10 +448,7 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 
 	// Process each prefix incrementally
 	for prefixIdx, prefix := range prefixes {
-		logger().Debug(context.Background(), "Processing prefix",
-			ion.Int("prefix_index", prefixIdx+1),
-			ion.Int("total_prefixes", len(prefixes)),
-			ion.String("prefix", prefix))
+		fmt.Printf(">>> [SERVER] Processing prefix %d/%d: '%s'...\n", prefixIdx+1, len(prefixes), prefix)
 
 		batchSize := 100
 		var lastKey []byte
@@ -484,47 +468,34 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 		switch prefix {
 		case "block:":
 			actualBatchSize = 20 // Very small batch for blocks - each block ~97KB, so 20 blocks = ~2MB (well under 20MB limit)
-			logger().Debug(context.Background(), "Using reduced batch size for block prefix",
-				ion.Int("batch_size", actualBatchSize))
+			fmt.Printf(">>> [SERVER] Using reduced batch size %d for 'block:' prefix (to avoid gRPC 20MB message size limit)\n", actualBatchSize)
 		case "tx:", "tx_processed:":
 			actualBatchSize = 20 // Medium batch for transactions
 		case "tx_processing:":
 			actualBatchSize = 20 // Small prefix, can use larger batches
 		case "address:", "did:":
 			actualBatchSize = 20 // AccountsDB entries - using smaller batch to ensure all DIDs/addresses are synced
-			logger().Debug(context.Background(), "Using batch size for AccountsDB prefix",
-				ion.Int("batch_size", actualBatchSize),
-				ion.String("prefix", prefix))
+			fmt.Printf(">>> [SERVER] Using batch size %d for '%s' prefix (AccountsDB)\n", actualBatchSize, prefix)
 		}
 
 		for {
 			batchNum++
 			if batchNum%100 == 0 {
-				logger().Debug(context.Background(), "Progress scanning prefix",
-					ion.String("prefix", prefix),
-					ion.Int("batch", batchNum),
-					ion.Int("keys_checked", totalChecked),
-					ion.Int("sync_keys_found", len(syncKeys)),
-					ion.Int("keys_in_client", keysInClientHashMap))
+				fmt.Printf(">>> [SERVER] Progress for '%s': batch %d (checked %d keys, found %d SYNC keys, %d already in client)...\n",
+					prefix, batchNum, totalChecked, len(syncKeys), keysInClientHashMap)
 			}
 
 			// Get batch of keys from database
 			keys, err := fs.getKeysBatchIncremental(db, prefix, actualBatchSize, lastKey)
 			if err != nil {
-				logger().Debug(context.Background(), "Failed to get batch",
-					ion.String("prefix", prefix),
-					ion.Err(err))
+				fmt.Printf(">>> [SERVER] ERROR: Failed to get batch for '%s': %v\n", prefix, err)
 				return nil, "", fmt.Errorf("failed to get keys batch for prefix %s: %w", prefix, err)
 			}
 			rawKeysCount := len(keys)
 
 			if len(keys) == 0 {
-				logger().Debug(context.Background(), "Finished processing prefix",
-					ion.String("prefix", prefix),
-					ion.Int("total_batches", batchNum),
-					ion.Int("keys_checked", totalChecked),
-					ion.Int("sync_keys_found", len(syncKeys)),
-					ion.Int("keys_in_client", keysInClientHashMap))
+				fmt.Printf(">>> [SERVER] ✓ Finished processing prefix '%s' (total batches: %d, checked %d, found %d SYNC, %d in client)\n",
+					prefix, batchNum, totalChecked, len(syncKeys), keysInClientHashMap)
 				break
 			}
 
@@ -533,8 +504,7 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 			// Immudb returns keys lexicographically: block:1, block:10, block:100, block:1000, etc.
 			// When using SeekKey, it may include the SeekKey itself in the next batch
 			if lastKey != nil && len(keys) > 0 && string(keys[0]) == string(lastKey) {
-				logger().Debug(context.Background(), "Skipping duplicate key from previous batch",
-					ion.String("key", keys[0]))
+				fmt.Printf(">>> [SERVER] Skipping duplicate key '%s' (matches lastKey from previous batch)\n", keys[0])
 				keys = keys[1:]
 				if len(keys) == 0 {
 					// If we skipped the only key, get next batch
@@ -582,22 +552,15 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 
 			// Log block key statistics for debugging
 			if blockKeysChecked > 0 && batchNum%10 == 0 {
-				logger().Debug(context.Background(), "Block keys statistics in batch",
-					ion.Int("batch", batchNum),
-					ion.Int("checked", blockKeysChecked),
-					ion.Int("sync", blockKeysInSync),
-					ion.Int("skipped", blockKeysSkipped))
+				fmt.Printf(">>> [SERVER] Block keys in batch %d: checked %d, SYNC %d, skipped %d (already in client HashMap)\n",
+					batchNum, blockKeysChecked, blockKeysInSync, blockKeysSkipped)
 			}
 
 			// If we got fewer than batch size, we're done with this prefix
 			// CRITICAL: Must use rawKeysCount and actualBatchSize
 			if rawKeysCount < actualBatchSize {
-				logger().Debug(context.Background(), "Finished processing prefix",
-					ion.String("prefix", prefix),
-					ion.Int("total_batches", batchNum),
-					ion.Int("keys_checked", totalChecked),
-					ion.Int("sync_keys_found", len(syncKeys)),
-					ion.Int("keys_in_client", keysInClientHashMap))
+				fmt.Printf(">>> [SERVER] ✓ Finished processing prefix '%s' (total batches: %d, checked %d keys, found %d SYNC keys, %d already in client)\n",
+					prefix, batchNum, totalChecked, len(syncKeys), keysInClientHashMap)
 				break
 			}
 
@@ -610,20 +573,13 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 			totalBlockKeysChecked += prefixBlockKeysChecked
 			totalBlockKeysInSync += prefixBlockKeysInSync
 			totalBlockKeysSkipped += prefixBlockKeysSkipped
-			logger().Debug(context.Background(), "Prefix block: complete",
-				ion.Int("keys_checked", totalChecked),
-				ion.Int("sync_keys_found", len(syncKeys)),
-				ion.Int("keys_in_client", keysInClientHashMap))
-			logger().Debug(context.Background(), "Block keys statistics",
-				ion.Int("checked", prefixBlockKeysChecked),
-				ion.Int("sync", prefixBlockKeysInSync),
-				ion.Int("skipped", prefixBlockKeysSkipped))
+			fmt.Printf(">>> [SERVER] ✓ Prefix 'block:' complete - checked %d keys, found %d SYNC keys, %d already in client HashMap\n",
+				totalChecked, len(syncKeys), keysInClientHashMap)
+			fmt.Printf(">>> [SERVER]   Block keys: checked %d, SYNC %d, skipped %d (in client HashMap)\n",
+				prefixBlockKeysChecked, prefixBlockKeysInSync, prefixBlockKeysSkipped)
 		} else {
-			logger().Debug(context.Background(), "Prefix complete",
-				ion.String("prefix", prefix),
-				ion.Int("keys_checked", totalChecked),
-				ion.Int("sync_keys_found", len(syncKeys)),
-				ion.Int("keys_in_client", keysInClientHashMap))
+			fmt.Printf(">>> [SERVER] ✓ Prefix '%s' complete - checked %d keys, found %d SYNC keys, %d already in client HashMap\n",
+				prefix, totalChecked, len(syncKeys), keysInClientHashMap)
 		}
 	}
 
@@ -638,35 +594,35 @@ func (fs *FastSync) computeSyncKeysIncremental(db *config.PooledConnection, clie
 		}
 	}
 
-	logger().Debug(context.Background(), "Incremental SYNC computation complete",
-		ion.Int("total_sync_keys", len(syncKeys)),
-		ion.Int("block_keys_in_sync", blockKeyCount),
-		ion.Bool("has_latest_block", hasLatestBlock))
+	fmt.Printf(">>> [SERVER] ✓ Incremental SYNC computation complete\n")
+	fmt.Printf(">>> [SERVER]   Total SYNC keys: %d\n", len(syncKeys))
+	fmt.Printf(">>> [SERVER]   Block keys in SYNC: %d\n", blockKeyCount)
+	fmt.Printf(">>> [SERVER]   latest_block in SYNC: %v\n", hasLatestBlock)
 
 	if dbType == MainDB {
-		logger().Debug(context.Background(), "Block key statistics",
-			ion.Int("total_checked", totalBlockKeysChecked),
-			ion.Int("in_sync", totalBlockKeysInSync),
-			ion.Int("skipped", totalBlockKeysSkipped))
+		fmt.Printf(">>> [SERVER]   Block key statistics:\n")
+		fmt.Printf(">>> [SERVER]     Total block keys checked: %d\n", totalBlockKeysChecked)
+		fmt.Printf(">>> [SERVER]     Block keys in SYNC: %d\n", totalBlockKeysInSync)
+		fmt.Printf(">>> [SERVER]     Block keys skipped (in client HashMap): %d\n", totalBlockKeysSkipped)
 
 		if totalBlockKeysChecked > 0 && totalBlockKeysInSync == 0 && totalBlockKeysSkipped > 0 {
-			logger().Debug(context.Background(), "Client HashMap contains all block keys but none added to SYNC",
-				ion.Int("block_keys_skipped", totalBlockKeysSkipped))
+			fmt.Printf(">>> [SERVER] ⚠ WARNING: Client HashMap contains ALL %d block keys, but 0 were added to SYNC!\n", totalBlockKeysSkipped)
+			fmt.Printf(">>> [SERVER] ⚠ This suggests client's HashMap is stale (contains keys not in client's actual database)\n")
+			fmt.Printf(">>> [SERVER] ⚠ Client should validate HashMap keys before sending to server\n")
 		}
 
 		if blockKeyCount == 0 && !hasLatestBlock {
-			logger().Debug(context.Background(), "No block keys or latest_block in SYNC keys - may indicate stale HashMap")
+			fmt.Printf(">>> [SERVER] WARNING: No block keys or latest_block in SYNC keys! This may indicate client HashMap is stale.\n")
 		}
 	}
 
-	dbTypeForLog := "AccountsDB"
-	if dbType == MainDB {
-		dbTypeForLog = "MainDB"
-	}
 	fingerprint := serverFullState.Fingerprint()
-	logger().Debug(context.Background(), "Full state fingerprint",
-		ion.String("db_type", dbTypeForLog),
-		ion.String("fingerprint", fingerprint))
+	fmt.Printf(">>> [SERVER]   Full state fingerprint (%s): %s\n", func() string {
+		if dbType == MainDB {
+			return "MainDB"
+		}
+		return "AccountsDB"
+	}(), fingerprint)
 
 	return syncKeys, fingerprint, nil
 }
@@ -688,61 +644,54 @@ func GetDBData_Accounts(db *config.PooledConnection, prefix string) ([]string, e
 }
 
 func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
-	logger().Info(context.Background(), "Making Default HashMap")
+	fmt.Println(">>> [SERVER] Making Default HashMap...")
 	MAP := hashmap.New()
 
 	// Get block: keys
-	logger().Info(context.Background(), "Getting block keys")
+	fmt.Println(">>> [SERVER] Getting block: keys...")
 	blockKeys, err := GetDBData_Default(fs.mainDB, "block:")
 	if err != nil {
-		logger().Debug(context.Background(), "Failed to get block keys",
-			ion.Err(err))
+		fmt.Printf(">>> [SERVER] ERROR: Failed to get block keys: %v\n", err)
 		return nil, err
 	}
-	logger().Debug(context.Background(), "Got block keys",
-		ion.Int("count", len(blockKeys)))
+	fmt.Printf(">>> [SERVER] ✓ Got %d block keys\n", len(blockKeys))
 	for _, key := range blockKeys {
 		MAP.Insert(key)
 	}
 
 	// Get tx: keys
-	logger().Info(context.Background(), "Getting tx keys")
+	fmt.Println(">>> [SERVER] Getting tx: keys...")
 	txKeys, err := GetDBData_Default(fs.mainDB, "tx:")
 	if err != nil {
-		logger().Debug(context.Background(), "Failed to get tx keys",
-			ion.Err(err))
+		fmt.Printf(">>> [SERVER] ERROR: Failed to get tx keys: %v\n", err)
 		return nil, err
 	}
-	logger().Debug(context.Background(), "Got tx keys",
-		ion.Int("count", len(txKeys)))
+	fmt.Printf(">>> [SERVER] ✓ Got %d tx keys\n", len(txKeys))
 	for _, key := range txKeys {
 		MAP.Insert(key)
 	}
 
 	// Get tx_processed: keys
-	logger().Info(context.Background(), "Getting tx_processed keys")
+	fmt.Println(">>> [SERVER] Getting tx_processed: keys...")
 	txProcessedKeys, err := GetDBData_Default(fs.mainDB, "tx_processed:")
 	if err != nil {
-		logger().Debug(context.Background(), "Failed to get tx_processed keys",
-			ion.Err(err))
+		fmt.Printf(">>> [SERVER] ERROR: Failed to get tx_processed keys: %v\n", err)
 		return nil, err
 	}
-	logger().Debug(context.Background(), "Got tx_processed keys",
-		ion.Int("count", len(txProcessedKeys)))
+	fmt.Printf(">>> [SERVER] ✓ Got %d tx_processed keys\n", len(txProcessedKeys))
 	for _, key := range txProcessedKeys {
 		MAP.Insert(key)
 	}
 
 	// Check for latest_block key explicitly
-	logger().Info(context.Background(), "Checking for latest_block key")
+	fmt.Println(">>> [SERVER] Checking for latest_block key...")
 	exists, err := DB_OPs.Exists(fs.mainDB, "latest_block")
 	if err == nil && exists {
 		MAP.Insert("latest_block")
-		logger().Info(context.Background(), "Added latest_block key")
+		fmt.Println(">>> [SERVER] ✓ Added latest_block key")
 	}
 
-	logger().Debug(context.Background(), "Default HashMap complete",
-		ion.Int("total_keys", MAP.Size()))
+	fmt.Printf(">>> [SERVER] ✓ Default HashMap complete: %d total keys\n", MAP.Size())
 
 	// CRITICAL: Validate HashMap keys exist in DB to remove stale keys
 	// This ensures the HashMap accurately reflects the current DB state
@@ -752,39 +701,34 @@ func (fs *FastSync) MakeHashMap_Default() (*hashmap.HashMap, error) {
 }
 
 func (fs *FastSync) MakeHashMap_Accounts() (*hashmap.HashMap, error) {
-	logger().Info(context.Background(), "Making Accounts HashMap")
+	fmt.Println(">>> [SERVER] Making Accounts HashMap...")
 	MAP := hashmap.New()
 
 	// Get address: keys (actual account data)
-	logger().Info(context.Background(), "Getting address keys")
+	fmt.Println(">>> [SERVER] Getting address: keys...")
 	addressKeys, err := GetDBData_Accounts(fs.accountsDB, "address:")
 	if err != nil {
-		logger().Debug(context.Background(), "Failed to get address keys",
-			ion.Err(err))
+		fmt.Printf(">>> [SERVER] ERROR: Failed to get address keys: %v\n", err)
 		return nil, err
 	}
-	logger().Debug(context.Background(), "Got address keys",
-		ion.Int("count", len(addressKeys)))
+	fmt.Printf(">>> [SERVER] ✓ Got %d address keys\n", len(addressKeys))
 	for _, key := range addressKeys {
 		MAP.Insert(key)
 	}
 
 	// Get did: keys (DID references to accounts)
-	logger().Info(context.Background(), "Getting did keys")
+	fmt.Println(">>> [SERVER] Getting did: keys...")
 	didKeys, err := GetDBData_Accounts(fs.accountsDB, "did:")
 	if err != nil {
-		logger().Debug(context.Background(), "Failed to get did keys",
-			ion.Err(err))
+		fmt.Printf(">>> [SERVER] ERROR: Failed to get did keys: %v\n", err)
 		return nil, err
 	}
-	logger().Debug(context.Background(), "Got did keys",
-		ion.Int("count", len(didKeys)))
+	fmt.Printf(">>> [SERVER] ✓ Got %d did keys\n", len(didKeys))
 	for _, key := range didKeys {
 		MAP.Insert(key)
 	}
 
-	logger().Debug(context.Background(), "Accounts HashMap complete",
-		ion.Int("total_keys", MAP.Size()))
+	fmt.Printf(">>> [SERVER] ✓ Accounts HashMap complete: %d total keys\n", MAP.Size())
 
 	// CRITICAL: Validate HashMap keys exist in DB to remove stale keys
 	// This ensures the HashMap accurately reflects the current DB state
@@ -816,6 +760,9 @@ func NewFastSync(h host.Host, mainDB, accountsDB *config.PooledConnection, logge
 		fs.Logger.Info(context.Background(), "FastSync service initialized with CRDT engine",
 			ion.String("protocol_id", string(SyncProtocolID)),
 			ion.Int("crdt_memory_limit_mb", 50))
+	} else {
+		// Fallback if logger is nil
+		fmt.Printf("FastSync service initialized with CRDT engine (Protocol ID: %s)\n", SyncProtocolID)
 	}
 
 	return fs
@@ -838,18 +785,17 @@ func (fs *FastSync) ExportCRDTs() ([]json.RawMessage, error) {
 		return nil, fmt.Errorf("CRDT engine not initialized")
 	}
 
-	logger().Info(context.Background(), "Starting CRDT export for synchronization")
+	log.Info().Msg("Starting CRDT export for synchronization")
 
 	// 1. Get all CRDT objects from the memory store
 	allCRDTs := fs.crdtEngine.GetAllCRDTs()
 
 	if len(allCRDTs) == 0 {
-		logger().Info(context.Background(), "No CRDTs to export")
+		log.Info().Msg("No CRDTs to export")
 		return []json.RawMessage{}, nil
 	}
 
-	logger().Info(context.Background(), "Exporting CRDTs",
-		ion.Int("count", len(allCRDTs)))
+	log.Info().Int("count", len(allCRDTs)).Msg("Exporting CRDTs")
 
 	// 2. Serialize each CRDT to JSON format with metadata
 	var exportedCRDTs []json.RawMessage
@@ -863,17 +809,14 @@ func (fs *FastSync) ExportCRDTs() ([]json.RawMessage, error) {
 		case *crdt.Counter:
 			crdtType = "counter"
 		default:
-			logger().Warn(context.Background(), "Unknown CRDT type, skipping export",
-				ion.String("key", key))
+			log.Warn().Str("key", key).Msg("Unknown CRDT type, skipping export")
 			continue
 		}
 
 		// Serialize CRDT data to JSON
 		crdtData, err := json.Marshal(crdtObj)
 		if err != nil {
-			logger().Error(context.Background(), "Failed to marshal CRDT data", err,
-				ion.String("key", key),
-				ion.String("type", crdtType))
+			log.Error().Err(err).Str("key", key).Str("type", crdtType).Msg("Failed to marshal CRDT data")
 			continue
 		}
 
@@ -889,23 +832,23 @@ func (fs *FastSync) ExportCRDTs() ([]json.RawMessage, error) {
 		// Serialize wrapper to JSON
 		wrapperData, err := json.Marshal(wrapper)
 		if err != nil {
-			logger().Error(context.Background(), "Failed to marshal CRDT wrapper", err,
-				ion.String("key", key),
-				ion.String("type", crdtType))
+			log.Error().Err(err).Str("key", key).Str("type", crdtType).Msg("Failed to marshal CRDT wrapper")
 			continue
 		}
 
 		exportedCRDTs = append(exportedCRDTs, json.RawMessage(wrapperData))
 
-		logger().Debug(context.Background(), "Exported CRDT",
-			ion.String("key", key),
-			ion.String("type", crdtType),
-			ion.Int("size", len(wrapperData)))
+		log.Debug().
+			Str("key", key).
+			Str("type", crdtType).
+			Int("size", len(wrapperData)).
+			Msg("Exported CRDT")
 	}
 
-	logger().Info(context.Background(), "CRDT export completed",
-		ion.Int("total", len(allCRDTs)),
-		ion.Int("exported", len(exportedCRDTs)))
+	log.Info().
+		Int("total", len(allCRDTs)).
+		Int("exported", len(exportedCRDTs)).
+		Msg("CRDT export completed")
 
 	// 4. Return serialized data for network transmission
 	return exportedCRDTs, nil
@@ -919,22 +862,20 @@ func (fs *FastSync) ImportCRDTs(crdtData []json.RawMessage) error {
 	}
 
 	if len(crdtData) == 0 {
-		logger().Info(context.Background(), "No CRDTs to import")
+		log.Info().Msg("No CRDTs to import")
 		return nil
 	}
 
-	logger().Info(context.Background(), "Starting CRDT import",
-		ion.Int("count", len(crdtData)))
+	log.Info().Int("count", len(crdtData)).Msg("Starting CRDT import")
 
 	// Use the existing storeCRDTs function which already handles the import logic
 	err := fs.storeCRDTs(fs.crdtEngine, crdtData)
 	if err != nil {
-		logger().Error(context.Background(), "Failed to import CRDTs", err)
+		log.Error().Err(err).Msg("Failed to import CRDTs")
 		return fmt.Errorf("failed to import CRDTs: %w", err)
 	}
 
-	logger().Info(context.Background(), "CRDT import completed successfully",
-		ion.Int("imported", len(crdtData)))
+	log.Info().Int("imported", len(crdtData)).Msg("CRDT import completed successfully")
 	return nil
 }
 
@@ -959,18 +900,19 @@ func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, err
 		if time.Since(lastDeadlineUpdate) > 30*time.Second {
 			deadline = time.Now().UTC().Add(extendedTimeout)
 			if err := stream.SetReadDeadline(deadline); err != nil {
-				logger().Warn(context.Background(), "Failed to extend read deadline, continuing", ion.Err(err))
+				log.Warn().Err(err).Msg("Failed to extend read deadline, continuing")
 			} else {
 				lastDeadlineUpdate = time.Now().UTC()
-				logger().Debug(context.Background(), "Extended read deadline for large message",
-					ion.Int("chunks_read", chunkCount),
-					ion.Int("bytes_read", len(msgData)))
+				log.Debug().
+					Int("chunks_read", chunkCount).
+					Int("bytes_read", len(msgData)).
+					Msg("Extended read deadline for large message")
 			}
 		}
 
 		chunk, isPrefix, err := reader.ReadLine()
 		if err != nil {
-			logger().Error(context.Background(), "Failed to read message chunk", err)
+			log.Error().Err(err).Msg("Failed to read message chunk")
 			return nil, fmt.Errorf("failed to read message: %w", err)
 		}
 
@@ -983,9 +925,10 @@ func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, err
 	}
 
 	// Add debugging to show message size and content
-	logger().Info(context.Background(), "Read message data",
-		ion.Int("bytes", len(msgData)),
-		ion.Int("chunks", chunkCount))
+	log.Info().
+		Int("bytes", len(msgData)).
+		Int("chunks", chunkCount).
+		Msg("Read message data")
 
 	if len(msgData) == 0 {
 		return nil, fmt.Errorf("received empty message")
@@ -993,8 +936,11 @@ func readMessage(reader *bufio.Reader, stream network.Stream) (*SyncMessage, err
 
 	var msg SyncMessage
 	if err := json.Unmarshal(msgData, &msg); err != nil {
-		logger().Error(context.Background(), "Failed to unmarshal message", err,
-			ion.Int("bytes", len(msgData)))
+		log.Error().
+			Err(err).
+			Int("bytes", len(msgData)).
+			Str("raw_data", string(msgData)).
+			Msg("Failed to unmarshal message")
 		return nil, fmt.Errorf("failed to unmarshal message (%d bytes): %w", len(msgData), err)
 	}
 
@@ -1020,27 +966,29 @@ func writeMessage(writer *bufio.Writer, stream network.Stream, msg *SyncMessage)
 
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
-		logger().Error(context.Background(), "Failed to marshal message", err)
+		log.Error().Err(err).Msg("Failed to marshal message")
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 	msgBytes = append(msgBytes, '\n')
 
 	actualSize := len(msgBytes)
-	logger().Info(context.Background(), "Writing message data",
-		ion.Int("bytes", actualSize),
-		ion.Int("estimated_keys", estimatedSize/100))
+	log.Info().
+		Int("bytes", actualSize).
+		Int("estimated_keys", estimatedSize/100).
+		Msg("Writing message data")
 
 	// Set write deadline - extend for large messages
 	deadline := time.Now().UTC().Add(ResponseTimeout)
 	if estimatedSize > 1000000 || actualSize > 1000000 {
 		// For very large messages (>1MB), give extra time
 		deadline = time.Now().UTC().Add(ResponseTimeout * 2)
-		logger().Info(context.Background(), "Large message detected, using extended timeout",
-			ion.Int("size_bytes", actualSize))
+		log.Info().
+			Int("size_bytes", actualSize).
+			Msg("Large message detected, using extended timeout")
 	}
 
 	if err := stream.SetWriteDeadline(deadline); err != nil {
-		logger().Error(context.Background(), "Failed to set write deadline", err)
+		log.Error().Err(err).Msg("Failed to set write deadline")
 		return fmt.Errorf("failed to set write deadline: %w", err)
 	}
 
@@ -1054,8 +1002,7 @@ func writeMessage(writer *bufio.Writer, stream network.Stream, msg *SyncMessage)
 				end = len(msgBytes)
 			}
 			if _, err := writer.Write(msgBytes[i:end]); err != nil {
-				logger().Error(context.Background(), "Failed to write message chunk", err,
-					ion.Int("offset", i))
+				log.Error().Err(err).Int("offset", i).Msg("Failed to write message chunk")
 				return fmt.Errorf("failed to write message chunk: %w", err)
 			}
 
@@ -1063,7 +1010,7 @@ func writeMessage(writer *bufio.Writer, stream network.Stream, msg *SyncMessage)
 			currentChunk := i / chunkSize
 			if currentChunk%10 == 0 {
 				if err := writer.Flush(); err != nil {
-					logger().Error(context.Background(), "Failed to flush during chunk write", err)
+					log.Error().Err(err).Msg("Failed to flush during chunk write")
 				}
 				deadline = time.Now().UTC().Add(ResponseTimeout)
 				stream.SetWriteDeadline(deadline)
@@ -1071,26 +1018,23 @@ func writeMessage(writer *bufio.Writer, stream network.Stream, msg *SyncMessage)
 				// Log progress every 50 chunks (approx 3.2MB)
 				if currentChunk%50 == 0 {
 					progress := float64(i) / float64(len(msgBytes)) * 100
-					logger().Debug(context.Background(), "Sending large message",
-						ion.Float64("progress_percent", progress),
-						ion.Int("bytes_sent", i),
-						ion.Int("total_bytes", len(msgBytes)))
+					fmt.Printf(">>> [NETWORK] Sending large message: %.1f%% complete (%d/%d bytes)\n", progress, i, len(msgBytes))
 				}
 			}
 		}
 	} else {
 		if _, err := writer.Write(msgBytes); err != nil {
-			logger().Error(context.Background(), "Failed to write message bytes", err)
+			log.Error().Err(err).Msg("Failed to write message bytes")
 			return fmt.Errorf("failed to write message: %w", err)
 		}
 	}
 
 	if err := writer.Flush(); err != nil {
-		logger().Error(context.Background(), "Failed to flush message", err)
+		log.Error().Err(err).Msg("Failed to flush message")
 		return fmt.Errorf("failed to flush message: %w", err)
 	}
 
-	logger().Info(context.Background(), "Message written and flushed successfully")
+	log.Info().Msg("Message written and flushed successfully")
 	return nil
 }
 
@@ -1100,9 +1044,7 @@ func retry(operation func() error) error {
 
 	for attempt := 0; attempt < MaxRetries; attempt++ {
 		if attempt > 0 {
-			logger().Debug(context.Background(), "Retrying operation",
-				ion.Int("attempt", attempt+1),
-				ion.Int64("delay_ms", backoff.Milliseconds()))
+			log.Debug().Int("attempt", attempt+1).Dur("delay", backoff).Msg("Retrying operation")
 			time.Sleep(backoff)
 			backoff *= 2 // Exponential backoff
 		}
@@ -1121,8 +1063,10 @@ func retry(operation func() error) error {
 func (fs *FastSync) handleStream(stream network.Stream) {
 	defer func() {
 		if r := recover(); r != nil {
-			logger().Debug(context.Background(), "PANIC in handleStream",
-				ion.String("panic", fmt.Sprintf("%v", r)))
+			log.Error().
+				Interface("panic", r).
+				Msg("PANIC in handleStream - recovering and closing stream")
+			fmt.Printf(">>> [SERVER] PANIC in handleStream: %v\n", r)
 		}
 		stream.Close()
 	}()
@@ -1130,9 +1074,10 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 	peerID := stream.Conn().RemotePeer()
 	remote := stream.Conn().RemoteMultiaddr().String()
 
-	logger().Info(context.Background(), "Received sync stream",
-		ion.String("peer", peerID.String()),
-		ion.String("remote", remote))
+	log.Info().
+		Str("peer", peerID.String()).
+		Str("remote", remote).
+		Msg("Received sync stream")
 
 	reader := bufio.NewReader(stream)
 	writer := bufio.NewWriter(stream)
@@ -1147,10 +1092,11 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 			errMsg := err.Error()
 			if err == io.EOF || strings.Contains(errMsg, "EOF") || strings.Contains(errMsg, "stream reset") {
 				// EOF is expected when client closes stream after sync completion
-				logger().Debug(context.Background(), "Stream closed by client - sync completed")
+				log.Debug().Msg("Stream closed by client (EOF/Reset) - sync likely completed successfully")
+				fmt.Printf(">>> [SERVER] Stream closed by client (EOF) - sync completed\n")
 			} else {
-				logger().Debug(context.Background(), "Error reading from stream",
-					ion.Err(err))
+				log.Error().Err(err).Msg("Error reading from stream")
+				fmt.Printf(">>> [SERVER] ERROR reading message: %v\n", err)
 			}
 			break
 		}
@@ -1162,9 +1108,11 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					logger().Debug(context.Background(), "PANIC in message handler",
-						ion.String("message_type", msg.Type),
-						ion.String("panic", fmt.Sprintf("%v", r)))
+					log.Error().
+						Interface("panic", r).
+						Str("message_type", msg.Type).
+						Msg("PANIC in message handler - recovering")
+					fmt.Printf(">>> [SERVER] PANIC handling message type %s: %v\n", msg.Type, r)
 					handleErr = fmt.Errorf("panic in handler: %v", r)
 
 					// Try to send error response to client
@@ -1192,9 +1140,7 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 				// Start of valid HashMap exchange
 				// If msg chunks are involved, we prepare the builder
 				if msg.TotalChunks > 0 {
-					logger().Debug(context.Background(), "Starting chunked HashMap exchange",
-						ion.Int("expected_chunks", msg.TotalChunks),
-						ion.String("peer", peerID.String()))
+					fmt.Printf(">>> [SERVER] Starting chunked HashMap exchange (expecting %d chunks) from %s\n", msg.TotalChunks, peerID.String())
 
 					// Initialize builder
 					clientHashMapBuilder = &TypeHashMapExchange_Struct{
@@ -1206,8 +1152,7 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 					response = nil
 				} else {
 					// Legacy/Standard flow (single message)
-					logger().Debug(context.Background(), "Received HashMap exchange request",
-						ion.String("peer", peerID.String()))
+					fmt.Printf(">>> [SERVER] Received HashMap exchange request from %s\n", peerID.String())
 					handleErr = fs.handleHashMapExchangeSYNCChunked(peerID, msg, writer, reader, stream)
 					response = nil // Chunks/Response sent directly in handler
 				}
@@ -1226,7 +1171,7 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 				// Assume msg.Data contains JSON []string
 				var keys []string
 				if err := json.Unmarshal(msg.Data, &keys); err != nil {
-					logger().Error(context.Background(), "Failed to unmarshal keys from chunk", err)
+					log.Error().Err(err).Msg("Failed to unmarshal keys from chunk")
 				} else {
 					// Identify DB type for keys
 					if msg.DBType == MainDB {
@@ -1249,19 +1194,19 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 					Success:     true,
 				}
 				if err := writeMessage(writer, stream, ackMsg); err != nil {
-					logger().Error(context.Background(), "Failed to write ACK", err)
+					log.Error().Err(err).Msg("Failed to write ACK")
 				}
 				response = nil
 
 			case TypeReconciliationRequest:
 				// Handle reconciliation request (Pre-Sync Check)
 				if err := fs.handleReconciliation(peerID, msg, stream, writer); err != nil {
-					logger().Error(context.Background(), "Failed to handle reconciliation request", err)
+					log.Error().Err(err).Msg("Failed to handle reconciliation request")
 				}
 				response = nil
 
 			case TypeHashMapChunkComplete:
-				logger().Debug(context.Background(), "Chunk assembly complete, processing full HashMap exchange")
+				fmt.Printf(">>> [SERVER] Chunk assembly complete. Processing full HashMap exchange...\n")
 
 				// Ensure builder is not nil
 				if clientHashMapBuilder == nil {
@@ -1297,8 +1242,7 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 			case RequestFiletransfer: // This will trigger for the file transfer
 				response, handleErr = fs.MakeAVROFile_Transfer(peerID, msg)
 			default:
-				logger().Warn(context.Background(), "Unknown message type",
-					ion.String("type", msg.Type))
+				log.Warn().Str("type", msg.Type).Msg("Unknown message type")
 				handleErr = fmt.Errorf("unknown message type: %s", msg.Type)
 			}
 		}() // End panic recovery wrapper
@@ -1309,9 +1253,10 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 		}
 
 		if handleErr != nil {
-			logger().Error(context.Background(), "Error handling message", handleErr,
-				ion.String("msg_type", msg.Type),
-				ion.String("peer", peerID.String()))
+			log.Error().Err(handleErr).
+				Str("msg_type", msg.Type).
+				Str("peer", peerID.String()).
+				Msg("Error handling message")
 
 			// Send abort message
 			abortMsg := &SyncMessage{
@@ -1327,7 +1272,7 @@ func (fs *FastSync) handleStream(stream network.Stream) {
 
 		if response != nil {
 			if err := writeMessage(writer, stream, response); err != nil {
-				logger().Error(context.Background(), "Failed to send response", err)
+				log.Error().Err(err).Msg("Failed to send response")
 				break
 			}
 		}
@@ -1341,82 +1286,76 @@ func CheckChecksum(temp *hashmap.HashMap, checksum string) bool {
 
 // handleHashMapExchangeSYNCChunked sends HashMap data in chunks of 100 keys
 func (fs *FastSync) handleHashMapExchangeSYNCChunked(peerID peer.ID, msg *SyncMessage, writer *bufio.Writer, reader *bufio.Reader, stream network.Stream) error {
-	logger().Info(context.Background(), "Received HashMap Exchange SYNC Request - starting chunked transfer",
-		ion.String("peer", peerID.String()))
+	fmt.Println(">>> [SERVER] Received HashMap Exchange SYNC Request - starting chunked transfer")
+	log.Info().
+		Str("peer", peerID.String()).
+		Msg("Received HashMap Exchange SYNC Request - sending chunks")
 
 	// Checksum validation
-	logger().Info(context.Background(), "Validating client HashMap checksums")
+	fmt.Println(">>> [SERVER] Validating client HashMap checksums...")
 	if msg.HashMap_MetaData.Main_HashMap_MetaData.KeysCount > 0 {
 		if !CheckChecksum(msg.HashMap.MAIN_HashMap, msg.HashMap_MetaData.Main_HashMap_MetaData.Checksum) {
-			logger().Info(context.Background(), "Invalid main HashMap checksum")
+			fmt.Println(">>> [SERVER] ERROR: Invalid main HashMap checksum")
 			return fmt.Errorf("invalid main HashMap checksum")
 		}
-		logger().Info(context.Background(), "Main HashMap checksum valid")
+		fmt.Println(">>> [SERVER] ✓ Main HashMap checksum valid")
 	}
 
 	if msg.HashMap_MetaData.Accounts_HashMap_MetaData.KeysCount > 0 {
 		if !CheckChecksum(msg.HashMap.Accounts_HashMap, msg.HashMap_MetaData.Accounts_HashMap_MetaData.Checksum) {
-			logger().Info(context.Background(), "Invalid accounts HashMap checksum")
+			fmt.Println(">>> [SERVER] ERROR: Invalid accounts HashMap checksum")
 			return fmt.Errorf("invalid accounts HashMap checksum")
 		}
-		logger().Info(context.Background(), "Accounts HashMap checksum valid")
+		fmt.Println(">>> [SERVER] ✓ Accounts HashMap checksum valid")
 	}
 
 	// OPTIMIZATION: For very large datasets, compute SYNC keys incrementally without building full HashMaps
 	// This avoids loading millions of keys into memory
-	logger().Info(context.Background(), "Computing SYNC keys incrementally")
+	fmt.Println(">>> [SERVER] Computing SYNC keys incrementally (streaming approach for large datasets)...")
 
 	// Compute SYNC keys incrementally for Main DB
-	logger().Debug(context.Background(), "Computing Main DB SYNC keys incrementally")
-	mainHashMapSize := 0
-	if msg.HashMap.MAIN_HashMap != nil {
-		mainHashMapSize = msg.HashMap.MAIN_HashMap.Size()
-	}
-	logger().Debug(context.Background(), "Client Main HashMap size",
-		ion.Int("size", mainHashMapSize))
-
+	fmt.Printf(">>> [SERVER] Computing Main DB SYNC keys incrementally...\n")
+	fmt.Printf(">>> [SERVER] Client Main HashMap size: %d\n", func() int {
+		if msg.HashMap.MAIN_HashMap != nil {
+			return msg.HashMap.MAIN_HashMap.Size()
+		}
+		return 0
+	}())
 	SYNC_Keys_Main, mainFingerprint, err := fs.computeSyncKeysIncremental(fs.mainDB, msg.HashMap.MAIN_HashMap, MainDB)
 	if err != nil {
-		logger().Debug(context.Background(), "Failed to compute Main SYNC keys",
-			ion.Err(err))
+		fmt.Printf(">>> [SERVER] ERROR: Failed to compute Main SYNC keys: %v\n", err)
 		return err
 	}
-	logger().Debug(context.Background(), "Main SYNC keys computed",
-		ion.Int("count", len(SYNC_Keys_Main)))
+	fmt.Printf(">>> [SERVER] ✓ Main SYNC keys computed: %d keys (server has more, client needs %d)\n", len(SYNC_Keys_Main), len(SYNC_Keys_Main))
 
 	// Compute SYNC keys incrementally for Accounts DB
-	logger().Debug(context.Background(), "Computing Accounts DB SYNC keys incrementally")
-	acctsHashMapSize := 0
-	if msg.HashMap.Accounts_HashMap != nil {
-		acctsHashMapSize = msg.HashMap.Accounts_HashMap.Size()
-	}
-	logger().Debug(context.Background(), "Client Accounts HashMap size",
-		ion.Int("size", acctsHashMapSize))
-
+	fmt.Printf(">>> [SERVER] Computing Accounts DB SYNC keys incrementally...\n")
+	fmt.Printf(">>> [SERVER] Client Accounts HashMap size: %d\n", func() int {
+		if msg.HashMap.Accounts_HashMap != nil {
+			return msg.HashMap.Accounts_HashMap.Size()
+		}
+		return 0
+	}())
 	SYNC_Keys_Accounts, acctsFingerprint, err := fs.computeSyncKeysIncremental(fs.accountsDB, msg.HashMap.Accounts_HashMap, AccountsDB)
 	if err != nil {
-		logger().Debug(context.Background(), "Failed to compute Accounts SYNC keys",
-			ion.Err(err))
+		fmt.Printf(">>> [SERVER] ERROR: Failed to compute Accounts SYNC keys: %v\n", err)
 		return err
 	}
-	logger().Debug(context.Background(), "Accounts SYNC keys computed",
-		ion.Int("count", len(SYNC_Keys_Accounts)))
+	fmt.Printf(">>> [SERVER] ✓ Accounts SYNC keys computed: %d keys (server has more, client needs %d)\n", len(SYNC_Keys_Accounts), len(SYNC_Keys_Accounts))
 
 	// Calculate total chunks needed
 	totalKeys := len(SYNC_Keys_Main) + len(SYNC_Keys_Accounts)
 	totalChunks := (totalKeys + HashMapChunkSize - 1) / HashMapChunkSize
 
-	logger().Debug(context.Background(), "Preparing to send chunks",
-		ion.Int("total_chunks", totalChunks),
-		ion.Int("total_keys", totalKeys),
-		ion.Int("keys_per_chunk", HashMapChunkSize))
-	logger().Info(context.Background(), "Sending HashMap in chunks",
-		ion.Int("main_keys", len(SYNC_Keys_Main)),
-		ion.Int("accounts_keys", len(SYNC_Keys_Accounts)),
-		ion.Int("total_chunks", totalChunks))
+	fmt.Printf(">>> [SERVER] Preparing to send %d chunks (total %d keys, %d keys per chunk)\n", totalChunks, totalKeys, HashMapChunkSize)
+	log.Info().
+		Int("main_keys", len(SYNC_Keys_Main)).
+		Int("accounts_keys", len(SYNC_Keys_Accounts)).
+		Int("total_chunks", totalChunks).
+		Msg("Sending HashMap in chunks")
 
 	// Send metadata first
-	logger().Info(context.Background(), "Sending HashMap metadata")
+	fmt.Println(">>> [SERVER] Sending HashMap metadata...")
 	metadataResponse := &SyncMessage{
 		Type:        TypeHashMapExchangeSYNC,
 		SenderID:    fs.host.ID().String(),
@@ -1436,19 +1375,17 @@ func (fs *FastSync) handleHashMapExchangeSYNCChunked(peerID peer.ID, msg *SyncMe
 	}
 
 	if err := writeMessage(writer, stream, metadataResponse); err != nil {
-		logger().Debug(context.Background(), "Failed to send HashMap metadata",
-			ion.Err(err))
+		fmt.Printf(">>> [SERVER] ERROR: Failed to send HashMap metadata: %v\n", err)
 		return fmt.Errorf("failed to send HashMap metadata: %w", err)
 	}
-	logger().Info(context.Background(), "Metadata sent successfully")
+	fmt.Println(">>> [SERVER] ✓ Metadata sent successfully")
 
 	// Send chunks: Main HashMap first, then Accounts
 	allKeys := append(SYNC_Keys_Main, SYNC_Keys_Accounts...)
 	chunkNum := 0
 	lastDeadlineUpdate := time.Now().UTC()
 
-	logger().Debug(context.Background(), "Starting to send chunks",
-		ion.Int("total_chunks", totalChunks))
+	fmt.Printf(">>> [SERVER] Starting to send chunks (total: %d chunks)...\n", totalChunks)
 	for i := 0; i < len(allKeys); i += HashMapChunkSize {
 		end := i + HashMapChunkSize
 		if end > len(allKeys) {
@@ -1463,24 +1400,17 @@ func (fs *FastSync) handleHashMapExchangeSYNCChunked(peerID peer.ID, msg *SyncMe
 		if time.Since(lastDeadlineUpdate) > 30*time.Second {
 			newDeadline := time.Now().UTC().Add(30 * time.Minute)
 			if err := stream.SetWriteDeadline(newDeadline); err != nil {
-				logger().Debug(context.Background(), "Failed to extend write deadline",
-					ion.Err(err))
+				fmt.Printf(">>> [SERVER] WARNING: Failed to extend write deadline: %v\n", err)
 			}
 			if err := stream.SetReadDeadline(newDeadline); err != nil {
-				logger().Debug(context.Background(), "Failed to extend read deadline",
-					ion.Err(err))
+				fmt.Printf(">>> [SERVER] WARNING: Failed to extend read deadline: %v\n", err)
 			} else {
 				lastDeadlineUpdate = time.Now().UTC()
-				logger().Debug(context.Background(), "Extended deadlines",
-					ion.Int("chunk", chunkNum),
-					ion.Int("total", totalChunks))
+				fmt.Printf(">>> [SERVER] Extended deadlines (sending chunk %d/%d)...\n", chunkNum, totalChunks)
 			}
 		}
 
-		logger().Debug(context.Background(), "Sending chunk",
-			ion.Int("chunk", chunkNum),
-			ion.Int("total", totalChunks),
-			ion.Int("keys", len(chunkKeys)))
+		fmt.Printf(">>> [SERVER] Sending chunk %d/%d (%d keys)...\n", chunkNum, totalChunks, len(chunkKeys))
 		chunkMsg := &SyncMessage{
 			Type:        TypeHashMapChunk,
 			SenderID:    fs.host.ID().String(),
@@ -1491,41 +1421,34 @@ func (fs *FastSync) handleHashMapExchangeSYNCChunked(peerID peer.ID, msg *SyncMe
 		}
 
 		if err := writeMessage(writer, stream, chunkMsg); err != nil {
-			logger().Debug(context.Background(), "Failed to send chunk",
-				ion.Int("chunk", chunkNum),
-				ion.Err(err))
+			fmt.Printf(">>> [SERVER] ERROR: Failed to send chunk %d: %v\n", chunkNum, err)
 			return fmt.Errorf("failed to send chunk %d: %w", chunkNum, err)
 		}
-		logger().Debug(context.Background(), "Chunk sent, waiting for ACK",
-			ion.Int("chunk", chunkNum))
+		fmt.Printf(">>> [SERVER] ✓ Chunk %d sent, waiting for ACK...\n", chunkNum)
 
 		// Wait for ACK before sending next chunk
-		logger().Debug(context.Background(), "Waiting for ACK for chunk",
-			ion.Int("chunk", chunkNum))
+		fmt.Printf(">>> [SERVER] Waiting for ACK for chunk %d...\n", chunkNum)
 		ackMsg, err := readMessage(reader, stream)
 		if err != nil {
-			logger().Debug(context.Background(), "Failed to read chunk ACK",
-				ion.Err(err))
+			fmt.Printf(">>> [SERVER] ERROR: Failed to read chunk ACK: %v\n", err)
 			return fmt.Errorf("failed to read chunk ACK: %w", err)
 		}
 
 		if ackMsg.Type != TypeHashMapChunkAck || ackMsg.ChunkNumber != chunkNum {
-			logger().Debug(context.Background(), "Invalid ACK for chunk",
-				ion.Int("chunk", chunkNum),
-				ion.String("ack_type", ackMsg.Type),
-				ion.Int("ack_chunk_num", ackMsg.ChunkNumber))
+			fmt.Printf(">>> [SERVER] ERROR: Invalid ACK for chunk %d (type: %s, chunkNum: %d)\n", chunkNum, ackMsg.Type, ackMsg.ChunkNumber)
 			return fmt.Errorf("invalid ACK for chunk %d", chunkNum)
 		}
 
-		progress := float64(i+len(chunkKeys)) / float64(len(allKeys)) * 100
-		logger().Debug(context.Background(), "Chunk acknowledged",
-			ion.Int("chunk", chunkNum),
-			ion.Int("total", totalChunks),
-			ion.Float64("progress_percent", progress))
+		fmt.Printf(">>> [SERVER] ✓ Chunk %d/%d acknowledged (progress: %.1f%%)\n", chunkNum, totalChunks, float64(chunkNum)/float64(totalChunks)*100)
+		log.Debug().
+			Int("chunk", chunkNum).
+			Int("total", totalChunks).
+			Int("keys", len(chunkKeys)).
+			Msg("Chunk sent and acknowledged")
 	}
 
 	// Send completion message
-	logger().Info(context.Background(), "All chunks sent, sending completion message")
+	fmt.Println(">>> [SERVER] All chunks sent, sending completion message...")
 	completeMsg := &SyncMessage{
 		Type:      TypeHashMapChunkComplete,
 		SenderID:  fs.host.ID().String(),
@@ -1534,15 +1457,14 @@ func (fs *FastSync) handleHashMapExchangeSYNCChunked(peerID peer.ID, msg *SyncMe
 	}
 
 	if err := writeMessage(writer, stream, completeMsg); err != nil {
-		logger().Debug(context.Background(), "Failed to send chunk complete",
-			ion.Err(err))
+		fmt.Printf(">>> [SERVER] ERROR: Failed to send chunk complete: %v\n", err)
 		return fmt.Errorf("failed to send chunk complete: %w", err)
 	}
 
-	logger().Debug(context.Background(), "All HashMap chunks sent successfully",
-		ion.Int("total_chunks", totalChunks))
-	logger().Info(context.Background(), "All HashMap chunks sent successfully",
-		ion.Int("total_chunks", totalChunks))
+	fmt.Printf(">>> [SERVER] ✓ All HashMap chunks sent successfully (%d chunks)\n", totalChunks)
+	log.Info().
+		Int("total_chunks", totalChunks).
+		Msg("All HashMap chunks sent successfully")
 
 	return nil
 }
@@ -1609,11 +1531,11 @@ func (fs *FastSync) requestReconciliation(peerID peer.ID, stream network.Stream,
 		serverAcctsRoot := respMsg.MerkleRoot.AccountsMerkleRoot
 
 		// Debug: Print reconciliation data
-		logger().Debug(context.Background(), "Reconciliation data",
-			ion.String("local_main_root", fmt.Sprintf("%x", mainRoot)),
-			ion.String("server_main_root", fmt.Sprintf("%x", serverMainRoot)),
-			ion.String("local_accts_root", fmt.Sprintf("%x", acctsRoot)),
-			ion.String("server_accts_root", fmt.Sprintf("%x", serverAcctsRoot)))
+		fmt.Printf(">>> [CLIENT] RECONCILIATION DATA:\n")
+		fmt.Printf(">>> [CLIENT] Local Main Root:    %x\n", mainRoot)
+		fmt.Printf(">>> [CLIENT] Server Main Root:   %x\n", serverMainRoot)
+		fmt.Printf(">>> [CLIENT] Local Accts Root:   %x\n", acctsRoot)
+		fmt.Printf(">>> [CLIENT] Server Accts Root:  %x\n", serverAcctsRoot)
 
 		mainMatch := string(mainRoot) == string(serverMainRoot)
 		acctsMatch := string(acctsRoot) == string(serverAcctsRoot)
@@ -1630,11 +1552,11 @@ func (fs *FastSync) requestReconciliation(peerID peer.ID, stream network.Stream,
 		serverAcctsChecksum := respMsg.HashMap_MetaData.Accounts_HashMap_MetaData.Checksum
 
 		// Debug: Print reconciliation data
-		logger().Debug(context.Background(), "HashMap reconciliation data",
-			ion.String("local_main_checksum", localMainChecksum),
-			ion.String("server_main_checksum", serverMainChecksum),
-			ion.String("local_accts_checksum", localAcctsChecksum),
-			ion.String("server_accts_checksum", serverAcctsChecksum))
+		fmt.Printf(">>> [CLIENT] RECONCILIATION DATA (HashMap):\n")
+		fmt.Printf(">>> [CLIENT] Local Main Checksum:    %s\n", localMainChecksum)
+		fmt.Printf(">>> [CLIENT] Server Main Checksum:   %s\n", serverMainChecksum)
+		fmt.Printf(">>> [CLIENT] Local Accts Checksum:   %s\n", localAcctsChecksum)
+		fmt.Printf(">>> [CLIENT] Server Accts Checksum:  %s\n", serverAcctsChecksum)
 
 		mainMatch := localMainChecksum == serverMainChecksum
 		acctsMatch := localAcctsChecksum == serverAcctsChecksum
@@ -1705,7 +1627,7 @@ func (fs *FastSync) handleReconciliation(peerID peer.ID, msg *SyncMessage, strea
 
 	} else if msg.ReconciliationType == ReconTypeHashMap {
 		// Compute fingerprints on-demand (expensive but thorough)
-		logger().Info(context.Background(), ">>> [SERVER] Computing on-demand HashMap fingerprints for reconciliation...")
+		fmt.Println(">>> [SERVER] Computing on-demand HashMap fingerprints for reconciliation...")
 
 		emptyHM := hashmap.New()
 		_, mainFingerprint, err := fs.computeSyncKeysIncremental(fs.mainDB, emptyHM, MainDB)
@@ -1757,36 +1679,33 @@ func (fs *FastSync) Phase1_SYNC(peerID peer.ID) (*SyncMessage, error) {
 	if fs.Logger != nil {
 		fs.Logger.Info(context.Background(), "Phase1: Making Main HashMap", ion.String("role", "CLIENT"))
 	} else {
-		logger().Info(context.Background(), "Phase1: Making Main HashMap")
+		fmt.Println(">>> [CLIENT] Phase1: Making Main HashMap...")
 	}
 	MAIN_HashMap, err := fs.MakeHashMap_Default()
 	if err != nil {
 		return nil, err
 	}
-	logger().Debug(context.Background(), "Phase1: Main HashMap created",
-		ion.Int("keys", MAIN_HashMap.Size()))
+	fmt.Printf(">>> [CLIENT] Phase1: Main HashMap created with %d keys\n", MAIN_HashMap.Size())
 
 	// Second make hashmap of Accounts DB
 	if fs.Logger != nil {
 		fs.Logger.Info(context.Background(), "Phase1: Making Accounts HashMap", ion.String("role", "CLIENT"))
 	} else {
-		logger().Info(context.Background(), "Phase1: Making Accounts HashMap")
+		fmt.Println(">>> [CLIENT] Phase1: Making Accounts HashMap...")
 	}
 	ACCOUNTS_HashMap, err := fs.MakeHashMap_Accounts()
 	if err != nil {
 		return nil, err
 	}
-	logger().Debug(context.Background(), "Phase1: Accounts HashMap created",
-		ion.Int("keys", ACCOUNTS_HashMap.Size()))
+	fmt.Printf(">>> [CLIENT] Phase1: Accounts HashMap created with %d keys\n", ACCOUNTS_HashMap.Size())
 
 	// Compute the Metadata for the both Maps
 
 	ComputeCHECKSUM_MAIN_Value := MAIN_HashMap.Fingerprint()
 	ComputeCHECKSUM_ACCOUNTS_Value := ACCOUNTS_HashMap.Fingerprint()
 
-	logger().Debug(context.Background(), "Phase1: Sending HashMaps to server",
-		ion.Int("main_keys", MAIN_HashMap.Size()),
-		ion.Int("accounts_keys", ACCOUNTS_HashMap.Size()))
+	fmt.Printf(">>> [CLIENT] Phase1: Sending HashMaps to server - Main: %d keys, Accounts: %d keys\n",
+		MAIN_HashMap.Size(), ACCOUNTS_HashMap.Size())
 
 	MAIN_HashMap_Metadata := &MetaData{
 		KeysCount: MAIN_HashMap.Size(),
@@ -1822,7 +1741,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	if fs.Logger != nil {
 		fs.Logger.Info(context.Background(), "Performing Pre-Sync Merkle Check...", ion.String("peer", peerID.String()))
 	} else {
-		logger().Info(context.Background(), ">>> [CLIENT] Performing Pre-Sync Merkle Check...")
+		fmt.Println(">>> [CLIENT] Performing Pre-Sync Merkle Check...")
 	}
 
 	preStream, err := returnStream(fs, peerID)
@@ -1851,7 +1770,7 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 			if fs.Logger != nil {
 				fs.Logger.Info(context.Background(), msg)
 			} else {
-				logger().Info(context.Background(), ">>> [CLIENT] " + msg)
+				fmt.Println(">>> [CLIENT] " + msg)
 			}
 			return &SyncMessage{Type: TypeSyncComplete, Success: true, Data: json.RawMessage([]byte(`"Pre-Sync Match"`))}, nil
 		}
@@ -1926,14 +1845,14 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 			fs.Logger.Warn(context.Background(), "Failed to transfer AVRO file, retrying file transfer",
 				ion.String("peer", peerID.String()))
 		} else {
-			logger().Warn(context.Background(), "Failed to transfer AVRO file, retrying file transfer",
-				ion.String("peer", peerID.String()))
+			log.Warn().Str("peer", peerID.String()).Msg("Failed to transfer AVRO file, retrying file transfer")
 		}
 
 		for i := range 3 {
-			logger().Debug(context.Background(), "Retrying file transfer",
-				ion.String("peer", peerID.String()),
-				ion.Int("attempt", i+1))
+			log.Debug().
+				Str("peer", peerID.String()).
+				Int("attempt", i+1).
+				Msg("Retrying file transfer")
 
 			err = fs.Phase3_FileRequest(Phase1, peerID, stream, writer, reader)
 			if err == nil {
@@ -1949,28 +1868,30 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	if fs.Logger != nil {
 		fs.Logger.Info(context.Background(), "Starting Phase4 - Pushing data from AVRO files to database", ion.String("role", "CLIENT"))
 	} else {
-		logger().Info(context.Background(), "Starting Phase4 - Pushing data from AVRO files to database")
+		fmt.Println(">>> [CLIENT] Starting Phase4 - Pushing data from AVRO files to database...")
 	}
 
 	// Debug: Check Phase2 state
-	mainMapExists := Phase2.HashMap != nil && Phase2.HashMap.MAIN_HashMap != nil
-	acctsMapExists := Phase2.HashMap != nil && Phase2.HashMap.Accounts_HashMap != nil
-	logger().Debug(context.Background(), "Phase2 state",
-		ion.Bool("has_main_hashmap", mainMapExists),
-		ion.Bool("has_accounts_hashmap", acctsMapExists))
-
+	fmt.Printf(">>> [CLIENT] DEBUG: Phase2 state - Main HashMap: %v, Accounts HashMap: %v\n",
+		Phase2.HashMap != nil,
+		Phase2.HashMap != nil)
 	if Phase2.HashMap != nil {
-		mainSize := 0
-		if Phase2.HashMap.MAIN_HashMap != nil {
-			mainSize = Phase2.HashMap.MAIN_HashMap.Size()
-		}
-		acctsSize := 0
-		if Phase2.HashMap.Accounts_HashMap != nil {
-			acctsSize = Phase2.HashMap.Accounts_HashMap.Size()
-		}
-		logger().Debug(context.Background(), "Phase2 HashMaps size",
-			ion.Int("main_size", mainSize),
-			ion.Int("accounts_size", acctsSize))
+		fmt.Printf(">>> [CLIENT] DEBUG: Phase2.MAIN_HashMap: %v, size: %d\n",
+			Phase2.HashMap.MAIN_HashMap != nil,
+			func() int {
+				if Phase2.HashMap.MAIN_HashMap != nil {
+					return Phase2.HashMap.MAIN_HashMap.Size()
+				}
+				return 0
+			}())
+		fmt.Printf(">>> [CLIENT] DEBUG: Phase2.Accounts_HashMap: %v, size: %d\n",
+			Phase2.HashMap.Accounts_HashMap != nil,
+			func() int {
+				if Phase2.HashMap.Accounts_HashMap != nil {
+					return Phase2.HashMap.Accounts_HashMap.Size()
+				}
+				return 0
+			}())
 	}
 
 	// 1. Push the Main DB Transactions from AVRO file to the DB - if no maindb then skip
@@ -1978,62 +1899,70 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 	if Phase2.HashMap != nil && Phase2.HashMap.MAIN_HashMap != nil {
 		mainHashMapSize = Phase2.HashMap.MAIN_HashMap.Size()
 	}
-	logger().Debug(context.Background(), "Checking Main DB",
-		ion.Int("hashmap_size", mainHashMapSize))
+	fmt.Printf(">>> [CLIENT] Checking Main DB - HashMap size: %d\n", mainHashMapSize)
 
 	if Phase2.HashMap != nil && Phase2.HashMap.MAIN_HashMap != nil && Phase2.HashMap.MAIN_HashMap.Size() > 0 {
-		logger().Debug(context.Background(), "Pushing Main DB data from AVRO file",
-			ion.Int("keys", Phase2.HashMap.MAIN_HashMap.Size()))
+		fmt.Printf(">>> [CLIENT] Pushing Main DB data (%d keys) from AVRO file...\n", Phase2.HashMap.MAIN_HashMap.Size())
 		if err := fs.PushDataToDB(Phase2, MainDB, "fastsync/.temp/defaultdb.avro"); err != nil {
-			logger().Debug(context.Background(), "Failed to push Main DB transactions", ion.Err(err))
+			fmt.Printf(">>> [CLIENT] ERROR: Failed to push Main DB transactions: %v\n", err)
+			log.Error().Err(err).Msg("Failed to push Main DB transactions")
 			return nil, fmt.Errorf("failed to push Main DB transactions: %w", err)
 		}
-		logger().Info(context.Background(), "Successfully pushed Main DB transactions")
+		fmt.Println(">>> [CLIENT] ✓ Successfully pushed Main DB transactions to immudb")
+		log.Info().Msg("Successfully pushed Main DB transactions")
 	} else {
-		logger().Info(context.Background(), "Skipping Main DB push - no data to push")
+		fmt.Println(">>> [CLIENT] Skipping Main DB push - no data to push")
+		log.Info().Msg("Skipping Main DB push - no data to push")
 	}
 
 	// 2. Push the Accounts DB Transactions from AVRO file to the DB - if no accountsdb then skip
-	acctSize := 0
-	if Phase2.HashMap != nil && Phase2.HashMap.Accounts_HashMap != nil {
-		acctSize = Phase2.HashMap.Accounts_HashMap.Size()
-	}
-	logger().Debug(context.Background(), "Checking Accounts DB",
-		ion.Int("hashmap_size", acctSize))
+	fmt.Printf(">>> [CLIENT] Checking Accounts DB - HashMap size: %d\n", func() int {
+		if Phase2.HashMap.Accounts_HashMap != nil {
+			return Phase2.HashMap.Accounts_HashMap.Size()
+		}
+		return 0
+	}())
 
-	if Phase2.HashMap != nil && Phase2.HashMap.Accounts_HashMap != nil && Phase2.HashMap.Accounts_HashMap.Size() > 0 {
-		logger().Debug(context.Background(), "Pushing Accounts DB data from AVRO file",
-			ion.Int("keys", Phase2.HashMap.Accounts_HashMap.Size()))
+	if Phase2.HashMap.Accounts_HashMap != nil && Phase2.HashMap.Accounts_HashMap.Size() > 0 {
+		fmt.Printf(">>> [CLIENT] Pushing Accounts DB data (%d keys) from AVRO file...\n", Phase2.HashMap.Accounts_HashMap.Size())
+		log.Info().
+			Int("accounts_hashmap_size", Phase2.HashMap.Accounts_HashMap.Size()).
+			Msg("Processing Accounts DB transactions")
 
 		// Check if accounts database client is properly initialized
 		if fs.accountsDB == nil {
-			logger().Error(context.Background(), "Accounts database client is nil - cannot restore accounts data", nil)
+			fmt.Println(">>> [CLIENT] ERROR: Accounts database client is nil - cannot restore accounts data")
+			log.Error().Msg("Accounts database client is nil - cannot restore accounts data")
 			return nil, fmt.Errorf("accounts database client is not initialized")
 		}
 
 		if err := fs.PushDataToDB(Phase2, AccountsDB, "fastsync/.temp/accountsdb.avro"); err != nil {
-			logger().Error(context.Background(), "Failed to push Accounts DB transactions", err)
+			fmt.Printf(">>> [CLIENT] ERROR: Failed to push Accounts DB transactions: %v\n", err)
+			log.Error().Err(err).Msg("Failed to push Accounts DB transactions")
 			return nil, fmt.Errorf("failed to push Accounts DB transactions: %w", err)
 		}
-		logger().Info(context.Background(), "Successfully pushed Accounts DB transactions")
+		fmt.Println(">>> [CLIENT] ✓ Successfully pushed Accounts DB transactions to immudb")
+		log.Info().Msg("Successfully pushed Accounts DB transactions")
 	} else {
-		acctMapNil := Phase2.HashMap == nil || Phase2.HashMap.Accounts_HashMap == nil
-		acctSize := 0
-		if !acctMapNil && Phase2.HashMap.Accounts_HashMap != nil {
-			acctSize = Phase2.HashMap.Accounts_HashMap.Size()
-		}
-		logger().Info(context.Background(), "Skipping Accounts DB push - no data to push",
-			ion.Bool("hashmap_nil", acctMapNil),
-			ion.Int("hashmap_size", acctSize))
+		fmt.Println(">>> [CLIENT] Skipping Accounts DB push - no data to push")
+		log.Info().
+			Bool("hashmap_nil", Phase2.HashMap.Accounts_HashMap == nil).
+			Int("hashmap_size", func() int {
+				if Phase2.HashMap.Accounts_HashMap != nil {
+					return Phase2.HashMap.Accounts_HashMap.Size()
+				}
+				return 0
+			}()).
+			Msg("Skipping Accounts DB push - no data to push")
 	}
 
-	logger().Info(context.Background(), "Phase4 completed successfully")
+	fmt.Println(">>> [CLIENT] ✓ Phase4 completed successfully")
 
 	// 5. Post-Sync Verification: Dual-Check (Merkle + Content)
 	if fs.Logger != nil {
-		fs.Logger.Info(context.Background(), "Performing Post-Sync Verification", ion.String("peer", peerID.String()))
+		fs.Logger.Info(context.Background(), "Performing Post-Sync Verification...", ion.String("peer", peerID.String()))
 	} else {
-		logger().Info(context.Background(), "Performing Post-Sync Verification")
+		fmt.Println(">>> [CLIENT] Performing Post-Sync Verification...")
 	}
 
 	// 5a. Merkle Check (Fast, but history-dependent)
@@ -2047,28 +1976,28 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 			match, reconErr := fs.requestReconciliation(peerID, postStream, postReader, postWriter, ReconTypeMerkle, "", "")
 			if reconErr != nil {
 				if fs.Logger != nil {
-					fs.Logger.Warn(context.Background(), "Post-Sync Merkle Check failed", ion.String("error", reconErr.Error()))
+					fs.Logger.Warn(context.Background(), "Post-Sync Merkle Check failed (error)", ion.String("error", reconErr.Error()))
 				}
 			} else if match {
 				msg := "Post-Sync: Merkle Roots Match. Transaction history is identical!"
 				if fs.Logger != nil {
 					fs.Logger.Info(context.Background(), msg)
 				} else {
-					logger().Info(context.Background(), msg)
+					fmt.Println(">>> [CLIENT] " + msg)
 				}
 			} else {
 				msg := "Post-Sync: Merkle Roots Mismatch (Expected due to different transaction history)."
 				if fs.Logger != nil {
 					fs.Logger.Warn(context.Background(), msg)
 				} else {
-					logger().Info(context.Background(), msg)
+					fmt.Println(">>> [CLIENT] " + msg)
 				}
 			}
 		}()
 	}
 
 	// 5b. Content Verification (Thorough, history-independent)
-	logger().Info(context.Background(), "Performing POST-SYNC CONTENT VERIFICATION - Computing fresh local State Fingerprints")
+	fmt.Println(">>> [CLIENT] Performing POST-SYNC CONTENT VERIFICATION - Computing fresh local State Fingerprints...")
 	localMainHM, mainHMErr := fs.MakeHashMap_Default()
 	localAcctsHM, acctsHMErr := fs.MakeHashMap_Accounts()
 
@@ -2082,20 +2011,16 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 		mainMatch := localMainFingerprint == serverMainFingerprint
 		acctsMatch := localAcctsFingerprint == serverAcctsFingerprint
 
-		logger().Debug(context.Background(), "Content Verification Results",
-			ion.Bool("main_match", mainMatch),
-			ion.String("local_main", localMainFingerprint),
-			ion.String("server_main", serverMainFingerprint),
-			ion.Bool("accounts_match", acctsMatch),
-			ion.String("local_accounts", localAcctsFingerprint),
-			ion.String("server_accounts", serverAcctsFingerprint))
+		fmt.Printf(">>> [CLIENT] Content Verification Results:\n")
+		fmt.Printf(">>> [CLIENT]   Main DB:     %v (Local: %s, Server: %s)\n", mainMatch, localMainFingerprint, serverMainFingerprint)
+		fmt.Printf(">>> [CLIENT]   Accounts DB: %v (Local: %s, Server: %s)\n", acctsMatch, localAcctsFingerprint, serverAcctsFingerprint)
 
 		if mainMatch && acctsMatch {
 			msg := "POST-SYNC CONTENT VERIFICATION SUCCESSFUL! Total state matches server."
 			if fs.Logger != nil {
 				fs.Logger.Info(context.Background(), msg)
 			} else {
-				logger().Info(context.Background(), msg)
+				fmt.Println(">>> [CLIENT] " + msg)
 			}
 		} else {
 			msg := "POST-SYNC CONTENT VERIFICATION FAILED! State divergence detected."
@@ -2104,15 +2029,11 @@ func (fs *FastSync) HandleSync(peerID peer.ID) (*SyncMessage, error) {
 					ion.Bool("main_match", mainMatch),
 					ion.Bool("accounts_match", acctsMatch))
 			} else {
-				logger().Error(context.Background(), msg, fmt.Errorf("state mismatch"),
-					ion.Bool("main_match", mainMatch),
-					ion.Bool("accounts_match", acctsMatch))
+				fmt.Println(">>> [CLIENT] ERROR: " + msg)
 			}
 		}
 	} else {
-		logger().Debug(context.Background(), "Could not perform content verification",
-			ion.Err(mainHMErr),
-			ion.Err(acctsHMErr))
+		fmt.Printf(">>> [CLIENT] WARNING: Could not perform content verification: %v, %v\n", mainHMErr, acctsHMErr)
 	}
 
 	return &SyncMessage{
@@ -2167,12 +2088,22 @@ func (fs *FastSync) handleBatchRequest(peerID peer.ID, msg *SyncMessage) (*SyncM
 		return nil, fmt.Errorf("failed to serialize batch data: %w", err)
 	}
 
-	logger().Debug(context.Background(), "Sending batch data",
-		ion.String("peer", peerID.String()),
-		ion.Int("batch", int(msg.BatchNumber)),
-		ion.Int("entries", len(entries)),
-		ion.Int("crdts", len(crdts)),
-		ion.String("db", dbTypeToString(msg.DBType)))
+	log.Info().
+		Str("peer", peerID.String()).
+		Int("batch", msg.BatchNumber).
+		Int("entries", len(entries)).
+		Int("crdts", len(crdts)).
+		Str("db", dbTypeToString(msg.DBType)).
+		Msg("Sending batch data")
+
+	fmt.Printf(
+		"Sending batch data → peer=%s batch=%d entries=%d crdts=%d db=%s\n",
+		peerID.String(),
+		msg.BatchNumber,
+		len(entries),
+		len(crdts),
+		dbTypeToString(msg.DBType),
+	)
 
 	return &SyncMessage{
 		Type:        TypeBatchData,
@@ -2251,23 +2182,22 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 	// 2. Use defer to ensure backup files are cleaned up even if errors occur.
 	defer func() {
 		if err := os.Remove(mainAVROpath); err != nil && !os.IsNotExist(err) {
-			logger().Error(context.Background(), "Failed to remove temporary backup file", err,
-				ion.String("path", mainAVROpath))
+			log.Error().Err(err).Str("path", mainAVROpath).Msg("Failed to remove temporary backup file")
 		}
 		if err := os.Remove(accountsAVROpath); err != nil && !os.IsNotExist(err) {
-			logger().Error(context.Background(), "Failed to remove temporary backup file", err,
-				ion.String("path", accountsAVROpath))
+			log.Error().Err(err).Str("path", accountsAVROpath).Msg("Failed to remove temporary backup file")
 		}
 	}()
 
 	// 3. Create targeted backups using the client's HashMap.
 	// Only create MainDB AVRO file if there are keys to sync
-	mainHashMapSize := 0
-	if msg.HashMap != nil && msg.HashMap.MAIN_HashMap != nil {
-		mainHashMapSize = msg.HashMap.MAIN_HashMap.Size()
-	}
-	logger().Debug(context.Background(), "MakeAVROFile_Transfer: MainDB HashMap size",
-		ion.Int("size", mainHashMapSize))
+	fmt.Printf(">>> [SERVER] MakeAVROFile_Transfer: MainDB HashMap size: %d\n",
+		func() int {
+			if msg.HashMap != nil && msg.HashMap.MAIN_HashMap != nil {
+				return msg.HashMap.MAIN_HashMap.Size()
+			}
+			return 0
+		}())
 	if msg.HashMap != nil && msg.HashMap.MAIN_HashMap != nil && msg.HashMap.MAIN_HashMap.Size() > 0 {
 		mainCfg := DB_OPs.Config{
 			Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
@@ -2297,18 +2227,19 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 				}
 			}
 		}
-		logger().Debug(context.Background(), "MainDB HashMap breakdown for AVRO creation",
-			ion.Int("total_keys", totalKeysInHashMap),
-			ion.Int("block_keys", blockKeyCount),
-			ion.Int("tx_keys", txKeyCount),
-			ion.Int("tx_processed_keys", txProcessedKeyCount),
-			ion.Bool("has_latest_block", latestBlockInHashMap))
+		fmt.Printf(">>> [SERVER] MainDB HashMap breakdown for AVRO creation:\n")
+		fmt.Printf(">>> [SERVER]   Total keys: %d\n", totalKeysInHashMap)
+		fmt.Printf(">>> [SERVER]   Block keys: %d\n", blockKeyCount)
+		fmt.Printf(">>> [SERVER]   TX keys: %d\n", txKeyCount)
+		fmt.Printf(">>> [SERVER]   TX_processed keys: %d\n", txProcessedKeyCount)
+		fmt.Printf(">>> [SERVER]   latest_block: %v\n", latestBlockInHashMap)
 
-		logger().Info(context.Background(), "Creating targeted backup from MAIN HashMap",
-			ion.String("peer", peerID.String()),
-			ion.Int("keys", msg.HashMap.MAIN_HashMap.Size()),
-			ion.Int("block_keys", blockKeyCount),
-			ion.Bool("latest_block", latestBlockInHashMap))
+		log.Info().
+			Str("peer", peerID.String()).
+			Int("keys", msg.HashMap.MAIN_HashMap.Size()).
+			Int("block_keys", blockKeyCount).
+			Bool("latest_block", latestBlockInHashMap).
+			Msg("Creating targeted backup from MAIN HashMap")
 
 		err := DB_OPs.BackupFromHashMap(mainCfg, msg.HashMap.MAIN_HashMap)
 		if err != nil {
@@ -2316,23 +2247,21 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 		}
 
 		// Transfer the main DB backup file
-		logger().Info(context.Background(), "Transferring main DB backup file",
-			ion.String("peer", peerID.String()),
-			ion.String("file", mainAVROpath))
+		log.Info().Str("peer", peerID.String()).Str("file", mainAVROpath).Msg("Transferring main DB backup file")
 		err = TransferAVROFile(fs.host, peerID, mainAVROpath, "fastsync/.temp/defaultdb.avro")
 		if err != nil {
 			return nil, fmt.Errorf("failed to transfer main database: %w", err)
 		}
-		logger().Info(context.Background(), "Successfully transferred main DB backup file",
-			ion.Int("keys", msg.HashMap.MAIN_HashMap.Size()))
+		log.Info().Int("keys", msg.HashMap.MAIN_HashMap.Size()).Msg("Successfully transferred main DB backup file")
 	} else {
-		emptySize := 0
-		if msg.HashMap.MAIN_HashMap != nil {
-			emptySize = msg.HashMap.MAIN_HashMap.Size()
-		}
-		logger().Info(context.Background(), "Skipping main DB AVRO file creation and transfer - HashMap is empty")
-		logger().Debug(context.Background(), "MainDB HashMap is empty, skipping AVRO file creation",
-			ion.Int("size", emptySize))
+		log.Info().Msg("Skipping main DB AVRO file creation and transfer (no keys to sync - HashMap is empty)")
+		fmt.Printf(">>> [SERVER] MainDB HashMap is empty (size: %d), skipping AVRO file creation\n",
+			func() int {
+				if msg.HashMap.MAIN_HashMap != nil {
+					return msg.HashMap.MAIN_HashMap.Size()
+				}
+				return 0
+			}())
 	}
 
 	// Process accounts DB if it has entries
@@ -2347,10 +2276,10 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 				didKeyCount++
 			}
 		}
-		logger().Debug(context.Background(), "AccountsDB HashMap breakdown for AVRO creation",
-			ion.Int("total_keys", msg.HashMap.Accounts_HashMap.Size()),
-			ion.Int("address_keys", addressKeyCount),
-			ion.Int("did_keys", didKeyCount))
+		fmt.Printf(">>> [SERVER] AccountsDB HashMap breakdown for AVRO creation:\n")
+		fmt.Printf(">>> [SERVER]   Total keys: %d\n", msg.HashMap.Accounts_HashMap.Size())
+		fmt.Printf(">>> [SERVER]   Address keys: %d\n", addressKeyCount)
+		fmt.Printf(">>> [SERVER]   DID keys: %d\n", didKeyCount)
 
 		accountsCfg := DB_OPs.Config{
 			Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
@@ -2360,11 +2289,12 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 			OutputPath: accountsAVROpath,
 		}
 
-		logger().Info(context.Background(), "Creating targeted backup from Accounts HashMap",
-			ion.String("peer", peerID.String()),
-			ion.Int("keys", msg.HashMap.Accounts_HashMap.Size()),
-			ion.Int("address_keys", addressKeyCount),
-			ion.Int("did_keys", didKeyCount))
+		log.Info().
+			Str("peer", peerID.String()).
+			Int("keys", msg.HashMap.Accounts_HashMap.Size()).
+			Int("address_keys", addressKeyCount).
+			Int("did_keys", didKeyCount).
+			Msg("Creating targeted backup from Accounts HashMap")
 
 		err := DB_OPs.BackupFromHashMap(accountsCfg, msg.HashMap.Accounts_HashMap)
 		if err != nil {
@@ -2372,9 +2302,7 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 		}
 
 		// Transfer the accounts DB backup file
-		logger().Info(context.Background(), "Transferring accounts DB backup file",
-			ion.String("peer", peerID.String()),
-			ion.String("file", accountsAVROpath))
+		log.Info().Str("peer", peerID.String()).Str("file", accountsAVROpath).Msg("Transferring accounts DB backup file")
 		err = TransferAVROFile(fs.host, peerID, accountsAVROpath, "fastsync/.temp/accountsdb.avro")
 		if err != nil {
 			return nil, fmt.Errorf("failed to transfer accounts database: %w", err)
@@ -2382,8 +2310,7 @@ func (fs *FastSync) MakeAVROFile_Transfer(peerID peer.ID, msg *SyncMessage) (*Sy
 	}
 
 	// 6. Send a completion message back on the control stream.
-	logger().Info(context.Background(), "File transfers complete, sending SyncComplete",
-		ion.String("peer", peerID.String()))
+	log.Info().Str("peer", peerID.String()).Msg("File transfers complete. Sending SyncComplete.")
 	return &SyncMessage{
 		Type:      TypeSyncComplete,
 		SenderID:  fs.host.ID().String(),
@@ -2401,8 +2328,10 @@ func (fs *FastSync) FirstSyncServer(peerID peer.ID) error {
 		fs.Logger.Info(context.Background(), "Starting first sync server - exporting all data",
 			ion.String("peer", peerID.String()))
 	} else {
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_SERVER] Starting first sync - exporting all data from both databases")
-		logger().Info(context.Background(), "Starting first sync server - exporting all data", ion.String("peer", peerID.String()))
+		fmt.Println(">>> [FIRST_SYNC_SERVER] Starting first sync - exporting all data from both databases")
+		log.Info().
+			Str("peer", peerID.String()).
+			Msg("Starting first sync server - exporting all data")
 	}
 
 	// Ensure the temporary directory exists
@@ -2416,49 +2345,42 @@ func (fs *FastSync) FirstSyncServer(peerID peer.ID) error {
 	// Clean up any existing files
 	defer func() {
 		if err := os.Remove(mainAVROpath); err != nil && !os.IsNotExist(err) {
-			logger().Error(context.Background(), "Failed to remove temp file", err,
-				ion.String("path", mainAVROpath))
+			log.Error().Err(err).Str("path", mainAVROpath).Msg("Failed to remove temp file")
 		}
 		if err := os.Remove(accountsAVROpath); err != nil && !os.IsNotExist(err) {
-			logger().Error(context.Background(), "Failed to remove temp file", err,
-				ion.String("path", accountsAVROpath))
+			log.Error().Err(err).Str("path", accountsAVROpath).Msg("Failed to remove temp file")
 		}
 	}()
 
 	// 1. Get ALL keys from MainDB (defaultdb)
-	logger().Info(context.Background(), "Getting all keys from MainDB (defaultdb)")
+	fmt.Println(">>> [FIRST_SYNC_SERVER] Getting all keys from MainDB (defaultdb)...")
 	mainHashMap := hashmap.New()
 	mainKeys, err := DB_OPs.GetAllKeys(fs.mainDB, "")
 	if err != nil {
 		return fmt.Errorf("failed to get all keys from MainDB: %w", err)
 	}
-	logger().Debug(context.Background(), "Found keys in MainDB",
-		ion.Int("count", len(mainKeys)))
+	fmt.Printf(">>> [FIRST_SYNC_SERVER] Found %d keys in MainDB\n", len(mainKeys))
 	for _, key := range mainKeys {
 		mainHashMap.Insert(key)
 	}
-	logger().Debug(context.Background(), "MainDB HashMap created",
-		ion.Int("keys", mainHashMap.Size()))
+	fmt.Printf(">>> [FIRST_SYNC_SERVER] MainDB HashMap created with %d keys\n", mainHashMap.Size())
 
 	// 2. Get ALL keys from AccountsDB
-	logger().Info(context.Background(), "Getting all keys from AccountsDB")
+	fmt.Println(">>> [FIRST_SYNC_SERVER] Getting all keys from AccountsDB...")
 	accountsHashMap := hashmap.New()
 	accountsKeys, err := DB_OPs.GetAllKeys(fs.accountsDB, "")
 	if err != nil {
 		return fmt.Errorf("failed to get all keys from AccountsDB: %w", err)
 	}
-	logger().Debug(context.Background(), "Found keys in AccountsDB",
-		ion.Int("count", len(accountsKeys)))
+	fmt.Printf(">>> [FIRST_SYNC_SERVER] Found %d keys in AccountsDB\n", len(accountsKeys))
 	for _, key := range accountsKeys {
 		accountsHashMap.Insert(key)
 	}
-	logger().Debug(context.Background(), "AccountsDB HashMap created",
-		ion.Int("keys", accountsHashMap.Size()))
+	fmt.Printf(">>> [FIRST_SYNC_SERVER] AccountsDB HashMap created with %d keys\n", accountsHashMap.Size())
 
 	// 3. Create AVRO file for MainDB if it has data
 	if mainHashMap.Size() > 0 {
-		logger().Debug(context.Background(), "Creating AVRO file for MainDB",
-			ion.Int("keys", mainHashMap.Size()))
+		fmt.Printf(">>> [FIRST_SYNC_SERVER] Creating AVRO file for MainDB (%d keys)...\n", mainHashMap.Size())
 		mainCfg := DB_OPs.Config{
 			Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
 			Username:   settings.Get().Database.Username,
@@ -2470,24 +2392,25 @@ func (fs *FastSync) FirstSyncServer(peerID peer.ID) error {
 		if err := DB_OPs.BackupFromHashMap(mainCfg, mainHashMap); err != nil {
 			return fmt.Errorf("failed to backup MainDB: %w", err)
 		}
-		logger().Info(context.Background(), "MainDB AVRO file created")
+		fmt.Println(">>> [FIRST_SYNC_SERVER] ✓ MainDB AVRO file created")
 
 		// Transfer the MainDB file
-		logger().Info(context.Background(), "Transferring MainDB AVRO file to receiver")
+		fmt.Println(">>> [FIRST_SYNC_SERVER] Transferring MainDB AVRO file to receiver...")
 		if err := TransferAVROFile(fs.host, peerID, mainAVROpath, "fastsync/.temp/defaultdb.avro"); err != nil {
 			return fmt.Errorf("failed to transfer MainDB file: %w", err)
 		}
-		logger().Info(context.Background(), "MainDB file transferred successfully",
-			ion.String("peer", peerID.String()),
-			ion.Int("keys", mainHashMap.Size()))
+		fmt.Println(">>> [FIRST_SYNC_SERVER] ✓ MainDB file transferred successfully")
+		log.Info().
+			Str("peer", peerID.String()).
+			Int("keys", mainHashMap.Size()).
+			Msg("MainDB file transferred successfully")
 	} else {
-		logger().Info(context.Background(), "MainDB is empty, skipping AVRO file creation")
+		fmt.Println(">>> [FIRST_SYNC_SERVER] MainDB is empty, skipping AVRO file creation")
 	}
 
 	// 4. Create AVRO file for AccountsDB if it has data
 	if accountsHashMap.Size() > 0 {
-		logger().Debug(context.Background(), "Creating AVRO file for AccountsDB",
-			ion.Int("keys", accountsHashMap.Size()))
+		fmt.Printf(">>> [FIRST_SYNC_SERVER] Creating AVRO file for AccountsDB (%d keys)...\n", accountsHashMap.Size())
 		accountsCfg := DB_OPs.Config{
 			Address:    config.DBAddress + ":" + strconv.Itoa(config.DBPort),
 			Username:   settings.Get().Database.Username,
@@ -2499,17 +2422,20 @@ func (fs *FastSync) FirstSyncServer(peerID peer.ID) error {
 		if err := DB_OPs.BackupFromHashMap(accountsCfg, accountsHashMap); err != nil {
 			return fmt.Errorf("failed to backup AccountsDB: %w", err)
 		}
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_SERVER] ✓ AccountsDB AVRO file created")
+		fmt.Println(">>> [FIRST_SYNC_SERVER] ✓ AccountsDB AVRO file created")
 
 		// Transfer the AccountsDB file
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_SERVER] Transferring AccountsDB AVRO file to receiver...")
+		fmt.Println(">>> [FIRST_SYNC_SERVER] Transferring AccountsDB AVRO file to receiver...")
 		if err := TransferAVROFile(fs.host, peerID, accountsAVROpath, "fastsync/.temp/accountsdb.avro"); err != nil {
 			return fmt.Errorf("failed to transfer AccountsDB file: %w", err)
 		}
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_SERVER] ✓ AccountsDB file transferred successfully")
-		logger().Info(context.Background(), "AccountsDB file transferred successfully", ion.String("peer", peerID.String()), ion.Int("keys", accountsHashMap.Size()))
+		fmt.Println(">>> [FIRST_SYNC_SERVER] ✓ AccountsDB file transferred successfully")
+		log.Info().
+			Str("peer", peerID.String()).
+			Int("keys", accountsHashMap.Size()).
+			Msg("AccountsDB file transferred successfully")
 	} else {
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_SERVER] AccountsDB is empty, skipping AVRO file creation")
+		fmt.Println(">>> [FIRST_SYNC_SERVER] AccountsDB is empty, skipping AVRO file creation")
 	}
 
 	if fs.Logger != nil {
@@ -2518,8 +2444,12 @@ func (fs *FastSync) FirstSyncServer(peerID peer.ID) error {
 			ion.Int("main_keys", mainHashMap.Size()),
 			ion.Int("accounts_keys", accountsHashMap.Size()))
 	} else {
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_SERVER] ✓ First sync server completed successfully")
-		logger().Info(context.Background(), "First sync server completed successfully", ion.String("peer", peerID.String()), ion.Int("main_keys", mainHashMap.Size()), ion.Int("accounts_keys", accountsHashMap.Size()))
+		fmt.Println(">>> [FIRST_SYNC_SERVER] ✓ First sync server completed successfully")
+		log.Info().
+			Str("peer", peerID.String()).
+			Int("main_keys", mainHashMap.Size()).
+			Int("accounts_keys", accountsHashMap.Size()).
+			Msg("First sync server completed successfully")
 	}
 
 	return nil
@@ -2533,7 +2463,7 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 	if fs.Logger != nil {
 		fs.Logger.Info(context.Background(), "Performing Pre-Sync Merkle Check...", ion.String("peer", peerID.String()))
 	} else {
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] Performing Pre-Sync Merkle Check...")
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] Performing Pre-Sync Merkle Check...")
 	}
 
 	preStream, err := returnStream(fs, peerID)
@@ -2558,7 +2488,7 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 			if fs.Logger != nil {
 				fs.Logger.Info(context.Background(), msg)
 			} else {
-				logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] " + msg)
+				fmt.Println(">>> [FIRST_SYNC_CLIENT] " + msg)
 			}
 			return nil // Abort successfully
 		}
@@ -2568,8 +2498,10 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 		fs.Logger.Info(context.Background(), "Starting first sync client - waiting for data",
 			ion.String("peer", peerID.String()))
 	} else {
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] Starting first sync client - waiting for data from server")
-		logger().Info(context.Background(), "Starting first sync client - waiting for data", ion.String("peer", peerID.String()))
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] Starting first sync client - waiting for data from server")
+		log.Info().
+			Str("peer", peerID.String()).
+			Msg("Starting first sync client - waiting for data")
 	}
 
 	// Ensure the temp directory exists
@@ -2583,7 +2515,7 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 	accountsDBPath := "fastsync/.temp/accountsdb.avro"
 
 	// Wait for files to be received (with timeout)
-	logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] Waiting for files from server...")
+	fmt.Println(">>> [FIRST_SYNC_CLIENT] Waiting for files from server...")
 	maxWaitTime := 30 * time.Minute // Allow up to 30 minutes for large transfers
 	startTime := time.Now()
 
@@ -2601,7 +2533,7 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 
 		// If both files exist, break
 		if mainFileExists && accountsFileExists {
-			logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] ✓ Both files received")
+			fmt.Println(">>> [FIRST_SYNC_CLIENT] ✓ Both files received")
 			break
 		}
 
@@ -2624,7 +2556,7 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 
 	// 1. Load MainDB data if file exists
 	if mainFileExists {
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] Loading MainDB data from AVRO file...")
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] Loading MainDB data from AVRO file...")
 		// Create a dummy SyncMessage for PushDataToDB
 		mainSyncMsg := &SyncMessage{
 			Type:      TypeSyncComplete,
@@ -2636,15 +2568,18 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 		if err := fs.PushDataToDB(mainSyncMsg, MainDB, mainDBPath); err != nil {
 			return fmt.Errorf("failed to load MainDB data: %w", err)
 		}
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] ✓ MainDB data loaded successfully")
-		logger().Info(context.Background(), "MainDB data loaded successfully", ion.String("peer", peerID.String()), ion.String("file", mainDBPath))
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] ✓ MainDB data loaded successfully")
+		log.Info().
+			Str("peer", peerID.String()).
+			Str("file", mainDBPath).
+			Msg("MainDB data loaded successfully")
 	} else {
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] MainDB file not received, skipping")
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] MainDB file not received, skipping")
 	}
 
 	// 2. Load AccountsDB data if file exists
 	if accountsFileExists {
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] Loading AccountsDB data from AVRO file...")
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] Loading AccountsDB data from AVRO file...")
 		// Create a dummy SyncMessage for PushDataToDB
 		accountsSyncMsg := &SyncMessage{
 			Type:      TypeSyncComplete,
@@ -2656,10 +2591,13 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 		if err := fs.PushDataToDB(accountsSyncMsg, AccountsDB, accountsDBPath); err != nil {
 			return fmt.Errorf("failed to load AccountsDB data: %w", err)
 		}
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] ✓ AccountsDB data loaded successfully")
-		logger().Info(context.Background(), "AccountsDB data loaded successfully", ion.String("peer", peerID.String()), ion.String("file", accountsDBPath))
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] ✓ AccountsDB data loaded successfully")
+		log.Info().
+			Str("peer", peerID.String()).
+			Str("file", accountsDBPath).
+			Msg("AccountsDB data loaded successfully")
 	} else {
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] AccountsDB file not received, skipping")
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] AccountsDB file not received, skipping")
 	}
 
 	if fs.Logger != nil {
@@ -2668,15 +2606,19 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 			ion.Bool("main_loaded", mainFileExists),
 			ion.Bool("accounts_loaded", accountsFileExists))
 	} else {
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] ✓ First sync client completed successfully")
-		logger().Info(context.Background(), "First sync client completed successfully", ion.String("peer", peerID.String()), ion.Bool("main_loaded", mainFileExists), ion.Bool("accounts_loaded", accountsFileExists))
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] ✓ First sync client completed successfully")
+		log.Info().
+			Str("peer", peerID.String()).
+			Bool("main_loaded", mainFileExists).
+			Bool("accounts_loaded", accountsFileExists).
+			Msg("First sync client completed successfully")
 	}
 
 	// Post-Sync Verification: Dual-Check (Merkle + Content)
 	if fs.Logger != nil {
 		fs.Logger.Info(context.Background(), "Performing Post-Sync Verification...", ion.String("peer", peerID.String()))
 	} else {
-		logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] Performing Post-Sync Verification...")
+		fmt.Println(">>> [FIRST_SYNC_CLIENT] Performing Post-Sync Verification...")
 	}
 
 	// 5a. Merkle Check (Fast, but history-dependent)
@@ -2697,21 +2639,21 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 				if fs.Logger != nil {
 					fs.Logger.Info(context.Background(), msg)
 				} else {
-					logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] " + msg)
+					fmt.Println(">>> [FIRST_SYNC_CLIENT] " + msg)
 				}
 			} else {
 				msg := "Post-Sync: Merkle Roots Mismatch (Expected due to different transaction history)."
 				if fs.Logger != nil {
 					fs.Logger.Warn(context.Background(), msg)
 				} else {
-					logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] " + msg)
+					fmt.Println(">>> [FIRST_SYNC_CLIENT] " + msg)
 				}
 			}
 		}()
 	}
 
 	// 5b. Content Verification (Thorough, history-independent)
-	logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] Performing POST-SYNC CONTENT VERIFICATION - Computing fresh local State Fingerprints...")
+	fmt.Println(">>> [FIRST_SYNC_CLIENT] Performing POST-SYNC CONTENT VERIFICATION - Computing fresh local State Fingerprints...")
 	localMainHM, mainHMErr := fs.MakeHashMap_Default()
 	localAcctsHM, acctsHMErr := fs.MakeHashMap_Accounts()
 
@@ -2736,20 +2678,20 @@ func (fs *FastSync) FirstSyncClient(peerID peer.ID) error {
 					if fs.Logger != nil {
 						fs.Logger.Info(context.Background(), msg)
 					} else {
-						logger().Info(context.Background(), ">>> [FIRST_SYNC_CLIENT] " + msg)
+						fmt.Println(">>> [FIRST_SYNC_CLIENT] " + msg)
 					}
 				} else {
 					msg := "POST-SYNC CONTENT VERIFICATION FAILED! State divergence detected."
 					if fs.Logger != nil {
 						fs.Logger.Error(context.Background(), msg, fmt.Errorf("state mismatch"))
 					} else {
-						logger().Error(context.Background(), ">>> [FIRST_SYNC_CLIENT] ERROR: " + msg, nil)
+						fmt.Println(">>> [FIRST_SYNC_CLIENT] ERROR: " + msg)
 					}
 				}
 			}()
 		}
 	} else {
-		logger().Debug(context.Background(), "Could not perform content verification")
+		fmt.Printf(">>> [FIRST_SYNC_CLIENT] WARNING: Could not perform content verification: %v, %v\n", mainHMErr, acctsHMErr)
 	}
 
 	return nil

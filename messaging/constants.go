@@ -8,5 +8,4 @@ var (
 	DIDLocalGRO              interfaces.LocalGoroutineManagerInterface
 	BroadcastLocalGRO        interfaces.LocalGoroutineManagerInterface
 	BlockPropagationLocalGRO interfaces.LocalGoroutineManagerInterface
-	ContractLocalGRO         interfaces.LocalGoroutineManagerInterface
 )

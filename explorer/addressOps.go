@@ -72,7 +72,7 @@ func (s *ImmuDBServer) getAddressTransactions(c *gin.Context) {
 	// This function scans blocks in reverse order and stops early once it has enough transactions
 	transactions, total, err := DB_OPs.GetTransactionsByAccountPaginated(&s.defaultdb, &address, offset, limit)
 	if err != nil {
-		logger().Error(loggerCtx, "Failed to get transactions for address",
+		logger().GetNamedLogger().Error(loggerCtx, "Failed to get transactions for address",
 			err,
 			ion.String("address", addressParam),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),

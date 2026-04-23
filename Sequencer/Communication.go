@@ -17,7 +17,6 @@ import (
 	PubSubMessages "gossipnode/config/PubSubMessages"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -56,57 +55,59 @@ func (rh *ResponseHandler) RegisterPeer(peerID peer.ID, role string) chan bool {
 	responseChan := make(chan bool, 1)
 	rh.responses[peerID] = responseChan
 	rh.roles[peerID] = role
-	logger().Debug(context.Background(), "ResponseHandler.RegisterPeer: Created channel for peer",
-		ion.String("peer", peerID.String()),
-		ion.String("role", role))
+	fmt.Printf("=== ResponseHandler.RegisterPeer: Created channel %p for peer: %s (role: %s) ===\n", responseChan, peerID, role)
 	return responseChan
 }
 
 // HandleResponse handles an ACK response from a peer
 func (rh *ResponseHandler) HandleResponse(peerID peer.ID, accepted bool, role string) {
-	logger().Debug(context.Background(), "ResponseHandler.HandleResponse called for peer",
-		ion.String("peer", peerID.String()),
-		ion.Bool("accepted", accepted))
+	fmt.Printf("=== ResponseHandler.HandleResponse called for peer: %s (accepted: %t) ===\n", peerID, accepted)
+
+	// Debug: Show all registered peers
+	rh.mutex.RLock()
+	fmt.Printf("=== ResponseHandler DEBUG: All registered peers (roles): ===\n")
+	for p, r := range rh.roles {
+		fmt.Printf("  - Peer: %s, Role: %s\n", p, r)
+	}
+	fmt.Printf("=== ResponseHandler DEBUG: All registered peers (channels): ===\n")
+	for p, ch := range rh.responses {
+		fmt.Printf("  - Peer: %s, Channel: %p\n", p, ch)
+	}
+	fmt.Printf("=== End of registered peers ===\n")
 
 	storedRole, exists := rh.roles[peerID]
+	rh.mutex.RUnlock()
 
 	if !exists {
 		storedRole = "unknown" // fallback
 	}
 
-	logger().Debug(context.Background(), "ResponseHandler: Using stored role for peer",
-		ion.String("peer", peerID.String()),
-		ion.String("role", storedRole))
+	fmt.Printf("=== ResponseHandler: Using stored role '%s' for peer: %s ===\n", storedRole, peerID)
 
 	// Track accepted peers in the global tracker
 	if accepted {
 		tracker := PubSubMessages.GetSubscriptionTracker()
 		tracker.MarkPeerAccepted(peerID, storedRole)
-		logger().Debug(context.Background(), "Global tracker: Marked peer as accepted",
-			ion.String("peer", peerID.String()),
-			ion.String("role", storedRole),
-			ion.Int("total", tracker.GetActiveCount()))
+		fmt.Printf("=== Global tracker: Marked peer %s as accepted (role: %s, total: %d) ===\n", peerID, storedRole, tracker.GetActiveCount())
 	}
 
 	rh.mutex.RLock()
 	responseChan, exists := rh.responses[peerID]
 	rh.mutex.RUnlock()
 
+	fmt.Printf("ResponseHandler: Channel exists for peer %s: %t\n", peerID, exists)
 	if exists {
-		logger().Debug(context.Background(), "ResponseHandler: Attempting to send to channel for peer",
-			ion.String("peer", peerID.String()))
+		fmt.Printf("ResponseHandler: Attempting to send to channel for peer %s\n", peerID)
 		select {
 		case responseChan <- accepted:
-			logger().Debug(context.Background(), "ResponseHandler: Successfully sent response to channel for peer",
-				ion.String("peer", peerID.String()))
+			fmt.Printf("ResponseHandler: Successfully sent response to channel for peer %s\n", peerID)
 		default:
-			logger().Debug(context.Background(), "ResponseHandler: Channel full or closed for peer",
-				ion.String("peer", peerID.String()))
+			fmt.Printf("ResponseHandler: Channel full or closed for peer %s\n", peerID)
 			// Channel is full or closed, ignore
 		}
 	} else {
-		logger().Debug(context.Background(), "ResponseHandler: No channel found for peer",
-			ion.String("peer", peerID.String()))
+		fmt.Printf("ResponseHandler: No channel found for peer %s\n", peerID)
+		fmt.Printf("ResponseHandler: Available channels: %v\n", rh.responses)
 	}
 }
 
@@ -449,8 +450,7 @@ func askPeersForSubscription(
 	responseHandler *ResponseHandler,
 	peerType string,
 ) (int, int, []peer.ID) {
-	logger().Debug(context.Background(), "askPeersForSubscription",
-		ion.String("count", fmt.Sprintf("%d", len(peerAddrs))))
+	fmt.Println("askPeersForSubscription", peerAddrs)
 	if len(peerAddrs) == 0 {
 		log.Printf("No %s peers to ask for subscription", peerType)
 		return 0, 0, nil
@@ -522,33 +522,27 @@ func askPeersForSubscription(
 				return fmt.Errorf("failed to send subscription request to %s %s: %v", peerType, peerID, err)
 			}
 
-			logger().Debug(context.Background(), "Sent subscription request to peer, waiting for ACK",
-				ion.String("type", peerType),
-				ion.String("peer", peerID.String()))
+			log.Printf("Sent subscription request to %s peer: %s, waiting for ACK...", peerType, peerID)
+			fmt.Printf("=== askPeersForSubscription: Waiting for response from peer: %s ===\n", peerID)
+			fmt.Printf("=== askPeersForSubscription: Response channel: %p for peer: %s ===\n", chanForGoroutine, peerID)
 
 			// Wait for response with timeout
 			select {
 			case response := <-chanForGoroutine:
-				logger().Debug(context.Background(), "Received response from peer",
-					ion.String("peer", peerID.String()),
-					ion.Bool("accepted", response))
+				fmt.Printf("=== askPeersForSubscription: Received response from peer: %s (accepted: %t) ===\n", peerID, response)
 				mu.Lock()
 				accepted[peerID.String()] = response
 				mu.Unlock()
 
 				if response {
-					logger().Debug(context.Background(), "Peer accepted subscription",
-						ion.String("type", peerType),
-						ion.String("peer", peerID.String()))
+					log.Printf("%s peer %s accepted subscription", peerType, peerID)
 				} else {
-					logger().Debug(context.Background(), "Peer rejected subscription",
-						ion.String("type", peerType),
-						ion.String("peer", peerID.String()))
+					log.Printf("%s peer %s rejected subscription", peerType, peerID)
 				}
 			case <-timeoutCtx.Done():
-				logger().Warn(context.Background(), "Timeout waiting for ACK from peer",
-					ion.String("type", peerType),
-					ion.String("peer", peerID.String()))
+				fmt.Printf("=== askPeersForSubscription: TIMEOUT waiting for response from peer: %s ===\n", peerID)
+				fmt.Printf("=== askPeersForSubscription: Timeout context done for peer: %s ===\n", peerID)
+				log.Printf("Timeout waiting for ACK from %s peer: %s", peerType, peerID)
 				mu.Lock()
 				accepted[peerID.String()] = false
 				mu.Unlock()

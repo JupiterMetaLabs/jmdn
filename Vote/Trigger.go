@@ -79,7 +79,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 	logger_ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tracer := logger().Tracer("Vote")
+	tracer := logger().NamedLogger.Tracer("Vote")
 	spanCtx, span := tracer.Start(logger_ctx, "Vote.SubmitVote")
 	defer span.End()
 
@@ -114,7 +114,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 			span.RecordError(err)
 
 			// 🔴 DETAILED REJECTION LOGGING WITH STRUCTURED LOGGER
-			logger().Error(spanCtx, "VOTE REJECTED: Block validation failed",
+			logger().NamedLogger.Error(spanCtx, "VOTE REJECTED: Block validation failed",
 				err,
 				ion.String("peer_id", listenerNode.PeerID.String()),
 				ion.String("block_hash", blockHash),
@@ -125,16 +125,15 @@ func (vt *VoteTrigger) SubmitVote() error {
 				ion.String("rejection_reason", err.Error()),
 				ion.String("function", "Vote.SubmitVote"))
 
-			// Also log to console via logger
-			logger().Info(spanCtx, "VOTE REJECTED (-1)",
-				ion.String("peer_id", listenerNode.PeerID.String()),
-				ion.String("block_hash", blockHash),
-				ion.Int("block_number", int(zkBlock.BlockNumber)),
-				ion.Int("transaction_count", len(zkBlock.Transactions)),
-				ion.String("rejection_reason", err.Error()))
+			// Also print to console for immediate visibility
+			fmt.Printf("❌ VOTE REJECTED (-1)\n")
+			fmt.Printf("   Peer: %s\n", listenerNode.PeerID.String())
+			fmt.Printf("   Block: %s (Number: %d)\n", blockHash, zkBlock.BlockNumber)
+			fmt.Printf("   Transactions: %d\n", len(zkBlock.Transactions))
+			fmt.Printf("   Rejection Reason: %v\n", err)
 		} else {
 			// Status is false but no error
-			logger().Warn(spanCtx, "VOTE REJECTED: Validation returned false without error",
+			logger().NamedLogger.Warn(spanCtx, "VOTE REJECTED: Validation returned false without error",
 				ion.String("peer_id", listenerNode.PeerID.String()),
 				ion.String("block_hash", blockHash),
 				ion.Int("block_number", int(zkBlock.BlockNumber)),
@@ -142,11 +141,10 @@ func (vt *VoteTrigger) SubmitVote() error {
 				ion.String("vote_decision", "REJECT"),
 				ion.String("function", "Vote.SubmitVote"))
 
-			logger().Info(spanCtx, "VOTE REJECTED (-1)",
-				ion.String("peer_id", listenerNode.PeerID.String()),
-				ion.String("block_hash", blockHash),
-				ion.Int("block_number", int(zkBlock.BlockNumber)),
-				ion.String("rejection_reason", "Validation returned false (no error details)"))
+			fmt.Printf("❌ VOTE REJECTED (-1)\n")
+			fmt.Printf("   Peer: %s\n", listenerNode.PeerID.String())
+			fmt.Printf("   Block: %s (Number: %d)\n", blockHash, zkBlock.BlockNumber)
+			fmt.Printf("   Rejection Reason: Validation returned false (no error details)\n")
 		}
 	} else if status {
 		// VOTE ACCEPTED (1)
@@ -162,7 +160,7 @@ func (vt *VoteTrigger) SubmitVote() error {
 		)
 
 		// ✅ ACCEPTANCE LOGGING
-		logger().Info(spanCtx, "VOTE ACCEPTED: Block validation successful",
+		logger().NamedLogger.Info(spanCtx, "VOTE ACCEPTED: Block validation successful",
 			ion.String("peer_id", listenerNode.PeerID.String()),
 			ion.String("block_hash", blockHash),
 			ion.Int("block_number", int(zkBlock.BlockNumber)),
@@ -171,10 +169,10 @@ func (vt *VoteTrigger) SubmitVote() error {
 			ion.String("vote_decision", "ACCEPT"),
 			ion.String("function", "Vote.SubmitVote"))
 
-		logger().Info(spanCtx, "VOTE ACCEPTED (1)",
-			ion.String("peer_id", listenerNode.PeerID.String()),
-			ion.String("block_hash", blockHash),
-			ion.Int("block_number", int(zkBlock.BlockNumber)))
+		fmt.Printf("✅ VOTE ACCEPTED (1) | Peer: %s | Block: %s (Number: %d)\n",
+			listenerNode.PeerID.String(),
+			blockHash,
+			zkBlock.BlockNumber)
 	} else {
 		return fmt.Errorf("failed to vote, as vote is neither 1 or -1")
 	}
