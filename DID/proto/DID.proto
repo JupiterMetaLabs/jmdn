@@ -1,0 +1,67 @@
+syntax = "proto3";
+package proto;
+
+option go_package = "gossipnode/DID/proto";
+
+import "google/protobuf/empty.proto";
+
+service DIDService {
+  // Register a new DID
+  rpc RegisterDID(RegisterDIDRequest) returns (RegisterDIDResponse);
+  
+  // Get information about a specific DID
+  rpc GetDID(GetDIDRequest) returns (DIDResponse);
+  
+  // List all DIDs with pagination
+  rpc ListDIDs(ListDIDsRequest) returns (ListDIDsResponse);
+  
+  // Get stats about the DID system
+  rpc GetDIDStats(google.protobuf.Empty) returns (DIDStats);
+}
+
+message RegisterDIDRequest {
+  string did = 1;
+  string public_key = 2;
+}
+
+message RegisterDIDResponse {
+  bool success = 1;
+  string message = 2;
+  DIDInfo did_info = 3;
+}
+
+message GetDIDRequest {
+  string did = 1;
+}
+
+message DIDResponse {
+  bool exists = 1;
+  DIDInfo did_info = 2;
+}
+
+message DIDInfo {
+  string did = 1;
+  string public_key = 2;
+  int64 created_at = 3;
+  int64 updated_at = 4;
+  string balance = 5;
+  string nonce = 6;
+  string metadata = 7;
+  string account_type = 8;
+}
+
+message ListDIDsRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+
+message ListDIDsResponse {
+  repeated DIDInfo dids = 1;
+  int32 total_count = 2;
+}
+
+message DIDStats {
+  int32 total_dids = 1;
+  string total_balance = 2;
+  int64 last_update = 3;
+}

@@ -1,0 +1,166 @@
+syntax = "proto3";
+
+package explorer;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/yourusername/P2P-Communication/explorer/proto";
+
+// The explorer service definition.
+service ExplorerService {
+  // Block related RPCs
+  rpc GetBlock(BlockRequest) returns (BlockResponse) {}
+  rpc GetBlockByNumber(BlockNumberRequest) returns (BlockResponse) {}
+  rpc ListBlocks(BlockPagination) returns (BlockListResponse) {}
+  rpc GetLatestBlocks(BlockCountRequest) returns (BlockListResponse) {}
+  rpc GetMissingBlocks(BlockNumberRequest) returns (BlockListResponse) {}
+  
+  // Transaction related RPCs
+  rpc GetTransaction(TransactionRequest) returns (TransactionResponse) {}
+  rpc ListTransactionsInBlock(BlockNumberRequest) returns (TransactionListResponse) {}
+  
+  // DID related RPCs
+  rpc ListDIDs(PaginationRequest) returns (DIDListResponse) {}
+  rpc GetDIDDetails(DIDRequest) returns (DIDResponse) {}
+  
+  // Stats RPC
+  rpc GetStats(google.protobuf.Empty) returns (StatsResponse) {}
+  
+  // Stream blocks (server-side streaming)
+  rpc StreamBlocks(google.protobuf.Empty) returns (stream BlockResponse) {}
+}
+
+// Common pagination request
+message PaginationRequest {
+  int32 page = 1;
+  int32 limit = 2;
+}
+
+// Block requests and responses
+message BlockRequest {
+  string id = 1; // Block hash
+}
+
+message BlockNumberRequest {
+  uint64 number = 1; // Block number
+}
+
+message BlockCountRequest {
+  uint32 count = 1; // Number of blocks to return (max 100)
+}
+
+message BlockPagination {
+  int32 page = 1;
+  int32 limit = 2;
+  string order_by = 3; // e.g., "number", "timestamp"
+  bool desc = 4; // Sort in descending order
+}
+
+message BlockResponse {
+  string block_hash = 1;
+  bytes stark_proof = 2;
+  repeated uint32 commitment = 3;
+  string proof_hash = 4;
+  string status = 5;
+  string txns_root = 6;
+  repeated ZKBlockTransaction transactions = 7;
+  int64 timestamp = 8;
+  string extra_data = 9;
+  bytes state_root = 10;
+  bytes logs_bloom = 11;
+  string coinbase_addr = 12;
+  string zkvm_addr = 13;
+  bytes prev_hash = 14;
+  uint64 gas_limit = 15;
+  uint64 gas_used = 16;
+  uint64 block_number = 17;
+}
+
+message BlockListResponse {
+  repeated BlockResponse blocks = 1;
+  int32 total = 2;
+  int32 page = 3;
+  int32 limit = 4;
+}
+
+// Transaction requests and responses
+message TransactionRequest {
+  string hash = 1; // Transaction hash
+}
+
+message TransactionResponse {
+  string hash = 1;
+  string from = 2;
+  string to = 3;
+  string value = 4;
+  string type = 5;
+  string timestamp = 6;
+  string chain_id = 7;
+  string nonce = 8;
+  string gas_limit = 9;
+  string max_fee = 10;
+  string max_priority_fee = 11;
+  string data = 12;
+  string block_hash = 13;
+  uint64 block_number = 14;
+  uint32 transaction_index = 15;
+}
+
+message TransactionListResponse {
+  repeated TransactionResponse transactions = 1;
+  int32 total = 2;
+  int32 page = 3;
+  int32 limit = 4;
+}
+
+// DID requests and responses
+message DIDRequest {
+  string did = 1;
+}
+
+message DIDResponse {
+  string did = 1;
+  string public_key = 2;
+  string balance = 3;
+  uint64 nonce = 4;
+  map<string, string> attributes = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+message DIDListResponse {
+  repeated DIDResponse dids = 1;
+  int32 total = 2;
+  int32 page = 3;
+  int32 limit = 4;
+}
+
+// Stats response
+message StatsResponse {
+  uint64 latest_block_number = 1;
+  uint64 total_blocks = 2;
+  uint64 total_transactions = 3;
+  uint64 total_dids = 4;
+  uint64 pending_transactions = 5;
+  string total_value_transferred = 6;
+  double average_block_time = 7; // in seconds
+  map<string, uint64> transaction_count_by_type = 8;
+  google.protobuf.Timestamp last_updated = 9;
+}
+
+// ZKBlockTransaction represents a transaction in a ZK block
+message ZKBlockTransaction {
+  string hash = 1;
+  string from = 2;
+  string to = 3;
+  string value = 4;
+  string type = 5;
+  string timestamp = 6;
+  string chain_id = 7;
+  string nonce = 8;
+  string gas_limit = 9;
+  string max_fee = 10;
+  string max_priority_fee = 11;
+  string data = 12;
+}
