@@ -6,6 +6,9 @@ Restoring authenticity in digital infrastructure by privately verifying humans, 
 
 **Whitepaper**: [JMDT White Paper (PDF)](./docs/JMDT%20White%20Paper%20-%20latest.pdf)
 
+[![CERT-IN Security Audit](https://img.shields.io/badge/CERT--IN_Audit-Passed-brightgreen?logo=shield&logoColor=white)](./audits/2026-03-terasoft-certin-vapt/VERIFICATION.md)
+[![Auditor](https://img.shields.io/badge/Auditor-Terasoft_Technologies-blue)](./audits/2026-03-terasoft-certin-vapt/TERA_CERT-IN_03_2026_CR_16_Certificate.pdf)
+
 Jupiter Meta Data Token Chain (JMDT) is a modular, Ethereum-based Layer 2 (L2) blockchain protocol designed to address the scalability, privacy, and compliance limitations of traditional blockchain systems. Built with Zero-Knowledge Proofs (ZKPs), Decentralized Identity (DID), and our own proprietary Asynchronous Validation Consensus (AVC), JMDT delivers a high-performance, privacy-preserving infrastructure tailored for both decentralized applications and enterprise-grade solutions.
 
 ## Vision and Mission
@@ -154,6 +157,18 @@ Alternatively, you can configure via flags (see `jmdn --help` or `docs/CONFIG.md
 | `fastsync <peer_multiaddr>`               | Fast sync blockchain data with a peer |
 | `dbstate`                                 | Show current ImmuDB database state    |
 | `exit`                                    | Exit the program                      |
+
+## Security
+
+JMDN has been independently audited by [Terasoft Technologies](https://www.terasoft.in), a **STQC & CERT-IN empaneled** test laboratory. The source code review covered 69,000 lines of Go, following OWASP Secure Coding Guidelines and CERT Secure Coding Standards.
+
+**Certificate**: [TERA/CERT-IN/03/2026/CR/16](./audits/2026-03-terasoft-certin-vapt/TERA_CERT-IN_03_2026_CR_16_Certificate.pdf) — issued 12 March 2026, covering release [v1.1.0](https://github.com/JupiterMetaLabs/jmdn/releases/tag/v1.1.0).
+
+All identified findings were remediated and verified closed. See [`audits/2026-03-terasoft-certin-vapt/VERIFICATION.md`](./audits/2026-03-terasoft-certin-vapt/VERIFICATION.md) for independent verification instructions and checksum matching.
+
+The full VAPT report is available on request — contact security@jupitermeta.io.
+
+To report a vulnerability, see [SECURITY.md](./SECURITY.md).
 
 ---
 **Document Version**: Based on JMDT White Paper 1.3 | Nov 2025
