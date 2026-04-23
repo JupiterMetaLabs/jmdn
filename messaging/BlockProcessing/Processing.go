@@ -5,22 +5,23 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gossipnode/DB_OPs"
+	"gossipnode/SmartContract"
+	"gossipnode/config"
 	"math/big"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"gossipnode/DB_OPs"
-	"gossipnode/config"
-
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
-	"go.opentelemetry.io/otel/attribute"
+	"github.com/ethereum/go-ethereum/core/tracing"
+	"github.com/holiman/uint256"
 )
 
 const (
-	LOG_FILE = ""
+	LOG_FILE = "block_processing.log"
 	TOPIC    = "BlockProcessing"
 )
 
@@ -35,7 +36,16 @@ var (
 	DefaultGasLimit       = int64(21000)
 	DefaultGasPrice       = int64(1000000000) // 1 Gwei
 	CreateMissingAccounts = true              // Set to false to disable automatic DID creation
+
+	// Smart Contract Configuration
+	// This ChainID must be set via SetChainID() from main.go
+	GlobalChainID = 0
 )
+
+// SetChainID sets the global network chain ID for transaction processing
+func SetChainID(chainID int) {
+	GlobalChainID = chainID
+}
 
 // ClearProcessedTransactions clears the processed transactions map
 // This should be called at the start of processing a new block
@@ -64,54 +74,51 @@ func cleanupTransactionLock(txHash string) {
 	delete(txProcessingLocks, txHash)
 }
 
-// ProcessBlockTransactions processes all transactions in a block atomically
-// If any transaction fails, all are rolled back
-func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock, accountsClient *config.PooledConnection) error {
-	// Record trace span and close it
-	span_ctx, span := logger().NamedLogger.Tracer("BlockProcessing").Start(logger_ctx, "BlockProcessing.ProcessBlockTransactions")
-	defer span.End()
+// ContractDeploymentInfo carries the essential details of a contract deployed
+// within a block.  Returned by ProcessBlockTransactions so the sequencer can
+// propagate the contract to the rest of the network post-consensus.
+type ContractDeploymentInfo struct {
+	ContractAddress common.Address
+	Deployer        common.Address
+	TxHash          common.Hash
+	BlockNumber     uint64
+	GasUsed         uint64
+}
 
-	startTime := time.Now().UTC()
-	span.SetAttributes(
-		attribute.Int64("block_number", int64(block.BlockNumber)),
-		attribute.String("block_hash", block.BlockHash.Hex()),
-		attribute.Int("transaction_count", len(block.Transactions)),
-	)
+// ProcessBlockTransactions processes all transactions in a block atomically.
+// If any transaction fails, all are rolled back.
+// If commitToDB is true, state changes are persisted to the database.
+// Returns a slice of ContractDeploymentInfo for every successfully deployed contract.
+func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.PooledConnection, commitToDB bool) ([]ContractDeploymentInfo, error) {
+	// Note: StateDB is NOT initialized here for regular transactions
+	// It will be created on-demand inside processTransaction() only for smart contract transactions
 
 	// Check if block was already processed
 	blockKey := fmt.Sprintf("block_processed:%s", block.BlockHash.Hex())
 	processed, err := DB_OPs.Exists(accountsClient, blockKey)
 	if err == nil && processed {
-		span.SetAttributes(attribute.String("status", "already_processed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Info(span_ctx, "Block already processed, skipping",
-			ion.String("block_hash", block.BlockHash.Hex()),
-			ion.Int64("block_number", int64(block.BlockNumber)),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
-		)
-		return nil
+		logger().Info(context.Background(), "Block already processed, skipping", ion.String("block_hash", block.BlockHash.Hex()))
+		return nil, nil
 	}
 
 	ClearProcessedTransactions()
 
-	// Store original balances to enable rollback - CRITICAL for atomicity
+	// Store original balances to enable rollback
 	originalBalances := make(map[common.Address]string)
 	affectedAccounts := make(map[common.Address]bool)
 
 	// First, collect all affected DIDs from the block
 	for _, tx := range block.Transactions {
 		affectedAccounts[*tx.From] = true
-		affectedAccounts[*tx.To] = true
+		// Smart contracts should be type 2 transactions and their To address is the contract address that will be generated while processing
+		if tx.To != nil && tx.Type == 2 {
+			affectedAccounts[*tx.To] = true
+		}
 	}
 	affectedAccounts[*block.CoinbaseAddr] = true
 	affectedAccounts[*block.ZKVMAddr] = true
 
-	span.SetAttributes(attribute.Int("affected_accounts", len(affectedAccounts)))
-
-	// Fetch and store original balances BEFORE any processing
+	// Fetch and store original balances
 	for accounts := range affectedAccounts {
 		doc, err := DB_OPs.GetAccount(accountsClient, accounts)
 		if err == nil {
@@ -124,33 +131,16 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 
 	// Sort transactions by nonce if available to ensure proper ordering
 	sortedTxs := sortTransactionsByNonce(block.Transactions)
-	span.SetAttributes(attribute.Int("sorted_transactions", len(sortedTxs)))
 
-	logger().NamedLogger.Info(span_ctx, "Starting block processing",
-		ion.String("block_hash", block.BlockHash.Hex()),
-		ion.Int64("block_number", int64(block.BlockNumber)),
-		ion.Int("transaction_count", len(sortedTxs)),
-		ion.Int("affected_accounts", len(affectedAccounts)),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
-	)
+	// Accumulate contract deployments so the sequencer can propagate them.
+	var deployments []ContractDeploymentInfo
 
-	// Track successfully processed transactions for atomic commit
-	successfullyProcessedTxs := make([]string, 0, len(sortedTxs))
-
-	// Process all transactions - if ANY fails, rollback ALL
-	for i, tx := range sortedTxs {
+	// Process all transactions
+	for _, tx := range sortedTxs {
 		// Check if this transaction was already processed within this block
 		processedTxsMutex.Lock()
 		if processedTxs[tx.Hash.Hex()] {
-			logger().NamedLogger.Warn(span_ctx, "Duplicate transaction in block, skipping",
-				ion.String("tx_hash", tx.Hash.Hex()),
-				ion.Int("tx_index", i),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("topic", TOPIC),
-				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
-			)
+			logger().Warn(context.Background(), "Duplicate transaction in block, skipping", ion.Err(errors.New("duplicate transaction")), ion.String("tx_hash", tx.Hash.Hex()))
 			processedTxsMutex.Unlock()
 			continue
 		}
@@ -161,142 +151,51 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		txKey := fmt.Sprintf("tx_processed:%s", tx.Hash)
 		alreadyProcessed, err := DB_OPs.Exists(accountsClient, txKey)
 		if err == nil && alreadyProcessed {
-			logger().NamedLogger.Warn(span_ctx, "Transaction already processed in previous block, skipping",
-				ion.String("tx_hash", tx.Hash.Hex()),
-				ion.Int("tx_index", i),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("topic", TOPIC),
-				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
-			)
 			continue
 		}
 
-		// Process the transaction with span context
-		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient)
-		if Process_err != nil {
-			// ATOMICITY: If any transaction fails, roll back ALL affected accounts
-			span.RecordError(Process_err)
-			span.SetAttributes(attribute.String("status", "failed"), attribute.String("failed_tx_hash", tx.Hash.Hex()), attribute.Int("failed_tx_index", i))
-
-			logger().NamedLogger.Error(span_ctx, "Transaction failed, rolling back entire block",
-				Process_err,
-				ion.String("tx_hash", tx.Hash.Hex()),
-				ion.Int("tx_index", i),
-				ion.Int("total_transactions", len(sortedTxs)),
-				ion.Int("successful_before_failure", len(successfullyProcessedTxs)),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("topic", TOPIC),
-				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
-			)
-
-			// Rollback all balances to original state
-			rollbackError := rollbackBalances(span_ctx, originalBalances, accountsClient)
-			if rollbackError != nil {
-				span.RecordError(rollbackError)
-				logger().NamedLogger.Error(span_ctx, "Failed to rollback balances after transaction failure",
-					rollbackError,
-					ion.String("tx_hash", tx.Hash.Hex()),
-					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-					ion.String("topic", TOPIC),
-					ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
-				)
-				// Still return the original error as it's more critical
-			}
-
-			// Clean up processing markers for all transactions processed so far
-			for _, txHash := range successfullyProcessedTxs {
-				cleanupProcessingMarkers(span_ctx, accountsClient, txHash)
-			}
-			cleanupProcessingMarkers(span_ctx, accountsClient, tx.Hash.Hex())
-
-			duration := time.Since(startTime).Seconds()
-			span.SetAttributes(attribute.Float64("duration", duration))
-			return fmt.Errorf("block processing failed at transaction %d/%d (hash: %s): %w", i+1, len(sortedTxs), tx.Hash.Hex(), Process_err)
-		}
-
-		// Track successfully processed transaction
-		successfullyProcessedTxs = append(successfullyProcessedTxs, tx.Hash.Hex())
-	}
-
-	// ATOMICITY: Use Immudb's atomic transaction to mark all operations at once
-	// This reduces N database calls to 1 atomic transaction, improving performance
-	// If any operation fails, Immudb automatically rolls back the entire transaction
-	if len(successfullyProcessedTxs) > 0 {
-		// Use Immudb's atomic transaction API to batch all marking operations
-		err := DB_OPs.Transaction(accountsClient.Client, func(tx *config.ImmuTransaction) error {
-			// Mark all successfully processed transactions
-			for _, txHash := range successfullyProcessedTxs {
-				txKey := fmt.Sprintf("tx_processed:%s", txHash)
-				if err := DB_OPs.Set(tx, txKey, time.Now().UTC().Unix()); err != nil {
-					return fmt.Errorf("failed to add transaction marker for %s: %w", txHash, err)
-				}
-
-				// Clean up processing markers (set to -1 to mark as cleaned)
-				processingKey := fmt.Sprintf("tx_processing:%s", txHash)
-				if err := DB_OPs.Set(tx, processingKey, int64(-1)); err != nil {
-					return fmt.Errorf("failed to add cleanup marker for %s: %w", txHash, err)
-				}
-			}
-
-			// Mark the block as processed - this is the final operation in the transaction
-			if err := DB_OPs.Set(tx, blockKey, time.Now().UTC().Unix()); err != nil {
-				return fmt.Errorf("failed to add block marker: %w", err)
-			}
-
-			return nil
-		})
-
+		// Process transaction (State DB created inside if it's a smart contract)
+		info, err := processTransaction(tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient, commitToDB)
 		if err != nil {
-			// Transaction failed - Immudb automatically rolled back all operations
-			span.RecordError(err)
-			span.SetAttributes(attribute.String("status", "atomic_marking_failed"))
-			logger().NamedLogger.Error(span_ctx, "Failed to atomically mark transactions and block, rolling back balances",
-				err,
-				ion.Int("transaction_count", len(successfullyProcessedTxs)),
-				ion.String("block_hash", block.BlockHash.Hex()),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("topic", TOPIC),
-				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
-			)
-			// Rollback balances since transaction marking failed
-			rollbackBalances(span_ctx, originalBalances, accountsClient)
-			// Clean up processing markers (they weren't committed due to transaction failure)
-			for _, txHash := range successfullyProcessedTxs {
-				cleanupProcessingMarkers(span_ctx, accountsClient, txHash)
+			logger().Error(context.Background(), "processTransaction failed", err, ion.String("tx_hash", tx.Hash.Hex()))
+			// If any transaction fails, roll back all affected DIDs
+			rollbackError := rollbackBalances(originalBalances, accountsClient)
+			if rollbackError != nil {
 			}
-			duration := time.Since(startTime).Seconds()
-			span.SetAttributes(attribute.Float64("duration", duration))
-			return fmt.Errorf("failed to atomically mark transactions and block: %w", err)
-		}
 
-		span.SetAttributes(attribute.Int("atomically_marked_transactions", len(successfullyProcessedTxs)))
-		logger().NamedLogger.Info(span_ctx, "Atomically marked all transactions and block as processed",
-			ion.Int("transaction_count", len(successfullyProcessedTxs)),
-			ion.String("block_hash", block.BlockHash.Hex()),
-			ion.Int64("block_number", int64(block.BlockNumber)),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
-		)
+			// Clean up any processing markers for failed transactions
+			cleanupProcessingMarkers(accountsClient, tx.Hash.Hex())
+
+			return nil, fmt.Errorf("block processing failed: %w", err)
+		}
+		if info != nil {
+			info.BlockNumber = block.BlockNumber
+			deployments = append(deployments, *info)
+		}
 	}
 
-	duration := time.Since(startTime).Seconds()
-	span.SetAttributes(
-		attribute.Float64("duration", duration),
-		attribute.String("status", "success"),
-		attribute.Int("processed_transactions", len(successfullyProcessedTxs)),
-	)
-	logger().NamedLogger.Info(span_ctx, "Block processed successfully",
-		ion.String("block_hash", block.BlockHash.Hex()),
-		ion.Int64("block_number", int64(block.BlockNumber)),
-		ion.Int("processed_transactions", len(successfullyProcessedTxs)),
-		ion.Float64("duration", duration),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
-	)
+	// Mark all transactions as successfully processed in the database
+	for txHash := range processedTxs {
+		txKey := fmt.Sprintf("tx_processed:%s", txHash)
+		if err := DB_OPs.Create(accountsClient, txKey, time.Now().UTC().Unix()); err != nil {
+			logger().Warn(context.Background(), "Failed to mark transaction as processed", ion.Err(err), ion.String("tx_hash", txHash))
+		}
 
-	return nil
+		// Clean up the processing key
+		processingKey := fmt.Sprintf("tx_processing:%s", txHash)
+		if exists, _ := DB_OPs.Exists(accountsClient, processingKey); exists {
+			if err := DB_OPs.Create(accountsClient, processingKey, int64(-1)); err != nil {
+				logger().Warn(context.Background(), "Failed to clean up processing marker", ion.Err(err), ion.String("tx_hash", txHash))
+			}
+		}
+	}
+
+	// Mark the block as processed (regular transactions already committed via DB_OPs)
+	if err := DB_OPs.Create(accountsClient, blockKey, time.Now().UTC().Unix()); err != nil {
+		logger().Warn(context.Background(), "Failed to mark block as processed", ion.Err(err), ion.String("block_hash", block.BlockHash.Hex()))
+	}
+
+	return deployments, nil
 }
 
 // sortTransactionsByNonce sorts transactions by their nonce value if available
@@ -336,17 +235,10 @@ func sortTransactionsByNonce(txs []config.Transaction) []config.Transaction {
 }
 
 // cleanupProcessingMarkers removes temporary processing markers
-func cleanupProcessingMarkers(span_ctx context.Context, accountsClient *config.PooledConnection, txHash string) {
+func cleanupProcessingMarkers(accountsClient *config.PooledConnection, txHash string) {
 	processingKey := fmt.Sprintf("tx_processing:%s", txHash)
 	if exists, _ := DB_OPs.Exists(accountsClient, processingKey); exists {
 		if err := DB_OPs.Create(accountsClient, processingKey, int64(-1)); err != nil {
-			logger().NamedLogger.Warn(span_ctx, "Failed to clean up processing marker",
-				ion.String("tx_hash", txHash),
-				ion.String("error", err.Error()),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("topic", TOPIC),
-				ion.String("function", "BlockProcessing.cleanupProcessingMarkers"),
-			)
 		}
 	}
 
@@ -355,100 +247,246 @@ func cleanupProcessingMarkers(span_ctx context.Context, accountsClient *config.P
 }
 
 // rollbackBalances restores original balances for all affected DIDs
-func rollbackBalances(span_ctx context.Context, originalBalances map[common.Address]string, accountsClient *config.PooledConnection) error {
-	rollbackSpanCtx, rollbackSpan := logger().NamedLogger.Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.rollbackBalances")
-	defer rollbackSpan.End()
-
-	rollbackStartTime := time.Now().UTC()
-	rollbackSpan.SetAttributes(attribute.Int("accounts_to_rollback", len(originalBalances)))
-
-	rollbackCount := 0
+func rollbackBalances(originalBalances map[common.Address]string, accountsClient *config.PooledConnection) error {
 	for did, balance := range originalBalances {
+		// Optimization: If original balance is "0", checking if account exists first can avoid "key not found" error
+		// when trying to update a non-existent account (e.g. 0x...02 or new contract)
+		if balance == "0" {
+			_, err := DB_OPs.GetAccount(accountsClient, did)
+			if err != nil {
+				// If account doesn't exist and we want to roll it back to 0, just do nothing (it's effectively 0)
+				// avoiding the "key not found" error on UpdateAccountBalance
+				logger().Info(context.Background(), "Skipping rollback for non-existent account (original balance was 0)", ion.String("did", did.String()))
+				continue
+			}
+		}
+
 		if err := DB_OPs.UpdateAccountBalance(accountsClient, did, balance); err != nil {
-			rollbackSpan.RecordError(err)
-			rollbackSpan.SetAttributes(attribute.String("status", "partial_failure"), attribute.String("failed_account", did.Hex()))
-			logger().NamedLogger.Error(rollbackSpanCtx, "Failed to restore balance during rollback",
-				err,
-				ion.String("account", did.Hex()),
-				ion.String("original_balance", balance),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("topic", TOPIC),
-				ion.String("function", "BlockProcessing.rollbackBalances"),
-			)
+			// If key not found (and we didn't catch it above), log warning but continue rolling back others
+			if strings.Contains(err.Error(), "key not found") {
+				logger().Warn(context.Background(), "Skipping rollback for non-existent account (key not found)", ion.Err(errors.New("key not found")), ion.String("did", did.String()))
+				continue
+			}
 			return fmt.Errorf("failed to restore balance for %s: %w", did, err)
 		}
-		rollbackCount++
-		logger().NamedLogger.Debug(rollbackSpanCtx, "Rolled back balance to original value",
-			ion.String("account", did.Hex()),
-			ion.String("balance", balance),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockProcessing.rollbackBalances"),
-		)
+		logger().Info(context.Background(), "Rolled back balance to original value", ion.String("did", did.String()), ion.String("balance", balance))
 	}
-
-	duration := time.Since(rollbackStartTime).Seconds()
-	rollbackSpan.SetAttributes(
-		attribute.Float64("duration", duration),
-		attribute.String("status", "success"),
-		attribute.Int("rolled_back_accounts", rollbackCount),
-	)
-	logger().NamedLogger.Info(rollbackSpanCtx, "Rollback completed successfully",
-		ion.Int("rolled_back_accounts", rollbackCount),
-		ion.Float64("duration", duration),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockProcessing.rollbackBalances"),
-	)
-
 	return nil
 }
 
-// ProcessTransaction handles a single transaction's balance updates
-func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection) error {
-	// Record trace span and close it
-	txSpanCtx, txSpan := logger().NamedLogger.Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.processTransaction")
-	defer txSpan.End()
-
-	txStartTime := time.Now().UTC()
-	txSpan.SetAttributes(
-		attribute.String("tx_hash", tx.Hash.Hex()),
-		attribute.String("from", tx.From.Hex()),
-		attribute.String("to", tx.To.Hex()),
-		attribute.String("coinbase", coinbaseAddr.Hex()),
-		attribute.String("zkvm", zkvmAddr.Hex()),
-	)
-
+// ProcessTransaction handles a single transaction's balance updates.
+// For smart contracts, a StateDB is created and changes are committed based on commitToDB flag.
+// For regular transfers, DB_OPs is used directly (always commits).
+func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection, commitToDB bool) (*ContractDeploymentInfo, error) {
 	// First check the connection
 	if accountsClient == nil {
-		txSpan.RecordError(errors.New("accountsClient is nil"))
-		txSpan.SetAttributes(attribute.String("status", "error"))
-		return errors.New("accountsClient is nil")
+		logger().Error(context.Background(), "Function: messaging.processTransaction - accountsClient is nil", errors.New("accountsClient is nil"))
+		return nil, fmt.Errorf("accountsClient is nil")
 	}
 
 	// Confirm the DB connection
 	err := DB_OPs.EnsureDBConnection(accountsClient)
 	if err != nil {
-		txSpan.RecordError(err)
-		txSpan.SetAttributes(attribute.String("status", "db_connection_failed"))
-		duration := time.Since(txStartTime).Seconds()
-		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(txSpanCtx, "Failed to establish database connection",
-			err,
-			ion.String("tx_hash", tx.Hash.Hex()),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockProcessing.processTransaction"),
-		)
-		return fmt.Errorf("failed to establish database connection: %w", err)
+		logger().Error(context.Background(), "Failed to establish database connection", err)
+		return nil, fmt.Errorf("failed to establish database connection: %w", err)
 	}
 
-	logger().NamedLogger.Debug(txSpanCtx, "Database connection check successful",
-		ion.String("tx_hash", tx.Hash.Hex()),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockProcessing.processTransaction"),
-	)
+	// ========== SMART CONTRACT DETECTION ==========
+	// Check if this is a contract deployment (To == nil) or execution (code exists at To)
+	isContract := (tx.To == nil && tx.Type == 2)
+	if !isContract && tx.To != nil {
+		// Lightweight code-presence check — avoids allocating a full StateDB.
+		isContract = SmartContract.HasCode(*tx.To)
+	}
+	// Declare StateDB and snapshot variables (used by both smart contracts and regular transfers)
+	var stateDB SmartContract.StateDB
+	var snapshot int
+
+	// Only create StateDB for smart contracts (variables declared below in regular transfer section)
+	if isContract {
+		stateDB, err = SmartContract.NewStateDB(GlobalChainID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize StateDB for contract: %w", err)
+		}
+		snapshot = stateDB.Snapshot()
+	}
+
+	// ========== CONTRACT DEPLOYMENT ==========
+	if tx.To == nil && tx.Type == 2 {
+
+		logger().Info(context.Background(), "🚀 [CONSENSUS] CONTRACT DEPLOYMENT detected", ion.String("tx_hash", tx.Hash.Hex()))
+
+		// Call SmartContract module's deployment processor with StateDB
+		result, err := SmartContract.ProcessContractDeployment(&tx, stateDB, GlobalChainID)
+		if err != nil {
+			stateDB.RevertToSnapshot(snapshot) // Rollback
+			logger().Error(context.Background(), "❌ [CONSENSUS] Contract deployment failed", err, ion.String("tx_hash", tx.Hash.Hex()))
+			cleanupProcessingMarkers(accountsClient, tx.Hash.Hex())
+			return nil, fmt.Errorf("contract deployment failed: %w", err)
+		}
+
+		if !result.Success {
+			stateDB.RevertToSnapshot(snapshot) // Rollback
+			logger().Error(context.Background(), "❌ [CONSENSUS] Contract deployment unsuccessful", errors.New("deployment unsuccessful"), ion.String("tx_hash", tx.Hash.Hex()))
+			return nil, result.Error
+		}
+
+		// Handle gas fees
+		parsedTx, err := parseTransaction(tx)
+		if err != nil {
+			stateDB.RevertToSnapshot(snapshot)
+			return nil, fmt.Errorf("failed to parse transaction for gas: %w", err)
+		}
+
+		gasUsed := big.NewInt(int64(result.GasUsed))
+		gasFeeToDeduct := new(big.Int).Mul(gasUsed, parsedTx.EffectiveGasFee)
+
+		// Split gas fee between validators
+		halfGasFee := new(big.Int).Div(gasFeeToDeduct, big.NewInt(2))
+		remainder := new(big.Int).Mod(gasFeeToDeduct, big.NewInt(2))
+		zkvmGasFee := new(big.Int).Set(halfGasFee)
+		coinbaseGasFee := new(big.Int).Add(halfGasFee, remainder)
+
+		// Deduct ONLY gas fee from sender (EVM handles value transfer via transferFn)
+		// EVM's Create() method automatically transfers parsedTx.Value from sender to contract
+		gasDeductAmount, overflow := uint256.FromBig(gasFeeToDeduct)
+		if overflow {
+			stateDB.RevertToSnapshot(snapshot)
+			return nil, fmt.Errorf("gas fee amount overflow")
+		}
+		stateDB.SubBalance(*tx.From, gasDeductAmount, tracing.BalanceChangeTransfer)
+
+		// Note: Value transfer to contract is handled by EVM's Create() via transferFn
+		// No manual transfer needed here to avoid double-counting
+
+		// Pay coinbase their share of gas fees
+		coinbaseAmount, overflow := uint256.FromBig(coinbaseGasFee)
+		if overflow {
+			stateDB.RevertToSnapshot(snapshot)
+			return nil, fmt.Errorf("coinbase gas fee overflow")
+		}
+		stateDB.AddBalance(coinbaseAddr, coinbaseAmount, tracing.BalanceChangeTransfer)
+
+		// Pay ZKVM their share of gas fees
+		zkvmAmount, overflow := uint256.FromBig(zkvmGasFee)
+		if overflow {
+			stateDB.RevertToSnapshot(snapshot)
+			return nil, fmt.Errorf("zkvm gas fee overflow")
+		}
+		stateDB.AddBalance(zkvmAddr, zkvmAmount, tracing.BalanceChangeTransfer)
+
+		logger().Info(context.Background(), "💰 Gas fees processed for deployment", ion.String("contract", result.ContractAddress.Hex()))
+
+		// Commit StateDB changes if requested
+		if commitToDB {
+			logger().Info(context.Background(), "💾 Committing contract deployment state to database")
+
+			// Update balances in DID service before committing StateDB
+			for addr, balance := range stateDB.GetBalanceChanges() {
+				if err := DB_OPs.UpdateAccountBalance(accountsClient, addr, balance.String()); err != nil {
+					return nil, fmt.Errorf("failed to update DID service balance for %s: %w", addr.Hex(), err)
+				}
+			}
+
+			if _, err := stateDB.CommitToDB(false); err != nil {
+				return nil, fmt.Errorf("failed to commit contract deployment state: %w", err)
+			}
+
+			// Return deployment info so sequencer can propagate via gossip.
+			return &ContractDeploymentInfo{
+				ContractAddress: result.ContractAddress,
+				Deployer:        *tx.From,
+				TxHash:          tx.Hash,
+				GasUsed:         result.GasUsed,
+				// BlockNumber is filled in by the caller (ProcessBlockTransactions)
+			}, nil
+		}
+
+		logger().Info(context.Background(), "🚫 Skipping state commit (verification mode)")
+		return nil, nil
+	}
+
+	// ========== SMART CONTRACT EXECUTION DETECTION ==========
+	// Check if this is a transaction to an existing contract (To != nil and has code)
+	// We use stateDB.GetCodeSize to check if the target address is a contract
+	if tx.To != nil && stateDB.GetCodeSize(*tx.To) > 0 {
+		logger().Info(context.Background(), "⚙️ [CONSENSUS] CONTRACT EXECUTION detected", ion.String("tx_hash", tx.Hash.Hex()))
+
+		// Call SmartContract module's execution processor with StateDB
+		result, err := SmartContract.ProcessContractExecution(&tx, stateDB, GlobalChainID)
+		if err != nil {
+			stateDB.RevertToSnapshot(snapshot) // Rollback
+			logger().Error(context.Background(), "❌ [CONSENSUS] Contract execution failed", err, ion.String("tx_hash", tx.Hash.Hex()))
+			cleanupProcessingMarkers(accountsClient, tx.Hash.Hex())
+			return nil, fmt.Errorf("contract execution failed: %w", err)
+		}
+
+		// Handle gas fees
+		parsedTx, err := parseTransaction(tx)
+		if err != nil {
+			stateDB.RevertToSnapshot(snapshot)
+			return nil, fmt.Errorf("failed to parse transaction for gas: %w", err)
+		}
+
+		gasUsed := big.NewInt(int64(result.GasUsed))
+		gasFeeToDeduct := new(big.Int).Mul(gasUsed, parsedTx.EffectiveGasFee)
+
+		// Split gas fee between validators
+		halfGasFee := new(big.Int).Div(gasFeeToDeduct, big.NewInt(2))
+		remainder := new(big.Int).Mod(gasFeeToDeduct, big.NewInt(2))
+		zkvmGasFee := new(big.Int).Set(halfGasFee)
+		coinbaseGasFee := new(big.Int).Add(halfGasFee, remainder)
+
+		// Deduct ONLY gas fee from sender (EVM handles value transfer via transferFn)
+		// EVM's Call() method automatically transfers parsedTx.Value from sender to contract
+		gasDeductAmount, overflow := uint256.FromBig(gasFeeToDeduct)
+		if overflow {
+			stateDB.RevertToSnapshot(snapshot)
+			return nil, fmt.Errorf("gas fee amount overflow")
+		}
+		stateDB.SubBalance(*tx.From, gasDeductAmount, tracing.BalanceChangeTransfer)
+
+		// Note: Value transfer to contract is handled by EVM's Call() via transferFn
+		// No manual transfer needed here to avoid double-counting
+
+		// Pay coinbase their share of gas fees
+		coinbaseExecAmount, overflow := uint256.FromBig(coinbaseGasFee)
+		if overflow {
+			stateDB.RevertToSnapshot(snapshot)
+			return nil, fmt.Errorf("coinbase gas fee overflow")
+		}
+		stateDB.AddBalance(coinbaseAddr, coinbaseExecAmount, tracing.BalanceChangeTransfer)
+
+		// Pay ZKVM their share of gas fees
+		zkvmExecAmount, overflow := uint256.FromBig(zkvmGasFee)
+		if overflow {
+			stateDB.RevertToSnapshot(snapshot)
+			return nil, fmt.Errorf("zkvm gas fee overflow")
+		}
+		stateDB.AddBalance(zkvmAddr, zkvmExecAmount, tracing.BalanceChangeTransfer)
+
+		logger().Info(context.Background(), "💰 Gas fees processed for execution", ion.String("contract", tx.To.Hex()))
+
+		// Commit StateDB changes if requested
+		if commitToDB {
+			logger().Info(context.Background(), "💾 Committing contract execution state to database")
+
+			// Update balances in DID service before committing StateDB
+			for addr, balance := range stateDB.GetBalanceChanges() {
+				if err := DB_OPs.UpdateAccountBalance(accountsClient, addr, balance.String()); err != nil {
+					return nil, fmt.Errorf("failed to update DID service balance for %s: %w", addr.Hex(), err)
+				}
+			}
+
+			if _, err := stateDB.CommitToDB(false); err != nil {
+				return nil, fmt.Errorf("failed to commit contract execution state: %w", err)
+			}
+		} else {
+			logger().Info(context.Background(), "🚫 Skipping state commit (verification mode)")
+		}
+
+		return nil, nil
+	}
 
 	// Check if transaction was already processed (from previous blocks)
 	txLock := getTransactionLock(tx.Hash.String())
@@ -465,16 +503,8 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// Check if already completed
 	processed, err := DB_OPs.Exists(accountsClient, txKey)
 	if err == nil && processed {
-		txSpan.SetAttributes(attribute.String("status", "already_processed"))
-		duration := time.Since(txStartTime).Seconds()
-		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Info(txSpanCtx, "Transaction already processed in previous block, skipping",
-			ion.String("tx_hash", tx.Hash.Hex()),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockProcessing.processTransaction"),
-		)
-		return nil
+		logger().Info(context.Background(), "Transaction already processed in previous block, skipping", ion.String("tx_hash", tx.Hash.Hex()))
+		return nil, nil
 	}
 
 	// Check if we're currently processing this transaction
@@ -487,37 +517,15 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 			var timestamp int64
 			if err := json.Unmarshal(valueBytes, &timestamp); err == nil {
 				if time.Now().UTC().Unix()-timestamp > 300 {
-					txSpan.SetAttributes(attribute.String("processing_marker_status", "stale"), attribute.Int64("stale_timestamp", timestamp))
-					logger().NamedLogger.Warn(txSpanCtx, "Found stale processing marker, continuing with transaction",
-						ion.String("tx_hash", tx.Hash.Hex()),
-						ion.Int64("stale_timestamp", timestamp),
-						ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-						ion.String("topic", TOPIC),
-						ion.String("function", "BlockProcessing.processTransaction"),
-					)
 				} else {
-					txSpan.SetAttributes(attribute.String("processing_marker_status", "active"))
-					logger().NamedLogger.Warn(txSpanCtx, "Transaction is already being processed, possible duplicate",
-						ion.String("tx_hash", tx.Hash.Hex()),
-						ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-						ion.String("topic", TOPIC),
-						ion.String("function", "BlockProcessing.processTransaction"),
-					)
 					// We have the lock, so continue processing anyway as previous attempt might have failed
-				}
+				} // We have the lock, so continue processing anyway as previous attempt might have failed
 			}
 		}
 	}
 
 	// Mark transaction as being processed
 	if err := DB_OPs.Create(accountsClient, txProcessingKey, time.Now().UTC().Unix()); err != nil {
-		logger().NamedLogger.Warn(txSpanCtx, "Failed to mark transaction as processing",
-			ion.String("tx_hash", tx.Hash.Hex()),
-			ion.String("error", err.Error()),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockProcessing.processTransaction"),
-		)
 		// Continue processing since this is just a precaution
 	}
 
@@ -532,20 +540,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		} else if err == DB_OPs.ErrNotFound || strings.Contains(err.Error(), "key not found") {
 			originalBalances[did] = "0"
 		} else {
-			txSpan.RecordError(err)
-			txSpan.SetAttributes(attribute.String("status", "balance_retrieval_failed"), attribute.String("failed_account", did.Hex()))
-			cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
-			duration := time.Since(txStartTime).Seconds()
-			txSpan.SetAttributes(attribute.Float64("duration", duration))
-			logger().NamedLogger.Error(txSpanCtx, "Failed to retrieve original balance",
-				err,
-				ion.String("tx_hash", tx.Hash.Hex()),
-				ion.String("account", did.Hex()),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("topic", TOPIC),
-				ion.String("function", "BlockProcessing.processTransaction"),
-			)
-			return fmt.Errorf("failed to retrieve original balance for %s: %w", did.Hex(), err)
+			return nil, fmt.Errorf("failed to retrieve original balance for %s: %w", did.Hex(), err)
 		}
 	}
 
@@ -553,19 +548,8 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	var parsedTx *config.ParsedZKTransaction
 	parsedTx, err = parseTransaction(tx)
 	if err != nil {
-		txSpan.RecordError(err)
-		txSpan.SetAttributes(attribute.String("status", "parse_failed"))
-		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
-		duration := time.Since(txStartTime).Seconds()
-		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(txSpanCtx, "Failed to parse transaction",
-			err,
-			ion.String("tx_hash", tx.Hash.Hex()),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockProcessing.processTransaction"),
-		)
-		return fmt.Errorf("failed to parse transaction: %w", err)
+		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
+		return nil, fmt.Errorf("failed to parse transaction: %w", err)
 	}
 
 	// Gas Limit is already a bigInt
@@ -592,234 +576,92 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	zkvmGasFee := new(big.Int).Set(halfGasFee)
 	coinbaseGasFee := new(big.Int).Add(halfGasFee, remainder)
 
-	txSpan.SetAttributes(
-		attribute.String("value", parsedTx.ValueBig.String()),
-		attribute.String("gas_limit", gasLimit.String()),
-		attribute.String("gas_fee", gasFeeToDeduct.String()),
-		attribute.String("total_deduction", totalDeduction.String()),
-		attribute.String("coinbase_gas_fee", coinbaseGasFee.String()),
-		attribute.String("zkvm_gas_fee", zkvmGasFee.String()),
-	)
-
-	logger().NamedLogger.Info(txSpanCtx, "Transaction Amount Calculated",
-		ion.String("tx_hash", tx.Hash.Hex()),
-		ion.String("from", tx.From.Hex()),
-		ion.String("to", tx.To.Hex()),
-		ion.String("value", parsedTx.ValueBig.String()),
-		ion.String("gas_limit", gasLimit.String()),
-		ion.String("gas_fee", gasFeeToDeduct.String()),
-		ion.String("total_deduction", totalDeduction.String()),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockProcessing.processTransaction"),
-	)
-
 	// Check if sender exists before attempting deduction
 	senderExists, _ := accountExists(tx.From, accountsClient)
-	txSpan.SetAttributes(attribute.Bool("sender_exists", senderExists))
 	if !senderExists {
-		txSpan.RecordError(errors.New("sender DID does not exist"))
-		txSpan.SetAttributes(attribute.String("status", "sender_not_found"))
-		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
-		duration := time.Since(txStartTime).Seconds()
-		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(txSpanCtx, "Sender DID does not exist",
-			errors.New("sender DID does not exist"),
-			ion.String("tx_hash", tx.Hash.Hex()),
-			ion.String("from", tx.From.Hex()),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockProcessing.processTransaction"),
-		)
-		return fmt.Errorf("sender DID %s does not exist", tx.From)
+		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
+		return nil, fmt.Errorf("sender DID %s does not exist", tx.From)
 	}
 
 	// Check if recipient exists (for better error reporting)
 	recipientExists, _ := accountExists(tx.To, accountsClient)
-	txSpan.SetAttributes(attribute.Bool("recipient_exists", recipientExists))
 	if !recipientExists && !CreateMissingAccounts {
-		txSpan.RecordError(errors.New("recipient DID does not exist"))
-		txSpan.SetAttributes(attribute.String("status", "recipient_not_found"))
-		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
-		duration := time.Since(txStartTime).Seconds()
-		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(txSpanCtx, "Recipient DID does not exist",
-			errors.New("recipient DID does not exist"),
-			ion.String("tx_hash", tx.Hash.Hex()),
-			ion.String("to", tx.To.Hex()),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockProcessing.processTransaction"),
-		)
-		return fmt.Errorf("recipient DID %s does not exist and automatic creation is disabled", tx.To)
+		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
+		return nil, fmt.Errorf("recipient DID %s does not exist and automatic creation is disabled", tx.To)
 	}
+
+	// ========== REGULAR TRANSFER: Create StateDB ==========
+	// All transactions now use StateDB for Ethereum-style verification
+	stateDB, err = SmartContract.NewStateDB(GlobalChainID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create StateDB for regular transfer: %w", err)
+	}
+	snapshot = stateDB.Snapshot()
 
 	// 1. Deduct from sender
-	if err := deductFromSender(txSpanCtx, *tx.From, totalDeduction.String(), accountsClient); err != nil {
-		txSpan.RecordError(err)
-		txSpan.SetAttributes(attribute.String("status", "deduction_failed"), attribute.String("failed_step", "deduct_from_sender"))
-		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
-		duration := time.Since(txStartTime).Seconds()
-		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(txSpanCtx, "Failed to deduct from sender",
-			err,
-			ion.String("tx_hash", tx.Hash.Hex()),
-			ion.String("from", tx.From.Hex()),
-			ion.String("amount", totalDeduction.String()),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockProcessing.processTransaction"),
-		)
-		return categorizeDeductionError(err)
+	if err := deductFromSender(*tx.From, totalDeduction.String(), stateDB, accountsClient); err != nil {
+		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
+		return nil, categorizeDeductionError(err)
 	}
-
-	txSpan.SetAttributes(attribute.String("deduction_step", "completed"))
 
 	// 2. Add amount to recipient
-	if err := addToRecipient(txSpanCtx, *tx.To, parsedTx.ValueBig.String(), accountsClient); err != nil {
-		// Rollback sender deduction on failure
-		txSpan.RecordError(err)
-		txSpan.SetAttributes(attribute.String("status", "recipient_add_failed"), attribute.String("failed_step", "add_to_recipient"))
-		if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, *tx.From, originalBalances[*tx.From]); rollbackErr != nil {
-			txSpan.RecordError(rollbackErr)
-			logger().NamedLogger.Error(txSpanCtx, "Failed to rollback sender balance",
-				rollbackErr,
-				ion.String("tx_hash", tx.Hash.Hex()),
-				ion.String("from", tx.From.Hex()),
-				ion.String("original_balance", originalBalances[*tx.From]),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("topic", TOPIC),
-				ion.String("function", "BlockProcessing.processTransaction"),
-			)
-		} else {
-			logger().NamedLogger.Info(txSpanCtx, "Rolled back sender balance due to recipient update failure",
-				ion.String("tx_hash", tx.Hash.Hex()),
-				ion.String("from", tx.From.Hex()),
-				ion.String("original_balance", originalBalances[*tx.From]),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("topic", TOPIC),
-				ion.String("function", "BlockProcessing.processTransaction"),
-			)
-		}
-		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
-		duration := time.Since(txStartTime).Seconds()
-		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		return fmt.Errorf("failed to add to recipient: %w", err)
+	if err := addToRecipient(*tx.To, parsedTx.ValueBig.String(), stateDB, accountsClient); err != nil {
+		stateDB.RevertToSnapshot(snapshot)
+		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
+		return nil, fmt.Errorf("failed to add to recipient: %w", err)
 	}
-
-	txSpan.SetAttributes(attribute.String("recipient_add_step", "completed"))
 
 	// 3. Split gas fee between coinbase and ZKVM
-	if err := addToRecipient(txSpanCtx, coinbaseAddr, coinbaseGasFee.String(), accountsClient); err != nil {
-		// Rollback previous operations
-		txSpan.RecordError(err)
-		txSpan.SetAttributes(attribute.String("status", "coinbase_gas_fee_failed"), attribute.String("failed_step", "add_to_coinbase"))
-		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
-		for _, accounts := range rollbackAccounts {
-			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
-				txSpan.RecordError(rollbackErr)
-				logger().NamedLogger.Error(txSpanCtx, "Failed to rollback balance",
-					rollbackErr,
-					ion.String("tx_hash", tx.Hash.Hex()),
-					ion.String("account", accounts.Hex()),
-					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-					ion.String("topic", TOPIC),
-					ion.String("function", "BlockProcessing.processTransaction"),
-				)
-			} else {
-				logger().NamedLogger.Info(txSpanCtx, "Rolled back balance due to gas fee update failure",
-					ion.String("tx_hash", tx.Hash.Hex()),
-					ion.String("account", accounts.Hex()),
-					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-					ion.String("topic", TOPIC),
-					ion.String("function", "BlockProcessing.processTransaction"),
-				)
-			}
-		}
-		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
-		duration := time.Since(txStartTime).Seconds()
-		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		return fmt.Errorf("failed to add gas fee to coinbase: %w", err)
+	if err := addToRecipient(coinbaseAddr, coinbaseGasFee.String(), stateDB, accountsClient); err != nil {
+		stateDB.RevertToSnapshot(snapshot)
+		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
+		return nil, fmt.Errorf("failed to add gas fee to coinbase: %w", err)
 	}
 
-	txSpan.SetAttributes(attribute.String("coinbase_gas_fee_step", "completed"))
-
-	if err := addToRecipient(txSpanCtx, zkvmAddr, zkvmGasFee.String(), accountsClient); err != nil {
-		// Rollback previous operations
-		txSpan.RecordError(err)
-		txSpan.SetAttributes(attribute.String("status", "zkvm_gas_fee_failed"), attribute.String("failed_step", "add_to_zkvm"))
-		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
-		for _, accounts := range rollbackAccounts {
-			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
-				txSpan.RecordError(rollbackErr)
-				logger().NamedLogger.Error(txSpanCtx, "Failed to rollback balance",
-					rollbackErr,
-					ion.String("tx_hash", tx.Hash.Hex()),
-					ion.String("account", accounts.Hex()),
-					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-					ion.String("topic", TOPIC),
-					ion.String("function", "BlockProcessing.processTransaction"),
-				)
-			} else {
-				logger().NamedLogger.Info(txSpanCtx, "Rolled back balance due to gas fee update failure",
-					ion.String("tx_hash", tx.Hash.Hex()),
-					ion.String("account", accounts.Hex()),
-					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-					ion.String("topic", TOPIC),
-					ion.String("function", "BlockProcessing.processTransaction"),
-				)
-			}
-		}
-		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
-		duration := time.Since(txStartTime).Seconds()
-		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		return fmt.Errorf("failed to add gas fee to ZKVM: %w", err)
+	if err := addToRecipient(zkvmAddr, zkvmGasFee.String(), stateDB, accountsClient); err != nil {
+		stateDB.RevertToSnapshot(snapshot)
+		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
+		return nil, fmt.Errorf("failed to add gas fee to ZKVM: %w", err)
 	}
 
-	txSpan.SetAttributes(attribute.String("zkvm_gas_fee_step", "completed"))
+	// Commit StateDB if requested (Ethereum-style)
+	if commitToDB {
+		logger().Info(context.Background(), "💾 Committing regular transfer state to database")
+
+		// Update balances in DID service before committing StateDB
+		for addr, balance := range stateDB.GetBalanceChanges() {
+			if err := DB_OPs.UpdateAccountBalance(accountsClient, addr, balance.String()); err != nil {
+				return nil, fmt.Errorf("failed to update DID service balance for %s: %w", addr.Hex(), err)
+			}
+		}
+
+		if _, err := stateDB.CommitToDB(false); err != nil {
+			return nil, fmt.Errorf("failed to commit regular transfer state: %w", err)
+		}
+	} else {
+		logger().Info(context.Background(), "🚫 Skipping state commit for regular transfer (verification mode)")
+	}
 
 	// Mark transaction as fully processed - this is the key that prevents double processing
 	if err := DB_OPs.Create(accountsClient, txKey, time.Now().UTC().Unix()); err != nil {
-		txSpan.RecordError(err)
-		logger().NamedLogger.Error(txSpanCtx, "Failed to mark transaction as processed",
-			err,
-			ion.String("tx_hash", tx.Hash.Hex()),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockProcessing.processTransaction"),
-		)
 		// Still continue as the transaction was processed successfully
 	}
 
 	// Clean up the processing marker
-	cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
+	cleanupProcessingMarkers(accountsClient, tx.Hash.String())
 
-	duration := time.Since(txStartTime).Seconds()
-	txSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().NamedLogger.Info(txSpanCtx, "Transaction processed successfully",
-		ion.String("tx_hash", tx.Hash.Hex()),
-		ion.Float64("duration", duration),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockProcessing.processTransaction"),
-	)
-
-	return nil
+	return nil, nil
 }
 
 // accountExists checks if an account exists in the database
 func accountExists(account *common.Address, accountsClient *config.PooledConnection) (bool, error) {
-	fmt.Println("Checking if account exists: ", account.Hex()) // Debugging
 	_, err := DB_OPs.GetAccount(accountsClient, *account)
 	if err != nil {
 		if err == DB_OPs.ErrNotFound || strings.Contains(err.Error(), "key not found") {
-			fmt.Println("Account does not exist: ", account.Hex()) // Debugging
 			return false, nil
 		}
-		fmt.Println("Error checking account existence: ", account.Hex(), "Error: ", err.Error()) // Debugging
 		return false, err
 	}
-	fmt.Println("Account exists: ", account.Hex()) // Debugging
 	return true, nil
 }
 
@@ -906,91 +748,53 @@ func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error
 	return parsed, nil
 }
 
-// deductFromSender deducts an amount from a sender's DID account
-func deductFromSender(span_ctx context.Context, fromDID common.Address, amount string, accountsClient *config.PooledConnection) error {
-	// Get the current DID document using the provided accounts client
-	didDoc, err := DB_OPs.GetAccount(accountsClient, fromDID)
-	if err != nil {
-		return fmt.Errorf("failed to retrieve sender DID %s: %w", fromDID, err)
-	}
-
-	// Parse current balance
-	currentBalance, ok := new(big.Int).SetString(didDoc.Balance, 10)
-	if !ok {
-		return fmt.Errorf("invalid balance format for DID %s: %s", fromDID, didDoc.Balance)
-	}
-
+// deductFromSender deducts an amount from a sender's DID account using StateDB
+func deductFromSender(fromDID common.Address, amount string, stateDB SmartContract.StateDB, accountsClient *config.PooledConnection) error {
 	// Parse amount to deduct
 	deductAmount, ok := new(big.Int).SetString(amount, 10)
 	if !ok {
 		return fmt.Errorf("invalid deduction amount: %s", amount)
 	}
 
-	// Check if sufficient balance
-	if currentBalance.Cmp(deductAmount) < 0 {
+	// Convert to uint256
+	amt, overflow := uint256.FromBig(deductAmount)
+	if overflow {
+		return fmt.Errorf("deduction amount overflow")
+	}
+
+	// Check balance using StateDB
+	currentBalance := stateDB.GetBalance(fromDID)
+	if currentBalance.Cmp(amt) < 0 {
 		return fmt.Errorf("insufficient balance for DID %s: has %s, needs %s",
-			fromDID, currentBalance.String(), deductAmount.String())
+			fromDID.Hex(), currentBalance.String(), amt.String())
 	}
 
-	// Calculate new balance
-	newBalance := new(big.Int).Sub(currentBalance, deductAmount)
+	// Deduct using StateDB
+	stateDB.SubBalance(fromDID, amt, tracing.BalanceChangeTransfer)
 
-	// Update the balance in the database using the provided accounts client
-	if err := DB_OPs.UpdateAccountBalance(accountsClient, fromDID, newBalance.String()); err != nil {
-		return fmt.Errorf("failed to update sender balance: %w", err)
-	}
-
-	logger().NamedLogger.Debug(span_ctx, "Deducted amount from sender",
-		ion.String("account", fromDID.String()),
-		ion.String("amount", amount),
-		ion.String("old_balance", currentBalance.String()),
-		ion.String("new_balance", newBalance.String()),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockProcessing.deductFromSender"),
-	)
+	// Log the deduction with original format
 
 	return nil
 }
 
-// addToRecipient adds an amount to a recipient's DID account
-func addToRecipient(span_ctx context.Context, ToAddress common.Address, amount string, accountsClient *config.PooledConnection) error {
-	// Get the current DID document using the provided accounts client
-	didDoc, err := DB_OPs.GetAccount(accountsClient, ToAddress)
-	if err != nil {
-		// If DID doesn't exist,
-		return fmt.Errorf("failed to retrieve recipient DID %s: %w", ToAddress, err)
-	}
-
-	// Parse current balance
-	currentBalance, ok := new(big.Int).SetString(didDoc.Balance, 10)
-	if !ok {
-		return fmt.Errorf("invalid balance format for DID %s: %s", ToAddress, didDoc.Balance)
-	}
-
+// addToRecipient adds an amount to a recipient's DID account using StateDB
+func addToRecipient(ToAddress common.Address, amount string, stateDB SmartContract.StateDB, accountsClient *config.PooledConnection) error {
 	// Parse amount to add
 	addAmount, ok := new(big.Int).SetString(amount, 10)
 	if !ok {
 		return fmt.Errorf("invalid addition amount: %s", amount)
 	}
 
-	// Calculate new balance
-	newBalance := new(big.Int).Add(currentBalance, addAmount)
-
-	// Update the balance in the database using the provided accounts client
-	if err := DB_OPs.UpdateAccountBalance(accountsClient, ToAddress, newBalance.String()); err != nil {
-		return fmt.Errorf("failed to update recipient balance: %w", err)
+	// Convert to uint256
+	amt, overflow := uint256.FromBig(addAmount)
+	if overflow {
+		return fmt.Errorf("addition amount overflow")
 	}
 
-	logger().NamedLogger.Debug(span_ctx, "Added amount to recipient",
-		ion.String("account", ToAddress.String()),
-		ion.String("amount", amount),
-		ion.String("old_balance", currentBalance.String()),
-		ion.String("new_balance", newBalance.String()),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("topic", TOPIC),
-		ion.String("function", "BlockProcessing.addToRecipient"),
-	)
+	// Add using StateDB (automatically creates account if needed)
+	stateDB.AddBalance(ToAddress, amt, tracing.BalanceChangeTransfer)
+
+	// Log the addition with original format
 
 	return nil
 }

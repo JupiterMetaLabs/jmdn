@@ -11,6 +11,8 @@ import (
 	"github.com/multiformats/go-multiaddr"
 )
 
+// logger function is not used in this file - it uses fmt.Errorf which is kept as-is
+
 // @static function
 
 // With the block you will attack the metadata to it before the propagation of the block

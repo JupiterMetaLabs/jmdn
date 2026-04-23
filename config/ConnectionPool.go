@@ -144,7 +144,7 @@ func NewConnectionPool(logger_ctx context.Context, config *ConnectionPoolConfig,
 				ion.String("log_file", LOG_FILE),
 				ion.String("topic", TOPIC),
 				ion.String("function", "ConnectionPool.NewConnectionPool"))
-			fmt.Printf("failed to initialize local gro: %v", err)
+			logger.Error(spanCtx, "failed to initialize local gro", err)
 		}
 	}
 

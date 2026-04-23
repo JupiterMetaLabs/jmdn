@@ -13,5 +13,5 @@ func logger() *ion.Ion {
 		return nil
 	}
 	// Return the NamedLogger which is *ion.Ion
-	return logInstance.NamedLogger
+	return logInstance.GetNamedLogger()
 }

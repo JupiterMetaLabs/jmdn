@@ -8,6 +8,7 @@
 # Options:
 #   --go          Install Go
 #   --yggdrasil   Install Yggdrasil
+#   --solidity    Install Solidity compiler (solc)
 #   --all         Install all dependencies (default if no flags provided)
 #   --storage-local   Install PostgreSQL + Redis as native services
 #   --storage-docker  Install Docker tooling and run PostgreSQL + Redis via compose
@@ -200,6 +201,9 @@ prompt_storage_credentials() {
 # 1. System Dependencies (GCC/Build Essentials)
 ################################################################################
 install_sys_deps() {
+	if [[ "${PLATFORM}" != "macos" ]]; then
+		require_root
+	fi
 	log_info "Checking system build dependencies..."
 
 	local gcc_missing=false
@@ -273,6 +277,7 @@ install_sys_deps() {
 # 2. Go Installation
 ################################################################################
 install_go() {
+	require_root
 	local target_ver="go${GO_FALLBACK_VER}"
 
 	log_info "Checking Go (Target: ${target_ver})..."
@@ -325,6 +330,7 @@ install_go() {
 # 3. Yggdrasil Installation
 ################################################################################
 install_yggdrasil() {
+	require_root
 	log_info "Checking Yggdrasil (Target: ${YGG_FALLBACK_VER})..."
 
 	if check_command yggdrasil; then

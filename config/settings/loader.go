@@ -36,6 +36,9 @@ func Load() (*NodeConfig, error) {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("reading config file: %w", err)
 		}
+		fmt.Println("No configuration file found, using defaults and environment variables")
+	} else {
+		fmt.Printf("Configuration loaded from: %s\n", v.ConfigFileUsed())
 	}
 
 	// 6. Environment variables (Highest priority after flags)
@@ -123,6 +126,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ports.did", d.Ports.DID)
 	v.SetDefault("ports.facade", d.Ports.Facade)
 	v.SetDefault("ports.ws", d.Ports.WS)
+	v.SetDefault("ports.geth", d.Ports.Geth)
+	v.SetDefault("ports.smart", d.Ports.Smart)
 	v.SetDefault("ports.metrics", d.Ports.Metrics)
 	v.SetDefault("ports.profiler", d.Ports.Profiler)
 
@@ -134,6 +139,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("binds.did", d.Binds.DID)
 	v.SetDefault("binds.facade", d.Binds.Facade)
 	v.SetDefault("binds.ws", d.Binds.WS)
+	v.SetDefault("binds.geth", d.Binds.Geth)
+	v.SetDefault("binds.smart", d.Binds.Smart)
 	v.SetDefault("binds.metrics", d.Binds.Metrics)
 	v.SetDefault("binds.profiler", d.Binds.Profiler)
 

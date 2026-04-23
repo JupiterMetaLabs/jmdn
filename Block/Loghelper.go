@@ -1,34 +1,17 @@
 package Block
 
 import (
-	"sync"
+	"context"
 
-	"github.com/rs/zerolog"
+	"github.com/JupiterMetaLabs/ion"
 )
-
-var (
-	txLogger    zerolog.Logger
-	loggerMutex sync.RWMutex
-)
-
-// SetLogger sets the transaction logger for the Block package
-func SetLogger(logger zerolog.Logger) {
-	loggerMutex.Lock()
-	defer loggerMutex.Unlock()
-	txLogger = logger
-}
 
 // LogTransaction logs transaction data in structured format
 func LogTransaction(hash, from, to, value, txType string) {
-	loggerMutex.RLock()
-	defer loggerMutex.RUnlock()
-
-	// Ensure proper field names match what Promtail expects
-	txLogger.Info().
-		Str("transaction_hash", hash).
-		Str("from", from).
-		Str("to", to).
-		Str("value", value).
-		Str("type", txType).
-		Msg("Transaction processed")
+	logger().Info(context.Background(), "Transaction processed",
+		ion.String("transaction_hash", hash),
+		ion.String("from", from),
+		ion.String("to", to),
+		ion.String("value", value),
+		ion.String("type", txType))
 }
