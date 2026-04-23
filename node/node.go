@@ -18,6 +18,7 @@ import (
 	"gossipnode/transfer"
 
 	libp2p "github.com/libp2p/go-libp2p"
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -69,13 +70,14 @@ func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
 				return nil, "", fmt.Errorf("failed to derive peer ID: %v", err)
 			}
 
-			fmt.Println(colorgreen+"Loaded existing peer ID:"+colorreset, peerID.String())
+			logger().Info(context.Background(), colorgreen+"Loaded existing peer ID:"+colorreset,
+				ion.String("peer", peerID.String()))
 			return privKey, peerID, nil
 		}
 	}
 
 	// Generate new key pair
-	fmt.Println("Generating new peer identity...")
+	logger().Info(context.Background(), "Generating new peer identity")
 	privKey, _, err := crypto.GenerateKeyPair(crypto.Ed25519, 0)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to generate key pair: %v", err)
@@ -110,7 +112,8 @@ func loadOrCreatePrivateKey() (crypto.PrivKey, peer.ID, error) {
 		return nil, "", fmt.Errorf("failed to write peer.json: %v", err)
 	}
 
-	fmt.Printf("Generated new peer ID: %s\n", peerID.String())
+	logger().Info(context.Background(), "Generated new peer ID",
+		ion.String("peer", peerID.String()))
 	return privKey, peerID, nil
 }
 
@@ -126,16 +129,16 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 	}
 
 	// Load or create Peer ID
-	fmt.Println("Loading or creating private key...")
+	logger().Info(context.Background(), "Loading or creating private key")
 	privKey, peerID, err := loadOrCreatePrivateKey()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load/create Peer ID: %v", err)
 	}
-	fmt.Println("Private key loaded successfully")
+	logger().Info(context.Background(), "Private key loaded successfully")
 
-	fmt.Println("Getting libp2p metrics registerer...")
+	logger().Info(context.Background(), "Getting libp2p metrics registerer")
 	libp2pRegisterer := metrics.GetLibp2pRegisterer()
-	fmt.Println("Creating libp2p host...")
+	logger().Info(context.Background(), "Creating libp2p host")
 
 	// Build listen addresses conditionally
 	listenAddrs := []string{
@@ -150,9 +153,11 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 		// Dynamically construct the Yggdrasil address
 		config.IP6YGG = "/ip6/" + config.Yggdrasil_Address + "/tcp/15000"
 		listenAddrs = append(listenAddrs, config.IP6YGG)
-		fmt.Printf("Adding Yggdrasil address to listen addresses: %s\n", config.IP6YGG)
+		logger().Info(context.Background(), "Adding Yggdrasil address to listen addresses",
+			ion.String("address", config.IP6YGG))
 	} else {
-		fmt.Printf("Skipping Yggdrasil address (not available or invalid): %s\n", config.Yggdrasil_Address)
+		logger().Info(context.Background(), "Skipping Yggdrasil address (not available or invalid)",
+			ion.String("address", config.Yggdrasil_Address))
 	}
 
 	h, err := libp2p.New(
@@ -171,13 +176,13 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to start libp2p: %v", err)
 	}
-	fmt.Println("libp2p host created successfully")
+	logger().Info(context.Background(), "libp2p host created successfully")
 
-	fmt.Println("Initializing block propagation...")
+	logger().Info(context.Background(), "Initializing block propagation")
 	if err := messaging.InitBlockPropagation(h); err != nil {
 		return nil, fmt.Errorf("failed to initialize block propagation: %v", err)
 	}
-	fmt.Println("Block propagation initialized successfully")
+	logger().Info(context.Background(), "Block propagation initialized successfully")
 
 	// Verify the host's peer ID matches what we expect
 	if peerID.String() != h.ID().String() {
@@ -207,7 +212,8 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 		// Initialize ForListner for this node so it can handle subscription requests
 		// This is needed because ListenerHandler.handleAskForSubscription requires ForListner to be set
 		if AVCStruct.NewGlobalVariables().Get_ForListner() == nil {
-			fmt.Printf("=== Initializing ForListner for regular node: %s ===\n", h.ID())
+			logger().Info(context.Background(), "=== Initializing ForListner for regular node ===",
+				ion.String("node", h.ID().String()))
 			// Create a basic BuddyNode for this regular node
 			defaultBuddies := AVCStruct.NewBuddiesBuilder(nil)
 			// Create StreamCache for this node
@@ -238,9 +244,10 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 				},
 			}
 			AVCStruct.NewGlobalVariables().Set_ForListner(basicBuddyNode)
-			fmt.Printf("=== ForListner initialized successfully ===\n")
+			logger().Info(context.Background(), "=== ForListner initialized successfully ===")
 		} else {
-			fmt.Printf("=== ForListner already initialized for node: %s ===\n", h.ID())
+			logger().Info(context.Background(), "=== ForListner already initialized for node ===",
+				ion.String("node", h.ID().String()))
 		}
 
 		// Create a clear listener handler for handling subscription requests, votes, and responses
@@ -271,7 +278,8 @@ func SendMessage(n *config.Node, target string, message string) error {
 		return err
 	}
 
-	fmt.Println("Connected to peer:", isConnected)
+	logger().Info(context.Background(), "Connected to peer",
+		ion.Bool("connected", isConnected))
 
 	// Connect to the peer
 	if err := n.Host.Connect(context.Background(), *peerInfo); err != nil {
@@ -288,7 +296,8 @@ func SendFile(n *config.Node, target string, filepath string, destination string
 		return err
 	}
 
-	fmt.Println("Connected to peer:", isConnected)
+	logger().Info(context.Background(), "Connected to peer",
+		ion.Bool("connected", isConnected))
 	// Connect to the peer
 	if err := n.Host.Connect(context.Background(), *peerInfo); err != nil {
 		return fmt.Errorf("connection failed: %v", err)
@@ -331,14 +340,14 @@ func GetPeerID() string {
 func GetPeerIDFromJSON() string {
 	// Check if file exists
 	if _, err := os.Stat(peerFile); err != nil {
-		fmt.Println("Failed to stat peer.json:", err)
+		logger().Error(context.Background(), "Failed to stat peer.json", err)
 		return ""
 	}
 
 	// Open the file
 	file, err := os.Open(peerFile)
 	if err != nil {
-		fmt.Println("Failed to open peer.json:", err)
+		logger().Error(context.Background(), "Failed to open peer.json", err)
 		return ""
 	}
 	defer file.Close()
@@ -346,11 +355,12 @@ func GetPeerIDFromJSON() string {
 	// Decode JSON
 	var config config.PeerConfig
 	if err := json.NewDecoder(file).Decode(&config); err != nil {
-		fmt.Println("Failed to decode peer.json:", err)
+		logger().Error(context.Background(), "Failed to decode peer.json", err)
 		return ""
 	}
 
-	fmt.Println("Peer ID from peer.json:", config.PeerID)
+	logger().Info(context.Background(), "Peer ID from peer.json",
+		ion.String("peer", config.PeerID))
 	return config.PeerID
 }
 

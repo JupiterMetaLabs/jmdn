@@ -35,7 +35,7 @@ import (
 // It stops checking once it has found enough peers (maxPeers), or after checking all candidates
 func (consensus *Consensus) ConnectedNessCheck(candidates []PubSubMessages.Buddy_PeerMultiaddr, maxPeers int) (map[peer.ID]multiaddr.Multiaddr, error) {
 	logger_ctx := context.Background()
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.ConnectedNessCheck")
 	defer span.End()
 
@@ -45,7 +45,7 @@ func (consensus *Consensus) ConnectedNessCheck(candidates []PubSubMessages.Buddy
 		attribute.Int("candidates_count", len(candidates)),
 	)
 
-	logger().NamedLogger.Info(trace_ctx, "Checking connectedness of candidates",
+	logger().Info(trace_ctx, "Checking connectedness of candidates",
 		ion.Int("max_peers", maxPeers),
 		ion.Int("candidates_count", len(candidates)),
 		ion.String("function", "Consensus.ConnectedNessCheck"))
@@ -71,7 +71,7 @@ func (consensus *Consensus) ConnectedNessCheck(candidates []PubSubMessages.Buddy
 		connectedness := consensus.Host.Network().Connectedness(candidate.PeerID)
 		if connectedness == network.Connected {
 			reachablePeers[candidate.PeerID] = candidate.Multiaddr
-			logger().NamedLogger.Info(trace_ctx, "Buddy node is actually connected",
+			logger().Info(trace_ctx, "Buddy node is actually connected",
 				ion.String("peer_id", candidate.PeerID.String()),
 				ion.String("connectedness", connectedness.String()),
 				ion.String("function", "Consensus.ConnectedNessCheck"))
@@ -84,7 +84,7 @@ func (consensus *Consensus) ConnectedNessCheck(candidates []PubSubMessages.Buddy
 		attribute.Float64("duration", duration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(trace_ctx, "Connectedness check completed",
+	logger().Info(trace_ctx, "Connectedness check completed",
 		ion.Int("reachable_peers", len(reachablePeers)),
 		ion.Float64("duration", duration),
 		ion.String("function", "Consensus.ConnectedNessCheck"))
@@ -95,7 +95,7 @@ func (consensus *Consensus) ConnectedNessCheck(candidates []PubSubMessages.Buddy
 func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Create root context for the entire consensus process
 	rootCtx := context.Background()
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	trace_ctx, rootSpan := tracer.Start(rootCtx, "Consensus.Start")
 	// NOTE: We do NOT defer rootSpan.End() here because the goroutine needs to end it
 	// when it completes. The root span will be ended in startEventDrivenFlowAfterSubscriptionPermission
@@ -107,7 +107,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		attribute.Int("tx_count", len(zkblock.Transactions)),
 	)
 
-	logger().NamedLogger.Info(trace_ctx, "Starting consensus process",
+	logger().Info(trace_ctx, "Starting consensus process",
 		ion.Int64("block_number", int64(zkblock.BlockNumber)),
 		ion.String("block_hash", zkblock.BlockHash.Hex()),
 		ion.Int("tx_count", len(zkblock.Transactions)),
@@ -119,7 +119,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		if err != nil {
 			rootSpan.RecordError(err)
 			rootSpan.SetAttributes(attribute.String("status", "gro_init_failed"))
-			logger().NamedLogger.Error(trace_ctx, "Failed to initialize local gro",
+			logger().Error(trace_ctx, "Failed to initialize local gro",
 				err,
 				ion.String("function", "Consensus.Start"))
 			return fmt.Errorf("CONSENSUSERROR.START: failed to initialize local gro: %v", err)
@@ -138,7 +138,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Warmup the consensus
 	warmupCtx, warmupSpan := tracer.Start(trace_ctx, "Consensus.Start.warmup")
 	warmupStartTime := time.Now().UTC()
-	logger().NamedLogger.Info(warmupCtx, "Starting consensus warmup",
+	logger().Info(warmupCtx, "Starting consensus warmup",
 		ion.String("function", "Consensus.Start.warmup"))
 
 	candidates, errMSG := consensus.warmup()
@@ -147,7 +147,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		warmupSpan.SetAttributes(attribute.String("status", "failed"))
 		warmupDuration := time.Since(warmupStartTime).Seconds()
 		warmupSpan.SetAttributes(attribute.Float64("duration", warmupDuration))
-		logger().NamedLogger.Error(warmupCtx, "Failed to warmup consensus",
+		logger().Error(warmupCtx, "Failed to warmup consensus",
 			errMSG,
 			ion.Float64("duration", warmupDuration),
 			ion.String("function", "Consensus.Start.warmup"))
@@ -160,7 +160,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		attribute.Float64("duration", warmupDuration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(warmupCtx, "Consensus warmup completed",
+	logger().Info(warmupCtx, "Consensus warmup completed",
 		ion.Int("candidates_count", len(candidates)),
 		ion.Float64("duration", warmupDuration),
 		ion.String("function", "Consensus.Start.warmup"))
@@ -169,7 +169,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Connect to the candidates first via AddPeerCache
 	addPeersCtx, addPeersSpan := tracer.Start(trace_ctx, "Consensus.Start.addPeersToCache")
 	addPeersStartTime := time.Now().UTC()
-	logger().NamedLogger.Info(addPeersCtx, "Adding peers to cache",
+	logger().Info(addPeersCtx, "Adding peers to cache",
 		ion.Int("candidates_count", len(candidates)),
 		ion.String("function", "Consensus.Start.addPeersToCache"))
 
@@ -180,7 +180,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		addPeersSpan.SetAttributes(attribute.String("status", "failed"))
 		addPeersDuration := time.Since(addPeersStartTime).Seconds()
 		addPeersSpan.SetAttributes(attribute.Float64("duration", addPeersDuration))
-		logger().NamedLogger.Error(addPeersCtx, "Failed to add peers to cache",
+		logger().Error(addPeersCtx, "Failed to add peers to cache",
 			err,
 			ion.Float64("duration", addPeersDuration),
 			ion.String("function", "Consensus.Start.addPeersToCache"))
@@ -196,7 +196,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		attribute.Float64("duration", addPeersDuration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(addPeersCtx, "Peers added to cache",
+	logger().Info(addPeersCtx, "Peers added to cache",
 		ion.Int("reachable_peers", len(stats.GetReachablePeers())),
 		ion.Int("unreachable_peers", len(stats.GetUnreachablePeers())),
 		ion.Int("total_peers", stats.GetTotalPeers()),
@@ -209,7 +209,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	connectednessCtx, connectednessSpan := tracer.Start(trace_ctx, "Consensus.Start.verifyConnectedness")
 	connectednessStartTime := time.Now().UTC()
 	maxPeersToCheck := config.MaxMainPeers + config.MaxBackupPeers
-	logger().NamedLogger.Info(connectednessCtx, "Verifying connectedness of peers",
+	logger().Info(connectednessCtx, "Verifying connectedness of peers",
 		ion.Int("max_peers_to_check", maxPeersToCheck),
 		ion.String("function", "Consensus.Start.verifyConnectedness"))
 
@@ -222,7 +222,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		connectednessSpan.SetAttributes(attribute.String("status", "failed"))
 		connectednessDuration := time.Since(connectednessStartTime).Seconds()
 		connectednessSpan.SetAttributes(attribute.Float64("duration", connectednessDuration))
-		logger().NamedLogger.Error(connectednessCtx, "Failed to verify connectedness",
+		logger().Error(connectednessCtx, "Failed to verify connectedness",
 			errMSG,
 			ion.Float64("duration", connectednessDuration),
 			ion.String("function", "Consensus.Start.verifyConnectedness"))
@@ -237,7 +237,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		attribute.Float64("duration", connectednessDuration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(connectednessCtx, "Verified connected peers",
+	logger().Info(connectednessCtx, "Verified connected peers",
 		ion.Int("connected_peers", len(reachablePeers)),
 		ion.Int("candidates", len(candidates)),
 		ion.Float64("duration", connectednessDuration),
@@ -247,7 +247,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Step 3: Split into Main and Backup based on first MaxMainPeers connected peers
 	splitCtx, splitSpan := tracer.Start(trace_ctx, "Consensus.Start.splitCandidates")
 	splitStartTime := time.Now().UTC()
-	logger().NamedLogger.Info(splitCtx, "Splitting candidates into main and backup",
+	logger().Info(splitCtx, "Splitting candidates into main and backup",
 		ion.String("function", "Consensus.Start.splitCandidates"))
 
 	MainCandidates, BackupCandidates := helper.InitCandidateLists(len(candidates))
@@ -277,7 +277,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		)
 		splitDuration := time.Since(splitStartTime).Seconds()
 		splitSpan.SetAttributes(attribute.Float64("duration", splitDuration))
-		logger().NamedLogger.Error(splitCtx, "Insufficient connected peers",
+		logger().Error(splitCtx, "Insufficient connected peers",
 			fmt.Errorf("%s", ErrorMessage),
 			ion.Int("main_candidates", len(MainCandidates)),
 			ion.Int("required", config.MaxMainPeers),
@@ -303,7 +303,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		attribute.Float64("duration", splitDuration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(splitCtx, "Split candidates into main and backup",
+	logger().Info(splitCtx, "Split candidates into main and backup",
 		ion.Int("main_candidates", len(MainCandidates)),
 		ion.Int("backup_candidates", len(BackupCandidates)),
 		ion.Float64("duration", splitDuration),
@@ -313,7 +313,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Populate consensus.PeerList directly from MainCandidates and BackupCandidates
 	populateCtx, populateSpan := tracer.Start(trace_ctx, "Consensus.Start.populatePeerList")
 	populateStartTime := time.Now().UTC()
-	logger().NamedLogger.Info(populateCtx, "Populating peer list",
+	logger().Info(populateCtx, "Populating peer list",
 		ion.Int("main_candidates", len(MainCandidates)),
 		ion.Int("backup_candidates", len(BackupCandidates)),
 		ion.String("function", "Consensus.Start.populatePeerList"))
@@ -325,7 +325,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		populateDuration := time.Since(populateStartTime).Seconds()
 		populateSpan.SetAttributes(attribute.Float64("duration", populateDuration))
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.POPULATEPEERLIST: failed to populate peer list: %v", errMSG)
-		logger().NamedLogger.Error(populateCtx, "Failed to populate peer list",
+		logger().Error(populateCtx, "Failed to populate peer list",
 			errMSG,
 			ion.Float64("duration", populateDuration),
 			ion.String("function", "Consensus.Start.populatePeerList"))
@@ -347,7 +347,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		attribute.Float64("duration", populateDuration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(populateCtx, "Peer list populated",
+	logger().Info(populateCtx, "Peer list populated",
 		ion.Int("main_peers", len(consensus.PeerList.MainPeers)),
 		ion.Int("backup_peers", len(consensus.PeerList.BackupPeers)),
 		ion.Float64("duration", populateDuration),
@@ -369,7 +369,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		Description(msg).
 		Send()
 
-	logger().NamedLogger.Info(trace_ctx, "Final buddy nodes list built",
+	logger().Info(trace_ctx, "Final buddy nodes list built",
 		ion.Int("main_peers_count", len(consensus.PeerList.MainPeers)),
 		ion.String("peer_ids", strings.Join(peerIDs, ", ")),
 		ion.String("function", "Consensus.Start"))
@@ -377,7 +377,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Create ConsensusMessage with ONLY the final connected buddy nodes
 	setZKBlockCtx, setZKBlockSpan := tracer.Start(trace_ctx, "Consensus.Start.setZKBlockData")
 	setZKBlockStartTime := time.Now().UTC()
-	logger().NamedLogger.Info(setZKBlockCtx, "Setting ZKBlock data",
+	logger().Info(setZKBlockCtx, "Setting ZKBlock data",
 		ion.String("function", "Consensus.Start.setZKBlockData"))
 
 	errMSG = consensus.SetZKBlockData(zkblock, MainCandidates)
@@ -387,7 +387,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		setZKBlockDuration := time.Since(setZKBlockStartTime).Seconds()
 		setZKBlockSpan.SetAttributes(attribute.Float64("duration", setZKBlockDuration))
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.SETZKBLOCKDATA: failed to set zkblock data: %v", errMSG)
-		logger().NamedLogger.Error(setZKBlockCtx, "Failed to set ZKBlock data",
+		logger().Error(setZKBlockCtx, "Failed to set ZKBlock data",
 			errMSG,
 			ion.Float64("duration", setZKBlockDuration),
 			ion.String("function", "Consensus.Start.setZKBlockData"))
@@ -407,7 +407,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		attribute.Float64("duration", setZKBlockDuration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(setZKBlockCtx, "ZKBlock data set successfully",
+	logger().Info(setZKBlockCtx, "ZKBlock data set successfully",
 		ion.Float64("duration", setZKBlockDuration),
 		ion.String("function", "Consensus.Start.setZKBlockData"))
 	setZKBlockSpan.End()
@@ -415,7 +415,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Validate consensus configuration
 	validateCtx, validateSpan := tracer.Start(trace_ctx, "Consensus.Start.validateConfiguration")
 	validateStartTime := time.Now().UTC()
-	logger().NamedLogger.Info(validateCtx, "Validating consensus configuration",
+	logger().Info(validateCtx, "Validating consensus configuration",
 		ion.String("function", "Consensus.Start.validateConfiguration"))
 
 	if err := ValidateConsensusConfiguration(consensus); err != nil {
@@ -424,7 +424,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		validateDuration := time.Since(validateStartTime).Seconds()
 		validateSpan.SetAttributes(attribute.Float64("duration", validateDuration))
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.VALIDATECONSENSUSCONFIGURATION: invalid consensus configuration: %v", err)
-		logger().NamedLogger.Error(validateCtx, "Invalid consensus configuration",
+		logger().Error(validateCtx, "Invalid consensus configuration",
 			err,
 			ion.Float64("duration", validateDuration),
 			ion.String("function", "Consensus.Start.validateConfiguration"))
@@ -444,7 +444,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		attribute.Float64("duration", validateDuration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(validateCtx, "Consensus configuration validated",
+	logger().Info(validateCtx, "Consensus configuration validated",
 		ion.Float64("duration", validateDuration),
 		ion.String("function", "Consensus.Start.validateConfiguration"))
 	validateSpan.End()
@@ -459,7 +459,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Setup pubsub channels
 	setupPubsubCtx, setupPubsubSpan := tracer.Start(trace_ctx, "Consensus.Start.setupPubsubChannels")
 	setupPubsubStartTime := time.Now().UTC()
-	logger().NamedLogger.Info(setupPubsubCtx, "Setting up pubsub channels",
+	logger().Info(setupPubsubCtx, "Setting up pubsub channels",
 		ion.Int("allowed_peers", len(allowedPeers)),
 		ion.Int("main_peers", len(consensus.PeerList.MainPeers)),
 		ion.Int("backup_peers", len(consensus.PeerList.BackupPeers)),
@@ -472,7 +472,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		setupPubsubDuration := time.Since(setupPubsubStartTime).Seconds()
 		setupPubsubSpan.SetAttributes(attribute.Float64("duration", setupPubsubDuration))
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.SETGOSSIPNODE: failed to set gossipnode: %v", err)
-		logger().NamedLogger.Error(setupPubsubCtx, "Failed to set gossipnode",
+		logger().Error(setupPubsubCtx, "Failed to set gossipnode",
 			err,
 			ion.Float64("duration", setupPubsubDuration),
 			ion.String("function", "Consensus.Start.setupPubsubChannels"))
@@ -493,7 +493,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		setupPubsubDuration := time.Since(setupPubsubStartTime).Seconds()
 		setupPubsubSpan.SetAttributes(attribute.Float64("duration", setupPubsubDuration))
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.CREATECHANNEL: failed to create pubsub channel: %v", err)
-		logger().NamedLogger.Error(setupPubsubCtx, "Failed to create pubsub channel",
+		logger().Error(setupPubsubCtx, "Failed to create pubsub channel",
 			err,
 			ion.String("channel", config.PubSub_ConsensusChannel),
 			ion.Float64("duration", setupPubsubDuration),
@@ -513,7 +513,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		attribute.String("consensus_channel", config.PubSub_ConsensusChannel),
 		attribute.Bool("consensus_channel_created", true),
 	)
-	logger().NamedLogger.Info(setupPubsubCtx, "Successfully created pubsub channel",
+	logger().Info(setupPubsubCtx, "Successfully created pubsub channel",
 		ion.String("channel", config.PubSub_ConsensusChannel),
 		ion.String("function", "Consensus.Start.setupPubsubChannels"))
 
@@ -521,13 +521,13 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.Pubsub_CRDTSync, false, allowedPeers); err != nil {
 		if err.Error() != fmt.Sprintf("channel %s already exists", config.Pubsub_CRDTSync) {
 			setupPubsubSpan.RecordError(err)
-			logger().NamedLogger.Warn(setupPubsubCtx, "Failed to create CRDT sync channel, continuing anyway",
-				ion.String("error", err.Error()),
+			logger().Warn(setupPubsubCtx, "Failed to create CRDT sync channel, continuing anyway",
+				ion.Err(err),
 				ion.String("channel", config.Pubsub_CRDTSync),
 				ion.String("function", "Consensus.Start.setupPubsubChannels"))
 		} else {
 			setupPubsubSpan.SetAttributes(attribute.Bool("crdt_channel_already_exists", true))
-			logger().NamedLogger.Info(setupPubsubCtx, "CRDT sync channel already exists",
+			logger().Info(setupPubsubCtx, "CRDT sync channel already exists",
 				ion.String("channel", config.Pubsub_CRDTSync),
 				ion.String("function", "Consensus.Start.setupPubsubChannels"))
 		}
@@ -536,7 +536,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 			attribute.String("crdt_channel", config.Pubsub_CRDTSync),
 			attribute.Bool("crdt_channel_created", true),
 		)
-		logger().NamedLogger.Info(setupPubsubCtx, "Successfully created CRDT sync channel",
+		logger().Info(setupPubsubCtx, "Successfully created CRDT sync channel",
 			ion.String("channel", config.Pubsub_CRDTSync),
 			ion.Int("allowed_peers", len(allowedPeers)),
 			ion.Int("buddy_nodes", len(consensus.PeerList.MainPeers)),
@@ -553,7 +553,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Subscribe the sequencer to its own channel to receive votes from buddy nodes
 	subscribeCtx, subscribeSpan := tracer.Start(trace_ctx, "Consensus.Start.subscribeToChannel")
 	subscribeStartTime := time.Now().UTC()
-	logger().NamedLogger.Info(subscribeCtx, "Subscribing sequencer to consensus channel",
+	logger().Info(subscribeCtx, "Subscribing sequencer to consensus channel",
 		ion.String("function", "Consensus.Start.subscribeToChannel"))
 
 	globalVars := PubSubMessages.NewGlobalVariables()
@@ -564,7 +564,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		pubSubBuddyNode := MessagePassing.NewBuddyNode(logger_ctx, consensus.Host, defaultBuddies, nil, consensus.gossipnode.GetGossipPubSub())
 		globalVars.Set_PubSubNode(pubSubBuddyNode)
 		subscribeSpan.SetAttributes(attribute.Bool("pubsub_node_initialized", true))
-		logger().NamedLogger.Info(subscribeCtx, "Initialized PubSubNode for sequencer",
+		logger().Info(subscribeCtx, "Initialized PubSubNode for sequencer",
 			ion.String("function", "Consensus.Start.subscribeToChannel"))
 	}
 
@@ -572,13 +572,13 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	service := Service.NewSubscriptionService(consensus.gossipnode.GetGossipPubSub())
 	if err := service.HandleStreamSubscriptionRequest(logger_ctx, config.PubSub_ConsensusChannel); err != nil {
 		subscribeSpan.RecordError(err)
-		logger().NamedLogger.Warn(subscribeCtx, "Failed to subscribe sequencer to consensus channel",
-			ion.String("error", err.Error()),
+		logger().Warn(subscribeCtx, "Failed to subscribe sequencer to consensus channel",
+			ion.Err(err),
 			ion.String("channel", config.PubSub_ConsensusChannel),
 			ion.String("function", "Consensus.Start.subscribeToChannel"))
 	} else {
 		subscribeSpan.SetAttributes(attribute.Bool("subscribed_to_consensus_channel", true))
-		logger().NamedLogger.Info(subscribeCtx, "Successfully subscribed to consensus channel for vote collection",
+		logger().Info(subscribeCtx, "Successfully subscribed to consensus channel for vote collection",
 			ion.String("channel", config.PubSub_ConsensusChannel),
 			ion.String("function", "Consensus.Start.subscribeToChannel"))
 	}
@@ -586,7 +586,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Initialize listener node for vote collection
 	listenerCtx, listenerSpan := tracer.Start(trace_ctx, "Consensus.Start.initializeListener")
 	listenerStartTime := time.Now().UTC()
-	logger().NamedLogger.Info(listenerCtx, "Initializing listener node for vote collection",
+	logger().Info(listenerCtx, "Initializing listener node for vote collection",
 		ion.String("function", "Consensus.Start.initializeListener"))
 
 	consensus.ListenerNode = MessagePassing.NewListenerNode(logger_ctx, consensus.Host, consensus.ResponseHandler)
@@ -594,7 +594,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		attribute.String("protocol", string(config.SubmitMessageProtocol)),
 		attribute.Bool("listener_initialized", true),
 	)
-	logger().NamedLogger.Info(listenerCtx, "Listener node initialized for vote collection",
+	logger().Info(listenerCtx, "Listener node initialized for vote collection",
 		ion.String("protocol", string(config.SubmitMessageProtocol)),
 		ion.String("function", "Consensus.Start.initializeListener"))
 
@@ -612,7 +612,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 			attribute.Int("main_peers", len(consensus.PeerList.MainPeers)),
 			attribute.Int("backup_peers", len(consensus.PeerList.BackupPeers)),
 		)
-		logger().NamedLogger.Info(listenerCtx, "Populated listener node with buddy nodes",
+		logger().Info(listenerCtx, "Populated listener node with buddy nodes",
 			ion.Int("total_buddies", len(allPeerIDs)),
 			ion.Int("main_peers", len(consensus.PeerList.MainPeers)),
 			ion.Int("backup_peers", len(consensus.PeerList.BackupPeers)),
@@ -636,7 +636,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// Event-driven flow: Request subscriptions → Verify → Broadcast votes → Process CRDT
 	requestSubCtx, requestSubSpan := tracer.Start(trace_ctx, "Consensus.Start.requestSubscriptionPermission")
 	requestSubStartTime := time.Now().UTC()
-	logger().NamedLogger.Info(requestSubCtx, "Requesting subscription permission",
+	logger().Info(requestSubCtx, "Requesting subscription permission",
 		ion.String("function", "Consensus.Start.requestSubscriptionPermission"))
 
 	if err := consensus.RequestSubscriptionPermission(); err != nil {
@@ -645,7 +645,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		requestSubDuration := time.Since(requestSubStartTime).Seconds()
 		requestSubSpan.SetAttributes(attribute.Float64("duration", requestSubDuration))
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.REQUESTSUBSCRIPTIONPERMISSION: Failed to request subscription permission: %v", err)
-		logger().NamedLogger.Error(requestSubCtx, "Failed to request subscription permission",
+		logger().Error(requestSubCtx, "Failed to request subscription permission",
 			err,
 			ion.Float64("duration", requestSubDuration),
 			ion.String("function", "Consensus.Start.requestSubscriptionPermission"))
@@ -665,7 +665,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		attribute.Float64("duration", requestSubDuration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(requestSubCtx, "Subscription permission granted",
+	logger().Info(requestSubCtx, "Subscription permission granted",
 		ion.Float64("duration", requestSubDuration),
 		ion.String("function", "Consensus.Start.requestSubscriptionPermission"))
 	requestSubSpan.End()
@@ -674,7 +674,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// This ensures that BFT consensus only waits for/accepts votes from the actual committee
 	// and excludes any backup nodes that were connected but not selected as main peers.
 	startUpdateListenerCtx, startUpdateListenerSpan := tracer.Start(trace_ctx, "Consensus.Start.updateListenerNode")
-	logger().NamedLogger.Info(startUpdateListenerCtx, "Updating listener node with finalized consensus committee",
+	logger().Info(startUpdateListenerCtx, "Updating listener node with finalized consensus committee",
 		ion.Int("committee_size", len(consensus.PeerList.MainPeers)),
 		ion.String("function", "Consensus.Start.updateListenerNode"))
 
@@ -694,7 +694,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 			peerIDStrings = append(peerIDStrings, peerID.String())
 		}
 
-		logger().NamedLogger.Info(startUpdateListenerCtx, "Listener node updated with final committee",
+		logger().Info(startUpdateListenerCtx, "Listener node updated with final committee",
 			ion.Int("count", len(consensus.PeerList.MainPeers)),
 			ion.String("committee_peers", strings.Join(peerIDStrings, ", ")),
 			ion.String("function", "Consensus.Start.updateListenerNode"))
@@ -721,7 +721,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		attribute.String("status", "async_flow_started"),
 		attribute.Bool("async_flow_running", true),
 	)
-	logger().NamedLogger.Info(trace_ctx, "Consensus Start completed, async flow started",
+	logger().Info(trace_ctx, "Consensus Start completed, async flow started",
 		ion.Float64("total_duration", totalDuration),
 		ion.String("function", "Consensus.Start"))
 
@@ -734,14 +734,14 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 // Ensures: 1 creator + MaxMainPeers subscribers = MaxMainPeers + 1 total nodes
 func (consensus *Consensus) RequestSubscriptionPermission() error {
 	logger_ctx := context.Background()
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.RequestSubscriptionPermission")
 	defer span.End()
 
 	startTime := time.Now().UTC()
 	span.SetAttributes(attribute.String("channel", consensus.Channel))
 
-	logger().NamedLogger.Info(trace_ctx, "Requesting subscription permission from buddy nodes",
+	logger().Info(trace_ctx, "Requesting subscription permission from buddy nodes",
 		ion.String("channel", consensus.Channel),
 		ion.String("function", "Consensus.RequestSubscriptionPermission"))
 
@@ -756,7 +756,7 @@ func (consensus *Consensus) RequestSubscriptionPermission() error {
 	if err := ValidateConsensusConfiguration(consensus); err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "validation_failed"))
-		logger().NamedLogger.Error(trace_ctx, "Invalid consensus configuration",
+		logger().Error(trace_ctx, "Invalid consensus configuration",
 			err,
 			ion.String("function", "Consensus.RequestSubscriptionPermission"))
 		return fmt.Errorf("invalid consensus configuration: %w", err)
@@ -769,7 +769,7 @@ func (consensus *Consensus) RequestSubscriptionPermission() error {
 		span.SetAttributes(attribute.String("status", "failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(trace_ctx, "Failed to get subscription permission",
+		logger().Error(trace_ctx, "Failed to get subscription permission",
 			err,
 			ion.Float64("duration", duration),
 			ion.String("function", "Consensus.RequestSubscriptionPermission"))
@@ -782,7 +782,7 @@ func (consensus *Consensus) RequestSubscriptionPermission() error {
 		attribute.String("status", "success"),
 		attribute.Int("expected_subscribers", config.MaxMainPeers),
 	)
-	logger().NamedLogger.Info(trace_ctx, "Successfully obtained subscription permission",
+	logger().Info(trace_ctx, "Successfully obtained subscription permission",
 		ion.Int("expected_subscribers", config.MaxMainPeers),
 		ion.Float64("duration", duration),
 		ion.String("function", "Consensus.RequestSubscriptionPermission"))
@@ -798,7 +798,7 @@ func (consensus *Consensus) RequestSubscriptionPermission() error {
 // from Start() that needs to be ended when this function completes to ensure the complete
 // trace is recorded with all child spans.
 func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(traceCtx context.Context, parentRootSpan ion.Span) {
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	// Create a child span from the parent trace context
 	// traceCtx contains the trace information, so this span will be linked to the parent
 	trace_ctx, asyncFlowSpan := tracer.Start(traceCtx, "Consensus.startEventDrivenFlowAfterSubscriptionPermission")
@@ -812,7 +812,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 	}()
 
 	startTime := time.Now().UTC()
-	logger().NamedLogger.Info(trace_ctx, "Starting event-driven consensus flow",
+	logger().Info(trace_ctx, "Starting event-driven consensus flow",
 		ion.String("function", "Consensus.startEventDrivenFlowAfterSubscriptionPermission"))
 
 	if common.LocalGRO == nil {
@@ -821,7 +821,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 		if err != nil {
 			asyncFlowSpan.RecordError(err)
 			asyncFlowSpan.SetAttributes(attribute.String("status", "gro_init_failed"))
-			logger().NamedLogger.Error(trace_ctx, "Failed to initialize local gro",
+			logger().Error(trace_ctx, "Failed to initialize local gro",
 				err,
 				ion.String("function", "Consensus.startEventDrivenFlowAfterSubscriptionPermission"))
 			// End spans before returning
@@ -836,7 +836,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 	// Step 2: Verify subscriptions (with retry mechanism)
 	verifyCtx, verifySpan := tracer.Start(trace_ctx, "Consensus.startEventDrivenFlow.verifySubscriptions")
 	verifyStartTime := time.Now().UTC()
-	logger().NamedLogger.Info(verifyCtx, "Verifying subscriptions",
+	logger().Info(verifyCtx, "Verifying subscriptions",
 		ion.String("function", "Consensus.startEventDrivenFlow.verifySubscriptions"))
 
 	// Optimization: Since we now wait for the mesh to form inside VerifySubscriptions,
@@ -852,8 +852,8 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 		verifySpan.SetAttributes(attribute.Int("attempt", attempt))
 		if err := consensus.VerifySubscriptions(trace_ctx); err != nil {
 			if attempt < maxRetries {
-				logger().NamedLogger.Warn(verifyCtx, "Verification attempt failed, retrying",
-					ion.String("error", err.Error()),
+				logger().Warn(verifyCtx, "Verification attempt failed, retrying",
+					ion.Err(err),
 					ion.Int("attempt", attempt),
 					ion.Int("max_retries", maxRetries),
 					ion.Float64("retry_delay_seconds", retryDelay.Seconds()),
@@ -862,13 +862,13 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 				continue
 			}
 			verifySpan.RecordError(err)
-			logger().NamedLogger.Warn(verifyCtx, "Subscription verification failed after all retries, continuing anyway",
-				ion.String("error", err.Error()),
+			logger().Warn(verifyCtx, "Subscription verification failed after all retries, continuing anyway",
+				ion.Err(err),
 				ion.Int("attempts", maxRetries),
 				ion.String("function", "Consensus.startEventDrivenFlow.verifySubscriptions"))
 		} else {
 			verifySpan.SetAttributes(attribute.String("status", "success"))
-			logger().NamedLogger.Info(verifyCtx, "Subscriptions verified successfully",
+			logger().Info(verifyCtx, "Subscriptions verified successfully",
 				ion.Int("attempt", attempt),
 				ion.String("function", "Consensus.startEventDrivenFlow.verifySubscriptions"))
 			break
@@ -882,7 +882,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 	// Step 3: Broadcast vote trigger (only after subscriptions are verified/attempted)
 	broadcastCtx, broadcastSpan := tracer.Start(trace_ctx, "Consensus.startEventDrivenFlow.broadcastVoteTrigger")
 	broadcastStartTime := time.Now().UTC()
-	logger().NamedLogger.Info(broadcastCtx, "Broadcasting vote trigger",
+	logger().Info(broadcastCtx, "Broadcasting vote trigger",
 		ion.String("function", "Consensus.startEventDrivenFlow.broadcastVoteTrigger"))
 
 	if consensus.ZKBlockData == nil {
@@ -892,7 +892,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 		broadcastDuration := time.Since(broadcastStartTime).Seconds()
 		broadcastSpan.SetAttributes(attribute.Float64("duration", broadcastDuration))
 		ErrorMessage := err.Error()
-		logger().NamedLogger.Error(broadcastCtx, "ZKBlockData not set, cannot broadcast vote trigger",
+		logger().Error(broadcastCtx, "ZKBlockData not set, cannot broadcast vote trigger",
 			err,
 			ion.Float64("duration", broadcastDuration),
 			ion.String("function", "Consensus.startEventDrivenFlow.broadcastVoteTrigger"))
@@ -913,7 +913,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 		broadcastDuration := time.Since(broadcastStartTime).Seconds()
 		broadcastSpan.SetAttributes(attribute.Float64("duration", broadcastDuration))
 		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.BROADCASTVOTETRIGGER: BroadcastVoteTrigger failed: %v", err)
-		logger().NamedLogger.Error(broadcastCtx, "BroadcastVoteTrigger failed",
+		logger().Error(broadcastCtx, "BroadcastVoteTrigger failed",
 			err,
 			ion.Float64("duration", broadcastDuration),
 			ion.String("function", "Consensus.startEventDrivenFlow.broadcastVoteTrigger"))
@@ -933,7 +933,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 		attribute.Float64("duration", broadcastDuration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(broadcastCtx, "Vote trigger broadcast successfully",
+	logger().Info(broadcastCtx, "Vote trigger broadcast successfully",
 		ion.Float64("duration", broadcastDuration),
 		ion.String("function", "Consensus.startEventDrivenFlow.broadcastVoteTrigger"))
 	broadcastSpan.End()
@@ -941,7 +941,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 	// Step 4: Wait for votes to be collected and processed, then print CRDT state and process votes
 	processVotesCtx, processVotesSpan := tracer.Start(trace_ctx, "Consensus.startEventDrivenFlow.processVotes")
 	processVotesStartTime := time.Now().UTC()
-	logger().NamedLogger.Info(processVotesCtx, "Waiting for votes to be collected and processed",
+	logger().Info(processVotesCtx, "Waiting for votes to be collected and processed",
 		ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
 
 	// TODO: Replace this with actual event-driven trigger from vote collection completion
@@ -953,7 +953,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 		// Wait for votes to be collected (this should be replaced with event-driven trigger)
 		waitTime := 15 * time.Second
 		processSpan.SetAttributes(attribute.Float64("wait_time_seconds", waitTime.Seconds()))
-		logger().NamedLogger.Info(processCtx, "Waiting for vote collection",
+		logger().Info(processCtx, "Waiting for vote collection",
 			ion.Float64("wait_time_seconds", waitTime.Seconds()),
 			ion.String("function", "Consensus.startEventDrivenFlow.processVotes.waitAndProcess"))
 		time.Sleep(waitTime)
@@ -961,7 +961,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 		// Print CRDT state
 		printCtx, printSpan := tracer.Start(processCtx, "Consensus.startEventDrivenFlow.processVotes.printCRDTState")
 		printStartTime := time.Now().UTC()
-		logger().NamedLogger.Info(printCtx, "Triggering CRDT state print",
+		logger().Info(printCtx, "Triggering CRDT state print",
 			ion.String("function", "Consensus.startEventDrivenFlow.processVotes.printCRDTState"))
 
 		if err := consensus.PrintCRDTState(printCtx); err != nil {
@@ -969,7 +969,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 			printSpan.SetAttributes(attribute.String("status", "failed"))
 			printDuration := time.Since(printStartTime).Seconds()
 			printSpan.SetAttributes(attribute.Float64("duration", printDuration))
-			logger().NamedLogger.Error(printCtx, "PrintCRDTState failed",
+			logger().Error(printCtx, "PrintCRDTState failed",
 				err,
 				ion.Float64("duration", printDuration),
 				ion.String("function", "Consensus.startEventDrivenFlow.processVotes.printCRDTState"))
@@ -979,7 +979,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 				attribute.Float64("duration", printDuration),
 				attribute.String("status", "success"),
 			)
-			logger().NamedLogger.Info(printCtx, "CRDT state printed successfully",
+			logger().Info(printCtx, "CRDT state printed successfully",
 				ion.Float64("duration", printDuration),
 				ion.String("function", "Consensus.startEventDrivenFlow.processVotes.printCRDTState"))
 		}
@@ -988,7 +988,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 		// Process vote collection
 		collectCtx, collectSpan := tracer.Start(processCtx, "Consensus.startEventDrivenFlow.processVotes.processVoteCollection")
 		collectStartTime := time.Now().UTC()
-		logger().NamedLogger.Info(collectCtx, "Triggering vote collection and processing",
+		logger().Info(collectCtx, "Triggering vote collection and processing",
 			ion.String("function", "Consensus.startEventDrivenFlow.processVotes.processVoteCollection"))
 
 		if err := consensus.ProcessVoteCollection(); err != nil {
@@ -996,7 +996,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 			collectSpan.SetAttributes(attribute.String("status", "failed"))
 			collectDuration := time.Since(collectStartTime).Seconds()
 			collectSpan.SetAttributes(attribute.Float64("duration", collectDuration))
-			logger().NamedLogger.Error(collectCtx, "ProcessVoteCollection failed",
+			logger().Error(collectCtx, "ProcessVoteCollection failed",
 				err,
 				ion.Float64("duration", collectDuration),
 				ion.String("function", "Consensus.startEventDrivenFlow.processVotes.processVoteCollection"))
@@ -1006,7 +1006,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 				attribute.Float64("duration", collectDuration),
 				attribute.String("status", "success"),
 			)
-			logger().NamedLogger.Info(collectCtx, "Vote collection and processing initiated successfully",
+			logger().Info(collectCtx, "Vote collection and processing initiated successfully",
 				ion.Float64("duration", collectDuration),
 				ion.String("function", "Consensus.startEventDrivenFlow.processVotes.processVoteCollection"))
 		}
@@ -1029,7 +1029,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 		attribute.Float64("duration", totalDuration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(trace_ctx, "Event-driven consensus flow completed",
+	logger().Info(trace_ctx, "Event-driven consensus flow completed",
 		ion.Float64("total_duration", totalDuration),
 		ion.String("function", "Consensus.startEventDrivenFlowAfterSubscriptionPermission"))
 }
@@ -1037,12 +1037,12 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 // VerifySubscriptions checks if nodes are actually subscribed to the pubsub channel
 // This method now uses the new pubsub-based verification system
 func (consensus *Consensus) VerifySubscriptions(logger_ctx context.Context) error {
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.VerifySubscriptions")
 	defer span.End()
 
 	startTime := time.Now().UTC()
-	logger().NamedLogger.Info(trace_ctx, "Starting subscription verification using pubsub messaging",
+	logger().Info(trace_ctx, "Starting subscription verification using pubsub messaging",
 		ion.String("function", "Consensus.VerifySubscriptions"))
 
 	if consensus.gossipnode == nil {
@@ -1059,7 +1059,7 @@ func (consensus *Consensus) VerifySubscriptions(logger_ctx context.Context) erro
 		span.SetAttributes(attribute.String("status", "failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(trace_ctx, "Failed to verify subscriptions",
+		logger().Error(trace_ctx, "Failed to verify subscriptions",
 			err,
 			ion.Float64("duration", duration),
 			ion.String("function", "Consensus.VerifySubscriptions"))
@@ -1067,7 +1067,7 @@ func (consensus *Consensus) VerifySubscriptions(logger_ctx context.Context) erro
 	}
 
 	span.SetAttributes(attribute.Int("verified_peers_count", len(verifiedPeerIDs)))
-	logger().NamedLogger.Info(trace_ctx, "Received verification responses from peers",
+	logger().Info(trace_ctx, "Received verification responses from peers",
 		ion.Int("verified_peers", len(verifiedPeerIDs)),
 		ion.Int("expected_peers", config.MaxMainPeers),
 		ion.String("function", "Consensus.VerifySubscriptions"))
@@ -1079,7 +1079,7 @@ func (consensus *Consensus) VerifySubscriptions(logger_ctx context.Context) erro
 		span.SetAttributes(attribute.String("status", "count_mismatch"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(trace_ctx, "Incorrect number of verified peers",
+		logger().Error(trace_ctx, "Incorrect number of verified peers",
 			err,
 			ion.Int("got", len(verifiedPeerIDs)),
 			ion.Int("expected", config.MaxMainPeers),
@@ -1090,7 +1090,7 @@ func (consensus *Consensus) VerifySubscriptions(logger_ctx context.Context) erro
 
 	// Log all verified PeerIDs
 	for connectionPeerID, responsePeerID := range verifiedPeerIDs {
-		logger().NamedLogger.Info(trace_ctx, "Verified subscription",
+		logger().Info(trace_ctx, "Verified subscription",
 			ion.String("connection_peer", connectionPeerID.String()),
 			ion.String("response_peer", responsePeerID),
 			ion.String("function", "Consensus.VerifySubscriptions"))
@@ -1101,7 +1101,7 @@ func (consensus *Consensus) VerifySubscriptions(logger_ctx context.Context) erro
 		attribute.Float64("duration", duration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(trace_ctx, "Subscription verification successful",
+	logger().Info(trace_ctx, "Subscription verification successful",
 		ion.Int("verified_peers", len(verifiedPeerIDs)),
 		ion.Float64("duration", duration),
 		ion.String("function", "Consensus.VerifySubscriptions"))
@@ -1112,19 +1112,19 @@ func (consensus *Consensus) VerifySubscriptions(logger_ctx context.Context) erro
 // This initiates the voting process by sending vote trigger broadcasts
 func (consensus *Consensus) BroadcastVoteTrigger() error {
 	logger_ctx := context.Background()
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.BroadcastVoteTrigger")
 	defer span.End()
 
 	startTime := time.Now().UTC()
-	logger().NamedLogger.Info(trace_ctx, "Broadcasting vote trigger",
+	logger().Info(trace_ctx, "Broadcasting vote trigger",
 		ion.String("function", "Consensus.BroadcastVoteTrigger"))
 
 	if consensus.gossipnode == nil {
 		err := fmt.Errorf("GossipPubSub not initialized for consensus")
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "validation_failed"))
-		logger().NamedLogger.Error(trace_ctx, "GossipPubSub not initialized",
+		logger().Error(trace_ctx, "GossipPubSub not initialized",
 			err,
 			ion.String("function", "Consensus.BroadcastVoteTrigger"))
 		return err
@@ -1134,7 +1134,7 @@ func (consensus *Consensus) BroadcastVoteTrigger() error {
 		err := fmt.Errorf("ZKBlockData not set - cannot trigger voting")
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "zkblockdata_not_set"))
-		logger().NamedLogger.Error(trace_ctx, "ZKBlockData not set",
+		logger().Error(trace_ctx, "ZKBlockData not set",
 			err,
 			ion.String("function", "Consensus.BroadcastVoteTrigger"))
 		return err
@@ -1151,7 +1151,7 @@ func (consensus *Consensus) BroadcastVoteTrigger() error {
 		span.SetAttributes(attribute.String("status", "failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Error(trace_ctx, "Failed to broadcast vote trigger",
+		logger().Error(trace_ctx, "Failed to broadcast vote trigger",
 			err,
 			ion.Float64("duration", duration),
 			ion.String("function", "Consensus.BroadcastVoteTrigger"))
@@ -1163,7 +1163,7 @@ func (consensus *Consensus) BroadcastVoteTrigger() error {
 		attribute.Float64("duration", duration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(trace_ctx, "Vote trigger broadcast completed successfully",
+	logger().Info(trace_ctx, "Vote trigger broadcast completed successfully",
 		ion.Float64("duration", duration),
 		ion.String("function", "Consensus.BroadcastVoteTrigger"))
 	return nil
@@ -1171,12 +1171,12 @@ func (consensus *Consensus) BroadcastVoteTrigger() error {
 
 // PrintCRDTState prints the current state of the CRDT (read-only operation)
 func (consensus *Consensus) PrintCRDTState(logger_ctx context.Context) error {
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.PrintCRDTState")
 	defer span.End()
 
 	startTime := time.Now().UTC()
-	logger().NamedLogger.Info(trace_ctx, "Printing CRDT state",
+	logger().Info(trace_ctx, "Printing CRDT state",
 		ion.String("function", "Consensus.PrintCRDTState"))
 
 	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
@@ -1184,7 +1184,7 @@ func (consensus *Consensus) PrintCRDTState(logger_ctx context.Context) error {
 		err := fmt.Errorf("listener node or CRDT layer not initialized")
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "validation_failed"))
-		logger().NamedLogger.Error(trace_ctx, "Listener node or CRDT layer not initialized",
+		logger().Error(trace_ctx, "Listener node or CRDT layer not initialized",
 			err,
 			ion.String("function", "Consensus.PrintCRDTState"))
 		return err
@@ -1194,7 +1194,7 @@ func (consensus *Consensus) PrintCRDTState(logger_ctx context.Context) error {
 		err := fmt.Errorf("ZKBlockData not initialized")
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "validation_failed"))
-		logger().NamedLogger.Error(trace_ctx, "ZKBlockData not initialized",
+		logger().Error(trace_ctx, "ZKBlockData not initialized",
 			err,
 			ion.String("function", "Consensus.PrintCRDTState"))
 		return err
@@ -1215,7 +1215,7 @@ func (consensus *Consensus) PrintCRDTState(logger_ctx context.Context) error {
 		attribute.Float64("duration", duration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(trace_ctx, "CRDT state printed successfully",
+	logger().Info(trace_ctx, "CRDT state printed successfully",
 		ion.Float64("duration", duration),
 		ion.String("function", "Consensus.PrintCRDTState"))
 
@@ -1224,26 +1224,18 @@ func (consensus *Consensus) PrintCRDTState(logger_ctx context.Context) error {
 
 // printCRDTHeader prints the header information for CRDT state
 func (consensus *Consensus) printCRDTHeader(listenerNode *PubSubMessages.BuddyNode) {
-	fmt.Printf("\n╔════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║             CRDT STATE - SEQUENCER                         ║\n")
-	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n")
-	fmt.Printf("Peer ID: %s\n", listenerNode.PeerID.String())
-	fmt.Printf("Timestamp: %s\n", time.Now().UTC().Format(time.RFC3339))
-	fmt.Printf("Block Hash: %s\n", consensus.ZKBlockData.GetZKBlock().BlockHash.String())
-	fmt.Printf("Messages Received: %d | Sent: %d | Total: %d\n",
-		listenerNode.MetaData.Received,
-		listenerNode.MetaData.Sent,
-		listenerNode.MetaData.Total)
+	logger().Info(context.Background(), "CRDT State - Sequencer - Start")
+	logger().Info(context.Background(), "CRDT State", ion.String("peer_id", listenerNode.PeerID.String()), ion.String("timestamp", time.Now().UTC().Format(time.RFC3339)), ion.String("block_hash", consensus.ZKBlockData.GetZKBlock().BlockHash.String()))
 }
 
 // printCRDTVotes prints vote information from CRDT
 func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode) {
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.printCRDTVotes")
 	defer span.End()
 
 	startTime := time.Now().UTC()
-	logger().NamedLogger.Info(trace_ctx, "Printing CRDT votes",
+	logger().Info(trace_ctx, "Printing CRDT votes",
 		ion.String("function", "Consensus.printCRDTVotes"))
 
 	votes, exists := MessagePassing.GetVotesFromCRDT(trace_ctx, listenerNode.CRDTLayer, "vote")
@@ -1252,15 +1244,14 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 			attribute.Int("votes_count", 0),
 			attribute.Bool("votes_exist", false),
 		)
-		fmt.Printf("\n📊 Votes in CRDT: 0 (no votes collected yet)\n")
-		logger().NamedLogger.Info(trace_ctx, "No votes in CRDT yet",
+	logger().Info(trace_ctx, "Votes in CRDT", ion.Int("vote_count", 0))
+		logger().Info(trace_ctx, "No votes in CRDT yet",
 			ion.String("function", "Consensus.printCRDTVotes"))
 		return
 	}
 
 	span.SetAttributes(attribute.Int("votes_count", len(votes)))
-	fmt.Printf("\n📊 Total Votes in CRDT: %d\n", len(votes))
-	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	logger().Info(trace_ctx, "Total votes in CRDT", ion.Int("vote_count", len(votes)))
 
 	yesVotes := 0
 	noVotes := 0
@@ -1269,11 +1260,11 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 		var voteData map[string]interface{}
 		if err := json.Unmarshal([]byte(vote), &voteData); err != nil {
 			span.RecordError(err)
-			logger().NamedLogger.Warn(trace_ctx, "Failed to parse vote",
-				ion.String("error", err.Error()),
+			logger().Warn(trace_ctx, "Failed to parse vote",
+				ion.Err(err),
 				ion.Int("vote_index", i+1),
 				ion.String("function", "Consensus.printCRDTVotes"))
-			fmt.Printf("  Vote %d: [PARSING ERROR] %s\n", i+1, vote)
+			logger().Error(trace_ctx, "Vote parsing error", fmt.Errorf("invalid vote"), ion.Int("vote_index", i+1))
 			continue
 		}
 
@@ -1286,11 +1277,10 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 			noVotes++
 		}
 
-		fmt.Printf("  ✓ Vote %d:\n", i+1)
-		fmt.Printf("    - Value: %v\n", voteValue)
-		fmt.Printf("    - Block Hash: %v\n", blockHash)
+			logger().Debug(trace_ctx, "Processing vote", ion.Int("vote_index", i+1))
+			logger().Debug(trace_ctx, "Vote value", ion.String("value", fmt.Sprintf("%v", voteValue)))
+			logger().Debug(trace_ctx, "Vote block hash", ion.String("block_hash", fmt.Sprintf("%v", blockHash)))
 		if i < len(votes)-1 {
-			fmt.Printf("    ─────────────────────────────────────────────\n")
 		}
 	}
 
@@ -1299,15 +1289,14 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 		attribute.Int("no_votes", noVotes),
 	)
 
-	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	fmt.Printf("📊 Vote Summary: YES=%d, NO=%d, Total=%d\n", yesVotes, noVotes, len(votes))
+	logger().Info(trace_ctx, "Vote summary", ion.Int("yes_votes", yesVotes), ion.Int("no_votes", noVotes), ion.Int("total_votes", len(votes)))
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(
 		attribute.Float64("duration", duration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(trace_ctx, "CRDT votes printed",
+	logger().Info(trace_ctx, "CRDT votes printed",
 		ion.Int("total_votes", len(votes)),
 		ion.Int("yes_votes", yesVotes),
 		ion.Int("no_votes", noVotes),
@@ -1317,21 +1306,20 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 
 // printCRDTFooter prints the footer for CRDT state
 func (consensus *Consensus) printCRDTFooter() {
-	fmt.Printf("╔════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("╚════════════════════════════════════════════════════════════╝\n\n")
+	logger().Info(context.Background(), "CRDT State - Sequencer - End")
 }
 
 // ProcessVoteCollection orchestrates the vote collection and processing flow
 // This manages the state flag and coordinates vote collection, verification, and block processing
 func (consensus *Consensus) ProcessVoteCollection() error {
 	logger_ctx := context.Background()
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.ProcessVoteCollection")
 	defer span.End()
 
 	startTime := time.Now().UTC()
 	span.SetAttributes(attribute.Float64("duration", startTime.Sub(startTime).Seconds()))
-	logger().NamedLogger.Info(trace_ctx, "Processing vote collection",
+	logger().Info(trace_ctx, "Processing vote collection",
 		ion.String("function", "Consensus.ProcessVoteCollection"))
 
 	if common.LocalGRO == nil {
@@ -1340,7 +1328,7 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 		if err != nil {
 			span.RecordError(err)
 			span.SetAttributes(attribute.String("status", "gro_init_failed"))
-			logger().NamedLogger.Error(trace_ctx, "Failed to initialize local gro",
+			logger().Error(trace_ctx, "Failed to initialize local gro",
 				err,
 				ion.String("function", "Consensus.ProcessVoteCollection"))
 			return fmt.Errorf("CONSENSUSERROR.PROCESSVOTECOLLECTION: failed to initialize local gro: %v", err)
@@ -1360,7 +1348,7 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 	if consensus.isProcessingVotes && consensus.processedBlockHash == currentBlockHash {
 		consensus.mu.Unlock()
 		span.SetAttributes(attribute.Bool("already_processing", true), attribute.String("status", "skipped"))
-		logger().NamedLogger.Info(trace_ctx, "Vote processing already in progress, skipping duplicate call",
+		logger().Info(trace_ctx, "Vote processing already in progress, skipping duplicate call",
 			ion.String("block_hash", currentBlockHash),
 			ion.String("function", "Consensus.ProcessVoteCollection"))
 		return nil
@@ -1386,7 +1374,7 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 			err := fmt.Errorf("listener node not available for vote collection")
 			processSpan.RecordError(err)
 			processSpan.SetAttributes(attribute.String("status", "listener_not_available"))
-			logger().NamedLogger.Error(processCtx, "Listener node not available for vote collection",
+			logger().Error(processCtx, "Listener node not available for vote collection",
 				err,
 				ion.String("function", "Consensus.ProcessVoteCollection.process"))
 			return nil
@@ -1401,7 +1389,7 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 			attribute.Int("bls_results_count", len(blsResults)),
 			attribute.Float64("duration", collectDuration),
 		)
-		logger().NamedLogger.Info(collectCtx, "Collected vote results from buddies",
+		logger().Info(collectCtx, "Collected vote results from buddies",
 			ion.Int("bls_results", len(blsResults)),
 			ion.Float64("duration", collectDuration),
 			ion.String("function", "Consensus.ProcessVoteCollection.collectVoteResults"))
@@ -1416,7 +1404,7 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 			attribute.Bool("consensus_reached", consensusReached),
 			attribute.Float64("duration", verifyDuration),
 		)
-		logger().NamedLogger.Info(verifyCtx, "Consensus verification completed",
+		logger().Info(verifyCtx, "Consensus verification completed",
 			ion.Bool("consensus_reached", consensusReached),
 			ion.Float64("duration", verifyDuration),
 			ion.String("function", "Consensus.ProcessVoteCollection.verifyConsensus"))
@@ -1430,7 +1418,7 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 			broadcastSpan.SetAttributes(attribute.String("status", "failed"))
 			broadcastDuration := time.Since(broadcastStartTime).Seconds()
 			broadcastSpan.SetAttributes(attribute.Float64("duration", broadcastDuration))
-			logger().NamedLogger.Error(broadcastCtx, "Failed to broadcast and process block",
+			logger().Error(broadcastCtx, "Failed to broadcast and process block",
 				err,
 				ion.Float64("duration", broadcastDuration),
 				ion.String("function", "Consensus.ProcessVoteCollection.broadcastAndProcess"))
@@ -1442,7 +1430,7 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 			attribute.Float64("duration", broadcastDuration),
 			attribute.String("status", "success"),
 		)
-		logger().NamedLogger.Info(broadcastCtx, "Broadcast and process block completed",
+		logger().Info(broadcastCtx, "Broadcast and process block completed",
 			ion.Float64("duration", broadcastDuration),
 			ion.String("function", "Consensus.ProcessVoteCollection.broadcastAndProcess"))
 		broadcastSpan.End()
@@ -1460,7 +1448,7 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 		attribute.Float64("duration", totalDuration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(trace_ctx, "Vote collection processing initiated",
+	logger().Info(trace_ctx, "Vote collection processing initiated",
 		ion.Float64("duration", totalDuration),
 		ion.String("function", "Consensus.ProcessVoteCollection"))
 	return nil
@@ -1470,7 +1458,7 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 // Returns BLS results from buddy nodes
 func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMessages.BuddyNode) []BLS_Signer.BLSresponse {
 	logger_ctx := context.Background()
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.CollectVoteResultsFromBuddies")
 	defer span.End()
 
@@ -1483,14 +1471,14 @@ func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMe
 		if err != nil {
 			span.RecordError(err)
 			span.SetAttributes(attribute.String("status", "gro_init_failed"))
-			logger().NamedLogger.Error(trace_ctx, "Failed to initialize local gro",
+			logger().Error(trace_ctx, "Failed to initialize local gro",
 				err,
 				ion.String("function", "Consensus.CollectVoteResultsFromBuddies"))
 			return nil
 		}
 	}
 
-	logger().NamedLogger.Info(trace_ctx, "Requesting vote aggregation results from buddy nodes",
+	logger().Info(trace_ctx, "Requesting vote aggregation results from buddy nodes",
 		ion.Int("buddy_nodes", len(listenerNode.BuddyNodes.Buddies_Nodes)),
 		ion.String("function", "Consensus.CollectVoteResultsFromBuddies"))
 
@@ -1498,7 +1486,7 @@ func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMe
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "waitgroup_creation_failed"))
-		logger().NamedLogger.Error(trace_ctx, "Failed to create function wait group",
+		logger().Error(trace_ctx, "Failed to create function wait group",
 			err,
 			ion.String("function", "Consensus.CollectVoteResultsFromBuddies"))
 		return nil
@@ -1526,7 +1514,7 @@ func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMe
 		attribute.Float64("duration", duration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(trace_ctx, "Collected vote results from all buddy nodes",
+	logger().Info(trace_ctx, "Collected vote results from all buddy nodes",
 		ion.Int("bls_results", len(blsResults)),
 		ion.Float64("duration", duration),
 		ion.String("function", "Consensus.CollectVoteResultsFromBuddies"))
@@ -1537,7 +1525,7 @@ func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMe
 // Returns BLS response if successful, nil otherwise
 func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Signer.BLSresponse {
 	logger_ctx := context.Background()
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.requestVoteResultFromBuddy")
 	defer span.End()
 
@@ -1546,7 +1534,7 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 	blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.String()
 	span.SetAttributes(attribute.String("block_hash", blockHash))
 
-	logger().NamedLogger.Info(trace_ctx, "Requesting vote result from buddy node",
+	logger().Info(trace_ctx, "Requesting vote result from buddy node",
 		ion.String("peer_id", peerID.String()),
 		ion.String("block_hash", blockHash),
 		ion.String("function", "Consensus.requestVoteResultFromBuddy"))
@@ -1555,7 +1543,7 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "stream_failed"))
-		logger().NamedLogger.Error(trace_ctx, "Failed to open stream to peer",
+		logger().Error(trace_ctx, "Failed to open stream to peer",
 			err,
 			ion.String("peer_id", peerID.String()),
 			ion.String("function", "Consensus.requestVoteResultFromBuddy"))
@@ -1572,7 +1560,7 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "marshal_payload_failed"))
-		logger().NamedLogger.Error(trace_ctx, "Failed to marshal request payload",
+		logger().Error(trace_ctx, "Failed to marshal request payload",
 			err,
 			ion.String("peer_id", peerID.String()),
 			ion.String("function", "Consensus.requestVoteResultFromBuddy"))
@@ -1589,7 +1577,7 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "marshal_message_failed"))
-		logger().NamedLogger.Error(trace_ctx, "Failed to marshal request message",
+		logger().Error(trace_ctx, "Failed to marshal request message",
 			err,
 			ion.String("peer_id", peerID.String()),
 			ion.String("function", "Consensus.requestVoteResultFromBuddy"))
@@ -1599,14 +1587,14 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 	if _, err := stream.Write([]byte(string(reqData) + string(rune(config.Delimiter)))); err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "write_failed"))
-		logger().NamedLogger.Error(trace_ctx, "Failed to write request to peer",
+		logger().Error(trace_ctx, "Failed to write request to peer",
 			err,
 			ion.String("peer_id", peerID.String()),
 			ion.String("function", "Consensus.requestVoteResultFromBuddy"))
 		return nil
 	}
 
-	logger().NamedLogger.Info(trace_ctx, "Sent vote result request to peer",
+	logger().Info(trace_ctx, "Sent vote result request to peer",
 		ion.String("peer_id", peerID.String()),
 		ion.String("function", "Consensus.requestVoteResultFromBuddy"))
 
@@ -1616,7 +1604,7 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 		span.SetAttributes(attribute.String("status", "no_response"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Warn(trace_ctx, "No response received from peer",
+		logger().Warn(trace_ctx, "No response received from peer",
 			ion.String("peer_id", peerID.String()),
 			ion.Float64("duration", duration),
 			ion.String("function", "Consensus.requestVoteResultFromBuddy"))
@@ -1632,7 +1620,7 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 			attribute.String("status", "success"),
 			attribute.Bool("bls_result_received", true),
 		)
-		logger().NamedLogger.Info(trace_ctx, "Successfully received vote result from peer",
+		logger().Info(trace_ctx, "Successfully received vote result from peer",
 			ion.String("peer_id", peerID.String()),
 			ion.Bool("bls_agree", result.Agree),
 			ion.Float64("duration", duration),
@@ -1643,7 +1631,7 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 			attribute.Float64("duration", duration),
 			attribute.String("status", "parse_failed"),
 		)
-		logger().NamedLogger.Warn(trace_ctx, "Failed to parse vote result response",
+		logger().Warn(trace_ctx, "Failed to parse vote result response",
 			ion.String("peer_id", peerID.String()),
 			ion.Float64("duration", duration),
 			ion.String("function", "Consensus.requestVoteResultFromBuddy"))
@@ -1654,7 +1642,7 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 // readVoteResultResponse reads vote result response from stream with timeout
 func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID peer.ID) string {
 	logger_ctx := context.Background()
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.readVoteResultResponse")
 	defer span.End()
 
@@ -1667,7 +1655,7 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 		if err != nil {
 			span.RecordError(err)
 			span.SetAttributes(attribute.String("status", "gro_init_failed"))
-			logger().NamedLogger.Error(trace_ctx, "Failed to initialize local gro",
+			logger().Error(trace_ctx, "Failed to initialize local gro",
 				err,
 				ion.String("function", "Consensus.readVoteResultResponse"))
 			return ""
@@ -1695,7 +1683,7 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 			attribute.Float64("duration", duration),
 			attribute.String("status", "success"),
 		)
-		logger().NamedLogger.Info(trace_ctx, "Successfully read vote result response",
+		logger().Info(trace_ctx, "Successfully read vote result response",
 			ion.String("peer_id", peerID.String()),
 			ion.Int("response_size_bytes", len(resp)),
 			ion.Float64("duration", duration),
@@ -1706,8 +1694,8 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 		span.SetAttributes(attribute.String("status", "read_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Warn(trace_ctx, "Failed to read response from peer",
-			ion.String("error", err.Error()),
+		logger().Warn(trace_ctx, "Failed to read response from peer",
+			ion.Err(err),
 			ion.String("peer_id", peerID.String()),
 			ion.Float64("duration", duration),
 			ion.String("function", "Consensus.readVoteResultResponse"))
@@ -1718,7 +1706,7 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 		span.SetAttributes(attribute.String("status", "timeout"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().NamedLogger.Warn(trace_ctx, "Timeout waiting for response from peer",
+		logger().Warn(trace_ctx, "Timeout waiting for response from peer",
 			ion.String("peer_id", peerID.String()),
 			ion.Float64("timeout_seconds", 45.0),
 			ion.Float64("duration", duration),
@@ -1730,7 +1718,7 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 // parseVoteResultResponse parses vote result response and extracts BLS result
 func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer.ID) *BLS_Signer.BLSresponse {
 	logger_ctx := context.Background()
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.parseVoteResultResponse")
 	defer span.End()
 
@@ -1740,14 +1728,14 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 		attribute.Int("response_size_bytes", len(response)),
 	)
 
-	logger().NamedLogger.Info(trace_ctx, "Parsing vote result response",
+	logger().Info(trace_ctx, "Parsing vote result response",
 		ion.String("peer_id", peerID.String()),
 		ion.String("function", "Consensus.parseVoteResultResponse"))
 
 	responseMsg := PubSubMessages.NewMessageBuilder(nil).DeferenceMessage(response)
 	if responseMsg == nil {
 		span.SetAttributes(attribute.String("status", "parse_failed"), attribute.String("reason", "response_msg_nil"))
-		logger().NamedLogger.Warn(trace_ctx, "Failed to deference message",
+		logger().Warn(trace_ctx, "Failed to deference message",
 			ion.String("peer_id", peerID.String()),
 			ion.String("function", "Consensus.parseVoteResultResponse"))
 		return nil
@@ -1757,7 +1745,7 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 	if err := json.Unmarshal([]byte(responseMsg.Message), &resultData); err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "unmarshal_failed"))
-		logger().NamedLogger.Error(trace_ctx, "Failed to unmarshal response message",
+		logger().Error(trace_ctx, "Failed to unmarshal response message",
 			err,
 			ion.String("peer_id", peerID.String()),
 			ion.String("function", "Consensus.parseVoteResultResponse"))
@@ -1768,7 +1756,7 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 	if result, ok := resultData["result"].(float64); ok {
 		Maps.StoreVoteResult(peerID.String(), int8(result))
 		span.SetAttributes(attribute.Int64("vote_result", int64(result)))
-		logger().NamedLogger.Info(trace_ctx, "Received vote result from peer",
+		logger().Info(trace_ctx, "Received vote result from peer",
 			ion.String("peer_id", peerID.String()),
 			ion.Int64("vote_result", int64(result)),
 			ion.String("function", "Consensus.parseVoteResultResponse"))
@@ -1805,7 +1793,7 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 			attribute.Float64("duration", duration),
 			attribute.String("status", "success"),
 		)
-		logger().NamedLogger.Info(trace_ctx, "BLS result extracted from response",
+		logger().Info(trace_ctx, "BLS result extracted from response",
 			ion.String("peer_id", peerID.String()),
 			ion.String("bls_peer_id", pid),
 			ion.Bool("bls_agree", agree),
@@ -1827,7 +1815,7 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 		attribute.Float64("duration", duration),
 		attribute.String("status", "no_bls_data"),
 	)
-	logger().NamedLogger.Warn(trace_ctx, "No BLS data in response",
+	logger().Warn(trace_ctx, "No BLS data in response",
 		ion.String("peer_id", peerID.String()),
 		ion.Float64("duration", duration),
 		ion.String("function", "Consensus.parseVoteResultResponse"))
@@ -1838,7 +1826,7 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 // Returns true if consensus reached (majority agree), false otherwise
 func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSresponse) bool {
 	logger_ctx := context.Background()
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.VerifyConsensusWithBLS")
 	defer span.End()
 
@@ -1848,7 +1836,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	// Context for the alerts
 	alert_ctx := trace_ctx
 
-	logger().NamedLogger.Info(trace_ctx, "Verifying consensus with BLS signatures",
+	logger().Info(trace_ctx, "Verifying consensus with BLS signatures",
 		ion.Int("bls_results_count", len(blsResults)),
 		ion.String("function", "Consensus.VerifyConsensusWithBLS"))
 
@@ -1856,7 +1844,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		err := fmt.Errorf("no BLS results collected - cannot verify consensus")
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "no_results"))
-		logger().NamedLogger.Warn(trace_ctx, "No BLS results collected, skipping block processing",
+		logger().Warn(trace_ctx, "No BLS results collected, skipping block processing",
 			ion.String("function", "Consensus.VerifyConsensusWithBLS"))
 		return false
 	}
@@ -1872,8 +1860,8 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		}
 		if err := BLS_Verifier.Verify(r, vote); err != nil {
 			span.RecordError(err)
-			logger().NamedLogger.Warn(trace_ctx, "BLS verification failed for peer",
-				ion.String("error", err.Error()),
+			logger().Warn(trace_ctx, "BLS verification failed for peer",
+				ion.Err(err),
 				ion.String("peer_id", r.PeerID),
 				ion.Int64("vote", int64(vote)),
 				ion.String("function", "Consensus.VerifyConsensusWithBLS"))
@@ -1898,7 +1886,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
 		msg := "❌ No valid BLS signatures - consensus failed, skipping block processing - No BLS results collected"
-		logger().NamedLogger.Error(trace_ctx, "No valid BLS signatures, consensus failed",
+		logger().Error(trace_ctx, "No valid BLS signatures, consensus failed",
 			err,
 			ion.Float64("duration", duration),
 			ion.String("function", "Consensus.VerifyConsensusWithBLS"))
@@ -1930,7 +1918,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 			attribute.Bool("consensus_reached", true),
 		)
 		msg := fmt.Sprintf("✅ BFT Consensus Reached: %d/%d votes in favor (needed: %d)\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
-		logger().NamedLogger.Info(trace_ctx, "BFT Consensus reached",
+		logger().Info(trace_ctx, "BFT Consensus reached",
 			ion.Int("yes_votes", validYes),
 			ion.Int("total_votes", validTotal),
 			ion.Int("needed_votes", needed),
@@ -1953,7 +1941,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		attribute.Bool("consensus_reached", false),
 	)
 	msg := fmt.Sprintf("❌ Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
-	logger().NamedLogger.Warn(trace_ctx, "Consensus failed",
+	logger().Warn(trace_ctx, "Consensus failed",
 		ion.Int("yes_votes", validYes),
 		ion.Int("total_votes", validTotal),
 		ion.Int("needed_votes", needed),
@@ -1980,7 +1968,7 @@ func (consensus *Consensus) IsListenerActive() bool {
 // This method demonstrates how the consensus system is ready to collect votes
 func (consensus *Consensus) StartVoteCollection(blockHash string) error {
 	logger_ctx := context.Background()
-	tracer := logger().NamedLogger.Tracer("Consensus")
+	tracer := logger().Tracer("Consensus")
 	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.StartVoteCollection")
 	defer span.End()
 
@@ -1991,7 +1979,7 @@ func (consensus *Consensus) StartVoteCollection(blockHash string) error {
 		attribute.String("vote_stage", string(config.Type_SubmitVote)),
 	)
 
-	logger().NamedLogger.Info(trace_ctx, "Starting vote collection",
+	logger().Info(trace_ctx, "Starting vote collection",
 		ion.String("block_hash", blockHash),
 		ion.String("function", "Consensus.StartVoteCollection"))
 
@@ -1999,7 +1987,7 @@ func (consensus *Consensus) StartVoteCollection(blockHash string) error {
 		err := fmt.Errorf("listener node not active - cannot collect votes")
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "listener_not_active"))
-		logger().NamedLogger.Error(trace_ctx, "Listener node not active",
+		logger().Error(trace_ctx, "Listener node not active",
 			err,
 			ion.String("function", "Consensus.StartVoteCollection"))
 		return err
@@ -2010,7 +1998,7 @@ func (consensus *Consensus) StartVoteCollection(blockHash string) error {
 		attribute.Float64("duration", duration),
 		attribute.String("status", "success"),
 	)
-	logger().NamedLogger.Info(trace_ctx, "Vote collection started successfully",
+	logger().Info(trace_ctx, "Vote collection started successfully",
 		ion.String("block_hash", blockHash),
 		ion.String("protocol", string(config.SubmitMessageProtocol)),
 		ion.String("vote_stage", string(config.Type_SubmitVote)),

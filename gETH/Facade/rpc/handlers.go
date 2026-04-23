@@ -3,13 +3,16 @@ package rpc
 import (
 	"context"
 	"encoding/hex"
+
+	log "gossipnode/logging"
+
+	"github.com/JupiterMetaLabs/ion"
 	"errors"
 	"fmt"
 	"math/big"
 	"strings"
 
 	"encoding/json"
-	"log"
 
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
@@ -22,40 +25,64 @@ func NewHandlers(service Service.Service) *Handlers { return &Handlers{service: 
 func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, error) {
 	// Log incoming request
 	reqJSON, _ := json.Marshal(req)
-	log.Printf("⚡️RPC Request: %s", string(reqJSON))
+	logger().Info(ctx, "RPC Request", ion.String("request", string(reqJSON)))
 
 	switch req.Method {
 	case "web3_clientVersion":
 		v, err := handler.service.ClientVersion(ctx)
 		resp, _ := finish(req, v, err)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		return resp, err
+	case "solc_compile":
+		// Expected params[0]: { "source": "...", "optimize": true, "runs": 200 }
+		if len(req.Params) == 0 {
+			resp, _ := invalidParams(req, "missing params")
+			return resp, nil
+		}
+		var compileReq struct {
+			Source   string `json:"source"`
+			Optimize bool   `json:"optimize"`
+			Runs     uint32 `json:"runs"`
+		}
+		// Marshal the any type back to JSON and then unmarshal into our struct
+		paramJSON, _ := json.Marshal(req.Params[0])
+		if err := json.Unmarshal(paramJSON, &compileReq); err != nil {
+			resp, _ := invalidParams(req, "invalid params: "+err.Error())
+			return resp, nil
+		}
+		if compileReq.Runs == 0 {
+			compileReq.Runs = 200
+		}
+		result, err := handler.service.CompileSolidity(ctx, compileReq.Source, compileReq.Optimize, compileReq.Runs)
+		resp, _ := finish(req, result, err)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, err
 	case "net_version":
 		id, err := handler.service.ChainID(ctx)
 		resp, _ := finish(req, id.String(), err)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, err
 	case "eth_chainId":
 		id, err := handler.service.ChainID(ctx)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+id.Text(16), nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, nil
 
 	case "eth_blockNumber":
 		n, err := handler.service.BlockNumber(ctx)
 		resp, _ := finish(req, "0x"+n.Text(16), err)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, err
 
 	case "eth_getTransactionCount":
 		if len(req.Params) < 2 {
 			resp, _ := invalidParams(req, "missing address and block tag")
-			// log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			// logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, nil
 		}
 		addr, _ := req.Params[0].(string)
@@ -63,22 +90,22 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		count, err := handler.service.GetTransactionCount(ctx, addr, block)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			// log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			// logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+count.Text(16), nil)
-		fmt.Println("Called RPC Call -- eth_getTransactionCount")
-		// log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logger().Debug(ctx, "Called RPC Call", ion.String("method", "eth_getTransactionCount"))
+		// logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, nil
 
 	case "eth_getBlockByNumber":
 		// params: [blockTag, fullTx(bool)]
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing block tag")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, nil
 		}
-		fmt.Println("req.Params: ", req.Params)
+		logger().Debug(ctx, "Request parameters", ion.String("method", "eth_getBlockByNumber"))
 		tag, _ := req.Params[0].(string)
 		full := false
 
@@ -94,257 +121,277 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		num, err := parseBlockTag(ctx, handler.service, tag)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
 		b, err := handler.service.BlockByNumber(ctx, num, full)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
 		resp, _ := finish(req, marshalBlock(b, full), nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, nil
 
 	case "eth_getBalance":
 		if len(req.Params) < 2 {
 			resp, _ := invalidParams(req, "need address and block tag")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, nil
 		}
 		addr, _ := req.Params[0].(string)
 		num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
 		bal, err := handler.service.Balance(ctx, addr, num, "jmdt:metamask")
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+bal.Text(16), nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, nil
 	case "eth_call":
-		// Log incoming payload for eth_call
-		// log.Printf("📥 eth_call payload: %+v", req.Params)
-		// if len(req.Params) < 1 {
-		// 	resp, _ := invalidParams(req, "missing call object")
-		// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		// 	return resp, nil
-		// }
-		// msg, err := toCallMsg(req.Params[0])
-		// if err != nil {
-		// 	resp, _ := finish(req, nil, err)
-		// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		// 	return resp, err
-		// }
-		// var num *big.Int
-		// if len(req.Params) > 1 {
-		// 	num, err = parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
-		// 	if err != nil {
-		// 		resp, _ := finish(req, nil, err)
-		// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		// 		return resp, err
-		// 	}
-		// }
-		// out, err := handler.service.Call(ctx, msg, num)
-		// if err != nil {
-		// 	resp, _ := finish(req, nil, err)
-		// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		// 	return resp, err
-		// }
-		// resp, _ := finish(req, "0x"+hex.EncodeToString(out), nil)
-		// Explicitly disabled for security/compliance
-		resp := RespErr(req.ID, -32601, "eth_call disabled")
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		return resp, nil
-
-	case "eth_estimateGas":
 		if len(req.Params) < 1 {
-			resp, _ := invalidParams(req, "missing tx object")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			resp, _ := invalidParams(req, "missing call object")
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, nil
 		}
 		msg, err := toCallMsg(req.Params[0])
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, err
+		}
+		var num *big.Int
+		if len(req.Params) > 1 {
+			num, err = parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
+			if err != nil {
+				resp, _ := finish(req, nil, err)
+				logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+				return resp, err
+			}
+		}
+		out, err := handler.service.Call(ctx, msg, num)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, err
+		}
+		resp, _ := finish(req, "0x"+hex.EncodeToString(out), nil)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		return resp, nil
+
+	case "eth_estimateGas":
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing tx object")
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, nil
+		}
+		msg, err := toCallMsg(req.Params[0])
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
 		g, err := handler.service.EstimateGas(ctx, msg)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
 		resp, _ := finish(req, "0x"+big.NewInt(int64(g)).Text(16), nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, nil
 
-	case "eth_gasPrice":
-		p, err := handler.service.GasPrice(ctx)
-		resp, _ := finish(req, "0x"+p.Text(16), err)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-		return resp, err
+
 
 	case "eth_sendRawTransaction":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing raw tx")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, nil
 		}
 		raw, _ := req.Params[0].(string)
 		// Debugging
-		fmt.Println(">>>>>> eth_sendRawTransaction received: ", raw)
+		logger().Debug(ctx, "eth_sendRawTransaction received", ion.String("raw_tx_length", fmt.Sprintf("%d", len(raw))))
 		txh, err := handler.service.SendRawTx(ctx, raw)
 		resp, _ := finish(req, txh, err)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, err
 
 	case "eth_getTransactionByHash":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing tx hash")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, nil
 		}
 		tx, err := handler.service.TxByHash(ctx, mustString(req.Params[0]))
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
 		resp, _ := finish(req, marshalTx(tx), nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, nil
 
 	case "eth_getTransactionReceipt":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing tx hash")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, nil
 		}
 		rcpt, err := handler.service.ReceiptByHash(ctx, mustString(req.Params[0]))
 		resp, _ := finish(req, rcpt, err)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, err
 
 	case "eth_getLogs":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing filter")
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, nil
 		}
 		q, err := toFilterQuery(req.Params[0])
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
 		logs, err := handler.service.GetLogs(ctx, *q)
 		if err != nil {
 			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
 		resp, _ := finish(req, marshalLogs(logs), nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, nil
 
-	// case "eth_getCode":
-	// 	if len(req.Params) < 2 {
-	// 		resp, _ := invalidParams(req, "missing address and block tag")
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, nil
-	// 	}
-	// 	addr, _ := req.Params[0].(string)
-	// 	num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
-	// 	if err != nil {
-	// 		resp, _ := finish(req, nil, err)
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, err
-	// 	}
-	// 	code, err := handler.service.GetCode(ctx, addr, num)
-	// 	if err != nil {
-	// 		resp, _ := finish(req, nil, err)
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, err
-	// 	}
-	// 	resp, _ := finish(req, code, nil)
-	// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 	return resp, nil
+	case "eth_getCode":
+		if len(req.Params) < 2 {
+			resp, _ := invalidParams(req, "missing address and block tag")
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, nil
+		}
+		addr, _ := req.Params[0].(string)
+		num, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, err
+		}
+		code, err := handler.service.GetCode(ctx, addr, num)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, err
+		}
+		resp, _ := finish(req, code, nil)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		return resp, nil
 
-	// case "eth_feeHistory":
-	// 	if len(req.Params) < 2 {
-	// 		resp, _ := invalidParams(req, "missing blockCount and newestBlock")
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, nil
-	// 	}
+	case "eth_getStorageAt":
+		if len(req.Params) < 2 {
+			resp, _ := invalidParams(req, "missing address and slot")
+			return resp, nil
+		}
+		address, _ := req.Params[0].(string)
+		slot, _ := req.Params[1].(string)
+		blockNum := "latest"
+		if len(req.Params) > 2 {
+			if b, ok := req.Params[2].(string); ok {
+				blockNum = b
+			}
+		}
+		result, err := handler.service.GetStorageAt(ctx, address, slot, blockNum)
+		resp, _ := finish(req, result, err)
+		return resp, err
 
-	// 	// Parse blockCount (can be string hex or number)
-	// 	var blockCount uint64
-	// 	switch v := req.Params[0].(type) {
-	// 	case string:
-	// 		if strings.HasPrefix(v, "0x") {
-	// 			bigVal := new(big.Int)
-	// 			bigVal.SetString(v[2:], 16)
-	// 			blockCount = bigVal.Uint64()
-	// 		} else {
-	// 			fmt.Sscanf(v, "%d", &blockCount)
-	// 		}
-	// 	case float64:
-	// 		blockCount = uint64(v)
-	// 	case int:
-	// 		blockCount = uint64(v)
-	// 	default:
-	// 		resp, _ := invalidParams(req, "invalid blockCount type")
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, nil
-	// 	}
+	case "eth_gasPrice":
+		result, err := handler.service.GetGasPrice(ctx)
+		resp, _ := finish(req, result, err)
+		return resp, err
 
-	// 	// Parse newestBlock (block tag)
-	// 	newestBlock, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
-	// 	if err != nil {
-	// 		resp, _ := finish(req, nil, err)
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, err
-	// 	}
+	case "eth_feeHistory":
+		if len(req.Params) < 2 {
+			resp, _ := invalidParams(req, "missing blockCount and newestBlock")
+			return resp, nil
+		}
+		var blockCount int
+		switch v := req.Params[0].(type) {
+		case string:
+			if strings.HasPrefix(v, "0x") {
+				var count uint64
+				fmt.Sscanf(v[2:], "%x", &count)
+				blockCount = int(count)
+			} else {
+				fmt.Sscanf(v, "%d", &blockCount)
+			}
+		case float64:
+			blockCount = int(v)
+		case int:
+			blockCount = v
+		}
 
-	// 	// Parse rewardPercentiles (optional, third parameter)
-	// 	var rewardPercentiles []float64
-	// 	if len(req.Params) > 2 {
-	// 		if percArray, ok := req.Params[2].([]any); ok {
-	// 			rewardPercentiles = make([]float64, 0, len(percArray))
-	// 			for _, p := range percArray {
-	// 				switch v := p.(type) {
-	// 				case float64:
-	// 					rewardPercentiles = append(rewardPercentiles, v)
-	// 				case string:
-	// 					var val float64
-	// 					fmt.Sscanf(v, "%f", &val)
-	// 					rewardPercentiles = append(rewardPercentiles, val)
-	// 				}
-	// 			}
-	// 		}
-	// 	}
+		newestBlock, _ := req.Params[1].(string)
 
-	// 	history, err := handler.service.FeeHistory(ctx, blockCount, newestBlock, rewardPercentiles)
-	// 	if err != nil {
-	// 		resp, _ := finish(req, nil, err)
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, err
-	// 	}
-	// 	resp, _ := finish(req, history, nil)
-	// 	log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 	return resp, nil
+		var rewardPercentiles []float64
+		if len(req.Params) > 2 {
+			if arr, ok := req.Params[2].([]any); ok {
+				for _, val := range arr {
+					if f, ok := val.(float64); ok {
+						rewardPercentiles = append(rewardPercentiles, f)
+					}
+				}
+			}
+		}
+
+		result, err := handler.service.GetFeeHistory(ctx, blockCount, newestBlock, rewardPercentiles)
+		resp, _ := finish(req, result, err)
+		return resp, err
+
+	case "eth_maxPriorityFeePerGas":
+		result, err := handler.service.GetMaxPriorityFeePerGas(ctx)
+		resp, _ := finish(req, result, err)
+		return resp, err
+
+	case "net_listening":
+		result, err := handler.service.IsListening(ctx)
+		resp, _ := finish(req, result, err)
+		return resp, err
+
+	case "net_peerCount":
+		result, err := handler.service.GetPeerCount(ctx)
+		resp, _ := finish(req, result, err)
+		return resp, err
+
+	case "debug_traceTransaction":
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing tx hash")
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, nil
+		}
+		txHash, _ := req.Params[0].(string)
+		result, err := handler.service.TraceTransaction(ctx, txHash)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, err
+		}
+		resp, _ := finish(req, result, nil)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		return resp, nil
 
 	default:
 		resp := RespErr(req.ID, -32601, "Method not found")
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, nil
 	}
 }
@@ -572,4 +619,13 @@ func marshalLogs(logs []Types.Log) []map[string]any {
 		}
 	}
 	return result
+}
+
+// logger returns the ion logger instance for the Facade package
+func logger() *ion.Ion {
+	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(log.Facade, "")
+	if err != nil {
+		return nil
+	}
+	return logInstance.GetNamedLogger()
 }

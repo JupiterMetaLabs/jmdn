@@ -44,6 +44,8 @@ type PortSettings struct {
 	DID       int `mapstructure:"did"       yaml:"did"`
 	Facade    int `mapstructure:"facade"    yaml:"facade"`
 	WS        int `mapstructure:"ws"        yaml:"ws"`
+	Geth      int `mapstructure:"geth"      yaml:"geth"`
+	Smart     int `mapstructure:"smart"     yaml:"smart"`
 	Metrics   int `mapstructure:"metrics"   yaml:"metrics"`
 	Profiler  int `mapstructure:"profiler"  yaml:"profiler"`
 }
@@ -58,6 +60,8 @@ type BindSettings struct {
 	DID       string `mapstructure:"did"       yaml:"did"`
 	Facade    string `mapstructure:"facade"    yaml:"facade"`
 	WS        string `mapstructure:"ws"        yaml:"ws"`
+	Geth      string `mapstructure:"geth"      yaml:"geth"`
+	Smart     string `mapstructure:"smart"     yaml:"smart"`
 	Metrics   string `mapstructure:"metrics"   yaml:"metrics"`
 	Profiler  string `mapstructure:"profiler"  yaml:"profiler"`
 }

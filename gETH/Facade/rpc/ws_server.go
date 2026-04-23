@@ -3,18 +3,14 @@ package rpc
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"gossipnode/config/GRO"
+	"gossipnode/gETH/Facade/Service"
+	"gossipnode/gETH/Facade/Service/Types"
+	"gossipnode/gETH/common"
 	"log"
 	"net/http"
 	"sync"
 	"time"
-
-	"gossipnode/config/GRO"
-	"gossipnode/config/settings"
-	"gossipnode/gETH/Facade/Service"
-	"gossipnode/gETH/Facade/Service/Types"
-	"gossipnode/gETH/common"
-	"gossipnode/pkg/gatekeeper"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/gorilla/websocket"
@@ -42,29 +38,10 @@ func (s *WSServer) Serve(addr string) error {
 func (s *WSServer) ServeWithContext(ctx context.Context, addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleWS)
-
-	// Setup Security via gatekeeper helper
-	secCfg := &settings.Get().Security
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	tlsEnabled, httpMW, err := gatekeeper.ConfigureNetHTTPServer(srv, settings.ServiceEthRPC, secCfg, nil)
-	if err != nil {
-		return fmt.Errorf("failed to configure secure WS server: %w", err)
-	}
-	// Wrap the mux: rate limiting fires on every HTTP upgrade request before gorilla upgrades the connection.
-	srv.Handler = httpMW.Wrap(settings.ServiceEthRPC, mux)
-	if tlsEnabled {
-		log.Printf("🔐 gETH WS server starting with TLS enabled")
-	} else {
-		log.Printf("⚠️ gETH WS server starting WITHOUT TLS (Insecure mode enabled in policy)")
-	}
-
+	srv := &http.Server{Addr: addr, Handler: mux}
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- gatekeeper.ServeHTTP(srv, tlsEnabled)
+		errCh <- srv.ListenAndServe()
 	}()
 
 	select {
@@ -229,7 +206,7 @@ func forwardBlocks(conn *websocket.Conn, sid string, ch <-chan *Types.Block) {
 }
 func forwardLogs(conn *websocket.Conn, sid string, ch <-chan Types.Log) {
 	for l := range ch {
-		msg := subMsg{Jsonrpc: "2.o", Method: "eth_subscription"}
+		msg := subMsg{Jsonrpc: "2.0", Method: "eth_subscription"}
 		msg.Params.Subscription = sid
 		msg.Params.Result = marshalLogs([]Types.Log{l})[0]
 		_ = conn.WriteJSON(msg)

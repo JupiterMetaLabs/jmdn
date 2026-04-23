@@ -3,29 +3,27 @@ package rpc
 import (
 	"context"
 	"errors"
-	"fmt"
+	"log"
 	"net/http"
 	"time"
 
+	"gossipnode/gETH/Facade/Service/Logger"
+
 	"github.com/gin-gonic/gin"
-
-	"gossipnode/config/settings"
-	"gossipnode/logging"
-	"gossipnode/pkg/gatekeeper"
-
-	"github.com/JupiterMetaLabs/ion"
 )
 
 type HTTPServer struct {
-	h      *Handlers
-	logger *ion.Ion // Add logger
+	h *Handlers
 }
 
 func NewHTTPServer(h *Handlers) *HTTPServer {
-	// Initialize logger
-	l, _ := logging.NewAsyncLogger().Get().NamedLogger("JSONRPC", "")
-
-	return &HTTPServer{h: h, logger: l.NamedLogger}
+	Logger.Once.Do(func() {
+		if err := Logger.InitLogger(); err != nil {
+			// Log error but don't panic - continue without logger
+			log.Printf("Warning: failed to initialize logger: %v\n", err)
+		}
+	})
+	return &HTTPServer{h: h}
 }
 
 func (s *HTTPServer) Serve(addr string) error {
@@ -44,27 +42,18 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 	router.Use(gin.Recovery())
 	router.Use(withCORS())
 
-	// Initialize Security via gatekeeper helper
-	secCfg := &settings.Get().Security
+	// Add JSON-RPC handler
+	router.Any("/", s.handleJSONRPC)
+
+	// Create HTTP server with GIN router
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	tlsEnabled, middleware, err := gatekeeper.ConfigureHTTPServer(srv, settings.ServiceEthRPC, secCfg, s.logger)
-	if err != nil {
-		return fmt.Errorf("failed to configure secure HTTP server: %w", err)
-	}
-
-	// Apply Gatekeeper Middleware
-	router.Use(middleware.Middleware(settings.ServiceEthRPC))
-
-	// Add JSON-RPC handler
-	router.Any("/", s.handleJSONRPC)
-
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- gatekeeper.ServeHTTP(srv, tlsEnabled)
+		errCh <- srv.ListenAndServe()
 	}()
 
 	select {
