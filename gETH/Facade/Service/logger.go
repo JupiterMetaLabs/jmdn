@@ -37,7 +37,7 @@ func logger() *ion.Ion {
 		return nil
 	}
 	// Return the NamedLogger which is *ion.Ion
-	return logInstance.GetNamedLogger()
+	return logInstance.NamedLogger
 }
 
 // Global Logger instance - Lazy initialized

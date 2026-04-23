@@ -9,8 +9,6 @@ import (
 	Router "gossipnode/Pubsub/Router"
 	"gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
-
-	"github.com/JupiterMetaLabs/ion"
 )
 
 var (
@@ -26,7 +24,7 @@ func AppendMessage(message *PubSubMessages.GossipMessage) {
 		var err error
 		LocalGRO, err = InitializeGRO()
 		if err != nil {
-			logger().Error(context.Background(), "Error initializing LocalGRO", err)
+			fmt.Println("Error initializing LocalGRO:", err)
 			return
 		}
 	}
@@ -43,13 +41,13 @@ func AppendMessage(message *PubSubMessages.GossipMessage) {
 	select {
 	case ChannelBuffer <- *message:
 	default:
-		logger().Warn(context.Background(), "Channel buffer full, message dropped")
+		fmt.Println("⚠️ Channel buffer full, message dropped")
 	}
 }
 
 // startMessageListener is an internal helper that runs until idle for >10s.
 func startMessageListener() {
-	logger().Debug(context.Background(), "Listener started")
+	fmt.Println("▶️ Listener started")
 
 	idleTimer := time.NewTimer(10 * time.Second)
 	defer idleTimer.Stop()
@@ -71,8 +69,7 @@ func startMessageListener() {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						logger().Warn(context.Background(), "Recovered in message handler",
-							ion.String("recovery", fmt.Sprintf("%v", r)))
+						fmt.Println("Recovered in message handler:", r)
 					}
 				}()
 				processMessage(msg)
@@ -80,7 +77,7 @@ func startMessageListener() {
 
 		// NO messages for 10 seconds, close the channel automatically
 		case <-idleTimer.C:
-			logger().Debug(context.Background(), "Listener idle for 10s, closing channel")
+			fmt.Println("⏹️ Listener idle for 10s, closing channel")
 			closeChannel()
 			return
 		}
@@ -100,13 +97,13 @@ func closeChannel() {
 	isStarted = false
 	ChannelBuffer = make(chan PubSubMessages.GossipMessage) // recreate new channel for next use
 
-	logger().Debug(context.Background(), "Channel closed and reset")
+	fmt.Println("✅ Channel closed and reset")
 }
 
 func processMessage(msg PubSubMessages.GossipMessage) {
 	// This is the to be processed message so Publish message is not a type here
 	err := Router.Router(&msg)
 	if err != nil {
-		logger().Error(context.Background(), "Error processing message", err)
+		fmt.Println("Error processing message:", err)
 	}
 }

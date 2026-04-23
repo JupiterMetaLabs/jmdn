@@ -463,7 +463,7 @@ func (h *CommandHandler) handleMempoolStats(parts []string) {
 	logger_ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// Get mempool client
-	routingClient, err := Block.GetRoutingClient()
+	routingClient, err := Block.GetRoutingClient(logger_ctx)
 	if err != nil {
 		fmt.Printf("❌ Mempool client not available: %v\n", err)
 		return

@@ -12,6 +12,7 @@ import (
 	"gossipnode/DB_OPs/sqlops"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
+	log "gossipnode/logging"
 	"gossipnode/metrics"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
@@ -39,7 +40,7 @@ type NodeManager struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	mutex           sync.RWMutex
-	Logger          *ion.Ion
+	Logger          *log.Logging
 }
 
 // ManagedPeer represents a peer being manually managed
@@ -103,6 +104,14 @@ func ClearNodeManagerInterface() {
 	NodeManagerInterface = nil
 }
 
+// Zero allocation logger - its already allocated in the asynclogger
+func logger() *log.Logging {
+	logger, err := log.NewAsyncLogger().Get().NamedLogger(log.MessagePassing_StructService, "")
+	if err != nil {
+		return nil
+	}
+	return logger
+}
 
 // NewNodeManager creates a new node manager for the host
 func NewNodeManager(node *config.Node) (*NodeManager, error) {
@@ -186,7 +195,7 @@ func createNodeManager(node *config.Node) (*NodeManager, error) {
 	metricsLogger := logger()
 
 	// Create logger context for tracing
-	metricsLogger.Info(ctx, "Initializing Node Manager",
+	metricsLogger.NamedLogger.Info(ctx, "Initializing Node Manager",
 		ion.String("connection_database", config.DBName),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -219,7 +228,7 @@ func createNodeManager(node *config.Node) (*NodeManager, error) {
 	// manager.DisplayDBPeers()
 
 	// Set up heartbeat handler
-	metricsLogger.Info(ctx, "Node Manager initialized",
+	metricsLogger.NamedLogger.Info(ctx, "Node Manager initialized",
 		ion.Int("managed_peers", len(manager.trackedPeers)),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -236,7 +245,7 @@ func createNodeManager(node *config.Node) (*NodeManager, error) {
 func (nm *NodeManager) initConnectedPeersTable(logger_ctx context.Context) error {
 
 	// record trace span and close it
-	span_ctx, span := logger().Tracer("NodeManager").Start(logger_ctx, "NodeManager.initConnectedPeersTable")
+	span_ctx, span := logger().NamedLogger.Tracer("NodeManager").Start(logger_ctx, "NodeManager.initConnectedPeersTable")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -251,7 +260,7 @@ func (nm *NodeManager) initConnectedPeersTable(logger_ctx context.Context) error
 		return err
 	}
 	span.SetAttributes(attribute.String("status", "success"))
-	logger().Info(span_ctx, "Connected peers table created",
+	logger().NamedLogger.Info(span_ctx, "Connected peers table created",
 		ion.Float64("duration", duration),
 		ion.String("status", "success"),
 	)
@@ -262,7 +271,7 @@ func (nm *NodeManager) initConnectedPeersTable(logger_ctx context.Context) error
 func (nm *NodeManager) loadManagedPeers(logger_ctx context.Context) error {
 
 	// record trace span and close it
-	span_ctx, span := logger().Tracer("NodeManager").Start(logger_ctx, "NodeManager.loadManagedPeers")
+	span_ctx, span := logger().NamedLogger.Tracer("NodeManager").Start(logger_ctx, "NodeManager.loadManagedPeers")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -273,7 +282,7 @@ func (nm *NodeManager) loadManagedPeers(logger_ctx context.Context) error {
 	// Call the function to get peers
 	peers, err := udb.GetConnectedPeers()
 	if err != nil {
-		logger().Error(span_ctx, "Failed to get connected peers",
+		logger().NamedLogger.Error(span_ctx, "Failed to get connected peers",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -294,7 +303,7 @@ func (nm *NodeManager) loadManagedPeers(logger_ctx context.Context) error {
 		// Use the peer package's Decode function to get a peer.ID
 		peerID, err := peer.Decode(dbPeer.PeerID)
 		if err != nil {
-			logger().Warn(span_ctx, "Invalid peer ID in database",
+			logger().NamedLogger.Warn(span_ctx, "Invalid peer ID in database",
 				ion.String("error", err.Error()),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -324,7 +333,7 @@ func (nm *NodeManager) loadManagedPeers(logger_ctx context.Context) error {
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
-	logger().Info(span_ctx, "Loaded managed peers from database",
+	logger().NamedLogger.Info(span_ctx, "Loaded managed peers from database",
 		ion.Int("loaded", loadedCount),
 		ion.Int("active", activeCount),
 		ion.Float64("duration_seconds", duration),
@@ -342,14 +351,14 @@ func (nm *NodeManager) StartHeartbeat(intervalSeconds int) {
 	}
 
 	// record trace span and close it
-	span_ctx, span := logger().Tracer("NodeManager").Start(nm.ctx, "NodeManager.StartHeartbeat")
+	span_ctx, span := logger().NamedLogger.Tracer("NodeManager").Start(nm.ctx, "NodeManager.StartHeartbeat")
 	defer span.End()
 
 	interval := time.Duration(intervalSeconds) * time.Second
 	nm.heartbeatTicker = time.NewTicker(interval)
 
 	LocalGRO.Go(GRO.NodeThread, func(ctx context.Context) error {
-		logger().Debug(span_ctx, "Starting heartbeat process with interval of %v",
+		logger().NamedLogger.Debug(span_ctx, "Starting heartbeat process with interval of %v",
 			ion.Int("interval", intervalSeconds),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -376,7 +385,7 @@ func (nm *NodeManager) StopHeartbeat() {
 // AddPeer adds a peer to be managed or reconnects if already managed
 func (nm *NodeManager) AddPeer(multiAddr string) error {
 	// Record trace span and close it
-	span_ctx, span := logger().Tracer("NodeManager").Start(nm.ctx, "NodeManager.AddPeer")
+	span_ctx, span := logger().NamedLogger.Tracer("NodeManager").Start(nm.ctx, "NodeManager.AddPeer")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -403,7 +412,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 	// Check if this is a self-connection attempt
 	if peerInfo.ID == nm.host.ID() {
 		span.SetAttributes(attribute.String("status", "error"), attribute.String("error_type", "self_connection"))
-		logger().Warn(span_ctx, "Attempted to add self as peer",
+		logger().NamedLogger.Warn(span_ctx, "Attempted to add self as peer",
 			ion.String("peer_id", peerInfo.ID.String()),
 			ion.String("multiaddr", multiAddr),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -447,7 +456,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 			span.RecordError(err)
 			span.SetAttributes(attribute.String("status", "reconnection_failed"))
 			span.SetAttributes(attribute.Float64("connection_duration", time.Since(connectStart).Seconds()))
-			logger().Warn(span_ctx, "Reconnection attempt to peer failed",
+			logger().NamedLogger.Warn(span_ctx, "Reconnection attempt to peer failed",
 				ion.String("peer_id", peerInfo.ID.String()),
 				ion.String("error", err.Error()),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -471,7 +480,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 		if err != nil {
 			// Database update failed, but connection was successful
 			span.RecordError(err)
-			logger().Error(span_ctx, "Failed to update reconnected peer status",
+			logger().NamedLogger.Error(span_ctx, "Failed to update reconnected peer status",
 				err,
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -482,7 +491,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "reconnected"))
-		logger().Info(span_ctx, "Successfully reconnected to peer",
+		logger().NamedLogger.Info(span_ctx, "Successfully reconnected to peer",
 			ion.String("peer_id", peerInfo.ID.String()),
 			ion.String("multiaddr", multiAddr),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -509,7 +518,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "database_error"))
-		logger().Error(span_ctx, "Failed to store peer in database",
+		logger().NamedLogger.Error(span_ctx, "Failed to store peer in database",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -527,7 +536,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 	if err := nm.host.Connect(connectCtx, *peerInfo); err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "connection_failed"), attribute.Float64("connection_duration", time.Since(connectStart).Seconds()))
-		logger().Warn(span_ctx, "Initial connection to peer failed",
+		logger().NamedLogger.Warn(span_ctx, "Initial connection to peer failed",
 			ion.String("peer_id", peerInfo.ID.String()),
 			ion.Float64("duration", time.Since(connectStart).Seconds()),
 			ion.String("multiaddr", multiAddr),
@@ -540,7 +549,7 @@ func (nm *NodeManager) AddPeer(multiAddr string) error {
 		// We still keep the peer in our list for future connection attempts
 	} else {
 		span.SetAttributes(attribute.Float64("connection_duration", time.Since(connectStart).Seconds()))
-		logger().Info(span_ctx, "Successfully connected to peer",
+		logger().NamedLogger.Info(span_ctx, "Successfully connected to peer",
 			ion.String("peer_id", peerInfo.ID.String()),
 			ion.Float64("duration", time.Since(connectStart).Seconds()),
 			ion.String("multiaddr", multiAddr),
@@ -564,7 +573,7 @@ func (nm *NodeManager) GetHost() host.Host {
 // RemovePeer removes a peer from management
 func (nm *NodeManager) RemovePeer(peerIDStr string) error {
 	// Record trace span and close it
-	span_ctx, span := logger().Tracer("NodeManager").Start(nm.ctx, "NodeManager.RemovePeer")
+	span_ctx, span := logger().NamedLogger.Tracer("NodeManager").Start(nm.ctx, "NodeManager.RemovePeer")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -603,7 +612,7 @@ func (nm *NodeManager) RemovePeer(peerIDStr string) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "database_error"))
-		logger().Error(span_ctx, "Failed to remove peer from database",
+		logger().NamedLogger.Error(span_ctx, "Failed to remove peer from database",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -617,7 +626,7 @@ func (nm *NodeManager) RemovePeer(peerIDStr string) error {
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().Info(span_ctx, "Peer removed from management",
+	logger().NamedLogger.Info(span_ctx, "Peer removed from management",
 		ion.String("peer_id", peerID.String()),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.Float64("duration", duration),
@@ -689,14 +698,14 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 	defer stream.Close()
 
 	// Record trace span and close it
-	span_ctx, span := logger().Tracer("NodeManager").Start(nm.ctx, "NodeManager.handleHeartbeat")
+	span_ctx, span := logger().NamedLogger.Tracer("NodeManager").Start(nm.ctx, "NodeManager.handleHeartbeat")
 	defer span.End()
 
 	startTime := time.Now().UTC()
 	remotePeer := stream.Conn().RemotePeer()
 	span.SetAttributes(attribute.String("remote_peer_id", remotePeer.String()))
 
-	logger().Debug(span_ctx, "Received heartbeat",
+	logger().NamedLogger.Debug(span_ctx, "Received heartbeat",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -713,7 +722,7 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 		span.SetAttributes(attribute.String("status", "read_error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(span_ctx, "Error reading heartbeat",
+		logger().NamedLogger.Error(span_ctx, "Error reading heartbeat",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -727,7 +736,7 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 
 	if message != "HEARTBEAT" {
 		span.SetAttributes(attribute.String("message_status", "invalid"))
-		logger().Debug(span_ctx, "Heartbeat message received",
+		logger().NamedLogger.Debug(span_ctx, "Heartbeat message received",
 			ion.String("message", message),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -743,7 +752,7 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 			span.SetAttributes(attribute.String("status", "write_error"))
 			duration := time.Since(startTime).Seconds()
 			span.SetAttributes(attribute.Float64("duration", duration))
-			logger().Error(span_ctx, "Error sending heartbeat response",
+			logger().NamedLogger.Error(span_ctx, "Error sending heartbeat response",
 				err,
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -754,7 +763,7 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 		}
 
 		span.SetAttributes(attribute.String("response_sent", response))
-		logger().Debug(span_ctx, "Sent heartbeat response",
+		logger().NamedLogger.Debug(span_ctx, "Sent heartbeat response",
 			ion.String("response", response),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -782,7 +791,7 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 			if err != nil {
 				span.RecordError(err)
 				span.SetAttributes(attribute.String("db_update_status", "failed"))
-				logger().Error(span_ctx, "Failed to update peer status in database",
+				logger().NamedLogger.Error(span_ctx, "Failed to update peer status in database",
 					err,
 					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 					ion.String("log_file", LOG_FILE),
@@ -791,7 +800,7 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 				)
 			} else {
 				span.SetAttributes(attribute.String("db_update_status", "success"))
-				logger().Debug(span_ctx, "Updated peer status in database",
+				logger().NamedLogger.Debug(span_ctx, "Updated peer status in database",
 					ion.String("peer_id", remotePeer.String()),
 					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 					ion.String("log_file", LOG_FILE),
@@ -800,7 +809,7 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 				)
 			}
 		} else {
-			logger().Debug(span_ctx, "Heartbeat from non-managed peer",
+			logger().NamedLogger.Debug(span_ctx, "Heartbeat from non-managed peer",
 				ion.String("peer_id", remotePeer.String()),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -820,7 +829,7 @@ func (nm *NodeManager) handleHeartbeat(stream network.Stream) {
 
 func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 	// Record trace span and close it
-	span_ctx, span := logger().Tracer("NodeManager").Start(nm.ctx, "NodeManager.sendHeartbeat")
+	span_ctx, span := logger().NamedLogger.Tracer("NodeManager").Start(nm.ctx, "NodeManager.sendHeartbeat")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -838,7 +847,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 		span.SetAttributes(attribute.String("status", "peer_not_found"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(span_ctx, "Peer not found in managed peers",
+		logger().NamedLogger.Error(span_ctx, "Peer not found in managed peers",
 			fmt.Errorf("peer %s not found in managed peers", peerID),
 			ion.String("peer_id", peerID.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -858,7 +867,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 		span.SetAttributes(attribute.String("status", "invalid_multiaddr"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(span_ctx, "Invalid stored multiaddress",
+		logger().NamedLogger.Error(span_ctx, "Invalid stored multiaddress",
 			err,
 			ion.String("peer_id", peerID.String()),
 			ion.String("multiaddr", peers.Multiaddr),
@@ -877,7 +886,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 		span.SetAttributes(attribute.String("status", "invalid_peer_info"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(span_ctx, "Invalid peer info",
+		logger().NamedLogger.Error(span_ctx, "Invalid peer info",
 			err,
 			ion.String("peer_id", peerID.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -893,7 +902,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 	defer cancel()
 	connectStart := time.Now().UTC()
 
-	logger().Debug(span_ctx, "Attempting to connect",
+	logger().NamedLogger.Debug(span_ctx, "Attempting to connect",
 		ion.String("peer_id", peerID.String()),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -906,7 +915,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 		span.SetAttributes(attribute.String("status", "connection_failed"), attribute.Float64("connection_duration", time.Since(connectStart).Seconds()))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Debug(span_ctx, "Connection failed",
+		logger().NamedLogger.Debug(span_ctx, "Connection failed",
 			ion.String("peer_id", peerID.String()),
 			ion.String("error", err.Error()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -926,7 +935,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 		span.SetAttributes(attribute.String("status", "stream_open_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(span_ctx, "Failed to open heartbeat stream",
+		logger().NamedLogger.Error(span_ctx, "Failed to open heartbeat stream",
 			err,
 			ion.String("peer_id", peerID.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -942,7 +951,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 
 	// Write a simple heartbeat message
 	writeStart := time.Now().UTC()
-	logger().Debug(span_ctx, "Sending heartbeat message",
+	logger().NamedLogger.Debug(span_ctx, "Sending heartbeat message",
 		ion.String("peer_id", peerID.String()),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -955,7 +964,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 		span.SetAttributes(attribute.String("status", "write_failed"), attribute.Float64("write_duration", time.Since(writeStart).Seconds()))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(span_ctx, "Failed to send heartbeat",
+		logger().NamedLogger.Error(span_ctx, "Failed to send heartbeat",
 			err,
 			ion.String("peer_id", peerID.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -973,7 +982,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 	stream.SetReadDeadline(time.Now().UTC().Add(5 * time.Second))
 	readStart := time.Now().UTC()
 
-	logger().Debug(span_ctx, "Waiting for heartbeat response",
+	logger().NamedLogger.Debug(span_ctx, "Waiting for heartbeat response",
 		ion.String("peer_id", peerID.String()),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -986,7 +995,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 		span.SetAttributes(attribute.String("status", "read_failed"), attribute.Float64("read_duration", time.Since(readStart).Seconds()))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(span_ctx, "Failed to read heartbeat response",
+		logger().NamedLogger.Error(span_ctx, "Failed to read heartbeat response",
 			err,
 			ion.String("peer_id", peerID.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1006,7 +1015,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 		span.SetAttributes(attribute.String("status", "invalid_response"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(span_ctx, "Invalid heartbeat response",
+		logger().NamedLogger.Error(span_ctx, "Invalid heartbeat response",
 			errors.New("invalid heartbeat response: "+response),
 			ion.String("response", response),
 			ion.String("peer_id", peerID.String()),
@@ -1020,7 +1029,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().Debug(span_ctx, "Valid heartbeat response received",
+	logger().NamedLogger.Debug(span_ctx, "Valid heartbeat response received",
 		ion.String("peer_id", peerID.String()),
 		ion.String("response", response),
 		ion.Float64("duration", duration),
@@ -1035,7 +1044,7 @@ func (nm *NodeManager) sendHeartbeat(peerID peer.ID) (bool, error) {
 // Update the performHeartbeat function to include auto-removal logic
 func (nm *NodeManager) performHeartbeat(logger_ctx context.Context) {
 	// Record trace span and close it
-	span_ctx, span := logger().Tracer("NodeManager").Start(logger_ctx, "NodeManager.performHeartbeat")
+	span_ctx, span := logger().NamedLogger.Tracer("NodeManager").Start(logger_ctx, "NodeManager.performHeartbeat")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -1046,7 +1055,7 @@ func (nm *NodeManager) performHeartbeat(logger_ctx context.Context) {
 		if err != nil {
 			span.RecordError(err)
 			span.SetAttributes(attribute.String("status", "initialization_error"))
-			logger().Error(span_ctx, "Error initializing LocalGRO",
+			logger().NamedLogger.Error(span_ctx, "Error initializing LocalGRO",
 				err,
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -1075,7 +1084,7 @@ func (nm *NodeManager) performHeartbeat(logger_ctx context.Context) {
 
 	wg, err := LocalGRO.NewFunctionWaitGroup(context.Background(), GRO.NodeManagerWG)
 	if err != nil {
-		logger().Error(logger_ctx, "Failed to create waitgroup",
+		logger().NamedLogger.Error(logger_ctx, "Failed to create waitgroup",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -1090,7 +1099,7 @@ func (nm *NodeManager) performHeartbeat(logger_ctx context.Context) {
 		peerID := peerID
 		LocalGRO.Go(GRO.NodeThread, func(ctx context.Context) error {
 
-			logger().Debug(logger_ctx, "Sending heartbeat",
+			logger().NamedLogger.Debug(logger_ctx, "Sending heartbeat",
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
 				ion.String("topic", TOPIC),
@@ -1102,7 +1111,7 @@ func (nm *NodeManager) performHeartbeat(logger_ctx context.Context) {
 			failCount := peer.HeartbeatFail
 			nm.mutex.RUnlock()
 
-			logger().Debug(logger_ctx, "Sending heartbeat",
+			logger().NamedLogger.Debug(logger_ctx, "Sending heartbeat",
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
 				ion.String("topic", TOPIC),
@@ -1116,7 +1125,7 @@ func (nm *NodeManager) performHeartbeat(logger_ctx context.Context) {
 
 			if err != nil {
 				failCount++
-				// logger().Warn(logger_ctx, "Heartbeat failed",
+				// logger().NamedLogger.Warn(logger_ctx, "Heartbeat failed",
 				// 	ion.String("error", err.Error()),
 				// 	ion.Int("failures", failCount),
 				// 	ion.Float64("latency_seconds", latency),
@@ -1127,7 +1136,7 @@ func (nm *NodeManager) performHeartbeat(logger_ctx context.Context) {
 				// )
 
 			} else {
-				// logger().Info(span_ctx, "Heartbeat successful",
+				// logger().NamedLogger.Info(span_ctx, "Heartbeat successful",
 				// 	ion.String("peer_id", peerID.String()),
 				// 	ion.Float64("latency_seconds", latency),
 				// 	ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1143,7 +1152,7 @@ func (nm *NodeManager) performHeartbeat(logger_ctx context.Context) {
 			// Update peer status
 			err = nm.UpdatePeerStatus(peerID, success, failCount)
 			if err != nil {
-				logger().Error(span_ctx, "Failed to update peer status",
+				logger().NamedLogger.Error(span_ctx, "Failed to update peer status",
 					err,
 					ion.String("peer_id", peerID.String()),
 					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1155,7 +1164,7 @@ func (nm *NodeManager) performHeartbeat(logger_ctx context.Context) {
 
 			// If too many consecutive failures, mark as offline
 			if failCount >= config.HeartbeatFailureThreshold {
-				logger().Warn(span_ctx, "Peer marked as offline due to consecutive heartbeat failures",
+				logger().NamedLogger.Warn(span_ctx, "Peer marked as offline due to consecutive heartbeat failures",
 					ion.String("peer_id", peerID.String()),
 					ion.Int("failures", failCount),
 					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1167,7 +1176,7 @@ func (nm *NodeManager) performHeartbeat(logger_ctx context.Context) {
 
 			// NEW CODE: Auto-remove peers with excessive failures (9+)
 			if failCount >= config.HeartbeatRemovalThreshold {
-				logger().Warn(span_ctx, "Removing peer due to excessive consecutive failures",
+				logger().NamedLogger.Warn(span_ctx, "Removing peer due to excessive consecutive failures",
 					ion.String("peer_id", peerID.String()),
 					ion.Int("failures", failCount),
 					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1178,7 +1187,7 @@ func (nm *NodeManager) performHeartbeat(logger_ctx context.Context) {
 
 				// Remove the peer from management
 				if err := nm.RemovePeer(peerID.String()); err != nil {
-					logger().Error(span_ctx, "Failed to remove unreachable peer",
+					logger().NamedLogger.Error(span_ctx, "Failed to remove unreachable peer",
 						err,
 						ion.String("peer_id", peerID.String()),
 						ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1187,7 +1196,7 @@ func (nm *NodeManager) performHeartbeat(logger_ctx context.Context) {
 						ion.String("function", "node.performHeartbeat"),
 					)
 				} else {
-					logger().Info(span_ctx, "Peer removed from management after 9 consecutive failures",
+					logger().NamedLogger.Info(span_ctx, "Peer removed from management after 9 consecutive failures",
 						ion.String("peer_id", peerID.String()),
 						ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 						ion.String("log_file", LOG_FILE),
@@ -1227,7 +1236,7 @@ func (nm *NodeManager) Shutdown() {
 	if nm.heartbeatTicker != nil {
 		nm.heartbeatTicker.Stop()
 	}
-	logger().Info(nm.ctx, "Node manager shutdown complete",
+	logger().NamedLogger.Info(nm.ctx, "Node manager shutdown complete",
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
@@ -1286,7 +1295,7 @@ func (nm *NodeManager) PingMultiaddrWithRetries(multiAddr string, attempts int) 
 	defer cancel()
 
 	if err := nm.host.Connect(ctx, *peerInfo); err != nil {
-		logger().Debug(nm.ctx, "Connection failed",
+		logger().NamedLogger.Debug(nm.ctx, "Connection failed",
 			ion.String("multiaddr", multiAddr),
 			ion.String("error", err.Error()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1325,7 +1334,7 @@ func (nm *NodeManager) PingMultiaddrWithRetries(multiAddr string, attempts int) 
 
 	if successCount > 0 {
 		avgRTT := totalRTT / time.Duration(successCount)
-		logger().Info(nm.ctx, "Ping successful",
+		logger().NamedLogger.Info(nm.ctx, "Ping successful",
 			ion.String("multiaddr", multiAddr),
 			ion.Int("successful_pings", successCount),
 			ion.Int("total_attempts", attempts),
@@ -1338,7 +1347,7 @@ func (nm *NodeManager) PingMultiaddrWithRetries(multiAddr string, attempts int) 
 		return true, avgRTT, nil
 	}
 
-	logger().Debug(nm.ctx, "All ping attempts failed",
+	logger().NamedLogger.Debug(nm.ctx, "All ping attempts failed",
 		ion.String("multiaddr", multiAddr),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),

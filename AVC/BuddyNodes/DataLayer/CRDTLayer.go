@@ -8,9 +8,7 @@ import (
 
 	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/crdt"
-	log "gossipnode/logging"
 
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -122,7 +120,7 @@ func SyncAllNodes(ctx context.Context, nodes map[string]*Types.Controller) error
 		for j := i + 1; j < len(nodeIDs); j++ {
 			node1ID := nodeIDs[i]
 			node2ID := nodeIDs[j]
-			logger(log.CRDTLayer).Debug(context.Background(), "Syncing CRDT nodes", ion.String("node1", node1ID), ion.String("node2", node2ID))
+			fmt.Println("Syncing", node1ID, "with", node2ID)
 			if err := SyncWithNode(ctx, nodes[node1ID], nodes[node2ID], node1ID, node2ID); err != nil {
 				return fmt.Errorf("failed to sync %s with %s: %v", node1ID, node2ID, err)
 			}
@@ -141,14 +139,4 @@ func GetCRDTState(ctx context.Context, controller *Types.Controller) map[string]
 // This uses the Engine's public method to apply the merged state
 func applyMergedCRDT(engine *crdt.Engine, key string, crdt crdt.CRDT) {
 	engine.ApplyMergedCRDT(key, crdt)
-}
-
-
-// logger returns the ion logger instance for CRDT layer
-func logger(namedLogger string) *ion.Ion {
-	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(namedLogger, "")
-	if err != nil {
-		return nil
-	}
-	return logInstance.GetNamedLogger()
 }

@@ -16,7 +16,6 @@ import (
 	"gossipnode/config/settings"
 	"gossipnode/seednode"
 
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
@@ -33,7 +32,7 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 	// Get the pubsub node if available
 	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
 	if pubSubNode == nil || pubSubNode.PubSub == nil {
-		logger().Info(context.Background(), "⚠️ PubSub node not available, using local CRDT data only")
+		fmt.Printf("⚠️ PubSub node not available, using local CRDT data only\n")
 		return nil
 	}
 
@@ -44,7 +43,7 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 
 	// Ensure buddy nodes list is populated from cached consensus if empty
 	if len(listenerNode.BuddyNodes.Buddies_Nodes) == 0 {
-		logger().Info(context.Background(), "⚠️ Buddy list empty at CRDT sync; attempting to populate from consensus cache")
+		fmt.Printf("⚠️ Buddy list empty at CRDT sync; attempting to populate from consensus cache\n")
 		buddyIDs := make([]peer.ID, 0, config.MaxMainPeers)
 		count := 0
 		for _, consensusMsg := range AVCStruct.CacheConsensuMessage {
@@ -68,7 +67,7 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 		}
 		if len(buddyIDs) > 0 {
 			listenerNode.BuddyNodes.Buddies_Nodes = buddyIDs
-		logger().Info(context.Background(), "✅ Populated buddy nodes from cache for CRDT sync:", ion.String("args", fmt.Sprintf("✅ Populated buddy nodes from cache for CRDT sync: %d peers (MaxMainPeers=%d)", len(buddyIDs), config.MaxMainPeers)))
+			fmt.Printf("✅ Populated buddy nodes from cache for CRDT sync: %d peers (MaxMainPeers=%d)\n", len(buddyIDs), config.MaxMainPeers)
 		}
 	}
 
@@ -76,19 +75,19 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 	syncConfig := CRDTSync.DefaultSyncConfig()
 	topicName := syncConfig.TopicName
 
-		logger().Info(context.Background(), "🔄 Starting CRDT sync (mode: both - publish & subscribe) on topic:", ion.String("args", fmt.Sprintf("🔄 Starting CRDT sync (mode: both - publish & subscribe) on topic: %s", topicName)))
+	fmt.Printf("🔄 Starting CRDT sync (mode: both - publish & subscribe) on topic: %s\n", topicName)
 
 	// STEP 1: Connect to all buddy nodes before sync starts
-		logger().Info(context.Background(), "🔌 Connecting to buddy nodes for CRDT sync...")
+	fmt.Printf("🔌 Connecting to buddy nodes for CRDT sync...\n")
 	if err := connectToBuddyNodesForSync(listenerNode); err != nil {
-		logger().Info(context.Background(), "⚠️ Failed to connect to some buddy nodes:", ion.String("args", fmt.Sprintf("⚠️ Failed to connect to some buddy nodes: %v (continuing anyway)", err)))
+		fmt.Printf("⚠️ Failed to connect to some buddy nodes: %v (continuing anyway)\n", err)
 	}
 
 	// Note: The CRDT sync channel is created by the sequencer during consensus start
 	// ONLY vote aggregating buddy nodes can join this channel (not regular network nodes)
 	// Buddy nodes should only subscribe to it, not create it
 	// This ensures all vote aggregating nodes join the same channel created by the sequencer
-		logger().Info(context.Background(), "📡 Subscribing to CRDT sync channel (private channel for vote aggregating buddies):", ion.String("args", fmt.Sprintf("📡 Subscribing to CRDT sync channel (private channel for vote aggregating buddies): %s", topicName)))
+	fmt.Printf("📡 Subscribing to CRDT sync channel (private channel for vote aggregating buddies): %s\n", topicName)
 
 	// Create local channel reference if it doesn't exist (for subscription permission check)
 	// This is just a local representation - the actual channel is created by the sequencer
@@ -107,7 +106,7 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 			Creator:      pubSubNode.PubSub.Host.ID(),
 			CreatedAt:    time.Now().UTC().Unix(),
 		}
-		logger().Info(context.Background(), "📋 Created local channel reference for", ion.String("args", fmt.Sprintf("📋 Created local channel reference for %s (private, only vote aggregating buddies allowed)", topicName)))
+		fmt.Printf("📋 Created local channel reference for %s (private, only vote aggregating buddies allowed)\n", topicName)
 	}
 	pubSubNode.PubSub.Mutex.Unlock()
 
@@ -136,15 +135,15 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 
 	totalBuddyNodes := len(allBuddyNodes)
 	if totalBuddyNodes == 0 {
-		logger().Info(context.Background(), "⚠️ No other buddy nodes found (expected", ion.String("args", fmt.Sprintf("⚠️ No other buddy nodes found (expected %d) - skipping CRDT sync", expectedBuddyCount)))
+		fmt.Printf("⚠️ No other buddy nodes found (expected %d) - skipping CRDT sync\n", expectedBuddyCount)
 		return nil
 	}
 
 	if totalBuddyNodes < expectedBuddyCount {
-		logger().Info(context.Background(), "⚠️ Only found", ion.String("args", fmt.Sprintf("⚠️ Only found %d buddy nodes, expected %d (config.MaxMainPeers)", totalBuddyNodes, expectedBuddyCount)))
+		fmt.Printf("⚠️ Only found %d buddy nodes, expected %d (config.MaxMainPeers)\n", totalBuddyNodes, expectedBuddyCount)
 	}
 
-		logger().Info(context.Background(), "📋 Will sync with", ion.String("args", fmt.Sprintf("📋 Will sync with %d buddy nodes (expected: %d from config.MaxMainPeers)", totalBuddyNodes, expectedBuddyCount)))
+	fmt.Printf("📋 Will sync with %d buddy nodes (expected: %d from config.MaxMainPeers)\n", totalBuddyNodes, expectedBuddyCount)
 
 	// Track received messages from each buddy node
 	receivedFrom := make(map[string]bool)
@@ -164,7 +163,7 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 		messageBytes := []byte(gossipMsg.Data.Message)
 
 		if err := json.Unmarshal(messageBytes, &rawMsg); err != nil {
-		logger().Info(context.Background(), "⚠️ Failed to parse CRDT sync message (raw):", ion.String("args", fmt.Sprintf("⚠️ Failed to parse CRDT sync message (raw): %v", err)))
+			fmt.Printf("⚠️ Failed to parse CRDT sync message (raw): %v\n", err)
 			return
 		}
 
@@ -222,12 +221,13 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 				count := len(receivedFrom)
 				receivedMutex.Unlock()
 
-		logger().Info(context.Background(), fmt.Sprintf("📥 Received CRDT sync from %s (%d/%d buddy nodes)", crdtSyncMsg.NodeID[:8], count, totalBuddyNodes))
+				fmt.Printf("📥 Received CRDT sync from %s (%d/%d buddy nodes)\n",
+					crdtSyncMsg.NodeID[:8], count, totalBuddyNodes)
 				syncMessages <- crdtSyncMsg
 
 				// Check if we've received from all buddy nodes
 				if count >= totalBuddyNodes {
-		logger().Info(context.Background(), "✅ Received CRDT sync from all", ion.String("args", fmt.Sprintf("✅ Received CRDT sync from all %d buddy nodes - ready to complete", totalBuddyNodes)))
+					fmt.Printf("✅ Received CRDT sync from all %d buddy nodes - ready to complete\n", totalBuddyNodes)
 					select {
 					case syncComplete <- true:
 					default:
@@ -241,20 +241,20 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 	})
 
 	if err != nil {
-		logger().Info(context.Background(), "⚠️ Failed to subscribe to CRDT sync topic:", ion.String("args", fmt.Sprintf("⚠️ Failed to subscribe to CRDT sync topic: %v", err)))
+		fmt.Printf("⚠️ Failed to subscribe to CRDT sync topic: %v\n", err)
 		return fmt.Errorf("failed to subscribe to sync topic: %w", err)
 	}
 
 	// Publish our own CRDT state ONCE to the pubsub channel
 	allCRDTs := listenerNode.CRDTLayer.CRDTLayer.GetAllCRDTs()
-		logger().Info(context.Background(), "📤 Publishing local CRDT state (", ion.String("args", fmt.Sprintf("📤 Publishing local CRDT state (%d objects) to pubsub channel: %s", len(allCRDTs), topicName)))
+	fmt.Printf("📤 Publishing local CRDT state (%d objects) to pubsub channel: %s\n", len(allCRDTs), topicName)
 
 	if len(allCRDTs) > 0 {
 		syncData := make(map[string]json.RawMessage)
 		for key, crdt := range allCRDTs {
 			data, err := json.Marshal(crdt)
 			if err != nil {
-		logger().Info(context.Background(), "⚠️ Failed to marshal CRDT for key", ion.String("args", fmt.Sprintf("⚠️ Failed to marshal CRDT for key %s: %v", key, err)))
+				fmt.Printf("⚠️ Failed to marshal CRDT for key %s: %v\n", key, err)
 				continue
 			}
 			syncData[key] = data
@@ -271,7 +271,7 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 
 		syncDataBytes, err := json.Marshal(syncMsg)
 		if err != nil {
-		logger().Info(context.Background(), "⚠️ Failed to marshal sync message:", ion.String("args", fmt.Sprintf("⚠️ Failed to marshal sync message: %v", err)))
+			fmt.Printf("⚠️ Failed to marshal sync message: %v\n", err)
 		} else {
 			if err := Publisher.Publish(logger_ctx, pubSubNode.PubSub, topicName,
 				AVCStruct.NewMessageBuilder(nil).
@@ -280,13 +280,13 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 					SetTimestamp(time.Now().UTC().Unix()).
 					SetACK(AVCStruct.NewACKBuilder().True_ACK_Message(listenerNode.PeerID, config.Type_CRDT_SYNC)),
 				nil); err != nil {
-		logger().Info(context.Background(), "⚠️ Failed to publish CRDT sync:", ion.String("args", fmt.Sprintf("⚠️ Failed to publish CRDT sync: %v", err)))
+				fmt.Printf("⚠️ Failed to publish CRDT sync: %v\n", err)
 			} else {
-		logger().Info(context.Background(), "✅ Published CRDT state to pubsub channel")
+				fmt.Printf("✅ Published CRDT state to pubsub channel\n")
 			}
 		}
 	} else {
-		logger().Info(context.Background(), "⚠️ No CRDT objects to publish (empty CRDT)")
+		fmt.Printf("⚠️ No CRDT objects to publish (empty CRDT)\n")
 		// Still publish an empty sync message so other nodes know we're active
 		syncMsg := CRDTSync.Message{
 			Type:      config.Type_CRDT_SYNC,
@@ -309,8 +309,8 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 	// Keep the pubsub channel open for full 30 seconds to ensure all nodes sync
 	// Increased from 10s to 30s to handle network delays
 	syncDuration := 30 * time.Second
-		logger().Info(context.Background(), "⏳ Waiting for CRDT sync messages from", ion.String("args", fmt.Sprintf("⏳ Waiting for CRDT sync messages from %d buddy nodes", totalBuddyNodes)))
-		logger().Info(context.Background(), "Pubsub channel will stay open for", ion.String("args", fmt.Sprintf("Pubsub channel will stay open for %v to ensure complete synchronization", syncDuration)))
+	fmt.Printf("⏳ Waiting for CRDT sync messages from %d buddy nodes\n", totalBuddyNodes)
+	fmt.Printf("   Pubsub channel will stay open for %v to ensure complete synchronization\n", syncDuration)
 
 	startTime := time.Now().UTC()
 	timeout := time.After(syncDuration)
@@ -325,7 +325,7 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 		case syncMsg := <-syncMessages:
 			// Merge received CRDT data into local CRDT
 			if err := mergeCRDTData(listenerNode, syncMsg); err != nil {
-		logger().Info(context.Background(), "⚠️ Failed to merge CRDT from", ion.String("args", fmt.Sprintf("⚠️ Failed to merge CRDT from %s: %v", syncMsg.NodeID[:8], err)))
+				fmt.Printf("⚠️ Failed to merge CRDT from %s: %v\n", syncMsg.NodeID[:8], err)
 			} else {
 				mergedCount++
 				receivedMutex.Lock()
@@ -333,14 +333,16 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 				receivedMutex.Unlock()
 
 				elapsed := time.Since(startTime)
-		logger().Info(context.Background(), fmt.Sprintf("✅ Merged CRDT from %s (%d/%d merged, %d/%d received, elapsed: %v)", syncMsg.NodeID[:8], mergedCount, totalBuddyNodes, receivedCount, totalBuddyNodes, elapsed.Round(time.Second)))
+				fmt.Printf("✅ Merged CRDT from %s (%d/%d merged, %d/%d received, elapsed: %v)\n",
+					syncMsg.NodeID[:8], mergedCount, totalBuddyNodes, receivedCount, totalBuddyNodes, elapsed.Round(time.Second))
 
 				// Check if we've received from all buddy nodes
 				if receivedCount >= totalBuddyNodes {
 					// Received from all, but keep subscription open for remaining time to catch any late messages
 					remaining := syncDuration - elapsed
 					if remaining > 0 && time.Since(lastUpdate) > 2*time.Second {
-		logger().Info(context.Background(), fmt.Sprintf("📥 Received from all %d buddies, keeping channel open for %v more to ensure full sync", totalBuddyNodes, remaining.Round(time.Second)))
+						fmt.Printf("📥 Received from all %d buddies, keeping channel open for %v more to ensure full sync\n",
+							totalBuddyNodes, remaining.Round(time.Second))
 						lastUpdate = time.Now().UTC()
 					}
 				}
@@ -348,11 +350,12 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 
 		case <-syncComplete:
 			elapsed := time.Since(startTime)
-		logger().Info(context.Background(), fmt.Sprintf("✅ Received sync messages from all %d buddy nodes (elapsed: %v)", totalBuddyNodes, elapsed.Round(time.Second)))
+			fmt.Printf("✅ Received sync messages from all %d buddy nodes (elapsed: %v)\n",
+				totalBuddyNodes, elapsed.Round(time.Second))
 			// Keep subscription open until timeout to ensure we receive all messages
 			remaining := syncDuration - elapsed
 			if remaining > 0 {
-		logger().Info(context.Background(), "Keeping channel open for", ion.String("args", fmt.Sprintf("Keeping channel open for %v more to catch any late messages", remaining.Round(time.Second))))
+				fmt.Printf("   Keeping channel open for %v more to catch any late messages\n", remaining.Round(time.Second))
 			}
 
 		case <-timeout:
@@ -360,7 +363,8 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 			receivedCount := len(receivedFrom)
 			receivedMutex.Unlock()
 			elapsed := time.Since(startTime)
-		logger().Info(context.Background(), fmt.Sprintf("⏱️ Sync duration complete (%v) - received from %d/%d buddy nodes, merged %d", elapsed.Round(time.Second), receivedCount, totalBuddyNodes, mergedCount))
+			fmt.Printf("⏱️ Sync duration complete (%v) - received from %d/%d buddy nodes, merged %d\n",
+				elapsed.Round(time.Second), receivedCount, totalBuddyNodes, mergedCount)
 			subscriptionDone = true
 		}
 
@@ -372,14 +376,15 @@ func TriggerCRDTSyncForBuddyNode(logger_ctx context.Context, listenerNode *AVCSt
 			elapsed := time.Since(startTime)
 			remaining := syncDuration - elapsed
 			if remaining > 0 {
-		logger().Info(context.Background(), fmt.Sprintf("📊 Sync status: %d/%d received, %d merged, %v remaining", receivedCount, totalBuddyNodes, mergedCount, remaining.Round(time.Second)))
+				fmt.Printf("📊 Sync status: %d/%d received, %d merged, %v remaining\n",
+					receivedCount, totalBuddyNodes, mergedCount, remaining.Round(time.Second))
 				lastUpdate = time.Now().UTC()
 			}
 		}
 	}
 
 	// Process any remaining messages in the channel (non-blocking, quick drain)
-		logger().Info(context.Background(), "🔄 Processing any remaining messages...")
+	fmt.Printf("🔄 Processing any remaining messages...\n")
 	remainingProcessed := 0
 	drainTimeout := time.After(2 * time.Second)
 drainLoop:
@@ -398,10 +403,10 @@ drainLoop:
 		}
 	}
 
-		logger().Info(context.Background(), "═══════════════════════════════════════════════════════════")
-		logger().Info(context.Background(), "✅ CRDT SYNC COMPLETE - Exchanged states with", ion.String("args", fmt.Sprintf("✅ CRDT SYNC COMPLETE - Exchanged states with %d buddy nodes", mergedCount)))
-		logger().Info(context.Background(), "All buddy nodes should now have consistent CRDT data")
-		logger().Info(context.Background(), "═══════════════════════════════════════════════════════════")
+	fmt.Printf("═══════════════════════════════════════════════════════════\n")
+	fmt.Printf("✅ CRDT SYNC COMPLETE - Exchanged states with %d buddy nodes\n", mergedCount)
+	fmt.Printf("   All buddy nodes should now have consistent CRDT data\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════\n")
 
 	return nil
 }
@@ -449,7 +454,7 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 		}
 	}
 	if cacheAdded > 0 {
-		logger().Info(context.Background(), "📋 Using", ion.String("args", fmt.Sprintf("📋 Using %d buddy targets from consensus cache (multiaddr-based)", cacheAdded)))
+		fmt.Printf("📋 Using %d buddy targets from consensus cache (multiaddr-based)\n", cacheAdded)
 	}
 
 	// NOTE: We do NOT use connected peers as fallback anymore
@@ -469,11 +474,11 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 			}
 		}
 		if len(fallbackIDs) == 0 {
-		logger().Info(context.Background(), "⚠️ No buddy nodes found from any source (expected", ion.String("args", fmt.Sprintf("⚠️ No buddy nodes found from any source (expected %d MaxMainPeers)", expectedBuddyCount)))
-		logger().Info(context.Background(), "⚠️ Cannot connect to other nodes for CRDT sync")
+			fmt.Printf("⚠️ No buddy nodes found from any source (expected %d MaxMainPeers)\n", expectedBuddyCount)
+			fmt.Printf("⚠️ Cannot connect to other nodes for CRDT sync\n")
 			return nil
 		}
-		logger().Info(context.Background(), "📋 Falling back to", ion.String("args", fmt.Sprintf("📋 Falling back to %d buddy peer IDs (will resolve multiaddrs)", len(fallbackIDs))))
+		fmt.Printf("📋 Falling back to %d buddy peer IDs (will resolve multiaddrs)\n", len(fallbackIDs))
 
 		// Convert fallback IDs into targets by resolving multiaddrs below
 		for _, pid := range fallbackIDs {
@@ -482,12 +487,14 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 	}
 
 	if len(buddyTargets) < expectedBuddyCount {
-		logger().Info(context.Background(), fmt.Sprintf("⚠️ Only found %d buddy nodes, expected %d (config.MaxMainPeers)", len(buddyTargets), expectedBuddyCount))
+		fmt.Printf("⚠️ Only found %d buddy nodes, expected %d (config.MaxMainPeers)\n",
+			len(buddyTargets), expectedBuddyCount)
 	}
 
-		logger().Info(context.Background(), fmt.Sprintf("✅ Total buddy nodes to connect: %d (expected: %d from config.MaxMainPeers)", len(buddyTargets), expectedBuddyCount))
+	fmt.Printf("✅ Total buddy nodes to connect: %d (expected: %d from config.MaxMainPeers)\n",
+		len(buddyTargets), expectedBuddyCount)
 
-		logger().Info(context.Background(), "🔌 Connecting to", ion.String("args", fmt.Sprintf("🔌 Connecting to %d buddy nodes for CRDT sync...", len(buddyTargets))))
+	fmt.Printf("🔌 Connecting to %d buddy nodes for CRDT sync...\n", len(buddyTargets))
 
 	connectedCount := 0
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -503,7 +510,7 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 
 		// Check if already connected
 		if listenerNode.Host.Network().Connectedness(buddyPeerID) == network.Connected {
-		logger().Info(context.Background(), "✅ Already connected to buddy", ion.String("args", fmt.Sprintf("✅ Already connected to buddy %s", buddyPeerID.String()[:8])))
+			fmt.Printf("✅ Already connected to buddy %s\n", buddyPeerID.String()[:8])
 			connectedCount++
 			continue
 		}
@@ -513,7 +520,7 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 		// Priority 1: Use target's provided multiaddr if present
 		if target.Multiaddr != nil {
 			multiaddrs = []multiaddr.Multiaddr{target.Multiaddr}
-		logger().Info(context.Background(), "📋 Using provided multiaddr for buddy", ion.String("args", fmt.Sprintf("📋 Using provided multiaddr for buddy %s: %s", buddyPeerID.String()[:8], target.Multiaddr.String())))
+			fmt.Printf("📋 Using provided multiaddr for buddy %s: %s\n", buddyPeerID.String()[:8], target.Multiaddr.String())
 		}
 
 		// Priority 2: Try to get from peerstore (fastest local source)
@@ -521,13 +528,13 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 			peerstoreAddrs := listenerNode.Host.Peerstore().Addrs(buddyPeerID)
 			if len(peerstoreAddrs) > 0 {
 				multiaddrs = peerstoreAddrs
-		logger().Info(context.Background(), "📋 Got", ion.String("args", fmt.Sprintf("📋 Got %d multiaddrs from peerstore for buddy %s", len(multiaddrs), buddyPeerID.String()[:8])))
+				fmt.Printf("📋 Got %d multiaddrs from peerstore for buddy %s\n", len(multiaddrs), buddyPeerID.String()[:8])
 			}
 		}
 
 		// Priority 3: Query seed node as last resort
 		if len(multiaddrs) == 0 && settings.Get().Network.SeedNode != "" {
-		logger().Info(context.Background(), "🔍 Querying seed node for multiaddr of buddy", ion.String("args", fmt.Sprintf("🔍 Querying seed node for multiaddr of buddy %s...", buddyPeerID.String()[:8])))
+			fmt.Printf("🔍 Querying seed node for multiaddr of buddy %s...\n", buddyPeerID.String()[:8])
 
 			client, err := seednode.NewClient(settings.Get().Network.SeedNode)
 			if err == nil {
@@ -539,12 +546,12 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 							multiaddrs = append(multiaddrs, maddr)
 						}
 					}
-		logger().Info(context.Background(), "📋 Got", ion.String("args", fmt.Sprintf("📋 Got %d multiaddrs from seed node for buddy %s", len(multiaddrs), buddyPeerID.String()[:8])))
+					fmt.Printf("📋 Got %d multiaddrs from seed node for buddy %s\n", len(multiaddrs), buddyPeerID.String()[:8])
 				} else if err != nil {
-		logger().Info(context.Background(), "⚠️ Failed to get peer from seed node:", ion.String("args", fmt.Sprintf("⚠️ Failed to get peer from seed node: %v", err)))
+					fmt.Printf("⚠️ Failed to get peer from seed node: %v\n", err)
 				}
 			} else {
-		logger().Info(context.Background(), "⚠️ Failed to create seed node client:", ion.String("args", fmt.Sprintf("⚠️ Failed to create seed node client: %v", err)))
+				fmt.Printf("⚠️ Failed to create seed node client: %v\n", err)
 			}
 		}
 
@@ -555,27 +562,27 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 				Addrs: multiaddrs,
 			}
 
-		logger().Info(context.Background(), "🔌 Attempting to connect to buddy", ion.String("args", fmt.Sprintf("🔌 Attempting to connect to buddy %s at %s...", buddyPeerID.String()[:8], multiaddrs[0].String())))
+			fmt.Printf("🔌 Attempting to connect to buddy %s at %s...\n", buddyPeerID.String()[:8], multiaddrs[0].String())
 
 			if err := listenerNode.Host.Connect(ctx, peerInfo); err != nil {
-		logger().Info(context.Background(), "❌ Failed to connect to buddy", ion.String("args", fmt.Sprintf("❌ Failed to connect to buddy %s: %v", buddyPeerID.String()[:8], err)))
+				fmt.Printf("❌ Failed to connect to buddy %s: %v\n", buddyPeerID.String()[:8], err)
 				// Try next multiaddr if available
 				if len(multiaddrs) > 1 {
 					for i := 1; i < len(multiaddrs) && i < 3; i++ { // Try up to 3 addresses
 						peerInfo.Addrs = []multiaddr.Multiaddr{multiaddrs[i]}
 						if err := listenerNode.Host.Connect(ctx, peerInfo); err == nil {
-		logger().Info(context.Background(), "✅ Connected to buddy", ion.String("args", fmt.Sprintf("✅ Connected to buddy %s using fallback address", buddyPeerID.String()[:8])))
+							fmt.Printf("✅ Connected to buddy %s using fallback address\n", buddyPeerID.String()[:8])
 							connectedCount++
 							goto nextPeer
 						}
 					}
 				}
 			} else {
-		logger().Info(context.Background(), "✅ Connected to buddy", ion.String("args", fmt.Sprintf("✅ Connected to buddy %s", buddyPeerID.String()[:8])))
+				fmt.Printf("✅ Connected to buddy %s\n", buddyPeerID.String()[:8])
 				connectedCount++
 			}
 		} else {
-		logger().Info(context.Background(), "⚠️ No multiaddrs found for buddy", ion.String("args", fmt.Sprintf("⚠️ No multiaddrs found for buddy %s, skipping connection", buddyPeerID.String()[:8])))
+			fmt.Printf("⚠️ No multiaddrs found for buddy %s, skipping connection\n", buddyPeerID.String()[:8])
 		}
 
 	nextPeer:
@@ -583,7 +590,7 @@ func connectToBuddyNodesForSync(listenerNode *AVCStruct.BuddyNode) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-		logger().Info(context.Background(), "✅ Connected to", ion.String("args", fmt.Sprintf("✅ Connected to %d/%d buddy nodes for CRDT sync", connectedCount, len(buddyTargets))))
+	fmt.Printf("✅ Connected to %d/%d buddy nodes for CRDT sync\n", connectedCount, len(buddyTargets))
 
 	// Wait a moment for connections to establish
 	time.Sleep(1 * time.Second)
@@ -604,7 +611,7 @@ func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) 
 		return fmt.Errorf("invalid sender peer ID: %w", err)
 	}
 
-		logger().Info(context.Background(), "🔄 Merging CRDT data from peer", ion.String("args", fmt.Sprintf("🔄 Merging CRDT data from peer %s", senderPeerID.String()[:8])))
+	fmt.Printf("🔄 Merging CRDT data from peer %s\n", senderPeerID.String()[:8])
 
 	// Merge each CRDT from the sync message
 	// Key is the vote peer ID, value is the CRDT set containing vote elements
@@ -612,7 +619,7 @@ func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) 
 		// Parse the vote peer ID
 		votePeerID, err := peer.Decode(votePeerIDStr)
 		if err != nil {
-		logger().Info(context.Background(), "⚠️ Invalid peer ID in sync data:", ion.String("args", fmt.Sprintf("⚠️ Invalid peer ID in sync data: %s", votePeerIDStr)))
+			fmt.Printf("⚠️ Invalid peer ID in sync data: %s\n", votePeerIDStr)
 			continue
 		}
 
@@ -624,7 +631,7 @@ func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) 
 		}
 
 		if err := json.Unmarshal(rawData, &remoteCRDT); err != nil {
-		logger().Info(context.Background(), "⚠️ Failed to unmarshal CRDT for peer", ion.String("args", fmt.Sprintf("⚠️ Failed to unmarshal CRDT for peer %s: %v", votePeerIDStr[:8], err)))
+			fmt.Printf("⚠️ Failed to unmarshal CRDT for peer %s: %v\n", votePeerIDStr[:8], err)
 			continue
 		}
 
@@ -635,19 +642,19 @@ func mergeCRDTData(listenerNode *AVCStruct.BuddyNode, syncMsg CRDTSync.Message) 
 				// DataLayer.Add(controller, nodeID peer.ID, key string, value string)
 				// For votes: key is the vote peer ID, value is the vote JSON element
 				if err := DataLayer.Add(listenerNode.CRDTLayer, votePeerID, votePeerIDStr, element); err != nil {
-		logger().Info(context.Background(), "⚠️ Failed to add vote element to CRDT for peer", ion.String("args", fmt.Sprintf("⚠️ Failed to add vote element to CRDT for peer %s: %v", votePeerIDStr[:8], err)))
+					fmt.Printf("⚠️ Failed to add vote element to CRDT for peer %s: %v\n", votePeerIDStr[:8], err)
 				} else {
 					if len(element) > 50 {
-		logger().Info(context.Background(), "✅ Added vote element from peer ...", ion.String("args", fmt.Sprintf("✅ Added vote element from peer ...%s: %s...", votePeerIDStr[8:], element[:50])))
+						fmt.Printf("  ✅ Added vote element from peer ...%s: %s...\n", votePeerIDStr[8:], element[:50])
 					} else {
-		logger().Info(context.Background(), "✅ Added vote element from peer", ion.String("args", fmt.Sprintf("✅ Added vote element from peer %s: %s", votePeerIDStr[:8], element)))
+						fmt.Printf("  ✅ Added vote element from peer %s: %s\n", votePeerIDStr[:8], element)
 					}
 				}
 			}
 		}
 	}
 
-		logger().Info(context.Background(), "✅ Completed merging CRDT data from peer", ion.String("args", fmt.Sprintf("✅ Completed merging CRDT data from peer %s", senderPeerID.String()[:8])))
+	fmt.Printf("✅ Completed merging CRDT data from peer %s\n", senderPeerID.String()[:8])
 
 	return nil
 }

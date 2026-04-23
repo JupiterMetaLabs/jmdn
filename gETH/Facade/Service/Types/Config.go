@@ -1,8 +1,9 @@
 package Types
 
 import (
-	"gossipnode/config"
 	"math/big"
+
+	"gossipnode/config"
 )
 
 // Withdrawal represents EIP-4895 withdrawal

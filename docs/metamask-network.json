@@ -1,8 +1,0 @@
-{
-  "networkName": "JMDT Local",
-  "rpcUrl": "http://localhost:8545",
-  "chainId": 8000800,
-  "currencySymbol": "JMDT",
-  "blockExplorerUrl": "http://localhost:8080",
-  "note": "Replace chainId with the value from eth_chainId on your node. Replace localhost with your node IP for remote connections."
-}

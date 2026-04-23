@@ -63,7 +63,7 @@ func SubmitMessage(logger_ctx context.Context, msg *PubSubMessages.Message, PubS
 	// Check if this is a vote message
 	var voteData map[string]interface{}
 	if err := json.Unmarshal([]byte(msg.Message), &voteData); err != nil {
-		logger().Error(logger_ctx, "Failed to unmarshal vote message", err,
+		logger().NamedLogger.Error(logger_ctx, "Failed to unmarshal vote message", err,
 			ion.String("function", "Structs.SubmitMessage"))
 		return errors.New("failed to unmarshal vote message: %v")
 	}
@@ -83,7 +83,7 @@ func SubmitMessage(logger_ctx context.Context, msg *PubSubMessages.Message, PubS
 
 		// Adding data to the CRDT First - Before PubSub
 		if err := ServiceLayer.Controller(ListenerNode.CRDTLayer, OP); err != nil {
-			logger().Error(logger_ctx, "Failed to add vote to local CRDT Engine", err.(error),
+			logger().NamedLogger.Error(logger_ctx, "Failed to add vote to local CRDT Engine", err.(error),
 				ion.String("function", "Structs.SubmitMessage"))
 			return errors.New("failed to add vote to local CRDT Engine: " + err.(error).Error())
 		}
@@ -91,14 +91,14 @@ func SubmitMessage(logger_ctx context.Context, msg *PubSubMessages.Message, PubS
 		// This is a regular message, try to unmarshal as OP
 		OP := &Types.OP{}
 		if err := json.Unmarshal([]byte(msg.Message), OP); err != nil {
-			logger().Error(logger_ctx, "Failed to unmarshal message", err,
+			logger().NamedLogger.Error(logger_ctx, "Failed to unmarshal message", err,
 				ion.String("function", "Structs.SubmitMessage"))
 			return errors.New("failed to unmarshal message: " + err.Error())
 		}
 
 		// Adding data to the CRDT First - Before PubSub
 		if err := ServiceLayer.Controller(ListenerNode.CRDTLayer, OP); err != nil {
-			logger().Error(logger_ctx, "Failed to add vote to local CRDT Engine", err.(error),
+			logger().NamedLogger.Error(logger_ctx, "Failed to add vote to local CRDT Engine", err.(error),
 				ion.String("function", "Structs.SubmitMessage"))
 			return errors.New("failed to add vote to local CRDT Engine: " + err.(error).Error())
 		}
@@ -106,7 +106,7 @@ func SubmitMessage(logger_ctx context.Context, msg *PubSubMessages.Message, PubS
 
 	// Now Submit to the publish function in the pubsub using config.PubSub_ConsensusChannel
 	if err := Publisher.Publish(logger_ctx, PubSub, config.PubSub_ConsensusChannel, msg, map[string]string{}); err != nil {
-		logger().Error(logger_ctx, "Failed to publish message to pubsub", err,
+		logger().NamedLogger.Error(logger_ctx, "Failed to publish message to pubsub", err,
 			ion.String("function", "Structs.SubmitMessage"))
 		return errors.New("failed to publish message to pubsub: %v")
 	}
@@ -118,24 +118,24 @@ func SubmitMessage(logger_ctx context.Context, msg *PubSubMessages.Message, PubS
 // targetBlockHash is required - votes without matching block_hash are skipped.
 func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string) (int8, error) {
 	if listenerNode == nil || listenerNode.CRDTLayer == nil {
-		logger().Error(logger_ctx, "Listener node or CRDT layer not initialized", nil,
+		logger().NamedLogger.Error(logger_ctx, "Listener node or CRDT layer not initialized", nil,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
 		return 0, errors.New("listener node or CRDT layer not initialized")
 	}
 
 	if targetBlockHash == "" {
-		logger().Error(logger_ctx, "TargetBlockHash is required for vote processing to avoid mixing votes from different blocks", nil,
+		logger().NamedLogger.Error(logger_ctx, "TargetBlockHash is required for vote processing to avoid mixing votes from different blocks", nil,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
 		return 0, errors.New("targetBlockHash is required for vote processing to avoid mixing votes from different blocks")
 	}
 
-	logger().Info(logger_ctx, "Processing votes from CRDT for voting",
+	logger().NamedLogger.Info(logger_ctx, "Processing votes from CRDT for voting",
 		ion.String("target_block_hash", targetBlockHash),
 		ion.String("function", "Structs.ProcessVotesFromCRDT"))
 
 	// Get all CRDTs to find all keys that might contain votes
 	allCRDTs := listenerNode.CRDTLayer.CRDTLayer.GetAllCRDTs()
-	logger().Info(logger_ctx, "Found CRDT keys in storage",
+	logger().NamedLogger.Info(logger_ctx, "Found CRDT keys in storage",
 		ion.Int("count", len(allCRDTs)),
 		ion.String("function", "Structs.ProcessVotesFromCRDT"))
 
@@ -149,7 +149,7 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 	// Iterate through all CRDT keys
 	for key := range allCRDTs {
 		votes, exists := DataLayer.GetSet(listenerNode.CRDTLayer, key)
-		logger().Info(logger_ctx, "Key exists in CRDT",
+		logger().NamedLogger.Info(logger_ctx, "Key exists in CRDT",
 			ion.String("key", key),
 			ion.Bool("exists", exists),
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
@@ -162,7 +162,7 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 		for _, voteStr := range votes {
 			var voteDataObj map[string]interface{}
 			if err := json.Unmarshal([]byte(voteStr), &voteDataObj); err != nil {
-				logger().Error(logger_ctx, "Failed to parse vote", err,
+				logger().NamedLogger.Error(logger_ctx, "Failed to parse vote", err,
 					ion.String("vote_str", voteStr),
 					ion.String("function", "Structs.ProcessVotesFromCRDT"))
 				continue
@@ -176,7 +176,7 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 
 			voteValue, ok := voteValueRaw.(float64)
 			if !ok {
-				logger().Error(logger_ctx, "Invalid vote value type", nil,
+				logger().NamedLogger.Error(logger_ctx, "Invalid vote value type", nil,
 					ion.String("vote_value_raw", voteValueRaw.(string)),
 					ion.String("function", "Structs.ProcessVotesFromCRDT"))
 				continue
@@ -187,14 +187,14 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 
 			// Require matching block hash (targetBlockHash is always required now)
 			if !hasBlockHash || !blockHashOK {
-				logger().Debug(logger_ctx, "Skipping peer vote without block_hash while targeting",
+				logger().NamedLogger.Debug(logger_ctx, "Skipping peer vote without block_hash while targeting",
 					ion.String("key", key),
 					ion.String("target_block_hash", targetBlockHash),
 					ion.String("function", "Structs.ProcessVotesFromCRDT"))
 				continue
 			}
 			if blockHash != targetBlockHash {
-				logger().Debug(logger_ctx, "Skipping peer vote for block_hash",
+				logger().NamedLogger.Debug(logger_ctx, "Skipping peer vote for block_hash",
 					ion.String("key", key),
 					ion.String("block_hash", blockHash),
 					ion.String("target_block_hash", targetBlockHash),
@@ -207,7 +207,7 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 				vote:      int8(voteValue),
 				blockHash: blockHash,
 			}
-			logger().Debug(logger_ctx, "Added vote for peer",
+			logger().NamedLogger.Debug(logger_ctx, "Added vote for peer",
 				ion.String("key", key),
 				ion.Int("vote_value", int(voteValue)),
 				ion.String("block_hash", blockHash),
@@ -216,7 +216,7 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 	}
 
 	if len(voteData) == 0 {
-		logger().Error(logger_ctx, "No votes found in CRDT to process", nil,
+		logger().NamedLogger.Error(logger_ctx, "No votes found in CRDT to process", nil,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
 		return 0, errors.New("no votes found in CRDT")
 	}
@@ -224,14 +224,14 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 	// Get peer weights from seed node
 	client, err := seednode.NewClient(settings.Get().Network.SeedNode)
 	if err != nil {
-		logger().Error(logger_ctx, "Failed to create seed node client", err,
+		logger().NamedLogger.Error(logger_ctx, "Failed to create seed node client", err,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
 		return 0, errors.New("failed to create seed node client: " + err.Error())
 	}
 
 	weights, err := client.ListWeightsofPeers()
 	if err != nil {
-		logger().Error(logger_ctx, "Failed to get peer weights", err,
+		logger().NamedLogger.Error(logger_ctx, "Failed to get peer weights", err,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
 		return 0, errors.New("failed to get peer weights: " + err.Error())
 	}
@@ -243,21 +243,21 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 		if weight, exists := weights[peerID]; exists {
 			filteredVoteData[peerID] = vote.vote
 			filteredWeights[peerID] = weight
-			logger().Debug(logger_ctx, "Peer has weight and vote",
+			logger().NamedLogger.Debug(logger_ctx, "Peer has weight and vote",
 				ion.String("peer_id", peerID),
 				ion.Float64("weight", weight),
 				ion.Int("vote", int(vote.vote)),
 				ion.String("block_hash", vote.blockHash),
 				ion.String("function", "Structs.ProcessVotesFromCRDT"))
 		} else {
-			logger().Debug(logger_ctx, "Peer not found in weights, skipping",
+			logger().NamedLogger.Debug(logger_ctx, "Peer not found in weights, skipping",
 				ion.String("peer_id", peerID),
 				ion.String("function", "Structs.ProcessVotesFromCRDT"))
 		}
 	}
 
 	if len(filteredVoteData) == 0 {
-		logger().Error(logger_ctx, "No votes found after filtering by weights", nil,
+		logger().NamedLogger.Error(logger_ctx, "No votes found after filtering by weights", nil,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
 		return 0, errors.New("no votes found after filtering by weights")
 	}
@@ -265,12 +265,12 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 	// Call votemodule.VoteAggregation with filtered maps
 	result, err := voteaggregation.VoteAggregation(filteredWeights, filteredVoteData)
 	if err != nil {
-		logger().Error(logger_ctx, "Failed to aggregate votes", err,
+		logger().NamedLogger.Error(logger_ctx, "Failed to aggregate votes", err,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
 		return 0, errors.New("failed to aggregate votes: " + err.Error())
 	}
 
-	logger().Debug(logger_ctx, "Vote aggregation result",
+	logger().NamedLogger.Debug(logger_ctx, "Vote aggregation result",
 		ion.Bool("result", result),
 		ion.String("function", "Structs.ProcessVotesFromCRDT"))
 

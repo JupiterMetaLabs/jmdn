@@ -48,7 +48,7 @@ func GetSubscriptionManager(gps *PubSubMessages.GossipPubSub) *SubscriptionManag
 			subscriptions: make(map[string]*ManagedSubscription),
 			gps:           gps,
 		}
-		logger().Info(context.Background(), "Initialized global SubscriptionManager (singleton)")
+		fmt.Println("🎯 Initialized global SubscriptionManager (singleton)")
 	})
 
 	// Update gps reference if needed (in case it changes)
@@ -63,7 +63,7 @@ func GetSubscriptionManager(gps *PubSubMessages.GossipPubSub) *SubscriptionManag
 
 // Subscribe subscribes to a topic with duplicate prevention
 func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic string, handler func(*PubSubMessages.GossipMessage)) error {
-	tracer := logger().Tracer("Subscription")
+	tracer := logger().NamedLogger.Tracer("Subscription")
 	trace_ctx, span := tracer.Start(logger_ctx, "SubscriptionManager.Subscribe")
 	defer span.End()
 
@@ -73,7 +73,7 @@ func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic strin
 		attribute.String("peer_id", sm.gps.Host.ID().String()),
 	)
 
-	logger().Info(trace_ctx, "SubscriptionManager: Subscribe request",
+	logger().NamedLogger.Info(trace_ctx, "SubscriptionManager: Subscribe request",
 		ion.String("topic", topic),
 		ion.String("function", "SubscriptionManager.Subscribe"))
 
@@ -93,7 +93,7 @@ func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic strin
 			attribute.Int("ref_count", existing.refCount),
 			attribute.Int("handlers_count", len(existing.handlers)),
 		)
-		logger().Info(trace_ctx, "SubscriptionManager: Topic already subscribed, added handler",
+		logger().NamedLogger.Info(trace_ctx, "SubscriptionManager: Topic already subscribed, added handler",
 			ion.String("topic", topic),
 			ion.Int("ref_count", existing.refCount),
 			ion.Int("handlers_count", len(existing.handlers)),
@@ -109,7 +109,7 @@ func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic strin
 		err := fmt.Errorf("access denied: not authorized to subscribe to channel %s", topic)
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "access_denied"))
-		logger().Error(trace_ctx, "SubscriptionManager: Access denied",
+		logger().NamedLogger.Error(trace_ctx, "SubscriptionManager: Access denied",
 			err,
 			ion.String("topic", topic),
 			ion.String("function", "SubscriptionManager.Subscribe"))
@@ -134,7 +134,7 @@ func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic strin
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "topic_join_failed"))
-		logger().Error(trace_ctx, "SubscriptionManager: Failed to get or join topic",
+		logger().NamedLogger.Error(trace_ctx, "SubscriptionManager: Failed to get or join topic",
 			err,
 			ion.String("topic", topic),
 			ion.String("function", "SubscriptionManager.Subscribe"))
@@ -146,7 +146,7 @@ func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic strin
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "subscribe_failed"))
-		logger().Error(trace_ctx, "SubscriptionManager: Failed to subscribe to topic",
+		logger().NamedLogger.Error(trace_ctx, "SubscriptionManager: Failed to subscribe to topic",
 			err,
 			ion.String("topic", topic),
 			ion.String("function", "SubscriptionManager.Subscribe"))
@@ -197,13 +197,13 @@ func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic strin
 			msg, err := sub.Next(ctxNext)
 			if err != nil {
 				if ctxNext.Err() != nil || err == context.Canceled || err == context.DeadlineExceeded {
-					logger().Info(trace_ctx, "SubscriptionManager: Subscription cancelled",
+					logger().NamedLogger.Info(trace_ctx, "SubscriptionManager: Subscription cancelled",
 						ion.String("topic", topic),
 						ion.Int("messages_processed", messageCount),
 						ion.String("function", "SubscriptionManager.Subscribe"))
 					return nil
 				}
-				logger().Error(trace_ctx, "SubscriptionManager: Error reading message",
+				logger().NamedLogger.Error(trace_ctx, "SubscriptionManager: Error reading message",
 					err,
 					ion.String("topic", topic),
 					ion.Int("messages_processed", messageCount),
@@ -214,7 +214,7 @@ func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic strin
 			// Parse the actual message data from raw bytes
 			var messageData PubSubMessages.Message
 			if err := json.Unmarshal(msg.Data, &messageData); err != nil {
-				logger().Warn(trace_ctx, "SubscriptionManager: Failed to unmarshal message data, skipping",
+				logger().NamedLogger.Warn(trace_ctx, "SubscriptionManager: Failed to unmarshal message data, skipping",
 					ion.String("error", err.Error()),
 					ion.String("topic", topic),
 					ion.Int("message_size_bytes", len(msg.Data)),
@@ -230,7 +230,7 @@ func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic strin
 					True_ACK_Message(msg.GetFrom(), config.Type_Publish)
 
 				messageData.SetACK(ack)
-				logger().Debug(trace_ctx, "SubscriptionManager: Attached default ACK to message",
+				logger().NamedLogger.Debug(trace_ctx, "SubscriptionManager: Attached default ACK to message",
 					ion.String("topic", topic),
 					ion.String("sender", msg.GetFrom().String()),
 					ion.String("function", "SubscriptionManager.Subscribe"))
@@ -284,7 +284,7 @@ func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic strin
 		attribute.Int("total_subscriptions", len(sm.subscriptions)),
 	)
 
-	logger().Info(trace_ctx, "SubscriptionManager: Successfully subscribed to topic",
+	logger().NamedLogger.Info(trace_ctx, "SubscriptionManager: Successfully subscribed to topic",
 		ion.String("topic", topic),
 		ion.Int("total_subscriptions", len(sm.subscriptions)),
 		ion.Float64("duration", duration),
@@ -296,14 +296,14 @@ func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic strin
 // Unsubscribe unsubscribes from a topic with reference counting
 func (sm *SubscriptionManager) Unsubscribe(topic string) error {
 	logger_ctx := context.Background()
-	tracer := logger().Tracer("Subscription")
+	tracer := logger().NamedLogger.Tracer("Subscription")
 	trace_ctx, span := tracer.Start(logger_ctx, "SubscriptionManager.Unsubscribe")
 	defer span.End()
 
 	startTime := time.Now().UTC()
 	span.SetAttributes(attribute.String("topic", topic))
 
-	logger().Info(trace_ctx, "SubscriptionManager: Unsubscribe request",
+	logger().NamedLogger.Info(trace_ctx, "SubscriptionManager: Unsubscribe request",
 		ion.String("topic", topic),
 		ion.String("function", "SubscriptionManager.Unsubscribe"))
 
@@ -313,7 +313,7 @@ func (sm *SubscriptionManager) Unsubscribe(topic string) error {
 	managed, exists := sm.subscriptions[topic]
 	if !exists {
 		span.SetAttributes(attribute.String("status", "not_found"))
-		logger().Warn(trace_ctx, "SubscriptionManager: Topic not found",
+		logger().NamedLogger.Warn(trace_ctx, "SubscriptionManager: Topic not found",
 			ion.String("topic", topic),
 			ion.String("function", "SubscriptionManager.Unsubscribe"))
 		return fmt.Errorf("topic %s not subscribed", topic)
@@ -331,7 +331,7 @@ func (sm *SubscriptionManager) Unsubscribe(topic string) error {
 
 	if managed.refCount > 0 {
 		// Still have references, keep subscription active
-		logger().Info(trace_ctx, "SubscriptionManager: Decremented refCount, keeping subscription active",
+		logger().NamedLogger.Info(trace_ctx, "SubscriptionManager: Decremented refCount, keeping subscription active",
 			ion.String("topic", topic),
 			ion.Int("ref_count", managed.refCount),
 			ion.Int("handlers_remaining", len(managed.handlers)),
@@ -352,7 +352,7 @@ func (sm *SubscriptionManager) Unsubscribe(topic string) error {
 	// Close the topic to free resources
 	if managed.pubsubTopic != nil {
 		if err := managed.pubsubTopic.Close(); err != nil {
-			logger().Warn(trace_ctx, "SubscriptionManager: Failed to close topic",
+			logger().NamedLogger.Warn(trace_ctx, "SubscriptionManager: Failed to close topic",
 				ion.String("topic", topic),
 				ion.String("error", err.Error()),
 				ion.String("function", "SubscriptionManager.Unsubscribe"))
@@ -367,7 +367,7 @@ func (sm *SubscriptionManager) Unsubscribe(topic string) error {
 		attribute.Int("total_subscriptions", len(sm.subscriptions)),
 	)
 
-	logger().Info(trace_ctx, "SubscriptionManager: Successfully unsubscribed and cleaned up",
+	logger().NamedLogger.Info(trace_ctx, "SubscriptionManager: Successfully unsubscribed and cleaned up",
 		ion.String("topic", topic),
 		ion.Int("total_subscriptions", len(sm.subscriptions)),
 		ion.Float64("duration", duration),
@@ -379,11 +379,11 @@ func (sm *SubscriptionManager) Unsubscribe(topic string) error {
 // Shutdown cancels all active subscriptions
 func (sm *SubscriptionManager) Shutdown() {
 	logger_ctx := context.Background()
-	tracer := logger().Tracer("Subscription")
+	tracer := logger().NamedLogger.Tracer("Subscription")
 	trace_ctx, span := tracer.Start(logger_ctx, "SubscriptionManager.Shutdown")
 	defer span.End()
 
-	logger().Info(trace_ctx, "SubscriptionManager: Shutting down all subscriptions",
+	logger().NamedLogger.Info(trace_ctx, "SubscriptionManager: Shutting down all subscriptions",
 		ion.Int("total_subscriptions", len(sm.subscriptions)),
 		ion.String("function", "SubscriptionManager.Shutdown"))
 
@@ -400,13 +400,13 @@ func (sm *SubscriptionManager) Shutdown() {
 		// Close the topic to free resources
 		if managed.pubsubTopic != nil {
 			if err := managed.pubsubTopic.Close(); err != nil {
-				logger().Warn(trace_ctx, "SubscriptionManager: Failed to close topic during shutdown",
+				logger().NamedLogger.Warn(trace_ctx, "SubscriptionManager: Failed to close topic during shutdown",
 					ion.String("topic", topic),
 					ion.String("error", err.Error()),
 					ion.String("function", "SubscriptionManager.Shutdown"))
 			}
 		}
-		logger().Info(trace_ctx, "SubscriptionManager: Cancelled subscription and closed topic",
+		logger().NamedLogger.Info(trace_ctx, "SubscriptionManager: Cancelled subscription and closed topic",
 			ion.String("topic", topic),
 			ion.String("function", "SubscriptionManager.Shutdown"))
 	}
@@ -416,13 +416,13 @@ func (sm *SubscriptionManager) Shutdown() {
 	// Shutdown the GossipPubSub instance to cleanup remaining resources
 	if sm.gps != nil {
 		if err := sm.gps.Shutdown(context.Background()); err != nil {
-			logger().Warn(trace_ctx, "SubscriptionManager: Failed to shutdown GossipPubSub",
+			logger().NamedLogger.Warn(trace_ctx, "SubscriptionManager: Failed to shutdown GossipPubSub",
 				ion.String("error", err.Error()),
 				ion.String("function", "SubscriptionManager.Shutdown"))
 		}
 	}
 
-	logger().Info(trace_ctx, "SubscriptionManager: Shutdown complete",
+	logger().NamedLogger.Info(trace_ctx, "SubscriptionManager: Shutdown complete",
 		ion.String("function", "SubscriptionManager.Shutdown"))
 }
 

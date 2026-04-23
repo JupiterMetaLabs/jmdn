@@ -6,12 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+
 	block "gossipnode/Block"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/gETH/proto"
 
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -130,10 +130,7 @@ func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error
 	// Sort the Txns by nonce
 	Txns = SortTransactionsByNonce(Txns)
 	// Now pick the last nonce
-	var nonce uint64
-	if len(Txns) > 0 {
-		nonce = Txns[len(Txns)-1].Nonce
-	}
+	nonce := Txns[len(Txns)-1].Nonce
 
 	// Create hash of all transactions
 	txHash, err := HashTransactions(Txns)
@@ -170,11 +167,14 @@ func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	// Debugging
-	logger().Debug(context.Background(), "Transaction details",
-		ion.String("type", fmt.Sprintf("%d", tx.Type)),
-		ion.String("gas_price", tx.GasPrice.String()))
-	hash, err := block.SubmitRawTransaction(context.Background(), &tx)
+	fmt.Println("Transaction: ", tx)
+	fmt.Println("Transaction Type: ", tx.Type)
+	fmt.Println("Gas Fee Type: ", tx.GasPrice)
+	fmt.Println("Gas Fee: ", tx.GasPrice)
+	hash, err := block.SubmitRawTransaction(ctx, &tx)
 	if err != nil {
 		return nil, err
 	}
@@ -182,15 +182,17 @@ func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error
 	return &proto.SendRawTxResp{TxHash: common.HexToHash(hash).Bytes()}, nil
 }
 
+/* UNUSED
 func _EstimateGas(req *proto.CallReq) (*proto.EstimateResp, error) {
 	// Get the Mempool Client
 	RoutingClient, err := block.ReturnMempoolObject()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get mempool client: %v", err)
 	}
-
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	// Get the Fee Stats
-	feeStats, err := RoutingClient.WrapperGetFeeStatistics()
+	feeStats, err := RoutingClient.WrapperGetFeeStatistics(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -199,6 +201,7 @@ func _EstimateGas(req *proto.CallReq) (*proto.EstimateResp, error) {
 		GasEstimate: feeStats.RecommendedFees.Standard,
 	}, nil
 }
+*/
 
 func _GetChainID(req *proto.Empty, chainID int) (*proto.Quantity, error) {
 	return &proto.Quantity{Value: uint64(chainID)}, nil

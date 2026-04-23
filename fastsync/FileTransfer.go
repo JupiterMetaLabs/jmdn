@@ -1,23 +1,21 @@
 package fastsync
 
 import (
-	"context"
 	"fmt"
 	"os"
 
 	"gossipnode/transfer"
 
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/rs/zerolog/log"
 )
 
 func TransferAVROFile(h host.Host, peerID peer.ID, filepath string, remoteFilename string) error {
 	// Debugging
-	logger().Debug(context.Background(), "Transferring AVRO file to peer",
-		ion.String("peer", peerID.String()),
-		ion.String("filepath", filepath),
-		ion.String("remote_filename", remoteFilename))
+	fmt.Println("Transferring AVRO file to peer:", peerID.String())
+	fmt.Println("Filepath:", filepath)
+	fmt.Println("File name:", remoteFilename)
 
 	// Check if file exists and has content
 	fileInfo, err := os.Stat(filepath)
@@ -27,26 +25,29 @@ func TransferAVROFile(h host.Host, peerID peer.ID, filepath string, remoteFilena
 
 	// Skip transfer if file is empty
 	if fileInfo.Size() == 0 {
-		logger().Info(context.Background(), "Skipping empty file transfer",
-			ion.String("peer", peerID.String()),
-			ion.String("file", filepath))
+		log.Info().
+			Str("peer", peerID.String()).
+			Str("file", filepath).
+			Msg("Skipping empty file transfer")
 		return nil
 	}
 
 	// Debug logging
-	logger().Info(context.Background(), "Initiating file transfer",
-		ion.String("peer", peerID.String()),
-		ion.String("file", filepath),
-		ion.Int64("size_bytes", fileInfo.Size()))
+	log.Info().
+		Str("peer", peerID.String()).
+		Str("file", filepath).
+		Int64("size_bytes", fileInfo.Size()).
+		Msg("Initiating file transfer")
 
 	err = transfer.SendFile(h, peerID, filepath, remoteFilename)
 	if err != nil {
 		return fmt.Errorf("failed to send file: %w", err)
 	}
 
-	logger().Info(context.Background(), "File transfer completed successfully",
-		ion.String("peer", peerID.String()),
-		ion.String("file", filepath))
+	log.Info().
+		Str("peer", peerID.String()).
+		Str("file", filepath).
+		Msg("File transfer completed successfully")
 
 	return nil
 }

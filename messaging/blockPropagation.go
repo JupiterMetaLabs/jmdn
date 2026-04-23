@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -16,10 +15,10 @@ import (
 	GROHelper "gossipnode/messaging/common"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/rs/zerolog/log"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
@@ -46,7 +45,7 @@ func StartBlockPropagationCleanup() {
 		var err error
 		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
 		if err != nil {
-			broadcastLogger().Error(context.Background(), "Failed to initialize BlockPropagationLocalGRO", err)
+			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
 			return
 		}
 	}
@@ -62,9 +61,12 @@ func StartBlockPropagationCleanup() {
 // Initialize the host when starting the node
 func InitBlockPropagation(h host.Host) error {
 	globalHost = h // Save the host reference
+	fmt.Println("Block propagation system initialized")
 	var initErr error
 	immuClientOnce.Do(func() {
-		broadcastLogger().Info(context.Background(), "Block propagation system initialized - connections will be obtained on-demand")
+		// Block propagation system initialized - will get connections on-demand
+		fmt.Println("Block propagation system initialized - connections will be obtained on-demand")
+		log.Info().Msg("Block propagation system initialized")
 	})
 	return initErr
 }
@@ -117,7 +119,10 @@ func timeoutPeer(peerID string, duration time.Duration) {
 	defer peerTimeoutMutex.Unlock()
 
 	peerTimeouts[peerID] = time.Now().UTC().Add(duration)
-	broadcastLogger().Info(context.Background(), "Peer timed out for sending duplicate block", ion.String("peer", peerID), ion.String("duration", duration.String()))
+	log.Info().
+		Str("peer", peerID).
+		Dur("duration", duration).
+		Msg("Peer timed out for sending duplicate block")
 }
 
 // isMessageProcessed checks if this message has already been processed
@@ -144,17 +149,17 @@ func storeMessageInImmuDB(msg config.BlockMessage) error {
 
 	// Store the message
 	if err := DB_OPs.Create(nil, key, msg); err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to store message in ImmuDB", err, ion.String("key", key))
+		log.Error().Err(err).Str("key", key).Msg("Failed to store message in ImmuDB")
 		return err
 	}
 
 	// Update message set
 	if err := updateMessageSet(key); err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to update message set", err, ion.String("key", key))
+		log.Error().Err(err).Str("key", key).Msg("Failed to update message set")
 		return err
 	}
 
-	broadcastLogger().Debug(context.Background(), "Message stored in ImmuDB", ion.String("key", key), ion.String("type", msg.Type))
+	log.Debug().Str("key", key).Str("type", msg.Type).Msg("Message stored in ImmuDB")
 	return nil
 }
 
@@ -195,7 +200,7 @@ func HandleBlockStream(stream network.Stream) {
 		var err error
 		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
 		if err != nil {
-			broadcastLogger().Error(context.Background(), "Failed to initialize BlockPropagationLocalGRO", err)
+			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
 			return
 		}
 	}
@@ -203,7 +208,7 @@ func HandleBlockStream(stream network.Stream) {
 
 	remotePeer := stream.Conn().RemotePeer().String()
 	if isPeerTimedOut(remotePeer) {
-		broadcastLogger().Debug(context.Background(), "Ignoring message from timed-out peer", ion.String("peer", remotePeer))
+		log.Debug().Str("peer", remotePeer).Msg("Ignoring message from timed-out peer")
 		return
 	}
 
@@ -213,21 +218,21 @@ func HandleBlockStream(stream network.Stream) {
 	reader := bufio.NewReader(stream)
 	messageBytes, err := reader.ReadBytes('\n')
 	if err != nil && err != io.EOF {
-		broadcastLogger().Error(context.Background(), "Failed to read message bytes", err)
+		log.Error().Err(err).Msg("Failed to read message bytes")
 		return
 	}
 
 	// Parse the message
 	var msg config.BlockMessage
 	if err := json.Unmarshal(messageBytes, &msg); err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to unmarshal block message", err)
+		log.Error().Err(err).Msg("Failed to unmarshal block message")
 		return
 	}
 
 	// Check for duplicates
 	messageID := getMessageIDForBloomFilter(msg)
 	if isMessageProcessed(messageID) {
-		broadcastLogger().Debug(context.Background(), "Duplicate message received", ion.String("message_id", messageID))
+		log.Debug().Str("message_id", messageID).Msg("Duplicate message received")
 		timeoutPeer(remotePeer, 20*time.Second)
 		return
 	}
@@ -237,19 +242,21 @@ func HandleBlockStream(stream network.Stream) {
 
 	// For ZK blocks, prioritize forwarding over processing
 	if msg.Type == "zkblock" && msg.Block != nil {
-		broadcastLogger().Info(context.Background(), "Received ZK block from peer",
-			ion.String("block_hash", msg.Block.BlockHash.Hex()),
-			ion.Uint64("block_number", msg.Block.BlockNumber),
-			ion.Int("txn_count", len(msg.Block.Transactions)))
+		log.Info().
+			Str("block_hash", msg.Block.BlockHash.Hex()).
+			Uint64("block_number", msg.Block.BlockNumber).
+			Int("txn_count", len(msg.Block.Transactions)).
+			Msg("Received ZK block from peer")
 
 		// STEP 1: FORWARD BLOCK FIRST - increment hops and forward to other peers
 		if msg.Hops < config.MaxHops {
 			msg.Hops++
 			if globalHost != nil {
-				broadcastLogger().Info(context.Background(), "Forwarding ZK block to peers",
-					ion.String("block_hash", msg.Block.BlockHash.Hex()),
-					ion.Uint64("block_number", msg.Block.BlockNumber),
-					ion.Int("hops", msg.Hops))
+				log.Info().
+					Str("block_hash", msg.Block.BlockHash.Hex()).
+					Uint64("block_number", msg.Block.BlockNumber).
+					Int("hops", msg.Hops).
+					Msg("Forwarding ZK block to peers")
 
 				// Don't wait for forwarding to complete
 				BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
@@ -257,7 +264,7 @@ func HandleBlockStream(stream network.Stream) {
 					return nil
 				})
 			} else {
-				broadcastLogger().Error(context.Background(), "Cannot forward block: global host not initialized", errors.New("global host not initialized"))
+				log.Error().Msg("Cannot forward block: global host not initialized")
 			}
 		}
 
@@ -265,8 +272,9 @@ func HandleBlockStream(stream network.Stream) {
 		BlockPropagationLocalGRO.Go(GRO.BlockPropagationProcessAndValidateThread, func(ctx context.Context) error {
 			// Check if block is explicitly rejected
 			if status, ok := msg.Data["status"]; ok && status == "rejected" {
-				broadcastLogger().Info(ctx, "Received consensus REJECTION for block - discarding",
-					ion.String("block_hash", msg.Block.BlockHash.Hex()))
+				log.Info().
+					Str("block_hash", msg.Block.BlockHash.Hex()).
+					Msg("Received consensus REJECTION for block - discarding")
 				return nil
 			}
 
@@ -274,7 +282,7 @@ func HandleBlockStream(stream network.Stream) {
 			if blsJSON, ok := msg.Data["bls_results"]; ok && len(blsJSON) > 0 {
 				var blsResponses []BLS_Signer.BLSresponse
 				if err := json.Unmarshal([]byte(blsJSON), &blsResponses); err != nil {
-					broadcastLogger().Error(context.Background(), "Failed to unmarshal bls_results; skipping verification", err)
+					log.Error().Err(err).Msg("Failed to unmarshal bls_results; skipping verification")
 				} else if len(blsResponses) > 0 {
 					// Count how many verified signatures explicitly favor (+1)
 					validYes := 0
@@ -286,7 +294,7 @@ func HandleBlockStream(stream network.Stream) {
 							vote = 1
 						}
 						if err := BLS_Verifier.Verify(r, vote); err != nil {
-							broadcastLogger().Warn(context.Background(), "BLS verification failed for buddy response", ion.Err(err), ion.String("peer", r.PeerID))
+							log.Warn().Err(err).Str("peer", r.PeerID).Msg("BLS verification failed for buddy response")
 							continue
 						}
 						validTotal++
@@ -295,35 +303,36 @@ func HandleBlockStream(stream network.Stream) {
 						}
 					}
 					if validTotal == 0 {
-						broadcastLogger().Error(ctx, "No valid BLS signatures - skipping block processing (irrelevant block)", errors.New("no valid BLS signatures"))
+						log.Error().Msg("No valid BLS signatures - skipping block processing (irrelevant block)")
 						return fmt.Errorf("no valid BLS signatures - skipping block processing (irrelevant block)")
 					}
 					needed := (validTotal / 2) + 1
 					if validYes < needed {
-						broadcastLogger().Error(ctx, "BLS majority not in favor (+1) - skipping block processing (irrelevant block)",
-							errors.New("BLS majority not in favor"),
-							ion.Int("valid_yes", validYes),
-							ion.Int("needed", needed),
-							ion.Int("valid_total", validTotal))
+						log.Error().
+							Int("valid_yes", validYes).
+							Int("needed", needed).
+							Int("valid_total", validTotal).
+							Msg("BLS majority not in favor (+1) - skipping block processing (irrelevant block)")
 						return fmt.Errorf("BLS majority not in favor (+1) - skipping block processing (irrelevant block)")
 					}
-					broadcastLogger().Info(ctx, "BLS majority in favor verified - continuing block processing",
-						ion.Int("valid_yes", validYes),
-						ion.Int("needed", needed),
-						ion.Int("valid_total", validTotal))
+					log.Info().
+						Int("valid_yes", validYes).
+						Int("needed", needed).
+						Int("valid_total", validTotal).
+						Msg("BLS majority in favor verified - continuing block processing")
 				}
 			}
 
 			// Create DB clients for processing
 			mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 			if err != nil {
-				broadcastLogger().Error(ctx, "Failed to create main DB client", err)
+				log.Error().Err(err).Msg("Failed to create main DB client")
 				return fmt.Errorf("failed to create main DB client: %w", err)
 			}
 
 			accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
 			if err != nil {
-				broadcastLogger().Error(ctx, "Failed to create accounts DB client", err)
+				log.Error().Err(err).Msg("Failed to create accounts DB client")
 				return fmt.Errorf("failed to create accounts DB client: %w", err)
 			}
 			defer func() {
@@ -331,51 +340,49 @@ func HandleBlockStream(stream network.Stream) {
 				DB_OPs.PutAccountsConnection(accountsClient)
 			}()
 
-			broadcastLogger().Info(ctx, "Processing block transactions",
-				ion.String("block_hash", msg.Block.BlockHash.Hex()),
-				ion.Uint64("block_number", msg.Block.BlockNumber))
+			log.Info().
+				Str("block_hash", msg.Block.BlockHash.Hex()).
+				Uint64("block_number", msg.Block.BlockNumber).
+				Msg("Processing block transactions")
 
-			// Pull-on-demand: ensure contract metadata is present before execution.
-			// This handles the case where the ContractMessage gossip was missed
-			// (e.g. sequencer went offline before propagation completed).
-			if h := getHostInstance(); h != nil {
-				PrefetchMissingContracts(ctx, h, msg.Block.Transactions)
-			}
-
-			// Process all transactions in the block atomically with rollback capability.
-			// Receiver nodes discard the deployments slice — only the sequencer propagates contracts.
-			if _, err := BlockProcessing.ProcessBlockTransactions(msg.Block, accountsClient, true); err != nil {
-				broadcastLogger().Error(ctx, "Block processing failed - not storing block", err,
-					ion.String("block_hash", msg.Block.BlockHash.Hex()))
+			// Process all transactions in the block atomically with rollback capability
+			if err := BlockProcessing.ProcessBlockTransactions(ctx, msg.Block, accountsClient); err != nil {
+				log.Error().
+					Err(err).
+					Str("block_hash", msg.Block.BlockHash.Hex()).
+					Msg("Block processing failed - not storing block")
 				return fmt.Errorf("block processing failed - not storing block: %w", err)
 			}
 
-			broadcastLogger().Info(ctx, "All transactions processed successfully - storing block",
-				ion.String("block_hash", msg.Block.BlockHash.Hex()))
+			log.Info().
+				Str("block_hash", msg.Block.BlockHash.Hex()).
+				Msg("All transactions processed successfully - storing block")
 
 			// Store the validated and processed block in main DB
 			if err := DB_OPs.StoreZKBlock(mainDBClient, msg.Block); err != nil {
-				broadcastLogger().Error(ctx, "Failed to store block in database", err,
-					ion.String("block_hash", msg.Block.BlockHash.Hex()))
+				log.Error().
+					Err(err).
+					Str("block_hash", msg.Block.BlockHash.Hex()).
+					Msg("Failed to store block in database")
 				return fmt.Errorf("failed to store block in database: %w", err)
 			}
 
 			// Store block message metadata
 			if err := storeMessageInImmuDB(msg); err != nil { // msg is a copy, but it's fine
-				broadcastLogger().Error(ctx, "Failed to store block message in ImmuDB", err)
+				log.Error().Err(err).Msg("Failed to store block message in ImmuDB")
 			}
 
-			broadcastLogger().Info(ctx, "Block processed and stored successfully",
-				ion.String("block_hash", msg.Block.BlockHash.Hex()),
-				ion.Uint64("block_number", msg.Block.BlockNumber))
+			log.Info().
+				Str("block_hash", msg.Block.BlockHash.Hex()).
+				Uint64("block_number", msg.Block.BlockNumber).
+				Msg("Block processed and stored successfully")
 			return nil
 		})
 
-		broadcastLogger().Info(context.Background(), "ZKBlock received",
-			ion.String("sender", msg.Sender),
-			ion.Uint64("block_number", msg.Block.BlockNumber),
-			ion.String("block_hash", msg.Block.BlockHash.Hex()),
-			ion.Int("txn_count", len(msg.Block.Transactions)))
+		// Print to console
+		fmt.Printf("\n[ZKBLOCK from %s] Block #%d, Hash: %s, Txns: %d\n>>> ",
+			msg.Sender, msg.Block.BlockNumber, msg.Block.BlockHash.Hex(),
+			len(msg.Block.Transactions))
 	} else {
 		// Handle other message types (not our focus)
 		if msg.Hops < config.MaxHops {
@@ -397,7 +404,7 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 		var err error
 		BlockPropagationLocalGRO, err = GROHelper.InitializeGRO(GRO.BlockPropagationLocal)
 		if err != nil {
-			broadcastLogger().Error(context.Background(), "Failed to initialize BlockPropagationLocalGRO", err)
+			log.Error().Err(err).Msg("Failed to initialize BlockPropagationLocalGRO")
 			return
 		}
 	}
@@ -406,7 +413,7 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 	// Convert message to JSON
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to marshal block message", err)
+		log.Error().Err(err).Msg("Failed to marshal block message")
 		return
 	}
 	msgBytes = append(msgBytes, '\n')
@@ -416,7 +423,7 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 	var successMutex sync.Mutex
 	wg, err := BlockPropagationLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.BlockPropagationForwardWG)
 	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to create waitgroup for block forwarding", err)
+		log.Error().Err(err).Msg("Failed to create waitgroup for block forwarding")
 		return
 	}
 
@@ -432,13 +439,13 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 		if err := BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
 			stream, err := h.NewStream(ctx, peerIDForGoroutine, config.BlockPropagationProtocol)
 			if err != nil {
-				broadcastLogger().Debug(ctx, "Failed to open stream", ion.String("peer", peerIDForGoroutine.String()))
+				log.Debug().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to open stream")
 				return err
 			}
 			defer stream.Close()
 
 			if _, err := stream.Write(msgBytes); err != nil {
-				broadcastLogger().Debug(ctx, "Failed to write message", ion.String("peer", peerIDForGoroutine.String()))
+				log.Debug().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to write message")
 				return err
 			}
 
@@ -449,14 +456,15 @@ func forwardBlock(h host.Host, msg config.BlockMessage) {
 			metrics.MessagesSentCounter.WithLabelValues(msg.Type, peerIDForGoroutine.String()).Inc()
 			return nil
 		}, local.AddToWaitGroup(GRO.BlockPropagationForwardWG)); err != nil {
-			broadcastLogger().Error(context.Background(), "Failed to start goroutine for block forwarding", err, ion.String("peer", peerIDForGoroutine.String()))
+			log.Error().Err(err).Str("peer", peerIDForGoroutine.String()).Msg("Failed to start goroutine for block forwarding")
 		}
 	}
 
 	wg.Wait()
 
-	broadcastLogger().Info(context.Background(), "Block forwarded to peers",
-		ion.String("type", msg.Type),
-		ion.Int("success", successCount),
-		ion.Int("total", len(peers)-1))
+	log.Info().
+		Str("type", msg.Type).
+		Int("success", successCount).
+		Int("total", len(peers)-1).
+		Msg("Block forwarded to peers")
 }

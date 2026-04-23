@@ -22,14 +22,14 @@ import (
 
 func NewListenerNode(logger_ctx context.Context, h host.Host, responseHandler AVCStruct.ResponseHandler) *StructListener {
 	// Record trace span and close it
-	spanCtx, span := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.NewListenerNode")
+	spanCtx, span := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.NewListenerNode")
 	defer span.End()
 
 	startTime := time.Now().UTC()
 	peerID := h.ID()
 	span.SetAttributes(attribute.String("peer_id", peerID.String()))
 
-	logger().Info(spanCtx, "Initializing ListenerNode",
+	logger().NamedLogger.Info(spanCtx, "Initializing ListenerNode",
 		ion.String("peer_id", peerID.String()),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -44,7 +44,7 @@ func NewListenerNode(logger_ctx context.Context, h host.Host, responseHandler AV
 			span.SetAttributes(attribute.String("status", "gro_init_failed"))
 			duration := time.Since(startTime).Seconds()
 			span.SetAttributes(attribute.Float64("duration", duration))
-			logger().Error(spanCtx, "Failed to initialize StreamCache local manager",
+			logger().NamedLogger.Error(spanCtx, "Failed to initialize StreamCache local manager",
 				err,
 				ion.String("peer_id", peerID.String()),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -62,7 +62,7 @@ func NewListenerNode(logger_ctx context.Context, h host.Host, responseHandler AV
 		span.SetAttributes(attribute.String("status", "stream_cache_build_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(spanCtx, "Failed to create stream cache",
+		logger().NamedLogger.Error(spanCtx, "Failed to create stream cache",
 			err,
 			ion.String("peer_id", peerID.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -104,7 +104,7 @@ func NewListenerNode(logger_ctx context.Context, h host.Host, responseHandler AV
 
 	// Set up the stream handler for the listener nodes message protocol
 	h.SetStreamHandler(config.SubmitMessageProtocol, func(stream network.Stream) {
-		logger().Info(spanCtx, "New submit message connection received",
+		logger().NamedLogger.Info(spanCtx, "New submit message connection received",
 			ion.String("remote_peer_id", stream.Conn().RemotePeer().String()),
 			ion.String("protocol", string(config.SubmitMessageProtocol)),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -121,7 +121,7 @@ func NewListenerNode(logger_ctx context.Context, h host.Host, responseHandler AV
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().Info(spanCtx, "ListenerNode initialized successfully",
+	logger().NamedLogger.Info(spanCtx, "ListenerNode initialized successfully",
 		ion.String("peer_id", peerID.String()),
 		ion.String("protocol", string(config.SubmitMessageProtocol)),
 		ion.Float64("duration", duration),
@@ -136,14 +136,14 @@ func NewListenerNode(logger_ctx context.Context, h host.Host, responseHandler AV
 // NewBuddyNode creates a new BuddyNode instance from an existing host
 func NewBuddyNode(logger_ctx context.Context, h host.Host, buddies *AVCStruct.Buddies, responseHandler AVCStruct.ResponseHandler, pubsub *AVCStruct.GossipPubSub) *AVCStruct.BuddyNode {
 	// Record trace span and close it
-	spanCtx, span := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.NewBuddyNode")
+	spanCtx, span := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.NewBuddyNode")
 	defer span.End()
 
 	startTime := time.Now().UTC()
 	peerID := h.ID()
 	span.SetAttributes(attribute.String("peer_id", peerID.String()))
 
-	logger().Info(spanCtx, "Creating buddy node",
+	logger().NamedLogger.Info(spanCtx, "Creating buddy node",
 		ion.String("peer_id", peerID.String()),
 		ion.Bool("pubsub_provided", pubsub != nil),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -159,7 +159,7 @@ func NewBuddyNode(logger_ctx context.Context, h host.Host, buddies *AVCStruct.Bu
 			span.SetAttributes(attribute.String("status", "gro_init_failed"))
 			duration := time.Since(startTime).Seconds()
 			span.SetAttributes(attribute.Float64("duration", duration))
-			logger().Error(spanCtx, "Failed to initialize StreamCache local manager",
+			logger().NamedLogger.Error(spanCtx, "Failed to initialize StreamCache local manager",
 				err,
 				ion.String("peer_id", peerID.String()),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -172,7 +172,7 @@ func NewBuddyNode(logger_ctx context.Context, h host.Host, buddies *AVCStruct.Bu
 
 	if pubsub == nil {
 		span.SetAttributes(attribute.String("status", "pubsub_nil_warning"))
-		logger().Warn(spanCtx, "Pubsub parameter is nil",
+		logger().NamedLogger.Warn(spanCtx, "Pubsub parameter is nil",
 			ion.String("peer_id", peerID.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -180,7 +180,7 @@ func NewBuddyNode(logger_ctx context.Context, h host.Host, buddies *AVCStruct.Bu
 			ion.String("function", "MessagePassing.NewBuddyNode"))
 	} else {
 		span.SetAttributes(attribute.String("pubsub_host_id", pubsub.Host.ID().String()))
-		logger().Info(spanCtx, "Pubsub parameter is valid",
+		logger().NamedLogger.Info(spanCtx, "Pubsub parameter is valid",
 			ion.String("peer_id", peerID.String()),
 			ion.String("pubsub_host_id", pubsub.Host.ID().String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -196,7 +196,7 @@ func NewBuddyNode(logger_ctx context.Context, h host.Host, buddies *AVCStruct.Bu
 		span.SetAttributes(attribute.String("status", "stream_cache_build_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(spanCtx, "Failed to create stream cache",
+		logger().NamedLogger.Error(spanCtx, "Failed to create stream cache",
 			err,
 			ion.String("peer_id", peerID.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -235,7 +235,7 @@ func NewBuddyNode(logger_ctx context.Context, h host.Host, buddies *AVCStruct.Bu
 
 	// Set up the stream handler for the buddy nodes message protocol
 	h.SetStreamHandler(config.BuddyNodesMessageProtocol, func(stream network.Stream) {
-		logger().Info(spanCtx, "New buddy nodes connection received",
+		logger().NamedLogger.Info(spanCtx, "New buddy nodes connection received",
 			ion.String("remote_peer_id", stream.Conn().RemotePeer().String()),
 			ion.String("protocol", string(config.BuddyNodesMessageProtocol)),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -252,7 +252,7 @@ func NewBuddyNode(logger_ctx context.Context, h host.Host, buddies *AVCStruct.Bu
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().Info(spanCtx, "BuddyNode initialized successfully",
+	logger().NamedLogger.Info(spanCtx, "BuddyNode initialized successfully",
 		ion.String("peer_id", peerID.String()),
 		ion.String("protocol", string(config.BuddyNodesMessageProtocol)),
 		ion.Float64("duration", duration),
@@ -268,7 +268,7 @@ func NewBuddyNode(logger_ctx context.Context, h host.Host, buddies *AVCStruct.Bu
 // Uses LRU cache with TTL for optimal performance and resource efficiency
 func (StructBuddyNode *StructBuddyNode) SendMessageToPeer(logger_ctx context.Context, peerID peer.ID, message string) error {
 	// Record trace span and close it
-	sendSpanCtx, sendSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.SendMessageToPeer")
+	sendSpanCtx, sendSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.SendMessageToPeer")
 	defer sendSpan.End()
 
 	startTime := time.Now().UTC()
@@ -277,7 +277,7 @@ func (StructBuddyNode *StructBuddyNode) SendMessageToPeer(logger_ctx context.Con
 		attribute.Int("message_length", len(message)),
 	)
 
-	logger().Info(sendSpanCtx, "Sending buddy message to peer",
+	logger().NamedLogger.Info(sendSpanCtx, "Sending buddy message to peer",
 		ion.String("peer_id", peerID.String()),
 		ion.String("message", message),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -331,7 +331,7 @@ func (StructBuddyNode *StructBuddyNode) SendMessageToPeer(logger_ctx context.Con
 
 	duration := time.Since(startTime).Seconds()
 	sendSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().Info(sendSpanCtx, "Successfully sent buddy message to peer",
+	logger().NamedLogger.Info(sendSpanCtx, "Successfully sent buddy message to peer",
 		ion.String("peer_id", peerID.String()),
 		ion.String("message", message),
 		ion.Float64("duration", duration),
@@ -346,12 +346,12 @@ func (StructBuddyNode *StructBuddyNode) SendMessageToPeer(logger_ctx context.Con
 // CloseAllStreams closes all streams in the cache (for cleanup)
 func (StructBuddyNode *StructBuddyNode) CloseAllStreams(logger_ctx context.Context) {
 	// Record trace span and close it
-	closeSpanCtx, closeSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.CloseAllStreams")
+	closeSpanCtx, closeSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.CloseAllStreams")
 	defer closeSpan.End()
 
 	startTime := time.Now().UTC()
 
-	logger().Info(closeSpanCtx, "Closing all streams",
+	logger().NamedLogger.Info(closeSpanCtx, "Closing all streams",
 		ion.String("peer_id", StructBuddyNode.BuddyNode.PeerID.String()),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -361,7 +361,7 @@ func (StructBuddyNode *StructBuddyNode) CloseAllStreams(logger_ctx context.Conte
 	StreamCache := NewStreamCacheBuilder(StructBuddyNode.BuddyNode.StreamCache)
 	if StreamCache == nil {
 		closeSpan.SetAttributes(attribute.String("status", "stream_cache_nil"))
-		logger().Warn(closeSpanCtx, "StreamCache is nil, cannot close streams",
+		logger().NamedLogger.Warn(closeSpanCtx, "StreamCache is nil, cannot close streams",
 			ion.String("peer_id", StructBuddyNode.BuddyNode.PeerID.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -374,7 +374,7 @@ func (StructBuddyNode *StructBuddyNode) CloseAllStreams(logger_ctx context.Conte
 
 	duration := time.Since(startTime).Seconds()
 	closeSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().Info(closeSpanCtx, "Successfully closed all streams",
+	logger().NamedLogger.Info(closeSpanCtx, "Successfully closed all streams",
 		ion.String("peer_id", StructBuddyNode.BuddyNode.PeerID.String()),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -386,12 +386,12 @@ func (StructBuddyNode *StructBuddyNode) CloseAllStreams(logger_ctx context.Conte
 // GetStreamCacheStats returns statistics about the stream cache
 func (StructBuddyNode *StructBuddyNode) GetStreamCacheStats(logger_ctx context.Context) map[string]interface{} {
 	// Record trace span and close it
-	statsSpanCtx, statsSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.GetStreamCacheStats")
+	statsSpanCtx, statsSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.GetStreamCacheStats")
 	defer statsSpan.End()
 
 	startTime := time.Now().UTC()
 
-	logger().Info(statsSpanCtx, "Getting stream cache stats",
+	logger().NamedLogger.Info(statsSpanCtx, "Getting stream cache stats",
 		ion.String("peer_id", StructBuddyNode.BuddyNode.PeerID.String()),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -423,7 +423,7 @@ func (StructBuddyNode *StructBuddyNode) GetStreamCacheStats(logger_ctx context.C
 
 	duration := time.Since(startTime).Seconds()
 	statsSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().Info(statsSpanCtx, "Successfully retrieved stream cache stats",
+	logger().NamedLogger.Info(statsSpanCtx, "Successfully retrieved stream cache stats",
 		ion.String("peer_id", StructBuddyNode.BuddyNode.PeerID.String()),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -437,13 +437,13 @@ func (StructBuddyNode *StructBuddyNode) GetStreamCacheStats(logger_ctx context.C
 // GetVotesFromCRDT retrieves all votes from the CRDT for a given key
 func GetVotesFromCRDT(logger_ctx context.Context, crdtLayer *Types.Controller, key string) ([]string, bool) {
 	// Record trace span and close it
-	votesSpanCtx, votesSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.GetVotesFromCRDT")
+	votesSpanCtx, votesSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.GetVotesFromCRDT")
 	defer votesSpan.End()
 
 	startTime := time.Now().UTC()
 	votesSpan.SetAttributes(attribute.String("key", key))
 
-	logger().Info(votesSpanCtx, "Getting votes from CRDT",
+	logger().NamedLogger.Info(votesSpanCtx, "Getting votes from CRDT",
 		ion.String("key", key),
 		ion.Bool("crdt_layer_provided", crdtLayer != nil),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -468,7 +468,7 @@ func GetVotesFromCRDT(logger_ctx context.Context, crdtLayer *Types.Controller, k
 
 	duration := time.Since(startTime).Seconds()
 	votesSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().Info(votesSpanCtx, "Retrieved votes from CRDT",
+	logger().NamedLogger.Info(votesSpanCtx, "Retrieved votes from CRDT",
 		ion.String("key", key),
 		ion.Bool("found", found),
 		ion.Int("votes_count", len(votes)),

@@ -12,6 +12,7 @@ import (
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/rs/zerolog/log"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
@@ -294,8 +295,7 @@ func (s *ImmuDBServer) StartWithContext(ctx context.Context, addr string) error 
 		ion.String("topic", TOPIC),
 		ion.String("function", "ExplorerAPI.StartWithContext"))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Starting ImmuDB API server (zerolog fallback)",
-		ion.String("bind_address", bindAddr))
+	log.Info().Str("addr", bindAddr).Msg("Starting ImmuDB API server")
 
 	// Use http.Server for explicit control over binding
 	srv := &http.Server{
@@ -480,6 +480,7 @@ func (s *ImmuDBServer) generateToken(c *gin.Context) {
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "ExplorerAPI.generateToken"))
+		log.Error().Err(err).Msg("Failed to generate JWT token")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
@@ -529,13 +530,11 @@ func (s *ImmuDBServer) getVersion(c *gin.Context) {
 }
 
 // rootHealth is a lightweight, unauthenticated health endpoint served at GET /.
-// Returns the Ethereum-standard client version string (e.g. "JMDN/v1.1.0/linux-amd64/go1.25.1")
-// rather than the full VersionInfo struct — health probes need "alive + identity", not build metadata.
-// For detailed build info (commit, branch, build time), use GET /api/v1/node/version.
+// It intentionally exposes minimal information — just enough to confirm the node is alive.
 func (s *ImmuDBServer) rootHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "ok",
 		"service": "jmdn",
-		"version": version.ClientVersion(),
+		"version": version.GetVersionInfo(),
 	})
 }

@@ -9,7 +9,6 @@ import (
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
-	log "gossipnode/logging"
 
 	"github.com/JupiterMetaLabs/JMDN_Merkletree/merkletree"
 	"github.com/JupiterMetaLabs/ion"
@@ -83,7 +82,7 @@ func (m *MerkleProof) GenerateMerkleTree(startBlock, endBlock int64) (*merkletre
 		BlockMerge:    int(math.Ceil(float64(endBlock-startBlock+1) * 0.005)),
 	}
 
-	logger(log.DB_OPs_MerkleTree).Debug(context.Background(), "Block merge configuration", ion.Int("block_merge", cfg.BlockMerge))
+	fmt.Println("BlockMerge: ", cfg.BlockMerge)
 
 	Builder, err := merkletree.NewBuilder(cfg)
 	if err != nil {
@@ -200,14 +199,4 @@ func (m *MerkleProof) ReconstructTree(snap *merkletree.MerkleTreeSnapshot) (*mer
 	}
 
 	return builder, nil
-}
-
-
-// logger returns the ion logger instance for merkletree package
-func logger(namedLogger string) *ion.Ion {
-	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(namedLogger, "")
-	if err != nil {
-		return nil
-	}
-	return logInstance.GetNamedLogger()
 }

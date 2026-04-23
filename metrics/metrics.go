@@ -2,7 +2,7 @@ package metrics
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -168,7 +168,7 @@ func StartMetricsServer(addr string) {
 		var err error
 		LocalGRO, err = common.InitializeGRO(GRO.MetricsLocal)
 		if err != nil {
-			log.Printf("Error initializing LocalGRO: %v\n", err)
+			fmt.Printf("Error initializing LocalGRO: %v\n", err)
 			return
 		}
 	}

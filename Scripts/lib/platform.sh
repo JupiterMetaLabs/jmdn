@@ -69,9 +69,6 @@ detect_platform() {
 	FreeBSD)
 		PLATFORM="freebsd"
 		;;
-	MINGW* | CYGWIN* | MSYS*)
-		PLATFORM="windows"
-		;;
 	*)
 		PLATFORM="unknown"
 		;;
@@ -130,14 +127,6 @@ detect_pkg_manager() {
 		PKG_MANAGER="brew"
 	elif [[ "${PLATFORM}" == "freebsd" ]]; then
 		PKG_MANAGER="pkg"
-	elif [[ "${PLATFORM}" == "windows" ]]; then
-		if command -v choco &>/dev/null; then
-			PKG_MANAGER="choco"
-		elif command -v scoop &>/dev/null; then
-			PKG_MANAGER="scoop"
-		else
-			PKG_MANAGER="unknown"
-		fi
 	else
 		PKG_MANAGER="unknown"
 	fi

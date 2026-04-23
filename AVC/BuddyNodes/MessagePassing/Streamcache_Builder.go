@@ -11,7 +11,6 @@ import (
 	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
 
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -287,7 +286,7 @@ func (sc *StructStreamCache) ParallelCleanUpRoutine() {
 		var err error
 		ListenerHandlerLocal, err = common.InitializeGRO(GRO.HandleBFTRequestLocal)
 		if err != nil {
-			logger().Info(context.Background(), "❌ Failed to initialize ListenerHandler local manager", ion.Err(err))
+			fmt.Printf("❌ Failed to initialize ListenerHandler local manager: %v\n", err)
 			return
 		}
 	}
@@ -298,7 +297,7 @@ func (sc *StructStreamCache) ParallelCleanUpRoutine() {
 	// Use sync.Once to ensure only one cleanup goroutine is spawned globally
 	cleanupOnce.Do(func() {
 		// cleanupRunning = true  // unused: assigned but never read
-		logger().Info(context.Background(), "Starting global StreamCache cleanup routine")
+		fmt.Println("🚀 Starting global StreamCache cleanup routine (singleton)")
 
 		ListenerHandlerLocal.Go(GRO.StreamCacheParallelCleanUpRoutineThread, func(ctx context.Context) error {
 			defer func() {
@@ -308,7 +307,7 @@ func (sc *StructStreamCache) ParallelCleanUpRoutine() {
 			for {
 				select {
 				case <-ctx.Done():
-					logger().Info(context.Background(), "Global StreamCache cleanup routine stopping")
+					fmt.Println("🛑 Global StreamCache cleanup routine stopping")
 					return nil
 				default:
 					// Cleanup all registered StreamCache instances

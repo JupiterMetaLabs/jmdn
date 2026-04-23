@@ -2,10 +2,11 @@ package Utils
 
 import (
 	"context"
+	"time"
+
 	"gossipnode/DB_OPs"
 	"gossipnode/messaging"
 	"gossipnode/node"
-	"time"
 )
 
 func CreateAccountandPropagateDID(Document DIDDoc) error {

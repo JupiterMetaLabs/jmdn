@@ -2,8 +2,8 @@ package node
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	discovery "github.com/libp2p/go-libp2p/p2p/discovery/mdns"
@@ -16,8 +16,7 @@ type discoveryHandler struct {
 
 // HandlePeerFound implements the discovery.Notifee interface
 func (d *discoveryHandler) HandlePeerFound(pi peer.AddrInfo) {
-	logger().Info(context.Background(), "Discovered peer",
-		ion.String("peer", pi.ID.String()))
+	fmt.Printf("Discovered peer: %s\n", pi.ID.String())
 	d.h.Connect(context.Background(), pi)
 }
 
@@ -25,7 +24,7 @@ func (d *discoveryHandler) HandlePeerFound(pi peer.AddrInfo) {
 func StartDiscovery(h host.Host) {
 	service := discovery.NewMdnsService(h, "custom-libp2p-network", &discoveryHandler{h})
 	if err := service.Start(); err != nil {
-		logger().Error(context.Background(), "Discovery error", err)
+		fmt.Println("Discovery error:", err)
 		return
 	}
 }

@@ -16,7 +16,6 @@ import (
 	"gossipnode/config/PubSubMessages"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -237,12 +236,14 @@ func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 
 	// Attach ACK if missing or if Data is nil
 	if gossipMsg.Data == nil {
-		logger().Debug(context.Background(), "Received message with nil Data - initializing new Message")
+		fmt.Printf("Received message with nil Data - initializing new Message\n")
+		log.Printf("Received message with nil Data - initializing new Message\n")
 		gossipMsg.Data = PubSubMessages.NewMessageBuilder(nil).SetSender(gossipMsg.Sender)
 	}
 
 	if gossipMsg.Data.GetACK() == nil {
-		logger().Debug(context.Background(), "Received message with nil ACK - attaching default ACK")
+		fmt.Printf("Received message with nil ACK - attaching default ACK\n")
+		log.Printf("Received message with nil ACK - attaching default ACK\n")
 
 		// Create a default ACK with Type_Publish stage
 		ack := PubSubMessages.NewACKBuilder().
@@ -250,8 +251,8 @@ func handleGossipStream(gps *PubSubMessages.GossipPubSub, s network.Stream) {
 
 		gossipMsg.Data.SetACK(ack)
 	}
-	logger().Debug(context.Background(), "Received message with ACK",
-		ion.String("ack", fmt.Sprintf("%+v", gossipMsg.Data.GetACK())))
+	fmt.Printf("Received message with ACK: %+v\n", gossipMsg.Data.GetACK())
+	fmt.Printf("==============================================\n")
 	// Check if we've already seen this message
 	gps.Mutex.Lock()
 	if _, seen := gps.MessageCache[gossipMsg.ID]; seen {

@@ -14,7 +14,6 @@ import (
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
@@ -95,11 +94,8 @@ func ClearCache() {
 
 // FallbackConnectionFunction: update cache only (no connect)
 func FallbackConnectionFunction(peerID peer.ID, multiaddrs []string) {
-	ctx := context.Background()
 	if len(multiaddrs) == 0 {
-		if l := cacheLogger(); l != nil {
-			l.Debug(ctx, "No multiaddrs provided for fallback", ion.String("peer_id", peerID.String()))
-		}
+		fmt.Printf("[%s] No multiaddrs provided for fallback\n", peerID)
 		return
 	}
 
@@ -108,63 +104,46 @@ func FallbackConnectionFunction(peerID peer.ID, multiaddrs []string) {
 	for _, multiaddrStr := range multiaddrs {
 		addr, err := multiaddr.NewMultiaddr(multiaddrStr)
 		if err != nil {
-			if l := cacheLogger(); l != nil {
-				l.Error(ctx, "Invalid multiaddr", err, ion.String("peer_id", peerID.String()))
-			}
+			fmt.Printf("[%s] Invalid multiaddr: %v\n", peerID, err)
 			continue
 		}
 
 		nm := GetNodeManager()
 		if nm == nil {
-			if l := cacheLogger(); l != nil {
-				l.Warn(ctx, "NodeManager not available for reachability check", ion.String("peer_id", peerID.String()))
-			}
+			fmt.Printf("[%s] NodeManager not available for reachability check\n", peerID)
 			break
 		}
 
 		reachable, timeTaken, err := nm.PingMultiaddrWithRetries(multiaddrStr, 3)
 		if err != nil {
-			if l := cacheLogger(); l != nil {
-				l.Error(ctx, "Error checking reachability", err, ion.String("peer_id", peerID.String()))
-			}
+			fmt.Printf("[%s] Error checking reachability: %v\n", peerID, err)
 			continue
 		}
-		if l := cacheLogger(); l != nil {
-			l.Debug(ctx, "Reachability check completed", ion.String("peer_id", peerID.String()), ion.Duration("time_taken", timeTaken))
-		}
+		fmt.Printf("[%s] Time taken to check reachability: %v\n", peerID, timeTaken)
 		if !reachable {
-			if l := cacheLogger(); l != nil {
-				l.Debug(ctx, "Multiaddr not reachable", ion.String("peer_id", peerID.String()), ion.String("multiaddr", multiaddrStr))
-			}
+			fmt.Printf("[%s] Multiaddr not reachable: %s\n", peerID, multiaddrStr)
 			continue
 		}
 
 		AddPeer(peerID, addr)
 		reachableFound = true
-		if l := cacheLogger(); l != nil {
-			l.Debug(ctx, "Reachable fallback multiaddr found", ion.String("peer_id", peerID.String()), ion.String("multiaddr", multiaddrStr))
-		}
+		fmt.Printf("[%s] Reachable fallback multiaddr found: %s\n", peerID, multiaddrStr)
 		break
 	}
 
 	if !reachableFound {
-		if l := cacheLogger(); l != nil {
-			l.Warn(ctx, "No reachable fallback multiaddr found", ion.String("peer_id", peerID.String()))
-		}
+		fmt.Printf("[%s] No reachable fallback multiaddr found\n", peerID)
 	}
 }
 
 // AddPeersTemporary: concurrent reachability check, adds all reachable peers
 // Returns statistics about reachability checks and connections
 func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) Stats {
-	ctx := context.Background()
 	if AddPeersCacheLocalGRO == nil {
 		var err error
 		AddPeersCacheLocalGRO, err = common.InitializeGRO(GRO.AddPeersCacheLocal)
 		if err != nil {
-			if l := cacheLogger(); l != nil {
-				l.Error(ctx, "failed to initialize local gro", err)
-			}
+			fmt.Printf("failed to initialize local gro: %v", err)
 		}
 	}
 
@@ -178,24 +157,18 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) Stats {
 	}
 	AddPeersCacheMu.Unlock()
 
-	wg, err := AddPeersCacheLocalGRO.NewFunctionWaitGroup(ctx, GRO.AddPeersCacheWaitGroup)
+	wg, err := AddPeersCacheLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.AddPeersCacheWaitGroup)
 	if err != nil {
-		if l := cacheLogger(); l != nil {
-			l.Error(ctx, "failed to create function wait group", err)
-		}
+		fmt.Printf("failed to create function wait group: %v", err)
 		stats.TimeTaken = time.Since(startTime)
 		return *stats
 	}
 
-	if l := cacheLogger(); l != nil {
-		l.Info(ctx, "Starting concurrent reachability checks", ion.Int("peer_count", len(peers)))
-	}
+	fmt.Println("---- Starting concurrent reachability checks ----")
 
 	nm := GetNodeManager()
 	if nm == nil {
-		if l := cacheLogger(); l != nil {
-			l.Warn(ctx, "NodeManager not available")
-		}
+		fmt.Println("NodeManager not available")
 		stats.TimeTaken = time.Since(startTime)
 		return *stats
 	}
@@ -206,37 +179,27 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) Stats {
 			addrStr := buddy.Multiaddr.String()
 			peerID := buddy.PeerID
 			index := idx
-			if l := cacheLogger(); l != nil {
-				l.Debug(ctx, "Checking peer", ion.Int("thread", index), ion.String("peer_id", peerID.String()), ion.String("addr", addrStr))
-			}
+			fmt.Printf("[Thread %d] Checking peer %s at %s\n", index, peerID, addrStr)
 
 			if nm == nil {
-				if l := cacheLogger(); l != nil {
-					l.Warn(ctx, "NodeManager not available", ion.String("peer_id", peerID.String()))
-				}
+				fmt.Printf("[%s] NodeManager not available\n", peerID)
 				stats.AddUnreachablePeer(peerID, buddy.Multiaddr)
 				return fmt.Errorf("nodeManager not available")
 			}
 
 			reachable, timeTaken, err := nm.PingMultiaddrWithRetries(addrStr, 3)
 			if err != nil {
-				if l := cacheLogger(); l != nil {
-					l.Error(ctx, "Reachability check error", err, ion.String("peer_id", peerID.String()))
-				}
+				fmt.Printf("[%s] Error: %v\n", peerID, err)
 				stats.AddUnreachablePeer(peerID, buddy.Multiaddr)
 				return fmt.Errorf("error: %v", err)
 			}
 
-			if l := cacheLogger(); l != nil {
-				l.Debug(ctx, "Reachability check completed", ion.String("peer_id", peerID.String()), ion.Duration("time_taken", timeTaken), ion.Bool("reachable", reachable))
-			}
+			fmt.Printf("[%s] Time: %v, Reachable: %v\n", peerID, timeTaken, reachable)
 
 			if reachable {
 				stats.AddReachablePeer(peerID, buddy.Multiaddr)
 				AddPeer(peerID, buddy.Multiaddr)
-				if l := cacheLogger(); l != nil {
-					l.Debug(ctx, "Peer added", ion.String("peer_id", peerID.String()))
-				}
+				fmt.Printf("✓ Peer %s added\n", peerID)
 			} else {
 				stats.AddUnreachablePeer(peerID, buddy.Multiaddr)
 				return fmt.Errorf("peer %s not reachable", peerID)
@@ -250,24 +213,17 @@ func AddPeersTemporary(peers []PubSubMessages.Buddy_PeerMultiaddr) Stats {
 	reachablePeers := stats.GetReachablePeers()
 	unreachablePeers := stats.GetUnreachablePeers()
 
-	if l := cacheLogger(); l != nil {
-		l.Info(ctx, "Reachability checks completed", ion.Int("reachable_count", len(reachablePeers)), ion.Int("unreachable_count", len(unreachablePeers)))
-	}
+	fmt.Printf("\n---- Found %d reachable peers (unreachable: %d) ----\n",
+		len(reachablePeers), len(unreachablePeers))
 
 	if len(reachablePeers) > 0 {
 		if err := ConnectToTemporaryPeers(reachablePeers); err != nil {
-			if l := cacheLogger(); l != nil {
-				l.Error(ctx, "Connection failed", err)
-			}
+			fmt.Printf("Connection failed: %v\n", err)
 		} else {
-			if l := cacheLogger(); l != nil {
-				l.Debug(ctx, "Connected to peers", ion.Int("count", len(reachablePeers)))
-			}
+			fmt.Printf("Connected to %d peers\n", len(reachablePeers))
 		}
 	} else {
-		if l := cacheLogger(); l != nil {
-			l.Warn(ctx, "No reachable peers found")
-		}
+		fmt.Println("No reachable peers found")
 	}
 
 	stats.TimeTaken = time.Since(startTime)
@@ -279,7 +235,6 @@ func GetNodeManager() *node.NodeManager {
 }
 
 func ConnectToTemporaryPeers(peers map[peer.ID]multiaddr.Multiaddr) error {
-	ctx := context.Background()
 	nodeManager := GetNodeManager()
 	if nodeManager == nil {
 		return fmt.Errorf("NodeManager not available")
@@ -290,28 +245,20 @@ func ConnectToTemporaryPeers(peers map[peer.ID]multiaddr.Multiaddr) error {
 
 	for peerID, addr := range peers {
 		addrStr := addr.String()
-		if l := cacheLogger(); l != nil {
-			l.Debug(ctx, "Adding temporary peer for consensus", ion.String("peer_id", peerID.String()), ion.String("addr", addrStr))
-		}
+		fmt.Printf("Adding temporary peer for consensus: %s at %s\n", peerID, addrStr)
 
 		if err := nodeManager.AddPeer(addrStr); err != nil {
 			// Check if error is because peer is already connected (this is OK)
 			if err.Error() == fmt.Sprintf("peer %s is already connected and managed", peerID) {
-				if l := cacheLogger(); l != nil {
-					l.Debug(ctx, "Peer already connected (OK)", ion.String("peer_id", peerID.String()))
-				}
+				fmt.Printf("Peer %s already connected (OK)\n", peerID)
 				connectedCount++
 				connectedPeers[peerID] = true
 			} else {
-				if l := cacheLogger(); l != nil {
-					l.Error(ctx, "Failed to add peer", err, ion.String("peer_id", peerID.String()))
-				}
+				fmt.Printf("Failed to add peer %s: %v\n", peerID, err)
 				failedCount++
 			}
 		} else {
-			if l := cacheLogger(); l != nil {
-				l.Debug(ctx, "Peer added to NodeManager for consensus", ion.String("peer_id", peerID.String()))
-			}
+			fmt.Printf("Peer %s added to NodeManager for consensus\n", peerID)
 			connectedCount++
 			connectedPeers[peerID] = true
 		}
@@ -333,24 +280,16 @@ func ConnectToTemporaryPeers(peers map[peer.ID]multiaddr.Multiaddr) error {
 		connectedness := host.Network().Connectedness(peerID)
 		if connectedness == network.Connected {
 			actuallyConnected++
-			if l := cacheLogger(); l != nil {
-				l.Debug(ctx, "Verified connection to peer", ion.String("peer_id", peerID.String()[:16]))
-			}
+			fmt.Printf("✅ Verified connection to peer %s\n", peerID.String()[:16])
 		} else {
-			if l := cacheLogger(); l != nil {
-				l.Warn(ctx, "Peer not actually connected", ion.String("peer_id", peerID.String()[:16]), ion.String("connectedness", connectedness.String()))
-			}
+			fmt.Printf("❌ Peer %s not actually connected (status: %v)\n", peerID.String()[:16], connectedness)
 			// Remove from connectedPeers map
 			delete(connectedPeers, peerID)
 		}
 	}
 
-	if l := cacheLogger(); l != nil {
-		l.Info(ctx, "Temporary peer connection summary",
-			ion.Int("added_to_node_manager", connectedCount),
-			ion.Int("failed", failedCount),
-			ion.Int("actually_connected", actuallyConnected))
-	}
+	fmt.Printf("Temporary peer connection summary: %d added to NodeManager, %d failed, %d actually connected\n",
+		connectedCount, failedCount, actuallyConnected)
 
 	// Return error if we don't have enough actually connected peers
 	if actuallyConnected < config.MaxMainPeers {

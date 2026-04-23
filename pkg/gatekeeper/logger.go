@@ -14,7 +14,7 @@ func gatekeeperLogger(namedLogger string) *ion.Ion {
 	if err != nil {
 		return nil
 	}
-	return logInstance.GetNamedLogger()
+	return logInstance.NamedLogger
 }
 
 // logger is a convenience alias used by middleware files in this package.

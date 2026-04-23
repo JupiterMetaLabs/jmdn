@@ -13,7 +13,6 @@ import (
 	"gossipnode/config/GRO"
 	"gossipnode/config/PubSubMessages"
 
-	"github.com/JupiterMetaLabs/ion"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -32,14 +31,14 @@ func NewEnhancedSubscriber(subscription *pubsub.Subscription, gps *PubSubMessage
 
 // SubscribeEnhanced subscribes to a topic with enhanced reliability
 func SubscribeEnhanced(logger_ctx context.Context, gps *PubSubMessages.GossipPubSub, topic string, handler func(*PubSubMessages.GossipMessage)) error {
-	logger().Debug(context.Background(), "About to call SubscribeEnhanced for topic", ion.String("topic", topic))
+	fmt.Printf("About to call SubscribeEnhanced for %s\n", topic)
 
 	// Check if we can subscribe to this channel
 	if !CanSubscribe(gps, topic, gps.Host.ID()) {
 		return fmt.Errorf("access denied: not authorized to subscribe to channel %s", topic)
 	}
 
-	logger().Debug(context.Background(), "CanSubscribe returned true for topic", ion.String("topic", topic))
+	fmt.Printf("CanSubscribe returned true for %s\n", topic)
 	gps.Mutex.Lock()
 	gps.Topics[topic] = true
 	gps.Handlers[topic] = handler
@@ -63,7 +62,7 @@ func SubscribeEnhanced(logger_ctx context.Context, gps *PubSubMessages.GossipPub
 		}
 	}
 
-	logger().Debug(context.Background(), "SubscribeEnhanced completed successfully for topic", ion.String("topic", topic))
+	fmt.Printf("SubscribeEnhanced completed successfully for %s\n", topic)
 	log.Printf("📨 Enhanced subscription to topic: %s", topic)
 	return nil
 }
@@ -80,7 +79,7 @@ func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName s
 		}
 	}
 
-	logger().Debug(context.Background(), "About to call GetOrJoinTopic for topic", ion.String("topic", topicName))
+	fmt.Printf("About to call GetOrJoinTopic for %s\n", topicName)
 
 	// Get or join the topic
 	topic, err := gps.GetOrJoinTopic(topicName)
@@ -88,7 +87,7 @@ func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName s
 		return fmt.Errorf("failed to get or join topic %s: %w", topicName, err)
 	}
 
-	logger().Debug(context.Background(), "GetOrJoinTopic returned successfully for topic", ion.String("topic", topicName))
+	fmt.Printf("GetOrJoinTopic returned successfully for %s\n", topicName)
 
 	// Subscribe to the topic
 	sub, err := topic.Subscribe()
@@ -96,7 +95,7 @@ func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName s
 		return fmt.Errorf("failed to subscribe to topic %s: %w", topicName, err)
 	}
 
-	logger().Debug(context.Background(), "Subscribe returned successfully for topic", ion.String("topic", topicName))
+	fmt.Printf("Subscribe returned successfully for %s\n", topicName)
 
 	// Store subscription and cancellation so Unsubscribe can stop the underlying subscription/goroutine.
 	gps.Mutex.Lock()
@@ -122,7 +121,7 @@ func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName s
 	enhancedSubscriber := NewEnhancedSubscriber(sub, gps, handler)
 
 	// Start enhanced message processing
-	logger().Debug(context.Background(), "Context set for topic", ion.String("topic", topicName))
+	fmt.Printf("Context set for %s\n", topicName)
 	run := func(ctx context.Context) error {
 		ctxNext, cancelNext := context.WithCancel(ctx)
 		defer cancelNext()
@@ -146,7 +145,7 @@ func subscribeEnhancedViaGossipSub(gps *PubSubMessages.GossipPubSub, topicName s
 		go func() { _ = run(subCtx) }()
 	}
 
-	logger().Debug(context.Background(), "subscribeEnhancedViaGossipSub returned successfully for topic", ion.String("topic", topicName))
+	fmt.Printf("subscribeEnhancedViaGossipSub returned successfully for %s\n", topicName)
 	return nil
 }
 

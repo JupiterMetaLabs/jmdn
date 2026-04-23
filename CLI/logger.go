@@ -16,7 +16,7 @@ func logger() *ion.Ion {
 		return nil
 	}
 	// Return the NamedLogger which is *ion.Ion
-	return logInstance.GetNamedLogger()
+	return logInstance.NamedLogger
 }
 
 // clientLogger returns the specific named logger for the CLI Client
@@ -25,5 +25,5 @@ func clientLogger() *ion.Ion {
 	if err != nil {
 		return nil
 	}
-	return logInstance.GetNamedLogger()
+	return logInstance.NamedLogger
 }

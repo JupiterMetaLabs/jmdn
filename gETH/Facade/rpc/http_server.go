@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -26,13 +26,21 @@ type HTTPServer struct {
 }
 
 func NewHTTPServer(h *Handlers) *HTTPServer {
-	Logger.Once.Do(func() {
-		if err := Logger.InitLogger(); err != nil {
-			// Log error but don't panic - continue without logger
-			log.Printf("Warning: failed to initialize logger: %v\n", err)
-		}
-	})
-	return &HTTPServer{h: h}
+	// Initialize logger
+	l, _ := logging.NewAsyncLogger().Get().NamedLogger("JSONRPC", "")
+
+	return &HTTPServer{h: h, logger: l.NamedLogger}
+}
+
+func (s *HTTPServer) WithDualDB(d *dualdb.DualDB) *HTTPServer {
+	s.dualDB = d
+	return s
+}
+
+// WithCassata wires read-only Thebe projection APIs (see registerThebeReadRoutes).
+func (s *HTTPServer) WithCassata(c *cassata.Cassata) *HTTPServer {
+	s.cassata = c
+	return s
 }
 
 func (s *HTTPServer) WithDualDB(d *dualdb.DualDB) *HTTPServer {
@@ -62,10 +70,8 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 	router.Use(gin.Recovery())
 	router.Use(withCORS())
 
-	// Add JSON-RPC handler
-	router.Any("/", s.handleJSONRPC)
-
-	// Create HTTP server with GIN router
+	// Initialize Security via gatekeeper helper
+	secCfg := &settings.Get().Security
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           router,
@@ -86,7 +92,7 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.ListenAndServe()
+		errCh <- gatekeeper.ServeHTTP(srv, tlsEnabled)
 	}()
 
 	select {

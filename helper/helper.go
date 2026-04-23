@@ -1,17 +1,15 @@
 package helper
 
 import (
-	"context"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math/big"
 
 	"gossipnode/config"
 
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/holiman/uint256"
+	"github.com/rs/zerolog/log"
 )
 
 // BroadcastHandler defines an interface for components that can broadcast messages
@@ -30,10 +28,7 @@ func SetBroadcastHandler(handler BroadcastHandler) {
 func ConvertBigToUint256(b *big.Int) (*uint256.Int, bool) {
 	u, overflow := uint256.FromBig(b)
 	if overflow {
-		// Note: Using context.Background() for conversion errors without context
-		logger().Error(context.Background(), "Overflow occurred while converting big.Int to uint256",
-			errors.New("uint256 overflow"),
-			ion.String("value", b.String()))
+		log.Error().Msg("Overflow occurred while converting big.Int to uint256")
 		return nil, true
 	}
 	return u, overflow
@@ -57,10 +52,9 @@ func Uint64ToBytes(n uint64) []byte {
 
 // NotifyBroadcast sends a notification to the broadcast handler
 func NotifyBroadcast(msg config.BlockMessage) {
-	ctx := context.Background()
 	// Skip if handler isn't set
 	if broadcastHandler == nil {
-		logger().Debug(ctx, "Broadcast handler not set")
+		log.Debug().Msg("Broadcast handler not set")
 		return
 	}
 
@@ -73,14 +67,13 @@ func NotifyBroadcast(msg config.BlockMessage) {
 	// Marshal to JSON
 	data, err := json.Marshal(notification)
 	if err != nil {
-		logger().Error(ctx, "Failed to marshal block notification", err)
+		log.Error().Err(err).Msg("Failed to marshal block notification")
 		return
 	}
 
 	// Send to handler for broadcasting
 	broadcastHandler.HandleBroadcast(data)
-	logger().Debug(ctx, "Block notification sent to broadcaster",
-		ion.String("block_id", msg.ID))
+	log.Debug().Str("block_id", msg.ID).Msg("Block notification sent to broadcaster")
 }
 
 func ToJSON(v interface{}) []byte {

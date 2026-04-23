@@ -32,12 +32,12 @@ func NewVerificationService(buddyNode *PubSubMessages.BuddyNode) *VerificationSe
 
 // HandleVerifySubscription handles incoming subscription verification requests
 func (s *VerificationService) HandleVerifySubscription(logger_ctx context.Context, gossipMessage *PubSubMessages.GossipMessage) error {
-	logger().Info(logger_ctx, "Handling verify subscription message",
+	logger().NamedLogger.Info(logger_ctx, "Handling verify subscription message",
 		ion.String("sender", string(gossipMessage.Sender)),
 		ion.String("function", "VerificationService.HandleVerifySubscription"))
 
 	if s.buddyNode == nil {
-		logger().Error(logger_ctx, "BuddyNode not available for verification",
+		logger().NamedLogger.Error(logger_ctx, "BuddyNode not available for verification",
 			errors.New("buddy node not available for verification"),
 			ion.String("function", "VerificationService.HandleVerifySubscription"))
 		return fmt.Errorf("buddy node not available for verification")
@@ -45,14 +45,14 @@ func (s *VerificationService) HandleVerifySubscription(logger_ctx context.Contex
 
 	// Check if we're subscribed to the consensus channel
 	if !s.IsSubscribedToConsensusChannel() {
-		logger().Info(logger_ctx, "Node not subscribed to consensus channel - sending ACK_FALSE",
+		logger().NamedLogger.Info(logger_ctx, "Node not subscribed to consensus channel - sending ACK_FALSE",
 			ion.String("function", "VerificationService.HandleVerifySubscription"))
 		return s.SendVerificationResponse(logger_ctx, false)
 	}
 
 	// Node is ready and subscribed, respond with ACK_TRUE + PeerID
 	hostID := s.buddyNode.Host.ID().String()
-	logger().Info(logger_ctx, "Node is subscribed - sending ACK_TRUE with PeerID",
+	logger().NamedLogger.Info(logger_ctx, "Node is subscribed - sending ACK_TRUE with PeerID",
 		ion.String("peer_id", hostID),
 		ion.String("function", "VerificationService.HandleVerifySubscription"))
 
@@ -101,13 +101,13 @@ func (s *VerificationService) SendVerificationResponse(logger_ctx context.Contex
 	})
 
 	if err != nil {
-		logger().Error(logger_ctx, "Failed to publish verification response", err,
+		logger().NamedLogger.Error(logger_ctx, "Failed to publish verification response", err,
 			ion.String("accepted", fmt.Sprintf("%t", accepted)),
 			ion.String("function", "VerificationService.sendVerificationResponse"))
 		return fmt.Errorf("failed to publish verification response: %v", err)
 	}
 
-	logger().Info(logger_ctx, "Published verification response",
+	logger().NamedLogger.Info(logger_ctx, "Published verification response",
 		ion.String("accepted", fmt.Sprintf("%t", accepted)),
 		ion.String("peer_id", s.buddyNode.PeerID.String()),
 		ion.String("function", "VerificationService.sendVerificationResponse"))
@@ -124,7 +124,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 
 	startTime := time.Now().UTC()
 
-	logger().Info(logger_ctx, "Starting subscription verification for expected peers",
+	logger().NamedLogger.Info(logger_ctx, "Starting subscription verification for expected peers",
 		ion.Int("expected_count", len(expectedPeers)),
 		ion.String("function", "VerificationService.VerifySubscriptions"))
 
@@ -148,7 +148,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 				// Parse peer ID from the response
 				peerID, err := peer.Decode(msg.Data.ACK.PeerID)
 				if err != nil {
-					logger().Error(logger_ctx, "Failed to decode peer ID from response", err,
+					logger().NamedLogger.Error(logger_ctx, "Failed to decode peer ID from response", err,
 						ion.String("function", "VerificationService.VerifySubscriptions"))
 				} else {
 					// Check if this peer is in our expected peers list
@@ -160,7 +160,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 						for _, p := range expectedPeers {
 							expectedStrs = append(expectedStrs, p.String())
 						}
-						logger().Warn(logger_ctx, "Peer mismatch during verification",
+						logger().NamedLogger.Warn(logger_ctx, "Peer mismatch during verification",
 							ion.String("received_peer", peerID.String()),
 							ion.String("expected_peers", strings.Join(expectedStrs, ", ")),
 							ion.String("function", "VerificationService.VerifySubscriptions"))
@@ -171,7 +171,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 						// Only add if not already present (avoid duplicates)
 						if _, exists := verificationResponses[peerID]; !exists {
 							verificationResponses[peerID] = msg.Data.ACK.PeerID
-							logger().Info(logger_ctx, "Received verification ACK from expected peer",
+							logger().NamedLogger.Info(logger_ctx, "Received verification ACK from expected peer",
 								ion.String("peer", peerID.String()),
 								ion.Int("total_received", len(verificationResponses)),
 								ion.Int("expected", len(expectedPeers)),
@@ -181,7 +181,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 							if len(verificationResponses) >= len(expectedPeers) {
 								select {
 								case doneChan <- struct{}{}:
-									logger().Info(logger_ctx, "All verification responses received, signaling completion",
+									logger().NamedLogger.Info(logger_ctx, "All verification responses received, signaling completion",
 										ion.Int("received", len(verificationResponses)),
 										ion.Int("expected", len(expectedPeers)),
 										ion.String("function", "VerificationService.VerifySubscriptions"))
@@ -192,7 +192,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 						}
 						mu.Unlock()
 					} else {
-						logger().Info(logger_ctx, "Received verification ACK from unexpected peer",
+						logger().NamedLogger.Info(logger_ctx, "Received verification ACK from unexpected peer",
 							ion.String("peer", peerID.String()),
 							ion.String("function", "VerificationService.VerifySubscriptions"))
 					}
@@ -216,7 +216,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 	// This prevents a race condition where the PubSub mesh isn't formed yet
 	pubsubTopic, exists := s.buddyNode.PubSub.TopicsMap[config.PubSub_ConsensusChannel]
 	if !exists {
-		logger().Warn(logger_ctx, "Topic not found in TopicsMap, proceeding with fixed delay",
+		logger().NamedLogger.Warn(logger_ctx, "Topic not found in TopicsMap, proceeding with fixed delay",
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "VerificationService.VerifySubscriptions"))
 		time.Sleep(200 * time.Millisecond)
@@ -226,7 +226,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 		meshTicker := time.NewTicker(50 * time.Millisecond)
 		defer meshTicker.Stop()
 
-		logger().Info(logger_ctx, "Waiting for PubSub mesh to form",
+		logger().NamedLogger.Info(logger_ctx, "Waiting for PubSub mesh to form",
 			ion.Int("expected_peers", len(expectedPeers)),
 			ion.String("function", "VerificationService.VerifySubscriptions"))
 
@@ -234,7 +234,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 		for {
 			select {
 			case <-meshTimeout:
-				logger().Warn(logger_ctx, "Timeout waiting for PubSub mesh to form, proceeding anyway",
+				logger().NamedLogger.Warn(logger_ctx, "Timeout waiting for PubSub mesh to form, proceeding anyway",
 					ion.String("function", "VerificationService.VerifySubscriptions"))
 				break MeshWaitLoop
 			case <-meshTicker.C:
@@ -248,7 +248,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 				}
 
 				if connectedCount >= len(expectedPeers) {
-					logger().Info(logger_ctx, "PubSub mesh formed with all expected peers",
+					logger().NamedLogger.Info(logger_ctx, "PubSub mesh formed with all expected peers",
 						ion.Int("connected", connectedCount),
 						ion.Int("total_peers_in_topic", len(peers)),
 						ion.String("function", "VerificationService.VerifySubscriptions"))
@@ -258,7 +258,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 					// For now, let's log every tick if we are close to timeout or just debug
 					// But to avoid noise, let's just log if count > 0 but < expected
 					if connectedCount > 0 {
-						logger().Debug(logger_ctx, "Waiting for full mesh",
+						logger().NamedLogger.Debug(logger_ctx, "Waiting for full mesh",
 							ion.Int("connected", connectedCount),
 							ion.Int("expected", len(expectedPeers)),
 							ion.Int("total_peers_in_topic", len(peers)),
@@ -269,7 +269,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 		}
 	}
 
-	logger().Info(logger_ctx, "Proceeding with verification request",
+	logger().NamedLogger.Info(logger_ctx, "Proceeding with verification request",
 		ion.String("function", "VerificationService.VerifySubscriptions"))
 
 	// Send verification request to all expected peers
@@ -292,7 +292,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 		return nil, fmt.Errorf("failed to publish verification request: %v", err)
 	}
 
-	logger().Info(logger_ctx, "Published verification request to consensus channel",
+	logger().NamedLogger.Info(logger_ctx, "Published verification request to consensus channel",
 		ion.String("function", "VerificationService.VerifySubscriptions"))
 
 	// Wait for either all responses or timeout using select
@@ -307,7 +307,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 	select {
 	case <-doneChan:
 		duration := time.Since(startTime)
-		logger().Info(logger_ctx, "Received all expected verification responses",
+		logger().NamedLogger.Info(logger_ctx, "Received all expected verification responses",
 			ion.Int("received", len(verificationResponses)),
 			ion.Int("expected", len(expectedPeers)),
 			ion.Float64("duration_ms", float64(duration.Milliseconds())),
@@ -317,7 +317,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 		finalCount := len(verificationResponses)
 		mu.Unlock()
 		duration := time.Since(startTime)
-		logger().Warn(logger_ctx, "Verification timeout reached",
+		logger().NamedLogger.Warn(logger_ctx, "Verification timeout reached",
 			ion.Int("received", finalCount),
 			ion.Int("expected", len(expectedPeers)),
 			ion.Float64("duration_ms", float64(duration.Milliseconds())),
@@ -329,7 +329,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 	finalCount := len(verificationResponses)
 	mu.Unlock()
 
-	logger().Info(logger_ctx, "Subscription verification completed",
+	logger().NamedLogger.Info(logger_ctx, "Subscription verification completed",
 		ion.Int("verified", finalCount),
 		ion.Int("expected", len(expectedPeers)),
 		ion.String("function", "VerificationService.VerifySubscriptions"))
@@ -345,7 +345,7 @@ func (s *VerificationService) VerifySubscriptions(logger_ctx context.Context, ex
 
 	// Unsubscribe from the channel
 	if err := Connector.Unsubscribe(s.buddyNode.PubSub, config.PubSub_ConsensusChannel); err != nil {
-		logger().Error(logger_ctx, "Failed to unsubscribe from consensus channel", err,
+		logger().NamedLogger.Error(logger_ctx, "Failed to unsubscribe from consensus channel", err,
 			ion.String("function", "VerificationService.VerifySubscriptions"))
 	}
 

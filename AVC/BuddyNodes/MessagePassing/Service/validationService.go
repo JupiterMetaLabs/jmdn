@@ -360,12 +360,12 @@ func (vs *ValidationService) ValidateJSONMessage(jsonData string, target interfa
 // LogValidationError logs validation errors with appropriate level
 func (vs *ValidationService) LogValidationError(logger_ctx context.Context, err error, context map[string]interface{}) {
 	if ve, ok := err.(*ValidationError); ok {
-		logger().Error(logger_ctx, "Validation failed", err,
+		logger().NamedLogger.Error(logger_ctx, "Validation failed", err,
 			ion.String("field", ve.Field),
 			ion.String("code", ve.Code),
 			ion.String("function", "ValidationService.LogValidationError"))
 	} else {
-		logger().Error(logger_ctx, "Validation failed", err,
+		logger().NamedLogger.Error(logger_ctx, "Validation failed", err,
 			ion.String("function", "ValidationService.LogValidationError"))
 	}
 }

@@ -33,7 +33,7 @@ func NewListenerStruct(listner *AVCStruct.BuddyNode) *StructListener {
 
 func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx context.Context, s network.Stream) {
 	// Record trace span and close it
-	spanCtx, span := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.HandleSubmitMessageStream")
+	spanCtx, span := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.HandleSubmitMessageStream")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -42,7 +42,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 	// Ensure stream is closed to prevent resource leaks
 	defer s.Close()
 
-	logger().Info(spanCtx, "StructListener.HandleSubmitMessageStream called",
+	logger().NamedLogger.Info(spanCtx, "StructListener.HandleSubmitMessageStream called",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -56,7 +56,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 		span.SetAttributes(attribute.String("status", "read_error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(spanCtx, "Error reading message from peer",
+		logger().NamedLogger.Error(spanCtx, "Error reading message from peer",
 			err,
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("message", msg),
@@ -69,7 +69,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 
 	span.SetAttributes(attribute.String("message_received", "true"), attribute.Int("message_length", len(msg)))
 
-	logger().Info(spanCtx, "Raw message received",
+	logger().NamedLogger.Info(spanCtx, "Raw message received",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("message", msg),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -79,7 +79,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 
 	message := AVCStruct.NewMessageBuilder(nil).DeferenceMessage(msg)
 
-	logger().Info(spanCtx, "Received submit message from peer",
+	logger().NamedLogger.Info(spanCtx, "Received submit message from peer",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("message", msg),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -93,7 +93,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 		span.SetAttributes(attribute.String("status", "parse_failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(spanCtx, "Failed to parse message - malformed JSON or invalid structure",
+		logger().NamedLogger.Error(spanCtx, "Failed to parse message - malformed JSON or invalid structure",
 			fmt.Errorf("failed to parse message"),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("raw_message", msg),
@@ -110,7 +110,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 		span.SetAttributes(attribute.String("status", "nil_ack"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(spanCtx, "Received message with nil ACK",
+		logger().NamedLogger.Error(spanCtx, "Received message with nil ACK",
 			fmt.Errorf("received message with nil ACK"),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("raw_message", msg),
@@ -124,7 +124,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 	ackStage := message.GetACK().GetStage()
 	span.SetAttributes(attribute.String("ack_stage", ackStage))
 
-	logger().Info(spanCtx, "ACK Stage",
+	logger().NamedLogger.Info(spanCtx, "ACK Stage",
 		ion.String("ack_stage", ackStage),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -133,7 +133,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 
 	switch ackStage {
 	case config.Type_SubmitVote:
-		logger().Info(spanCtx, "Handling Type_SubmitVote",
+		logger().NamedLogger.Info(spanCtx, "Handling Type_SubmitVote",
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("message", message.Message),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -145,7 +145,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 		listenerHandler := NewListenerHandler(StructListenerNode.ResponseHandler)
 		listenerHandler.handleSubmitVote(spanCtx, s, message)
 	case config.Type_AskForSubscription:
-		logger().Info(spanCtx, "Handling Type_AskForSubscription",
+		logger().NamedLogger.Info(spanCtx, "Handling Type_AskForSubscription",
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("message", message.Message),
 			ion.String("ack_stage", message.GetACK().GetStage()),
@@ -163,7 +163,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 		ackStatus := message.GetACK().GetStatus()
 		span.SetAttributes(attribute.String("ack_status", ackStatus))
 
-		logger().Info(spanCtx, "Received subscription response from peer",
+		logger().NamedLogger.Info(spanCtx, "Received subscription response from peer",
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("message", message.Message),
 			ion.String("ack_status", ackStatus),
@@ -177,7 +177,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 			accepted := ackStatus == "ACK_TRUE"
 			span.SetAttributes(attribute.Bool("accepted", accepted))
 			StructListenerNode.ResponseHandler.HandleResponse(s.Conn().RemotePeer(), accepted, "main")
-			logger().Info(spanCtx, "Successfully routed subscription response to ResponseHandler",
+			logger().NamedLogger.Info(spanCtx, "Successfully routed subscription response to ResponseHandler",
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.Bool("accepted", accepted),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -186,7 +186,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 				ion.String("function", "MessagePassing.HandleSubmitMessageStream"))
 		} else {
 			span.SetAttributes(attribute.String("status", "no_response_handler"))
-			logger().Error(spanCtx, "No ResponseHandler set - subscription response not routed",
+			logger().NamedLogger.Error(spanCtx, "No ResponseHandler set - subscription response not routed",
 				fmt.Errorf("no response handler set"),
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -202,7 +202,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 
 		if useLegacyBFT {
 			// LEGACY PATH: Manual vote aggregation (no PBFT engine)
-			logger().Info(spanCtx, "Handling Type_BFTRequest -> TriggerForBFTFromSequencer (LEGACY MODE)",
+			logger().NamedLogger.Info(spanCtx, "Handling Type_BFTRequest -> TriggerForBFTFromSequencer (LEGACY MODE)",
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("bft_mode", "legacy"),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -213,7 +213,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 			listenerHandler.TriggerForBFTFromSequencer(s, message, AVCStruct.NewGlobalVariables().Get_PubSubNode().BuddyNodes.GetBuddies())
 		} else {
 			// NEW PATH: Full PBFT consensus engine (default)
-			logger().Info(spanCtx, "Handling Type_BFTRequest -> handleBFTRequest (BFT ENGINE)",
+			logger().NamedLogger.Info(spanCtx, "Handling Type_BFTRequest -> handleBFTRequest (BFT ENGINE)",
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("bft_mode", "engine"),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -224,7 +224,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 			listenerHandler.handleBFTRequest(spanCtx, s, message)
 		}
 	case config.Type_VoteResult:
-		logger().Info(spanCtx, "Handling Type_VoteResult -> handleVoteResultRequest",
+		logger().NamedLogger.Info(spanCtx, "Handling Type_VoteResult -> handleVoteResultRequest",
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -235,7 +235,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 		listenerHandler := NewListenerHandler(StructListenerNode.ResponseHandler)
 		listenerHandler.handleVoteResultRequest(spanCtx, s, message)
 	case config.Type_BFTResult:
-		logger().Info(spanCtx, "Handling Type_BFTResult -> print buddy result with BLS",
+		logger().NamedLogger.Info(spanCtx, "Handling Type_BFTResult -> print buddy result with BLS",
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -265,7 +265,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 		if err := json.Unmarshal([]byte(message.Message), &payload); err != nil {
 			span.RecordError(err)
 			span.SetAttributes(attribute.String("status", "parse_bft_result_failed"))
-			logger().Error(spanCtx, "Failed to parse BFTResult payload",
+			logger().NamedLogger.Error(spanCtx, "Failed to parse BFTResult payload",
 				err,
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -292,7 +292,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 			span.SetAttributes(attribute.String("failure_reason", payload.FailureReason))
 		}
 
-		logger().Info(spanCtx, "Received BFT result from buddy (with BLS)",
+		logger().NamedLogger.Info(spanCtx, "Received BFT result from buddy (with BLS)",
 			ion.String("buddy_id", payload.BuddyID),
 			ion.String("block_hash", payload.BlockHash),
 			ion.Int64("round", int64(payload.Round)),
@@ -311,7 +311,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 			ion.String("function", "MessagePassing.HandleSubmitMessageStream"))
 	default:
 		span.SetAttributes(attribute.String("status", "unknown_message_type"))
-		logger().Error(spanCtx, "Unknown message type",
+		logger().NamedLogger.Error(spanCtx, "Unknown message type",
 			fmt.Errorf("unknown message type: %s", ackStage),
 			ion.String("remote_peer_id", remotePeer.String()),
 			ion.String("ack_stage", ackStage),
@@ -328,7 +328,7 @@ func (StructListenerNode *StructListener) HandleSubmitMessageStream(logger_ctx c
 
 func (StructListenerNode *StructListener) HandleSubscriptionResponse(logger_ctx context.Context, s network.Stream, message *AVCStruct.Message, peerID peer.ID) {
 	// Record trace span and close it
-	responseSpanCtx, responseSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.HandleSubscriptionResponse")
+	responseSpanCtx, responseSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.HandleSubscriptionResponse")
 	defer responseSpan.End()
 
 	startTime := time.Now().UTC()
@@ -347,7 +347,7 @@ func (StructListenerNode *StructListener) HandleSubscriptionResponse(logger_ctx 
 			responseSpan.SetAttributes(attribute.String("status", "read_error"))
 			duration := time.Since(startTime).Seconds()
 			responseSpan.SetAttributes(attribute.Float64("duration", duration))
-			logger().Error(responseSpanCtx, "Error reading response from stream",
+			logger().NamedLogger.Error(responseSpanCtx, "Error reading response from stream",
 				err,
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("expected_peer_id", peerID.String()),
@@ -358,7 +358,7 @@ func (StructListenerNode *StructListener) HandleSubscriptionResponse(logger_ctx 
 			return
 		}
 
-		logger().Info(responseSpanCtx, "Received response from stream",
+		logger().NamedLogger.Info(responseSpanCtx, "Received response from stream",
 			ion.String("response", responseMsg),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -371,7 +371,7 @@ func (StructListenerNode *StructListener) HandleSubscriptionResponse(logger_ctx 
 			responseSpan.SetAttributes(attribute.String("status", "parse_failed"))
 			duration := time.Since(startTime).Seconds()
 			responseSpan.SetAttributes(attribute.Float64("duration", duration))
-			logger().Error(responseSpanCtx, "Failed to parse response message",
+			logger().NamedLogger.Error(responseSpanCtx, "Failed to parse response message",
 				fmt.Errorf("failed to parse response message"),
 				ion.String("remote_peer_id", remotePeer.String()),
 				ion.String("expected_peer_id", peerID.String()),
@@ -386,7 +386,7 @@ func (StructListenerNode *StructListener) HandleSubscriptionResponse(logger_ctx 
 	ackStatus := message.GetACK().GetStatus()
 	responseSpan.SetAttributes(attribute.String("ack_status", ackStatus))
 
-	logger().Info(responseSpanCtx, "HandleSubscriptionResponse: Received response from peer",
+	logger().NamedLogger.Info(responseSpanCtx, "HandleSubscriptionResponse: Received response from peer",
 		ion.String("remote_peer_id", remotePeer.String()),
 		ion.String("expected_peer_id", peerID.String()),
 		ion.String("message", message.Message),
@@ -404,7 +404,7 @@ func (StructListenerNode *StructListener) HandleSubscriptionResponse(logger_ctx 
 
 		StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted, "main")
 
-		logger().Info(responseSpanCtx, "Successfully routed subscription response to ResponseHandler",
+		logger().NamedLogger.Info(responseSpanCtx, "Successfully routed subscription response to ResponseHandler",
 			ion.String("peer_id", peerID.String()),
 			ion.Bool("accepted", accepted),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -413,7 +413,7 @@ func (StructListenerNode *StructListener) HandleSubscriptionResponse(logger_ctx 
 			ion.String("function", "MessagePassing.HandleSubscriptionResponse"))
 	} else {
 		responseSpan.SetAttributes(attribute.String("status", "no_response_handler"))
-		logger().Error(responseSpanCtx, "No ResponseHandler set - subscription response not routed",
+		logger().NamedLogger.Error(responseSpanCtx, "No ResponseHandler set - subscription response not routed",
 			fmt.Errorf("no response handler set"),
 			ion.String("peer_id", peerID.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -430,7 +430,7 @@ func (StructListenerNode *StructListener) HandleSubscriptionResponse(logger_ctx 
 // Uses LRU cache with TTL for optimal performance and resource efficiency
 func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.Context, peerID peer.ID, message string) error {
 	// Record trace span and close it
-	sendSpanCtx, sendSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.SendMessageToPeer")
+	sendSpanCtx, sendSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.SendMessageToPeer")
 	defer sendSpan.End()
 
 	startTime := time.Now().UTC()
@@ -439,7 +439,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 		attribute.Int("message_length", len(message)),
 	)
 
-	logger().Info(sendSpanCtx, "Sending message to peer",
+	logger().NamedLogger.Info(sendSpanCtx, "Sending message to peer",
 		ion.String("peer_id", peerID.String()),
 		ion.String("message", message),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -461,7 +461,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 	if err != nil {
 		// Direct connection failed, try fallback via seed node
 		sendSpan.SetAttributes(attribute.String("connection_method", "seed_node_fallback"))
-		logger().Info(sendSpanCtx, "Direct connection failed, using seed node fallback",
+		logger().NamedLogger.Info(sendSpanCtx, "Direct connection failed, using seed node fallback",
 			ion.String("peer_id", peerID.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -481,7 +481,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 		// If write fails, the stream might be invalid, close it and try fallback
 		StreamCache.CloseStream(peerID)
 		sendSpan.SetAttributes(attribute.String("connection_method", "seed_node_fallback_after_write_fail"))
-		logger().Info(sendSpanCtx, "Stream write failed, using seed node fallback",
+		logger().NamedLogger.Info(sendSpanCtx, "Stream write failed, using seed node fallback",
 			ion.String("peer_id", peerID.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -514,7 +514,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 		stream.SetWriteDeadline(time.Now().UTC().Add(10 * time.Second))
 		sendSpan.SetAttributes(attribute.String("read_deadline", deadline.Format(time.RFC3339)))
 
-		logger().Info(sendSpanCtx, "Set read deadline and starting to read response",
+		logger().NamedLogger.Info(sendSpanCtx, "Set read deadline and starting to read response",
 			ion.String("peer_id", peerID.String()),
 			ion.String("deadline", deadline.Format(time.RFC3339)),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -530,7 +530,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 			sendSpan.SetAttributes(attribute.String("status", "read_response_failed"))
 			duration := time.Since(startTime).Seconds()
 			sendSpan.SetAttributes(attribute.Float64("duration", duration))
-			logger().Error(sendSpanCtx, "Failed to read response from peer",
+			logger().NamedLogger.Error(sendSpanCtx, "Failed to read response from peer",
 				err,
 				ion.String("peer_id", peerID.String()),
 				ion.String("deadline", deadline.Format(time.RFC3339)),
@@ -544,7 +544,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 		} else if responseMsg != "" {
 			sendSpan.SetAttributes(attribute.String("response_received", "true"), attribute.Int("response_length", len(responseMsg)))
 
-			logger().Info(sendSpanCtx, "Received response from peer",
+			logger().NamedLogger.Info(sendSpanCtx, "Received response from peer",
 				ion.String("peer_id", peerID.String()),
 				ion.String("response", responseMsg),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -566,7 +566,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 					accepted := responseMessage.GetACK().GetStatus() == "ACK_TRUE"
 					sendSpan.SetAttributes(attribute.Bool("subscription_accepted", accepted))
 
-					logger().Info(sendSpanCtx, "Processing subscription response from peer",
+					logger().NamedLogger.Info(sendSpanCtx, "Processing subscription response from peer",
 						ion.String("peer_id", peerID.String()),
 						ion.Bool("accepted", accepted),
 						ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -577,7 +577,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 					// Route the response to ResponseHandler if available
 					if StructListenerNode.ResponseHandler != nil {
 						StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted, "main")
-						logger().Info(sendSpanCtx, "Successfully routed subscription response to ResponseHandler",
+						logger().NamedLogger.Info(sendSpanCtx, "Successfully routed subscription response to ResponseHandler",
 							ion.String("peer_id", peerID.String()),
 							ion.Bool("accepted", accepted),
 							ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -588,7 +588,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 				}
 
 				// stream.Close()
-				logger().Info(sendSpanCtx, "Stream closed after receiving response (deferred)",
+				logger().NamedLogger.Info(sendSpanCtx, "Stream closed after receiving response (deferred)",
 					ion.String("peer_id", peerID.String()),
 					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 					ion.String("log_file", LOG_FILE),
@@ -599,7 +599,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 	} else {
 		// For votes, just close the stream without waiting for response
 		// stream.Close()
-		logger().Info(sendSpanCtx, "Vote submitted - no response expected, closing stream (deferred)",
+		logger().NamedLogger.Info(sendSpanCtx, "Vote submitted - no response expected, closing stream (deferred)",
 			ion.String("peer_id", peerID.String()),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -616,7 +616,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 
 	duration := time.Since(startTime).Seconds()
 	sendSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().Info(sendSpanCtx, "Successfully sent listener message to peer",
+	logger().NamedLogger.Info(sendSpanCtx, "Successfully sent listener message to peer",
 		ion.String("peer_id", peerID.String()),
 		ion.String("message", message),
 		ion.Float64("duration", duration),
@@ -631,7 +631,7 @@ func (StructListenerNode *StructListener) SendMessageToPeer(logger_ctx context.C
 // sendViaSeedNode establishes a quick connection via seed node, sends message, and drops connection
 func (StructListenerNode *StructListener) sendViaSeedNode(logger_ctx context.Context, peerID peer.ID, message string) error {
 	// Record trace span and close it
-	seedSpanCtx, seedSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.sendViaSeedNode")
+	seedSpanCtx, seedSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.sendViaSeedNode")
 	defer seedSpan.End()
 
 	startTime := time.Now().UTC()
@@ -641,7 +641,7 @@ func (StructListenerNode *StructListener) sendViaSeedNode(logger_ctx context.Con
 		attribute.String("connection_method", "seed_node"),
 	)
 
-	logger().Info(seedSpanCtx, "Sending message via seed node",
+	logger().NamedLogger.Info(seedSpanCtx, "Sending message via seed node",
 		ion.String("peer_id", peerID.String()),
 		ion.String("message", message),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -701,7 +701,7 @@ func (StructListenerNode *StructListener) sendViaSeedNode(logger_ctx context.Con
 	if err == nil && responseMsg != "" {
 		seedSpan.SetAttributes(attribute.String("response_received", "true"), attribute.Int("response_length", len(responseMsg)))
 
-		logger().Info(seedSpanCtx, "Received response from peer via seed node",
+		logger().NamedLogger.Info(seedSpanCtx, "Received response from peer via seed node",
 			ion.String("peer_id", peerID.String()),
 			ion.String("response", responseMsg),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -717,7 +717,7 @@ func (StructListenerNode *StructListener) sendViaSeedNode(logger_ctx context.Con
 				accepted := responseMessage.GetACK().GetStatus() == "ACK_TRUE"
 				seedSpan.SetAttributes(attribute.Bool("subscription_accepted", accepted))
 
-				logger().Info(seedSpanCtx, "Processing subscription response from peer via seed node",
+				logger().NamedLogger.Info(seedSpanCtx, "Processing subscription response from peer via seed node",
 					ion.String("peer_id", peerID.String()),
 					ion.Bool("accepted", accepted),
 					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -728,7 +728,7 @@ func (StructListenerNode *StructListener) sendViaSeedNode(logger_ctx context.Con
 				// Route the response to ResponseHandler if available
 				if StructListenerNode.ResponseHandler != nil {
 					StructListenerNode.ResponseHandler.HandleResponse(peerID, accepted, "main")
-					logger().Info(seedSpanCtx, "Successfully routed subscription response to ResponseHandler",
+					logger().NamedLogger.Info(seedSpanCtx, "Successfully routed subscription response to ResponseHandler",
 						ion.String("peer_id", peerID.String()),
 						ion.Bool("accepted", accepted),
 						ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -749,7 +749,7 @@ func (StructListenerNode *StructListener) sendViaSeedNode(logger_ctx context.Con
 
 	duration := time.Since(startTime).Seconds()
 	seedSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().Info(seedSpanCtx, "Successfully sent listener message to peer via seed node",
+	logger().NamedLogger.Info(seedSpanCtx, "Successfully sent listener message to peer via seed node",
 		ion.String("peer_id", peerID.String()),
 		ion.String("message", message),
 		ion.Float64("duration", duration),
@@ -764,13 +764,13 @@ func (StructListenerNode *StructListener) sendViaSeedNode(logger_ctx context.Con
 // getPeerInfoFromSeedNode retrieves peer information from seed node
 func (StructListenerNode *StructListener) getPeerInfoFromSeedNode(logger_ctx context.Context, peerID peer.ID) (*peer.AddrInfo, error) {
 	// Record trace span and close it
-	peerInfoSpanCtx, peerInfoSpan := logger().Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.getPeerInfoFromSeedNode")
+	peerInfoSpanCtx, peerInfoSpan := logger().NamedLogger.Tracer("MessagePassing").Start(logger_ctx, "MessagePassing.getPeerInfoFromSeedNode")
 	defer peerInfoSpan.End()
 
 	startTime := time.Now().UTC()
 	peerInfoSpan.SetAttributes(attribute.String("peer_id", peerID.String()))
 
-	logger().Info(peerInfoSpanCtx, "Getting peer info from seed node",
+	logger().NamedLogger.Info(peerInfoSpanCtx, "Getting peer info from seed node",
 		ion.String("peer_id", peerID.String()),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -810,7 +810,7 @@ func (StructListenerNode *StructListener) getPeerInfoFromSeedNode(logger_ctx con
 	for _, multiaddrStr := range peerRecord.Multiaddrs {
 		addr, err := multiaddr.NewMultiaddr(multiaddrStr)
 		if err != nil {
-			logger().Warn(peerInfoSpanCtx, "Skipping invalid multiaddr",
+			logger().NamedLogger.Warn(peerInfoSpanCtx, "Skipping invalid multiaddr",
 				ion.String("multiaddr", multiaddrStr),
 				ion.String("error", err.Error()),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -835,7 +835,7 @@ func (StructListenerNode *StructListener) getPeerInfoFromSeedNode(logger_ctx con
 
 	duration := time.Since(startTime).Seconds()
 	peerInfoSpan.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	logger().Info(peerInfoSpanCtx, "Successfully retrieved peer info from seed node",
+	logger().NamedLogger.Info(peerInfoSpanCtx, "Successfully retrieved peer info from seed node",
 		ion.String("peer_id", peerID.String()),
 		ion.Int("valid_addrs_count", validAddrs),
 		ion.Float64("duration", duration),

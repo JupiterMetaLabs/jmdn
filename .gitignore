@@ -71,5 +71,3 @@ internal/WAL/.tmp/*
 AVC/BLS/Router/config/bls.json
 AVC/BuddyNodes/MessagePassing/BLS_Signer/config/bls.json
 AVC/BuddyNodes/MessagePassing/BLS_Verifier/config/bls.json
-internal/WAL/*
-docs/ADR-001-code-review.md

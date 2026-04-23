@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -36,9 +35,9 @@ func SetupLibp2pHost(ctx context.Context, port int) (host.Host, *pubsub.PubSub, 
 		return nil, nil, fmt.Errorf("failed to create gossipsub: %w", err)
 	}
 
-	logger().Info(context.Background(), "✅ libp2p host created\n")
-	logger().Info(context.Background(), "   Peer ID: %s", h.ID())
-	logger().Info(context.Background(), "   Listening on: %s", listenAddr)
+	fmt.Printf("✅ libp2p host created\n")
+	fmt.Printf("   Peer ID: %s\n", h.ID())
+	fmt.Printf("   Listening on: %s\n", listenAddr)
 
 	return h, ps, nil
 }
@@ -46,40 +45,40 @@ func SetupLibp2pHost(ctx context.Context, port int) (host.Host, *pubsub.PubSub, 
 // ConnectToPeers connects to bootstrap/peer nodes
 func ConnectToPeers(ctx context.Context, h host.Host, peerAddrs []string) error {
 	if len(peerAddrs) == 0 {
-		logger().Warn(context.Background(), "No peers to connect to")
+		fmt.Println("⚠️  No peers to connect to")
 		return nil
 	}
 
-	logger().Info(context.Background(), "🔗 Connecting to %d peers...", len(peerAddrs))
+	fmt.Printf("🔗 Connecting to %d peers...\n", len(peerAddrs))
 
 	for _, addrStr := range peerAddrs {
 		// Parse multiaddr
 		maddr, err := multiaddr.NewMultiaddr(addrStr)
 		if err != nil {
-			logger().Info(context.Background(), "❌ Invalid peer address %s: %v", addrStr, err)
+			fmt.Printf("❌ Invalid peer address %s: %v\n", addrStr, err)
 			continue
 		}
 
 		// Extract peer info
 		peerInfo, err := peer.AddrInfoFromP2pAddr(maddr)
 		if err != nil {
-			logger().Info(context.Background(), "❌ Failed to parse peer info from %s: %v", addrStr, err)
+			fmt.Printf("❌ Failed to parse peer info from %s: %v\n", addrStr, err)
 			continue
 		}
 
 		// Check if this is a self-connection attempt
 		if peerInfo.ID == h.ID() {
-			logger().Info(context.Background(), "🚫 Skipping self-connection attempt: %s", addrStr)
+			fmt.Printf("🚫 Skipping self-connection attempt: %s\n", addrStr)
 			continue
 		}
 
 		// Connect
 		if err := h.Connect(ctx, *peerInfo); err != nil {
-			logger().Info(context.Background(), "❌ Failed to connect to %s: %v", peerInfo.ID, err)
+			fmt.Printf("❌ Failed to connect to %s: %v\n", peerInfo.ID, err)
 			continue
 		}
 
-		logger().Info(context.Background(), "✅ Connected to peer: %s", peerInfo.ID)
+		fmt.Printf("✅ Connected to peer: %s\n", peerInfo.ID)
 	}
 
 	return nil
@@ -87,7 +86,7 @@ func ConnectToPeers(ctx context.Context, h host.Host, peerAddrs []string) error 
 
 // SetupSimpleNetwork creates a local test network
 func SetupSimpleNetwork(ctx context.Context, numNodes int, startPort int) ([]host.Host, []*pubsub.PubSub, error) {
-	logger().Info(context.Background(), "🚀 Setting up local test network with %d nodes", numNodes)
+	fmt.Printf("🚀 Setting up local test network with %d nodes\n", numNodes)
 
 	hosts := make([]host.Host, numNodes)
 	pubsubs := make([]*pubsub.PubSub, numNodes)
@@ -103,7 +102,7 @@ func SetupSimpleNetwork(ctx context.Context, numNodes int, startPort int) ([]hos
 	}
 
 	// Connect them all together (full mesh for testing)
-	logger().Info(context.Background(), "Connecting nodes in full mesh")
+	fmt.Println("\n🔗 Connecting nodes in full mesh...")
 	for i := 0; i < numNodes; i++ {
 		for j := i + 1; j < numNodes; j++ {
 			// Connect i to j
@@ -113,11 +112,11 @@ func SetupSimpleNetwork(ctx context.Context, numNodes int, startPort int) ([]hos
 			}
 
 			if err := hosts[i].Connect(ctx, peerInfo); err != nil {
-				logger().Info(context.Background(), "⚠️  Failed to connect node %d to node %d: %v", i, j, err)
+				fmt.Printf("⚠️  Failed to connect node %d to node %d: %v\n", i, j, err)
 			}
 		}
 	}
 
-	logger().Info(context.Background(), "\n✅ Network setup complete! %d nodes connected", numNodes)
+	fmt.Printf("\n✅ Network setup complete! %d nodes connected\n", numNodes)
 	return hosts, pubsubs, nil
 }

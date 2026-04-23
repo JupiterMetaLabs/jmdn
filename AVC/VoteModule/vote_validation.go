@@ -1,13 +1,9 @@
 package votemodule
 
 import (
-	"context"
 	"errors"
+	"fmt"
 	"math"
-
-	log "gossipnode/logging"
-
-	"github.com/JupiterMetaLabs/ion"
 )
 
 func VoteAggregation(weights map[string]float64, votes map[string]int8) (bool, error) {
@@ -54,16 +50,6 @@ func WeightAggregation(weight float64, correct bool, alpha float64, beta float64
 	// logit transform (add delta in log-odds space)
 	logValue := math.Log(weight/(1-weight)) + delta
 	// sigmoid value
-	logger(log.VoteModule).Debug(context.Background(), "Vote calculation", ion.Float64("original", weight), ion.Bool("correct", correct), ion.Float64("new_value", 1/(1+math.Exp(-logValue))))
+	fmt.Println("original=", weight, "correct=", correct, "newValue=", 1/(1+math.Exp(-logValue)))
 	return 1 / (1 + math.Exp(-logValue))
-}
-
-
-// logger returns the ion logger instance for vote module
-func logger(namedLogger string) *ion.Ion {
-	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(namedLogger, "")
-	if err != nil {
-		return nil
-	}
-	return logInstance.GetNamedLogger()
 }

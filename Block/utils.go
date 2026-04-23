@@ -4,11 +4,11 @@ import (
 	"gossipnode/config"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
+/* UNUSED
 // Helper function to convert our AccessList type to go-ethereum's types.AccessList
 func convertAccessList(accessList config.AccessList) types.AccessList {
 	result := make(types.AccessList, len(accessList))
@@ -20,6 +20,7 @@ func convertAccessList(accessList config.AccessList) types.AccessList {
 	}
 	return result
 }
+*/
 
 // Hash returns the Keccak256 hash of the transaction
 func Hash(tx *config.Transaction) (common.Hash, error) {
