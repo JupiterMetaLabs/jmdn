@@ -15,10 +15,12 @@ type NodeConfig struct {
 	Ports    PortSettings     `mapstructure:"ports"`
 	Binds    BindSettings     `mapstructure:"binds"`
 	Database DatabaseSettings `mapstructure:"database"`
+	Thebe    ThebeConfig      `mapstructure:"thebe"`
 	Logging  LoggingSettings  `mapstructure:"logging"`
 	Features FeatureSettings  `mapstructure:"features"`
 	Security SecurityConfig   `mapstructure:"security"`
 	Alerts   AlertsConfig     `mapstructure:"alerts"`
+	FastSync FastSyncSettings `mapstructure:"fastsync"`
 }
 
 // NodeSettings defines the identity of this node.
@@ -70,6 +72,17 @@ type BindSettings struct {
 type DatabaseSettings struct {
 	Username string `mapstructure:"username" yaml:"username"`
 	Password string `mapstructure:"password" yaml:"password"`
+}
+
+// ThebeConfig controls optional ThebeDB integration.
+type ThebeConfig struct {
+	Enabled    bool   `mapstructure:"enabled" yaml:"enabled"`         // default false
+	KVPath     string `mapstructure:"kv_path" yaml:"kv_path"`         // default "./data/thebe-kv"
+	SQLDSN     string `mapstructure:"sql_dsn" yaml:"sql_dsn"`         // reads THEBE_SQL_DSN env var
+	RedisURL   string `mapstructure:"redis_url" yaml:"redis_url"`     // optional, reads THEBE_REDIS_URL
+	StreamName string `mapstructure:"stream_name" yaml:"stream_name"` // optional, default "thebedb.events"
+	MaxLen     int64  `mapstructure:"max_len" yaml:"max_len"`         // optional, default 1000
+	GroupName  string `mapstructure:"group_name" yaml:"group_name"`   // optional, default "projector"
 }
 
 // LoggingSettings mirrors Ion's Config struct so jmdn.yaml can fully configure
@@ -126,4 +139,36 @@ type LogTracingSettings struct {
 type FeatureSettings struct {
 	UseLegacyBFT bool `mapstructure:"use_legacy_bft" yaml:"use_legacy_bft"`
 	GROTrack     bool `mapstructure:"grotrack"        yaml:"grotrack"`
+}
+
+// FastSyncSettings controls FastSync V2 behaviour for this node.
+//
+// Serving vs syncing are independent:
+//   - enabled=true  → this node registers FastSync protocol handlers and serves
+//     block/account data to any peer that requests it.
+//   - sync=true     → this node is allowed to pull data from peers and update
+//     its own local database (HeaderSync, DataSync, Reconciliation).
+//
+// A sequencer should set sync=false so it never overwrites its own authoritative
+// state, while keeping enabled=true so other nodes can still sync from it.
+type FastSyncSettings struct {
+	// Enabled controls whether the FastSync engine is initialized and protocol
+	// handlers are registered. Set false to disable FastSync entirely.
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// Sync controls whether this node will pull data from peers and write to its
+	// local DB. false = read-only participant (serves data, never updates itself).
+	Sync bool `mapstructure:"sync" yaml:"sync"`
+
+	// StartupSync controls whether the node attempts to catch up on missed blocks
+	// automatically when it (re)starts and connects to peers.
+	StartupSync bool `mapstructure:"startup_sync" yaml:"startup_sync"`
+
+	// SyncTimeout is the maximum wall-clock time allowed for a single full sync
+	// operation before it is cancelled.
+	SyncTimeout time.Duration `mapstructure:"sync_timeout" yaml:"sync_timeout"`
+
+	// AllowedPeers is an optional whitelist of libp2p peer IDs this node will
+	// accept sync data FROM. Empty list = accept from any peer.
+	AllowedPeers []string `mapstructure:"allowed_peers" yaml:"allowed_peers"`
 }

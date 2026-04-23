@@ -194,31 +194,52 @@ func (vt *VoteTrigger) SubmitVote() error {
 
 	// Reuse existing logger_ctx from above (already created with tracer)
 
-	// Try to send to multiple nodes if first attempt fails
+	// Determine the target node: prefer the sequencer (consensus creator) if known
+	var targetPeerID peer.ID
+	sequencerIDStr := vt.ConsensusMessage.GetSequencerID()
+	if sequencerIDStr != "" {
+		decoded, decErr := peer.Decode(sequencerIDStr)
+		if decErr != nil {
+			fmt.Printf("⚠️ Failed to decode SequencerID %q, falling back to consistent hashing: %v\n", sequencerIDStr, decErr)
+		} else {
+			targetPeerID = decoded
+		}
+	}
+
+	// Try to send to the sequencer (or fallback to consistent hashing)
 	maxAttempts := 3
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		// Pick up the listener node using the consistent hashing with offset
-		NodeToSendTo := vt.PickListnerWithOffset(listenerNode.PeerID, attempt)
+		var sendTo peer.ID
+		if targetPeerID != "" {
+			// Send directly to the sequencer
+			sendTo = targetPeerID
+		} else {
+			// Fallback: use consistent hashing (backward compatibility with old sequencer nodes)
+			NodeToSendTo := vt.PickListnerWithOffset(listenerNode.PeerID, attempt)
+			sendTo = NodeToSendTo.PeerID
+		}
 
 		// Check if trying to send to self - skip and try next
-		if NodeToSendTo.PeerID == listenerNode.PeerID && attempt < maxAttempts-1 {
+		if sendTo == listenerNode.PeerID && attempt < maxAttempts-1 {
 			continue
 		}
 
-		// Send the message to the listener node
+		// Send the message to the target node
 		err := MessagePassing.NewListenerStruct(listenerNode).
-			SendMessageToPeer(logger_ctx, NodeToSendTo.PeerID, string(messageBytes))
+			SendMessageToPeer(logger_ctx, sendTo, string(messageBytes))
 
 		if err != nil {
 			// If this is not the last attempt, try again
 			if attempt < maxAttempts-1 {
+				fmt.Printf("⚠️ Failed to send vote to %s (attempt %d/%d): %v\n", sendTo, attempt+1, maxAttempts, err)
 				continue
 			}
 			// Last attempt failed
-			return fmt.Errorf("failed to send message to listener node after %d attempts: %v", maxAttempts, err)
+			return fmt.Errorf("failed to send vote to sequencer %s after %d attempts: %v", sendTo, maxAttempts, err)
 		}
 
 		// Success!
+		fmt.Printf("✅ Vote sent to sequencer %s\n", sendTo)
 		return nil
 	}
 

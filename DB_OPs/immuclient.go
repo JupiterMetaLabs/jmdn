@@ -2005,6 +2005,17 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 		ion.String("function", "DB_OPs.StoreZKBlock"),
 	)
 
+	// Best-effort Thebe fanout: keeps immudb primary behavior unchanged while
+	// mirroring committed blocks into Thebe/Cassata (which calls ThebeDB.Append).
+	if shadow := getThebeShadowWriter(); shadow != nil {
+		if shadowErr := shadow.StoreZKBlock(mainDBClient, block); shadowErr != nil {
+			mainDBClient.Client.Logger.Warn(loggerCtx, "Thebe shadow block fanout failed",
+				ion.String("error", shadowErr.Error()),
+				ion.String("blockkey", blockKey),
+				ion.String("function", "DB_OPs.StoreZKBlock"))
+		}
+	}
+
 	return nil
 }
 
@@ -2164,16 +2175,17 @@ func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (
 	return block, nil
 }
 
-// GetLatestBlockNumber returns the latest block number (UNCHANGED)
+// GetLatestBlockNumber returns the latest block number (ENHANCED with retries and reconciliation)
 func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error) {
 	var err error
 	var shouldReturnConnection = false
 
-	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Define Function wide context for timeout - increased for robustness
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
 	if mainDBClient == nil {
 		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
@@ -2192,67 +2204,136 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 
 	if shouldReturnConnection {
 		defer func() {
-
-			mainDBClient.Client.Logger.Debug(loggerCtx, "Main DB connection put back successfully",
-				ion.String("database", config.DBName),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", LOG_FILE),
-				ion.String("topic", TOPIC),
-				ion.String("function", "DB_OPs.GetLatestBlockNumber"),
-			)
 			PutMainDBConnection(mainDBClient)
 		}()
 	}
-	latestBytes, err := Read(mainDBClient, "latest_block")
-	if err != nil {
-		// Check for both our custom ErrNotFound and the ImmuDB-specific errors
-		if err == ErrNotFound ||
-			strings.Contains(err.Error(), "key not found") ||
-			strings.Contains(err.Error(), "tbtree: key not found") {
 
-			mainDBClient.Client.Logger.Debug(loggerCtx, "No blocks found in the database yet",
+	// Try to read "latest_block" with retries
+	var latestBytes []byte
+	for retry := 0; retry < 3; retry++ {
+		latestBytes, err = Read(mainDBClient, "latest_block")
+		if err == nil {
+			break
+		}
+
+		// If it's a persistent error or not connection/deadline related, don't retry indefinitely
+		if err == ErrNotFound || strings.Contains(err.Error(), "key not found") {
+			mainDBClient.Client.Logger.Debug(loggerCtx, "latest_block marker not found, attempting reconciliation",
 				ion.String("database", config.DBName),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", LOG_FILE),
 				ion.String("topic", TOPIC),
 				ion.String("function", "DB_OPs.GetLatestBlockNumber"),
 			)
-			return 0, nil // No blocks yet
+			// Trigger reconciliation fallback
+			return ReconcileLatestBlockNumber(mainDBClient)
 		}
 
-		mainDBClient.Client.Logger.Error(loggerCtx, "Failed to get latest block number",
+		if isConnectionError(err) || strings.Contains(err.Error(), "DeadlineExceeded") {
+			mainDBClient.Client.Logger.Warn(loggerCtx, fmt.Sprintf("Timeout getting latest block number (attempt %d/3): %v", retry+1, err),
+				ion.String("database", config.DBName),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("topic", TOPIC),
+				ion.String("function", "DB_OPs.GetLatestBlockNumber"),
+			)
+			time.Sleep(100 * time.Millisecond * time.Duration(retry+1))
+			continue
+		}
+
+		// Other errors
+		break
+	}
+
+	if err != nil {
+		// If read failed after retries, try reconciliation as a last resort
+		mainDBClient.Client.Logger.Error(loggerCtx, fmt.Sprintf("Failed to read latest_block marker after retries: %v. Attempting final reconciliation.", err),
 			err,
 			ion.String("database", config.DBName),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "DB_OPs.GetLatestBlockNumber"),
 		)
-		return 0, fmt.Errorf("failed to get latest block: %w - GetLatestBlockNumber", err)
+		return ReconcileLatestBlockNumber(mainDBClient)
 	}
 
-	var blockNumber uint64
-	if err := json.Unmarshal(latestBytes, &blockNumber); err != nil {
-
-		mainDBClient.Client.Logger.Error(loggerCtx, "Failed to parse latest block number",
-			err,
-			ion.String("database", config.DBName),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DB_OPs.GetLatestBlockNumber"),
-		)
-		return 0, fmt.Errorf("failed to parse latest block number: %w - GetLatestBlockNumber", err)
+	if len(latestBytes) == 0 {
+		return 0, nil
 	}
 
-	mainDBClient.Client.Logger.Debug(loggerCtx, "Successfully retrieved latest block number",
-		ion.String("blocknumber", fmt.Sprintf("%d", blockNumber)),
+	var latestNum uint64
+	err = json.Unmarshal(latestBytes, &latestNum)
+	if err != nil {
+		// If corrupted data, reconcile
+		return ReconcileLatestBlockNumber(mainDBClient)
+	}
+
+	return latestNum, nil
+}
+
+// ReconcileLatestBlockNumber scans for the highest block key and updates the marker
+func ReconcileLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error) {
+	var err error
+	var shouldReturnConnection = false
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	loggerCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if mainDBClient == nil {
+		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get main DB connection: %w - ReconcileLatestBlockNumber", err)
+		}
+		shouldReturnConnection = true
+	}
+
+	if shouldReturnConnection {
+		defer PutMainDBConnection(mainDBClient)
+	}
+
+	mainDBClient.Client.Logger.Info(loggerCtx, "Starting latest block reconciliation using key count...",
+		ion.String("prefix", PREFIX_BLOCK_HASH),
+		ion.String("database", config.DBName),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
-		ion.String("function", "DB_OPs.GetLatestBlockNumber"),
+		ion.String("function", "DB_OPs.ReconcileLatestBlockNumber"),
 	)
-	return blockNumber, nil
+
+	// Use the count of block:hash: keys to determine the number of blocks
+	count, err := CountBuilder{}.GetMainDBCount(PREFIX_BLOCK_HASH)
+	if err != nil {
+		return 0, fmt.Errorf("reconciliation failed to get key count: %w", err)
+	}
+
+	var reconciledNum uint64
+	if count == 0 {
+		mainDBClient.Client.Logger.Info(loggerCtx, "Reconciliation: no block hash keys found. Database appears empty.",
+			ion.String("database", config.DBName),
+			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+		)
+		reconciledNum = 0
+	} else {
+		// If there are 'count' blocks and they start from 0, the latest is count - 1
+		reconciledNum = uint64(count - 1)
+
+		mainDBClient.Client.Logger.Info(loggerCtx, fmt.Sprintf("Reconciliation successful: identified latest block %d from count %d", reconciledNum, count),
+			ion.Int("total_blocks", count),
+			ion.Uint64("latest_block_number", reconciledNum),
+			ion.String("database", config.DBName),
+			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+		)
+	}
+
+	// Update the latest_block marker with the reconciled value
+	if err := Create(mainDBClient, "latest_block", reconciledNum); err != nil {
+		mainDBClient.Client.Logger.Error(loggerCtx, "Failed to update latest_block marker during reconciliation",
+			err,
+			ion.Uint64("block_number", reconciledNum),
+		)
+		// Non-fatal, we still found the number
+	}
+
+	return reconciledNum, nil
 }
 
 // GetTransactionBlock returns the block containing a specific transaction (UNCHANGED)

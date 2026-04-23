@@ -45,6 +45,10 @@ type Consensus struct {
 	// Guards to prevent infinite loops
 	isProcessingVotes  bool
 	processedBlockHash string
+	// Event-driven vote collection
+	voteNotifyCh chan PubSubMessages.VoteNotification
+	roundCtx     context.Context
+	roundCancel  context.CancelFunc
 }
 
 // @constructor function
@@ -280,6 +284,11 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 // CleanupSubscriptions unsubscribes from consensus-related topics to prevent resource leaks
 // This should be called after each consensus round completes (success or failure)
 func (consensus *Consensus) CleanupSubscriptions() {
+	// Cancel the round context if active
+	if consensus.roundCancel != nil {
+		consensus.roundCancel()
+	}
+
 	if consensus.gossipnode == nil {
 		return
 	}

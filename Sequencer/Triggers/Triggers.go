@@ -422,7 +422,7 @@ func RequestVoteResultsFromBuddies(blockhash string) error {
 				var resultData map[string]interface{}
 				if err := json.Unmarshal([]byte(responseMsg.Message), &resultData); err == nil {
 					if result, ok := resultData["result"].(float64); ok {
-						Maps.StoreVoteResult(peerID.String(), int8(result))
+						Maps.StoreVoteResult(blockhash, peerID.String(), int8(result))
 						log.Printf("RequestVoteResultsFromBuddies: Stored vote result from %s: %d", peerID, int8(result))
 					}
 				}
@@ -452,7 +452,7 @@ func StartBFTConsensus(blockhash string) error {
 	elapsed := time.Duration(0)
 
 	for elapsed < maxWait {
-		count := Maps.GetVoteResultsCount()
+		count := Maps.GetVoteResultsCount(blockhash)
 		if count > 0 {
 			log.Printf("StartBFTConsensus: Found %d vote results, proceeding with BFT", count)
 			break
@@ -471,7 +471,7 @@ func StartBFTConsensus(blockhash string) error {
 
 	// Prepare buddy input data for BFT using vote results
 	buddyNode.Mutex.RLock()
-	allVoteResults := Maps.GetAllVoteResults()
+	allVoteResults := Maps.GetAllVoteResults(blockhash)
 
 	allBuddies := make([]bft.BuddyInput, len(buddyNode.BuddyNodes.Buddies_Nodes))
 	for i, peerID := range buddyNode.BuddyNodes.Buddies_Nodes {

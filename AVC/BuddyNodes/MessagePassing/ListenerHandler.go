@@ -1110,6 +1110,13 @@ func (lh *ListenerHandler) handleSubmitVote(logger_ctx context.Context, s networ
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.handleSubmitVote"))
 
+		// Notify the sequencer's vote collector (if this node IS the sequencer)
+		NotifyVoteCollector(AVCStruct.VoteNotification{
+			PeerID:    remotePeer.String(),
+			BlockHash: blockHash,
+			Vote:      int8(voteValue),
+		})
+
 		// Now publish the vote to pubsub so ALL other buddy nodes can receive it
 		if pubSubNode != nil && pubSubNode.PubSub != nil {
 			logger().Info(voteSpanCtx, "Republishing vote to pubsub for all buddy nodes",
@@ -1904,8 +1911,12 @@ func (lh *ListenerHandler) TriggerForBFTFromSequencer(s network.Stream, message 
 					if err := json.Unmarshal([]byte(msg.Message), &resultData); err == nil {
 						if result, ok := resultData["result"].(float64); ok {
 							voteResult := int8(result)
-							Maps.StoreVoteResult(buddyID.String(), voteResult)
-							logger().Info(context.Background(), fmt.Sprintf("✅ Stored vote result for peer %s: %d", buddyID.String(), voteResult))
+							resultBlockHash := ""
+							if bh, ok := resultData["block_hash"].(string); ok {
+								resultBlockHash = bh
+							}
+							Maps.StoreVoteResult(resultBlockHash, buddyID.String(), voteResult)
+							fmt.Printf("✅ Stored vote result for peer %s: %d\n", buddyID.String(), voteResult)
 							responsesMutex.Lock()
 							responsesReceived++
 							count := responsesReceived

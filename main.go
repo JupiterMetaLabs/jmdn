@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -18,6 +19,11 @@ import (
 	"gossipnode/logging"
 	"gossipnode/shutdown"
 
+	thebedb "github.com/JupiterMetaLabs/ThebeDB"
+	thebecfg "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/events"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 	orchestratorGlobal "github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	ion "github.com/JupiterMetaLabs/ion"
@@ -27,7 +33,11 @@ import (
 	"gossipnode/CA/ImmuDB_CA"
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/cassata"
+	"gossipnode/DB_OPs/dualdb"
+	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/DID"
+	"gossipnode/FastsyncV2"
 	"gossipnode/Pubsub"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
@@ -52,6 +62,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/rs/zerolog/log"
+	"go.uber.org/zap"
 )
 
 var (
@@ -90,7 +102,8 @@ func goMaybeTracked(
 
 // Global variables for easier access
 var (
-	fastSyncer *fastsync.FastSync
+	fastSyncer   *fastsync.FastSync
+	fastSyncerV2 *FastsyncV2.FastsyncV2
 	// immuClient   *config.ImmuClient // unused: declared but never assigned or read
 	globalPubSub *Pubsub.StructGossipPubSub
 )
@@ -99,6 +112,7 @@ var (
 var (
 	mainDBPool     *config.ConnectionPool // Main database connection pool
 	accountsDBPool *config.ConnectionPool // Accounts/DID database connection pool
+	cas            *cassata.Cassata
 )
 
 func initGlobalGRO() {
@@ -163,6 +177,9 @@ func StartFacadeServer(bindAddr string, port int, chainID int, smartRPC int) {
 
 		handler := rpc.NewHandlers(Service.NewService(chainID, smartRPC))
 		httpServer := rpc.NewHTTPServer(handler)
+		if cas != nil {
+			httpServer = httpServer.WithCassata(cas)
+		}
 
 		addr := fmt.Sprintf("%s:%d", bindAddr, port)
 		if err := httpServer.ServeWithContext(ctx, addr); err != nil {
@@ -242,6 +259,41 @@ func formatTimestamp(t time.Time) string {
 	return localTime.Format("02-01-2006 15:04:05")
 }
 
+func maskDSN(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<invalid>"
+	}
+	if u.User != nil {
+		username := u.User.Username()
+		if username != "" {
+			u.User = url.UserPassword(username, "***")
+		} else {
+			u.User = url.UserPassword("***", "***")
+		}
+	}
+	return u.String()
+}
+
+func maskRedisURL(raw string) string {
+	return maskDSN(raw)
+}
+
+func buildThebeEventsConfig(cfg settings.ThebeConfig) *events.Config {
+	if strings.TrimSpace(cfg.RedisURL) == "" {
+		return nil
+	}
+	return &events.Config{
+		RedisURL:   cfg.RedisURL,
+		StreamName: cfg.StreamName,
+		MaxLen:     cfg.MaxLen,
+		GroupName:  cfg.GroupName,
+	}
+}
+
 // runCommand executes a CLI command via gRPC to the running service
 func runCommand(command string, args []string, grpcPort int) {
 	// Special handling for version command - we want it to work even if node is offline
@@ -292,8 +344,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
-		fmt.Println("  fastsync <peer>      - Fast sync with peer")
-		fmt.Println("  firstsync <peer> <server|client> - First sync: get all data from peer (server) or receive all data (client)")
+		fmt.Println("  fastsync <peer>      - Fast sync with peer (V2 Engine)")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
 		fmt.Println("are only available in interactive mode.")
@@ -450,64 +501,33 @@ func runCommand(command string, args []string, grpcPort int) {
 			os.Exit(1)
 		}
 
-	case "fastsync":
+	case "fastsync", "fastsyncv2", "firstsync":
 		if len(args) < 1 {
 			fmt.Println("Usage: jmdn -cmd fastsync <peer_multiaddr>")
 			os.Exit(1)
 		}
-		fmt.Println("Starting fast sync...")
-		stats, err := client.FastSync(args[0])
+		fmt.Println("Starting FastSync (V2 Engine)...")
+		stats, err := client.FastSyncV2(args[0])
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
-		// Defensive guards against nil responses to prevent panics
 		if stats == nil {
-			fmt.Println("FastSync returned no stats (nil). The target peer may be unreachable or rejected the request.")
+			fmt.Println("FastSync returned no stats. The target peer may be unreachable.")
 			os.Exit(1)
 		}
-		fmt.Printf("Sync completed in %dms\n", stats.TimeTaken)
+		if stats.Error != "" {
+			fmt.Printf("FastSync failed: %s\n", stats.Error)
+			os.Exit(1)
+		}
+		fmt.Printf("Sync completed in %ds\n", stats.TimeTaken)
 		if stats.MainState == nil {
-			fmt.Println("  Main DB TxID: unavailable (no state returned)")
+			fmt.Println("  Main DB TxID: unavailable")
 		} else {
 			fmt.Printf("  Main DB TxID: %d\n", stats.MainState.TxId)
 		}
 		if stats.AccountsState == nil {
-			fmt.Println("  Accounts DB TxID: unavailable (no state returned)")
-		} else {
-			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
-		}
-
-	case "firstsync":
-		if len(args) < 2 {
-			fmt.Println("Usage: jmdn -cmd firstsync <peer_multiaddr> <server|client>")
-			os.Exit(1)
-		}
-		mode := args[1]
-		if mode != "server" && mode != "client" {
-			fmt.Println("Error: mode must be 'server' or 'client'")
-			fmt.Println("Usage: jmdn -cmd firstsync <peer_multiaddr> <server|client>")
-			os.Exit(1)
-		}
-		fmt.Printf("Starting first sync in %s mode...\n", mode)
-		stats, err := client.FirstSync(args[0], mode)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
-		}
-		// Defensive guards against nil responses to prevent panics
-		if stats == nil {
-			fmt.Println("FirstSync returned no stats (nil). The target peer may be unreachable or rejected the request.")
-			os.Exit(1)
-		}
-		fmt.Printf("Sync completed in %dms\n", stats.TimeTaken)
-		if stats.MainState == nil {
-			fmt.Println("  Main DB TxID: unavailable (no state returned)")
-		} else {
-			fmt.Printf("  Main DB TxID: %d\n", stats.MainState.TxId)
-		}
-		if stats.AccountsState == nil {
-			fmt.Println("  Accounts DB TxID: unavailable (no state returned)")
+			fmt.Println("  Accounts DB TxID: unavailable")
 		} else {
 			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
 		}
@@ -552,8 +572,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  sendfile <peer> <filepath> <remote> - Send file")
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
-		fmt.Println("  fastsync <peer>      - Fast sync with peer")
-		fmt.Println("  firstsync <peer> <server|client> - First sync: get all data from peer (server) or receive all data (client)")
+		fmt.Println("  fastsync <peer>      - Fast sync with peer (V2 Engine)")
 		os.Exit(1)
 	}
 }
@@ -682,6 +701,17 @@ func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsC
 	return fs
 }
 
+// initFastsyncV2 initializes the FastSync V2 service
+func initFastsyncV2(n *config.Node) *FastsyncV2.FastsyncV2 {
+	fs, err := FastsyncV2.NewFastsyncV2(n.Host)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
+		return nil
+	}
+	log.Info().Msg("FastsyncV2 service initialized")
+	return fs
+}
+
 // initPubSub initializes the PubSub system for the node
 func initPubSub(n *config.Node) (*Pubsub.StructGossipPubSub, error) {
 	fmt.Println("Initializing PubSub system...")
@@ -803,6 +833,16 @@ func main() {
 	// RE-RESOLVE TOKENS: CLI flags might have updated secrets (ExplorerAPIKey, JWTSecret).
 	// We must refresh the token cache so GetResolvedToken() returns the correct values.
 	cfg.Security.ResolveTokens()
+
+	log.Info().
+		Bool("enabled", cfg.Thebe.Enabled).
+		Str("kv_path", cfg.Thebe.KVPath).
+		Str("sql_dsn", maskDSN(cfg.Thebe.SQLDSN)).
+		Str("redis_url", maskRedisURL(cfg.Thebe.RedisURL)).
+		Str("stream_name", cfg.Thebe.StreamName).
+		Int64("max_len", cfg.Thebe.MaxLen).
+		Str("group_name", cfg.Thebe.GroupName).
+		Msg("Resolved Thebe config")
 
 	// Chain ID global initialization — must happen before any Security validation.
 	// Previously this was only set inside Block/Server.go (gated behind BlockGen > 0),
@@ -938,6 +978,25 @@ func main() {
 	os.Exit(1)
 	}
 
+	// Initialize ThebeDB + JMDN profile only when feature-flagged.
+	if cfg.Thebe.Enabled {
+		reg := profile.NewRegistry()
+		reg.Register(thebeprofile.New())
+		db, err := thebedb.NewFromConfig(thebedb.Config{
+			KV:       kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath},
+			SQL:      thebecfg.SQL{DSN: cfg.Thebe.SQLDSN},
+			Events:   buildThebeEventsConfig(cfg.Thebe),
+			Profiles: reg,
+		})
+		if err != nil {
+			log.Fatal().Err(err).Msg("thebedb init failed")
+		}
+		defer db.Close()
+		cas = cassata.New(db, zap.NewNop())
+		DB_OPs.SetThebeShadowWriter(dualdb.NewShadowAdapter(cas))
+		log.Info().Msg("ThebeDB Cassata middleware enabled")
+	}
+
 	// Discover Yggdrasil address BEFORE creating the node
 	fmt.Println("Discovering Yggdrasil address...")
 	ipv6, err := helper.GetTun0GlobalIPv6()
@@ -1019,6 +1078,67 @@ func main() {
 
 	// Initialize FastSync service
 	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
+	if cfg.FastSync.Enabled {
+		fastSyncerV2 = initFastsyncV2(n)
+	} else {
+		log.Info().Msg("[FastSync] disabled by config — protocol handlers not registered")
+	}
+
+	// Startup sync: catch up on blocks missed while offline.
+	// Only runs if both the engine is up and this node is configured to sync.
+	if fastSyncerV2 != nil && cfg.FastSync.Sync && cfg.FastSync.StartupSync {
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.StartupSyncThread, func(ctx context.Context) error {
+			// Wait for peer connections to establish after node startup
+			time.Sleep(5 * time.Second)
+
+			peers := n.Host.Network().Peers()
+			if len(peers) == 0 {
+				// TODO: Query seed node for available sync peers when no direct peers are connected
+				log.Info().Msg("[StartupSync] No peers connected, skipping startup sync")
+				return nil
+			}
+
+			log.Info().Int("peers", len(peers)).Msg("[StartupSync] Attempting startup sync with connected peers")
+
+			for _, peerID := range peers {
+				// Honour allowed_peers whitelist if configured
+				if len(cfg.FastSync.AllowedPeers) > 0 {
+					allowed := false
+					for _, ap := range cfg.FastSync.AllowedPeers {
+						if ap == peerID.String() {
+							allowed = true
+							break
+						}
+					}
+					if !allowed {
+						log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Skipping peer not in allowed_peers")
+						continue
+					}
+				}
+
+				addrs := n.Host.Peerstore().Addrs(peerID)
+				if len(addrs) == 0 {
+					continue
+				}
+
+				log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Trying peer")
+				if err := fastSyncerV2.HandleStartupSync(peerID, addrs); err != nil {
+					log.Warn().Err(err).Str("peer", peerID.String()).Msg("[StartupSync] Failed, trying next peer")
+					continue
+				}
+
+				log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Sync completed successfully")
+				return nil
+			}
+
+			log.Warn().Msg("[StartupSync] Failed to sync with any connected peer")
+			return nil
+		}); err != nil {
+			log.Error().Err(err).Str("thread", GRO.StartupSyncThread).Msg("Failed to start startup sync goroutine")
+		}
+	} else if fastSyncerV2 != nil && !cfg.FastSync.Sync {
+		log.Info().Msg("[FastSync] sync=false — this node serves data only, local DB will not be updated")
+	}
 
 	// Initialize Yggdrasil messaging if enabled
 	if cfg.Network.Yggdrasil {
@@ -1218,6 +1338,7 @@ func main() {
 		Node:            n,
 		NodeManager:     nodeManager,
 		FastSyncer:      fastSyncer,
+		FastSyncerV2:    fastSyncerV2,
 		SeedNode:        cfg.Network.SeedNode,
 		EnableYggdrasil: cfg.Network.Yggdrasil,
 		ChainID:         cfg.Network.ChainID,

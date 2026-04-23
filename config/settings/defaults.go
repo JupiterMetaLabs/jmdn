@@ -47,6 +47,15 @@ func DefaultConfig() NodeConfig {
 			Username: "immudb",
 			Password: "immudb",
 		},
+		Thebe: ThebeConfig{
+			Enabled:    false,
+			KVPath:     "./data/thebe-kv",
+			SQLDSN:     "",
+			RedisURL:   "",
+			StreamName: "thebedb.events",
+			MaxLen:     1000,
+			GroupName:  "projector",
+		},
 		Logging: LoggingSettings{
 			Level:       "warn",
 			Development: false,
@@ -79,6 +88,13 @@ func DefaultConfig() NodeConfig {
 		Features: FeatureSettings{
 			UseLegacyBFT: false,
 			GROTrack:     false,
+		},
+		FastSync: FastSyncSettings{
+			Enabled:      true,
+			Sync:         true,
+			StartupSync:  true,
+			SyncTimeout:  10 * time.Minute,
+			AllowedPeers: []string{},
 		},
 		Security: DefaultSecurityConfig(),
 		Alerts:   DefaultAlertsConfig(),

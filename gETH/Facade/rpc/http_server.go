@@ -2,18 +2,27 @@ package rpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"time"
 
-	"gossipnode/gETH/Facade/Service/Logger"
-
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/gin-gonic/gin"
+
+	"gossipnode/DB_OPs/cassata"
+	"gossipnode/DB_OPs/dualdb"
+	"gossipnode/config/settings"
+	"gossipnode/logging"
+	"gossipnode/pkg/gatekeeper"
 )
 
 type HTTPServer struct {
-	h *Handlers
+	h       *Handlers
+	dualDB  *dualdb.DualDB
+	cassata *cassata.Cassata // optional: Postgres projection reads when Thebe is enabled
+	logger  *ion.Ion        // Add logger
 }
 
 func NewHTTPServer(h *Handlers) *HTTPServer {
@@ -24,6 +33,17 @@ func NewHTTPServer(h *Handlers) *HTTPServer {
 		}
 	})
 	return &HTTPServer{h: h}
+}
+
+func (s *HTTPServer) WithDualDB(d *dualdb.DualDB) *HTTPServer {
+	s.dualDB = d
+	return s
+}
+
+// WithCassata wires read-only Thebe projection APIs (see registerThebeReadRoutes).
+func (s *HTTPServer) WithCassata(c *cassata.Cassata) *HTTPServer {
+	s.cassata = c
+	return s
 }
 
 func (s *HTTPServer) Serve(addr string) error {
@@ -51,6 +71,19 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	tlsEnabled, middleware, err := gatekeeper.ConfigureHTTPServer(srv, settings.ServiceEthRPC, secCfg, s.logger)
+	if err != nil {
+		return fmt.Errorf("failed to configure secure HTTP server: %w", err)
+	}
+
+	// Apply Gatekeeper Middleware
+	router.Use(middleware.Middleware(settings.ServiceEthRPC))
+
+	// Add JSON-RPC handler
+	router.Any("/", s.handleJSONRPC)
+	router.GET("/debug/dualdb/report", s.DualDBReport)
+	s.registerThebeReadRoutes(router)
+
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- srv.ListenAndServe()
@@ -67,6 +100,19 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 			return nil
 		}
 		return err
+	}
+}
+
+func (s *HTTPServer) DualDBReport(c *gin.Context) {
+	if s.dualDB == nil {
+		c.String(http.StatusServiceUnavailable, "dualdb not enabled")
+		return
+	}
+
+	c.Header("Content-Type", "application/json")
+	if err := json.NewEncoder(c.Writer).Encode(s.dualDB.Report()); err != nil {
+		c.String(http.StatusInternalServerError, "failed to encode dualdb report")
+		return
 	}
 }
 

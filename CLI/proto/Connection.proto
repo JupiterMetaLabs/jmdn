@@ -91,6 +91,7 @@ service CLIService {
 
     // Database Operations
     rpc FastSync(PeerRequest) returns (SyncStats) {}
+    rpc FastSyncV2(PeerRequest) returns (SyncStats) {}
     rpc FirstSync(FirstSyncRequest) returns (SyncStats) {}
     rpc GetDatabaseState(google.protobuf.Empty) returns (DatabaseStates) {}
 
