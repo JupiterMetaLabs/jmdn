@@ -655,6 +655,17 @@ func initFastsyncV2(n *config.Node) *FastsyncV2.FastsyncV2 {
 	return fs
 }
 
+// initFastsyncV2 initializes the FastSync V2 service
+func initFastsyncV2(n *config.Node) *FastsyncV2.FastsyncV2 {
+	fs, err := FastsyncV2.NewFastsyncV2(n.Host)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
+		return nil
+	}
+	log.Info().Msg("FastsyncV2 service initialized")
+	return fs
+}
+
 // initPubSub initializes the PubSub system for the node
 func initPubSub(n *config.Node) (*Pubsub.StructGossipPubSub, error) {
 	fmt.Println("Initializing PubSub system...")
@@ -897,6 +908,25 @@ func main() {
 
 	if err := initAccountsDBPool(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
+	}
+
+	// Initialize ThebeDB + JMDN profile only when feature-flagged.
+	if cfg.Thebe.Enabled {
+		reg := profile.NewRegistry()
+		reg.Register(thebeprofile.New())
+		db, err := thebedb.NewFromConfig(thebedb.Config{
+			KV:       kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath},
+			SQL:      thebecfg.SQL{DSN: cfg.Thebe.SQLDSN},
+			Events:   buildThebeEventsConfig(cfg.Thebe),
+			Profiles: reg,
+		})
+		if err != nil {
+			log.Fatal().Err(err).Msg("thebedb init failed")
+		}
+		defer db.Close()
+		cas = cassata.New(db, zap.NewNop())
+		DB_OPs.SetThebeShadowWriter(dualdb.NewShadowAdapter(cas))
+		log.Info().Msg("ThebeDB Cassata middleware enabled")
 	}
 
 	// Initialize ThebeDB + JMDN profile only when feature-flagged.

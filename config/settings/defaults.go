@@ -52,6 +52,15 @@ func DefaultConfig() NodeConfig {
 			MaxLen:     1000,
 			GroupName:  "projector",
 		},
+		Thebe: ThebeConfig{
+			Enabled:    false,
+			KVPath:     "./data/thebe-kv",
+			SQLDSN:     "",
+			RedisURL:   "",
+			StreamName: "thebedb.events",
+			MaxLen:     1000,
+			GroupName:  "projector",
+		},
 		Logging: LoggingSettings{
 			Level:       "warn",
 			Development: false,

@@ -43,6 +43,17 @@ func (s *HTTPServer) WithCassata(c *cassata.Cassata) *HTTPServer {
 	return s
 }
 
+func (s *HTTPServer) WithDualDB(d *dualdb.DualDB) *HTTPServer {
+	s.dualDB = d
+	return s
+}
+
+// WithCassata wires read-only Thebe projection APIs (see registerThebeReadRoutes).
+func (s *HTTPServer) WithCassata(c *cassata.Cassata) *HTTPServer {
+	s.cassata = c
+	return s
+}
+
 func (s *HTTPServer) Serve(addr string) error {
 	return s.ServeWithContext(context.Background(), addr)
 }
