@@ -7,8 +7,6 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [1.1.1] - 2026-04-XX
-
 ### Added
 - CERT-IN security audit certificate (TERA/CERT-IN/03/2026/CR/16)
   with verification instructions ([VERIFICATION.md](./audits/2026-03-terasoft-certin-vapt/VERIFICATION.md))
