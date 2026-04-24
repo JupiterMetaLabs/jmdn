@@ -23,6 +23,7 @@ func DefaultConfig() NodeConfig {
 			CLI:       0, // disabled
 			DID:       15052,
 			Facade:    8545,
+			ThebeDebug: 19090,
 			WS:        8546,
 			Geth:      15054,
 			Smart:     15056,
@@ -37,6 +38,7 @@ func DefaultConfig() NodeConfig {
 			CLI:       "127.0.0.1", // Admin - CLI control
 			DID:       "0.0.0.0",   // Identity Service
 			Facade:    "0.0.0.0",   // Public RPC
+			ThebeDebug: "127.0.0.1", // Internal debug APIs
 			WS:        "0.0.0.0",   // Public WS
 			Geth:      "127.0.0.1", // Internal gRPC
 			Smart:     "127.0.0.1", // Internal gRPC

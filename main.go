@@ -162,7 +162,7 @@ func initAppandLocalGRO() {
 	}
 }
 
-func StartFacadeServer(bindAddr string, port int, chainID int, smartRPC int) {
+func StartFacadeServer(bindAddr string, port int, debugBindAddr string, debugPort int, chainID int, smartRPC int) {
 	if MainLM == nil {
 		if logger := mainLogger(); logger != nil {
 			logger.Error(context.Background(), "MainLM not initialized. Call initAppandLocalGRO() first", nil)
@@ -179,6 +179,17 @@ func StartFacadeServer(bindAddr string, port int, chainID int, smartRPC int) {
 		httpServer := rpc.NewHTTPServer(handler)
 		if cas != nil {
 			httpServer = httpServer.WithCassata(cas)
+		}
+
+		if debugPort > 0 {
+			debugAddr := fmt.Sprintf("%s:%d", debugBindAddr, debugPort)
+			go func() {
+				if err := httpServer.ServeDebugWithContext(ctx, debugAddr); err != nil {
+					if logger := mainLogger(); logger != nil {
+						logger.Error(ctx, "Facade debug server stopped", err, ion.String("addr", debugAddr))
+					}
+				}
+			}()
 		}
 
 		addr := fmt.Sprintf("%s:%d", bindAddr, port)
@@ -1359,7 +1370,14 @@ func main() {
 
 	if cfg.Ports.Facade > 0 {
 		fmt.Printf("Starting gETH Facade server on port %d\n", cfg.Ports.Facade)
-		StartFacadeServer(cfg.Binds.Facade, cfg.Ports.Facade, cfg.Network.ChainID, cfg.Ports.Smart)
+		StartFacadeServer(
+			cfg.Binds.Facade,
+			cfg.Ports.Facade,
+			cfg.Binds.ThebeDebug,
+			cfg.Ports.ThebeDebug,
+			cfg.Network.ChainID,
+			cfg.Ports.Smart,
+		)
 	}
 
 	if cfg.Ports.WS > 0 {

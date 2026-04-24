@@ -22,6 +22,7 @@ ports:
   cli: 0
   did: 15052
   facade: 8545
+  thebe_debug: 19090
   ws: 8546
   metrics: 0       # Disabled by default (use -metrics 8081 to enable)
   profiler: 0      # Disabled by default (use -profiler 6060 to enable)
@@ -33,6 +34,7 @@ binds:
   cli: "127.0.0.1"       # Admin - CLI control
   did: "0.0.0.0"
   facade: "0.0.0.0"
+  thebe_debug: "127.0.0.1"
   ws: "0.0.0.0"
   metrics: "127.0.0.1"
   profiler: "127.0.0.1"  # Debugging - STRICTLY LOCALHOST

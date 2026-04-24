@@ -45,6 +45,7 @@ type PortSettings struct {
 	CLI       int `mapstructure:"cli"       yaml:"cli"`
 	DID       int `mapstructure:"did"       yaml:"did"`
 	Facade    int `mapstructure:"facade"    yaml:"facade"`
+	ThebeDebug int `mapstructure:"thebe_debug" yaml:"thebe_debug"`
 	WS        int `mapstructure:"ws"        yaml:"ws"`
 	Geth      int `mapstructure:"geth"      yaml:"geth"`
 	Smart     int `mapstructure:"smart"     yaml:"smart"`
@@ -61,6 +62,7 @@ type BindSettings struct {
 	CLI       string `mapstructure:"cli"       yaml:"cli"`
 	DID       string `mapstructure:"did"       yaml:"did"`
 	Facade    string `mapstructure:"facade"    yaml:"facade"`
+	ThebeDebug string `mapstructure:"thebe_debug" yaml:"thebe_debug"`
 	WS        string `mapstructure:"ws"        yaml:"ws"`
 	Geth      string `mapstructure:"geth"      yaml:"geth"`
 	Smart     string `mapstructure:"smart"     yaml:"smart"`

@@ -79,8 +79,6 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 
 	// Register routes after middleware so protection applies consistently.
 	router.Any("/", s.handleJSONRPC)
-	router.GET("/debug/dualdb/report", s.DualDBReport)
-	s.registerThebeReadRoutes(router)
 
 	errCh := make(chan error, 1)
 	go func() {
