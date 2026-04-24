@@ -16,6 +16,7 @@ import (
 	thebecfg "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
+	"github.com/cockroachdb/pebble"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
@@ -46,7 +47,7 @@ func main() {
 
 	ctx := context.Background()
 
-	pebbleStore, err := contractDB.NewPebbleStore(*pebblePath)
+	pebbleStore, err := pebble.Open(*pebblePath, &pebble.Options{})
 	if err != nil {
 		log.Fatalf("open pebble: %v", err)
 	}
@@ -200,8 +201,11 @@ func main() {
 }
 
 // migratePrefix iterates all keys with the given prefix and calls fn for each.
-func migratePrefix(store *contractDB.PebbleStore, prefix []byte, fn func(key, val []byte) error) error {
-	iter, err := store.NewIterator(prefix)
+func migratePrefix(store *pebble.DB, prefix []byte, fn func(key, val []byte) error) error {
+	iter, err := store.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: keyUpperBound(prefix),
+	})
 	if err != nil {
 		return err
 	}
@@ -210,6 +214,18 @@ func migratePrefix(store *contractDB.PebbleStore, prefix []byte, fn func(key, va
 	for ok := iter.First(); ok; ok = iter.Next() {
 		if err := fn(iter.Key(), iter.Value()); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func keyUpperBound(prefix []byte) []byte {
+	upper := make([]byte, len(prefix))
+	copy(upper, prefix)
+	for i := len(upper) - 1; i >= 0; i-- {
+		upper[i]++
+		if upper[i] != 0 {
+			return upper
 		}
 	}
 	return nil

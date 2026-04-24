@@ -2,13 +2,9 @@ package contractDB
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"sync"
-
-	"github.com/cockroachdb/pebble"
 )
 
 // ============================================================================
@@ -65,7 +61,6 @@ type Iterator interface {
 type StoreType string
 
 const (
-	StoreTypePebble StoreType = "pebble"
 	StoreTypeMemory StoreType = "memory"
 )
 
@@ -78,8 +73,6 @@ type Config struct {
 // NewKVStore creates a new KVStore based on the configuration.
 func NewKVStore(cfg Config) (KVStore, error) {
 	switch cfg.Type {
-	case StoreTypePebble:
-		return NewPebbleStore(cfg.Path)
 	case StoreTypeMemory:
 		return NewMemKVStore(), nil
 	default:
@@ -88,114 +81,10 @@ func NewKVStore(cfg Config) (KVStore, error) {
 }
 
 // DefaultConfig returns a Config suitable for production use.
-// The storage path can be overridden via the CONTRACT_DB_PATH environment variable.
 func DefaultConfig() Config {
-	path := "./contract_storage_pebble"
-	if p := os.Getenv("CONTRACT_DB_PATH"); p != "" {
-		path = p
-	}
 	return Config{
-		Type: StoreTypePebble,
-		Path: path,
+		Type: StoreTypeMemory,
 	}
-}
-
-// ============================================================================
-// PebbleStore — production KV store backed by CockroachDB Pebble
-// ============================================================================
-
-// PebbleStore implements KVStore using PebbleDB.
-type PebbleStore struct {
-	db *pebble.DB
-}
-
-// Ensure PebbleStore implements KVStore.
-var _ KVStore = (*PebbleStore)(nil)
-
-// NewPebbleStore opens a PebbleDB at the given path.
-func NewPebbleStore(path string) (*PebbleStore, error) {
-	db, err := pebble.Open(path, &pebble.Options{})
-	if err != nil {
-		return nil, err
-	}
-	return &PebbleStore{db: db}, nil
-}
-
-func (s *PebbleStore) Get(key []byte) ([]byte, error) {
-	val, closer, err := s.db.Get(key)
-	if err != nil {
-		if errors.Is(err, pebble.ErrNotFound) {
-			return nil, nil // nil means not-found (matches interface contract)
-		}
-		return nil, err
-	}
-	valCopy := make([]byte, len(val))
-	copy(valCopy, val)
-	closer.Close()
-	return valCopy, nil
-}
-
-func (s *PebbleStore) Set(key, value []byte) error {
-	return s.db.Set(key, value, pebble.Sync)
-}
-
-func (s *PebbleStore) Delete(key []byte) error {
-	return s.db.Delete(key, pebble.Sync)
-}
-
-func (s *PebbleStore) NewBatch() Batch {
-	return &pebbleBatch{batch: s.db.NewBatch()}
-}
-
-func (s *PebbleStore) Close() error {
-	return s.db.Close()
-}
-
-func (s *PebbleStore) NewIterator(prefix []byte) (Iterator, error) {
-	opts := &pebble.IterOptions{}
-	if len(prefix) > 0 {
-		opts.LowerBound = prefix
-		opts.UpperBound = keyUpperBound(prefix)
-	}
-	iter, err := s.db.NewIter(opts)
-	if err != nil {
-		return nil, err
-	}
-	return &pebbleIterator{iter: iter}, nil
-}
-
-// pebbleBatch implements Batch for PebbleDB.
-type pebbleBatch struct {
-	batch *pebble.Batch
-}
-
-func (b *pebbleBatch) Set(key, value []byte) error { return b.batch.Set(key, value, nil) }
-func (b *pebbleBatch) Delete(key []byte) error      { return b.batch.Delete(key, nil) }
-func (b *pebbleBatch) Commit() error                { return b.batch.Commit(pebble.Sync) }
-func (b *pebbleBatch) Close() error                 { return b.batch.Close() }
-
-// pebbleIterator implements Iterator for PebbleDB.
-type pebbleIterator struct {
-	iter *pebble.Iterator
-}
-
-func (i *pebbleIterator) First() bool  { return i.iter.First() }
-func (i *pebbleIterator) Next() bool   { return i.iter.Next() }
-func (i *pebbleIterator) Key() []byte  { return i.iter.Key() }
-func (i *pebbleIterator) Value() []byte { return i.iter.Value() }
-func (i *pebbleIterator) Close() error { return i.iter.Close() }
-
-// keyUpperBound returns the immediate next key for a prefix scan.
-func keyUpperBound(b []byte) []byte {
-	end := make([]byte, len(b))
-	copy(end, b)
-	for i := len(end) - 1; i >= 0; i-- {
-		end[i]++
-		if end[i] != 0 {
-			return end
-		}
-	}
-	return nil // overflow
 }
 
 // ============================================================================
