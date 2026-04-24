@@ -125,6 +125,7 @@ else
 			;;
 		--solidity)
 			INSTALL_SOLIDITY=true
+			;;
 		--yggdrasil)
 			INSTALL_YGG=true
 			;;
