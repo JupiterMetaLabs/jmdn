@@ -371,11 +371,13 @@ func (c *ContractDB) GetStateAndCommittedState(addr common.Address, key common.H
 	return c.GetState(addr, key), c.GetCommittedState(addr, key)
 }
 
-func (c *ContractDB) IsNewContract(_ common.Address) bool           { return false }
-func (c *ContractDB) GetTransientState(_ common.Address, _ common.Hash) common.Hash { return common.Hash{} }
-func (c *ContractDB) SetTransientState(_ common.Address, _, _ common.Hash)          {}
-func (c *ContractDB) GetStorageRoot(_ common.Address) common.Hash   { return common.Hash{} }
-func (c *ContractDB) GetSelfDestruction(_ common.Address) bool      { return false }
+func (c *ContractDB) IsNewContract(_ common.Address) bool { return false }
+func (c *ContractDB) GetTransientState(_ common.Address, _ common.Hash) common.Hash {
+	return common.Hash{}
+}
+func (c *ContractDB) SetTransientState(_ common.Address, _, _ common.Hash) {}
+func (c *ContractDB) GetStorageRoot(_ common.Address) common.Hash          { return common.Hash{} }
+func (c *ContractDB) GetSelfDestruction(_ common.Address) bool             { return false }
 
 // ============================================================================
 // Lightweight helpers (use shared singletons directly — no full StateDB needed)
@@ -433,6 +435,16 @@ func SetSharedKVStore(store KVStore) {
 	sharedKVStore = store
 }
 
+// sharedStateRepo is the singleton StateRepository used by request-scoped
+// InitializeStateDB calls (router handlers, estimators, tracers).
+var sharedStateRepo StateRepository
+
+// SetSharedStateRepository stores the process-wide StateRepository singleton.
+// Must be configured during startup before any EVM processing begins.
+func SetSharedStateRepository(repo StateRepository) {
+	sharedStateRepo = repo
+}
+
 // sharedDIDClient is the singleton gRPC client for the DID service.
 // Reusing one connection avoids dialling per deployment.
 var sharedDIDClient pbdid.DIDServiceClient
@@ -447,8 +459,6 @@ func SetSharedDIDClient(client pbdid.DIDServiceClient) {
 // It reuses the process-wide singletons where available and falls back to
 // env-var-configured connections for standalone / test use.
 func InitializeStateDB() (StateDB, error) {
-	var err error
-
 	// Resolve DID client
 	var didClient pbdid.DIDServiceClient
 	if sharedDIDClient != nil {
@@ -465,18 +475,10 @@ func InitializeStateDB() (StateDB, error) {
 		didClient = pbdid.NewDIDServiceClient(didConn)
 	}
 
-	// Resolve KVStore
-	var storageDB KVStore
-	if sharedKVStore != nil {
-		storageDB = sharedKVStore
-	} else {
-		cfg := DefaultConfig()
-		storageDB, err = NewKVStore(cfg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize contract storage: %w", err)
-		}
+	// Resolve StateRepository
+	if sharedStateRepo == nil {
+		return nil, fmt.Errorf("contractDB: StateRepository not initialised (Thebe repository is required)")
 	}
 
-	repo := NewPebbleAdapter(storageDB)
-	return NewContractDB(didClient, repo), nil
+	return NewContractDB(didClient, sharedStateRepo), nil
 }

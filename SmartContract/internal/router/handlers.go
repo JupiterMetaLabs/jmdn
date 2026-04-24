@@ -19,11 +19,11 @@ import (
 	"gossipnode/SmartContract/proto"
 	pb "gossipnode/gETH/proto"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/JupiterMetaLabs/ion"
 )
 
 // ============================================================================
@@ -222,7 +222,7 @@ func (r *Router) ExecuteContract(ctx context.Context, req *proto.ExecuteContract
 		ion.String("contract", req.ContractAddress))
 
 	// Per-request StateDB — prevents concurrent calls from corrupting shared in-memory state.
-	// All instances share the same underlying PebbleDB via sharedKVStore, so committed writes
+	// All instances share the same underlying state backend, so committed writes
 	// from one call are visible to subsequent calls.
 	stateDB, err := contractDB.InitializeStateDB()
 	if err != nil {
@@ -291,7 +291,7 @@ func (r *Router) CallContract(ctx context.Context, req *proto.CallContractReques
 		return "", fmt.Errorf("contract_address is required")
 	}
 
-	// Per-request read-only StateDB — backed by the shared PebbleDB so code is visible.
+	// Per-request read-only StateDB — backed by shared state backend so code is visible.
 	// No CommitToDB call means no state mutations escape this function.
 	stateDB, err := contractDB.InitializeStateDB()
 	if err != nil {

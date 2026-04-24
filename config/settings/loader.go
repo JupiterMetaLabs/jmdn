@@ -157,9 +157,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("thebe.max_len", d.Thebe.MaxLen)
 	v.SetDefault("thebe.group_name", d.Thebe.GroupName)
 
-	// ContractDB
-	v.SetDefault("contractdb.backend", d.ContractDB.Backend)
-
 	// Logging
 	v.SetDefault("logging.level", d.Logging.Level)
 	v.SetDefault("logging.development", d.Logging.Development)

@@ -8,8 +8,8 @@ import (
 	"gossipnode/SmartContract/pkg/types"
 	"sync"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/JupiterMetaLabs/ion"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // KVStoreRegistry implements RegistryDB using the generic KVStore interface.
@@ -52,7 +52,7 @@ func (r *KVStoreRegistry) RegisterContract(ctx context.Context, metadata *types.
 		return fmt.Errorf("failed to marshal contract metadata: %w", err)
 	}
 
-	logger().Info(ctx, "💾 [ABI FLOW - REGISTRY] Saving to PebbleDB",
+	logger().Info(ctx, "💾 [ABI FLOW - REGISTRY] Saving contract metadata",
 		ion.String("address", metadata.Address.Hex()),
 		ion.Int("serialized_size", len(data)))
 
@@ -64,7 +64,7 @@ func (r *KVStoreRegistry) RegisterContract(ctx context.Context, metadata *types.
 		return err
 	}
 
-	logger().Info(ctx, "✅ [ABI FLOW - REGISTRY] Successfully saved to PebbleDB",
+	logger().Info(ctx, "✅ [ABI FLOW - REGISTRY] Successfully saved contract metadata",
 		ion.String("address", metadata.Address.Hex()))
 
 	return nil
@@ -92,7 +92,7 @@ func (r *KVStoreRegistry) GetContract(ctx context.Context, address common.Addres
 		return nil, fmt.Errorf("contract not found at address %s", address.Hex())
 	}
 
-	logger().Info(ctx, "📦 [ABI FLOW - REGISTRY] Retrieved data from PebbleDB",
+	logger().Info(ctx, "📦 [ABI FLOW - REGISTRY] Retrieved contract metadata",
 		ion.String("address", address.Hex()),
 		ion.Int("data_size", len(data)))
 

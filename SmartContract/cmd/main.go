@@ -12,8 +12,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"gossipnode/logging"
 
-	contractDB "gossipnode/DB_OPs/contractDB"
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/cassata"
+	contractDB "gossipnode/DB_OPs/contractDB"
+	"gossipnode/DB_OPs/thebeprofile"
 	pbdid "gossipnode/DID/proto"
 	"gossipnode/Security"
 	"gossipnode/SmartContract/internal/contract_registry"
@@ -22,6 +24,11 @@ import (
 	"gossipnode/config"
 	"gossipnode/config/settings"
 	pb "gossipnode/gETH/proto"
+
+	thebedb "github.com/JupiterMetaLabs/ThebeDB"
+	thebecfg "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 )
 
 func main() {
@@ -49,13 +56,24 @@ func main() {
 	dbConfig := database.LoadConfigFromEnv()
 	fmt.Printf("   DB Type  : %s\n", dbConfig.Type)
 
-	// 2. Shared KVStore
-	kvStore, err := contractDB.NewKVStore(contractDB.DefaultConfig())
-	if err != nil {
-		logger().Error(ctx, "Failed to initialize KVStore", err)
+	// 2. Thebe/Cassata (mandatory state backend)
+	if !cfg.Thebe.Enabled {
+		logger().Error(ctx, "Thebe must be enabled for SmartContract standalone server", fmt.Errorf("thebe.enabled=false"))
 		os.Exit(1)
 	}
-	contractDB.SetSharedKVStore(kvStore)
+	reg := profile.NewRegistry()
+	reg.Register(thebeprofile.New())
+	db, err := thebedb.NewFromConfig(thebedb.Config{
+		KV:       kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath},
+		SQL:      thebecfg.SQL{DSN: cfg.Thebe.SQLDSN},
+		Profiles: reg,
+	})
+	if err != nil {
+		logger().Error(ctx, "Failed to initialize ThebeDB", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	cas := cassata.New(db, nil)
 
 	// 3. DB_OPs connection pools (for nonce / account lookups)
 	poolConfig := config.DefaultConnectionPoolConfig()
@@ -67,13 +85,14 @@ func main() {
 	}
 
 	// 4. Contract registry
+	dbConfig.Type = database.DBTypeInMemory
 	registryFactory, err := contract_registry.NewRegistryFactory(dbConfig)
 	if err != nil {
 		logger().Error(ctx, "Failed to create registry factory", err)
 		os.Exit(1)
 	}
 	Security.SetExpectedChainID(chainID)
-	reg, err := registryFactory.CreateRegistryDB(kvStore)
+	registryDB, err := registryFactory.CreateRegistryDB(nil)
 	if err != nil {
 		logger().Error(ctx, "Failed to create registry", err)
 		os.Exit(1)
@@ -98,14 +117,14 @@ func main() {
 	}
 	defer didConn.Close()
 	didClient := pbdid.NewDIDServiceClient(didConn)
-	contractDB.SetSharedDIDClient(didClient)
 
 	// 7. ContractDB (StateDB)
-	repo := contractDB.NewPebbleAdapter(kvStore)
+	repo := contractDB.NewThebeStateRepository(cas)
+	contractDB.SetSharedStateRepository(repo)
 	stateDB := contractDB.NewContractDB(didClient, repo)
 
 	// 8. Router
-	smartRouter := router.NewRouter(chainID, stateDB, reg, nil, chainClient)
+	smartRouter := router.NewRouter(chainID, stateDB, registryDB, nil, chainClient)
 	defer smartRouter.Close()
 
 	fmt.Printf("✅ Server ready on localhost:%d\n\n", port)

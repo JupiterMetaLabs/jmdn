@@ -3,7 +3,6 @@ package SmartContract
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/JupiterMetaLabs/ion"
 	"google.golang.org/grpc"
@@ -17,7 +16,6 @@ import (
 	"gossipnode/SmartContract/internal/database"
 	"gossipnode/SmartContract/internal/evm"
 	"gossipnode/SmartContract/internal/router"
-	"gossipnode/config/settings"
 	pb "gossipnode/gETH/proto"
 )
 
@@ -33,12 +31,10 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 			ion.String("endpoint", evmEndpoint))
 	}
 
-	// 1. Shared KVStore (for contract registry persistence)
+	// 1. Contract registry configuration
 	dbConfig := database.LoadConfigFromEnv()
-	kvStore, err := contractDB.NewKVStore(contractDB.DefaultConfig())
-	if err != nil {
-		return fmt.Errorf("failed to initialize KVStore for Smart Contracts: %w", err)
-	}
+	// Contract registry is ephemeral and should not open on-disk KV files.
+	dbConfig.Type = database.DBTypeInMemory
 
 	// 2. Contract Registry
 	registryFactory, err := contract_registry.NewRegistryFactory(dbConfig)
@@ -48,7 +44,7 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 
 	Security.SetExpectedChainID(chainID)
 
-	reg, err := registryFactory.CreateRegistryDB(kvStore)
+	reg, err := registryFactory.CreateRegistryDB(nil)
 	if err != nil {
 		return fmt.Errorf("failed to create registry: %w", err)
 	}
@@ -96,20 +92,13 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 	SetSharedRegistry(reg)
 	logger().Info(ctx, "Shared contract registry registered.")
 
-	// 5. ContractDB (State Layer)
-	cfg := settings.Get()
-	useThebeRepo := cas != nil && !strings.EqualFold(strings.TrimSpace(cfg.ContractDB.Backend), "pebble")
-
-	var repo contractDB.StateRepository
-	if useThebeRepo {
-		repo = contractDB.NewThebeStateRepository(cas)
-		logger().Info(ctx, "ContractDB: using ThebeStateRepository (ThebeDB-backed)")
-	} else {
-		contractDB.SetSharedKVStore(kvStore)
-		repo = contractDB.NewPebbleAdapter(kvStore)
-		logger().Warn(ctx, "ContractDB: falling back to PebbleAdapter — set contractdb.backend=thebe for production")
+	// 5. ContractDB (State Layer) — Thebe-only runtime path.
+	if cas == nil {
+		return fmt.Errorf("failed to initialize Smart Contract state repository: cassata is nil (ThebeDB is required)")
 	}
-
+	repo := contractDB.NewThebeStateRepository(cas)
+	contractDB.SetSharedStateRepository(repo)
+	logger().Info(ctx, "ContractDB: using ThebeStateRepository (ThebeDB-backed)")
 	stateDB := contractDB.NewContractDB(didClient, repo)
 
 	// 6. Router

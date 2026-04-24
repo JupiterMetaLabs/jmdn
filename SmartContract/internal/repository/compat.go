@@ -16,4 +16,4 @@ type StorageMetadata = contractDB.StorageMetadata
 
 // ---- Constructor aliases ----
 
-var NewPebbleAdapter = contractDB.NewPebbleAdapter
+var NewThebeStateRepository = contractDB.NewThebeStateRepository

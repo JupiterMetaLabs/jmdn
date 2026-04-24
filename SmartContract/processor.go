@@ -35,7 +35,7 @@ func SetSharedRegistry(reg contract_registry.RegistryDB) {
 
 // RegisterContractFromGossip stores contract metadata received via gossip into
 // the local registry.  Idempotent — if the contract already exists the call is
-// a no-op (the registry records the address; bytecode is already in PebbleDB
+// a no-op (the registry records the address; bytecode is already in state storage
 // from EVM execution during block processing).
 func RegisterContractFromGossip(
 	ctx context.Context,
@@ -178,7 +178,7 @@ func NewEVMExecutor(chainID int) *EVMExecutor {
 }
 
 // NewStateDB creates a new StateDB instance with default configuration
-// utilizing the underlying infrastructure (PebbleDB + gRPC clients)
+// utilizing the underlying infrastructure (state storage + gRPC clients)
 func NewStateDB(chainID int) (StateDB, error) {
 	return evm.InitializeStateDB(chainID)
 }

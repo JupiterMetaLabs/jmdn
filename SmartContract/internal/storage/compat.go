@@ -20,7 +20,6 @@ type Config = contractDB.Config
 // ---- Constants ----
 
 const (
-	StoreTypePebble = contractDB.StoreTypePebble
 	StoreTypeMemory = contractDB.StoreTypeMemory
 )
 
@@ -28,10 +27,9 @@ const (
 
 var NewKVStore = contractDB.NewKVStore
 var NewMemKVStore = contractDB.NewMemKVStore
-var NewPebbleStore = contractDB.NewPebbleStore
 
 // ConfigFromEnv creates a storage Config from a database.Config.
-// Kept for backward compatibility — always returns a Pebble config.
+// Kept for backward compatibility — always returns a memory config.
 func ConfigFromEnv(_ *database.Config) Config {
-	return contractDB.DefaultConfig()
+	return contractDB.Config{Type: contractDB.StoreTypeMemory}
 }

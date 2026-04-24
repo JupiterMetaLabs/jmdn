@@ -21,9 +21,6 @@ const (
 
 	// DBTypeInMemory represents in-memory database (for testing)
 	DBTypeInMemory DBType = "memory"
-
-	// DBTypePebble represents PebbleDB database
-	DBTypePebble DBType = "pebble"
 )
 
 // Config holds database configuration
@@ -38,7 +35,7 @@ type Config struct {
 	Username string
 	Password string
 
-	// Storage path for embedded databases (Pebble, ImmuDB)
+	// Storage path for embedded databases
 	Path string
 
 	// Connection pool settings
@@ -57,10 +54,10 @@ type Config struct {
 }
 
 // DefaultConfig returns default database configuration
-// Uses ImmuDB with standard settings
+// Uses in-memory storage with standard settings.
 func DefaultConfig() *Config {
 	return &Config{
-		Type:           DBTypePebble,
+		Type:           DBTypeInMemory,
 		Host:           "localhost",
 		Port:           3322,
 		Database:       "contractsdb",

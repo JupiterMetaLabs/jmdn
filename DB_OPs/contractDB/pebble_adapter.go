@@ -23,6 +23,11 @@ func NewPebbleAdapter(db KVStore) *PebbleAdapter {
 	return &PebbleAdapter{db: db}
 }
 
+// NewPebbleStateRepository returns a Pebble-backed StateRepository.
+func NewPebbleStateRepository(db KVStore) StateRepository {
+	return NewPebbleAdapter(db)
+}
+
 // ============================================================================
 // Read operations
 // ============================================================================

@@ -56,9 +56,6 @@ func DefaultConfig() NodeConfig {
 			MaxLen:     1000,
 			GroupName:  "",
 		},
-		ContractDB: ContractDBConfig{
-			Backend: "thebe",
-		},
 		Logging: LoggingSettings{
 			Level:       "warn",
 			Development: false,

@@ -3,7 +3,6 @@ package contract_registry
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 
 	contractDB "gossipnode/DB_OPs/contractDB"
@@ -50,33 +49,11 @@ func DefaultRegistryFactory() (*RegistryFactory, error) {
 
 // CreateRegistryDB creates a RegistryDB implementation based on configuration
 func (f *RegistryFactory) CreateRegistryDB(sharedStore contractDB.KVStore) (RegistryDB, error) {
-	// If shared store is provided, prefer that for Pebble
-	if sharedStore != nil && f.config.Type == database.DBTypePebble {
-		return NewKVStoreRegistry(sharedStore), nil
-	}
-
 	switch f.config.Type {
 	case database.DBTypeInMemory:
 		return NewInMemoryRegistryDB(), nil
-	case database.DBTypePebble:
-		// Fallback create new store if not provided (though main.go should provide it)
-		// We use a separate path suffix if we are force-creating it here to avoid lock
-		// But ideally this path shouldn't be hit if main.go does its job
-		path := "contract_registry_pebble"
-		if f.config.Path != "" {
-			path = strings.TrimSuffix(f.config.Path, "/") + "_registry"
-		}
-
-		store, err := contractDB.NewKVStore(contractDB.Config{
-			Type: contractDB.StoreTypePebble,
-			Path: path,
-		})
-		if err != nil {
-			return nil, err
-		}
-		return NewKVStoreRegistry(store), nil
 	default:
-		return nil, fmt.Errorf("unsupported database type for RegistryDB: %s", f.config.Type)
+		return nil, fmt.Errorf("unsupported database type for RegistryDB: %s (only memory is supported)", f.config.Type)
 	}
 }
 
