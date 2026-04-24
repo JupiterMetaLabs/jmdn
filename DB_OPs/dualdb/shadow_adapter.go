@@ -68,6 +68,10 @@ func (s *ShadowAdapter) CreateAccount(_ *config.PooledConnection, didAddress str
 }
 
 func (s *ShadowAdapter) UpdateAccountBalance(_ *config.PooledConnection, address common.Address, newBalance string) error {
+	// WARNING: this upsert hard-codes Nonce to "0". In Thebe projections this can
+	// overwrite a newer nonce after balance-only updates. Prefer reading the current
+	// projected nonce first and carrying it forward, or use a targeted SQL UPDATE on
+	// balance_wei only.
 	account := cassata.AccountResult{
 		Address:     address.Hex(),
 		BalanceWei:  newBalance,
@@ -108,7 +112,6 @@ func (s *ShadowAdapter) StoreZKBlock(_ *config.PooledConnection, block *config.Z
 	// numbers. We do not have the prior row id here without a DB read, so leave
 	// chain unset (NULL). Snapshot rows remain keyed by block_number / block_hash.
 	if err := s.cas.IngestSnapshot(ctx, cassata.SnapshotResult{
-		SnapshotID:     int64(block.BlockNumber),
 		BlockNumber:    block.BlockNumber,
 		BlockHash:      block.BlockHash.Hex(),
 		PrevSnapshotID: nil,
@@ -229,8 +232,22 @@ func decodeTx(v interface{}) (cassata.TxResult, bool) {
 		return t, true
 	case *cassata.TxResult:
 		return *t, true
+	case []byte:
+		var tx cassata.TxResult
+		if err := json.Unmarshal(t, &tx); err != nil {
+			return cassata.TxResult{}, false
+		}
+		return tx, true
 	default:
-		return cassata.TxResult{}, false
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return cassata.TxResult{}, false
+		}
+		var tx cassata.TxResult
+		if err := json.Unmarshal(raw, &tx); err != nil {
+			return cassata.TxResult{}, false
+		}
+		return tx, true
 	}
 }
 
@@ -240,8 +257,22 @@ func decodeZKProof(v interface{}) (cassata.ZKProofResult, bool) {
 		return t, true
 	case *cassata.ZKProofResult:
 		return *t, true
+	case []byte:
+		var zk cassata.ZKProofResult
+		if err := json.Unmarshal(t, &zk); err != nil {
+			return cassata.ZKProofResult{}, false
+		}
+		return zk, true
 	default:
-		return cassata.ZKProofResult{}, false
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return cassata.ZKProofResult{}, false
+		}
+		var zk cassata.ZKProofResult
+		if err := json.Unmarshal(raw, &zk); err != nil {
+			return cassata.ZKProofResult{}, false
+		}
+		return zk, true
 	}
 }
 
@@ -251,8 +282,22 @@ func decodeSnapshot(v interface{}) (cassata.SnapshotResult, bool) {
 		return t, true
 	case *cassata.SnapshotResult:
 		return *t, true
+	case []byte:
+		var snap cassata.SnapshotResult
+		if err := json.Unmarshal(t, &snap); err != nil {
+			return cassata.SnapshotResult{}, false
+		}
+		return snap, true
 	default:
-		return cassata.SnapshotResult{}, false
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return cassata.SnapshotResult{}, false
+		}
+		var snap cassata.SnapshotResult
+		if err := json.Unmarshal(raw, &snap); err != nil {
+			return cassata.SnapshotResult{}, false
+		}
+		return snap, true
 	}
 }
 
@@ -401,18 +446,12 @@ func txToCassata(block *config.ZKBlock, idx int) cassata.TxResult {
 	}
 	var sigR *string
 	if tx.R != nil {
-		s := tx.R.Text(16)
-		if !strings.HasPrefix(s, "0x") {
-			s = "0x" + s
-		}
+		s := fmt.Sprintf("0x%064x", tx.R)
 		sigR = &s
 	}
 	var sigS *string
 	if tx.S != nil {
-		s := tx.S.Text(16)
-		if !strings.HasPrefix(s, "0x") {
-			s = "0x" + s
-		}
+		s := fmt.Sprintf("0x%064x", tx.S)
 		sigS = &s
 	}
 

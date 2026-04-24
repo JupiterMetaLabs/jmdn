@@ -13,6 +13,7 @@ import (
 )
 
 // KVStoreRegistry implements RegistryDB using the generic KVStore interface.
+// Kept for now as a backend-agnostic adapter for tests/fallback wiring.
 type KVStoreRegistry struct {
 	db contractDB.KVStore
 	mu sync.RWMutex
