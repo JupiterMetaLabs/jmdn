@@ -575,7 +575,7 @@ func BroadcastVoteTriggerToCommittee(h host.Host, consensusMessage *PubSubMessag
 		var err error
 		BroadcastLocalGRO, err = GROHelper.InitializeGRO(GRO.BroadcastLocal)
 		if err != nil {
-			log.Error().Err(err).Msg("Failed to initialize BroadcastLocalGRO")
+			broadcastLogger().Error(context.Background(), "Failed to initialize BroadcastLocalGRO", err)
 			return err
 		}
 	}
@@ -622,14 +622,13 @@ func BroadcastVoteTriggerToCommittee(h host.Host, consensusMessage *PubSubMessag
 	}
 	msgBytes = append(msgBytes, '\n')
 
-	log.Info().
-		Str("msg_id", msg.ID).
-		Int("committee_peers", len(committeePeers)).
-		Msg("Starting targeted vote trigger broadcast to committee peers")
+	broadcastLogger().Info(context.Background(), "Starting targeted vote trigger broadcast to committee peers",
+		ion.String("msg_id", msg.ID),
+		ion.Int("committee_peers", len(committeePeers)))
 
 	wg, err := BroadcastLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.BroadcastVoteTriggerWG)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to create waitgroup for committee broadcast vote trigger")
+		broadcastLogger().Error(context.Background(), "Failed to create waitgroup for committee broadcast vote trigger", err)
 		return fmt.Errorf("failed to create waitgroup for committee broadcast vote trigger: %w", err)
 	}
 	var successCount int
@@ -643,14 +642,16 @@ func BroadcastVoteTriggerToCommittee(h host.Host, consensusMessage *PubSubMessag
 
 			stream, err := h.NewStream(ctx, peer, config.BroadcastProtocol)
 			if err != nil {
-				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to open broadcast stream for committee vote trigger")
+				broadcastLogger().Error(context.Background(), "Failed to open broadcast stream for committee vote trigger", err,
+					ion.String("peer", peer.String()))
 				return err
 			}
 			defer stream.Close()
 
 			_, err = stream.Write(msgBytes)
 			if err != nil {
-				log.Error().Err(err).Str("peer", peer.String()).Msg("Failed to send committee vote trigger message")
+				broadcastLogger().Error(context.Background(), "Failed to send committee vote trigger message", err,
+					ion.String("peer", peer.String()))
 				return err
 			}
 
@@ -669,11 +670,10 @@ func BroadcastVoteTriggerToCommittee(h host.Host, consensusMessage *PubSubMessag
 		return fmt.Errorf("failed to broadcast vote trigger to any committee peers")
 	}
 
-	log.Info().
-		Str("msg_id", msg.ID).
-		Int("success", successCount).
-		Int("total", len(committeePeers)).
-		Msg("Committee vote trigger broadcast complete")
+	broadcastLogger().Info(context.Background(), "Committee vote trigger broadcast complete",
+		ion.String("msg_id", msg.ID),
+		ion.Int("success", successCount),
+		ion.Int("total", len(committeePeers)))
 	return nil
 }
 

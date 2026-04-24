@@ -361,3 +361,158 @@ func (c *Cassata) ListSnapshots(ctx context.Context, limit, offset int) ([]Snaps
 	}
 	return out, rows.Err()
 }
+
+// ── Contract write path ───────────────────────────────────────────
+
+func (c *Cassata) IngestContractCode(ctx context.Context, r ContractCodeResult) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestContractCode marshal: %w", err)
+	}
+	return c.appendRecord("contract_code", "contract_code:"+r.Address, v)
+}
+
+func (c *Cassata) IngestContractStorage(ctx context.Context, r ContractStorageResult) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestContractStorage marshal: %w", err)
+	}
+	key := fmt.Sprintf("contract_storage:%s:%s", r.Address, r.SlotHash)
+	return c.appendRecord("contract_storage", key, v)
+}
+
+func (c *Cassata) IngestContractStorageMeta(ctx context.Context, r ContractStorageMetaResult) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestContractStorageMeta marshal: %w", err)
+	}
+	key := fmt.Sprintf("contract_storage_meta:%s:%s", r.Address, r.SlotHash)
+	return c.appendRecord("contract_storage_meta", key, v)
+}
+
+func (c *Cassata) IngestContractNonce(ctx context.Context, r ContractNonceResult) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestContractNonce marshal: %w", err)
+	}
+	return c.appendRecord("contract_nonce", "contract_nonce:"+r.Address, v)
+}
+
+func (c *Cassata) IngestContractMeta(ctx context.Context, r ContractMetaResult) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestContractMeta marshal: %w", err)
+	}
+	return c.appendRecord("contract_meta", "contract_meta:"+r.Address, v)
+}
+
+func (c *Cassata) IngestContractReceipt(ctx context.Context, r ContractReceiptResult) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestContractReceipt marshal: %w", err)
+	}
+	return c.appendRecord("contract_receipt", "contract_receipt:"+r.TxHash, v)
+}
+
+// ── Contract read path ────────────────────────────────────────────
+
+func (c *Cassata) GetContractCode(ctx context.Context, address string) (*ContractCodeResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, code, code_hash, created_at
+		FROM contract_code WHERE address = $1`, address)
+	var r ContractCodeResult
+	if err := row.Scan(&r.Address, &r.Code, &r.CodeHash, &r.CreatedAt); err != nil {
+		return nil, fmt.Errorf("cassata.GetContractCode: %w", err)
+	}
+	return &r, nil
+}
+
+func (c *Cassata) GetContractStorage(ctx context.Context, address, slotHash string) (*ContractStorageResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, slot_hash, value_hash, updated_at
+		FROM contract_storage WHERE address = $1 AND slot_hash = $2`,
+		address, slotHash)
+	var r ContractStorageResult
+	if err := row.Scan(&r.Address, &r.SlotHash, &r.ValueHash, &r.UpdatedAt); err != nil {
+		return nil, fmt.Errorf("cassata.GetContractStorage: %w", err)
+	}
+	return &r, nil
+}
+
+func (c *Cassata) GetContractStorageMeta(ctx context.Context, address, slotHash string) (*ContractStorageMetaResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, slot_hash, value_hash,
+		       last_modified_block, last_modified_tx, updated_at
+		FROM contract_storage_metadata WHERE address = $1 AND slot_hash = $2`,
+		address, slotHash)
+	var r ContractStorageMetaResult
+	if err := row.Scan(
+		&r.Address, &r.SlotHash, &r.ValueHash,
+		&r.LastModifiedBlock, &r.LastModifiedTx, &r.UpdatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetContractStorageMeta: %w", err)
+	}
+	return &r, nil
+}
+
+func (c *Cassata) GetContractNonce(ctx context.Context, address string) (*ContractNonceResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, nonce, updated_at
+		FROM contract_nonces WHERE address = $1`, address)
+	var r ContractNonceResult
+	if err := row.Scan(&r.Address, &r.Nonce, &r.UpdatedAt); err != nil {
+		return nil, fmt.Errorf("cassata.GetContractNonce: %w", err)
+	}
+	return &r, nil
+}
+
+func (c *Cassata) GetContractMeta(ctx context.Context, address string) (*ContractMetaResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, code_hash, code_size, deployer_address,
+		       deployment_tx, deployment_block, raw, created_at, updated_at
+		FROM contract_metadata WHERE address = $1`, address)
+	var r ContractMetaResult
+	if err := row.Scan(
+		&r.Address, &r.CodeHash, &r.CodeSize, &r.DeployerAddress,
+		&r.DeploymentTx, &r.DeploymentBlock, &r.Raw, &r.CreatedAt, &r.UpdatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetContractMeta: %w", err)
+	}
+	return &r, nil
+}
+
+func (c *Cassata) GetContractReceipt(ctx context.Context, txHash string) (*ContractReceiptResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT tx_hash, block_number, tx_index, status, gas_used,
+		       contract_address, revert_reason, logs, raw, created_at
+		FROM contract_receipts WHERE tx_hash = $1`, txHash)
+	var r ContractReceiptResult
+	if err := row.Scan(
+		&r.TxHash, &r.BlockNumber, &r.TxIndex, &r.Status, &r.GasUsed,
+		&r.ContractAddress, &r.RevertReason, &r.Logs, &r.Raw, &r.CreatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetContractReceipt: %w", err)
+	}
+	return &r, nil
+}
+
+func (c *Cassata) ListContractStorageByAddress(ctx context.Context, address string) ([]ContractStorageResult, error) {
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
+		SELECT address, slot_hash, value_hash, updated_at
+		FROM contract_storage
+		WHERE address = $1
+		ORDER BY slot_hash ASC`, address)
+	if err != nil {
+		return nil, fmt.Errorf("cassata.ListContractStorageByAddress: %w", err)
+	}
+	defer rows.Close()
+	var out []ContractStorageResult
+	for rows.Next() {
+		var r ContractStorageResult
+		if err := rows.Scan(&r.Address, &r.SlotHash, &r.ValueHash, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

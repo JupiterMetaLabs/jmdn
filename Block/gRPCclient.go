@@ -388,7 +388,7 @@ func convertAccessListToPb(accessList config.AccessList) []*pb.AccessTuple {
 var globalMempoolClient *MempoolClient
 
 // InitMempoolClient initializes the global mempool client
-func InitMempoolClient(address string) error {
+func InitMempoolClient(ctx context.Context, address string) error {
 	client, err := NewMempoolClient(address)
 	if err != nil {
 		return err
@@ -397,7 +397,7 @@ func InitMempoolClient(address string) error {
 	globalMempoolClient = client
 	// Don't verify connection here since GetMempoolStats depends on routing client
 	// which is initialized later in main.go
-	logger().Info(context.Background(), "Mempool client initialized successfully")
+	logger().Info(ctx, "Mempool client initialized successfully")
 	return nil
 }
 

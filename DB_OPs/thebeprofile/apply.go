@@ -76,6 +76,55 @@ type snapshotPayload struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+// ── Contract payload types ────────────────────────────────────────
+
+type contractCodePayload struct {
+	Address  string `json:"address"`   // CHAR(42)
+	Code     []byte `json:"code"`      // BYTEA
+	CodeHash string `json:"code_hash"` // CHAR(66)
+}
+
+type contractStoragePayload struct {
+	Address   string `json:"address"`    // CHAR(42)
+	SlotHash  string `json:"slot_hash"`  // CHAR(66)
+	ValueHash string `json:"value_hash"` // CHAR(66) — zero hash when slot deleted
+}
+
+type contractStorageMetaPayload struct {
+	Address           string `json:"address"`
+	SlotHash          string `json:"slot_hash"`
+	ValueHash         string `json:"value_hash"`
+	LastModifiedBlock uint64 `json:"last_modified_block"`
+	LastModifiedTx    string `json:"last_modified_tx"` // CHAR(66)
+}
+
+type contractNoncePayload struct {
+	Address string `json:"address"` // CHAR(42)
+	Nonce   string `json:"nonce"` // NUMERIC(78,0) string (matches cassata JSON)
+}
+
+type contractMetaPayload struct {
+	Address         string          `json:"address"`
+	CodeHash        string          `json:"code_hash"`
+	CodeSize        uint64          `json:"code_size"`
+	DeployerAddress string          `json:"deployer_address"`
+	DeploymentTx    string          `json:"deployment_tx"`
+	DeploymentBlock uint64          `json:"deployment_block"`
+	Raw             json.RawMessage `json:"raw"` // full ContractMetadata JSON
+}
+
+type contractReceiptPayload struct {
+	TxHash          string          `json:"tx_hash"`
+	BlockNumber     uint64          `json:"block_number"`
+	TxIndex         uint64          `json:"tx_index"`
+	Status          int16           `json:"status"`           // 1=success 0=fail
+	GasUsed         string          `json:"gas_used"`         // NUMERIC(78,0) string
+	ContractAddress string          `json:"contract_address"` // CHAR(42), empty if not deploy
+	RevertReason    string          `json:"revert_reason"`
+	Logs            json.RawMessage `json:"logs"`
+	Raw             []byte          `json:"raw"` // full serialised receipt bytes
+}
+
 func applyAccount(tx *sql.Tx, value []byte) error {
 	var p accountPayload
 	if err := json.Unmarshal(value, &p); err != nil {
@@ -169,6 +218,122 @@ func applySnapshot(tx *sql.Tx, value []byte) error {
 		VALUES ($1,$2,$3)`,
 		p.BlockNumber, p.BlockHash, p.PrevSnapshotID,
 	)
+}
+
+// ── Contract apply functions ─────────────────────────────────────
+
+func applyContractCode(tx *sql.Tx, value []byte) error {
+	var p contractCodePayload
+	if err := json.Unmarshal(value, &p); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`
+		INSERT INTO contract_code (address, code, code_hash)
+		VALUES ($1,$2,$3)
+		ON CONFLICT DO NOTHING`,
+		p.Address, p.Code, p.CodeHash,
+	)
+	return err
+}
+
+func applyContractStorage(tx *sql.Tx, value []byte) error {
+	var p contractStoragePayload
+	if err := json.Unmarshal(value, &p); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`
+		INSERT INTO contract_storage (address, slot_hash, value_hash)
+		VALUES ($1,$2,$3)
+		ON CONFLICT (address, slot_hash) DO UPDATE SET
+			value_hash = EXCLUDED.value_hash,
+			updated_at = NOW()`,
+		p.Address, p.SlotHash, p.ValueHash,
+	)
+	return err
+}
+
+func applyContractStorageMeta(tx *sql.Tx, value []byte) error {
+	var p contractStorageMetaPayload
+	if err := json.Unmarshal(value, &p); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`
+		INSERT INTO contract_storage_metadata
+			(address, slot_hash, value_hash, last_modified_block, last_modified_tx)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (address, slot_hash) DO UPDATE SET
+			value_hash          = EXCLUDED.value_hash,
+			last_modified_block = EXCLUDED.last_modified_block,
+			last_modified_tx    = EXCLUDED.last_modified_tx,
+			updated_at          = NOW()`,
+		p.Address, p.SlotHash, p.ValueHash, p.LastModifiedBlock, p.LastModifiedTx,
+	)
+	return err
+}
+
+func applyContractNonce(tx *sql.Tx, value []byte) error {
+	var p contractNoncePayload
+	if err := json.Unmarshal(value, &p); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`
+		INSERT INTO contract_nonces (address, nonce)
+		VALUES ($1,$2)
+		ON CONFLICT (address) DO UPDATE SET
+			nonce      = EXCLUDED.nonce,
+			updated_at = NOW()`,
+		p.Address, p.Nonce,
+	)
+	return err
+}
+
+func applyContractMeta(tx *sql.Tx, value []byte) error {
+	var p contractMetaPayload
+	if err := json.Unmarshal(value, &p); err != nil {
+		return err
+	}
+	raw := p.Raw
+	if raw == nil {
+		raw = json.RawMessage(`{}`)
+	}
+	_, err := tx.Exec(`
+		INSERT INTO contract_metadata
+			(address, code_hash, code_size, deployer_address,
+			 deployment_tx, deployment_block, raw)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT (address) DO UPDATE SET
+			code_hash        = EXCLUDED.code_hash,
+			code_size        = EXCLUDED.code_size,
+			deployer_address = EXCLUDED.deployer_address,
+			deployment_tx    = EXCLUDED.deployment_tx,
+			deployment_block = EXCLUDED.deployment_block,
+			raw              = EXCLUDED.raw,
+			updated_at       = NOW()`,
+		p.Address, p.CodeHash, p.CodeSize, p.DeployerAddress,
+		p.DeploymentTx, p.DeploymentBlock, raw,
+	)
+	return err
+}
+
+func applyContractReceipt(tx *sql.Tx, value []byte) error {
+	var p contractReceiptPayload
+	if err := json.Unmarshal(value, &p); err != nil {
+		return err
+	}
+	logs := p.Logs
+	if logs == nil {
+		logs = json.RawMessage(`[]`)
+	}
+	_, err := tx.Exec(`
+		INSERT INTO contract_receipts
+			(tx_hash, block_number, tx_index, status, gas_used,
+			 contract_address, revert_reason, logs, raw)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT DO NOTHING`,
+		p.TxHash, p.BlockNumber, p.TxIndex, p.Status, p.GasUsed,
+		p.ContractAddress, p.RevertReason, logs, p.Raw,
+	)
+	return err
 }
 
 // insertIgnoreUnique runs INSERT under a SAVEPOINT so a duplicate key (23505)

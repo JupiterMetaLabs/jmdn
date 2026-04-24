@@ -76,3 +76,61 @@ type SnapshotResult struct {
 	PrevSnapshotID *int64    `json:"prev_snapshot_id"` // nil = genesis snapshot
 	CreatedAt      time.Time `json:"created_at"`
 }
+
+// ── Contract result types ─────────────────────────────────────────
+// Every field maps 1:1 to a PostgreSQL column.
+// Addresses → CHAR(42), hashes → CHAR(66), binary → []byte
+
+type ContractCodeResult struct {
+	Address   string    `json:"address"`   // CHAR(42) PK
+	Code      []byte    `json:"code"`      // BYTEA
+	CodeHash  string    `json:"code_hash"` // CHAR(66)
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type ContractStorageResult struct {
+	Address   string    `json:"address"`   // CHAR(42)
+	SlotHash  string    `json:"slot_hash"`  // CHAR(66)
+	ValueHash string    `json:"value_hash"` // CHAR(66) zero hash = empty slot
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type ContractStorageMetaResult struct {
+	Address           string    `json:"address"`
+	SlotHash          string    `json:"slot_hash"`
+	ValueHash         string    `json:"value_hash"`
+	LastModifiedBlock uint64    `json:"last_modified_block"`
+	LastModifiedTx    string    `json:"last_modified_tx"` // CHAR(66)
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+type ContractNonceResult struct {
+	Address   string    `json:"address"` // CHAR(42) PK
+	Nonce     string    `json:"nonce"`   // NUMERIC(78,0) string
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type ContractMetaResult struct {
+	Address         string          `json:"address"`
+	CodeHash        string          `json:"code_hash"`
+	CodeSize        uint64          `json:"code_size"`
+	DeployerAddress string          `json:"deployer_address"`
+	DeploymentTx    string          `json:"deployment_tx"`
+	DeploymentBlock uint64          `json:"deployment_block"`
+	Raw             json.RawMessage `json:"raw"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+}
+
+type ContractReceiptResult struct {
+	TxHash          string          `json:"tx_hash"`          // CHAR(66) PK
+	BlockNumber     uint64          `json:"block_number"`
+	TxIndex         uint64          `json:"tx_index"`
+	Status          int16           `json:"status"` // 1=success 0=fail
+	GasUsed         string          `json:"gas_used"` // NUMERIC(78,0) string
+	ContractAddress string          `json:"contract_address"` // CHAR(42), empty if not deploy
+	RevertReason    string          `json:"revert_reason"`
+	Logs            json.RawMessage `json:"logs"`
+	Raw             []byte          `json:"raw"` // full receipt bytes
+	CreatedAt       time.Time       `json:"created_at"`
+}

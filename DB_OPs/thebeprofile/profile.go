@@ -10,7 +10,12 @@ import (
 
 const ProfileName = "jmdn"
 
-var namespaces = []string{"account", "block", "tx", "zk", "snapshot"}
+var namespaces = []string{
+	"account", "block", "tx", "zk", "snapshot",
+	// contract layer
+	"contract_code", "contract_storage", "contract_storage_meta",
+	"contract_nonce", "contract_meta", "contract_receipt",
+}
 
 type JMDNProfile struct{}
 
@@ -35,6 +40,18 @@ func (p *JMDNProfile) Apply(_ context.Context, _ uint64, record *thebejmdt.Canon
 		return applyZKProof(tx, record.Value)
 	case "snapshot":
 		return applySnapshot(tx, record.Value)
+	case "contract_code":
+		return applyContractCode(tx, record.Value)
+	case "contract_storage":
+		return applyContractStorage(tx, record.Value)
+	case "contract_storage_meta":
+		return applyContractStorageMeta(tx, record.Value)
+	case "contract_nonce":
+		return applyContractNonce(tx, record.Value)
+	case "contract_meta":
+		return applyContractMeta(tx, record.Value)
+	case "contract_receipt":
+		return applyContractReceipt(tx, record.Value)
 	default:
 		return fmt.Errorf("thebeprofile: unknown namespace %q", record.Namespace)
 	}

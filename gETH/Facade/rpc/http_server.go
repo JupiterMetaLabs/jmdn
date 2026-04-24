@@ -68,6 +68,7 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	secCfg := &settings.Get().Security
 	tlsEnabled, middleware, err := gatekeeper.ConfigureHTTPServer(srv, settings.ServiceEthRPC, secCfg, s.logger)
 	if err != nil {
 		return fmt.Errorf("failed to configure secure HTTP server: %w", err)
@@ -83,7 +84,7 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.ListenAndServe()
+		errCh <- gatekeeper.ServeHTTP(srv, tlsEnabled)
 	}()
 
 	select {

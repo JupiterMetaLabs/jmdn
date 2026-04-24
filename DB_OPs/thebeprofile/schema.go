@@ -253,5 +253,217 @@ CREATE OR REPLACE RULE rule_snapshots_no_update AS
 CREATE OR REPLACE RULE rule_snapshots_no_delete AS
     ON DELETE TO snapshots DO INSTEAD NOTHING;
 
+-- ================================================================
+-- 6. contract_code
+-- Append-only: contract bytecode never changes after deployment
+-- PK: address CHAR(42) — deployed contract address
+-- code_hash: CHAR(66) — keccak256 of bytecode for integrity checks
+-- ================================================================
+CREATE TABLE IF NOT EXISTS contract_code (
+    address    CHAR(42)     PRIMARY KEY,
+    code       BYTEA        NOT NULL,
+    code_hash  CHAR(66)     NOT NULL,
+    created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE OR REPLACE FUNCTION fn_contract_code_immutable()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'contract_code is append-only: % not permitted', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger WHERE tgname = 'trg_contract_code_immutable'
+    ) THEN
+        CREATE TRIGGER trg_contract_code_immutable
+            BEFORE UPDATE OR DELETE ON contract_code
+            FOR EACH ROW EXECUTE FUNCTION fn_contract_code_immutable();
+    END IF;
+END $$;
+
+-- ================================================================
+-- 7. contract_storage
+-- Mutable: EVM SSTORE can overwrite or zero any slot at any time
+-- PK: (address, slot_hash)
+-- When a slot is zeroed, value_hash is set to the zero hash
+-- (0x0000...0000) — rows are kept, never physically deleted
+-- ================================================================
+CREATE TABLE IF NOT EXISTS contract_storage (
+    address    CHAR(42)     NOT NULL,
+    slot_hash  CHAR(66)     NOT NULL,
+    value_hash CHAR(66)     NOT NULL,
+    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (address, slot_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contract_storage_address
+    ON contract_storage(address);
+
+CREATE OR REPLACE FUNCTION fn_contract_storage_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger WHERE tgname = 'trg_contract_storage_updated_at'
+    ) THEN
+        CREATE TRIGGER trg_contract_storage_updated_at
+            BEFORE UPDATE ON contract_storage
+            FOR EACH ROW EXECUTE FUNCTION fn_contract_storage_updated_at();
+    END IF;
+END $$;
+
+-- ================================================================
+-- 8. contract_storage_metadata
+-- Mutable: updated on every SSTORE that touches this slot
+-- Records which block/tx last modified each storage slot
+-- ================================================================
+CREATE TABLE IF NOT EXISTS contract_storage_metadata (
+    address             CHAR(42)     NOT NULL,
+    slot_hash           CHAR(66)     NOT NULL,
+    value_hash          CHAR(66),
+    last_modified_block BIGINT,
+    last_modified_tx    CHAR(66),
+    updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (address, slot_hash)
+);
+
+CREATE OR REPLACE FUNCTION fn_contract_storage_meta_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger WHERE tgname = 'trg_contract_storage_meta_updated_at'
+    ) THEN
+        CREATE TRIGGER trg_contract_storage_meta_updated_at
+            BEFORE UPDATE ON contract_storage_metadata
+            FOR EACH ROW EXECUTE FUNCTION fn_contract_storage_meta_updated_at();
+    END IF;
+END $$;
+
+-- ================================================================
+-- 9. contract_nonces
+-- Mutable: EVM internal nonce, separate from accounts.nonce
+-- accounts.nonce = blockchain tx nonce (immudb source of truth)
+-- contract_nonces.nonce = EVM execution nonce (ThebeDB projection)
+-- ================================================================
+CREATE TABLE IF NOT EXISTS contract_nonces (
+    address    CHAR(42)      PRIMARY KEY,
+    nonce      NUMERIC(78,0) NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT chk_contract_nonce_non_negative
+        CHECK (nonce >= 0)
+);
+
+CREATE OR REPLACE FUNCTION fn_contract_nonce_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger WHERE tgname = 'trg_contract_nonce_updated_at'
+    ) THEN
+        CREATE TRIGGER trg_contract_nonce_updated_at
+            BEFORE UPDATE ON contract_nonces
+            FOR EACH ROW EXECUTE FUNCTION fn_contract_nonce_updated_at();
+    END IF;
+END $$;
+
+-- ================================================================
+-- 10. contract_metadata
+-- Mutable: deployment info. Set on deploy, may be enriched later.
+-- code_hash, code_size: from bytecode analysis at deploy time
+-- deployer_address, deployment_tx, deployment_block: from tx context
+-- raw: full JSON blob of ContractMetadata struct for compatibility
+-- ================================================================
+CREATE TABLE IF NOT EXISTS contract_metadata (
+    address          CHAR(42)     PRIMARY KEY,
+    code_hash        CHAR(66),
+    code_size        BIGINT,
+    deployer_address CHAR(42),
+    deployment_tx    CHAR(66),
+    deployment_block BIGINT,
+    raw              JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE OR REPLACE FUNCTION fn_contract_metadata_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger WHERE tgname = 'trg_contract_metadata_updated_at'
+    ) THEN
+        CREATE TRIGGER trg_contract_metadata_updated_at
+            BEFORE UPDATE ON contract_metadata
+            FOR EACH ROW EXECUTE FUNCTION fn_contract_metadata_updated_at();
+    END IF;
+END $$;
+
+-- ================================================================
+-- 11. contract_receipts
+-- Append-only: EVM execution receipts — immutable once committed
+-- Separate from blockchain receipts (Facade_Receipts.go)
+-- raw: full serialised TransactionReceipt for zero-loss compatibility
+-- logs: JSONB for queryable log filtering
+-- ================================================================
+CREATE TABLE IF NOT EXISTS contract_receipts (
+    tx_hash          CHAR(66)      PRIMARY KEY,
+    block_number     BIGINT,
+    tx_index         BIGINT,
+    status           SMALLINT      NOT NULL,  -- 1=success 0=fail
+    gas_used         NUMERIC(78,0),
+    contract_address CHAR(42),
+    revert_reason    TEXT,
+    logs             JSONB         NOT NULL DEFAULT '[]'::jsonb,
+    raw              BYTEA         NOT NULL,
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT chk_contract_receipt_status_valid
+        CHECK (status IN (0, 1))
+);
+
+CREATE INDEX IF NOT EXISTS idx_contract_receipts_block_number
+    ON contract_receipts(block_number);
+
+CREATE OR REPLACE FUNCTION fn_contract_receipts_immutable()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'contract_receipts is append-only: % not permitted', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger WHERE tgname = 'trg_contract_receipts_immutable'
+    ) THEN
+        CREATE TRIGGER trg_contract_receipts_immutable
+            BEFORE UPDATE OR DELETE ON contract_receipts
+            FOR EACH ROW EXECUTE FUNCTION fn_contract_receipts_immutable();
+    END IF;
+END $$;
+
 COMMIT;
 `

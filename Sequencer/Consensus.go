@@ -960,7 +960,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 	requiredVotes := config.MaxMainPeers
 	collectedVotes := make(map[string]int8) // peerID -> vote
 
-	logger().NamedLogger.Info(processVotesCtx, "Starting event-driven vote collection",
+	logger().Info(processVotesCtx, "Starting event-driven vote collection",
 		ion.Int("required_votes", requiredVotes),
 		ion.String("block_hash", blockHash),
 		ion.Float64("timeout_seconds", config.ConsensusTimeout.Seconds()),
@@ -972,7 +972,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 		case notification := <-voteNotifyCh:
 			// Only accept votes for this round's block hash
 			if notification.BlockHash != blockHash {
-				logger().NamedLogger.Warn(processVotesCtx, "Ignoring vote for different block hash",
+				logger().Warn(processVotesCtx, "Ignoring vote for different block hash",
 					ion.String("expected", blockHash),
 					ion.String("got", notification.BlockHash),
 					ion.String("peer", notification.PeerID),
@@ -982,7 +982,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 
 			// Only accept votes from committee members
 			if !isCommitteeMember(notification.PeerID, consensus.PeerList.MainPeers) {
-				logger().NamedLogger.Warn(processVotesCtx, "Ignoring vote from non-committee peer",
+				logger().Warn(processVotesCtx, "Ignoring vote from non-committee peer",
 					ion.String("peer", notification.PeerID),
 					ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
 				continue
@@ -992,7 +992,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 			collectedVotes[notification.PeerID] = notification.Vote
 			Maps.StoreVoteResult(blockHash, notification.PeerID, notification.Vote)
 
-			logger().NamedLogger.Info(processVotesCtx, "Vote received via push notification",
+			logger().Info(processVotesCtx, "Vote received via push notification",
 				ion.String("peer", notification.PeerID),
 				ion.Int("vote", int(notification.Vote)),
 				ion.Int("collected", len(collectedVotes)),
@@ -1004,7 +1004,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 
 			// Exit early if we have all votes (quorum)
 			if len(collectedVotes) >= requiredVotes {
-				logger().NamedLogger.Info(processVotesCtx, "All votes collected - quorum reached",
+				logger().Info(processVotesCtx, "All votes collected - quorum reached",
 					ion.Int("collected", len(collectedVotes)),
 					ion.Int("required", requiredVotes),
 					ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
@@ -1012,7 +1012,7 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 			}
 
 		case <-roundCtx.Done():
-			logger().NamedLogger.Warn(processVotesCtx, "Round deadline reached, proceeding with partial votes",
+			logger().Warn(processVotesCtx, "Round deadline reached, proceeding with partial votes",
 				ion.Int("collected", len(collectedVotes)),
 				ion.Int("required", requiredVotes),
 				ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
@@ -1046,7 +1046,7 @@ VOTES_COLLECTED:
 
 	// Broadcast and process the block
 	if err := consensus.BroadcastAndProcessBlock(blsResults, consensusReached); err != nil {
-		logger().NamedLogger.Error(trace_ctx, "Failed to broadcast and process block",
+		logger().Error(trace_ctx, "Failed to broadcast and process block",
 			err,
 			ion.String("function", "Consensus.startEventDrivenFlowAfterSubscriptionPermission"))
 	}
