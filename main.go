@@ -1260,7 +1260,7 @@ func main() {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.SmartContractThread, func(ctx context.Context) error {
 			mainLogger().Info(context.Background(), "Starting integrated Smart Contract gRPC server", ion.Int("port", cfg.Ports.Smart))
 			didAddr := fmt.Sprintf("%s:%d", cfg.Binds.DID, cfg.Ports.DID)
-			if err := SmartContract.StartIntegratedServer(ctx, cfg.Ports.Smart, cfg.Network.ChainID, cfg.Ports.Geth, didAddr, cfg.Ports.BlockGen); err != nil {
+			if err := SmartContract.StartIntegratedServer(ctx, cfg.Ports.Smart, cfg.Network.ChainID, cfg.Ports.Geth, didAddr, cfg.Ports.BlockGen, cas); err != nil {
 				mainLogger().Error(context.Background(), "Failed to start Smart Contract integrated server", err)
 			}
 			return nil

@@ -10,17 +10,18 @@ import (
 // NodeConfig is the top-level configuration for a JMDN node.
 // Each section maps to a YAML key in jmdn.yaml.
 type NodeConfig struct {
-	Node     NodeSettings     `mapstructure:"node"`
-	Network  NetworkSettings  `mapstructure:"network"`
-	Ports    PortSettings     `mapstructure:"ports"`
-	Binds    BindSettings     `mapstructure:"binds"`
-	Database DatabaseSettings `mapstructure:"database"`
-	Thebe    ThebeConfig      `mapstructure:"thebe"`
-	Logging  LoggingSettings  `mapstructure:"logging"`
-	Features FeatureSettings  `mapstructure:"features"`
-	Security SecurityConfig   `mapstructure:"security"`
-	Alerts   AlertsConfig     `mapstructure:"alerts"`
-	FastSync FastSyncSettings `mapstructure:"fastsync"`
+	Node       NodeSettings     `mapstructure:"node"`
+	Network    NetworkSettings  `mapstructure:"network"`
+	Ports      PortSettings     `mapstructure:"ports"`
+	Binds      BindSettings     `mapstructure:"binds"`
+	Database   DatabaseSettings `mapstructure:"database"`
+	Thebe      ThebeConfig      `mapstructure:"thebe"`
+	ContractDB ContractDBConfig `mapstructure:"contractdb"`
+	Logging    LoggingSettings  `mapstructure:"logging"`
+	Features   FeatureSettings  `mapstructure:"features"`
+	Security   SecurityConfig   `mapstructure:"security"`
+	Alerts     AlertsConfig     `mapstructure:"alerts"`
+	FastSync   FastSyncSettings `mapstructure:"fastsync"`
 }
 
 // NodeSettings defines the identity of this node.
@@ -83,6 +84,11 @@ type ThebeConfig struct {
 	StreamName string `mapstructure:"stream_name" yaml:"stream_name"` // optional, default "thebedb.events"
 	MaxLen     int64  `mapstructure:"max_len" yaml:"max_len"`         // optional, default 1000
 	GroupName  string `mapstructure:"group_name" yaml:"group_name"`   // optional, default "projector"
+}
+
+// ContractDBConfig controls smart contract state backend selection.
+type ContractDBConfig struct {
+	Backend string `mapstructure:"backend" yaml:"backend"` // "thebe" (default) or "pebble"
 }
 
 // LoggingSettings mirrors Ion's Config struct so jmdn.yaml can fully configure

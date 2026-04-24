@@ -3,11 +3,13 @@ package SmartContract
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/JupiterMetaLabs/ion"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"gossipnode/DB_OPs/cassata"
 	contractDB "gossipnode/DB_OPs/contractDB"
 	pbdid "gossipnode/DID/proto"
 	"gossipnode/Security"
@@ -15,12 +17,13 @@ import (
 	"gossipnode/SmartContract/internal/database"
 	"gossipnode/SmartContract/internal/evm"
 	"gossipnode/SmartContract/internal/router"
+	"gossipnode/config/settings"
 	pb "gossipnode/gETH/proto"
 )
 
 // StartIntegratedServer initialises and starts the Smart Contract gRPC server
 // within the context of the main JMDN node, sharing the process-wide DB lock.
-func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort int, didAddr string, blockgenPort int) error {
+func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort int, didAddr string, blockgenPort int, cas *cassata.Cassata) error {
 	logger().Info(ctx, "Initializing Smart Contract Service...")
 
 	if blockgenPort > 0 {
@@ -30,16 +33,12 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 			ion.String("endpoint", evmEndpoint))
 	}
 
-	// 1. Shared KVStore (Pebble singleton — must be opened once per process)
+	// 1. Shared KVStore (for contract registry persistence)
 	dbConfig := database.LoadConfigFromEnv()
 	kvStore, err := contractDB.NewKVStore(contractDB.DefaultConfig())
 	if err != nil {
 		return fmt.Errorf("failed to initialize KVStore for Smart Contracts: %w", err)
 	}
-
-	// Share with contractDB package so all EVM executions reuse this handle.
-	contractDB.SetSharedKVStore(kvStore)
-	logger().Info(ctx, "Shared KVStore for contract storage initialised.")
 
 	// 2. Contract Registry
 	registryFactory, err := contract_registry.NewRegistryFactory(dbConfig)
@@ -98,7 +97,19 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 	logger().Info(ctx, "Shared contract registry registered.")
 
 	// 5. ContractDB (State Layer)
-	repo := contractDB.NewPebbleAdapter(kvStore)
+	cfg := settings.Get()
+	useThebeRepo := cas != nil && !strings.EqualFold(strings.TrimSpace(cfg.ContractDB.Backend), "pebble")
+
+	var repo contractDB.StateRepository
+	if useThebeRepo {
+		repo = contractDB.NewThebeStateRepository(cas)
+		logger().Info(ctx, "ContractDB: using ThebeStateRepository (ThebeDB-backed)")
+	} else {
+		contractDB.SetSharedKVStore(kvStore)
+		repo = contractDB.NewPebbleAdapter(kvStore)
+		logger().Warn(ctx, "ContractDB: falling back to PebbleAdapter — set contractdb.backend=thebe for production")
+	}
+
 	stateDB := contractDB.NewContractDB(didClient, repo)
 
 	// 6. Router
