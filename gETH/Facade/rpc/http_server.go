@@ -27,7 +27,10 @@ type HTTPServer struct {
 
 func NewHTTPServer(h *Handlers) *HTTPServer {
 	// Initialize logger
-	l, _ := logging.NewAsyncLogger().Get().NamedLogger("JSONRPC", "")
+	l, err := logging.NewAsyncLogger().Get().NamedLogger("JSONRPC", "")
+	if err != nil || l == nil || l.NamedLogger == nil {
+		return &HTTPServer{h: h}
+	}
 
 	return &HTTPServer{h: h, logger: l.NamedLogger}
 }
@@ -59,9 +62,6 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 	router.Use(gin.Recovery())
 	router.Use(withCORS())
 
-	// Add JSON-RPC handler
-	router.Any("/", s.handleJSONRPC)
-
 	// Create HTTP server with GIN router
 	srv := &http.Server{
 		Addr:              addr,
@@ -77,7 +77,7 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 	// Apply Gatekeeper Middleware
 	router.Use(middleware.Middleware(settings.ServiceEthRPC))
 
-	// Add JSON-RPC handler
+	// Register routes after middleware so protection applies consistently.
 	router.Any("/", s.handleJSONRPC)
 	router.GET("/debug/dualdb/report", s.DualDBReport)
 	s.registerThebeReadRoutes(router)
