@@ -10,6 +10,7 @@ import (
 type Service interface {
 	ChainID(ctx context.Context) (*big.Int, error)
 	ClientVersion(ctx context.Context) (string, error)
+	Accounts(ctx context.Context) ([]string, error)
 	BlockNumber(ctx context.Context) (*big.Int, error)
 	BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error)
 	Balance(ctx context.Context, addr string, block *big.Int, network string) (*big.Int, error)

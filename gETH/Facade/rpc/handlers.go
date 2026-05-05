@@ -62,6 +62,11 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		resp, _ := finish(req, id.String(), err)
 		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, err
+	case "eth_accounts", "eth_requestAccounts":
+		accounts, err := handler.service.Accounts(ctx)
+		resp, _ := finish(req, accounts, err)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		return resp, err
 	case "eth_chainId":
 		id, err := handler.service.ChainID(ctx)
 		if err != nil {

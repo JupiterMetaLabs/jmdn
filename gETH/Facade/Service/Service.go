@@ -112,6 +112,33 @@ func (s *ServiceImpl) ClientVersion(ctx context.Context) (string, error) {
 	return ClientVersion, nil
 }
 
+func (s *ServiceImpl) Accounts(ctx context.Context) ([]string, error) {
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	accounts, err := DB_OPs.ListAllAccounts(nil, 0)
+	if err != nil {
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("Accounts failed: %v", err), "Accounts", -1); logErr != nil {
+			logger().Error(opCtx, "Failed to log Accounts error", logErr)
+		}
+		return nil, err
+	}
+
+	addresses := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		addresses = append(addresses, account.Address.Hex())
+	}
+
+	if logErr := Logger.LogData(opCtx, fmt.Sprintf("Accounts returned to the client: %d", len(addresses)), "Accounts", 1); logErr != nil {
+		logger().Error(opCtx, "Failed to log Accounts success", logErr)
+	}
+
+	return addresses, nil
+}
+
 func (s *ServiceImpl) BlockNumber(ctx context.Context) (*big.Int, error) {
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
