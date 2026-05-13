@@ -68,10 +68,11 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			}
 
 			cfgTx := config.Transaction{
-				Type:     uint8(tx.Type),
-				Nonce:    tx.Nonce,
-				GasLimit: tx.GasLimit,
-				Data:     tx.Data,
+				Type:      uint8(tx.Type),
+				Timestamp: tx.Timestamp,
+				Nonce:     tx.Nonce,
+				GasLimit:  tx.GasLimit,
+				Data:      tx.Data,
 			}
 
 			if len(tx.Hash) > 0 {

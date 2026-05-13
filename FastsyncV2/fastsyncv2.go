@@ -605,11 +605,12 @@ func zkBlockToProtoNonHeaders(b *types.ZKBlock) *blockpb.NonHeaders {
 
 	for idx, tx := range b.Transactions {
 		pbTx := &blockpb.Transaction{
-			Hash:     tx.Hash[:],
-			Type:     uint32(tx.Type),
-			Nonce:    tx.Nonce,
-			GasLimit: tx.GasLimit,
-			Data:     tx.Data,
+			Hash:      tx.Hash[:],
+			Type:      uint32(tx.Type),
+			Timestamp: tx.Timestamp,
+			Nonce:     tx.Nonce,
+			GasLimit:  tx.GasLimit,
+			Data:      tx.Data,
 		}
 		if tx.From != nil {
 			pbTx.From = tx.From[:]
