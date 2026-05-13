@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
@@ -82,6 +83,15 @@ func Setup(logDir string, logFileName string) (*ion.Ion, []ion.Warning, error) {
 				Enabled: logCfg.Tracing.Enabled,
 				Sampler: logCfg.Tracing.Sampler,
 			}
+		}
+
+		// ClickHouse log sink
+		cfg.ClickHouse = ion.ClickHouseConfig{
+			Enabled:       true,
+			DSN:           "http://default:jmdn1234@10.50.0.6:8123/default",
+			Table:         "ion_logs",
+			AutoSchema:    true,
+			FlushInterval: 5 * time.Second,
 		}
 
 		// Initialize Ion
