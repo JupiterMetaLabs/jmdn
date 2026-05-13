@@ -769,8 +769,11 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 	// The sequencer is the first peer in the cache (from when we subscribed)
 	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
 	if pubSubNode == nil || len(pubSubNode.BuddyNodes.Buddies_Nodes) == 0 {
-		logger().Error(logger_ctx, "Cannot send vote result - no sequencer peer found",
-			errors.New("Cannot send vote result - no sequencer peer found"),
+		// Expected on the sequencer node itself: the sequencer's pubsub node has
+		// no buddy list, so this is a no-op (the sequencer doesn't send results
+		// to itself — it drives consensus directly via CollectVoteResultsFromBuddies).
+		// Log at WARN so it is visible but not alarming.
+		logger().Warn(logger_ctx, "sendVoteResultToSequencer: no buddy peers found in pubsub node — skipping (expected on sequencer node)",
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
 	}
@@ -795,8 +798,8 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 	}
 
 	if !found {
-		logger().Error(logger_ctx, "Cannot send vote result - no valid sequencer peer found (all are self)",
-			errors.New("Cannot send vote result - no valid sequencer peer found (all are self)"),
+		// Also expected on the sequencer node: all peers in the list match self.
+		logger().Warn(logger_ctx, "sendVoteResultToSequencer: all buddy peers are self — skipping (expected on sequencer node)",
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
 	}

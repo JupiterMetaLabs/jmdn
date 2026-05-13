@@ -53,6 +53,18 @@ type ListenerHandler struct {
 	sequencerMutex  sync.RWMutex
 }
 
+// writeRawError writes a plain JSON error string to the stream followed by the
+// protocol delimiter, then half-closes the write side.
+// It MUST be used instead of the message builder for error paths because
+// peer.ID values contain raw multihash bytes that are not valid UTF-8.
+// json.Marshal on any struct embedding a peer.ID will fail silently and write
+// nothing, leaving the remote side with a bare EOF.
+func writeRawError(s network.Stream, jsonErr string, delimiter byte) {
+	payload := jsonErr + string(rune(delimiter))
+	_, _ = s.Write([]byte(payload))
+	_ = s.CloseWrite()
+}
+
 // NewListenerHandler creates a new ListenerHandler instance
 func NewListenerHandler(responseHandler AVCStruct.ResponseHandler) *ListenerHandler {
 	return &ListenerHandler{
@@ -1510,18 +1522,11 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.handleVoteResultRequest"))
-		// Write explicit error response so sequencer does not receive bare EOF.
-		localPeer := s.Conn().LocalPeer()
-		errAck := AVCStruct.NewACKBuilder().False_ACK_Message(localPeer, config.Type_VoteResult)
-		errResp := AVCStruct.NewMessageBuilder(nil).
-			SetSender(localPeer).
-			SetMessage(`{"error":"listener node not initialized","vote_result":0}`).
-			SetTimestamp(time.Now().UTC().Unix()).
-			SetACK(errAck)
-		if errBytes, merr := json.Marshal(errResp); merr == nil {
-			_, _ = s.Write([]byte(string(errBytes) + string(rune(config.Delimiter))))
-			_ = s.CloseWrite()
-		}
+		// Write a plain-text error response so the sequencer does not receive
+		// bare EOF. We avoid the message builder here because peer.ID contains
+		// raw multihash bytes that are not valid UTF-8 and will cause
+		// json.Marshal to fail silently, resulting in a bare EOF anyway.
+		writeRawError(s, `{"error":"listener node not initialized","vote_result":0}`, config.Delimiter)
 		return
 	}
 
@@ -1610,17 +1615,8 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.handleVoteResultRequest"))
-		// Write explicit error response — do not leave sequencer with bare EOF.
-		errAck := AVCStruct.NewACKBuilder().False_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
-		errResp := AVCStruct.NewMessageBuilder(nil).
-			SetSender(listenerNode.PeerID).
-			SetMessage(fmt.Sprintf(`{"error":"process votes failed: %v","vote_result":0}`, err)).
-			SetTimestamp(time.Now().UTC().Unix()).
-			SetACK(errAck)
-		if errBytes, merr := json.Marshal(errResp); merr == nil {
-			_, _ = s.Write([]byte(string(errBytes) + string(rune(config.Delimiter))))
-			_ = s.CloseWrite()
-		}
+		// Use raw write — avoids peer.ID UTF-8 marshaling failure.
+		writeRawError(s, fmt.Sprintf(`{"error":"process votes failed","vote_result":0,"detail":%q}`, err.Error()), config.Delimiter)
 		return
 	}
 
@@ -1675,16 +1671,8 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.handleVoteResultRequest"))
-		errAck := AVCStruct.NewACKBuilder().False_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
-		errResp := AVCStruct.NewMessageBuilder(nil).
-			SetSender(listenerNode.PeerID).
-			SetMessage(`{"error":"marshal result failed","vote_result":0}`).
-			SetTimestamp(time.Now().UTC().Unix()).
-			SetACK(errAck)
-		if errBytes, merr := json.Marshal(errResp); merr == nil {
-			_, _ = s.Write([]byte(string(errBytes) + string(rune(config.Delimiter))))
-			_ = s.CloseWrite()
-		}
+		// Use raw write — avoids peer.ID UTF-8 marshaling failure.
+		writeRawError(s, `{"error":"marshal result failed","vote_result":0}`, config.Delimiter)
 		return
 	}
 
@@ -1707,11 +1695,8 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.handleVoteResultRequest"))
-		// Still write a minimal error so the sequencer does not read bare EOF.
-		fallback := fmt.Sprintf(`{"error":"response marshal failed","vote_result":%d}`, result) +
-			string(rune(config.Delimiter))
-		_, _ = s.Write([]byte(fallback))
-		_ = s.CloseWrite()
+		// Use raw write — avoids peer.ID UTF-8 marshaling failure.
+		writeRawError(s, fmt.Sprintf(`{"error":"response marshal failed","vote_result":%d}`, result), config.Delimiter)
 		return
 	}
 
