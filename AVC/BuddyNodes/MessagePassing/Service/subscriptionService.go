@@ -732,15 +732,16 @@ func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStru
 		ion.String("bft_decision", bftDecision),
 		ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 
-	// Send vote result back to the sequencer
-	// sendVoteResultToSequencer(listenerNode, result)
+	// Push the vote result to the sequencer directly.
+	// The sequencer also polls via CollectVoteResultsFromBuddies (pull path),
+	// but the pull path depends on handleVoteResultRequest having a valid
+	// listenerNode at query time. The push path is the reliable primary signal.
+	sendVoteResultToSequencer(logger_ctx, listenerNode, result)
 
-	// BFT will be triggered elsewhere (from ListenerHandler)
-	logger().Info(logger_ctx, "Vote processing completed, BFT will be triggered",
+	logger().Info(logger_ctx, "Vote processing completed, result pushed to sequencer",
 		ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 }
 
-/* UNUSED
 // sendVoteResultToSequencer sends the vote result back to the sequencer via SubmitMessageProtocol
 func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStruct.BuddyNode, result int8) {
 	logger().Info(logger_ctx, "Sending vote result to sequencer",
@@ -865,7 +866,6 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 		ion.String("message", resultMessage),
 		ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 }
-*/
 
 // handleVerifySubscriptionRequest processes verification requests from the sequencer
 func (s *SubscriptionService) handleVerifySubscriptionRequest(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {

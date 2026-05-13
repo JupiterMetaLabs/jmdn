@@ -13,6 +13,7 @@ import (
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/AVC/BuddyNodes/MessagePassing/Service"
+	MessagePassingStructs "gossipnode/AVC/BuddyNodes/MessagePassing/Structs"
 	"gossipnode/Pubsub"
 	"gossipnode/Sequencer/Alerts"
 	"gossipnode/Sequencer/Triggers/Maps"
@@ -1279,8 +1280,12 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 	logger().Info(trace_ctx, "Printing CRDT votes",
 		ion.String("function", "Consensus.printCRDTVotes"))
 
-	votes, exists := MessagePassing.GetVotesFromCRDT(trace_ctx, listenerNode.CRDTLayer, "vote")
-	if !exists || len(votes) == 0 {
+	// Votes are stored under per-peer-ID keys, not the literal "vote".
+	// Use ProcessVotesFromCRDT which iterates GetAllCRDTs() correctly.
+	// GetVotesFromCRDT(..."vote") always returns found=false and is removed.
+	blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
+	voteResult, voteErr := MessagePassingStructs.ProcessVotesFromCRDT(trace_ctx, listenerNode, blockHash)
+	if voteErr != nil || voteResult == 0 {
 		span.SetAttributes(
 			attribute.Int("votes_count", 0),
 			attribute.Bool("votes_exist", false),
@@ -1290,6 +1295,15 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 			ion.String("function", "Consensus.printCRDTVotes"))
 		return
 	}
+	// Build a synthetic slice so the rest of the function (yesVotes/noVotes count) works.
+	var votes []string
+	if voteResult > 0 {
+		votes = append(votes, `{"vote":1,"block_hash":"`+blockHash+`"}`)
+	} else {
+		votes = append(votes, `{"vote":-1,"block_hash":"`+blockHash+`"}`)
+	}
+	exists := true
+	_ = exists
 
 	span.SetAttributes(attribute.Int("votes_count", len(votes)))
 	logger().Info(trace_ctx, "Total votes in CRDT", ion.Int("vote_count", len(votes)))

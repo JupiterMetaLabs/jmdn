@@ -1487,7 +1487,18 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		ion.String("topic", TOPIC),
 		ion.String("function", "MessagePassing.handleVoteResultRequest"))
 
-	listenerNode := AVCStruct.NewGlobalVariables().Get_ForListner()
+	// Retry up to 3 times in case the global listener node is not yet set
+	// (race between node init and the sequencer's first pull request).
+	var listenerNode *AVCStruct.BuddyNode
+	for i := 0; i < 3; i++ {
+		listenerNode = AVCStruct.NewGlobalVariables().Get_ForListner()
+		if listenerNode != nil && listenerNode.CRDTLayer != nil {
+			break
+		}
+		if i < 2 {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
 	if listenerNode == nil || listenerNode.CRDTLayer == nil {
 		voteResultSpan.RecordError(fmt.Errorf("listener node or CRDT layer not initialized"))
 		voteResultSpan.SetAttributes(attribute.String("status", "node_not_initialized"))
@@ -1499,6 +1510,18 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.handleVoteResultRequest"))
+		// Write explicit error response so sequencer does not receive bare EOF.
+		localPeer := s.Conn().LocalPeer()
+		errAck := AVCStruct.NewACKBuilder().False_ACK_Message(localPeer, config.Type_VoteResult)
+		errResp := AVCStruct.NewMessageBuilder(nil).
+			SetSender(localPeer).
+			SetMessage(`{"error":"listener node not initialized","vote_result":0}`).
+			SetTimestamp(time.Now().UTC().Unix()).
+			SetACK(errAck)
+		if errBytes, merr := json.Marshal(errResp); merr == nil {
+			_, _ = s.Write([]byte(string(errBytes) + string(rune(config.Delimiter))))
+			_ = s.CloseWrite()
+		}
 		return
 	}
 
@@ -1587,6 +1610,17 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.handleVoteResultRequest"))
+		// Write explicit error response — do not leave sequencer with bare EOF.
+		errAck := AVCStruct.NewACKBuilder().False_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
+		errResp := AVCStruct.NewMessageBuilder(nil).
+			SetSender(listenerNode.PeerID).
+			SetMessage(fmt.Sprintf(`{"error":"process votes failed: %v","vote_result":0}`, err)).
+			SetTimestamp(time.Now().UTC().Unix()).
+			SetACK(errAck)
+		if errBytes, merr := json.Marshal(errResp); merr == nil {
+			_, _ = s.Write([]byte(string(errBytes) + string(rune(config.Delimiter))))
+			_ = s.CloseWrite()
+		}
 		return
 	}
 
@@ -1641,6 +1675,16 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.handleVoteResultRequest"))
+		errAck := AVCStruct.NewACKBuilder().False_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
+		errResp := AVCStruct.NewMessageBuilder(nil).
+			SetSender(listenerNode.PeerID).
+			SetMessage(`{"error":"marshal result failed","vote_result":0}`).
+			SetTimestamp(time.Now().UTC().Unix()).
+			SetACK(errAck)
+		if errBytes, merr := json.Marshal(errResp); merr == nil {
+			_, _ = s.Write([]byte(string(errBytes) + string(rune(config.Delimiter))))
+			_ = s.CloseWrite()
+		}
 		return
 	}
 
@@ -1663,6 +1707,11 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "MessagePassing.handleVoteResultRequest"))
+		// Still write a minimal error so the sequencer does not read bare EOF.
+		fallback := fmt.Sprintf(`{"error":"response marshal failed","vote_result":%d}`, result) +
+			string(rune(config.Delimiter))
+		_, _ = s.Write([]byte(fallback))
+		_ = s.CloseWrite()
 		return
 	}
 
