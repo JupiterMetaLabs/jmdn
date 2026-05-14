@@ -767,39 +767,53 @@ func sendVoteResultToSequencer(logger_ctx context.Context, listenerNode *AVCStru
 
 	// Get the sequencer peer ID from the subscription cache
 	// The sequencer is the first peer in the cache (from when we subscribed)
-	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
-	if pubSubNode == nil || len(pubSubNode.BuddyNodes.Buddies_Nodes) == 0 {
-		// Expected on the sequencer node itself: the sequencer's pubsub node has
-		// no buddy list, so this is a no-op (the sequencer doesn't send results
-		// to itself — it drives consensus directly via CollectVoteResultsFromBuddies).
-		// Log at WARN so it is visible but not alarming.
-		logger().Warn(logger_ctx, "sendVoteResultToSequencer: no buddy peers found in pubsub node — skipping (expected on sequencer node)",
-			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
-		return
-	}
-
-	// Find a valid sequencer peer (not self)
-	var sequencerPeerID peer.ID
-	found := false
 	currentPeerID := listenerNode.PeerID
 	currentHostID := listenerNode.Host.ID()
 
-	for _, peerID := range pubSubNode.BuddyNodes.Buddies_Nodes {
-		// Skip if this is our own peer ID
-		if peerID == currentPeerID || peerID == currentHostID {
-			logger().Info(logger_ctx, "Skipping self-peer",
-				ion.String("peer_id", peerID.String()),
-				ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
-			continue
+	var sequencerPeerID peer.ID
+	found := false
+
+	// Path 1: pubsub buddy node list (set on buddy nodes when the sequencer
+	// broadcasts its buddy list at consensus start).
+	pubSubNode := AVCStruct.NewGlobalVariables().Get_PubSubNode()
+	if pubSubNode != nil {
+		for _, pid := range pubSubNode.BuddyNodes.Buddies_Nodes {
+			if pid == currentPeerID || pid == currentHostID {
+				continue
+			}
+			sequencerPeerID = pid
+			found = true
+			break
 		}
-		sequencerPeerID = peerID
-		found = true
-		break
+	}
+
+	// Path 2: consensus message cache — SequencerID is explicitly set by the
+	// sequencer at round start for exactly this purpose ("so voters know where
+	// to send votes"). Used when pubSubNode has no buddy list (common on buddy nodes).
+	if !found {
+		for _, msg := range AVCStruct.CacheConsensuMessage {
+			if msg == nil || msg.SequencerID == "" {
+				continue
+			}
+			pid, err := peer.Decode(msg.SequencerID)
+			if err != nil {
+				continue
+			}
+			if pid == currentPeerID || pid == currentHostID {
+				continue // this node IS the sequencer — no-op
+			}
+			sequencerPeerID = pid
+			found = true
+			logger().Info(logger_ctx, "sendVoteResultToSequencer: resolved sequencer from consensus cache",
+				ion.String("sequencer_id", msg.SequencerID),
+				ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
+			break
+		}
 	}
 
 	if !found {
-		// Also expected on the sequencer node: all peers in the list match self.
-		logger().Warn(logger_ctx, "sendVoteResultToSequencer: all buddy peers are self — skipping (expected on sequencer node)",
+		// Node is the sequencer itself (no non-self peer found anywhere) — no-op.
+		logger().Warn(logger_ctx, "sendVoteResultToSequencer: sequencer peer not found — node is likely the sequencer itself",
 			ion.String("function", "SubscriptionService.sendVoteResultToSequencer"))
 		return
 	}

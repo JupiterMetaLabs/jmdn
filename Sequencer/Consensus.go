@@ -959,11 +959,17 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 	processVotesStartTime := time.Now().UTC()
 
 	blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
-	requiredVotes := config.MaxMainPeers
+	// Use the actual enrolled committee size, not the global constant.
+	// In testnet the committee may be smaller than config.MaxMainPeers.
+	requiredVotes := len(consensus.PeerList.MainPeers)
+	if requiredVotes == 0 {
+		requiredVotes = 1
+	}
 	collectedVotes := make(map[string]int8) // peerID -> vote
 
 	logger().Info(processVotesCtx, "Starting event-driven vote collection",
 		ion.Int("required_votes", requiredVotes),
+		ion.Int("committee_size", len(consensus.PeerList.MainPeers)),
 		ion.String("block_hash", blockHash),
 		ion.Float64("timeout_seconds", config.ConsensusTimeout.Seconds()),
 		ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
@@ -994,15 +1000,17 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 			collectedVotes[notification.PeerID] = notification.Vote
 			Maps.StoreVoteResult(blockHash, notification.PeerID, notification.Vote)
 
+			pid := notification.PeerID
+			if len(pid) > 16 {
+				pid = pid[:16]
+			}
 			logger().Info(processVotesCtx, "Vote received via push notification",
 				ion.String("peer", notification.PeerID),
+				ion.String("peer_short", pid),
 				ion.Int("vote", int(notification.Vote)),
 				ion.Int("collected", len(collectedVotes)),
 				ion.Int("required", requiredVotes),
 				ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
-
-			fmt.Printf("📥 Vote received: peer=%s vote=%d (%d/%d)\n",
-				notification.PeerID[:16], notification.Vote, len(collectedVotes), requiredVotes)
 
 			// Exit early if we have all votes (quorum)
 			if len(collectedVotes) >= requiredVotes {
@@ -1018,7 +1026,10 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 				ion.Int("collected", len(collectedVotes)),
 				ion.Int("required", requiredVotes),
 				ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
-			fmt.Printf("⏰ Consensus timeout: collected %d/%d votes\n", len(collectedVotes), requiredVotes)
+			logger().Info(processVotesCtx, "Consensus round timeout — proceeding with partial votes",
+				ion.Int("collected", len(collectedVotes)),
+				ion.Int("required", requiredVotes),
+				ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
 			goto VOTES_COLLECTED
 		}
 	}
@@ -2022,10 +2033,14 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		return false
 	}
 
-	// Enforce quorum based on the fixed committee size (MaxMainPeers = 5)
-	// We need a majority of the EXPECTED committee, regardless of how many responded.
-	// For 5 peers, strict majority is 3.
-	needed := (config.MaxMainPeers / 2) + 1
+	// Majority of the actual enrolled committee, not the global MaxMainPeers constant.
+	// In testnet the committee may be smaller than config.MaxMainPeers, so using
+	// the constant would require more signatures than there are active nodes.
+	committeeSize := len(consensus.PeerList.MainPeers)
+	if committeeSize == 0 {
+		committeeSize = config.MaxMainPeers // fallback to config if list unavailable
+	}
+	needed := (committeeSize / 2) + 1
 	peerVotesStr := strings.Join(votedPeers, "\n")
 
 	span.SetAttributes(
