@@ -959,22 +959,29 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 	processVotesStartTime := time.Now().UTC()
 
 	blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
-	// Use the actual enrolled committee size, not the global constant.
-	// In testnet the committee may be smaller than config.MaxMainPeers.
-	requiredVotes := len(consensus.PeerList.MainPeers)
-	if requiredVotes == 0 {
-		requiredVotes = 1
-	}
+	// requiredVotes is a majority of MaxMainPeers (the global committee size).
+	// We do NOT use len(MainPeers) here because MainPeers only reflects nodes
+	// that responded during subscription permission — it can be much smaller
+	// than the actual number of participating validators. Using it as the quorum
+	// threshold means the loop exits after 1-2 votes and ignores the rest.
+	// We accept all votes for the correct block hash (BLS is the auth layer)
+	// and let the timeout flush partial results when not all peers respond.
+	requiredVotes := (config.MaxMainPeers / 2) + 1
 	collectedVotes := make(map[string]int8) // peerID -> vote
 
 	logger().Info(processVotesCtx, "Starting event-driven vote collection",
 		ion.Int("required_votes", requiredVotes),
-		ion.Int("committee_size", len(consensus.PeerList.MainPeers)),
+		ion.Int("enrolled_peers", len(consensus.PeerList.MainPeers)),
+		ion.Int("max_main_peers", config.MaxMainPeers),
 		ion.String("block_hash", blockHash),
 		ion.Float64("timeout_seconds", config.ConsensusTimeout.Seconds()),
 		ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
 
-	// Event loop: wait for votes or timeout
+	// Event loop: wait for votes or timeout.
+	// Accept votes from ANY peer for the correct block hash — pre-enrollment
+	// (MainPeers) covers only the nodes that responded to subscription permission,
+	// which is a subset of actual validators. BLS verification is the real
+	// authenticity check; filtering here by MainPeers silently discards valid votes.
 	for {
 		select {
 		case notification := <-voteNotifyCh:
@@ -983,14 +990,6 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 				logger().Warn(processVotesCtx, "Ignoring vote for different block hash",
 					ion.String("expected", blockHash),
 					ion.String("got", notification.BlockHash),
-					ion.String("peer", notification.PeerID),
-					ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
-				continue
-			}
-
-			// Only accept votes from committee members
-			if !isCommitteeMember(notification.PeerID, consensus.PeerList.MainPeers) {
-				logger().Warn(processVotesCtx, "Ignoring vote from non-committee peer",
 					ion.String("peer", notification.PeerID),
 					ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
 				continue
@@ -2047,14 +2046,15 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		return false
 	}
 
-	// Majority of the actual enrolled committee, not the global MaxMainPeers constant.
-	// In testnet the committee may be smaller than config.MaxMainPeers, so using
-	// the constant would require more signatures than there are active nodes.
-	committeeSize := len(consensus.PeerList.MainPeers)
-	if committeeSize == 0 {
-		committeeSize = config.MaxMainPeers // fallback to config if list unavailable
+	// Majority of actual BLS responders.
+	// MainPeers only reflects nodes enrolled during subscription permission,
+	// not all validators that participated. Using it as the committee size
+	// produces wrong thresholds when real participation > enrolled peers.
+	// Instead: majority of peers who actually returned a valid BLS signature.
+	needed := (validTotal / 2) + 1
+	if needed == 0 {
+		needed = 1
 	}
-	needed := (committeeSize / 2) + 1
 	peerVotesStr := strings.Join(votedPeers, "\n")
 
 	span.SetAttributes(
