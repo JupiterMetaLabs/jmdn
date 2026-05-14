@@ -222,12 +222,15 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		listenerNode := globalVars.Get_ForListner()
 
 		if listenerNode != nil && msg.Data.Sender == listenerNode.PeerID {
-			logger().Info(logger_ctx, "Skipping own vote (self-loop prevention)",
+			// Own vote arriving back via pubsub republication.
+			// Skip BFT re-triggering (prevents infinite loops) but DO store
+			// in CRDT — SubmitVote() already stores it, this is a no-op upsert
+			// that keeps the CRDT consistent and doesn't cost anything.
+			logger().Info(logger_ctx, "Received own vote via pubsub — storing in CRDT, skipping BFT re-trigger",
 				ion.String("topic", config.PubSub_ConsensusChannel),
 				ion.String("vote_from", msg.Data.Sender.String()),
-				ion.String("vote_message", msg.Data.Message),
 				ion.String("function", "SubscriptionService.handleReceivedMessage"))
-			return nil // Don't process own vote from pubsub
+			// Fall through to CRDT storage below; early return removed intentionally.
 		}
 
 		logger().Info(logger_ctx, "Received vote message via pubsub",

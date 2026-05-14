@@ -8,6 +8,8 @@ import (
 	"fmt"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
+	"gossipnode/AVC/BuddyNodes/ServiceLayer"
+	"gossipnode/AVC/BuddyNodes/Types"
 	"gossipnode/Security"
 
 	"time"
@@ -177,6 +179,35 @@ func (vt *VoteTrigger) SubmitVote() error {
 			ion.Int("block_number", int(zkBlock.BlockNumber)))
 	} else {
 		return fmt.Errorf("failed to vote, as vote is neither 1 or -1")
+	}
+
+	// Store own vote in the local CRDT before sending to the sequencer.
+	// This ensures that when the sequencer pulls BLS from this node, its
+	// CRDT has at least its own vote to sign over — regardless of pubsub
+	// propagation timing. Without this, ProcessVotesFromCRDT finds 0 votes
+	// and returns an error, producing 0 BLS results on the sequencer side.
+	if listenerNode.CRDTLayer != nil {
+		ownVoteJSON := vt.ToVoteString(vt.Vote)
+		OP := &Types.OP{
+			NodeID: listenerNode.PeerID,
+			OpType: int8(1),
+			KeyValue: Types.KeyValue{
+				Key:   listenerNode.PeerID.String(),
+				Value: ownVoteJSON,
+			},
+		}
+		if result := ServiceLayer.Controller(listenerNode.CRDTLayer, OP); result != nil {
+			if err, ok := result.(error); ok && err != nil {
+				logger().Warn(spanCtx, "Failed to store own vote in local CRDT (non-fatal, will still send to sequencer)",
+					ion.Err(err),
+					ion.String("function", "Vote.SubmitVote"))
+			}
+		}
+		logger().Info(spanCtx, "Stored own vote in local CRDT",
+			ion.String("peer_id", listenerNode.PeerID.String()),
+			ion.Int("vote", int(vt.Vote.Vote)),
+			ion.String("block_hash", vt.Vote.BlockHash),
+			ion.String("function", "Vote.SubmitVote"))
 	}
 
 	// Create proper message with ACK stage for vote submission
