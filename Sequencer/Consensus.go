@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"gossipnode/AVC/BuddyNodes/DataLayer"
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
@@ -1509,6 +1510,64 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 	return nil
 }
 
+// voterPeerIDsForBlock returns the union of:
+//   a) listenerNode.BuddyNodes.Buddies_Nodes (the pre-selected committee)
+//   b) all peer IDs found in the CRDT that have a vote for targetBlockHash
+//
+// This ensures CollectVoteResultsFromBuddies queries every peer that actually
+// voted, not just the peers that were enrolled at consensus-start time.
+// selfID is excluded from the result.
+func voterPeerIDsForBlock(
+	listenerNode *PubSubMessages.BuddyNode,
+	targetBlockHash string,
+	selfID peer.ID,
+) []peer.ID {
+	seen := make(map[peer.ID]bool)
+	var result []peer.ID
+
+	// Always include the pre-selected committee first.
+	for _, id := range listenerNode.BuddyNodes.Buddies_Nodes {
+		if id == selfID || seen[id] {
+			continue
+		}
+		seen[id] = true
+		result = append(result, id)
+	}
+
+	// Augment with any peer that voted in the CRDT for this specific block.
+	// CRDT keys are base58-encoded peer ID strings.
+	if listenerNode.CRDTLayer == nil {
+		return result
+	}
+	allCRDTs := listenerNode.CRDTLayer.CRDTLayer.GetAllCRDTs()
+	for key := range allCRDTs {
+		pid, err := peer.Decode(key)
+		if err != nil {
+			continue // key is not a peer ID — skip
+		}
+		if pid == selfID || seen[pid] {
+			continue
+		}
+		// Verify this peer voted for the target block.
+		votes, exists := DataLayer.GetSet(listenerNode.CRDTLayer, key)
+		if !exists || len(votes) == 0 {
+			continue
+		}
+		for _, voteStr := range votes {
+			var voteObj map[string]interface{}
+			if err := json.Unmarshal([]byte(voteStr), &voteObj); err != nil {
+				continue
+			}
+			if bh, ok := voteObj["block_hash"].(string); ok && bh == targetBlockHash {
+				seen[pid] = true
+				result = append(result, pid)
+				break
+			}
+		}
+	}
+	return result
+}
+
 // CollectVoteResultsFromBuddies collects vote aggregation results from all buddy nodes
 // Returns BLS results from buddy nodes
 func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMessages.BuddyNode) []BLS_Signer.BLSresponse {
@@ -1533,8 +1592,17 @@ func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMe
 		}
 	}
 
+	// Build expanded peer set: committee + any CRDT voter for this block.
+	// Peers that voted but weren't enrolled in MainPeers at consensus start
+	// would never be queried without this expansion.
+	blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
+	selfID := consensus.Host.ID()
+	buddySet := voterPeerIDsForBlock(listenerNode, blockHash, selfID)
+
 	logger().Info(trace_ctx, "Requesting vote aggregation results from buddy nodes",
-		ion.Int("buddy_nodes", len(listenerNode.BuddyNodes.Buddies_Nodes)),
+		ion.Int("buddy_nodes", len(buddySet)),
+		ion.Int("committee_peers", len(listenerNode.BuddyNodes.Buddies_Nodes)),
+		ion.String("block_hash", blockHash),
 		ion.String("function", "Consensus.CollectVoteResultsFromBuddies"))
 
 	wg, err := common.LocalGRO.NewFunctionWaitGroup(trace_ctx, GRO.SequencerVoteCollectionWaitGroup)
@@ -1550,7 +1618,7 @@ func (consensus *Consensus) CollectVoteResultsFromBuddies(listenerNode *PubSubMe
 	var blsResultsMu sync.Mutex
 	blsResults := make([]BLS_Signer.BLSresponse, 0, config.MaxMainPeers)
 
-	for _, buddyID := range listenerNode.BuddyNodes.Buddies_Nodes {
+	for _, buddyID := range buddySet {
 		common.LocalGRO.Go(GRO.SequencerVoteCollectionThread, func(ctx context.Context) error {
 			blsResult := consensus.requestVoteResultFromBuddy(buddyID)
 			if blsResult != nil {
