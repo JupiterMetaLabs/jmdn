@@ -1050,9 +1050,23 @@ VOTES_COLLECTED:
 	// Print CRDT state
 	consensus.PrintCRDTState(trace_ctx)
 
-	// Collect BLS results from buddy nodes (pull-based for BLS signatures)
+	// Collect BLS results from buddy nodes (pull-based).
+	// Retry up to 3 times with 500ms gaps: buddies may still be processing
+	// their CRDT when the sequencer queries immediately after quorum.
 	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
-	blsResults := consensus.CollectVoteResultsFromBuddies(listenerNode)
+	var blsResults []BLS_Signer.BLSresponse
+	for attempt := 1; attempt <= 3; attempt++ {
+		blsResults = consensus.CollectVoteResultsFromBuddies(listenerNode)
+		if len(blsResults) > 0 {
+			break
+		}
+		if attempt < 3 {
+			logger().Info(trace_ctx, "BLS pull returned 0 results — retrying",
+				ion.Int("attempt", attempt),
+				ion.String("function", "Consensus.startEventDrivenFlowAfterSubscriptionPermission"))
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
 
 	// Verify consensus with BLS signatures
 	consensusReached := consensus.VerifyConsensusWithBLS(blsResults)

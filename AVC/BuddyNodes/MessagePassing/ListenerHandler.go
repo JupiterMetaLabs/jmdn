@@ -1601,14 +1601,32 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		CRDTSync.PrintCurrentCRDTContent()
 	}
 
-	// Process votes from CRDT
-	result, err := Structs.ProcessVotesFromCRDT(voteResultSpanCtx, listenerNode, targetBlockHash)
+	// Process votes from CRDT — retry up to 3 times with 300ms waits.
+	// The sequencer may query the buddy immediately after it sent its vote,
+	// before the vote has been replicated into the buddy's CRDT via pubsub.
+	var result int8
+	var err error
+	const maxCRDTAttempts = 3
+	for attempt := 1; attempt <= maxCRDTAttempts; attempt++ {
+		result, err = Structs.ProcessVotesFromCRDT(voteResultSpanCtx, listenerNode, targetBlockHash)
+		if err == nil {
+			break
+		}
+		if attempt < maxCRDTAttempts {
+			logger().Info(voteResultSpanCtx, "CRDT has no votes yet — waiting before retry",
+				ion.Int("attempt", attempt),
+				ion.Int("max_attempts", maxCRDTAttempts),
+				ion.String("target_block_hash", targetBlockHash),
+				ion.String("function", "MessagePassing.handleVoteResultRequest"))
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
 	if err != nil {
 		voteResultSpan.RecordError(err)
 		voteResultSpan.SetAttributes(attribute.String("status", "process_votes_failed"))
 		duration := time.Since(startTime).Seconds()
 		voteResultSpan.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(voteResultSpanCtx, "Failed to process votes from CRDT",
+		logger().Error(voteResultSpanCtx, "Failed to process votes from CRDT after retries",
 			err,
 			ion.String("target_block_hash", targetBlockHash),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
