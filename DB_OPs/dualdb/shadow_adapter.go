@@ -120,6 +120,43 @@ func (s *ShadowAdapter) StoreZKBlock(_ *config.PooledConnection, block *config.Z
 		return err
 	}
 
+	// Upsert from/to account stubs before ingesting transactions.
+	// transactions.fk_txn_from requires accounts(address) to exist.
+	// The canonical balance lives in immudb; here we ensure the row exists.
+	seen := make(map[string]bool)
+	for i := range block.Transactions {
+		tx := block.Transactions[i]
+		for _, addr := range []interface{}{tx.From, tx.To} {
+			if addr == nil {
+				continue
+			}
+			var hexAddr string
+			switch a := addr.(type) {
+			case *common.Address:
+				if a != nil {
+					hexAddr = a.Hex()
+				}
+			case common.Address:
+				hexAddr = a.Hex()
+			}
+			if hexAddr == "" || seen[hexAddr] {
+				continue
+			}
+			seen[hexAddr] = true
+			stub := cassata.AccountResult{
+				Address:     hexAddr,
+				BalanceWei:  "0",
+				Nonce:       "0",
+				AccountType: 0,
+				Metadata:    json.RawMessage(`{}`),
+				CreatedAt:   time.Now().UTC(),
+				UpdatedAt:   time.Now().UTC(),
+			}
+			// Best-effort — ignore error; the FK will only fail if absent.
+			_ = s.cas.IngestAccount(ctx, stub)
+		}
+	}
+
 	for i := range block.Transactions {
 		if err := s.cas.IngestTx(ctx, txToCassata(block, i)); err != nil {
 			return err
