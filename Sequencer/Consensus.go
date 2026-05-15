@@ -1824,6 +1824,9 @@ func (consensus *Consensus) readVoteResultResponse(stream network.Stream, peerID
 
 	select {
 	case resp := <-responseCh:
+		// ReadString includes the delimiter byte in the returned string.
+		// Strip it so parseVoteResultResponse receives clean JSON.
+		resp = strings.TrimRight(resp, string(rune(config.Delimiter)))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(
 			attribute.Int("response_size_bytes", len(resp)),
@@ -1883,6 +1886,16 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 	if responseMsg == nil {
 		span.SetAttributes(attribute.String("status", "parse_failed"), attribute.String("reason", "response_msg_nil"))
 		logger().Warn(trace_ctx, "Failed to deference message",
+			ion.String("peer_id", peerID.String()),
+			ion.String("function", "Consensus.parseVoteResultResponse"))
+		return nil
+	}
+
+	// Empty Message means the buddy sent an error response (no votes in CRDT,
+	// init failure, etc.). Log at WARN — not an unexpected condition.
+	if responseMsg.Message == "" {
+		span.SetAttributes(attribute.String("status", "empty_message"))
+		logger().Warn(trace_ctx, "Buddy returned empty message (likely error response — no votes in CRDT)",
 			ion.String("peer_id", peerID.String()),
 			ion.String("function", "Consensus.parseVoteResultResponse"))
 		return nil
