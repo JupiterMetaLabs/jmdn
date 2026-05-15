@@ -396,7 +396,10 @@ func Read(PooledConnection *config.PooledConnection, key string) ([]byte, error)
 	entry, err := PooledConnection.Client.Client.Get(ctx, []byte(key))
 	if err != nil {
 		if isNotFoundError(err) {
-			PooledConnection.Client.Logger.Warn(loggerCtx, "Key not found",
+			// "Key not found" is normal for deduplication read-before-write
+			// checks (block_processed:, tx_processed:, block:N etc.).
+			// Use Debug to avoid polluting logs on every new block/tx.
+			PooledConnection.Client.Logger.Debug(loggerCtx, "Key not found",
 				ion.String("key", key),
 				ion.String("database", config.DBName),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1338,8 +1341,8 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 	entry, err := ic.Client.VerifiedGet(ctx, []byte(key))
 	if err != nil {
 		if isNotFoundError(err) {
-
-			ic.Logger.Warn(loggerCtx, "Key not found",
+			// Debug — not found on a deduplication check is the normal path.
+			ic.Logger.Debug(loggerCtx, "Key not found",
 				ion.String("key", key),
 				ion.String("database", config.DBName),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),

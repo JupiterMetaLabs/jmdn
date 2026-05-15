@@ -580,6 +580,11 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	senderExists, _ := accountExists(tx.From, accountsClient)
 	if !senderExists {
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
+		logger().Error(context.Background(), "Balance transfer blocked: sender account not found in accounts DB",
+			errors.New("sender not found"),
+			ion.String("sender", tx.From.Hex()),
+			ion.String("tx_hash", tx.Hash.Hex()),
+			ion.String("hint", "CreateAccount must be called for this address before it can send transactions"))
 		return nil, fmt.Errorf("sender DID %s does not exist", tx.From)
 	}
 
@@ -598,9 +603,23 @@ func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvm
 	}
 	snapshot = stateDB.Snapshot()
 
+	// Log sender balance before deduction so failures are diagnosable
+	senderBalance := stateDB.GetBalance(*tx.From)
+	logger().Info(context.Background(), "Regular transfer: sender balance check",
+		ion.String("sender", tx.From.Hex()),
+		ion.String("sender_balance_wei", senderBalance.String()),
+		ion.String("total_deduction_wei", totalDeduction.String()),
+		ion.String("tx_hash", tx.Hash.Hex()))
+
 	// 1. Deduct from sender
 	if err := deductFromSender(*tx.From, totalDeduction.String(), stateDB, accountsClient); err != nil {
 		cleanupProcessingMarkers(accountsClient, tx.Hash.String())
+		logger().Error(context.Background(), "Balance transfer blocked: insufficient balance or deduction error",
+			err,
+			ion.String("sender", tx.From.Hex()),
+			ion.String("sender_balance_wei", senderBalance.String()),
+			ion.String("total_deduction_wei", totalDeduction.String()),
+			ion.String("tx_hash", tx.Hash.Hex()))
 		return nil, categorizeDeductionError(err)
 	}
 
