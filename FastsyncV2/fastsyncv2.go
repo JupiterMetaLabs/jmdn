@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"math/big"
 	"os"
 	"path/filepath"
 	"time"
@@ -386,33 +385,15 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 		}
 		if len(missingMap) > 0 {
 			log.Printf("[FastsyncV2] Phase 4.5: fetching %d missing tagged accounts", len(missingMap))
-			fetchResp, fetchErr := fs.AccountSyncRouter.FetchAccounts(availResp, missingMap)
-			if fetchErr != nil {
-				log.Printf("[FastsyncV2] Phase 4.5 warning: FetchAccounts failed: %v", fetchErr)
-			} else {
-				// Track which addresses were returned by the server.
-				returned := make(map[string]bool)
-				if fetchResp != nil && len(fetchResp.GetAccounts()) > 0 {
-					accounts := protoAccountsToTypes(fetchResp.GetAccounts())
-					if err := accountMgr.WriteAccounts(accounts); err != nil {
-						log.Printf("[FastsyncV2] Phase 4.5 warning: WriteAccounts failed: %v", err)
-					} else {
-						log.Printf("[FastsyncV2] Phase 4.5 complete: wrote %d missing tagged accounts", len(accounts))
-					}
-					for _, a := range accounts {
-						returned[a.Address.Hex()] = true
-					}
-				}
-
-				// For any address the server also doesn't have, create it locally
-				// with zero balance so Reconciliation can replay its transactions.
-				for addr := range missingMap {
-					if !returned[common.HexToAddress(addr).Hex()] {
-						log.Printf("[FastsyncV2] Phase 4.5: address %s not on server, creating with zero balance", addr)
-						if err := accountMgr.CreateAccount(addr, new(big.Int), 0); err != nil {
-							log.Printf("[FastsyncV2] Phase 4.5 warning: CreateAccount %s failed: %v", addr, err)
-						}
-					}
+			resp, err := fs.AccountSyncRouter.FetchAccounts(availResp, missingMap)
+			if err != nil {
+				log.Printf("[FastsyncV2] Phase 4.5 warning: FetchAccounts failed: %v", err)
+			} else if resp != nil && len(resp.GetAccounts()) > 0 {
+				accounts := protoAccountsToTypes(resp.GetAccounts())
+				if err := accountMgr.WriteAccounts(accounts); err != nil {
+					log.Printf("[FastsyncV2] Phase 4.5 warning: WriteAccounts failed: %v", err)
+				} else {
+					log.Printf("[FastsyncV2] Phase 4.5 complete: wrote %d missing tagged accounts", len(accounts))
 				}
 			}
 		}
