@@ -2,6 +2,7 @@ package NodeInfo
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"time"
 
@@ -57,6 +58,15 @@ func (sync *sync_struct) GetBlockDetails() types.PriorSync {
 	if err != nil {
 		log.Printf("Error getting latest block number for GetBlockDetails: %v", err)
 		return types.PriorSync{}
+	}
+
+	// SyncConfirmation needs the actual highest block in DB (headers written by
+	// HeaderSync), not just the DataSync marker. Use whichever is higher.
+	if headerLatestBytes, readErr := DB_OPs.Read(conn, "header_latest_block"); readErr == nil {
+		var headerLatest uint64
+		if jsonErr := json.Unmarshal(headerLatestBytes, &headerLatest); jsonErr == nil && headerLatest > latestNum {
+			latestNum = headerLatest
+		}
 	}
 
 	latestBlock, err := DB_OPs.GetZKBlockByNumber(conn, latestNum)

@@ -268,17 +268,43 @@ func (it *immudbNonceIter) NextBatch() ([]*types.Account, error) {
 	return result, nil
 }
 
-// GetAccountsByNonces looks up accounts from the cache built during NextBatch.
-// Accounts not yet seen (iterator not fully consumed) will be absent — callers
-// should only call this after processing the batch that contained those nonces.
+// GetAccountsByNonces scans the DB to find accounts matching the given nonces.
+// The dispatcher calls this on a fresh iterator (no prior NextBatch), so we
+// cannot rely on the in-memory cache — we scan paginated until all nonces are found.
 func (it *immudbNonceIter) GetAccountsByNonces(nonces []uint64) ([]*types.Account, error) {
-	it.mu.Lock()
-	defer it.mu.Unlock()
+	if len(nonces) == 0 {
+		return nil, nil
+	}
+
+	nonceSet := make(map[uint64]bool, len(nonces))
+	for _, n := range nonces {
+		nonceSet[n] = true
+	}
 
 	result := make([]*types.Account, 0, len(nonces))
-	for _, n := range nonces {
-		if acc, ok := it.nonceToAccount[n]; ok {
-			result = append(result, acc)
+	const scanBatch = 1000
+	offset := 0
+
+	for {
+		accs, err := DB_OPs.ListAccountsPaginated(nil, scanBatch, offset, "")
+		if err != nil {
+			return nil, fmt.Errorf("GetAccountsByNonces scan: %w", err)
+		}
+		if len(accs) == 0 {
+			break
+		}
+		for _, acc := range accs {
+			ta := dbOpsToTypes(acc)
+			if nonceSet[ta.Nonce] {
+				result = append(result, ta)
+				if len(result) == len(nonces) {
+					return result, nil
+				}
+			}
+		}
+		offset += len(accs)
+		if len(accs) < scanBatch {
+			break
 		}
 	}
 	return result, nil

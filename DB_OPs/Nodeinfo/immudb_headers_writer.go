@@ -91,6 +91,21 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 		}
 	}
 
+	// Update header_latest_block so SyncConfirmation can build the correct Merkle
+	// range. This is separate from latest_block (which DataSync owns) so the
+	// explorer still shows only fully data-synced blocks.
+	if len(headers) > 0 {
+		highestWritten := headers[0].BlockNumber
+		for _, h := range headers[1:] {
+			if h.BlockNumber > highestWritten {
+				highestWritten = h.BlockNumber
+			}
+		}
+		if err2 := DB_OPs.Update("header_latest_block", highestWritten); err2 != nil {
+			return fmt.Errorf("update header_latest_block failed: %w", err2)
+		}
+	}
+
 	// Restore latest_block to the pre-HeaderSync value so the marker always
 	// reflects the last fully data-synced block, not just the last header.
 	if prevErr == nil {
