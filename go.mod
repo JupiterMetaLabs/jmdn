@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260421120217-e464cfd68005
-	github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260213044906-5629a60edea4
+	github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8
 	github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5
 	github.com/JupiterMetaLabs/ion v0.3.5
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
@@ -85,7 +85,7 @@ require (
 	github.com/jackpal/go-nat-pmp v1.0.2 // indirect
 	github.com/jbenet/go-temp-err-catcher v0.1.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.18.3 // indirect
+	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/koron/go-ssdp v0.0.6 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
@@ -219,3 +219,5 @@ require (
 )
 
 replace github.com/JupiterMetaLabs/ion => ../ion
+
+replace github.com/JupiterMetaLabs/JMDN-FastSync => ../JMDN-FastSync

@@ -25,11 +25,13 @@ import (
 	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/WAL"
+	accountspb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/accounts"
 	availabilitypb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/availability"
 	blockpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/block"
 	headersyncpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/headersync"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
 	wal_types "github.com/JupiterMetaLabs/JMDN-FastSync/common/types/wal"
+	"github.com/JupiterMetaLabs/JMDN-FastSync/core/accountsync"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/core/availability"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/core/datasync"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/core/headersync"
@@ -37,6 +39,7 @@ import (
 	potsrequesthelper "github.com/JupiterMetaLabs/JMDN-FastSync/core/pots/helper"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/core/priorsync"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/core/reconsillation"
+	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -65,12 +68,13 @@ type FastsyncV2 struct {
 	NodeInfo     *types.Nodeinfo
 	WAL          *WAL.WAL
 	PoTSWAL      *WAL.WAL
-	PriorRouter  priorsync.Priorsync_router
-	HeaderRouter headersync.Headersync_router
-	DataRouter   datasync.DataSync_router
-	AvailRouter  availability.Availability_router
-	ReconRouter  reconsillation.Reconciliation_router
-	PoTSRouter   *pots.PoTS
+	PriorRouter       priorsync.Priorsync_router
+	HeaderRouter      headersync.Headersync_router
+	DataRouter        datasync.DataSync_router
+	AvailRouter       availability.Availability_router
+	ReconRouter       reconsillation.Reconciliation_router
+	PoTSRouter        *pots.PoTS
+	AccountSyncRouter accountsync.AccountSync_router
 
 	// blockInfoAdapter is the ImmuDB-backed implementation of types.BlockInfo.
 	// Used for local block queries, header/data writes, and account management.
@@ -122,6 +126,7 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 	availRouter := availability.NewAvailability()
 	reconRouter := reconsillation.NewReconciliation()
 	potsRouter := pots.NewPoTS()
+	accountSyncRouter := accountsync.NewAccountSync()
 
 	// --- 5. Configure routers with shared sync variables ---
 	// The first version parameter to SetSyncVars controls transport selection in the
@@ -142,6 +147,8 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 	// commsVersion (2) enables QUIC transport with TCP fallback, matching the other routers.
 	potsRouter.SetSyncVars(ctx, commsVersion, *nodeinfo, h)
 	potsRouter.SetWAL(ctx, potsWAL)
+
+	accountSyncRouter.SetSyncVars(ctx, commsVersion, *nodeinfo, h, wal)
 
 	// --- 6. Mark this node as available for sync and start server-side handlers ---
 	// IAmAvailable allows other nodes to discover us via Availability requests.
@@ -164,13 +171,14 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 		NodeInfo:         nodeinfo,
 		WAL:              wal,
 		PoTSWAL:          potsWAL,
-		PriorRouter:      priorRouter,
-		HeaderRouter:     headerRouter,
-		DataRouter:       dataRouter,
-		AvailRouter:      availRouter,
-		ReconRouter:      reconRouter,
-		PoTSRouter:       potsRouter,
-		blockInfoAdapter: blockInfo,
+		PriorRouter:       priorRouter,
+		HeaderRouter:      headerRouter,
+		DataRouter:        dataRouter,
+		AvailRouter:       availRouter,
+		ReconRouter:       reconRouter,
+		PoTSRouter:        potsRouter,
+		AccountSyncRouter: accountSyncRouter,
+		blockInfoAdapter:  blockInfo,
 	}, nil
 }
 
@@ -307,6 +315,22 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 	remotes := []*availabilitypb.AvailabilityResponse{availResp}
 
 	// =========================================================================
+	// PHASE 2.5: AccountSync — sync zero-transaction accounts before header fetch
+	// =========================================================================
+	// Upload our local account nonce ART; server diffs it against its own accounts
+	// and streams any missing ones back via dial-back (AccountsSyncDataProtocol).
+	// Those accounts are written to DB by the stream handler before this returns.
+	// Must run before HeaderSync so Reconciliation sees a complete account set.
+	log.Println("[FastsyncV2] Phase 2.5: AccountSync")
+
+	totalMissing, err := fs.AccountSyncRouter.AccountSync(availResp)
+	if err != nil {
+		log.Printf("[FastsyncV2] Phase 2.5 warning: AccountSync failed: %v", err)
+	} else {
+		log.Printf("[FastsyncV2] Phase 2.5 complete: %d missing accounts synced", totalMissing)
+	}
+
+	// =========================================================================
 	// PHASE 3: HeaderSync — fetch block headers for divergent ranges
 	// =========================================================================
 	// The library batches the tag into chunks of MAX_HEADERS_PER_REQUEST (1500),
@@ -344,6 +368,36 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 	// so that Reconciliation and PoTS work with the correct state.
 	fs.reconcileLocalLatestBlock()
 
+	// =========================================================================
+	// PHASE 4.5: FetchAccounts — pull any tagged accounts missing from local DB
+	// =========================================================================
+	// DataSync returns the set of accounts touched by the synced blocks. Before
+	// Reconciliation replays their transactions, ensure every tagged account
+	// actually exists locally. Missing ones are fetched in one targeted request.
+	if taggedAccounts != nil && len(taggedAccounts.Accounts) > 0 {
+		missingMap := make(map[string]bool)
+		accountMgr := fs.blockInfoAdapter.NewAccountManager()
+		for addr := range taggedAccounts.Accounts {
+			acc, err := accountMgr.GetAccountByAddress(addr)
+			if err == nil && acc == nil {
+				missingMap[addr] = true
+			}
+		}
+		if len(missingMap) > 0 {
+			log.Printf("[FastsyncV2] Phase 4.5: fetching %d missing tagged accounts", len(missingMap))
+			resp, err := fs.AccountSyncRouter.FetchAccounts(availResp, missingMap)
+			if err != nil {
+				log.Printf("[FastsyncV2] Phase 4.5 warning: FetchAccounts failed: %v", err)
+			} else if resp != nil && len(resp.GetAccounts()) > 0 {
+				accounts := protoAccountsToTypes(resp.GetAccounts())
+				if err := accountMgr.WriteAccounts(accounts); err != nil {
+					log.Printf("[FastsyncV2] Phase 4.5 warning: WriteAccounts failed: %v", err)
+				} else {
+					log.Printf("[FastsyncV2] Phase 4.5 complete: wrote %d missing tagged accounts", len(accounts))
+				}
+			}
+		}
+	}
 
 	// =========================================================================
 	// PHASE 5: Reconciliation — recompute and commit account balances
@@ -354,7 +408,7 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 	//   3. Atomic DB commit via AccountManager.BatchUpdateAccounts
 	log.Println("[FastsyncV2] Phase 5: Reconciliation")
 
-	reconciledCount, failedAccounts, err := fs.ReconRouter.Reconcile(taggedAccounts)
+	reconciledCount, failedAccounts, err := fs.ReconRouter.Reconcile(taggedAccounts, availResp)
 	if err != nil {
 		log.Printf("[FastsyncV2] Phase 5 warning: reconciliation returned error: %v", err)
 	}
@@ -457,7 +511,7 @@ func (fs *FastsyncV2) executePoTS(
 
 			// Secondary Reconciliation for accounts affected by PoTS blocks.
 			if potsTaggedAccts != nil {
-				reconCount, failed, err := fs.ReconRouter.Reconcile(potsTaggedAccts)
+				reconCount, failed, err := fs.ReconRouter.Reconcile(potsTaggedAccts, availResp)
 				if err != nil {
 					log.Printf("[FastsyncV2] PoTS reconciliation warning: %v", err)
 				}
@@ -543,6 +597,9 @@ func (fs *FastsyncV2) Close() {
 	}
 	if fs.PoTSRouter != nil {
 		fs.PoTSRouter.Close()
+	}
+	if fs.AccountSyncRouter != nil {
+		fs.AccountSyncRouter.Close()
 	}
 	if fs.WAL != nil {
 		fs.WAL.Close()
@@ -664,6 +721,24 @@ func commitmentToBytes(c []uint32) []byte {
 		buf[i*4+3] = byte(v >> 24)
 	}
 	return buf
+}
+
+// protoAccountsToTypes converts a slice of proto Account messages to types.Account.
+// The address bytes field (20 bytes) is converted to common.Address.
+func protoAccountsToTypes(pbAccounts []*accountspb.Account) []*types.Account {
+	result := make([]*types.Account, 0, len(pbAccounts))
+	for _, pb := range pbAccounts {
+		result = append(result, &types.Account{
+			DIDAddress:  pb.GetDidAddress(),
+			Address:     common.BytesToAddress(pb.GetAddress()),
+			Balance:     pb.GetBalance(),
+			Nonce:       pb.GetNonce(),
+			AccountType: pb.GetAccountType(),
+			CreatedAt:   pb.GetCreatedAt(),
+			UpdatedAt:   pb.GetUpdatedAt(),
+		})
+	}
+	return result
 }
 
 // reconcileLocalLatestBlock ensures the local database marker ("latest_block") matches

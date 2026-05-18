@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
@@ -138,6 +140,169 @@ func (am *account_manager) CreateAccount(accountAddress string, balance *big.Int
 	}
 
 	return nil
+}
+
+// Time Complexity: O(1)
+func (am *account_manager) GetAccountByAddress(accountAddress string) (*types.Account, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get account DB connection: %w", err)
+	}
+
+	addr := common.HexToAddress(accountAddress)
+	acc, err := DB_OPs.GetAccount(conn, addr)
+	if err != nil {
+		if strings.Contains(err.Error(), "key not found") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get account: %w", err)
+	}
+	return dbOpsToTypes(acc), nil
+}
+
+// Time Complexity: O(N) where N is the number of accounts
+func (am *account_manager) WriteAccounts(accounts []*types.Account) error {
+	if len(accounts) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get account DB connection: %w", err)
+	}
+
+	entries := make([]struct {
+		Key   string
+		Value []byte
+	}, 0, len(accounts))
+
+	for _, acc := range accounts {
+		dbAcc := &DB_OPs.Account{
+			DIDAddress:  acc.DIDAddress,
+			Address:     acc.Address,
+			Balance:     acc.Balance,
+			Nonce:       acc.Nonce,
+			AccountType: acc.AccountType,
+			CreatedAt:   acc.CreatedAt,
+			UpdatedAt:   acc.UpdatedAt,
+			Metadata:    acc.Metadata,
+		}
+		val, err := json.Marshal(dbAcc)
+		if err != nil {
+			return fmt.Errorf("marshal account %s: %w", acc.Address.Hex(), err)
+		}
+		entries = append(entries, struct {
+			Key   string
+			Value []byte
+		}{
+			Key:   DB_OPs.Prefix + acc.Address.Hex(),
+			Value: val,
+		})
+	}
+
+	return DB_OPs.BatchRestoreAccounts(conn, entries)
+}
+
+// NewAccountNonceIterator returns an iterator that pages through all accounts
+// using ListAccountsPaginated, sorted by nonce within each batch.
+// The in-memory nonce→account cache supports GetAccountsByNonces lookups.
+func (am *account_manager) NewAccountNonceIterator(batchSize int) types.AccountNonceIterator {
+	return &immudbNonceIter{
+		batchSize:      batchSize,
+		nonceToAccount: make(map[uint64]*types.Account),
+	}
+}
+
+// ─── immudbNonceIter ─────────────────────────────────────────────────────────
+
+type immudbNonceIter struct {
+	batchSize      int
+	offset         int
+	done           bool
+	mu             sync.Mutex
+	nonceToAccount map[uint64]*types.Account
+}
+
+func (it *immudbNonceIter) TotalAccounts() (uint64, error) {
+	count, err := DB_OPs.CountAccounts(nil)
+	return uint64(count), err
+}
+
+func (it *immudbNonceIter) NextBatch() ([]*types.Account, error) {
+	if it.done {
+		return nil, nil
+	}
+
+	accs, err := DB_OPs.ListAccountsPaginated(nil, it.batchSize, it.offset, "")
+	if err != nil {
+		return nil, fmt.Errorf("account nonce iterator: %w", err)
+	}
+	if len(accs) == 0 {
+		it.done = true
+		return nil, nil
+	}
+
+	result := make([]*types.Account, len(accs))
+	it.mu.Lock()
+	for i, acc := range accs {
+		ta := dbOpsToTypes(acc)
+		result[i] = ta
+		it.nonceToAccount[ta.Nonce] = ta
+	}
+	it.mu.Unlock()
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Nonce < result[j].Nonce
+	})
+
+	it.offset += len(accs)
+	if len(accs) < it.batchSize {
+		it.done = true
+	}
+	return result, nil
+}
+
+// GetAccountsByNonces looks up accounts from the cache built during NextBatch.
+// Accounts not yet seen (iterator not fully consumed) will be absent — callers
+// should only call this after processing the batch that contained those nonces.
+func (it *immudbNonceIter) GetAccountsByNonces(nonces []uint64) ([]*types.Account, error) {
+	it.mu.Lock()
+	defer it.mu.Unlock()
+
+	result := make([]*types.Account, 0, len(nonces))
+	for _, n := range nonces {
+		if acc, ok := it.nonceToAccount[n]; ok {
+			result = append(result, acc)
+		}
+	}
+	return result, nil
+}
+
+func (it *immudbNonceIter) Close() {
+	it.mu.Lock()
+	it.nonceToAccount = nil
+	it.mu.Unlock()
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+func dbOpsToTypes(acc *DB_OPs.Account) *types.Account {
+	return &types.Account{
+		DIDAddress:  acc.DIDAddress,
+		Address:     acc.Address,
+		Balance:     acc.Balance,
+		Nonce:       acc.Nonce,
+		AccountType: acc.AccountType,
+		CreatedAt:   acc.CreatedAt,
+		UpdatedAt:   acc.UpdatedAt,
+		Metadata:    acc.Metadata,
+	}
 }
 
 // Time Complexity: O(N) where N is the number of updates

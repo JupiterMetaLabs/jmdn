@@ -5,10 +5,8 @@ github.com/ClickHouse/ch-go v0.71.0 h1:bUdZ/EZj/LcVHsMqaRUP2holqygrPWQKeMjc6nZoy
 github.com/ClickHouse/ch-go v0.71.0/go.mod h1:NwbNc+7jaqfY58dmdDUbG4Jl22vThgx1cYjBw0vtgXw=
 github.com/ClickHouse/clickhouse-go/v2 v2.45.0 h1:iHt15nA4iYhfde5bDQAcLAat9BAh7B5ksPRNRa4UI7s=
 github.com/ClickHouse/clickhouse-go/v2 v2.45.0/go.mod h1:giJfUVlMkcfUEPVfRpt51zZaGEx9i17gCos8gBl392c=
-github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260401065006-cee589d6c547 h1:JSsrQz1WjZMUEDuVm+a45MbgVUusyqmvIuvOI0nqBDk=
-github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260401065006-cee589d6c547/go.mod h1:8NMjQKQ9vvtWdugaGsyp2IGeplpB1xITYtgVguotcQE=
-github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260213044906-5629a60edea4 h1:L8laR48CLdrTsV8mfxaBfpVR+/U22tQyIxbP25i2d90=
-github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260213044906-5629a60edea4/go.mod h1:9AvHMXXjd0dSPiPmsjKRfgUPTIyxRyoUC0RtVPIVVlc=
+github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8 h1:yPrYb6g6NnqGsiCVqMf0zndEYTuelL3B03Fee+utLWA=
+github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8/go.mod h1:zM8F31G2SiPXzTo1WzbDFZ5iOOAkqrkuZjS0QVDW4ew=
 github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5 h1:S9+s6JeWSrGJ6ooYb4f8iRlJxwPUZ8X/EA4EgxKS3zc=
 github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5/go.mod h1:SNkJRVlUwZM7Lt5ZhojWaimBljLg/pV6IKgn8oyViOA=
 github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20251001021608-1fe7b43fc4d6 h1:1zYrtlhrZ6/b6SAjLSfKzWtdgqK0U+HtH/VcBWh1BaU=
@@ -175,8 +173,8 @@ github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHm
 github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI2bnpBCr8=
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
 github.com/klauspost/compress v1.13.6/go.mod h1:/3/Vjq9QcHkK5uEr5lBEmyoZ1iFhe47etQ6QUkpK6sk=
-github.com/klauspost/compress v1.18.3 h1:9PJRvfbmTabkOX8moIpXPbMMbYN60bWImDDU7L+/6zw=
-github.com/klauspost/compress v1.18.3/go.mod h1:R0h/fSBs8DE4ENlcrlib3PsXS61voFxhIs2DeRhCvJ4=
+github.com/klauspost/compress v1.18.5 h1:/h1gH5Ce+VWNLSWqPzOVn6XBO+vJbCNGvjoaGBFW2IE=
+github.com/klauspost/compress v1.18.5/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
 github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzhA9Y=
 github.com/klauspost/cpuid/v2 v2.3.0/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
 github.com/konsorten/go-windows-terminal-sequences v1.0.1/go.mod h1:T0+1ngSBFLxvqU3pZ+m/2kptfBszLMUkC4ZK/EgS/cQ=
