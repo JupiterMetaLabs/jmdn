@@ -324,6 +324,31 @@ func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
 	}, nil
 }
 
+func (h *CommandHandler) HandleAccountSync(peeraddr string) (SyncStats, error) {
+	if peeraddr == "" {
+		return SyncStats{}, fmt.Errorf("usage: accountsync <peer_multiaddr>")
+	}
+	if h.FastSyncerV2 == nil {
+		return SyncStats{}, fmt.Errorf("FastsyncV2 engine is inactive")
+	}
+
+	startTime := time.Now().UTC()
+	_, err := h.FastSyncerV2.AccountSyncOnly(peeraddr)
+	if err != nil {
+		return SyncStats{}, fmt.Errorf("AccountSync failed: %w", err)
+	}
+
+	var newAccountsState *schema.ImmutableState
+	if h.DIDClient != nil {
+		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
+	}
+
+	return SyncStats{
+		TimeTaken:     time.Since(startTime),
+		AccountsState: newAccountsState,
+	}, nil
+}
+
 func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStats, error) {
 	if peeraddr == "" {
 		return SyncStats{}, fmt.Errorf("usage: firstsync <peer_multiaddr> <server|client>")

@@ -259,6 +259,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
 		fmt.Println("  fastsync <peer>      - Fast sync with peer (V2 Engine)")
+		fmt.Println("  accountsync <peer>   - Sync missing accounts only (skip block sync)")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
 		fmt.Println("are only available in interactive mode.")
@@ -446,6 +447,26 @@ func runCommand(command string, args []string, grpcPort int) {
 			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
 		}
 
+	case "accountsync":
+		if len(args) < 1 {
+			fmt.Println("Usage: jmdn -cmd accountsync <peer_multiaddr>")
+			os.Exit(1)
+		}
+		fmt.Println("Starting AccountSync (accounts only, no block sync)...")
+		stats, err := client.AccountSync(args[0])
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if stats.Error != "" {
+			fmt.Printf("AccountSync failed: %s\n", stats.Error)
+			os.Exit(1)
+		}
+		fmt.Printf("AccountSync completed in %ds\n", stats.TimeTaken)
+		if stats.AccountsState != nil {
+			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
+		}
+
 	case "sendfile":
 		if len(args) < 3 {
 			fmt.Println("Usage: jmdn -cmd sendfile <peer> <filepath> <remote_filename>")
@@ -487,6 +508,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  fastsync <peer>      - Fast sync with peer (V2 Engine)")
+		fmt.Println("  accountsync <peer>   - Sync missing accounts only (skip block sync)")
 		os.Exit(1)
 	}
 }

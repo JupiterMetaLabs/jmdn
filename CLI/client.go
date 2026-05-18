@@ -161,6 +161,12 @@ func (c *Client) FastSyncV2(peerAddr string) (*pb.SyncStats, error) {
 	return c.conn.FastSyncV2(ctx, &pb.PeerRequest{Peer: peerAddr})
 }
 
+// AccountSync syncs missing accounts only (skips block sync)
+func (c *Client) AccountSync(peerAddr string) (*pb.SyncStats, error) {
+	ctx := context.Background()
+	return c.conn.AccountSync(ctx, &pb.PeerRequest{Peer: peerAddr})
+}
+
 // FirstSync performs first synchronization with a peer (server or client mode)
 func (c *Client) FirstSync(peerAddr string, mode string) (*pb.SyncStats, error) {
 	// ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
