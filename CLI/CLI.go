@@ -107,6 +107,7 @@ func PrintFuncs() {
 	fmt.Println("  stats                             - Show messaging statistics")
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
 	fmt.Println("  fastsync <peer_multiaddr>        - Fast sync blockchain data with a peer (V2 Engine)")
+	fmt.Println("  accountsync <peer_multiaddr>     - Sync missing accounts only (skip block sync)")
 	fmt.Println("  dbstate                           - Show current ImmuDB database state")
 	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
@@ -266,6 +267,8 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleBroadcast(parts)
 	case "fastsync", "fastsyncv2", "firstsync":
 		h.handleFastSync(parts)
+	case "accountsync":
+		h.handleAccountSync(parts)
 	case "propagateDID":
 		h.handlePropagateDID(parts)
 	case "syncinfo":
@@ -628,6 +631,29 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 	printDashes()
 }
 
+
+func (h *CommandHandler) handleAccountSync(parts []string) {
+	if len(parts) != 2 {
+		fmt.Println("Usage: accountsync <peer_multiaddr>")
+		return
+	}
+	if h.FastSyncerV2 == nil {
+		fmt.Println("Error: FastsyncV2 engine is not initialized")
+		return
+	}
+
+	fmt.Printf("Starting account-only sync with peer %s\n", parts[1])
+	startTime := time.Now().UTC()
+
+	synced, err := h.FastSyncerV2.AccountSyncOnly(parts[1])
+	if err != nil {
+		fmt.Printf("AccountSync failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("AccountSync complete: %d missing accounts synced in %v\n", synced, time.Since(startTime))
+	printDashes()
+}
 
 func (h *CommandHandler) handlePropagateDID(parts []string) {
 	if len(parts) < 3 || len(parts) > 4 {

@@ -182,6 +182,52 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 	}, nil
 }
 
+// AccountSyncOnly connects to targetPeer, performs Availability (to get auth),
+// then runs AccountSync only — skipping block comparison and data sync entirely.
+// Use this when both nodes have identical blocks but the local node is missing accounts.
+func (fs *FastsyncV2) AccountSyncOnly(targetPeer string) (uint64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
+	defer cancel()
+
+	maddr, err := multiaddr.NewMultiaddr(targetPeer)
+	if err != nil {
+		return 0, fmt.Errorf("invalid multiaddr %q: %w", targetPeer, err)
+	}
+	info, err := peer.AddrInfoFromP2pAddr(maddr)
+	if err != nil {
+		return 0, fmt.Errorf("extract peer info: %w", err)
+	}
+	if err := fs.Host.Connect(ctx, *info); err != nil {
+		return 0, fmt.Errorf("connect to peer %s: %w", info.ID, err)
+	}
+
+	peerAddrs := fs.Host.Peerstore().Addrs(info.ID)
+	if len(peerAddrs) == 0 {
+		peerAddrs = info.Addrs
+	}
+	targetNodeInfo := &types.Nodeinfo{
+		PeerID:    info.ID,
+		Multiaddr: peerAddrs,
+		Version:   commsVersion,
+	}
+
+	availResp, err := fs.AvailRouter.SendAvailabilityRequest(
+		ctx, fs.PriorRouter.GetSyncVars(), *targetNodeInfo, 0, math.MaxUint64,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("availability request failed: %w", err)
+	}
+	if !availResp.IsAvailable {
+		return 0, fmt.Errorf("peer %s reports unavailable for FastSync", info.ID)
+	}
+	if availResp.Auth == nil || availResp.Auth.UUID == "" {
+		return 0, fmt.Errorf("peer %s returned no auth token", info.ID)
+	}
+	log.Printf("[FastsyncV2] AccountSyncOnly: authorized (UUID=%s), starting AccountSync", availResp.Auth.UUID)
+
+	return fs.AccountSyncRouter.AccountSync(availResp)
+}
+
 // HandleSync executes the full FastSync protocol with the target peer.
 //
 // The target peer must be a valid libp2p multiaddress with an embedded peer ID,
