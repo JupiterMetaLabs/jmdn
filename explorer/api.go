@@ -301,8 +301,8 @@ func (s *ImmuDBServer) StartWithContext(ctx context.Context, addr string) error 
 	srv := &http.Server{
 		Addr:           bindAddr,
 		Handler:        s.router,
-		ReadTimeout:    10 * time.Second,
-		WriteTimeout:   10 * time.Second,
+		ReadTimeout:    60 * time.Second,
+		WriteTimeout:   60 * time.Second,
 		MaxHeaderBytes: 1 << 20, // 1 MB
 	}
 
