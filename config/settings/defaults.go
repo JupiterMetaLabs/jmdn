@@ -77,9 +77,9 @@ func DefaultConfig() NodeConfig {
 			GROTrack:     false,
 		},
 		FastSync: FastSyncSettings{
-			Enabled:      true,
-			Sync:         true,
-			StartupSync:  true,
+			Enabled:       true,
+			EnablePulling: true,
+			PullOnStartup: true,
 			SyncTimeout:  10 * time.Minute,
 			AllowedPeers: []string{},
 		},
