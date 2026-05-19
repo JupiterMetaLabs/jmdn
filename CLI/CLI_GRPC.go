@@ -226,6 +226,9 @@ func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 	if peeraddr == "" {
 		return SyncStats{}, fmt.Errorf("usage: fastsync <peer_multiaddr>")
 	}
+	if !h.PullAllowed {
+		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
+	}
 
 	err := h.checkDBClient()
 	if err != nil {
@@ -295,6 +298,9 @@ func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
 	if peeraddr == "" {
 		return SyncStats{}, fmt.Errorf("usage: fastsyncv2 <peer_multiaddr>")
 	}
+	if !h.PullAllowed {
+		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
+	}
 
 	// Make sure engine exists
 	if h.FastSyncerV2 == nil {
@@ -328,6 +334,9 @@ func (h *CommandHandler) HandleAccountSync(peeraddr string) (SyncStats, error) {
 	if peeraddr == "" {
 		return SyncStats{}, fmt.Errorf("usage: accountsync <peer_multiaddr>")
 	}
+	if !h.PullAllowed {
+		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
+	}
 	if h.FastSyncerV2 == nil {
 		return SyncStats{}, fmt.Errorf("FastsyncV2 engine is inactive")
 	}
@@ -358,6 +367,11 @@ func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStat
 		return SyncStats{}, fmt.Errorf("usage: firstsync <peer_multiaddr> <server|client>")
 	}
 
+	modeLower := strings.ToLower(mode)
+	if modeLower == "client" && !h.PullAllowed {
+		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
+	}
+
 	err := h.checkDBClient()
 	if err != nil {
 		return SyncStats{}, fmt.Errorf("database client not initialized: %v", err)
@@ -380,7 +394,6 @@ func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStat
 		return SyncStats{}, fmt.Errorf("failed to extract peer info: %v", err)
 	}
 
-	modeLower := strings.ToLower(mode)
 	if modeLower != "server" && modeLower != "client" {
 		return SyncStats{}, fmt.Errorf("invalid mode: %s. Must be 'server' or 'client'", mode)
 	}

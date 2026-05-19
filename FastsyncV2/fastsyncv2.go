@@ -56,9 +56,6 @@ const (
 	commsVersion = 2
 
 	priorsyncVersion = 2
-
-	// syncTimeout is the maximum wall-clock time for a complete sync operation.
-	syncTimeout = 15 * time.Minute
 )
 
 // FastsyncV2 holds the router instances and shared state for the sync engine.
@@ -79,6 +76,9 @@ type FastsyncV2 struct {
 	// blockInfoAdapter is the ImmuDB-backed implementation of types.BlockInfo.
 	// Used for local block queries, header/data writes, and account management.
 	blockInfoAdapter types.BlockInfo
+
+	// syncTimeout is the maximum wall-clock time for a complete sync operation.
+	syncTimeout time.Duration
 }
 
 // NewFastsyncV2 initializes the JMDN-FastSync V2 engine over the given libp2p host.
@@ -86,7 +86,7 @@ type FastsyncV2 struct {
 // It creates the NodeInfo adapter (ImmuDB), initializes both WALs (standard + PoTS),
 // creates and configures all protocol routers, and starts the server-side network handlers
 // so this node can respond to incoming sync requests from other peers.
-func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
+func NewFastsyncV2(h host.Host, syncTimeout time.Duration) (*FastsyncV2, error) {
 	ctx := context.Background()
 
 	// --- 1. Initialize the BlockInfo adapter (ImmuDB → JMDN-FastSync interface) ---
@@ -179,6 +179,7 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 		PoTSRouter:        potsRouter,
 		AccountSyncRouter: accountSyncRouter,
 		blockInfoAdapter:  blockInfo,
+		syncTimeout:       syncTimeout,
 	}, nil
 }
 
@@ -186,7 +187,7 @@ func NewFastsyncV2(h host.Host) (*FastsyncV2, error) {
 // then runs AccountSync only — skipping block comparison and data sync entirely.
 // Use this when both nodes have identical blocks but the local node is missing accounts.
 func (fs *FastsyncV2) AccountSyncOnly(targetPeer string) (uint64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), fs.syncTimeout)
 	defer cancel()
 
 	maddr, err := multiaddr.NewMultiaddr(targetPeer)
@@ -273,7 +274,7 @@ func (fs *FastsyncV2) HandleStartupSync(peerID peer.ID, addrs []multiaddr.Multia
 // begins comparing: 0 for a full sync, or localBlockNum for incremental startup sync.
 func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) error {
 	syncStart := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), fs.syncTimeout)
 	defer cancel()
 
 	// --- 0. Pre-sync reconciliation ---

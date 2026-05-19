@@ -618,8 +618,8 @@ func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsC
 }
 
 // initFastsyncV2 initializes the FastSync V2 service
-func initFastsyncV2(n *config.Node) *FastsyncV2.FastsyncV2 {
-	fs, err := FastsyncV2.NewFastsyncV2(n.Host)
+func initFastsyncV2(n *config.Node, syncTimeout time.Duration) *FastsyncV2.FastsyncV2 {
+	fs, err := FastsyncV2.NewFastsyncV2(n.Host, syncTimeout)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
 		return nil
@@ -942,7 +942,7 @@ func main() {
 	// Initialize FastSync service
 	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
 	if cfg.FastSync.Enabled {
-		fastSyncerV2 = initFastsyncV2(n)
+		fastSyncerV2 = initFastsyncV2(n, cfg.FastSync.SyncTimeout)
 	} else {
 		log.Info().Msg("[FastSync] disabled by config — protocol handlers not registered")
 	}
@@ -1171,6 +1171,7 @@ func main() {
 		ChainID:         cfg.Network.ChainID,
 		FacadePort:      cfg.Ports.Facade,
 		WSPort:          cfg.Ports.WS,
+		PullAllowed:     cfg.FastSync.Sync,
 	}
 
 	// Only set database clients if they're properly initialized
