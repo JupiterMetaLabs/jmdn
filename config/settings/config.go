@@ -140,13 +140,13 @@ type FastSyncSettings struct {
 	// handlers are registered. Set false to disable FastSync entirely.
 	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 
-	// Sync controls whether this node will pull data from peers and write to its
+	// EnablePulling controls whether this node will pull data from peers and write to its
 	// local DB. false = read-only participant (serves data, never updates itself).
-	Sync bool `mapstructure:"sync" yaml:"sync"`
+	EnablePulling bool `mapstructure:"enable_pulling" yaml:"enable_pulling"`
 
-	// StartupSync controls whether the node attempts to catch up on missed blocks
+	// PullOnStartup controls whether the node attempts to catch up on missed blocks
 	// automatically when it (re)starts and connects to peers.
-	StartupSync bool `mapstructure:"startup_sync" yaml:"startup_sync"`
+	PullOnStartup bool `mapstructure:"pull_on_startup" yaml:"pull_on_startup"`
 
 	// SyncTimeout is the maximum wall-clock time allowed for a single full sync
 	// operation before it is cancelled.

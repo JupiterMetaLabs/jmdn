@@ -618,8 +618,8 @@ func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsC
 }
 
 // initFastsyncV2 initializes the FastSync V2 service
-func initFastsyncV2(n *config.Node) *FastsyncV2.FastsyncV2 {
-	fs, err := FastsyncV2.NewFastsyncV2(n.Host)
+func initFastsyncV2(n *config.Node, syncTimeout time.Duration) *FastsyncV2.FastsyncV2 {
+	fs, err := FastsyncV2.NewFastsyncV2(n.Host, syncTimeout)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
 		return nil
@@ -942,14 +942,13 @@ func main() {
 	// Initialize FastSync service
 	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
 	if cfg.FastSync.Enabled {
-		fastSyncerV2 = initFastsyncV2(n)
+		fastSyncerV2 = initFastsyncV2(n, cfg.FastSync.SyncTimeout)
 	} else {
 		log.Info().Msg("[FastSync] disabled by config — protocol handlers not registered")
 	}
 
 	// Startup sync: catch up on blocks missed while offline.
-	// Only runs if both the engine is up and this node is configured to sync.
-	if fastSyncerV2 != nil && cfg.FastSync.Sync && cfg.FastSync.StartupSync {
+	if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.PullOnStartup {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.StartupSyncThread, func(ctx context.Context) error {
 			// Wait for peer connections to establish after node startup
 			time.Sleep(5 * time.Second)
@@ -999,8 +998,8 @@ func main() {
 		}); err != nil {
 			log.Error().Err(err).Str("thread", GRO.StartupSyncThread).Msg("Failed to start startup sync goroutine")
 		}
-	} else if fastSyncerV2 != nil && !cfg.FastSync.Sync {
-		log.Info().Msg("[FastSync] sync=false — this node serves data only, local DB will not be updated")
+	} else if fastSyncerV2 != nil && !cfg.FastSync.EnablePulling {
+		log.Info().Msg("[FastSync] Node configured with enable_pulling=false (serve-only participant); skipping StartupSync")
 	}
 
 	// Initialize Yggdrasil messaging if enabled
@@ -1171,6 +1170,7 @@ func main() {
 		ChainID:         cfg.Network.ChainID,
 		FacadePort:      cfg.Ports.Facade,
 		WSPort:          cfg.Ports.WS,
+		PullAllowed:     cfg.FastSync.EnablePulling,
 	}
 
 	// Only set database clients if they're properly initialized

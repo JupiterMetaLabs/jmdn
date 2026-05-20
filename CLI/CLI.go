@@ -61,6 +61,7 @@ type CommandHandler struct {
 	ChainID         int
 	FacadePort      int
 	WSPort          int
+	PullAllowed     bool
 }
 
 // Simple helper to print the CLI prompt in color
