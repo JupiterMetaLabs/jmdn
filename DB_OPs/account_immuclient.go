@@ -386,6 +386,52 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		}
 	}
 
+	// Deduplicate address entries via hash set: the sender may include the same key
+	// multiple times in one page. The LWW check reads the committed DB value (not the
+	// in-progress ops slice), so both copies would independently pass and produce a
+	// duplicate key in ExecAll. Build a key→entry map keeping the highest UpdatedAt,
+	// then flatten back to slice.
+	{
+		type entry = struct {
+			Key   string
+			Value []byte
+		}
+		addrSet := make(map[string]entry, len(addressEntries))
+		for _, e := range addressEntries {
+			cur, ok := addrSet[e.Key]
+			if !ok {
+				addrSet[e.Key] = e
+				continue
+			}
+			var curAcc, inAcc Account
+			if json.Unmarshal(cur.Value, &curAcc) == nil &&
+				json.Unmarshal(e.Value, &inAcc) == nil &&
+				inAcc.UpdatedAt > curAcc.UpdatedAt {
+				addrSet[e.Key] = e
+			}
+		}
+		addressEntries = make([]entry, 0, len(addrSet))
+		for _, e := range addrSet {
+			addressEntries = append(addressEntries, e)
+		}
+	}
+
+	// Deduplicate DID entries via hash set: refs are idempotent, last occurrence wins.
+	{
+		type entry = struct {
+			Key   string
+			Value []byte
+		}
+		didSet := make(map[string]entry, len(didEntries))
+		for _, e := range didEntries {
+			didSet[e.Key] = e
+		}
+		didEntries = make([]entry, 0, len(didSet))
+		for _, e := range didSet {
+			didEntries = append(didEntries, e)
+		}
+	}
+
 	// Build a map of address keys being written in this batch for quick lookup
 	addressKeysInBatch := make(map[string]bool)
 	for _, e := range addressEntries {
@@ -516,51 +562,7 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		// If addressKeysInBatch[addrKey] is true, we already processed it above
 	}
 
-	// Process did: keys after address: keys are updated
-	for _, e := range didEntries {
-		// For DID keys, create a reference to the address key
-		var acc Account
-		if err := json.Unmarshal(e.Value, &acc); err != nil {
-			// If payload is not an Account, skip creating ref to avoid corrupt data
-			continue
-		}
-		addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
-
-		// Check if address key is being written in this batch OR already exists in DB
-		// This ensures references are only created for valid address keys
-		shouldCreateRef := false
-		if addressKeysInBatch[addrKey] {
-			// Address key is being written in this batch - safe to create reference
-			shouldCreateRef = true
-		} else {
-			// Check if address key exists in database
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
-			cancel()
-			if getErr == nil {
-				// Address key exists in database - safe to create reference
-				shouldCreateRef = true
-			}
-		}
-
-		if !shouldCreateRef {
-			// Address key doesn't exist - skip creating reference
-			// This can happen if address: key was skipped due to LWW or was never synced
-			continue
-		}
-
-		didKey := []byte(e.Key)
-		ops = append(ops, &schema.Op{Operation: &schema.Op_Ref{Ref: &schema.ReferenceRequest{
-			Key:           didKey,
-			ReferencedKey: []byte(addrKey),
-			AtTx:          0,
-			BoundRef:      true,
-		}}})
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	if len(ops) == 0 {
-		// Nothing to apply (e.g., all entries skipped by LWW) -> treat as success
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		PooledConnection.Client.Logger.Debug(loggerCtx, "No operations to apply in batch restore (all skipped by LWW)",
@@ -582,19 +584,32 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		ion.String("topic", TOPIC),
 		ion.String("function", "DB_OPs.BatchRestoreAccounts"))
 
-	_, err = PooledConnection.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops})
-	if err != nil {
-		loggerCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		PooledConnection.Client.Logger.Error(loggerCtx, "Batch restore ExecAll failed",
-			err,
-			ion.Int("operations_count", len(ops)),
-			ion.String("database", config.AccountsDBName),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DB_OPs.BatchRestoreAccounts"))
-		return fmt.Errorf("accounts batch restore failed: %w", err)
+	// Chunk ops to stay within ImmuDB's MaxTxEntries limit (default 1024).
+	// Each chunk is its own atomic transaction; LWW semantics make this safe.
+	const immudbMaxOpsPerTx = 1000
+	for chunkStart := 0; chunkStart < len(ops); chunkStart += immudbMaxOpsPerTx {
+		end := chunkStart + immudbMaxOpsPerTx
+		if end > len(ops) {
+			end = len(ops)
+		}
+		chunkCtx, chunkCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, err = PooledConnection.Client.Client.ExecAll(chunkCtx, &schema.ExecAllRequest{Operations: ops[chunkStart:end]})
+		chunkCancel()
+		if err != nil {
+			loggerCtx2, cancel2 := context.WithCancel(context.Background())
+			defer cancel2()
+			PooledConnection.Client.Logger.Error(loggerCtx2, "Batch restore ExecAll failed",
+				err,
+				ion.Int("operations_count", end-chunkStart),
+				ion.Int("chunk_start", chunkStart),
+				ion.Int("total_ops", len(ops)),
+				ion.String("database", config.AccountsDBName),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("log_file", LOG_FILE),
+				ion.String("topic", TOPIC),
+				ion.String("function", "DB_OPs.BatchRestoreAccounts"))
+			return fmt.Errorf("accounts batch restore failed: %w", err)
+		}
 	}
 
 	loggerCtx2, cancel2 := context.WithCancel(context.Background())
