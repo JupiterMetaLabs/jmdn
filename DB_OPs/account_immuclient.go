@@ -432,6 +432,50 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		}
 	}
 
+	// Pre-fetch all existing account values in one GetAll RPC instead of N individual Gets
+	// during the LWW loop. Holding a connection across 3000+ sequential Gets exhausts the
+	// pool (max 20) when multiple dispatchWorkers run concurrently.
+	existingAccounts := make(map[string]Account, len(addressEntries))
+	{
+		prefetchSet := make(map[string]struct{}, len(addressEntries)+len(didEntries))
+		prefetchKeys := make([][]byte, 0, len(addressEntries)+len(didEntries))
+		for _, e := range addressEntries {
+			if _, ok := prefetchSet[e.Key]; !ok {
+				prefetchSet[e.Key] = struct{}{}
+				prefetchKeys = append(prefetchKeys, []byte(e.Key))
+			}
+		}
+		for _, e := range didEntries {
+			var acc Account
+			if json.Unmarshal(e.Value, &acc) == nil {
+				k := fmt.Sprintf("%s%s", Prefix, acc.Address)
+				if _, ok := prefetchSet[k]; !ok {
+					prefetchSet[k] = struct{}{}
+					prefetchKeys = append(prefetchKeys, []byte(k))
+				}
+			}
+		}
+		if len(prefetchKeys) > 0 {
+			fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			entriesList, getAllErr := PooledConnection.Client.Client.GetAll(fetchCtx, prefetchKeys)
+			fetchCancel()
+			if getAllErr == nil && entriesList != nil {
+				for _, entry := range entriesList.Entries {
+					if entry == nil || entry.Value == nil {
+						continue
+					}
+					var acc Account
+					if json.Unmarshal(entry.Value, &acc) == nil {
+						existingAccounts[string(entry.Key)] = acc
+					}
+				}
+			}
+			// GetAll failure is treated as "all accounts are new" — safe degradation;
+			// worst case we write data that LWW would have skipped, but correctness
+			// is preserved because ImmuDB is append-only and the node re-syncs on divergence.
+		}
+	}
+
 	// Build a map of address keys being written in this batch for quick lookup
 	addressKeysInBatch := make(map[string]bool)
 	for _, e := range addressEntries {
@@ -458,49 +502,32 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		var shouldWrite = true
 		var incoming Account
 		if err := json.Unmarshal(e.Value, &incoming); err == nil {
-			// Try read existing account
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			entry, getErr := PooledConnection.Client.Client.Get(ctx, []byte(e.Key))
-			cancel()
-			if getErr == nil && entry != nil && len(entry.Value) > 0 {
-				var existing Account
-				if jsonErr := json.Unmarshal(entry.Value, &existing); jsonErr == nil {
-					// If existing is newer, skip writing to preserve newer balance
-					if existing.UpdatedAt > incoming.UpdatedAt {
-						// Remove from batch map since we're not writing it
-						delete(addressKeysInBatch, e.Key)
-						shouldWrite = false
-					} else if existing.UpdatedAt == incoming.UpdatedAt {
-						// If timestamps are equal, only update if incoming has different balance
-						// This handles race conditions where sync happens during local update
-						if existing.Balance == incoming.Balance {
-							// Same timestamp and balance - skip to avoid unnecessary write
-							delete(addressKeysInBatch, e.Key)
-							shouldWrite = false
-						}
-						// Same timestamp but different balance - write it (takes newer data)
-					}
-					// incoming.UpdatedAt > existing.UpdatedAt - we write the newer data
-					if shouldWrite && existing.UpdatedAt < incoming.UpdatedAt {
-						loggerCtx, cancel := context.WithCancel(context.Background())
-						defer cancel()
-						PooledConnection.Client.Logger.Debug(loggerCtx, "Updating account - incoming is newer (LWW)",
-							ion.String("key", e.Key),
-							ion.Int64("existing_updated_at", existing.UpdatedAt),
-							ion.Int64("incoming_updated_at", incoming.UpdatedAt),
-							ion.String("existing_balance", existing.Balance),
-							ion.String("incoming_balance", incoming.Balance),
-							ion.String("database", config.AccountsDBName),
-							ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-							ion.String("log_file", LOG_FILE),
-							ion.String("topic", TOPIC),
-							ion.String("function", "DB_OPs.BatchRestoreAccounts"))
-					}
+			if existing, found := existingAccounts[e.Key]; found {
+				if existing.UpdatedAt > incoming.UpdatedAt {
+					delete(addressKeysInBatch, e.Key)
+					shouldWrite = false
+				} else if existing.UpdatedAt == incoming.UpdatedAt && existing.Balance == incoming.Balance {
+					// Same timestamp and balance - no change needed
+					delete(addressKeysInBatch, e.Key)
+					shouldWrite = false
 				}
-				// If existing unmarshal fails, proceed with write (shouldWrite = true)
+				if shouldWrite && existing.UpdatedAt < incoming.UpdatedAt {
+					loggerCtx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					PooledConnection.Client.Logger.Debug(loggerCtx, "Updating account - incoming is newer (LWW)",
+						ion.String("key", e.Key),
+						ion.Int64("existing_updated_at", existing.UpdatedAt),
+						ion.Int64("incoming_updated_at", incoming.UpdatedAt),
+						ion.String("existing_balance", existing.Balance),
+						ion.String("incoming_balance", incoming.Balance),
+						ion.String("database", config.AccountsDBName),
+						ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+						ion.String("log_file", LOG_FILE),
+						ion.String("topic", TOPIC),
+						ion.String("function", "DB_OPs.BatchRestoreAccounts"))
+				}
 			}
 		} else {
-			// Account doesn't exist yet - we'll create it
 			loggerCtx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			PooledConnection.Client.Logger.Debug(loggerCtx, "Creating new account during sync",
@@ -541,25 +568,18 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		}
 		addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
 
-		// If address key was in batch but skipped, or not in batch at all
 		if !addressKeysInBatch[addrKey] {
-			// Check if address key exists in database
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
-			cancel()
-			if getErr == nil {
-				// Address key exists in DB - create reference
-				didKey := []byte(e.Key)
+			if _, found := existingAccounts[addrKey]; found {
 				ops = append(ops, &schema.Op{Operation: &schema.Op_Ref{Ref: &schema.ReferenceRequest{
-					Key:           didKey,
+					Key:           []byte(e.Key),
 					ReferencedKey: []byte(addrKey),
 					AtTx:          0,
 					BoundRef:      true,
 				}}})
 			}
-			// If getErr != nil, address key doesn't exist - skip creating orphaned reference
+			// addrKey not in existingAccounts → doesn't exist in DB → skip orphaned ref
 		}
-		// If addressKeysInBatch[addrKey] is true, we already processed it above
+		// addressKeysInBatch[addrKey] == true → DID ref already appended in Pass 1
 	}
 
 	if len(ops) == 0 {
