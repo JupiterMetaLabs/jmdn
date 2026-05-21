@@ -214,7 +214,7 @@ func (am *account_manager) WriteAccounts(accounts []*types.Account) error {
 }
 
 // NewAccountNonceIterator returns an iterator that pages through all accounts
-// using ListAccountsPaginated, sorted by nonce within each batch.
+// using ListAccountsPaginatedCursor, sorted by nonce within each batch.
 // The in-memory nonce→account cache supports GetAccountsByNonces lookups.
 func (am *account_manager) NewAccountNonceIterator(batchSize int) types.AccountNonceIterator {
 	return &immudbNonceIter{
@@ -227,7 +227,7 @@ func (am *account_manager) NewAccountNonceIterator(batchSize int) types.AccountN
 
 type immudbNonceIter struct {
 	batchSize      int
-	offset         int
+	cursor         []byte // cursor for ListAccountsPaginatedCursor; nil = start
 	done           bool
 	mu             sync.Mutex
 	nonceToAccount map[uint64]*types.Account
@@ -243,7 +243,7 @@ func (it *immudbNonceIter) NextBatch() ([]*types.Account, error) {
 		return nil, nil
 	}
 
-	accs, err := DB_OPs.ListAccountsPaginated(nil, it.batchSize, it.offset, "")
+	accs, nextCursor, err := DB_OPs.ListAccountsPaginatedCursor(nil, it.batchSize, it.cursor, "")
 	if err != nil {
 		return nil, fmt.Errorf("account nonce iterator: %w", err)
 	}
@@ -265,8 +265,8 @@ func (it *immudbNonceIter) NextBatch() ([]*types.Account, error) {
 		return result[i].Nonce < result[j].Nonce
 	})
 
-	it.offset += len(accs)
-	if len(accs) < it.batchSize {
+	it.cursor = nextCursor
+	if nextCursor == nil {
 		it.done = true
 	}
 	return result, nil
@@ -274,7 +274,7 @@ func (it *immudbNonceIter) NextBatch() ([]*types.Account, error) {
 
 // GetAccountsByNonces scans the DB to find accounts matching the given nonces.
 // The dispatcher calls this on a fresh iterator (no prior NextBatch), so we
-// cannot rely on the in-memory cache — we scan paginated until all nonces are found.
+// cannot rely on the in-memory cache — we scan cursor-paginated until all nonces are found.
 func (it *immudbNonceIter) GetAccountsByNonces(nonces []uint64) ([]*types.Account, error) {
 	if len(nonces) == 0 {
 		return nil, nil
@@ -287,10 +287,10 @@ func (it *immudbNonceIter) GetAccountsByNonces(nonces []uint64) ([]*types.Accoun
 
 	result := make([]*types.Account, 0, len(nonces))
 	const scanBatch = 1000
-	offset := 0
+	var cursor []byte
 
 	for {
-		accs, err := DB_OPs.ListAccountsPaginated(nil, scanBatch, offset, "")
+		accs, nextCursor, err := DB_OPs.ListAccountsPaginatedCursor(nil, scanBatch, cursor, "")
 		if err != nil {
 			return nil, fmt.Errorf("GetAccountsByNonces scan: %w", err)
 		}
@@ -306,10 +306,10 @@ func (it *immudbNonceIter) GetAccountsByNonces(nonces []uint64) ([]*types.Accoun
 				}
 			}
 		}
-		offset += len(accs)
-		if len(accs) < scanBatch {
+		if nextCursor == nil {
 			break
 		}
+		cursor = nextCursor
 	}
 	return result, nil
 }

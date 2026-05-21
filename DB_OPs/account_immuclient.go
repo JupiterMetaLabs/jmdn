@@ -1167,6 +1167,113 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 	return accounts, nil
 }
 
+// ListAccountsPaginatedCursor is the cursor-based counterpart to ListAccountsPaginated.
+// It avoids the O(N²) re-scan that the offset-based variant performs (which walks the
+// full prefix from the start on every call). Callers pass the cursor returned by the
+// previous call as seekKey; a nil seekKey starts from the beginning. A nil nextCursor
+// in the return signals that iteration is complete.
+//
+// Used by the AccountSync iterator on the FastSync hot path where the full 2.7M-account
+// DB must be paged through without repeated full-prefix scans.
+func ListAccountsPaginatedCursor(PooledConnection *config.PooledConnection, limit int, seekKey []byte, extendedPrefix string) ([]*Account, []byte, error) {
+	var err error
+	var shouldReturnConnection = false
+
+	ctx := context.Background()
+	defer ctx.Done()
+
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get connection from pool: %w - ListAccountsPaginatedCursor", err)
+		}
+		shouldReturnConnection = true
+	}
+	if shouldReturnConnection {
+		defer PutAccountsConnection(PooledConnection)
+	}
+	ic := PooledConnection.Client
+	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
+		return nil, nil, fmt.Errorf("failed to ensure accounts database is selected: %w - ListAccountsPaginatedCursor", err)
+	}
+
+	prefix := []byte(Prefix)
+
+	batchSize := limit
+	if batchSize < 256 {
+		batchSize = 256
+	}
+
+	var accounts []*Account
+	var lastReturnedKey []byte
+	cursor := seekKey
+	exhausted := false
+
+	for len(accounts) < limit {
+		scanReq := &schema.ScanRequest{
+			Prefix:  prefix,
+			Limit:   uint64(batchSize),
+			SeekKey: cursor,
+			Desc:    true, // latest accounts first — matches ListAccountsPaginated
+		}
+		ReadCtx, ReadCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		scanResult, scanErr := ic.Client.Scan(ReadCtx, scanReq)
+		ReadCancel()
+		if scanErr != nil {
+			loggerCtx, cancel := context.WithCancel(context.Background())
+			PooledConnection.Client.Logger.Error(loggerCtx, "Failed to scan for accounts",
+				scanErr,
+				ion.String("database", config.AccountsDBName),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("log_file", LOG_FILE),
+				ion.String("topic", TOPIC),
+				ion.String("function", "DB_OPs.ListAccountsPaginatedCursor"))
+			cancel()
+			return nil, nil, fmt.Errorf("failed to scan for accounts: %w - ListAccountsPaginatedCursor", scanErr)
+		}
+
+		if len(scanResult.Entries) == 0 {
+			exhausted = true
+			break
+		}
+
+		// SeekKey is inclusive — skip the first entry if it matches the cursor we passed in.
+		startIndex := 0
+		if cursor != nil && string(scanResult.Entries[0].Key) == string(cursor) {
+			startIndex = 1
+		}
+
+		for i := startIndex; i < len(scanResult.Entries); i++ {
+			entry := scanResult.Entries[i]
+			var acc Account
+			if err := json.Unmarshal(entry.Value, &acc); err != nil {
+				continue
+			}
+			lastReturnedKey = entry.Key
+			if extendedPrefix != "" && !strings.HasPrefix(acc.DIDAddress, extendedPrefix) {
+				continue
+			}
+			accounts = append(accounts, &acc)
+			if len(accounts) >= limit {
+				break
+			}
+		}
+
+		if len(scanResult.Entries) < batchSize {
+			exhausted = true
+			break
+		}
+		cursor = scanResult.Entries[len(scanResult.Entries)-1].Key
+	}
+
+	var nextCursor []byte
+	if !exhausted && lastReturnedKey != nil {
+		nextCursor = lastReturnedKey
+	}
+
+	return accounts, nextCursor, nil
+}
+
 // CountAccounts returns the total number of Accounts in the database.
 // This implementation scans keys without loading them all into memory.
 func CountAccounts(PooledConnection *config.PooledConnection) (int, error) {
