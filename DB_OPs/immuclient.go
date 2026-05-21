@@ -847,7 +847,8 @@ func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limi
 			Prefix:  []byte(prefix),
 			Limit:   uint64(limit),
 			SeekKey: seekKey,
-			Desc:    true, // latest keys first
+			Desc:    false, // ASC: Prefix filter is reliable only in ascending scans;
+			// DESC with no matching keys falls backward past the prefix and returns wrong results
 		}
 
 		ic.Logger.Debug(loggerCtx, fmt.Sprintf("Scanning keys with prefix: %s (limit: %d)", prefix, limit),

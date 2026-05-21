@@ -152,6 +152,10 @@ func (am *account_manager) GetAccountByAddress(accountAddress string) (*types.Ac
 		return nil, fmt.Errorf("failed to get account DB connection: %w", err)
 	}
 
+	// Strip "address:" DB key prefix if present — the external FastSync module may pass
+	// DB key format; common.HexToAddress expects bare hex (0x... or unprefixed).
+	accountAddress = strings.TrimPrefix(accountAddress, DB_OPs.Prefix)
+
 	addr := common.HexToAddress(accountAddress)
 	acc, err := DB_OPs.GetAccount(conn, addr)
 	if err != nil {
