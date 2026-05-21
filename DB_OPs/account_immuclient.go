@@ -1082,8 +1082,8 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 			Desc:    true, // latest accounts first
 		}
 		ReadCtx, ReadCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer ReadCancel()
 		scanResult, err := ic.Client.Scan(ReadCtx, scanReq)
+		ReadCancel()
 		if err != nil {
 			loggerCtx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -1118,7 +1118,6 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 				var acc Account
 				if err := json.Unmarshal(entry.Value, &acc); err != nil {
 					loggerCtx, cancel := context.WithCancel(context.Background())
-					defer cancel()
 					PooledConnection.Client.Logger.Warn(loggerCtx, "Skipping account due to unmarshal error",
 						ion.String("error", err.Error()),
 						ion.String("key", string(entry.Key)),
@@ -1127,6 +1126,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 						ion.String("log_file", LOG_FILE),
 						ion.String("topic", TOPIC),
 						ion.String("function", "DB_OPs.ListAccountsPaginated"))
+					cancel()
 					continue
 				}
 
@@ -1165,6 +1165,114 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 		ion.String("function", "DB_OPs.ListAccountsPaginated"))
 
 	return accounts, nil
+}
+
+// ListAccountsPaginatedFrom retrieves up to limit accounts starting after seekKey in ascending key order.
+// seekKey=nil starts from the first address: entry. Returns the accounts and the scan cursor
+// (key of the last accepted account); pass it as seekKey on the next call to continue without rescanning.
+//
+// Time: O(limit) ImmuDB entries read; Space: O(limit)
+// DS: ImmuDB ascending Scan with SeekKey cursor — no offset restart across calls.
+func ListAccountsPaginatedFrom(PooledConnection *config.PooledConnection, limit int, seekKey []byte, extendedPrefix string) ([]*Account, []byte, error) {
+	var err error
+	var shouldReturnConnection = false
+
+	ctx := context.Background()
+
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get connection from pool: %w - ListAccountsPaginatedFrom", err)
+		}
+		shouldReturnConnection = true
+	}
+	if shouldReturnConnection {
+		defer func() {
+			PutAccountsConnection(PooledConnection)
+		}()
+	}
+
+	ic := PooledConnection.Client
+	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
+		return nil, nil, fmt.Errorf("failed to ensure accounts database is selected: %w - ListAccountsPaginatedFrom", err)
+	}
+
+	prefix := []byte(Prefix)
+	var accounts []*Account
+	var lastKey []byte
+	const internalBatch = 1000
+	currentSeek := seekKey
+
+	for len(accounts) < limit {
+		scanReq := &schema.ScanRequest{
+			Prefix:  prefix,
+			Limit:   uint64(internalBatch),
+			SeekKey: currentSeek,
+			Desc:    false,
+		}
+
+		scanCtx, scanCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		scanResult, scanErr := ic.Client.Scan(scanCtx, scanReq)
+		scanCancel()
+
+		if scanErr != nil {
+			loggerCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ic.Logger.Error(loggerCtx, "Failed to scan for accounts",
+				scanErr,
+				ion.String("database", config.AccountsDBName),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("log_file", LOG_FILE),
+				ion.String("topic", TOPIC),
+				ion.String("function", "DB_OPs.ListAccountsPaginatedFrom"))
+			return nil, nil, fmt.Errorf("failed to scan for accounts: %w - ListAccountsPaginatedFrom", scanErr)
+		}
+
+		if len(scanResult.Entries) == 0 {
+			break
+		}
+
+		// ImmuDB Scan is inclusive on SeekKey — skip the first entry if it is the cursor itself.
+		startIndex := 0
+		if currentSeek != nil && string(scanResult.Entries[0].Key) == string(currentSeek) {
+			startIndex = 1
+		}
+
+		for i := startIndex; i < len(scanResult.Entries) && len(accounts) < limit; i++ {
+			entry := scanResult.Entries[i]
+
+			var acc Account
+			if jsonErr := json.Unmarshal(entry.Value, &acc); jsonErr != nil {
+				loggerCtx, cancel := context.WithCancel(context.Background())
+				ic.Logger.Warn(loggerCtx, "Skipping account due to unmarshal error",
+					ion.String("error", jsonErr.Error()),
+					ion.String("key", string(entry.Key)),
+					ion.String("database", config.AccountsDBName),
+					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+					ion.String("log_file", LOG_FILE),
+					ion.String("topic", TOPIC),
+					ion.String("function", "DB_OPs.ListAccountsPaginatedFrom"))
+				cancel()
+				continue
+			}
+
+			if extendedPrefix != "" && !strings.HasPrefix(acc.DIDAddress, extendedPrefix) {
+				continue
+			}
+
+			accounts = append(accounts, &acc)
+			lastKey = entry.Key
+		}
+
+		if len(accounts) >= limit || len(scanResult.Entries) < internalBatch {
+			break
+		}
+
+		// Advance cursor to the end of this scan batch.
+		currentSeek = scanResult.Entries[len(scanResult.Entries)-1].Key
+	}
+
+	return accounts, lastKey, nil
 }
 
 // CountAccounts returns the total number of Accounts in the database.
@@ -1249,10 +1357,9 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 
 		// Process current batch of blocks
 		for i := startBlock; i <= endBlock; i++ {
-			block, err := GetZKBlockByNumber(PooledConnection, i)
+			block, err := GetZKBlockByNumberFast(PooledConnection, i)
 			if err != nil {
 				loggerCtx, cancel := context.WithCancel(context.Background())
-				defer cancel()
 				ic.Logger.Warn(loggerCtx, "Error retrieving block, skipping",
 					ion.String("error", err.Error()),
 					ion.Uint64("block_number", i),
@@ -1261,6 +1368,7 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 					ion.String("log_file", LOG_FILE),
 					ion.String("topic", TOPIC),
 					ion.String("function", "DB_OPs.GetTransactionsByAccount"))
+				cancel()
 				continue
 			}
 
@@ -1573,10 +1681,9 @@ func GetTransactionsByAccountPaginated(PooledConnection *config.PooledConnection
 
 		// Process current batch of blocks (in reverse order)
 		for i := currentBlock; i >= startBlock && len(allMatchingTxs) < transactionsNeeded; i-- {
-			block, err := GetZKBlockByNumber(PooledConnection, i)
+			block, err := GetZKBlockByNumberFast(PooledConnection, i)
 			if err != nil {
 				loggerCtx, cancel := context.WithCancel(context.Background())
-				defer cancel()
 				ic.Logger.Warn(loggerCtx, "Error retrieving block, skipping",
 					ion.String("error", err.Error()),
 					ion.Uint64("block_number", i),
@@ -1585,6 +1692,7 @@ func GetTransactionsByAccountPaginated(PooledConnection *config.PooledConnection
 					ion.String("log_file", LOG_FILE),
 					ion.String("topic", TOPIC),
 					ion.String("function", "DB_OPs.GetTransactionsByAccountPaginated"))
+				cancel()
 				continue
 			}
 
