@@ -27,6 +27,7 @@ import (
 	"gossipnode/CA/ImmuDB_CA"
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
+	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
 	"gossipnode/DID"
 	"gossipnode/Pubsub"
 	"gossipnode/Security"
@@ -51,6 +52,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 )
 
@@ -860,6 +862,25 @@ func main() {
 
 	if err := initAccountsDBPool(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
+	}
+
+	// ── Account Sync Worker (Redis Stream) ───────────────────────────────────
+	// WriteAccounts and BatchUpdateAccounts enqueue to a Redis Stream and return
+	// immediately, decoupling callers from the ~15 s ImmuDB commit latency.
+	// The worker drains the stream and writes batches to ImmuDB asynchronously.
+	// Required before FastsyncV2 starts — it calls WriteAccounts during sync.
+	if cfg.Database.Redis.URL == "" {
+		log.Warn().Msg("[AccountSyncWorker] database.redis.url not configured — WriteAccounts will fail; set url in jmdn.yaml or JMDN_DATABASE_REDIS_URL")
+	} else {
+		redisClient := redis.NewClient(&redis.Options{
+			Addr: cfg.Database.Redis.URL,
+		})
+		accountStreamer := NodeInfo.NewRedisStreamer(redisClient)
+		if err := NodeInfo.StartAccountSyncWorker(ctx, accountStreamer, NodeInfo.DefaultWorkerConfig()); err != nil {
+			log.Fatal().Err(err).Str("redis_url", cfg.Database.Redis.URL).Msg("Failed to start account sync worker")
+		}
+		log.Info().Str("redis_url", cfg.Database.Redis.URL).Msg("[AccountSyncWorker] started — WriteAccounts is now async")
+		fmt.Println("✅ Account sync worker started (Redis Stream → ImmuDB async)")
 	}
 
 	// Discover Yggdrasil address BEFORE creating the node

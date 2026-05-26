@@ -42,6 +42,9 @@ func DefaultConfig() NodeConfig {
 		Database: DatabaseSettings{
 			Username: "",
 			Password: "",
+			Redis: RedisSettings{
+				URL: "", // required for account sync worker; set via jmdn.yaml or JMDN_DATABASE_REDIS_URL
+			},
 		},
 		Logging: LoggingSettings{
 			Level:       "warn",

@@ -41,6 +41,8 @@ binds:
 database:
   username: ""
   password: ""
+  redis:
+    url: "localhost:6379"
 
 # ── Logging (Ion) ────────────────────────────────────────
 # Maps directly to Ion's config struct. All env vars like

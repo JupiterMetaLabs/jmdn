@@ -123,6 +123,7 @@ func setDefaults(v *viper.Viper) {
 	// Database
 	v.SetDefault("database.username", d.Database.Username)
 	v.SetDefault("database.password", d.Database.Password)
+	v.SetDefault("database.redis.url", d.Database.Redis.URL)
 
 	// Logging
 	v.SetDefault("logging.level", d.Logging.Level)
