@@ -7,12 +7,12 @@ import (
 	"math/big"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
 	"github.com/ethereum/go-ethereum/common"
 	"gossipnode/DB_OPs"
+	"gossipnode/config"
 )
 
 type account_manager struct{}
@@ -33,18 +33,9 @@ func (am *account_manager) GetTransactionsForAccount(accountAddress string) ([]t
 		return nil, fmt.Errorf("failed to get transactions by account: %w", err)
 	}
 
-	// Serialize and deserialize to map config.Transaction to types.DBTransaction.
-	// The JSON tags match between config.Transaction and types.Transaction (embedded in DBTransaction),
-	// so core fields are preserved. DB-specific fields (BlockNumber, TxIndex, CreatedAt) will be zero-valued.
-	var result []types.DBTransaction
+	result := make([]types.DBTransaction, 0, len(cfgTxs))
 	for _, tx := range cfgTxs {
-		b, err := json.Marshal(tx)
-		if err == nil {
-			var dbTx types.DBTransaction
-			if json.Unmarshal(b, &dbTx) == nil {
-				result = append(result, dbTx)
-			}
-		}
+		result = append(result, configTxToDBTx(tx))
 	}
 	return result, nil
 }
@@ -213,37 +204,47 @@ func (am *account_manager) WriteAccounts(accounts []*types.Account) error {
 	return DB_OPs.BatchRestoreAccounts(conn, entries)
 }
 
-// NewAccountNonceIterator returns an iterator that pages through all accounts
-// using ListAccountsPaginatedCursor, sorted by nonce within each batch.
-// The in-memory nonce→account cache supports GetAccountsByNonces lookups.
+// NewAccountNonceIterator returns a cursor-based iterator over all accounts.
+// Each NextBatch call advances a seekKey cursor — O(N) total scan across all batches.
 func (am *account_manager) NewAccountNonceIterator(batchSize int) types.AccountNonceIterator {
 	return &immudbNonceIter{
-		batchSize:      batchSize,
-		nonceToAccount: make(map[uint64]*types.Account),
+		batchSize: batchSize,
 	}
 }
 
 // ─── immudbNonceIter ─────────────────────────────────────────────────────────
 
+// MODULE: DB_OPs/Nodeinfo (immudbNonceIter)
+// PURPOSE: cursor-based iterator that pages all accounts from ImmuDB in ascending key order.
+//
+// CORE DATA STRUCTURES:
+//   - lastKey []byte: scan cursor — key of the last returned account; nil = start of DB.
+//     Fixed size (one key). Threaded across NextBatch calls so each call resumes where the
+//     previous left off instead of restarting from key 0.
+//
+// DO NOT:
+//   - Replace lastKey with an offset int — that restarts the scan from key 0 each call (O(N²)).
+//   - Add an in-memory account cache on this struct — 2.7M entries exhaust heap during sync.
+
 type immudbNonceIter struct {
-	batchSize      int
-	cursor         []byte // cursor for ListAccountsPaginatedCursor; nil = start
-	done           bool
-	mu             sync.Mutex
-	nonceToAccount map[uint64]*types.Account
+	batchSize int
+	lastKey   []byte // scan cursor: key of last returned account, nil = start
+	done      bool
 }
 
+// Time: O(1)
 func (it *immudbNonceIter) TotalAccounts() (uint64, error) {
 	count, err := DB_OPs.CountAccounts(nil)
 	return uint64(count), err
 }
 
+// Time: O(batchSize) ImmuDB entries; Space: O(batchSize)
 func (it *immudbNonceIter) NextBatch() ([]*types.Account, error) {
 	if it.done {
 		return nil, nil
 	}
 
-	accs, nextCursor, err := DB_OPs.ListAccountsPaginatedCursor(nil, it.batchSize, it.cursor, "")
+	accs, lastKey, err := DB_OPs.ListAccountsPaginatedFrom(nil, it.batchSize, it.lastKey, "")
 	if err != nil {
 		return nil, fmt.Errorf("account nonce iterator: %w", err)
 	}
@@ -253,44 +254,38 @@ func (it *immudbNonceIter) NextBatch() ([]*types.Account, error) {
 	}
 
 	result := make([]*types.Account, len(accs))
-	it.mu.Lock()
 	for i, acc := range accs {
-		ta := dbOpsToTypes(acc)
-		result[i] = ta
-		it.nonceToAccount[ta.Nonce] = ta
+		result[i] = dbOpsToTypes(acc)
 	}
-	it.mu.Unlock()
 
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Nonce < result[j].Nonce
 	})
 
-	it.cursor = nextCursor
-	if nextCursor == nil {
+	it.lastKey = lastKey
+	if len(accs) < it.batchSize {
 		it.done = true
 	}
 	return result, nil
 }
 
-// GetAccountsByNonces scans the DB to find accounts matching the given nonces.
-// The dispatcher calls this on a fresh iterator (no prior NextBatch), so we
-// cannot rely on the in-memory cache — we scan cursor-paginated until all nonces are found.
+// GetAccountsByNonces scans all accounts once via cursor to find those matching the given nonces.
+// Time: O(N) where N = total accounts; Space: O(|nonces|)
 func (it *immudbNonceIter) GetAccountsByNonces(nonces []uint64) ([]*types.Account, error) {
 	if len(nonces) == 0 {
 		return nil, nil
 	}
 
-	nonceSet := make(map[uint64]bool, len(nonces))
+	nonceSet := make(map[uint64]struct{}, len(nonces))
 	for _, n := range nonces {
-		nonceSet[n] = true
+		nonceSet[n] = struct{}{}
 	}
 
 	result := make([]*types.Account, 0, len(nonces))
-	const scanBatch = 1000
-	var cursor []byte
+	var seekKey []byte
 
 	for {
-		accs, nextCursor, err := DB_OPs.ListAccountsPaginatedCursor(nil, scanBatch, cursor, "")
+		accs, lastKey, err := DB_OPs.ListAccountsPaginatedFrom(nil, 1000, seekKey, "")
 		if err != nil {
 			return nil, fmt.Errorf("GetAccountsByNonces scan: %w", err)
 		}
@@ -299,26 +294,22 @@ func (it *immudbNonceIter) GetAccountsByNonces(nonces []uint64) ([]*types.Accoun
 		}
 		for _, acc := range accs {
 			ta := dbOpsToTypes(acc)
-			if nonceSet[ta.Nonce] {
+			if _, ok := nonceSet[ta.Nonce]; ok {
 				result = append(result, ta)
 				if len(result) == len(nonces) {
 					return result, nil
 				}
 			}
 		}
-		if nextCursor == nil {
+		if lastKey == nil || len(accs) < 1000 {
 			break
 		}
-		cursor = nextCursor
+		seekKey = lastKey
 	}
 	return result, nil
 }
 
-func (it *immudbNonceIter) Close() {
-	it.mu.Lock()
-	it.nonceToAccount = nil
-	it.mu.Unlock()
-}
+func (it *immudbNonceIter) Close() {}
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -375,4 +366,46 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 	}
 
 	return DB_OPs.BatchRestoreAccounts(conn, entries)
+}
+
+// configTxToDBTx converts a config.Transaction to types.DBTransaction via direct field copy.
+// DB-specific fields (BlockNumber, TxIndex, CreatedAt) are zero-valued — not available from config.Transaction.
+func configTxToDBTx(tx *config.Transaction) types.DBTransaction {
+	return types.DBTransaction{
+		Transaction: types.Transaction{
+			Hash:           tx.Hash,
+			From:           tx.From,
+			To:             tx.To,
+			Value:          tx.Value,
+			Type:           tx.Type,
+			Timestamp:      tx.Timestamp,
+			ChainID:        tx.ChainID,
+			Nonce:          tx.Nonce,
+			GasLimit:       tx.GasLimit,
+			GasPrice:       tx.GasPrice,
+			MaxFee:         tx.MaxFee,
+			MaxPriorityFee: tx.MaxPriorityFee,
+			Data:           tx.Data,
+			AccessList:     configAccessListToTypes(tx.AccessList),
+			V:              tx.V,
+			R:              tx.R,
+			S:              tx.S,
+		},
+	}
+}
+
+// configAccessListToTypes converts config.AccessList to types.AccessList.
+// Both are structurally identical but defined in separate packages.
+func configAccessListToTypes(al config.AccessList) types.AccessList {
+	if len(al) == 0 {
+		return nil
+	}
+	result := make(types.AccessList, len(al))
+	for i, t := range al {
+		result[i] = types.AccessTuple{
+			Address:     t.Address,
+			StorageKeys: t.StorageKeys,
+		}
+	}
+	return result
 }
