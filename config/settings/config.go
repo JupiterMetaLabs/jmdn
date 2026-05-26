@@ -103,14 +103,15 @@ type LogFileSettings struct {
 
 // LogOTELSettings configures OpenTelemetry log/trace export.
 type LogOTELSettings struct {
-	Enabled        bool          `mapstructure:"enabled"         yaml:"enabled"`
-	Endpoint       string        `mapstructure:"endpoint"        yaml:"endpoint"`
-	Protocol       string        `mapstructure:"protocol"        yaml:"protocol"` // grpc or http
-	Insecure       bool          `mapstructure:"insecure"        yaml:"insecure"`
-	Username       string        `mapstructure:"username"        yaml:"username"`
-	Password       string        `mapstructure:"password"        yaml:"password"`
-	BatchSize      int           `mapstructure:"batch_size"      yaml:"batch_size"`
-	ExportInterval time.Duration `mapstructure:"export_interval" yaml:"export_interval"`
+	Enabled        bool              `mapstructure:"enabled"         yaml:"enabled"`
+	Endpoint       string            `mapstructure:"endpoint"        yaml:"endpoint"`
+	Protocol       string            `mapstructure:"protocol"        yaml:"protocol"` // grpc or http
+	Insecure       bool              `mapstructure:"insecure"        yaml:"insecure"`
+	Headers        map[string]string `mapstructure:"headers"         yaml:"headers"`
+	Username       string            `mapstructure:"username"        yaml:"username"`
+	Password       string            `mapstructure:"password"        yaml:"password"`
+	BatchSize      int               `mapstructure:"batch_size"      yaml:"batch_size"`
+	ExportInterval time.Duration     `mapstructure:"export_interval" yaml:"export_interval"`
 }
 
 // LogTracingSettings configures distributed tracing.

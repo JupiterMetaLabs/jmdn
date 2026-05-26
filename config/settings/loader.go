@@ -148,6 +148,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("logging.otel.endpoint", d.Logging.OTEL.Endpoint)
 	v.SetDefault("logging.otel.protocol", d.Logging.OTEL.Protocol)
 	v.SetDefault("logging.otel.insecure", d.Logging.OTEL.Insecure)
+	v.SetDefault("logging.otel.headers", d.Logging.OTEL.Headers)
 	v.SetDefault("logging.otel.username", d.Logging.OTEL.Username)
 	v.SetDefault("logging.otel.password", d.Logging.OTEL.Password)
 	v.SetDefault("logging.otel.batch_size", d.Logging.OTEL.BatchSize)

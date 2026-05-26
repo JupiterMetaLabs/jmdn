@@ -64,6 +64,7 @@ func DefaultConfig() NodeConfig {
 				Enabled:        false,
 				Protocol:       "grpc",
 				Insecure:       false,
+				Headers:        map[string]string{},
 				BatchSize:      512,
 				ExportInterval: 5 * time.Second,
 			},

@@ -69,6 +69,7 @@ logging:
     endpoint: ""             # e.g. "collector.example.com:4317"
     protocol: "grpc"
     insecure: false
+    headers: {}              # e.g. {"Authorization": "Bearer <token>"}
     username: ""             # Prefer env: JMDN_LOGGING_OTEL_USERNAME
     password: ""             # Prefer env: JMDN_LOGGING_OTEL_PASSWORD
     batch_size: 512
