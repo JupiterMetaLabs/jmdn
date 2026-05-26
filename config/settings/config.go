@@ -63,10 +63,20 @@ type BindSettings struct {
 	Profiler  string `mapstructure:"profiler"  yaml:"profiler"`
 }
 
-// DatabaseSettings controls ImmuDB connection parameters.
+// RedisSettings controls the Redis connection used by the account sync worker.
+// The worker uses a Redis Stream (XADD/XREADGROUP/XACK) to decouple the
+// WriteAccounts / BatchUpdateAccounts callers from the ~15 s ImmuDB commit latency.
+// URL format: "host:port" (e.g. "localhost:6379").
+// Env override: JMDN_DATABASE_REDIS_URL
+type RedisSettings struct {
+	URL string `mapstructure:"url" yaml:"url"`
+}
+
+// DatabaseSettings controls ImmuDB and Redis connection parameters.
 type DatabaseSettings struct {
-	Username string `mapstructure:"username" yaml:"username"`
-	Password string `mapstructure:"password" yaml:"password"`
+	Username string        `mapstructure:"username" yaml:"username"`
+	Password string        `mapstructure:"password" yaml:"password"`
+	Redis    RedisSettings `mapstructure:"redis"    yaml:"redis"`
 }
 
 // LoggingSettings mirrors Ion's Config struct so jmdn.yaml can fully configure

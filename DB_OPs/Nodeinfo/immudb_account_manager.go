@@ -158,50 +158,36 @@ func (am *account_manager) GetAccountByAddress(accountAddress string) (*types.Ac
 	return dbOpsToTypes(acc), nil
 }
 
-// Time Complexity: O(N) where N is the number of accounts
+// WriteAccounts enqueues accounts to the Redis stream for async DB write.
+// Returns immediately after the enqueue — the caller gets an ACK without waiting
+// for the ImmuDB commit (which can take up to 15 s under load).
+//
+// StartAccountSyncWorker must be called before WriteAccounts or this returns an error.
+// If Redis is unavailable, this fails fast — no fallback to synchronous DB write.
+// At-least-once delivery is guaranteed by the worker via PEL + XAUTOCLAIM.
+//
+// Time: O(N) serialization + O(1) XADD round trip, where N = len(accounts).
 func (am *account_manager) WriteAccounts(accounts []*types.Account) error {
 	if len(accounts) == 0 {
 		return nil
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
+	s := getStreamer()
+	if s == nil {
+		return fmt.Errorf("WriteAccounts: account sync worker not initialized; call StartAccountSyncWorker before use")
+	}
+	data, err := json.Marshal(accounts)
 	if err != nil {
-		return fmt.Errorf("failed to get account DB connection: %w", err)
+		return fmt.Errorf("WriteAccounts: marshal accounts: %w", err)
 	}
-
-	entries := make([]struct {
-		Key   string
-		Value []byte
-	}, 0, len(accounts))
-
-	for _, acc := range accounts {
-		dbAcc := &DB_OPs.Account{
-			DIDAddress:  acc.DIDAddress,
-			Address:     acc.Address,
-			Balance:     acc.Balance,
-			Nonce:       acc.Nonce,
-			AccountType: acc.AccountType,
-			CreatedAt:   acc.CreatedAt,
-			UpdatedAt:   acc.UpdatedAt,
-			Metadata:    acc.Metadata,
-		}
-		val, err := json.Marshal(dbAcc)
-		if err != nil {
-			return fmt.Errorf("marshal account %s: %w", acc.Address.Hex(), err)
-		}
-		entries = append(entries, struct {
-			Key   string
-			Value []byte
-		}{
-			Key:   DB_OPs.Prefix + acc.Address.Hex(),
-			Value: val,
-		})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err = s.Enqueue(ctx, accountSyncStream, map[string]any{
+		"type": string(payloadTypeAccounts),
+		"data": string(data),
+	}); err != nil {
+		return fmt.Errorf("WriteAccounts: enqueue to stream %q: %w", accountSyncStream, err)
 	}
-
-	return DB_OPs.BatchRestoreAccounts(conn, entries)
+	return nil
 }
 
 // NewAccountNonceIterator returns a cursor-based iterator over all accounts.
@@ -326,46 +312,87 @@ func dbOpsToTypes(acc *DB_OPs.Account) *types.Account {
 	}
 }
 
-// Time Complexity: O(N) where N is the number of updates
+// BatchUpdateAccounts enqueues account balance/nonce updates to the Redis stream for async DB write.
+// Returns immediately after the enqueue.
+//
+// StartAccountSyncWorker must be called before BatchUpdateAccounts or this returns an error.
+// If Redis is unavailable, this fails fast.
+// At-least-once delivery is guaranteed by the worker via PEL + XAUTOCLAIM.
+//
+// Time: O(N) serialization + O(1) XADD round trip, where N = len(updates).
 func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
+	if len(updates) == 0 {
+		return nil
+	}
+	s := getStreamer()
+	if s == nil {
+		return fmt.Errorf("BatchUpdateAccounts: account sync worker not initialized; call StartAccountSyncWorker before use")
+	}
+	// Convert to wire type for stable JSON serialization.
+	// big.Int.String() produces a decimal string; accountUpdateWire makes the format explicit.
+	wires := make([]accountUpdateWire, len(updates))
+	for i, u := range updates {
+		wires[i] = accountUpdateWire{
+			Address:    u.Address,
+			NewBalance: u.NewBalance.String(),
+			Nonce:      u.Nonce,
+		}
+	}
+	data, err := json.Marshal(wires)
 	if err != nil {
-		return fmt.Errorf("failed to get account DB connection: %w", err)
+		return fmt.Errorf("BatchUpdateAccounts: marshal updates: %w", err)
 	}
-
-	var entries []struct {
-		Key   string
-		Value []byte
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err = s.Enqueue(ctx, accountSyncStream, map[string]any{
+		"type": string(payloadTypeUpdates),
+		"data": string(data),
+	}); err != nil {
+		return fmt.Errorf("BatchUpdateAccounts: enqueue to stream %q: %w", accountSyncStream, err)
 	}
+	return nil
+}
 
-	for _, u := range updates {
-		addr := common.HexToAddress(u.Address)
-		acc := &DB_OPs.Account{
-			DIDAddress:  u.Address,
-			Address:     addr,
-			Balance:     u.NewBalance.String(),
-			Nonce:       u.Nonce,
-			AccountType: "user",
-			UpdatedAt:   time.Now().UTC().UnixNano(),
+// configTxToDBTx converts a config.Transaction to types.DBTransaction via direct field copy.
+// DB-specific fields (BlockNumber, TxIndex, CreatedAt) are zero-valued — not available from config.Transaction.
+func configTxToDBTx(tx *config.Transaction) types.DBTransaction {
+	return types.DBTransaction{
+		Transaction: types.Transaction{
+			Hash:           tx.Hash,
+			From:           tx.From,
+			To:             tx.To,
+			Value:          tx.Value,
+			Type:           tx.Type,
+			Timestamp:      tx.Timestamp,
+			ChainID:        tx.ChainID,
+			Nonce:          tx.Nonce,
+			GasLimit:       tx.GasLimit,
+			GasPrice:       tx.GasPrice,
+			MaxFee:         tx.MaxFee,
+			MaxPriorityFee: tx.MaxPriorityFee,
+			Data:           tx.Data,
+			AccessList:     configAccessListToTypes(tx.AccessList),
+			V:              tx.V,
+			R:              tx.R,
+			S:              tx.S,
+		},
+	}
+}
+
+// configAccessListToTypes converts config.AccessList to types.AccessList.
+// Both are structurally identical but defined in separate packages.
+func configAccessListToTypes(al config.AccessList) types.AccessList {
+	if len(al) == 0 {
+		return nil
+	}
+	result := make(types.AccessList, len(al))
+	for i, t := range al {
+		result[i] = types.AccessTuple{
+			Address:     t.Address,
+			StorageKeys: t.StorageKeys,
 		}
-
-		val, err := json.Marshal(acc)
-		if err != nil {
-			return fmt.Errorf("failed to marshal account %s: %w", u.Address, err)
-		}
-		entries = append(entries, struct {
-			Key   string
-			Value []byte
-		}{
-			Key:   DB_OPs.Prefix + addr.Hex(),
-			Value: val,
-		})
 	}
-
-	return DB_OPs.BatchRestoreAccounts(conn, entries)
+	return result
 }
 
 // configTxToDBTx converts a config.Transaction to types.DBTransaction via direct field copy.
