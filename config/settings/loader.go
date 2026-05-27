@@ -124,6 +124,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.username", d.Database.Username)
 	v.SetDefault("database.password", d.Database.Password)
 	v.SetDefault("database.redis.url", d.Database.Redis.URL)
+	v.SetDefault("database.redis.password", d.Database.Redis.Password)
 
 	// Logging
 	v.SetDefault("logging.level", d.Logging.Level)
@@ -171,8 +172,29 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fastsync.allowed_peers", d.FastSync.AllowedPeers)
 
 	// Security
+	v.SetDefault("security.enabled", d.Security.Enabled)
+	v.SetDefault("security.cert_dir", d.Security.CertDir)
+	v.SetDefault("security.ip_cache_size", d.Security.IPCacheSize)
+	v.SetDefault("security.global_rate_limit", d.Security.GlobalRateLimit)
+	v.SetDefault("security.global_burst", d.Security.GlobalBurst)
+	v.SetDefault("security.trust_forwarded_headers", d.Security.TrustForwardedHeaders)
+	v.SetDefault("security.trusted_proxies", d.Security.TrustedProxies)
+	v.SetDefault("security.trusted_clients", d.Security.TrustedClients)
 	v.SetDefault("security.explorer_api_key", d.Security.ExplorerAPIKey)
 	v.SetDefault("security.jwt_secret", d.Security.JWTSecret)
+
+	// Register defaults for all predefined Security Services so Viper can pick up ENV overrides
+	for svcName, policy := range d.Security.Services {
+		prefix := "security.services." + svcName + "."
+		v.SetDefault(prefix+"tls", policy.TLS)
+		v.SetDefault(prefix+"auth_type", string(policy.AuthType))
+		v.SetDefault(prefix+"token_env", policy.TokenEnv)
+		v.SetDefault(prefix+"rate_limit", policy.RateLimit)
+		v.SetDefault(prefix+"burst", policy.Burst)
+		v.SetDefault(prefix+"cert_file", policy.CertFile)
+		v.SetDefault(prefix+"key_file", policy.KeyFile)
+		v.SetDefault(prefix+"ca_file", policy.CAFile)
+	}
 
 	// Alerts
 	v.SetDefault("alerts.url", d.Alerts.URL)

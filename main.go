@@ -873,7 +873,8 @@ func main() {
 		log.Warn().Msg("[AccountSyncWorker] database.redis.url not configured — WriteAccounts will fail; set url in jmdn.yaml or JMDN_DATABASE_REDIS_URL")
 	} else {
 		redisClient := redis.NewClient(&redis.Options{
-			Addr: cfg.Database.Redis.URL,
+			Addr:     cfg.Database.Redis.URL,
+			Password: cfg.Database.Redis.Password,
 		})
 		accountStreamer := NodeInfo.NewRedisStreamer(redisClient)
 		if err := NodeInfo.StartAccountSyncWorker(ctx, accountStreamer, NodeInfo.DefaultWorkerConfig()); err != nil {

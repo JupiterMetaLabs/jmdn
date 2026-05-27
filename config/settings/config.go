@@ -67,9 +67,10 @@ type BindSettings struct {
 // The worker uses a Redis Stream (XADD/XREADGROUP/XACK) to decouple the
 // WriteAccounts / BatchUpdateAccounts callers from the ~15 s ImmuDB commit latency.
 // URL format: "host:port" (e.g. "localhost:6379").
-// Env override: JMDN_DATABASE_REDIS_URL
+// Env override: JMDN_DATABASE_REDIS_URL, JMDN_DATABASE_REDIS_PASSWORD
 type RedisSettings struct {
-	URL string `mapstructure:"url" yaml:"url"`
+	URL      string `mapstructure:"url" yaml:"url"`
+	Password string `mapstructure:"password" yaml:"password"`
 }
 
 // DatabaseSettings controls ImmuDB and Redis connection parameters.

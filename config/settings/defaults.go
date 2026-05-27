@@ -43,7 +43,8 @@ func DefaultConfig() NodeConfig {
 			Username: "",
 			Password: "",
 			Redis: RedisSettings{
-				URL: "", // required for account sync worker; set via jmdn.yaml or JMDN_DATABASE_REDIS_URL
+				URL:      "127.0.0.1:6379", // required for account sync worker; set via jmdn.yaml or JMDN_DATABASE_REDIS_URL
+				Password: "jmdnredissync",  // optional: set if Redis requires authentication
 			},
 		},
 		Logging: LoggingSettings{
@@ -84,8 +85,8 @@ func DefaultConfig() NodeConfig {
 			Enabled:       true,
 			EnablePulling: true,
 			PullOnStartup: true,
-			SyncTimeout:  10 * time.Minute,
-			AllowedPeers: []string{},
+			SyncTimeout:   10 * time.Minute,
+			AllowedPeers:  []string{},
 		},
 		Security: DefaultSecurityConfig(),
 		Alerts:   DefaultAlertsConfig(),
