@@ -29,9 +29,10 @@ type Account struct {
 	DIDAddress string `json:"did,omitempty"`
 
 	// New PublicKey based fields
-	Address common.Address `json:"address"` // Derived from PublicKey
-	Balance string         `json:"balance,omitempty"`
-	Nonce   uint64         `json:"nonce"`
+	Address       common.Address `json:"address"` // Derived from PublicKey
+	Balance       string         `json:"balance,omitempty"`
+	Nonce         uint64         `json:"nonce"`
+	TxCountSent   uint64         `json:"tx_count_sent"` // Tracks actual analytical transactions sent
 
 	// Account metadata
 	AccountType string `json:"account_type"` // "did" or "publickey"
@@ -943,6 +944,71 @@ func UpdateAccountBalance(PooledConnection *config.PooledConnection, address com
 		ion.String("topic", TOPIC),
 		ion.String("function", "DB_OPs.UpdateAccountBalance"))
 	fmt.Printf("=== DEBUG: UpdateAccountBalance completed successfully for address %s ===\n", address.Hex())
+	return nil
+}
+
+// UpdateAccountSenderState updates the balance, increments the sent transaction count, and sets the new nonce.
+func UpdateAccountSenderState(PooledConnection *config.PooledConnection, address common.Address, newBalance string, newNonce uint64) error {
+	fmt.Printf("=== DEBUG: UpdateAccountSenderState called for address %s with balance %s and nonce %d ===\n", address.Hex(), newBalance, newNonce)
+
+	// Define Function wide context for timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var err error
+	var shouldReturnConnection = false
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		fmt.Println("DEBUG: PooledConnection is nil, getting new connection from pool")
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
+		if err != nil {
+			fmt.Printf("DEBUG: Failed to get connection from pool: %v\n", err)
+			return fmt.Errorf("failed to get connection from pool: %w - UpdateAccountSenderState", err)
+		}
+		shouldReturnConnection = true
+	}
+
+	if shouldReturnConnection {
+		defer func() {
+			fmt.Println("DEBUG: Returning connection to pool")
+			PutAccountsConnection(PooledConnection)
+		}()
+	}
+
+	// Ensure we're using the accounts database
+	if PooledConnection != nil {
+		if err := ensureAccountsDBSelected(PooledConnection); err != nil {
+			return fmt.Errorf("failed to ensure accounts database is selected: %w", err)
+		}
+	}
+
+	doc, err := GetAccount(PooledConnection, address)
+	if err != nil {
+		return err
+	}
+
+	doc.Balance = newBalance
+	doc.TxCountSent = doc.TxCountSent + 1
+	doc.Nonce = newNonce
+	doc.UpdatedAt = time.Now().UTC().UnixNano()
+
+	// Safe Write to the DB with the same key
+	key := fmt.Sprintf("%s%s", Prefix, address)
+	err = SafeCreate(PooledConnection.Client, key, doc)
+	if err != nil {
+		loggerCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		PooledConnection.Client.Logger.Error(loggerCtx, "Failed to update account sender state",
+			err,
+			ion.String("account", address.String()),
+			ion.String("database", config.AccountsDBName),
+			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+			ion.String("log_file", LOG_FILE),
+			ion.String("topic", TOPIC),
+			ion.String("function", "DB_OPs.UpdateAccountSenderState"))
+		return err
+	}
+
+	fmt.Printf("=== DEBUG: UpdateAccountSenderState completed successfully for address %s ===\n", address.Hex())
 	return nil
 }
 

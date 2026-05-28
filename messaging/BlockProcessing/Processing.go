@@ -655,7 +655,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	}
 
 	// 1. Deduct from sender
-	if err := deductFromSender(txSpanCtx, *tx.From, totalDeduction.String(), accountsClient); err != nil {
+	if err := deductFromSender(txSpanCtx, &tx, totalDeduction.String(), accountsClient); err != nil {
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "deduction_failed"), attribute.String("failed_step", "deduct_from_sender"))
 		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
@@ -907,7 +907,8 @@ func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error
 }
 
 // deductFromSender deducts an amount from a sender's DID account
-func deductFromSender(span_ctx context.Context, fromDID common.Address, amount string, accountsClient *config.PooledConnection) error {
+func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount string, accountsClient *config.PooledConnection) error {
+	fromDID := *tx.From
 	// Get the current DID document using the provided accounts client
 	didDoc, err := DB_OPs.GetAccount(accountsClient, fromDID)
 	if err != nil {
@@ -918,6 +919,11 @@ func deductFromSender(span_ctx context.Context, fromDID common.Address, amount s
 	currentBalance, ok := new(big.Int).SetString(didDoc.Balance, 10)
 	if !ok {
 		return fmt.Errorf("invalid balance format for DID %s: %s", fromDID, didDoc.Balance)
+	}
+
+	// Foolproof execution-time nonce check (prevents same-block replay attacks)
+	if tx.Nonce < didDoc.Nonce {
+		return fmt.Errorf("execution rejected: submitted nonce %d is lower than account's current DB nonce %d (possible same-block replay attack)", tx.Nonce, didDoc.Nonce)
 	}
 
 	// Parse amount to deduct
@@ -935,16 +941,17 @@ func deductFromSender(span_ctx context.Context, fromDID common.Address, amount s
 	// Calculate new balance
 	newBalance := new(big.Int).Sub(currentBalance, deductAmount)
 
-	// Update the balance in the database using the provided accounts client
-	if err := DB_OPs.UpdateAccountBalance(accountsClient, fromDID, newBalance.String()); err != nil {
-		return fmt.Errorf("failed to update sender balance: %w", err)
+	// Update the balance, tx count, and nonce in the database using the provided accounts client
+	if err := DB_OPs.UpdateAccountSenderState(accountsClient, fromDID, newBalance.String(), tx.Nonce+1); err != nil {
+		return fmt.Errorf("failed to update sender balance and state: %w", err)
 	}
 
-	logger().NamedLogger.Debug(span_ctx, "Deducted amount from sender",
+	logger().NamedLogger.Debug(span_ctx, "Deducted amount from sender and updated state",
 		ion.String("account", fromDID.String()),
 		ion.String("amount", amount),
 		ion.String("old_balance", currentBalance.String()),
 		ion.String("new_balance", newBalance.String()),
+		ion.Uint64("new_nonce", tx.Nonce+1),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("topic", TOPIC),
 		ion.String("function", "BlockProcessing.deductFromSender"),
