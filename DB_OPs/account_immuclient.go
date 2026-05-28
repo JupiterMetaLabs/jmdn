@@ -135,11 +135,8 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 		}()
 	}
 
-	// Create a Nonce First
-	Nonce, err := PutNonceofAccount()
-	if err != nil {
-		return err
-	}
+	// Initialize Nonce to 0
+	var Nonce uint64 = 0
 
 	// Create A CreatedAt and UpdatedAt
 	CreatedAt := time.Now().UTC().UnixNano()

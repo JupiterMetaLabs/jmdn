@@ -513,44 +513,31 @@ func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, ma
 	// ------------------------------------------------------------
 	// 6. Nonce validation (USING CACHE)
 	_, nonceSpan := tracer.Start(spanCtx, "Security.allChecksWithCache.validateNonce")
-	hasDuplicate, latestNonce, hasAnyTransactions, err := DB_OPs.CheckNonceAndGetLatest(mainDBConn, tx.From, tx.Nonce)
-	if err != nil {
+	
+	account, err := DB_OPs.GetAccount(mainDBConn, *tx.From)
+	var expectedNonce uint64 = 0
+	if err == nil && account != nil {
+		expectedNonce = account.Nonce
+	} else if err != nil && err.Error() != "account not found" {
 		nonceSpan.RecordError(err)
 		nonceSpan.End()
 		span.RecordError(err)
-		logger().Error(spanCtx, "Failed to check nonce", err,
+		logger().Error(spanCtx, "Failed to get account for nonce check", err,
 			ion.String("function", "Security.allChecksWithCache"))
 		return false, fmt.Errorf("nonce check failed with error: %w", err)
 	}
 
 	nonceSpan.SetAttributes(
-		attribute.Bool("has_duplicate", hasDuplicate),
-		attribute.Int64("latest_nonce", int64(latestNonce)),
+		attribute.Int64("expected_nonce", int64(expectedNonce)),
+		attribute.Int64("submitted_nonce", int64(tx.Nonce)),
 	)
 
-	if hasDuplicate {
-		err := fmt.Errorf("transaction with same nonce already exists")
+	if tx.Nonce < expectedNonce {
+		err := fmt.Errorf("submitted nonce %d is too low, expected >= %d", tx.Nonce, expectedNonce)
 		nonceSpan.RecordError(err)
 		nonceSpan.End()
 		span.RecordError(err)
-		logger().Error(spanCtx, "Duplicate nonce detected", err,
-			ion.String("function", "Security.allChecksWithCache"))
-		return false, err
-	}
-
-	var minAllowedNonce uint64
-	if !hasAnyTransactions {
-		minAllowedNonce = 0
-	} else {
-		minAllowedNonce = latestNonce + 1
-	}
-
-	if tx.Nonce < minAllowedNonce {
-		err := fmt.Errorf("submitted nonce %d is too low, must be >= %d", tx.Nonce, minAllowedNonce)
-		nonceSpan.RecordError(err)
-		nonceSpan.End()
-		span.RecordError(err)
-		logger().Error(spanCtx, "Nonce is too low", err,
+		logger().Error(spanCtx, "Nonce is too low or duplicate", err,
 			ion.String("function", "Security.allChecksWithCache"))
 		return false, err
 	}
