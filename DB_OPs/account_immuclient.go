@@ -56,13 +56,36 @@ func (s *AccountsSet) Add(address common.Address) {
 	s.Accounts[address.Hex()] = nil
 }
 
-// Get the Nonce of a account - NTF
-var counter uint64
 
+// lastNonce is used to guarantee monotonic nanosecond timestamps for PutNonceofAccount.
+var lastNonce atomic.Uint64
+
+// PutNonceofAccount generates a unique epoch ID for new accounts.
+//
+// HISTORICAL BUG (Fixed): Previously computed as `uint64(UnixNano) << 16 | counter`, 
+// which silently overflowed uint64 and corrupted the embedded timestamp.
+//
+// FIX (Option C): We now use a pure monotonic nanosecond counter. It returns
+// exact UnixNano precision, gracefully bumping by +1ns on extreme collisions.
+//
+// LIFECYCLE WARNING: The `Nonce` field in the Account struct serves a dual purpose:
+// 1. On creation: It stores this unique nanosecond timestamp ID.
+// 2. Post-transaction: Reconciliation and consensus overwrite it with the account's 
+//    highest transaction nonce (e.g., 0, 1, 2...). 
+// Do NOT rely on Account.Nonce remaining a timestamp if the account has sent transactions!
 func PutNonceofAccount() (uint64, error) {
-	ts := uint64(time.Now().UTC().UnixNano())
-	c := atomic.AddUint64(&counter, 1)
-	return ts<<16 | (c & 0xFFFF), nil // embed counter in low bits
+	for {
+		ns := uint64(time.Now().UTC().UnixNano())
+		prev := lastNonce.Load()
+		next := ns
+		if next <= prev {
+			next = prev + 1 // same-ns collision: bump forward
+		}
+		if lastNonce.CompareAndSwap(prev, next) {
+			return next, nil
+		}
+		// CAS lost race against another goroutine — retry
+	}
 }
 
 // Create Account from DID and Address and Store using StoreAccount
@@ -525,6 +548,31 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 						ion.String("log_file", LOG_FILE),
 						ion.String("topic", TOPIC),
 						ion.String("function", "DB_OPs.BatchRestoreAccounts"))
+				}
+
+				// FIELD MERGING: Prevent partial updates (e.g. from Reconciliation) from wiping out account metadata
+				if shouldWrite {
+					// 1. Preserve DIDAddress if incoming DID is empty or mistakenly set to the hex address
+					if incoming.DIDAddress == "" || incoming.DIDAddress == incoming.Address.Hex() {
+						incoming.DIDAddress = existing.DIDAddress
+					}
+					// 2. Preserve CreatedAt
+					if incoming.CreatedAt == 0 {
+						incoming.CreatedAt = existing.CreatedAt
+					}
+					// 3. Preserve AccountType
+					if incoming.AccountType == "user" && existing.AccountType != "" {
+						incoming.AccountType = existing.AccountType
+					}
+					// 4. Preserve Metadata
+					if incoming.Metadata == nil {
+						incoming.Metadata = existing.Metadata
+					}
+
+					// Re-serialize the merged account object to overwrite e.Value
+					if mergedVal, err := json.Marshal(incoming); err == nil {
+						e.Value = mergedVal
+					}
 				}
 			}
 		} else {
