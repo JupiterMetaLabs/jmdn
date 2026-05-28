@@ -45,6 +45,7 @@ func (i *dbBlockHeaderIterator) GetBlockHeaders(blocknumbers []uint64) ([]*block
 			GasLimit:     b.GasLimit,
 			GasUsed:      b.GasUsed,
 			BlockNumber:  b.BlockNumber,
+			LogsBloom:    b.LogsBloom,
 		}
 		if b.CoinbaseAddr != nil {
 			h.CoinbaseAddr = b.CoinbaseAddr[:]
@@ -87,6 +88,7 @@ func (i *dbBlockHeaderIterator) GetBlockHeadersRange(start, end uint64) ([]*bloc
 			GasLimit:     b.GasLimit,
 			GasUsed:      b.GasUsed,
 			BlockNumber:  b.BlockNumber,
+			LogsBloom:    b.LogsBloom,
 		}
 		if b.CoinbaseAddr != nil {
 			h.CoinbaseAddr = b.CoinbaseAddr[:]

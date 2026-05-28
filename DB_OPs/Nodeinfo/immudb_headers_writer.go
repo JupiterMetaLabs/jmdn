@@ -51,6 +51,7 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 			ExtraData:   h.ExtraData,
 			GasLimit:    h.GasLimit,
 			GasUsed:     h.GasUsed,
+			LogsBloom:   h.LogsBloom,
 		}
 
 		if len(h.StateRoot) > 0 {

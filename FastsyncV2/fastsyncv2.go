@@ -678,6 +678,7 @@ func zkBlockToProtoHeader(b *types.ZKBlock) *blockpb.Header {
 		GasLimit:    b.GasLimit,
 		GasUsed:     b.GasUsed,
 		BlockNumber: b.BlockNumber,
+		LogsBloom:   b.LogsBloom,
 	}
 	if b.CoinbaseAddr != nil {
 		h.CoinbaseAddr = b.CoinbaseAddr[:]
@@ -742,6 +743,21 @@ func zkBlockToProtoNonHeaders(b *types.ZKBlock) *blockpb.NonHeaders {
 		}
 		if tx.S != nil {
 			pbTx.S = tx.S.Bytes()
+		}
+
+		if tx.ChainID != nil {
+			pbTx.ChainId = tx.ChainID.Bytes()
+		}
+		if len(tx.AccessList) > 0 {
+			for _, al := range tx.AccessList {
+				pbAl := &blockpb.AccessTuple{
+					Address: al.Address[:],
+				}
+				for _, sk := range al.StorageKeys {
+					pbAl.StorageKeys = append(pbAl.StorageKeys, sk[:])
+				}
+				pbTx.AccessList = append(pbTx.AccessList, pbAl)
+			}
 		}
 
 		nh.Transactions = append(nh.Transactions, &blockpb.DBTransaction{
