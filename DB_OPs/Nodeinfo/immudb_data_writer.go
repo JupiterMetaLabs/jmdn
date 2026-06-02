@@ -122,6 +122,20 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			if len(tx.S) > 0 {
 				cfgTx.S = new(big.Int).SetBytes(tx.S)
 			}
+			if len(tx.ChainId) > 0 {
+				cfgTx.ChainID = new(big.Int).SetBytes(tx.ChainId)
+			}
+			if len(tx.AccessList) > 0 {
+				for _, al := range tx.AccessList {
+					cfgAl := config.AccessTuple{
+						Address: common.BytesToAddress(al.Address),
+					}
+					for _, sk := range al.StorageKeys {
+						cfgAl.StorageKeys = append(cfgAl.StorageKeys, common.BytesToHash(sk))
+					}
+					cfgTx.AccessList = append(cfgTx.AccessList, cfgAl)
+				}
+			}
 
 			txs = append(txs, cfgTx)
 		}
