@@ -130,11 +130,12 @@ func DefaultWorkerConfig() AccountSyncWorkerConfig {
 //
 // Time: O(1) — one XGROUP CREATE round trip + goroutine spawn.
 func StartAccountSyncWorker(ctx context.Context, streamer RedisStreamer, cfg AccountSyncWorkerConfig) error {
-	if err := streamer.EnsureConsumerGroup(ctx, accountSyncStream, accountSyncGroup); err != nil {
-		return fmt.Errorf("StartAccountSyncWorker: create consumer group %q on stream %q: %w",
-			accountSyncGroup, accountSyncStream, err)
-	}
+	// We no longer block node startup if Redis is temporarily unavailable.
+	// We set the streamer immediately so callers can attempt to enqueue (which
+	// handles its own retry/failover if Redis is down).
 	setStreamer(streamer)
+	
+	// Launch the worker. It will ensure the consumer group exists asynchronously.
 	go runWorker(ctx, streamer, cfg)
 	return nil
 }
@@ -150,6 +151,24 @@ func runWorker(ctx context.Context, s RedisStreamer, cfg AccountSyncWorkerConfig
 	log.Printf("[AccountSyncWorker] started (stream=%s group=%s consumer=%s)",
 		accountSyncStream, accountSyncGroup, accountSyncConsumer)
 	defer log.Printf("[AccountSyncWorker] stopped")
+
+	// Ensure the consumer group exists before attempting to read.
+	// We do this in a retry loop here so it doesn't block node startup if Redis is down.
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := s.EnsureConsumerGroup(ctx, accountSyncStream, accountSyncGroup); err != nil {
+			log.Printf("[AccountSyncWorker] EnsureConsumerGroup error: %v — retrying in 30s", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(30 * time.Second):
+			}
+			continue
+		}
+		break
+	}
 
 	// Replay any entries left unACKed by a previous crash before accepting new work.
 	if err := reclaimPending(ctx, s, cfg); err != nil {
