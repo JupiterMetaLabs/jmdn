@@ -9,7 +9,6 @@ import (
 	"gossipnode/config"
 	"gossipnode/config/settings"
 
-	"sync/atomic"
 	"time"
 
 	"github.com/JupiterMetaLabs/ion"
@@ -29,10 +28,10 @@ type Account struct {
 	DIDAddress string `json:"did,omitempty"`
 
 	// New PublicKey based fields
-	Address       common.Address `json:"address"` // Derived from PublicKey
-	Balance       string         `json:"balance,omitempty"`
-	Nonce         uint64         `json:"nonce"`
-	TxCountSent   uint64         `json:"tx_count_sent"` // Tracks actual analytical transactions sent
+	Address     common.Address `json:"address"` // Derived from PublicKey
+	Balance     string         `json:"balance,omitempty"`
+	Nonce       uint64         `json:"nonce"`
+	TxCountSent uint64         `json:"tx_count_sent"` // Tracks actual analytical transactions sent
 
 	// Account metadata
 	AccountType string `json:"account_type"` // "did" or "publickey"
@@ -55,38 +54,6 @@ func NewAccountsSet() *AccountsSet {
 
 func (s *AccountsSet) Add(address common.Address) {
 	s.Accounts[address.Hex()] = nil
-}
-
-
-// lastNonce is used to guarantee monotonic nanosecond timestamps for PutNonceofAccount.
-var lastNonce atomic.Uint64
-
-// PutNonceofAccount generates a unique epoch ID for new accounts.
-//
-// HISTORICAL BUG (Fixed): Previously computed as `uint64(UnixNano) << 16 | counter`, 
-// which silently overflowed uint64 and corrupted the embedded timestamp.
-//
-// FIX (Option C): We now use a pure monotonic nanosecond counter. It returns
-// exact UnixNano precision, gracefully bumping by +1ns on extreme collisions.
-//
-// LIFECYCLE WARNING: The `Nonce` field in the Account struct serves a dual purpose:
-// 1. On creation: It stores this unique nanosecond timestamp ID.
-// 2. Post-transaction: Reconciliation and consensus overwrite it with the account's 
-//    highest transaction nonce (e.g., 0, 1, 2...). 
-// Do NOT rely on Account.Nonce remaining a timestamp if the account has sent transactions!
-func PutNonceofAccount() (uint64, error) {
-	for {
-		ns := uint64(time.Now().UTC().UnixNano())
-		prev := lastNonce.Load()
-		next := ns
-		if next <= prev {
-			next = prev + 1 // same-ns collision: bump forward
-		}
-		if lastNonce.CompareAndSwap(prev, next) {
-			return next, nil
-		}
-		// CAS lost race against another goroutine — retry
-	}
 }
 
 // Create Account from DID and Address and Store using StoreAccount
