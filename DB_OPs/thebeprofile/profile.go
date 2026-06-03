@@ -1,58 +1,94 @@
+// MODULE: DB_OPs/thebeprofile/profile.go
+// PURPOSE: JMDNProfile implements ThebeDB's profile.Profile — projects CanonicalRecords
+//          from the KV log into the JMDN PostgreSQL schema (6 tables).
+//
+// CORE DATA STRUCTURES:
+//   - handlers: map[string]applyFunc — keyed by namespace string, populated once at
+//     construction in NewJMDNProfile(), read-only after. Access: O(1) lookup at Apply() time.
+//     Size: fixed (6 entries — one per SQL namespace). No locking needed (read-only after init).
+//
+// TO MODIFY BEHAVIOR:
+//   - Add new SQL namespace: add applyFunc + register in NewJMDNProfile() handlers map
+//   - Change SQL for existing namespace: edit the corresponding apply_<entity>.go file
+//
+// DO NOT:
+//   - Use reflection to build SQL arguments (type-unsafe, breaks on rename)
+//   - Import gossipnode/DB_OPs (cycle risk — thebeprofile sits inside DB_OPs/)
+//   - Store mutable state on JMDNProfile (Apply() is called concurrently)
+//
+// EXTENSION POINT: new namespace → new apply_<entity>.go + register in handlers map
+//
+// CHANGE SCENARIOS:
+//   Add contract namespaces (Phase 7): add apply_contract_*.go + register — profile.go unchanged
+//   Change account upsert logic: edit apply_account.go — profile.go unchanged
+
 package thebeprofile
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 
-	thebejmdt "github.com/JupiterMetaLabs/ThebeDB/examples/jmdt"
+	core "github.com/JupiterMetaLabs/ThebeDB/pkg/core"
+	profilepkg "github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 )
 
-const ProfileName = "jmdn"
+// compile-time interface check
+var _ profilepkg.Profile = (*JMDNProfile)(nil)
 
-var namespaces = []string{
-	"account", "block", "tx", "zk", "snapshot",
-	// contract layer
-	"contract_code", "contract_storage", "contract_storage_meta",
-	"contract_nonce", "contract_meta", "contract_receipt",
+// applyFunc is the typed handler signature for each namespace.
+// seq is the KV log sequence number; record carries namespace + raw value bytes.
+// tx is per-call — never share across goroutines.
+type applyFunc func(ctx context.Context, seq uint64, record *core.CanonicalRecord, tx *sql.Tx) error
+
+// JMDNProfile projects CanonicalRecords into the JMDN PostgreSQL schema.
+// Safe for concurrent use — handlers map is read-only after NewJMDNProfile().
+type JMDNProfile struct {
+	handlers map[string]applyFunc
 }
 
-type JMDNProfile struct{}
+// NewJMDNProfile constructs a JMDNProfile with all 6 namespace handlers registered.
+func NewJMDNProfile() *JMDNProfile {
+	p := &JMDNProfile{
+		handlers: make(map[string]applyFunc, 6),
+	}
+	p.handlers["account"] = applyAccount
+	p.handlers["block"] = applyBlock
+	p.handlers["snapshot"] = applySnapshot
+	p.handlers["tx"] = applyTransaction
+	p.handlers["zk"] = applyZKProof
+	p.handlers["l1_finality"] = applyL1Finality
+	return p
+}
 
-func New() *JMDNProfile { return &JMDNProfile{} }
+// Name returns the unique profile identifier used for logging and offset tracking.
+func (p *JMDNProfile) Name() string { return "jmdn" }
 
-func (p *JMDNProfile) Name() string         { return ProfileName }
-func (p *JMDNProfile) Namespaces() []string { return namespaces }
-func (p *JMDNProfile) GetMigration() string { return migration }
+// Namespaces returns the exact Namespace values this profile handles.
+// Must match the Namespace field set on records at write time — mismatch causes silent data loss.
+func (p *JMDNProfile) Namespaces() []string {
+	return []string{"account", "block", "snapshot", "tx", "zk", "l1_finality"}
+}
 
-func (p *JMDNProfile) Apply(_ context.Context, _ uint64, record *thebejmdt.CanonicalRecord, tx *sql.Tx) error {
+// GetMigration returns the complete PostgreSQL DDL for the JMDN projection schema.
+// Executed verbatim once on startup; all statements use IF NOT EXISTS for idempotency.
+func (p *JMDNProfile) GetMigration() string { return migrationSQL }
+
+// Apply routes a single CanonicalRecord to the correct namespace handler.
+// Unknown namespaces are logged and silently skipped (return nil) to avoid
+// blocking other namespace projections. Apply is safe for concurrent use.
+func (p *JMDNProfile) Apply(ctx context.Context, seq uint64, record *core.CanonicalRecord, tx *sql.Tx) error {
 	if record == nil {
 		return nil
 	}
-	switch record.Namespace {
-	case "account":
-		return applyAccount(tx, record.Value)
-	case "block":
-		return applyBlock(tx, record.Value)
-	case "tx":
-		return applyTx(tx, record.Value)
-	case "zk":
-		return applyZKProof(tx, record.Value)
-	case "snapshot":
-		return applySnapshot(tx, record.Value)
-	case "contract_code":
-		return applyContractCode(tx, record.Value)
-	case "contract_storage":
-		return applyContractStorage(tx, record.Value)
-	case "contract_storage_meta":
-		return applyContractStorageMeta(tx, record.Value)
-	case "contract_nonce":
-		return applyContractNonce(tx, record.Value)
-	case "contract_meta":
-		return applyContractMeta(tx, record.Value)
-	case "contract_receipt":
-		return applyContractReceipt(tx, record.Value)
-	default:
-		return fmt.Errorf("thebeprofile: unknown namespace %q", record.Namespace)
+	fn, ok := p.handlers[record.Namespace]
+	if !ok {
+		log.Printf("thebeprofile: unknown namespace %q seq=%d — skipping", record.Namespace, seq)
+		return nil
 	}
+	if err := fn(ctx, seq, record, tx); err != nil {
+		return fmt.Errorf("thebeprofile: namespace=%q seq=%d: %w", record.Namespace, seq, err)
+	}
+	return nil
 }

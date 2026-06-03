@@ -2,26 +2,25 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	DB_OPs "gossipnode/DB_OPs"
-	"gossipnode/DB_OPs/cassata"
-	"gossipnode/DB_OPs/dualdb"
+	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/config"
 	"gossipnode/config/settings"
 
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
-	thebecfg "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
-	"github.com/JupiterMetaLabs/ThebeDB/pkg/events"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/builder"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
+	thebeSql "github.com/JupiterMetaLabs/ThebeDB/pkg/sql"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -91,41 +90,45 @@ func main() {
 	defer DB_OPs.CloseMainDBPool()
 
 	reg := profile.NewRegistry()
-	reg.Register(thebeprofile.New())
-	thebe, err := thebedb.NewFromConfig(thebedb.Config{
-		KV:  kv.Config{Backend: kv.BackendBadger, Path: thebeKV},
-		SQL: thebecfg.SQL{DSN: thebeDSN},
-		Events: &events.Config{
-			RedisURL:   cfg.Thebe.RedisURL,
-			StreamName: cfg.Thebe.StreamName,
-			MaxLen:     cfg.Thebe.MaxLen,
-			GroupName:  cfg.Thebe.GroupName,
-		},
-		Profiles: reg,
-	})
+	reg.Register(thebeprofile.NewJMDNProfile())
+
+	kvStore, err := kv.NewStore(kv.Config{Backend: kv.BackendBadger, Path: thebeKV})
+	if err != nil {
+		log.Fatalf("kv store init: %v", err)
+	}
+	sqlEngine, err := thebeSql.NewSQLEngine(thebeDSN)
+	if err != nil {
+		log.Fatalf("sql engine init: %v", err)
+	}
+	thebe, err := thebedb.New(kvStore, sqlEngine, thebedb.WithProfileRegistry(reg))
 	if err != nil {
 		log.Fatalf("init thebedb: %v", err)
 	}
 	defer thebe.Close()
 
-	cas := cassata.New(thebe, nil)
-	shadow := dualdb.NewShadowAdapter(cas)
+	outbox, err := thebegateway.NewOutboxStore(thebeKV + "/outbox.db")
+	if err != nil {
+		log.Fatalf("outbox store init: %v", err)
+	}
+	gw := thebegateway.NewThebeGateway(builder.New(thebe), nil, outbox)
+	adapter := DB_OPs.NewGatewayAdapter(gw)
+
 	ctx := context.Background()
 
-	if err := migrateAccounts(ctx, shadow); err != nil {
+	if err := migrateAccounts(ctx, gw); err != nil {
 		log.Fatalf("migrate accounts: %v", err)
 	}
-	if err := ensureTxParticipantAccounts(ctx, cas, fromBlock, toBlock); err != nil {
+	if err := ensureTxParticipantAccounts(ctx, gw, fromBlock, toBlock); err != nil {
 		log.Fatalf("ensure tx participant accounts: %v", err)
 	}
-	if err := migrateBlocks(ctx, shadow, fromBlock, toBlock); err != nil {
+	if err := migrateBlocks(ctx, adapter, fromBlock, toBlock); err != nil {
 		log.Fatalf("migrate blocks: %v", err)
 	}
 
 	log.Printf("migration completed in %s", time.Since(start).Round(time.Millisecond))
 }
 
-func migrateAccounts(ctx context.Context, shadow *dualdb.ShadowAdapter) error {
+func migrateAccounts(ctx context.Context, gw thebegateway.ThebeGateway) error {
 	accounts, err := DB_OPs.ListAllAccounts(nil, 0)
 	if err != nil {
 		return fmt.Errorf("list accounts: %w", err)
@@ -136,8 +139,8 @@ func migrateAccounts(ctx context.Context, shadow *dualdb.ShadowAdapter) error {
 		if acc == nil {
 			continue
 		}
-		key := DB_OPs.Prefix + acc.Address.Hex()
-		if err := shadow.Create(nil, key, acc); err != nil {
+		rec := accountToRecord(acc)
+		if err := gw.WriteAccount(ctx, rec); err != nil {
 			return fmt.Errorf("ingest account %s: %w", acc.Address.Hex(), err)
 		}
 		migrated++
@@ -146,8 +149,29 @@ func migrateAccounts(ctx context.Context, shadow *dualdb.ShadowAdapter) error {
 		}
 	}
 	log.Printf("accounts migrated total: %d", migrated)
-	_ = ctx
 	return nil
+}
+
+// accountToRecord maps a DB_OPs.Account to an AccountRecord DTO.
+func accountToRecord(acc *DB_OPs.Account) *thebegateway.AccountRecord {
+	did := acc.DIDAddress
+	if did == "" {
+		did = "did:jmdn:" + acc.Address.Hex()
+	}
+	accountType := int16(0) // "did"
+	if acc.AccountType == "publickey" {
+		accountType = 1
+	}
+	return &thebegateway.AccountRecord{
+		Address:     acc.Address.Hex(),
+		DIDAddress:  did,
+		BalanceWei:  acc.Balance,
+		Nonce:       strconv.FormatUint(acc.Nonce, 10),
+		AccountType: accountType,
+		Metadata:    acc.Metadata,
+		CreatedAt:   time.Unix(0, acc.CreatedAt).UTC(),
+		UpdatedAt:   time.Unix(0, acc.UpdatedAt).UTC(),
+	}
 }
 
 // accountAddressesFromImmu returns lower-hex keys (no 0x) for addresses already in immudb accounts.
@@ -166,7 +190,7 @@ func accountAddressesFromImmu() (map[string]struct{}, error) {
 	return out, nil
 }
 
-func ensureTxParticipantAccounts(ctx context.Context, cas *cassata.Cassata, fromBlock, toBlock uint64) error {
+func ensureTxParticipantAccounts(ctx context.Context, gw thebegateway.ThebeGateway, fromBlock, toBlock uint64) error {
 	latest, err := DB_OPs.GetLatestBlockNumber(nil)
 	if err != nil {
 		return fmt.Errorf("get latest block number: %w", err)
@@ -207,16 +231,17 @@ func ensureTxParticipantAccounts(ctx context.Context, cas *cassata.Cassata, from
 			continue
 		}
 		addr := common.HexToAddress("0x" + hexKey)
-		stub := cassata.AccountResult{
+		stub := &thebegateway.AccountRecord{
 			Address:     addr.Hex(),
+			DIDAddress:  "did:jmdn:" + addr.Hex(),
 			BalanceWei:  "0",
 			Nonce:       "0",
 			AccountType: 0,
-			Metadata:    json.RawMessage(`{"migrated_stub":true}`),
+			Metadata:    map[string]any{"migrated_stub": true},
 			CreatedAt:   time.Now().UTC(),
 			UpdatedAt:   time.Now().UTC(),
 		}
-		if err := cas.IngestAccount(ctx, stub); err != nil {
+		if err := gw.WriteAccount(ctx, stub); err != nil {
 			return fmt.Errorf("stub account %s: %w", addr.Hex(), err)
 		}
 		known[hexKey] = struct{}{}
@@ -228,7 +253,7 @@ func ensureTxParticipantAccounts(ctx context.Context, cas *cassata.Cassata, from
 	return nil
 }
 
-func migrateBlocks(_ context.Context, shadow *dualdb.ShadowAdapter, fromBlock, toBlock uint64) error {
+func migrateBlocks(_ context.Context, adapter *DB_OPs.GatewayAdapter, fromBlock, toBlock uint64) error {
 	latest, err := DB_OPs.GetLatestBlockNumber(nil)
 	if err != nil {
 		return fmt.Errorf("get latest block number: %w", err)
@@ -247,7 +272,7 @@ func migrateBlocks(_ context.Context, shadow *dualdb.ShadowAdapter, fromBlock, t
 			log.Printf("skip block %d: %v", n, err)
 			continue
 		}
-		if err := shadow.StoreZKBlock(nil, block); err != nil {
+		if err := adapter.StoreZKBlock(nil, block); err != nil {
 			return fmt.Errorf("ingest block %d: %w", n, err)
 		}
 		migrated++

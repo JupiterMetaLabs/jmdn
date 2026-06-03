@@ -20,10 +20,10 @@ import (
 	"gossipnode/shutdown"
 
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
-	thebecfg "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
-	"github.com/JupiterMetaLabs/ThebeDB/pkg/events"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/builder"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
+	thebeSql "github.com/JupiterMetaLabs/ThebeDB/pkg/sql"
 	orchestratorGlobal "github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	ion "github.com/JupiterMetaLabs/ion"
@@ -34,7 +34,7 @@ import (
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/cassata"
-	"gossipnode/DB_OPs/dualdb"
+	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/DID"
 	"gossipnode/FastsyncV2"
@@ -291,18 +291,6 @@ func maskDSN(raw string) string {
 
 func maskRedisURL(raw string) string {
 	return maskDSN(raw)
-}
-
-func buildThebeEventsConfig(cfg settings.ThebeConfig) *events.Config {
-	if strings.TrimSpace(cfg.RedisURL) == "" {
-		return nil
-	}
-	return &events.Config{
-		RedisURL:   cfg.RedisURL,
-		StreamName: cfg.StreamName,
-		MaxLen:     cfg.MaxLen,
-		GroupName:  cfg.GroupName,
-	}
 }
 
 // runCommand executes a CLI command via gRPC to the running service
@@ -988,20 +976,33 @@ func main() {
 	// Initialize ThebeDB + JMDN profile only when feature-flagged.
 	if cfg.Thebe.Enabled {
 		reg := profile.NewRegistry()
-		reg.Register(thebeprofile.New())
-		db, err := thebedb.NewFromConfig(thebedb.Config{
-			KV:       kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath},
-			SQL:      thebecfg.SQL{DSN: cfg.Thebe.SQLDSN},
-			Events:   buildThebeEventsConfig(cfg.Thebe),
-			Profiles: reg,
-		})
+		reg.Register(thebeprofile.NewJMDNProfile())
+
+		kvStore, err := kv.NewStore(kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath})
+		if err != nil {
+			log.Fatal().Err(err).Msg("thebedb: kv store init failed")
+		}
+		sqlEngine, err := thebeSql.NewSQLEngine(cfg.Thebe.SQLDSN)
+		if err != nil {
+			log.Fatal().Err(err).Msg("thebedb: sql engine init failed")
+		}
+		db, err := thebedb.New(kvStore, sqlEngine, thebedb.WithProfileRegistry(reg))
 		if err != nil {
 			log.Fatal().Err(err).Msg("thebedb init failed")
 		}
 		defer db.Close()
+
+		// Keep cassata for backward-compat callers (SmartContract, gETH routes).
 		cas = cassata.New(db, zap.NewNop())
-		DB_OPs.SetThebeShadowWriter(dualdb.NewShadowAdapter(cas))
-		log.Info().Msg("ThebeDB Cassata middleware enabled")
+
+		// Wire ThebeGateway as the ThebeShadowWriter — replaces cassata-based ShadowAdapter.
+		outbox, err := thebegateway.NewOutboxStore(cfg.Thebe.KVPath + "/outbox.db")
+		if err != nil {
+			log.Fatal().Err(err).Msg("thebedb: outbox store init failed")
+		}
+		gw := thebegateway.NewThebeGateway(builder.New(db), nil, outbox)
+		DB_OPs.SetThebeShadowWriter(DB_OPs.NewGatewayAdapter(gw))
+		log.Info().Msg("ThebeDB gateway enabled")
 	}
 
 	// Discover Yggdrasil address BEFORE creating the node

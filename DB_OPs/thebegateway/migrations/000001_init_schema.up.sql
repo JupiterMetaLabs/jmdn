@@ -1,31 +1,3 @@
-// MODULE: DB_OPs/thebeprofile/schema.go
-// PURPOSE: Holds the PostgreSQL DDL migration for the JMDN ThebeDB projection schema.
-//          Returned verbatim by JMDNProfile.GetMigration() and executed once at startup.
-//
-// CORE DATA STRUCTURES:
-//   - migrationSQL: package-level string constant — read-only after compile.
-//     Size: static ~5KB SQL string. Never allocated at runtime.
-//
-// TO MODIFY BEHAVIOR:
-//   - Add a new table: append DDL below inside the string constant + add apply_<entity>.go
-//   - Rename a table: update DDL here + corresponding apply_<entity>.go + register in profile.go
-//
-// DO NOT:
-//   - Modify this constant at runtime (it is a const — compile-time only)
-//   - Add Go logic to this file; SQL DDL only
-//   - Use fmt.Sprintf to build SQL (injection risk, const handles it)
-//
-// EXTENSION POINT: Phase 7 contract tables → append new CREATE TABLE IF NOT EXISTS blocks here
-
-package thebeprofile
-
-// migrationSQL is the complete PostgreSQL DDL for the JMDN blockchain projection schema.
-// Applied by ThebeDB at startup via GetMigration(). All statements use IF NOT EXISTS
-// for idempotency — safe to re-run on every node restart.
-//
-// Table creation order satisfies FK dependencies:
-//  1. accounts  2. blocks  3. snapshots  4. transactions  5. zk_proofs  6. l1_finality
-const migrationSQL = `
 -- ================================================================
 -- ThebeDB - JMDN PostgreSQL Projection Schema
 -- Migration: 000001_init_schema (UP)
@@ -254,4 +226,3 @@ CREATE OR REPLACE RULE rule_l1_finality_no_update AS
 
 CREATE OR REPLACE RULE rule_l1_finality_no_delete AS
     ON DELETE TO l1_finality DO INSTEAD NOTHING;
-`
