@@ -5,6 +5,7 @@
 //   - ThebeGateway: stateless per-call write surface; implementations hold builder+cache+outbox deps
 //   - ThebeReader: stateless per-call read surface; implementations hold sql+cache deps
 //   - OutboxStore: WAL persistence; implementations backed by SQLite thebe_outbox table
+//   - ThebeKVStore: minimal kv.Store surface for direct contract KV writes (Phase 7 — DONE)
 //
 // TO MODIFY BEHAVIOR:
 //   - Add new entity: add method to ThebeGateway + ThebeReader → implement in concrete structs
@@ -19,7 +20,7 @@
 // EXTENSION POINT: new entity type → add method pair to ThebeGateway + ThebeReader interfaces
 //
 // CHANGE SCENARIOS:
-//   Add contract KV methods: add WriteContractCode/GetContractCode to both interfaces — Phase 7
+//   Phase 7 contract KV layer: DONE — WriteContractCode/GetContractCode + 4 more pairs implemented
 //   Swap outbox backend: implement OutboxStore with different backing — OutboxWorker unchanged
 
 package thebegateway
@@ -28,6 +29,16 @@ import (
 	"context"
 	"time"
 )
+
+// ThebeKVStore is the minimal kv.Store surface for direct contract KV writes.
+// kv.Store from github.com/JupiterMetaLabs/ThebeDB/pkg/kv satisfies this.
+// PutWorm: write-once (immutable). PutDerived: overwrite (mutable).
+// Time: O(1) each — single BadgerDB round trip
+type ThebeKVStore interface {
+	PutWorm(key, value []byte) error
+	PutDerived(key, value []byte) error
+	Get(key []byte) ([]byte, error)
+}
 
 // ThebeGateway — write surface. Facade over ThebeDB 2PC (SQL + KV) + cache.
 // Each method: atomic SQL+KV write via ThebeDB 2PC, then best-effort cache SET.
@@ -40,6 +51,13 @@ type ThebeGateway interface {
 	WriteSnapshot(ctx context.Context, snapshot *SnapshotRecord) error
 	WriteZKProof(ctx context.Context, proof *ZKProofRecord) error
 	WriteL1Finality(ctx context.Context, finality *L1FinalityRecord) error
+
+	// Contract KV layer — Phase 7
+	WriteContractCode(ctx context.Context, rec *ContractCodeRecord) error
+	WriteContractNonce(ctx context.Context, rec *ContractNonceRecord) error
+	WriteContractStorage(ctx context.Context, rec *ContractStorageRecord) error
+	WriteContractMeta(ctx context.Context, rec *ContractMetaRecord) error
+	WriteContractReceipt(ctx context.Context, rec *ContractReceiptRecord) error
 }
 
 // ThebeReader — read surface. Read-through cache: cache hit → return; miss → SQL/KV → cache SET with TTL → return.
@@ -51,6 +69,13 @@ type ThebeReader interface {
 	GetLatestTransactionsByAddress(ctx context.Context, address string, limit int) ([]*TransactionRecord, error)
 	GetZKProof(ctx context.Context, blockNumber uint64) (*ZKProofRecord, error)
 	GetSnapshot(ctx context.Context, blockNumber uint64) (*SnapshotRecord, error)
+
+	// Contract KV layer — Phase 7
+	GetContractCode(ctx context.Context, address string) (*ContractCodeRecord, error)
+	GetContractNonce(ctx context.Context, address string) (*ContractNonceRecord, error)
+	GetContractStorage(ctx context.Context, address string, slot []byte) (*ContractStorageRecord, error)
+	GetContractMeta(ctx context.Context, address string) (*ContractMetaRecord, error)
+	GetContractReceipt(ctx context.Context, txHash string) (*ContractReceiptRecord, error)
 }
 
 // OutboxStore — WAL persistence for failed ThebeGateway writes.

@@ -71,6 +71,12 @@ func L1FinalityKey(confirmation string) string {
 	return "jmdn:l1finality:" + confirmation
 }
 
+// ContractReceiptKey returns the Redis cache key for a contract receipt by tx hash.
+// Distinct from TransactionKey to prevent cache collision between receipts and txs.
+func ContractReceiptKey(txHash string) string {
+	return "jmdn:contract:receipt:" + txHash
+}
+
 // ContractCodeKey returns the Redis cache key for contract bytecode by address.
 // Phase 7 — no matching ThebeReader.GetContractCode yet; wired when contract KV layer lands.
 func ContractCodeKey(address string) string {

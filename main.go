@@ -1000,7 +1000,7 @@ func main() {
 		if err != nil {
 			log.Fatal().Err(err).Msg("thebedb: outbox store init failed")
 		}
-		gw := thebegateway.NewThebeGateway(builder.New(db), nil, outbox)
+		gw := thebegateway.NewThebeGateway(builder.New(db), db.KV, nil, outbox)
 		DB_OPs.SetThebeShadowWriter(DB_OPs.NewGatewayAdapter(gw))
 		log.Info().Msg("ThebeDB gateway enabled")
 	}

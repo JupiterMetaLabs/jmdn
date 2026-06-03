@@ -1,21 +1,21 @@
 // MODULE: DB_OPs/thebeprofile/schema.go
 // PURPOSE: Holds the PostgreSQL DDL migration for the JMDN ThebeDB projection schema.
 //          Returned verbatim by JMDNProfile.GetMigration() and executed once at startup.
+//          Phase 7: migrationSQL002 adds contract_receipts table (contract code/nonce/storage/meta live in KV).
 //
 // CORE DATA STRUCTURES:
 //   - migrationSQL: package-level string constant — read-only after compile.
 //     Size: static ~5KB SQL string. Never allocated at runtime.
+//   - migrationSQL002: Phase 7 contract_receipts table.
 //
 // TO MODIFY BEHAVIOR:
-//   - Add a new table: append DDL below inside the string constant + add apply_<entity>.go
+//   - Add a new table: add a new migrationSQL00N constant + concatenate in GetMigration()
 //   - Rename a table: update DDL here + corresponding apply_<entity>.go + register in profile.go
 //
 // DO NOT:
 //   - Modify this constant at runtime (it is a const — compile-time only)
 //   - Add Go logic to this file; SQL DDL only
 //   - Use fmt.Sprintf to build SQL (injection risk, const handles it)
-//
-// EXTENSION POINT: Phase 7 contract tables → append new CREATE TABLE IF NOT EXISTS blocks here
 
 package thebeprofile
 
@@ -254,4 +254,46 @@ CREATE OR REPLACE RULE rule_l1_finality_no_update AS
 
 CREATE OR REPLACE RULE rule_l1_finality_no_delete AS
     ON DELETE TO l1_finality DO INSTEAD NOTHING;
+`
+
+// migrationSQL002 is the Phase 7 DDL for the contract_receipts table.
+// Contract code/nonce/storage/meta live in BadgerDB KV — not in SQL.
+// Applied via GetMigration() which concatenates all migration constants.
+const migrationSQL002 = `
+-- ================================================================
+-- ThebeDB - JMDN PostgreSQL Projection Schema
+-- Migration: 000002_contract_receipt (UP)
+-- Contract receipts in SQL for log filtering and block-level queries.
+-- Contract code/storage/nonce/meta live in KV (BadgerDB) — not here.
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS contract_receipts (
+    tx_hash          CHAR(66)      PRIMARY KEY,
+    block_number     BIGINT        NOT NULL,
+    tx_index         SMALLINT      NOT NULL,
+    status           SMALLINT      NOT NULL CHECK (status IN (0, 1)),
+    gas_used         NUMERIC(78,0) NOT NULL,
+    contract_address CHAR(42),
+    logs             JSONB         NOT NULL DEFAULT '[]'::jsonb,
+    revert_reason    TEXT,
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT fk_contract_receipt_block
+        FOREIGN KEY (block_number) REFERENCES blocks(block_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contract_receipts_block_number
+    ON contract_receipts(block_number);
+
+CREATE INDEX IF NOT EXISTS idx_contract_receipts_contract_address
+    ON contract_receipts(contract_address) WHERE contract_address IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_contract_receipts_logs
+    ON contract_receipts USING GIN(logs);
+
+CREATE OR REPLACE RULE rule_contract_receipts_no_update AS
+    ON UPDATE TO contract_receipts DO INSTEAD NOTHING;
+
+CREATE OR REPLACE RULE rule_contract_receipts_no_delete AS
+    ON DELETE TO contract_receipts DO INSTEAD NOTHING;
 `

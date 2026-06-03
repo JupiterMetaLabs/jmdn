@@ -1,9 +1,11 @@
 // MODULE: DB_OPs/thebegateway/reader.go
 // PURPOSE: Concrete ThebeReader — read-through cache over PostgreSQL projection.
 //          Cache hit → return. Miss → SQL query → cache SET with TTL → return.
+//          Phase 7: contract code/nonce/storage/meta read directly from BadgerDB KV via ThebeKVStore.
+//          Contract receipts use the standard SQL read-through cache pattern.
 //
 // CORE DATA STRUCTURES:
-//   - thebeReader: holds sqlQuerier (interface) + cache.Cache (interface, may be nil).
+//   - thebeReader: holds sqlQuerier (interface) + ThebeKVStore (interface) + cache.Cache (interface, may be nil).
 //     Stateless per-call. Safe for concurrent use.
 //   - sqlQuerier: local interface over *sql.DB — accepts QueryRowContext + QueryContext.
 //     Allows test injection of mock DB without real PostgreSQL.
@@ -21,7 +23,7 @@
 // EXTENSION POINT: new entity read → new sqlGet* constant + method following read() pattern
 //
 // CHANGE SCENARIOS:
-//   Add GetL1Finality (future): add sqlGetL1Finality constant + method — this file's pattern unchanged
+//   Phase 7 contract reads: DONE — GetContractCode/Nonce/Storage/Meta use KV; GetContractReceipt uses SQL
 //   Disable cache: inject nil cache.Cache — reader falls through to SQL always
 
 package thebegateway
@@ -50,14 +52,16 @@ type scanner interface {
 
 type thebeReader struct {
 	db    sqlQuerier
+	kv    ThebeKVStore
 	cache cache.Cache // nil = cache disabled
 }
 
 // NewThebeReader constructs a ThebeReader.
 // db: *sql.DB pointing at the PostgreSQL projection database
+// kv: ThebeKVStore for direct contract KV reads; may be nil (contract KV reads will error)
 // c: cache.Cache implementation; nil disables caching (all reads hit SQL directly)
-func NewThebeReader(db *sql.DB, c cache.Cache) ThebeReader {
-	return &thebeReader{db: db, cache: c}
+func NewThebeReader(db *sql.DB, kv ThebeKVStore, c cache.Cache) ThebeReader {
+	return &thebeReader{db: db, kv: kv, cache: c}
 }
 
 // Compile-time interface check.
@@ -354,4 +358,100 @@ func (r *thebeReader) GetSnapshot(ctx context.Context, blockNumber uint64) (*Sna
 		return nil, err
 	}
 	return &rec, nil
+}
+
+// sqlGetContractReceipt fetches a contract receipt by tx_hash (PK).
+const sqlGetContractReceipt = `
+    SELECT tx_hash, block_number, tx_index, status, gas_used, contract_address,
+           logs, revert_reason, created_at
+    FROM contract_receipts WHERE tx_hash = $1`
+
+// readKV reads from KV store, populates dest via JSON unmarshal.
+// No cache for KV reads — BadgerDB is already in-process and fast.
+// Time: O(1) — single BadgerDB read
+func (r *thebeReader) readKV(key []byte, dest any) error {
+	data, err := r.kv.Get(key)
+	if err != nil {
+		return fmt.Errorf("KV get: %w", err)
+	}
+	return json.Unmarshal(data, dest)
+}
+
+// GetContractCode returns contract bytecode from KV.
+// Time: O(1) — KV direct read
+func (r *thebeReader) GetContractCode(_ context.Context, address string) (*ContractCodeRecord, error) {
+	var rec ContractCodeRecord
+	if err := r.readKV(kvCodeKey(address), &rec); err != nil {
+		return nil, fmt.Errorf("GetContractCode %s: %w", address, err)
+	}
+	return &rec, nil
+}
+
+// GetContractNonce returns contract nonce from KV (stored as raw big-endian uint64).
+// Time: O(1) — KV direct read, nonce stored as raw uint64 big-endian
+func (r *thebeReader) GetContractNonce(_ context.Context, address string) (*ContractNonceRecord, error) {
+	data, err := r.kv.Get(kvNonceKey(address))
+	if err != nil {
+		return nil, fmt.Errorf("GetContractNonce %s: %w", address, err)
+	}
+	return &ContractNonceRecord{Address: address, Nonce: decodeUint64(data)}, nil
+}
+
+// GetContractStorage returns a contract storage slot from KV (binary key).
+// slot must be exactly 32 bytes (raw, not hex-encoded).
+// Time: O(1) — KV direct read (binary key)
+func (r *thebeReader) GetContractStorage(_ context.Context, address string, slot []byte) (*ContractStorageRecord, error) {
+	addrBytes, err := hexToBytes20(address)
+	if err != nil {
+		return nil, fmt.Errorf("GetContractStorage: invalid address: %w", err)
+	}
+	if len(slot) != 32 {
+		return nil, fmt.Errorf("GetContractStorage: slot must be 32 bytes, got %d", len(slot))
+	}
+	var rec ContractStorageRecord
+	if err := r.readKV(kvStorageKey(addrBytes, slot), &rec); err != nil {
+		return nil, fmt.Errorf("GetContractStorage %s: %w", address, err)
+	}
+	return &rec, nil
+}
+
+// GetContractMeta returns contract deployment metadata from KV.
+// Time: O(1) — KV direct read
+func (r *thebeReader) GetContractMeta(_ context.Context, address string) (*ContractMetaRecord, error) {
+	var rec ContractMetaRecord
+	if err := r.readKV(kvMetaKey(address), &rec); err != nil {
+		return nil, fmt.Errorf("GetContractMeta %s: %w", address, err)
+	}
+	return &rec, nil
+}
+
+// GetContractReceipt returns the contract receipt for the given tx hash.
+// Time: O(1) — SQL PK lookup with read-through cache
+func (r *thebeReader) GetContractReceipt(ctx context.Context, txHash string) (*ContractReceiptRecord, error) {
+	var rec ContractReceiptRecord
+	err := r.read(ctx, ContractReceiptKey(txHash), TTLTransaction, &rec, func() error {
+		return r.scanContractReceipt(r.db.QueryRowContext(ctx, sqlGetContractReceipt, txHash), &rec)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+// scanContractReceipt scans a single contract_receipts row into rec.
+func (r *thebeReader) scanContractReceipt(row *sql.Row, rec *ContractReceiptRecord) error {
+	var contractAddrNull sql.NullString
+	var logsJSON []byte
+	err := row.Scan(
+		&rec.TxHash, &rec.BlockNumber, &rec.TxIndex, &rec.Status,
+		&rec.GasUsed, &contractAddrNull, &logsJSON, &rec.RevertReason, &rec.CreatedAt,
+	)
+	if err != nil {
+		return err
+	}
+	if contractAddrNull.Valid {
+		rec.ContractAddress = &contractAddrNull.String
+	}
+	rec.Logs = logsJSON
+	return nil
 }

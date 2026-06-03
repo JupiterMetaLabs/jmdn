@@ -32,6 +32,8 @@ import (
 
 	core "github.com/JupiterMetaLabs/ThebeDB/pkg/core"
 	profilepkg "github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
+
+	"gossipnode/DB_OPs/thebegateway"
 )
 
 // compile-time interface check
@@ -48,10 +50,10 @@ type JMDNProfile struct {
 	handlers map[string]applyFunc
 }
 
-// NewJMDNProfile constructs a JMDNProfile with all 6 namespace handlers registered.
+// NewJMDNProfile constructs a JMDNProfile with all 7 namespace handlers registered.
 func NewJMDNProfile() *JMDNProfile {
 	p := &JMDNProfile{
-		handlers: make(map[string]applyFunc, 6),
+		handlers: make(map[string]applyFunc, 7),
 	}
 	p.handlers["account"] = applyAccount
 	p.handlers["block"] = applyBlock
@@ -59,6 +61,7 @@ func NewJMDNProfile() *JMDNProfile {
 	p.handlers["tx"] = applyTransaction
 	p.handlers["zk"] = applyZKProof
 	p.handlers["l1_finality"] = applyL1Finality
+	p.handlers[string(thebegateway.NamespaceContractReceipt)] = applyContractReceipt
 	return p
 }
 
@@ -68,12 +71,15 @@ func (p *JMDNProfile) Name() string { return "jmdn" }
 // Namespaces returns the exact Namespace values this profile handles.
 // Must match the Namespace field set on records at write time — mismatch causes silent data loss.
 func (p *JMDNProfile) Namespaces() []string {
-	return []string{"account", "block", "snapshot", "tx", "zk", "l1_finality"}
+	return []string{"account", "block", "snapshot", "tx", "zk", "l1_finality", "contract_receipt"}
 }
 
 // GetMigration returns the complete PostgreSQL DDL for the JMDN projection schema.
 // Executed verbatim once on startup; all statements use IF NOT EXISTS for idempotency.
-func (p *JMDNProfile) GetMigration() string { return migrationSQL }
+// Migration order: 000001_init_schema → 000002_contract_receipt
+func (p *JMDNProfile) GetMigration() string {
+	return migrationSQL + "\n\n" + migrationSQL002
+}
 
 // Apply routes a single CanonicalRecord to the correct namespace handler.
 // Unknown namespaces are logged and silently skipped (return nil) to avoid

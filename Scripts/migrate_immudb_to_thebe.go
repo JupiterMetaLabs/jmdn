@@ -110,7 +110,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("outbox store init: %v", err)
 	}
-	gw := thebegateway.NewThebeGateway(builder.New(thebe), nil, outbox)
+	gw := thebegateway.NewThebeGateway(builder.New(thebe), thebe.KV, nil, outbox)
 	adapter := DB_OPs.NewGatewayAdapter(gw)
 
 	ctx := context.Background()

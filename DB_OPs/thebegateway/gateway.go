@@ -2,9 +2,11 @@
 // PURPOSE: Concrete ThebeGateway — translates JMDN domain write events into ThebeDB
 //          2PC appends (KV log + SQL projection) followed by best-effort cache population.
 //          On 2PC failure: payload enqueued to OutboxStore WAL for retry by OutboxWorker.
+//          Phase 7: contract KV writes (code/nonce/storage/meta) go direct to BadgerDB via
+//          ThebeKVStore; contract_receipt goes via 2PC append (SQL projection).
 //
 // CORE DATA STRUCTURES:
-//   - thebeGateway: holds ThebeAppender + cache.Cache + OutboxStore (all interfaces).
+//   - thebeGateway: holds ThebeAppender + ThebeKVStore + cache.Cache + OutboxStore (all interfaces).
 //     Stateless per-call. Safe for concurrent use — all deps are interfaces.
 //
 // TO MODIFY BEHAVIOR:
@@ -20,15 +22,17 @@
 // EXTENSION POINT: new entity → new Write method on ThebeGateway interface + case in OutboxWorker.dispatch()
 //
 // CHANGE SCENARIOS:
-//   Add contract writes (Phase 7): add WriteContractCode etc. — follow exact same write() helper pattern
+//   Phase 7 contract writes: DONE — WriteContractCode/Nonce/Storage/Meta use KV directly; WriteContractReceipt uses 2PC
 //   Disable cache: inject a no-op cache.Cache implementation — gateway code unchanged
 
 package thebegateway
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/cache"
@@ -47,16 +51,18 @@ var _ ThebeGateway = (*thebeGateway)(nil)
 
 type thebeGateway struct {
 	appender ThebeAppender
+	kv       ThebeKVStore  // direct KV writes for contract data
 	cache    cache.Cache
 	outbox   OutboxStore
 }
 
 // NewThebeGateway constructs a ThebeGateway. All deps are interfaces.
 // appender: *builder.Builder satisfies ThebeAppender
+// kv: kv.Store from ThebeDB satisfies ThebeKVStore; may be nil (contract KV writes will error)
 // c: *cache.RedisCache or any cache.Cache implementation; may be nil (cache skipped)
 // outbox: SQLite-backed OutboxStore from NewOutboxStore()
-func NewThebeGateway(appender ThebeAppender, c cache.Cache, outbox OutboxStore) ThebeGateway {
-	return &thebeGateway{appender: appender, cache: c, outbox: outbox}
+func NewThebeGateway(appender ThebeAppender, kv ThebeKVStore, c cache.Cache, outbox OutboxStore) ThebeGateway {
+	return &thebeGateway{appender: appender, kv: kv, cache: c, outbox: outbox}
 }
 
 // write is the shared write path for all ThebeGateway methods.
@@ -144,4 +150,94 @@ func (g *thebeGateway) WriteZKProof(ctx context.Context, proof *ZKProofRecord) e
 func (g *thebeGateway) WriteL1Finality(ctx context.Context, finality *L1FinalityRecord) error {
 	return g.write(ctx, NamespaceL1Finality, "WriteL1Finality", finality,
 		L1FinalityKey(finality.Confirmation), TTLL1Finality)
+}
+
+// writeKV is the shared write path for immutable KV entries (PutWorm).
+// Marshals record to JSON, calls kv.PutWorm. No outbox — KV writes are local BadgerDB.
+// Time: O(1) — single BadgerDB write
+func (g *thebeGateway) writeKV(key []byte, record any) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("thebeGateway KV marshal: %w", err)
+	}
+	return g.kv.PutWorm(key, data)
+}
+
+// writeMutableKV is the shared write path for mutable KV entries (PutDerived).
+// Time: O(1) — single BadgerDB write
+func (g *thebeGateway) writeMutableKV(key []byte, record any) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("thebeGateway KV marshal: %w", err)
+	}
+	return g.kv.PutDerived(key, data)
+}
+
+// hexDecode strips the optional 0x prefix and decodes hex.
+func hexDecode(s string) ([]byte, error) {
+	s = strings.TrimPrefix(s, "0x")
+	return hex.DecodeString(s)
+}
+
+// hexToBytes20 decodes a 0x-prefixed hex string to exactly 20 bytes.
+func hexToBytes20(h string) ([]byte, error) {
+	b, err := hexDecode(h)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) != 20 {
+		return nil, fmt.Errorf("expected 20 bytes, got %d", len(b))
+	}
+	return b, nil
+}
+
+// hexToBytes32 decodes a 0x-prefixed hex string to exactly 32 bytes.
+func hexToBytes32(h string) ([]byte, error) {
+	b, err := hexDecode(h)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) != 32 {
+		return nil, fmt.Errorf("expected 32 bytes, got %d", len(b))
+	}
+	return b, nil
+}
+
+// WriteContractCode writes contract bytecode to KV (PutWorm — immutable after deploy).
+// Time: O(1) — PutWorm (immutable after deploy)
+func (g *thebeGateway) WriteContractCode(_ context.Context, rec *ContractCodeRecord) error {
+	return g.writeKV(kvCodeKey(rec.Address), rec)
+}
+
+// WriteContractNonce writes contract nonce to KV as raw big-endian uint64 (PutDerived — mutable).
+// Time: O(1) — PutDerived (mutable)
+func (g *thebeGateway) WriteContractNonce(_ context.Context, rec *ContractNonceRecord) error {
+	return g.kv.PutDerived(kvNonceKey(rec.Address), encodeUint64(rec.Nonce))
+}
+
+// WriteContractStorage writes a contract storage slot to KV (PutDerived — mutable, changes on every SSTORE).
+// Time: O(1) — PutDerived (mutable, storage changes on every SSTORE)
+func (g *thebeGateway) WriteContractStorage(_ context.Context, rec *ContractStorageRecord) error {
+	addrBytes, err := hexToBytes20(rec.Address)
+	if err != nil {
+		return fmt.Errorf("WriteContractStorage: invalid address: %w", err)
+	}
+	slotBytes, err := hexToBytes32(rec.Slot)
+	if err != nil {
+		return fmt.Errorf("WriteContractStorage: invalid slot: %w", err)
+	}
+	return g.writeMutableKV(kvStorageKey(addrBytes, slotBytes), rec)
+}
+
+// WriteContractMeta writes contract deployment metadata to KV (PutWorm — immutable after deploy).
+// Time: O(1) — PutWorm (immutable after deploy)
+func (g *thebeGateway) WriteContractMeta(_ context.Context, rec *ContractMetaRecord) error {
+	return g.writeKV(kvMetaKey(rec.Address), rec)
+}
+
+// WriteContractReceipt appends a contract receipt to ThebeDB via 2PC → SQL contract_receipts table.
+// Time: O(1) amortized — appends CanonicalRecord → ThebeDB 2PC → SQL contract_receipts
+func (g *thebeGateway) WriteContractReceipt(ctx context.Context, rec *ContractReceiptRecord) error {
+	return g.write(ctx, NamespaceContractReceipt, "WriteContractReceipt", rec,
+		TransactionKey(rec.TxHash), TTLTransaction)
 }

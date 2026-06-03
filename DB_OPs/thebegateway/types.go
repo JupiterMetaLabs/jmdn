@@ -24,12 +24,13 @@ import "time"
 type Namespace string
 
 const (
-	NamespaceAccount    Namespace = "account"
-	NamespaceBlock      Namespace = "block"
-	NamespaceTransaction Namespace = "tx"
-	NamespaceSnapshot   Namespace = "snapshot"
-	NamespaceZKProof    Namespace = "zk"
-	NamespaceL1Finality Namespace = "l1_finality"
+	NamespaceAccount         Namespace = "account"
+	NamespaceBlock           Namespace = "block"
+	NamespaceTransaction     Namespace = "tx"
+	NamespaceSnapshot        Namespace = "snapshot"
+	NamespaceZKProof         Namespace = "zk"
+	NamespaceL1Finality      Namespace = "l1_finality"
+	NamespaceContractReceipt Namespace = "contract_receipt"
 )
 
 // MaxOutboxAttempts is the ceiling for OutboxStore retry loops.
@@ -110,6 +111,55 @@ type L1FinalityRecord struct {
 	Confirmation string         `json:"confirmation"`   // CHAR(42)
 	BlockNumbers []uint64       `json:"block_numbers"`  // BIGINT[]
 	Metadata     map[string]any `json:"metadata"`       // JSONB
+}
+
+// ContractCodeRecord — KV PutWorm (immutable after deploy)
+type ContractCodeRecord struct {
+	Address string `json:"address"` // 0x-prefixed hex
+	Code    []byte `json:"code"`    // raw EVM bytecode
+}
+
+// ContractNonceRecord — KV PutDerived (incremented per deployment)
+type ContractNonceRecord struct {
+	Address string `json:"address"`
+	Nonce   uint64 `json:"nonce"`
+}
+
+// ContractStorageRecord — KV PutDerived (mutable, updated on every SSTORE)
+// Merged: slot value + modification metadata in one entry.
+// Key uses binary concat: contract:storage: + addr_20_bytes + slot_32_bytes
+type ContractStorageRecord struct {
+	Address           string `json:"address"`              // 0x-prefixed hex (for logging only — key uses raw bytes)
+	Slot              string `json:"slot"`                 // 0x-prefixed 32-byte hex
+	ValueHash         string `json:"value_hash"`           // 0x-prefixed 32-byte hex (Keccak256 of value)
+	LastModifiedBlock uint64 `json:"last_modified_block"`
+	LastModifiedTx    string `json:"last_modified_tx"`     // 0x-prefixed tx hash
+	UpdatedAt         int64  `json:"updated_at"`           // Unix nanoseconds
+}
+
+// ContractMetaRecord — KV PutWorm (immutable after deploy)
+type ContractMetaRecord struct {
+	Address      string    `json:"address"`
+	CodeHash     string    `json:"code_hash"`     // 0x-prefixed keccak256
+	CodeSize     int       `json:"code_size"`
+	Deployer     string    `json:"deployer"`      // 0x-prefixed address
+	DeployTxHash string    `json:"deploy_tx_hash"`
+	DeployBlock  uint64    `json:"deploy_block"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// ContractReceiptRecord — SQL via CanonicalRecord (namespace: contract_receipt)
+// Maps to contract_receipts table (migration 000002)
+type ContractReceiptRecord struct {
+	TxHash          string    `json:"tx_hash"`
+	BlockNumber     uint64    `json:"block_number"`
+	TxIndex         int16     `json:"tx_index"`
+	Status          int16     `json:"status"`            // 1=success 0=fail
+	GasUsed         string    `json:"gas_used"`          // NUMERIC(78,0) as string
+	ContractAddress *string   `json:"contract_address"`  // NULL for non-deploys
+	Logs            []byte    `json:"logs"`              // raw JSON array
+	RevertReason    string    `json:"revert_reason"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // OutboxEntry is a WAL entry for failed ThebeGateway writes.
