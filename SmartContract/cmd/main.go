@@ -26,9 +26,9 @@ import (
 	pb "gossipnode/gETH/proto"
 
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
-	thebecfg "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
+	thebeSql "github.com/JupiterMetaLabs/ThebeDB/pkg/sql"
 )
 
 func main() {
@@ -62,12 +62,18 @@ func main() {
 		os.Exit(1)
 	}
 	reg := profile.NewRegistry()
-	reg.Register(thebeprofile.New())
-	db, err := thebedb.NewFromConfig(thebedb.Config{
-		KV:       kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath},
-		SQL:      thebecfg.SQL{DSN: cfg.Thebe.SQLDSN},
-		Profiles: reg,
-	})
+	reg.Register(thebeprofile.NewJMDNProfile())
+	kvStore, err := kv.NewStore(kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath})
+	if err != nil {
+		logger().Error(ctx, "Failed to initialize KV store", err)
+		os.Exit(1)
+	}
+	sqlEngine, err := thebeSql.NewSQLEngine(cfg.Thebe.SQLDSN)
+	if err != nil {
+		logger().Error(ctx, "Failed to initialize SQL engine", err)
+		os.Exit(1)
+	}
+	db, err := thebedb.New(kvStore, sqlEngine, thebedb.WithProfileRegistry(reg))
 	if err != nil {
 		logger().Error(ctx, "Failed to initialize ThebeDB", err)
 		os.Exit(1)

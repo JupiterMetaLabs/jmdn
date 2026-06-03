@@ -60,6 +60,7 @@ func NewOutboxWorker(store OutboxStore, gateway ThebeGateway, interval time.Dura
 
 // Start launches the background polling goroutine. Non-blocking.
 // Call Stop() to shut it down gracefully.
+// Time: O(1) to start; poll loop is O(batchSize) per tick — bounded by defaultBatchSize=32
 func (w *OutboxWorker) Start() {
 	go w.run()
 }

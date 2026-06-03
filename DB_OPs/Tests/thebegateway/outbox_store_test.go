@@ -192,7 +192,7 @@ func TestMaxAttemptsFilter(t *testing.T) {
 	id := entries[0].ID
 
 	// Exhaust all attempts — MaxOutboxAttempts=3
-	for i := 0; i < thebegateway.MaxOutboxAttempts; i++ {
+	for i := range thebegateway.MaxOutboxAttempts {
 		// Always set retry in past so Next can see it, until it exceeds max
 		if err := store.IncrementAttempts(context.Background(), id, time.Now().Add(-time.Second)); err != nil {
 			t.Fatalf("IncrementAttempts iteration %d: %v", i, err)

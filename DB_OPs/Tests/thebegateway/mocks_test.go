@@ -6,12 +6,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JupiterMetaLabs/ThebeDB/pkg/cache"
 	core "github.com/JupiterMetaLabs/ThebeDB/pkg/core"
 	"gossipnode/DB_OPs/thebegateway"
 )
 
-// ---- mockAppender ----
+// ---- spyAppender ----
 
 type appendCall struct {
 	ns      string
@@ -19,13 +18,13 @@ type appendCall struct {
 	value   []byte
 }
 
-type mockAppender struct {
+type spyAppender struct {
 	mu    sync.Mutex
 	calls []appendCall
 	err   error
 }
 
-func (m *mockAppender) Append(_ context.Context, record *core.CanonicalRecord) (uint64, error) {
+func (m *spyAppender) Append(_ context.Context, record *core.CanonicalRecord) (uint64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, appendCall{
@@ -36,13 +35,13 @@ func (m *mockAppender) Append(_ context.Context, record *core.CanonicalRecord) (
 	return uint64(len(m.calls)), m.err
 }
 
-func (m *mockAppender) callCount() int {
+func (m *spyAppender) callCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.calls)
 }
 
-func (m *mockAppender) lastCall() (appendCall, bool) {
+func (m *spyAppender) lastCall() (appendCall, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.calls) == 0 {
@@ -51,7 +50,7 @@ func (m *mockAppender) lastCall() (appendCall, bool) {
 	return m.calls[len(m.calls)-1], true
 }
 
-// ---- mockCache ----
+// ---- spyCache ----
 
 type setCacheCall struct {
 	key   string
@@ -59,19 +58,18 @@ type setCacheCall struct {
 	ttl   time.Duration
 }
 
-type mockCache struct {
+type spyCache struct {
 	mu       sync.Mutex
 	setCalls []setCacheCall
 	setErr   error
 	data     map[string][]byte
-	getErr   error
 }
 
-func newMockCache() *mockCache {
-	return &mockCache{data: make(map[string][]byte)}
+func newSpyCache() *spyCache {
+	return &spyCache{data: make(map[string][]byte)}
 }
 
-func (m *mockCache) Set(_ context.Context, key string, value []byte, ttl time.Duration) error {
+func (m *spyCache) Set(_ context.Context, key string, value []byte, ttl time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.setCalls = append(m.setCalls, setCacheCall{key: key, value: value, ttl: ttl})
@@ -82,34 +80,31 @@ func (m *mockCache) Set(_ context.Context, key string, value []byte, ttl time.Du
 	return nil
 }
 
-func (m *mockCache) Get(_ context.Context, key string) ([]byte, error) {
+func (m *spyCache) Get(_ context.Context, key string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.getErr != nil {
-		return nil, m.getErr
-	}
 	v, ok := m.data[key]
 	if !ok {
-		return nil, cache.ErrMiss
+		return nil, errors.New("cache: miss")
 	}
 	return v, nil
 }
 
-func (m *mockCache) Delete(_ context.Context, _ ...string) error           { return nil }
-func (m *mockCache) Exists(_ context.Context, _ string) (bool, error)      { return false, nil }
-func (m *mockCache) Keys(_ context.Context, _ string, _ int64) ([]string, error) {
+func (m *spyCache) Delete(_ context.Context, _ ...string) error               { return nil }
+func (m *spyCache) Exists(_ context.Context, _ string) (bool, error)          { return false, nil }
+func (m *spyCache) Keys(_ context.Context, _ string, _ int64) ([]string, error) {
 	return nil, nil
 }
-func (m *mockCache) TTL(_ context.Context, _ string) (time.Duration, error) { return 0, nil }
-func (m *mockCache) Close() error                                            { return nil }
+func (m *spyCache) TTL(_ context.Context, _ string) (time.Duration, error) { return 0, nil }
+func (m *spyCache) Close() error                                             { return nil }
 
-func (m *mockCache) setCallCount() int {
+func (m *spyCache) setCallCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.setCalls)
 }
 
-func (m *mockCache) lastSetKey() string {
+func (m *spyCache) lastSetKey() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.setCalls) == 0 {
@@ -118,9 +113,9 @@ func (m *mockCache) lastSetKey() string {
 	return m.setCalls[len(m.setCalls)-1].key
 }
 
-// ---- mockOutbox ----
+// ---- spyOutbox ----
 
-type mockOutbox struct {
+type spyOutbox struct {
 	mu           sync.Mutex
 	enqueueErr   error
 	enqueueCalls int
@@ -132,14 +127,14 @@ type mockOutbox struct {
 	incrErr      error
 }
 
-func (m *mockOutbox) Enqueue(_ context.Context, _ thebegateway.OutboxEntry) error {
+func (m *spyOutbox) Enqueue(_ context.Context, _ thebegateway.OutboxEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.enqueueCalls++
 	return m.enqueueErr
 }
 
-func (m *mockOutbox) Next(_ context.Context, _ int) ([]thebegateway.OutboxEntry, error) {
+func (m *spyOutbox) Next(_ context.Context, _ int) ([]thebegateway.OutboxEntry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.nextErr != nil {
@@ -148,33 +143,33 @@ func (m *mockOutbox) Next(_ context.Context, _ int) ([]thebegateway.OutboxEntry,
 	return m.nextEntries, nil
 }
 
-func (m *mockOutbox) Ack(_ context.Context, id int64) error {
+func (m *spyOutbox) Ack(_ context.Context, id int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ackCalls = append(m.ackCalls, id)
 	return m.ackErr
 }
 
-func (m *mockOutbox) IncrementAttempts(_ context.Context, id int64, _ time.Time) error {
+func (m *spyOutbox) IncrementAttempts(_ context.Context, id int64, _ time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.incrCalls = append(m.incrCalls, id)
 	return m.incrErr
 }
 
-func (m *mockOutbox) ackCount() int {
+func (m *spyOutbox) ackCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.ackCalls)
 }
 
-func (m *mockOutbox) incrCount() int {
+func (m *spyOutbox) incrCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.incrCalls)
 }
 
-// ---- mockKV ----
+// ---- spyKV ----
 
 type kvCall struct {
 	op    string // "worm" | "derived" | "get"
@@ -182,7 +177,7 @@ type kvCall struct {
 	value []byte
 }
 
-type mockKV struct {
+type spyKV struct {
 	mu       sync.Mutex
 	calls    []kvCall
 	wormErr  error
@@ -191,28 +186,28 @@ type mockKV struct {
 	getVal   []byte
 }
 
-func (m *mockKV) PutWorm(key, value []byte) error {
+func (m *spyKV) PutWorm(key, value []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, kvCall{op: "worm", key: key, value: value})
 	return m.wormErr
 }
 
-func (m *mockKV) PutDerived(key, value []byte) error {
+func (m *spyKV) PutDerived(key, value []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, kvCall{op: "derived", key: key, value: value})
 	return m.derivErr
 }
 
-func (m *mockKV) Get(key []byte) ([]byte, error) {
+func (m *spyKV) Get(key []byte) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, kvCall{op: "get", key: key})
 	return m.getVal, m.getErr
 }
 
-func (m *mockKV) lastCall() (kvCall, bool) {
+func (m *spyKV) lastCall() (kvCall, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.calls) == 0 {
@@ -221,67 +216,67 @@ func (m *mockKV) lastCall() (kvCall, bool) {
 	return m.calls[len(m.calls)-1], true
 }
 
-// ---- mockGateway (for OutboxWorker tests) ----
+// ---- spyGateway (for OutboxWorker tests) ----
 
 type writeCall struct {
 	method string
-	record interface{}
+	record any
 }
 
-type mockGateway struct {
+type spyGateway struct {
 	mu    sync.Mutex
 	calls []writeCall
 	err   error
 }
 
-func (m *mockGateway) record(method string, r interface{}) error {
+func (m *spyGateway) rec(method string, r any) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, writeCall{method: method, record: r})
 	return m.err
 }
 
-func (m *mockGateway) WriteBlock(_ context.Context, b *thebegateway.BlockRecord) error {
-	return m.record("WriteBlock", b)
+func (m *spyGateway) WriteBlock(_ context.Context, b *thebegateway.BlockRecord) error {
+	return m.rec("WriteBlock", b)
 }
-func (m *mockGateway) WriteAccount(_ context.Context, a *thebegateway.AccountRecord) error {
-	return m.record("WriteAccount", a)
+func (m *spyGateway) WriteAccount(_ context.Context, a *thebegateway.AccountRecord) error {
+	return m.rec("WriteAccount", a)
 }
-func (m *mockGateway) WriteTransaction(_ context.Context, t *thebegateway.TransactionRecord) error {
-	return m.record("WriteTransaction", t)
+func (m *spyGateway) WriteTransaction(_ context.Context, t *thebegateway.TransactionRecord) error {
+	return m.rec("WriteTransaction", t)
 }
-func (m *mockGateway) WriteSnapshot(_ context.Context, s *thebegateway.SnapshotRecord) error {
-	return m.record("WriteSnapshot", s)
+func (m *spyGateway) WriteSnapshot(_ context.Context, s *thebegateway.SnapshotRecord) error {
+	return m.rec("WriteSnapshot", s)
 }
-func (m *mockGateway) WriteZKProof(_ context.Context, z *thebegateway.ZKProofRecord) error {
-	return m.record("WriteZKProof", z)
+func (m *spyGateway) WriteZKProof(_ context.Context, z *thebegateway.ZKProofRecord) error {
+	return m.rec("WriteZKProof", z)
 }
-func (m *mockGateway) WriteL1Finality(_ context.Context, l *thebegateway.L1FinalityRecord) error {
-	return m.record("WriteL1Finality", l)
+func (m *spyGateway) WriteL1Finality(_ context.Context, l *thebegateway.L1FinalityRecord) error {
+	return m.rec("WriteL1Finality", l)
 }
-func (m *mockGateway) WriteContractCode(_ context.Context, r *thebegateway.ContractCodeRecord) error {
-	return m.record("WriteContractCode", r)
+func (m *spyGateway) WriteContractCode(_ context.Context, r *thebegateway.ContractCodeRecord) error {
+	return m.rec("WriteContractCode", r)
 }
-func (m *mockGateway) WriteContractNonce(_ context.Context, r *thebegateway.ContractNonceRecord) error {
-	return m.record("WriteContractNonce", r)
+func (m *spyGateway) WriteContractNonce(_ context.Context, r *thebegateway.ContractNonceRecord) error {
+	return m.rec("WriteContractNonce", r)
 }
-func (m *mockGateway) WriteContractStorage(_ context.Context, r *thebegateway.ContractStorageRecord) error {
-	return m.record("WriteContractStorage", r)
+func (m *spyGateway) WriteContractStorage(_ context.Context, r *thebegateway.ContractStorageRecord) error {
+	return m.rec("WriteContractStorage", r)
 }
-func (m *mockGateway) WriteContractMeta(_ context.Context, r *thebegateway.ContractMetaRecord) error {
-	return m.record("WriteContractMeta", r)
+func (m *spyGateway) WriteContractMeta(_ context.Context, r *thebegateway.ContractMetaRecord) error {
+	return m.rec("WriteContractMeta", r)
 }
-func (m *mockGateway) WriteContractReceipt(_ context.Context, r *thebegateway.ContractReceiptRecord) error {
-	return m.record("WriteContractReceipt", r)
+func (m *spyGateway) WriteContractReceipt(_ context.Context, r *thebegateway.ContractReceiptRecord) error {
+	return m.rec("WriteContractReceipt", r)
 }
 
-func (m *mockGateway) callCount() int {
+func (m *spyGateway) callCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.calls)
 }
 
-func (m *mockGateway) lastMethod() string {
+func (m *spyGateway) lastMethod() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.calls) == 0 {

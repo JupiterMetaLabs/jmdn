@@ -84,6 +84,7 @@ func (p *JMDNProfile) GetMigration() string {
 // Apply routes a single CanonicalRecord to the correct namespace handler.
 // Unknown namespaces are logged and silently skipped (return nil) to avoid
 // blocking other namespace projections. Apply is safe for concurrent use.
+// Time: O(1) — map lookup into handlers (fixed-size, 7 entries); SQL cost is in the apply func
 func (p *JMDNProfile) Apply(ctx context.Context, seq uint64, record *core.CanonicalRecord, tx *sql.Tx) error {
 	if record == nil {
 		return nil
