@@ -134,9 +134,9 @@ infra: infra-kv infra-redis infra-sql
 infra-redis-start:
 	@echo "→ starting Redis on 127.0.0.1:6379 (ctrl-c to stop)"
 	@if [ "$(OS)" = "Darwin" ]; then \
-		redis-server; \
+		redis-server --daemonize no; \
 	else \
-		redis-server /etc/redis/redis.conf --daemonize no; \
+		redis-server --daemonize no; \
 	fi
 
 infra-sql-start:
@@ -144,8 +144,15 @@ infra-sql-start:
 	@if [ "$(OS)" = "Darwin" ]; then \
 		/opt/homebrew/opt/postgresql@16/bin/postgres -D /opt/homebrew/var/postgresql@16; \
 	else \
-		sudo -u postgres /usr/lib/postgresql/$(shell pg_lsclusters -h | awk '{print $$1}' | head -1)/bin/postgres \
-			-D /var/lib/postgresql/$(shell pg_lsclusters -h | awk '{print $$1}' | head -1)/main; \
+		PG_VER=$$(pg_lsclusters -h | awk '{print $$1}' | head -1); \
+		PG_CLUSTER=$$(pg_lsclusters -h | awk '{print $$2}' | head -1); \
+		PG_DATA=$$(pg_lsclusters -h | awk '{print $$6}' | head -1); \
+		if [ ! -f "$$PG_DATA/postgresql.conf" ]; then \
+			echo "→ cluster not initialised — running pg_createcluster $$PG_VER $$PG_CLUSTER"; \
+			sudo pg_createcluster $$PG_VER $$PG_CLUSTER; \
+		fi; \
+		echo "  cluster: $$PG_VER/$$PG_CLUSTER  data: $$PG_DATA"; \
+		sudo pg_ctlcluster $$PG_VER $$PG_CLUSTER start; \
 	fi
 
 # Create jmdn db + user — run once after the first infra-sql-start.
