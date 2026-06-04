@@ -20,8 +20,10 @@
 // DO NOT:
 //   - Start this worker from a constructor. StartAccountSyncWorker is the only entry point.
 //   - ACK entries before BatchRestoreAccounts succeeds — breaks at-least-once guarantee.
-//   - Pass the lifecycle ctx to GetAccountConnectionandPutBack — the connection auto-return
-//     goroutine fires on ctx.Done(); use a scoped timeout ctx per DB write instead.
+//   - Acquire the DB connection via GetAccountConnectionandPutBack — its auto-return
+//     goroutine fires on the scoped ctx deadline and can recycle the connection mid-write
+//     (data race). Use GetAccountsConnections + defer PutAccountsConnection, and thread the
+//     scoped writeCtx into BatchRestoreAccounts so the deadline bounds the DB ops directly.
 //   - Replace []dbEntry with a map — sequential append + slice-of-chunks is the right
 //     access pattern for BatchRestoreAccounts (ordered, fixed-size sub-batches).
 //
@@ -40,11 +42,13 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"sync/atomic"
 	"time"
+
+	"gossipnode/DB_OPs"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
 	"github.com/ethereum/go-ethereum/common"
-	"gossipnode/DB_OPs"
 )
 
 // ─── dbEntry type alias ───────────────────────────────────────────────────────
@@ -109,117 +113,118 @@ func DefaultWorkerConfig() AccountSyncWorkerConfig {
 	return AccountSyncWorkerConfig{
 		MaxDrainItems:       100,
 		MaxAccountsPerBatch: 500,
-		BlockTimeout:        5 * time.Second,
+		BlockTimeout:        30 * time.Second,
 		PendingIdleTimeout:  30 * time.Second,
 		DBWriteTimeout:      60 * time.Second,
 	}
 }
 
+// ─── WorkerManager — atomic lifecycle ────────────────────────────────────────
+
+// WorkerManager manages the drain goroutine lifecycle with lock-free atomics.
+// The worker starts lazily on the first WriteAccounts call and shuts down after
+// BlockTimeout of idle time. Producers restart it automatically via EnsureActive.
+type WorkerManager struct {
+	isOnline      atomic.Bool  // true = drain goroutine is running
+	resetInflight atomic.Bool  // true = a lastActivity-reset goroutine is in flight
+	lastActivity  atomic.Int64 // UnixNano — last successful commit or explicit reset
+
+	streamer RedisStreamer
+	cfg      AccountSyncWorkerConfig
+}
+
+// EnsureActive is called by WriteAccounts before every XADD.
+// If the worker is offline it wins a CAS to start it; if it is near its idle
+// deadline it wins a CAS to extend lastActivity. Always returns immediately.
+// Hot-path cost (online + healthy): two atomic loads + subtract + compare ≈ single-digit ns.
+func (wm *WorkerManager) EnsureActive() {
+	if !wm.isOnline.Load() {
+		if wm.isOnline.CompareAndSwap(false, true) {
+			wm.lastActivity.Store(time.Now().UnixNano())
+			log.Printf("[accountqueue] worker offline — restarting")
+			go wm.runWorker()
+		}
+		// CAS loss = another caller already claimed the spawn; worker is starting.
+		return
+	}
+
+	// Online — check remaining idle budget. Refresh if under 50%.
+	elapsed := time.Since(time.Unix(0, wm.lastActivity.Load()))
+	if wm.cfg.BlockTimeout-elapsed < wm.cfg.BlockTimeout/2 {
+		if wm.resetInflight.CompareAndSwap(false, true) {
+			go func() {
+				defer wm.resetInflight.Store(false)
+				wm.lastActivity.Store(time.Now().UnixNano())
+			}()
+		}
+	}
+}
+
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
 
-// StartAccountSyncWorker creates the Redis consumer group, registers the streamer
-// for use by WriteAccounts and BatchUpdateAccounts, and launches the background
-// drain worker.
+// StartAccountSyncWorker creates a WorkerManager, installs it as the package-level
+// queue, and returns. The drain goroutine starts lazily on the first WriteAccounts call.
 //
-// MUST be called exactly once from main.go (or the lifecycle coordinator) before
-// any WriteAccounts or BatchUpdateAccounts calls. If this function is not called,
-// both methods return an error immediately.
+// MUST be called exactly once from main.go before any WriteAccounts or BatchUpdateAccounts.
+// If not called, both methods log an error and skip the enqueue (no write occurs).
 //
-// The worker exits when ctx is cancelled. Unacked entries remain in the Redis PEL
-// and are reclaimed by the next StartAccountSyncWorker call via XAUTOCLAIM.
-//
-// Time: O(1) — one XGROUP CREATE round trip + goroutine spawn.
-func StartAccountSyncWorker(ctx context.Context, streamer RedisStreamer, cfg AccountSyncWorkerConfig) error {
-	// We no longer block node startup if Redis is temporarily unavailable.
-	// We set the streamer immediately so callers can attempt to enqueue (which
-	// handles its own retry/failover if Redis is down).
-	setStreamer(streamer)
-	
-	// Launch the worker. It will ensure the consumer group exists asynchronously.
-	go runWorker(ctx, streamer, cfg)
-	return nil
+// Time: O(1) — no Redis round trip; EnsureConsumerGroup is deferred to the first runWorker call.
+func StartAccountSyncWorker(streamer RedisStreamer, cfg AccountSyncWorkerConfig) *WorkerManager {
+	m := &WorkerManager{streamer: streamer, cfg: cfg}
+	InstallAccountQueue(streamer, m)
+	return m
 }
 
 // ─── Worker loop ─────────────────────────────────────────────────────────────
 
-// runWorker is the main drain loop. It blocks on XREADGROUP until data arrives or
-// BlockTimeout elapses, then coalesces and writes to ImmuDB.
-//
-// Startup: reclaimPending is called first to replay any PEL entries left by a prior crash.
-// Exit: clean on ctx cancellation (XREADGROUP propagates the ctx; select checks at loop top).
-func runWorker(ctx context.Context, s RedisStreamer, cfg AccountSyncWorkerConfig) {
-	log.Printf("[AccountSyncWorker] started (stream=%s group=%s consumer=%s)",
+// runWorker is the drain loop running as a method on WorkerManager.
+// It exits when BlockTimeout elapses with no data AND lastActivity is stale.
+// defer sets isOnline=false so even a panic marks the worker offline.
+func (wm *WorkerManager) runWorker() {
+	defer wm.isOnline.Store(false)
+	log.Printf("[accountqueue] worker started (stream=%s group=%s consumer=%s)",
 		accountSyncStream, accountSyncGroup, accountSyncConsumer)
-	defer log.Printf("[AccountSyncWorker] stopped")
+	defer log.Printf("[accountqueue] worker stopped")
 
-	// Ensure the consumer group exists before attempting to read.
-	// We do this in a retry loop here so it doesn't block node startup if Redis is down.
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		if err := s.EnsureConsumerGroup(ctx, accountSyncStream, accountSyncGroup); err != nil {
-			log.Printf("[AccountSyncWorker] EnsureConsumerGroup error: %v — retrying in 30s", err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(30 * time.Second):
-			}
-			continue
-		}
-		break
+	if err := wm.streamer.EnsureConsumerGroup(context.Background(), accountSyncStream, accountSyncGroup); err != nil {
+		log.Printf("[accountqueue] ERROR: EnsureConsumerGroup: %v — worker exiting", err)
+		return
 	}
 
-	// Replay any entries left unACKed by a previous crash before accepting new work.
-	if err := reclaimPending(ctx, s, cfg); err != nil {
-		if ctx.Err() == nil {
-			// Log but don't fatal — new entries can still be processed.
-			log.Printf("[AccountSyncWorker] WARN: startup reclaimPending error: %v", err)
-		}
+	// Reclaim any entries left unACKed by a prior worker run.
+	if err := reclaimPending(wm.streamer, wm.cfg); err != nil {
+		log.Printf("[accountqueue] WARN: startup reclaimPending error: %v", err)
 	}
 
 	for {
-		// Check for shutdown before blocking on Redis.
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		// XREADGROUP BLOCK cfg.BlockTimeout — sleeps inside Redis until new entries arrive
-		// or the timeout elapses. ctx cancellation propagates through go-redis.
-		entries, err := s.ReadGroup(
-			ctx,
+		entries, err := wm.streamer.ReadGroup(
+			context.Background(),
 			accountSyncStream, accountSyncGroup, accountSyncConsumer,
-			cfg.MaxDrainItems,
-			cfg.BlockTimeout,
+			wm.cfg.MaxDrainItems,
+			wm.cfg.BlockTimeout,
 		)
 		if err != nil {
-			if ctx.Err() != nil {
-				return // clean shutdown
-			}
-			log.Printf("[AccountSyncWorker] ReadGroup error: %v — retrying in 1s", err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
+			log.Printf("[accountqueue] ReadGroup error: %v — retrying in 1s", err)
+			time.Sleep(time.Second)
 			continue
 		}
-		if len(entries) == 0 {
-			continue // timeout, no data — loop
-		}
-
-		log.Printf("[AccountSyncWorker] drained %d stream entries — processing", len(entries))
-		if err := processBatch(ctx, s, entries, cfg); err != nil {
-			if ctx.Err() != nil {
+		if entries == nil {
+			// BlockTimeout elapsed with no data — check idle window.
+			if time.Since(time.Unix(0, wm.lastActivity.Load())) >= wm.cfg.BlockTimeout {
+				log.Printf("[accountqueue] worker idle for %s — going offline", wm.cfg.BlockTimeout)
 				return
 			}
-			// Do NOT ACK. Entries remain in PEL and are replayed by the next
-			// reclaimPending call (on worker restart) or by XAUTOCLAIM.
+			// lastActivity was refreshed by a concurrent EnsureActive reset; keep going.
+			continue
+		}
+
+		if err := processBatch(wm.streamer, entries, wm.cfg); err != nil {
+			// Do NOT ACK. Entries remain in PEL and are replayed by reclaimPending on next start.
 			// BatchRestoreAccounts is LWW-idempotent — replays are safe.
-			log.Printf("[AccountSyncWorker] processBatch error: %v — %d entries remain in PEL for retry",
+			log.Printf("[accountqueue] processBatch error: %v — %d entries remain in PEL for retry",
 				err, len(entries))
+		} else {
+			wm.lastActivity.Store(time.Now().UnixNano())
 		}
 	}
 }
@@ -229,17 +234,14 @@ func runWorker(ctx context.Context, s RedisStreamer, cfg AccountSyncWorkerConfig
 // unACKed by a previous crash.
 //
 // Iterates via cursor until the full PEL is scanned ("0-0" returned as next cursor).
+// Each DB op uses context.Background() with cfg.DBWriteTimeout — no external cancellation.
 //
 // Time: O(PEL size / MaxDrainItems) XAUTOCLAIM round trips + processBatch cost per page.
-func reclaimPending(ctx context.Context, s RedisStreamer, cfg AccountSyncWorkerConfig) error {
+func reclaimPending(s RedisStreamer, cfg AccountSyncWorkerConfig) error {
 	cursor := "0-0"
 	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
 		entries, next, err := s.AutoClaim(
-			ctx,
+			context.Background(),
 			accountSyncStream, accountSyncGroup, accountSyncConsumer,
 			cfg.PendingIdleTimeout,
 			cursor,
@@ -250,8 +252,8 @@ func reclaimPending(ctx context.Context, s RedisStreamer, cfg AccountSyncWorkerC
 		}
 
 		if len(entries) > 0 {
-			log.Printf("[AccountSyncWorker] reclaiming %d pending entries (cursor=%s)", len(entries), cursor)
-			if err := processBatch(ctx, s, entries, cfg); err != nil {
+			log.Printf("[accountqueue] reclaiming %d pending entries (cursor=%s)", len(entries), cursor)
+			if err := processBatch(s, entries, cfg); err != nil {
 				return fmt.Errorf("process reclaimed entries at cursor=%s: %w", cursor, err)
 			}
 		}
@@ -282,11 +284,11 @@ func reclaimPending(ctx context.Context, s RedisStreamer, cfg AccountSyncWorkerC
 //
 // Time: O(N/MaxAccountsPerBatch) BatchRestoreAccounts round trips, where N = total accounts.
 // Space: O(N) — ephemeral []dbEntry freed after ACK.
-func processBatch(ctx context.Context, s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerConfig) error {
+func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerConfig) error {
 	var (
 		writeEntries []dbEntry // accounts to persist to ImmuDB
-		goodIDs      []string  // stream IDs to ACK after successful DB write
-		poisonIDs    []string  // stream IDs to ACK immediately (unrecoverable parse failure)
+		goodIDs      []string  // stream IDs to ACK+XDEL after successful DB write
+		poisonIDs    []string  // stream IDs to ACK+XDEL immediately (unrecoverable)
 	)
 
 	for _, entry := range entries {
@@ -297,7 +299,7 @@ func processBatch(ctx context.Context, s RedisStreamer, entries []StreamEntry, c
 		case payloadTypeAccounts:
 			parsed, err := parseAccountsPayload(dataStr)
 			if err != nil {
-				log.Printf("[AccountSyncWorker] WARN: poison pill — undecodable accounts entry %s: %v", entry.ID, err)
+				log.Printf("[accountqueue] WARN: poison pill — undecodable accounts entry %s: %v", entry.ID, err)
 				poisonIDs = append(poisonIDs, entry.ID)
 				continue
 			}
@@ -307,7 +309,7 @@ func processBatch(ctx context.Context, s RedisStreamer, entries []StreamEntry, c
 		case payloadTypeUpdates:
 			parsed, err := parseUpdatesPayload(dataStr)
 			if err != nil {
-				log.Printf("[AccountSyncWorker] WARN: poison pill — undecodable updates entry %s: %v", entry.ID, err)
+				log.Printf("[accountqueue] WARN: poison pill — undecodable updates entry %s: %v", entry.ID, err)
 				poisonIDs = append(poisonIDs, entry.ID)
 				continue
 			}
@@ -315,16 +317,18 @@ func processBatch(ctx context.Context, s RedisStreamer, entries []StreamEntry, c
 			goodIDs = append(goodIDs, entry.ID)
 
 		default:
-			log.Printf("[AccountSyncWorker] WARN: poison pill — unknown payload type %q in entry %s", payloadType, entry.ID)
+			log.Printf("[accountqueue] WARN: poison pill — unknown payload type %q in entry %s", payloadType, entry.ID)
 			poisonIDs = append(poisonIDs, entry.ID)
 		}
 	}
 
-	// ACK poison pills immediately — they are unrecoverable and must not block the PEL.
+	// ACK + XDEL poison pills immediately — unrecoverable, must not block the PEL.
 	if len(poisonIDs) > 0 {
-		ackCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		ackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := s.Ack(ackCtx, accountSyncStream, accountSyncGroup, poisonIDs...); err != nil {
-			log.Printf("[AccountSyncWorker] WARN: failed to ACK %d poison pills: %v", len(poisonIDs), err)
+			log.Printf("[accountqueue] WARN: failed to ACK %d poison pills: %v", len(poisonIDs), err)
+		} else if err := s.Delete(ackCtx, accountSyncStream, poisonIDs...); err != nil {
+			log.Printf("[accountqueue] WARN: failed to XDEL %d poison pills: %v", len(poisonIDs), err)
 		}
 		cancel()
 	}
@@ -333,44 +337,48 @@ func processBatch(ctx context.Context, s RedisStreamer, entries []StreamEntry, c
 		return nil
 	}
 
-	// Use a timeout context scoped to this DB write — NOT the lifecycle ctx.
-	// GetAccountConnectionandPutBack launches a goroutine that returns the connection
-	// on ctx.Done(). Using the lifecycle ctx would return the connection on worker
-	// shutdown rather than on write completion.
-	writeCtx, writeCancel := context.WithTimeout(ctx, cfg.DBWriteTimeout)
+	// Scope a timeout to this DB write. writeCtx bounds connection acquisition AND
+	// (threaded into BatchRestoreAccounts) every GetAll/ExecAll inside the write.
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), cfg.DBWriteTimeout)
 	defer writeCancel()
 
-	conn, err := DB_OPs.GetAccountConnectionandPutBack(writeCtx)
+	// Acquire explicitly and return on processBatch exit — NOT via
+	// GetAccountConnectionandPutBack. That helper's auto-return goroutine fires when
+	// writeCtx hits its deadline, which can recycle the connection back into the pool
+	// while a multi-chunk BatchRestoreAccounts is still issuing gRPC on it (data race).
+	conn, err := DB_OPs.GetAccountsConnections(writeCtx)
 	if err != nil {
 		return fmt.Errorf("get account DB connection: %w", err)
 	}
+	defer DB_OPs.PutAccountsConnection(conn)
 
 	// Write in sub-batches to bound individual ImmuDB commit size.
 	// All chunks must succeed before any ACK is issued.
-	//
-	// Time: O(ceil(N / MaxAccountsPerBatch)) BatchRestoreAccounts calls.
+	start := time.Now()
 	for i := 0; i < len(writeEntries); i += cfg.MaxAccountsPerBatch {
 		end := i + cfg.MaxAccountsPerBatch
 		if end > len(writeEntries) {
 			end = len(writeEntries)
 		}
-		// []dbEntry is a type alias for []struct{Key string; Value []byte} —
-		// assignment-compatible with BatchRestoreAccounts parameter without conversion.
-		if err := DB_OPs.BatchRestoreAccounts(conn, writeEntries[i:end]); err != nil {
+		if err := DB_OPs.BatchRestoreAccounts(writeCtx, conn, writeEntries[i:end]); err != nil {
 			return fmt.Errorf("BatchRestoreAccounts chunk [%d:%d] of %d: %w", i, end, len(writeEntries), err)
 		}
 	}
+	commitDur := time.Since(start)
 
-	// All sub-batches succeeded — ACK the good entries, removing them from the PEL.
-	// If ACK itself fails, entries remain in PEL and will be replayed.
-	// Replay safety: BatchRestoreAccounts is LWW-idempotent.
-	ackCtx, ackCancel := context.WithTimeout(ctx, 5*time.Second)
+	// All sub-batches succeeded — ACK + XDEL in one pipeline round-trip.
+	// XACK removes entries from the PEL; XDEL removes the payload from the stream body.
+	// Without XDEL, ACKed entries accumulate in the stream indefinitely.
+	// Replay safety: BatchRestoreAccounts is LWW-idempotent if ACK fails and entries replay.
+	ackCtx, ackCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer ackCancel()
 	if err := s.Ack(ackCtx, accountSyncStream, accountSyncGroup, goodIDs...); err != nil {
-		log.Printf("[AccountSyncWorker] WARN: ACK failed for %d entries after successful DB write: %v — will be reclaimed and re-written (safe, LWW)", len(goodIDs), err)
+		log.Printf("[accountqueue] WARN: ACK failed for %d entries after successful DB write: %v — will be reclaimed and re-written (safe, LWW)", len(goodIDs), err)
+	} else if err := s.Delete(ackCtx, accountSyncStream, goodIDs...); err != nil {
+		log.Printf("[accountqueue] WARN: XDEL failed for %d entries after ACK: %v", len(goodIDs), err)
 	} else {
-		log.Printf("[AccountSyncWorker] wrote %d accounts from %d entries; all ACKed",
-			len(writeEntries), len(goodIDs))
+		log.Printf("[accountqueue] wrote %d accounts from %d entries in %s; ACKed + XDELed",
+			len(writeEntries), len(goodIDs), commitDur.Round(time.Millisecond))
 	}
 
 	return nil
@@ -388,7 +396,7 @@ func parseAccountsPayload(dataStr string) ([]dbEntry, error) {
 	if err := json.Unmarshal([]byte(dataStr), &accs); err != nil {
 		return nil, fmt.Errorf("unmarshal []*types.Account: %w", err)
 	}
-	
+
 	// We might emit up to 2 entries per account (address: and did:)
 	entries := make([]dbEntry, 0, len(accs)*2)
 	for _, acc := range accs {
@@ -411,13 +419,13 @@ func parseAccountsPayload(dataStr string) ([]dbEntry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("marshal DB_OPs.Account for address %s: %w", acc.Address.Hex(), err)
 		}
-		
+
 		// 1. Emit the primary address key
 		entries = append(entries, dbEntry{
 			Key:   DB_OPs.Prefix + acc.Address.Hex(),
 			Value: val,
 		})
-		
+
 		// 2. Emit the DID key so BatchRestoreAccounts creates the bound reference
 		if acc.DIDAddress != "" {
 			entries = append(entries, dbEntry{

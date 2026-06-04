@@ -89,6 +89,9 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			if len(tx.Value) > 0 {
 				cfgTx.Value = new(big.Int).SetBytes(tx.Value)
 			}
+			if len(tx.ChainId) > 0 {
+				cfgTx.ChainID = new(big.Int).SetBytes(tx.ChainId)
+			}
 			if len(tx.GasPrice) > 0 {
 				cfgTx.GasPrice = new(big.Int).SetBytes(tx.GasPrice)
 			}
@@ -97,6 +100,18 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			}
 			if len(tx.MaxPriorityFee) > 0 {
 				cfgTx.MaxPriorityFee = new(big.Int).SetBytes(tx.MaxPriorityFee)
+			}
+			if len(tx.AccessList) > 0 {
+				cfgTx.AccessList = make(config.AccessList, 0, len(tx.AccessList))
+				for _, pbAT := range tx.AccessList {
+					at := config.AccessTuple{
+						Address: common.BytesToAddress(pbAT.Address),
+					}
+					for _, sk := range pbAT.StorageKeys {
+						at.StorageKeys = append(at.StorageKeys, common.BytesToHash(sk))
+					}
+					cfgTx.AccessList = append(cfgTx.AccessList, at)
+				}
 			}
 			if len(tx.V) > 0 {
 				cfgTx.V = new(big.Int).SetBytes(tx.V)

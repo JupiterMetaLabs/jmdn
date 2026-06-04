@@ -877,10 +877,8 @@ func main() {
 			Password: cfg.Database.Redis.Password,
 		})
 		accountStreamer := NodeInfo.NewRedisStreamer(redisClient)
-		if err := NodeInfo.StartAccountSyncWorker(ctx, accountStreamer, NodeInfo.DefaultWorkerConfig()); err != nil {
-			log.Fatal().Err(err).Str("redis_url", cfg.Database.Redis.URL).Msg("Failed to start account sync worker")
-		}
-		log.Info().Str("redis_url", cfg.Database.Redis.URL).Msg("[AccountSyncWorker] started — WriteAccounts is now async")
+		NodeInfo.StartAccountSyncWorker(accountStreamer, NodeInfo.DefaultWorkerConfig())
+		log.Info().Str("redis_url", cfg.Database.Redis.URL).Msg("[accountqueue] installed — WriteAccounts is now async, worker starts lazily")
 		fmt.Println("✅ Account sync worker started (Redis Stream → ImmuDB async)")
 	}
 

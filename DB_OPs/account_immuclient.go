@@ -325,7 +325,7 @@ func BatchCreateAccountsOrdered(PooledConnection *config.PooledConnection, entri
 
 // BatchRestoreAccounts applies a batch of entries into accountsdb.
 // For address:<addr> keys it writes KV. For did:<did> it creates a bound reference to the corresponding address key.
-func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []struct {
+func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledConnection, entries []struct {
 	Key   string
 	Value []byte
 }) error {
@@ -334,12 +334,6 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 	}
 	var err error
 	var shouldReturnConnection bool
-
-	// Define Function wide context for timeout
-	ctx := context.Background()
-
-	// End the context.Background()
-	defer ctx.Done()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
@@ -446,7 +440,7 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 			}
 		}
 		if len(prefetchKeys) > 0 {
-			fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			fetchCtx, fetchCancel := context.WithTimeout(ctx, 30*time.Second)
 			entriesList, getAllErr := PooledConnection.Client.Client.GetAll(fetchCtx, prefetchKeys)
 			fetchCancel()
 			if getAllErr == nil && entriesList != nil {
@@ -627,7 +621,7 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		if end > len(ops) {
 			end = len(ops)
 		}
-		chunkCtx, chunkCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		chunkCtx, chunkCancel := context.WithTimeout(ctx, 30*time.Second)
 		_, err = PooledConnection.Client.Client.ExecAll(chunkCtx, &schema.ExecAllRequest{Operations: ops[chunkStart:end]})
 		chunkCancel()
 		if err != nil {

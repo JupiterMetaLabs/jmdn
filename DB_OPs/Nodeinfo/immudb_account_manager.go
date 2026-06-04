@@ -171,10 +171,11 @@ func (am *account_manager) WriteAccounts(accounts []*types.Account) error {
 	if len(accounts) == 0 {
 		return nil
 	}
-	s := getStreamer()
+	s, mgr := getAccountQueue()
 	if s == nil {
-		return fmt.Errorf("WriteAccounts: account sync worker not initialized; call StartAccountSyncWorker before use")
+		return fmt.Errorf("WriteAccounts: account queue not initialized; call StartAccountSyncWorker before use")
 	}
+	mgr.EnsureActive()
 	data, err := json.Marshal(accounts)
 	if err != nil {
 		return fmt.Errorf("WriteAccounts: marshal accounts: %w", err)
@@ -326,10 +327,11 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 	if len(updates) == 0 {
 		return nil
 	}
-	s := getStreamer()
+	s, mgr := getAccountQueue()
 	if s == nil {
-		return fmt.Errorf("BatchUpdateAccounts: account sync worker not initialized; call StartAccountSyncWorker before use")
+		return fmt.Errorf("BatchUpdateAccounts: account queue not initialized; call StartAccountSyncWorker before use")
 	}
+	mgr.EnsureActive()
 	// Convert to wire type for stable JSON serialization.
 	// big.Int.String() produces a decimal string; accountUpdateWire makes the format explicit.
 	wires := make([]accountUpdateWire, len(updates))
