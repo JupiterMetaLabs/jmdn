@@ -150,7 +150,7 @@ func storeAccountInDB(msg DIDMessage) {
 		// 	UpdatedAt:   time.Now().UTC().Unix(),
 		// }
 
-		// Store Account document preserving the sender's StateID
+		// Store Account document preserving the sender's ART Nonce
 		err := DB_OPs.StorePropagatedAccount(client, msg.Account)
 		if err != nil {
 			log.Error().Err(err).Str("Account", msg.Account.DIDAddress).Msg("Failed to store Propagated Account in database")

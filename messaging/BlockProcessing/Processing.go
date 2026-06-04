@@ -922,8 +922,8 @@ func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount s
 	}
 
 	// Foolproof execution-time nonce check (prevents same-block replay attacks)
-	if tx.Nonce < didDoc.Nonce {
-		return fmt.Errorf("execution rejected: submitted nonce %d is lower than account's current DB nonce %d (possible same-block replay attack)", tx.Nonce, didDoc.Nonce)
+	if tx.Nonce < didDoc.TxNonce {
+		return fmt.Errorf("execution rejected: submitted nonce %d is lower than account's current DB nonce %d (possible same-block replay attack)", tx.Nonce, didDoc.TxNonce)
 	}
 
 	// Parse amount to deduct

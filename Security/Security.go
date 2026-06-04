@@ -517,7 +517,7 @@ func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, ma
 	account, err := DB_OPs.GetAccount(mainDBConn, *tx.From)
 	var expectedNonce uint64 = 0
 	if err == nil && account != nil {
-		expectedNonce = account.Nonce
+		expectedNonce = account.TxNonce
 	} else if err != nil && err.Error() != "account not found" {
 		nonceSpan.RecordError(err)
 		nonceSpan.End()

@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"gossipnode/config"
 	"gossipnode/config/settings"
 
-	"sync/atomic"
 	"time"
 
 	"github.com/JupiterMetaLabs/ion"
@@ -29,10 +29,10 @@ type Account struct {
 	DIDAddress string `json:"did,omitempty"`
 
 	// New PublicKey based fields
-	StateID     uint64         `json:"nonce"`   // Unique deterministic ID for Fastsync ART (migrated from old nonce)
+	Nonce       uint64         `json:"nonce"`   // Unique deterministic ID for Fastsync ART (migrated from old nonce)
 	Address     common.Address `json:"address"` // Derived from PublicKey
 	Balance     string         `json:"balance,omitempty"`
-	Nonce       uint64         `json:"tx_nonce"`      // Real Ethereum Nonce
+	TxNonce     uint64         `json:"tx_nonce"`      // Real Ethereum Nonce
 	TxCountSent uint64         `json:"tx_count_sent"` // Tracks actual analytical transactions sent
 
 	// Account metadata
@@ -109,15 +109,15 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 	CreatedAt := time.Now().UTC().UnixNano()
 	UpdatedAt := time.Now().UTC().UnixNano()
 
-	StateID := GenerateStateID()
+	ARTNonce := GenerateARTNonce()
 
 	// Create the account document
 	AccountDoc = &Account{
-		StateID:     StateID,
+		Nonce:       ARTNonce,
 		DIDAddress:  DIDAddress,
 		Address:     Address,
 		Balance:     "0",
-		Nonce:       0,
+		TxNonce:     0,
 		TxCountSent: 0,
 		AccountType: "user",
 		CreatedAt:   CreatedAt,
@@ -190,10 +190,12 @@ func storeAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 
 	// Create the account document
 	AccountDoc = &Account{
+		Nonce:       KeyDoc.Nonce,
 		DIDAddress:  KeyDoc.DIDAddress,
 		Address:     KeyDoc.Address,
 		Balance:     KeyDoc.Balance,
-		Nonce:       KeyDoc.Nonce,
+		TxNonce:     KeyDoc.TxNonce,
+		TxCountSent: KeyDoc.TxCountSent,
 		AccountType: KeyDoc.AccountType,
 		CreatedAt:   KeyDoc.CreatedAt,
 		UpdatedAt:   time.Now().UTC().UnixNano(),
@@ -952,7 +954,7 @@ func UpdateAccountSenderState(PooledConnection *config.PooledConnection, address
 
 	doc.Balance = newBalance
 	doc.TxCountSent = doc.TxCountSent + 1
-	doc.Nonce = newNonce
+	doc.TxNonce = newNonce
 	doc.UpdatedAt = time.Now().UTC().UnixNano()
 
 	// Safe Write to the DB with the same key
@@ -2338,7 +2340,7 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 // [AUDIT OK]: State transition logic (TxCountSent++, Nonce update) and blockTimestamp propagation verified safe; 1 call site in BlockProcessing.
 // [AUDIT OK]: Nil checks on account/address, connection pooling handling, and direct storage verified safe; 1 call site in DIDPropagation.
 // StorePropagatedAccount securely stores an account received from the P2P network,
-// perfectly preserving its StateID and other properties to ensure Fastsync consensus.
+// perfectly preserving its ART Nonce and other properties to ensure Fastsync consensus.
 func StorePropagatedAccount(PooledConnection *config.PooledConnection, account *Account) error {
 	var err error
 	var shouldReturnConnection = false
@@ -2365,14 +2367,14 @@ func StorePropagatedAccount(PooledConnection *config.PooledConnection, account *
 	return storeAccount(PooledConnection, account)
 }
 
-var stateIDCounter uint64
+var artNonceCounter uint64
 
 // [AUDIT OK]: Atomic counter and bit shift mathematically proven safe against overflow (51 bits for micro + 12 for counter = 63 bits); 1 call site in CreateAccount.
-// GenerateStateID generates a locally unique StateID for Fastsync ART routing.
+// GenerateARTNonce generates a locally unique Nonce for Fastsync ART routing.
 // This is strictly used when this node originates an account (e.g., manual DID creation).
-// Accounts synced from the network MUST preserve the sender's StateID.
-func GenerateStateID() uint64 {
+// Accounts synced from the network MUST preserve the sender's ART Nonce.
+func GenerateARTNonce() uint64 {
 	ts := uint64(time.Now().UTC().UnixMicro())
-	c := atomic.AddUint64(&stateIDCounter, 1)
+	c := atomic.AddUint64(&artNonceCounter, 1)
 	return (ts << 12) | (c & 0xFFF)
 }
