@@ -172,7 +172,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		}
 
 		// Process the transaction with span context
-		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient)
+		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient, block.Timestamp)
 		if Process_err != nil {
 			// ATOMICITY: If any transaction fails, roll back ALL affected accounts
 			span.RecordError(Process_err)
@@ -190,7 +190,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 			)
 
 			// Rollback all balances to original state
-			rollbackError := rollbackBalances(span_ctx, originalBalances, accountsClient)
+			rollbackError := rollbackBalances(span_ctx, originalBalances, accountsClient, block.Timestamp)
 			if rollbackError != nil {
 				span.RecordError(rollbackError)
 				logger().NamedLogger.Error(span_ctx, "Failed to rollback balances after transaction failure",
@@ -259,7 +259,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 			)
 			// Rollback balances since transaction marking failed
-			rollbackBalances(span_ctx, originalBalances, accountsClient)
+			rollbackBalances(span_ctx, originalBalances, accountsClient, block.Timestamp)
 			// Clean up processing markers (they weren't committed due to transaction failure)
 			for _, txHash := range successfullyProcessedTxs {
 				cleanupProcessingMarkers(span_ctx, accountsClient, txHash)
@@ -355,7 +355,7 @@ func cleanupProcessingMarkers(span_ctx context.Context, accountsClient *config.P
 }
 
 // rollbackBalances restores original balances for all affected DIDs
-func rollbackBalances(span_ctx context.Context, originalBalances map[common.Address]string, accountsClient *config.PooledConnection) error {
+func rollbackBalances(span_ctx context.Context, originalBalances map[common.Address]string, accountsClient *config.PooledConnection, blockTimestamp int64) error {
 	rollbackSpanCtx, rollbackSpan := logger().NamedLogger.Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.rollbackBalances")
 	defer rollbackSpan.End()
 
@@ -405,7 +405,7 @@ func rollbackBalances(span_ctx context.Context, originalBalances map[common.Addr
 }
 
 // ProcessTransaction handles a single transaction's balance updates
-func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection) error {
+func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection, blockTimestamp int64) error {
 	// Record trace span and close it
 	txSpanCtx, txSpan := logger().NamedLogger.Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.processTransaction")
 	defer txSpan.End()
@@ -655,7 +655,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	}
 
 	// 1. Deduct from sender
-	if err := deductFromSender(txSpanCtx, &tx, totalDeduction.String(), accountsClient); err != nil {
+	if err := deductFromSender(txSpanCtx, &tx, totalDeduction.String(), accountsClient, blockTimestamp); err != nil {
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "deduction_failed"), attribute.String("failed_step", "deduct_from_sender"))
 		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
@@ -676,7 +676,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	txSpan.SetAttributes(attribute.String("deduction_step", "completed"))
 
 	// 2. Add amount to recipient
-	if err := addToRecipient(txSpanCtx, *tx.To, parsedTx.ValueBig.String(), accountsClient); err != nil {
+	if err := addToRecipient(txSpanCtx, *tx.To, parsedTx.ValueBig.String(), accountsClient, blockTimestamp); err != nil {
 		// Rollback sender deduction on failure
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "recipient_add_failed"), attribute.String("failed_step", "add_to_recipient"))
@@ -710,13 +710,13 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	txSpan.SetAttributes(attribute.String("recipient_add_step", "completed"))
 
 	// 3. Split gas fee between coinbase and ZKVM
-	if err := addToRecipient(txSpanCtx, coinbaseAddr, coinbaseGasFee.String(), accountsClient); err != nil {
+	if err := addToRecipient(txSpanCtx, coinbaseAddr, coinbaseGasFee.String(), accountsClient, blockTimestamp); err != nil {
 		// Rollback previous operations
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "coinbase_gas_fee_failed"), attribute.String("failed_step", "add_to_coinbase"))
 		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
 		for _, accounts := range rollbackAccounts {
-			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
+			if rollbackErr := rollbackBalances(txSpanCtx, originalBalances, accountsClient, blockTimestamp); rollbackErr != nil {
 				txSpan.RecordError(rollbackErr)
 				logger().NamedLogger.Error(txSpanCtx, "Failed to rollback balance",
 					rollbackErr,
@@ -744,13 +744,13 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	txSpan.SetAttributes(attribute.String("coinbase_gas_fee_step", "completed"))
 
-	if err := addToRecipient(txSpanCtx, zkvmAddr, zkvmGasFee.String(), accountsClient); err != nil {
+	if err := addToRecipient(txSpanCtx, zkvmAddr, zkvmGasFee.String(), accountsClient, blockTimestamp); err != nil {
 		// Rollback previous operations
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "zkvm_gas_fee_failed"), attribute.String("failed_step", "add_to_zkvm"))
 		rollbackAccounts := []common.Address{*tx.From, *tx.To, coinbaseAddr, zkvmAddr}
 		for _, accounts := range rollbackAccounts {
-			if rollbackErr := DB_OPs.UpdateAccountBalance(accountsClient, accounts, originalBalances[accounts]); rollbackErr != nil {
+			if rollbackErr := rollbackBalances(txSpanCtx, originalBalances, accountsClient, blockTimestamp); rollbackErr != nil {
 				txSpan.RecordError(rollbackErr)
 				logger().NamedLogger.Error(txSpanCtx, "Failed to rollback balance",
 					rollbackErr,
@@ -907,7 +907,7 @@ func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error
 }
 
 // deductFromSender deducts an amount from a sender's DID account
-func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount string, accountsClient *config.PooledConnection) error {
+func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount string, accountsClient *config.PooledConnection, blockTimestamp int64) error {
 	fromDID := *tx.From
 	// Get the current DID document using the provided accounts client
 	didDoc, err := DB_OPs.GetAccount(accountsClient, fromDID)
@@ -961,12 +961,11 @@ func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount s
 }
 
 // addToRecipient adds an amount to a recipient's DID account
-func addToRecipient(span_ctx context.Context, ToAddress common.Address, amount string, accountsClient *config.PooledConnection) error {
+func addToRecipient(span_ctx context.Context, ToAddress common.Address, amount string, accountsClient *config.PooledConnection, blockTimestamp int64) error {
 	// Get the current DID document using the provided accounts client
 	didDoc, err := DB_OPs.GetAccount(accountsClient, ToAddress)
 	if err != nil {
-		// If DID doesn't exist,
-		return fmt.Errorf("failed to retrieve recipient DID %s: %w", ToAddress, err)
+		return fmt.Errorf("failed to retrieve recipient DID %s (account must exist before transfer): %w", ToAddress, err)
 	}
 
 	// Parse current balance

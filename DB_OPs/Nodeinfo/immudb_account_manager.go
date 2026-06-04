@@ -304,7 +304,9 @@ func dbOpsToTypes(acc *DB_OPs.Account) *types.Account {
 		DIDAddress:  acc.DIDAddress,
 		Address:     acc.Address,
 		Balance:     acc.Balance,
-		Nonce:       acc.Nonce,
+		Nonce:       acc.StateID, // MAP: StateID -> Fastsync Nonce (ART Key)
+		TxNonce:     acc.Nonce,   // MAP: Ethereum Nonce -> TxNonce
+		TxCountSent: acc.TxCountSent,
 		AccountType: acc.AccountType,
 		CreatedAt:   acc.CreatedAt,
 		UpdatedAt:   acc.UpdatedAt,

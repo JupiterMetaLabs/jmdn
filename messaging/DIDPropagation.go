@@ -150,10 +150,10 @@ func storeAccountInDB(msg DIDMessage) {
 		// 	UpdatedAt:   time.Now().UTC().Unix(),
 		// }
 
-		// Store Account document
-		err := DB_OPs.CreateAccount(client, msg.Account.DIDAddress, msg.Account.Address, nil)
+		// Store Account document preserving the sender's StateID
+		err := DB_OPs.StorePropagatedAccount(client, msg.Account)
 		if err != nil {
-			log.Error().Err(err).Str("Account", msg.Account.DIDAddress).Msg("Failed to store Account in database")
+			log.Error().Err(err).Str("Account", msg.Account.DIDAddress).Msg("Failed to store Propagated Account in database")
 			return err
 		}
 

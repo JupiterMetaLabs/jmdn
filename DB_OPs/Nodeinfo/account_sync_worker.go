@@ -399,7 +399,9 @@ func parseAccountsPayload(dataStr string) ([]dbEntry, error) {
 			DIDAddress:  acc.DIDAddress,
 			Address:     acc.Address,
 			Balance:     acc.Balance,
-			Nonce:       acc.Nonce,
+			StateID:     acc.Nonce, // REVERSE MAP: Fastsync Nonce -> StateID
+			Nonce:       acc.TxNonce,
+			TxCountSent: acc.TxCountSent,
 			AccountType: acc.AccountType,
 			CreatedAt:   acc.CreatedAt,
 			UpdatedAt:   acc.UpdatedAt,
