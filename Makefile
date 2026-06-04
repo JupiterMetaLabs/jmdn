@@ -15,7 +15,9 @@ BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 # Linker flags
 LDFLAGS=-ldflags "-X 'gossipnode/config/version.gitCommit=${GIT_COMMIT}' -X 'gossipnode/config/version.gitBranch=${GIT_BRANCH}' -X 'gossipnode/config/version.gitTag=${GIT_TAG}' -X 'gossipnode/config/version.buildTime=${BUILD_TIME}' -linkmode=external -w -s"
 
-.PHONY: all build clean run test fmt lint lint-fix version deploy
+.PHONY: all build clean run test fmt lint lint-fix version deploy \
+        infra-kv infra-redis infra-sql infra \
+        infra-redis-start infra-sql-start infra-sql-setup
 
 all: build
 
@@ -43,6 +45,79 @@ deploy: build
 	@mkdir -p ${INSTALL_PATH}
 	@mv ./${BINARY_NAME} ${INSTALL_PATH}/${BINARY_NAME}
 	@echo "Deployment complete: ${INSTALL_PATH}/${BINARY_NAME}"
+
+# ── Infrastructure Setup ──────────────────────────────────────────────────────
+# Run once on a fresh machine. Requires Homebrew on macOS.
+# Install only  — does not start services automatically.
+# To start: make infra-redis-start / make infra-sql-start
+
+JMDN_KV_PATH ?= /opt/jmdn/thebe-kv
+
+# Create the BadgerDB KV directory at /opt/jmdn (no daemon — embedded store).
+infra-kv:
+	@if [ -d "$(JMDN_KV_PATH)" ]; then \
+		echo "✓ KV path already exists: $(JMDN_KV_PATH)"; \
+	else \
+		echo "→ creating KV directory at $(JMDN_KV_PATH)"; \
+		sudo mkdir -p $(JMDN_KV_PATH); \
+		sudo chown -R $(shell whoami) /opt/jmdn; \
+		echo "✓ done — set thebe.kv_path: \"$(JMDN_KV_PATH)\" in jmdn.yaml"; \
+	fi
+
+# Install Redis via Homebrew (no auto-start).
+infra-redis:
+	@if brew list redis &>/dev/null; then \
+		echo "✓ Redis already installed"; \
+	else \
+		echo "→ installing Redis"; \
+		brew install redis; \
+		echo "✓ done — run: make infra-redis-start"; \
+	fi
+
+# Install PostgreSQL via Homebrew, create jmdn db + user (no auto-start).
+infra-sql:
+	@if brew list postgresql@16 &>/dev/null; then \
+		echo "✓ PostgreSQL@16 already installed"; \
+	else \
+		echo "→ installing PostgreSQL@16"; \
+		brew install postgresql@16; \
+		echo "✓ done — run: make infra-sql-start"; \
+	fi
+
+# Install all three.
+infra: infra-kv infra-redis infra-sql
+	@echo ""
+	@echo "✓ all infra installed"
+	@echo ""
+	@echo "Next steps:"
+	@echo "  make infra-redis-start"
+	@echo "  make infra-sql-start      (then make infra-sql-setup)"
+	@echo ""
+	@echo "jmdn.yaml:"
+	@echo "  thebe:"
+	@echo "    enabled: true"
+	@echo "    kv_path: \"$(JMDN_KV_PATH)\""
+	@echo "    redis_url: \"redis://127.0.0.1:6379\""
+	@echo "  THEBE_SQL_DSN=postgres://jmdn@localhost:5432/jmdn?sslmode=disable"
+
+# ── Infrastructure Start ───────────────────────────────────────────────────────
+
+# Start Redis in the foreground (ctrl-c to stop).
+infra-redis-start:
+	@echo "→ starting Redis on 127.0.0.1:6379"
+	redis-server --daemonize no
+
+# Start PostgreSQL in the foreground.
+infra-sql-start:
+	@echo "→ starting PostgreSQL@16"
+	/opt/homebrew/opt/postgresql@16/bin/postgres -D /opt/homebrew/var/postgresql@16
+
+# Create jmdn db + user (run once after infra-sql-start).
+infra-sql-setup:
+	@echo "→ creating jmdn user and database"
+	@/opt/homebrew/opt/postgresql@16/bin/createuser --superuser jmdn 2>/dev/null || echo "  user jmdn already exists"
+	@/opt/homebrew/opt/postgresql@16/bin/createdb --owner=jmdn jmdn 2>/dev/null || echo "  database jmdn already exists"
+	@echo "✓ DSN: postgres://jmdn@localhost:5432/jmdn?sslmode=disable"
 
 # ── Developer Quality Targets ─────────────────────────────────────────────────
 # These mirror exactly what CI runs. Use before pushing.

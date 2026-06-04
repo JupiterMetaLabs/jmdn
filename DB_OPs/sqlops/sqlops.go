@@ -496,7 +496,7 @@ func (u *UnifiedDB) GetConnectedPeers() ([]PeerInfo, error) {
 			s := string(v)
 			peer.IsAlive = s == "true" || s == "1"
 		default:
-			logger(log.DB_OPs_SqlOps).Warn(context.Background(), "Unexpected type for isAlive", ion.String("type", fmt.Sprintf("%T", v)))
+			sqllogger(log.DB_OPs_SqlOps).Warn(context.Background(), "Unexpected type for isAlive", ion.String("type", fmt.Sprintf("%T", v)))
 			// Default to false
 			peer.IsAlive = false
 		}
@@ -580,7 +580,7 @@ func (u *UnifiedDB) CountConnectedPeers() (int, error) {
 
 
 // logger returns the ion logger instance for sqlops package
-func logger(namedLogger string) *ion.Ion {
+func sqllogger(namedLogger string) *ion.Ion {
 	logInstance, err := log.NewAsyncLogger().Get().NamedLogger(namedLogger, "")
 	if err != nil {
 		return nil

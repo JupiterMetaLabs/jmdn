@@ -37,8 +37,8 @@ func SetupLibp2pHost(ctx context.Context, port int) (host.Host, *pubsub.PubSub, 
 	}
 
 	logger().Info(context.Background(), "✅ libp2p host created\n")
-	logger().Info(context.Background(), "   Peer ID: %s", h.ID())
-	logger().Info(context.Background(), "   Listening on: %s", listenAddr)
+	logger().Info(context.Background(), "   Peer ID: %s", ion.String("peer_id", string(h.ID())))
+	logger().Info(context.Background(), "   Listening on: %s", ion.String("listen_addr", listenAddr))
 
 	return h, ps, nil
 }
@@ -50,36 +50,36 @@ func ConnectToPeers(ctx context.Context, h host.Host, peerAddrs []string) error 
 		return nil
 	}
 
-	logger().Info(context.Background(), "🔗 Connecting to %d peers...", len(peerAddrs))
+	logger().Info(context.Background(), "🔗 Connecting to %d peers...", ion.Int("num_peers", len(peerAddrs)))
 
 	for _, addrStr := range peerAddrs {
 		// Parse multiaddr
 		maddr, err := multiaddr.NewMultiaddr(addrStr)
 		if err != nil {
-			logger().Info(context.Background(), "❌ Invalid peer address %s: %v", addrStr, err)
+			logger().Info(context.Background(), "❌ Invalid peer address %s: %v", ion.String("addr_str", addrStr), ion.String("err", err.Error()))
 			continue
 		}
 
 		// Extract peer info
 		peerInfo, err := peer.AddrInfoFromP2pAddr(maddr)
 		if err != nil {
-			logger().Info(context.Background(), "❌ Failed to parse peer info from %s: %v", addrStr, err)
+			logger().Info(context.Background(), "❌ Failed to parse peer info from %s: %v", ion.String("addr_str", addrStr), ion.String("err", err.Error()))
 			continue
 		}
 
 		// Check if this is a self-connection attempt
 		if peerInfo.ID == h.ID() {
-			logger().Info(context.Background(), "🚫 Skipping self-connection attempt: %s", addrStr)
+			logger().Info(context.Background(), "🚫 Skipping self-connection attempt: %s", ion.String("addr_str", string(peerInfo.ID)))
 			continue
 		}
 
 		// Connect
 		if err := h.Connect(ctx, *peerInfo); err != nil {
-			logger().Info(context.Background(), "❌ Failed to connect to %s: %v", peerInfo.ID, err)
+			logger().Info(context.Background(), "❌ Failed to connect to %s: %v", ion.String("peer_id", string(peerInfo.ID)), ion.String("err", err.Error()))
 			continue
 		}
 
-		logger().Info(context.Background(), "✅ Connected to peer: %s", peerInfo.ID)
+		logger().Info(context.Background(), "✅ Connected to peer: %s", ion.String("peer_id", string(peerInfo.ID)))
 	}
 
 	return nil
@@ -87,7 +87,7 @@ func ConnectToPeers(ctx context.Context, h host.Host, peerAddrs []string) error 
 
 // SetupSimpleNetwork creates a local test network
 func SetupSimpleNetwork(ctx context.Context, numNodes int, startPort int) ([]host.Host, []*pubsub.PubSub, error) {
-	logger().Info(context.Background(), "🚀 Setting up local test network with %d nodes", numNodes)
+	logger().Info(context.Background(), "🚀 Setting up local test network with %d nodes", ion.Int("num_nodes", numNodes))
 
 	hosts := make([]host.Host, numNodes)
 	pubsubs := make([]*pubsub.PubSub, numNodes)
@@ -113,11 +113,11 @@ func SetupSimpleNetwork(ctx context.Context, numNodes int, startPort int) ([]hos
 			}
 
 			if err := hosts[i].Connect(ctx, peerInfo); err != nil {
-				logger().Info(context.Background(), "⚠️  Failed to connect node %d to node %d: %v", i, j, err)
+				logger().Info(context.Background(), "⚠️  Failed to connect node %d to node %d: %v", ion.Int("node_i", i), ion.Int("node_j", j), ion.String("err", err.Error()))
 			}
 		}
 	}
 
-	logger().Info(context.Background(), "\n✅ Network setup complete! %d nodes connected", numNodes)
+	logger().Info(context.Background(), "\n✅ Network setup complete! %d nodes connected", ion.Int("num_nodes", numNodes))
 	return hosts, pubsubs, nil
 }
