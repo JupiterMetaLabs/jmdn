@@ -2,8 +2,6 @@ module gossipnode
 
 go 1.25.0
 
-replace github.com/JupiterMetaLabs/ThebeDB => ../ThebeDB
-
 require (
 	github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260401065006-cee589d6c547
 	github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260213044906-5629a60edea4
