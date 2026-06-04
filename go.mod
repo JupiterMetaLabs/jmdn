@@ -7,7 +7,7 @@ replace github.com/JupiterMetaLabs/ThebeDB => ../ThebeDB
 require (
 	github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260401065006-cee589d6c547
 	github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260213044906-5629a60edea4
-	github.com/JupiterMetaLabs/ThebeDB v0.0.0
+	github.com/JupiterMetaLabs/ThebeDB v0.0.0-00010101000000-000000000000
 	github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5
 	github.com/JupiterMetaLabs/ion v0.4.1
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
