@@ -1,15 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
-	"sync"
-	"time"
 
 	"gossipnode/DB_OPs"
 
@@ -24,14 +22,15 @@ var (
 )
 
 type AccountStats struct {
-	TxCount uint64 `json:"tx_count"`
-	MaxNonce uint64 `json:"max_nonce"`
+	TxCount     uint64 `json:"tx_count"`
+	MaxNonce    uint64 `json:"max_nonce"`
+	MaxNonceSet bool   `json:"max_nonce_set"`
 }
 
 func main() {
 	flag.Parse()
 
-	log.Printf("Starting V3 Migration...")
+	log.Printf("Starting V3 Migration with Pagination...")
 	log.Printf("Data Directory: %s", *dataDir)
 
 	// 1. Load Replay Stats (if available)
@@ -51,83 +50,123 @@ func main() {
 		WithAddress("127.0.0.1").
 		WithPort(3323)
 
+	ctx := context.Background()
 	c := client.NewClient().WithOptions(opts)
-	err := c.OpenSession(context.Background(), []byte("immudb"), []byte("immudb"), "defaultdb")
+	err := c.OpenSession(ctx, []byte("immudb"), []byte("immudb"), "accountsdb")
 	if err != nil {
-		log.Fatalf("Failed to connect: %v", err)
+		log.Fatalf("Failed to connect to accountsdb: %v", err)
 	}
-	defer c.CloseSession(context.Background())
+	defer c.CloseSession(ctx)
 
-	// 3. Scan all accounts
-	req := &schema.ScanRequest{
-		Prefix: []byte(DB_OPs.Prefix),
-		Desc:   false,
-	}
+	log.Printf("Connected to accountsdb. Starting paginated patch process...")
 
-	entries, err := c.Scan(context.Background(), req)
-	if err != nil {
-		log.Fatalf("Failed to scan: %v", err)
-	}
+	processedAccounts := 0
+	patchedAccounts := 0
+	parseErrors := 0
 
-	log.Printf("Found %d total account entries to migrate", len(entries.Entries))
+	prefix := []byte(DB_OPs.Prefix)
+	var seekKey []byte
 
-	var currentBatch []*schema.KeyValue
-	migratedCount := 0
-
-	for _, entry := range entries.Entries {
-		var acc DB_OPs.Account
-		if err := json.Unmarshal(entry.Value, &acc); err != nil {
-			log.Printf("Warning: skipped unparseable account %s", string(entry.Key))
-			continue
+	for {
+		req := &schema.ScanRequest{
+			Prefix:  prefix,
+			SeekKey: seekKey,
+			Limit:   uint64(*batchSize),
+			Desc:    false,
 		}
 
-		// THE MIGRATION LOGIC
-		// 1. The old bad nonce is automatically loaded into acc.Nonce thanks to the `json:"nonce"` tag.
-		// We just need to ensure it's not zero (though it shouldn't be for old accounts).
-		if acc.Nonce == 0 {
-			log.Printf("Warning: Account %s had 0 for old nonce!", acc.Address.Hex())
-		}
-
-		// 2. Assign the true Ethereum Nonce & TxCount (if available)
-		if stats, ok := statsMap[acc.Address.Hex()]; ok {
-			acc.TxNonce = stats.MaxNonce
-			acc.TxCountSent = stats.TxCount
-		} else {
-			acc.TxNonce = 0
-			acc.TxCountSent = 0
-		}
-
-		// Re-serialize
-		newBytes, err := json.Marshal(acc)
+		resp, err := c.Scan(ctx, req)
 		if err != nil {
-			log.Fatalf("Marshal failed: %v", err)
+			log.Fatalf("FATAL: scan failed (seekKey=%q): %v", string(seekKey), err)
+		}
+		if len(resp.Entries) == 0 {
+			break
 		}
 
-		currentBatch = append(currentBatch, &schema.KeyValue{
-			Key:   entry.Key,
-			Value: newBytes,
-		})
+		// ImmuDB Scan with SeekKey is INCLUSIVE — skip the first entry if it
+		// matches our cursor to avoid re-processing and infinite loops.
+		startIndex := 0
+		if seekKey != nil && len(resp.Entries) > 0 && bytes.Equal(resp.Entries[0].Key, seekKey) {
+			startIndex = 1
+		}
 
-		if len(currentBatch) >= *batchSize {
-			commitBatch(c, currentBatch)
-			migratedCount += len(currentBatch)
-			currentBatch = nil
-			log.Printf("Migrated %d accounts...", migratedCount)
+		// Build a batch update for all accounts that need patching in this page.
+		ops := make([]*schema.Op, 0, *batchSize)
+
+		for i := startIndex; i < len(resp.Entries); i++ {
+			e := resp.Entries[i]
+
+			var acc DB_OPs.Account
+			if err := json.Unmarshal(e.Value, &acc); err != nil {
+				log.Printf("WARN: skipping key %q — unmarshal error: %v", string(e.Key), err)
+				parseErrors++
+				continue
+			}
+			processedAccounts++
+
+			// ── V3 Migration Logic ──────────────────────────────────────────────
+			// 1. The old bad nonce is automatically loaded into acc.Nonce thanks to the `json:"nonce"` tag.
+			if acc.Nonce == 0 {
+				// Just a warning, not an error.
+				log.Printf("Warning: Account %s had 0 for old nonce!", acc.Address.Hex())
+			}
+
+			// 2. Assign the true Ethereum Nonce & TxCount
+			if stats, ok := statsMap[acc.Address.Hex()]; ok {
+				acc.TxCountSent = stats.TxCount
+				if stats.MaxNonceSet {
+					acc.TxNonce = stats.MaxNonce + 1
+				} else {
+					acc.TxNonce = 1 // Fallback if max_nonce_set is somehow false but tx_count > 0
+				}
+			} else {
+				acc.TxNonce = 0
+				acc.TxCountSent = 0
+			}
+
+			// Re-marshal and prepare the operation
+			valBytes, err := json.Marshal(acc)
+			if err != nil {
+				log.Printf("WARN: skipping key %q — re-marshal error: %v", string(e.Key), err)
+				continue
+			}
+
+			ops = append(ops, &schema.Op{
+				Operation: &schema.Op_Kv{
+					Kv: &schema.KeyValue{
+						Key:   e.Key,
+						Value: valBytes,
+					},
+				},
+			})
+			patchedAccounts++
+		}
+
+		// Flush the batch for this page
+		if len(ops) > 0 {
+			_, err := c.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops})
+			if err != nil {
+				log.Fatalf("FATAL: batch write failed: %v", err)
+			}
+		}
+
+		// Advance the cursor past the last key in this batch
+		seekKey = resp.Entries[len(resp.Entries)-1].Key
+
+		// Progress logging
+		if processedAccounts%100_000 == 0 && processedAccounts > 0 {
+			fmt.Printf("  ... processed %d accounts, patched %d so far\n", processedAccounts, patchedAccounts)
+		}
+
+		// If this was a partial batch we've reached the end.
+		if len(resp.Entries) < *batchSize {
+			break
 		}
 	}
 
-	if len(currentBatch) > 0 {
-		commitBatch(c, currentBatch)
-		migratedCount += len(currentBatch)
-	}
-
-	log.Printf("SUCCESS: Migrated %d accounts.", migratedCount)
+	log.Printf("\n[Phase V3] Migration Complete!")
+	log.Printf("  Accounts scanned : %d", processedAccounts)
+	log.Printf("  Accounts patched : %d", patchedAccounts)
+	log.Printf("  Parse errors     : %d", parseErrors)
 	log.Printf("Old bad nonces successfully preserved in ART Nonce, and TxNonce initialized.")
-}
-
-func commitBatch(c client.ImmuClient, batch []*schema.KeyValue) {
-	req := &schema.SetRequest{KVs: batch}
-	if _, err := c.SetAll(context.Background(), req); err != nil {
-		log.Fatalf("Failed to commit batch: %v", err)
-	}
 }

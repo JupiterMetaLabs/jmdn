@@ -514,18 +514,17 @@ func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, ma
 	// 6. Nonce validation (USING CACHE)
 	_, nonceSpan := tracer.Start(spanCtx, "Security.allChecksWithCache.validateNonce")
 	
-	account, err := DB_OPs.GetAccount(mainDBConn, *tx.From)
-	var expectedNonce uint64 = 0
-	if err == nil && account != nil {
-		expectedNonce = account.TxNonce
-	} else if err != nil && err.Error() != "account not found" {
+	account := security_cache.GetAccount(*tx.From)
+	if account == nil {
+		err := errors.New("sender account not found in cache")
 		nonceSpan.RecordError(err)
 		nonceSpan.End()
 		span.RecordError(err)
 		logger().Error(spanCtx, "Failed to get account for nonce check", err,
 			ion.String("function", "Security.allChecksWithCache"))
-		return false, fmt.Errorf("nonce check failed with error: %w", err)
+		return false, err
 	}
+	expectedNonce := account.TxNonce
 
 	nonceSpan.SetAttributes(
 		attribute.Int64("expected_nonce", int64(expectedNonce)),
@@ -541,6 +540,10 @@ func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, ma
 			ion.String("function", "Security.allChecksWithCache"))
 		return false, err
 	}
+
+	// Update cache so subsequent transactions from same sender see incremented nonce
+	security_cache.UpdateTxNonce(*tx.From, tx.Nonce+1)
+
 	nonceSpan.End()
 
 	duration := time.Since(startTime).Seconds()
