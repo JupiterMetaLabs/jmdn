@@ -975,21 +975,31 @@ func main() {
 
 	// Initialize ThebeDB + JMDN profile only when feature-flagged.
 	if cfg.Thebe.Enabled {
+		fmt.Fprintf(os.Stderr, "thebedb: init — kv_path=%s dsn=%s\n", cfg.Thebe.KVPath, maskDSN(cfg.Thebe.SQLDSN))
+
 		reg := profile.NewRegistry()
 		reg.Register(thebeprofile.NewJMDNProfile())
 
 		kvStore, err := kv.NewStore(kv.Config{Backend: kv.BackendBadger, Path: cfg.Thebe.KVPath})
 		if err != nil {
-			log.Fatal().Err(err).Msg("thebedb: kv store init failed")
+			fmt.Fprintf(os.Stderr, "FATAL thebedb: kv store init failed: %v\n", err)
+			os.Exit(1)
 		}
+		fmt.Fprintln(os.Stderr, "thebedb: kv store OK")
+
 		sqlEngine, err := thebeSql.NewSQLEngine(cfg.Thebe.SQLDSN)
 		if err != nil {
-			log.Fatal().Err(err).Msg("thebedb: sql engine init failed")
+			fmt.Fprintf(os.Stderr, "FATAL thebedb: sql engine init failed: %v\n", err)
+			os.Exit(1)
 		}
+		fmt.Fprintln(os.Stderr, "thebedb: sql engine OK")
+
 		db, err := thebedb.New(kvStore, sqlEngine, thebedb.WithProfileRegistry(reg))
 		if err != nil {
-			log.Fatal().Err(err).Msg("thebedb init failed")
+			fmt.Fprintf(os.Stderr, "FATAL thebedb: db init failed: %v\n", err)
+			os.Exit(1)
 		}
+		fmt.Fprintln(os.Stderr, "thebedb: db init OK")
 		defer db.Close()
 
 		// Keep cassata for backward-compat callers (SmartContract, gETH routes).
@@ -998,11 +1008,12 @@ func main() {
 		// Wire ThebeGateway as the ThebeShadowWriter — replaces cassata-based ShadowAdapter.
 		outbox, err := thebegateway.NewOutboxStore(cfg.Thebe.KVPath + "/outbox.db")
 		if err != nil {
-			log.Fatal().Err(err).Msg("thebedb: outbox store init failed")
+			fmt.Fprintf(os.Stderr, "FATAL thebedb: outbox store init failed: %v\n", err)
+			os.Exit(1)
 		}
 		gw := thebegateway.NewThebeGateway(builder.New(db), db.KV, nil, outbox)
 		DB_OPs.SetThebeShadowWriter(DB_OPs.NewGatewayAdapter(gw))
-		log.Info().Msg("ThebeDB gateway enabled")
+		fmt.Fprintln(os.Stderr, "thebedb: gateway enabled")
 	}
 
 	// Discover Yggdrasil address BEFORE creating the node
