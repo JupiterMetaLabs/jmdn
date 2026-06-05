@@ -3,6 +3,7 @@ package NodeInfo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"sort"
@@ -16,6 +17,70 @@ import (
 )
 
 type account_manager struct{}
+
+// ─── Bounded enqueue (producer side) ──────────────────────────────────────────
+//
+// The library's AccountSync receive path (sync_protocols.go HandleAccountsSyncData)
+// accumulates every page of a sync session and calls WriteAccounts ONCE at EOF with
+// the whole batch — potentially millions of records. Packing that into a single XADD
+// risks exceeding Redis proto-max-bulk-len (512 MiB) and stalls/fails the enqueue; a
+// failed enqueue at EOF (after all pages were ACKed) collapses the session and drives
+// the dispatcher into a retry→dead-letter storm. We split into fixed-size messages so
+// every XADD is small and fast, and the worker's per-drain memory stays bounded.
+
+// maxRecordsPerMessage caps how many account/update records are packed into one Redis
+// stream message (one XADD). 500 mirrors AccountSyncWorkerConfig.MaxAccountsPerBatch so
+// a single message maps to roughly one ImmuDB sub-batch; at ~300 B/record a message is
+// ~150 KB — three orders of magnitude under Redis's 512 MiB bulk limit.
+const maxRecordsPerMessage = 500
+
+// enqueueTimeout scales the enqueue deadline with chunk count: a 10 s base plus 5 ms per
+// chunk covers large syncs (e.g. 2000 chunks → ~20 s) without an unbounded wait. The
+// server is not blocked on this enqueue (pages were already ACKed), so a generous,
+// bounded budget is safe.
+//
+// Time: O(1)
+func enqueueTimeout(chunks int) time.Duration {
+	return 10*time.Second + time.Duration(chunks)*5*time.Millisecond
+}
+
+// enqueueRecordsChunked splits items into chunks of at most maxRecordsPerMessage,
+// marshals each chunk to JSON, and XADDs it to the account sync stream tagged ptype.
+// Best-effort: every chunk is attempted and errors are aggregated (errors.Join), so a
+// single transient XADD failure does not drop the remaining chunks. Any chunk that
+// fails to enqueue is backfilled by the worker's LWW write on a later sync /
+// reconciliation — strictly safer than the previous all-or-nothing single message.
+//
+// Time: O(N) marshal + O(ceil(N/maxRecordsPerMessage)) XADD round trips, N = len(items).
+// Space: O(maxRecordsPerMessage) per message — never the whole batch at once.
+// DS: input []T re-sliced in place into fixed-size windows; no intermediate copy.
+func enqueueRecordsChunked[T any](ctx context.Context, s RedisStreamer, ptype syncPayloadType, items []T) error {
+	var errs []error
+	for start := 0; start < len(items); start += maxRecordsPerMessage {
+		end := start + maxRecordsPerMessage
+		if end > len(items) {
+			end = len(items)
+		}
+		data, err := json.Marshal(items[start:end])
+		if err != nil {
+			errs = append(errs, fmt.Errorf("marshal chunk [%d:%d]: %w", start, end, err))
+			continue
+		}
+		if _, err := s.Enqueue(ctx, accountSyncStream, map[string]any{
+			"type": string(ptype),
+			"data": string(data),
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("enqueue chunk [%d:%d]: %w", start, end, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// chunkCount returns the number of messages len(n) records split into maxRecordsPerMessage.
+// Time: O(1)
+func chunkCount(n int) int {
+	return (n + maxRecordsPerMessage - 1) / maxRecordsPerMessage
+}
 
 // Time Complexity: O(N) where N is the total number of transactions scanned or retrieved
 func (am *account_manager) GetTransactionsForAccount(accountAddress string) ([]types.DBTransaction, error) {
@@ -158,15 +223,21 @@ func (am *account_manager) GetAccountByAddress(accountAddress string) (*types.Ac
 	return dbOpsToTypes(acc), nil
 }
 
-// WriteAccounts enqueues accounts to the Redis stream for async DB write.
-// Returns immediately after the enqueue — the caller gets an ACK without waiting
-// for the ImmuDB commit (which can take up to 15 s under load).
+// WriteAccounts enqueues accounts to the Redis stream for async DB write, split into
+// fixed-size messages of at most maxRecordsPerMessage (see enqueueRecordsChunked).
+// Returns immediately after the enqueue — the caller gets an ACK without waiting for
+// the ImmuDB commit (which can take up to 15 s under load).
+//
+// The library hands this the entire end-of-stream batch (up to millions of accounts);
+// chunking keeps each XADD small so it never exceeds Redis's bulk-string limit and the
+// enqueue cannot fail the whole session. Enqueue is best-effort across chunks: a
+// partial failure returns an aggregated error but does not drop successful chunks; the
+// worker's LWW write backfills the rest on a later sync.
 //
 // StartAccountSyncWorker must be called before WriteAccounts or this returns an error.
-// If Redis is unavailable, this fails fast — no fallback to synchronous DB write.
 // At-least-once delivery is guaranteed by the worker via PEL + XAUTOCLAIM.
 //
-// Time: O(N) serialization + O(1) XADD round trip, where N = len(accounts).
+// Time: O(N) serialization + O(ceil(N/maxRecordsPerMessage)) XADD round trips, N = len(accounts).
 func (am *account_manager) WriteAccounts(accounts []*types.Account) error {
 	if len(accounts) == 0 {
 		return nil
@@ -176,17 +247,12 @@ func (am *account_manager) WriteAccounts(accounts []*types.Account) error {
 		return fmt.Errorf("WriteAccounts: account queue not initialized; call StartAccountSyncWorker before use")
 	}
 	mgr.EnsureActive()
-	data, err := json.Marshal(accounts)
-	if err != nil {
-		return fmt.Errorf("WriteAccounts: marshal accounts: %w", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	chunks := chunkCount(len(accounts))
+	ctx, cancel := context.WithTimeout(context.Background(), enqueueTimeout(chunks))
 	defer cancel()
-	if _, err = s.Enqueue(ctx, accountSyncStream, map[string]any{
-		"type": string(payloadTypeAccounts),
-		"data": string(data),
-	}); err != nil {
-		return fmt.Errorf("WriteAccounts: enqueue to stream %q: %w", accountSyncStream, err)
+	if err := enqueueRecordsChunked(ctx, s, payloadTypeAccounts, accounts); err != nil {
+		return fmt.Errorf("WriteAccounts: enqueue %d accounts in %d messages: %w", len(accounts), chunks, err)
 	}
 	return nil
 }
@@ -313,14 +379,14 @@ func dbOpsToTypes(acc *DB_OPs.Account) *types.Account {
 	}
 }
 
-// BatchUpdateAccounts enqueues account balance/nonce updates to the Redis stream for async DB write.
-// Returns immediately after the enqueue.
+// BatchUpdateAccounts enqueues account balance/nonce updates to the Redis stream for
+// async DB write, split into fixed-size messages of at most maxRecordsPerMessage.
+// Returns immediately after the enqueue. Best-effort across chunks (see WriteAccounts).
 //
 // StartAccountSyncWorker must be called before BatchUpdateAccounts or this returns an error.
-// If Redis is unavailable, this fails fast.
 // At-least-once delivery is guaranteed by the worker via PEL + XAUTOCLAIM.
 //
-// Time: O(N) serialization + O(1) XADD round trip, where N = len(updates).
+// Time: O(N) serialization + O(ceil(N/maxRecordsPerMessage)) XADD round trips, N = len(updates).
 func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) error {
 	if len(updates) == 0 {
 		return nil
@@ -340,17 +406,12 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 			Nonce:      u.Nonce,
 		}
 	}
-	data, err := json.Marshal(wires)
-	if err != nil {
-		return fmt.Errorf("BatchUpdateAccounts: marshal updates: %w", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	chunks := chunkCount(len(wires))
+	ctx, cancel := context.WithTimeout(context.Background(), enqueueTimeout(chunks))
 	defer cancel()
-	if _, err = s.Enqueue(ctx, accountSyncStream, map[string]any{
-		"type": string(payloadTypeUpdates),
-		"data": string(data),
-	}); err != nil {
-		return fmt.Errorf("BatchUpdateAccounts: enqueue to stream %q: %w", accountSyncStream, err)
+	if err := enqueueRecordsChunked(ctx, s, payloadTypeUpdates, wires); err != nil {
+		return fmt.Errorf("BatchUpdateAccounts: enqueue %d updates in %d messages: %w", len(updates), chunks, err)
 	}
 	return nil
 }

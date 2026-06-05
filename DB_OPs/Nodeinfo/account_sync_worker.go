@@ -6,7 +6,9 @@
 //   - []StreamEntry: ephemeral per runWorker iteration.
 //     Bounded by AccountSyncWorkerConfig.MaxDrainItems (default 100).
 //   - []dbEntry: ephemeral per processBatch call.
-//     Bounded by MaxDrainItems × avg-accounts-per-payload.
+//     Bounded by MaxDrainItems × maxRecordsPerMessage (producer caps each message at
+//     maxRecordsPerMessage records — see immudb_account_manager.go). DID refs may add
+//     up to one extra entry per account.
 //     Sub-batched into chunks of MaxAccountsPerBatch before each BatchRestoreAccounts call.
 //   - PEL (Redis-side, not in-process): unacked entries in flight.
 //     Evicted by AutoClaim after PendingIdleTimeout; no in-process growth.
