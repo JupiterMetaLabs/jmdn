@@ -151,9 +151,11 @@ infra-sql-start:
 	else \
 		PG_VER=$$(pg_lsclusters -h | awk '{print $$1}' | head -1); \
 		PG_CLUSTER=$$(pg_lsclusters -h | awk '{print $$2}' | head -1); \
+		PG_DATA=$$(pg_lsclusters -h | awk '{print $$6}' | head -1); \
 		PG_CONF_DIR=/etc/postgresql/$$PG_VER/$$PG_CLUSTER; \
-		if [ ! -f "$$PG_CONF_DIR/postgresql.conf" ]; then \
-			echo "→ creating cluster $$PG_VER/$$PG_CLUSTER"; \
+		if [ ! -f "$$PG_DATA/PG_VERSION" ]; then \
+			echo "→ data dir uninitialised — dropping stale cluster config and recreating"; \
+			sudo pg_dropcluster $$PG_VER $$PG_CLUSTER 2>/dev/null || true; \
 			sudo pg_createcluster --port $(JMDN_PG_PORT) $$PG_VER $$PG_CLUSTER; \
 		fi; \
 		echo "→ setting port=$(JMDN_PG_PORT) listen_addresses='$(JMDN_PG_HOST)' in $$PG_CONF_DIR/postgresql.conf"; \
@@ -162,7 +164,7 @@ infra-sql-start:
 		echo "→ allowing all-host connections in $$PG_CONF_DIR/pg_hba.conf"; \
 		grep -q "^host all all 0.0.0.0/0" $$PG_CONF_DIR/pg_hba.conf \
 			|| echo "host all all 0.0.0.0/0 trust" | sudo tee -a $$PG_CONF_DIR/pg_hba.conf > /dev/null; \
-		echo "  conf: $$PG_CONF_DIR  bind: $(JMDN_PG_HOST):$(JMDN_PG_PORT)"; \
+		echo "  conf: $$PG_CONF_DIR  data: $$PG_DATA  bind: $(JMDN_PG_HOST):$(JMDN_PG_PORT)"; \
 		sudo pg_ctlcluster $$PG_VER $$PG_CLUSTER start; \
 	fi
 
