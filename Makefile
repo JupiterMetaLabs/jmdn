@@ -51,11 +51,12 @@ deploy: build
 # Install only — does not start services automatically.
 # To start: make infra-redis-start / make infra-sql-start
 
-JMDN_KV_PATH    ?= /opt/jmdn/thebe-kv
-JMDN_PG_PORT    ?= 5430
-JMDN_PG_HOST    ?= 0.0.0.0
-JMDN_PG_PASSWORD ?= jmdndefault
-OS               := $(shell uname -s)
+JMDN_KV_PATH      ?= /opt/jmdn/thebe-kv
+JMDN_PG_PORT      ?= 5430
+JMDN_PG_HOST      ?= 0.0.0.0
+JMDN_PG_PASSWORD  ?= jmdndefault
+JMDN_SERVICE_USER ?= jmdn
+OS                := $(shell uname -s)
 
 # ── KV (BadgerDB — embedded, no daemon) ───────────────────────────────────────
 
@@ -65,7 +66,7 @@ infra-kv:
 	else \
 		echo "→ creating KV directory at $(JMDN_KV_PATH)"; \
 		sudo mkdir -p $(JMDN_KV_PATH); \
-		sudo chown -R $$(whoami) /opt/jmdn; \
+		sudo chown -R $(JMDN_SERVICE_USER) /opt/jmdn; \
 		echo "✓ done — set thebe.kv_path: \"$(JMDN_KV_PATH)\" in jmdn.yaml"; \
 	fi
 
@@ -180,7 +181,7 @@ infra-thebe-reset:
 	@echo "→ wiping KV store at $(JMDN_KV_PATH)"
 	sudo rm -rf $(JMDN_KV_PATH)
 	sudo mkdir -p $(JMDN_KV_PATH)
-	sudo chown -R $$(whoami) $(JMDN_KV_PATH)
+	sudo chown -R $(JMDN_SERVICE_USER) $(JMDN_KV_PATH)
 	@echo "→ dropping and recreating jmdn database on port $(JMDN_PG_PORT)"
 	@if [ "$(OS)" = "Darwin" ]; then \
 		/opt/homebrew/opt/postgresql@16/bin/psql -p $(JMDN_PG_PORT) -U postgres -c "DROP DATABASE IF EXISTS jmdn;" postgres; \
