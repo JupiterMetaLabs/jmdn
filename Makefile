@@ -149,14 +149,20 @@ infra-sql-start:
 			-p $(JMDN_PG_PORT) \
 			-h $(JMDN_PG_HOST); \
 	else \
-		PG_VER=$$(pg_lsclusters -h | awk '{print $$1}' | head -1); \
-		PG_CLUSTER=$$(pg_lsclusters -h | awk '{print $$2}' | head -1); \
-		PG_DATA=$$(pg_lsclusters -h | awk '{print $$6}' | head -1); \
+		PG_VER=$$(pg_lsclusters -h 2>/dev/null | awk '{print $$1}' | head -1); \
+		PG_CLUSTER=$$(pg_lsclusters -h 2>/dev/null | awk '{print $$2}' | head -1); \
+		if [ -z "$$PG_VER" ]; then \
+			PG_VER=$$(ls /usr/lib/postgresql/ 2>/dev/null | sort -V | tail -1); \
+		fi; \
+		if [ -z "$$PG_CLUSTER" ]; then \
+			PG_CLUSTER=main; \
+		fi; \
+		PG_DATA=/var/lib/postgresql/$$PG_VER/$$PG_CLUSTER; \
 		PG_CONF_DIR=/etc/postgresql/$$PG_VER/$$PG_CLUSTER; \
 		if [ ! -f "$$PG_DATA/PG_VERSION" ]; then \
-			echo "→ data dir uninitialised — dropping stale cluster config and recreating"; \
+			echo "→ creating cluster $$PG_VER/$$PG_CLUSTER on port $(JMDN_PG_PORT)"; \
 			sudo pg_dropcluster $$PG_VER $$PG_CLUSTER 2>/dev/null || true; \
-			sudo pg_createcluster --port $(JMDN_PG_PORT) $$PG_VER $$PG_CLUSTER; \
+			sudo pg_createcluster -p $(JMDN_PG_PORT) $$PG_VER $$PG_CLUSTER; \
 		fi; \
 		echo "→ setting port=$(JMDN_PG_PORT) listen_addresses='$(JMDN_PG_HOST)' in $$PG_CONF_DIR/postgresql.conf"; \
 		sudo sed -i "s/^#*port = .*/port = $(JMDN_PG_PORT)/" $$PG_CONF_DIR/postgresql.conf; \
