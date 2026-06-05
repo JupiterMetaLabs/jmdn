@@ -17,7 +17,7 @@ LDFLAGS=-ldflags "-X 'gossipnode/config/version.gitCommit=${GIT_COMMIT}' -X 'gos
 
 .PHONY: all build clean run test fmt lint lint-fix version deploy \
         infra-kv infra-redis infra-sql infra \
-        infra-redis-start infra-sql-start infra-sql-setup
+        infra-redis-start infra-sql-start infra-sql-setup infra-thebe-reset
 
 all: build
 
@@ -174,6 +174,25 @@ infra-sql-start:
 		echo "  conf: $$PG_CONF_DIR  data: $$PG_DATA  bind: $(JMDN_PG_HOST):$(JMDN_PG_PORT)"; \
 		sudo pg_ctlcluster $$PG_VER $$PG_CLUSTER start; \
 	fi
+
+# Wipe all ThebeDB state (KV + SQL) and recreate from scratch — use before re-running migration.
+infra-thebe-reset:
+	@echo "→ wiping KV store at $(JMDN_KV_PATH)"
+	sudo rm -rf $(JMDN_KV_PATH)
+	sudo mkdir -p $(JMDN_KV_PATH)
+	sudo chown -R $$(whoami) $(JMDN_KV_PATH)
+	@echo "→ dropping and recreating jmdn database on port $(JMDN_PG_PORT)"
+	@if [ "$(OS)" = "Darwin" ]; then \
+		/opt/homebrew/opt/postgresql@16/bin/psql -p $(JMDN_PG_PORT) -U postgres -c "DROP DATABASE IF EXISTS jmdn;" postgres; \
+		/opt/homebrew/opt/postgresql@16/bin/psql -p $(JMDN_PG_PORT) -U postgres -c "CREATE DATABASE jmdn OWNER jmdn;" postgres; \
+		/opt/homebrew/opt/postgresql@16/bin/psql -p $(JMDN_PG_PORT) -U postgres -c "ALTER USER jmdn WITH PASSWORD '$(JMDN_PG_PASSWORD)';" postgres; \
+	else \
+		sudo -u postgres psql -p $(JMDN_PG_PORT) -c "DROP DATABASE IF EXISTS jmdn;" postgres; \
+		sudo -u postgres psql -p $(JMDN_PG_PORT) -c "CREATE DATABASE jmdn OWNER jmdn;" postgres; \
+		sudo -u postgres psql -p $(JMDN_PG_PORT) -c "ALTER USER jmdn WITH PASSWORD '$(JMDN_PG_PASSWORD)';" postgres; \
+	fi
+	@echo "✓ ThebeDB state wiped — ready for fresh migration"
+	@echo "  run: go run ./cmd/immudb-to-thebe --thebe-sql-dsn \"postgres://jmdn:$(JMDN_PG_PASSWORD)@$(JMDN_PG_HOST):$(JMDN_PG_PORT)/jmdn?sslmode=disable\""
 
 # Create jmdn db + user — run once after the first infra-sql-start.
 infra-sql-setup:
