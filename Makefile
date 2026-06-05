@@ -52,7 +52,9 @@ deploy: build
 # To start: make infra-redis-start / make infra-sql-start
 
 JMDN_KV_PATH ?= /opt/jmdn/thebe-kv
-OS            := $(shell uname -s)
+JMDN_PG_PORT  ?= 5430
+JMDN_PG_HOST  ?= 0.0.0.0
+OS             := $(shell uname -s)
 
 # ── KV (BadgerDB — embedded, no daemon) ───────────────────────────────────────
 
@@ -127,7 +129,7 @@ infra: infra-kv infra-redis infra-sql
 	@echo "    enabled: true"
 	@echo "    kv_path: \"$(JMDN_KV_PATH)\""
 	@echo "    redis_url: \"redis://127.0.0.1:6379\""
-	@echo "  env: THEBE_SQL_DSN=postgres://jmdn@localhost:5432/jmdn?sslmode=disable"
+	@echo "  env: THEBE_SQL_DSN=postgres://jmdn@$(JMDN_PG_HOST):$(JMDN_PG_PORT)/jmdn?sslmode=disable"
 
 # ── Start (foreground) ────────────────────────────────────────────────────────
 
@@ -140,32 +142,41 @@ infra-redis-start:
 	fi
 
 infra-sql-start:
-	@echo "→ starting PostgreSQL (ctrl-c to stop)"
+	@echo "→ starting PostgreSQL on $(JMDN_PG_HOST):$(JMDN_PG_PORT) (ctrl-c to stop)"
 	@if [ "$(OS)" = "Darwin" ]; then \
-		/opt/homebrew/opt/postgresql@16/bin/postgres -D /opt/homebrew/var/postgresql@16; \
+		/opt/homebrew/opt/postgresql@16/bin/postgres \
+			-D /opt/homebrew/var/postgresql@16 \
+			-p $(JMDN_PG_PORT) \
+			-h $(JMDN_PG_HOST); \
 	else \
 		PG_VER=$$(pg_lsclusters -h | awk '{print $$1}' | head -1); \
 		PG_CLUSTER=$$(pg_lsclusters -h | awk '{print $$2}' | head -1); \
 		PG_DATA=$$(pg_lsclusters -h | awk '{print $$6}' | head -1); \
 		if [ ! -f "$$PG_DATA/postgresql.conf" ]; then \
-			echo "→ cluster not initialised — running pg_createcluster $$PG_VER $$PG_CLUSTER"; \
-			sudo pg_createcluster $$PG_VER $$PG_CLUSTER; \
+			echo "→ cluster not initialised — running pg_createcluster --port $(JMDN_PG_PORT) $$PG_VER $$PG_CLUSTER"; \
+			sudo pg_createcluster --port $(JMDN_PG_PORT) $$PG_VER $$PG_CLUSTER; \
 		fi; \
-		echo "  cluster: $$PG_VER/$$PG_CLUSTER  data: $$PG_DATA"; \
+		echo "→ configuring listen_addresses and port in $$PG_DATA/postgresql.conf"; \
+		sudo sed -i "s/^#*port = .*/port = $(JMDN_PG_PORT)/" $$PG_DATA/postgresql.conf; \
+		sudo sed -i "s/^#*listen_addresses = .*/listen_addresses = '$(JMDN_PG_HOST)'/" $$PG_DATA/postgresql.conf; \
+		echo "→ allowing all-host connections in $$PG_DATA/pg_hba.conf"; \
+		grep -q "^host all all 0.0.0.0/0" $$PG_DATA/pg_hba.conf \
+			|| echo "host all all 0.0.0.0/0 trust" | sudo tee -a $$PG_DATA/pg_hba.conf > /dev/null; \
+		echo "  cluster: $$PG_VER/$$PG_CLUSTER  data: $$PG_DATA  bind: $(JMDN_PG_HOST):$(JMDN_PG_PORT)"; \
 		sudo pg_ctlcluster $$PG_VER $$PG_CLUSTER start; \
 	fi
 
 # Create jmdn db + user — run once after the first infra-sql-start.
 infra-sql-setup:
-	@echo "→ setting up jmdn database"
+	@echo "→ setting up jmdn database on port $(JMDN_PG_PORT)"
 	@if [ "$(OS)" = "Darwin" ]; then \
-		/opt/homebrew/opt/postgresql@16/bin/createuser --superuser jmdn 2>/dev/null || echo "  user jmdn already exists"; \
-		/opt/homebrew/opt/postgresql@16/bin/createdb --owner=jmdn jmdn 2>/dev/null || echo "  database jmdn already exists"; \
+		/opt/homebrew/opt/postgresql@16/bin/createuser --superuser -p $(JMDN_PG_PORT) jmdn 2>/dev/null || echo "  user jmdn already exists"; \
+		/opt/homebrew/opt/postgresql@16/bin/createdb --owner=jmdn -p $(JMDN_PG_PORT) jmdn 2>/dev/null || echo "  database jmdn already exists"; \
 	else \
-		sudo -u postgres createuser --superuser jmdn 2>/dev/null || echo "  user jmdn already exists"; \
-		sudo -u postgres createdb --owner=jmdn jmdn 2>/dev/null   || echo "  database jmdn already exists"; \
+		sudo -u postgres createuser --superuser -p $(JMDN_PG_PORT) jmdn 2>/dev/null || echo "  user jmdn already exists"; \
+		sudo -u postgres createdb --owner=jmdn -p $(JMDN_PG_PORT) jmdn 2>/dev/null   || echo "  database jmdn already exists"; \
 	fi
-	@echo "✓ DSN: postgres://jmdn@localhost:5432/jmdn?sslmode=disable"
+	@echo "✓ DSN: postgres://jmdn@$(JMDN_PG_HOST):$(JMDN_PG_PORT)/jmdn?sslmode=disable"
 
 # ── Developer Quality Targets ─────────────────────────────────────────────────
 # These mirror exactly what CI runs. Use before pushing.
