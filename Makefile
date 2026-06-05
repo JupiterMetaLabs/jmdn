@@ -151,18 +151,18 @@ infra-sql-start:
 	else \
 		PG_VER=$$(pg_lsclusters -h | awk '{print $$1}' | head -1); \
 		PG_CLUSTER=$$(pg_lsclusters -h | awk '{print $$2}' | head -1); \
-		PG_DATA=$$(pg_lsclusters -h | awk '{print $$6}' | head -1); \
-		if [ ! -f "$$PG_DATA/postgresql.conf" ]; then \
-			echo "→ cluster not initialised — running pg_createcluster --port $(JMDN_PG_PORT) $$PG_VER $$PG_CLUSTER"; \
+		PG_CONF_DIR=/etc/postgresql/$$PG_VER/$$PG_CLUSTER; \
+		if [ ! -f "$$PG_CONF_DIR/postgresql.conf" ]; then \
+			echo "→ creating cluster $$PG_VER/$$PG_CLUSTER"; \
 			sudo pg_createcluster --port $(JMDN_PG_PORT) $$PG_VER $$PG_CLUSTER; \
 		fi; \
-		echo "→ configuring listen_addresses and port in $$PG_DATA/postgresql.conf"; \
-		sudo sed -i "s/^#*port = .*/port = $(JMDN_PG_PORT)/" $$PG_DATA/postgresql.conf; \
-		sudo sed -i "s/^#*listen_addresses = .*/listen_addresses = '$(JMDN_PG_HOST)'/" $$PG_DATA/postgresql.conf; \
-		echo "→ allowing all-host connections in $$PG_DATA/pg_hba.conf"; \
-		grep -q "^host all all 0.0.0.0/0" $$PG_DATA/pg_hba.conf \
-			|| echo "host all all 0.0.0.0/0 trust" | sudo tee -a $$PG_DATA/pg_hba.conf > /dev/null; \
-		echo "  cluster: $$PG_VER/$$PG_CLUSTER  data: $$PG_DATA  bind: $(JMDN_PG_HOST):$(JMDN_PG_PORT)"; \
+		echo "→ setting port=$(JMDN_PG_PORT) listen_addresses='$(JMDN_PG_HOST)' in $$PG_CONF_DIR/postgresql.conf"; \
+		sudo sed -i "s/^#*port = .*/port = $(JMDN_PG_PORT)/" $$PG_CONF_DIR/postgresql.conf; \
+		sudo sed -i "s/^#*listen_addresses = .*/listen_addresses = '$(JMDN_PG_HOST)'/" $$PG_CONF_DIR/postgresql.conf; \
+		echo "→ allowing all-host connections in $$PG_CONF_DIR/pg_hba.conf"; \
+		grep -q "^host all all 0.0.0.0/0" $$PG_CONF_DIR/pg_hba.conf \
+			|| echo "host all all 0.0.0.0/0 trust" | sudo tee -a $$PG_CONF_DIR/pg_hba.conf > /dev/null; \
+		echo "  conf: $$PG_CONF_DIR  bind: $(JMDN_PG_HOST):$(JMDN_PG_PORT)"; \
 		sudo pg_ctlcluster $$PG_VER $$PG_CLUSTER start; \
 	fi
 
