@@ -33,7 +33,7 @@ import (
 const sqlInsertZKProof = `
 INSERT INTO zk_proofs (block_number, proof_hash, stark_proof, commitment)
 VALUES ($1,$2,$3,$4)
-ON CONFLICT (block_number) DO NOTHING`
+ON CONFLICT DO NOTHING`
 
 func applyZKProof(_ context.Context, _ uint64, record *core.CanonicalRecord, tx *sql.Tx) error {
 	var r thebegateway.ZKProofRecord

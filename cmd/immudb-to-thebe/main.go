@@ -100,17 +100,17 @@ func main() {
 	adapter := DB_OPs.NewGatewayAdapter(gw)
 	log.Println("ThebeDB gateway ready")
 
-	// 4. Migrate blocks.
-	if !*skipBlocks {
-		if err := migrateBlocks(adapter, *startBlock, *batchSize); err != nil {
-			log.Fatalf("block migration: %v", err)
-		}
-	}
-
-	// 5. Migrate accounts.
+	// 4. Migrate accounts first (blocks have FK → snapshots; txs reference account addresses).
 	if !*skipAccounts {
 		if err := migrateAccounts(gw); err != nil {
 			log.Fatalf("account migration: %v", err)
+		}
+	}
+
+	// 5. Migrate blocks (after accounts are in DB).
+	if !*skipBlocks {
+		if err := migrateBlocks(adapter, *startBlock, *batchSize); err != nil {
+			log.Fatalf("block migration: %v", err)
 		}
 	}
 

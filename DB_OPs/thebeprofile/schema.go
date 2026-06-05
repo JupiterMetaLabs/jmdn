@@ -156,10 +156,6 @@ CREATE TABLE IF NOT EXISTS transactions (
 
     CONSTRAINT fk_txn_snapshot
         FOREIGN KEY (block_number) REFERENCES snapshots(block_number),
-    CONSTRAINT fk_txn_from
-        FOREIGN KEY (from_addr)    REFERENCES accounts(address),
-    CONSTRAINT fk_txn_to
-        FOREIGN KEY (to_addr)      REFERENCES accounts(address),
     CONSTRAINT uq_txn_block_index
         UNIQUE (block_number, tx_index)
 );
