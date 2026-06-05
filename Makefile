@@ -51,10 +51,11 @@ deploy: build
 # Install only — does not start services automatically.
 # To start: make infra-redis-start / make infra-sql-start
 
-JMDN_KV_PATH ?= /opt/jmdn/thebe-kv
-JMDN_PG_PORT  ?= 5430
-JMDN_PG_HOST  ?= 0.0.0.0
-OS             := $(shell uname -s)
+JMDN_KV_PATH    ?= /opt/jmdn/thebe-kv
+JMDN_PG_PORT    ?= 5430
+JMDN_PG_HOST    ?= 0.0.0.0
+JMDN_PG_PASSWORD ?= jmdndefault
+OS               := $(shell uname -s)
 
 # ── KV (BadgerDB — embedded, no daemon) ───────────────────────────────────────
 
@@ -129,7 +130,7 @@ infra: infra-kv infra-redis infra-sql
 	@echo "    enabled: true"
 	@echo "    kv_path: \"$(JMDN_KV_PATH)\""
 	@echo "    redis_url: \"redis://127.0.0.1:6379\""
-	@echo "  env: THEBE_SQL_DSN=postgres://jmdn@$(JMDN_PG_HOST):$(JMDN_PG_PORT)/jmdn?sslmode=disable"
+	@echo "  env: THEBE_SQL_DSN=postgres://jmdn:$(JMDN_PG_PASSWORD)@$(JMDN_PG_HOST):$(JMDN_PG_PORT)/jmdn?sslmode=disable"
 
 # ── Start (foreground) ────────────────────────────────────────────────────────
 
@@ -180,11 +181,13 @@ infra-sql-setup:
 	@if [ "$(OS)" = "Darwin" ]; then \
 		/opt/homebrew/opt/postgresql@16/bin/createuser --superuser -p $(JMDN_PG_PORT) jmdn 2>/dev/null || echo "  user jmdn already exists"; \
 		/opt/homebrew/opt/postgresql@16/bin/createdb --owner=jmdn -p $(JMDN_PG_PORT) jmdn 2>/dev/null || echo "  database jmdn already exists"; \
+		/opt/homebrew/opt/postgresql@16/bin/psql -p $(JMDN_PG_PORT) -U postgres -c "ALTER USER jmdn WITH PASSWORD '$(JMDN_PG_PASSWORD)';" jmdn; \
 	else \
 		sudo -u postgres createuser --superuser -p $(JMDN_PG_PORT) jmdn 2>/dev/null || echo "  user jmdn already exists"; \
 		sudo -u postgres createdb --owner=jmdn -p $(JMDN_PG_PORT) jmdn 2>/dev/null   || echo "  database jmdn already exists"; \
+		sudo -u postgres psql -p $(JMDN_PG_PORT) -c "ALTER USER jmdn WITH PASSWORD '$(JMDN_PG_PASSWORD)';"; \
 	fi
-	@echo "✓ DSN: postgres://jmdn@$(JMDN_PG_HOST):$(JMDN_PG_PORT)/jmdn?sslmode=disable"
+	@echo "✓ DSN: postgres://jmdn:$(JMDN_PG_PASSWORD)@$(JMDN_PG_HOST):$(JMDN_PG_PORT)/jmdn?sslmode=disable"
 
 # ── Developer Quality Targets ─────────────────────────────────────────────────
 # These mirror exactly what CI runs. Use before pushing.

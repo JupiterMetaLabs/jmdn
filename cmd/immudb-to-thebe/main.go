@@ -45,7 +45,7 @@ import (
 
 func main() {
 	thebeKVPath := flag.String("thebe-kv-path", "/opt/jmdn/thebe-kv", "BadgerDB path for ThebeDB KV store")
-	thebeSQLDSN := flag.String("thebe-sql-dsn", "postgres://jmdn@0.0.0.0:5430/jmdn?sslmode=disable", "PostgreSQL DSN for ThebeDB SQL projection")
+	thebeSQLDSN := flag.String("thebe-sql-dsn", "postgres://jmdn:jmdndefault@0.0.0.0:5430/jmdn?sslmode=disable", "PostgreSQL DSN for ThebeDB SQL projection")
 	_ = flag.String("thebe-redis-url", "redis://127.0.0.1:6379", "Redis URL (informational — cache is disabled in migration mode)")
 	startBlock := flag.Uint64("start-block", 0, "Block number to start migration from (for resume)")
 	batchSize := flag.Int("batch-size", 500, "Number of blocks per ImmuDB GetAll batch")
