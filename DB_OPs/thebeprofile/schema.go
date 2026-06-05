@@ -110,13 +110,6 @@ CREATE INDEX IF NOT EXISTS idx_blocks_timestamp
 CREATE INDEX IF NOT EXISTS idx_blocks_block_hash
     ON blocks(block_hash);
 
--- Hard-block mutation on append-only table.
-CREATE OR REPLACE RULE rule_blocks_no_update AS
-    ON UPDATE TO blocks DO INSTEAD NOTHING;
-
-CREATE OR REPLACE RULE rule_blocks_no_delete AS
-    ON DELETE TO blocks DO INSTEAD NOTHING;
-
 -- ================================================================
 -- 3) snapshots (SQL — Append Only — Create Read)
 -- One snapshot per block (1:1 FK to blocks).
@@ -132,12 +125,6 @@ CREATE TABLE IF NOT EXISTS snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_created_at
     ON snapshots(created_at DESC);
-
-CREATE OR REPLACE RULE rule_snapshots_no_update AS
-    ON UPDATE TO snapshots DO INSTEAD NOTHING;
-
-CREATE OR REPLACE RULE rule_snapshots_no_delete AS
-    ON DELETE TO snapshots DO INSTEAD NOTHING;
 
 -- ================================================================
 -- 4) transactions (SQL — Append Only — Create Read)
@@ -195,12 +182,6 @@ CREATE INDEX IF NOT EXISTS idx_txn_to_block_desc
     ON transactions(to_addr, block_number DESC, tx_index DESC)
     WHERE to_addr IS NOT NULL;
 
-CREATE OR REPLACE RULE rule_transactions_no_update AS
-    ON UPDATE TO transactions DO INSTEAD NOTHING;
-
-CREATE OR REPLACE RULE rule_transactions_no_delete AS
-    ON DELETE TO transactions DO INSTEAD NOTHING;
-
 -- ================================================================
 -- 5) zk_proofs (SQL — Append Only — Create Read)
 -- One ZK proof per block (1:1 FK to blocks).
@@ -219,12 +200,6 @@ CREATE TABLE IF NOT EXISTS zk_proofs (
 
 CREATE INDEX IF NOT EXISTS idx_zk_proofs_proof_hash
     ON zk_proofs(proof_hash);
-
-CREATE OR REPLACE RULE rule_zk_proofs_no_update AS
-    ON UPDATE TO zk_proofs DO INSTEAD NOTHING;
-
-CREATE OR REPLACE RULE rule_zk_proofs_no_delete AS
-    ON DELETE TO zk_proofs DO INSTEAD NOTHING;
 
 -- ================================================================
 -- 6) l1_finality (SQL — Append Only — Create Read)
@@ -248,12 +223,6 @@ CREATE INDEX IF NOT EXISTS idx_l1_finality_block_numbers
 
 CREATE INDEX IF NOT EXISTS idx_l1_finality_metadata
     ON l1_finality USING GIN(metadata) WHERE metadata IS NOT NULL;
-
-CREATE OR REPLACE RULE rule_l1_finality_no_update AS
-    ON UPDATE TO l1_finality DO INSTEAD NOTHING;
-
-CREATE OR REPLACE RULE rule_l1_finality_no_delete AS
-    ON DELETE TO l1_finality DO INSTEAD NOTHING;
 `
 
 // migrationSQL002 is the Phase 7 DDL for the contract_receipts table.
@@ -290,10 +259,4 @@ CREATE INDEX IF NOT EXISTS idx_contract_receipts_contract_address
 
 CREATE INDEX IF NOT EXISTS idx_contract_receipts_logs
     ON contract_receipts USING GIN(logs);
-
-CREATE OR REPLACE RULE rule_contract_receipts_no_update AS
-    ON UPDATE TO contract_receipts DO INSTEAD NOTHING;
-
-CREATE OR REPLACE RULE rule_contract_receipts_no_delete AS
-    ON DELETE TO contract_receipts DO INSTEAD NOTHING;
 `
