@@ -61,10 +61,10 @@ const (
 // FastsyncV2 holds the router instances and shared state for the sync engine.
 // Create with NewFastsyncV2; trigger sync with HandleSync.
 type FastsyncV2 struct {
-	Host         host.Host
-	NodeInfo     *types.Nodeinfo
-	WAL          *WAL.WAL
-	PoTSWAL      *WAL.WAL
+	Host              host.Host
+	NodeInfo          *types.Nodeinfo
+	WAL               *WAL.WAL
+	PoTSWAL           *WAL.WAL
 	PriorRouter       priorsync.Priorsync_router
 	HeaderRouter      headersync.Headersync_router
 	DataRouter        datasync.DataSync_router
@@ -167,10 +167,10 @@ func NewFastsyncV2(h host.Host, syncTimeout time.Duration) (*FastsyncV2, error) 
 	}()
 
 	return &FastsyncV2{
-		Host:             h,
-		NodeInfo:         nodeinfo,
-		WAL:              wal,
-		PoTSWAL:          potsWAL,
+		Host:              h,
+		NodeInfo:          nodeinfo,
+		WAL:               wal,
+		PoTSWAL:           potsWAL,
 		PriorRouter:       priorRouter,
 		HeaderRouter:      headerRouter,
 		DataRouter:        dataRouter,
@@ -281,7 +281,6 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 	// Ensure our local block marker is accurate before starting
 	log.Printf("[FastsyncV2] Reconciling local block marker before sync...")
 	fs.reconcileLocalLatestBlock()
-
 
 	// --- Parse and connect to the target peer ---
 	maddr, err := multiaddr.NewMultiaddr(targetPeer)

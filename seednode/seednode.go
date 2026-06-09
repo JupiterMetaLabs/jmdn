@@ -336,7 +336,7 @@ func (c *Client) DiscoverAndAddNeighbors(h host.Host, nodeManager interface{}) e
 					// Create a map of current peer IDs for quick lookup
 					for i := 0; i < peerCount; i++ {
 						peerValue := peersValue.Index(i)
-						if peerValue.Kind() == reflect.Ptr {
+						if peerValue.Kind() == reflect.Pointer {
 							peerValue = peerValue.Elem()
 						}
 

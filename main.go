@@ -29,6 +29,7 @@ import (
 	"gossipnode/DB_OPs"
 	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
 	"gossipnode/DID"
+	"gossipnode/FastsyncV2"
 	"gossipnode/Pubsub"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
@@ -36,7 +37,6 @@ import (
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
 	"gossipnode/explorer"
-	"gossipnode/FastsyncV2"
 	fastsync "gossipnode/fastsync"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/rpc"
@@ -92,7 +92,7 @@ func goMaybeTracked(
 
 // Global variables for easier access
 var (
-	fastSyncer *fastsync.FastSync
+	fastSyncer   *fastsync.FastSync
 	fastSyncerV2 *FastsyncV2.FastsyncV2
 	// immuClient   *config.ImmuClient // unused: declared but never assigned or read
 	globalPubSub *Pubsub.StructGossipPubSub

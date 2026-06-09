@@ -279,7 +279,6 @@ func Test_ConnectionPool_WithNilConnection(t *testing.T) {
 	fmt.Printf("   Address: %s\n", address.Hex())
 }
 
-
 func Test_Account_Database_Write_Read(t *testing.T) {
 	fmt.Printf("=== Testing Account Database Write and Read ===\n")
 

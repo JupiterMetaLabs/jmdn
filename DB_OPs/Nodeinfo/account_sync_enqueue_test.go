@@ -37,13 +37,15 @@ func (r *recordingStreamer) EnsureConsumerGroup(context.Context, string, string)
 func (r *recordingStreamer) ReadGroup(context.Context, string, string, string, int64, time.Duration) ([]StreamEntry, error) {
 	return nil, nil
 }
-func (r *recordingStreamer) Ack(context.Context, string, string, ...string) error    { return nil }
-func (r *recordingStreamer) Delete(context.Context, string, ...string) error          { return nil }
+func (r *recordingStreamer) Ack(context.Context, string, string, ...string) error { return nil }
+func (r *recordingStreamer) Delete(context.Context, string, ...string) error      { return nil }
 func (r *recordingStreamer) AutoClaim(context.Context, string, string, string, time.Duration, string, int64) ([]StreamEntry, string, error) {
 	return nil, "0-0", nil
 }
-func (r *recordingStreamer) Len(context.Context, string) (int64, error)               { return 0, nil }
-func (r *recordingStreamer) PendingCount(context.Context, string, string) (int64, error) { return 0, nil }
+func (r *recordingStreamer) Len(context.Context, string) (int64, error) { return 0, nil }
+func (r *recordingStreamer) PendingCount(context.Context, string, string) (int64, error) {
+	return 0, nil
+}
 
 // decodeCount returns how many records a recorded message's "data" field holds.
 func decodeCount(t *testing.T, msg map[string]any) int {
@@ -61,9 +63,9 @@ func decodeCount(t *testing.T, msg map[string]any) int {
 
 func TestEnqueueRecordsChunked_Boundaries(t *testing.T) {
 	cases := []struct {
-		name      string
-		n         int
-		wantMsgs  int
+		name     string
+		n        int
+		wantMsgs int
 	}{
 		{"empty", 0, 0},
 		{"single", 1, 1},

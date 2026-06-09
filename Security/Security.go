@@ -513,7 +513,7 @@ func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, ma
 	// ------------------------------------------------------------
 	// 6. Nonce validation (USING CACHE)
 	_, nonceSpan := tracer.Start(spanCtx, "Security.allChecksWithCache.validateNonce")
-	
+
 	account := security_cache.GetAccount(*tx.From)
 	if account == nil {
 		err := errors.New("sender account not found in cache")

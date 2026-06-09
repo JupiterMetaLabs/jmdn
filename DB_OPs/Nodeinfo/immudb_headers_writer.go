@@ -9,8 +9,9 @@ import (
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/block"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
 	"github.com/ethereum/go-ethereum/common"
-	"gossipnode/config"
+
 	"gossipnode/DB_OPs"
+	"gossipnode/config"
 )
 
 type HeadersWriter struct{}
@@ -117,4 +118,3 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 
 	return nil
 }
-

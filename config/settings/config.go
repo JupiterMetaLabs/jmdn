@@ -10,16 +10,16 @@ import (
 // NodeConfig is the top-level configuration for a JMDN node.
 // Each section maps to a YAML key in jmdn.yaml.
 type NodeConfig struct {
-	Node      NodeSettings      `mapstructure:"node"`
-	Network   NetworkSettings   `mapstructure:"network"`
-	Ports     PortSettings      `mapstructure:"ports"`
-	Binds     BindSettings      `mapstructure:"binds"`
-	Database  DatabaseSettings  `mapstructure:"database"`
-	Logging   LoggingSettings   `mapstructure:"logging"`
-	Features  FeatureSettings   `mapstructure:"features"`
-	Security  SecurityConfig    `mapstructure:"security"`
-	Alerts    AlertsConfig      `mapstructure:"alerts"`
-	FastSync  FastSyncSettings  `mapstructure:"fastsync"`
+	Node     NodeSettings     `mapstructure:"node"`
+	Network  NetworkSettings  `mapstructure:"network"`
+	Ports    PortSettings     `mapstructure:"ports"`
+	Binds    BindSettings     `mapstructure:"binds"`
+	Database DatabaseSettings `mapstructure:"database"`
+	Logging  LoggingSettings  `mapstructure:"logging"`
+	Features FeatureSettings  `mapstructure:"features"`
+	Security SecurityConfig   `mapstructure:"security"`
+	Alerts   AlertsConfig     `mapstructure:"alerts"`
+	FastSync FastSyncSettings `mapstructure:"fastsync"`
 }
 
 // NodeSettings defines the identity of this node.
@@ -141,9 +141,9 @@ type FeatureSettings struct {
 //
 // Serving vs syncing are independent:
 //   - enabled=true  → this node registers FastSync protocol handlers and serves
-//                     block/account data to any peer that requests it.
+//     block/account data to any peer that requests it.
 //   - sync=true     → this node is allowed to pull data from peers and update
-//                     its own local database (HeaderSync, DataSync, Reconciliation).
+//     its own local database (HeaderSync, DataSync, Reconciliation).
 //
 // A sequencer should set sync=false so it never overwrites its own authoritative
 // state, while keeping enabled=true so other nodes can still sync from it.

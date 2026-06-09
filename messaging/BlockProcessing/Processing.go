@@ -672,7 +672,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		// Remove nested rollback logic: parent loop will handle full block rollback via rollbackState
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "recipient_add_failed"), attribute.String("failed_step", "add_to_recipient"))
-		
+
 		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
 		duration := time.Since(txStartTime).Seconds()
 		txSpan.SetAttributes(attribute.Float64("duration", duration))

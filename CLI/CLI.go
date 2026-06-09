@@ -12,10 +12,10 @@ import (
 	"gossipnode/Block"
 	CLICommon "gossipnode/CLI/common"
 	"gossipnode/DB_OPs"
+	"gossipnode/FastsyncV2"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	"gossipnode/config/version"
-	"gossipnode/FastsyncV2"
 	"gossipnode/fastsync"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
@@ -631,7 +631,6 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 	fmt.Printf("Fastsync completed in %v\n", time.Since(startTime))
 	printDashes()
 }
-
 
 func (h *CommandHandler) handleAccountSync(parts []string) {
 	if len(parts) != 2 {

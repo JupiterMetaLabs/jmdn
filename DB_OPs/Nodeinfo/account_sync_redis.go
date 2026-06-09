@@ -230,7 +230,7 @@ func (r *redisStreamerAdapter) PendingCount(ctx context.Context, stream, group s
 // Read by every WriteAccounts / BatchUpdateAccounts call. types.AccountManager
 // interface signatures are fixed externally — package-level injection is the only path.
 var (
-	pkgAccountStreamer  RedisStreamer
+	pkgAccountStreamer RedisStreamer
 	pkgWorkerManager   *WorkerManager
 	pkgAccountQueueMu  sync.RWMutex
 )
@@ -240,7 +240,7 @@ var (
 func InstallAccountQueue(s RedisStreamer, m *WorkerManager) {
 	pkgAccountQueueMu.Lock()
 	pkgAccountStreamer = s
-	pkgWorkerManager  = m
+	pkgWorkerManager = m
 	pkgAccountQueueMu.Unlock()
 }
 
