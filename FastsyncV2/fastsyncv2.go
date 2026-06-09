@@ -431,6 +431,20 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 			}
 		}
 		if len(missingMap) > 0 {
+			// DataSync can run for several minutes on large syncs, causing the
+			// server-side AUTH_TTL (2 min) to expire. Re-run Availability to get
+			// a fresh token before calling FetchAccounts so we don't fail auth.
+			if refreshResp, refreshErr := fs.AvailRouter.SendAvailabilityRequest(
+				ctx, fs.PriorRouter.GetSyncVars(), *targetNodeInfo, startBlock, math.MaxUint64,
+			); refreshErr != nil {
+				log.Printf("[FastsyncV2] Phase 4.5: auth refresh failed, proceeding with existing token: %v", refreshErr)
+			} else if refreshResp.IsAvailable && refreshResp.Auth != nil && refreshResp.Auth.UUID != "" {
+				log.Printf("[FastsyncV2] Phase 4.5: auth token refreshed (UUID=%s)", refreshResp.Auth.UUID)
+				availResp = refreshResp
+				// Rebuild the remotes slice so Phase 5/6 also use the fresh token.
+				remotes = []*availabilitypb.AvailabilityResponse{availResp}
+			}
+
 			log.Printf("[FastsyncV2] Phase 4.5: fetching %d missing tagged accounts", len(missingMap))
 			resp, err := fs.AccountSyncRouter.FetchAccounts(availResp, missingMap)
 			if err != nil {

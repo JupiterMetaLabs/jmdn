@@ -10,10 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
-	"github.com/ethereum/go-ethereum/common"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+
+	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 type account_manager struct{}
@@ -372,6 +373,8 @@ func dbOpsToTypes(acc *DB_OPs.Account) *types.Account {
 		Address:     acc.Address,
 		Balance:     acc.Balance,
 		Nonce:       acc.Nonce,
+		TxNonce:     acc.TxNonce,
+		TxCountSent: acc.TxCountSent,
 		AccountType: acc.AccountType,
 		CreatedAt:   acc.CreatedAt,
 		UpdatedAt:   acc.UpdatedAt,

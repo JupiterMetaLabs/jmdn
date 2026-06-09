@@ -47,9 +47,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gossipnode/DB_OPs"
+
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
 	"github.com/ethereum/go-ethereum/common"
-	"gossipnode/DB_OPs"
 )
 
 // ─── dbEntry type alias ───────────────────────────────────────────────────────
@@ -397,7 +398,7 @@ func parseAccountsPayload(dataStr string) ([]dbEntry, error) {
 	if err := json.Unmarshal([]byte(dataStr), &accs); err != nil {
 		return nil, fmt.Errorf("unmarshal []*types.Account: %w", err)
 	}
-	
+
 	// We might emit up to 2 entries per account (address: and did:)
 	entries := make([]dbEntry, 0, len(accs)*2)
 	for _, acc := range accs {
@@ -409,6 +410,8 @@ func parseAccountsPayload(dataStr string) ([]dbEntry, error) {
 			Address:     acc.Address,
 			Balance:     acc.Balance,
 			Nonce:       acc.Nonce,
+			TxNonce:     acc.TxNonce,
+			TxCountSent: acc.TxCountSent,
 			AccountType: acc.AccountType,
 			CreatedAt:   acc.CreatedAt,
 			UpdatedAt:   acc.UpdatedAt,
@@ -418,13 +421,13 @@ func parseAccountsPayload(dataStr string) ([]dbEntry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("marshal DB_OPs.Account for address %s: %w", acc.Address.Hex(), err)
 		}
-		
+
 		// 1. Emit the primary address key
 		entries = append(entries, dbEntry{
 			Key:   DB_OPs.Prefix + acc.Address.Hex(),
 			Value: val,
 		})
-		
+
 		// 2. Emit the DID key so BatchRestoreAccounts creates the bound reference
 		if acc.DIDAddress != "" {
 			entries = append(entries, dbEntry{

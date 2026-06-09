@@ -279,54 +279,6 @@ func Test_ConnectionPool_WithNilConnection(t *testing.T) {
 	fmt.Printf("   Address: %s\n", address.Hex())
 }
 
-func Test_Account_Nonce_Generation(t *testing.T) {
-	fmt.Printf("=== Testing Account Nonce Generation ===\n")
-
-	// Test the nonce generation function
-	nonce1, err := DB_OPs.PutNonceofAccount()
-	if err != nil {
-		t.Fatalf("Failed to generate nonce 1: %v", err)
-	}
-
-	// Wait a bit to ensure different timestamps
-	// time.Sleep(1 * time.Millisecond)
-
-	nonce2, err := DB_OPs.PutNonceofAccount()
-	if err != nil {
-		t.Fatalf("Failed to generate nonce 2: %v", err)
-	}
-
-	nonce3, err := DB_OPs.PutNonceofAccount()
-	if err != nil {
-		t.Fatalf("Failed to generate nonce 3: %v", err)
-	}
-
-	time.Sleep(1 * time.Millisecond)
-
-	nonce4, err := DB_OPs.PutNonceofAccount()
-	if err != nil {
-		t.Fatalf("Failed to generate nonce 4: %v", err)
-	}
-
-	fmt.Printf("Generated nonces:\n")
-	fmt.Printf("   Nonce 1: %d\n", nonce1)
-	fmt.Printf("   Nonce 2: %d\n", nonce2)
-	fmt.Printf("   Nonce 3: %d\n", nonce3)
-	fmt.Printf("   Nonce 4: %d\n", nonce4)
-	// Verify nonces are different
-	if nonce1 == nonce2 {
-		t.Fatalf("Generated nonces should be different")
-	}
-
-	// Verify nonces are reasonable (based on timestamp)
-	// Note: The nonce includes a counter in the lower bits, so it might be slightly larger than current timestamp
-	now := time.Now().UTC().UnixNano()
-	if nonce1 > uint64(now)+1000000 || nonce2 > uint64(now)+1000000 {
-		t.Fatalf("Generated nonces should be close to current timestamp")
-	}
-
-	fmt.Printf("✅ Account nonce generation test passed!\n")
-}
 
 func Test_Account_Database_Write_Read(t *testing.T) {
 	fmt.Printf("=== Testing Account Database Write and Read ===\n")
@@ -609,7 +561,7 @@ func Test_UpdateAccountBalance(t *testing.T) {
 	// Update balance
 	newBalance := "1000.50"
 	fmt.Printf("Updating balance to: %s\n", newBalance)
-	err = DB_OPs.UpdateAccountBalance(conn, address, newBalance)
+	err = DB_OPs.UpdateAccountBalance(conn, address, newBalance, time.Now().UTC().UnixNano())
 	if err != nil {
 		DB_OPs.PutAccountsConnection(conn)
 		t.Fatalf("Failed to update balance: %v", err)
