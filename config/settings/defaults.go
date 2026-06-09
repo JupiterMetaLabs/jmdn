@@ -42,6 +42,10 @@ func DefaultConfig() NodeConfig {
 		Database: DatabaseSettings{
 			Username: "",
 			Password: "",
+			Redis: RedisSettings{
+				URL:      "127.0.0.1:6379", // required for account sync worker; set via jmdn.yaml or JMDN_DATABASE_REDIS_URL
+				Password: "jmdnredissync",  // optional: set if Redis requires authentication
+			},
 		},
 		Logging: LoggingSettings{
 			Level:       "warn",
@@ -64,6 +68,7 @@ func DefaultConfig() NodeConfig {
 				Enabled:        false,
 				Protocol:       "grpc",
 				Insecure:       false,
+				Headers:        map[string]string{},
 				BatchSize:      512,
 				ExportInterval: 5 * time.Second,
 			},
@@ -75,6 +80,13 @@ func DefaultConfig() NodeConfig {
 		Features: FeatureSettings{
 			UseLegacyBFT: false,
 			GROTrack:     false,
+		},
+		FastSync: FastSyncSettings{
+			Enabled:       true,
+			EnablePulling: true,
+			PullOnStartup: true,
+			SyncTimeout:   10 * time.Minute,
+			AllowedPeers:  []string{},
 		},
 		Security: DefaultSecurityConfig(),
 		Alerts:   DefaultAlertsConfig(),

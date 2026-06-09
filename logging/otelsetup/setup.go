@@ -66,16 +66,15 @@ func Setup(logDir string, logFileName string) (*ion.Ion, []ion.Warning, error) {
 
 		// OTEL export
 		if logCfg.OTEL.Enabled && logCfg.OTEL.Endpoint != "" {
-			cfg.OTEL = ion.OTELConfig{
-				Enabled:        true,
-				Endpoint:       logCfg.OTEL.Endpoint,
-				Protocol:       logCfg.OTEL.Protocol,
-				Insecure:       logCfg.OTEL.Insecure,
-				Username:       logCfg.OTEL.Username,
-				Password:       logCfg.OTEL.Password,
-				BatchSize:      logCfg.OTEL.BatchSize,
-				ExportInterval: logCfg.OTEL.ExportInterval,
-			}
+			cfg.OTEL.Enabled = true
+			cfg.OTEL.Endpoint = logCfg.OTEL.Endpoint
+			cfg.OTEL.Protocol = logCfg.OTEL.Protocol
+			cfg.OTEL.Insecure = logCfg.OTEL.Insecure
+			cfg.OTEL.Headers = logCfg.OTEL.Headers
+			cfg.OTEL.Username = logCfg.OTEL.Username
+			cfg.OTEL.Password = logCfg.OTEL.Password
+			cfg.OTEL.BatchSize = logCfg.OTEL.BatchSize
+			cfg.OTEL.ExportInterval = logCfg.OTEL.ExportInterval
 
 			// Tracing (inherits OTEL endpoint)
 			cfg.Tracing = ion.TracingConfig{

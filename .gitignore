@@ -47,3 +47,8 @@ vendor/
 
 # Internal team references
 docs/SONARQUBE_SETUP_GUIDE.md
+jmdn.yaml
+internal/WAL/.tmp/*
+.claude/*
+.code-review-graph/*
+.cursor/*
