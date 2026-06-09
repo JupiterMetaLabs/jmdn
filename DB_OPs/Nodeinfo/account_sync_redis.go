@@ -5,7 +5,7 @@
 // CORE DATA STRUCTURES:
 //   - StreamEntry: ephemeral; one per stream message read. Count per ReadGroup call
 //     is bounded by AccountSyncWorkerConfig.MaxDrainItems at the call site.
-//   - pkgStreamer (package-level): singleton reference set once by StartAccountSyncWorker.
+//   - pkgAccountStreamer / pkgWorkerManager (package-level): set once by InstallAccountQueue.
 //     Read by every WriteAccounts / BatchUpdateAccounts call. Never replaced after set.
 //
 // TO MODIFY BEHAVIOR:
@@ -17,7 +17,7 @@
 // DO NOT:
 //   - Import *redis.Client outside redisStreamerAdapter — it is the only concrete import.
 //   - Store request-scoped state on redisStreamerAdapter (stateless wrapper by design).
-//   - Replace pkgStreamer with a per-call parameter — types.AccountManager interface
+//   - Replace pkgAccountStreamer with a per-call parameter — types.AccountManager interface
 //     signatures are fixed by the external JMDN-FastSync module and cannot be changed.
 //
 // EXTENSION POINT: new queue backends → implement RedisStreamer; inject via StartAccountSyncWorker.
@@ -96,12 +96,26 @@ type RedisStreamer interface {
 	// Time: O(|ids|) — single XACK round trip.
 	Ack(ctx context.Context, stream, group string, ids ...string) error
 
+	// Delete removes message IDs from the stream body (XDEL), reclaiming memory.
+	// Call in a pipeline with Ack after every successful DB commit. XACK alone leaves
+	// the payload resident in the stream; XDEL is required to reclaim that space.
+	// Time: O(|ids|) — single XDEL round trip.
+	Delete(ctx context.Context, stream string, ids ...string) error
+
 	// AutoClaim reclaims pending entries that have been idle longer than minIdle.
 	// start is the minimum PEL cursor ID ("0-0" to scan from the beginning).
 	// Returns reclaimed entries and the next cursor ID.
 	// "0-0" as the returned cursor means the full PEL was scanned.
 	// Time: O(count) — single XAUTOCLAIM round trip.
 	AutoClaim(ctx context.Context, stream, group, consumer string, minIdle time.Duration, start string, count int64) ([]StreamEntry, string, error)
+
+	// Len returns the total number of messages currently in the stream (XLEN).
+	// Time: O(1).
+	Len(ctx context.Context, stream string) (int64, error)
+
+	// PendingCount returns the count of unacked messages in the PEL for the given group.
+	// Time: O(1) — single XPENDING round trip.
+	PendingCount(ctx context.Context, stream, group string) (int64, error)
 }
 
 // ─── Concrete adapter ─────────────────────────────────────────────────────────
@@ -169,6 +183,14 @@ func (r *redisStreamerAdapter) Ack(ctx context.Context, stream, group string, id
 	return r.client.XAck(ctx, stream, group, ids...).Err()
 }
 
+// Time: O(|ids|) — single XDEL round trip
+func (r *redisStreamerAdapter) Delete(ctx context.Context, stream string, ids ...string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return r.client.XDel(ctx, stream, ids...).Err()
+}
+
 // Time: O(count) — single XAUTOCLAIM round trip
 // go-redis v9 XAutoClaimCmd.Result() returns ([]XMessage, string, error) — three values.
 func (r *redisStreamerAdapter) AutoClaim(ctx context.Context, stream, group, consumer string, minIdle time.Duration, start string, count int64) ([]StreamEntry, string, error) {
@@ -190,29 +212,43 @@ func (r *redisStreamerAdapter) AutoClaim(ctx context.Context, stream, group, con
 	return entries, next, nil
 }
 
-// ─── Package-level streamer singleton ────────────────────────────────────────
-
-// pkgStreamer is the package-level RedisStreamer set once by StartAccountSyncWorker.
-// It is read by every WriteAccounts and BatchUpdateAccounts call.
-// types.AccountManager interface signatures are fixed externally and cannot carry
-// a streamer parameter — this package-level injection is the only available path.
-var (
-	pkgStreamer   RedisStreamer
-	pkgStreamerMu sync.RWMutex
-)
-
-// setStreamer stores the streamer. Called once from StartAccountSyncWorker.
-func setStreamer(s RedisStreamer) {
-	pkgStreamerMu.Lock()
-	pkgStreamer = s
-	pkgStreamerMu.Unlock()
+func (r *redisStreamerAdapter) Len(ctx context.Context, stream string) (int64, error) {
+	return r.client.XLen(ctx, stream).Result()
 }
 
-// getStreamer returns the package-level streamer, or nil if StartAccountSyncWorker
-// has not yet been called.
+func (r *redisStreamerAdapter) PendingCount(ctx context.Context, stream, group string) (int64, error) {
+	info, err := r.client.XPending(ctx, stream, group).Result()
+	if err != nil {
+		return 0, err
+	}
+	return info.Count, nil
+}
+
+// ─── Package-level queue singleton ───────────────────────────────────────────
+
+// pkgAccountStreamer and pkgWorkerManager are set once by InstallAccountQueue.
+// Read by every WriteAccounts / BatchUpdateAccounts call. types.AccountManager
+// interface signatures are fixed externally — package-level injection is the only path.
+var (
+	pkgAccountStreamer  RedisStreamer
+	pkgWorkerManager   *WorkerManager
+	pkgAccountQueueMu  sync.RWMutex
+)
+
+// InstallAccountQueue stores the streamer and manager together.
+// Called once from StartAccountSyncWorker during node startup.
+func InstallAccountQueue(s RedisStreamer, m *WorkerManager) {
+	pkgAccountQueueMu.Lock()
+	pkgAccountStreamer = s
+	pkgWorkerManager  = m
+	pkgAccountQueueMu.Unlock()
+}
+
+// getAccountQueue returns the package-level streamer and worker manager.
+// Both are nil if InstallAccountQueue has not yet been called.
 // Time: O(1)
-func getStreamer() RedisStreamer {
-	pkgStreamerMu.RLock()
-	defer pkgStreamerMu.RUnlock()
-	return pkgStreamer
+func getAccountQueue() (RedisStreamer, *WorkerManager) {
+	pkgAccountQueueMu.RLock()
+	defer pkgAccountQueueMu.RUnlock()
+	return pkgAccountStreamer, pkgWorkerManager
 }

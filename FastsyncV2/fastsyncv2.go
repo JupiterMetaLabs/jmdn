@@ -726,6 +726,9 @@ func zkBlockToProtoNonHeaders(b *types.ZKBlock) *blockpb.NonHeaders {
 		if tx.Value != nil {
 			pbTx.Value = tx.Value.Bytes()
 		}
+		if tx.ChainID != nil {
+			pbTx.ChainId = tx.ChainID.Bytes()
+		}
 		if tx.GasPrice != nil {
 			pbTx.GasPrice = tx.GasPrice.Bytes()
 		}
@@ -734,6 +737,15 @@ func zkBlockToProtoNonHeaders(b *types.ZKBlock) *blockpb.NonHeaders {
 		}
 		if tx.MaxPriorityFee != nil {
 			pbTx.MaxPriorityFee = tx.MaxPriorityFee.Bytes()
+		}
+		for _, at := range tx.AccessList {
+			pbAT := &blockpb.AccessTuple{
+				Address: at.Address[:],
+			}
+			for _, sk := range at.StorageKeys {
+				pbAT.StorageKeys = append(pbAT.StorageKeys, sk[:])
+			}
+			pbTx.AccessList = append(pbTx.AccessList, pbAT)
 		}
 		if tx.V != nil {
 			pbTx.V = tx.V.Bytes()
