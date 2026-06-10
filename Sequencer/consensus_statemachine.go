@@ -3,7 +3,6 @@ package Sequencer
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 
 	"gossipnode/AVC/BuddyNodes/MessagePassing"
@@ -19,6 +18,7 @@ import (
 	"gossipnode/config/PubSubMessages/Cache"
 	"gossipnode/messaging"
 
+	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -75,7 +75,7 @@ What it does:
 - Query the buddy nodes from the NodeSelectionRouter
 - Deduplicate by Buddy_PeerMultiaddr
 */
-func (consensus *Consensus) warmup() ([]PubSubMessages.Buddy_PeerMultiaddr, error) {
+func (consensus *Consensus) warmup(ctx context.Context) ([]PubSubMessages.Buddy_PeerMultiaddr, error) {
 
 	if consensus.Host == nil {
 		return nil, fmt.Errorf("host is nil")
@@ -92,19 +92,24 @@ func (consensus *Consensus) warmup() ([]PubSubMessages.Buddy_PeerMultiaddr, erro
 	Maps.ClearVoteResults()
 	Cache.ClearCache()
 
-	log.Printf("Cleared previous round vote results at start of consensus round")
+	logger().NamedLogger.Info(ctx, "Cleared previous round vote results at start of consensus round",
+		ion.String("function", "Consensus.warmup"))
 
 	buddies, errMSG := helper.QueryBuddyNodes()
 	if errMSG != nil {
 		return nil, fmt.Errorf("failed to query buddy nodes: %v", errMSG)
 	}
 
-	log.Printf("Queried %d buddy node candidates from NodeSelectionRouter", len(buddies))
+	logger().NamedLogger.Info(ctx, "Queried buddy node candidates from NodeSelectionRouter",
+		ion.Int("candidates", len(buddies)),
+		ion.String("function", "Consensus.warmup"))
 
 	// Deduplicate buddies by peer.ID (buddies may have multiple multiaddrs per peer)
 	candidates := helper.GetUniqueBuddyPeers(buddies)
 
-	log.Printf("got: %d candidates after deduplication", len(candidates))
+	logger().NamedLogger.Info(ctx, "got candidates after deduplication",
+		ion.Int("candidates", len(candidates)),
+		ion.String("function", "Consensus.warmup"))
 
 	return candidates, nil
 }
@@ -187,14 +192,14 @@ What it does:
 - This is a state-changing operation as it modifies the blockchain state
 - IMPORTANT: Cleans up subscriptions after processing to prevent resource leaks
 */
-func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLSresponse, consensusReached bool) error {
+func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsResults []BLS_Signer.BLSresponse, consensusReached bool) error {
 	// Context for the alerts
-	alert_ctx := context.Background()
+	alert_ctx := ctx
 	defer alert_ctx.Done()
 
 	// CRITICAL FIX: Clean up subscriptions when consensus round completes (success or failure)
 	// This prevents subscription accumulation over long-running consensus operations
-	defer consensus.CleanupSubscriptions()
+	defer consensus.CleanupSubscriptions(ctx)
 
 	consensus.mu.Lock()
 	defer consensus.mu.Unlock()
@@ -225,10 +230,8 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 		return fmt.Errorf("failed to broadcast block with BLS results: %w", err)
 	}
 
-	fmt.Printf("✅ Broadcasted block with %d BLS results\n", len(blsResults))
-
-	// Only process block locally if consensus was reached
 	if consensusReached {
+		// Only process block locally if consensus was reached
 		if err := messaging.ProcessBlockLocally(block, blsResults); err != nil {
 			Alerts.NewAlertBuilder(alert_ctx).
 				AlertName(helper.Alert_Consensus_ProcessBlockFailed_FailedToProcessBlockLocally).
@@ -241,6 +244,13 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 				Send()
 			return fmt.Errorf("failed to process block locally after broadcast: %w", err)
 		}
+
+		logger().NamedLogger.Info(ctx, "Broadcasted block",
+			ion.Int("bls_results", len(blsResults)),
+			ion.String("block_hash", block.BlockHash.Hex()),
+			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.String("function", "Consensus.BroadcastAndProcessBlock"))
+
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_ProcessBlockSuccess_BlockProcessedLocally).
 			Status(Alerts.AlertStatusSuccess).
@@ -253,6 +263,12 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 		// Consensus not reached is a valid BFT outcome, not an infrastructure error.
 		// The alert from VerifyConsensusWithBLS already notifies about the failed vote.
 		// We broadcast with "rejected" status so nodes discard — no error to propagate.
+		logger().NamedLogger.Info(ctx, "Broadcasted rejected block",
+			ion.Int("bls_results", len(blsResults)),
+			ion.String("block_hash", block.BlockHash.Hex()),
+			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.String("function", "Consensus.BroadcastAndProcessBlock"))
+
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_BlockRejectedByConsensus).
 			Status(Alerts.AlertStatusWarning).
@@ -268,7 +284,7 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 
 // CleanupSubscriptions unsubscribes from consensus-related topics to prevent resource leaks
 // This should be called after each consensus round completes (success or failure)
-func (consensus *Consensus) CleanupSubscriptions() {
+func (consensus *Consensus) CleanupSubscriptions(ctx context.Context) {
 	if consensus.gossipnode == nil {
 		return
 	}
@@ -280,14 +296,19 @@ func (consensus *Consensus) CleanupSubscriptions() {
 
 	// Unsubscribe from consensus channel
 	if err := Subscription.Unsubscribe(gps, config.PubSub_ConsensusChannel); err != nil {
-		log.Printf("⚠️ Failed to unsubscribe from consensus channel: %v", err)
+		logger().NamedLogger.Warn(ctx, "Failed to unsubscribe from consensus channel",
+			ion.String("error", err.Error()),
+			ion.String("function", "Consensus.CleanupSubscriptions"))
 	} else {
-		log.Printf("✅ Cleaned up consensus channel subscription")
+		logger().NamedLogger.Info(ctx, "Cleaned up consensus channel subscription",
+			ion.String("function", "Consensus.CleanupSubscriptions"))
 	}
 
 	// Unsubscribe from CRDT sync channel
 	if err := Subscription.Unsubscribe(gps, config.Pubsub_CRDTSync); err != nil {
 		// This may fail if we never subscribed - that's OK
-		log.Printf("⚠️ Failed to unsubscribe from CRDT sync channel: %v (may not have been subscribed)", err)
+		logger().NamedLogger.Debug(ctx, "Failed to unsubscribe from CRDT sync channel (may not have been subscribed)",
+			ion.String("error", err.Error()),
+			ion.String("function", "Consensus.CleanupSubscriptions"))
 	}
 }

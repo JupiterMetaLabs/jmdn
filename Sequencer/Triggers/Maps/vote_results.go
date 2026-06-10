@@ -1,7 +1,6 @@
 package Maps
 
 import (
-	"log"
 	"sync"
 )
 
@@ -16,7 +15,7 @@ func StoreVoteResult(peerID string, result int8) {
 	voteResultsMutex.Lock()
 	defer voteResultsMutex.Unlock()
 	voteResultsMap[peerID] = result
-	log.Printf("Stored vote result for peer %s: %d", peerID, result)
+
 }
 
 // GetVoteResult retrieves a vote result for a peer
@@ -43,7 +42,7 @@ func ClearVoteResults() {
 	voteResultsMutex.Lock()
 	defer voteResultsMutex.Unlock()
 	voteResultsMap = make(map[string]int8)
-	log.Printf("Cleared all vote results")
+
 }
 
 // GetVoteResultsCount returns the number of stored vote results

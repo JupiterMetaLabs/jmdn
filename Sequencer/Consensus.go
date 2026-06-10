@@ -141,7 +141,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	logger().NamedLogger.Info(warmupCtx, "Starting consensus warmup",
 		ion.String("function", "Consensus.Start.warmup"))
 
-	candidates, errMSG := consensus.warmup()
+	candidates, errMSG := consensus.warmup(warmupCtx)
 	if errMSG != nil {
 		warmupSpan.RecordError(errMSG)
 		warmupSpan.SetAttributes(attribute.String("status", "failed"))
@@ -1427,7 +1427,7 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 		broadcastStartTime := time.Now().UTC()
 		blockNumber := consensus.ZKBlockData.GetZKBlock().BlockNumber
 		blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
-		if err := consensus.BroadcastAndProcessBlock(blsResults, consensusReached); err != nil {
+		if err := consensus.BroadcastAndProcessBlock(broadcastCtx, blsResults, consensusReached); err != nil {
 			broadcastSpan.RecordError(err)
 			broadcastSpan.SetAttributes(attribute.String("status", "failed"))
 			broadcastDuration := time.Since(broadcastStartTime).Seconds()
@@ -1960,7 +1960,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		attribute.String("status", "consensus_failed"),
 		attribute.Bool("consensus_reached", false),
 	)
-	msg := fmt.Sprintf("❌ Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
+	msg := fmt.Sprintf("Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
 	logger().NamedLogger.Warn(trace_ctx, "Consensus failed",
 		ion.Int("yes_votes", validYes),
 		ion.Int("total_votes", validTotal),
@@ -1970,8 +1970,8 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		ion.String("function", "Consensus.VerifyConsensusWithBLS"))
 	Alerts.NewAlertBuilder(alert_ctx).
 		AlertName(helper.Alert_BFT_Consensus_Failed).
-		Status(Alerts.AlertStatusError).
-		Severity(Alerts.SeverityError).
+		Status(Alerts.AlertStatusWarning).
+		Severity(Alerts.SeverityWarning).
 		Description(msg).
 		Send()
 	return false
