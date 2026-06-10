@@ -200,14 +200,13 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 	defer consensus.mu.Unlock()
 
 	if consensus.ZKBlockData == nil || consensus.ZKBlockData.GetZKBlock() == nil {
-		ErrorMessage := "CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: ZKBlockData not initialized"
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_ProcessBlockFailed_ZKBlockDataNotSet).
 			Status(Alerts.AlertStatusError).
 			Severity(Alerts.SeverityError).
-			Description(ErrorMessage).
+			Description("ZKBlockData not initialized when attempting to broadcast and process block").
 			Send()
-		return fmt.Errorf("ZKBlockData not initialized, error: %s", ErrorMessage)
+		return fmt.Errorf("ZKBlockData not initialized")
 	}
 
 	block := consensus.ZKBlockData.GetZKBlock()
@@ -223,7 +222,7 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 	// Broadcast block with BLS results (if any)
 	// If consensusReached is false, we send "rejected" status so nodes can discard the block
 	if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, block, consensusReached, extraData, blsResults); err != nil {
-		return fmt.Errorf("failed to broadcast block with BLS results: %v", err)
+		return fmt.Errorf("failed to broadcast block with BLS results: %w", err)
 	}
 
 	fmt.Printf("✅ Broadcasted block with %d BLS results\n", len(blsResults))
@@ -231,34 +230,37 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 	// Only process block locally if consensus was reached
 	if consensusReached {
 		if err := messaging.ProcessBlockLocally(block, blsResults); err != nil {
-			ErrorMessage := fmt.Sprintf("CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Failed to process block locally after broadcast: %v", err)
 			Alerts.NewAlertBuilder(alert_ctx).
 				AlertName(helper.Alert_Consensus_ProcessBlockFailed_FailedToProcessBlockLocally).
 				Status(Alerts.AlertStatusError).
 				Severity(Alerts.SeverityError).
-				Description(ErrorMessage).
+				Description("Failed to process block locally after successful broadcast").
+				Msg(err.Error()).
+				Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
+				Label("block_hash", block.BlockHash.Hex()).
 				Send()
-			fmt.Printf("%s", ErrorMessage)
-			return fmt.Errorf("failed to process block locally after broadcast: %v, error: %s", err, ErrorMessage)
+			return fmt.Errorf("failed to process block locally after broadcast: %w", err)
 		}
-		msg := fmt.Sprintf("✅ Processed block locally - account balances updated\nBlock #%d\n(hash: %s)", block.BlockNumber, block.BlockHash.Hex())
-		fmt.Printf("%s", msg)
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_ProcessBlockSuccess_BlockProcessedLocally).
 			Status(Alerts.AlertStatusSuccess).
 			Severity(Alerts.SeveritySuccess).
-			Description(msg).
+			Description("Block processed locally - account balances updated").
+			Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
+			Label("block_hash", block.BlockHash.Hex()).
 			Send()
 	} else {
-		msg := fmt.Sprintf("CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Consensus not reached\nBlock #%d\n(hash: %s)", block.BlockNumber, block.BlockHash.Hex())
-		fmt.Printf("%s", msg)
+		// Consensus not reached is a valid BFT outcome, not an infrastructure error.
+		// The alert from VerifyConsensusWithBLS already notifies about the failed vote.
+		// We broadcast with "rejected" status so nodes discard — no error to propagate.
 		Alerts.NewAlertBuilder(alert_ctx).
-			AlertName(helper.Alert_Consensus_ProcessBlockFailed_ConsensusNotReached).
+			AlertName(helper.Alert_Consensus_BlockRejectedByConsensus).
 			Status(Alerts.AlertStatusWarning).
 			Severity(Alerts.SeverityWarning).
-			Description(msg).
+			Description("Block rejected by consensus - broadcast with rejected status").
+			Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
+			Label("block_hash", block.BlockHash.Hex()).
 			Send()
-		return fmt.Errorf("consensus not reached, error: %s", msg)
 	}
 
 	return nil

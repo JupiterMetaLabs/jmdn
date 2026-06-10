@@ -1425,13 +1425,18 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 		// Step 3: Broadcast and process block (state-changing operation)
 		broadcastCtx, broadcastSpan := tracer.Start(processCtx, "Consensus.ProcessVoteCollection.broadcastAndProcess")
 		broadcastStartTime := time.Now().UTC()
+		blockNumber := consensus.ZKBlockData.GetZKBlock().BlockNumber
+		blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
 		if err := consensus.BroadcastAndProcessBlock(blsResults, consensusReached); err != nil {
 			broadcastSpan.RecordError(err)
 			broadcastSpan.SetAttributes(attribute.String("status", "failed"))
 			broadcastDuration := time.Since(broadcastStartTime).Seconds()
 			broadcastSpan.SetAttributes(attribute.Float64("duration", broadcastDuration))
-			logger().NamedLogger.Error(broadcastCtx, "Failed to broadcast and process block",
+			logger().NamedLogger.Error(broadcastCtx, "Failed to broadcast or process block locally",
 				err,
+				ion.Int64("block_number", int64(blockNumber)),
+				ion.String("block_hash", blockHash),
+				ion.Bool("consensus_reached", consensusReached),
 				ion.Float64("duration", broadcastDuration),
 				ion.String("function", "Consensus.ProcessVoteCollection.broadcastAndProcess"))
 			broadcastSpan.End()
@@ -1443,6 +1448,9 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 			attribute.String("status", "success"),
 		)
 		logger().NamedLogger.Info(broadcastCtx, "Broadcast and process block completed",
+			ion.Int64("block_number", int64(blockNumber)),
+			ion.String("block_hash", blockHash),
+			ion.Bool("consensus_reached", consensusReached),
 			ion.Float64("duration", broadcastDuration),
 			ion.String("function", "Consensus.ProcessVoteCollection.broadcastAndProcess"))
 		broadcastSpan.End()
