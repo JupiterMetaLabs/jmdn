@@ -64,7 +64,7 @@ func (s *ImmuDBServer) getBlockByNumber(c *gin.Context) {
 		return
 	}
 
-	block, err := DB_OPs.GetZKBlockByNumber(&s.defaultdb, numberInt)
+	block, err := DB_OPs.ReadZKBlockByNumber(&s.defaultdb, numberInt)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -111,7 +111,7 @@ func (s *ImmuDBServer) getBlock(c *gin.Context) {
 	hash := c.Param("id")
 	span.SetAttributes(attribute.String("block_hash", hash))
 
-	block, err := DB_OPs.GetZKBlockByHash(&s.defaultdb, hash)
+	block, err := DB_OPs.ReadZKBlockByHash(&s.defaultdb, hash)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -202,7 +202,7 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 	// Get blocks for the current page
 	var blocks []*config.ZKBlock
 	for i := endBlock; i >= startBlock; i-- {
-		block, err := DB_OPs.GetZKBlockByNumber(&s.defaultdb, i)
+		block, err := DB_OPs.ReadZKBlockByNumber(&s.defaultdb, i)
 		if err != nil {
 			// If a block is not found, it might be a gap in the blockchain.
 			// Log the error and continue to the next block to provide a partial response.
@@ -477,7 +477,7 @@ func (s *ImmuDBServer) listTransactions_inBlock(c *gin.Context) {
 		return
 	}
 
-	BlockData, err := DB_OPs.GetZKBlockByNumber(&s.defaultdb, blockNumberInt)
+	BlockData, err := DB_OPs.ReadZKBlockByNumber(&s.defaultdb, blockNumberInt)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -789,7 +789,7 @@ func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
 	var missingBlocks []*config.ZKBlock
 	for blockNumberInt < latestBlockNumber {
 		blockNumberInt++
-		block, err := DB_OPs.GetZKBlockByNumber(&s.defaultdb, blockNumberInt)
+		block, err := DB_OPs.ReadZKBlockByNumber(&s.defaultdb, blockNumberInt)
 		if err != nil {
 			span.RecordError(err)
 			span.SetAttributes(attribute.String("status", "error"))

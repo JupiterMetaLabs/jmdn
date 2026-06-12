@@ -14,7 +14,7 @@ func GetLatesBlockNumber(DBclient *ImmuDBServer) (uint64, error) {
 }
 
 func GetLatestBlockByNumber(DBclient *ImmuDBServer, blockNumber uint64) (*config.ZKBlock, error) {
-	block, err := DB_OPs.GetZKBlockByNumber(&DBclient.defaultdb, blockNumber)
+	block, err := DB_OPs.ReadZKBlockByNumber(&DBclient.defaultdb, blockNumber)
 	if err != nil {
 		return nil, err
 	}

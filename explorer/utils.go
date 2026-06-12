@@ -144,7 +144,7 @@ func checkForNewBlocks(DBclient *ImmuDBServer) {
 	errorCount := 0
 
 	for i := currentBlockNumber + 1; i <= latestBlockNumber; i++ {
-		block, err := DB_OPs.GetZKBlockByNumber(&DBclient.defaultdb, i)
+		block, err := DB_OPs.ReadZKBlockByNumber(&DBclient.defaultdb, i)
 		if err != nil {
 			errorCount++
 			span.RecordError(err)

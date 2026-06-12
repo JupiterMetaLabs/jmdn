@@ -2205,6 +2205,53 @@ func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (
 	return block, nil
 }
 
+// ReadZKBlockByHash retrieves a ZK block by its hash using plain Get (no proof generation).
+// Use for sync/reconciliation paths where tamper-proof guarantees are not required.
+// Time: O(1); Space: O(block size)
+func ReadZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (*config.ZKBlock, error) {
+	var shouldReturnConnection = false
+	var err error
+	hashKey := fmt.Sprintf("%s%s", PREFIX_BLOCK_HASH, blockHash)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if mainDBClient == nil {
+		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get main DB connection: %w - ReadZKBlockByHash", err)
+		}
+		shouldReturnConnection = true
+	}
+
+	if shouldReturnConnection {
+		defer func() {
+			PutMainDBConnection(mainDBClient)
+		}()
+	}
+
+	// First get the block key from the hash mapping using plain read
+	entryHash, err := mainDBClient.Client.Client.Get(ctx, []byte(hashKey))
+	if err != nil {
+		return nil, fmt.Errorf("failed to find block key for hash %s: %w", blockHash, err)
+	}
+
+	blockKey := entryHash.Value
+
+	// Then get the actual block data using the block key
+	entryBlock, err := mainDBClient.Client.Client.Get(ctx, blockKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve block data for hash %s: %w", blockHash, err)
+	}
+
+	block := new(config.ZKBlock)
+	if err := json.Unmarshal(entryBlock.Value, block); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal block for hash %s: %w", blockHash, err)
+	}
+
+	return block, nil
+}
+
 // GetLatestBlockNumber returns the latest block number (UNCHANGED)
 func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error) {
 	var err error
