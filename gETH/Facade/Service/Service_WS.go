@@ -152,7 +152,7 @@ func pollForNewBlocks() {
 // getBlockForSubscription retrieves a block and converts it to Types.Block format
 func getBlockForSubscription(blockNumber uint64) (*Types.Block, error) {
 	// Get the ZK block from database
-	zkBlock, err := DB_OPs.GetZKBlockByNumber(nil, blockNumber)
+	zkBlock, err := DB_OPs.ReadZKBlockByNumber(nil, blockNumber)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ZK block %d: %w", blockNumber, err)
 	}

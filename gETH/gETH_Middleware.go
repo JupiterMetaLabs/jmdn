@@ -35,7 +35,7 @@ func _GetBlockByNumber(req *proto.GetBlockByNumberReq) (*proto.Block, error) {
 	// 	return nil, err
 	// }
 	// First call the exisitng apis to get the block by the number
-	zkblock, err := DB_OPs.GetZKBlockByNumber(nil, req.Number)
+	zkblock, err := DB_OPs.ReadZKBlockByNumber(nil, req.Number)
 	if err != nil {
 		return nil, err
 	}

@@ -108,7 +108,7 @@ func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bo
 	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	ZKBlock, err := DB_OPs.GetZKBlockByNumber(nil, num.Uint64())
+	ZKBlock, err := DB_OPs.ReadZKBlockByNumber(nil, num.Uint64())
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("BlockByNumber failed: %v", err), "BlockByNumber", -1); logErr != nil {
 			fmt.Printf("Failed to log BlockByNumber error: %v\n", logErr)

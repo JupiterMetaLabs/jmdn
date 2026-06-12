@@ -2084,12 +2084,12 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 	return block, nil
 }
 
-// GetZKBlockByNumberFast retrieves a ZK block by number using plain Get (no proof generation).
+// ReadZKBlockByNumber retrieves a ZK block by number using plain Get (no proof generation).
 // Use for sync/reconciliation paths where tamper-proof guarantees are not required.
 // 5–10× faster than GetZKBlockByNumber for bulk reads.
 //
 // Time: O(1); Space: O(block size)
-func GetZKBlockByNumberFast(mainDBClient *config.PooledConnection, blockNumber uint64) (*config.ZKBlock, error) {
+func ReadZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint64) (*config.ZKBlock, error) {
 	var shouldReturnConnection = false
 	var err error
 	blockKey := fmt.Sprintf("%s%d", PREFIX_BLOCK, blockNumber)
@@ -2101,7 +2101,7 @@ func GetZKBlockByNumberFast(mainDBClient *config.PooledConnection, blockNumber u
 	if mainDBClient == nil {
 		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get main DB connection: %w - GetZKBlockByNumberFast", err)
+			return nil, fmt.Errorf("failed to get main DB connection: %w - ReadZKBlockByNumber", err)
 		}
 		shouldReturnConnection = true
 	}
@@ -2364,7 +2364,7 @@ func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (
 		return nil, fmt.Errorf("failed to parse block number for tx %s: %w", txHash, err)
 	}
 
-	return GetZKBlockByNumber(mainDBClient, blockNumber)
+	return ReadZKBlockByNumber(mainDBClient, blockNumber)
 }
 
 // Get Transaction by hash

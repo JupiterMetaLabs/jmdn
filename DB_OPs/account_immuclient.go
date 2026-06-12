@@ -1329,7 +1329,7 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 
 		// Process current batch of blocks
 		for i := startBlock; i <= endBlock; i++ {
-			block, err := GetZKBlockByNumberFast(PooledConnection, i)
+			block, err := ReadZKBlockByNumber(PooledConnection, i)
 			if err != nil {
 				loggerCtx, cancel := context.WithCancel(context.Background())
 				ic.Logger.Warn(loggerCtx, "Error retrieving block, skipping",
@@ -1653,7 +1653,7 @@ func GetTransactionsByAccountPaginated(PooledConnection *config.PooledConnection
 
 		// Process current batch of blocks (in reverse order)
 		for i := currentBlock; i >= startBlock && len(allMatchingTxs) < transactionsNeeded; i-- {
-			block, err := GetZKBlockByNumberFast(PooledConnection, i)
+			block, err := ReadZKBlockByNumber(PooledConnection, i)
 			if err != nil {
 				loggerCtx, cancel := context.WithCancel(context.Background())
 				ic.Logger.Warn(loggerCtx, "Error retrieving block, skipping",
