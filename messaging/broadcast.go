@@ -595,13 +595,6 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 	peers := h.Network().Peers()
 	if len(peers) == 0 {
 		log.Warn().Msg("No connected peers to broadcast block to")
-		if result {
-			// Only process locally if we have BLS results indicating consensus
-			if len(bls) > 0 {
-				return ProcessBlockLocally(block, bls)
-			}
-			log.Warn().Msg("Cannot process block locally without BLS results - consensus not verified")
-		}
 		return nil
 	}
 
@@ -692,14 +685,6 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 		Int("total", len(peers)).
 		Msg("Block broadcast complete (with extra data)")
 
-	if result {
-		log.Info().Str("block_hash", block.BlockHash.Hex()).Msg("Positive result - processing block locally")
-		// Only process locally if we have BLS results indicating consensus
-		if len(bls) > 0 {
-			return ProcessBlockLocally(block, bls)
-		}
-		log.Warn().Str("block_hash", block.BlockHash.Hex()).Msg("Cannot process block locally without BLS results - consensus not verified")
-	}
 	return nil
 }
 

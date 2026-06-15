@@ -141,7 +141,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	logger().NamedLogger.Info(warmupCtx, "Starting consensus warmup",
 		ion.String("function", "Consensus.Start.warmup"))
 
-	candidates, errMSG := consensus.warmup()
+	candidates, errMSG := consensus.warmup(warmupCtx)
 	if errMSG != nil {
 		warmupSpan.RecordError(errMSG)
 		warmupSpan.SetAttributes(attribute.String("status", "failed"))
@@ -1425,13 +1425,18 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 		// Step 3: Broadcast and process block (state-changing operation)
 		broadcastCtx, broadcastSpan := tracer.Start(processCtx, "Consensus.ProcessVoteCollection.broadcastAndProcess")
 		broadcastStartTime := time.Now().UTC()
-		if err := consensus.BroadcastAndProcessBlock(blsResults, consensusReached); err != nil {
+		blockNumber := consensus.ZKBlockData.GetZKBlock().BlockNumber
+		blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
+		if err := consensus.BroadcastAndProcessBlock(broadcastCtx, blsResults, consensusReached); err != nil {
 			broadcastSpan.RecordError(err)
 			broadcastSpan.SetAttributes(attribute.String("status", "failed"))
 			broadcastDuration := time.Since(broadcastStartTime).Seconds()
 			broadcastSpan.SetAttributes(attribute.Float64("duration", broadcastDuration))
-			logger().NamedLogger.Error(broadcastCtx, "Failed to broadcast and process block",
+			logger().NamedLogger.Error(broadcastCtx, "Failed to broadcast or process block locally",
 				err,
+				ion.Int64("block_number", int64(blockNumber)),
+				ion.String("block_hash", blockHash),
+				ion.Bool("consensus_reached", consensusReached),
 				ion.Float64("duration", broadcastDuration),
 				ion.String("function", "Consensus.ProcessVoteCollection.broadcastAndProcess"))
 			broadcastSpan.End()
@@ -1443,6 +1448,9 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 			attribute.String("status", "success"),
 		)
 		logger().NamedLogger.Info(broadcastCtx, "Broadcast and process block completed",
+			ion.Int64("block_number", int64(blockNumber)),
+			ion.String("block_hash", blockHash),
+			ion.Bool("consensus_reached", consensusReached),
 			ion.Float64("duration", broadcastDuration),
 			ion.String("function", "Consensus.ProcessVoteCollection.broadcastAndProcess"))
 		broadcastSpan.End()
@@ -1952,7 +1960,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		attribute.String("status", "consensus_failed"),
 		attribute.Bool("consensus_reached", false),
 	)
-	msg := fmt.Sprintf("❌ Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
+	msg := fmt.Sprintf("Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
 	logger().NamedLogger.Warn(trace_ctx, "Consensus failed",
 		ion.Int("yes_votes", validYes),
 		ion.Int("total_votes", validTotal),
@@ -1962,8 +1970,8 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		ion.String("function", "Consensus.VerifyConsensusWithBLS"))
 	Alerts.NewAlertBuilder(alert_ctx).
 		AlertName(helper.Alert_BFT_Consensus_Failed).
-		Status(Alerts.AlertStatusError).
-		Severity(Alerts.SeverityError).
+		Status(Alerts.AlertStatusWarning).
+		Severity(Alerts.SeverityWarning).
 		Description(msg).
 		Send()
 	return false

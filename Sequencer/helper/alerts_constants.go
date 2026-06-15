@@ -20,4 +20,6 @@ const (
 	Alert_Consensus_ProcessBlockFailed_FailedToProcessBlockLocally = "Process Block Failed: Failed to process block locally"
 	Alert_Consensus_ProcessBlockSuccess_BlockProcessedLocally      = "Process Block Success: Block processed locally"
 	Alert_Consensus_ProcessBlockFailed_ConsensusNotReached         = "Process Block Failed: Consensus not reached"
+	// Consensus-not-reached is a valid BFT outcome; this alert name reflects that it's not an error
+	Alert_Consensus_BlockRejectedByConsensus = "Consensus: Block rejected by vote quorum"
 )

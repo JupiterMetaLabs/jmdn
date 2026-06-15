@@ -7,6 +7,50 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Consensus-not-reached propagated as an error**
+  (`Sequencer/consensus_statemachine.go`, `Sequencer/Consensus.go`).
+  `BroadcastAndProcessBlock` returned an error when a BFT quorum vote failed,
+  causing `ProcessVoteCollection` to treat a valid consensus outcome as a node
+  failure. A network experiencing peer churn could produce continuous false failures,
+  masking real issues. `BroadcastAndProcessBlock` now returns `nil` on
+  consensus-not-reached; the round ends cleanly and the next round begins normally.
+
+- **Local block processing responsibility separated from broadcast**
+  (`messaging/broadcast.go`, `Sequencer/consensus_statemachine.go`).
+  `BroadcastBlockToEveryNodeWithExtraData` contained `ProcessBlockLocally` call sites
+  that did not belong in the broadcast layer. Removed; local processing is now the
+  exclusive responsibility of `BroadcastAndProcessBlock` in the consensus state machine.
+
+- **Pubsub unsubscribe failure logged at wrong level**
+  (`Pubsub/Subscription/Subscription.go`).
+  Topic unsubscribe failure downgraded from `Error` to `Warn`.
+
+### Changed
+
+- **Trace context propagation through consensus pipeline**
+  (`Sequencer/consensus_statemachine.go`, `Sequencer/Consensus.go`).
+  `warmup`, `BroadcastAndProcessBlock`, and `CleanupSubscriptions` now accept and
+  propagate `context.Context`. The active OTEL span is now correctly carried through
+  the full consensus execution path, enabling end-to-end distributed tracing of each
+  consensus round.
+
+- **Structured logging across consensus internals**
+  (`Sequencer/consensus_statemachine.go`, `Sequencer/Consensus.go`).
+  All unstructured `log.Printf` and `fmt.Printf` calls replaced with
+  `logger().NamedLogger` structured calls carrying span context and ion fields.
+  Block number, block hash, and consensus outcome are now indexed on every relevant
+  log entry, making per-block trace correlation possible in log aggregation.
+
+- **Error wrapping** (`Sequencer/consensus_statemachine.go`, `messaging/broadcast.go`).
+  `fmt.Errorf("...: %v", err)` → `fmt.Errorf("...: %w", err)` for proper
+  `errors.Is` / `errors.As` unwrapping by callers.
+
+- **Hot-path per-vote logging removed** (`Sequencer/Triggers/Maps/vote_results.go`).
+  `StoreVoteResult` and `ClearVoteResults` emitted `log.Printf` on every call.
+  Removed.
+
 ### Added
 
 - **FastSync V2 engine** (`FastsyncV2/fastsyncv2.go` — new, 851 lines).

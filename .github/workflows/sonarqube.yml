@@ -12,6 +12,7 @@ concurrency:
 
 jobs:
   sonarqube:
+    if: false # service unavailable — re-enable when SONAR_HOST_URL is restored
     name: SonarQube Analysis
     runs-on: ubuntu-latest
 
