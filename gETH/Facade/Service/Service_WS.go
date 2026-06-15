@@ -95,18 +95,22 @@ func startBlockPollerIfNeeded() {
 	if hasSubscribers {
 		// Start polling in a separate goroutine
 		BlockPoller.Go(GRO.BlockPollerThread, func(ctx context.Context) error {
-			pollForNewBlocks()
+			pollForNewBlocks(ctx)
 			return nil
 		})
 	}
 }
 
 // pollForNewBlocks continuously polls for new blocks and notifies subscribers
-func pollForNewBlocks() {
+func pollForNewBlocks(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Second) // Poll every 2 seconds
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 		// Check if we still have subscribers
 		newHeadsSubscriptions.RLock()
 		hasSubscribers := len(newHeadsSubscriptions.subscribers) > 0
@@ -118,7 +122,7 @@ func pollForNewBlocks() {
 		}
 
 		// Get latest block number
-		latestBlock, err := DB_OPs.GetLatestBlockNumber(nil)
+		latestBlock, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
 		if err != nil {
 			// Log error but continue polling
 			fmt.Printf("Failed to get latest block number: %v\n", err)
@@ -145,6 +149,7 @@ func pollForNewBlocks() {
 				// Update last processed block
 				setLastProcessedBlock(blockNum)
 			}
+		}
 		}
 	}
 }

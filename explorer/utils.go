@@ -36,7 +36,7 @@ func StartBlockPoller(ctx context.Context, DBclient *ImmuDBServer, pollInterval 
 
 	// Initialize with the current latest block
 	if lastBlockNumber == 0 {
-		latest, err := DB_OPs.GetLatestBlockNumber(&DBclient.defaultdb)
+		latest, err := DB_OPs.GetLatestBlockNumber(ctx, &DBclient.defaultdb)
 		if err == nil {
 			blockMutex.Lock()
 			lastBlockNumber = latest
@@ -90,7 +90,7 @@ func checkForNewBlocks(DBclient *ImmuDBServer) {
 	startTime := time.Now().UTC()
 
 	// Get the latest block number from the database
-	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(&DBclient.defaultdb)
+	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(loggerCtx, &DBclient.defaultdb)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))

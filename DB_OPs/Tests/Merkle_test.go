@@ -1,6 +1,7 @@
 package DB_OPs_Tests
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -34,7 +35,7 @@ func Test_GenerateMerkleTree(t *testing.T) {
 	endBlock := int64(-1)
 
 	fmt.Printf("Generating Merkle Tree for blocks %d to %d...\n", startBlock, endBlock)
-	snapshot, err := merkleProof.GenerateMerkleTree(startBlock, endBlock)
+	snapshot, err := merkleProof.GenerateMerkleTree(context.Background(), startBlock, endBlock)
 
 	if err != nil {
 		t.Errorf("GenerateMerkleTree failed: %v", err)

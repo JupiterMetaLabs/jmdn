@@ -393,7 +393,13 @@ func Read(PooledConnection *config.PooledConnection, key string) ([]byte, error)
 
 	// Execute the read operation
 
-	entry, err := PooledConnection.Client.Client.Get(ctx, []byte(key))
+	var entry *schema.Entry
+	err = withRetry(PooledConnection.Client, "Read", func() error {
+		var innerErr error
+		entry, innerErr = PooledConnection.Client.Client.Get(ctx, []byte(key))
+		return innerErr
+	})
+
 	if err != nil {
 		if isNotFoundError(err) {
 			PooledConnection.Client.Logger.Warn(loggerCtx, "Key not found",
@@ -1335,8 +1341,13 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 		ion.String("function", "DB_OPs.SafeRead"),
 	)
 
-	// Execute the read directly (no withRetry for pooled connections)
-	entry, err := ic.Client.VerifiedGet(ctx, []byte(key))
+	// Execute the read with retry
+	var entry *schema.Entry
+	err = withRetry(ic, "SafeRead", func() error {
+		var innerErr error
+		entry, innerErr = ic.Client.VerifiedGet(ctx, []byte(key))
+		return innerErr
+	})
 	if err != nil {
 		if isNotFoundError(err) {
 
@@ -2252,16 +2263,15 @@ func ReadZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) 
 	return block, nil
 }
 
-// GetLatestBlockNumber returns the latest block number (UNCHANGED)
-func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error) {
+// GetLatestBlockNumber returns the latest block number
+func GetLatestBlockNumber(ctx context.Context, mainDBClient *config.PooledConnection) (uint64, error) {
 	var err error
 	var shouldReturnConnection = false
 
-	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	loggerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	if mainDBClient == nil {
 		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
@@ -2269,7 +2279,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 		}
 		shouldReturnConnection = true
 
-		mainDBClient.Client.Logger.Debug(loggerCtx, "Main DB connection retrieved successfully",
+		mainDBClient.Client.Logger.Debug(ctx, "Main DB connection retrieved successfully",
 			ion.String("database", config.DBName),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -2281,7 +2291,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 	if shouldReturnConnection {
 		defer func() {
 
-			mainDBClient.Client.Logger.Debug(loggerCtx, "Main DB connection put back successfully",
+			mainDBClient.Client.Logger.Debug(ctx, "Main DB connection put back successfully",
 				ion.String("database", config.DBName),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -2298,7 +2308,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 			strings.Contains(err.Error(), "key not found") ||
 			strings.Contains(err.Error(), "tbtree: key not found") {
 
-			mainDBClient.Client.Logger.Debug(loggerCtx, "No blocks found in the database yet",
+			mainDBClient.Client.Logger.Debug(ctx, "No blocks found in the database yet",
 				ion.String("database", config.DBName),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -2308,7 +2318,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 			return 0, nil // No blocks yet
 		}
 
-		mainDBClient.Client.Logger.Error(loggerCtx, "Failed to get latest block number",
+		mainDBClient.Client.Logger.Error(ctx, "Failed to get latest block number",
 			err,
 			ion.String("database", config.DBName),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -2322,7 +2332,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 	var blockNumber uint64
 	if err := json.Unmarshal(latestBytes, &blockNumber); err != nil {
 
-		mainDBClient.Client.Logger.Error(loggerCtx, "Failed to parse latest block number",
+		mainDBClient.Client.Logger.Error(ctx, "Failed to parse latest block number",
 			err,
 			ion.String("database", config.DBName),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -2333,7 +2343,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 		return 0, fmt.Errorf("failed to parse latest block number: %w - GetLatestBlockNumber", err)
 	}
 
-	mainDBClient.Client.Logger.Debug(loggerCtx, "Successfully retrieved latest block number",
+	mainDBClient.Client.Logger.Debug(ctx, "Successfully retrieved latest block number",
 		ion.String("blocknumber", fmt.Sprintf("%d", blockNumber)),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -2633,7 +2643,7 @@ func GetAllBlocks(mainDBClient *config.PooledConnection) ([]*config.ZKBlock, err
 			PutMainDBConnection(mainDBClient)
 		}()
 	}
-	latestBlockNumber, err := GetLatestBlockNumber(mainDBClient)
+	latestBlockNumber, err := GetLatestBlockNumber(ctx, mainDBClient)
 	if err != nil {
 		return nil, err
 	}

@@ -68,7 +68,7 @@ func (s *ServiceImpl) BlockNumber(ctx context.Context) (*big.Int, error) {
 	defer cancel()
 
 	// Pass the context to the database operation
-	BlockNumber, err := DB_OPs.GetLatestBlockNumber(nil)
+	BlockNumber, err := DB_OPs.GetLatestBlockNumber(opCtx, nil)
 	if err != nil {
 		// Log error
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("BlockNumber failed: %v", err), "BlockNumber", -1); logErr != nil {

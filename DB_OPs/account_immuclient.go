@@ -1303,7 +1303,7 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 	ic := PooledConnection.Client
 
 	// Get the latest block number
-	latestBlockNumber, err := GetLatestBlockNumber(PooledConnection)
+	latestBlockNumber, err := GetLatestBlockNumber(ctx, PooledConnection)
 	if err != nil {
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1617,7 +1617,7 @@ func GetTransactionsByAccountPaginated(PooledConnection *config.PooledConnection
 	ic := PooledConnection.Client
 
 	// Get the latest block number
-	latestBlockNumber, err := GetLatestBlockNumber(PooledConnection)
+	latestBlockNumber, err := GetLatestBlockNumber(ctx, PooledConnection)
 	if err != nil {
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -2096,7 +2096,7 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 	ic := PooledConnection.Client
 
 	// Get the latest block number
-	latestBlockNumber, err := GetLatestBlockNumber(PooledConnection)
+	latestBlockNumber, err := GetLatestBlockNumber(ctx, PooledConnection)
 	if err != nil {
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()

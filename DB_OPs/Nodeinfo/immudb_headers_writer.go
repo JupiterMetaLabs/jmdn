@@ -40,7 +40,7 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 	// the latest_block marker — that would make the explorer and StartupSync think
 	// the node is fully synced up to the last header, when DataSync hasn't run yet.
 	// We restore this value after all headers are written.
-	prevLatest, prevErr := DB_OPs.GetLatestBlockNumber(conn)
+	prevLatest, prevErr := DB_OPs.GetLatestBlockNumber(ctx, conn)
 
 	for _, h := range headers {
 		b := &config.ZKBlock{

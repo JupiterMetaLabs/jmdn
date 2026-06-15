@@ -173,7 +173,7 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 	)
 
 	// Get total number of blocks for pagination metadata
-	totalBlocks, err := DB_OPs.GetLatestBlockNumber(&s.defaultdb)
+	totalBlocks, err := DB_OPs.GetLatestBlockNumber(c.Request.Context(), &s.defaultdb)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -304,7 +304,7 @@ func (s *ImmuDBServer) getLatestBlock(c *gin.Context) {
 	startTime := time.Now().UTC()
 
 	// Get the latest block number
-	latestBlockNumber, err := GetLatesBlockNumber(s)
+	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(c.Request.Context(), &s.defaultdb)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -321,7 +321,7 @@ func (s *ImmuDBServer) getLatestBlock(c *gin.Context) {
 	}
 
 	// Get the latest block by number
-	block, err := GetLatestBlockByNumber(s, latestBlockNumber)
+	block, err := DB_OPs.ReadZKBlockByNumber(&s.defaultdb, latestBlockNumber)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -365,7 +365,7 @@ func (s *ImmuDBServer) getLatestBlockStats(c *gin.Context) {
 
 	startTime := time.Now().UTC()
 
-	latestBlockNumber, err := GetLatesBlockNumber(s)
+	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(c.Request.Context(), &s.defaultdb)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -375,7 +375,7 @@ func (s *ImmuDBServer) getLatestBlockStats(c *gin.Context) {
 		return
 	}
 
-	block, err := GetLatestBlockByNumber(s, latestBlockNumber)
+	block, err := DB_OPs.ReadZKBlockByNumber(&s.defaultdb, latestBlockNumber)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -593,7 +593,7 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 
 	// Get latest block number and total blocks in a goroutine
 	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
-		latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(&s.defaultdb)
+		latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(c.Request.Context(), &s.defaultdb)
 		if err != nil {
 			handleErr(fmt.Errorf("failed to get latest block number: %w", err))
 			return fmt.Errorf("failed to get latest block number: %w", err)
@@ -762,7 +762,7 @@ func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
 		return
 	}
 
-	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(&s.defaultdb)
+	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(c.Request.Context(), &s.defaultdb)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -936,7 +936,7 @@ func (s *ImmuDBServer) listTransactions_fromLastBlock(c *gin.Context) {
 	)
 
 	// Get the last block number
-	lastBlockNumber, err := DB_OPs.GetLatestBlockNumber(&s.defaultdb)
+	lastBlockNumber, err := DB_OPs.GetLatestBlockNumber(c.Request.Context(), &s.defaultdb)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))

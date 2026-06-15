@@ -925,7 +925,7 @@ func getLatestBlock(c *gin.Context) {
 	}
 	defer DB_OPs.PutMainDBConnection(mainDBClient)
 
-	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(mainDBClient)
+	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(ctx, mainDBClient)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "get_latest_failed"))

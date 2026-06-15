@@ -804,7 +804,7 @@ func Test_GetTransactionsByAccount_SpecificAddress(t *testing.T) {
 	fmt.Printf("\n🔍 Testing Transaction Count Logic:\n")
 
 	// Check latest block number
-	latestBlock, err := DB_OPs.GetLatestBlockNumber(nil)
+	latestBlock, err := DB_OPs.GetLatestBlockNumber(context.Background(), nil)
 	if err != nil {
 		fmt.Printf("❌ Failed to get latest block number: %v\n", err)
 	} else {

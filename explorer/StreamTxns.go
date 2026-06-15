@@ -86,7 +86,7 @@ func (s *ImmuDBServer) streamBlocks(c *gin.Context) {
 	notify := c.Writer.CloseNotify()
 
 	// Send initial data (e.g., latest block)
-	latestBlock, err := DB_OPs.GetLatestBlockNumber(&s.defaultdb)
+	latestBlock, err := DB_OPs.GetLatestBlockNumber(c.Request.Context(), &s.defaultdb)
 	if err == nil {
 		block, err := DB_OPs.ReadZKBlockByNumber(&s.defaultdb, latestBlock)
 		if err == nil {

@@ -67,7 +67,7 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 		toBlock = filterQuery.ToBlock.Uint64()
 	} else {
 		// If ToBlock is not specified, get the latest block number
-		latestBlock, err := GetLatestBlockNumber(mainDBClient)
+		latestBlock, err := GetLatestBlockNumber(ctx, mainDBClient)
 		if err != nil {
 			loggerCtx, cancel := context.WithCancel(context.Background())
 			defer cancel()
