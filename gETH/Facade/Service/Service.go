@@ -108,7 +108,7 @@ func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bo
 	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	ZKBlock, err := DB_OPs.ReadZKBlockByNumber(nil, num.Uint64())
+	ZKBlock, err := DB_OPs.ReadZKBlockByNumber(opCtx, nil, num.Uint64())
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("BlockByNumber failed: %v", err), "BlockByNumber", -1); logErr != nil {
 			fmt.Printf("Failed to log BlockByNumber error: %v\n", logErr)
@@ -341,7 +341,7 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 	}
 
 	// Get the block containing this transaction
-	block, err := DB_OPs.GetTransactionBlock(nil, normalizedHash)
+	block, err := DB_OPs.GetTransactionBlock(opCtx, nil, normalizedHash)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash failed to get block: %v", err), "TxByHash", -1); logErr != nil {
 			fmt.Printf("Failed to log TxByHash error: %v\n", logErr)

@@ -2100,13 +2100,10 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 // 5–10× faster than GetZKBlockByNumber for bulk reads.
 //
 // Time: O(1); Space: O(block size)
-func ReadZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint64) (*config.ZKBlock, error) {
+func ReadZKBlockByNumber(ctx context.Context, mainDBClient *config.PooledConnection, blockNumber uint64) (*config.ZKBlock, error) {
 	var shouldReturnConnection = false
 	var err error
 	blockKey := fmt.Sprintf("%s%d", PREFIX_BLOCK, blockNumber)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 
 	block := new(config.ZKBlock)
 	if mainDBClient == nil {
@@ -2219,13 +2216,10 @@ func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (
 // ReadZKBlockByHash retrieves a ZK block by its hash using plain Get (no proof generation).
 // Use for sync/reconciliation paths where tamper-proof guarantees are not required.
 // Time: O(1); Space: O(block size)
-func ReadZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (*config.ZKBlock, error) {
+func ReadZKBlockByHash(ctx context.Context, mainDBClient *config.PooledConnection, blockHash string) (*config.ZKBlock, error) {
 	var shouldReturnConnection = false
 	var err error
 	hashKey := fmt.Sprintf("%s%s", PREFIX_BLOCK_HASH, blockHash)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 
 	if mainDBClient == nil {
 		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
@@ -2354,14 +2348,12 @@ func GetLatestBlockNumber(ctx context.Context, mainDBClient *config.PooledConnec
 }
 
 // GetTransactionBlock returns the block containing a specific transaction (UNCHANGED)
-func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (*config.ZKBlock, error) {
+func GetTransactionBlock(ctx context.Context, mainDBClient *config.PooledConnection, txHash string) (*config.ZKBlock, error) {
 	var err error
 	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	loggerCtx, cancel := context.WithCancel(context.Background())
+	loggerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if mainDBClient == nil {
 		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
@@ -2421,7 +2413,7 @@ func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (
 		return nil, fmt.Errorf("failed to parse block number for tx %s: %w", txHash, err)
 	}
 
-	return ReadZKBlockByNumber(mainDBClient, blockNumber)
+	return ReadZKBlockByNumber(ctx, mainDBClient, blockNumber)
 }
 
 // Get Transaction by hash
@@ -2463,7 +2455,7 @@ func GetTransactionByHash(mainDBClient *config.PooledConnection, txHash string) 
 			PutMainDBConnection(mainDBClient)
 		}()
 	}
-	block, err := GetTransactionBlock(mainDBClient, txHash)
+	block, err := GetTransactionBlock(ctx, mainDBClient, txHash)
 	if err != nil {
 
 		mainDBClient.Client.Logger.Error(loggerCtx, "Failed to get transaction block",

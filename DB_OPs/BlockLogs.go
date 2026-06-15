@@ -85,7 +85,10 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 
 	// Iterate through blocks in the specified range
 	for blockNum := fromBlock; blockNum <= toBlock; blockNum++ {
-		block, err := ReadZKBlockByNumber(mainDBClient, blockNum)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		block, err := ReadZKBlockByNumber(ctx, mainDBClient, blockNum)
 		if err != nil {
 			// Log error but continue with other blocks
 			loggerCtx, cancel := context.WithCancel(context.Background())
