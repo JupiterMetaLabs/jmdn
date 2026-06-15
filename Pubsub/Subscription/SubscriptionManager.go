@@ -351,7 +351,7 @@ func (sm *SubscriptionManager) Unsubscribe(topic string) error {
 	}
 	// Close the topic to free resources
 	if managed.pubsubTopic != nil {
-		if err := managed.pubsubTopic.Close(); err != nil {
+		if err := sm.gps.CloseTopic(topic); err != nil {
 			logger().NamedLogger.Warn(trace_ctx, "SubscriptionManager: Failed to close topic",
 				ion.String("topic", topic),
 				ion.String("error", err.Error()),
@@ -399,7 +399,7 @@ func (sm *SubscriptionManager) Shutdown() {
 		}
 		// Close the topic to free resources
 		if managed.pubsubTopic != nil {
-			if err := managed.pubsubTopic.Close(); err != nil {
+			if err := sm.gps.CloseTopic(topic); err != nil {
 				logger().NamedLogger.Warn(trace_ctx, "SubscriptionManager: Failed to close topic during shutdown",
 					ion.String("topic", topic),
 					ion.String("error", err.Error()),

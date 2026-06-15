@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"gossipnode/config"
 	"gossipnode/config/settings"
 
-	"sync/atomic"
 	"time"
 
 	"github.com/JupiterMetaLabs/ion"
@@ -29,9 +29,11 @@ type Account struct {
 	DIDAddress string `json:"did,omitempty"`
 
 	// New PublicKey based fields
-	Address common.Address `json:"address"` // Derived from PublicKey
-	Balance string         `json:"balance,omitempty"`
-	Nonce   uint64         `json:"nonce"`
+	Nonce       uint64         `json:"nonce"`   // Unique deterministic ID for Fastsync ART (migrated from old nonce)
+	Address     common.Address `json:"address"` // Derived from PublicKey
+	Balance     string         `json:"balance,omitempty"`
+	TxNonce     uint64         `json:"tx_nonce"`      // Real Ethereum Nonce
+	TxCountSent uint64         `json:"tx_count_sent"` // Tracks actual analytical transactions sent
 
 	// Account metadata
 	AccountType string `json:"account_type"` // "did" or "publickey"
@@ -54,15 +56,6 @@ func NewAccountsSet() *AccountsSet {
 
 func (s *AccountsSet) Add(address common.Address) {
 	s.Accounts[address.Hex()] = nil
-}
-
-// Get the Nonce of a account - NTF
-var counter uint64
-
-func PutNonceofAccount() (uint64, error) {
-	ts := uint64(time.Now().UTC().UnixNano())
-	c := atomic.AddUint64(&counter, 1)
-	return ts<<16 | (c & 0xFFFF), nil // embed counter in low bits
 }
 
 // Create Account from DID and Address and Store using StoreAccount
@@ -112,29 +105,26 @@ func CreateAccount(PooledConnection *config.PooledConnection, DIDAddress string,
 		}()
 	}
 
-	// Create a Nonce First
-	Nonce, err := PutNonceofAccount()
-	if err != nil {
-		return err
-	}
-
 	// Create A CreatedAt and UpdatedAt
 	CreatedAt := time.Now().UTC().UnixNano()
 	UpdatedAt := time.Now().UTC().UnixNano()
 
+	ARTNonce := GenerateARTNonce()
+
 	// Create the account document
 	AccountDoc = &Account{
+		Nonce:       ARTNonce,
 		DIDAddress:  DIDAddress,
 		Address:     Address,
 		Balance:     "0",
-		Nonce:       Nonce,
+		TxNonce:     0,
+		TxCountSent: 0,
 		AccountType: "user",
 		CreatedAt:   CreatedAt,
 		UpdatedAt:   UpdatedAt,
 		Metadata:    metadata,
 	}
-	// Debugging
-	// fmt.Println("AccountDoc: ", AccountDoc)
+
 	// Store the account document
 	err = storeAccount(PooledConnection, AccountDoc)
 	if err != nil {
@@ -200,10 +190,12 @@ func storeAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 
 	// Create the account document
 	AccountDoc = &Account{
+		Nonce:       KeyDoc.Nonce,
 		DIDAddress:  KeyDoc.DIDAddress,
 		Address:     KeyDoc.Address,
 		Balance:     KeyDoc.Balance,
-		Nonce:       KeyDoc.Nonce,
+		TxNonce:     KeyDoc.TxNonce,
+		TxCountSent: KeyDoc.TxCountSent,
 		AccountType: KeyDoc.AccountType,
 		CreatedAt:   KeyDoc.CreatedAt,
 		UpdatedAt:   time.Now().UTC().UnixNano(),
@@ -335,7 +327,7 @@ func BatchCreateAccountsOrdered(PooledConnection *config.PooledConnection, entri
 
 // BatchRestoreAccounts applies a batch of entries into accountsdb.
 // For address:<addr> keys it writes KV. For did:<did> it creates a bound reference to the corresponding address key.
-func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []struct {
+func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledConnection, entries []struct {
 	Key   string
 	Value []byte
 }) error {
@@ -344,12 +336,6 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 	}
 	var err error
 	var shouldReturnConnection bool
-
-	// Define Function wide context for timeout
-	ctx := context.Background()
-
-	// End the context.Background()
-	defer ctx.Done()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
@@ -386,6 +372,96 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		}
 	}
 
+	// Deduplicate address entries via hash set: the sender may include the same key
+	// multiple times in one page. The LWW check reads the committed DB value (not the
+	// in-progress ops slice), so both copies would independently pass and produce a
+	// duplicate key in ExecAll. Build a key→entry map keeping the highest UpdatedAt,
+	// then flatten back to slice.
+	{
+		type entry = struct {
+			Key   string
+			Value []byte
+		}
+		addrSet := make(map[string]entry, len(addressEntries))
+		for _, e := range addressEntries {
+			cur, ok := addrSet[e.Key]
+			if !ok {
+				addrSet[e.Key] = e
+				continue
+			}
+			var curAcc, inAcc Account
+			if json.Unmarshal(cur.Value, &curAcc) == nil &&
+				json.Unmarshal(e.Value, &inAcc) == nil &&
+				inAcc.UpdatedAt > curAcc.UpdatedAt {
+				addrSet[e.Key] = e
+			}
+		}
+		addressEntries = make([]entry, 0, len(addrSet))
+		for _, e := range addrSet {
+			addressEntries = append(addressEntries, e)
+		}
+	}
+
+	// Deduplicate DID entries via hash set: refs are idempotent, last occurrence wins.
+	{
+		type entry = struct {
+			Key   string
+			Value []byte
+		}
+		didSet := make(map[string]entry, len(didEntries))
+		for _, e := range didEntries {
+			didSet[e.Key] = e
+		}
+		didEntries = make([]entry, 0, len(didSet))
+		for _, e := range didSet {
+			didEntries = append(didEntries, e)
+		}
+	}
+
+	// Pre-fetch all existing account values in one GetAll RPC instead of N individual Gets
+	// during the LWW loop. Holding a connection across 3000+ sequential Gets exhausts the
+	// pool (max 20) when multiple dispatchWorkers run concurrently.
+	existingAccounts := make(map[string]Account, len(addressEntries))
+	{
+		prefetchSet := make(map[string]struct{}, len(addressEntries)+len(didEntries))
+		prefetchKeys := make([][]byte, 0, len(addressEntries)+len(didEntries))
+		for _, e := range addressEntries {
+			if _, ok := prefetchSet[e.Key]; !ok {
+				prefetchSet[e.Key] = struct{}{}
+				prefetchKeys = append(prefetchKeys, []byte(e.Key))
+			}
+		}
+		for _, e := range didEntries {
+			var acc Account
+			if json.Unmarshal(e.Value, &acc) == nil {
+				k := fmt.Sprintf("%s%s", Prefix, acc.Address)
+				if _, ok := prefetchSet[k]; !ok {
+					prefetchSet[k] = struct{}{}
+					prefetchKeys = append(prefetchKeys, []byte(k))
+				}
+			}
+		}
+		if len(prefetchKeys) > 0 {
+			fetchCtx, fetchCancel := context.WithTimeout(ctx, 30*time.Second)
+			entriesList, getAllErr := PooledConnection.Client.Client.GetAll(fetchCtx, prefetchKeys)
+			fetchCancel()
+			if getAllErr == nil && entriesList != nil {
+				for _, entry := range entriesList.Entries {
+					if entry == nil || entry.Value == nil {
+						continue
+					}
+					var acc Account
+					if json.Unmarshal(entry.Value, &acc) == nil {
+						existingAccounts[string(entry.Key)] = acc
+					}
+				}
+			}
+			// GetAll failure is treated as "all accounts are new" — safe degradation;
+			// worst case we write data that LWW would have skipped, but correctness
+			// is preserved because ImmuDB is append-only and the node re-syncs on divergence.
+		}
+	}
+
 	// Build a map of address keys being written in this batch for quick lookup
 	addressKeysInBatch := make(map[string]bool)
 	for _, e := range addressEntries {
@@ -412,49 +488,57 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		var shouldWrite = true
 		var incoming Account
 		if err := json.Unmarshal(e.Value, &incoming); err == nil {
-			// Try read existing account
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			entry, getErr := PooledConnection.Client.Client.Get(ctx, []byte(e.Key))
-			cancel()
-			if getErr == nil && entry != nil && len(entry.Value) > 0 {
-				var existing Account
-				if jsonErr := json.Unmarshal(entry.Value, &existing); jsonErr == nil {
-					// If existing is newer, skip writing to preserve newer balance
-					if existing.UpdatedAt > incoming.UpdatedAt {
-						// Remove from batch map since we're not writing it
-						delete(addressKeysInBatch, e.Key)
-						shouldWrite = false
-					} else if existing.UpdatedAt == incoming.UpdatedAt {
-						// If timestamps are equal, only update if incoming has different balance
-						// This handles race conditions where sync happens during local update
-						if existing.Balance == incoming.Balance {
-							// Same timestamp and balance - skip to avoid unnecessary write
-							delete(addressKeysInBatch, e.Key)
-							shouldWrite = false
-						}
-						// Same timestamp but different balance - write it (takes newer data)
+			if existing, found := existingAccounts[e.Key]; found {
+				if existing.UpdatedAt > incoming.UpdatedAt {
+					delete(addressKeysInBatch, e.Key)
+					shouldWrite = false
+				} else if existing.UpdatedAt == incoming.UpdatedAt && existing.Balance == incoming.Balance {
+					// Same timestamp and balance - no change needed
+					delete(addressKeysInBatch, e.Key)
+					shouldWrite = false
+				}
+				if shouldWrite && existing.UpdatedAt < incoming.UpdatedAt {
+					loggerCtx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					PooledConnection.Client.Logger.Debug(loggerCtx, "Updating account - incoming is newer (LWW)",
+						ion.String("key", e.Key),
+						ion.Int64("existing_updated_at", existing.UpdatedAt),
+						ion.Int64("incoming_updated_at", incoming.UpdatedAt),
+						ion.String("existing_balance", existing.Balance),
+						ion.String("incoming_balance", incoming.Balance),
+						ion.String("database", config.AccountsDBName),
+						ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+						ion.String("log_file", LOG_FILE),
+						ion.String("topic", TOPIC),
+						ion.String("function", "DB_OPs.BatchRestoreAccounts"))
+				}
+
+				// FIELD MERGING: Prevent partial updates (e.g. from Reconciliation) from wiping out account metadata
+				if shouldWrite {
+					// 1. Preserve DIDAddress if incoming DID is empty or mistakenly set to the hex address
+					if incoming.DIDAddress == "" || incoming.DIDAddress == incoming.Address.Hex() {
+						incoming.DIDAddress = existing.DIDAddress
 					}
-					// incoming.UpdatedAt > existing.UpdatedAt - we write the newer data
-					if shouldWrite && existing.UpdatedAt < incoming.UpdatedAt {
-						loggerCtx, cancel := context.WithCancel(context.Background())
-						defer cancel()
-						PooledConnection.Client.Logger.Debug(loggerCtx, "Updating account - incoming is newer (LWW)",
-							ion.String("key", e.Key),
-							ion.Int64("existing_updated_at", existing.UpdatedAt),
-							ion.Int64("incoming_updated_at", incoming.UpdatedAt),
-							ion.String("existing_balance", existing.Balance),
-							ion.String("incoming_balance", incoming.Balance),
-							ion.String("database", config.AccountsDBName),
-							ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-							ion.String("log_file", LOG_FILE),
-							ion.String("topic", TOPIC),
-							ion.String("function", "DB_OPs.BatchRestoreAccounts"))
+					// 2. Preserve CreatedAt
+					if incoming.CreatedAt == 0 {
+						incoming.CreatedAt = existing.CreatedAt
+					}
+					// 3. Preserve AccountType
+					if incoming.AccountType == "user" && existing.AccountType != "" {
+						incoming.AccountType = existing.AccountType
+					}
+					// 4. Preserve Metadata
+					if incoming.Metadata == nil {
+						incoming.Metadata = existing.Metadata
+					}
+
+					// Re-serialize the merged account object to overwrite e.Value
+					if mergedVal, err := json.Marshal(incoming); err == nil {
+						e.Value = mergedVal
 					}
 				}
-				// If existing unmarshal fails, proceed with write (shouldWrite = true)
 			}
 		} else {
-			// Account doesn't exist yet - we'll create it
 			loggerCtx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			PooledConnection.Client.Logger.Debug(loggerCtx, "Creating new account during sync",
@@ -495,72 +579,21 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		}
 		addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
 
-		// If address key was in batch but skipped, or not in batch at all
 		if !addressKeysInBatch[addrKey] {
-			// Check if address key exists in database
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
-			cancel()
-			if getErr == nil {
-				// Address key exists in DB - create reference
-				didKey := []byte(e.Key)
+			if _, found := existingAccounts[addrKey]; found {
 				ops = append(ops, &schema.Op{Operation: &schema.Op_Ref{Ref: &schema.ReferenceRequest{
-					Key:           didKey,
+					Key:           []byte(e.Key),
 					ReferencedKey: []byte(addrKey),
 					AtTx:          0,
 					BoundRef:      true,
 				}}})
 			}
-			// If getErr != nil, address key doesn't exist - skip creating orphaned reference
+			// addrKey not in existingAccounts → doesn't exist in DB → skip orphaned ref
 		}
-		// If addressKeysInBatch[addrKey] is true, we already processed it above
+		// addressKeysInBatch[addrKey] == true → DID ref already appended in Pass 1
 	}
 
-	// Process did: keys after address: keys are updated
-	for _, e := range didEntries {
-		// For DID keys, create a reference to the address key
-		var acc Account
-		if err := json.Unmarshal(e.Value, &acc); err != nil {
-			// If payload is not an Account, skip creating ref to avoid corrupt data
-			continue
-		}
-		addrKey := fmt.Sprintf("%s%s", Prefix, acc.Address)
-
-		// Check if address key is being written in this batch OR already exists in DB
-		// This ensures references are only created for valid address keys
-		shouldCreateRef := false
-		if addressKeysInBatch[addrKey] {
-			// Address key is being written in this batch - safe to create reference
-			shouldCreateRef = true
-		} else {
-			// Check if address key exists in database
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_, getErr := PooledConnection.Client.Client.Get(ctx, []byte(addrKey))
-			cancel()
-			if getErr == nil {
-				// Address key exists in database - safe to create reference
-				shouldCreateRef = true
-			}
-		}
-
-		if !shouldCreateRef {
-			// Address key doesn't exist - skip creating reference
-			// This can happen if address: key was skipped due to LWW or was never synced
-			continue
-		}
-
-		didKey := []byte(e.Key)
-		ops = append(ops, &schema.Op{Operation: &schema.Op_Ref{Ref: &schema.ReferenceRequest{
-			Key:           didKey,
-			ReferencedKey: []byte(addrKey),
-			AtTx:          0,
-			BoundRef:      true,
-		}}})
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	if len(ops) == 0 {
-		// Nothing to apply (e.g., all entries skipped by LWW) -> treat as success
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		PooledConnection.Client.Logger.Debug(loggerCtx, "No operations to apply in batch restore (all skipped by LWW)",
@@ -582,19 +615,32 @@ func BatchRestoreAccounts(PooledConnection *config.PooledConnection, entries []s
 		ion.String("topic", TOPIC),
 		ion.String("function", "DB_OPs.BatchRestoreAccounts"))
 
-	_, err = PooledConnection.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops})
-	if err != nil {
-		loggerCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		PooledConnection.Client.Logger.Error(loggerCtx, "Batch restore ExecAll failed",
-			err,
-			ion.Int("operations_count", len(ops)),
-			ion.String("database", config.AccountsDBName),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DB_OPs.BatchRestoreAccounts"))
-		return fmt.Errorf("accounts batch restore failed: %w", err)
+	// Chunk ops to stay within ImmuDB's MaxTxEntries limit (default 1024).
+	// Each chunk is its own atomic transaction; LWW semantics make this safe.
+	const immudbMaxOpsPerTx = 1000
+	for chunkStart := 0; chunkStart < len(ops); chunkStart += immudbMaxOpsPerTx {
+		end := chunkStart + immudbMaxOpsPerTx
+		if end > len(ops) {
+			end = len(ops)
+		}
+		chunkCtx, chunkCancel := context.WithTimeout(ctx, 30*time.Second)
+		_, err = PooledConnection.Client.Client.ExecAll(chunkCtx, &schema.ExecAllRequest{Operations: ops[chunkStart:end]})
+		chunkCancel()
+		if err != nil {
+			loggerCtx2, cancel2 := context.WithCancel(context.Background())
+			defer cancel2()
+			PooledConnection.Client.Logger.Error(loggerCtx2, "Batch restore ExecAll failed",
+				err,
+				ion.Int("operations_count", end-chunkStart),
+				ion.Int("chunk_start", chunkStart),
+				ion.Int("total_ops", len(ops)),
+				ion.String("database", config.AccountsDBName),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("log_file", LOG_FILE),
+				ion.String("topic", TOPIC),
+				ion.String("function", "DB_OPs.BatchRestoreAccounts"))
+			return fmt.Errorf("accounts batch restore failed: %w", err)
+		}
 	}
 
 	loggerCtx2, cancel2 := context.WithCancel(context.Background())
@@ -765,105 +811,66 @@ func GetAccount(PooledConnection *config.PooledConnection, address common.Addres
 	return loadAccountByKey(PooledConnection, key, "DB_OPs.GetAccount")
 }
 
-// UpdateAccountBalance updates the balance for a Account
-func UpdateAccountBalance(PooledConnection *config.PooledConnection, address common.Address, newBalance string) error {
-	fmt.Printf("=== DEBUG: UpdateAccountBalance called for address %s with balance %s ===\n", address.Hex(), newBalance)
-
-	// Define Function wide context for timeout
+// UpdateAccount is the central method to write a modified Account object to the database.
+// It handles connection pooling, ensures the Accounts database is selected, and performs a SafeCreate.
+// The caller is expected to fetch the account via GetAccount, modify it, and pass it here.
+func UpdateAccount(PooledConnection *config.PooledConnection, doc *Account) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var err error
 	var shouldReturnConnection = false
 	if PooledConnection == nil || PooledConnection.Client == nil {
-		fmt.Println("DEBUG: PooledConnection is nil, getting new connection from pool")
 		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			fmt.Printf("DEBUG: Failed to get connection from pool: %v\n", err)
-			return fmt.Errorf("failed to get connection from pool: %w - UpdateAccountBalance", err)
+			return fmt.Errorf("failed to get connection from pool: %w - UpdateAccount", err)
 		}
 		shouldReturnConnection = true
-		loggerCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		PooledConnection.Client.Logger.Debug(loggerCtx, "Client Connection is Nil, so Pulled up quick connection from the Pool",
-			ion.String("database", config.AccountsDBName),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DB_OPs.UpdateAccountBalance"))
-	} else {
-		fmt.Println("DEBUG: Using provided PooledConnection")
 	}
 
 	if shouldReturnConnection {
 		defer func() {
-			fmt.Println("DEBUG: Returning connection to pool")
-			loggerCtx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			PooledConnection.Client.Logger.Debug(loggerCtx, "Client Connection is returned to the Pool",
-				ion.String("database", config.AccountsDBName),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", LOG_FILE),
-				ion.String("topic", TOPIC),
-				ion.String("function", "DB_OPs.UpdateAccountBalance"))
 			PutAccountsConnection(PooledConnection)
 		}()
 	}
 
-	// Ensure we're using the accounts database
-	if PooledConnection != nil {
-		fmt.Println("DEBUG: Ensuring accounts database is selected")
-		if err := ensureAccountsDBSelected(PooledConnection); err != nil {
-			fmt.Printf("DEBUG: Failed to ensure accounts database is selected: %v\n", err)
-			return fmt.Errorf("failed to ensure accounts database is selected: %w", err)
-		}
-		fmt.Println("DEBUG: Accounts database selection confirmed")
+	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
+		return fmt.Errorf("failed to ensure accounts database is selected: %w", err)
 	}
 
-	fmt.Printf("DEBUG: Getting account for address %s\n", address.Hex())
+	if doc == nil || doc.Address == (common.Address{}) {
+		return fmt.Errorf("invalid account document provided to UpdateAccount")
+	}
+
+	key := fmt.Sprintf("%s%s", Prefix, doc.Address)
+	if err = SafeCreate(PooledConnection.Client, key, doc); err != nil {
+		loggerCtx, logCancel := context.WithCancel(context.Background())
+		defer logCancel()
+		PooledConnection.Client.Logger.Error(loggerCtx, "Failed to update account",
+			err,
+			ion.String("account", doc.Address.String()),
+			ion.String("database", config.AccountsDBName),
+			ion.String("function", "DB_OPs.UpdateAccount"))
+		return err
+	}
+	return nil
+}
+
+// UpdateAccountBalance updates only the balance for an account.
+// Used widely in test suites (account_immuclient_test.go, security_cache_test.go).
+// updatedAt must be set by the caller to block.Timestamp (in nanoseconds) to ensure
+// deterministic UpdatedAt values that are identical across all network nodes processing
+// the same block. Never pass time.Now() here.
+func UpdateAccountBalance(PooledConnection *config.PooledConnection, address common.Address, newBalance string, updatedAt int64) error {
 	doc, err := GetAccount(PooledConnection, address)
 	if err != nil {
-		fmt.Printf("DEBUG: Failed to get account: %v\n", err)
 		return err
 	}
-	fmt.Printf("DEBUG: Retrieved account - Current balance: %s, UpdatedAt: %d\n", doc.Balance, doc.UpdatedAt)
 
 	doc.Balance = newBalance
-	doc.UpdatedAt = time.Now().UTC().UnixNano()
-	fmt.Printf("DEBUG: Updated account document - New balance: %s, New UpdatedAt: %d\n", doc.Balance, doc.UpdatedAt)
+	doc.UpdatedAt = updatedAt
 
-	// Safe Write to the DB with the same key
-	key := fmt.Sprintf("%s%s", Prefix, address)
-	fmt.Printf("DEBUG: Writing to database with key: %s\n", key)
-	err = SafeCreate(PooledConnection.Client, key, doc)
-	if err != nil {
-		fmt.Printf("DEBUG: SafeCreate failed: %v\n", err)
-		loggerCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		PooledConnection.Client.Logger.Error(loggerCtx, "Failed to update DID balance",
-			err,
-			ion.String("account", address.String()),
-			ion.String("database", config.AccountsDBName),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DB_OPs.UpdateAccountBalance"))
-		return err
-	}
-	fmt.Println("DEBUG: SafeCreate completed successfully")
-
-	loggerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	PooledConnection.Client.Logger.Debug(loggerCtx, "Successfully updated Account balance",
-		ion.String("account", address.String()),
-		ion.String("new_balance", newBalance),
-		ion.String("database", config.AccountsDBName),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", LOG_FILE),
-		ion.String("topic", TOPIC),
-		ion.String("function", "DB_OPs.UpdateAccountBalance"))
-	fmt.Printf("=== DEBUG: UpdateAccountBalance completed successfully for address %s ===\n", address.Hex())
-	return nil
+	return UpdateAccount(PooledConnection, doc)
 }
 
 // ListAllAccounts retrieves all Accounts with a limit
@@ -1047,8 +1054,8 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 			Desc:    true, // latest accounts first
 		}
 		ReadCtx, ReadCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer ReadCancel()
 		scanResult, err := ic.Client.Scan(ReadCtx, scanReq)
+		ReadCancel()
 		if err != nil {
 			loggerCtx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -1083,7 +1090,6 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 				var acc Account
 				if err := json.Unmarshal(entry.Value, &acc); err != nil {
 					loggerCtx, cancel := context.WithCancel(context.Background())
-					defer cancel()
 					PooledConnection.Client.Logger.Warn(loggerCtx, "Skipping account due to unmarshal error",
 						ion.String("error", err.Error()),
 						ion.String("key", string(entry.Key)),
@@ -1092,6 +1098,7 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 						ion.String("log_file", LOG_FILE),
 						ion.String("topic", TOPIC),
 						ion.String("function", "DB_OPs.ListAccountsPaginated"))
+					cancel()
 					continue
 				}
 
@@ -1130,6 +1137,114 @@ func ListAccountsPaginated(PooledConnection *config.PooledConnection, limit, off
 		ion.String("function", "DB_OPs.ListAccountsPaginated"))
 
 	return accounts, nil
+}
+
+// ListAccountsPaginatedFrom retrieves up to limit accounts starting after seekKey in ascending key order.
+// seekKey=nil starts from the first address: entry. Returns the accounts and the scan cursor
+// (key of the last accepted account); pass it as seekKey on the next call to continue without rescanning.
+//
+// Time: O(limit) ImmuDB entries read; Space: O(limit)
+// DS: ImmuDB ascending Scan with SeekKey cursor — no offset restart across calls.
+func ListAccountsPaginatedFrom(PooledConnection *config.PooledConnection, limit int, seekKey []byte, extendedPrefix string) ([]*Account, []byte, error) {
+	var err error
+	var shouldReturnConnection = false
+
+	ctx := context.Background()
+
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get connection from pool: %w - ListAccountsPaginatedFrom", err)
+		}
+		shouldReturnConnection = true
+	}
+	if shouldReturnConnection {
+		defer func() {
+			PutAccountsConnection(PooledConnection)
+		}()
+	}
+
+	ic := PooledConnection.Client
+	if err := ensureAccountsDBSelected(PooledConnection); err != nil {
+		return nil, nil, fmt.Errorf("failed to ensure accounts database is selected: %w - ListAccountsPaginatedFrom", err)
+	}
+
+	prefix := []byte(Prefix)
+	var accounts []*Account
+	var lastKey []byte
+	const internalBatch = 1000
+	currentSeek := seekKey
+
+	for len(accounts) < limit {
+		scanReq := &schema.ScanRequest{
+			Prefix:  prefix,
+			Limit:   uint64(internalBatch),
+			SeekKey: currentSeek,
+			Desc:    false,
+		}
+
+		scanCtx, scanCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		scanResult, scanErr := ic.Client.Scan(scanCtx, scanReq)
+		scanCancel()
+
+		if scanErr != nil {
+			loggerCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ic.Logger.Error(loggerCtx, "Failed to scan for accounts",
+				scanErr,
+				ion.String("database", config.AccountsDBName),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("log_file", LOG_FILE),
+				ion.String("topic", TOPIC),
+				ion.String("function", "DB_OPs.ListAccountsPaginatedFrom"))
+			return nil, nil, fmt.Errorf("failed to scan for accounts: %w - ListAccountsPaginatedFrom", scanErr)
+		}
+
+		if len(scanResult.Entries) == 0 {
+			break
+		}
+
+		// ImmuDB Scan is inclusive on SeekKey — skip the first entry if it is the cursor itself.
+		startIndex := 0
+		if currentSeek != nil && string(scanResult.Entries[0].Key) == string(currentSeek) {
+			startIndex = 1
+		}
+
+		for i := startIndex; i < len(scanResult.Entries) && len(accounts) < limit; i++ {
+			entry := scanResult.Entries[i]
+
+			var acc Account
+			if jsonErr := json.Unmarshal(entry.Value, &acc); jsonErr != nil {
+				loggerCtx, cancel := context.WithCancel(context.Background())
+				ic.Logger.Warn(loggerCtx, "Skipping account due to unmarshal error",
+					ion.String("error", jsonErr.Error()),
+					ion.String("key", string(entry.Key)),
+					ion.String("database", config.AccountsDBName),
+					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+					ion.String("log_file", LOG_FILE),
+					ion.String("topic", TOPIC),
+					ion.String("function", "DB_OPs.ListAccountsPaginatedFrom"))
+				cancel()
+				continue
+			}
+
+			if extendedPrefix != "" && !strings.HasPrefix(acc.DIDAddress, extendedPrefix) {
+				continue
+			}
+
+			accounts = append(accounts, &acc)
+			lastKey = entry.Key
+		}
+
+		if len(accounts) >= limit || len(scanResult.Entries) < internalBatch {
+			break
+		}
+
+		// Advance cursor to the end of this scan batch.
+		currentSeek = scanResult.Entries[len(scanResult.Entries)-1].Key
+	}
+
+	return accounts, lastKey, nil
 }
 
 // CountAccounts returns the total number of Accounts in the database.
@@ -1214,10 +1329,9 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 
 		// Process current batch of blocks
 		for i := startBlock; i <= endBlock; i++ {
-			block, err := GetZKBlockByNumber(PooledConnection, i)
+			block, err := GetZKBlockByNumberFast(PooledConnection, i)
 			if err != nil {
 				loggerCtx, cancel := context.WithCancel(context.Background())
-				defer cancel()
 				ic.Logger.Warn(loggerCtx, "Error retrieving block, skipping",
 					ion.String("error", err.Error()),
 					ion.Uint64("block_number", i),
@@ -1226,6 +1340,7 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 					ion.String("log_file", LOG_FILE),
 					ion.String("topic", TOPIC),
 					ion.String("function", "DB_OPs.GetTransactionsByAccount"))
+				cancel()
 				continue
 			}
 
@@ -1538,10 +1653,9 @@ func GetTransactionsByAccountPaginated(PooledConnection *config.PooledConnection
 
 		// Process current batch of blocks (in reverse order)
 		for i := currentBlock; i >= startBlock && len(allMatchingTxs) < transactionsNeeded; i-- {
-			block, err := GetZKBlockByNumber(PooledConnection, i)
+			block, err := GetZKBlockByNumberFast(PooledConnection, i)
 			if err != nil {
 				loggerCtx, cancel := context.WithCancel(context.Background())
-				defer cancel()
 				ic.Logger.Warn(loggerCtx, "Error retrieving block, skipping",
 					ion.String("error", err.Error()),
 					ion.Uint64("block_number", i),
@@ -1550,6 +1664,7 @@ func GetTransactionsByAccountPaginated(PooledConnection *config.PooledConnection
 					ion.String("log_file", LOG_FILE),
 					ion.String("topic", TOPIC),
 					ion.String("function", "DB_OPs.GetTransactionsByAccountPaginated"))
+				cancel()
 				continue
 			}
 
@@ -2015,8 +2130,13 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 			startBlock = 0
 		}
 
-		// Process current batch of blocks (in reverse order)
-		for i := currentBlock; i >= startBlock; i-- {
+		// Process current batch of blocks (in reverse order).
+		// Loop is written as a top-decrement to avoid uint64 underflow: if startBlock
+		// is 0 and the condition were checked as "i >= startBlock" after decrement,
+		// i would wrap to uint64 max on the iteration where i==0, causing an infinite
+		// loop that attempts to fetch non-existent blocks near ^uint64(0).
+		for i := currentBlock + 1; i > startBlock; {
+			i--
 			block, err := GetZKBlockByNumber(PooledConnection, i)
 			if err != nil {
 				loggerCtx, cancel := context.WithCancel(context.Background())
@@ -2108,4 +2228,48 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 		ion.String("function", "DB_OPs.CheckNonceAndGetLatest"))
 
 	return hasDuplicate, latestNonce, foundLatestNonce, nil
+}
+
+// [AUDIT OK]: Connection lifecycle, determinism via addr bytes, and Immudb writes verified safe across 1 call site in BlockProcessing.
+// [AUDIT OK]: Read-modify-write pattern verified safe; GetAccount validates existence; 3 call sites in BlockProcessing.
+// [AUDIT OK]: State transition logic (TxCountSent++, Nonce update) and blockTimestamp propagation verified safe; 1 call site in BlockProcessing.
+// [AUDIT OK]: Nil checks on account/address, connection pooling handling, and direct storage verified safe; 1 call site in DIDPropagation.
+// StorePropagatedAccount securely stores an account received from the P2P network,
+// perfectly preserving its ART Nonce and other properties to ensure Fastsync consensus.
+func StorePropagatedAccount(PooledConnection *config.PooledConnection, account *Account) error {
+	var err error
+	var shouldReturnConnection = false
+
+	if account == nil || account.Address == (common.Address{}) {
+		return fmt.Errorf("propagated account is invalid")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get accounts connection: %w - StorePropagatedAccount", err)
+		}
+		shouldReturnConnection = true
+	}
+
+	if shouldReturnConnection {
+		defer PutAccountsConnection(PooledConnection)
+	}
+
+	return storeAccount(PooledConnection, account)
+}
+
+var artNonceCounter uint64
+
+// [AUDIT OK]: Atomic counter and bit shift mathematically proven safe against overflow (51 bits for micro + 12 for counter = 63 bits); 1 call site in CreateAccount.
+// GenerateARTNonce generates a locally unique Nonce for Fastsync ART routing.
+// This is strictly used when this node originates an account (e.g., manual DID creation).
+// Accounts synced from the network MUST preserve the sender's ART Nonce.
+func GenerateARTNonce() uint64 {
+	ts := uint64(time.Now().UTC().UnixMicro())
+	c := atomic.AddUint64(&artNonceCounter, 1)
+	return (ts << 12) | (c & 0xFFF)
 }

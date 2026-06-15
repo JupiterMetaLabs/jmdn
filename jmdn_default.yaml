@@ -41,6 +41,9 @@ binds:
 database:
   username: ""
   password: ""
+  redis:
+    url: "127.0.0.1:6379"
+    password: ""
 
 # ── Logging (Ion) ────────────────────────────────────────
 # Maps directly to Ion's config struct. All env vars like
@@ -69,6 +72,7 @@ logging:
     endpoint: ""             # e.g. "collector.example.com:4317"
     protocol: "grpc"
     insecure: false
+    headers: {}              # e.g. {"Authorization": "Bearer <token>"}
     username: ""             # Prefer env: JMDN_LOGGING_OTEL_USERNAME
     password: ""             # Prefer env: JMDN_LOGGING_OTEL_PASSWORD
     batch_size: 512
@@ -83,14 +87,15 @@ features:
   use_legacy_bft: false
   grotrack: false            # Requires ports.metrics > 0
 
-# ── Alerts ─────────────────────────────────────────────
-# External alerting service (Telegram via tg.jmdt.io).
-# Prefer env vars for secrets: JMDN_ALERTS_API_KEY, JMDN_ALERTS_CHAT_ID
-alerts:
-  url: ""                    # e.g. "https://tg.jmdt.io/multi-channel"
-  api_key: ""                # Prefer env: JMDN_ALERTS_API_KEY
-  chat_id: ""                # Prefer env: JMDN_ALERTS_CHAT_ID
-  http_timeout: 10s
+# ── FastSync V2 ─────────────────────────────────────────
+fastsync:
+  enabled: true          # Register protocol handlers and serve data to peers
+  enable_pulling: true   # Allow this node to pull data and update its local DB
+                         # Set false for sequencers/authoritative nodes that must
+                         # never overwrite their own state (they still serve data)
+  pull_on_startup: true  # Catch up on missed blocks automatically on node restart
+  sync_timeout: 10m      # Max wall-clock time for a single full sync operation
+  allowed_peers: []      # Whitelist of peer IDs to sync FROM (empty = any peer)
 
 # ── Security ────────────────────────────────────────────
 # Enterprise Security Module (Gatekeeper)
@@ -192,3 +197,12 @@ security:
       auth_type: "mtls"
       rate_limit: 0         # NEVER rate-limit BFT consensus
       burst: 0
+
+# ── Alerts ─────────────────────────────────────────────
+# External alerting service (Telegram via tg.jmdt.io).
+# Prefer env vars for secrets: JMDN_ALERTS_API_KEY, JMDN_ALERTS_CHAT_ID
+alerts:
+  url: ""                    # e.g. "https://tg.jmdt.io/multi-channel"
+  api_key: ""                # Prefer env: JMDN_ALERTS_API_KEY
+  chat_id: ""                # Prefer env: JMDN_ALERTS_CHAT_ID
+  http_timeout: 10s

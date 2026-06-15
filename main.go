@@ -27,7 +27,9 @@ import (
 	"gossipnode/CA/ImmuDB_CA"
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
+	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
 	"gossipnode/DID"
+	"gossipnode/FastsyncV2"
 	"gossipnode/Pubsub"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
@@ -50,6 +52,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 )
 
@@ -89,7 +92,8 @@ func goMaybeTracked(
 
 // Global variables for easier access
 var (
-	fastSyncer *fastsync.FastSync
+	fastSyncer   *fastsync.FastSync
+	fastSyncerV2 *FastsyncV2.FastsyncV2
 	// immuClient   *config.ImmuClient // unused: declared but never assigned or read
 	globalPubSub *Pubsub.StructGossipPubSub
 )
@@ -256,8 +260,8 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
-		fmt.Println("  fastsync <peer>      - Fast sync with peer")
-		fmt.Println("  firstsync <peer> <server|client> - First sync: get all data from peer (server) or receive all data (client)")
+		fmt.Println("  fastsync <peer>      - Fast sync with peer (V2 Engine)")
+		fmt.Println("  accountsync <peer>   - Sync missing accounts only (skip block sync)")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
 		fmt.Println("are only available in interactive mode.")
@@ -414,65 +418,54 @@ func runCommand(command string, args []string, grpcPort int) {
 			os.Exit(1)
 		}
 
-	case "fastsync":
+	case "fastsync", "fastsyncv2", "firstsync":
 		if len(args) < 1 {
 			fmt.Println("Usage: jmdn -cmd fastsync <peer_multiaddr>")
 			os.Exit(1)
 		}
-		fmt.Println("Starting fast sync...")
-		stats, err := client.FastSync(args[0])
+		fmt.Println("Starting FastSync (V2 Engine)...")
+		stats, err := client.FastSyncV2(args[0])
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
-		// Defensive guards against nil responses to prevent panics
 		if stats == nil {
-			fmt.Println("FastSync returned no stats (nil). The target peer may be unreachable or rejected the request.")
+			fmt.Println("FastSync returned no stats. The target peer may be unreachable.")
 			os.Exit(1)
 		}
-		fmt.Printf("Sync completed in %dms\n", stats.TimeTaken)
+		if stats.Error != "" {
+			fmt.Printf("FastSync failed: %s\n", stats.Error)
+			os.Exit(1)
+		}
+		fmt.Printf("Sync completed in %ds\n", stats.TimeTaken)
 		if stats.MainState == nil {
-			fmt.Println("  Main DB TxID: unavailable (no state returned)")
+			fmt.Println("  Main DB TxID: unavailable")
 		} else {
 			fmt.Printf("  Main DB TxID: %d\n", stats.MainState.TxId)
 		}
 		if stats.AccountsState == nil {
-			fmt.Println("  Accounts DB TxID: unavailable (no state returned)")
+			fmt.Println("  Accounts DB TxID: unavailable")
 		} else {
 			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
 		}
 
-	case "firstsync":
-		if len(args) < 2 {
-			fmt.Println("Usage: jmdn -cmd firstsync <peer_multiaddr> <server|client>")
+	case "accountsync":
+		if len(args) < 1 {
+			fmt.Println("Usage: jmdn -cmd accountsync <peer_multiaddr>")
 			os.Exit(1)
 		}
-		mode := args[1]
-		if mode != "server" && mode != "client" {
-			fmt.Println("Error: mode must be 'server' or 'client'")
-			fmt.Println("Usage: jmdn -cmd firstsync <peer_multiaddr> <server|client>")
-			os.Exit(1)
-		}
-		fmt.Printf("Starting first sync in %s mode...\n", mode)
-		stats, err := client.FirstSync(args[0], mode)
+		fmt.Println("Starting AccountSync (accounts only, no block sync)...")
+		stats, err := client.AccountSync(args[0])
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
-		// Defensive guards against nil responses to prevent panics
-		if stats == nil {
-			fmt.Println("FirstSync returned no stats (nil). The target peer may be unreachable or rejected the request.")
+		if stats.Error != "" {
+			fmt.Printf("AccountSync failed: %s\n", stats.Error)
 			os.Exit(1)
 		}
-		fmt.Printf("Sync completed in %dms\n", stats.TimeTaken)
-		if stats.MainState == nil {
-			fmt.Println("  Main DB TxID: unavailable (no state returned)")
-		} else {
-			fmt.Printf("  Main DB TxID: %d\n", stats.MainState.TxId)
-		}
-		if stats.AccountsState == nil {
-			fmt.Println("  Accounts DB TxID: unavailable (no state returned)")
-		} else {
+		fmt.Printf("AccountSync completed in %ds\n", stats.TimeTaken)
+		if stats.AccountsState != nil {
 			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
 		}
 
@@ -516,8 +509,8 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  sendfile <peer> <filepath> <remote> - Send file")
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
-		fmt.Println("  fastsync <peer>      - Fast sync with peer")
-		fmt.Println("  firstsync <peer> <server|client> - First sync: get all data from peer (server) or receive all data (client)")
+		fmt.Println("  fastsync <peer>      - Fast sync with peer (V2 Engine)")
+		fmt.Println("  accountsync <peer>   - Sync missing accounts only (skip block sync)")
 		os.Exit(1)
 	}
 }
@@ -623,6 +616,17 @@ func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsC
 
 	fs := fastsync.NewFastSync(n.Host, mainClient, accountsClient, ionLogger)
 	log.Info().Msg("FastSync service initialized - will get connections when needed")
+	return fs
+}
+
+// initFastsyncV2 initializes the FastSync V2 service
+func initFastsyncV2(n *config.Node, syncTimeout time.Duration) *FastsyncV2.FastsyncV2 {
+	fs, err := FastsyncV2.NewFastsyncV2(n.Host, syncTimeout)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
+		return nil
+	}
+	log.Info().Msg("FastsyncV2 service initialized")
 	return fs
 }
 
@@ -860,6 +864,24 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
 	}
 
+	// ── Account Sync Worker (Redis Stream) ───────────────────────────────────
+	// WriteAccounts and BatchUpdateAccounts enqueue to a Redis Stream and return
+	// immediately, decoupling callers from the ~15 s ImmuDB commit latency.
+	// The worker drains the stream and writes batches to ImmuDB asynchronously.
+	// Required before FastsyncV2 starts — it calls WriteAccounts during sync.
+	if cfg.Database.Redis.URL == "" {
+		log.Warn().Msg("[AccountSyncWorker] database.redis.url not configured — WriteAccounts will fail; set url in jmdn.yaml or JMDN_DATABASE_REDIS_URL")
+	} else {
+		redisClient := redis.NewClient(&redis.Options{
+			Addr:     cfg.Database.Redis.URL,
+			Password: cfg.Database.Redis.Password,
+		})
+		accountStreamer := NodeInfo.NewRedisStreamer(redisClient)
+		NodeInfo.StartAccountSyncWorker(accountStreamer, NodeInfo.DefaultWorkerConfig())
+		log.Info().Str("redis_url", cfg.Database.Redis.URL).Msg("[accountqueue] installed — WriteAccounts is now async, worker starts lazily")
+		fmt.Println("✅ Account sync worker started (Redis Stream → ImmuDB async)")
+	}
+
 	// Discover Yggdrasil address BEFORE creating the node
 	fmt.Println("Discovering Yggdrasil address...")
 	ipv6, err := helper.GetTun0GlobalIPv6()
@@ -939,6 +961,66 @@ func main() {
 
 	// Initialize FastSync service
 	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
+	if cfg.FastSync.Enabled {
+		fastSyncerV2 = initFastsyncV2(n, cfg.FastSync.SyncTimeout)
+	} else {
+		log.Info().Msg("[FastSync] disabled by config — protocol handlers not registered")
+	}
+
+	// Startup sync: catch up on blocks missed while offline.
+	if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.PullOnStartup {
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.StartupSyncThread, func(ctx context.Context) error {
+			// Wait for peer connections to establish after node startup
+			time.Sleep(5 * time.Second)
+
+			peers := n.Host.Network().Peers()
+			if len(peers) == 0 {
+				// TODO: Query seed node for available sync peers when no direct peers are connected
+				log.Info().Msg("[StartupSync] No peers connected, skipping startup sync")
+				return nil
+			}
+
+			log.Info().Int("peers", len(peers)).Msg("[StartupSync] Attempting startup sync with connected peers")
+
+			for _, peerID := range peers {
+				// Honour allowed_peers whitelist if configured
+				if len(cfg.FastSync.AllowedPeers) > 0 {
+					allowed := false
+					for _, ap := range cfg.FastSync.AllowedPeers {
+						if ap == peerID.String() {
+							allowed = true
+							break
+						}
+					}
+					if !allowed {
+						log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Skipping peer not in allowed_peers")
+						continue
+					}
+				}
+
+				addrs := n.Host.Peerstore().Addrs(peerID)
+				if len(addrs) == 0 {
+					continue
+				}
+
+				log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Trying peer")
+				if err := fastSyncerV2.HandleStartupSync(peerID, addrs); err != nil {
+					log.Warn().Err(err).Str("peer", peerID.String()).Msg("[StartupSync] Failed, trying next peer")
+					continue
+				}
+
+				log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Sync completed successfully")
+				return nil
+			}
+
+			log.Warn().Msg("[StartupSync] Failed to sync with any connected peer")
+			return nil
+		}); err != nil {
+			log.Error().Err(err).Str("thread", GRO.StartupSyncThread).Msg("Failed to start startup sync goroutine")
+		}
+	} else if fastSyncerV2 != nil && !cfg.FastSync.EnablePulling {
+		log.Info().Msg("[FastSync] Node configured with enable_pulling=false (serve-only participant); skipping StartupSync")
+	}
 
 	// Initialize Yggdrasil messaging if enabled
 	if cfg.Network.Yggdrasil {
@@ -1102,11 +1184,13 @@ func main() {
 		Node:            n,
 		NodeManager:     nodeManager,
 		FastSyncer:      fastSyncer,
+		FastSyncerV2:    fastSyncerV2,
 		SeedNode:        cfg.Network.SeedNode,
 		EnableYggdrasil: cfg.Network.Yggdrasil,
 		ChainID:         cfg.Network.ChainID,
 		FacadePort:      cfg.Ports.Facade,
 		WSPort:          cfg.Ports.WS,
+		PullAllowed:     cfg.FastSync.EnablePulling,
 	}
 
 	// Only set database clients if they're properly initialized

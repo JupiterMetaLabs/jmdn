@@ -345,8 +345,8 @@ func (s *AccountServer) RegisterDID(ctx context.Context, req *pb.RegisterDIDRequ
 			Did:       req.Did,
 			PublicKey: req.PublicKey,
 			Balance:   "0",
-			CreatedAt: time.Now().UTC().Unix(),
-			UpdatedAt: time.Now().UTC().Unix(),
+			CreatedAt: time.Now().UTC().UnixNano(),
+			UpdatedAt: time.Now().UTC().UnixNano(),
 		},
 	}, nil
 }

@@ -7,11 +7,17 @@ import (
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/merkletree"
 	"gossipnode/config"
+	"gossipnode/config/settings"
 
 	"github.com/stretchr/testify/assert"
 )
 
 func Test_GenerateMerkleTree(t *testing.T) {
+	// Initialize settings
+	if _, err := settings.Load(); err != nil {
+		t.Logf("Failed to load settings: %v", err)
+	}
+
 	// Initialize DB Pool
 	if err := DB_OPs.InitMainDBPool(config.DefaultConnectionPoolConfig()); err != nil {
 		t.Logf("Pool might be already initialized: %v", err)

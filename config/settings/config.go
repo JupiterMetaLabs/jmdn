@@ -19,6 +19,7 @@ type NodeConfig struct {
 	Features FeatureSettings  `mapstructure:"features"`
 	Security SecurityConfig   `mapstructure:"security"`
 	Alerts   AlertsConfig     `mapstructure:"alerts"`
+	FastSync FastSyncSettings `mapstructure:"fastsync"`
 }
 
 // NodeSettings defines the identity of this node.
@@ -62,10 +63,21 @@ type BindSettings struct {
 	Profiler  string `mapstructure:"profiler"  yaml:"profiler"`
 }
 
-// DatabaseSettings controls ImmuDB connection parameters.
-type DatabaseSettings struct {
-	Username string `mapstructure:"username" yaml:"username"`
+// RedisSettings controls the Redis connection used by the account sync worker.
+// The worker uses a Redis Stream (XADD/XREADGROUP/XACK) to decouple the
+// WriteAccounts / BatchUpdateAccounts callers from the ~15 s ImmuDB commit latency.
+// URL format: "host:port" (e.g. "localhost:6379").
+// Env override: JMDN_DATABASE_REDIS_URL, JMDN_DATABASE_REDIS_PASSWORD
+type RedisSettings struct {
+	URL      string `mapstructure:"url" yaml:"url"`
 	Password string `mapstructure:"password" yaml:"password"`
+}
+
+// DatabaseSettings controls ImmuDB and Redis connection parameters.
+type DatabaseSettings struct {
+	Username string        `mapstructure:"username" yaml:"username"`
+	Password string        `mapstructure:"password" yaml:"password"`
+	Redis    RedisSettings `mapstructure:"redis"    yaml:"redis"`
 }
 
 // LoggingSettings mirrors Ion's Config struct so jmdn.yaml can fully configure
@@ -102,14 +114,15 @@ type LogFileSettings struct {
 
 // LogOTELSettings configures OpenTelemetry log/trace export.
 type LogOTELSettings struct {
-	Enabled        bool          `mapstructure:"enabled"         yaml:"enabled"`
-	Endpoint       string        `mapstructure:"endpoint"        yaml:"endpoint"`
-	Protocol       string        `mapstructure:"protocol"        yaml:"protocol"` // grpc or http
-	Insecure       bool          `mapstructure:"insecure"        yaml:"insecure"`
-	Username       string        `mapstructure:"username"        yaml:"username"`
-	Password       string        `mapstructure:"password"        yaml:"password"`
-	BatchSize      int           `mapstructure:"batch_size"      yaml:"batch_size"`
-	ExportInterval time.Duration `mapstructure:"export_interval" yaml:"export_interval"`
+	Enabled        bool              `mapstructure:"enabled"         yaml:"enabled"`
+	Endpoint       string            `mapstructure:"endpoint"        yaml:"endpoint"`
+	Protocol       string            `mapstructure:"protocol"        yaml:"protocol"` // grpc or http
+	Insecure       bool              `mapstructure:"insecure"        yaml:"insecure"`
+	Headers        map[string]string `mapstructure:"headers"         yaml:"headers"`
+	Username       string            `mapstructure:"username"        yaml:"username"`
+	Password       string            `mapstructure:"password"        yaml:"password"`
+	BatchSize      int               `mapstructure:"batch_size"      yaml:"batch_size"`
+	ExportInterval time.Duration     `mapstructure:"export_interval" yaml:"export_interval"`
 }
 
 // LogTracingSettings configures distributed tracing.
@@ -122,4 +135,36 @@ type LogTracingSettings struct {
 type FeatureSettings struct {
 	UseLegacyBFT bool `mapstructure:"use_legacy_bft" yaml:"use_legacy_bft"`
 	GROTrack     bool `mapstructure:"grotrack"        yaml:"grotrack"`
+}
+
+// FastSyncSettings controls FastSync V2 behaviour for this node.
+//
+// Serving vs syncing are independent:
+//   - enabled=true  → this node registers FastSync protocol handlers and serves
+//     block/account data to any peer that requests it.
+//   - sync=true     → this node is allowed to pull data from peers and update
+//     its own local database (HeaderSync, DataSync, Reconciliation).
+//
+// A sequencer should set sync=false so it never overwrites its own authoritative
+// state, while keeping enabled=true so other nodes can still sync from it.
+type FastSyncSettings struct {
+	// Enabled controls whether the FastSync engine is initialized and protocol
+	// handlers are registered. Set false to disable FastSync entirely.
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// EnablePulling controls whether this node will pull data from peers and write to its
+	// local DB. false = read-only participant (serves data, never updates itself).
+	EnablePulling bool `mapstructure:"enable_pulling" yaml:"enable_pulling"`
+
+	// PullOnStartup controls whether the node attempts to catch up on missed blocks
+	// automatically when it (re)starts and connects to peers.
+	PullOnStartup bool `mapstructure:"pull_on_startup" yaml:"pull_on_startup"`
+
+	// SyncTimeout is the maximum wall-clock time allowed for a single full sync
+	// operation before it is cancelled.
+	SyncTimeout time.Duration `mapstructure:"sync_timeout" yaml:"sync_timeout"`
+
+	// AllowedPeers is an optional whitelist of libp2p peer IDs this node will
+	// accept sync data FROM. Empty list = accept from any peer.
+	AllowedPeers []string `mapstructure:"allowed_peers" yaml:"allowed_peers"`
 }

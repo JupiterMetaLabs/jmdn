@@ -152,36 +152,28 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 	if err != nil {
 		fmt.Printf("DEBUG: GetAccount error: %v\n", err)
 		fmt.Printf("DEBUG: Error type: %T\n", err)
-		// If account not found, create a new account with zero balance
 		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
-			// Convert address to common.Address using case-insensitive conversion
-			address := Utils.ConvertAddressCaseInsensitive(addr)
-
-			// Create new account with zero balance
-			// We need to provide a DID address, so we'll use the address as DID for now
-			didAddress := fmt.Sprintf("%s%s:%s", DB_OPs.DIDPrefix, network, address.Hex())
-
-			// Create the Utils.DIDDoc
-			didDoc := Utils.DIDDoc{
-				Address:    address,
+			// Auto-create and propagate the account
+			didAddress := fmt.Sprintf("%s%s:%s", DB_OPs.DIDPrefix, "jmdn", convertedAddr.Hex())
+			doc := Utils.DIDDoc{
+				Address:    convertedAddr,
 				DIDAddress: didAddress,
 				Metadata:   nil,
 			}
-
-			// Create the account and propagate the DID
-			if err := Utils.CreateAccountandPropagateDID(didDoc); err != nil {
-				if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance failed to create account and propagate DID: %v", err), "Balance", -1); logErr != nil {
-					fmt.Printf("Failed to log Balance account creation and propagation error: %v\n", logErr)
+			if createErr := Utils.CreateAccountandPropagateDID(doc); createErr != nil {
+				if logErr := Logger.LogData(opCtx, fmt.Sprintf("Failed to auto-create and propagate DID %s: %v", convertedAddr.Hex(), createErr), "Balance", -1); logErr != nil {
+					fmt.Printf("Failed to log Balance error: %v\n", logErr)
 				}
-				return nil, err
+			} else {
+				if logErr := Logger.LogData(opCtx, fmt.Sprintf("Auto-created and propagated DID %s via eth_getBalance", convertedAddr.Hex()), "Balance", 1); logErr != nil {
+					fmt.Printf("Failed to log Balance success: %v\n", logErr)
+				}
 			}
 
-			// Log account creation
-			if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance created new account for address: %s", addr), "Balance", 1); logErr != nil {
-				fmt.Printf("Failed to log Balance account creation: %v\n", logErr)
+			// Log and return zero balance without writing to database
+			if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance returned zero for non-existent address: %s", addr), "Balance", 1); logErr != nil {
+				fmt.Printf("Failed to log Balance success: %v\n", logErr)
 			}
-
-			// Return zero balance for new account
 			return big.NewInt(0), nil
 		}
 

@@ -1110,7 +1110,7 @@ func (fs *FastSync) batchCreateOrderedWithRetry(entries []struct {
 			}
 		case AccountsDB:
 			fmt.Printf(">>> [DB] Calling BatchRestoreAccounts for AccountsDB with %d entries...\n", len(entries))
-			err = DB_OPs.BatchRestoreAccounts(dbClient, entries)
+			err = DB_OPs.BatchRestoreAccounts(context.Background(), dbClient, entries)
 			if err != nil {
 				fmt.Printf(">>> [DB] ERROR: BatchRestoreAccounts failed for AccountsDB: %v\n", err)
 			} else {

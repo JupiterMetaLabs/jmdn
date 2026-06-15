@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"testing"
+	"time"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/Security"
@@ -71,7 +72,7 @@ func TestSecurityCache_BasicOperations(t *testing.T) {
 	}
 	// Ensure account exists
 	_ = DB_OPs.CreateAccount(conn, did, addr, map[string]interface{}{"type": "test"})
-	err = DB_OPs.UpdateAccountBalance(conn, addr, initialBalance.String())
+	err = DB_OPs.UpdateAccountBalance(conn, addr, initialBalance.String(), time.Now().UTC().UnixNano())
 	assert.NoError(t, err)
 	DB_OPs.PutAccountsConnection(conn)
 
@@ -127,11 +128,11 @@ func TestSecurityCache_DoubleSpendProtection(t *testing.T) {
 
 	// Create/Update Sender with 100 Wei
 	_ = DB_OPs.CreateAccount(conn, "did:test:sender", senderAddr, nil)
-	_ = DB_OPs.UpdateAccountBalance(conn, senderAddr, "100")
+	_ = DB_OPs.UpdateAccountBalance(conn, senderAddr, "100", time.Now().UTC().UnixNano())
 
 	// Create/Update Receiver with 0 Wei
 	_ = DB_OPs.CreateAccount(conn, "did:test:receiver", receiverAddr, nil)
-	_ = DB_OPs.UpdateAccountBalance(conn, receiverAddr, "0")
+	_ = DB_OPs.UpdateAccountBalance(conn, receiverAddr, "0", time.Now().UTC().UnixNano())
 
 	fmt.Println("Loading Sender (Balance=100) and Receiver (Balance=0) into cache...")
 	accountsSet := DB_OPs.NewAccountsSet()

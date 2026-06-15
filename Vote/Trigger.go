@@ -210,13 +210,15 @@ func (vt *VoteTrigger) SubmitVote() error {
 		if err != nil {
 			// If this is not the last attempt, try again
 			if attempt < maxAttempts-1 {
+				fmt.Printf("⚠️ Failed to send vote to %s (attempt %d/%d): %v\n", NodeToSendTo.PeerID, attempt+1, maxAttempts, err)
 				continue
 			}
 			// Last attempt failed
-			return fmt.Errorf("failed to send message to listener node after %d attempts: %v", maxAttempts, err)
+			return fmt.Errorf("failed to send vote to %s after %d attempts: %v", NodeToSendTo.PeerID, maxAttempts, err)
 		}
 
 		// Success!
+		fmt.Printf("✅ Vote sent to %s\n", NodeToSendTo.PeerID)
 		return nil
 	}
 
