@@ -3,6 +3,13 @@
 # Binary name (can be overridden via command line: make BINARY_NAME=custom_name)
 BINARY_NAME ?= jmdn
 
+# Custom append-only DuckDB (../duckdb commit 0071f5e8ce).
+# Build reldebug first: cd ../duckdb && make reldebug
+DUCKDB_DIR     := $(shell pwd)/../duckdb
+DUCKDB_INCLUDE := $(DUCKDB_DIR)/src/include
+DUCKDB_LIB     := $(DUCKDB_DIR)/build/reldebug/src
+THEBEDB_DIR    := $(shell pwd)/../ThebeDB
+
 # Install path (can be overridden via command line: make deploy INSTALL_PATH=/usr/local/bin)
 INSTALL_PATH ?= /usr/local/bin
 
@@ -15,7 +22,7 @@ BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 # Linker flags
 LDFLAGS=-ldflags "-X 'gossipnode/config/version.gitCommit=${GIT_COMMIT}' -X 'gossipnode/config/version.gitBranch=${GIT_BRANCH}' -X 'gossipnode/config/version.gitTag=${GIT_TAG}' -X 'gossipnode/config/version.buildTime=${BUILD_TIME}' -linkmode=external -w -s"
 
-.PHONY: all build clean run test fmt lint lint-fix version deploy
+.PHONY: all build build-eventlog clean run test test-eventlog fmt lint lint-fix version deploy
 
 all: build
 
@@ -43,6 +50,30 @@ deploy: build
 	@mkdir -p ${INSTALL_PATH}
 	@mv ./${BINARY_NAME} ${INSTALL_PATH}/${BINARY_NAME}
 	@echo "Deployment complete: ${INSTALL_PATH}/${BINARY_NAME}"
+
+# ── Append-only DuckDB Targets ────────────────────────────────────────────────
+# Build JMDN with the custom append-only DuckDB (binder-level enforcement).
+# duckdb_use_lib tells go-duckdb/v2 to skip its bundled binary and link
+# against the custom libduckdb.dylib instead.
+# Prereq: cd ../duckdb && make reldebug
+build-eventlog:
+	@echo "Building ${BINARY_NAME} with custom append-only DuckDB..."
+	CGO_ENABLED=1 \
+	CGO_CPPFLAGS="-I$(DUCKDB_INCLUDE)" \
+	CGO_LDFLAGS="-L$(DUCKDB_LIB) -lduckdb" \
+	DYLD_LIBRARY_PATH=$(DUCKDB_LIB) \
+	go build -tags duckdb_use_lib ${LDFLAGS} -o ${BINARY_NAME} .
+
+# Run ThebeDB's eventlog enforcement tests against the custom DuckDB.
+# Tests verify that DELETE/UPDATE/TRUNCATE/DROP COLUMN are blocked at
+# the binder level, and that AppendBatch dedup + Runner ordering hold.
+test-eventlog:
+	@echo "Running eventlog enforcement tests against custom DuckDB..."
+	cd $(THEBEDB_DIR) && \
+	CGO_CPPFLAGS="-I$(DUCKDB_INCLUDE)" \
+	CGO_LDFLAGS="-L$(DUCKDB_LIB) -lduckdb" \
+	DYLD_LIBRARY_PATH=$(DUCKDB_LIB) \
+	go test -tags duckdb_use_lib -count=1 -v ./tests/eventlog/...
 
 # ── Developer Quality Targets ─────────────────────────────────────────────────
 # These mirror exactly what CI runs. Use before pushing.
