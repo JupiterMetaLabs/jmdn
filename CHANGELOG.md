@@ -10,9 +10,14 @@ adhering to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **FastSync V2 engine** (`FastsyncV2/fastsyncv2.go` — new, 851 lines).
-  Multi-phase block sync over libp2p: PriorSync (Merkle root comparison) →
-  HeaderSync (skeleton headers) → DataSync (full transactions + ZK proofs) →
-  Reconciliation (account balances) → PoTS (catch-up on blocks produced during sync).
+  Replaces the legacy sync engine to solve node data divergence that was blocking
+  consensus: nodes with inconsistent account state could not agree on block validity.
+  V2 introduces a structured multi-phase protocol over libp2p —
+  PriorSync (Merkle root comparison) → HeaderSync (skeleton headers) →
+  DataSync (full transactions + ZK proofs) → Reconciliation (account balances) →
+  PoTS (catch-up on blocks produced during sync) — that brings any node to full,
+  verified parity before it participates in consensus. The Reconciliation phase
+  resolves account state divergence independently of block sync.
   CLI aliases `fastsync`, `fastsyncv2`, and `firstsync` all dispatch to the V2 engine.
   Serve and pull are decoupled: `fastsync.enabled` registers protocol handlers;
   `fastsync.enable_pulling` gates any write to the local database, allowing sequencers
