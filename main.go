@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -16,7 +17,6 @@ import (
 	"time"
 
 	"gossipnode/config/GRO"
-	"gossipnode/logging"
 	"gossipnode/shutdown"
 
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
@@ -33,6 +33,7 @@ import (
 	"gossipnode/CA/ImmuDB_CA"
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/backend"
 	"gossipnode/DB_OPs/cassata"
 	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/DB_OPs/thebeprofile"
@@ -46,7 +47,6 @@ import (
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
 	"gossipnode/explorer"
-	fastsync "gossipnode/fastsync"
 	"gossipnode/gETH"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/rpc"
@@ -102,7 +102,6 @@ func goMaybeTracked(
 
 // Global variables for easier access
 var (
-	fastSyncer   *fastsync.FastSync
 	fastSyncerV2 *FastsyncV2.FastsyncV2
 	// immuClient   *config.ImmuClient // unused: declared but never assigned or read
 	globalPubSub *Pubsub.StructGossipPubSub
@@ -639,8 +638,9 @@ func initMainDBPool(logger_ctx context.Context, enableLoki bool, username, passw
 		DBPassword: password,
 	}
 
-	// Initialize the global pool
-	config.InitGlobalPoolWithLoki(poolingConfig)
+	// Initialize the global pool. The factory is supplied process-wide via
+	// config.SetGlobalHandleFactory once ThebeDB is constructed (initThebeBackend).
+	config.InitGlobalPoolWithLoki(poolingConfig, nil)
 
 	mainDBPool = config.GetGlobalPool(logger_ctx)
 
@@ -674,28 +674,6 @@ func initAccountsDBPool() error {
 		logger.Info(context.Background(), "Accounts database connection pool initialized", ion.String("database", config.AccountsDBName))
 	}
 	return nil
-}
-
-// initFastSync initializes the FastSync service
-// initFastSync initializes the FastSync service
-func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsClient *config.PooledConnection) *fastsync.FastSync {
-	// Initialize named logger for FastSync
-	// This uses the global AsyncLogger instance to create a structured logger
-	fsLogger, err := logging.NewAsyncLogger().NamedLogger("FastSync", "")
-	var ionLogger *ion.Ion
-
-	if err != nil {
-		if logger := mainLogger(); logger != nil {
-			logger.Error(context.Background(), "Failed to create FastSync logger - falling back to nil logger", err)
-		}
-		// We still proceed, just without the detailed ion logger
-	} else if fsLogger != nil && fsLogger.NamedLogger != nil {
-		ionLogger = fsLogger.NamedLogger
-	}
-
-	fs := fastsync.NewFastSync(n.Host, mainClient, accountsClient, ionLogger)
-	log.Info().Msg("FastSync service initialized - will get connections when needed")
-	return fs
 }
 
 // initFastsyncV2 initializes the FastSync V2 service
@@ -1013,7 +991,17 @@ func main() {
 		}
 		gw := thebegateway.NewThebeGateway(builder.New(db), db.KV, nil, outbox)
 		DB_OPs.SetThebeShadowWriter(DB_OPs.NewGatewayAdapter(gw))
-		fmt.Fprintln(os.Stderr, "thebedb: gateway enabled")
+
+		// Wire the process-wide ThebeHandle factory. Every pool connection becomes a
+		// cache-decorated store.ThebeHandle backed by ThebeDB: writes via the gateway
+		// (2PC SQL+KV), reads via the reader (SQL). Pools are lazy, so setting this
+		// before the first GetConnection is sufficient.
+		reader := thebegateway.NewThebeReader(db.SQL.GetDB(), db.KV, nil)
+		thebeHandleBackend := backend.New(gw, reader, nil)
+		config.SetGlobalHandleFactory(func() (io.Closer, error) {
+			return backend.NewComposite(thebeHandleBackend, nil), nil
+		})
+		fmt.Fprintln(os.Stderr, "thebedb: gateway + handle factory enabled")
 	}
 
 	// Discover Yggdrasil address BEFORE creating the node
@@ -1095,8 +1083,7 @@ func main() {
 		}
 	}()
 
-	// Initialize FastSync service
-	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
+	// Initialize FastSync service (V2 engine only; legacy fastsync removed in ThebeDB migration)
 	if cfg.FastSync.Enabled {
 		fastSyncerV2 = initFastsyncV2(n)
 	} else {
@@ -1356,7 +1343,6 @@ func main() {
 	cmdHandler := &cli.CommandHandler{
 		Node:            n,
 		NodeManager:     nodeManager,
-		FastSyncer:      fastSyncer,
 		FastSyncerV2:    fastSyncerV2,
 		SeedNode:        cfg.Network.SeedNode,
 		EnableYggdrasil: cfg.Network.Yggdrasil,

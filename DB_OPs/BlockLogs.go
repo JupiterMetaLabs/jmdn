@@ -8,8 +8,6 @@ import (
 	"gossipnode/config"
 	"gossipnode/config/utils"
 	"gossipnode/gETH/Facade/Service/Types"
-
-	"github.com/JupiterMetaLabs/ion"
 )
 
 // GetLogs retrieves logs based on filter criteria
@@ -28,29 +26,11 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 			return nil, fmt.Errorf("failed to get main DB connection: %w - GetLogs", err)
 		}
 		shouldReturnConnection = true
-		loggerCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		mainDBClient.Client.Logger.Debug(loggerCtx, "Main DB connection retrieved successfully",
-			ion.String("database", config.DBName),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", "ImmuDB.log"),
-			ion.String("topic", "ImmuDB_ImmuClient"),
-			ion.String("function", "DB_OPs.GetLogs"))
 	}
 
 	// Return connection to pool when done
 	if shouldReturnConnection {
-		defer func() {
-			loggerCtx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			mainDBClient.Client.Logger.Debug(loggerCtx, "Main DB connection put back successfully",
-				ion.String("database", config.DBName),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", "ImmuDB.log"),
-				ion.String("topic", "ImmuDB_ImmuClient"),
-				ion.String("function", "DB_OPs.GetLogs"))
-			PutMainDBConnection(mainDBClient)
-		}()
+		defer PutMainDBConnection(mainDBClient)
 	}
 
 	var allLogs []Types.Log
@@ -69,15 +49,6 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 		// If ToBlock is not specified, get the latest block number
 		latestBlock, err := GetLatestBlockNumber(mainDBClient)
 		if err != nil {
-			loggerCtx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			mainDBClient.Client.Logger.Error(loggerCtx, "Failed to get latest block number",
-				err,
-				ion.String("database", config.DBName),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", "ImmuDB.log"),
-				ion.String("topic", "ImmuDB_ImmuClient"),
-				ion.String("function", "DB_OPs.GetLogs"))
 			return nil, fmt.Errorf("failed to get latest block number: %w", err)
 		}
 		toBlock = latestBlock
@@ -88,16 +59,6 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 		block, err := GetZKBlockByNumber(mainDBClient, blockNum)
 		if err != nil {
 			// Log error but continue with other blocks
-			loggerCtx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			mainDBClient.Client.Logger.Warn(loggerCtx, "Failed to get block for log filtering",
-				ion.String("error", err.Error()),
-				ion.Uint64("blockNumber", blockNum),
-				ion.String("database", config.DBName),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", "ImmuDB.log"),
-				ion.String("topic", "ImmuDB_ImmuClient"),
-				ion.String("function", "DB_OPs.GetLogs"))
 			continue
 		}
 
@@ -105,33 +66,11 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 		blockLogs, err := GetLogsFromBlock(mainDBClient, block, filterQuery)
 		if err != nil {
 			// Log error but continue with other blocks
-			loggerCtx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			mainDBClient.Client.Logger.Warn(loggerCtx, "Failed to get logs from block",
-				ion.String("error", err.Error()),
-				ion.Uint64("blockNumber", blockNum),
-				ion.String("database", config.DBName),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", "ImmuDB.log"),
-				ion.String("topic", "ImmuDB_ImmuClient"),
-				ion.String("function", "DB_OPs.GetLogs"))
 			continue
 		}
 
 		allLogs = append(allLogs, blockLogs...)
 	}
-
-	loggerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	mainDBClient.Client.Logger.Debug(loggerCtx, "Successfully retrieved logs",
-		ion.Uint64("fromBlock", fromBlock),
-		ion.Uint64("toBlock", toBlock),
-		ion.Int("logCount", len(allLogs)),
-		ion.String("database", config.DBName),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", "ImmuDB.log"),
-		ion.String("topic", "ImmuDB_ImmuClient"),
-		ion.String("function", "DB_OPs.GetLogs"))
 
 	return allLogs, nil
 }

@@ -144,7 +144,7 @@ func InitMainDBPoolWithLoki(poolConfig *config.ConnectionPoolConfig, enableLoki 
 			DBPassword: password,
 		}
 
-		mainDBPool = config.NewConnectionPool(loggerCtx, poolCfg, ionLogger, poolingConfig)
+		mainDBPool = config.NewConnectionPool(loggerCtx, poolCfg, ionLogger, poolingConfig, nil)
 		mainDBPool.Logger.Debug(loggerCtx, "Main database connection pool initialized successfully.",
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -162,29 +162,7 @@ func ensureMainDBSelected(conn *config.PooledConnection) error {
 	if conn == nil || conn.Client == nil {
 		return fmt.Errorf("invalid connection")
 	}
-
-	loggerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	conn.Client.Logger.Debug(loggerCtx, "Ensuring main database selected",
-		ion.String("database", config.DBName),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", LOG_FILE),
-		ion.String("topic", TOPIC),
-		ion.String("function", "DB_OPs.ensureMainDBSelected"))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Re-select database to get database-specific token
-	dbResp, err := conn.Client.Client.UseDatabase(ctx, &schema.Database{DatabaseName: config.DBName})
-	if err != nil {
-		return fmt.Errorf("failed to re-select database during token refresh: %w", err)
-	}
-
-	// Update connection with new token and context
-	conn.Token = dbResp.Token
-	conn.Client.Ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", conn.Token))
-
+	// ThebeDB handles are stateless — no UseDatabase/token selection needed.
 	return nil
 }
 
@@ -355,15 +333,7 @@ func GetMainDBConnectionandPutBack(ctx context.Context) (*config.PooledConnectio
 		return nil, fmt.Errorf("failed to get main database connection: %w - GetMainDBConnectionandPutBack", err)
 	}
 
-	// Log successful connection retrieval
-	loggerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	conn.Client.Logger.Debug(loggerCtx, "Got main database connection",
-		ion.String("database", config.DBName),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", LOG_FILE),
-		ion.String("topic", TOPIC),
-		ion.String("function", "DB_OPs.GetMainDBConnectionandPutBack"))
+	// ThebeDB handles have no Logger field — logging removed (Phase 6 migration).
 
 	// Set up automatic cleanup when context is done
 	// Use a goroutine to monitor context cancellation
@@ -392,17 +362,8 @@ func GetMainDBConnectionandPutBack(ctx context.Context) (*config.PooledConnectio
 			if err == nil {
 				err = groCtx.Err()
 			}
-			if err != nil {
-				loggerCtx, cancel := context.WithCancel(context.Background())
-				defer cancel()
-				conn.Client.Logger.Debug(loggerCtx, "Auto-returning main database connection due to context completion",
-					ion.String("database", config.DBName),
-					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-					ion.String("log_file", LOG_FILE),
-					ion.String("topic", TOPIC),
-					ion.String("function", "DB_OPs.GetMainDBConnectionandPutBack"),
-					ion.String("context_error", err.Error()))
-			}
+			// ThebeDB handles have no Logger field — logging removed (Phase 6 migration).
+			_ = err
 
 			PutMainDBConnection(conn)
 			return nil
@@ -425,17 +386,8 @@ func GetMainDBConnectionandPutBack(ctx context.Context) (*config.PooledConnectio
 			if err == nil {
 				err = groCtx.Err()
 			}
-			if err != nil {
-				loggerCtx, cancel := context.WithCancel(context.Background())
-				defer cancel()
-				conn.Client.Logger.Debug(loggerCtx, "Auto-returning main database connection due to context completion",
-					ion.String("database", config.DBName),
-					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-					ion.String("log_file", LOG_FILE),
-					ion.String("topic", TOPIC),
-					ion.String("function", "DB_OPs.GetMainDBConnectionandPutBack"),
-					ion.String("context_error", err.Error()))
-			}
+			// ThebeDB handles have no Logger field — logging removed (Phase 6 migration).
+			_ = err
 
 			PutMainDBConnection(conn)
 			return nil

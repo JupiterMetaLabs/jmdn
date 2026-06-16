@@ -77,7 +77,7 @@ func InitAccountsPool() error {
 			DBPassword: settings.Get().Database.Password,
 		}
 
-		accountsPool = config.NewConnectionPool(loggerCtx, poolCfg, loggerInstance, poolingConfig)
+		accountsPool = config.NewConnectionPool(loggerCtx, poolCfg, loggerInstance, poolingConfig, nil)
 		accountsPool.Logger.Debug(loggerCtx, "Accounts database connection pool initialized successfully",
 			ion.String("database", config.AccountsDBName),
 			ion.Int("max_connections", accountsPool.Config.MaxConnections),
@@ -150,7 +150,6 @@ func PutAccountsConnection(conn *config.PooledConnection) {
 		if conn != nil {
 			accountsPool.Logger.Debug(loggerCtx, "Returning accounts connection",
 				ion.String("database", config.AccountsDBName),
-				ion.String("connection_id", conn.Token),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
 				ion.String("topic", TOPIC),
@@ -358,60 +357,9 @@ func EnsureDBConnection(accountsPool *config.PooledConnection) error {
 		return errors.New("database client is not initialized")
 	}
 
-	// Create context for logging (without changing function signature)
-	loggerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	var lastErr error
-
-	// Try to check connection with retries
-	for i := 0; i < maxRetries; i++ {
-		// Try to get current state
-		ctx, cancel := context.WithTimeout(loggerCtx, 10*time.Second)
-		defer cancel()
-
-		_, err := accountsPool.Client.Client.CurrentState(ctx)
-		if err == nil {
-			accountsPool.Client.Logger.Debug(ctx, "Database connection check successful",
-				ion.String("database", accountsPool.Database),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", LOG_FILE),
-				ion.String("topic", TOPIC),
-				ion.String("function", "DB_OPs.EnsureDBConnection"))
-			// Connection is good
-			return nil
-		}
-
-		lastErr = err
-
-		// Log the failed attempt
-		accountsPool.Client.Logger.Error(ctx, "Failed to establish database connection",
-			err,
-			ion.Int("attempt", i+1),
-			ion.Int("max_retries", maxRetries),
-			ion.String("database", accountsPool.Database),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DB_OPs.EnsureDBConnection"))
-
-		// If not the last attempt, wait before retrying
-		if i < maxRetries-1 {
-			time.Sleep(retryDelay)
-		}
-	}
-
-	// If we got here, all retries failed
-	accountsPool.Client.Logger.Error(loggerCtx, "Failed to establish database connection after all retries",
-		lastErr,
-		ion.Int("max_retries", maxRetries),
-		ion.String("database", accountsPool.Database),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", LOG_FILE),
-		ion.String("topic", TOPIC),
-		ion.String("function", "DB_OPs.EnsureDBConnection"))
-
-	return fmt.Errorf("failed to establish database connection after %d attempts: %w", maxRetries, lastErr)
+	// ThebeDB handles are stateless and always ready — no health check needed.
+	// Connection health is managed by the ThebeGateway/ThebeReader deps, not the pool slot.
+	return nil
 }
 
 /* GetAccountConnectionandPutBack retrieves a connection from the accounts database pool
@@ -455,14 +403,9 @@ func GetAccountConnectionandPutBack(ctx context.Context) (*config.PooledConnecti
 	}
 
 	// Log successful connection retrieval
-	if conn != nil && conn.Client != nil && conn.Client.Logger != nil {
-		conn.Client.Logger.Debug(ctx, "Got accounts connection",
-			ion.String("database", config.AccountsDBName),
-			ion.String("connection_id", conn.Token),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DB_OPs.GetAccountConnectionandPutBack"))
+	if conn != nil && conn.Client != nil {
+		// ThebeDB handles have no Logger field — log is a no-op here (Phase 6 migration)
+		_ = conn
 	}
 
 	// Set up automatic cleanup when context is done
@@ -484,21 +427,7 @@ func GetAccountConnectionandPutBack(ctx context.Context) (*config.PooledConnecti
 			}
 
 			// Put is designed to be idempotent; avoid unsynchronized reads of conn.InUse here.
-			err := callerCtx.Err()
-			if err == nil {
-				err = groCtx.Err()
-			}
-			if err != nil && conn != nil && conn.Client != nil && conn.Client.Logger != nil {
-				conn.Client.Logger.Debug(groCtx, "Auto-returning accounts connection due to context completion",
-					ion.String("database", config.AccountsDBName),
-					ion.String("connection_id", conn.Token),
-					ion.String("context_error", err.Error()),
-					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-					ion.String("log_file", LOG_FILE),
-					ion.String("topic", TOPIC),
-					ion.String("function", "DB_OPs.GetAccountConnectionandPutBack"))
-			}
-
+			// ThebeDB handles have no Logger — logging removed (Phase 6 migration).
 			PutAccountsConnection(conn)
 			return nil
 		}, local.WithTimeout(time.Until(deadline)))
@@ -516,21 +445,7 @@ func GetAccountConnectionandPutBack(ctx context.Context) (*config.PooledConnecti
 			}
 
 			// Put is designed to be idempotent; avoid unsynchronized reads of conn.InUse here.
-			err := callerCtx.Err()
-			if err == nil {
-				err = groCtx.Err()
-			}
-			if err != nil && conn != nil && conn.Client != nil && conn.Client.Logger != nil {
-				conn.Client.Logger.Debug(groCtx, "Auto-returning accounts connection due to context completion",
-					ion.String("database", config.AccountsDBName),
-					ion.String("connection_id", conn.Token),
-					ion.String("context_error", err.Error()),
-					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-					ion.String("log_file", LOG_FILE),
-					ion.String("topic", TOPIC),
-					ion.String("function", "DB_OPs.GetAccountConnectionandPutBack"))
-			}
-
+			// ThebeDB handles have no Logger — logging removed (Phase 6 migration).
 			PutAccountsConnection(conn)
 			return nil
 		})

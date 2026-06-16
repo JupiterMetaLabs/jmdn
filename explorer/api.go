@@ -61,7 +61,7 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 	}
 
 	// Create span for server initialization
-	spanCtx, span := defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.NewImmuDBServer")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.NewImmuDBServer")
 	defer span.End()
 
 	span.SetAttributes(
@@ -74,7 +74,7 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 
 	// Initialize Security Components
 	secCfg := &settings.Get().Security
-	logger := defaultdb.Client.Logger
+	ionLog := logger()
 
 	// Rate Limiter
 	rl, err := gatekeeper.NewRateLimiter(secCfg, secCfg.IPCacheSize)
@@ -82,10 +82,10 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 		return nil, err
 	}
 	// Middleware
-	middleware := gatekeeper.NewGinMiddleware(secCfg, rl, logger)
+	middleware := gatekeeper.NewGinMiddleware(secCfg, rl, ionLog)
 
 	// TLS Loader
-	tlsLoader := gatekeeper.NewTLSLoader(secCfg, logger)
+	tlsLoader := gatekeeper.NewTLSLoader(secCfg, ionLog)
 
 	// Create server instance
 	server := &ImmuDBServer{
@@ -102,7 +102,7 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
 
-	defaultdb.Client.Logger.Info(spanCtx, "ImmuDB API server created successfully",
+	logger().Info(spanCtx, "ImmuDB API server created successfully",
 		ion.String("database", config.DBName),
 		ion.String("accounts_database", config.AccountsDBName),
 		ion.Float64("duration", duration),
@@ -267,7 +267,7 @@ func (s *ImmuDBServer) Start(addr string) error {
 // StartWithContext runs the HTTP server and shuts it down when ctx is cancelled.
 func (s *ImmuDBServer) StartWithContext(ctx context.Context, addr string) error {
 	// Create span for server start
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(ctx, "ExplorerAPI.StartWithContext")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(ctx, "ExplorerAPI.StartWithContext")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -287,14 +287,14 @@ func (s *ImmuDBServer) StartWithContext(ctx context.Context, addr string) error 
 		attribute.String("bind_address", bindAddr),
 	)
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Starting ImmuDB API server",
+	logger().Info(spanCtx, "Starting ImmuDB API server",
 		ion.String("bind_address", bindAddr),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
 		ion.String("function", "ExplorerAPI.StartWithContext"))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Starting ImmuDB API server (zerolog fallback)",
+	logger().Info(spanCtx, "Starting ImmuDB API server (zerolog fallback)",
 		ion.String("bind_address", bindAddr))
 
 	// Use http.Server for explicit control over binding
@@ -309,16 +309,16 @@ func (s *ImmuDBServer) StartWithContext(ctx context.Context, addr string) error 
 	config, err := s.tlsLoader.LoadServerTLS(settings.ServiceExplorerAPI)
 	if err != nil {
 		// FAIL HARD: If TLS is enabled in policy but fails to load, we must not start insecurely.
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to load TLS config for Explorer API", err)
+		logger().Error(spanCtx, "Failed to load TLS config for Explorer API", err)
 		return fmt.Errorf("failed to load TLS config for Explorer API: %w", err)
 	}
 
 	// If TLS config is present, use it
 	if config != nil {
 		srv.TLSConfig = config
-		s.defaultdb.Client.Logger.Info(spanCtx, "TLS Enabled for Explorer API")
+		logger().Info(spanCtx, "TLS Enabled for Explorer API")
 	} else {
-		s.defaultdb.Client.Logger.Warn(spanCtx, "TLS Disabled for Explorer API (Configuration)", ion.String("service", settings.ServiceExplorerAPI))
+		logger().Warn(spanCtx, "TLS Disabled for Explorer API (Configuration)", ion.String("service", settings.ServiceExplorerAPI))
 	}
 
 	errCh := make(chan error, 1)
@@ -359,7 +359,7 @@ func (s *ImmuDBServer) Close() {
 	if s.defaultdb.Client != nil {
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.Close")
+		spanCtx, span := logger().Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.Close")
 		defer span.End()
 
 		span.SetAttributes(
@@ -367,7 +367,7 @@ func (s *ImmuDBServer) Close() {
 			attribute.String("function", "ExplorerAPI.Close"),
 		)
 
-		s.defaultdb.Client.Logger.Info(spanCtx, "Closing the MainDB Connection in the API.go File",
+		logger().Info(spanCtx, "Closing the MainDB Connection in the API.go File",
 			ion.String("database", config.DBName),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -378,7 +378,7 @@ func (s *ImmuDBServer) Close() {
 	if s.accountsdb.Client != nil {
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		spanCtx, span := s.accountsdb.Client.Logger.Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.Close")
+		spanCtx, span := logger().Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.Close")
 		defer span.End()
 
 		span.SetAttributes(
@@ -386,7 +386,7 @@ func (s *ImmuDBServer) Close() {
 			attribute.String("function", "ExplorerAPI.Close"),
 		)
 
-		s.accountsdb.Client.Logger.Info(spanCtx, "Closing the AccountsDB Connection in the API.go File",
+		logger().Info(spanCtx, "Closing the AccountsDB Connection in the API.go File",
 			ion.String("database", config.AccountsDBName),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -423,7 +423,7 @@ func cors() gin.HandlerFunc {
 // generateToken creates a JWT token when provided with a valid API key
 func (s *ImmuDBServer) generateToken(c *gin.Context) {
 	// Create span for token generation
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.generateToken")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.generateToken")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -474,7 +474,7 @@ func (s *ImmuDBServer) generateToken(c *gin.Context) {
 		span.SetAttributes(attribute.String("status", "error"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		s.defaultdb.Client.Logger.Error(spanCtx, "Failed to generate JWT token",
+		logger().Error(spanCtx, "Failed to generate JWT token",
 			err,
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -488,7 +488,7 @@ func (s *ImmuDBServer) generateToken(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "JWT token generated successfully",
+	logger().Info(spanCtx, "JWT token generated successfully",
 		ion.Int("expires_in_seconds", int(JWT_EXPIRATION.Seconds())),
 		ion.Int64("expires_at", now.Add(JWT_EXPIRATION).Unix()),
 		ion.Float64("duration", duration),
@@ -508,7 +508,7 @@ func (s *ImmuDBServer) generateToken(c *gin.Context) {
 // getVersion returns the current version information
 func (s *ImmuDBServer) getVersion(c *gin.Context) {
 	// Create span for version endpoint
-	spanCtx, span := s.defaultdb.Client.Logger.Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getVersion")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getVersion")
 	defer span.End()
 
 	startTime := time.Now().UTC()
@@ -518,7 +518,7 @@ func (s *ImmuDBServer) getVersion(c *gin.Context) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 
-	s.defaultdb.Client.Logger.Info(spanCtx, "Version information retrieved",
+	logger().Info(spanCtx, "Version information retrieved",
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),

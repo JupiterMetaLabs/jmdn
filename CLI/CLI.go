@@ -12,11 +12,10 @@ import (
 	"gossipnode/Block"
 	CLICommon "gossipnode/CLI/common"
 	"gossipnode/DB_OPs"
+	"gossipnode/FastsyncV2"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	"gossipnode/config/version"
-	"gossipnode/FastsyncV2"
-	"gossipnode/fastsync"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	groMetrics "gossipnode/metrics/gro"
@@ -52,7 +51,6 @@ func formatTimestamp(timestamp int64) string {
 type CommandHandler struct {
 	Node            *config.Node
 	NodeManager     *node.NodeManager
-	FastSyncer      *fastsync.FastSync
 	FastSyncerV2    *FastsyncV2.FastsyncV2
 	MainClient      *config.PooledConnection
 	DIDClient       *config.PooledConnection
@@ -628,7 +626,6 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 	printDashes()
 }
 
-
 func (h *CommandHandler) handlePropagateDID(parts []string) {
 	if len(parts) < 3 || len(parts) > 4 {
 		fmt.Println("Usage: propagateDID <did> <public_key> [balance]")
@@ -670,9 +667,12 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
 
 func (h *CommandHandler) handleSyncInfo() {
 	fmt.Println("FastSync Configuration:")
-	fmt.Printf("  Batch Size: %d\n", fastsync.SyncBatchSize)
-	fmt.Printf("  Request Timeout: %v\n", fastsync.RequestTimeout)
-	fmt.Printf("  Response Timeout: %v\n", fastsync.ResponseTimeout)
+	fmt.Println("  Engine: FastsyncV2 (PoTS / WAL-based)")
+	if h.FastSyncerV2 == nil {
+		fmt.Println("  Status: inactive")
+	} else {
+		fmt.Println("  Status: active")
+	}
 	printDashes()
 }
 

@@ -12,7 +12,6 @@ import (
 	"gossipnode/node"
 	"gossipnode/seed"
 
-	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 )
@@ -41,8 +40,8 @@ type HandleShowStats struct {
 
 type SyncStats struct {
 	TimeTaken     time.Duration
-	MainState     *schema.ImmutableState
-	AccountsState *schema.ImmutableState
+	MainState     *DB_OPs.DatabaseState
+	AccountsState *DB_OPs.DatabaseState
 	Error         string
 }
 
@@ -208,7 +207,7 @@ func (h *CommandHandler) HandleBroadcast(message string) (bool, error) {
 	}
 }
 
-func (h *CommandHandler) CheckDBStats() (*schema.ImmutableState, *schema.ImmutableState, error) {
+func (h *CommandHandler) CheckDBStats() (*DB_OPs.DatabaseState, *DB_OPs.DatabaseState, error) {
 	// Get both database states before sync
 	mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
 	if err != nil {
@@ -263,7 +262,11 @@ func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 			time.Sleep(2 * time.Second)
 		}
 
-		_, syncErr = h.FastSyncer.HandleSync(addrInfo.ID)
+		// Legacy fastsync removed in the ThebeDB migration; route to the V2 engine.
+		if h.FastSyncerV2 == nil {
+			return SyncStats{}, fmt.Errorf("FastsyncV2 engine is inactive")
+		}
+		syncErr = h.FastSyncerV2.HandleSync(peeraddr)
 		if syncErr == nil {
 			break
 		}
@@ -309,7 +312,7 @@ func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
 
 	// Re-fetch DB states to report. FastsyncV2 doesn't require MainClient/DIDClient
 	// for the sync itself, so guard against nil before querying.
-	var newMainState, newAccountsState *schema.ImmutableState
+	var newMainState, newAccountsState *DB_OPs.DatabaseState
 	if h.MainClient != nil {
 		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient.Client)
 	}
@@ -363,16 +366,14 @@ func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStat
 	fmt.Printf("Starting first sync with peer %s (mode: %s)\n", addrInfo.ID.String(), modeLower)
 	startTime := time.Now().UTC()
 
-	var syncErr error
-	if modeLower == "server" {
-		// Server mode: export and send all data
-		fmt.Println(">>> Running in SERVER mode - exporting all data...")
-		syncErr = h.FastSyncer.FirstSyncServer(addrInfo.ID)
-	} else {
-		// Client mode: receive and load all data
-		fmt.Println(">>> Running in CLIENT mode - receiving all data...")
-		syncErr = h.FastSyncer.FirstSyncClient(addrInfo.ID)
+	// Legacy fastsync (server/client first-sync split) removed in the ThebeDB
+	// migration. FastsyncV2 performs a unified sync regardless of mode; the mode
+	// argument is retained for CLI compatibility but is now informational only.
+	if h.FastSyncerV2 == nil {
+		return SyncStats{}, fmt.Errorf("FastsyncV2 engine is inactive")
 	}
+	fmt.Printf(">>> Running unified FastsyncV2 (requested mode: %s)...\n", modeLower)
+	syncErr := h.FastSyncerV2.HandleSync(peeraddr)
 
 	if syncErr != nil {
 		return SyncStats{}, fmt.Errorf("first sync failed: %v", syncErr)

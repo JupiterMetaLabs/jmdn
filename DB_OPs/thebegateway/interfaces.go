@@ -70,6 +70,14 @@ type ThebeReader interface {
 	GetZKProof(ctx context.Context, blockNumber uint64) (*ZKProofRecord, error)
 	GetSnapshot(ctx context.Context, blockNumber uint64) (*SnapshotRecord, error)
 
+	// Phase 2.0 — bulk and alternate-key reads
+	GetBlockByHash(ctx context.Context, hash string) (*BlockRecord, error)
+	BulkGetBlocks(ctx context.Context, from, to uint64) ([]*BlockRecord, error)
+	GetAccountByDID(ctx context.Context, did string) (*AccountRecord, error)
+	BulkGetAccounts(ctx context.Context, addresses []string) ([]*AccountRecord, error)
+	ListAccounts(ctx context.Context, limit int) ([]*AccountRecord, error)
+	GetTransactionsByBlock(ctx context.Context, blockNumber uint64) ([]*TransactionRecord, error)
+
 	// Contract KV layer — Phase 7
 	GetContractCode(ctx context.Context, address string) (*ContractCodeRecord, error)
 	GetContractNonce(ctx context.Context, address string) (*ContractNonceRecord, error)

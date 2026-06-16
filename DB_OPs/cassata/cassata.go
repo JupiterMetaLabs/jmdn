@@ -13,6 +13,7 @@ import (
 	"time"
 
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
+	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -495,6 +496,99 @@ func (c *Cassata) GetContractReceipt(ctx context.Context, txHash string) (*Contr
 	}
 	return &r, nil
 }
+
+// ── Phase 2.0 bulk and alternate-key reads ───────────────────────
+
+func (c *Cassata) GetBlockByHash(ctx context.Context, hash string) (*BlockResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT block_number, block_hash, parent_hash, timestamp,
+		       txs_root, state_root, logs_bloom,
+		       coinbase_addr, zkvm_addr,
+		       gas_limit, gas_used, status, extra_data, created_at
+		FROM blocks WHERE block_hash = $1`, hash)
+	var b BlockResult
+	if err := row.Scan(
+		&b.BlockNumber, &b.BlockHash, &b.ParentHash, &b.Timestamp,
+		&b.TxsRoot, &b.StateRoot, &b.LogsBloom,
+		&b.CoinbaseAddr, &b.ZKVMAddr,
+		&b.GasLimit, &b.GasUsed, &b.Status, &b.ExtraData, &b.CreatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetBlockByHash: %w", err)
+	}
+	return &b, nil
+}
+
+func (c *Cassata) BulkGetBlocks(ctx context.Context, from, to uint64) ([]BlockResult, error) {
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
+		SELECT block_number, block_hash, parent_hash, timestamp,
+		       txs_root, state_root, logs_bloom,
+		       coinbase_addr, zkvm_addr,
+		       gas_limit, gas_used, status, extra_data, created_at
+		FROM blocks WHERE block_number >= $1 AND block_number <= $2
+		ORDER BY block_number ASC`, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("cassata.BulkGetBlocks: %w", err)
+	}
+	defer rows.Close()
+	var out []BlockResult
+	for rows.Next() {
+		var b BlockResult
+		if err := rows.Scan(
+			&b.BlockNumber, &b.BlockHash, &b.ParentHash, &b.Timestamp,
+			&b.TxsRoot, &b.StateRoot, &b.LogsBloom,
+			&b.CoinbaseAddr, &b.ZKVMAddr,
+			&b.GasLimit, &b.GasUsed, &b.Status, &b.ExtraData, &b.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+func (c *Cassata) GetAccountByDID(ctx context.Context, did string) (*AccountResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, did_address, balance_wei, nonce,
+		       account_type, metadata, created_at, updated_at
+		FROM accounts WHERE did_address = $1`, did)
+	var a AccountResult
+	if err := row.Scan(
+		&a.Address, &a.DIDAddress, &a.BalanceWei, &a.Nonce,
+		&a.AccountType, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetAccountByDID: %w", err)
+	}
+	return &a, nil
+}
+
+func (c *Cassata) BulkGetAccounts(ctx context.Context, addresses []string) ([]AccountResult, error) {
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `
+		SELECT address, did_address, balance_wei, nonce,
+		       account_type, metadata, created_at, updated_at
+		FROM accounts WHERE address = ANY($1)`, pq.Array(addresses))
+	if err != nil {
+		return nil, fmt.Errorf("cassata.BulkGetAccounts: %w", err)
+	}
+	defer rows.Close()
+	var out []AccountResult
+	for rows.Next() {
+		var a AccountResult
+		if err := rows.Scan(
+			&a.Address, &a.DIDAddress, &a.BalanceWei, &a.Nonce,
+			&a.AccountType, &a.Metadata, &a.CreatedAt, &a.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (c *Cassata) GetTransactionsByBlock(ctx context.Context, blockNumber uint64) ([]TxResult, error) {
+	return c.ListTransactionsByBlock(ctx, blockNumber)
+}
+
+// ── Contract storage listing ──────────────────────────────────────
 
 func (c *Cassata) ListContractStorageByAddress(ctx context.Context, address string) ([]ContractStorageResult, error) {
 	rows, err := c.db.SQL.GetDB().QueryContext(ctx, `

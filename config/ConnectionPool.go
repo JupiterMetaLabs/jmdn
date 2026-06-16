@@ -4,8 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io"
 	"sync"
 	"time"
 
@@ -15,10 +14,7 @@ import (
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/JupiterMetaLabs/ion"
-	"github.com/codenotary/immudb/pkg/api/schema"
-	"github.com/codenotary/immudb/pkg/client"
 	"go.opentelemetry.io/otel/attribute"
-	"google.golang.org/grpc/metadata"
 )
 
 var ConnectionPoolLocalGRO interfaces.LocalGoroutineManagerInterface
@@ -69,18 +65,48 @@ func DefaultConnectionPoolConfig() *ConnectionPoolConfig {
 
 }
 
-// PooledConnection represents a connection in the pool
+// PooledConnection represents a connection in the pool.
+// Client holds a store.ThebeHandle (assigned by createConnection) exposed as io.Closer
+// to avoid an import cycle: store → config → store.
+// Callers needing store.ThebeHandle use: h := conn.Client.(store.ThebeHandle)
 type PooledConnection struct {
-	Client      *ImmuClient
-	Token       string
-	TokenExpiry time.Time
-	Database    string
-	CreatedAt   time.Time
-	LastUsed    time.Time
-	InUse       bool
+	Client    io.Closer
+	Database  string
+	CreatedAt time.Time
+	LastUsed  time.Time
+	InUse     bool
 }
 
-// ConnectionPool manages a pool of ImmuDB connections
+// HandleFactory creates a new store.ThebeHandle (exposed as io.Closer to avoid import cycle).
+// Implementations must return a value that also satisfies store.ThebeHandle.
+// Typical implementation: backend.NewComposite(backend.New(gw, r, lw), cache)
+type HandleFactory func() (io.Closer, error)
+
+// globalHandleFactory is the process-wide fallback factory used by any pool
+// created without an explicit factory. Set once at startup after ThebeDB is
+// constructed (config.SetGlobalHandleFactory). Guarded by globalFactoryMu.
+var (
+	globalHandleFactory HandleFactory
+	globalFactoryMu     sync.RWMutex
+)
+
+// SetGlobalHandleFactory registers the process-wide ThebeHandle factory.
+// Call this exactly once, after ThebeDB (gateway + reader + cache) is built and
+// before the first pool connection is borrowed.
+func SetGlobalHandleFactory(f HandleFactory) {
+	globalFactoryMu.Lock()
+	defer globalFactoryMu.Unlock()
+	globalHandleFactory = f
+}
+
+// GlobalHandleFactory returns the process-wide factory, or nil if unset.
+func GlobalHandleFactory() HandleFactory {
+	globalFactoryMu.RLock()
+	defer globalFactoryMu.RUnlock()
+	return globalHandleFactory
+}
+
+// ConnectionPool manages a pool of ThebeDB-backed store.ThebeHandle connections.
 type ConnectionPool struct {
 	Config      *ConnectionPoolConfig
 	Connections []*PooledConnection
@@ -88,26 +114,36 @@ type ConnectionPool struct {
 	Closed      bool
 	Logger      *ion.Ion
 
-	// Connection details (using default ImmuDB values)
-	Address  string // Name of the ImmuDB server
-	Port     int
 	Database string
-	Username string
-	Password string
+
+	// factory creates a new ThebeHandle per pool slot.
+	// Shared ThebeDB deps (gateway, reader, cache) are captured in the closure at construction time.
+	factory HandleFactory
 
 	// Background tasks
 	CleanupTicker *time.Ticker
 	StopCleanup   chan struct{}
 }
 
-// Callers should use this to create contexts for their database operations.
+// GetContext returns a background context for database operations.
 func (pc *PooledConnection) GetContext() context.Context {
-	return metadata.NewOutgoingContext(context.Background(),
-		metadata.Pairs("authorization", pc.Token))
+	return context.Background()
 }
 
-// NewConnectionPool creates a new connection pool
-func NewConnectionPool(logger_ctx context.Context, config *ConnectionPoolConfig, logger *ion.Ion, poolingConfig *PoolingConfig) *ConnectionPool {
+// ImmuClient returns the underlying *ImmuClient if this PooledConnection was created
+// by the legacy ImmuDB pool path. Returns nil when backed by a ThebeDB handle.
+// Deprecated: migrate callers to store.ThebeHandle methods (Phase 6).
+func (pc *PooledConnection) ImmuClient() *ImmuClient {
+	if pc == nil || pc.Client == nil {
+		return nil
+	}
+	ic, _ := pc.Client.(*ImmuClient)
+	return ic
+}
+
+// NewConnectionPool creates a new connection pool backed by ThebeDB.
+// factory is called once per pool slot to create a store.ThebeHandle (returned as io.Closer).
+func NewConnectionPool(logger_ctx context.Context, config *ConnectionPoolConfig, logger *ion.Ion, poolingConfig *PoolingConfig, factory HandleFactory) *ConnectionPool {
 	// Record trace span and close it
 	spanCtx, span := logger.Tracer("ConnectionPool").Start(logger_ctx, "ConnectionPool.NewConnectionPool")
 	defer span.End()
@@ -115,16 +151,12 @@ func NewConnectionPool(logger_ctx context.Context, config *ConnectionPoolConfig,
 	startTime := time.Now().UTC()
 	span.SetAttributes(
 		attribute.String("database", poolingConfig.DBName),
-		attribute.String("address", poolingConfig.DBAddress),
-		attribute.Int("port", poolingConfig.DBPort),
 		attribute.Int("max_connections", config.MaxConnections),
 		attribute.Int("min_connections", config.MinConnections),
 	)
 
 	logger.Debug(spanCtx, "Creating new connection pool",
 		ion.String("database", poolingConfig.DBName),
-		ion.String("address", poolingConfig.DBAddress),
-		ion.Int("port", poolingConfig.DBPort),
 		ion.Int("max_connections", config.MaxConnections),
 		ion.Int("min_connections", config.MinConnections),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -154,11 +186,8 @@ func NewConnectionPool(logger_ctx context.Context, config *ConnectionPoolConfig,
 		Logger:        logger,
 		StopCleanup:   make(chan struct{}),
 		CleanupTicker: time.NewTicker(1 * time.Minute),
-		Address:       poolingConfig.DBAddress,
-		Port:          poolingConfig.DBPort,
 		Database:      poolingConfig.DBName,
-		Username:      poolingConfig.DBUsername,
-		Password:      poolingConfig.DBPassword,
+		factory:       factory,
 	}
 
 	// Start background cleanup
@@ -224,7 +253,6 @@ func (p *ConnectionPool) Get(logger_ctx context.Context) (*PooledConnection, err
 		conn := p.Connections[i]
 		if conn.InUse {
 			p.Logger.Debug(spanCtx, "Connection is in use",
-				ion.String("connection_id", conn.Token),
 				ion.String("database", conn.Database),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -233,19 +261,16 @@ func (p *ConnectionPool) Get(logger_ctx context.Context) (*PooledConnection, err
 			continue
 		}
 
-		// Check if connection is expired (lifetime or token)
+		// Check if connection has exceeded its max lifetime.
 		lifetimeExpired := time.Since(conn.CreatedAt) > p.Config.MaxLifetime
-		tokenExpired := time.Until(conn.TokenExpiry) < p.Config.TokenRefreshBuffer
 
-		if lifetimeExpired || tokenExpired {
+		if lifetimeExpired {
 			p.closeConnection(spanCtx, conn)
 			p.Connections = append(p.Connections[:i], p.Connections[i+1:]...)
-			span.SetAttributes(attribute.Bool("lifetime_expired", lifetimeExpired), attribute.Bool("token_expired", tokenExpired))
-			p.Logger.Debug(spanCtx, "Connection closed due to expiration",
-				ion.String("connection_id", conn.Token),
+			span.SetAttributes(attribute.Bool("lifetime_expired", lifetimeExpired))
+			p.Logger.Debug(spanCtx, "Connection closed due to lifetime expiration",
 				ion.String("database", conn.Database),
 				ion.Bool("lifetime_expired", lifetimeExpired),
-				ion.Bool("token_expired", tokenExpired),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
 				ion.String("topic", TOPIC),
@@ -257,14 +282,12 @@ func (p *ConnectionPool) Get(logger_ctx context.Context) (*PooledConnection, err
 		conn.InUse = true
 		conn.LastUsed = time.Now().UTC()
 		span.SetAttributes(
-			attribute.String("connection_id", conn.Token),
 			attribute.String("status", "reused"),
 			attribute.Bool("connection_reused", true),
 		)
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
 		p.Logger.Debug(spanCtx, "Connection found and reused",
-			ion.String("connection_id", conn.Token),
 			ion.String("database", conn.Database),
 			ion.Float64("duration", duration),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -311,7 +334,6 @@ func (p *ConnectionPool) Get(logger_ctx context.Context) (*PooledConnection, err
 	conn.InUse = true
 	p.Connections = append(p.Connections, conn)
 	span.SetAttributes(
-		attribute.String("connection_id", conn.Token),
 		attribute.String("status", "created"),
 		attribute.Bool("connection_created", true),
 		attribute.Int("new_pool_size", len(p.Connections)),
@@ -319,7 +341,6 @@ func (p *ConnectionPool) Get(logger_ctx context.Context) (*PooledConnection, err
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 	p.Logger.Debug(spanCtx, "New connection created and added to pool",
-		ion.String("connection_id", conn.Token),
 		ion.String("database", p.Database),
 		ion.Int("pool_size", len(p.Connections)),
 		ion.Float64("duration", duration),
@@ -330,174 +351,62 @@ func (p *ConnectionPool) Get(logger_ctx context.Context) (*PooledConnection, err
 	return conn, nil
 }
 
-// createConnection creates a new connection to ImmuDB
+// createConnection calls the HandleFactory to build a new store.ThebeHandle (returned as io.Closer).
+// No network connection is established here — the ThebeDB deps are pre-connected and captured in factory.
 func (cp *ConnectionPool) createConnection(logger_ctx context.Context) (*PooledConnection, error) {
-	// Record trace span and close it
 	spanCtx, span := cp.Logger.Tracer("ConnectionPool").Start(logger_ctx, "ConnectionPool.createConnection")
 	defer span.End()
 
 	startTime := time.Now().UTC()
-	span.SetAttributes(
-		attribute.String("database", cp.Database),
-		attribute.String("address", cp.Address),
-		attribute.Int("port", cp.Port),
-		attribute.String("username", cp.Username),
-	)
+	span.SetAttributes(attribute.String("database", cp.Database))
 
-	cp.Logger.Debug(spanCtx, "Creating new connection to ImmuDB",
-		ion.String("database", cp.Database),
-		ion.String("address", cp.Address),
-		ion.Int("port", cp.Port),
-		ion.String("username", cp.Username),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", LOG_FILE),
-		ion.String("topic", TOPIC),
-		ion.String("function", "ConnectionPool.createConnection"))
-
-	// ensure our state dir exists
-	if err := os.MkdirAll(State_Path_Hidden, 0o750); err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "state_dir_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		return nil, fmt.Errorf("could not create state dir: %w", err)
-	}
-
-	// build file paths inside .immudb-state
-	certFile := filepath.Join(State_Path_Hidden, "server.cert.pem")
-	keyFile := filepath.Join(State_Path_Hidden, "server.key.pem")
-	caFile := filepath.Join(State_Path_Hidden, "ca.cert.pem")
-
-	// Configure the client with mTLS enabled
-	opts := client.DefaultOptions().
-		WithAddress(cp.Address).
-		WithPort(cp.Port).
-		WithDir(State_Path_Hidden).
-		WithMaxRecvMsgSize(1024 * 1024 * 200). // 20MB message size
-		WithDisableIdentityCheck(false).       // Disable identity file to prevent 24-hour expiration
-		WithMTLsOptions(
-			client.MTLsOptions{}.WithCertificate(certFile).WithPkey(keyFile).WithClientCAs(caFile).WithServername(cp.Address),
-		)
-
-	clientStart := time.Now().UTC()
-	c, err := client.NewImmuClient(opts)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "client_creation_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		cp.Logger.Error(spanCtx, "Failed to create ImmuDB client",
-			err,
-			ion.String("address", cp.Address),
-			ion.Int("port", cp.Port),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "ConnectionPool.createConnection"))
-		return nil, fmt.Errorf("failed to create client: %w", err)
-	}
-
-	clientDuration := time.Since(clientStart).Seconds()
-	span.SetAttributes(attribute.Float64("client_creation_duration", clientDuration), attribute.String("session_id", c.SessionID))
-
-	// login + select database as before
-	ctx, cancel := context.WithTimeout(spanCtx, cp.Config.ConnectionTimeout)
-	defer cancel()
-
-	loginStart := time.Now().UTC()
-	cp.Logger.Debug(spanCtx, "Authenticating with ImmuDB",
-		ion.String("username", cp.Username),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", LOG_FILE),
-		ion.String("topic", TOPIC),
-		ion.String("function", "ConnectionPool.createConnection"))
-
-	lr, err := c.Login(ctx, []byte(cp.Username), []byte(cp.Password))
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "login_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		c.Disconnect()
-		cp.Logger.Error(spanCtx, "Login failed",
-			err,
-			ion.String("username", cp.Username),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "ConnectionPool.createConnection"))
-		return nil, fmt.Errorf("login failed: %w", err)
-	}
-
-	loginDuration := time.Since(loginStart).Seconds()
-	span.SetAttributes(attribute.Float64("login_duration", loginDuration))
-
-	md := metadata.Pairs("authorization", lr.Token)
-	authCtx := metadata.NewOutgoingContext(ctx, md)
-
-	dbStart := time.Now().UTC()
-	cp.Logger.Debug(spanCtx, "Selecting database",
+	cp.Logger.Debug(spanCtx, "Creating new ThebeDB handle",
 		ion.String("database", cp.Database),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
 		ion.String("function", "ConnectionPool.createConnection"))
 
-	dbResp, err := c.UseDatabase(authCtx, &schema.Database{DatabaseName: cp.Database})
+	factory := cp.factory
+	if factory == nil {
+		// Fall back to the process-wide factory set once ThebeDB is constructed.
+		// Pools are created lazily (no pre-warm), so the global factory only needs
+		// to be set before the first GetConnection — not at InitPool time.
+		factory = GlobalHandleFactory()
+	}
+	if factory == nil {
+		err := fmt.Errorf("ConnectionPool.createConnection: HandleFactory is nil (call config.SetGlobalHandleFactory after ThebeDB init)")
+		span.RecordError(err)
+		return nil, err
+	}
+
+	handle, err := factory()
 	if err != nil {
 		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "use_database_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		c.Disconnect()
-		cp.Logger.Error(spanCtx, "Failed to use database",
+		span.SetAttributes(attribute.String("status", "factory_failed"))
+		cp.Logger.Error(spanCtx, "HandleFactory failed",
 			err,
 			ion.String("database", cp.Database),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "ConnectionPool.createConnection"))
-		return nil, fmt.Errorf("failed to use database %s: %w", cp.Database, err)
-	}
-
-	dbDuration := time.Since(dbStart).Seconds()
-	span.SetAttributes(attribute.Float64("database_selection_duration", dbDuration))
-
-	Immuclient := ImmuClient{
-		Client:      c,
-		Ctx:         ctx,
-		Cancel:      cancel,
-		BaseCtx:     context.Background(),
-		Database:    cp.Database,
-		RetryLimit:  3,
-		IsConnected: true,
-		Logger:      cp.Logger,
+		return nil, fmt.Errorf("ConnectionPool.createConnection: %w", err)
 	}
 
 	now := time.Now().UTC()
 	conn := &PooledConnection{
-		Client:      &Immuclient,
-		Token:       dbResp.Token,
-		TokenExpiry: now.Add(cp.Config.TokenMaxLifetime),
-		Database:    cp.Database,
-		CreatedAt:   now,
-		LastUsed:    now,
-		InUse:       false,
+		Client:    handle,
+		Database:  cp.Database,
+		CreatedAt: now,
+		LastUsed:  now,
+		InUse:     false,
 	}
-
-	span.SetAttributes(
-		attribute.String("connection_id", conn.Token),
-		attribute.String("token_expiry", conn.TokenExpiry.Format(time.RFC3339)),
-	)
 
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
-	cp.Logger.Debug(spanCtx, "Successfully created new connection to database",
+	cp.Logger.Debug(spanCtx, "Successfully created new ThebeDB handle",
 		ion.String("database", cp.Database),
-		ion.String("connection_id", conn.Token),
-		ion.Float64("client_creation_duration", clientDuration),
-		ion.Float64("login_duration", loginDuration),
-		ion.Float64("database_selection_duration", dbDuration),
 		ion.Float64("total_duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -530,10 +439,7 @@ func (p *ConnectionPool) Put(logger_ctx context.Context, conn *PooledConnection)
 		return
 	}
 
-	span.SetAttributes(
-		attribute.String("connection_id", conn.Token),
-		attribute.String("database", conn.Database),
-	)
+	span.SetAttributes(attribute.String("database", conn.Database))
 
 	p.Mutex.Lock()
 	defer p.Mutex.Unlock()
@@ -553,7 +459,6 @@ func (p *ConnectionPool) Put(logger_ctx context.Context, conn *PooledConnection)
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
 		p.Logger.Debug(spanCtx, "Connection already in pool, updating LastUsed",
-			ion.String("connection_id", conn.Token),
 			ion.String("database", conn.Database),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -572,7 +477,6 @@ func (p *ConnectionPool) Put(logger_ctx context.Context, conn *PooledConnection)
 			duration := time.Since(startTime).Seconds()
 			span.SetAttributes(attribute.Float64("duration", duration))
 			p.Logger.Debug(spanCtx, "Connection already in pool slice, marking as not in use",
-				ion.String("connection_id", conn.Token),
 				ion.String("database", conn.Database),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -596,7 +500,6 @@ func (p *ConnectionPool) Put(logger_ctx context.Context, conn *PooledConnection)
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))
 	p.Logger.Debug(spanCtx, "Connection returned to pool",
-		ion.String("connection_id", conn.Token),
 		ion.String("database", conn.Database),
 		ion.Int("pool_size", len(p.Connections)),
 		ion.Float64("duration", duration),
@@ -659,7 +562,7 @@ func (p *ConnectionPool) Close(logger_ctx context.Context) {
 		ion.String("function", "ConnectionPool.Close"))
 }
 
-// closeConnection safely disconnects the client.
+// closeConnection releases the handle's resources.
 func (p *ConnectionPool) closeConnection(logger_ctx context.Context, conn *PooledConnection) {
 	if conn == nil || conn.Client == nil {
 		return
@@ -668,15 +571,11 @@ func (p *ConnectionPool) closeConnection(logger_ctx context.Context, conn *Poole
 	spanCtx, span := p.Logger.Tracer("ConnectionPool").Start(logger_ctx, "ConnectionPool.closeConnection")
 	defer span.End()
 
-	span.SetAttributes(
-		attribute.String("connection_id", conn.Token),
-		attribute.String("database", conn.Database),
-	)
+	span.SetAttributes(attribute.String("database", conn.Database))
 
-	conn.Client.Cancel()
+	_ = conn.Client.Close()
 
-	p.Logger.Debug(spanCtx, "Disconnected ImmuDB client",
-		ion.String("connection_id", conn.Token),
+	p.Logger.Debug(spanCtx, "Closed ThebeDB handle",
 		ion.String("database", conn.Database),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -805,12 +704,14 @@ var (
 // at application startup before any calls to GetGlobalPool.
 // It panics if initialization fails, as a DB connection pool is a critical
 // component for the application to run.
-func InitGlobalPool(logger_ctx context.Context, poolConfig *PoolingConfig, logger *ion.Ion) {
-	InitGlobalPoolWithLoki(poolConfig)
+// factory: called per pool slot to create a store.ThebeHandle (as io.Closer).
+func InitGlobalPool(logger_ctx context.Context, poolConfig *PoolingConfig, logger *ion.Ion, factory HandleFactory) {
+	InitGlobalPoolWithLoki(poolConfig, factory)
 }
 
-// InitGlobalPoolWithLoki initializes the global connection pool with optional Loki support
-func InitGlobalPoolWithLoki(poolConfig *PoolingConfig) {
+// InitGlobalPoolWithLoki initializes the global connection pool with optional Loki support.
+// factory: called per pool slot to build a store.ThebeHandle (returned as io.Closer).
+func InitGlobalPoolWithLoki(poolConfig *PoolingConfig, factory HandleFactory) {
 	asyncLogger := logging.NewAsyncLogger()
 	if asyncLogger == nil {
 		panic("FATAL: NewAsyncLogger returned nil")
@@ -839,7 +740,7 @@ func InitGlobalPoolWithLoki(poolConfig *PoolingConfig) {
 			panic("FATAL: logger cannot be nil for InitGlobalPool")
 		}
 		poolCfg := DefaultConnectionPoolConfig()
-		globalPool = NewConnectionPool(logger_ctx, poolCfg, logger, poolConfig)
+		globalPool = NewConnectionPool(logger_ctx, poolCfg, logger, poolConfig, factory)
 	})
 }
 

@@ -37,6 +37,15 @@ type ImmuClient struct {
 	Database    string
 }
 
+// Close implements io.Closer so *ImmuClient can be stored in config.PooledConnection.Client.
+// Delegates to Cancel() to release the underlying gRPC context.
+func (ic *ImmuClient) Close() error {
+	if ic != nil && ic.Cancel != nil {
+		ic.Cancel()
+	}
+	return nil
+}
+
 // BlockHasher for generating block hashes
 type BlockHasher struct{}
 

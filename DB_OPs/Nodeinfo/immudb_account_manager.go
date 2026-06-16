@@ -32,8 +32,6 @@ func (am *account_manager) GetTransactionsForAccount(accountAddress string) ([]t
 	}
 
 	// Serialize and deserialize to map config.Transaction to types.DBTransaction.
-	// The JSON tags match between config.Transaction and types.Transaction (embedded in DBTransaction),
-	// so core fields are preserved. DB-specific fields (BlockNumber, TxIndex, CreatedAt) will be zero-valued.
 	var result []types.DBTransaction
 	for _, tx := range cfgTxs {
 		b, err := json.Marshal(tx)
@@ -95,8 +93,7 @@ func (am *account_manager) UpdateAccountBalance(accountAddress string, balance *
 	doc.Nonce = nonce
 	doc.UpdatedAt = time.Now().UTC().UnixNano()
 
-	key := fmt.Sprintf("%s%s", DB_OPs.Prefix, addr)
-	if err := DB_OPs.SafeCreate(conn.Client, key, doc); err != nil {
+	if err := DB_OPs.SaveAccount(conn, doc); err != nil {
 		return fmt.Errorf("failed to write updated account: %w", err)
 	}
 
@@ -116,7 +113,6 @@ func (am *account_manager) CreateAccount(accountAddress string, balance *big.Int
 	addr := common.HexToAddress(accountAddress)
 
 	// CreateAccount atomically writes the address: KV entry AND the did: reference via ExecAll.
-	// It generates its own nonce internally, so we correct it afterwards.
 	meta := make(map[string]interface{})
 	if err := DB_OPs.CreateAccount(conn, accountAddress, addr, meta); err != nil {
 		return fmt.Errorf("failed to create account: %w", err)
@@ -132,8 +128,7 @@ func (am *account_manager) CreateAccount(accountAddress string, balance *big.Int
 	doc.Nonce = nonce
 	doc.UpdatedAt = time.Now().UTC().UnixNano()
 
-	key := fmt.Sprintf("%s%s", DB_OPs.Prefix, addr)
-	if err := DB_OPs.SafeCreate(conn.Client, key, doc); err != nil {
+	if err := DB_OPs.SaveAccount(conn, doc); err != nil {
 		return fmt.Errorf("failed to write account with correct balance/nonce: %w", err)
 	}
 

@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/cache"
+	"github.com/lib/pq"
 )
 
 // sqlQuerier is the minimal *sql.DB surface used by thebeReader.
@@ -108,6 +109,40 @@ const (
 	sqlGetSnapshot = `
         SELECT block_number, block_hash, created_at
         FROM snapshots WHERE block_number = $1`
+
+	// Phase 2.0 — bulk and alternate-key reads
+	sqlGetBlockByHash = `
+        SELECT block_number, block_hash, parent_hash, timestamp, txs_root, state_root,
+               logs_bloom, coinbase_addr, zkvm_addr, gas_limit, gas_used, status, extra_data
+        FROM blocks WHERE block_hash = $1`
+
+	sqlBulkGetBlocks = `
+        SELECT block_number, block_hash, parent_hash, timestamp, txs_root, state_root,
+               logs_bloom, coinbase_addr, zkvm_addr, gas_limit, gas_used, status, extra_data
+        FROM blocks WHERE block_number >= $1 AND block_number <= $2
+        ORDER BY block_number ASC`
+
+	sqlGetAccountByDID = `
+        SELECT address, did_address, balance_wei, nonce, account_type, metadata,
+               created_at, updated_at
+        FROM accounts WHERE did_address = $1`
+
+	sqlBulkGetAccounts = `
+        SELECT address, did_address, balance_wei, nonce, account_type, metadata,
+               created_at, updated_at
+        FROM accounts WHERE address = ANY($1)`
+
+	sqlListAccounts = `
+        SELECT address, did_address, balance_wei, nonce, account_type, metadata,
+               created_at, updated_at
+        FROM accounts ORDER BY created_at ASC`
+
+	sqlGetTxsByBlock = `
+        SELECT tx_hash, block_number, tx_index, from_addr, to_addr, value_wei, nonce,
+               type, gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
+               data, access_list, sig_v, sig_r, sig_s
+        FROM transactions WHERE block_number = $1
+        ORDER BY tx_index ASC`
 )
 
 // read is the shared read-through pattern for single-record methods.
@@ -245,8 +280,8 @@ func (r *thebeReader) GetAccount(ctx context.Context, address string) (*AccountR
 // Accepts the scanner interface so it works with both *sql.Row and *sql.Rows.
 func (r *thebeReader) scanTx(s scanner, rec *TransactionRecord) error {
 	var (
-		toAddrNull      sql.NullString
-		accessListJSON  []byte
+		toAddrNull     sql.NullString
+		accessListJSON []byte
 	)
 	err := s.Scan(
 		&rec.TxHash,
@@ -358,6 +393,153 @@ func (r *thebeReader) GetSnapshot(ctx context.Context, blockNumber uint64) (*Sna
 		return nil, err
 	}
 	return &rec, nil
+}
+
+// GetBlockByHash returns the block with the given block hash.
+// Time: O(1) — hash-indexed lookup (requires index on block_hash column)
+func (r *thebeReader) GetBlockByHash(ctx context.Context, hash string) (*BlockRecord, error) {
+	var rec BlockRecord
+	err := r.read(ctx, "jmdn:block:hash:"+hash, TTLBlock, &rec, func() error {
+		return r.scanBlock(r.db.QueryRowContext(ctx, sqlGetBlockByHash, hash), &rec)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+// BulkGetBlocks returns all blocks in [from, to] inclusive ordered by block_number ASC.
+// Time: O(n) where n = to-from+1 — single SQL range scan.
+func (r *thebeReader) BulkGetBlocks(ctx context.Context, from, to uint64) ([]*BlockRecord, error) {
+	rows, err := r.db.QueryContext(ctx, sqlBulkGetBlocks, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("BulkGetBlocks: query: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*BlockRecord
+	for rows.Next() {
+		var rec BlockRecord
+		var (
+			coinbaseNull sql.NullString
+			zkvmNull     sql.NullString
+			gasLimitStr  string
+			gasUsedStr   string
+			extraJSON    []byte
+		)
+		if err := rows.Scan(
+			&rec.BlockNumber, &rec.BlockHash, &rec.ParentHash, &rec.Timestamp,
+			&rec.TxsRoot, &rec.StateRoot, &rec.LogsBloom,
+			&coinbaseNull, &zkvmNull,
+			&gasLimitStr, &gasUsedStr,
+			&rec.Status, &extraJSON,
+		); err != nil {
+			return nil, fmt.Errorf("BulkGetBlocks: scan: %w", err)
+		}
+		rec.CoinbaseAddr = coinbaseNull.String
+		rec.ZKVMAddr = zkvmNull.String
+		if gasLimitStr != "" {
+			_, _ = fmt.Sscanf(gasLimitStr, "%d", &rec.GasLimit)
+		}
+		if gasUsedStr != "" {
+			_, _ = fmt.Sscanf(gasUsedStr, "%d", &rec.GasUsed)
+		}
+		_ = json.Unmarshal(extraJSON, &rec.ExtraData)
+		results = append(results, &rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("BulkGetBlocks: rows: %w", err)
+	}
+	return results, nil
+}
+
+// GetAccountByDID returns the account with the given DID address.
+// Time: O(1) — DID-indexed lookup (requires index on did_address column)
+func (r *thebeReader) GetAccountByDID(ctx context.Context, did string) (*AccountRecord, error) {
+	var rec AccountRecord
+	err := r.read(ctx, "jmdn:account:did:"+did, TTLAccount, &rec, func() error {
+		return r.scanAccount(r.db.QueryRowContext(ctx, sqlGetAccountByDID, did), &rec)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+// BulkGetAccounts returns accounts for all given addresses in a single SQL ANY() query.
+// Time: O(n) where n = len(addresses) — single SQL ANY() scan.
+func (r *thebeReader) BulkGetAccounts(ctx context.Context, addresses []string) ([]*AccountRecord, error) {
+	rows, err := r.db.QueryContext(ctx, sqlBulkGetAccounts, pq.Array(addresses))
+	if err != nil {
+		return nil, fmt.Errorf("BulkGetAccounts: query: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*AccountRecord
+	for rows.Next() {
+		var rec AccountRecord
+		if err := r.scanAccount(rows, &rec); err != nil {
+			return nil, fmt.Errorf("BulkGetAccounts: scan: %w", err)
+		}
+		results = append(results, &rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("BulkGetAccounts: rows: %w", err)
+	}
+	return results, nil
+}
+
+// ListAccounts returns accounts ordered by creation time. limit <= 0 means no cap.
+// Time: O(n) — sequential scan ordered by created_at; n = rows returned.
+func (r *thebeReader) ListAccounts(ctx context.Context, limit int) ([]*AccountRecord, error) {
+	query := sqlListAccounts
+	args := []any{}
+	if limit > 0 {
+		query += " LIMIT $1"
+		args = append(args, limit)
+	}
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("ListAccounts: query: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*AccountRecord
+	for rows.Next() {
+		var rec AccountRecord
+		if err := r.scanAccount(rows, &rec); err != nil {
+			return nil, fmt.Errorf("ListAccounts: scan: %w", err)
+		}
+		results = append(results, &rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ListAccounts: rows: %w", err)
+	}
+	return results, nil
+}
+
+// GetTransactionsByBlock returns all transactions in the given block ordered by tx_index ASC.
+// Time: O(n) where n = number of transactions in the block.
+func (r *thebeReader) GetTransactionsByBlock(ctx context.Context, blockNumber uint64) ([]*TransactionRecord, error) {
+	rows, err := r.db.QueryContext(ctx, sqlGetTxsByBlock, blockNumber)
+	if err != nil {
+		return nil, fmt.Errorf("GetTransactionsByBlock: query: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*TransactionRecord
+	for rows.Next() {
+		var rec TransactionRecord
+		if err := r.scanTx(rows, &rec); err != nil {
+			return nil, fmt.Errorf("GetTransactionsByBlock: scan: %w", err)
+		}
+		results = append(results, &rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetTransactionsByBlock: rows: %w", err)
+	}
+	return results, nil
 }
 
 // sqlGetContractReceipt fetches a contract receipt by tx_hash (PK).

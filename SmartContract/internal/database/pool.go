@@ -86,7 +86,7 @@ func getOrCreateContractsPool(cfg *Config) (*config.ConnectionPool, error) {
 	}
 
 	// Create the pool
-	pool := config.NewConnectionPool(context.Background(), poolConfig, logger.NamedLogger, poolingConfig)
+	pool := config.NewConnectionPool(context.Background(), poolConfig, logger.NamedLogger, poolingConfig, nil)
 
 	// Store in registry
 	contractsDBPools[poolKey] = pool
