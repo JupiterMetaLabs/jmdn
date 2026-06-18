@@ -66,11 +66,10 @@ func (r *realDbOps) CreateAccount(conn *config.PooledConnection, DIDAddress stri
 }
 
 func (r *realDbOps) GetAccountsConnection() (*config.PooledConnection, error) {
-	return DB_OPs.GetAccountConnectionandPutBack(context.Background())
+	return nil, nil
 }
 
 func (r *realDbOps) PutAccountsConnection(conn *config.PooledConnection) {
-	DB_OPs.PutAccountsConnection(conn)
 }
 
 // Account and DID Server implements the DIDService

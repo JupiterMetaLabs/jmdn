@@ -60,17 +60,7 @@ func InitDIDPropagation(existingClient *config.PooledConnection) error {
 			accountsMutex.Unlock()
 			broadcastLogger().Info(context.Background(), "DID propagation system initialized with existing database client")
 		} else {
-			// Create accounts database client if none provided
-			ctx := context.Background()
-			client, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-			if err != nil {
-				initErr = fmt.Errorf("failed to create accounts database client: %w", err)
-				return
-			}
-
-			accountsMutex.Lock()
-			accountsClient = client
-			accountsMutex.Unlock()
+			// No existing client provided; DB_OPs calls use globalThebeHandle via getHandle(nil).
 			broadcastLogger().Info(context.Background(), "DID propagation system initialized with new database client")
 		}
 	})

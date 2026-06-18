@@ -943,7 +943,7 @@ func (s *ServiceImpl) TraceTransaction(ctx context.Context, txHash string) (json
 		txHash = "0x" + txHash
 	}
 
-	// Fetch the original transaction from ImmuDB
+	// Fetch the original transaction from ThebeDB
 	zkTx, err := DB_OPs.GetTransactionByHash(nil, txHash)
 	if err != nil {
 		return nil, fmt.Errorf("TraceTransaction: tx not found: %w", err)

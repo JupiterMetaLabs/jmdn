@@ -278,18 +278,7 @@ func rollbackBalances(originalBalances map[common.Address]string, accountsClient
 // For smart contracts, a StateDB is created and changes are committed based on commitToDB flag.
 // For regular transfers, DB_OPs is used directly (always commits).
 func processTransaction(tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection, commitToDB bool) (*ContractDeploymentInfo, error) {
-	// First check the connection
-	if accountsClient == nil {
-		logger().Error(context.Background(), "Function: messaging.processTransaction - accountsClient is nil", errors.New("accountsClient is nil"))
-		return nil, fmt.Errorf("accountsClient is nil")
-	}
-
-	// Confirm the DB connection
-	err := DB_OPs.EnsureDBConnection(accountsClient)
-	if err != nil {
-		logger().Error(context.Background(), "Failed to establish database connection", err)
-		return nil, fmt.Errorf("failed to establish database connection: %w", err)
-	}
+	var err error
 
 	// ========== SMART CONTRACT DETECTION ==========
 	// Check if this is a contract deployment (To == nil) or execution (code exists at To)

@@ -13,7 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 
-	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
@@ -49,16 +48,8 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 	// For now, we'll use the defaultdb logger after connection
 	startTime := time.Now().UTC()
 
-	// Create ImmuDB client
-	defaultdb, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
-	if err != nil {
-		return nil, err
-	}
-
-	accountsdb, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
-	if err != nil {
-		return nil, err
-	}
+	// Connections are now managed by the global ThebeDB handle (getHandle).
+	// No pool acquisition needed here.
 
 	// Create span for server initialization
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.NewImmuDBServer")
@@ -89,8 +80,6 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 
 	// Create server instance
 	server := &ImmuDBServer{
-		defaultdb:  *defaultdb,
-		accountsdb: *accountsdb,
 		router:     router,
 		gatekeeper: middleware,
 		tlsLoader:  tlsLoader,
@@ -115,8 +104,6 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 }
 
 func CloseImmuDBServer(server *ImmuDBServer) {
-	DB_OPs.PutMainDBConnection(&server.defaultdb)
-	DB_OPs.PutAccountsConnection(&server.accountsdb)
 	server.Close()
 }
 
@@ -367,32 +354,12 @@ func (s *ImmuDBServer) Close() {
 			attribute.String("function", "ExplorerAPI.Close"),
 		)
 
-		logger().Info(spanCtx, "Closing the MainDB Connection in the API.go File",
+		logger().Info(spanCtx, "Closing the ExplorerAPI server",
 			ion.String("database", config.DBName),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
 			ion.String("topic", TOPIC),
 			ion.String("function", "ExplorerAPI.Close"))
-		DB_OPs.PutAccountsConnection(&s.defaultdb)
-	}
-	if s.accountsdb.Client != nil {
-		loggerCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		spanCtx, span := logger().Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.Close")
-		defer span.End()
-
-		span.SetAttributes(
-			attribute.String("database", config.AccountsDBName),
-			attribute.String("function", "ExplorerAPI.Close"),
-		)
-
-		logger().Info(spanCtx, "Closing the AccountsDB Connection in the API.go File",
-			ion.String("database", config.AccountsDBName),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "ExplorerAPI.Close"))
-		DB_OPs.PutMainDBConnection(&s.accountsdb)
 	}
 }
 

@@ -1,4 +1,7 @@
+//go:build ignore
+
 // cmd/immudb-to-thebe: one-shot migration tool.
+// Tagged //go:build ignore — ImmuDB pools no longer exist post-migration.
 // Reads all blocks and accounts from ImmuDB and commits them to ThebeDB
 // using the ThebeGateway interfaces defined in DB_OPs/thebegateway.
 //

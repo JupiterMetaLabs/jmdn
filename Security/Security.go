@@ -95,30 +95,7 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 		attribute.String("block_hash", zkBlock.BlockHash.Hex()),
 	)
 
-	// Get connections ONCE for all transaction validations
-	// This reduces connection usage from N×2 to just 2 per block validation
-	ctx, cancelConn := context.WithTimeout(traceCtx, 60*time.Second)
-	defer cancelConn()
-
-	accountsConn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "connection_failed"))
-		logger().Error(traceCtx, "Failed to get accounts connection for ZKBlock validation", err,
-			ion.String("function", "Security.CheckZKBlockValidation"))
-		return false, fmt.Errorf("failed to get accounts connection for ZKBlock validation: %w", err)
-	}
-	defer DB_OPs.PutAccountsConnection(accountsConn)
-
-	mainDBConn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "connection_failed"))
-		logger().Error(traceCtx, "Failed to get main DB connection for ZKBlock validation", err,
-			ion.String("function", "Security.CheckZKBlockValidation"))
-		return false, fmt.Errorf("failed to get main DB connection for ZKBlock validation: %w", err)
-	}
-	defer DB_OPs.PutMainDBConnection(mainDBConn)
+	// Connections managed by global ThebeDB handle — no pool acquisition needed.
 
 	/*
 		// Load all the accounts into the cache
@@ -142,7 +119,7 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 	}
 
 	// Load all accounts into the cache at once
-	security_cache.LoadAccounts(txValidationCtx, accountsConn, accountsSet)
+	security_cache.LoadAccounts(txValidationCtx, nil, accountsSet)
 
 	validatedCount := 0
 	for i, tx := range zkBlock.Transactions {
@@ -153,7 +130,7 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 		)
 
 		// Pass SecurityCache instead of accountsConn
-		status, err := allChecksWithConn(&tx, security_cache, mainDBConn, txSpanCtx)
+		status, err := allChecksWithConn(&tx, security_cache, nil, txSpanCtx)
 		if err != nil {
 			txSpan.RecordError(err)
 			txSpan.SetAttributes(attribute.String("status", "validation_failed"))
@@ -270,30 +247,6 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 		)
 	}
 
-	ctx, cancelConn := context.WithTimeout(traceCtx, 30*time.Second)
-	defer cancelConn()
-
-	// Get connections for single transaction validation
-	accountsConn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "connection_failed"))
-		logger().Error(traceCtx, "Failed to get accounts connection", err,
-			ion.String("function", "Security.AllChecks"))
-		return false, fmt.Errorf("failed to get accounts connection: %w", err)
-	}
-	defer DB_OPs.PutAccountsConnection(accountsConn)
-
-	mainDBConn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "connection_failed"))
-		logger().Error(traceCtx, "Failed to get main DB connection", err,
-			ion.String("function", "Security.AllChecks"))
-		return false, fmt.Errorf("failed to get main DB connection: %w", err)
-	}
-	defer DB_OPs.PutMainDBConnection(mainDBConn)
-
 	// Collect all unique addresses from transactions
 	accountsSet := DB_OPs.NewAccountsSet()
 	accountsSet.Add(*fromAddress)
@@ -301,9 +254,9 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 		accountsSet.Add(*toAddress)
 	}
 
-	security_cache.LoadAccounts(loggerCtx, accountsConn, accountsSet)
+	security_cache.LoadAccounts(loggerCtx, nil, accountsSet)
 
-	result, err := allChecksWithConn(tx, security_cache, mainDBConn, traceCtx)
+	result, err := allChecksWithConn(tx, security_cache, nil, traceCtx)
 
 	duration := time.Since(startTime).Seconds()
 	if err != nil {
@@ -345,15 +298,6 @@ func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, ma
 			ion.String("function", "Security.allChecksWithCache"))
 		return false, err
 	}
-	if mainDBConn == nil || mainDBConn.Client == nil {
-		err := errors.New("main DB connection is nil or invalid")
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "validation_failed"))
-		logger().Error(spanCtx, "Main DB connection is nil or invalid", err,
-			ion.String("function", "Security.allChecksWithCache"))
-		return false, err
-	}
-
 	if tx != nil {
 		toAttr := "<contract creation>"
 		if tx.To != nil {

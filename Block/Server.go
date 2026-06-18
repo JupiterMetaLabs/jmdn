@@ -658,35 +658,10 @@ func getBlockByNumber(c *gin.Context) {
 		ion.String("topic", BLOCKTOPIC),
 		ion.String("function", "BlockServer.getBlockByNumber"))
 
-	ctx, cancel := context.WithTimeout(spanCtx, 15*time.Second)
+	_, cancel := context.WithTimeout(spanCtx, 15*time.Second)
 	defer cancel()
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "db_connection_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(spanCtx, "Database connection failed",
-			err,
-			ion.Int64("block_number", int64(blockNumber)),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getBlockByNumber"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
-		return
-	}
-	defer func() {
-		logger().Info(spanCtx, "Putting database connection back to pool",
-			ion.String("database", "MainDB Connection"),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getBlockByNumber"))
-		DB_OPs.PutMainDBConnection(mainDBClient)
-	}()
 
-	block, err := DB_OPs.GetZKBlockByNumber(mainDBClient, blockNumber)
+	block, err := DB_OPs.GetZKBlockByNumber(nil, blockNumber)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "block_not_found"))
@@ -739,28 +714,10 @@ func getBlockByHash(c *gin.Context) {
 		ion.String("topic", BLOCKTOPIC),
 		ion.String("function", "BlockServer.getBlockByHash"))
 
-	ctx, cancel := context.WithTimeout(spanCtx, 15*time.Second)
+	_, cancel := context.WithTimeout(spanCtx, 15*time.Second)
 	defer cancel()
 
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "db_connection_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(spanCtx, "Database connection failed",
-			err,
-			ion.String("block_hash", blockHash),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getBlockByHash"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
-		return
-	}
-	defer DB_OPs.PutMainDBConnection(mainDBClient)
-
-	block, err := DB_OPs.GetZKBlockByHash(mainDBClient, blockHash)
+	block, err := DB_OPs.GetZKBlockByHash(nil, blockHash)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "block_not_found"))
@@ -813,28 +770,10 @@ func getTransactionInfo(c *gin.Context) {
 		ion.String("topic", TOPIC),
 		ion.String("function", "BlockServer.getTransactionInfo"))
 
-	ctx, cancel := context.WithTimeout(spanCtx, 15*time.Second)
+	_, cancel := context.WithTimeout(spanCtx, 15*time.Second)
 	defer cancel()
 
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "db_connection_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(spanCtx, "Database connection failed",
-			err,
-			ion.String("tx_hash", txHash),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", TOPIC),
-			ion.String("function", "BlockServer.getTransactionInfo"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
-		return
-	}
-	defer DB_OPs.PutMainDBConnection(mainDBClient)
-
-	block, err := DB_OPs.GetTransactionBlock(mainDBClient, txHash)
+	block, err := DB_OPs.GetTransactionBlock(nil, txHash)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "transaction_not_found"))
@@ -922,27 +861,10 @@ func getLatestBlock(c *gin.Context) {
 		ion.String("topic", BLOCKTOPIC),
 		ion.String("function", "BlockServer.getLatestBlock"))
 
-	ctx, cancel := context.WithTimeout(spanCtx, 15*time.Second)
+	_, cancel := context.WithTimeout(spanCtx, 15*time.Second)
 	defer cancel()
 
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		span.RecordError(err)
-		span.SetAttributes(attribute.String("status", "db_connection_failed"))
-		duration := time.Since(startTime).Seconds()
-		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(spanCtx, "Database connection failed",
-			err,
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", FILENAME),
-			ion.String("topic", BLOCKTOPIC),
-			ion.String("function", "BlockServer.getLatestBlock"))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
-		return
-	}
-	defer DB_OPs.PutMainDBConnection(mainDBClient)
-
-	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(mainDBClient)
+	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(nil)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "get_latest_failed"))
@@ -973,7 +895,7 @@ func getLatestBlock(c *gin.Context) {
 
 	span.SetAttributes(attribute.Int64("latest_block_number", int64(latestBlockNumber)))
 
-	block, err := DB_OPs.GetZKBlockByNumber(mainDBClient, latestBlockNumber)
+	block, err := DB_OPs.GetZKBlockByNumber(nil, latestBlockNumber)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "get_block_data_failed"))

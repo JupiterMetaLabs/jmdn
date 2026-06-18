@@ -314,23 +314,6 @@ func HandleBlockStream(stream network.Stream) {
 				}
 			}
 
-			// Create DB clients for processing
-			mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-			if err != nil {
-				broadcastLogger().Error(ctx, "Failed to create main DB client", err)
-				return fmt.Errorf("failed to create main DB client: %w", err)
-			}
-
-			accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-			if err != nil {
-				broadcastLogger().Error(ctx, "Failed to create accounts DB client", err)
-				return fmt.Errorf("failed to create accounts DB client: %w", err)
-			}
-			defer func() {
-				DB_OPs.PutMainDBConnection(mainDBClient)
-				DB_OPs.PutAccountsConnection(accountsClient)
-			}()
-
 			broadcastLogger().Info(ctx, "Processing block transactions",
 				ion.String("block_hash", msg.Block.BlockHash.Hex()),
 				ion.Uint64("block_number", msg.Block.BlockNumber))
@@ -344,7 +327,7 @@ func HandleBlockStream(stream network.Stream) {
 
 			// Process all transactions in the block atomically with rollback capability.
 			// Receiver nodes discard the deployments slice — only the sequencer propagates contracts.
-			if _, err := BlockProcessing.ProcessBlockTransactions(msg.Block, accountsClient, true); err != nil {
+			if _, err := BlockProcessing.ProcessBlockTransactions(msg.Block, nil, true); err != nil {
 				broadcastLogger().Error(ctx, "Block processing failed - not storing block", err,
 					ion.String("block_hash", msg.Block.BlockHash.Hex()))
 				return fmt.Errorf("block processing failed - not storing block: %w", err)
@@ -354,7 +337,7 @@ func HandleBlockStream(stream network.Stream) {
 				ion.String("block_hash", msg.Block.BlockHash.Hex()))
 
 			// Store the validated and processed block in main DB
-			if err := DB_OPs.StoreZKBlock(mainDBClient, msg.Block); err != nil {
+			if err := DB_OPs.StoreZKBlock(nil, msg.Block); err != nil {
 				broadcastLogger().Error(ctx, "Failed to store block in database", err,
 					ion.String("block_hash", msg.Block.BlockHash.Hex()))
 				return fmt.Errorf("failed to store block in database: %w", err)

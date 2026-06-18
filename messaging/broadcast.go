@@ -857,26 +857,9 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		return nil, fmt.Errorf("cannot process block %s without BLS results to verify consensus", block.BlockHash.Hex())
 	}
 
-	// Create DB clients for processing
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
-	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to get main DB connection", err)
-		return nil, fmt.Errorf("failed to get main DB connection: %w", err)
-	}
-
-	accountsClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
-	if err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to get accounts DB connection", err)
-		return nil, fmt.Errorf("failed to get accounts DB connection: %w", err)
-	}
-	defer func() {
-		DB_OPs.PutMainDBConnection(mainDBClient)
-		DB_OPs.PutAccountsConnection(accountsClient)
-	}()
-
 	// Store the block in main DB FIRST to ensure it's valid before processing transactions
 	// This prevents balance updates for invalid blocks that fail to store
-	if err := DB_OPs.StoreZKBlock(mainDBClient, block); err != nil {
+	if err := DB_OPs.StoreZKBlock(nil, block); err != nil {
 		broadcastLogger().Error(context.Background(), "Failed to store block in database - skipping transaction processing", err,
 			ion.String("block_hash", block.BlockHash.Hex()),
 			ion.Uint64("block_number", block.BlockNumber))
@@ -885,7 +868,7 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 
 	// Only process transactions if block storage succeeded
 	// This ensures balance updates only happen for valid, stored blocks
-	deployments, err := BlockProcessing.ProcessBlockTransactions(block, accountsClient, true)
+	deployments, err := BlockProcessing.ProcessBlockTransactions(block, nil, true)
 	if err != nil {
 		broadcastLogger().Error(context.Background(), "Block transaction processing failed after block storage", err,
 			ion.String("block_hash", block.BlockHash.Hex()))
