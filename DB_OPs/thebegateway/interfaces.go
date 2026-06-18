@@ -58,6 +58,12 @@ type ThebeGateway interface {
 	WriteContractStorage(ctx context.Context, rec *ContractStorageRecord) error
 	WriteContractMeta(ctx context.Context, rec *ContractMetaRecord) error
 	WriteContractReceipt(ctx context.Context, rec *ContractReceiptRecord) error
+
+	// Tx processing flag — KV direct write.
+	// SetTxProcessing marks txHash as in-flight (value="-1") in BadgerDB.
+	// ClearTxProcessing removes the flag once the tx is confirmed or dropped.
+	SetTxProcessing(ctx context.Context, txHash string) error
+	ClearTxProcessing(ctx context.Context, txHash string) error
 }
 
 // ThebeReader — read surface. Read-through cache: cache hit → return; miss → SQL/KV → cache SET with TTL → return.
@@ -84,6 +90,9 @@ type ThebeReader interface {
 	GetContractStorage(ctx context.Context, address string, slot []byte) (*ContractStorageRecord, error)
 	GetContractMeta(ctx context.Context, address string) (*ContractMetaRecord, error)
 	GetContractReceipt(ctx context.Context, txHash string) (*ContractReceiptRecord, error)
+
+	// IsTxProcessing returns true if txHash has an in-flight processing flag in KV.
+	IsTxProcessing(ctx context.Context, txHash string) (bool, error)
 }
 
 // OutboxStore — WAL persistence for failed ThebeGateway writes.

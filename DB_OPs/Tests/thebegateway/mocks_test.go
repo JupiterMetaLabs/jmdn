@@ -269,6 +269,12 @@ func (m *spyGateway) WriteContractMeta(_ context.Context, r *thebegateway.Contra
 func (m *spyGateway) WriteContractReceipt(_ context.Context, r *thebegateway.ContractReceiptRecord) error {
 	return m.rec("WriteContractReceipt", r)
 }
+func (m *spyGateway) SetTxProcessing(_ context.Context, txHash string) error {
+	return m.rec("SetTxProcessing", txHash)
+}
+func (m *spyGateway) ClearTxProcessing(_ context.Context, txHash string) error {
+	return m.rec("ClearTxProcessing", txHash)
+}
 
 func (m *spyGateway) callCount() int {
 	m.mu.Lock()

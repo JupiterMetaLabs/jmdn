@@ -162,6 +162,21 @@ func (h *compositeHandle) SetTransactionStatus(ctx context.Context, txHash strin
 	return h.txs.SetTransactionStatus(ctx, txHash, status)
 }
 
+// SetTxProcessing delegates to the cache-decorated TxStore.
+func (h *compositeHandle) SetTxProcessing(ctx context.Context, txHash string) error {
+	return h.txs.SetTxProcessing(ctx, txHash)
+}
+
+// ClearTxProcessing delegates to the cache-decorated TxStore.
+func (h *compositeHandle) ClearTxProcessing(ctx context.Context, txHash string) error {
+	return h.txs.ClearTxProcessing(ctx, txHash)
+}
+
+// IsTxProcessing delegates to the cache-decorated TxStore.
+func (h *compositeHandle) IsTxProcessing(ctx context.Context, txHash string) (bool, error) {
+	return h.txs.IsTxProcessing(ctx, txHash)
+}
+
 // — ZKProofStore —
 
 // StoreZKBlock delegates to the cache-decorated ZKProofStore.

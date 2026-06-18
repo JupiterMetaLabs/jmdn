@@ -241,3 +241,21 @@ func (g *thebeGateway) WriteContractReceipt(ctx context.Context, rec *ContractRe
 	return g.write(ctx, NamespaceContractReceipt, "WriteContractReceipt", rec,
 		TransactionKey(rec.TxHash), TTLTransaction)
 }
+
+// SetTxProcessing writes a "-1" sentinel to KV marking txHash as in-flight.
+// Time: O(1) — PutDerived (mutable, will be cleared on confirmation/drop)
+func (g *thebeGateway) SetTxProcessing(_ context.Context, txHash string) error {
+	if err := g.kv.PutDerived(kvTxProcessingKey(txHash), kvTxProcessingValue); err != nil {
+		return fmt.Errorf("SetTxProcessing(%s): %w", txHash, err)
+	}
+	return nil
+}
+
+// ClearTxProcessing removes the in-flight flag for txHash by writing an empty tombstone.
+// Time: O(1) — PutDerived (overwrites sentinel with empty value)
+func (g *thebeGateway) ClearTxProcessing(_ context.Context, txHash string) error {
+	if err := g.kv.PutDerived(kvTxProcessingKey(txHash), []byte{}); err != nil {
+		return fmt.Errorf("ClearTxProcessing(%s): %w", txHash, err)
+	}
+	return nil
+}

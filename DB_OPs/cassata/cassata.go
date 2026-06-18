@@ -13,6 +13,7 @@ import (
 	"time"
 
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
 	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
@@ -609,4 +610,117 @@ func (c *Cassata) ListContractStorageByAddress(ctx context.Context, address stri
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// ── Contract registry write + read path ──────────────────────────
+// Writes go through ThebeDB.Append → projector → contracts SQL table.
+// Reads query the contracts table directly.
+
+func (c *Cassata) IngestContractRegistry(ctx context.Context, r ContractRegistryResult) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("cassata.IngestContractRegistry marshal: %w", err)
+	}
+	return c.appendRecord("contract_registry", "contract_registry:"+r.Address, v)
+}
+
+func (c *Cassata) GetContractFromRegistry(ctx context.Context, address string) (*ContractRegistryResult, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `
+		SELECT address, deployer, name, abi, bytecode_hash,
+		       deploy_block, deploy_time, deploy_tx_hash,
+		       code_size, contract_type, state, metadata, created_at
+		FROM contracts WHERE address = $1`, address)
+	var r ContractRegistryResult
+	if err := row.Scan(
+		&r.Address, &r.Deployer, &r.Name, &r.ABI, &r.BytecodeHash,
+		&r.DeployBlock, &r.DeployTime, &r.DeployTxHash,
+		&r.CodeSize, &r.ContractType, &r.State, &r.Metadata, &r.CreatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("cassata.GetContractFromRegistry: %w", err)
+	}
+	return &r, nil
+}
+
+func (c *Cassata) ListContractsFromRegistry(ctx context.Context, opts ListContractOptions) ([]ContractRegistryResult, error) {
+	limit := int(opts.Limit)
+	if limit <= 0 {
+		limit = 50
+	}
+
+	// Build a simple parameterised query. We use explicit conditions rather
+	// than fmt.Sprintf to avoid SQL injection — all filtering is via $N params.
+	baseQ := `
+		SELECT address, deployer, name, abi, bytecode_hash,
+		       deploy_block, deploy_time, deploy_tx_hash,
+		       code_size, contract_type, state, metadata, created_at
+		FROM contracts
+		WHERE 1=1`
+
+	args := []interface{}{}
+	paramN := 1
+
+	if opts.Deployer != "" {
+		baseQ += fmt.Sprintf(" AND deployer = $%d", paramN)
+		args = append(args, opts.Deployer)
+		paramN++
+	}
+	if opts.FromBlock > 0 {
+		baseQ += fmt.Sprintf(" AND deploy_block >= $%d", paramN)
+		args = append(args, opts.FromBlock)
+		paramN++
+	}
+	if opts.ToBlock > 0 {
+		baseQ += fmt.Sprintf(" AND deploy_block <= $%d", paramN)
+		args = append(args, opts.ToBlock)
+		paramN++
+	}
+	if opts.FromTime > 0 {
+		baseQ += fmt.Sprintf(" AND deploy_time >= $%d", paramN)
+		args = append(args, opts.FromTime)
+		paramN++
+	}
+	if opts.ToTime > 0 {
+		baseQ += fmt.Sprintf(" AND deploy_time <= $%d", paramN)
+		args = append(args, opts.ToTime)
+		paramN++
+	}
+
+	baseQ += fmt.Sprintf(" ORDER BY deploy_time DESC LIMIT $%d OFFSET $%d", paramN, paramN+1)
+	args = append(args, limit, opts.Offset)
+
+	rows, err := c.db.SQL.GetDB().QueryContext(ctx, baseQ, args...)
+	if err != nil {
+		return nil, fmt.Errorf("cassata.ListContractsFromRegistry: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ContractRegistryResult
+	for rows.Next() {
+		var r ContractRegistryResult
+		if err := rows.Scan(
+			&r.Address, &r.Deployer, &r.Name, &r.ABI, &r.BytecodeHash,
+			&r.DeployBlock, &r.DeployTime, &r.DeployTxHash,
+			&r.CodeSize, &r.ContractType, &r.State, &r.Metadata, &r.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (c *Cassata) CountContracts(ctx context.Context) (uint64, error) {
+	row := c.db.SQL.GetDB().QueryRowContext(ctx, `SELECT COUNT(*) FROM contracts`)
+	var n uint64
+	if err := row.Scan(&n); err != nil {
+		return 0, fmt.Errorf("cassata.CountContracts: %w", err)
+	}
+	return n, nil
+}
+
+// KV returns the underlying BadgerDB store for direct derived-key reads/writes.
+// Used by KVStateRepository / KVStateBatch for hot-path EVM state access.
+// Callers must NOT write to canonical log keys (use Append for that).
+func (c *Cassata) KV() kv.Store {
+	return c.db.KV
 }

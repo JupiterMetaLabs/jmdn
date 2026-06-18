@@ -31,15 +31,12 @@ func NewMerkleProof() MerkleProofInterface {
 }
 
 func (m *MerkleProof) GetMainDBConnection() *MerkleProof {
-	dbconn, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
-	if err != nil {
-		return &MerkleProof{}
-	}
-	return &MerkleProof{mainDBClient: dbconn}
+	// Pool acquisition removed — getHandle(nil) uses the global ThebeDB handle.
+	return &MerkleProof{}
 }
 
 func (m *MerkleProof) PutMainDBConnection() {
-	DB_OPs.PutMainDBConnection(m.mainDBClient)
+	// No-op: connection lifecycle is now managed by the global ThebeDB handle.
 }
 
 func (m *MerkleProof) GenerateMerkleTree(startBlock, endBlock int64) (*merkletree.MerkleTreeSnapshot, error) {

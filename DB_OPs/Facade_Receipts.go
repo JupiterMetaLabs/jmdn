@@ -2,7 +2,6 @@ package DB_OPs
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"gossipnode/config"
 	"gossipnode/config/utils"
@@ -14,30 +13,8 @@ import (
 
 // GetReceiptByHash retrieves a transaction receipt by its hash
 func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*config.Receipt, error) {
-	var err error
-	var shouldReturnConnection bool = false
-
-	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	// Get connection if not provided
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
-		}
-		shouldReturnConnection = true
-
-	}
-
-	// Return connection to pool when done
-	if shouldReturnConnection {
-		defer func() {
-
-			PutMainDBConnection(mainDBClient)
-		}()
-	}
 
 	// Normalize hash - ensure it has 0x prefix (keys are stored with 0x prefix)
 	normalizedHash := hash
@@ -71,21 +48,12 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 		return receipt, nil
 	}
 
-	// Transaction not found - SECOND: Check if tx_processing = -1
-	processingKey := fmt.Sprintf("tx_processing:%s", normalizedHash)
-	processing, err := Exists(mainDBClient, processingKey)
-	if err == nil && processing {
-		// Read the value to check if it's -1
-		processingValueBytes, readErr := Read(mainDBClient, processingKey)
-		if readErr == nil && len(processingValueBytes) > 0 {
-			var processingValue int64
-			if jsonErr := json.Unmarshal(processingValueBytes, &processingValue); jsonErr == nil {
-				if processingValue == -1 {
-
-					// Return nil receipt to indicate result should be null
-					return nil, nil
-				}
-			}
+	// Transaction not found - SECOND: Check KV for in-flight processing flag ("-1" sentinel).
+	// SetTxProcessing writes this flag when a tx enters the mempool/processing queue.
+	// If the flag is present, the tx is still being processed → return null receipt (not an error).
+	if h, hErr := getHandle(mainDBClient); hErr == nil {
+		if processing, _ := h.IsTxProcessing(ctx, normalizedHash); processing {
+			return nil, nil
 		}
 	}
 
@@ -165,63 +133,14 @@ func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *c
 }
 
 func MakeReceiptRoot(mainDBClient *config.PooledConnection, receipts []*config.Receipt) ([]byte, error) {
-	var err error
-	var shouldReturnConnection bool = false
-
-	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
-		}
-		shouldReturnConnection = true
-
-	}
-
 	receiptRoot, err := utils.GenerateReceiptRoot(receipts)
 	if err != nil {
-
 		return nil, fmt.Errorf("failed to generate receipt root: %w", err)
 	}
-
-	if shouldReturnConnection {
-		defer func() {
-
-			PutMainDBConnection(mainDBClient)
-		}()
-	}
-
 	return receiptRoot, nil
-
 }
 
 func GetReceiptsofBlock(mainDBClient *config.PooledConnection, blockNumber uint64) ([]*config.Receipt, error) {
-	var err error
-	var shouldReturnConnection bool = false
-
-	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get main DB connection: %w", err)
-		}
-		shouldReturnConnection = true
-
-	}
-
-	if shouldReturnConnection {
-		defer func() {
-
-			PutMainDBConnection(mainDBClient)
-		}()
-	}
-
 	// Get Transactions of block and then get receipts for each transaction
 	transactions, err := GetTransactionsOfBlock(mainDBClient, blockNumber)
 	if err != nil {

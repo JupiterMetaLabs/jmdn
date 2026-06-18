@@ -8,32 +8,15 @@ import (
 	"gossipnode/config"
 )
 
-// GetMultipleAccounts retrieves multiple accounts from the DB.
-// NOTE: This was backed by ImmuDB GetAll. Migrated to ThebeDB in Phase 6 —
-// use store.AccountStore.BulkGetAccounts instead. Returns error until migrated.
+// GetMultipleAccounts retrieves multiple accounts from ThebeDB in a single bulk SQL read.
+// PooledConnection may be nil — getHandle falls back to the global ThebeDB handle.
 func GetMultipleAccounts(PooledConnection *config.PooledConnection, accounts *AccountsSet) (map[string]*Account, error) {
 	if len(accounts.Accounts) == 0 {
 		return map[string]*Account{}, nil
 	}
 
-	// 1. Setup Context and Connection
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	var err error
-	var shouldReturnConnection bool
-
-	if PooledConnection == nil || PooledConnection.Client == nil {
-		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get connection: %w", err)
-		}
-		shouldReturnConnection = true
-	}
-
-	if shouldReturnConnection {
-		defer PutAccountsConnection(PooledConnection)
-	}
 
 	h, err := getHandle(PooledConnection)
 	if err != nil {

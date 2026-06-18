@@ -10,22 +10,8 @@ import (
 
 // GetTransactionsOfBlock retrieves all transactions for a given block number.
 func GetTransactionsOfBlock(mainDBClient *config.PooledConnection, blockNumber uint64) ([]*config.Transaction, error) {
-	var err error
-	var shouldReturnConnection = false
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	_, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("GetTransactionsOfBlock: failed to get main DB connection: %w", err)
-		}
-		shouldReturnConnection = true
-	}
-	if shouldReturnConnection {
-		defer PutMainDBConnection(mainDBClient)
-	}
 
 	zkblock, err := GetZKBlockByNumber(mainDBClient, blockNumber)
 	if err != nil {

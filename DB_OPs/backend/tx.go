@@ -63,13 +63,41 @@ func (b *thebeBackend) GetTransactionsByAddress(ctx context.Context, address str
 // Time: O(1) — single gateway write.
 func (b *thebeBackend) SetTransactionStatus(ctx context.Context, txHash string, status int) error {
 	rec := &thebegateway.ContractReceiptRecord{
-		TxHash:  txHash,
-		Status:  int16(status),
+		TxHash: txHash,
+		Status: int16(status),
 	}
 	if err := b.gw.WriteContractReceipt(ctx, rec); err != nil {
 		return fmt.Errorf("backend.SetTransactionStatus(%s, %d): %w", txHash, status, err)
 	}
 	return nil
+}
+
+// SetTxProcessing marks txHash as in-flight in BadgerDB KV ("-1" sentinel).
+// Time: O(1) — single KV PutDerived via gateway.
+func (b *thebeBackend) SetTxProcessing(ctx context.Context, txHash string) error {
+	if err := b.gw.SetTxProcessing(ctx, txHash); err != nil {
+		return fmt.Errorf("backend.SetTxProcessing(%s): %w", txHash, err)
+	}
+	return nil
+}
+
+// ClearTxProcessing removes the in-flight flag for txHash (empty tombstone in KV).
+// Time: O(1) — single KV PutDerived via gateway.
+func (b *thebeBackend) ClearTxProcessing(ctx context.Context, txHash string) error {
+	if err := b.gw.ClearTxProcessing(ctx, txHash); err != nil {
+		return fmt.Errorf("backend.ClearTxProcessing(%s): %w", txHash, err)
+	}
+	return nil
+}
+
+// IsTxProcessing returns true if txHash has an active in-flight flag in KV.
+// Time: O(1) — single KV Get via reader.
+func (b *thebeBackend) IsTxProcessing(ctx context.Context, txHash string) (bool, error) {
+	processing, err := b.r.IsTxProcessing(ctx, txHash)
+	if err != nil {
+		return false, fmt.Errorf("backend.IsTxProcessing(%s): %w", txHash, err)
+	}
+	return processing, nil
 }
 
 // toTransactionRecord converts config.Transaction → thebegateway.TransactionRecord.

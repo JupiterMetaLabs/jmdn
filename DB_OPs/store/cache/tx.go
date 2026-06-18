@@ -98,3 +98,18 @@ func (s *cachedTxStore) SetTransactionStatus(ctx context.Context, txHash string,
 	_ = s.c.Delete(ctx, Tx(txHash))
 	return nil
 }
+
+// SetTxProcessing delegates directly — KV-backed, no cache layer.
+func (s *cachedTxStore) SetTxProcessing(ctx context.Context, txHash string) error {
+	return s.inner.SetTxProcessing(ctx, txHash)
+}
+
+// ClearTxProcessing delegates directly — KV-backed, no cache layer.
+func (s *cachedTxStore) ClearTxProcessing(ctx context.Context, txHash string) error {
+	return s.inner.ClearTxProcessing(ctx, txHash)
+}
+
+// IsTxProcessing delegates directly — KV-backed, no cache layer.
+func (s *cachedTxStore) IsTxProcessing(ctx context.Context, txHash string) (bool, error) {
+	return s.inner.IsTxProcessing(ctx, txHash)
+}

@@ -221,6 +221,47 @@ CREATE INDEX IF NOT EXISTS idx_l1_finality_metadata
     ON l1_finality USING GIN(metadata) WHERE metadata IS NOT NULL;
 `
 
+// migrationSQL003 is the Phase 8 DDL for the contracts registry table.
+// Stores deployed-contract metadata (deployer, ABI, deploy block/tx) for
+// the ListContracts / GetContract registry queries. Code/storage/nonce/meta
+// live in KV — this table is query-index only.
+const migrationSQL003 = `
+-- ================================================================
+-- ThebeDB - JMDN PostgreSQL Projection Schema
+-- Migration: 000003_contract_registry (UP)
+-- Applied by: JMDNProfile.GetMigration() via ThebeDB profile system
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS contracts (
+    address          CHAR(42)      PRIMARY KEY,
+    deployer         CHAR(42)      NOT NULL,
+    name             TEXT          NOT NULL DEFAULT '',
+    abi              TEXT          NOT NULL DEFAULT '',
+    bytecode_hash    CHAR(66)      NOT NULL,
+    deploy_block     BIGINT        NOT NULL,
+    deploy_time      BIGINT        NOT NULL,
+    deploy_tx_hash   CHAR(66)      NOT NULL,
+    code_size        BIGINT        NOT NULL DEFAULT 0,
+    contract_type    TEXT          NOT NULL DEFAULT 'custom',
+    state            TEXT          NOT NULL DEFAULT 'active',
+    metadata         JSONB         NOT NULL DEFAULT '{}'::jsonb,
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_contracts_deployer
+    ON contracts(deployer);
+
+CREATE INDEX IF NOT EXISTS idx_contracts_deploy_block
+    ON contracts(deploy_block DESC);
+
+CREATE INDEX IF NOT EXISTS idx_contracts_deploy_time
+    ON contracts(deploy_time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_contracts_state
+    ON contracts(state);
+`
+
 // migrationSQL002 is the Phase 7 DDL for the contract_receipts table.
 // Contract code/nonce/storage/meta live in BadgerDB KV — not in SQL.
 // Applied via GetMigration() which concatenates all migration constants.

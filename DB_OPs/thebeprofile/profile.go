@@ -50,10 +50,10 @@ type JMDNProfile struct {
 	handlers map[string]applyFunc
 }
 
-// NewJMDNProfile constructs a JMDNProfile with all 7 namespace handlers registered.
+// NewJMDNProfile constructs a JMDNProfile with all 8 namespace handlers registered.
 func NewJMDNProfile() *JMDNProfile {
 	p := &JMDNProfile{
-		handlers: make(map[string]applyFunc, 7),
+		handlers: make(map[string]applyFunc, 8),
 	}
 	p.handlers["account"] = applyAccount
 	p.handlers["block"] = applyBlock
@@ -62,6 +62,7 @@ func NewJMDNProfile() *JMDNProfile {
 	p.handlers["zk"] = applyZKProof
 	p.handlers["l1_finality"] = applyL1Finality
 	p.handlers[string(thebegateway.NamespaceContractReceipt)] = applyContractReceipt
+	p.handlers["contract_registry"] = applyContractRegistry
 	return p
 }
 
@@ -71,14 +72,14 @@ func (p *JMDNProfile) Name() string { return "jmdn" }
 // Namespaces returns the exact Namespace values this profile handles.
 // Must match the Namespace field set on records at write time — mismatch causes silent data loss.
 func (p *JMDNProfile) Namespaces() []string {
-	return []string{"account", "block", "snapshot", "tx", "zk", "l1_finality", "contract_receipt"}
+	return []string{"account", "block", "snapshot", "tx", "zk", "l1_finality", "contract_receipt", "contract_registry"}
 }
 
 // GetMigration returns the complete PostgreSQL DDL for the JMDN projection schema.
 // Executed verbatim once on startup; all statements use IF NOT EXISTS for idempotency.
-// Migration order: 000001_init_schema → 000002_contract_receipt
+// Migration order: 000001_init_schema → 000002_contract_receipt → 000003_contract_registry
 func (p *JMDNProfile) GetMigration() string {
-	return migrationSQL + "\n\n" + migrationSQL002
+	return migrationSQL + "\n\n" + migrationSQL002 + "\n\n" + migrationSQL003
 }
 
 // Apply routes a single CanonicalRecord to the correct namespace handler.

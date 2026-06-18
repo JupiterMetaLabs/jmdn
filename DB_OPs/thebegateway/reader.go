@@ -620,6 +620,19 @@ func (r *thebeReader) GetContractReceipt(ctx context.Context, txHash string) (*C
 	return &rec, nil
 }
 
+// IsTxProcessing returns true if txHash has a "-1" in-flight flag in KV.
+// A missing key or empty tombstone both return false.
+// Time: O(1) — KV direct read (no SQL, no cache)
+func (r *thebeReader) IsTxProcessing(_ context.Context, txHash string) (bool, error) {
+	val, err := r.kv.Get(kvTxProcessingKey(txHash))
+	if err != nil {
+		// key not found → not processing
+		return false, nil
+	}
+	// empty tombstone = cleared
+	return len(val) > 0, nil
+}
+
 // scanContractReceipt scans a single contract_receipts row into rec.
 func (r *thebeReader) scanContractReceipt(row *sql.Row, rec *ContractReceiptRecord) error {
 	var contractAddrNull sql.NullString

@@ -2,48 +2,12 @@ package DB_OPs
 
 import (
 	"context"
-	log "gossipnode/logging"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/JupiterMetaLabs/ion"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
-
-// logEntry is a JSON-serialisable mirror of types.Log.
-// We serialise this to ImmuDB so that consumers outside this package
-// (e.g. future explorers) can decode without importing go-ethereum.
-type logEntry struct {
-	Address     string   `json:"address"`
-	Topics      []string `json:"topics"`
-	Data        string   `json:"data"`
-	BlockNumber uint64   `json:"blockNumber"`
-	TxHash      string   `json:"txHash"`
-	TxIndex     uint     `json:"txIndex"`
-	BlockHash   string   `json:"blockHash"`
-	LogIndex    uint     `json:"logIndex"`
-	Removed     bool     `json:"removed"`
-}
-
-func ethLogToEntry(l *ethtypes.Log) logEntry {
-	topics := make([]string, len(l.Topics))
-	for i, t := range l.Topics {
-		topics[i] = t.Hex()
-	}
-	return logEntry{
-		Address:     l.Address.Hex(),
-		Topics:      topics,
-		Data:        fmt.Sprintf("0x%x", l.Data),
-		BlockNumber: l.BlockNumber,
-		TxHash:      l.TxHash.Hex(),
-		TxIndex:     l.TxIndex,
-		BlockHash:   l.BlockHash.Hex(),
-		LogIndex:    l.Index,
-		Removed:     l.Removed,
-	}
-}
 
 // ----------------------------------------------------------------------------
 // LogWriter
@@ -77,42 +41,19 @@ func (lw *LogWriter) Write(logs []*ethtypes.Log) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	// Grab a pooled connection once for the whole batch.
-	pc, err := GetMainDBConnectionandPutBack(ctx)
+	h, err := getHandle(nil)
 	if err != nil {
-		return fmt.Errorf("LogWriter.Write: failed to get DB connection: %w", err)
+		return fmt.Errorf("LogWriter.Write: failed to get DB handle: %w", err)
 	}
-	defer PutMainDBConnection(pc)
+
+	// Store all logs via ThebeDB in a single call.
+	if storeErr := h.StoreLogs(ctx, logs); storeErr != nil {
+		return fmt.Errorf("LogWriter.Write: StoreLogs failed: %w", storeErr)
+	}
 
 	for _, l := range logs {
 		if l == nil {
 			continue
-		}
-
-		value, err := json.Marshal(ethLogToEntry(l))
-		if err != nil {
-			return fmt.Errorf("LogWriter.Write: marshal failed: %w", err)
-		}
-
-		// 1. Primary key
-		primaryKey := fmt.Sprintf("log:%d:%d:%d", l.BlockNumber, l.TxIndex, l.Index)
-		if err := Create(pc, primaryKey, value); err != nil {
-			return fmt.Errorf("LogWriter.Write: primary key store failed: %w", err)
-		}
-
-		// 2. By-address index
-		addrKey := fmt.Sprintf("logaddr:%s:%d:%d", l.Address.Hex(), l.BlockNumber, l.Index)
-		if err := Create(pc, addrKey, value); err != nil {
-			// Non-fatal — index write; log but continue
-			logger(log.DB_OPs_LogWriter).Warn(context.Background(), "LogWriter.Write: addr index store warning", ion.Err(err))
-		}
-
-		// 3. By-topic index (one entry per topic position)
-		for _, topic := range l.Topics {
-			topicKey := fmt.Sprintf("logtopic:%s:%d:%d", topic.Hex(), l.BlockNumber, l.Index)
-			if err := Create(pc, topicKey, value); err != nil {
-				logger(log.DB_OPs_LogWriter).Warn(context.Background(), "LogWriter.Write: topic index store warning", ion.Err(err))
-			}
 		}
 
 		// Fan-out to live subscribers (non-blocking)

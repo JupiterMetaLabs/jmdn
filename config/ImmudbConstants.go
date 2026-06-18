@@ -5,8 +5,6 @@ import (
 	"time"
 
 	"github.com/JupiterMetaLabs/ion"
-	"github.com/codenotary/immudb/pkg/api/schema"
-	"github.com/codenotary/immudb/pkg/client"
 )
 
 const (
@@ -25,9 +23,10 @@ const (
 	RequestTimeout   = 10 * time.Second
 )
 
-// ImmuClient provides a simplified interface for ImmuDB operations
+// ImmuClient is a legacy stub retained so call-sites in dualdb and immuclient.go
+// compile without modification. The real storage backend is now store.ThebeHandle
+// (injected via config.HandleFactory). All immudb fields have been removed.
 type ImmuClient struct {
-	Client      client.ImmuClient
 	Ctx         context.Context
 	Cancel      context.CancelFunc
 	BaseCtx     context.Context
@@ -49,8 +48,9 @@ func (ic *ImmuClient) Close() error {
 // BlockHasher for generating block hashes
 type BlockHasher struct{}
 
-// ImmuTransaction represents a transaction in ImmuDB
+// ImmuTransaction is a legacy stub. Ops is kept as []interface{} to satisfy
+// any callers that append to it without importing immudb schema types.
 type ImmuTransaction struct {
 	Client *ImmuClient
-	Ops    []*schema.Op
+	Ops    []interface{}
 }

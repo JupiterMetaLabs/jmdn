@@ -5,118 +5,82 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+
+	"gossipnode/DB_OPs/store"
 	"gossipnode/config"
-	"gossipnode/config/utils"
 	"gossipnode/gETH/Facade/Service/Types"
 )
 
-// GetLogs retrieves logs based on filter criteria
+// GetLogs retrieves event logs matching the given filter query via ThebeDB SQL.
+// PooledConnection may be nil — getHandle falls back to the global ThebeDB handle.
 func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuery) ([]Types.Log, error) {
-	var err error
-	var shouldReturnConnection = false
-
-	// Define Function wide context for timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Get connection if not provided
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get main DB connection: %w - GetLogs", err)
-		}
-		shouldReturnConnection = true
+	h, err := getHandle(mainDBClient)
+	if err != nil {
+		return nil, fmt.Errorf("GetLogs: %w", err)
 	}
 
-	// Return connection to pool when done
-	if shouldReturnConnection {
-		defer PutMainDBConnection(mainDBClient)
+	filter := filterQueryToStoreFilter(filterQuery)
+	ethLogs, err := h.GetLogs(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("GetLogs: %w", err)
 	}
 
-	var allLogs []Types.Log
-
-	// Determine block range
-	fromBlock := uint64(0)
-	toBlock := uint64(0)
-
-	if filterQuery.FromBlock != nil {
-		fromBlock = filterQuery.FromBlock.Uint64()
-	}
-
-	if filterQuery.ToBlock != nil {
-		toBlock = filterQuery.ToBlock.Uint64()
-	} else {
-		// If ToBlock is not specified, get the latest block number
-		latestBlock, err := GetLatestBlockNumber(mainDBClient)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get latest block number: %w", err)
-		}
-		toBlock = latestBlock
-	}
-
-	// Iterate through blocks in the specified range
-	for blockNum := fromBlock; blockNum <= toBlock; blockNum++ {
-		block, err := GetZKBlockByNumber(mainDBClient, blockNum)
-		if err != nil {
-			// Log error but continue with other blocks
+	result := make([]Types.Log, 0, len(ethLogs))
+	for _, l := range ethLogs {
+		if l == nil {
 			continue
 		}
-
-		// Get logs from all transactions in this block
-		blockLogs, err := GetLogsFromBlock(mainDBClient, block, filterQuery)
-		if err != nil {
-			// Log error but continue with other blocks
-			continue
+		topics := make([][]byte, len(l.Topics))
+		for i, t := range l.Topics {
+			h := t // copy
+			topics[i] = h[:]
 		}
-
-		allLogs = append(allLogs, blockLogs...)
+		result = append(result, Types.Log{
+			Address:     l.Address.Bytes(),
+			Topics:      topics,
+			Data:        l.Data,
+			BlockNumber: l.BlockNumber,
+			TxHash:      l.TxHash.Bytes(),
+			TxIndex:     uint64(l.TxIndex),
+			LogIndex:    uint64(l.Index),
+			Removed:     l.Removed,
+		})
 	}
-
-	return allLogs, nil
+	return result, nil
 }
 
-// getLogsFromBlock extracts logs from a specific block based on filter criteria
-func GetLogsFromBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock, filterQuery Types.FilterQuery) ([]Types.Log, error) {
-	var blockLogs []Types.Log
-
-	// Iterate through all transactions in the block
-	for _, tx := range block.Transactions {
-		// Get receipt for this transaction
-		receipt, err := GetReceiptByHash(mainDBClient, tx.Hash.Hex())
-		if err != nil {
-			// If receipt doesn't exist, skip this transaction
-			continue
-		}
-
-		// Convert config.Log to Types.Log and apply filters
-		for _, log := range receipt.Logs {
-			// Convert to Types.Log format
-			typesLog := Types.Log{
-				Address:     log.Address.Bytes(),
-				Topics:      utils.ConvertHashesToByteArrays(log.Topics),
-				Data:        log.Data,
-				BlockNumber: log.BlockNumber,
-				TxHash:      log.TxHash.Bytes(),
-				LogIndex:    log.LogIndex,
-			}
-
-			// Apply address filter
-			if len(filterQuery.Addresses) > 0 {
-				if !utils.ContainsAddress(filterQuery.Addresses, string(typesLog.Address)) {
-					continue
-				}
-			}
-
-			// Apply topic filters
-			if len(filterQuery.Topics) > 0 {
-				if !utils.MatchesTopicFilter(filterQuery.Topics, utils.ConvertHashesToStrings(log.Topics)) {
-					continue
-				}
-			}
-
-			blockLogs = append(blockLogs, typesLog)
-		}
+// filterQueryToStoreFilter converts a gETH FilterQuery to a store.LogFilter.
+func filterQueryToStoreFilter(q Types.FilterQuery) store.LogFilter {
+	var from, to uint64
+	if q.FromBlock != nil {
+		from = q.FromBlock.Uint64()
+	}
+	if q.ToBlock != nil {
+		to = q.ToBlock.Uint64()
 	}
 
-	return blockLogs, nil
+	addrs := make([]common.Address, 0, len(q.Addresses))
+	for _, a := range q.Addresses {
+		addrs = append(addrs, common.HexToAddress(a))
+	}
+
+	topics := make([][]common.Hash, len(q.Topics))
+	for i, row := range q.Topics {
+		hashes := make([]common.Hash, len(row))
+		for j, t := range row {
+			hashes[j] = common.HexToHash(t)
+		}
+		topics[i] = hashes
+	}
+
+	return store.LogFilter{
+		FromBlock: from,
+		ToBlock:   to,
+		Addresses: addrs,
+		Topics:    topics,
+	}
 }

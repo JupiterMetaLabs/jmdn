@@ -64,6 +64,14 @@ type TxStore interface {
 	GetTransactionsByBlock(ctx context.Context, blockNumber uint64) ([]*thebegateway.TransactionRecord, error)
 	GetTransactionsByAddress(ctx context.Context, address string, limit int) ([]*thebegateway.TransactionRecord, error)
 	SetTransactionStatus(ctx context.Context, txHash string, status int) error
+
+	// Tx processing flag — backed by BadgerDB KV.
+	// SetTxProcessing marks a transaction as in-flight ("-1" sentinel in KV).
+	// ClearTxProcessing removes the flag once confirmed or dropped.
+	// IsTxProcessing returns true when the sentinel exists and is non-empty.
+	SetTxProcessing(ctx context.Context, txHash string) error
+	ClearTxProcessing(ctx context.Context, txHash string) error
+	IsTxProcessing(ctx context.Context, txHash string) (bool, error)
 }
 
 // ZKProofStore covers ZK proof persistence and retrieval.

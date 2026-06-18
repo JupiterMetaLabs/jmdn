@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -58,16 +59,37 @@ func PutNonceofAccount() (uint64, error) {
 	return ts<<16 | (c & 0xFFFF), nil
 }
 
-// getHandle extracts the store.ThebeHandle from a PooledConnection.
+// globalThebeHandle is the process-wide ThebeHandle set once at startup.
+// It is used as a fallback when conn.Client does not satisfy store.ThebeHandle
+// (e.g. legacy callers that pass a nil or stub connection).
+var (
+	globalThebeHandle   store.ThebeHandle
+	globalThebeHandleMu sync.RWMutex
+)
+
+// SetGlobalHandle registers the process-wide ThebeHandle.
+// Call exactly once from main after backend.New() is constructed.
+func SetGlobalHandle(h store.ThebeHandle) {
+	globalThebeHandleMu.Lock()
+	globalThebeHandle = h
+	globalThebeHandleMu.Unlock()
+}
+
+// getHandle extracts a store.ThebeHandle from conn, falling back to the
+// process-wide global handle when the connection client is not a ThebeHandle.
 func getHandle(conn *config.PooledConnection) (store.ThebeHandle, error) {
-	if conn == nil || conn.Client == nil {
-		return nil, fmt.Errorf("getHandle: nil connection or client")
+	if conn != nil && conn.Client != nil {
+		if h, ok := conn.Client.(store.ThebeHandle); ok {
+			return h, nil
+		}
 	}
-	h, ok := conn.Client.(store.ThebeHandle)
-	if !ok {
-		return nil, fmt.Errorf("getHandle: Client does not implement store.ThebeHandle (type: %T)", conn.Client)
+	globalThebeHandleMu.RLock()
+	h := globalThebeHandle
+	globalThebeHandleMu.RUnlock()
+	if h != nil {
+		return h, nil
 	}
-	return h, nil
+	return nil, fmt.Errorf("getHandle: no ThebeHandle available (conn=%v)", conn)
 }
 
 // storeAccountToStore converts DB_OPs.Account to store.Account.
@@ -113,19 +135,6 @@ func CreateAccount(conn *config.PooledConnection, DIDAddress string, Address com
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetAccountConnectionandPutBack(ctx)
-		if err != nil {
-			return fmt.Errorf("CreateAccount: failed to get connection: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutAccountsConnection(conn)
-	}
-
 	h, err := getHandle(conn)
 	if err != nil {
 		return fmt.Errorf("CreateAccount: %w", err)
@@ -160,19 +169,6 @@ func storeAccount(conn *config.PooledConnection, KeyDoc *Account) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetAccountConnectionandPutBack(ctx)
-		if err != nil {
-			return fmt.Errorf("storeAccount: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutAccountsConnection(conn)
-	}
-
 	h, err := getHandle(conn)
 	if err != nil {
 		return fmt.Errorf("storeAccount: %w", err)
@@ -194,19 +190,6 @@ func BatchCreateAccountsOrdered(conn *config.PooledConnection, entries []struct 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetAccountConnectionandPutBack(ctx)
-		if err != nil {
-			return fmt.Errorf("BatchCreateAccountsOrdered: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutAccountsConnection(conn)
-	}
 
 	h, err := getHandle(conn)
 	if err != nil {
@@ -238,21 +221,6 @@ func BatchRestoreAccounts(conn *config.PooledConnection, entries []struct {
 }) error {
 	if len(entries) == 0 {
 		return fmt.Errorf("entries cannot be empty")
-	}
-
-	var err error
-	var shouldReturn bool
-	ctx := context.Background()
-
-	if conn == nil || conn.Client == nil {
-		conn, err = GetAccountConnectionandPutBack(ctx)
-		if err != nil {
-			return fmt.Errorf("BatchRestoreAccounts: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutAccountsConnection(conn)
 	}
 
 	h, err := getHandle(conn)
@@ -300,19 +268,6 @@ func loadAccountByKey(conn *config.PooledConnection, key []byte, logFn string) (
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetAccountConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", logFn, err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutAccountsConnection(conn)
-	}
-
 	h, err := getHandle(conn)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", logFn, err)
@@ -341,19 +296,6 @@ func GetAccountByDID(conn *config.PooledConnection, did string) (*Account, error
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetAccountConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("GetAccountByDID: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutAccountsConnection(conn)
-	}
-
 	h, err := getHandle(conn)
 	if err != nil {
 		return nil, fmt.Errorf("GetAccountByDID: %w", err)
@@ -373,19 +315,6 @@ func GetAccountByDID(conn *config.PooledConnection, did string) (*Account, error
 func GetAccount(conn *config.PooledConnection, address common.Address) (*Account, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetAccountConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("GetAccount: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutAccountsConnection(conn)
-	}
 
 	h, err := getHandle(conn)
 	if err != nil {
@@ -407,19 +336,6 @@ func UpdateAccountBalance(conn *config.PooledConnection, address common.Address,
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetAccountConnectionandPutBack(ctx)
-		if err != nil {
-			return fmt.Errorf("UpdateAccountBalance: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutAccountsConnection(conn)
-	}
-
 	h, err := getHandle(conn)
 	if err != nil {
 		return fmt.Errorf("UpdateAccountBalance: %w", err)
@@ -427,31 +343,16 @@ func UpdateAccountBalance(conn *config.PooledConnection, address common.Address,
 	return h.UpdateAccountBalance(ctx, address.Hex(), newBalance)
 }
 
-// ListAllAccounts retrieves all accounts. Returns empty list for ThebeDB backend.
+// ListAllAccounts retrieves all accounts.
 func ListAllAccounts(conn *config.PooledConnection, limit int) ([]*Account, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	_ = ctx
-
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetAccountConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("ListAllAccounts: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutAccountsConnection(conn)
-	}
 
 	h, err := getHandle(conn)
 	if err != nil {
 		return nil, fmt.Errorf("ListAllAccounts: %w", err)
 	}
 
-	// Time: O(n) — single SQL scan ordered by created_at; n = rows returned (limit<=0 → all).
 	storeAccounts, err := h.ListAccounts(ctx, limit)
 	if err != nil {
 		return nil, fmt.Errorf("ListAllAccounts: %w", err)
@@ -465,23 +366,6 @@ func ListAllAccounts(conn *config.PooledConnection, limit int) ([]*Account, erro
 
 // ListAccountsPaginated returns paginated accounts. Not natively supported; returns empty.
 func ListAccountsPaginated(conn *config.PooledConnection, limit, offset int, extendedPrefix string) ([]*Account, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	_ = ctx
-
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetAccountConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("ListAccountsPaginated: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutAccountsConnection(conn)
-	}
-
 	logger(log.DB_OPs_AccountConnectionPool).Warn(context.Background(),
 		"ListAccountsPaginated: not fully implemented for ThebeDB backend")
 	return []*Account{}, nil
@@ -500,19 +384,6 @@ func CountAccounts(conn *config.PooledConnection) (int, error) {
 func GetTransactionsByAccount(conn *config.PooledConnection, accountAddr *common.Address) ([]*config.Transaction, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("GetTransactionsByAccount: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(conn)
-	}
 
 	h, err := getHandle(conn)
 	if err != nil {
@@ -559,19 +430,6 @@ func isTransactionInvolvingAccount(tx config.Transaction, accountAddr *common.Ad
 func CheckNonceDuplicate(conn *config.PooledConnection, fromAddr *common.Address, nonce uint64) (bool, error) {
 	ctx := context.Background()
 
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return false, fmt.Errorf("CheckNonceDuplicate: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(conn)
-	}
-
 	h, err := getHandle(conn)
 	if err != nil {
 		return false, fmt.Errorf("CheckNonceDuplicate: %w", err)
@@ -583,19 +441,6 @@ func CheckNonceDuplicate(conn *config.PooledConnection, fromAddr *common.Address
 func GetLatestNonce(conn *config.PooledConnection, fromAddr *common.Address) (uint64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return 0, fmt.Errorf("GetLatestNonce: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(conn)
-	}
 
 	h, err := getHandle(conn)
 	if err != nil {
@@ -638,19 +483,6 @@ func GetTransactionHashes(conn *config.PooledConnection, offset, limit int) ([]s
 func GetTransactionsPaginated(conn *config.PooledConnection, offset, limit int) ([]*config.Transaction, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, 0, fmt.Errorf("GetTransactionsPaginated: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(conn)
-	}
 
 	h, err := getHandle(conn)
 	if err != nil {
@@ -716,19 +548,6 @@ func CheckNonceAndGetLatest(conn *config.PooledConnection, fromAddr *common.Addr
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return false, 0, false, fmt.Errorf("CheckNonceAndGetLatest: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(conn)
-	}
-
 	h, err := getHandle(conn)
 	if err != nil {
 		return false, 0, false, fmt.Errorf("CheckNonceAndGetLatest: %w", err)
@@ -748,28 +567,13 @@ func CheckNonceAndGetLatest(conn *config.PooledConnection, fromAddr *common.Addr
 	return hasDuplicate, latestNonce, hasAnyTx, nil
 }
 
-// SaveAccount persists a full Account record by delegating to UpdateAccountBalance
-// and, when supported, to other field setters. For ThebeDB, balance is the primary
-// mutable field tracked via UpdateAccountBalance.
+// SaveAccount persists a full Account record — delegates to UpdateAccountBalance.
 func SaveAccount(conn *config.PooledConnection, acc *Account) error {
 	if acc == nil {
 		return ErrNilValue
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	var err error
-	var shouldReturn bool
-	if conn == nil || conn.Client == nil {
-		conn, err = GetAccountConnectionandPutBack(ctx)
-		if err != nil {
-			return fmt.Errorf("SaveAccount: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutAccountsConnection(conn)
-	}
 
 	h, err := getHandle(conn)
 	if err != nil {

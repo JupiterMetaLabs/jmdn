@@ -16,11 +16,23 @@ package thebegateway
 import "encoding/binary"
 
 const (
-	kvPrefixCode    = "contract:code:"
-	kvPrefixNonce   = "contract:nonce:"
-	kvPrefixStorage = "contract:storage:"
-	kvPrefixMeta    = "contract:meta:"
+	kvPrefixCode         = "contract:code:"
+	kvPrefixNonce        = "contract:nonce:"
+	kvPrefixStorage      = "contract:storage:"
+	kvPrefixMeta         = "contract:meta:"
+	kvPrefixTxProcessing = "tx_processing:"
 )
+
+// kvTxProcessingKey returns the KV key for tx processing status.
+// Value "-1" means the transaction is still being processed.
+// Key is removed (tombstoned) once the tx is confirmed or dropped.
+// Time: O(1)
+func kvTxProcessingKey(txHash string) []byte {
+	return []byte(kvPrefixTxProcessing + txHash)
+}
+
+// kvTxProcessingValue is the sentinel stored for an in-flight transaction.
+var kvTxProcessingValue = []byte("-1")
 
 // kvCodeKey returns the KV key for contract bytecode.
 // Time: O(1)

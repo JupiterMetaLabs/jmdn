@@ -122,6 +122,35 @@ type ContractMetaResult struct {
 	UpdatedAt       time.Time       `json:"updated_at"`
 }
 
+// ContractRegistryResult carries deployed-contract metadata for the contracts SQL table.
+// Written via IngestContractRegistry → ThebeDB.Append → projector → contracts table.
+type ContractRegistryResult struct {
+	Address      string          `json:"address"`       // CHAR(42) PK
+	Deployer     string          `json:"deployer"`      // CHAR(42)
+	Name         string          `json:"name"`          // optional display name
+	ABI          string          `json:"abi"`           // JSON ABI string
+	BytecodeHash string          `json:"bytecode_hash"` // CHAR(66)
+	DeployBlock  uint64          `json:"deploy_block"`
+	DeployTime   uint64          `json:"deploy_time"`   // unix seconds
+	DeployTxHash string          `json:"deploy_tx_hash"` // CHAR(66)
+	CodeSize     uint64          `json:"code_size"`
+	ContractType string          `json:"contract_type"` // erc20, erc721, custom, …
+	State        string          `json:"state"`         // active, paused, destroyed
+	Metadata     json.RawMessage `json:"metadata"`
+	CreatedAt    time.Time       `json:"created_at"`
+}
+
+// ListContractOptions filters for ListContractsFromRegistry.
+type ListContractOptions struct {
+	Deployer  string // filter by deployer address (empty = all)
+	FromBlock uint64 // inclusive; 0 = no lower bound
+	ToBlock   uint64 // inclusive; 0 = no upper bound
+	FromTime  int64  // unix seconds; 0 = no lower bound
+	ToTime    int64  // unix seconds; 0 = no upper bound
+	Limit     uint32 // 0 = default (50)
+	Offset    uint64
+}
+
 type ContractReceiptResult struct {
 	TxHash          string          `json:"tx_hash"`          // CHAR(66) PK
 	BlockNumber     uint64          `json:"block_number"`

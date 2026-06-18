@@ -59,12 +59,9 @@ func isNotFoundError(err error) bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Generic KV stubs — these operations have no direct ThebeHandle equivalent.
-// For block/account data, use typed methods (StoreZKBlock, GetZKBlockByNumber, etc.).
+// Generic KV stubs — no direct ThebeHandle equivalent.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Create stores a value by key. Stub for ThebeDB backend — succeeds silently.
-// Callers storing blocks/txs should use StoreZKBlock; CRDT data may be dropped.
 func Create(conn *config.PooledConnection, key string, value interface{}) error {
 	if key == "" {
 		return ErrEmptyKey
@@ -72,11 +69,9 @@ func Create(conn *config.PooledConnection, key string, value interface{}) error 
 	if value == nil {
 		return ErrNilValue
 	}
-	// No generic KV in ThebeDB. Silently succeed to avoid breaking callers.
 	return nil
 }
 
-// Read retrieves a value by key. Returns ErrNotFound for ThebeDB backend.
 func Read(conn *config.PooledConnection, key string) ([]byte, error) {
 	if key == "" {
 		return nil, ErrEmptyKey
@@ -84,7 +79,6 @@ func Read(conn *config.PooledConnection, key string) ([]byte, error) {
 	return nil, ErrNotFound
 }
 
-// ReadJSON retrieves a value by key and unmarshals it into dest.
 func ReadJSON(key string, dest interface{}) error {
 	data, err := Read(nil, key)
 	if err != nil {
@@ -96,22 +90,18 @@ func ReadJSON(key string, dest interface{}) error {
 	return nil
 }
 
-// Update updates an existing key with a new value.
 func Update(key string, value interface{}) error {
 	return Create(nil, key, value)
 }
 
-// GetKeys retrieves keys with a specified prefix. Returns empty for ThebeDB.
 func GetKeys(conn *config.PooledConnection, prefix string, limit int) ([]string, error) {
 	return []string{}, nil
 }
 
-// GetAllKeys retrieves all keys with a prefix. Returns empty for ThebeDB.
 func GetAllKeys(conn *config.PooledConnection, prefix string) ([]string, error) {
 	return []string{}, nil
 }
 
-// BatchCreate stores multiple key-value pairs. Stub for ThebeDB.
 func BatchCreate(conn *config.PooledConnection, entries map[string]interface{}) error {
 	if len(entries) == 0 {
 		return ErrEmptyBatch
@@ -119,7 +109,6 @@ func BatchCreate(conn *config.PooledConnection, entries map[string]interface{}) 
 	return nil
 }
 
-// BatchCreateOrdered stores ordered key-value pairs. Stub for ThebeDB.
 func BatchCreateOrdered(conn *config.PooledConnection, entries []struct {
 	Key   string
 	Value []byte
@@ -130,7 +119,6 @@ func BatchCreateOrdered(conn *config.PooledConnection, entries []struct {
 	return nil
 }
 
-// Exists checks if a key exists. Returns false for ThebeDB (no generic KV).
 func Exists(conn *config.PooledConnection, key string) (bool, error) {
 	if key == "" {
 		return false, ErrEmptyKey
@@ -156,19 +144,11 @@ func CountTransactions(conn *config.PooledConnection) (int, error) {
 	return count, nil
 }
 
-// GetMerkleRoot returns the database-level merkle root.
-//
-// ImmuDB exposed a single tamper-proof state root per DB. ThebeDB's integrity
-// proof lives in the append-only KV log (verifiable via builder.VerifyChain),
-// not as a single root reachable through store.ThebeHandle. Until that is
-// surfaced through the handle, this returns an empty root with no error so
-// callers that only display it as a stat (e.g. the explorer) degrade
-// gracefully rather than failing the whole request.
+// GetMerkleRoot returns an empty root — ThebeDB integrity proof lives in the KV log.
 func GetMerkleRoot(conn *config.PooledConnection) ([]byte, error) {
 	return []byte{}, nil
 }
 
-// SafeCreate is a verified write — delegates to Create in ThebeDB backend.
 func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 	if key == "" {
 		return ErrEmptyKey
@@ -176,16 +156,13 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 	if value == nil {
 		return ErrNilValue
 	}
-	// In ThebeDB backend, SafeCreate is equivalent to Create (no separate verification layer).
 	return Create(nil, key, value)
 }
 
-// SafeRead is a verified read — delegates to Read in ThebeDB backend.
 func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 	return Read(nil, key)
 }
 
-// SafeReadJSON retrieves a verified value by key and unmarshals it.
 func SafeReadJSON(ic *config.ImmuClient, key string, dest interface{}) error {
 	return ReadJSON(key, dest)
 }
@@ -196,22 +173,8 @@ func SafeReadJSON(ic *config.ImmuClient, key string, dest interface{}) error {
 
 // StoreZKBlock stores a complete ZK block via ThebeHandle.
 func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) error {
-	var err error
-	var shouldReturn bool
-
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
-
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return fmt.Errorf("StoreZKBlock: failed to get main DB connection: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(mainDBClient)
-	}
 
 	h, err := getHandle(mainDBClient)
 	if err != nil {
@@ -222,20 +185,16 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 		return fmt.Errorf("StoreZKBlock: %w", err)
 	}
 
-	// Store each transaction
 	for i := range block.Transactions {
 		if txErr := h.StoreTransaction(ctx, &block.Transactions[i], block.BlockNumber, i); txErr != nil {
-			// Non-fatal: log and continue
 			_ = txErr
 		}
 	}
 
-	// Store ZK proof
 	if zkErr := h.StoreZKBlock(ctx, block); zkErr != nil {
-		_ = zkErr // non-fatal
+		_ = zkErr
 	}
 
-	// Best-effort shadow fanout
 	if shadow := getThebeShadowWriter(); shadow != nil {
 		if shadowErr := shadow.StoreZKBlock(mainDBClient, block); shadowErr != nil {
 			_ = shadowErr
@@ -257,7 +216,6 @@ func getZKBlockWithTxs(ctx context.Context, h store.ThebeHandle, blockNumber uin
 		return nil, fmt.Errorf("getZKBlockWithTxs: %w", err)
 	}
 
-	// Fetch transactions for this block
 	txRecs, err := h.GetTransactionsByBlock(ctx, blockNumber)
 	if err == nil && len(txRecs) > 0 {
 		txs := make([]config.Transaction, 0, len(txRecs))
@@ -275,22 +233,8 @@ func getZKBlockWithTxs(ctx context.Context, h store.ThebeHandle, blockNumber uin
 
 // GetZKBlockByNumber retrieves a ZK block by its number.
 func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint64) (*config.ZKBlock, error) {
-	var err error
-	var shouldReturn bool
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("GetZKBlockByNumber: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(mainDBClient)
-	}
 
 	h, err := getHandle(mainDBClient)
 	if err != nil {
@@ -302,22 +246,8 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 
 // GetZKBlockByHash retrieves a ZK block by its hash.
 func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (*config.ZKBlock, error) {
-	var err error
-	var shouldReturn bool
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("GetZKBlockByHash: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(mainDBClient)
-	}
 
 	h, err := getHandle(mainDBClient)
 	if err != nil {
@@ -334,7 +264,6 @@ func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (
 		return nil, fmt.Errorf("GetZKBlockByHash: %w", err)
 	}
 
-	// Fetch transactions
 	txRecs, err := h.GetTransactionsByBlock(ctx, rec.BlockNumber)
 	if err == nil {
 		txs := make([]config.Transaction, 0, len(txRecs))
@@ -352,22 +281,8 @@ func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (
 
 // GetLatestBlockNumber returns the latest block number.
 func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error) {
-	var err error
-	var shouldReturn bool
-
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return 0, fmt.Errorf("GetLatestBlockNumber: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(mainDBClient)
-	}
 
 	h, err := getHandle(mainDBClient)
 	if err != nil {
@@ -377,30 +292,15 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 	return h.GetLatestBlockNumber(ctx)
 }
 
-// ReconcileLatestBlockNumber attempts to find the latest block by scanning.
-// For ThebeDB, this delegates to GetLatestBlockNumber.
+// ReconcileLatestBlockNumber delegates to GetLatestBlockNumber.
 func ReconcileLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error) {
 	return GetLatestBlockNumber(mainDBClient)
 }
 
 // GetTransactionBlock returns the block containing a specific transaction.
 func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (*config.ZKBlock, error) {
-	var err error
-	var shouldReturn bool
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("GetTransactionBlock: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(mainDBClient)
-	}
 
 	h, err := getHandle(mainDBClient)
 	if err != nil {
@@ -417,22 +317,8 @@ func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (
 
 // GetTransactionByHash retrieves a single transaction by hash.
 func GetTransactionByHash(mainDBClient *config.PooledConnection, txHash string) (*config.Transaction, error) {
-	var err error
-	var shouldReturn bool
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("GetTransactionByHash: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(mainDBClient)
-	}
 
 	h, err := getHandle(mainDBClient)
 	if err != nil {
@@ -463,19 +349,6 @@ func GetTransactionsBatch(mainDBClient *config.PooledConnection, hashes []string
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	var err error
-	var shouldReturn bool
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("GetTransactionsBatch: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(mainDBClient)
-	}
 
 	var transactions []*config.Transaction
 	batchSize := 10
@@ -519,22 +392,8 @@ func GetTransactionsBatch(mainDBClient *config.PooledConnection, hashes []string
 
 // GetAllBlocks returns all blocks from 1 to latest.
 func GetAllBlocks(mainDBClient *config.PooledConnection) ([]*config.ZKBlock, error) {
-	var err error
-	var shouldReturn bool
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("GetAllBlocks: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(mainDBClient)
-	}
 
 	h, err := getHandle(mainDBClient)
 	if err != nil {
@@ -561,12 +420,10 @@ func GetAllBlocks(mainDBClient *config.PooledConnection) ([]*config.ZKBlock, err
 // Utility functions kept for backward compatibility
 // ─────────────────────────────────────────────────────────────────────────────
 
-// NewBlockHasher creates a new BlockHasher.
 func NewBlockHasher() *config.BlockHasher {
 	return &config.BlockHasher{}
 }
 
-// HashBlock generates a hash for a block.
 func HashBlock(h *config.BlockHasher, nonce, sender string, timestamp int64) string {
 	data := fmt.Sprintf("%s-%s-%d", nonce, sender, timestamp)
 	hash := sha256.Sum256([]byte(data))
@@ -574,19 +431,15 @@ func HashBlock(h *config.BlockHasher, nonce, sender string, timestamp int64) str
 }
 
 // DatabaseState is a stub for the ImmuDB ImmutableState type.
-// TxId and TxHash are always zero/nil for the ThebeDB backend.
 type DatabaseState struct {
 	TxId   uint64
 	TxHash []byte
 }
 
-// GetDatabaseState returns a zero-value DatabaseState for ThebeDB.
-// In ThebeDB, there is no immutable state concept — returns (DatabaseState{}, nil).
 func GetDatabaseState(closer interface{}) (*DatabaseState, error) {
 	return &DatabaseState{}, nil
 }
 
-// Close closes a connection handle. Accepts io.Closer or *config.ImmuClient.
 func Close(closer interface{}) error {
 	if closer == nil {
 		return nil
@@ -599,21 +452,16 @@ func Close(closer interface{}) error {
 		if v.Cancel != nil {
 			v.Cancel()
 		}
-		if v.Client != nil {
-			return v.Client.Disconnect()
-		}
 	case io.Closer:
 		return v.Close()
 	}
 	return nil
 }
 
-// IsHealthy checks if an ImmuClient is healthy (legacy).
 func IsHealthy(ic *config.ImmuClient) bool {
 	return ic != nil && ic.IsConnected
 }
 
-// Ping performs a health check (legacy ImmuClient).
 func Ping(ic *config.ImmuClient) error {
 	if ic == nil {
 		return fmt.Errorf("database client is nil")
@@ -621,21 +469,14 @@ func Ping(ic *config.ImmuClient) error {
 	if !ic.IsConnected {
 		return fmt.Errorf("client not connected")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_, err := ic.Client.CurrentState(ctx)
-	return err
+	return nil
 }
 
-// Transaction creates a transaction context (legacy ImmuClient).
 func Transaction(ic *config.ImmuClient, fn func(tx *config.ImmuTransaction) error) error {
-	tx := &config.ImmuTransaction{
-		Client: ic,
-	}
+	tx := &config.ImmuTransaction{Client: ic}
 	return fn(tx)
 }
 
-// Set adds a set operation to a transaction (legacy).
 func Set(tx *config.ImmuTransaction, key string, value interface{}) error {
 	if key == "" {
 		return ErrEmptyKey
@@ -646,7 +487,6 @@ func Set(tx *config.ImmuTransaction, key string, value interface{}) error {
 	return nil
 }
 
-// ensureConnectionDatabaseSelected is a no-op for ThebeDB (stateless handles).
 func ensureConnectionDatabaseSelected(pc *config.PooledConnection) error {
 	if pc == nil || pc.Client == nil {
 		return fmt.Errorf("ensureConnectionDatabaseSelected: invalid connection")
@@ -654,17 +494,14 @@ func ensureConnectionDatabaseSelected(pc *config.PooledConnection) error {
 	return nil
 }
 
-// reconnect is kept for legacy callers; always returns an error.
 func reconnect(ic *config.ImmuClient, FUNCTION string) error {
 	return fmt.Errorf("reconnect: not supported in ThebeDB backend (function: %s)", FUNCTION)
 }
 
-// withRetry is kept for legacy callers; executes op once without retry.
 func withRetry(ic *config.ImmuClient, operation string, fn func() error) error {
 	return fn()
 }
 
-// isConnectionError checks if err is a connection error.
 func isConnectionError(err error) bool {
 	if err == nil {
 		return false
@@ -682,19 +519,6 @@ func isConnectionError(err error) bool {
 func GetTransactionsByBlock(mainDBClient *config.PooledConnection, blockNumber uint64) ([]*config.Transaction, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	var err error
-	var shouldReturn bool
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("GetTransactionsByBlock: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(mainDBClient)
-	}
 
 	h, err := getHandle(mainDBClient)
 	if err != nil {
@@ -721,19 +545,6 @@ func SetTransactionStatus(mainDBClient *config.PooledConnection, txHash string, 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var err error
-	var shouldReturn bool
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return fmt.Errorf("SetTransactionStatus: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(mainDBClient)
-	}
-
 	h, err := getHandle(mainDBClient)
 	if err != nil {
 		return fmt.Errorf("SetTransactionStatus: %w", err)
@@ -747,19 +558,6 @@ func GetReceipt(mainDBClient *config.PooledConnection, txHash string) (*config.R
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var err error
-	var shouldReturn bool
-	if mainDBClient == nil {
-		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("GetReceipt: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutMainDBConnection(mainDBClient)
-	}
-
 	h, err := getHandle(mainDBClient)
 	if err != nil {
 		return nil, fmt.Errorf("GetReceipt: %w", err)
@@ -772,19 +570,6 @@ func GetReceipt(mainDBClient *config.PooledConnection, txHash string) (*config.R
 func BulkGetAccounts(conn *config.PooledConnection, addresses []string) ([]*store.Account, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	var err error
-	var shouldReturn bool
-	if conn == nil {
-		conn, err = GetAccountConnectionandPutBack(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("BulkGetAccounts: %w", err)
-		}
-		shouldReturn = true
-	}
-	if shouldReturn {
-		defer PutAccountsConnection(conn)
-	}
 
 	h, err := getHandle(conn)
 	if err != nil {
@@ -802,14 +587,7 @@ func GetZKProofByBlockNumber(mainDBClient *config.PooledConnection, blockNumber 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if mainDBClient == nil {
-		var connErr error
-		mainDBClient, connErr = GetMainDBConnectionandPutBack(ctx)
-		if connErr != nil {
-			return block, nil
-		}
-		defer PutMainDBConnection(mainDBClient)
-	}
+
 	h, hErr := getHandle(mainDBClient)
 	if hErr != nil {
 		return block, nil
@@ -820,9 +598,6 @@ func GetZKProofByBlockNumber(mainDBClient *config.PooledConnection, blockNumber 
 	}
 	return block, nil
 }
-
-// getHandle is reused from account_immuclient.go in the same package.
-// (declared there, available package-wide)
 
 // common.Address usage kept for CountTransactionsByAccount signature.
 var _ = common.Address{}
