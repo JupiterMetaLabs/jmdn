@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,9 +13,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"gossipnode/logging"
 
-	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/backend"
 	"gossipnode/DB_OPs/cassata"
 	contractDB "gossipnode/DB_OPs/contractDB"
+	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/DB_OPs/thebeprofile"
 	pbdid "gossipnode/DID/proto"
 	"gossipnode/Security"
@@ -26,6 +28,7 @@ import (
 	pb "gossipnode/gETH/proto"
 
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
+	"github.com/JupiterMetaLabs/ThebeDB/pkg/builder"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 	thebeSql "github.com/JupiterMetaLabs/ThebeDB/pkg/sql"
@@ -81,14 +84,14 @@ func main() {
 	defer db.Close()
 	cas := cassata.New(db, nil)
 
-	// 3. DB_OPs connection pools (for nonce / account lookups)
-	poolConfig := config.DefaultConnectionPoolConfig()
-	if err := DB_OPs.InitMainDBPool(poolConfig); err != nil {
-		logger().Warn(ctx, "Failed to initialize DB_OPs pool — nonce retrieval might fail", ion.Err(err))
-	}
-	if err := DB_OPs.InitAccountsPool(); err != nil {
-		logger().Warn(ctx, "Failed to initialize Accounts pool — DID checks might fail", ion.Err(err))
-	}
+	// 3. Wire global ThebeDB handle so DB_OPs functions use it via getHandle(nil).
+	gw := thebegateway.NewThebeGateway(builder.New(db), db.KV, nil, nil)
+	reader := thebegateway.NewThebeReader(db.SQL.GetDB(), db.KV, nil)
+	thebeHandleBackend := backend.New(gw, reader, nil)
+	config.SetGlobalHandleFactory(func() (io.Closer, error) {
+		return backend.NewComposite(thebeHandleBackend, nil), nil
+	})
+	_ = cas // cassata used directly by SmartContract execution engine
 
 	// 4. Contract registry
 	dbConfig.Type = database.DBTypeInMemory

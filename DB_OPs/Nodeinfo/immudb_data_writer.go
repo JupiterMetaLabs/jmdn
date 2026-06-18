@@ -1,11 +1,9 @@
 package NodeInfo
 
 import (
-	"context"
 	"fmt"
 	"math/big"
 	"strings"
-	"time"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
@@ -28,14 +26,6 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		return err
-	}
-
 	for _, nh := range data {
 		if nh == nil {
 			continue
@@ -43,7 +33,7 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 
 		// FastSync splits blocks into Headers and NonHeaders. During WriteData, the block header
 		// usually exists already in DB from WriteHeaders. We fetch it, merge non-header data, and overwrite.
-		b, err := DB_OPs.GetZKBlockByNumber(conn, nh.BlockNumber)
+		b, err := DB_OPs.GetZKBlockByNumber(nil, nh.BlockNumber)
 		if err != nil {
 			// Block header not yet written — create a minimal block to attach non-header data.
 			b = &config.ZKBlock{
@@ -114,7 +104,7 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			b.Transactions = txs
 		}
 
-		if err := DB_OPs.StoreZKBlock(conn, b); err != nil {
+		if err := DB_OPs.StoreZKBlock(nil, b); err != nil {
 			// if err not nill, then force write or update
 			if strings.Contains(err.Error(), "already exists") {
 				blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, b.BlockNumber)
@@ -137,7 +127,7 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 				// entries get written — required for GetTransactionByHash to work.
 				for _, tx := range b.Transactions {
 					txKey := fmt.Sprintf("%s%s", DB_OPs.DEFAULT_PREFIX_TX, tx.Hash)
-					if err2 := DB_OPs.Create(conn, txKey, b.BlockNumber); err2 != nil {
+					if err2 := DB_OPs.Create(nil, txKey, b.BlockNumber); err2 != nil {
 						if !strings.Contains(err2.Error(), "already exists") {
 							return fmt.Errorf("store tx index for %s: %w", tx.Hash, err2)
 						}

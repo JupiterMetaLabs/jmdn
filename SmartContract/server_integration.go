@@ -13,7 +13,6 @@ import (
 	pbdid "gossipnode/DID/proto"
 	"gossipnode/Security"
 	"gossipnode/SmartContract/internal/contract_registry"
-	"gossipnode/SmartContract/internal/database"
 	"gossipnode/SmartContract/internal/evm"
 	"gossipnode/SmartContract/internal/router"
 	pb "gossipnode/gETH/proto"
@@ -21,8 +20,14 @@ import (
 
 // StartIntegratedServer initialises and starts the Smart Contract gRPC server
 // within the context of the main JMDN node, sharing the process-wide DB lock.
+// cas must be non-nil — it provides both the KV store (for hot-path EVM state)
+// and the SQL projection (for receipts and the contract registry).
 func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort int, didAddr string, blockgenPort int, cas *cassata.Cassata) error {
 	logger().Info(ctx, "Initializing Smart Contract Service...")
+
+	if cas == nil {
+		return fmt.Errorf("cassata is nil — ThebeDB is required")
+	}
 
 	if blockgenPort > 0 {
 		evmEndpoint := fmt.Sprintf("http://localhost:%d", blockgenPort)
@@ -31,25 +36,13 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 			ion.String("endpoint", evmEndpoint))
 	}
 
-	// 1. Contract registry configuration
-	dbConfig := database.LoadConfigFromEnv()
-	// Contract registry is ephemeral and should not open on-disk KV files.
-	dbConfig.Type = database.DBTypeInMemory
-
-	// 2. Contract Registry
-	registryFactory, err := contract_registry.NewRegistryFactory(dbConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create registry factory: %w", err)
-	}
-
 	Security.SetExpectedChainID(chainID)
 
-	reg, err := registryFactory.CreateRegistryDB(nil)
-	if err != nil {
-		return fmt.Errorf("failed to create registry: %w", err)
-	}
+	// 1. Contract Registry — ThebeDB-backed (persists across restarts).
+	reg := contract_registry.NewThebeRegistryDB(cas)
+	logger().Info(ctx, "ContractRegistry: using ThebeRegistryDB (persisted)")
 
-	// 3. gETH gRPC client
+	// 2. gETH gRPC client
 	gethClientConn, err := grpc.NewClient(
 		fmt.Sprintf("localhost:%d", gethPort),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -66,7 +59,7 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 	}
 	chainClient := pb.NewChainClient(gethClientConn)
 
-	// 4. DID gRPC client
+	// 3. DID gRPC client
 	didClientConn, err := grpc.NewClient(
 		didAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -92,19 +85,17 @@ func StartIntegratedServer(ctx context.Context, port int, chainID int, gethPort 
 	SetSharedRegistry(reg)
 	logger().Info(ctx, "Shared contract registry registered.")
 
-	// 5. ContractDB (State Layer) — Thebe-only runtime path.
-	if cas == nil {
-		return fmt.Errorf("failed to initialize Smart Contract state repository: cassata is nil (ThebeDB is required)")
-	}
-	repo := contractDB.NewThebeStateRepository(cas)
+	// 4. ContractDB (State Layer) — KV-backed hot path for code/storage/nonce/meta;
+	//    SQL-backed for receipts (via cassata).
+	repo := contractDB.NewKVStateRepository(cas.KV(), cas)
 	contractDB.SetSharedStateRepository(repo)
-	logger().Info(ctx, "ContractDB: using ThebeStateRepository (ThebeDB-backed)")
+	logger().Info(ctx, "ContractDB: using KVStateRepository (BadgerDB hot path)")
 	stateDB := contractDB.NewContractDB(didClient, repo)
 
-	// 6. Router
+	// 5. Router
 	smartRouter := router.NewRouter(chainID, stateDB, reg, nil, chainClient)
 
-	// 7. Start gRPC server (blocks until ctx is cancelled)
+	// 6. Start gRPC server (blocks until ctx is cancelled)
 	logger().Info(ctx, "Starting Integrated Smart Contract gRPC server",
 		ion.Int("port", port))
 

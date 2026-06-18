@@ -1,9 +1,7 @@
 package NodeInfo
 
 import (
-	"context"
 	"log"
-	"time"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/checksum/checksum_priorsync"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
@@ -15,28 +13,18 @@ const ChecksumVersion = 2
 type sync_struct struct{}
 
 // Time Complexity: O(1)
-// NewSyncStruct initializes the ImmuDB synchronization struct that satisfies types.BlockInfo.
+// NewSyncStruct initializes the synchronization struct that satisfies types.BlockInfo.
 func NewSyncStruct() types.BlockInfo {
 	return &sync_struct{}
 }
 
-// Time Complexity: O(1) mostly, bounded by network round trip to ImmuDB.
-// GetBlockNumber retrieves the latest block number from the main ImmuDB.
+// Time Complexity: O(1) mostly, bounded by network round trip to ThebeDB.
+// GetBlockNumber retrieves the latest block number.
 func (sync *sync_struct) GetBlockNumber() uint64 {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Increased timeout
-	defer cancel()
-
-	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		log.Printf("[NodeInfo] ERROR: Failed to get main DB connection for block number: %v", err)
-		return 0
-	}
-
-	num, err := DB_OPs.GetLatestBlockNumber(conn)
+	num, err := DB_OPs.GetLatestBlockNumber(nil)
 	if err != nil {
 		log.Printf("[NodeInfo] ERROR: GetLatestBlockNumber failed: %v. Attempting manual reconciliation.", err)
-		// Try reconciliation as a fallback if GetLatestBlockNumber didn't already trigger it or failed
-		reconciled, recErr := DB_OPs.ReconcileLatestBlockNumber(conn)
+		reconciled, recErr := DB_OPs.ReconcileLatestBlockNumber(nil)
 		if recErr != nil {
 			log.Printf("[NodeInfo] CRITICAL: Reconciliation also failed: %v", recErr)
 			return 0
@@ -48,16 +36,7 @@ func (sync *sync_struct) GetBlockNumber() uint64 {
 
 // ReconcileBlockNumber manually triggers a scan to find and update the latest block marker.
 func (sync *sync_struct) ReconcileBlockNumber() uint64 {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		log.Printf("[NodeInfo] ERROR: Failed to get connection for reconciliation: %v", err)
-		return 0
-	}
-
-	num, err := DB_OPs.ReconcileLatestBlockNumber(conn)
+	num, err := DB_OPs.ReconcileLatestBlockNumber(nil)
 	if err != nil {
 		log.Printf("[NodeInfo] ERROR: Reconciliation failed: %v", err)
 		return 0
@@ -65,26 +44,16 @@ func (sync *sync_struct) ReconcileBlockNumber() uint64 {
 	return num
 }
 
-
 // Time Complexity: O(1) bounded by single block DB lookup
 // GetBlockDetails fetches the latest block headers and returns a checksum wrapped in a PriorSync struct.
 func (sync *sync_struct) GetBlockDetails() types.PriorSync {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		log.Printf("Error getting main DB connection for get block details: %v", err)
-		return types.PriorSync{}
-	}
-
-	latestNum, err := DB_OPs.GetLatestBlockNumber(conn)
+	latestNum, err := DB_OPs.GetLatestBlockNumber(nil)
 	if err != nil {
 		log.Printf("Error getting latest block number for GetBlockDetails: %v", err)
 		return types.PriorSync{}
 	}
 
-	latestBlock, err := DB_OPs.GetZKBlockByNumber(conn, latestNum)
+	latestBlock, err := DB_OPs.GetZKBlockByNumber(nil, latestNum)
 	if err != nil {
 		log.Printf("Error getting latest block details: %v", err)
 		return types.PriorSync{}
@@ -112,7 +81,8 @@ func (sync *sync_struct) GetBlockDetails() types.PriorSync {
 }
 
 // Time Complexity: O(1)
-// NewAccountManager returns the ImmuDB implementation of AccountManager.
+// NewAccountManager returns the ThebeDB implementation of AccountManager.
 func (sync *sync_struct) NewAccountManager() types.AccountManager {
 	return &account_manager{}
 }
+

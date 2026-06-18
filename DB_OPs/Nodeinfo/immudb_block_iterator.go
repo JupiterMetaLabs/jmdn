@@ -1,9 +1,7 @@
 package NodeInfo
 
 import (
-	"context"
 	"encoding/json"
-	"time"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
 	"gossipnode/DB_OPs"
@@ -41,15 +39,7 @@ func (i *dbBlockIterator) Next() ([]*types.ZKBlock, error) {
 		batchEnd = i.end
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	blocks, err := DB_OPs.GetBlocksRange(conn, i.current, batchEnd)
+	blocks, err := DB_OPs.GetBlocksRange(nil, i.current, batchEnd)
 	if err != nil {
 		return nil, err
 	}
@@ -83,15 +73,7 @@ func (i *dbBlockIterator) Prev() ([]*types.ZKBlock, error) {
 		batchStart = i.start
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	blocks, err := DB_OPs.GetBlocksRange(conn, batchStart, i.tail)
+	blocks, err := DB_OPs.GetBlocksRange(nil, batchStart, i.tail)
 	if err != nil {
 		return nil, err
 	}

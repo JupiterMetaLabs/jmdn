@@ -1,7 +1,6 @@
 package NodeInfo
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -17,21 +16,12 @@ type account_manager struct{}
 
 // Time Complexity: O(N) where N is the total number of transactions scanned or retrieved
 func (am *account_manager) GetTransactionsForAccount(accountAddress string) ([]types.DBTransaction, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get main DB connection: %w", err)
-	}
-
 	addr := common.HexToAddress(accountAddress)
-	cfgTxs, err := DB_OPs.GetTransactionsByAccount(conn, &addr)
+	cfgTxs, err := DB_OPs.GetTransactionsByAccount(nil, &addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get transactions by account: %w", err)
 	}
 
-	// Serialize and deserialize to map config.Transaction to types.DBTransaction.
 	var result []types.DBTransaction
 	for _, tx := range cfgTxs {
 		b, err := json.Marshal(tx)
@@ -47,16 +37,8 @@ func (am *account_manager) GetTransactionsForAccount(accountAddress string) ([]t
 
 // Time Complexity: O(1)
 func (am *account_manager) GetAccountBalance(accountAddress string) (*big.Int, uint64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to get account DB connection: %w", err)
-	}
-
 	addr := common.HexToAddress(accountAddress)
-	acc, err := DB_OPs.GetAccount(conn, addr)
+	acc, err := DB_OPs.GetAccount(nil, addr)
 	if err != nil {
 		if strings.Contains(err.Error(), "key not found") {
 			return big.NewInt(0), 0, nil
@@ -71,17 +53,9 @@ func (am *account_manager) GetAccountBalance(accountAddress string) (*big.Int, u
 
 // Time Complexity: O(1) — read-modify-write to update both balance and nonce atomically.
 func (am *account_manager) UpdateAccountBalance(accountAddress string, balance *big.Int, nonce uint64) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get account DB connection: %w", err)
-	}
-
 	addr := common.HexToAddress(accountAddress)
 
-	doc, err := DB_OPs.GetAccount(conn, addr)
+	doc, err := DB_OPs.GetAccount(nil, addr)
 	if err != nil {
 		if strings.Contains(err.Error(), "key not found") {
 			return am.CreateAccount(accountAddress, balance, nonce)
@@ -93,7 +67,7 @@ func (am *account_manager) UpdateAccountBalance(accountAddress string, balance *
 	doc.Nonce = nonce
 	doc.UpdatedAt = time.Now().UTC().UnixNano()
 
-	if err := DB_OPs.SaveAccount(conn, doc); err != nil {
+	if err := DB_OPs.SaveAccount(nil, doc); err != nil {
 		return fmt.Errorf("failed to write updated account: %w", err)
 	}
 
@@ -102,24 +76,14 @@ func (am *account_manager) UpdateAccountBalance(accountAddress string, balance *
 
 // Time Complexity: O(1)
 func (am *account_manager) CreateAccount(accountAddress string, balance *big.Int, nonce uint64) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get account DB connection: %w", err)
-	}
-
 	addr := common.HexToAddress(accountAddress)
 
-	// CreateAccount atomically writes the address: KV entry AND the did: reference via ExecAll.
 	meta := make(map[string]interface{})
-	if err := DB_OPs.CreateAccount(conn, accountAddress, addr, meta); err != nil {
+	if err := DB_OPs.CreateAccount(nil, accountAddress, addr, meta); err != nil {
 		return fmt.Errorf("failed to create account: %w", err)
 	}
 
-	// Read-modify-write to set the caller-provided balance and nonce.
-	doc, err := DB_OPs.GetAccount(conn, addr)
+	doc, err := DB_OPs.GetAccount(nil, addr)
 	if err != nil {
 		return fmt.Errorf("failed to read back created account: %w", err)
 	}
@@ -128,7 +92,7 @@ func (am *account_manager) CreateAccount(accountAddress string, balance *big.Int
 	doc.Nonce = nonce
 	doc.UpdatedAt = time.Now().UTC().UnixNano()
 
-	if err := DB_OPs.SaveAccount(conn, doc); err != nil {
+	if err := DB_OPs.SaveAccount(nil, doc); err != nil {
 		return fmt.Errorf("failed to write account with correct balance/nonce: %w", err)
 	}
 
@@ -137,14 +101,6 @@ func (am *account_manager) CreateAccount(accountAddress string, balance *big.Int
 
 // Time Complexity: O(N) where N is the number of updates
 func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get account DB connection: %w", err)
-	}
-
 	var entries []struct {
 		Key   string
 		Value []byte
@@ -174,5 +130,6 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 		})
 	}
 
-	return DB_OPs.BatchRestoreAccounts(conn, entries)
+	return DB_OPs.BatchRestoreAccounts(nil, entries)
 }
+

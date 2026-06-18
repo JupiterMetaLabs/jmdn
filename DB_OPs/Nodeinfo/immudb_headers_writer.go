@@ -1,10 +1,8 @@
 package NodeInfo
 
 import (
-	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/block"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
@@ -24,14 +22,6 @@ func (sync *sync_struct) NewHeadersWriter() types.WriteHeaders {
 func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 	if len(headers) == 0 {
 		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		return err
 	}
 
 	for _, h := range headers {
@@ -64,7 +54,7 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 			b.ZKVMAddr = &addr
 		}
 		
-		err := DB_OPs.StoreZKBlock(conn, b)
+		err := DB_OPs.StoreZKBlock(nil, b)
 		if err != nil {
 			if strings.Contains(err.Error(), "already exists") {
 				blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, b.BlockNumber)

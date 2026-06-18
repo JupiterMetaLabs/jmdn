@@ -1,9 +1,6 @@
 package NodeInfo
 
 import (
-	"context"
-	"time"
-
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/block"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
 	"gossipnode/DB_OPs"
@@ -20,15 +17,8 @@ func (sync *sync_struct) NewBlockHeaderIterator() types.BlockHeader {
 func (i *dbBlockHeaderIterator) GetBlockHeaders(blocknumbers []uint64) ([]*block.Header, error) {
 	var headers []*block.Header
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	for _, num := range blocknumbers {
-		b, err := DB_OPs.GetZKBlockByNumber(conn, num)
+		b, err := DB_OPs.GetZKBlockByNumber(nil, num)
 		if err != nil || b == nil {
 			continue
 		}
@@ -61,14 +51,7 @@ func (i *dbBlockHeaderIterator) GetBlockHeaders(blocknumbers []uint64) ([]*block
 
 // Time Complexity: O(N) where N is the end - start range
 func (i *dbBlockHeaderIterator) GetBlockHeadersRange(start, end uint64) ([]*block.Header, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	blocks, err := DB_OPs.GetBlocksRange(conn, start, end)
+	blocks, err := DB_OPs.GetBlocksRange(nil, start, end)
 	if err != nil {
 		return nil, err
 	}
