@@ -50,6 +50,12 @@ deploy: build
 # Supports macOS (Homebrew) and Linux (apt). OS is auto-detected.
 # Install only — does not start services automatically.
 # To start: make infra-redis-start / make infra-sql-start
+#
+# NOTE: These variables are INFRA-ONLY — they are used exclusively by the
+# infra-* targets below to provision directories and databases on this machine.
+# They are NOT passed to the Go build and are NOT baked into the binary.
+# The running node reads all ThebeDB config at runtime from jmdn.yaml:
+#   thebe.kv_path, thebe.sql_dsn (or env THEBE_SQL_DSN), thebe.redis_url.
 
 JMDN_KV_PATH      ?= /opt/jmdn/thebe-kv
 JMDN_PG_PORT      ?= 5430

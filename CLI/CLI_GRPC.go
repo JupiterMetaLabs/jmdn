@@ -12,6 +12,7 @@ import (
 	"gossipnode/node"
 	"gossipnode/seed"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 )
@@ -295,36 +296,7 @@ func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 }
 
 func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
-	if peeraddr == "" {
-		return SyncStats{}, fmt.Errorf("usage: fastsyncv2 <peer_multiaddr>")
-	}
-
-	// Make sure engine exists
-	if h.FastSyncerV2 == nil {
-		return SyncStats{}, fmt.Errorf("FastsyncV2 engine is inactive")
-	}
-
-	startTime := time.Now().UTC()
-	err := h.FastSyncerV2.HandleSync(peeraddr)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("FastsyncV2 failed: %w", err)
-	}
-
-	// Re-fetch DB states to report. FastsyncV2 doesn't require MainClient/DIDClient
-	// for the sync itself, so guard against nil before querying.
-	var newMainState, newAccountsState *DB_OPs.DatabaseState
-	if h.MainClient != nil {
-		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient.Client)
-	}
-	if h.DIDClient != nil {
-		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
-	}
-
-	return SyncStats{
-		TimeTaken:     time.Since(startTime),
-		MainState:     newMainState,
-		AccountsState: newAccountsState,
-	}, nil
+	return SyncStats{}, fmt.Errorf("fastsync removed: use ThebeDB sync instead")
 }
 
 func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStats, error) {
@@ -397,15 +369,23 @@ func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStat
 	}, nil
 }
 
-func (h *CommandHandler) HandleGetDID(did string) (*DB_OPs.Account, error) {
-	if did == "" {
-		return nil, fmt.Errorf("usage: getDID <did>")
+func (h *CommandHandler) HandleGetDID(input string) (*DB_OPs.Account, error) {
+	if input == "" {
+		return nil, fmt.Errorf("usage: getDID <did|address>")
 	}
 
-	doc, err := DB_OPs.GetAccountByDID(h.MainClient, did)
+	if strings.HasPrefix(input, DB_OPs.DIDPrefix) {
+		doc, err := DB_OPs.GetAccountByDID(h.MainClient, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to retrieve DID %s: %v", input, err)
+		}
+		return doc, nil
+	}
+
+	// Treat as Ethereum address
+	doc, err := DB_OPs.GetAccount(h.MainClient, common.HexToAddress(input))
 	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve DID %s: %v", did, err)
+		return nil, fmt.Errorf("failed to retrieve address %s: %v", input, err)
 	}
-
 	return doc, nil
 }

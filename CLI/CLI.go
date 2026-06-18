@@ -12,7 +12,6 @@ import (
 	"gossipnode/Block"
 	CLICommon "gossipnode/CLI/common"
 	"gossipnode/DB_OPs"
-	"gossipnode/FastsyncV2"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	"gossipnode/config/version"
@@ -25,8 +24,6 @@ import (
 	"gossipnode/shutdown"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/libp2p/go-libp2p/core/peer"
-	ma "github.com/multiformats/go-multiaddr"
 )
 
 // formatTimestamp handles both Unix seconds and nanoseconds formats
@@ -48,10 +45,15 @@ func formatTimestamp(timestamp int64) string {
 }
 
 // CommandHandler holds dependencies for CLI command execution
+// FastSyncerV2Interface is the subset of the FastsyncV2 engine used by the CLI.
+// The concrete implementation is wired in main.go once the engine is initialised.
+type FastSyncerV2Interface interface {
+	HandleSync(targetPeer string) error
+}
+
 type CommandHandler struct {
 	Node            *config.Node
 	NodeManager     *node.NodeManager
-	FastSyncerV2    *FastsyncV2.FastsyncV2
 	MainClient      *config.PooledConnection
 	DIDClient       *config.PooledConnection
 	SeedNode        string
@@ -59,6 +61,7 @@ type CommandHandler struct {
 	ChainID         int
 	FacadePort      int
 	WSPort          int
+	FastSyncerV2    FastSyncerV2Interface
 }
 
 // Simple helper to print the CLI prompt in color
@@ -104,11 +107,9 @@ func PrintFuncs() {
 	fmt.Println("  mempoolStats                      - Show mempool statistics")
 	fmt.Println("  stats                             - Show messaging statistics")
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
-	fmt.Println("  fastsync <peer_multiaddr>        - Fast sync blockchain data with a peer (V2 Engine)")
 	fmt.Println("  dbstate                           - Show current ImmuDB database state")
 	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
-	fmt.Println("  syncinfo                          - Show FastSync configuration")
 	fmt.Println("  gethstatus                        - Show gETH server status (chain ID, ports)")
 	fmt.Println("  grometrics                        - Show GRO metrics")
 	fmt.Println("  version                           - Show current binary version")
@@ -262,12 +263,8 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleShowStats()
 	case "broadcast":
 		h.handleBroadcast(parts)
-	case "fastsync", "fastsyncv2", "firstsync":
-		h.handleFastSync(parts)
 	case "propagateDID":
 		h.handlePropagateDID(parts)
-	case "syncinfo":
-		h.handleSyncInfo()
 	case "getDID":
 		h.handleGetDID(parts)
 	case "dbstate":
@@ -568,63 +565,6 @@ func (h *CommandHandler) handleBroadcast(parts []string) {
 	}
 }
 
-func (h *CommandHandler) handleFastSync(parts []string) {
-	if len(parts) != 2 {
-		fmt.Println("Usage: fastsync <peer_multiaddr>")
-		return
-	}
-
-	if h.FastSyncerV2 == nil {
-		fmt.Println("Error: FastsyncV2 engine is not initialized")
-		return
-	}
-
-	// Parse the multiaddr
-	addr, err := ma.NewMultiaddr(parts[1])
-	if err != nil {
-		fmt.Printf("Invalid multiaddress: %v\n", err)
-		return
-	}
-
-	// Extract peer ID from multiaddr
-	addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
-	if err != nil {
-		fmt.Printf("Failed to extract peer info: %v\n", err)
-		return
-	}
-
-	// Show pre-sync DB state if clients are available
-	if h.MainClient != nil && h.DIDClient != nil {
-		mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
-		if err == nil {
-			fmt.Printf("Pre-sync main DB state: TxID=%d, Root=%x\n", mainState.TxId, mainState.TxHash)
-		}
-	}
-
-	fmt.Printf("Starting blockchain fastsync (V2 Engine) with peer %s\n", addrInfo.ID.String())
-
-	startTime := time.Now().UTC()
-	syncErr := h.FastSyncerV2.HandleSync(parts[1])
-	if syncErr != nil {
-		fmt.Printf("Fastsync failed: %v\n", syncErr)
-		return
-	}
-
-	// Show post-sync DB state if clients are available
-	if h.MainClient != nil && h.DIDClient != nil {
-		newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
-		if err == nil {
-			fmt.Printf("Post-sync main DB state: TxID=%d, Root=%x\n", newMainState.TxId, newMainState.TxHash)
-		}
-		newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
-		if err == nil {
-			fmt.Printf("Post-sync accounts DB state: TxID=%d, Root=%x\n", newAccountsState.TxId, newAccountsState.TxHash)
-		}
-	}
-
-	fmt.Printf("Fastsync completed in %v\n", time.Since(startTime))
-	printDashes()
-}
 
 func (h *CommandHandler) handlePropagateDID(parts []string) {
 	if len(parts) < 3 || len(parts) > 4 {
@@ -665,16 +605,6 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
 	}
 }
 
-func (h *CommandHandler) handleSyncInfo() {
-	fmt.Println("FastSync Configuration:")
-	fmt.Println("  Engine: FastsyncV2 (PoTS / WAL-based)")
-	if h.FastSyncerV2 == nil {
-		fmt.Println("  Status: inactive")
-	} else {
-		fmt.Println("  Status: active")
-	}
-	printDashes()
-}
 
 func (h *CommandHandler) handleGetDID(parts []string) {
 	if len(parts) != 2 {

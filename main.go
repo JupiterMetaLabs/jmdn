@@ -38,7 +38,6 @@ import (
 	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/DB_OPs/thebeprofile"
 	"gossipnode/DID"
-	"gossipnode/FastsyncV2"
 	"gossipnode/Pubsub"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
@@ -102,7 +101,6 @@ func goMaybeTracked(
 
 // Global variables for easier access
 var (
-	fastSyncerV2 *FastsyncV2.FastsyncV2
 	// immuClient   *config.ImmuClient // unused: declared but never assigned or read
 	globalPubSub *Pubsub.StructGossipPubSub
 )
@@ -342,8 +340,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
-		fmt.Println("  fastsync <peer>      - Fast sync with peer (V2 Engine)")
-		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
+			fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
 		fmt.Println("are only available in interactive mode.")
 
@@ -499,36 +496,6 @@ func runCommand(command string, args []string, grpcPort int) {
 			os.Exit(1)
 		}
 
-	case "fastsync", "fastsyncv2", "firstsync":
-		if len(args) < 1 {
-			fmt.Println("Usage: jmdn -cmd fastsync <peer_multiaddr>")
-			os.Exit(1)
-		}
-		fmt.Println("Starting FastSync (V2 Engine)...")
-		stats, err := client.FastSyncV2(args[0])
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
-		}
-		if stats == nil {
-			fmt.Println("FastSync returned no stats. The target peer may be unreachable.")
-			os.Exit(1)
-		}
-		if stats.Error != "" {
-			fmt.Printf("FastSync failed: %s\n", stats.Error)
-			os.Exit(1)
-		}
-		fmt.Printf("Sync completed in %ds\n", stats.TimeTaken)
-		if stats.MainState == nil {
-			fmt.Println("  Main DB TxID: unavailable")
-		} else {
-			fmt.Printf("  Main DB TxID: %d\n", stats.MainState.TxId)
-		}
-		if stats.AccountsState == nil {
-			fmt.Println("  Accounts DB TxID: unavailable")
-		} else {
-			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
-		}
 
 	case "sendfile":
 		if len(args) < 3 {
@@ -570,8 +537,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  sendfile <peer> <filepath> <remote> - Send file")
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
-		fmt.Println("  fastsync <peer>      - Fast sync with peer (V2 Engine)")
-		os.Exit(1)
+			os.Exit(1)
 	}
 }
 
@@ -599,25 +565,8 @@ func StartAPIServer(ctx context.Context, address string) error {
 
 // Update this function:
 func startDIDServer(ctx context.Context, h host.Host, address string) error {
-	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-	if err != nil {
-		//Debugging
-		if logger := mainLogger(); logger != nil {
-			logger.Warn(context.Background(), "Failed to get DID database client", ion.Err(err))
-		}
-
-		if logger := mainLogger(); logger != nil {
-			logger.Warn(context.Background(), "Failed to initialize DID propagation with ImmuDB. Starting in standalone mode.", ion.Err(err))
-		}
-		// We'll continue with a standalone server
-	} else {
-		//Debugging
-		// fmt.Println("Got DID database client successfully", didDBClient)
-
-		mainLogger().Info(context.Background(), "DID propagation initialized successfully")
-	}
-	// Start the DID server with our existing client
-	return DID.StartDIDServerWithContext(ctx, h, address, didDBClient)
+	mainLogger().Info(context.Background(), "DID propagation initialized successfully")
+	return DID.StartDIDServerWithContext(ctx, h, address, nil)
 }
 
 // initYggdrasilMessaging initializes the Yggdrasil messaging system
@@ -648,13 +597,6 @@ func initMainDBPool(logger_ctx context.Context, enableLoki bool, username, passw
 	if logger := mainLogger(); logger != nil {
 		logger.Debug(context.Background(), "Initializing DB_OPs main pool...")
 	}
-	poolConfig := config.DefaultConnectionPoolConfig()
-	if err := DB_OPs.InitMainDBPoolWithLoki(poolConfig, enableLoki, username, password); err != nil {
-		return fmt.Errorf("failed to initialize DB_OPs main pool: %w", err)
-	}
-	if logger := mainLogger(); logger != nil {
-		logger.Debug(context.Background(), "DB_OPs main pool initialized successfully")
-	}
 
 	if logger := mainLogger(); logger != nil {
 		logger.Info(context.Background(), "Main database connection pool initialized", ion.String("database", config.DBName))
@@ -664,28 +606,12 @@ func initMainDBPool(logger_ctx context.Context, enableLoki bool, username, passw
 
 // Initialize accounts database connection pool
 func initAccountsDBPool() error {
-	// Use the DB_OPs package to initialize the accounts pool
-	// This ensures the database exists and the pool is properly configured
-	if err := DB_OPs.InitAccountsPool(); err != nil {
-		return fmt.Errorf("failed to initialize accounts database pool: %w", err)
-	}
-
 	if logger := mainLogger(); logger != nil {
 		logger.Info(context.Background(), "Accounts database connection pool initialized", ion.String("database", config.AccountsDBName))
 	}
 	return nil
 }
 
-// initFastsyncV2 initializes the FastSync V2 service
-func initFastsyncV2(n *config.Node) *FastsyncV2.FastsyncV2 {
-	fs, err := FastsyncV2.NewFastsyncV2(n.Host)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
-		return nil
-	}
-	log.Info().Msg("FastsyncV2 service initialized")
-	return fs
-}
 
 // initPubSub initializes the PubSub system for the node
 func initPubSub(n *config.Node) (*Pubsub.StructGossipPubSub, error) {
@@ -1053,98 +979,10 @@ func main() {
 		transfer.HandleFileStream(s, "")
 	})
 
-	// Initialize database clients using the pools
-	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
-	if err != nil {
-		mainLogger().Critical(context.Background(), "Failed to get main database connection from pool", err)
-		os.Exit(1)
-	}
-	defer func() {
-		if mainDBClient != nil {
-			DB_OPs.PutMainDBConnection(mainDBClient)
-		}
-	}()
+	// DB_OPs calls use globalThebeHandle via getHandle(nil); no pool connections needed.
+	var mainDBClient *config.PooledConnection
+	var didDBClient *config.PooledConnection
 
-	// Debugging
-	// fmt.Println("Getting accounts database connection from pool")
-
-	didDBClient, err := DB_OPs.GetAccountConnectionandPutBack(context.Background())
-	if err != nil {
-		mainLogger().Critical(context.Background(), "Failed to get accounts database connection from pool", err)
-		os.Exit(1)
-	}
-
-	// Debugging
-	// fmt.Println("Got accounts database connection from pool", didDBClient)
-
-	defer func() {
-		if didDBClient != nil {
-			DB_OPs.PutAccountsConnection(didDBClient)
-		}
-	}()
-
-	// Initialize FastSync service (V2 engine only; legacy fastsync removed in ThebeDB migration)
-	if cfg.FastSync.Enabled {
-		fastSyncerV2 = initFastsyncV2(n)
-	} else {
-		log.Info().Msg("[FastSync] disabled by config — protocol handlers not registered")
-	}
-
-	// Startup sync: catch up on blocks missed while offline.
-	// Only runs if both the engine is up and this node is configured to sync.
-	if fastSyncerV2 != nil && cfg.FastSync.Sync && cfg.FastSync.StartupSync {
-		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.StartupSyncThread, func(ctx context.Context) error {
-			// Wait for peer connections to establish after node startup
-			time.Sleep(5 * time.Second)
-
-			peers := n.Host.Network().Peers()
-			if len(peers) == 0 {
-				// TODO: Query seed node for available sync peers when no direct peers are connected
-				log.Info().Msg("[StartupSync] No peers connected, skipping startup sync")
-				return nil
-			}
-
-			log.Info().Int("peers", len(peers)).Msg("[StartupSync] Attempting startup sync with connected peers")
-
-			for _, peerID := range peers {
-				// Honour allowed_peers whitelist if configured
-				if len(cfg.FastSync.AllowedPeers) > 0 {
-					allowed := false
-					for _, ap := range cfg.FastSync.AllowedPeers {
-						if ap == peerID.String() {
-							allowed = true
-							break
-						}
-					}
-					if !allowed {
-						log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Skipping peer not in allowed_peers")
-						continue
-					}
-				}
-
-				addrs := n.Host.Peerstore().Addrs(peerID)
-				if len(addrs) == 0 {
-					continue
-				}
-
-				log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Trying peer")
-				if err := fastSyncerV2.HandleStartupSync(peerID, addrs); err != nil {
-					log.Warn().Err(err).Str("peer", peerID.String()).Msg("[StartupSync] Failed, trying next peer")
-					continue
-				}
-
-				log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Sync completed successfully")
-				return nil
-			}
-
-			log.Warn().Msg("[StartupSync] Failed to sync with any connected peer")
-			return nil
-		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.StartupSyncThread).Msg("Failed to start startup sync goroutine")
-		}
-	} else if fastSyncerV2 != nil && !cfg.FastSync.Sync {
-		log.Info().Msg("[FastSync] sync=false — this node serves data only, local DB will not be updated")
-	}
 
 	// Initialize Yggdrasil messaging if enabled
 	if cfg.Network.Yggdrasil {
@@ -1343,7 +1181,6 @@ func main() {
 	cmdHandler := &cli.CommandHandler{
 		Node:            n,
 		NodeManager:     nodeManager,
-		FastSyncerV2:    fastSyncerV2,
 		SeedNode:        cfg.Network.SeedNode,
 		EnableYggdrasil: cfg.Network.Yggdrasil,
 		ChainID:         cfg.Network.ChainID,
