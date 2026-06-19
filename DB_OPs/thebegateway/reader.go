@@ -33,6 +33,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/cache"
@@ -85,7 +86,7 @@ const (
 	sqlGetAccount = `
         SELECT address, did_address, balance_wei, nonce, account_type, metadata,
                created_at, updated_at
-        FROM accounts WHERE address = $1`
+        FROM accounts WHERE LOWER(address) = LOWER($1)`
 
 	sqlGetTransaction = `
         SELECT tx_hash, block_number, tx_index, from_addr, to_addr, value_wei, nonce,
@@ -125,7 +126,9 @@ const (
 	sqlGetAccountByDID = `
         SELECT address, did_address, balance_wei, nonce, account_type, metadata,
                created_at, updated_at
-        FROM accounts WHERE did_address = $1`
+        FROM accounts WHERE LOWER(did_address) = LOWER($1)
+           OR LOWER(address) = LOWER($1)
+        LIMIT 1`
 
 	sqlBulkGetAccounts = `
         SELECT address, did_address, balance_wei, nonce, account_type, metadata,
@@ -265,10 +268,13 @@ func (r *thebeReader) scanAccount(s scanner, rec *AccountRecord) error {
 
 // GetAccount returns the account with the given address.
 // Time: O(1) — PK lookup
+// Normalises address to lowercase before querying — Ethereum addresses are
+// case-insensitive but stored as lowercase hex in Postgres.
 func (r *thebeReader) GetAccount(ctx context.Context, address string) (*AccountRecord, error) {
+	addr := strings.ToLower(address)
 	var rec AccountRecord
-	err := r.read(ctx, AccountKey(address), TTLAccount, &rec, func() error {
-		return r.scanAccount(r.db.QueryRowContext(ctx, sqlGetAccount, address), &rec)
+	err := r.read(ctx, AccountKey(addr), TTLAccount, &rec, func() error {
+		return r.scanAccount(r.db.QueryRowContext(ctx, sqlGetAccount, addr), &rec)
 	})
 	if err != nil {
 		return nil, err
@@ -453,11 +459,14 @@ func (r *thebeReader) BulkGetBlocks(ctx context.Context, from, to uint64) ([]*Bl
 	return results, nil
 }
 
-// GetAccountByDID returns the account with the given DID address.
-// Time: O(1) — DID-indexed lookup (requires index on did_address column)
+// GetAccountByDID returns the account matching the given DID or address string.
+// Case-insensitive: LOWER(did_address) = LOWER($1) OR LOWER(address) = LOWER($1)
+// so callers can pass checksummed, lowercase, or DID format interchangeably.
 func (r *thebeReader) GetAccountByDID(ctx context.Context, did string) (*AccountRecord, error) {
+	// Normalise cache key to lowercase so checksummed and lowercase inputs share one entry.
+	cacheKey := "jmdn:account:did:" + strings.ToLower(did)
 	var rec AccountRecord
-	err := r.read(ctx, "jmdn:account:did:"+did, TTLAccount, &rec, func() error {
+	err := r.read(ctx, cacheKey, TTLAccount, &rec, func() error {
 		return r.scanAccount(r.db.QueryRowContext(ctx, sqlGetAccountByDID, did), &rec)
 	})
 	if err != nil {

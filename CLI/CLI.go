@@ -644,61 +644,25 @@ func (h *CommandHandler) handleGetDID(parts []string) {
 }
 
 func (h *CommandHandler) handleDBState() {
-
-	err := h.checkDBClient()
+	// Latest block via globalThebeHandle → Postgres ORDER BY block_number DESC LIMIT 1
+	latestBlock, err := DB_OPs.GetLatestBlockNumber(nil)
 	if err != nil {
-		fmt.Printf("Database client not initialized: %v\n", err)
+		fmt.Printf("Failed to get latest block number: %v\n", err)
+		fmt.Println("  (ThebeDB handle may not be initialised yet — check jmdn.yaml thebe config)")
 		return
 	}
 
-	err = h.checkDIDClient()
-	if err != nil {
-		fmt.Printf("DID database client not initialized: %v\n", err)
-		return
-	}
+	fmt.Println("Current ThebeDB State (Postgres):")
+	fmt.Printf("  Latest Block:   %d\n", latestBlock)
 
-	// Debugging
-	// fmt.Println("Got DB Client and DID Client", h.MainClient.Client, h.DIDClient.Client)
-
-	state, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
-	if err != nil {
-		fmt.Printf("Failed to get database state: %v\n", err)
-		return
-	}
-
-	fmt.Println("Current ImmuDB State:")
-	fmt.Printf("  Transaction ID: %d\n", state.TxId)
-	fmt.Printf("  Merkle Root: %x\n", state.TxHash)
-
-	// Count entries in the database using pagination
-	const maxKeysPerBatch = 2000 // Staying well under the 2500 limit
-	var totalKeys int
-	var lastKey string
-	var hasMoreKeys = true
-
-	for hasMoreKeys {
-		keys, err := DB_OPs.GetAllKeys(h.MainClient, lastKey)
-		if err != nil {
-			fmt.Printf("Failed to count database entries: %v\n", err)
-			hasMoreKeys = false
-			continue
-		}
-
-		count := len(keys)
-		totalKeys += count
-
-		// If we got fewer keys than our limit, we've reached the end
-		if count < maxKeysPerBatch {
-			hasMoreKeys = false
-		} else if count > 0 {
-			// Set the last key for the next batch
-			lastKey = keys[count-1]
-		} else {
-			hasMoreKeys = false
+	// Show the latest block header
+	if latestBlock > 0 {
+		block, berr := DB_OPs.GetZKBlockByNumber(nil, latestBlock)
+		if berr == nil && block != nil {
+			fmt.Printf("  Block Hash:     %s\n", block.BlockHash)
+			fmt.Printf("  Gas Used:       %d\n", block.GasUsed)
 		}
 	}
-
-	fmt.Printf("  Total Keys: %d\n", totalKeys)
 	printDashes()
 }
 

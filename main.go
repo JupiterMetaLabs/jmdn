@@ -945,6 +945,10 @@ func main() {
 		config.SetGlobalHandleFactory(func() (io.Closer, error) {
 			return backend.NewComposite(thebeHandleBackend, nil), nil
 		})
+		// Also wire the process-wide ThebeHandle used by DB_OPs shim functions
+		// (GetLatestBlockNumber, GetBlock, etc.) which call getHandle() directly
+		// without going through a PooledConnection.
+		DB_OPs.SetGlobalHandle(backend.NewComposite(thebeHandleBackend, nil))
 		fmt.Fprintln(os.Stderr, "thebedb: gateway + handle factory enabled")
 	}
 
