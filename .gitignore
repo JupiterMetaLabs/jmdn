@@ -106,3 +106,5 @@ storage/thebe-kv/DISCARD
 storage/thebe-kv/KEYREGISTRY
 storage/thebe-kv/LOCK
 storage/thebe-kv/MANIFEST
+*.duckdb
+*.wal
