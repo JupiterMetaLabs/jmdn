@@ -95,3 +95,14 @@ AVC/BLS/Router/config/bls.json
 AVC/BuddyNodes/MessagePassing/BLS_Signer/config/bls.json
 AVC/BuddyNodes/MessagePassing/BLS_Verifier/config/bls.json
 .gocache
+*.vlog
+*.mem
+
+# ThebeDB runtime data
+storage/
+data/eventlog*
+data/dlq/
+storage/thebe-kv/DISCARD
+storage/thebe-kv/KEYREGISTRY
+storage/thebe-kv/LOCK
+storage/thebe-kv/MANIFEST
