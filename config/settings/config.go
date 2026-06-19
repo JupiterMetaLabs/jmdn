@@ -85,6 +85,16 @@ type ThebeConfig struct {
 	StreamName string `mapstructure:"stream_name" yaml:"stream_name"` // optional, default "thebedb.events"
 	MaxLen     int64  `mapstructure:"max_len" yaml:"max_len"`         // optional, default 1000
 	GroupName  string `mapstructure:"group_name" yaml:"group_name"`   // optional, default "projector"
+	CDC        ThebeCDCConfig `mapstructure:"cdc" yaml:"cdc"`
+}
+
+type ThebeCDCConfig struct {
+    Enabled     bool   `mapstructure:"enabled" yaml:"enabled"`
+    SlotName    string `mapstructure:"slot_name" yaml:"slot_name"`
+    Publication string `mapstructure:"publication" yaml:"publication"`
+    LogPath     string `mapstructure:"log_path" yaml:"log_path"`
+    DLQPath     string `mapstructure:"dlq_path" yaml:"dlq_path"`
+    MaxLagBytes int64  `mapstructure:"max_lag_bytes" yaml:"max_lag_bytes"`
 }
 
 // LoggingSettings mirrors Ion's Config struct so jmdn.yaml can fully configure

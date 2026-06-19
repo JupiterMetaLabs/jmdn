@@ -21,6 +21,7 @@ import (
 
 	thebedb "github.com/JupiterMetaLabs/ThebeDB"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/builder"
+	thebeconfig "github.com/JupiterMetaLabs/ThebeDB/pkg/config"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/kv"
 	"github.com/JupiterMetaLabs/ThebeDB/pkg/profile"
 	thebeSql "github.com/JupiterMetaLabs/ThebeDB/pkg/sql"
@@ -340,7 +341,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
-			fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
+		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
 		fmt.Println("are only available in interactive mode.")
 
@@ -496,7 +497,6 @@ func runCommand(command string, args []string, grpcPort int) {
 			os.Exit(1)
 		}
 
-
 	case "sendfile":
 		if len(args) < 3 {
 			fmt.Println("Usage: jmdn -cmd sendfile <peer> <filepath> <remote_filename>")
@@ -537,7 +537,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  sendfile <peer> <filepath> <remote> - Send file")
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
-			os.Exit(1)
+		os.Exit(1)
 	}
 }
 
@@ -611,7 +611,6 @@ func initAccountsDBPool() error {
 	}
 	return nil
 }
-
 
 // initPubSub initializes the PubSub system for the node
 func initPubSub(n *config.Node) (*Pubsub.StructGossipPubSub, error) {
@@ -906,6 +905,25 @@ func main() {
 		fmt.Fprintln(os.Stderr, "thebedb: db init OK")
 		defer db.Close()
 
+		// Wire CDC if enabled.
+		// IMPORTANT: pass cfg.Thebe.SQLDSN (direct Postgres DSN), never PgBouncer —
+		// logical replication is session-level and breaks over transaction pooling.
+		if cfg.Thebe.CDC.Enabled {
+			cdcCfg := thebeconfig.CDC{
+				Enabled:     true,
+				SlotName:    cfg.Thebe.CDC.SlotName,
+				Publication: cfg.Thebe.CDC.Publication,
+				LogPath:     cfg.Thebe.CDC.LogPath,
+				DLQPath:     cfg.Thebe.CDC.DLQPath,
+				MaxLagBytes: cfg.Thebe.CDC.MaxLagBytes,
+			}
+			if err := db.StartCDC(cdcCfg, cfg.Thebe.SQLDSN); err != nil {
+				fmt.Fprintf(os.Stderr, "FATAL thebedb: cdc start failed: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Fprintln(os.Stderr, "thebedb: CDC pipeline running")
+		}
+
 		// Keep cassata for backward-compat callers (SmartContract, gETH routes).
 		cas = cassata.New(db, zap.NewNop())
 
@@ -982,7 +1000,6 @@ func main() {
 	// DB_OPs calls use globalThebeHandle via getHandle(nil); no pool connections needed.
 	var mainDBClient *config.PooledConnection
 	var didDBClient *config.PooledConnection
-
 
 	// Initialize Yggdrasil messaging if enabled
 	if cfg.Network.Yggdrasil {
