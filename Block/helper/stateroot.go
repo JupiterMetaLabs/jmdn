@@ -1,6 +1,7 @@
 package helper
 
 import (
+	"context"
 	"fmt"
 
 	"gossipnode/DB_OPs"
@@ -13,9 +14,9 @@ import (
 // Compute_stateroot computes the new state root by hashing the previous state root with the new block hash
 // It validates that the computed state root matches the state root in the payload
 // Returns the computed state root if validation passes, otherwise returns an error
-func Compute_stateroot(payload *config.ZKBlock) (common.Hash, error) {
+func Compute_stateroot(ctx context.Context, payload *config.ZKBlock) (common.Hash, error) {
 	// Get the latest block number from the database
-	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(nil)
+	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("failed to get latest block number: %w", err)
 	}

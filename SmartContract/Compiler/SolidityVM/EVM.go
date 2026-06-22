@@ -1,14 +1,14 @@
 package SolidityVM
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"gossipnode/config/Types"
 	"gossipnode/config/Types/Solidity"
-
-	solc "github.com/imxyb/solc-go"
 )
 
 type EVM struct {
@@ -20,41 +20,53 @@ func NewEVM(compiledContract *Types.CompiledContract) *EVM {
 }
 
 // Compile compiles Solidity source code and returns a CompiledContract.
-// This is a stateless operation - no file I/O, uses in-memory compilation via solc-go library.
+// This requires the 'solc' binary to be installed and available in the system PATH.
 func (e *EVM) Compile(sourceCode string) (*Types.CompiledContract, error) {
-	// Use solc-go for in-memory compilation (no temp files needed)
-	compiler, err := solc.GetCompiler("0.8.28")
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize solc compiler: %w", err)
+	// Check if solc is available
+	if _, err := exec.LookPath("solc"); err != nil {
+		return nil, fmt.Errorf("%w: 'solc' executable not found in PATH. Please install the Solidity compiler", Solidity.ErrCompilationFailed)
 	}
 
-	// Create Input struct
-	input := &solc.Input{
-		Language: "Solidity",
-		Sources: map[string]solc.SourceIn{
-			"contract.sol": {
-				Content: sourceCode,
+	// Create Input struct for standard JSON format
+	input := map[string]interface{}{
+		"language": "Solidity",
+		"sources": map[string]interface{}{
+			"contract.sol": map[string]string{
+				"content": sourceCode,
 			},
 		},
-		Settings: solc.Settings{
-			OutputSelection: map[string]map[string][]string{
-				"*": {
-					"*": {"abi", "evm.bytecode", "evm.deployedBytecode"},
+		"settings": map[string]interface{}{
+			"outputSelection": map[string]interface{}{
+				"*": map[string]interface{}{
+					"*": []string{"abi", "evm.bytecode", "evm.deployedBytecode"},
 				},
 			},
-			Optimizer: solc.Optimizer{
-				Enabled: true,
-				Runs:    200,
+			"optimizer": map[string]interface{}{
+				"enabled": true,
+				"runs":    200,
 			},
-			EVMVersion: "london",
+			"evmVersion": "london",
 		},
 	}
 
-	// Compile
-	output, err := compiler.Compile(input)
+	inputJSON, err := json.Marshal(input)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", Solidity.ErrCompilationFailed, err)
+		return nil, fmt.Errorf("failed to marshal solc input: %w", err)
 	}
+
+	// Execute local solc binary
+	cmd := exec.Command("solc", "--standard-json")
+	cmd.Stdin = bytes.NewReader(inputJSON)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("%w: solc execution failed: %v, stderr: %s", Solidity.ErrCompilationFailed, err, stderr.String())
+	}
+
+	outputJSON := stdout.Bytes()
 
 	// Parse the JSON output
 	var result struct {
@@ -74,12 +86,6 @@ func (e *EVM) Compile(sourceCode string) (*Types.CompiledContract, error) {
 		} `json:"errors"`
 	}
 
-	// Convert Output to JSON bytes
-	outputJSON, err := json.Marshal(output)
-	if err != nil {
-		return nil, Solidity.ErrMarshalOutput
-	}
-
 	if err := json.Unmarshal(outputJSON, &result); err != nil {
 		return nil, Solidity.ErrUnmarshalOutput
 	}
@@ -90,6 +96,8 @@ func (e *EVM) Compile(sourceCode string) (*Types.CompiledContract, error) {
 		for _, err := range result.Errors {
 			messages = append(messages, err.Message)
 		}
+		// Some errors are just warnings, but for simplicity we treat all returned messages as issues
+		// Real solc has "severity": "error" or "warning", let's be strict or just print.
 		return nil, fmt.Errorf("%w: %s", Solidity.ErrCompilationFailed, strings.Join(messages, "; "))
 	}
 
@@ -134,7 +142,6 @@ func (e *EVM) Compile(sourceCode string) (*Types.CompiledContract, error) {
 		SetABI(string(abiJSON)).
 		SetDeployedBytecode("0x" + contractData.EVM.DeployedBytecode.Object)
 
-	// Return the value (not pointer) to match function signature
 	return compiledContract, nil
 }
 

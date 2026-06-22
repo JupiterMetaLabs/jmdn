@@ -140,8 +140,8 @@ func storeAccountInDB(msg DIDMessage) {
 		// 	UpdatedAt:   time.Now().UTC().Unix(),
 		// }
 
-		// Store Account document
-		err := DB_OPs.CreateAccount(client, msg.Account.DIDAddress, msg.Account.Address, nil)
+		// Store Account document preserving the sender's ART Nonce
+		err := DB_OPs.StorePropagatedAccount(client, msg.Account)
 		if err != nil {
 			broadcastLogger().Error(ctx, "Failed to store Account in database", err, ion.String("Account", msg.Account.DIDAddress))
 			return err

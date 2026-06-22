@@ -62,6 +62,7 @@ type CommandHandler struct {
 	FacadePort      int
 	WSPort          int
 	FastSyncerV2    FastSyncerV2Interface
+	PullAllowed     bool
 }
 
 // Simple helper to print the CLI prompt in color
@@ -565,7 +566,6 @@ func (h *CommandHandler) handleBroadcast(parts []string) {
 	}
 }
 
-
 func (h *CommandHandler) handlePropagateDID(parts []string) {
 	if len(parts) < 3 || len(parts) > 4 {
 		fmt.Println("Usage: propagateDID <did> <public_key> [balance]")
@@ -604,7 +604,6 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
 		fmt.Println("DID propagated successfully to all connected peers")
 	}
 }
-
 
 func (h *CommandHandler) handleGetDID(parts []string) {
 	if len(parts) != 2 {
@@ -645,7 +644,7 @@ func (h *CommandHandler) handleGetDID(parts []string) {
 
 func (h *CommandHandler) handleDBState() {
 	// Latest block via globalThebeHandle → Postgres ORDER BY block_number DESC LIMIT 1
-	latestBlock, err := DB_OPs.GetLatestBlockNumber(nil)
+	latestBlock, err := DB_OPs.GetLatestBlockNumber(context.Background(), nil)
 	if err != nil {
 		fmt.Printf("Failed to get latest block number: %v\n", err)
 		fmt.Println("  (ThebeDB handle may not be initialised yet — check jmdn.yaml thebe config)")

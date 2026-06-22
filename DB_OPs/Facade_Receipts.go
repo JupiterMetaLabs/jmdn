@@ -27,7 +27,7 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 	tx, err := GetTransactionByHash(mainDBClient, normalizedHash)
 	if err == nil && tx != nil {
 		// Transaction found - get the block and generate receipt
-		block, err := GetTransactionBlock(mainDBClient, normalizedHash)
+		block, err := GetTransactionBlock(ctx, mainDBClient, normalizedHash)
 		if err != nil {
 
 			return nil, fmt.Errorf("failed to get block for receipt generation: %w", err)

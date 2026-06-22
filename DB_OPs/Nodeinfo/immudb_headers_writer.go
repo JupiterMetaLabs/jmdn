@@ -1,14 +1,17 @@
 package NodeInfo
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/block"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
 	"github.com/ethereum/go-ethereum/common"
-	"gossipnode/config"
+
 	"gossipnode/DB_OPs"
+	"gossipnode/config"
 )
 
 type HeadersWriter struct{}
@@ -24,6 +27,21 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 		return nil
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Snapshot latest_block before writing any headers.
+	// HeaderSync writes skeleton blocks (no transactions) so it must not advance
+	// the latest_block marker — that would make the explorer and StartupSync think
+	// the node is fully synced up to the last header, when DataSync hasn't run yet.
+	// We restore this value after all headers are written.
+	prevLatest, prevErr := DB_OPs.GetLatestBlockNumber(ctx, conn)
+
 	for _, h := range headers {
 		b := &config.ZKBlock{
 			BlockNumber: h.BlockNumber,
@@ -33,9 +51,10 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 			TxnsRoot:    h.TxnsRoot,
 			ExtraData:   h.ExtraData,
 			GasLimit:    h.GasLimit,
-			GasUsed:      h.GasUsed,
+			GasUsed:     h.GasUsed,
+			LogsBloom:   h.LogsBloom,
 		}
-		
+
 		if len(h.StateRoot) > 0 {
 			b.StateRoot = common.BytesToHash(h.StateRoot)
 		}
@@ -53,8 +72,8 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 			addr := common.BytesToAddress(h.ZkvmAddr)
 			b.ZKVMAddr = &addr
 		}
-		
-		err := DB_OPs.StoreZKBlock(nil, b)
+
+		err := DB_OPs.StoreZKBlock(conn, b)
 		if err != nil {
 			if strings.Contains(err.Error(), "already exists") {
 				blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, b.BlockNumber)
@@ -67,15 +86,35 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 					return fmt.Errorf("force update hash mapping failed: %w", err2)
 				}
 
-				if err2 := DB_OPs.Update("latest_block", b.BlockNumber); err2 != nil {
-					return fmt.Errorf("force update latest block failed: %w", err2)
-				}
+				// Do NOT update latest_block here — DataSync owns the marker.
 			} else {
 				return err
 			}
 		}
 	}
-	
+
+	// Update header_latest_block so SyncConfirmation can build the correct Merkle
+	// range. This is separate from latest_block (which DataSync owns) so the
+	// explorer still shows only fully data-synced blocks.
+	if len(headers) > 0 {
+		highestWritten := headers[0].BlockNumber
+		for _, h := range headers[1:] {
+			if h.BlockNumber > highestWritten {
+				highestWritten = h.BlockNumber
+			}
+		}
+		if err2 := DB_OPs.Update("header_latest_block", highestWritten); err2 != nil {
+			return fmt.Errorf("update header_latest_block failed: %w", err2)
+		}
+	}
+
+	// Restore latest_block to the pre-HeaderSync value so the marker always
+	// reflects the last fully data-synced block, not just the last header.
+	if prevErr == nil {
+		if err2 := DB_OPs.Update("latest_block", prevLatest); err2 != nil {
+			return fmt.Errorf("restore latest_block after HeaderSync failed: %w", err2)
+		}
+	}
+
 	return nil
 }
-

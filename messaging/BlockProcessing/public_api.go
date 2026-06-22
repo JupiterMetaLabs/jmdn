@@ -2,6 +2,8 @@ package BlockProcessing
 
 import (
 	"gossipnode/config"
+	"time"
+	"context"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -26,6 +28,6 @@ func ProcessSingleTransaction(
 	commitToDB bool,
 ) error {
 	// Discard the ContractDeploymentInfo — buddy-node verification paths don't propagate.
-	_, err := processTransaction(*tx, coinbaseAddr, zkvmAddr, accountsClient, commitToDB)
+	_, err := processTransaction(context.Background(), *tx, coinbaseAddr, zkvmAddr, accountsClient, time.Now().Unix(), commitToDB)
 	return err
 }

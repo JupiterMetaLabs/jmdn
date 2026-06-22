@@ -9,7 +9,6 @@ import (
 
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
-	log "gossipnode/logging"
 
 	"github.com/JupiterMetaLabs/JMDN_Merkletree/merkletree"
 	"github.com/JupiterMetaLabs/ion"
@@ -20,7 +19,7 @@ type MerkleProof struct {
 }
 
 type MerkleProofInterface interface {
-	GenerateMerkleTree(startBlock, endBlock int64) (*merkletree.MerkleTreeSnapshot, error)
+	GenerateMerkleTree(ctx context.Context, startBlock, endBlock int64) (*merkletree.MerkleTreeSnapshot, error)
 	ReconstructTree(snap *merkletree.MerkleTreeSnapshot) (*merkletree.Builder, error)
 	GetMainDBConnection() *MerkleProof
 	PutMainDBConnection()
@@ -39,20 +38,24 @@ func (m *MerkleProof) PutMainDBConnection() {
 	// No-op: connection lifecycle is now managed by the global ThebeDB handle.
 }
 
-func (m *MerkleProof) GenerateMerkleTree(startBlock, endBlock int64) (*merkletree.MerkleTreeSnapshot, error) {
-	merkleLogger := logger(log.DB_OPs_MerkleTree)
+func (m *MerkleProof) GenerateMerkleTree(ctx context.Context, startBlock, endBlock int64) (*merkletree.MerkleTreeSnapshot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	if endBlock == -1 {
-		latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(m.mainDBClient)
+		// If the endBlock is -1, then we need to get the latest block number from the db.
+		latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(ctx, m.mainDBClient)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get latest block number: %w", err)
 		}
-		merkleLogger.Debug(context.Background(), "Latest block number", ion.Int64("latest_block_number", int64(latestBlockNumber)))
+		m.mainDBClient.Client.Logger.Debug(ctx, "Latest block number", ion.Int64("latest_block_number", int64(latestBlockNumber)), ion.String("function", "DB_OPs.merkletree.GenerateMerkleTree"))
 		endBlock = int64(latestBlockNumber)
 	} else if endBlock < startBlock {
 		str := fmt.Sprintf("endBlock (%d) cannot be less than startBlock (%d)", endBlock, startBlock)
 		err := errors.New(str)
-		merkleLogger.Error(context.Background(), "GenerateMerkleTree: invalid range", err,
+
+		m.mainDBClient.Client.Logger.Error(ctx, "GenerateMerkleTree", err,
 			ion.Int64("start_block", startBlock),
 			ion.Int64("end_block", endBlock),
 		)
@@ -60,7 +63,9 @@ func (m *MerkleProof) GenerateMerkleTree(startBlock, endBlock int64) (*merkletre
 	} else if endBlock < -1 {
 		str := fmt.Sprintf("endBlock (%d) cannot be less than -1", endBlock)
 		err := errors.New(str)
-		merkleLogger.Error(context.Background(), "GenerateMerkleTree: invalid endBlock", err,
+
+		m.mainDBClient.Client.Logger.Error(ctx, "GenerateMerkleTree", err,
+			ion.Int64("start_block", startBlock),
 			ion.Int64("end_block", endBlock),
 		)
 		return nil, err
@@ -71,7 +76,7 @@ func (m *MerkleProof) GenerateMerkleTree(startBlock, endBlock int64) (*merkletre
 		BlockMerge:    int(math.Ceil(float64(endBlock-startBlock+1) * 0.005)),
 	}
 
-	merkleLogger.Debug(context.Background(), "Block merge configuration", ion.Int("block_merge", cfg.BlockMerge))
+	m.mainDBClient.Client.Logger.Debug(context.Background(), "Block merge configuration", ion.Int("block_merge", cfg.BlockMerge))
 
 	Builder, err := merkletree.NewBuilder(cfg)
 	if err != nil {
@@ -80,7 +85,7 @@ func (m *MerkleProof) GenerateMerkleTree(startBlock, endBlock int64) (*merkletre
 
 	iterator := DB_OPs.NewBlockIterator(m.mainDBClient, uint64(startBlock), uint64(endBlock), 1000)
 
-	merkleLogger.Info(context.Background(), "Starting Merkle Tree generation",
+	m.mainDBClient.Client.Logger.Info(ctx, "Starting Merkle Tree generation",
 		ion.Int64("start_block", startBlock),
 		ion.Int64("end_block", endBlock),
 	)
@@ -90,7 +95,10 @@ func (m *MerkleProof) GenerateMerkleTree(startBlock, endBlock int64) (*merkletre
 	for {
 		blocks, err := iterator.Next()
 		if err != nil {
-			merkleLogger.Error(context.Background(), "Failed to retrieve block batch", err)
+			m.mainDBClient.Client.Logger.Error(ctx, "Failed to retrieve block batch",
+				err,
+				ion.String("function", "DB_OPs.merkletree.GenerateMerkleTree"),
+			)
 			return nil, fmt.Errorf("failed to retrieve blocks: %w", err)
 		}
 
@@ -101,7 +109,7 @@ func (m *MerkleProof) GenerateMerkleTree(startBlock, endBlock int64) (*merkletre
 		for _, block := range blocks {
 			if block.BlockNumber > expectedBlockNumber {
 				gapSize := block.BlockNumber - expectedBlockNumber
-				merkleLogger.Warn(context.Background(), "Detected missing blocks, filling with empty hashes",
+				m.mainDBClient.Client.Logger.Warn(ctx, "Detected missing blocks, filling with empty hashes",
 					ion.Uint64("gap_start", expectedBlockNumber),
 					ion.Uint64("gap_end", block.BlockNumber-1),
 					ion.Uint64("gap_size", gapSize),
@@ -117,7 +125,10 @@ func (m *MerkleProof) GenerateMerkleTree(startBlock, endBlock int64) (*merkletre
 			hashe := merkletree.Hash32(block.BlockHash)
 			_, err = Builder.Push(block.BlockNumber, []merkletree.Hash32{hashe})
 			if err != nil {
-				merkleLogger.Error(context.Background(), "Failed to push block to merkle builder", err)
+				m.mainDBClient.Client.Logger.Error(ctx, "Failed to push block to merkle builder",
+					err,
+					ion.String("function", "DB_OPs.merkletree.GenerateMerkleTree"),
+				)
 				return nil, fmt.Errorf("failed to push block %d: %w", block.BlockNumber, err)
 			}
 
@@ -127,7 +138,7 @@ func (m *MerkleProof) GenerateMerkleTree(startBlock, endBlock int64) (*merkletre
 
 	if expectedBlockNumber <= uint64(endBlock) {
 		gapSize := uint64(endBlock) - expectedBlockNumber + 1
-		merkleLogger.Warn(context.Background(), "Detected missing trailing blocks, filling with empty hashes",
+		m.mainDBClient.Client.Logger.Warn(ctx, "Detected missing trailing blocks, filling with empty hashes",
 			ion.Uint64("gap_start", expectedBlockNumber),
 			ion.Uint64("gap_end", uint64(endBlock)),
 			ion.Uint64("gap_size", gapSize),
@@ -144,7 +155,7 @@ func (m *MerkleProof) GenerateMerkleTree(startBlock, endBlock int64) (*merkletre
 		return nil, fmt.Errorf("failed to finalize merkle tree: %w", err)
 	}
 
-	merkleLogger.Info(context.Background(), "Merkle Tree generation completed",
+	m.mainDBClient.Client.Logger.Info(ctx, "Merkle Tree generation completed",
 		ion.String("root", hex.EncodeToString(root[:])),
 	)
 

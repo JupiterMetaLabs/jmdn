@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -97,7 +96,7 @@ func GenerateBLSKeyPair() ([]byte, []byte, error) {
 		PubKey  string `json:"bls_pub"`
 	}
 
-	if data, err := ioutil.ReadFile(config.BLSFile); err == nil {
+	if data, err := os.ReadFile(config.BLSFile); err == nil {
 		var bf blsFile
 		if err := json.Unmarshal(data, &bf); err == nil && bf.PrivKey != "" && bf.PubKey != "" {
 			if priv, err := base64.StdEncoding.DecodeString(bf.PrivKey); err == nil {
@@ -128,7 +127,7 @@ func GenerateBLSKeyPair() ([]byte, []byte, error) {
 		PeerID string `json:"peer_id"`
 	}
 	var pf peerFile
-	if pdata, err := ioutil.ReadFile(config.PeerFile); err == nil {
+	if pdata, err := os.ReadFile(config.PeerFile); err == nil {
 		_ = json.Unmarshal(pdata, &pf)
 	}
 
@@ -138,7 +137,7 @@ func GenerateBLSKeyPair() ([]byte, []byte, error) {
 		PubKey:  base64.StdEncoding.EncodeToString(pubBytes),
 	}
 	if out, err := json.MarshalIndent(bf, "", "  "); err == nil {
-		_ = ioutil.WriteFile(config.BLSFile, out, 0o600)
+		_ = os.WriteFile(config.BLSFile, out, 0o600)
 	}
 
 	return privBytes, pubBytes, nil

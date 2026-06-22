@@ -92,10 +92,10 @@ func StartGRPC(port int, chainID int) error {
 // Implement the Chain service methods
 
 func (s *Server) GetBlockByNumber(ctx context.Context, req *proto.GetBlockByNumberReq) (*proto.Block, error) {
-	logger().Info(ctx, "gRPC: GetBlockByNumber",
+	logger().Info(ctx, "geth gRPC: GetBlockByNumber",
 		ion.Uint64("number", req.GetNumber()),
 		ion.Bool("fullTx", req.GetFullTx()))
-	block, err := _GetBlockByNumber(req)
+	block, err := _GetBlockByNumber(ctx, req)
 	if err != nil {
 		logger().Error(ctx, "gRPC: GetBlockByNumber failed", err)
 		return nil, status.Errorf(codes.Internal, "failed to get block by number: %v", err)
@@ -104,10 +104,10 @@ func (s *Server) GetBlockByNumber(ctx context.Context, req *proto.GetBlockByNumb
 }
 
 func (s *Server) GetBlockByHash(ctx context.Context, req *proto.GetBlockByHashReq) (*proto.Block, error) {
-	logger().Info(ctx, "gRPC: GetBlockByHash",
+	logger().Info(ctx, "geth gRPC: GetBlockByHash",
 		ion.String("hash", fmt.Sprintf("%x", req.GetHash())),
 		ion.Bool("fullTx", req.GetFullTx()))
-	block, err := _GetBlockByHash(req)
+	block, err := _GetBlockByHash(ctx, req)
 	if err != nil {
 		logger().Error(ctx, "gRPC: GetBlockByHash failed", err)
 		return nil, status.Errorf(codes.Internal, "failed to get block by hash: %v", err)
@@ -116,9 +116,9 @@ func (s *Server) GetBlockByHash(ctx context.Context, req *proto.GetBlockByHashRe
 }
 
 func (s *Server) GetTransactionByHash(ctx context.Context, req *proto.GetByHashReq) (*proto.Transaction, error) {
-	logger().Info(ctx, "gRPC: GetTransactionByHash",
+	logger().Info(ctx, "geth gRPC: GetTransactionByHash",
 		ion.String("hash", fmt.Sprintf("%x", req.GetHash())))
-	tx, err := _GetTransactionByHash(req)
+	tx, err := _GetTransactionByHash(ctx, req)
 	if err != nil {
 		logger().Error(ctx, "gRPC: GetTransactionByHash failed", err)
 		return nil, status.Errorf(codes.Internal, "failed to get transaction by hash: %v", err)
@@ -127,9 +127,9 @@ func (s *Server) GetTransactionByHash(ctx context.Context, req *proto.GetByHashR
 }
 
 func (s *Server) GetReceiptByHash(ctx context.Context, req *proto.GetByHashReq) (*proto.Receipt, error) {
-	logger().Info(ctx, "gRPC: GetReceiptByHash",
+	logger().Info(ctx, "geth gRPC: GetReceiptByHash",
 		ion.String("hash", fmt.Sprintf("%x", req.GetHash())))
-	receipt, err := _GetReceiptByHash(req)
+	receipt, err := _GetReceiptByHash(ctx, req)
 	if err != nil {
 		logger().Error(ctx, "gRPC: GetReceiptByHash failed", err)
 		return nil, status.Errorf(codes.Internal, "failed to get receipt by hash: %v", err)
@@ -138,9 +138,9 @@ func (s *Server) GetReceiptByHash(ctx context.Context, req *proto.GetByHashReq) 
 }
 
 func (s *Server) GetAccountState(ctx context.Context, req *proto.GetAccountStateReq) (*proto.AccountState, error) {
-	logger().Info(ctx, "gRPC: GetAccountState",
+	logger().Info(ctx, "geth gRPC: GetAccountState",
 		ion.String("address", fmt.Sprintf("%x", req.GetAddress())))
-	accountState, err := _GetAccountState(req)
+	accountState, err := _GetAccountState(ctx, req)
 	if err != nil {
 		logger().Error(ctx, "gRPC: GetAccountState failed", err)
 		return nil, status.Errorf(codes.Internal, "failed to get account state: %v", err)
@@ -149,8 +149,8 @@ func (s *Server) GetAccountState(ctx context.Context, req *proto.GetAccountState
 }
 
 func (s *Server) SendRawTransaction(ctx context.Context, req *proto.SendRawTxReq) (*proto.SendRawTxResp, error) {
-	logger().Info(ctx, "gRPC: SendRawTransaction")
-	resp, err := _SubmitRawTransaction(req)
+	logger().Info(ctx, "geth gRPC: SendRawTransaction")
+	resp, err := _SubmitRawTransaction(ctx, req)
 	if err != nil {
 		logger().Error(ctx, "gRPC: SendRawTransaction failed", err)
 		return nil, status.Errorf(codes.Internal, "failed to submit raw transaction: %v", err)
@@ -184,8 +184,8 @@ func (s *Server) StreamLogs(req *proto.LogsSubReq, stream proto.Chain_StreamLogs
 }
 
 func (s *Server) GetChainID(ctx context.Context, req *proto.Empty) (*proto.Quantity, error) {
-	logger().Info(ctx, "gRPC: GetChainID")
-	quantity, err := _GetChainID(req, s.ChainID)
+	logger().Info(ctx, "geth gRPC: GetChainID")
+	quantity, err := _GetChainID(ctx, req, s.ChainID)
 	if err != nil {
 		logger().Error(ctx, "gRPC: GetChainID failed", err)
 		return nil, status.Errorf(codes.Internal, "failed to get chain ID: %v", err)

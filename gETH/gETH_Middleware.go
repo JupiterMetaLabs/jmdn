@@ -28,14 +28,9 @@ type ServiceInterface interface {
 	GetChainID(req *proto.Empty) (*proto.Quantity, error)
 }
 
-func _GetBlockByNumber(req *proto.GetBlockByNumberReq) (*proto.Block, error) {
-	// Init DB
-	// Conn, err := initDBs()
-	// if err != nil {
-	// 	return nil, err
-	// }
+func _GetBlockByNumber(ctx context.Context, req *proto.GetBlockByNumberReq) (*proto.Block, error) {
 	// First call the exisitng apis to get the block by the number
-	zkblock, err := DB_OPs.GetZKBlockByNumber(nil, req.Number)
+	zkblock, err := DB_OPs.ReadZKBlockByNumber(ctx, nil, req.Number)
 	if err != nil {
 		return nil, err
 	}
@@ -48,12 +43,7 @@ func _GetBlockByNumber(req *proto.GetBlockByNumberReq) (*proto.Block, error) {
 	return block, nil
 }
 
-func _GetBlockByHash(req *proto.GetBlockByHashReq) (*proto.Block, error) {
-	// Init DB
-	// Conn, err := initDBs()
-	// if err != nil {
-	// 	return nil, err
-	// }
+func _GetBlockByHash(ctx context.Context, req *proto.GetBlockByHashReq) (*proto.Block, error) {
 	// Convert the hash to string
 	reqHash := hex.EncodeToString(req.Hash)
 	if reqHash[0:2] == "0x" {
@@ -74,12 +64,7 @@ func _GetBlockByHash(req *proto.GetBlockByHashReq) (*proto.Block, error) {
 	return block, nil
 }
 
-func _GetTransactionByHash(req *proto.GetByHashReq) (*proto.Transaction, error) {
-	// Init DB
-	// Conn, err := initDBs()
-	// if err != nil {
-	// 	return nil, err
-	// }
+func _GetTransactionByHash(ctx context.Context, req *proto.GetByHashReq) (*proto.Transaction, error) {
 	// Convert the hash to string
 	reqHash := hex.EncodeToString(req.Hash)
 	if reqHash[0:2] == "0x" {
@@ -98,13 +83,12 @@ func _GetTransactionByHash(req *proto.GetByHashReq) (*proto.Transaction, error) 
 	return value, nil
 }
 
-func _GetReceiptByHash(req *proto.GetByHashReq) (*proto.Receipt, error) {
-
+func _GetReceiptByHash(ctx context.Context, req *proto.GetByHashReq) (*proto.Receipt, error) {
 	Blockreq := &proto.GetBlockByHashReq{
 		Hash: req.Hash,
 	}
 	// Get Block by hash first
-	Block, err := _GetBlockByHash(Blockreq)
+	Block, err := _GetBlockByHash(ctx, Blockreq)
 	if err != nil {
 		return nil, err
 	}
@@ -112,13 +96,7 @@ func _GetReceiptByHash(req *proto.GetByHashReq) (*proto.Receipt, error) {
 	return ConvertGETHBlocktoReceipt(Block)
 }
 
-func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error) {
-	// Init DB
-	// Conn, err := initDBs()
-	// if err != nil {
-	// 	return nil, err
-	// }
-
+func _GetAccountState(ctx context.Context, req *proto.GetAccountStateReq) (*proto.AccountState, error) {
 	// Get Txns by DID
 	// convert the req.Address from bytes to common.Address
 	addr := common.Address(req.Address)
@@ -163,7 +141,7 @@ func _GetAccountState(req *proto.GetAccountStateReq) (*proto.AccountState, error
 	}, nil
 }
 
-func _SubmitRawTransaction(req *proto.SendRawTxReq) (*proto.SendRawTxResp, error) {
+func _SubmitRawTransaction(ctx context.Context, req *proto.SendRawTxReq) (*proto.SendRawTxResp, error) {
 	// Convert Signed Transaction bytes to proper DS
 	var tx config.Transaction
 	err := json.Unmarshal(req.SignedTx, &tx)
@@ -200,6 +178,6 @@ func _EstimateGas(req *proto.CallReq) (*proto.EstimateResp, error) {
 	}, nil
 }
 
-func _GetChainID(req *proto.Empty, chainID int) (*proto.Quantity, error) {
+func _GetChainID(ctx context.Context, req *proto.Empty, chainID int) (*proto.Quantity, error) {
 	return &proto.Quantity{Value: uint64(chainID)}, nil
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
+
 	"gossipnode/DB_OPs"
 )
 

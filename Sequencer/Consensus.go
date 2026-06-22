@@ -143,7 +143,7 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	logger().Info(warmupCtx, "Starting consensus warmup",
 		ion.String("function", "Consensus.Start.warmup"))
 
-	candidates, errMSG := consensus.warmup()
+	candidates, errMSG := consensus.warmup(warmupCtx)
 	if errMSG != nil {
 		warmupSpan.RecordError(errMSG)
 		warmupSpan.SetAttributes(attribute.String("status", "failed"))
@@ -413,10 +413,6 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		ion.Float64("duration", setZKBlockDuration),
 		ion.String("function", "Consensus.Start.setZKBlockData"))
 	setZKBlockSpan.End()
-
-	// Set sequencer identity and round ID so voters know where to send votes
-	consensus.ZKBlockData.SetSequencerID(consensus.Host.ID().String())
-	consensus.ZKBlockData.SetRoundID(zkblock.BlockHash.Hex())
 
 	// Validate consensus configuration
 	validateCtx, validateSpan := tracer.Start(trace_ctx, "Consensus.Start.validateConfiguration")
@@ -944,165 +940,104 @@ func (consensus *Consensus) startEventDrivenFlowAfterSubscriptionPermission(trac
 		ion.String("function", "Consensus.startEventDrivenFlow.broadcastVoteTrigger"))
 	broadcastSpan.End()
 
-	// Step 4: Event-driven vote collection
-	// Create a round context with ConsensusTimeout deadline
-	roundCtx, roundCancel := context.WithTimeout(trace_ctx, config.ConsensusTimeout)
-	consensus.roundCtx = roundCtx
-	consensus.roundCancel = roundCancel
-
-	// Create vote notification channel and register it so handleSubmitVote can push votes
-	voteNotifyCh := make(chan PubSubMessages.VoteNotification, config.MaxMainPeers)
-	consensus.voteNotifyCh = voteNotifyCh
-	MessagePassing.RegisterVoteCollector(voteNotifyCh)
-
+	// Step 4: Wait for votes to be collected and processed, then print CRDT state and process votes
 	processVotesCtx, processVotesSpan := tracer.Start(trace_ctx, "Consensus.startEventDrivenFlow.processVotes")
 	processVotesStartTime := time.Now().UTC()
-
-	blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
-	// requiredVotes is a majority of MaxMainPeers (the global committee size).
-	// We do NOT use len(MainPeers) here because MainPeers only reflects nodes
-	// that responded during subscription permission — it can be much smaller
-	// than the actual number of participating validators. Using it as the quorum
-	// threshold means the loop exits after 1-2 votes and ignores the rest.
-	// We accept all votes for the correct block hash (BLS is the auth layer)
-	// and let the timeout flush partial results when not all peers respond.
-	requiredVotes := (config.MaxMainPeers / 2) + 1
-	collectedVotes := make(map[string]int8) // peerID -> vote
-
-	logger().Info(processVotesCtx, "Starting event-driven vote collection",
-		ion.Int("required_votes", requiredVotes),
-		ion.Int("enrolled_peers", len(consensus.PeerList.MainPeers)),
-		ion.Int("max_main_peers", config.MaxMainPeers),
-		ion.String("block_hash", blockHash),
-		ion.Float64("timeout_seconds", config.ConsensusTimeout.Seconds()),
+	logger().Info(processVotesCtx, "Waiting for votes to be collected and processed",
 		ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
 
-	// Event loop: wait for votes or timeout.
-	// Accept votes from ANY peer for the correct block hash — pre-enrollment
-	// (MainPeers) covers only the nodes that responded to subscription permission,
-	// which is a subset of actual validators. BLS verification is the real
-	// authenticity check; filtering here by MainPeers silently discards valid votes.
-	for {
-		select {
-		case notification := <-voteNotifyCh:
-			// Only accept votes for this round's block hash
-			if notification.BlockHash != blockHash {
-				logger().Warn(processVotesCtx, "Ignoring vote for different block hash",
-					ion.String("expected", blockHash),
-					ion.String("got", notification.BlockHash),
-					ion.String("peer", notification.PeerID),
-					ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
-				continue
-			}
+	// TODO: Replace this with actual event-driven trigger from vote collection completion
+	// For now, use a delay but log that it should be event-driven
+	common.LocalGRO.Go(GRO.SequencerRequestEventDrivenFlowThread, func(ctx context.Context) error {
+		processCtx, processSpan := tracer.Start(processVotesCtx, "Consensus.startEventDrivenFlow.processVotes.waitAndProcess")
+		defer processSpan.End()
 
-			// Store vote (idempotent)
-			collectedVotes[notification.PeerID] = notification.Vote
-			Maps.StoreVoteResult(blockHash, notification.PeerID, notification.Vote)
+		// Wait for votes to be collected (this should be replaced with event-driven trigger)
+		waitTime := 15 * time.Second
+		processSpan.SetAttributes(attribute.Float64("wait_time_seconds", waitTime.Seconds()))
+		logger().Info(processCtx, "Waiting for vote collection",
+			ion.Float64("wait_time_seconds", waitTime.Seconds()),
+			ion.String("function", "Consensus.startEventDrivenFlow.processVotes.waitAndProcess"))
+		time.Sleep(waitTime)
 
-			pid := notification.PeerID
-			if len(pid) > 16 {
-				pid = pid[:16]
-			}
-			logger().Info(processVotesCtx, "Vote received via push notification",
-				ion.String("peer", notification.PeerID),
-				ion.String("peer_short", pid),
-				ion.Int("vote", int(notification.Vote)),
-				ion.Int("collected", len(collectedVotes)),
-				ion.Int("required", requiredVotes),
-				ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
+		// Print CRDT state
+		printCtx, printSpan := tracer.Start(processCtx, "Consensus.startEventDrivenFlow.processVotes.printCRDTState")
+		printStartTime := time.Now().UTC()
+		logger().Info(printCtx, "Triggering CRDT state print",
+			ion.String("function", "Consensus.startEventDrivenFlow.processVotes.printCRDTState"))
 
-			// Exit early if we have all votes (quorum)
-			if len(collectedVotes) >= requiredVotes {
-				logger().Info(processVotesCtx, "All votes collected - quorum reached",
-					ion.Int("collected", len(collectedVotes)),
-					ion.Int("required", requiredVotes),
-					ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
-				goto VOTES_COLLECTED
-			}
-
-		case <-roundCtx.Done():
-			logger().Warn(processVotesCtx, "Round deadline reached, proceeding with partial votes",
-				ion.Int("collected", len(collectedVotes)),
-				ion.Int("required", requiredVotes),
-				ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
-			logger().Info(processVotesCtx, "Consensus round timeout — proceeding with partial votes",
-				ion.Int("collected", len(collectedVotes)),
-				ion.Int("required", requiredVotes),
-				ion.String("function", "Consensus.startEventDrivenFlow.processVotes"))
-			goto VOTES_COLLECTED
+		if err := consensus.PrintCRDTState(printCtx); err != nil {
+			printSpan.RecordError(err)
+			printSpan.SetAttributes(attribute.String("status", "failed"))
+			printDuration := time.Since(printStartTime).Seconds()
+			printSpan.SetAttributes(attribute.Float64("duration", printDuration))
+			logger().Error(printCtx, "PrintCRDTState failed",
+				err,
+				ion.Float64("duration", printDuration),
+				ion.String("function", "Consensus.startEventDrivenFlow.processVotes.printCRDTState"))
+		} else {
+			printDuration := time.Since(printStartTime).Seconds()
+			printSpan.SetAttributes(
+				attribute.Float64("duration", printDuration),
+				attribute.String("status", "success"),
+			)
+			logger().Info(printCtx, "CRDT state printed successfully",
+				ion.Float64("duration", printDuration),
+				ion.String("function", "Consensus.startEventDrivenFlow.processVotes.printCRDTState"))
 		}
-	}
+		printSpan.End()
 
-VOTES_COLLECTED:
-	// Unregister the vote collector now that collection is done
-	MessagePassing.UnregisterVoteCollector()
-	roundCancel()
+		// Process vote collection
+		collectCtx, collectSpan := tracer.Start(processCtx, "Consensus.startEventDrivenFlow.processVotes.processVoteCollection")
+		collectStartTime := time.Now().UTC()
+		logger().Info(collectCtx, "Triggering vote collection and processing",
+			ion.String("function", "Consensus.startEventDrivenFlow.processVotes.processVoteCollection"))
+
+		if err := consensus.ProcessVoteCollection(); err != nil {
+			collectSpan.RecordError(err)
+			collectSpan.SetAttributes(attribute.String("status", "failed"))
+			collectDuration := time.Since(collectStartTime).Seconds()
+			collectSpan.SetAttributes(attribute.Float64("duration", collectDuration))
+			logger().Error(collectCtx, "ProcessVoteCollection failed",
+				err,
+				ion.Float64("duration", collectDuration),
+				ion.String("function", "Consensus.startEventDrivenFlow.processVotes.processVoteCollection"))
+		} else {
+			collectDuration := time.Since(collectStartTime).Seconds()
+			collectSpan.SetAttributes(
+				attribute.Float64("duration", collectDuration),
+				attribute.String("status", "success"),
+			)
+			logger().Info(collectCtx, "Vote collection and processing initiated successfully",
+				ion.Float64("duration", collectDuration),
+				ion.String("function", "Consensus.startEventDrivenFlow.processVotes.processVoteCollection"))
+		}
+		collectSpan.End()
+
+		processDuration := time.Since(processVotesStartTime).Seconds()
+		processSpan.SetAttributes(
+			attribute.Float64("duration", processDuration),
+			attribute.String("status", "success"),
+		)
+		return nil
+	})
 
 	processVotesDuration := time.Since(processVotesStartTime).Seconds()
-	processVotesSpan.SetAttributes(
-		attribute.Int("votes_collected", len(collectedVotes)),
-		attribute.Int("votes_required", requiredVotes),
-		attribute.Float64("duration", processVotesDuration),
-	)
+	processVotesSpan.SetAttributes(attribute.Float64("duration", processVotesDuration))
 	processVotesSpan.End()
-
-	// Print CRDT state
-	consensus.PrintCRDTState(trace_ctx)
-
-	// Collect BLS results from buddy nodes (pull-based).
-	// Retry up to 3 times with 500ms gaps: buddies may still be processing
-	// their CRDT when the sequencer queries immediately after quorum.
-	listenerNode := PubSubMessages.NewGlobalVariables().Get_ForListner()
-	var blsResults []BLS_Signer.BLSresponse
-	for attempt := 1; attempt <= 3; attempt++ {
-		blsResults = consensus.CollectVoteResultsFromBuddies(listenerNode)
-		if len(blsResults) > 0 {
-			break
-		}
-		if attempt < 3 {
-			logger().Info(trace_ctx, "BLS pull returned 0 results — retrying",
-				ion.Int("attempt", attempt),
-				ion.String("function", "Consensus.startEventDrivenFlowAfterSubscriptionPermission"))
-			time.Sleep(500 * time.Millisecond)
-		}
-	}
-
-	// Verify consensus with BLS signatures
-	consensusReached := consensus.VerifyConsensusWithBLS(blsResults)
-
-	// Broadcast and process the block
-	if err := consensus.BroadcastAndProcessBlock(blsResults, consensusReached); err != nil {
-		logger().Error(trace_ctx, "Failed to broadcast and process block",
-			err,
-			ion.String("function", "Consensus.startEventDrivenFlowAfterSubscriptionPermission"))
-	}
 
 	totalDuration := time.Since(startTime).Seconds()
 	asyncFlowSpan.SetAttributes(
 		attribute.Float64("duration", totalDuration),
 		attribute.String("status", "success"),
-		attribute.Int("votes_collected", len(collectedVotes)),
-		attribute.Bool("consensus_reached", consensusReached),
 	)
 	logger().Info(trace_ctx, "Event-driven consensus flow completed",
 		ion.Float64("total_duration", totalDuration),
-		ion.Int("votes_collected", len(collectedVotes)),
-		ion.Bool("consensus_reached", consensusReached),
 		ion.String("function", "Consensus.startEventDrivenFlowAfterSubscriptionPermission"))
 }
 
 // VerifySubscriptions checks if nodes are actually subscribed to the pubsub channel
 // This method now uses the new pubsub-based verification system
-// isCommitteeMember checks if a peer ID string is in the committee (MainPeers list)
-func isCommitteeMember(peerIDStr string, mainPeers []peer.ID) bool {
-	for _, p := range mainPeers {
-		if p.String() == peerIDStr {
-			return true
-		}
-	}
-	return false
-}
-
 func (consensus *Consensus) VerifySubscriptions(logger_ctx context.Context) error {
 	tracer := logger().Tracer("Consensus")
 	trace_ctx, span := tracer.Start(logger_ctx, "Consensus.VerifySubscriptions")
@@ -1212,8 +1147,8 @@ func (consensus *Consensus) BroadcastVoteTrigger() error {
 		attribute.String("block_hash", consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()),
 	)
 
-	// Send vote trigger only to committee members (not all connected peers)
-	if err := messaging.BroadcastVoteTriggerToCommittee(consensus.Host, consensus.ZKBlockData, consensus.PeerList.MainPeers); err != nil {
+	// Use the messaging.BroadcastVoteTrigger function to broadcast the vote trigger
+	if err := messaging.BroadcastVoteTrigger(consensus.Host, consensus.ZKBlockData); err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "failed"))
 		duration := time.Since(startTime).Seconds()
@@ -1493,13 +1428,18 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 		// Step 3: Broadcast and process block (state-changing operation)
 		broadcastCtx, broadcastSpan := tracer.Start(processCtx, "Consensus.ProcessVoteCollection.broadcastAndProcess")
 		broadcastStartTime := time.Now().UTC()
-		if err := consensus.BroadcastAndProcessBlock(blsResults, consensusReached); err != nil {
+		blockNumber := consensus.ZKBlockData.GetZKBlock().BlockNumber
+		blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
+		if err := consensus.BroadcastAndProcessBlock(broadcastCtx, blsResults, consensusReached); err != nil {
 			broadcastSpan.RecordError(err)
 			broadcastSpan.SetAttributes(attribute.String("status", "failed"))
 			broadcastDuration := time.Since(broadcastStartTime).Seconds()
 			broadcastSpan.SetAttributes(attribute.Float64("duration", broadcastDuration))
-			logger().Error(broadcastCtx, "Failed to broadcast and process block",
+			logger().Error(broadcastCtx, "Failed to broadcast or process block locally",
 				err,
+				ion.Int64("block_number", int64(blockNumber)),
+				ion.String("block_hash", blockHash),
+				ion.Bool("consensus_reached", consensusReached),
 				ion.Float64("duration", broadcastDuration),
 				ion.String("function", "Consensus.ProcessVoteCollection.broadcastAndProcess"))
 			broadcastSpan.End()
@@ -1511,6 +1451,9 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 			attribute.String("status", "success"),
 		)
 		logger().Info(broadcastCtx, "Broadcast and process block completed",
+			ion.Int64("block_number", int64(blockNumber)),
+			ion.String("block_hash", blockHash),
+			ion.Bool("consensus_reached", consensusReached),
 			ion.Float64("duration", broadcastDuration),
 			ion.String("function", "Consensus.ProcessVoteCollection.broadcastAndProcess"))
 		broadcastSpan.End()
@@ -1535,8 +1478,9 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 }
 
 // voterPeerIDsForBlock returns the union of:
-//   a) listenerNode.BuddyNodes.Buddies_Nodes (the pre-selected committee)
-//   b) all peer IDs found in the CRDT that have a vote for targetBlockHash
+//
+//	a) listenerNode.BuddyNodes.Buddies_Nodes (the pre-selected committee)
+//	b) all peer IDs found in the CRDT that have a vote for targetBlockHash
 //
 // This ensures CollectVoteResultsFromBuddies queries every peer that actually
 // voted, not just the peers that were enrolled at consensus-start time.
@@ -1914,7 +1858,7 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 
 	// Extract and store numeric vote
 	if result, ok := resultData["result"].(float64); ok {
-		Maps.StoreVoteResult(consensus.ZKBlockData.GetZKBlock().BlockHash.Hex(), peerID.String(), int8(result))
+		Maps.StoreVoteResult(peerID.String(), int8(result))
 		span.SetAttributes(attribute.Int64("vote_result", int64(result)))
 		logger().Info(trace_ctx, "Received vote result from peer",
 			ion.String("peer_id", peerID.String()),
@@ -2105,7 +2049,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		attribute.String("status", "consensus_failed"),
 		attribute.Bool("consensus_reached", false),
 	)
-	msg := fmt.Sprintf("❌ Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
+	msg := fmt.Sprintf("Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
 	logger().Warn(trace_ctx, "Consensus failed",
 		ion.Int("yes_votes", validYes),
 		ion.Int("total_votes", validTotal),
@@ -2115,8 +2059,8 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		ion.String("function", "Consensus.VerifyConsensusWithBLS"))
 	Alerts.NewAlertBuilder(alert_ctx).
 		AlertName(helper.Alert_BFT_Consensus_Failed).
-		Status(Alerts.AlertStatusError).
-		Severity(Alerts.SeverityError).
+		Status(Alerts.AlertStatusWarning).
+		Severity(Alerts.SeverityWarning).
 		Description(msg).
 		Send()
 	return false

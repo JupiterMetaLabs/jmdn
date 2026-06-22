@@ -133,8 +133,8 @@ func Unsubscribe(gps *PubSubMessages.GossipPubSub, topic string) error {
 		span.SetAttributes(attribute.String("status", "failed"))
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(attribute.Float64("duration", duration))
-		logger().Error(trace_ctx, "Failed to unsubscribe from topic",
-			err,
+		logger().Warn(trace_ctx, "Failed to unsubscribe from topic",
+			ion.String("error", err.Error()),
 			ion.String("topic", topic),
 			ion.Float64("duration", duration),
 			ion.String("function", "Subscription.Unsubscribe"))

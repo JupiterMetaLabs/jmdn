@@ -17,37 +17,41 @@ func DefaultConfig() NodeConfig {
 			HeartbeatInterval: 10,
 		},
 		Ports: PortSettings{
-			API:       0, // disabled
-			BlockGen:  0, // disabled
-			BlockGRPC: 0, // disabled
-			CLI:       0, // disabled
-			DID:       15052,
-			Facade:    8545,
+			API:        0, // disabled
+			BlockGen:   0, // disabled
+			BlockGRPC:  0, // disabled
+			CLI:        0, // disabled
+			DID:        15052,
+			Facade:     8545,
 			ThebeDebug: 19090,
-			WS:        8546,
-			Geth:      15054,
-			Smart:     15056,
+			WS:         8546,
+			Geth:       15054,
+			Smart:      15056,
 
 			Metrics:  0, // disabled
 			Profiler: 0, // disabled
 		},
 		Binds: BindSettings{
-			API:       "0.0.0.0",   // Public data access
-			BlockGen:  "127.0.0.1", // Admin - Block generation
-			BlockGRPC: "0.0.0.0",   // P2P - Block propagation
-			CLI:       "127.0.0.1", // Admin - CLI control
-			DID:       "0.0.0.0",   // Identity Service
-			Facade:    "0.0.0.0",   // Public RPC
+			API:        "0.0.0.0",   // Public data access
+			BlockGen:   "127.0.0.1", // Admin - Block generation
+			BlockGRPC:  "0.0.0.0",   // P2P - Block propagation
+			CLI:        "127.0.0.1", // Admin - CLI control
+			DID:        "0.0.0.0",   // Identity Service
+			Facade:     "0.0.0.0",   // Public RPC
 			ThebeDebug: "127.0.0.1", // Internal debug APIs
-			WS:        "0.0.0.0",   // Public WS
-			Geth:      "127.0.0.1", // Internal gRPC
-			Smart:     "127.0.0.1", // Internal gRPC
-			Metrics:   "127.0.0.1", // Metrics scraping (usually internal network)
-			Profiler:  "127.0.0.1", // Debugging - STRICTLY LOCALHOST
+			WS:         "0.0.0.0",   // Public WS
+			Geth:       "127.0.0.1", // Internal gRPC
+			Smart:      "127.0.0.1", // Internal gRPC
+			Metrics:    "127.0.0.1", // Metrics scraping (usually internal network)
+			Profiler:   "127.0.0.1", // Debugging - STRICTLY LOCALHOST
 		},
 		Database: DatabaseSettings{
 			Username: "immudb",
 			Password: "immudb",
+			Redis: RedisSettings{
+				URL:      "127.0.0.1:6379", // required for account sync worker; set via jmdn.yaml or JMDN_DATABASE_REDIS_URL
+				Password: "jmdnredissync",  // optional: set if Redis requires authentication
+			},
 		},
 		Thebe: ThebeConfig{
 			Enabled:    false,
@@ -79,6 +83,7 @@ func DefaultConfig() NodeConfig {
 				Enabled:        false,
 				Protocol:       "grpc",
 				Insecure:       false,
+				Headers:        map[string]string{},
 				BatchSize:      512,
 				ExportInterval: 5 * time.Second,
 			},
@@ -92,11 +97,11 @@ func DefaultConfig() NodeConfig {
 			GROTrack:     false,
 		},
 		FastSync: FastSyncSettings{
-			Enabled:      true,
-			Sync:         true,
-			StartupSync:  true,
-			SyncTimeout:  10 * time.Minute,
-			AllowedPeers: []string{},
+			Enabled:       true,
+			EnablePulling: true,
+			PullOnStartup: true,
+			SyncTimeout:   10 * time.Minute,
+			AllowedPeers:  []string{},
 		},
 		Security: DefaultSecurityConfig(),
 		Alerts:   DefaultAlertsConfig(),

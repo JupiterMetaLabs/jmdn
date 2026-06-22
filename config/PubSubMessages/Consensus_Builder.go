@@ -15,8 +15,6 @@ func NewConsensusMessageBuilder(consensusMessage *ConsensusMessage) *ConsensusMe
 			StartTime:    consensusMessage.StartTime,
 			InteriumTime: consensusMessage.InteriumTime,
 			TotalNodes:   consensusMessage.TotalNodes,
-			SequencerID:  consensusMessage.SequencerID,
-			RoundID:      consensusMessage.RoundID,
 		}
 	}
 	return &ConsensusMessage{}
@@ -117,22 +115,4 @@ func (consensusMessage *ConsensusMessage) RemoveGloalVarCacheConsensusMessage() 
 func (consensusMessage *ConsensusMessage) ClearGloalVarCacheConsensusMessage() *ConsensusMessage {
 	CacheConsensuMessage = make(map[string]*ConsensusMessage)
 	return consensusMessage
-}
-
-func (consensusMessage *ConsensusMessage) SetSequencerID(id string) *ConsensusMessage {
-	consensusMessage.SequencerID = id
-	return consensusMessage
-}
-
-func (consensusMessage *ConsensusMessage) GetSequencerID() string {
-	return consensusMessage.SequencerID
-}
-
-func (consensusMessage *ConsensusMessage) SetRoundID(id string) *ConsensusMessage {
-	consensusMessage.RoundID = id
-	return consensusMessage
-}
-
-func (consensusMessage *ConsensusMessage) GetRoundID() string {
-	return consensusMessage.RoundID
 }

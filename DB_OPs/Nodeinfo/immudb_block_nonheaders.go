@@ -5,6 +5,7 @@ import (
 
 	blockpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/block"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
+
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
 )
@@ -62,11 +63,12 @@ func convertZKBlockToNonHeaders(b *config.ZKBlock) *blockpb.NonHeaders {
 
 	for idx, tx := range b.Transactions {
 		pbTx := &blockpb.Transaction{
-			Hash:     tx.Hash[:],
-			Type:     uint32(tx.Type),
-			Nonce:    tx.Nonce,
-			GasLimit: tx.GasLimit,
-			Data:     tx.Data,
+			Hash:      tx.Hash[:],
+			Type:      uint32(tx.Type),
+			Timestamp: tx.Timestamp,
+			Nonce:     tx.Nonce,
+			GasLimit:  tx.GasLimit,
+			Data:      tx.Data,
 		}
 		if tx.From != nil {
 			pbTx.From = tx.From[:]
@@ -77,6 +79,9 @@ func convertZKBlockToNonHeaders(b *config.ZKBlock) *blockpb.NonHeaders {
 		if tx.Value != nil {
 			pbTx.Value = tx.Value.Bytes()
 		}
+		if tx.ChainID != nil {
+			pbTx.ChainId = tx.ChainID.Bytes()
+		}
 		if tx.GasPrice != nil {
 			pbTx.GasPrice = tx.GasPrice.Bytes()
 		}
@@ -86,6 +91,15 @@ func convertZKBlockToNonHeaders(b *config.ZKBlock) *blockpb.NonHeaders {
 		if tx.MaxPriorityFee != nil {
 			pbTx.MaxPriorityFee = tx.MaxPriorityFee.Bytes()
 		}
+		for _, at := range tx.AccessList {
+			pbAT := &blockpb.AccessTuple{
+				Address: at.Address[:],
+			}
+			for _, sk := range at.StorageKeys {
+				pbAT.StorageKeys = append(pbAT.StorageKeys, sk[:])
+			}
+			pbTx.AccessList = append(pbTx.AccessList, pbAT)
+		}
 		if tx.V != nil {
 			pbTx.V = tx.V.Bytes()
 		}
@@ -94,6 +108,21 @@ func convertZKBlockToNonHeaders(b *config.ZKBlock) *blockpb.NonHeaders {
 		}
 		if tx.S != nil {
 			pbTx.S = tx.S.Bytes()
+		}
+
+		if tx.ChainID != nil {
+			pbTx.ChainId = tx.ChainID.Bytes()
+		}
+		if len(tx.AccessList) > 0 {
+			for _, al := range tx.AccessList {
+				pbAl := &blockpb.AccessTuple{
+					Address: al.Address[:],
+				}
+				for _, sk := range al.StorageKeys {
+					pbAl.StorageKeys = append(pbAl.StorageKeys, sk[:])
+				}
+				pbTx.AccessList = append(pbTx.AccessList, pbAl)
+			}
 		}
 
 		nh.Transactions = append(nh.Transactions, &blockpb.DBTransaction{

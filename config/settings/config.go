@@ -39,62 +39,73 @@ type NetworkSettings struct {
 
 // PortSettings groups all port/address assignments.
 type PortSettings struct {
-	API       int `mapstructure:"api"       yaml:"api"`
-	BlockGen  int `mapstructure:"blockgen"  yaml:"blockgen"`
-	BlockGRPC int `mapstructure:"blockgrpc" yaml:"blockgrpc"`
-	CLI       int `mapstructure:"cli"       yaml:"cli"`
-	DID       int `mapstructure:"did"       yaml:"did"`
-	Facade    int `mapstructure:"facade"    yaml:"facade"`
+	API        int `mapstructure:"api"       yaml:"api"`
+	BlockGen   int `mapstructure:"blockgen"  yaml:"blockgen"`
+	BlockGRPC  int `mapstructure:"blockgrpc" yaml:"blockgrpc"`
+	CLI        int `mapstructure:"cli"       yaml:"cli"`
+	DID        int `mapstructure:"did"       yaml:"did"`
+	Facade     int `mapstructure:"facade"    yaml:"facade"`
 	ThebeDebug int `mapstructure:"thebe_debug" yaml:"thebe_debug"`
-	WS        int `mapstructure:"ws"        yaml:"ws"`
-	Geth      int `mapstructure:"geth"      yaml:"geth"`
-	Smart     int `mapstructure:"smart"     yaml:"smart"`
-	Metrics   int `mapstructure:"metrics"   yaml:"metrics"`
-	Profiler  int `mapstructure:"profiler"  yaml:"profiler"`
+	WS         int `mapstructure:"ws"        yaml:"ws"`
+	Geth       int `mapstructure:"geth"      yaml:"geth"`
+	Smart      int `mapstructure:"smart"     yaml:"smart"`
+	Metrics    int `mapstructure:"metrics"   yaml:"metrics"`
+	Profiler   int `mapstructure:"profiler"  yaml:"profiler"`
 }
 
 // BindSettings groups all bind address configurations.
 // Defaults: Admin ports = 127.0.0.1, Public ports = 0.0.0.0
 type BindSettings struct {
-	API       string `mapstructure:"api"       yaml:"api"`
-	BlockGen  string `mapstructure:"blockgen"  yaml:"blockgen"`
-	BlockGRPC string `mapstructure:"blockgrpc" yaml:"blockgrpc"`
-	CLI       string `mapstructure:"cli"       yaml:"cli"`
-	DID       string `mapstructure:"did"       yaml:"did"`
-	Facade    string `mapstructure:"facade"    yaml:"facade"`
+	API        string `mapstructure:"api"       yaml:"api"`
+	BlockGen   string `mapstructure:"blockgen"  yaml:"blockgen"`
+	BlockGRPC  string `mapstructure:"blockgrpc" yaml:"blockgrpc"`
+	CLI        string `mapstructure:"cli"       yaml:"cli"`
+	DID        string `mapstructure:"did"       yaml:"did"`
+	Facade     string `mapstructure:"facade"    yaml:"facade"`
 	ThebeDebug string `mapstructure:"thebe_debug" yaml:"thebe_debug"`
-	WS        string `mapstructure:"ws"        yaml:"ws"`
-	Geth      string `mapstructure:"geth"      yaml:"geth"`
-	Smart     string `mapstructure:"smart"     yaml:"smart"`
-	Metrics   string `mapstructure:"metrics"   yaml:"metrics"`
-	Profiler  string `mapstructure:"profiler"  yaml:"profiler"`
+	WS         string `mapstructure:"ws"        yaml:"ws"`
+	Geth       string `mapstructure:"geth"      yaml:"geth"`
+	Smart      string `mapstructure:"smart"     yaml:"smart"`
+	Metrics    string `mapstructure:"metrics"   yaml:"metrics"`
+	Profiler   string `mapstructure:"profiler"  yaml:"profiler"`
 }
 
-// DatabaseSettings controls ImmuDB connection parameters.
-type DatabaseSettings struct {
-	Username string `mapstructure:"username" yaml:"username"`
+// RedisSettings controls the Redis connection used by the account sync worker.
+// The worker uses a Redis Stream (XADD/XREADGROUP/XACK) to decouple the
+// WriteAccounts / BatchUpdateAccounts callers from the ~15 s ImmuDB commit latency.
+// URL format: "host:port" (e.g. "localhost:6379").
+// Env override: JMDN_DATABASE_REDIS_URL, JMDN_DATABASE_REDIS_PASSWORD
+type RedisSettings struct {
+	URL      string `mapstructure:"url" yaml:"url"`
 	Password string `mapstructure:"password" yaml:"password"`
 }
 
 // ThebeConfig controls optional ThebeDB integration.
 type ThebeConfig struct {
-	Enabled    bool   `mapstructure:"enabled" yaml:"enabled"`         // default false
-	KVPath     string `mapstructure:"kv_path" yaml:"kv_path"`         // default "./data/thebe-kv"
-	SQLDSN     string `mapstructure:"sql_dsn" yaml:"sql_dsn"`         // reads THEBE_SQL_DSN env var
-	RedisURL   string `mapstructure:"redis_url" yaml:"redis_url"`     // optional, reads THEBE_REDIS_URL
-	StreamName string `mapstructure:"stream_name" yaml:"stream_name"` // optional, default "thebedb.events"
-	MaxLen     int64  `mapstructure:"max_len" yaml:"max_len"`         // optional, default 1000
-	GroupName  string `mapstructure:"group_name" yaml:"group_name"`   // optional, default "projector"
+	Enabled    bool           `mapstructure:"enabled" yaml:"enabled"`         // default false
+	KVPath     string         `mapstructure:"kv_path" yaml:"kv_path"`         // default "./data/thebe-kv"
+	SQLDSN     string         `mapstructure:"sql_dsn" yaml:"sql_dsn"`         // reads THEBE_SQL_DSN env var
+	RedisURL   string         `mapstructure:"redis_url" yaml:"redis_url"`     // optional, reads THEBE_REDIS_URL
+	StreamName string         `mapstructure:"stream_name" yaml:"stream_name"` // optional, default "thebedb.events"
+	MaxLen     int64          `mapstructure:"max_len" yaml:"max_len"`         // optional, default 1000
+	GroupName  string         `mapstructure:"group_name" yaml:"group_name"`   // optional, default "projector"
 	CDC        ThebeCDCConfig `mapstructure:"cdc" yaml:"cdc"`
 }
 
 type ThebeCDCConfig struct {
-    Enabled     bool   `mapstructure:"enabled" yaml:"enabled"`
-    SlotName    string `mapstructure:"slot_name" yaml:"slot_name"`
-    Publication string `mapstructure:"publication" yaml:"publication"`
-    LogPath     string `mapstructure:"log_path" yaml:"log_path"`
-    DLQPath     string `mapstructure:"dlq_path" yaml:"dlq_path"`
-    MaxLagBytes int64  `mapstructure:"max_lag_bytes" yaml:"max_lag_bytes"`
+	Enabled     bool   `mapstructure:"enabled" yaml:"enabled"`
+	SlotName    string `mapstructure:"slot_name" yaml:"slot_name"`
+	Publication string `mapstructure:"publication" yaml:"publication"`
+	LogPath     string `mapstructure:"log_path" yaml:"log_path"`
+	DLQPath     string `mapstructure:"dlq_path" yaml:"dlq_path"`
+	MaxLagBytes int64  `mapstructure:"max_lag_bytes" yaml:"max_lag_bytes"`
+}
+
+// DatabaseSettings controls ImmuDB and Redis connection parameters.
+type DatabaseSettings struct {
+	Username string        `mapstructure:"username" yaml:"username"`
+	Password string        `mapstructure:"password" yaml:"password"`
+	Redis    RedisSettings `mapstructure:"redis"    yaml:"redis"`
 }
 
 // LoggingSettings mirrors Ion's Config struct so jmdn.yaml can fully configure
@@ -131,14 +142,15 @@ type LogFileSettings struct {
 
 // LogOTELSettings configures OpenTelemetry log/trace export.
 type LogOTELSettings struct {
-	Enabled        bool          `mapstructure:"enabled"         yaml:"enabled"`
-	Endpoint       string        `mapstructure:"endpoint"        yaml:"endpoint"`
-	Protocol       string        `mapstructure:"protocol"        yaml:"protocol"` // grpc or http
-	Insecure       bool          `mapstructure:"insecure"        yaml:"insecure"`
-	Username       string        `mapstructure:"username"        yaml:"username"`
-	Password       string        `mapstructure:"password"        yaml:"password"`
-	BatchSize      int           `mapstructure:"batch_size"      yaml:"batch_size"`
-	ExportInterval time.Duration `mapstructure:"export_interval" yaml:"export_interval"`
+	Enabled        bool              `mapstructure:"enabled"         yaml:"enabled"`
+	Endpoint       string            `mapstructure:"endpoint"        yaml:"endpoint"`
+	Protocol       string            `mapstructure:"protocol"        yaml:"protocol"` // grpc or http
+	Insecure       bool              `mapstructure:"insecure"        yaml:"insecure"`
+	Headers        map[string]string `mapstructure:"headers"         yaml:"headers"`
+	Username       string            `mapstructure:"username"        yaml:"username"`
+	Password       string            `mapstructure:"password"        yaml:"password"`
+	BatchSize      int               `mapstructure:"batch_size"      yaml:"batch_size"`
+	ExportInterval time.Duration     `mapstructure:"export_interval" yaml:"export_interval"`
 }
 
 // LogTracingSettings configures distributed tracing.
@@ -168,13 +180,13 @@ type FastSyncSettings struct {
 	// handlers are registered. Set false to disable FastSync entirely.
 	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 
-	// Sync controls whether this node will pull data from peers and write to its
+	// EnablePulling controls whether this node will pull data from peers and write to its
 	// local DB. false = read-only participant (serves data, never updates itself).
-	Sync bool `mapstructure:"sync" yaml:"sync"`
+	EnablePulling bool `mapstructure:"enable_pulling" yaml:"enable_pulling"`
 
-	// StartupSync controls whether the node attempts to catch up on missed blocks
+	// PullOnStartup controls whether the node attempts to catch up on missed blocks
 	// automatically when it (re)starts and connects to peers.
-	StartupSync bool `mapstructure:"startup_sync" yaml:"startup_sync"`
+	PullOnStartup bool `mapstructure:"pull_on_startup" yaml:"pull_on_startup"`
 
 	// SyncTimeout is the maximum wall-clock time allowed for a single full sync
 	// operation before it is cancelled.

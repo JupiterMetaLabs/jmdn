@@ -773,7 +773,7 @@ func getTransactionInfo(c *gin.Context) {
 	_, cancel := context.WithTimeout(spanCtx, 15*time.Second)
 	defer cancel()
 
-	block, err := DB_OPs.GetTransactionBlock(nil, txHash)
+	block, err := DB_OPs.GetTransactionBlock(spanCtx, nil, txHash)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "transaction_not_found"))
@@ -864,7 +864,7 @@ func getLatestBlock(c *gin.Context) {
 	_, cancel := context.WithTimeout(spanCtx, 15*time.Second)
 	defer cancel()
 
-	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(nil)
+	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(spanCtx, nil)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "get_latest_failed"))

@@ -1004,6 +1004,33 @@ func main() {
 	// DB_OPs calls use globalThebeHandle via getHandle(nil); no pool connections needed.
 	var mainDBClient *config.PooledConnection
 	var didDBClient *config.PooledConnection
+	// Initialize database clients using the pools
+	mainDBClient, err = DB_OPs.GetMainDBConnectionandPutBack(context.Background())
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to get main database connection from pool")
+	}
+	defer func() {
+		if mainDBClient != nil {
+			DB_OPs.PutMainDBConnection(mainDBClient)
+		}
+	}()
+
+	// Debugging
+	// fmt.Println("Getting accounts database connection from pool")
+
+	didDBClient, err = DB_OPs.GetAccountConnectionandPutBack(context.Background())
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to get accounts database connection from pool")
+	}
+
+	// Debugging
+	// fmt.Println("Got accounts database connection from pool", didDBClient)
+
+	defer func() {
+		if didDBClient != nil {
+			DB_OPs.PutAccountsConnection(didDBClient)
+		}
+	}()
 
 	// Initialize Yggdrasil messaging if enabled
 	if cfg.Network.Yggdrasil {
@@ -1207,6 +1234,7 @@ func main() {
 		ChainID:         cfg.Network.ChainID,
 		FacadePort:      cfg.Ports.Facade,
 		WSPort:          cfg.Ports.WS,
+		PullAllowed:     cfg.FastSync.EnablePulling,
 	}
 
 	// Only set database clients if they're properly initialized

@@ -63,7 +63,7 @@ func (s *ImmuDBServer) getBlockByNumber(c *gin.Context) {
 		return
 	}
 
-	block, err := DB_OPs.GetZKBlockByNumber(&s.defaultdb, numberInt)
+	block, err := DB_OPs.ReadZKBlockByNumber(spanCtx, &s.defaultdb, numberInt)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -110,7 +110,7 @@ func (s *ImmuDBServer) getBlock(c *gin.Context) {
 	hash := c.Param("id")
 	span.SetAttributes(attribute.String("block_hash", hash))
 
-	block, err := DB_OPs.GetZKBlockByHash(&s.defaultdb, hash)
+	block, err := DB_OPs.ReadZKBlockByHash(spanCtx, &s.defaultdb, hash)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -172,7 +172,7 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 	)
 
 	// Get total number of blocks for pagination metadata
-	totalBlocks, err := DB_OPs.GetLatestBlockNumber(&s.defaultdb)
+	totalBlocks, err := DB_OPs.GetLatestBlockNumber(c.Request.Context(), &s.defaultdb)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -201,7 +201,7 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 	// Get blocks for the current page
 	var blocks []*config.ZKBlock
 	for i := endBlock; i >= startBlock; i-- {
-		block, err := DB_OPs.GetZKBlockByNumber(&s.defaultdb, i)
+		block, err := DB_OPs.ReadZKBlockByNumber(spanCtx, &s.defaultdb, i)
 		if err != nil {
 			// If a block is not found, it might be a gap in the blockchain.
 			// Log the error and continue to the next block to provide a partial response.
@@ -267,7 +267,7 @@ func (s *ImmuDBServer) getTransactionBlock(c *gin.Context) {
 	hash := c.Param("hash")
 	span.SetAttributes(attribute.String("transaction_hash", hash))
 
-	block, err := DB_OPs.GetTransactionBlock(&s.defaultdb, hash)
+	block, err := DB_OPs.GetTransactionBlock(spanCtx, &s.defaultdb, hash)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -303,7 +303,7 @@ func (s *ImmuDBServer) getLatestBlock(c *gin.Context) {
 	startTime := time.Now().UTC()
 
 	// Get the latest block number
-	latestBlockNumber, err := GetLatesBlockNumber(s)
+	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(c.Request.Context(), &s.defaultdb)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -320,7 +320,7 @@ func (s *ImmuDBServer) getLatestBlock(c *gin.Context) {
 	}
 
 	// Get the latest block by number
-	block, err := GetLatestBlockByNumber(s, latestBlockNumber)
+	block, err := DB_OPs.ReadZKBlockByNumber(spanCtx, &s.defaultdb, latestBlockNumber)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -364,7 +364,7 @@ func (s *ImmuDBServer) getLatestBlockStats(c *gin.Context) {
 
 	startTime := time.Now().UTC()
 
-	latestBlockNumber, err := GetLatesBlockNumber(s)
+	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(c.Request.Context(), &s.defaultdb)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -374,7 +374,7 @@ func (s *ImmuDBServer) getLatestBlockStats(c *gin.Context) {
 		return
 	}
 
-	block, err := GetLatestBlockByNumber(s, latestBlockNumber)
+	block, err := DB_OPs.ReadZKBlockByNumber(spanCtx, &s.defaultdb, latestBlockNumber)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -476,7 +476,7 @@ func (s *ImmuDBServer) listTransactions_inBlock(c *gin.Context) {
 		return
 	}
 
-	BlockData, err := DB_OPs.GetZKBlockByNumber(&s.defaultdb, blockNumberInt)
+	BlockData, err := DB_OPs.ReadZKBlockByNumber(spanCtx, &s.defaultdb, blockNumberInt)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -592,7 +592,7 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 
 	// Get latest block number and total blocks in a goroutine
 	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
-		latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(&s.defaultdb)
+		latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(c.Request.Context(), &s.defaultdb)
 		if err != nil {
 			handleErr(fmt.Errorf("failed to get latest block number: %w", err))
 			return fmt.Errorf("failed to get latest block number: %w", err)
@@ -761,7 +761,7 @@ func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
 		return
 	}
 
-	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(&s.defaultdb)
+	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(c.Request.Context(), &s.defaultdb)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))
@@ -788,7 +788,7 @@ func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
 	var missingBlocks []*config.ZKBlock
 	for blockNumberInt < latestBlockNumber {
 		blockNumberInt++
-		block, err := DB_OPs.GetZKBlockByNumber(&s.defaultdb, blockNumberInt)
+		block, err := DB_OPs.ReadZKBlockByNumber(spanCtx, &s.defaultdb, blockNumberInt)
 		if err != nil {
 			span.RecordError(err)
 			span.SetAttributes(attribute.String("status", "error"))
@@ -935,7 +935,7 @@ func (s *ImmuDBServer) listTransactions_fromLastBlock(c *gin.Context) {
 	)
 
 	// Get the last block number
-	lastBlockNumber, err := DB_OPs.GetLatestBlockNumber(&s.defaultdb)
+	lastBlockNumber, err := DB_OPs.GetLatestBlockNumber(c.Request.Context(), &s.defaultdb)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "error"))

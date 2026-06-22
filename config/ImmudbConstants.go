@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/JupiterMetaLabs/ion"
+	"github.com/codenotary/immudb/pkg/api/schema"
+	"github.com/codenotary/immudb/pkg/client"
 )
 
 const (
@@ -23,9 +25,11 @@ const (
 	RequestTimeout   = 10 * time.Second
 )
 
-// ImmuClient is a legacy stub retained so call-sites in dualdb and immuclient.go
-// compile without modification. The real storage backend is now store.ThebeHandle
-// (injected via config.HandleFactory). All immudb fields have been removed.
+// ImmuClient is a legacy struct retained so existing call-sites in dualdb,
+// immuclient.go, and account_immuclient.go compile without modification.
+// The real storage backend is store.ThebeHandle (injected via config.HandleFactory).
+// Fields that were removed from the remove/immudb branch are restored here
+// to preserve compilation of the merged main branch code.
 type ImmuClient struct {
 	Ctx         context.Context
 	Cancel      context.CancelFunc
@@ -34,6 +38,9 @@ type ImmuClient struct {
 	IsConnected bool
 	Logger      *ion.Ion
 	Database    string
+	// Client is the underlying ImmuDB gRPC client.
+	// Legacy call-sites access it for KV operations (Get, Set, ExecAll, Scan, etc.).
+	Client client.ImmuClient
 }
 
 // Close implements io.Closer so *ImmuClient can be stored in config.PooledConnection.Client.
@@ -48,9 +55,8 @@ func (ic *ImmuClient) Close() error {
 // BlockHasher for generating block hashes
 type BlockHasher struct{}
 
-// ImmuTransaction is a legacy stub. Ops is kept as []interface{} to satisfy
-// any callers that append to it without importing immudb schema types.
+// ImmuTransaction is a legacy stub.
 type ImmuTransaction struct {
 	Client *ImmuClient
-	Ops    []interface{}
+	Ops    []*schema.Op
 }

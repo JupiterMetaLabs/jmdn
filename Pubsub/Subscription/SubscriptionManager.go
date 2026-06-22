@@ -349,11 +349,8 @@ func (sm *SubscriptionManager) Unsubscribe(topic string) error {
 	if managed.cancel != nil {
 		managed.cancel()
 	}
-	// Close the topic AND evict from gps.TopicsMap via CloseTopic.
-	// Calling managed.pubsubTopic.Close() directly leaves a stale closed
-	// handle in TopicsMap; the next GetOrJoinTopic call returns the dead
-	// handle and all publishes fail with "this Topic is closed".
-	if sm.gps != nil {
+	// Close the topic to free resources
+	if managed.pubsubTopic != nil {
 		if err := sm.gps.CloseTopic(topic); err != nil {
 			logger().Warn(trace_ctx, "SubscriptionManager: Failed to close topic",
 				ion.String("topic", topic),
@@ -405,7 +402,7 @@ func (sm *SubscriptionManager) Shutdown() {
 		}
 		// Close the topic to free resources
 		if managed.pubsubTopic != nil {
-			if err := managed.pubsubTopic.Close(); err != nil {
+			if err := sm.gps.CloseTopic(topic); err != nil {
 				logger().Warn(trace_ctx, "SubscriptionManager: Failed to close topic during shutdown",
 					ion.String("topic", topic),
 					ion.String("error", err.Error()),

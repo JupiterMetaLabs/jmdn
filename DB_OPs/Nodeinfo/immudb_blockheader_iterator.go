@@ -3,6 +3,7 @@ package NodeInfo
 import (
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/block"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
+
 	"gossipnode/DB_OPs"
 )
 
@@ -22,19 +23,20 @@ func (i *dbBlockHeaderIterator) GetBlockHeaders(blocknumbers []uint64) ([]*block
 		if err != nil || b == nil {
 			continue
 		}
-		
+
 		h := &block.Header{
-			ProofHash:    b.ProofHash,
-			Status:       b.Status,
-			TxnsRoot:     b.TxnsRoot,
-			Timestamp:    b.Timestamp,
-			ExtraData:    b.ExtraData,
-			StateRoot:    b.StateRoot[:],
-			BlockHash:    b.BlockHash[:],
-			PrevHash:     b.PrevHash[:],
-			GasLimit:     b.GasLimit,
-			GasUsed:      b.GasUsed,
-			BlockNumber:  b.BlockNumber,
+			ProofHash:   b.ProofHash,
+			Status:      b.Status,
+			TxnsRoot:    b.TxnsRoot,
+			Timestamp:   b.Timestamp,
+			ExtraData:   b.ExtraData,
+			StateRoot:   b.StateRoot[:],
+			BlockHash:   b.BlockHash[:],
+			PrevHash:    b.PrevHash[:],
+			GasLimit:    b.GasLimit,
+			GasUsed:     b.GasUsed,
+			BlockNumber: b.BlockNumber,
+			LogsBloom:   b.LogsBloom,
 		}
 		if b.CoinbaseAddr != nil {
 			h.CoinbaseAddr = b.CoinbaseAddr[:]
@@ -59,17 +61,18 @@ func (i *dbBlockHeaderIterator) GetBlockHeadersRange(start, end uint64) ([]*bloc
 	var headers []*block.Header
 	for _, b := range blocks {
 		h := &block.Header{
-			ProofHash:    b.ProofHash,
-			Status:       b.Status,
-			TxnsRoot:     b.TxnsRoot,
-			Timestamp:    b.Timestamp,
-			ExtraData:    b.ExtraData,
-			StateRoot:    b.StateRoot[:],
-			BlockHash:    b.BlockHash[:],
-			PrevHash:     b.PrevHash[:],
-			GasLimit:     b.GasLimit,
-			GasUsed:      b.GasUsed,
-			BlockNumber:  b.BlockNumber,
+			ProofHash:   b.ProofHash,
+			Status:      b.Status,
+			TxnsRoot:    b.TxnsRoot,
+			Timestamp:   b.Timestamp,
+			ExtraData:   b.ExtraData,
+			StateRoot:   b.StateRoot[:],
+			BlockHash:   b.BlockHash[:],
+			PrevHash:    b.PrevHash[:],
+			GasLimit:    b.GasLimit,
+			GasUsed:     b.GasUsed,
+			BlockNumber: b.BlockNumber,
+			LogsBloom:   b.LogsBloom,
 		}
 		if b.CoinbaseAddr != nil {
 			h.CoinbaseAddr = b.CoinbaseAddr[:]

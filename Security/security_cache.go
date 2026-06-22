@@ -83,21 +83,21 @@ func (s *SecurityCache) SubBalance(address common.Address, wei *big.Int) {
 	}
 }
 
-func (s *SecurityCache) UpdateNonce(address common.Address, newNonce uint64) {
+func (s *SecurityCache) UpdateTxNonce(address common.Address, newNonce uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	account := s.accounts[address.Hex()]
 	if account != nil {
-		account.Nonce = newNonce
+		account.TxNonce = newNonce
 	}
 }
 
-func (s *SecurityCache) GetNonce(address common.Address) uint64 {
+func (s *SecurityCache) GetTxNonce(address common.Address) uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	account := s.accounts[address.Hex()]
 	if account != nil {
-		return account.Nonce
+		return account.TxNonce
 	}
 	return 0
 }

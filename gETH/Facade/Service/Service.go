@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	scTracer "gossipnode/SmartContract/pkg/tracer"
 	"gossipnode/SmartContract/pkg/client"
+	scTracer "gossipnode/SmartContract/pkg/tracer"
 	smartcontractpb "gossipnode/SmartContract/proto"
 
 	"github.com/JupiterMetaLabs/ion"
@@ -145,7 +145,7 @@ func (s *ServiceImpl) BlockNumber(ctx context.Context) (*big.Int, error) {
 	defer cancel()
 
 	// Pass the context to the database operation
-	BlockNumber, err := DB_OPs.GetLatestBlockNumber(nil)
+	BlockNumber, err := DB_OPs.GetLatestBlockNumber(opCtx, nil)
 	if err != nil {
 		// Log error
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("BlockNumber failed: %v", err), "BlockNumber", -1); logErr != nil {
@@ -185,10 +185,10 @@ func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bo
 	opCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	ZKBlock, err := DB_OPs.GetZKBlockByNumber(nil, num.Uint64())
+	ZKBlock, err := DB_OPs.ReadZKBlockByNumber(opCtx, nil, num.Uint64())
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("BlockByNumber failed: %v", err), "BlockByNumber", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log BlockByNumber error", logErr)
+			logger().Error(opCtx, "Failed to log BlockByNumber error", logErr)
 		}
 		return nil, err
 	}
@@ -202,7 +202,7 @@ func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bo
 	block := Utils.ConvertZKBlockToBlock(ZKBlock)
 	if block == nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("BlockByNumber failed: %v", err), "BlockByNumber", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log BlockByNumber error", logErr)
+			logger().Error(opCtx, "Failed to log BlockByNumber error", logErr)
 		}
 		return nil, err
 	}
@@ -227,43 +227,38 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 	logger().Debug(opCtx, "Address conversion", ion.String("original", addr), ion.String("converted", convertedAddr.Hex()))
 	AccountDetails, err := DB_OPs.GetAccount(nil, convertedAddr)
 	if err != nil {
-	logger().Error(opCtx, "GetAccount error", err)
+		logger().Error(opCtx, "GetAccount error", err)
 		// If account not found, create a new account with zero balance
 		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
-			// Convert address to common.Address using case-insensitive conversion
-			address := Utils.ConvertAddressCaseInsensitive(addr)
-
-			// Create new account with zero balance
-			// We need to provide a DID address, so we'll use the address as DID for now
-			didAddress := fmt.Sprintf("%s%s:%s", DB_OPs.DIDPrefix, network, address.Hex())
-
-			// Create the Utils.DIDDoc
-			didDoc := Utils.DIDDoc{
-				Address:    address,
+			// Auto-create and propagate the account
+			didAddress := fmt.Sprintf("%s%s:%s", DB_OPs.DIDPrefix, "jmdn", convertedAddr.Hex())
+			doc := Utils.DIDDoc{
+				Address:    convertedAddr,
 				DIDAddress: didAddress,
 				Metadata:   nil,
 			}
 
 			// Create the account and propagate the DID
-			if err := Utils.CreateAccountandPropagateDID(didDoc); err != nil {
-				if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance failed to create account and propagate DID: %v", err), "Balance", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log Balance account creation error", logErr)
+			if createErr := Utils.CreateAccountandPropagateDID(doc); createErr != nil {
+				if logErr := Logger.LogData(opCtx, fmt.Sprintf("Failed to auto-create and propagate DID %s: %v", convertedAddr.Hex(), createErr), "Balance", -1); logErr != nil {
+					logger().Error(opCtx, "Failed to log Balance account creation error", logErr)
 				}
-				return nil, err
+			} else {
+				if logErr := Logger.LogData(opCtx, fmt.Sprintf("Auto-created and propagated DID %s via eth_getBalance", convertedAddr.Hex()), "Balance", 1); logErr != nil {
+					fmt.Printf("Failed to log Balance success: %v\n", logErr)
+				}
 			}
 
 			// Log account creation
 			if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance created new account for address: %s", addr), "Balance", 1); logErr != nil {
 				logger().Error(opCtx, "Failed to log Balance account creation", logErr)
 			}
-
-			// Return zero balance for new account
 			return big.NewInt(0), nil
 		}
 
 		// For other errors, log and return
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance failed: %v", err), "Balance", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log Balance error", logErr)
+			logger().Error(opCtx, "Failed to log Balance error", logErr)
 		}
 		return nil, err
 	}
@@ -280,7 +275,7 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 	balance, err := Utils.ConvertBalance(AccountDetails.Balance)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("Balance failed: %v", err), "Balance", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log Balance error", logErr)
+			logger().Error(opCtx, "Failed to log Balance error", logErr)
 		}
 		return nil, err
 	}
@@ -307,7 +302,7 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 	rawBytes, err := hex.DecodeString(rawHex)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed to decode hex: %v", err), "SendRawTx", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log SendRawTx hex decode error", logErr)
+			logger().Error(opCtx, "Failed to log SendRawTx hex decode error", logErr)
 		}
 		return "", fmt.Errorf("failed to decode hex string: %w", err)
 	}
@@ -317,32 +312,32 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 	err = json.Unmarshal(rawBytes, &tx)
 	if err != nil {
 		// If JSON parsing fails, try to parse as RLP-encoded transaction
-	logger().Debug(opCtx, "JSON parsing failed, trying RLP parsing")
+		logger().Debug(opCtx, "JSON parsing failed, trying RLP parsing")
 
 		// Parse RLP-encoded transaction
 		var ethTx ethtypes.Transaction
 		err = rlp.DecodeBytes(rawBytes, &ethTx)
 		if err != nil {
 			if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed to parse RLP transaction: %v", err), "SendRawTx", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log SendRawTx RLP parse error", logErr)
+				logger().Error(opCtx, "Failed to log SendRawTx RLP parse error", logErr)
 			}
 			return "", fmt.Errorf("failed to parse RLP transaction: %w", err)
 		}
 
 		// Convert Ethereum transaction to our config.Transaction format
 		tx = convertEthTxToConfigTx(&ethTx)
-	logger().Debug(opCtx, "Converted RLP transaction")
+		logger().Debug(opCtx, "Converted RLP transaction")
 	} else {
-	logger().Debug(opCtx, "JSON transaction parsed")
+		logger().Debug(opCtx, "JSON transaction parsed")
 	}
 
 	hash, err := block.SubmitRawTransaction(context.Background(), &tx)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed: %v", err), "SendRawTx", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log SendRawTx error", logErr)
+			logger().Error(opCtx, "Failed to log SendRawTx error", logErr)
 		}
 		// Debugging
-	logger().Error(opCtx, "SubmitRawTransaction failed", err)
+		logger().Error(opCtx, "SubmitRawTransaction failed", err)
 		return "", err
 	}
 
@@ -425,10 +420,10 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 	}
 
 	// Get the block containing this transaction
-	block, err := DB_OPs.GetTransactionBlock(nil, normalizedHash)
+	block, err := DB_OPs.GetTransactionBlock(opCtx, nil, normalizedHash)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash failed to get block: %v", err), "TxByHash", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log TxByHash error", logErr)
+			logger().Error(opCtx, "Failed to log TxByHash error", logErr)
 		}
 		return nil, err
 	}
@@ -437,7 +432,7 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 	ZKTx, err := DB_OPs.GetTransactionByHash(nil, normalizedHash)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash failed: %v", err), "TxByHash", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log TxByHash error", logErr)
+			logger().Error(opCtx, "Failed to log TxByHash error", logErr)
 		}
 		return nil, err
 	}
@@ -446,7 +441,7 @@ func (s *ServiceImpl) TxByHash(ctx context.Context, hash string) (*Types.Tx, err
 	tx := Utils.ConvertTrabsactionToTx(ZKTx)
 	if tx == nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("TxByHash failed: %v", err), "TxByHash", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log TxByHash error", logErr)
+			logger().Error(opCtx, "Failed to log TxByHash error", logErr)
 		}
 		return nil, err
 	}
@@ -487,13 +482,13 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 		// Check if error is "transaction not found"
 		if err.Error() == "transaction not found" {
 			if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash: transaction not found: %s", hash), "ReceiptByHash", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log ReceiptByHash error", logErr)
+				logger().Error(opCtx, "Failed to log ReceiptByHash error", logErr)
 			}
 			// Return error that will be formatted as JSON-RPC error with code -32000
 			return nil, fmt.Errorf("transaction not found")
 		}
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash failed: %v", err), "ReceiptByHash", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log ReceiptByHash error", logErr)
+			logger().Error(opCtx, "Failed to log ReceiptByHash error", logErr)
 		}
 		return nil, err
 	}
@@ -610,7 +605,7 @@ func (s *ServiceImpl) GetLogs(ctx context.Context, q Types.FilterQuery) ([]Types
 	logs, err := DB_OPs.GetLogs(nil, q)
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetLogs failed: %v", err), "GetLogs", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log GetLogs error", logErr)
+			logger().Error(opCtx, "Failed to log GetLogs error", logErr)
 		}
 		return nil, err
 	}
@@ -718,7 +713,7 @@ func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
 	feeStats, err := block.GetFeeStatisticsFromRouting()
 	if err != nil {
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GasPrice failed to get fee statistics: %v", err), "GasPrice", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log GasPrice error", logErr)
+			logger().Error(opCtx, "Failed to log GasPrice error", logErr)
 		}
 		// Return fallback value on error (use 35 gwei minimum)
 		return big.NewInt(35000000000), nil
@@ -792,7 +787,7 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 		latest, err := s.BlockNumber(ctx)
 		if err != nil {
 			if logErr := Logger.LogData(opCtx, fmt.Sprintf("FeeHistory failed to get latest block: %v", err), "FeeHistory", -1); logErr != nil {
-	logger().Error(opCtx, "Failed to log FeeHistory error", logErr)
+				logger().Error(opCtx, "Failed to log FeeHistory error", logErr)
 			}
 			return nil, err
 		}
@@ -902,10 +897,10 @@ func (s *ServiceImpl) GetFeeHistory(ctx context.Context, blockCount int, newestB
 	history, err := s.FeeHistory(ctx, uint64(blockCount), nil, rewardPercentiles)
 	if err != nil || len(history) == 0 {
 		return map[string]interface{}{
-			"oldestBlock": "0x0",
+			"oldestBlock":   "0x0",
 			"baseFeePerGas": []string{hexutil.EncodeBig(config.DefaultGasPrice)},
-			"gasUsedRatio": []float64{0.0},
-			"reward": [][]string{},
+			"gasUsedRatio":  []float64{0.0},
+			"reward":        [][]string{},
 		}, nil
 	}
 	return history, nil

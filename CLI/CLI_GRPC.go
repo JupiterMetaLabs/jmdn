@@ -226,6 +226,9 @@ func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 	if peeraddr == "" {
 		return SyncStats{}, fmt.Errorf("usage: fastsync <peer_multiaddr>")
 	}
+	if !h.PullAllowed {
+		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
+	}
 
 	err := h.checkDBClient()
 	if err != nil {
@@ -299,6 +302,34 @@ func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
 	return SyncStats{}, fmt.Errorf("fastsync removed: use ThebeDB sync instead")
 }
 
+func (h *CommandHandler) HandleAccountSync(peeraddr string) (SyncStats, error) {
+	if peeraddr == "" {
+		return SyncStats{}, fmt.Errorf("usage: accountsync <peer_multiaddr>")
+	}
+	if !h.PullAllowed {
+		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
+	}
+	if h.FastSyncerV2 == nil {
+		return SyncStats{}, fmt.Errorf("FastsyncV2 engine is inactive")
+	}
+
+	startTime := time.Now().UTC()
+	err := h.FastSyncerV2.HandleSync(peeraddr)
+	if err != nil {
+		return SyncStats{}, fmt.Errorf("AccountSync failed: %w", err)
+	}
+
+	var newAccountsState *DB_OPs.DatabaseState
+	if h.DIDClient != nil {
+		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
+	}
+
+	return SyncStats{
+		TimeTaken:     time.Since(startTime),
+		AccountsState: newAccountsState,
+	}, nil
+}
+
 func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStats, error) {
 	if peeraddr == "" {
 		return SyncStats{}, fmt.Errorf("usage: firstsync <peer_multiaddr> <server|client>")
@@ -306,6 +337,11 @@ func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStat
 
 	if mode == "" {
 		return SyncStats{}, fmt.Errorf("usage: firstsync <peer_multiaddr> <server|client>")
+	}
+
+	modeLower := strings.ToLower(mode)
+	if modeLower == "client" && !h.PullAllowed {
+		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
 	}
 
 	err := h.checkDBClient()
@@ -330,7 +366,6 @@ func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStat
 		return SyncStats{}, fmt.Errorf("failed to extract peer info: %v", err)
 	}
 
-	modeLower := strings.ToLower(mode)
 	if modeLower != "server" && modeLower != "client" {
 		return SyncStats{}, fmt.Errorf("invalid mode: %s. Must be 'server' or 'client'", mode)
 	}

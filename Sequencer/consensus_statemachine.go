@@ -45,10 +45,6 @@ type Consensus struct {
 	// Guards to prevent infinite loops
 	isProcessingVotes  bool
 	processedBlockHash string
-	// Event-driven vote collection
-	voteNotifyCh chan PubSubMessages.VoteNotification
-	roundCtx     context.Context
-	roundCancel  context.CancelFunc
 }
 
 // @constructor function
@@ -79,7 +75,7 @@ What it does:
 - Query the buddy nodes from the NodeSelectionRouter
 - Deduplicate by Buddy_PeerMultiaddr
 */
-func (consensus *Consensus) warmup() ([]PubSubMessages.Buddy_PeerMultiaddr, error) {
+func (consensus *Consensus) warmup(ctx context.Context) ([]PubSubMessages.Buddy_PeerMultiaddr, error) {
 
 	if consensus.Host == nil {
 		return nil, fmt.Errorf("host is nil")
@@ -96,21 +92,24 @@ func (consensus *Consensus) warmup() ([]PubSubMessages.Buddy_PeerMultiaddr, erro
 	Maps.ClearVoteResults()
 	Cache.ClearCache()
 
-	logger().Info(context.Background(), "Cleared previous round vote results at start of consensus round")
+	logger().Info(ctx, "Cleared previous round vote results at start of consensus round",
+		ion.String("function", "Consensus.warmup"))
 
 	buddies, errMSG := helper.QueryBuddyNodes()
 	if errMSG != nil {
 		return nil, fmt.Errorf("failed to query buddy nodes: %v", errMSG)
 	}
 
-	logger().Info(context.Background(), "Queried buddy node candidates from NodeSelectionRouter",
-		ion.Int("count", len(buddies)))
+	logger().Info(ctx, "Queried buddy node candidates from NodeSelectionRouter",
+		ion.Int("candidates", len(buddies)),
+		ion.String("function", "Consensus.warmup"))
 
 	// Deduplicate buddies by peer.ID (buddies may have multiple multiaddrs per peer)
 	candidates := helper.GetUniqueBuddyPeers(buddies)
 
-	logger().Info(context.Background(), "Deduplicated buddy node candidates",
-		ion.Int("count", len(candidates)))
+	logger().Info(ctx, "got candidates after deduplication",
+		ion.Int("candidates", len(candidates)),
+		ion.String("function", "Consensus.warmup"))
 
 	return candidates, nil
 }
@@ -193,27 +192,26 @@ What it does:
 - This is a state-changing operation as it modifies the blockchain state
 - IMPORTANT: Cleans up subscriptions after processing to prevent resource leaks
 */
-func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLSresponse, consensusReached bool) error {
+func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsResults []BLS_Signer.BLSresponse, consensusReached bool) error {
 	// Context for the alerts
-	alert_ctx := context.Background()
+	alert_ctx := ctx
 	defer alert_ctx.Done()
 
 	// CRITICAL FIX: Clean up subscriptions when consensus round completes (success or failure)
 	// This prevents subscription accumulation over long-running consensus operations
-	defer consensus.CleanupSubscriptions()
+	defer consensus.CleanupSubscriptions(ctx)
 
 	consensus.mu.Lock()
 	defer consensus.mu.Unlock()
 
 	if consensus.ZKBlockData == nil || consensus.ZKBlockData.GetZKBlock() == nil {
-		ErrorMessage := "CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: ZKBlockData not initialized"
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_ProcessBlockFailed_ZKBlockDataNotSet).
 			Status(Alerts.AlertStatusError).
 			Severity(Alerts.SeverityError).
-			Description(ErrorMessage).
+			Description("ZKBlockData not initialized when attempting to broadcast and process block").
 			Send()
-		return fmt.Errorf("ZKBlockData not initialized, error: %s", ErrorMessage)
+		return fmt.Errorf("ZKBlockData not initialized")
 	}
 
 	block := consensus.ZKBlockData.GetZKBlock()
@@ -229,53 +227,56 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 	// Broadcast block with BLS results (if any)
 	// If consensusReached is false, we send "rejected" status so nodes can discard the block
 	if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, block, consensusReached, extraData, blsResults); err != nil {
-		return fmt.Errorf("failed to broadcast block with BLS results: %v", err)
+		return fmt.Errorf("failed to broadcast block with BLS results: %w", err)
 	}
 
-	logger().Info(context.Background(), "Broadcasted block with BLS results",
-		ion.Int("bls_results_count", len(blsResults)))
-
-	// Only process block locally if consensus was reached
 	if consensusReached {
-		deployments, err := messaging.ProcessBlockLocally(block, blsResults)
-		if err != nil {
-			ErrorMessage := fmt.Sprintf("CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Failed to process block locally after broadcast: %v", err)
+		// Only process block locally if consensus was reached
+		if _, err := messaging.ProcessBlockLocally(block, blsResults); err != nil {
 			Alerts.NewAlertBuilder(alert_ctx).
 				AlertName(helper.Alert_Consensus_ProcessBlockFailed_FailedToProcessBlockLocally).
 				Status(Alerts.AlertStatusError).
 				Severity(Alerts.SeverityError).
-				Description(ErrorMessage).
+				Description("Failed to process block locally after successful broadcast").
+				Msg(err.Error()).
+				Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
+				Label("block_hash", block.BlockHash.Hex()).
 				Send()
-			logger().Error(context.Background(), "Failed to process block locally after broadcast", err,
-				ion.String("detail", ErrorMessage))
-			return fmt.Errorf("failed to process block locally after broadcast: %v, error: %s", err, ErrorMessage)
+			return fmt.Errorf("failed to process block locally after broadcast: %w", err)
 		}
-		// Propagate any newly-deployed contracts to peers (sequencer-only, fire-and-forget).
-		if len(deployments) > 0 {
-			go messaging.PropagateContractDeployments(consensus.Host, deployments)
-		}
-		msg := fmt.Sprintf("✅ Processed block locally - account balances updated\nBlock #%d\n(hash: %s)", block.BlockNumber, block.BlockHash.Hex())
-		logger().Info(context.Background(), "Processed block locally - account balances updated",
-			ion.Uint64("block_number", block.BlockNumber),
-			ion.String("block_hash", block.BlockHash.Hex()))
+
+		logger().Info(ctx, "Broadcasted block",
+			ion.Int("bls_results", len(blsResults)),
+			ion.String("block_hash", block.BlockHash.Hex()),
+			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.String("function", "Consensus.BroadcastAndProcessBlock"))
+
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_ProcessBlockSuccess_BlockProcessedLocally).
 			Status(Alerts.AlertStatusSuccess).
 			Severity(Alerts.SeveritySuccess).
-			Description(msg).
+			Description("Block processed locally - account balances updated").
+			Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
+			Label("block_hash", block.BlockHash.Hex()).
 			Send()
 	} else {
-		msg := fmt.Sprintf("CONSENSUSERROR.BROADCASTANDPROCESSBLOCK: Consensus not reached\nBlock #%d\n(hash: %s)", block.BlockNumber, block.BlockHash.Hex())
-		logger().Warn(context.Background(), "Consensus not reached - block will not be processed locally",
-			ion.Uint64("block_number", block.BlockNumber),
-			ion.String("block_hash", block.BlockHash.Hex()))
+		// Consensus not reached is a valid BFT outcome, not an infrastructure error.
+		// The alert from VerifyConsensusWithBLS already notifies about the failed vote.
+		// We broadcast with "rejected" status so nodes discard — no error to propagate.
+		logger().Info(ctx, "Broadcasted rejected block",
+			ion.Int("bls_results", len(blsResults)),
+			ion.String("block_hash", block.BlockHash.Hex()),
+			ion.Int64("block_number", int64(block.BlockNumber)),
+			ion.String("function", "Consensus.BroadcastAndProcessBlock"))
+
 		Alerts.NewAlertBuilder(alert_ctx).
-			AlertName(helper.Alert_Consensus_ProcessBlockFailed_ConsensusNotReached).
+			AlertName(helper.Alert_Consensus_BlockRejectedByConsensus).
 			Status(Alerts.AlertStatusWarning).
 			Severity(Alerts.SeverityWarning).
-			Description(msg).
+			Description("Block rejected by consensus - broadcast with rejected status").
+			Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
+			Label("block_hash", block.BlockHash.Hex()).
 			Send()
-		return fmt.Errorf("consensus not reached, error: %s", msg)
 	}
 
 	return nil
@@ -283,12 +284,7 @@ func (consensus *Consensus) BroadcastAndProcessBlock(blsResults []BLS_Signer.BLS
 
 // CleanupSubscriptions unsubscribes from consensus-related topics to prevent resource leaks
 // This should be called after each consensus round completes (success or failure)
-func (consensus *Consensus) CleanupSubscriptions() {
-	// Cancel the round context if active
-	if consensus.roundCancel != nil {
-		consensus.roundCancel()
-	}
-
+func (consensus *Consensus) CleanupSubscriptions(ctx context.Context) {
 	if consensus.gossipnode == nil {
 		return
 	}
@@ -300,16 +296,19 @@ func (consensus *Consensus) CleanupSubscriptions() {
 
 	// Unsubscribe from consensus channel
 	if err := Subscription.Unsubscribe(gps, config.PubSub_ConsensusChannel); err != nil {
-		logger().Warn(context.Background(), "Failed to unsubscribe from consensus channel",
-			ion.Err(err))
+		logger().Warn(ctx, "Failed to unsubscribe from consensus channel",
+			ion.String("error", err.Error()),
+			ion.String("function", "Consensus.CleanupSubscriptions"))
 	} else {
-		logger().Info(context.Background(), "Cleaned up consensus channel subscription")
+		logger().Info(ctx, "Cleaned up consensus channel subscription",
+			ion.String("function", "Consensus.CleanupSubscriptions"))
 	}
 
 	// Unsubscribe from CRDT sync channel
 	if err := Subscription.Unsubscribe(gps, config.Pubsub_CRDTSync); err != nil {
 		// This may fail if we never subscribed - that's OK
-		logger().Warn(context.Background(), "Failed to unsubscribe from CRDT sync channel (may not have been subscribed)",
-			ion.Err(err))
+		logger().Debug(ctx, "Failed to unsubscribe from CRDT sync channel (may not have been subscribed)",
+			ion.String("error", err.Error()),
+			ion.String("function", "Consensus.CleanupSubscriptions"))
 	}
 }

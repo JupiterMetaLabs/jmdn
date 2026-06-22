@@ -66,15 +66,20 @@ func DefaultConnectionPoolConfig() *ConnectionPoolConfig {
 }
 
 // PooledConnection represents a connection in the pool.
-// Client holds a store.ThebeHandle (assigned by createConnection) exposed as io.Closer
-// to avoid an import cycle: store → config → store.
-// Callers needing store.ThebeHandle use: h := conn.Client.(store.ThebeHandle)
+// Client holds a legacy *ImmuClient for old ImmuDB-backed code paths.
+// Handle holds a store.ThebeHandle (as io.Closer) for new ThebeDB-backed code.
+// Callers using getHandle() will pick up Handle first, then fall back to the
+// global process-wide ThebeHandle.
 type PooledConnection struct {
-	Client    io.Closer
+	Client    *ImmuClient
+	Handle    io.Closer
 	Database  string
 	CreatedAt time.Time
 	LastUsed  time.Time
 	InUse     bool
+	// Token is the ImmuDB authentication token, used by legacy account_immuclient.go
+	// call-sites that set authorization metadata on gRPC requests.
+	Token string
 }
 
 // HandleFactory creates a new store.ThebeHandle (exposed as io.Closer to avoid import cycle).
@@ -130,15 +135,13 @@ func (pc *PooledConnection) GetContext() context.Context {
 	return context.Background()
 }
 
-// ImmuClient returns the underlying *ImmuClient if this PooledConnection was created
-// by the legacy ImmuDB pool path. Returns nil when backed by a ThebeDB handle.
-// Deprecated: migrate callers to store.ThebeHandle methods (Phase 6).
+// ImmuClient returns the underlying *ImmuClient if this PooledConnection was
+// created with one (legacy ImmuDB pool path). Returns nil when backed only by
+// a ThebeDB handle (use getHandle via DB_OPs package instead).
+//
+// Deprecated: migrate callers to store.ThebeHandle methods.
 func (pc *PooledConnection) ImmuClient() *ImmuClient {
-	if pc == nil || pc.Client == nil {
-		return nil
-	}
-	ic, _ := pc.Client.(*ImmuClient)
-	return ic
+	return pc.Client
 }
 
 // NewConnectionPool creates a new connection pool backed by ThebeDB.
@@ -396,7 +399,7 @@ func (cp *ConnectionPool) createConnection(logger_ctx context.Context) (*PooledC
 
 	now := time.Now().UTC()
 	conn := &PooledConnection{
-		Client:    handle,
+		Handle:    handle,
 		Database:  cp.Database,
 		CreatedAt: now,
 		LastUsed:  now,
@@ -564,7 +567,7 @@ func (p *ConnectionPool) Close(logger_ctx context.Context) {
 
 // closeConnection releases the handle's resources.
 func (p *ConnectionPool) closeConnection(logger_ctx context.Context, conn *PooledConnection) {
-	if conn == nil || conn.Client == nil {
+	if conn == nil {
 		return
 	}
 
@@ -573,7 +576,14 @@ func (p *ConnectionPool) closeConnection(logger_ctx context.Context, conn *Poole
 
 	span.SetAttributes(attribute.String("database", conn.Database))
 
-	_ = conn.Client.Close()
+	// Close the ThebeDB handle if present.
+	if conn.Handle != nil {
+		_ = conn.Handle.Close()
+	}
+	// Close the legacy ImmuDB client if present.
+	if conn.Client != nil {
+		_ = conn.Client.Close()
+	}
 
 	p.Logger.Debug(spanCtx, "Closed ThebeDB handle",
 		ion.String("database", conn.Database),

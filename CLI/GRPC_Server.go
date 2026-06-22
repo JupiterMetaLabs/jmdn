@@ -242,6 +242,17 @@ func (s *CLIServer) FastSyncV2(ctx context.Context, req *pb.PeerRequest) (*pb.Sy
 	}, nil
 }
 
+func (s *CLIServer) AccountSync(ctx context.Context, req *pb.PeerRequest) (*pb.SyncStats, error) {
+	stats, err := s.handler.HandleAccountSync(req.Peer)
+	if err != nil {
+		return &pb.SyncStats{Error: err.Error()}, nil
+	}
+	return &pb.SyncStats{
+		TimeTaken:     int64(stats.TimeTaken.Seconds()),
+		AccountsState: convertDBState(stats.AccountsState),
+	}, nil
+}
+
 func (s *CLIServer) FirstSync(ctx context.Context, req *pb.FirstSyncRequest) (*pb.SyncStats, error) {
 	stats, err := s.handler.HandleFirstSync(req.Peer, req.Mode)
 	if err != nil {

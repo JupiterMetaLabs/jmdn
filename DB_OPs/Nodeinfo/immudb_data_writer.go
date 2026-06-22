@@ -58,10 +58,11 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			}
 
 			cfgTx := config.Transaction{
-				Type:     uint8(tx.Type),
-				Nonce:    tx.Nonce,
-				GasLimit: tx.GasLimit,
-				Data:     tx.Data,
+				Type:      uint8(tx.Type),
+				Timestamp: tx.Timestamp,
+				Nonce:     tx.Nonce,
+				GasLimit:  tx.GasLimit,
+				Data:      tx.Data,
 			}
 
 			if len(tx.Hash) > 0 {
@@ -78,6 +79,9 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			if len(tx.Value) > 0 {
 				cfgTx.Value = new(big.Int).SetBytes(tx.Value)
 			}
+			if len(tx.ChainId) > 0 {
+				cfgTx.ChainID = new(big.Int).SetBytes(tx.ChainId)
+			}
 			if len(tx.GasPrice) > 0 {
 				cfgTx.GasPrice = new(big.Int).SetBytes(tx.GasPrice)
 			}
@@ -87,6 +91,18 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			if len(tx.MaxPriorityFee) > 0 {
 				cfgTx.MaxPriorityFee = new(big.Int).SetBytes(tx.MaxPriorityFee)
 			}
+			if len(tx.AccessList) > 0 {
+				cfgTx.AccessList = make(config.AccessList, 0, len(tx.AccessList))
+				for _, pbAT := range tx.AccessList {
+					at := config.AccessTuple{
+						Address: common.BytesToAddress(pbAT.Address),
+					}
+					for _, sk := range pbAT.StorageKeys {
+						at.StorageKeys = append(at.StorageKeys, common.BytesToHash(sk))
+					}
+					cfgTx.AccessList = append(cfgTx.AccessList, at)
+				}
+			}
 			if len(tx.V) > 0 {
 				cfgTx.V = new(big.Int).SetBytes(tx.V)
 			}
@@ -95,6 +111,20 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			}
 			if len(tx.S) > 0 {
 				cfgTx.S = new(big.Int).SetBytes(tx.S)
+			}
+			if len(tx.ChainId) > 0 {
+				cfgTx.ChainID = new(big.Int).SetBytes(tx.ChainId)
+			}
+			if len(tx.AccessList) > 0 {
+				for _, al := range tx.AccessList {
+					cfgAl := config.AccessTuple{
+						Address: common.BytesToAddress(al.Address),
+					}
+					for _, sk := range al.StorageKeys {
+						cfgAl.StorageKeys = append(cfgAl.StorageKeys, common.BytesToHash(sk))
+					}
+					cfgTx.AccessList = append(cfgTx.AccessList, cfgAl)
+				}
 			}
 
 			txs = append(txs, cfgTx)

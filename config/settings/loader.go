@@ -149,6 +149,8 @@ func setDefaults(v *viper.Viper) {
 	// Database
 	v.SetDefault("database.username", d.Database.Username)
 	v.SetDefault("database.password", d.Database.Password)
+	v.SetDefault("database.redis.url", d.Database.Redis.URL)
+	v.SetDefault("database.redis.password", d.Database.Redis.Password)
 
 	// Thebe
 	v.SetDefault("thebe.enabled", d.Thebe.Enabled)
@@ -183,6 +185,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("logging.otel.endpoint", d.Logging.OTEL.Endpoint)
 	v.SetDefault("logging.otel.protocol", d.Logging.OTEL.Protocol)
 	v.SetDefault("logging.otel.insecure", d.Logging.OTEL.Insecure)
+	v.SetDefault("logging.otel.headers", d.Logging.OTEL.Headers)
 	v.SetDefault("logging.otel.username", d.Logging.OTEL.Username)
 	v.SetDefault("logging.otel.password", d.Logging.OTEL.Password)
 	v.SetDefault("logging.otel.batch_size", d.Logging.OTEL.BatchSize)
@@ -198,14 +201,35 @@ func setDefaults(v *viper.Viper) {
 
 	// FastSync
 	v.SetDefault("fastsync.enabled", d.FastSync.Enabled)
-	v.SetDefault("fastsync.sync", d.FastSync.Sync)
-	v.SetDefault("fastsync.startup_sync", d.FastSync.StartupSync)
+	v.SetDefault("fastsync.enable_pulling", d.FastSync.EnablePulling)
+	v.SetDefault("fastsync.pull_on_startup", d.FastSync.PullOnStartup)
 	v.SetDefault("fastsync.sync_timeout", d.FastSync.SyncTimeout)
 	v.SetDefault("fastsync.allowed_peers", d.FastSync.AllowedPeers)
 
 	// Security
+	v.SetDefault("security.enabled", d.Security.Enabled)
+	v.SetDefault("security.cert_dir", d.Security.CertDir)
+	v.SetDefault("security.ip_cache_size", d.Security.IPCacheSize)
+	v.SetDefault("security.global_rate_limit", d.Security.GlobalRateLimit)
+	v.SetDefault("security.global_burst", d.Security.GlobalBurst)
+	v.SetDefault("security.trust_forwarded_headers", d.Security.TrustForwardedHeaders)
+	v.SetDefault("security.trusted_proxies", d.Security.TrustedProxies)
+	v.SetDefault("security.trusted_clients", d.Security.TrustedClients)
 	v.SetDefault("security.explorer_api_key", d.Security.ExplorerAPIKey)
 	v.SetDefault("security.jwt_secret", d.Security.JWTSecret)
+
+	// Register defaults for all predefined Security Services so Viper can pick up ENV overrides
+	for svcName, policy := range d.Security.Services {
+		prefix := "security.services." + svcName + "."
+		v.SetDefault(prefix+"tls", policy.TLS)
+		v.SetDefault(prefix+"auth_type", string(policy.AuthType))
+		v.SetDefault(prefix+"token_env", policy.TokenEnv)
+		v.SetDefault(prefix+"rate_limit", policy.RateLimit)
+		v.SetDefault(prefix+"burst", policy.Burst)
+		v.SetDefault(prefix+"cert_file", policy.CertFile)
+		v.SetDefault(prefix+"key_file", policy.KeyFile)
+		v.SetDefault(prefix+"ca_file", policy.CAFile)
+	}
 
 	// Alerts
 	v.SetDefault("alerts.url", d.Alerts.URL)
