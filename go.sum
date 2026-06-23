@@ -7,6 +7,8 @@ github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260623172225-ee9db84a5609 h1:4
 github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260623172225-ee9db84a5609/go.mod h1:0erT7gGH4TYtitRik+Y3GfxSa5KGLacr9rJovV3vNB0=
 github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260623190349-1e218bd06f7b h1:58QlmKb4FGT8F8xFFQ6gUG61bbAXNnrTan+PNgh67VU=
 github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260623190349-1e218bd06f7b/go.mod h1:0erT7gGH4TYtitRik+Y3GfxSa5KGLacr9rJovV3vNB0=
+github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260623191406-56133298595b h1:/Tz6f/DmUW+3AH6zvlfzZk987yd0Xla0+cve9YgNM1Y=
+github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260623191406-56133298595b/go.mod h1:0erT7gGH4TYtitRik+Y3GfxSa5KGLacr9rJovV3vNB0=
 github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8 h1:yPrYb6g6NnqGsiCVqMf0zndEYTuelL3B03Fee+utLWA=
 github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8/go.mod h1:zM8F31G2SiPXzTo1WzbDFZ5iOOAkqrkuZjS0QVDW4ew=
 github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5 h1:S9+s6JeWSrGJ6ooYb4f8iRlJxwPUZ8X/EA4EgxKS3zc=
