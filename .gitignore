@@ -73,3 +73,4 @@ storage/thebe-kv/LOCK
 storage/thebe-kv/MANIFEST
 *.duckdb
 *.wal
+docs/FASTSYNC_V3_MIGRATION_PLAN.md
