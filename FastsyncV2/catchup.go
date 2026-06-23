@@ -27,6 +27,8 @@ import (
 	"math"
 	"time"
 
+	"gossipnode/DB_OPs"
+
 	availabilitypb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/availability"
 	authpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/availability/auth"
 	ackpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/ack"
@@ -290,6 +292,14 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 		log.Printf("[CatchUpSync] phase 8 warning: verification scan failed: %v", verifyErr)
 	} else if len(verifyTag.Range) == 0 && len(verifyTag.BlockNumber) == 0 {
 		log.Printf("[CatchUpSync] phase 8: PASS — all blocks in [%d..%d] have data", fromBlock, remoteTip)
+		// Advance latest_block to remoteTip. This is the authoritative write:
+		// phases 2/3 may have been skipped (data already present), so WriteData
+		// never ran and the DB key was never updated on this run.
+		if updateErr := DB_OPs.Update("latest_block", remoteTip); updateErr != nil {
+			log.Printf("[CatchUpSync] phase 8 warning: failed to update latest_block to %d: %v", remoteTip, updateErr)
+		} else {
+			log.Printf("[CatchUpSync] phase 8: latest_block advanced to %d", remoteTip)
+		}
 	} else {
 		log.Printf("[CatchUpSync] phase 8: INCOMPLETE — %d range(s) still missing data:", len(verifyTag.Range))
 		for _, r := range verifyTag.Range {
@@ -435,11 +445,14 @@ func (fs *FastsyncV2) buildDataMissingTag(fromBlock, remoteTip uint64) (*tagging
 			return nil, fmt.Errorf("data-missing block iterator: %w", err)
 		}
 		if len(batch) == 0 {
-			// Remaining [cursor..remoteTip] are absent — include them.
+			// Remaining [cursor..remoteTip] are absent from the DB — include them.
 			if cursor <= remoteTip {
 				addToRun(cursor)
-				endRunAt(remoteTip)
 			}
+			// Close any open run (covers both absent trailing blocks AND the case
+			// where the last DB block needed DataSync: cursor advanced past remoteTip
+			// but inRun is still true). endRunAt is a no-op when inRun==false.
+			endRunAt(remoteTip)
 			break
 		}
 
