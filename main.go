@@ -260,8 +260,9 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
-		fmt.Println("  fastsync <peer>      - Fast sync with peer (V2 Engine)")
-		fmt.Println("  accountsync <peer>   - Sync missing accounts only (skip block sync)")
+		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
+		fmt.Println("  catchup <peer> <from_block>       - Catch up from a known block to chain tip (post-bootstrap)")
+		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
 		fmt.Println("are only available in interactive mode.")
@@ -449,6 +450,30 @@ func runCommand(command string, args []string, grpcPort int) {
 			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
 		}
 
+	case "catchup":
+		if len(args) < 2 {
+			fmt.Println("Usage: jmdn -cmd catchup <peer_multiaddr> <from_block>")
+			os.Exit(1)
+		}
+		fromBlock, err := strconv.ParseUint(args[1], 10, 64)
+		if err != nil {
+			fmt.Printf("Invalid from_block %q: %v\n", args[1], err)
+			os.Exit(1)
+		}
+		fmt.Printf("Starting CatchUpSync from block %d...\n", fromBlock)
+		stats, err := client.CatchUpSync(args[0], fromBlock)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if stats != nil && stats.Error != "" {
+			fmt.Printf("CatchUpSync failed: %s\n", stats.Error)
+			os.Exit(1)
+		}
+		if stats != nil {
+			fmt.Printf("CatchUpSync completed in %ds\n", stats.TimeTaken)
+		}
+
 	case "accountsync":
 		if len(args) < 1 {
 			fmt.Println("Usage: jmdn -cmd accountsync <peer_multiaddr>")
@@ -509,8 +534,9 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  sendfile <peer> <filepath> <remote> - Send file")
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
-		fmt.Println("  fastsync <peer>      - Fast sync with peer (V2 Engine)")
-		fmt.Println("  accountsync <peer>   - Sync missing accounts only (skip block sync)")
+		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
+		fmt.Println("  catchup <peer> <from_block>       - Catch up from a known block to chain tip (post-bootstrap)")
+		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		os.Exit(1)
 	}
 }
@@ -967,57 +993,31 @@ func main() {
 		log.Info().Msg("[FastSync] disabled by config — protocol handlers not registered")
 	}
 
-	// Startup sync: catch up on blocks missed while offline.
-	if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.PullOnStartup {
-		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.StartupSyncThread, func(ctx context.Context) error {
-			// Wait for peer connections to establish after node startup
-			time.Sleep(5 * time.Second)
-
-			peers := n.Host.Network().Peers()
-			if len(peers) == 0 {
-				// TODO: Query seed node for available sync peers when no direct peers are connected
-				log.Info().Msg("[StartupSync] No peers connected, skipping startup sync")
+	// CatchUp sync: post-bootstrap reconciliation from a known block to realtime.
+	// Triggered when catch_up_from_block > 0 in config. Runs once on startup,
+	// then the node falls through to normal operation / pubsub.
+	if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.CatchUpFromBlock > 0 {
+		if cfg.FastSync.CatchUpPeer == "" {
+			log.Error().Msg("[CatchUpSync] catch_up_from_block is set but catch_up_peer is empty — skipping")
+		} else {
+			fromBlock := cfg.FastSync.CatchUpFromBlock
+			peer := cfg.FastSync.CatchUpPeer
+			if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.StartupSyncThread, func(ctx context.Context) error {
+				time.Sleep(5 * time.Second) // allow peer connections to establish
+				log.Info().Uint64("from_block", fromBlock).Str("peer", peer).Msg("[CatchUpSync] starting post-bootstrap catch-up")
+				if err := fastSyncerV2.HandleCatchUpSync(fromBlock, peer); err != nil {
+					log.Error().Err(err).Msg("[CatchUpSync] failed")
+					return err
+				}
+				log.Info().Msg("[CatchUpSync] completed successfully")
 				return nil
+			}); err != nil {
+				log.Error().Err(err).Str("thread", GRO.StartupSyncThread).Msg("Failed to start CatchUpSync goroutine")
 			}
-
-			log.Info().Int("peers", len(peers)).Msg("[StartupSync] Attempting startup sync with connected peers")
-
-			for _, peerID := range peers {
-				// Honour allowed_peers whitelist if configured
-				if len(cfg.FastSync.AllowedPeers) > 0 {
-					allowed := false
-					for _, ap := range cfg.FastSync.AllowedPeers {
-						if ap == peerID.String() {
-							allowed = true
-							break
-						}
-					}
-					if !allowed {
-						log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Skipping peer not in allowed_peers")
-						continue
-					}
-				}
-
-				addrs := n.Host.Peerstore().Addrs(peerID)
-				if len(addrs) == 0 {
-					continue
-				}
-
-				log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Trying peer")
-				if err := fastSyncerV2.HandleStartupSync(peerID, addrs); err != nil {
-					log.Warn().Err(err).Str("peer", peerID.String()).Msg("[StartupSync] Failed, trying next peer")
-					continue
-				}
-
-				log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Sync completed successfully")
-				return nil
-			}
-
-			log.Warn().Msg("[StartupSync] Failed to sync with any connected peer")
-			return nil
-		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.StartupSyncThread).Msg("Failed to start startup sync goroutine")
 		}
+	// StartupSync (HandleStartupSync) disabled — catchup is the only startup sync path.
+	// } else if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.PullOnStartup {
+	// 	...
 	} else if fastSyncerV2 != nil && !cfg.FastSync.EnablePulling {
 		log.Info().Msg("[FastSync] Node configured with enable_pulling=false (serve-only participant); skipping StartupSync")
 	}

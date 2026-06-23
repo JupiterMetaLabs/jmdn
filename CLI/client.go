@@ -179,6 +179,15 @@ func (c *Client) FirstSync(peerAddr string, mode string) (*pb.SyncStats, error) 
 	})
 }
 
+// CatchUpSync reconciles blocks [fromBlock..remoteTip] without Merkle bisection.
+func (c *Client) CatchUpSync(peerAddr string, fromBlock uint64) (*pb.SyncStats, error) {
+	ctx := context.Background()
+	return c.conn.CatchUpSync(ctx, &pb.CatchUpRequest{
+		Peer:      peerAddr,
+		FromBlock: fromBlock,
+	})
+}
+
 // GetDatabaseState returns the current database state
 func (c *Client) GetDatabaseState() (*pb.DatabaseStates, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -167,4 +167,15 @@ type FastSyncSettings struct {
 	// AllowedPeers is an optional whitelist of libp2p peer IDs this node will
 	// accept sync data FROM. Empty list = accept from any peer.
 	AllowedPeers []string `mapstructure:"allowed_peers" yaml:"allowed_peers"`
+
+	// CatchUpFromBlock, when non-zero, triggers HandleCatchUpSync on startup
+	// instead of HandleStartupSync. Set to the first block NOT present in the
+	// local DB after a bootstrap snapshot load (i.e. snapshot_tip + 1).
+	// Requires CatchUpPeer to be set.
+	CatchUpFromBlock uint64 `mapstructure:"catch_up_from_block" yaml:"catch_up_from_block"`
+
+	// CatchUpPeer is the libp2p multiaddr (with embedded peer ID) of the node
+	// to catch up from. Example: /ip4/1.2.3.4/tcp/15000/p2p/12D3KooW...
+	// Only used when CatchUpFromBlock > 0.
+	CatchUpPeer string `mapstructure:"catch_up_peer" yaml:"catch_up_peer"`
 }

@@ -170,6 +170,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("fastsync.pull_on_startup", d.FastSync.PullOnStartup)
 	v.SetDefault("fastsync.sync_timeout", d.FastSync.SyncTimeout)
 	v.SetDefault("fastsync.allowed_peers", d.FastSync.AllowedPeers)
+	v.SetDefault("fastsync.catch_up_from_block", d.FastSync.CatchUpFromBlock)
+	v.SetDefault("fastsync.catch_up_peer", d.FastSync.CatchUpPeer)
 
 	// Security
 	v.SetDefault("security.enabled", d.Security.Enabled)
