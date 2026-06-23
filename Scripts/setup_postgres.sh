@@ -155,7 +155,7 @@ if [ "${SETUP_MODE}" = "local" ]; then
     prompt DB_HOST   "Postgres host"          "${DB_HOST}"
     prompt DB_PORT   "Postgres port"          "${DB_PORT}"
     # macOS brew installs Postgres with the current user as superuser, not 'postgres'
-    local default_super="${PG_SUPERUSER}"
+    default_super="${PG_SUPERUSER}"
     [ "${PLATFORM}" = "macos" ] && default_super="$(whoami)"
     prompt PG_SUPERUSER "Superuser name"      "${default_super}"
     log_info "Connecting as superuser '${PG_SUPERUSER}' — you may be prompted for its password."
