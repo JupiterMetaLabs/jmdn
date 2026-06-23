@@ -22,13 +22,17 @@ import (
 	"fmt"
 	"time"
 
+	"gossipnode/DB_OPs/store"
 	"gossipnode/config"
-
-	"github.com/codenotary/immudb/pkg/api/schema"
 )
 
-// DatabaseState is a legacy alias used by explorer/BlockOps.go
-type DatabaseState = schema.ImmutableState
+// DatabaseState replaces the former schema.ImmutableState alias.
+// ImmuDB is removed; callers receive a zeroed state from GetDatabaseState.
+type DatabaseState struct {
+	Db     string
+	TxId   uint64
+	TxHash []byte
+}
 
 // ---------------------------------------------------------------------------
 // MainDB connection pool shims (were in MainDB_Connections.go)
@@ -77,6 +81,66 @@ func PutAccountsConnection(_ *config.PooledConnection) {}
 // Deprecated: remove callers.
 func GetAccountsConnections(_ context.Context) (*config.PooledConnection, error) { 
 	return nil, fmt.Errorf("GetAccountsConnections: ImmuDB accounts pool removed — use getHandle(nil) instead")
+}
+
+// storeAccountToDBOps converts a *store.Account to *Account.
+// TxNonce and TxCountSent will be zero until store.Account adds those fields (Task #26).
+func storeAccountToDBOps(a *store.Account) *Account {
+	return &Account{
+		DIDAddress:  a.DIDAddress,
+		Address:     a.Address,
+		Balance:     a.Balance,
+		Nonce:       a.Nonce,
+		TxNonce:     a.TxNonce,
+		TxCountSent: a.TxCountSent,
+		AccountType: a.AccountType,
+		CreatedAt:   a.CreatedAt,
+		UpdatedAt:   a.UpdatedAt,
+		Metadata:    a.Metadata,
+	}
+}
+
+// ListAccountsPaginatedCtx returns a page of accounts using offset-based pagination via ThebeDB.
+func ListAccountsPaginatedCtx(ctx context.Context, limit, offset int) ([]*Account, error) {
+	h, err := getHandle(nil)
+	if err != nil {
+		return nil, fmt.Errorf("ListAccountsPaginatedCtx: %w", err)
+	}
+	rows, err := h.ListAccountsPaginated(ctx, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]*Account, len(rows))
+	for i, r := range rows {
+		result[i] = storeAccountToDBOps(r)
+	}
+	return result, nil
+}
+
+// CountAccountsCtx returns the total number of accounts via ThebeDB.
+func CountAccountsCtx(ctx context.Context) (uint64, error) {
+	h, err := getHandle(nil)
+	if err != nil {
+		return 0, fmt.Errorf("CountAccountsCtx: %w", err)
+	}
+	return h.CountAccounts(ctx)
+}
+
+// GetAccountsByNonces returns accounts matching any of the given nonces via ThebeDB.
+func GetAccountsByNonces(ctx context.Context, nonces []uint64) ([]*Account, error) {
+	h, err := getHandle(nil)
+	if err != nil {
+		return nil, fmt.Errorf("GetAccountsByNonces: %w", err)
+	}
+	rows, err := h.GetAccountsByNonces(ctx, nonces)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]*Account, len(rows))
+	for i, r := range rows {
+		result[i] = storeAccountToDBOps(r)
+	}
+	return result, nil
 }
 
 // SaveAccount persists a full Account record — delegates to UpdateAccountBalance.
