@@ -187,12 +187,6 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 	var taggedAccounts *taggingpb.TaggedAccounts
 	if len(dataMissingTag.Range) == 0 && len(dataMissingTag.BlockNumber) == 0 {
 		log.Printf("[CatchUpSync] phase 3 skipped: all blocks in [%d..%d] already have data", fromBlock, remoteTip)
-		// DataSync skipped → scan local blocks to collect accounts with transactions
-		// so reconciliation can still update balances on re-runs.
-		taggedAccounts = fs.collectTaggedAccountsFromBlocks(fromBlock, remoteTip)
-		if taggedAccounts != nil {
-			log.Printf("[CatchUpSync] phase 3: collected %d accounts from local blocks for reconciliation", len(taggedAccounts.Accounts))
-		}
 	} else {
 		log.Printf("[CatchUpSync] phase 3: %d data-missing range(s) to fetch", len(dataMissingTag.Range))
 		dataSyncReq := &datasyncpb.DataSyncRequest{
@@ -211,6 +205,28 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 			return fmt.Errorf("catchup: data sync: %w", err)
 		}
 		log.Printf("[CatchUpSync] phase 3 complete")
+	}
+
+	// Always scan local blocks [fromBlock..remoteTip] for tagged accounts and merge
+	// with DataSync's results. This serves two purposes:
+	//   1. When DataSync was skipped (data already present), this is the only source
+	//      of tagged accounts for reconciliation.
+	//   2. When DataSync ran for SOME new blocks only, previously-failed reconciliation
+	//      accounts from already-synced blocks are re-included here so they are retried.
+	// With 500-block batch reads this is ~3 DB round-trips for a 1200-block range.
+	localTagged := fs.collectTaggedAccountsFromBlocks(fromBlock, remoteTip)
+	if localTagged != nil {
+		if taggedAccounts == nil {
+			taggedAccounts = localTagged
+			log.Printf("[CatchUpSync] phase 3: %d accounts from local scan", len(taggedAccounts.Accounts))
+		} else {
+			before := len(taggedAccounts.Accounts)
+			for addr := range localTagged.Accounts {
+				taggedAccounts.Accounts[addr] = true
+			}
+			log.Printf("[CatchUpSync] phase 3: merged local scan (+%d) → %d total accounts for reconciliation",
+				len(taggedAccounts.Accounts)-before, len(taggedAccounts.Accounts))
+		}
 	}
 
 	// ── Phase 3.5: FetchAccounts — pull tagged accounts missing locally ───
