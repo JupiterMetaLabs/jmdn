@@ -1001,10 +1001,6 @@ func main() {
 		transfer.HandleFileStream(s, "")
 	})
 
-	// DB_OPs calls use globalThebeHandle via getHandle(nil); no pool connections needed.
-	// mainDBClient and didDBClient are kept as nil — all callers accept nil PooledConnection.
-	var mainDBClient *config.PooledConnection
-	var didDBClient *config.PooledConnection
 
 	// Initialize Yggdrasil messaging if enabled
 	if cfg.Network.Yggdrasil {
@@ -1211,20 +1207,6 @@ func main() {
 		PullAllowed:     cfg.FastSync.EnablePulling,
 	}
 
-	// Only set database clients if they're properly initialized
-	if mainDBClient != nil {
-		cmdHandler.MainClient = mainDBClient
-		fmt.Println(config.ColorGreen + "Main database client connected" + config.ColorReset)
-	} else {
-		fmt.Println(config.ColorYellow + "Warning: Main database client not available - some commands disabled" + config.ColorReset)
-	}
-
-	if didDBClient != nil {
-		cmdHandler.DIDClient = didDBClient
-		fmt.Println(config.ColorGreen + "DID database client connected" + config.ColorReset)
-	} else {
-		fmt.Println(config.ColorYellow + "Warning: DID database client not available - some commands disabled" + config.ColorReset)
-	}
 
 	if cfg.Ports.Facade > 0 {
 		fmt.Printf("Starting gETH Facade server on port %d\n", cfg.Ports.Facade)
