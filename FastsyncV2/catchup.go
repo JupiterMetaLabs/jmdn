@@ -467,6 +467,9 @@ func (fs *FastsyncV2) buildDataMissingTag(fromBlock, remoteTip uint64) (*tagging
 	runStart := uint64(0)
 	inRun := false
 
+	// Diagnostic counters — logged at end to explain why blocks pass/fail.
+	var nAbsent, nNoProof, nGasNoTx, nComplete uint64
+
 	// Start a new run at b (or extend if already in one).
 	addToRun := func(b uint64) {
 		if !inRun {
@@ -490,6 +493,7 @@ func (fs *FastsyncV2) buildDataMissingTag(fromBlock, remoteTip uint64) (*tagging
 		if len(batch) == 0 {
 			// Remaining [cursor..remoteTip] are absent from the DB — include them.
 			if cursor <= remoteTip {
+				nAbsent += remoteTip - cursor + 1
 				addToRun(cursor)
 			}
 			// Close any open run (covers both absent trailing blocks AND the case
@@ -507,9 +511,18 @@ func (fs *FastsyncV2) buildDataMissingTag(fromBlock, remoteTip uint64) (*tagging
 
 			// Absent blocks [cursor..b-1]: they need DataSync — extend or start run.
 			if b > cursor {
+				nAbsent += b - cursor
 				addToRun(cursor)
 				// Run is now active through at least b-1.
 				// We decide below whether b also extends it or closes it.
+			}
+
+			if len(blk.StarkProof) == 0 {
+				nNoProof++
+			} else if blk.GasUsed > 0 && len(blk.Transactions) == 0 {
+				nGasNoTx++
+			} else {
+				nComplete++
 			}
 
 			if blockNeedsDataSync(blk) {
@@ -525,6 +538,9 @@ func (fs *FastsyncV2) buildDataMissingTag(fromBlock, remoteTip uint64) (*tagging
 			cursor = b + 1
 		}
 	}
+
+	log.Printf("[CatchUpSync] phase 3 scan: absent=%d noProof=%d gasNoTx=%d complete=%d",
+		nAbsent, nNoProof, nGasNoTx, nComplete)
 
 	return &taggingpb.Tag{Range: ranges}, nil
 }
