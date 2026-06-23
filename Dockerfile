@@ -68,6 +68,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        netcat-openbsd \
        wget \
        bzip2 \
+       openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ImmuDB
@@ -101,8 +102,11 @@ RUN chmod +x /usr/local/bin/start_jmdn_wrapper.sh \
 # Copy default config as jmdn.yaml (mirrors setup_config.sh: cp jmdn_default.yaml → jmdn.yaml)
 COPY --from=builder /src/jmdn_default.yaml /etc/jmdn/jmdn.yaml
 # peer.json must be at ./config/peer.json relative to WORKDIR (hardcoded in config/constants.go)
-# WORKDIR is /opt/jmdn/data (volume) so it persists across restarts
+# WORKDIR is /opt/jmdn/data (volume) so it persists across restarts.
+# Also kept at /etc/jmdn/peer.json as a fallback — bootstrap_sync wipes the volume,
+# so the entrypoint restores from /etc/jmdn/peer.json if missing after bootstrap.
 COPY --from=builder /src/config/peer.json /opt/jmdn/data/config/peer.json
+COPY --from=builder /src/config/peer.json /etc/jmdn/peer.json
 
 # Expose ports per jmdn.yaml (localhost-bound ports excluded)
 # 6090  - HTTP API / Explorer      (ports.api)
