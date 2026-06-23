@@ -51,6 +51,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
@@ -261,7 +262,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
 		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
-		fmt.Println("  catchup <peer> <from_block>       - Catch up from a known block to chain tip (post-bootstrap)")
+		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
 		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
@@ -451,16 +452,21 @@ func runCommand(command string, args []string, grpcPort int) {
 		}
 
 	case "catchup":
-		if len(args) < 2 {
-			fmt.Println("Usage: jmdn -cmd catchup <peer_multiaddr> <from_block>")
+		if len(args) < 1 {
+			fmt.Println("Usage: jmdn -cmd catchup <peer_multiaddr> [from_block]")
+			fmt.Println("  from_block defaults to 0 (auto-detect from local DB tip)")
 			os.Exit(1)
 		}
-		fromBlock, err := strconv.ParseUint(args[1], 10, 64)
-		if err != nil {
-			fmt.Printf("Invalid from_block %q: %v\n", args[1], err)
-			os.Exit(1)
+		var fromBlock uint64
+		if len(args) >= 2 {
+			var err error
+			fromBlock, err = strconv.ParseUint(args[1], 10, 64)
+			if err != nil {
+				fmt.Printf("Invalid from_block %q: %v\n", args[1], err)
+				os.Exit(1)
+			}
 		}
-		fmt.Printf("Starting CatchUpSync from block %d...\n", fromBlock)
+		fmt.Printf("Starting CatchUpSync (from_block=%d)...\n", fromBlock)
 		stats, err := client.CatchUpSync(args[0], fromBlock)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -535,7 +541,7 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
-		fmt.Println("  catchup <peer> <from_block>       - Catch up from a known block to chain tip (post-bootstrap)")
+		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
 		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		os.Exit(1)
 	}
@@ -994,26 +1000,46 @@ func main() {
 	}
 
 	// CatchUp sync: post-bootstrap reconciliation from a known block to realtime.
-	// Triggered when catch_up_from_block > 0 in config. Runs once on startup,
-	// then the node falls through to normal operation / pubsub.
-	if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.CatchUpFromBlock > 0 {
-		if cfg.FastSync.CatchUpPeer == "" {
-			log.Error().Msg("[CatchUpSync] catch_up_from_block is set but catch_up_peer is empty — skipping")
-		} else {
-			fromBlock := cfg.FastSync.CatchUpFromBlock
-			peer := cfg.FastSync.CatchUpPeer
-			if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.StartupSyncThread, func(ctx context.Context) error {
-				time.Sleep(5 * time.Second) // allow peer connections to establish
-				log.Info().Uint64("from_block", fromBlock).Str("peer", peer).Msg("[CatchUpSync] starting post-bootstrap catch-up")
-				if err := fastSyncerV2.HandleCatchUpSync(fromBlock, peer); err != nil {
-					log.Error().Err(err).Msg("[CatchUpSync] failed")
-					return err
-				}
-				log.Info().Msg("[CatchUpSync] completed successfully")
-				return nil
-			}); err != nil {
-				log.Error().Err(err).Str("thread", GRO.StartupSyncThread).Msg("Failed to start CatchUpSync goroutine")
+	// catch_up_peer is a plain peer ID (e.g. 12D3KooW...) — resolved from peerstore,
+	// same pattern as the old HandleStartupSync startup path.
+	if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.CatchUpPeer != "" {
+		if cfg.FastSync.CatchUpFromBlock == 0 {
+			log.Warn().Msg("[CatchUpSync] catch_up_from_block not set — defaulting to 1 (full scan). Set to bootstrapTip+1 to limit scan range.")
+		}
+		catchUpPeerIDStr := cfg.FastSync.CatchUpPeer
+		fromBlock := cfg.FastSync.CatchUpFromBlock
+		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.StartupSyncThread, func(ctx context.Context) error {
+			time.Sleep(5 * time.Second) // allow peer connections to establish
+
+			// Resolve the configured peer ID to a libp2p peer.ID.
+			catchUpPeerID, err := peer.Decode(catchUpPeerIDStr)
+			if err != nil {
+				return fmt.Errorf("[CatchUpSync] invalid catch_up_peer %q: %w", catchUpPeerIDStr, err)
 			}
+
+			// Get addresses from peerstore — same as HandleStartupSync.
+			addrs := n.Host.Peerstore().Addrs(catchUpPeerID)
+			if len(addrs) == 0 {
+				return fmt.Errorf("[CatchUpSync] peer %s not in peerstore — not connected yet", catchUpPeerIDStr)
+			}
+
+			// Build full multiaddr with embedded peer ID, matching HandleStartupSync pattern.
+			targetMultiaddr := fmt.Sprintf("%s/p2p/%s", addrs[0].String(), catchUpPeerID.String())
+
+			log.Info().
+				Uint64("from_block", fromBlock).
+				Str("peer", catchUpPeerIDStr).
+				Str("addr", targetMultiaddr).
+				Msg("[CatchUpSync] starting")
+
+			if err := fastSyncerV2.HandleCatchUpSync(fromBlock, targetMultiaddr); err != nil {
+				log.Error().Err(err).Msg("[CatchUpSync] failed")
+				return err
+			}
+			log.Info().Msg("[CatchUpSync] completed successfully")
+			return nil
+		}); err != nil {
+			log.Error().Err(err).Str("thread", GRO.StartupSyncThread).Msg("Failed to start CatchUpSync goroutine")
 		}
 	// StartupSync (HandleStartupSync) disabled — catchup is the only startup sync path.
 	// } else if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.PullOnStartup {

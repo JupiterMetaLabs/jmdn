@@ -39,8 +39,31 @@ import (
 // Kept for reference — re-enable the commented blocks above if TTL is reduced.
 
 // HandleCatchUpSync is the public entry point. See package-level doc above.
+//
+// fromBlock is the first block AFTER the guaranteed-complete bootstrap range.
+// It anchors the gap scan — buildMissingTag scans [fromBlock..remoteTip] and
+// fetches only what is absent locally.
+//
+// Lifecycle:
+//
+//	Stage 1 — bootstrap loads [0..X] (complete, no gaps)
+//	Stage 2 — HandleCatchUpSync(X+1, peer) → syncs [X+1..T1], no gaps expected
+//	Stage 3 — node offline, misses Y blocks; HandleCatchUpSync(X+1, peer) again
+//	           → buildMissingTag finds any Stage-2 gaps + new [lastSynced+1..T2]
+//
+// fromBlock should always be bootstrapTip+1 (set in fastsync.catch_up_from_block
+// config). Never use localTip+1: if Stage 2 was partial, localTip may be in the
+// middle of a gap and the scan would skip missing blocks below it.
 func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) error {
 	catchUpStart := time.Now()
+
+	// fromBlock=0 is a safety fallback only — callers should always pass
+	// bootstrapTip+1 (from config catch_up_from_block). Using localTip+1 here
+	// would silently skip gaps below localTip if Stage 2 was interrupted.
+	if fromBlock == 0 {
+		fromBlock = 1
+		log.Printf("[CatchUpSync] fromBlock not set, defaulting to 1 (full scan from genesis)")
+	}
 
 	// Use a generous timeout — catching up on days of blocks takes much longer
 	// than a normal incremental sync. Callers can wrap in their own deadline if needed.

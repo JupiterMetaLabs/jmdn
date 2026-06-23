@@ -331,9 +331,10 @@ func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
 }
 
 func (h *CommandHandler) HandleCatchUpSync(peeraddr string, fromBlock uint64) (SyncStats, error) {
-	if peeraddr == "" || fromBlock == 0 {
-		return SyncStats{}, fmt.Errorf("usage: catchup <peer_multiaddr> <from_block>")
+	if peeraddr == "" {
+		return SyncStats{}, fmt.Errorf("usage: catchup <peer_multiaddr> [from_block]")
 	}
+	// fromBlock=0 → auto-detect inside HandleCatchUpSync
 	if !h.PullAllowed {
 		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
 	}

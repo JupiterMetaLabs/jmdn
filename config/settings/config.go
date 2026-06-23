@@ -168,14 +168,20 @@ type FastSyncSettings struct {
 	// accept sync data FROM. Empty list = accept from any peer.
 	AllowedPeers []string `mapstructure:"allowed_peers" yaml:"allowed_peers"`
 
-	// CatchUpFromBlock, when non-zero, triggers HandleCatchUpSync on startup
-	// instead of HandleStartupSync. Set to the first block NOT present in the
-	// local DB after a bootstrap snapshot load (i.e. snapshot_tip + 1).
-	// Requires CatchUpPeer to be set.
+	// CatchUpFromBlock is the first block AFTER the bootstrap snapshot
+	// (i.e. bootstrapTip + 1). Set this once after loading the bootstrap and
+	// never change it. Every catchup run — including after the node goes offline
+	// and comes back — scans from this block to remoteTip to find all gaps.
+	//
+	// 0 = full scan from block 1 (genesis). Use this if no bootstrap was loaded.
+	// N = scan from N; bootstrap guaranteed to cover [0..N-1] with no gaps.
+	//
+	// Do NOT set this to localTip+1: if a previous catchup was partial,
+	// localTip may be ahead of gaps that would be silently skipped.
 	CatchUpFromBlock uint64 `mapstructure:"catch_up_from_block" yaml:"catch_up_from_block"`
 
-	// CatchUpPeer is the libp2p multiaddr (with embedded peer ID) of the node
-	// to catch up from. Example: /ip4/1.2.3.4/tcp/15000/p2p/12D3KooW...
-	// Only used when CatchUpFromBlock > 0.
+	// CatchUpPeer is the libp2p peer ID of the node to catch up from.
+	// Example: 12D3KooWAbCdEf...
+	// The node must be connected (in peerstore) at startup for addresses to resolve.
 	CatchUpPeer string `mapstructure:"catch_up_peer" yaml:"catch_up_peer"`
 }
