@@ -273,7 +273,16 @@ if [ "${SETUP_MODE}" = "local" ] && [ -n "${PG_CONF_PATH}" ] && [ -f "${PG_CONF_
         esac
         log_ok "Postgres restarted."
         NEEDS_RESTART=false
-        sleep 2
+        # Wait until Postgres is accepting connections (up to 30s).
+        _pg_wait=0
+        until pg_isready -h "${DB_HOST}" -p "${DB_PORT}" -U "${PG_SUPERUSER}" -q 2>/dev/null; do
+            sleep 1
+            _pg_wait=$((_pg_wait + 1))
+            if [ "${_pg_wait}" -ge 30 ]; then
+                log_die "Postgres did not become ready within 30s on ${DB_HOST}:${DB_PORT}. Check pg logs."
+            fi
+        done
+        log_ok "Postgres is accepting connections."
     fi
 elif [ "${SETUP_MODE}" = "docker" ]; then
     log_info "Docker mode: wal_level=logical is set in docker-compose.yml — no manual patch needed."
