@@ -251,6 +251,12 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 	}
 
 	// ── Phase 5: Reconciliation ───────────────────────────────────────────
+	// Brief pause before reconciliation: DataSync may have just written thousands
+	// of blocks and ImmuDB needs a moment to settle its commit queue before read
+	// queries (GetTransactionsForAccount) can complete within their deadline.
+	const reconDelay = 5 * time.Second
+	log.Printf("[CatchUpSync] phase 5: waiting %s for ImmuDB to settle before reconciliation", reconDelay)
+	time.Sleep(reconDelay)
 	log.Printf("[CatchUpSync] phase 5: reconciliation")
 
 	reconCount, failedAccounts, err := fs.ReconRouter.Reconcile(taggedAccounts, availResp)

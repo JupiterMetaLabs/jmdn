@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"sort"
 	"strings"
@@ -85,7 +86,7 @@ func chunkCount(n int) int {
 
 // Time Complexity: O(N) where N is the total number of transactions scanned or retrieved
 func (am *account_manager) GetTransactionsForAccount(accountAddress string) ([]types.DBTransaction, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
@@ -245,7 +246,10 @@ func (am *account_manager) WriteAccounts(accounts []*types.Account) error {
 	}
 	s, mgr := getAccountQueue()
 	if s == nil {
-		return fmt.Errorf("WriteAccounts: account queue not initialized; call StartAccountSyncWorker before use")
+		// Redis not available — write directly to ImmuDB synchronously.
+		// Slower (~15 s/batch) but correct; no external dependency required.
+		log.Printf("[accountqueue] Redis not available — writing %d accounts directly to ImmuDB", len(accounts))
+		return writeAccountsDirect(accounts)
 	}
 	mgr.EnsureActive()
 
@@ -255,6 +259,62 @@ func (am *account_manager) WriteAccounts(accounts []*types.Account) error {
 	if err := enqueueRecordsChunked(ctx, s, payloadTypeAccounts, accounts); err != nil {
 		return fmt.Errorf("WriteAccounts: enqueue %d accounts in %d messages: %w", len(accounts), chunks, err)
 	}
+	return nil
+}
+
+// writeAccountsDirect writes accounts synchronously to ImmuDB without going through Redis.
+// Used when the Redis queue is not configured. Uses the same dbEntry/BatchRestoreAccounts
+// path as the worker so the write is LWW-idempotent.
+func writeAccountsDirect(accounts []*types.Account) error {
+	entries := make([]dbEntry, 0, len(accounts)*2)
+	for _, acc := range accounts {
+		if acc == nil {
+			continue
+		}
+		dbAcc := &DB_OPs.Account{
+			DIDAddress:  acc.DIDAddress,
+			Address:     acc.Address,
+			Balance:     acc.Balance,
+			Nonce:       acc.Nonce,
+			TxNonce:     acc.TxNonce,
+			TxCountSent: acc.TxCountSent,
+			AccountType: acc.AccountType,
+			CreatedAt:   acc.CreatedAt,
+			UpdatedAt:   acc.UpdatedAt,
+			Metadata:    acc.Metadata,
+		}
+		val, err := json.Marshal(dbAcc)
+		if err != nil {
+			return fmt.Errorf("writeAccountsDirect: marshal %s: %w", acc.Address.Hex(), err)
+		}
+		entries = append(entries, dbEntry{Key: DB_OPs.Prefix + acc.Address.Hex(), Value: val})
+		if acc.DIDAddress != "" {
+			entries = append(entries, dbEntry{Key: DB_OPs.DIDPrefix + acc.DIDAddress, Value: val})
+		}
+	}
+
+	const batchSize = 500
+	// Generous timeout: 60 s base + 2 s per batch to cover ImmuDB commit latency.
+	timeout := 60*time.Second + time.Duration(len(entries)/batchSize+1)*2*time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	conn, err := DB_OPs.GetAccountsConnections(ctx)
+	if err != nil {
+		return fmt.Errorf("writeAccountsDirect: get connection: %w", err)
+	}
+	defer DB_OPs.PutAccountsConnection(conn)
+
+	for i := 0; i < len(entries); i += batchSize {
+		end := i + batchSize
+		if end > len(entries) {
+			end = len(entries)
+		}
+		if err := DB_OPs.BatchRestoreAccounts(ctx, conn, entries[i:end]); err != nil {
+			return fmt.Errorf("writeAccountsDirect: batch [%d:%d]: %w", i, end, err)
+		}
+	}
+	log.Printf("[accountqueue] direct write complete: %d accounts written to ImmuDB", len(accounts))
 	return nil
 }
 
