@@ -176,12 +176,20 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 			return fmt.Errorf("StoreZKBlock: zk proof: %w", err)
 		}
 	}
-	// Write transactions
+	// Write transactions and collect unique sender addresses
+	senders := make(map[string]struct{}, len(block.Transactions))
 	for i := range block.Transactions {
 		tx := block.Transactions[i]
 		if err := h.StoreTransaction(ctx, &tx, block.BlockNumber, i); err != nil {
 			return fmt.Errorf("StoreZKBlock: tx[%d]: %w", i, err)
 		}
+		if tx.From != nil {
+			senders[tx.From.Hex()] = struct{}{}
+		}
+	}
+	// Refresh tx_nonce + tx_count_sent for every sender in this block
+	for addr := range senders {
+		_ = h.RefreshAccountTxStats(ctx, addr) // best-effort; don't fail block write
 	}
 	return nil
 }

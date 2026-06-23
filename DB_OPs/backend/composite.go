@@ -174,6 +174,11 @@ func (h *compositeHandle) CountTransactions(ctx context.Context) (uint64, error)
 	return h.txs.CountTransactions(ctx)
 }
 
+// RefreshAccountTxStats delegates to the cache-decorated TxStore.
+func (h *compositeHandle) RefreshAccountTxStats(ctx context.Context, address string) error {
+	return h.txs.RefreshAccountTxStats(ctx, address)
+}
+
 // GetTransactionsByAddress delegates to the cache-decorated TxStore.
 func (h *compositeHandle) GetTransactionsByAddress(ctx context.Context, address string, limit int) ([]*thebegateway.TransactionRecord, error) {
 	return h.txs.GetTransactionsByAddress(ctx, address, limit)

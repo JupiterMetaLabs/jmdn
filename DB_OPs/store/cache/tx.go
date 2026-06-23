@@ -93,6 +93,11 @@ func (s *cachedTxStore) CountTransactions(ctx context.Context) (uint64, error) {
 	return s.inner.CountTransactions(ctx)
 }
 
+// RefreshAccountTxStats delegates directly — targeted SQL UPDATE, not cached.
+func (s *cachedTxStore) RefreshAccountTxStats(ctx context.Context, address string) error {
+	return s.inner.RefreshAccountTxStats(ctx, address)
+}
+
 // GetTransactionsByAddress delegates directly — result set is bounded only by caller-supplied limit.
 // Time: O(n) — not cached.
 func (s *cachedTxStore) GetTransactionsByAddress(ctx context.Context, address string, limit int) ([]*thebegateway.TransactionRecord, error) {

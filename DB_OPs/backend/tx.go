@@ -118,6 +118,14 @@ func (b *thebeBackend) CountTransactions(ctx context.Context) (uint64, error) {
 	return n, nil
 }
 
+// RefreshAccountTxStats recomputes tx_nonce and tx_count_sent for address.
+func (b *thebeBackend) RefreshAccountTxStats(ctx context.Context, address string) error {
+	if err := b.r.RefreshAccountTxStats(ctx, address); err != nil {
+		return fmt.Errorf("backend.RefreshAccountTxStats(%s): %w", address, err)
+	}
+	return nil
+}
+
 // toTransactionRecord converts config.Transaction → thebegateway.TransactionRecord.
 func toTransactionRecord(tx *config.Transaction, blockNumber uint64, txIndex int) *thebegateway.TransactionRecord {
 	rec := &thebegateway.TransactionRecord{

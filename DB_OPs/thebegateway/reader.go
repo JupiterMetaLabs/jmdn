@@ -169,6 +169,25 @@ const (
         LIMIT $1 OFFSET $2`
 
 	sqlCountTransactions = `SELECT COUNT(*) FROM transactions`
+
+	// sqlRefreshAccountTxStats recomputes tx_nonce and tx_count_sent for a single address.
+	// tx_nonce  = nonce of the most recent outgoing tx + 1 (0 if none).
+	// tx_count_sent = total outgoing txs from this address.
+	sqlRefreshAccountTxStats = `
+        UPDATE accounts
+        SET
+            tx_nonce = COALESCE(
+                (SELECT CAST(nonce AS BIGINT) + 1
+                 FROM transactions
+                 WHERE from_addr = $1
+                 ORDER BY block_number DESC, tx_index DESC
+                 LIMIT 1),
+                0
+            ),
+            tx_count_sent = (
+                SELECT COUNT(*) FROM transactions WHERE from_addr = $1
+            )
+        WHERE address = $1`
 )
 
 // read is the shared read-through pattern for single-record methods.
@@ -658,6 +677,18 @@ func (r *thebeReader) CountTransactions(ctx context.Context) (uint64, error) {
 		return 0, fmt.Errorf("CountTransactions: %w", err)
 	}
 	return n, nil
+}
+
+// RefreshAccountTxStats recomputes tx_nonce and tx_count_sent for address from the
+// transactions table.  Called after each block is written.
+// tx_nonce      = nonce of the most recent outgoing tx + 1 (0 if no txs).
+// tx_count_sent = total COUNT of txs where from_addr = address.
+func (r *thebeReader) RefreshAccountTxStats(ctx context.Context, address string) error {
+	_, err := r.db.ExecContext(ctx, sqlRefreshAccountTxStats, address)
+	if err != nil {
+		return fmt.Errorf("RefreshAccountTxStats(%s): %w", address, err)
+	}
+	return nil
 }
 
 // sqlGetContractReceipt fetches a contract receipt by tx_hash (PK).
