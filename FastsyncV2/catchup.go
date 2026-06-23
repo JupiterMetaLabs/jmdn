@@ -111,8 +111,12 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 		return fmt.Errorf("catchup: peer %s returned no auth token", info.ID)
 	}
 
-	// remoteTip is the highest block the peer reported.
-	remoteTip := uint64(availResp.BlockMerge)
+	// remoteTip is the peer's latest block number (BlockHeight field).
+	// Note: BlockMerge is a Merkle tree parameter, NOT the block count.
+	remoteTip := availResp.BlockHeight
+	if remoteTip == 0 {
+		return fmt.Errorf("catchup: peer %s returned block_height=0 (server may be outdated)", info.ID)
+	}
 	if remoteTip < fromBlock {
 		return fmt.Errorf("catchup: remoteTip %d < fromBlock %d — nothing to sync", remoteTip, fromBlock)
 	}
