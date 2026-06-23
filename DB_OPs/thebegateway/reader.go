@@ -45,6 +45,7 @@ import (
 type sqlQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
 // scanner abstracts *sql.Row and *sql.Rows so scan helpers work for both single and multi-row queries.
