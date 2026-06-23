@@ -28,9 +28,14 @@ import (
 	"time"
 
 	availabilitypb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/availability"
+	authpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/availability/auth"
+	ackpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/ack"
+	datasyncpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/datasync"
 	headersyncpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/headersync"
+	phasepb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/phase"
 	taggingpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/tagging"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
+	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types/constants"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 )
@@ -111,64 +116,94 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 		return fmt.Errorf("catchup: peer %s returned no auth token", info.ID)
 	}
 
-	// remoteTip is the peer's latest block number (BlockHeight field).
-	// Note: BlockMerge is a Merkle tree parameter, NOT the block count.
+	// remoteTip is the peer's latest block number (BlockHeight field, added in add/catchup).
+	// Old peers (pre-add/catchup binary) leave this as 0 — fall back to our own local tip
+	// so we can at least close any gaps within our already-downloaded range.
+	// New blocks beyond our local tip will be picked up once the peer is updated.
 	remoteTip := availResp.BlockHeight
 	if remoteTip == 0 {
-		return fmt.Errorf("catchup: peer %s returned block_height=0 (server may be outdated)", info.ID)
+		localTip := fs.blockInfoAdapter.GetBlockNumber()
+		if localTip == 0 {
+			return fmt.Errorf("catchup: peer %s returned block_height=0 and local tip is also 0 — peer needs the add/catchup binary update", info.ID)
+		}
+		log.Printf("[CatchUpSync] WARNING: peer %s returned block_height=0 (pre-add/catchup binary). "+
+			"Falling back to local tip %d. Update the peer node to sync new blocks beyond local tip.",
+			info.ID, localTip)
+		remoteTip = localTip
 	}
 	if remoteTip < fromBlock {
-		return fmt.Errorf("catchup: remoteTip %d < fromBlock %d — nothing to sync", remoteTip, fromBlock)
+		log.Printf("[CatchUpSync] remoteTip %d < fromBlock %d — nothing to sync", remoteTip, fromBlock)
+		return nil
 	}
 
 	log.Printf("[CatchUpSync] phase 1 complete: remoteTip=%d auth=%s", remoteTip, availResp.Auth.UUID)
 
 	remotes := []*availabilitypb.AvailabilityResponse{availResp}
 
-	// ── Build the catch-up tag (sparse gap detection) ────────────────────
+	// ── Build header-missing tag (sparse gap detection) ─────────────────
 	// Scan local DB for blocks already present in [fromBlock..remoteTip] and
-	// compute the complement — only the gaps are fetched, not the full range.
+	// compute the complement — only header-missing blocks are fetched here.
+	// NOTE: PubSub announcements may have already written block headers without
+	// transaction data. Those blocks appear "present" to the iterator but lack
+	// NonHeaders data. Phase 3 (DataSync) always runs for the full range to fix
+	// this independently of whether Phase 2 (HeaderSync) found anything to do.
 	catchUpTag, err := fs.buildMissingTag(fromBlock, remoteTip)
 	if err != nil {
 		return fmt.Errorf("catchup: scan local blocks: %w", err)
 	}
-	if len(catchUpTag.Range) == 0 && len(catchUpTag.BlockNumber) == 0 {
-		log.Printf("[CatchUpSync] all blocks [%d..%d] already present locally", fromBlock, remoteTip)
-		return nil
-	}
-	log.Printf("[CatchUpSync] %d missing range(s) to fetch", len(catchUpTag.Range))
 
 	// ── Phase 2: HeaderSync ───────────────────────────────────────────────
 	log.Printf("[CatchUpSync] phase 2: header sync [%d..%d]", fromBlock, remoteTip)
 
-	dataSyncReq, err := fs.HeaderRouter.HeaderSync(
-		&headersyncpb.HeaderSyncRequest{Tag: catchUpTag},
-		remotes,
-		false, // syncConfirmation=false: skip Merkle, we know the exact range
-	)
-	if err != nil {
-		return fmt.Errorf("catchup: header sync: %w", err)
+	if len(catchUpTag.Range) > 0 || len(catchUpTag.BlockNumber) > 0 {
+		log.Printf("[CatchUpSync] %d missing header range(s) to fetch", len(catchUpTag.Range))
+		_, err = fs.HeaderRouter.HeaderSync(
+			&headersyncpb.HeaderSyncRequest{Tag: catchUpTag},
+			remotes,
+			false, // syncConfirmation=false: skip Merkle, we know the exact range
+		)
+		if err != nil {
+			return fmt.Errorf("catchup: header sync: %w", err)
+		}
+		log.Printf("[CatchUpSync] phase 2 complete")
+	} else {
+		log.Printf("[CatchUpSync] phase 2 skipped: all headers present in [%d..%d]", fromBlock, remoteTip)
 	}
-	log.Printf("[CatchUpSync] phase 2 complete")
 
 	// ── Phase 3: DataSync ─────────────────────────────────────────────────
-	log.Printf("[CatchUpSync] phase 3: data sync")
+	// Scan local blocks to find which ones are missing NonHeaders data.
+	// StarkProof is written ONLY by DataSync (immudb_data_writer.go) — absent or
+	// empty means the block needs DataSync regardless of whether HeaderSync ran.
+	// Blocks written only by PubSub/HeaderSync will have StarkProof==nil.
+	log.Printf("[CatchUpSync] phase 3: scanning for data-missing blocks [%d..%d]", fromBlock, remoteTip)
 
-	// dataSyncReq is nil if HeaderSync found no blocks to write (range already
-	// present locally). Skip DataSync in that case — same behaviour as HandleSync.
-	if dataSyncReq == nil {
-		log.Printf("[CatchUpSync] phase 3 skipped: no DataSync request from HeaderSync")
-		return nil
-	}
-
-	taggedAccounts, err := fs.DataRouter.DataSync(dataSyncReq, remotes)
+	dataMissingTag, err := fs.buildDataMissingTag(fromBlock, remoteTip)
 	if err != nil {
-		return fmt.Errorf("catchup: data sync: %w", err)
+		return fmt.Errorf("catchup: scan data-missing blocks: %w", err)
 	}
-	log.Printf("[CatchUpSync] phase 3 complete")
 
-	// Refresh the local block marker after writing a large batch of data.
-	fs.reconcileLocalLatestBlock()
+	var taggedAccounts *taggingpb.TaggedAccounts
+	if len(dataMissingTag.Range) == 0 && len(dataMissingTag.BlockNumber) == 0 {
+		log.Printf("[CatchUpSync] phase 3 skipped: all blocks in [%d..%d] already have data", fromBlock, remoteTip)
+	} else {
+		log.Printf("[CatchUpSync] phase 3: %d data-missing range(s) to fetch", len(dataMissingTag.Range))
+		dataSyncReq := &datasyncpb.DataSyncRequest{
+			Tag:     dataMissingTag,
+			Version: uint32(commsVersion),
+			Ack:     &ackpb.Ack{Ok: true},
+			Phase: &phasepb.Phase{
+				PresentPhase:    constants.HEADER_SYNC_RESPONSE,
+				SuccessivePhase: constants.DATA_SYNC_REQUEST,
+				Success:         true,
+				Auth:            &authpb.Auth{UUID: availResp.Auth.UUID},
+			},
+		}
+		taggedAccounts, err = fs.DataRouter.DataSync(dataSyncReq, remotes)
+		if err != nil {
+			return fmt.Errorf("catchup: data sync: %w", err)
+		}
+		log.Printf("[CatchUpSync] phase 3 complete")
+	}
 
 	// ── Phase 3.5: FetchAccounts — pull tagged accounts missing locally ───
 	if taggedAccounts != nil && len(taggedAccounts.Accounts) > 0 {
@@ -240,6 +275,32 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 		log.Printf("[CatchUpSync] phase 7 complete")
 	}
 
+	// Always update latest_block regardless of which phases ran.
+	// This is critical when PubSub blocks were header-only before this run.
+	fs.reconcileLocalLatestBlock()
+
+	// ── Phase 8: Post-sync verification ──────────────────────────────────
+	// Re-run buildDataMissingTag over the same range. If sync succeeded, the
+	// returned tag will be empty (all blocks now have StarkProof set).
+	// Any non-empty ranges indicate blocks that are still data-incomplete.
+	log.Printf("[CatchUpSync] phase 8: verifying sync completeness [%d..%d]", fromBlock, remoteTip)
+
+	verifyTag, verifyErr := fs.buildDataMissingTag(fromBlock, remoteTip)
+	if verifyErr != nil {
+		log.Printf("[CatchUpSync] phase 8 warning: verification scan failed: %v", verifyErr)
+	} else if len(verifyTag.Range) == 0 && len(verifyTag.BlockNumber) == 0 {
+		log.Printf("[CatchUpSync] phase 8: PASS — all blocks in [%d..%d] have data", fromBlock, remoteTip)
+	} else {
+		log.Printf("[CatchUpSync] phase 8: INCOMPLETE — %d range(s) still missing data:", len(verifyTag.Range))
+		for _, r := range verifyTag.Range {
+			log.Printf("[CatchUpSync]   missing data: blocks [%d..%d] (%d blocks)",
+				r.Start, r.End, r.End-r.Start+1)
+		}
+		for _, bn := range verifyTag.BlockNumber {
+			log.Printf("[CatchUpSync]   missing data: block %d", bn)
+		}
+	}
+
 	log.Printf("[CatchUpSync] done in %s", time.Since(catchUpStart).Round(time.Millisecond))
 	return nil
 }
@@ -278,6 +339,23 @@ func (fs *FastsyncV2) tryRefreshAuth(ctx context.Context, targetNodeInfo *types.
 //	→ gaps: [2..2], [4..6], [8..8]
 const catchUpBatchSize = 500
 
+// buildDataMissingTag scans [fromBlock..remoteTip] and returns a Tag covering
+// blocks that need DataSync — i.e. blocks where NonHeaders (txs, ZK proof) have
+// not been written yet.
+//
+// A block needs DataSync when:
+//   - It is absent from the local DB entirely (gap in the iterator), OR
+//   - It is present but StarkProof is empty. StarkProof is written ONLY by
+//     DataSync (immudb_data_writer.go:59); HeaderSync and PubSub never set it.
+//
+// Limitation: blocks with a genuinely empty ZK proof will always have
+// len(StarkProof)==0 even after DataSync. They will be re-fetched on every
+// catchup run. This is safe (DataSync is idempotent) and rare in practice on a
+// ZK L2 where every finalized block carries a proof.
+//
+// Consecutive blocks needing DataSync are coalesced into a single RangeTag to
+// minimise round-trips.
+
 func (fs *FastsyncV2) buildMissingTag(fromBlock, remoteTip uint64) (*taggingpb.Tag, error) {
 	iter := fs.blockInfoAdapter.NewBlockIterator(fromBlock, remoteTip, catchUpBatchSize)
 	defer iter.Close()
@@ -310,6 +388,74 @@ func (fs *FastsyncV2) buildMissingTag(fromBlock, remoteTip uint64) (*taggingpb.T
 	// Trailing gap: blocks after the last present one up to remoteTip
 	if cursor <= remoteTip {
 		ranges = append(ranges, &taggingpb.RangeTag{Start: cursor, End: remoteTip})
+	}
+
+	return &taggingpb.Tag{Range: ranges}, nil
+}
+
+func (fs *FastsyncV2) buildDataMissingTag(fromBlock, remoteTip uint64) (*taggingpb.Tag, error) {
+	iter := fs.blockInfoAdapter.NewBlockIterator(fromBlock, remoteTip, catchUpBatchSize)
+	defer iter.Close()
+
+	var ranges []*taggingpb.RangeTag
+	cursor := fromBlock
+	runStart := uint64(0)
+	inRun := false
+
+	// Start a new run at b (or extend if already in one).
+	addToRun := func(b uint64) {
+		if !inRun {
+			runStart = b
+			inRun = true
+		}
+	}
+	// Close the active run, capping it at end.
+	endRunAt := func(end uint64) {
+		if inRun {
+			ranges = append(ranges, &taggingpb.RangeTag{Start: runStart, End: end})
+			inRun = false
+		}
+	}
+
+	for {
+		batch, err := iter.Next()
+		if err != nil {
+			return nil, fmt.Errorf("data-missing block iterator: %w", err)
+		}
+		if len(batch) == 0 {
+			// Remaining [cursor..remoteTip] are absent — include them.
+			if cursor <= remoteTip {
+				addToRun(cursor)
+				endRunAt(remoteTip)
+			}
+			break
+		}
+
+		for _, blk := range batch {
+			b := blk.BlockNumber
+			if b < cursor {
+				continue // shouldn't happen with a sorted iterator
+			}
+
+			// Absent blocks [cursor..b-1]: they need DataSync — extend or start run.
+			if b > cursor {
+				addToRun(cursor)
+				// Run is now active through at least b-1.
+				// We decide below whether b also extends it or closes it.
+			}
+
+			if len(blk.StarkProof) == 0 {
+				// Block b is present but data-incomplete — keep the run going.
+				addToRun(b)
+			} else {
+				// Block b is complete — close any active run just before b.
+				if inRun {
+					endRunAt(b - 1)
+				}
+			}
+
+			cursor = b + 1
+		}
 	}
 
 	return &taggingpb.Tag{Range: ranges}, nil
