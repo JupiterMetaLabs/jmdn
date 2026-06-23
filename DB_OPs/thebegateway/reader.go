@@ -84,7 +84,7 @@ const (
         FROM blocks WHERE block_number = $1`
 
 	sqlGetAccount = `
-        SELECT address, did_address, balance_wei, nonce, account_type, metadata,
+        SELECT address, did_address, balance_wei, nonce, tx_nonce, tx_count_sent, account_type, metadata,
                created_at, updated_at
         FROM accounts WHERE LOWER(address) = LOWER($1)`
 
@@ -124,21 +124,34 @@ const (
         ORDER BY block_number ASC`
 
 	sqlGetAccountByDID = `
-        SELECT address, did_address, balance_wei, nonce, account_type, metadata,
+        SELECT address, did_address, balance_wei, nonce, tx_nonce, tx_count_sent, account_type, metadata,
                created_at, updated_at
         FROM accounts WHERE LOWER(did_address) = LOWER($1)
            OR LOWER(address) = LOWER($1)
         LIMIT 1`
 
 	sqlBulkGetAccounts = `
-        SELECT address, did_address, balance_wei, nonce, account_type, metadata,
+        SELECT address, did_address, balance_wei, nonce, tx_nonce, tx_count_sent, account_type, metadata,
                created_at, updated_at
         FROM accounts WHERE address = ANY($1)`
 
 	sqlListAccounts = `
-        SELECT address, did_address, balance_wei, nonce, account_type, metadata,
+        SELECT address, did_address, balance_wei, nonce, tx_nonce, tx_count_sent, account_type, metadata,
                created_at, updated_at
         FROM accounts ORDER BY created_at ASC`
+
+	sqlListAccountsPaginated = `
+        SELECT address, did_address, balance_wei, nonce, tx_nonce, tx_count_sent, account_type, metadata,
+               created_at, updated_at
+        FROM accounts ORDER BY created_at ASC
+        LIMIT $1 OFFSET $2`
+
+	sqlCountAccounts = `SELECT COUNT(*) FROM accounts`
+
+	sqlGetAccountsByNonces = `
+        SELECT address, did_address, balance_wei, nonce, tx_nonce, tx_count_sent, account_type, metadata,
+               created_at, updated_at
+        FROM accounts WHERE nonce = ANY($1)`
 
 	sqlGetTxsByBlock = `
         SELECT tx_hash, block_number, tx_index, from_addr, to_addr, value_wei, nonce,
@@ -254,6 +267,8 @@ func (r *thebeReader) scanAccount(s scanner, rec *AccountRecord) error {
 		&rec.DIDAddress,
 		&rec.BalanceWei,
 		&rec.Nonce,
+		&rec.TxNonce,
+		&rec.TxCountSent,
 		&rec.AccountType,
 		&metaJSON,
 		&rec.CreatedAt,
@@ -526,6 +541,60 @@ func (r *thebeReader) ListAccounts(ctx context.Context, limit int) ([]*AccountRe
 		return nil, fmt.Errorf("ListAccounts: rows: %w", err)
 	}
 	return results, nil
+}
+
+// ListAccountsPaginated returns a page of accounts ordered by created_at ASC.
+// Used by AccountNonceIterator for cursor-based pagination.
+func (r *thebeReader) ListAccountsPaginated(ctx context.Context, limit, offset int) ([]*AccountRecord, error) {
+	rows, err := r.db.QueryContext(ctx, sqlListAccountsPaginated, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("ListAccountsPaginated: query: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*AccountRecord
+	for rows.Next() {
+		var rec AccountRecord
+		if err := r.scanAccount(rows, &rec); err != nil {
+			return nil, fmt.Errorf("ListAccountsPaginated: scan: %w", err)
+		}
+		results = append(results, &rec)
+	}
+	return results, rows.Err()
+}
+
+// CountAccounts returns the total number of accounts via a fast COUNT(*) query.
+// Safe to call at any point — does not advance any cursor.
+func (r *thebeReader) CountAccounts(ctx context.Context) (uint64, error) {
+	var n uint64
+	if err := r.db.QueryRowContext(ctx, sqlCountAccounts).Scan(&n); err != nil {
+		return 0, fmt.Errorf("CountAccounts: %w", err)
+	}
+	return n, nil
+}
+
+// GetAccountsByNonces batch-fetches accounts whose nonce matches any value in the slice.
+// Used by AccountSync to hydrate nonce pages before streaming to the client.
+// Time: O(n) — single WHERE nonce = ANY($1) query.
+func (r *thebeReader) GetAccountsByNonces(ctx context.Context, nonces []uint64) ([]*AccountRecord, error) {
+	if len(nonces) == 0 {
+		return nil, nil
+	}
+	rows, err := r.db.QueryContext(ctx, sqlGetAccountsByNonces, pq.Array(nonces))
+	if err != nil {
+		return nil, fmt.Errorf("GetAccountsByNonces: query: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*AccountRecord
+	for rows.Next() {
+		var rec AccountRecord
+		if err := r.scanAccount(rows, &rec); err != nil {
+			return nil, fmt.Errorf("GetAccountsByNonces: scan: %w", err)
+		}
+		results = append(results, &rec)
+	}
+	return results, rows.Err()
 }
 
 // GetTransactionsByBlock returns all transactions in the given block ordered by tx_index ASC.

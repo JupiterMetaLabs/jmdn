@@ -31,16 +31,18 @@ import (
 )
 
 const sqlUpsertAccount = `
-INSERT INTO accounts (address, did_address, balance_wei, nonce, account_type, metadata, created_at, updated_at)
+INSERT INTO accounts (address, did_address, balance_wei, nonce, tx_nonce, tx_count_sent, account_type, metadata, created_at, updated_at)
 -- created_at intentionally excluded from DO UPDATE (preserved from first insert)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 ON CONFLICT (address) DO UPDATE SET
-    balance_wei  = EXCLUDED.balance_wei,
-    nonce        = EXCLUDED.nonce,
-    account_type = EXCLUDED.account_type,
-    metadata     = EXCLUDED.metadata,
+    balance_wei   = EXCLUDED.balance_wei,
+    nonce         = EXCLUDED.nonce,
+    tx_nonce      = EXCLUDED.tx_nonce,
+    tx_count_sent = EXCLUDED.tx_count_sent,
+    account_type  = EXCLUDED.account_type,
+    metadata      = EXCLUDED.metadata,
     -- did_address intentionally excluded: immutable after account creation
-    updated_at   = EXCLUDED.updated_at
+    updated_at    = EXCLUDED.updated_at
 WHERE accounts.updated_at < EXCLUDED.updated_at`
 
 func applyAccount(_ context.Context, _ uint64, record *core.CanonicalRecord, tx *sql.Tx) error {
@@ -53,7 +55,7 @@ func applyAccount(_ context.Context, _ uint64, record *core.CanonicalRecord, tx 
 		return fmt.Errorf("applyAccount: marshal metadata: %w", err)
 	}
 	_, err = tx.Exec(sqlUpsertAccount,
-		r.Address, r.DIDAddress, r.BalanceWei, r.Nonce,
+		r.Address, r.DIDAddress, r.BalanceWei, r.Nonce, r.TxNonce, r.TxCountSent,
 		r.AccountType, metaJSON, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {

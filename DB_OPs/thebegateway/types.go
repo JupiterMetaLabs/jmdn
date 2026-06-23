@@ -40,14 +40,16 @@ const MaxOutboxAttempts = 3
 // AccountRecord maps to the `accounts` SQL table.
 // Mirrors DB_OPs.Account fields without importing that package.
 type AccountRecord struct {
-	Address     string         `json:"address"`      // CHAR(42) — 0x-prefixed hex
-	DIDAddress  string         `json:"did_address"`  // TEXT — W3C DID string
-	BalanceWei  string         `json:"balance_wei"`  // VARCHAR(30) — decimal string
-	Nonce       string         `json:"nonce"`        // VARCHAR(30) — decimal string
-	AccountType int16          `json:"account_type"` // SMALLINT — 0=legacy, 1=publickey
-	Metadata    map[string]any `json:"metadata"`     // JSONB
-	CreatedAt   time.Time      `json:"created_at"`   // TIMESTAMPTZ
-	UpdatedAt   time.Time      `json:"updated_at"`   // TIMESTAMPTZ
+	Address     string         `json:"address"`       // CHAR(42) — 0x-prefixed hex
+	DIDAddress  string         `json:"did_address"`   // TEXT — W3C DID string
+	BalanceWei  string         `json:"balance_wei"`   // VARCHAR(30) — decimal string
+	Nonce       string         `json:"nonce"`         // VARCHAR(30) — decimal string
+	TxNonce     uint64         `json:"tx_nonce"`      // BIGINT — real Ethereum nonce
+	TxCountSent uint64         `json:"tx_count_sent"` // BIGINT — analytical tx send count
+	AccountType int16          `json:"account_type"`  // SMALLINT — 0=legacy, 1=publickey
+	Metadata    map[string]any `json:"metadata"`      // JSONB
+	CreatedAt   time.Time      `json:"created_at"`    // TIMESTAMPTZ
+	UpdatedAt   time.Time      `json:"updated_at"`    // TIMESTAMPTZ
 }
 
 // BlockRecord maps to the `blocks` SQL table.

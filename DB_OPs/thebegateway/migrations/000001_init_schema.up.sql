@@ -23,14 +23,16 @@
 -- loss when round-tripping through Go's big.Int string conversion.
 -- ================================================================
 CREATE TABLE IF NOT EXISTS accounts (
-    address      CHAR(42)     PRIMARY KEY,
-    did_address  TEXT         NOT NULL UNIQUE,
-    balance_wei  VARCHAR(30)  NOT NULL DEFAULT '0',
-    nonce        VARCHAR(30)  NOT NULL DEFAULT '0',
-    account_type SMALLINT     NOT NULL,
-    metadata     JSONB        NOT NULL DEFAULT '{}'::jsonb,
-    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    address        CHAR(42)     PRIMARY KEY,
+    did_address    TEXT         NOT NULL UNIQUE,
+    balance_wei    VARCHAR(30)  NOT NULL DEFAULT '0',
+    nonce          VARCHAR(30)  NOT NULL DEFAULT '0',
+    tx_nonce       BIGINT       NOT NULL DEFAULT 0,
+    tx_count_sent  BIGINT       NOT NULL DEFAULT 0,
+    account_type   SMALLINT     NOT NULL,
+    metadata       JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_accounts_updated_at

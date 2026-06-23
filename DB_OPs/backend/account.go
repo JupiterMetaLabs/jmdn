@@ -133,6 +133,37 @@ func (b *thebeBackend) ListAccounts(ctx context.Context, limit int) ([]*store.Ac
 	return out, nil
 }
 
+// ListAccountsPaginated returns a page of accounts ordered by created_at ASC.
+func (b *thebeBackend) ListAccountsPaginated(ctx context.Context, limit, offset int) ([]*store.Account, error) {
+	recs, err := b.r.ListAccountsPaginated(ctx, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("backend.ListAccountsPaginated(%d,%d): %w", limit, offset, err)
+	}
+	out := make([]*store.Account, len(recs))
+	for i, rec := range recs {
+		out[i] = toStoreAccount(rec)
+	}
+	return out, nil
+}
+
+// CountAccounts returns the total number of account rows.
+func (b *thebeBackend) CountAccounts(ctx context.Context) (uint64, error) {
+	return b.r.CountAccounts(ctx)
+}
+
+// GetAccountsByNonces batch-fetches accounts matching any of the given nonce values.
+func (b *thebeBackend) GetAccountsByNonces(ctx context.Context, nonces []uint64) ([]*store.Account, error) {
+	recs, err := b.r.GetAccountsByNonces(ctx, nonces)
+	if err != nil {
+		return nil, fmt.Errorf("backend.GetAccountsByNonces: %w", err)
+	}
+	out := make([]*store.Account, len(recs))
+	for i, rec := range recs {
+		out[i] = toStoreAccount(rec)
+	}
+	return out, nil
+}
+
 // toAccountRecord converts store.Account → thebegateway.AccountRecord.
 func toAccountRecord(a *store.Account) *thebegateway.AccountRecord {
 	accountType := int16(0)
@@ -144,6 +175,8 @@ func toAccountRecord(a *store.Account) *thebegateway.AccountRecord {
 		DIDAddress:  a.DIDAddress,
 		BalanceWei:  a.Balance,
 		Nonce:       strconv.FormatUint(a.Nonce, 10),
+		TxNonce:     a.TxNonce,
+		TxCountSent: a.TxCountSent,
 		AccountType: accountType,
 		Metadata:    a.Metadata,
 		CreatedAt:   time.Unix(0, a.CreatedAt),
@@ -163,6 +196,8 @@ func toStoreAccount(r *thebegateway.AccountRecord) *store.Account {
 		DIDAddress:  r.DIDAddress,
 		Balance:     r.BalanceWei,
 		Nonce:       nonce,
+		TxNonce:     r.TxNonce,
+		TxCountSent: r.TxCountSent,
 		AccountType: accountType,
 		Metadata:    r.Metadata,
 		CreatedAt:   r.CreatedAt.UnixNano(),
