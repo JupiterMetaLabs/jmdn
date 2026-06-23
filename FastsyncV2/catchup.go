@@ -187,6 +187,12 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 	var taggedAccounts *taggingpb.TaggedAccounts
 	if len(dataMissingTag.Range) == 0 && len(dataMissingTag.BlockNumber) == 0 {
 		log.Printf("[CatchUpSync] phase 3 skipped: all blocks in [%d..%d] already have data", fromBlock, remoteTip)
+		// DataSync skipped → scan local blocks to collect accounts with transactions
+		// so reconciliation can still update balances on re-runs.
+		taggedAccounts = fs.collectTaggedAccountsFromBlocks(fromBlock, remoteTip)
+		if taggedAccounts != nil {
+			log.Printf("[CatchUpSync] phase 3: collected %d accounts from local blocks for reconciliation", len(taggedAccounts.Accounts))
+		}
 	} else {
 		log.Printf("[CatchUpSync] phase 3: %d data-missing range(s) to fetch", len(dataMissingTag.Range))
 		dataSyncReq := &datasyncpb.DataSyncRequest{
@@ -419,6 +425,37 @@ func (fs *FastsyncV2) buildMissingTag(fromBlock, remoteTip uint64) (*taggingpb.T
 	}
 
 	return &taggingpb.Tag{Range: ranges}, nil
+}
+
+// collectTaggedAccountsFromBlocks scans local blocks [fromBlock..remoteTip] and
+// returns a TaggedAccounts containing every unique sender and receiver address
+// found in stored transactions. Used when DataSync is skipped (data already
+// present) so that Phase 5 reconciliation still updates account balances.
+func (fs *FastsyncV2) collectTaggedAccountsFromBlocks(fromBlock, remoteTip uint64) *taggingpb.TaggedAccounts {
+	iter := fs.blockInfoAdapter.NewBlockIterator(fromBlock, remoteTip, catchUpBatchSize)
+	defer iter.Close()
+
+	accounts := make(map[string]bool)
+	for {
+		batch, err := iter.Next()
+		if err != nil || len(batch) == 0 {
+			break
+		}
+		for _, blk := range batch {
+			for _, tx := range blk.Transactions {
+				if tx.From != nil {
+					accounts[tx.From.Hex()] = true
+				}
+				if tx.To != nil {
+					accounts[tx.To.Hex()] = true
+				}
+			}
+		}
+	}
+	if len(accounts) == 0 {
+		return nil
+	}
+	return &taggingpb.TaggedAccounts{Accounts: accounts}
 }
 
 func (fs *FastsyncV2) buildDataMissingTag(fromBlock, remoteTip uint64) (*taggingpb.Tag, error) {
