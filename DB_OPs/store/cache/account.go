@@ -130,3 +130,15 @@ func (s *cachedAccountStore) BulkGetAccounts(ctx context.Context, addresses []st
 func (s *cachedAccountStore) ListAccounts(ctx context.Context, limit int) ([]*store.Account, error) {
 	return s.inner.ListAccounts(ctx, limit)
 }
+
+func (s *cachedAccountStore) ListAccountsPaginated(ctx context.Context, limit, offset int) ([]*store.Account, error) {
+	return s.inner.ListAccountsPaginated(ctx, limit, offset)
+}
+
+func (s *cachedAccountStore) CountAccounts(ctx context.Context) (uint64, error) {
+	return s.inner.CountAccounts(ctx)
+}
+
+func (s *cachedAccountStore) GetAccountsByNonces(ctx context.Context, nonces []uint64) ([]*store.Account, error) {
+	return s.inner.GetAccountsByNonces(ctx, nonces)
+}

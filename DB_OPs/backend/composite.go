@@ -135,6 +135,18 @@ func (h *compositeHandle) ListAccounts(ctx context.Context, limit int) ([]*store
 	return h.accounts.ListAccounts(ctx, limit)
 }
 
+func (h *compositeHandle) ListAccountsPaginated(ctx context.Context, limit, offset int) ([]*store.Account, error) {
+	return h.accounts.ListAccountsPaginated(ctx, limit, offset)
+}
+
+func (h *compositeHandle) CountAccounts(ctx context.Context) (uint64, error) {
+	return h.accounts.CountAccounts(ctx)
+}
+
+func (h *compositeHandle) GetAccountsByNonces(ctx context.Context, nonces []uint64) ([]*store.Account, error) {
+	return h.accounts.GetAccountsByNonces(ctx, nonces)
+}
+
 // — TxStore —
 
 // StoreTransaction delegates to the cache-decorated TxStore.

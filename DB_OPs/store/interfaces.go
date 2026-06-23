@@ -55,6 +55,9 @@ type AccountStore interface {
 	GetLatestNonce(ctx context.Context, address string) (uint64, error)
 	BulkGetAccounts(ctx context.Context, addresses []string) ([]*Account, error)
 	ListAccounts(ctx context.Context, limit int) ([]*Account, error)
+	ListAccountsPaginated(ctx context.Context, limit, offset int) ([]*Account, error)
+	CountAccounts(ctx context.Context) (uint64, error)
+	GetAccountsByNonces(ctx context.Context, nonces []uint64) ([]*Account, error)
 }
 
 // TxStore covers transaction persistence and retrieval.
