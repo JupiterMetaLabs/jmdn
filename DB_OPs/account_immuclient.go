@@ -1303,7 +1303,7 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 	ic := PooledConnection.Client
 
 	// Get the latest block number
-	latestBlockNumber, err := GetLatestBlockNumber(PooledConnection)
+	latestBlockNumber, err := GetLatestBlockNumber(ctx, PooledConnection)
 	if err != nil {
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1329,7 +1329,10 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 
 		// Process current batch of blocks
 		for i := startBlock; i <= endBlock; i++ {
-			block, err := GetZKBlockByNumberFast(PooledConnection, i)
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			block, err := ReadZKBlockByNumber(ctx, PooledConnection, i)
 			if err != nil {
 				loggerCtx, cancel := context.WithCancel(context.Background())
 				ic.Logger.Warn(loggerCtx, "Error retrieving block, skipping",
@@ -1617,7 +1620,7 @@ func GetTransactionsByAccountPaginated(PooledConnection *config.PooledConnection
 	ic := PooledConnection.Client
 
 	// Get the latest block number
-	latestBlockNumber, err := GetLatestBlockNumber(PooledConnection)
+	latestBlockNumber, err := GetLatestBlockNumber(ctx, PooledConnection)
 	if err != nil {
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1653,7 +1656,10 @@ func GetTransactionsByAccountPaginated(PooledConnection *config.PooledConnection
 
 		// Process current batch of blocks (in reverse order)
 		for i := currentBlock; i >= startBlock && len(allMatchingTxs) < transactionsNeeded; i-- {
-			block, err := GetZKBlockByNumberFast(PooledConnection, i)
+			if ctx.Err() != nil {
+				return nil, 0, ctx.Err()
+			}
+			block, err := ReadZKBlockByNumber(ctx, PooledConnection, i)
 			if err != nil {
 				loggerCtx, cancel := context.WithCancel(context.Background())
 				ic.Logger.Warn(loggerCtx, "Error retrieving block, skipping",
@@ -2096,7 +2102,7 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 	ic := PooledConnection.Client
 
 	// Get the latest block number
-	latestBlockNumber, err := GetLatestBlockNumber(PooledConnection)
+	latestBlockNumber, err := GetLatestBlockNumber(ctx, PooledConnection)
 	if err != nil {
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -2122,6 +2128,9 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 
 	// Start from latest block and go backwards
 	for currentBlock := latestBlockNumber; currentBlock > 0 && blocksScanned < maxBlocksToScan; {
+		if ctx.Err() != nil {
+			return false, 0, false, ctx.Err()
+		}
 		// Determine the batch range (going backwards)
 		var startBlock uint64
 		if currentBlock >= batchSize {
@@ -2136,8 +2145,11 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 		// i would wrap to uint64 max on the iteration where i==0, causing an infinite
 		// loop that attempts to fetch non-existent blocks near ^uint64(0).
 		for i := currentBlock + 1; i > startBlock; {
+			if ctx.Err() != nil {
+				return false, 0, false, ctx.Err()
+			}
 			i--
-			block, err := GetZKBlockByNumber(PooledConnection, i)
+			block, err := ReadZKBlockByNumber(ctx, PooledConnection, i)
 			if err != nil {
 				loggerCtx, cancel := context.WithCancel(context.Background())
 				defer cancel()

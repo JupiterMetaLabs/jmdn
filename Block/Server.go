@@ -817,7 +817,7 @@ func getTransactionInfo(c *gin.Context) {
 	}
 	defer DB_OPs.PutMainDBConnection(mainDBClient)
 
-	block, err := DB_OPs.GetTransactionBlock(mainDBClient, txHash)
+	block, err := DB_OPs.GetTransactionBlock(ctx, mainDBClient, txHash)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "transaction_not_found"))
@@ -925,7 +925,7 @@ func getLatestBlock(c *gin.Context) {
 	}
 	defer DB_OPs.PutMainDBConnection(mainDBClient)
 
-	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(mainDBClient)
+	latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(ctx, mainDBClient)
 	if err != nil {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "get_latest_failed"))

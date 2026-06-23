@@ -67,7 +67,7 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 		toBlock = filterQuery.ToBlock.Uint64()
 	} else {
 		// If ToBlock is not specified, get the latest block number
-		latestBlock, err := GetLatestBlockNumber(mainDBClient)
+		latestBlock, err := GetLatestBlockNumber(ctx, mainDBClient)
 		if err != nil {
 			loggerCtx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -85,7 +85,10 @@ func GetLogs(mainDBClient *config.PooledConnection, filterQuery Types.FilterQuer
 
 	// Iterate through blocks in the specified range
 	for blockNum := fromBlock; blockNum <= toBlock; blockNum++ {
-		block, err := GetZKBlockByNumber(mainDBClient, blockNum)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		block, err := ReadZKBlockByNumber(ctx, mainDBClient, blockNum)
 		if err != nil {
 			// Log error but continue with other blocks
 			loggerCtx, cancel := context.WithCancel(context.Background())

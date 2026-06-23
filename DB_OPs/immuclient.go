@@ -393,7 +393,13 @@ func Read(PooledConnection *config.PooledConnection, key string) ([]byte, error)
 
 	// Execute the read operation
 
-	entry, err := PooledConnection.Client.Client.Get(ctx, []byte(key))
+	var entry *schema.Entry
+	err = withRetry(PooledConnection.Client, "Read", func() error {
+		var innerErr error
+		entry, innerErr = PooledConnection.Client.Client.Get(ctx, []byte(key))
+		return innerErr
+	})
+
 	if err != nil {
 		if isNotFoundError(err) {
 			PooledConnection.Client.Logger.Warn(loggerCtx, "Key not found",
@@ -1335,8 +1341,13 @@ func SafeRead(ic *config.ImmuClient, key string) ([]byte, error) {
 		ion.String("function", "DB_OPs.SafeRead"),
 	)
 
-	// Execute the read directly (no withRetry for pooled connections)
-	entry, err := ic.Client.VerifiedGet(ctx, []byte(key))
+	// Execute the read with retry
+	var entry *schema.Entry
+	err = withRetry(ic, "SafeRead", func() error {
+		var innerErr error
+		entry, innerErr = ic.Client.VerifiedGet(ctx, []byte(key))
+		return innerErr
+	})
 	if err != nil {
 		if isNotFoundError(err) {
 
@@ -2084,24 +2095,21 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 	return block, nil
 }
 
-// GetZKBlockByNumberFast retrieves a ZK block by number using plain Get (no proof generation).
+// ReadZKBlockByNumber retrieves a ZK block by number using plain Get (no proof generation).
 // Use for sync/reconciliation paths where tamper-proof guarantees are not required.
 // 5–10× faster than GetZKBlockByNumber for bulk reads.
 //
 // Time: O(1); Space: O(block size)
-func GetZKBlockByNumberFast(mainDBClient *config.PooledConnection, blockNumber uint64) (*config.ZKBlock, error) {
+func ReadZKBlockByNumber(ctx context.Context, mainDBClient *config.PooledConnection, blockNumber uint64) (*config.ZKBlock, error) {
 	var shouldReturnConnection = false
 	var err error
 	blockKey := fmt.Sprintf("%s%d", PREFIX_BLOCK, blockNumber)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 
 	block := new(config.ZKBlock)
 	if mainDBClient == nil {
 		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get main DB connection: %w - GetZKBlockByNumberFast", err)
+			return nil, fmt.Errorf("failed to get main DB connection: %w - ReadZKBlockByNumber", err)
 		}
 		shouldReturnConnection = true
 	}
@@ -2205,16 +2213,59 @@ func GetZKBlockByHash(mainDBClient *config.PooledConnection, blockHash string) (
 	return block, nil
 }
 
-// GetLatestBlockNumber returns the latest block number (UNCHANGED)
-func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error) {
+// ReadZKBlockByHash retrieves a ZK block by its hash using plain Get (no proof generation).
+// Use for sync/reconciliation paths where tamper-proof guarantees are not required.
+// Time: O(1); Space: O(block size)
+func ReadZKBlockByHash(ctx context.Context, mainDBClient *config.PooledConnection, blockHash string) (*config.ZKBlock, error) {
+	var shouldReturnConnection = false
+	var err error
+	hashKey := fmt.Sprintf("%s%s", PREFIX_BLOCK_HASH, blockHash)
+
+	if mainDBClient == nil {
+		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get main DB connection: %w - ReadZKBlockByHash", err)
+		}
+		shouldReturnConnection = true
+	}
+
+	if shouldReturnConnection {
+		defer func() {
+			PutMainDBConnection(mainDBClient)
+		}()
+	}
+
+	// First get the block key from the hash mapping using plain read
+	entryHash, err := mainDBClient.Client.Client.Get(ctx, []byte(hashKey))
+	if err != nil {
+		return nil, fmt.Errorf("failed to find block key for hash %s: %w", blockHash, err)
+	}
+
+	blockKey := entryHash.Value
+
+	// Then get the actual block data using the block key
+	entryBlock, err := mainDBClient.Client.Client.Get(ctx, blockKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve block data for hash %s: %w", blockHash, err)
+	}
+
+	block := new(config.ZKBlock)
+	if err := json.Unmarshal(entryBlock.Value, block); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal block for hash %s: %w", blockHash, err)
+	}
+
+	return block, nil
+}
+
+// GetLatestBlockNumber returns the latest block number
+func GetLatestBlockNumber(ctx context.Context, mainDBClient *config.PooledConnection) (uint64, error) {
 	var err error
 	var shouldReturnConnection = false
 
-	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	loggerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	if mainDBClient == nil {
 		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
@@ -2222,7 +2273,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 		}
 		shouldReturnConnection = true
 
-		mainDBClient.Client.Logger.Debug(loggerCtx, "Main DB connection retrieved successfully",
+		mainDBClient.Client.Logger.Debug(ctx, "Main DB connection retrieved successfully",
 			ion.String("database", config.DBName),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 			ion.String("log_file", LOG_FILE),
@@ -2234,7 +2285,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 	if shouldReturnConnection {
 		defer func() {
 
-			mainDBClient.Client.Logger.Debug(loggerCtx, "Main DB connection put back successfully",
+			mainDBClient.Client.Logger.Debug(ctx, "Main DB connection put back successfully",
 				ion.String("database", config.DBName),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -2251,7 +2302,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 			strings.Contains(err.Error(), "key not found") ||
 			strings.Contains(err.Error(), "tbtree: key not found") {
 
-			mainDBClient.Client.Logger.Debug(loggerCtx, "No blocks found in the database yet",
+			mainDBClient.Client.Logger.Debug(ctx, "No blocks found in the database yet",
 				ion.String("database", config.DBName),
 				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 				ion.String("log_file", LOG_FILE),
@@ -2261,7 +2312,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 			return 0, nil // No blocks yet
 		}
 
-		mainDBClient.Client.Logger.Error(loggerCtx, "Failed to get latest block number",
+		mainDBClient.Client.Logger.Error(ctx, "Failed to get latest block number",
 			err,
 			ion.String("database", config.DBName),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -2275,7 +2326,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 	var blockNumber uint64
 	if err := json.Unmarshal(latestBytes, &blockNumber); err != nil {
 
-		mainDBClient.Client.Logger.Error(loggerCtx, "Failed to parse latest block number",
+		mainDBClient.Client.Logger.Error(ctx, "Failed to parse latest block number",
 			err,
 			ion.String("database", config.DBName),
 			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -2286,7 +2337,7 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 		return 0, fmt.Errorf("failed to parse latest block number: %w - GetLatestBlockNumber", err)
 	}
 
-	mainDBClient.Client.Logger.Debug(loggerCtx, "Successfully retrieved latest block number",
+	mainDBClient.Client.Logger.Debug(ctx, "Successfully retrieved latest block number",
 		ion.String("blocknumber", fmt.Sprintf("%d", blockNumber)),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
@@ -2297,14 +2348,12 @@ func GetLatestBlockNumber(mainDBClient *config.PooledConnection) (uint64, error)
 }
 
 // GetTransactionBlock returns the block containing a specific transaction (UNCHANGED)
-func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (*config.ZKBlock, error) {
+func GetTransactionBlock(ctx context.Context, mainDBClient *config.PooledConnection, txHash string) (*config.ZKBlock, error) {
 	var err error
 	var shouldReturnConnection = false
 
 	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	loggerCtx, cancel := context.WithCancel(context.Background())
+	loggerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if mainDBClient == nil {
 		mainDBClient, err = GetMainDBConnectionandPutBack(ctx)
@@ -2364,7 +2413,7 @@ func GetTransactionBlock(mainDBClient *config.PooledConnection, txHash string) (
 		return nil, fmt.Errorf("failed to parse block number for tx %s: %w", txHash, err)
 	}
 
-	return GetZKBlockByNumber(mainDBClient, blockNumber)
+	return ReadZKBlockByNumber(ctx, mainDBClient, blockNumber)
 }
 
 // Get Transaction by hash
@@ -2406,7 +2455,7 @@ func GetTransactionByHash(mainDBClient *config.PooledConnection, txHash string) 
 			PutMainDBConnection(mainDBClient)
 		}()
 	}
-	block, err := GetTransactionBlock(mainDBClient, txHash)
+	block, err := GetTransactionBlock(ctx, mainDBClient, txHash)
 	if err != nil {
 
 		mainDBClient.Client.Logger.Error(loggerCtx, "Failed to get transaction block",
@@ -2586,7 +2635,7 @@ func GetAllBlocks(mainDBClient *config.PooledConnection) ([]*config.ZKBlock, err
 			PutMainDBConnection(mainDBClient)
 		}()
 	}
-	latestBlockNumber, err := GetLatestBlockNumber(mainDBClient)
+	latestBlockNumber, err := GetLatestBlockNumber(ctx, mainDBClient)
 	if err != nil {
 		return nil, err
 	}
