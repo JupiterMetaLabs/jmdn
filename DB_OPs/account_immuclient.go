@@ -1266,8 +1266,10 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 	var err error
 	var shouldReturnConnection = false
 
-	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	// Define Function wide context for timeout.
+	// The scan reads every block from 0..latestBlock via batch GetAll calls (~24 batches
+	// for 11605 blocks). 120s gives ample headroom even under ImmuDB load.
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	if PooledConnection == nil || PooledConnection.Client == nil {
@@ -1318,40 +1320,38 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 	}
 
 	var matchingTxs []*config.Transaction
-	batchSize := uint64(100) // Process 100 blocks at a time
+	// Use large batches so GetAll makes ~24 round-trips for 11605 blocks instead
+	// of 11605 individual reads. This cuts scan time from minutes to seconds.
+	const batchSize = uint64(500)
 
-	// Start from block 0 (genesis block) to include all blocks
 	for startBlock := uint64(0); startBlock <= latestBlockNumber; startBlock += batchSize {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		endBlock := startBlock + batchSize - 1
 		if endBlock > latestBlockNumber {
 			endBlock = latestBlockNumber
 		}
 
-		// Process current batch of blocks
-		for i := startBlock; i <= endBlock; i++ {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			block, err := ReadZKBlockByNumber(ctx, PooledConnection, i)
-			if err != nil {
-				loggerCtx, cancel := context.WithCancel(context.Background())
-				ic.Logger.Warn(loggerCtx, "Error retrieving block, skipping",
-					ion.String("error", err.Error()),
-					ion.Uint64("block_number", i),
-					ion.String("database", config.AccountsDBName),
-					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-					ion.String("log_file", LOG_FILE),
-					ion.String("topic", TOPIC),
-					ion.String("function", "DB_OPs.GetTransactionsByAccount"))
-				cancel()
-				continue
-			}
+		blocks, err := GetBlocksRange(PooledConnection, startBlock, endBlock)
+		if err != nil {
+			loggerCtx, cancel := context.WithCancel(context.Background())
+			ic.Logger.Warn(loggerCtx, "Error retrieving block batch, skipping",
+				ion.String("error", err.Error()),
+				ion.Uint64("start_block", startBlock),
+				ion.Uint64("end_block", endBlock),
+				ion.String("database", config.DBName),
+				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+				ion.String("log_file", LOG_FILE),
+				ion.String("topic", TOPIC),
+				ion.String("function", "DB_OPs.GetTransactionsByAccount"))
+			cancel()
+			continue
+		}
 
-			// Check each transaction in the current block
+		for _, block := range blocks {
 			for _, tx := range block.Transactions {
-				// Check if the transaction involves the given account
 				if isTransactionInvolvingAccount(tx, accountAddr) {
-					// Create a copy of the transaction to avoid referencing the loop variable
 					txCopy := tx
 					matchingTxs = append(matchingTxs, &txCopy)
 				}

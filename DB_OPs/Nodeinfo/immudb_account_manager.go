@@ -251,14 +251,18 @@ func (am *account_manager) WriteAccounts(accounts []*types.Account) error {
 		log.Printf("[accountqueue] Redis not available — writing %d accounts directly to ImmuDB", len(accounts))
 		return writeAccountsDirect(accounts)
 	}
-	mgr.EnsureActive()
-
 	chunks := chunkCount(len(accounts))
 	ctx, cancel := context.WithTimeout(context.Background(), enqueueTimeout(chunks))
 	defer cancel()
 	if err := enqueueRecordsChunked(ctx, s, payloadTypeAccounts, accounts); err != nil {
-		return fmt.Errorf("WriteAccounts: enqueue %d accounts in %d messages: %w", len(accounts), chunks, err)
+		// Redis is configured but unreachable (server down, connection refused, etc).
+		// Fall back to direct ImmuDB write rather than dropping the accounts entirely.
+		// Do NOT call EnsureActive — no point starting the worker if Redis is down.
+		log.Printf("[accountqueue] Redis enqueue failed (%v) — falling back to direct ImmuDB write for %d accounts", err, len(accounts))
+		return writeAccountsDirect(accounts)
 	}
+	// Enqueue succeeded — ensure the drain worker is running to process it.
+	mgr.EnsureActive()
 	return nil
 }
 
