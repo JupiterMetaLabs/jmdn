@@ -456,7 +456,7 @@ func (fs *FastsyncV2) buildDataMissingTag(fromBlock, remoteTip uint64) (*tagging
 				// We decide below whether b also extends it or closes it.
 			}
 
-			if blockNeedsDataSync(&blk) {
+			if blockNeedsDataSync(blk) {
 				// Block b is present but data-incomplete — keep the run going.
 				addToRun(b)
 			} else {
