@@ -56,7 +56,8 @@ func ReadZKBlockByHash(ctx context.Context, conn *config.PooledConnection, block
 	return GetZKBlockByHash(conn, blockHash)
 }
 
-// GetZKBlockByHash retrieves a ZK block by its hash string.
+// GetZKBlockByHash retrieves a ZK block by its hash string,
+// including ZK proof and transaction data.
 func GetZKBlockByHash(_ *config.PooledConnection, blockHash string) (*config.ZKBlock, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -68,29 +69,81 @@ func GetZKBlockByHash(_ *config.PooledConnection, blockHash string) (*config.ZKB
 	if err != nil {
 		return nil, fmt.Errorf("GetZKBlockByHash(%s): %w", blockHash, err)
 	}
-	return blockRecordToZKBlock(rec)
+	blk, convErr := blockRecordToZKBlock(rec)
+	if convErr != nil {
+		return nil, convErr
+	}
+	if proof, err := h.GetZKProof(ctx, rec.BlockNumber); err == nil {
+		zkProofRecordToZKBlock(proof, blk)
+	}
+	if txRecs, err := h.GetTransactionsByBlock(ctx, rec.BlockNumber); err == nil {
+		blk.Transactions = make([]config.Transaction, 0, len(txRecs))
+		for _, r := range txRecs {
+			if t := txRecordToTransaction(r); t != nil {
+				blk.Transactions = append(blk.Transactions, *t)
+			}
+		}
+	}
+	return blk, nil
 }
 
 // CountTransactions returns the total number of stored transactions.
-// Stub — CountTransactions is not yet in store.ThebeHandle.
-// Returns 0 until task #26 adds a CountTransactions SQL method.
 func CountTransactions(_ *config.PooledConnection) (int64, error) {
-	return 0, fmt.Errorf("CountTransactions: not yet implemented in ThebeDB")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	h, err := getHandle(nil)
+	if err != nil {
+		return 0, fmt.Errorf("CountTransactions: %w", err)
+	}
+	n, err := h.CountTransactions(ctx)
+	return int64(n), err
 }
 
 // GetTransactionsPaginated returns a page of all transactions ordered by block_number DESC.
-// Stub — paginated TX queries are not yet in store.ThebeHandle.
+// offset and limit follow SQL semantics (offset = skip N rows).
 func GetTransactionsPaginated(_ *config.PooledConnection, offset, limit int) ([]*config.Transaction, int, error) {
-	return nil, 0, fmt.Errorf("GetTransactionsPaginated: not yet implemented in ThebeDB")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	h, err := getHandle(nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("GetTransactionsPaginated: %w", err)
+	}
+	recs, err := h.GetTransactionsPaginated(ctx, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("GetTransactionsPaginated: %w", err)
+	}
+	total, _ := h.CountTransactions(ctx)
+	txs := make([]*config.Transaction, 0, len(recs))
+	for _, r := range recs {
+		txs = append(txs, txRecordToConfig(r))
+	}
+	return txs, int(total), nil
 }
 
 // GetTransactionsByAccountPaginated returns a page of transactions for address.
-// Stub — paginated TX queries are not yet in store.ThebeHandle.
 func GetTransactionsByAccountPaginated(_ *config.PooledConnection, address *common.Address, offset, limit int) ([]*config.Transaction, int, error) {
 	if address == nil {
 		return nil, 0, fmt.Errorf("GetTransactionsByAccountPaginated: nil address")
 	}
-	return nil, 0, fmt.Errorf("GetTransactionsByAccountPaginated: not yet implemented in ThebeDB")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	h, err := getHandle(nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("GetTransactionsByAccountPaginated: %w", err)
+	}
+	recs, err := h.GetTransactionsByAddress(ctx, address.Hex(), limit+offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("GetTransactionsByAccountPaginated: %w", err)
+	}
+	if offset >= len(recs) {
+		return nil, len(recs), nil
+	}
+	page := recs[offset:]
+	txs := make([]*config.Transaction, 0, len(page))
+	for _, r := range page {
+		txs = append(txs, txRecordToConfig(r))
+	}
+	return txs, len(recs), nil
 }
 
 // ── Account reads ────────────────────────────────────────────────────────────

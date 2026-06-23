@@ -83,6 +83,16 @@ func (s *cachedTxStore) GetTransactionsByBlock(ctx context.Context, blockNumber 
 	return s.inner.GetTransactionsByBlock(ctx, blockNumber)
 }
 
+// GetTransactionsPaginated delegates directly — not cached (paginated reads vary by offset).
+func (s *cachedTxStore) GetTransactionsPaginated(ctx context.Context, limit, offset int) ([]*thebegateway.TransactionRecord, error) {
+	return s.inner.GetTransactionsPaginated(ctx, limit, offset)
+}
+
+// CountTransactions delegates directly — not cached (count changes on every new block).
+func (s *cachedTxStore) CountTransactions(ctx context.Context) (uint64, error) {
+	return s.inner.CountTransactions(ctx)
+}
+
 // GetTransactionsByAddress delegates directly — result set is bounded only by caller-supplied limit.
 // Time: O(n) — not cached.
 func (s *cachedTxStore) GetTransactionsByAddress(ctx context.Context, address string, limit int) ([]*thebegateway.TransactionRecord, error) {

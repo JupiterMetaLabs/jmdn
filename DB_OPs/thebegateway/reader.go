@@ -159,6 +159,16 @@ const (
                data, access_list, sig_v, sig_r, sig_s
         FROM transactions WHERE block_number = $1
         ORDER BY tx_index ASC`
+
+	sqlGetTxsPaginated = `
+        SELECT tx_hash, block_number, tx_index, from_addr, to_addr, value_wei, nonce,
+               type, gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
+               data, access_list, sig_v, sig_r, sig_s
+        FROM transactions
+        ORDER BY block_number DESC, tx_index DESC
+        LIMIT $1 OFFSET $2`
+
+	sqlCountTransactions = `SELECT COUNT(*) FROM transactions`
 )
 
 // read is the shared read-through pattern for single-record methods.
@@ -618,6 +628,36 @@ func (r *thebeReader) GetTransactionsByBlock(ctx context.Context, blockNumber ui
 		return nil, fmt.Errorf("GetTransactionsByBlock: rows: %w", err)
 	}
 	return results, nil
+}
+
+// GetTransactionsPaginated returns a page of transactions ordered by block_number DESC.
+func (r *thebeReader) GetTransactionsPaginated(ctx context.Context, limit, offset int) ([]*TransactionRecord, error) {
+	rows, err := r.db.QueryContext(ctx, sqlGetTxsPaginated, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("GetTransactionsPaginated: query: %w", err)
+	}
+	defer rows.Close()
+	var results []*TransactionRecord
+	for rows.Next() {
+		var rec TransactionRecord
+		if err := r.scanTx(rows, &rec); err != nil {
+			return nil, fmt.Errorf("GetTransactionsPaginated: scan: %w", err)
+		}
+		results = append(results, &rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetTransactionsPaginated: rows: %w", err)
+	}
+	return results, nil
+}
+
+// CountTransactions returns the total number of transactions in the SQL store.
+func (r *thebeReader) CountTransactions(ctx context.Context) (uint64, error) {
+	var n uint64
+	if err := r.db.QueryRowContext(ctx, sqlCountTransactions).Scan(&n); err != nil {
+		return 0, fmt.Errorf("CountTransactions: %w", err)
+	}
+	return n, nil
 }
 
 // sqlGetContractReceipt fetches a contract receipt by tx_hash (PK).

@@ -86,6 +86,8 @@ type ThebeReader interface {
 	CountAccounts(ctx context.Context) (uint64, error)
 	GetAccountsByNonces(ctx context.Context, nonces []uint64) ([]*AccountRecord, error)
 	GetTransactionsByBlock(ctx context.Context, blockNumber uint64) ([]*TransactionRecord, error)
+	GetTransactionsPaginated(ctx context.Context, limit, offset int) ([]*TransactionRecord, error)
+	CountTransactions(ctx context.Context) (uint64, error)
 
 	// Contract KV layer — Phase 7
 	GetContractCode(ctx context.Context, address string) (*ContractCodeRecord, error)

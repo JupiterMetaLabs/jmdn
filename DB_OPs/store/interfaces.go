@@ -66,6 +66,8 @@ type TxStore interface {
 	GetTransaction(ctx context.Context, txHash string) (*thebegateway.TransactionRecord, error)
 	GetTransactionsByBlock(ctx context.Context, blockNumber uint64) ([]*thebegateway.TransactionRecord, error)
 	GetTransactionsByAddress(ctx context.Context, address string, limit int) ([]*thebegateway.TransactionRecord, error)
+	GetTransactionsPaginated(ctx context.Context, limit, offset int) ([]*thebegateway.TransactionRecord, error)
+	CountTransactions(ctx context.Context) (uint64, error)
 	SetTransactionStatus(ctx context.Context, txHash string, status int) error
 
 	// Tx processing flag — backed by BadgerDB KV.

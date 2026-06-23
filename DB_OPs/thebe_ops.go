@@ -186,7 +186,8 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 	return nil
 }
 
-// GetZKBlockByNumber retrieves a ZK block by its number from ThebeDB.
+// GetZKBlockByNumber retrieves a ZK block by its number from ThebeDB,
+// including ZK proof and transaction data.
 func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint64) (*config.ZKBlock, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -201,6 +202,17 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 	blk, convErr := blockRecordToZKBlock(rec)
 	if convErr != nil {
 		return nil, fmt.Errorf("GetZKBlockByNumber(%d): convert: %w", blockNumber, convErr)
+	}
+	if proof, err := h.GetZKProof(ctx, blockNumber); err == nil {
+		zkProofRecordToZKBlock(proof, blk)
+	}
+	if txRecs, err := h.GetTransactionsByBlock(ctx, blockNumber); err == nil {
+		blk.Transactions = make([]config.Transaction, 0, len(txRecs))
+		for _, r := range txRecs {
+			if t := txRecordToTransaction(r); t != nil {
+				blk.Transactions = append(blk.Transactions, *t)
+			}
+		}
 	}
 	return blk, nil
 }
