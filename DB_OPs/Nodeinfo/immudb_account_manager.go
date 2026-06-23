@@ -460,9 +460,10 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 	}
 	s, mgr := getAccountQueue()
 	if s == nil {
-		return fmt.Errorf("BatchUpdateAccounts: account queue not initialized; call StartAccountSyncWorker before use")
+		log.Printf("[accountqueue] BatchUpdateAccounts: queue not initialized — writing %d updates directly to ImmuDB", len(updates))
+		return batchUpdateAccountsDirect(am, updates)
 	}
-	mgr.EnsureActive()
+
 	// Convert to wire type for stable JSON serialization.
 	// big.Int.String() produces a decimal string; accountUpdateWire makes the format explicit.
 	wires := make([]accountUpdateWire, len(updates))
@@ -478,7 +479,26 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 	ctx, cancel := context.WithTimeout(context.Background(), enqueueTimeout(chunks))
 	defer cancel()
 	if err := enqueueRecordsChunked(ctx, s, payloadTypeUpdates, wires); err != nil {
-		return fmt.Errorf("BatchUpdateAccounts: enqueue %d updates in %d messages: %w", len(updates), chunks, err)
+		log.Printf("[accountqueue] Redis enqueue failed (%v) — falling back to direct ImmuDB write for %d updates", err, len(updates))
+		return batchUpdateAccountsDirect(am, updates)
+	}
+	mgr.EnsureActive()
+	return nil
+}
+
+// batchUpdateAccountsDirect writes account balance updates synchronously to ImmuDB,
+// bypassing Redis. Used when Redis is unavailable.
+func batchUpdateAccountsDirect(am *account_manager, updates []types.AccountUpdate) error {
+	for _, u := range updates {
+		if u.IsNewAccount {
+			if err := am.CreateAccount(u.Address, u.NewBalance, u.Nonce); err != nil {
+				return fmt.Errorf("batchUpdateAccountsDirect: create %s: %w", u.Address, err)
+			}
+		} else {
+			if err := am.UpdateAccountBalance(u.Address, u.NewBalance, u.Nonce); err != nil {
+				return fmt.Errorf("batchUpdateAccountsDirect: update %s: %w", u.Address, err)
+			}
+		}
 	}
 	return nil
 }
