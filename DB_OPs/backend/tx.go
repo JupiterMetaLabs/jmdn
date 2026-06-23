@@ -100,6 +100,24 @@ func (b *thebeBackend) IsTxProcessing(ctx context.Context, txHash string) (bool,
 	return processing, nil
 }
 
+// GetTransactionsPaginated returns a page of transactions ordered by block_number DESC.
+func (b *thebeBackend) GetTransactionsPaginated(ctx context.Context, limit, offset int) ([]*thebegateway.TransactionRecord, error) {
+	recs, err := b.r.GetTransactionsPaginated(ctx, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("backend.GetTransactionsPaginated: %w", err)
+	}
+	return recs, nil
+}
+
+// CountTransactions returns the total number of transactions in the SQL store.
+func (b *thebeBackend) CountTransactions(ctx context.Context) (uint64, error) {
+	n, err := b.r.CountTransactions(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("backend.CountTransactions: %w", err)
+	}
+	return n, nil
+}
+
 // toTransactionRecord converts config.Transaction → thebegateway.TransactionRecord.
 func toTransactionRecord(tx *config.Transaction, blockNumber uint64, txIndex int) *thebegateway.TransactionRecord {
 	rec := &thebegateway.TransactionRecord{
