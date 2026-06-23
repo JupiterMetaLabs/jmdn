@@ -52,19 +52,22 @@ RUN GIT_COMMIT=${GIT_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo "u
 FROM debian:bookworm-slim
 
 # Install runtime dependencies + Yggdrasil (required: network.yggdrasil: true in jmdn.yaml)
-ARG YGGDRASIL_VERSION=0.5.12
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     gnupg \
     libc6 \
     && mkdir -p /usr/local/apt-keys \
-    && curl -fsSL https://neilalexander.s3.dualstack.eu-west-2.amazonaws.com/deb/key.txt \
-       | gpg --dearmor --yes -o /usr/local/apt-keys/yggdrasil-keyring.gpg \
+    && gpg --fetch-keys https://neilalexander.s3.dualstack.eu-west-2.amazonaws.com/deb/key.txt \
+    && gpg --export 1C5162E133015D81A811239D1840CDAC6011C5EA \
+       | tee /usr/local/apt-keys/yggdrasil-keyring.gpg > /dev/null \
     && echo 'deb [signed-by=/usr/local/apt-keys/yggdrasil-keyring.gpg] http://neilalexander.s3.dualstack.eu-west-2.amazonaws.com/deb/ debian yggdrasil' \
        > /etc/apt/sources.list.d/yggdrasil.list \
     && apt-get update && apt-get install -y --no-install-recommends \
-       yggdrasil=${YGGDRASIL_VERSION} \
+       yggdrasil \
+       netcat-openbsd \
+       wget \
+       bzip2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ImmuDB
@@ -87,13 +90,19 @@ RUN mkdir -p \
     /var/log/jmdn \
     && chown -R jmdn:jmdn /opt/jmdn /var/log/jmdn /etc/jmdn
 
-# Copy binary, wrapper, and default config from builder
+# Copy binary, scripts, and default config from builder
 COPY --from=builder /src/jmdn /usr/local/bin/jmdn
 COPY --from=builder /src/Scripts/start_jmdn_wrapper.sh /usr/local/bin/start_jmdn_wrapper.sh
-RUN chmod +x /usr/local/bin/start_jmdn_wrapper.sh
+COPY --from=builder /src/Scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY --from=builder /src/Scripts/bootstrap_sync.sh    /usr/local/bin/bootstrap_sync.sh
+RUN chmod +x /usr/local/bin/start_jmdn_wrapper.sh \
+             /usr/local/bin/docker-entrypoint.sh \
+             /usr/local/bin/bootstrap_sync.sh
 # Copy default config as jmdn.yaml (mirrors setup_config.sh: cp jmdn_default.yaml → jmdn.yaml)
 COPY --from=builder /src/jmdn_default.yaml /etc/jmdn/jmdn.yaml
-COPY --from=builder /src/config/peer.json /etc/jmdn/peer.json
+# peer.json must be at ./config/peer.json relative to WORKDIR (hardcoded in config/constants.go)
+# WORKDIR is /opt/jmdn/data (volume) so it persists across restarts
+COPY --from=builder /src/config/peer.json /opt/jmdn/data/config/peer.json
 
 # Expose ports per jmdn.yaml (localhost-bound ports excluded)
 # 6090  - HTTP API / Explorer      (ports.api)
@@ -102,8 +111,8 @@ COPY --from=builder /src/config/peer.json /etc/jmdn/peer.json
 # 16052 - DID service              (ports.did)
 # 6545  - Facade / JSON-RPC        (ports.facade)
 # 6546  - WebSocket                (ports.ws)
-# 3323  - ImmuDB
-EXPOSE 6090 16050 16055 16052 6545 6546 3323
+# ImmuDB (3322) is container-internal — not exposed
+EXPOSE 6090 16050 16055 16052 6545 6546
 
 # Health check against actual API port (ports.api: 6090)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
@@ -112,10 +121,12 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # Data volume for ImmuDB + node persistence
 VOLUME ["/opt/jmdn/data"]
 
-USER jmdn
-WORKDIR /home/jmdn
+# Run as root — required for bootstrap_sync.sh (chown after snapshot extract)
+# WORKDIR matches where jmdn resolves ./config/peer.json (config/constants.go: PeerFile = "./config/peer.json")
+WORKDIR /opt/jmdn/data
 
-# Wrapper handles binary path resolution; override config with:
-#   -v /your/jmdn.yaml:/etc/jmdn/jmdn.yaml
-ENTRYPOINT ["/usr/local/bin/start_jmdn_wrapper.sh"]
-CMD ["-config", "/etc/jmdn/jmdn.yaml"]
+# 1. bootstrap_sync.sh  (first run only — downloads snapshot, writes sentinel)
+# 2. immudb             (starts in background)
+# 3. start_jmdn_wrapper.sh → jmdn
+# Override config: -v /your/jmdn.yaml:/etc/jmdn/jmdn.yaml
+CMD ["/usr/local/bin/docker-entrypoint.sh"]
