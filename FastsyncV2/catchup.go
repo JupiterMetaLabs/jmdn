@@ -279,13 +279,19 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 	const reconDelay = 5 * time.Second
 	log.Printf("[CatchUpSync] phase 5: waiting %s for ImmuDB to settle before reconciliation", reconDelay)
 	time.Sleep(reconDelay)
-	log.Printf("[CatchUpSync] phase 5: reconciliation")
+	accountCount := 0
+	if taggedAccounts != nil {
+		accountCount = len(taggedAccounts.Accounts)
+	}
+	log.Printf("[CatchUpSync] phase 5: reconciliation — %d accounts to process", accountCount)
+	reconStart := time.Now()
 
 	reconCount, failedAccounts, err := fs.ReconRouter.Reconcile(taggedAccounts, availResp)
 	if err != nil {
 		log.Printf("[CatchUpSync] phase 5 warning: %v", err)
 	}
-	log.Printf("[CatchUpSync] phase 5 complete: %d committed, %d failed", reconCount, len(failedAccounts))
+	log.Printf("[CatchUpSync] phase 5 complete: %d committed, %d failed, took %s",
+		reconCount, len(failedAccounts), time.Since(reconStart).Round(time.Millisecond))
 
 	// ── Phase 6: Re-auth before PoTS (disabled — AUTH_TTL is now 48h) ─────
 	// if refreshed, ok := fs.tryRefreshAuth(ctx, targetNodeInfo, 0); ok {
