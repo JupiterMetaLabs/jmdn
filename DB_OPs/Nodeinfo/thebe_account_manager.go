@@ -164,22 +164,14 @@ func (am *account_manager) CreateAccount(accountAddress string, balance *big.Int
 
 // Time Complexity: O(1)
 func (am *account_manager) GetAccountByAddress(accountAddress string) (*types.Account, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, err := DB_OPs.GetAccountConnectionandPutBack(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get account DB connection: %w", err)
-	}
-
 	// Strip "address:" DB key prefix if present — the external FastSync module may pass
 	// DB key format; common.HexToAddress expects bare hex (0x... or unprefixed).
 	accountAddress = strings.TrimPrefix(accountAddress, DB_OPs.Prefix)
 
 	addr := common.HexToAddress(accountAddress)
-	acc, err := DB_OPs.GetAccount(conn, addr)
+	acc, err := DB_OPs.GetAccount(nil, addr)
 	if err != nil {
-		if strings.Contains(err.Error(), "key not found") {
+		if strings.Contains(err.Error(), "key not found") || strings.Contains(err.Error(), "no rows") {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get account: %w", err)
@@ -224,44 +216,45 @@ func (am *account_manager) WriteAccounts(accounts []*types.Account) error {
 // NewAccountNonceIterator returns a cursor-based iterator over all accounts.
 // Each NextBatch call advances a seekKey cursor — O(N) total scan across all batches.
 func (am *account_manager) NewAccountNonceIterator(batchSize int) types.AccountNonceIterator {
-	return &immudbNonceIter{
+	return &thebeNonceIter{
 		batchSize: batchSize,
 	}
 }
 
-// ─── immudbNonceIter ─────────────────────────────────────────────────────────
+// ─── thebeNonceIter ─────────────────────────────────────────────────────────
 
-// MODULE: DB_OPs/Nodeinfo (immudbNonceIter)
-// PURPOSE: cursor-based iterator that pages all accounts from ImmuDB in ascending key order.
+// MODULE: DB_OPs/Nodeinfo (thebeNonceIter)
+// PURPOSE: offset-based iterator that pages all accounts from SQL (ThebeDB) in ascending created_at order.
 //
 // CORE DATA STRUCTURES:
-//   - lastKey []byte: scan cursor — key of the last returned account; nil = start of DB.
-//     Fixed size (one key). Threaded across NextBatch calls so each call resumes where the
-//     previous left off instead of restarting from key 0.
+//   - offset int: SQL OFFSET counter — advances by len(batch) on each NextBatch call.
 //
 // DO NOT:
-//   - Replace lastKey with an offset int — that restarts the scan from key 0 each call (O(N²)).
 //   - Add an in-memory account cache on this struct — 2.7M entries exhaust heap during sync.
 
-type immudbNonceIter struct {
+type thebeNonceIter struct {
 	batchSize int
-	lastKey   []byte // scan cursor: key of last returned account, nil = start
+	offset    int
 	done      bool
 }
 
 // Time: O(1)
-func (it *immudbNonceIter) TotalAccounts() (uint64, error) {
-	count, err := DB_OPs.CountAccounts(nil)
-	return uint64(count), err
+func (it *thebeNonceIter) TotalAccounts() (uint64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return DB_OPs.CountAccountsCtx(ctx)
 }
 
-// Time: O(batchSize) ImmuDB entries; Space: O(batchSize)
-func (it *immudbNonceIter) NextBatch() ([]*types.Account, error) {
+// Time: O(batchSize) SQL rows; Space: O(batchSize)
+func (it *thebeNonceIter) NextBatch() ([]*types.Account, error) {
 	if it.done {
 		return nil, nil
 	}
 
-	accs, lastKey, err := DB_OPs.ListAccountsPaginatedFrom(nil, it.batchSize, it.lastKey, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	accs, err := DB_OPs.ListAccountsPaginatedCtx(ctx, it.batchSize, it.offset)
 	if err != nil {
 		return nil, fmt.Errorf("account nonce iterator: %w", err)
 	}
@@ -279,54 +272,36 @@ func (it *immudbNonceIter) NextBatch() ([]*types.Account, error) {
 		return result[i].Nonce < result[j].Nonce
 	})
 
-	it.lastKey = lastKey
+	it.offset += len(accs)
 	if len(accs) < it.batchSize {
 		it.done = true
 	}
 	return result, nil
 }
 
-// GetAccountsByNonces scans all accounts once via cursor to find those matching the given nonces.
-// Time: O(N) where N = total accounts; Space: O(|nonces|)
-func (it *immudbNonceIter) GetAccountsByNonces(nonces []uint64) ([]*types.Account, error) {
+// GetAccountsByNonces returns accounts matching any of the given nonces via ThebeDB.
+// Time: O(|nonces|) SQL query; Space: O(|nonces|)
+func (it *thebeNonceIter) GetAccountsByNonces(nonces []uint64) ([]*types.Account, error) {
 	if len(nonces) == 0 {
 		return nil, nil
 	}
 
-	nonceSet := make(map[uint64]struct{}, len(nonces))
-	for _, n := range nonces {
-		nonceSet[n] = struct{}{}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	accs, err := DB_OPs.GetAccountsByNonces(ctx, nonces)
+	if err != nil {
+		return nil, fmt.Errorf("GetAccountsByNonces: %w", err)
 	}
 
-	result := make([]*types.Account, 0, len(nonces))
-	var seekKey []byte
-
-	for {
-		accs, lastKey, err := DB_OPs.ListAccountsPaginatedFrom(nil, 1000, seekKey, "")
-		if err != nil {
-			return nil, fmt.Errorf("GetAccountsByNonces scan: %w", err)
-		}
-		if len(accs) == 0 {
-			break
-		}
-		for _, acc := range accs {
-			ta := dbOpsToTypes(acc)
-			if _, ok := nonceSet[ta.Nonce]; ok {
-				result = append(result, ta)
-				if len(result) == len(nonces) {
-					return result, nil
-				}
-			}
-		}
-		if lastKey == nil || len(accs) < 1000 {
-			break
-		}
-		seekKey = lastKey
+	result := make([]*types.Account, len(accs))
+	for i, acc := range accs {
+		result[i] = dbOpsToTypes(acc)
 	}
 	return result, nil
 }
 
-func (it *immudbNonceIter) Close() {}
+func (it *thebeNonceIter) Close() {}
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 

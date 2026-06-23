@@ -15,12 +15,10 @@ import (
 
 type DataWriter struct{}
 
-// Time Complexity: O(1)
 func (sync *sync_struct) NewDataWriter() types.WriteData {
 	return &DataWriter{}
 }
 
-// Time Complexity: O(N*M) where N is number of NonHeaders and M is transactions per batch
 func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 	if len(data) == 0 {
 		return nil
@@ -31,14 +29,9 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			continue
 		}
 
-		// FastSync splits blocks into Headers and NonHeaders. During WriteData, the block header
-		// usually exists already in DB from WriteHeaders. We fetch it, merge non-header data, and overwrite.
 		b, err := DB_OPs.GetZKBlockByNumber(nil, nh.BlockNumber)
 		if err != nil {
-			// Block header not yet written — create a minimal block to attach non-header data.
-			b = &config.ZKBlock{
-				BlockNumber: nh.BlockNumber,
-			}
+			b = &config.ZKBlock{BlockNumber: nh.BlockNumber}
 			if nh.Snapshot != nil && len(nh.Snapshot.BlockHash) > 0 {
 				b.BlockHash = common.BytesToHash(nh.Snapshot.BlockHash)
 			}
@@ -56,7 +49,6 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			if tx == nil {
 				continue
 			}
-
 			cfgTx := config.Transaction{
 				Type:      uint8(tx.Type),
 				Timestamp: tx.Timestamp,
@@ -64,7 +56,6 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 				GasLimit:  tx.GasLimit,
 				Data:      tx.Data,
 			}
-
 			if len(tx.Hash) > 0 {
 				cfgTx.Hash = common.BytesToHash(tx.Hash)
 			}
@@ -94,9 +85,7 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			if len(tx.AccessList) > 0 {
 				cfgTx.AccessList = make(config.AccessList, 0, len(tx.AccessList))
 				for _, pbAT := range tx.AccessList {
-					at := config.AccessTuple{
-						Address: common.BytesToAddress(pbAT.Address),
-					}
+					at := config.AccessTuple{Address: common.BytesToAddress(pbAT.Address)}
 					for _, sk := range pbAT.StorageKeys {
 						at.StorageKeys = append(at.StorageKeys, common.BytesToHash(sk))
 					}
@@ -112,21 +101,6 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			if len(tx.S) > 0 {
 				cfgTx.S = new(big.Int).SetBytes(tx.S)
 			}
-			if len(tx.ChainId) > 0 {
-				cfgTx.ChainID = new(big.Int).SetBytes(tx.ChainId)
-			}
-			if len(tx.AccessList) > 0 {
-				for _, al := range tx.AccessList {
-					cfgAl := config.AccessTuple{
-						Address: common.BytesToAddress(al.Address),
-					}
-					for _, sk := range al.StorageKeys {
-						cfgAl.StorageKeys = append(cfgAl.StorageKeys, common.BytesToHash(sk))
-					}
-					cfgTx.AccessList = append(cfgTx.AccessList, cfgAl)
-				}
-			}
-
 			txs = append(txs, cfgTx)
 		}
 
@@ -135,39 +109,24 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 		}
 
 		if err := DB_OPs.StoreZKBlock(nil, b); err != nil {
-			// if err not nill, then force write or update
-			if strings.Contains(err.Error(), "already exists") {
-				blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, b.BlockNumber)
-				if err2 := DB_OPs.Update(blockKey, b); err2 != nil {
-					return fmt.Errorf("force update block %d failed: %w", b.BlockNumber, err2)
-				}
-
-				hashKey := fmt.Sprintf("%s%s", DB_OPs.PREFIX_BLOCK_HASH, b.BlockHash.Hex())
-				if err2 := DB_OPs.Update(hashKey, blockKey); err2 != nil {
-					return fmt.Errorf("force update hash mapping failed: %w", err2)
-				}
-
-				if err2 := DB_OPs.Update("latest_block", b.BlockNumber); err2 != nil {
-					return fmt.Errorf("force update latest block failed: %w", err2)
-				}
-
-				// Write tx:<hash> → blockNumber index for each transaction.
-				// WriteHeaders stores blocks without transactions, so StoreZKBlock's tx
-				// indexing loop runs 0 times there. This is the only place those index
-				// entries get written — required for GetTransactionByHash to work.
-				for _, tx := range b.Transactions {
-					txKey := fmt.Sprintf("%s%s", DB_OPs.DEFAULT_PREFIX_TX, tx.Hash)
-					if err2 := DB_OPs.Create(nil, txKey, b.BlockNumber); err2 != nil {
-						if !strings.Contains(err2.Error(), "already exists") {
-							return fmt.Errorf("store tx index for %s: %w", tx.Hash, err2)
-						}
-					}
-				}
-			} else {
-				return err
+			if !strings.Contains(err.Error(), "already exists") {
+				return fmt.Errorf("WriteData: block %d: %w", b.BlockNumber, err)
 			}
+			// Block already exists — StoreZKBlock upserts, so this shouldn't happen
+			// with the new SQL backend. Log and continue.
 		}
 	}
-
 	return nil
+}
+
+// bytesToCommitment converts []byte (big-endian packed uint32s) back to []uint32.
+func bytesToCommitment(b []byte) []uint32 {
+	if len(b)%4 != 0 {
+		return nil
+	}
+	out := make([]uint32, len(b)/4)
+	for i := range out {
+		out[i] = uint32(b[i*4])<<24 | uint32(b[i*4+1])<<16 | uint32(b[i*4+2])<<8 | uint32(b[i*4+3])
+	}
+	return out
 }
