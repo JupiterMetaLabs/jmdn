@@ -5,8 +5,6 @@ import (
 	"time"
 
 	"github.com/JupiterMetaLabs/ion"
-	"github.com/codenotary/immudb/pkg/api/schema"
-	"github.com/codenotary/immudb/pkg/client"
 )
 
 const (
@@ -40,7 +38,7 @@ type ImmuClient struct {
 	Database    string
 	// Client is the underlying ImmuDB gRPC client.
 	// Legacy call-sites access it for KV operations (Get, Set, ExecAll, Scan, etc.).
-	Client client.ImmuClient
+	Client interface{}
 }
 
 // Close implements io.Closer so *ImmuClient can be stored in config.PooledConnection.Client.
@@ -58,5 +56,5 @@ type BlockHasher struct{}
 // ImmuTransaction is a legacy stub.
 type ImmuTransaction struct {
 	Client *ImmuClient
-	Ops    []*schema.Op
+	Ops    []interface{}
 }
