@@ -52,3 +52,15 @@ internal/WAL/.tmp/*
 .claude/*
 .code-review-graph/*
 .cursor/*
+docs/FASTSYNC_V3_MIGRATION_PLAN.md
+eventlog.duckdb
+Scripts/sign_tx.go
+storage/thebe-kv/00001.mem
+storage/thebe-kv/000016.vlog
+storage/thebe-kv/000017.vlog
+storage/thebe-kv/DISCARD
+storage/thebe-kv/KEYREGISTRY
+storage/thebe-kv/LOCK
+storage/thebe-kv/MANIFEST
+storage/thebe-kv/outbox.db
+dlq/DLQ.log
