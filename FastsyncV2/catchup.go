@@ -281,7 +281,7 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 
 	// ── Phase 8: Post-sync verification ──────────────────────────────────
 	// Re-run buildDataMissingTag over the same range. If sync succeeded, the
-	// returned tag will be empty (all blocks now have StarkProof set).
+	// returned tag will be empty (all blocks pass blockNeedsDataSync check).
 	// Any non-empty ranges indicate blocks that are still data-incomplete.
 	log.Printf("[CatchUpSync] phase 8: verifying sync completeness [%d..%d]", fromBlock, remoteTip)
 
@@ -339,20 +339,32 @@ func (fs *FastsyncV2) tryRefreshAuth(ctx context.Context, targetNodeInfo *types.
 //	→ gaps: [2..2], [4..6], [8..8]
 const catchUpBatchSize = 500
 
+// blockNeedsDataSync returns true when a locally-present block is missing its
+// NonHeaders data and must be (re-)fetched via DataSync.
+//
+// Two conditions trigger a re-fetch:
+//  1. StarkProof is empty — DataSync has never written ZK proof data for this
+//     block. StarkProof is set ONLY by DataSync (immudb_data_writer.go:59).
+//  2. GasUsed > 0 but Transactions is empty — the block consumed gas so it
+//     must have transactions, but none were stored. This catches blocks where a
+//     previous DataSync run set StarkProof but failed to persist transactions
+//     (e.g. due to the old "if len(txs) > 0" guard that has since been removed).
+//
+// Limitation: a block with GasUsed=0 and an empty ZK proof (legitimately no
+// transactions and no proof) will be re-fetched on every run. This is safe
+// (DataSync is idempotent) and extremely rare on a ZK L2 in practice.
+func blockNeedsDataSync(blk *types.ZKBlock) bool {
+	if len(blk.StarkProof) == 0 {
+		return true
+	}
+	if blk.GasUsed > 0 && len(blk.Transactions) == 0 {
+		return true
+	}
+	return false
+}
+
 // buildDataMissingTag scans [fromBlock..remoteTip] and returns a Tag covering
-// blocks that need DataSync — i.e. blocks where NonHeaders (txs, ZK proof) have
-// not been written yet.
-//
-// A block needs DataSync when:
-//   - It is absent from the local DB entirely (gap in the iterator), OR
-//   - It is present but StarkProof is empty. StarkProof is written ONLY by
-//     DataSync (immudb_data_writer.go:59); HeaderSync and PubSub never set it.
-//
-// Limitation: blocks with a genuinely empty ZK proof will always have
-// len(StarkProof)==0 even after DataSync. They will be re-fetched on every
-// catchup run. This is safe (DataSync is idempotent) and rare in practice on a
-// ZK L2 where every finalized block carries a proof.
-//
+// blocks that need DataSync (absent or data-incomplete per blockNeedsDataSync).
 // Consecutive blocks needing DataSync are coalesced into a single RangeTag to
 // minimise round-trips.
 
@@ -444,7 +456,7 @@ func (fs *FastsyncV2) buildDataMissingTag(fromBlock, remoteTip uint64) (*tagging
 				// We decide below whether b also extends it or closes it.
 			}
 
-			if len(blk.StarkProof) == 0 {
+			if blockNeedsDataSync(&blk) {
 				// Block b is present but data-incomplete — keep the run going.
 				addToRun(b)
 			} else {
