@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gossipnode/config/settings"
+	"gossipnode/internal/syncmonitor"
 	"gossipnode/logging"
 	"gossipnode/pkg/gatekeeper"
 
@@ -17,8 +18,9 @@ import (
 )
 
 type HTTPServer struct {
-	h      *Handlers
-	logger *ion.Ion // Add logger
+	h           *Handlers
+	logger      *ion.Ion // Add logger
+	syncMonitor *syncmonitor.Monitor
 }
 
 func NewHTTPServer(h *Handlers) *HTTPServer {
@@ -26,6 +28,12 @@ func NewHTTPServer(h *Handlers) *HTTPServer {
 	l, _ := logging.NewAsyncLogger().Get().NamedLogger("JSONRPC", "")
 
 	return &HTTPServer{h: h, logger: l.NamedLogger}
+}
+
+// WithSyncMonitor attaches a SyncMonitor so the server exposes /sync/* routes.
+func (s *HTTPServer) WithSyncMonitor(m *syncmonitor.Monitor) *HTTPServer {
+	s.syncMonitor = m
+	return s
 }
 
 func (s *HTTPServer) Serve(addr string) error {
@@ -61,6 +69,11 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 
 	// Add JSON-RPC handler
 	router.Any("/", s.handleJSONRPC)
+
+	// Add sync status/reconcile endpoints if a monitor is wired in
+	if s.syncMonitor != nil {
+		RegisterSyncRoutes(router, s.syncMonitor)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {

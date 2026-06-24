@@ -156,22 +156,14 @@ type FastSyncSettings struct {
 	// local DB. false = read-only participant (serves data, never updates itself).
 	EnablePulling bool `mapstructure:"enable_pulling" yaml:"enable_pulling"`
 
-	// EnableCatchup controls whether the node automatically runs HandleCatchUpSync on
-	// startup using catch_up_peer and catch_up_from_block. Requires enable_pulling=true.
+	// EnableCatchup controls whether the node automatically runs HandleCatchUpSync
+	// driven by the seednode SyncMonitor. Requires enable_pulling=true.
 	// Set false to disable automatic catchup while still allowing manual CLI catchup.
 	EnableCatchup bool `mapstructure:"enable_catchup" yaml:"enable_catchup"`
-
-	// PullOnStartup controls whether the node attempts to catch up on missed blocks
-	// automatically when it (re)starts and connects to peers.
-	PullOnStartup bool `mapstructure:"pull_on_startup" yaml:"pull_on_startup"`
 
 	// SyncTimeout is the maximum wall-clock time allowed for a single full sync
 	// operation before it is cancelled.
 	SyncTimeout time.Duration `mapstructure:"sync_timeout" yaml:"sync_timeout"`
-
-	// AllowedPeers is an optional whitelist of libp2p peer IDs this node will
-	// accept sync data FROM. Empty list = accept from any peer.
-	AllowedPeers []string `mapstructure:"allowed_peers" yaml:"allowed_peers"`
 
 	// CatchUpFromBlock is the first block AFTER the bootstrap snapshot
 	// (i.e. bootstrapTip + 1). Set this once after loading the bootstrap and
@@ -185,8 +177,8 @@ type FastSyncSettings struct {
 	// localTip may be ahead of gaps that would be silently skipped.
 	CatchUpFromBlock uint64 `mapstructure:"catch_up_from_block" yaml:"catch_up_from_block"`
 
-	// CatchUpPeer is the libp2p peer ID of the node to catch up from.
-	// Example: 12D3KooWAbCdEf...
-	// The node must be connected (in peerstore) at startup for addresses to resolve.
-	CatchUpPeer string `mapstructure:"catch_up_peer" yaml:"catch_up_peer"`
+	// SyncCheckInterval is how often the SyncMonitor reports this node's Merkle
+	// root to the seednode and checks whether reconciliation is needed.
+	// Default: 10 minutes. Minimum enforced by the monitor: 1 minute.
+	SyncCheckInterval time.Duration `mapstructure:"sync_check_interval" yaml:"sync_check_interval"`
 }

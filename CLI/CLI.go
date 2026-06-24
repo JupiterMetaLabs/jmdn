@@ -662,7 +662,8 @@ func (h *CommandHandler) handleCatchUpSync(parts []string) {
 	fmt.Printf("Starting catch-up sync (from_block=%d) with peer %s\n", fromBlock, parts[1])
 	startTime := time.Now()
 
-	if err := h.FastSyncerV2.HandleCatchUpSync(fromBlock, parts[1]); err != nil {
+	// Interactive CLI — no cancellable ctx in scope; HandleCatchUpSync applies fs.syncTimeout internally.
+	if err := h.FastSyncerV2.HandleCatchUpSync(context.Background(), fromBlock, parts[1]); err != nil {
 		fmt.Printf("CatchUpSync failed: %v\n", err)
 		return
 	}

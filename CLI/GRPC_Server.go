@@ -266,7 +266,7 @@ func (s *CLIServer) FirstSync(ctx context.Context, req *pb.FirstSyncRequest) (*p
 }
 
 func (s *CLIServer) CatchUpSync(ctx context.Context, req *pb.CatchUpRequest) (*pb.SyncStats, error) {
-	stats, err := s.handler.HandleCatchUpSync(req.Peer, req.FromBlock)
+	stats, err := s.handler.HandleCatchUpSync(ctx, req.Peer, req.FromBlock)
 	if err != nil {
 		return &pb.SyncStats{Error: err.Error()}, nil
 	}

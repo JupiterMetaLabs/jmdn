@@ -1,6 +1,7 @@
 package CLI
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -330,11 +331,11 @@ func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
 	}, nil
 }
 
-func (h *CommandHandler) HandleCatchUpSync(peeraddr string, fromBlock uint64) (SyncStats, error) {
+func (h *CommandHandler) HandleCatchUpSync(ctx context.Context, peeraddr string, fromBlock uint64) (SyncStats, error) {
 	if peeraddr == "" {
 		return SyncStats{}, fmt.Errorf("usage: catchup <peer_multiaddr> [from_block]")
 	}
-	// fromBlock=0 → auto-detect inside HandleCatchUpSync
+	// fromBlock=0 → auto-detect via effectiveReconRange inside HandleCatchUpSync
 	if !h.PullAllowed {
 		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
 	}
@@ -343,7 +344,7 @@ func (h *CommandHandler) HandleCatchUpSync(peeraddr string, fromBlock uint64) (S
 	}
 
 	startTime := time.Now().UTC()
-	if err := h.FastSyncerV2.HandleCatchUpSync(fromBlock, peeraddr); err != nil {
+	if err := h.FastSyncerV2.HandleCatchUpSync(ctx, fromBlock, peeraddr); err != nil {
 		return SyncStats{}, fmt.Errorf("CatchUpSync failed: %w", err)
 	}
 

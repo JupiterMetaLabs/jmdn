@@ -85,11 +85,14 @@ type FastsyncV2 struct {
 
 // NewFastsyncV2 initializes the JMDN-FastSync V2 engine over the given libp2p host.
 //
+// ctx governs the lifetime of server-side network handlers and all router contexts.
+// Pass the node's top-level shutdown context so handlers are cancelled on node exit.
+// Close() must still be called on shutdown to flush WALs and tear down routers.
+//
 // It creates the NodeInfo adapter (ImmuDB), initializes both WALs (standard + PoTS),
 // creates and configures all protocol routers, and starts the server-side network handlers
 // so this node can respond to incoming sync requests from other peers.
-func NewFastsyncV2(h host.Host, syncTimeout time.Duration) (*FastsyncV2, error) {
-	ctx := context.Background()
+func NewFastsyncV2(ctx context.Context, h host.Host, syncTimeout time.Duration) (*FastsyncV2, error) {
 
 	// --- 1. Initialize the BlockInfo adapter (ImmuDB → JMDN-FastSync interface) ---
 	blockInfo := NodeInfo.NewSyncStruct()
@@ -161,11 +164,13 @@ func NewFastsyncV2(h host.Host, syncTimeout time.Duration) (*FastsyncV2, error) 
 	//   /priorsync/v1/availability, /priorsync/v1/merkle, /priorsync/v1/pots,
 	//   /fastsync/v1/pubsub/blocks
 	// It blocks until the context is cancelled, so run in a goroutine.
+	// The goroutine exits when ctx is cancelled (node shutdown).
 	go func() {
 		log.Printf("[FastsyncV2] Server handlers started on peer %s", h.ID().String())
 		if err := priorRouter.SetupNetworkHandlers(true); err != nil && err != context.Canceled {
 			log.Printf("[FastsyncV2] Server handler error: %v", err)
 		}
+		log.Printf("[FastsyncV2] Server handlers stopped")
 	}()
 
 	return &FastsyncV2{
@@ -593,11 +598,14 @@ func (fs *FastsyncV2) executePoTS(
 				if availResp.BlockHeight == 0 {
 					potsFromBlock = 1
 				}
-				potsReconFrom, potsReconSkip := fs.effectiveReconRange(potsFromBlock, math.MaxUint64)
+				// Fetch latest block before effectiveReconRange so toBlock is concrete.
+				// Previously math.MaxUint64 was passed, meaning skip was never triggered
+				// even when the entire PoTS range was already reconciled.
+				potsLatest := fs.blockInfoAdapter.GetBlockDetails().Blocknumber
+				potsReconFrom, potsReconSkip := fs.effectiveReconRange(potsFromBlock, potsLatest)
 				if potsReconSkip {
-					log.Printf("[FastsyncV2] PoTS reconciliation skipped: already reconciled")
+					log.Printf("[FastsyncV2] PoTS reconciliation skipped: already reconciled up to %d", potsLatest)
 				} else {
-					potsLatest := fs.blockInfoAdapter.GetBlockDetails().Blocknumber
 					potsDeltas := fs.computeAccountDeltas(potsReconFrom, potsLatest)
 					log.Printf("[FastsyncV2] PoTS: computed deltas for %d accounts", len(potsDeltas))
 					reconCount, failed, err := fs.ReconRouter.ReconcileWithDeltas(potsDeltas, availResp)
@@ -846,21 +854,9 @@ func zkBlockToProtoNonHeaders(b *types.ZKBlock) *blockpb.NonHeaders {
 		if tx.S != nil {
 			pbTx.S = tx.S.Bytes()
 		}
-
-		if tx.ChainID != nil {
-			pbTx.ChainId = tx.ChainID.Bytes()
-		}
-		if len(tx.AccessList) > 0 {
-			for _, al := range tx.AccessList {
-				pbAl := &blockpb.AccessTuple{
-					Address: al.Address[:],
-				}
-				for _, sk := range al.StorageKeys {
-					pbAl.StorageKeys = append(pbAl.StorageKeys, sk[:])
-				}
-				pbTx.AccessList = append(pbTx.AccessList, pbAl)
-			}
-		}
+		// NOTE: AccessList is already encoded in the loop above (lines 831-839).
+		// The duplicate block that was here has been removed — it doubled every
+		// access-list entry in the serialised output.
 
 		nh.Transactions = append(nh.Transactions, &blockpb.DBTransaction{
 			Tx:        pbTx,

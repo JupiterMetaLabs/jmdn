@@ -41,6 +41,7 @@ import (
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/rpc"
 	"gossipnode/helper"
+	"gossipnode/internal/syncmonitor"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	"gossipnode/metrics"
@@ -51,7 +52,6 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
@@ -140,7 +140,7 @@ func initAppandLocalGRO() {
 	}
 }
 
-func StartFacadeServer(bindAddr string, port int, chainID int) {
+func StartFacadeServer(bindAddr string, port int, chainID int, mon *syncmonitor.Monitor) {
 	if MainLM == nil {
 		log.Fatal().Msg("MainLM not initialized. Call initAppandLocalGRO() first")
 	}
@@ -150,6 +150,9 @@ func StartFacadeServer(bindAddr string, port int, chainID int) {
 
 		handler := rpc.NewHandlers(Service.NewService(chainID))
 		httpServer := rpc.NewHTTPServer(handler)
+		if mon != nil {
+			httpServer.WithSyncMonitor(mon)
+		}
 
 		addr := fmt.Sprintf("%s:%d", bindAddr, port)
 		if err := httpServer.ServeWithContext(ctx, addr); err != nil {
@@ -651,9 +654,11 @@ func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsC
 	return fs
 }
 
-// initFastsyncV2 initializes the FastSync V2 service
-func initFastsyncV2(n *config.Node, syncTimeout time.Duration) *FastsyncV2.FastsyncV2 {
-	fs, err := FastsyncV2.NewFastsyncV2(n.Host, syncTimeout)
+// initFastsyncV2 initializes the FastSync V2 service.
+// ctx is the node's top-level shutdown context — it governs the lifetime of
+// server-side network handler goroutines inside the engine.
+func initFastsyncV2(ctx context.Context, n *config.Node, syncTimeout time.Duration) *FastsyncV2.FastsyncV2 {
+	fs, err := FastsyncV2.NewFastsyncV2(ctx, n.Host, syncTimeout)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
 		return nil
@@ -994,58 +999,76 @@ func main() {
 	// Initialize FastSync service
 	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
 	if cfg.FastSync.Enabled {
-		fastSyncerV2 = initFastsyncV2(n, cfg.FastSync.SyncTimeout)
+		fastSyncerV2 = initFastsyncV2(ctx, n, cfg.FastSync.SyncTimeout)
 	} else {
 		log.Info().Msg("[FastSync] disabled by config — protocol handlers not registered")
 	}
 
-	// CatchUp sync: post-bootstrap reconciliation from a known block to realtime.
-	// catch_up_peer is a plain peer ID (e.g. 12D3KooW...) — resolved from peerstore,
-	// same pattern as the old HandleStartupSync startup path.
-	if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.EnableCatchup && cfg.FastSync.CatchUpPeer != "" {
-		if cfg.FastSync.CatchUpFromBlock == 0 {
-			log.Warn().Msg("[CatchUpSync] catch_up_from_block not set — defaulting to 0 (full scan from genesis). Set to bootstrapTip+1 to limit scan range.")
-		}
-		catchUpPeerIDStr := cfg.FastSync.CatchUpPeer
-		fromBlock := cfg.FastSync.CatchUpFromBlock
-		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.StartupSyncThread, func(ctx context.Context) error {
-			time.Sleep(5 * time.Second) // allow peer connections to establish
-
-			// Resolve the configured peer ID to a libp2p peer.ID.
-			catchUpPeerID, err := peer.Decode(catchUpPeerIDStr)
+	// SeedMonitor: periodic Merkle-root check against the seednode.
+	// When the seednode reports this node is out of sync, the ReconcileFunc
+	// drives HandleCatchUpSync against the seednode's recommended good peers.
+	//
+	// cfg.FastSync.CatchUpPeer is retained for CLI / manual-override use only
+	// (jmdn catchup --peer <id> command). Production peer selection comes from
+	// the seednode's GoodPeers list returned by ReportBlockState.
+	var syncMonitor *syncmonitor.Monitor
+	if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.EnableCatchup {
+		if cfg.Network.SeedNode == "" {
+			log.Warn().Msg("[SyncMonitor] cfg.network.seed_node not set — sync monitor disabled; node will not auto-reconcile")
+		} else {
+			selfPeerID := n.Host.ID().String()
+			// Use the existing seednode.Client — no separate seedclient package needed.
+			// NewClient dials synchronously; failure here means we skip the monitor.
+			seedCli, err := seednode.NewClient(cfg.Network.SeedNode)
 			if err != nil {
-				return fmt.Errorf("[CatchUpSync] invalid catch_up_peer %q: %w", catchUpPeerIDStr, err)
+				log.Error().Err(err).Msg("[SyncMonitor] failed to create seednode client — sync monitor disabled")
+			} else {
+				blockInfo := NodeInfo.NewSyncStruct()
+				reporter := syncmonitor.NewSeednodeReporter(seedCli, selfPeerID)
+				syncMonitor = syncmonitor.New(blockInfo, reporter, cfg.FastSync.SyncCheckInterval)
+
+				// ReconcileFunc: try each seednode-recommended peer in order until one succeeds.
+				// fromBlock=0 lets effectiveReconRange pick up from the SQLite checkpoint.
+				fromBlock := cfg.FastSync.CatchUpFromBlock
+				syncMonitor.SetReconcileFunc(func(rctx context.Context, peers []syncmonitor.PeerInfo) error {
+					if len(peers) == 0 {
+						return fmt.Errorf("[ReconcileFunc] seednode returned no good peers")
+					}
+					for _, p := range peers {
+						if len(p.Multiaddrs) == 0 {
+							log.Warn().Str("peer", p.PeerID).Msg("[ReconcileFunc] peer has no multiaddrs, skipping")
+							continue
+						}
+						targetMultiaddr := p.Multiaddrs[0] + "/p2p/" + p.PeerID
+						log.Info().
+							Str("peer", p.PeerID).
+							Str("addr", targetMultiaddr).
+							Uint64("from_block", fromBlock).
+							Msg("[ReconcileFunc] attempting catchup")
+						if err := fastSyncerV2.HandleCatchUpSync(rctx, fromBlock, targetMultiaddr); err != nil {
+							log.Warn().Err(err).Str("peer", p.PeerID).Msg("[ReconcileFunc] peer failed, trying next")
+							continue
+						}
+						log.Info().Str("peer", p.PeerID).Msg("[ReconcileFunc] catchup succeeded")
+						return nil
+					}
+					return fmt.Errorf("[ReconcileFunc] all %d seednode peers failed catchup", len(peers))
+				})
+
+				if err := syncMonitor.Start(ctx); err != nil {
+					log.Error().Err(err).Msg("[SyncMonitor] failed to start — continuing without monitor")
+					syncMonitor = nil
+					// Close the gRPC connection — monitor won't call Close itself.
+					if closeErr := seedCli.Close(); closeErr != nil {
+						log.Warn().Err(closeErr).Msg("[SyncMonitor] seednode client close error")
+					}
+				} else {
+					log.Info().Dur("interval", cfg.FastSync.SyncCheckInterval).Msg("[SyncMonitor] started")
+				}
 			}
-
-			// Get addresses from peerstore — same as HandleStartupSync.
-			addrs := n.Host.Peerstore().Addrs(catchUpPeerID)
-			if len(addrs) == 0 {
-				return fmt.Errorf("[CatchUpSync] peer %s not in peerstore — not connected yet", catchUpPeerIDStr)
-			}
-
-			// Build full multiaddr with embedded peer ID, matching HandleStartupSync pattern.
-			targetMultiaddr := fmt.Sprintf("%s/p2p/%s", addrs[0].String(), catchUpPeerID.String())
-
-			log.Info().
-				Uint64("from_block", fromBlock).
-				Str("peer", catchUpPeerIDStr).
-				Str("addr", targetMultiaddr).
-				Msg("[CatchUpSync] starting")
-
-			if err := fastSyncerV2.HandleCatchUpSync(fromBlock, targetMultiaddr); err != nil {
-				log.Error().Err(err).Msg("[CatchUpSync] failed")
-				return err
-			}
-			log.Info().Msg("[CatchUpSync] completed successfully")
-			return nil
-		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.StartupSyncThread).Msg("Failed to start CatchUpSync goroutine")
 		}
-		// StartupSync (HandleStartupSync) disabled — catchup is the only startup sync path.
-		// } else if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.PullOnStartup {
-		// 	...
 	} else if fastSyncerV2 != nil && !cfg.FastSync.EnablePulling {
-		log.Info().Msg("[FastSync] Node configured with enable_pulling=false (serve-only participant); skipping StartupSync")
+		log.Info().Msg("[FastSync] Node configured with enable_pulling=false (serve-only participant); skipping SyncMonitor")
 	}
 
 	// Initialize Yggdrasil messaging if enabled
@@ -1236,7 +1259,7 @@ func main() {
 
 	if cfg.Ports.Facade > 0 {
 		fmt.Printf("Starting gETH Facade server on port %d\n", cfg.Ports.Facade)
-		StartFacadeServer(cfg.Binds.Facade, cfg.Ports.Facade, cfg.Network.ChainID)
+		StartFacadeServer(cfg.Binds.Facade, cfg.Ports.Facade, cfg.Network.ChainID, syncMonitor)
 	}
 
 	if cfg.Ports.WS > 0 {

@@ -3,7 +3,7 @@ package FastsyncV2
 // HandleCatchUpSync syncs blocks [fromBlock..remoteTip] without Merkle bisection.
 //
 // Use this after a bootstrap snapshot has loaded blocks [0..X]: call
-// HandleCatchUpSync(X+1, targetPeer) to reconcile the remaining blocks to the
+// HandleCatchUpSync(ctx, X+1, targetPeer) to reconcile the remaining blocks to the
 // current chain tip.
 //
 // Unlike HandleSync / HandleStartupSync, this path skips PriorSync entirely.
@@ -47,6 +47,10 @@ import (
 
 // HandleCatchUpSync is the public entry point. See package-level doc above.
 //
+// ctx is the caller's context — cancellation propagates into all phases so the
+// node can shut down cleanly mid-catchup. The function applies fs.syncTimeout on
+// top of the parent ctx (whichever deadline comes first wins).
+//
 // fromBlock is the first block AFTER the guaranteed-complete bootstrap range.
 // It anchors the gap scan — buildMissingTag scans [fromBlock..remoteTip] and
 // fetches only what is absent locally.
@@ -54,14 +58,14 @@ import (
 // Lifecycle:
 //
 //	Stage 1 — bootstrap loads [0..X] (complete, no gaps)
-//	Stage 2 — HandleCatchUpSync(X+1, peer) → syncs [X+1..T1], no gaps expected
-//	Stage 3 — node offline, misses Y blocks; HandleCatchUpSync(X+1, peer) again
+//	Stage 2 — HandleCatchUpSync(ctx, X+1, peer) → syncs [X+1..T1], no gaps expected
+//	Stage 3 — node offline, misses Y blocks; HandleCatchUpSync(ctx, X+1, peer) again
 //	           → buildMissingTag finds any Stage-2 gaps + new [lastSynced+1..T2]
 //
 // fromBlock should always be bootstrapTip+1 (set in fastsync.catch_up_from_block
 // config). Never use localTip+1: if Stage 2 was partial, localTip may be in the
 // middle of a gap and the scan would skip missing blocks below it.
-func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) error {
+func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, targetPeer string) error {
 	catchUpStart := time.Now()
 
 	// fromBlock=0 is a safety fallback only — callers should always pass
@@ -72,9 +76,9 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 		log.Printf("[CatchUpSync] fromBlock not set, defaulting to 1 (full scan from genesis)")
 	}
 
-	// Use a generous timeout — catching up on days of blocks takes much longer
-	// than a normal incremental sync. Callers can wrap in their own deadline if needed.
-	ctx, cancel := context.WithTimeout(context.Background(), fs.syncTimeout)
+	// Apply syncTimeout on top of the parent context.
+	// Parent cancellation (node shutdown, monitor cancel) takes priority.
+	ctx, cancel := context.WithTimeout(ctx, fs.syncTimeout)
 	defer cancel()
 
 	// ── Parse and connect ─────────────────────────────────────────────────
@@ -449,7 +453,13 @@ func (fs *FastsyncV2) collectTaggedAccountsFromBlocks(fromBlock, remoteTip uint6
 	accounts := make(map[string]bool)
 	for {
 		batch, err := iter.Next()
-		if err != nil || len(batch) == 0 {
+		if err != nil {
+			// Partial result — log and break. Reconciliation will run on
+			// whatever accounts were collected before the failure.
+			log.Printf("[CatchUpSync] collectTaggedAccounts: iterator error at ~block %d: %v (partial result)", fromBlock, err)
+			break
+		}
+		if len(batch) == 0 {
 			break
 		}
 		for _, blk := range batch {
