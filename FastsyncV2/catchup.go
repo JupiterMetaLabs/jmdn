@@ -273,17 +273,9 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 	}
 
 	// ── Phase 5: Reconciliation ───────────────────────────────────────────
-	// Brief pause before reconciliation: DataSync may have just written thousands
-	// of blocks and ImmuDB needs a moment to settle its commit queue before read
-	// queries (GetTransactionsForAccount) can complete within their deadline.
-	const reconDelay = 5 * time.Second
-	log.Printf("[CatchUpSync] phase 5: waiting %s for ImmuDB to settle before reconciliation", reconDelay)
-	time.Sleep(reconDelay)
-	accountCount := 0
-	if taggedAccounts != nil {
-		accountCount = len(taggedAccounts.Accounts)
-	}
-	log.Printf("[CatchUpSync] phase 5: reconciliation — %d accounts to process", accountCount)
+	// Single-pass delta approach: one BlockIterator scan over [reconFrom..remoteTip]
+	// computes all account deltas in memory — no per-account DB scan needed.
+	log.Printf("[CatchUpSync] phase 5: reconciliation (delta approach)")
 	reconStart := time.Now()
 
 	reconFrom, reconSkip := fs.effectiveReconRange(fromBlock, remoteTip)
@@ -293,7 +285,9 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 		if reconFrom > fromBlock {
 			log.Printf("[CatchUpSync] phase 5: advancing fromBlock %d → %d (already reconciled)", fromBlock, reconFrom)
 		}
-		reconCount, failedAccounts, err := fs.ReconRouter.Reconcile(taggedAccounts, availResp, reconFrom, remoteTip)
+		deltas := fs.computeAccountDeltas(reconFrom, remoteTip)
+		log.Printf("[CatchUpSync] phase 5: computed deltas for %d accounts", len(deltas))
+		reconCount, failedAccounts, err := fs.ReconRouter.ReconcileWithDeltas(deltas, availResp)
 		if err != nil {
 			log.Printf("[CatchUpSync] phase 5 warning: %v", err)
 		}

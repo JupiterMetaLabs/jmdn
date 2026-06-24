@@ -488,9 +488,11 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 	wires := make([]accountUpdateWire, len(updates))
 	for i, u := range updates {
 		wires[i] = accountUpdateWire{
-			Address:    u.Address,
-			NewBalance: u.NewBalance.String(),
-			Nonce:      u.Nonce,
+			Address:     u.Address,
+			NewBalance:  u.NewBalance.String(),
+			Nonce:       u.Nonce,
+			TxNonce:     u.TxNonce,
+			TxCountSent: u.TxCountSent,
 		}
 	}
 

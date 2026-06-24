@@ -464,10 +464,8 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 	// =========================================================================
 	// PHASE 5: Reconciliation — recompute and commit account balances
 	// =========================================================================
-	// Three-phase atomic operation:
-	//   1. Concurrent balance computation (up to 15 goroutines replay transactions)
-	//   2. WAL batch write (single ReconciliationBatchEvent for crash recovery)
-	//   3. Atomic DB commit via AccountManager.BatchUpdateAccounts
+	// Single-pass approach: one BlockIterator scan computes all account deltas
+	// (O(blocks)), then applies them — no per-account DB scan.
 	log.Println("[FastsyncV2] Phase 5: Reconciliation")
 
 	remoteBlockNum := availResp.BlockHeight
@@ -481,7 +479,9 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 		if reconFrom > localBlockNum+1 {
 			log.Printf("[FastsyncV2] Phase 5: advancing fromBlock %d → %d (already reconciled)", localBlockNum+1, reconFrom)
 		}
-		reconciledCount, failedAccounts, err := fs.ReconRouter.Reconcile(taggedAccounts, availResp, reconFrom, remoteBlockNum)
+		deltas := fs.computeAccountDeltas(reconFrom, remoteBlockNum)
+		log.Printf("[FastsyncV2] Phase 5: computed deltas for %d accounts", len(deltas))
+		reconciledCount, failedAccounts, err := fs.ReconRouter.ReconcileWithDeltas(deltas, availResp)
 		if err != nil {
 			log.Printf("[FastsyncV2] Phase 5 warning: reconciliation returned error: %v", err)
 		}
@@ -597,13 +597,16 @@ func (fs *FastsyncV2) executePoTS(
 				if potsReconSkip {
 					log.Printf("[FastsyncV2] PoTS reconciliation skipped: already reconciled")
 				} else {
-					reconCount, failed, err := fs.ReconRouter.Reconcile(potsTaggedAccts, availResp, potsReconFrom, math.MaxUint64)
+					potsLatest := fs.blockInfoAdapter.GetBlockDetails().Blocknumber
+					potsDeltas := fs.computeAccountDeltas(potsReconFrom, potsLatest)
+					log.Printf("[FastsyncV2] PoTS: computed deltas for %d accounts", len(potsDeltas))
+					reconCount, failed, err := fs.ReconRouter.ReconcileWithDeltas(potsDeltas, availResp)
 					if err != nil {
 						log.Printf("[FastsyncV2] PoTS reconciliation warning: %v", err)
 					}
 					log.Printf("[FastsyncV2] PoTS reconciled %d accounts, %d failed", reconCount, len(failed))
 					if err == nil {
-						fs.markReconComplete(fs.blockInfoAdapter.GetBlockDetails().Blocknumber)
+						fs.markReconComplete(potsLatest)
 					}
 				}
 			}
