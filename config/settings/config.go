@@ -152,13 +152,15 @@ type FastSyncSettings struct {
 	// handlers are registered. Set false to disable FastSync entirely.
 	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 
-	// EnablePulling controls whether this node will pull data from peers and write to its
-	// local DB. false = read-only participant (serves data, never updates itself).
+	// EnablePulling controls whether this node pulls data from peers and writes to
+	// its local DB (HeaderSync, DataSync, Reconciliation). false = serve-only.
+	// Sequencer must keep this false — it is the authoritative source of truth.
+	// Also guards all CLI sync commands via PullAllowed.
 	EnablePulling bool `mapstructure:"enable_pulling" yaml:"enable_pulling"`
 
-	// EnableCatchup controls whether the node automatically runs HandleCatchUpSync
-	// driven by the seednode SyncMonitor. Requires enable_pulling=true.
-	// Set false to disable automatic catchup while still allowing manual CLI catchup.
+	// EnableCatchup controls whether the SyncMonitor automatically reconciles this
+	// node against peers when the seednode reports it is out of sync.
+	// Requires enable_pulling=true. Never set on the sequencer.
 	EnableCatchup bool `mapstructure:"enable_catchup" yaml:"enable_catchup"`
 
 	// SyncTimeout is the maximum wall-clock time allowed for a single full sync

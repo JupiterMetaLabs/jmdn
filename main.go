@@ -1004,21 +1004,16 @@ func main() {
 		log.Info().Msg("[FastSync] disabled by config — protocol handlers not registered")
 	}
 
-	// SeedMonitor: periodic Merkle-root check against the seednode.
-	// When the seednode reports this node is out of sync, the ReconcileFunc
-	// drives HandleCatchUpSync against the seednode's recommended good peers.
-	//
-	// cfg.FastSync.CatchUpPeer is retained for CLI / manual-override use only
-	// (jmdn catchup --peer <id> command). Production peer selection comes from
-	// the seednode's GoodPeers list returned by ReportBlockState.
+	// SeedMonitor: every node with fastsync enabled reports its Merkle root to the
+	// seednode periodically (outbound only, no DB writes ever).
+	// ReconcileFunc is only wired when enable_catchup=true — never set on the sequencer.
+	// enable_pulling guards CLI pull commands and the reconcile path independently.
 	var syncMonitor *syncmonitor.Monitor
-	if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.EnableCatchup {
+	if fastSyncerV2 != nil && cfg.FastSync.Enabled {
 		if cfg.Network.SeedNode == "" {
-			log.Warn().Msg("[SyncMonitor] cfg.network.seed_node not set — sync monitor disabled; node will not auto-reconcile")
+			log.Warn().Msg("[SyncMonitor] cfg.network.seed_node not set — sync monitor disabled")
 		} else {
 			selfPeerID := n.Host.ID().String()
-			// Use the existing seednode.Client — no separate seedclient package needed.
-			// NewClient dials synchronously; failure here means we skip the monitor.
 			seedCli, err := seednode.NewClient(cfg.Network.SeedNode)
 			if err != nil {
 				log.Error().Err(err).Msg("[SyncMonitor] failed to create seednode client — sync monitor disabled")
@@ -1027,48 +1022,51 @@ func main() {
 				reporter := syncmonitor.NewSeednodeReporter(seedCli, selfPeerID)
 				syncMonitor = syncmonitor.New(blockInfo, reporter, cfg.FastSync.SyncCheckInterval)
 
-				// ReconcileFunc: try each seednode-recommended peer in order until one succeeds.
-				// fromBlock=0 lets effectiveReconRange pick up from the SQLite checkpoint.
-				fromBlock := cfg.FastSync.CatchUpFromBlock
-				syncMonitor.SetReconcileFunc(func(rctx context.Context, peers []syncmonitor.PeerInfo) error {
-					if len(peers) == 0 {
-						return fmt.Errorf("[ReconcileFunc] seednode returned no good peers")
-					}
-					for _, p := range peers {
-						if len(p.Multiaddrs) == 0 {
-							log.Warn().Str("peer", p.PeerID).Msg("[ReconcileFunc] peer has no multiaddrs, skipping")
-							continue
+				// Only wire reconciliation on non-sequencer nodes.
+				// The sequencer sets enable_catchup=false — it is the authoritative source,
+				// it never catches up from peers.
+				if cfg.FastSync.EnableCatchup {
+					fromBlock := cfg.FastSync.CatchUpFromBlock
+					syncMonitor.SetReconcileFunc(func(rctx context.Context, peers []syncmonitor.PeerInfo) error {
+						if len(peers) == 0 {
+							return fmt.Errorf("[ReconcileFunc] seednode returned no good peers")
 						}
-						targetMultiaddr := p.Multiaddrs[0] + "/p2p/" + p.PeerID
-						log.Info().
-							Str("peer", p.PeerID).
-							Str("addr", targetMultiaddr).
-							Uint64("from_block", fromBlock).
-							Msg("[ReconcileFunc] attempting catchup")
-						if err := fastSyncerV2.HandleCatchUpSync(rctx, fromBlock, targetMultiaddr); err != nil {
-							log.Warn().Err(err).Str("peer", p.PeerID).Msg("[ReconcileFunc] peer failed, trying next")
-							continue
+						for _, p := range peers {
+							if len(p.Multiaddrs) == 0 {
+								log.Warn().Str("peer", p.PeerID).Msg("[ReconcileFunc] peer has no multiaddrs, skipping")
+								continue
+							}
+							targetMultiaddr := p.Multiaddrs[0] + "/p2p/" + p.PeerID
+							log.Info().
+								Str("peer", p.PeerID).
+								Str("addr", targetMultiaddr).
+								Uint64("from_block", fromBlock).
+								Msg("[ReconcileFunc] attempting catchup")
+							if err := fastSyncerV2.HandleCatchUpSync(rctx, fromBlock, targetMultiaddr); err != nil {
+								log.Warn().Err(err).Str("peer", p.PeerID).Msg("[ReconcileFunc] peer failed, trying next")
+								continue
+							}
+							log.Info().Str("peer", p.PeerID).Msg("[ReconcileFunc] catchup succeeded")
+							return nil
 						}
-						log.Info().Str("peer", p.PeerID).Msg("[ReconcileFunc] catchup succeeded")
-						return nil
-					}
-					return fmt.Errorf("[ReconcileFunc] all %d seednode peers failed catchup", len(peers))
-				})
+						return fmt.Errorf("[ReconcileFunc] all %d seednode peers failed catchup", len(peers))
+					})
+				}
 
 				if err := syncMonitor.Start(ctx); err != nil {
 					log.Error().Err(err).Msg("[SyncMonitor] failed to start — continuing without monitor")
 					syncMonitor = nil
-					// Close the gRPC connection — monitor won't call Close itself.
 					if closeErr := seedCli.Close(); closeErr != nil {
 						log.Warn().Err(closeErr).Msg("[SyncMonitor] seednode client close error")
 					}
 				} else {
-					log.Info().Dur("interval", cfg.FastSync.SyncCheckInterval).Msg("[SyncMonitor] started")
+					log.Info().
+						Bool("catchup", cfg.FastSync.EnableCatchup).
+						Dur("interval", cfg.FastSync.SyncCheckInterval).
+						Msg("[SyncMonitor] started")
 				}
 			}
 		}
-	} else if fastSyncerV2 != nil && !cfg.FastSync.EnablePulling {
-		log.Info().Msg("[FastSync] Node configured with enable_pulling=false (serve-only participant); skipping SyncMonitor")
 	}
 
 	// Initialize Yggdrasil messaging if enabled
