@@ -7,6 +7,114 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Performance
+
+- **Explorer, JSON-RPC facade, and gRPC server switched to proof-free block reads**
+  (`explorer/BlockOps.go`, `explorer/StreamTxns.go`, `explorer/utils.go`,
+  `gETH/Facade/Service/Service.go`, `gETH/Facade/Service/Service_WS.go`,
+  `gETH/gETH_Middleware.go`).
+  Standard query endpoints previously called `GetZKBlockByNumber` /
+  `GetZKBlockByHash`, which use ImmuDB's `VerifiedGet` path and generate a
+  Merkle inclusion proof on every read. Routine queries — block-by-number,
+  block-by-hash, latest block, transaction lookups, new-head subscriptions —
+  do not require tamper-proof guarantees at the DB layer. Affected endpoints
+  now use `ReadZKBlockByNumber` and `ReadZKBlockByHash` (plain `Get`, no proof):
+  `getBlockByNumber`, `getBlock`, `listBlocks`, `getTransactionBlock`,
+  `getLatestBlock`, `getLatestBlockStats`, `listTransactions_inBlock`,
+  `getMissingBlocks`, `streamBlocks`, `checkForNewBlocks`, `BlockByNumber`,
+  `TxByHash`, `getBlockForSubscription`, `_GetBlockByNumber`. Other endpoints
+  in those files received context propagation only.
+
+- **`ReadZKBlockByNumber`** (`DB_OPs/immuclient.go`).
+  Renamed from `GetZKBlockByNumberFast` and extended with a `ctx context.Context`
+  first parameter. Establishes a naming convention: `Read*` = plain `Get`, no
+  Merkle proof (fast, for query and sync paths); `Get*` = `VerifiedGet`, Merkle
+  proof (tamper-proof, for trust-critical paths). All call sites updated.
+
+- **`ReadZKBlockByHash`** (`DB_OPs/immuclient.go`).
+  New fast hash-based block lookup via plain `Get`, no proof generation.
+  Two-step: `PREFIX_BLOCK_HASH + hash` → block key → block data. Used by
+  `explorer/BlockOps.go` `getBlock` and `gETH/gETH_Middleware.go`
+  `_GetBlockByHash`.
+
+- **`withRetry` on `Read` and `SafeRead`** (`DB_OPs/immuclient.go`).
+  The two lowest-level ImmuDB read primitives (`Get` and `VerifiedGet`) were
+  the only read functions without retry logic. Both now wrapped with `withRetry`,
+  matching the behaviour of write operations.
+
+- **Context cancellation guards in block-scanning loops**
+  (`DB_OPs/account_immuclient.go`, `DB_OPs/BlockLogs.go`,
+  `explorer/utils.go`, `gETH/Facade/Service/Service_WS.go`).
+  `ctx.Err() != nil` check added at the top of each iteration in
+  `GetTransactionsByAccount`, `GetTransactionsByAccountPaginated`,
+  `CheckNonceAndGetLatest` (outer and inner loops), `GetLogs` block scan,
+  `checkForNewBlocks`, and the WS poller per-block loop. A cancelled or
+  timed-out context now short-circuits immediately.
+
+- **DB read functions now accept caller-owned context**
+  (`DB_OPs/immuclient.go`, `DB_OPs/account_immuclient.go`,
+  `DB_OPs/BlockLogs.go`, `DB_OPs/Facade_Receipts.go`,
+  `DB_OPs/merkletree/merkle.go`,
+  `DB_OPs/Nodeinfo/immudb_adapter.go`,
+  `DB_OPs/Nodeinfo/immudb_headers_writer.go`,
+  `Block/Server.go`, `Block/helper/stateroot.go`,
+  `explorer/BlockOps.go`, `explorer/StreamTxns.go`, `explorer/utils.go`,
+  `gETH/Facade/Service/Service.go`, `gETH/gETH_Middleware.go`,
+  `gETH/Server.go`).
+  `GetLatestBlockNumber`, `GetTransactionBlock`, and `ReadZKBlockByNumber`
+  previously constructed their own `context.WithTimeout(context.Background(),
+  5s)` internally, silently discarding HTTP handler deadlines and gRPC
+  cancellations. All three functions now accept `ctx context.Context` as their
+  first parameter. The hardcoded timeout is removed. HTTP handlers pass
+  `c.Request.Context()`; gRPC handlers pass the RPC context; `GetLatestBlockNumber`
+  nil-guards with `context.Background()` when a nil ctx is passed.
+
+### Fixed
+
+- **WebSocket block poller spawning duplicate goroutines**
+  (`gETH/Facade/Service/Service_WS.go`).
+  `startBlockPollerIfNeeded` had no concurrency guard. Two simultaneous
+  `SubscribeNewHeads` calls could both pass the subscriber check and each
+  launch a `pollForNewBlocks` goroutine, producing duplicate new-head
+  notifications. Fixed with an `isPolling bool` flag inside the
+  `newHeadsSubscriptions` mutex group; the flag is checked and set atomically
+  under `Lock()` before any goroutine is launched. The subscriber-count check
+  inside the poll loop upgraded from `RLock` to `Lock` to also reset
+  `isPolling` when the map empties.
+
+- **WebSocket new subscriber receiving historical blocks from genesis**
+  (`gETH/Facade/Service/Service_WS.go`).
+  `lastProcessedBlock` was initialised to 0, so a new subscriber would trigger
+  emission of every block since genesis. `startBlockPollerIfNeeded` now reads
+  `GetLatestBlockNumber` once on startup and seeds `lastProcessedBlock` before
+  entering the poll loop.
+
+- **`pollForNewBlocks` goroutine leaked on shutdown**
+  (`gETH/Facade/Service/Service_WS.go`).
+  The polling loop used `for range ticker.C` with no `ctx.Done()` arm; the
+  goroutine had no exit path when the GRO context was cancelled. Replaced with
+  `select { case <-ctx.Done(): return; case <-ticker.C: ... }`. `isPolling`
+  reset to `false` when the subscriber map empties.
+
+### Changed
+
+- **`explorer/BlockOps_Helper.go` wrappers deleted** (`explorer/BlockOps_Helper.go`).
+  `GetLatesBlockNumber` and `GetLatestBlockByNumber` were single-line
+  pass-throughs to `DB_OPs` functions with no added logic. Both callers in
+  `BlockOps.go` now call `DB_OPs` directly.
+
+- **gRPC middleware context propagation** (`gETH/gETH_Middleware.go`,
+  `gETH/Server.go`).
+  All seven middleware functions (`_GetBlockByNumber`, `_GetBlockByHash`,
+  `_GetTransactionByHash`, `_GetReceiptByHash`, `_GetAccountState`,
+  `_SubmitRawTransaction`, `_GetChainID`) now accept `ctx context.Context` and
+  forward it to DB calls. All seven corresponding gRPC server handlers pass
+  their RPC context through. `_SubmitRawTransaction` had its own
+  `context.WithCancel(context.Background())` removed. Commented-out DB init
+  scaffolding cleaned up from five functions.
+
+- **`.gitignore`** — `test_results/` added.
+
 ### Fixed
 
 - **Consensus-not-reached propagated as an error**

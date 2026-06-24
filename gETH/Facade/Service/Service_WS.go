@@ -19,6 +19,7 @@ var (
 	newHeadsSubscriptions = struct {
 		sync.RWMutex
 		subscribers map[string]*NewHeadsSubscription
+		isPolling   bool
 	}{
 		subscribers: make(map[string]*NewHeadsSubscription),
 	}
@@ -82,77 +83,98 @@ func (s *ServiceImpl) SubscribeNewHeads(ctx context.Context) (<-chan *Types.Bloc
 
 // startBlockPollerIfNeeded starts the block polling goroutine if it's not already running
 func startBlockPollerIfNeeded() {
+	newHeadsSubscriptions.Lock()
+	if newHeadsSubscriptions.isPolling {
+		newHeadsSubscriptions.Unlock()
+		return
+	}
+	newHeadsSubscriptions.isPolling = true
+	newHeadsSubscriptions.Unlock()
+
 	BlockPoller, err := common.InitializeGRO(GRO.FacadeLocal)
 	if err != nil {
 		log.Printf("❌ Failed to initialize local gro: %v", err)
+		newHeadsSubscriptions.Lock()
+		newHeadsSubscriptions.isPolling = false
+		newHeadsSubscriptions.Unlock()
 		return
 	}
-	// Check if we already have subscribers and polling is needed
-	newHeadsSubscriptions.RLock()
-	hasSubscribers := len(newHeadsSubscriptions.subscribers) > 0
-	newHeadsSubscriptions.RUnlock()
 
-	if hasSubscribers {
-		// Start polling in a separate goroutine
-		BlockPoller.Go(GRO.BlockPollerThread, func(ctx context.Context) error {
-			pollForNewBlocks()
-			return nil
-		})
+	// Initialize the lastProcessedBlock to the current latest block
+	// so we don't scan the entire chain from block 0.
+	initCtx, initCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer initCancel()
+	if latest, err := DB_OPs.GetLatestBlockNumber(initCtx, nil); err == nil {
+		setLastProcessedBlock(latest)
 	}
+
+	// Start polling in a separate goroutine
+	BlockPoller.Go(GRO.BlockPollerThread, func(ctx context.Context) error {
+		pollForNewBlocks(ctx)
+		return nil
+	})
 }
 
 // pollForNewBlocks continuously polls for new blocks and notifies subscribers
-func pollForNewBlocks() {
+func pollForNewBlocks(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Second) // Poll every 2 seconds
 	defer ticker.Stop()
 
-	for range ticker.C {
-		// Check if we still have subscribers
-		newHeadsSubscriptions.RLock()
-		hasSubscribers := len(newHeadsSubscriptions.subscribers) > 0
-		newHeadsSubscriptions.RUnlock()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Check if we still have subscribers
+			newHeadsSubscriptions.Lock()
+			if len(newHeadsSubscriptions.subscribers) == 0 {
+				// No more subscribers, stop polling
+				newHeadsSubscriptions.isPolling = false
+				newHeadsSubscriptions.Unlock()
+				break
+			}
+			newHeadsSubscriptions.Unlock()
 
-		if !hasSubscribers {
-			// No more subscribers, stop polling
-			break
-		}
+			// Get latest block number
+			latestBlock, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
+			if err != nil {
+				// Log error but continue polling
+				fmt.Printf("Failed to get latest block number: %v\n", err)
+				continue
+			}
 
-		// Get latest block number
-		latestBlock, err := DB_OPs.GetLatestBlockNumber(nil)
-		if err != nil {
-			// Log error but continue polling
-			fmt.Printf("Failed to get latest block number: %v\n", err)
-			continue
-		}
+			// Get last processed block
+			lastProcessed := getLastProcessedBlock()
 
-		// Get last processed block
-		lastProcessed := getLastProcessedBlock()
+			// Check for new blocks
+			if latestBlock > lastProcessed {
+				// Process new blocks
+				for blockNum := lastProcessed + 1; blockNum <= latestBlock; blockNum++ {
+					if ctx.Err() != nil {
+						return
+					}
+					block, err := getBlockForSubscription(ctx, blockNum)
+					if err != nil {
+						// Log error but continue with other blocks
+						fmt.Printf("Failed to get block %d: %v\n", blockNum, err)
+						continue
+					}
 
-		// Check for new blocks
-		if latestBlock > lastProcessed {
-			// Process new blocks
-			for blockNum := lastProcessed + 1; blockNum <= latestBlock; blockNum++ {
-				block, err := getBlockForSubscription(blockNum)
-				if err != nil {
-					// Log error but continue with other blocks
-					fmt.Printf("Failed to get block %d: %v\n", blockNum, err)
-					continue
+					// Notify all subscribers
+					notifyNewBlock(block)
+
+					// Update last processed block
+					setLastProcessedBlock(blockNum)
 				}
-
-				// Notify all subscribers
-				notifyNewBlock(block)
-
-				// Update last processed block
-				setLastProcessedBlock(blockNum)
 			}
 		}
 	}
 }
 
 // getBlockForSubscription retrieves a block and converts it to Types.Block format
-func getBlockForSubscription(blockNumber uint64) (*Types.Block, error) {
+func getBlockForSubscription(ctx context.Context, blockNumber uint64) (*Types.Block, error) {
 	// Get the ZK block from database
-	zkBlock, err := DB_OPs.GetZKBlockByNumber(nil, blockNumber)
+	zkBlock, err := DB_OPs.ReadZKBlockByNumber(ctx, nil, blockNumber)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ZK block %d: %w", blockNumber, err)
 	}

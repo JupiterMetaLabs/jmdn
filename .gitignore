@@ -44,6 +44,8 @@ __debug_bin
 *.pem
 *.crt
 vendor/
+*.duckdb
+storage/*
 
 # Internal team references
 docs/SONARQUBE_SETUP_GUIDE.md
@@ -52,8 +54,5 @@ internal/WAL/.tmp/*
 .claude/*
 .code-review-graph/*
 .cursor/*
-docs/FASTSYNC_V3_MIGRATION_PLAN.md
-eventlog.duckdb
-Scripts/sign_tx.go
-storage/*
-*.log
+test_results/
+
