@@ -64,14 +64,6 @@ import (
 func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) error {
 	catchUpStart := time.Now()
 
-	// fromBlock=0 is a safety fallback only — callers should always pass
-	// bootstrapTip+1 (from config catch_up_from_block). Using localTip+1 here
-	// would silently skip gaps below localTip if Stage 2 was interrupted.
-	if fromBlock == 0 {
-		fromBlock = 1
-		log.Printf("[CatchUpSync] fromBlock not set, defaulting to 1 (full scan from genesis)")
-	}
-
 	// Use a generous timeout — catching up on days of blocks takes much longer
 	// than a normal incremental sync. Callers can wrap in their own deadline if needed.
 	ctx, cancel := context.WithTimeout(context.Background(), fs.syncTimeout)
