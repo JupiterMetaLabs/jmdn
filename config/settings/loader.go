@@ -167,6 +167,7 @@ func setDefaults(v *viper.Viper) {
 	// FastSync
 	v.SetDefault("fastsync.enabled", d.FastSync.Enabled)
 	v.SetDefault("fastsync.enable_pulling", d.FastSync.EnablePulling)
+	v.SetDefault("fastsync.enable_catchup", d.FastSync.EnableCatchup)
 	v.SetDefault("fastsync.pull_on_startup", d.FastSync.PullOnStartup)
 	v.SetDefault("fastsync.sync_timeout", d.FastSync.SyncTimeout)
 	v.SetDefault("fastsync.allowed_peers", d.FastSync.AllowedPeers)

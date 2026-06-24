@@ -29,9 +29,9 @@ import (
 
 	"gossipnode/DB_OPs"
 
+	ackpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/ack"
 	availabilitypb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/availability"
 	authpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/availability/auth"
-	ackpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/ack"
 	datasyncpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/datasync"
 	headersyncpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/headersync"
 	phasepb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/phase"
@@ -352,22 +352,6 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 
 	log.Printf("[CatchUpSync] done in %s", time.Since(catchUpStart).Round(time.Millisecond))
 	return nil
-}
-
-// tryRefreshAuth sends a fresh availability request and returns the new response
-// if the peer is still available and returns a valid token.
-func (fs *FastsyncV2) tryRefreshAuth(ctx context.Context, targetNodeInfo *types.Nodeinfo, startBlock uint64) (*availabilitypb.AvailabilityResponse, bool) {
-	resp, err := fs.AvailRouter.SendAvailabilityRequest(
-		ctx, fs.PriorRouter.GetSyncVars(), *targetNodeInfo, startBlock, math.MaxUint64,
-	)
-	if err != nil {
-		log.Printf("[CatchUpSync] auth refresh failed: %v", err)
-		return nil, false
-	}
-	if !resp.IsAvailable || resp.Auth == nil || resp.Auth.UUID == "" {
-		return nil, false
-	}
-	return resp, true
 }
 
 // buildMissingTag scans the local DB over [fromBlock..remoteTip] and returns a

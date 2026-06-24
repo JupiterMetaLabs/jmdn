@@ -1002,9 +1002,9 @@ func main() {
 	// CatchUp sync: post-bootstrap reconciliation from a known block to realtime.
 	// catch_up_peer is a plain peer ID (e.g. 12D3KooW...) — resolved from peerstore,
 	// same pattern as the old HandleStartupSync startup path.
-	if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.CatchUpPeer != "" {
+	if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.EnableCatchup && cfg.FastSync.CatchUpPeer != "" {
 		if cfg.FastSync.CatchUpFromBlock == 0 {
-			log.Warn().Msg("[CatchUpSync] catch_up_from_block not set — defaulting to 1 (full scan). Set to bootstrapTip+1 to limit scan range.")
+			log.Warn().Msg("[CatchUpSync] catch_up_from_block not set — defaulting to 0 (full scan from genesis). Set to bootstrapTip+1 to limit scan range.")
 		}
 		catchUpPeerIDStr := cfg.FastSync.CatchUpPeer
 		fromBlock := cfg.FastSync.CatchUpFromBlock
@@ -1041,9 +1041,9 @@ func main() {
 		}); err != nil {
 			log.Error().Err(err).Str("thread", GRO.StartupSyncThread).Msg("Failed to start CatchUpSync goroutine")
 		}
-	// StartupSync (HandleStartupSync) disabled — catchup is the only startup sync path.
-	// } else if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.PullOnStartup {
-	// 	...
+		// StartupSync (HandleStartupSync) disabled — catchup is the only startup sync path.
+		// } else if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.PullOnStartup {
+		// 	...
 	} else if fastSyncerV2 != nil && !cfg.FastSync.EnablePulling {
 		log.Info().Msg("[FastSync] Node configured with enable_pulling=false (serve-only participant); skipping StartupSync")
 	}

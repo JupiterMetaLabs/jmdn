@@ -156,6 +156,11 @@ type FastSyncSettings struct {
 	// local DB. false = read-only participant (serves data, never updates itself).
 	EnablePulling bool `mapstructure:"enable_pulling" yaml:"enable_pulling"`
 
+	// EnableCatchup controls whether the node automatically runs HandleCatchUpSync on
+	// startup using catch_up_peer and catch_up_from_block. Requires enable_pulling=true.
+	// Set false to disable automatic catchup while still allowing manual CLI catchup.
+	EnableCatchup bool `mapstructure:"enable_catchup" yaml:"enable_catchup"`
+
 	// PullOnStartup controls whether the node attempts to catch up on missed blocks
 	// automatically when it (re)starts and connects to peers.
 	PullOnStartup bool `mapstructure:"pull_on_startup" yaml:"pull_on_startup"`
