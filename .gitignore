@@ -56,3 +56,5 @@ internal/WAL/.tmp/*
 .cursor/*
 test_results/
 
+dlq/*
+*.log

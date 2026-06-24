@@ -57,6 +57,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
     libc6 \
+    netcat-openbsd \
+    wget \
+    openssl \
+    python3 \
+    gawk \
     && mkdir -p /usr/local/apt-keys \
     && gpg --fetch-keys https://neilalexander.s3.dualstack.eu-west-2.amazonaws.com/deb/key.txt \
     && gpg --export 1C5162E133015D81A811239D1840CDAC6011C5EA \
@@ -65,10 +70,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        > /etc/apt/sources.list.d/yggdrasil.list \
     && apt-get update && apt-get install -y --no-install-recommends \
        yggdrasil \
-       netcat-openbsd \
-       wget \
-       bzip2 \
-       openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ImmuDB
@@ -79,32 +80,29 @@ RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
     -o /usr/local/bin/immudb && \
     chmod +x /usr/local/bin/immudb
 
-# Create non-root user
-RUN groupadd -r jmdn && useradd -r -g jmdn -d /home/jmdn -s /bin/bash -m jmdn
-
 # Create required directories (mirrors install_services.sh layout)
 RUN mkdir -p \
     /etc/jmdn/certs \
     /opt/jmdn/data/data \
     /opt/jmdn/data/config \
     /opt/jmdn/data/DB \
-    /var/log/jmdn \
-    && chown -R jmdn:jmdn /opt/jmdn /var/log/jmdn /etc/jmdn
+    /var/log/jmdn
 
-# Copy binary, scripts, and default config from builder
-COPY --from=builder /src/jmdn /usr/local/bin/jmdn
-COPY --from=builder /src/Scripts/start_jmdn_wrapper.sh /usr/local/bin/start_jmdn_wrapper.sh
-COPY --from=builder /src/Scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-COPY --from=builder /src/Scripts/bootstrap_sync.sh    /usr/local/bin/bootstrap_sync.sh
+# Copy binary and scripts from builder
+COPY --from=builder /src/jmdn                           /usr/local/bin/jmdn
+COPY --from=builder /src/Scripts/start_jmdn_wrapper.sh  /usr/local/bin/start_jmdn_wrapper.sh
+COPY --from=builder /src/Scripts/docker-entrypoint.sh   /usr/local/bin/docker-entrypoint.sh
+COPY --from=builder /src/Scripts/bootstrap_sync.sh      /usr/local/bin/bootstrap_sync.sh
 RUN chmod +x /usr/local/bin/start_jmdn_wrapper.sh \
              /usr/local/bin/docker-entrypoint.sh \
              /usr/local/bin/bootstrap_sync.sh
+
 # Copy default config as jmdn.yaml (mirrors setup_config.sh: cp jmdn_default.yaml → jmdn.yaml)
 COPY --from=builder /src/jmdn_default.yaml /etc/jmdn/jmdn.yaml
-# peer.json must be at ./config/peer.json relative to WORKDIR (hardcoded in config/constants.go)
-# WORKDIR is /opt/jmdn/data (volume) so it persists across restarts.
-# Also kept at /etc/jmdn/peer.json as a fallback — bootstrap_sync wipes the volume,
-# so the entrypoint restores from /etc/jmdn/peer.json if missing after bootstrap.
+
+# peer.json stored at two locations:
+#   /opt/jmdn/data/config/peer.json — runtime path (WORKDIR-relative, per config/constants.go)
+#   /etc/jmdn/peer.json             — fallback used by entrypoint after bootstrap wipes the volume
 COPY --from=builder /src/config/peer.json /opt/jmdn/data/config/peer.json
 COPY --from=builder /src/config/peer.json /etc/jmdn/peer.json
 
@@ -119,18 +117,19 @@ COPY --from=builder /src/config/peer.json /etc/jmdn/peer.json
 EXPOSE 6090 16050 16055 16052 6545 6546
 
 # Health check against actual API port (ports.api: 6090)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# start-period extended to 60s to allow bootstrap sync on first run
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:6090/health || exit 1
 
-# Data volume for ImmuDB + node persistence
+# Data volume — ImmuDB data, peer identity, certs, fastsync state
 VOLUME ["/opt/jmdn/data"]
 
-# Run as root — required for bootstrap_sync.sh (chown after snapshot extract)
-# WORKDIR matches where jmdn resolves ./config/peer.json (config/constants.go: PeerFile = "./config/peer.json")
+# Run as root — bootstrap_sync.sh needs root for chown after snapshot extract
+# WORKDIR must match where jmdn resolves ./config/peer.json
+# (hardcoded in config/constants.go: PeerFile = "./config/peer.json")
 WORKDIR /opt/jmdn/data
 
-# 1. bootstrap_sync.sh  (first run only — downloads snapshot, writes sentinel)
-# 2. immudb             (starts in background)
-# 3. start_jmdn_wrapper.sh → jmdn
+# Startup order: ImmuDB → bootstrap sync → jmdn
 # Override config: -v /your/jmdn.yaml:/etc/jmdn/jmdn.yaml
-CMD ["/usr/local/bin/docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["-config", "/etc/jmdn/jmdn.yaml"]
