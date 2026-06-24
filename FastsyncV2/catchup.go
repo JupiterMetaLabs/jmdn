@@ -150,16 +150,23 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 	log.Printf("[CatchUpSync] phase 2: header sync [%d..%d]", fromBlock, remoteTip)
 
 	if len(catchUpTag.Range) > 0 || len(catchUpTag.BlockNumber) > 0 {
-		log.Printf("[CatchUpSync] %d missing header range(s) to fetch", len(catchUpTag.Range))
+		p2Blocks := tagBlockCount(catchUpTag)
+		p2Batches := (p2Blocks + constants.MAX_HEADERS_PER_REQUEST - 1) / constants.MAX_HEADERS_PER_REQUEST
+		log.Printf("[CatchUpSync] phase 2: fetching %d headers across ~%d batches (%d blocks/batch)",
+			p2Blocks, p2Batches, constants.MAX_HEADERS_PER_REQUEST)
+		p2Start := time.Now()
+		stopP2 := watchProgress("[CatchUpSync] phase 2", "headers", p2Blocks, p2Batches, p2Start)
 		_, err = fs.HeaderRouter.HeaderSync(
 			&headersyncpb.HeaderSyncRequest{Tag: catchUpTag},
 			remotes,
 			false, // syncConfirmation=false: skip Merkle, we know the exact range
 		)
+		stopP2()
 		if err != nil {
 			return fmt.Errorf("catchup: header sync: %w", err)
 		}
-		log.Printf("[CatchUpSync] phase 2 complete")
+		log.Printf("[CatchUpSync] phase 2 complete: %d headers in %s",
+			p2Blocks, time.Since(p2Start).Round(time.Millisecond))
 	} else {
 		log.Printf("[CatchUpSync] phase 2 skipped: all headers present in [%d..%d]", fromBlock, remoteTip)
 	}
@@ -180,7 +187,12 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 	if len(dataMissingTag.Range) == 0 && len(dataMissingTag.BlockNumber) == 0 {
 		log.Printf("[CatchUpSync] phase 3 skipped: all blocks in [%d..%d] already have data", fromBlock, remoteTip)
 	} else {
-		log.Printf("[CatchUpSync] phase 3: %d data-missing range(s) to fetch", len(dataMissingTag.Range))
+		p3Blocks := tagBlockCount(dataMissingTag)
+		p3Batches := (p3Blocks + constants.MAX_DATA_PER_REQUEST - 1) / constants.MAX_DATA_PER_REQUEST
+		log.Printf("[CatchUpSync] phase 3: fetching %d blocks across ~%d batches (%d blocks/batch)",
+			p3Blocks, p3Batches, constants.MAX_DATA_PER_REQUEST)
+		p3Start := time.Now()
+		stopP3 := watchProgress("[CatchUpSync] phase 3", "blocks", p3Blocks, p3Batches, p3Start)
 		dataSyncReq := &datasyncpb.DataSyncRequest{
 			Tag:     dataMissingTag,
 			Version: uint32(commsVersion),
@@ -193,10 +205,12 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 			},
 		}
 		taggedAccounts, err = fs.DataRouter.DataSync(dataSyncReq, remotes)
+		stopP3()
 		if err != nil {
 			return fmt.Errorf("catchup: data sync: %w", err)
 		}
-		log.Printf("[CatchUpSync] phase 3 complete")
+		log.Printf("[CatchUpSync] phase 3 complete: %d blocks in %s",
+			p3Blocks, time.Since(p3Start).Round(time.Millisecond))
 	}
 
 	// Always scan local blocks [fromBlock..remoteTip] for tagged accounts and merge
@@ -386,6 +400,42 @@ func blockNeedsDataSync(blk *types.ZKBlock) bool {
 		return true
 	}
 	return false
+}
+
+// tagBlockCount returns the total number of blocks described by a Tag.
+// Range entries contribute (end-start+1) each; individual BlockNumbers contribute 1 each.
+func tagBlockCount(tag *taggingpb.Tag) uint64 {
+	if tag == nil {
+		return 0
+	}
+	var n uint64
+	for _, r := range tag.Range {
+		if r.End >= r.Start {
+			n += r.End - r.Start + 1
+		}
+	}
+	n += uint64(len(tag.BlockNumber))
+	return n
+}
+
+// watchProgress starts a background goroutine that logs a "[phase] still running…"
+// line every 10 s. Call the returned stop func to shut it down before logging completion.
+func watchProgress(label, unit string, total, batches uint64, start time.Time) func() {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				log.Printf("%s: still running — %d %s / ~%d batches (elapsed %s)",
+					label, total, unit, batches, time.Since(start).Round(time.Second))
+			}
+		}
+	}()
+	return func() { close(done) }
 }
 
 // buildDataMissingTag scans [fromBlock..remoteTip] and returns a Tag covering
