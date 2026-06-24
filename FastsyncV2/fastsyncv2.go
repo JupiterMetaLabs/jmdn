@@ -20,9 +20,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
+	"gossipnode/DB_OPs/sqlops"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/WAL"
 	accountspb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/accounts"
@@ -468,13 +470,28 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 	//   3. Atomic DB commit via AccountManager.BatchUpdateAccounts
 	log.Println("[FastsyncV2] Phase 5: Reconciliation")
 
-	reconciledCount, failedAccounts, err := fs.ReconRouter.Reconcile(taggedAccounts, availResp)
-	if err != nil {
-		log.Printf("[FastsyncV2] Phase 5 warning: reconciliation returned error: %v", err)
+	remoteBlockNum := availResp.BlockHeight
+	if remoteBlockNum == 0 {
+		remoteBlockNum = math.MaxUint64
 	}
-	log.Printf("[FastsyncV2] Phase 5 complete: %d accounts reconciled, %d failed", reconciledCount, len(failedAccounts))
-	if len(failedAccounts) > 0 {
-		log.Printf("[FastsyncV2] Failed accounts: %v", failedAccounts)
+	reconFrom, reconSkip := fs.effectiveReconRange(localBlockNum+1, remoteBlockNum)
+	if reconSkip {
+		log.Printf("[FastsyncV2] Phase 5 skipped: range [%d..%d] already reconciled", localBlockNum+1, remoteBlockNum)
+	} else {
+		if reconFrom > localBlockNum+1 {
+			log.Printf("[FastsyncV2] Phase 5: advancing fromBlock %d → %d (already reconciled)", localBlockNum+1, reconFrom)
+		}
+		reconciledCount, failedAccounts, err := fs.ReconRouter.Reconcile(taggedAccounts, availResp, reconFrom, remoteBlockNum)
+		if err != nil {
+			log.Printf("[FastsyncV2] Phase 5 warning: reconciliation returned error: %v", err)
+		}
+		log.Printf("[FastsyncV2] Phase 5 complete: %d accounts reconciled, %d failed", reconciledCount, len(failedAccounts))
+		if len(failedAccounts) > 0 {
+			log.Printf("[FastsyncV2] Failed accounts: %v", failedAccounts)
+		}
+		if err == nil {
+			fs.markReconComplete(remoteBlockNum)
+		}
 	}
 
 	// =========================================================================
@@ -570,12 +587,25 @@ func (fs *FastsyncV2) executePoTS(
 			}
 
 			// Secondary Reconciliation for accounts affected by PoTS blocks.
+			// PoTS blocks are produced after availResp.BlockHeight, so fromBlock = BlockHeight+1.
 			if potsTaggedAccts != nil {
-				reconCount, failed, err := fs.ReconRouter.Reconcile(potsTaggedAccts, availResp)
-				if err != nil {
-					log.Printf("[FastsyncV2] PoTS reconciliation warning: %v", err)
+				potsFromBlock := availResp.BlockHeight + 1
+				if availResp.BlockHeight == 0 {
+					potsFromBlock = 1
 				}
-				log.Printf("[FastsyncV2] PoTS reconciled %d accounts, %d failed", reconCount, len(failed))
+				potsReconFrom, potsReconSkip := fs.effectiveReconRange(potsFromBlock, math.MaxUint64)
+				if potsReconSkip {
+					log.Printf("[FastsyncV2] PoTS reconciliation skipped: already reconciled")
+				} else {
+					reconCount, failed, err := fs.ReconRouter.Reconcile(potsTaggedAccts, availResp, potsReconFrom, math.MaxUint64)
+					if err != nil {
+						log.Printf("[FastsyncV2] PoTS reconciliation warning: %v", err)
+					}
+					log.Printf("[FastsyncV2] PoTS reconciled %d accounts, %d failed", reconCount, len(failed))
+					if err == nil {
+						fs.markReconComplete(fs.blockInfoAdapter.GetBlockDetails().Blocknumber)
+					}
+				}
 			}
 		}
 	} else {
@@ -635,6 +665,50 @@ func (fs *FastsyncV2) dumpPoTSWALToDB(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// reconBlockKey is the SQLite key_value key used to persist the last successfully
+// reconciled block number. Reading it before each Reconcile call prevents
+// double-counting on re-runs that cover an already-reconciled range.
+const reconBlockKey = "fastsync:last_reconciled_block"
+
+// effectiveReconRange returns the adjusted [from, to] range that hasn't been
+// reconciled yet, plus a skip flag when the entire range is already done.
+//
+// Algorithm:
+//
+//	lastBlock = SQLite key_value["fastsync:last_reconciled_block"] (0 if absent)
+//	effectiveFrom = max(fromBlock, lastBlock+1)
+//	skip = effectiveFrom > toBlock
+func (fs *FastsyncV2) effectiveReconRange(fromBlock, toBlock uint64) (from uint64, skip bool) {
+	udb, err := sqlops.NewUnifiedDB()
+	if err != nil {
+		log.Printf("[FastsyncV2] recon anchor: open SQLite failed (%v) — using fromBlock=%d as-is", err, fromBlock)
+		return fromBlock, false
+	}
+	defer udb.Close()
+
+	from = fromBlock
+	if raw, err := udb.GetKeyValue(reconBlockKey); err == nil && raw != "" {
+		if last, err := strconv.ParseUint(raw, 10, 64); err == nil && last+1 > fromBlock {
+			from = last + 1
+		}
+	}
+	return from, from > toBlock
+}
+
+// markReconComplete stores toBlock as the last successfully reconciled block.
+func (fs *FastsyncV2) markReconComplete(toBlock uint64) {
+	udb, err := sqlops.NewUnifiedDB()
+	if err != nil {
+		log.Printf("[FastsyncV2] recon anchor: open SQLite failed (%v) — last_reconciled_block not persisted", err)
+		return
+	}
+	defer udb.Close()
+
+	if err := udb.StoreKeyValue(reconBlockKey, strconv.FormatUint(toBlock, 10)); err != nil {
+		log.Printf("[FastsyncV2] recon anchor: store failed (%v) — last_reconciled_block not persisted", err)
+	}
 }
 
 // Close tears down all routers and flushes WALs.

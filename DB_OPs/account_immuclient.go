@@ -1373,6 +1373,76 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 	return matchingTxs, nil
 }
 
+// GetTransactionsByAccountInRange retrieves transactions for an account in [fromBlock, toBlock].
+// Pass math.MaxUint64 for toBlock to scan up to the latest block in the DB.
+// Identical to GetTransactionsByAccount but scans a bounded block range instead of 0..latest,
+// enabling delta-only reconciliation so each sync run replays only new transactions.
+func GetTransactionsByAccountInRange(PooledConnection *config.PooledConnection, accountAddr *common.Address, fromBlock, toBlock uint64) ([]*config.Transaction, error) {
+	var err error
+	var shouldReturnConnection = false
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	if PooledConnection == nil || PooledConnection.Client == nil {
+		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get main DB connection from pool: %w - GetTransactionsByAccountInRange", err)
+		}
+		shouldReturnConnection = true
+	}
+	if shouldReturnConnection {
+		defer PutMainDBConnection(PooledConnection)
+	}
+
+	latestBlockNumber, err := GetLatestBlockNumber(ctx, PooledConnection)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get latest block number: %w", err)
+	}
+
+	if toBlock > latestBlockNumber {
+		toBlock = latestBlockNumber
+	}
+	if fromBlock > toBlock {
+		// Nothing to scan — no new blocks in range
+		return nil, nil
+	}
+
+	var matchingTxs []*config.Transaction
+	const batchSize = uint64(500)
+
+	for startBlock := fromBlock; startBlock <= toBlock; startBlock += batchSize {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		endBlock := startBlock + batchSize - 1
+		if endBlock > toBlock {
+			endBlock = toBlock
+		}
+
+		blocks, err := GetBlocksRange(PooledConnection, startBlock, endBlock)
+		if err != nil {
+			PooledConnection.Client.Logger.Warn(ctx, "Error retrieving block batch, skipping",
+				ion.String("error", err.Error()),
+				ion.Uint64("start_block", startBlock),
+				ion.Uint64("end_block", endBlock),
+				ion.String("function", "DB_OPs.GetTransactionsByAccountInRange"))
+			continue
+		}
+
+		for _, block := range blocks {
+			for _, tx := range block.Transactions {
+				if isTransactionInvolvingAccount(tx, accountAddr) {
+					txCopy := tx
+					matchingTxs = append(matchingTxs, &txCopy)
+				}
+			}
+		}
+	}
+
+	return matchingTxs, nil
+}
+
 // isTransactionInvolvingAccount checks if a transaction involves a specific account
 func isTransactionInvolvingAccount(tx config.Transaction, accountAddr *common.Address) bool {
 	// Compare address values, not pointers

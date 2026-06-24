@@ -107,6 +107,25 @@ func (am *account_manager) GetTransactionsForAccount(accountAddress string) ([]t
 	return result, nil
 }
 
+func (am *account_manager) GetTransactionsForAccountInRange(accountAddress string, fromBlock, toBlock uint64) ([]types.DBTransaction, error) {
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get main DB connection: %w", err)
+	}
+
+	addr := common.HexToAddress(accountAddress)
+	cfgTxs, err := DB_OPs.GetTransactionsByAccountInRange(conn, &addr, fromBlock, toBlock)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transactions in range [%d..%d]: %w", fromBlock, toBlock, err)
+	}
+
+	result := make([]types.DBTransaction, 0, len(cfgTxs))
+	for _, tx := range cfgTxs {
+		result = append(result, configTxToDBTx(tx))
+	}
+	return result, nil
+}
+
 // Time Complexity: O(1)
 func (am *account_manager) GetAccountBalance(accountAddress string) (*big.Int, uint64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

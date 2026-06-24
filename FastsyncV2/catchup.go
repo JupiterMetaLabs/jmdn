@@ -286,12 +286,23 @@ func (fs *FastsyncV2) HandleCatchUpSync(fromBlock uint64, targetPeer string) err
 	log.Printf("[CatchUpSync] phase 5: reconciliation — %d accounts to process", accountCount)
 	reconStart := time.Now()
 
-	reconCount, failedAccounts, err := fs.ReconRouter.Reconcile(taggedAccounts, availResp)
-	if err != nil {
-		log.Printf("[CatchUpSync] phase 5 warning: %v", err)
+	reconFrom, reconSkip := fs.effectiveReconRange(fromBlock, remoteTip)
+	if reconSkip {
+		log.Printf("[CatchUpSync] phase 5 skipped: range [%d..%d] already reconciled", fromBlock, remoteTip)
+	} else {
+		if reconFrom > fromBlock {
+			log.Printf("[CatchUpSync] phase 5: advancing fromBlock %d → %d (already reconciled)", fromBlock, reconFrom)
+		}
+		reconCount, failedAccounts, err := fs.ReconRouter.Reconcile(taggedAccounts, availResp, reconFrom, remoteTip)
+		if err != nil {
+			log.Printf("[CatchUpSync] phase 5 warning: %v", err)
+		}
+		log.Printf("[CatchUpSync] phase 5 complete: %d committed, %d failed, took %s",
+			reconCount, len(failedAccounts), time.Since(reconStart).Round(time.Millisecond))
+		if err == nil {
+			fs.markReconComplete(remoteTip)
+		}
 	}
-	log.Printf("[CatchUpSync] phase 5 complete: %d committed, %d failed, took %s",
-		reconCount, len(failedAccounts), time.Since(reconStart).Round(time.Millisecond))
 
 	// ── Phase 6: Re-auth before PoTS (disabled — AUTH_TTL is now 48h) ─────
 	// if refreshed, ok := fs.tryRefreshAuth(ctx, targetNodeInfo, 0); ok {
