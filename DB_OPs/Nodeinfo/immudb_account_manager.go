@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"sort"
 	"strings"
@@ -85,7 +86,7 @@ func chunkCount(n int) int {
 
 // Time Complexity: O(N) where N is the total number of transactions scanned or retrieved
 func (am *account_manager) GetTransactionsForAccount(accountAddress string) ([]types.DBTransaction, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
@@ -97,6 +98,25 @@ func (am *account_manager) GetTransactionsForAccount(accountAddress string) ([]t
 	cfgTxs, err := DB_OPs.GetTransactionsByAccount(conn, &addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get transactions by account: %w", err)
+	}
+
+	result := make([]types.DBTransaction, 0, len(cfgTxs))
+	for _, tx := range cfgTxs {
+		result = append(result, configTxToDBTx(tx))
+	}
+	return result, nil
+}
+
+func (am *account_manager) GetTransactionsForAccountInRange(accountAddress string, fromBlock, toBlock uint64) ([]types.DBTransaction, error) {
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get main DB connection: %w", err)
+	}
+
+	addr := common.HexToAddress(accountAddress)
+	cfgTxs, err := DB_OPs.GetTransactionsByAccountInRange(conn, &addr, fromBlock, toBlock)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transactions in range [%d..%d]: %w", fromBlock, toBlock, err)
 	}
 
 	result := make([]types.DBTransaction, 0, len(cfgTxs))
@@ -245,16 +265,79 @@ func (am *account_manager) WriteAccounts(accounts []*types.Account) error {
 	}
 	s, mgr := getAccountQueue()
 	if s == nil {
-		return fmt.Errorf("WriteAccounts: account queue not initialized; call StartAccountSyncWorker before use")
+		// Redis not available — write directly to ImmuDB synchronously.
+		// Slower (~15 s/batch) but correct; no external dependency required.
+		log.Printf("[accountqueue] Redis not available — writing %d accounts directly to ImmuDB", len(accounts))
+		return writeAccountsDirect(accounts)
 	}
-	mgr.EnsureActive()
-
 	chunks := chunkCount(len(accounts))
 	ctx, cancel := context.WithTimeout(context.Background(), enqueueTimeout(chunks))
 	defer cancel()
 	if err := enqueueRecordsChunked(ctx, s, payloadTypeAccounts, accounts); err != nil {
-		return fmt.Errorf("WriteAccounts: enqueue %d accounts in %d messages: %w", len(accounts), chunks, err)
+		// Redis is configured but unreachable (server down, connection refused, etc).
+		// Fall back to direct ImmuDB write rather than dropping the accounts entirely.
+		// Do NOT call EnsureActive — no point starting the worker if Redis is down.
+		log.Printf("[accountqueue] Redis enqueue failed (%v) — falling back to direct ImmuDB write for %d accounts", err, len(accounts))
+		return writeAccountsDirect(accounts)
 	}
+	// Enqueue succeeded — ensure the drain worker is running to process it.
+	mgr.EnsureActive()
+	return nil
+}
+
+// writeAccountsDirect writes accounts synchronously to ImmuDB without going through Redis.
+// Used when the Redis queue is not configured. Uses the same dbEntry/BatchRestoreAccounts
+// path as the worker so the write is LWW-idempotent.
+func writeAccountsDirect(accounts []*types.Account) error {
+	entries := make([]dbEntry, 0, len(accounts)*2)
+	for _, acc := range accounts {
+		if acc == nil {
+			continue
+		}
+		dbAcc := &DB_OPs.Account{
+			DIDAddress:  acc.DIDAddress,
+			Address:     acc.Address,
+			Balance:     acc.Balance,
+			Nonce:       acc.Nonce,
+			TxNonce:     acc.TxNonce,
+			TxCountSent: acc.TxCountSent,
+			AccountType: acc.AccountType,
+			CreatedAt:   acc.CreatedAt,
+			UpdatedAt:   acc.UpdatedAt,
+			Metadata:    acc.Metadata,
+		}
+		val, err := json.Marshal(dbAcc)
+		if err != nil {
+			return fmt.Errorf("writeAccountsDirect: marshal %s: %w", acc.Address.Hex(), err)
+		}
+		entries = append(entries, dbEntry{Key: DB_OPs.Prefix + acc.Address.Hex(), Value: val})
+		if acc.DIDAddress != "" {
+			entries = append(entries, dbEntry{Key: DB_OPs.DIDPrefix + acc.DIDAddress, Value: val})
+		}
+	}
+
+	const batchSize = 500
+	// Generous timeout: 60 s base + 2 s per batch to cover ImmuDB commit latency.
+	timeout := 60*time.Second + time.Duration(len(entries)/batchSize+1)*2*time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	conn, err := DB_OPs.GetAccountsConnections(ctx)
+	if err != nil {
+		return fmt.Errorf("writeAccountsDirect: get connection: %w", err)
+	}
+	defer DB_OPs.PutAccountsConnection(conn)
+
+	for i := 0; i < len(entries); i += batchSize {
+		end := i + batchSize
+		if end > len(entries) {
+			end = len(entries)
+		}
+		if err := DB_OPs.BatchRestoreAccounts(ctx, conn, entries[i:end]); err != nil {
+			return fmt.Errorf("writeAccountsDirect: batch [%d:%d]: %w", i, end, err)
+		}
+	}
+	log.Printf("[accountqueue] direct write complete: %d accounts written to ImmuDB", len(accounts))
 	return nil
 }
 
@@ -396,17 +479,20 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 	}
 	s, mgr := getAccountQueue()
 	if s == nil {
-		return fmt.Errorf("BatchUpdateAccounts: account queue not initialized; call StartAccountSyncWorker before use")
+		log.Printf("[accountqueue] BatchUpdateAccounts: queue not initialized — writing %d updates directly to ImmuDB", len(updates))
+		return batchUpdateAccountsDirect(am, updates)
 	}
-	mgr.EnsureActive()
+
 	// Convert to wire type for stable JSON serialization.
 	// big.Int.String() produces a decimal string; accountUpdateWire makes the format explicit.
 	wires := make([]accountUpdateWire, len(updates))
 	for i, u := range updates {
 		wires[i] = accountUpdateWire{
-			Address:    u.Address,
-			NewBalance: u.NewBalance.String(),
-			Nonce:      u.Nonce,
+			Address:     u.Address,
+			NewBalance:  u.NewBalance.String(),
+			Nonce:       u.Nonce,
+			TxNonce:     u.TxNonce,
+			TxCountSent: u.TxCountSent,
 		}
 	}
 
@@ -414,7 +500,26 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 	ctx, cancel := context.WithTimeout(context.Background(), enqueueTimeout(chunks))
 	defer cancel()
 	if err := enqueueRecordsChunked(ctx, s, payloadTypeUpdates, wires); err != nil {
-		return fmt.Errorf("BatchUpdateAccounts: enqueue %d updates in %d messages: %w", len(updates), chunks, err)
+		log.Printf("[accountqueue] Redis enqueue failed (%v) — falling back to direct ImmuDB write for %d updates", err, len(updates))
+		return batchUpdateAccountsDirect(am, updates)
+	}
+	mgr.EnsureActive()
+	return nil
+}
+
+// batchUpdateAccountsDirect writes account balance updates synchronously to ImmuDB,
+// bypassing Redis. Used when Redis is unavailable.
+func batchUpdateAccountsDirect(am *account_manager, updates []types.AccountUpdate) error {
+	for _, u := range updates {
+		if u.IsNewAccount {
+			if err := am.CreateAccount(u.Address, u.NewBalance, u.Nonce); err != nil {
+				return fmt.Errorf("batchUpdateAccountsDirect: create %s: %w", u.Address, err)
+			}
+		} else {
+			if err := am.UpdateAccountBalance(u.Address, u.NewBalance, u.Nonce); err != nil {
+				return fmt.Errorf("batchUpdateAccountsDirect: update %s: %w", u.Address, err)
+			}
+		}
 	}
 	return nil
 }

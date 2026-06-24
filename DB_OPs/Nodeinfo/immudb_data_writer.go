@@ -36,6 +36,8 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 		return err
 	}
 
+	var highestWritten uint64
+
 	for _, nh := range data {
 		if nh == nil {
 			continue
@@ -140,12 +142,15 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			txs = append(txs, cfgTx)
 		}
 
-		if len(txs) > 0 {
-			b.Transactions = txs
-		}
+		// Always overwrite Transactions from the DataSync response.
+		// The previous guard (if len(txs) > 0) was wrong: if the server sends
+		// transactions for this block, they must be written; if it sends none,
+		// the block genuinely has no transactions and we must clear any stale
+		// data left by PubSub/HeaderSync skeleton writes.
+		b.Transactions = txs
 
 		if err := DB_OPs.StoreZKBlock(conn, b); err != nil {
-			// if err not nill, then force write or update
+			// if err not nil, then force write or update
 			if strings.Contains(err.Error(), "already exists") {
 				blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, b.BlockNumber)
 				if err2 := DB_OPs.Update(blockKey, b); err2 != nil {
@@ -157,14 +162,10 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 					return fmt.Errorf("force update hash mapping failed: %w", err2)
 				}
 
-				if err2 := DB_OPs.Update("latest_block", b.BlockNumber); err2 != nil {
-					return fmt.Errorf("force update latest block failed: %w", err2)
-				}
-
 				// Write tx:<hash> → blockNumber index for each transaction.
 				// WriteHeaders stores blocks without transactions, so StoreZKBlock's tx
 				// indexing loop runs 0 times there. This is the only place those index
-				// entries get written — required for GetTransactionByHash to work.
+				// entries get written for existing blocks — required for GetTransactionByHash.
 				for _, tx := range b.Transactions {
 					txKey := fmt.Sprintf("%s%s", DB_OPs.DEFAULT_PREFIX_TX, tx.Hash)
 					if err2 := DB_OPs.Create(conn, txKey, b.BlockNumber); err2 != nil {
@@ -176,6 +177,20 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			} else {
 				return err
 			}
+		}
+
+		if b.BlockNumber > highestWritten {
+			highestWritten = b.BlockNumber
+		}
+	}
+
+	// Update latest_block once to the highest block number written in this batch.
+	// Per-block updates (done inside the loop above) are non-deterministic when
+	// DataSync workers run concurrently — the last worker to finish may not hold
+	// the highest block. A single update at the end is authoritative.
+	if highestWritten > 0 {
+		if err2 := DB_OPs.Update("latest_block", highestWritten); err2 != nil {
+			return fmt.Errorf("update latest_block to %d failed: %w", highestWritten, err2)
 		}
 	}
 

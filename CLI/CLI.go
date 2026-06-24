@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -107,8 +108,9 @@ func PrintFuncs() {
 	fmt.Println("  mempoolStats                      - Show mempool statistics")
 	fmt.Println("  stats                             - Show messaging statistics")
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
-	fmt.Println("  fastsync <peer_multiaddr>        - Fast sync blockchain data with a peer (V2 Engine)")
-	fmt.Println("  accountsync <peer_multiaddr>     - Sync missing accounts only (skip block sync)")
+	fmt.Println("  fastsync <peer_multiaddr>                    - Fast sync blockchain data with a peer (V2 Engine)")
+	fmt.Println("  catchup <peer_multiaddr> [from_block]        - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
+	fmt.Println("  accountsync <peer_multiaddr>                 - Sync missing accounts only (skip block sync)")
 	fmt.Println("  dbstate                           - Show current ImmuDB database state")
 	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
@@ -268,6 +270,8 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleBroadcast(parts)
 	case "fastsync", "fastsyncv2", "firstsync":
 		h.handleFastSync(parts)
+	case "catchup":
+		h.handleCatchUpSync(parts)
 	case "accountsync":
 		h.handleAccountSync(parts)
 	case "propagateDID":
@@ -629,6 +633,41 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 	}
 
 	fmt.Printf("Fastsync completed in %v\n", time.Since(startTime))
+	printDashes()
+}
+
+func (h *CommandHandler) handleCatchUpSync(parts []string) {
+	if len(parts) < 2 {
+		fmt.Println("Usage: catchup <peer_multiaddr> [from_block]")
+		fmt.Println("  peer_multiaddr  full multiaddr with peer ID, e.g. /ip4/1.2.3.4/tcp/15000/p2p/12D3KooW...")
+		fmt.Println("  from_block      optional; defaults to 0 (auto-detect from local DB tip)")
+		fmt.Println("                  pass 1 to force a full scan from genesis")
+		return
+	}
+	if h.FastSyncerV2 == nil {
+		fmt.Println("Error: FastsyncV2 engine is not initialized")
+		return
+	}
+
+	var fromBlock uint64
+	if len(parts) >= 3 {
+		var err error
+		fromBlock, err = strconv.ParseUint(parts[2], 10, 64)
+		if err != nil {
+			fmt.Printf("Invalid from_block %q: %v\n", parts[2], err)
+			return
+		}
+	} // fromBlock=0 → auto-detect inside HandleCatchUpSync
+
+	fmt.Printf("Starting catch-up sync (from_block=%d) with peer %s\n", fromBlock, parts[1])
+	startTime := time.Now()
+
+	if err := h.FastSyncerV2.HandleCatchUpSync(fromBlock, parts[1]); err != nil {
+		fmt.Printf("CatchUpSync failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("CatchUpSync completed in %v\n", time.Since(startTime))
 	printDashes()
 }
 
