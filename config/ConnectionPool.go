@@ -59,7 +59,7 @@ type PoolingConfig struct {
 func DefaultConnectionPoolConfig() *ConnectionPoolConfig {
 	return &ConnectionPoolConfig{
 		MinConnections:     2,
-		MaxConnections:     20,
+		MaxConnections:     30,
 		ConnectionTimeout:  30 * time.Second,
 		IdleTimeout:        5 * time.Minute,
 		MaxLifetime:        30 * time.Minute,

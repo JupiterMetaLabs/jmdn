@@ -1,8 +1,8 @@
 cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
 cloud.google.com/go v0.34.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260624044452-d59628408292 h1:9zgOGNN6oXq4tfui2K31KiZrbmz7XVHuhBNmEF8mxW0=
-github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260624044452-d59628408292/go.mod h1:0erT7gGH4TYtitRik+Y3GfxSa5KGLacr9rJovV3vNB0=
+github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260624061943-72fc8e50b45c h1:DxH55rS7byJmCYL++vQq6aICLTLNIX/dqJ/MTWfTHSM=
+github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260624061943-72fc8e50b45c/go.mod h1:0erT7gGH4TYtitRik+Y3GfxSa5KGLacr9rJovV3vNB0=
 github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8 h1:yPrYb6g6NnqGsiCVqMf0zndEYTuelL3B03Fee+utLWA=
 github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8/go.mod h1:zM8F31G2SiPXzTo1WzbDFZ5iOOAkqrkuZjS0QVDW4ew=
 github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5 h1:S9+s6JeWSrGJ6ooYb4f8iRlJxwPUZ8X/EA4EgxKS3zc=
