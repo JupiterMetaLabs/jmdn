@@ -168,19 +168,19 @@ This is the complete runbook for a fresh VM with Docker already installed.
 ### Step 1 — Clone the repo
 
 ```bash
-# Clone to /opt/jmdn-node (or any directory you prefer)
-sudo mkdir -p /opt/jmdn-node
-sudo chown $USER /opt/jmdn-node
-git clone https://github.com/JupiterMetaLabs/jmdn.git /opt/jmdn-node
-cd /opt/jmdn-node
+mkdir -p /opt/jmdn
+git clone https://github.com/JupiterMetaLabs/jmdn.git /opt/jmdn
+cd /opt/jmdn
 ```
+
+> Running as root? That's fine — Docker itself runs as root. The `jmdn` user only exists **inside the container** and is managed by the entrypoint script. You do not need a `jmdn` user on the host.
 
 ### Step 2 — Create a .env file (credentials + secrets)
 
 The `.env` file lives next to `docker-compose.yml`. Docker Compose reads it automatically.
 
 ```bash
-cat > /opt/jmdn-node/.env << 'EOF'
+cat > /opt/jmdn/.env << 'EOF'
 # ImmuDB password — must match in both immudb and jmdn services.
 # Default "immudb" works but change this before exposing to the internet.
 IMMUDB_PASSWORD=immudb
@@ -209,8 +209,8 @@ EOF
 If you need to override any node settings beyond what env vars cover, copy the default config and edit it:
 
 ```bash
-cp /opt/jmdn-node/jmdn_default.yaml /opt/jmdn-node/jmdn.yaml
-# edit /opt/jmdn-node/jmdn.yaml as needed
+cp /opt/jmdn/jmdn_default.yaml /opt/jmdn/jmdn.yaml
+# edit /opt/jmdn/jmdn.yaml as needed
 ```
 
 Then uncomment this line in `docker-compose.yml` under the `jmdn:` service volumes:
@@ -220,16 +220,26 @@ Then uncomment this line in `docker-compose.yml` under the `jmdn:` service volum
 
 If you skip this step, the baked-in default config is used — which is fine for most operators.
 
-### Step 4 — Start the stack
+### Step 4 — Build the JMDN image
+
+The `redis` and `immudb` images are pulled from public Docker Hub automatically. The JMDN image must be built from source:
 
 ```bash
-cd /opt/jmdn-node
+cd /opt/jmdn
+docker build -t ghcr.io/jupitermeta/jmdn:latest .
+```
+
+This takes a few minutes (downloads Go deps, compiles the binary).
+
+### Step 5 — Start the stack
+
+```bash
 docker compose up -d
 ```
 
 Three containers start: `jmdn-immudb`, `jmdn-redis`, `jmdn`. The jmdn container waits for both to be healthy before starting.
 
-### Step 5 — Watch first-run bootstrap
+### Step 6 — Watch first-run bootstrap
 
 First run downloads the chain snapshot from GCS (can take 10–30 minutes depending on bandwidth):
 
@@ -256,7 +266,7 @@ Expected output:
 
 Subsequent restarts skip bootstrap entirely and start in seconds.
 
-### Step 6 — Verify the node is healthy
+### Step 7 — Verify the node is healthy
 
 ```bash
 # All three containers should show (healthy)
