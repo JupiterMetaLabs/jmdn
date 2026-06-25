@@ -38,14 +38,9 @@ services:
       IMMUDB_ADMIN_PASSWORD: "${IMMUDB_PASSWORD:-immudb}"
     volumes:
       - immudb-data:/var/lib/immudb
-    healthcheck:
-      # immudb image has no bash — /dev/tcp doesn't work.
-      # Use wget on immudb's built-in web API (port 8080).
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ >/dev/null 2>&1 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      start_period: 15s
-      retries: 5
+    # No health check — codenotary/immudb:1.10.0 is distroless (no shell, no
+    # wget, no nc). jmdn depends on service_started + entrypoint waits for
+    # port 3322 via nc before starting the node process.
     logging:
       driver: json-file
       options:
@@ -113,7 +108,7 @@ services:
     restart: unless-stopped
     depends_on:
       immudb:
-        condition: service_healthy
+        condition: service_started   # immudb image is distroless — no health check possible
       redis:
         condition: service_healthy
 
