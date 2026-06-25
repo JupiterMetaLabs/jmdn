@@ -870,6 +870,8 @@ func zkBlockToProtoNonHeaders(b *types.ZKBlock) *blockpb.NonHeaders {
 
 // commitmentToBytes encodes a []uint32 commitment to raw bytes (4 bytes per element, little-endian).
 // This matches the block_nonheader.proto ZKProof.commitment field (bytes).
+// NOTE: internal/merkle/hash.go encodes the same field BIG-endian for Merkle leaf hashing.
+// The two encodings serve different purposes and must NOT be mixed.
 func commitmentToBytes(c []uint32) []byte {
 	if len(c) == 0 {
 		return nil

@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
+	"sync"
 	"time"
 
 	database "gossipnode/DB_OPs/sqlops"
@@ -15,6 +17,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"golang.org/x/time/rate"
 )
 
 // PeerRequest represents a request for peer information
@@ -26,6 +29,52 @@ type PeerRequest struct {
 // PeerResponse contains information about peers
 type PeerResponse struct {
 	Peers []config.PeerInfo `json:"peers"`
+}
+
+// ── Per-peer registration rate limiter ───────────────────────────────────────
+// Prevents Sybil attacks: each peer ID is allowed at most 5 registrations per
+// hour. The limiter map is cleaned up lazily on access (entries older than 2h
+// are evicted). This is an in-memory guard; it resets on process restart.
+//
+// Rate: 5 tokens/hour = ~1 token per 720 seconds, burst of 5.
+const (
+	registrationRate  = rate.Every(720 * time.Second) // 5/hour
+	registrationBurst = 5
+	limiterTTL        = 2 * time.Hour
+)
+
+type limiterEntry struct {
+	lim      *rate.Limiter
+	lastSeen time.Time
+}
+
+var (
+	peerLimitersMu sync.Mutex
+	peerLimiters   = make(map[string]*limiterEntry)
+)
+
+// getOrCreateLimiter returns a rate.Limiter for the given peer ID, evicting
+// stale entries older than limiterTTL to bound memory usage.
+func getOrCreateLimiter(peerID string) *rate.Limiter {
+	peerLimitersMu.Lock()
+	defer peerLimitersMu.Unlock()
+
+	now := time.Now()
+
+	// Lazy eviction: remove entries not seen in > limiterTTL.
+	for id, entry := range peerLimiters {
+		if now.Sub(entry.lastSeen) > limiterTTL {
+			delete(peerLimiters, id)
+		}
+	}
+
+	entry, ok := peerLimiters[peerID]
+	if !ok {
+		entry = &limiterEntry{lim: rate.NewLimiter(registrationRate, registrationBurst)}
+		peerLimiters[peerID] = entry
+	}
+	entry.lastSeen = now
+	return entry.lim
 }
 
 // NewPeerRegistry creates a new peer registry
@@ -76,29 +125,28 @@ func RegisterAsSeed(node *config.Node) error {
 		return nil
 	})
 
-	fmt.Println("Node registered as seed node")
+	log.Printf("[seed] node registered as seed node")
 	return nil
 }
 
 // handleSeedRequest handles general seed node requests
 func handleSeedRequest(stream network.Stream, node *config.Node) {
-	// Basic handler for seed protocol
 	defer stream.Close()
 
-	// Read the request
 	reader := bufio.NewReader(stream)
 	message, err := reader.ReadString('\n')
 	if err != nil {
-		fmt.Printf("Error reading seed request: %v\n", err)
+		log.Printf("[seed] error reading seed request from %s: %v", stream.Conn().RemotePeer(), err)
 		return
 	}
 
-	fmt.Println("Received seed request:", message)
+	// Log at Debug level only — message is peer-supplied and must not be logged at Info
+	// to avoid inadvertently recording attacker-controlled data in structured logs.
+	log.Printf("[seed] seed request received (peer=%s, len=%d)", stream.Conn().RemotePeer(), len(message))
 
-	// For now, just acknowledge receipt
 	_, err = stream.Write([]byte("Seed node received request\n"))
 	if err != nil {
-		fmt.Printf("Error sending response: %v\n", err)
+		log.Printf("[seed] error sending seed response to %s: %v", stream.Conn().RemotePeer(), err)
 	}
 }
 
@@ -111,7 +159,6 @@ func handlePeerDiscoveryRequest(stream network.Stream, node *config.Node) {
 		return
 	}
 
-	// Track this peer in our registry
 	remotePeer := stream.Conn().RemotePeer()
 	addrs := stream.Conn().RemoteMultiaddr().String()
 
@@ -128,41 +175,35 @@ func handlePeerDiscoveryRequest(stream network.Stream, node *config.Node) {
 	db := node.DB.Instance.(*database.UnifiedDB)
 	err := db.AddPeer(remotePeer.String(), addrs, 0, nil)
 	if err != nil {
-		fmt.Printf("Error updating peer in database: %v\n", err)
+		log.Printf("[seed] error updating peer %s in database: %v", remotePeer, err)
 	}
 
-	// Read the peer request
 	var request PeerRequest
 	decoder := json.NewDecoder(stream)
 	if err := decoder.Decode(&request); err != nil {
-		fmt.Printf("Error decoding peer request: %v\n", err)
+		log.Printf("[seed] error decoding peer request from %s: %v", remotePeer, err)
 		stream.Write([]byte("{\"error\": \"Invalid request format\"}\n"))
 		return
 	}
 
-	// Prepare response with peer information
 	maxPeers := request.MaxPeers
 	if maxPeers <= 0 || maxPeers > config.MaxTrackedPeers {
-		maxPeers = 20 // Default to 20 peers
+		maxPeers = 20
 	}
 
-	// Get peers from database
 	peerAddrs, err := db.GetPeers(6, maxPeers)
 	if err != nil {
-		fmt.Printf("Error retrieving peers: %v\n", err)
+		log.Printf("[seed] error retrieving peers for %s: %v", remotePeer, err)
 		stream.Write([]byte("{\"error\": \"Failed to retrieve peers\"}\n"))
 		return
 	}
 
-	// Convert to PeerInfo objects
 	peers := make([]config.PeerInfo, 0, len(peerAddrs))
 	for _, addr := range peerAddrs {
-		// Skip the requesting peer
 		if strings.Contains(addr, remotePeer.String()) {
 			continue
 		}
 
-		// Parse multiaddr to extract peer ID
 		parts := strings.Split(addr, "/p2p/")
 		if len(parts) < 2 {
 			continue
@@ -174,9 +215,7 @@ func handlePeerDiscoveryRequest(stream network.Stream, node *config.Node) {
 			continue
 		}
 
-		// Apply type filter if specified
 		if request.Type != "" {
-			// Get the peer's capabilities from the database
 			_, _, capabilities, _, err := db.GetPeer(peerID.String())
 			if err != nil || !containsCapability(capabilities, request.Type) {
 				continue
@@ -193,15 +232,15 @@ func handlePeerDiscoveryRequest(stream network.Stream, node *config.Node) {
 		}
 	}
 
-	// Send the response
 	response := PeerResponse{Peers: peers}
 	encoder := json.NewEncoder(stream)
 	if err := encoder.Encode(response); err != nil {
-		fmt.Printf("Error encoding peer response: %v\n", err)
+		log.Printf("[seed] error encoding peer response for %s: %v", remotePeer, err)
 	}
 }
 
-// handleRegisterRequest handles peer registration
+// handleRegisterRequest handles peer registration with per-peer rate limiting
+// and a registry size cap to prevent Sybil attacks.
 func handleRegisterRequest(stream network.Stream, node *config.Node) {
 	defer stream.Close()
 
@@ -210,31 +249,45 @@ func handleRegisterRequest(stream network.Stream, node *config.Node) {
 		return
 	}
 
-	// Get the peer's info
 	remotePeer := stream.Conn().RemotePeer()
 	remoteAddr := stream.Conn().RemoteMultiaddr()
 
-	// Create a full multiaddress for this peer
+	// ── Rate limit: max 5 registrations per hour per peer ID ─────────────────
+	lim := getOrCreateLimiter(remotePeer.String())
+	if !lim.Allow() {
+		log.Printf("[seed] registration rate limit exceeded for peer %s — rejecting", remotePeer)
+		stream.Write([]byte("{\"error\": \"Rate limit exceeded — try again later\"}\n"))
+		return
+	}
+
+	// ── Registry size cap: reject when at capacity ────────────────────────────
+	node.PeerStore.Mutex.RLock()
+	peerCount := len(node.PeerStore.Peers)
+	node.PeerStore.Mutex.RUnlock()
+	if peerCount >= config.MaxTrackedPeers {
+		log.Printf("[seed] registry full (%d/%d) — rejecting registration for %s",
+			peerCount, config.MaxTrackedPeers, remotePeer)
+		stream.Write([]byte("{\"error\": \"Seed registry full\"}\n"))
+		return
+	}
+
 	fullAddr := fmt.Sprintf("%s/p2p/%s", remoteAddr.String(), remotePeer.String())
 
-	// Add the peer to the database
 	db := node.DB.Instance.(*database.UnifiedDB)
 	err := db.AddPeer(remotePeer.String(), fullAddr, 0, nil)
 	if err != nil {
-		fmt.Printf("Error registering peer %s: %v\n", remotePeer, err)
+		log.Printf("[seed] error registering peer %s: %v", remotePeer, err)
 		stream.Write([]byte("{\"error\": \"Registration failed\"}\n"))
 		return
 	}
 
-	// Send back acknowledgment with 4 random peers
 	peers, err := db.GetPeers(6, 4)
 	if err != nil {
-		fmt.Printf("Error getting peers for %s: %v\n", remotePeer, err)
+		log.Printf("[seed] error getting bootstrap peers for %s: %v", remotePeer, err)
 		stream.Write([]byte("{\"error\": \"Failed to retrieve peers\"}\n"))
 		return
 	}
 
-	// Format response
 	response := "REGISTERED|"
 	if len(peers) > 0 {
 		response += strings.Join(peers, ",")
@@ -242,7 +295,7 @@ func handleRegisterRequest(stream network.Stream, node *config.Node) {
 
 	_, err = stream.Write([]byte(response + "\n"))
 	if err != nil {
-		fmt.Printf("Error sending registration response to %s: %v\n", remotePeer, err)
+		log.Printf("[seed] error sending registration response to %s: %v", remotePeer, err)
 	}
 }
 
@@ -264,12 +317,11 @@ func runPeerCleanup(node *config.Node) {
 	for {
 		<-ticker.C
 		if !node.IsSeed || node.DB == nil {
-			return // Stop if no longer a seed node
+			return
 		}
 
 		now := time.Now().UTC().Unix()
 
-		// Clean up the in-memory store
 		node.PeerStore.Mutex.Lock()
 		for id, info := range node.PeerStore.Peers {
 			if now-info.LastSeen > config.PeerTTL {
@@ -279,21 +331,17 @@ func runPeerCleanup(node *config.Node) {
 		node.PeerStore.LastCleanup = now
 		node.PeerStore.Mutex.Unlock()
 
-		// Also clean up peers in the database (could ping them first)
-		// This would require more implementation but shows how you would use it
-		fmt.Println("Peer cleanup completed")
+		log.Printf("[seed] peer cleanup completed")
 	}
 }
 
 // RequestPeers asks a seed node for available peers
 func RequestPeers(h host.Host, seedAddr string, maxPeers int, peerType string) ([]config.PeerInfo, error) {
-	// Parse the seed node address
 	addr, err := peer.AddrInfoFromString(seedAddr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid seed address: %v", err)
 	}
 
-	// Connect to the seed node
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -301,14 +349,12 @@ func RequestPeers(h host.Host, seedAddr string, maxPeers int, peerType string) (
 		return nil, fmt.Errorf("failed to connect to seed node: %v", err)
 	}
 
-	// Open a stream for peer discovery
 	stream, err := h.NewStream(ctx, addr.ID, config.PeerDiscoveryProtocol)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open peer discovery stream: %v", err)
 	}
 	defer stream.Close()
 
-	// Send request
 	request := PeerRequest{
 		MaxPeers: maxPeers,
 		Type:     peerType,
@@ -319,7 +365,6 @@ func RequestPeers(h host.Host, seedAddr string, maxPeers int, peerType string) (
 		return nil, fmt.Errorf("failed to send peer request: %v", err)
 	}
 
-	// Read response
 	var response PeerResponse
 	decoder := json.NewDecoder(stream)
 	if err := decoder.Decode(&response); err != nil {

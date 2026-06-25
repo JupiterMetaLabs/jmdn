@@ -606,8 +606,6 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 
 	for batchNum < maxBatches {
 		batchNum++
-		// Create a batch request
-		fmt.Printf(">>> [DB] Getting batch %d for prefix '%s' (current count: %d keys)...\n", batchNum, prefix, len(allKeys))
 
 		var rawKeys []string
 
@@ -622,7 +620,9 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 					strings.Contains(errStr, "Unavailable") ||
 					strings.Contains(errStr, "connection error")) {
 
-					fmt.Printf(">>> [DB] WARNING: Connection error in batch %d (attempt %d): %v. Refreshing connection...\n", batchNum, retry+1, err)
+					PooledConnection.Client.Logger.Warn(loggerCtx, fmt.Sprintf("connection error in batch %d (attempt %d) — refreshing", batchNum, retry+1),
+						ion.String("error", err.Error()),
+						ion.String("function", "DB_OPs.GetAllKeys"))
 
 					// If we own the connection (shouldReturnConnection=true) or even if we don't,
 					// we need a working connection to continue.
@@ -648,12 +648,13 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 						}
 						continue // Retry with new connection
 					} else {
-						fmt.Printf(">>> [DB] ERROR: Failed to refresh connection: %v\n", connErr)
+						PooledConnection.Client.Logger.Warn(loggerCtx, "failed to refresh connection",
+							ion.String("error", connErr.Error()),
+							ion.String("function", "DB_OPs.GetAllKeys"))
 					}
 				}
 
 				// If not retryable or retries exhausted
-				fmt.Printf(">>> [DB] ERROR: Failed to get batch %d for prefix '%s': %v\n", batchNum, prefix, err)
 				PooledConnection.Client.Logger.Error(loggerCtx, fmt.Sprintf("Failed to scan keys with prefix: %s (limit: %d)", prefix, batchSize),
 					err,
 					ion.String("prefix", prefix),
@@ -676,7 +677,6 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 				validKeys = append(validKeys, key)
 			} else {
 				// If we get a key that doesn't match the prefix, we've gone past the prefix range
-				fmt.Printf(">>> [DB] WARNING: Key '%s' doesn't match prefix '%s' - stopping scan\n", key, prefix)
 				break
 			}
 		}
@@ -689,16 +689,11 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 				keysSet[key] = true
 				uniqueKeys = append(uniqueKeys, key)
 			} else {
-				fmt.Printf(">>> [DB] WARNING: Duplicate key found: '%s'\n", key)
-			}
+				}
 		}
-
-		fmt.Printf(">>> [DB] ✓ Got batch %d: %d raw keys for prefix '%s' (%d valid, %d unique, total so far: %d keys)\n",
-			batchNum, len(rawKeys), prefix, len(validKeys), len(uniqueKeys), len(allKeys)+len(uniqueKeys))
 
 		// If no keys returned, we're done
 		if len(uniqueKeys) == 0 {
-			fmt.Printf(">>> [DB] No more valid keys for prefix '%s', stopping\n", prefix)
 			break
 		}
 
@@ -711,18 +706,14 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 		// Check if the first key is the same as lastSeenKey (overlap from SeekKey)
 		// ImmuDB Scan is inclusive of SeekKey, so we must skip it to advance
 		if len(keys) > 0 && lastSeenKey != "" && keys[0] == lastSeenKey {
-			// fmt.Printf(">>> [DB] Skipping overlapping key: '%s'\n", keys[0])
 			keys = keys[1:]
 			if len(keys) == 0 {
-				// No new keys in this batch
-				fmt.Printf(">>> [DB] No new keys found after skipping overlap. Scan complete.\n")
 				break
 			}
 		}
 
 		// If we got fewer than batch size from the DB, we're done
 		if len(rawKeys) < batchSize {
-			fmt.Printf(">>> [DB] Got fewer than batch size (%d < %d) from DB, stopping\n", len(rawKeys), batchSize)
 			break
 		}
 
@@ -731,22 +722,23 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 
 		// Check if we're stuck - if the last key hasn't changed, we're in a loop
 		if lastSeenKey != "" && newLastKey == lastSeenKey {
-			fmt.Printf(">>> [DB] WARNING: LastKey hasn't changed between batches ('%s'). Stopping to prevent infinite loop.\n", newLastKey)
+			PooledConnection.Client.Logger.Warn(loggerCtx, "last key unchanged — stopping to prevent infinite loop",
+				ion.String("last_key", newLastKey),
+				ion.String("function", "DB_OPs.GetAllKeys"))
 			break
 		}
 
 		lastKey = []byte(newLastKey)
-		lastSeenKey = newLastKey // Track for loop detection
-
-		fmt.Printf(">>> [DB] Continuing to next batch for prefix '%s' (lastKey: %s)...\n", prefix, string(lastKey))
+		lastSeenKey = newLastKey
 	}
 
 	if batchNum >= maxBatches {
-		fmt.Printf(">>> [DB] WARNING: Reached maximum batch limit (%d). Stopping to prevent infinite loop.\n", maxBatches)
-		fmt.Printf(">>> [DB] Collected %d keys so far. This may indicate a pagination issue.\n", len(allKeys))
+		PooledConnection.Client.Logger.Warn(loggerCtx, "reached max batch limit — possible pagination issue",
+			ion.Int("max_batches", maxBatches),
+			ion.String("prefix", prefix),
+			ion.Int("keys_collected", len(allKeys)),
+			ion.String("function", "DB_OPs.GetAllKeys"))
 	}
-	// Debugging output with a newline for clarity
-	fmt.Printf("Total keys found: %d with Prefix: %s\n", len(allKeys), prefix)
 	return allKeys, nil
 }
 
@@ -866,13 +858,11 @@ func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limi
 			ion.String("topic", TOPIC),
 			ion.String("function", "DB_OPs.getKeysBatch"))
 
-		fmt.Printf(">>> [DB] Executing Scan for prefix '%s' (limit: %d, seekKey: %v)...\n", prefix, limit, len(seekKey) > 0)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // Increased timeout for large datasets
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		scanResult, err := ic.Client.Scan(ctx, scanReq)
 		if err != nil {
-			fmt.Printf(">>> [DB] ERROR: Scan failed for prefix '%s': %v\n", prefix, err)
 			ic.Logger.Error(loggerCtx, fmt.Sprintf("Failed to scan keys with prefix: %s (limit: %d)", prefix, limit),
 				err,
 				ion.String("prefix", prefix),
@@ -884,7 +874,6 @@ func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limi
 				ion.String("function", "DB_OPs.getKeysBatch"))
 			return nil, fmt.Errorf("failed to scan keys with prefix: %s (limit: %d): %w - getKeysBatch", prefix, limit, err)
 		}
-		fmt.Printf(">>> [DB] ✓ Scan completed for prefix '%s': %d entries returned\n", prefix, len(scanResult.Entries))
 		ic.Logger.Debug(loggerCtx, fmt.Sprintf("Scan completed for prefix: %s (limit: %d)", prefix, limit),
 			ion.String("prefix", prefix),
 			ion.Int("limit", limit),
@@ -910,14 +899,15 @@ func getKeysBatch(PooledConnection *config.PooledConnection, prefix string, limi
 		return keys, nil
 	}
 
-	fmt.Println("Keys scanned Failed - Config.Immuclient Not Found")
+	PooledConnection.Client.Logger.Warn(loggerCtx, "no valid ImmuDB client",
+		ion.String("prefix", prefix),
+		ion.String("function", "DB_OPs.getKeysBatch"))
 	return nil, nil
 }
 
 // BatchCreate stores multiple key-value pairs in a single transaction
 func BatchCreate(PooledConnection *config.PooledConnection, entries map[string]interface{}) error {
 	if len(entries) == 0 {
-		fmt.Println("BatchCreate Failed - Empty Batch")
 		return ErrEmptyBatch
 	}
 
@@ -934,7 +924,6 @@ func BatchCreate(PooledConnection *config.PooledConnection, entries map[string]i
 	if PooledConnection == nil || PooledConnection.Client == nil {
 		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
 		if err != nil {
-			fmt.Println("BatchCreate Failed - Config.Immuclient Not Found")
 			return fmt.Errorf("failed to get database connection: %w - BatchCreate", err)
 		}
 		shouldReturnConnection = true
@@ -1158,8 +1147,6 @@ func GetMerkleRoot(PooledConnection *config.PooledConnection) ([]byte, error) {
 
 // SafeCreate stores a value with the given key and verifies the operation (UNCHANGED - but can optionally use connection pool)
 func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
-	fmt.Printf("=== DEBUG: SafeCreate called with key: %s ===\n", key)
-
 	var err error
 	var PooledConnection *config.PooledConnection
 	var shouldReturnConnection = false
@@ -1174,15 +1161,12 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 	// If ic is nil, we need to determine which database to use based on context
 	// For now, we'll default to accounts database since this is called from UpdateAccountBalance
 	if ic == nil {
-		fmt.Println("DEBUG: ic is nil, getting accounts connection")
 		PooledConnection, err = GetAccountConnectionandPutBack(ctx)
 		if err != nil {
-			fmt.Printf("DEBUG: Failed to get accounts connection: %v\n", err)
 			return err
 		}
 		shouldReturnConnection = true
 		ic = PooledConnection.Client
-		fmt.Println("DEBUG: Successfully got accounts connection")
 
 		PooledConnection.Client.Logger.Debug(loggerCtx, "Client Connection is Nil, so Pulled up quick connection from the Pool",
 			ion.String("database", config.AccountsDBName),
@@ -1191,8 +1175,6 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 			ion.String("topic", TOPIC),
 			ion.String("function", "DB_OPs.SafeCreate"),
 		)
-	} else {
-		fmt.Println("DEBUG: Using provided ic client")
 	}
 
 	// Check for empty key and nil value
@@ -1234,15 +1216,10 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 		}()
 	}
 
-	// Traditional approach with single connection (no withRetry for pooled connections)
-	// Convert value to bytes
-	fmt.Println("DEBUG: Converting value to bytes")
 	valueBytes, err := toBytes(value)
 	if err != nil {
-		fmt.Printf("DEBUG: Failed to convert value to bytes: %v\n", err)
 		return err
 	}
-	fmt.Printf("DEBUG: Successfully converted value to bytes (length: %d)\n", len(valueBytes))
 
 	ic.Logger.Debug(loggerCtx, "Creating verified key",
 		ion.String("key", key),
@@ -1252,12 +1229,8 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 		ion.String("function", "DB_OPs.SafeCreate"),
 	)
 
-	// Store the key-value pair with verification
-	fmt.Println("DEBUG: Creating context and calling VerifiedSet")
-
 	verifiedTx, err := ic.Client.VerifiedSet(ctx, []byte(key), valueBytes)
 	if err != nil {
-		fmt.Printf("DEBUG: VerifiedSet failed: %v\n", err)
 		PooledConnection.Client.Logger.Error(loggerCtx, "Failed to create verified key",
 			err,
 			ion.String("key", key),
@@ -1268,8 +1241,6 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 		)
 		return err
 	}
-	fmt.Printf("DEBUG: VerifiedSet completed successfully - TX ID: %d\n", verifiedTx.Id)
-
 	ic.Logger.Debug(loggerCtx, "Transaction verified",
 		ion.Uint64("tx", verifiedTx.Id),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
@@ -1277,7 +1248,6 @@ func SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
 		ion.String("topic", TOPIC),
 		ion.String("function", "DB_OPs.SafeCreate"),
 	)
-	fmt.Printf("=== DEBUG: SafeCreate completed successfully for key: %s ===\n", key)
 	return nil
 }
 
@@ -2063,11 +2033,10 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 		}()
 	}
 	// Use VerifiedGet directly to avoid overhead of SafeReadJSON
-	// (context creation, logging, etc. in a hot path)
-	ctxV, cancelV := context.WithCancel(context.Background())
-	defer cancelV()
-
-	entry, err := mainDBClient.Client.Client.VerifiedGet(ctxV, []byte(blockKey))
+	// (context creation, logging, etc. in a hot path).
+	// Reuse ctx (5 s timeout from above) — ctxV had no deadline and could hang
+	// indefinitely if ImmuDB is slow or unresponsive.
+	entry, err := mainDBClient.Client.Client.VerifiedGet(ctx, []byte(blockKey))
 	if err != nil {
 		mainDBClient.Client.Logger.Error(loggerCtx, "Failed to retrieve block (VerifiedGet)",
 			err,

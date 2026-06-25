@@ -37,6 +37,7 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 	}
 
 	var highestWritten uint64
+	var didWriteBlock bool // tracks whether any block was successfully stored
 
 	for _, nh := range data {
 		if nh == nil {
@@ -124,20 +125,8 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			if len(tx.S) > 0 {
 				cfgTx.S = new(big.Int).SetBytes(tx.S)
 			}
-			if len(tx.ChainId) > 0 {
-				cfgTx.ChainID = new(big.Int).SetBytes(tx.ChainId)
-			}
-			if len(tx.AccessList) > 0 {
-				for _, al := range tx.AccessList {
-					cfgAl := config.AccessTuple{
-						Address: common.BytesToAddress(al.Address),
-					}
-					for _, sk := range al.StorageKeys {
-						cfgAl.StorageKeys = append(cfgAl.StorageKeys, common.BytesToHash(sk))
-					}
-					cfgTx.AccessList = append(cfgTx.AccessList, cfgAl)
-				}
-			}
+			// ChainID and AccessList are fully handled in the pass above.
+			// No further processing needed here.
 
 			txs = append(txs, cfgTx)
 		}
@@ -179,8 +168,9 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			}
 		}
 
-		if b.BlockNumber > highestWritten {
+		if !didWriteBlock || b.BlockNumber > highestWritten {
 			highestWritten = b.BlockNumber
+			didWriteBlock = true
 		}
 	}
 
@@ -188,10 +178,17 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 	// Per-block updates (done inside the loop above) are non-deterministic when
 	// DataSync workers run concurrently — the last worker to finish may not hold
 	// the highest block. A single update at the end is authoritative.
-	if highestWritten > 0 {
+	//
+	// The previous guard was `highestWritten > 0`, which silently skipped the
+	// update when a batch contained only block 0 (genesis). Using didWriteBlock
+	// correctly handles genesis — latest_block is always set after any data write.
+	if didWriteBlock {
 		if err2 := DB_OPs.Update("latest_block", highestWritten); err2 != nil {
 			return fmt.Errorf("update latest_block to %d failed: %w", highestWritten, err2)
 		}
+		// Fix 2: record write time so SyncMonitor propagation guard can skip a
+		// Merkle check that races with a block that just landed.
+		notifyBlockReceived()
 	}
 
 	return nil

@@ -72,9 +72,10 @@ func BuildLocalMerkleRoot(ctx context.Context, blockInfo fastsync_types.BlockInf
 				hashes = append(hashes, merkletree.Hash32{})
 				continue
 			}
-			var h merkletree.Hash32
-			copy(h[:], b.BlockHash[:])
-			hashes = append(hashes, h)
+			// Recompute from all block fields (including transactions) rather
+			// than trusting BlockHash, which is a wire-derived value from the
+			// proto snapshot and does not cover transaction content.
+			hashes = append(hashes, merkletree.Hash32(hashBlock(b)))
 		}
 
 		batchStart := processed + start
