@@ -38,10 +38,11 @@ type PeerResponse struct {
 //
 // Rate: 5 tokens/hour = ~1 token per 720 seconds, burst of 5.
 const (
-	registrationRate  = rate.Every(720 * time.Second) // 5/hour
 	registrationBurst = 5
 	limiterTTL        = 2 * time.Hour
 )
+
+var registrationRate = rate.Every(720 * time.Second) // 5 registrations/hour
 
 type limiterEntry struct {
 	lim      *rate.Limiter
