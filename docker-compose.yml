@@ -1,0 +1,191 @@
+# JMDN Node — Docker Compose
+#
+# Services:
+#   immudb — tamper-proof append-only ledger (separate container, own volume)
+#   redis  — account sync worker queue (Redis Streams)
+#   jmdn   — the JMDT node process (non-root via gosu)
+#
+# Quick start:
+#   docker compose up -d
+#
+# First run: jmdn downloads a chain snapshot from GCS (several GB), extracts
+# it into the immudb volume, then hands off to the immudb service. Follow logs:
+#   docker compose logs -f
+#
+# Force re-bootstrap:
+#   docker compose run --rm jmdn-bootstrap
+#   docker compose up -d
+
+services:
+
+  # ── ImmuDB ────────────────────────────────────────────────────────────────
+  # Tamper-proof append-only ledger. Runs as a separate service so it can be
+  # upgraded, monitored, and backed up independently of the node process.
+  # jmdn connects via JMDN_DATABASE_ADDRESS=immudb (Docker internal DNS).
+  #
+  # Note: immudb username/password are NOT related to the P2P network.
+  # They are only used by the jmdn process to authenticate its local DB
+  # connection. Leave blank for immudb's built-in defaults (fine for most
+  # operators). Set both here and in jmdn environment if you want custom creds.
+  immudb:
+    image: codenotary/immudb:1.10.0
+    container_name: jmdn-immudb
+    restart: unless-stopped
+    environment:
+      IMMUDB_DIR: /var/lib/immudb
+      # Default is immudb/immudb. To harden: set IMMUDB_PASSWORD in .env and
+      # mirror it as JMDN_DATABASE_PASSWORD in the jmdn service below.
+      IMMUDB_ADMIN_PASSWORD: "${IMMUDB_PASSWORD:-immudb}"
+    volumes:
+      - immudb-data:/var/lib/immudb
+    healthcheck:
+      # immuadmin is NOT bundled in the official immudb image.
+      # Use a TCP socket probe via bash /dev/tcp instead.
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/3322' 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  # Account sync worker (Redis Streams XADD/XREADGROUP/XACK).
+  # Decouples WriteAccounts/BatchUpdateAccounts from ImmuDB's ~15s commit
+  # latency. Required for correct account/balance queries (exchange APIs).
+  redis:
+    image: redis:7-alpine
+    container_name: jmdn-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-jmdnredissync}
+      --appendonly yes
+      --appendfsync everysec
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-jmdnredissync}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Bootstrap (one-time init) ─────────────────────────────────────────────
+  # Downloads the chain snapshot and populates the immudb volume.
+  # Runs as root (needs chown). Use profiles so it only runs on demand:
+  #   docker compose run --rm jmdn-bootstrap
+  # After bootstrap completes, start the stack normally:
+  #   docker compose up -d
+  jmdn-bootstrap:
+    image: ghcr.io/jupitermeta/jmdn:latest
+    # build: .
+    container_name: jmdn-bootstrap
+    profiles: [bootstrap]
+    user: root
+    entrypoint: ["/usr/local/bin/bootstrap_sync.sh"]
+    volumes:
+      - immudb-data:/opt/jmdn/data
+    environment:
+      GCS_BUCKET: "${GCS_BUCKET:-jmzk-releases}"
+      GCS_PREFIX: "${GCS_PREFIX:-jmdn_bootstrap_2306}"
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ── JMDN Node ─────────────────────────────────────────────────────────────
+  # Entrypoint runs as root for bootstrap chown, then gosu-drops to jmdn user.
+  # With IMMUDB_EXTERNAL=true the entrypoint skips starting the embedded
+  # immudb process and just waits for the immudb service to be ready.
+  jmdn:
+    image: ghcr.io/jupitermeta/jmdn:latest
+    # build: .
+    container_name: jmdn
+    restart: unless-stopped
+    depends_on:
+      immudb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    ports:
+      - "8545:8545"   # JSON-RPC (Ethereum-compatible) — primary exchange endpoint
+      - "8546:8546"   # WebSocket RPC
+      - "15052:15052" # DID service
+      # Explorer API — auth-protected, localhost-bound by default.
+      # Uncomment to expose (set JMDN_SECURITY_EXPLORER_API_KEY first):
+      # - "8090:8090"
+
+    environment:
+      # ── ImmuDB (external service) ───────────────────────────────────────────
+      IMMUDB_EXTERNAL: "true"
+      JMDN_DATABASE_ADDRESS: "immudb"   # Docker internal DNS → immudb service
+      JMDN_DATABASE_PORT: "3322"
+      # Must match IMMUDB_ADMIN_PASSWORD above. Change both together via .env:
+      #   IMMUDB_PASSWORD=your-strong-password
+      JMDN_DATABASE_USERNAME: "immudb"
+      JMDN_DATABASE_PASSWORD: "${IMMUDB_PASSWORD:-immudb}"
+
+      # ── Redis (required) ────────────────────────────────────────────────────
+      JMDN_DATABASE_REDIS_URL: "redis:6379"
+      JMDN_DATABASE_REDIS_PASSWORD: "${REDIS_PASSWORD:-jmdnredissync}"
+
+      # ── Explorer API ────────────────────────────────────────────────────────
+      # Enable so the container health check passes (localhost-only).
+      JMDN_PORTS_API: "8090"
+      JMDN_BINDS_API: "127.0.0.1"
+
+      # ── Node identity ───────────────────────────────────────────────────────
+      # JMDN_NODE_ALIAS: "my-node"
+
+      # ── Security secrets — set before mainnet ───────────────────────────────
+      # JMDN_SECURITY_JWT_SECRET: ""
+      # JMDN_SECURITY_EXPLORER_API_KEY: ""
+
+      # ── Alerting (optional) ─────────────────────────────────────────────────
+      # JMDN_ALERTS_URL: "https://tg.jmdt.io/multi-channel"
+      # JMDN_ALERTS_API_KEY: ""
+      # JMDN_ALERTS_CHAT_ID: ""
+
+    volumes:
+      # immudb-data is the source of truth — jmdn reads/writes via immudb service.
+      # No need to mount it directly into jmdn in external mode.
+
+      # Custom config (optional):
+      # - ./jmdn.yaml:/etc/jmdn/jmdn.yaml:ro
+
+      # Production TLS certs (optional — self-signed generated otherwise):
+      # - ./certs:/opt/jmdn/data/certs:ro
+
+      # Peer identity and fastsync state (separate from immudb data):
+      - jmdn-state:/opt/jmdn/data
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8090/api/v1/node/version"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  immudb-data:   # immudb ledger — populated by jmdn-bootstrap on first run
+    driver: local
+  redis-data:    # Redis AOF persistence
+    driver: local
+  jmdn-state:    # peer.json, certs, fastsync state (separate from ledger)
+    driver: local

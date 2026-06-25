@@ -74,7 +74,12 @@ type RedisSettings struct {
 }
 
 // DatabaseSettings controls ImmuDB and Redis connection parameters.
+// Env overrides use the JMDN_ prefix (e.g. JMDN_DATABASE_ADDRESS, JMDN_DATABASE_PORT).
 type DatabaseSettings struct {
+	// ImmuDB connection — override to point at a separate immudb container.
+	Address string `mapstructure:"address" yaml:"address"`
+	Port    int    `mapstructure:"port"    yaml:"port"`
+
 	Username string        `mapstructure:"username" yaml:"username"`
 	Password string        `mapstructure:"password" yaml:"password"`
 	Redis    RedisSettings `mapstructure:"redis"    yaml:"redis"`

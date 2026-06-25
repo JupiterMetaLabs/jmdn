@@ -2,14 +2,14 @@
 # JMDN (Jupiter MetaZK Decentralized Network) - Multi-stage Dockerfile
 # =============================================================================
 # Build:   docker build -t jmdn:latest .
-# Run:     docker run -d --name jmdn -p 8080:8080 -p 4001:4001 jmdn:latest
-# Config:  docker run -d -v /path/to/config.env:/etc/jmdn/config.env jmdn:latest
+# Run:     docker run -d --name jmdn -p 6090:6090 -p 6545:6545 jmdn:latest
+# Config:  docker run -d -v /path/to/jmdn.yaml:/etc/jmdn/jmdn.yaml jmdn:latest
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # Stage 1: Build
 # -----------------------------------------------------------------------------
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.25.3-bookworm AS builder
 
 # Install build dependencies (CGO_ENABLED=1 requires gcc)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -51,11 +51,26 @@ RUN GIT_COMMIT=${GIT_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo "u
 # -----------------------------------------------------------------------------
 FROM debian:bookworm-slim
 
-# Install runtime dependencies
+# Install runtime dependencies + Yggdrasil (required: network.yggdrasil: true in jmdn.yaml)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    gnupg \
+    gosu \
     libc6 \
+    netcat-openbsd \
+    wget \
+    openssl \
+    python3 \
+    gawk \
+    && mkdir -p /usr/local/apt-keys \
+    && gpg --fetch-keys https://neilalexander.s3.dualstack.eu-west-2.amazonaws.com/deb/key.txt \
+    && gpg --export 1C5162E133015D81A811239D1840CDAC6011C5EA \
+       | tee /usr/local/apt-keys/yggdrasil-keyring.gpg > /dev/null \
+    && echo 'deb [signed-by=/usr/local/apt-keys/yggdrasil-keyring.gpg] http://neilalexander.s3.dualstack.eu-west-2.amazonaws.com/deb/ debian yggdrasil' \
+       > /etc/apt/sources.list.d/yggdrasil.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+       yggdrasil \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ImmuDB
@@ -66,35 +81,63 @@ RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
     -o /usr/local/bin/immudb && \
     chmod +x /usr/local/bin/immudb
 
-# Create non-root user
+# Create non-root user — runs immudb and jmdn after bootstrap completes.
+# Entrypoint starts as root (bootstrap needs chown), then drops to jmdn via gosu.
 RUN groupadd -r jmdn && useradd -r -g jmdn -d /home/jmdn -s /bin/bash -m jmdn
 
-# Create required directories
-RUN mkdir -p /etc/jmdn /opt/jmdn/data /var/log/jmdn && \
-    chown -R jmdn:jmdn /opt/jmdn /var/log/jmdn /etc/jmdn
+# Create required directories and hand ownership to jmdn (mirrors install_services.sh layout)
+RUN mkdir -p \
+    /etc/jmdn/certs \
+    /opt/jmdn/data/data \
+    /opt/jmdn/data/config \
+    /opt/jmdn/data/DB \
+    /var/log/jmdn \
+    && chown -R jmdn:jmdn /opt/jmdn /var/log/jmdn /etc/jmdn
 
-# Copy binary and default config from builder
-COPY --from=builder /src/jmdn /usr/local/bin/jmdn
-COPY --from=builder /src/jmdn_default.yaml /etc/jmdn/jmdn_default.yaml
+# Copy binary and scripts from builder
+COPY --from=builder /src/jmdn                           /usr/local/bin/jmdn
+COPY --from=builder /src/Scripts/start_jmdn_wrapper.sh  /usr/local/bin/start_jmdn_wrapper.sh
+COPY --from=builder /src/Scripts/docker-entrypoint.sh   /usr/local/bin/docker-entrypoint.sh
+COPY --from=builder /src/Scripts/bootstrap_sync.sh      /usr/local/bin/bootstrap_sync.sh
+RUN chmod +x /usr/local/bin/start_jmdn_wrapper.sh \
+             /usr/local/bin/docker-entrypoint.sh \
+             /usr/local/bin/bootstrap_sync.sh
+
+# Copy default config as jmdn.yaml (mirrors setup_config.sh: cp jmdn_default.yaml → jmdn.yaml)
+COPY --from=builder /src/jmdn_default.yaml /etc/jmdn/jmdn.yaml
+
+# peer.json stored at two locations:
+#   /opt/jmdn/data/config/peer.json — runtime path (WORKDIR-relative, per config/constants.go)
+#   /etc/jmdn/peer.json             — fallback used by entrypoint after bootstrap wipes the volume
+COPY --from=builder /src/config/peer.json /opt/jmdn/data/config/peer.json
 COPY --from=builder /src/config/peer.json /etc/jmdn/peer.json
 
-# Expose common ports
-# 8080 - HTTP API / Explorer
-# 4001 - P2P / libp2p
-# 3323 - ImmuDB
-# 50051 - gRPC
-EXPOSE 8080 4001 3323 50051
+# Expose ports per jmdn_default.yaml (localhost-bound ports excluded)
+# 8090  - Explorer API             (ports.api)       disabled by default; set JMDN_PORTS_API=8090
+# 15050 - Block generation         (ports.blockgen)  disabled by default
+# 15055 - Block propagation gRPC   (ports.blockgrpc) disabled by default
+# 15052 - DID service              (ports.did)
+# 8545  - Facade / JSON-RPC        (ports.facade)
+# 8546  - WebSocket                (ports.ws)
+# ImmuDB (3322) is container-internal — not exposed
+EXPOSE 8090 15050 15055 15052 8545 8546
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+# Health check against Explorer API (ports.api).
+# API is disabled by default — enable it via JMDN_PORTS_API=8090 (see docker-compose.yml).
+# start-period extended to 120s to allow bootstrap sync on first run.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+    CMD curl -sf http://localhost:8090/api/v1/node/version || exit 1
 
-# Data volume for ImmuDB persistence
+# Data volume — ImmuDB data, peer identity, certs, fastsync state
 VOLUME ["/opt/jmdn/data"]
 
-USER jmdn
-WORKDIR /home/jmdn
+# Entrypoint runs as root so bootstrap_sync can chown the extracted snapshot.
+# After bootstrap it uses gosu to drop to jmdn for immudb and the node process.
+# WORKDIR must be /opt/jmdn/data — jmdn resolves peer.json as ./config/peer.json
+# (hardcoded: config/constants.go PeerFile = "./config/peer.json")
+WORKDIR /opt/jmdn/data
 
-# Default entrypoint - override config with -v /your/config.env:/etc/jmdn/config.env
-ENTRYPOINT ["jmdn"]
-CMD ["-config", "/etc/jmdn/config.env"]
+# Startup order: bootstrap (root) → restore paths → gosu jmdn immudb → gosu jmdn jmdn
+# Override config: -v /your/jmdn.yaml:/etc/jmdn/jmdn.yaml
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["-config", "/etc/jmdn/jmdn.yaml"]

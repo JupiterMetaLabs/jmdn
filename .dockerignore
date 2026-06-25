@@ -1,28 +1,125 @@
-# Binary
-jmdn
+# =============================================================================
+# JMDN Docker Build Context — .dockerignore
+# =============================================================================
+# Controls what gets sent to the Docker daemon for `docker build`.
+# Smaller context = faster builds, no accidental secret leakage.
+#
+# !! CRITICAL: Do NOT add Scripts/ here !!
+# The builder stage does `COPY . .`, then the runtime stage does:
+#   COPY --from=builder /src/Scripts/docker-entrypoint.sh ...
+#   COPY --from=builder /src/Scripts/bootstrap_sync.sh ...
+#   COPY --from=builder /src/Scripts/start_jmdn_wrapper.sh ...
+# Excluding Scripts/ breaks the build at COPY --from=builder.
+# Individual dev-only scripts that don't go into the image are excluded below.
+# =============================================================================
 
-# Git
+# ── Compiled binaries (built inside Docker, not copied from host) ──────────────
+jmdn
+jmdn.exe
+gossipnode
+gossipnode.exe
+gossipnode.exe.sig
+immudb
+immudb_mac
+immuclient
+JMDT-node
+test-cli
+__debug_bin
+*.out
+*.test
+
+# ── Git internals ──────────────────────────────────────────────────────────────
 .git
 .gitignore
+.github
 
-# IDE
+# ── IDE / OS clutter ───────────────────────────────────────────────────────────
 .vscode
 .idea
+.cursor
+.DS_Store
+Thumbs.db
 *.swp
 *.swo
-.DS_Store
+cloudgrafana.txt
 
-# Reports and docs (not needed for build)
+# ── Documentation ──────────────────────────────────────────────────────────────
+# Whitelisted: guides that may be referenced or kept for context.
 *.pdf
 *.docx
 *.md
 !README.md
-!DEPLOY_GUIDE.md
+!GETTING_STARTED.md
+!DOCKER.md
+!CHANGELOG.md
 
-# Test artifacts
+# ── Test artifacts ─────────────────────────────────────────────────────────────
 *_test.go
 gosec_report.txt
 go_vet_report.txt
+test_results/
+coverage.out
+*.avro
 
-# Grafana dashboards (not needed in container)
+# ── Runtime data — never bake into image ───────────────────────────────────────
+# Created at runtime by the node or operator. Baking them in would leak data.
+data/
+/data
+logs/
+*.log
+dlq/
+storage/
+.immudb_state/
+*.db
+eventlog.duckdb
+internal/WAL/.tmp/
+
+# Operator config — mount at runtime, never bake in.
+# A local jmdn.yaml may contain secrets and node-specific state.
+jmdn.yaml
+
+# ── Credentials and secrets ────────────────────────────────────────────────────
+# TLS certs are generated at runtime by docker-entrypoint.sh.
+# Excluding prevents leakage of local dev certs into the image.
+.env
+*.env
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*_rsa
+*_ed25519
+*.secret
+Account.json
+
+# ── Grafana / monitoring ───────────────────────────────────────────────────────
 grafana/
+
+# ── Audit, simulation, dev artifacts ──────────────────────────────────────────
+audits/
+security-audit-report.*
+SIM/
+temp/
+
+# ── Dev-only scripts (not needed in image) ─────────────────────────────────────
+# Do NOT exclude Scripts/ — see critical note at top.
+# Only exclude scripts that are never copied into the image:
+Scripts/restore_tags.sh
+Scripts/sign_tx.go
+Scripts/merke_temp.go
+Scripts/deploy.sh
+Scripts/install_services.sh
+Scripts/setup_dependencies.sh
+Scripts/setup_certs.sh
+Scripts/setup_config.sh
+
+# ── Vendor (use go mod download in Dockerfile instead) ─────────────────────────
+vendor/
+
+# ── Storage engine state ───────────────────────────────────────────────────────
+storage/thebe-kv/
+*.vlog
+
+# ── CI / quality tooling config ────────────────────────────────────────────────
+sonar-project.properties

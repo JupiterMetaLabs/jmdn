@@ -783,6 +783,19 @@ func main() {
 	// We must refresh the token cache so GetResolvedToken() returns the correct values.
 	cfg.Security.ResolveTokens()
 
+	// ImmuDB address/port — override package-level vars so all callers
+	// (ConnectionPool, fastsync, DB_OPs) pick up the config value without
+	// needing individual changes. Defaults: localhost:3322 (embedded).
+	// Override via JMDN_DATABASE_ADDRESS / JMDN_DATABASE_PORT to use an
+	// external immudb container.
+	if cfg.Database.Address != "" {
+		config.DBAddress = cfg.Database.Address
+	}
+	if cfg.Database.Port > 0 {
+		config.DBPort = cfg.Database.Port
+	}
+	fmt.Printf("ImmuDB target: %s:%d\n", config.DBAddress, config.DBPort)
+
 	// Chain ID global initialization — must happen before any Security validation.
 	// Previously this was only set inside Block/Server.go (gated behind BlockGen > 0),
 	// which left expectedChainID nil on non-sequencer nodes. All nodes need it because
