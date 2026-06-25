@@ -39,9 +39,9 @@ services:
     volumes:
       - immudb-data:/var/lib/immudb
     healthcheck:
-      # immuadmin is NOT bundled in the official immudb image.
-      # Use a TCP socket probe via bash /dev/tcp instead.
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/3322' 2>/dev/null || exit 1"]
+      # immudb image has no bash — /dev/tcp doesn't work.
+      # Use wget on immudb's built-in web API (port 8080).
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       start_period: 15s
