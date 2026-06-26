@@ -156,7 +156,7 @@ services:
       # No need to mount it directly into jmdn in external mode.
 
       # Custom config (optional):
-      # - ./jmdn.yaml:/etc/jmdn/jmdn.yaml:ro
+      - ./jmdn.yaml:/etc/jmdn/jmdn.yaml:ro
 
       # Production TLS certs (optional — self-signed generated otherwise):
       # - ./certs:/opt/jmdn/data/certs:ro

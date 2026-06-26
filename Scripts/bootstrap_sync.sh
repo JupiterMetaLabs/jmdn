@@ -116,8 +116,10 @@ if [ -d "$DATA_DIR" ] && [ "$(ls -A "$DATA_DIR" 2>/dev/null)" ]; then
     TIMESTAMP=$(date -u '+%Y%m%dT%H%M%S')
     BACKUP_DIR="${BACKUP_BASE}/data_${TIMESTAMP}"
     log "Backing up existing data → $BACKUP_DIR"
-    mkdir -p "$BACKUP_BASE"
-    mv "$DATA_DIR" "$BACKUP_DIR"
+    mkdir -p "$BACKUP_DIR"
+    # DATA_DIR may be a Docker volume mount point — cannot mv the directory
+    # itself (Device or resource busy). Move contents instead.
+    find "$DATA_DIR" -mindepth 1 -maxdepth 1 -exec mv {} "$BACKUP_DIR/" \;
 fi
 
 # ── Clear immudb identity/state files ────────────────────
@@ -148,7 +150,10 @@ log "Data root found: $REAL_DATA_DIR"
 
 # ── Move to final location ────────────────────────────────
 log "Moving data to $DATA_DIR..."
-mv "$REAL_DATA_DIR" "$DATA_DIR"
+# DATA_DIR always exists as a Docker volume mount point — `mv src dst` when
+# dst exists as a directory would move src *into* dst, giving the wrong path.
+# Move contents of REAL_DATA_DIR into DATA_DIR instead.
+find "$REAL_DATA_DIR" -mindepth 1 -maxdepth 1 -exec mv {} "$DATA_DIR/" \;
 rm -rf "${BASE_DIR}/data_tmp"
 
 # ── Fix permissions ───────────────────────────────────────
