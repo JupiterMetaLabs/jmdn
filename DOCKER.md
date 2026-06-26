@@ -205,21 +205,19 @@ EOF
 
 > `.env` is in `.gitignore` — it will never be committed.
 
-### Step 3 — (Optional) Custom node config
+### Step 3 — Create your node config
 
-If you need to override any node settings beyond what env vars cover, copy the default config and edit it:
+Create `jmdn.yaml` in the same directory as `docker-compose.yml`:
 
 ```bash
-cp /opt/jmdn/jmdn/jmdn_default.yaml /opt/jmdn/jmdn/jmdn.yaml
-# edit /opt/jmdn/jmdn/jmdn.yaml as needed
+cd /opt/jmdn/jmdn
+# create and edit your config — see jmdn_default.yaml in the repo for all available keys
+nano jmdn.yaml
 ```
 
-Then uncomment this line in `docker-compose.yml` under the `jmdn:` service volumes:
-```yaml
-- ./jmdn.yaml:/etc/jmdn/jmdn.yaml:ro
-```
+`docker-compose.yml` mounts `./jmdn.yaml` into the container at `/etc/jmdn/jmdn.yaml`. The node reads that path automatically on startup — no flags needed.
 
-If you skip this step, the baked-in default config is used — which is fine for most operators.
+> **This file must exist before running `docker compose up`.** The mount is always active.
 
 ### Step 4 — Build the JMDN image
 

@@ -155,7 +155,8 @@ services:
       # immudb-data is the source of truth — jmdn reads/writes via immudb service.
       # No need to mount it directly into jmdn in external mode.
 
-      # Custom config (optional):
+      # Custom config — jmdn.yaml must exist next to this file (see Step 3 in DOCKER.md).
+      # Maps host ./jmdn.yaml → /etc/jmdn/jmdn.yaml inside the container (read by node on startup).
       - ./jmdn.yaml:/etc/jmdn/jmdn.yaml:ro
 
       # Production TLS certs (optional — self-signed generated otherwise):
