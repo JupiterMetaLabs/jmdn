@@ -28,12 +28,30 @@ IMMUDB_EXTERNAL="${IMMUDB_EXTERNAL:-false}"
 
 log() { echo "[entrypoint] $*"; }
 
+# ── Config guard ──────────────────────────────────────────
+# jmdn.yaml must be mounted — node must not start with compiled defaults
+# (wrong chain_id, wrong seednode). Mount via: -v /your/jmdn.yaml:/etc/jmdn/jmdn.yaml
+if [ ! -f /etc/jmdn/jmdn.yaml ]; then
+    log "ERROR: /etc/jmdn/jmdn.yaml not found."
+    log "Mount your config: -v \$(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml"
+    exit 1
+fi
+
 # ── Step 1: Bootstrap sync ────────────────────────────────
 # External mode: skip — bootstrap must run via the jmdn-bootstrap service so
 # it writes into the immudb-data volume (not jmdn-state).
 # Embedded mode: run bootstrap_sync.sh before immudb starts.
 if [ "${IMMUDB_EXTERNAL}" = "true" ]; then
-    log "External ImmuDB mode — skipping bootstrap (populate immudb-data volume first via: docker compose run --rm jmdn-bootstrap)"
+    log "External ImmuDB mode — skipping bootstrap."
+    # Guard: ensure bootstrap was run against the immudb-data volume before this
+    # container started. Without it, jmdn connects to an empty immudb and fails.
+    SENTINEL="/opt/jmdn/data/.bootstrapped"
+    if [ ! -f "$SENTINEL" ]; then
+        log "ERROR: Bootstrap sentinel not found at $SENTINEL."
+        log "Run bootstrap first: docker compose run --rm jmdn-bootstrap"
+        exit 1
+    fi
+    log "Sentinel found — immudb-data volume is populated."
 else
     log "Embedded ImmuDB mode — running bootstrap sync..."
     if ! /usr/local/bin/bootstrap_sync.sh; then

@@ -30,9 +30,6 @@ GCS_BUCKET="${GCS_BUCKET:-jmzk-releases}"
 GCS_PREFIX="${GCS_PREFIX:-jmdn_bootstrap_2306}"
 PARTS_PREFIX="${PARTS_PREFIX:-data_backup_23062026.part}"
 CHECKSUM_FILE="${CHECKSUM_FILE:-checksums.md5}"
-# JMDN_USER is exported by docker-entrypoint.sh before calling this script.
-# Fallback to jmdn so bootstrap_sync.sh can also be run standalone.
-JMDN_USER="${JMDN_USER:-jmdn}"
 
 BASE_DIR="/opt/jmdn"
 DATA_DIR="${BASE_DIR}/data"

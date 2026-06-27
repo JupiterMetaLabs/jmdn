@@ -81,9 +81,10 @@ RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
     -o /usr/local/bin/immudb && \
     chmod +x /usr/local/bin/immudb
 
-# Create non-root user — runs immudb and jmdn after bootstrap completes.
-# Entrypoint starts as root (bootstrap needs chown), then drops to jmdn via gosu.
-RUN groupadd -r jmdn && useradd -r -g jmdn -d /home/jmdn -s /bin/bash -m jmdn
+# Create non-root user pinned to UID/GID 3322 — must match IMMUDB_UID (3322) used
+# in bootstrap_sync.sh so that immudb (started via gosu jmdn) can write to its
+# data directory after the snapshot is extracted and chowned to 3322:3322.
+RUN groupadd -r -g 3322 jmdn && useradd -r -u 3322 -g jmdn -d /home/jmdn -s /bin/bash -m jmdn
 
 # Create required directories and hand ownership to jmdn (mirrors install_services.sh layout)
 # /opt/jmdn          = JMDN_DATA root (WorkingDirectory for jmdn process)
