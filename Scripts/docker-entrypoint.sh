@@ -4,11 +4,19 @@
 # Runs as root. Drops to jmdn user (via gosu) for all long-running processes.
 #
 # Startup order:
-#   1. Bootstrap sync  — root only: download snapshot, chown to jmdn, write sentinel
-#                        MUST run before ImmuDB — bootstrap mv's /opt/jmdn/data
-#   2. Restore paths   — root: peer.json, certs (may be wiped by bootstrap)
-#   3. gosu jmdn immudb — drops privilege, starts ImmuDB, waits for :3322
-#   4. gosu jmdn jmdn  — drops privilege, exec's the node process
+#   1. Bootstrap check — skipped when IMMUDB_EXTERNAL=true (separate container mode).
+#                        In embedded mode only: download snapshot into /opt/jmdn/data.
+#   2. Restore paths   — root: ensure DB/, config/, certs/ exist with correct ownership.
+#   3. Wait for ImmuDB — nc loop against immudb host:port.
+#   4. gosu jmdn jmdn  — drops privilege, exec's the node process.
+#
+# External ImmuDB mode (IMMUDB_EXTERNAL=true, default in docker-compose.yml):
+#   Bootstrap is handled by the jmdn-bootstrap profile service which mounts
+#   immudb-data:/opt/jmdn/data and writes the snapshot there. The jmdn container
+#   mounts jmdn-state:/opt/jmdn — running bootstrap here would write into the
+#   wrong volume and the data would never reach immudb.
+#   Run bootstrap once before starting the stack:
+#     docker compose run --rm jmdn-bootstrap
 
 set -euo pipefail
 
@@ -16,38 +24,47 @@ JMDN_USER="${JMDN_USER:-jmdn}"
 IMMUDB_PORT="${IMMUDB_PORT:-3322}"
 IMMUDB_DIR="${IMMUDB_DIR:-/opt/jmdn/data}"
 IMMUDB_READY_TIMEOUT="${IMMUDB_READY_TIMEOUT:-30}"
+IMMUDB_EXTERNAL="${IMMUDB_EXTERNAL:-false}"
 
 log() { echo "[entrypoint] $*"; }
 
-# ── Step 1: Bootstrap sync (first run only) ──────────────
-# Runs as root — bootstrap_sync.sh chowns the extracted snapshot to jmdn:jmdn.
-# ImmuDB is NOT running here: bootstrap mv's /opt/jmdn/data, so starting
-# ImmuDB first would leave it with stale file handles after the directory swap.
-if ! /usr/local/bin/bootstrap_sync.sh; then
-    log "ERROR: Bootstrap failed — aborting."
-    exit 1
+# ── Step 1: Bootstrap sync ────────────────────────────────
+# External mode: skip — bootstrap must run via the jmdn-bootstrap service so
+# it writes into the immudb-data volume (not jmdn-state).
+# Embedded mode: run bootstrap_sync.sh before immudb starts.
+if [ "${IMMUDB_EXTERNAL}" = "true" ]; then
+    log "External ImmuDB mode — skipping bootstrap (populate immudb-data volume first via: docker compose run --rm jmdn-bootstrap)"
+else
+    log "Embedded ImmuDB mode — running bootstrap sync..."
+    if ! /usr/local/bin/bootstrap_sync.sh; then
+        log "ERROR: Bootstrap failed — aborting."
+        exit 1
+    fi
 fi
 
 # ── Step 2: Restore paths (runs as root before privilege drop) ────────────────
 
 # Ensure required subdirectories exist on the volume with correct ownership.
-# The image pre-creates these dirs, but the jmdn-state volume mount overlays
-# the image filesystem — so the volume starts empty and they must be recreated.
+# JMDN_DATA = /opt/jmdn — matches bare-metal WorkingDirectory=${JMDN_DATA}.
+# The jmdn-state volume overlays the image filesystem at /opt/jmdn on first run,
+# so the volume starts empty and these dirs must be recreated here.
+# NOTE: /opt/jmdn/data is immudb's dir — managed by the immudb container and
+#       mounted separately (immudb-data volume). Do NOT create it here.
 mkdir -p \
-    /opt/jmdn/data/config \
-    /opt/jmdn/data/DB \
-    /opt/jmdn/data/certs
+    /opt/jmdn/config \
+    /opt/jmdn/DB \
+    /opt/jmdn/certs
 chown "${JMDN_USER}:${JMDN_USER}" \
-    /opt/jmdn/data/config \
-    /opt/jmdn/data/DB \
-    /opt/jmdn/data/certs
+    /opt/jmdn/config \
+    /opt/jmdn/DB \
+    /opt/jmdn/certs
 
 # TLS certs — mirrors Scripts/setup_certs.sh.
 # Self-signed certs generated only if missing.
-# For production: mount real certs at /opt/jmdn/data/certs
-if [ ! -f /opt/jmdn/data/certs/ca.crt ]; then
+# For production: mount real certs at /opt/jmdn/certs
+if [ ! -f /opt/jmdn/certs/ca.crt ]; then
     log "Generating self-signed TLS certs..."
-    CERT_DIR=/opt/jmdn/data/certs
+    CERT_DIR=/opt/jmdn/certs
 
     openssl req -x509 -newkey rsa:4096 -nodes -days 3650 \
         -keyout "$CERT_DIR/ca.key" -out "$CERT_DIR/ca.crt" \
@@ -73,7 +90,6 @@ fi
 # IMMUDB_EXTERNAL=true  → immudb runs as a separate container (docker-compose);
 #                          entrypoint just waits for JMDN_DATABASE_ADDRESS:port.
 # IMMUDB_EXTERNAL=false → entrypoint starts the embedded immudb process.
-IMMUDB_EXTERNAL="${IMMUDB_EXTERNAL:-false}"
 IMMUDB_HOST="${JMDN_DATABASE_ADDRESS:-127.0.0.1}"
 IMMUDB_PID=""
 

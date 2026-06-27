@@ -86,11 +86,17 @@ RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
 RUN groupadd -r jmdn && useradd -r -g jmdn -d /home/jmdn -s /bin/bash -m jmdn
 
 # Create required directories and hand ownership to jmdn (mirrors install_services.sh layout)
+# /opt/jmdn          = JMDN_DATA root (WorkingDirectory for jmdn process)
+# /opt/jmdn/data     = immudb --dir (systemdb, defaultdb, accountsdb)
+# /opt/jmdn/config   = peer.json and other jmdn config
+# /opt/jmdn/DB       = gossipnode.db (DBPath = "./DB/gossipnode.db" relative to WorkingDirectory)
+# /opt/jmdn/certs    = TLS certs (self-signed or operator-mounted)
 RUN mkdir -p \
     /etc/jmdn/certs \
-    /opt/jmdn/data/data \
-    /opt/jmdn/data/config \
-    /opt/jmdn/data/DB \
+    /opt/jmdn/data \
+    /opt/jmdn/config \
+    /opt/jmdn/DB \
+    /opt/jmdn/certs \
     /var/log/jmdn \
     && chown -R jmdn:jmdn /opt/jmdn /var/log/jmdn /etc/jmdn
 
@@ -127,14 +133,16 @@ EXPOSE 8090 15050 15055 15052 8545 8546
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
     CMD curl -sf http://localhost:8090/api/v1/node/version || exit 1
 
-# Data volume — ImmuDB data, peer identity, certs, fastsync state
-VOLUME ["/opt/jmdn/data"]
+# Volume declaration — node state (config/, DB/, certs/).
+# immudb data (/opt/jmdn/data) is a separate named volume mounted to the immudb
+# container — the jmdn container does NOT mount immudb files (IMMUDB_EXTERNAL=true).
+VOLUME ["/opt/jmdn"]
 
 # Entrypoint runs as root so bootstrap_sync can chown the extracted snapshot.
-# After bootstrap it uses gosu to drop to jmdn for immudb and the node process.
-# WORKDIR must be /opt/jmdn/data — jmdn resolves peer.json as ./config/peer.json
-# (hardcoded: config/constants.go PeerFile = "./config/peer.json")
-WORKDIR /opt/jmdn/data
+# After bootstrap it uses gosu to drop to jmdn for the node process.
+# WORKDIR = /opt/jmdn — matches bare metal WorkingDirectory=${JMDN_DATA}.
+# jmdn resolves "./DB/gossipnode.db" and "./config/peer.json" relative to this.
+WORKDIR /opt/jmdn
 
 # Startup order: bootstrap (root) → restore paths → gosu jmdn immudb → gosu jmdn jmdn
 # Override config: -v /your/jmdn.yaml:/etc/jmdn/jmdn.yaml
