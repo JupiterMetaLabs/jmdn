@@ -1038,6 +1038,34 @@ docker compose restart jmdn
 # Entrypoint will generate fresh self-signed certs
 ```
 
+### Manual catchup sync
+
+If the node bootstrapped successfully but is missing recent blocks (e.g. blocks produced after the snapshot was taken), trigger a catchup manually from inside the container:
+
+```bash
+docker exec -it jmdn jmdn -cmd catchup \
+  /ip4/<peer-ip>/tcp/15000/p2p/<peer-id> \
+  <from_block>
+```
+
+Replace `<peer-ip>`, `<peer-id>`, and `<from_block>` with the target peer's address and the first block after your bootstrap snapshot (e.g. `bootstrapTip + 1`).
+
+Example — catching up from block 11605:
+
+```bash
+docker exec -it jmdn jmdn -cmd catchup \
+  /ip4/<peer-ip>/tcp/15000/p2p/12D3KooW... \
+  11605
+```
+
+Follow progress in the node logs:
+
+```bash
+docker logs --tail 100 -f jmdn
+```
+
+Look for `[CatchUpSync] done in …` to confirm completion. The SyncMonitor will keep the node in sync automatically after that.
+
 ### Full container reset (nuclear option)
 
 ```bash
