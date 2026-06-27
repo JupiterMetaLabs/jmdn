@@ -157,12 +157,13 @@ find "$REAL_DATA_DIR" -mindepth 1 -maxdepth 1 -exec mv {} "$DATA_DIR/" \;
 rm -rf "${BASE_DIR}/data_tmp"
 
 # ── Fix permissions ───────────────────────────────────────
-# Snapshot archives may embed arbitrary uid/gid from the source system.
-# Reset ownership to jmdn so immudb and jmdn (both running as jmdn) can
-# read and write the data directory. Bootstrap runs as root — this is the
-# only step that requires it.
-log "Fixing permissions on $DATA_DIR..."
-chown -R "${JMDN_USER}:${JMDN_USER}" "$DATA_DIR"
+# Bootstrap runs as root, so extracted files are root-owned.
+# immudb container runs as UID:GID 3322:3322 and needs write access
+# to its transaction logs. chown so immudb can read and write its data.
+# (jmdn connects via gRPC and never touches this directory.)
+IMMUDB_UID="${IMMUDB_UID:-3322}"
+log "Setting ownership of $DATA_DIR to $IMMUDB_UID:$IMMUDB_UID..."
+chown -R "${IMMUDB_UID}:${IMMUDB_UID}" "$DATA_DIR"
 
 # ── Clean up work directory ───────────────────────────────
 log "Cleaning up work directory..."

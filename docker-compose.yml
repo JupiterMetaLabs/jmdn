@@ -80,7 +80,7 @@ services:
   # Guard: writes .bootstrapped sentinel — safe to call again (skips if done).
   #   docker compose run --rm jmdn-bootstrap
   jmdn-bootstrap:
-    image: ghcr.io/jupitermeta/jmdn:latest
+    image: ghcr.io/jupitermetalabs/jmdn:latest
     container_name: jmdn-bootstrap
     profiles: [bootstrap]
     user: root
@@ -105,7 +105,7 @@ services:
   # WorkingDirectory = /opt/jmdn (matches bare-metal ${JMDN_DATA}).
   # DB/gossipnode.db resolves as ./DB/gossipnode.db relative to WorkingDirectory.
   jmdn:
-    image: ghcr.io/jupitermeta/jmdn:latest
+    image: ghcr.io/jupitermetalabs/jmdn:latest
     container_name: jmdn
     restart: unless-stopped
     depends_on:
