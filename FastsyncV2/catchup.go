@@ -422,6 +422,9 @@ func (fs *FastsyncV2) buildMissingTag(fromBlock, remoteTip uint64) (*taggingpb.T
 		}
 
 		for _, blk := range batch {
+			if blk == nil {
+				continue
+			}
 			b := blk.BlockNumber
 			if b < cursor {
 				continue // already accounted for (shouldn't happen with sorted iterator)
@@ -463,6 +466,9 @@ func (fs *FastsyncV2) collectTaggedAccountsFromBlocks(fromBlock, remoteTip uint6
 			break
 		}
 		for _, blk := range batch {
+			if blk == nil {
+				continue
+			}
 			for _, tx := range blk.Transactions {
 				if tx.From != nil {
 					accounts[tx.From.Hex()] = true
@@ -525,6 +531,9 @@ func (fs *FastsyncV2) buildDataMissingTag(fromBlock, remoteTip uint64) (*tagging
 		}
 
 		for _, blk := range batch {
+			if blk == nil {
+				continue
+			}
 			b := blk.BlockNumber
 			if b < cursor {
 				continue // shouldn't happen with a sorted iterator

@@ -246,13 +246,15 @@ func (m *Monitor) Start(ctx context.Context) error {
 	log.Printf("[syncmonitor] starting — base interval: %v", m.baseInterval)
 
 	go func() {
-		// Fix 1: randomised startup jitter — spreads 50+ nodes uniformly across
-		// the interval window instead of all firing at the same wall-clock offset.
+		// Run first check immediately on startup, then apply jitter before the
+		// second check so subsequent nodes joining later don't all fire in lockstep.
+		m.runCheck(ctx)
+
 		jitter := time.Duration(rand.Int64N(int64(m.baseInterval)))
-		log.Printf("[syncmonitor] startup jitter: %v", jitter.Round(time.Millisecond))
+		log.Printf("[syncmonitor] post-startup jitter before second check: %v", jitter.Round(time.Millisecond))
 		select {
 		case <-ctx.Done():
-			log.Println("[syncmonitor] stopped before first check")
+			log.Println("[syncmonitor] stopped after first check")
 			return
 		case <-time.After(jitter):
 		}

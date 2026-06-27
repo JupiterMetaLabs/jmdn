@@ -42,6 +42,9 @@ func (fs *FastsyncV2) computeAccountDeltas(fromBlock, toBlock uint64) map[string
 			break
 		}
 		for _, blk := range batch {
+			if blk == nil {
+				continue
+			}
 			applyBlockDeltas(blk, deltas)
 		}
 	}
@@ -51,6 +54,9 @@ func (fs *FastsyncV2) computeAccountDeltas(fromBlock, toBlock uint64) map[string
 
 // applyBlockDeltas applies the transaction effects of one ZKBlock to the delta map.
 func applyBlockDeltas(blk *types.ZKBlock, deltas map[string]*types.AccountDelta) {
+	if blk == nil {
+		return
+	}
 	var coinbaseAddr, zkvmAddr string
 	if blk.CoinbaseAddr != nil {
 		coinbaseAddr = strings.ToLower(blk.CoinbaseAddr.Hex())
