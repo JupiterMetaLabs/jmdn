@@ -23,7 +23,7 @@ set -euo pipefail
 JMDN_USER="${JMDN_USER:-jmdn}"
 IMMUDB_PORT="${IMMUDB_PORT:-3322}"
 IMMUDB_DIR="${IMMUDB_DIR:-/opt/jmdn/data}"
-IMMUDB_READY_TIMEOUT="${IMMUDB_READY_TIMEOUT:-30}"
+IMMUDB_READY_TIMEOUT="${IMMUDB_READY_TIMEOUT:-120}"
 IMMUDB_EXTERNAL="${IMMUDB_EXTERNAL:-false}"
 
 log() { echo "[entrypoint] $*"; }
@@ -130,6 +130,9 @@ elapsed=0
 until nc -z "${IMMUDB_HOST}" "${IMMUDB_PORT}" 2>/dev/null; do
     if [ "${elapsed}" -ge "${IMMUDB_READY_TIMEOUT}" ]; then
         log "ERROR: ImmuDB did not become ready within ${IMMUDB_READY_TIMEOUT}s"
+        log "  ImmuDB loads all databases before binding port ${IMMUDB_PORT}."
+        log "  Large snapshots can take 2-5 min. Increase timeout:"
+        log "    docker run -e IMMUDB_READY_TIMEOUT=300 ..."
         [ -n "${IMMUDB_PID}" ] && kill "${IMMUDB_PID}" 2>/dev/null || true
         exit 1
     fi

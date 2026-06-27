@@ -135,7 +135,7 @@ EXPOSE 8090 15050 15055 15052 8545 8546
 # Health check against Explorer API (ports.api).
 # API is disabled by default — enable it via JMDN_PORTS_API=8090 (see docker-compose.yml).
 # start-period extended to 120s to allow bootstrap sync on first run.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
     CMD curl -sf http://localhost:8090/api/v1/node/version || exit 1
 
 # Volume declaration — node state (config/, DB/, certs/).
