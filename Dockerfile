@@ -1,9 +1,13 @@
 # =============================================================================
 # JMDN (Jupiter MetaZK Decentralized Network) - Multi-stage Dockerfile
 # =============================================================================
-# Build:   docker build -t jmdn:latest .
-# Run:     docker run -d --name jmdn -p 6090:6090 -p 6545:6545 jmdn:latest
-# Config:  docker run -d -v /path/to/jmdn.yaml:/etc/jmdn/jmdn.yaml jmdn:latest
+# Build:   docker build -t ghcr.io/jupitermetalabs/jmdn:latest .
+# Run:     docker run -d --name jmdn \
+#            -v $(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml:ro \
+#            -v jmdn-data:/opt/jmdn \
+#            -p 8545:8545 -p 8546:8546 -p 15052:15052 \
+#            ghcr.io/jupitermetalabs/jmdn:latest
+# Docs:    See DOCKER.md § 5 for full docker run reference
 # =============================================================================
 
 # -----------------------------------------------------------------------------

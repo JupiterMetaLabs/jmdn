@@ -9,16 +9,17 @@
 1. [How Docker Works — The Basics](#1-how-docker-works--the-basics)
 2. [JMDN Architecture Inside Docker](#2-jmdn-architecture-inside-docker)
 3. [Services Deep Dive](#3-services-deep-dive)
-4. [Quick Start](#4-quick-start)
-5. [First Run — What Actually Happens](#5-first-run--what-actually-happens)
-6. [Configuration](#6-configuration)
-7. [Building the Image from Source](#7-building-the-image-from-source)
-8. [Debugging — Live Logs, Exec, Inspect](#8-debugging--live-logs-exec-inspect)
-9. [Log Retention](#9-log-retention)
-10. [Health Checks](#10-health-checks)
-11. [Volumes and Data Management](#11-volumes-and-data-management)
-12. [Upgrading](#12-upgrading)
-13. [Troubleshooting](#13-troubleshooting)
+4. [Quick Start (Docker Compose)](#4-quick-start--new-vm-setup)
+5. [Running with `docker run` (Standalone)](#5-running-with-docker-run-standalone)
+6. [First Run — What Actually Happens](#6-first-run--what-actually-happens)
+7. [Configuration](#7-configuration)
+8. [Building the Image from Source](#8-building-the-image-from-source)
+9. [Debugging — Live Logs, Exec, Inspect](#9-debugging--live-logs-exec-inspect)
+10. [Log Retention](#10-log-retention)
+11. [Health Checks](#11-health-checks)
+12. [Volumes and Data Management](#12-volumes-and-data-management)
+13. [Upgrading](#13-upgrading)
+14. [Troubleshooting](#14-troubleshooting)
 
 ---
 
@@ -312,7 +313,153 @@ curl -s http://localhost:8090/api/v1/node/version
 
 ---
 
-## 5. First Run — What Actually Happens
+## 5. Running with `docker run` (Standalone)
+
+Use these commands when you want to run a single JMDN node without Docker Compose — for quick tests, CI, or a minimal setup with embedded ImmuDB.
+
+### Pull the image
+
+```bash
+# Latest release
+docker pull ghcr.io/jupitermetalabs/jmdn:latest
+
+# Specific version
+docker pull ghcr.io/jupitermetalabs/jmdn:v1.0.0
+```
+
+> Images are published for **linux/amd64**, **linux/arm64**, and **linux/arm/v7**. Docker pulls the right variant automatically based on your machine's architecture.
+
+### Minimal run (embedded ImmuDB)
+
+The node starts with ImmuDB running inside the same container. On first start, `bootstrap_sync.sh` downloads the chain snapshot automatically before starting the node — this can take 10–30 minutes.
+
+```bash
+docker run -d \
+  --name jmdn \
+  -v $(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml:ro \
+  -v jmdn-data:/opt/jmdn \
+  -p 8545:8545 \
+  -p 8546:8546 \
+  -p 15052:15052 \
+  ghcr.io/jupitermetalabs/jmdn:latest
+```
+
+| Flag | Purpose |
+|---|---|
+| `-v $(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml:ro` | **Required** — node exits with an error if this is missing |
+| `-v jmdn-data:/opt/jmdn` | Persists peer identity, certs, DB, and immudb data across restarts |
+| `-p 8545:8545` | JSON-RPC (exchange endpoint) |
+| `-p 8546:8546` | WebSocket RPC |
+| `-p 15052:15052` | DID service |
+
+### With Explorer API enabled
+
+The Explorer API (`/api/v1/node/version`, etc.) is disabled by default. Enable it with `JMDN_PORTS_API`:
+
+```bash
+docker run -d \
+  --name jmdn \
+  -v $(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml:ro \
+  -v jmdn-data:/opt/jmdn \
+  -p 8545:8545 \
+  -p 8546:8546 \
+  -p 15052:15052 \
+  -p 8090:8090 \
+  -e JMDN_PORTS_API=8090 \
+  ghcr.io/jupitermetalabs/jmdn:latest
+```
+
+### With all optional services exposed
+
+```bash
+docker run -d \
+  --name jmdn \
+  -v $(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml:ro \
+  -v jmdn-data:/opt/jmdn \
+  -p 8545:8545 \
+  -p 8546:8546 \
+  -p 15052:15052 \
+  -p 8090:8090 \
+  -p 15050:15050 \
+  -p 15055:15055 \
+  -e JMDN_PORTS_API=8090 \
+  -e JMDN_DATABASE_PASSWORD=your-strong-password \
+  ghcr.io/jupitermetalabs/jmdn:latest
+```
+
+### Follow startup logs
+
+```bash
+docker logs -f jmdn
+```
+
+Expected output on first run:
+
+```
+[entrypoint] First run detected — starting bootstrap sync.
+[bootstrap] Listing parts from GCS: gs://jmzk-releases/jmdn_bootstrap_2306/...
+[bootstrap] Downloading parts to /opt/jmdn/bootstrap_tmp...
+[bootstrap] Checksums OK.
+[bootstrap] Extraction complete.
+[bootstrap] Bootstrap complete. Sentinel written → /opt/jmdn/data/.bootstrapped
+[entrypoint] TLS certs generated.
+[entrypoint] Starting embedded ImmuDB as jmdn (dir: /opt/jmdn/data)...
+[entrypoint] Waiting for ImmuDB on 127.0.0.1:3322...
+[entrypoint] ImmuDB ready (4s)
+[entrypoint] Starting JMDN as jmdn...
+```
+
+Subsequent starts are fast — bootstrap is skipped once the sentinel exists.
+
+### Verify the node is up
+
+```bash
+# JSON-RPC
+curl -s http://localhost:8545 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}'
+
+# Explorer API (if JMDN_PORTS_API=8090 was set)
+curl -s http://localhost:8090/api/v1/node/version
+```
+
+### Force re-bootstrap
+
+Delete the sentinel file and restart. The next start downloads a fresh snapshot:
+
+```bash
+docker exec jmdn rm /opt/jmdn/data/.bootstrapped
+docker restart jmdn
+```
+
+### Stop and remove
+
+```bash
+docker stop jmdn && docker rm jmdn
+# Volume jmdn-data is preserved — re-run with the same -v flag to resume.
+
+# Full reset (deletes all chain data):
+docker stop jmdn && docker rm jmdn
+docker volume rm jmdn-data
+```
+
+### Environment variable overrides
+
+Pass `-e KEY=value` to `docker run` to override defaults:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `JMDN_PORTS_API` | `0` (disabled) | Set `8090` to enable Explorer API |
+| `JMDN_DATABASE_PASSWORD` | `immudb` | ImmuDB admin password |
+| `GCS_BUCKET` | `jmzk-releases` | Bootstrap snapshot bucket |
+| `GCS_PREFIX` | `jmdn_bootstrap_2306` | Snapshot path prefix in bucket |
+| `PARTS_PREFIX` | `data_backup_23062026.part` | Part filename prefix |
+| `IMMUDB_EXTERNAL` | `false` | Set `true` only with docker-compose (separate immudb container) |
+| `JMDN_SECURITY_JWT_SECRET` | `""` | JWT signing secret |
+
+---
+
+## 6. First Run — What Actually Happens
 
 Understanding this prevents confusion when something goes wrong.
 
@@ -376,7 +523,7 @@ docker compose restart immudb jmdn
 
 ---
 
-## 6. Configuration
+## 7. Configuration
 
 ### Environment variables (recommended for operators)
 
@@ -435,7 +582,7 @@ volumes:
 
 ---
 
-## 7. Building the Image from Source
+## 8. Building the Image from Source
 
 ```bash
 # Standard build (version shows as "unknown")
@@ -471,7 +618,7 @@ The final image does NOT contain the Go toolchain or source code.
 
 ---
 
-## 8. Debugging — Live Logs, Exec, Inspect
+## 9. Debugging — Live Logs, Exec, Inspect
 
 ### View logs
 
@@ -568,7 +715,7 @@ docker compose down -v
 
 ---
 
-## 9. Log Retention
+## 10. Log Retention
 
 ### The difference from journald
 
@@ -662,7 +809,7 @@ Then configure Prometheus to scrape `localhost:8081/metrics`.
 
 ---
 
-## 10. Health Checks
+## 11. Health Checks
 
 All three services have health checks configured in `docker-compose.yml`. Docker polls them periodically and marks the container `healthy` or `unhealthy`.
 
@@ -703,7 +850,7 @@ for c in h['Log'][-3:]:
 
 ---
 
-## 11. Volumes and Data Management
+## 12. Volumes and Data Management
 
 ```bash
 # List all volumes
@@ -786,7 +933,7 @@ docker compose up -d
 
 ---
 
-## 12. Upgrading
+## 13. Upgrading
 
 ### Pull new image
 
@@ -827,7 +974,7 @@ docker compose up -d redis
 
 ---
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 ### Node stuck on bootstrap
 
