@@ -30,8 +30,9 @@ services:
   # jmdn connects via gRPC on port 3322 (Docker internal DNS: immudb:3322).
   # Data directory: /opt/jmdn/data — matches bare-metal immudb --dir ${JMDN_DATA}/data.
   #
-  # Credentials: immudb/immudb are immudb's built-in defaults.
-  # To harden: set IMMUDB_PASSWORD in jmdn.yaml and here.
+  # Credentials: immudb container reads IMMUDB_ADMIN_PASSWORD from .env.
+  # jmdn reads its copy from database.password in jmdn.yaml.
+  # These are separate config paths for separate processes — both must agree.
   immudb:
     image: codenotary/immudb:1.10.0
     container_name: jmdn-immudb
@@ -123,20 +124,16 @@ services:
       # - "8090:8090"
 
     environment:
-      # ── ImmuDB (external container) ─────────────────────────────────────────
+      # Docker-mode routing — tells jmdn to connect to the immudb container
+      # rather than localhost. All other config lives in jmdn.yaml.
       IMMUDB_EXTERNAL: "true"
       JMDN_DATABASE_ADDRESS: "immudb"   # Docker internal DNS → immudb service
       JMDN_DATABASE_PORT: "3322"
-      JMDN_DATABASE_USERNAME: "immudb"
-      JMDN_DATABASE_PASSWORD: "${IMMUDB_PASSWORD:-immudb}"
 
-      # ── Redis ───────────────────────────────────────────────────────────────
-      JMDN_DATABASE_REDIS_URL: "redis:6379"
-      JMDN_DATABASE_REDIS_PASSWORD: "${REDIS_PASSWORD:-jmdnredissync}"
-
-      # ── Explorer API (enables health check) ─────────────────────────────────
-      JMDN_PORTS_API: "8090"
-      JMDN_BINDS_API: "127.0.0.1"
+      # Explorer API key — forwarded into the container so the health check curl
+      # can include the Bearer token. Set JMDN_SECURITY_EXPLORER_API_KEY in .env.
+      # Must match security.explorer_api_key in jmdn.yaml.
+      JMDN_SECURITY_EXPLORER_API_KEY: "${JMDN_SECURITY_EXPLORER_API_KEY:-}"
 
     volumes:
       # Node config — jmdn.yaml must exist next to this file (see DOCKER.md Step 3).
@@ -147,14 +144,21 @@ services:
       # jmdn resolves ./DB/ and ./config/ relative to this mount point.
       - jmdn-state:/opt/jmdn
 
+      # immudb data — read-only so the entrypoint can verify the bootstrap sentinel
+      # (/opt/jmdn/data/.bootstrapped) before starting the node.
+      # Docker overlapping mounts: jmdn-state covers /opt/jmdn; this more-specific
+      # mount overrides /opt/jmdn/data with immudb-data (read-only).
+      # jmdn never writes here — immudb owns this directory exclusively.
+      - immudb-data:/opt/jmdn/data:ro
+
       # Production TLS certs (optional — self-signed generated on first run):
       # - ./certs:/opt/jmdn/certs:ro
 
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8090/api/v1/node/version"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8090/api/v1/node/version -H \"Authorization: Bearer ${JMDN_SECURITY_EXPLORER_API_KEY:-}\" || exit 1"]
       interval: 30s
       timeout: 5s
-      start_period: 30s
+      start_period: 300s
       retries: 3
 
     logging:

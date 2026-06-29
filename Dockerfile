@@ -123,7 +123,7 @@ RUN chmod +x /usr/local/bin/start_jmdn_wrapper.sh \
 # the node generate its own peer identity.
 
 # Expose ports per jmdn_default.yaml (localhost-bound ports excluded)
-# 8090  - Explorer API             (ports.api)       disabled by default; set JMDN_PORTS_API=8090
+# 8090  - Explorer API             (ports.api)       disabled by default; set ports.api: 8090 in jmdn.yaml
 # 15050 - Block generation         (ports.blockgen)  disabled by default
 # 15055 - Block propagation gRPC   (ports.blockgrpc) disabled by default
 # 15052 - DID service              (ports.did)
@@ -133,14 +133,19 @@ RUN chmod +x /usr/local/bin/start_jmdn_wrapper.sh \
 EXPOSE 8090 15050 15055 15052 8545 8546
 
 # Health check against Explorer API (ports.api).
-# API is disabled by default — enable it via JMDN_PORTS_API=8090 (see docker-compose.yml).
-# start-period extended to 120s to allow bootstrap sync on first run.
+# API is disabled by default — enable by setting ports.api: 8090 in jmdn.yaml.
+# start-period extended to 300s to allow bootstrap sync on first run.
+# Auth: Explorer API requires a Bearer token when security.explorer_api_key is set.
+# Pass the key via JMDN_SECURITY_EXPLORER_API_KEY env var (docker run -e or compose).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
-    CMD curl -sf http://localhost:8090/api/v1/node/version || exit 1
+    CMD sh -c 'curl -sf http://localhost:8090/api/v1/node/version \
+        -H "Authorization: Bearer ${JMDN_SECURITY_EXPLORER_API_KEY:-}" || exit 1'
 
-# Volume declaration — node state (config/, DB/, certs/).
-# immudb data (/opt/jmdn/data) is a separate named volume mounted to the immudb
-# container — the jmdn container does NOT mount immudb files (IMMUDB_EXTERNAL=true).
+# Volume declaration — all node state under /opt/jmdn.
+# compose (IMMUDB_EXTERNAL=true): immudb-data is mounted separately into the immudb
+#   container at /opt/jmdn/data — jmdn container only uses jmdn-state for DB/, config/, certs/.
+# embedded (IMMUDB_EXTERNAL=false, docker run): single volume holds everything
+#   including /opt/jmdn/data (immudb files) and /opt/jmdn/DB, config/, certs/.
 VOLUME ["/opt/jmdn"]
 
 # Entrypoint runs as root so bootstrap_sync can chown the extracted snapshot.

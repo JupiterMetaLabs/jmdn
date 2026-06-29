@@ -456,18 +456,31 @@ func (m *Monitor) triggerReconcile(peers []PeerInfo) {
 
 	captured := peers // capture before goroutine
 	go func() {
+		var reconcileErr error
 		defer func() {
-			m.reconciling.Store(false)
-			// Fix 6: after reconciliation, reset to base interval and re-check immediately.
+			// Reset counter and interval BEFORE releasing reconciling flag.
+			// Without this ordering a concurrent runCheck could observe
+			// reconciling=false while consecutiveOutOfSync is still 2, re-triggering
+			// a second reconcile before cleanup is complete (race window).
 			m.runMu.Lock()
 			m.currentInterval = m.baseInterval
 			m.consecutiveOutOfSync = 0
 			m.runMu.Unlock()
-			m.immediateRecheck.Store(true)
+			m.reconciling.Store(false)
+			// Only fire immediateRecheck on success.
+			// On failure the counter resets to 0 and interval to base; an immediate
+			// recheck would find the node still out-of-sync, burn one counter
+			// increment, then wait the full base interval (up to 10 min) before the
+			// threshold fires again. Skipping immediateRecheck lets the normal timer
+			// fire once at baseInterval, giving peers time to stabilise before retry.
+			if reconcileErr == nil {
+				m.immediateRecheck.Store(true)
+			}
 		}()
 		log.Printf("[syncmonitor] starting reconciliation against %d good peer(s)", len(captured))
-		if err := reconcileFn(rootCtx, captured); err != nil {
-			log.Printf("[syncmonitor] reconciliation failed: %v", err)
+		reconcileErr = reconcileFn(rootCtx, captured)
+		if reconcileErr != nil {
+			log.Printf("[syncmonitor] reconciliation failed: %v", reconcileErr)
 		} else {
 			log.Println("[syncmonitor] reconciliation complete — re-checking immediately")
 		}

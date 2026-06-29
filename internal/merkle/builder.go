@@ -48,6 +48,15 @@ func BuildLocalMerkleRoot(ctx context.Context, blockInfo fastsync_types.BlockInf
 	iter := blockInfo.NewBlockIterator(start, head, defaultBatchSize)
 	defer iter.Close()
 
+	// Log at most ~10 progress lines regardless of chain length.
+	// logStride = ceil((head+1) / 10), minimum one batch worth of blocks.
+	total := head + 1
+	logStride := (total + 9) / 10
+	if logStride < uint64(defaultBatchSize) {
+		logStride = uint64(defaultBatchSize)
+	}
+	nextLogAt := logStride
+
 	var processed uint64
 	for {
 		// Check for context cancellation between batches
@@ -83,7 +92,11 @@ func BuildLocalMerkleRoot(ctx context.Context, blockInfo fastsync_types.BlockInf
 			return nil, fmt.Errorf("Merkle push failed at height %d: %w", batchStart, err)
 		}
 		processed += uint64(len(blocks))
-		log.Printf("[merkle] processed %d / %d blocks", processed, head+1)
+		if processed >= nextLogAt {
+			log.Printf("[merkle] processed %d / %d blocks (%.0f%%)", processed, total,
+				float64(processed)/float64(total)*100)
+			nextLogAt = processed + logStride
+		}
 	}
 
 	root, err := builder.Finalize()

@@ -126,21 +126,6 @@ func convertZKBlockToNonHeaders(b *config.ZKBlock) *blockpb.NonHeaders {
 			pbTx.S = tx.S.Bytes()
 		}
 
-		if tx.ChainID != nil {
-			pbTx.ChainId = tx.ChainID.Bytes()
-		}
-		if len(tx.AccessList) > 0 {
-			for _, al := range tx.AccessList {
-				pbAl := &blockpb.AccessTuple{
-					Address: al.Address[:],
-				}
-				for _, sk := range al.StorageKeys {
-					pbAl.StorageKeys = append(pbAl.StorageKeys, sk[:])
-				}
-				pbTx.AccessList = append(pbTx.AccessList, pbAl)
-			}
-		}
-
 		nh.Transactions = append(nh.Transactions, &blockpb.DBTransaction{
 			Tx:        pbTx,
 			TxIndex:   uint32(idx),

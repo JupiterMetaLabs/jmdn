@@ -131,11 +131,25 @@ Example:
 ```bash
 ./jmdn -cmd fastsync <peer_multiaddr>
 ```
-Performs fast synchronization with a peer.
+Performs a full FastSync V2 with a peer (5-phase Merkle bisection protocol).
 
 Example:
 ```bash
 ./jmdn -cmd fastsync /ip4/192.168.1.1/tcp/15000/p2p/12D3KooW...
+```
+
+#### CatchUp Sync
+```bash
+./jmdn -cmd catchup <peer_multiaddr> <from_block>
+```
+Triggers a CatchUpSync with a peer starting from the specified block number.
+Lightweight post-bootstrap gap-fill — identifies and fetches only missing headers
+and data blocks without repeating full Merkle bisection. Use this after initial
+bootstrap to fill gaps that have accumulated since.
+
+Example:
+```bash
+./jmdn -cmd catchup /ip4/34.174.233.203/tcp/15000/p2p/12D3KooW... 11605
 ```
 
 ### DID Operations
@@ -242,8 +256,9 @@ Stops the running service and exits the program (interactive mode only).
 
 **Blockchain:**
 ```bash
-./jmdn -cmd fastsync <peer>  # Sync with peer
-./jmdn -cmd getdid <did>      # Get DID document
+./jmdn -cmd fastsync <peer>              # Full FastSync with peer
+./jmdn -cmd catchup <peer> <from_block>  # Lightweight gap-fill from block
+./jmdn -cmd getdid <did>                 # Get DID document
 ```
 
 ## Notes

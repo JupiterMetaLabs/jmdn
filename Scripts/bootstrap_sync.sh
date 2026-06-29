@@ -20,8 +20,9 @@
 #   PARTS_PREFIX   Part filename prefix     (default: data_backup_23062026.part)
 #   CHECKSUM_FILE  Checksum filename        (default: checksums.md5)
 #
-# To force a re-sync after wiping the volume:
-#   docker exec jmdn rm /opt/jmdn/data/.bootstrapped && docker restart jmdn
+# To force a re-sync (delete sentinel from the immudb-data volume):
+#   docker run --rm -v jmdn_immudb-data:/data alpine rm -f /data/.bootstrapped
+#   docker compose run --rm jmdn-bootstrap
 
 set -euo pipefail
 
@@ -30,10 +31,15 @@ GCS_BUCKET="${GCS_BUCKET:-jmzk-releases}"
 GCS_PREFIX="${GCS_PREFIX:-jmdn_bootstrap_2306}"
 PARTS_PREFIX="${PARTS_PREFIX:-data_backup_23062026.part}"
 CHECKSUM_FILE="${CHECKSUM_FILE:-checksums.md5}"
+# UID:GID the immudb container runs as. Override if your immudb image differs.
+IMMUDB_UID="${IMMUDB_UID:-3322}"
 
 BASE_DIR="/opt/jmdn"
 DATA_DIR="${BASE_DIR}/data"
 WORK_DIR="${BASE_DIR}/bootstrap_tmp"
+# BACKUP_BASE is on the container's writable layer (not a named volume).
+# It exists only for the duration of this bootstrap run — not persistent storage.
+# Its purpose is to clear DATA_DIR before extraction, with a safety copy in-flight.
 BACKUP_BASE="${BASE_DIR}/backup"
 IMMUDB_STATE_DIR="${BASE_DIR}/.immudb_state"
 SENTINEL="${DATA_DIR}/.bootstrapped"
@@ -154,11 +160,10 @@ find "$REAL_DATA_DIR" -mindepth 1 -maxdepth 1 -exec mv {} "$DATA_DIR/" \;
 rm -rf "${BASE_DIR}/data_tmp"
 
 # ── Fix permissions ───────────────────────────────────────
-# Bootstrap runs as root, so extracted files are root-owned.
-# immudb container runs as UID:GID 3322:3322 and needs write access
-# to its transaction logs. chown so immudb can read and write its data.
-# (jmdn connects via gRPC and never touches this directory.)
-IMMUDB_UID="${IMMUDB_UID:-3322}"
+# Bootstrap runs as root → extracted files are root-owned (mode 644/755).
+# immudb runs as IMMUDB_UID:IMMUDB_UID and needs write access to tx logs.
+# chown so immudb can read and write its own data directory.
+# jmdn connects via gRPC and never mounts this directory.
 log "Setting ownership of $DATA_DIR to $IMMUDB_UID:$IMMUDB_UID..."
 chown -R "${IMMUDB_UID}:${IMMUDB_UID}" "$DATA_DIR"
 

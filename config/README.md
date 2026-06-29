@@ -146,12 +146,34 @@ ConsensusTimeout = 20 * time.Second
 
 ### Database Configuration
 ```go
-DBAddress  = "localhost"
-DBPort     = 3322
+var DBAddress = "localhost"   // overridden at startup from config.database.address
+var DBPort    = 3322          // overridden at startup from config.database.port
 DBUsername = "immudb"
 DBPassword = "immudb"
 DBName     = "defaultdb"
 AccountsDBName = "accountsdb"
+```
+
+### FastSync Settings (`config/settings/`)
+```go
+type FastSyncSettings struct {
+    Enabled          bool
+    EnablePulling    bool
+    EnableCatchup    bool          // enable_catchup — wire SyncMonitor reconciliation
+    SyncTimeout      time.Duration
+    SyncCheckInterval time.Duration // sync_check_interval — default 10m
+    CatchUpFromBlock  uint64        // catch_up_from_block — first block after bootstrap snapshot
+}
+```
+
+### DatabaseSettings (`config/settings/`)
+```go
+type DatabaseSettings struct {
+    Address  string // database.address — default "localhost"
+    Port     int    // database.port    — default 3322
+    Username string
+    Password string
+}
 ```
 
 ## Usage
@@ -260,11 +282,9 @@ Configuration can be tested by:
 - Validating key loading
 - Testing data structure serialization
 
-## Future Enhancements
+## Notes
 
-- Configuration file support (YAML/JSON)
-- Environment variable expansion
-- Dynamic configuration updates
-- Configuration validation
-- Configuration documentation generation
+- `DBAddress` and `DBPort` are package-level variables (not constants) and are overridden at node startup from `config.database.address` / `config.database.port` in `jmdn.yaml`.
+- `ConnectionPool.MaxConnections` is 30.
+- The `settings/` sub-package (`config.go`, `defaults.go`, `loader.go`) owns all YAML-driven runtime configuration and is the authoritative source for `FastSyncSettings` and `DatabaseSettings`.
 

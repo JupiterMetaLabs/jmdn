@@ -50,7 +50,11 @@ func hashBlock(b *fastsync_types.ZKBlock) [32]byte {
 		dst.Write(data)
 	}
 	writeBigInt := func(dst interface{ Write([]byte) (int, error) }, v *big.Int) {
-		if v == nil {
+		// Normalize nil and zero to the same encoding.
+		// big.Int(0).Bytes() returns []byte{}, so the PubSub path (stores big.Int(0))
+		// and the DataSync path (stores nil for zero-length proto bytes) would otherwise
+		// produce different hashes for semantically identical zero values.
+		if v == nil || v.Sign() == 0 {
 			dst.Write([]byte{0x00})
 		} else {
 			dst.Write([]byte{0x01})

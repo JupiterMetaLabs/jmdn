@@ -88,6 +88,7 @@ If you're familiar with VMs and systemd, here's the mental model:
 
 Named volumes (on host):
   immudb-data → /opt/jmdn/data   (immudb ledger: systemdb, defaultdb, accountsdb)
+                                  also mounted :ro in jmdn container for bootstrap sentinel check
   jmdn-state  → /opt/jmdn        (node state: DB/gossipnode.db, config/peer.json, certs/)
   redis-data  → /data            (Redis AOF log)
 ```
@@ -201,27 +202,30 @@ git checkout main
 
 > Running as root? That's fine — Docker itself runs as root. The `jmdn` user only exists **inside the container** and is managed by the entrypoint script. You do not need a `jmdn` user on the host.
 
-### Step 2 — Create a .env file (credentials + secrets)
+### Step 2 — Create a .env file (container passwords only)
 
-The `.env` file lives next to `docker-compose.yml`. Docker Compose reads it automatically.
+The `.env` file is minimal — it exists only because the immudb and redis containers are separate processes that cannot read `jmdn.yaml`. They need their passwords passed in via environment variables. Everything else lives in `jmdn.yaml` (Step 3).
+
+Generate the two passwords:
+
+```bash
+openssl rand -base64 32   # → IMMUDB_PASSWORD
+openssl rand -base64 32   # → REDIS_PASSWORD
+```
 
 ```bash
 cat > /opt/jmdn/jmdn/.env << 'EOF'
-# ImmuDB password — must match in both immudb and jmdn services.
-# Default "immudb" works but change this before exposing to the internet.
-IMMUDB_PASSWORD=immudb
+# ImmuDB password — used by the immudb container.
+# Must match database.password in jmdn.yaml.
+IMMUDB_PASSWORD=<generated>
 
-# Redis password
-REDIS_PASSWORD=jmdnredissync
+# Redis password — used by the redis container.
+# Must match database.redis.password in jmdn.yaml.
+REDIS_PASSWORD=<generated>
 
-# Secrets — set before mainnet
-# JMDN_SECURITY_JWT_SECRET=
-# JMDN_SECURITY_EXPLORER_API_KEY=
-
-# Alerting (optional Telegram)
-# JMDN_ALERTS_URL=https://tg.jmdt.io/multi-channel
-# JMDN_ALERTS_API_KEY=
-# JMDN_ALERTS_CHAT_ID=
+# Explorer API key — forwarded into the jmdn container for the health check curl.
+# Must match security.explorer_api_key in jmdn.yaml.
+JMDN_SECURITY_EXPLORER_API_KEY=<generated>
 EOF
 ```
 
@@ -229,21 +233,57 @@ EOF
 
 ### Step 3 — Create your node config
 
-Create `jmdn.yaml` in the same directory as `docker-compose.yml`:
+All configuration lives in one file. Copy the exchange template:
 
 ```bash
 cd /opt/jmdn/jmdn
-# Create and edit your config — see jmdn_default.yaml in the repo for all available keys.
+cp jmdn_exchange.yaml jmdn.yaml
 nano jmdn.yaml
 ```
 
-`docker-compose.yml` mounts `./jmdn.yaml` into the container at `/etc/jmdn/jmdn.yaml`. The node reads that path automatically on startup — no flags needed.
+Fill in every field marked REQUIRED:
+
+| Field | What to set |
+|---|---|
+| `node.alias` | A unique name for this node (e.g. `exchange-prod-1`) |
+| `logging.service_name` | Same as `node.alias` |
+| `network.seednode` | Provided by JupiterMeta offline |
+| `network.mempool` | Provided by JupiterMeta offline |
+| `database.password` | jmdn's ImmuDB password — set the same value as `IMMUDB_PASSWORD` in `.env` (two separate config paths, must agree) |
+| `database.redis.password` | jmdn's Redis password — set the same value as `REDIS_PASSWORD` in `.env` (same reason) |
+| `security.jwt_secret` | Generate: `openssl rand -base64 32` |
+| `security.explorer_api_key` | Generate: `openssl rand -base64 32` |
+| `fastsync.catch_up_from_block` | Bootstrap snapshot tip + 1. Provided with the bootstrap. Leaving at 0 works but causes a slow full genesis scan on every sync cycle. |
+
+`docker-compose.yml` mounts `./jmdn.yaml` into the container at `/etc/jmdn/jmdn.yaml`. The node reads it automatically on startup — no flags needed.
 
 > **This file must exist before running `docker compose up`.** The mount is always active.
 
-### Step 4 — Build the JMDN image
+### Step 4 — Get the JMDN image
 
-The `redis` and `immudb` images are pulled from public Docker Hub automatically. The JMDN image must be built from source:
+The `redis` and `immudb` images are pulled from Docker Hub automatically. For the JMDN image, choose one option:
+
+**Option A — Pull the pre-built image (recommended)**
+
+JupiterMeta publishes a signed, multi-arch image to GitHub Container Registry on every release. This is the fastest path — no Go toolchain required.
+
+```bash
+# Pull the latest release
+docker pull ghcr.io/jupitermetalabs/jmdn:latest
+
+# Or pin to a specific version
+docker pull ghcr.io/jupitermetalabs/jmdn:v1.2.0
+```
+
+To use a specific version in compose, edit `docker-compose.yml`:
+```yaml
+jmdn:
+  image: ghcr.io/jupitermetalabs/jmdn:v1.2.0   # pin to a release tag
+```
+
+**Option B — Build from source**
+
+Use this if you need a custom build or a branch that has not been released yet.
 
 ```bash
 cd /opt/jmdn/jmdn
@@ -256,7 +296,7 @@ docker build \
   .
 ```
 
-This takes a few minutes (downloads Go deps, compiles the binary). The `--build-arg` flags embed version metadata into the binary — without them, `version` shows as `unknown`.
+This takes a few minutes (downloads Go deps, compiles the binary). The `--build-arg` flags embed version metadata into the binary — without them, `./jmdn --version` shows as `unknown`.
 
 ### Step 5 — Bootstrap ImmuDB (first time only)
 
@@ -275,7 +315,9 @@ Expected output:
 [bootstrap] Listing parts from GCS: gs://jmzk-releases/jmdn_bootstrap_2306/...
 [bootstrap] Downloading parts to /opt/jmdn/bootstrap_tmp...
 [bootstrap] Checksums OK.
-[bootstrap] Extraction complete.
+[bootstrap] Extracting parts into sandbox: /opt/jmdn/data_tmp/sandbox
+[bootstrap] Moving data to /opt/jmdn/data...
+[bootstrap] Setting ownership of /opt/jmdn/data to 3322:3322...
 [bootstrap] Bootstrap complete. Sentinel written → /opt/jmdn/data/.bootstrapped
 ```
 
@@ -289,7 +331,8 @@ docker compose logs -f jmdn
 Three containers start: `jmdn-immudb`, `jmdn-redis`, `jmdn`. Expected node output:
 
 ```
-[entrypoint] External ImmuDB mode — skipping bootstrap
+[entrypoint] External ImmuDB mode — skipping bootstrap.
+[entrypoint] Sentinel found — immudb-data volume is populated.
 [entrypoint] TLS certs generated.
 [entrypoint] Waiting for ImmuDB on immudb:3322...
 [entrypoint] ImmuDB ready (2s)
@@ -302,13 +345,14 @@ Three containers start: `jmdn-immudb`, `jmdn-redis`, `jmdn`. Expected node outpu
 # All three containers should show (healthy)
 docker compose ps
 
-# JSON-RPC (exchange endpoint)
+# JSON-RPC (exchange endpoint) — no auth required
 curl -s http://localhost:8545 -X POST \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
 
-# Node version
-curl -s http://localhost:8090/api/v1/node/version
+# Explorer API — requires the API key set in .env
+curl -s http://localhost:8090/api/v1/node/version \
+  -H "Authorization: Bearer <JMDN_SECURITY_EXPLORER_API_KEY>"
 ```
 
 ---
@@ -400,7 +444,9 @@ Expected output on first run:
 [bootstrap] Listing parts from GCS: gs://jmzk-releases/jmdn_bootstrap_2306/...
 [bootstrap] Downloading parts to /opt/jmdn/bootstrap_tmp...
 [bootstrap] Checksums OK.
-[bootstrap] Extraction complete.
+[bootstrap] Extracting parts into sandbox: /opt/jmdn/data_tmp/sandbox
+[bootstrap] Moving data to /opt/jmdn/data...
+[bootstrap] Setting ownership of /opt/jmdn/data to 3322:3322...
 [bootstrap] Bootstrap complete. Sentinel written → /opt/jmdn/data/.bootstrapped
 [entrypoint] TLS certs generated.
 [entrypoint] Starting embedded ImmuDB as jmdn (dir: /opt/jmdn/data)...
@@ -478,7 +524,7 @@ docker compose run --rm jmdn-bootstrap
               ├─ Extracts: cat parts* | tar -xzf - into sandbox
               ├─ Finds systemdb/ → that parent dir is the data root
               ├─ Moves data root → /opt/jmdn/data
-              ├─ chown -R jmdn:jmdn /opt/jmdn/data
+              ├─ chown -R 3322:3322 /opt/jmdn/data
               └─ touch /opt/jmdn/data/.bootstrapped
 
 # Step B: stack starts
@@ -494,12 +540,16 @@ docker compose up -d
                 │
                 ├─ IMMUDB_EXTERNAL=true → skip bootstrap
                 │
+                ├─ check /opt/jmdn/data/.bootstrapped (on immudb-data:ro mount)
+                │   MISSING? → exit 1 "Run jmdn-bootstrap first"
+                │   EXISTS?  → continue
+                │
                 ├─ [root] mkdir -p /opt/jmdn/{config,DB,certs}
                 │         chown jmdn:jmdn
                 │
                 ├─ [root] Generate self-signed TLS certs if /opt/jmdn/certs/ca.crt missing
                 │
-                ├─ nc -z immudb 3322  (waits up to 30s)
+                ├─ nc -z immudb 3322  (waits up to IMMUDB_READY_TIMEOUT=120s by default)
                 │
                 └─ gosu jmdn → jmdn
 ```
@@ -508,15 +558,10 @@ docker compose up -d
 
 **Force re-bootstrap:**
 ```bash
-# Remove sentinel from the immudb-data volume via a temporary container
-docker run --rm \
-  -v $(docker compose config --format json | python3 -c "import sys,json; print(json.load(sys.stdin)['volumes']['immudb-data']['name'])") \
-  alpine rm -f /opt/jmdn/data/.bootstrapped
+# Remove sentinel from the immudb-data volume via a temporary alpine container
+docker run --rm -v jmdn_immudb-data:/data alpine rm -f /data/.bootstrapped
 
-# Or use the volume name directly (project name prefix = directory name)
-docker run --rm -v jmdn_immudb-data:/opt/jmdn/data alpine rm -f /opt/jmdn/data/.bootstrapped
-
-# Then re-run bootstrap
+# Re-run bootstrap, then bring the stack back up
 docker compose run --rm jmdn-bootstrap
 docker compose restart immudb jmdn
 ```
@@ -529,38 +574,33 @@ docker compose restart immudb jmdn
 
 Set these in `docker-compose.yml` under the `jmdn:` service's `environment:` block, or in a `.env` file in the same directory.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `JMDN_DATABASE_ADDRESS` | `immudb` | ImmuDB host (Docker DNS → immudb service) |
-| `JMDN_DATABASE_PORT` | `3322` | ImmuDB port |
-| `JMDN_DATABASE_USERNAME` | `immudb` | ImmuDB username |
-| `JMDN_DATABASE_PASSWORD` | `immudb` | ImmuDB password |
-| `JMDN_DATABASE_REDIS_URL` | `redis:6379` | Redis address |
-| `JMDN_DATABASE_REDIS_PASSWORD` | `jmdnredissync` | Redis password |
-| `JMDN_PORTS_API` | `0` | Enable Explorer API (set `8090`) |
-| `JMDN_BINDS_API` | `127.0.0.1` | Explorer API bind address |
-| `JMDN_SECURITY_JWT_SECRET` | `""` | JWT signing secret |
-| `JMDN_SECURITY_EXPLORER_API_KEY` | `""` | Explorer API key |
-| `JMDN_ALERTS_URL` | `""` | Telegram alert webhook |
-| `GCS_BUCKET` | `jmzk-releases` | Bootstrap snapshot GCS bucket |
-| `GCS_PREFIX` | `jmdn_bootstrap_2306` | Snapshot path prefix |
-| `REDIS_PASSWORD` | `jmdnredissync` | Redis auth password |
-| `IMMUDB_PASSWORD` | `immudb` | ImmuDB admin password |
-| `IMMUDB_EXTERNAL` | `true` | `true` = immudb runs as a separate container (compose default) |
-| `JMDN_USER` | `jmdn` | OS user for privilege drop |
+Most configuration belongs in `jmdn.yaml` — set it there. The environment variables below are the exceptions: Docker-mode routing values that must be injected by compose because they differ from a bare-metal install, and the two container passwords that the immudb/redis containers need directly.
 
-All `JMDN_*` vars map directly to `jmdn_default.yaml` keys with underscores as separators. For example, `JMDN_NETWORK_CHAIN_ID=8000800` sets `network.chain_id`.
+| Variable | Value | Purpose |
+|---|---|---|
+| `IMMUDB_EXTERNAL` | `true` | Tells jmdn to connect to an external immudb container instead of spawning one |
+| `JMDN_DATABASE_ADDRESS` | `immudb` | Docker DNS name of the immudb service (overrides `localhost` default) |
+| `JMDN_DATABASE_PORT` | `3322` | ImmuDB gRPC port |
+| `IMMUDB_PASSWORD` | *(from .env)* | immudb container startup password — must match `database.password` in jmdn.yaml |
+| `REDIS_PASSWORD` | *(from .env)* | Redis container `--requirepass` — must match `database.redis.password` in jmdn.yaml |
+| `GCS_BUCKET` | `jmzk-releases` | Bootstrap snapshot GCS bucket (bootstrap container only) |
+| `GCS_PREFIX` | `jmdn_bootstrap_2306` | Snapshot path prefix (bootstrap container only) |
+| `IMMUDB_USER` | `jmdn` | OS user the immudb files are owned by (entrypoint chown) |
+
+All `JMDN_*` vars map directly to `jmdn.yaml` keys with underscores as separators. For example, `JMDN_NETWORK_CHAIN_ID=7000700` sets `network.chain_id`.
 
 ### Custom config file
 
-Copy and edit the default config, then place it next to `docker-compose.yml`:
+Exchange operators: copy `jmdn_exchange.yaml` (pre-configured for this use case).
+All other operators: copy `jmdn_default.yaml` for a blank-slate starting point.
 
 ```bash
-cp jmdn_default.yaml jmdn.yaml
-# Edit jmdn.yaml with your node settings (mempool, network, ports, etc.)
+cp jmdn_exchange.yaml jmdn.yaml   # exchange operators
+# or
+cp jmdn_default.yaml jmdn.yaml    # all other operators
 ```
 
-`docker-compose.yml` always mounts `./jmdn.yaml:/etc/jmdn/jmdn.yaml:ro`. The node reads `/etc/jmdn/jmdn.yaml` automatically via viper — no flags needed.
+`docker-compose.yml` always mounts `./jmdn.yaml:/etc/jmdn/jmdn.yaml:ro`. The node reads `/etc/jmdn/jmdn.yaml` automatically via Viper — no flags needed.
 
 ### Production TLS certificates
 
@@ -584,11 +624,25 @@ volumes:
 
 ## 8. Building the Image from Source
 
-```bash
-# Standard build (version shows as "unknown")
-docker build -t ghcr.io/jupitermetalabs/jmdn:latest .
+### When to build locally
 
-# With version metadata embedded (recommended)
+The pre-built image (see Step 4, Option A) is sufficient for most operators. Build locally when:
+- You need a branch or commit that hasn't been released yet
+- You want to verify the binary from source
+- You're developing or testing changes
+
+### How CI publishes images
+
+Every push of a `v*` tag to GitHub (e.g. `v1.2.0`) automatically builds and publishes:
+- `ghcr.io/jupitermetalabs/jmdn:v1.2.0` — pinnable version tag
+- `ghcr.io/jupitermetalabs/jmdn:latest` — updated on every release
+
+Builds cover linux/amd64, linux/arm64, linux/arm/v7 — Docker pulls the right variant automatically.
+
+### Build commands
+
+```bash
+# Build the current branch (version metadata embedded)
 docker build \
   --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
   --build-arg GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
@@ -596,7 +650,16 @@ docker build \
   -t ghcr.io/jupitermetalabs/jmdn:latest \
   .
 
-# Multi-platform build (for ARM64 servers / Apple Silicon CI)
+# Build a specific release tag
+git checkout v1.2.0
+docker build \
+  --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
+  --build-arg GIT_BRANCH=v1.2.0 \
+  --build-arg GIT_TAG=v1.2.0 \
+  -t ghcr.io/jupitermetalabs/jmdn:v1.2.0 \
+  .
+
+# Multi-platform build (push to registry)
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
@@ -605,7 +668,7 @@ docker buildx build \
   -t ghcr.io/jupitermetalabs/jmdn:latest \
   --push .
 
-# Use local build in compose instead of pulling
+# Use local build in compose (no pull needed)
 # Edit docker-compose.yml: comment out `image:`, uncomment `build: .`
 docker compose up -d --build
 ```
@@ -614,7 +677,7 @@ The build has two stages:
 1. **Builder** (`golang:1.25.3-bookworm`) — downloads deps, compiles binary with `CGO_ENABLED=1`
 2. **Runtime** (`debian:bookworm-slim`) — copies binary + scripts, installs runtime deps only
 
-The final image does NOT contain the Go toolchain or source code.
+The final image contains no Go toolchain or source code.
 
 ---
 
@@ -658,9 +721,9 @@ docker compose exec jmdn ps aux
 # Inspect immudb volume contents (immudb is distroless — no exec)
 docker run --rm -v jmdn_immudb-data:/data alpine ls /data/
 
-# Redis health
-docker compose exec redis redis-cli -a jmdnredissync ping
-docker compose exec redis redis-cli -a jmdnredissync xlen account_sync_stream
+# Redis health (use the REDIS_PASSWORD value from your .env)
+docker compose exec redis redis-cli -a "$REDIS_PASSWORD" ping
+docker compose exec redis redis-cli -a "$REDIS_PASSWORD" xlen account_sync_stream
 ```
 
 ### Inspect containers
@@ -825,11 +888,11 @@ docker inspect --format='{{json .State.Health}}' jmdn | python3 -m json.tool
 
 | Service | Health check | Interval | Start period |
 |---|---|---|---|
-| `jmdn` | `GET /api/v1/node/version` → HTTP 200 | 30s | 30s |
+| `jmdn` | `GET /api/v1/node/version` → HTTP 200 | 30s | 300s |
 | `redis` | `redis-cli ping` | 10s | — |
 | `immudb` | none — distroless image (no shell, no wget, no nc) | — | — |
 
-Readiness for immudb is handled by the jmdn entrypoint: it loops `nc -z immudb 3322` for up to 30s before starting the node process.
+Readiness for immudb is handled by the jmdn entrypoint: it loops `nc -z immudb 3322` for up to 120s (default) before starting the node process. Override with `IMMUDB_READY_TIMEOUT=300` if your host is slow to load a large snapshot.
 
 ### If health checks fail
 
@@ -935,23 +998,32 @@ docker compose up -d
 
 ## 13. Upgrading
 
-### Pull new image
+### Option A — Upgrade via pre-built image (recommended)
+
+JupiterMeta publishes a new image for every release. To upgrade:
 
 ```bash
-# Pull latest
+# 1. Pin to the new version in docker-compose.yml:
+#      image: ghcr.io/jupitermetalabs/jmdn:v1.3.0
+
+# 2. Pull the new image
 docker compose pull jmdn
 
-# Restart with new image (zero downtime not guaranteed — node process restarts)
+# 3. Restart the node (node process restarts — brief downtime)
 docker compose up -d jmdn
 
-# Verify new version
-curl -s http://localhost:8090/api/v1/node/version
+# 4. Verify
+curl -s http://localhost:8090/api/v1/node/version \
+  -H "Authorization: Bearer $JMDN_SECURITY_EXPLORER_API_KEY"
 ```
 
-### Build and deploy from source
+> After upgrading, check the release notes for any changes to `fastsync.catch_up_from_block` — if the bootstrap snapshot was refreshed, update this value in `jmdn.yaml` and restart.
+
+### Option B — Build and deploy from source
 
 ```bash
-git pull origin main
+git fetch --tags
+git checkout v1.2.0   # or the branch/commit you want
 docker build \
   --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
   --build-arg GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
@@ -987,10 +1059,30 @@ docker compose logs -f jmdn-bootstrap
 
 ### `unhealthy` immediately after start
 
+The health check calls `GET /api/v1/node/version` on port 8090. Two common causes:
+
+**1. Explorer API port not enabled.** Requires `ports.api: 8090` in `jmdn.yaml`.
+
 ```bash
-# Check if Explorer API is enabled
-docker compose exec jmdn env | grep JMDN_PORTS_API
-# Should be 8090. If empty, health check cannot connect.
+# Check that the Explorer API port is configured in jmdn.yaml
+grep "api:" /opt/jmdn/jmdn/jmdn.yaml
+# Should show: api: 8090
+
+# Check that the node process is actually listening
+docker compose exec jmdn ss -tlnp | grep 8090
+```
+
+**2. Auth token missing or wrong.** When `security.explorer_api_key` is set, the health check curl must send a matching Bearer token. Set `JMDN_SECURITY_EXPLORER_API_KEY` in `.env` to the same value as `security.explorer_api_key` in `jmdn.yaml`.
+
+```bash
+# Confirm the health check is sending a token
+docker inspect jmdn | python3 -c "
+import json,sys
+h=json.load(sys.stdin)[0]['State']['Health']
+for c in h['Log'][-1:]:
+    print(c['Output'])
+"
+# If output contains '401' → token mismatch or JMDN_SECURITY_EXPLORER_API_KEY not set in .env
 ```
 
 ### ImmuDB not reachable
@@ -1007,9 +1099,10 @@ docker run --rm -v jmdn_immudb-data:/data alpine ls /data/
 
 ```bash
 docker compose ps redis
-# If unhealthy: check password mismatch
-# REDIS_PASSWORD in jmdn env must match the --requirepass used by redis
+# If unhealthy: check password mismatch — REDIS_PASSWORD in .env must match --requirepass used by redis
 docker compose logs redis
+# Test manually (use REDIS_PASSWORD from your .env)
+docker compose exec redis redis-cli -a "$REDIS_PASSWORD" ping
 ```
 
 ### Out of disk space

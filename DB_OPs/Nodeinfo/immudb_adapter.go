@@ -118,6 +118,70 @@ func (sync *sync_struct) GetBlockDetails() types.PriorSync {
 	return *priorsync
 }
 
+// ReconcileBlockNumber performs an authoritative scan of immudb to find the true
+// highest contiguous block present, bypassing the potentially-stale "latest_block"
+// marker. Called by FastsyncV2.reconcileLocalLatestBlock() before each catchup.
+//
+// Use case: blocks written by propagation (PubSub) may advance the immudb key-space
+// beyond the stored "latest_block" marker — e.g. after a crash mid-write or when
+// the DataSync writer advances blocks before updating the marker. Without this, the
+// catchup scan range is anchored to a stale head, causing the node to report a lower
+// Merkle fingerprint to the seednode than necessary.
+//
+// Bound: scans at most reconcileScanAhead blocks ahead of the marker in a single
+// batch read (one immudb round-trip). In practice the marker is never more than a
+// few hundred blocks stale; this bound is conservative and keeps the call O(1).
+func (sync *sync_struct) ReconcileBlockNumber() uint64 {
+	const reconcileScanAhead = uint64(500)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	base := sync.GetBlockNumber()
+	if base == 0 {
+		return 0
+	}
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		log.Printf("[NodeInfo] ReconcileBlockNumber: DB connection failed: %v — returning marker %d", err, base)
+		return base
+	}
+
+	// Single batch read: [base+1 .. base+reconcileScanAhead]
+	scanEnd := base + reconcileScanAhead
+	candidates, err := DB_OPs.GetBlocksRange(conn, base+1, scanEnd)
+	if err != nil {
+		log.Printf("[NodeInfo] ReconcileBlockNumber: GetBlocksRange failed: %v — returning marker %d", err, base)
+		return base
+	}
+	if len(candidates) == 0 {
+		return base
+	}
+
+	// Build a presence set, then walk forward to find the highest contiguous block.
+	present := make(map[uint64]bool, len(candidates))
+	for _, b := range candidates {
+		if b != nil {
+			present[b.BlockNumber] = true
+		}
+	}
+
+	highest := base
+	for n := base + 1; n <= scanEnd; n++ {
+		if !present[n] {
+			break // contiguous run ended
+		}
+		highest = n
+	}
+
+	if highest > base {
+		log.Printf("[NodeInfo] ReconcileBlockNumber: marker=%d true_head=%d (%d untracked block(s))",
+			base, highest, highest-base)
+	}
+	return highest
+}
+
 // Time Complexity: O(1)
 // NewAccountManager returns the ImmuDB implementation of AccountManager.
 func (sync *sync_struct) NewAccountManager() types.AccountManager {
