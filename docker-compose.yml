@@ -30,13 +30,16 @@ services:
   # jmdn connects via gRPC on port 3322 (Docker internal DNS: immudb:3322).
   # Data directory: /opt/jmdn/data — matches bare-metal immudb --dir ${JMDN_DATA}/data.
   #
-  # Credentials: immudb container reads IMMUDB_ADMIN_PASSWORD from .env.
-  # jmdn reads its copy from database.password in jmdn.yaml.
-  # These are separate config paths for separate processes — both must agree.
+  # Credentials: IMMUDB_ADMIN_PASSWORD is set from .env on every start.
+  # --force-admin-password ensures the password is always applied, even on an
+  # existing database. Bootstrap snapshots come pre-initialized with a baked-in
+  # password — without this flag, immudb ignores IMMUDB_ADMIN_PASSWORD on restart
+  # and jmdn cannot connect on first deploy.
   immudb:
     image: codenotary/immudb:1.10.0
     container_name: jmdn-immudb
     restart: unless-stopped
+    command: ["--force-admin-password"]
     environment:
       IMMUDB_DIR: /opt/jmdn/data
       IMMUDB_ADMIN_PASSWORD: "${IMMUDB_PASSWORD:-immudb}"
@@ -129,6 +132,12 @@ services:
       IMMUDB_EXTERNAL: "true"
       JMDN_DATABASE_ADDRESS: "immudb"   # Docker internal DNS → immudb service
       JMDN_DATABASE_PORT: "3322"
+
+      # Passwords — synced from .env so operators only set them once.
+      # immudb container reads IMMUDB_PASSWORD directly; jmdn reads it here via Viper.
+      # Redis container reads REDIS_PASSWORD directly; jmdn reads it here via Viper.
+      JMDN_DATABASE_PASSWORD: "${IMMUDB_PASSWORD:-immudb}"
+      JMDN_DATABASE_REDIS_PASSWORD: "${REDIS_PASSWORD:-jmdnredissync}"
 
       # Explorer API key — forwarded into the container so the health check curl
       # can include the Bearer token. Set JMDN_SECURITY_EXPLORER_API_KEY in .env.

@@ -60,9 +60,9 @@ database:
   port: 3322
   username: "immudb"
 
-  # REQUIRED — ImmuDB password. Set the same value as IMMUDB_PASSWORD in .env.
-  # Reason: jmdn reads this field; the immudb container reads IMMUDB_PASSWORD from .env.
-  # They are separate config paths for separate processes — both must agree.
+  # ImmuDB password.
+  # Docker Compose: leave blank — compose passes IMMUDB_PASSWORD from .env directly
+  # to jmdn via JMDN_DATABASE_PASSWORD (Viper env > yaml). Set only for bare-metal.
   password: ""
 
   redis:
@@ -70,9 +70,9 @@ database:
     # Bare-metal: "127.0.0.1:6379"
     url: "redis:6379"
 
-    # REQUIRED — Redis password. Set the same value as REDIS_PASSWORD in .env.
-    # Reason: jmdn reads this field; the redis container reads REDIS_PASSWORD from .env.
-    # They are separate config paths for separate processes — both must agree.
+    # Redis password.
+    # Docker Compose: leave blank — compose passes REDIS_PASSWORD from .env directly
+    # to jmdn via JMDN_DATABASE_REDIS_PASSWORD (Viper env > yaml). Set only for bare-metal.
     password: ""
 
 # ── 6. Logging ───────────────────────────────────────────────────────────────
