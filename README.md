@@ -63,53 +63,25 @@ Run a node to participate in the JMDT network.
 
 #### Dependencies
 - **Go 1.25+**: Programming language runtime
-- **Docker & Docker Compose**: Containerization platform
 - **Yggdrasil**: Decentralized mesh networking protocol
-- **ImmuDB**: Tamper-proof database (installed automatically)
+- **ImmuDB**: Tamper-proof database (installed automatically via setup script)
 
-### Quick Setup
-
-The easiest way to set up the environment is using the provided setup script:
+### Quick Setup — From Source
 
 ```bash
-# Make the setup script executable and run it
+# Install Go, ImmuDB, and Yggdrasil
 sudo ./Scripts/setup_dependencies.sh
+
+# Build the binary
+./Scripts/build.sh
+
+# Run the node
+./jmdn -config /etc/jmdn/config.env
 ```
 
-This script will automatically install all prerequisites:
-1. **Go Programming Language**
-2. **ImmuDB**
-3. **Yggdrasil Network**
+For full setup including configuration, firewall rules, and systemd service installation, see **[GETTING_STARTED.md](./GETTING_STARTED.md)**.
 
-### Manual Installation
-
-If you prefer to install dependencies manually or need to install them individually, use the `setup_dependencies.sh` script with specific flags:
-
-#### 1. Install Go
-```bash
-sudo ./Scripts/setup_dependencies.sh --go
-```
-
-#### 2. Install ImmuDB
-```bash
-sudo ./Scripts/setup_dependencies.sh --immudb
-```
-
-#### 3. Install Yggdrasil
-```bash
-sudo ./Scripts/setup_dependencies.sh --yggdrasil
-```
-
-### Build the Application
-
-After installing prerequisites:
-
-1. Build the application using the build script:
-   ```bash
-   ./Scripts/build.sh
-   ```
-
-For full node setup, configuration, and service installation see **[GETTING_STARTED.md](./GETTING_STARTED.md)**.
+> **Docker** (v1.2.0+, experimental): Container-based deployment is available for operators who prefer it. See [DOCKER.md](./DOCKER.md). Source deployment is the recommended path for production nodes.
 
 ## Running a Node
 
@@ -127,7 +99,7 @@ We recommend using the configuration generation script:
 ./Scripts/setup_config.sh
 ```
 
-Alternatively, you can configure via flags (see `jmdn --help` or `docs/CONFIG.md`):
+Alternatively, you can configure via flags (see `jmdn --help`):
 
 | Flag                     | Description                          | Default   |
 | ------------------------ | ------------------------------------ | --------- |
@@ -154,9 +126,10 @@ Alternatively, you can configure via flags (see `jmdn --help` or `docs/CONFIG.md
 | `peers`                                   | Request updated peer list from seed   |
 | `stats`                                   | Show messaging statistics             |
 | `broadcast <message>`                     | Broadcast to all connected peers      |
-| `fastsync <peer_multiaddr>`               | Fast sync blockchain data with a peer |
-| `dbstate`                                 | Show current ImmuDB database state    |
-| `exit`                                    | Exit the program                      |
+| `fastsync <peer_multiaddr>`               | Fast sync blockchain data with a peer        |
+| `catchup <peer_multiaddr> <from_block>`   | CatchUpSync from a specific block with a peer |
+| `dbstate`                                 | Show current ImmuDB database state           |
+| `exit`                                    | Exit the program                             |
 
 ## Security
 
@@ -171,5 +144,5 @@ The full VAPT report is available on request — contact security@jupitermeta.io
 To report a vulnerability, see [SECURITY.md](./SECURITY.md).
 
 ---
-**Document Version**: Based on JMDT White Paper 1.3 | Nov 2025
-**Copyright**: © 2025 JMDT | Jupiter Meta Labs Foundation | Seychelles
+**Document Version**: Based on JMDT White Paper 1.3 | Updated Jun 2026
+**Copyright**: © 2026 JMDT | Jupiter Meta Labs Foundation | Seychelles

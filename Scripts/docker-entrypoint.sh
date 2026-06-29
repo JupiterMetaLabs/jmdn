@@ -45,6 +45,9 @@ if [ "${IMMUDB_EXTERNAL}" = "true" ]; then
     log "External ImmuDB mode — skipping bootstrap."
     # Guard: ensure bootstrap was run against the immudb-data volume before this
     # container started. Without it, jmdn connects to an empty immudb and fails.
+    # immudb-data is mounted read-only at /opt/jmdn/data (see docker-compose.yml volumes).
+    # Docker overlapping mounts: jmdn-state covers /opt/jmdn; immudb-data overrides
+    # /opt/jmdn/data specifically — so the sentinel written by bootstrap is visible here.
     SENTINEL="/opt/jmdn/data/.bootstrapped"
     if [ ! -f "$SENTINEL" ]; then
         log "ERROR: Bootstrap sentinel not found at $SENTINEL."

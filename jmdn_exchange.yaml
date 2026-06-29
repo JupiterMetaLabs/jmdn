@@ -1,0 +1,188 @@
+# JMDN Exchange Node Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# For: Exchange / integration operators running a JMDN node.
+# Usage: Copy to jmdn.yaml (or /etc/jmdn/jmdn.yaml), fill in all fields
+#        marked REQUIRED, then start the stack.
+#
+# Docker quick-start:
+#   cp jmdn_exchange.yaml jmdn.yaml
+#   # fill in REQUIRED fields below
+#   docker compose up -d
+#
+# Secrets: Never commit this file after filling in secrets.
+#          Use environment variable overrides (JMDN_ prefix) in production.
+#          e.g. JMDN_SECURITY_JWT_SECRET=<value>
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── 1. Node Identity ─────────────────────────────────────────────────────────
+node:
+  # REQUIRED — unique identifier shown in logs and on the seednode registry.
+  alias: "<YOUR_NODE_ALIAS>"           # e.g. "exchange-jmdn-prod-1"
+
+# ── 2. Network ───────────────────────────────────────────────────────────────
+network:
+  chain_id: 7000700                    # JMDT mainnet chain ID — do not change.
+  # REQUIRED — provided by JupiterMeta offline.
+  seednode: "<SEEDNODE_HOST>"
+  mempool: "<MEMPOOL_HOST>"
+  yggdrasil: true
+  heartbeat_interval: 10               # seconds
+
+# ── 3. Ports ─────────────────────────────────────────────────────────────────
+ports:
+  api: 8090        # Explorer HTTP API (internal monitoring — see Security below)
+  blockgen: 0      # Disabled — sequencer only
+  blockgrpc: 0     # Disabled — sequencer only
+  cli: 15053       # CLI admin (localhost only — see binds below)
+  did: 15052       # DID service
+  facade: 8545     # Ethereum JSON-RPC
+  ws: 8546         # WebSocket RPC
+  metrics: 0       # Prometheus — enable (8081) if you have a scraper
+  profiler: 0      # pprof — keep disabled in production
+
+# ── 4. Binds ─────────────────────────────────────────────────────────────────
+binds:
+  api: "0.0.0.0"       # Explorer API — accessible on all interfaces (auth-protected)
+  blockgen: "127.0.0.1"
+  blockgrpc: "127.0.0.1"
+  cli: "127.0.0.1"     # CLI admin — localhost ONLY, never expose
+  did: "0.0.0.0"
+  facade: "0.0.0.0"
+  ws: "0.0.0.0"
+  metrics: "127.0.0.1"
+  profiler: "127.0.0.1"
+
+# ── 5. Database ──────────────────────────────────────────────────────────────
+database:
+  # Docker: address "immudb" is the Docker internal DNS name for the immudb container.
+  # Bare-metal: change to "localhost" (or wherever immudb runs).
+  address: "immudb"
+  port: 3322
+  username: "immudb"
+
+  # REQUIRED — ImmuDB password. Set the same value as IMMUDB_PASSWORD in .env.
+  # Reason: jmdn reads this field; the immudb container reads IMMUDB_PASSWORD from .env.
+  # They are separate config paths for separate processes — both must agree.
+  password: ""
+
+  redis:
+    # Docker: "redis:6379" — the Redis container's Docker DNS name and port.
+    # Bare-metal: "127.0.0.1:6379"
+    url: "redis:6379"
+
+    # REQUIRED — Redis password. Set the same value as REDIS_PASSWORD in .env.
+    # Reason: jmdn reads this field; the redis container reads REDIS_PASSWORD from .env.
+    # They are separate config paths for separate processes — both must agree.
+    password: ""
+
+# ── 6. Logging ───────────────────────────────────────────────────────────────
+logging:
+  level: "info"
+  development: false
+  # Keep in sync with node.alias above.
+  service_name: "<YOUR_NODE_ALIAS>"
+
+  console:
+    enabled: true
+    format: "systemd"    # json | pretty | systemd
+    color: true
+    errors_to_stderr: true
+
+  file:
+    enabled: false
+    path: ""
+    max_size_mb: 100
+    max_age_days: 7
+    max_backups: 5
+    compress: true
+
+  # OTEL telemetry — configure only if you operate your own OpenTelemetry collector.
+  # Leave enabled: false if you do not.
+  otel:
+    enabled: false
+    endpoint: ""           # e.g. "collector.yourinfra.com:4317"
+    protocol: "grpc"
+    insecure: false
+    headers: {}
+    username: ""           # Env: JMDN_LOGGING_OTEL_USERNAME
+    password: ""           # Env: JMDN_LOGGING_OTEL_PASSWORD
+    batch_size: 512
+    export_interval: "5s"
+
+  tracing:
+    enabled: false
+    sampler: "ratio:0.2"
+
+# ── 7. Features ──────────────────────────────────────────────────────────────
+features:
+  use_legacy_bft: false
+  grotrack: false
+
+# ── 8. FastSync ──────────────────────────────────────────────────────────────
+fastsync:
+  enabled: true
+  enable_pulling: true     # This node pulls state from peers on sync.
+  enable_catchup: true     # SyncMonitor auto-reconciles when seednode reports divergence.
+  sync_timeout: "100m"     # Allow long syncs — exchange nodes may start from a cold snapshot.
+  sync_check_interval: "10m"
+
+  # REQUIRED if you used bootstrap_sync.sh to seed immudb.
+  # Set to the block number of the bootstrap snapshot tip + 1.
+  # JupiterMeta will provide the exact value for the current snapshot alongside
+  # the bootstrap download. Setting to 0 is safe but causes a full genesis scan
+  # on every catchup (very slow on a bootstrapped node).
+  catch_up_from_block: 11605
+
+# ── 9. Security ──────────────────────────────────────────────────────────────
+security:
+  enabled: true
+  ip_cache_size: 1000
+
+  # ── Secrets (REQUIRED) ───────────────────────────────────────────────────
+  # Generate strong random values for both. Example:
+  #   openssl rand -base64 32
+  # Prefer env vars in production:
+  #   JMDN_SECURITY_EXPLORER_API_KEY=<value>
+  #   JMDN_SECURITY_JWT_SECRET=<value>
+  explorer_api_key: ""     # REQUIRED — token for Explorer API access (see explorer_api below)
+  jwt_secret: ""           # REQUIRED — JWT signing secret
+
+  # ── Rate Limiting ────────────────────────────────────────────────────────
+  # Layer 1: Global per-IP cap across all services.
+  global_rate_limit: 150
+  global_burst: 300
+
+  # Cloud / Load Balancer support
+  trust_forwarded_headers: true
+  trusted_proxies: []
+
+  # Trusted clients (bypass rate limiting — not auth).
+  # Add your internal monitoring IPs here if needed.
+  trusted_clients: []
+
+  # ── Per-Service Policies ────────────────────────────────────────────────
+  services:
+    # Ethereum JSON-RPC — public endpoint, rate-limited only.
+    eth_rpc:
+      rate_limit: 50
+      burst: 100
+
+    # DID service — public, rate-limited.
+    did_service:
+      rate_limit: 30
+      burst: 60
+
+    # Explorer HTTP API — auth-protected with a Bearer token.
+    # To call this endpoint, include the header:
+    #   Authorization: Bearer <explorer_api_key set above>
+    # To disable authentication entirely (not recommended for production),
+    # change auth_type to "none".
+    explorer_api:
+      rate_limit: 50
+      burst: 100
+      auth_type: "token"
+      token_env: "EXPLORER_API_KEY"
+
+    # Mempool — TLS-only, no auth required.
+    mempool_service:
+      tls: true

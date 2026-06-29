@@ -8,7 +8,7 @@ node:
 
 # ── Networking ───────────────────────────────────────────
 network:
-  chain_id: 8000800
+  chain_id: 7000700
   seednode: ""
   mempool: ""
   yggdrasil: true

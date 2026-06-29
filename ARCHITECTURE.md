@@ -109,33 +109,50 @@ Command-line interface and gRPC server for node management:
 - `peers`: Request updated peer list from seed
 - `stats`: Show messaging statistics
 - `broadcast <message>`: Broadcast to all connected peers
-- `fastsync <peer_multiaddr>`: Fast sync blockchain data
+- `fastsync <peer_multiaddr>`: Full FastSync V2 with a peer
+- `catchup <peer_multiaddr> <from_block>`: CatchUpSync — lightweight gap-fill from a specific block
 - `dbstate`: Show current ImmuDB database state
 - `propagateDID <did> <public_key>`: Propagate DID to network
 - `getDID <did>`: Get DID document from network
 - `syncinfo`: Show FastSync configuration
 
-### 5. FastSync Component (`fastsync/`)
+### 5. FastSync V2 Component (`FastsyncV2/`)
 
-High-performance blockchain synchronization system with CRDT support:
+High-performance blockchain synchronisation with two complementary protocols:
 
-**Key Files:**
-- `fastsync.go`: Main FastSync implementation
-- `fastsyncNew.go`: Enhanced version with HashMap-based synchronization
-- `FileTransfer.go`: File transfer utilities for large data sync
+**FastSync V2 — Full Sync** (`FastsyncV2/fastsyncv2.go`)
 
-**Synchronization Process:**
-1. **Phase 1**: Exchange database states and Merkle roots
-2. **Phase 2**: Compute and exchange HashMaps to identify missing data
-3. **Phase 3**: Transfer missing data in optimized batches
-4. **Phase 4**: Verification and consistency checks
+5-phase Merkle bisection protocol for initial bootstrap synchronisation:
+1. **PriorSync**: Exchange prior-sync metadata and establish baseline
+2. **HeaderSync**: Sync block headers
+3. **DataSync**: Sync block data (transactions, proofs)
+4. **Reconcile**: Single-pass account delta reconciliation
+5. **PoTS**: Proof-of-Time-Stamp verification
+
+**CatchUpSync — Lightweight Gap-Fill** (`FastsyncV2/catchup.go`)
+
+8-phase protocol for nodes that have already bootstrapped and need to fill
+gaps accumulated since. Skips Merkle bisection entirely:
+1. Availability probe (establish remote tip)
+2. Header gap scan (`buildMissingTag`, O(n) cursor) and fetch
+3. Data gap scan (`buildDataMissingTag`) and fetch; also scans tagged accounts
+4. Missing account fetch
+5. Delta reconciliation
+6. Re-auth (disabled; AUTH TTL = 48 h)
+7. PoTS
+8. Post-sync verification — advances `latest_block` only on clean pass
+
+**Delta Reconciliation Engine** (`FastsyncV2/deltas.go`)
+
+`computeAccountDeltas` performs one O(blocks) pass over a range, applying
+sender debit, receiver credit, coinbase credit, and ZKVM credit. Uses
+EIP-1559-aware gas price selection. A SQLite anchor
+(`fastsync:last_reconciled_block`) prevents double-counting on re-runs.
 
 **Key Features:**
-- **HashMap-based Diff**: Efficient identification of missing data
-- **Batch Processing**: Transfer data in configurable batch sizes
-- **CRDT Integration**: Conflict-free synchronization of concurrent operations
-- **Retry Logic**: Automatic retry with exponential backoff
-- **Progress Tracking**: Real-time synchronization progress monitoring
+- Batch size: 500 blocks
+- `blockNeedsDataSync` heuristic: empty StarkProof, or non-zero GasUsed with no transactions
+- Used by both FastSync V2 Phase 4 and CatchUpSync Phase 5
 
 ### 6. CRDT Component (`crdt/`)
 
@@ -269,11 +286,11 @@ Libp2p node creation and peer management:
 
 ### 12. Seed Node Integration (`seednode/`)
 
-External seed node registration and peer discovery system:
+External seed node registration, peer discovery, and block-state reporting:
 
 **Key Files:**
 - `seednode.go`: gRPC client for seed node communication
-- `proto/seednode.proto`: Protocol buffer definitions for seed node service
+- `proto/peer.proto`: Protocol buffer definitions (source file; package `peerpb`)
 - `proto/seednode.pb.go`: Generated Go code for protocol buffers
 - `proto/seednode_grpc.pb.go`: Generated gRPC service code
 
@@ -282,29 +299,71 @@ External seed node registration and peer discovery system:
 - **Public IP Detection**: Automatically detect public IP using ifconfig.me
 - **Multiaddress Construction**: Build proper libp2p multiaddresses
 - **VRS Signing**: Cryptographic signing of peer records and heartbeats
+- **Block State Reporting**: Report local Merkle root to seednode; receive sync verdict
 
 **Key Functions:**
 - `RegisterPeer()`: Register this peer with the seed node
 - `SendHeartbeat()`: Send periodic heartbeat to seed node
-- `getPublicIP()`: Fetch public IP address from ifconfig.me
-- `signPeerRecord()`: Sign peer records with VRS signature
-- `signHeartbeat()`: Sign heartbeat messages with VRS signature
+- `ReportBlockState(ctx, selfPeerID, blockHead, merkleRoot)`: Send local block head
+  and Merkle root; returns `SyncStatus` with `IsSynced`, sequencer head/root, and
+  `GoodPeers` (recommended sync peers when out of sync)
 
-**Protocol Features:**
-- **Public IP Detection**: Uses ifconfig.me service for external IP
-- **Port Detection**: Automatically detects TCP port from libp2p host
-- **Address Filtering**: Filters out local/private addresses for external registration
-- **Fallback Strategy**: Falls back to local addresses if public IP unavailable
-- **VRS Signing**: Complete ECDSA signature with R, S, V components
-- **Deterministic V Calculation**: Consistent V component calculation
+**`ReportBlockState` RPC** (`PeerDirectory` service):
+```protobuf
+rpc ReportBlockState(BlockStateReport) returns (BlockStateResponse);
 
-**Integration Points:**
-- **Startup Registration**: Automatically registers during node startup
-- **Command Line**: Configurable via `-seednode` flag
-- **Error Handling**: Graceful handling of connection failures
-- **Logging**: Comprehensive logging of registration status
+message BlockStateReport {
+  string peer_id     = 1;  // Reporting node's libp2p PeerID
+  uint64 block_head  = 2;  // Latest block number
+  bytes  merkle_root = 3;  // 32-byte Merkle root
+  int64  reported_at = 4;  // Unix epoch (seconds)
+}
 
-### 13. Configuration (`config/`)
+message BlockStateResponse {
+  bool   is_synced      = 1;  // True if node matches sequencer
+  uint64 sequencer_head = 2;
+  bytes  sequencer_root = 3;
+  repeated SignedPeerRecord good_peers = 4;  // Populated when is_synced=false
+  string message        = 5;
+}
+```
+
+### 13. SyncMonitor (`internal/syncmonitor/`)
+
+Background daemon that automates divergence detection and reconciliation:
+
+- Runs on a configurable interval (`sync_check_interval`, default 10 min)
+- Builds the local Merkle root via `BuildLocalMerkleRoot`
+- Reports it to the seednode via `ReportBlockState`
+- Triggers `HandleCatchUpSync` against recommended peers when the seednode
+  signals divergence (only when `enable_catchup: true`)
+
+**Six hardening measures preventing false positives:**
+1. Startup jitter — randomised delay before the second check
+2. Propagation guard — skips check if a block was received within 30 s
+3. Consecutive threshold — two divergence detections required before reconciling
+4. Block-delta filter — ≤3 block difference treated as propagation lag
+5. Seednode grace period — three consecutive RPC failures before marking seednode unreachable
+6. Adaptive interval — 1.5× backoff when in sync; halved on divergence; uses `time.Timer`
+
+**HTTP endpoints** (on the gETH facade server when monitor is active):
+- `GET /sync/status` — returns current sync state as JSON
+- `POST /sync/reconcile` — triggers an immediate sync check
+
+### 14. Canonical Merkle Package (`internal/merkle/`)
+
+Provides a stable, deterministic Merkle root over the local block history:
+
+- `hashBlock(b *ZKBlock) [32]byte` — canonical SHA-256 leaf hash over all
+  `ZKBlock` fields (excluding `BlockHash`). Big-endian encoding,
+  length-prefixed variable fields, nullable pointer flags, per-tx sub-hash.
+  `nil` and `big.Int(0)` produce identical encodings.
+- `BuildLocalMerkleRoot(ctx, blockInfo)` — iterates blocks 0..head, substituting
+  zero-hashes for missing blocks, and returns the resulting root.
+
+Replaces the previous ad-hoc implementation in `DB_OPs/merkletree/merkle.go`.
+
+### 15. Configuration (`config/`)
 
 System configuration and constants:
 
@@ -360,11 +419,21 @@ Security validation and checks:
 6. **Network Propagation**: Broadcast blocks to all peers
 
 ### 3. Synchronization Flow
-1. **State Exchange**: Nodes exchange current database states
-2. **Diff Calculation**: Use HashMaps to identify missing data
-3. **Batch Transfer**: Transfer missing data in optimized batches
-4. **Verification**: Verify synchronization consistency
-5. **CRDT Merge**: Merge any concurrent operations
+
+**FastSync V2 (initial bootstrap):**
+1. PriorSync — exchange baseline metadata
+2. HeaderSync — sync missing block headers
+3. DataSync — sync missing block data
+4. Reconcile — single-pass account delta reconciliation
+5. PoTS — proof-of-timestamp verification
+
+**CatchUpSync (post-bootstrap gap-fill, automatic via SyncMonitor):**
+1. SyncMonitor builds local Merkle root and calls `ReportBlockState`
+2. Seednode returns sync verdict + recommended peers
+3. `HandleCatchUpSync` scans for missing headers and data blocks (O(n) cursor)
+4. Fetches only the identified gaps from the target peer
+5. Runs delta reconciliation over the filled range
+6. Post-sync verification confirms clean state
 
 ### 4. DID Management Flow
 1. **DID Registration**: Register new identity with public key
@@ -395,11 +464,12 @@ Security validation and checks:
 
 The system supports multiple deployment modes:
 
-1. **Single Node**: Standalone node for development/testing
-2. **Seed Node**: Bootstrap node for network discovery
-3. **Full Node**: Complete node with all services enabled
-4. **API Node**: Node focused on providing API services
-5. **Sync Node**: Node optimized for blockchain synchronization
+1. **Docker Compose** (recommended for production): multi-architecture container stack (linux/amd64, linux/arm64, linux/arm/v7) — immudb + redis + jmdn. See [DOCKER.md](./DOCKER.md).
+2. **Single Node**: Standalone node for development/testing (native binary)
+3. **Seed Node**: Bootstrap node for network discovery
+4. **Full Node**: Complete node with all services enabled
+5. **API Node**: Node focused on providing API services
+6. **Sync Node**: Node optimized for blockchain synchronisation
 
 ## Monitoring & Observability
 
