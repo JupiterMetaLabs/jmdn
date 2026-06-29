@@ -20,12 +20,14 @@ func GetBlocksRange(mainDBClient *config.PooledConnection, startBlock, endBlock 
 		return nil, fmt.Errorf("startBlock (%d) cannot be greater than endBlock (%d)", startBlock, endBlock)
 	}
 
-	// Setup context and logging
-	ctx, cancel := context.WithCancel(context.Background()) // Increased timeout for bulk op
-	defer cancel()
+	// Setup context and logging.
+	// 30 s is sufficient for a 1000-block GetAll; callers with tighter deadlines
+	// should pass their own ctx (tracked in DB_OPs context propagation backlog).
+	ctx, cancelCtx := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelCtx()
 
-	loggerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	loggerCtx, cancelLog := context.WithCancel(context.Background())
+	defer cancelLog()
 
 	var err error
 	var shouldReturnConnection = false

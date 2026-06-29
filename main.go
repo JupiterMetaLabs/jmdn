@@ -41,6 +41,7 @@ import (
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/rpc"
 	"gossipnode/helper"
+	"gossipnode/internal/syncmonitor"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	"gossipnode/metrics"
@@ -139,7 +140,7 @@ func initAppandLocalGRO() {
 	}
 }
 
-func StartFacadeServer(bindAddr string, port int, chainID int) {
+func StartFacadeServer(bindAddr string, port int, chainID int, mon *syncmonitor.Monitor) {
 	if MainLM == nil {
 		log.Fatal().Msg("MainLM not initialized. Call initAppandLocalGRO() first")
 	}
@@ -149,6 +150,9 @@ func StartFacadeServer(bindAddr string, port int, chainID int) {
 
 		handler := rpc.NewHandlers(Service.NewService(chainID))
 		httpServer := rpc.NewHTTPServer(handler)
+		if mon != nil {
+			httpServer.WithSyncMonitor(mon)
+		}
 
 		addr := fmt.Sprintf("%s:%d", bindAddr, port)
 		if err := httpServer.ServeWithContext(ctx, addr); err != nil {
@@ -260,8 +264,9 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
-		fmt.Println("  fastsync <peer>      - Fast sync with peer (V2 Engine)")
-		fmt.Println("  accountsync <peer>   - Sync missing accounts only (skip block sync)")
+		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
+		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
+		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
 		fmt.Println("are only available in interactive mode.")
@@ -449,6 +454,35 @@ func runCommand(command string, args []string, grpcPort int) {
 			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
 		}
 
+	case "catchup":
+		if len(args) < 1 {
+			fmt.Println("Usage: jmdn -cmd catchup <peer_multiaddr> [from_block]")
+			fmt.Println("  from_block defaults to 0 (auto-detect from local DB tip)")
+			os.Exit(1)
+		}
+		var fromBlock uint64
+		if len(args) >= 2 {
+			var err error
+			fromBlock, err = strconv.ParseUint(args[1], 10, 64)
+			if err != nil {
+				fmt.Printf("Invalid from_block %q: %v\n", args[1], err)
+				os.Exit(1)
+			}
+		}
+		fmt.Printf("Starting CatchUpSync (from_block=%d)...\n", fromBlock)
+		stats, err := client.CatchUpSync(args[0], fromBlock)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if stats != nil && stats.Error != "" {
+			fmt.Printf("CatchUpSync failed: %s\n", stats.Error)
+			os.Exit(1)
+		}
+		if stats != nil {
+			fmt.Printf("CatchUpSync completed in %ds\n", stats.TimeTaken)
+		}
+
 	case "accountsync":
 		if len(args) < 1 {
 			fmt.Println("Usage: jmdn -cmd accountsync <peer_multiaddr>")
@@ -509,8 +543,9 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  sendfile <peer> <filepath> <remote> - Send file")
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
-		fmt.Println("  fastsync <peer>      - Fast sync with peer (V2 Engine)")
-		fmt.Println("  accountsync <peer>   - Sync missing accounts only (skip block sync)")
+		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
+		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
+		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		os.Exit(1)
 	}
 }
@@ -619,9 +654,11 @@ func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsC
 	return fs
 }
 
-// initFastsyncV2 initializes the FastSync V2 service
-func initFastsyncV2(n *config.Node, syncTimeout time.Duration) *FastsyncV2.FastsyncV2 {
-	fs, err := FastsyncV2.NewFastsyncV2(n.Host, syncTimeout)
+// initFastsyncV2 initializes the FastSync V2 service.
+// ctx is the node's top-level shutdown context — it governs the lifetime of
+// server-side network handler goroutines inside the engine.
+func initFastsyncV2(ctx context.Context, n *config.Node, syncTimeout time.Duration) *FastsyncV2.FastsyncV2 {
+	fs, err := FastsyncV2.NewFastsyncV2(ctx, n.Host, syncTimeout)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
 		return nil
@@ -745,6 +782,19 @@ func main() {
 	// RE-RESOLVE TOKENS: CLI flags might have updated secrets (ExplorerAPIKey, JWTSecret).
 	// We must refresh the token cache so GetResolvedToken() returns the correct values.
 	cfg.Security.ResolveTokens()
+
+	// ImmuDB address/port — override package-level vars so all callers
+	// (ConnectionPool, fastsync, DB_OPs) pick up the config value without
+	// needing individual changes. Defaults: localhost:3322 (embedded).
+	// Override via JMDN_DATABASE_ADDRESS / JMDN_DATABASE_PORT to use an
+	// external immudb container.
+	if cfg.Database.Address != "" {
+		config.DBAddress = cfg.Database.Address
+	}
+	if cfg.Database.Port > 0 {
+		config.DBPort = cfg.Database.Port
+	}
+	fmt.Printf("ImmuDB target: %s:%d\n", config.DBAddress, config.DBPort)
 
 	// Chain ID global initialization — must happen before any Security validation.
 	// Previously this was only set inside Block/Server.go (gated behind BlockGen > 0),
@@ -962,64 +1012,74 @@ func main() {
 	// Initialize FastSync service
 	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
 	if cfg.FastSync.Enabled {
-		fastSyncerV2 = initFastsyncV2(n, cfg.FastSync.SyncTimeout)
+		fastSyncerV2 = initFastsyncV2(ctx, n, cfg.FastSync.SyncTimeout)
 	} else {
 		log.Info().Msg("[FastSync] disabled by config — protocol handlers not registered")
 	}
 
-	// Startup sync: catch up on blocks missed while offline.
-	if fastSyncerV2 != nil && cfg.FastSync.EnablePulling && cfg.FastSync.PullOnStartup {
-		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.StartupSyncThread, func(ctx context.Context) error {
-			// Wait for peer connections to establish after node startup
-			time.Sleep(5 * time.Second)
+	// SeedMonitor: every node with fastsync enabled reports its Merkle root to the
+	// seednode periodically (outbound only, no DB writes ever).
+	// ReconcileFunc is only wired when enable_catchup=true — never set on the sequencer.
+	// enable_pulling guards CLI pull commands and the reconcile path independently.
+	var syncMonitor *syncmonitor.Monitor
+	if fastSyncerV2 != nil && cfg.FastSync.Enabled {
+		if cfg.Network.SeedNode == "" {
+			log.Warn().Msg("[SyncMonitor] cfg.network.seed_node not set — sync monitor disabled")
+		} else {
+			selfPeerID := n.Host.ID().String()
+			seedCli, err := seednode.NewClient(cfg.Network.SeedNode)
+			if err != nil {
+				log.Error().Err(err).Msg("[SyncMonitor] failed to create seednode client — sync monitor disabled")
+			} else {
+				blockInfo := NodeInfo.NewSyncStruct()
+				reporter := syncmonitor.NewSeednodeReporter(seedCli, selfPeerID)
+				syncMonitor = syncmonitor.New(blockInfo, reporter, cfg.FastSync.SyncCheckInterval)
 
-			peers := n.Host.Network().Peers()
-			if len(peers) == 0 {
-				// TODO: Query seed node for available sync peers when no direct peers are connected
-				log.Info().Msg("[StartupSync] No peers connected, skipping startup sync")
-				return nil
-			}
-
-			log.Info().Int("peers", len(peers)).Msg("[StartupSync] Attempting startup sync with connected peers")
-
-			for _, peerID := range peers {
-				// Honour allowed_peers whitelist if configured
-				if len(cfg.FastSync.AllowedPeers) > 0 {
-					allowed := false
-					for _, ap := range cfg.FastSync.AllowedPeers {
-						if ap == peerID.String() {
-							allowed = true
-							break
+				// Only wire reconciliation on non-sequencer nodes.
+				// The sequencer sets enable_catchup=false — it is the authoritative source,
+				// it never catches up from peers.
+				if cfg.FastSync.EnableCatchup {
+					fromBlock := cfg.FastSync.CatchUpFromBlock
+					syncMonitor.SetReconcileFunc(func(rctx context.Context, peers []syncmonitor.PeerInfo) error {
+						if len(peers) == 0 {
+							return fmt.Errorf("[ReconcileFunc] seednode returned no good peers")
 						}
+						for _, p := range peers {
+							if len(p.Multiaddrs) == 0 {
+								log.Warn().Str("peer", p.PeerID).Msg("[ReconcileFunc] peer has no multiaddrs, skipping")
+								continue
+							}
+							targetMultiaddr := p.Multiaddrs[0] + "/p2p/" + p.PeerID
+							log.Info().
+								Str("peer", p.PeerID).
+								Str("addr", targetMultiaddr).
+								Uint64("from_block", fromBlock).
+								Msg("[ReconcileFunc] attempting catchup")
+							if err := fastSyncerV2.HandleCatchUpSync(rctx, fromBlock, targetMultiaddr); err != nil {
+								log.Warn().Err(err).Str("peer", p.PeerID).Msg("[ReconcileFunc] peer failed, trying next")
+								continue
+							}
+							log.Info().Str("peer", p.PeerID).Msg("[ReconcileFunc] catchup succeeded")
+							return nil
+						}
+						return fmt.Errorf("[ReconcileFunc] all %d seednode peers failed catchup", len(peers))
+					})
+				}
+
+				if err := syncMonitor.Start(ctx); err != nil {
+					log.Error().Err(err).Msg("[SyncMonitor] failed to start — continuing without monitor")
+					syncMonitor = nil
+					if closeErr := seedCli.Close(); closeErr != nil {
+						log.Warn().Err(closeErr).Msg("[SyncMonitor] seednode client close error")
 					}
-					if !allowed {
-						log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Skipping peer not in allowed_peers")
-						continue
-					}
+				} else {
+					log.Info().
+						Bool("catchup", cfg.FastSync.EnableCatchup).
+						Dur("interval", cfg.FastSync.SyncCheckInterval).
+						Msg("[SyncMonitor] started")
 				}
-
-				addrs := n.Host.Peerstore().Addrs(peerID)
-				if len(addrs) == 0 {
-					continue
-				}
-
-				log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Trying peer")
-				if err := fastSyncerV2.HandleStartupSync(peerID, addrs); err != nil {
-					log.Warn().Err(err).Str("peer", peerID.String()).Msg("[StartupSync] Failed, trying next peer")
-					continue
-				}
-
-				log.Info().Str("peer", peerID.String()).Msg("[StartupSync] Sync completed successfully")
-				return nil
 			}
-
-			log.Warn().Msg("[StartupSync] Failed to sync with any connected peer")
-			return nil
-		}); err != nil {
-			log.Error().Err(err).Str("thread", GRO.StartupSyncThread).Msg("Failed to start startup sync goroutine")
 		}
-	} else if fastSyncerV2 != nil && !cfg.FastSync.EnablePulling {
-		log.Info().Msg("[FastSync] Node configured with enable_pulling=false (serve-only participant); skipping StartupSync")
 	}
 
 	// Initialize Yggdrasil messaging if enabled
@@ -1210,7 +1270,7 @@ func main() {
 
 	if cfg.Ports.Facade > 0 {
 		fmt.Printf("Starting gETH Facade server on port %d\n", cfg.Ports.Facade)
-		StartFacadeServer(cfg.Binds.Facade, cfg.Ports.Facade, cfg.Network.ChainID)
+		StartFacadeServer(cfg.Binds.Facade, cfg.Ports.Facade, cfg.Network.ChainID, syncMonitor)
 	}
 
 	if cfg.Ports.WS > 0 {

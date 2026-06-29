@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package peerpb;
 
-option go_package = "seedNodes/api/peer;peerpb";
+option go_package = "gossipnode/seednode/proto;peerpb";
 
 import "google/protobuf/empty.proto";
 
@@ -356,6 +356,22 @@ message PingRTTResponse {
 }
 
 
+// Block state report from a node to the seednode
+message BlockStateReport {
+  string peer_id     = 1;  // Reporting node's libp2p PeerID
+  uint64 block_head  = 2;  // Latest block number the node has
+  bytes  merkle_root = 3;  // 32-byte Merkle root over block hashes
+  int64  reported_at = 4;  // Unix epoch (seconds)
+}
+
+message BlockStateResponse {
+  bool   is_synced      = 1;  // True if node matches sequencer
+  uint64 sequencer_head = 2;  // Sequencer's latest block number
+  bytes  sequencer_root = 3;  // Sequencer's Merkle root
+  repeated SignedPeerRecord good_peers = 4;  // Peers to sync from (populated when is_synced=false)
+  string message        = 5;  // Human-readable status
+}
+
 // Peer Directory Service
 service PeerDirectory {
   rpc RegisterPeer(RegisterPeerRequest) returns (RegisterPeerResponse);
@@ -392,6 +408,11 @@ service PeerDirectory {
   rpc ListBuddy(ListBuddyRequest) returns (ListBuddyResponse);
   rpc RemoveBuddy(RemoveBuddyRequest) returns (RemoveBuddyResponse);
   rpc RemoveAllBuddies(RemoveAllBuddiesRequest) returns (RemoveAllBuddiesResponse);
-
+  
+  // Ping RTT measurement using libp2p ping
   rpc PingRTT(PingRTTRequest) returns (PingRTTResponse);
+
+  // Block state sync check — nodes call this to report their Merkle root
+  // Seednode compares against sequencer's root and returns sync status + good peers
+  rpc ReportBlockState(BlockStateReport) returns (BlockStateResponse);
 }

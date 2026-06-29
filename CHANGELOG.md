@@ -7,6 +7,188 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Docker deployment stack** (`Dockerfile`, `docker-compose.yml`,
+  `Scripts/docker-entrypoint.sh`, `Scripts/bootstrap_sync.sh`, `DOCKER.md`).
+  Multi-architecture container image (linux/amd64, linux/arm64, linux/arm/v7)
+  built from `golang:1.25.3-bookworm` / `debian:bookworm-slim`. Includes
+  Yggdrasil (required when `network.yggdrasil: true`). The `jmdn` user and
+  group are pinned to UID/GID 3322 to match immudb container volume ownership.
+  `docker-entrypoint.sh` handles root-to-unprivileged privilege drop (gosu),
+  TLS certificate generation (CA + 8 service certs), and two deployment modes:
+  embedded immudb or externally managed immudb (`IMMUDB_EXTERNAL=true`).
+  `bootstrap_sync.sh` restores an immudb snapshot from GCS with MD5 verification
+  and a sentinel guard (`.bootstrapped`) to skip restore on subsequent starts.
+  `docker-compose.yml` composes immudb, Redis (AOF), and jmdn with an optional
+  bootstrap profile. `DOCKER.md` is the full operator guide.
+
+- **CatchUpSync — 8-phase post-bootstrap gap-fill protocol**
+  (`FastsyncV2/catchup.go`).
+  `HandleCatchUpSync(ctx, fromBlock, targetPeer)` fills header and data gaps
+  accumulated after initial FastSync without repeating Merkle bisection.
+  Phase 1: availability probe. Phase 2: header gap scan (`buildMissingTag`,
+  O(n) cursor) and fetch. Phase 3: data gap scan (`buildDataMissingTag`, using
+  a heuristic — empty StarkProof, or non-zero GasUsed with no transactions)
+  and fetch, plus tagged-account scan over locally-held blocks. Phase 3.5:
+  missing account fetch. Phase 4: account sync. Phase 5: delta reconciliation.
+  Phase 6: re-auth (disabled; AUTH TTL = 48 h). Phase 7: PoTS. Phase 8:
+  post-sync verification — re-runs the data gap scan and advances `latest_block`
+  to the remote tip only on a clean pass. Batch size: 500.
+
+- **`CatchUpSync` CLI RPC** (`CLI/proto/Connection.proto`,
+  `CLI/proto/Connection.pb.go`, `CLI/proto/Connection_grpc.pb.go`,
+  `CLI/client.go`).
+  New `rpc CatchUpSync(CatchUpRequest) returns (SyncStats)` on `CLIService`.
+  `CatchUpRequest` carries `peer string` and `from_block uint64`. Exposed as
+  `jmdn -cmd catchup <peer-multiaddr> <from-block>`.
+
+- **Single-pass delta reconciliation engine** (`FastsyncV2/deltas.go`).
+  `computeAccountDeltas(fromBlock, toBlock)` performs one O(blocks) pass to
+  compute per-account balance and nonce deltas, replacing the previous
+  O(accounts × blocks) approach. Applies sender debit (value + gas fee, nonce
+  advance), receiver credit, coinbase credit (gas/2, rounding remainder to
+  coinbase), and ZKVM credit (gas/2). Gas price selection handles EIP-1559
+  type-2 and legacy transactions. Used by both CatchUpSync and FastSync V2
+  Phase 5. A SQLite key (`fastsync:last_reconciled_block`) anchors completed
+  reconciliation ranges; `effectiveReconRange` and `markReconComplete` prevent
+  double-counting on re-runs.
+
+- **Canonical Merkle package** (`internal/merkle/builder.go`,
+  `internal/merkle/hash.go`).
+  `hashBlock` produces a canonical SHA-256 leaf hash over all `ZKBlock` fields
+  (excluding `BlockHash`) using big-endian encoding, length-prefixed variable
+  fields, nullable pointer flags, and a per-transaction sub-hash. The encoding
+  is stable across node versions. `BuildLocalMerkleRoot` iterates from block 0
+  to the current head, substituting zero-hashes for missing blocks. Replaces
+  `DB_OPs/merkletree/merkle.go` (deleted).
+
+- **SyncMonitor — background divergence detection daemon**
+  (`internal/syncmonitor/monitor.go`, `internal/syncmonitor/monitor_test.go`).
+  Runs on a configurable interval; builds the local Merkle root, reports it to
+  the seednode via `ReportBlockState`, and triggers CatchUpSync when the
+  seednode signals divergence. Six hardening measures: (1) startup jitter,
+  (2) propagation guard — skips check if a block was received within 30 s,
+  (3) consecutive threshold — requires two divergence detections before
+  reconciling, (4) block-delta filter — ≤3 block difference treated as
+  propagation lag, (5) seednode grace period — three consecutive RPC failures
+  before marking seednode unreachable, (6) adaptive interval — 1.5× backoff
+  when in sync, halved on divergence, implemented with `time.Timer`.
+  Unit tests cover all six fixes. The monitor is wired in `main.go`; its
+  reconcile function is activated only when `fastsync.enable_catchup: true`.
+
+- **HTTP sync endpoints** (`gETH/Facade/rpc/sync_handlers.go`,
+  `gETH/Facade/rpc/http_server.go`).
+  `GET /sync/status` returns the current SyncMonitor state as JSON.
+  `POST /sync/reconcile` triggers an immediate sync check.
+
+- **`ReportBlockState` RPC on `PeerDirectory`**
+  (`seednode/proto/seednode.proto`, `seednode/proto/seednode.pb.go`,
+  `seednode/proto/seednode_grpc.pb.go`, `seednode/seednode.go`).
+  New `BlockStateReport` message (peer ID, block head, 32-byte Merkle root,
+  timestamp) and `BlockStateResponse` message (sync verdict, sequencer head and
+  root, list of recommended sync peers). `seednode.Client.ReportBlockState`
+  calls the RPC with a 15-second timeout and returns a `SyncStatus` struct.
+  The proto source is renamed from `seednode.proto` to `peer.proto` and the
+  Go package path updated to `gossipnode/seednode/proto;peerpb`.
+
+- **`GetTransactionsByAccountInRange`** (`DB_OPs/account_immuclient.go`,
+  `DB_OPs/Nodeinfo/immudb_account_manager.go`).
+  Bounded block-range variant of the account transaction scan, used by the
+  delta reconciliation engine.
+
+- **`notifyBlockReceived` propagation signal**
+  (`DB_OPs/Nodeinfo/immudb_adapter.go`, `DB_OPs/Nodeinfo/immudb_data_writer.go`,
+  `DB_OPs/Nodeinfo/immudb_headers_writer.go`).
+  `lastBlockReceivedNs atomic.Int64` updated after every successful `WriteData`
+  and `WriteHeaders` call. Exposed as `LastBlockReceivedAt() time.Time` for the
+  SyncMonitor propagation guard.
+
+- **`DatabaseSettings.Address` and `DatabaseSettings.Port`**
+  (`config/settings/config.go`, `config/settings/defaults.go`,
+  `config/settings/loader.go`, `config/ImmudbConstants.go`, `main.go`,
+  `jmdn_default.yaml`).
+  ImmuDB target host and port are now configurable. `DBAddress` and `DBPort`
+  are promoted from package constants to variables and overridden at startup
+  from config. Defaults: `localhost:3322`.
+
+- **`TxNonce` and `TxCountSent` fields on account update wire struct**
+  (`DB_OPs/Nodeinfo/account_sync_worker.go`,
+  `DB_OPs/Nodeinfo/immudb_account_manager.go`).
+  Added to `accountUpdateWire` and propagated through `BatchUpdateAccounts`
+  and `batchUpdateAccountsDirect`.
+
+### Changed
+
+- **`FastSyncSettings` config keys renamed and extended**
+  (`config/settings/config.go`, `config/settings/defaults.go`,
+  `config/settings/loader.go`).
+  `pull_on_startup` removed (startup sync goroutine removed from `main.go`).
+  `allowed_peers` removed. New keys: `enable_catchup` (bool, default `false`),
+  `catch_up_from_block` (uint64, default `0`), `sync_check_interval` (duration,
+  default `10m`).
+
+- **FastSync V2 Phase 5 rewritten to use delta reconciliation**
+  (`FastsyncV2/fastsyncv2.go`).
+  Phase 5 and PoTS reconciliation now use `computeAccountDeltas` +
+  `ReconcileWithDeltas` + `effectiveReconRange`/`markReconComplete`.
+  `NewFastsyncV2` gains a `ctx context.Context` parameter.
+  AccessList duplicate encoding bug fixed.
+
+- **`latest_block` write consolidated to end of batch**
+  (`DB_OPs/Nodeinfo/immudb_data_writer.go`).
+  The per-block `latest_block` write is replaced by a single write at the end
+  of each batch using `highestWritten` and `didWriteBlock` flags. Genesis block
+  0 handled correctly.
+
+- **Block iterator position correctness**
+  (`DB_OPs/Nodeinfo/immudb_block_iterator.go`).
+  Batch results are now placed into a positionally-correct nil-padded slice
+  indexed by `BlockNumber`. Previously, when ImmuDB omitted a missing entry,
+  subsequent blocks in the batch occupied wrong positions.
+
+- **`configToFastsyncBlock` direct field assignment**
+  (`DB_OPs/Nodeinfo/immudb_block_iterator.go`).
+  Replaces a JSON marshal/unmarshal round-trip used to copy config block fields
+  into the fastsync type.
+
+- **Redis fallback for account writes**
+  (`DB_OPs/Nodeinfo/immudb_account_manager.go`).
+  `WriteAccounts` and `BatchUpdateAccounts` now fall back to direct ImmuDB
+  writes (`writeAccountsDirect`, `batchUpdateAccountsDirect`) when Redis is
+  unavailable or the enqueue fails.
+
+- **`GetTransactionsForAccount` timeout extended; `GetTransactionsByAccount`
+  timeout and batch size increased** (`DB_OPs/Nodeinfo/immudb_account_manager.go`,
+  `DB_OPs/account_immuclient.go`).
+  `GetTransactionsForAccount`: 10 s → 60 s.
+  `GetTransactionsByAccount`: 8 s → 120 s; batch size 100 → 500; switched from
+  per-block reads to `GetBlocksRange` batching.
+
+- **`BulkGetBlock` context upgraded to timeout**
+  (`DB_OPs/BulkGetBlock.go`).
+  `context.WithCancel` replaced with `context.WithTimeout(30 s)`.
+
+- **Seed server hardened** (`seed/seed.go`).
+  Per-peer rate limiting: 5 registrations/hour, burst 5, lazy 2-hour eviction.
+  Registry size cap: new registrations rejected when peer store reaches
+  `MaxTrackedPeers`. All `fmt.Print*` replaced with structured `log.Printf`
+  calls tagged `[seed]`.
+
+- **`ConnectionPool.MaxConnections`** (`config/ConnectionPool.go`): 20 → 30.
+
+### Removed
+
+- **`DB_OPs/merkletree/merkle.go`** — replaced by `internal/merkle/`.
+
+- **`FastSyncSettings.PullOnStartup` and `FastSyncSettings.AllowedPeers`** —
+  removed along with the corresponding startup sync goroutine in `main.go`.
+
+- **Debug `fmt.Printf` output from DB layer**
+  (`DB_OPs/account_immuclient.go`, `DB_OPs/immuclient.go`).
+  All `fmt.Printf(">>> [DB]...")` diagnostic calls removed from `GetAllKeys`,
+  `getKeysBatch`, `SafeCreate`, and `GetZKBlockByNumber`.
+
 ### Performance
 
 - **Explorer, JSON-RPC facade, and gRPC server switched to proof-free block reads**

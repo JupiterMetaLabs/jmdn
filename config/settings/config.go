@@ -74,7 +74,12 @@ type RedisSettings struct {
 }
 
 // DatabaseSettings controls ImmuDB and Redis connection parameters.
+// Env overrides use the JMDN_ prefix (e.g. JMDN_DATABASE_ADDRESS, JMDN_DATABASE_PORT).
 type DatabaseSettings struct {
+	// ImmuDB connection — override to point at a separate immudb container.
+	Address string `mapstructure:"address" yaml:"address"`
+	Port    int    `mapstructure:"port"    yaml:"port"`
+
 	Username string        `mapstructure:"username" yaml:"username"`
 	Password string        `mapstructure:"password" yaml:"password"`
 	Redis    RedisSettings `mapstructure:"redis"    yaml:"redis"`
@@ -152,19 +157,35 @@ type FastSyncSettings struct {
 	// handlers are registered. Set false to disable FastSync entirely.
 	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 
-	// EnablePulling controls whether this node will pull data from peers and write to its
-	// local DB. false = read-only participant (serves data, never updates itself).
+	// EnablePulling controls whether this node pulls data from peers and writes to
+	// its local DB (HeaderSync, DataSync, Reconciliation). false = serve-only.
+	// Sequencer must keep this false — it is the authoritative source of truth.
+	// Also guards all CLI sync commands via PullAllowed.
 	EnablePulling bool `mapstructure:"enable_pulling" yaml:"enable_pulling"`
 
-	// PullOnStartup controls whether the node attempts to catch up on missed blocks
-	// automatically when it (re)starts and connects to peers.
-	PullOnStartup bool `mapstructure:"pull_on_startup" yaml:"pull_on_startup"`
+	// EnableCatchup controls whether the SyncMonitor automatically reconciles this
+	// node against peers when the seednode reports it is out of sync.
+	// Requires enable_pulling=true. Never set on the sequencer.
+	EnableCatchup bool `mapstructure:"enable_catchup" yaml:"enable_catchup"`
 
 	// SyncTimeout is the maximum wall-clock time allowed for a single full sync
 	// operation before it is cancelled.
 	SyncTimeout time.Duration `mapstructure:"sync_timeout" yaml:"sync_timeout"`
 
-	// AllowedPeers is an optional whitelist of libp2p peer IDs this node will
-	// accept sync data FROM. Empty list = accept from any peer.
-	AllowedPeers []string `mapstructure:"allowed_peers" yaml:"allowed_peers"`
+	// CatchUpFromBlock is the first block AFTER the bootstrap snapshot
+	// (i.e. bootstrapTip + 1). Set this once after loading the bootstrap and
+	// never change it. Every catchup run — including after the node goes offline
+	// and comes back — scans from this block to remoteTip to find all gaps.
+	//
+	// 0 = full scan from block 1 (genesis). Use this if no bootstrap was loaded.
+	// N = scan from N; bootstrap guaranteed to cover [0..N-1] with no gaps.
+	//
+	// Do NOT set this to localTip+1: if a previous catchup was partial,
+	// localTip may be ahead of gaps that would be silently skipped.
+	CatchUpFromBlock uint64 `mapstructure:"catch_up_from_block" yaml:"catch_up_from_block"`
+
+	// SyncCheckInterval is how often the SyncMonitor reports this node's Merkle
+	// root to the seednode and checks whether reconciliation is needed.
+	// Default: 10 minutes. Minimum enforced by the monitor: 1 minute.
+	SyncCheckInterval time.Duration `mapstructure:"sync_check_interval" yaml:"sync_check_interval"`
 }

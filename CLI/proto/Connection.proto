@@ -94,6 +94,7 @@ service CLIService {
     rpc FastSyncV2(PeerRequest) returns (SyncStats) {}
     rpc AccountSync(PeerRequest) returns (SyncStats) {}
     rpc FirstSync(FirstSyncRequest) returns (SyncStats) {}
+    rpc CatchUpSync(CatchUpRequest) returns (SyncStats) {}
     rpc GetDatabaseState(google.protobuf.Empty) returns (DatabaseStates) {}
 
     // Node Operations
@@ -138,6 +139,11 @@ message DIDPropagationRequest {
 message FirstSyncRequest {
     string peer = 1;
     string mode = 2;  // "server" or "client"
+}
+
+message CatchUpRequest {
+    string peer       = 1;  // full libp2p multiaddr with peer ID
+    uint64 from_block = 2;  // first block NOT in local DB (bootstrap tip + 1)
 }
 
 message SyncInfo {

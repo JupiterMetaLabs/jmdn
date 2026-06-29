@@ -256,9 +256,19 @@ func (s *CLIServer) AccountSync(ctx context.Context, req *pb.PeerRequest) (*pb.S
 func (s *CLIServer) FirstSync(ctx context.Context, req *pb.FirstSyncRequest) (*pb.SyncStats, error) {
 	stats, err := s.handler.HandleFirstSync(req.Peer, req.Mode)
 	if err != nil {
-		return &pb.SyncStats{
-			Error: err.Error(),
-		}, nil
+		return &pb.SyncStats{Error: err.Error()}, nil
+	}
+	return &pb.SyncStats{
+		TimeTaken:     int64(stats.TimeTaken.Seconds()),
+		MainState:     convertDBState(stats.MainState),
+		AccountsState: convertDBState(stats.AccountsState),
+	}, nil
+}
+
+func (s *CLIServer) CatchUpSync(ctx context.Context, req *pb.CatchUpRequest) (*pb.SyncStats, error) {
+	stats, err := s.handler.HandleCatchUpSync(ctx, req.Peer, req.FromBlock)
+	if err != nil {
+		return &pb.SyncStats{Error: err.Error()}, nil
 	}
 	return &pb.SyncStats{
 		TimeTaken:     int64(stats.TimeTaken.Seconds()),

@@ -93,6 +93,10 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 		}
 	}
 
+	// Fix 2: record that blocks arrived so SyncMonitor propagation guard
+	// can skip a Merkle check racing with an in-flight header write.
+	notifyBlockReceived()
+
 	// Update header_latest_block so SyncConfirmation can build the correct Merkle
 	// range. This is separate from latest_block (which DataSync owns) so the
 	// explorer still shows only fully data-synced blocks.

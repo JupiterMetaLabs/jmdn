@@ -20,9 +20,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
+	"gossipnode/DB_OPs/sqlops"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/WAL"
 	accountspb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/accounts"
@@ -83,11 +85,14 @@ type FastsyncV2 struct {
 
 // NewFastsyncV2 initializes the JMDN-FastSync V2 engine over the given libp2p host.
 //
+// ctx governs the lifetime of server-side network handlers and all router contexts.
+// Pass the node's top-level shutdown context so handlers are cancelled on node exit.
+// Close() must still be called on shutdown to flush WALs and tear down routers.
+//
 // It creates the NodeInfo adapter (ImmuDB), initializes both WALs (standard + PoTS),
 // creates and configures all protocol routers, and starts the server-side network handlers
 // so this node can respond to incoming sync requests from other peers.
-func NewFastsyncV2(h host.Host, syncTimeout time.Duration) (*FastsyncV2, error) {
-	ctx := context.Background()
+func NewFastsyncV2(ctx context.Context, h host.Host, syncTimeout time.Duration) (*FastsyncV2, error) {
 
 	// --- 1. Initialize the BlockInfo adapter (ImmuDB → JMDN-FastSync interface) ---
 	blockInfo := NodeInfo.NewSyncStruct()
@@ -159,11 +164,13 @@ func NewFastsyncV2(h host.Host, syncTimeout time.Duration) (*FastsyncV2, error) 
 	//   /priorsync/v1/availability, /priorsync/v1/merkle, /priorsync/v1/pots,
 	//   /fastsync/v1/pubsub/blocks
 	// It blocks until the context is cancelled, so run in a goroutine.
+	// The goroutine exits when ctx is cancelled (node shutdown).
 	go func() {
 		log.Printf("[FastsyncV2] Server handlers started on peer %s", h.ID().String())
 		if err := priorRouter.SetupNetworkHandlers(true); err != nil && err != context.Canceled {
 			log.Printf("[FastsyncV2] Server handler error: %v", err)
 		}
+		log.Printf("[FastsyncV2] Server handlers stopped")
 	}()
 
 	return &FastsyncV2{
@@ -462,19 +469,34 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 	// =========================================================================
 	// PHASE 5: Reconciliation — recompute and commit account balances
 	// =========================================================================
-	// Three-phase atomic operation:
-	//   1. Concurrent balance computation (up to 15 goroutines replay transactions)
-	//   2. WAL batch write (single ReconciliationBatchEvent for crash recovery)
-	//   3. Atomic DB commit via AccountManager.BatchUpdateAccounts
+	// Single-pass approach: one BlockIterator scan computes all account deltas
+	// (O(blocks)), then applies them — no per-account DB scan.
 	log.Println("[FastsyncV2] Phase 5: Reconciliation")
 
-	reconciledCount, failedAccounts, err := fs.ReconRouter.Reconcile(taggedAccounts, availResp)
-	if err != nil {
-		log.Printf("[FastsyncV2] Phase 5 warning: reconciliation returned error: %v", err)
+	remoteBlockNum := availResp.BlockHeight
+	if remoteBlockNum == 0 {
+		remoteBlockNum = math.MaxUint64
 	}
-	log.Printf("[FastsyncV2] Phase 5 complete: %d accounts reconciled, %d failed", reconciledCount, len(failedAccounts))
-	if len(failedAccounts) > 0 {
-		log.Printf("[FastsyncV2] Failed accounts: %v", failedAccounts)
+	reconFrom, reconSkip := fs.effectiveReconRange(localBlockNum+1, remoteBlockNum)
+	if reconSkip {
+		log.Printf("[FastsyncV2] Phase 5 skipped: range [%d..%d] already reconciled", localBlockNum+1, remoteBlockNum)
+	} else {
+		if reconFrom > localBlockNum+1 {
+			log.Printf("[FastsyncV2] Phase 5: advancing fromBlock %d → %d (already reconciled)", localBlockNum+1, reconFrom)
+		}
+		deltas := fs.computeAccountDeltas(reconFrom, remoteBlockNum)
+		log.Printf("[FastsyncV2] Phase 5: computed deltas for %d accounts", len(deltas))
+		reconciledCount, failedAccounts, err := fs.ReconRouter.ReconcileWithDeltas(deltas, availResp)
+		if err != nil {
+			log.Printf("[FastsyncV2] Phase 5 warning: reconciliation returned error: %v", err)
+		}
+		log.Printf("[FastsyncV2] Phase 5 complete: %d accounts reconciled, %d failed", reconciledCount, len(failedAccounts))
+		if len(failedAccounts) > 0 {
+			log.Printf("[FastsyncV2] Failed accounts: %v", failedAccounts)
+		}
+		if err == nil {
+			fs.markReconComplete(remoteBlockNum)
+		}
 	}
 
 	// =========================================================================
@@ -570,12 +592,31 @@ func (fs *FastsyncV2) executePoTS(
 			}
 
 			// Secondary Reconciliation for accounts affected by PoTS blocks.
+			// PoTS blocks are produced after availResp.BlockHeight, so fromBlock = BlockHeight+1.
 			if potsTaggedAccts != nil {
-				reconCount, failed, err := fs.ReconRouter.Reconcile(potsTaggedAccts, availResp)
-				if err != nil {
-					log.Printf("[FastsyncV2] PoTS reconciliation warning: %v", err)
+				potsFromBlock := availResp.BlockHeight + 1
+				if availResp.BlockHeight == 0 {
+					potsFromBlock = 1
 				}
-				log.Printf("[FastsyncV2] PoTS reconciled %d accounts, %d failed", reconCount, len(failed))
+				// Fetch latest block before effectiveReconRange so toBlock is concrete.
+				// Previously math.MaxUint64 was passed, meaning skip was never triggered
+				// even when the entire PoTS range was already reconciled.
+				potsLatest := fs.blockInfoAdapter.GetBlockDetails().Blocknumber
+				potsReconFrom, potsReconSkip := fs.effectiveReconRange(potsFromBlock, potsLatest)
+				if potsReconSkip {
+					log.Printf("[FastsyncV2] PoTS reconciliation skipped: already reconciled up to %d", potsLatest)
+				} else {
+					potsDeltas := fs.computeAccountDeltas(potsReconFrom, potsLatest)
+					log.Printf("[FastsyncV2] PoTS: computed deltas for %d accounts", len(potsDeltas))
+					reconCount, failed, err := fs.ReconRouter.ReconcileWithDeltas(potsDeltas, availResp)
+					if err != nil {
+						log.Printf("[FastsyncV2] PoTS reconciliation warning: %v", err)
+					}
+					log.Printf("[FastsyncV2] PoTS reconciled %d accounts, %d failed", reconCount, len(failed))
+					if err == nil {
+						fs.markReconComplete(potsLatest)
+					}
+				}
 			}
 		}
 	} else {
@@ -635,6 +676,50 @@ func (fs *FastsyncV2) dumpPoTSWALToDB(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// reconBlockKey is the SQLite key_value key used to persist the last successfully
+// reconciled block number. Reading it before each Reconcile call prevents
+// double-counting on re-runs that cover an already-reconciled range.
+const reconBlockKey = "fastsync:last_reconciled_block"
+
+// effectiveReconRange returns the adjusted [from, to] range that hasn't been
+// reconciled yet, plus a skip flag when the entire range is already done.
+//
+// Algorithm:
+//
+//	lastBlock = SQLite key_value["fastsync:last_reconciled_block"] (0 if absent)
+//	effectiveFrom = max(fromBlock, lastBlock+1)
+//	skip = effectiveFrom > toBlock
+func (fs *FastsyncV2) effectiveReconRange(fromBlock, toBlock uint64) (from uint64, skip bool) {
+	udb, err := sqlops.NewUnifiedDB()
+	if err != nil {
+		log.Printf("[FastsyncV2] recon anchor: open SQLite failed (%v) — using fromBlock=%d as-is", err, fromBlock)
+		return fromBlock, false
+	}
+	defer udb.Close()
+
+	from = fromBlock
+	if raw, err := udb.GetKeyValue(reconBlockKey); err == nil && raw != "" {
+		if last, err := strconv.ParseUint(raw, 10, 64); err == nil && last+1 > fromBlock {
+			from = last + 1
+		}
+	}
+	return from, from > toBlock
+}
+
+// markReconComplete stores toBlock as the last successfully reconciled block.
+func (fs *FastsyncV2) markReconComplete(toBlock uint64) {
+	udb, err := sqlops.NewUnifiedDB()
+	if err != nil {
+		log.Printf("[FastsyncV2] recon anchor: open SQLite failed (%v) — last_reconciled_block not persisted", err)
+		return
+	}
+	defer udb.Close()
+
+	if err := udb.StoreKeyValue(reconBlockKey, strconv.FormatUint(toBlock, 10)); err != nil {
+		log.Printf("[FastsyncV2] recon anchor: store failed (%v) — last_reconciled_block not persisted", err)
+	}
 }
 
 // Close tears down all routers and flushes WALs.
@@ -769,21 +854,9 @@ func zkBlockToProtoNonHeaders(b *types.ZKBlock) *blockpb.NonHeaders {
 		if tx.S != nil {
 			pbTx.S = tx.S.Bytes()
 		}
-
-		if tx.ChainID != nil {
-			pbTx.ChainId = tx.ChainID.Bytes()
-		}
-		if len(tx.AccessList) > 0 {
-			for _, al := range tx.AccessList {
-				pbAl := &blockpb.AccessTuple{
-					Address: al.Address[:],
-				}
-				for _, sk := range al.StorageKeys {
-					pbAl.StorageKeys = append(pbAl.StorageKeys, sk[:])
-				}
-				pbTx.AccessList = append(pbTx.AccessList, pbAl)
-			}
-		}
+		// NOTE: AccessList is already encoded in the loop above (lines 831-839).
+		// The duplicate block that was here has been removed — it doubled every
+		// access-list entry in the serialised output.
 
 		nh.Transactions = append(nh.Transactions, &blockpb.DBTransaction{
 			Tx:        pbTx,
@@ -797,6 +870,8 @@ func zkBlockToProtoNonHeaders(b *types.ZKBlock) *blockpb.NonHeaders {
 
 // commitmentToBytes encodes a []uint32 commitment to raw bytes (4 bytes per element, little-endian).
 // This matches the block_nonheader.proto ZKProof.commitment field (bytes).
+// NOTE: internal/merkle/hash.go encodes the same field BIG-endian for Merkle leaf hashing.
+// The two encodings serve different purposes and must NOT be mixed.
 func commitmentToBytes(c []uint32) []byte {
 	if len(c) == 0 {
 		return nil

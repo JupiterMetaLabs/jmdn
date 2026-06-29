@@ -1,6 +1,7 @@
 package CLI
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -315,6 +316,38 @@ func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
 
 	// Re-fetch DB states to report. FastsyncV2 doesn't require MainClient/DIDClient
 	// for the sync itself, so guard against nil before querying.
+	var newMainState, newAccountsState *schema.ImmutableState
+	if h.MainClient != nil {
+		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient.Client)
+	}
+	if h.DIDClient != nil {
+		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
+	}
+
+	return SyncStats{
+		TimeTaken:     time.Since(startTime),
+		MainState:     newMainState,
+		AccountsState: newAccountsState,
+	}, nil
+}
+
+func (h *CommandHandler) HandleCatchUpSync(ctx context.Context, peeraddr string, fromBlock uint64) (SyncStats, error) {
+	if peeraddr == "" {
+		return SyncStats{}, fmt.Errorf("usage: catchup <peer_multiaddr> [from_block]")
+	}
+	// fromBlock=0 → auto-detect via effectiveReconRange inside HandleCatchUpSync
+	if !h.PullAllowed {
+		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
+	}
+	if h.FastSyncerV2 == nil {
+		return SyncStats{}, fmt.Errorf("FastsyncV2 engine is inactive")
+	}
+
+	startTime := time.Now().UTC()
+	if err := h.FastSyncerV2.HandleCatchUpSync(ctx, fromBlock, peeraddr); err != nil {
+		return SyncStats{}, fmt.Errorf("CatchUpSync failed: %w", err)
+	}
+
 	var newMainState, newAccountsState *schema.ImmutableState
 	if h.MainClient != nil {
 		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient.Client)

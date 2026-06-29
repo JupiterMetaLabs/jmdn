@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"gossipnode/DB_OPs"
@@ -15,6 +16,27 @@ import (
 const ChecksumVersion = 2
 
 type sync_struct struct{}
+
+// lastBlockReceivedNs holds the Unix nanosecond timestamp of the last successful
+// block write (WriteData or WriteHeaders). Updated atomically from write paths;
+// read by the SyncMonitor propagation guard via LastBlockReceivedAt().
+var lastBlockReceivedNs atomic.Int64
+
+// notifyBlockReceived records the current wall-clock time as the last block-received
+// timestamp. Called from WriteData and WriteHeaders after a successful DB write.
+func notifyBlockReceived() {
+	lastBlockReceivedNs.Store(time.Now().UnixNano())
+}
+
+// LastBlockReceivedAt satisfies the syncmonitor.blockTimer interface.
+// Returns zero time if no block has ever been written (propagation guard skips).
+func (sync *sync_struct) LastBlockReceivedAt() time.Time {
+	ns := lastBlockReceivedNs.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
 
 // Time Complexity: O(1)
 // NewSyncStruct initializes the ImmuDB synchronization struct that satisfies types.BlockInfo.
