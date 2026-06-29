@@ -508,15 +508,10 @@ docker compose up -d
 
 **Force re-bootstrap:**
 ```bash
-# Remove sentinel from the immudb-data volume via a temporary container
-docker run --rm \
-  -v $(docker compose config --format json | python3 -c "import sys,json; print(json.load(sys.stdin)['volumes']['immudb-data']['name'])") \
-  alpine rm -f /opt/jmdn/data/.bootstrapped
+# Remove sentinel from the immudb-data volume via a temporary alpine container
+docker run --rm -v jmdn_immudb-data:/data alpine rm -f /data/.bootstrapped
 
-# Or use the volume name directly (project name prefix = directory name)
-docker run --rm -v jmdn_immudb-data:/opt/jmdn/data alpine rm -f /opt/jmdn/data/.bootstrapped
-
-# Then re-run bootstrap
+# Re-run bootstrap, then bring the stack back up
 docker compose run --rm jmdn-bootstrap
 docker compose restart immudb jmdn
 ```
