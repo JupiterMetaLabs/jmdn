@@ -10,17 +10,17 @@ import (
 	"fmt"
 	"log"
 
-	merkletree "github.com/JupiterMetaLabs/JMDN_Merkletree/merkletree"
 	fastsync_types "github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
+	merkletree "github.com/JupiterMetaLabs/JMDN_Merkletree/merkletree"
 )
 
 const defaultBatchSize = 1000
 
 // Result holds the output of BuildLocalMerkleRoot.
 type Result struct {
-	Root      [32]byte // Merkle root over all block hashes 0..Head
-	Head      uint64   // Latest block number included
-	Total     uint64   // Total blocks processed
+	Root  [32]byte // Merkle root over all block hashes 0..Head
+	Head  uint64   // Latest block number included
+	Total uint64   // Total blocks processed
 }
 
 // BuildLocalMerkleRoot iterates all blocks from the node's ImmuDB and returns

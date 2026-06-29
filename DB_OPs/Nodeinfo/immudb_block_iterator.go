@@ -17,22 +17,22 @@ import (
 // security audit — commit: fix(iterator): replace JSON round-trip with direct conversion).
 func configToFastsyncBlock(b *config.ZKBlock) *fastsync_types.ZKBlock {
 	out := &fastsync_types.ZKBlock{
-		StarkProof:  b.StarkProof,
-		Commitment:  b.Commitment,
-		ProofHash:   b.ProofHash,
-		Status:      b.Status,
-		TxnsRoot:    b.TxnsRoot,
-		Timestamp:   b.Timestamp,
-		ExtraData:   b.ExtraData,
-		StateRoot:   b.StateRoot,
-		LogsBloom:   b.LogsBloom,
+		StarkProof:   b.StarkProof,
+		Commitment:   b.Commitment,
+		ProofHash:    b.ProofHash,
+		Status:       b.Status,
+		TxnsRoot:     b.TxnsRoot,
+		Timestamp:    b.Timestamp,
+		ExtraData:    b.ExtraData,
+		StateRoot:    b.StateRoot,
+		LogsBloom:    b.LogsBloom,
 		CoinbaseAddr: b.CoinbaseAddr,
-		ZKVMAddr:    b.ZKVMAddr,
-		PrevHash:    b.PrevHash,
-		BlockHash:   b.BlockHash,
-		GasLimit:    b.GasLimit,
-		GasUsed:     b.GasUsed,
-		BlockNumber: b.BlockNumber,
+		ZKVMAddr:     b.ZKVMAddr,
+		PrevHash:     b.PrevHash,
+		BlockHash:    b.BlockHash,
+		GasLimit:     b.GasLimit,
+		GasUsed:      b.GasUsed,
+		BlockNumber:  b.BlockNumber,
 	}
 
 	if len(b.Transactions) > 0 {

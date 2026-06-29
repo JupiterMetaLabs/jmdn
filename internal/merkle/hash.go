@@ -25,6 +25,7 @@ import (
 //     See FastsyncV2/fastsyncv2.go:commitmentToBytes for the authoritative note.
 //   - Transactions: 4-byte count prefix + each tx hashed independently (sub-hash)
 //   - AccessList per tx: 4-byte entry count + per-entry 4-byte key count
+//
 // HashBlock is the exported form of hashBlock, available to other packages
 // (e.g. DB_OPs/merkletree) that need to produce Merkle leaves consistent
 // with the SyncMonitor root.

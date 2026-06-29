@@ -689,7 +689,7 @@ func GetAllKeys(PooledConnection *config.PooledConnection, prefix string) ([]str
 				keysSet[key] = true
 				uniqueKeys = append(uniqueKeys, key)
 			} else {
-				}
+			}
 		}
 
 		// If no keys returned, we're done

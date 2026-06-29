@@ -30,13 +30,13 @@ import (
 // ─── defaults ─────────────────────────────────────────────────────────────────
 
 const (
-	defaultBaseInterval              = 10 * time.Minute
-	defaultMinCheckInterval          = 1 * time.Minute
-	defaultMaxInterval               = 30 * time.Minute
-	defaultBlockPropagationWindow    = 30 * time.Second
-	defaultOutOfSyncThreshold        = 2
+	defaultBaseInterval               = 10 * time.Minute
+	defaultMinCheckInterval           = 1 * time.Minute
+	defaultMaxInterval                = 30 * time.Minute
+	defaultBlockPropagationWindow     = 30 * time.Second
+	defaultOutOfSyncThreshold         = 2
 	defaultPropagationToleranceBlocks = uint64(3)
-	defaultSeednodeGracePeriod       = 3
+	defaultSeednodeGracePeriod        = 3
 )
 
 // ─── Public types ─────────────────────────────────────────────────────────────

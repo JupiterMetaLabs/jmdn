@@ -35,7 +35,7 @@ func (s *stubBlockInfo) GetBlockNumber() uint64 { return s.head }
 func (s *stubBlockInfo) GetBlockDetails() fastsync_types.PriorSync {
 	return fastsync_types.PriorSync{Blocknumber: s.head}
 }
-func (s *stubBlockInfo) AUTH() fastsync_types.AUTHHandler                        { return nil }
+func (s *stubBlockInfo) AUTH() fastsync_types.AUTHHandler                         { return nil }
 func (s *stubBlockInfo) NewBlockHeaderIterator() fastsync_types.BlockHeader       { return nil }
 func (s *stubBlockInfo) NewBlockNonHeaderIterator() fastsync_types.BlockNonHeader { return nil }
 func (s *stubBlockInfo) NewHeadersWriter() fastsync_types.WriteHeaders            { return nil }
@@ -82,7 +82,7 @@ func (it *stubBlockIter) Next() ([]*fastsync_types.ZKBlock, error) {
 	return batch, nil
 }
 func (it *stubBlockIter) Prev() ([]*fastsync_types.ZKBlock, error) { return nil, nil }
-func (it *stubBlockIter) Close()                                    {}
+func (it *stubBlockIter) Close()                                   {}
 
 // ─── stub SeedReporter ───────────────────────────────────────────────────────
 
