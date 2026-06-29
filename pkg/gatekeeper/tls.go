@@ -104,40 +104,73 @@ func (l *TLSLoader) LoadServerTLS(serviceName string) (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
-// LoadClientTLS loads the TLS configuration for a client connecting to a verified service
-// clientIdentity is optional; if provided, it loads a client certificate for mTLS (e.g. "cli_client")
+// LoadClientTLS builds a TLS client config for outbound connections to a named service.
+//
+// CA resolution order (first match wins):
+//  1. Explicit policy.CAFile override   — private CA / pinned cert
+//  2. <cert_dir>/ca.crt on disk         — private CA (internal mTLS)
+//  3. OS / system CA pool               — public services (Let's Encrypt, etc.)
+//
+// Using the system pool (case 3) is correct and intentional for internet-facing endpoints
+// such as mre.jmdt.io or seednode.jmdt.io: their Let's Encrypt ISRG Root X1 cert is
+// already trusted by the OS on every modern Linux host. No local cert provisioning needed.
+//
+// clientIdentity is optional. When provided, a client certificate is loaded from
+// <cert_dir>/<clientIdentity>.crt/.key for mTLS.
 func (l *TLSLoader) LoadClientTLS(targetServiceName string, clientIdentity string) (*tls.Config, error) {
-	// For clients, we mainly need to trust the CA that signed the server's cert
+	// 1. Determine CA file path — policy override takes priority.
 	caFile := fmt.Sprintf("%s/ca.crt", l.config.CertDir)
-
-	// Check if specific service policy overrides CA
 	if policy, ok := l.config.Services[targetServiceName]; ok && policy.CAFile != "" {
 		caFile = policy.CAFile
 	}
 
-	caPem, err := os.ReadFile(caFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read CA file: %w", err)
+	// 2. Build CA pool using resolution order documented above.
+	var (
+		certPool *x509.CertPool
+		caSource string
+	)
+	switch caPem, err := os.ReadFile(caFile); {
+	case err == nil:
+		// Local CA file found — private CA or pinned cert scenario.
+		certPool = x509.NewCertPool()
+		if !certPool.AppendCertsFromPEM(caPem) {
+			return nil, fmt.Errorf("gatekeeper: failed to parse CA PEM from %s", caFile)
+		}
+		caSource = caFile
+
+	case os.IsNotExist(err):
+		// No local CA file — use OS trust store (covers Let's Encrypt, DigiCert, etc.).
+		// x509.SystemCertPool returns nil on some platforms; tolerate that gracefully.
+		certPool, _ = x509.SystemCertPool()
+		if certPool == nil {
+			certPool = x509.NewCertPool()
+		}
+		caSource = "system"
+
+	default:
+		// File exists but is unreadable (permissions / I/O error) — hard fail.
+		return nil, fmt.Errorf("gatekeeper: failed to read CA file %s: %w", caFile, err)
 	}
 
-	certPool := x509.NewCertPool()
-	if !certPool.AppendCertsFromPEM(caPem) {
-		return nil, fmt.Errorf("failed to append CA certs")
-	}
+	l.logger.Info(context.Background(), "TLS client credentials resolved",
+		ion.String("service", targetServiceName),
+		ion.String("ca_source", caSource),
+		ion.Bool("mtls_identity", clientIdentity != ""),
+	)
 
 	tlsConfig := &tls.Config{
-		RootCAs:    certPool,
+		RootCAs:    certPool, // nil == system pool per crypto/tls docs; explicit pool set above
 		MinVersion: tls.VersionTLS13,
 	}
 
-	// 2. Load Client Certificate if identity provided (mTLS)
+	// 3. Load client certificate for mTLS when an identity is provided.
 	if clientIdentity != "" {
 		certFile := fmt.Sprintf("%s/%s.crt", l.config.CertDir, clientIdentity)
 		keyFile := fmt.Sprintf("%s/%s.key", l.config.CertDir, clientIdentity)
 
 		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load client identity %s: %w", clientIdentity, err)
+			return nil, fmt.Errorf("gatekeeper: failed to load client identity %s: %w", clientIdentity, err)
 		}
 		tlsConfig.Certificates = []tls.Certificate{cert}
 	}
