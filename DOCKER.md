@@ -108,7 +108,7 @@ The compose stack runs immudb as its own container (`codenotary/immudb:1.10.0`) 
 
 For a public exchange listing, separate is the right call. The 0.1ms latency is irrelevant at immudb's ~15s commit frequency; the operational independence is not.
 
-**Credentials:** ImmuDB uses `immudb`/`immudb` as built-in defaults. Both services must use the same password. To harden: set `IMMUDB_PASSWORD=your-strong-password` in a `.env` file — compose picks it up automatically for both services.
+**Credentials:** Set `IMMUDB_PASSWORD` in `.env` — compose injects it into both the immudb container and jmdn automatically. The immudb service runs with `--force-admin-password`, which resets the admin password to `IMMUDB_PASSWORD` on every start. This is required because bootstrap snapshots come pre-initialized with a baked-in password; without it, immudb ignores `IMMUDB_ADMIN_PASSWORD` on an existing database and jmdn cannot connect.
 
 ### Why Redis is separate
 
@@ -249,8 +249,8 @@ Fill in every field marked REQUIRED:
 | `logging.service_name` | Same as `node.alias` |
 | `network.seednode` | Provided by JupiterMeta offline |
 | `network.mempool` | Provided by JupiterMeta offline |
-| `database.password` | jmdn's ImmuDB password — set the same value as `IMMUDB_PASSWORD` in `.env` (two separate config paths, must agree) |
-| `database.redis.password` | jmdn's Redis password — set the same value as `REDIS_PASSWORD` in `.env` (same reason) |
+| `database.password` | Leave blank for Docker Compose — compose injects `IMMUDB_PASSWORD` from `.env` automatically. Set only for bare-metal. |
+| `database.redis.password` | Leave blank for Docker Compose — compose injects `REDIS_PASSWORD` from `.env` automatically. Set only for bare-metal. |
 | `security.jwt_secret` | Generate: `openssl rand -base64 32` |
 | `security.explorer_api_key` | Generate: `openssl rand -base64 32` |
 | `fastsync.catch_up_from_block` | Bootstrap snapshot tip + 1. Provided with the bootstrap. Leaving at 0 works but causes a slow full genesis scan on every sync cycle. |
