@@ -34,7 +34,7 @@ const (
 // These are set once at startup (before serving begins), so contention is negligible
 // in practice — the mutex exists purely to satisfy the Go memory model and race detector.
 var (
-	signerMu       sync.RWMutex
+	signerMu        sync.RWMutex
 	expectedChainID *big.Int
 )
 
