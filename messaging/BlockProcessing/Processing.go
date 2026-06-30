@@ -791,26 +791,27 @@ func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error
 	// Determine gas fee based on transaction type
 	// Type 0x0 = Legacy, 0x1 = AccessList, 0x2 = DynamicFee (EIP-1559)
 	if tx.Type == 2 { // EIP-1559 transaction
-		// For EIP-1559, use MaxFee as the effective gas fee
-		if tx.MaxFee != nil {
-			parsed.MaxFeeBig = new(big.Int).Set(tx.MaxFee)
-			parsed.EffectiveGasFee = new(big.Int).Set(tx.MaxFee)
+		// EIP-1559 effective gas price = min(maxFee, baseFee + tip)
+		// JMDN uses a flat 35 gwei base fee.
+		const baseFeeWei = int64(35_000_000_000)
+
+		maxFee := tx.MaxFee
+		if maxFee == nil {
+			maxFee = big.NewInt(baseFeeWei) // safe fallback
+		}
+		parsed.MaxFeeBig = new(big.Int).Set(maxFee)
+
+		tip := tx.MaxPriorityFee
+		if tip == nil {
+			tip = new(big.Int)
+		}
+		basePlusTip := new(big.Int).Add(big.NewInt(baseFeeWei), tip)
+
+		// effective = min(maxFee, baseFee + tip)
+		if maxFee.Cmp(basePlusTip) <= 0 {
+			parsed.EffectiveGasFee = new(big.Int).Set(maxFee)
 		} else {
-			// Fallback to MaxPriorityFee if MaxFee is not set
-			if tx.MaxPriorityFee != nil {
-				parsed.MaxFeeBig = new(big.Int).Set(tx.MaxPriorityFee)
-				parsed.EffectiveGasFee = new(big.Int).Set(tx.MaxPriorityFee)
-			} else {
-				// Fallback to GasPrice if available
-				if tx.GasPrice != nil {
-					parsed.MaxFeeBig = new(big.Int).Set(tx.GasPrice)
-					parsed.EffectiveGasFee = new(big.Int).Set(tx.GasPrice)
-				} else {
-					// Last resort: use default gas price
-					parsed.MaxFeeBig = big.NewInt(DefaultGasPrice)
-					parsed.EffectiveGasFee = big.NewInt(DefaultGasPrice)
-				}
-			}
+			parsed.EffectiveGasFee = basePlusTip
 		}
 	} else {
 		// For Legacy or AccessList transactions, use GasPrice if available

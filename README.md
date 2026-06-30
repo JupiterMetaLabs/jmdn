@@ -81,7 +81,7 @@ sudo ./Scripts/setup_dependencies.sh
 
 For full setup including configuration, firewall rules, and systemd service installation, see **[GETTING_STARTED.md](./GETTING_STARTED.md)**.
 
-> **Docker** (v1.2.0+, experimental): Container-based deployment is available for operators who prefer it. See [DOCKER.md](./DOCKER.md). Source deployment is the recommended path for production nodes.
+> **Docker** (v1.2.0+): Container-based deployment is available for operators who prefer it. See [DOCKER.md](./DOCKER.md) for the full setup guide.
 
 ## Running a Node
 
