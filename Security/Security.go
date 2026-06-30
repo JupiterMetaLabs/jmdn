@@ -3,7 +3,6 @@ package Security
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
@@ -62,14 +61,6 @@ func SetExpectedChainIDBig(id *big.Int) {
 	}
 
 	expectedChainID = new(big.Int).Set(id)
-
-	// Convert to uint64 safely
-	chainIDUint := expectedChainID.Uint64()
-
-	// Convert to binary (big-endian) representation
-	chainIDBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(chainIDBytes, chainIDUint)
-
 	rebuildSignerCache()
 }
 
@@ -807,12 +798,11 @@ func checkTransactionHash(tx *config.Transaction, traceCtx context.Context) (boo
 
 	span.SetAttributes(attribute.String("tx_hash", tx.Hash.Hex()))
 
-	// Construct the transaction the same way as CheckSignature does
+	// Construct the transaction using tx.Type directly (same as CheckSignature).
 	var ethTx *types.Transaction
 
-	switch {
-	case tx.MaxFee != nil && tx.MaxPriorityFee != nil:
-		// EIP-1559 (Type 2)
+	switch tx.Type {
+	case types.DynamicFeeTxType: // 2 — EIP-1559
 		inner := &types.DynamicFeeTx{
 			ChainID:    tx.ChainID,
 			Nonce:      tx.Nonce,
@@ -829,8 +819,7 @@ func checkTransactionHash(tx *config.Transaction, traceCtx context.Context) (boo
 		}
 		ethTx = types.NewTx(inner)
 
-	case len(tx.AccessList) > 0:
-		// EIP-2930 (Type 1)
+	case types.AccessListTxType: // 1 — EIP-2930
 		inner := &types.AccessListTx{
 			ChainID:    tx.ChainID,
 			Nonce:      tx.Nonce,
@@ -846,8 +835,7 @@ func checkTransactionHash(tx *config.Transaction, traceCtx context.Context) (boo
 		}
 		ethTx = types.NewTx(inner)
 
-	default:
-		// Legacy (Type 0)
+	default: // 0 — Legacy
 		inner := &types.LegacyTx{
 			Nonce:    tx.Nonce,
 			To:       tx.To,
