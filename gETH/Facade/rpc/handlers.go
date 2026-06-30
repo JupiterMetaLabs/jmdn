@@ -510,12 +510,12 @@ func marshalBlock(b *Types.Block, full bool) map[string]any {
 
 		// PoW fields — this chain has no PoW; use standard empty/zero values
 		// so EIP-3675 (PoS) compatible clients don't reject the block envelope
-		"sha3Uncles":       sha3UnclesEmpty,
-		"nonce":            "0x0000000000000000",
-		"difficulty":       "0x0",
-		"totalDifficulty":  "0x0",
-		"mixHash":          "0x" + strings.Repeat("0", 64),
-		"uncles":           []string{},
+		"sha3Uncles":      sha3UnclesEmpty,
+		"nonce":           "0x0000000000000000",
+		"difficulty":      "0x0",
+		"totalDifficulty": "0x0",
+		"mixHash":         "0x" + strings.Repeat("0", 64),
+		"uncles":          []string{},
 
 		"transactions": []any{},
 	}
