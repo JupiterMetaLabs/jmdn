@@ -161,8 +161,18 @@ func (s *SecurityCache) CheckBalanceWithCache(tx *config.Transaction, traceCtx c
 	}
 
 	// Calculate Total Cost (Value + Gas)
+	// Type 2 (EIP-1559) has nil GasPrice — use MaxFee as worst-case gas price.
 	cost := new(big.Int).Set(tx.Value) // Value to transfer
-	gasCost := new(big.Int).Mul(new(big.Int).SetUint64(tx.GasLimit), tx.GasPrice)
+	var effectiveGasPrice *big.Int
+	switch {
+	case tx.GasPrice != nil:
+		effectiveGasPrice = tx.GasPrice
+	case tx.MaxFee != nil:
+		effectiveGasPrice = tx.MaxFee
+	default:
+		effectiveGasPrice = new(big.Int) // 0 — will fail balance check if value > balance
+	}
+	gasCost := new(big.Int).Mul(new(big.Int).SetUint64(tx.GasLimit), effectiveGasPrice)
 	totalCost := new(big.Int).Add(cost, gasCost)
 
 	// Check sufficiency
