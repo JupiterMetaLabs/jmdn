@@ -800,15 +800,11 @@ func convertToPbTransaction(tx *config.Transaction, txHash string) *pb.Transacti
 		// Assuming tx.Timestamp is already a Unix timestamp (uint64)
 		pbTx.Timestamp = uint64(tx.Timestamp)
 	}
-	// Handle transaction fee fields based on type
-	if tx.Type == 1 || (tx.MaxFee != nil && tx.MaxPriorityFee != nil) {
-		pbTx.Type = 2 // EIP-1559
-	} else {
-		pbTx.Type = 0 // Legacy
-		// For legacy transactions, use GasPrice as MaxFee if MaxFee is not set.
-		if pbTx.MaxFee == "0" && tx.GasPrice != nil {
-			pbTx.MaxFee = tx.GasPrice.String()
-		}
+	// Set type directly from config.Transaction.Type (0=Legacy, 1=AccessList, 2=EIP-1559)
+	pbTx.Type = uint32(tx.Type)
+	// For legacy transactions, fall back to GasPrice as MaxFee if MaxFee is unset.
+	if tx.Type == 0 && pbTx.MaxFee == "0" && tx.GasPrice != nil {
+		pbTx.MaxFee = tx.GasPrice.String()
 	}
 
 	return pbTx
