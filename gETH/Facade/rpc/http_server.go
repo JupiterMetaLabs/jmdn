@@ -2,9 +2,11 @@ package rpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -94,9 +96,57 @@ func (s *HTTPServer) ServeWithContext(ctx context.Context, addr string) error {
 	}
 }
 
+const maxBatchSize = 100
+
 func (s *HTTPServer) handleJSONRPC(c *gin.Context) {
+	body, err := c.GetRawData()
+	if err != nil || len(body) == 0 {
+		write(c, RespErr(nil, -32700, "Parse error"))
+		return
+	}
+
+	// Detect batch vs single by inspecting first non-whitespace byte
+	isBatch := false
+	for _, b := range body {
+		if b == ' ' || b == '\t' || b == '\n' || b == '\r' {
+			continue
+		}
+		isBatch = b == '['
+		break
+	}
+
+	if isBatch {
+		var reqs []Request
+		if err := json.Unmarshal(body, &reqs); err != nil {
+			write(c, RespErr(nil, -32700, "Parse error"))
+			return
+		}
+		if len(reqs) == 0 {
+			write(c, RespErr(nil, -32600, "Invalid Request: empty batch"))
+			return
+		}
+		if len(reqs) > maxBatchSize {
+			write(c, RespErr(nil, -32600, fmt.Sprintf("batch too large: max %d requests", maxBatchSize)))
+			return
+		}
+		resps := make([]Response, len(reqs))
+		var wg sync.WaitGroup
+		for i, req := range reqs {
+			wg.Add(1)
+			go func(i int, req Request) {
+				defer wg.Done()
+				resps[i], _ = s.h.Handle(c.Request.Context(), req)
+			}(i, req)
+		}
+		wg.Wait()
+		c.Header("Content-Type", "application/json")
+		c.JSON(http.StatusOK, resps)
+		return
+	}
+
+	// Single request — identical to original behaviour
 	var req Request
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		write(c, RespErr(nil, -32700, "Parse error"))
 		return
 	}
