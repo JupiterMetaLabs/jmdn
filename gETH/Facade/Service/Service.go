@@ -17,7 +17,6 @@ import (
 	Utils "gossipnode/gETH/Facade/Service/utils"
 
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/rlp"
 )
 
 // ServiceImpl implements the Service interface
@@ -248,9 +247,11 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 		// If JSON parsing fails, try to parse as RLP-encoded transaction
 		fmt.Println(">>>>>> JSON parsing failed, trying RLP parsing")
 
-		// Parse RLP-encoded transaction
+		// Parse transaction — UnmarshalBinary handles all types:
+		// legacy (no prefix), EIP-2930 (0x01), EIP-1559 (0x02).
+		// rlp.DecodeBytes cannot handle typed transactions (0x01/0x02 prefix).
 		var ethTx types.Transaction
-		err = rlp.DecodeBytes(rawBytes, &ethTx)
+		err = ethTx.UnmarshalBinary(rawBytes)
 		if err != nil {
 			if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed to parse RLP transaction: %v", err), "SendRawTx", -1); logErr != nil {
 				fmt.Printf("Failed to log SendRawTx RLP parse error: %v\n", logErr)
@@ -288,7 +289,7 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 // convertEthTxToConfigTx converts an Ethereum transaction to our config.Transaction format
 func convertEthTxToConfigTx(ethTx *types.Transaction) config.Transaction {
 	// Get the sender address
-	from, _ := types.Sender(types.NewEIP155Signer(ethTx.ChainId()), ethTx)
+	from, _ := types.Sender(types.LatestSignerForChainID(ethTx.ChainId()), ethTx)
 
 	// Convert to our transaction format
 	tx := config.Transaction{
@@ -712,68 +713,35 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 		oldestNum = big.NewInt(0)
 	}
 
-	// Initialize result arrays
-	baseFeePerGas := make([]string, 0, blockCount+1)
-	gasUsedRatio := make([]float64, 0, blockCount+1)
-	var rewards [][]string
+	// JMDN does not implement variable base fees — return the same 35 gwei constant
+	// used by eth_getBlockByNumber. No DB reads needed.
+	const baseFeeConstant = "0x826299e00" // 35_000_000_000 wei
 
-	// If percentiles are provided, initialize rewards array
-	if len(perc) > 0 {
-		rewards = make([][]string, 0, blockCount+1)
+	count := newestNum.Uint64() - oldestNum.Uint64() + 1
+	baseFeePerGas := make([]string, count)
+	gasUsedRatio := make([]float64, count)
+	for i := range baseFeePerGas {
+		baseFeePerGas[i] = baseFeeConstant
+		gasUsedRatio[i] = 0.5 // neutral placeholder
 	}
 
-	// Fetch blocks from newest to oldest (inclusive)
-	current := new(big.Int).Set(newestNum)
-	blocksToFetch := blockCount + 1
-
-	for i := uint64(0); i < blocksToFetch && current.Sign() >= 0 && current.Cmp(oldestNum) >= 0; i++ {
-		block, err := s.BlockByNumber(ctx, current, false)
-		if err != nil {
-			// If block doesn't exist, skip it
-			current.Sub(current, big.NewInt(1))
-			continue
-		}
-
-		// Extract base fee per gas
-		var baseFeeHex string
-		if len(block.Header.BaseFee) > 0 {
-			baseFeeBig := new(big.Int).SetBytes(block.Header.BaseFee)
-			baseFeeHex = "0x" + baseFeeBig.Text(16)
-		} else {
-			// If no base fee (pre-EIP-1559), set to 0x0
-			baseFeeHex = "0x0"
-		}
-		baseFeePerGas = append(baseFeePerGas, baseFeeHex)
-
-		// Calculate gas used ratio
-		var gasUsedRatioVal float64
-		if block.Header.GasLimit > 0 {
-			gasUsedRatioVal = float64(block.Header.GasUsed) / float64(block.Header.GasLimit)
-		} else {
-			gasUsedRatioVal = 0.0
-		}
-		gasUsedRatio = append(gasUsedRatio, gasUsedRatioVal)
-
-		// Calculate rewards if percentiles are provided
-		if len(perc) > 0 {
-			blockRewards := make([]string, len(perc))
-			// TODO: Calculate actual rewards from transaction priority fees
-			// For now, set all rewards to 0x0
-			for j := range perc {
-				blockRewards[j] = "0x0"
+	var rewards [][]string
+	if len(perc) > 0 {
+		rewards = make([][]string, count)
+		for i := range rewards {
+			row := make([]string, len(perc))
+			for j := range row {
+				row[j] = "0x0"
 			}
-			rewards = append(rewards, blockRewards)
+			rewards[i] = row
 		}
-
-		// Move to previous block
-		current.Sub(current, big.NewInt(1))
 	}
 
 	// Build result map
 	result := map[string]any{
-		"oldestBlock": fmt.Sprintf("0x%x", oldestNum.Uint64()),
-		// "baseFeePerGas": baseFeePerGas,
-		"gasUsedRatio": gasUsedRatio,
+		"oldestBlock":   fmt.Sprintf("0x%x", oldestNum.Uint64()),
+		"baseFeePerGas": baseFeePerGas,
+		"gasUsedRatio":  gasUsedRatio,
 	}
 
 	// Add rewards if provided
