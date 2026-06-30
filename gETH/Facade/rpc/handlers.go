@@ -103,7 +103,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 			return resp, err
 		}
-		resp, _ := finish(req, marshalBlock(b, full), nil)
+		resp, _ := finish(req, marshalBlock(b, full, handler.service.GetChainIDValue()), nil)
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
@@ -218,7 +218,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 			return resp, err
 		}
-		resp, _ := finish(req, marshalTx(tx), nil)
+		resp, _ := finish(req, marshalTx(tx, handler.service.GetChainIDValue()), nil)
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
@@ -421,6 +421,20 @@ func toCallMsg(p any) (Types.CallMsg, error) {
 				msg.GasPrice = bigGasPrice
 			}
 		}
+		if maxFee, ok := callObj["maxFeePerGas"].(string); ok {
+			if strings.HasPrefix(maxFee, "0x") {
+				v := new(big.Int)
+				v.SetString(maxFee[2:], 16)
+				msg.MaxFeePerGas = v
+			}
+		}
+		if maxTip, ok := callObj["maxPriorityFeePerGas"].(string); ok {
+			if strings.HasPrefix(maxTip, "0x") {
+				v := new(big.Int)
+				v.SetString(maxTip[2:], 16)
+				msg.MaxPriorityFeePerGas = v
+			}
+		}
 
 		return msg, nil
 	}
@@ -478,7 +492,7 @@ func toFilterQuery(p any) (*Types.FilterQuery, error) {
 // sha3UnclesEmpty is the Keccak-256 of an empty uncle list — standard constant for PoS/non-PoW chains.
 const sha3UnclesEmpty = "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"
 
-func marshalBlock(b *Types.Block, full bool) map[string]any {
+func marshalBlock(b *Types.Block, full bool, globalChainID *big.Int) map[string]any {
 	result := map[string]any{
 		// Core identity
 		"number":     "0x" + new(big.Int).SetUint64(b.Header.Number).Text(16),
@@ -523,7 +537,7 @@ func marshalBlock(b *Types.Block, full bool) map[string]any {
 	if full && len(b.Transactions) > 0 {
 		txs := make([]any, len(b.Transactions))
 		for i, tx := range b.Transactions {
-			txs[i] = marshalTx(tx)
+			txs[i] = marshalTx(tx, globalChainID)
 		}
 		result["transactions"] = txs
 	} else if len(b.Transactions) > 0 {
@@ -537,18 +551,61 @@ func marshalBlock(b *Types.Block, full bool) map[string]any {
 	return result
 }
 
-func marshalTx(tx *Types.Tx) map[string]any {
+func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {
+	// to: null for contract deployments, hex address otherwise
+	var to any
+	if len(tx.To) > 0 {
+		to = "0x" + hex.EncodeToString(tx.To)
+	}
+
+	// gasPrice: for type 2 use effectiveGasPrice = min(maxFeePerGas, baseFee+tip)
+	// For legacy/type1 use GasPrice directly.
+	const baseFee = int64(35_000_000_000)
+	var gasPriceHex string
+	if tx.Type == 2 && len(tx.MaxFeePerGas) > 0 {
+		maxFee := new(big.Int).SetBytes(tx.MaxFeePerGas)
+		tip := new(big.Int)
+		if len(tx.MaxPriorityFeePerGas) > 0 {
+			tip.SetBytes(tx.MaxPriorityFeePerGas)
+		}
+		basePlusTip := new(big.Int).Add(big.NewInt(baseFee), tip)
+		effective := maxFee
+		if maxFee.Cmp(basePlusTip) > 0 {
+			effective = basePlusTip
+		}
+		gasPriceHex = "0x" + effective.Text(16)
+	} else {
+		gasPriceHex = "0x" + new(big.Int).SetBytes(tx.GasPrice).Text(16)
+	}
+
 	result := map[string]any{
 		"hash":     "0x" + hex.EncodeToString(tx.Hash),
 		"from":     "0x" + hex.EncodeToString(tx.From),
-		"to":       "0x" + hex.EncodeToString(tx.To),
+		"to":       to,
 		"input":    "0x" + hex.EncodeToString(tx.Input),
 		"value":    "0x" + new(big.Int).SetBytes(tx.Value).Text(16),
 		"nonce":    "0x" + new(big.Int).SetUint64(tx.Nonce).Text(16),
 		"gas":      "0x" + new(big.Int).SetUint64(tx.Gas).Text(16),
-		"gasPrice": "0x" + new(big.Int).SetBytes(tx.GasPrice).Text(16),
+		"gasPrice": gasPriceHex,
 		"type":     "0x" + new(big.Int).SetUint64(uint64(tx.Type)).Text(16),
 	}
+
+	// EIP-1559 fields (type 2)
+	if tx.Type == 2 {
+		if len(tx.MaxFeePerGas) > 0 {
+			result["maxFeePerGas"] = "0x" + new(big.Int).SetBytes(tx.MaxFeePerGas).Text(16)
+		}
+		if len(tx.MaxPriorityFeePerGas) > 0 {
+			result["maxPriorityFeePerGas"] = "0x" + new(big.Int).SetBytes(tx.MaxPriorityFeePerGas).Text(16)
+		}
+	}
+
+	// chainId — always emit; fall back to global chain ID if not set on the tx
+	chainID := new(big.Int).SetBytes(tx.ChainID)
+	if len(tx.ChainID) == 0 {
+		chainID = globalChainID
+	}
+	result["chainId"] = "0x" + chainID.Text(16)
 
 	// Add optional fields if they exist
 	if len(tx.R) > 0 {

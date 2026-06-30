@@ -9,6 +9,7 @@ import (
 
 type Service interface {
 	ChainID(ctx context.Context) (*big.Int, error)
+	GetChainIDValue() *big.Int
 	ClientVersion(ctx context.Context) (string, error)
 	BlockNumber(ctx context.Context) (*big.Int, error)
 	BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error)

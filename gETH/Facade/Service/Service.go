@@ -31,6 +31,10 @@ func NewService(chainID int) Service {
 	}
 }
 
+func (s *ServiceImpl) GetChainIDValue() *big.Int {
+	return big.NewInt(int64(s.ChainIDValue))
+}
+
 func (s *ServiceImpl) ChainID(ctx context.Context) (*big.Int, error) {
 	// Create a new context with timeout for this operation
 	opCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -324,21 +328,41 @@ func convertEthTxToConfigTx(ethTx *types.Transaction) config.Transaction {
 	// Debugging
 	fmt.Println("Hash: ", tx.Hash.Hex())
 	fmt.Println("From: ", tx.From.Hex())
-	fmt.Println("To: ", tx.To.Hex())
-	fmt.Println("Value: ", tx.Value.String())
+	if tx.To != nil {
+		fmt.Println("To: ", tx.To.Hex())
+	} else {
+		fmt.Println("To: nil (contract creation)")
+	}
+	if tx.Value != nil {
+		fmt.Println("Value: ", tx.Value.String())
+	}
 	fmt.Println("Type: ", tx.Type)
 	fmt.Println("Timestamp: ", tx.Timestamp)
-	fmt.Println("ChainID: ", tx.ChainID.String())
+	if tx.ChainID != nil {
+		fmt.Println("ChainID: ", tx.ChainID.String())
+	}
 	fmt.Println("Nonce: ", tx.Nonce)
 	fmt.Println("GasLimit: ", tx.GasLimit)
-	fmt.Println("GasPrice: ", tx.GasPrice.String())
-	fmt.Println("MaxFee: ", tx.MaxFee.String())
-	fmt.Println("MaxPriorityFee: ", tx.MaxPriorityFee.String())
+	if tx.GasPrice != nil {
+		fmt.Println("GasPrice: ", tx.GasPrice.String())
+	}
+	if tx.MaxFee != nil {
+		fmt.Println("MaxFee: ", tx.MaxFee.String())
+	}
+	if tx.MaxPriorityFee != nil {
+		fmt.Println("MaxPriorityFee: ", tx.MaxPriorityFee.String())
+	}
 	fmt.Println("Data: ", tx.Data)
 	fmt.Println("AccessList: ", tx.AccessList)
-	fmt.Println("V: ", tx.V.String())
-	fmt.Println("R: ", tx.R.String())
-	fmt.Println("S: ", tx.S.String())
+	if tx.V != nil {
+		fmt.Println("V: ", tx.V.String())
+	}
+	if tx.R != nil {
+		fmt.Println("R: ", tx.R.String())
+	}
+	if tx.S != nil {
+		fmt.Println("S: ", tx.S.String())
+	}
 
 	return tx
 }
@@ -488,22 +512,31 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 	}
 	receiptMap["type"] = "0x" + fmt.Sprintf("%x", txType)
 
-	// Add effectiveGasPrice from transaction
-	if tx != nil {
+	// Add effectiveGasPrice from transaction.
+	// EIP-1559: effectiveGasPrice = min(maxFeePerGas, baseFee + maxPriorityFeePerGas)
+	// baseFee is the network constant (35 gwei) used across all RPC responses.
+	{
+		const baseFee = int64(35_000_000_000)
 		var effectiveGasPrice *big.Int
-		if tx.GasPrice != nil {
-			// For legacy (Type 0) and EIP-2930 (Type 1), use GasPrice
+		if tx != nil && tx.GasPrice != nil {
+			// Legacy (type 0) and EIP-2930 (type 1)
 			effectiveGasPrice = tx.GasPrice
-		} else if tx.MaxFee != nil {
-			// For EIP-1559 (Type 2), use MaxFee as effectiveGasPrice
-			// In a full implementation, this would be min(MaxFee, baseFee + MaxPriorityFee)
-			// but for simplicity, we use MaxFee
-			effectiveGasPrice = tx.MaxFee
+		} else if tx != nil && tx.MaxFee != nil {
+			tip := tx.MaxPriorityFee
+			if tip == nil {
+				tip = big.NewInt(0)
+			}
+			basePlusTip := new(big.Int).Add(big.NewInt(baseFee), tip)
+			if tx.MaxFee.Cmp(basePlusTip) < 0 {
+				effectiveGasPrice = new(big.Int).Set(tx.MaxFee)
+			} else {
+				effectiveGasPrice = basePlusTip
+			}
+		} else {
+			// Fallback: always emit effectiveGasPrice (EIP-1559 requires it)
+			effectiveGasPrice = big.NewInt(baseFee)
 		}
-
-		if effectiveGasPrice != nil {
-			receiptMap["effectiveGasPrice"] = "0x" + effectiveGasPrice.Text(16)
-		}
+		receiptMap["effectiveGasPrice"] = "0x" + effectiveGasPrice.Text(16)
 	}
 
 	// Add from and to addresses from transaction
