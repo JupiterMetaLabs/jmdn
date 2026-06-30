@@ -475,25 +475,50 @@ func toFilterQuery(p any) (*Types.FilterQuery, error) {
 	return &Types.FilterQuery{}, errors.New("invalid filter object")
 }
 
+// sha3UnclesEmpty is the Keccak-256 of an empty uncle list — standard constant for PoS/non-PoW chains.
+const sha3UnclesEmpty = "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"
+
 func marshalBlock(b *Types.Block, full bool) map[string]any {
 	result := map[string]any{
-		"number":       "0x" + new(big.Int).SetUint64(b.Header.Number).Text(16),
-		"hash":         "0x" + hex.EncodeToString(b.Header.Hash),
-		"parentHash":   "0x" + hex.EncodeToString(b.Header.ParentHash),
-		"timestamp":    "0x" + new(big.Int).SetUint64(b.Header.Timestamp).Text(16),
-		"gasLimit":     "0x" + new(big.Int).SetUint64(b.Header.GasLimit).Text(16),
-		"gasUsed":      "0x" + new(big.Int).SetUint64(b.Header.GasUsed).Text(16),
+		// Core identity
+		"number":     "0x" + new(big.Int).SetUint64(b.Header.Number).Text(16),
+		"hash":       "0x" + hex.EncodeToString(b.Header.Hash),
+		"parentHash": "0x" + hex.EncodeToString(b.Header.ParentHash),
+		"timestamp":  "0x" + new(big.Int).SetUint64(b.Header.Timestamp).Text(16),
+
+		// Gas
+		"gasLimit": "0x" + new(big.Int).SetUint64(b.Header.GasLimit).Text(16),
+		"gasUsed":  "0x" + new(big.Int).SetUint64(b.Header.GasUsed).Text(16),
+
+		// State / receipts — all stored in ZKBlock, surfaced via BlockHeader
+		"stateRoot":    "0x" + hex.EncodeToString(b.Header.StateRoot),
+		"receiptsRoot": "0x" + hex.EncodeToString(b.Header.ReceiptsRoot),
+		"logsBloom":    "0x" + hex.EncodeToString(b.Header.LogsBloom),
+		"extraData":    "0x" + hex.EncodeToString(b.Header.ExtraData),
+
+		// Miner / sequencer address (ZKVMAddr in ZKBlock → Miner in BlockHeader)
+		"miner": "0x" + hex.EncodeToString(b.Header.Miner),
+
+		// EIP-1559 base fee — computed at read time (35 gwei constant) in ConvertZKBlockToblockheader.
+		// Guard against nil/empty for blocks written before this field existed.
+		"baseFeePerGas": func() string {
+			if len(b.Header.BaseFee) > 0 {
+				return "0x" + new(big.Int).SetBytes(b.Header.BaseFee).Text(16)
+			}
+			return "0x" + big.NewInt(35000000000).Text(16) // fallback: 35 gwei
+		}(),
+
+		// PoW fields — this chain has no PoW; use standard empty/zero values
+		// so EIP-3675 (PoS) compatible clients don't reject the block envelope
+		"sha3Uncles":      sha3UnclesEmpty,
+		"nonce":           "0x0000000000000000",
+		"difficulty":      "0x0",
+		"totalDifficulty": "0x0",
+		"mixHash":         "0x" + strings.Repeat("0", 64),
+		"uncles":          []string{},
+
 		"transactions": []any{},
 	}
-
-	// Add baseFeePerGas at top-level from header (EIP-1559)
-	// if b.Header != nil && len(b.Header.BaseFee) > 0 {
-	// 	baseFeeBig := new(big.Int).SetBytes(b.Header.BaseFee)
-	// 	result["baseFeePerGas"] = "0x" + baseFeeBig.Text(16)
-	// } else {
-	// 	// If no base fee (pre-EIP-1559 blocks), set to null or omit
-	// 	result["baseFeePerGas"] = nil
-	// }
 
 	if full && len(b.Transactions) > 0 {
 		txs := make([]any, len(b.Transactions))

@@ -87,20 +87,33 @@ func (s *ServiceImpl) BlockNumber(ctx context.Context) (*big.Int, error) {
 
 func (s *ServiceImpl) GetTransactionCount(ctx context.Context, addr string, block string) (*big.Int, error) {
 	// Create a new context with timeout for this operation
-	_, cancel := context.WithTimeout(ctx, 10*time.Second)
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Return the transaction count for the given address of latest block
-	Transactions, err := DB_OPs.CountTransactions(nil)
+	// Normalize the address (handles mixed-case / checksum addresses)
+	convertedAddr := Utils.ConvertAddressCaseInsensitive(addr)
+
+	// TxNonce on the Account record is the authoritative Ethereum nonce.
+	// It is maintained by block processing as: account.TxNonce = tx.Nonce + 1
+	// CountTransactionsByAccount is NOT used here because it counts both FROM and TO
+	// transactions, which would inflate the nonce for recipient addresses.
+	account, err := DB_OPs.GetAccount(nil, convertedAddr)
 	if err != nil {
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
+			// Address has no transactions yet — nonce is 0
+			return big.NewInt(0), nil
+		}
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetTransactionCount failed: %v", err), "GetTransactionCount", -1); logErr != nil {
+			fmt.Printf("Failed to log GetTransactionCount error: %v\n", logErr)
+		}
 		return nil, err
 	}
 
-	// fmt.Println("Transactions: ", Transactions)
-	// Convert the Transactions to big.Int
-	TransactionsBigInt := big.NewInt(int64(Transactions))
+	if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetTransactionCount returned nonce %d for %s", account.TxNonce, addr), "GetTransactionCount", 1); logErr != nil {
+		fmt.Printf("Failed to log GetTransactionCount: %v\n", logErr)
+	}
 
-	return TransactionsBigInt, nil
+	return big.NewInt(int64(account.TxNonce)), nil
 }
 
 func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error) {
