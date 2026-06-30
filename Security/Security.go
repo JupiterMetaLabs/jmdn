@@ -6,18 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-
-	"gossipnode/config"
-
+	"sync"
 	"time"
+
+	"gossipnode/DB_OPs"
+	"gossipnode/config"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"go.opentelemetry.io/otel/attribute"
-
-	"gossipnode/DB_OPs"
 )
 
 const (
@@ -31,7 +30,13 @@ const (
 
 // expectedChainID holds the node's configured chain ID for validation.
 // Set this at startup using SetExpectedChainID/SetExpectedChainIDBig.
-var expectedChainID *big.Int
+// signerMu guards expectedChainID and all cached signers.
+// These are set once at startup (before serving begins), so contention is negligible
+// in practice — the mutex exists purely to satisfy the Go memory model and race detector.
+var (
+	signerMu       sync.RWMutex
+	expectedChainID *big.Int
+)
 
 // Cached signers — built once when expectedChainID is set; avoids per-tx allocation.
 var (
@@ -41,6 +46,7 @@ var (
 )
 
 func rebuildSignerCache() {
+	// caller must hold signerMu.Lock()
 	if expectedChainID != nil {
 		cachedLatestSigner = types.LatestSignerForChainID(expectedChainID)
 		cachedEIP155Signer = types.NewEIP155Signer(expectedChainID)
@@ -49,17 +55,20 @@ func rebuildSignerCache() {
 
 // SetExpectedChainID sets the expected chain ID used to validate incoming transactions.
 func SetExpectedChainID(id int) {
+	signerMu.Lock()
+	defer signerMu.Unlock()
 	expectedChainID = big.NewInt(int64(id))
 	rebuildSignerCache()
 }
 
 // SetExpectedChainIDBig sets the expected chain ID from a big.Int safely.
 func SetExpectedChainIDBig(id *big.Int) {
+	signerMu.Lock()
+	defer signerMu.Unlock()
 	if id == nil {
 		expectedChainID = nil
 		return
 	}
-
 	expectedChainID = new(big.Int).Set(id)
 	rebuildSignerCache()
 }
@@ -359,10 +368,14 @@ func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, ma
 	}
 
 	if tx != nil {
+		toAddr := "nil" // contract deployment
+		if tx.To != nil {
+			toAddr = tx.To.Hex()
+		}
 		span.SetAttributes(
 			attribute.String("tx_hash", tx.Hash.Hex()),
 			attribute.String("from_address", tx.From.Hex()),
-			attribute.String("to_address", tx.To.Hex()),
+			attribute.String("to_address", toAddr),
 			attribute.Int64("nonce", int64(tx.Nonce)),
 		)
 	}
@@ -371,7 +384,10 @@ func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, ma
 	// 1. ChainID validation
 	_, chainIDSpan := tracer.Start(spanCtx, "Security.allChecksWithCache.validateChainID")
 	// 1.1. ChainID validation: expected chain ID must be configured first
-	if expectedChainID == nil {
+	signerMu.RLock()
+	localExpectedChainID := expectedChainID
+	signerMu.RUnlock()
+	if localExpectedChainID == nil {
 		err := errors.New("expected chain ID is not configured")
 		chainIDSpan.RecordError(err)
 		chainIDSpan.SetAttributes(attribute.String("status", "validation_failed"))
@@ -397,16 +413,16 @@ func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, ma
 	}
 
 	// 1.3. Transaction ChainID must match expected ChainID
-	if tx.ChainID.Cmp(expectedChainID) != 0 {
+	if tx.ChainID.Cmp(localExpectedChainID) != 0 {
 		err := fmt.Errorf("chain ID mismatch: got %s (uint64: %d), expected %s (uint64: %d)",
-			tx.ChainID.String(), tx.ChainID.Uint64(), expectedChainID.String(), expectedChainID.Uint64())
+			tx.ChainID.String(), tx.ChainID.Uint64(), localExpectedChainID.String(), localExpectedChainID.Uint64())
 		chainIDSpan.RecordError(err)
 		chainIDSpan.SetAttributes(
 			attribute.String("status", "validation_failed"),
 			attribute.String("tx_chain_id", tx.ChainID.String()),
 			attribute.Int64("tx_chain_id_uint64", int64(tx.ChainID.Uint64())),
-			attribute.String("expected_chain_id", expectedChainID.String()),
-			attribute.Int64("expected_chain_id_uint64", int64(expectedChainID.Uint64())),
+			attribute.String("expected_chain_id", localExpectedChainID.String()),
+			attribute.Int64("expected_chain_id_uint64", int64(localExpectedChainID.Uint64())),
 		)
 		chainIDSpan.End()
 		span.RecordError(err)
@@ -414,8 +430,8 @@ func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, ma
 		logger().Error(spanCtx, "Chain ID mismatch", err,
 			ion.String("tx_chain_id", tx.ChainID.String()),
 			ion.Int64("tx_chain_id_uint64", int64(tx.ChainID.Uint64())),
-			ion.String("expected_chain_id", expectedChainID.String()),
-			ion.Int64("expected_chain_id_uint64", int64(expectedChainID.Uint64())),
+			ion.String("expected_chain_id", localExpectedChainID.String()),
+			ion.Int64("expected_chain_id_uint64", int64(localExpectedChainID.Uint64())),
 			ion.String("function", "Security.allChecksWithCache"))
 		return false, err
 	}
@@ -539,6 +555,10 @@ func allChecksWithConn(tx *config.Transaction, security_cache *SecurityCache, ma
 		attribute.Int64("submitted_nonce", int64(tx.Nonce)),
 	)
 
+	// TODO(nonce-gap): currently accepts future nonces (tx.Nonce > expectedNonce).
+	// If such a tx is committed the account jumps to tx.Nonce+1, permanently orphaning
+	// all nonces in between. Evaluate whether to enforce tx.Nonce == expectedNonce
+	// (strict sequential, standard EVM) or keep >= for queued-tx support.
 	if tx.Nonce < expectedNonce {
 		err := fmt.Errorf("submitted nonce %d is too low, expected >= %d", tx.Nonce, expectedNonce)
 		nonceSpan.RecordError(err)
@@ -661,14 +681,14 @@ func CheckSignature(tx *config.Transaction, traceCtx context.Context) (bool, err
 	var from common.Address
 	var err error
 
-	chainIDStr := ""
+	chainIDStr := "legacy/none"
 	if tx.ChainID != nil {
 		chainIDStr = tx.ChainID.String()
-		span.SetAttributes(
-			attribute.Int64("v_value", int64(v)),
-			attribute.String("chain_id", chainIDStr),
-		)
 	}
+	span.SetAttributes(
+		attribute.Int64("v_value", int64(v)),
+		attribute.String("chain_id", chainIDStr),
+	)
 
 	logger().Info(spanCtx, "Starting signature check",
 		ion.Int64("v_value", int64(v)),
@@ -678,9 +698,14 @@ func CheckSignature(tx *config.Transaction, traceCtx context.Context) (bool, err
 	// Signer selection — use cached singletons (built at SetExpectedChainID time).
 	// Typed txns (type 1/2): V is just the recovery bit (0/1); EIP155Signer rejects them.
 	// Legacy txns: V encodes chain ID (EIP-155) or is 27/28 (Homestead/pre-EIP-155).
+	signerMu.RLock()
+	localLatest := cachedLatestSigner
+	localEIP155 := cachedEIP155Signer
+	signerMu.RUnlock()
+
 	switch tx.Type {
 	case types.DynamicFeeTxType, types.AccessListTxType:
-		signer := cachedLatestSigner
+		signer := localLatest
 		if signer == nil {
 			signer = types.LatestSignerForChainID(tx.ChainID)
 		}
@@ -714,7 +739,7 @@ func CheckSignature(tx *config.Transaction, traceCtx context.Context) (bool, err
 		}
 
 		// EIP-155 encoded V (V = chainID*2 + 35/36), or Homestead fallback
-		eip155 := cachedEIP155Signer
+		eip155 := localEIP155
 		if eip155 == nil {
 			eip155 = types.NewEIP155Signer(tx.ChainID)
 		}

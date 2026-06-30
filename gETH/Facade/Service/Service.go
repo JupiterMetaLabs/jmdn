@@ -116,7 +116,7 @@ func (s *ServiceImpl) GetTransactionCount(ctx context.Context, addr string, bloc
 		fmt.Printf("Failed to log GetTransactionCount: %v\n", logErr)
 	}
 
-	return big.NewInt(int64(account.TxNonce)), nil
+	return new(big.Int).SetUint64(account.TxNonce), nil
 }
 
 func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error) {

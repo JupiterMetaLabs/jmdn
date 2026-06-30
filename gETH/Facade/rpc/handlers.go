@@ -574,8 +574,10 @@ func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {
 			effective = basePlusTip
 		}
 		gasPriceHex = "0x" + effective.Text(16)
-	} else {
+	} else if len(tx.GasPrice) > 0 {
 		gasPriceHex = "0x" + new(big.Int).SetBytes(tx.GasPrice).Text(16)
+	} else {
+		gasPriceHex = "0x0"
 	}
 
 	result := map[string]any{
