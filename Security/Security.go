@@ -34,9 +34,24 @@ const (
 // Set this at startup using SetExpectedChainID/SetExpectedChainIDBig.
 var expectedChainID *big.Int
 
+// Cached signers — built once when expectedChainID is set; avoids per-tx allocation.
+var (
+	cachedLatestSigner  types.Signer
+	cachedEIP155Signer  types.Signer
+	cachedHomeSteadSigner types.Signer = types.HomesteadSigner{}
+)
+
+func rebuildSignerCache() {
+	if expectedChainID != nil {
+		cachedLatestSigner = types.LatestSignerForChainID(expectedChainID)
+		cachedEIP155Signer = types.NewEIP155Signer(expectedChainID)
+	}
+}
+
 // SetExpectedChainID sets the expected chain ID used to validate incoming transactions.
 func SetExpectedChainID(id int) {
 	expectedChainID = big.NewInt(int64(id))
+	rebuildSignerCache()
 }
 
 // SetExpectedChainIDBig sets the expected chain ID from a big.Int safely.
@@ -54,6 +69,8 @@ func SetExpectedChainIDBig(id *big.Int) {
 	// Convert to binary (big-endian) representation
 	chainIDBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(chainIDBytes, chainIDUint)
+
+	rebuildSignerCache()
 }
 
 func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
@@ -584,8 +601,9 @@ func CheckSignature(tx *config.Transaction, traceCtx context.Context) (bool, err
 		span.SetAttributes(attribute.String("to_address", tx.To.Hex()))
 	}
 
-	if tx.From == nil || tx.To == nil || tx.V == nil || tx.R == nil || tx.S == nil {
-		err := errors.New("transaction missing required signature fields (From, To, V, R, or S)")
+	// To is nil for contract deployments — only require From + signature fields.
+	if tx.From == nil || tx.V == nil || tx.R == nil || tx.S == nil {
+		err := errors.New("transaction missing required signature fields (From, V, R, or S)")
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "validation_failed"))
 		logger().Error(spanCtx, "Transaction missing required signature fields", err,
@@ -593,13 +611,11 @@ func CheckSignature(tx *config.Transaction, traceCtx context.Context) (bool, err
 		return false, err
 	}
 
+	// Use tx.Type directly — already set by convertEthTxToConfigTx at ingest time.
+	// Field-presence heuristics are fragile and redundant.
 	var ethTx *types.Transaction
-	var signer types.Signer
-
-	// Determine transaction type based on fields
-	switch {
-	case tx.MaxFee != nil && tx.MaxPriorityFee != nil:
-		// EIP-1559 (Type 2)
+	switch tx.Type {
+	case types.DynamicFeeTxType: // 2 — EIP-1559
 		inner := &types.DynamicFeeTx{
 			ChainID:    tx.ChainID,
 			Nonce:      tx.Nonce,
@@ -617,8 +633,7 @@ func CheckSignature(tx *config.Transaction, traceCtx context.Context) (bool, err
 		ethTx = types.NewTx(inner)
 		span.SetAttributes(attribute.String("tx_type", "EIP-1559"))
 
-	case len(tx.AccessList) > 0:
-		// EIP-2930 (Type 1)
+	case types.AccessListTxType: // 1 — EIP-2930
 		inner := &types.AccessListTx{
 			ChainID:    tx.ChainID,
 			Nonce:      tx.Nonce,
@@ -635,8 +650,7 @@ func CheckSignature(tx *config.Transaction, traceCtx context.Context) (bool, err
 		ethTx = types.NewTx(inner)
 		span.SetAttributes(attribute.String("tx_type", "EIP-2930"))
 
-	default:
-		// Legacy (Type 0)
+	default: // 0 — Legacy
 		inner := &types.LegacyTx{
 			Nonce:    tx.Nonce,
 			To:       tx.To,
@@ -652,78 +666,73 @@ func CheckSignature(tx *config.Transaction, traceCtx context.Context) (bool, err
 		span.SetAttributes(attribute.String("tx_type", "Legacy"))
 	}
 
-	// 👇 Smart signer detection with fallback for MetaMask compatibility
 	v := tx.V.Uint64()
 	var from common.Address
 	var err error
 
+	chainIDStr := ""
 	if tx.ChainID != nil {
+		chainIDStr = tx.ChainID.String()
 		span.SetAttributes(
 			attribute.Int64("v_value", int64(v)),
-			attribute.String("chain_id", tx.ChainID.String()),
+			attribute.String("chain_id", chainIDStr),
 		)
 	}
 
 	logger().Info(spanCtx, "Starting signature check",
 		ion.Int64("v_value", int64(v)),
-		ion.String("chain_id", tx.ChainID.String()),
+		ion.String("chain_id", chainIDStr),
 		ion.String("function", "Security.CheckSignature"))
 
-	// Strategy: MetaMask signs legacy transactions with V=27/28 (pre-EIP-155)
-	// Even when ChainID is present, we need to try both signers
-	if v == 27 || v == 28 {
-		// First try HomesteadSigner (pre-EIP-155) - this is what MetaMask uses
-		signer = types.HomesteadSigner{}
-		logger().Info(spanCtx, "Trying HomesteadSigner (pre-EIP-155, MetaMask standard)",
+	// Signer selection — use cached singletons (built at SetExpectedChainID time).
+	// Typed txns (type 1/2): V is just the recovery bit (0/1); EIP155Signer rejects them.
+	// Legacy txns: V encodes chain ID (EIP-155) or is 27/28 (Homestead/pre-EIP-155).
+	switch tx.Type {
+	case types.DynamicFeeTxType, types.AccessListTxType:
+		signer := cachedLatestSigner
+		if signer == nil {
+			signer = types.LatestSignerForChainID(tx.ChainID)
+		}
+		logger().Info(spanCtx, "Trying LatestSignerForChainID (typed transaction)",
+			ion.Int64("tx_type", int64(tx.Type)),
 			ion.String("function", "Security.CheckSignature"))
 		from, err = types.Sender(signer, ethTx)
 		if err == nil && from == *tx.From {
 			duration := time.Since(startTime).Seconds()
-			span.SetAttributes(
-				attribute.String("status", "success"),
-				attribute.String("signer_type", "HomesteadSigner"),
-				attribute.Float64("duration", duration),
-			)
-			logger().Info(spanCtx, "Signature verified with HomesteadSigner",
+			span.SetAttributes(attribute.String("status", "success"), attribute.String("signer_type", "LatestSignerForChainID"), attribute.Float64("duration", duration))
+			logger().Info(spanCtx, "Signature verified with LatestSignerForChainID",
 				ion.Float64("duration", duration),
 				ion.String("function", "Security.CheckSignature"))
 			return true, nil
 		}
 
-		// If that failed and ChainID is present, try EIP155Signer as fallback
-		if tx.ChainID != nil && err != nil {
-			signer = types.NewEIP155Signer(tx.ChainID)
-			logger().Info(spanCtx, "HomesteadSigner failed, trying EIP155Signer",
-				ion.String("error", err.Error()),
-				ion.String("chain_id", tx.ChainID.String()),
+	default: // legacy
+		if v == 27 || v == 28 {
+			logger().Info(spanCtx, "Trying HomesteadSigner (pre-EIP-155)",
 				ion.String("function", "Security.CheckSignature"))
-			from, err = types.Sender(signer, ethTx)
+			from, err = types.Sender(cachedHomeSteadSigner, ethTx)
 			if err == nil && from == *tx.From {
 				duration := time.Since(startTime).Seconds()
-				span.SetAttributes(
-					attribute.String("status", "success"),
-					attribute.String("signer_type", "EIP155Signer"),
-					attribute.Float64("duration", duration),
-				)
-				logger().Info(spanCtx, "Signature verified with EIP155Signer",
+				span.SetAttributes(attribute.String("status", "success"), attribute.String("signer_type", "HomesteadSigner"), attribute.Float64("duration", duration))
+				logger().Info(spanCtx, "Signature verified with HomesteadSigner",
 					ion.Float64("duration", duration),
 					ion.String("function", "Security.CheckSignature"))
 				return true, nil
 			}
+			// Fall through to EIP155 below
 		}
-	} else {
-		// V != 27/28 means EIP-155 encoded (V = chainID*2 + 35 or chainID*2 + 36)
-		signer = types.NewEIP155Signer(tx.ChainID)
-		logger().Info(spanCtx, "Trying EIP155Signer (EIP-155 encoded V value)",
+
+		// EIP-155 encoded V (V = chainID*2 + 35/36), or Homestead fallback
+		eip155 := cachedEIP155Signer
+		if eip155 == nil {
+			eip155 = types.NewEIP155Signer(tx.ChainID)
+		}
+		logger().Info(spanCtx, "Trying EIP155Signer",
 			ion.String("function", "Security.CheckSignature"))
-		from, err = types.Sender(signer, ethTx)
+		from, err = types.Sender(eip155, ethTx)
 		if err == nil && from == *tx.From {
 			duration := time.Since(startTime).Seconds()
-			span.SetAttributes(
-				attribute.String("status", "success"),
-				attribute.String("signer_type", "EIP155Signer"),
-				attribute.Float64("duration", duration),
-			)
+			span.SetAttributes(attribute.String("status", "success"), attribute.String("signer_type", "EIP155Signer"), attribute.Float64("duration", duration))
 			logger().Info(spanCtx, "Signature verified with EIP155Signer",
 				ion.Float64("duration", duration),
 				ion.String("function", "Security.CheckSignature"))
