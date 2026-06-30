@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"os"
 
@@ -164,15 +165,36 @@ func (l *TLSLoader) LoadClientTLS(targetServiceName string, clientIdentity strin
 	}
 
 	// 3. Load client certificate for mTLS when an identity is provided.
+	//
+	// The client cert is OPTIONAL: if the cert file is absent, we proceed with
+	// one-way TLS (server-auth only). This is the correct behaviour for public
+	// endpoints like mre.jmdt.io whose nginx terminates TLS without requiring a
+	// client certificate. A hard failure here would leave the routing client
+	// singleton nil and silently block all transaction submissions.
+	//
+	// We only hard-fail if the cert file EXISTS but cannot be read/parsed, which
+	// indicates a genuine provisioning error rather than a deliberate omission.
 	if clientIdentity != "" {
 		certFile := fmt.Sprintf("%s/%s.crt", l.config.CertDir, clientIdentity)
 		keyFile := fmt.Sprintf("%s/%s.key", l.config.CertDir, clientIdentity)
 
-		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-		if err != nil {
+		switch cert, err := tls.LoadX509KeyPair(certFile, keyFile); {
+		case err == nil:
+			// mTLS client cert found and loaded — present it to the server.
+			tlsConfig.Certificates = []tls.Certificate{cert}
+
+		case errors.Is(err, os.ErrNotExist):
+			// Cert not provisioned on this node — proceed with one-way TLS.
+			// This is expected for nodes connecting to internet-facing endpoints.
+			l.logger.Warn(context.Background(), "mTLS client cert not found — proceeding with one-way TLS",
+				ion.String("identity", clientIdentity),
+				ion.String("cert_file", certFile),
+			)
+
+		default:
+			// File exists but failed to read or parse — genuine provisioning error.
 			return nil, fmt.Errorf("gatekeeper: failed to load client identity %s: %w", clientIdentity, err)
 		}
-		tlsConfig.Certificates = []tls.Certificate{cert}
 	}
 
 	return tlsConfig, nil
