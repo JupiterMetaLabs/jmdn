@@ -35,8 +35,8 @@ var expectedChainID *big.Int
 
 // Cached signers — built once when expectedChainID is set; avoids per-tx allocation.
 var (
-	cachedLatestSigner  types.Signer
-	cachedEIP155Signer  types.Signer
+	cachedLatestSigner    types.Signer
+	cachedEIP155Signer    types.Signer
 	cachedHomeSteadSigner types.Signer = types.HomesteadSigner{}
 )
 
