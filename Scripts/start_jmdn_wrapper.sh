@@ -64,6 +64,12 @@ if [[ ! -f "${CONFIG_PATH}" ]] && [[ -f "./jmdn.yaml" ]]; then
     CONFIG_PATH="./jmdn.yaml"
 fi
 
+# Source auto-generated Redis credentials if present
+if [[ -f "${JMDN_ETC}/redis.env" ]]; then
+    # shellcheck disable=SC1090
+    source "${JMDN_ETC}/redis.env"
+fi
+
 # --- Validate and exec -------------------------------------------------------
 
 log_info "Starting JMDN..."
