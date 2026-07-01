@@ -1,6 +1,7 @@
 package Router
 
 import (
+	"encoding/hex"
 	"fmt"
 
 	blssign "gossipnode/AVC/BLS/bls-sign"
@@ -22,7 +23,7 @@ func (r *BLSRouter) SignMessage(agree bool, message string, signerID string) (st
 		if err != nil {
 			return "", err
 		}
-		return string(sig), nil
+		return hex.EncodeToString(sig), nil
 	}
 	return "", fmt.Errorf("not agreed")
 }
