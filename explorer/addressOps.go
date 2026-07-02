@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/txindex"
@@ -50,13 +51,8 @@ func bigHex(n *big.Int) string {
 }
 
 // getAddressTransactions returns transactions for a specific address.
-//
-// Fast path (txindex available): SQLite index lookup O(log n) → ImmuDB fetch by
-// hash for only the current page (~20 items). No full block scan, no ImmuDB
-// connection held open for the duration of a scan.
-//
-// Fallback path (txindex not ready / nil): original GetTransactionsByAccountPaginated
-// scan — preserves behaviour on nodes that haven't initialised the index yet.
+// Uses SQLite txindex for O(log n) lookup → ImmuDB point-fetch per page item.
+// Returns empty pagination if txindex is not initialised.
 func (s *ImmuDBServer) getAddressTransactions(c *gin.Context) {
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -68,7 +64,7 @@ func (s *ImmuDBServer) getAddressTransactions(c *gin.Context) {
 	}
 
 	address := common.HexToAddress(addressParam)
-	normalizedAddr := address.Hex() // checksum form stored in SQLite
+	normalizedAddr := strings.ToLower(address.Hex()) // lowercase — matches ImmuDB/SQLite storage
 
 	pageStr := c.DefaultQuery("page", "1")
 	limitStr := c.DefaultQuery("limit", "20")

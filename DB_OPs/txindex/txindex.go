@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -124,7 +125,7 @@ func (idx *DB) IndexBlock(block *config.ZKBlock) error {
 func (idx *DB) CountByAddress(address string) (int, error) {
 	var n int
 	err := idx.db.QueryRow(
-		`SELECT COUNT(*) FROM address_txns WHERE address = ?`, address,
+		`SELECT COUNT(*) FROM address_txns WHERE address = ?`, strings.ToLower(address),
 	).Scan(&n)
 	return n, err
 }
@@ -141,7 +142,7 @@ func (idx *DB) GetTxRefsByOffset(address string, offset, limit int) ([]TxRef, er
 		WHERE  address = ?
 		ORDER  BY block_number DESC
 		LIMIT  ? OFFSET ?
-	`, address, limit, offset)
+	`, strings.ToLower(address), limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("txindex: offset query address %s: %w", address, err)
 	}
@@ -170,6 +171,7 @@ func (idx *DB) GetTxHashesByAddress(address string, cursor uint64, limit int) ([
 		err  error
 	)
 
+	addr := strings.ToLower(address)
 	if cursor == 0 {
 		rows, err = idx.db.Query(`
 			SELECT block_number, tx_hash
@@ -177,7 +179,7 @@ func (idx *DB) GetTxHashesByAddress(address string, cursor uint64, limit int) ([
 			WHERE  address = ?
 			ORDER  BY block_number DESC
 			LIMIT  ?
-		`, address, limit)
+		`, addr, limit)
 	} else {
 		rows, err = idx.db.Query(`
 			SELECT block_number, tx_hash
@@ -185,7 +187,7 @@ func (idx *DB) GetTxHashesByAddress(address string, cursor uint64, limit int) ([
 			WHERE  address = ? AND block_number <= ?
 			ORDER  BY block_number DESC
 			LIMIT  ?
-		`, address, cursor, limit)
+		`, addr, cursor, limit)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("txindex: query address %s: %w", address, err)
@@ -300,12 +302,12 @@ func (idx *DB) indexBlocks(blocks []*config.ZKBlock) error {
 			txHash = t.Hash.Hex()
 
 			if t.From != nil {
-				if _, err := stmt.Exec(t.From.Hex(), blk.BlockNumber, txHash); err != nil {
+				if _, err := stmt.Exec(strings.ToLower(t.From.Hex()), blk.BlockNumber, txHash); err != nil {
 					return fmt.Errorf("txindex: insert from block %d: %w", blk.BlockNumber, err)
 				}
 			}
 			if t.To != nil {
-				if _, err := stmt.Exec(t.To.Hex(), blk.BlockNumber, txHash); err != nil {
+				if _, err := stmt.Exec(strings.ToLower(t.To.Hex()), blk.BlockNumber, txHash); err != nil {
 					return fmt.Errorf("txindex: insert to block %d: %w", blk.BlockNumber, err)
 				}
 			}

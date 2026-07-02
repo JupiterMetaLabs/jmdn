@@ -219,6 +219,8 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			resp, _ := invalidParams(req, "address must be a string")
 			return resp, nil
 		}
+		// Normalize to lowercase — ImmuDB/SQLite stores addresses in lowercase.
+		addr = strings.ToLower(addr)
 
 		page := 1
 		if len(req.Params) > 1 {
