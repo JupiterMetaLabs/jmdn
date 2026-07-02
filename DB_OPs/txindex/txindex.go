@@ -119,6 +119,45 @@ func (idx *DB) IndexBlock(block *config.ZKBlock) error {
 	return idx.indexBlocks([]*config.ZKBlock{block})
 }
 
+// CountByAddress returns the total number of transactions indexed for an address.
+// Fast: backed by the idx_address_block index.
+func (idx *DB) CountByAddress(address string) (int, error) {
+	var n int
+	err := idx.db.QueryRow(
+		`SELECT COUNT(*) FROM address_txns WHERE address = ?`, address,
+	).Scan(&n)
+	return n, err
+}
+
+// GetTxRefsByOffset returns paginated tx references for an address, newest first,
+// using SQL OFFSET. Suitable for page-number–based UIs.
+func (idx *DB) GetTxRefsByOffset(address string, offset, limit int) ([]TxRef, error) {
+	if limit <= 0 || limit > maxPageSize {
+		limit = defaultPageSize
+	}
+	rows, err := idx.db.Query(`
+		SELECT block_number, tx_hash
+		FROM   address_txns
+		WHERE  address = ?
+		ORDER  BY block_number DESC
+		LIMIT  ? OFFSET ?
+	`, address, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("txindex: offset query address %s: %w", address, err)
+	}
+	defer rows.Close()
+
+	var results []TxRef
+	for rows.Next() {
+		var ref TxRef
+		if err := rows.Scan(&ref.BlockNumber, &ref.TxHash); err != nil {
+			return nil, fmt.Errorf("txindex: scan row: %w", err)
+		}
+		results = append(results, ref)
+	}
+	return results, rows.Err()
+}
+
 // GetTxHashesByAddress returns paginated tx references for an address, newest first.
 // cursor = 0 starts from the newest; pass the BlockNumber of the last result to page forward.
 func (idx *DB) GetTxHashesByAddress(address string, cursor uint64, limit int) ([]TxRef, error) {
@@ -414,4 +453,20 @@ func QueryByAddress(address string, cursor uint64, limit int) ([]TxRef, error) {
 		return nil, fmt.Errorf("txindex not initialised")
 	}
 	return globalIdx.GetTxHashesByAddress(address, cursor, limit)
+}
+
+// QueryByAddressOffset returns a page of tx refs using SQL OFFSET (page-number UIs).
+func QueryByAddressOffset(address string, offset, limit int) ([]TxRef, error) {
+	if globalIdx == nil {
+		return nil, fmt.Errorf("txindex not initialised")
+	}
+	return globalIdx.GetTxRefsByOffset(address, offset, limit)
+}
+
+// CountByAddress returns the total indexed tx count for an address.
+func CountByAddress(address string) (int, error) {
+	if globalIdx == nil {
+		return 0, fmt.Errorf("txindex not initialised")
+	}
+	return globalIdx.CountByAddress(address)
 }
