@@ -267,6 +267,9 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
 		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
 		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
+		fmt.Println("  rebuildindex                      - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
+		fmt.Println("  rebuildrange <from> <to>          - Re-index a specific block range (targeted gap repair)")
+		fmt.Println("  txindexstatus                     - Show tx-address index sync status (ready/syncing, last indexed block)")
 		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
@@ -484,6 +487,62 @@ func runCommand(command string, args []string, grpcPort int) {
 			fmt.Printf("CatchUpSync completed in %ds\n", stats.TimeTaken)
 		}
 
+	case "rebuildindex":
+		fmt.Println("Rebuilding tx-address index from genesis (this may take a while)...")
+		resp, err := client.RebuildTxIndex()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if resp.Error != "" {
+			fmt.Printf("RebuildIndex failed: %s\n", resp.Error)
+			os.Exit(1)
+		}
+		fmt.Printf("RebuildIndex complete in %v\n", time.Duration(resp.TimeTakenMs)*time.Millisecond)
+
+	case "rebuildrange":
+		if len(args) != 2 {
+			fmt.Println("Usage: jmdn -cmd rebuildrange <from_block> <to_block>")
+			os.Exit(1)
+		}
+		from, err := strconv.ParseUint(args[0], 10, 64)
+		if err != nil {
+			fmt.Printf("Invalid from_block %q: %v\n", args[0], err)
+			os.Exit(1)
+		}
+		to, err := strconv.ParseUint(args[1], 10, 64)
+		if err != nil {
+			fmt.Printf("Invalid to_block %q: %v\n", args[1], err)
+			os.Exit(1)
+		}
+		fmt.Printf("Re-indexing blocks [%d..%d]...\n", from, to)
+		resp, err := client.RebuildTxIndexRange(from, to)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if resp.Error != "" {
+			fmt.Printf("RebuildRange failed: %s\n", resp.Error)
+			os.Exit(1)
+		}
+		fmt.Printf("RebuildRange [%d..%d] complete in %v\n", from, to, time.Duration(resp.TimeTakenMs)*time.Millisecond)
+
+	case "txindexstatus":
+		resp, err := client.GetTxIndexStatus()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if resp.Error != "" {
+			fmt.Printf("txindex status: %s\n", resp.Error)
+			os.Exit(1)
+		}
+		state := "SYNCING (catchup in progress)"
+		if resp.Ready {
+			state = "READY"
+		}
+		fmt.Printf("txindex status: %s — last indexed block: %d\n", state, resp.LastIndexedBlock)
+
 	case "accountsync":
 		if len(args) < 1 {
 			fmt.Println("Usage: jmdn -cmd accountsync <peer_multiaddr>")
@@ -546,6 +605,9 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
 		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
+		fmt.Println("  rebuildindex                      - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
+		fmt.Println("  rebuildrange <from> <to>          - Re-index a specific block range (targeted gap repair)")
+		fmt.Println("  txindexstatus                     - Show tx-address index sync status (ready/syncing, last indexed block)")
 		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		os.Exit(1)
 	}
@@ -894,7 +956,18 @@ func main() {
 			}
 		}
 
-		// 3. Delegate final shutdown to the centralized handler
+		// 3. Stop the tx-address index: refuse new async work, cancel any
+		// in-flight catchup/rebuild, and close both SQLite pools. Must run
+		// before the process exits — nothing else does this today, and an
+		// unclosed sql.DB leaks its connections/WAL file handles.
+		log.Info().Msg("Shutting down transaction address index...")
+		if err := txindex.Shutdown(); err != nil {
+			log.Error().Err(err).Msg("txindex shutdown reported an error")
+		} else {
+			log.Info().Msg("Transaction address index stopped")
+		}
+
+		// 4. Delegate final shutdown to the centralized handler
 		if shutdown.Shutdown() {
 			logger_cancel()
 			defer shutdown.OS_EXIT(0)
@@ -911,17 +984,23 @@ func main() {
 	}
 	fmt.Println("Main database pool initialized successfully")
 
-	// Initialise the SQLite tx-by-address index.
-	// EnsureReady runs a catchup from ImmuDB if the index is behind or empty.
+	// Initialise the SQLite tx-by-address index. Init() only opens the DB file
+	// and starts the background worker — it returns immediately. The (possibly
+	// long, e.g. full genesis migration on first deploy) gap catchup runs in a
+	// goroutine so it never delays facade/RPC/consensus/gossip startup below.
+	// Until txindex.IsReady() is true, eth_getTransactionsByAddress and
+	// getAddressTransactions return a "still syncing" / 503 error rather than
+	// an ImmuDB-scan fallback, which no longer exists (see PR history).
 	txIndexPath := cfg.Database.TxIndexPath
 	if txIndexPath == "" {
-		txIndexPath = "txindex.db"
+		txIndexPath = "./DB/txindex.db" // matches config/settings/defaults.go default
 	}
 	if err := txindex.Init(logger_ctx, txIndexPath); err != nil {
-		// Non-fatal: node still operates; address lookups fall back to ImmuDB scan.
-		log.Warn().Err(err).Msg("txindex init failed — address lookups will be slower")
+		// Only Open() (disk/permissions) failures land here — catchup failures
+		// are logged asynchronously by the background goroutine.
+		log.Warn().Err(err).Msg("txindex init failed — address-by-tx lookups will error until this is resolved (see CLI `rebuildindex`)")
 	} else {
-		fmt.Println("Transaction address index ready")
+		fmt.Println("Transaction address index starting (background catchup in progress)")
 	}
 
 	if err := initAccountsDBPool(); err != nil {

@@ -97,6 +97,11 @@ service CLIService {
     rpc CatchUpSync(CatchUpRequest) returns (SyncStats) {}
     rpc GetDatabaseState(google.protobuf.Empty) returns (DatabaseStates) {}
 
+    // Transaction-address index (SQLite-backed, derived from ImmuDB — see DB_OPs/txindex)
+    rpc RebuildTxIndex(google.protobuf.Empty) returns (TxIndexRebuildResponse) {}
+    rpc RebuildTxIndexRange(TxIndexRebuildRangeRequest) returns (TxIndexRebuildResponse) {}
+    rpc GetTxIndexStatus(google.protobuf.Empty) returns (TxIndexStatusResponse) {}
+
     // Node Operations
     rpc ReturnAddrs(google.protobuf.Empty) returns (Addrs) {}
     rpc GetSyncInfo(google.protobuf.Empty) returns (SyncInfo) {}
@@ -175,4 +180,20 @@ message CleanPeersResponse {
 message DatabaseStates {
     DatabaseState main_db = 1;
     DatabaseState accounts_db = 2;
+}
+
+message TxIndexRebuildRangeRequest {
+    uint64 from_block = 1;
+    uint64 to_block   = 2;
+}
+
+message TxIndexRebuildResponse {
+    int64 time_taken_ms = 1;  // wall-clock duration of the rebuild, in milliseconds
+    string error = 2;         // empty on success
+}
+
+message TxIndexStatusResponse {
+    bool ready = 1;                 // false while the initial/rebuild catchup is still in progress
+    uint64 last_indexed_block = 2;  // highest block number fully indexed so far
+    string error = 3;               // empty on success (e.g. "txindex not initialised" otherwise)
 }

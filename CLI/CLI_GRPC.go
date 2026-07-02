@@ -491,6 +491,12 @@ func (h *CommandHandler) HandleRebuildRange(ctx context.Context, from, to uint64
 	return time.Since(startTime), nil
 }
 
+// HandleTxIndexStatus reports whether the tx-address index has completed its
+// first full gap catchup, and the highest block number it has indexed so far.
+func (h *CommandHandler) HandleTxIndexStatus(ctx context.Context) (isReady bool, lastIndexedBlock uint64, err error) {
+	return txindex.Status(ctx)
+}
+
 func (h *CommandHandler) HandleGetDID(did string) (*DB_OPs.Account, error) {
 	if did == "" {
 		return nil, fmt.Errorf("usage: getDID <did>")

@@ -195,6 +195,30 @@ func (c *Client) GetDatabaseState() (*pb.DatabaseStates, error) {
 	return c.conn.GetDatabaseState(ctx, &emptypb.Empty{})
 }
 
+// RebuildTxIndex wipes and rebuilds the tx-address index from genesis. No
+// timeout — like CatchUpSync, this can legitimately take a long time on a
+// long chain and the CLI process is meant to wait for it.
+func (c *Client) RebuildTxIndex() (*pb.TxIndexRebuildResponse, error) {
+	ctx := context.Background()
+	return c.conn.RebuildTxIndex(ctx, &emptypb.Empty{})
+}
+
+// RebuildTxIndexRange re-indexes a specific block range [from, to].
+func (c *Client) RebuildTxIndexRange(from, to uint64) (*pb.TxIndexRebuildResponse, error) {
+	ctx := context.Background()
+	return c.conn.RebuildTxIndexRange(ctx, &pb.TxIndexRebuildRangeRequest{
+		FromBlock: from,
+		ToBlock:   to,
+	})
+}
+
+// GetTxIndexStatus returns whether the tx-address index is ready and its high-water mark.
+func (c *Client) GetTxIndexStatus() (*pb.TxIndexStatusResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return c.conn.GetTxIndexStatus(ctx, &emptypb.Empty{})
+}
+
 // ReturnAddrs returns all addresses for this node
 func (c *Client) ReturnAddrs() (*pb.Addrs, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

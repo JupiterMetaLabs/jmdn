@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"sync"
 
 	"encoding/json"
 	"log"
@@ -14,6 +15,8 @@ import (
 	"gossipnode/DB_OPs/txindex"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 type Handlers struct{ service Service.Service }
@@ -215,8 +218,8 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			return resp, nil
 		}
 		addr := mustString(req.Params[0])
-		if addr == "" {
-			resp, _ := invalidParams(req, "address must be a string")
+		if addr == "" || !common.IsHexAddress(addr) {
+			resp, _ := invalidParams(req, "address must be a valid hex address")
 			return resp, nil
 		}
 		// Normalize to lowercase — ImmuDB/SQLite stores addresses in lowercase.
@@ -234,6 +237,13 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		if page < 1 {
 			page = 1
 		}
+		// JSON numbers arrive as float64 — int(v) on an out-of-range float is
+		// implementation-specific (could land anywhere), so clamp explicitly
+		// rather than trusting the post-conversion value alone.
+		const maxPage = 1_000_000
+		if page > maxPage {
+			page = maxPage
+		}
 
 		limit := 20
 		if len(req.Params) > 2 {
@@ -249,41 +259,75 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		}
 
 		offset := (page - 1) * limit
-		refs, idxErr := txindex.QueryByAddressOffset(addr, offset, limit)
+
+		// Look up total first and short-circuit out-of-range pages before
+		// paying for SQLite's O(offset) skip-scan (OFFSET isn't O(1) even with
+		// the covering index) — a cheap request for page 1e6 shouldn't force
+		// an expensive scan just to come back empty.
+		total, totalErr := txindex.CountByAddress(ctx, addr)
+		if totalErr != nil {
+			resp, _ := finish(req, nil, fmt.Errorf("txindex unavailable: %w", totalErr))
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, nil
+		}
+		if offset < 0 || offset >= total {
+			resp, _ := finish(req, map[string]any{
+				"transactions": []any{},
+				"pagination": map[string]any{
+					"current_page": page,
+					"per_page":     limit,
+					"total_pages":  totalPagesOfInt(total, limit),
+					"total_items":  total,
+					"has_next":     false,
+					"has_prev":     page > 1,
+				},
+			}, nil)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, nil
+		}
+
+		refs, idxErr := txindex.QueryByAddressOffset(ctx, addr, offset, limit)
 		if idxErr != nil {
 			resp, _ := finish(req, nil, fmt.Errorf("txindex unavailable: %w", idxErr))
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 			return resp, nil
 		}
 
-		total, _ := txindex.CountByAddress(addr)
+		// Hydrate each ref from ImmuDB by hash in parallel (bounded) — each
+		// fetch is an independent point lookup, page size is capped at 100.
+		const hydrationConcurrency = 10
+		txs := make([]any, len(refs))
+		sem := make(chan struct{}, hydrationConcurrency)
+		var wg sync.WaitGroup
+		for i, ref := range refs {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(i int, ref txindex.TxRef) {
+				defer wg.Done()
+				defer func() { <-sem }()
 
-		txs := make([]any, 0, len(refs))
-		for _, ref := range refs {
-			tx, fetchErr := handler.service.TxByHash(ctx, ref.TxHash)
-			if fetchErr != nil || tx == nil {
-				// Return a skeleton so the caller can see block/hash even if hydration fails.
-				txs = append(txs, map[string]any{
-					"blockNumber": "0x" + new(big.Int).SetUint64(ref.BlockNumber).Text(16),
-					"hash":        ref.TxHash,
-				})
-				continue
-			}
-			m := marshalTx(tx, handler.service.GetChainIDValue())
-			m["blockNumber"] = "0x" + new(big.Int).SetUint64(ref.BlockNumber).Text(16)
-			txs = append(txs, m)
+				tx, fetchErr := handler.service.TxByHash(ctx, ref.TxHash)
+				if fetchErr != nil || tx == nil {
+					// Return a skeleton so the caller can see block/hash even if hydration fails.
+					txs[i] = map[string]any{
+						"blockNumber": "0x" + new(big.Int).SetUint64(ref.BlockNumber).Text(16),
+						"hash":        ref.TxHash,
+					}
+					return
+				}
+				m := marshalTx(tx, handler.service.GetChainIDValue())
+				m["blockNumber"] = "0x" + new(big.Int).SetUint64(ref.BlockNumber).Text(16)
+				txs[i] = m
+			}(i, ref)
 		}
+		wg.Wait()
 
-		totalPages := 0
-		if total > 0 {
-			totalPages = (total + limit - 1) / limit
-		}
 		resp, _ := finish(req, map[string]any{
 			"transactions": txs,
 			"pagination": map[string]any{
 				"current_page": page,
 				"per_page":     limit,
-				"total_pages":  totalPages,
+				"total_pages":  totalPagesOfInt(total, limit),
 				"total_items":  total,
 				"has_next":     offset+limit < total,
 				"has_prev":     page > 1,
@@ -466,6 +510,14 @@ func invalidParams(req Request, msg string) (Response, error) {
 func mustString(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+// totalPagesOfInt computes the page count for a given total item count and page size.
+func totalPagesOfInt(total, limit int) int {
+	if total <= 0 || limit <= 0 {
+		return 0
+	}
+	return (total + limit - 1) / limit
 }
 
 func toCallMsg(p any) (Types.CallMsg, error) {

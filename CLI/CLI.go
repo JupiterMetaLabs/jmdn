@@ -113,6 +113,7 @@ func PrintFuncs() {
 	fmt.Println("  catchup <peer_multiaddr> [from_block]        - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
 	fmt.Println("  rebuildindex                                 - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
 	fmt.Println("  rebuildrange <from_block> <to_block>         - Re-index a specific block range (targeted gap repair)")
+	fmt.Println("  txindexstatus                                - Show tx-address index sync status (ready/syncing, last indexed block)")
 	fmt.Println("  accountsync <peer_multiaddr>                 - Sync missing accounts only (skip block sync)")
 	fmt.Println("  dbstate                           - Show current ImmuDB database state")
 	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
@@ -279,6 +280,8 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleRebuildIndex()
 	case "rebuildrange":
 		h.handleRebuildRange(parts)
+	case "txindexstatus":
+		h.handleTxIndexStatus()
 	case "accountsync":
 		h.handleAccountSync(parts)
 	case "propagateDID":
@@ -716,6 +719,21 @@ func (h *CommandHandler) handleRebuildRange(parts []string) {
 		return
 	}
 	fmt.Printf("RebuildRange [%d..%d] complete in %v\n", from, to, time.Since(startTime))
+	printDashes()
+}
+
+func (h *CommandHandler) handleTxIndexStatus() {
+	isReady, lastIndexed, err := txindex.Status(context.Background())
+	if err != nil {
+		fmt.Printf("txindex status: %v\n", err)
+		printDashes()
+		return
+	}
+	state := "SYNCING (catchup in progress)"
+	if isReady {
+		state = "READY"
+	}
+	fmt.Printf("txindex status: %s — last indexed block: %d\n", state, lastIndexed)
 	printDashes()
 }
 
