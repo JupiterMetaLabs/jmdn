@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"log"
 
+	"gossipnode/DB_OPs/txindex"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
 )
@@ -205,6 +206,89 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		resp, _ := finish(req, txh, err)
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, err
+
+	// Non-standard but widely used by explorers / wallets.
+	// params: [address, page (optional, default 1), limit (optional, default 20)]
+	case "eth_getTransactionsByAddress":
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing address")
+			return resp, nil
+		}
+		addr := mustString(req.Params[0])
+		if addr == "" {
+			resp, _ := invalidParams(req, "address must be a string")
+			return resp, nil
+		}
+
+		page := 1
+		if len(req.Params) > 1 {
+			switch v := req.Params[1].(type) {
+			case float64:
+				page = int(v)
+			case string:
+				fmt.Sscanf(v, "%d", &page)
+			}
+		}
+		if page < 1 {
+			page = 1
+		}
+
+		limit := 20
+		if len(req.Params) > 2 {
+			switch v := req.Params[2].(type) {
+			case float64:
+				limit = int(v)
+			case string:
+				fmt.Sscanf(v, "%d", &limit)
+			}
+		}
+		if limit < 1 || limit > 100 {
+			limit = 20
+		}
+
+		offset := (page - 1) * limit
+		refs, idxErr := txindex.QueryByAddressOffset(addr, offset, limit)
+		if idxErr != nil {
+			resp, _ := finish(req, nil, fmt.Errorf("txindex unavailable: %w", idxErr))
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, nil
+		}
+
+		total, _ := txindex.CountByAddress(addr)
+
+		txs := make([]any, 0, len(refs))
+		for _, ref := range refs {
+			tx, fetchErr := handler.service.TxByHash(ctx, ref.TxHash)
+			if fetchErr != nil || tx == nil {
+				// Return a skeleton so the caller can see block/hash even if hydration fails.
+				txs = append(txs, map[string]any{
+					"blockNumber": "0x" + new(big.Int).SetUint64(ref.BlockNumber).Text(16),
+					"hash":        ref.TxHash,
+				})
+				continue
+			}
+			m := marshalTx(tx, handler.service.GetChainIDValue())
+			m["blockNumber"] = "0x" + new(big.Int).SetUint64(ref.BlockNumber).Text(16)
+			txs = append(txs, m)
+		}
+
+		totalPages := 0
+		if total > 0 {
+			totalPages = (total + limit - 1) / limit
+		}
+		resp, _ := finish(req, map[string]any{
+			"transactions": txs,
+			"pagination": map[string]any{
+				"current_page": page,
+				"per_page":     limit,
+				"total_pages":  totalPages,
+				"total_items":  total,
+				"has_next":     offset+limit < total,
+				"has_prev":     page > 1,
+			},
+		}, nil)
+		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		return resp, nil
 
 	case "eth_getTransactionByHash":
 		if len(req.Params) < 1 {
