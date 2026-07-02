@@ -13,6 +13,7 @@ import (
 	"gossipnode/Block"
 	CLICommon "gossipnode/CLI/common"
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/txindex"
 	"gossipnode/FastsyncV2"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
@@ -110,6 +111,8 @@ func PrintFuncs() {
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
 	fmt.Println("  fastsync <peer_multiaddr>                    - Fast sync blockchain data with a peer (V2 Engine)")
 	fmt.Println("  catchup <peer_multiaddr> [from_block]        - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
+	fmt.Println("  rebuildindex                                 - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
+	fmt.Println("  rebuildrange <from_block> <to_block>         - Re-index a specific block range (targeted gap repair)")
 	fmt.Println("  accountsync <peer_multiaddr>                 - Sync missing accounts only (skip block sync)")
 	fmt.Println("  dbstate                           - Show current ImmuDB database state")
 	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
@@ -272,6 +275,10 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleFastSync(parts)
 	case "catchup":
 		h.handleCatchUpSync(parts)
+	case "rebuildindex":
+		h.handleRebuildIndex()
+	case "rebuildrange":
+		h.handleRebuildRange(parts)
 	case "accountsync":
 		h.handleAccountSync(parts)
 	case "propagateDID":
@@ -669,6 +676,46 @@ func (h *CommandHandler) handleCatchUpSync(parts []string) {
 	}
 
 	fmt.Printf("CatchUpSync completed in %v\n", time.Since(startTime))
+	printDashes()
+}
+
+func (h *CommandHandler) handleRebuildIndex() {
+	fmt.Println("Rebuilding tx-address index from genesis (this may take a while)...")
+	startTime := time.Now()
+	if err := txindex.RebuildIndex(context.Background()); err != nil {
+		fmt.Printf("RebuildIndex failed: %v\n", err)
+		return
+	}
+	fmt.Printf("RebuildIndex complete in %v\n", time.Since(startTime))
+	printDashes()
+}
+
+func (h *CommandHandler) handleRebuildRange(parts []string) {
+	if len(parts) != 3 {
+		fmt.Println("Usage: rebuildrange <from_block> <to_block>")
+		return
+	}
+	from, err := strconv.ParseUint(parts[1], 10, 64)
+	if err != nil {
+		fmt.Printf("Invalid from_block %q: %v\n", parts[1], err)
+		return
+	}
+	to, err := strconv.ParseUint(parts[2], 10, 64)
+	if err != nil {
+		fmt.Printf("Invalid to_block %q: %v\n", parts[2], err)
+		return
+	}
+	if from > to {
+		fmt.Println("Error: from_block must be <= to_block")
+		return
+	}
+	fmt.Printf("Re-indexing blocks [%d..%d]...\n", from, to)
+	startTime := time.Now()
+	if err := txindex.RebuildRange(context.Background(), from, to); err != nil {
+		fmt.Printf("RebuildRange failed: %v\n", err)
+		return
+	}
+	fmt.Printf("RebuildRange [%d..%d] complete in %v\n", from, to, time.Since(startTime))
 	printDashes()
 }
 

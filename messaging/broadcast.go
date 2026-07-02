@@ -14,6 +14,7 @@ import (
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/txindex"
 	"gossipnode/Vote"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
@@ -795,6 +796,10 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		// This is a separate issue that may need rollback handling in the future
 		return fmt.Errorf("failed to process block transactions: %w", err)
 	}
+
+	// Update the SQLite tx-by-address index asynchronously.
+	// Non-blocking — never delays the block commit path.
+	txindex.IndexBlockAsync(block)
 
 	log.Info().
 		Uint64("block_number", block.BlockNumber).

@@ -28,6 +28,7 @@ import (
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
 	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
+	"gossipnode/DB_OPs/txindex"
 	"gossipnode/DID"
 	"gossipnode/FastsyncV2"
 	"gossipnode/Pubsub"
@@ -909,6 +910,19 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to initialize main database pool")
 	}
 	fmt.Println("Main database pool initialized successfully")
+
+	// Initialise the SQLite tx-by-address index.
+	// EnsureReady runs a catchup from ImmuDB if the index is behind or empty.
+	txIndexPath := cfg.Database.TxIndexPath
+	if txIndexPath == "" {
+		txIndexPath = "txindex.db"
+	}
+	if err := txindex.Init(logger_ctx, txIndexPath); err != nil {
+		// Non-fatal: node still operates; address lookups fall back to ImmuDB scan.
+		log.Warn().Err(err).Msg("txindex init failed — address lookups will be slower")
+	} else {
+		fmt.Println("Transaction address index ready")
+	}
 
 	if err := initAccountsDBPool(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
