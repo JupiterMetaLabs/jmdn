@@ -149,20 +149,12 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 
 // generateReceiptFromTransaction creates a receipt from transaction and block data
 func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *config.Transaction, block *config.ZKBlock, txIndex uint64) *config.Receipt {
-	// gasForTx returns the actual gas consumed by a transaction, falling back
-	// to GasLimit when GasUsed is not yet populated (pre-EIP-1559 blocks).
-	gasForTx := func(t config.Transaction) uint64 {
-		if t.GasUsed > 0 {
-			return t.GasUsed
-		}
-		return t.GasLimit
-	}
-
-	// Cumulative gas used = sum of gas for all txns up to and including this one.
+	// Cumulative gas used = sum of GasLimit for all txns up to and including this one.
+	// config.Transaction does not carry a GasUsed field; GasLimit is the best proxy.
 	var cumulativeGasUsed uint64
 	for i := uint64(0); i <= txIndex; i++ {
 		if i < uint64(len(block.Transactions)) {
-			cumulativeGasUsed += gasForTx(block.Transactions[i])
+			cumulativeGasUsed += block.Transactions[i].GasLimit
 		}
 	}
 
@@ -172,8 +164,7 @@ func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *c
 	logs := []config.Log{}
 	logsBloom := utils.GenerateLogsBloom(logs)
 
-	// Actual gas used by this transaction.
-	gasUsed := gasForTx(*tx)
+	gasUsed := tx.GasLimit
 
 	receipt := &config.Receipt{
 		TxHash:            tx.Hash,
