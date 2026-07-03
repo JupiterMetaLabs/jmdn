@@ -288,6 +288,36 @@ func (s *CLIServer) GetDatabaseState(ctx context.Context, _ *emptypb.Empty) (*pb
 	}, nil
 }
 
+// RebuildTxIndex wipes and rebuilds the tx-address SQLite index from genesis.
+// Errors are returned in the response body (not as a gRPC error) so a long
+// rebuild that fails partway still reports cleanly to `jmdn -cmd rebuildindex`,
+// consistent with how CatchUpSync/FastSync report failures via SyncStats.Error.
+func (s *CLIServer) RebuildTxIndex(ctx context.Context, _ *emptypb.Empty) (*pb.TxIndexRebuildResponse, error) {
+	elapsed, err := s.handler.HandleRebuildIndex(ctx)
+	if err != nil {
+		return &pb.TxIndexRebuildResponse{Error: err.Error()}, nil
+	}
+	return &pb.TxIndexRebuildResponse{TimeTakenMs: elapsed.Milliseconds()}, nil
+}
+
+// RebuildTxIndexRange re-indexes a specific block range, for a targeted gap repair.
+func (s *CLIServer) RebuildTxIndexRange(ctx context.Context, req *pb.TxIndexRebuildRangeRequest) (*pb.TxIndexRebuildResponse, error) {
+	elapsed, err := s.handler.HandleRebuildRange(ctx, req.FromBlock, req.ToBlock)
+	if err != nil {
+		return &pb.TxIndexRebuildResponse{Error: err.Error()}, nil
+	}
+	return &pb.TxIndexRebuildResponse{TimeTakenMs: elapsed.Milliseconds()}, nil
+}
+
+// GetTxIndexStatus reports whether the tx-address index is ready and how far it's caught up.
+func (s *CLIServer) GetTxIndexStatus(ctx context.Context, _ *emptypb.Empty) (*pb.TxIndexStatusResponse, error) {
+	ready, lastIndexed, err := s.handler.HandleTxIndexStatus(ctx)
+	if err != nil {
+		return &pb.TxIndexStatusResponse{Error: err.Error()}, nil
+	}
+	return &pb.TxIndexStatusResponse{Ready: ready, LastIndexedBlock: lastIndexed}, nil
+}
+
 // Helper function to convert database state
 func convertDBState(state *schema.ImmutableState) *pb.DatabaseState {
 	if state == nil {

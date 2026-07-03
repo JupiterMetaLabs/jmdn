@@ -64,3 +64,5 @@ storage/thebe-kv/MANIFEST
 storage/thebe-kv/outbox.db
 dlq/DLQ.log
 jmdn2
+*.db-wal
+*.db-shm

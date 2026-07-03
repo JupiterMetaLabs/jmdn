@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/helper"
 	"gossipnode/messaging/directMSG"
@@ -465,6 +466,35 @@ func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStat
 		MainState:     newMainState,
 		AccountsState: newAccountsState,
 	}, nil
+}
+
+// HandleRebuildIndex wipes and rebuilds the tx-address SQLite index from genesis.
+// Fixes all gaps regardless of where last_indexed_block is sitting.
+func (h *CommandHandler) HandleRebuildIndex(ctx context.Context) (time.Duration, error) {
+	startTime := time.Now()
+	if err := txindex.RebuildIndex(ctx); err != nil {
+		return 0, fmt.Errorf("RebuildIndex failed: %w", err)
+	}
+	return time.Since(startTime), nil
+}
+
+// HandleRebuildRange re-indexes a specific block range [from, to].
+// Safe to run over already-indexed blocks — INSERT OR IGNORE prevents duplicates.
+func (h *CommandHandler) HandleRebuildRange(ctx context.Context, from, to uint64) (time.Duration, error) {
+	if from > to {
+		return 0, fmt.Errorf("from_block (%d) must be <= to_block (%d)", from, to)
+	}
+	startTime := time.Now()
+	if err := txindex.RebuildRange(ctx, from, to); err != nil {
+		return 0, fmt.Errorf("RebuildRange [%d..%d] failed: %w", from, to, err)
+	}
+	return time.Since(startTime), nil
+}
+
+// HandleTxIndexStatus reports whether the tx-address index has completed its
+// first full gap catchup, and the highest block number it has indexed so far.
+func (h *CommandHandler) HandleTxIndexStatus(ctx context.Context) (isReady bool, lastIndexedBlock uint64, err error) {
+	return txindex.Status(ctx)
 }
 
 func (h *CommandHandler) HandleGetDID(did string) (*DB_OPs.Account, error) {
