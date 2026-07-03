@@ -13,6 +13,7 @@ package txindex
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -398,7 +399,16 @@ func (idx *DB) indexBlocks(ctx context.Context, blocks []*config.ZKBlock) error 
 	if err != nil {
 		return fmt.Errorf("txindex: begin: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck
+	defer func() {
+		// Rollback after a successful Commit() is a guaranteed no-op that
+		// returns sql.ErrTxDone — expected, not logged. Anything else (a
+		// dropped connection, a driver-level error) means the write lock or
+		// connection may not have been released cleanly, which is worth
+		// knowing about rather than silently swallowing.
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			log.Printf("[txindex] indexBlocks: rollback failed: %v", rbErr)
+		}
+	}()
 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT OR IGNORE INTO address_txns (address, block_number, tx_hash)
@@ -463,15 +473,6 @@ func (idx *DB) lastIndexedBlock(ctx context.Context) (uint64, error) {
 		return 0, fmt.Errorf("txindex: parse last_indexed_block %q: %w", val, err)
 	}
 	return n, nil
-}
-
-// setMeta upserts a metadata value. Ordinary keys just overwrite.
-func setMeta(tx *sql.Tx, key, value string) error {
-	_, err := tx.Exec(`
-		INSERT INTO index_meta (key, value) VALUES (?, ?)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value
-	`, key, value)
-	return err
 }
 
 // setMetaMonotonicMax upserts a numeric metadata value only if it is greater
@@ -767,7 +768,13 @@ func RebuildIndex(ctx context.Context) error {
 		return fmt.Errorf("txindex: RebuildIndex begin: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM address_txns; DELETE FROM index_meta;`); err != nil {
-		tx.Rollback() //nolint:errcheck
+		// The truncate error (err) is what's returned to the caller either
+		// way; a rollback failure here is secondary but still worth a log —
+		// this is a destructive op (wiping the whole index), so a lock or
+		// connection left in a bad state afterward should not go unnoticed.
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			log.Printf("[txindex] RebuildIndex: rollback after truncate failure: %v", rbErr)
+		}
 		return fmt.Errorf("txindex: RebuildIndex truncate: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
