@@ -107,6 +107,15 @@ func (s *ImmuDBServer) getAddressTransactions(c *gin.Context) {
 	// force SQLite into an O(offset) skip-scan (OFFSET is not O(1) even with
 	// the covering index) for a request that's cheap to issue — check the
 	// count and short-circuit to an empty page instead of paying for the scan.
+	//
+	// NOTE: this count and the paginated query below are two separate SQLite
+	// reads, not one transaction — a new block can land on this address
+	// between them, so `total` can be very slightly stale relative to the
+	// rows actually returned (e.g. has_next/total_pages off by one row right
+	// at a page boundary). This is intentional, not an oversight: it's a
+	// harmless, self-correcting UI paginator, and wrapping both reads in a
+	// transaction would hold a read lock across two round-trips for no real
+	// benefit. Please don't "fix" this with a transaction.
 	total, totalErr := txindex.CountByAddress(reqCtx, normalizedAddr)
 	if totalErr != nil {
 		logger().GetNamedLogger().Error(loggerCtx, "txindex unavailable",

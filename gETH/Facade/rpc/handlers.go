@@ -264,6 +264,11 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		// paying for SQLite's O(offset) skip-scan (OFFSET isn't O(1) even with
 		// the covering index) — a cheap request for page 1e6 shouldn't force
 		// an expensive scan just to come back empty.
+		//
+		// NOTE: this count and the paginated query below are two separate
+		// SQLite reads, not one transaction, so `total` can be very slightly
+		// stale relative to the rows returned if a block lands in between.
+		// Intentional — harmless for a UI paginator, not worth a transaction.
 		total, totalErr := txindex.CountByAddress(ctx, addr)
 		if totalErr != nil {
 			resp, _ := finish(req, nil, fmt.Errorf("txindex unavailable: %w", totalErr))

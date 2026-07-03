@@ -514,6 +514,27 @@ var (
 	// a worker that's on its way out.
 	shuttingDown atomic.Bool
 
+	// asyncSendMu makes "check shuttingDown, then send" in IndexBlockAsync
+	// mutually exclusive with closing asyncQueue in Shutdown(). Just setting
+	// shuttingDown before closing is NOT sufficient on its own: a goroutine
+	// that read shuttingDown==false a moment earlier can still be blocked on
+	// `asyncQueue <- block` when the channel gets closed, which panics
+	// (send on closed channel), not just hangs. Senders take RLock for the
+	// duration of their check+send; Shutdown takes the write Lock before
+	// closing, which can only succeed once every in-flight send has finished,
+	// so the close can never race a send.
+	asyncSendMu sync.RWMutex
+
+	// asyncCloseOnce ensures asyncQueue is closed exactly once no matter how
+	// many times Shutdown() is called. Deliberately NOT implemented by
+	// setting the asyncQueue variable itself to nil after closing: that would
+	// be a second, unsynchronized write to a package-level variable that
+	// asyncIndexWorker's `range asyncQueue` also reads — asyncQueue is
+	// written exactly once, when Init() creates it, and never reassigned
+	// again, so there is nothing for the race detector (or a real
+	// interleaving on a weakly-ordered platform) to catch.
+	asyncCloseOnce sync.Once
+
 	// shutdownCtx/shutdownCancel form the root of every background operation
 	// this package starts on its own initiative (the async worker's writes,
 	// the initial catchup goroutine). Deriving from context.Background() ONCE
@@ -552,6 +573,16 @@ func IsReady() bool {
 // A failed Open() (e.g. disk/permission issue) does NOT permanently wedge the
 // package: callers may call Init again and it will retry from scratch as
 // long as the singleton has not already been set.
+//
+// Once a call successfully sets globalIdx, Init is a permanent one-shot: any
+// later call (even with a different dbPath) returns nil immediately without
+// touching shutdownCtx/shutdownCancel/asyncStart again — the early
+// `if globalIdx != nil` check below runs before shutdownCtx is ever
+// (re)assigned, so the running async worker is never left bound to a stale
+// context. This also means Init cannot be used to re-point the singleton at
+// a different file mid-process (e.g. between test cases) — tests that need a
+// fresh instance should exercise Open()/*DB directly instead of the
+// singleton, which is what txindex_test.go does.
 func Init(ctx context.Context, dbPath string) error {
 	globalMu.Lock()
 	if globalIdx != nil {
@@ -629,7 +660,16 @@ func asyncIndexWorker() {
 // logged loudly rather than spawning unbounded goroutines — RebuildRange/
 // RebuildIndex or the next EnsureReady() catchup will fill the gap.
 func IndexBlockAsync(block *config.ZKBlock) {
-	if block == nil || shuttingDown.Load() || getIdx() == nil || asyncQueue == nil {
+	if block == nil || getIdx() == nil {
+		return
+	}
+
+	// Hold the send side of asyncSendMu for the whole check+send so Shutdown()
+	// can't close asyncQueue out from under us mid-send (see asyncSendMu doc).
+	asyncSendMu.RLock()
+	defer asyncSendMu.RUnlock()
+
+	if shuttingDown.Load() || asyncQueue == nil {
 		return
 	}
 	select {
@@ -642,12 +682,26 @@ func IndexBlockAsync(block *config.ZKBlock) {
 
 // Shutdown stops the index from accepting new async work, cancels any
 // in-flight background operation started by this package (initial catchup,
-// or a queued async write), and closes both SQLite connection pools.
+// or a queued async write), closes asyncQueue so asyncIndexWorker can exit
+// instead of blocking on it forever, and closes both SQLite connection pools.
 // Call this once during graceful node shutdown. Safe to call even if Init
 // was never called (no-op), and safe to call more than once.
 func Shutdown() error {
 	shuttingDown.Store(true)
 	shutdownCancel() // cancels the initial-catchup goroutine and unblocks any in-flight write
+
+	// Taking the write lock waits for any IndexBlockAsync call currently
+	// inside its check+send critical section to finish first, so by the time
+	// we close the channel no goroutine can still be sending on it.
+	// asyncCloseOnce (not a nil-check on asyncQueue itself) is what makes a
+	// second Shutdown() call safe — see its doc comment above.
+	asyncSendMu.Lock()
+	asyncCloseOnce.Do(func() {
+		if asyncQueue != nil {
+			close(asyncQueue)
+		}
+	})
+	asyncSendMu.Unlock()
 
 	idx := getIdx()
 	if idx == nil {
