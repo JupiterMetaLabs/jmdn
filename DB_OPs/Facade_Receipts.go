@@ -11,7 +11,6 @@ import (
 	"gossipnode/config/utils"
 
 	"github.com/JupiterMetaLabs/ion"
-	"github.com/ethereum/go-ethereum/common"
 )
 
 // GetReceiptByHash retrieves a transaction receipt by its hash
@@ -150,53 +149,31 @@ func GetReceiptByHash(mainDBClient *config.PooledConnection, hash string) (*conf
 
 // generateReceiptFromTransaction creates a receipt from transaction and block data
 func generateReceiptFromTransaction(mainDBClient *config.PooledConnection, tx *config.Transaction, block *config.ZKBlock, txIndex uint64) *config.Receipt {
-	// Calculate cumulative gas used up to this transaction using actual gas consumption
-	var cumulativeGasUsed uint64 = 0
+	// gasForTx returns the actual gas consumed by a transaction, falling back
+	// to GasLimit when GasUsed is not yet populated (pre-EIP-1559 blocks).
+	gasForTx := func(t config.Transaction) uint64 {
+		if t.GasUsed > 0 {
+			return t.GasUsed
+		}
+		return t.GasLimit
+	}
+
+	// Cumulative gas used = sum of gas for all txns up to and including this one.
+	var cumulativeGasUsed uint64
 	for i := uint64(0); i <= txIndex; i++ {
 		if i < uint64(len(block.Transactions)) {
-			// Use actual gas consumption if available, otherwise fall back to gas limit
-			gasUsed := block.Transactions[i].GasLimit
-			cumulativeGasUsed += gasUsed
+			cumulativeGasUsed += gasForTx(block.Transactions[i])
 		}
 	}
 
-	// Generate logs directly when function is called
-	// Logs are generated with metadata populated from block/transaction data
+	// Plain ETH transfers and most non-contract calls emit no logs.
+	// Do not fabricate synthetic log entries — return an empty slice so
+	// dApps that parse receipt logs see correct data.
 	logs := []config.Log{}
-
-	// Create a log entry with all required fields populated
-	if tx.From != nil {
-		log := config.Log{
-			BlockNumber: block.BlockNumber,
-			BlockHash:   block.BlockHash,
-			TxHash:      tx.Hash,
-			TxIndex:     txIndex,
-			LogIndex:    txIndex,
-			Data:        []byte{0},
-			Topics:      []common.Hash{},
-			Removed:     false,
-			Address:     *tx.From,
-		}
-		logs = append(logs, log)
-	}
-
-	// Create bloom filter for logs using proper Ethereum algorithm
 	logsBloom := utils.GenerateLogsBloom(logs)
 
-	// Determine if this is a contract creation transaction
-	// For now, we dont need to worry about the contractAddress
-	// var contractAddress *common.Address = nil
-	// if tx.To == nil {
-	// 	// This is a contract creation transaction
-	// 	// Future, For now, we'll leave it as nil
-	// }
-
-	// Use actual gas consumption if available, otherwise fall back to gas limit
-	gasUsed := tx.GasLimit
-	if gasUsed == 0 {
-		// If gas tracking is not available, use gas limit as fallback
-		gasUsed = tx.GasLimit
-	}
+	// Actual gas used by this transaction.
+	gasUsed := gasForTx(*tx)
 
 	receipt := &config.Receipt{
 		TxHash:            tx.Hash,
