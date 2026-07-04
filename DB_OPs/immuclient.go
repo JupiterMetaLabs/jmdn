@@ -2352,7 +2352,8 @@ func GetTransactionBlock(ctx context.Context, mainDBClient *config.PooledConnect
 			PutMainDBConnection(mainDBClient)
 		}()
 	}
-	txKey := fmt.Sprintf("%s%s", DEFAULT_PREFIX_TX, txHash)
+	// Normalize hash to lowercase — ImmuDB keys are stored lowercase (via common.Hash.String()).
+	txKey := fmt.Sprintf("%s%s", DEFAULT_PREFIX_TX, strings.ToLower(txHash))
 
 	blockNumberBytes, err := Read(mainDBClient, txKey)
 	if err != nil {
@@ -2439,10 +2440,13 @@ func GetTransactionByHash(mainDBClient *config.PooledConnection, txHash string) 
 	}
 
 	// Find the transaction in the block.
+	// Normalize both sides to lowercase so EIP-55 checksum hashes from callers
+	// still match the lowercase hex stored in block.Transactions[i].Hash.
 	var zkTx *config.Transaction
+	normalizedTxHash := strings.ToLower(txHash)
 	for i := range block.Transactions {
-		TempBlockHash := block.Transactions[i].Hash.String()
-		if TempBlockHash == txHash {
+		TempBlockHash := strings.ToLower(block.Transactions[i].Hash.String())
+		if TempBlockHash == normalizedTxHash {
 
 			mainDBClient.Client.Logger.Debug(loggerCtx, "Successfully retrieved transaction by hash",
 				ion.String("transactionhash", txHash),
