@@ -1547,101 +1547,28 @@ func CheckNonceDuplicate(PooledConnection *config.PooledConnection, fromAddr *co
 	return false, nil
 }
 
-// GetLatestNonce retrieves the latest (highest) nonce for a given account address
-// Returns the latest nonce and an error if any
-// If no transactions exist for the account, returns 0 (indicating first transaction)
+// GetLatestNonce retrieves the current TxNonce for an account from accountsdb.
+// TxNonce is the authoritative Ethereum nonce — maintained by block processing as
+// account.TxNonce = tx.Nonce + 1. Reading it here keeps nonce checks consistent
+// with Security.go and Processing.go which both read from accountsdb.
+//
+// The previous implementation scanned transaction history in the main DB which
+// was slower and could diverge from the account record (different DB source).
 func GetLatestNonce(PooledConnection *config.PooledConnection, fromAddr *common.Address) (uint64, error) {
-	var err error
-	var shouldReturnConnection = false
-
-	// Define Function wide context for timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if PooledConnection == nil || PooledConnection.Client == nil {
-		// Use MAIN database connection since transactions are stored in main DB
-		PooledConnection, err = GetMainDBConnectionandPutBack(ctx)
-		if err != nil {
-			return 0, fmt.Errorf("failed to get main DB connection from pool: %w - GetLatestNonce", err)
-		}
-		shouldReturnConnection = true
-		loggerCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		PooledConnection.Client.Logger.Debug(loggerCtx, "Client Connection is Nil, so Pulled up quick connection from the Pool",
-			ion.String("database", config.DBName),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DB_OPs.GetLatestNonce"))
-	}
-	if shouldReturnConnection {
-		defer func() {
-			loggerCtx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			PooledConnection.Client.Logger.Debug(loggerCtx, "Client Connection is returned to the Pool",
-				ion.String("database", config.DBName),
-				ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-				ion.String("log_file", LOG_FILE),
-				ion.String("topic", TOPIC),
-				ion.String("function", "DB_OPs.GetLatestNonce"))
-			PutMainDBConnection(PooledConnection)
-		}()
+	if fromAddr == nil {
+		return 0, fmt.Errorf("GetLatestNonce: fromAddr is nil")
 	}
 
-	ic := PooledConnection.Client
-
-	// Get all transactions for the from address
-	transactions, err := GetTransactionsByAccount(PooledConnection, fromAddr)
+	account, err := GetAccount(PooledConnection, *fromAddr)
 	if err != nil {
-		loggerCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		ic.Logger.Error(loggerCtx, "Failed to get transactions for latest nonce check",
-			err,
-			ion.String("from_address", fromAddr.Hex()),
-			ion.String("database", config.DBName),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DB_OPs.GetLatestNonce"))
-		return 0, fmt.Errorf("failed to get transactions for latest nonce check: %w", err)
-	}
-
-	// If no transactions exist, return 0 (first transaction will have nonce 0 or 1)
-	if len(transactions) == 0 {
-		loggerCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		ic.Logger.Debug(loggerCtx, "No transactions found for account, returning 0 as latest nonce",
-			ion.String("from_address", fromAddr.Hex()),
-			ion.String("database", config.DBName),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DB_OPs.GetLatestNonce"))
-		return 0, nil
-	}
-
-	// Find the maximum nonce among transactions from this address
-	var latestNonce uint64 = 0
-	for _, tx := range transactions {
-		if tx.From != nil && *tx.From == *fromAddr {
-			if tx.Nonce > latestNonce {
-				latestNonce = tx.Nonce
-			}
+		if err == ErrNotFound {
+			// Account doesn't exist yet — first transaction will use nonce 0.
+			return 0, nil
 		}
+		return 0, fmt.Errorf("GetLatestNonce: failed to get account %s: %w", fromAddr.Hex(), err)
 	}
 
-	loggerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ic.Logger.Debug(loggerCtx, "Successfully retrieved latest nonce for account",
-		ion.String("from_address", fromAddr.Hex()),
-		ion.Uint64("latest_nonce", latestNonce),
-		ion.String("database", config.DBName),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", LOG_FILE),
-		ion.String("topic", TOPIC),
-		ion.String("function", "DB_OPs.GetLatestNonce"))
-
-	return latestNonce, nil
+	return account.TxNonce, nil
 }
 
 // GetTransactionHashes retrieves transaction hashes with pagination (DEPRECATED - use GetTransactionsPaginated)
