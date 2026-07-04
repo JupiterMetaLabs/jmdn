@@ -488,25 +488,31 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	}
 
 	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.PubSub_ConsensusChannel, false, allowedPeers); err != nil {
-		setupPubsubSpan.RecordError(err)
-		setupPubsubSpan.SetAttributes(attribute.String("status", "create_channel_failed"))
-		setupPubsubDuration := time.Since(setupPubsubStartTime).Seconds()
-		setupPubsubSpan.SetAttributes(attribute.Float64("duration", setupPubsubDuration))
-		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.CREATECHANNEL: failed to create pubsub channel: %v", err)
-		logger().NamedLogger.Error(setupPubsubCtx, "Failed to create pubsub channel",
-			err,
-			ion.String("channel", config.PubSub_ConsensusChannel),
-			ion.Float64("duration", setupPubsubDuration),
-			ion.String("function", "Consensus.Start.setupPubsubChannels"))
-		setupPubsubSpan.End()
+		if err.Error() != fmt.Sprintf("channel %s already exists", config.PubSub_ConsensusChannel) {
+			setupPubsubSpan.RecordError(err)
+			setupPubsubSpan.SetAttributes(attribute.String("status", "create_channel_failed"))
+			setupPubsubDuration := time.Since(setupPubsubStartTime).Seconds()
+			setupPubsubSpan.SetAttributes(attribute.Float64("duration", setupPubsubDuration))
+			ErrorMessage := fmt.Sprintf("CONSENSUSERROR.CREATECHANNEL: failed to create pubsub channel: %v", err)
+			logger().NamedLogger.Error(setupPubsubCtx, "Failed to create pubsub channel",
+				err,
+				ion.String("channel", config.PubSub_ConsensusChannel),
+				ion.Float64("duration", setupPubsubDuration),
+				ion.String("function", "Consensus.Start.setupPubsubChannels"))
+			setupPubsubSpan.End()
 
-		Alerts.NewAlertBuilder(alert_ctx).
-			AlertName(helper.Alert_Consensus_FailedToCreatePubsubChannel).
-			Status(Alerts.AlertStatusError).
-			Severity(Alerts.SeverityError).
-			Description(ErrorMessage).
-			Send()
-		return fmt.Errorf("%s", ErrorMessage)
+			Alerts.NewAlertBuilder(alert_ctx).
+				AlertName(helper.Alert_Consensus_FailedToCreatePubsubChannel).
+				Status(Alerts.AlertStatusError).
+				Severity(Alerts.SeverityError).
+				Description(ErrorMessage).
+				Send()
+			return fmt.Errorf("%s", ErrorMessage)
+		}
+		setupPubsubSpan.SetAttributes(attribute.Bool("consensus_channel_already_exists", true))
+		logger().NamedLogger.Info(setupPubsubCtx, "Consensus pubsub channel already exists, reusing",
+			ion.String("channel", config.PubSub_ConsensusChannel),
+			ion.String("function", "Consensus.Start.setupPubsubChannels"))
 	}
 
 	setupPubsubSpan.SetAttributes(
