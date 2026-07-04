@@ -1788,6 +1788,16 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 			ion.String("function", "Consensus.parseVoteResultResponse"))
 	}
 
+	// Extract rejection reasons if present (peerID → reason for peers that voted -1)
+	rejectionReasons := make(map[string]string)
+	if rrAny, ok := resultData["rejection_reasons"].(map[string]interface{}); ok {
+		for k, v := range rrAny {
+			if s, ok := v.(string); ok {
+				rejectionReasons[k] = s
+			}
+		}
+	}
+
 	// Extract BLS if present
 	if blsAny, ok := resultData["bls"].(map[string]interface{}); ok {
 		sig := ""
@@ -1833,6 +1843,7 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 			SetAgree(agree).
 			SetPubKey(pub).
 			SetPeerID(pid).
+			SetRejectionReasons(rejectionReasons).
 			Build()
 	}
 
@@ -1879,6 +1890,16 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	validTotal := 0
 	var votedPeers []string // Track peer IDs with their votes
 
+	// Merge rejection reasons from all buddy responses (each buddy reports all peers)
+	mergedRejectionReasons := make(map[string]string)
+	for _, r := range blsResults {
+		for peerID, reason := range r.RejectionReasons {
+			if _, exists := mergedRejectionReasons[peerID]; !exists {
+				mergedRejectionReasons[peerID] = reason
+			}
+		}
+	}
+
 	for _, r := range blsResults {
 		vote := int8(-1)
 		if r.Agree {
@@ -1894,9 +1915,18 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 			continue
 		}
 		validTotal++
-		votedPeers = append(votedPeers, fmt.Sprintf("  - %s (vote: %d)", r.PeerID, vote))
+		peerLine := fmt.Sprintf("  - %s (vote: %d)", r.PeerID, vote)
 		if vote == 1 {
 			validYes++
+		}
+		votedPeers = append(votedPeers, peerLine)
+	}
+
+	// Append rejection reasons for peers that voted -1
+	if len(mergedRejectionReasons) > 0 {
+		votedPeers = append(votedPeers, "  Rejection details:")
+		for peerID, reason := range mergedRejectionReasons {
+			votedPeers = append(votedPeers, fmt.Sprintf("    • %s: %s", peerID, reason))
 		}
 	}
 

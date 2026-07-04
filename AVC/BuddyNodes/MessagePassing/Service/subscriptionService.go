@@ -713,7 +713,7 @@ func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStru
 		ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 
 	// Process votes from CRDT with block hash filtering
-	result, err := Structs.ProcessVotesFromCRDT(logger_ctx, listenerNode, blockHash)
+	result, _, err := Structs.ProcessVotesFromCRDT(logger_ctx, listenerNode, blockHash)
 	if err != nil {
 		logger().NamedLogger.Error(logger_ctx, "Failed to process votes from CRDT", err,
 			ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))

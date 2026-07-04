@@ -1567,7 +1567,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	}
 
 	// Process votes from CRDT
-	result, err := Structs.ProcessVotesFromCRDT(voteResultSpanCtx, listenerNode, targetBlockHash)
+	result, rejectionReasons, err := Structs.ProcessVotesFromCRDT(voteResultSpanCtx, listenerNode, targetBlockHash)
 	if err != nil {
 		voteResultSpan.RecordError(err)
 		voteResultSpan.SetAttributes(attribute.String("status", "process_votes_failed"))
@@ -1618,8 +1618,9 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 
 	// Send the result back
 	resultData := map[string]interface{}{
-		"result": result,
-		"bls":    blsResp,
+		"result":           result,
+		"bls":              blsResp,
+		"rejection_reasons": rejectionReasons,
 	}
 
 	resultJSON, err := json.Marshal(resultData)
