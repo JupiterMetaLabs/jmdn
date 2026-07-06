@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	BlockCommon "gossipnode/Block/common"
@@ -293,6 +294,15 @@ func SetHostInstance(h host.Host) {
 
 // globalGPS holds the GossipPubSub instance for broadcasting L1 finality to peers.
 var globalGPS *PubSubMessages.GossipPubSub
+
+// latestL1CommitCache stores the highest block number known to have L1 commit data.
+// Updated atomically by receiveL1Commit and receiveL1CommitRange so that the gETH
+// RPC facade can do a single point-lookup instead of a backwards scan.
+var latestL1CommitCache atomic.Uint64
+
+// GetLatestL1CommitBlockNum returns the cached latest L1-committed block number.
+// Returns 0 if no commit has been received since startup (gETH falls back to scan).
+func GetLatestL1CommitBlockNum() uint64 { return latestL1CommitCache.Load() }
 
 // SetGossipPubSubInstance registers the pubsub instance so the /api/l1-commit
 // endpoint can broadcast finality data to all connected peers via gossip.
@@ -1072,6 +1082,11 @@ func receiveL1Commit(c *gin.Context) {
 		ion.Int64("l1_block_number", int64(payload.L1BlockNumber)),
 		ion.String("function", "BlockServer.receiveL1Commit"))
 
+	// Update in-memory cache so gETH facade can skip the backwards scan.
+	if cur := latestL1CommitCache.Load(); payload.BlockNumber > cur {
+		latestL1CommitCache.Store(payload.BlockNumber)
+	}
+
 	// Broadcast to peers via gossip so all nodes update their copy.
 	if globalGPS != nil {
 		msgJSON, _ := json.Marshal(payload)
@@ -1168,6 +1183,11 @@ func receiveL1CommitRange(c *gin.Context) {
 		ion.Int64("updated", int64(updated)),
 		ion.Int64("skipped", int64(skipped)),
 		ion.String("function", "BlockServer.receiveL1CommitRange"))
+
+	// Update in-memory cache to the end of the committed range.
+	if cur := latestL1CommitCache.Load(); payload.EndBlock > cur {
+		latestL1CommitCache.Store(payload.EndBlock)
+	}
 
 	// ONE broadcast for the entire range — peers apply all blocks in a single message.
 	if globalGPS != nil {
