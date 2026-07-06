@@ -1618,8 +1618,8 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 
 	// Send the result back
 	resultData := map[string]interface{}{
-		"result":           result,
-		"bls":              blsResp,
+		"result":            result,
+		"bls":               blsResp,
 		"rejection_reasons": rejectionReasons,
 	}
 
