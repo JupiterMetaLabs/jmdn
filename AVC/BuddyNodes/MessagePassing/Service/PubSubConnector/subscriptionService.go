@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"gossipnode/DB_OPs"
 	Publisher "gossipnode/Pubsub/Publish"
 	Connector "gossipnode/Pubsub/Subscription"
-	"gossipnode/DB_OPs"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
