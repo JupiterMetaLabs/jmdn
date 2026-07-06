@@ -123,7 +123,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 	}
 
 	logger().NamedLogger.Info(logger_ctx, "Processing received pubsub message",
-		ion.String("topic", config.PubSub_ConsensusChannel),
+		ion.String("topic", msg.Topic),
 		ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 		ion.String("sender", msg.Sender.String()),
 		ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -511,17 +511,11 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 		ion.String("channel", channelName),
 		ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 	err := Connector.Subscribe(logger_ctx, s.pubSub, channelName, func(msg *AVCStruct.GossipMessage) {
-		logger().NamedLogger.Info(logger_ctx, "Received message on consensus channel",
+		logger().NamedLogger.Info(logger_ctx, "Received message on channel",
 			ion.String("channel", channelName),
 			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 			ion.String("sender", msg.Sender.String()),
 			ion.String("topic", msg.Topic),
-			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
-
-		logger().NamedLogger.Info(logger_ctx, "Received message on consensus channel",
-			ion.String("channel", channelName),
-			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
-			ion.String("sender", msg.Sender.String()),
 			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 
 		// Handle the received message by processing it through the message router
@@ -536,13 +530,13 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 	})
 
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to subscribe to consensus channel", err,
+		logger().NamedLogger.Error(logger_ctx, "Failed to subscribe to channel", err,
 			ion.String("channel", channelName),
 			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 		return errors.New("failed to subscribe to " + channelName + ": " + err.Error())
 	}
 
-	logger().NamedLogger.Info(logger_ctx, "Successfully subscribed to consensus channel",
+	logger().NamedLogger.Info(logger_ctx, "Successfully subscribed to channel",
 		ion.String("channel", channelName),
 		ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 
