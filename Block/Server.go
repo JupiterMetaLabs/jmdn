@@ -1104,6 +1104,9 @@ func receiveL1Commit(c *gin.Context) {
 			payload.BlockNumber, payload.L1TxHash, gps.Host.ID(), gps.GossipSubPS == nil)
 		msgJSON, _ := json.Marshal(payload)
 		msg := &PubSubMessages.Message{
+			// Sender must be a valid peer.ID: an empty one marshals to "" and
+			// receivers fail unmarshalling with "invalid cid: cid too short".
+			Sender:  gps.Host.ID(),
 			Message: string(msgJSON),
 			ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_L1Commit),
 		}
@@ -1213,6 +1216,8 @@ func receiveL1CommitRange(c *gin.Context) {
 			payload.StartBlock, payload.EndBlock, payload.L1TxHash, gps.Host.ID(), gps.GossipSubPS == nil)
 		msgJSON, _ := json.Marshal(payload)
 		msg := &PubSubMessages.Message{
+			// Sender must be a valid peer.ID (see receiveL1Commit).
+			Sender:  gps.Host.ID(),
 			Message: string(msgJSON),
 			ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_L1CommitRange),
 		}
