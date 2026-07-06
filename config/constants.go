@@ -59,6 +59,10 @@ const (
 	Delimiter               = 0x1E
 	PubSub_ConsensusChannel = "pubsub-consensus"
 	PubSub_BFTConsensus     = "pubsub-bft-consensus"
+	// PubSub_L1CommitChannel is a persistent topic for L1 finality broadcasts.
+	// It is deliberately separate from PubSub_ConsensusChannel, whose
+	// subscriptions are round-scoped (unsubscribed on END_PUBSUB).
+	PubSub_L1CommitChannel = "pubsub-l1-commit"
 	Pubsub_MessageBuffer    = "pubsub-buffer"
 	Pubsub_CRDTSync         = "pubsub-crdt-sync"
 )

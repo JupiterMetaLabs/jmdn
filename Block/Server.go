@@ -1107,7 +1107,7 @@ func receiveL1Commit(c *gin.Context) {
 			Message: string(msgJSON),
 			ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_L1Commit),
 		}
-		if pubErr := Publisher.Publish(spanCtx, gps, config.PubSub_ConsensusChannel, msg, nil); pubErr != nil {
+		if pubErr := Publisher.Publish(spanCtx, gps, config.PubSub_L1CommitChannel, msg, nil); pubErr != nil {
 			fmt.Printf("[L1Commit] Publish error: %v\n", pubErr)
 			logger().NamedLogger.Warn(spanCtx, "Failed to broadcast L1 commit to peers (non-fatal)",
 				ion.String("error", pubErr.Error()),
@@ -1216,7 +1216,7 @@ func receiveL1CommitRange(c *gin.Context) {
 			Message: string(msgJSON),
 			ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_L1CommitRange),
 		}
-		if pubErr := Publisher.Publish(spanCtx, gps, config.PubSub_ConsensusChannel, msg, nil); pubErr != nil {
+		if pubErr := Publisher.Publish(spanCtx, gps, config.PubSub_L1CommitChannel, msg, nil); pubErr != nil {
 			fmt.Printf("[L1CommitRange] Publish error: %v\n", pubErr)
 			logger().NamedLogger.Warn(spanCtx, "Failed to broadcast L1 commit range to peers (non-fatal)",
 				ion.String("error", pubErr.Error()),
