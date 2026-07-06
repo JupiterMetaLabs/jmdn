@@ -100,7 +100,8 @@ const (
 	Type_BLSVote    = "BLS_VOTE"
 
 	// L1 finality broadcast — sent by the node that received the commit confirmation
-	Type_L1Commit = "L1_COMMIT"
+	Type_L1Commit      = "L1_COMMIT"
+	Type_L1CommitRange = "L1_COMMIT_RANGE"
 )
 
 // Increase buffer sizes

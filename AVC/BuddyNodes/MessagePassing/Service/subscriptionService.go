@@ -371,6 +371,12 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		}
 		return s.handleL1Commit(logger_ctx, msg)
 
+	case config.Type_L1CommitRange:
+		if msg.Sender == s.pubSub.Host.ID() {
+			return nil
+		}
+		return s.handleL1CommitRange(logger_ctx, msg)
+
 	default:
 		// Debugging in the default case
 		logger().NamedLogger.Info(logger_ctx, "Received message with unknown stage",
@@ -971,6 +977,71 @@ func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AV
 		ion.String("l1_tx_hash", payload.L1TxHash),
 		ion.Int64("l1_block_number", int64(payload.L1BlockNumber)),
 		ion.String("function", "SubscriptionService.handleL1Commit"))
+
+	return nil
+}
+
+// handleL1CommitRange processes a Type_L1CommitRange gossip message, updating every
+// block in [start_block, end_block] with the shared L1 tx hash and L1 block number.
+func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
+	type l1CommitRangePayload struct {
+		StartBlock    uint64 `json:"start_block"`
+		EndBlock      uint64 `json:"end_block"`
+		L1TxHash      string `json:"l1_tx_hash"`
+		L1BlockNumber uint64 `json:"l1_block_number"`
+	}
+
+	var payload l1CommitRangePayload
+	if err := json.Unmarshal([]byte(msg.Data.Message), &payload); err != nil {
+		logger().NamedLogger.Error(logger_ctx, "Failed to parse L1 commit range payload", err,
+			ion.String("function", "SubscriptionService.handleL1CommitRange"))
+		return err
+	}
+
+	if payload.StartBlock == 0 || payload.EndBlock < payload.StartBlock || payload.L1TxHash == "" {
+		logger().NamedLogger.Info(logger_ctx, "Skipping L1 commit range: missing or invalid fields",
+			ion.String("function", "SubscriptionService.handleL1CommitRange"))
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(logger_ctx, 60*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		logger().NamedLogger.Error(logger_ctx, "DB connection failed for L1 commit range update", err,
+			ion.String("function", "SubscriptionService.handleL1CommitRange"))
+		return err
+	}
+
+	var updated, skipped int
+	for blockNum := payload.StartBlock; blockNum <= payload.EndBlock; blockNum++ {
+		block, err := DB_OPs.GetZKBlockByNumber(conn, blockNum)
+		if err != nil {
+			skipped++
+			continue
+		}
+		block.L1TxHash = payload.L1TxHash
+		block.L1BlockNumber = payload.L1BlockNumber
+		blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, blockNum)
+		if err := DB_OPs.Update(blockKey, block); err != nil {
+			logger().NamedLogger.Warn(logger_ctx, "Failed to update block with L1 range finality",
+				ion.Int64("block_number", int64(blockNum)),
+				ion.String("error", err.Error()),
+				ion.String("function", "SubscriptionService.handleL1CommitRange"))
+			skipped++
+			continue
+		}
+		updated++
+	}
+
+	logger().NamedLogger.Info(logger_ctx, "L1 range finality applied from peer broadcast",
+		ion.Int64("start_block", int64(payload.StartBlock)),
+		ion.Int64("end_block", int64(payload.EndBlock)),
+		ion.String("l1_tx_hash", payload.L1TxHash),
+		ion.Int64("updated", int64(updated)),
+		ion.Int64("skipped", int64(skipped)),
+		ion.String("function", "SubscriptionService.handleL1CommitRange"))
 
 	return nil
 }

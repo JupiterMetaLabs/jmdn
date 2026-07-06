@@ -407,6 +407,7 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 	router.POST("/api/submit-raw-tx", submitRawTransaction)
 	router.POST("/api/process-block", processZKBlock)
 	router.POST("/api/l1-commit", receiveL1Commit)
+	router.POST("/api/l1-commit-range", receiveL1CommitRange)
 	router.GET("/api/block/:number", getBlockByNumber)
 	router.GET("/api/block/hash/:hash", getBlockByHash)
 	router.GET("/api/tx/:hash", getTransactionInfo)
@@ -1090,5 +1091,105 @@ func receiveL1Commit(c *gin.Context) {
 		"block_number":    payload.BlockNumber,
 		"l1_tx_hash":      payload.L1TxHash,
 		"l1_block_number": payload.L1BlockNumber,
+	})
+}
+
+// l1CommitRangePayload is the body expected at POST /api/l1-commit-range.
+type l1CommitRangePayload struct {
+	StartBlock    uint64 `json:"start_block"`
+	EndBlock      uint64 `json:"end_block"`
+	L1TxHash      string `json:"l1_tx_hash"`
+	L1BlockNumber uint64 `json:"l1_block_number"`
+}
+
+// receiveL1CommitRange handles a batched L1 commit covering start_block..end_block.
+// All blocks in the range share the same L1 tx hash. After updating all local records,
+// ONE gossip broadcast is sent so peers apply the range atomically.
+func receiveL1CommitRange(c *gin.Context) {
+	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.receiveL1CommitRange")
+	defer span.End()
+
+	var payload l1CommitRangePayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		logger().NamedLogger.Error(spanCtx, "Invalid l1-commit-range payload", err,
+			ion.String("function", "BlockServer.receiveL1CommitRange"))
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid payload: %v", err)})
+		return
+	}
+
+	if payload.StartBlock == 0 || payload.EndBlock < payload.StartBlock || payload.L1TxHash == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "start_block, end_block >= start_block, and l1_tx_hash are required"})
+		return
+	}
+
+	span.SetAttributes(
+		attribute.Int64("start_block", int64(payload.StartBlock)),
+		attribute.Int64("end_block", int64(payload.EndBlock)),
+		attribute.String("l1_tx_hash", payload.L1TxHash),
+	)
+
+	ctx, cancel := context.WithTimeout(spanCtx, 30*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		logger().NamedLogger.Error(spanCtx, "DB connection failed", err,
+			ion.String("function", "BlockServer.receiveL1CommitRange"))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db connection failed"})
+		return
+	}
+
+	var updated, skipped int
+	for blockNum := payload.StartBlock; blockNum <= payload.EndBlock; blockNum++ {
+		block, err := DB_OPs.GetZKBlockByNumber(conn, blockNum)
+		if err != nil {
+			// Block may not exist on this node yet — skip, not fatal.
+			skipped++
+			continue
+		}
+		block.L1TxHash = payload.L1TxHash
+		block.L1BlockNumber = payload.L1BlockNumber
+		blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, blockNum)
+		if err := DB_OPs.Update(blockKey, block); err != nil {
+			logger().NamedLogger.Warn(spanCtx, "Failed to update block L1 finality",
+				ion.Int64("block_number", int64(blockNum)),
+				ion.String("error", err.Error()),
+				ion.String("function", "BlockServer.receiveL1CommitRange"))
+			skipped++
+			continue
+		}
+		updated++
+	}
+
+	logger().NamedLogger.Info(spanCtx, "L1 range finality stored",
+		ion.Int64("start_block", int64(payload.StartBlock)),
+		ion.Int64("end_block", int64(payload.EndBlock)),
+		ion.String("l1_tx_hash", payload.L1TxHash),
+		ion.Int64("updated", int64(updated)),
+		ion.Int64("skipped", int64(skipped)),
+		ion.String("function", "BlockServer.receiveL1CommitRange"))
+
+	// ONE broadcast for the entire range — peers apply all blocks in a single message.
+	if globalGPS != nil {
+		msgJSON, _ := json.Marshal(payload)
+		msg := &PubSubMessages.Message{
+			Message: string(msgJSON),
+			ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(globalGPS.Host.ID(), config.Type_L1CommitRange),
+		}
+		if pubErr := Publisher.Publish(spanCtx, globalGPS, config.PubSub_ConsensusChannel, msg, nil); pubErr != nil {
+			logger().NamedLogger.Warn(spanCtx, "Failed to broadcast L1 commit range to peers (non-fatal)",
+				ion.String("error", pubErr.Error()),
+				ion.String("function", "BlockServer.receiveL1CommitRange"))
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":          "ok",
+		"start_block":     payload.StartBlock,
+		"end_block":       payload.EndBlock,
+		"l1_tx_hash":      payload.L1TxHash,
+		"l1_block_number": payload.L1BlockNumber,
+		"updated":         updated,
+		"skipped":         skipped,
 	})
 }
