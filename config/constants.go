@@ -98,6 +98,9 @@ const (
 	// For BLS Voting - BLS Voting would be listening on the message transfer protocol
 	Type_BLSRequest = "BLS_REQUEST"
 	Type_BLSVote    = "BLS_VOTE"
+
+	// L1 finality broadcast — sent by the node that received the commit confirmation
+	Type_L1Commit = "L1_COMMIT"
 )
 
 // Increase buffer sizes

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
 	common "gossipnode/AVC/BuddyNodes/common"
+	"gossipnode/DB_OPs"
 	Publisher "gossipnode/Pubsub/Publish"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
@@ -361,6 +363,13 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
 
 		return s.handleVerifySubscriptionRequest(logger_ctx, msg)
+
+	case config.Type_L1Commit:
+		// Prevent self-echo: the originating node already wrote it before broadcasting.
+		if msg.Sender == s.pubSub.Host.ID() {
+			return nil
+		}
+		return s.handleL1Commit(logger_ctx, msg)
 
 	default:
 		// Debugging in the default case
@@ -901,6 +910,67 @@ func (s *SubscriptionService) handleVerifySubscriptionRequest(logger_ctx context
 			ion.String("function", "SubscriptionService.handleVerifySubscriptionRequest"))
 		return err
 	}
+
+	return nil
+}
+
+// handleL1Commit processes a Type_L1Commit message broadcast by the sequencer node.
+// It updates the local block record with L1 finality data (tx hash + L1 block number).
+func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
+	type l1CommitPayload struct {
+		BlockNumber   uint64 `json:"block_number"`
+		L1TxHash      string `json:"l1_tx_hash"`
+		L1BlockNumber uint64 `json:"l1_block_number"`
+	}
+
+	var payload l1CommitPayload
+	if err := json.Unmarshal([]byte(msg.Data.Message), &payload); err != nil {
+		logger().NamedLogger.Error(logger_ctx, "Failed to parse L1 commit payload", err,
+			ion.String("function", "SubscriptionService.handleL1Commit"))
+		return err
+	}
+
+	if payload.BlockNumber == 0 || payload.L1TxHash == "" {
+		logger().NamedLogger.Info(logger_ctx, "Skipping L1 commit: missing required fields",
+			ion.String("function", "SubscriptionService.handleL1Commit"))
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(logger_ctx, 15*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		logger().NamedLogger.Error(logger_ctx, "DB connection failed for L1 commit update", err,
+			ion.String("function", "SubscriptionService.handleL1Commit"))
+		return err
+	}
+
+	block, err := DB_OPs.GetZKBlockByNumber(conn, payload.BlockNumber)
+	if err != nil {
+		// Block may not exist on this peer yet; treat as non-fatal.
+		logger().NamedLogger.Info(logger_ctx, "Block not found for L1 commit update (non-fatal)",
+			ion.Int64("block_number", int64(payload.BlockNumber)),
+			ion.String("function", "SubscriptionService.handleL1Commit"))
+		return nil
+	}
+
+	block.L1TxHash = payload.L1TxHash
+	block.L1BlockNumber = payload.L1BlockNumber
+
+	blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, payload.BlockNumber)
+	if err := DB_OPs.Update(blockKey, block); err != nil {
+		logger().NamedLogger.Error(logger_ctx, "Failed to update block with L1 finality", err,
+			ion.Int64("block_number", int64(payload.BlockNumber)),
+			ion.String("function", "SubscriptionService.handleL1Commit"))
+		return err
+	}
+
+	logger().NamedLogger.Info(logger_ctx, "L1 finality applied from peer broadcast",
+		ion.Int64("block_number", int64(payload.BlockNumber)),
+		ion.String("l1_tx_hash", payload.L1TxHash),
+		ion.Int64("l1_block_number", int64(payload.L1BlockNumber)),
+		ion.String("function", "SubscriptionService.handleL1Commit"))
 
 	return nil
 }

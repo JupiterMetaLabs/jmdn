@@ -1063,8 +1063,8 @@ func main() {
 	} else {
 		fmt.Println("✅ PubSub system ready for consensus and messaging")
 		log.Info().Msg("PubSub system initialized successfully")
-		// Store reference for later use
-		_ = globalPubSub // Mark as used to avoid linting error
+		// Give Block server access to GPS so /api/l1-commit can broadcast to peers.
+		Block.SetGossipPubSubInstance(globalPubSub.GetGossipPubSub())
 	}
 
 	// Set the stream handler for receiving files for fastsync. This is crucial

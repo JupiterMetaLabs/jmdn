@@ -2,6 +2,7 @@ package Block
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,10 +14,12 @@ import (
 
 	BlockCommon "gossipnode/Block/common"
 	"gossipnode/DB_OPs"
+	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
 	"gossipnode/metrics"
 	"gossipnode/pkg/gatekeeper"
@@ -288,6 +291,15 @@ func SetHostInstance(h host.Host) {
 	globalHost = h // Uncommented - host is needed for consensus
 }
 
+// globalGPS holds the GossipPubSub instance for broadcasting L1 finality to peers.
+var globalGPS *PubSubMessages.GossipPubSub
+
+// SetGossipPubSubInstance registers the pubsub instance so the /api/l1-commit
+// endpoint can broadcast finality data to all connected peers via gossip.
+func SetGossipPubSubInstance(gps *PubSubMessages.GossipPubSub) {
+	globalGPS = gps
+}
+
 func Startserver(bindAddr string, port int, h host.Host, chainID int) {
 	_ = StartserverWithContext(context.Background(), bindAddr, port, h, chainID)
 }
@@ -394,6 +406,7 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 	// Transaction endpoints
 	router.POST("/api/submit-raw-tx", submitRawTransaction)
 	router.POST("/api/process-block", processZKBlock)
+	router.POST("/api/l1-commit", receiveL1Commit)
 	router.GET("/api/block/:number", getBlockByNumber)
 	router.GET("/api/block/hash/:hash", getBlockByHash)
 	router.GET("/api/tx/:hash", getTransactionInfo)
@@ -985,4 +998,97 @@ func getLatestBlock(c *gin.Context) {
 		ion.String("function", "BlockServer.getLatestBlock"))
 
 	c.JSON(http.StatusOK, block)
+}
+
+// l1CommitPayload is the body expected from the orchestrator at POST /api/l1-commit.
+type l1CommitPayload struct {
+	BlockNumber   uint64 `json:"block_number"`
+	L1TxHash      string `json:"l1_tx_hash"`
+	L1BlockNumber uint64 `json:"l1_block_number"`
+}
+
+// receiveL1Commit is called by the orchestrator after commitRollup is mined on L1.
+// It updates the local block record with L1 finality data and broadcasts to peers.
+func receiveL1Commit(c *gin.Context) {
+	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.receiveL1Commit")
+	defer span.End()
+
+	var payload l1CommitPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		logger().NamedLogger.Error(spanCtx, "Invalid l1-commit payload", err,
+			ion.String("function", "BlockServer.receiveL1Commit"))
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid payload: %v", err)})
+		return
+	}
+
+	if payload.BlockNumber == 0 || payload.L1TxHash == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "block_number and l1_tx_hash are required"})
+		return
+	}
+
+	span.SetAttributes(
+		attribute.Int64("block_number", int64(payload.BlockNumber)),
+		attribute.String("l1_tx_hash", payload.L1TxHash),
+		attribute.Int64("l1_block_number", int64(payload.L1BlockNumber)),
+	)
+
+	// Fetch block, stamp L1 finality, write back.
+	ctx, cancel := context.WithTimeout(spanCtx, 15*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		logger().NamedLogger.Error(spanCtx, "DB connection failed", err,
+			ion.String("function", "BlockServer.receiveL1Commit"))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db connection failed"})
+		return
+	}
+
+	block, err := DB_OPs.GetZKBlockByNumber(conn, payload.BlockNumber)
+	if err != nil {
+		logger().NamedLogger.Error(spanCtx, "Block not found", err,
+			ion.Int64("block_number", int64(payload.BlockNumber)),
+			ion.String("function", "BlockServer.receiveL1Commit"))
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("block %d not found: %v", payload.BlockNumber, err)})
+		return
+	}
+
+	block.L1TxHash = payload.L1TxHash
+	block.L1BlockNumber = payload.L1BlockNumber
+
+	blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, payload.BlockNumber)
+	if err := DB_OPs.Update(blockKey, block); err != nil {
+		logger().NamedLogger.Error(spanCtx, "Failed to update block with L1 finality", err,
+			ion.Int64("block_number", int64(payload.BlockNumber)),
+			ion.String("function", "BlockServer.receiveL1Commit"))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update block: %v", err)})
+		return
+	}
+
+	logger().NamedLogger.Info(spanCtx, "L1 finality stored",
+		ion.Int64("block_number", int64(payload.BlockNumber)),
+		ion.String("l1_tx_hash", payload.L1TxHash),
+		ion.Int64("l1_block_number", int64(payload.L1BlockNumber)),
+		ion.String("function", "BlockServer.receiveL1Commit"))
+
+	// Broadcast to peers via gossip so all nodes update their copy.
+	if globalGPS != nil {
+		msgJSON, _ := json.Marshal(payload)
+		msg := &PubSubMessages.Message{
+			Message: string(msgJSON),
+			ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(globalGPS.Host.ID(), config.Type_L1Commit),
+		}
+		if pubErr := Publisher.Publish(spanCtx, globalGPS, config.PubSub_ConsensusChannel, msg, nil); pubErr != nil {
+			logger().NamedLogger.Warn(spanCtx, "Failed to broadcast L1 commit to peers (non-fatal)",
+				ion.String("error", pubErr.Error()),
+				ion.String("function", "BlockServer.receiveL1Commit"))
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":          "ok",
+		"block_number":    payload.BlockNumber,
+		"l1_tx_hash":      payload.L1TxHash,
+		"l1_block_number": payload.L1BlockNumber,
+	})
 }
