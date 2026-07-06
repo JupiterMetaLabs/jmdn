@@ -33,6 +33,11 @@ func (blsresponse *BLSresponse) SetPeerID(peerID string) *BLSresponse {
 	return blsresponse
 }
 
+func (blsresponse *BLSresponse) SetRejectionReasons(reasons map[string]string) *BLSresponse {
+	blsresponse.RejectionReasons = reasons
+	return blsresponse
+}
+
 func (blsresponse *BLSresponse) Build() *BLSresponse {
 	return blsresponse
 }
@@ -52,4 +57,8 @@ func (blsresponse *BLSresponse) GetPubKey() string {
 
 func (blsresponse *BLSresponse) GetPeerID() string {
 	return blsresponse.PeerID
+}
+
+func (blsresponse *BLSresponse) GetRejectionReasons() map[string]string {
+	return blsresponse.RejectionReasons
 }

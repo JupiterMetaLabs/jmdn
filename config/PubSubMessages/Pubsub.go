@@ -80,8 +80,9 @@ type Message struct {
 
 // Vote represents a vote on a block
 type Vote struct {
-	Vote      int8   `json:"vote"`       // 1 for yes, -1 for no
-	BlockHash string `json:"block_hash"` // hash of the block
+	Vote            int8   `json:"vote"`                       // 1 for yes, -1 for no
+	BlockHash       string `json:"block_hash"`                 // hash of the block
+	RejectionReason string `json:"rejection_reason,omitempty"` // set when vote == -1
 }
 
 // BlockResult represents the result of block validation
