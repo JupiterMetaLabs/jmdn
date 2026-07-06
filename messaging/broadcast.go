@@ -794,7 +794,6 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		return fmt.Errorf("failed to store block in database: %w", err)
 	}
 
-
 	// Update the SQLite tx-by-address index asynchronously.
 	// Non-blocking — never delays the block commit path.
 	txindex.IndexBlockAsync(block)
