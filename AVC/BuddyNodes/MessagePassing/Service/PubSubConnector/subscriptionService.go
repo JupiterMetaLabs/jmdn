@@ -206,12 +206,16 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		return s.handleBFTCommitVote(logger_ctx, msg)
 
 	case config.Type_L1Commit:
+		fmt.Printf("[L1Commit] Received gossip from sender=%s self=%s isSelf=%v\n",
+			msg.Sender, s.pubSub.Host.ID(), msg.Sender == s.pubSub.Host.ID())
 		if msg.Sender == s.pubSub.Host.ID() {
 			return nil
 		}
 		return s.handleL1Commit(logger_ctx, msg)
 
 	case config.Type_L1CommitRange:
+		fmt.Printf("[L1CommitRange] Received gossip from sender=%s self=%s isSelf=%v\n",
+			msg.Sender, s.pubSub.Host.ID(), msg.Sender == s.pubSub.Host.ID())
 		if msg.Sender == s.pubSub.Host.ID() {
 			return nil
 		}
@@ -787,9 +791,12 @@ func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AV
 	}
 	var p payload
 	if err := json.Unmarshal([]byte(msg.Data.Message), &p); err != nil {
+		fmt.Printf("[L1Commit] parse error: %v | raw: %s\n", err, msg.Data.Message)
 		return fmt.Errorf("handleL1Commit: parse error: %w", err)
 	}
+	fmt.Printf("[L1Commit] Applying block=%d l1_tx=%s l1_block=%d\n", p.BlockNumber, p.L1TxHash, p.L1BlockNumber)
 	if p.BlockNumber == 0 || p.L1TxHash == "" {
+		fmt.Printf("[L1Commit] Skipping — empty payload\n")
 		return nil
 	}
 
@@ -798,20 +805,24 @@ func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AV
 
 	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
+		fmt.Printf("[L1Commit] DB connection error: %v\n", err)
 		return fmt.Errorf("handleL1Commit: db connection: %w", err)
 	}
 
 	block, err := DB_OPs.GetZKBlockByNumber(conn, p.BlockNumber)
 	if err != nil {
+		fmt.Printf("[L1Commit] Block %d not found on this peer (err=%v) — skipping\n", p.BlockNumber, err)
 		return nil // block not on this peer yet — non-fatal
 	}
 	block.L1TxHash = p.L1TxHash
 	block.L1BlockNumber = p.L1BlockNumber
 	blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, p.BlockNumber)
 	if err := DB_OPs.Update(blockKey, block); err != nil {
+		fmt.Printf("[L1Commit] Update block %d error: %v\n", p.BlockNumber, err)
 		return fmt.Errorf("handleL1Commit: update block %d: %w", p.BlockNumber, err)
 	}
 
+	fmt.Printf("[L1Commit] SUCCESS block=%d l1_tx=%s written\n", p.BlockNumber, p.L1TxHash)
 	logger().NamedLogger.Info(logger_ctx, "L1 finality applied from gossip",
 		ion.Int64("block_number", int64(p.BlockNumber)),
 		ion.String("l1_tx_hash", p.L1TxHash),
@@ -829,9 +840,12 @@ func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, ms
 	}
 	var p payload
 	if err := json.Unmarshal([]byte(msg.Data.Message), &p); err != nil {
+		fmt.Printf("[L1CommitRange] parse error: %v | raw: %s\n", err, msg.Data.Message)
 		return fmt.Errorf("handleL1CommitRange: parse error: %w", err)
 	}
+	fmt.Printf("[L1CommitRange] Applying blocks=%d-%d l1_tx=%s l1_block=%d\n", p.StartBlock, p.EndBlock, p.L1TxHash, p.L1BlockNumber)
 	if p.StartBlock == 0 || p.EndBlock < p.StartBlock || p.L1TxHash == "" {
+		fmt.Printf("[L1CommitRange] Skipping — invalid payload\n")
 		return nil
 	}
 
@@ -860,6 +874,7 @@ func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, ms
 		updated++
 	}
 
+	fmt.Printf("[L1CommitRange] DONE blocks=%d-%d updated=%d skipped=%d\n", p.StartBlock, p.EndBlock, updated, skipped)
 	logger().NamedLogger.Info(logger_ctx, "L1 range finality applied from gossip",
 		ion.Int64("start_block", int64(p.StartBlock)),
 		ion.Int64("end_block", int64(p.EndBlock)),

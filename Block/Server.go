@@ -1100,16 +1100,23 @@ func receiveL1Commit(c *gin.Context) {
 
 	// Broadcast to peers via gossip so all nodes update their copy.
 	if gps := getPublishGPS(); gps != nil {
+		fmt.Printf("[L1Commit] Broadcasting block=%d l1_tx=%s via GPS host=%s GossipSubPS_nil=%v\n",
+			payload.BlockNumber, payload.L1TxHash, gps.Host.ID(), gps.GossipSubPS == nil)
 		msgJSON, _ := json.Marshal(payload)
 		msg := &PubSubMessages.Message{
 			Message: string(msgJSON),
 			ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_L1Commit),
 		}
 		if pubErr := Publisher.Publish(spanCtx, gps, config.PubSub_ConsensusChannel, msg, nil); pubErr != nil {
+			fmt.Printf("[L1Commit] Publish error: %v\n", pubErr)
 			logger().NamedLogger.Warn(spanCtx, "Failed to broadcast L1 commit to peers (non-fatal)",
 				ion.String("error", pubErr.Error()),
 				ion.String("function", "BlockServer.receiveL1Commit"))
+		} else {
+			fmt.Printf("[L1Commit] Publish OK for block=%d\n", payload.BlockNumber)
 		}
+	} else {
+		fmt.Printf("[L1Commit] No GPS instance available — broadcast skipped for block=%d\n", payload.BlockNumber)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -1202,15 +1209,20 @@ func receiveL1CommitRange(c *gin.Context) {
 
 	// ONE broadcast for the entire range — peers apply all blocks in a single message.
 	if gps := getPublishGPS(); gps != nil {
+		fmt.Printf("[L1CommitRange] Broadcasting blocks=%d-%d l1_tx=%s via GPS host=%s GossipSubPS_nil=%v\n",
+			payload.StartBlock, payload.EndBlock, payload.L1TxHash, gps.Host.ID(), gps.GossipSubPS == nil)
 		msgJSON, _ := json.Marshal(payload)
 		msg := &PubSubMessages.Message{
 			Message: string(msgJSON),
 			ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_L1CommitRange),
 		}
 		if pubErr := Publisher.Publish(spanCtx, gps, config.PubSub_ConsensusChannel, msg, nil); pubErr != nil {
+			fmt.Printf("[L1CommitRange] Publish error: %v\n", pubErr)
 			logger().NamedLogger.Warn(spanCtx, "Failed to broadcast L1 commit range to peers (non-fatal)",
 				ion.String("error", pubErr.Error()),
 				ion.String("function", "BlockServer.receiveL1CommitRange"))
+		} else {
+			fmt.Printf("[L1CommitRange] Publish OK blocks=%d-%d\n", payload.StartBlock, payload.EndBlock)
 		}
 	}
 
