@@ -439,12 +439,14 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 	receipt, err := DB_OPs.GetReceiptByHash(nil, hash)
 	if err != nil {
 		// Check if error is "transaction not found"
+		// Per EIP-1474: eth_getTransactionReceipt MUST return result:null (not a JSON-RPC error)
+		// when the tx is not yet mined. An error response causes MetaMask to stop polling
+		// and permanently show the tx as "submitted".
 		if err.Error() == "transaction not found" {
-			if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash: transaction not found: %s", hash), "ReceiptByHash", -1); logErr != nil {
-				fmt.Printf("Failed to log ReceiptByHash error: %v\n", logErr)
+			if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash: tx not yet mined (returning null): %s", hash), "ReceiptByHash", -1); logErr != nil {
+				fmt.Printf("Failed to log ReceiptByHash: %v\n", logErr)
 			}
-			// Return error that will be formatted as JSON-RPC error with code -32000
-			return nil, fmt.Errorf("transaction not found")
+			return nil, nil
 		}
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash failed: %v", err), "ReceiptByHash", -1); logErr != nil {
 			fmt.Printf("Failed to log ReceiptByHash error: %v\n", logErr)
