@@ -310,6 +310,17 @@ func SetGossipPubSubInstance(gps *PubSubMessages.GossipPubSub) {
 	globalGPS = gps
 }
 
+// getPublishGPS returns the best GossipPubSub instance for broadcasting.
+// Prefers the global PubSubNode's PubSub (the same instance the subscription
+// handlers are listening on) so publisher and subscribers share one GossipSub.
+// Falls back to globalGPS if the PubSubNode isn't initialised yet.
+func getPublishGPS() *PubSubMessages.GossipPubSub {
+	if node := PubSubMessages.NewGlobalVariables().Get_PubSubNode(); node != nil && node.PubSub != nil {
+		return node.PubSub
+	}
+	return globalGPS
+}
+
 func Startserver(bindAddr string, port int, h host.Host, chainID int) {
 	_ = StartserverWithContext(context.Background(), bindAddr, port, h, chainID)
 }
@@ -1088,13 +1099,13 @@ func receiveL1Commit(c *gin.Context) {
 	}
 
 	// Broadcast to peers via gossip so all nodes update their copy.
-	if globalGPS != nil {
+	if gps := getPublishGPS(); gps != nil {
 		msgJSON, _ := json.Marshal(payload)
 		msg := &PubSubMessages.Message{
 			Message: string(msgJSON),
-			ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(globalGPS.Host.ID(), config.Type_L1Commit),
+			ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_L1Commit),
 		}
-		if pubErr := Publisher.Publish(spanCtx, globalGPS, config.PubSub_ConsensusChannel, msg, nil); pubErr != nil {
+		if pubErr := Publisher.Publish(spanCtx, gps, config.PubSub_ConsensusChannel, msg, nil); pubErr != nil {
 			logger().NamedLogger.Warn(spanCtx, "Failed to broadcast L1 commit to peers (non-fatal)",
 				ion.String("error", pubErr.Error()),
 				ion.String("function", "BlockServer.receiveL1Commit"))
@@ -1190,13 +1201,13 @@ func receiveL1CommitRange(c *gin.Context) {
 	}
 
 	// ONE broadcast for the entire range — peers apply all blocks in a single message.
-	if globalGPS != nil {
+	if gps := getPublishGPS(); gps != nil {
 		msgJSON, _ := json.Marshal(payload)
 		msg := &PubSubMessages.Message{
 			Message: string(msgJSON),
-			ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(globalGPS.Host.ID(), config.Type_L1CommitRange),
+			ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_L1CommitRange),
 		}
-		if pubErr := Publisher.Publish(spanCtx, globalGPS, config.PubSub_ConsensusChannel, msg, nil); pubErr != nil {
+		if pubErr := Publisher.Publish(spanCtx, gps, config.PubSub_ConsensusChannel, msg, nil); pubErr != nil {
 			logger().NamedLogger.Warn(spanCtx, "Failed to broadcast L1 commit range to peers (non-fatal)",
 				ion.String("error", pubErr.Error()),
 				ion.String("function", "BlockServer.receiveL1CommitRange"))
