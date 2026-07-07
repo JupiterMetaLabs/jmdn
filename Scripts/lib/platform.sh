@@ -351,6 +351,16 @@ _map_package_name() {
 	git)
 		echo "git"
 		;;
+	redis)
+		case "${PKG_MANAGER}" in
+		apt)
+			echo "redis-server"
+			;;
+		*)
+			echo "redis"
+			;;
+		esac
+		;;
 	*)
 		echo "${pkg}"
 		;;
@@ -367,27 +377,28 @@ pkg_install() {
 		return 0
 	fi
 
+	local rc=0
 	case "${PKG_MANAGER}" in
 	apt)
 		log_info "Installing packages via apt..."
 		# Note: caller is responsible for running apt-get update before pkg_install
-		apt-get install -y "${packages[@]}"
+		apt-get install -y "${packages[@]}" || rc=$?
 		;;
 	dnf)
 		log_info "Installing packages via dnf..."
-		dnf install -y "${packages[@]}"
+		dnf install -y "${packages[@]}" || rc=$?
 		;;
 	yum)
 		log_info "Installing packages via yum..."
-		yum install -y "${packages[@]}"
+		yum install -y "${packages[@]}" || rc=$?
 		;;
 	pacman)
 		log_info "Installing packages via pacman..."
-		pacman -Sy --noconfirm "${packages[@]}"
+		pacman -Sy --noconfirm "${packages[@]}" || rc=$?
 		;;
 	apk)
 		log_info "Installing packages via apk..."
-		apk add --no-cache "${packages[@]}"
+		apk add --no-cache "${packages[@]}" || rc=$?
 		;;
 	brew)
 		log_info "Installing packages via brew..."
@@ -396,19 +407,24 @@ pkg_install() {
 				log_info "Setting up Xcode Command Line Tools..."
 				xcode-select --install || true
 			else
-				brew install "${pkg}"
+				brew install "${pkg}" || rc=$?
 			fi
 		done
 		;;
 	pkg)
 		log_info "Installing packages via pkg..."
-		pkg install -y "${packages[@]}"
+		pkg install -y "${packages[@]}" || rc=$?
 		;;
 	*)
 		log_error "Unknown package manager: ${PKG_MANAGER}"
 		return 1
 		;;
 	esac
+
+	if [[ ${rc} -ne 0 ]]; then
+		log_error "Package installation failed (exit ${rc}): ${packages[*]}"
+		return "${rc}"
+	fi
 
 	log_ok "Packages installed successfully"
 }
@@ -512,8 +528,8 @@ svc_enable() {
 		rc-update add "${service}"
 		;;
 	rcd)
-		# rc.d services are enabled via /etc/rc.conf.d/
-		log_info "FreeBSD rc.d service ${service} must be enabled via /etc/rc.conf.d/"
+		# Persist via /etc/rc.conf.d/<service> — sysrc is the standard tool.
+		sysrc "${service}_enable=YES"
 		;;
 	*)
 		log_error "Unknown service manager: ${SVC_MANAGER}"
