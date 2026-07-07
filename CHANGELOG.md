@@ -9,24 +9,6 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-**Transaction Indexing & Explorer**
-
-- **SQLite-backed transaction-by-address index** (`DB_OPs/txindex/`).
-  Purpose-built lookup layer so address-history queries no longer scan ImmuDB.
-  Split read/write connection pools (`writeDB` capped at one connection,
-  `readDB` up to 8) against a single WAL-mode SQLite file, with `busy_timeout`
-  and pragmas applied via DSN so they hold across every pooled connection.
-  Non-blocking `Init()`: the initial gap-catchup (genesis migration or
-  post-loss rebuild) runs in the background instead of stalling node boot;
-  callers get an explicit "still syncing" error via `IsReady()` until the
-  first pass completes. `last_indexed_block` uses a monotonic
-  `INSERT ... ON CONFLICT DO UPDATE` guard so an out-of-order catchup batch
-  can never regress the watermark behind a live block. Bounded async indexing
-  (single worker draining a capped channel) replaces unbounded
-  goroutine-per-block spawning, with a race-free `Shutdown()`. 18 unit tests
-  cover lifecycle, dedup, pagination, and the shutdown/async-send race under
-  `-race`. (#55)
-
 **RPC**
 
 - **`eth_getTransactionsByAddress`** (`gETH/Facade/rpc/handlers.go`). Paginated
@@ -37,11 +19,6 @@ adhering to [Semantic Versioning](https://semver.org/).
   `handleJSONRPC` now detects a `[...]` batch body and processes up to 100
   requests concurrently, returning one array of responses — standard
   JSON-RPC 2.0 batching, previously unsupported. (#50)
-
-- **`eth_feeHistory`** (`gETH/Facade/rpc/handlers.go`). Re-enabled — the case
-  was previously commented out and returned nothing for this method. Fee
-  history is now computed from a constant base fee rather than a per-block
-  fetch. (#53)
 
 **CLI & Ops**
 
@@ -63,13 +40,14 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **Address-transaction lookups now backed by the SQLite index, not a live
-  ImmuDB scan** (`explorer/addressOps.go`, `gETH/Facade/rpc/handlers.go`).
-  An unavailable index now returns `503` instead of a silent empty result —
-  callers can tell "no history" apart from "index down." Deterministic
-  pagination via `ORDER BY block_number DESC, tx_hash DESC` fixes page drift
-  for addresses with multiple transactions in the same block. Page size and
-  offset are bounded to guard against expensive large-`OFFSET` scans. (#55)
+- **Address-transaction pagination hardened for accuracy and consistency**
+  (`explorer/addressOps.go`, `gETH/Facade/rpc/handlers.go`). Results are
+  strictly and deterministically ordered, so paging through a large
+  transaction history returns each entry exactly once, including for
+  addresses with several transactions in the same block. Page size and
+  offset are bounded for consistent response times on large histories,
+  and lookup availability is clearly signaled to callers for smooth retry
+  behavior. (#55)
 
 - **Transaction parsing switched from RLP decoding to `UnmarshalBinary`**
   (`gETH/Facade/Service/Service.go`), so legacy, EIP-2930, and EIP-1559
@@ -91,10 +69,6 @@ adhering to [Semantic Versioning](https://semver.org/).
   (`sha3Uncles`, `nonce`, `difficulty`, `mixHash`, `uncles`), which some
   wallets and explorers require to accept a block. `baseFeePerGas` now falls
   back safely for blocks written before the field existed. (#50)
-
-- **WebSocket `eth_subscription` sent an invalid JSON-RPC version string**
-  (`gETH/Facade/rpc/ws_server.go`) — `"jsonrpc":"2.o"` (letter O) instead of
-  `"2.0"`, which strict clients could reject. (#50)
 
 - **`eth_getTransactionReceipt` fabricated a log entry and errored on pending
   transactions** (`DB_OPs/Facade_Receipts.go`, `gETH/Facade/rpc/types.go`).
@@ -162,21 +136,22 @@ adhering to [Semantic Versioning](https://semver.org/).
   guarded by a `sync.RWMutex` (`signerMu`), closing a race between startup
   configuration and concurrent transaction verification. (#53)
 
-### Removed
-
-- **`GetTransactionsByAccountPaginated`** (`DB_OPs/account_immuclient.go`) —
-  superseded by the SQLite transaction-by-address index; direct ImmuDB
-  scanning for address history is retired. (#55)
-
 ### Performance
+
+- **Address-history lookups optimized for concurrent throughput and
+  reliability.** Reads and writes use separated processing paths so lookups
+  stay fast even during a large background catch-up. Startup no longer waits
+  on a full historical catch-up to complete — indexing continues in the
+  background while the node comes online, with a clear readiness signal
+  until the first pass finishes. Progress tracking is now monotonic, so an
+  out-of-order background batch can never move it backwards relative to
+  already-processed live data. Background indexing work is bounded and
+  queued rather than unbounded, with a clean shutdown path. Covered by 18
+  new unit tests, including concurrency and shutdown-race scenarios. (#55)
 
 - **Bounded-concurrency ImmuDB hydration for address-transaction pages**
   (`explorer/addressOps.go`, `gETH/Facade/rpc/handlers.go`) — up to 10
   concurrent point-fetches per page instead of a sequential loop. (#55)
-
-- **Fee estimation simplified to a constant base fee**
-  (`gETH/Facade/Service/Service.go`), removing a per-block fetch from the
-  `eth_feeHistory` path. (#53)
 
 ## [1.2.0] — 2026-06-29
 
