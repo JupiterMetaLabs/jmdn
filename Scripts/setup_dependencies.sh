@@ -2,13 +2,14 @@
 ################################################################################
 # setup_dependencies.sh - JMDN Cross-Platform Dependency Installer
 #
-# Installs JMDN dependencies: Go, ImmuDB, Yggdrasil, GCC/build tools
+# Installs JMDN dependencies: Go, ImmuDB, Yggdrasil, Redis, GCC/build tools
 #
 # Usage: sudo ./setup_dependencies.sh [options]
 # Options:
 #   --go          Install Go
 #   --immudb      Install ImmuDB
 #   --yggdrasil   Install Yggdrasil
+#   --redis       Install Redis server and configure password
 #   --all         Install all dependencies (default if no flags provided)
 #
 # Supported Platforms:
@@ -17,6 +18,10 @@
 #   - FreeBSD
 #
 # Changelog:
+#   - 2026-07-01: Added --redis (install + idempotent password setup, stored
+#     in ${JMDN_ETC}/redis.env). Reuses pkg_install/_map_package_name and
+#     svc_enable/svc_restart from lib/platform.sh instead of duplicating
+#     per-platform package/service logic.
 #   - 2025-03-02: Added cross-platform support for Linux, macOS, and FreeBSD
 #   - 2025-03-02: Integrated platform.sh for shared helpers and detection
 #   - 2025-03-02: Added support for pacman, apk, brew, pkg managers
@@ -101,6 +106,7 @@ esac
 INSTALL_GO=false
 INSTALL_IMMUDB=false
 INSTALL_YGG=false
+INSTALL_REDIS=false
 
 if [ $# -eq 0 ]; then
 	log_warn "No arguments provided."
@@ -109,6 +115,7 @@ if [ $# -eq 0 ]; then
 	echo "  --go          Install Go"
 	echo "  --immudb      Install ImmuDB"
 	echo "  --yggdrasil   Install Yggdrasil"
+	echo "  --redis       Install Redis"
 	echo "  --all         Install all dependencies"
 	exit 1
 else
@@ -123,10 +130,14 @@ else
 		--yggdrasil)
 			INSTALL_YGG=true
 			;;
+		--redis)
+			INSTALL_REDIS=true
+			;;
 		--all)
 			INSTALL_GO=true
 			INSTALL_IMMUDB=true
 			INSTALL_YGG=true
+			INSTALL_REDIS=true
 			;;
 		*)
 			log_die "Unknown argument: $arg"
@@ -490,6 +501,191 @@ _install_yggdrasil_manual() {
 }
 
 ################################################################################
+# 5. Redis Installation
+################################################################################
+
+# Where the password generated/used by this script is persisted, so reruns
+# are idempotent and a future config step can pick it up. Root-only.
+REDIS_CRED_FILE="${JMDN_ETC}/redis.env"
+
+# Resolve the systemd/openrc/rcd service (unit) name for the installed
+# package. brew/launchd is handled separately via `brew services`.
+_redis_service_name() {
+	case "${PKG_MANAGER}" in
+	apt)
+		echo "redis-server"
+		;;
+	*)
+		echo "redis"
+		;;
+	esac
+}
+
+# Locate the active redis.conf. Uses JMDN_PREFIX (already computed by
+# platform.sh) instead of a hardcoded /usr/local guess, so this resolves
+# correctly on Apple Silicon Homebrew (/opt/homebrew) as well as Intel
+# Homebrew and FreeBSD (/usr/local).
+_redis_conf_path() {
+	local candidates=(
+		"${JMDN_PREFIX}/etc/redis.conf"
+		"/etc/redis/redis.conf"
+		"/etc/redis.conf"
+		"/etc/redis/redis-server.conf"
+	)
+	local conf
+	for conf in "${candidates[@]}"; do
+		if [[ -f "${conf}" ]]; then
+			echo "${conf}"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# Generate a strong random password. Prefers openssl (already a declared
+# dependency of this script); falls back to /dev/urandom + base64 if absent.
+_generate_redis_password() {
+	if check_command openssl; then
+		openssl rand -base64 32 | tr -d '=+/\n' | cut -c1-32
+	else
+		head -c 48 /dev/urandom | base64 | tr -d '=+/\n' | cut -c1-32
+	fi
+}
+
+# Configure Redis auth. Idempotent: if REDIS_CRED_FILE already holds a
+# password from a previous run, it's reused as-is (no silent rotation of a
+# credential that jmdn.yaml may already be configured with). REDIS_PASSWORD
+# in the environment always wins, for explicit overrides.
+#
+# Sets REDIS_CONF_CHANGED=1 only when redis.conf was actually modified, so
+# the caller can skip the service restart on no-op reruns (deploy.sh runs
+# this via --all on every deployment — an unconditional restart would bounce
+# the account-sync queue on every deploy for no reason).
+_configure_redis_password() {
+	local redis_pass="${REDIS_PASSWORD:-}"
+
+	if [[ -z "${redis_pass}" && -f "${REDIS_CRED_FILE}" ]]; then
+		# shellcheck disable=SC1090
+		source "${REDIS_CRED_FILE}"
+		redis_pass="${REDIS_PASSWORD:-}"
+		[[ -n "${redis_pass}" ]] && log_info "Reusing existing Redis password from ${REDIS_CRED_FILE}."
+	fi
+
+	if [[ -z "${redis_pass}" ]]; then
+		redis_pass="$(_generate_redis_password)"
+		log_info "Generated a new random Redis password."
+	fi
+
+	local conf
+	if ! conf="$(_redis_conf_path)"; then
+		log_warn "Could not locate redis.conf on this system. Password NOT set — Redis is running unauthenticated."
+		return 1
+	fi
+
+	# Password alphabet is [A-Za-z0-9] (base64 minus =+/), safe as a literal
+	# grep pattern with -F.
+	if grep -qxF "requirepass ${redis_pass}" "${conf}"; then
+		log_ok "Redis password already configured in ${conf} — no change."
+	else
+		log_info "Configuring Redis password in ${conf}..."
+		sed_inplace '/^requirepass /d' "${conf}"
+		echo "requirepass ${redis_pass}" >>"${conf}"
+		REDIS_CONF_CHANGED=1
+	fi
+
+	ensure_dir "$(dirname "${REDIS_CRED_FILE}")" 755
+	chmod 755 "$(dirname "${REDIS_CRED_FILE}")" # ensure_dir only chmods on first creation
+	(
+		umask 077
+		cat >"${REDIS_CRED_FILE}" <<-EOF
+		# Generated by setup_dependencies.sh — do not commit.
+		export REDIS_PASSWORD="${redis_pass}"
+		export JMDN_DATABASE_REDIS_PASSWORD="${redis_pass}"
+		EOF
+	)
+	chmod 600 "${REDIS_CRED_FILE}"
+
+	log_ok "Redis password configured. Credentials saved to ${REDIS_CRED_FILE}."
+}
+
+# Enable + start the Redis service via the shared svc_* abstractions in
+# lib/platform.sh, so any future service-manager fix applies here too.
+# Restarts ONLY when redis.conf changed (REDIS_CONF_CHANGED=1); an already-
+# running Redis with an unchanged config is left alone so reruns (e.g.
+# deploy.sh --all on every deployment) don't bounce the account-sync queue.
+_start_redis_service() {
+	local svc
+	svc="$(_redis_service_name)"
+
+	if [[ "${SVC_MANAGER}" == "launchd" ]]; then
+		if ! check_command brew; then
+			log_warn "Homebrew not found. Start Redis manually."
+			return 1
+		fi
+		if [[ "${REDIS_CONF_CHANGED}" -eq 1 ]]; then
+			brew services restart redis || { log_warn "Could not restart Redis via brew services."; return 1; }
+		else
+			# Idempotent: no-op if already running.
+			brew services start redis || { log_warn "Could not start Redis via brew services."; return 1; }
+		fi
+		return 0
+	fi
+
+	if [[ -z "${SVC_MANAGER:-}" || "${SVC_MANAGER}" == "unknown" ]]; then
+		log_warn "No supported service manager detected. Start Redis manually."
+		return 1
+	fi
+
+	svc_enable "${svc}" || log_warn "Could not enable ${svc} at boot."
+
+	if [[ "${REDIS_CONF_CHANGED}" -eq 1 ]]; then
+		svc_restart "${svc}" || { log_warn "Could not restart ${svc}."; return 1; }
+	elif svc_status "${svc}" >/dev/null 2>&1; then
+		log_ok "${svc} already running with unchanged config — not restarting."
+		return 0
+	else
+		svc_start "${svc}" || { log_warn "Could not start ${svc}."; return 1; }
+	fi
+
+	sleep 1
+	if ! svc_status "${svc}"; then
+		log_warn "${svc} does not appear to be running after restart."
+		return 1
+	fi
+}
+
+install_redis() {
+	log_info "Checking Redis..."
+
+	# Set by _configure_redis_password when redis.conf is actually modified;
+	# _start_redis_service restarts only in that case.
+	REDIS_CONF_CHANGED=0
+
+	if check_command redis-server || check_command redis-cli; then
+		log_ok "Redis is already installed."
+	else
+		log_info "Installing Redis via ${PKG_MANAGER}..."
+
+		if [[ "${PKG_MANAGER}" == "apt" ]]; then
+			apt-get update
+		fi
+
+		if ! pkg_install "$(_map_package_name redis)"; then
+			if [[ "${PKG_MANAGER}" == "dnf" || "${PKG_MANAGER}" == "yum" ]]; then
+				log_warn "Redis package not found. On RHEL/CentOS this usually requires EPEL:"
+				log_warn "  ${PKG_MANAGER} install -y epel-release && ${PKG_MANAGER} install -y redis"
+			fi
+			log_die "Failed to install Redis."
+		fi
+	fi
+
+	_configure_redis_password || log_warn "Redis password setup incomplete — review manually before relying on it."
+	_start_redis_service || log_warn "Redis service could not be confirmed running — check manually."
+
+	log_ok "Redis setup complete."
+}
+
+################################################################################
 # Main Execution
 ################################################################################
 
@@ -506,6 +702,10 @@ fi
 
 if [[ "${INSTALL_YGG}" == true ]]; then
 	install_yggdrasil
+fi
+
+if [[ "${INSTALL_REDIS}" == true ]]; then
+	install_redis
 fi
 
 log_ok "Dependencies setup complete!"

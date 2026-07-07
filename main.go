@@ -1021,9 +1021,8 @@ func main() {
 			Password: cfg.Database.Redis.Password,
 		})
 		accountStreamer := NodeInfo.NewRedisStreamer(redisClient)
-		NodeInfo.StartAccountSyncWorker(accountStreamer, NodeInfo.DefaultWorkerConfig())
+		NodeInfo.StartAccountSyncWorker(logger_ctx, accountStreamer, NodeInfo.DefaultWorkerConfig())
 		log.Info().Str("redis_url", cfg.Database.Redis.URL).Msg("[accountqueue] installed — WriteAccounts is now async, worker starts lazily")
-		fmt.Println("✅ Account sync worker started (Redis Stream → ImmuDB async)")
 	}
 
 	// Discover Yggdrasil address BEFORE creating the node

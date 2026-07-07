@@ -101,7 +101,7 @@ log_ok "Binary deployed to ${BINARY_DEST}"
 
 # Update wrapper script if changed
 if [ -f "./Scripts/start_jmdn_wrapper.sh" ]; then
-    WRAPPER_DEST="${JMDN_BIN}/jmdn_wrapper"
+    WRAPPER_DEST="${JMDN_BIN}/start_jmdn_wrapper.sh"
     cp ./Scripts/start_jmdn_wrapper.sh "${WRAPPER_DEST}"
     chmod +x "${WRAPPER_DEST}"
     log_ok "Wrapper script updated at ${WRAPPER_DEST}"

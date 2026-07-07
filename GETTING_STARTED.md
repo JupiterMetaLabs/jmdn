@@ -30,6 +30,7 @@ Before you begin, ensure your machine meets the following requirements.
 | **GCC** | Any | Required for CGO build (`gcc` package) |
 | **ImmuDB** | Latest | Installed automatically |
 | **Yggdrasil** | Latest | Installed automatically |
+| **Redis** | 5+ | Installed automatically; optional — powers the account sync queue, node falls back to direct ImmuDB writes if unavailable |
 
 ---
 
@@ -65,7 +66,7 @@ git checkout v1.2.0  # replace with target version
 
 ## Step 3 — Install Dependencies
 
-Run the unified setup script. This installs Go, ImmuDB, and Yggdrasil.
+Run the unified setup script. This installs Go, ImmuDB, Yggdrasil, and Redis.
 
 ```bash
 sudo ./Scripts/setup_dependencies.sh
@@ -79,7 +80,10 @@ To install dependencies individually:
 sudo ./Scripts/setup_dependencies.sh --go         # Go runtime only
 sudo ./Scripts/setup_dependencies.sh --immudb     # ImmuDB only
 sudo ./Scripts/setup_dependencies.sh --yggdrasil  # Yggdrasil only
+sudo ./Scripts/setup_dependencies.sh --redis      # Redis only
 ```
+
+> **Redis password:** the script generates a random password on first run and saves it to `/etc/jmdn/redis.env` (root-only). Copy that value into `database.redis.password` in `/etc/jmdn/jmdn.yaml` (or export `JMDN_DATABASE_REDIS_PASSWORD`) — the config generator in Step 5 does not do this for you yet. Re-running the script reuses the same password rather than rotating it.
 
 ---
 

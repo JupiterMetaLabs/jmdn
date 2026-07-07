@@ -75,6 +75,10 @@ type StreamEntry struct {
 // The concrete implementation is redisStreamerAdapter (wraps *redis.Client).
 // Tests may substitute a mock implementing this interface.
 type RedisStreamer interface {
+	// Ping verifies the connection to the Redis server.
+	// Time: O(1) — single PING round trip.
+	Ping(ctx context.Context) error
+
 	// Enqueue appends a message to the named stream. Returns the assigned message ID.
 	// Time: O(1) — single XADD round trip.
 	Enqueue(ctx context.Context, stream string, values map[string]any) (string, error)
@@ -132,6 +136,11 @@ type redisStreamerAdapter struct {
 // Time: O(1)
 func NewRedisStreamer(client *redis.Client) RedisStreamer {
 	return &redisStreamerAdapter{client: client}
+}
+
+// Time: O(1) — single PING round trip
+func (r *redisStreamerAdapter) Ping(ctx context.Context) error {
+	return r.client.Ping(ctx).Err()
 }
 
 // Time: O(1) — single XADD round trip
