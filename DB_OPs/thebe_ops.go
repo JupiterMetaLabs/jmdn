@@ -402,6 +402,62 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 	return txs, nil
 }
 
+// DBTx pairs a config.Transaction with its DB placement metadata.
+// Used by Nodeinfo adapters to build types.DBTransaction with a real
+// BlockNumber — reconciliation resolves coinbase/ZKVM per-tx via BlockNumber.
+type DBTx struct {
+	Tx          *config.Transaction
+	BlockNumber uint64
+	TxIndex     uint16
+}
+
+// GetDBTransactionsByAccount retrieves all transactions for an account with
+// block placement metadata preserved.
+func GetDBTransactionsByAccount(accountAddr *common.Address) ([]DBTx, error) {
+	if accountAddr == nil {
+		return nil, fmt.Errorf("GetDBTransactionsByAccount: nil address")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	h, err := getHandle(nil)
+	if err != nil {
+		return nil, fmt.Errorf("GetDBTransactionsByAccount: %w", err)
+	}
+	recs, err := h.GetTransactionsByAddress(ctx, accountAddr.Hex(), 0x7fffffff)
+	if err != nil {
+		return nil, fmt.Errorf("GetDBTransactionsByAccount(%s): %w", accountAddr.Hex(), err)
+	}
+	out := make([]DBTx, 0, len(recs))
+	for _, r := range recs {
+		out = append(out, DBTx{Tx: txRecordToConfig(r), BlockNumber: r.BlockNumber, TxIndex: uint16(r.TxIndex)})
+	}
+	return out, nil
+}
+
+// GetDBTransactionsByAccountInRange retrieves transactions for an account within
+// [fromBlock, toBlock] inclusive, with block placement metadata preserved.
+// Hot path for CatchUp ReconcileWithDeltas.
+func GetDBTransactionsByAccountInRange(accountAddr *common.Address, fromBlock, toBlock uint64) ([]DBTx, error) {
+	if accountAddr == nil {
+		return nil, fmt.Errorf("GetDBTransactionsByAccountInRange: nil address")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	h, err := getHandle(nil)
+	if err != nil {
+		return nil, fmt.Errorf("GetDBTransactionsByAccountInRange: %w", err)
+	}
+	recs, err := h.GetTransactionsByAddressInRange(ctx, accountAddr.Hex(), fromBlock, toBlock)
+	if err != nil {
+		return nil, fmt.Errorf("GetDBTransactionsByAccountInRange(%s): %w", accountAddr.Hex(), err)
+	}
+	out := make([]DBTx, 0, len(recs))
+	for _, r := range recs {
+		out = append(out, DBTx{Tx: txRecordToConfig(r), BlockNumber: r.BlockNumber, TxIndex: uint16(r.TxIndex)})
+	}
+	return out, nil
+}
+
 // GetTransactionsByAccountInRange retrieves transactions where the account is
 // sender or receiver within [fromBlock, toBlock] inclusive, via ThebeDB SQL.
 // Hot path for CatchUp ReconcileWithDeltas — uses composite (addr, block_number) indexes.

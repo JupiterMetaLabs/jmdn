@@ -87,33 +87,34 @@ func chunkCount(n int) int {
 // Time Complexity: O(N) where N is the total number of transactions scanned or retrieved
 func (am *account_manager) GetTransactionsForAccount(accountAddress string) ([]types.DBTransaction, error) {
 	addr := common.HexToAddress(accountAddress)
-	cfgTxs, err := DB_OPs.GetTransactionsByAccount(nil, &addr)
+	dbtxs, err := DB_OPs.GetDBTransactionsByAccount(&addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get transactions by account: %w", err)
 	}
 
-	result := make([]types.DBTransaction, 0, len(cfgTxs))
-	for _, tx := range cfgTxs {
-		result = append(result, configTxToDBTx(tx))
+	result := make([]types.DBTransaction, 0, len(dbtxs))
+	for _, t := range dbtxs {
+		dbtx := configTxToDBTx(t.Tx)
+		dbtx.BlockNumber = t.BlockNumber
+		dbtx.TxIndex = t.TxIndex
+		result = append(result, dbtx)
 	}
 	return result, nil
 }
 
 func (am *account_manager) GetTransactionsForAccountInRange(accountAddress string, fromBlock, toBlock uint64) ([]types.DBTransaction, error) {
-	conn, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("failed to get main DB connection: %w", err)
-	}
-
 	addr := common.HexToAddress(accountAddress)
-	cfgTxs, err := DB_OPs.GetTransactionsByAccountInRange(conn, &addr, fromBlock, toBlock)
+	dbtxs, err := DB_OPs.GetDBTransactionsByAccountInRange(&addr, fromBlock, toBlock)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get transactions in range [%d..%d]: %w", fromBlock, toBlock, err)
 	}
 
-	result := make([]types.DBTransaction, 0, len(cfgTxs))
-	for _, tx := range cfgTxs {
-		result = append(result, configTxToDBTx(tx))
+	result := make([]types.DBTransaction, 0, len(dbtxs))
+	for _, t := range dbtxs {
+		dbtx := configTxToDBTx(t.Tx)
+		dbtx.BlockNumber = t.BlockNumber
+		dbtx.TxIndex = t.TxIndex
+		result = append(result, dbtx)
 	}
 	return result, nil
 }
@@ -463,7 +464,7 @@ func batchUpdateAccountsDirect(am *account_manager, updates []types.AccountUpdat
 }
 
 // configTxToDBTx converts a config.Transaction to types.DBTransaction via direct field copy.
-// DB-specific fields (BlockNumber, TxIndex, CreatedAt) are zero-valued — not available from config.Transaction.
+// DB-specific fields (BlockNumber, TxIndex) are set by callers from DB_OPs.DBTx metadata.
 func configTxToDBTx(tx *config.Transaction) types.DBTransaction {
 	return types.DBTransaction{
 		Transaction: types.Transaction{

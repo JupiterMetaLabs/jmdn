@@ -38,6 +38,13 @@ func (sync *sync_struct) LastBlockReceivedAt() time.Time {
 }
 
 // Time Complexity: O(1)
+// Compile-time interface conformance against the pinned JMDN-FastSync version.
+var (
+	_ types.BlockInfo            = (*sync_struct)(nil)
+	_ types.AccountManager       = (*account_manager)(nil)
+	_ types.AccountNonceIterator = (*thebeNonceIter)(nil)
+)
+
 // NewSyncStruct initializes the synchronization struct that satisfies types.BlockInfo.
 func NewSyncStruct() types.BlockInfo {
 	return &sync_struct{}
