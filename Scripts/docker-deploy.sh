@@ -14,10 +14,9 @@
 #                                        docker compose up -d jmdn again
 #
 # What this does NOT do (by design, matches DOCKER.md §13 Option A):
-#   - It does not choose which version to deploy. Pin the tag in
-#     docker-compose.yml (or docker-compose.override.yml) first, exactly as
-#     DOCKER.md §13 already documents, then run this script instead of the
-#     4 manual commands there.
+#   - It does not choose which version to deploy. Pin the release first by
+#     setting JMDN_VERSION in .env (see DOCKER.md §13), then run this script
+#     instead of the manual pull/up commands there.
 #   - It does not touch immudb or redis. Those upgrade independently
 #     (DOCKER.md §13 "Upgrading Redis or ImmuDB") — a jmdn-only rollback
 #     can't un-upgrade them anyway, so scope is kept to what this script

@@ -23,18 +23,23 @@
 #   docker compose run --rm jmdn-bootstrap
 #   docker compose up -d
 
-# Pin the project name so volume names (jmdn_immudb-data, jmdn_jmdn-state,
-# jmdn_redis-data) are stable regardless of the checkout directory name —
-# the backup/restore/debug commands in DOCKER.md rely on them.
+# Project name — deliberately NOT pinned here with a top-level `name:` key.
 #
-# Migration note: if you have an EXISTING stack that was created from a
-# directory not named "jmdn", its volumes are named <dirname>_immudb-data
-# etc. — this pin makes compose look for jmdn_* volumes instead, so the node
-# would start empty. Either keep running with `docker compose -p <dirname>`,
-# or copy the volumes once:
-#   docker run --rm -v <dirname>_immudb-data:/from -v jmdn_immudb-data:/to \
+# The project name prefixes volume/network names (<project>_immudb-data ...).
+# New installs set COMPOSE_PROJECT_NAME=jmdn in .env (DOCKER.md Step 2) so
+# those names are stable regardless of the checkout directory. Existing
+# deployments predate that .env line: their project name is derived from
+# their checkout directory, and their chain data lives in volumes under that
+# prefix. A `name:` pin in this file would travel to them on their next
+# `git pull` and silently repoint compose at empty jmdn_* volumes — .env is
+# operator-owned and never touched by git, so this stays their choice.
+#
+# To adopt the stable name on an existing node (optional, brief downtime):
+#   docker compose down        # keeps volumes
+#   docker run --rm -v <olddir>_immudb-data:/from -v jmdn_immudb-data:/to \
 #     alpine sh -c "cd /from && cp -a . /to"   # repeat for jmdn-state, redis-data
-name: jmdn
+#   echo "COMPOSE_PROJECT_NAME=jmdn" >> .env
+#   docker compose up -d
 
 services:
 
@@ -156,7 +161,7 @@ services:
   # Guard: writes .bootstrapped sentinel — safe to call again (skips if done).
   #   docker compose run --rm jmdn-bootstrap
   jmdn-bootstrap:
-    image: ghcr.io/jupitermetalabs/jmdn:latest
+    image: ghcr.io/jupitermetalabs/jmdn:${JMDN_VERSION:-latest}
     container_name: jmdn-bootstrap
     profiles: [bootstrap]
     user: root
@@ -195,7 +200,11 @@ services:
   # WorkingDirectory = /opt/jmdn (matches bare-metal ${JMDN_DATA}).
   # DB/gossipnode.db resolves as ./DB/gossipnode.db relative to WorkingDirectory.
   jmdn:
-    image: ghcr.io/jupitermetalabs/jmdn:latest
+    # Version comes from .env (JMDN_VERSION=v1.2.1) — never edit this line to
+    # pin a release. Keeping the tag out of this tracked file means upgrades
+    # don't dirty the git checkout, so `git pull` never merge-conflicts on
+    # compose changes shipped with a release. See DOCKER.md §13.
+    image: ghcr.io/jupitermetalabs/jmdn:${JMDN_VERSION:-latest}
     container_name: jmdn
     restart: unless-stopped
 

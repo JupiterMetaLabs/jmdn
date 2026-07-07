@@ -236,6 +236,11 @@ This is the complete runbook for a fresh VM with Docker already installed.
 
 ### Step 1 — Clone the repo
 
+Clone into any directory you like — `/opt/jmdn/jmdn` is our suggested
+default. The directory name has no effect on the stack: volume and network
+names are controlled by `COMPOSE_PROJECT_NAME` in `.env` (Step 2), not by
+where you cloned.
+
 ```bash
 mkdir -p /opt/jmdn
 git clone https://github.com/JupiterMetaLabs/jmdn.git /opt/jmdn/jmdn
@@ -258,6 +263,15 @@ openssl rand -base64 32   # → REDIS_PASSWORD
 
 ```bash
 cat > /opt/jmdn/jmdn/.env << 'EOF'
+# Compose project name — prefixes volume/network names (jmdn_immudb-data ...).
+# Pinning it here keeps those names stable regardless of the checkout
+# directory, so every volume/backup command in this guide works verbatim.
+COMPOSE_PROJECT_NAME=jmdn
+
+# JMDN release to run. Set to a release tag (recommended for production);
+# upgrade by changing this line — never by editing docker-compose.yml.
+JMDN_VERSION=v1.2.1
+
 # ImmuDB password — used by the immudb container.
 # Must match database.password in jmdn.yaml.
 IMMUDB_PASSWORD=<generated>
@@ -330,11 +344,9 @@ docker pull ghcr.io/jupitermetalabs/jmdn:latest
 docker pull ghcr.io/jupitermetalabs/jmdn:v1.2.0
 ```
 
-To use a specific version in compose, edit `docker-compose.yml`:
-```yaml
-jmdn:
-  image: ghcr.io/jupitermetalabs/jmdn:v1.2.0   # pin to a release tag
-```
+Compose reads the version from `JMDN_VERSION` in `.env` (Step 2) — you
+already pinned it there. Don't edit the image tag in `docker-compose.yml`;
+keeping that file untouched is what lets `git pull` update it cleanly later.
 
 **Option B — Build from source**
 
@@ -641,6 +653,8 @@ Most configuration belongs in `jmdn.yaml` — set it there. The environment vari
 | `GCS_BUCKET` | `jmzk-releases` | Bootstrap snapshot GCS bucket (bootstrap container only) |
 | `GCS_PREFIX` | `jmdn_bootstrap_2306` | Snapshot path prefix (bootstrap container only) |
 | `IMMUDB_USER` | `jmdn` | OS user the immudb files are owned by (entrypoint chown) |
+| `COMPOSE_PROJECT_NAME` | *(directory name)* | Prefixes volume/network names — set to `jmdn` in `.env` (Step 2) so this guide's volume commands work verbatim. Existing deployments without it keep their current prefix; changing it on a live node repoints compose at different volumes |
+| `JMDN_VERSION` | `latest` | JMDN image tag for the `jmdn` and `jmdn-bootstrap` services. Pin a release in `.env`; upgrades change this line only (§13) |
 | `JMDN_MEM_LIMIT` / `JMDN_CPU_LIMIT` | `4g` / `2.0` | jmdn container resource caps — scale to host, `0` = unlimited (see §4 sizing table) |
 | `IMMUDB_MEM_LIMIT` / `IMMUDB_CPU_LIMIT` | `4g` / `1.0` | immudb container resource caps (see §4 sizing table) |
 | `REDIS_MEM_LIMIT` / `REDIS_CPU_LIMIT` | `512m` / `0.5` | redis container resource caps (see §4 sizing table) |
@@ -1073,6 +1087,10 @@ container is much harder to miss than a quietly-restarting one.
 
 ## 12. Volumes and Data Management
 
+> Volume names below assume `COMPOSE_PROJECT_NAME=jmdn` (Step 2). On an
+> older install without that `.env` line, the prefix is your checkout
+> directory's name instead — check with `docker volume ls`.
+
 ```bash
 # List all volumes
 docker volume ls | grep jmdn
@@ -1217,41 +1235,79 @@ docker compose up -d
 
 ## 13. Upgrading
 
+Two things update on different channels, and it helps to keep them apart:
+
+| Channel | Command | What it delivers |
+|---|---|---|
+| **Image** | `docker compose pull` | New `jmdn` binary + in-container scripts (entrypoint, wrapper, bootstrap) — the actual node software |
+| **Repo** | `git pull` | `docker-compose.yml` (limits, healthcheck, service wiring) and this documentation |
+
+A version upgrade only *requires* the image channel. Pulling the repo too is
+recommended — releases sometimes ship compose improvements — and is always
+safe because nothing you configure lives in tracked files: your settings are
+in `.env` and `jmdn.yaml`, both gitignored.
+
 ### Option A — Upgrade via pre-built image (recommended)
 
-JupiterMeta publishes a new image for every release. Pin the new version in
-`docker-compose.yml` first:
-
-```yaml
-image: ghcr.io/jupitermetalabs/jmdn:v1.2.0
-```
-
-Then run the deploy script — the Docker counterpart of the bare-metal
-`Scripts/deploy.sh`, with the same safety contract:
+For nodes installed with this guide (`.env` contains `JMDN_VERSION`):
 
 ```bash
+# 1. Set the new version in .env
+sed -i 's/^JMDN_VERSION=.*/JMDN_VERSION=v1.2.1/' .env
+
+# 2. (Recommended) refresh compose + docs — clean, nothing local is tracked
+git pull
+
+# 3. Pull + restart with automatic rollback on failed health check
 ./Scripts/docker-deploy.sh
 ```
 
-It snapshots the currently running image, pulls the new one, restarts the
-node, polls the health check, and **automatically rolls back to the
-previous image** if the new one fails to come up healthy.
-
-To do the same steps by hand instead (no automatic rollback):
+`docker-deploy.sh` snapshots the currently running image, pulls the new one,
+restarts the node, polls the health check, and **automatically rolls back to
+the previous image** if the new one fails to come up healthy. To do the same
+by hand instead (no automatic rollback):
 
 ```bash
-# 1. Pull the new image
 docker compose pull jmdn
-
-# 2. Restart the node (node process restarts — brief downtime)
 docker compose up -d jmdn
-
-# 3. Verify
 curl -s http://localhost:8090/api/v1/node/version \
   -H "Authorization: Bearer $JMDN_SECURITY_EXPLORER_API_KEY"
 ```
 
 > After upgrading, check the release notes for any changes to `fastsync.catch_up_from_block` — if the bootstrap snapshot was refreshed, update this value in `jmdn.yaml` and restart.
+
+### Upgrading a node installed with the v1.2.0 guide (one-time migration)
+
+The v1.2.0 guide had you pin releases by editing the `image:` line inside
+`docker-compose.yml`. That edit makes your checkout dirty, so `git pull`
+will refuse or merge-conflict on the compose file. Migrate once — afterwards
+every upgrade is the 3 steps above:
+
+```bash
+# 1. Park your local compose edit (the image tag is its only local change)
+git stash
+
+# 2. Refresh the repo — brings the compose file that reads JMDN_VERSION from .env
+git pull
+
+# 3. Your stashed tag edit is now obsolete — the tag lives in .env instead
+git stash drop
+
+# 4. Pin your version in .env (REQUIRED — without it the tag defaults to :latest)
+echo "JMDN_VERSION=v1.2.1" >> .env
+
+# 5. Pull + restart as usual
+docker compose pull jmdn && docker compose up -d jmdn
+```
+
+> **Do NOT add `COMPOSE_PROJECT_NAME=jmdn` to an existing node's `.env`.**
+> Your volumes are named after the project name your stack was created with
+> (usually your checkout directory). Changing it repoints compose at fresh
+> empty volumes and your node will refuse to start (missing bootstrap
+> sentinel). Leave it unset — everything keeps working under your existing
+> names. If you ever *want* to adopt the standard names, follow the volume
+> copy steps in the `docker-compose.yml` header comment during a planned
+> maintenance window.
 
 ### Option B — Build and deploy from source
 
