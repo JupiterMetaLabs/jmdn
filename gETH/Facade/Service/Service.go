@@ -154,6 +154,54 @@ func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bo
 	return block, nil
 }
 
+// LatestL1CommitBlock returns the most recent block that has L1 commit data.
+//
+// Fast path (O(1)): Block/Server.go maintains an atomic cache of the latest
+// committed block number, updated on every /api/l1-commit* call. If the cache
+// is warm we do a single point-lookup.
+//
+// Cold path (first call after restart before any commit arrives): scans
+// backwards up to 10 000 blocks — exits immediately on the first hit.
+func (s *ServiceImpl) LatestL1CommitBlock(ctx context.Context) (*Types.Block, error) {
+	const maxScan = 10_000
+
+	opCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Fast path — cache is warm.
+	if cached := block.GetLatestL1CommitBlockNum(); cached > 0 {
+		zkBlock, err := DB_OPs.ReadZKBlockByNumber(opCtx, nil, cached)
+		if err == nil && zkBlock != nil && zkBlock.L1TxHash != "" {
+			return Utils.ConvertZKBlockToBlock(zkBlock), nil
+		}
+		// Cache pointed at a block without L1 data (shouldn't happen, but fall through).
+	}
+
+	// Cold path — scan backwards from chain tip.
+	latest, err := DB_OPs.GetLatestBlockNumber(opCtx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("LatestL1CommitBlock: get latest block: %w", err)
+	}
+
+	start := int64(latest)
+	end := start - maxScan
+	if end < 0 {
+		end = 0
+	}
+
+	for n := start; n >= end; n-- {
+		zkBlock, err := DB_OPs.ReadZKBlockByNumber(opCtx, nil, uint64(n))
+		if err != nil || zkBlock == nil {
+			continue
+		}
+		if zkBlock.L1TxHash != "" {
+			return Utils.ConvertZKBlockToBlock(zkBlock), nil
+		}
+	}
+
+	return nil, nil // no committed block found in window
+}
+
 // Need to add more functionality to this
 func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, network string) (*big.Int, error) {
 

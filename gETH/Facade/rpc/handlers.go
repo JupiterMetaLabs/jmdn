@@ -76,7 +76,9 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		return resp, nil
 
 	case "eth_getBlockByNumber":
-		// params: [blockTag, fullTx(bool)]
+		// params: [blockTag, fullTx(bool), wantL1Commit(bool, optional)]
+		// wantL1Commit=true with tag="latest" → returns the latest block that has
+		// L1 commit data (L1TxHash != ""), not the absolute chain tip.
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing block tag")
 			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
@@ -95,17 +97,44 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			}
 		}
 
-		num, err := parseBlockTag(ctx, handler.service, tag)
-		if err != nil {
-			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-			return resp, err
+		wantL1Commit := false
+		if len(req.Params) > 2 {
+			switch v := req.Params[2].(type) {
+			case bool:
+				wantL1Commit = v
+			case string:
+				wantL1Commit = strings.EqualFold(v, "true")
+			}
 		}
-		b, err := handler.service.BlockByNumber(ctx, num, full)
-		if err != nil {
-			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-			return resp, err
+
+		var b *Types.Block
+		if wantL1Commit && strings.EqualFold(strings.TrimSpace(tag), "latest") {
+			var l1Err error
+			b, l1Err = handler.service.LatestL1CommitBlock(ctx)
+			if l1Err != nil {
+				resp, _ := finish(req, nil, l1Err)
+				log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+				return resp, l1Err
+			}
+			if b == nil {
+				resp, _ := finish(req, nil, nil) // no committed block found
+				log.Printf("📤 RPC Response: %s -> null (no L1-committed block found)", req.Method)
+				return resp, nil
+			}
+		} else {
+			num, err := parseBlockTag(ctx, handler.service, tag)
+			if err != nil {
+				resp, _ := finish(req, nil, err)
+				log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+				return resp, err
+			}
+			var blockErr error
+			b, blockErr = handler.service.BlockByNumber(ctx, num, full)
+			if blockErr != nil {
+				resp, _ := finish(req, nil, blockErr)
+				log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+				return resp, blockErr
+			}
 		}
 		resp, _ := finish(req, marshalBlock(b, full, handler.service.GetChainIDValue()), nil)
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
@@ -675,6 +704,12 @@ func marshalBlock(b *Types.Block, full bool, globalChainID *big.Int) map[string]
 		"uncles":          []string{},
 
 		"transactions": []any{},
+	}
+
+	// L1 commit data — present when this block's range has been committed to L1.
+	if b.L1TxHash != "" {
+		result["l1TxHash"] = b.L1TxHash
+		result["l1BlockNumber"] = "0x" + new(big.Int).SetUint64(b.L1BlockNumber).Text(16)
 	}
 
 	if full && len(b.Transactions) > 0 {

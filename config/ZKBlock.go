@@ -54,6 +54,10 @@ type ZKBlock struct {
 	GasLimit     uint64          `json:"gaslimit"`
 	GasUsed      uint64          `json:"gasused"`
 	BlockNumber  uint64          `json:"blocknumber"`
+
+	// L1 finality — set after commitRollup is mined on Ethereum
+	L1TxHash      string `json:"l1_tx_hash,omitempty"`
+	L1BlockNumber uint64 `json:"l1_block_number,omitempty"`
 }
 
 // ParsedZKTransaction is a helper struct with parsed numeric fields

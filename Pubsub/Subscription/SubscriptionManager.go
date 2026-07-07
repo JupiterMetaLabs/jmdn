@@ -247,6 +247,15 @@ func (sm *SubscriptionManager) Subscribe(logger_ctx context.Context, topic strin
 			}
 
 			messageCount++
+			// Debug: log every received message stage so we can trace propagation.
+			{
+				stage := ""
+				if messageData.ACK != nil {
+					stage = messageData.ACK.Stage
+				}
+				fmt.Printf("[SubMgr] topic=%s from=%s stage=%s handlers=%d\n",
+					topic, msg.GetFrom(), stage, len(managed.handlers))
+			}
 
 			// Call ALL registered handlers
 			// We need to lock while reading handlers because they can be appended/removed safely
