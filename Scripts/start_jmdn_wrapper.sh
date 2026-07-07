@@ -64,6 +64,17 @@ if [[ ! -f "${CONFIG_PATH}" ]] && [[ -f "./jmdn.yaml" ]]; then
     CONFIG_PATH="./jmdn.yaml"
 fi
 
+# Source auto-generated Redis credentials if present and readable.
+# -r (not -f): the file is root-owned mode 600; if the service runs as a
+# non-root SERVICE_USER, a bare `source` on an unreadable file would kill
+# the wrapper under `set -e` and the node would never start.
+if [[ -r "${JMDN_ETC}/redis.env" ]]; then
+    # shellcheck disable=SC1090
+    source "${JMDN_ETC}/redis.env"
+elif [[ -e "${JMDN_ETC}/redis.env" ]]; then
+    log_info "Skipping ${JMDN_ETC}/redis.env (not readable by $(id -un)) — set database.redis.password in jmdn.yaml instead"
+fi
+
 # --- Validate and exec -------------------------------------------------------
 
 log_info "Starting JMDN..."

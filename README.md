@@ -65,11 +65,12 @@ Run a node to participate in the JMDT network.
 - **Go 1.25+**: Programming language runtime
 - **Yggdrasil**: Decentralized mesh networking protocol
 - **ImmuDB**: Tamper-proof database (installed automatically via setup script)
+- **Redis**: Account sync worker queue (installed automatically via setup script; optional — the node falls back to direct ImmuDB writes if unavailable)
 
 ### Quick Setup — From Source
 
 ```bash
-# Install Go, ImmuDB, and Yggdrasil
+# Install Go, ImmuDB, Yggdrasil, and Redis
 sudo ./Scripts/setup_dependencies.sh
 
 # Build the binary
