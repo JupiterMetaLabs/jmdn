@@ -138,11 +138,12 @@ func NewRedisStreamer(client *redis.Client) RedisStreamer {
 	return &redisStreamerAdapter{client: client}
 }
 
-// Time: O(1) — single XADD round trip
+// Time: O(1) — single PING round trip
 func (r *redisStreamerAdapter) Ping(ctx context.Context) error {
 	return r.client.Ping(ctx).Err()
 }
 
+// Time: O(1) — single XADD round trip
 func (r *redisStreamerAdapter) Enqueue(ctx context.Context, stream string, values map[string]any) (string, error) {
 	return r.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: stream,

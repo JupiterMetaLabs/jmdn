@@ -556,6 +556,11 @@ _generate_redis_password() {
 # password from a previous run, it's reused as-is (no silent rotation of a
 # credential that jmdn.yaml may already be configured with). REDIS_PASSWORD
 # in the environment always wins, for explicit overrides.
+#
+# Sets REDIS_CONF_CHANGED=1 only when redis.conf was actually modified, so
+# the caller can skip the service restart on no-op reruns (deploy.sh runs
+# this via --all on every deployment — an unconditional restart would bounce
+# the account-sync queue on every deploy for no reason).
 _configure_redis_password() {
 	local redis_pass="${REDIS_PASSWORD:-}"
 
@@ -577,9 +582,16 @@ _configure_redis_password() {
 		return 1
 	fi
 
-	log_info "Configuring Redis password in ${conf}..."
-	sed_inplace '/^requirepass /d' "${conf}"
-	echo "requirepass ${redis_pass}" >>"${conf}"
+	# Password alphabet is [A-Za-z0-9] (base64 minus =+/), safe as a literal
+	# grep pattern with -F.
+	if grep -qxF "requirepass ${redis_pass}" "${conf}"; then
+		log_ok "Redis password already configured in ${conf} — no change."
+	else
+		log_info "Configuring Redis password in ${conf}..."
+		sed_inplace '/^requirepass /d' "${conf}"
+		echo "requirepass ${redis_pass}" >>"${conf}"
+		REDIS_CONF_CHANGED=1
+	fi
 
 	ensure_dir "$(dirname "${REDIS_CRED_FILE}")" 755
 	chmod 755 "$(dirname "${REDIS_CRED_FILE}")" # ensure_dir only chmods on first creation
@@ -596,8 +608,11 @@ _configure_redis_password() {
 	log_ok "Redis password configured. Credentials saved to ${REDIS_CRED_FILE}."
 }
 
-# Enable + (re)start the Redis service via the shared svc_* abstractions in
+# Enable + start the Redis service via the shared svc_* abstractions in
 # lib/platform.sh, so any future service-manager fix applies here too.
+# Restarts ONLY when redis.conf changed (REDIS_CONF_CHANGED=1); an already-
+# running Redis with an unchanged config is left alone so reruns (e.g.
+# deploy.sh --all on every deployment) don't bounce the account-sync queue.
 _start_redis_service() {
 	local svc
 	svc="$(_redis_service_name)"
@@ -607,7 +622,12 @@ _start_redis_service() {
 			log_warn "Homebrew not found. Start Redis manually."
 			return 1
 		fi
-		brew services restart redis || { log_warn "Could not restart Redis via brew services."; return 1; }
+		if [[ "${REDIS_CONF_CHANGED}" -eq 1 ]]; then
+			brew services restart redis || { log_warn "Could not restart Redis via brew services."; return 1; }
+		else
+			# Idempotent: no-op if already running.
+			brew services start redis || { log_warn "Could not start Redis via brew services."; return 1; }
+		fi
 		return 0
 	fi
 
@@ -617,7 +637,15 @@ _start_redis_service() {
 	fi
 
 	svc_enable "${svc}" || log_warn "Could not enable ${svc} at boot."
-	svc_restart "${svc}" || { log_warn "Could not restart ${svc}."; return 1; }
+
+	if [[ "${REDIS_CONF_CHANGED}" -eq 1 ]]; then
+		svc_restart "${svc}" || { log_warn "Could not restart ${svc}."; return 1; }
+	elif svc_status "${svc}" >/dev/null 2>&1; then
+		log_ok "${svc} already running with unchanged config — not restarting."
+		return 0
+	else
+		svc_start "${svc}" || { log_warn "Could not start ${svc}."; return 1; }
+	fi
 
 	sleep 1
 	if ! svc_status "${svc}"; then
@@ -628,6 +656,10 @@ _start_redis_service() {
 
 install_redis() {
 	log_info "Checking Redis..."
+
+	# Set by _configure_redis_password when redis.conf is actually modified;
+	# _start_redis_service restarts only in that case.
+	REDIS_CONF_CHANGED=0
 
 	if check_command redis-server || check_command redis-cli; then
 		log_ok "Redis is already installed."

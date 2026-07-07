@@ -33,6 +33,7 @@ func (r *recordingStreamer) Enqueue(_ context.Context, _ string, values map[stri
 	return "id", nil
 }
 
+func (r *recordingStreamer) Ping(context.Context) error                                { return nil }
 func (r *recordingStreamer) EnsureConsumerGroup(context.Context, string, string) error { return nil }
 func (r *recordingStreamer) ReadGroup(context.Context, string, string, string, int64, time.Duration) ([]StreamEntry, error) {
 	return nil, nil
