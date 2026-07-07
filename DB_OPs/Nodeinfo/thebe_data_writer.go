@@ -119,14 +119,4 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 	return nil
 }
 
-// bytesToCommitment converts []byte (big-endian packed uint32s) back to []uint32.
-func bytesToCommitment(b []byte) []uint32 {
-	if len(b)%4 != 0 {
-		return nil
-	}
-	out := make([]uint32, len(b)/4)
-	for i := range out {
-		out[i] = uint32(b[i*4])<<24 | uint32(b[i*4+1])<<16 | uint32(b[i*4+2])<<8 | uint32(b[i*4+3])
-	}
-	return out
-}
+// bytesToCommitment lives in thebe_block_nonheaders.go (little-endian pair with commitmentToBytes).

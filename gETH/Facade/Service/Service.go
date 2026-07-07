@@ -22,7 +22,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/rlp"
 )
 
 // ServiceImpl implements the Service interface
@@ -43,6 +42,10 @@ func NewService(chainID int, smartRPC int) Service {
 		SmartContractPort: smartRPC,
 		scClient:          scClient,
 	}
+}
+
+func (s *ServiceImpl) GetChainIDValue() *big.Int {
+	return big.NewInt(int64(s.ChainIDValue))
 }
 
 func (s *ServiceImpl) ChainID(ctx context.Context) (*big.Int, error) {
@@ -164,20 +167,33 @@ func (s *ServiceImpl) BlockNumber(ctx context.Context) (*big.Int, error) {
 
 func (s *ServiceImpl) GetTransactionCount(ctx context.Context, addr string, block string) (*big.Int, error) {
 	// Create a new context with timeout for this operation
-	_, cancel := context.WithTimeout(ctx, 10*time.Second)
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Return the transaction count for the given address of latest block
-	Transactions, err := DB_OPs.CountTransactions(nil)
+	// Normalize the address (handles mixed-case / checksum addresses)
+	convertedAddr := Utils.ConvertAddressCaseInsensitive(addr)
+
+	// TxNonce on the Account record is the authoritative Ethereum nonce.
+	// It is maintained by block processing as: account.TxNonce = tx.Nonce + 1
+	// CountTransactionsByAccount is NOT used here because it counts both FROM and TO
+	// transactions, which would inflate the nonce for recipient addresses.
+	account, err := DB_OPs.GetAccount(nil, convertedAddr)
 	if err != nil {
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
+			// Address has no transactions yet — nonce is 0
+			return big.NewInt(0), nil
+		}
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetTransactionCount failed: %v", err), "GetTransactionCount", -1); logErr != nil {
+			fmt.Printf("Failed to log GetTransactionCount error: %v\n", logErr)
+		}
 		return nil, err
 	}
 
-	// fmt.Println("Transactions: ", Transactions)
-	// Convert the Transactions to big.Int
-	TransactionsBigInt := big.NewInt(int64(Transactions))
+	if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetTransactionCount returned nonce %d for %s", account.TxNonce, addr), "GetTransactionCount", 1); logErr != nil {
+		fmt.Printf("Failed to log GetTransactionCount: %v\n", logErr)
+	}
 
-	return TransactionsBigInt, nil
+	return new(big.Int).SetUint64(account.TxNonce), nil
 }
 
 func (s *ServiceImpl) BlockByNumber(ctx context.Context, num *big.Int, fullTx bool) (*Types.Block, error) {
@@ -314,9 +330,11 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 		// If JSON parsing fails, try to parse as RLP-encoded transaction
 		logger().Debug(opCtx, "JSON parsing failed, trying RLP parsing")
 
-		// Parse RLP-encoded transaction
+		// Parse transaction — UnmarshalBinary handles all types:
+		// legacy (no prefix), EIP-2930 (0x01), EIP-1559 (0x02).
+		// rlp.DecodeBytes cannot handle typed transactions (0x01/0x02 prefix).
 		var ethTx ethtypes.Transaction
-		err = rlp.DecodeBytes(rawBytes, &ethTx)
+		err = ethTx.UnmarshalBinary(rawBytes)
 		if err != nil {
 			if logErr := Logger.LogData(opCtx, fmt.Sprintf("SendRawTx failed to parse RLP transaction: %v", err), "SendRawTx", -1); logErr != nil {
 				logger().Error(opCtx, "Failed to log SendRawTx RLP parse error", logErr)
@@ -354,7 +372,7 @@ func (s *ServiceImpl) SendRawTx(ctx context.Context, rawHex string) (string, err
 // convertEthTxToConfigTx converts an Ethereum transaction to our config.Transaction format
 func convertEthTxToConfigTx(ethTx *ethtypes.Transaction) config.Transaction {
 	// Get the sender address
-	from, _ := ethtypes.Sender(ethtypes.NewEIP155Signer(ethTx.ChainId()), ethTx)
+	from, _ := ethtypes.Sender(ethtypes.LatestSignerForChainID(ethTx.ChainId()), ethTx)
 
 	// Convert to our transaction format
 	tx := config.Transaction{
@@ -389,21 +407,41 @@ func convertEthTxToConfigTx(ethTx *ethtypes.Transaction) config.Transaction {
 	// Debugging
 	logger().Debug(context.Background(), "Transaction details", ion.String("hash", tx.Hash.Hex()))
 	logger().Debug(context.Background(), "Transaction sender", ion.String("from", tx.From.Hex()))
-	logger().Debug(context.Background(), "Transaction recipient", ion.String("to", tx.To.Hex()))
-	logger().Debug(context.Background(), "Transaction value", ion.String("value", tx.Value.String()))
+	if tx.To != nil {
+		logger().Debug(context.Background(), "Transaction recipient", ion.String("to", tx.To.Hex()))
+	} else {
+		logger().Debug(context.Background(), "Transaction recipient", ion.String("to", "nil (contract creation)"))
+	}
+	if tx.Value != nil {
+		logger().Debug(context.Background(), "Transaction value", ion.String("value", tx.Value.String()))
+	}
 	logger().Debug(context.Background(), "Transaction type", ion.Int("type", int(tx.Type)))
 	logger().Debug(context.Background(), "Transaction timestamp", ion.Int("timestamp", int(tx.Timestamp)))
-	logger().Debug(context.Background(), "Chain ID", ion.String("chain_id", tx.ChainID.String()))
+	if tx.ChainID != nil {
+		logger().Debug(context.Background(), "Chain ID", ion.String("chain_id", tx.ChainID.String()))
+	}
 	logger().Debug(context.Background(), "Transaction nonce", ion.Int("nonce", int(tx.Nonce)))
 	logger().Debug(context.Background(), "Gas limit", ion.Int("gas_limit", int(tx.GasLimit)))
-	logger().Debug(context.Background(), "Gas price", ion.String("gas_price", tx.GasPrice.String()))
-	logger().Debug(context.Background(), "Max fee", ion.String("max_fee", tx.MaxFee.String()))
-	logger().Debug(context.Background(), "Max priority fee", ion.String("max_priority_fee", tx.MaxPriorityFee.String()))
+	if tx.GasPrice != nil {
+		logger().Debug(context.Background(), "Gas price", ion.String("gas_price", tx.GasPrice.String()))
+	}
+	if tx.MaxFee != nil {
+		logger().Debug(context.Background(), "Max fee", ion.String("max_fee", tx.MaxFee.String()))
+	}
+	if tx.MaxPriorityFee != nil {
+		logger().Debug(context.Background(), "Max priority fee", ion.String("max_priority_fee", tx.MaxPriorityFee.String()))
+	}
 	logger().Debug(context.Background(), "Transaction data length", ion.Int("data_len", len(tx.Data)))
 	logger().Debug(context.Background(), "Access list present")
-	logger().Debug(context.Background(), "Transaction V", ion.String("v", tx.V.String()))
-	logger().Debug(context.Background(), "Transaction R", ion.String("r", tx.R.String()))
-	logger().Debug(context.Background(), "Transaction S", ion.String("s", tx.S.String()))
+	if tx.V != nil {
+		logger().Debug(context.Background(), "Transaction V", ion.String("v", tx.V.String()))
+	}
+	if tx.R != nil {
+		logger().Debug(context.Background(), "Transaction R", ion.String("r", tx.R.String()))
+	}
+	if tx.S != nil {
+		logger().Debug(context.Background(), "Transaction S", ion.String("s", tx.S.String()))
+	}
 
 	return tx
 }
@@ -480,12 +518,14 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 	receipt, err := DB_OPs.GetReceiptByHash(nil, hash)
 	if err != nil {
 		// Check if error is "transaction not found"
+		// Per EIP-1474: eth_getTransactionReceipt MUST return result:null (not a JSON-RPC error)
+		// when the tx is not yet mined. An error response causes MetaMask to stop polling
+		// and permanently show the tx as "submitted".
 		if err.Error() == "transaction not found" {
-			if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash: transaction not found: %s", hash), "ReceiptByHash", -1); logErr != nil {
+			if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash: tx not yet mined (returning null): %s", hash), "ReceiptByHash", -1); logErr != nil {
 				logger().Error(opCtx, "Failed to log ReceiptByHash error", logErr)
 			}
-			// Return error that will be formatted as JSON-RPC error with code -32000
-			return nil, fmt.Errorf("transaction not found")
+			return nil, nil
 		}
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("ReceiptByHash failed: %v", err), "ReceiptByHash", -1); logErr != nil {
 			logger().Error(opCtx, "Failed to log ReceiptByHash error", logErr)
@@ -553,22 +593,31 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 	}
 	receiptMap["type"] = "0x" + fmt.Sprintf("%x", txType)
 
-	// Add effectiveGasPrice from transaction
-	if tx != nil {
+	// Add effectiveGasPrice from transaction.
+	// EIP-1559: effectiveGasPrice = min(maxFeePerGas, baseFee + maxPriorityFeePerGas)
+	// baseFee is the network constant (35 gwei) used across all RPC responses.
+	{
+		const baseFee = int64(35_000_000_000)
 		var effectiveGasPrice *big.Int
-		if tx.GasPrice != nil {
-			// For legacy (Type 0) and EIP-2930 (Type 1), use GasPrice
+		if tx != nil && tx.GasPrice != nil {
+			// Legacy (type 0) and EIP-2930 (type 1)
 			effectiveGasPrice = tx.GasPrice
-		} else if tx.MaxFee != nil {
-			// For EIP-1559 (Type 2), use MaxFee as effectiveGasPrice
-			// In a full implementation, this would be min(MaxFee, baseFee + MaxPriorityFee)
-			// but for simplicity, we use MaxFee
-			effectiveGasPrice = tx.MaxFee
+		} else if tx != nil && tx.MaxFee != nil {
+			tip := tx.MaxPriorityFee
+			if tip == nil {
+				tip = big.NewInt(0)
+			}
+			basePlusTip := new(big.Int).Add(big.NewInt(baseFee), tip)
+			if tx.MaxFee.Cmp(basePlusTip) < 0 {
+				effectiveGasPrice = new(big.Int).Set(tx.MaxFee)
+			} else {
+				effectiveGasPrice = basePlusTip
+			}
+		} else {
+			// Fallback: always emit effectiveGasPrice (EIP-1559 requires it)
+			effectiveGasPrice = big.NewInt(baseFee)
 		}
-
-		if effectiveGasPrice != nil {
-			receiptMap["effectiveGasPrice"] = "0x" + effectiveGasPrice.Text(16)
-		}
+		receiptMap["effectiveGasPrice"] = "0x" + effectiveGasPrice.Text(16)
 	}
 
 	// Add from and to addresses from transaction
@@ -801,68 +850,35 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 		oldestNum = big.NewInt(0)
 	}
 
-	// Initialize result arrays
-	baseFeePerGas := make([]string, 0, blockCount+1)
-	gasUsedRatio := make([]float64, 0, blockCount+1)
-	var rewards [][]string
+	// JMDN does not implement variable base fees — return the same 35 gwei constant
+	// used by eth_getBlockByNumber. No DB reads needed.
+	const baseFeeConstant = "0x826299e00" // 35_000_000_000 wei
 
-	// If percentiles are provided, initialize rewards array
-	if len(perc) > 0 {
-		rewards = make([][]string, 0, blockCount+1)
+	count := newestNum.Uint64() - oldestNum.Uint64() + 1
+	baseFeePerGas := make([]string, count)
+	gasUsedRatio := make([]float64, count)
+	for i := range baseFeePerGas {
+		baseFeePerGas[i] = baseFeeConstant
+		gasUsedRatio[i] = 0.5 // neutral placeholder
 	}
 
-	// Fetch blocks from newest to oldest (inclusive)
-	current := new(big.Int).Set(newestNum)
-	blocksToFetch := blockCount + 1
-
-	for i := uint64(0); i < blocksToFetch && current.Sign() >= 0 && current.Cmp(oldestNum) >= 0; i++ {
-		block, err := s.BlockByNumber(ctx, current, false)
-		if err != nil {
-			// If block doesn't exist, skip it
-			current.Sub(current, big.NewInt(1))
-			continue
-		}
-
-		// Extract base fee per gas
-		var baseFeeHex string
-		if len(block.Header.BaseFee) > 0 {
-			baseFeeBig := new(big.Int).SetBytes(block.Header.BaseFee)
-			baseFeeHex = "0x" + baseFeeBig.Text(16)
-		} else {
-			// If no base fee (pre-EIP-1559), set to 0x0
-			baseFeeHex = "0x0"
-		}
-		baseFeePerGas = append(baseFeePerGas, baseFeeHex)
-
-		// Calculate gas used ratio
-		var gasUsedRatioVal float64
-		if block.Header.GasLimit > 0 {
-			gasUsedRatioVal = float64(block.Header.GasUsed) / float64(block.Header.GasLimit)
-		} else {
-			gasUsedRatioVal = 0.0
-		}
-		gasUsedRatio = append(gasUsedRatio, gasUsedRatioVal)
-
-		// Calculate rewards if percentiles are provided
-		if len(perc) > 0 {
-			blockRewards := make([]string, len(perc))
-			// TODO: Calculate actual rewards from transaction priority fees
-			// For now, set all rewards to 0x0
-			for j := range perc {
-				blockRewards[j] = "0x0"
+	var rewards [][]string
+	if len(perc) > 0 {
+		rewards = make([][]string, count)
+		for i := range rewards {
+			row := make([]string, len(perc))
+			for j := range row {
+				row[j] = "0x0"
 			}
-			rewards = append(rewards, blockRewards)
+			rewards[i] = row
 		}
-
-		// Move to previous block
-		current.Sub(current, big.NewInt(1))
 	}
 
 	// Build result map
 	result := map[string]any{
-		"oldestBlock": fmt.Sprintf("0x%x", oldestNum.Uint64()),
-		// "baseFeePerGas": baseFeePerGas,
-		"gasUsedRatio": gasUsedRatio,
+		"oldestBlock":   fmt.Sprintf("0x%x", oldestNum.Uint64()),
+		"baseFeePerGas": baseFeePerGas,
+		"gasUsedRatio":  gasUsedRatio,
 	}
 
 	// Add rewards if provided

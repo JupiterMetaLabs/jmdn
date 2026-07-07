@@ -490,25 +490,31 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	}
 
 	if err := Pubsub.CreateChannel(consensus.gossipnode.GetGossipPubSub(), config.PubSub_ConsensusChannel, false, allowedPeers); err != nil {
-		setupPubsubSpan.RecordError(err)
-		setupPubsubSpan.SetAttributes(attribute.String("status", "create_channel_failed"))
-		setupPubsubDuration := time.Since(setupPubsubStartTime).Seconds()
-		setupPubsubSpan.SetAttributes(attribute.Float64("duration", setupPubsubDuration))
-		ErrorMessage := fmt.Sprintf("CONSENSUSERROR.CREATECHANNEL: failed to create pubsub channel: %v", err)
-		logger().Error(setupPubsubCtx, "Failed to create pubsub channel",
-			err,
-			ion.String("channel", config.PubSub_ConsensusChannel),
-			ion.Float64("duration", setupPubsubDuration),
-			ion.String("function", "Consensus.Start.setupPubsubChannels"))
-		setupPubsubSpan.End()
+		if err.Error() != fmt.Sprintf("channel %s already exists", config.PubSub_ConsensusChannel) {
+			setupPubsubSpan.RecordError(err)
+			setupPubsubSpan.SetAttributes(attribute.String("status", "create_channel_failed"))
+			setupPubsubDuration := time.Since(setupPubsubStartTime).Seconds()
+			setupPubsubSpan.SetAttributes(attribute.Float64("duration", setupPubsubDuration))
+			ErrorMessage := fmt.Sprintf("CONSENSUSERROR.CREATECHANNEL: failed to create pubsub channel: %v", err)
+			logger().Error(setupPubsubCtx, "Failed to create pubsub channel",
+				err,
+				ion.String("channel", config.PubSub_ConsensusChannel),
+				ion.Float64("duration", setupPubsubDuration),
+				ion.String("function", "Consensus.Start.setupPubsubChannels"))
+			setupPubsubSpan.End()
 
-		Alerts.NewAlertBuilder(alert_ctx).
-			AlertName(helper.Alert_Consensus_FailedToCreatePubsubChannel).
-			Status(Alerts.AlertStatusError).
-			Severity(Alerts.SeverityError).
-			Description(ErrorMessage).
-			Send()
-		return fmt.Errorf("%s", ErrorMessage)
+			Alerts.NewAlertBuilder(alert_ctx).
+				AlertName(helper.Alert_Consensus_FailedToCreatePubsubChannel).
+				Status(Alerts.AlertStatusError).
+				Severity(Alerts.SeverityError).
+				Description(ErrorMessage).
+				Send()
+			return fmt.Errorf("%s", ErrorMessage)
+		}
+		setupPubsubSpan.SetAttributes(attribute.Bool("consensus_channel_already_exists", true))
+		logger().Info(setupPubsubCtx, "Consensus pubsub channel already exists, reusing",
+			ion.String("channel", config.PubSub_ConsensusChannel),
+			ion.String("function", "Consensus.Start.setupPubsubChannels"))
 	}
 
 	setupPubsubSpan.SetAttributes(
@@ -1244,7 +1250,7 @@ func (consensus *Consensus) printCRDTVotes(logger_ctx context.Context, listenerN
 	// Use ProcessVotesFromCRDT which iterates GetAllCRDTs() correctly.
 	// GetVotesFromCRDT(..."vote") always returns found=false and is removed.
 	blockHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
-	voteResult, voteErr := MessagePassingStructs.ProcessVotesFromCRDT(trace_ctx, listenerNode, blockHash)
+	voteResult, _, voteErr := MessagePassingStructs.ProcessVotesFromCRDT(trace_ctx, listenerNode, blockHash)
 	if voteErr != nil || voteResult == 0 {
 		span.SetAttributes(
 			attribute.Int("votes_count", 0),
@@ -1866,6 +1872,16 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 			ion.String("function", "Consensus.parseVoteResultResponse"))
 	}
 
+	// Extract rejection reasons if present (peerID → reason for peers that voted -1)
+	rejectionReasons := make(map[string]string)
+	if rrAny, ok := resultData["rejection_reasons"].(map[string]interface{}); ok {
+		for k, v := range rrAny {
+			if s, ok := v.(string); ok {
+				rejectionReasons[k] = s
+			}
+		}
+	}
+
 	// Extract BLS if present
 	if blsAny, ok := resultData["bls"].(map[string]interface{}); ok {
 		sig := ""
@@ -1911,6 +1927,7 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 			SetAgree(agree).
 			SetPubKey(pub).
 			SetPeerID(pid).
+			SetRejectionReasons(rejectionReasons).
 			Build()
 	}
 
@@ -1957,6 +1974,16 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	validTotal := 0
 	var votedPeers []string // Track peer IDs with their votes
 
+	// Merge rejection reasons from all buddy responses (each buddy reports all peers)
+	mergedRejectionReasons := make(map[string]string)
+	for _, r := range blsResults {
+		for peerID, reason := range r.RejectionReasons {
+			if _, exists := mergedRejectionReasons[peerID]; !exists {
+				mergedRejectionReasons[peerID] = reason
+			}
+		}
+	}
+
 	for _, r := range blsResults {
 		vote := int8(-1)
 		if r.Agree {
@@ -1972,9 +1999,18 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 			continue
 		}
 		validTotal++
-		votedPeers = append(votedPeers, fmt.Sprintf("  - %s (vote: %d)", r.PeerID, vote))
+		peerLine := fmt.Sprintf("  - %s (vote: %d)", r.PeerID, vote)
 		if vote == 1 {
 			validYes++
+		}
+		votedPeers = append(votedPeers, peerLine)
+	}
+
+	// Append rejection reasons for peers that voted -1
+	if len(mergedRejectionReasons) > 0 {
+		votedPeers = append(votedPeers, "  Rejection details:")
+		for peerID, reason := range mergedRejectionReasons {
+			votedPeers = append(votedPeers, fmt.Sprintf("    • %s: %s", peerID, reason))
 		}
 	}
 

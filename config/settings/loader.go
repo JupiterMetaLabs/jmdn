@@ -147,10 +147,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("binds.profiler", d.Binds.Profiler)
 
 	// Database
+	v.SetDefault("database.address", d.Database.Address)
+	v.SetDefault("database.port", d.Database.Port)
 	v.SetDefault("database.username", d.Database.Username)
 	v.SetDefault("database.password", d.Database.Password)
 	v.SetDefault("database.redis.url", d.Database.Redis.URL)
 	v.SetDefault("database.redis.password", d.Database.Redis.Password)
+	v.SetDefault("database.tx_index_path", d.Database.TxIndexPath)
 
 	// Thebe
 	v.SetDefault("thebe.enabled", d.Thebe.Enabled)
@@ -202,9 +205,10 @@ func setDefaults(v *viper.Viper) {
 	// FastSync
 	v.SetDefault("fastsync.enabled", d.FastSync.Enabled)
 	v.SetDefault("fastsync.enable_pulling", d.FastSync.EnablePulling)
-	v.SetDefault("fastsync.pull_on_startup", d.FastSync.PullOnStartup)
+	v.SetDefault("fastsync.enable_catchup", d.FastSync.EnableCatchup)
 	v.SetDefault("fastsync.sync_timeout", d.FastSync.SyncTimeout)
-	v.SetDefault("fastsync.allowed_peers", d.FastSync.AllowedPeers)
+	v.SetDefault("fastsync.catch_up_from_block", d.FastSync.CatchUpFromBlock)
+	v.SetDefault("fastsync.sync_check_interval", d.FastSync.SyncCheckInterval)
 
 	// Security
 	v.SetDefault("security.enabled", d.Security.Enabled)

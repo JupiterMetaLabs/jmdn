@@ -42,6 +42,7 @@ This document describes every port used by a JMDN node, its security posture, an
 - **Code Reference**: `gETH/Facade/rpc/handlers.go`
 - **Endpoints**: `eth_blockNumber`, `eth_getBalance`, `eth_chainId`, `eth_sendRawTransaction`, `eth_call`
 - **Note**: `eth_call` is often disabled for compliance.
+- **Additional endpoints** (when SyncMonitor is enabled): `GET /sync/status`, `POST /sync/reconcile`
 - **Recommendation**: Public (`0.0.0.0`) on dedicated RPC nodes. Restrict to specific dApps or wallets if not acting as a public RPC.
 
 ---

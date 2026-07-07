@@ -110,6 +110,11 @@ func ConvertTrabsactionToTx(tx *config.Transaction) *Types.Tx {
 		v = 0
 	}
 
+	var chainID []byte
+	if tx.ChainID != nil {
+		chainID = tx.ChainID.Bytes()
+	}
+
 	Txn := &Types.Tx{
 		Hash:                 tx.Hash.Bytes(),
 		From:                 from,
@@ -128,6 +133,7 @@ func ConvertTrabsactionToTx(tx *config.Transaction) *Types.Tx {
 		MaxPriorityFeePerGas: maxPriorityFeePerGas,
 		MaxFeePerBlobGas:     nil,
 		BlobVersionedHashes:  nil,
+		ChainID:              chainID,
 	}
 	return Txn
 }

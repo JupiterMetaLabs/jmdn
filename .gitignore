@@ -53,13 +53,12 @@ internal/WAL/.tmp/*
 .claude/*
 .code-review-graph/*
 .cursor/*
-
-
 *.log
 *.logs
 *.db
 *.db-wal
-.gocache
+*.db-shm
+.gocache 
 *.vlog
 *.mem
 
@@ -67,11 +66,16 @@ internal/WAL/.tmp/*
 storage/
 data/eventlog*
 data/dlq/
+dlq/DLQ.log
 storage/thebe-kv/DISCARD
 storage/thebe-kv/KEYREGISTRY
 storage/thebe-kv/LOCK
 storage/thebe-kv/MANIFEST
+storage/thebe-kv/outbox.db
 *.duckdb
 *.wal
+eventlog.duckdb
+test_results/
+jmdn2
 docs/FASTSYNC_V3_MIGRATION_PLAN.md
 Scripts/sign_tx.go

@@ -71,11 +71,13 @@ type dbEntry = struct {
 // surprises (math/big.Int marshals as a quoted decimal string, but that behaviour
 // is implementation-defined and not guaranteed across versions).
 //
-// Stored in the stream as: {"address":"0x...","new_balance":"1000000","nonce":42}
+// Stored in the stream as: {"address":"0x...","new_balance":"1000000","nonce":42,"tx_nonce":43,"tx_count_sent":5}
 type accountUpdateWire struct {
-	Address    string `json:"address"`
-	NewBalance string `json:"new_balance"` // decimal string from big.Int.String()
-	Nonce      uint64 `json:"nonce"`
+	Address     string `json:"address"`
+	NewBalance  string `json:"new_balance"` // decimal string from big.Int.String()
+	Nonce       uint64 `json:"nonce"`
+	TxNonce     uint64 `json:"tx_nonce"`
+	TxCountSent uint64 `json:"tx_count_sent"`
 }
 
 // ─── Configuration ────────────────────────────────────────────────────────────
@@ -462,6 +464,8 @@ func parseUpdatesPayload(dataStr string) ([]dbEntry, error) {
 			Address:     addr,
 			Balance:     balance.String(),
 			Nonce:       w.Nonce,
+			TxNonce:     w.TxNonce,
+			TxCountSent: w.TxCountSent,
 			AccountType: "user",
 			UpdatedAt:   time.Now().UTC().UnixNano(),
 		}

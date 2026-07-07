@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"gossipnode/Block"
 	CLICommon "gossipnode/CLI/common"
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	"gossipnode/config/version"
@@ -20,6 +22,9 @@ import (
 	groMetrics "gossipnode/metrics/gro"
 	"gossipnode/node"
 	"gossipnode/seednode"
+
+	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
 	peerpb "gossipnode/seednode/proto"
 	"gossipnode/shutdown"
 
@@ -49,6 +54,8 @@ func formatTimestamp(timestamp int64) string {
 // The concrete implementation is wired in main.go once the engine is initialised.
 type FastSyncerV2Interface interface {
 	HandleSync(targetPeer string) error
+	HandleCatchUpSync(ctx context.Context, fromBlock uint64, targetPeer string) error
+	AccountSyncOnly(targetPeer string) (uint64, error)
 }
 
 type CommandHandler struct {
@@ -108,6 +115,12 @@ func PrintFuncs() {
 	fmt.Println("  mempoolStats                      - Show mempool statistics")
 	fmt.Println("  stats                             - Show messaging statistics")
 	fmt.Println("  broadcast <message>              - Broadcast a message to all connected peers")
+	fmt.Println("  fastsync <peer_multiaddr>                    - Fast sync blockchain data with a peer (V2 Engine)")
+	fmt.Println("  catchup <peer_multiaddr> [from_block]        - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
+	fmt.Println("  rebuildindex                                 - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
+	fmt.Println("  rebuildrange <from_block> <to_block>         - Re-index a specific block range (targeted gap repair)")
+	fmt.Println("  txindexstatus                                - Show tx-address index sync status (ready/syncing, last indexed block)")
+	fmt.Println("  accountsync <peer_multiaddr>                 - Sync missing accounts only (skip block sync)")
 	fmt.Println("  dbstate                           - Show current ImmuDB database state")
 	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
@@ -264,6 +277,18 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleShowStats()
 	case "broadcast":
 		h.handleBroadcast(parts)
+	case "fastsync", "fastsyncv2", "firstsync":
+		h.handleFastSync(parts)
+	case "catchup":
+		h.handleCatchUpSync(parts)
+	case "rebuildindex":
+		h.handleRebuildIndex()
+	case "rebuildrange":
+		h.handleRebuildRange(parts)
+	case "txindexstatus":
+		h.handleTxIndexStatus()
+	case "accountsync":
+		h.handleAccountSync(parts)
 	case "propagateDID":
 		h.handlePropagateDID(parts)
 	case "getDID":
@@ -564,6 +589,178 @@ func (h *CommandHandler) handleBroadcast(parts []string) {
 	} else {
 		fmt.Println("Message broadcast initiated")
 	}
+}
+
+func (h *CommandHandler) handleFastSync(parts []string) {
+	if len(parts) != 2 {
+		fmt.Println("Usage: fastsync <peer_multiaddr>")
+		return
+	}
+
+	if h.FastSyncerV2 == nil {
+		fmt.Println("Error: FastsyncV2 engine is not initialized")
+		return
+	}
+
+	// Parse the multiaddr
+	addr, err := ma.NewMultiaddr(parts[1])
+	if err != nil {
+		fmt.Printf("Invalid multiaddress: %v\n", err)
+		return
+	}
+
+	// Extract peer ID from multiaddr
+	addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
+	if err != nil {
+		fmt.Printf("Failed to extract peer info: %v\n", err)
+		return
+	}
+
+	// Show pre-sync DB state if clients are available
+	if h.MainClient != nil && h.DIDClient != nil {
+		mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+		if err == nil {
+			fmt.Printf("Pre-sync main DB state: TxID=%d, Root=%x\n", mainState.TxId, mainState.TxHash)
+		}
+	}
+
+	fmt.Printf("Starting blockchain fastsync (V2 Engine) with peer %s\n", addrInfo.ID.String())
+
+	startTime := time.Now().UTC()
+	syncErr := h.FastSyncerV2.HandleSync(parts[1])
+	if syncErr != nil {
+		fmt.Printf("Fastsync failed: %v\n", syncErr)
+		return
+	}
+
+	// Show post-sync DB state if clients are available
+	if h.MainClient != nil && h.DIDClient != nil {
+		newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+		if err == nil {
+			fmt.Printf("Post-sync main DB state: TxID=%d, Root=%x\n", newMainState.TxId, newMainState.TxHash)
+		}
+		newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
+		if err == nil {
+			fmt.Printf("Post-sync accounts DB state: TxID=%d, Root=%x\n", newAccountsState.TxId, newAccountsState.TxHash)
+		}
+	}
+
+	fmt.Printf("Fastsync completed in %v\n", time.Since(startTime))
+	printDashes()
+}
+
+func (h *CommandHandler) handleCatchUpSync(parts []string) {
+	if len(parts) < 2 {
+		fmt.Println("Usage: catchup <peer_multiaddr> [from_block]")
+		fmt.Println("  peer_multiaddr  full multiaddr with peer ID, e.g. /ip4/1.2.3.4/tcp/15000/p2p/12D3KooW...")
+		fmt.Println("  from_block      optional; defaults to 0 (auto-detect from local DB tip)")
+		fmt.Println("                  pass 1 to force a full scan from genesis")
+		return
+	}
+	if h.FastSyncerV2 == nil {
+		fmt.Println("Error: FastsyncV2 engine is not initialized")
+		return
+	}
+
+	var fromBlock uint64
+	if len(parts) >= 3 {
+		var err error
+		fromBlock, err = strconv.ParseUint(parts[2], 10, 64)
+		if err != nil {
+			fmt.Printf("Invalid from_block %q: %v\n", parts[2], err)
+			return
+		}
+	} // fromBlock=0 → auto-detect inside HandleCatchUpSync
+
+	fmt.Printf("Starting catch-up sync (from_block=%d) with peer %s\n", fromBlock, parts[1])
+	startTime := time.Now()
+
+	// Interactive CLI — no cancellable ctx in scope; HandleCatchUpSync applies fs.syncTimeout internally.
+	if err := h.FastSyncerV2.HandleCatchUpSync(context.Background(), fromBlock, parts[1]); err != nil {
+		fmt.Printf("CatchUpSync failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("CatchUpSync completed in %v\n", time.Since(startTime))
+	printDashes()
+}
+
+func (h *CommandHandler) handleRebuildIndex() {
+	fmt.Println("Rebuilding tx-address index from genesis (this may take a while)...")
+	startTime := time.Now()
+	if err := txindex.RebuildIndex(context.Background()); err != nil {
+		fmt.Printf("RebuildIndex failed: %v\n", err)
+		return
+	}
+	fmt.Printf("RebuildIndex complete in %v\n", time.Since(startTime))
+	printDashes()
+}
+
+func (h *CommandHandler) handleRebuildRange(parts []string) {
+	if len(parts) != 3 {
+		fmt.Println("Usage: rebuildrange <from_block> <to_block>")
+		return
+	}
+	from, err := strconv.ParseUint(parts[1], 10, 64)
+	if err != nil {
+		fmt.Printf("Invalid from_block %q: %v\n", parts[1], err)
+		return
+	}
+	to, err := strconv.ParseUint(parts[2], 10, 64)
+	if err != nil {
+		fmt.Printf("Invalid to_block %q: %v\n", parts[2], err)
+		return
+	}
+	if from > to {
+		fmt.Println("Error: from_block must be <= to_block")
+		return
+	}
+	fmt.Printf("Re-indexing blocks [%d..%d]...\n", from, to)
+	startTime := time.Now()
+	if err := txindex.RebuildRange(context.Background(), from, to); err != nil {
+		fmt.Printf("RebuildRange failed: %v\n", err)
+		return
+	}
+	fmt.Printf("RebuildRange [%d..%d] complete in %v\n", from, to, time.Since(startTime))
+	printDashes()
+}
+
+func (h *CommandHandler) handleTxIndexStatus() {
+	isReady, lastIndexed, err := txindex.Status(context.Background())
+	if err != nil {
+		fmt.Printf("txindex status: %v\n", err)
+		printDashes()
+		return
+	}
+	state := "SYNCING (catchup in progress)"
+	if isReady {
+		state = "READY"
+	}
+	fmt.Printf("txindex status: %s — last indexed block: %d\n", state, lastIndexed)
+	printDashes()
+}
+
+func (h *CommandHandler) handleAccountSync(parts []string) {
+	if len(parts) != 2 {
+		fmt.Println("Usage: accountsync <peer_multiaddr>")
+		return
+	}
+	if h.FastSyncerV2 == nil {
+		fmt.Println("Error: FastsyncV2 engine is not initialized")
+		return
+	}
+
+	fmt.Printf("Starting account-only sync with peer %s\n", parts[1])
+	startTime := time.Now().UTC()
+
+	synced, err := h.FastSyncerV2.AccountSyncOnly(parts[1])
+	if err != nil {
+		fmt.Printf("AccountSync failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("AccountSync complete: %d missing accounts synced in %v\n", synced, time.Since(startTime))
+	printDashes()
 }
 
 func (h *CommandHandler) handlePropagateDID(parts []string) {

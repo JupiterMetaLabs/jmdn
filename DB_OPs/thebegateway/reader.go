@@ -104,6 +104,15 @@ const (
         ORDER BY block_number DESC, tx_index DESC
         LIMIT $2`
 
+	sqlGetTxsByAddrInRange = `
+        SELECT tx_hash, block_number, tx_index, from_addr, to_addr, value_wei, nonce,
+               type, gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei,
+               data, access_list, sig_v, sig_r, sig_s
+        FROM transactions
+        WHERE (from_addr = $1 OR to_addr = $1)
+          AND block_number >= $2 AND block_number <= $3
+        ORDER BY block_number ASC, tx_index ASC`
+
 	sqlGetZKProof = `
         SELECT block_number, proof_hash, stark_proof, commitment
         FROM zk_proofs WHERE block_number = $1`
@@ -397,6 +406,31 @@ func (r *thebeReader) GetLatestTransactionsByAddress(ctx context.Context, addres
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("GetLatestTransactionsByAddress: rows: %w", err)
+	}
+	return results, nil
+}
+
+
+// GetTransactionsByAddressInRange returns all transactions where address is
+// sender or receiver within [fromBlock, toBlock] inclusive, ordered ascending.
+// Backed by idx_txn_from_addr_block / idx_txn_to_addr_block composite indexes.
+func (r *thebeReader) GetTransactionsByAddressInRange(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*TransactionRecord, error) {
+	rows, err := r.db.QueryContext(ctx, sqlGetTxsByAddrInRange, address, fromBlock, toBlock)
+	if err != nil {
+		return nil, fmt.Errorf("GetTransactionsByAddressInRange: query: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*TransactionRecord
+	for rows.Next() {
+		var rec TransactionRecord
+		if err := r.scanTx(rows, &rec); err != nil {
+			return nil, fmt.Errorf("GetTransactionsByAddressInRange: scan: %w", err)
+		}
+		results = append(results, &rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetTransactionsByAddressInRange: rows: %w", err)
 	}
 	return results, nil
 }

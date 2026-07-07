@@ -1234,3 +1234,54 @@ func (c *Client) RemoveAllBuddies(ctx context.Context) error {
 
 	return nil
 }
+
+// ─── Block-state sync ─────────────────────────────────────────────────────────
+
+// SyncStatus is the parsed response from ReportBlockState.
+type SyncStatus struct {
+	IsSynced      bool
+	SequencerHead uint64
+	SequencerRoot []byte
+	GoodPeers     []SyncPeerInfo
+	Message       string
+}
+
+// SyncPeerInfo is a stripped-down peer record sufficient for dialling.
+type SyncPeerInfo struct {
+	PeerID     string
+	Multiaddrs []string
+	Region     string
+}
+
+// ReportBlockState sends this node's current block head and Merkle root to
+// the seednode and returns the sync verdict plus recommended peers.
+// selfPeerID is this node's libp2p PeerID string.
+func (c *Client) ReportBlockState(ctx context.Context, selfPeerID string, blockHead uint64, merkleRoot []byte) (*SyncStatus, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	resp, err := c.client.ReportBlockState(ctx, &peerpb.BlockStateReport{
+		PeerId:     selfPeerID,
+		BlockHead:  blockHead,
+		MerkleRoot: merkleRoot,
+		ReportedAt: time.Now().Unix(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("seednode: ReportBlockState RPC failed: %w", err)
+	}
+
+	status := &SyncStatus{
+		IsSynced:      resp.IsSynced,
+		SequencerHead: resp.SequencerHead,
+		SequencerRoot: resp.SequencerRoot,
+		Message:       resp.Message,
+	}
+	for _, p := range resp.GoodPeers {
+		status.GoodPeers = append(status.GoodPeers, SyncPeerInfo{
+			PeerID:     p.PeerId,
+			Multiaddrs: p.Multiaddrs,
+			Region:     p.Region,
+		})
+	}
+	return status, nil
+}

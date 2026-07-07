@@ -25,6 +25,12 @@ const (
 	TOPIC    = "BlockProcessing"
 )
 
+// ErrStaleNonce is returned when a transaction's nonce is lower than the
+// account's current DB nonce. This is a skippable condition — it means the
+// tx was valid at security-check time but the account moved on before
+// ProcessBlockLocally ran (race between vote validation and execution).
+var ErrStaleNonce = errors.New("stale nonce")
+
 // AccountSnapshot captures the mutable state of an account before block processing begins.
 // All three fields must be restored atomically on rollback to prevent nonce/count corruption.
 type AccountSnapshot struct {
@@ -188,7 +194,23 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 		// Process the transaction with span context
 		info, Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient, block.Timestamp, commitToDB)
 		if Process_err != nil {
-			// ATOMICITY: If any transaction fails, roll back ALL affected accounts
+			// Stale nonce: security check passed at vote time but the account nonce
+			// advanced before execution (race with PoTS / concurrent block processing).
+			// Skip this tx — do NOT roll back other txs or fail the block.
+			if errors.Is(Process_err, ErrStaleNonce) {
+				cleanupProcessingMarkers(accountsClient, tx.Hash.Hex())
+				logger().Warn(span_ctx, "Skipping tx with stale nonce — account nonce advanced between security check and execution",
+					ion.String("tx_hash", tx.Hash.Hex()),
+					ion.Int("tx_index", i),
+					ion.String("error", Process_err.Error()),
+					ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+					ion.String("topic", TOPIC),
+					ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
+				)
+				continue
+			}
+
+			// ATOMICITY: If any non-stale transaction fails, roll back ALL affected accounts
 			span.RecordError(Process_err)
 			span.SetAttributes(attribute.String("status", "failed"), attribute.String("failed_tx_hash", tx.Hash.Hex()), attribute.Int("failed_tx_index", i))
 
@@ -850,26 +872,27 @@ func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error
 	// Determine gas fee based on transaction type
 	// Type 0x0 = Legacy, 0x1 = AccessList, 0x2 = DynamicFee (EIP-1559)
 	if tx.Type == 2 { // EIP-1559 transaction
-		// For EIP-1559, use MaxFee as the effective gas fee
-		if tx.MaxFee != nil {
-			parsed.MaxFeeBig = new(big.Int).Set(tx.MaxFee)
-			parsed.EffectiveGasFee = new(big.Int).Set(tx.MaxFee)
+		// EIP-1559 effective gas price = min(maxFee, baseFee + tip)
+		// JMDN uses a flat 35 gwei base fee.
+		const baseFeeWei = int64(35_000_000_000)
+
+		maxFee := tx.MaxFee
+		if maxFee == nil {
+			maxFee = big.NewInt(baseFeeWei) // safe fallback
+		}
+		parsed.MaxFeeBig = new(big.Int).Set(maxFee)
+
+		tip := tx.MaxPriorityFee
+		if tip == nil {
+			tip = new(big.Int)
+		}
+		basePlusTip := new(big.Int).Add(big.NewInt(baseFeeWei), tip)
+
+		// effective = min(maxFee, baseFee + tip)
+		if maxFee.Cmp(basePlusTip) <= 0 {
+			parsed.EffectiveGasFee = new(big.Int).Set(maxFee)
 		} else {
-			// Fallback to MaxPriorityFee if MaxFee is not set
-			if tx.MaxPriorityFee != nil {
-				parsed.MaxFeeBig = new(big.Int).Set(tx.MaxPriorityFee)
-				parsed.EffectiveGasFee = new(big.Int).Set(tx.MaxPriorityFee)
-			} else {
-				// Fallback to GasPrice if available
-				if tx.GasPrice != nil {
-					parsed.MaxFeeBig = new(big.Int).Set(tx.GasPrice)
-					parsed.EffectiveGasFee = new(big.Int).Set(tx.GasPrice)
-				} else {
-					// Last resort: use default gas price
-					parsed.MaxFeeBig = big.NewInt(DefaultGasPrice)
-					parsed.EffectiveGasFee = big.NewInt(DefaultGasPrice)
-				}
-			}
+			parsed.EffectiveGasFee = basePlusTip
 		}
 	} else {
 		// For Legacy or AccessList transactions, use GasPrice if available
@@ -908,9 +931,12 @@ func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount s
 		return fmt.Errorf("invalid balance format for DID %s: %s", fromDID, didDoc.Balance)
 	}
 
-	// Foolproof execution-time nonce check (prevents same-block replay attacks)
+	// Foolproof execution-time nonce check (prevents same-block replay attacks).
+	// Returns ErrStaleNonce so the caller can skip this tx rather than rolling
+	// back the entire block — the tx was valid at security-check time but the
+	// account nonce advanced before ProcessBlockLocally ran.
 	if tx.Nonce < didDoc.TxNonce {
-		return fmt.Errorf("execution rejected: submitted nonce %d is lower than account's current DB nonce %d (possible same-block replay attack)", tx.Nonce, didDoc.TxNonce)
+		return fmt.Errorf("%w: submitted nonce %d is lower than account's current DB nonce %d", ErrStaleNonce, tx.Nonce, didDoc.TxNonce)
 	}
 
 	// Parse amount to deduct

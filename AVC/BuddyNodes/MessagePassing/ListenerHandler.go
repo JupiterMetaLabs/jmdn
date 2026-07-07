@@ -1598,10 +1598,11 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	// The sequencer may query the buddy immediately after it sent its vote,
 	// before the vote has been replicated into the buddy's CRDT via pubsub.
 	var result int8
+	var rejectionReasons map[string]string
 	var err error
 	const maxCRDTAttempts = 3
 	for attempt := 1; attempt <= maxCRDTAttempts; attempt++ {
-		result, err = Structs.ProcessVotesFromCRDT(voteResultSpanCtx, listenerNode, targetBlockHash)
+		result, rejectionReasons, err = Structs.ProcessVotesFromCRDT(voteResultSpanCtx, listenerNode, targetBlockHash)
 		if err == nil {
 			break
 		}
@@ -1666,8 +1667,9 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 
 	// Send the result back
 	resultData := map[string]interface{}{
-		"result": result,
-		"bls":    blsResp,
+		"result":            result,
+		"bls":               blsResp,
+		"rejection_reasons": rejectionReasons,
 	}
 
 	resultJSON, err := json.Marshal(resultData)

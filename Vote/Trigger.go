@@ -101,9 +101,14 @@ func (vt *VoteTrigger) SubmitVote() error {
 
 	if !status || err != nil {
 		// VOTE REJECTED (-1)
+		rejectionReason := "validation returned false"
+		if err != nil {
+			rejectionReason = err.Error()
+		}
 		vote := PubSubMessages.Vote{
-			Vote:      -1,
-			BlockHash: blockHash,
+			Vote:            -1,
+			BlockHash:       blockHash,
+			RejectionReason: rejectionReason,
 		}
 		vt.setVote(&vote)
 

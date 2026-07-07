@@ -108,7 +108,8 @@ func (s *SecurityCache) GetAccount(address common.Address) *DB_OPs.Account {
 	return s.accounts[address.Hex()]
 }
 
-// CheckAddressExistWithCache checks if sender and receiver exist in the cache.
+// CheckAddressExistWithCache checks if sender (and receiver, if not a contract deployment) exist in the cache.
+// tx.To == nil is valid for contract deployments — only the sender is required to exist.
 func (s *SecurityCache) CheckAddressExistWithCache(tx *config.Transaction, traceCtx context.Context) (bool, error) {
 	if tx.From == nil {
 		return false, errors.New("from address is nil")

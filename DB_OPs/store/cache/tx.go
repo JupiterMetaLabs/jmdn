@@ -104,6 +104,11 @@ func (s *cachedTxStore) GetTransactionsByAddress(ctx context.Context, address st
 	return s.inner.GetTransactionsByAddress(ctx, address, limit)
 }
 
+// GetTransactionsByAddressInRange delegates directly — range reads are not cached.
+func (s *cachedTxStore) GetTransactionsByAddressInRange(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.TransactionRecord, error) {
+	return s.inner.GetTransactionsByAddressInRange(ctx, address, fromBlock, toBlock)
+}
+
 // SetTransactionStatus delegates to inner, then invalidates the tx hash cache key on success.
 // Time: O(1) inner write; cache invalidation is best-effort.
 func (s *cachedTxStore) SetTransactionStatus(ctx context.Context, txHash string, status int) error {

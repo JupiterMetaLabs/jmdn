@@ -3,6 +3,7 @@ package Service
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"sync"
@@ -122,8 +123,8 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 
 	logger().Info(logger_ctx, "Processing received pubsub message",
 		ion.String("topic", config.PubSub_ConsensusChannel),
-		ion.String("message_id", msg.ID),
-		ion.String("sender", string(msg.Sender)),
+		ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+		ion.String("sender", msg.Sender.String()),
 		ion.String("function", "SubscriptionService.handleReceivedMessage"))
 
 	// Check if the message has valid data
@@ -236,7 +237,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		logger().Info(logger_ctx, "Received vote message via pubsub",
 			ion.String("to_buddy_node", listenerNode.PeerID.String()),
 			ion.String("topic", config.PubSub_ConsensusChannel),
-			ion.String("message_id", msg.ID),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 			ion.String("sender", msg.Data.Sender.String()),
 			ion.String("vote_message", msg.Data.Message),
 			ion.String("channel", msg.Topic),
@@ -340,7 +341,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 	case config.Type_ToBeProcessed:
 		logger().Info(logger_ctx, "Processing TO_BE_PROCESSED message",
 			ion.String("topic", config.PubSub_ConsensusChannel),
-			ion.String("message_id", msg.ID),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
 
 		return nil
@@ -433,7 +434,7 @@ func (s *SubscriptionService) handleCommitVote(logger_ctx context.Context, msg *
 func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	logger().Info(logger_ctx, "Handling subscription request from pubsub",
 		ion.String("topic", config.PubSub_ConsensusChannel),
-		ion.String("sender", string(msg.Sender)),
+		ion.String("sender", msg.Sender.String()),
 		ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
 
 	// In a real implementation, you would:
@@ -444,7 +445,7 @@ func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Conte
 
 	// For now, we'll just log the request
 	logger().Info(logger_ctx, "Subscription request received from",
-		ion.String("sender", string(msg.Sender)),
+		ion.String("sender", msg.Sender.String()),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
 
@@ -501,14 +502,14 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 	err := Connector.Subscribe(logger_ctx, s.pubSub, channelName, func(msg *AVCStruct.GossipMessage) {
 		logger().Info(logger_ctx, "Received message on consensus channel",
 			ion.String("channel", channelName),
-			ion.String("message_id", msg.ID),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 			ion.String("sender", msg.Sender.String()),
 			ion.String("topic", msg.Topic),
 			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 
 		logger().Info(logger_ctx, "Received message on consensus channel",
 			ion.String("channel", channelName),
-			ion.String("message_id", msg.ID),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 			ion.String("sender", msg.Sender.String()),
 			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 
@@ -516,7 +517,7 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 		if err := s.handleReceivedMessage(logger_ctx, msg); err != nil {
 			logger().Error(logger_ctx, "Failed to handle received message", err,
 				ion.String("channel", channelName),
-				ion.String("message_id", msg.ID),
+				ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 				ion.String("sender", msg.Sender.String()),
 				ion.String("topic", msg.Topic),
 				ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
@@ -716,7 +717,7 @@ func processVotesAndTriggerBFT(logger_ctx context.Context, listenerNode *AVCStru
 		ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))
 
 	// Process votes from CRDT with block hash filtering
-	result, err := Structs.ProcessVotesFromCRDT(logger_ctx, listenerNode, blockHash)
+	result, _, err := Structs.ProcessVotesFromCRDT(logger_ctx, listenerNode, blockHash)
 	if err != nil {
 		logger().Error(logger_ctx, "Failed to process votes from CRDT", err,
 			ion.String("function", "SubscriptionService.processVotesAndTriggerBFT"))

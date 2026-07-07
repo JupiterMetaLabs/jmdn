@@ -5,7 +5,7 @@ go 1.25.0
 replace github.com/JupiterMetaLabs/ThebeDB => ../ThebeDB
 
 require (
-	github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260604113915-c1470ecc039d
+	github.com/JupiterMetaLabs/JMDN-FastSync v0.0.0-20260624070201-0e662a93ce62
 	github.com/JupiterMetaLabs/JMDN_Merkletree v0.0.0-20260413092720-b819e61566f8
 	github.com/JupiterMetaLabs/ThebeDB v0.0.0-00010101000000-000000000000
 	github.com/JupiterMetaLabs/goroutine-orchestrator v0.1.5

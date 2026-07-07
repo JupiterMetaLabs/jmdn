@@ -7,11 +7,16 @@ import (
 	"github.com/JupiterMetaLabs/ion"
 )
 
-const (
-	// Database connection settings
+// DBAddress and DBPort are vars so main.go can override them from config at
+// startup (JMDN_DATABASE_ADDRESS / JMDN_DATABASE_PORT env vars or jmdn.yaml).
+// All callers (fastsync, DB_OPs, ConnectionPool) read these vars — pointing
+// at an external immudb container requires no changes in those packages.
+var (
 	DBAddress = "localhost"
 	DBPort    = 3322
+)
 
+const (
 	DBName            = "defaultdb"
 	State_Path_Hidden = "./.immudb_state"
 

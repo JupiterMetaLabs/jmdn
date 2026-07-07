@@ -103,7 +103,7 @@ func startBlockPollerIfNeeded() {
 		return
 	}
 
-	// Initialize the lastProcessedBlock to the current latest block 
+	// Initialize the lastProcessedBlock to the current latest block
 	// so we don't scan the entire chain from block 0.
 	initCtx, initCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer initCancel()
@@ -128,48 +128,48 @@ func pollForNewBlocks(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-		// Check if we still have subscribers
-		newHeadsSubscriptions.Lock()
-		if len(newHeadsSubscriptions.subscribers) == 0 {
-			// No more subscribers, stop polling
-			newHeadsSubscriptions.isPolling = false
-			newHeadsSubscriptions.Unlock()
-			break
-		}
-		newHeadsSubscriptions.Unlock()
-
-		// Get latest block number
-		latestBlock, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
-		if err != nil {
-			// Log error but continue polling
-			logger().Error(context.Background(), "Failed to get latest block number", err)
-			continue
-		}
-
-		// Get last processed block
-		lastProcessed := getLastProcessedBlock()
-
-		// Check for new blocks
-		if latestBlock > lastProcessed {
-			// Process new blocks
-			for blockNum := lastProcessed + 1; blockNum <= latestBlock; blockNum++ {
-				if ctx.Err() != nil {
-					return
-				}
-				block, err := getBlockForSubscription(ctx, blockNum)
-				if err != nil {
-					// Log error but continue with other blocks
-					logger().Error(context.Background(), "Failed to get block", err, ion.Int("block_num", int(blockNum)))
-					continue
-				}
-
-				// Notify all subscribers
-				notifyNewBlock(block)
-
-				// Update last processed block
-				setLastProcessedBlock(blockNum)
+			// Check if we still have subscribers
+			newHeadsSubscriptions.Lock()
+			if len(newHeadsSubscriptions.subscribers) == 0 {
+				// No more subscribers, stop polling
+				newHeadsSubscriptions.isPolling = false
+				newHeadsSubscriptions.Unlock()
+				break
 			}
-		}
+			newHeadsSubscriptions.Unlock()
+
+			// Get latest block number
+			latestBlock, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
+			if err != nil {
+				// Log error but continue polling
+				fmt.Printf("Failed to get latest block number: %v\n", err)
+				continue
+			}
+
+			// Get last processed block
+			lastProcessed := getLastProcessedBlock()
+
+			// Check for new blocks
+			if latestBlock > lastProcessed {
+				// Process new blocks
+				for blockNum := lastProcessed + 1; blockNum <= latestBlock; blockNum++ {
+					if ctx.Err() != nil {
+						return
+					}
+					block, err := getBlockForSubscription(ctx, blockNum)
+					if err != nil {
+						// Log error but continue with other blocks
+						fmt.Printf("Failed to get block %d: %v\n", blockNum, err)
+						continue
+					}
+
+					// Notify all subscribers
+					notifyNewBlock(block)
+
+					// Update last processed block
+					setLastProcessedBlock(blockNum)
+				}
+			}
 		}
 	}
 }

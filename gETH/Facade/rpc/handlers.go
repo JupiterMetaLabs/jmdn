@@ -11,11 +11,15 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"sync"
 
 	"encoding/json"
 
+	"gossipnode/DB_OPs/txindex"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 type Handlers struct{ service Service.Service }
@@ -135,7 +139,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
-		resp, _ := finish(req, marshalBlock(b, full), nil)
+		resp, _ := finish(req, marshalBlock(b, full, handler.service.GetChainIDValue()), nil)
 		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, nil
 
@@ -230,6 +234,137 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, err
 
+	// Non-standard but widely used by explorers / wallets.
+	// params: [address, page (optional, default 1), limit (optional, default 20)]
+	case "eth_getTransactionsByAddress":
+		if len(req.Params) < 1 {
+			resp, _ := invalidParams(req, "missing address")
+			return resp, nil
+		}
+		addr := mustString(req.Params[0])
+		if addr == "" || !common.IsHexAddress(addr) {
+			resp, _ := invalidParams(req, "address must be a valid hex address")
+			return resp, nil
+		}
+		// Normalize to lowercase — ImmuDB/SQLite stores addresses in lowercase.
+		addr = strings.ToLower(addr)
+
+		page := 1
+		if len(req.Params) > 1 {
+			switch v := req.Params[1].(type) {
+			case float64:
+				page = int(v)
+			case string:
+				fmt.Sscanf(v, "%d", &page)
+			}
+		}
+		if page < 1 {
+			page = 1
+		}
+		// JSON numbers arrive as float64 — int(v) on an out-of-range float is
+		// implementation-specific (could land anywhere), so clamp explicitly
+		// rather than trusting the post-conversion value alone.
+		const maxPage = 1_000_000
+		if page > maxPage {
+			page = maxPage
+		}
+
+		limit := 20
+		if len(req.Params) > 2 {
+			switch v := req.Params[2].(type) {
+			case float64:
+				limit = int(v)
+			case string:
+				fmt.Sscanf(v, "%d", &limit)
+			}
+		}
+		if limit < 1 || limit > 100 {
+			limit = 20
+		}
+
+		offset := (page - 1) * limit
+
+		// Look up total first and short-circuit out-of-range pages before
+		// paying for SQLite's O(offset) skip-scan (OFFSET isn't O(1) even with
+		// the covering index) — a cheap request for page 1e6 shouldn't force
+		// an expensive scan just to come back empty.
+		//
+		// NOTE: this count and the paginated query below are two separate
+		// SQLite reads, not one transaction, so `total` can be very slightly
+		// stale relative to the rows returned if a block lands in between.
+		// Intentional — harmless for a UI paginator, not worth a transaction.
+		total, totalErr := txindex.CountByAddress(ctx, addr)
+		if totalErr != nil {
+			resp, _ := finish(req, nil, fmt.Errorf("txindex unavailable: %w", totalErr))
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, nil
+		}
+		if offset < 0 || offset >= total {
+			resp, _ := finish(req, map[string]any{
+				"transactions": []any{},
+				"pagination": map[string]any{
+					"current_page": page,
+					"per_page":     limit,
+					"total_pages":  totalPagesOfInt(total, limit),
+					"total_items":  total,
+					"has_next":     false,
+					"has_prev":     page > 1,
+				},
+			}, nil)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, nil
+		}
+
+		refs, idxErr := txindex.QueryByAddressOffset(ctx, addr, offset, limit)
+		if idxErr != nil {
+			resp, _ := finish(req, nil, fmt.Errorf("txindex unavailable: %w", idxErr))
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, nil
+		}
+
+		// Hydrate each ref from ImmuDB by hash in parallel (bounded) — each
+		// fetch is an independent point lookup, page size is capped at 100.
+		const hydrationConcurrency = 10
+		txs := make([]any, len(refs))
+		sem := make(chan struct{}, hydrationConcurrency)
+		var wg sync.WaitGroup
+		for i, ref := range refs {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(i int, ref txindex.TxRef) {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				tx, fetchErr := handler.service.TxByHash(ctx, ref.TxHash)
+				if fetchErr != nil || tx == nil {
+					// Return a skeleton so the caller can see block/hash even if hydration fails.
+					txs[i] = map[string]any{
+						"blockNumber": "0x" + new(big.Int).SetUint64(ref.BlockNumber).Text(16),
+						"hash":        ref.TxHash,
+					}
+					return
+				}
+				m := marshalTx(tx, handler.service.GetChainIDValue())
+				m["blockNumber"] = "0x" + new(big.Int).SetUint64(ref.BlockNumber).Text(16)
+				txs[i] = m
+			}(i, ref)
+		}
+		wg.Wait()
+
+		resp, _ := finish(req, map[string]any{
+			"transactions": txs,
+			"pagination": map[string]any{
+				"current_page": page,
+				"per_page":     limit,
+				"total_pages":  totalPagesOfInt(total, limit),
+				"total_items":  total,
+				"has_next":     offset+limit < total,
+				"has_prev":     page > 1,
+			},
+		}, nil)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		return resp, nil
+
 	case "eth_getTransactionByHash":
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing tx hash")
@@ -242,7 +377,7 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, err
 		}
-		resp, _ := finish(req, marshalTx(tx), nil)
+		resp, _ := finish(req, marshalTx(tx, handler.service.GetChainIDValue()), nil)
 		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 		return resp, nil
 
@@ -327,40 +462,66 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 	case "eth_feeHistory":
 		if len(req.Params) < 2 {
 			resp, _ := invalidParams(req, "missing blockCount and newestBlock")
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
 			return resp, nil
 		}
-		var blockCount int
+
+		// Parse blockCount (can be string hex or number)
+		var blockCount uint64
 		switch v := req.Params[0].(type) {
 		case string:
 			if strings.HasPrefix(v, "0x") {
-				var count uint64
-				fmt.Sscanf(v[2:], "%x", &count)
-				blockCount = int(count)
+				bigVal := new(big.Int)
+				bigVal.SetString(v[2:], 16)
+				blockCount = bigVal.Uint64()
 			} else {
 				fmt.Sscanf(v, "%d", &blockCount)
 			}
 		case float64:
-			blockCount = int(v)
+			blockCount = uint64(v)
 		case int:
-			blockCount = v
+			blockCount = uint64(v)
+		default:
+			resp, _ := invalidParams(req, "invalid blockCount type")
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, nil
 		}
 
-		newestBlock, _ := req.Params[1].(string)
+		// Parse newestBlock (block tag)
+		newestBlock, err := parseBlockTag(ctx, handler.service, mustString(req.Params[1]))
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, err
+		}
 
+		// Parse rewardPercentiles (optional, third parameter)
 		var rewardPercentiles []float64
 		if len(req.Params) > 2 {
-			if arr, ok := req.Params[2].([]any); ok {
-				for _, val := range arr {
-					if f, ok := val.(float64); ok {
-						rewardPercentiles = append(rewardPercentiles, f)
+			if percArray, ok := req.Params[2].([]any); ok {
+				rewardPercentiles = make([]float64, 0, len(percArray))
+				for _, p := range percArray {
+					switch v := p.(type) {
+					case float64:
+						rewardPercentiles = append(rewardPercentiles, v)
+					case string:
+						var val float64
+						fmt.Sscanf(v, "%f", &val)
+						rewardPercentiles = append(rewardPercentiles, val)
 					}
 				}
 			}
 		}
 
-		result, err := handler.service.GetFeeHistory(ctx, blockCount, newestBlock, rewardPercentiles)
-		resp, _ := finish(req, result, err)
-		return resp, err
+		history, err := handler.service.FeeHistory(ctx, blockCount, newestBlock, rewardPercentiles)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+			return resp, err
+		}
+		resp, _ := finish(req, history, nil)
+		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+		return resp, nil
 
 	case "eth_maxPriorityFeePerGas":
 		result, err := handler.service.GetMaxPriorityFeePerGas(ctx)
@@ -434,6 +595,14 @@ func mustString(v any) string {
 	return s
 }
 
+// totalPagesOfInt computes the page count for a given total item count and page size.
+func totalPagesOfInt(total, limit int) int {
+	if total <= 0 || limit <= 0 {
+		return 0
+	}
+	return (total + limit - 1) / limit
+}
+
 func toCallMsg(p any) (Types.CallMsg, error) {
 	// Parse call object from JSON-RPC params
 	if callObj, ok := p.(map[string]any); ok {
@@ -471,6 +640,20 @@ func toCallMsg(p any) (Types.CallMsg, error) {
 				bigGasPrice := new(big.Int)
 				bigGasPrice.SetString(gasPrice[2:], 16)
 				msg.GasPrice = bigGasPrice
+			}
+		}
+		if maxFee, ok := callObj["maxFeePerGas"].(string); ok {
+			if strings.HasPrefix(maxFee, "0x") {
+				v := new(big.Int)
+				v.SetString(maxFee[2:], 16)
+				msg.MaxFeePerGas = v
+			}
+		}
+		if maxTip, ok := callObj["maxPriorityFeePerGas"].(string); ok {
+			if strings.HasPrefix(maxTip, "0x") {
+				v := new(big.Int)
+				v.SetString(maxTip[2:], 16)
+				msg.MaxPriorityFeePerGas = v
 			}
 		}
 
@@ -527,30 +710,55 @@ func toFilterQuery(p any) (*Types.FilterQuery, error) {
 	return &Types.FilterQuery{}, errors.New("invalid filter object")
 }
 
-func marshalBlock(b *Types.Block, full bool) map[string]any {
+// sha3UnclesEmpty is the Keccak-256 of an empty uncle list — standard constant for PoS/non-PoW chains.
+const sha3UnclesEmpty = "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"
+
+func marshalBlock(b *Types.Block, full bool, globalChainID *big.Int) map[string]any {
 	result := map[string]any{
-		"number":       "0x" + new(big.Int).SetUint64(b.Header.Number).Text(16),
-		"hash":         "0x" + hex.EncodeToString(b.Header.Hash),
-		"parentHash":   "0x" + hex.EncodeToString(b.Header.ParentHash),
-		"timestamp":    "0x" + new(big.Int).SetUint64(b.Header.Timestamp).Text(16),
-		"gasLimit":     "0x" + new(big.Int).SetUint64(b.Header.GasLimit).Text(16),
-		"gasUsed":      "0x" + new(big.Int).SetUint64(b.Header.GasUsed).Text(16),
+		// Core identity
+		"number":     "0x" + new(big.Int).SetUint64(b.Header.Number).Text(16),
+		"hash":       "0x" + hex.EncodeToString(b.Header.Hash),
+		"parentHash": "0x" + hex.EncodeToString(b.Header.ParentHash),
+		"timestamp":  "0x" + new(big.Int).SetUint64(b.Header.Timestamp).Text(16),
+
+		// Gas
+		"gasLimit": "0x" + new(big.Int).SetUint64(b.Header.GasLimit).Text(16),
+		"gasUsed":  "0x" + new(big.Int).SetUint64(b.Header.GasUsed).Text(16),
+
+		// State / receipts — all stored in ZKBlock, surfaced via BlockHeader
+		"stateRoot":    "0x" + hex.EncodeToString(b.Header.StateRoot),
+		"receiptsRoot": "0x" + hex.EncodeToString(b.Header.ReceiptsRoot),
+		"logsBloom":    "0x" + hex.EncodeToString(b.Header.LogsBloom),
+		"extraData":    "0x" + hex.EncodeToString(b.Header.ExtraData),
+
+		// Miner / sequencer address (ZKVMAddr in ZKBlock → Miner in BlockHeader)
+		"miner": "0x" + hex.EncodeToString(b.Header.Miner),
+
+		// EIP-1559 base fee — computed at read time (35 gwei constant) in ConvertZKBlockToblockheader.
+		// Guard against nil/empty for blocks written before this field existed.
+		"baseFeePerGas": func() string {
+			if len(b.Header.BaseFee) > 0 {
+				return "0x" + new(big.Int).SetBytes(b.Header.BaseFee).Text(16)
+			}
+			return "0x" + big.NewInt(35000000000).Text(16) // fallback: 35 gwei
+		}(),
+
+		// PoW fields — this chain has no PoW; use standard empty/zero values
+		// so EIP-3675 (PoS) compatible clients don't reject the block envelope
+		"sha3Uncles":      sha3UnclesEmpty,
+		"nonce":           "0x0000000000000000",
+		"difficulty":      "0x0",
+		"totalDifficulty": "0x0",
+		"mixHash":         "0x" + strings.Repeat("0", 64),
+		"uncles":          []string{},
+
 		"transactions": []any{},
 	}
-
-	// Add baseFeePerGas at top-level from header (EIP-1559)
-	// if b.Header != nil && len(b.Header.BaseFee) > 0 {
-	// 	baseFeeBig := new(big.Int).SetBytes(b.Header.BaseFee)
-	// 	result["baseFeePerGas"] = "0x" + baseFeeBig.Text(16)
-	// } else {
-	// 	// If no base fee (pre-EIP-1559 blocks), set to null or omit
-	// 	result["baseFeePerGas"] = nil
-	// }
 
 	if full && len(b.Transactions) > 0 {
 		txs := make([]any, len(b.Transactions))
 		for i, tx := range b.Transactions {
-			txs[i] = marshalTx(tx)
+			txs[i] = marshalTx(tx, globalChainID)
 		}
 		result["transactions"] = txs
 	} else if len(b.Transactions) > 0 {
@@ -564,18 +772,63 @@ func marshalBlock(b *Types.Block, full bool) map[string]any {
 	return result
 }
 
-func marshalTx(tx *Types.Tx) map[string]any {
+func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {
+	// to: null for contract deployments, hex address otherwise
+	var to any
+	if len(tx.To) > 0 {
+		to = "0x" + hex.EncodeToString(tx.To)
+	}
+
+	// gasPrice: for type 2 use effectiveGasPrice = min(maxFeePerGas, baseFee+tip)
+	// For legacy/type1 use GasPrice directly.
+	const baseFee = int64(35_000_000_000)
+	var gasPriceHex string
+	if tx.Type == 2 && len(tx.MaxFeePerGas) > 0 {
+		maxFee := new(big.Int).SetBytes(tx.MaxFeePerGas)
+		tip := new(big.Int)
+		if len(tx.MaxPriorityFeePerGas) > 0 {
+			tip.SetBytes(tx.MaxPriorityFeePerGas)
+		}
+		basePlusTip := new(big.Int).Add(big.NewInt(baseFee), tip)
+		effective := maxFee
+		if maxFee.Cmp(basePlusTip) > 0 {
+			effective = basePlusTip
+		}
+		gasPriceHex = "0x" + effective.Text(16)
+	} else if len(tx.GasPrice) > 0 {
+		gasPriceHex = "0x" + new(big.Int).SetBytes(tx.GasPrice).Text(16)
+	} else {
+		gasPriceHex = "0x0"
+	}
+
 	result := map[string]any{
 		"hash":     "0x" + hex.EncodeToString(tx.Hash),
 		"from":     "0x" + hex.EncodeToString(tx.From),
-		"to":       "0x" + hex.EncodeToString(tx.To),
+		"to":       to,
 		"input":    "0x" + hex.EncodeToString(tx.Input),
 		"value":    "0x" + new(big.Int).SetBytes(tx.Value).Text(16),
 		"nonce":    "0x" + new(big.Int).SetUint64(tx.Nonce).Text(16),
 		"gas":      "0x" + new(big.Int).SetUint64(tx.Gas).Text(16),
-		"gasPrice": "0x" + new(big.Int).SetBytes(tx.GasPrice).Text(16),
+		"gasPrice": gasPriceHex,
 		"type":     "0x" + new(big.Int).SetUint64(uint64(tx.Type)).Text(16),
 	}
+
+	// EIP-1559 fields (type 2)
+	if tx.Type == 2 {
+		if len(tx.MaxFeePerGas) > 0 {
+			result["maxFeePerGas"] = "0x" + new(big.Int).SetBytes(tx.MaxFeePerGas).Text(16)
+		}
+		if len(tx.MaxPriorityFeePerGas) > 0 {
+			result["maxPriorityFeePerGas"] = "0x" + new(big.Int).SetBytes(tx.MaxPriorityFeePerGas).Text(16)
+		}
+	}
+
+	// chainId — always emit; fall back to global chain ID if not set on the tx
+	chainID := new(big.Int).SetBytes(tx.ChainID)
+	if len(tx.ChainID) == 0 {
+		chainID = globalChainID
+	}
+	result["chainId"] = "0x" + chainID.Text(16)
 
 	// Add optional fields if they exist
 	if len(tx.R) > 0 {

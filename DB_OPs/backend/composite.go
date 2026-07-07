@@ -184,6 +184,11 @@ func (h *compositeHandle) GetTransactionsByAddress(ctx context.Context, address 
 	return h.txs.GetTransactionsByAddress(ctx, address, limit)
 }
 
+// GetTransactionsByAddressInRange delegates to the cache-decorated TxStore.
+func (h *compositeHandle) GetTransactionsByAddressInRange(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.TransactionRecord, error) {
+	return h.txs.GetTransactionsByAddressInRange(ctx, address, fromBlock, toBlock)
+}
+
 // SetTransactionStatus delegates to the cache-decorated TxStore.
 func (h *compositeHandle) SetTransactionStatus(ctx context.Context, txHash string, status int) error {
 	return h.txs.SetTransactionStatus(ctx, txHash, status)

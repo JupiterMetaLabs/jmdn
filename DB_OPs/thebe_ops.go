@@ -402,6 +402,30 @@ func GetTransactionsByAccount(PooledConnection *config.PooledConnection, account
 	return txs, nil
 }
 
+// GetTransactionsByAccountInRange retrieves transactions where the account is
+// sender or receiver within [fromBlock, toBlock] inclusive, via ThebeDB SQL.
+// Hot path for CatchUp ReconcileWithDeltas — uses composite (addr, block_number) indexes.
+func GetTransactionsByAccountInRange(PooledConnection *config.PooledConnection, accountAddr *common.Address, fromBlock, toBlock uint64) ([]*config.Transaction, error) {
+	if accountAddr == nil {
+		return nil, fmt.Errorf("GetTransactionsByAccountInRange: nil address")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	h, err := getHandle(nil)
+	if err != nil {
+		return nil, fmt.Errorf("GetTransactionsByAccountInRange: %w", err)
+	}
+	recs, err := h.GetTransactionsByAddressInRange(ctx, accountAddr.Hex(), fromBlock, toBlock)
+	if err != nil {
+		return nil, fmt.Errorf("GetTransactionsByAccountInRange(%s): %w", accountAddr.Hex(), err)
+	}
+	txs := make([]*config.Transaction, 0, len(recs))
+	for _, r := range recs {
+		txs = append(txs, txRecordToConfig(r))
+	}
+	return txs, nil
+}
+
 // ========================================
 // ART NONCE (from account_immuclient.go)
 // ========================================

@@ -59,6 +59,7 @@ type Tx struct {
 	MaxPriorityFeePerGas []byte             `json:"maxpriorityfeepergas"`
 	MaxFeePerBlobGas     []byte             `json:"maxfeeperblobgas"`
 	BlobVersionedHashes  [][]byte           `json:"blobversionedhashes"`
+	ChainID              []byte             `json:"chainId"`
 	BlockNumber          *uint64            `json:"blocknumber,omitempty"`
 	BlockHash            []byte             `json:"blockhash,omitempty"`
 	TransactionIndex     *uint64            `json:"transactionindex,omitempty"`
@@ -78,10 +79,12 @@ type Log struct {
 }
 
 type CallMsg struct {
-	From, To      string
-	Data          []byte
-	Value         *big.Int
-	Gas, GasPrice *big.Int
+	From, To             string
+	Data                 []byte
+	Value                *big.Int
+	Gas, GasPrice        *big.Int
+	MaxFeePerGas         *big.Int
+	MaxPriorityFeePerGas *big.Int
 }
 
 type FilterQuery struct {

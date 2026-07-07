@@ -256,9 +256,19 @@ func (s *CLIServer) AccountSync(ctx context.Context, req *pb.PeerRequest) (*pb.S
 func (s *CLIServer) FirstSync(ctx context.Context, req *pb.FirstSyncRequest) (*pb.SyncStats, error) {
 	stats, err := s.handler.HandleFirstSync(req.Peer, req.Mode)
 	if err != nil {
-		return &pb.SyncStats{
-			Error: err.Error(),
-		}, nil
+		return &pb.SyncStats{Error: err.Error()}, nil
+	}
+	return &pb.SyncStats{
+		TimeTaken:     int64(stats.TimeTaken.Seconds()),
+		MainState:     convertDBState(stats.MainState),
+		AccountsState: convertDBState(stats.AccountsState),
+	}, nil
+}
+
+func (s *CLIServer) CatchUpSync(ctx context.Context, req *pb.CatchUpRequest) (*pb.SyncStats, error) {
+	stats, err := s.handler.HandleCatchUpSync(ctx, req.Peer, req.FromBlock)
+	if err != nil {
+		return &pb.SyncStats{Error: err.Error()}, nil
 	}
 	return &pb.SyncStats{
 		TimeTaken:     int64(stats.TimeTaken.Seconds()),
@@ -276,6 +286,36 @@ func (s *CLIServer) GetDatabaseState(ctx context.Context, _ *emptypb.Empty) (*pb
 		MainDb:     convertDBState(mainState),
 		AccountsDb: convertDBState(accountsState),
 	}, nil
+}
+
+// RebuildTxIndex wipes and rebuilds the tx-address SQLite index from genesis.
+// Errors are returned in the response body (not as a gRPC error) so a long
+// rebuild that fails partway still reports cleanly to `jmdn -cmd rebuildindex`,
+// consistent with how CatchUpSync/FastSync report failures via SyncStats.Error.
+func (s *CLIServer) RebuildTxIndex(ctx context.Context, _ *emptypb.Empty) (*pb.TxIndexRebuildResponse, error) {
+	elapsed, err := s.handler.HandleRebuildIndex(ctx)
+	if err != nil {
+		return &pb.TxIndexRebuildResponse{Error: err.Error()}, nil
+	}
+	return &pb.TxIndexRebuildResponse{TimeTakenMs: elapsed.Milliseconds()}, nil
+}
+
+// RebuildTxIndexRange re-indexes a specific block range, for a targeted gap repair.
+func (s *CLIServer) RebuildTxIndexRange(ctx context.Context, req *pb.TxIndexRebuildRangeRequest) (*pb.TxIndexRebuildResponse, error) {
+	elapsed, err := s.handler.HandleRebuildRange(ctx, req.FromBlock, req.ToBlock)
+	if err != nil {
+		return &pb.TxIndexRebuildResponse{Error: err.Error()}, nil
+	}
+	return &pb.TxIndexRebuildResponse{TimeTakenMs: elapsed.Milliseconds()}, nil
+}
+
+// GetTxIndexStatus reports whether the tx-address index is ready and how far it's caught up.
+func (s *CLIServer) GetTxIndexStatus(ctx context.Context, _ *emptypb.Empty) (*pb.TxIndexStatusResponse, error) {
+	ready, lastIndexed, err := s.handler.HandleTxIndexStatus(ctx)
+	if err != nil {
+		return &pb.TxIndexStatusResponse{Error: err.Error()}, nil
+	}
+	return &pb.TxIndexStatusResponse{Ready: ready, LastIndexedBlock: lastIndexed}, nil
 }
 
 // Helper function to convert database state

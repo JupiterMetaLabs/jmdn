@@ -2,6 +2,7 @@ package PubSubConnector
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -100,8 +101,8 @@ func (s *SubscriptionService) HandleAskForSubscription(gossipMessage *AVCStruct.
 	// Subscribe to the consensus channel
 	err := Connector.Subscribe(trace_ctx, s.pubSub, config.PubSub_ConsensusChannel, func(msg *AVCStruct.GossipMessage) {
 		logger().Info(trace_ctx, "Received pubsub message on consensus channel:",
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.HandleAskForSubscription"))
 
@@ -162,8 +163,8 @@ func (s *SubscriptionService) HandleEndPubSub(gossipMessage *AVCStruct.GossipMes
 func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	logger().Info(logger_ctx, "Processing received pubsub message",
 		ion.String("topic", config.PubSub_ConsensusChannel),
-		ion.String("message_id", msg.ID),
-		ion.String("sender", string(msg.Sender)),
+		ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+		ion.String("sender", msg.Sender.String()),
 		ion.String("function", "SubscriptionService.handleReceivedMessage"))
 
 	// Check if the message has valid data
@@ -216,14 +217,14 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	logger().Info(logger_ctx, "Handling subscription request from pubsub",
 		ion.String("topic", config.PubSub_ConsensusChannel),
-		ion.String("sender", string(msg.Sender)),
+		ion.String("sender", msg.Sender.String()),
 		ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
 
 	// 1. Validate the requesting node
 	if err := s.validateRequestingNode(logger_ctx, msg); err != nil {
 		logger().Error(logger_ctx, "Node validation failed:", err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
@@ -234,8 +235,8 @@ func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Conte
 	// 2. Check if the node is authorized to subscribe
 	if err := s.checkNodeAuthorization(logger_ctx, msg.Sender); err != nil {
 		logger().Error(logger_ctx, "Node authorization failed:", err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
@@ -245,8 +246,8 @@ func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Conte
 	// 3. Add the node to your buddy list
 	if err := s.addNodeToBuddyList(logger_ctx, msg.Sender); err != nil {
 		logger().Error(logger_ctx, "Failed to add node to buddy list:", err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
@@ -256,8 +257,8 @@ func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Conte
 	// 4. Send a response back to the requesting node
 	if err := s.sendSubscriptionResponse(logger_ctx, msg, true); err != nil {
 		logger().Error(logger_ctx, "Failed to send subscription response:", err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
@@ -265,8 +266,8 @@ func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Conte
 	}
 
 	logger().Info(logger_ctx, "Successfully processed subscription request from:",
-		ion.String("message_id", msg.ID),
-		ion.String("sender", string(msg.Sender)),
+		ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+		ion.String("sender", msg.Sender.String()),
 		ion.String("stage", string(msg.Data.ACK.Stage)),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
@@ -283,8 +284,8 @@ func (s *SubscriptionService) validateRequestingNode(logger_ctx context.Context,
 
 		logger().Error(logger_ctx, err.Error(),
 			err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.validateRequestingNode"))
@@ -296,8 +297,8 @@ func (s *SubscriptionService) validateRequestingNode(logger_ctx context.Context,
 		err := errors.New("subscriptionService.validateRequestingNode - sender is empty")
 		logger().Error(logger_ctx, err.Error(),
 			err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.validateRequestingNode"))
@@ -312,8 +313,8 @@ func (s *SubscriptionService) validateRequestingNode(logger_ctx context.Context,
 		err := errors.New("subscriptionService.validateRequestingNode - message timestamp is too old")
 		logger().Error(logger_ctx, err.Error(),
 			err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.validateRequestingNode"))
@@ -324,8 +325,8 @@ func (s *SubscriptionService) validateRequestingNode(logger_ctx context.Context,
 		err := errors.New("subscriptionService.validateRequestingNode - message timestamp is in the future")
 		logger().Error(logger_ctx, err.Error(),
 			err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.validateRequestingNode"))
@@ -337,8 +338,8 @@ func (s *SubscriptionService) validateRequestingNode(logger_ctx context.Context,
 		err := errors.New("subscriptionService.validateRequestingNode - invalid ACK stage for subscription request")
 		logger().Error(logger_ctx, err.Error(),
 			err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.validateRequestingNode"))
@@ -446,7 +447,7 @@ func (s *SubscriptionService) addNodeToBuddyList(logger_ctx context.Context, pee
 // sendSubscriptionResponse sends a response back to the requesting node
 func (s *SubscriptionService) sendSubscriptionResponse(logger_ctx context.Context, msg *AVCStruct.GossipMessage, accepted bool) error {
 	logger().Info(logger_ctx, "Sending subscription response",
-		ion.String("sender", string(msg.Sender)),
+		ion.String("sender", msg.Sender.String()),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("function", "SubscriptionService.sendSubscriptionResponse"))
 	// Get the current buddy node from global variables
@@ -455,7 +456,7 @@ func (s *SubscriptionService) sendSubscriptionResponse(logger_ctx context.Contex
 		err := errors.New("subscriptionService.sendSubscriptionResponse - buddy node not available for sending response")
 		logger().Error(logger_ctx, err.Error(),
 			err,
-			ion.String("sender", string(msg.Sender)),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.sendSubscriptionResponse"))
 		return err
@@ -490,7 +491,7 @@ func (s *SubscriptionService) sendSubscriptionResponse(logger_ctx context.Contex
 		err := errors.New("subscriptionService.sendSubscriptionResponse - failed to publish subscription response")
 		logger().Error(logger_ctx, err.Error(),
 			err,
-			ion.String("sender", string(msg.Sender)),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("topic", log.SubscriptionService),
 			ion.String("function", "SubscriptionService.sendSubscriptionResponse"))
 
@@ -498,7 +499,7 @@ func (s *SubscriptionService) sendSubscriptionResponse(logger_ctx context.Contex
 	}
 
 	logger().Info(logger_ctx, "Sent subscription response",
-		ion.String("sender", string(msg.Sender)),
+		ion.String("sender", msg.Sender.String()),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("accepted", fmt.Sprintf("%t", accepted)),
 		ion.String("function", "SubscriptionService.sendSubscriptionResponse"))
@@ -611,7 +612,7 @@ func (s *SubscriptionService) getBFTHandler(logger_ctx context.Context, channelN
 func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	logger().Info(logger_ctx, "Handling BFT request",
 		ion.String("topic", log.SubscriptionService),
-		ion.String("message_id", msg.ID),
+		ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 		ion.String("function", "SubscriptionService.handleBFTRequest"))
 
 	// Parse the request data
@@ -626,7 +627,7 @@ func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *
 		err := errors.New("subscriptionService.handleBFTRequest - failed to parse BFT request")
 		logger().Error(logger_ctx, err.Error(),
 			err,
-			ion.String("message_id", msg.ID),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 			ion.String("topic", log.SubscriptionService),
 			ion.String("function", "SubscriptionService.handleBFTRequest"))
 		return err

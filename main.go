@@ -38,6 +38,9 @@ import (
 	"gossipnode/DB_OPs/cassata"
 	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/DB_OPs/thebeprofile"
+	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
+	"gossipnode/DB_OPs/txindex"
+	"gossipnode/FastsyncV2"
 	"gossipnode/DID"
 	"gossipnode/Pubsub"
 	"gossipnode/Security"
@@ -51,6 +54,7 @@ import (
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/rpc"
 	"gossipnode/helper"
+	"gossipnode/internal/syncmonitor"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	"gossipnode/metrics"
@@ -102,7 +106,7 @@ func goMaybeTracked(
 
 // Global variables for easier access
 var (
-	// immuClient   *config.ImmuClient // unused: declared but never assigned or read
+	fastSyncerV2 *FastsyncV2.FastsyncV2
 	globalPubSub *Pubsub.StructGossipPubSub
 )
 
@@ -160,7 +164,7 @@ func initAppandLocalGRO() {
 	}
 }
 
-func StartFacadeServer(bindAddr string, port int, debugBindAddr string, debugPort int, chainID int, smartRPC int) {
+func StartFacadeServer(bindAddr string, port int, debugBindAddr string, debugPort int, chainID int, smartRPC int, mon *syncmonitor.Monitor) {
 	if MainLM == nil {
 		if logger := mainLogger(); logger != nil {
 			logger.Error(context.Background(), "MainLM not initialized. Call initAppandLocalGRO() first", nil)
@@ -177,6 +181,9 @@ func StartFacadeServer(bindAddr string, port int, debugBindAddr string, debugPor
 		httpServer := rpc.NewHTTPServer(handler)
 		if cas != nil {
 			httpServer = httpServer.WithCassata(cas)
+		}
+		if mon != nil {
+			httpServer.WithSyncMonitor(mon)
 		}
 
 		if debugPort > 0 {
@@ -341,6 +348,12 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
+		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
+		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
+		fmt.Println("  rebuildindex                      - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
+		fmt.Println("  rebuildrange <from> <to>          - Re-index a specific block range (targeted gap repair)")
+		fmt.Println("  txindexstatus                     - Show tx-address index sync status (ready/syncing, last indexed block)")
+		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
 		fmt.Println("are only available in interactive mode.")
@@ -497,6 +510,142 @@ func runCommand(command string, args []string, grpcPort int) {
 			os.Exit(1)
 		}
 
+	case "fastsync", "fastsyncv2", "firstsync":
+		if len(args) < 1 {
+			fmt.Println("Usage: jmdn -cmd fastsync <peer_multiaddr>")
+			os.Exit(1)
+		}
+		fmt.Println("Starting FastSync (V2 Engine)...")
+		stats, err := client.FastSyncV2(args[0])
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if stats == nil {
+			fmt.Println("FastSync returned no stats. The target peer may be unreachable.")
+			os.Exit(1)
+		}
+		if stats.Error != "" {
+			fmt.Printf("FastSync failed: %s\n", stats.Error)
+			os.Exit(1)
+		}
+		fmt.Printf("Sync completed in %ds\n", stats.TimeTaken)
+		if stats.MainState == nil {
+			fmt.Println("  Main DB TxID: unavailable")
+		} else {
+			fmt.Printf("  Main DB TxID: %d\n", stats.MainState.TxId)
+		}
+		if stats.AccountsState == nil {
+			fmt.Println("  Accounts DB TxID: unavailable")
+		} else {
+			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
+		}
+
+	case "catchup":
+		if len(args) < 1 {
+			fmt.Println("Usage: jmdn -cmd catchup <peer_multiaddr> [from_block]")
+			fmt.Println("  from_block defaults to 0 (auto-detect from local DB tip)")
+			os.Exit(1)
+		}
+		var fromBlock uint64
+		if len(args) >= 2 {
+			var err error
+			fromBlock, err = strconv.ParseUint(args[1], 10, 64)
+			if err != nil {
+				fmt.Printf("Invalid from_block %q: %v\n", args[1], err)
+				os.Exit(1)
+			}
+		}
+		fmt.Printf("Starting CatchUpSync (from_block=%d)...\n", fromBlock)
+		stats, err := client.CatchUpSync(args[0], fromBlock)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if stats != nil && stats.Error != "" {
+			fmt.Printf("CatchUpSync failed: %s\n", stats.Error)
+			os.Exit(1)
+		}
+		if stats != nil {
+			fmt.Printf("CatchUpSync completed in %ds\n", stats.TimeTaken)
+		}
+
+	case "rebuildindex":
+		fmt.Println("Rebuilding tx-address index from genesis (this may take a while)...")
+		resp, err := client.RebuildTxIndex()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if resp.Error != "" {
+			fmt.Printf("RebuildIndex failed: %s\n", resp.Error)
+			os.Exit(1)
+		}
+		fmt.Printf("RebuildIndex complete in %v\n", time.Duration(resp.TimeTakenMs)*time.Millisecond)
+
+	case "rebuildrange":
+		if len(args) != 2 {
+			fmt.Println("Usage: jmdn -cmd rebuildrange <from_block> <to_block>")
+			os.Exit(1)
+		}
+		from, err := strconv.ParseUint(args[0], 10, 64)
+		if err != nil {
+			fmt.Printf("Invalid from_block %q: %v\n", args[0], err)
+			os.Exit(1)
+		}
+		to, err := strconv.ParseUint(args[1], 10, 64)
+		if err != nil {
+			fmt.Printf("Invalid to_block %q: %v\n", args[1], err)
+			os.Exit(1)
+		}
+		fmt.Printf("Re-indexing blocks [%d..%d]...\n", from, to)
+		resp, err := client.RebuildTxIndexRange(from, to)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if resp.Error != "" {
+			fmt.Printf("RebuildRange failed: %s\n", resp.Error)
+			os.Exit(1)
+		}
+		fmt.Printf("RebuildRange [%d..%d] complete in %v\n", from, to, time.Duration(resp.TimeTakenMs)*time.Millisecond)
+
+	case "txindexstatus":
+		resp, err := client.GetTxIndexStatus()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if resp.Error != "" {
+			fmt.Printf("txindex status: %s\n", resp.Error)
+			os.Exit(1)
+		}
+		state := "SYNCING (catchup in progress)"
+		if resp.Ready {
+			state = "READY"
+		}
+		fmt.Printf("txindex status: %s — last indexed block: %d\n", state, resp.LastIndexedBlock)
+
+	case "accountsync":
+		if len(args) < 1 {
+			fmt.Println("Usage: jmdn -cmd accountsync <peer_multiaddr>")
+			os.Exit(1)
+		}
+		fmt.Println("Starting AccountSync (accounts only, no block sync)...")
+		stats, err := client.AccountSync(args[0])
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if stats.Error != "" {
+			fmt.Printf("AccountSync failed: %s\n", stats.Error)
+			os.Exit(1)
+		}
+		fmt.Printf("AccountSync completed in %ds\n", stats.TimeTaken)
+		if stats.AccountsState != nil {
+			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
+		}
+
 	case "sendfile":
 		if len(args) < 3 {
 			fmt.Println("Usage: jmdn -cmd sendfile <peer> <filepath> <remote_filename>")
@@ -537,6 +686,12 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  sendfile <peer> <filepath> <remote> - Send file")
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
+		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
+		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
+		fmt.Println("  rebuildindex                      - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
+		fmt.Println("  rebuildrange <from> <to>          - Re-index a specific block range (targeted gap repair)")
+		fmt.Println("  txindexstatus                     - Show tx-address index sync status (ready/syncing, last indexed block)")
+		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		os.Exit(1)
 	}
 }
@@ -610,6 +765,19 @@ func initAccountsDBPool() error {
 		logger.Info(context.Background(), "Accounts database connection pool initialized", ion.String("database", config.AccountsDBName))
 	}
 	return nil
+}
+
+// initFastsyncV2 initializes the FastSync V2 service.
+// ctx is the node's top-level shutdown context — it governs the lifetime of
+// server-side network handler goroutines inside the engine.
+func initFastsyncV2(ctx context.Context, n *config.Node, syncTimeout time.Duration) *FastsyncV2.FastsyncV2 {
+	fs, err := FastsyncV2.NewFastsyncV2(ctx, n.Host, syncTimeout)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to start FastsyncV2 engine")
+		return nil
+	}
+	log.Info().Msg("FastsyncV2 service initialized")
+	return fs
 }
 
 // initPubSub initializes the PubSub system for the node
@@ -744,6 +912,19 @@ func main() {
 		Str("group_name", cfg.Thebe.GroupName).
 		Msg("Resolved Thebe config")
 
+	// ImmuDB address/port — override package-level vars so all callers
+	// (ConnectionPool, fastsync, DB_OPs) pick up the config value without
+	// needing individual changes. Defaults: localhost:3322 (embedded).
+	// Override via JMDN_DATABASE_ADDRESS / JMDN_DATABASE_PORT to use an
+	// external immudb container.
+	if cfg.Database.Address != "" {
+		config.DBAddress = cfg.Database.Address
+	}
+	if cfg.Database.Port > 0 {
+		config.DBPort = cfg.Database.Port
+	}
+	fmt.Printf("ImmuDB target: %s:%d\n", config.DBAddress, config.DBPort)
+
 	// Chain ID global initialization — must happen before any Security validation.
 	// Previously this was only set inside Block/Server.go (gated behind BlockGen > 0),
 	// which left expectedChainID nil on non-sequencer nodes. All nodes need it because
@@ -853,7 +1034,18 @@ func main() {
 			}
 		}
 
-		// 3. Delegate final shutdown to the centralized handler
+		// 3. Stop the tx-address index: refuse new async work, cancel any
+		// in-flight catchup/rebuild, and close both SQLite pools. Must run
+		// before the process exits — nothing else does this today, and an
+		// unclosed sql.DB leaks its connections/WAL file handles.
+		log.Info().Msg("Shutting down transaction address index...")
+		if err := txindex.Shutdown(); err != nil {
+			log.Error().Err(err).Msg("txindex shutdown reported an error")
+		} else {
+			log.Info().Msg("Transaction address index stopped")
+		}
+
+		// 4. Delegate final shutdown to the centralized handler
 		if shutdown.Shutdown() {
 			logger_cancel()
 			defer shutdown.OS_EXIT(0)
@@ -871,6 +1063,25 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to initialize main database pool")
 	}
 	fmt.Println("Main database pool initialized successfully")
+
+	// Initialise the SQLite tx-by-address index. Init() only opens the DB file
+	// and starts the background worker — it returns immediately. The (possibly
+	// long, e.g. full genesis migration on first deploy) gap catchup runs in a
+	// goroutine so it never delays facade/RPC/consensus/gossip startup below.
+	// Until txindex.IsReady() is true, eth_getTransactionsByAddress and
+	// getAddressTransactions return a "still syncing" / 503 error rather than
+	// an ImmuDB-scan fallback, which no longer exists (see PR history).
+	txIndexPath := cfg.Database.TxIndexPath
+	if txIndexPath == "" {
+		txIndexPath = "./DB/txindex.db" // matches config/settings/defaults.go default
+	}
+	if err := txindex.Init(logger_ctx, txIndexPath); err != nil {
+		// Only Open() (disk/permissions) failures land here — catchup failures
+		// are logged asynchronously by the background goroutine.
+		log.Warn().Err(err).Msg("txindex init failed — address-by-tx lookups will error until this is resolved (see CLI `rebuildindex`)")
+	} else {
+		fmt.Println("Transaction address index starting (background catchup in progress)")
+	}
 
 	if err := initAccountsDBPool(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
@@ -1001,6 +1212,77 @@ func main() {
 		transfer.HandleFileStream(s, "")
 	})
 
+	// Initialize FastsyncV2 service
+	if cfg.FastSync.Enabled {
+		fastSyncerV2 = initFastsyncV2(ctx, n, cfg.FastSync.SyncTimeout)
+	} else {
+		log.Info().Msg("[FastSync] disabled by config — protocol handlers not registered")
+	}
+
+	// SeedMonitor: every node with fastsync enabled reports its Merkle root to the
+	// seednode periodically (outbound only, no DB writes ever).
+	// ReconcileFunc is only wired when enable_catchup=true — never set on the sequencer.
+	// enable_pulling guards CLI pull commands and the reconcile path independently.
+	var syncMonitor *syncmonitor.Monitor
+	if fastSyncerV2 != nil && cfg.FastSync.Enabled {
+		if cfg.Network.SeedNode == "" {
+			log.Warn().Msg("[SyncMonitor] cfg.network.seed_node not set — sync monitor disabled")
+		} else {
+			selfPeerID := n.Host.ID().String()
+			seedCli, err := seednode.NewClient(cfg.Network.SeedNode)
+			if err != nil {
+				log.Error().Err(err).Msg("[SyncMonitor] failed to create seednode client — sync monitor disabled")
+			} else {
+				blockInfo := NodeInfo.NewSyncStruct()
+				reporter := syncmonitor.NewSeednodeReporter(seedCli, selfPeerID)
+				syncMonitor = syncmonitor.New(blockInfo, reporter, cfg.FastSync.SyncCheckInterval)
+
+				// Only wire reconciliation on non-sequencer nodes.
+				// The sequencer sets enable_catchup=false — it is the authoritative source,
+				// it never catches up from peers.
+				if cfg.FastSync.EnableCatchup {
+					fromBlock := cfg.FastSync.CatchUpFromBlock
+					syncMonitor.SetReconcileFunc(func(rctx context.Context, peers []syncmonitor.PeerInfo) error {
+						if len(peers) == 0 {
+							return fmt.Errorf("[ReconcileFunc] seednode returned no good peers")
+						}
+						for _, p := range peers {
+							if len(p.Multiaddrs) == 0 {
+								log.Warn().Str("peer", p.PeerID).Msg("[ReconcileFunc] peer has no multiaddrs, skipping")
+								continue
+							}
+							targetMultiaddr := p.Multiaddrs[0] + "/p2p/" + p.PeerID
+							log.Info().
+								Str("peer", p.PeerID).
+								Str("addr", targetMultiaddr).
+								Uint64("from_block", fromBlock).
+								Msg("[ReconcileFunc] attempting catchup")
+							if err := fastSyncerV2.HandleCatchUpSync(rctx, fromBlock, targetMultiaddr); err != nil {
+								log.Warn().Err(err).Str("peer", p.PeerID).Msg("[ReconcileFunc] peer failed, trying next")
+								continue
+							}
+							log.Info().Str("peer", p.PeerID).Msg("[ReconcileFunc] catchup succeeded")
+							return nil
+						}
+						return fmt.Errorf("[ReconcileFunc] all %d seednode peers failed catchup", len(peers))
+					})
+				}
+
+				if err := syncMonitor.Start(ctx); err != nil {
+					log.Error().Err(err).Msg("[SyncMonitor] failed to start — continuing without monitor")
+					syncMonitor = nil
+					if closeErr := seedCli.Close(); closeErr != nil {
+						log.Warn().Err(closeErr).Msg("[SyncMonitor] seednode client close error")
+					}
+				} else {
+					log.Info().
+						Bool("catchup", cfg.FastSync.EnableCatchup).
+						Dur("interval", cfg.FastSync.SyncCheckInterval).
+						Msg("[SyncMonitor] started")
+				}
+			}
+		}
+	}
 
 	// Initialize Yggdrasil messaging if enabled
 	if cfg.Network.Yggdrasil {
@@ -1205,6 +1487,7 @@ func main() {
 		FacadePort:      cfg.Ports.Facade,
 		WSPort:          cfg.Ports.WS,
 		PullAllowed:     cfg.FastSync.EnablePulling,
+		FastSyncerV2:    fastSyncerV2,
 	}
 
 
@@ -1217,6 +1500,7 @@ func main() {
 			cfg.Ports.ThebeDebug,
 			cfg.Network.ChainID,
 			cfg.Ports.Smart,
+			syncMonitor,
 		)
 	}
 

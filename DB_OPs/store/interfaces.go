@@ -66,6 +66,7 @@ type TxStore interface {
 	GetTransaction(ctx context.Context, txHash string) (*thebegateway.TransactionRecord, error)
 	GetTransactionsByBlock(ctx context.Context, blockNumber uint64) ([]*thebegateway.TransactionRecord, error)
 	GetTransactionsByAddress(ctx context.Context, address string, limit int) ([]*thebegateway.TransactionRecord, error)
+	GetTransactionsByAddressInRange(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.TransactionRecord, error)
 	GetTransactionsPaginated(ctx context.Context, limit, offset int) ([]*thebegateway.TransactionRecord, error)
 	CountTransactions(ctx context.Context) (uint64, error)
 	RefreshAccountTxStats(ctx context.Context, address string) error

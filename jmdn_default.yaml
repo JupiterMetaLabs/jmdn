@@ -8,7 +8,7 @@ node:
 
 # ── Networking ───────────────────────────────────────────
 network:
-  chain_id: 8000800
+  chain_id: 7000700
   seednode: ""
   mempool: ""
   yggdrasil: true
@@ -40,9 +40,17 @@ binds:
   profiler: "127.0.0.1"  # Debugging - STRICTLY LOCALHOST
 
 # ── Database (ImmuDB) ───────────────────────────────────
+# address/port: point at an external immudb container (docker-compose default).
+#   For embedded mode (single container): leave as localhost:3322.
+#   Env: JMDN_DATABASE_ADDRESS / JMDN_DATABASE_PORT
+# username/password: NOT related to P2P — only used for the local DB connection.
+#   Leave blank to use ImmuDB's built-in defaults (fine for most operators).
+#   Env: JMDN_DATABASE_USERNAME / JMDN_DATABASE_PASSWORD
 database:
-  username: ""
-  password: ""
+  address: "localhost"   # Env: JMDN_DATABASE_ADDRESS
+  port: 3322             # Env: JMDN_DATABASE_PORT
+  username: ""           # Env: JMDN_DATABASE_USERNAME
+  password: ""           # Env: JMDN_DATABASE_PASSWORD
   redis:
     url: "127.0.0.1:6379"
     password: ""
@@ -108,13 +116,20 @@ features:
 
 # ── FastSync V2 ─────────────────────────────────────────
 fastsync:
-  enabled: true          # Register protocol handlers and serve data to peers
-  enable_pulling: true   # Allow this node to pull data and update its local DB
-                         # Set false for sequencers/authoritative nodes that must
-                         # never overwrite their own state (they still serve data)
-  pull_on_startup: true  # Catch up on missed blocks automatically on node restart
-  sync_timeout: 10m      # Max wall-clock time for a single full sync operation
-  allowed_peers: []      # Whitelist of peer IDs to sync FROM (empty = any peer)
+  enabled: true           # Register protocol handlers and serve data to peers
+  enable_pulling: true    # Allow this node to pull data from peers and write to its DB.
+                          # Set false on sequencers — they are authoritative and must
+                          # never overwrite their own state (they still serve data).
+  enable_catchup: true    # Wire SyncMonitor reconciliation — auto-catchup when the
+                          # seednode reports this node is out of sync.
+                          # MUST be false on the sequencer — it is authoritative and
+                          # must never pull state from peers to overwrite its own chain.
+  sync_timeout: 10m       # Max wall-clock time for a single full sync operation.
+  sync_check_interval: 10m # How often to report Merkle root to seednode. Min: 1m.
+  catch_up_from_block: 0  # First block AFTER your bootstrap snapshot (bootstrapTip+1).
+                          # 0 = full scan from genesis (safe default, no bootstrap loaded).
+                          # Set to bootstrapTip+1 after bootstrap to avoid rescanning
+                          # the already-complete bootstrap range on every catchup.
 
 # ── Security ────────────────────────────────────────────
 # Enterprise Security Module (Gatekeeper)

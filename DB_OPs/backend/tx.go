@@ -59,6 +59,16 @@ func (b *thebeBackend) GetTransactionsByAddress(ctx context.Context, address str
 	return recs, nil
 }
 
+// GetTransactionsByAddressInRange retrieves transactions for an address within
+// [fromBlock, toBlock] inclusive. Hot path for CatchUp ReconcileWithDeltas.
+func (b *thebeBackend) GetTransactionsByAddressInRange(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.TransactionRecord, error) {
+	recs, err := b.r.GetTransactionsByAddressInRange(ctx, address, fromBlock, toBlock)
+	if err != nil {
+		return nil, fmt.Errorf("backend.GetTransactionsByAddressInRange(%s, %d, %d): %w", address, fromBlock, toBlock, err)
+	}
+	return recs, nil
+}
+
 // SetTransactionStatus writes a minimal ContractReceiptRecord with the given status.
 // Time: O(1) — single gateway write.
 func (b *thebeBackend) SetTransactionStatus(ctx context.Context, txHash string, status int) error {

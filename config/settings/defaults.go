@@ -46,8 +46,11 @@ func DefaultConfig() NodeConfig {
 			Profiler:   "127.0.0.1", // Debugging - STRICTLY LOCALHOST
 		},
 		Database: DatabaseSettings{
-			Username: "immudb",
-			Password: "immudb",
+			Address:     "localhost", // override via JMDN_DATABASE_ADDRESS for a separate immudb container
+			Port:        3322,        // override via JMDN_DATABASE_PORT
+			Username:    "immudb",    // immudb built-in default; override via JMDN_DATABASE_USERNAME
+			Password:    "immudb",    // immudb built-in default; override via JMDN_DATABASE_PASSWORD
+			TxIndexPath: "./DB/txindex.db",
 			Redis: RedisSettings{
 				URL:      "127.0.0.1:6379", // required for account sync worker; set via jmdn.yaml or JMDN_DATABASE_REDIS_URL
 				Password: "jmdnredissync",  // optional: set if Redis requires authentication
@@ -97,11 +100,12 @@ func DefaultConfig() NodeConfig {
 			GROTrack:     false,
 		},
 		FastSync: FastSyncSettings{
-			Enabled:       true,
-			EnablePulling: true,
-			PullOnStartup: true,
-			SyncTimeout:   10 * time.Minute,
-			AllowedPeers:  []string{},
+			Enabled:           true,
+			EnablePulling:     true,
+			EnableCatchup:     false,
+			SyncTimeout:       10 * time.Minute,
+			CatchUpFromBlock:  0,
+			SyncCheckInterval: 10 * time.Minute,
 		},
 		Security: DefaultSecurityConfig(),
 		Alerts:   DefaultAlertsConfig(),

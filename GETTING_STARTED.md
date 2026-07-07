@@ -1,5 +1,7 @@
 # Getting Started — Running a JMDN Node
 
+> **Prefer Docker?** See **[DOCKER.md](./DOCKER.md)** for the container-based deployment guide — the recommended path for production nodes.
+>
 > This guide walks you through setting up and running a JMDN node from source on Linux or Raspberry Pi.
 > Estimated time: **10–30 minutes** on a clean machine.
 
@@ -56,7 +58,7 @@ cd jmdn
 To run a specific release:
 
 ```bash
-git checkout v2.5.0  # replace with target version
+git checkout v1.2.0  # replace with target version
 ```
 
 ---

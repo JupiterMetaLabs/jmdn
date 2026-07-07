@@ -8,6 +8,7 @@ import (
 	"gossipnode/gETH/Facade/Service/Types"
 	"gossipnode/gETH/common"
 	"log"
+	"math/big"
 	"net/http"
 	"sync"
 	"time"
@@ -115,8 +116,9 @@ func (s *WSServer) handleWS(w http.ResponseWriter, r *http.Request) {
 				}
 				storeSub(subs, &mu, sid, stop)
 				_ = conn.WriteJSON(RespOK(req.ID, sid))
+				chainID := s.be.GetChainIDValue()
 				FacadeLocalGRO.Go(GRO.FacadeThread, func(ctx context.Context) error {
-					forwardBlocks(conn, sid, ch)
+					forwardBlocks(conn, sid, ch, chainID)
 					return nil
 				})
 
@@ -196,11 +198,11 @@ type subMsg struct {
 	} `json:"params"`
 }
 
-func forwardBlocks(conn *websocket.Conn, sid string, ch <-chan *Types.Block) {
+func forwardBlocks(conn *websocket.Conn, sid string, ch <-chan *Types.Block, chainID *big.Int) {
 	for b := range ch {
 		msg := subMsg{Jsonrpc: "2.0", Method: "eth_subscription"}
 		msg.Params.Subscription = sid
-		msg.Params.Result = marshalBlock(b, false)
+		msg.Params.Result = marshalBlock(b, false, chainID)
 		_ = conn.WriteJSON(msg)
 	}
 }

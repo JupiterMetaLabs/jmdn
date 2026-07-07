@@ -1,11 +1,13 @@
 package CLI
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/helper"
 	"gossipnode/messaging/directMSG"
@@ -302,6 +304,38 @@ func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
 	return SyncStats{}, fmt.Errorf("fastsync removed: use ThebeDB sync instead")
 }
 
+func (h *CommandHandler) HandleCatchUpSync(ctx context.Context, peeraddr string, fromBlock uint64) (SyncStats, error) {
+	if peeraddr == "" {
+		return SyncStats{}, fmt.Errorf("usage: catchup <peer_multiaddr> [from_block]")
+	}
+	// fromBlock=0 → auto-detect via effectiveReconRange inside HandleCatchUpSync
+	if !h.PullAllowed {
+		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
+	}
+	if h.FastSyncerV2 == nil {
+		return SyncStats{}, fmt.Errorf("FastsyncV2 engine is inactive")
+	}
+
+	startTime := time.Now().UTC()
+	if err := h.FastSyncerV2.HandleCatchUpSync(ctx, fromBlock, peeraddr); err != nil {
+		return SyncStats{}, fmt.Errorf("CatchUpSync failed: %w", err)
+	}
+
+	var newMainState, newAccountsState *DB_OPs.DatabaseState
+	if h.MainClient != nil {
+		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient.Client)
+	}
+	if h.DIDClient != nil {
+		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
+	}
+
+	return SyncStats{
+		TimeTaken:     time.Since(startTime),
+		MainState:     newMainState,
+		AccountsState: newAccountsState,
+	}, nil
+}
+
 func (h *CommandHandler) HandleAccountSync(peeraddr string) (SyncStats, error) {
 	if peeraddr == "" {
 		return SyncStats{}, fmt.Errorf("usage: accountsync <peer_multiaddr>")
@@ -402,6 +436,35 @@ func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStat
 		MainState:     newMainState,
 		AccountsState: newAccountsState,
 	}, nil
+}
+
+// HandleRebuildIndex wipes and rebuilds the tx-address SQLite index from genesis.
+// Fixes all gaps regardless of where last_indexed_block is sitting.
+func (h *CommandHandler) HandleRebuildIndex(ctx context.Context) (time.Duration, error) {
+	startTime := time.Now()
+	if err := txindex.RebuildIndex(ctx); err != nil {
+		return 0, fmt.Errorf("RebuildIndex failed: %w", err)
+	}
+	return time.Since(startTime), nil
+}
+
+// HandleRebuildRange re-indexes a specific block range [from, to].
+// Safe to run over already-indexed blocks — INSERT OR IGNORE prevents duplicates.
+func (h *CommandHandler) HandleRebuildRange(ctx context.Context, from, to uint64) (time.Duration, error) {
+	if from > to {
+		return 0, fmt.Errorf("from_block (%d) must be <= to_block (%d)", from, to)
+	}
+	startTime := time.Now()
+	if err := txindex.RebuildRange(ctx, from, to); err != nil {
+		return 0, fmt.Errorf("RebuildRange [%d..%d] failed: %w", from, to, err)
+	}
+	return time.Since(startTime), nil
+}
+
+// HandleTxIndexStatus reports whether the tx-address index has completed its
+// first full gap catchup, and the highest block number it has indexed so far.
+func (h *CommandHandler) HandleTxIndexStatus(ctx context.Context) (isReady bool, lastIndexedBlock uint64, err error) {
+	return txindex.Status(ctx)
 }
 
 func (h *CommandHandler) HandleGetDID(input string) (*DB_OPs.Account, error) {
