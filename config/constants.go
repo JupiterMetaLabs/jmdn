@@ -63,8 +63,8 @@ const (
 	// It is deliberately separate from PubSub_ConsensusChannel, whose
 	// subscriptions are round-scoped (unsubscribed on END_PUBSUB).
 	PubSub_L1CommitChannel = "pubsub-l1-commit"
-	Pubsub_MessageBuffer    = "pubsub-buffer"
-	Pubsub_CRDTSync         = "pubsub-crdt-sync"
+	Pubsub_MessageBuffer   = "pubsub-buffer"
+	Pubsub_CRDTSync        = "pubsub-crdt-sync"
 )
 
 const (
