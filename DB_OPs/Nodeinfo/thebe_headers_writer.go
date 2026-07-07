@@ -56,6 +56,10 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 			return fmt.Errorf("WriteHeaders: block %d: %w", b.BlockNumber, err)
 		}
 	}
+	// Record that blocks arrived so the SyncMonitor propagation guard can skip
+	// a Merkle check racing with an in-flight header write (main Fix 2).
+	notifyBlockReceived()
+
 	// "header_latest_block" sentinel is now derived from SQL MAX(block_number) —
 	// DB_OPs.Update is a no-op for that key.
 	return nil

@@ -104,9 +104,12 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			txs = append(txs, cfgTx)
 		}
 
-		if len(txs) > 0 {
-			b.Transactions = txs
-		}
+		// Always overwrite Transactions from the DataSync response.
+		// A guard like (if len(txs) > 0) would be wrong: if the server sends
+		// transactions for this block, they must be written; if it sends none,
+		// the block genuinely has no transactions and we must clear any stale
+		// data left by PubSub/HeaderSync skeleton writes (main fix).
+		b.Transactions = txs
 
 		if err := DB_OPs.StoreZKBlock(nil, b); err != nil {
 			if !strings.Contains(err.Error(), "already exists") {
@@ -116,6 +119,11 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			// with the new SQL backend. Log and continue.
 		}
 	}
+
+	// Record that blocks arrived so the SyncMonitor propagation guard can skip
+	// a Merkle check racing with an in-flight data write (main Fix 2).
+	notifyBlockReceived()
+
 	return nil
 }
 

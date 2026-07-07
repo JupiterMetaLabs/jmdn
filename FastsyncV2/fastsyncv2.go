@@ -75,7 +75,7 @@ type FastsyncV2 struct {
 	PoTSRouter        *pots.PoTS
 	AccountSyncRouter accountsync.AccountSync_router
 
-	// blockInfoAdapter is the ImmuDB-backed implementation of types.BlockInfo.
+	// blockInfoAdapter is the ThebeDB-backed implementation of types.BlockInfo.
 	// Used for local block queries, header/data writes, and account management.
 	blockInfoAdapter types.BlockInfo
 
