@@ -1,16 +1,18 @@
 # JMDN Node — Docker Compose
 #
 # Services:
+#   postgres       — ThebeDB SQL projection (wal_level=logical for CDC)
 #   redis          — account sync worker queue (Redis Streams)
 #   jmdn           — the JMDN node process (non-root via gosu)
 #   jmdn-bootstrap — one-time GCS snapshot download (profile-gated)
 #
-# Storage: ThebeDB is embedded in the jmdn process (BadgerDB KV + SQL
-# projection) — no external database service is required.
+# Storage: ThebeDB KV (BadgerDB) is embedded in the jmdn process; the SQL
+# projection lives in the postgres service.
 #
 # Volume layout (mirrors bare-metal install_services.sh):
-#   jmdn-state  → /opt/jmdn        jmdn WorkingDirectory (DB/, storage/, config/, certs/)
-#   redis-data  → /data            Redis AOF log
+#   postgres-data → /var/lib/postgresql/data   ThebeDB SQL projection
+#   jmdn-state    → /opt/jmdn                  jmdn WorkingDirectory (DB/, storage/, config/, certs/)
+#   redis-data    → /data                      Redis AOF log
 #
 # First run:
 #   docker compose run --rm jmdn-bootstrap   # populate chain data once
@@ -25,6 +27,37 @@
 #   docker compose up -d
 
 services:
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  # ThebeDB SQL projection target. wal_level=logical is required for the
+  # ThebeDB CDC (WAL consumer). Host port 5430 matches Scripts tooling.
+  postgres:
+    image: postgres:16-alpine
+    container_name: jmdn-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jmdn
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-jmdndefault}"
+      POSTGRES_DB: jmdn
+    command: >
+      postgres
+        -c wal_level=logical
+        -c max_replication_slots=4
+        -c max_wal_senders=4
+    ports:
+      - "5430:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jmdn -d jmdn"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
 
   # ── Redis ─────────────────────────────────────────────────────────────────
   # Account sync worker queue (Redis Streams XADD/XREADGROUP/XACK).
@@ -74,8 +107,8 @@ services:
 
   # ── JMDN Node ─────────────────────────────────────────────────────────────
   # Entrypoint runs as root (creates dirs, generates certs), then gosu-drops
-  # to jmdn user. ThebeDB (BadgerDB + SQL projection) lives inside the node's
-  # state volume — no external DB connection.
+  # to jmdn user. ThebeDB KV (BadgerDB) lives in the node's state volume;
+  # the SQL projection connects to the postgres service via THEBE_SQL_DSN.
   #
   # WorkingDirectory = /opt/jmdn (matches bare-metal ${JMDN_DATA}).
   # DB/gossipnode.db resolves as ./DB/gossipnode.db relative to WorkingDirectory.
@@ -84,6 +117,8 @@ services:
     container_name: jmdn
     restart: unless-stopped
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
 
@@ -96,6 +131,10 @@ services:
       # - "8090:8090"
 
     environment:
+      # ThebeDB SQL projection — Docker internal DNS to the postgres service.
+      # Overrides the yaml sql_dsn (Viper env > yaml).
+      THEBE_SQL_DSN: "postgres://jmdn:${POSTGRES_PASSWORD:-jmdndefault}@postgres:5432/jmdn?sslmode=disable"
+
       # Redis container reads REDIS_PASSWORD directly; jmdn reads it here via Viper.
       JMDN_DATABASE_REDIS_PASSWORD: "${REDIS_PASSWORD:-jmdnredissync}"
 
@@ -129,6 +168,8 @@ services:
         max-file: "5"
 
 volumes:
+  postgres-data: # ThebeDB SQL projection
+    driver: local
   jmdn-state:   # jmdn node state at /opt/jmdn (DB/, storage/, config/, certs/)
     driver: local
   redis-data:   # Redis AOF log

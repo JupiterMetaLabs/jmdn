@@ -65,6 +65,19 @@ database:
     # to jmdn via JMDN_DATABASE_REDIS_PASSWORD (Viper env > yaml). Set only for bare-metal.
     password: ""
 
+# ── ThebeDB ──────────────────────────────────────────────────────────────────
+# The node's storage backend (BadgerDB KV + Postgres projection).
+# Docker Compose: DSN is injected via THEBE_SQL_DSN env (postgres service DNS).
+# Bare-metal: point at the Postgres provisioned by Scripts/setup_postgres.sh.
+thebe:
+  enabled: true
+  kv_path: "./storage/thebe-kv"
+  sql_dsn: "postgres://jmdn:jmdndefault@127.0.0.1:5430/jmdn?sslmode=disable"  # Env: THEBE_SQL_DSN
+  cdc:
+    enabled: true
+    slot_name: thebe_eventlog
+    publication: thebe_pub
+
 # ── 6. Logging ───────────────────────────────────────────────────────────────
 logging:
   level: "info"

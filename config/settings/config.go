@@ -80,9 +80,9 @@ type RedisSettings struct {
 	Password string `mapstructure:"password" yaml:"password"`
 }
 
-// ThebeConfig controls optional ThebeDB integration.
+// ThebeConfig controls the ThebeDB storage backend (the node's only DB).
 type ThebeConfig struct {
-	Enabled    bool           `mapstructure:"enabled" yaml:"enabled"`         // default false
+	Enabled    bool           `mapstructure:"enabled" yaml:"enabled"`         // default true — ThebeDB is the only storage backend
 	KVPath     string         `mapstructure:"kv_path" yaml:"kv_path"`         // default "./data/thebe-kv"
 	SQLDSN     string         `mapstructure:"sql_dsn" yaml:"sql_dsn"`         // reads THEBE_SQL_DSN env var
 	RedisURL   string         `mapstructure:"redis_url" yaml:"redis_url"`     // optional, reads THEBE_REDIS_URL

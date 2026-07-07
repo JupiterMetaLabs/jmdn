@@ -49,9 +49,9 @@ database:
 
 # ── ThebeDB ──────────────────────────────────────────────
 thebe:
-  enabled: false
-  kv_path: "./data/thebe-kv"
-  sql_dsn: ""                  # Env: THEBE_SQL_DSN
+  enabled: true                # ThebeDB is the node's only storage backend
+  kv_path: "./storage/thebe-kv"
+  sql_dsn: "postgres://jmdn:jmdndefault@127.0.0.1:5430/jmdn?sslmode=disable"  # Env: THEBE_SQL_DSN
   redis_url: ""                # Env: THEBE_REDIS_URL
   stream_name: "thebedb.events" # Env: THEBE_STREAM_NAME
   max_len: 1000                # Env: THEBE_MAX_LEN

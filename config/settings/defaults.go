@@ -53,9 +53,12 @@ func DefaultConfig() NodeConfig {
 			},
 		},
 		Thebe: ThebeConfig{
-			Enabled:    false,
-			KVPath:     "",
-			SQLDSN:     "",
+			// ThebeDB is the node's only storage backend post ImmuDB removal —
+			// enabled by default. DSN matches the Postgres provisioned by
+			// Scripts/install_services.sh / setup_postgres.sh (host port 5430).
+			Enabled:    true,
+			KVPath:     "./storage/thebe-kv",
+			SQLDSN:     "postgres://jmdn:jmdndefault@127.0.0.1:5430/jmdn?sslmode=disable",
 			RedisURL:   "",
 			StreamName: "",
 			MaxLen:     1000,
