@@ -114,19 +114,20 @@ func SubmitMessage(logger_ctx context.Context, msg *PubSubMessages.Message, PubS
 }
 
 // ProcessVotesFromCRDT extracts votes from CRDT, filters them by block hash,
-// processes them through votemodule, and returns the aggregated result.
+// processes them through votemodule, and returns the aggregated result and per-peer rejection reasons.
 // targetBlockHash is required - votes without matching block_hash are skipped.
-func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string) (int8, error) {
+// The second return value maps peerID → rejection_reason for peers that voted -1.
+func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessages.BuddyNode, targetBlockHash string) (int8, map[string]string, error) {
 	if listenerNode == nil || listenerNode.CRDTLayer == nil {
 		logger().NamedLogger.Error(logger_ctx, "Listener node or CRDT layer not initialized", nil,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, errors.New("listener node or CRDT layer not initialized")
+		return 0, nil, errors.New("listener node or CRDT layer not initialized")
 	}
 
 	if targetBlockHash == "" {
 		logger().NamedLogger.Error(logger_ctx, "TargetBlockHash is required for vote processing to avoid mixing votes from different blocks", nil,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, errors.New("targetBlockHash is required for vote processing to avoid mixing votes from different blocks")
+		return 0, nil, errors.New("targetBlockHash is required for vote processing to avoid mixing votes from different blocks")
 	}
 
 	logger().NamedLogger.Info(logger_ctx, "Processing votes from CRDT for voting",
@@ -139,10 +140,11 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 		ion.Int("count", len(allCRDTs)),
 		ion.String("function", "Structs.ProcessVotesFromCRDT"))
 
-	// Map to store peer_id -> vote value and the block hash it applies to
+	// Map to store peer_id -> vote value, block hash, and optional rejection reason
 	type peerVote struct {
-		vote      int8
-		blockHash string
+		vote            int8
+		blockHash       string
+		rejectionReason string
 	}
 	voteData := make(map[string]peerVote)
 
@@ -202,10 +204,17 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 				continue
 			}
 
+			// Extract optional rejection reason (present when vote == -1)
+			rejectionReason := ""
+			if r, ok := voteDataObj["rejection_reason"].(string); ok {
+				rejectionReason = r
+			}
+
 			// Use the key (which is the peer ID) to store the latest vote for that block
 			voteData[key] = peerVote{
-				vote:      int8(voteValue),
-				blockHash: blockHash,
+				vote:            int8(voteValue),
+				blockHash:       blockHash,
+				rejectionReason: rejectionReason,
 			}
 			logger().NamedLogger.Debug(logger_ctx, "Added vote for peer",
 				ion.String("key", key),
@@ -218,7 +227,7 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 	if len(voteData) == 0 {
 		logger().NamedLogger.Error(logger_ctx, "No votes found in CRDT to process", nil,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, errors.New("no votes found in CRDT")
+		return 0, nil, errors.New("no votes found in CRDT")
 	}
 
 	// Get peer weights from seed node
@@ -226,23 +235,27 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 	if err != nil {
 		logger().NamedLogger.Error(logger_ctx, "Failed to create seed node client", err,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, errors.New("failed to create seed node client: " + err.Error())
+		return 0, nil, errors.New("failed to create seed node client: " + err.Error())
 	}
 
 	weights, err := client.ListWeightsofPeers()
 	if err != nil {
 		logger().NamedLogger.Error(logger_ctx, "Failed to get peer weights", err,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, errors.New("failed to get peer weights: " + err.Error())
+		return 0, nil, errors.New("failed to get peer weights: " + err.Error())
 	}
 
-	// Filter weights to only include peers that voted
+	// Filter weights to only include peers that voted; collect rejection reasons
 	filteredWeights := make(map[string]float64)
 	filteredVoteData := make(map[string]int8)
+	rejectionReasons := make(map[string]string)
 	for peerID, vote := range voteData {
 		if weight, exists := weights[peerID]; exists {
 			filteredVoteData[peerID] = vote.vote
 			filteredWeights[peerID] = weight
+			if vote.vote == -1 && vote.rejectionReason != "" {
+				rejectionReasons[peerID] = vote.rejectionReason
+			}
 			logger().NamedLogger.Debug(logger_ctx, "Peer has weight and vote",
 				ion.String("peer_id", peerID),
 				ion.Float64("weight", weight),
@@ -259,7 +272,7 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 	if len(filteredVoteData) == 0 {
 		logger().NamedLogger.Error(logger_ctx, "No votes found after filtering by weights", nil,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, errors.New("no votes found after filtering by weights")
+		return 0, nil, errors.New("no votes found after filtering by weights")
 	}
 
 	// Call votemodule.VoteAggregation with filtered maps
@@ -267,7 +280,7 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 	if err != nil {
 		logger().NamedLogger.Error(logger_ctx, "Failed to aggregate votes", err,
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, errors.New("failed to aggregate votes: " + err.Error())
+		return 0, nil, errors.New("failed to aggregate votes: " + err.Error())
 	}
 
 	logger().NamedLogger.Debug(logger_ctx, "Vote aggregation result",
@@ -276,8 +289,8 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 
 	// Convert boolean result to int8
 	if result {
-		return 1, nil
+		return 1, rejectionReasons, nil
 	} else {
-		return -1, nil
+		return -1, rejectionReasons, nil
 	}
 }

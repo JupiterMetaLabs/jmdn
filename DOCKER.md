@@ -949,8 +949,13 @@ jmdn-state volume (mounted at /opt/jmdn in jmdn container):
 │   ├── ca.key
 │   └── <service>.{crt,key}
 └── DB/
-    └── gossipnode.db      ← SQLite node manager state
+    ├── gossipnode.db      ← SQLite node manager state
+    ├── txindex.db         ← SQLite address→transaction index (eth_getTransactionsByAddress, /explorer)
+    ├── txindex.db-wal     ← WAL journal (present while the node is running)
+    └── txindex.db-shm     ← WAL shared-memory index
 ```
+
+`txindex.db` is fully rebuildable from ImmuDB — it's a derived index, not a source of truth. Losing it (missing volume, disk issue, corruption) is not catastrophic: the node detects it's empty/behind and re-catchups it automatically in the background on next start (`eth_getTransactionsByAddress` / `/explorer/.../transactions` return "still syncing" until that completes — see §14 for manual rebuild). It's still included in the backup below since that's simpler than special-casing it, but restoring it is optional.
 
 ### Backup
 
@@ -1158,6 +1163,32 @@ docker logs --tail 100 -f jmdn
 ```
 
 Look for `[CatchUpSync] done in …` to confirm completion. The SyncMonitor will keep the node in sync automatically after that.
+
+### Transaction-address index stuck, missing, or returning errors
+
+`eth_getTransactionsByAddress` (RPC) and `GET /explorer/address/:address/transactions` (Explorer API) are backed by a small SQLite index (`DB/txindex.db`) that the node rebuilds from ImmuDB automatically in the background — it's never restored from a backup, only ever caught up live. While it's catching up (first boot, after a fresh volume, or after `rebuildindex`), both endpoints return a "still syncing" / `503` response instead of wrong or empty-looking data.
+
+Check status:
+
+```bash
+docker exec -it jmdn jmdn -cmd txindexstatus
+# READY — last indexed block: 184213
+# or: SYNCING (catchup in progress) — last indexed block: 91004
+```
+
+If it's stuck in `SYNCING` for far longer than the chain height would justify, or the RPC/Explorer address-history endpoints keep erroring, force a full rebuild from genesis:
+
+```bash
+docker exec -it jmdn jmdn -cmd rebuildindex
+```
+
+This wipes and re-scans the entire chain from ImmuDB — safe to run any time, but can take a while on a long chain (it runs in the background; the node stays up and keeps serving everything else while it does). Watch progress with `txindexstatus` or in the logs (`[txindex] Indexed up to block …`).
+
+For a narrower gap (e.g. you know blocks in a specific range were missed), repair just that range instead of a full rebuild:
+
+```bash
+docker exec -it jmdn jmdn -cmd rebuildrange <from_block> <to_block>
+```
 
 ### Full container reset (nuclear option)
 

@@ -60,10 +60,10 @@ type GossipPubSub struct {
 
 // Message represents the data payload of a gossip message
 type Message struct {
-	Sender    peer.ID
-	Message   string // json string of the json message - it would be a OP of struct Types.OP with the Vote of struct Vote
-	Timestamp int64
-	ACK       *ACK
+	Sender    peer.ID `json:"sender"`
+	Message   string  `json:"message"` // json string of the json message - it would be a OP of struct Types.OP with the Vote of struct Vote
+	Timestamp int64   `json:"timestamp"`
+	ACK       *ACK    `json:"ack"`
 
 	// ============================================================================
 	// BFT Consensus Fields (NEW)
@@ -80,8 +80,9 @@ type Message struct {
 
 // Vote represents a vote on a block
 type Vote struct {
-	Vote      int8   `json:"vote"`       // 1 for yes, -1 for no
-	BlockHash string `json:"block_hash"` // hash of the block
+	Vote            int8   `json:"vote"`                       // 1 for yes, -1 for no
+	BlockHash       string `json:"block_hash"`                 // hash of the block
+	RejectionReason string `json:"rejection_reason,omitempty"` // set when vote == -1
 }
 
 // BlockResult represents the result of block validation

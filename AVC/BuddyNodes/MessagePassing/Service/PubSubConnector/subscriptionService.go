@@ -2,12 +2,14 @@ package PubSubConnector
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"gossipnode/DB_OPs"
 	Publisher "gossipnode/Pubsub/Publish"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
@@ -100,8 +102,8 @@ func (s *SubscriptionService) HandleAskForSubscription(gossipMessage *AVCStruct.
 	// Subscribe to the consensus channel
 	err := Connector.Subscribe(trace_ctx, s.pubSub, config.PubSub_ConsensusChannel, func(msg *AVCStruct.GossipMessage) {
 		logger().NamedLogger.Info(trace_ctx, "Received pubsub message on consensus channel:",
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.HandleAskForSubscription"))
 
@@ -162,8 +164,8 @@ func (s *SubscriptionService) HandleEndPubSub(gossipMessage *AVCStruct.GossipMes
 func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	logger().NamedLogger.Info(logger_ctx, "Processing received pubsub message",
 		ion.String("topic", config.PubSub_ConsensusChannel),
-		ion.String("message_id", msg.ID),
-		ion.String("sender", string(msg.Sender)),
+		ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+		ion.String("sender", msg.Sender.String()),
 		ion.String("function", "SubscriptionService.handleReceivedMessage"))
 
 	// Check if the message has valid data
@@ -203,6 +205,22 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
 		return s.handleBFTCommitVote(logger_ctx, msg)
 
+	case config.Type_L1Commit:
+		fmt.Printf("[L1Commit] Received gossip from sender=%s self=%s isSelf=%v\n",
+			msg.Sender, s.pubSub.Host.ID(), msg.Sender == s.pubSub.Host.ID())
+		if msg.Sender == s.pubSub.Host.ID() {
+			return nil
+		}
+		return s.handleL1Commit(logger_ctx, msg)
+
+	case config.Type_L1CommitRange:
+		fmt.Printf("[L1CommitRange] Received gossip from sender=%s self=%s isSelf=%v\n",
+			msg.Sender, s.pubSub.Host.ID(), msg.Sender == s.pubSub.Host.ID())
+		if msg.Sender == s.pubSub.Host.ID() {
+			return nil
+		}
+		return s.handleL1CommitRange(logger_ctx, msg)
+
 	default:
 		logger().NamedLogger.Info(logger_ctx, "Received message with unknown stage:",
 			ion.String("stage", string(msg.Data.ACK.Stage)),
@@ -216,14 +234,14 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	logger().NamedLogger.Info(logger_ctx, "Handling subscription request from pubsub",
 		ion.String("topic", config.PubSub_ConsensusChannel),
-		ion.String("sender", string(msg.Sender)),
+		ion.String("sender", msg.Sender.String()),
 		ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
 
 	// 1. Validate the requesting node
 	if err := s.validateRequestingNode(logger_ctx, msg); err != nil {
 		logger().NamedLogger.Error(logger_ctx, "Node validation failed:", err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
@@ -234,8 +252,8 @@ func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Conte
 	// 2. Check if the node is authorized to subscribe
 	if err := s.checkNodeAuthorization(logger_ctx, msg.Sender); err != nil {
 		logger().NamedLogger.Error(logger_ctx, "Node authorization failed:", err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
@@ -245,8 +263,8 @@ func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Conte
 	// 3. Add the node to your buddy list
 	if err := s.addNodeToBuddyList(logger_ctx, msg.Sender); err != nil {
 		logger().NamedLogger.Error(logger_ctx, "Failed to add node to buddy list:", err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
@@ -256,8 +274,8 @@ func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Conte
 	// 4. Send a response back to the requesting node
 	if err := s.sendSubscriptionResponse(logger_ctx, msg, true); err != nil {
 		logger().NamedLogger.Error(logger_ctx, "Failed to send subscription response:", err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
@@ -265,8 +283,8 @@ func (s *SubscriptionService) handleSubscriptionRequest(logger_ctx context.Conte
 	}
 
 	logger().NamedLogger.Info(logger_ctx, "Successfully processed subscription request from:",
-		ion.String("message_id", msg.ID),
-		ion.String("sender", string(msg.Sender)),
+		ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+		ion.String("sender", msg.Sender.String()),
 		ion.String("stage", string(msg.Data.ACK.Stage)),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("function", "SubscriptionService.handleSubscriptionRequest"))
@@ -283,8 +301,8 @@ func (s *SubscriptionService) validateRequestingNode(logger_ctx context.Context,
 
 		logger().NamedLogger.Error(logger_ctx, err.Error(),
 			err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.validateRequestingNode"))
@@ -296,8 +314,8 @@ func (s *SubscriptionService) validateRequestingNode(logger_ctx context.Context,
 		err := errors.New("subscriptionService.validateRequestingNode - sender is empty")
 		logger().NamedLogger.Error(logger_ctx, err.Error(),
 			err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.validateRequestingNode"))
@@ -312,8 +330,8 @@ func (s *SubscriptionService) validateRequestingNode(logger_ctx context.Context,
 		err := errors.New("subscriptionService.validateRequestingNode - message timestamp is too old")
 		logger().NamedLogger.Error(logger_ctx, err.Error(),
 			err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.validateRequestingNode"))
@@ -324,8 +342,8 @@ func (s *SubscriptionService) validateRequestingNode(logger_ctx context.Context,
 		err := errors.New("subscriptionService.validateRequestingNode - message timestamp is in the future")
 		logger().NamedLogger.Error(logger_ctx, err.Error(),
 			err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.validateRequestingNode"))
@@ -337,8 +355,8 @@ func (s *SubscriptionService) validateRequestingNode(logger_ctx context.Context,
 		err := errors.New("subscriptionService.validateRequestingNode - invalid ACK stage for subscription request")
 		logger().NamedLogger.Error(logger_ctx, err.Error(),
 			err,
-			ion.String("message_id", msg.ID),
-			ion.String("sender", string(msg.Sender)),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("stage", string(msg.Data.ACK.Stage)),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.validateRequestingNode"))
@@ -446,7 +464,7 @@ func (s *SubscriptionService) addNodeToBuddyList(logger_ctx context.Context, pee
 // sendSubscriptionResponse sends a response back to the requesting node
 func (s *SubscriptionService) sendSubscriptionResponse(logger_ctx context.Context, msg *AVCStruct.GossipMessage, accepted bool) error {
 	logger().NamedLogger.Info(logger_ctx, "Sending subscription response",
-		ion.String("sender", string(msg.Sender)),
+		ion.String("sender", msg.Sender.String()),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("function", "SubscriptionService.sendSubscriptionResponse"))
 	// Get the current buddy node from global variables
@@ -455,7 +473,7 @@ func (s *SubscriptionService) sendSubscriptionResponse(logger_ctx context.Contex
 		err := errors.New("subscriptionService.sendSubscriptionResponse - buddy node not available for sending response")
 		logger().NamedLogger.Error(logger_ctx, err.Error(),
 			err,
-			ion.String("sender", string(msg.Sender)),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.sendSubscriptionResponse"))
 		return err
@@ -490,7 +508,7 @@ func (s *SubscriptionService) sendSubscriptionResponse(logger_ctx context.Contex
 		err := errors.New("subscriptionService.sendSubscriptionResponse - failed to publish subscription response")
 		logger().NamedLogger.Error(logger_ctx, err.Error(),
 			err,
-			ion.String("sender", string(msg.Sender)),
+			ion.String("sender", msg.Sender.String()),
 			ion.String("topic", log.SubscriptionService),
 			ion.String("function", "SubscriptionService.sendSubscriptionResponse"))
 
@@ -498,7 +516,7 @@ func (s *SubscriptionService) sendSubscriptionResponse(logger_ctx context.Contex
 	}
 
 	logger().NamedLogger.Info(logger_ctx, "Sent subscription response",
-		ion.String("sender", string(msg.Sender)),
+		ion.String("sender", msg.Sender.String()),
 		ion.String("topic", config.PubSub_ConsensusChannel),
 		ion.String("accepted", fmt.Sprintf("%t", accepted)),
 		ion.String("function", "SubscriptionService.sendSubscriptionResponse"))
@@ -611,7 +629,7 @@ func (s *SubscriptionService) getBFTHandler(logger_ctx context.Context, channelN
 func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
 	logger().NamedLogger.Info(logger_ctx, "Handling BFT request",
 		ion.String("topic", log.SubscriptionService),
-		ion.String("message_id", msg.ID),
+		ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 		ion.String("function", "SubscriptionService.handleBFTRequest"))
 
 	// Parse the request data
@@ -626,7 +644,7 @@ func (s *SubscriptionService) handleBFTRequest(logger_ctx context.Context, msg *
 		err := errors.New("subscriptionService.handleBFTRequest - failed to parse BFT request")
 		logger().NamedLogger.Error(logger_ctx, err.Error(),
 			err,
-			ion.String("message_id", msg.ID),
+			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 			ion.String("topic", log.SubscriptionService),
 			ion.String("function", "SubscriptionService.handleBFTRequest"))
 		return err
@@ -762,4 +780,107 @@ func (s *SubscriptionService) InitBFTHandlers() {
 	if s.bftHandlers == nil {
 		s.bftHandlers = make(map[string]BFTMessageHandler)
 	}
+}
+
+// handleL1Commit updates the local block with L1 finality data received via gossip.
+func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
+	type payload struct {
+		BlockNumber   uint64 `json:"block_number"`
+		L1TxHash      string `json:"l1_tx_hash"`
+		L1BlockNumber uint64 `json:"l1_block_number"`
+	}
+	var p payload
+	if err := json.Unmarshal([]byte(msg.Data.Message), &p); err != nil {
+		fmt.Printf("[L1Commit] parse error: %v | raw: %s\n", err, msg.Data.Message)
+		return fmt.Errorf("handleL1Commit: parse error: %w", err)
+	}
+	fmt.Printf("[L1Commit] Applying block=%d l1_tx=%s l1_block=%d\n", p.BlockNumber, p.L1TxHash, p.L1BlockNumber)
+	if p.BlockNumber == 0 || p.L1TxHash == "" {
+		fmt.Printf("[L1Commit] Skipping — empty payload\n")
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(logger_ctx, 15*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		fmt.Printf("[L1Commit] DB connection error: %v\n", err)
+		return fmt.Errorf("handleL1Commit: db connection: %w", err)
+	}
+
+	block, err := DB_OPs.GetZKBlockByNumber(conn, p.BlockNumber)
+	if err != nil {
+		fmt.Printf("[L1Commit] Block %d not found on this peer (err=%v) — skipping\n", p.BlockNumber, err)
+		return nil // block not on this peer yet — non-fatal
+	}
+	block.L1TxHash = p.L1TxHash
+	block.L1BlockNumber = p.L1BlockNumber
+	blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, p.BlockNumber)
+	if err := DB_OPs.Update(blockKey, block); err != nil {
+		fmt.Printf("[L1Commit] Update block %d error: %v\n", p.BlockNumber, err)
+		return fmt.Errorf("handleL1Commit: update block %d: %w", p.BlockNumber, err)
+	}
+
+	fmt.Printf("[L1Commit] SUCCESS block=%d l1_tx=%s written\n", p.BlockNumber, p.L1TxHash)
+	logger().NamedLogger.Info(logger_ctx, "L1 finality applied from gossip",
+		ion.Int64("block_number", int64(p.BlockNumber)),
+		ion.String("l1_tx_hash", p.L1TxHash),
+		ion.String("function", "PubSubConnector.handleL1Commit"))
+	return nil
+}
+
+// handleL1CommitRange updates a range of blocks with shared L1 finality data received via gossip.
+func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
+	type payload struct {
+		StartBlock    uint64 `json:"start_block"`
+		EndBlock      uint64 `json:"end_block"`
+		L1TxHash      string `json:"l1_tx_hash"`
+		L1BlockNumber uint64 `json:"l1_block_number"`
+	}
+	var p payload
+	if err := json.Unmarshal([]byte(msg.Data.Message), &p); err != nil {
+		fmt.Printf("[L1CommitRange] parse error: %v | raw: %s\n", err, msg.Data.Message)
+		return fmt.Errorf("handleL1CommitRange: parse error: %w", err)
+	}
+	fmt.Printf("[L1CommitRange] Applying blocks=%d-%d l1_tx=%s l1_block=%d\n", p.StartBlock, p.EndBlock, p.L1TxHash, p.L1BlockNumber)
+	if p.StartBlock == 0 || p.EndBlock < p.StartBlock || p.L1TxHash == "" {
+		fmt.Printf("[L1CommitRange] Skipping — invalid payload\n")
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(logger_ctx, 60*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		return fmt.Errorf("handleL1CommitRange: db connection: %w", err)
+	}
+
+	var updated, skipped int
+	for blockNum := p.StartBlock; blockNum <= p.EndBlock; blockNum++ {
+		block, err := DB_OPs.GetZKBlockByNumber(conn, blockNum)
+		if err != nil {
+			skipped++
+			continue
+		}
+		block.L1TxHash = p.L1TxHash
+		block.L1BlockNumber = p.L1BlockNumber
+		blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, blockNum)
+		if err := DB_OPs.Update(blockKey, block); err != nil {
+			skipped++
+			continue
+		}
+		updated++
+	}
+
+	fmt.Printf("[L1CommitRange] DONE blocks=%d-%d updated=%d skipped=%d\n", p.StartBlock, p.EndBlock, updated, skipped)
+	logger().NamedLogger.Info(logger_ctx, "L1 range finality applied from gossip",
+		ion.Int64("start_block", int64(p.StartBlock)),
+		ion.Int64("end_block", int64(p.EndBlock)),
+		ion.String("l1_tx_hash", p.L1TxHash),
+		ion.Int64("updated", int64(updated)),
+		ion.Int64("skipped", int64(skipped)),
+		ion.String("function", "PubSubConnector.handleL1CommitRange"))
+	return nil
 }
