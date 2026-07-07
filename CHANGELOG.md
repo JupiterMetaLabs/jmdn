@@ -5,6 +5,131 @@ All notable changes to JMDN are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/),
 adhering to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+**Transaction Indexing & Explorer**
+
+- **SQLite-backed transaction-by-address index** (`DB_OPs/txindex/`).
+  Purpose-built lookup layer so address-history queries no longer scan ImmuDB.
+  Split read/write connection pools (`writeDB` capped at one connection,
+  `readDB` up to 8) against a single WAL-mode SQLite file, with `busy_timeout`
+  and pragmas applied via DSN so they hold across every pooled connection.
+  Non-blocking `Init()`: the initial gap-catchup (genesis migration or
+  post-loss rebuild) runs in the background instead of stalling node boot;
+  callers get an explicit "still syncing" error via `IsReady()` until the
+  first pass completes. `last_indexed_block` uses a monotonic
+  `INSERT ... ON CONFLICT DO UPDATE` guard so an out-of-order catchup batch
+  can never regress the watermark behind a live block. Bounded async indexing
+  (single worker draining a capped channel) replaces unbounded
+  goroutine-per-block spawning, with a race-free `Shutdown()`. 18 unit tests
+  cover lifecycle, dedup, pagination, and the shutdown/async-send race under
+  `-race`. (#55)
+
+**RPC**
+
+- **`eth_getTransactionsByAddress`** (`gETH/Facade/rpc/handlers.go`). Paginated
+  address-transaction lookup backed by the new index, with address validation
+  and bounded-concurrency (10 in flight) ImmuDB hydration per page. (#55)
+
+- **JSON-RPC batch requests** (`gETH/Facade/rpc/http_server.go`).
+  `handleJSONRPC` now detects a `[...]` batch body and processes up to 100
+  requests concurrently, returning one array of responses — standard
+  JSON-RPC 2.0 batching, previously unsupported. (#50)
+
+- **`eth_feeHistory`** (`gETH/Facade/rpc/handlers.go`). Re-enabled — the case
+  was previously commented out and returned nothing for this method. Fee
+  history is now computed from a constant base fee rather than a per-block
+  fetch. (#53)
+
+**CLI & Ops**
+
+- **`rebuildindex`, `rebuildrange <from> <to>`, `txindexstatus`** — new
+  console and `-cmd` gRPC commands (`CLI/CLI.go`, `CLI/CLI_GRPC.go`,
+  `CLI/GRPC_Server.go`, `CLI/client.go`, `CLI/proto/Connection.proto`) for
+  operating the transaction index from a running node, e.g.
+  `docker exec -it jmdn jmdn -cmd txindexstatus`. Documented in `DOCKER.md`. (#55)
+
+### Changed
+
+- **Address-transaction lookups now backed by the SQLite index, not a live
+  ImmuDB scan** (`explorer/addressOps.go`, `gETH/Facade/rpc/handlers.go`).
+  An unavailable index now returns `503` instead of a silent empty result —
+  callers can tell "no history" apart from "index down." Deterministic
+  pagination via `ORDER BY block_number DESC, tx_hash DESC` fixes page drift
+  for addresses with multiple transactions in the same block. Page size and
+  offset are bounded to guard against expensive large-`OFFSET` scans. (#55)
+
+- **Transaction parsing switched from RLP decoding to `UnmarshalBinary`**
+  (`gETH/Facade/Service/Service.go`), so legacy, EIP-2930, and EIP-1559
+  transactions are all parsed consistently on submission. (#53)
+
+### Fixed
+
+**RPC**
+
+- **`eth_getTransactionCount` returned the same value for every address**
+  (`gETH/Facade/Service/Service.go`) — the lookup ignored the `addr` parameter
+  entirely (`DB_OPs.CountTransactions(nil)`). Now returns the account's actual
+  `TxNonce`. (#50)
+
+- **Block responses missing standard Ethereum JSON-RPC fields**
+  (`gETH/Facade/rpc/handlers.go`) — `eth_getBlockByNumber` /
+  `eth_getBlockByHash` did not include `stateRoot`, `receiptsRoot`,
+  `logsBloom`, `extraData`, `miner`, or PoW-compatibility placeholders
+  (`sha3Uncles`, `nonce`, `difficulty`, `mixHash`, `uncles`), which some
+  wallets and explorers require to accept a block. `baseFeePerGas` now falls
+  back safely for blocks written before the field existed. (#50)
+
+- **WebSocket `eth_subscription` sent an invalid JSON-RPC version string**
+  (`gETH/Facade/rpc/ws_server.go`) — `"jsonrpc":"2.o"` (letter O) instead of
+  `"2.0"`, which strict clients could reject. (#50)
+
+**Transaction Submission & Security**
+
+- **Signature verification for typed transactions** (`Security/Security.go`).
+  `CheckSignature` now uses `LatestSignerForChainID` to recover EIP-2930 and
+  EIP-1559 signatures correctly, alongside the existing legacy (V=27/28) path. (#53)
+
+- **Contract deployment transactions were rejected** (`Security/Security.go`).
+  `CheckAddressExistWithCache` treated a nil `to` address (a contract
+  deployment) as invalid; deployments are now correctly exempted from the
+  receiver-existence check. A related nil-pointer panic in trace attributes
+  was also fixed. (#53)
+
+**mTLS**
+
+- **Missing client certificate caused a fatal error instead of a fallback**
+  (`pkg/gatekeeper/tls.go`). Nodes connecting to endpoints that don't require
+  a client certificate (e.g. public gateway endpoints) failed outright,
+  blocking all transaction submissions through that route. Now falls back to
+  one-way TLS and only hard-fails if a cert file exists but is unreadable or
+  invalid. (#51)
+
+### Security
+
+- **Data race on chain-ID and cached transaction signers**
+  (`Security/Security.go`) — `expectedChainID` and its derived signers are now
+  guarded by a `sync.RWMutex` (`signerMu`), closing a race between startup
+  configuration and concurrent transaction verification. (#53)
+
+### Removed
+
+- **`GetTransactionsByAccountPaginated`** (`DB_OPs/account_immuclient.go`) —
+  superseded by the SQLite transaction-by-address index; direct ImmuDB
+  scanning for address history is retired. (#55)
+
+### Performance
+
+- **Bounded-concurrency ImmuDB hydration for address-transaction pages**
+  (`explorer/addressOps.go`, `gETH/Facade/rpc/handlers.go`) — up to 10
+  concurrent point-fetches per page instead of a sequential loop. (#55)
+
+- **Fee estimation simplified to a constant base fee**
+  (`gETH/Facade/Service/Service.go`), removing a per-block fetch from the
+  `eth_feeHistory` path. (#53)
+
 ## [1.2.0] — 2026-06-29
 
 ### Added
