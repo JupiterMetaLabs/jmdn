@@ -51,6 +51,16 @@ adhering to [Semantic Versioning](https://semver.org/).
   operating the transaction index from a running node, e.g.
   `docker exec -it jmdn jmdn -cmd txindexstatus`. Documented in `DOCKER.md`. (#55)
 
+**L1 Finality**
+
+- **L1 finality tracking** (`Block/Server.go`, `config/ZKBlock.go`,
+  `gETH/Facade/rpc/handlers.go`). Blocks now carry `l1TxHash` / `l1BlockNumber`
+  once their rollup commitment is confirmed on L1. New `POST /api/l1-commit`
+  and `POST /api/l1-commit-range` endpoints ingest commit data and broadcast
+  it to peers over a dedicated gossip channel (`pubsub-l1-commit`) so every
+  node's local record stays in sync. `eth_getBlockByNumber` accepts a
+  `wantL1Commit` flag to fetch the latest L1-committed block directly. (#59)
+
 ### Changed
 
 - **Address-transaction lookups now backed by the SQLite index, not a live
@@ -86,6 +96,18 @@ adhering to [Semantic Versioning](https://semver.org/).
   (`gETH/Facade/rpc/ws_server.go`) — `"jsonrpc":"2.o"` (letter O) instead of
   `"2.0"`, which strict clients could reject. (#50)
 
+- **`eth_getTransactionReceipt` fabricated a log entry and errored on pending
+  transactions** (`DB_OPs/Facade_Receipts.go`, `gETH/Facade/rpc/types.go`).
+  Generated receipts no longer include a synthetic log entry that never came
+  from the chain. A transaction that hasn't been mined yet now returns
+  `null`, per spec, instead of a JSON-RPC error — fixes repeated failed
+  lookups from wallets polling for a receipt. (#56)
+
+- **Transaction-hash lookups were case-sensitive** (`DB_OPs/immuclient.go`) —
+  stored keys are always lowercase; a mixed-case hash from a caller would
+  silently fail to match. Reads now normalize to lowercase, matching the
+  write path. (#56)
+
 **Transaction Submission & Security**
 
 - **Signature verification for typed transactions** (`Security/Security.go`).
@@ -106,6 +128,32 @@ adhering to [Semantic Versioning](https://semver.org/).
   blocking all transaction submissions through that route. Now falls back to
   one-way TLS and only hard-fails if a cert file exists but is unreadable or
   invalid. (#51)
+
+**Consensus & Voting**
+
+- **Vote rejection reasons were discarded** (`Sequencer/Consensus.go`,
+  `Vote/Trigger.go`, `AVC/BuddyNodes/MessagePassing/`). `ProcessVotesFromCRDT`
+  now returns and propagates the reason a vote was rejected, surfaced through
+  to consensus output instead of a bare pass/fail — improves operator
+  visibility into why a vote didn't succeed. (#57)
+
+- **Block processing and storage could run out of order**
+  (`messaging/broadcast.go`) — local block processing now happens strictly
+  before the block is considered committed, closing a window where a block
+  could be marked stored before its transactions were fully applied. (#57)
+
+**CLI**
+
+- **DID lookups used the wrong ImmuDB client** (`CLI/CLI_GRPC.go`) —
+  corrected to use the DID-specific client, matching how other CLI
+  account/DID commands connect. (#57)
+
+**Networking**
+
+- **Duplicate GossipSub routers could silently break existing subscriptions**
+  (`config/PubSubMessages/GossipSub_Helper.go`) — router/topic instances are
+  now a per-host singleton, preventing a second registration from orphaning
+  the first. (#59)
 
 ### Security
 

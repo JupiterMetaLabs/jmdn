@@ -15,6 +15,7 @@ import (
 	"gossipnode/seed"
 
 	"github.com/codenotary/immudb/pkg/api/schema"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 )
@@ -502,7 +503,17 @@ func (h *CommandHandler) HandleGetDID(did string) (*DB_OPs.Account, error) {
 		return nil, fmt.Errorf("usage: getDID <did>")
 	}
 
-	doc, err := DB_OPs.GetAccountByDID(h.MainClient, did)
+	// If the input looks like an Ethereum address, look up by address key ("address:<addr>").
+	// Otherwise fall back to DID key ("did:<did>") for full DID strings.
+	if common.IsHexAddress(did) {
+		doc, err := DB_OPs.GetAccount(h.DIDClient, common.HexToAddress(did))
+		if err != nil {
+			return nil, fmt.Errorf("failed to retrieve DID %s: %v", did, err)
+		}
+		return doc, nil
+	}
+
+	doc, err := DB_OPs.GetAccountByDID(h.DIDClient, did)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve DID %s: %v", did, err)
 	}

@@ -3,31 +3,55 @@ package PubSubMessages
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// InitGossipSub initializes libp2p GossipSub for the GossipPubSub instance
+// A libp2p host must have exactly ONE GossipSub router: creating a second one
+// silently overwrites the first router's stream handlers, so subscriptions made
+// on the first router stop receiving network messages. We therefore cache one
+// router (and one joined-topic map) per host and share them across every
+// GossipPubSub wrapper built for that host.
+var (
+	sharedRoutersMu sync.Mutex
+	sharedRouters   = make(map[peer.ID]*pubsub.PubSub)
+	sharedTopicMaps = make(map[peer.ID]map[string]*pubsub.Topic)
+)
+
+// InitGossipSub initializes libp2p GossipSub for the GossipPubSub instance.
+// The underlying router and joined-topic map are per-host singletons.
 func (gps *GossipPubSub) InitGossipSub() error {
 	if gps.Host == nil {
 		return fmt.Errorf("host must be set before initializing GossipSub")
 	}
 
-	// Initialize GossipSub instance with FloodPublish for reliable small-network propagation
-	// and PeerExchange to help nodes find each other
-	gossipSub, err := pubsub.NewGossipSub(context.Background(), gps.Host,
-		pubsub.WithFloodPublish(true),
-		pubsub.WithPeerExchange(true),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create GossipSub: %w", err)
+	sharedRoutersMu.Lock()
+	defer sharedRoutersMu.Unlock()
+
+	hostID := gps.Host.ID()
+	gossipSub, exists := sharedRouters[hostID]
+	if !exists {
+		// Initialize GossipSub instance with FloodPublish for reliable small-network propagation
+		// and PeerExchange to help nodes find each other
+		var err error
+		gossipSub, err = pubsub.NewGossipSub(context.Background(), gps.Host,
+			pubsub.WithFloodPublish(true),
+			pubsub.WithPeerExchange(true),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create GossipSub: %w", err)
+		}
+		sharedRouters[hostID] = gossipSub
+		sharedTopicMaps[hostID] = make(map[string]*pubsub.Topic)
 	}
 
 	gps.GossipSubPS = gossipSub
 	gps.Mutex.Lock()
-	if gps.TopicsMap == nil {
-		gps.TopicsMap = make(map[string]*pubsub.Topic)
-	}
+	// Share the joined-topic map: a topic can only be joined once per router,
+	// so every wrapper on this host must see the same *pubsub.Topic handles.
+	gps.TopicsMap = sharedTopicMaps[hostID]
 	if gps.Subscriptions == nil {
 		gps.Subscriptions = make(map[string]*pubsub.Subscription)
 	}
@@ -45,37 +69,27 @@ func (gps *GossipPubSub) GetOrJoinTopic(topicName string) (*pubsub.Topic, error)
 		return nil, fmt.Errorf("topic name must not be empty")
 	}
 
-	// Fast path: read lock to check for existing topic + capture GossipSub pointer.
-	gps.Mutex.RLock()
-	ps := gps.GossipSubPS
-	if gps.TopicsMap != nil {
-		if topic, exists := gps.TopicsMap[topicName]; exists && topic != nil {
-			gps.Mutex.RUnlock()
-			return topic, nil
-		}
-	}
-	gps.Mutex.RUnlock()
+	// TopicsMap is shared across all wrappers on this host, so guard the whole
+	// check-join-store sequence with the package-level mutex: a topic can only
+	// be joined once per router.
+	sharedRoutersMu.Lock()
+	defer sharedRoutersMu.Unlock()
 
+	ps := gps.GossipSubPS
 	if ps == nil {
 		return nil, fmt.Errorf("GossipSub not initialized")
 	}
 
-	// Join can do non-trivial work; do it outside locks to avoid deadlocks.
-	joinedTopic, err := ps.Join(topicName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to join topic %s: %w", topicName, err)
-	}
-
-	// Store under write lock (double-check to handle concurrent Join).
-	gps.Mutex.Lock()
-	defer gps.Mutex.Unlock()
-
 	if gps.TopicsMap == nil {
 		gps.TopicsMap = make(map[string]*pubsub.Topic)
 	}
-	if existing, exists := gps.TopicsMap[topicName]; exists && existing != nil {
-		_ = joinedTopic.Close()
-		return existing, nil
+	if topic, exists := gps.TopicsMap[topicName]; exists && topic != nil {
+		return topic, nil
+	}
+
+	joinedTopic, err := ps.Join(topicName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to join topic %s: %w", topicName, err)
 	}
 	gps.TopicsMap[topicName] = joinedTopic
 	return joinedTopic, nil
@@ -83,12 +97,12 @@ func (gps *GossipPubSub) GetOrJoinTopic(topicName string) (*pubsub.Topic, error)
 
 // CloseTopic closes a topic
 func (gps *GossipPubSub) CloseTopic(topicName string) error {
-	gps.Mutex.Lock()
+	sharedRoutersMu.Lock()
 	topic, exists := gps.TopicsMap[topicName]
 	if exists {
 		delete(gps.TopicsMap, topicName)
 	}
-	gps.Mutex.Unlock()
+	sharedRoutersMu.Unlock()
 	if exists {
 		_ = topic.Close()
 	}

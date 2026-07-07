@@ -772,29 +772,26 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		DB_OPs.PutAccountsConnection(accountsClient)
 	}()
 
-	// Store the block in main DB FIRST to ensure it's valid before processing transactions
-	// This prevents balance updates for invalid blocks that fail to store
-	if err := DB_OPs.StoreZKBlock(mainDBClient, block); err != nil {
-		log.Error().
-			Err(err).
-			Str("block_hash", block.BlockHash.Hex()).
-			Uint64("block_number", block.BlockNumber).
-			Msg("Failed to store block in database - skipping transaction processing")
-		return fmt.Errorf("failed to store block in database: %w", err)
-	}
-
-	// Only process transactions if block storage succeeded
-	// This ensures balance updates only happen for valid, stored blocks
+	// Process transactions BEFORE storing the block — matches blockPropagation.go ordering.
+	// If tx processing fails, the block is never persisted, keeping account state consistent.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := BlockProcessing.ProcessBlockTransactions(ctx, block, accountsClient); err != nil {
 		log.Error().
 			Err(err).
 			Str("block_hash", block.BlockHash.Hex()).
-			Msg("Block transaction processing failed after block storage")
-		// Note: Block is already stored, but transactions failed
-		// This is a separate issue that may need rollback handling in the future
+			Msg("Block transaction processing failed - not storing block")
 		return fmt.Errorf("failed to process block transactions: %w", err)
+	}
+
+	// Store block only after transactions have been successfully applied.
+	if err := DB_OPs.StoreZKBlock(mainDBClient, block); err != nil {
+		log.Error().
+			Err(err).
+			Str("block_hash", block.BlockHash.Hex()).
+			Uint64("block_number", block.BlockNumber).
+			Msg("Failed to store block in database after transaction processing")
+		return fmt.Errorf("failed to store block in database: %w", err)
 	}
 
 	// Update the SQLite tx-by-address index asynchronously.

@@ -23,6 +23,7 @@ import (
 	ion "github.com/JupiterMetaLabs/ion"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
+	MsgPassingService "gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/Block"
 	"gossipnode/CA/ImmuDB_CA"
 	cli "gossipnode/CLI"
@@ -1063,8 +1064,21 @@ func main() {
 	} else {
 		fmt.Println("✅ PubSub system ready for consensus and messaging")
 		log.Info().Msg("PubSub system initialized successfully")
-		// Store reference for later use
-		_ = globalPubSub // Mark as used to avoid linting error
+		// Give Block server access to GPS so /api/l1-commit can broadcast to peers.
+		Block.SetGossipPubSubInstance(globalPubSub.GetGossipPubSub())
+
+		// Subscribe to the dedicated L1 commit channel at startup so this node
+		// receives L1Commit/L1CommitRange broadcasts from the sequencer. This
+		// topic is persistent — unlike the consensus channel, it is never
+		// unsubscribed at the end of a consensus round (END_PUBSUB).
+		go func() {
+			svc := MsgPassingService.NewSubscriptionService(globalPubSub.GetGossipPubSub())
+			if subErr := svc.HandleStreamSubscriptionRequest(ctx, config.PubSub_L1CommitChannel); subErr != nil {
+				fmt.Printf("⚠️  Failed to subscribe to L1 commit channel at startup: %v\n", subErr)
+			} else {
+				fmt.Println("✅ Subscribed to L1 commit channel at startup")
+			}
+		}()
 	}
 
 	// Set the stream handler for receiving files for fastsync. This is crucial

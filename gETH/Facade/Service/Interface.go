@@ -25,6 +25,11 @@ type Service interface {
 	GetCode(ctx context.Context, addr string, block *big.Int) (string, error)
 	FeeHistory(ctx context.Context, blockCount uint64, newest *big.Int, perc []float64) (map[string]any, error)
 
+	// LatestL1CommitBlock returns the most recent block that has L1 commit data
+	// (L1TxHash != ""). Scans backwards from the chain tip up to 10 000 blocks.
+	// Returns nil, nil if no committed block is found within that window.
+	LatestL1CommitBlock(ctx context.Context) (*Types.Block, error)
+
 	// Streaming (for WS subscriptions)
 	SubscribeNewHeads(ctx context.Context) (<-chan *Types.Block, func(), error)
 	// SubscribeLogs is used to subscribe to logs - Its used by Smartcontracts so it can be skipped for some time - // Future
