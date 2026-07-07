@@ -30,6 +30,7 @@ const (
 type histHandle struct {
 	store.ThebeHandle
 	balances map[string]string // lowercase addr → latest balance
+	override *thebegateway.TransactionRecord
 }
 
 func (h *histHandle) GetLatestBlockNumber(_ context.Context) (uint64, error) { return 10, nil }
@@ -69,6 +70,9 @@ func (h *histHandle) txInBlock9() *thebegateway.TransactionRecord {
 func (h *histHandle) GetTransactionsByAddressInRange(_ context.Context, address string, from, to uint64) ([]*thebegateway.TransactionRecord, error) {
 	a := common.HexToAddress(address)
 	if from <= 9 && 9 <= to && (a == common.HexToAddress(userAddr) || a == common.HexToAddress(peerAddr)) {
+		if h.override != nil {
+			return []*thebegateway.TransactionRecord{h.override}, nil
+		}
 		return []*thebegateway.TransactionRecord{h.txInBlock9()}, nil
 	}
 	return nil, nil
@@ -165,6 +169,28 @@ func TestHistoricalBalance_LookbackCap(t *testing.T) {
 	_, err := DB_OPs.GetBalanceAtBlock(common.HexToAddress(userAddr), 5) // tip 10, lookback 5 > 1
 	if err == nil {
 		t.Fatal("expected history-too-deep error")
+	}
+}
+
+// Recorded gas fee (gas_fee_wei column) must take precedence over the
+// derived gasLimit×price value when present.
+func TestHistoricalBalance_RecordedFeePreferred(t *testing.T) {
+	h := &histHandle{balances: map[string]string{
+		userAddr: "870", // 1000 − 100 (value) − 30 (RECORDED fee, not the derived 20)
+	}}
+	rec := h.txInBlock9()
+	rec.GasFeeWei = "30"
+	h.override = rec
+	DB_OPs.SetGlobalHandle(h)
+	t.Cleanup(func() { DB_OPs.SetGlobalHandle(nil) })
+
+	got, err := DB_OPs.GetBalanceAtBlock(common.HexToAddress(userAddr), 8)
+	if err != nil {
+		t.Fatalf("GetBalanceAtBlock: %v", err)
+	}
+	// 870 + 100 + 30 (recorded) = 1000; derived fee (20) would give 990.
+	if got.Cmp(big.NewInt(1000)) != 0 {
+		t.Fatalf("recorded fee not used: want 1000, got %s", got)
 	}
 }
 

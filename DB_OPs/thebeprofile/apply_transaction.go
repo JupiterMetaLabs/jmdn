@@ -32,8 +32,8 @@ import (
 )
 
 const sqlInsertTransaction = `
-INSERT INTO transactions (tx_hash, block_number, tx_index, from_addr, to_addr, value_wei, nonce, type, gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei, data, access_list, sig_v, sig_r, sig_s)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+INSERT INTO transactions (tx_hash, block_number, tx_index, from_addr, to_addr, value_wei, nonce, type, gas_limit, gas_price_wei, max_fee_wei, max_priority_fee_wei, gas_fee_wei, data, access_list, sig_v, sig_r, sig_s)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 ON CONFLICT (tx_hash) DO NOTHING`
 
 func applyTransaction(_ context.Context, _ uint64, record *core.CanonicalRecord, tx *sql.Tx) error {
@@ -52,10 +52,20 @@ func applyTransaction(_ context.Context, _ uint64, record *core.CanonicalRecord,
 		r.TxHash, r.BlockNumber, r.TxIndex, r.FromAddr, r.ToAddr,
 		r.ValueWei, r.Nonce, r.Type,
 		r.GasLimit, r.GasPriceWei, r.MaxFeeWei, r.MaxPriorityFeeWei,
+		nullIfEmptyNumeric(r.GasFeeWei),
 		r.Data, alJSON, r.SigV, r.SigR, r.SigS,
 	)
 	if err != nil {
 		return fmt.Errorf("applyTransaction: exec: %w", err)
 	}
 	return nil
+}
+
+// nullIfEmptyNumeric maps "" to "0" so NUMERIC NOT NULL DEFAULT 0 columns
+// accept records written before the field existed.
+func nullIfEmptyNumeric(v string) string {
+	if v == "" {
+		return "0"
+	}
+	return v
 }

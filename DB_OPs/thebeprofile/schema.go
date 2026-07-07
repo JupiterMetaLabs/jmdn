@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     gas_price_wei        VARCHAR(30),
     max_fee_wei          VARCHAR(30),
     max_priority_fee_wei VARCHAR(30),
+    gas_fee_wei          NUMERIC(78,0) NOT NULL DEFAULT 0,  -- recorded fee (sender debit; coinbase/zkvm split)
     data                 BYTEA,
     access_list          JSONB         NOT NULL DEFAULT '[]'::jsonb,
     sig_v                BIGINT        NOT NULL,

@@ -169,6 +169,11 @@ func toTransactionRecord(tx *config.Transaction, blockNumber uint64, txIndex int
 	if tx.MaxPriorityFee != nil {
 		rec.MaxPriorityFeeWei = tx.MaxPriorityFee.String()
 	}
+
+	// Record the fee actually charged to the sender at ingest time.
+	// Canonical math: config.GasFee (gasLimit × effective price). Readers
+	// (historical balance, receipts, explorer) use this instead of re-deriving.
+	rec.GasFeeWei = config.GasFee(tx).String()
 	if tx.V != nil {
 		if tx.V.IsUint64() {
 			rec.SigV = tx.V.Uint64()

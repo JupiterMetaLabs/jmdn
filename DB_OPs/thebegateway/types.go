@@ -85,6 +85,7 @@ type TransactionRecord struct {
 	GasPriceWei        string         `json:"gas_price_wei"`        // VARCHAR(30)
 	MaxFeeWei          string         `json:"max_fee_wei"`          // VARCHAR(30)
 	MaxPriorityFeeWei  string         `json:"max_priority_fee_wei"` // VARCHAR(30)
+	GasFeeWei          string         `json:"gas_fee_wei"`          // NUMERIC(78,0) — recorded fee charged to sender (gasLimit × effective price at ingest)
 	Data               []byte         `json:"data"`                 // BYTEA
 	AccessList         map[string]any `json:"access_list"`          // JSONB
 	SigV               uint64         `json:"sig_v"`                // BIGINT — int16 overflows for chainID > 16383 (EIP-155)

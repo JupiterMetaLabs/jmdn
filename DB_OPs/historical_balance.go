@@ -88,7 +88,7 @@ func GetBalanceAtBlock(addr common.Address, atBlock uint64) (*big.Int, error) {
 	}
 	for _, t := range dbtxs {
 		tx := t.Tx
-		gasFee := computeGasFeeConfig(tx)
+		gasFee := gasFeeForTx(t.GasFeeWei, tx)
 		if tx.From != nil && strings.ToLower(tx.From.Hex()) == addrLower {
 			delta.Sub(delta, gasFee)
 			if tx.Value != nil && tx.Value.Sign() > 0 {
@@ -120,7 +120,7 @@ func GetBalanceAtBlock(addr common.Address, atBlock uint64) (*big.Int, error) {
 		}
 		for _, r := range txRecs {
 			tx := txRecordToConfig(r)
-			gasFee := computeGasFeeConfig(tx)
+			gasFee := gasFeeForTx(r.GasFeeWei, tx)
 			half := new(big.Int).Div(gasFee, two)
 			remainder := new(big.Int).Mod(gasFee, two)
 			if isCoinbase {
@@ -141,44 +141,14 @@ func GetBalanceAtBlock(addr common.Address, atBlock uint64) (*big.Int, error) {
 	return balanceAt, nil
 }
 
-// computeGasFeeConfig returns gasLimit * effectiveGasPrice for a config.Transaction.
-// Mirrors FastsyncV2/deltas.go computeGasFee / effectiveGasPrice exactly.
-func computeGasFeeConfig(tx *config.Transaction) *big.Int {
-	if tx == nil || tx.GasLimit == 0 {
-		return big.NewInt(0)
-	}
-	gasLimit := new(big.Int).SetUint64(tx.GasLimit)
-	return new(big.Int).Mul(gasLimit, effectiveGasPriceConfig(tx))
-}
-
-var oneGweiHist = big.NewInt(1_000_000_000)
-
-// effectiveGasPriceConfig mirrors FastsyncV2/deltas.go effectiveGasPrice:
-//
-//	EIP-1559 (type 2): MaxFee → MaxPriorityFee → GasPrice → 1 Gwei
-//	Legacy   (0/1):    GasPrice → MaxFee → MaxPriorityFee → 1 Gwei
-func effectiveGasPriceConfig(tx *config.Transaction) *big.Int {
-	switch tx.Type {
-	case 2: // EIP-1559
-		if tx.MaxFee != nil && tx.MaxFee.Sign() > 0 {
-			return tx.MaxFee
-		}
-		if tx.MaxPriorityFee != nil && tx.MaxPriorityFee.Sign() > 0 {
-			return tx.MaxPriorityFee
-		}
-		if tx.GasPrice != nil && tx.GasPrice.Sign() > 0 {
-			return tx.GasPrice
-		}
-	default: // Legacy / EIP-2930
-		if tx.GasPrice != nil && tx.GasPrice.Sign() > 0 {
-			return tx.GasPrice
-		}
-		if tx.MaxFee != nil && tx.MaxFee.Sign() > 0 {
-			return tx.MaxFee
-		}
-		if tx.MaxPriorityFee != nil && tx.MaxPriorityFee.Sign() > 0 {
-			return tx.MaxPriorityFee
+// gasFeeForTx returns the recorded per-tx gas fee when present (gas_fee_wei
+// column, written at ingest), falling back to the derived value for rows
+// created before fee recording existed.
+func gasFeeForTx(recorded string, tx *config.Transaction) *big.Int {
+	if recorded != "" && recorded != "0" {
+		if v, ok := new(big.Int).SetString(recorded, 10); ok {
+			return v
 		}
 	}
-	return oneGweiHist
+	return config.GasFee(tx)
 }

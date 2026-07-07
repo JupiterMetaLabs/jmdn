@@ -421,6 +421,7 @@ type DBTx struct {
 	Tx          *config.Transaction
 	BlockNumber uint64
 	TxIndex     uint16
+	GasFeeWei   string // recorded fee from the gas_fee_wei column ("" for legacy rows)
 }
 
 // GetDBTransactionsByAccount retrieves all transactions for an account with
@@ -441,7 +442,7 @@ func GetDBTransactionsByAccount(accountAddr *common.Address) ([]DBTx, error) {
 	}
 	out := make([]DBTx, 0, len(recs))
 	for _, r := range recs {
-		out = append(out, DBTx{Tx: txRecordToConfig(r), BlockNumber: r.BlockNumber, TxIndex: uint16(r.TxIndex)})
+		out = append(out, DBTx{Tx: txRecordToConfig(r), BlockNumber: r.BlockNumber, TxIndex: uint16(r.TxIndex), GasFeeWei: r.GasFeeWei})
 	}
 	return out, nil
 }
@@ -465,7 +466,7 @@ func GetDBTransactionsByAccountInRange(accountAddr *common.Address, fromBlock, t
 	}
 	out := make([]DBTx, 0, len(recs))
 	for _, r := range recs {
-		out = append(out, DBTx{Tx: txRecordToConfig(r), BlockNumber: r.BlockNumber, TxIndex: uint16(r.TxIndex)})
+		out = append(out, DBTx{Tx: txRecordToConfig(r), BlockNumber: r.BlockNumber, TxIndex: uint16(r.TxIndex), GasFeeWei: r.GasFeeWei})
 	}
 	return out, nil
 }
