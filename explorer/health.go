@@ -17,8 +17,8 @@ type health struct {
 }
 
 // healthCheck handles health check requests for the default database
-func (s *ImmuDBServer) healthCheck(c *gin.Context) {
-	value, err := s.checkHealth(c, s.defaultdb.Client, "defaultdb")
+func (s *ExplorerServer) healthCheck(c *gin.Context) {
+	value, err := s.checkHealth(c, s.defaultdb.Handle, "defaultdb")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -27,8 +27,8 @@ func (s *ImmuDBServer) healthCheck(c *gin.Context) {
 }
 
 // didHealthCheck handles health check requests for the accounts database
-func (s *ImmuDBServer) didHealthCheck(c *gin.Context) {
-	health, err := s.checkHealth(c, s.accountsdb.Client, "AccountsDB")
+func (s *ExplorerServer) didHealthCheck(c *gin.Context) {
+	health, err := s.checkHealth(c, s.accountsdb.Handle, "AccountsDB")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -38,7 +38,7 @@ func (s *ImmuDBServer) didHealthCheck(c *gin.Context) {
 
 // checkHealth is a helper function that performs the actual health check.
 // A non-nil handle means the pool produced a live ThebeDB connection.
-func (s *ImmuDBServer) checkHealth(c *gin.Context, db io.Closer, dbType string) (*health, error) {
+func (s *ExplorerServer) checkHealth(c *gin.Context, db io.Closer, dbType string) (*health, error) {
 	isHealthy := db != nil
 
 	var status string

@@ -121,7 +121,7 @@ func PrintFuncs() {
 	fmt.Println("  rebuildrange <from_block> <to_block>         - Re-index a specific block range (targeted gap repair)")
 	fmt.Println("  txindexstatus                                - Show tx-address index sync status (ready/syncing, last indexed block)")
 	fmt.Println("  accountsync <peer_multiaddr>                 - Sync missing accounts only (skip block sync)")
-	fmt.Println("  dbstate                           - Show current ImmuDB database state")
+	fmt.Println("  dbstate                           - Show current database state")
 	fmt.Println("  propagateDID <did> <public_key>  - Propagate a DID to the network")
 	fmt.Println("  getDID <did>                      - Get a DID document from the network")
 	fmt.Println("  gethstatus                        - Show gETH server status (chain ID, ports)")
@@ -618,7 +618,7 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 
 	// Show pre-sync DB state if clients are available
 	if h.MainClient != nil && h.DIDClient != nil {
-		mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+		mainState, err := DB_OPs.GetDatabaseState(h.MainClient)
 		if err == nil {
 			fmt.Printf("Pre-sync main DB state: TxID=%d, Root=%x\n", mainState.TxId, mainState.TxHash)
 		}
@@ -635,11 +635,11 @@ func (h *CommandHandler) handleFastSync(parts []string) {
 
 	// Show post-sync DB state if clients are available
 	if h.MainClient != nil && h.DIDClient != nil {
-		newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+		newMainState, err := DB_OPs.GetDatabaseState(h.MainClient)
 		if err == nil {
 			fmt.Printf("Post-sync main DB state: TxID=%d, Root=%x\n", newMainState.TxId, newMainState.TxHash)
 		}
-		newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
+		newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient)
 		if err == nil {
 			fmt.Printf("Post-sync accounts DB state: TxID=%d, Root=%x\n", newAccountsState.TxId, newAccountsState.TxHash)
 		}

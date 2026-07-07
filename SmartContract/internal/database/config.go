@@ -10,8 +10,8 @@ import (
 type DBType string
 
 const (
-	// DBTypeImmuDB represents ImmuDB database
-	DBTypeImmuDB DBType = "immudb"
+	// DBTypeThebeDB represents the embedded ThebeDB store
+	DBTypeThebeDB DBType = "thebedb"
 
 	// DBTypePostgreSQL represents PostgreSQL database (future)
 	DBTypePostgreSQL DBType = "postgres"
@@ -42,10 +42,6 @@ type Config struct {
 	MinConnections int
 	MaxConnections int
 
-	// ImmuDB-specific settings
-	ImmuDBStateDir string
-	ImmuDBCertPath string
-
 	// PostgreSQL-specific settings
 	PostgresSSLMode string
 
@@ -61,11 +57,8 @@ func DefaultConfig() *Config {
 		Host:           "localhost",
 		Port:           3322,
 		Database:       "contractsdb",
-		Username:       "immudb",
-		Password:       "immudb",
 		MinConnections: 2,
 		MaxConnections: 20,
-		ImmuDBStateDir: "./.immudb_state",
 	}
 }
 
@@ -113,11 +106,6 @@ func LoadConfigFromEnv() *Config {
 		if max, err := strconv.Atoi(maxConn); err == nil {
 			config.MaxConnections = max
 		}
-	}
-
-	// ImmuDB-specific
-	if stateDir := os.Getenv("IMMUDB_STATE_DIR"); stateDir != "" {
-		config.ImmuDBStateDir = stateDir
 	}
 
 	// PostgreSQL-specific

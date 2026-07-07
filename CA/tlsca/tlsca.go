@@ -1,4 +1,4 @@
-package ImmuDB_CA
+package tlsca
 
 import (
 	"crypto/ecdsa"
@@ -133,7 +133,7 @@ func generateCA(certPath, keyPath string, now time.Time) (*x509.Certificate, *ec
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName:   "ImmuDB-Local-CA",
+			CommonName:   "JMDN-Local-CA",
 			Organization: []string{"Your Org"},
 		},
 		NotBefore:             now.Add(-1 * time.Hour),

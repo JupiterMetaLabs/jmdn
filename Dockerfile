@@ -77,28 +77,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        yggdrasil \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ImmuDB
-ARG IMMUDB_VERSION=1.10.0
-ARG TARGETARCH
-RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
-    curl -fsSL "https://github.com/codenotary/immudb/releases/download/v${IMMUDB_VERSION}/immudb-v${IMMUDB_VERSION}-linux-${ARCH}" \
-    -o /usr/local/bin/immudb && \
-    chmod +x /usr/local/bin/immudb
-
-# Create non-root user pinned to UID/GID 3322 — must match IMMUDB_UID (3322) used
-# in bootstrap_sync.sh so that immudb (started via gosu jmdn) can write to its
-# data directory after the snapshot is extracted and chowned to 3322:3322.
+# Create non-root user pinned to UID/GID 3322 — must match JMDN_UID (3322) used
+# in bootstrap_sync.sh so the node (started via gosu jmdn) can write to its
+# state directory after the snapshot is extracted and chowned to 3322:3322.
 RUN groupadd -r -g 3322 jmdn && useradd -r -u 3322 -g jmdn -d /home/jmdn -s /bin/bash -m jmdn
 
 # Create required directories and hand ownership to jmdn (mirrors install_services.sh layout)
 # /opt/jmdn          = JMDN_DATA root (WorkingDirectory for jmdn process)
-# /opt/jmdn/data     = immudb --dir (systemdb, defaultdb, accountsdb)
+# /opt/jmdn/storage  = ThebeDB embedded store (BadgerDB KV + SQL projection)
 # /opt/jmdn/config   = peer.json and other jmdn config
 # /opt/jmdn/DB       = gossipnode.db (DBPath = "./DB/gossipnode.db" relative to WorkingDirectory)
 # /opt/jmdn/certs    = TLS certs (self-signed or operator-mounted)
 RUN mkdir -p \
     /etc/jmdn/certs \
-    /opt/jmdn/data \
+    /opt/jmdn/storage \
     /opt/jmdn/config \
     /opt/jmdn/DB \
     /opt/jmdn/certs \
@@ -129,7 +121,6 @@ RUN chmod +x /usr/local/bin/start_jmdn_wrapper.sh \
 # 15052 - DID service              (ports.did)
 # 8545  - Facade / JSON-RPC        (ports.facade)
 # 8546  - WebSocket                (ports.ws)
-# ImmuDB (3322) is container-internal — not exposed
 EXPOSE 8090 15050 15055 15052 8545 8546
 
 # Health check against Explorer API (ports.api).
@@ -141,11 +132,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
     CMD sh -c 'curl -sf http://localhost:8090/api/v1/node/version \
         -H "Authorization: Bearer ${JMDN_SECURITY_EXPLORER_API_KEY:-}" || exit 1'
 
-# Volume declaration — all node state under /opt/jmdn.
-# compose (IMMUDB_EXTERNAL=true): immudb-data is mounted separately into the immudb
-#   container at /opt/jmdn/data — jmdn container only uses jmdn-state for DB/, config/, certs/.
-# embedded (IMMUDB_EXTERNAL=false, docker run): single volume holds everything
-#   including /opt/jmdn/data (immudb files) and /opt/jmdn/DB, config/, certs/.
+# Volume declaration — all node state under /opt/jmdn
+# (ThebeDB storage/, DB/, config/, certs/).
 VOLUME ["/opt/jmdn"]
 
 # Entrypoint runs as root so bootstrap_sync can chown the extracted snapshot.
@@ -154,7 +142,7 @@ VOLUME ["/opt/jmdn"]
 # jmdn resolves "./DB/gossipnode.db" and "./config/peer.json" relative to this.
 WORKDIR /opt/jmdn
 
-# Startup order: bootstrap (root) → restore paths → gosu jmdn immudb → gosu jmdn jmdn
+# Startup order: bootstrap (root) → restore paths → gosu jmdn jmdn
 # Override config: -v /your/jmdn.yaml:/etc/jmdn/jmdn.yaml
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 # Binary loads /etc/jmdn/jmdn.yaml automatically via viper — no -config flag needed.

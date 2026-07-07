@@ -212,12 +212,12 @@ func (h *CommandHandler) HandleBroadcast(message string) (bool, error) {
 
 func (h *CommandHandler) CheckDBStats() (*DB_OPs.DatabaseState, *DB_OPs.DatabaseState, error) {
 	// Get both database states before sync
-	mainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+	mainState, err := DB_OPs.GetDatabaseState(h.MainClient)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get main database state: %v", err)
 	}
 
-	accountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
+	accountsState, err := DB_OPs.GetDatabaseState(h.DIDClient)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get accounts database state: %v", err)
 	}
@@ -283,12 +283,12 @@ func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
 	}
 
 	// Get post-sync states
-	newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+	newMainState, err := DB_OPs.GetDatabaseState(h.MainClient)
 	if err != nil {
 		return SyncStats{}, fmt.Errorf("failed to get main database state after sync: %v", err)
 	}
 
-	newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
+	newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient)
 	if err != nil {
 		return SyncStats{}, fmt.Errorf("failed to get accounts database state after sync: %v", err)
 	}
@@ -323,10 +323,10 @@ func (h *CommandHandler) HandleCatchUpSync(ctx context.Context, peeraddr string,
 
 	var newMainState, newAccountsState *DB_OPs.DatabaseState
 	if h.MainClient != nil {
-		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient.Client)
+		newMainState, _ = DB_OPs.GetDatabaseState(h.MainClient)
 	}
 	if h.DIDClient != nil {
-		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
+		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient)
 	}
 
 	return SyncStats{
@@ -355,7 +355,7 @@ func (h *CommandHandler) HandleAccountSync(peeraddr string) (SyncStats, error) {
 
 	var newAccountsState *DB_OPs.DatabaseState
 	if h.DIDClient != nil {
-		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient.Client)
+		newAccountsState, _ = DB_OPs.GetDatabaseState(h.DIDClient)
 	}
 
 	return SyncStats{
@@ -421,12 +421,12 @@ func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStat
 	}
 
 	// Get post-sync states
-	newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
+	newMainState, err := DB_OPs.GetDatabaseState(h.MainClient)
 	if err != nil {
 		return SyncStats{}, fmt.Errorf("failed to get main database state after sync: %v", err)
 	}
 
-	newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
+	newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient)
 	if err != nil {
 		return SyncStats{}, fmt.Errorf("failed to get accounts database state after sync: %v", err)
 	}

@@ -63,7 +63,7 @@ func sendEventToClients(event StreamEvent) {
 }
 
 // streamBlocks handles SSE connections for block and transaction streaming
-func (s *ImmuDBServer) streamBlocks(c *gin.Context) {
+func (s *ExplorerServer) streamBlocks(c *gin.Context) {
 	// Create a channel for this client
 	messageChan := make(chan string)
 

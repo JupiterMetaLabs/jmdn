@@ -31,7 +31,7 @@ import (
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	"gossipnode/Block"
-	"gossipnode/CA/ImmuDB_CA"
+	"gossipnode/CA/tlsca"
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/backend"
@@ -697,10 +697,10 @@ func runCommand(command string, args []string, grpcPort int) {
 }
 
 func StartAPIServer(ctx context.Context, address string) error {
-	// Create ImmuDB API server
-	server, err := explorer.NewImmuDBServer()
+	// Create Explorer API server
+	server, err := explorer.NewExplorerServer()
 	if err != nil {
-		return fmt.Errorf("failed to create ImmuDB API server: %w", err)
+		return fmt.Errorf("failed to create Explorer API server: %w", err)
 	}
 
 	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.BlockPollerThread, func(ctx context.Context) error {
@@ -713,7 +713,7 @@ func StartAPIServer(ctx context.Context, address string) error {
 	}
 
 	if logger := mainLogger(); logger != nil {
-		logger.Info(context.Background(), "Starting ImmuDB API server", ion.String("address", address))
+		logger.Info(context.Background(), "Starting Explorer API server", ion.String("address", address))
 	}
 	return server.StartWithContext(ctx, address)
 }
@@ -733,13 +733,9 @@ func initYggdrasilMessaging(ctx context.Context) {
 }
 
 // Initialize main database connection pool
-func initMainDBPool(logger_ctx context.Context, enableLoki bool, username, password string) error {
+func initMainDBPool(logger_ctx context.Context, enableLoki bool) error {
 	poolingConfig := &config.PoolingConfig{
-		DBAddress:  config.DBAddress,
-		DBPort:     config.DBPort,
-		DBName:     config.DBName,
-		DBUsername: username,
-		DBPassword: password,
+		DBName: config.DBName,
 	}
 
 	// Initialize the global pool. The factory is supplied process-wide via
@@ -811,7 +807,7 @@ func main() {
 	profilerPort := flag.String("profiler", "", "Port for Go profiler (pprof) (empty disables profiler server)")
 	grotrack := flag.Bool("grotrack", false, "Track GRO goroutines in Prometheus/Grafana (requires -metrics)")
 	enableYggdrasil := flag.Bool("ygg", true, "Enable Yggdrasil direct messaging (default: true)")
-	apiPort := flag.Int("api", 0, "Run ImmuDB API on specified port (0 = disabled)")
+	apiPort := flag.Int("api", 0, "Run Explorer API on specified port (0 = disabled)")
 	blockgen := flag.Int("blockgen", 0, "Run Block creator API on specified port (0 = disabled)")
 	blockgRPC := flag.Int("blockgrpc", 0, "Run Block gRPC server on specified port (0 = disabled)")
 	mempoolgRPC := flag.String("mempool", "localhost:15051", "Mempool gRPC server address")
@@ -822,8 +818,6 @@ func main() {
 	gETHWSServer := flag.Int("ws", 8546, "gETH WSServer address")
 	smartRPC := flag.Int("smart", 15056, "Smart Contract gRPC server address")
 	chainID := flag.Int("chainID", 7000700, "Chain ID for the blockchain network")
-	immudbUsername := flag.String("immudb-user", "", "ImmuDB username")
-	immudbPassword := flag.String("immudb-pass", "", "ImmuDB password")
 	explorerAPIKey := flag.String("explorer-api-key", "", "Explorer API key")
 	jwtSecret := flag.String("jwt-secret", "", "JWT secret")
 	command := flag.String("cmd", "", "Execute a CLI command (e.g., listpeers, addrs, stats, dbstate)")
@@ -887,10 +881,6 @@ func main() {
 			cfg.Ports.Smart = *smartRPC
 		case "chainID":
 			cfg.Network.ChainID = *chainID
-		case "immudb-user":
-			cfg.Database.Username = *immudbUsername
-		case "immudb-pass":
-			cfg.Database.Password = *immudbPassword
 		case "explorer-api-key":
 			cfg.Security.ExplorerAPIKey = *explorerAPIKey
 		case "jwt-secret":
@@ -912,18 +902,6 @@ func main() {
 		Str("group_name", cfg.Thebe.GroupName).
 		Msg("Resolved Thebe config")
 
-	// ImmuDB address/port — override package-level vars so all callers
-	// (ConnectionPool, fastsync, DB_OPs) pick up the config value without
-	// needing individual changes. Defaults: localhost:3322 (embedded).
-	// Override via JMDN_DATABASE_ADDRESS / JMDN_DATABASE_PORT to use an
-	// external immudb container.
-	if cfg.Database.Address != "" {
-		config.DBAddress = cfg.Database.Address
-	}
-	if cfg.Database.Port > 0 {
-		config.DBPort = cfg.Database.Port
-	}
-	fmt.Printf("ImmuDB target: %s:%d\n", config.DBAddress, config.DBPort)
 
 	// Chain ID global initialization — must happen before any Security validation.
 	// Previously this was only set inside Block/Server.go (gated behind BlockGen > 0),
@@ -947,7 +925,7 @@ func main() {
 	messaging.StartBroadcastCleanup()
 
 	var nodeManager *node.NodeManager
-	if err := ImmuDB_CA.EnsureTLSAssets(".immudb_state"); err != nil {
+	if err := tlsca.EnsureTLSAssets(".immudb_state"); err != nil {
 		if logger := mainLogger(); logger != nil {
 			logger.Error(context.Background(), "Failed to ensure TLS assets", err)
 		}
@@ -1059,7 +1037,7 @@ func main() {
 
 	// Initialize database connection pools FIRST
 	fmt.Println("Initializing main database pool...")
-	if err := initMainDBPool(logger_ctx, false, cfg.Database.Username, cfg.Database.Password); err != nil {
+	if err := initMainDBPool(logger_ctx, false); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize main database pool")
 	}
 	fmt.Println("Main database pool initialized successfully")
@@ -1464,8 +1442,8 @@ func main() {
 
 	if cfg.Ports.API > 0 {
 		if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.ExplorerThread, func(ctx context.Context) error {
-			mainLogger().Info(context.Background(), fmt.Sprintf("Starting ImmuDB API on port %d", cfg.Ports.API))
-			fmt.Printf("\nImmuDB API available at http://localhost:%d/api\n", cfg.Ports.API)
+			mainLogger().Info(context.Background(), fmt.Sprintf("Starting Explorer API on port %d", cfg.Ports.API))
+			fmt.Printf("\nExplorer API available at http://localhost:%d/api\n", cfg.Ports.API)
 
 			// Initialize API server
 			apiAddr := fmt.Sprintf("%s:%d", cfg.Binds.API, cfg.Ports.API)

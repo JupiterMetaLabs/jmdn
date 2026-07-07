@@ -147,10 +147,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("binds.profiler", d.Binds.Profiler)
 
 	// Database
-	v.SetDefault("database.address", d.Database.Address)
-	v.SetDefault("database.port", d.Database.Port)
-	v.SetDefault("database.username", d.Database.Username)
-	v.SetDefault("database.password", d.Database.Password)
 	v.SetDefault("database.redis.url", d.Database.Redis.URL)
 	v.SetDefault("database.redis.password", d.Database.Redis.Password)
 	v.SetDefault("database.tx_index_path", d.Database.TxIndexPath)

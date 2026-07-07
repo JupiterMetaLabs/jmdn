@@ -17,7 +17,7 @@ import (
 type noOpPrimary struct{}
 
 func (noOpPrimary) Create(*config.PooledConnection, string, interface{}) error { return nil }
-func (noOpPrimary) SafeCreate(*config.ImmuClient, string, interface{}) error   { return nil }
+func (noOpPrimary) SafeCreate(string, interface{}) error { return nil }
 func (noOpPrimary) BatchCreate(*config.PooledConnection, map[string]interface{}) error {
 	return nil
 }

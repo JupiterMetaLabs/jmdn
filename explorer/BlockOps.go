@@ -44,7 +44,7 @@ type LatestBlockStats struct {
 }
 
 // Get block by number
-func (s *ImmuDBServer) getBlockByNumber(c *gin.Context) {
+func (s *ExplorerServer) getBlockByNumber(c *gin.Context) {
 	// Create span for getBlockByNumber
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getBlockByNumber")
 	defer span.End()
@@ -101,7 +101,7 @@ func (s *ImmuDBServer) getBlockByNumber(c *gin.Context) {
 }
 
 // Get block by hash
-func (s *ImmuDBServer) getBlock(c *gin.Context) {
+func (s *ExplorerServer) getBlock(c *gin.Context) {
 	// Create span for getBlock
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getBlock")
 	defer span.End()
@@ -147,7 +147,7 @@ func (s *ImmuDBServer) getBlock(c *gin.Context) {
 }
 
 // List all blocks by pagination
-func (s *ImmuDBServer) listBlocks(c *gin.Context) {
+func (s *ExplorerServer) listBlocks(c *gin.Context) {
 	// Create span for listBlocks
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.listBlocks")
 	defer span.End()
@@ -258,7 +258,7 @@ func (s *ImmuDBServer) listBlocks(c *gin.Context) {
 }
 
 /* UNUSED
-func (s *ImmuDBServer) getTransactionBlock(c *gin.Context) {
+func (s *ExplorerServer) getTransactionBlock(c *gin.Context) {
 	// Create span for getTransactionBlock
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getTransactionBlock")
 	defer span.End()
@@ -295,7 +295,7 @@ func (s *ImmuDBServer) getTransactionBlock(c *gin.Context) {
 }
 */
 
-func (s *ImmuDBServer) getLatestBlock(c *gin.Context) {
+func (s *ExplorerServer) getLatestBlock(c *gin.Context) {
 	// Create span for getLatestBlock
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getLatestBlock")
 	defer span.End()
@@ -357,7 +357,7 @@ func (s *ImmuDBServer) getLatestBlock(c *gin.Context) {
 	c.JSON(http.StatusOK, block)
 }
 
-func (s *ImmuDBServer) getLatestBlockStats(c *gin.Context) {
+func (s *ExplorerServer) getLatestBlockStats(c *gin.Context) {
 	// Create span for getLatestBlockStats
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getLatestBlockStats")
 	defer span.End()
@@ -415,7 +415,7 @@ func (s *ImmuDBServer) getLatestBlockStats(c *gin.Context) {
 }
 
 // Get transaction by hash
-func (s *ImmuDBServer) getTransaction(c *gin.Context) {
+func (s *ExplorerServer) getTransaction(c *gin.Context) {
 	// Create span for getTransaction
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getTransaction")
 	defer span.End()
@@ -457,7 +457,7 @@ func (s *ImmuDBServer) getTransaction(c *gin.Context) {
 }
 
 // Get list of transactions in a given block
-func (s *ImmuDBServer) listTransactions_inBlock(c *gin.Context) {
+func (s *ExplorerServer) listTransactions_inBlock(c *gin.Context) {
 	// Create span for listTransactions_inBlock
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.listTransactions_inBlock")
 	defer span.End()
@@ -519,7 +519,7 @@ func (s *ImmuDBServer) listTransactions_inBlock(c *gin.Context) {
 }
 
 // Get default db stats
-func (s *ImmuDBServer) getStats(c *gin.Context) {
+func (s *ExplorerServer) getStats(c *gin.Context) {
 	// Create span for getStats
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getStats")
 	defer span.End()
@@ -565,8 +565,7 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 
 	// Get database status in a goroutine
 	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
-		tempClient := s.defaultdb.Client
-		status, err := DB_OPs.GetDatabaseState(tempClient)
+		status, err := DB_OPs.GetDatabaseState(&s.defaultdb)
 		if err != nil {
 			handleErr(fmt.Errorf("failed to get database state: %w", err))
 			return nil
@@ -686,7 +685,7 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 	c.JSON(http.StatusOK, stats)
 }
 
-func (s *ImmuDBServer) getDIDDetailsFromAddr(c *gin.Context) {
+func (s *ExplorerServer) getDIDDetailsFromAddr(c *gin.Context) {
 	// Create span for getDIDDetailsFromAddr
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getDIDDetailsFromAddr")
 	defer span.End()
@@ -742,7 +741,7 @@ func (s *ImmuDBServer) getDIDDetailsFromAddr(c *gin.Context) {
 }
 
 // Get the Missing blocks
-func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
+func (s *ExplorerServer) getMissingBlocks(c *gin.Context) {
 	// Create span for getMissingBlocks
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getMissingBlocks")
 	defer span.End()
@@ -827,7 +826,7 @@ func (s *ImmuDBServer) getMissingBlocks(c *gin.Context) {
 	c.JSON(http.StatusOK, missingBlocks)
 }
 
-func (s *ImmuDBServer) listTransactions(c *gin.Context) {
+func (s *ExplorerServer) listTransactions(c *gin.Context) {
 	// Create span for listTransactions
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.listTransactions")
 	defer span.End()
@@ -905,7 +904,7 @@ func (s *ImmuDBServer) listTransactions(c *gin.Context) {
 
 // From last block number - go in reverse order and get the transactions in the block
 // Returns paginated transactions from multiple blocks starting from the latest block going backwards
-func (s *ImmuDBServer) listTransactions_fromLastBlock(c *gin.Context) {
+func (s *ExplorerServer) listTransactions_fromLastBlock(c *gin.Context) {
 	// Create span for listTransactions_fromLastBlock
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.listTransactions_fromLastBlock")
 	defer span.End()

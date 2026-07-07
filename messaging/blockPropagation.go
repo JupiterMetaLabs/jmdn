@@ -130,8 +130,8 @@ func markMessageProcessed(messageID string) {
 	messageFilter.Add([]byte(messageID))
 }
 
-// storeMessageInImmuDB stores a message in ImmuDB using the appropriate key
-func storeMessageInImmuDB(msg config.BlockMessage) error {
+// storeMessageInDB stores a message in ImmuDB using the appropriate key
+func storeMessageInDB(msg config.BlockMessage) error {
 	// Determine the key - focus on ZK blocks
 	var key string
 	if msg.Type == "zkblock" && msg.Block != nil {
@@ -144,7 +144,7 @@ func storeMessageInImmuDB(msg config.BlockMessage) error {
 
 	// Store the message
 	if err := DB_OPs.Create(nil, key, msg); err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to store message in ImmuDB", err, ion.String("key", key))
+		broadcastLogger().Error(context.Background(), "Failed to store message in ThebeDB", err, ion.String("key", key))
 		return err
 	}
 
@@ -154,7 +154,7 @@ func storeMessageInImmuDB(msg config.BlockMessage) error {
 		return err
 	}
 
-	broadcastLogger().Debug(context.Background(), "Message stored in ImmuDB", ion.String("key", key), ion.String("type", msg.Type))
+	broadcastLogger().Debug(context.Background(), "Message stored in ThebeDB", ion.String("key", key), ion.String("type", msg.Type))
 	return nil
 }
 
@@ -344,8 +344,8 @@ func HandleBlockStream(stream network.Stream) {
 			}
 
 			// Store block message metadata
-			if err := storeMessageInImmuDB(msg); err != nil { // msg is a copy, but it's fine
-				broadcastLogger().Error(ctx, "Failed to store block message in ImmuDB", err)
+			if err := storeMessageInDB(msg); err != nil { // msg is a copy, but it's fine
+				broadcastLogger().Error(ctx, "Failed to store block message in ThebeDB", err)
 			}
 
 			broadcastLogger().Info(ctx, "Block processed and stored successfully",

@@ -105,7 +105,6 @@ if [ $# -eq 0 ]; then
 	echo "Usage: sudo $0 [options]"
 	echo "Options:"
 	echo "  --go          Install Go"
-	echo "  --immudb      Install ImmuDB"
 	echo "  --yggdrasil   Install Yggdrasil"
 	echo "  --solidity    Install Solidity compiler (solc)"
 	echo "  --all         Install all dependencies"
@@ -119,9 +118,6 @@ else
 		case $arg in
 		--go)
 			INSTALL_GO=true
-			;;
-		--immudb)
-			INSTALL_IMMUDB=true
 			;;
 		--solidity)
 			INSTALL_SOLIDITY=true
@@ -335,66 +331,6 @@ install_go() {
 	else
 		rm -rf "$tmp_dir"
 		log_die "Failed to download Go from $url"
-	fi
-}
-
-################################################################################
-# 3. ImmuDB Installation
-################################################################################
-install_immudb() {
-	require_root
-	local target_ver="v${IMMUDB_FALLBACK_VER}"
-
-	log_info "Checking ImmuDB (Target: ${target_ver})..."
-	if check_command immudb; then
-		# Output: immudb 1.10.0
-		local installed_raw
-		installed_raw=$(immudb version 2>/dev/null | head -n1 | awk '{print $2}')
-		local installed_ver="v${installed_raw}"
-
-		# Clean versions for comparison (remove v)
-		local v_inst="${installed_raw}"
-		local v_targ="${target_ver#v}"
-
-		if ver_lt "$v_inst" "$v_targ"; then
-			log_warn "ImmuDB version is old (${installed_ver}). Upgrading to ${target_ver}..."
-		else
-			log_ok "ImmuDB is up-to-date or newer: ${installed_ver} (Target: ${target_ver})"
-			return 0
-		fi
-	fi
-
-	# Strip 'v' for filename construction
-	local clean_ver="${target_ver#v}"
-	local filename="immudb-v${clean_ver}-${OS_IMMU}-${ARCH_IMMU}"
-	local url="https://github.com/codenotary/immudb/releases/download/${target_ver}/${filename}"
-
-	log_info "Downloading ImmuDB ${target_ver}..."
-
-	# Ensure JMDN_BIN directory exists
-	if [[ ! -d "${JMDN_BIN}" ]]; then
-		log_info "Creating binary directory: ${JMDN_BIN}"
-		mkdir -p "${JMDN_BIN}"
-	fi
-
-	local tmp_dir
-	tmp_dir=$(mktemp -d)
-
-	if curl -L -o "$tmp_dir/immudb" "$url"; then
-		chmod +x "$tmp_dir/immudb"
-		mv "$tmp_dir/immudb" "${JMDN_BIN}/immudb"
-		rm -rf "$tmp_dir"
-		log_ok "ImmuDB installed to ${JMDN_BIN}/immudb"
-	else
-		rm -rf "$tmp_dir"
-		if [[ "${PLATFORM}" == "freebsd" ]]; then
-			log_warn "Failed to download ImmuDB binary for FreeBSD from $url"
-			log_warn "ImmuDB may not have official FreeBSD binaries."
-			log_warn "Consider building from source: https://github.com/codenotary/immudb"
-			return 1
-		else
-			log_die "Failed to download ImmuDB from $url"
-		fi
 	fi
 }
 

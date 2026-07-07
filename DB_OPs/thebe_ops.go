@@ -19,7 +19,6 @@ import (
 	"gossipnode/DB_OPs/thebegateway"
 	"gossipnode/config"
 
-	"github.com/JupiterMetaLabs/ion"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -113,46 +112,10 @@ func Update(key string, value interface{}) error {
 	return nil
 }
 
-// Close closes the ImmuDB client connection.
-func Close(ic *config.ImmuClient) error {
-	loggerCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ic.Logger.Debug(loggerCtx, "Closing ImmuDB connection",
-		ion.String("database", config.DBName),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", LOG_FILE),
-		ion.String("topic", TOPIC),
-		ion.String("function", "DB_OPs.Close"))
-
-	if ic.Cancel != nil {
-		ic.Cancel()
-	}
-
-	ic.IsConnected = false
-
-	ic.Logger.Debug(loggerCtx, "ImmuDB connection closed successfully",
-		ion.String("database", config.DBName),
-		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-		ion.String("log_file", LOG_FILE),
-		ion.String("topic", TOPIC),
-		ion.String("function", "DB_OPs.Close"))
-
-	defer func() {
-		ic.Logger.Debug(loggerCtx, "ImmuDB connection closed successfully",
-			ion.String("database", config.DBName),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DB_OPs.Close"))
-		// Logger sync is handled by ion internally
-	}()
-
-	return nil
-}
 
 // GetDatabaseState returns the current state of the database.
 // ImmuDB removed — returns a zeroed DatabaseState.
-func GetDatabaseState(_ *config.ImmuClient) (*DatabaseState, error) {
+func GetDatabaseState(_ *config.PooledConnection) (*DatabaseState, error) {
 	return &DatabaseState{}, nil
 }
 

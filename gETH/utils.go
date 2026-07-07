@@ -10,13 +10,13 @@ import (
 	"sort"
 )
 
-type immuDBServer struct {
+type dbServer struct {
 	defaultdb  config.PooledConnection
 	accountsdb config.PooledConnection
 }
 
-func initDBs() (immuDBServer, error) {
-	return immuDBServer{}, nil
+func initDBs() (dbServer, error) {
+	return dbServer{}, nil
 }
 
 func ConvertZKTransactiontoETHTransaction(zktransactions []config.Transaction) ([]*proto.Transaction, error) {

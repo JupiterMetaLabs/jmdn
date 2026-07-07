@@ -25,7 +25,7 @@ func ConvertStringToUint64(str string) (uint64, error) {
 
 // StartBlockPoller starts a background loop that polls for new blocks.
 // It stops when ctx is cancelled.
-func StartBlockPoller(ctx context.Context, DBclient *ImmuDBServer, pollInterval time.Duration) {
+func StartBlockPoller(ctx context.Context, DBclient *ExplorerServer, pollInterval time.Duration) {
 	// Create span for block poller initialization
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(ctx, "ExplorerAPI.StartBlockPoller")
 	defer span.End()
@@ -79,7 +79,7 @@ func StartBlockPoller(ctx context.Context, DBclient *ImmuDBServer, pollInterval 
 	}
 }
 
-func checkForNewBlocks(DBclient *ImmuDBServer) {
+func checkForNewBlocks(DBclient *ExplorerServer) {
 	// Create span for checking new blocks
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -54,17 +54,7 @@ binds:
 
 # ── 5. Database ──────────────────────────────────────────────────────────────
 database:
-  # Docker: address "immudb" is the Docker internal DNS name for the immudb container.
-  # Bare-metal: change to "localhost" (or wherever immudb runs).
-  address: "immudb"
-  port: 3322
-  username: "immudb"
-
-  # ImmuDB password.
-  # Docker Compose: leave blank — compose passes IMMUDB_PASSWORD from .env directly
-  # to jmdn via JMDN_DATABASE_PASSWORD (Viper env > yaml). Set only for bare-metal.
-  password: ""
-
+  # ThebeDB is embedded (BadgerDB KV + SQL projection) — no address/credentials.
   redis:
     # Docker: "redis:6379" — the Redis container's Docker DNS name and port.
     # Bare-metal: "127.0.0.1:6379"
@@ -126,7 +116,7 @@ fastsync:
   sync_timeout: "100m"     # Allow long syncs — exchange nodes may start from a cold snapshot.
   sync_check_interval: "10m"
 
-  # REQUIRED if you used bootstrap_sync.sh to seed immudb.
+  # REQUIRED if you used bootstrap_sync.sh to seed the node state.
   # Set to the block number of the bootstrap snapshot tip + 1.
   # JupiterMeta will provide the exact value for the current snapshot alongside
   # the bootstrap download. Setting to 0 is safe but causes a full genesis scan

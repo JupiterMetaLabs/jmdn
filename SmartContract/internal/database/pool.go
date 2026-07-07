@@ -18,8 +18,8 @@ var (
 
 // GetOrCreateContractsDBPool gets or creates an ImmuDB connection pool for contractsdb
 func GetOrCreateContractsDBPool(cfg *Config) (*config.PooledConnection, error) {
-	if cfg.Type != DBTypeImmuDB {
-		return nil, fmt.Errorf("config is not for ImmuDB: %s", cfg.Type)
+	if cfg.Type != DBTypeThebeDB {
+		return nil, fmt.Errorf("config is not for ThebeDB: %s", cfg.Type)
 	}
 
 	// Get or create pool
@@ -60,11 +60,7 @@ func getOrCreateContractsPool(cfg *Config) (*config.ConnectionPool, error) {
 
 	// Create connection pool configuration
 	poolingConfig := &config.PoolingConfig{
-		DBAddress:  cfg.Host,
-		DBPort:     cfg.Port,
-		DBName:     cfg.Database,
-		DBUsername: cfg.Username,
-		DBPassword: cfg.Password,
+		DBName: cfg.Database,
 	}
 
 	// Create async logger for the pool
@@ -172,7 +168,7 @@ func countActiveConnections(pool *config.ConnectionPool) int {
 // EnsureDatabaseExists checks if a database exists and creates it if it doesn't
 // This is useful for initializing contractsdb on first run
 func EnsureDatabaseExists(ctx context.Context, cfg *Config) error {
-	if cfg.Type != DBTypeImmuDB {
+	if cfg.Type != DBTypeThebeDB {
 		// Only ImmuDB requires database creation
 		return nil
 	}

@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func (s *ImmuDBServer) listDIDs(c *gin.Context) {
+func (s *ExplorerServer) listDIDs(c *gin.Context) {
 
 	// Note: "network" filter param not used after ThebeDB migration (SQL replaces ImmuDB prefix scan)
 	_ = c.Query("network")
@@ -64,7 +64,7 @@ func getPaginationMetadata(page, limit, totalPages int) gin.H {
 	}
 }
 
-func (s *ImmuDBServer) getDIDDetails(c *gin.Context) {
+func (s *ExplorerServer) getDIDDetails(c *gin.Context) {
 	// list of DIDs in the request
 	DIDs := c.QueryArray("dids")
 	if len(DIDs) == 0 {

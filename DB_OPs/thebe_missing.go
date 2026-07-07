@@ -274,15 +274,14 @@ func GetMerkleRoot(_ *config.PooledConnection) ([]byte, error) {
 // ── ImmuDB transaction stubs ─────────────────────────────────────────────────
 
 // Transaction executes fn in a logical transaction context.
-// ImmuDB removed — fn is invoked directly (no atomic KV batch).
+// Legacy stub — fn is invoked directly (no atomic KV batch).
 // Callers use this to mark processed tx/block keys, which are now no-ops.
-func Transaction(ic *config.ImmuClient, fn func(tx *config.ImmuTransaction) error) error {
-	tx := &config.ImmuTransaction{Client: ic}
-	return fn(tx)
+func Transaction(fn func() error) error {
+	return fn()
 }
 
-// Set adds a KV operation to an ImmuTransaction.
-// ImmuDB removed — this is a no-op; processing markers are derived from SQL state.
-func Set(_ *config.ImmuTransaction, _ string, _ interface{}) error {
+// Set records a processing-marker key. No-op — processing markers are
+// derived from SQL state in ThebeDB.
+func Set(_ string, _ interface{}) error {
 	return nil
 }

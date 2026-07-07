@@ -39,18 +39,10 @@ binds:
   metrics: "127.0.0.1"
   profiler: "127.0.0.1"  # Debugging - STRICTLY LOCALHOST
 
-# ── Database (ImmuDB) ───────────────────────────────────
-# address/port: point at an external immudb container (docker-compose default).
-#   For embedded mode (single container): leave as localhost:3322.
-#   Env: JMDN_DATABASE_ADDRESS / JMDN_DATABASE_PORT
-# username/password: NOT related to P2P — only used for the local DB connection.
-#   Leave blank to use ImmuDB's built-in defaults (fine for most operators).
-#   Env: JMDN_DATABASE_USERNAME / JMDN_DATABASE_PASSWORD
+# ── Database ─────────────────────────────────────────────
+# ThebeDB is embedded (BadgerDB KV + SQL projection) — no address/credentials.
+# redis: account sync worker queue.
 database:
-  address: "localhost"   # Env: JMDN_DATABASE_ADDRESS
-  port: 3322             # Env: JMDN_DATABASE_PORT
-  username: ""           # Env: JMDN_DATABASE_USERNAME
-  password: ""           # Env: JMDN_DATABASE_PASSWORD
   redis:
     url: "127.0.0.1:6379"
     password: ""

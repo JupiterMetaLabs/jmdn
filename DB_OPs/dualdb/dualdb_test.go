@@ -28,7 +28,7 @@ func (m *mockPrimary) Create(_ *config.PooledConnection, _ string, _ interface{}
 	return m.err
 }
 
-func (m *mockPrimary) SafeCreate(_ *config.ImmuClient, _ string, _ interface{}) error {
+func (m *mockPrimary) SafeCreate(_ string, _ interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
@@ -88,7 +88,7 @@ func (m *mockShadow) Create(_ *config.PooledConnection, _ string, _ interface{})
 	return m.err
 }
 
-func (m *mockShadow) SafeCreate(_ *config.ImmuClient, _ string, _ interface{}) error {
+func (m *mockShadow) SafeCreate(_ string, _ interface{}) error {
 	m.markCalled()
 	return m.err
 }

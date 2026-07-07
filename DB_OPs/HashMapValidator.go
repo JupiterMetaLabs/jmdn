@@ -15,7 +15,7 @@ func ValidateHashMapKeys(hashMap *hashmap.HashMap, dbClient *config.PooledConnec
 		return hashmap.New(), nil
 	}
 
-	if dbClient == nil || dbClient.Client == nil {
+	if dbClient == nil {
 		return nil, fmt.Errorf("database client is nil")
 	}
 
@@ -78,7 +78,7 @@ func ValidateHashMapKeysIncremental(hashMap *hashmap.HashMap, dbClient *config.P
 		return hashmap.New(), nil
 	}
 
-	if dbClient == nil || dbClient.Client == nil {
+	if dbClient == nil {
 		return nil, fmt.Errorf("database client is nil")
 	}
 

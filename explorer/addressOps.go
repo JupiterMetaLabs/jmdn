@@ -67,7 +67,7 @@ const maxAddrTxPage = 1_000_000
 // If the txindex is unavailable, this returns 503 rather than a fake empty
 // "no transactions" result — callers must be able to tell "no data" apart
 // from "data source down".
-func (s *ImmuDBServer) getAddressTransactions(c *gin.Context) {
+func (s *ExplorerServer) getAddressTransactions(c *gin.Context) {
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// reqCtx is tied to the HTTP request's lifecycle (cancelled if the client

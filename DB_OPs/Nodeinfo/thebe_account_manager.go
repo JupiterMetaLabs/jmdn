@@ -221,9 +221,9 @@ func (am *account_manager) WriteAccounts(accounts []*types.Account) error {
 	}
 	s, mgr := getAccountQueue()
 	if s == nil {
-		// Redis not available — write directly to ImmuDB synchronously.
+		// Redis not available — write directly to ThebeDB synchronously.
 		// Slower (~15 s/batch) but correct; no external dependency required.
-		log.Printf("[accountqueue] Redis not available — writing %d accounts directly to ImmuDB", len(accounts))
+		log.Printf("[accountqueue] Redis not available — writing %d accounts directly to ThebeDB", len(accounts))
 		return writeAccountsDirect(accounts)
 	}
 	chunks := chunkCount(len(accounts))
@@ -231,9 +231,9 @@ func (am *account_manager) WriteAccounts(accounts []*types.Account) error {
 	defer cancel()
 	if err := enqueueRecordsChunked(ctx, s, payloadTypeAccounts, accounts); err != nil {
 		// Redis is configured but unreachable (server down, connection refused, etc).
-		// Fall back to direct ImmuDB write rather than dropping the accounts entirely.
+		// Fall back to direct ThebeDB write rather than dropping the accounts entirely.
 		// Do NOT call EnsureActive — no point starting the worker if Redis is down.
-		log.Printf("[accountqueue] Redis enqueue failed (%v) — falling back to direct ImmuDB write for %d accounts", err, len(accounts))
+		log.Printf("[accountqueue] Redis enqueue failed (%v) — falling back to direct ThebeDB write for %d accounts", err, len(accounts))
 		return writeAccountsDirect(accounts)
 	}
 	// Enqueue succeeded — ensure the drain worker is running to process it.
@@ -293,7 +293,7 @@ func writeAccountsDirect(accounts []*types.Account) error {
 			return fmt.Errorf("writeAccountsDirect: batch [%d:%d]: %w", i, end, err)
 		}
 	}
-	log.Printf("[accountqueue] direct write complete: %d accounts written to ImmuDB", len(accounts))
+	log.Printf("[accountqueue] direct write complete: %d accounts written to ThebeDB", len(accounts))
 	return nil
 }
 
@@ -418,7 +418,7 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 	}
 	s, mgr := getAccountQueue()
 	if s == nil {
-		log.Printf("[accountqueue] BatchUpdateAccounts: queue not initialized — writing %d updates directly to ImmuDB", len(updates))
+		log.Printf("[accountqueue] BatchUpdateAccounts: queue not initialized — writing %d updates directly to ThebeDB", len(updates))
 		return batchUpdateAccountsDirect(am, updates)
 	}
 
@@ -439,14 +439,14 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 	ctx, cancel := context.WithTimeout(context.Background(), enqueueTimeout(chunks))
 	defer cancel()
 	if err := enqueueRecordsChunked(ctx, s, payloadTypeUpdates, wires); err != nil {
-		log.Printf("[accountqueue] Redis enqueue failed (%v) — falling back to direct ImmuDB write for %d updates", err, len(updates))
+		log.Printf("[accountqueue] Redis enqueue failed (%v) — falling back to direct ThebeDB write for %d updates", err, len(updates))
 		return batchUpdateAccountsDirect(am, updates)
 	}
 	mgr.EnsureActive()
 	return nil
 }
 
-// batchUpdateAccountsDirect writes account balance updates synchronously to ImmuDB,
+// batchUpdateAccountsDirect writes account balance updates synchronously to ThebeDB,
 // bypassing Redis. Used when Redis is unavailable.
 func batchUpdateAccountsDirect(am *account_manager, updates []types.AccountUpdate) error {
 	for _, u := range updates {

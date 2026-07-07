@@ -16,7 +16,7 @@ import (
 // PrimaryWriter mirrors the exact immudb write signatures used in DB_OPs.
 type PrimaryWriter interface {
 	Create(pooledConnection *config.PooledConnection, key string, value interface{}) error
-	SafeCreate(ic *config.ImmuClient, key string, value interface{}) error
+	SafeCreate(key string, value interface{}) error
 	BatchCreate(pooledConnection *config.PooledConnection, entries map[string]interface{}) error
 	CreateAccount(pooledConnection *config.PooledConnection, didAddress string, address common.Address, metadata map[string]interface{}) error
 	UpdateAccountBalance(pooledConnection *config.PooledConnection, address common.Address, newBalance string) error
@@ -26,7 +26,7 @@ type PrimaryWriter interface {
 // ShadowWriter mirrors the same write signatures and routes to cassata ingest.
 type ShadowWriter interface {
 	Create(pooledConnection *config.PooledConnection, key string, value interface{}) error
-	SafeCreate(ic *config.ImmuClient, key string, value interface{}) error
+	SafeCreate(key string, value interface{}) error
 	BatchCreate(pooledConnection *config.PooledConnection, entries map[string]interface{}) error
 	CreateAccount(pooledConnection *config.PooledConnection, didAddress string, address common.Address, metadata map[string]interface{}) error
 	UpdateAccountBalance(pooledConnection *config.PooledConnection, address common.Address, newBalance string) error
@@ -100,13 +100,13 @@ func (d *DualDB) Create(pooledConnection *config.PooledConnection, key string, v
 	return nil
 }
 
-func (d *DualDB) SafeCreate(ic *config.ImmuClient, key string, value interface{}) error {
+func (d *DualDB) SafeCreate(key string, value interface{}) error {
 	d.metrics.TotalWrites.Add(1)
-	if err := d.primary.SafeCreate(ic, key, value); err != nil {
+	if err := d.primary.SafeCreate(key, value); err != nil {
 		return err
 	}
 	d.shadowWrite(context.Background(), func() error {
-		return d.shadow.SafeCreate(ic, key, value)
+		return d.shadow.SafeCreate(key, value)
 	})
 	return nil
 }

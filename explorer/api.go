@@ -30,8 +30,8 @@ const (
 // JWT token expiration time (24 hours)
 const JWT_EXPIRATION = 1 * time.Hour
 
-// ImmuDBServer represents the ImmuDB API server
-type ImmuDBServer struct {
+// ExplorerServer represents the Explorer API server
+type ExplorerServer struct {
 	defaultdb  config.PooledConnection
 	accountsdb config.PooledConnection
 	router     *gin.Engine
@@ -39,8 +39,8 @@ type ImmuDBServer struct {
 	tlsLoader  *gatekeeper.TLSLoader
 }
 
-// NewImmuDBServer creates a new ImmuDB API server
-func NewImmuDBServer() (*ImmuDBServer, error) {
+// NewExplorerServer creates a new Explorer API server
+func NewExplorerServer() (*ExplorerServer, error) {
 	loggerCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -52,7 +52,7 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 	// No pool acquisition needed here.
 
 	// Create span for server initialization
-	spanCtx, span := logger().Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.NewImmuDBServer")
+	spanCtx, span := logger().Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.NewExplorerServer")
 	defer span.End()
 
 	span.SetAttributes(
@@ -79,7 +79,7 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 	tlsLoader := gatekeeper.NewTLSLoader(secCfg, ionLog)
 
 	// Create server instance
-	server := &ImmuDBServer{
+	server := &ExplorerServer{
 		router:     router,
 		gatekeeper: middleware,
 		tlsLoader:  tlsLoader,
@@ -91,24 +91,24 @@ func NewImmuDBServer() (*ImmuDBServer, error) {
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration), attribute.String("status", "success"))
 
-	logger().Info(spanCtx, "ImmuDB API server created successfully",
+	logger().Info(spanCtx, "Explorer API server created successfully",
 		ion.String("database", config.DBName),
 		ion.String("accounts_database", config.AccountsDBName),
 		ion.Float64("duration", duration),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
-		ion.String("function", "ExplorerAPI.NewImmuDBServer"))
+		ion.String("function", "ExplorerAPI.NewExplorerServer"))
 
 	return server, nil
 }
 
-func CloseImmuDBServer(server *ImmuDBServer) {
+func CloseExplorerServer(server *ExplorerServer) {
 	server.Close()
 }
 
 // setupRoutes configures the API routes
-func (s *ImmuDBServer) setupRoutes() {
+func (s *ExplorerServer) setupRoutes() {
 	gin.DefaultWriter = os.Stdout
 	gin.DefaultErrorWriter = os.Stderr
 
@@ -247,12 +247,12 @@ func (s *ImmuDBServer) setupRoutes() {
 
 // Start runs the HTTP server until it exits.
 // Prefer StartWithContext in long-running processes so shutdown can be graceful.
-func (s *ImmuDBServer) Start(addr string) error {
+func (s *ExplorerServer) Start(addr string) error {
 	return s.StartWithContext(context.Background(), addr)
 }
 
 // StartWithContext runs the HTTP server and shuts it down when ctx is cancelled.
-func (s *ImmuDBServer) StartWithContext(ctx context.Context, addr string) error {
+func (s *ExplorerServer) StartWithContext(ctx context.Context, addr string) error {
 	// Create span for server start
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(ctx, "ExplorerAPI.StartWithContext")
 	defer span.End()
@@ -274,14 +274,14 @@ func (s *ImmuDBServer) StartWithContext(ctx context.Context, addr string) error 
 		attribute.String("bind_address", bindAddr),
 	)
 
-	logger().Info(spanCtx, "Starting ImmuDB API server",
+	logger().Info(spanCtx, "Starting Explorer API server",
 		ion.String("bind_address", bindAddr),
 		ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
 		ion.String("function", "ExplorerAPI.StartWithContext"))
 
-	logger().Info(spanCtx, "Starting ImmuDB API server (zerolog fallback)",
+	logger().Info(spanCtx, "Starting Explorer API server (zerolog fallback)",
 		ion.String("bind_address", bindAddr))
 
 	// Use http.Server for explicit control over binding
@@ -342,8 +342,8 @@ func (s *ImmuDBServer) StartWithContext(ctx context.Context, addr string) error 
 }
 
 // Close cleans up resources
-func (s *ImmuDBServer) Close() {
-	if s.defaultdb.Client != nil {
+func (s *ExplorerServer) Close() {
+	if s.defaultdb.Handle != nil {
 		loggerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		spanCtx, span := logger().Tracer("ExplorerAPI").Start(loggerCtx, "ExplorerAPI.Close")
@@ -388,7 +388,7 @@ func cors() gin.HandlerFunc {
 }
 
 // generateToken creates a JWT token when provided with a valid API key
-func (s *ImmuDBServer) generateToken(c *gin.Context) {
+func (s *ExplorerServer) generateToken(c *gin.Context) {
 	// Create span for token generation
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.generateToken")
 	defer span.End()
@@ -473,7 +473,7 @@ func (s *ImmuDBServer) generateToken(c *gin.Context) {
 }
 
 // getVersion returns the current version information
-func (s *ImmuDBServer) getVersion(c *gin.Context) {
+func (s *ExplorerServer) getVersion(c *gin.Context) {
 	// Create span for version endpoint
 	spanCtx, span := logger().Tracer("ExplorerAPI").Start(c.Request.Context(), "ExplorerAPI.getVersion")
 	defer span.End()
@@ -499,7 +499,7 @@ func (s *ImmuDBServer) getVersion(c *gin.Context) {
 // Returns the Ethereum-standard client version string (e.g. "JMDN/v1.1.0/linux-amd64/go1.25.1")
 // rather than the full VersionInfo struct — health probes need "alive + identity", not build metadata.
 // For detailed build info (commit, branch, build time), use GET /api/v1/node/version.
-func (s *ImmuDBServer) rootHealth(c *gin.Context) {
+func (s *ExplorerServer) rootHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "ok",
 		"service": "jmdn",

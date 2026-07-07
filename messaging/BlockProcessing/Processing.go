@@ -259,28 +259,27 @@ func ProcessBlockTransactions(block *config.ZKBlock, accountsClient *config.Pool
 		}
 	}
 
-	// ATOMICITY: Use Immudb's atomic transaction to mark all operations at once
-	// This reduces N database calls to 1 atomic transaction, improving performance
-	// If any operation fails, Immudb automatically rolls back the entire transaction
+	// Mark all processed tx/block keys in one logical batch.
+	// ThebeDB: these markers are derived from SQL state — Set is a no-op kept
+	// for flow parity with the legacy write path.
 	if len(successfullyProcessedTxs) > 0 {
-		// Use Immudb's atomic transaction API to batch all marking operations
-		err := DB_OPs.Transaction(accountsClient.Client, func(tx *config.ImmuTransaction) error {
+		err := DB_OPs.Transaction(func() error {
 			// Mark all successfully processed transactions
 			for _, txHash := range successfullyProcessedTxs {
 				txKey := fmt.Sprintf("tx_processed:%s", txHash)
-				if err := DB_OPs.Set(tx, txKey, time.Now().UTC().Unix()); err != nil {
+				if err := DB_OPs.Set(txKey, time.Now().UTC().Unix()); err != nil {
 					return fmt.Errorf("failed to add transaction marker for %s: %w", txHash, err)
 				}
 
 				// Clean up processing markers (set to -1 to mark as cleaned)
 				processingKey := fmt.Sprintf("tx_processing:%s", txHash)
-				if err := DB_OPs.Set(tx, processingKey, int64(-1)); err != nil {
+				if err := DB_OPs.Set(processingKey, int64(-1)); err != nil {
 					return fmt.Errorf("failed to add cleanup marker for %s: %w", txHash, err)
 				}
 			}
 
 			// Mark the block as processed - this is the final operation in the transaction
-			if err := DB_OPs.Set(tx, blockKey, time.Now().UTC().Unix()); err != nil {
+			if err := DB_OPs.Set(blockKey, time.Now().UTC().Unix()); err != nil {
 				return fmt.Errorf("failed to add block marker: %w", err)
 			}
 
