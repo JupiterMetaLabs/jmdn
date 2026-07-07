@@ -237,9 +237,30 @@ func (s *ServiceImpl) Balance(ctx context.Context, addr string, block *big.Int, 
 	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Lets assume block is the latest - so we will get the balance from the latest block
-	// Future we will add the balance retrival based on the particular block.
 	convertedAddr := Utils.ConvertAddressCaseInsensitive(addr)
+
+	// Historical balance: when a concrete past block is requested, reconstruct
+	// via reverse-delta replay (DB_OPs.GetBalanceAtBlock). "latest"/"pending"
+	// resolve to the chain tip in parseBlockTag and fall through to the fast path.
+	if block != nil && block.IsUint64() {
+		if tip, tipErr := DB_OPs.GetLatestBlockNumber(opCtx, nil); tipErr == nil {
+			requested := block.Uint64()
+			if requested > tip {
+				return nil, fmt.Errorf("block %d not found (tip %d)", requested, tip)
+			}
+			if requested < tip {
+				bal, histErr := DB_OPs.GetBalanceAtBlock(convertedAddr, requested)
+				if histErr != nil {
+					logger().Error(opCtx, "Historical balance reconstruction failed", histErr,
+						ion.String("address", convertedAddr.Hex()),
+						ion.Uint64("block", requested))
+					return nil, histErr
+				}
+				return bal, nil
+			}
+		}
+	}
+
 	logger().Debug(opCtx, "Address conversion", ion.String("original", addr), ion.String("converted", convertedAddr.Hex()))
 	AccountDetails, err := DB_OPs.GetAccount(nil, convertedAddr)
 	if err != nil {

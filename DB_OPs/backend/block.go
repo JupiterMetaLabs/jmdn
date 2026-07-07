@@ -163,3 +163,13 @@ func (b *thebeBackend) GetL1FinalityForBlock(ctx context.Context, blockNumber ui
 	}
 	return rec, nil
 }
+
+// GetBlocksByRewardAddress returns blocks where address is coinbase or ZKVM.
+// Used by historical balance reconstruction.
+func (b *thebeBackend) GetBlocksByRewardAddress(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.BlockRecord, error) {
+	recs, err := b.r.GetBlocksByRewardAddress(ctx, address, fromBlock, toBlock)
+	if err != nil {
+		return nil, fmt.Errorf("backend.GetBlocksByRewardAddress(%s, %d, %d): %w", address, fromBlock, toBlock, err)
+	}
+	return recs, nil
+}

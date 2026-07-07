@@ -113,6 +113,14 @@ const (
           AND block_number >= $2 AND block_number <= $3
         ORDER BY block_number ASC, tx_index ASC`
 
+	sqlGetBlocksByRewardAddr = `
+        SELECT block_number, block_hash, parent_hash, timestamp, txs_root, state_root,
+               logs_bloom, coinbase_addr, zkvm_addr, gas_limit, gas_used, status, extra_data
+        FROM blocks
+        WHERE (LOWER(coinbase_addr) = LOWER($1) OR LOWER(zkvm_addr) = LOWER($1))
+          AND block_number >= $2 AND block_number <= $3
+        ORDER BY block_number ASC`
+
 	sqlGetZKProof = `
         SELECT block_number, proof_hash, stark_proof, commitment
         FROM zk_proofs WHERE block_number = $1`
@@ -461,6 +469,31 @@ func (r *thebeReader) GetL1FinalityForBlock(ctx context.Context, blockNumber uin
 	return &rec, nil
 }
 
+
+// GetBlocksByRewardAddress returns blocks in [fromBlock, toBlock] where the
+// address is the coinbase or ZKVM (gas fee recipient). Used by historical
+// balance reconstruction (eth_getBalance at block N).
+func (r *thebeReader) GetBlocksByRewardAddress(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*BlockRecord, error) {
+	rows, err := r.db.QueryContext(ctx, sqlGetBlocksByRewardAddr, address, fromBlock, toBlock)
+	if err != nil {
+		return nil, fmt.Errorf("GetBlocksByRewardAddress: query: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*BlockRecord
+	for rows.Next() {
+		var rec BlockRecord
+		if err := r.scanBlockRow(rows, &rec); err != nil {
+			return nil, fmt.Errorf("GetBlocksByRewardAddress: scan: %w", err)
+		}
+		results = append(results, &rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetBlocksByRewardAddress: rows: %w", err)
+	}
+	return results, nil
+}
+
 // scanZKProof scans a single zk_proofs row into rec.
 func (r *thebeReader) scanZKProof(s scanner, rec *ZKProofRecord) error {
 	return s.Scan(
@@ -531,37 +564,45 @@ func (r *thebeReader) BulkGetBlocks(ctx context.Context, from, to uint64) ([]*Bl
 	var results []*BlockRecord
 	for rows.Next() {
 		var rec BlockRecord
-		var (
-			coinbaseNull sql.NullString
-			zkvmNull     sql.NullString
-			gasLimitStr  string
-			gasUsedStr   string
-			extraJSON    []byte
-		)
-		if err := rows.Scan(
-			&rec.BlockNumber, &rec.BlockHash, &rec.ParentHash, &rec.Timestamp,
-			&rec.TxsRoot, &rec.StateRoot, &rec.LogsBloom,
-			&coinbaseNull, &zkvmNull,
-			&gasLimitStr, &gasUsedStr,
-			&rec.Status, &extraJSON,
-		); err != nil {
+		if err := r.scanBlockRow(rows, &rec); err != nil {
 			return nil, fmt.Errorf("BulkGetBlocks: scan: %w", err)
 		}
-		rec.CoinbaseAddr = coinbaseNull.String
-		rec.ZKVMAddr = zkvmNull.String
-		if gasLimitStr != "" {
-			_, _ = fmt.Sscanf(gasLimitStr, "%d", &rec.GasLimit)
-		}
-		if gasUsedStr != "" {
-			_, _ = fmt.Sscanf(gasUsedStr, "%d", &rec.GasUsed)
-		}
-		_ = json.Unmarshal(extraJSON, &rec.ExtraData)
 		results = append(results, &rec)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("BulkGetBlocks: rows: %w", err)
 	}
 	return results, nil
+}
+
+// scanBlockRow scans one blocks row (multi-row *sql.Rows variant of scanBlock).
+func (r *thebeReader) scanBlockRow(rows *sql.Rows, rec *BlockRecord) error {
+	var (
+		coinbaseNull sql.NullString
+		zkvmNull     sql.NullString
+		gasLimitStr  string
+		gasUsedStr   string
+		extraJSON    []byte
+	)
+	if err := rows.Scan(
+		&rec.BlockNumber, &rec.BlockHash, &rec.ParentHash, &rec.Timestamp,
+		&rec.TxsRoot, &rec.StateRoot, &rec.LogsBloom,
+		&coinbaseNull, &zkvmNull,
+		&gasLimitStr, &gasUsedStr,
+		&rec.Status, &extraJSON,
+	); err != nil {
+		return err
+	}
+	rec.CoinbaseAddr = coinbaseNull.String
+	rec.ZKVMAddr = zkvmNull.String
+	if gasLimitStr != "" {
+		_, _ = fmt.Sscanf(gasLimitStr, "%d", &rec.GasLimit)
+	}
+	if gasUsedStr != "" {
+		_, _ = fmt.Sscanf(gasUsedStr, "%d", &rec.GasUsed)
+	}
+	_ = json.Unmarshal(extraJSON, &rec.ExtraData)
+	return nil
 }
 
 // GetAccountByDID returns the account matching the given DID or address string.

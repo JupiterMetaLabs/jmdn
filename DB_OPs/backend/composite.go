@@ -257,3 +257,8 @@ func (h *compositeHandle) StoreL1Finality(ctx context.Context, rec *thebegateway
 func (h *compositeHandle) GetL1FinalityForBlock(ctx context.Context, blockNumber uint64) (*thebegateway.L1FinalityRecord, error) {
 	return h.blocks.GetL1FinalityForBlock(ctx, blockNumber)
 }
+
+// GetBlocksByRewardAddress delegates to the BlockStore.
+func (h *compositeHandle) GetBlocksByRewardAddress(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.BlockRecord, error) {
+	return h.blocks.GetBlocksByRewardAddress(ctx, address, fromBlock, toBlock)
+}

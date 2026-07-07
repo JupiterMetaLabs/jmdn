@@ -112,6 +112,14 @@ CREATE INDEX IF NOT EXISTS idx_blocks_timestamp
 CREATE INDEX IF NOT EXISTS idx_blocks_block_hash
     ON blocks(block_hash);
 
+-- Historical balance reconstruction (eth_getBalance at block N):
+-- WHERE LOWER(coinbase_addr)=LOWER($1) OR LOWER(zkvm_addr)=LOWER($1)
+CREATE INDEX IF NOT EXISTS idx_blocks_coinbase_lower
+    ON blocks(LOWER(coinbase_addr), block_number) WHERE coinbase_addr IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_blocks_zkvm_lower
+    ON blocks(LOWER(zkvm_addr), block_number) WHERE zkvm_addr IS NOT NULL;
+
 -- ================================================================
 -- 3) snapshots (SQL — Append Only — Create Read)
 -- One snapshot per block (1:1 FK to blocks).
