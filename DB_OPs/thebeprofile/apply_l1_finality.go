@@ -32,8 +32,8 @@ import (
 )
 
 const sqlInsertL1Finality = `
-INSERT INTO l1_finality (confirmation, block_numbers, metadata)
-VALUES ($1,$2,$3)
+INSERT INTO l1_finality (confirmation, l1_block_number, block_numbers, metadata)
+VALUES ($1,$2,$3,$4)
 ON CONFLICT (confirmation) DO NOTHING`
 
 func applyL1Finality(_ context.Context, _ uint64, record *core.CanonicalRecord, tx *sql.Tx) error {
@@ -54,6 +54,7 @@ func applyL1Finality(_ context.Context, _ uint64, record *core.CanonicalRecord, 
 	}
 	_, err = tx.Exec(sqlInsertL1Finality,
 		r.Confirmation,
+		r.L1BlockNumber,
 		pq.Array(r.BlockNumbers),
 		metaJSON,
 	)

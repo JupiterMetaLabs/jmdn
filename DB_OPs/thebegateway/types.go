@@ -110,9 +110,10 @@ type ZKProofRecord struct {
 
 // L1FinalityRecord maps to the `l1_finality` SQL table.
 type L1FinalityRecord struct {
-	Confirmation string         `json:"confirmation"`   // CHAR(42)
-	BlockNumbers []uint64       `json:"block_numbers"`  // BIGINT[]
-	Metadata     map[string]any `json:"metadata"`       // JSONB
+	Confirmation  string         `json:"confirmation"`    // CHAR(66) — 0x-prefixed L1 tx hash
+	L1BlockNumber uint64         `json:"l1_block_number"` // Ethereum block containing the L1 tx
+	BlockNumbers  []uint64       `json:"block_numbers"`   // BIGINT[] — L2 blocks covered by this commit
+	Metadata      map[string]any `json:"metadata"`        // JSONB
 }
 
 // ContractCodeRecord — KV PutWorm (immutable after deploy)

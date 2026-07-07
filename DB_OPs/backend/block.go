@@ -142,3 +142,24 @@ func commitmentToBytes(c []uint32) []byte {
 	}
 	return out
 }
+
+// StoreL1Finality appends an L1 finality record through the gateway
+// (canonical log → projector → l1_finality table).
+func (b *thebeBackend) StoreL1Finality(ctx context.Context, rec *thebegateway.L1FinalityRecord) error {
+	if rec == nil || rec.Confirmation == "" {
+		return fmt.Errorf("backend.StoreL1Finality: nil or empty confirmation")
+	}
+	if err := b.gw.WriteL1Finality(ctx, rec); err != nil {
+		return fmt.Errorf("backend.StoreL1Finality(%s): %w", rec.Confirmation, err)
+	}
+	return nil
+}
+
+// GetL1FinalityForBlock returns the latest L1 commit covering blockNumber.
+func (b *thebeBackend) GetL1FinalityForBlock(ctx context.Context, blockNumber uint64) (*thebegateway.L1FinalityRecord, error) {
+	rec, err := b.r.GetL1FinalityForBlock(ctx, blockNumber)
+	if err != nil {
+		return nil, fmt.Errorf("backend.GetL1FinalityForBlock(%d): %w", blockNumber, err)
+	}
+	return rec, nil
+}

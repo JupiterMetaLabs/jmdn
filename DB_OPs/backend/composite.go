@@ -247,3 +247,13 @@ func (h *compositeHandle) GetLogs(ctx context.Context, filter store.LogFilter) (
 func (h *compositeHandle) Close() error {
 	return h.closer.Close()
 }
+
+// StoreL1Finality delegates to the BlockStore.
+func (h *compositeHandle) StoreL1Finality(ctx context.Context, rec *thebegateway.L1FinalityRecord) error {
+	return h.blocks.StoreL1Finality(ctx, rec)
+}
+
+// GetL1FinalityForBlock delegates to the BlockStore.
+func (h *compositeHandle) GetL1FinalityForBlock(ctx context.Context, blockNumber uint64) (*thebegateway.L1FinalityRecord, error) {
+	return h.blocks.GetL1FinalityForBlock(ctx, blockNumber)
+}

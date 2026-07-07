@@ -117,6 +117,13 @@ const (
         SELECT block_number, proof_hash, stark_proof, commitment
         FROM zk_proofs WHERE block_number = $1`
 
+	sqlGetL1FinalityForBlock = `
+        SELECT confirmation, l1_block_number, block_numbers
+        FROM l1_finality
+        WHERE block_numbers @> ARRAY[$1]::bigint[]
+        ORDER BY created_at DESC
+        LIMIT 1`
+
 	sqlGetSnapshot = `
         SELECT block_number, block_hash, created_at
         FROM snapshots WHERE block_number = $1`
@@ -433,6 +440,25 @@ func (r *thebeReader) GetTransactionsByAddressInRange(ctx context.Context, addre
 		return nil, fmt.Errorf("GetTransactionsByAddressInRange: rows: %w", err)
 	}
 	return results, nil
+}
+
+
+// GetL1FinalityForBlock returns the most recent L1 finality record covering
+// the given L2 block number, or sql.ErrNoRows-wrapped error when the block
+// has not yet been committed to L1. Uses the GIN index on block_numbers.
+func (r *thebeReader) GetL1FinalityForBlock(ctx context.Context, blockNumber uint64) (*L1FinalityRecord, error) {
+	var rec L1FinalityRecord
+	var nums pq.Int64Array
+	row := r.db.QueryRowContext(ctx, sqlGetL1FinalityForBlock, int64(blockNumber))
+	if err := row.Scan(&rec.Confirmation, &rec.L1BlockNumber, &nums); err != nil {
+		return nil, fmt.Errorf("GetL1FinalityForBlock(%d): %w", blockNumber, err)
+	}
+	rec.Confirmation = strings.TrimSpace(rec.Confirmation) // CHAR(66) pads
+	rec.BlockNumbers = make([]uint64, len(nums))
+	for i, n := range nums {
+		rec.BlockNumbers[i] = uint64(n)
+	}
+	return &rec, nil
 }
 
 // scanZKProof scans a single zk_proofs row into rec.

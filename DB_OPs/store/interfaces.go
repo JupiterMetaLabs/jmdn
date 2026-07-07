@@ -43,6 +43,8 @@ type BlockStore interface {
 	GetBlockByHash(ctx context.Context, hash string) (*thebegateway.BlockRecord, error)
 	GetLatestBlockNumber(ctx context.Context) (uint64, error)
 	BulkGetBlocks(ctx context.Context, from, to uint64) ([]*thebegateway.BlockRecord, error)
+	StoreL1Finality(ctx context.Context, rec *thebegateway.L1FinalityRecord) error
+	GetL1FinalityForBlock(ctx context.Context, blockNumber uint64) (*thebegateway.L1FinalityRecord, error)
 }
 
 // AccountStore covers account lifecycle and nonce management.

@@ -123,3 +123,13 @@ func (s *cachedBlockStore) GetLatestBlockNumber(ctx context.Context) (uint64, er
 func (s *cachedBlockStore) BulkGetBlocks(ctx context.Context, from, to uint64) ([]*thebegateway.BlockRecord, error) {
 	return s.inner.BulkGetBlocks(ctx, from, to)
 }
+
+// StoreL1Finality delegates directly — L1 finality writes are not cached.
+func (s *cachedBlockStore) StoreL1Finality(ctx context.Context, rec *thebegateway.L1FinalityRecord) error {
+	return s.inner.StoreL1Finality(ctx, rec)
+}
+
+// GetL1FinalityForBlock delegates directly — reads are infrequent (facade queries).
+func (s *cachedBlockStore) GetL1FinalityForBlock(ctx context.Context, blockNumber uint64) (*thebegateway.L1FinalityRecord, error) {
+	return s.inner.GetL1FinalityForBlock(ctx, blockNumber)
+}

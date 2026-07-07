@@ -194,6 +194,50 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 	return nil
 }
 
+
+// StoreL1CommitRange records that L1 transaction l1TxHash (mined in Ethereum
+// block l1BlockNumber) committed L2 blocks [fromBlock..toBlock].
+// Append-only — blocks rows are immutable, so L1 finality lives in its own table.
+func StoreL1CommitRange(l1TxHash string, l1BlockNumber, fromBlock, toBlock uint64) error {
+	if l1TxHash == "" || toBlock < fromBlock {
+		return fmt.Errorf("StoreL1CommitRange: invalid args (hash=%q, range=[%d..%d])", l1TxHash, fromBlock, toBlock)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	h, err := getHandle(nil)
+	if err != nil {
+		return fmt.Errorf("StoreL1CommitRange: %w", err)
+	}
+	nums := make([]uint64, 0, toBlock-fromBlock+1)
+	for b := fromBlock; b <= toBlock; b++ {
+		nums = append(nums, b)
+	}
+	return h.StoreL1Finality(ctx, &thebegateway.L1FinalityRecord{
+		Confirmation:  l1TxHash,
+		L1BlockNumber: l1BlockNumber,
+		BlockNumbers:  nums,
+	})
+}
+
+// GetL1CommitForBlock returns the L1 tx hash and L1 block number for an L2
+// block, or ("", 0, nil) when the block is not yet committed to L1.
+func GetL1CommitForBlock(blockNumber uint64) (string, uint64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h, err := getHandle(nil)
+	if err != nil {
+		return "", 0, fmt.Errorf("GetL1CommitForBlock: %w", err)
+	}
+	rec, err := h.GetL1FinalityForBlock(ctx, blockNumber)
+	if err != nil {
+		if strings.Contains(err.Error(), "no rows") {
+			return "", 0, nil
+		}
+		return "", 0, err
+	}
+	return rec.Confirmation, rec.L1BlockNumber, nil
+}
+
 // GetZKBlockByNumber retrieves a ZK block by its number from ThebeDB,
 // including ZK proof and transaction data.
 func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint64) (*config.ZKBlock, error) {
@@ -221,6 +265,11 @@ func GetZKBlockByNumber(mainDBClient *config.PooledConnection, blockNumber uint6
 				blk.Transactions = append(blk.Transactions, *t)
 			}
 		}
+	}
+	// Hydrate L1 finality (best-effort — absent until commitRollup mines on L1).
+	if l1rec, err := h.GetL1FinalityForBlock(ctx, blockNumber); err == nil && l1rec != nil {
+		blk.L1TxHash = l1rec.Confirmation
+		blk.L1BlockNumber = l1rec.L1BlockNumber
 	}
 	return blk, nil
 }

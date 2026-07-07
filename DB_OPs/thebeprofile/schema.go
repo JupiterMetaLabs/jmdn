@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     did_address  TEXT         NOT NULL UNIQUE,
     balance_wei  VARCHAR(30)  NOT NULL DEFAULT '0',
     nonce        VARCHAR(30)  NOT NULL DEFAULT '0',
+    tx_nonce      BIGINT      NOT NULL DEFAULT 0,
+    tx_count_sent BIGINT      NOT NULL DEFAULT 0,
     account_type SMALLINT     NOT NULL,
     metadata     JSONB        NOT NULL DEFAULT '{}'::jsonb,
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -205,10 +207,11 @@ CREATE INDEX IF NOT EXISTS idx_zk_proofs_proof_hash
 --   WHERE block_numbers @> ARRAY[42::bigint]
 -- ================================================================
 CREATE TABLE IF NOT EXISTS l1_finality (
-    confirmation  CHAR(42)     PRIMARY KEY,
-    block_numbers BIGINT[]     NOT NULL,
-    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    metadata      JSONB
+    confirmation    CHAR(66)     PRIMARY KEY,
+    l1_block_number BIGINT       NOT NULL DEFAULT 0,
+    block_numbers   BIGINT[]     NOT NULL,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    metadata        JSONB
 );
 
 CREATE INDEX IF NOT EXISTS idx_l1_finality_created_at
