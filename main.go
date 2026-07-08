@@ -23,11 +23,13 @@ import (
 	ion "github.com/JupiterMetaLabs/ion"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
+	MsgPassingService "gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/Block"
 	"gossipnode/CA/ImmuDB_CA"
 	cli "gossipnode/CLI"
 	"gossipnode/DB_OPs"
 	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
+	"gossipnode/DB_OPs/txindex"
 	"gossipnode/DID"
 	"gossipnode/FastsyncV2"
 	"gossipnode/Pubsub"
@@ -266,6 +268,9 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  propagatedid <did> <public_key> [balance] - Propagate DID to network")
 		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
 		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
+		fmt.Println("  rebuildindex                      - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
+		fmt.Println("  rebuildrange <from> <to>          - Re-index a specific block range (targeted gap repair)")
+		fmt.Println("  txindexstatus                     - Show tx-address index sync status (ready/syncing, last indexed block)")
 		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		fmt.Println("\nUsage: ./jmdn -cmd <command> [args...]")
 		fmt.Println("\nNote: Some interactive commands (mempoolStats, seednodeStats, etc.)")
@@ -483,6 +488,62 @@ func runCommand(command string, args []string, grpcPort int) {
 			fmt.Printf("CatchUpSync completed in %ds\n", stats.TimeTaken)
 		}
 
+	case "rebuildindex":
+		fmt.Println("Rebuilding tx-address index from genesis (this may take a while)...")
+		resp, err := client.RebuildTxIndex()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if resp.Error != "" {
+			fmt.Printf("RebuildIndex failed: %s\n", resp.Error)
+			os.Exit(1)
+		}
+		fmt.Printf("RebuildIndex complete in %v\n", time.Duration(resp.TimeTakenMs)*time.Millisecond)
+
+	case "rebuildrange":
+		if len(args) != 2 {
+			fmt.Println("Usage: jmdn -cmd rebuildrange <from_block> <to_block>")
+			os.Exit(1)
+		}
+		from, err := strconv.ParseUint(args[0], 10, 64)
+		if err != nil {
+			fmt.Printf("Invalid from_block %q: %v\n", args[0], err)
+			os.Exit(1)
+		}
+		to, err := strconv.ParseUint(args[1], 10, 64)
+		if err != nil {
+			fmt.Printf("Invalid to_block %q: %v\n", args[1], err)
+			os.Exit(1)
+		}
+		fmt.Printf("Re-indexing blocks [%d..%d]...\n", from, to)
+		resp, err := client.RebuildTxIndexRange(from, to)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if resp.Error != "" {
+			fmt.Printf("RebuildRange failed: %s\n", resp.Error)
+			os.Exit(1)
+		}
+		fmt.Printf("RebuildRange [%d..%d] complete in %v\n", from, to, time.Duration(resp.TimeTakenMs)*time.Millisecond)
+
+	case "txindexstatus":
+		resp, err := client.GetTxIndexStatus()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if resp.Error != "" {
+			fmt.Printf("txindex status: %s\n", resp.Error)
+			os.Exit(1)
+		}
+		state := "SYNCING (catchup in progress)"
+		if resp.Ready {
+			state = "READY"
+		}
+		fmt.Printf("txindex status: %s — last indexed block: %d\n", state, resp.LastIndexedBlock)
+
 	case "accountsync":
 		if len(args) < 1 {
 			fmt.Println("Usage: jmdn -cmd accountsync <peer_multiaddr>")
@@ -545,6 +606,9 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
 		fmt.Println("  catchup <peer> [from_block]       - Catch up to chain tip; from_block defaults to auto-detect (localTip+1)")
+		fmt.Println("  rebuildindex                      - Wipe and rebuild tx-address index from genesis (fixes all gaps)")
+		fmt.Println("  rebuildrange <from> <to>          - Re-index a specific block range (targeted gap repair)")
+		fmt.Println("  txindexstatus                     - Show tx-address index sync status (ready/syncing, last indexed block)")
 		fmt.Println("  accountsync <peer>                - Sync missing accounts only (skip block sync)")
 		os.Exit(1)
 	}
@@ -872,31 +936,67 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// shutdownSequenceBudget bounds steps 1-4 below as a whole. Each step is
+	// already individually bounded (profiler: 5s; shutdown.Shutdown()'s GRO
+	// window: ~10s + ~0.4s of flush sleeps), but nothing previously capped
+	// the SEQUENCE — a stall anywhere in it could still run past Docker's
+	// `stop_grace_period: 30s` (docker-compose.yml) and get SIGKILLed with
+	// no log line explaining why. Kept comfortably under that 30s so this
+	// fires first, logs why, and exits cleanly instead of being killed blind.
+	const shutdownSequenceBudget = 25 * time.Second
+
 	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.ShutdownThread, func(ctx context.Context) error {
 		<-sigCh
 
 		fmt.Println("\nShutdown signal received, closing connections...")
 
-		// 1. Cancel the main context to stop context-aware components (e.g., Yggdrasil, API)
-		cancel()
+		shutdownDone := make(chan struct{})
+		go func() {
+			defer close(shutdownDone)
 
-		// 2. Shutdown profiler concurrently with other cleanups (with timeout)
-		if profilerServer != nil {
-			log.Info().Msg("Shutting down profiler server...")
-			// Give it 5 seconds to finish active profiles/requests
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer shutdownCancel()
-			if err := profilerServer.Shutdown(shutdownCtx); err != nil {
-				log.Error().Err(err).Msg("Profiler server forced to shutdown")
-			} else {
-				log.Info().Msg("Profiler server stopped gracefully")
+			// 1. Cancel the main context to stop context-aware components (e.g., Yggdrasil, API)
+			cancel()
+
+			// 2. Shutdown profiler concurrently with other cleanups (with timeout)
+			if profilerServer != nil {
+				log.Info().Msg("Shutting down profiler server...")
+				// Give it 5 seconds to finish active profiles/requests
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer shutdownCancel()
+				if err := profilerServer.Shutdown(shutdownCtx); err != nil {
+					log.Error().Err(err).Msg("Profiler server forced to shutdown")
+				} else {
+					log.Info().Msg("Profiler server stopped gracefully")
+				}
 			}
-		}
 
-		// 3. Delegate final shutdown to the centralized handler
-		if shutdown.Shutdown() {
-			logger_cancel()
-			defer shutdown.OS_EXIT(0)
+			// 3. Stop the tx-address index: refuse new async work, cancel any
+			// in-flight catchup/rebuild, and close both SQLite pools. Must run
+			// before the process exits — nothing else does this today, and an
+			// unclosed sql.DB leaks its connections/WAL file handles.
+			log.Info().Msg("Shutting down transaction address index...")
+			if err := txindex.Shutdown(); err != nil {
+				log.Error().Err(err).Msg("txindex shutdown reported an error")
+			} else {
+				log.Info().Msg("Transaction address index stopped")
+			}
+
+			// 4. Delegate final shutdown to the centralized handler
+			if shutdown.Shutdown() {
+				logger_cancel()
+				defer shutdown.OS_EXIT(0)
+			}
+		}()
+
+		select {
+		case <-shutdownDone:
+			// Completed within budget. If step 4 succeeded, shutdown.OS_EXIT(0)
+			// already terminated the process before this select could observe
+			// the close — this case is only reachable if shutdown.Shutdown()
+			// returned false (no exit call was made).
+		case <-time.After(shutdownSequenceBudget):
+			log.Error().Msg("shutdown sequence exceeded its budget — forcing exit so Docker's stop_grace_period doesn't SIGKILL blind")
+			shutdown.OS_EXIT(1)
 		}
 		return nil
 	}); err != nil {
@@ -910,6 +1010,25 @@ func main() {
 	}
 	fmt.Println("Main database pool initialized successfully")
 
+	// Initialise the SQLite tx-by-address index. Init() only opens the DB file
+	// and starts the background worker — it returns immediately. The (possibly
+	// long, e.g. full genesis migration on first deploy) gap catchup runs in a
+	// goroutine so it never delays facade/RPC/consensus/gossip startup below.
+	// Until txindex.IsReady() is true, eth_getTransactionsByAddress and
+	// getAddressTransactions return a "still syncing" / 503 error rather than
+	// an ImmuDB-scan fallback, which no longer exists (see PR history).
+	txIndexPath := cfg.Database.TxIndexPath
+	if txIndexPath == "" {
+		txIndexPath = "./DB/txindex.db" // matches config/settings/defaults.go default
+	}
+	if err := txindex.Init(logger_ctx, txIndexPath); err != nil {
+		// Only Open() (disk/permissions) failures land here — catchup failures
+		// are logged asynchronously by the background goroutine.
+		log.Warn().Err(err).Msg("txindex init failed — address-by-tx lookups will error until this is resolved (see CLI `rebuildindex`)")
+	} else {
+		fmt.Println("Transaction address index starting (background catchup in progress)")
+	}
+
 	if err := initAccountsDBPool(); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
 	}
@@ -920,16 +1039,15 @@ func main() {
 	// The worker drains the stream and writes batches to ImmuDB asynchronously.
 	// Required before FastsyncV2 starts — it calls WriteAccounts during sync.
 	if cfg.Database.Redis.URL == "" {
-		log.Warn().Msg("[AccountSyncWorker] database.redis.url not configured — WriteAccounts will fail; set url in jmdn.yaml or JMDN_DATABASE_REDIS_URL")
+		log.Warn().Msg("[AccountSyncWorker] database.redis.url not configured — WriteAccounts/BatchUpdateAccounts will fall back to synchronous direct ImmuDB writes (slower, ~15s commit latency per call, no async queue); set url in jmdn.yaml or JMDN_DATABASE_REDIS_URL to enable the async Redis-backed path")
 	} else {
 		redisClient := redis.NewClient(&redis.Options{
 			Addr:     cfg.Database.Redis.URL,
 			Password: cfg.Database.Redis.Password,
 		})
 		accountStreamer := NodeInfo.NewRedisStreamer(redisClient)
-		NodeInfo.StartAccountSyncWorker(accountStreamer, NodeInfo.DefaultWorkerConfig())
+		NodeInfo.StartAccountSyncWorker(logger_ctx, accountStreamer, NodeInfo.DefaultWorkerConfig())
 		log.Info().Str("redis_url", cfg.Database.Redis.URL).Msg("[accountqueue] installed — WriteAccounts is now async, worker starts lazily")
-		fmt.Println("✅ Account sync worker started (Redis Stream → ImmuDB async)")
 	}
 
 	// Discover Yggdrasil address BEFORE creating the node
@@ -970,8 +1088,21 @@ func main() {
 	} else {
 		fmt.Println("✅ PubSub system ready for consensus and messaging")
 		log.Info().Msg("PubSub system initialized successfully")
-		// Store reference for later use
-		_ = globalPubSub // Mark as used to avoid linting error
+		// Give Block server access to GPS so /api/l1-commit can broadcast to peers.
+		Block.SetGossipPubSubInstance(globalPubSub.GetGossipPubSub())
+
+		// Subscribe to the dedicated L1 commit channel at startup so this node
+		// receives L1Commit/L1CommitRange broadcasts from the sequencer. This
+		// topic is persistent — unlike the consensus channel, it is never
+		// unsubscribed at the end of a consensus round (END_PUBSUB).
+		go func() {
+			svc := MsgPassingService.NewSubscriptionService(globalPubSub.GetGossipPubSub())
+			if subErr := svc.HandleStreamSubscriptionRequest(ctx, config.PubSub_L1CommitChannel); subErr != nil {
+				fmt.Printf("⚠️  Failed to subscribe to L1 commit channel at startup: %v\n", subErr)
+			} else {
+				fmt.Println("✅ Subscribed to L1 commit channel at startup")
+			}
+		}()
 	}
 
 	// Set the stream handler for receiving files for fastsync. This is crucial

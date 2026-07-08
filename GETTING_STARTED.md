@@ -30,6 +30,7 @@ Before you begin, ensure your machine meets the following requirements.
 | **GCC** | Any | Required for CGO build (`gcc` package) |
 | **ImmuDB** | Latest | Installed automatically |
 | **Yggdrasil** | Latest | Installed automatically |
+| **Redis** | 5+ | Installed automatically; optional — powers the account sync queue, node falls back to direct ImmuDB writes if unavailable |
 
 ---
 
@@ -65,7 +66,7 @@ git checkout v1.2.0  # replace with target version
 
 ## Step 3 — Install Dependencies
 
-Run the unified setup script. This installs Go, ImmuDB, and Yggdrasil.
+Run the unified setup script. This installs Go, ImmuDB, Yggdrasil, and Redis.
 
 ```bash
 sudo ./Scripts/setup_dependencies.sh
@@ -79,7 +80,10 @@ To install dependencies individually:
 sudo ./Scripts/setup_dependencies.sh --go         # Go runtime only
 sudo ./Scripts/setup_dependencies.sh --immudb     # ImmuDB only
 sudo ./Scripts/setup_dependencies.sh --yggdrasil  # Yggdrasil only
+sudo ./Scripts/setup_dependencies.sh --redis      # Redis only
 ```
+
+> **Redis password:** the script generates a random password on first run and saves it to `/etc/jmdn/redis.env` (root-only). If you start the node via `start_jmdn_wrapper.sh` (the standard systemd/launchd/rc.d path, Step 6), this is automatic — the wrapper sources `redis.env` and exports `JMDN_DATABASE_REDIS_PASSWORD` for you, no manual step needed. Only set `database.redis.password` in `/etc/jmdn/jmdn.yaml` by hand if you're running the binary directly instead of via the wrapper — the config generator in Step 5 does not do this for you yet. Re-running the script reuses the same password rather than rotating it.
 
 ---
 
@@ -124,6 +128,42 @@ sudo ./Scripts/install_services.sh
 ```
 
 > Before opening firewall rules, review **[PORTS.md](./PORTS.md)** for the full security posture of each port and recommended cloud firewall rules.
+
+### Optional (recommended) — Bootstrap from a chain snapshot
+
+Skip this and a fresh node will start from genesis and slowly scan every block
+on its own — that's what `fastsync.catch_up_from_block: 0` in `jmdn.yaml`
+means. For anything other than a throwaway dev node, load the pre-built
+snapshot instead, same as the Docker path does with `jmdn-bootstrap`:
+
+```bash
+sudo ./Scripts/bootstrap_sync.sh
+```
+
+Requires `curl`, `wget`, `awk`, `md5sum`, `tar`, `python3` on `PATH` — install
+any that are missing (`sudo apt install -y wget python3`, most are already
+present on a stock Ubuntu/Debian image). Downloads and verifies the chain
+snapshot into `/opt/jmdn/data`, same location `install_services.sh` just
+created. Takes 10–30 minutes depending on bandwidth; safe to re-run — it
+skips immediately if `/opt/jmdn/data/.bootstrapped` already exists.
+
+> **Ownership note:** the script chowns `/opt/jmdn/data` to `IMMUDB_UID`
+> (default `3322`, matching the Docker image's `jmdn` user) so it can be
+> re-run unmodified against Docker-style snapshots. On bare metal with the
+> default `SERVICE_USER=root` (see `install_services.sh`), immudb runs as
+> root and ignores file ownership, so this is a no-op in practice. If you set
+> `SERVICE_USER` to a non-root user, pass `IMMUDB_UID=<that user's uid>` so
+> immudb can actually read its own data:
+> ```bash
+> sudo IMMUDB_UID=$(id -u jmdn) ./Scripts/bootstrap_sync.sh
+> ```
+
+To force a fresh snapshot later (e.g. after a long time offline):
+
+```bash
+sudo rm /opt/jmdn/data/.bootstrapped
+sudo ./Scripts/bootstrap_sync.sh
+```
 
 Start the services:
 

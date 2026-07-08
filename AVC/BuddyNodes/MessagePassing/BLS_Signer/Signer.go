@@ -10,10 +10,11 @@ import (
 )
 
 type BLSresponse struct {
-	Signature string
-	Agree     bool
-	PubKey    string
-	PeerID    string
+	Signature        string
+	Agree            bool
+	PubKey           string
+	PeerID           string
+	RejectionReasons map[string]string // peerID → reason, populated when Agree=false
 }
 
 // cached BLS keypair (per-process)

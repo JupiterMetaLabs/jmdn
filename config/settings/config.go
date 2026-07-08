@@ -80,9 +80,13 @@ type DatabaseSettings struct {
 	Address string `mapstructure:"address" yaml:"address"`
 	Port    int    `mapstructure:"port"    yaml:"port"`
 
-	Username string        `mapstructure:"username" yaml:"username"`
-	Password string        `mapstructure:"password" yaml:"password"`
-	Redis    RedisSettings `mapstructure:"redis"    yaml:"redis"`
+	Username string        `mapstructure:"username"      yaml:"username"`
+	Password string        `mapstructure:"password"      yaml:"password"`
+	Redis    RedisSettings `mapstructure:"redis"         yaml:"redis"`
+
+	// TxIndexPath is the path to the SQLite address→tx index file.
+	// Defaults to "txindex.db" in the working directory if empty.
+	TxIndexPath string `mapstructure:"tx_index_path" yaml:"tx_index_path"`
 }
 
 // LoggingSettings mirrors Ion's Config struct so jmdn.yaml can fully configure

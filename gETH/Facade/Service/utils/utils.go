@@ -25,6 +25,8 @@ func ConvertZKBlockToBlock(zkBlock *config.ZKBlock) *Types.Block {
 		Withdrawals:     nil,
 		BlobGasUsed:     nil,
 		ExcessBlobGas:   nil,
+		L1TxHash:        zkBlock.L1TxHash,
+		L1BlockNumber:   zkBlock.L1BlockNumber,
 	}
 }
 

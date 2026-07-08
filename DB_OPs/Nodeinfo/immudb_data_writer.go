@@ -2,6 +2,7 @@ package NodeInfo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"strings"
@@ -61,6 +62,19 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 			b.ProofHash = nh.ZkProof.ProofHash
 			b.StarkProof = nh.ZkProof.StarkProof
 			b.Commitment = bytesToCommitment(nh.ZkProof.Commitment)
+		}
+
+		// Decode L1 finality from metadata shim (option 2a: no proto change needed).
+		// Only apply if the peer has already finalised this block on L1.
+		if nh.L1Finality != nil && len(nh.L1Finality.Metadata) > 0 {
+			var meta struct {
+				L1TxHash      string `json:"l1_tx_hash"`
+				L1BlockNumber uint64 `json:"l1_block_number"`
+			}
+			if err := json.Unmarshal(nh.L1Finality.Metadata, &meta); err == nil && meta.L1TxHash != "" {
+				b.L1TxHash = meta.L1TxHash
+				b.L1BlockNumber = meta.L1BlockNumber
+			}
 		}
 
 		var txs []config.Transaction

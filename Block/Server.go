@@ -2,6 +2,7 @@ package Block
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,15 +10,19 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	BlockCommon "gossipnode/Block/common"
 	"gossipnode/DB_OPs"
+	Publisher "gossipnode/Pubsub/Publish"
 	"gossipnode/Security"
 	"gossipnode/Sequencer"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
+	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/settings"
+	"gossipnode/l1finality"
 	"gossipnode/metrics"
 	"gossipnode/pkg/gatekeeper"
 
@@ -288,6 +293,35 @@ func SetHostInstance(h host.Host) {
 	globalHost = h // Uncommented - host is needed for consensus
 }
 
+// globalGPS holds the GossipPubSub instance for broadcasting L1 finality to peers.
+var globalGPS *PubSubMessages.GossipPubSub
+
+// latestL1CommitCache stores the highest block number known to have L1 commit data.
+// Updated atomically by receiveL1Commit and receiveL1CommitRange so that the gETH
+// RPC facade can do a single point-lookup instead of a backwards scan.
+var latestL1CommitCache atomic.Uint64
+
+// GetLatestL1CommitBlockNum returns the cached latest L1-committed block number.
+// Returns 0 if no commit has been received since startup (gETH falls back to scan).
+func GetLatestL1CommitBlockNum() uint64 { return latestL1CommitCache.Load() }
+
+// SetGossipPubSubInstance registers the pubsub instance so the /api/l1-commit
+// endpoint can broadcast finality data to all connected peers via gossip.
+func SetGossipPubSubInstance(gps *PubSubMessages.GossipPubSub) {
+	globalGPS = gps
+}
+
+// getPublishGPS returns the best GossipPubSub instance for broadcasting.
+// Prefers the global PubSubNode's PubSub (the same instance the subscription
+// handlers are listening on) so publisher and subscribers share one GossipSub.
+// Falls back to globalGPS if the PubSubNode isn't initialised yet.
+func getPublishGPS() *PubSubMessages.GossipPubSub {
+	if node := PubSubMessages.NewGlobalVariables().Get_PubSubNode(); node != nil && node.PubSub != nil {
+		return node.PubSub
+	}
+	return globalGPS
+}
+
 func Startserver(bindAddr string, port int, h host.Host, chainID int) {
 	_ = StartserverWithContext(context.Background(), bindAddr, port, h, chainID)
 }
@@ -394,6 +428,8 @@ func StartserverWithContext(ctx context.Context, bindAddr string, port int, h ho
 	// Transaction endpoints
 	router.POST("/api/submit-raw-tx", submitRawTransaction)
 	router.POST("/api/process-block", processZKBlock)
+	router.POST("/api/l1-commit", receiveL1Commit)
+	router.POST("/api/l1-commit-range", receiveL1CommitRange)
 	router.GET("/api/block/:number", getBlockByNumber)
 	router.GET("/api/block/hash/:hash", getBlockByHash)
 	router.GET("/api/tx/:hash", getTransactionInfo)
@@ -985,4 +1021,200 @@ func getLatestBlock(c *gin.Context) {
 		ion.String("function", "BlockServer.getLatestBlock"))
 
 	c.JSON(http.StatusOK, block)
+}
+
+// receiveL1Commit is called by the orchestrator after commitRollup is mined on L1.
+// It updates the local block record with L1 finality data and broadcasts to peers.
+// Apply logic is shared with the gossip receivers via the l1finality package —
+// see that package's doc comment for why.
+func receiveL1Commit(c *gin.Context) {
+	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.receiveL1Commit")
+	defer span.End()
+
+	var payload l1finality.CommitPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		logger().NamedLogger.Error(spanCtx, "Invalid l1-commit payload", err,
+			ion.String("function", "BlockServer.receiveL1Commit"))
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid payload: %v", err)})
+		return
+	}
+
+	if err := payload.Validate(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	span.SetAttributes(
+		attribute.Int64("block_number", int64(payload.BlockNumber)),
+		attribute.String("l1_tx_hash", payload.L1TxHash),
+		attribute.Int64("l1_block_number", int64(payload.L1BlockNumber)),
+	)
+
+	ctx, cancel := context.WithTimeout(spanCtx, 15*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		logger().NamedLogger.Error(spanCtx, "DB connection failed", err,
+			ion.String("function", "BlockServer.receiveL1Commit"))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db connection failed"})
+		return
+	}
+
+	found, err := l1finality.ApplyCommit(conn, payload)
+	if err != nil {
+		logger().NamedLogger.Error(spanCtx, "Failed to update block with L1 finality", err,
+			ion.Int64("block_number", int64(payload.BlockNumber)),
+			ion.String("function", "BlockServer.receiveL1Commit"))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update block: %v", err)})
+		return
+	}
+	if !found {
+		logger().NamedLogger.Error(spanCtx, "Block not found", nil,
+			ion.Int64("block_number", int64(payload.BlockNumber)),
+			ion.String("function", "BlockServer.receiveL1Commit"))
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("block %d not found", payload.BlockNumber)})
+		return
+	}
+
+	logger().NamedLogger.Info(spanCtx, "L1 finality stored",
+		ion.Int64("block_number", int64(payload.BlockNumber)),
+		ion.String("l1_tx_hash", payload.L1TxHash),
+		ion.Int64("l1_block_number", int64(payload.L1BlockNumber)),
+		ion.String("function", "BlockServer.receiveL1Commit"))
+
+	// Update in-memory cache so gETH facade can skip the backwards scan.
+	if cur := latestL1CommitCache.Load(); payload.BlockNumber > cur {
+		latestL1CommitCache.Store(payload.BlockNumber)
+	}
+
+	// Broadcast to peers via gossip so all nodes update their copy.
+	if gps := getPublishGPS(); gps != nil {
+		logger().NamedLogger.Info(spanCtx, "Broadcasting L1 commit to peers",
+			ion.Int64("block_number", int64(payload.BlockNumber)),
+			ion.String("l1_tx_hash", payload.L1TxHash),
+			ion.String("gps_host", gps.Host.ID().String()),
+			ion.String("function", "BlockServer.receiveL1Commit"))
+		msgJSON, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			logger().NamedLogger.Error(spanCtx, "Failed to marshal L1 commit for broadcast", marshalErr,
+				ion.Int64("block_number", int64(payload.BlockNumber)),
+				ion.String("function", "BlockServer.receiveL1Commit"))
+		} else {
+			msg := &PubSubMessages.Message{
+				// Sender must be a valid peer.ID: an empty one marshals to "" and
+				// receivers fail unmarshalling with "invalid cid: cid too short".
+				Sender:  gps.Host.ID(),
+				Message: string(msgJSON),
+				ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_L1Commit),
+			}
+			if pubErr := Publisher.Publish(spanCtx, gps, config.PubSub_L1CommitChannel, msg, nil); pubErr != nil {
+				logger().NamedLogger.Warn(spanCtx, "Failed to broadcast L1 commit to peers (non-fatal)",
+					ion.String("error", pubErr.Error()),
+					ion.String("function", "BlockServer.receiveL1Commit"))
+			}
+		}
+	} else {
+		logger().NamedLogger.Warn(spanCtx, "No GPS instance available — broadcast skipped",
+			ion.Int64("block_number", int64(payload.BlockNumber)),
+			ion.String("function", "BlockServer.receiveL1Commit"))
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":          "ok",
+		"block_number":    payload.BlockNumber,
+		"l1_tx_hash":      payload.L1TxHash,
+		"l1_block_number": payload.L1BlockNumber,
+	})
+}
+
+// receiveL1CommitRange handles a batched L1 commit covering start_block..end_block
+// (bounded by l1finality.MaxRangeSpan). All blocks in the range share the same L1
+// tx hash. After updating all local records, ONE gossip broadcast is sent so peers
+// apply the range atomically. Apply logic is shared via the l1finality package.
+func receiveL1CommitRange(c *gin.Context) {
+	spanCtx, span := logger().NamedLogger.Tracer("BlockServer").Start(c.Request.Context(), "BlockServer.receiveL1CommitRange")
+	defer span.End()
+
+	var payload l1finality.RangePayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		logger().NamedLogger.Error(spanCtx, "Invalid l1-commit-range payload", err,
+			ion.String("function", "BlockServer.receiveL1CommitRange"))
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid payload: %v", err)})
+		return
+	}
+
+	if err := payload.Validate(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	span.SetAttributes(
+		attribute.Int64("start_block", int64(payload.StartBlock)),
+		attribute.Int64("end_block", int64(payload.EndBlock)),
+		attribute.String("l1_tx_hash", payload.L1TxHash),
+	)
+
+	ctx, cancel := context.WithTimeout(spanCtx, 30*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		logger().NamedLogger.Error(spanCtx, "DB connection failed", err,
+			ion.String("function", "BlockServer.receiveL1CommitRange"))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db connection failed"})
+		return
+	}
+
+	updated, skipped := l1finality.ApplyRange(conn, payload)
+
+	logger().NamedLogger.Info(spanCtx, "L1 range finality stored",
+		ion.Int64("start_block", int64(payload.StartBlock)),
+		ion.Int64("end_block", int64(payload.EndBlock)),
+		ion.String("l1_tx_hash", payload.L1TxHash),
+		ion.Int64("updated", int64(updated)),
+		ion.Int64("skipped", int64(skipped)),
+		ion.String("function", "BlockServer.receiveL1CommitRange"))
+
+	// Update in-memory cache to the end of the committed range.
+	if cur := latestL1CommitCache.Load(); payload.EndBlock > cur {
+		latestL1CommitCache.Store(payload.EndBlock)
+	}
+
+	// ONE broadcast for the entire range — peers apply all blocks in a single message.
+	if gps := getPublishGPS(); gps != nil {
+		logger().NamedLogger.Info(spanCtx, "Broadcasting L1 commit range to peers",
+			ion.Int64("start_block", int64(payload.StartBlock)),
+			ion.Int64("end_block", int64(payload.EndBlock)),
+			ion.String("gps_host", gps.Host.ID().String()),
+			ion.String("function", "BlockServer.receiveL1CommitRange"))
+		msgJSON, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			logger().NamedLogger.Error(spanCtx, "Failed to marshal L1 commit range for broadcast", marshalErr,
+				ion.Int64("start_block", int64(payload.StartBlock)),
+				ion.String("function", "BlockServer.receiveL1CommitRange"))
+		} else {
+			msg := &PubSubMessages.Message{
+				// Sender must be a valid peer.ID (see receiveL1Commit).
+				Sender:  gps.Host.ID(),
+				Message: string(msgJSON),
+				ACK:     PubSubMessages.NewACKBuilder().True_ACK_Message(gps.Host.ID(), config.Type_L1CommitRange),
+			}
+			if pubErr := Publisher.Publish(spanCtx, gps, config.PubSub_L1CommitChannel, msg, nil); pubErr != nil {
+				logger().NamedLogger.Warn(spanCtx, "Failed to broadcast L1 commit range to peers (non-fatal)",
+					ion.String("error", pubErr.Error()),
+					ion.String("function", "BlockServer.receiveL1CommitRange"))
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":          "ok",
+		"start_block":     payload.StartBlock,
+		"end_block":       payload.EndBlock,
+		"l1_tx_hash":      payload.L1TxHash,
+		"l1_block_number": payload.L1BlockNumber,
+		"updated":         updated,
+		"skipped":         skipped,
+	})
 }

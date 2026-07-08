@@ -173,9 +173,23 @@ func (wm *WorkerManager) EnsureActive() {
 // If not called, both methods log an error and skip the enqueue (no write occurs).
 //
 // Time: O(1) — no Redis round trip; EnsureConsumerGroup is deferred to the first runWorker call.
-func StartAccountSyncWorker(streamer RedisStreamer, cfg AccountSyncWorkerConfig) *WorkerManager {
+func StartAccountSyncWorker(logger_ctx context.Context, streamer RedisStreamer, cfg AccountSyncWorkerConfig) *WorkerManager {
 	m := &WorkerManager{streamer: streamer, cfg: cfg}
 	InstallAccountQueue(streamer, m)
+
+	// Eagerly verify Redis connection in the background.
+	// We do this to ensure we get a reliable success/failure log on boot,
+	// because the actual worker loop is lazy and might not start if the node is already synced.
+	go func() {
+		ctx, cancel := context.WithTimeout(logger_ctx, 5*time.Second)
+		defer cancel()
+		if err := streamer.Ping(ctx); err != nil {
+			log.Printf("[accountqueue] WARN: Boot-time Redis ping failed: %v. This is a one-off diagnostic, not a live health gate — Enqueue calls will fall back to direct DB writes on their own if Redis is still unreachable when they run.", err)
+		} else {
+			log.Printf("[accountqueue] Boot-time Redis ping succeeded — connected and authenticated. (Diagnostic only; does not guarantee later Enqueue calls will succeed.)")
+		}
+	}()
+
 	return m
 }
 

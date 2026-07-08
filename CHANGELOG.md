@@ -5,6 +5,210 @@ All notable changes to JMDN are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/),
 adhering to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [1.2.1] - 2026-07-08
+
+### Added
+
+**RPC**
+
+- **`eth_getTransactionsByAddress`** (`gETH/Facade/rpc/handlers.go`). Paginated
+  address-transaction lookup backed by the new index, with address validation
+  and bounded-concurrency (10 in flight) ImmuDB hydration per page. (#55)
+
+- **JSON-RPC batch requests** (`gETH/Facade/rpc/http_server.go`).
+  `handleJSONRPC` now detects a `[...]` batch body and processes up to 100
+  requests concurrently, returning one array of responses — standard
+  JSON-RPC 2.0 batching, previously unsupported. (#50)
+
+**CLI & Ops**
+
+- **`rebuildindex`, `rebuildrange <from> <to>`, `txindexstatus`** — new
+  console and `-cmd` gRPC commands (`CLI/CLI.go`, `CLI/CLI_GRPC.go`,
+  `CLI/GRPC_Server.go`, `CLI/client.go`, `CLI/proto/Connection.proto`) for
+  operating the transaction index from a running node, e.g.
+  `docker exec -it jmdn jmdn -cmd txindexstatus`. Documented in `DOCKER.md`. (#55)
+
+**L1 Finality**
+
+- **L1 finality tracking** (`Block/Server.go`, `config/ZKBlock.go`,
+  `gETH/Facade/rpc/handlers.go`). Blocks now carry `l1TxHash` / `l1BlockNumber`
+  once their rollup commitment is confirmed on L1. New `POST /api/l1-commit`
+  and `POST /api/l1-commit-range` endpoints ingest commit data and broadcast
+  it to peers over a dedicated gossip channel (`pubsub-l1-commit`) so every
+  node's local record stays in sync. `eth_getBlockByNumber` accepts a
+  `wantL1Commit` flag to fetch the latest L1-committed block directly. (#59)
+
+**Account Sync**
+
+- **Redis is now auto-provisioned** (`Scripts/setup_dependencies.sh --redis`)
+  for the account-sync queue, with secure, idempotent password setup. (#60)
+
+**Docker & Deployment**
+
+- **Docker deployment hardened for production, with exchange nodes in
+  mind.** Everything below ships in `docker-compose.yml` and a new
+  `Scripts/docker-deploy.sh` — no action needed to benefit, though sizing
+  and version pinning are worth reviewing on upgrade (`DOCKER.md` §4, §13).
+
+  - **Network reachability improved** — the node's peer-to-peer port is now
+    published by default, so a Docker-deployed node can be dialed by other
+    peers instead of only reaching out on its own.
+  - **Resource governance** — memory/CPU/file-descriptor/process caps on
+    every service, scaled to host size via `.env` (see the new
+    `.env.docker.example` template and `DOCKER.md`'s sizing table for
+    8GB/16GB/32GB/64GB hosts).
+  - **Safe, automatic upgrades** — `docker-deploy.sh` pulls, restarts, and
+    health-checks the node, automatically rolling back to the previous
+    image if the new one fails to come up healthy.
+  - **Steadier shutdowns and restarts** — per-service grace periods tuned
+    to how long each component actually needs to stop cleanly, zombie
+    process reaping, and a two-tier health check (Explorer API with a
+    time-bounded JSON-RPC fallback) so a node running the minimal config
+    doesn't show falsely unhealthy.
+  - **Tighter default port exposure** — only what's needed for standard
+    node operation is published out of the box; a few narrowly-scoped
+    ports stay off by default, documented in `PORTS.md` for anyone with a
+    specific reason to turn them on.
+  - **Cleaner upgrades going forward** — the image version and Compose
+    project name now live in a local `.env` file instead of the tracked
+    `docker-compose.yml`, so pulling the latest repo changes never
+    conflicts with an operator's pinned version again. (#62)
+
+### Changed
+
+- **Address-transaction pagination hardened for accuracy and consistency**
+  (`explorer/addressOps.go`, `gETH/Facade/rpc/handlers.go`). Results are
+  strictly and deterministically ordered, so paging through a large
+  transaction history returns each entry exactly once, including for
+  addresses with several transactions in the same block. Page size and
+  offset are bounded for consistent response times on large histories,
+  and lookup availability is clearly signaled to callers for smooth retry
+  behavior. (#55)
+
+- **Transaction parsing switched from RLP decoding to `UnmarshalBinary`**
+  (`gETH/Facade/Service/Service.go`), so legacy, EIP-2930, and EIP-1559
+  transactions are all parsed consistently on submission. (#53)
+
+**Graceful Shutdown**
+
+- **Shutdown sequence now bounded end-to-end** (`main.go`,
+  `logging/ion_Builder.go`). OTEL/tracing flush on shutdown is now
+  time-boxed at 3s instead of running under an unbounded context — matters
+  once tracing is enabled and the collector is slow or unreachable. The
+  overall shutdown sequence also now runs under its own deadline, kept
+  under Docker's `stop_grace_period`, so a stall anywhere in it is logged
+  and the process exits cleanly instead of being silently SIGKILLed.
+
+### Fixed
+
+**RPC**
+
+- **`eth_getTransactionCount` returned the same value for every address**
+  (`gETH/Facade/Service/Service.go`) — the lookup ignored the `addr` parameter
+  entirely (`DB_OPs.CountTransactions(nil)`). Now returns the account's actual
+  `TxNonce`. (#50)
+
+- **Block responses missing standard Ethereum JSON-RPC fields**
+  (`gETH/Facade/rpc/handlers.go`) — `eth_getBlockByNumber` /
+  `eth_getBlockByHash` did not include `stateRoot`, `receiptsRoot`,
+  `logsBloom`, `extraData`, `miner`, or PoW-compatibility placeholders
+  (`sha3Uncles`, `nonce`, `difficulty`, `mixHash`, `uncles`), which some
+  wallets and explorers require to accept a block. `baseFeePerGas` now falls
+  back safely for blocks written before the field existed. (#50)
+
+- **`eth_getTransactionReceipt` fabricated a log entry and errored on pending
+  transactions** (`DB_OPs/Facade_Receipts.go`, `gETH/Facade/rpc/types.go`).
+  Generated receipts no longer include a synthetic log entry that never came
+  from the chain. A transaction that hasn't been mined yet now returns
+  `null`, per spec, instead of a JSON-RPC error — fixes repeated failed
+  lookups from wallets polling for a receipt. (#56)
+
+- **Transaction-hash lookups were case-sensitive** (`DB_OPs/immuclient.go`) —
+  stored keys are always lowercase; a mixed-case hash from a caller would
+  silently fail to match. Reads now normalize to lowercase, matching the
+  write path. (#56)
+
+**Transaction Submission & Security**
+
+- **Signature verification for typed transactions** (`Security/Security.go`).
+  `CheckSignature` now uses `LatestSignerForChainID` to recover EIP-2930 and
+  EIP-1559 signatures correctly, alongside the existing legacy (V=27/28) path. (#53)
+
+- **Contract deployment transactions were rejected** (`Security/Security.go`).
+  `CheckAddressExistWithCache` treated a nil `to` address (a contract
+  deployment) as invalid; deployments are now correctly exempted from the
+  receiver-existence check. A related nil-pointer panic in trace attributes
+  was also fixed. (#53)
+
+**mTLS**
+
+- **Missing client certificate caused a fatal error instead of a fallback**
+  (`pkg/gatekeeper/tls.go`). Nodes connecting to endpoints that don't require
+  a client certificate (e.g. public gateway endpoints) failed outright,
+  blocking all transaction submissions through that route. Now falls back to
+  one-way TLS and only hard-fails if a cert file exists but is unreadable or
+  invalid. (#51)
+
+**Consensus & Voting**
+
+- **Vote rejection reasons were discarded** (`Sequencer/Consensus.go`,
+  `Vote/Trigger.go`, `AVC/BuddyNodes/MessagePassing/`). `ProcessVotesFromCRDT`
+  now returns and propagates the reason a vote was rejected, surfaced through
+  to consensus output instead of a bare pass/fail — improves operator
+  visibility into why a vote didn't succeed. (#57)
+
+- **Block processing and storage could run out of order**
+  (`messaging/broadcast.go`) — local block processing now happens strictly
+  before the block is considered committed, closing a window where a block
+  could be marked stored before its transactions were fully applied. (#57)
+
+**CLI**
+
+- **DID lookups used the wrong ImmuDB client** (`CLI/CLI_GRPC.go`) —
+  corrected to use the DID-specific client, matching how other CLI
+  account/DID commands connect. (#57)
+
+**Networking**
+
+- **Duplicate GossipSub routers could silently break existing subscriptions**
+  (`config/PubSubMessages/GossipSub_Helper.go`) — router/topic instances are
+  now a per-host singleton, preventing a second registration from orphaning
+  the first. (#59)
+
+**Deployment**
+
+- **Redeploying via `deploy.sh` silently failed to update the node's
+  startup wrapper** (`Scripts/deploy.sh`) — the script wrote the updated
+  wrapper to a filename the systemd/launchd/rc.d service definitions never
+  referenced, so wrapper changes never took effect on redeploy, only on a
+  fresh install. Now writes to the correct path. (#60)
+
+### Security
+
+- **Data race on chain-ID and cached transaction signers**
+  (`Security/Security.go`) — `expectedChainID` and its derived signers are now
+  guarded by a `sync.RWMutex` (`signerMu`), closing a race between startup
+  configuration and concurrent transaction verification. (#53)
+
+### Performance
+
+- **Address-history lookups optimized for concurrent throughput and
+  reliability.** Reads and writes use separated processing paths so lookups
+  stay fast even during a large background catch-up. Startup no longer waits
+  on a full historical catch-up to complete — indexing continues in the
+  background while the node comes online, with a clear readiness signal
+  until the first pass finishes. Progress tracking is now monotonic, so an
+  out-of-order background batch can never move it backwards relative to
+  already-processed live data. Background indexing work is bounded and
+  queued rather than unbounded, with a clean shutdown path. Covered by 18
+  new unit tests, including concurrency and shutdown-race scenarios. (#55)
+
+- **Bounded-concurrency ImmuDB hydration for address-transaction pages**
+  (`explorer/addressOps.go`, `gETH/Facade/rpc/handlers.go`) — up to 10
+  concurrent point-fetches per page instead of a sequential loop. (#55)
+
 ## [1.2.0] — 2026-06-29
 
 ### Added
@@ -483,6 +687,7 @@ adhering to [Semantic Versioning](https://semver.org/).
 ### Added
 - Initial open source release
 
+[1.2.1]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.0.0...v1.1.0
