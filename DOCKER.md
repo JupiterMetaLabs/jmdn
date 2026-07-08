@@ -1255,6 +1255,11 @@ recommended — releases sometimes ship compose improvements — and is always
 safe because nothing you configure lives in tracked files: your settings are
 in `.env` and `jmdn.yaml`, both gitignored.
 
+> `docker-deploy.sh`'s rollback only restores the previous **image** — it
+> doesn't touch the `immudb-data` / `jmdn-state` volumes. For anything past
+> a routine point release, snapshot them first with the steps in §12
+> [Backup](#12-volumes-and-data-management).
+
 ### Which path applies to you?
 
 - **Installed with the v1.2.0 guide** (the first Docker release — `docker-compose.yml` has a hand-edited `image:` tag, and `.env` has no `JMDN_VERSION`) → run the **one-time migration** below first. After that, every future upgrade is Option A.
