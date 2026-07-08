@@ -189,12 +189,12 @@ This is the complete runbook for a fresh VM with Docker already installed.
   on a bigger host, override them in the same `.env` file as your passwords
   (Step 2). Nothing else changes — `docker compose up -d` applies them.
 
-  | Host | `JMDN_MEM_LIMIT` | `JMDN_CPU_LIMIT` | `IMMUDB_MEM_LIMIT` | `IMMUDB_CPU_LIMIT` | `REDIS_MEM_LIMIT` | `REDIS_MAXMEMORY` |
-  |---|---|---|---|---|---|---|
-  | 8 GB / 4c *(defaults)* | `4g` | `2.0` | `4g` | `1.0` | `512m` | `384mb` |
-  | 16 GB / 8c | `8g` | `6.0` | `4g` | `2.0` | `1g` | `768mb` |
-  | 32 GB / 16c | `16g` | `0` (unlimited) | `8g` | `4.0` | `2g` | `1536mb` |
-  | 64 GB / 32c | `32g` | `0` (unlimited) | `16g` | `8.0` | `4g` | `3gb` |
+  | Host | `JMDN_MEM_LIMIT` | `JMDN_CPU_LIMIT` | `IMMUDB_MEM_LIMIT` | `IMMUDB_CPU_LIMIT` | `REDIS_MEM_LIMIT` | `REDIS_CPU_LIMIT` | `REDIS_MAXMEMORY` |
+  |---|---|---|---|---|---|---|---|
+  | 8 GB / 4c *(defaults)* | `4g` | `2.0` | `2g` | `1.0` | `512m` | `0.5` | `384mb` |
+  | 16 GB / 8c | `8g` | `6.0` | `4g` | `2.0` | `1g` | `0.5` | `768mb` |
+  | 32 GB / 16c | `16g` | `0` (unlimited) | `8g` | `4.0` | `2g` | `1.0` | `1536mb` |
+  | 64 GB / 32c | `32g` | `0` (unlimited) | `16g` | `8.0` | `4g` | `1.0` | `3gb` |
 
   Rules of thumb behind the table: give jmdn ~50% of host RAM and immudb
   ~25%, keep `REDIS_MAXMEMORY` at ~75% of `REDIS_MEM_LIMIT`, and always
@@ -254,6 +254,8 @@ git checkout main
 
 The `.env` file is minimal — it exists only because the immudb and redis containers are separate processes that cannot read `jmdn.yaml`. They need their passwords passed in via environment variables. Everything else lives in `jmdn.yaml` (Step 3).
 
+A filled-in-able template is at [`.env.docker.example`](./.env.docker.example) in the repo root — `cp .env.docker.example .env` and edit, or build it by hand with the heredoc below.
+
 Generate the two passwords:
 
 ```bash
@@ -266,6 +268,9 @@ cat > /opt/jmdn/jmdn/.env << 'EOF'
 # Compose project name — prefixes volume/network names (jmdn_immudb-data ...).
 # Pinning it here keeps those names stable regardless of the checkout
 # directory, so every volume/backup command in this guide works verbatim.
+# NEW INSTALLS ONLY — if you're migrating an existing node, do NOT copy this
+# line as-is; see §13 "Upgrading a node installed with the v1.2.0 guide"
+# first, or you'll repoint compose at empty volumes.
 COMPOSE_PROJECT_NAME=jmdn
 
 # JMDN release to run. Set to a release tag (recommended for production);
@@ -656,9 +661,10 @@ Most configuration belongs in `jmdn.yaml` — set it there. The environment vari
 | `COMPOSE_PROJECT_NAME` | *(directory name)* | Prefixes volume/network names — set to `jmdn` in `.env` (Step 2) so this guide's volume commands work verbatim. Existing deployments without it keep their current prefix; changing it on a live node repoints compose at different volumes |
 | `JMDN_VERSION` | `latest` | JMDN image tag for the `jmdn` and `jmdn-bootstrap` services. Pin a release in `.env`; upgrades change this line only (§13) |
 | `JMDN_MEM_LIMIT` / `JMDN_CPU_LIMIT` | `4g` / `2.0` | jmdn container resource caps — scale to host, `0` = unlimited (see §4 sizing table) |
-| `IMMUDB_MEM_LIMIT` / `IMMUDB_CPU_LIMIT` | `4g` / `1.0` | immudb container resource caps (see §4 sizing table) |
+| `IMMUDB_MEM_LIMIT` / `IMMUDB_CPU_LIMIT` | `2g` / `1.0` | immudb container resource caps (see §4 sizing table) |
 | `REDIS_MEM_LIMIT` / `REDIS_CPU_LIMIT` | `512m` / `0.5` | redis container resource caps (see §4 sizing table) |
 | `REDIS_MAXMEMORY` | `384mb` | Redis self-enforced memory ceiling — keep at ~75% of `REDIS_MEM_LIMIT` |
+| `BOOTSTRAP_MEM_LIMIT` / `BOOTSTRAP_CPU_LIMIT` | `2g` / `1.0` | `jmdn-bootstrap` container resource caps — one-time snapshot download/extract, not in the §4 sizing table since it doesn't run alongside the other three; raise `BOOTSTRAP_MEM_LIMIT` if bootstrapping a very large snapshot fails on decompress |
 
 All `JMDN_*` vars map directly to `jmdn.yaml` keys with underscores as separators. For example, `JMDN_NETWORK_CHAIN_ID=7000700` sets `network.chain_id`.
 

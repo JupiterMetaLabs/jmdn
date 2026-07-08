@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"gossipnode/logging/otelsetup"
 
@@ -102,12 +103,25 @@ func (al *AsyncLogger) Sync() error {
 	return al.GlobalLogger.Sync()
 }
 
+// ionShutdownTimeout bounds the OTEL exporter flush on shutdown. Tracing/OTEL
+// export is disabled by default (config/settings/defaults.go), so this only
+// matters once an operator enables it — without a deadline, an unreachable
+// or slow collector would block ionInstance.Shutdown() indefinitely, past
+// the node's own graceful-shutdown window and past Docker's stop_grace_period,
+// guaranteeing a SIGKILL mid-shutdown instead of a clean exit. Best-effort:
+// same "don't let telemetry block shutdown" tradeoff already made for the
+// profiler server (5s) and the GRO shutdown window (10s) elsewhere in the
+// shutdown path.
+const ionShutdownTimeout = 3 * time.Second
+
 func (al *AsyncLogger) Shutdown() error {
 	// GlobalLogger is already *ion.Ion, no type assertion needed
 	if al.GlobalLogger == nil {
 		return fmt.Errorf("GlobalLogger is not initialized")
 	}
-	return otelsetup.Shutdown(context.Background(), al.GlobalLogger)
+	ctx, cancel := context.WithTimeout(context.Background(), ionShutdownTimeout)
+	defer cancel()
+	return otelsetup.Shutdown(ctx, al.GlobalLogger)
 }
 
 func (al *AsyncLogger) Close(topic string) error {

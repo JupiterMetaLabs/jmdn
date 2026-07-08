@@ -936,42 +936,67 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// shutdownSequenceBudget bounds steps 1-4 below as a whole. Each step is
+	// already individually bounded (profiler: 5s; shutdown.Shutdown()'s GRO
+	// window: ~10s + ~0.4s of flush sleeps), but nothing previously capped
+	// the SEQUENCE — a stall anywhere in it could still run past Docker's
+	// `stop_grace_period: 30s` (docker-compose.yml) and get SIGKILLed with
+	// no log line explaining why. Kept comfortably under that 30s so this
+	// fires first, logs why, and exits cleanly instead of being killed blind.
+	const shutdownSequenceBudget = 25 * time.Second
+
 	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.ShutdownThread, func(ctx context.Context) error {
 		<-sigCh
 
 		fmt.Println("\nShutdown signal received, closing connections...")
 
-		// 1. Cancel the main context to stop context-aware components (e.g., Yggdrasil, API)
-		cancel()
+		shutdownDone := make(chan struct{})
+		go func() {
+			defer close(shutdownDone)
 
-		// 2. Shutdown profiler concurrently with other cleanups (with timeout)
-		if profilerServer != nil {
-			log.Info().Msg("Shutting down profiler server...")
-			// Give it 5 seconds to finish active profiles/requests
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer shutdownCancel()
-			if err := profilerServer.Shutdown(shutdownCtx); err != nil {
-				log.Error().Err(err).Msg("Profiler server forced to shutdown")
-			} else {
-				log.Info().Msg("Profiler server stopped gracefully")
+			// 1. Cancel the main context to stop context-aware components (e.g., Yggdrasil, API)
+			cancel()
+
+			// 2. Shutdown profiler concurrently with other cleanups (with timeout)
+			if profilerServer != nil {
+				log.Info().Msg("Shutting down profiler server...")
+				// Give it 5 seconds to finish active profiles/requests
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer shutdownCancel()
+				if err := profilerServer.Shutdown(shutdownCtx); err != nil {
+					log.Error().Err(err).Msg("Profiler server forced to shutdown")
+				} else {
+					log.Info().Msg("Profiler server stopped gracefully")
+				}
 			}
-		}
 
-		// 3. Stop the tx-address index: refuse new async work, cancel any
-		// in-flight catchup/rebuild, and close both SQLite pools. Must run
-		// before the process exits — nothing else does this today, and an
-		// unclosed sql.DB leaks its connections/WAL file handles.
-		log.Info().Msg("Shutting down transaction address index...")
-		if err := txindex.Shutdown(); err != nil {
-			log.Error().Err(err).Msg("txindex shutdown reported an error")
-		} else {
-			log.Info().Msg("Transaction address index stopped")
-		}
+			// 3. Stop the tx-address index: refuse new async work, cancel any
+			// in-flight catchup/rebuild, and close both SQLite pools. Must run
+			// before the process exits — nothing else does this today, and an
+			// unclosed sql.DB leaks its connections/WAL file handles.
+			log.Info().Msg("Shutting down transaction address index...")
+			if err := txindex.Shutdown(); err != nil {
+				log.Error().Err(err).Msg("txindex shutdown reported an error")
+			} else {
+				log.Info().Msg("Transaction address index stopped")
+			}
 
-		// 4. Delegate final shutdown to the centralized handler
-		if shutdown.Shutdown() {
-			logger_cancel()
-			defer shutdown.OS_EXIT(0)
+			// 4. Delegate final shutdown to the centralized handler
+			if shutdown.Shutdown() {
+				logger_cancel()
+				defer shutdown.OS_EXIT(0)
+			}
+		}()
+
+		select {
+		case <-shutdownDone:
+			// Completed within budget. If step 4 succeeded, shutdown.OS_EXIT(0)
+			// already terminated the process before this select could observe
+			// the close — this case is only reachable if shutdown.Shutdown()
+			// returned false (no exit call was made).
+		case <-time.After(shutdownSequenceBudget):
+			log.Error().Msg("shutdown sequence exceeded its budget — forcing exit so Docker's stop_grace_period doesn't SIGKILL blind")
+			shutdown.OS_EXIT(1)
 		}
 		return nil
 	}); err != nil {
@@ -1014,7 +1039,7 @@ func main() {
 	// The worker drains the stream and writes batches to ImmuDB asynchronously.
 	// Required before FastsyncV2 starts — it calls WriteAccounts during sync.
 	if cfg.Database.Redis.URL == "" {
-		log.Warn().Msg("[AccountSyncWorker] database.redis.url not configured — WriteAccounts will fail; set url in jmdn.yaml or JMDN_DATABASE_REDIS_URL")
+		log.Warn().Msg("[AccountSyncWorker] database.redis.url not configured — WriteAccounts/BatchUpdateAccounts will fall back to synchronous direct ImmuDB writes (slower, ~15s commit latency per call, no async queue); set url in jmdn.yaml or JMDN_DATABASE_REDIS_URL to enable the async Redis-backed path")
 	} else {
 		redisClient := redis.NewClient(&redis.Options{
 			Addr:     cfg.Database.Redis.URL,

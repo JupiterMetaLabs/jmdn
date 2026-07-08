@@ -94,7 +94,7 @@ services:
         soft: 65536
         hard: 65536
       nproc: 32768
-    mem_limit: "${IMMUDB_MEM_LIMIT:-4g}"
+    mem_limit: "${IMMUDB_MEM_LIMIT:-2g}"
     cpus: "${IMMUDB_CPU_LIMIT:-1.0}"
     pids_limit: 2048
 
@@ -179,9 +179,12 @@ services:
       GCS_PREFIX: "${GCS_PREFIX:-jmdn_bootstrap_2306}"
 
     # Resource governance — short-lived, but a stalled/corrupt download
-    # shouldn't be able to consume unbounded host CPU/RAM either.
-    mem_limit: 2g
-    cpus: "1.0"
+    # shouldn't be able to consume unbounded host CPU/RAM either. Env-tunable
+    # like every other service's caps (see DOCKER.md §4) — the snapshot
+    # decompress/extract step can need more than the 2g default on a very
+    # large chain snapshot.
+    mem_limit: "${BOOTSTRAP_MEM_LIMIT:-2g}"
+    cpus: "${BOOTSTRAP_CPU_LIMIT:-1.0}"
     pids_limit: 1024
 
     logging:
@@ -283,8 +286,12 @@ services:
     # exchanges actually consume. The fallback keeps nodes running
     # jmdn_default.yaml (ports.api disabled) from showing permanently
     # unhealthy while serving RPC fine.
+    # Each curl leg gets its own --max-time so a hung (not refused) first
+    # endpoint can't consume the whole 5s Docker timeout and starve the
+    # second — without this, a stalled port-8090 handler silently defeats
+    # the fallback the two-tier design exists to provide.
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8090/api/v1/node/version -H \"Authorization: Bearer ${JMDN_SECURITY_EXPLORER_API_KEY:-}\" || curl -sf http://localhost:8545 -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' || exit 1"]
+      test: ["CMD-SHELL", "curl -sf --max-time 2 http://localhost:8090/api/v1/node/version -H \"Authorization: Bearer ${JMDN_SECURITY_EXPLORER_API_KEY:-}\" || curl -sf --max-time 2 http://localhost:8545 -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' || exit 1"]
       interval: 30s
       timeout: 5s
       start_period: 300s

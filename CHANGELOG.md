@@ -38,6 +38,35 @@ adhering to [Semantic Versioning](https://semver.org/).
   node's local record stays in sync. `eth_getBlockByNumber` accepts a
   `wantL1Commit` flag to fetch the latest L1-committed block directly. (#59)
 
+**Account Sync**
+
+- **Redis is now auto-provisioned** (`Scripts/setup_dependencies.sh --redis`)
+  for the account-sync queue, with secure, idempotent password setup. (#60)
+
+**Docker & Deployment**
+
+- **Docker deployment hardened for production, with exchange nodes in
+  mind.** Everything below ships in `docker-compose.yml` and a new
+  `Scripts/docker-deploy.sh` — no action needed to benefit, though sizing
+  and version pinning are worth reviewing on upgrade (`DOCKER.md` §4, §13).
+
+  - **Resource governance** — memory/CPU/file-descriptor/process caps on
+    every service, scaled to host size via `.env` (see the new
+    `.env.docker.example` template and `DOCKER.md`'s sizing table for
+    8GB/16GB/32GB/64GB hosts).
+  - **Safe, automatic upgrades** — `docker-deploy.sh` pulls, restarts, and
+    health-checks the node, automatically rolling back to the previous
+    image if the new one fails to come up healthy.
+  - **Steadier shutdowns and restarts** — per-service grace periods tuned
+    to how long each component actually needs to stop cleanly, zombie
+    process reaping, and a two-tier health check (Explorer API with a
+    JSON-RPC fallback) so a node running the minimal config doesn't show
+    falsely unhealthy.
+  - **Cleaner upgrades going forward** — the image version and Compose
+    project name now live in a local `.env` file instead of the tracked
+    `docker-compose.yml`, so pulling the latest repo changes never
+    conflicts with an operator's pinned version again. (#62)
+
 ### Changed
 
 - **Address-transaction pagination hardened for accuracy and consistency**
@@ -52,6 +81,16 @@ adhering to [Semantic Versioning](https://semver.org/).
 - **Transaction parsing switched from RLP decoding to `UnmarshalBinary`**
   (`gETH/Facade/Service/Service.go`), so legacy, EIP-2930, and EIP-1559
   transactions are all parsed consistently on submission. (#53)
+
+**Graceful Shutdown**
+
+- **Shutdown sequence now bounded end-to-end** (`main.go`,
+  `logging/ion_Builder.go`). OTEL/tracing flush on shutdown is now
+  time-boxed at 3s instead of running under an unbounded context — matters
+  once tracing is enabled and the collector is slow or unreachable. The
+  overall shutdown sequence also now runs under its own deadline, kept
+  under Docker's `stop_grace_period`, so a stall anywhere in it is logged
+  and the process exits cleanly instead of being silently SIGKILLed.
 
 ### Fixed
 
@@ -128,6 +167,14 @@ adhering to [Semantic Versioning](https://semver.org/).
   (`config/PubSubMessages/GossipSub_Helper.go`) — router/topic instances are
   now a per-host singleton, preventing a second registration from orphaning
   the first. (#59)
+
+**Deployment**
+
+- **Redeploying via `deploy.sh` silently failed to update the node's
+  startup wrapper** (`Scripts/deploy.sh`) — the script wrote the updated
+  wrapper to a filename the systemd/launchd/rc.d service definitions never
+  referenced, so wrapper changes never took effect on redeploy, only on a
+  fresh install. Now writes to the correct path. (#60)
 
 ### Security
 

@@ -83,7 +83,7 @@ sudo ./Scripts/setup_dependencies.sh --yggdrasil  # Yggdrasil only
 sudo ./Scripts/setup_dependencies.sh --redis      # Redis only
 ```
 
-> **Redis password:** the script generates a random password on first run and saves it to `/etc/jmdn/redis.env` (root-only). Copy that value into `database.redis.password` in `/etc/jmdn/jmdn.yaml` (or export `JMDN_DATABASE_REDIS_PASSWORD`) — the config generator in Step 5 does not do this for you yet. Re-running the script reuses the same password rather than rotating it.
+> **Redis password:** the script generates a random password on first run and saves it to `/etc/jmdn/redis.env` (root-only). If you start the node via `start_jmdn_wrapper.sh` (the standard systemd/launchd/rc.d path, Step 6), this is automatic — the wrapper sources `redis.env` and exports `JMDN_DATABASE_REDIS_PASSWORD` for you, no manual step needed. Only set `database.redis.password` in `/etc/jmdn/jmdn.yaml` by hand if you're running the binary directly instead of via the wrapper — the config generator in Step 5 does not do this for you yet. Re-running the script reuses the same password rather than rotating it.
 
 ---
 

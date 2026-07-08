@@ -56,6 +56,21 @@ HEALTH_DELAY="${HEALTH_DELAY:-10}"   # 40 * 10s = ~6.5 min ceiling
 cd "$PROJECT_DIR"
 log_info "Working directory: $(pwd)"
 
+# --- Concurrency guard -------------------------------------------------------
+# Two overlapping runs against the same checkout (a cron-triggered deploy
+# racing a manual one, or a double-click of a CI job) would both snapshot,
+# tag, pull, and roll back against the same $ROLLBACK_TAG and the same
+# container — the second run's rollback tag-swap could clobber the first
+# run's in-flight state. One lock per checkout directory (not global) so
+# unrelated jmdn checkouts on the same host don't block each other.
+command -v flock >/dev/null 2>&1 || { log_error "flock not found on PATH — required to prevent overlapping deploy runs."; exit 1; }
+LOCK_FILE="/tmp/jmdn-docker-deploy.$(basename "$PROJECT_DIR").lock"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    log_error "Another docker-deploy.sh run for this checkout is already in progress (lock: ${LOCK_FILE}). Exiting."
+    exit 1
+fi
+
 # --- Preflight ------------------------------------------------------------
 command -v docker >/dev/null 2>&1 || { log_error "docker not found on PATH."; exit 1; }
 docker compose version >/dev/null 2>&1 || { log_error "docker compose v2 not found."; exit 1; }
@@ -84,14 +99,7 @@ else
     log_warn "No rollback safety net will be available if it fails."
 fi
 
-# --- Pull + recreate ---------------------------------------------------------
-log_info "Pulling latest image for ${SERVICE}..."
-docker compose pull "$SERVICE"
-
-log_info "Recreating ${SERVICE}..."
-docker compose up -d "$SERVICE"
-
-# --- Health poll --------------------------------------------------------------
+# --- Health poll (function, defined before use) --------------------------------
 # Mirrors deploy.sh's health-poll-then-rollback loop, but reads Docker's own
 # HEALTHCHECK status instead of systemd unit state. Falls back to "is it
 # running at all" if the container has no healthcheck defined (e.g. someone
@@ -133,21 +141,34 @@ poll_health() {
     return 1
 }
 
-if poll_health; then
-    log_ok "Deployment complete — ${SERVICE} is up and healthy."
-    # Keep exactly one rollback snapshot, same retention model as deploy.sh's
-    # single .bak file — not deleting it here on purpose, next deploy's
-    # `docker tag` overwrites it. Nothing to clean up.
-    exit 0
-fi
+# --- Rollback (function, defined before use) ------------------------------------
+# Shared by both failure paths that can occur after this point: a failed
+# `docker compose up -d` (initial recreate) and a failed health check.
+# Both need the exact same recovery, so it lives in one place instead of
+# being duplicated.
+#
+# Note: `docker tag "$ROLLBACK_TAG" "$CURRENT_IMAGE_REF"` repoints the
+# mutable ref (e.g. ":latest" or a version tag) locally at the old image sha.
+# This is a *local* Docker image-cache change only — it diverges from
+# whatever the registry actually has at that ref until the next real
+# `docker compose pull`, which always re-fetches and overwrites it. Bounded,
+# not permanent, but `docker images`/`docker inspect` will show the old sha
+# under that ref in the meantime — don't mistake that for the registry state.
+rollback() {
+    if [ "$CURRENT_CONTAINER_EXISTS" != true ]; then
+        log_error "No previous image available — this was the first deploy. Nothing to roll back to."
+        docker compose logs --tail=50 "$SERVICE" || true
+        return
+    fi
 
-# --- Rollback -----------------------------------------------------------------
-log_error "Deployment failed health checks."
-
-if [ "$CURRENT_CONTAINER_EXISTS" = true ]; then
     log_warn "Rolling back ${SERVICE} to previous image (${CURRENT_IMAGE_REF})..."
     docker tag "$ROLLBACK_TAG" "$CURRENT_IMAGE_REF"
-    docker compose up -d "$SERVICE"
+    if ! docker compose up -d "$SERVICE"; then
+        log_error "Rollback's own 'docker compose up -d' failed. Manual intervention required."
+        log_error "Previous image is still tagged at: ${ROLLBACK_TAG}"
+        docker compose logs --tail=50 "$SERVICE" || true
+        return
+    fi
 
     # Shorter poll for the rollback itself — if the *previous* image can't
     # come back healthy either, something else on the host changed
@@ -159,11 +180,41 @@ if [ "$CURRENT_CONTAINER_EXISTS" = true ]; then
         log_error "Rollback failed too! Manual intervention required."
         log_error "Previous image is still tagged at: ${ROLLBACK_TAG}"
     fi
-else
-    log_error "No previous image available — this was the first deploy. Nothing to roll back to."
+
+    log_info "Recent ${SERVICE} logs:"
+    docker compose logs --tail=50 "$SERVICE" || true
+}
+
+# --- Pull + recreate ---------------------------------------------------------
+# Both steps are explicitly guarded (not left to bare `set -e`) because they
+# need different failure responses: a failed pull has touched nothing (the
+# old container is still running) so there's nothing to roll back — just
+# exit. A failed `up -d` may already have stopped/removed the old container
+# as part of recreation, so that failure must go through the same rollback
+# path a failed health check does, not abort past it and skip rollback
+# entirely (the gap this script used to have under bare `set -e`).
+log_info "Pulling latest image for ${SERVICE}..."
+if ! docker compose pull "$SERVICE"; then
+    log_error "docker compose pull failed — nothing was changed, old container (if any) is untouched. Nothing to roll back."
+    exit 1
 fi
 
-log_info "Recent ${SERVICE} logs:"
-docker compose logs --tail=50 "$SERVICE" || true
+log_info "Recreating ${SERVICE}..."
+if ! docker compose up -d "$SERVICE"; then
+    log_error "docker compose up -d failed to (re)create ${SERVICE}."
+    rollback
+    exit 1
+fi
 
+# --- Health poll --------------------------------------------------------------
+if poll_health; then
+    log_ok "Deployment complete — ${SERVICE} is up and healthy."
+    # Keep exactly one rollback snapshot, same retention model as deploy.sh's
+    # single .bak file — not deleting it here on purpose, next deploy's
+    # `docker tag` overwrites it. Nothing to clean up.
+    exit 0
+fi
+
+log_error "Deployment failed health checks."
+rollback
 exit 1
