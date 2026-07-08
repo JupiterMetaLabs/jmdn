@@ -11,11 +11,11 @@ This document describes every port used by a JMDN node, its security posture, an
 | 1 | Explorer API | `8090` | HTTP | Internal / Trusted IPs | Auth-protected endpoints |
 | 2 | Facade RPC | `8545` / `8546` | JSON-RPC / WS | Public (RPC nodes) | Ethereum-compatible |
 | 3 | P2P Gossip | `15000` | TCP + UDP | **Public** | Required for node participation |
-| 4 | Yggdrasil | `15001` | TCP + UDP | **Public** | Mesh overlay network |
-| 5 | DID Service | `15052` | gRPC | Public (DID resolvers) | Identity resolution |
+| 4 | Yggdrasil direct-msg | `15001` | TCP only | Public on bare metal; **not exposed in the Docker image** (see note below) | JMDN's own messaging listener |
+| 5 | DID Service | `15052` | gRPC | Public on bare metal (deliberate choice); **not exposed in the Docker image** (see note below) | Identity resolution + unauthenticated registration |
 | 6 | CLI Admin | `15053` | gRPC | **Localhost only** | Full admin control — never expose |
-| 7 | BlockGen API | `15050` | HTTP | Localhost (Sequencers) | Disable on generic nodes |
-| 8 | BlockGRPC | `15055` | gRPC | Internal (Validators) | Disable on passive nodes |
+| 7 | BlockGen API | `15050` | HTTP | Localhost (internal role only) | Disable on generic nodes; **not exposed in the Docker image** |
+| 8 | BlockGRPC | `15055` | gRPC | Internal (Validators) | Disable on passive nodes; **not exposed in the Docker image** |
 | 9 | Metrics | `8081` | HTTP | Localhost / Internal | Prometheus `/metrics` |
 | 10 | Profiler | `6060` | HTTP | **Disabled in production** | pprof — information leak risk |
 
@@ -55,11 +55,14 @@ This document describes every port used by a JMDN node, its security posture, an
 
 ---
 
-### 4. Yggdrasil (Mesh Network)
-- **Port**: `15001` (TCP + UDP)
-- **Protocol**: Yggdrasil IPv6 overlay
-- **Purpose**: Direct mesh messaging and peer discovery over an encrypted overlay network.
-- **Recommendation**: **Must be public**. Required for Yggdrasil-based messaging between nodes.
+### 4. Yggdrasil direct-messaging listener
+- **Port**: `15001` (TCP only — `net.Listen("tcp6", ":15001")`, no UDP listener exists on this port)
+- **Code Reference**: `messaging/directMSG/directMSG.go`
+- **Purpose**: JMDN's own direct node-to-node messaging service, addressed via the peer's Yggdrasil-assigned IPv6 address. This is a JMDN listener, not the Yggdrasil mesh-peering protocol itself.
+- **Bare metal**: must be public to use this feature — confirmed the OS `yggdrasil` package's own postinst enables and starts its systemd unit automatically on install, so this works out of the box there.
+- **Docker: not exposed, on purpose, for two independent reasons — confirmed live on a running mainnet container:**
+  1. **The daemon isn't running.** `docker top` showed no `yggdrasil` process; `ls /sys/class/net` showed only `eth0`/`lo`, no `tun0`/`ygg0`. `setup_dependencies.sh --yggdrasil` only installs the package — nothing in `docker-entrypoint.sh` or anywhere else in this repo starts it. There's no init system in the container to run the OS package's normal auto-start postinst hook, so the feature can't work at all today, regardless of this port.
+  2. **Publishing this port via Docker wouldn't actually help even once the daemon is wired up.** Yggdrasil mesh traffic arrives over a TUN device that lives inside the container's own network namespace — it doesn't traverse the Docker bridge/NAT layer at all, so Docker's `-p`/`ports:` port-forwarding has nothing to translate. A published port here would only matter for reaching this listener via the container's *regular* public IP directly (bypassing the mesh entirely), which undercuts the reason to use Yggdrasil addressing in the first place. See `DOCKER.md` §4 sizing/ports section for the fuller writeup and a sketch of what actually wiring this up would take (TUN device + `NET_ADMIN` capability, config generation, process supervision).
 
 ---
 
@@ -68,7 +71,20 @@ This document describes every port used by a JMDN node, its security posture, an
 - **Protocol**: gRPC
 - **Code Reference**: `DID/DID.go`
 - **Endpoints**: `RegisterDID`, `GetDID`, `ListDIDs`
-- **Recommendation**: Public (`0.0.0.0`) on nodes acting as DID resolvers. Can be disabled (`0`) on non-resolver nodes.
+- **`RegisterDID` has no authentication** — the `ServiceDID` security policy is
+  `AuthType: None` (`config/settings/security.go`), and
+  `pkg/gatekeeper/auth_grpc.go`'s `authenticate()` returns `nil` immediately
+  for that case (verified in code, not assumed). Anyone who can reach this
+  port and isn't rate-limited can register an arbitrary DID — this is not
+  just a read-only "resolver" endpoint despite the name.
+- **Bare metal**: public (`0.0.0.0`) on nodes deliberately acting as DID
+  resolvers, accepting that tradeoff. Set `ports.did: 0` to disable on
+  non-resolver nodes.
+- **Docker: not exposed by default** (`docker-compose.yml`'s `ports:` entry
+  for `15052` is commented out) — the listener still runs inside the
+  container (`ports.did` defaults to `15052`, not `0`), it's simply not
+  published to the host/internet. Uncomment only if you're deliberately
+  running a public DID-resolver node.
 
 ---
 
@@ -82,12 +98,13 @@ This document describes every port used by a JMDN node, its security posture, an
 
 ---
 
-### 7. BlockGen API (Sequencer)
+### 7. BlockGen API
 - **Port**: `15050` (HTTP)
 - **Protocol**: HTTP
 - **Code Reference**: `Block/server.go`
 - **Endpoints**: `POST /api/process-block` — triggers consensus.
-- **Recommendation**: Disabled (`0`) on generic nodes. Localhost only on Sequencer nodes.
+- **Recommendation**: Disabled (`0`) on generic nodes. Localhost only on the nodes that run this role.
+- **Docker**: not exposed — not in `docker-compose.yml`'s `ports:` list or the Dockerfile's `EXPOSE`.
 
 ---
 
@@ -95,6 +112,7 @@ This document describes every port used by a JMDN node, its security posture, an
 - **Port**: `15055` (gRPC)
 - **Purpose**: Validator-to-validator block propagation.
 - **Recommendation**: Disabled (`0`) on passive or observer nodes. Internal-only on validator clusters.
+- **Docker**: not exposed — same as `15050`.
 
 ---
 
@@ -127,7 +145,7 @@ This document describes every port used by a JMDN node, its security posture, an
 | Rule | Direction | Source | Port(s) | Action | Applies To |
 |---|---|---|---|---|---|
 | `allow-p2p` | Ingress | `0.0.0.0/0` | `tcp:15000`, `udp:15000` | Allow | All nodes |
-| `allow-yggdrasil` | Ingress | `0.0.0.0/0` | `tcp:15001`, `udp:15001` | Allow | All nodes |
+| `allow-yggdrasil` | Ingress | `0.0.0.0/0` | `tcp:15001` | Allow | Bare-metal nodes only — see §4, not applicable to the Docker deployment path today |
 | `allow-rpc-public` | Ingress | `0.0.0.0/0` | `tcp:8545`, `tcp:8546` | Allow | RPC nodes only |
 | `allow-internal-all` | Ingress | `10.0.0.0/8` (VPC) | `tcp:0–65535` | Allow | All nodes |
 | `allow-monitoring` | Ingress | `<monitoring-IP>/32` | `tcp:8090`, `tcp:8081` | Allow | All nodes |

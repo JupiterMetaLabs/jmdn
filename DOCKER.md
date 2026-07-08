@@ -66,7 +66,7 @@ If you're familiar with VMs and systemd, here's the mental model:
 │  │  Ports (listening as jmdn user):                                      │    │
 │  │    :8545  JSON-RPC   ◄── MEXC / exchange connects here                │    │
 │  │    :8546  WebSocket                                                   │    │
-│  │    :15052 DID service                                                 │    │
+│  │    :15000 P2P gossip — LibP2P (TCP+UDP) ◄── peers dial in here        │    │
 │  │    :8090  Explorer API  (localhost only, health check)                │    │
 │  └──────────────────────┬────────────────────────────────────────────────┘   │
 │                          │                                                    │
@@ -229,10 +229,26 @@ This is the complete runbook for a fresh VM with Docker already installed.
 
 | Port | Protocol | Purpose |
 |---|---|---|
+| 15000 | TCP **+ UDP** | P2P gossip (LibP2P, TCP + QUIC) — **must be public**; without inbound 15000 the node can dial out but can't be dialed by peers, degrading to outbound-only participation |
 | 8545 | TCP | JSON-RPC — exchange endpoint |
 | 8546 | TCP | WebSocket RPC |
-| 15052 | TCP | DID service |
 | 8090 | TCP | Explorer API (optional, localhost-only by default) |
+
+> **Port 15001 (Yggdrasil direct-messaging) is deliberately not published here.**
+> The Yggdrasil daemon isn't wired up in this image — no `tun0`/`ygg0`
+> interface, confirmed live on a running container — so the feature can't
+> work yet regardless. Publishing it wouldn't fix that either way: mesh
+> traffic would arrive over a TUN device inside the container's own network
+> namespace, not over the Docker bridge, so Docker's port-forwarding has
+> nothing to do with reaching it over the mesh. See `PORTS.md` §4.
+
+> **Ports 15050, 15052, 15055 are also deliberately not in this table** — not
+> exposed by default. `15052` (DID service) runs `RegisterDID` with **no
+> authentication**, so publishing it lets anyone who reaches it register
+> arbitrary DIDs, not just resolve existing ones. See `PORTS.md` §5, §7, §8
+> before opening any of the three.
+
+See **[PORTS.md](./PORTS.md)** for the full security posture of every port.
 
 ### Step 1 — Clone the repo
 
@@ -454,9 +470,9 @@ docker run -d \
   --name jmdn \
   -v $(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml:ro \
   -v jmdn-data:/opt/jmdn \
+  -p 15000:15000 -p 15000:15000/udp \
   -p 8545:8545 \
   -p 8546:8546 \
-  -p 15052:15052 \
   ghcr.io/jupitermetalabs/jmdn:latest
 ```
 
@@ -464,9 +480,9 @@ docker run -d \
 |---|---|
 | `-v $(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml:ro` | **Required** — node exits with an error if this is missing |
 | `-v jmdn-data:/opt/jmdn` | Persists peer identity, certs, DB, and immudb data across restarts |
+| `-p 15000:15000` + `/udp` | P2P gossip (LibP2P, TCP + QUIC) — **required**; without inbound 15000 the node can't be dialed by peers |
 | `-p 8545:8545` | JSON-RPC (exchange endpoint) |
 | `-p 8546:8546` | WebSocket RPC |
-| `-p 15052:15052` | DID service |
 
 ### With Explorer API enabled
 
@@ -477,31 +493,20 @@ docker run -d \
   --name jmdn \
   -v $(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml:ro \
   -v jmdn-data:/opt/jmdn \
+  -p 15000:15000 -p 15000:15000/udp \
   -p 8545:8545 \
   -p 8546:8546 \
-  -p 15052:15052 \
   -p 8090:8090 \
   -e JMDN_PORTS_API=8090 \
   ghcr.io/jupitermetalabs/jmdn:latest
 ```
 
-### With all optional services exposed
+### Ports intentionally left out of these examples
 
-```bash
-docker run -d \
-  --name jmdn \
-  -v $(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml:ro \
-  -v jmdn-data:/opt/jmdn \
-  -p 8545:8545 \
-  -p 8546:8546 \
-  -p 15052:15052 \
-  -p 8090:8090 \
-  -p 15050:15050 \
-  -p 15055:15055 \
-  -e JMDN_PORTS_API=8090 \
-  -e JMDN_DATABASE_PASSWORD=your-strong-password \
-  ghcr.io/jupitermetalabs/jmdn:latest
-```
+`15052` (DID service), `15050` (BlockGen API), and `15055` (BlockGRPC) are not
+exposed by default. `15052`'s `RegisterDID` has no authentication, so
+publishing it lets anyone reach it register arbitrary DIDs, not just resolve
+existing ones. See `PORTS.md` §5, §7, §8 before enabling any of the three.
 
 ### Follow startup logs
 
@@ -861,9 +866,6 @@ curl -s http://localhost:8545 \
 
 # Check WebSocket
 wscat -c ws://localhost:8546
-
-# Check DID service port
-nc -zv localhost 15052
 
 # Check immudb reachability from inside jmdn container
 docker compose exec jmdn nc -zv immudb 3322
