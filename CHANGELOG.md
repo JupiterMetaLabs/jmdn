@@ -50,6 +50,9 @@ adhering to [Semantic Versioning](https://semver.org/).
   `Scripts/docker-deploy.sh` — no action needed to benefit, though sizing
   and version pinning are worth reviewing on upgrade (`DOCKER.md` §4, §13).
 
+  - **Network reachability improved** — the node's peer-to-peer port is now
+    published by default, so a Docker-deployed node can be dialed by other
+    peers instead of only reaching out on its own.
   - **Resource governance** — memory/CPU/file-descriptor/process caps on
     every service, scaled to host size via `.env` (see the new
     `.env.docker.example` template and `DOCKER.md`'s sizing table for
@@ -60,8 +63,12 @@ adhering to [Semantic Versioning](https://semver.org/).
   - **Steadier shutdowns and restarts** — per-service grace periods tuned
     to how long each component actually needs to stop cleanly, zombie
     process reaping, and a two-tier health check (Explorer API with a
-    JSON-RPC fallback) so a node running the minimal config doesn't show
-    falsely unhealthy.
+    time-bounded JSON-RPC fallback) so a node running the minimal config
+    doesn't show falsely unhealthy.
+  - **Tighter default port exposure** — only what's needed for standard
+    node operation is published out of the box; a few narrowly-scoped
+    ports stay off by default, documented in `PORTS.md` for anyone with a
+    specific reason to turn them on.
   - **Cleaner upgrades going forward** — the image version and Compose
     project name now live in a local `.env` file instead of the tracked
     `docker-compose.yml`, so pulling the latest repo changes never
