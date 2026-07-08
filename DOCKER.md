@@ -1255,41 +1255,17 @@ recommended — releases sometimes ship compose improvements — and is always
 safe because nothing you configure lives in tracked files: your settings are
 in `.env` and `jmdn.yaml`, both gitignored.
 
-### Option A — Upgrade via pre-built image (recommended)
+### Which path applies to you?
 
-For nodes installed with this guide (`.env` contains `JMDN_VERSION`):
+- **Installed with the v1.2.0 guide** (the first Docker release — `docker-compose.yml` has a hand-edited `image:` tag, and `.env` has no `JMDN_VERSION`) → run the **one-time migration** below first. After that, every future upgrade is Option A.
+- **Installed with this guide** (`.env` already has `JMDN_VERSION`) → skip the migration, go straight to **Option A**.
 
-```bash
-# 1. Set the new version in .env
-sed -i 's/^JMDN_VERSION=.*/JMDN_VERSION=v1.2.1/' .env
-
-# 2. (Recommended) refresh compose + docs — clean, nothing local is tracked
-git pull
-
-# 3. Pull + restart with automatic rollback on failed health check
-./Scripts/docker-deploy.sh
-```
-
-`docker-deploy.sh` snapshots the currently running image, pulls the new one,
-restarts the node, polls the health check, and **automatically rolls back to
-the previous image** if the new one fails to come up healthy. To do the same
-by hand instead (no automatic rollback):
-
-```bash
-docker compose pull jmdn
-docker compose up -d jmdn
-curl -s http://localhost:8090/api/v1/node/version \
-  -H "Authorization: Bearer $JMDN_SECURITY_EXPLORER_API_KEY"
-```
-
-> After upgrading, check the release notes for any changes to `fastsync.catch_up_from_block` — if the bootstrap snapshot was refreshed, update this value in `jmdn.yaml` and restart.
-
-### Upgrading a node installed with the v1.2.0 guide (one-time migration)
+### One-time migration (v1.2.0 installs only)
 
 The v1.2.0 guide had you pin releases by editing the `image:` line inside
 `docker-compose.yml`. That edit makes your checkout dirty, so `git pull`
 will refuse or merge-conflict on the compose file. Migrate once — afterwards
-every upgrade is the 3 steps above:
+you're on the same footing as any new install and use Option A below:
 
 ```bash
 # 1. Park your local compose edit (the image tag is its only local change)
@@ -1317,26 +1293,85 @@ docker compose pull jmdn && docker compose up -d jmdn
 > copy steps in the `docker-compose.yml` header comment during a planned
 > maintenance window.
 
+Once migrated, you will not need this section again — new releases only ever touch `.env`.
+
+### Option A — Upgrade via pre-built image (recommended, all installs after migration)
+
+```bash
+# 1. Set the new version in .env — adds the line if missing, portable (no sed -i,
+#    so it works the same on Linux and macOS)
+grep -v '^JMDN_VERSION=' .env > .env.tmp && echo 'JMDN_VERSION=v1.2.1' >> .env.tmp && mv .env.tmp .env
+
+# 2. (Recommended) refresh compose + docs — clean, nothing local is tracked
+git pull
+
+# 3. Pull + restart with automatic rollback on failure
+./Scripts/docker-deploy.sh
+```
+
+`docker-deploy.sh` snapshots the currently running image, pulls the new one,
+and restarts the node — **automatically rolling back to the previous image**
+if the new one either fails to come up at all or comes up but fails its
+health check. It also guards against two overlapping runs (e.g. a cron job
+firing mid-upgrade): a second invocation exits immediately with an
+"already in progress" message instead of racing the first.
+
+To do the same by hand instead (no automatic rollback):
+
+```bash
+docker compose pull jmdn
+docker compose up -d jmdn
+
+# JSON-RPC is published by default; Explorer API (port 8090) is opt-in
+# (Step 2) so it isn't a reliable check unless you enabled it yourself.
+curl -s http://localhost:8545 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+```
+
+> After upgrading, check the release notes for any changes to `fastsync.catch_up_from_block` — if the bootstrap snapshot was refreshed, update this value in `jmdn.yaml` and restart.
+
 ### Option B — Build and deploy from source
 
 ```bash
 git fetch --tags
 git checkout v1.2.0   # or the branch/commit you want
+
+# The built tag must match what docker-compose.yml will request — that's
+# JMDN_VERSION from .env, or "latest" if it's unset. Get this wrong and
+# `docker compose up` silently keeps running the old image.
+TAG=$(grep '^JMDN_VERSION=' .env | cut -d= -f2)
+TAG=${TAG:-latest}
+
 docker build \
   --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
   --build-arg GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
   --build-arg GIT_TAG=$(git describe --tags --always --dirty) \
-  -t ghcr.io/jupitermetalabs/jmdn:latest \
+  -t ghcr.io/jupitermetalabs/jmdn:${TAG} \
   .
 docker compose up -d jmdn
 ```
 
+> Don't follow this build with `./Scripts/docker-deploy.sh` — it runs
+> `docker compose pull`, which would overwrite your local build with
+> whatever's on the registry under the same tag.
+
 ### Upgrading Redis or ImmuDB
 
-These are separate images and can be upgraded independently:
+Unlike `jmdn`, these image tags are pinned directly in `docker-compose.yml` —
+there's no `.env` variable for them. Editing that file in place would dirty
+your checkout and fight the next `git pull`, so pin the new version in a
+`docker-compose.override.yml` instead (Compose merges it in automatically,
+and it's untracked):
+
+```yaml
+# docker-compose.override.yml
+services:
+  redis:
+    image: redis:7.4-alpine
+```
 
 ```bash
-# Update image tag in docker-compose.yml, then:
 docker compose pull redis
 docker compose up -d redis
 # jmdn will reconnect automatically
