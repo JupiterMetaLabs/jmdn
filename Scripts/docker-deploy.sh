@@ -63,7 +63,7 @@ log_info "Working directory: $(pwd)"
 # container — the second run's rollback tag-swap could clobber the first
 # run's in-flight state. One lock per checkout directory (not global) so
 # unrelated jmdn checkouts on the same host don't block each other.
-command -v flock >/dev/null 2>&1 || { log_error "flock not found on PATH — required to prevent overlapping deploy runs."; exit 1; }
+command -v flock >/dev/null 2>&1 || { log_error "flock not found on PATH — required to prevent overlapping deploy runs. This script targets Linux Docker hosts, where flock ships with util-linux by default. If you're testing from macOS (no flock in the base OS), run it inside a Linux container or VM instead."; exit 1; }
 LOCK_FILE="/tmp/jmdn-docker-deploy.$(basename "$PROJECT_DIR").lock"
 exec 200>"$LOCK_FILE"
 if ! flock -n 200; then
