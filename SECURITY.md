@@ -80,7 +80,7 @@ Details and reward tiers will be published at [jmdt.io](https://jmdt.io) once th
 
 | Version | Supported |
 |---------|-----------|
-| v1.2.x | ✅ Active (latest: v1.2.0) |
+| v1.2.x | ✅ Active (latest: v1.2.1) |
 | v1.1.x | 🔒 Security patches only |
 | v1.0.x | ❌ No |
 
