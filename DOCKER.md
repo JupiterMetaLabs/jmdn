@@ -1336,6 +1336,39 @@ curl -s http://localhost:8545 \
 
 > After upgrading, check the release notes for any changes to `fastsync.catch_up_from_block` — if the bootstrap snapshot was refreshed, update this value in `jmdn.yaml` and restart.
 
+### Upgrading a node installed with the v1.2.0 guide (one-time migration)
+
+The v1.2.0 guide had you pin releases by editing the `image:` line inside
+`docker-compose.yml`. That edit makes your checkout dirty, so `git pull`
+will refuse or merge-conflict on the compose file. Migrate once — afterwards
+every upgrade is the 3 steps above:
+
+```bash
+# 1. Park your local compose edit (the image tag is its only local change)
+git stash
+
+# 2. Refresh the repo — brings the compose file that reads JMDN_VERSION from .env
+git pull
+
+# 3. Your stashed tag edit is now obsolete — the tag lives in .env instead
+git stash drop
+
+# 4. Pin your version in .env (REQUIRED — without it the tag defaults to :latest)
+echo "JMDN_VERSION=v1.2.1" >> .env
+
+# 5. Pull + restart as usual
+docker compose pull jmdn && docker compose up -d jmdn
+```
+
+> **Do NOT add `COMPOSE_PROJECT_NAME=jmdn` to an existing node's `.env`.**
+> Your volumes are named after the project name your stack was created with
+> (usually your checkout directory). Changing it repoints compose at fresh
+> empty volumes and your node will refuse to start (missing bootstrap
+> sentinel). Leave it unset — everything keeps working under your existing
+> names. If you ever *want* to adopt the standard names, follow the volume
+> copy steps in the `docker-compose.yml` header comment during a planned
+> maintenance window.
+
 ### Option B — Build and deploy from source
 
 ```bash
