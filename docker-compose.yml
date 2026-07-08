@@ -94,7 +94,7 @@ services:
         soft: 65536
         hard: 65536
       nproc: 32768
-    mem_limit: "${IMMUDB_MEM_LIMIT:-4g}"
+    mem_limit: "${IMMUDB_MEM_LIMIT:-2g}"
     cpus: "${IMMUDB_CPU_LIMIT:-1.0}"
     pids_limit: 2048
 
@@ -179,9 +179,12 @@ services:
       GCS_PREFIX: "${GCS_PREFIX:-jmdn_bootstrap_2306}"
 
     # Resource governance — short-lived, but a stalled/corrupt download
-    # shouldn't be able to consume unbounded host CPU/RAM either.
-    mem_limit: 2g
-    cpus: "1.0"
+    # shouldn't be able to consume unbounded host CPU/RAM either. Env-tunable
+    # like every other service's caps (see DOCKER.md §4) — the snapshot
+    # decompress/extract step can need more than the 2g default on a very
+    # large chain snapshot.
+    mem_limit: "${BOOTSTRAP_MEM_LIMIT:-2g}"
+    cpus: "${BOOTSTRAP_CPU_LIMIT:-1.0}"
     pids_limit: 1024
 
     logging:
@@ -234,9 +237,41 @@ services:
         condition: service_healthy
 
     ports:
+      # P2P gossip (LibP2P) — MUST be reachable from the internet (PORTS.md).
+      # TCP for stream transport, UDP for QUIC — node/node.go registers both
+      # transports unconditionally (libp2p.Transport(quic.NewTransport)),
+      # there's no config flag to disable QUIC, so both are always needed.
+      # A node without inbound 15000 can dial out but can't be dialed — it
+      # degrades to a NAT-ed leecher instead of a full participant.
+      - "15000:15000"
+      - "15000:15000/udp"
+      # Yggdrasil direct-messaging listener (messaging/directMSG,
+      # net.Listen("tcp6", ":15001")) — commented out, not published.
+      # Two independent reasons, not just "not wired up yet":
+      #   1. The actual Yggdrasil daemon isn't started anywhere in this
+      #      image (confirmed live on a running container: no tun0/ygg0
+      #      interface, no yggdrasil process) — the feature can't work at
+      #      all right now regardless of this port.
+      #   2. Even once the daemon IS wired up, publishing this port via
+      #      Docker's `-p`/`ports:` doesn't achieve what it looks like it
+      #      does: mesh traffic would arrive over a TUN device inside the
+      #      container's own network namespace, not over eth0/the Docker
+      #      bridge — Docker's port-forwarding only translates traffic on
+      #      the container's normal network interfaces, so it can't (and
+      #      doesn't need to) forward anything to a TUN-only listener. This
+      #      would only matter for reaching this listener via the host's
+      #      regular public IP directly, which defeats the point of using
+      #      Yggdrasil addressing in the first place.
+      # Uncomment only if/when Yggdrasil is actually running in this
+      # container AND you have a real reason to also want this reachable
+      # over the plain internet (not just the mesh) on this exact port.
+      # - "15001:15001"
       - "8545:8545"   # JSON-RPC (Ethereum-compatible) — primary exchange endpoint
       - "8546:8546"   # WebSocket RPC
-      - "15052:15052" # DID service
+      # DID service — not published by default. RegisterDID has no auth
+      # (AuthType: None), so anyone reaching this port could register
+      # arbitrary DIDs. Uncomment for a dedicated DID-resolver node (PORTS.md §5).
+      # - "15052:15052"
       # Explorer API — localhost-bound by default, auth-protected.
       # Uncomment to expose (set JMDN_SECURITY_EXPLORER_API_KEY first):
       # - "8090:8090"
@@ -283,8 +318,12 @@ services:
     # exchanges actually consume. The fallback keeps nodes running
     # jmdn_default.yaml (ports.api disabled) from showing permanently
     # unhealthy while serving RPC fine.
+    # Each curl leg gets its own --max-time so a hung (not refused) first
+    # endpoint can't consume the whole 5s Docker timeout and starve the
+    # second — without this, a stalled port-8090 handler silently defeats
+    # the fallback the two-tier design exists to provide.
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8090/api/v1/node/version -H \"Authorization: Bearer ${JMDN_SECURITY_EXPLORER_API_KEY:-}\" || curl -sf http://localhost:8545 -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' || exit 1"]
+      test: ["CMD-SHELL", "curl -sf --max-time 2 http://localhost:8090/api/v1/node/version -H \"Authorization: Bearer ${JMDN_SECURITY_EXPLORER_API_KEY:-}\" || curl -sf --max-time 2 http://localhost:8545 -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' || exit 1"]
       interval: 30s
       timeout: 5s
       start_period: 300s

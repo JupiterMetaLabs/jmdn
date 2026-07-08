@@ -15,6 +15,7 @@ import (
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"gossipnode/l1finality"
 	log "gossipnode/logging"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
@@ -206,16 +207,12 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 		return s.handleBFTCommitVote(logger_ctx, msg)
 
 	case config.Type_L1Commit:
-		fmt.Printf("[L1Commit] Received gossip from sender=%s self=%s isSelf=%v\n",
-			msg.Sender, s.pubSub.Host.ID(), msg.Sender == s.pubSub.Host.ID())
 		if msg.Sender == s.pubSub.Host.ID() {
 			return nil
 		}
 		return s.handleL1Commit(logger_ctx, msg)
 
 	case config.Type_L1CommitRange:
-		fmt.Printf("[L1CommitRange] Received gossip from sender=%s self=%s isSelf=%v\n",
-			msg.Sender, s.pubSub.Host.ID(), msg.Sender == s.pubSub.Host.ID())
 		if msg.Sender == s.pubSub.Host.ID() {
 			return nil
 		}
@@ -783,20 +780,19 @@ func (s *SubscriptionService) InitBFTHandlers() {
 }
 
 // handleL1Commit updates the local block with L1 finality data received via gossip.
+// Apply logic is shared with the HTTP ingestion path and the Service package's
+// identical handler via the l1finality package — see its doc comment.
 func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
-	type payload struct {
-		BlockNumber   uint64 `json:"block_number"`
-		L1TxHash      string `json:"l1_tx_hash"`
-		L1BlockNumber uint64 `json:"l1_block_number"`
-	}
-	var p payload
+	var p l1finality.CommitPayload
 	if err := json.Unmarshal([]byte(msg.Data.Message), &p); err != nil {
-		fmt.Printf("[L1Commit] parse error: %v | raw: %s\n", err, msg.Data.Message)
+		logger().NamedLogger.Error(logger_ctx, "Failed to parse L1 commit payload", err,
+			ion.String("function", "PubSubConnector.handleL1Commit"))
 		return fmt.Errorf("handleL1Commit: parse error: %w", err)
 	}
-	fmt.Printf("[L1Commit] Applying block=%d l1_tx=%s l1_block=%d\n", p.BlockNumber, p.L1TxHash, p.L1BlockNumber)
-	if p.BlockNumber == 0 || p.L1TxHash == "" {
-		fmt.Printf("[L1Commit] Skipping — empty payload\n")
+
+	if err := p.Validate(); err != nil {
+		logger().NamedLogger.Info(logger_ctx, "Skipping L1 commit: "+err.Error(),
+			ion.String("function", "PubSubConnector.handleL1Commit"))
 		return nil
 	}
 
@@ -805,24 +801,25 @@ func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AV
 
 	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
-		fmt.Printf("[L1Commit] DB connection error: %v\n", err)
+		logger().NamedLogger.Error(logger_ctx, "DB connection failed for L1 commit update", err,
+			ion.String("function", "PubSubConnector.handleL1Commit"))
 		return fmt.Errorf("handleL1Commit: db connection: %w", err)
 	}
 
-	block, err := DB_OPs.GetZKBlockByNumber(conn, p.BlockNumber)
+	found, err := l1finality.ApplyCommit(conn, p)
 	if err != nil {
-		fmt.Printf("[L1Commit] Block %d not found on this peer (err=%v) — skipping\n", p.BlockNumber, err)
-		return nil // block not on this peer yet — non-fatal
-	}
-	block.L1TxHash = p.L1TxHash
-	block.L1BlockNumber = p.L1BlockNumber
-	blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, p.BlockNumber)
-	if err := DB_OPs.Update(blockKey, block); err != nil {
-		fmt.Printf("[L1Commit] Update block %d error: %v\n", p.BlockNumber, err)
+		logger().NamedLogger.Error(logger_ctx, "Failed to update block with L1 finality", err,
+			ion.Int64("block_number", int64(p.BlockNumber)),
+			ion.String("function", "PubSubConnector.handleL1Commit"))
 		return fmt.Errorf("handleL1Commit: update block %d: %w", p.BlockNumber, err)
 	}
+	if !found {
+		logger().NamedLogger.Info(logger_ctx, "Block not found for L1 commit update (non-fatal)",
+			ion.Int64("block_number", int64(p.BlockNumber)),
+			ion.String("function", "PubSubConnector.handleL1Commit"))
+		return nil // block not on this peer yet — non-fatal
+	}
 
-	fmt.Printf("[L1Commit] SUCCESS block=%d l1_tx=%s written\n", p.BlockNumber, p.L1TxHash)
 	logger().NamedLogger.Info(logger_ctx, "L1 finality applied from gossip",
 		ion.Int64("block_number", int64(p.BlockNumber)),
 		ion.String("l1_tx_hash", p.L1TxHash),
@@ -830,22 +827,19 @@ func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AV
 	return nil
 }
 
-// handleL1CommitRange updates a range of blocks with shared L1 finality data received via gossip.
+// handleL1CommitRange updates a range of blocks with shared L1 finality data received
+// via gossip. Apply logic is shared via the l1finality package (see handleL1Commit above).
 func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
-	type payload struct {
-		StartBlock    uint64 `json:"start_block"`
-		EndBlock      uint64 `json:"end_block"`
-		L1TxHash      string `json:"l1_tx_hash"`
-		L1BlockNumber uint64 `json:"l1_block_number"`
-	}
-	var p payload
+	var p l1finality.RangePayload
 	if err := json.Unmarshal([]byte(msg.Data.Message), &p); err != nil {
-		fmt.Printf("[L1CommitRange] parse error: %v | raw: %s\n", err, msg.Data.Message)
+		logger().NamedLogger.Error(logger_ctx, "Failed to parse L1 commit range payload", err,
+			ion.String("function", "PubSubConnector.handleL1CommitRange"))
 		return fmt.Errorf("handleL1CommitRange: parse error: %w", err)
 	}
-	fmt.Printf("[L1CommitRange] Applying blocks=%d-%d l1_tx=%s l1_block=%d\n", p.StartBlock, p.EndBlock, p.L1TxHash, p.L1BlockNumber)
-	if p.StartBlock == 0 || p.EndBlock < p.StartBlock || p.L1TxHash == "" {
-		fmt.Printf("[L1CommitRange] Skipping — invalid payload\n")
+
+	if err := p.Validate(); err != nil {
+		logger().NamedLogger.Info(logger_ctx, "Skipping L1 commit range: "+err.Error(),
+			ion.String("function", "PubSubConnector.handleL1CommitRange"))
 		return nil
 	}
 
@@ -854,27 +848,13 @@ func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, ms
 
 	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 	if err != nil {
+		logger().NamedLogger.Error(logger_ctx, "DB connection failed for L1 commit range update", err,
+			ion.String("function", "PubSubConnector.handleL1CommitRange"))
 		return fmt.Errorf("handleL1CommitRange: db connection: %w", err)
 	}
 
-	var updated, skipped int
-	for blockNum := p.StartBlock; blockNum <= p.EndBlock; blockNum++ {
-		block, err := DB_OPs.GetZKBlockByNumber(conn, blockNum)
-		if err != nil {
-			skipped++
-			continue
-		}
-		block.L1TxHash = p.L1TxHash
-		block.L1BlockNumber = p.L1BlockNumber
-		blockKey := fmt.Sprintf("%s%d", DB_OPs.PREFIX_BLOCK, blockNum)
-		if err := DB_OPs.Update(blockKey, block); err != nil {
-			skipped++
-			continue
-		}
-		updated++
-	}
+	updated, skipped := l1finality.ApplyRange(conn, p)
 
-	fmt.Printf("[L1CommitRange] DONE blocks=%d-%d updated=%d skipped=%d\n", p.StartBlock, p.EndBlock, updated, skipped)
 	logger().NamedLogger.Info(logger_ctx, "L1 range finality applied from gossip",
 		ion.Int64("start_block", int64(p.StartBlock)),
 		ion.Int64("end_block", int64(p.EndBlock)),

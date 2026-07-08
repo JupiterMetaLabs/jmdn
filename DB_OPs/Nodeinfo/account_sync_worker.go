@@ -184,9 +184,9 @@ func StartAccountSyncWorker(logger_ctx context.Context, streamer RedisStreamer, 
 		ctx, cancel := context.WithTimeout(logger_ctx, 5*time.Second)
 		defer cancel()
 		if err := streamer.Ping(ctx); err != nil {
-			log.Printf("[accountqueue] WARN: Failed to connect to Redis: %v. Sync will fallback to direct DB writes.", err)
+			log.Printf("[accountqueue] WARN: Boot-time Redis ping failed: %v. This is a one-off diagnostic, not a live health gate — Enqueue calls will fall back to direct DB writes on their own if Redis is still unreachable when they run.", err)
 		} else {
-			log.Printf("[accountqueue] Successfully connected and authenticated with Redis")
+			log.Printf("[accountqueue] Boot-time Redis ping succeeded — connected and authenticated. (Diagnostic only; does not guarantee later Enqueue calls will succeed.)")
 		}
 	}()
 
