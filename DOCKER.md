@@ -154,9 +154,20 @@ When jmdn writes account state, it enqueues to a Redis Stream (`XADD`) and retur
 | Property | Value |
 |---|---|
 | Image | `redis:7-alpine` |
-| Persistence | AOF (`appendonly yes`, `appendfsync everysec`) |
+| Persistence | AOF (`appendonly yes`, `appendfsync everysec`) — **CORRECTNESS REQUIREMENT, not tuning** |
 | Auth | Password via `REDIS_PASSWORD` env var |
 | Usage | Redis Streams (not simple pub/sub — requires Redis 5+) |
+
+> **⚠ Redis persistence is load-bearing for account-state correctness.**
+> Reconciliation's balance effects and
+> tx_processed markers travel through this queue, and the recon anchor
+> (`sync:accounts_last_applied_block`) is advanced once the data is verified and
+> ENQUEUED — before the drain commits it to ImmuDB. If Redis loses the queue
+> (crash without AOF, eviction, `FLUSHALL`), the anchor claims ranges whose
+> effects never landed and reconciliation permanently skips them. `appendonly
+> yes` must be set on EVERY deployment, including bare-metal nodes that do not
+> use this compose file — check `redis.conf` there explicitly. Never point the
+> node at a cache-mode / ephemeral Redis.
 
 ### `jmdn-bootstrap` (one-time, profile-gated)
 

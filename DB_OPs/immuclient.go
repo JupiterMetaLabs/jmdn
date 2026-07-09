@@ -1945,19 +1945,13 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 		ion.String("function", "DB_OPs.StoreZKBlock"),
 	)
 
-	// Store the latest block number for quick access
-	if err := Create(mainDBClient, "latest_block", block.BlockNumber); err != nil {
-
-		mainDBClient.Client.Logger.Error(loggerCtx, "Failed to update latest block",
-			err,
-			ion.String("database", config.DBName),
-			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
-			ion.String("log_file", LOG_FILE),
-			ion.String("topic", TOPIC),
-			ion.String("function", "DB_OPs.StoreZKBlock"),
-		)
-		return fmt.Errorf("failed to update latest block: %w", err)
-	}
+	// StoreZKBlock no longer writes `latest_block`. The old per-block blind
+	// write here regressed the tip on any out-of-order store (PoTS WAL dump,
+	// replays, sync workers) and advanced it for SKELETON blocks written by
+	// header sync — which forced the headers writer into a snapshot/restore
+	// dance that itself raced concurrent writers. Callers that store FULL
+	// blocks own the marker via DB_OPs.UpdateLatestBlockMonotonic (live paths:
+	// blockPropagation/broadcast; sync: data writer batch-end, catchup phase 8).
 
 	// Store each transaction hash -> block number mapping for lookups
 	for _, tx := range block.Transactions {

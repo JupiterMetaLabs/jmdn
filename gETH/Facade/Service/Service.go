@@ -566,7 +566,6 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 	// EIP-1559: effectiveGasPrice = min(maxFeePerGas, baseFee + maxPriorityFeePerGas)
 	// baseFee is the network constant (35 gwei) used across all RPC responses.
 	{
-		const baseFee = int64(35_000_000_000)
 		var effectiveGasPrice *big.Int
 		if tx != nil && tx.GasPrice != nil {
 			// Legacy (type 0) and EIP-2930 (type 1)
@@ -576,7 +575,7 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 			if tip == nil {
 				tip = big.NewInt(0)
 			}
-			basePlusTip := new(big.Int).Add(big.NewInt(baseFee), tip)
+			basePlusTip := new(big.Int).Add(big.NewInt(config.BaseFeeWei), tip)
 			if tx.MaxFee.Cmp(basePlusTip) < 0 {
 				effectiveGasPrice = new(big.Int).Set(tx.MaxFee)
 			} else {
@@ -584,7 +583,7 @@ func (s *ServiceImpl) ReceiptByHash(ctx context.Context, hash string) (map[strin
 			}
 		} else {
 			// Fallback: always emit effectiveGasPrice (EIP-1559 requires it)
-			effectiveGasPrice = big.NewInt(baseFee)
+			effectiveGasPrice = big.NewInt(config.BaseFeeWei)
 		}
 		receiptMap["effectiveGasPrice"] = "0x" + effectiveGasPrice.Text(16)
 	}
@@ -719,18 +718,16 @@ func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
 			fmt.Printf("Failed to log GasPrice error: %v\n", logErr)
 		}
 		// Return fallback value on error (use 35 gwei minimum)
-		return big.NewInt(35000000000), nil
+		return big.NewInt(config.BaseFeeWei), nil
 	}
 
 	// Get standard recommended fee (wei)
 	gasPrice := big.NewInt(int64(feeStats.RecommendedFees.Standard))
 
-	// Enforce minimum gas price:
-	// - if zero or less than 20 gwei, use 35 gwei
-	twentyGwei := big.NewInt(20000000000)
-	thirtyFiveGwei := big.NewInt(35000000000)
+	// Enforce minimum gas price: use BaseFeeWei (35 gwei) as the floor.
+	twentyGwei := big.NewInt(20_000_000_000)
 	if gasPrice.Sign() <= 0 || gasPrice.Cmp(twentyGwei) < 0 {
-		gasPrice = new(big.Int).Set(thirtyFiveGwei)
+		gasPrice = big.NewInt(config.BaseFeeWei)
 	}
 
 	// Log success
@@ -798,7 +795,7 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 
 	// JMDN does not implement variable base fees — return the same 35 gwei constant
 	// used by eth_getBlockByNumber. No DB reads needed.
-	const baseFeeConstant = "0x826299e00" // 35_000_000_000 wei
+	baseFeeConstant := "0x" + big.NewInt(config.BaseFeeWei).Text(16)
 
 	count := newestNum.Uint64() - oldestNum.Uint64() + 1
 	baseFeePerGas := make([]string, count)

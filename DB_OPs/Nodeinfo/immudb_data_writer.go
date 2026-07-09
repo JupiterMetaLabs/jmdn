@@ -193,11 +193,14 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 	// DataSync workers run concurrently — the last worker to finish may not hold
 	// the highest block. A single update at the end is authoritative.
 	//
-	// The previous guard was `highestWritten > 0`, which silently skipped the
-	// update when a batch contained only block 0 (genesis). Using didWriteBlock
-	// correctly handles genesis — latest_block is always set after any data write.
+	// MONOTONIC. The old blind Update had the exact race
+	// txindex.setMetaMonotonicMax guards against: a stale catchup batch
+	// committing after newer live blocks moved the marker BACKWARDS. Genesis
+	// note: a batch containing only block 0 no longer needs a special guard —
+	// monotonic-from-0 means a genesis-only write is a no-op when the marker is
+	// already 0, which is the correct value.
 	if didWriteBlock {
-		if err2 := DB_OPs.Update("latest_block", highestWritten); err2 != nil {
+		if _, _, err2 := DB_OPs.UpdateLatestBlockMonotonic(highestWritten); err2 != nil {
 			return fmt.Errorf("update latest_block to %d failed: %w", highestWritten, err2)
 		}
 		// Fix 2: record write time so SyncMonitor propagation guard can skip a
