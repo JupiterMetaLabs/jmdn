@@ -26,6 +26,7 @@ import (
 	"gossipnode/DB_OPs"
 	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
 	"gossipnode/DB_OPs/sqlops"
+	"gossipnode/DB_OPs/txindex"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/WAL"
 	accountspb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/accounts"
@@ -534,6 +535,16 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 		// round or normal block propagation will catch the remaining blocks.
 	} else {
 		log.Println("[FastsyncV2] Phase 6 complete: PoTS synchronized")
+	}
+
+	// Refresh the tx-address SQLite index over everything this sync wrote.
+	// Previously only HandleCatchUpSync did this — blocks written by
+	// HandleSync/PoTS stayed unindexed until the next boot or catchup, so
+	// eth_getTransactionsByAddress silently served stale history. EnsureReady
+	// scans exactly [last_indexed+1 .. latest_block] (both markers are
+	// monotonic) and is idempotent (INSERT OR IGNORE) — a no-op when current.
+	if err := txindex.EnsureReady(ctx); err != nil {
+		log.Printf("[FastsyncV2] txindex refresh warning: %v", err)
 	}
 
 	elapsed := time.Since(syncStart).Round(time.Millisecond)
