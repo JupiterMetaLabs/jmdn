@@ -41,16 +41,13 @@ package NodeInfo
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"math/big"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"gossipnode/DB_OPs"
-	"gossipnode/config"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
 	"github.com/ethereum/go-ethereum/common"
@@ -319,10 +316,9 @@ func reclaimPending(s RedisStreamer, cfg AccountSyncWorkerConfig) error {
 // Space: O(N) — ephemeral []dbEntry freed after ACK.
 func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerConfig) error {
 	var (
-		writeEntries []dbEntry           // accounts to persist to ImmuDB
-		updateWires  []accountUpdateWire // balance/nonce updates to merge with stored accounts
-		goodIDs      []string            // stream IDs to ACK+XDEL after successful DB write
-		poisonIDs    []string            // stream IDs to ACK+XDEL immediately (unrecoverable)
+		writeEntries []dbEntry // accounts to persist to ImmuDB
+		goodIDs      []string  // stream IDs to ACK+XDEL after successful DB write
+		poisonIDs    []string  // stream IDs to ACK+XDEL immediately (unrecoverable)
 	)
 
 	for _, entry := range entries {
@@ -347,7 +343,13 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 				poisonIDs = append(poisonIDs, entry.ID)
 				continue
 			}
-			updateWires = append(updateWires, parsed...)
+			updEntries, err := updateWiresToEntries(parsed)
+			if err != nil {
+				log.Printf("[accountqueue] WARN: poison pill — unconvertible updates entry %s: %v", entry.ID, err)
+				poisonIDs = append(poisonIDs, entry.ID)
+				continue
+			}
+			writeEntries = append(writeEntries, updEntries...)
 			goodIDs = append(goodIDs, entry.ID)
 
 		default:
@@ -367,7 +369,7 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 		cancel()
 	}
 
-	if len(writeEntries) == 0 && len(updateWires) == 0 {
+	if len(writeEntries) == 0 {
 		return nil
 	}
 
@@ -385,18 +387,6 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 		return fmt.Errorf("get account DB connection: %w", err)
 	}
 	defer DB_OPs.PutAccountsConnection(conn)
-
-	// Resolve balance/nonce updates against the CURRENTLY stored account so the
-	// write preserves DIDAddress, AccountType, CreatedAt and Metadata, and carries
-	// the producer-side UpdatedAt for correct LWW ordering. A read failure returns
-	// an error → nothing is ACKed → the whole batch is retried from the PEL.
-	if len(updateWires) > 0 {
-		updEntries, err := buildUpdateEntries(writeCtx, conn, updateWires)
-		if err != nil {
-			return fmt.Errorf("resolve update entries: %w", err)
-		}
-		writeEntries = append(writeEntries, updEntries...)
-	}
 
 	// Write in sub-batches to bound individual ImmuDB commit size.
 	// All chunks must succeed before any ACK is issued.
@@ -485,9 +475,9 @@ func parseAccountsPayload(dataStr string) ([]dbEntry, error) {
 
 // parseUpdatesPayload deserializes and validates a payloadTypeUpdates JSON blob.
 // Reads accountUpdateWire (not types.AccountUpdate) to avoid big.Int JSON ambiguity.
-// Pure parse/validate — the DB merge happens later in buildUpdateEntries, once a
-// connection is held. Undecodable payloads surface here so they become poison
-// pills instead of failing the whole batch after a partial merge.
+// Pure parse/validate — the identity merge happens inside BatchRestoreAccounts.
+// Undecodable payloads surface here so they become poison pills instead of
+// failing the whole batch.
 //
 // Time: O(N) where N = number of updates in the payload.
 func parseUpdatesPayload(dataStr string) ([]accountUpdateWire, error) {
@@ -503,11 +493,18 @@ func parseUpdatesPayload(dataStr string) ([]accountUpdateWire, error) {
 	return wires, nil
 }
 
-// buildUpdateEntries converts balance/nonce update wires into full account objects
-// ready for BatchRestoreAccounts by merging each update into the currently stored
-// account.
+// updateWiresToEntries converts balance/nonce update wires into SPARSE account
+// objects ready for BatchRestoreAccounts. Pure function — no DB reads.
 //
-// Two corruption bugs lived in the old parseUpdatesPayload that this replaces:
+// Identity fields (DIDAddress, AccountType, CreatedAt, Metadata) are
+// intentionally zero-valued: a balance update carries no identity information.
+// BatchRestoreAccounts owns the merge — its single GetAll prefetch (one RPC per
+// chunk, vs N point reads here) preserves identity fields from the stored
+// account, applies monotonic guards to tx counters, and fills new-account
+// defaults. Keeping the merge in ONE place, next to the LWW compare, means the
+// same protections cover every write path, not just this worker.
+//
+// Two corruption bugs lived in the old version of this conversion:
 //  1. UpdatedAt was stamped time.Now() at DRAIN time. A replayed/reclaimed stale
 //     entry got a fresh timestamp and won LWW over newer correct data — stale
 //     balance resurrection after every worker crash/restart. UpdatedAt now
@@ -516,17 +513,9 @@ func parseUpdatesPayload(dataStr string) ([]accountUpdateWire, error) {
 //     address (not a DID), AccountType forced to "user", CreatedAt and Metadata
 //     dropped. Every update degraded the stored account object.
 //
-// DB read errors return an error → entries stay unACKed in the PEL and retry.
-//
-// Time: O(N) ImmuDB point reads + O(N) serialization, N = len(wires).
-
-// getAccountForUpdate is a test seam for buildUpdateEntries' account lookup.
-// Production value is DB_OPs.GetAccount; tests substitute a stub.
-var getAccountForUpdate = DB_OPs.GetAccount
-
-func buildUpdateEntries(ctx context.Context, conn *config.PooledConnection, wires []accountUpdateWire) ([]dbEntry, error) {
-	_ = ctx // reads below use the pooled connection's own client context handling
-	entries := make([]dbEntry, 0, len(wires)*2)
+// Time: O(N) serialization, N = len(wires).
+func updateWiresToEntries(wires []accountUpdateWire) ([]dbEntry, error) {
+	entries := make([]dbEntry, 0, len(wires))
 	for _, w := range wires {
 		balance := new(big.Int)
 		if _, ok := balance.SetString(w.NewBalance, 10); !ok {
@@ -541,41 +530,19 @@ func buildUpdateEntries(ctx context.Context, conn *config.PooledConnection, wire
 			updatedAt = time.Now().UTC().UnixNano()
 		}
 
-		dbAcc, err := getAccountForUpdate(conn, addr)
-		switch {
-		case err == nil && dbAcc != nil:
-			// Merge: overwrite balance/nonce counters only; preserve identity fields
-			// (DIDAddress, AccountType, CreatedAt, Metadata).
-			dbAcc.Balance = balance.String()
-			dbAcc.Nonce = w.Nonce
-			dbAcc.TxNonce = w.TxNonce
-			dbAcc.TxCountSent = w.TxCountSent
-			dbAcc.UpdatedAt = updatedAt
-		case err != nil && (errors.Is(err, DB_OPs.ErrNotFound) || strings.Contains(err.Error(), "key not found")):
-			// Account does not exist yet — construct a minimal object. DIDAddress
-			// stays empty: hex addresses are not DIDs and must not create did: refs.
-			dbAcc = &DB_OPs.Account{
-				Address:     addr,
-				Balance:     balance.String(),
-				Nonce:       w.Nonce,
-				TxNonce:     w.TxNonce,
-				TxCountSent: w.TxCountSent,
-				AccountType: "user",
-				CreatedAt:   updatedAt,
-				UpdatedAt:   updatedAt,
-			}
-		default:
-			return nil, fmt.Errorf("read account %s for update merge: %w", addr.Hex(), err)
+		dbAcc := &DB_OPs.Account{
+			Address:     addr,
+			Balance:     balance.String(),
+			Nonce:       w.Nonce,
+			TxNonce:     w.TxNonce,
+			TxCountSent: w.TxCountSent,
+			UpdatedAt:   updatedAt,
 		}
-
 		val, err := json.Marshal(dbAcc)
 		if err != nil {
 			return nil, fmt.Errorf("marshal DB_OPs.Account for address %s: %w", addr.Hex(), err)
 		}
 		entries = append(entries, dbEntry{Key: DB_OPs.Prefix + addr.Hex(), Value: val})
-		if dbAcc.DIDAddress != "" {
-			entries = append(entries, dbEntry{Key: DB_OPs.DIDPrefix + dbAcc.DIDAddress, Value: val})
-		}
 	}
 	return entries, nil
 }

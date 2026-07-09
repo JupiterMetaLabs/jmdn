@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"log"
 
-	"gossipnode/config"
 	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/gETH/Facade/Service"

@@ -466,7 +466,18 @@ func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledCo
 			fetchCtx, fetchCancel := context.WithTimeout(ctx, 30*time.Second)
 			entriesList, getAllErr := PooledConnection.Client.Client.GetAll(fetchCtx, prefetchKeys)
 			fetchCancel()
-			if getAllErr == nil && entriesList != nil {
+			// GetAll failure MUST fail the batch. Treating it as "all accounts are
+			// new" (the old behaviour) skipped both the LWW check and the identity
+			// merge: sparse update entries (empty DIDAddress/AccountType/CreatedAt)
+			// would be written raw, clobbering real account objects. Callers retry —
+			// the drain worker leaves entries unACKed in the Redis PEL.
+			// Note: immudb GetAll silently skips missing keys (database.go: ErrKeyNotFound
+			// is tolerated per key), so an all-new-accounts batch returns an empty list
+			// with a nil error — this path only fires on real RPC/DB failures.
+			if getAllErr != nil {
+				return fmt.Errorf("prefetch existing accounts (GetAll %d keys): %w - BatchRestoreAccounts", len(prefetchKeys), getAllErr)
+			}
+			if entriesList != nil {
 				for _, entry := range entriesList.Entries {
 					if entry == nil || entry.Value == nil {
 						continue
@@ -477,9 +488,6 @@ func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledCo
 					}
 				}
 			}
-			// GetAll failure is treated as "all accounts are new" — safe degradation;
-			// worst case we write data that LWW would have skipped, but correctness
-			// is preserved because ImmuDB is append-only and the node re-syncs on divergence.
 		}
 	}
 
@@ -578,6 +586,25 @@ func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledCo
 					// Re-serialize the merged account object to overwrite e.Value
 					if mergedVal, err := json.Marshal(incoming); err == nil {
 						e.Value = mergedVal
+					}
+				}
+			} else {
+				// NEW ACCOUNT (no stored object to merge from): fill defaults for
+				// identity fields that sparse update entries leave zero-valued.
+				// DIDAddress stays empty — hex addresses are not DIDs; the real DID
+				// arrives later via the accounts payload or DID propagation.
+				changed := false
+				if incoming.AccountType == "" {
+					incoming.AccountType = "user"
+					changed = true
+				}
+				if incoming.CreatedAt == 0 && incoming.UpdatedAt != 0 {
+					incoming.CreatedAt = incoming.UpdatedAt
+					changed = true
+				}
+				if changed {
+					if defVal, err := json.Marshal(incoming); err == nil {
+						e.Value = defVal
 					}
 				}
 			}
