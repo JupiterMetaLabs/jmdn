@@ -60,7 +60,12 @@ func BlockProcessedKey(blockHash string) string { return "block_processed:" + bl
 func markerValueApplied(raw []byte) bool {
 	v, err := strconv.ParseInt(string(raw), 10, 64)
 	if err != nil {
-		// Legacy/corrupt value — see MARKER SEMANTICS in the module header.
+		// Unparseable = APPLIED. All known legacy populations hold JSON int64s
+		// (Nov-2025/current defaultdb, Dec-2025 accountsdb — RCA §6b), so this
+		// branch should be unreachable; if a corrupt value ever lands here,
+		// "applied" is the skip direction and the affected tx becomes a case
+		// for the historical repair job (RCA §6a step 5), which recomputes
+		// from the tx index rather than trusting markers. (§6f review nit.)
 		return true
 	}
 	return v != MarkerRevoked
