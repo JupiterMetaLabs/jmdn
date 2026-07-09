@@ -19,11 +19,13 @@ package FastsyncV2
 // see config/gasfee.go for the exact formula and the history of that bug.
 
 import (
+	"context"
 	"fmt"
 	"math/big"
 	"strings"
 
 	"gossipnode/DB_OPs"
+	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
 	"gossipnode/config"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
@@ -49,6 +51,22 @@ import (
 // enqueue tx_processed markers for exactly these hashes so a recon re-run
 // (e.g. after a failed anchor advance) excludes them instead of re-applying.
 func (fs *FastsyncV2) computeAccountDeltas(fromBlock, toBlock uint64) (map[string]*types.AccountDelta, []string, error) {
+	// F5-B1 ENTRY GATE: the exclusion filter below reads tx_processed markers
+	// from the DATABASE — markers (and balances) still on the Redis queue are
+	// invisible to it. Computing deltas while a previous recon's effects are in
+	// flight re-includes those txs → both applications eventually drain →
+	// double-apply. The advance gate's timeout path makes this routine: a
+	// timed-out advance leaves the queue loaded and the range open, and the
+	// next recon run lands exactly here. Fail closed: no deltas over a
+	// non-quiescent queue. (B2: after a restart the in-process HWM is empty
+	// while Redis may still hold pre-restart entries — the gate falls back to
+	// a queue-empty check rather than assuming quiescence.)
+	gateCtx, gateCancel := context.WithTimeout(context.Background(), drainConfirmTimeout)
+	defer gateCancel()
+	if err := NodeInfo.WaitForQueueQuiescence(gateCtx); err != nil {
+		return nil, nil, fmt.Errorf("delta computation: queue not quiescent — prior recon effects may be in flight (fail closed): %w", err)
+	}
+
 	const batchSize = 500
 	iter := fs.blockInfoAdapter.NewBlockIterator(fromBlock, toBlock, batchSize)
 	defer iter.Close()

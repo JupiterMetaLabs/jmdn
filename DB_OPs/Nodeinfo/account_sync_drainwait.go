@@ -89,8 +89,11 @@ func streamIDGTE(a, b string) bool {
 }
 
 // noteEnqueuedID records an XADD-assigned stream ID (monotonic max).
+// Malformed IDs are ignored: recording one as the wait TARGET would wedge the
+// gate permanently (malformed compares as not-gte); real XADD IDs are always
+// well-formed "ms-seq".
 func noteEnqueuedID(id string) {
-	if id == "" {
+	if _, _, ok := parseStreamID(id); !ok {
 		return
 	}
 	drainProgress.mu.Lock()
@@ -101,6 +104,7 @@ func noteEnqueuedID(id string) {
 }
 
 // noteDrainedIDs records successfully applied+ACKed stream IDs (monotonic max).
+// Malformed IDs are skipped (see noteEnqueuedID).
 func noteDrainedIDs(ids []string) {
 	if len(ids) == 0 {
 		return
@@ -108,7 +112,7 @@ func noteDrainedIDs(ids []string) {
 	drainProgress.mu.Lock()
 	defer drainProgress.mu.Unlock()
 	for _, id := range ids {
-		if id == "" {
+		if _, _, ok := parseStreamID(id); !ok {
 			continue
 		}
 		if drainProgress.lastDrained == "" || streamIDGTE(id, drainProgress.lastDrained) {
@@ -140,10 +144,71 @@ func drainConfirmed(lastDrained, target string) bool {
 	return streamIDGTE(lastDrained, target)
 }
 
+// WaitForQueueQuiescence is the reconciliation ENTRY gate (F5-B1/B2): it
+// confirms that every previously enqueued account-stream entry — balances AND
+// tx markers from earlier recon runs or pre-restart sessions — has been applied
+// to the database. computeAccountDeltas MUST pass this gate before running the
+// marker exclusion filter: markers still sitting ON THE QUEUE are invisible to
+// the filter (it reads DB state), so computing deltas over a loaded queue
+// re-includes txs whose effects are in flight → double-apply on drain. The
+// advance gate's own timeout makes this scenario routine, not exotic: every
+// timed-out advance forces a recon re-run over a queue still holding the
+// previous run's markers (B1, review of d78a34c).
+//
+// Empty in-process HWM does NOT short-circuit here (B2, unlike the advance
+// gate): after a restart the HWM is lost while Redis may still hold
+// pre-restart entries — exactly the blind window. Fallback: poll the queue
+// itself (XLEN + XPENDING) until fully empty. This fallback only runs when
+// nothing has been enqueued since boot, so the shared-stream starvation
+// argument against depth checks does not apply (concurrent sync phases would
+// have set the HWM, taking the precise path instead).
+//
+// Fail direction: any error/timeout = NOT quiescent → callers fail closed
+// (skip this recon round; SyncMonitor retries later).
+func WaitForQueueQuiescence(ctx context.Context) error {
+	if target := LastAccountEnqueueID(); target != "" {
+		return WaitForAccountQueueDrain(ctx, target)
+	}
+
+	s, mgr := getAccountQueue()
+	if s == nil {
+		// Queue never installed: every write in this mode was synchronous
+		// (direct fallback) — nothing can be in flight.
+		return nil
+	}
+	if mgr != nil {
+		mgr.EnsureActive() // make sure a worker is draining any backlog
+	}
+
+	const pollInterval = 500 * time.Millisecond
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		qlen, lenErr := s.Len(ctx, accountSyncStream)
+		pending, pendErr := s.PendingCount(ctx, accountSyncStream, accountSyncGroup)
+		if lenErr == nil && pendErr == nil && qlen == 0 && pending == 0 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("queue not quiescent (len=%d lenErr=%v pending=%d pendErr=%v): %w",
+				qlen, lenErr, pending, pendErr, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 // WaitForAccountQueueDrain blocks until every account-stream entry up to
 // target has been applied and ACKed by the drain worker, or ctx expires.
 // Returns nil = CONFIRMED; any error = NOT confirmed (callers must treat the
 // work as possibly-unapplied and skip anchor advancement).
+//
+// The empty-target shortcut is valid HERE (advance gate) and only here: a
+// worst-case wrongly-skipped advance re-opens the range, which marker
+// exclusion handles — provided the ENTRY gate (WaitForQueueQuiescence) did its
+// job. Do not reuse this shortcut for entry gating (B2).
 func WaitForAccountQueueDrain(ctx context.Context, target string) error {
 	if target == "" {
 		return nil

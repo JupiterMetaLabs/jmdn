@@ -106,6 +106,95 @@ func TestHWMMonotonicity(t *testing.T) {
 	}
 }
 
+// depthStreamer is a RedisStreamer fake with controllable queue depth for the
+// B2 boot-fallback tests. Embeds the enqueue-test fake for the inert methods.
+type depthStreamer struct {
+	recordingStreamer
+	qlen, pending int64
+}
+
+func (d *depthStreamer) Len(context.Context, string) (int64, error) { return d.qlen, nil }
+func (d *depthStreamer) PendingCount(context.Context, string, string) (int64, error) {
+	return d.pending, nil
+}
+
+// withQueue temporarily installs a streamer as the package queue singleton.
+func withQueue(t *testing.T, s RedisStreamer) {
+	t.Helper()
+	origS, origM := getAccountQueue()
+	InstallAccountQueue(s, nil)
+	t.Cleanup(func() { InstallAccountQueue(origS, origM) })
+}
+
+// TestWaitForQueueQuiescence_BlocksWhileQueued pins B1: an entry gate over a
+// queue still holding a previous recon's entries must NOT pass — those entries
+// carry markers the exclusion filter cannot see yet.
+func TestWaitForQueueQuiescence_BlocksWhileQueued(t *testing.T) {
+	resetDrainProgress()
+	defer resetDrainProgress()
+
+	noteEnqueuedID("100-0") // previous recon enqueued; nothing drained yet
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := WaitForQueueQuiescence(ctx); err == nil {
+		t.Fatal("gate must block while previously enqueued entries are undrained")
+	}
+
+	// Drain catches up → gate opens.
+	noteDrainedIDs([]string{"100-0"})
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
+	defer cancel2()
+	if err := WaitForQueueQuiescence(ctx2); err != nil {
+		t.Fatalf("gate must open once drained >= target: %v", err)
+	}
+}
+
+// TestWaitForQueueQuiescence_BootFallback pins B2: an empty in-process HWM must
+// NOT mean quiescent — after a restart, Redis can still hold pre-restart
+// entries. The gate falls back to a real queue-depth check.
+func TestWaitForQueueQuiescence_BootFallback(t *testing.T) {
+	resetDrainProgress()
+	defer resetDrainProgress()
+
+	// Fresh boot (HWM empty) + backlog in Redis → NOT quiescent.
+	ds := &depthStreamer{qlen: 3, pending: 1}
+	withQueue(t, ds)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := WaitForQueueQuiescence(ctx); err == nil {
+		t.Fatal("empty HWM with a loaded queue must NOT be quiescent (boot blind window)")
+	}
+
+	// Backlog drains → quiescent.
+	ds.qlen, ds.pending = 0, 0
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
+	defer cancel2()
+	if err := WaitForQueueQuiescence(ctx2); err != nil {
+		t.Fatalf("empty queue must be quiescent: %v", err)
+	}
+}
+
+// TestNoteIDs_MalformedIgnored: a malformed ID recorded as the wait target
+// would wedge the gate forever (malformed compares not-gte); real XADD IDs are
+// always well-formed, and fakes/garbage must be ignored.
+func TestNoteIDs_MalformedIgnored(t *testing.T) {
+	resetDrainProgress()
+	defer resetDrainProgress()
+
+	noteEnqueuedID("id") // e.g. a test fake's return value
+	if got := LastAccountEnqueueID(); got != "" {
+		t.Fatalf("malformed enqueue ID recorded: %q", got)
+	}
+	noteDrainedIDs([]string{"garbage", "100-0"})
+	drainProgress.mu.Lock()
+	drained := drainProgress.lastDrained
+	drainProgress.mu.Unlock()
+	if drained != "100-0" {
+		t.Fatalf("drain HWM = %q, want 100-0 (garbage skipped)", drained)
+	}
+}
+
 func TestWaitForAccountQueueDrain(t *testing.T) {
 	resetDrainProgress()
 	defer resetDrainProgress()
