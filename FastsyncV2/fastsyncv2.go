@@ -485,7 +485,7 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 		if reconFrom > localBlockNum+1 {
 			log.Printf("[FastsyncV2] Phase 5: advancing fromBlock %d → %d (already applied)", localBlockNum+1, reconFrom)
 		}
-		deltas, deltaErr := fs.computeAccountDeltas(reconFrom, remoteBlockNum)
+		deltas, appliedHashes, deltaErr := fs.computeAccountDeltas(reconFrom, remoteBlockNum)
 		if deltaErr != nil {
 			// Fail closed: applying partial deltas (or deltas computed without the
 			// tx_processed exclusion filter) risks double-apply. Skip; anchor stays.
@@ -499,6 +499,12 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 			log.Printf("[FastsyncV2] Phase 5 complete: %d accounts reconciled, %d failed", reconciledCount, len(failedAccounts))
 			if len(failedAccounts) > 0 {
 				log.Printf("[FastsyncV2] Failed accounts: %v", failedAccounts)
+			}
+			// F4 3a: markers follow the balance enqueue for a CLEAN recon,
+			// independent of anchor verification — the deltas are on the queue
+			// and WILL be applied by the drain either way.
+			if err == nil && len(failedAccounts) == 0 {
+				fs.enqueueReconTxMarkers(appliedHashes, "Phase 5")
 			}
 			fs.advanceReconAnchorIfProven(err, len(failedAccounts), reconFrom, remoteBlockNum, "Phase 5")
 		}
@@ -611,7 +617,7 @@ func (fs *FastsyncV2) executePoTS(
 				if potsReconSkip {
 					log.Printf("[FastsyncV2] PoTS reconciliation skipped: already reconciled up to %d", potsLatest)
 				} else {
-					potsDeltas, potsDeltaErr := fs.computeAccountDeltas(potsReconFrom, potsLatest)
+					potsDeltas, potsAppliedHashes, potsDeltaErr := fs.computeAccountDeltas(potsReconFrom, potsLatest)
 					if potsDeltaErr != nil {
 						// Fail closed — see Phase 5 rationale.
 						log.Printf("[FastsyncV2] PoTS reconciliation skipped: delta computation failed (fail closed): %v", potsDeltaErr)
@@ -622,6 +628,9 @@ func (fs *FastsyncV2) executePoTS(
 							log.Printf("[FastsyncV2] PoTS reconciliation warning: %v", err)
 						}
 						log.Printf("[FastsyncV2] PoTS reconciled %d accounts, %d failed", reconCount, len(failed))
+						if err == nil && len(failed) == 0 {
+							fs.enqueueReconTxMarkers(potsAppliedHashes, "PoTS")
+						}
 						fs.advanceReconAnchorIfProven(err, len(failed), potsReconFrom, potsLatest, "PoTS")
 					}
 				}
@@ -732,6 +741,25 @@ func legacySQLiteRecon() uint64 {
 		return 0
 	}
 	return last
+}
+
+// enqueueReconTxMarkers enqueues tx_processed markers for the txs whose deltas
+// a CLEAN ReconcileWithDeltas just enqueued (F4 3a). Called strictly AFTER the
+// balance enqueue: stream FIFO plus the drain's markers-last ordering guarantee
+// the markers never commit before the balances they describe (A2).
+//
+// Failure is logged, never fatal — a missing marker fails toward re-apply on
+// the next recon (bounded double-apply, the repairable direction), never
+// toward skip.
+func (fs *FastsyncV2) enqueueReconTxMarkers(hashes []string, phase string) {
+	if len(hashes) == 0 {
+		return
+	}
+	if err := NodeInfo.EnqueueAppliedTxMarkers(hashes, time.Now().UTC().Unix()); err != nil {
+		log.Printf("[FastsyncV2] %s: tx marker enqueue failed (%v) — safe direction: next recon may re-apply (bounded), never skips", phase, err)
+		return
+	}
+	log.Printf("[FastsyncV2] %s: enqueued %d recon-applied tx markers", phase, len(hashes))
 }
 
 // tombstoneLegacySQLiteRecon overwrites the legacy SQLite watermark with an

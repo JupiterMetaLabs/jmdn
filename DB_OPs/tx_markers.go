@@ -156,6 +156,56 @@ func ApplyTxAtomic(accountsConn *config.PooledConnection, docs []*Account, txHas
 	return nil
 }
 
+// WriteTxProcessedMarkers writes applied markers for a set of txs to
+// accountsdb, chunked under the ExecAll cap. Used by the drain worker for
+// RECON-applied txs (F4 3a): reconciliation's balance effects commit through
+// BatchRestoreAccounts, and these markers make those txs visible to the live
+// guards and to future delta exclusion — without them, a recon re-run after a
+// failed anchor advance re-applies the same deltas.
+//
+// A2 ORDERING (enforced by the caller): markers commit strictly AFTER all
+// account chunks of the drain batch. Markers-first + a later account-chunk
+// failure would let a recon rerun exclude never-applied txs (permanent skip);
+// markers-last fails toward bounded double-apply on retry instead.
+//
+// Idempotent: re-writing the same marker value is a no-op semantically.
+func WriteTxProcessedMarkers(accountsConn *config.PooledConnection, markers map[string]int64) error {
+	if len(markers) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	conn, release, err := withAccountsConn(ctx, accountsConn)
+	if err != nil {
+		return fmt.Errorf("write tx markers: %w", err)
+	}
+	defer release()
+
+	const chunk = 500 // < maxExecAllEntries
+	ops := make([]*schema.Op, 0, chunk)
+	flush := func() error {
+		if len(ops) == 0 {
+			return nil
+		}
+		if _, err := conn.Client.Client.ExecAll(ctx, &schema.ExecAllRequest{Operations: ops}); err != nil {
+			return fmt.Errorf("write tx markers (%d ops): %w", len(ops), err)
+		}
+		ops = ops[:0]
+		return nil
+	}
+	for h, appliedAt := range markers {
+		ops = append(ops, markerOp(TxProcessedKey(h), appliedAt))
+		if len(ops) >= chunk {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+	}
+	return flush()
+}
+
 // RevokeTxProcessedMarkers overwrites the given txs' markers with -1 in
 // accountsdb (F4-A1, rollback path). Chunked under the ExecAll cap. Runs
 // BEFORE balance restoration: a crash between revocation and restore leaves

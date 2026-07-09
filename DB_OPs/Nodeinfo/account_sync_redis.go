@@ -54,8 +54,9 @@ const (
 type syncPayloadType string
 
 const (
-	payloadTypeAccounts syncPayloadType = "accounts" // payload: []*types.Account (JSON)
-	payloadTypeUpdates  syncPayloadType = "updates"  // payload: []accountUpdateWire (JSON)
+	payloadTypeAccounts  syncPayloadType = "accounts"   // payload: []*types.Account (JSON)
+	payloadTypeUpdates   syncPayloadType = "updates"    // payload: []accountUpdateWire (JSON)
+	payloadTypeTxMarkers syncPayloadType = "tx_markers" // payload: []txMarkerWire (JSON) — F4 3a
 )
 
 // ─── Domain types ─────────────────────────────────────────────────────────────

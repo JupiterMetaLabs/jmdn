@@ -297,7 +297,7 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 		if reconFrom > fromBlock {
 			log.Printf("[CatchUpSync] phase 5: advancing fromBlock %d → %d (already applied)", fromBlock, reconFrom)
 		}
-		deltas, deltaErr := fs.computeAccountDeltas(reconFrom, remoteTip)
+		deltas, appliedHashes, deltaErr := fs.computeAccountDeltas(reconFrom, remoteTip)
 		if deltaErr != nil {
 			// Fail closed: partial deltas (or deltas without marker exclusion)
 			// risk double-apply. Anchor stays; next run retries the range.
@@ -311,6 +311,10 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 			log.Printf("[CatchUpSync] phase 5 complete: %d committed, %d failed, took %s",
 				reconCount, len(failedAccounts), time.Since(reconStart).Round(time.Millisecond))
 			reconClean = err == nil && len(failedAccounts) == 0
+			// F4 3a: markers follow the balance enqueue for a clean recon.
+			if reconClean {
+				fs.enqueueReconTxMarkers(appliedHashes, "CatchUpSync phase 5")
+			}
 		}
 	}
 

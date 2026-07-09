@@ -43,17 +43,23 @@ import (
 // FAIL CLOSED: any iterator or marker-filter error aborts with an error —
 // partial deltas, or deltas computed without the exclusion filter, corrupt
 // balances when applied. Callers skip reconciliation and leave the anchor.
-func (fs *FastsyncV2) computeAccountDeltas(fromBlock, toBlock uint64) (map[string]*types.AccountDelta, error) {
+//
+// F4 3a: the second return value lists the tx hashes whose deltas ARE included
+// (i.e. not excluded by markers). After a clean ReconcileWithDeltas, callers
+// enqueue tx_processed markers for exactly these hashes so a recon re-run
+// (e.g. after a failed anchor advance) excludes them instead of re-applying.
+func (fs *FastsyncV2) computeAccountDeltas(fromBlock, toBlock uint64) (map[string]*types.AccountDelta, []string, error) {
 	const batchSize = 500
 	iter := fs.blockInfoAdapter.NewBlockIterator(fromBlock, toBlock, batchSize)
 	defer iter.Close()
 
 	deltas := make(map[string]*types.AccountDelta)
+	var appliedHashes []string
 
 	for {
 		batch, err := iter.Next()
 		if err != nil {
-			return nil, fmt.Errorf("delta computation: block iterator at [%d..%d]: %w", fromBlock, toBlock, err)
+			return nil, nil, fmt.Errorf("delta computation: block iterator at [%d..%d]: %w", fromBlock, toBlock, err)
 		}
 		if len(batch) == 0 {
 			break
@@ -71,7 +77,7 @@ func (fs *FastsyncV2) computeAccountDeltas(fromBlock, toBlock uint64) (map[strin
 		}
 		liveApplied, err := DB_OPs.FilterProcessedTxMarkers(hashes)
 		if err != nil {
-			return nil, fmt.Errorf("delta computation: tx_processed marker filter: %w", err)
+			return nil, nil, fmt.Errorf("delta computation: tx_processed marker filter: %w", err)
 		}
 
 		for _, blk := range batch {
@@ -80,9 +86,14 @@ func (fs *FastsyncV2) computeAccountDeltas(fromBlock, toBlock uint64) (map[strin
 			}
 			applyBlockDeltas(blk, deltas, liveApplied)
 		}
+		for _, h := range hashes {
+			if !liveApplied[h] {
+				appliedHashes = append(appliedHashes, h)
+			}
+		}
 	}
 
-	return deltas, nil
+	return deltas, appliedHashes, nil
 }
 
 // applyBlockDeltas applies the transaction effects of one ZKBlock to the delta

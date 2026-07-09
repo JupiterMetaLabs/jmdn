@@ -86,6 +86,16 @@ type accountUpdateWire struct {
 	UpdatedAt int64 `json:"updated_at,omitempty"`
 }
 
+// txMarkerWire is one recon-applied tx to mark as processed (F4 3a). Enqueued
+// by reconciliation AFTER its balance updates so stream FIFO ordering delivers
+// markers to the drain no earlier than the balances they describe.
+type txMarkerWire struct {
+	Hash string `json:"hash"`
+	// AppliedAt is the producer-side Unix-seconds stamp (marker value). Not an
+	// LWW key — markers are value-aware only for the -1 revocation sentinel.
+	AppliedAt int64 `json:"applied_at"`
+}
+
 // ─── Configuration ────────────────────────────────────────────────────────────
 
 // AccountSyncWorkerConfig holds tuning parameters for the account sync worker.
@@ -316,9 +326,10 @@ func reclaimPending(s RedisStreamer, cfg AccountSyncWorkerConfig) error {
 // Space: O(N) — ephemeral []dbEntry freed after ACK.
 func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerConfig) error {
 	var (
-		writeEntries []dbEntry // accounts to persist to ImmuDB
-		goodIDs      []string  // stream IDs to ACK+XDEL after successful DB write
-		poisonIDs    []string  // stream IDs to ACK+XDEL immediately (unrecoverable)
+		writeEntries []dbEntry        // accounts to persist to ImmuDB
+		txMarkers    map[string]int64 // recon-applied tx markers (F4 3a) — committed LAST
+		goodIDs      []string         // stream IDs to ACK+XDEL after successful DB write
+		poisonIDs    []string         // stream IDs to ACK+XDEL immediately (unrecoverable)
 	)
 
 	for _, entry := range entries {
@@ -352,6 +363,21 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 			writeEntries = append(writeEntries, updEntries...)
 			goodIDs = append(goodIDs, entry.ID)
 
+		case payloadTypeTxMarkers:
+			parsed, err := parseTxMarkersPayload(dataStr)
+			if err != nil {
+				log.Printf("[accountqueue] WARN: poison pill — undecodable tx_markers entry %s: %v", entry.ID, err)
+				poisonIDs = append(poisonIDs, entry.ID)
+				continue
+			}
+			if txMarkers == nil {
+				txMarkers = make(map[string]int64, len(parsed))
+			}
+			for _, m := range parsed {
+				txMarkers[m.Hash] = m.AppliedAt
+			}
+			goodIDs = append(goodIDs, entry.ID)
+
 		default:
 			log.Printf("[accountqueue] WARN: poison pill — unknown payload type %q in entry %s", payloadType, entry.ID)
 			poisonIDs = append(poisonIDs, entry.ID)
@@ -369,7 +395,7 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 		cancel()
 	}
 
-	if len(writeEntries) == 0 {
+	if len(writeEntries) == 0 && len(txMarkers) == 0 {
 		return nil
 	}
 
@@ -398,6 +424,18 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 		}
 		if err := DB_OPs.BatchRestoreAccounts(writeCtx, conn, writeEntries[i:end]); err != nil {
 			return fmt.Errorf("BatchRestoreAccounts chunk [%d:%d] of %d: %w", i, end, len(writeEntries), err)
+		}
+	}
+
+	// F4 3a / A2: recon-applied tx markers commit strictly AFTER every account
+	// chunk of this batch succeeded. Markers-first + a later chunk failure
+	// would let a recon rerun exclude never-applied txs (permanent skip);
+	// markers-last fails toward bounded double-apply on retry — the repairable
+	// direction. Failure here leaves the whole batch unACKed → PEL retry
+	// (marker writes are idempotent).
+	if len(txMarkers) > 0 {
+		if err := DB_OPs.WriteTxProcessedMarkers(conn, txMarkers); err != nil {
+			return fmt.Errorf("write %d recon tx markers (after %d account entries): %w", len(txMarkers), len(writeEntries), err)
 		}
 	}
 	commitDur := time.Since(start)
@@ -488,6 +526,26 @@ func parseUpdatesPayload(dataStr string) ([]accountUpdateWire, error) {
 	for _, w := range wires {
 		if _, ok := new(big.Int).SetString(w.NewBalance, 10); !ok {
 			return nil, fmt.Errorf("invalid decimal balance %q for address %s", w.NewBalance, w.Address)
+		}
+	}
+	return wires, nil
+}
+
+// parseTxMarkersPayload deserializes and validates a payloadTypeTxMarkers blob
+// (F4 3a). Pure parse — the markers-last ordered write happens in processBatch.
+func parseTxMarkersPayload(dataStr string) ([]txMarkerWire, error) {
+	var wires []txMarkerWire
+	if err := json.Unmarshal([]byte(dataStr), &wires); err != nil {
+		return nil, fmt.Errorf("unmarshal []txMarkerWire: %w", err)
+	}
+	for _, w := range wires {
+		if w.Hash == "" {
+			return nil, fmt.Errorf("tx marker with empty hash")
+		}
+		if w.AppliedAt <= 0 {
+			// -1/0 must never arrive on the wire — a revocation enqueued here
+			// would erase a legitimate live-path marker at drain time.
+			return nil, fmt.Errorf("tx marker %s with non-positive applied_at %d", w.Hash, w.AppliedAt)
 		}
 	}
 	return wires, nil
