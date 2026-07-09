@@ -485,10 +485,10 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 
 	// Convert to wire type for stable JSON serialization.
 	// big.Int.String() produces a decimal string; accountUpdateWire makes the format explicit.
-	// UpdatedAt is stamped HERE (enqueue time), not at drain time in the worker:
-	// entries reclaimed from the Redis PEL after a crash keep their original
-	// timestamp, so they cannot beat newer writes from the live executor (LWW).
-	enqueuedAt := time.Now().UTC().UnixNano()
+	// UpdatedAt is stamped HERE (producer side, at update-computation time) and carried
+	// through the stream — it is the LWW ordering key. The drain worker must never
+	// re-stamp it, or replayed stale entries would overwrite newer data.
+	now := time.Now().UTC().UnixNano()
 	wires := make([]accountUpdateWire, len(updates))
 	for i, u := range updates {
 		wires[i] = accountUpdateWire{
@@ -497,7 +497,7 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 			Nonce:       u.Nonce,
 			TxNonce:     u.TxNonce,
 			TxCountSent: u.TxCountSent,
-			UpdatedAt:   enqueuedAt,
+			UpdatedAt:   now,
 		}
 	}
 

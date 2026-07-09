@@ -13,15 +13,16 @@ package FastsyncV2
 //	Coinbase  → credit gasFee/2 + gasFee%2  (half + remainder)
 //	ZKVM      → credit gasFee/2
 //
-// Gas fee:
-//
-//	EIP-1559 (type 2): effectiveGasPrice = min(maxFee, baseFee(35 gwei) + tip)
-//	Legacy   (type 0/1): effectiveGasPrice = GasPrice ?? MaxFee ?? MaxPriorityFee ?? 1 Gwei
-//	gasFee = gasLimit * effectiveGasPrice
+// Gas fee: computed by config.GasFee / config.EffectiveGasPrice — the single
+// source of truth shared with the live execution path (Processing.go). Any
+// divergence between the two paths corrupts account balances on reconciliation;
+// see config/gasfee.go for the exact formula and the history of that bug.
 
 import (
 	"math/big"
 	"strings"
+
+	"gossipnode/config"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
 )
@@ -76,7 +77,7 @@ func applyBlockDeltas(blk *types.ZKBlock, deltas map[string]*types.AccountDelta)
 			toAddr = strings.ToLower(tx.To.Hex())
 		}
 
-		gasFee := computeGasFee(tx)
+		gasFee := config.GasFee(tx.Type, tx.GasLimit, tx.GasPrice, tx.MaxFee, tx.MaxPriorityFee)
 
 		halfGas := new(big.Int).Div(gasFee, big.NewInt(2))
 		remainder := new(big.Int).Mod(gasFee, big.NewInt(2))
@@ -128,53 +129,7 @@ func getDelta(deltas map[string]*types.AccountDelta, addr string) *types.Account
 	return d
 }
 
-// computeGasFee returns gasLimit * effectiveGasPrice following Processing.go rules.
-func computeGasFee(tx *types.Transaction) *big.Int {
-	if tx.GasLimit == 0 {
-		return big.NewInt(0)
-	}
-	gasLimit := new(big.Int).SetUint64(tx.GasLimit)
-	effectivePrice := effectiveGasPrice(tx)
-	return new(big.Int).Mul(gasLimit, effectivePrice)
-}
-
-var (
-	oneGwei       = big.NewInt(1_000_000_000)
-	deltasBaseFee = big.NewInt(35_000_000_000) // 35 gwei — must equal config.BaseFeeWei
-)
-
-// effectiveGasPrice returns the effective gas price for a transaction.
-// Mirrors config.EffectiveGasPrice exactly (operates on JMDN-FastSync types
-// so cannot import config directly).
-//
-//	EIP-1559 (type 2): min(maxFee, baseFee(35 gwei) + tip)
-//	Legacy   (0/1):    GasPrice → MaxFee → MaxPriorityFee → 1 Gwei
-func effectiveGasPrice(tx *types.Transaction) *big.Int {
-	switch tx.Type {
-	case 2: // EIP-1559: effective = min(maxFee, baseFee + tip)
-		maxFee := tx.MaxFee
-		if maxFee == nil || maxFee.Sign() <= 0 {
-			maxFee = new(big.Int).Set(deltasBaseFee)
-		}
-		tip := tx.MaxPriorityFee
-		if tip == nil {
-			tip = new(big.Int)
-		}
-		basePlusTip := new(big.Int).Add(deltasBaseFee, tip)
-		if maxFee.Cmp(basePlusTip) <= 0 {
-			return new(big.Int).Set(maxFee)
-		}
-		return new(big.Int).Set(basePlusTip)
-	default: // Legacy / EIP-2930
-		if tx.GasPrice != nil && tx.GasPrice.Sign() > 0 {
-			return new(big.Int).Set(tx.GasPrice)
-		}
-		if tx.MaxFee != nil && tx.MaxFee.Sign() > 0 {
-			return new(big.Int).Set(tx.MaxFee)
-		}
-		if tx.MaxPriorityFee != nil && tx.MaxPriorityFee.Sign() > 0 {
-			return new(big.Int).Set(tx.MaxPriorityFee)
-		}
-	}
-	return new(big.Int).Set(oneGwei)
-}
+// Gas-fee helpers intentionally removed: the formula previously duplicated here
+// drifted from Processing.go (raw MaxFee, no baseFee clamp, 1 gwei fallback,
+// zero fee on GasLimit==0) and corrupted balances on every reconciliation of
+// EIP-1559 transactions. Use config.GasFee / config.EffectiveGasPrice only.

@@ -14,6 +14,7 @@ import (
 
 	"gossipnode/config"
 	"gossipnode/DB_OPs/txindex"
+	"gossipnode/config"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
 

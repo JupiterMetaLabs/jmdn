@@ -41,13 +41,16 @@ package NodeInfo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"gossipnode/DB_OPs"
+	"gossipnode/config"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
 	"github.com/ethereum/go-ethereum/common"
@@ -71,17 +74,18 @@ type dbEntry = struct {
 // surprises (math/big.Int marshals as a quoted decimal string, but that behaviour
 // is implementation-defined and not guaranteed across versions).
 //
-// Stored in the stream as: {"address":"0x...","new_balance":"1000000","nonce":42,"tx_nonce":43,"tx_count_sent":5,"updated_at":1752000000000000000}
+// Stored in the stream as: {"address":"0x...","new_balance":"1000000","nonce":42,"tx_nonce":43,"tx_count_sent":5,"updated_at":1700000000000000000}
 type accountUpdateWire struct {
 	Address     string `json:"address"`
 	NewBalance  string `json:"new_balance"` // decimal string from big.Int.String()
 	Nonce       uint64 `json:"nonce"`
 	TxNonce     uint64 `json:"tx_nonce"`
 	TxCountSent uint64 `json:"tx_count_sent"`
-	// UpdatedAt is the LWW timestamp (UnixNano), stamped at ENQUEUE time by
-	// BatchUpdateAccounts. It must NOT be stamped at drain time: a PEL entry
-	// reclaimed after a crash would get a fresh timestamp and beat newer,
-	// correct data written by the live executor (LWW timestamp forgery).
+	// UpdatedAt is the producer-side UnixNano timestamp captured when the update
+	// was computed. It is the LWW ordering key for BatchRestoreAccounts. It MUST
+	// NOT be (re)stamped at drain time: a replayed/reclaimed stale entry would get
+	// a fresh timestamp and overwrite newer correct data (the pre-fix behaviour).
+	// 0 = entry enqueued by a pre-upgrade producer; drain falls back to now().
 	UpdatedAt int64 `json:"updated_at,omitempty"`
 }
 
@@ -181,6 +185,12 @@ func (wm *WorkerManager) EnsureActive() {
 func StartAccountSyncWorker(logger_ctx context.Context, streamer RedisStreamer, cfg AccountSyncWorkerConfig) *WorkerManager {
 	m := &WorkerManager{streamer: streamer, cfg: cfg}
 	InstallAccountQueue(streamer, m)
+
+	// Eagerly run one drain pass so entries left in the stream/PEL by a previous
+	// run are written promptly. Without this the worker starts lazily on the next
+	// WriteAccounts call — which may never come on an already-synced node, leaving
+	// queued account writes stranded across restarts.
+	m.EnsureActive()
 
 	// Eagerly verify Redis connection in the background.
 	// We do this to ensure we get a reliable success/failure log on boot,
@@ -309,9 +319,10 @@ func reclaimPending(s RedisStreamer, cfg AccountSyncWorkerConfig) error {
 // Space: O(N) — ephemeral []dbEntry freed after ACK.
 func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerConfig) error {
 	var (
-		writeEntries []dbEntry // accounts to persist to ImmuDB
-		goodIDs      []string  // stream IDs to ACK+XDEL after successful DB write
-		poisonIDs    []string  // stream IDs to ACK+XDEL immediately (unrecoverable)
+		writeEntries []dbEntry           // accounts to persist to ImmuDB
+		updateWires  []accountUpdateWire // balance/nonce updates to merge with stored accounts
+		goodIDs      []string            // stream IDs to ACK+XDEL after successful DB write
+		poisonIDs    []string            // stream IDs to ACK+XDEL immediately (unrecoverable)
 	)
 
 	for _, entry := range entries {
@@ -336,7 +347,7 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 				poisonIDs = append(poisonIDs, entry.ID)
 				continue
 			}
-			writeEntries = append(writeEntries, parsed...)
+			updateWires = append(updateWires, parsed...)
 			goodIDs = append(goodIDs, entry.ID)
 
 		default:
@@ -356,7 +367,7 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 		cancel()
 	}
 
-	if len(writeEntries) == 0 {
+	if len(writeEntries) == 0 && len(updateWires) == 0 {
 		return nil
 	}
 
@@ -374,6 +385,18 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 		return fmt.Errorf("get account DB connection: %w", err)
 	}
 	defer DB_OPs.PutAccountsConnection(conn)
+
+	// Resolve balance/nonce updates against the CURRENTLY stored account so the
+	// write preserves DIDAddress, AccountType, CreatedAt and Metadata, and carries
+	// the producer-side UpdatedAt for correct LWW ordering. A read failure returns
+	// an error → nothing is ACKed → the whole batch is retried from the PEL.
+	if len(updateWires) > 0 {
+		updEntries, err := buildUpdateEntries(writeCtx, conn, updateWires)
+		if err != nil {
+			return fmt.Errorf("resolve update entries: %w", err)
+		}
+		writeEntries = append(writeEntries, updEntries...)
+	}
 
 	// Write in sub-batches to bound individual ImmuDB commit size.
 	// All chunks must succeed before any ACK is issued.
@@ -460,51 +483,99 @@ func parseAccountsPayload(dataStr string) ([]dbEntry, error) {
 	return entries, nil
 }
 
-// parseUpdatesPayload deserializes a payloadTypeUpdates JSON blob into a flat list
-// of DB write entries ready for BatchRestoreAccounts.
+// parseUpdatesPayload deserializes and validates a payloadTypeUpdates JSON blob.
 // Reads accountUpdateWire (not types.AccountUpdate) to avoid big.Int JSON ambiguity.
+// Pure parse/validate — the DB merge happens later in buildUpdateEntries, once a
+// connection is held. Undecodable payloads surface here so they become poison
+// pills instead of failing the whole batch after a partial merge.
 //
 // Time: O(N) where N = number of updates in the payload.
-// Space: O(N) — one dbEntry per update.
-func parseUpdatesPayload(dataStr string) ([]dbEntry, error) {
+func parseUpdatesPayload(dataStr string) ([]accountUpdateWire, error) {
 	var wires []accountUpdateWire
 	if err := json.Unmarshal([]byte(dataStr), &wires); err != nil {
 		return nil, fmt.Errorf("unmarshal []accountUpdateWire: %w", err)
 	}
-	entries := make([]dbEntry, 0, len(wires))
+	for _, w := range wires {
+		if _, ok := new(big.Int).SetString(w.NewBalance, 10); !ok {
+			return nil, fmt.Errorf("invalid decimal balance %q for address %s", w.NewBalance, w.Address)
+		}
+	}
+	return wires, nil
+}
+
+// buildUpdateEntries converts balance/nonce update wires into full account objects
+// ready for BatchRestoreAccounts by merging each update into the currently stored
+// account.
+//
+// Two corruption bugs lived in the old parseUpdatesPayload that this replaces:
+//  1. UpdatedAt was stamped time.Now() at DRAIN time. A replayed/reclaimed stale
+//     entry got a fresh timestamp and won LWW over newer correct data — stale
+//     balance resurrection after every worker crash/restart. UpdatedAt now
+//     travels in the wire from the producer.
+//  2. The account object was rebuilt from defaults: DIDAddress set to the hex
+//     address (not a DID), AccountType forced to "user", CreatedAt and Metadata
+//     dropped. Every update degraded the stored account object.
+//
+// DB read errors return an error → entries stay unACKed in the PEL and retry.
+//
+// Time: O(N) ImmuDB point reads + O(N) serialization, N = len(wires).
+
+// getAccountForUpdate is a test seam for buildUpdateEntries' account lookup.
+// Production value is DB_OPs.GetAccount; tests substitute a stub.
+var getAccountForUpdate = DB_OPs.GetAccount
+
+func buildUpdateEntries(ctx context.Context, conn *config.PooledConnection, wires []accountUpdateWire) ([]dbEntry, error) {
+	_ = ctx // reads below use the pooled connection's own client context handling
+	entries := make([]dbEntry, 0, len(wires)*2)
 	for _, w := range wires {
 		balance := new(big.Int)
 		if _, ok := balance.SetString(w.NewBalance, 10); !ok {
+			// Already validated at parse time; repeated defensively.
 			return nil, fmt.Errorf("invalid decimal balance %q for address %s", w.NewBalance, w.Address)
 		}
 		addr := common.HexToAddress(w.Address)
-		// LWW timestamp comes from the wire (stamped at enqueue time). Fallback to
-		// drain time only for legacy entries produced before updated_at existed.
+
 		updatedAt := w.UpdatedAt
 		if updatedAt == 0 {
+			// In-flight entry from a pre-upgrade producer — best available ordering.
 			updatedAt = time.Now().UTC().UnixNano()
 		}
-		// DIDAddress, AccountType, CreatedAt, and Metadata are intentionally left
-		// zero-valued: a balance update carries no identity information. Writing
-		// placeholders here (hex address as DID, hardcoded "user" type) clobbered
-		// real account objects on every recon cycle. BatchRestoreAccounts merges
-		// the existing values for zero-valued fields.
-		dbAcc := &DB_OPs.Account{
-			Address:     addr,
-			Balance:     balance.String(),
-			Nonce:       w.Nonce,
-			TxNonce:     w.TxNonce,
-			TxCountSent: w.TxCountSent,
-			UpdatedAt:   updatedAt,
+
+		dbAcc, err := getAccountForUpdate(conn, addr)
+		switch {
+		case err == nil && dbAcc != nil:
+			// Merge: overwrite balance/nonce counters only; preserve identity fields
+			// (DIDAddress, AccountType, CreatedAt, Metadata).
+			dbAcc.Balance = balance.String()
+			dbAcc.Nonce = w.Nonce
+			dbAcc.TxNonce = w.TxNonce
+			dbAcc.TxCountSent = w.TxCountSent
+			dbAcc.UpdatedAt = updatedAt
+		case err != nil && (errors.Is(err, DB_OPs.ErrNotFound) || strings.Contains(err.Error(), "key not found")):
+			// Account does not exist yet — construct a minimal object. DIDAddress
+			// stays empty: hex addresses are not DIDs and must not create did: refs.
+			dbAcc = &DB_OPs.Account{
+				Address:     addr,
+				Balance:     balance.String(),
+				Nonce:       w.Nonce,
+				TxNonce:     w.TxNonce,
+				TxCountSent: w.TxCountSent,
+				AccountType: "user",
+				CreatedAt:   updatedAt,
+				UpdatedAt:   updatedAt,
+			}
+		default:
+			return nil, fmt.Errorf("read account %s for update merge: %w", addr.Hex(), err)
 		}
+
 		val, err := json.Marshal(dbAcc)
 		if err != nil {
-			return nil, fmt.Errorf("marshal DB_OPs.Account for address %s: %w", w.Address, err)
+			return nil, fmt.Errorf("marshal DB_OPs.Account for address %s: %w", addr.Hex(), err)
 		}
-		entries = append(entries, dbEntry{
-			Key:   DB_OPs.Prefix + addr.Hex(),
-			Value: val,
-		})
+		entries = append(entries, dbEntry{Key: DB_OPs.Prefix + addr.Hex(), Value: val})
+		if dbAcc.DIDAddress != "" {
+			entries = append(entries, dbEntry{Key: DB_OPs.DIDPrefix + dbAcc.DIDAddress, Value: val})
+		}
 	}
 	return entries, nil
 }

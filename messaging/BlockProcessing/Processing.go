@@ -797,24 +797,34 @@ func contains(s, substr string) bool {
 	return len(s) >= len(substr) && s[:len(substr)] == substr
 }
 
-// parseTransaction parses the numeric values in a transaction.
-// Fee logic is delegated to config.EffectiveGasPrice — single source of truth.
+// parseTransaction parses the numeric values in a transaction
 func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error) {
 	parsed := &config.ParsedZKTransaction{
 		Original: &tx,
 	}
 
+	// Set the value directly since it's already a *big.Int
 	if tx.Value != nil {
 		parsed.ValueBig = new(big.Int).Set(tx.Value)
 	} else {
 		parsed.ValueBig = big.NewInt(0)
 	}
 
-	parsed.EffectiveGasFee = config.EffectiveGasPrice(&tx)
+	// Determine gas fee based on transaction type.
+	// Type 0x0 = Legacy, 0x1 = AccessList, 0x2 = DynamicFee (EIP-1559).
+	// The formula lives in config.EffectiveGasPrice — the single source of truth
+	// shared with FastsyncV2 delta reconciliation. Do NOT inline fee logic here.
+	parsed.EffectiveGasFee = config.EffectiveGasPrice(tx.Type, tx.GasPrice, tx.MaxFee, tx.MaxPriorityFee)
 
-	// MaxFeeBig is only meaningful for EIP-1559 (type 2).
-	if tx.Type == 2 && tx.MaxFee != nil {
-		parsed.MaxFeeBig = new(big.Int).Set(tx.MaxFee)
+	if tx.Type == 2 {
+		maxFee := tx.MaxFee
+		if maxFee == nil {
+			maxFee = big.NewInt(config.BaseFeeWei) // safe fallback
+		}
+		parsed.MaxFeeBig = new(big.Int).Set(maxFee)
+	} else {
+		// For non-EIP-1559 transactions, MaxFeeBig is not applicable
+		parsed.MaxFeeBig = nil
 	}
 
 	return parsed, nil
