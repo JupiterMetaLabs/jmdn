@@ -18,7 +18,6 @@ import (
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	"gossipnode/config/version"
-	"gossipnode/fastsync"
 	"gossipnode/messaging"
 	"gossipnode/messaging/directMSG"
 	groMetrics "gossipnode/metrics/gro"
@@ -54,7 +53,6 @@ func formatTimestamp(timestamp int64) string {
 type CommandHandler struct {
 	Node            *config.Node
 	NodeManager     *node.NodeManager
-	FastSyncer      *fastsync.FastSync
 	FastSyncerV2    *FastsyncV2.FastsyncV2
 	MainClient      *config.PooledConnection
 	DIDClient       *config.PooledConnection
@@ -800,10 +798,8 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
 }
 
 func (h *CommandHandler) handleSyncInfo() {
-	fmt.Println("FastSync Configuration:")
-	fmt.Printf("  Batch Size: %d\n", fastsync.SyncBatchSize)
-	fmt.Printf("  Request Timeout: %v\n", fastsync.RequestTimeout)
-	fmt.Printf("  Response Timeout: %v\n", fastsync.ResponseTimeout)
+	fmt.Println("FastSync Configuration (V2):")
+	fmt.Println("  V1 retired — engine: FastsyncV2 (see docs/RCA_account_sync.md §6j)")
 	printDashes()
 }
 

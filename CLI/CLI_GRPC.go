@@ -3,7 +3,6 @@ package CLI
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"gossipnode/DB_OPs"
@@ -17,7 +16,6 @@ import (
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/peer"
-	ma "github.com/multiformats/go-multiaddr"
 )
 
 type HandlePeers struct {
@@ -225,76 +223,13 @@ func (h *CommandHandler) CheckDBStats() (*schema.ImmutableState, *schema.Immutab
 	return mainState, accountsState, nil
 }
 
+// HandleFastSync — RETIRED (fastsync V1). V1's Merkle-hashmap sync and its
+// blind latest_block/AVRO handling were superseded by FastsyncV2 (see
+// docs/RCA_account_sync.md §6j — V1 was the last writer outside the F6
+// monotonic choke point). The gRPC surface is preserved; use fastsyncv2 /
+// catchup instead.
 func (h *CommandHandler) HandleFastSync(peeraddr string) (SyncStats, error) {
-	if peeraddr == "" {
-		return SyncStats{}, fmt.Errorf("usage: fastsync <peer_multiaddr>")
-	}
-	if !h.PullAllowed {
-		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
-	}
-
-	err := h.checkDBClient()
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("database client not initialized: %v", err)
-	}
-
-	err = h.checkDIDClient()
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("database client (DID) not initialized: %v", err)
-	}
-
-	// Parse the multiaddr
-	addr, err := ma.NewMultiaddr(peeraddr)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("invalid multiaddress: %v", err)
-	}
-
-	// Extract peer ID from multiaddr
-	addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("failed to extract peer info: %v", err)
-	}
-
-	fmt.Printf("Starting blockchain sync with peer %s\n", addrInfo.ID.String())
-
-	// Start the sync process
-	startTime := time.Now().UTC()
-
-	maxRetries := 3
-	var syncErr error
-
-	for retry := 0; retry < maxRetries; retry++ {
-		if retry > 0 {
-			fmt.Printf("Retry %d/%d after error: %v\n", retry+1, maxRetries, syncErr)
-			time.Sleep(2 * time.Second)
-		}
-
-		_, syncErr = h.FastSyncer.HandleSync(addrInfo.ID)
-		if syncErr == nil {
-			break
-		}
-	}
-
-	if syncErr != nil {
-		return SyncStats{}, fmt.Errorf("sync failed after %d attempts: %v", maxRetries, syncErr)
-	}
-
-	// Get post-sync states
-	newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("failed to get main database state after sync: %v", err)
-	}
-
-	newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("failed to get accounts database state after sync: %v", err)
-	}
-
-	return SyncStats{
-		TimeTaken:     time.Since(startTime),
-		MainState:     newMainState,
-		AccountsState: newAccountsState,
-	}, nil
+	return SyncStats{}, fmt.Errorf("fastsync (V1) is retired — use 'fastsyncv2 <peer_multiaddr>' or 'catchup' (FastsyncV2)")
 }
 
 func (h *CommandHandler) HandleFastSyncV2(peeraddr string) (SyncStats, error) {
@@ -393,80 +328,12 @@ func (h *CommandHandler) HandleAccountSync(peeraddr string) (SyncStats, error) {
 	}, nil
 }
 
+// HandleFirstSync — RETIRED (fastsync V1 AVRO whole-DB exchange). Superseded
+// by the bootstrap snapshot flow (DOCKER.md) + FastsyncV2 catchup, which sync
+// incrementally with verification instead of replacing databases wholesale.
+// The gRPC surface is preserved.
 func (h *CommandHandler) HandleFirstSync(peeraddr string, mode string) (SyncStats, error) {
-	if peeraddr == "" {
-		return SyncStats{}, fmt.Errorf("usage: firstsync <peer_multiaddr> <server|client>")
-	}
-
-	if mode == "" {
-		return SyncStats{}, fmt.Errorf("usage: firstsync <peer_multiaddr> <server|client>")
-	}
-
-	modeLower := strings.ToLower(mode)
-	if modeLower == "client" && !h.PullAllowed {
-		return SyncStats{}, fmt.Errorf("node is configured as a serve-only participant (pulling disabled). cannot pull data")
-	}
-
-	err := h.checkDBClient()
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("database client not initialized: %v", err)
-	}
-
-	err = h.checkDIDClient()
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("database client (DID) not initialized: %v", err)
-	}
-
-	// Parse the multiaddr
-	addr, err := ma.NewMultiaddr(peeraddr)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("invalid multiaddress: %v", err)
-	}
-
-	// Extract peer ID from multiaddr
-	addrInfo, err := peer.AddrInfoFromP2pAddr(addr)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("failed to extract peer info: %v", err)
-	}
-
-	if modeLower != "server" && modeLower != "client" {
-		return SyncStats{}, fmt.Errorf("invalid mode: %s. Must be 'server' or 'client'", mode)
-	}
-
-	fmt.Printf("Starting first sync with peer %s (mode: %s)\n", addrInfo.ID.String(), modeLower)
-	startTime := time.Now().UTC()
-
-	var syncErr error
-	if modeLower == "server" {
-		// Server mode: export and send all data
-		fmt.Println(">>> Running in SERVER mode - exporting all data...")
-		syncErr = h.FastSyncer.FirstSyncServer(addrInfo.ID)
-	} else {
-		// Client mode: receive and load all data
-		fmt.Println(">>> Running in CLIENT mode - receiving all data...")
-		syncErr = h.FastSyncer.FirstSyncClient(addrInfo.ID)
-	}
-
-	if syncErr != nil {
-		return SyncStats{}, fmt.Errorf("first sync failed: %v", syncErr)
-	}
-
-	// Get post-sync states
-	newMainState, err := DB_OPs.GetDatabaseState(h.MainClient.Client)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("failed to get main database state after sync: %v", err)
-	}
-
-	newAccountsState, err := DB_OPs.GetDatabaseState(h.DIDClient.Client)
-	if err != nil {
-		return SyncStats{}, fmt.Errorf("failed to get accounts database state after sync: %v", err)
-	}
-
-	return SyncStats{
-		TimeTaken:     time.Since(startTime),
-		MainState:     newMainState,
-		AccountsState: newAccountsState,
-	}, nil
+	return SyncStats{}, fmt.Errorf("firstsync (V1 AVRO exchange) is retired — bootstrap from snapshot (see DOCKER.md), then 'catchup' (FastsyncV2)")
 }
 
 // HandleRebuildIndex wipes and rebuilds the tx-address SQLite index from genesis.
