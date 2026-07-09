@@ -260,14 +260,18 @@ func SeedAppliedAnchor(conn *config.PooledConnection, legacy uint64) (bool, erro
 
 // ─── Processed-tx marker filter (dual-DB) ─────────────────────────────────────
 
-// FilterProcessedTxMarkers returns the subset of txHashes that carry a
-// `tx_processed:` marker in EITHER defaultdb or accountsdb.
+// FilterProcessedTxMarkers returns the subset of txHashes whose `tx_processed:`
+// marker says APPLIED, dual-reading both databases with value-aware semantics
+// (F4: value -1 = revoked by rollback = NOT processed; see DB_OPs/tx_markers.go).
 //
-// Dual-read is mandatory (RCA §6b, empirical 2026-07-09): current markers live
-// in defaultdb, but a historical cluster (~Dec 2025) was written to accountsdb
-// by an earlier code path and is invisible to the live guards. Reconciliation
-// uses this filter to exclude already-live-applied txs from delta computation
-// (I2); missing either DB re-applies those txs.
+// DB precedence: accountsdb is authoritative when the key exists there — F4
+// writes markers AND rollback revocations to accountsdb, and a -1 revocation
+// must never be overridden by a stale legacy marker. defaultdb is consulted
+// only for keys absent from accountsdb (legacy populations: current-era
+// defaultdb markers + pre-F4 history; RCA §6b, empirical 2026-07-09).
+//
+// Reconciliation uses this filter to exclude already-live-applied txs from
+// delta computation (I2); missing either DB re-applies those txs.
 //
 // Errors are returned, never swallowed: a failed filter must abort delta
 // computation (fail closed) — proceeding without exclusions double-applies.
@@ -282,7 +286,7 @@ func FilterProcessedTxMarkers(txHashes []string) (map[string]bool, error) {
 	keys := make([][]byte, 0, len(txHashes))
 	keyToHash := make(map[string]string, len(txHashes))
 	for _, h := range txHashes {
-		k := "tx_processed:" + h
+		k := TxProcessedKey(h)
 		keys = append(keys, []byte(k))
 		keyToHash[k] = h
 	}
@@ -290,43 +294,69 @@ func FilterProcessedTxMarkers(txHashes []string) (map[string]bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// defaultdb (current marker home). Explicit Get/Put — NOT the auto-return
-	// helper, whose recycle-at-deadline goroutine races long GetAll sequences.
-	mainConn, err := GetMainDBConnection(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("marker filter: main connection: %w", err)
-	}
-	mainErr := func() error {
-		defer PutMainDBConnection(mainConn)
-		if err := ensureMainDBSelected(mainConn); err != nil {
-			return fmt.Errorf("select defaultdb: %w", err)
-		}
-		return collectExistingKeys(ctx, mainConn, keys, keyToHash, processed)
-	}()
-	if mainErr != nil {
-		return nil, fmt.Errorf("marker filter (defaultdb): %w", mainErr)
-	}
-
-	// accountsdb (historical ~Dec-2025 cluster)
+	// accountsdb FIRST — authoritative for every key present there.
+	acctValues := make(map[string][]byte, len(txHashes))
 	acctConn, err := GetAccountsConnections(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("marker filter: accounts connection: %w", err)
 	}
-	defer PutAccountsConnection(acctConn)
-	if err := ensureAccountsDBSelected(acctConn); err != nil {
-		return nil, fmt.Errorf("marker filter: select accountsdb: %w", err)
+	acctErr := func() error {
+		defer PutAccountsConnection(acctConn)
+		if err := ensureAccountsDBSelected(acctConn); err != nil {
+			return fmt.Errorf("select accountsdb: %w", err)
+		}
+		return collectMarkerValues(ctx, acctConn, keys, keyToHash, acctValues)
+	}()
+	if acctErr != nil {
+		return nil, fmt.Errorf("marker filter (accountsdb): %w", acctErr)
 	}
-	if err := collectExistingKeys(ctx, acctConn, keys, keyToHash, processed); err != nil {
-		return nil, fmt.Errorf("marker filter (accountsdb): %w", err)
+	for h, raw := range acctValues {
+		if markerValueApplied(raw) {
+			processed[h] = true
+		}
+		// present-but-revoked: decided; defaultdb must not override.
+	}
+
+	// defaultdb (legacy) — only keys accountsdb knows nothing about.
+	// Explicit Get/Put — NOT the auto-return helper, whose recycle-at-deadline
+	// goroutine races long GetAll sequences.
+	legacyKeys := make([][]byte, 0, len(keys))
+	for _, k := range keys {
+		if _, decided := acctValues[keyToHash[string(k)]]; !decided {
+			legacyKeys = append(legacyKeys, k)
+		}
+	}
+	if len(legacyKeys) > 0 {
+		mainValues := make(map[string][]byte, len(legacyKeys))
+		mainConn, err := GetMainDBConnection(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("marker filter: main connection: %w", err)
+		}
+		mainErr := func() error {
+			defer PutMainDBConnection(mainConn)
+			if err := ensureMainDBSelected(mainConn); err != nil {
+				return fmt.Errorf("select defaultdb: %w", err)
+			}
+			return collectMarkerValues(ctx, mainConn, legacyKeys, keyToHash, mainValues)
+		}()
+		if mainErr != nil {
+			return nil, fmt.Errorf("marker filter (defaultdb): %w", mainErr)
+		}
+		for h, raw := range mainValues {
+			if markerValueApplied(raw) {
+				processed[h] = true
+			}
+		}
 	}
 
 	return processed, nil
 }
 
-// collectExistingKeys GetAlls keys in chunks on the given (already-selected)
-// connection and records found ones into out. immudb GetAll tolerates missing
-// keys per-key (verified against immudb v1.10.0), so absence is not an error.
-func collectExistingKeys(ctx context.Context, conn *config.PooledConnection, keys [][]byte, keyToHash map[string]string, out map[string]bool) error {
+// collectMarkerValues GetAlls keys in chunks on the given (already-selected)
+// connection and records found raw values into out (keyed by tx hash). immudb
+// GetAll tolerates missing keys per-key (verified against immudb v1.10.0), so
+// absence is not an error.
+func collectMarkerValues(ctx context.Context, conn *config.PooledConnection, keys [][]byte, keyToHash map[string]string, out map[string][]byte) error {
 	const chunk = 1000
 	for i := 0; i < len(keys); i += chunk {
 		end := i + chunk
@@ -345,7 +375,7 @@ func collectExistingKeys(ctx context.Context, conn *config.PooledConnection, key
 				continue
 			}
 			if h, ok := keyToHash[string(e.Key)]; ok {
-				out[h] = true
+				out[h] = e.Value
 			}
 		}
 	}
