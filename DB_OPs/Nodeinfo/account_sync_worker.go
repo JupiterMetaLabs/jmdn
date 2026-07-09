@@ -71,13 +71,18 @@ type dbEntry = struct {
 // surprises (math/big.Int marshals as a quoted decimal string, but that behaviour
 // is implementation-defined and not guaranteed across versions).
 //
-// Stored in the stream as: {"address":"0x...","new_balance":"1000000","nonce":42,"tx_nonce":43,"tx_count_sent":5}
+// Stored in the stream as: {"address":"0x...","new_balance":"1000000","nonce":42,"tx_nonce":43,"tx_count_sent":5,"updated_at":1752000000000000000}
 type accountUpdateWire struct {
 	Address     string `json:"address"`
 	NewBalance  string `json:"new_balance"` // decimal string from big.Int.String()
 	Nonce       uint64 `json:"nonce"`
 	TxNonce     uint64 `json:"tx_nonce"`
 	TxCountSent uint64 `json:"tx_count_sent"`
+	// UpdatedAt is the LWW timestamp (UnixNano), stamped at ENQUEUE time by
+	// BatchUpdateAccounts. It must NOT be stamped at drain time: a PEL entry
+	// reclaimed after a crash would get a fresh timestamp and beat newer,
+	// correct data written by the live executor (LWW timestamp forgery).
+	UpdatedAt int64 `json:"updated_at,omitempty"`
 }
 
 // ─── Configuration ────────────────────────────────────────────────────────────
@@ -473,15 +478,24 @@ func parseUpdatesPayload(dataStr string) ([]dbEntry, error) {
 			return nil, fmt.Errorf("invalid decimal balance %q for address %s", w.NewBalance, w.Address)
 		}
 		addr := common.HexToAddress(w.Address)
+		// LWW timestamp comes from the wire (stamped at enqueue time). Fallback to
+		// drain time only for legacy entries produced before updated_at existed.
+		updatedAt := w.UpdatedAt
+		if updatedAt == 0 {
+			updatedAt = time.Now().UTC().UnixNano()
+		}
+		// DIDAddress, AccountType, CreatedAt, and Metadata are intentionally left
+		// zero-valued: a balance update carries no identity information. Writing
+		// placeholders here (hex address as DID, hardcoded "user" type) clobbered
+		// real account objects on every recon cycle. BatchRestoreAccounts merges
+		// the existing values for zero-valued fields.
 		dbAcc := &DB_OPs.Account{
-			DIDAddress:  w.Address,
 			Address:     addr,
 			Balance:     balance.String(),
 			Nonce:       w.Nonce,
 			TxNonce:     w.TxNonce,
 			TxCountSent: w.TxCountSent,
-			AccountType: "user",
-			UpdatedAt:   time.Now().UTC().UnixNano(),
+			UpdatedAt:   updatedAt,
 		}
 		val, err := json.Marshal(dbAcc)
 		if err != nil {

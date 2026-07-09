@@ -325,6 +325,27 @@ func BatchCreateAccountsOrdered(PooledConnection *config.PooledConnection, entri
 	return nil
 }
 
+// normalizeUpdatedAtNanos converts an UpdatedAt value of unknown unit
+// (seconds, millis, micros, or nanos since epoch) to nanoseconds so LWW
+// comparisons are unit-safe. Needed because the live executor stamps
+// UpdatedAt with the block timestamp (Unix seconds) while sync paths stamp
+// time.Now().UnixNano() — comparing them raw makes any nano-stamped write
+// beat every second-stamped write by 9 orders of magnitude.
+func normalizeUpdatedAtNanos(ts int64) int64 {
+	switch {
+	case ts <= 0:
+		return ts
+	case ts < 1e11: // seconds (valid until year ~5138)
+		return ts * int64(time.Second)
+	case ts < 1e14: // milliseconds
+		return ts * int64(time.Millisecond)
+	case ts < 1e17: // microseconds
+		return ts * int64(time.Microsecond)
+	default: // already nanoseconds
+		return ts
+	}
+}
+
 // BatchRestoreAccounts applies a batch of entries into accountsdb.
 // For address:<addr> keys it writes KV. For did:<did> it creates a bound reference to the corresponding address key.
 func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledConnection, entries []struct {
@@ -392,7 +413,7 @@ func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledCo
 			var curAcc, inAcc Account
 			if json.Unmarshal(cur.Value, &curAcc) == nil &&
 				json.Unmarshal(e.Value, &inAcc) == nil &&
-				inAcc.UpdatedAt > curAcc.UpdatedAt {
+				normalizeUpdatedAtNanos(inAcc.UpdatedAt) > normalizeUpdatedAtNanos(curAcc.UpdatedAt) {
 				addrSet[e.Key] = e
 			}
 		}
@@ -489,15 +510,19 @@ func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledCo
 		var incoming Account
 		if err := json.Unmarshal(e.Value, &incoming); err == nil {
 			if existing, found := existingAccounts[e.Key]; found {
-				if existing.UpdatedAt > incoming.UpdatedAt {
+				// Normalize both timestamps to nanoseconds — stored values may be
+				// in seconds (live executor: block timestamp) or nanos (sync paths).
+				existingTS := normalizeUpdatedAtNanos(existing.UpdatedAt)
+				incomingTS := normalizeUpdatedAtNanos(incoming.UpdatedAt)
+				if existingTS > incomingTS {
 					delete(addressKeysInBatch, e.Key)
 					shouldWrite = false
-				} else if existing.UpdatedAt == incoming.UpdatedAt && existing.Balance == incoming.Balance {
+				} else if existingTS == incomingTS && existing.Balance == incoming.Balance {
 					// Same timestamp and balance - no change needed
 					delete(addressKeysInBatch, e.Key)
 					shouldWrite = false
 				}
-				if shouldWrite && existing.UpdatedAt < incoming.UpdatedAt {
+				if shouldWrite && existingTS < incomingTS {
 					loggerCtx, cancel := context.WithCancel(context.Background())
 					defer cancel()
 					PooledConnection.Client.Logger.Debug(loggerCtx, "Updating account - incoming is newer (LWW)",
@@ -515,21 +540,39 @@ func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledCo
 
 				// FIELD MERGING: Prevent partial updates (e.g. from Reconciliation) from wiping out account metadata
 				if shouldWrite {
-					// 1. Preserve DIDAddress if incoming DID is empty or mistakenly set to the hex address
-					if incoming.DIDAddress == "" || incoming.DIDAddress == incoming.Address.Hex() {
+					// 1. Preserve DIDAddress if incoming DID is empty or mistakenly set to the
+					// hex address. EqualFold: legacy update entries carried the address in
+					// lowercase while Address.Hex() is EIP-55 checksummed — a case-sensitive
+					// compare never matched, letting the forged DID overwrite the real one.
+					if incoming.DIDAddress == "" || strings.EqualFold(incoming.DIDAddress, incoming.Address.Hex()) {
 						incoming.DIDAddress = existing.DIDAddress
 					}
 					// 2. Preserve CreatedAt
 					if incoming.CreatedAt == 0 {
 						incoming.CreatedAt = existing.CreatedAt
 					}
-					// 3. Preserve AccountType
-					if incoming.AccountType == "user" && existing.AccountType != "" {
+					// 3. Preserve AccountType. Empty = balance update carries no identity;
+					// "user" = legacy hardcoded placeholder from old update entries.
+					if (incoming.AccountType == "" || incoming.AccountType == "user") && existing.AccountType != "" {
 						incoming.AccountType = existing.AccountType
 					}
 					// 4. Preserve Metadata
 					if incoming.Metadata == nil {
 						incoming.Metadata = existing.Metadata
+					}
+					// 5. Preserve ART identity nonce: 0 means the producer had no value
+					// (e.g. reconciliation of a receiver-only account). Never zero it.
+					if incoming.Nonce == 0 {
+						incoming.Nonce = existing.Nonce
+					}
+					// 6. Monotonic guard on tx counters: the Ethereum nonce and sent-tx
+					// count never decrease. A lower incoming value means the producer had
+					// partial information (receiver-only recon delta) — keep the existing.
+					if incoming.TxNonce < existing.TxNonce {
+						incoming.TxNonce = existing.TxNonce
+					}
+					if incoming.TxCountSent < existing.TxCountSent {
+						incoming.TxCountSent = existing.TxCountSent
 					}
 
 					// Re-serialize the merged account object to overwrite e.Value
