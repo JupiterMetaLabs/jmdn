@@ -794,6 +794,14 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		return fmt.Errorf("failed to store block in database: %w", err)
 	}
 
+	// F6: full block stored + processed → advance the tip marker.
+	// Monotonic: a replayed/out-of-order block can never regress it.
+	// StoreZKBlock no longer writes the marker itself (skeleton safety).
+	if _, _, err := DB_OPs.UpdateLatestBlockMonotonic(block.BlockNumber); err != nil {
+		log.Warn().Err(err).Uint64("block_number", block.BlockNumber).
+			Msg("latest_block monotonic update failed (non-fatal: ReconcileBlockNumber heals forward)")
+	}
+
 	// Update the SQLite tx-by-address index asynchronously.
 	// Non-blocking — never delays the block commit path.
 	txindex.IndexBlockAsync(block)

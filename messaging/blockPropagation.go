@@ -367,6 +367,14 @@ func HandleBlockStream(stream network.Stream) {
 				return fmt.Errorf("failed to store block in database: %w", err)
 			}
 
+			// F6: full block stored + processed → advance the tip marker.
+			// Monotonic: a replayed/out-of-order block can never regress it.
+			// StoreZKBlock no longer writes the marker itself (skeleton safety).
+			if _, _, err := DB_OPs.UpdateLatestBlockMonotonic(msg.Block.BlockNumber); err != nil {
+				log.Warn().Err(err).Uint64("block_number", msg.Block.BlockNumber).
+					Msg("latest_block monotonic update failed (non-fatal: ReconcileBlockNumber heals forward)")
+			}
+
 			// Store block message metadata
 			if err := storeMessageInImmuDB(msg); err != nil { // msg is a copy, but it's fine
 				log.Error().Err(err).Msg("Failed to store block message in ImmuDB")

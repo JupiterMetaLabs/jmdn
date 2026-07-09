@@ -354,10 +354,14 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 		// Advance latest_block to remoteTip. This is the authoritative write:
 		// phases 2/3 may have been skipped (data already present), so WriteData
 		// never ran and the DB key was never updated on this run.
-		if updateErr := DB_OPs.Update("latest_block", remoteTip); updateErr != nil {
+		// F6: monotonic — a catchup against a lagging peer must never move the
+		// marker backwards past blocks live processing already committed.
+		if marker, advanced, updateErr := DB_OPs.UpdateLatestBlockMonotonic(remoteTip); updateErr != nil {
 			log.Printf("[CatchUpSync] phase 8 warning: failed to update latest_block to %d: %v", remoteTip, updateErr)
+		} else if advanced {
+			log.Printf("[CatchUpSync] phase 8: latest_block advanced to %d", marker)
 		} else {
-			log.Printf("[CatchUpSync] phase 8: latest_block advanced to %d", remoteTip)
+			log.Printf("[CatchUpSync] phase 8: latest_block already at %d (>= %d) — not regressed", marker, remoteTip)
 		}
 		// F3: the applied anchor advances HERE — the only point where both proofs
 		// exist: phase 5 applied everything (reconClean) AND this scan proved the

@@ -35,12 +35,13 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 		return err
 	}
 
-	// Snapshot latest_block before writing any headers.
-	// HeaderSync writes skeleton blocks (no transactions) so it must not advance
-	// the latest_block marker — that would make the explorer and StartupSync think
-	// the node is fully synced up to the last header, when DataSync hasn't run yet.
-	// We restore this value after all headers are written.
-	prevLatest, prevErr := DB_OPs.GetLatestBlockNumber(ctx, conn)
+	// F6: the latest_block snapshot/restore dance that used to live here is
+	// GONE. It existed to undo StoreZKBlock's per-block marker write for
+	// skeleton blocks — but the restore raced concurrent DataSync workers and
+	// live processing, clobbering their legitimate advances back to a stale
+	// value (a regression vector built to patch another). StoreZKBlock no
+	// longer touches the marker, so skeleton writes cannot advance it and
+	// there is nothing to restore.
 
 	for _, h := range headers {
 		b := &config.ZKBlock{
@@ -112,13 +113,6 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 		}
 	}
 
-	// Restore latest_block to the pre-HeaderSync value so the marker always
-	// reflects the last fully data-synced block, not just the last header.
-	if prevErr == nil {
-		if err2 := DB_OPs.Update("latest_block", prevLatest); err2 != nil {
-			return fmt.Errorf("restore latest_block after HeaderSync failed: %w", err2)
-		}
-	}
-
+	// F6: no latest_block restore — see the note at the top of this function.
 	return nil
 }

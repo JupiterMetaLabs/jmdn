@@ -256,6 +256,13 @@ func (fs *FastsyncV2) HandleSync(targetPeer string) error {
 // HandleStartupSync syncs from an already-connected peer, starting from the local
 // latest block number. This is used on node startup/restart to catch up on blocks
 // missed while offline, without re-syncing the entire chain.
+//
+// F6 NOTE — currently CALLER-LESS (verified 2026-07-09: no references outside
+// this file). If revived, do NOT anchor at localTip as below: catchup.go's own
+// warning applies — when a prior sync was interrupted, localTip can sit in the
+// middle of a gap and everything below it is silently skipped. Anchor at the
+// configured catch_up_from_block (bootstrap tip + 1) like HandleCatchUpSync,
+// which requires plumbing cfg.FastSync.CatchUpFromBlock into FastsyncV2 first.
 func (fs *FastsyncV2) HandleStartupSync(peerID peer.ID, addrs []multiaddr.Multiaddr) error {
 	if len(addrs) == 0 {
 		return fmt.Errorf("no addresses for peer %s", peerID)
