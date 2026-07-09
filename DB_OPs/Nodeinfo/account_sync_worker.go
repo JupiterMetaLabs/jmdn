@@ -86,7 +86,7 @@ type accountUpdateWire struct {
 	UpdatedAt int64 `json:"updated_at,omitempty"`
 }
 
-// txMarkerWire is one recon-applied tx to mark as processed (F4 3a). Enqueued
+// txMarkerWire is one recon-applied tx to mark as processed. Enqueued
 // by reconciliation AFTER its balance updates so stream FIFO ordering delivers
 // markers to the drain no earlier than the balances they describe.
 type txMarkerWire struct {
@@ -327,7 +327,7 @@ func reclaimPending(s RedisStreamer, cfg AccountSyncWorkerConfig) error {
 func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerConfig) error {
 	var (
 		writeEntries []dbEntry        // accounts to persist to ImmuDB
-		txMarkers    map[string]int64 // recon-applied tx markers (F4 3a) — committed LAST
+		txMarkers    map[string]int64 // recon-applied tx markers — committed LAST
 		goodIDs      []string         // stream IDs to ACK+XDEL after successful DB write
 		poisonIDs    []string         // stream IDs to ACK+XDEL immediately (unrecoverable)
 	)
@@ -427,7 +427,7 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 		}
 	}
 
-	// F4 3a / A2: recon-applied tx markers commit strictly AFTER every account
+	// ORDERING: recon-applied tx markers commit strictly AFTER every account
 	// chunk of this batch succeeded. Markers-first + a later chunk failure
 	// would let a recon rerun exclude never-applied txs (permanent skip);
 	// markers-last fails toward bounded double-apply on retry — the repairable
@@ -449,10 +449,10 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 	if err := s.Ack(ackCtx, accountSyncStream, accountSyncGroup, goodIDs...); err != nil {
 		log.Printf("[accountqueue] WARN: ACK failed for %d entries after successful DB write: %v — will be reclaimed and re-written (safe, LWW)", len(goodIDs), err)
 	} else {
-		// F5: advance the drain high-water mark ONLY after apply + ACK both
+		// Advance the drain high-water mark ONLY after apply + ACK both
 		// succeeded — an unACKed entry can be reclaimed and must not count as
-		// drained. This is what WaitForAccountQueueDrain (anchor gating,
-		// PROBE D) observes.
+		// drained. This is what WaitForAccountQueueDrain (anchor gating)
+		// observes.
 		noteDrainedIDs(goodIDs)
 		if err := s.Delete(ackCtx, accountSyncStream, goodIDs...); err != nil {
 			log.Printf("[accountqueue] WARN: XDEL failed for %d entries after ACK: %v", len(goodIDs), err)
@@ -538,8 +538,8 @@ func parseUpdatesPayload(dataStr string) ([]accountUpdateWire, error) {
 	return wires, nil
 }
 
-// parseTxMarkersPayload deserializes and validates a payloadTypeTxMarkers blob
-// (F4 3a). Pure parse — the markers-last ordered write happens in processBatch.
+// parseTxMarkersPayload deserializes and validates a payloadTypeTxMarkers blob.
+// Pure parse — the markers-last ordered write happens in processBatch.
 func parseTxMarkersPayload(dataStr string) ([]txMarkerWire, error) {
 	var wires []txMarkerWire
 	if err := json.Unmarshal([]byte(dataStr), &wires); err != nil {

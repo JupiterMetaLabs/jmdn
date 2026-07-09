@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// TestMarkerValueApplied pins the value-aware marker decision (F4-A1):
+// TestMarkerValueApplied pins the value-aware marker decision:
 // timestamps = applied, -1 = revoked by rollback, legacy garbage = applied.
 func TestMarkerValueApplied(t *testing.T) {
 	cases := []struct {
@@ -29,7 +29,7 @@ func TestMarkerValueApplied(t *testing.T) {
 }
 
 // TestMarkerKeyFormats freezes the on-disk key formats — they must match the
-// legacy populations already written by pre-F4 code.
+// legacy populations already on disk.
 func TestMarkerKeyFormats(t *testing.T) {
 	if got := TxProcessedKey("0xabc"); got != "tx_processed:0xabc" {
 		t.Errorf("TxProcessedKey: %q", got)

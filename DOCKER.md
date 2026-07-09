@@ -158,8 +158,8 @@ When jmdn writes account state, it enqueues to a Redis Stream (`XADD`) and retur
 | Auth | Password via `REDIS_PASSWORD` env var |
 | Usage | Redis Streams (not simple pub/sub — requires Redis 5+) |
 
-> **⚠ Redis persistence is load-bearing for account-state correctness (F3/F4,
-> RCA_account_sync.md §6f PROBE D).** Reconciliation's balance effects and
+> **⚠ Redis persistence is load-bearing for account-state correctness.**
+> Reconciliation's balance effects and
 > tx_processed markers travel through this queue, and the recon anchor
 > (`sync:accounts_last_applied_block`) is advanced once the data is verified and
 > ENQUEUED — before the drain commits it to ImmuDB. If Redis loses the queue

@@ -3,7 +3,7 @@ package NodeInfo
 // Tests for the payloadTypeUpdates drain path: parseUpdatesPayload validation
 // and updateWiresToEntries conversion.
 //
-// These pin the two fixes for the account-corruption RCA (see RCA_account_sync.md F2):
+// These pin two fixes for a historical account-corruption bug:
 //  1. UpdatedAt travels from the producer and is NOT re-stamped at drain time
 //     (re-stamping let replayed stale entries win LWW over newer data).
 //  2. Updates are written as SPARSE objects — identity fields (DIDAddress,

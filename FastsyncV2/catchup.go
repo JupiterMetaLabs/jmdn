@@ -285,9 +285,9 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 
 	// reconClean records whether phase 5 fully applied its range. The anchor is
 	// advanced ONLY in phase 8, after buildDataMissingTag proves the range is
-	// data-complete AND reconClean holds — advancing here (the pre-F3 behaviour)
+	// data-complete AND reconClean holds — advancing here (the old behaviour)
 	// stamped ranges "done" whose blocks were still skeleton/data-missing, so
-	// their transactions were silently never reconciled (RCA H2/H3).
+	// their transactions were silently never reconciled.
 	reconClean := false
 	reconFrom, reconSkip := fs.effectiveReconRange(fromBlock, remoteTip)
 	if reconSkip {
@@ -311,7 +311,7 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 			log.Printf("[CatchUpSync] phase 5 complete: %d committed, %d failed, took %s",
 				reconCount, len(failedAccounts), time.Since(reconStart).Round(time.Millisecond))
 			reconClean = err == nil && len(failedAccounts) == 0
-			// F4 3a: markers follow the balance enqueue for a clean recon.
+			// Markers follow the balance enqueue for a clean recon.
 			if reconClean {
 				fs.enqueueReconTxMarkers(appliedHashes, "CatchUpSync phase 5")
 			}
@@ -354,7 +354,7 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 		// Advance latest_block to remoteTip. This is the authoritative write:
 		// phases 2/3 may have been skipped (data already present), so WriteData
 		// never ran and the DB key was never updated on this run.
-		// F6: monotonic — a catchup against a lagging peer must never move the
+		// Monotonic — a catchup against a lagging peer must never move the
 		// marker backwards past blocks live processing already committed.
 		if marker, advanced, updateErr := DB_OPs.UpdateLatestBlockMonotonic(remoteTip); updateErr != nil {
 			log.Printf("[CatchUpSync] phase 8 warning: failed to update latest_block to %d: %v", remoteTip, updateErr)
@@ -363,7 +363,7 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 		} else {
 			log.Printf("[CatchUpSync] phase 8: latest_block already at %d (>= %d) — not regressed", marker, remoteTip)
 		}
-		// F3: the applied anchor advances HERE — the only point where both proofs
+		// The applied anchor advances HERE — the only point where both proofs
 		// exist: phase 5 applied everything (reconClean) AND this scan proved the
 		// range data-complete. markReconComplete caps at local tip + monotonic.
 		if reconClean {

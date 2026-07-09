@@ -1,9 +1,10 @@
 package FastsyncV2
 
-// Tests for the F3 marker-exclusion path in delta computation (invariant I2):
-// transactions already applied by live block processing (tx_processed marker)
-// must contribute NOTHING to reconciliation deltas, while unmarked txs in the
-// same block get full deltas (I1 — gap blocks are never skipped).
+// Tests for the marker-exclusion path in delta computation: transactions
+// already applied by live block processing (tx_processed marker) must
+// contribute NOTHING to reconciliation deltas — never applied twice — while
+// unmarked txs in the same block get full deltas (gap blocks are never
+// silently skipped).
 
 import (
 	"math/big"
@@ -62,18 +63,18 @@ func TestApplyBlockDeltas_SkipsLiveAppliedTxs(t *testing.T) {
 	deltas := make(map[string]*types.AccountDelta)
 	applyBlockDeltas(blk, deltas, skip)
 
-	// I2: tx1's sender and receiver must be completely absent.
+	// tx1's sender and receiver must be completely absent (no double-apply).
 	if _, ok := deltas[strings.ToLower(tx1.From.Hex())]; ok {
-		t.Error("skipped tx sender present in deltas — live-applied tx would be double-applied (I2)")
+		t.Error("skipped tx sender present in deltas — live-applied tx would be double-applied")
 	}
 	if _, ok := deltas[strings.ToLower(tx1.To.Hex())]; ok {
-		t.Error("skipped tx receiver present in deltas (I2)")
+		t.Error("skipped tx receiver present in deltas — would be double-applied")
 	}
 
-	// I1: tx2 (unmarked) must have full effects.
+	// tx2 (unmarked) must have full effects — never silently skipped.
 	sender2 := deltas[strings.ToLower(tx2.From.Hex())]
 	if sender2 == nil {
-		t.Fatal("unmarked tx sender missing from deltas — gap-block effects would be lost (I1)")
+		t.Fatal("unmarked tx sender missing from deltas — gap-block effects would be lost")
 	}
 	// sender delta = -(value + gasLimit*gasPrice)
 	wantSender := new(big.Int).Neg(new(big.Int).Add(
@@ -129,7 +130,7 @@ func TestApplyBlockDeltas_EmptySkipSetAppliesEverything(t *testing.T) {
 
 func TestApplyBlockDeltas_AllSkippedYieldsNothing(t *testing.T) {
 	// A fully live-applied block (e.g. re-scanned by catchup after live
-	// processing) must contribute zero deltas — the H1 double-apply scenario.
+	// processing) must contribute zero deltas — the double-apply scenario.
 	blk := deltaTestBlock()
 	skip := map[string]bool{
 		blk.Transactions[0].Hash.String(): true,
@@ -138,6 +139,6 @@ func TestApplyBlockDeltas_AllSkippedYieldsNothing(t *testing.T) {
 	deltas := make(map[string]*types.AccountDelta)
 	applyBlockDeltas(blk, deltas, skip)
 	if len(deltas) != 0 {
-		t.Fatalf("fully live-applied block must yield zero deltas (I2/H1), got %d accounts", len(deltas))
+		t.Fatalf("fully live-applied block must yield zero deltas, got %d accounts", len(deltas))
 	}
 }

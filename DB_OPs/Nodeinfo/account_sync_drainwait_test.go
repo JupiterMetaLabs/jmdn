@@ -1,6 +1,6 @@
 package NodeInfo
 
-// Tests for drain confirmation (F5, PROBE D): stream-ID ordering, HWM
+// Tests for drain confirmation: stream-ID ordering, HWM
 // monotonicity, and the pure confirmation decision. Every ambiguous input must
 // decide NOT-confirmed — the anchor-lag direction.
 
@@ -12,9 +12,9 @@ import (
 
 func TestParseStreamID(t *testing.T) {
 	cases := []struct {
-		in       string
-		ms, seq  uint64
-		ok       bool
+		in      string
+		ms, seq uint64
+		ok      bool
 	}{
 		{"1783583380000-0", 1783583380000, 0, true},
 		{"1783583380000-42", 1783583380000, 42, true},
@@ -107,7 +107,7 @@ func TestHWMMonotonicity(t *testing.T) {
 }
 
 // depthStreamer is a RedisStreamer fake with controllable queue depth for the
-// B2 boot-fallback tests. Embeds the enqueue-test fake for the inert methods.
+// boot-fallback tests. Embeds the enqueue-test fake for the inert methods.
 type depthStreamer struct {
 	recordingStreamer
 	qlen, pending int64
@@ -126,7 +126,7 @@ func withQueue(t *testing.T, s RedisStreamer) {
 	t.Cleanup(func() { InstallAccountQueue(origS, origM) })
 }
 
-// TestWaitForQueueQuiescence_BlocksWhileQueued pins B1: an entry gate over a
+// TestWaitForQueueQuiescence_BlocksWhileQueued pins that an entry gate over a
 // queue still holding a previous recon's entries must NOT pass — those entries
 // carry markers the exclusion filter cannot see yet.
 func TestWaitForQueueQuiescence_BlocksWhileQueued(t *testing.T) {
@@ -150,7 +150,7 @@ func TestWaitForQueueQuiescence_BlocksWhileQueued(t *testing.T) {
 	}
 }
 
-// TestWaitForQueueQuiescence_BootFallback pins B2: an empty in-process HWM must
+// TestWaitForQueueQuiescence_BootFallback pins that an empty in-process HWM must
 // NOT mean quiescent — after a restart, Redis can still hold pre-restart
 // entries. The gate falls back to a real queue-depth check.
 func TestWaitForQueueQuiescence_BootFallback(t *testing.T) {

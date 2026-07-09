@@ -76,8 +76,8 @@ func enqueueRecordsChunked[T any](ctx context.Context, s RedisStreamer, ptype sy
 			errs = append(errs, fmt.Errorf("enqueue chunk [%d:%d]: %w", start, end, err))
 			continue
 		}
-		// F5: record the XADD ID so reconciliation can wait for drain
-		// confirmation before advancing the anchor (PROBE D).
+		// Record the XADD ID so reconciliation can wait for drain
+		// confirmation before advancing the anchor.
 		noteEnqueuedID(id)
 	}
 	return errors.Join(errs...)
@@ -517,10 +517,10 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 	return nil
 }
 
-// EnqueueAppliedTxMarkers enqueues tx_processed markers for RECON-applied txs
-// (F4 3a). MUST be called AFTER the corresponding BatchUpdateAccounts: stream
+// EnqueueAppliedTxMarkers enqueues tx_processed markers for RECON-applied txs.
+// MUST be called AFTER the corresponding BatchUpdateAccounts: stream
 // FIFO + the drain's markers-last ordering then guarantee markers never commit
-// before the balances they describe (A2).
+// before the balances they describe.
 //
 // appliedAt is the producer-side Unix-seconds marker value (must be > 0).
 // Redis-unavailable fallback: writes markers directly — safe, because in that

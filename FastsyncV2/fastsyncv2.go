@@ -257,8 +257,8 @@ func (fs *FastsyncV2) HandleSync(targetPeer string) error {
 // latest block number. This is used on node startup/restart to catch up on blocks
 // missed while offline, without re-syncing the entire chain.
 //
-// F6 NOTE — currently CALLER-LESS (verified 2026-07-09: no references outside
-// this file). If revived, do NOT anchor at localTip as below: catchup.go's own
+// NOTE — currently CALLER-LESS (no references outside this file).
+// If revived, do NOT anchor at localTip as below: catchup.go's own
 // warning applies — when a prior sync was interrupted, localTip can sit in the
 // middle of a gap and everything below it is silently skipped. Anchor at the
 // configured catch_up_from_block (bootstrap tip + 1) like HandleCatchUpSync,
@@ -507,7 +507,7 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 			if len(failedAccounts) > 0 {
 				log.Printf("[FastsyncV2] Failed accounts: %v", failedAccounts)
 			}
-			// F4 3a: markers follow the balance enqueue for a CLEAN recon,
+			// Markers follow the balance enqueue for a CLEAN recon,
 			// independent of anchor verification — the deltas are on the queue
 			// and WILL be applied by the drain either way.
 			if err == nil && len(failedAccounts) == 0 {
@@ -702,15 +702,15 @@ func (fs *FastsyncV2) dumpPoTSWALToDB(ctx context.Context) error {
 	return nil
 }
 
-// reconBlockKey is the LEGACY (pre-F3) SQLite key that tracked reconciliation
-// progress. READ-ONLY since F3 — consumed once by reconAnchor() to seed the
+// reconBlockKey is the LEGACY SQLite key that tracked reconciliation
+// progress. READ-ONLY now — consumed once by reconAnchor() to seed the
 // accountsdb applied anchor, never written again. See legacySQLiteRecon.
 const reconBlockKey = "fastsync:last_reconciled_block"
 
 // effectiveReconRange returns the adjusted [from, to] range that hasn't been
 // reconciled yet, plus a skip flag when the entire range is already done.
 //
-// Since F3 the range derives from the accounts-applied anchor stored IN
+// The range derives from the accounts-applied anchor stored IN
 // accountsdb (DB_OPs.AppliedAnchorKey) — co-located with the balances it
 // describes, advanced by both the live path and reconciliation, seeded once
 // from the legacy SQLite watermark. Algorithm:
@@ -727,8 +727,8 @@ func (fs *FastsyncV2) effectiveReconRange(fromBlock, toBlock uint64) (from uint6
 	return from, from > toBlock
 }
 
-// legacySQLiteRecon reads the pre-F3 SQLite watermark (0 if absent/unreadable).
-// READ-ONLY since F3: used once to seed the accountsdb applied anchor.
+// legacySQLiteRecon reads the legacy SQLite watermark (0 if absent/unreadable).
+// READ-ONLY: used once to seed the accountsdb applied anchor.
 // Reconciliation-applied txs carry no tx_processed markers, so ignoring the
 // legacy value and re-reconciling its range would systematically double-apply;
 // seeding trades that for a bounded, repairable risk (the legacy value may be
@@ -751,9 +751,9 @@ func legacySQLiteRecon() uint64 {
 }
 
 // enqueueReconTxMarkers enqueues tx_processed markers for the txs whose deltas
-// a CLEAN ReconcileWithDeltas just enqueued (F4 3a). Called strictly AFTER the
+// a CLEAN ReconcileWithDeltas just enqueued. Called strictly AFTER the
 // balance enqueue: stream FIFO plus the drain's markers-last ordering guarantee
-// the markers never commit before the balances they describe (A2).
+// the markers never commit before the balances they describe.
 //
 // Failure is logged, never fatal — a missing marker fails toward re-apply on
 // the next recon (bounded double-apply, the repairable direction), never
@@ -771,7 +771,7 @@ func (fs *FastsyncV2) enqueueReconTxMarkers(hashes []string, phase string) {
 
 // tombstoneLegacySQLiteRecon overwrites the legacy SQLite watermark with an
 // unparseable sentinel after a successful seed. Without this, an accountsdb
-// restore to a PRE-F3 snapshot (anchor key absent) would re-run the migration
+// restore to an older snapshot (anchor key absent) would re-run the migration
 // and re-import the stale legacy value — the same re-poison path the
 // seed-once design exists to prevent. The original value is preserved inside
 // the sentinel for forensics; legacySQLiteRecon fails to parse it and
@@ -790,12 +790,12 @@ func tombstoneLegacySQLiteRecon(seeded uint64) {
 }
 
 // reconAnchor returns the accounts-applied anchor (accountsdb), seeding it once
-// from the legacy SQLite watermark on first use after the F3 upgrade. On read
+// from the legacy SQLite watermark on first use after the upgrade. On read
 // error it returns 0 — the SAFE direction: reconciliation re-covers the range
 // and tx_processed marker exclusion prevents double-apply (see DB_OPs/sync_anchor.go).
 func (fs *FastsyncV2) reconAnchor() uint64 {
 	if legacy := legacySQLiteRecon(); legacy > 0 {
-		// Cap BEFORE seeding: nodes running the pre-F3 code may carry the
+		// Cap BEFORE seeding: nodes running the legacy code may carry the
 		// MaxUint64 poison in SQLite (legacy-peer HandleSync path) — importing
 		// it would permanently disable reconciliation via the new anchor.
 		capped := DB_OPs.CapAnchorTarget(legacy, fs.blockInfoAdapter.GetBlockNumber())
@@ -805,7 +805,7 @@ func (fs *FastsyncV2) reconAnchor() uint64 {
 		if seeded, err := DB_OPs.SeedAppliedAnchor(nil, capped); err != nil {
 			log.Printf("[FastsyncV2] applied anchor: seed check failed: %v", err)
 		} else if seeded {
-			log.Printf("[FastsyncV2] applied anchor: SEEDED from legacy SQLite watermark = %d (one-time F3 migration)", capped)
+			log.Printf("[FastsyncV2] applied anchor: SEEDED from legacy SQLite watermark = %d (one-time migration)", capped)
 			tombstoneLegacySQLiteRecon(capped)
 		}
 	}
@@ -826,15 +826,15 @@ const drainConfirmTimeout = 90 * time.Second
 // markReconComplete advances the accounts-applied anchor to toBlock, capped at
 // the locally verified tip and monotonic (never backwards).
 //
-// The cap fixes a pre-F3 bug: HandleSync substitutes math.MaxUint64 when a
+// The cap fixes a legacy bug: HandleSync substitutes math.MaxUint64 when a
 // legacy peer reports BlockHeight 0 — the old SQLite code persisted that value,
 // permanently disabling reconciliation on the node.
 //
-// F5 (PROBE D): the advance is gated on DRAIN CONFIRMATION. Reconciliation's
+// The advance is gated on DRAIN CONFIRMATION. Reconciliation's
 // balance effects and tx markers travel through the Redis queue — enqueue ≠
 // applied. Advancing while entries are still queued lets a Redis loss (crash
 // without AOF, eviction, flush) strand an anchor that claims ranges whose
-// effects never reached the database: silent permanent skip (I1). The anchor
+// effects never reached the database: silent permanent skip. The anchor
 // now advances only once the drain worker has applied AND ACKed every account
 // stream entry this process enqueued (high-water mark ≥ capture point). Every
 // wait failure — timeout, worker restart, queue offline — skips the advance:
@@ -871,7 +871,7 @@ func (fs *FastsyncV2) markReconComplete(toBlock uint64) {
 // advanceReconAnchorIfProven is the single anchor-advancement gate for
 // reconciliation paths WITHOUT their own post-sync verification (HandleSync
 // phase 5, PoTS). It re-scans the range via buildDataMissingTag before
-// advancing — the anchor only ever states what is PROVEN applied (invariant I1).
+// advancing — the anchor only ever states what is PROVEN applied.
 // HandleCatchUpSync uses its own phase-8 verification instead.
 func (fs *FastsyncV2) advanceReconAnchorIfProven(reconErr error, failedCount int, fromBlock, toBlock uint64, phase string) {
 	tip := fs.blockInfoAdapter.GetBlockNumber()

@@ -1,14 +1,13 @@
 // MODULE: DB_OPs/latest_block
-// PURPOSE: Single monotonic choke point for the defaultdb `latest_block` marker
-//          (F6, RCA_account_sync.md §5 F6 / §4 secondary).
+// PURPOSE: Single monotonic choke point for the defaultdb `latest_block` marker.
 //
 // HISTORY: latest_block had FOUR writers and no guard —
-//   1. StoreZKBlock wrote it blindly per block (immuclient.go:1949, removed by
-//      F6): any out-of-order store (PoTS WAL dump, replayed block, sync worker)
+//   1. StoreZKBlock wrote it blindly per block (immuclient.go:1949, since
+//      removed): any out-of-order store (PoTS WAL dump, replayed block, sync worker)
 //      regressed the tip; header-sync SKELETON blocks (headers, no data)
 //      advanced it past the data-complete tip.
 //   2. The headers writer therefore snapshot/RESTORED it around header batches
-//      (immudb_headers_writer.go:38,118, removed by F6) — and the restore
+//      (immudb_headers_writer.go:38,118, since removed) — and the restore
 //      clobbered any legitimate advance committed concurrently by DataSync
 //      workers or live processing: a regression vector built to patch another.
 //   3. The data writer's batch-end update was blind: a stale catchup batch
@@ -16,7 +15,7 @@
 //      exact race txindex.setMetaMonotonicMax guards against).
 //   4. Catchup phase 8 wrote remoteTip blindly.
 //
-// F6: every writer goes through UpdateLatestBlockMonotonic. The marker never
+// NOW: every writer goes through UpdateLatestBlockMonotonic. The marker never
 // regresses; skeleton blocks never touch it (StoreZKBlock no longer writes it —
 // callers that store FULL blocks bump it explicitly).
 //

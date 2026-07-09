@@ -1,11 +1,13 @@
 package DB_OPs
 
-// Unit tests for the accounts-applied anchor's pure decision rules (F3).
+// Unit tests for the accounts-applied anchor's pure decision rules.
 // Each test names the invariant it pins:
-//   I1 — the anchor never exceeds a block whose effects are not fully applied
-//   I2 — no double-apply across live processing and reconciliation
-//   I3 — anchor co-located with the data it describes (storage property,
-//        enforced by placement in accountsdb; not testable here)
+//   - effects must never be silently skipped: the anchor never exceeds a
+//     block whose effects are not fully applied
+//   - effects must never be applied twice across live processing and
+//     reconciliation
+//   - the anchor is co-located with the data it describes (storage property,
+//     enforced by placement in accountsdb; not testable here)
 
 import (
 	"errors"
@@ -13,7 +15,7 @@ import (
 )
 
 func TestNextLiveAnchor_ContiguityRule(t *testing.T) {
-	// I1: a gap means blocks below are missing — the live path must NOT jump
+	// A gap means blocks below are missing — the live path must NOT jump
 	// the anchor over them (their effects would be skipped forever).
 	cases := []struct {
 		name         string
@@ -23,11 +25,11 @@ func TestNextLiveAnchor_ContiguityRule(t *testing.T) {
 		wantAdvanced bool
 	}{
 		{"contiguous next advances", 10, 11, 11, true},
-		{"gap does NOT advance (I1)", 10, 15, 10, false},
+		{"gap does NOT advance", 10, 15, 10, false},
 		{"duplicate/older does NOT advance", 10, 10, 10, false},
 		{"far older does NOT advance", 10, 3, 10, false},
 		{"genesis start: block 1 from anchor 0", 0, 1, 1, true},
-		{"bootstrap node mid-chain: no jump from 0 (I1)", 0, 5000, 0, false},
+		{"bootstrap node mid-chain: no jump from 0", 0, 5000, 0, false},
 	}
 	for _, c := range cases {
 		got, advanced := NextLiveAnchor(c.current, c.block)
@@ -40,7 +42,7 @@ func TestNextLiveAnchor_ContiguityRule(t *testing.T) {
 
 func TestNextReconAnchor_MonotonicMax(t *testing.T) {
 	// The anchor never moves backwards: a regression would re-open ranges whose
-	// recon-applied txs carry no markers → double-apply on the next run (I2).
+	// recon-applied txs carry no markers → double-apply on the next run.
 	cases := []struct {
 		name         string
 		current      uint64
@@ -64,9 +66,9 @@ func TestNextReconAnchor_MonotonicMax(t *testing.T) {
 }
 
 func TestCapAnchorTarget_PoisonGuard(t *testing.T) {
-	// I1: the anchor may never claim blocks the node does not verifiably hold.
+	// The anchor may never claim blocks the node does not verifiably hold.
 	// Two real poison sources: HandleSync's MaxUint64 substitution for legacy
-	// peers, and pre-F3 SQLite watermarks carrying that value into the seed.
+	// peers, and legacy SQLite watermarks carrying that value into the seed.
 	const maxU64 = ^uint64(0)
 	cases := []struct {
 		name        string
@@ -87,10 +89,10 @@ func TestCapAnchorTarget_PoisonGuard(t *testing.T) {
 }
 
 func TestShouldAdvanceReconAnchor_AllProofsRequired(t *testing.T) {
-	// I1: advancing on anything less than (no error AND zero failed accounts
-	// AND verified data-complete) stamps unapplied ranges as done — the exact
-	// dishonesty F3 removes (RCA H2/H3: failedAccounts>0 and skeleton-block
-	// ranges were previously marked complete).
+	// Advancing on anything less than (no error AND zero failed accounts
+	// AND verified data-complete) stamps unapplied ranges as done —
+	// historically, failedAccounts>0 and skeleton-block ranges were marked
+	// complete, silently skipping their effects.
 	someErr := errors.New("recon failed")
 	cases := []struct {
 		name     string
@@ -100,9 +102,9 @@ func TestShouldAdvanceReconAnchor_AllProofsRequired(t *testing.T) {
 		want     bool
 	}{
 		{"all proofs present → advance", nil, 0, true, true},
-		{"recon error blocks (H4)", someErr, 0, true, false},
-		{"failed accounts block (H3)", nil, 3, true, false},
-		{"unverified range blocks (H2)", nil, 0, false, false},
+		{"recon error blocks", someErr, 0, true, false},
+		{"failed accounts block", nil, 3, true, false},
+		{"unverified range blocks", nil, 0, false, false},
 		{"everything wrong blocks", someErr, 3, false, false},
 	}
 	for _, c := range cases {

@@ -193,7 +193,7 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 	// DataSync workers run concurrently — the last worker to finish may not hold
 	// the highest block. A single update at the end is authoritative.
 	//
-	// F6: MONOTONIC. The old blind Update had the exact race
+	// MONOTONIC. The old blind Update had the exact race
 	// txindex.setMetaMonotonicMax guards against: a stale catchup batch
 	// committing after newer live blocks moved the marker BACKWARDS. Genesis
 	// note: a batch containing only block 0 no longer needs a special guard —

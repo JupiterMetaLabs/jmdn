@@ -1,8 +1,8 @@
 // MODULE: DB_OPs/sync_anchor
 // PURPOSE: The accounts-applied anchor — the single honest watermark for account
-//          state (F3, RCA_account_sync.md §6c). Stored IN accountsdb so a restore
-//          of accountsdb rolls the anchor back together with the balances it
-//          describes (invariant I3).
+//          state. Stored IN accountsdb so a restore of accountsdb rolls the
+//          anchor back together with the balances it describes — the marker
+//          must live with the data it describes.
 //
 // SEMANTICS: anchor = N means "the account effects of every block ≤ N have been
 // applied to accountsdb exactly once". Two writers advance it:
@@ -13,17 +13,18 @@
 //
 // SAFETY DIRECTION: an anchor that is TOO LOW is safe for LIVE-applied blocks —
 // reconciliation re-covers the range and per-tx `tx_processed:` markers exclude
-// already-applied txs (I2). An anchor that is TOO HIGH permanently skips account
-// effects (I1 violation). Every writer here rounds DOWN under uncertainty, and
+// already-applied txs, so nothing is applied twice. An anchor that is TOO HIGH
+// permanently and silently skips account effects — the failure mode this design
+// exists to prevent. Every writer here rounds DOWN under uncertainty, and
 // every target is capped at the locally verified tip (CapAnchorTarget).
 //
 // CONCURRENCY: appliedAnchorMu serializes the read-modify-write between the two
 // writers (both run in this process). This is NOT optional: an unlocked
 // interleaving — live reads 10, recon writes 500, live writes 11 — REGRESSES the
 // anchor and re-opens a range containing RECON-applied txs, which carry no
-// tx_processed markers and would be double-applied on the next run. (Adopted
-// from Doc's fix/f3 after adversarial comparison; the original "lost update is
-// benign" claim was wrong for recon-applied ranges.)
+// tx_processed markers and would be double-applied on the next run. A lost
+// update here is NOT benign for recon-applied ranges, so the lock cannot be
+// dropped in favour of best-effort retries.
 //
 // DO NOT:
 //   - Write this key through BatchRestoreAccounts — it is not an account object
@@ -57,8 +58,8 @@ var appliedAnchorMu sync.Mutex
 
 // NextLiveAnchor is the live path's advancement rule: strictly contiguous.
 // Returns (newAnchor, true) only when block is exactly anchor+1. A gap means
-// blocks below are missing (downtime) — advancing would skip their effects
-// (I1 violation); reconciliation owns gap filling.
+// blocks below are missing (downtime) — advancing would silently skip their
+// effects; reconciliation owns gap filling.
 func NextLiveAnchor(current, block uint64) (uint64, bool) {
 	if block == current+1 {
 		return block, true
@@ -78,7 +79,8 @@ func NextReconAnchor(current, target uint64) (uint64, bool) {
 // ShouldAdvanceReconAnchor gates reconciliation's anchor writes. ALL must hold:
 // no reconciliation error, zero failed accounts, and the post-sync verification
 // (buildDataMissingTag empty) passed. Anything less and the range is not proven
-// applied — advancing would be the exact dishonesty F3 removes (H2/H3).
+// applied — advancing would claim effects were applied when they may not have
+// been (failed accounts, or skeleton blocks passing as complete).
 func ShouldAdvanceReconAnchor(reconErr error, failedAccounts int, verifyPassed bool) bool {
 	return reconErr == nil && failedAccounts == 0 && verifyPassed
 }
@@ -86,7 +88,7 @@ func ShouldAdvanceReconAnchor(reconErr error, failedAccounts int, verifyPassed b
 // CapAnchorTarget bounds any anchor target (advance OR legacy seed) at the
 // locally verified tip. Two real-world poison sources this neutralizes:
 //   - HandleSync substitutes math.MaxUint64 when a legacy peer reports
-//     BlockHeight 0 — the pre-F3 SQLite code persisted it, permanently
+//     BlockHeight 0 — the legacy SQLite code persisted it, permanently
 //     disabling reconciliation;
 //   - nodes carrying that poisoned SQLite value would otherwise import it
 //     into the new anchor via the migration seed.
@@ -123,7 +125,7 @@ func withAccountsConn(ctx context.Context, conn *config.PooledConnection) (*conf
 // ─── Storage (accountsdb) ─────────────────────────────────────────────────────
 
 // GetAppliedAnchor reads the anchor from accountsdb. Returns (0, false, nil)
-// when the key does not exist yet (fresh node or pre-F3 database).
+// when the key does not exist yet (fresh node or pre-anchor database).
 // conn may be nil — a pooled accounts connection is acquired and returned.
 func GetAppliedAnchor(conn *config.PooledConnection) (uint64, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -218,7 +220,7 @@ func advanceAnchor(conn *config.PooledConnection, target uint64, contiguous bool
 }
 
 // SeedAppliedAnchor writes the anchor ONLY if the key does not exist yet.
-// Migration path: pre-F3 nodes tracked reconciliation in SQLite
+// Migration path: older nodes tracked reconciliation in SQLite
 // (fastsync:last_reconciled_block); reconciliation-applied txs carry NO
 // tx_processed markers, so re-reconciling that range would double-apply.
 // Seeding from the legacy value trades a bounded, repairable risk (the legacy
@@ -262,16 +264,18 @@ func SeedAppliedAnchor(conn *config.PooledConnection, legacy uint64) (bool, erro
 
 // FilterProcessedTxMarkers returns the subset of txHashes whose `tx_processed:`
 // marker says APPLIED, dual-reading both databases with value-aware semantics
-// (F4: value -1 = revoked by rollback = NOT processed; see DB_OPs/tx_markers.go).
+// (value -1 = revoked by rollback = NOT processed; see DB_OPs/tx_markers.go).
 //
-// DB precedence: accountsdb is authoritative when the key exists there — F4
-// writes markers AND rollback revocations to accountsdb, and a -1 revocation
-// must never be overridden by a stale legacy marker. defaultdb is consulted
-// only for keys absent from accountsdb (legacy populations: current-era
-// defaultdb markers + pre-F4 history; RCA §6b, empirical 2026-07-09).
+// DB precedence: accountsdb is authoritative when the key exists there — the
+// live path writes markers AND rollback revocations to accountsdb, and a -1
+// revocation must never be overridden by a stale legacy marker. defaultdb is
+// consulted only for keys absent from accountsdb (legacy populations:
+// current-era defaultdb markers + older history; verified against a
+// production node).
 //
 // Reconciliation uses this filter to exclude already-live-applied txs from
-// delta computation (I2); missing either DB re-applies those txs.
+// delta computation, so effects are never applied twice; missing either DB
+// re-applies those txs.
 //
 // Errors are returned, never swallowed: a failed filter must abort delta
 // computation (fail closed) — proceeding without exclusions double-applies.
@@ -385,7 +389,8 @@ func collectMarkerValues(ctx context.Context, conn *config.PooledConnection, key
 // TransactionOnMainDB runs fn as one atomic ExecAll explicitly on defaultdb.
 // Exists because Transaction() inherits whatever database the session last
 // selected — marker commits previously landed in defaultdb or accountsdb
-// depending on incidental call order (RCA §6b, H0). Every marker commit MUST
+// depending on incidental call order, splitting the marker population across
+// two databases. Every marker commit MUST
 // use this instead of Transaction directly.
 func TransactionOnMainDB(conn *config.PooledConnection, fn func(tx *config.ImmuTransaction) error) error {
 	if conn == nil || conn.Client == nil {

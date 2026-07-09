@@ -39,9 +39,9 @@ type AccountSnapshot struct {
 }
 
 // txStage accumulates one transaction's account mutations in memory so they can
-// commit in a SINGLE accountsdb ExecAll together with the tx_processed marker
-// (F4 D-B, RCA §6e). Pre-F4, each mutation was an independent DB commit — a
-// crash mid-transaction left partially-applied balances with no marker, and the
+// commit in a SINGLE accountsdb ExecAll together with the tx_processed marker.
+// Previously, each mutation was an independent DB commit — a crash
+// mid-transaction left partially-applied balances with no marker, and the
 // replay re-applied the applied prefix (double-count).
 //
 // get is READ-THROUGH: an account already staged by an earlier step of the SAME
@@ -139,8 +139,8 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	)
 
 	// Check if block was already processed.
-	// F4: dual-read value-aware guard (accountsdb authoritative, defaultdb
-	// legacy) — the old Exists→Read path only ever saw defaultdb (H0).
+	// Dual-read value-aware guard (accountsdb authoritative, defaultdb
+	// legacy) — the old Exists→Read path only ever saw defaultdb.
 	blockKey := DB_OPs.BlockProcessedKey(block.BlockHash.Hex())
 	processed, err := DB_OPs.IsMarkerApplied(accountsClient, blockKey)
 	if err == nil && processed {
@@ -204,11 +204,12 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 	)
 
-	// F4: resolve the whole block's tx_processed markers in ONE dual-DB batch
+	// Resolve the whole block's tx_processed markers in ONE dual-DB batch
 	// lookup (value-aware: -1 = revoked = not processed). Replaces the per-tx
-	// Exists() calls, which read only defaultdb (H0) and flipped the session DB
+	// Exists() calls, which read only defaultdb and flipped the session DB
 	// twice per transaction. FAIL CLOSED: processing without the guard set
-	// risks re-applying already-applied txs — the exact corruption F4 removes.
+	// risks re-applying already-applied txs — the exact corruption this guard
+	// exists to remove.
 	blockTxHashes := make([]string, 0, len(block.Transactions))
 	for i := range block.Transactions {
 		blockTxHashes = append(blockTxHashes, block.Transactions[i].Hash.String())
@@ -221,7 +222,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	}
 
 	// Track successfully processed transactions for rollback bookkeeping (their
-	// markers must be revoked if a later tx hard-fails — F4-A1).
+	// markers must be revoked if a later tx hard-fails).
 	successfullyProcessedTxs := make([]string, 0, len(block.Transactions))
 
 	// Process all transactions exactly as ordered by the Sequencer
@@ -244,7 +245,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		processedTxsMutex.Unlock()
 
 		// Check if this transaction was already processed in a previous block
-		// (or an earlier attempt at this one). F4: in-memory set from the
+		// (or an earlier attempt at this one) — in-memory set from the
 		// block-level dual-DB prefilter above.
 		if liveApplied[tx.Hash.String()] {
 			logger().NamedLogger.Warn(span_ctx, "Transaction already processed in previous block, skipping",
@@ -291,11 +292,11 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 				ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 			)
 
-			// F4-A1: the prefix's txs committed atomically WITH their markers, so
+			// The prefix's txs committed atomically WITH their markers, so
 			// the markers are durable before this rollback runs. Revoke them
 			// (overwrite with -1) BEFORE restoring balances — otherwise a replay
-			// would skip txs 1..k against rolled-back balances (permanent skip,
-			// I1 violation, worse than the double-apply F4 closes).
+			// would skip txs 1..k against rolled-back balances (permanent
+			// silent skip, worse than a bounded double-apply).
 			//
 			// ORDER IS LOAD-BEARING: revoke-then-restore. A crash between the two
 			// leaves revoked markers over still-applied balances → replay
@@ -355,12 +356,12 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		successfullyProcessedTxs = append(successfullyProcessedTxs, tx.Hash.Hex())
 	}
 
-	// F4 (D-B): tx_processed markers committed atomically with each tx's
+	// tx_processed markers are committed atomically with each tx's
 	// balances inside the loop — the old block-end marker batch is gone. That
 	// batch wrote 2×txs+1 entries in ONE ExecAll, exceeding immudb's 1024-entry
 	// transaction cap on any block with >511 transactions: the commit failed,
-	// the block rolled back, and the chain halted on that block permanently
-	// (C2, RCA §6e). Per-tx commits are ≤5 entries each — the cap is
+	// the block rolled back, and the chain halted on that block permanently.
+	// Per-tx commits are ≤5 entries each — the cap is
 	// unreachable by construction.
 	//
 	// The block marker is now a fast-path replay hint only (the per-tx markers
@@ -400,7 +401,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 	)
 
-	// F3: advance the accounts-applied anchor (accountsdb). Runs AFTER the atomic
+	// Advance the accounts-applied anchor (accountsdb). Runs AFTER the atomic
 	// marker commit — the block's effects are proven applied at this point. This
 	// applies to zero-tx blocks too (nothing to apply still counts as applied).
 	advanceAppliedAnchor(span_ctx, accountsClient, block.BlockNumber)
@@ -572,7 +573,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// First check with a preliminary key that shows we've started processing
 	txProcessingKey := fmt.Sprintf("tx_processing:%s", tx.Hash)
 
-	// Check if already completed. F4: dual-read value-aware guard (accountsdb
+	// Check if already completed. Dual-read value-aware guard (accountsdb
 	// authoritative incl. -1 revocations, defaultdb legacy). Defense-in-depth
 	// re-check under the tx lock — the block-level prefilter can be stale if a
 	// concurrent path (PoTS replay) applied this tx after the prefilter ran.
@@ -772,7 +773,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 		return fmt.Errorf("recipient DID %s does not exist and automatic creation is disabled", tx.To)
 	}
 
-	// F4 (D-B): all account mutations for this tx are STAGED in memory and then
+	// All account mutations for this tx are STAGED in memory and then
 	// committed in ONE accountsdb ExecAll together with the tx_processed marker
 	// (ApplyTxAtomic below). Either the whole tx lands — balances AND marker —
 	// or none of it does; a crash can no longer leave partially-applied
@@ -839,7 +840,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	txSpan.SetAttributes(attribute.String("zkvm_gas_fee_step", "completed"))
 
-	// F4 (D-B): commit the whole tx atomically — every staged account document
+	// Commit the whole tx atomically — every staged account document
 	// plus the tx_processed marker in ONE accountsdb ExecAll. This replaces the
 	// old flow of ≤4 independent account commits followed by a separate marker
 	// Create (which went to defaultdb, and whose failure was tolerated — leaving
@@ -952,7 +953,7 @@ func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error
 	return parsed, nil
 }
 
-// deductFromSender validates and STAGES the sender-side deduction (F4: no DB
+// deductFromSender validates and STAGES the sender-side deduction (no DB
 // write here — the mutation commits atomically with the rest of the tx via
 // ApplyTxAtomic in processTransaction).
 func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount string, stage *txStage, blockTimestamp int64) error {
@@ -996,14 +997,14 @@ func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount s
 	didDoc.Balance = newBalance.String()
 	didDoc.TxNonce = tx.Nonce + 1
 	didDoc.TxCountSent = didDoc.TxCountSent + 1
-	// LWW timestamp in NANOSECONDS at the source (F3): blockTimestamp is Unix
+	// LWW timestamp in NANOSECONDS at the source: blockTimestamp is Unix
 	// seconds — storing it raw made every nano-stamped sync write beat later
-	// live writes by 9 orders of magnitude (RCA §3a). Block-timestamp-derived
+	// live writes by 9 orders of magnitude. Block-timestamp-derived
 	// (not wall-clock) so all nodes stamp identical values for the same block.
 	// normalizeUpdatedAtNanos remains the compare-time safety net for legacy rows.
 	didDoc.UpdatedAt = blockTimestamp * int64(time.Second)
 
-	// F4: stage only — committed atomically with the tx marker in ApplyTxAtomic.
+	// Stage only — committed atomically with the tx marker in ApplyTxAtomic.
 	stage.put(didDoc)
 
 	logger().NamedLogger.Debug(span_ctx, "Deducted amount from sender and updated state",
@@ -1020,7 +1021,7 @@ func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount s
 	return nil
 }
 
-// addToRecipient validates and STAGES a credit (F4: no DB write here — commits
+// addToRecipient validates and STAGES a credit (no DB write here — commits
 // atomically with the rest of the tx via ApplyTxAtomic in processTransaction).
 // blockTimestamp is used as updatedAt to keep account state deterministic across nodes.
 func addToRecipient(span_ctx context.Context, ToAddress common.Address, amount string, stage *txStage, blockTimestamp int64) error {
@@ -1048,14 +1049,14 @@ func addToRecipient(span_ctx context.Context, ToAddress common.Address, amount s
 
 	// Update the balance and timestamp sequentially using the fetched doc
 	didDoc.Balance = newBalance.String()
-	// LWW timestamp in NANOSECONDS at the source (F3): blockTimestamp is Unix
+	// LWW timestamp in NANOSECONDS at the source: blockTimestamp is Unix
 	// seconds — storing it raw made every nano-stamped sync write beat later
-	// live writes by 9 orders of magnitude (RCA §3a). Block-timestamp-derived
+	// live writes by 9 orders of magnitude. Block-timestamp-derived
 	// (not wall-clock) so all nodes stamp identical values for the same block.
 	// normalizeUpdatedAtNanos remains the compare-time safety net for legacy rows.
 	didDoc.UpdatedAt = blockTimestamp * int64(time.Second)
 
-	// F4: stage only — committed atomically with the tx marker in ApplyTxAtomic.
+	// Stage only — committed atomically with the tx marker in ApplyTxAtomic.
 	stage.put(didDoc)
 
 	logger().NamedLogger.Debug(span_ctx, "Added amount to recipient",

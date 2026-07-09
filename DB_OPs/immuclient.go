@@ -1945,7 +1945,7 @@ func StoreZKBlock(mainDBClient *config.PooledConnection, block *config.ZKBlock) 
 		ion.String("function", "DB_OPs.StoreZKBlock"),
 	)
 
-	// F6: StoreZKBlock no longer writes `latest_block`. The old per-block blind
+	// StoreZKBlock no longer writes `latest_block`. The old per-block blind
 	// write here regressed the tip on any out-of-order store (PoTS WAL dump,
 	// replays, sync workers) and advanced it for SKELETON blocks written by
 	// header sync — which forced the headers writer into a snapshot/restore

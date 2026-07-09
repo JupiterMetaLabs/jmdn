@@ -35,7 +35,7 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 		return err
 	}
 
-	// F6: the latest_block snapshot/restore dance that used to live here is
+	// NOTE: the latest_block snapshot/restore dance that used to live here is
 	// GONE. It existed to undo StoreZKBlock's per-block marker write for
 	// skeleton blocks — but the restore raced concurrent DataSync workers and
 	// live processing, clobbering their legitimate advances back to a stale
@@ -113,6 +113,6 @@ func (hw *HeadersWriter) WriteHeaders(headers []*block.Header) error {
 		}
 	}
 
-	// F6: no latest_block restore — see the note at the top of this function.
+	// No latest_block restore here — see the note at the top of this function.
 	return nil
 }

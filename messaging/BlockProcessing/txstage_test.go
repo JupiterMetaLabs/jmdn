@@ -9,9 +9,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// TestTxStage_ReadThroughAndAccumulation pins the F4 staging semantics: a later
+// TestTxStage_ReadThroughAndAccumulation pins the staging semantics: a later
 // step of the SAME tx must observe earlier staged mutations (self-transfer,
-// sender==coinbase, ...), exactly as it did under the pre-F4 sequential
+// sender==coinbase, ...), exactly as it did under the earlier sequential
 // commits.
 func TestTxStage_ReadThroughAndAccumulation(t *testing.T) {
 	addr := common.HexToAddress("0x1111111111111111111111111111111111111111")

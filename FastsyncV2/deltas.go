@@ -35,30 +35,31 @@ import (
 // of lowercase-hex-address → *types.AccountDelta. Accounts not touched in the range
 // are absent from the map.
 //
-// F3 — marker exclusion (invariant I2): transactions that carry a persistent
-// `tx_processed:` marker were already applied by the LIVE path
-// (ProcessBlockTransactions); including them here would apply their effects a
-// second time. The filter dual-reads defaultdb AND accountsdb (a historical
-// marker cluster lives in accountsdb — RCA §6b). Gap blocks fetched by catchup
-// were never live-processed, carry no markers, and get full deltas (I1).
+// MARKER EXCLUSION (effects must never be applied twice): transactions that
+// carry a persistent `tx_processed:` marker were already applied by the LIVE
+// path (ProcessBlockTransactions); including them here would apply their
+// effects a second time. The filter dual-reads defaultdb AND accountsdb (a
+// historical marker cluster lives in accountsdb). Gap blocks fetched by
+// catchup were never live-processed, carry no markers, and get full deltas —
+// their effects must never be silently skipped.
 //
 // FAIL CLOSED: any iterator or marker-filter error aborts with an error —
 // partial deltas, or deltas computed without the exclusion filter, corrupt
 // balances when applied. Callers skip reconciliation and leave the anchor.
 //
-// F4 3a: the second return value lists the tx hashes whose deltas ARE included
+// The second return value lists the tx hashes whose deltas ARE included
 // (i.e. not excluded by markers). After a clean ReconcileWithDeltas, callers
 // enqueue tx_processed markers for exactly these hashes so a recon re-run
 // (e.g. after a failed anchor advance) excludes them instead of re-applying.
 func (fs *FastsyncV2) computeAccountDeltas(fromBlock, toBlock uint64) (map[string]*types.AccountDelta, []string, error) {
-	// F5-B1 ENTRY GATE: the exclusion filter below reads tx_processed markers
+	// ENTRY GATE: the exclusion filter below reads tx_processed markers
 	// from the DATABASE — markers (and balances) still on the Redis queue are
 	// invisible to it. Computing deltas while a previous recon's effects are in
 	// flight re-includes those txs → both applications eventually drain →
 	// double-apply. The advance gate's timeout path makes this routine: a
 	// timed-out advance leaves the queue loaded and the range open, and the
 	// next recon run lands exactly here. Fail closed: no deltas over a
-	// non-quiescent queue. (B2: after a restart the in-process HWM is empty
+	// non-quiescent queue. (After a restart the in-process HWM is empty
 	// while Redis may still hold pre-restart entries — the gate falls back to
 	// a queue-empty check rather than assuming quiescence.)
 	gateCtx, gateCancel := context.WithTimeout(context.Background(), drainConfirmTimeout)
@@ -132,7 +133,7 @@ func applyBlockDeltas(blk *types.ZKBlock, deltas map[string]*types.AccountDelta,
 		tx := &blk.Transactions[i]
 
 		// Already applied by live block processing — applying its delta again
-		// would double-count (invariant I2). See computeAccountDeltas doc.
+		// would double-count. See computeAccountDeltas doc.
 		if skipTxs[tx.Hash.String()] {
 			continue
 		}

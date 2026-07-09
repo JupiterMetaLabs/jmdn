@@ -794,7 +794,7 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		return fmt.Errorf("failed to store block in database: %w", err)
 	}
 
-	// F6: full block stored + processed → advance the tip marker.
+	// Full block stored + processed → advance the tip marker.
 	// Monotonic: a replayed/out-of-order block can never regress it.
 	// StoreZKBlock no longer writes the marker itself (skeleton safety).
 	if _, _, err := DB_OPs.UpdateLatestBlockMonotonic(block.BlockNumber); err != nil {

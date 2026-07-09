@@ -4,7 +4,7 @@ package DB_OPs
 // account writes through BatchRestoreAccounts. Ports the merge-semantics tests
 // that previously lived against the worker's buildUpdateEntries (dropped when
 // the merge moved into this package), and pins the LWW/monotonic/new-default
-// behaviour from the account-corruption RCA (F2).
+// behaviour introduced after a historical account-corruption bug.
 
 import (
 	"testing"

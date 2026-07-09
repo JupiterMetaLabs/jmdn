@@ -1,11 +1,12 @@
 // MODULE: DB_OPs/Nodeinfo/account_sync_drainwait
-// PURPOSE: Drain confirmation for the account sync queue (F5, RCA §6f PROBE D).
+// PURPOSE: Drain confirmation for the account sync queue — guards against
+//          Redis losing queued effects.
 //
 // PROBLEM: reconciliation's balance effects travel through the Redis queue —
-// enqueue ≠ applied (G5). The recon anchor was advanced after data verification
+// enqueue ≠ applied. The recon anchor was advanced after data verification
 // but while the effects could still be sitting on the queue; Redis queue loss
 // (crash without AOF, eviction, flush) meant the anchor claimed ranges whose
-// effects never landed → silent permanent skip (I1).
+// effects never landed → silent permanent skip.
 //
 // MECHANISM: high-water-mark confirmation.
 //   - Producers record the max stream ID they enqueued (noteEnqueuedID, called
@@ -32,7 +33,7 @@
 // the same batch can carry the HWM past them. All queue payloads are
 // self-encoded (marshaled by this process), so a poison recon entry is
 // unreachable in practice; the historical repair job covers the pathological
-// case. (Same class as the §6f XAUTOCLAIM reorder residual.)
+// case. (Same class as the XAUTOCLAIM reorder residual.)
 
 package NodeInfo
 
@@ -144,7 +145,7 @@ func drainConfirmed(lastDrained, target string) bool {
 	return streamIDGTE(lastDrained, target)
 }
 
-// WaitForQueueQuiescence is the reconciliation ENTRY gate (F5-B1/B2): it
+// WaitForQueueQuiescence is the reconciliation ENTRY gate: it
 // confirms that every previously enqueued account-stream entry — balances AND
 // tx markers from earlier recon runs or pre-restart sessions — has been applied
 // to the database. computeAccountDeltas MUST pass this gate before running the
@@ -153,9 +154,9 @@ func drainConfirmed(lastDrained, target string) bool {
 // re-includes txs whose effects are in flight → double-apply on drain. The
 // advance gate's own timeout makes this scenario routine, not exotic: every
 // timed-out advance forces a recon re-run over a queue still holding the
-// previous run's markers (B1, review of d78a34c).
+// previous run's markers.
 //
-// Empty in-process HWM does NOT short-circuit here (B2, unlike the advance
+// Empty in-process HWM does NOT short-circuit here (unlike the advance
 // gate): after a restart the HWM is lost while Redis may still hold
 // pre-restart entries — exactly the blind window. Fallback: poll the queue
 // itself (XLEN + XPENDING) until fully empty. This fallback only runs when
@@ -208,7 +209,7 @@ func WaitForQueueQuiescence(ctx context.Context) error {
 // The empty-target shortcut is valid HERE (advance gate) and only here: a
 // worst-case wrongly-skipped advance re-opens the range, which marker
 // exclusion handles — provided the ENTRY gate (WaitForQueueQuiescence) did its
-// job. Do not reuse this shortcut for entry gating (B2).
+// job. Do not reuse this shortcut for entry gating.
 func WaitForAccountQueueDrain(ctx context.Context, target string) error {
 	if target == "" {
 		return nil

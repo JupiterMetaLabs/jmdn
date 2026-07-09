@@ -1,6 +1,6 @@
 package NodeInfo
 
-// Tests for the payloadTypeTxMarkers drain path (F4 3a / A2).
+// Tests for the payloadTypeTxMarkers drain path.
 
 import "testing"
 

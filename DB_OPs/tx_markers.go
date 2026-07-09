@@ -1,27 +1,27 @@
 // MODULE: DB_OPs/tx_markers
 // PURPOSE: Value-aware processed-marker layer + the per-tx atomic apply used by
-//          the live executor (F4, RCA_account_sync.md §6e, design D-B).
+//          the live executor.
 //
 // MARKER SEMANTICS (value-aware, NOT existence-based):
 //   value > 0  → applied (Unix timestamp of application)
 //   value = -1 → REVOKED: the tx's balance effects were rolled back after the
-//                marker committed. Introduced by F4-A1: per-tx atomic commits
-//                make the prefix's markers durable before a later tx can fail
-//                the block; rollback restores balances but immudb cannot delete
+//                marker committed. Needed because per-tx atomic commits make
+//                the prefix's markers durable before a later tx can fail the
+//                block; rollback restores balances but immudb cannot delete
 //                inside a transaction — so rollback overwrites the prefix
 //                markers with -1 and every consumer treats -1 as not-processed.
-//   unparseable → applied (legacy markers hold timestamps; fail toward skip
-//                would be I1-unsafe only if a legacy value were corrupt AND its
-//                effects absent — treated as the lower-risk direction).
+//   unparseable → applied (legacy markers hold timestamps; treating a corrupt
+//                value as applied silently skips its effects only if those
+//                effects are also absent — the lower-risk direction).
 //
 // DB PRECEDENCE (dual-read): accountsdb is authoritative when the key exists
-// there (F4 writes markers + revocations to accountsdb, atomically with the
-// balances they describe); defaultdb is consulted only for keys absent from
-// accountsdb (legacy populations: current-era defaultdb markers + pre-F4
-// history). Precedence is load-bearing: a -1 revocation in accountsdb must
-// never be overridden by a stale legacy marker for the same tx.
+// there (the live path writes markers + revocations to accountsdb, atomically
+// with the balances they describe); defaultdb is consulted only for keys
+// absent from accountsdb (legacy populations: current-era defaultdb markers +
+// older history). Precedence is load-bearing: a -1 revocation in accountsdb
+// must never be overridden by a stale legacy marker for the same tx.
 //
-// WHY MARKERS LIVE IN accountsdb FROM F4 ON: immudb ExecAll executes on the
+// WHY MARKERS LIVE IN accountsdb: immudb ExecAll executes on the
 // session's selected database (ExecAllRequest carries no DB field) — the ONLY
 // way a marker can commit atomically with the account balances it describes is
 // to live in the same database.
@@ -45,14 +45,14 @@ import (
 const MarkerRevoked = int64(-1)
 
 // maxExecAllEntries mirrors immudb embedded/store DefaultMaxTxEntries (1024).
-// Any ExecAll larger than this fails the commit outright (C2: the pre-F4
+// Any ExecAll larger than this fails the commit outright (the previous
 // block-end marker commit wrote 2×txs+1 entries and halted on blocks >511 txs).
 const maxExecAllEntries = 1024
 
 // TxProcessedKey / BlockProcessedKey build the marker keys. Formats are frozen —
 // they must match the legacy populations already on disk.
-func TxProcessedKey(txHash string) string    { return "tx_processed:" + txHash }
-func TxProcessingKey(txHash string) string   { return "tx_processing:" + txHash }
+func TxProcessedKey(txHash string) string       { return "tx_processed:" + txHash }
+func TxProcessingKey(txHash string) string      { return "tx_processing:" + txHash }
 func BlockProcessedKey(blockHash string) string { return "block_processed:" + blockHash }
 
 // markerValueApplied is the single value-aware decision: does this raw marker
@@ -61,11 +61,11 @@ func markerValueApplied(raw []byte) bool {
 	v, err := strconv.ParseInt(string(raw), 10, 64)
 	if err != nil {
 		// Unparseable = APPLIED. All known legacy populations hold JSON int64s
-		// (Nov-2025/current defaultdb, Dec-2025 accountsdb — RCA §6b), so this
-		// branch should be unreachable; if a corrupt value ever lands here,
+		// (Nov-2025/current defaultdb, Dec-2025 accountsdb), so this branch
+		// should be unreachable; if a corrupt value ever lands here,
 		// "applied" is the skip direction and the affected tx becomes a case
-		// for the historical repair job (RCA §6a step 5), which recomputes
-		// from the tx index rather than trusting markers. (§6f review nit.)
+		// for the historical repair job, which recomputes from the tx index
+		// rather than trusting markers.
 		return true
 	}
 	return v != MarkerRevoked
@@ -115,17 +115,17 @@ func IsMarkerApplied(accountsConn *config.PooledConnection, key string) (bool, e
 }
 
 // ApplyTxAtomic commits one transaction's complete effect in ONE accountsdb
-// ExecAll (F4 D-B): every touched account document + the tx_processed marker.
+// ExecAll: every touched account document + the tx_processed marker.
 // All-or-nothing: a crash leaves either no trace of the tx or a fully-applied,
-// fully-marked tx — the partially-applied state the pre-F4 code could produce
+// fully-marked tx — the partially-applied state the previous code could produce
 // (≤6 independent commits per tx) is no longer expressible.
 //
 // The transient tx_processing: advisory lock is deliberately NOT included — it
 // lives (and is read) in defaultdb and is not correctness-bearing for replay;
 // pulling its cleanup into this accountsdb ExecAll would create a new
-// split-brain marker population (the H0 lesson).
+// split-brain marker population across the two databases.
 //
-// Entry count is len(docs)+1 — far under the 1024 ExecAll cap (C2) by
+// Entry count is len(docs)+1 — far under the 1024 ExecAll cap by
 // construction.
 func ApplyTxAtomic(accountsConn *config.PooledConnection, docs []*Account, txHash string, appliedAt int64) error {
 	if len(docs) == 0 {
@@ -163,12 +163,12 @@ func ApplyTxAtomic(accountsConn *config.PooledConnection, docs []*Account, txHas
 
 // WriteTxProcessedMarkers writes applied markers for a set of txs to
 // accountsdb, chunked under the ExecAll cap. Used by the drain worker for
-// RECON-applied txs (F4 3a): reconciliation's balance effects commit through
+// RECON-applied txs: reconciliation's balance effects commit through
 // BatchRestoreAccounts, and these markers make those txs visible to the live
 // guards and to future delta exclusion — without them, a recon re-run after a
 // failed anchor advance re-applies the same deltas.
 //
-// A2 ORDERING (enforced by the caller): markers commit strictly AFTER all
+// ORDERING (enforced by the caller): markers commit strictly AFTER all
 // account chunks of the drain batch. Markers-first + a later account-chunk
 // failure would let a recon rerun exclude never-applied txs (permanent skip);
 // markers-last fails toward bounded double-apply on retry instead.
@@ -212,11 +212,11 @@ func WriteTxProcessedMarkers(accountsConn *config.PooledConnection, markers map[
 }
 
 // RevokeTxProcessedMarkers overwrites the given txs' markers with -1 in
-// accountsdb (F4-A1, rollback path). Chunked under the ExecAll cap. Runs
+// accountsdb (rollback path). Chunked under the ExecAll cap. Runs
 // BEFORE balance restoration: a crash between revocation and restore leaves
 // revoked markers over still-applied balances → replay re-applies → bounded
 // double-apply, the repairable direction. The reverse order would leave
-// applied markers over restored balances → permanent skip (I1 violation).
+// applied markers over restored balances → effects silently skipped forever.
 func RevokeTxProcessedMarkers(accountsConn *config.PooledConnection, txHashes []string) error {
 	if len(txHashes) == 0 {
 		return nil
@@ -249,7 +249,7 @@ func RevokeTxProcessedMarkers(accountsConn *config.PooledConnection, txHashes []
 }
 
 // WriteBlockProcessedMarker writes the block-level marker to accountsdb.
-// Post-F4 this is a fast-path hint — the per-tx markers carry the actual
+// This is only a fast-path hint — the per-tx markers carry the actual
 // exactly-once guarantee — but it short-circuits whole-block replays cheaply.
 func WriteBlockProcessedMarker(accountsConn *config.PooledConnection, blockHash string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
