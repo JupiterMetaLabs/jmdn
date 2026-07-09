@@ -19,7 +19,6 @@ require (
 	github.com/holiman/uint256 v1.3.2
 	github.com/libp2p/go-libp2p v0.47.0
 	github.com/libp2p/go-libp2p-pubsub v0.15.0
-	github.com/linkedin/goavro/v2 v2.15.0
 	github.com/mattn/go-sqlite3 v1.14.33
 	github.com/multiformats/go-multiaddr v0.16.1
 	github.com/olekukonko/tablewriter v0.0.5
@@ -71,7 +70,6 @@ require (
 	github.com/goccy/go-json v0.10.4 // indirect
 	github.com/goccy/go-yaml v1.18.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/golang/snappy v1.0.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware v1.3.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway v1.16.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
