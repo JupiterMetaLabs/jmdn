@@ -448,11 +448,18 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 	defer ackCancel()
 	if err := s.Ack(ackCtx, accountSyncStream, accountSyncGroup, goodIDs...); err != nil {
 		log.Printf("[accountqueue] WARN: ACK failed for %d entries after successful DB write: %v — will be reclaimed and re-written (safe, LWW)", len(goodIDs), err)
-	} else if err := s.Delete(ackCtx, accountSyncStream, goodIDs...); err != nil {
-		log.Printf("[accountqueue] WARN: XDEL failed for %d entries after ACK: %v", len(goodIDs), err)
 	} else {
-		log.Printf("[accountqueue] wrote %d accounts from %d entries in %s; ACKed + XDELed",
-			len(writeEntries), len(goodIDs), commitDur.Round(time.Millisecond))
+		// F5: advance the drain high-water mark ONLY after apply + ACK both
+		// succeeded — an unACKed entry can be reclaimed and must not count as
+		// drained. This is what WaitForAccountQueueDrain (anchor gating,
+		// PROBE D) observes.
+		noteDrainedIDs(goodIDs)
+		if err := s.Delete(ackCtx, accountSyncStream, goodIDs...); err != nil {
+			log.Printf("[accountqueue] WARN: XDEL failed for %d entries after ACK: %v", len(goodIDs), err)
+		} else {
+			log.Printf("[accountqueue] wrote %d accounts from %d entries in %s; ACKed + XDELed",
+				len(writeEntries), len(goodIDs), commitDur.Round(time.Millisecond))
+		}
 	}
 
 	return nil

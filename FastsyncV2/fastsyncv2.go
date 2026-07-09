@@ -810,25 +810,54 @@ func (fs *FastsyncV2) reconAnchor() uint64 {
 	return anchor
 }
 
+// drainConfirmTimeout bounds how long markReconComplete waits for the account
+// queue to drain before giving up on the anchor advance. Generous enough for a
+// few ImmuDB commit cycles (~15 s each); on expiry the anchor simply LAGS (safe
+// direction) and the next clean recon retries the advance.
+const drainConfirmTimeout = 90 * time.Second
+
 // markReconComplete advances the accounts-applied anchor to toBlock, capped at
 // the locally verified tip and monotonic (never backwards).
 //
 // The cap fixes a pre-F3 bug: HandleSync substitutes math.MaxUint64 when a
 // legacy peer reports BlockHeight 0 — the old SQLite code persisted that value,
 // permanently disabling reconciliation on the node.
+//
+// F5 (PROBE D): the advance is gated on DRAIN CONFIRMATION. Reconciliation's
+// balance effects and tx markers travel through the Redis queue — enqueue ≠
+// applied. Advancing while entries are still queued lets a Redis loss (crash
+// without AOF, eviction, flush) strand an anchor that claims ranges whose
+// effects never reached the database: silent permanent skip (I1). The anchor
+// now advances only once the drain worker has applied AND ACKed every account
+// stream entry this process enqueued (high-water mark ≥ capture point). Every
+// wait failure — timeout, worker restart, queue offline — skips the advance:
+// anchor lags, recon re-covers, markers prevent double-apply.
 func (fs *FastsyncV2) markReconComplete(toBlock uint64) {
 	tip := fs.blockInfoAdapter.GetBlockNumber()
 	if capped := DB_OPs.CapAnchorTarget(toBlock, tip); capped != toBlock {
 		log.Printf("[FastsyncV2] applied anchor: capping target %d at local tip %d", toBlock, tip)
 		toBlock = capped
 	}
+
+	// Capture AFTER all of this recon's enqueues (balances via
+	// ReconcileWithDeltas, markers via enqueueReconTxMarkers) — both happen
+	// before any markReconComplete call site. "" = nothing went through the
+	// queue (direct-write fallback): trivially confirmed.
+	target := NodeInfo.LastAccountEnqueueID()
+	waitCtx, cancel := context.WithTimeout(context.Background(), drainConfirmTimeout)
+	defer cancel()
+	if err := NodeInfo.WaitForAccountQueueDrain(waitCtx, target); err != nil {
+		log.Printf("[FastsyncV2] applied anchor: advance to %d SKIPPED — recon effects not confirmed in DB: %v (safe: anchor lags, next clean recon retries)", toBlock, err)
+		return
+	}
+
 	anchor, advanced, err := DB_OPs.AdvanceAppliedAnchorTo(nil, toBlock)
 	if err != nil {
 		log.Printf("[FastsyncV2] applied anchor: advance to %d failed: %v (safe: anchor lags)", toBlock, err)
 		return
 	}
 	if advanced {
-		log.Printf("[FastsyncV2] applied anchor advanced to %d (reconciliation proven)", anchor)
+		log.Printf("[FastsyncV2] applied anchor advanced to %d (reconciliation proven + drain-confirmed)", anchor)
 	}
 }
 

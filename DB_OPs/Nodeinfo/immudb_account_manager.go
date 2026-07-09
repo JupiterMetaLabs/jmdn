@@ -68,12 +68,17 @@ func enqueueRecordsChunked[T any](ctx context.Context, s RedisStreamer, ptype sy
 			errs = append(errs, fmt.Errorf("marshal chunk [%d:%d]: %w", start, end, err))
 			continue
 		}
-		if _, err := s.Enqueue(ctx, accountSyncStream, map[string]any{
+		id, err := s.Enqueue(ctx, accountSyncStream, map[string]any{
 			"type": string(ptype),
 			"data": string(data),
-		}); err != nil {
+		})
+		if err != nil {
 			errs = append(errs, fmt.Errorf("enqueue chunk [%d:%d]: %w", start, end, err))
+			continue
 		}
+		// F5: record the XADD ID so reconciliation can wait for drain
+		// confirmation before advancing the anchor (PROBE D).
+		noteEnqueuedID(id)
 	}
 	return errors.Join(errs...)
 }
