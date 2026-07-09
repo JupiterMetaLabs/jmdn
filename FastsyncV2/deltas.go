@@ -19,9 +19,11 @@ package FastsyncV2
 // see config/gasfee.go for the exact formula and the history of that bug.
 
 import (
+	"fmt"
 	"math/big"
 	"strings"
 
+	"gossipnode/DB_OPs"
 	"gossipnode/config"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
@@ -30,7 +32,18 @@ import (
 // computeAccountDeltas iterates all blocks in [fromBlock..toBlock] and returns a map
 // of lowercase-hex-address → *types.AccountDelta. Accounts not touched in the range
 // are absent from the map.
-func (fs *FastsyncV2) computeAccountDeltas(fromBlock, toBlock uint64) map[string]*types.AccountDelta {
+//
+// F3 — marker exclusion (invariant I2): transactions that carry a persistent
+// `tx_processed:` marker were already applied by the LIVE path
+// (ProcessBlockTransactions); including them here would apply their effects a
+// second time. The filter dual-reads defaultdb AND accountsdb (a historical
+// marker cluster lives in accountsdb — RCA §6b). Gap blocks fetched by catchup
+// were never live-processed, carry no markers, and get full deltas (I1).
+//
+// FAIL CLOSED: any iterator or marker-filter error aborts with an error —
+// partial deltas, or deltas computed without the exclusion filter, corrupt
+// balances when applied. Callers skip reconciliation and leave the anchor.
+func (fs *FastsyncV2) computeAccountDeltas(fromBlock, toBlock uint64) (map[string]*types.AccountDelta, error) {
 	const batchSize = 500
 	iter := fs.blockInfoAdapter.NewBlockIterator(fromBlock, toBlock, batchSize)
 	defer iter.Close()
@@ -39,22 +52,42 @@ func (fs *FastsyncV2) computeAccountDeltas(fromBlock, toBlock uint64) map[string
 
 	for {
 		batch, err := iter.Next()
-		if err != nil || len(batch) == 0 {
+		if err != nil {
+			return nil, fmt.Errorf("delta computation: block iterator at [%d..%d]: %w", fromBlock, toBlock, err)
+		}
+		if len(batch) == 0 {
 			break
 		}
+
+		// Collect this batch's tx hashes and resolve which are already live-applied.
+		var hashes []string
 		for _, blk := range batch {
 			if blk == nil {
 				continue
 			}
-			applyBlockDeltas(blk, deltas)
+			for i := range blk.Transactions {
+				hashes = append(hashes, blk.Transactions[i].Hash.String())
+			}
+		}
+		liveApplied, err := DB_OPs.FilterProcessedTxMarkers(hashes)
+		if err != nil {
+			return nil, fmt.Errorf("delta computation: tx_processed marker filter: %w", err)
+		}
+
+		for _, blk := range batch {
+			if blk == nil {
+				continue
+			}
+			applyBlockDeltas(blk, deltas, liveApplied)
 		}
 	}
 
-	return deltas
+	return deltas, nil
 }
 
-// applyBlockDeltas applies the transaction effects of one ZKBlock to the delta map.
-func applyBlockDeltas(blk *types.ZKBlock, deltas map[string]*types.AccountDelta) {
+// applyBlockDeltas applies the transaction effects of one ZKBlock to the delta
+// map, skipping any tx whose hash is in skipTxs (already applied by the live path).
+func applyBlockDeltas(blk *types.ZKBlock, deltas map[string]*types.AccountDelta, skipTxs map[string]bool) {
 	if blk == nil {
 		return
 	}
@@ -68,6 +101,12 @@ func applyBlockDeltas(blk *types.ZKBlock, deltas map[string]*types.AccountDelta)
 
 	for i := range blk.Transactions {
 		tx := &blk.Transactions[i]
+
+		// Already applied by live block processing — applying its delta again
+		// would double-count (invariant I2). See computeAccountDeltas doc.
+		if skipTxs[tx.Hash.String()] {
+			continue
+		}
 
 		var fromAddr, toAddr string
 		if tx.From != nil {

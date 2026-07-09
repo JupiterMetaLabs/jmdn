@@ -283,23 +283,34 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 	log.Printf("[CatchUpSync] phase 5: reconciliation (delta approach)")
 	reconStart := time.Now()
 
+	// reconClean records whether phase 5 fully applied its range. The anchor is
+	// advanced ONLY in phase 8, after buildDataMissingTag proves the range is
+	// data-complete AND reconClean holds — advancing here (the pre-F3 behaviour)
+	// stamped ranges "done" whose blocks were still skeleton/data-missing, so
+	// their transactions were silently never reconciled (RCA H2/H3).
+	reconClean := false
 	reconFrom, reconSkip := fs.effectiveReconRange(fromBlock, remoteTip)
 	if reconSkip {
-		log.Printf("[CatchUpSync] phase 5 skipped: range [%d..%d] already reconciled", fromBlock, remoteTip)
+		log.Printf("[CatchUpSync] phase 5 skipped: range [%d..%d] already applied", fromBlock, remoteTip)
+		reconClean = true // nothing left to apply is clean by definition
 	} else {
 		if reconFrom > fromBlock {
-			log.Printf("[CatchUpSync] phase 5: advancing fromBlock %d → %d (already reconciled)", fromBlock, reconFrom)
+			log.Printf("[CatchUpSync] phase 5: advancing fromBlock %d → %d (already applied)", fromBlock, reconFrom)
 		}
-		deltas := fs.computeAccountDeltas(reconFrom, remoteTip)
-		log.Printf("[CatchUpSync] phase 5: computed deltas for %d accounts", len(deltas))
-		reconCount, failedAccounts, err := fs.ReconRouter.ReconcileWithDeltas(deltas, availResp)
-		if err != nil {
-			log.Printf("[CatchUpSync] phase 5 warning: %v", err)
-		}
-		log.Printf("[CatchUpSync] phase 5 complete: %d committed, %d failed, took %s",
-			reconCount, len(failedAccounts), time.Since(reconStart).Round(time.Millisecond))
-		if err == nil {
-			fs.markReconComplete(remoteTip)
+		deltas, deltaErr := fs.computeAccountDeltas(reconFrom, remoteTip)
+		if deltaErr != nil {
+			// Fail closed: partial deltas (or deltas without marker exclusion)
+			// risk double-apply. Anchor stays; next run retries the range.
+			log.Printf("[CatchUpSync] phase 5 skipped: delta computation failed (fail closed): %v", deltaErr)
+		} else {
+			log.Printf("[CatchUpSync] phase 5: computed deltas for %d accounts", len(deltas))
+			reconCount, failedAccounts, err := fs.ReconRouter.ReconcileWithDeltas(deltas, availResp)
+			if err != nil {
+				log.Printf("[CatchUpSync] phase 5 warning: %v", err)
+			}
+			log.Printf("[CatchUpSync] phase 5 complete: %d committed, %d failed, took %s",
+				reconCount, len(failedAccounts), time.Since(reconStart).Round(time.Millisecond))
+			reconClean = err == nil && len(failedAccounts) == 0
 		}
 	}
 
@@ -343,6 +354,14 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 			log.Printf("[CatchUpSync] phase 8 warning: failed to update latest_block to %d: %v", remoteTip, updateErr)
 		} else {
 			log.Printf("[CatchUpSync] phase 8: latest_block advanced to %d", remoteTip)
+		}
+		// F3: the applied anchor advances HERE — the only point where both proofs
+		// exist: phase 5 applied everything (reconClean) AND this scan proved the
+		// range data-complete. markReconComplete caps at local tip + monotonic.
+		if reconClean {
+			fs.markReconComplete(remoteTip)
+		} else {
+			log.Printf("[CatchUpSync] phase 8: applied anchor NOT advanced — phase 5 was not clean; range retries next run")
 		}
 	} else {
 		log.Printf("[CatchUpSync] phase 8: INCOMPLETE — %d range(s) still missing data:", len(verifyTag.Range))

@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"time"
 
+	"gossipnode/DB_OPs"
 	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
 	"gossipnode/DB_OPs/sqlops"
 
@@ -482,20 +483,24 @@ func (fs *FastsyncV2) handleSyncInternal(targetPeer string, startBlock uint64) e
 		log.Printf("[FastsyncV2] Phase 5 skipped: range [%d..%d] already reconciled", localBlockNum+1, remoteBlockNum)
 	} else {
 		if reconFrom > localBlockNum+1 {
-			log.Printf("[FastsyncV2] Phase 5: advancing fromBlock %d → %d (already reconciled)", localBlockNum+1, reconFrom)
+			log.Printf("[FastsyncV2] Phase 5: advancing fromBlock %d → %d (already applied)", localBlockNum+1, reconFrom)
 		}
-		deltas := fs.computeAccountDeltas(reconFrom, remoteBlockNum)
-		log.Printf("[FastsyncV2] Phase 5: computed deltas for %d accounts", len(deltas))
-		reconciledCount, failedAccounts, err := fs.ReconRouter.ReconcileWithDeltas(deltas, availResp)
-		if err != nil {
-			log.Printf("[FastsyncV2] Phase 5 warning: reconciliation returned error: %v", err)
-		}
-		log.Printf("[FastsyncV2] Phase 5 complete: %d accounts reconciled, %d failed", reconciledCount, len(failedAccounts))
-		if len(failedAccounts) > 0 {
-			log.Printf("[FastsyncV2] Failed accounts: %v", failedAccounts)
-		}
-		if err == nil {
-			fs.markReconComplete(remoteBlockNum)
+		deltas, deltaErr := fs.computeAccountDeltas(reconFrom, remoteBlockNum)
+		if deltaErr != nil {
+			// Fail closed: applying partial deltas (or deltas computed without the
+			// tx_processed exclusion filter) risks double-apply. Skip; anchor stays.
+			log.Printf("[FastsyncV2] Phase 5 skipped: delta computation failed (fail closed): %v", deltaErr)
+		} else {
+			log.Printf("[FastsyncV2] Phase 5: computed deltas for %d accounts", len(deltas))
+			reconciledCount, failedAccounts, err := fs.ReconRouter.ReconcileWithDeltas(deltas, availResp)
+			if err != nil {
+				log.Printf("[FastsyncV2] Phase 5 warning: reconciliation returned error: %v", err)
+			}
+			log.Printf("[FastsyncV2] Phase 5 complete: %d accounts reconciled, %d failed", reconciledCount, len(failedAccounts))
+			if len(failedAccounts) > 0 {
+				log.Printf("[FastsyncV2] Failed accounts: %v", failedAccounts)
+			}
+			fs.advanceReconAnchorIfProven(err, len(failedAccounts), reconFrom, remoteBlockNum, "Phase 5")
 		}
 	}
 
@@ -606,15 +611,18 @@ func (fs *FastsyncV2) executePoTS(
 				if potsReconSkip {
 					log.Printf("[FastsyncV2] PoTS reconciliation skipped: already reconciled up to %d", potsLatest)
 				} else {
-					potsDeltas := fs.computeAccountDeltas(potsReconFrom, potsLatest)
-					log.Printf("[FastsyncV2] PoTS: computed deltas for %d accounts", len(potsDeltas))
-					reconCount, failed, err := fs.ReconRouter.ReconcileWithDeltas(potsDeltas, availResp)
-					if err != nil {
-						log.Printf("[FastsyncV2] PoTS reconciliation warning: %v", err)
-					}
-					log.Printf("[FastsyncV2] PoTS reconciled %d accounts, %d failed", reconCount, len(failed))
-					if err == nil {
-						fs.markReconComplete(potsLatest)
+					potsDeltas, potsDeltaErr := fs.computeAccountDeltas(potsReconFrom, potsLatest)
+					if potsDeltaErr != nil {
+						// Fail closed — see Phase 5 rationale.
+						log.Printf("[FastsyncV2] PoTS reconciliation skipped: delta computation failed (fail closed): %v", potsDeltaErr)
+					} else {
+						log.Printf("[FastsyncV2] PoTS: computed deltas for %d accounts", len(potsDeltas))
+						reconCount, failed, err := fs.ReconRouter.ReconcileWithDeltas(potsDeltas, availResp)
+						if err != nil {
+							log.Printf("[FastsyncV2] PoTS reconciliation warning: %v", err)
+						}
+						log.Printf("[FastsyncV2] PoTS reconciled %d accounts, %d failed", reconCount, len(failed))
+						fs.advanceReconAnchorIfProven(err, len(failed), potsReconFrom, potsLatest, "PoTS")
 					}
 				}
 			}
@@ -678,48 +686,131 @@ func (fs *FastsyncV2) dumpPoTSWALToDB(ctx context.Context) error {
 	return nil
 }
 
-// reconBlockKey is the SQLite key_value key used to persist the last successfully
-// reconciled block number. Reading it before each Reconcile call prevents
-// double-counting on re-runs that cover an already-reconciled range.
+// reconBlockKey is the LEGACY (pre-F3) SQLite key that tracked reconciliation
+// progress. READ-ONLY since F3 — consumed once by reconAnchor() to seed the
+// accountsdb applied anchor, never written again. See legacySQLiteRecon.
 const reconBlockKey = "fastsync:last_reconciled_block"
 
 // effectiveReconRange returns the adjusted [from, to] range that hasn't been
 // reconciled yet, plus a skip flag when the entire range is already done.
 //
-// Algorithm:
+// Since F3 the range derives from the accounts-applied anchor stored IN
+// accountsdb (DB_OPs.AppliedAnchorKey) — co-located with the balances it
+// describes, advanced by both the live path and reconciliation, seeded once
+// from the legacy SQLite watermark. Algorithm:
 //
-//	lastBlock = SQLite key_value["fastsync:last_reconciled_block"] (0 if absent)
-//	effectiveFrom = max(fromBlock, lastBlock+1)
+//	anchor = accountsdb["sync:accounts_last_applied_block"] (0 if absent)
+//	effectiveFrom = max(fromBlock, anchor+1)
 //	skip = effectiveFrom > toBlock
 func (fs *FastsyncV2) effectiveReconRange(fromBlock, toBlock uint64) (from uint64, skip bool) {
-	udb, err := sqlops.NewUnifiedDB()
-	if err != nil {
-		log.Printf("[FastsyncV2] recon anchor: open SQLite failed (%v) — using fromBlock=%d as-is", err, fromBlock)
-		return fromBlock, false
-	}
-	defer udb.Close()
-
+	anchor := fs.reconAnchor()
 	from = fromBlock
-	if raw, err := udb.GetKeyValue(reconBlockKey); err == nil && raw != "" {
-		if last, err := strconv.ParseUint(raw, 10, 64); err == nil && last+1 > fromBlock {
-			from = last + 1
-		}
+	if anchor+1 > fromBlock {
+		from = anchor + 1
 	}
 	return from, from > toBlock
 }
 
-// markReconComplete stores toBlock as the last successfully reconciled block.
-func (fs *FastsyncV2) markReconComplete(toBlock uint64) {
+// legacySQLiteRecon reads the pre-F3 SQLite watermark (0 if absent/unreadable).
+// READ-ONLY since F3: used once to seed the accountsdb applied anchor.
+// Reconciliation-applied txs carry no tx_processed markers, so ignoring the
+// legacy value and re-reconciling its range would systematically double-apply;
+// seeding trades that for a bounded, repairable risk (the legacy value may be
+// optimistically high — the repair job addresses the residue).
+func legacySQLiteRecon() uint64 {
 	udb, err := sqlops.NewUnifiedDB()
 	if err != nil {
-		log.Printf("[FastsyncV2] recon anchor: open SQLite failed (%v) — last_reconciled_block not persisted", err)
-		return
+		return 0
 	}
 	defer udb.Close()
-
-	if err := udb.StoreKeyValue(reconBlockKey, strconv.FormatUint(toBlock, 10)); err != nil {
-		log.Printf("[FastsyncV2] recon anchor: store failed (%v) — last_reconciled_block not persisted", err)
+	raw, err := udb.GetKeyValue(reconBlockKey)
+	if err != nil || raw == "" {
+		return 0
 	}
+	last, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return last
+}
+
+// reconAnchor returns the accounts-applied anchor (accountsdb), seeding it once
+// from the legacy SQLite watermark on first use after the F3 upgrade. On read
+// error it returns 0 — the SAFE direction: reconciliation re-covers the range
+// and tx_processed marker exclusion prevents double-apply (see DB_OPs/sync_anchor.go).
+func (fs *FastsyncV2) reconAnchor() uint64 {
+	if legacy := legacySQLiteRecon(); legacy > 0 {
+		// Cap BEFORE seeding: nodes running the pre-F3 code may carry the
+		// MaxUint64 poison in SQLite (legacy-peer HandleSync path) — importing
+		// it would permanently disable reconciliation via the new anchor.
+		capped := DB_OPs.CapAnchorTarget(legacy, fs.blockInfoAdapter.GetBlockNumber())
+		if capped != legacy {
+			log.Printf("[FastsyncV2] applied anchor: legacy SQLite watermark %d exceeds local tip — capped to %d (poison guard)", legacy, capped)
+		}
+		if seeded, err := DB_OPs.SeedAppliedAnchor(nil, capped); err != nil {
+			log.Printf("[FastsyncV2] applied anchor: seed check failed: %v", err)
+		} else if seeded {
+			log.Printf("[FastsyncV2] applied anchor: SEEDED from legacy SQLite watermark = %d (one-time F3 migration)", capped)
+		}
+	}
+	anchor, _, err := DB_OPs.GetAppliedAnchor(nil)
+	if err != nil {
+		log.Printf("[FastsyncV2] applied anchor: read failed (%v) — using 0 (safe: re-recon with marker exclusion)", err)
+		return 0
+	}
+	return anchor
+}
+
+// markReconComplete advances the accounts-applied anchor to toBlock, capped at
+// the locally verified tip and monotonic (never backwards).
+//
+// The cap fixes a pre-F3 bug: HandleSync substitutes math.MaxUint64 when a
+// legacy peer reports BlockHeight 0 — the old SQLite code persisted that value,
+// permanently disabling reconciliation on the node.
+func (fs *FastsyncV2) markReconComplete(toBlock uint64) {
+	tip := fs.blockInfoAdapter.GetBlockNumber()
+	if capped := DB_OPs.CapAnchorTarget(toBlock, tip); capped != toBlock {
+		log.Printf("[FastsyncV2] applied anchor: capping target %d at local tip %d", toBlock, tip)
+		toBlock = capped
+	}
+	anchor, advanced, err := DB_OPs.AdvanceAppliedAnchorTo(nil, toBlock)
+	if err != nil {
+		log.Printf("[FastsyncV2] applied anchor: advance to %d failed: %v (safe: anchor lags)", toBlock, err)
+		return
+	}
+	if advanced {
+		log.Printf("[FastsyncV2] applied anchor advanced to %d (reconciliation proven)", anchor)
+	}
+}
+
+// advanceReconAnchorIfProven is the single anchor-advancement gate for
+// reconciliation paths WITHOUT their own post-sync verification (HandleSync
+// phase 5, PoTS). It re-scans the range via buildDataMissingTag before
+// advancing — the anchor only ever states what is PROVEN applied (invariant I1).
+// HandleCatchUpSync uses its own phase-8 verification instead.
+func (fs *FastsyncV2) advanceReconAnchorIfProven(reconErr error, failedCount int, fromBlock, toBlock uint64, phase string) {
+	tip := fs.blockInfoAdapter.GetBlockNumber()
+	if toBlock > tip {
+		toBlock = tip
+	}
+	if toBlock < fromBlock {
+		return
+	}
+	verifyPassed := false
+	if reconErr == nil && failedCount == 0 {
+		tag, err := fs.buildDataMissingTag(fromBlock, toBlock)
+		verifyPassed = err == nil && len(tag.Range) == 0 && len(tag.BlockNumber) == 0
+		if !verifyPassed {
+			log.Printf("[FastsyncV2] %s: anchor NOT advanced — range [%d..%d] not data-complete (verify err: %v)",
+				phase, fromBlock, toBlock, err)
+		}
+	}
+	if !DB_OPs.ShouldAdvanceReconAnchor(reconErr, failedCount, verifyPassed) {
+		log.Printf("[FastsyncV2] %s: anchor NOT advanced (reconErr=%v failed=%d verified=%v)",
+			phase, reconErr, failedCount, verifyPassed)
+		return
+	}
+	fs.markReconComplete(toBlock)
 }
 
 // Close tears down all routers and flushes WALs.

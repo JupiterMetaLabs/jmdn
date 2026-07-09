@@ -106,6 +106,9 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 			ion.String("topic", TOPIC),
 			ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 		)
+		// The block's effects ARE applied (marker proves it) — give the applied
+		// anchor a chance to catch up if this duplicate is the contiguous next.
+		advanceAppliedAnchor(span_ctx, accountsClient, block.BlockNumber)
 		return nil
 	}
 
@@ -256,8 +259,13 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	// This reduces N database calls to 1 atomic transaction, improving performance
 	// If any operation fails, Immudb automatically rolls back the entire transaction
 	if len(successfullyProcessedTxs) > 0 {
-		// Use Immudb's atomic transaction API to batch all marking operations
-		err := DB_OPs.Transaction(accountsClient.Client, func(tx *config.ImmuTransaction) error {
+		// Use Immudb's atomic transaction API to batch all marking operations.
+		// TransactionOnMainDB, not Transaction: the plain variant inherits the
+		// session's last-selected database, which historically scattered markers
+		// across defaultdb AND accountsdb depending on incidental call order
+		// (RCA §6b H0 — empirically confirmed 2026-07-09). Markers live in
+		// defaultdb; the guards above (Exists → Read) also read defaultdb.
+		err := DB_OPs.TransactionOnMainDB(accountsClient, func(tx *config.ImmuTransaction) error {
 			// Mark all successfully processed transactions
 			for _, txHash := range successfullyProcessedTxs {
 				txKey := fmt.Sprintf("tx_processed:%s", txHash)
@@ -330,7 +338,39 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 	)
 
+	// F3: advance the accounts-applied anchor (accountsdb). Runs AFTER the atomic
+	// marker commit — the block's effects are proven applied at this point. This
+	// applies to zero-tx blocks too (nothing to apply still counts as applied).
+	advanceAppliedAnchor(span_ctx, accountsClient, block.BlockNumber)
+
 	return nil
+}
+
+// advanceAppliedAnchor advances the accounts-applied anchor via the contiguity
+// rule (DB_OPs.NextLiveAnchor): only block == anchor+1 moves it. Gaps are left
+// for reconciliation to fill and advance past.
+//
+// Errors are logged and swallowed BY DESIGN: a lagging anchor is safe
+// (reconciliation re-covers the range; tx_processed markers prevent
+// double-apply), but failing block processing over an anchor write would not be.
+func advanceAppliedAnchor(span_ctx context.Context, accountsClient *config.PooledConnection, blockNumber uint64) {
+	anchor, advanced, err := DB_OPs.AdvanceAppliedAnchorContiguous(accountsClient, blockNumber)
+	if err != nil {
+		logger().NamedLogger.Warn(span_ctx, "Applied-anchor advance failed (safe: anchor lags, recon will catch up)",
+			ion.Uint64("block_number", blockNumber),
+			ion.String("error", err.Error()),
+			ion.String("topic", TOPIC),
+			ion.String("function", "BlockProcessing.advanceAppliedAnchor"),
+		)
+		return
+	}
+	if advanced {
+		logger().NamedLogger.Debug(span_ctx, "Applied anchor advanced (live, contiguous)",
+			ion.Uint64("anchor", anchor),
+			ion.String("topic", TOPIC),
+			ion.String("function", "BlockProcessing.advanceAppliedAnchor"),
+		)
+	}
 }
 
 // cleanupProcessingMarkers removes temporary processing markers
@@ -872,7 +912,12 @@ func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount s
 	didDoc.Balance = newBalance.String()
 	didDoc.TxNonce = tx.Nonce + 1
 	didDoc.TxCountSent = didDoc.TxCountSent + 1
-	didDoc.UpdatedAt = blockTimestamp
+	// LWW timestamp in NANOSECONDS at the source (F3): blockTimestamp is Unix
+	// seconds — storing it raw made every nano-stamped sync write beat later
+	// live writes by 9 orders of magnitude (RCA §3a). Block-timestamp-derived
+	// (not wall-clock) so all nodes stamp identical values for the same block.
+	// normalizeUpdatedAtNanos remains the compare-time safety net for legacy rows.
+	didDoc.UpdatedAt = blockTimestamp * int64(time.Second)
 
 	if err := DB_OPs.UpdateAccount(accountsClient, didDoc); err != nil {
 		return fmt.Errorf("failed to update sender balance and state: %w", err)
@@ -918,7 +963,12 @@ func addToRecipient(span_ctx context.Context, ToAddress common.Address, amount s
 
 	// Update the balance and timestamp sequentially using the fetched doc
 	didDoc.Balance = newBalance.String()
-	didDoc.UpdatedAt = blockTimestamp
+	// LWW timestamp in NANOSECONDS at the source (F3): blockTimestamp is Unix
+	// seconds — storing it raw made every nano-stamped sync write beat later
+	// live writes by 9 orders of magnitude (RCA §3a). Block-timestamp-derived
+	// (not wall-clock) so all nodes stamp identical values for the same block.
+	// normalizeUpdatedAtNanos remains the compare-time safety net for legacy rows.
+	didDoc.UpdatedAt = blockTimestamp * int64(time.Second)
 
 	if err := DB_OPs.UpdateAccount(accountsClient, didDoc); err != nil {
 		return fmt.Errorf("failed to update recipient balance: %w", err)
