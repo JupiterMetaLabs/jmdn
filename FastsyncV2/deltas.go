@@ -15,8 +15,8 @@ package FastsyncV2
 //
 // Gas fee:
 //
-//	EIP-1559 (type 2): effectiveGasPrice = MaxFee ?? MaxPriorityFee ?? GasPrice ?? 1e9
-//	Legacy   (type 0/1): effectiveGasPrice = GasPrice ?? MaxFee ?? MaxPriorityFee ?? 1e9
+//	EIP-1559 (type 2): effectiveGasPrice = min(maxFee, baseFee(35 gwei) + tip)
+//	Legacy   (type 0/1): effectiveGasPrice = GasPrice ?? MaxFee ?? MaxPriorityFee ?? 1 Gwei
 //	gasFee = gasLimit * effectiveGasPrice
 
 import (
@@ -138,34 +138,43 @@ func computeGasFee(tx *types.Transaction) *big.Int {
 	return new(big.Int).Mul(gasLimit, effectivePrice)
 }
 
-var oneGwei = big.NewInt(1_000_000_000)
+var (
+	oneGwei       = big.NewInt(1_000_000_000)
+	deltasBaseFee = big.NewInt(35_000_000_000) // 35 gwei — must equal config.BaseFeeWei
+)
 
 // effectiveGasPrice returns the effective gas price for a transaction.
+// Mirrors config.EffectiveGasPrice exactly (operates on JMDN-FastSync types
+// so cannot import config directly).
 //
-//	EIP-1559 (type 2): MaxFee → MaxPriorityFee → GasPrice → 1 Gwei
+//	EIP-1559 (type 2): min(maxFee, baseFee(35 gwei) + tip)
 //	Legacy   (0/1):    GasPrice → MaxFee → MaxPriorityFee → 1 Gwei
 func effectiveGasPrice(tx *types.Transaction) *big.Int {
 	switch tx.Type {
-	case 2: // EIP-1559
-		if tx.MaxFee != nil && tx.MaxFee.Sign() > 0 {
-			return tx.MaxFee
+	case 2: // EIP-1559: effective = min(maxFee, baseFee + tip)
+		maxFee := tx.MaxFee
+		if maxFee == nil || maxFee.Sign() <= 0 {
+			maxFee = new(big.Int).Set(deltasBaseFee)
 		}
-		if tx.MaxPriorityFee != nil && tx.MaxPriorityFee.Sign() > 0 {
-			return tx.MaxPriorityFee
+		tip := tx.MaxPriorityFee
+		if tip == nil {
+			tip = new(big.Int)
 		}
-		if tx.GasPrice != nil && tx.GasPrice.Sign() > 0 {
-			return tx.GasPrice
+		basePlusTip := new(big.Int).Add(deltasBaseFee, tip)
+		if maxFee.Cmp(basePlusTip) <= 0 {
+			return new(big.Int).Set(maxFee)
 		}
+		return new(big.Int).Set(basePlusTip)
 	default: // Legacy / EIP-2930
 		if tx.GasPrice != nil && tx.GasPrice.Sign() > 0 {
-			return tx.GasPrice
+			return new(big.Int).Set(tx.GasPrice)
 		}
 		if tx.MaxFee != nil && tx.MaxFee.Sign() > 0 {
-			return tx.MaxFee
+			return new(big.Int).Set(tx.MaxFee)
 		}
 		if tx.MaxPriorityFee != nil && tx.MaxPriorityFee.Sign() > 0 {
-			return tx.MaxPriorityFee
+			return new(big.Int).Set(tx.MaxPriorityFee)
 		}
 	}
-	return oneGwei
+	return new(big.Int).Set(oneGwei)
 }

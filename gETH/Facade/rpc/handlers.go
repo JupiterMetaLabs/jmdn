@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"log"
 
+	"gossipnode/config"
 	"gossipnode/DB_OPs/txindex"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
@@ -691,7 +692,7 @@ func marshalBlock(b *Types.Block, full bool, globalChainID *big.Int) map[string]
 			if len(b.Header.BaseFee) > 0 {
 				return "0x" + new(big.Int).SetBytes(b.Header.BaseFee).Text(16)
 			}
-			return "0x" + big.NewInt(35000000000).Text(16) // fallback: 35 gwei
+			return "0x" + big.NewInt(config.BaseFeeWei).Text(16) // fallback: 35 gwei
 		}(),
 
 		// PoW fields — this chain has no PoW; use standard empty/zero values
@@ -738,7 +739,6 @@ func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {
 
 	// gasPrice: for type 2 use effectiveGasPrice = min(maxFeePerGas, baseFee+tip)
 	// For legacy/type1 use GasPrice directly.
-	const baseFee = int64(35_000_000_000)
 	var gasPriceHex string
 	if tx.Type == 2 && len(tx.MaxFeePerGas) > 0 {
 		maxFee := new(big.Int).SetBytes(tx.MaxFeePerGas)
@@ -746,7 +746,7 @@ func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {
 		if len(tx.MaxPriorityFeePerGas) > 0 {
 			tip.SetBytes(tx.MaxPriorityFeePerGas)
 		}
-		basePlusTip := new(big.Int).Add(big.NewInt(baseFee), tip)
+		basePlusTip := new(big.Int).Add(big.NewInt(config.BaseFeeWei), tip)
 		effective := maxFee
 		if maxFee.Cmp(basePlusTip) > 0 {
 			effective = basePlusTip

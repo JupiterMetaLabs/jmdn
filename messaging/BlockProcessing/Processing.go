@@ -797,61 +797,24 @@ func contains(s, substr string) bool {
 	return len(s) >= len(substr) && s[:len(substr)] == substr
 }
 
-// parseTransaction parses the numeric values in a transaction
+// parseTransaction parses the numeric values in a transaction.
+// Fee logic is delegated to config.EffectiveGasPrice — single source of truth.
 func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error) {
 	parsed := &config.ParsedZKTransaction{
 		Original: &tx,
 	}
 
-	// Set the value directly since it's already a *big.Int
 	if tx.Value != nil {
 		parsed.ValueBig = new(big.Int).Set(tx.Value)
 	} else {
 		parsed.ValueBig = big.NewInt(0)
 	}
 
-	// Determine gas fee based on transaction type
-	// Type 0x0 = Legacy, 0x1 = AccessList, 0x2 = DynamicFee (EIP-1559)
-	if tx.Type == 2 { // EIP-1559 transaction
-		// EIP-1559 effective gas price = min(maxFee, baseFee + tip)
-		// JMDN uses a flat 35 gwei base fee.
-		const baseFeeWei = int64(35_000_000_000)
+	parsed.EffectiveGasFee = config.EffectiveGasPrice(&tx)
 
-		maxFee := tx.MaxFee
-		if maxFee == nil {
-			maxFee = big.NewInt(baseFeeWei) // safe fallback
-		}
-		parsed.MaxFeeBig = new(big.Int).Set(maxFee)
-
-		tip := tx.MaxPriorityFee
-		if tip == nil {
-			tip = new(big.Int)
-		}
-		basePlusTip := new(big.Int).Add(big.NewInt(baseFeeWei), tip)
-
-		// effective = min(maxFee, baseFee + tip)
-		if maxFee.Cmp(basePlusTip) <= 0 {
-			parsed.EffectiveGasFee = new(big.Int).Set(maxFee)
-		} else {
-			parsed.EffectiveGasFee = basePlusTip
-		}
-	} else {
-		// For Legacy or AccessList transactions, use GasPrice if available
-		if tx.GasPrice != nil {
-			parsed.EffectiveGasFee = new(big.Int).Set(tx.GasPrice)
-		} else if tx.MaxFee != nil {
-			// Fallback to MaxFee if GasPrice is not set
-			parsed.EffectiveGasFee = new(big.Int).Set(tx.MaxFee)
-		} else if tx.MaxPriorityFee != nil {
-			// Fallback to MaxPriorityFee if others are not set
-			parsed.EffectiveGasFee = new(big.Int).Set(tx.MaxPriorityFee)
-		} else {
-			// Last resort: use default gas price
-			parsed.EffectiveGasFee = big.NewInt(DefaultGasPrice)
-		}
-
-		// For non-EIP-1559 transactions, MaxFeeBig is not applicable
-		parsed.MaxFeeBig = nil
+	// MaxFeeBig is only meaningful for EIP-1559 (type 2).
+	if tx.Type == 2 && tx.MaxFee != nil {
+		parsed.MaxFeeBig = new(big.Int).Set(tx.MaxFee)
 	}
 
 	return parsed, nil
