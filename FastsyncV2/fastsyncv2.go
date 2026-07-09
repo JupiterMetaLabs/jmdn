@@ -734,6 +734,26 @@ func legacySQLiteRecon() uint64 {
 	return last
 }
 
+// tombstoneLegacySQLiteRecon overwrites the legacy SQLite watermark with an
+// unparseable sentinel after a successful seed. Without this, an accountsdb
+// restore to a PRE-F3 snapshot (anchor key absent) would re-run the migration
+// and re-import the stale legacy value — the same re-poison path the
+// seed-once design exists to prevent. The original value is preserved inside
+// the sentinel for forensics; legacySQLiteRecon fails to parse it and
+// returns 0, so the migration can never fire twice.
+func tombstoneLegacySQLiteRecon(seeded uint64) {
+	udb, err := sqlops.NewUnifiedDB()
+	if err != nil {
+		log.Printf("[FastsyncV2] applied anchor: legacy watermark tombstone skipped (SQLite open: %v)", err)
+		return
+	}
+	defer udb.Close()
+	sentinel := fmt.Sprintf("migrated-to-accountsdb:%d", seeded)
+	if err := udb.StoreKeyValue(reconBlockKey, sentinel); err != nil {
+		log.Printf("[FastsyncV2] applied anchor: legacy watermark tombstone failed: %v", err)
+	}
+}
+
 // reconAnchor returns the accounts-applied anchor (accountsdb), seeding it once
 // from the legacy SQLite watermark on first use after the F3 upgrade. On read
 // error it returns 0 — the SAFE direction: reconciliation re-covers the range
@@ -751,6 +771,7 @@ func (fs *FastsyncV2) reconAnchor() uint64 {
 			log.Printf("[FastsyncV2] applied anchor: seed check failed: %v", err)
 		} else if seeded {
 			log.Printf("[FastsyncV2] applied anchor: SEEDED from legacy SQLite watermark = %d (one-time F3 migration)", capped)
+			tombstoneLegacySQLiteRecon(capped)
 		}
 	}
 	anchor, _, err := DB_OPs.GetAppliedAnchor(nil)
