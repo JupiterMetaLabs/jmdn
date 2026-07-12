@@ -411,7 +411,7 @@ Expected output:
 
 ```
 [bootstrap] First run detected — starting bootstrap sync.
-[bootstrap] Listing parts from GCS: gs://jmzk-releases/jmdn_bootstrap_2306/...
+[bootstrap] Listing parts from GCS: gs://jmdn-bootstrap/staging/bootstrap-20260709_180202/...
 [bootstrap] Downloading parts to /opt/jmdn/bootstrap_tmp...
 [bootstrap] Checksums OK.
 [bootstrap] Extracting parts into sandbox: /opt/jmdn/data_tmp/sandbox
@@ -529,7 +529,7 @@ Expected output on first run:
 
 ```
 [entrypoint] First run detected — starting bootstrap sync.
-[bootstrap] Listing parts from GCS: gs://jmzk-releases/jmdn_bootstrap_2306/...
+[bootstrap] Listing parts from GCS: gs://jmdn-bootstrap/staging/bootstrap-20260709_180202/...
 [bootstrap] Downloading parts to /opt/jmdn/bootstrap_tmp...
 [bootstrap] Checksums OK.
 [bootstrap] Extracting parts into sandbox: /opt/jmdn/data_tmp/sandbox
@@ -585,9 +585,10 @@ Pass `-e KEY=value` to `docker run` to override defaults:
 |---|---|---|
 | `JMDN_PORTS_API` | `0` (disabled) | Set `8090` to enable Explorer API |
 | `JMDN_DATABASE_PASSWORD` | `immudb` | ImmuDB admin password |
-| `GCS_BUCKET` | `jmzk-releases` | Bootstrap snapshot bucket |
-| `GCS_PREFIX` | `jmdn_bootstrap_2306` | Snapshot path prefix in bucket |
-| `PARTS_PREFIX` | `data_backup_23062026.part` | Part filename prefix |
+| `GCS_BUCKET` | `jmdn-bootstrap` | Bootstrap snapshot bucket |
+| `GCS_PREFIX` | `staging/bootstrap-20260709_180202` | Snapshot path prefix in bucket (repoint to promoted public prefix before fleet rollout) |
+| `PARTS_PREFIX` | `data-patched.part` | Part filename prefix |
+| `CHECKSUM_FILE` | `checksums.md5` | Checksum manifest filename |
 | `IMMUDB_EXTERNAL` | `false` | Set `true` only with docker-compose (separate immudb container) |
 | `JMDN_SECURITY_JWT_SECRET` | `""` | JWT signing secret |
 
@@ -671,8 +672,10 @@ Most configuration belongs in `jmdn.yaml` — set it there. The environment vari
 | `JMDN_DATABASE_PORT` | `3322` | ImmuDB gRPC port |
 | `IMMUDB_PASSWORD` | *(from .env)* | immudb container startup password — must match `database.password` in jmdn.yaml |
 | `REDIS_PASSWORD` | *(from .env)* | Redis container `--requirepass` — must match `database.redis.password` in jmdn.yaml |
-| `GCS_BUCKET` | `jmzk-releases` | Bootstrap snapshot GCS bucket (bootstrap container only) |
-| `GCS_PREFIX` | `jmdn_bootstrap_2306` | Snapshot path prefix (bootstrap container only) |
+| `GCS_BUCKET` | `jmdn-bootstrap` | Bootstrap snapshot GCS bucket (bootstrap container only) |
+| `GCS_PREFIX` | `staging/bootstrap-20260709_180202` | Snapshot path prefix (bootstrap container only; repoint to promoted public prefix before rollout) |
+| `PARTS_PREFIX` | `data-patched.part` | Snapshot part filename prefix (bootstrap container only) |
+| `CHECKSUM_FILE` | `checksums.md5` | Checksum manifest filename (bootstrap container only) |
 | `IMMUDB_USER` | `jmdn` | OS user the immudb files are owned by (entrypoint chown) |
 | `COMPOSE_PROJECT_NAME` | *(directory name)* | Prefixes volume/network names — set to `jmdn` in `.env` (Step 2) so this guide's volume commands work verbatim. Existing deployments without it keep their current prefix; changing it on a live node repoints compose at different volumes |
 | `JMDN_VERSION` | `latest` | JMDN image tag for the `jmdn` and `jmdn-bootstrap` services. Pin a release in `.env`; upgrades change this line only (§13) |
@@ -1271,17 +1274,17 @@ in `.env` and `jmdn.yaml`, both gitignored.
 > a routine point release, snapshot them first with the steps in §12
 > [Backup](#12-volumes-and-data-management).
 
-### Which path applies to you?
-
-- **Installed with the v1.2.0 guide** (the first Docker release — `docker-compose.yml` has a hand-edited `image:` tag, and `.env` has no `JMDN_VERSION`) → run the **one-time migration** below first. After that, every future upgrade is Option A.
-- **Installed with this guide** (`.env` already has `JMDN_VERSION`) → skip the migration, go straight to **Option A**.
+Most upgrades are the [normal upgrade](#normal-upgrade) below. **If this is your
+first upgrade from the original v1.2.0 install** (hand-edited `image:` tag, no
+`JMDN_VERSION` in `.env`), do the one-time migration just below *once* first;
+after that you upgrade like everyone else.
 
 ### One-time migration (v1.2.0 installs only)
 
 The v1.2.0 guide had you pin releases by editing the `image:` line inside
 `docker-compose.yml`. That edit makes your checkout dirty, so `git pull`
 will refuse or merge-conflict on the compose file. Migrate once — afterwards
-you're on the same footing as any new install and use Option A below:
+you're on the same footing as any new install and use the normal upgrade below:
 
 ```bash
 # 1. Park your local compose edit (the image tag is its only local change)
@@ -1311,7 +1314,10 @@ docker compose pull jmdn && docker compose up -d jmdn
 
 Once migrated, you will not need this section again — new releases only ever touch `.env`.
 
-### Option A — Upgrade via pre-built image (recommended, all installs after migration)
+### Normal upgrade
+
+The routine case — pre-built image, one line in `.env`. This is all a normal
+version bump needs; it never touches your chain data or config.
 
 ```bash
 # 1. Set the new version in .env — adds the line if missing, portable (no sed -i,
@@ -1345,42 +1351,7 @@ curl -s http://localhost:8545 \
   -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
 ```
 
-> After upgrading, check the release notes for any changes to `fastsync.catch_up_from_block` — if the bootstrap snapshot was refreshed, update this value in `jmdn.yaml` and restart.
-
-### Upgrading a node installed with the v1.2.0 guide (one-time migration)
-
-The v1.2.0 guide had you pin releases by editing the `image:` line inside
-`docker-compose.yml`. That edit makes your checkout dirty, so `git pull`
-will refuse or merge-conflict on the compose file. Migrate once — afterwards
-every upgrade is the 3 steps above:
-
-```bash
-# 1. Park your local compose edit (the image tag is its only local change)
-git stash
-
-# 2. Refresh the repo — brings the compose file that reads JMDN_VERSION from .env
-git pull
-
-# 3. Your stashed tag edit is now obsolete — the tag lives in .env instead
-git stash drop
-
-# 4. Pin your version in .env (REQUIRED — without it the tag defaults to :latest)
-echo "JMDN_VERSION=v1.2.1" >> .env
-
-# 5. Pull + restart as usual
-docker compose pull jmdn && docker compose up -d jmdn
-```
-
-> **Do NOT add `COMPOSE_PROJECT_NAME=jmdn` to an existing node's `.env`.**
-> Your volumes are named after the project name your stack was created with
-> (usually your checkout directory). Changing it repoints compose at fresh
-> empty volumes and your node will refuse to start (missing bootstrap
-> sentinel). Leave it unset — everything keeps working under your existing
-> names. If you ever *want* to adopt the standard names, follow the volume
-> copy steps in the `docker-compose.yml` header comment during a planned
-> maintenance window.
-
-### Option B — Build and deploy from source
+### Building from source (advanced)
 
 ```bash
 git fetch --tags
@@ -1425,6 +1396,80 @@ docker compose pull redis
 docker compose up -d redis
 # jmdn will reconnect automatically
 ```
+
+### One-time chain reset (only when explicitly instructed)
+
+> **This is not a routine operation.** A refreshed bootstrap snapshot only makes
+> *new* node installs faster — it does **not** invalidate a running node's data,
+> and existing nodes never need to rebootstrap to keep up. A node that is already
+> running stays in sync on its own; ordinary version upgrades (the normal
+> upgrade above) never touch your chain data.
+>
+> Follow this procedure **only** when JupiterMeta explicitly asks you to rebuild
+> from a specific snapshot for a coordinated one-time correction. Do not run it
+> as part of normal upgrades.
+
+This **discards local chain data** and re-seeds from the provided snapshot. A
+node is a replica, so nothing unique is lost; it is not reversible, so back up
+first if you keep custom material.
+
+**One complete procedure — run top to bottom, from your install directory**
+(where `docker-compose.yml` lives; this is what makes `docker compose down -v`
+target *your* volumes). Written for the v1.2.0 install; it is self-contained —
+you do not need any other section.
+
+```bash
+# 1. Back up anything you can't regenerate (secrets, custom certs).
+cp .env ~/jmdn.env.backup
+
+# 2. Clear the v1.2.0 pinned-image edit so the repo updates cleanly.
+#    (If your .env already has a JMDN_VERSION line, skip stash/drop — just `git pull`.)
+git stash          # parks the hand-edited `image:` tag (its only local change)
+git pull           # brings the compose + bootstrap config for the new snapshot
+git stash drop     # the old pinned edit is obsolete — version lives in .env now
+
+# 3. Pin the release version in .env (use the version JupiterMeta provides).
+echo "JMDN_VERSION=v1.2.1" >> .env
+
+# 4. Set the catch-up block in jmdn.yaml, under `fastsync:`
+#      catch_up_from_block: 12173      # = snapshot tip 12172 + 1
+#    (JupiterMeta provides the exact value with the snapshot.)
+
+# 5. Pull the image, WIPE old chain data + sync queue, re-bootstrap, start.
+docker compose pull
+docker compose down -v                     # removes this project's immudb-data, redis-data, jmdn-state
+docker compose run --rm jmdn-bootstrap     # downloads + verifies + extracts the snapshot
+docker compose up -d
+
+# 6. Verify it catches up from the new baseline.
+docker compose logs -f jmdn
+curl -s http://localhost:8545 -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+```
+
+Why all three volumes are wiped in step 5:
+
+- **`immudb-data`** — the chain itself; replaced by the verified snapshot (required).
+- **`redis-data`** — the account-sync queue; stale entries reference the old
+  chain and must not replay onto fresh state (required).
+- **`jmdn-state`** — node identity, TLS certs, and the derived tx-index. Wiping
+  gives a new node identity (it re-peers automatically via the seed nodes) and a
+  clean tx-index rebuild.
+
+**To preserve node identity / custom certs**, in step 5 replace `docker compose
+down -v` with a selective wipe (leaves `jmdn-state` intact):
+
+```bash
+docker compose down
+docker volume rm "$(basename "$PWD")_immudb-data" "$(basename "$PWD")_redis-data"
+# then continue step 5: docker compose run --rm jmdn-bootstrap && docker compose up -d
+```
+
+> Two things that must be right: `catch_up_from_block` = **snapshot tip + 1**
+> (a wrong value causes a full genesis re-scan or silently skipped blocks), and
+> you must run from the install directory so `down -v` wipes the correct volumes.
+> The snapshot prefix must be reachable over public HTTP — see `GCS_*` in the
+> [environment reference](#environment-variable-overrides).
 
 ---
 
