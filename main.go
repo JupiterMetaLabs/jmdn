@@ -15,12 +15,10 @@ import (
 	"time"
 
 	"gossipnode/config/GRO"
-	"gossipnode/logging"
 	"gossipnode/shutdown"
 
 	orchestratorGlobal "github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
-	ion "github.com/JupiterMetaLabs/ion"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
 	MsgPassingService "gossipnode/AVC/BuddyNodes/MessagePassing/Service"
@@ -39,7 +37,6 @@ import (
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
 	"gossipnode/explorer"
-	fastsync "gossipnode/fastsync"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/rpc"
 	"gossipnode/helper"
@@ -95,7 +92,6 @@ func goMaybeTracked(
 
 // Global variables for easier access
 var (
-	fastSyncer   *fastsync.FastSync
 	fastSyncerV2 *FastsyncV2.FastsyncV2
 	// immuClient   *config.ImmuClient // unused: declared but never assigned or read
 	globalPubSub *Pubsub.StructGossipPubSub
@@ -698,26 +694,6 @@ func initAccountsDBPool() error {
 	return nil
 }
 
-// initFastSync initializes the FastSync service
-// initFastSync initializes the FastSync service
-func initFastSync(n *config.Node, mainClient *config.PooledConnection, accountsClient *config.PooledConnection) *fastsync.FastSync {
-	// Initialize named logger for FastSync
-	// This uses the global AsyncLogger instance to create a structured logger
-	fsLogger, err := logging.NewAsyncLogger().NamedLogger("FastSync", "")
-	var ionLogger *ion.Ion
-
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to create FastSync logger - falling back to nil logger")
-		// We still proceed, just without the detailed ion logger
-	} else if fsLogger != nil && fsLogger.NamedLogger != nil {
-		ionLogger = fsLogger.NamedLogger
-	}
-
-	fs := fastsync.NewFastSync(n.Host, mainClient, accountsClient, ionLogger)
-	log.Info().Msg("FastSync service initialized - will get connections when needed")
-	return fs
-}
-
 // initFastsyncV2 initializes the FastSync V2 service.
 // ctx is the node's top-level shutdown context — it governs the lifetime of
 // server-side network handler goroutines inside the engine.
@@ -1140,8 +1116,7 @@ func main() {
 		}
 	}()
 
-	// Initialize FastSync service
-	fastSyncer = initFastSync(n, mainDBClient, didDBClient)
+	// fastsync V1 retired — FastsyncV2 only.
 	if cfg.FastSync.Enabled {
 		fastSyncerV2 = initFastsyncV2(ctx, n, cfg.FastSync.SyncTimeout)
 	} else {
@@ -1374,7 +1349,6 @@ func main() {
 	cmdHandler := &cli.CommandHandler{
 		Node:            n,
 		NodeManager:     nodeManager,
-		FastSyncer:      fastSyncer,
 		FastSyncerV2:    fastSyncerV2,
 		SeedNode:        cfg.Network.SeedNode,
 		EnableYggdrasil: cfg.Network.Yggdrasil,

@@ -214,6 +214,29 @@ func (idx *DB) CountByAddress(ctx context.Context, address string) (int, error) 
 	return n, nil
 }
 
+// CountTransactions returns the total number of DISTINCT transactions in the
+// index. DISTINCT is required: address_txns stores one row per (address, tx)
+// pair — a plain transfer appears under sender AND recipient, so COUNT(*)
+// would roughly double-count.
+//
+// Full index scan (PK is (address, tx_hash)), but SQLite-local — far cheaper
+// than the immudb prefix Count round-trip it replaces on the stats endpoint.
+// Callers should gate on IsReady(): during a rebuild the table is truncated
+// and this would report a misleading partial count.
+func (idx *DB) CountTransactions(ctx context.Context) (uint64, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	var n uint64
+	err := idx.readDB.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT tx_hash) FROM address_txns`,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("txindex: count transactions: %w", err)
+	}
+	return n, nil
+}
+
 // GetTxRefsByOffset returns paginated tx references for an address, newest first,
 // using SQL OFFSET. Suitable for page-number–based UIs.
 // Ordered by (block_number DESC, tx_hash DESC) — the tx_hash tiebreaker keeps
@@ -559,6 +582,21 @@ func getIdx() *DB {
 // catchup and is safe to treat as authoritative for reads.
 func IsReady() bool {
 	return ready.Load()
+}
+
+// CountTransactions returns the distinct-transaction count from the singleton
+// index. Errors when the index is not initialised or not yet authoritative
+// (rebuild / gap catchup in flight) — callers such as the explorer stats
+// endpoint fall back to the immudb prefix count in that case.
+func CountTransactions(ctx context.Context) (uint64, error) {
+	idx := getIdx()
+	if idx == nil {
+		return 0, fmt.Errorf("txindex not initialised")
+	}
+	if !IsReady() {
+		return 0, fmt.Errorf("txindex not ready (rebuild or gap catchup in progress)")
+	}
+	return idx.CountTransactions(ctx)
 }
 
 // Init opens the SQLite index and starts the background worker synchronously

@@ -325,6 +325,102 @@ func BatchCreateAccountsOrdered(PooledConnection *config.PooledConnection, entri
 	return nil
 }
 
+// normalizeUpdatedAtNanos converts an UpdatedAt value of unknown unit
+// (seconds, millis, micros, or nanos since epoch) to nanoseconds so LWW
+// comparisons are unit-safe. Needed because the live executor stamps
+// UpdatedAt with the block timestamp (Unix seconds) while sync paths stamp
+// time.Now().UnixNano() — comparing them raw makes any nano-stamped write
+// beat every second-stamped write by 9 orders of magnitude.
+func normalizeUpdatedAtNanos(ts int64) int64 {
+	switch {
+	case ts <= 0:
+		return ts
+	case ts < 1e11: // seconds (valid until year ~5138)
+		return ts * int64(time.Second)
+	case ts < 1e14: // milliseconds
+		return ts * int64(time.Millisecond)
+	case ts < 1e17: // microseconds
+		return ts * int64(time.Microsecond)
+	default: // already nanoseconds
+		return ts
+	}
+}
+
+// mergeAccountForWrite is the single, PURE decision point for writing an
+// account object over stored state. It owns LWW ordering, identity-field
+// preservation, monotonic counter guards, and new-account defaults — every
+// write path through BatchRestoreAccounts (sync accounts payloads, sparse
+// balance updates, restores) goes through this function. Unit-tested in
+// merge_account_test.go; keep it free of I/O and logging.
+//
+// existing == nil means no stored account (new account). Returns the merged
+// object and whether it should be written (false = existing state wins LWW).
+func mergeAccountForWrite(existing *Account, incoming Account) (Account, bool) {
+	if existing == nil {
+		// NEW ACCOUNT (no stored object to merge from): fill defaults for
+		// identity fields that sparse update entries leave zero-valued.
+		// DIDAddress stays empty — hex addresses are not DIDs; the real DID
+		// arrives later via the accounts payload or DID propagation.
+		if incoming.AccountType == "" {
+			incoming.AccountType = "user"
+		}
+		if incoming.CreatedAt == 0 && incoming.UpdatedAt != 0 {
+			incoming.CreatedAt = incoming.UpdatedAt
+		}
+		return incoming, true
+	}
+
+	// LWW on unit-normalized timestamps — stored values may be in seconds
+	// (live executor: block timestamp) or nanos (sync paths).
+	existingTS := normalizeUpdatedAtNanos(existing.UpdatedAt)
+	incomingTS := normalizeUpdatedAtNanos(incoming.UpdatedAt)
+	if existingTS > incomingTS {
+		return incoming, false
+	}
+	if existingTS == incomingTS && existing.Balance == incoming.Balance {
+		// Same timestamp and balance - no change needed
+		return incoming, false
+	}
+
+	// FIELD MERGING: Prevent partial updates (e.g. from Reconciliation) from wiping out account metadata
+	// 1. Preserve DIDAddress if incoming DID is empty or mistakenly set to the
+	// hex address. EqualFold: legacy update entries carried the address in
+	// lowercase while Address.Hex() is EIP-55 checksummed — a case-sensitive
+	// compare never matched, letting the forged DID overwrite the real one.
+	if incoming.DIDAddress == "" || strings.EqualFold(incoming.DIDAddress, incoming.Address.Hex()) {
+		incoming.DIDAddress = existing.DIDAddress
+	}
+	// 2. Preserve CreatedAt
+	if incoming.CreatedAt == 0 {
+		incoming.CreatedAt = existing.CreatedAt
+	}
+	// 3. Preserve AccountType. Empty = balance update carries no identity;
+	// "user" = legacy hardcoded placeholder from old update entries.
+	if (incoming.AccountType == "" || incoming.AccountType == "user") && existing.AccountType != "" {
+		incoming.AccountType = existing.AccountType
+	}
+	// 4. Preserve Metadata
+	if incoming.Metadata == nil {
+		incoming.Metadata = existing.Metadata
+	}
+	// 5. Preserve ART identity nonce: 0 means the producer had no value
+	// (e.g. reconciliation of a receiver-only account). Never zero it.
+	if incoming.Nonce == 0 {
+		incoming.Nonce = existing.Nonce
+	}
+	// 6. Monotonic guard on tx counters: the Ethereum nonce and sent-tx
+	// count never decrease. A lower incoming value means the producer had
+	// partial information (receiver-only recon delta) — keep the existing.
+	if incoming.TxNonce < existing.TxNonce {
+		incoming.TxNonce = existing.TxNonce
+	}
+	if incoming.TxCountSent < existing.TxCountSent {
+		incoming.TxCountSent = existing.TxCountSent
+	}
+
+	return incoming, true
+}
+
 // BatchRestoreAccounts applies a batch of entries into accountsdb.
 // For address:<addr> keys it writes KV. For did:<did> it creates a bound reference to the corresponding address key.
 func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledConnection, entries []struct {
@@ -392,7 +488,7 @@ func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledCo
 			var curAcc, inAcc Account
 			if json.Unmarshal(cur.Value, &curAcc) == nil &&
 				json.Unmarshal(e.Value, &inAcc) == nil &&
-				inAcc.UpdatedAt > curAcc.UpdatedAt {
+				normalizeUpdatedAtNanos(inAcc.UpdatedAt) > normalizeUpdatedAtNanos(curAcc.UpdatedAt) {
 				addrSet[e.Key] = e
 			}
 		}
@@ -445,7 +541,18 @@ func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledCo
 			fetchCtx, fetchCancel := context.WithTimeout(ctx, 30*time.Second)
 			entriesList, getAllErr := PooledConnection.Client.Client.GetAll(fetchCtx, prefetchKeys)
 			fetchCancel()
-			if getAllErr == nil && entriesList != nil {
+			// GetAll failure MUST fail the batch. Treating it as "all accounts are
+			// new" (the old behaviour) skipped both the LWW check and the identity
+			// merge: sparse update entries (empty DIDAddress/AccountType/CreatedAt)
+			// would be written raw, clobbering real account objects. Callers retry —
+			// the drain worker leaves entries unACKed in the Redis PEL.
+			// Note: immudb GetAll silently skips missing keys (database.go: ErrKeyNotFound
+			// is tolerated per key), so an all-new-accounts batch returns an empty list
+			// with a nil error — this path only fires on real RPC/DB failures.
+			if getAllErr != nil {
+				return fmt.Errorf("prefetch existing accounts (GetAll %d keys): %w - BatchRestoreAccounts", len(prefetchKeys), getAllErr)
+			}
+			if entriesList != nil {
 				for _, entry := range entriesList.Entries {
 					if entry == nil || entry.Value == nil {
 						continue
@@ -456,9 +563,6 @@ func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledCo
 					}
 				}
 			}
-			// GetAll failure is treated as "all accounts are new" — safe degradation;
-			// worst case we write data that LWW would have skipped, but correctness
-			// is preserved because ImmuDB is append-only and the node re-syncs on divergence.
 		}
 	}
 
@@ -488,54 +592,34 @@ func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledCo
 		var shouldWrite = true
 		var incoming Account
 		if err := json.Unmarshal(e.Value, &incoming); err == nil {
-			if existing, found := existingAccounts[e.Key]; found {
-				if existing.UpdatedAt > incoming.UpdatedAt {
-					delete(addressKeysInBatch, e.Key)
-					shouldWrite = false
-				} else if existing.UpdatedAt == incoming.UpdatedAt && existing.Balance == incoming.Balance {
-					// Same timestamp and balance - no change needed
-					delete(addressKeysInBatch, e.Key)
-					shouldWrite = false
-				}
-				if shouldWrite && existing.UpdatedAt < incoming.UpdatedAt {
+			var existing *Account
+			if ex, found := existingAccounts[e.Key]; found {
+				existing = &ex
+			}
+
+			merged, write := mergeAccountForWrite(existing, incoming)
+			shouldWrite = write
+			if !write {
+				delete(addressKeysInBatch, e.Key)
+			} else {
+				if existing != nil && normalizeUpdatedAtNanos(existing.UpdatedAt) < normalizeUpdatedAtNanos(merged.UpdatedAt) {
 					loggerCtx, cancel := context.WithCancel(context.Background())
 					defer cancel()
 					PooledConnection.Client.Logger.Debug(loggerCtx, "Updating account - incoming is newer (LWW)",
 						ion.String("key", e.Key),
 						ion.Int64("existing_updated_at", existing.UpdatedAt),
-						ion.Int64("incoming_updated_at", incoming.UpdatedAt),
+						ion.Int64("incoming_updated_at", merged.UpdatedAt),
 						ion.String("existing_balance", existing.Balance),
-						ion.String("incoming_balance", incoming.Balance),
+						ion.String("incoming_balance", merged.Balance),
 						ion.String("database", config.AccountsDBName),
 						ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
 						ion.String("log_file", LOG_FILE),
 						ion.String("topic", TOPIC),
 						ion.String("function", "DB_OPs.BatchRestoreAccounts"))
 				}
-
-				// FIELD MERGING: Prevent partial updates (e.g. from Reconciliation) from wiping out account metadata
-				if shouldWrite {
-					// 1. Preserve DIDAddress if incoming DID is empty or mistakenly set to the hex address
-					if incoming.DIDAddress == "" || incoming.DIDAddress == incoming.Address.Hex() {
-						incoming.DIDAddress = existing.DIDAddress
-					}
-					// 2. Preserve CreatedAt
-					if incoming.CreatedAt == 0 {
-						incoming.CreatedAt = existing.CreatedAt
-					}
-					// 3. Preserve AccountType
-					if incoming.AccountType == "user" && existing.AccountType != "" {
-						incoming.AccountType = existing.AccountType
-					}
-					// 4. Preserve Metadata
-					if incoming.Metadata == nil {
-						incoming.Metadata = existing.Metadata
-					}
-
-					// Re-serialize the merged account object to overwrite e.Value
-					if mergedVal, err := json.Marshal(incoming); err == nil {
-						e.Value = mergedVal
-					}
+				// Re-serialize the merged account object to overwrite e.Value
+				if mergedVal, err := json.Marshal(merged); err == nil {
+					e.Value = mergedVal
 				}
 			}
 		} else {

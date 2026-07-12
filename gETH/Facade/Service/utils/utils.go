@@ -225,7 +225,7 @@ func ConvertZKBlockToblockheader(ZKBlock config.ZKBlock) Types.BlockHeader {
 	// O(N^2) backward recursive database lookups.
 	// For now, since the sequencer only accepts Type 0 (Legacy) transactions which do not burn BaseFee,
 	// we return a constant 35 Gwei to satisfy downstream JSON-RPC wallets (MetaMask) without triggering OOM node crashes.
-	baseFee := big.NewInt(35000000000).Bytes()
+	baseFee := big.NewInt(config.BaseFeeWei).Bytes()
 
 	return Types.BlockHeader{
 		ParentHash:          ZKBlock.PrevHash.Bytes(),

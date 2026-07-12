@@ -552,6 +552,73 @@ _generate_redis_password() {
 	fi
 }
 
+# Configure Redis persistence to match docker-compose CLI flags:
+#   appendonly yes, appendfsync everysec, maxmemory-policy noeviction.
+# Without these, distro-default redis.conf uses RDB-only persistence
+# (appendonly no) — a crash between RDB snapshots loses the account sync
+# stream and the balance effects it carries. This is a correctness
+# requirement for jmdn, not tuning; see DOCKER.md's Redis persistence note.
+#
+# Idempotent: each directive is checked individually. Sets
+# REDIS_CONF_CHANGED=1 if any directive was missing/changed.
+_configure_redis_persistence() {
+	local conf
+	if ! conf="$(_redis_conf_path)"; then
+		log_warn "Could not locate redis.conf — persistence NOT configured."
+		return 1
+	fi
+
+	# These mirror docker-compose.yml: --appendonly yes --appendfsync everysec
+	# --maxmemory-policy noeviction. Keep them in sync.
+	local directives=(
+		"appendonly yes"
+		"appendfsync everysec"
+		"maxmemory-policy noeviction"
+	)
+
+	local directive key
+	for directive in "${directives[@]}"; do
+		key="${directive%% *}"
+		if grep -qxF "${directive}" "${conf}"; then
+			log_ok "${key} already set in ${conf} — no change."
+		else
+			log_info "Setting ${key} in ${conf}..."
+			sed_inplace "/^${key} /d" "${conf}"
+			echo "${directive}" >>"${conf}"
+			REDIS_CONF_CHANGED=1
+		fi
+	done
+
+	log_ok "Redis persistence configured (AOF + everysec + noeviction)."
+}
+
+# Verify the RUNNING server actually has AOF enabled. The conf edit above is
+# a silent no-op if the service unit loads a different conf file than
+# _redis_conf_path found — this closes that gap by asking the live server.
+_verify_redis_persistence() {
+	if ! check_command redis-cli; then
+		log_warn "redis-cli not available — cannot verify running persistence."
+		return 1
+	fi
+
+	local redis_pass="${REDIS_PASSWORD:-}"
+	if [[ -z "${redis_pass}" && -f "${REDIS_CRED_FILE}" ]]; then
+		# shellcheck disable=SC1090
+		source "${REDIS_CRED_FILE}"
+		redis_pass="${REDIS_PASSWORD:-}"
+	fi
+	local auth_args=()
+	[[ -n "${redis_pass}" ]] && auth_args=(-a "${redis_pass}" --no-auth-warning)
+
+	local aof
+	aof="$(redis-cli "${auth_args[@]}" CONFIG GET appendonly 2>/dev/null | tail -n1)"
+	if [[ "${aof}" != "yes" ]]; then
+		log_error "Verification failed: running Redis reports appendonly='${aof:-unreadable}'."
+		return 1
+	fi
+	log_ok "Verified: running Redis has appendonly=yes."
+}
+
 # Configure Redis auth. Idempotent: if REDIS_CRED_FILE already holds a
 # password from a previous run, it's reused as-is (no silent rotation of a
 # credential that jmdn.yaml may already be configured with). REDIS_PASSWORD
@@ -657,8 +724,9 @@ _start_redis_service() {
 install_redis() {
 	log_info "Checking Redis..."
 
-	# Set by _configure_redis_password when redis.conf is actually modified;
-	# _start_redis_service restarts only in that case.
+	# Set by _configure_redis_persistence / _configure_redis_password when
+	# redis.conf is actually modified; _start_redis_service restarts only
+	# in that case.
 	REDIS_CONF_CHANGED=0
 
 	if check_command redis-server || check_command redis-cli; then
@@ -679,8 +747,10 @@ install_redis() {
 		fi
 	fi
 
+	_configure_redis_persistence || log_error "Redis persistence NOT configured — REQUIRED for jmdn account-sync durability. Fix before running the node."
 	_configure_redis_password || log_warn "Redis password setup incomplete — review manually before relying on it."
 	_start_redis_service || log_warn "Redis service could not be confirmed running — check manually."
+	_verify_redis_persistence || log_error "Running Redis does NOT report appendonly=yes — the edited conf may not be the one the service loads. Fix before running the node."
 
 	log_ok "Redis setup complete."
 }
