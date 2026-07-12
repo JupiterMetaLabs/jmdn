@@ -11,6 +11,15 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+**Explorer**
+
+- **`/api/stats` total transaction count** now served from the SQLite tx-address
+  index (`DB_OPs/txindex/txindex.go`). `CountTransactions` uses
+  `SELECT COUNT(DISTINCT tx_hash)` so sender and recipient rows for the same
+  transfer are not double-counted. Falls back to the ImmuDB prefix-scan on any
+  index error. The index is gated — a partial count during `RebuildIndex` never
+  reaches the API. (#67)
+
 **RPC**
 
 - **`eth_getTransactionsByAddress`** (`gETH/Facade/rpc/handlers.go`). Paginated
@@ -44,6 +53,13 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 - **Redis is now auto-provisioned** (`Scripts/setup_dependencies.sh --redis`)
   for the account-sync queue, with secure, idempotent password setup. (#60)
+
+- **Redis AOF persistence configured on bare-metal installs**
+  (`Scripts/setup_dependencies.sh`). `appendonly yes`, `appendfsync everysec`,
+  and `maxmemory-policy noeviction` are now set and verified against the live
+  server on every install — matching the Docker Compose configuration. A Redis
+  crash between RDB snapshots loses the account-sync stream; AOF is a
+  correctness requirement, not a tuning option. (#66)
 
 **Docker & Deployment**
 
@@ -90,6 +106,11 @@ adhering to [Semantic Versioning](https://semver.org/).
 - **Transaction parsing switched from RLP decoding to `UnmarshalBinary`**
   (`gETH/Facade/Service/Service.go`), so legacy, EIP-2930, and EIP-1559
   transactions are all parsed consistently on submission. (#53)
+
+- **FastSync V1 retired** — superseded by FastsyncV2. CLI commands
+  (`fastsync`, `firstsync`) return an explicit retirement message pointing to
+  the V2 equivalents. The AVRO whole-DB exchange path and its backing code are
+  removed. (#66)
 
 **Graceful Shutdown**
 
@@ -176,6 +197,53 @@ adhering to [Semantic Versioning](https://semver.org/).
   (`config/PubSubMessages/GossipSub_Helper.go`) — router/topic instances are
   now a per-host singleton, preventing a second registration from orphaning
   the first. (#59)
+
+**Account Sync & Balance Correctness**
+
+- **Balance corruption on reconciliation** (`config/gasfee.go`,
+  `FastsyncV2/deltas.go`, `messaging/BlockProcessing/Processing.go`). Gas fee
+  calculation during reconciliation used different constants and fallback values
+  than the live execution path, causing balances to be re-corrupted on every
+  catchup. A shared `config/gasfee.go` now provides one formula used by both
+  paths. (#64)
+
+- **Account updates clobbered DID, type, and metadata fields** — drain worker
+  updates now merge into the stored account instead of overwriting it. LWW
+  timestamps are set by the producer so replayed stale entries cannot overwrite
+  newer data. (#64)
+
+- **Per-transaction balance and marker writes were not atomic**
+  (`messaging/BlockProcessing/Processing.go`, `DB_OPs/tx_markers.go`). A crash
+  mid-block left partially-applied balances with no marker; replay re-applied
+  the prefix, double-counting. All staged balance effects and the tx-processed
+  marker now commit in one ImmuDB `ExecAll` per transaction. (#64)
+
+- **Recon anchor could advance ahead of drained data**
+  (`DB_OPs/Nodeinfo/account_sync_drainwait.go`). The reconciliation anchor
+  marked ranges as applied before the Redis queue was flushed; a queue loss
+  (crash, eviction) silently skipped those ranges permanently. The anchor now
+  only advances after confirming the enqueued stream IDs have been applied and
+  ACKed by the drain worker. (#64)
+
+- **`latest_block` marker had four concurrent writers with no ordering guard**
+  (`DB_OPs/latest_block.go`). Out-of-order stores (PoTS WAL replay, catchup
+  batches, sync workers) regressed the tip; header-skeleton blocks advanced it
+  past the data-complete tip. All writers now go through a single monotonic
+  choke point. (#64)
+
+**Transaction Index**
+
+- **HandleSync and PoTS blocks were not indexed** — blocks synced by the
+  FastsyncV2 HandleSync and PoTS gap-fill paths were stored but never written
+  to the SQLite tx-address index, causing `eth_getTransactionsByAddress` to
+  return stale results between catchups. `EnsureReady` is now called at the
+  end of `handleSyncInternal` to close the gap. (#66)
+
+- **Non-sequencer nodes' live blocks were not indexed** — `blockPropagation`
+  stored and processed pubsub-received blocks but never called `IndexBlockAsync`,
+  so the index drifted continuously staler on non-sequencer nodes.
+  `IndexBlockAsync` is now called after every stored block on this path,
+  matching the sequencer path. (#66)
 
 **Deployment**
 
