@@ -494,3 +494,32 @@ var _ = func() bool {
 	var _ *sql.DB = idx.readDB
 	return true
 }()
+
+// ── CountTransactions (explorer stats source) ────────────────────────────────
+
+// TestCountTransactions_DistinctNotRows pins the DISTINCT semantics: the table
+// stores one row per (address, tx) pair, so a plain transfer produces TWO rows
+// (sender + recipient) for ONE transaction. COUNT(*) would report 2; the
+// explorer's total-transactions stat must report 1.
+func TestCountTransactions_DistinctNotRows(t *testing.T) {
+	idx := newTestDB(t)
+	ctx := context.Background()
+
+	a := addr("0x1111111111111111111111111111111111111111")
+	b := addr("0x2222222222222222222222222222222222222222")
+
+	// tx1: a→b (2 rows, 1 tx). tx2: a→a self-send (1 row after PK dedup, 1 tx).
+	require.NoError(t, idx.IndexBlock(ctx, makeBlock(1, makeTx(a, b, 1), makeTx(a, a, 2))))
+
+	require.Equal(t, 3, countRows(t, idx), "row count sanity: 2 (transfer) + 1 (self-send)")
+
+	n, err := idx.CountTransactions(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(2), n, "distinct tx count must not double-count multi-address txs")
+
+	// Re-indexing the same block (replay) must not change the count.
+	require.NoError(t, idx.IndexBlock(ctx, makeBlock(1, makeTx(a, b, 1), makeTx(a, a, 2))))
+	n, err = idx.CountTransactions(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(2), n, "replay must be idempotent")
+}
