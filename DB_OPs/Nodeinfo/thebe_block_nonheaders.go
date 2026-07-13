@@ -2,6 +2,7 @@ package NodeInfo
 
 import (
 	"encoding/binary"
+	"encoding/json"
 
 	blockpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/block"
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
@@ -58,6 +59,21 @@ func convertZKBlockToNonHeaders(b *config.ZKBlock) *blockpb.NonHeaders {
 			ProofHash:  b.ProofHash,
 			StarkProof: b.StarkProof,
 			Commitment: commitmentToBytes(b.Commitment),
+		}
+	}
+
+	// Encode L1 finality metadata so late-joining nodes receive it via DataSync.
+	// We reuse L1Finality.Metadata (JSONB bytes) to carry l1_tx_hash + l1_block_number
+	// without a proto schema change.
+	if b.L1TxHash != "" {
+		type l1Meta struct {
+			L1TxHash      string `json:"l1_tx_hash"`
+			L1BlockNumber uint64 `json:"l1_block_number"`
+		}
+		if meta, err := json.Marshal(l1Meta{L1TxHash: b.L1TxHash, L1BlockNumber: b.L1BlockNumber}); err == nil {
+			nh.L1Finality = &blockpb.L1Finality{
+				Metadata: meta,
+			}
 		}
 	}
 

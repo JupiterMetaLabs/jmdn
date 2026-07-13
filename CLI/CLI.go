@@ -802,6 +802,12 @@ func (h *CommandHandler) handlePropagateDID(parts []string) {
 	}
 }
 
+func (h *CommandHandler) handleSyncInfo() {
+	fmt.Println("FastSync Configuration (V2):")
+	fmt.Println("  V1 retired — engine: FastsyncV2")
+	printDashes()
+}
+
 func (h *CommandHandler) handleGetDID(parts []string) {
 	if len(parts) != 2 {
 		fmt.Println("Usage: getDID <did>")

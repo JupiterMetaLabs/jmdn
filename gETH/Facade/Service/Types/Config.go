@@ -21,6 +21,10 @@ type Block struct {
 	Withdrawals     []*Withdrawal `json:"withdrawals"`
 	BlobGasUsed     []byte        `json:"blobgasused"`
 	ExcessBlobGas   []byte        `json:"excessblobgas"`
+	// L1 commit data — populated when the block range containing this block
+	// has been committed to L1 via the ZKRollup contract.
+	L1TxHash      string `json:"l1TxHash"`
+	L1BlockNumber uint64 `json:"l1BlockNumber"`
 }
 
 type BlockHeader struct {

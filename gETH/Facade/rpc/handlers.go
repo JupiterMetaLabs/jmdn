@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 
 	"gossipnode/DB_OPs/txindex"
+	"gossipnode/config"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
 
@@ -108,7 +109,9 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		return resp, nil
 
 	case "eth_getBlockByNumber":
-		// params: [blockTag, fullTx(bool)]
+		// params: [blockTag, fullTx(bool), wantL1Commit(bool, optional)]
+		// wantL1Commit=true with tag="latest" → returns the latest block that has
+		// L1 commit data (L1TxHash != ""), not the absolute chain tip.
 		if len(req.Params) < 1 {
 			resp, _ := invalidParams(req, "missing block tag")
 			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
@@ -127,17 +130,44 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			}
 		}
 
-		num, err := parseBlockTag(ctx, handler.service, tag)
-		if err != nil {
-			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
-			return resp, err
+		wantL1Commit := false
+		if len(req.Params) > 2 {
+			switch v := req.Params[2].(type) {
+			case bool:
+				wantL1Commit = v
+			case string:
+				wantL1Commit = strings.EqualFold(v, "true")
+			}
 		}
-		b, err := handler.service.BlockByNumber(ctx, num, full)
-		if err != nil {
-			resp, _ := finish(req, nil, err)
-			logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
-			return resp, err
+
+		var b *Types.Block
+		if wantL1Commit && strings.EqualFold(strings.TrimSpace(tag), "latest") {
+			var l1Err error
+			b, l1Err = handler.service.LatestL1CommitBlock(ctx)
+			if l1Err != nil {
+				resp, _ := finish(req, nil, l1Err)
+				logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+				return resp, l1Err
+			}
+			if b == nil {
+				resp, _ := finish(req, nil, nil) // no committed block found
+				logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", "null (no L1-committed block found)"))
+				return resp, nil
+			}
+		} else {
+			num, err := parseBlockTag(ctx, handler.service, tag)
+			if err != nil {
+				resp, _ := finish(req, nil, err)
+				logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+				return resp, err
+			}
+			var blockErr error
+			b, blockErr = handler.service.BlockByNumber(ctx, num, full)
+			if blockErr != nil {
+				resp, _ := finish(req, nil, blockErr)
+				logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
+				return resp, blockErr
+			}
 		}
 		resp, _ := finish(req, marshalBlock(b, full, handler.service.GetChainIDValue()), nil)
 		logger().Info(ctx, "RPC Response", ion.String("method", req.Method), ion.String("response", fmt.Sprintf("%+v", resp)))
@@ -740,7 +770,7 @@ func marshalBlock(b *Types.Block, full bool, globalChainID *big.Int) map[string]
 			if len(b.Header.BaseFee) > 0 {
 				return "0x" + new(big.Int).SetBytes(b.Header.BaseFee).Text(16)
 			}
-			return "0x" + big.NewInt(35000000000).Text(16) // fallback: 35 gwei
+			return "0x" + big.NewInt(config.BaseFeeWei).Text(16) // fallback: 35 gwei
 		}(),
 
 		// PoW fields — this chain has no PoW; use standard empty/zero values
@@ -753,6 +783,12 @@ func marshalBlock(b *Types.Block, full bool, globalChainID *big.Int) map[string]
 		"uncles":          []string{},
 
 		"transactions": []any{},
+	}
+
+	// L1 commit data — present when this block's range has been committed to L1.
+	if b.L1TxHash != "" {
+		result["l1TxHash"] = b.L1TxHash
+		result["l1BlockNumber"] = "0x" + new(big.Int).SetUint64(b.L1BlockNumber).Text(16)
 	}
 
 	if full && len(b.Transactions) > 0 {
@@ -781,7 +817,6 @@ func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {
 
 	// gasPrice: for type 2 use effectiveGasPrice = min(maxFeePerGas, baseFee+tip)
 	// For legacy/type1 use GasPrice directly.
-	const baseFee = int64(35_000_000_000)
 	var gasPriceHex string
 	if tx.Type == 2 && len(tx.MaxFeePerGas) > 0 {
 		maxFee := new(big.Int).SetBytes(tx.MaxFeePerGas)
@@ -789,7 +824,7 @@ func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {
 		if len(tx.MaxPriorityFeePerGas) > 0 {
 			tip.SetBytes(tx.MaxPriorityFeePerGas)
 		}
-		basePlusTip := new(big.Int).Add(big.NewInt(baseFee), tip)
+		basePlusTip := new(big.Int).Add(big.NewInt(config.BaseFeeWei), tip)
 		effective := maxFee
 		if maxFee.Cmp(basePlusTip) > 0 {
 			effective = basePlusTip

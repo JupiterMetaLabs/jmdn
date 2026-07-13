@@ -64,6 +64,12 @@ type ThebeGateway interface {
 	// ClearTxProcessing removes the flag once the tx is confirmed or dropped.
 	SetTxProcessing(ctx context.Context, txHash string) error
 	ClearTxProcessing(ctx context.Context, txHash string) error
+
+	// Sync-state KV — generic durable key/value surface in the BadgerDB store.
+	// Used by the F-train invariant modules (tx markers, applied anchor,
+	// latest_block marker). GetSyncKV returns (nil, nil) when absent.
+	PutSyncKV(key string, value []byte) error
+	GetSyncKV(key string) ([]byte, error)
 }
 
 // ThebeReader — read surface. Read-through cache: cache hit → return; miss → SQL/KV → cache SET with TTL → return.

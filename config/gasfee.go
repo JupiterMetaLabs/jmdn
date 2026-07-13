@@ -1,56 +1,81 @@
-// MODULE: config/gasfee.go
-// PURPOSE: Canonical gas-fee math for JMDN transactions. Single source of
-//          truth inside this repo — the write path (backend/tx.go), the
-//          historical-balance reader (DB_OPs/historical_balance.go), and any
-//          future consumer MUST use these instead of re-deriving.
+// MODULE: config/gasfee
+// PURPOSE: Single source of truth for the consensus gas-fee formula.
 //
-// NOTE: FastsyncV2/deltas.go carries the same rules for types.Transaction
-//       (FastSync module type). If these change, change both in one commit.
-
+// Both balance-mutation paths MUST use these functions:
+//   - Live execution:      messaging/BlockProcessing/Processing.go (parseTransaction)
+//   - Delta reconciliation: FastsyncV2/deltas.go (computeAccountDeltas)
+//
+// HISTORY: Before this file existed the two paths drifted — live used
+// min(maxFee, 35 gwei baseFee + tip) with a 35 gwei fallback, while
+// reconciliation used raw MaxFee with a 1 gwei fallback and no clamp.
+// Every reconciled type-2 transaction with maxFee > baseFee+tip therefore
+// recomputed a DIFFERENT balance than the one consensus applied, corrupting
+// account state on every catchup. Do not fork this logic again.
 package config
 
 import "math/big"
 
-var oneGwei = big.NewInt(1_000_000_000)
+const (
+	// BaseFeeWei is JMDN's flat protocol base fee (35 gwei).
+	// Also hardcoded for RPC display in gETH/Facade (eth_gasPrice / fee history);
+	// keep those in sync if this changes.
+	BaseFeeWei = int64(35_000_000_000)
 
-// EffectiveGasPrice returns the effective gas price for a transaction.
+	// FallbackGasPriceWei is the last-resort effective gas price for legacy
+	// transactions that carry no fee fields at all (1 gwei).
+	FallbackGasPriceWei = int64(1_000_000_000)
+
+	// FallbackTxGasLimit is used when a transaction carries GasLimit == 0 (21000).
+	FallbackTxGasLimit = uint64(21000)
+)
+
+// EffectiveGasPrice returns the consensus effective gas price for a transaction.
 //
-//	EIP-1559 (type 2): MaxFee → MaxPriorityFee → GasPrice → 1 Gwei
-//	Legacy   (0/1):    GasPrice → MaxFee → MaxPriorityFee → 1 Gwei
-func EffectiveGasPrice(tx *Transaction) *big.Int {
-	if tx == nil {
-		return new(big.Int).Set(oneGwei)
+//	EIP-1559 (type 2): min(maxFee, BaseFeeWei + tip)
+//	                   nil maxFee → BaseFeeWei; nil tip → 0
+//	Legacy / AccessList (type 0/1): GasPrice → MaxFee → MaxPriorityFee → FallbackGasPriceWei
+//	                   (nil checks only — a present-but-zero GasPrice is honoured as zero)
+//
+// The returned *big.Int is always a fresh allocation — callers may mutate it.
+func EffectiveGasPrice(txType uint8, gasPrice, maxFee, maxPriorityFee *big.Int) *big.Int {
+	if txType == 2 {
+		mf := maxFee
+		if mf == nil {
+			mf = big.NewInt(BaseFeeWei)
+		}
+		tip := maxPriorityFee
+		if tip == nil {
+			tip = new(big.Int)
+		}
+		basePlusTip := new(big.Int).Add(big.NewInt(BaseFeeWei), tip)
+		if mf.Cmp(basePlusTip) <= 0 {
+			return new(big.Int).Set(mf)
+		}
+		return basePlusTip
 	}
-	switch tx.Type {
-	case 2: // EIP-1559
-		if tx.MaxFee != nil && tx.MaxFee.Sign() > 0 {
-			return tx.MaxFee
-		}
-		if tx.MaxPriorityFee != nil && tx.MaxPriorityFee.Sign() > 0 {
-			return tx.MaxPriorityFee
-		}
-		if tx.GasPrice != nil && tx.GasPrice.Sign() > 0 {
-			return tx.GasPrice
-		}
-	default: // Legacy / EIP-2930
-		if tx.GasPrice != nil && tx.GasPrice.Sign() > 0 {
-			return tx.GasPrice
-		}
-		if tx.MaxFee != nil && tx.MaxFee.Sign() > 0 {
-			return tx.MaxFee
-		}
-		if tx.MaxPriorityFee != nil && tx.MaxPriorityFee.Sign() > 0 {
-			return tx.MaxPriorityFee
-		}
+
+	if gasPrice != nil {
+		return new(big.Int).Set(gasPrice)
 	}
-	return new(big.Int).Set(oneGwei)
+	if maxFee != nil {
+		return new(big.Int).Set(maxFee)
+	}
+	if maxPriorityFee != nil {
+		return new(big.Int).Set(maxPriorityFee)
+	}
+	return big.NewInt(FallbackGasPriceWei)
 }
 
-// GasFee returns gasLimit * EffectiveGasPrice — the fee charged to the sender
-// and split between coinbase (half + remainder) and ZKVM (half).
-func GasFee(tx *Transaction) *big.Int {
-	if tx == nil || tx.GasLimit == 0 {
-		return big.NewInt(0)
+// GasFee returns gasLimit × EffectiveGasPrice with the FallbackTxGasLimit
+// applied when gasLimit == 0. This is the total fee deducted from the sender
+// and split between coinbase and ZKVM.
+func GasFee(txType uint8, gasLimit uint64, gasPrice, maxFee, maxPriorityFee *big.Int) *big.Int {
+	gl := gasLimit
+	if gl == 0 {
+		gl = FallbackTxGasLimit
 	}
-	return new(big.Int).Mul(new(big.Int).SetUint64(tx.GasLimit), EffectiveGasPrice(tx))
+	return new(big.Int).Mul(
+		new(big.Int).SetUint64(gl),
+		EffectiveGasPrice(txType, gasPrice, maxFee, maxPriorityFee),
+	)
 }

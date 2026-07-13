@@ -66,7 +66,7 @@ If you're familiar with VMs and systemd, here's the mental model:
 │  │  Ports (listening as jmdn user):                                      │    │
 │  │    :8545  JSON-RPC   ◄── MEXC / exchange connects here                │    │
 │  │    :8546  WebSocket                                                   │    │
-│  │    :15052 DID service                                                 │    │
+│  │    :15000 P2P gossip — LibP2P (TCP+UDP) ◄── peers dial in here        │    │
 │  │    :8090  Explorer API  (localhost only, health check)                │    │
 │  └──────────────────────┬────────────────────────────────────────────────┘   │
 │                          │                                                    │
@@ -147,16 +147,27 @@ When jmdn writes account state, it enqueues to a Redis Stream (`XADD`) and retur
 | Image | `codenotary/immudb:1.10.0` |
 | Data dir | `/opt/jmdn/data` (volume: `immudb-data`) |
 | Port | `3322` (internal only — not exposed to host) |
-| Health check | None — distroless image (no shell, no wget, no nc) |
+| Health check | None — verified reason, not an assumption; see §11 |
 
 ### `redis` (account sync queue)
 
 | Property | Value |
 |---|---|
 | Image | `redis:7-alpine` |
-| Persistence | AOF (`appendonly yes`, `appendfsync everysec`) |
+| Persistence | AOF (`appendonly yes`, `appendfsync everysec`) — **CORRECTNESS REQUIREMENT, not tuning** |
 | Auth | Password via `REDIS_PASSWORD` env var |
 | Usage | Redis Streams (not simple pub/sub — requires Redis 5+) |
+
+> **⚠ Redis persistence is load-bearing for account-state correctness.**
+> Reconciliation's balance effects and
+> tx_processed markers travel through this queue, and the recon anchor
+> (`sync:accounts_last_applied_block`) is advanced once the data is verified and
+> ENQUEUED — before the drain commits it to ImmuDB. If Redis loses the queue
+> (crash without AOF, eviction, `FLUSHALL`), the anchor claims ranges whose
+> effects never landed and reconciliation permanently skips them. `appendonly
+> yes` must be set on EVERY deployment, including bare-metal nodes that do not
+> use this compose file — check `redis.conf` there explicitly. Never point the
+> node at a cache-mode / ephemeral Redis.
 
 ### `jmdn-bootstrap` (one-time, profile-gated)
 
@@ -181,17 +192,81 @@ This is the complete runbook for a fresh VM with Docker already installed.
 ### Prerequisites
 
 - Docker 24+ and Docker Compose v2 — verify with `docker compose version`
+- **Host sizing: 8 GB RAM / 4 vCPU minimum — then scale the limits to your
+  host.** `docker-compose.yml` caps each container's memory and CPU. The
+  point of the caps is *blast radius* — a leak in one container OOM-kills
+  that container instead of the host — **not** capacity planning, so they
+  must grow with the machine. The defaults suit an entry-level 8-16 GB VM;
+  on a bigger host, override them in the same `.env` file as your passwords
+  (Step 2). Nothing else changes — `docker compose up -d` applies them.
+
+  | Host | `JMDN_MEM_LIMIT` | `JMDN_CPU_LIMIT` | `IMMUDB_MEM_LIMIT` | `IMMUDB_CPU_LIMIT` | `REDIS_MEM_LIMIT` | `REDIS_CPU_LIMIT` | `REDIS_MAXMEMORY` |
+  |---|---|---|---|---|---|---|---|
+  | 8 GB / 4c *(defaults)* | `4g` | `2.0` | `2g` | `1.0` | `512m` | `0.5` | `384mb` |
+  | 16 GB / 8c | `8g` | `6.0` | `4g` | `2.0` | `1g` | `0.5` | `768mb` |
+  | 32 GB / 16c | `16g` | `0` (unlimited) | `8g` | `4.0` | `2g` | `1.0` | `1536mb` |
+  | 64 GB / 32c | `32g` | `0` (unlimited) | `16g` | `8.0` | `4g` | `1.0` | `3gb` |
+
+  Rules of thumb behind the table: give jmdn ~50% of host RAM and immudb
+  ~25%, keep `REDIS_MAXMEMORY` at ~75% of `REDIS_MEM_LIMIT`, and always
+  leave ~20% of the host unallocated — that's not waste, it's the OS page
+  cache, which immudb read performance depends on. Memory and CPU deserve
+  different treatment: memory is incompressible (exceeding the cap = OOM
+  kill), so a cap is always warranted; CPU is compressible (contention just
+  means kernel scheduling), so on a host dedicated to this node a hard CPU
+  cap only throttles you while cores sit idle — set `JMDN_CPU_LIMIT=0`
+  (unlimited) there and keep CPU caps for shared hosts. `0` means unlimited
+  for any of these. For comparison, bare-metal's stated 2 GB minimum
+  (`GETTING_STARTED.md`) is a floor for a single lightweight node process,
+  not this full stack with a separate ledger and queue.
+- **amd64 host.** The `jmdn` image itself is published for linux/amd64,
+  arm64, and arm/v7 (§8), but `codenotary/immudb:1.10.0` — the version this
+  repo pins in `docker-compose.yml`, the Dockerfile, and `go.mod`'s immudb
+  client SDK — is an **amd64-only** image (immudb only started publishing
+  arm64 images at `1.11.1`, newer than what this repo is pinned to). On a
+  Raspberry Pi or other arm64 host, use bare-metal (`GETTING_STARTED.md`)
+  instead — its `setup_dependencies.sh` installs a native arm64 immudb
+  binary directly and doesn't hit this. Bumping the pinned version to pick
+  up arm64 support is a client/server upgrade project (every immudb version
+  reference in this repo moves in lockstep), not a one-line change.
 - 50 GB+ free disk space (chain snapshot on first run)
+  > **Where does that 50GB need to live?** Named volumes and container logs
+  > default to `/var/lib/docker`, not `/opt/jmdn`. On a VM with a small root
+  > disk and a separate large data disk, check the free space that matters —
+  > see [§12 Volumes and Data Management](#12-volumes-and-data-management) →
+  > "Repointing Docker's storage to a different disk" before your first
+  > `docker compose up`.
 - Open ports on firewall/security group:
 
 | Port | Protocol | Purpose |
 |---|---|---|
+| 15000 | TCP **+ UDP** | P2P gossip (LibP2P, TCP + QUIC) — **must be public**; without inbound 15000 the node can dial out but can't be dialed by peers, degrading to outbound-only participation |
 | 8545 | TCP | JSON-RPC — exchange endpoint |
 | 8546 | TCP | WebSocket RPC |
-| 15052 | TCP | DID service |
 | 8090 | TCP | Explorer API (optional, localhost-only by default) |
 
+> **Port 15001 (Yggdrasil direct-messaging) is deliberately not published here.**
+> The Yggdrasil daemon isn't wired up in this image — no `tun0`/`ygg0`
+> interface, confirmed live on a running container — so the feature can't
+> work yet regardless. Publishing it wouldn't fix that either way: mesh
+> traffic would arrive over a TUN device inside the container's own network
+> namespace, not over the Docker bridge, so Docker's port-forwarding has
+> nothing to do with reaching it over the mesh. See `PORTS.md` §4.
+
+> **Ports 15050, 15052, 15055 are also deliberately not in this table** — not
+> exposed by default. `15052` (DID service) runs `RegisterDID` with **no
+> authentication**, so publishing it lets anyone who reaches it register
+> arbitrary DIDs, not just resolve existing ones. See `PORTS.md` §5, §7, §8
+> before opening any of the three.
+
+See **[PORTS.md](./PORTS.md)** for the full security posture of every port.
+
 ### Step 1 — Clone the repo
+
+Clone into any directory you like — `/opt/jmdn/jmdn` is our suggested
+default. The directory name has no effect on the stack: volume and network
+names are controlled by `COMPOSE_PROJECT_NAME` in `.env` (Step 2), not by
+where you cloned.
 
 ```bash
 mkdir -p /opt/jmdn
@@ -206,6 +281,8 @@ git checkout main
 
 The `.env` file is minimal — it exists only because the immudb and redis containers are separate processes that cannot read `jmdn.yaml`. They need their passwords passed in via environment variables. Everything else lives in `jmdn.yaml` (Step 3).
 
+A filled-in-able template is at [`.env.docker.example`](./.env.docker.example) in the repo root — `cp .env.docker.example .env` and edit, or build it by hand with the heredoc below.
+
 Generate the two passwords:
 
 ```bash
@@ -215,6 +292,18 @@ openssl rand -base64 32   # → REDIS_PASSWORD
 
 ```bash
 cat > /opt/jmdn/jmdn/.env << 'EOF'
+# Compose project name — prefixes volume/network names (jmdn_immudb-data ...).
+# Pinning it here keeps those names stable regardless of the checkout
+# directory, so every volume/backup command in this guide works verbatim.
+# NEW INSTALLS ONLY — if you're migrating an existing node, do NOT copy this
+# line as-is; see §13 "Upgrading a node installed with the v1.2.0 guide"
+# first, or you'll repoint compose at empty volumes.
+COMPOSE_PROJECT_NAME=jmdn
+
+# JMDN release to run. Set to a release tag (recommended for production);
+# upgrade by changing this line — never by editing docker-compose.yml.
+JMDN_VERSION=v1.2.1
+
 # ImmuDB password — used by the immudb container.
 # Must match database.password in jmdn.yaml.
 IMMUDB_PASSWORD=<generated>
@@ -230,6 +319,18 @@ EOF
 ```
 
 > `.env` is in `.gitignore` — it will never be committed.
+
+> **Know where these secrets end up.** Compose injects `.env` values into
+> container environments, and anything in a container's environment is
+> readable in plaintext by anyone who can talk to the Docker socket:
+> `docker inspect jmdn | grep -A5 Env` shows every password and API key.
+> This is the standard trade-off for container-native config (bare-metal is
+> no better — `/etc/jmdn/jmdn.yaml` is plaintext on disk too), but it means:
+> (1) access to the Docker socket is equivalent to access to the secrets —
+> don't add users to the `docker` group casually; (2) never paste
+> `docker inspect` output into tickets/chat without scrubbing the `Env`
+> block; (3) if your org requires stronger handling, front these with a
+> secrets manager that writes `.env` at deploy time and rotates after.
 
 ### Step 3 — Create your node config
 
@@ -275,11 +376,9 @@ docker pull ghcr.io/jupitermetalabs/jmdn:latest
 docker pull ghcr.io/jupitermetalabs/jmdn:v1.2.0
 ```
 
-To use a specific version in compose, edit `docker-compose.yml`:
-```yaml
-jmdn:
-  image: ghcr.io/jupitermetalabs/jmdn:v1.2.0   # pin to a release tag
-```
+Compose reads the version from `JMDN_VERSION` in `.env` (Step 2) — you
+already pinned it there. Don't edit the image tag in `docker-compose.yml`;
+keeping that file untouched is what lets `git pull` update it cleanly later.
 
 **Option B — Build from source**
 
@@ -312,7 +411,7 @@ Expected output:
 
 ```
 [bootstrap] First run detected — starting bootstrap sync.
-[bootstrap] Listing parts from GCS: gs://jmzk-releases/jmdn_bootstrap_2306/...
+[bootstrap] Listing parts from GCS: gs://jmdn-bootstrap/staging/bootstrap-20260709_180202/...
 [bootstrap] Downloading parts to /opt/jmdn/bootstrap_tmp...
 [bootstrap] Checksums OK.
 [bootstrap] Extracting parts into sandbox: /opt/jmdn/data_tmp/sandbox
@@ -382,9 +481,9 @@ docker run -d \
   --name jmdn \
   -v $(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml:ro \
   -v jmdn-data:/opt/jmdn \
+  -p 15000:15000 -p 15000:15000/udp \
   -p 8545:8545 \
   -p 8546:8546 \
-  -p 15052:15052 \
   ghcr.io/jupitermetalabs/jmdn:latest
 ```
 
@@ -392,9 +491,9 @@ docker run -d \
 |---|---|
 | `-v $(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml:ro` | **Required** — node exits with an error if this is missing |
 | `-v jmdn-data:/opt/jmdn` | Persists peer identity, certs, DB, and immudb data across restarts |
+| `-p 15000:15000` + `/udp` | P2P gossip (LibP2P, TCP + QUIC) — **required**; without inbound 15000 the node can't be dialed by peers |
 | `-p 8545:8545` | JSON-RPC (exchange endpoint) |
 | `-p 8546:8546` | WebSocket RPC |
-| `-p 15052:15052` | DID service |
 
 ### With Explorer API enabled
 
@@ -405,31 +504,20 @@ docker run -d \
   --name jmdn \
   -v $(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml:ro \
   -v jmdn-data:/opt/jmdn \
+  -p 15000:15000 -p 15000:15000/udp \
   -p 8545:8545 \
   -p 8546:8546 \
-  -p 15052:15052 \
   -p 8090:8090 \
   -e JMDN_PORTS_API=8090 \
   ghcr.io/jupitermetalabs/jmdn:latest
 ```
 
-### With all optional services exposed
+### Ports intentionally left out of these examples
 
-```bash
-docker run -d \
-  --name jmdn \
-  -v $(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml:ro \
-  -v jmdn-data:/opt/jmdn \
-  -p 8545:8545 \
-  -p 8546:8546 \
-  -p 15052:15052 \
-  -p 8090:8090 \
-  -p 15050:15050 \
-  -p 15055:15055 \
-  -e JMDN_PORTS_API=8090 \
-  -e JMDN_DATABASE_PASSWORD=your-strong-password \
-  ghcr.io/jupitermetalabs/jmdn:latest
-```
+`15052` (DID service), `15050` (BlockGen API), and `15055` (BlockGRPC) are not
+exposed by default. `15052`'s `RegisterDID` has no authentication, so
+publishing it lets anyone reach it register arbitrary DIDs, not just resolve
+existing ones. See `PORTS.md` §5, §7, §8 before enabling any of the three.
 
 ### Follow startup logs
 
@@ -441,7 +529,7 @@ Expected output on first run:
 
 ```
 [entrypoint] First run detected — starting bootstrap sync.
-[bootstrap] Listing parts from GCS: gs://jmzk-releases/jmdn_bootstrap_2306/...
+[bootstrap] Listing parts from GCS: gs://jmdn-bootstrap/staging/bootstrap-20260709_180202/...
 [bootstrap] Downloading parts to /opt/jmdn/bootstrap_tmp...
 [bootstrap] Checksums OK.
 [bootstrap] Extracting parts into sandbox: /opt/jmdn/data_tmp/sandbox
@@ -497,9 +585,10 @@ Pass `-e KEY=value` to `docker run` to override defaults:
 |---|---|---|
 | `JMDN_PORTS_API` | `0` (disabled) | Set `8090` to enable Explorer API |
 | `JMDN_DATABASE_PASSWORD` | `immudb` | ImmuDB admin password |
-| `GCS_BUCKET` | `jmzk-releases` | Bootstrap snapshot bucket |
-| `GCS_PREFIX` | `jmdn_bootstrap_2306` | Snapshot path prefix in bucket |
-| `PARTS_PREFIX` | `data_backup_23062026.part` | Part filename prefix |
+| `GCS_BUCKET` | `jmdn-bootstrap` | Bootstrap snapshot bucket |
+| `GCS_PREFIX` | `staging/bootstrap-20260709_180202` | Snapshot path prefix in bucket (repoint to promoted public prefix before fleet rollout) |
+| `PARTS_PREFIX` | `data-patched.part` | Part filename prefix |
+| `CHECKSUM_FILE` | `checksums.md5` | Checksum manifest filename |
 | `IMMUDB_EXTERNAL` | `false` | Set `true` only with docker-compose (separate immudb container) |
 | `JMDN_SECURITY_JWT_SECRET` | `""` | JWT signing secret |
 
@@ -583,9 +672,18 @@ Most configuration belongs in `jmdn.yaml` — set it there. The environment vari
 | `JMDN_DATABASE_PORT` | `3322` | ImmuDB gRPC port |
 | `IMMUDB_PASSWORD` | *(from .env)* | immudb container startup password — must match `database.password` in jmdn.yaml |
 | `REDIS_PASSWORD` | *(from .env)* | Redis container `--requirepass` — must match `database.redis.password` in jmdn.yaml |
-| `GCS_BUCKET` | `jmzk-releases` | Bootstrap snapshot GCS bucket (bootstrap container only) |
-| `GCS_PREFIX` | `jmdn_bootstrap_2306` | Snapshot path prefix (bootstrap container only) |
+| `GCS_BUCKET` | `jmdn-bootstrap` | Bootstrap snapshot GCS bucket (bootstrap container only) |
+| `GCS_PREFIX` | `staging/bootstrap-20260709_180202` | Snapshot path prefix (bootstrap container only; repoint to promoted public prefix before rollout) |
+| `PARTS_PREFIX` | `data-patched.part` | Snapshot part filename prefix (bootstrap container only) |
+| `CHECKSUM_FILE` | `checksums.md5` | Checksum manifest filename (bootstrap container only) |
 | `IMMUDB_USER` | `jmdn` | OS user the immudb files are owned by (entrypoint chown) |
+| `COMPOSE_PROJECT_NAME` | *(directory name)* | Prefixes volume/network names — set to `jmdn` in `.env` (Step 2) so this guide's volume commands work verbatim. Existing deployments without it keep their current prefix; changing it on a live node repoints compose at different volumes |
+| `JMDN_VERSION` | `latest` | JMDN image tag for the `jmdn` and `jmdn-bootstrap` services. Pin a release in `.env`; upgrades change this line only (§13) |
+| `JMDN_MEM_LIMIT` / `JMDN_CPU_LIMIT` | `4g` / `2.0` | jmdn container resource caps — scale to host, `0` = unlimited (see §4 sizing table) |
+| `IMMUDB_MEM_LIMIT` / `IMMUDB_CPU_LIMIT` | `2g` / `1.0` | immudb container resource caps (see §4 sizing table) |
+| `REDIS_MEM_LIMIT` / `REDIS_CPU_LIMIT` | `512m` / `0.5` | redis container resource caps (see §4 sizing table) |
+| `REDIS_MAXMEMORY` | `384mb` | Redis self-enforced memory ceiling — keep at ~75% of `REDIS_MEM_LIMIT` |
+| `BOOTSTRAP_MEM_LIMIT` / `BOOTSTRAP_CPU_LIMIT` | `2g` / `1.0` | `jmdn-bootstrap` container resource caps — one-time snapshot download/extract, not in the §4 sizing table since it doesn't run alongside the other three; raise `BOOTSTRAP_MEM_LIMIT` if bootstrapping a very large snapshot fails on decompress |
 
 All `JMDN_*` vars map directly to `jmdn.yaml` keys with underscores as separators. For example, `JMDN_NETWORK_CHAIN_ID=7000700` sets `network.chain_id`.
 
@@ -601,6 +699,33 @@ cp jmdn_default.yaml jmdn.yaml    # all other operators
 ```
 
 `docker-compose.yml` always mounts `./jmdn.yaml:/etc/jmdn/jmdn.yaml:ro`. The node reads `/etc/jmdn/jmdn.yaml` automatically via Viper — no flags needed.
+
+### Enabling file-based logging (optional)
+
+`logging.file.enabled` is `false` by default — console output goes to
+stdout, which Docker's `json-file` driver captures and rotates for you (see
+[§10 Log Retention](#10-log-retention)). That's the safe default; most
+operators don't need to change it.
+
+If you do enable it (`logging.file.enabled: true` in `jmdn.yaml`) — for
+example to feed a log shipper that tails files instead of `docker logs` —
+**`logging.file.path` must resolve to somewhere under the `jmdn-state`
+volume mount (`/opt/jmdn/...`)**. Anything else writes to the container's
+writable layer, which is not backed by a volume and is deleted the moment
+the container is recreated (`docker compose up -d` after an image pull,
+`docker compose down` + `up`, etc.) — the file will look fine until the
+next deploy silently wipes it.
+
+```yaml
+logging:
+  file:
+    enabled: true
+    path: "/opt/jmdn/logs/app.log"   # under the jmdn-state volume — survives recreation
+```
+
+The rotation settings next to it (`max_size_mb`, `max_age_days`,
+`max_backups`, `compress`) are already sane defaults and self-contained —
+no extra Docker config needed once the path is right.
 
 ### Production TLS certificates
 
@@ -756,9 +881,6 @@ curl -s http://localhost:8545 \
 # Check WebSocket
 wscat -c ws://localhost:8546
 
-# Check DID service port
-nc -zv localhost 15052
-
 # Check immudb reachability from inside jmdn container
 docker compose exec jmdn nc -zv immudb 3322
 ```
@@ -888,11 +1010,34 @@ docker inspect --format='{{json .State.Health}}' jmdn | python3 -m json.tool
 
 | Service | Health check | Interval | Start period |
 |---|---|---|---|
-| `jmdn` | `GET /api/v1/node/version` → HTTP 200 | 30s | 300s |
+| `jmdn` | Two-tier: `GET /api/v1/node/version` → HTTP 200, falling back to JSON-RPC `eth_blockNumber` on :8545 | 30s | 300s |
 | `redis` | `redis-cli ping` | 10s | — |
-| `immudb` | none — distroless image (no shell, no wget, no nc) | — | — |
+| `immudb` | none — see below | — | — |
+
+The fallback matters for two reasons: `:8545` is the endpoint exchanges
+actually consume, so it's the more honest liveness signal — and operators
+running `jmdn_default.yaml` (where `ports.api` is disabled) would otherwise
+show permanently `unhealthy` for a node that's serving RPC fine.
 
 Readiness for immudb is handled by the jmdn entrypoint: it loops `nc -z immudb 3322` for up to 120s (default) before starting the node process. Override with `IMMUDB_READY_TIMEOUT=300` if your host is slow to load a large snapshot.
+
+### Why immudb has no Compose healthcheck
+
+- **No shell exists in the image.** `codenotary/immudb:1.10.0` is built on
+  `scratch` with exactly `/usr/sbin/immudb`, `/usr/local/bin/immuadmin`, and
+  CA certs — no coreutils, no `nc`, `wget`, or `curl`. Any
+  `healthcheck.test` that execs a command inside this container cannot run.
+- **The image's own baked-in `HEALTHCHECK CMD immuadmin status` doesn't work
+  cold.** `immuadmin status` performs a login handshake before it may query
+  the server, and a freshly started container has no cached token — it
+  fails on auth, not on reachability, every time.
+- **A network-based probe is technically possible** — immudb's `Health` RPC
+  is unauthenticated and reachable via gRPC reflection (on by default), so a
+  sidecar running `grpcurl` against `immudb.schema.ImmuService/Health` would
+  work (the generic `grpc_health_probe` tool would not — immudb uses its own
+  proto, not the standard `grpc.health.v1.Health` service). Not implemented:
+  an extra always-on container isn't worth it when the jmdn entrypoint's
+  `nc -z immudb 3322` wait loop already gates startup ordering correctly.
 
 ### If health checks fail
 
@@ -911,9 +1056,62 @@ for c in h['Log'][-3:]:
 # immudb not reachable → check: docker compose logs immudb
 ```
 
+### Crash-loop detection (Docker behaves differently from systemd here)
+
+On bare metal, systemd's defaults (`StartLimitIntervalSec=10`, `StartLimitBurst=5`)
+mean a unit that crashes 5 times in 10 seconds gives up and lands in a
+visible `failed` state — `systemctl status jmdn` shouts about it, and
+`Restart=always` stops retrying until someone runs `systemctl reset-failed`.
+
+`restart: unless-stopped` in `docker-compose.yml` has no such limit. A
+container that crashes on startup will restart forever on Docker's backoff
+schedule, silently, with `docker compose ps` showing `Restarting` — it never
+reaches a terminal "give up" state the way a systemd unit does. If nobody's
+watching, a crash loop can run for days without anything paging anyone.
+
+Watch `RestartCount` instead of waiting for a `failed` state that will
+never come:
+
+```bash
+# One-off check
+docker inspect --format='{{.RestartCount}}' jmdn
+
+# Alert-friendly: exits non-zero if restarts are climbing
+#   (run this from your monitoring cron/agent, not by hand)
+COUNT=$(docker inspect --format='{{.RestartCount}}' jmdn)
+if [ "$COUNT" -gt 5 ]; then
+    echo "jmdn has restarted ${COUNT} times — likely crash-looping" >&2
+    exit 1
+fi
+```
+
+If you'd rather have Docker itself give up (closer to the systemd
+behavior) instead of retrying forever, swap the restart policy for the
+`jmdn` service in `docker-compose.yml`:
+
+```yaml
+# restart: unless-stopped        # retries forever
+restart: on-failure:5             # gives up after 5 restarts, container
+                                   # then sits Exited — same visibility
+                                   # tradeoff systemd makes by default
+```
+
+Trade-off either way: `unless-stopped` self-heals from transient issues
+(brief network blip, host reboot) without paging anyone, but can mask a
+real crash loop. `on-failure:5` surfaces crash loops immediately as a
+stopped container, but also won't self-heal from a transient issue past
+attempt 5 — someone has to notice and restart it manually. Pick based on
+whether you have monitoring watching `RestartCount`/container state at all;
+if you don't yet, `on-failure:5` is the safer default since a stopped
+container is much harder to miss than a quietly-restarting one.
+
 ---
 
 ## 12. Volumes and Data Management
+
+> Volume names below assume `COMPOSE_PROJECT_NAME=jmdn` (Step 2). On an
+> older install without that `.env` line, the prefix is your checkout
+> directory's name instead — check with `docker volume ls`.
 
 ```bash
 # List all volumes
@@ -929,6 +1127,62 @@ docker volume inspect jmdn_immudb-data --format '{{.Mountpoint}}'
 
 docker volume inspect jmdn_jmdn-state --format '{{.Mountpoint}}'
 # → /var/lib/docker/volumes/jmdn_jmdn-state/_data
+```
+
+### Repointing Docker's storage to a different disk
+
+**On bare metal** (`GETTING_STARTED.md`), `JMDN_DATA=/opt/jmdn` is just a path —
+mount any disk there and the chain data lives on it. There's no ambiguity
+about which disk fills up.
+
+**In Docker**, that isolation disappears by default. Every named volume
+(`immudb-data`, `jmdn-state`, `redis-data`) *and* every container's JSON log
+file live under Docker's `data-root`, which defaults to `/var/lib/docker`.
+On most cloud VM images that's the OS root disk — the same disk as the OS,
+`apt` cache, and everything else. The chain snapshot alone can be tens of
+GB; add pulled images (~1-2 GB) and log budgets (jmdn 250MB + immudb 60MB +
+redis 30MB, see [§10 Log Retention](#10-log-retention)) and a small root
+disk fills up fast, well before the node itself reports any problem.
+
+Check what disk `/var/lib/docker` actually sits on **before** your first
+`docker compose up`:
+
+```bash
+df -h /var/lib/docker
+```
+
+If that's not the disk you sized for 50GB+, repoint Docker's `data-root` at
+the correct disk before starting the stack (this must happen before any
+containers/volumes exist — moving it afterward means manually copying
+`/var/lib/docker`):
+
+```bash
+sudo systemctl stop docker
+sudo mkdir -p /mnt/data-disk/docker
+
+# Move any existing data (skip on a fresh install)
+sudo rsync -aP /var/lib/docker/ /mnt/data-disk/docker/
+
+sudo mkdir -p /etc/docker
+cat <<'EOF' | sudo tee /etc/docker/daemon.json
+{
+  "data-root": "/mnt/data-disk/docker"
+}
+EOF
+
+sudo systemctl start docker
+docker info | grep "Docker Root Dir"
+# → Docker Root Dir: /mnt/data-disk/docker
+```
+
+Alternative if you'd rather not touch the daemon config: bind-mount host
+paths on the correct disk instead of named volumes for the two data-heavy
+services in `docker-compose.yml`:
+
+```yaml
+volumes:
+  - /mnt/data-disk/jmdn/immudb-data:/opt/jmdn/data   # instead of immudb-data:
+  - /mnt/data-disk/jmdn/jmdn-state:/opt/jmdn          # instead of jmdn-state:
 ```
 
 ### Volume layout
@@ -1003,51 +1257,219 @@ docker compose up -d
 
 ## 13. Upgrading
 
-### Option A — Upgrade via pre-built image (recommended)
+Two things update on different channels, and it helps to keep them apart:
 
-JupiterMeta publishes a new image for every release. To upgrade:
+| Channel | Command | What it delivers |
+|---|---|---|
+| **Image** | `docker compose pull` | New `jmdn` binary + in-container scripts (entrypoint, wrapper, bootstrap) — the actual node software |
+| **Repo** | `git pull` | `docker-compose.yml` (limits, healthcheck, service wiring) and this documentation |
+
+A version upgrade only *requires* the image channel. Pulling the repo too is
+recommended — releases sometimes ship compose improvements — and is always
+safe because nothing you configure lives in tracked files: your settings are
+in `.env` and `jmdn.yaml`, both gitignored.
+
+> `docker-deploy.sh`'s rollback only restores the previous **image** — it
+> doesn't touch the `immudb-data` / `jmdn-state` volumes. For anything past
+> a routine point release, snapshot them first with the steps in §12
+> [Backup](#12-volumes-and-data-management).
+
+Most upgrades are the [normal upgrade](#normal-upgrade) below. **If this is your
+first upgrade from the original v1.2.0 install** (hand-edited `image:` tag, no
+`JMDN_VERSION` in `.env`), do the one-time migration just below *once* first;
+after that you upgrade like everyone else.
+
+### One-time migration (v1.2.0 installs only)
+
+The v1.2.0 guide had you pin releases by editing the `image:` line inside
+`docker-compose.yml`. That edit makes your checkout dirty, so `git pull`
+will refuse or merge-conflict on the compose file. Migrate once — afterwards
+you're on the same footing as any new install and use the normal upgrade below:
 
 ```bash
-# 1. Pin to the new version in docker-compose.yml:
-#      image: ghcr.io/jupitermetalabs/jmdn:v1.3.0
+# 1. Park your local compose edit (the image tag is its only local change)
+git stash
 
-# 2. Pull the new image
-docker compose pull jmdn
+# 2. Refresh the repo — brings the compose file that reads JMDN_VERSION from .env
+git pull
 
-# 3. Restart the node (node process restarts — brief downtime)
-docker compose up -d jmdn
+# 3. Your stashed tag edit is now obsolete — the tag lives in .env instead
+git stash drop
 
-# 4. Verify
-curl -s http://localhost:8090/api/v1/node/version \
-  -H "Authorization: Bearer $JMDN_SECURITY_EXPLORER_API_KEY"
+# 4. Pin your version in .env (REQUIRED — without it the tag defaults to :latest)
+echo "JMDN_VERSION=v1.2.1" >> .env
+
+# 5. Pull + restart as usual
+docker compose pull jmdn && docker compose up -d jmdn
 ```
 
-> After upgrading, check the release notes for any changes to `fastsync.catch_up_from_block` — if the bootstrap snapshot was refreshed, update this value in `jmdn.yaml` and restart.
+> **Do NOT add `COMPOSE_PROJECT_NAME=jmdn` to an existing node's `.env`.**
+> Your volumes are named after the project name your stack was created with
+> (usually your checkout directory). Changing it repoints compose at fresh
+> empty volumes and your node will refuse to start (missing bootstrap
+> sentinel). Leave it unset — everything keeps working under your existing
+> names. If you ever *want* to adopt the standard names, follow the volume
+> copy steps in the `docker-compose.yml` header comment during a planned
+> maintenance window.
 
-### Option B — Build and deploy from source
+Once migrated, you will not need this section again — new releases only ever touch `.env`.
+
+### Normal upgrade
+
+The routine case — pre-built image, one line in `.env`. This is all a normal
+version bump needs; it never touches your chain data or config.
+
+```bash
+# 1. Set the new version in .env — adds the line if missing, portable (no sed -i,
+#    so it works the same on Linux and macOS)
+grep -v '^JMDN_VERSION=' .env > .env.tmp && echo 'JMDN_VERSION=v1.2.1' >> .env.tmp && mv .env.tmp .env
+
+# 2. (Recommended) refresh compose + docs — clean, nothing local is tracked
+git pull
+
+# 3. Pull + restart with automatic rollback on failure
+./Scripts/docker-deploy.sh
+```
+
+`docker-deploy.sh` snapshots the currently running image, pulls the new one,
+and restarts the node — **automatically rolling back to the previous image**
+if the new one either fails to come up at all or comes up but fails its
+health check. It also guards against two overlapping runs (e.g. a cron job
+firing mid-upgrade): a second invocation exits immediately with an
+"already in progress" message instead of racing the first.
+
+To do the same by hand instead (no automatic rollback):
+
+```bash
+docker compose pull jmdn
+docker compose up -d jmdn
+
+# JSON-RPC is published by default; Explorer API (port 8090) is opt-in
+# (Step 2) so it isn't a reliable check unless you enabled it yourself.
+curl -s http://localhost:8545 \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+```
+
+### Building from source (advanced)
 
 ```bash
 git fetch --tags
 git checkout v1.2.0   # or the branch/commit you want
+
+# The built tag must match what docker-compose.yml will request — that's
+# JMDN_VERSION from .env, or "latest" if it's unset. Get this wrong and
+# `docker compose up` silently keeps running the old image.
+TAG=$(grep '^JMDN_VERSION=' .env | cut -d= -f2)
+TAG=${TAG:-latest}
+
 docker build \
   --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
   --build-arg GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
   --build-arg GIT_TAG=$(git describe --tags --always --dirty) \
-  -t ghcr.io/jupitermetalabs/jmdn:latest \
+  -t ghcr.io/jupitermetalabs/jmdn:${TAG} \
   .
 docker compose up -d jmdn
 ```
 
+> Don't follow this build with `./Scripts/docker-deploy.sh` — it runs
+> `docker compose pull`, which would overwrite your local build with
+> whatever's on the registry under the same tag.
+
 ### Upgrading Redis or ImmuDB
 
-These are separate images and can be upgraded independently:
+Unlike `jmdn`, these image tags are pinned directly in `docker-compose.yml` —
+there's no `.env` variable for them. Editing that file in place would dirty
+your checkout and fight the next `git pull`, so pin the new version in a
+`docker-compose.override.yml` instead (Compose merges it in automatically,
+and it's untracked):
+
+```yaml
+# docker-compose.override.yml
+services:
+  redis:
+    image: redis:7.4-alpine
+```
 
 ```bash
-# Update image tag in docker-compose.yml, then:
 docker compose pull redis
 docker compose up -d redis
 # jmdn will reconnect automatically
 ```
+
+### One-time chain reset (only when explicitly instructed)
+
+> **This is not a routine operation.** A refreshed bootstrap snapshot only makes
+> *new* node installs faster — it does **not** invalidate a running node's data,
+> and existing nodes never need to rebootstrap to keep up. A node that is already
+> running stays in sync on its own; ordinary version upgrades (the normal
+> upgrade above) never touch your chain data.
+>
+> Follow this procedure **only** when JupiterMeta explicitly asks you to rebuild
+> from a specific snapshot for a coordinated one-time correction. Do not run it
+> as part of normal upgrades.
+
+This **discards local chain data** and re-seeds from the provided snapshot. A
+node is a replica, so nothing unique is lost; it is not reversible, so back up
+first if you keep custom material.
+
+**One complete procedure — run top to bottom, from your install directory**
+(where `docker-compose.yml` lives; this is what makes `docker compose down -v`
+target *your* volumes). Written for the v1.2.0 install; it is self-contained —
+you do not need any other section.
+
+```bash
+# 1. Back up anything you can't regenerate (secrets, custom certs).
+cp .env ~/jmdn.env.backup
+
+# 2. Clear the v1.2.0 pinned-image edit so the repo updates cleanly.
+#    (If your .env already has a JMDN_VERSION line, skip stash/drop — just `git pull`.)
+git stash          # parks the hand-edited `image:` tag (its only local change)
+git pull           # brings the compose + bootstrap config for the new snapshot
+git stash drop     # the old pinned edit is obsolete — version lives in .env now
+
+# 3. Pin the release version in .env (use the version JupiterMeta provides).
+echo "JMDN_VERSION=v1.2.1" >> .env
+
+# 4. Set the catch-up block in jmdn.yaml, under `fastsync:`
+#      catch_up_from_block: 12173      # = snapshot tip 12172 + 1
+#    (JupiterMeta provides the exact value with the snapshot.)
+
+# 5. Pull the image, WIPE old chain data + sync queue, re-bootstrap, start.
+docker compose pull
+docker compose down -v                     # removes this project's immudb-data, redis-data, jmdn-state
+docker compose run --rm jmdn-bootstrap     # downloads + verifies + extracts the snapshot
+docker compose up -d
+
+# 6. Verify it catches up from the new baseline.
+docker compose logs -f jmdn
+curl -s http://localhost:8545 -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+```
+
+Why all three volumes are wiped in step 5:
+
+- **`immudb-data`** — the chain itself; replaced by the verified snapshot (required).
+- **`redis-data`** — the account-sync queue; stale entries reference the old
+  chain and must not replay onto fresh state (required).
+- **`jmdn-state`** — node identity, TLS certs, and the derived tx-index. Wiping
+  gives a new node identity (it re-peers automatically via the seed nodes) and a
+  clean tx-index rebuild.
+
+**To preserve node identity / custom certs**, in step 5 replace `docker compose
+down -v` with a selective wipe (leaves `jmdn-state` intact):
+
+```bash
+docker compose down
+docker volume rm "$(basename "$PWD")_immudb-data" "$(basename "$PWD")_redis-data"
+# then continue step 5: docker compose run --rm jmdn-bootstrap && docker compose up -d
+```
+
+> Two things that must be right: `catch_up_from_block` = **snapshot tip + 1**
+> (a wrong value causes a full genesis re-scan or silently skipped blocks), and
+> you must run from the install directory so `down -v` wipes the correct volumes.
+> The snapshot prefix must be reachable over public HTTP — see `GCS_*` in the
+> [environment reference](#environment-variable-overrides).
 
 ---
 
@@ -1064,7 +1486,12 @@ docker compose logs -f jmdn-bootstrap
 
 ### `unhealthy` immediately after start
 
-The health check calls `GET /api/v1/node/version` on port 8090. Two common causes:
+The health check tries `GET /api/v1/node/version` on port 8090 first, then
+falls back to JSON-RPC `eth_blockNumber` on 8545 — so `unhealthy` means
+**both** endpoints are failing, which almost always means the node process
+itself isn't up yet (check `docker compose logs jmdn`). If the node is up
+but you expected the Explorer API tier specifically to pass, two common
+causes:
 
 **1. Explorer API port not enabled.** Requires `ports.api: 8090` in `jmdn.yaml`.
 
@@ -1122,6 +1549,25 @@ docker system prune
 # Check log sizes
 du -sh /var/lib/docker/containers/*/  | sort -h | tail -10
 ```
+
+**Prevent this instead of reacting to it.** `bare-metal build.sh` overwrites
+a single binary in place — nothing accumulates. Rebuilding a Docker image
+from source (§8) is different: every `docker build` leaves the previous
+image's layers behind as dangling, and the builder cache grows on every
+build. Neither is cleaned up automatically. On a host that rebuilds
+regularly (CI, frequent version bumps), schedule a weekly prune instead of
+waiting for `docker system prune` to become a fire drill:
+
+```bash
+# /etc/cron.weekly/docker-prune (chmod +x)
+#!/usr/bin/env bash
+# Only removes dangling/unused images older than 7 days — never touches
+# running containers, in-use images, or named volumes (immudb-data, jmdn-state, redis-data).
+docker image prune -af --filter "until=168h"
+docker builder prune -af --filter "until=168h"
+```
+
+Or via this tool's scheduler if you'd rather not manage a cron file by hand.
 
 ### Peer.json missing after restart
 

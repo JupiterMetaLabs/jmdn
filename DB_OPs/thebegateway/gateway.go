@@ -259,3 +259,25 @@ func (g *thebeGateway) ClearTxProcessing(_ context.Context, txHash string) error
 	}
 	return nil
 }
+
+// PutSyncKV writes a sync-state key (marker / anchor / tip) with overwrite
+// semantics into BadgerDB. The "sync-state:" prefix keeps these outside the
+// contract and tx-processing namespaces.
+func (g *thebeGateway) PutSyncKV(key string, value []byte) error {
+	if err := g.kv.PutDerived([]byte("sync-state:"+key), value); err != nil {
+		return fmt.Errorf("PutSyncKV(%s): %w", key, err)
+	}
+	return nil
+}
+
+// GetSyncKV reads a sync-state key. Absent keys return (nil, nil).
+func (g *thebeGateway) GetSyncKV(key string) ([]byte, error) {
+	v, err := g.kv.Get([]byte("sync-state:" + key))
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("GetSyncKV(%s): %w", key, err)
+	}
+	return v, nil
+}

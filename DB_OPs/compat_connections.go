@@ -159,3 +159,13 @@ func SaveAccount(conn *config.PooledConnection, acc *Account) error {
 
 	return h.UpdateAccountBalance(ctx, acc.Address.Hex(), acc.Balance)
 }
+
+// EnsureDBConnection verifies the storage backend is reachable. ThebeDB: the
+// embedded handle is process-wide — reachable iff the handle is installed.
+// The conn parameter is accepted for call-site compatibility and unused.
+func EnsureDBConnection(_ *config.PooledConnection) error {
+	if _, err := getHandle(nil); err != nil {
+		return fmt.Errorf("EnsureDBConnection: %w", err)
+	}
+	return nil
+}

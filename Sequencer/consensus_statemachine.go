@@ -232,7 +232,7 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 
 	if consensusReached {
 		// Only process block locally if consensus was reached
-		if _, err := messaging.ProcessBlockLocally(block, blsResults); err != nil {
+		if err := messaging.ProcessBlockLocally(block, blsResults); err != nil {
 			Alerts.NewAlertBuilder(alert_ctx).
 				AlertName(helper.Alert_Consensus_ProcessBlockFailed_FailedToProcessBlockLocally).
 				Status(Alerts.AlertStatusError).

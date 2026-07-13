@@ -13,11 +13,13 @@ import (
 	"gossipnode/AVC/BuddyNodes/ServiceLayer"
 	"gossipnode/AVC/BuddyNodes/Types"
 	common "gossipnode/AVC/BuddyNodes/common"
+	"gossipnode/DB_OPs"
 	Publisher "gossipnode/Pubsub/Publish"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"gossipnode/l1finality"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/JupiterMetaLabs/ion"
@@ -122,7 +124,7 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 	}
 
 	logger().Info(logger_ctx, "Processing received pubsub message",
-		ion.String("topic", config.PubSub_ConsensusChannel),
+		ion.String("topic", msg.Topic),
 		ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 		ion.String("sender", msg.Sender.String()),
 		ion.String("function", "SubscriptionService.handleReceivedMessage"))
@@ -366,6 +368,19 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 
 		return s.handleVerifySubscriptionRequest(logger_ctx, msg)
 
+	case config.Type_L1Commit:
+		// Prevent self-echo: the originating node already wrote it before broadcasting.
+		if msg.Sender == s.pubSub.Host.ID() {
+			return nil
+		}
+		return s.handleL1Commit(logger_ctx, msg)
+
+	case config.Type_L1CommitRange:
+		if msg.Sender == s.pubSub.Host.ID() {
+			return nil
+		}
+		return s.handleL1CommitRange(logger_ctx, msg)
+
 	default:
 		// Debugging in the default case
 		logger().Info(logger_ctx, "Received message with unknown stage",
@@ -500,17 +515,11 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 		ion.String("channel", channelName),
 		ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 	err := Connector.Subscribe(logger_ctx, s.pubSub, channelName, func(msg *AVCStruct.GossipMessage) {
-		logger().Info(logger_ctx, "Received message on consensus channel",
+		logger().Info(logger_ctx, "Received message on channel",
 			ion.String("channel", channelName),
 			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
 			ion.String("sender", msg.Sender.String()),
 			ion.String("topic", msg.Topic),
-			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
-
-		logger().Info(logger_ctx, "Received message on consensus channel",
-			ion.String("channel", channelName),
-			ion.String("message_id", hex.EncodeToString([]byte(msg.ID))),
-			ion.String("sender", msg.Sender.String()),
 			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 
 		// Handle the received message by processing it through the message router
@@ -525,13 +534,13 @@ func (s *SubscriptionService) HandleStreamSubscriptionRequest(logger_ctx context
 	})
 
 	if err != nil {
-		logger().Error(logger_ctx, "Failed to subscribe to consensus channel", err,
+		logger().Error(logger_ctx, "Failed to subscribe to channel", err,
 			ion.String("channel", channelName),
 			ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 		return errors.New("failed to subscribe to " + channelName + ": " + err.Error())
 	}
 
-	logger().Info(logger_ctx, "Successfully subscribed to consensus channel",
+	logger().Info(logger_ctx, "Successfully subscribed to channel",
 		ion.String("channel", channelName),
 		ion.String("function", "SubscriptionService.HandleStreamSubscriptionRequest"))
 
@@ -922,6 +931,98 @@ func (s *SubscriptionService) handleVerifySubscriptionRequest(logger_ctx context
 			ion.String("function", "SubscriptionService.handleVerifySubscriptionRequest"))
 		return err
 	}
+
+	return nil
+}
+
+// handleL1Commit processes a Type_L1Commit message broadcast by the sequencer node.
+// It updates the local block record with L1 finality data (tx hash + L1 block number).
+// Apply logic is shared with the HTTP ingestion path and the PubSubConnector
+// package's identical handler via the l1finality package — see its doc comment.
+func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
+	var payload l1finality.CommitPayload
+	if err := json.Unmarshal([]byte(msg.Data.Message), &payload); err != nil {
+		logger().Error(logger_ctx, "Failed to parse L1 commit payload", err,
+			ion.String("function", "SubscriptionService.handleL1Commit"))
+		return err
+	}
+
+	if err := payload.Validate(); err != nil {
+		logger().Info(logger_ctx, "Skipping L1 commit: "+err.Error(),
+			ion.String("function", "SubscriptionService.handleL1Commit"))
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(logger_ctx, 15*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		logger().Error(logger_ctx, "DB connection failed for L1 commit update", err,
+			ion.String("function", "SubscriptionService.handleL1Commit"))
+		return err
+	}
+
+	found, err := l1finality.ApplyCommit(conn, payload)
+	if err != nil {
+		logger().Error(logger_ctx, "Failed to update block with L1 finality", err,
+			ion.Int64("block_number", int64(payload.BlockNumber)),
+			ion.String("function", "SubscriptionService.handleL1Commit"))
+		return err
+	}
+	if !found {
+		// Block may not exist on this peer yet; treat as non-fatal.
+		logger().Info(logger_ctx, "Block not found for L1 commit update (non-fatal)",
+			ion.Int64("block_number", int64(payload.BlockNumber)),
+			ion.String("function", "SubscriptionService.handleL1Commit"))
+		return nil
+	}
+
+	logger().Info(logger_ctx, "L1 finality applied from peer broadcast",
+		ion.Int64("block_number", int64(payload.BlockNumber)),
+		ion.String("l1_tx_hash", payload.L1TxHash),
+		ion.Int64("l1_block_number", int64(payload.L1BlockNumber)),
+		ion.String("function", "SubscriptionService.handleL1Commit"))
+
+	return nil
+}
+
+// handleL1CommitRange processes a Type_L1CommitRange gossip message, updating every
+// block in [start_block, end_block] with the shared L1 tx hash and L1 block number.
+// Apply logic is shared via the l1finality package (see handleL1Commit above).
+func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
+	var payload l1finality.RangePayload
+	if err := json.Unmarshal([]byte(msg.Data.Message), &payload); err != nil {
+		logger().Error(logger_ctx, "Failed to parse L1 commit range payload", err,
+			ion.String("function", "SubscriptionService.handleL1CommitRange"))
+		return err
+	}
+
+	if err := payload.Validate(); err != nil {
+		logger().Info(logger_ctx, "Skipping L1 commit range: "+err.Error(),
+			ion.String("function", "SubscriptionService.handleL1CommitRange"))
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(logger_ctx, 60*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		logger().Error(logger_ctx, "DB connection failed for L1 commit range update", err,
+			ion.String("function", "SubscriptionService.handleL1CommitRange"))
+		return err
+	}
+
+	updated, skipped := l1finality.ApplyRange(conn, payload)
+
+	logger().Info(logger_ctx, "L1 range finality applied from peer broadcast",
+		ion.Int64("start_block", int64(payload.StartBlock)),
+		ion.Int64("end_block", int64(payload.EndBlock)),
+		ion.String("l1_tx_hash", payload.L1TxHash),
+		ion.Int64("updated", int64(updated)),
+		ion.Int64("skipped", int64(skipped)),
+		ion.String("function", "SubscriptionService.handleL1CommitRange"))
 
 	return nil
 }

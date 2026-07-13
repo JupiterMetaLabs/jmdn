@@ -262,3 +262,12 @@ func (h *compositeHandle) GetL1FinalityForBlock(ctx context.Context, blockNumber
 func (h *compositeHandle) GetBlocksByRewardAddress(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.BlockRecord, error) {
 	return h.blocks.GetBlocksByRewardAddress(ctx, address, fromBlock, toBlock)
 }
+
+// PutSyncKV / GetSyncKV delegate to the BlockStore.
+func (h *compositeHandle) PutSyncKV(key string, value []byte) error {
+	return h.blocks.PutSyncKV(key, value)
+}
+
+func (h *compositeHandle) GetSyncKV(key string) ([]byte, error) {
+	return h.blocks.GetSyncKV(key)
+}

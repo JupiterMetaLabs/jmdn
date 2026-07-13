@@ -686,7 +686,7 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 // ProcessBlockLocally processes a block locally after consensus is verified.
 // Returns the list of contracts deployed in the block so the sequencer can propagate them.
 // blsResults must be non-empty; consensus is verified before any state changes are made.
-func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSresponse) ([]BlockProcessing.ContractDeploymentInfo, error) {
+func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSresponse) error {
 	broadcastLogger().Info(context.Background(), "Processing block locally",
 		ion.String("block_hash", block.BlockHash.Hex()),
 		ion.Uint64("block_number", block.BlockNumber),
@@ -719,7 +719,7 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 			broadcastLogger().Error(context.Background(), "No valid BLS signatures - skipping block processing (invalid consensus)",
 				errors.New("no valid BLS signatures"),
 				ion.String("block_hash", block.BlockHash.Hex()))
-			return nil, fmt.Errorf("no valid BLS signatures for block %s", block.BlockHash.Hex())
+			return fmt.Errorf("no valid BLS signatures for block %s", block.BlockHash.Hex())
 		}
 
 		needed := (validTotal / 2) + 1
@@ -730,7 +730,7 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 				ion.Int("valid_yes", validYes),
 				ion.Int("needed", needed),
 				ion.Int("valid_total", validTotal))
-			return nil, fmt.Errorf("consensus not reached for block %s: %d/%d votes in favor (needed: %d)",
+			return fmt.Errorf("consensus not reached for block %s: %d/%d votes in favor (needed: %d)",
 				block.BlockHash.Hex(), validYes, validTotal, needed)
 		}
 
@@ -745,38 +745,45 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 		broadcastLogger().Error(context.Background(), "No BLS results provided - cannot verify consensus, refusing to process block",
 			errors.New("empty BLS results"),
 			ion.String("block_hash", block.BlockHash.Hex()))
-		return nil, fmt.Errorf("cannot process block %s without BLS results to verify consensus", block.BlockHash.Hex())
+		return fmt.Errorf("cannot process block %s without BLS results to verify consensus", block.BlockHash.Hex())
 	}
 
-	// Store the block in main DB FIRST to ensure it's valid before processing transactions
-	// This prevents balance updates for invalid blocks that fail to store
+	// Process transactions BEFORE storing the block (F-train ordering) —
+	// if tx processing fails, the block is never persisted, keeping account
+	// state consistent. Per-tx markers make replays exactly-once.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := BlockProcessing.ProcessBlockTransactions(ctx, block, nil); err != nil {
+		broadcastLogger().Error(context.Background(), "Block transaction processing failed - not storing block", err,
+			ion.String("block_hash", block.BlockHash.Hex()))
+		return fmt.Errorf("failed to process block transactions: %w", err)
+	}
+
+	// Store block only after transactions have been successfully applied.
 	if err := DB_OPs.StoreZKBlock(nil, block); err != nil {
-		broadcastLogger().Error(context.Background(), "Failed to store block in database - skipping transaction processing", err,
+		broadcastLogger().Error(context.Background(), "Failed to store block in database after transaction processing", err,
 			ion.String("block_hash", block.BlockHash.Hex()),
 			ion.Uint64("block_number", block.BlockNumber))
-		return nil, fmt.Errorf("failed to store block in database: %w", err)
+		return fmt.Errorf("failed to store block in database: %w", err)
+	}
+
+	// Full block stored + processed → advance the tip marker.
+	// Monotonic: a replayed/out-of-order block can never regress it.
+	// StoreZKBlock no longer writes the marker itself (skeleton safety).
+	if _, _, err := DB_OPs.UpdateLatestBlockMonotonic(block.BlockNumber); err != nil {
+		broadcastLogger().Warn(context.Background(), "latest_block monotonic update failed (non-fatal: ReconcileBlockNumber heals forward)",
+			ion.String("error", err.Error()),
+			ion.Uint64("block_number", block.BlockNumber))
 	}
 
 	// Update the SQLite tx-by-address index asynchronously.
 	// Non-blocking — never delays the block commit path.
 	txindex.IndexBlockAsync(block)
 
-	// Only process transactions if block storage succeeded
-	// This ensures balance updates only happen for valid, stored blocks
-	deployments, err := BlockProcessing.ProcessBlockTransactions(block, nil, true)
-	if err != nil {
-		broadcastLogger().Error(context.Background(), "Block transaction processing failed after block storage", err,
-			ion.String("block_hash", block.BlockHash.Hex()))
-		// Note: Block is already stored, but transactions failed
-		// This is a separate issue that may need rollback handling in the future
-		return nil, fmt.Errorf("failed to process block transactions: %w", err)
-	}
-
 	broadcastLogger().Info(context.Background(), "Block processed and stored successfully",
 		ion.Uint64("block_number", block.BlockNumber),
 		ion.String("block_hash", block.BlockHash.Hex()),
-		ion.Int("tx_count", len(block.Transactions)),
-		ion.Int("contract_deployments", len(deployments)))
+		ion.Int("tx_count", len(block.Transactions)))
 
-	return deployments, nil
+	return nil
 }

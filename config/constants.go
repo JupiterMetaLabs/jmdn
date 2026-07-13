@@ -73,8 +73,12 @@ const (
 	Delimiter               = 0x1E
 	PubSub_ConsensusChannel = "pubsub-consensus"
 	PubSub_BFTConsensus     = "pubsub-bft-consensus"
-	Pubsub_MessageBuffer    = "pubsub-buffer"
-	Pubsub_CRDTSync         = "pubsub-crdt-sync"
+	// PubSub_L1CommitChannel is a persistent topic for L1 finality broadcasts.
+	// It is deliberately separate from PubSub_ConsensusChannel, whose
+	// subscriptions are round-scoped (unsubscribed on END_PUBSUB).
+	PubSub_L1CommitChannel = "pubsub-l1-commit"
+	Pubsub_MessageBuffer   = "pubsub-buffer"
+	Pubsub_CRDTSync        = "pubsub-crdt-sync"
 )
 
 const (
@@ -112,6 +116,10 @@ const (
 	// For BLS Voting - BLS Voting would be listening on the message transfer protocol
 	Type_BLSRequest = "BLS_REQUEST"
 	Type_BLSVote    = "BLS_VOTE"
+
+	// L1 finality broadcast — sent by the node that received the commit confirmation
+	Type_L1Commit      = "L1_COMMIT"
+	Type_L1CommitRange = "L1_COMMIT_RANGE"
 )
 
 // Increase buffer sizes

@@ -4,7 +4,7 @@
 
 Restoring authenticity in digital infrastructure by privately verifying humans, and decentralising their data.
 
-**Whitepaper**: [JMDT White Paper (PDF)](./docs/JMDT%20White%20Paper%20-%20latest.pdf)
+**Whitepaper**: [JMDT White Paper (PDF)](./docs/JMDT_Layer_2_Blockchain.pdf)
 
 [![CERT-IN Security Audit](https://img.shields.io/badge/CERT--IN_Audit-Passed-brightgreen?logo=shield&logoColor=white)](./audits/2026-03-terasoft-certin-vapt/VERIFICATION.md)
 [![Auditor](https://img.shields.io/badge/Auditor-Terasoft_Technologies-blue)](./audits/2026-03-terasoft-certin-vapt/TERA_CERT-IN_03_2026_CR_16_Certificate.pdf)
@@ -65,11 +65,12 @@ Run a node to participate in the JMDT network.
 - **Go 1.25+**: Programming language runtime
 - **Yggdrasil**: Decentralized mesh networking protocol
 - **ImmuDB**: Tamper-proof database (installed automatically via setup script)
+- **Redis**: Account sync worker queue (installed automatically via setup script; optional — the node falls back to direct ImmuDB writes if unavailable)
 
 ### Quick Setup — From Source
 
 ```bash
-# Install Go, ImmuDB, and Yggdrasil
+# Install Go, ImmuDB, Yggdrasil, and Redis
 sudo ./Scripts/setup_dependencies.sh
 
 # Build the binary

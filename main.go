@@ -27,9 +27,9 @@ import (
 	thebeSql "github.com/JupiterMetaLabs/ThebeDB/pkg/sql"
 	orchestratorGlobal "github.com/JupiterMetaLabs/goroutine-orchestrator/manager/global"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
-	ion "github.com/JupiterMetaLabs/ion"
 
 	MessagePassing "gossipnode/AVC/BuddyNodes/MessagePassing"
+	MsgPassingService "gossipnode/AVC/BuddyNodes/MessagePassing/Service"
 	"gossipnode/Block"
 	"gossipnode/CA/tlsca"
 	cli "gossipnode/CLI"
@@ -62,6 +62,9 @@ import (
 	"gossipnode/profiler"
 	"gossipnode/seednode"
 	"gossipnode/transfer"
+
+	ion "github.com/JupiterMetaLabs/ion"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -985,13 +988,26 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// shutdownSequenceBudget bounds steps 1-4 below as a whole. Each step is
+	// already individually bounded (profiler: 5s; shutdown.Shutdown()'s GRO
+	// window: ~10s + ~0.4s of flush sleeps), but nothing previously capped
+	// the SEQUENCE — a stall anywhere in it could still run past Docker's
+	// `stop_grace_period: 30s` (docker-compose.yml) and get SIGKILLed with
+	// no log line explaining why. Kept comfortably under that 30s so this
+	// fires first, logs why, and exits cleanly instead of being killed blind.
+	const shutdownSequenceBudget = 25 * time.Second
+
 	if err := goMaybeTracked(MainLM, GRO.MainAM, GRO.MainLM, GRO.ShutdownThread, func(ctx context.Context) error {
 		<-sigCh
 
 		fmt.Println("\nShutdown signal received, closing connections...")
 
-		// 1. Cancel the main context to stop context-aware components (e.g., Yggdrasil, API)
-		cancel()
+		shutdownDone := make(chan struct{})
+		go func() {
+			defer close(shutdownDone)
+
+			// 1. Cancel the main context to stop context-aware components (e.g., Yggdrasil, API)
+			cancel()
 
 		// 2. Shutdown profiler concurrently with other cleanups (with timeout)
 		if profilerServer != nil {
@@ -1010,23 +1026,35 @@ func main() {
 					logger.Info(ctx, "Profiler server stopped gracefully")
 				}
 			}
-		}
+			}
 
-		// 3. Stop the tx-address index: refuse new async work, cancel any
-		// in-flight catchup/rebuild, and close both SQLite pools. Must run
-		// before the process exits — nothing else does this today, and an
-		// unclosed sql.DB leaks its connections/WAL file handles.
-		log.Info().Msg("Shutting down transaction address index...")
-		if err := txindex.Shutdown(); err != nil {
-			log.Error().Err(err).Msg("txindex shutdown reported an error")
-		} else {
-			log.Info().Msg("Transaction address index stopped")
-		}
+			// 3. Stop the tx-address index: refuse new async work, cancel any
+			// in-flight catchup/rebuild, and close both SQLite pools. Must run
+			// before the process exits — nothing else does this today, and an
+			// unclosed sql.DB leaks its connections/WAL file handles.
+			log.Info().Msg("Shutting down transaction address index...")
+			if err := txindex.Shutdown(); err != nil {
+				log.Error().Err(err).Msg("txindex shutdown reported an error")
+			} else {
+				log.Info().Msg("Transaction address index stopped")
+			}
 
-		// 4. Delegate final shutdown to the centralized handler
-		if shutdown.Shutdown() {
-			logger_cancel()
-			defer shutdown.OS_EXIT(0)
+			// 4. Delegate final shutdown to the centralized handler
+			if shutdown.Shutdown() {
+				logger_cancel()
+				defer shutdown.OS_EXIT(0)
+			}
+		}()
+
+		select {
+		case <-shutdownDone:
+			// Completed within budget. If step 4 succeeded, shutdown.OS_EXIT(0)
+			// already terminated the process before this select could observe
+			// the close — this case is only reachable if shutdown.Shutdown()
+			// returned false (no exit call was made).
+		case <-time.After(shutdownSequenceBudget):
+			log.Error().Msg("shutdown sequence exceeded its budget — forcing exit so Docker's stop_grace_period doesn't SIGKILL blind")
+			shutdown.OS_EXIT(1)
 		}
 		return nil
 	}); err != nil {
@@ -1141,6 +1169,23 @@ func main() {
 		fmt.Fprintln(os.Stderr, "thebedb: gateway + handle factory enabled")
 	}
 
+	// ── Account Sync Worker (Redis Stream) ───────────────────────────────────
+	// WriteAccounts and BatchUpdateAccounts enqueue to a Redis Stream and return
+	// immediately, decoupling callers from synchronous DB commit latency.
+	// The worker drains the stream and writes batches to ThebeDB asynchronously.
+	// Required before FastsyncV2 starts — it calls WriteAccounts during sync.
+	if cfg.Database.Redis.URL == "" {
+		log.Warn().Msg("[AccountSyncWorker] database.redis.url not configured — WriteAccounts/BatchUpdateAccounts will fall back to synchronous direct ThebeDB writes (no async queue); set url in jmdn.yaml or JMDN_DATABASE_REDIS_URL to enable the async Redis-backed path")
+	} else {
+		redisClient := redis.NewClient(&redis.Options{
+			Addr:     cfg.Database.Redis.URL,
+			Password: cfg.Database.Redis.Password,
+		})
+		accountStreamer := NodeInfo.NewRedisStreamer(redisClient)
+		NodeInfo.StartAccountSyncWorker(logger_ctx, accountStreamer, NodeInfo.DefaultWorkerConfig())
+		log.Info().Str("redis_url", cfg.Database.Redis.URL).Msg("[accountqueue] installed — WriteAccounts is now async, worker starts lazily")
+	}
+
 	// Discover Yggdrasil address BEFORE creating the node
 	fmt.Println("Discovering Yggdrasil address...")
 	ipv6, err := helper.GetTun0GlobalIPv6()
@@ -1178,9 +1223,22 @@ func main() {
 		// Continue without PubSub - some features may be limited
 	} else {
 		fmt.Println("✅ PubSub system ready for consensus and messaging")
-		mainLogger().Info(context.Background(), "PubSub system initialized successfully")
-		// Store reference for later use
-		_ = globalPubSub // Mark as used to avoid linting error
+		log.Info().Msg("PubSub system initialized successfully")
+		// Give Block server access to GPS so /api/l1-commit can broadcast to peers.
+		Block.SetGossipPubSubInstance(globalPubSub.GetGossipPubSub())
+
+		// Subscribe to the dedicated L1 commit channel at startup so this node
+		// receives L1Commit/L1CommitRange broadcasts from the sequencer. This
+		// topic is persistent — unlike the consensus channel, it is never
+		// unsubscribed at the end of a consensus round (END_PUBSUB).
+		go func() {
+			svc := MsgPassingService.NewSubscriptionService(globalPubSub.GetGossipPubSub())
+			if subErr := svc.HandleStreamSubscriptionRequest(ctx, config.PubSub_L1CommitChannel); subErr != nil {
+				fmt.Printf("⚠️  Failed to subscribe to L1 commit channel at startup: %v\n", subErr)
+			} else {
+				fmt.Println("✅ Subscribed to L1 commit channel at startup")
+			}
+		}()
 	}
 
 	// Set the stream handler for receiving files for fastsync. This is crucial
@@ -1190,6 +1248,7 @@ func main() {
 		transfer.HandleFileStream(s, "")
 	})
 
+	// fastsync V1 retired — FastsyncV2 only.
 	// Initialize FastsyncV2 service
 	if cfg.FastSync.Enabled {
 		fastSyncerV2 = initFastsyncV2(ctx, n, cfg.FastSync.SyncTimeout)

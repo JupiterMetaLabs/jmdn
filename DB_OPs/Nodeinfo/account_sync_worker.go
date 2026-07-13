@@ -71,13 +71,29 @@ type dbEntry = struct {
 // surprises (math/big.Int marshals as a quoted decimal string, but that behaviour
 // is implementation-defined and not guaranteed across versions).
 //
-// Stored in the stream as: {"address":"0x...","new_balance":"1000000","nonce":42,"tx_nonce":43,"tx_count_sent":5}
+// Stored in the stream as: {"address":"0x...","new_balance":"1000000","nonce":42,"tx_nonce":43,"tx_count_sent":5,"updated_at":1700000000000000000}
 type accountUpdateWire struct {
 	Address     string `json:"address"`
 	NewBalance  string `json:"new_balance"` // decimal string from big.Int.String()
 	Nonce       uint64 `json:"nonce"`
 	TxNonce     uint64 `json:"tx_nonce"`
 	TxCountSent uint64 `json:"tx_count_sent"`
+	// UpdatedAt is the producer-side UnixNano timestamp captured when the update
+	// was computed. It is the LWW ordering key for BatchRestoreAccounts. It MUST
+	// NOT be (re)stamped at drain time: a replayed/reclaimed stale entry would get
+	// a fresh timestamp and overwrite newer correct data (the pre-fix behaviour).
+	// 0 = entry enqueued by a pre-upgrade producer; drain falls back to now().
+	UpdatedAt int64 `json:"updated_at,omitempty"`
+}
+
+// txMarkerWire is one recon-applied tx to mark as processed. Enqueued
+// by reconciliation AFTER its balance updates so stream FIFO ordering delivers
+// markers to the drain no earlier than the balances they describe.
+type txMarkerWire struct {
+	Hash string `json:"hash"`
+	// AppliedAt is the producer-side Unix-seconds stamp (marker value). Not an
+	// LWW key — markers are value-aware only for the -1 revocation sentinel.
+	AppliedAt int64 `json:"applied_at"`
 }
 
 // ─── Configuration ────────────────────────────────────────────────────────────
@@ -173,9 +189,29 @@ func (wm *WorkerManager) EnsureActive() {
 // If not called, both methods log an error and skip the enqueue (no write occurs).
 //
 // Time: O(1) — no Redis round trip; EnsureConsumerGroup is deferred to the first runWorker call.
-func StartAccountSyncWorker(streamer RedisStreamer, cfg AccountSyncWorkerConfig) *WorkerManager {
+func StartAccountSyncWorker(logger_ctx context.Context, streamer RedisStreamer, cfg AccountSyncWorkerConfig) *WorkerManager {
 	m := &WorkerManager{streamer: streamer, cfg: cfg}
 	InstallAccountQueue(streamer, m)
+
+	// Eagerly run one drain pass so entries left in the stream/PEL by a previous
+	// run are written promptly. Without this the worker starts lazily on the next
+	// WriteAccounts call — which may never come on an already-synced node, leaving
+	// queued account writes stranded across restarts.
+	m.EnsureActive()
+
+	// Eagerly verify Redis connection in the background.
+	// We do this to ensure we get a reliable success/failure log on boot,
+	// because the actual worker loop is lazy and might not start if the node is already synced.
+	go func() {
+		ctx, cancel := context.WithTimeout(logger_ctx, 5*time.Second)
+		defer cancel()
+		if err := streamer.Ping(ctx); err != nil {
+			log.Printf("[accountqueue] WARN: Boot-time Redis ping failed: %v. This is a one-off diagnostic, not a live health gate — Enqueue calls will fall back to direct DB writes on their own if Redis is still unreachable when they run.", err)
+		} else {
+			log.Printf("[accountqueue] Boot-time Redis ping succeeded — connected and authenticated. (Diagnostic only; does not guarantee later Enqueue calls will succeed.)")
+		}
+	}()
+
 	return m
 }
 
@@ -290,9 +326,10 @@ func reclaimPending(s RedisStreamer, cfg AccountSyncWorkerConfig) error {
 // Space: O(N) — ephemeral []dbEntry freed after ACK.
 func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerConfig) error {
 	var (
-		writeEntries []dbEntry // accounts to persist to ImmuDB
-		goodIDs      []string  // stream IDs to ACK+XDEL after successful DB write
-		poisonIDs    []string  // stream IDs to ACK+XDEL immediately (unrecoverable)
+		writeEntries []dbEntry        // accounts to persist to ImmuDB
+		txMarkers    map[string]int64 // recon-applied tx markers — committed LAST
+		goodIDs      []string         // stream IDs to ACK+XDEL after successful DB write
+		poisonIDs    []string         // stream IDs to ACK+XDEL immediately (unrecoverable)
 	)
 
 	for _, entry := range entries {
@@ -317,7 +354,28 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 				poisonIDs = append(poisonIDs, entry.ID)
 				continue
 			}
-			writeEntries = append(writeEntries, parsed...)
+			updEntries, err := updateWiresToEntries(parsed)
+			if err != nil {
+				log.Printf("[accountqueue] WARN: poison pill — unconvertible updates entry %s: %v", entry.ID, err)
+				poisonIDs = append(poisonIDs, entry.ID)
+				continue
+			}
+			writeEntries = append(writeEntries, updEntries...)
+			goodIDs = append(goodIDs, entry.ID)
+
+		case payloadTypeTxMarkers:
+			parsed, err := parseTxMarkersPayload(dataStr)
+			if err != nil {
+				log.Printf("[accountqueue] WARN: poison pill — undecodable tx_markers entry %s: %v", entry.ID, err)
+				poisonIDs = append(poisonIDs, entry.ID)
+				continue
+			}
+			if txMarkers == nil {
+				txMarkers = make(map[string]int64, len(parsed))
+			}
+			for _, m := range parsed {
+				txMarkers[m.Hash] = m.AppliedAt
+			}
 			goodIDs = append(goodIDs, entry.ID)
 
 		default:
@@ -337,7 +395,7 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 		cancel()
 	}
 
-	if len(writeEntries) == 0 {
+	if len(writeEntries) == 0 && len(txMarkers) == 0 {
 		return nil
 	}
 
@@ -368,6 +426,18 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 			return fmt.Errorf("BatchRestoreAccounts chunk [%d:%d] of %d: %w", i, end, len(writeEntries), err)
 		}
 	}
+
+	// ORDERING: recon-applied tx markers commit strictly AFTER every account
+	// chunk of this batch succeeded. Markers-first + a later chunk failure
+	// would let a recon rerun exclude never-applied txs (permanent skip);
+	// markers-last fails toward bounded double-apply on retry — the repairable
+	// direction. Failure here leaves the whole batch unACKed → PEL retry
+	// (marker writes are idempotent).
+	if len(txMarkers) > 0 {
+		if err := DB_OPs.WriteTxProcessedMarkers(conn, txMarkers); err != nil {
+			return fmt.Errorf("write %d recon tx markers (after %d account entries): %w", len(txMarkers), len(writeEntries), err)
+		}
+	}
 	commitDur := time.Since(start)
 
 	// All sub-batches succeeded — ACK + XDEL in one pipeline round-trip.
@@ -378,11 +448,18 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 	defer ackCancel()
 	if err := s.Ack(ackCtx, accountSyncStream, accountSyncGroup, goodIDs...); err != nil {
 		log.Printf("[accountqueue] WARN: ACK failed for %d entries after successful DB write: %v — will be reclaimed and re-written (safe, LWW)", len(goodIDs), err)
-	} else if err := s.Delete(ackCtx, accountSyncStream, goodIDs...); err != nil {
-		log.Printf("[accountqueue] WARN: XDEL failed for %d entries after ACK: %v", len(goodIDs), err)
 	} else {
-		log.Printf("[accountqueue] wrote %d accounts from %d entries in %s; ACKed + XDELed",
-			len(writeEntries), len(goodIDs), commitDur.Round(time.Millisecond))
+		// Advance the drain high-water mark ONLY after apply + ACK both
+		// succeeded — an unACKed entry can be reclaimed and must not count as
+		// drained. This is what WaitForAccountQueueDrain (anchor gating)
+		// observes.
+		noteDrainedIDs(goodIDs)
+		if err := s.Delete(ackCtx, accountSyncStream, goodIDs...); err != nil {
+			log.Printf("[accountqueue] WARN: XDEL failed for %d entries after ACK: %v", len(goodIDs), err)
+		} else {
+			log.Printf("[accountqueue] wrote %d accounts from %d entries in %s; ACKed + XDELed",
+				len(writeEntries), len(goodIDs), commitDur.Round(time.Millisecond))
+		}
 	}
 
 	return nil
@@ -441,42 +518,96 @@ func parseAccountsPayload(dataStr string) ([]dbEntry, error) {
 	return entries, nil
 }
 
-// parseUpdatesPayload deserializes a payloadTypeUpdates JSON blob into a flat list
-// of DB write entries ready for BatchRestoreAccounts.
+// parseUpdatesPayload deserializes and validates a payloadTypeUpdates JSON blob.
 // Reads accountUpdateWire (not types.AccountUpdate) to avoid big.Int JSON ambiguity.
+// Pure parse/validate — the identity merge happens inside BatchRestoreAccounts.
+// Undecodable payloads surface here so they become poison pills instead of
+// failing the whole batch.
 //
 // Time: O(N) where N = number of updates in the payload.
-// Space: O(N) — one dbEntry per update.
-func parseUpdatesPayload(dataStr string) ([]dbEntry, error) {
+func parseUpdatesPayload(dataStr string) ([]accountUpdateWire, error) {
 	var wires []accountUpdateWire
 	if err := json.Unmarshal([]byte(dataStr), &wires); err != nil {
 		return nil, fmt.Errorf("unmarshal []accountUpdateWire: %w", err)
 	}
+	for _, w := range wires {
+		if _, ok := new(big.Int).SetString(w.NewBalance, 10); !ok {
+			return nil, fmt.Errorf("invalid decimal balance %q for address %s", w.NewBalance, w.Address)
+		}
+	}
+	return wires, nil
+}
+
+// parseTxMarkersPayload deserializes and validates a payloadTypeTxMarkers blob.
+// Pure parse — the markers-last ordered write happens in processBatch.
+func parseTxMarkersPayload(dataStr string) ([]txMarkerWire, error) {
+	var wires []txMarkerWire
+	if err := json.Unmarshal([]byte(dataStr), &wires); err != nil {
+		return nil, fmt.Errorf("unmarshal []txMarkerWire: %w", err)
+	}
+	for _, w := range wires {
+		if w.Hash == "" {
+			return nil, fmt.Errorf("tx marker with empty hash")
+		}
+		if w.AppliedAt <= 0 {
+			// -1/0 must never arrive on the wire — a revocation enqueued here
+			// would erase a legitimate live-path marker at drain time.
+			return nil, fmt.Errorf("tx marker %s with non-positive applied_at %d", w.Hash, w.AppliedAt)
+		}
+	}
+	return wires, nil
+}
+
+// updateWiresToEntries converts balance/nonce update wires into SPARSE account
+// objects ready for BatchRestoreAccounts. Pure function — no DB reads.
+//
+// Identity fields (DIDAddress, AccountType, CreatedAt, Metadata) are
+// intentionally zero-valued: a balance update carries no identity information.
+// BatchRestoreAccounts owns the merge — its single GetAll prefetch (one RPC per
+// chunk, vs N point reads here) preserves identity fields from the stored
+// account, applies monotonic guards to tx counters, and fills new-account
+// defaults. Keeping the merge in ONE place, next to the LWW compare, means the
+// same protections cover every write path, not just this worker.
+//
+// Two corruption bugs lived in the old version of this conversion:
+//  1. UpdatedAt was stamped time.Now() at DRAIN time. A replayed/reclaimed stale
+//     entry got a fresh timestamp and won LWW over newer correct data — stale
+//     balance resurrection after every worker crash/restart. UpdatedAt now
+//     travels in the wire from the producer.
+//  2. The account object was rebuilt from defaults: DIDAddress set to the hex
+//     address (not a DID), AccountType forced to "user", CreatedAt and Metadata
+//     dropped. Every update degraded the stored account object.
+//
+// Time: O(N) serialization, N = len(wires).
+func updateWiresToEntries(wires []accountUpdateWire) ([]dbEntry, error) {
 	entries := make([]dbEntry, 0, len(wires))
 	for _, w := range wires {
 		balance := new(big.Int)
 		if _, ok := balance.SetString(w.NewBalance, 10); !ok {
+			// Already validated at parse time; repeated defensively.
 			return nil, fmt.Errorf("invalid decimal balance %q for address %s", w.NewBalance, w.Address)
 		}
 		addr := common.HexToAddress(w.Address)
+
+		updatedAt := w.UpdatedAt
+		if updatedAt == 0 {
+			// In-flight entry from a pre-upgrade producer — best available ordering.
+			updatedAt = time.Now().UTC().UnixNano()
+		}
+
 		dbAcc := &DB_OPs.Account{
-			DIDAddress:  w.Address,
 			Address:     addr,
 			Balance:     balance.String(),
 			Nonce:       w.Nonce,
 			TxNonce:     w.TxNonce,
 			TxCountSent: w.TxCountSent,
-			AccountType: "user",
-			UpdatedAt:   time.Now().UTC().UnixNano(),
+			UpdatedAt:   updatedAt,
 		}
 		val, err := json.Marshal(dbAcc)
 		if err != nil {
-			return nil, fmt.Errorf("marshal DB_OPs.Account for address %s: %w", w.Address, err)
+			return nil, fmt.Errorf("marshal DB_OPs.Account for address %s: %w", addr.Hex(), err)
 		}
-		entries = append(entries, dbEntry{
-			Key:   DB_OPs.Prefix + addr.Hex(),
-			Value: val,
-		})
+		entries = append(entries, dbEntry{Key: DB_OPs.Prefix + addr.Hex(), Value: val})
 	}
 	return entries, nil
 }

@@ -44,6 +44,8 @@ type BlockStore interface {
 	GetLatestBlockNumber(ctx context.Context) (uint64, error)
 	BulkGetBlocks(ctx context.Context, from, to uint64) ([]*thebegateway.BlockRecord, error)
 	StoreL1Finality(ctx context.Context, rec *thebegateway.L1FinalityRecord) error
+	PutSyncKV(key string, value []byte) error
+	GetSyncKV(key string) ([]byte, error)
 	GetL1FinalityForBlock(ctx context.Context, blockNumber uint64) (*thebegateway.L1FinalityRecord, error)
 	GetBlocksByRewardAddress(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.BlockRecord, error)
 }

@@ -26,6 +26,24 @@
 #   docker compose run --rm jmdn-bootstrap
 #   docker compose up -d
 
+# Project name — deliberately NOT pinned here with a top-level `name:` key.
+#
+# The project name prefixes volume/network names (<project>_immudb-data ...).
+# New installs set COMPOSE_PROJECT_NAME=jmdn in .env (DOCKER.md Step 2) so
+# those names are stable regardless of the checkout directory. Existing
+# deployments predate that .env line: their project name is derived from
+# their checkout directory, and their chain data lives in volumes under that
+# prefix. A `name:` pin in this file would travel to them on their next
+# `git pull` and silently repoint compose at empty jmdn_* volumes — .env is
+# operator-owned and never touched by git, so this stays their choice.
+#
+# To adopt the stable name on an existing node (optional, brief downtime):
+#   docker compose down        # keeps volumes
+#   docker run --rm -v <olddir>_immudb-data:/from -v jmdn_immudb-data:/to \
+#     alpine sh -c "cd /from && cp -a . /to"   # repeat for jmdn-state, redis-data
+#   echo "COMPOSE_PROJECT_NAME=jmdn" >> .env
+#   docker compose up -d
+
 services:
 
   # ── PostgreSQL ────────────────────────────────────────────────────────────
@@ -35,6 +53,12 @@ services:
     image: postgres:16-alpine
     container_name: jmdn-postgres
     restart: unless-stopped
+    # Docker's default stop grace is 10s, then SIGKILL. A database flushing
+    # WAL segments must never be SIGKILLed mid-write (main's hardening,
+    # retargeted from immudb to postgres).
+    stop_grace_period: 120s
+    security_opt:
+      - no-new-privileges:true
     environment:
       POSTGRES_USER: jmdn
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-jmdndefault}"
@@ -58,6 +82,7 @@ services:
       options:
         max-size: "20m"
         max-file: "3"
+        compress: "true"
 
   # ── Redis ─────────────────────────────────────────────────────────────────
   # Account sync worker queue (Redis Streams XADD/XREADGROUP/XACK).
@@ -66,11 +91,20 @@ services:
     image: redis:7-alpine
     container_name: jmdn-redis
     restart: unless-stopped
+    # SIGTERM triggers a final AOF rewrite/save — with appendfsync everysec
+    # this is fast, but 10s (Docker default) is tight if the stream backlog
+    # is large. no-new-privileges is safe: the official image's su-exec only
+    # DROPS root→redis, never gains.
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
     command: >
       redis-server
       --requirepass ${REDIS_PASSWORD:-jmdnredissync}
       --appendonly yes
       --appendfsync everysec
+      --maxmemory ${REDIS_MAXMEMORY:-384mb}
+      --maxmemory-policy noeviction
     volumes:
       - redis-data:/data
     healthcheck:
@@ -78,32 +112,74 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+
+    # Resource governance — small, in-memory queue. maxmemory self-enforces
+    # before the kernel OOM-kills the container — keep it at ~75% of
+    # REDIS_MEM_LIMIT if you raise either (see DOCKER.md §4 sizing table);
+    # noeviction means writes error instead of silently dropping stream
+    # entries once account_sync_stream fills up (safer for a durable work
+    # queue than losing account writes).
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+    mem_limit: "${REDIS_MEM_LIMIT:-512m}"
+    cpus: "${REDIS_CPU_LIMIT:-0.5}"
+    pids_limit: 512
+
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+        compress: "true"
 
   # ── Bootstrap (one-time) ──────────────────────────────────────────────────
   # Downloads the chain snapshot from GCS and populates node state.
   # Guard: writes .bootstrapped sentinel — safe to call again (skips if done).
   #   docker compose run --rm jmdn-bootstrap
   jmdn-bootstrap:
-    image: ghcr.io/jupitermetalabs/jmdn:latest
+    image: ghcr.io/jupitermetalabs/jmdn:${JMDN_VERSION:-latest}
     container_name: jmdn-bootstrap
     profiles: [bootstrap]
     user: root
+    # bootstrap_sync.sh runs shell pipelines (cat parts* | tar, wget, md5sum)
+    # that spawn many children — tini (init: true) reaps them. The script
+    # runs as root for chown but never needs to gain further privileges.
+    init: true
+    security_opt:
+      - no-new-privileges:true
     entrypoint: ["/usr/local/bin/bootstrap_sync.sh"]
     volumes:
       - jmdn-state:/opt/jmdn
     environment:
-      GCS_BUCKET: "${GCS_BUCKET:-jmzk-releases}"
-      GCS_PREFIX: "${GCS_PREFIX:-jmdn_bootstrap_2306}"
+      # Snapshot location. Defaults point at the 2026-07-09 snapshot
+      # (chain tip 12172). PARTS_PREFIX/CHECKSUM_FILE MUST match how the
+      # snapshot was split — this one used `split … data-patched.part`.
+      # NOTE: bootstrap_sync.sh fetches over public HTTP
+      # (storage.googleapis.com), so this prefix must be world-readable.
+      # `staging/…` is the pre-promotion location; repoint to the promoted
+      # public prefix before fleet rollout.
+      GCS_BUCKET: "${GCS_BUCKET:-jmdn-bootstrap}"
+      GCS_PREFIX: "${GCS_PREFIX:-staging/bootstrap-20260709_180202}"
+      PARTS_PREFIX: "${PARTS_PREFIX:-data-patched.part}"
+      CHECKSUM_FILE: "${CHECKSUM_FILE:-checksums.md5}"
+
+    # Resource governance — short-lived, but a stalled/corrupt download
+    # shouldn't be able to consume unbounded host CPU/RAM either. Env-tunable
+    # like every other service's caps (see DOCKER.md §4) — the snapshot
+    # decompress/extract step can need more than the 2g default on a very
+    # large chain snapshot.
+    mem_limit: "${BOOTSTRAP_MEM_LIMIT:-2g}"
+    cpus: "${BOOTSTRAP_CPU_LIMIT:-1.0}"
+    pids_limit: 1024
+
     logging:
       driver: json-file
       options:
         max-size: "20m"
         max-file: "3"
+        compress: "true"
 
   # ── JMDN Node ─────────────────────────────────────────────────────────────
   # Entrypoint runs as root (creates dirs, generates certs), then gosu-drops
@@ -113,9 +189,33 @@ services:
   # WorkingDirectory = /opt/jmdn (matches bare-metal ${JMDN_DATA}).
   # DB/gossipnode.db resolves as ./DB/gossipnode.db relative to WorkingDirectory.
   jmdn:
-    image: ghcr.io/jupitermetalabs/jmdn:latest
+    # Version comes from .env (JMDN_VERSION=v1.2.1) — never edit this line to
+    # pin a release. Keeping the tag out of this tracked file means upgrades
+    # don't dirty the git checkout, so `git pull` never merge-conflicts on
+    # compose changes shipped with a release. See DOCKER.md §13.
+    image: ghcr.io/jupitermetalabs/jmdn:${JMDN_VERSION:-latest}
     container_name: jmdn
     restart: unless-stopped
+
+    # Graceful-shutdown budget. shutdown/shutdown.go flushes GRO metrics
+    # (~0.6s) before opening its own 10s graceful-shutdown window — Docker's
+    # default 10s grace would SIGKILL the node mid-shutdown on every stop.
+    # 30s covers the app's worst case with margin.
+    stop_grace_period: 30s
+
+    # PID 1 here is the jmdn Go binary (entrypoint exec's gosu → jmdn), which
+    # doesn't reap orphaned children. init: true puts tini at PID 1 so
+    # zombies are reaped and signal forwarding stays correct.
+    init: true
+
+    # The entrypoint only ever drops privileges (gosu root → jmdn); nothing
+    # needs to gain them after start, so block setuid escalation outright.
+    security_opt:
+      - no-new-privileges:true
+
+    # depends_on orders container CREATION only. If immudb restarts later,
+    # Docker does not restart jmdn — jmdn's immudb client reconnects over
+    # gRPC on its own.
     depends_on:
       postgres:
         condition: service_healthy
@@ -123,9 +223,41 @@ services:
         condition: service_healthy
 
     ports:
+      # P2P gossip (LibP2P) — MUST be reachable from the internet (PORTS.md).
+      # TCP for stream transport, UDP for QUIC — node/node.go registers both
+      # transports unconditionally (libp2p.Transport(quic.NewTransport)),
+      # there's no config flag to disable QUIC, so both are always needed.
+      # A node without inbound 15000 can dial out but can't be dialed — it
+      # degrades to a NAT-ed leecher instead of a full participant.
+      - "15000:15000"
+      - "15000:15000/udp"
+      # Yggdrasil direct-messaging listener (messaging/directMSG,
+      # net.Listen("tcp6", ":15001")) — commented out, not published.
+      # Two independent reasons, not just "not wired up yet":
+      #   1. The actual Yggdrasil daemon isn't started anywhere in this
+      #      image (confirmed live on a running container: no tun0/ygg0
+      #      interface, no yggdrasil process) — the feature can't work at
+      #      all right now regardless of this port.
+      #   2. Even once the daemon IS wired up, publishing this port via
+      #      Docker's `-p`/`ports:` doesn't achieve what it looks like it
+      #      does: mesh traffic would arrive over a TUN device inside the
+      #      container's own network namespace, not over eth0/the Docker
+      #      bridge — Docker's port-forwarding only translates traffic on
+      #      the container's normal network interfaces, so it can't (and
+      #      doesn't need to) forward anything to a TUN-only listener. This
+      #      would only matter for reaching this listener via the host's
+      #      regular public IP directly, which defeats the point of using
+      #      Yggdrasil addressing in the first place.
+      # Uncomment only if/when Yggdrasil is actually running in this
+      # container AND you have a real reason to also want this reachable
+      # over the plain internet (not just the mesh) on this exact port.
+      # - "15001:15001"
       - "8545:8545"   # JSON-RPC (Ethereum-compatible) — primary exchange endpoint
       - "8546:8546"   # WebSocket RPC
-      - "15052:15052" # DID service
+      # DID service — not published by default. RegisterDID has no auth
+      # (AuthType: None), so anyone reaching this port could register
+      # arbitrary DIDs. Uncomment for a dedicated DID-resolver node (PORTS.md §5).
+      # - "15052:15052"
       # Explorer API — localhost-bound by default, auth-protected.
       # Uncomment to expose (set JMDN_SECURITY_EXPLORER_API_KEY first):
       # - "8090:8090"
@@ -154,18 +286,51 @@ services:
       # Production TLS certs (optional — self-signed generated on first run):
       # - ./certs:/opt/jmdn/certs:ro
 
+    # Two-tier health check: Explorer API first (richer signal — exercises
+    # the auth path), falling back to JSON-RPC on :8545 — the endpoint
+    # exchanges actually consume. The fallback keeps nodes running
+    # jmdn_default.yaml (ports.api disabled) from showing permanently
+    # unhealthy while serving RPC fine.
+    # Each curl leg gets its own --max-time so a hung (not refused) first
+    # endpoint can't consume the whole 5s Docker timeout and starve the
+    # second — without this, a stalled port-8090 handler silently defeats
+    # the fallback the two-tier design exists to provide.
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8090/api/v1/node/version -H \"Authorization: Bearer ${JMDN_SECURITY_EXPLORER_API_KEY:-}\" || exit 1"]
+      test: ["CMD-SHELL", "curl -sf --max-time 2 http://localhost:8090/api/v1/node/version -H \"Authorization: Bearer ${JMDN_SECURITY_EXPLORER_API_KEY:-}\" || curl -sf --max-time 2 http://localhost:8545 -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' || exit 1"]
       interval: 30s
       timeout: 5s
       start_period: 300s
       retries: 3
+
+    # Resource governance — mirrors Scripts/install_services.sh's systemd
+    # unit (LimitNOFILE=65536, LimitNPROC=32768) so file-descriptor/thread
+    # ceilings don't silently depend on the host's Docker daemon defaults.
+    #
+    # mem_limit is blast-radius protection: a leak in one container gets
+    # that container OOM-killed instead of taking down immudb or the host.
+    # Scale with the host via .env (DOCKER.md §4 sizing table) — defaults
+    # suit an entry-level 8-16 GB VM; on a 32/64 GB host raise them, don't
+    # leave the node squeezed into 4 GB.
+    #
+    # CPU is different: it's compressible — contention just means kernel
+    # scheduling, not a kill — so a hard cap mostly hurts. On a dedicated
+    # node host set JMDN_CPU_LIMIT=0 (unlimited) and let jmdn burst to all
+    # cores; keep a cap only on shared hosts.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      nproc: 32768
+    mem_limit: "${JMDN_MEM_LIMIT:-4g}"
+    cpus: "${JMDN_CPU_LIMIT:-2.0}"
+    pids_limit: 4096
 
     logging:
       driver: json-file
       options:
         max-size: "50m"
         max-file: "5"
+        compress: "true"
 
 volumes:
   postgres-data: # ThebeDB SQL projection

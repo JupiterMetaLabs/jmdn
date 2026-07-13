@@ -222,22 +222,41 @@ func UpdateAccountBalance(_ *config.PooledConnection, addr common.Address, balan
 
 // ── Bulk account restore ─────────────────────────────────────────────────────
 
-// BatchRestoreAccounts writes a batch of KV entries as accounts.
+// BatchRestoreAccounts applies a batch of KV entries as accounts.
 // entries is []struct{Key string; Value []byte} — each Value is a JSON-encoded
-// Account.  LWW semantics: newer UpdatedAt wins (handled by storeAccount).
+// Account. EVERY entry routes through mergeAccountForWrite (merge_account.go)
+// — the single pure decision point for LWW ordering (unit-normalized
+// timestamps), identity-field preservation, and monotonic counters (F1–F6).
 func BatchRestoreAccounts(_ context.Context, _ *config.PooledConnection, entries []struct {
 	Key   string
 	Value []byte
 }) error {
+	if len(entries) == 0 {
+		return fmt.Errorf("entries cannot be empty")
+	}
 	for i, e := range entries {
-		var acc Account
-		if err := json.Unmarshal(e.Value, &acc); err != nil {
+		if e.Key == "" || e.Value == nil {
+			return fmt.Errorf("invalid entry (empty key or nil value)")
+		}
+		var incoming Account
+		if err := json.Unmarshal(e.Value, &incoming); err != nil {
 			return fmt.Errorf("BatchRestoreAccounts[%d] key=%s: unmarshal: %w", i, e.Key, err)
 		}
-		if acc.Address == (common.Address{}) {
+		if incoming.Address == (common.Address{}) {
 			continue // skip malformed entries
 		}
-		if err := storeAccount(nil, &acc); err != nil {
+
+		// Read existing state for the merge (nil = new account).
+		var existing *Account
+		if cur, err := GetAccount(nil, incoming.Address); err == nil && cur != nil {
+			existing = cur
+		}
+
+		merged, shouldWrite := mergeAccountForWrite(existing, incoming)
+		if !shouldWrite {
+			continue // existing state wins LWW — do not clobber
+		}
+		if err := storeAccount(nil, &merged); err != nil {
 			return fmt.Errorf("BatchRestoreAccounts[%d] key=%s: store: %w", i, e.Key, err)
 		}
 	}

@@ -24,6 +24,7 @@ import (
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/helper"
 	"gossipnode/messaging/BlockProcessing"
@@ -327,7 +328,7 @@ func HandleBlockStream(stream network.Stream) {
 
 			// Process all transactions in the block atomically with rollback capability.
 			// Receiver nodes discard the deployments slice — only the sequencer propagates contracts.
-			if _, err := BlockProcessing.ProcessBlockTransactions(msg.Block, nil, true); err != nil {
+			if err := BlockProcessing.ProcessBlockTransactions(context.Background(), msg.Block, nil); err != nil {
 				broadcastLogger().Error(ctx, "Block processing failed - not storing block", err,
 					ion.String("block_hash", msg.Block.BlockHash.Hex()))
 				return fmt.Errorf("block processing failed - not storing block: %w", err)
@@ -342,6 +343,22 @@ func HandleBlockStream(stream network.Stream) {
 					ion.String("block_hash", msg.Block.BlockHash.Hex()))
 				return fmt.Errorf("failed to store block in database: %w", err)
 			}
+
+			// Full block stored + processed → advance the tip marker.
+			// Monotonic: a replayed/out-of-order block can never regress it.
+			// StoreZKBlock no longer writes the marker itself (skeleton safety).
+			if _, _, err := DB_OPs.UpdateLatestBlockMonotonic(msg.Block.BlockNumber); err != nil {
+				broadcastLogger().Warn(context.Background(), "latest_block monotonic update failed (non-fatal: ReconcileBlockNumber heals forward)",
+					ion.String("error", err.Error()),
+					ion.Uint64("block_number", msg.Block.BlockNumber))
+			}
+
+			// Index the block's txs into the SQLite address index. Previously only
+			// the sequencer path (broadcast.go) indexed live — pubsub-received
+			// blocks on non-sequencer nodes were never indexed between catchups,
+			// so eth_getTransactionsByAddress drifted stale with IsReady still
+			// true. Async + drop-on-overflow; drops heal via the next gap scan.
+			txindex.IndexBlockAsync(msg.Block)
 
 			// Store block message metadata
 			if err := storeMessageInDB(msg); err != nil { // msg is a copy, but it's fine

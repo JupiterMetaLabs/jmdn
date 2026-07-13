@@ -15,7 +15,6 @@ import (
 	"gossipnode/SmartContract"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
-	"gossipnode/messaging/BlockProcessing"
 	GROHelper "gossipnode/messaging/common"
 	"gossipnode/metrics"
 
@@ -111,99 +110,11 @@ func markContractMessageProcessed(id string) {
 	contractFilter.Add([]byte(id))
 }
 
-// PropagateContractDeployments builds a ContractMessage for each deployment and
-// gossips it to every currently-connected peer.
-// Called as a goroutine (fire-and-forget) exclusively from the sequencer path.
-func PropagateContractDeployments(h host.Host, deployments []BlockProcessing.ContractDeploymentInfo) {
-	if err := ensureContractLocalGRO(); err != nil {
-		contractLogger().Error(context.Background(), "ContractPropagation: failed to initialize LocalGRO", err)
-		return
-	}
-
-	peers := h.Network().Peers()
-	if len(peers) == 0 {
-		contractLogger().Warn(context.Background(), "ContractPropagation: no peers to propagate to")
-		return
-	}
-
-	senderID := h.ID().String()
-	now := time.Now().UTC().Unix()
-
-	for _, dep := range deployments {
-		msg := ContractMessage{
-			Sender:          senderID,
-			Timestamp:       now,
-			Type:            "contract_deployed",
-			Hops:            0,
-			ContractAddress: dep.ContractAddress,
-			Deployer:        dep.Deployer,
-			TxHash:          dep.TxHash,
-			BlockNumber:     dep.BlockNumber,
-			GasUsed:         dep.GasUsed,
-		}
-		msg.ID = generateContractMessageID(senderID, dep.ContractAddress, dep.BlockNumber)
-
-		// Populate ABI from the local registry if available.
-		if abi, ok := SmartContract.GetContractABI(dep.ContractAddress); ok {
-			msg.ABI = abi
-		}
-
-		markContractMessageProcessed(msg.ID)
-
-		msgBytes, err := json.Marshal(msg)
-		if err != nil {
-			contractLogger().Error(context.Background(), "ContractPropagation: failed to marshal message", err,
-				ion.String("contract", dep.ContractAddress.Hex()))
-			continue
-		}
-		msgBytes = append(msgBytes, '\n')
-
-		wg, err := ContractLocalGRO.NewFunctionWaitGroup(context.Background(), GRO.ContractForwardWG)
-		if err != nil {
-			contractLogger().Error(context.Background(), "ContractPropagation: failed to create wait group", err)
-			continue
-		}
-
-		var successCount int
-		var successMu sync.Mutex
-
-		for _, peerID := range peers {
-			p := peerID
-			if err := ContractLocalGRO.Go(GRO.ContractPropagationThread, func(ctx context.Context) error {
-				ctxT, cancel := context.WithTimeout(ctx, 5*time.Second)
-				defer cancel()
-				stream, err := h.NewStream(ctxT, p, config.ContractPropagationProtocol)
-				if err != nil {
-					contractLogger().Debug(ctx, "ContractPropagation: failed to open stream",
-						ion.Err(err), ion.String("peer", p.String()))
-					return err
-				}
-				defer stream.Close()
-				if _, err := stream.Write(msgBytes); err != nil {
-					contractLogger().Debug(ctx, "ContractPropagation: failed to write message",
-						ion.Err(err), ion.String("peer", p.String()))
-					return err
-				}
-				successMu.Lock()
-				successCount++
-				successMu.Unlock()
-				metrics.MessagesSentCounter.WithLabelValues("contract", p.String()).Inc()
-				return nil
-			}, local.AddToWaitGroup(GRO.ContractForwardWG)); err != nil {
-				contractLogger().Error(context.Background(), "ContractPropagation: failed to start goroutine", err,
-				ion.String("peer", p.String()))
-			}
-		}
-
-		wg.Wait()
-
-		contractLogger().Info(context.Background(), "Contract deployment propagated",
-			ion.String("contract", dep.ContractAddress.Hex()),
-			ion.Uint64("block", dep.BlockNumber),
-			ion.Int("peers_sent", successCount),
-			ion.Int("peers_total", len(peers)))
-	}
-}
+// NOTE(F4 merge): PropagateContractDeployments (push propagation) was retired
+// with main's per-tx-atomic Processing.go rewrite — processTransaction no
+// longer returns ContractDeploymentInfo. Receivers rely on the pull-on-demand
+// path (PrefetchMissingContracts) below; re-introduce push propagation from
+// the sequencer if deployment latency becomes an issue.
 
 // HandleContractStream is the libp2p stream handler registered on all nodes for
 // the ContractPropagationProtocol.  It deduplicates via Bloom filter, writes the

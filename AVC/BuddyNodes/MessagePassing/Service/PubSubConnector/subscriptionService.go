@@ -9,11 +9,13 @@ import (
 	"sync"
 	"time"
 
+	"gossipnode/DB_OPs"
 	Publisher "gossipnode/Pubsub/Publish"
 	Connector "gossipnode/Pubsub/Subscription"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 	AVCStruct "gossipnode/config/PubSubMessages"
+	"gossipnode/l1finality"
 	log "gossipnode/logging"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
@@ -203,6 +205,18 @@ func (s *SubscriptionService) handleReceivedMessage(logger_ctx context.Context, 
 			ion.String("topic", config.PubSub_ConsensusChannel),
 			ion.String("function", "SubscriptionService.handleReceivedMessage"))
 		return s.handleBFTCommitVote(logger_ctx, msg)
+
+	case config.Type_L1Commit:
+		if msg.Sender == s.pubSub.Host.ID() {
+			return nil
+		}
+		return s.handleL1Commit(logger_ctx, msg)
+
+	case config.Type_L1CommitRange:
+		if msg.Sender == s.pubSub.Host.ID() {
+			return nil
+		}
+		return s.handleL1CommitRange(logger_ctx, msg)
 
 	default:
 		logger().Info(logger_ctx, "Received message with unknown stage:",
@@ -763,4 +777,90 @@ func (s *SubscriptionService) InitBFTHandlers() {
 	if s.bftHandlers == nil {
 		s.bftHandlers = make(map[string]BFTMessageHandler)
 	}
+}
+
+// handleL1Commit updates the local block with L1 finality data received via gossip.
+// Apply logic is shared with the HTTP ingestion path and the Service package's
+// identical handler via the l1finality package — see its doc comment.
+func (s *SubscriptionService) handleL1Commit(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
+	var p l1finality.CommitPayload
+	if err := json.Unmarshal([]byte(msg.Data.Message), &p); err != nil {
+		logger().Error(logger_ctx, "Failed to parse L1 commit payload", err,
+			ion.String("function", "PubSubConnector.handleL1Commit"))
+		return fmt.Errorf("handleL1Commit: parse error: %w", err)
+	}
+
+	if err := p.Validate(); err != nil {
+		logger().Info(logger_ctx, "Skipping L1 commit: "+err.Error(),
+			ion.String("function", "PubSubConnector.handleL1Commit"))
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(logger_ctx, 15*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		logger().Error(logger_ctx, "DB connection failed for L1 commit update", err,
+			ion.String("function", "PubSubConnector.handleL1Commit"))
+		return fmt.Errorf("handleL1Commit: db connection: %w", err)
+	}
+
+	found, err := l1finality.ApplyCommit(conn, p)
+	if err != nil {
+		logger().Error(logger_ctx, "Failed to update block with L1 finality", err,
+			ion.Int64("block_number", int64(p.BlockNumber)),
+			ion.String("function", "PubSubConnector.handleL1Commit"))
+		return fmt.Errorf("handleL1Commit: update block %d: %w", p.BlockNumber, err)
+	}
+	if !found {
+		logger().Info(logger_ctx, "Block not found for L1 commit update (non-fatal)",
+			ion.Int64("block_number", int64(p.BlockNumber)),
+			ion.String("function", "PubSubConnector.handleL1Commit"))
+		return nil // block not on this peer yet — non-fatal
+	}
+
+	logger().Info(logger_ctx, "L1 finality applied from gossip",
+		ion.Int64("block_number", int64(p.BlockNumber)),
+		ion.String("l1_tx_hash", p.L1TxHash),
+		ion.String("function", "PubSubConnector.handleL1Commit"))
+	return nil
+}
+
+// handleL1CommitRange updates a range of blocks with shared L1 finality data received
+// via gossip. Apply logic is shared via the l1finality package (see handleL1Commit above).
+func (s *SubscriptionService) handleL1CommitRange(logger_ctx context.Context, msg *AVCStruct.GossipMessage) error {
+	var p l1finality.RangePayload
+	if err := json.Unmarshal([]byte(msg.Data.Message), &p); err != nil {
+		logger().Error(logger_ctx, "Failed to parse L1 commit range payload", err,
+			ion.String("function", "PubSubConnector.handleL1CommitRange"))
+		return fmt.Errorf("handleL1CommitRange: parse error: %w", err)
+	}
+
+	if err := p.Validate(); err != nil {
+		logger().Info(logger_ctx, "Skipping L1 commit range: "+err.Error(),
+			ion.String("function", "PubSubConnector.handleL1CommitRange"))
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(logger_ctx, 60*time.Second)
+	defer cancel()
+
+	conn, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
+	if err != nil {
+		logger().Error(logger_ctx, "DB connection failed for L1 commit range update", err,
+			ion.String("function", "PubSubConnector.handleL1CommitRange"))
+		return fmt.Errorf("handleL1CommitRange: db connection: %w", err)
+	}
+
+	updated, skipped := l1finality.ApplyRange(conn, p)
+
+	logger().Info(logger_ctx, "L1 range finality applied from gossip",
+		ion.Int64("start_block", int64(p.StartBlock)),
+		ion.Int64("end_block", int64(p.EndBlock)),
+		ion.String("l1_tx_hash", p.L1TxHash),
+		ion.Int64("updated", int64(updated)),
+		ion.Int64("skipped", int64(skipped)),
+		ion.String("function", "PubSubConnector.handleL1CommitRange"))
+	return nil
 }

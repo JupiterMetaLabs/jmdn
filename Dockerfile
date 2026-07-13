@@ -5,7 +5,7 @@
 # Run:     docker run -d --name jmdn \
 #            -v $(pwd)/jmdn.yaml:/etc/jmdn/jmdn.yaml:ro \
 #            -v jmdn-data:/opt/jmdn \
-#            -p 8545:8545 -p 8546:8546 -p 15052:15052 \
+#            -p 15000:15000 -p 15000:15000/udp -p 8545:8545 -p 8546:8546 \
 #            ghcr.io/jupitermetalabs/jmdn:latest
 # Docs:    See DOCKER.md § 5 for full docker run reference
 # =============================================================================
@@ -115,13 +115,15 @@ RUN chmod +x /usr/local/bin/start_jmdn_wrapper.sh \
 # the node generate its own peer identity.
 
 # Expose ports per jmdn_default.yaml (localhost-bound ports excluded)
+# 15000 - P2P gossip (LibP2P)      TCP + UDP/QUIC    must be public — see PORTS.md
+# 15001 - Yggdrasil direct-msg     TCP only          not wired up in this image yet — see PORTS.md
 # 8090  - Explorer API             (ports.api)       disabled by default; set ports.api: 8090 in jmdn.yaml
-# 15050 - Block generation         (ports.blockgen)  disabled by default
-# 15055 - Block propagation gRPC   (ports.blockgrpc) disabled by default
-# 15052 - DID service              (ports.did)
+# 15050 - Block generation         (ports.blockgen)  not exposed by default — see PORTS.md
+# 15055 - Block propagation gRPC   (ports.blockgrpc) not exposed by default — see PORTS.md
+# 15052 - DID service              (ports.did)       not exposed by default — RegisterDID has no auth, see PORTS.md
 # 8545  - Facade / JSON-RPC        (ports.facade)
 # 8546  - WebSocket                (ports.ws)
-EXPOSE 8090 15050 15055 15052 8545 8546
+EXPOSE 15000 15000/udp 8090 15050 15055 15052 8545 8546
 
 # Health check against Explorer API (ports.api).
 # API is disabled by default — enable by setting ports.api: 8090 in jmdn.yaml.

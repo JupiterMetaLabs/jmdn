@@ -173,3 +173,13 @@ func (b *thebeBackend) GetBlocksByRewardAddress(ctx context.Context, address str
 	}
 	return recs, nil
 }
+
+// PutSyncKV / GetSyncKV expose the gateway's durable sync-state KV
+// (tx markers, applied anchor, latest_block marker — F-train modules).
+func (b *thebeBackend) PutSyncKV(key string, value []byte) error {
+	return b.gw.PutSyncKV(key, value)
+}
+
+func (b *thebeBackend) GetSyncKV(key string) ([]byte, error) {
+	return b.gw.GetSyncKV(key)
+}

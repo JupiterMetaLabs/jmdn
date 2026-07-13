@@ -5,8 +5,8 @@
 // ALGORITHM (reverse delta):
 //   balance_at(N) = latest_balance − Σ delta(addr, block) for blocks (N+1 .. tip)
 //
-//   Per transaction, mirroring FastsyncV2/deltas.go (reconciliation semantics —
-//   the two MUST stay in sync so historical balances agree with reconciled ones):
+//   Per transaction, using the consensus fee formula (config.GasFee — F1),
+//   the same one live processing and reconciliation use:
 //     addr == sender   → −value −gasFee        (reverse: add back)
 //     addr == receiver → +value                (reverse: subtract)
 //     addr == coinbase → +gasFee/2 + remainder (reverse: subtract)
@@ -17,8 +17,8 @@
 //   for the sequencer/coinbase address over deep history — bounded by
 //   MaxBalanceLookback.
 //
-// DO NOT: change gas-fee math here without changing FastsyncV2/deltas.go and
-//         messaging/BlockProcessing (Processing.go) in the same commit.
+// DO NOT: derive fees locally — config.GasFee is the single consensus
+//         formula (F1). Recorded gas_fee_wei wins when present.
 
 package DB_OPs
 
@@ -150,5 +150,5 @@ func gasFeeForTx(recorded string, tx *config.Transaction) *big.Int {
 			return v
 		}
 	}
-	return config.GasFee(tx)
+	return config.GasFee(tx.Type, tx.GasLimit, tx.GasPrice, tx.MaxFee, tx.MaxPriorityFee)
 }

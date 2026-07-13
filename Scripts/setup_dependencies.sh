@@ -20,6 +20,10 @@
 #   - FreeBSD
 #
 # Changelog:
+#   - 2026-07-01: Added --redis (install + idempotent password setup, stored
+#     in ${JMDN_ETC}/redis.env). Reuses pkg_install/_map_package_name and
+#     svc_enable/svc_restart from lib/platform.sh instead of duplicating
+#     per-platform package/service logic.
 #   - 2025-03-02: Added cross-platform support for Linux, macOS, and FreeBSD
 #   - 2025-03-02: Integrated platform.sh for shared helpers and detection
 #   - 2025-03-02: Added support for pacman, apk, brew, pkg managers
@@ -124,6 +128,9 @@ else
 			;;
 		--yggdrasil)
 			INSTALL_YGG=true
+			;;
+		--redis)
+			INSTALL_REDIS=true
 			;;
 		--all)
 			INSTALL_GO=true

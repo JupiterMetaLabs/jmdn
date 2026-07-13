@@ -138,3 +138,12 @@ func (s *cachedBlockStore) GetL1FinalityForBlock(ctx context.Context, blockNumbe
 func (s *cachedBlockStore) GetBlocksByRewardAddress(ctx context.Context, address string, fromBlock, toBlock uint64) ([]*thebegateway.BlockRecord, error) {
 	return s.inner.GetBlocksByRewardAddress(ctx, address, fromBlock, toBlock)
 }
+
+// PutSyncKV / GetSyncKV delegate directly — sync-state keys are not cached.
+func (s *cachedBlockStore) PutSyncKV(key string, value []byte) error {
+	return s.inner.PutSyncKV(key, value)
+}
+
+func (s *cachedBlockStore) GetSyncKV(key string) ([]byte, error) {
+	return s.inner.GetSyncKV(key)
+}

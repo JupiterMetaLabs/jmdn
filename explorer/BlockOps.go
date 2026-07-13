@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gossipnode/DB_OPs"
+	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
 	"gossipnode/config/GRO"
 
@@ -601,7 +602,17 @@ func (s *ExplorerServer) getStats(c *gin.Context) {
 		stats.TotalBlocks = latestBlockNumber + 1
 		mu.Unlock()
 
-		// Get total transactions count efficiently
+		// Total transactions: SQLite tx-address index first (local
+		// COUNT(DISTINCT tx_hash) — no immudb round trip). Falls back to the
+		// immudb "tx:" prefix Count when the index is uninitialised or
+		// mid-rebuild (IsReady false → txindex.CountTransactions errors by
+		// design, so a truncated table never reports a partial total).
+		if sqlCount, sqlErr := txindex.CountTransactions(ctx); sqlErr == nil {
+			mu.Lock()
+			stats.TotalTransactions = int64(sqlCount)
+			mu.Unlock()
+			return nil
+		}
 		totalTx, err := DB_OPs.CountTransactions(&s.defaultdb)
 		if err != nil {
 			handleErr(fmt.Errorf("failed to count transactions: %w", err))

@@ -68,12 +68,17 @@ func enqueueRecordsChunked[T any](ctx context.Context, s RedisStreamer, ptype sy
 			errs = append(errs, fmt.Errorf("marshal chunk [%d:%d]: %w", start, end, err))
 			continue
 		}
-		if _, err := s.Enqueue(ctx, accountSyncStream, map[string]any{
+		id, err := s.Enqueue(ctx, accountSyncStream, map[string]any{
 			"type": string(ptype),
 			"data": string(data),
-		}); err != nil {
+		})
+		if err != nil {
 			errs = append(errs, fmt.Errorf("enqueue chunk [%d:%d]: %w", start, end, err))
+			continue
 		}
+		// Record the XADD ID so reconciliation can wait for drain
+		// confirmation before advancing the anchor.
+		noteEnqueuedID(id)
 	}
 	return errors.Join(errs...)
 }
@@ -424,6 +429,10 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 
 	// Convert to wire type for stable JSON serialization.
 	// big.Int.String() produces a decimal string; accountUpdateWire makes the format explicit.
+	// UpdatedAt is stamped HERE (producer side, at update-computation time) and carried
+	// through the stream — it is the LWW ordering key. The drain worker must never
+	// re-stamp it, or replayed stale entries would overwrite newer data.
+	now := time.Now().UTC().UnixNano()
 	wires := make([]accountUpdateWire, len(updates))
 	for i, u := range updates {
 		wires[i] = accountUpdateWire{
@@ -432,6 +441,7 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 			Nonce:       u.Nonce,
 			TxNonce:     u.TxNonce,
 			TxCountSent: u.TxCountSent,
+			UpdatedAt:   now,
 		}
 	}
 
@@ -444,6 +454,54 @@ func (am *account_manager) BatchUpdateAccounts(updates []types.AccountUpdate) er
 	}
 	mgr.EnsureActive()
 	return nil
+}
+
+// EnqueueAppliedTxMarkers enqueues tx_processed markers for RECON-applied txs.
+// MUST be called AFTER the corresponding BatchUpdateAccounts: stream
+// FIFO + the drain's markers-last ordering then guarantee markers never commit
+// before the balances they describe.
+//
+// appliedAt is the producer-side Unix-seconds marker value (must be > 0).
+// Redis-unavailable fallback: writes markers directly — safe, because in that
+// mode BatchUpdateAccounts also wrote its balances directly and synchronously,
+// so the ordering guarantee holds degenerately.
+func EnqueueAppliedTxMarkers(txHashes []string, appliedAt int64) error {
+	if len(txHashes) == 0 {
+		return nil
+	}
+	if appliedAt <= 0 {
+		return fmt.Errorf("EnqueueAppliedTxMarkers: applied_at must be positive, got %d", appliedAt)
+	}
+
+	wires := make([]txMarkerWire, len(txHashes))
+	for i, h := range txHashes {
+		wires[i] = txMarkerWire{Hash: h, AppliedAt: appliedAt}
+	}
+
+	s, mgr := getAccountQueue()
+	if s == nil {
+		log.Printf("[accountqueue] EnqueueAppliedTxMarkers: queue not initialized — writing %d markers directly", len(txHashes))
+		return writeTxMarkersDirect(txHashes, appliedAt)
+	}
+
+	chunks := chunkCount(len(wires))
+	ctx, cancel := context.WithTimeout(context.Background(), enqueueTimeout(chunks))
+	defer cancel()
+	if err := enqueueRecordsChunked(ctx, s, payloadTypeTxMarkers, wires); err != nil {
+		log.Printf("[accountqueue] Redis enqueue failed (%v) — writing %d tx markers directly", err, len(txHashes))
+		return writeTxMarkersDirect(txHashes, appliedAt)
+	}
+	mgr.EnsureActive()
+	return nil
+}
+
+// writeTxMarkersDirect is the Redis-unavailable fallback for marker writes.
+func writeTxMarkersDirect(txHashes []string, appliedAt int64) error {
+	markers := make(map[string]int64, len(txHashes))
+	for _, h := range txHashes {
+		markers[h] = appliedAt
+	}
+	return DB_OPs.WriteTxProcessedMarkers(nil, markers)
 }
 
 // batchUpdateAccountsDirect writes account balance updates synchronously to ThebeDB,
