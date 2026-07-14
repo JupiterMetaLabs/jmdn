@@ -158,8 +158,15 @@ func CheckZKBlockValidation(zkBlock *config.ZKBlock) (bool, error) {
 		}
 	}
 
-	// Load all accounts into the cache at once
-	security_cache.LoadAccounts(txValidationCtx, accountsConn, accountsSet)
+	// Load all accounts into the cache at once — fail-closed on error.
+	if err := security_cache.LoadAccounts(txValidationCtx, accountsConn, accountsSet); err != nil {
+		txValidationSpan.RecordError(err)
+		txValidationSpan.End()
+		span.RecordError(err)
+		logger().Error(traceCtx, "Failed to load accounts into security cache for ZKBlock validation", err,
+			ion.String("function", "Security.CheckZKBlockValidation"))
+		return false, fmt.Errorf("failed to load accounts for block validation: %w", err)
+	}
 
 	validatedCount := 0
 	for i, tx := range zkBlock.Transactions {
@@ -314,23 +321,24 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 		accountsSet.Add(*toAddress)
 	}
 
-	security_cache.LoadAccounts(loggerCtx, accountsConn, accountsSet)
+	// Fail-closed: a DB error here must not be mistaken for "account not found".
+	if err := security_cache.LoadAccounts(loggerCtx, accountsConn, accountsSet); err != nil {
+		span.RecordError(err)
+		logger().Error(traceCtx, "Failed to load accounts into security cache", err,
+			ion.String("function", "Security.AllChecks"))
+		return false, fmt.Errorf("failed to load accounts for validation: %w", err)
+	}
 
-	// Submit-tx only: auto-register an unknown receiver so the tx can proceed.
-	// Consensus path (CheckZKBlockValidation) does NOT do this — it hard-fails on
-	// unknown receivers, which is correct because consensus sees only committed state.
-	if toAddress != nil && security_cache.GetAccount(*toAddress) == nil {
-		did := "did:jmdt:metamask:" + toAddress.Hex()
-		if err := DB_OPs.CreateAccount(accountsConn, did, *toAddress, nil); err != nil {
-			logger().Error(traceCtx, "Failed to auto-register receiver account", err,
-				ion.String("address", toAddress.Hex()),
-				ion.String("function", "Security.AllChecks"))
-			return false, fmt.Errorf("receiver account %s does not exist and could not be registered: %w", toAddress.Hex(), err)
-		}
+	// Submit-tx only: if receiver is unknown, add an in-cache placeholder so the
+	// address-existence and balance-simulation checks inside allChecksWithConn pass.
+	// We do NOT write to DB yet — we only persist after the tx clears ALL checks,
+	// so rejected txs (bad nonce, insufficient balance, etc.) never create DB entries.
+	receiverIsNew := toAddress != nil && security_cache.GetAccount(*toAddress) == nil
+	if receiverIsNew {
 		now := time.Now().UTC().UnixNano()
 		security_cache.RegisterAccount(*toAddress, &DB_OPs.Account{
 			Nonce:       DB_OPs.GenerateARTNonce(),
-			DIDAddress:  did,
+			DIDAddress:  "did:jmdt:metamask:" + toAddress.Hex(),
 			Address:     *toAddress,
 			Balance:     "0",
 			TxNonce:     0,
@@ -339,12 +347,30 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 			CreatedAt:   now,
 			UpdatedAt:   now,
 		})
-		logger().Info(traceCtx, "Auto-registered receiver account on submit",
-			ion.String("address", toAddress.Hex()),
-			ion.String("function", "Security.AllChecks"))
 	}
 
 	result, err := allChecksWithConn(tx, security_cache, mainDBConn, traceCtx)
+
+	// Persist receiver only if the tx passed every check.
+	// Reload from DB after creation so the cache holds the canonical doc
+	// (correct ARTNonce + timestamps) rather than the hand-built placeholder.
+	if result && err == nil && receiverIsNew {
+		did := "did:jmdt:metamask:" + toAddress.Hex()
+		if createErr := DB_OPs.CreateAccount(accountsConn, did, *toAddress, nil); createErr != nil {
+			logger().Error(traceCtx, "Failed to persist auto-registered receiver", createErr,
+				ion.String("address", toAddress.Hex()),
+				ion.String("function", "Security.AllChecks"))
+			// Non-fatal: block processing will create the account at apply time.
+		} else {
+			if actual, getErr := DB_OPs.GetAccount(accountsConn, *toAddress); getErr == nil && actual != nil {
+				security_cache.RegisterAccount(*toAddress, actual)
+			}
+			logger().Info(traceCtx, "Auto-registered receiver account on submit",
+				ion.String("address", toAddress.Hex()),
+				ion.String("did", did),
+				ion.String("function", "Security.AllChecks"))
+		}
+	}
 
 	duration := time.Since(startTime).Seconds()
 	if err != nil {

@@ -28,21 +28,18 @@ func NewSecurityCache() *SecurityCache {
 	}
 }
 
-func (s *SecurityCache) LoadAccounts(ctx context.Context, PooledConnection *config.PooledConnection, accounts *DB_OPs.AccountsSet) *SecurityCache {
+func (s *SecurityCache) LoadAccounts(ctx context.Context, PooledConnection *config.PooledConnection, accounts *DB_OPs.AccountsSet) error {
 	if len(accounts.Accounts) == 0 {
-		return s
+		return nil
 	}
 
-	// 2. Batch get accounts
-	// We pass nil for connection to let GetMultipleAccounts handle pooling internally.
-	// If we wanted to share an external connection, we'd pass it here.
-	// Since this is the entry point, passing nil is appropriate.
 	fetchedAccounts, err := DB_OPs.GetMultipleAccounts(PooledConnection, accounts)
 	if err != nil {
-		return s
+		// Propagate — callers must fail-closed. Swallowing this turns a transient DB
+		// error into "account not found", which can trigger zero-balance overwrites.
+		return err
 	}
 
-	// 3. Update cache
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -52,7 +49,7 @@ func (s *SecurityCache) LoadAccounts(ctx context.Context, PooledConnection *conf
 		}
 	}
 
-	return s
+	return nil
 }
 
 func (s *SecurityCache) Close() {
