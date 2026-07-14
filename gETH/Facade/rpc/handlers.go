@@ -507,21 +507,21 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
-	case "txpool_content":
-		content, err := handler.service.TxPoolContent(ctx)
-		if err != nil {
-			resp, _ := finish(req, nil, err)
-			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-			return resp, err
-		}
-		resp, _ := finish(req, content, nil)
-		// Intentionally not logging the full response — content can be megabytes.
-		var pendingCount int
-		if p, ok := content["pending"].(map[string]map[string]any); ok {
-			pendingCount = len(p)
-		}
-		log.Printf("📤 RPC Response: %s -> [%d pending senders]", req.Method, pendingCount)
-		return resp, nil
+	// txpool_content disabled for now — will be revisited in a future release.
+	// case "txpool_content":
+	// 	content, err := handler.service.TxPoolContent(ctx)
+	// 	if err != nil {
+	// 		resp, _ := finish(req, nil, err)
+	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+	// 		return resp, err
+	// 	}
+	// 	resp, _ := finish(req, content, nil)
+	// 	var pendingCount int
+	// 	if p, ok := content["pending"].(map[string]map[string]any); ok {
+	// 		pendingCount = len(p)
+	// 	}
+	// 	log.Printf("📤 RPC Response: %s -> [%d pending senders]", req.Method, pendingCount)
+	// 	return resp, nil
 
 	default:
 		resp := RespErr(req.ID, -32601, "Method not found")
@@ -730,9 +730,18 @@ func marshalBlock(b *Types.Block, full bool, globalChainID *big.Int) map[string]
 	}
 
 	if full && len(b.Transactions) > 0 {
+		blockHashHex := "0x" + hex.EncodeToString(b.Header.Hash)
+		blockNumHex := "0x" + new(big.Int).SetUint64(b.Header.Number).Text(16)
 		txs := make([]any, len(b.Transactions))
 		for i, tx := range b.Transactions {
-			txs[i] = marshalTx(tx, globalChainID)
+			m := marshalTx(tx, globalChainID)
+			// Override block-context fields with values from the parent block.
+			// Done here rather than mutating the *Types.Tx so this stays safe
+			// if a block cache is added in future.
+			m["blockHash"] = blockHashHex
+			m["blockNumber"] = blockNumHex
+			m["transactionIndex"] = "0x" + new(big.Int).SetUint64(uint64(i)).Text(16)
+			txs[i] = m
 		}
 		result["transactions"] = txs
 	} else if len(b.Transactions) > 0 {
@@ -774,55 +783,76 @@ func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {
 		gasPriceHex = "0x0"
 	}
 
-	result := map[string]any{
-		"hash":     "0x" + hex.EncodeToString(tx.Hash),
-		"from":     "0x" + hex.EncodeToString(tx.From),
-		"to":       to,
-		"input":    "0x" + hex.EncodeToString(tx.Input),
-		"value":    "0x" + new(big.Int).SetBytes(tx.Value).Text(16),
-		"nonce":    "0x" + new(big.Int).SetUint64(tx.Nonce).Text(16),
-		"gas":      "0x" + new(big.Int).SetUint64(tx.Gas).Text(16),
-		"gasPrice": gasPriceHex,
-		"type":     "0x" + new(big.Int).SetUint64(uint64(tx.Type)).Text(16),
-	}
-
-	// EIP-1559 fields (type 2)
-	if tx.Type == 2 {
-		if len(tx.MaxFeePerGas) > 0 {
-			result["maxFeePerGas"] = "0x" + new(big.Int).SetBytes(tx.MaxFeePerGas).Text(16)
-		}
-		if len(tx.MaxPriorityFeePerGas) > 0 {
-			result["maxPriorityFeePerGas"] = "0x" + new(big.Int).SetBytes(tx.MaxPriorityFeePerGas).Text(16)
-		}
-	}
-
 	// chainId — always emit; fall back to global chain ID if not set on the tx
 	chainID := new(big.Int).SetBytes(tx.ChainID)
 	if len(tx.ChainID) == 0 {
 		chainID = globalChainID
 	}
-	result["chainId"] = "0x" + chainID.Text(16)
 
-	// Add optional fields if they exist
-	if len(tx.R) > 0 {
-		result["r"] = "0x" + hex.EncodeToString(tx.R)
-	}
-	if len(tx.S) > 0 {
-		result["s"] = "0x" + hex.EncodeToString(tx.S)
-	}
+	// v/r/s — always emit; zero-value v is valid for EIP-1559 type 2
+	vHex := "0x0"
 	if tx.V > 0 {
-		result["v"] = "0x" + new(big.Int).SetUint64(uint64(tx.V)).Text(16)
+		vHex = "0x" + new(big.Int).SetUint64(uint64(tx.V)).Text(16)
+	}
+	rHex := "0x0"
+	if len(tx.R) > 0 {
+		rHex = "0x" + hex.EncodeToString(tx.R)
+	}
+	sHex := "0x0"
+	if len(tx.S) > 0 {
+		sHex = "0x" + hex.EncodeToString(tx.S)
 	}
 
-	// Add block information if available
-	if tx.BlockNumber != nil {
-		result["blockNumber"] = "0x" + new(big.Int).SetUint64(*tx.BlockNumber).Text(16)
-	}
+	// blockHash/blockNumber/transactionIndex: null for pending, hex for confirmed
+	var blockHash, blockNumber, transactionIndex any
 	if len(tx.BlockHash) > 0 {
-		result["blockHash"] = "0x" + hex.EncodeToString(tx.BlockHash)
+		blockHash = "0x" + hex.EncodeToString(tx.BlockHash)
+	}
+	if tx.BlockNumber != nil {
+		blockNumber = "0x" + new(big.Int).SetUint64(*tx.BlockNumber).Text(16)
 	}
 	if tx.TransactionIndex != nil {
-		result["transactionIndex"] = "0x" + new(big.Int).SetUint64(*tx.TransactionIndex).Text(16)
+		transactionIndex = "0x" + new(big.Int).SetUint64(*tx.TransactionIndex).Text(16)
+	}
+
+	result := map[string]any{
+		"blockHash":        blockHash,
+		"blockNumber":      blockNumber,
+		"transactionIndex": transactionIndex,
+		"hash":             "0x" + hex.EncodeToString(tx.Hash),
+		"from":             "0x" + hex.EncodeToString(tx.From),
+		"to":               to,
+		"nonce":            "0x" + new(big.Int).SetUint64(tx.Nonce).Text(16),
+		"value":            "0x" + new(big.Int).SetBytes(tx.Value).Text(16),
+		"gas":              "0x" + new(big.Int).SetUint64(tx.Gas).Text(16),
+		"gasPrice":         gasPriceHex,
+		"input":            "0x" + hex.EncodeToString(tx.Input),
+		"type":             "0x" + new(big.Int).SetUint64(uint64(tx.Type)).Text(16),
+		"chainId":          "0x" + chainID.Text(16),
+		// accessList added below for type 1/2; omitted for legacy type 0 per spec
+		"v": vHex,
+		"r": rHex,
+		"s": sHex,
+	}
+
+	// EIP-1559 fields (type 2)
+	if tx.Type == 2 {
+		maxFeeHex := "0x0"
+		if len(tx.MaxFeePerGas) > 0 {
+			maxFeeHex = "0x" + new(big.Int).SetBytes(tx.MaxFeePerGas).Text(16)
+		}
+		maxPrioHex := "0x0"
+		if len(tx.MaxPriorityFeePerGas) > 0 {
+			maxPrioHex = "0x" + new(big.Int).SetBytes(tx.MaxPriorityFeePerGas).Text(16)
+		}
+		result["maxFeePerGas"] = maxFeeHex
+		result["maxPriorityFeePerGas"] = maxPrioHex
+		result["accessList"] = []any{}
+		// yParity: recovery bit, same value as v for type 2 (0x0 or 0x1)
+		result["yParity"] = vHex
+	} else if tx.Type == 1 {
+		result["accessList"] = []any{}
+		result["yParity"] = vHex
 	}
 
 	return result
