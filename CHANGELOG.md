@@ -9,18 +9,6 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ## [1.2.2] - 2026-07-14
 
-### Added
-
-**RPC**
-
-- **`txpool_content`** (`gETH/Facade/rpc/handlers.go`,
-  `gETH/Facade/Service/Service.go`). Standard Ethereum txpool inspection
-  method: returns pending transactions grouped by sender and nonce
-  (`{"pending": {from: {nonce: <tx>}}, "queued": {}}`). Backed by the new
-  non-destructive `PeekPendingTransactions` MRE v1 call
-  (`Block/Singleton_RoutingClient.go`), so inspection never removes
-  transactions from the mempool. Capped at 5000 transactions per call.
-
 ### Fixed
 
 **RPC**
