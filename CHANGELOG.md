@@ -7,6 +7,50 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.2] - Unreleased
+
+### Added
+
+**RPC**
+
+- **`txpool_content`** (`gETH/Facade/rpc/handlers.go`,
+  `gETH/Facade/Service/Service.go`). Standard Ethereum txpool inspection
+  method: returns pending transactions grouped by sender and nonce
+  (`{"pending": {from: {nonce: <tx>}}, "queued": {}}`). Backed by the new
+  non-destructive `PeekPendingTransactions` MRE v1 call
+  (`Block/Singleton_RoutingClient.go`), so inspection never removes
+  transactions from the mempool. Capped at 5000 transactions per call.
+
+### Fixed
+
+**Security / Accounts**
+
+- **Fail-closed account loading** (`Security/security_cache.go`,
+  `Security/Security.go`). `LoadAccounts` now propagates database errors
+  instead of swallowing them; both submission validation (`AllChecks`) and
+  block validation (`CheckZKBlockValidation`) reject on load failure rather
+  than treating a transient DB error as "account not found".
+
+- **Zero-balance overwrite guard** (`DB_OPs/account_immuclient.go`).
+  `storeAccount`'s existence pre-check now distinguishes "key not found"
+  from transient errors (timeout, connection drop) and aborts on the
+  latter — previously a failed read fell through to writing a fresh
+  `Balance: "0"` document over a potentially funded account.
+
+- **Unknown receivers auto-registered safely on submit**
+  (`Security/Security.go`). A transaction to a not-yet-registered address
+  no longer fails validation: the receiver is simulated with an in-cache
+  placeholder during checks and persisted to the accounts DB only after
+  the transaction passes every check — rejected transactions never create
+  database entries. The cached copy is re-read from the DB after creation
+  so it always matches the stored document.
+
+- **Submit-time balance precheck uses the consensus gas formula**
+  (`Security/security_cache.go`). `CheckBalanceWithCache` now computes
+  gas cost via `config.GasFee` (EIP-1559 aware, identical to what block
+  execution charges) instead of an ad-hoc `gasPrice → maxFee → 0`
+  fallback.
+
 ## [1.2.1] - 2026-07-08
 
 ### Added
