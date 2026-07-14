@@ -212,6 +212,12 @@ func storeAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 		// returning nil treats it as "success" (idempotent)
 		return nil
 	}
+	if err != ErrNotFound && !strings.Contains(err.Error(), "key not found") && !strings.Contains(err.Error(), "tbtree: key not found") {
+		// Get failed for a reason other than "key not found" (e.g. timeout, connection
+		// drop). Fall-through would write Balance:"0" on top of a funded account —
+		// abort instead.
+		return fmt.Errorf("storeAccount: pre-check Get failed: %w", err)
+	}
 
 	// Create the DID key (e.g., "did:did:example:123")
 	didKey := []byte(DIDPrefix + KeyDoc.DIDAddress)

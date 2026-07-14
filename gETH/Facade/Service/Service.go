@@ -836,3 +836,92 @@ func (s *ServiceImpl) FeeHistory(ctx context.Context, blockCount uint64, newest 
 
 	return result, nil
 }
+
+// TxPoolContent returns all pending transactions from MRE in the standard
+// txpool_content format: {"pending": {from: {nonce: <txobj>}}, "queued": {}}.
+// Uses PeekPendingTransactions (non-destructive) via the MRE v1 gRPC service.
+func (s *ServiceImpl) TxPoolContent(ctx context.Context) (map[string]any, error) {
+	routingClient, err := block.GetRoutingClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("txpool_content: routing client unavailable: %w", err)
+	}
+
+	batch, err := routingClient.PeekPendingTransactions(ctx, 0) // 0 = no limit
+	if err != nil {
+		return nil, fmt.Errorf("txpool_content: %w", err)
+	}
+
+	// Group by sender → nonce → tx object (standard txpool_content shape).
+	pending := make(map[string]map[string]any)
+	for _, tx := range batch.GetTransactions() {
+		from := strings.ToLower(tx.GetFrom())
+		if from == "" {
+			continue
+		}
+		if pending[from] == nil {
+			pending[from] = make(map[string]any)
+		}
+		nonce := fmt.Sprintf("%d", tx.GetNonce())
+		pending[from][nonce] = mempoolTxToRPCObject(tx)
+	}
+
+	return map[string]any{
+		"pending": pending,
+		"queued":  map[string]any{}, // JMDN mempool has no nonce-gap staging
+	}, nil
+}
+
+// mempoolTxToRPCObject converts a proto Transaction to the Ethereum JSON-RPC tx object shape.
+func mempoolTxToRPCObject(tx interface {
+	GetHash() string
+	GetFrom() string
+	GetTo() string
+	GetValue() string
+	GetNonce() uint64
+	GetGasLimit() string
+	GetGasPrice() string
+	GetMaxFee() string
+	GetMaxPriorityFee() string
+	GetData() []byte
+	GetType() uint32
+	GetV() string
+	GetR() string
+	GetS() string
+}) map[string]any {
+	decToHex := func(dec string) string {
+		if dec == "" {
+			return "0x0"
+		}
+		n, ok := new(big.Int).SetString(dec, 10)
+		if !ok || n == nil {
+			return "0x0"
+		}
+		return "0x" + n.Text(16)
+	}
+
+	obj := map[string]any{
+		"blockHash":        nil,
+		"blockNumber":      nil,
+		"transactionIndex": nil,
+		"hash":             tx.GetHash(),
+		"from":             strings.ToLower(tx.GetFrom()),
+		"to":               strings.ToLower(tx.GetTo()),
+		"nonce":            fmt.Sprintf("0x%x", tx.GetNonce()),
+		"gas":              decToHex(tx.GetGasLimit()),
+		"value":            decToHex(tx.GetValue()),
+		"input":            "0x" + hex.EncodeToString(tx.GetData()),
+		"type":             fmt.Sprintf("0x%x", tx.GetType()),
+		"v":                tx.GetV(),
+		"r":                tx.GetR(),
+		"s":                tx.GetS(),
+	}
+
+	if tx.GetType() == 2 {
+		obj["maxFeePerGas"] = decToHex(tx.GetMaxFee())
+		obj["maxPriorityFeePerGas"] = decToHex(tx.GetMaxPriorityFee())
+	} else {
+		obj["gasPrice"] = decToHex(tx.GetGasPrice())
+	}
+
+	return obj
+}

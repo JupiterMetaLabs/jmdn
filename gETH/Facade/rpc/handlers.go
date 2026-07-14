@@ -507,6 +507,17 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
+	case "txpool_content":
+		content, err := handler.service.TxPoolContent(ctx)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		resp, _ := finish(req, content, nil)
+		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		return resp, nil
+
 	default:
 		resp := RespErr(req.ID, -32601, "Method not found")
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
