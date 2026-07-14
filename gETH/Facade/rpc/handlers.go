@@ -830,9 +830,9 @@ func marshalTx(tx *Types.Tx, globalChainID *big.Int) map[string]any {
 		"type":             "0x" + new(big.Int).SetUint64(uint64(tx.Type)).Text(16),
 		"chainId":          "0x" + chainID.Text(16),
 		// accessList added below for type 1/2; omitted for legacy type 0 per spec
-		"v":                vHex,
-		"r":                rHex,
-		"s":                sHex,
+		"v": vHex,
+		"r": rHex,
+		"s": sHex,
 	}
 
 	// EIP-1559 fields (type 2)
