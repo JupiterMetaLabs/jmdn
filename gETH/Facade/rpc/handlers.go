@@ -507,6 +507,22 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
+	case "txpool_content":
+		content, err := handler.service.TxPoolContent(ctx)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		resp, _ := finish(req, content, nil)
+		// Intentionally not logging the full response — content can be megabytes.
+		var pendingCount int
+		if p, ok := content["pending"].(map[string]map[string]any); ok {
+			pendingCount = len(p)
+		}
+		log.Printf("📤 RPC Response: %s -> [%d pending senders]", req.Method, pendingCount)
+		return resp, nil
+
 	default:
 		resp := RespErr(req.ID, -32601, "Method not found")
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
