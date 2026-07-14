@@ -36,4 +36,8 @@ type Service interface {
 	SubscribeLogs(ctx context.Context, q *Types.FilterQuery) (<-chan Types.Log, func(), error)
 	// This is to get the pending transactions - It will be implemented once MRE is ready - // Future
 	SubscribePendingTxs(ctx context.Context) (<-chan string, func(), error)
+
+	// TxPoolContent returns all pending transactions grouped by sender and nonce,
+	// in the standard txpool_content JSON-RPC format.
+	TxPoolContent(ctx context.Context) (map[string]any, error)
 }
