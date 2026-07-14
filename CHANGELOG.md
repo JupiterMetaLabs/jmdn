@@ -23,6 +23,22 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+**RPC**
+
+- **Spec-compliant transaction marshaling** (`gETH/Facade/rpc/handlers.go`).
+  Transaction objects returned by `eth_getBlockByNumber(full=true)` now carry
+  `blockHash`/`blockNumber`/`transactionIndex` from the parent block (injected
+  at marshal time without mutating shared tx objects); pending transactions
+  return these fields as JSON `null`. `v`/`r`/`s` are always emitted (`0x0`
+  when zero — a zero `v` is valid for EIP-1559), `chainId` is always present,
+  and type-2 transactions additionally carry `yParity`, `accessList`, and
+  always-present `maxFeePerGas`/`maxPriorityFeePerGas`, with `gasPrice`
+  reported as the effective gas price (`min(maxFeePerGas, baseFee + tip)`).
+  `accessList`/`yParity` are correctly omitted for legacy (type 0)
+  transactions. Locked down by golden-shape tests
+  (`gETH/Facade/rpc/marshal_test.go`), including a signer-level proof that
+  type-2 `V` is the raw parity bit, keeping the `yParity` mapping valid. (#75)
+
 **Security / Accounts**
 
 - **Fail-closed account loading** (`Security/security_cache.go`,
