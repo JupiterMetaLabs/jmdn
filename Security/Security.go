@@ -316,6 +316,34 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 
 	security_cache.LoadAccounts(loggerCtx, accountsConn, accountsSet)
 
+	// Submit-tx only: auto-register an unknown receiver so the tx can proceed.
+	// Consensus path (CheckZKBlockValidation) does NOT do this — it hard-fails on
+	// unknown receivers, which is correct because consensus sees only committed state.
+	if toAddress != nil && security_cache.GetAccount(*toAddress) == nil {
+		did := "did:jmdt:metamask:" + toAddress.Hex()
+		if err := DB_OPs.CreateAccount(accountsConn, did, *toAddress, nil); err != nil {
+			logger().Error(traceCtx, "Failed to auto-register receiver account", err,
+				ion.String("address", toAddress.Hex()),
+				ion.String("function", "Security.AllChecks"))
+			return false, fmt.Errorf("receiver account %s does not exist and could not be registered: %w", toAddress.Hex(), err)
+		}
+		now := time.Now().UTC().UnixNano()
+		security_cache.RegisterAccount(*toAddress, &DB_OPs.Account{
+			Nonce:       DB_OPs.GenerateARTNonce(),
+			DIDAddress:  did,
+			Address:     *toAddress,
+			Balance:     "0",
+			TxNonce:     0,
+			TxCountSent: 0,
+			AccountType: "user",
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		})
+		logger().Info(traceCtx, "Auto-registered receiver account on submit",
+			ion.String("address", toAddress.Hex()),
+			ion.String("function", "Security.AllChecks"))
+	}
+
 	result, err := allChecksWithConn(tx, security_cache, mainDBConn, traceCtx)
 
 	duration := time.Since(startTime).Seconds()

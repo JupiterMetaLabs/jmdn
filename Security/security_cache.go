@@ -108,6 +108,15 @@ func (s *SecurityCache) GetAccount(address common.Address) *DB_OPs.Account {
 	return s.accounts[address.Hex()]
 }
 
+// RegisterAccount inserts an account directly into the cache.
+// Used by the submit-tx path to register a newly created receiver account
+// without an extra DB round-trip.
+func (s *SecurityCache) RegisterAccount(address common.Address, account *DB_OPs.Account) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accounts[address.Hex()] = account
+}
+
 // CheckAddressExistWithCache checks if sender (and receiver, if not a contract deployment) exist in the cache.
 // tx.To == nil is valid for contract deployments — only the sender is required to exist.
 func (s *SecurityCache) CheckAddressExistWithCache(tx *config.Transaction, traceCtx context.Context) (bool, error) {
@@ -151,19 +160,9 @@ func (s *SecurityCache) CheckBalanceWithCache(tx *config.Transaction, traceCtx c
 		return false, fmt.Errorf("invalid balance format for account %s", tx.From.Hex())
 	}
 
-	// Calculate Total Cost (Value + Gas)
-	// Type 2 (EIP-1559) has nil GasPrice — use MaxFee as worst-case gas price.
+	// Calculate Total Cost (Value + Gas) using consensus formula (EIP-1559 aware).
 	cost := new(big.Int).Set(tx.Value) // Value to transfer
-	var effectiveGasPrice *big.Int
-	switch {
-	case tx.GasPrice != nil:
-		effectiveGasPrice = tx.GasPrice
-	case tx.MaxFee != nil:
-		effectiveGasPrice = tx.MaxFee
-	default:
-		effectiveGasPrice = new(big.Int) // 0 — will fail balance check if value > balance
-	}
-	gasCost := new(big.Int).Mul(new(big.Int).SetUint64(tx.GasLimit), effectiveGasPrice)
+	gasCost := config.GasFee(tx.Type, tx.GasLimit, tx.GasPrice, tx.MaxFee, tx.MaxPriorityFee)
 	totalCost := new(big.Int).Add(cost, gasCost)
 
 	// Check sufficiency
