@@ -920,9 +920,9 @@ func mempoolTxToRPCObject(tx interface {
 		"value":            decToHex(tx.GetValue()),
 		"input":            "0x" + hex.EncodeToString(tx.GetData()),
 		"type":             fmt.Sprintf("0x%x", tx.GetType()),
-		"v":                decToHex(tx.GetV()),
-		"r":                decToHex(tx.GetR()),
-		"s":                decToHex(tx.GetS()),
+		"v":                tx.GetV(), // already "0x…" hex — see getSignatureString, gRPCclient.go:756
+		"r":                tx.GetR(),
+		"s":                tx.GetS(),
 	}
 
 	if tx.GetType() == 2 {
