@@ -515,7 +515,12 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 			return resp, err
 		}
 		resp, _ := finish(req, content, nil)
-		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+		// Intentionally not logging the full response — content can be megabytes.
+		var pendingCount int
+		if p, ok := content["pending"].(map[string]map[string]any); ok {
+			pendingCount = len(p)
+		}
+		log.Printf("📤 RPC Response: %s -> [%d pending senders]", req.Method, pendingCount)
 		return resp, nil
 
 	default:

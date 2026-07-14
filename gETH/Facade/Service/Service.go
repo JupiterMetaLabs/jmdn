@@ -846,7 +846,10 @@ func (s *ServiceImpl) TxPoolContent(ctx context.Context) (map[string]any, error)
 		return nil, fmt.Errorf("txpool_content: routing client unavailable: %w", err)
 	}
 
-	batch, err := routingClient.PeekPendingTransactions(ctx, 0) // 0 = no limit
+	// Cap at 5000. MRE rejects limit <= 0, and pre-allocates make([]*Tx, 0, limit),
+	// so MaxInt32 would be a memory bomb. True "unbounded" semantics would need an
+	// MRE-side change to treat limit=0 as capped-prealloc; use this constant until then.
+	batch, err := routingClient.PeekPendingTransactions(ctx, 5000)
 	if err != nil {
 		return nil, fmt.Errorf("txpool_content: %w", err)
 	}
@@ -899,21 +902,27 @@ func mempoolTxToRPCObject(tx interface {
 		return "0x" + n.Text(16)
 	}
 
+	// Contract creations have an empty "to" field; geth renders those as null.
+	var to any
+	if t := tx.GetTo(); t != "" {
+		to = strings.ToLower(t)
+	}
+
 	obj := map[string]any{
 		"blockHash":        nil,
 		"blockNumber":      nil,
 		"transactionIndex": nil,
 		"hash":             tx.GetHash(),
 		"from":             strings.ToLower(tx.GetFrom()),
-		"to":               strings.ToLower(tx.GetTo()),
+		"to":               to,
 		"nonce":            fmt.Sprintf("0x%x", tx.GetNonce()),
 		"gas":              decToHex(tx.GetGasLimit()),
 		"value":            decToHex(tx.GetValue()),
 		"input":            "0x" + hex.EncodeToString(tx.GetData()),
 		"type":             fmt.Sprintf("0x%x", tx.GetType()),
-		"v":                tx.GetV(),
-		"r":                tx.GetR(),
-		"s":                tx.GetS(),
+		"v":                decToHex(tx.GetV()),
+		"r":                decToHex(tx.GetR()),
+		"s":                decToHex(tx.GetS()),
 	}
 
 	if tx.GetType() == 2 {
