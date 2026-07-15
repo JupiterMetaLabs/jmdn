@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 """
 migrate_immudb_to_thebe.py
 ──────────────────────────
@@ -18,7 +19,12 @@ OPTIONS:
   --immudb-pass    ImmuDB password      (default: immudb)
   --main-db        ImmuDB main DB name  (default: defaultdb)
   --accounts-db    ImmuDB accounts DB   (default: accountsdb)
-  --pg-dsn         Postgres DSN         (default: postgres://jmdn:jmdndefault@127.0.0.1:5430/jmdn)
+  --pg-dsn         Full Postgres DSN (overrides individual flags; skips prompts)
+  --pg-host        Postgres host        (default: 127.0.0.1)
+  --pg-port        Postgres port        (default: 5430)
+  --pg-user        Postgres user        (default: jmdn)
+  --pg-pass        Postgres password    (prompted if not supplied)
+  --pg-dbname      Postgres database    (default: jmdn)
   --batch-size     Keys per scan batch  (default: 500)
   --start-block    Resume from block N  (default: 0)
   --skip-blocks    Skip block/tx migration
@@ -27,6 +33,24 @@ OPTIONS:
 
 SCHEMA TABLES WRITTEN:
   accounts, blocks, snapshots, transactions, zk_proofs
+
+MARKERS / ANCHOR / TIP (F-train state — NOT migrated by this script):
+  tx_processed / block_processed markers, the applied anchor, and the
+  latest_block marker live in ThebeDB's BadgerDB sync-state KV, which this
+  script cannot write. This is SAFE for a one-shot migration:
+    - keep the node's local SQLite files (DB/gossipnode.db, txindex) in place;
+      on first boot the node seeds the applied anchor from the legacy
+      fastsync:last_reconciled_block value (SeedAppliedAnchor, capped at the
+      local tip by CapAnchorTarget);
+    - the seeded anchor excludes the migrated (marker-less) history from
+      reconciliation, so it is never re-applied;
+    - the latest_block marker rebuilds monotonically from the first
+      full-block write; the SQL tip read (MAX(block_number)) is correct
+      immediately after migration.
+  Do NOT delete the node's SQLite state before its first post-migration boot —
+  that discards the anchor seed and re-opens the whole history to recon
+  (bounded only by tx markers, which do not exist for migrated blocks).
+
 """
 
 import argparse
@@ -59,7 +83,14 @@ def parse_args():
     p.add_argument("--immudb-pass",   default="immudb")
     p.add_argument("--main-db",       default="defaultdb")
     p.add_argument("--accounts-db",   default="accountsdb")
-    p.add_argument("--pg-dsn",        default="postgres://jmdn:jmdndefault@127.0.0.1:5430/jmdn")
+    p.add_argument("--pg-dsn",        default=None,
+                   help="Full Postgres DSN (overrides individual --pg-* flags)")
+    p.add_argument("--pg-host",       default="127.0.0.1")
+    p.add_argument("--pg-port",       default=5430, type=int)
+    p.add_argument("--pg-user",       default="jmdn")
+    p.add_argument("--pg-pass",       default=None,
+                   help="Postgres password (prompted if not supplied)")
+    p.add_argument("--pg-dbname",     default="jmdn")
     p.add_argument("--batch-size",    default=500, type=int)
     p.add_argument("--start-block",   default=0, type=int)
     p.add_argument("--skip-blocks",   action="store_true")
@@ -148,14 +179,16 @@ def ensure_schema(conn):
     """Create tables if they don't exist (idempotent DDL from thebeprofile)."""
     ddl = """
     CREATE TABLE IF NOT EXISTS accounts (
-        address      CHAR(42)     PRIMARY KEY,
-        did_address  TEXT         NOT NULL UNIQUE,
-        balance_wei  VARCHAR(30)  NOT NULL DEFAULT '0',
-        nonce        VARCHAR(30)  NOT NULL DEFAULT '0',
-        account_type SMALLINT     NOT NULL DEFAULT 0,
-        metadata     JSONB        NOT NULL DEFAULT '{}'::jsonb,
-        created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-        updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        address       CHAR(42)     PRIMARY KEY,
+        did_address   TEXT         NOT NULL UNIQUE,
+        balance_wei   VARCHAR(30)  NOT NULL DEFAULT '0',
+        nonce         VARCHAR(30)  NOT NULL DEFAULT '0',
+        tx_nonce      BIGINT       NOT NULL DEFAULT 0,
+        tx_count_sent BIGINT       NOT NULL DEFAULT 0,
+        account_type  SMALLINT     NOT NULL DEFAULT 0,
+        metadata      JSONB        NOT NULL DEFAULT '{}'::jsonb,
+        created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS blocks (
@@ -196,6 +229,7 @@ def ensure_schema(conn):
         gas_price_wei        VARCHAR(30),
         max_fee_wei          VARCHAR(30),
         max_priority_fee_wei VARCHAR(30),
+        gas_fee_wei          NUMERIC(78,0) NOT NULL DEFAULT 0,
         data                 BYTEA,
         access_list          JSONB         NOT NULL DEFAULT '[]'::jsonb,
         sig_v                BIGINT        NOT NULL DEFAULT 0,
@@ -205,6 +239,14 @@ def ensure_schema(conn):
         CONSTRAINT fk_txn_snapshot
             FOREIGN KEY (block_number) REFERENCES snapshots(block_number),
         CONSTRAINT uq_txn_block_index UNIQUE (block_number, tx_index)
+    );
+
+    CREATE TABLE IF NOT EXISTS l1_finality (
+        confirmation    CHAR(66)     PRIMARY KEY,
+        l1_block_number BIGINT       NOT NULL DEFAULT 0,
+        block_numbers   BIGINT[]     NOT NULL,
+        created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        metadata        JSONB
     );
 
     CREATE TABLE IF NOT EXISTS zk_proofs (
@@ -234,13 +276,22 @@ def to_ts(value) -> datetime:
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
         except Exception:
             return datetime.now(timezone.utc)
-    # Numeric: detect scale by magnitude
+    # Numeric: detect scale by magnitude. MUST mirror DB_OPs/merge_account.go
+    # normalizeUpdatedAtNanos exactly — stored UpdatedAt values are mixed-unit
+    # (live executor: seconds; sync paths: nanos), and a threshold mismatch
+    # here rewrites LWW history for migrated accounts.
     v = int(value)
-    if v > 1_000_000_000_000_000:   # nanoseconds
-        v //= 1_000_000_000
-    elif v > 1_000_000_000_000:     # milliseconds
-        v //= 1_000
-    return datetime.fromtimestamp(v, tz=timezone.utc)
+    if v <= 0:
+        return datetime.now(timezone.utc)
+    if v < 100_000_000_000:                 # < 1e11 → seconds (until ~year 5138)
+        ns = v * 1_000_000_000
+    elif v < 100_000_000_000_000:           # < 1e14 → milliseconds
+        ns = v * 1_000_000
+    elif v < 100_000_000_000_000_000:       # < 1e17 → microseconds
+        ns = v * 1_000
+    else:                                   # nanoseconds
+        ns = v
+    return datetime.fromtimestamp(ns / 1_000_000_000, tz=timezone.utc)
 
 
 def hex_pad(h, length=66) -> str:
@@ -339,6 +390,9 @@ def migrate_blocks(immu_main, pg_conn, start_block: int, batch_size: int, dry_ru
         status_str   = b.get("status", "confirmed")
         status       = 1 if status_str in ("confirmed", "1", 1, True) else 0
         transactions = b.get("transactions", [])
+        # L1 finality — blocks touched by /api/l1-commit(-range) carry these.
+        l1_tx_hash   = b.get("l1_tx_hash", "") or ""
+        l1_block_num = int(b.get("l1_block_number", 0) or 0)
 
         if not dry_run:
             try:
@@ -364,6 +418,20 @@ def migrate_blocks(immu_main, pg_conn, start_block: int, batch_size: int, dry_ru
                 # 3. Insert transactions
                 for idx, tx in enumerate(transactions):
                     _insert_tx(cur, tx, block_num, idx)
+
+                # 4. L1 finality (ThebeDB stores it in the append-only
+                # l1_finality table, keyed by the L1 tx hash; block reads
+                # hydrate l1_tx_hash/l1_block_number from it). Consecutive
+                # blocks sharing one L1 commit merge into one row's array.
+                if l1_tx_hash:
+                    cur.execute("""
+                        INSERT INTO l1_finality (confirmation, l1_block_number, block_numbers)
+                        VALUES (%s,%s,ARRAY[%s]::bigint[])
+                        ON CONFLICT (confirmation) DO UPDATE SET
+                            block_numbers = (
+                                SELECT ARRAY(SELECT DISTINCT unnest(l1_finality.block_numbers || EXCLUDED.block_numbers) ORDER BY 1)
+                            )
+                    """, (hex_pad(l1_tx_hash, 66), l1_block_num, block_num))
 
                 pg_conn.commit()
                 migrated += 1
@@ -398,6 +466,10 @@ def migrate_blocks(immu_main, pg_conn, start_block: int, batch_size: int, dry_ru
     log(f"Blocks done: {migrated} migrated, {skipped} skipped, {failed} failed")
 
 
+# NOTE: gas_fee_wei is intentionally left at its DEFAULT 0 for migrated rows —
+# duplicating the consensus fee formula (config.GasFee: 35 gwei baseFee +
+# min-clamp) in Python would be drift-prone. Go readers treat 0 as "not
+# recorded" and fall back to deriving the fee with the real formula.
 def _insert_tx(cur, tx: dict, block_number: int, tx_index: int):
     tx_hash  = hex_pad(tx.get("hash", ""), 66)
     from_a   = hex_pad(tx.get("from", ""), 42)
@@ -450,6 +522,8 @@ def migrate_accounts(immu_accounts, pg_conn, batch_size: int, dry_run: bool):
         did     = acc.get("did", "") or acc.get("did_address", "") or address
         balance = str(acc.get("balance", "0") or "0")
         nonce   = str(acc.get("nonce", 0))
+        tx_nonce      = int(acc.get("tx_nonce", 0) or 0)
+        tx_count_sent = int(acc.get("tx_count_sent", 0) or 0)
         acc_type = 1 if acc.get("account_type") == "publickey" else 0
         meta    = json.dumps(acc.get("metadata") or {})
         created = to_ts(acc.get("created_at"))
@@ -457,16 +531,25 @@ def migrate_accounts(immu_accounts, pg_conn, batch_size: int, dry_run: bool):
 
         if not dry_run:
             try:
+                # Mirrors thebeprofile/apply_account.go: LWW guard on updated_at,
+                # created_at/did_address preserved from first insert, monotonic
+                # counters via GREATEST (merge_account.go invariant).
                 cur.execute("""
                     INSERT INTO accounts
-                        (address, did_address, balance_wei, nonce, account_type,
-                         metadata, created_at, updated_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                        (address, did_address, balance_wei, nonce, tx_nonce,
+                         tx_count_sent, account_type, metadata, created_at, updated_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT (address) DO UPDATE SET
-                        balance_wei  = EXCLUDED.balance_wei,
-                        nonce        = EXCLUDED.nonce,
-                        updated_at   = EXCLUDED.updated_at
-                """, (address, did, balance, nonce, acc_type, meta, created, updated))
+                        balance_wei   = EXCLUDED.balance_wei,
+                        nonce         = EXCLUDED.nonce,
+                        tx_nonce      = GREATEST(accounts.tx_nonce, EXCLUDED.tx_nonce),
+                        tx_count_sent = GREATEST(accounts.tx_count_sent, EXCLUDED.tx_count_sent),
+                        account_type  = EXCLUDED.account_type,
+                        metadata      = EXCLUDED.metadata,
+                        updated_at    = EXCLUDED.updated_at
+                    WHERE accounts.updated_at < EXCLUDED.updated_at
+                """, (address, did, balance, nonce, tx_nonce, tx_count_sent,
+                      acc_type, meta, created, updated))
                 pg_conn.commit()
                 migrated += 1
             except Exception as e:
@@ -502,8 +585,27 @@ def main():
     if args.dry_run:
         log("DRY RUN — no writes will be performed")
 
-    # Postgres
-    pg = pg_connect(args.pg_dsn)
+    # ── Build Postgres DSN (prompt for any missing pieces) ────────────────────
+    if args.pg_dsn:
+        pg_dsn = args.pg_dsn
+    else:
+        import getpass as _getpass
+
+        def _prompt(label, default):
+            val = input(f"{label} [{default}]: ").strip()
+            return val if val else default
+
+        pg_host   = _prompt("Postgres host",     args.pg_host)
+        pg_port   = _prompt("Postgres port",     str(args.pg_port))
+        pg_user   = _prompt("Postgres user",     args.pg_user)
+        pg_dbname = _prompt("Postgres database", args.pg_dbname)
+        if args.pg_pass:
+            pg_pass = args.pg_pass
+        else:
+            pg_pass = _getpass.getpass(f"Postgres password for {pg_user}: ")
+        pg_dsn = f"postgres://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_dbname}"
+
+    pg = pg_connect(pg_dsn)
     if not args.dry_run:
         ensure_schema(pg)
 
