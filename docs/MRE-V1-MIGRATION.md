@@ -1,26 +1,25 @@
-# MRE v1 Proto Migration — Executive Brief
+# MRE v1 Proto Migration & API Modernization — Executive Brief
 
-**What:** Migrate jmdn's gRPC client from MRE's legacy `/proto.RoutingService/*` API to the current `/jmdt.proto.mre.v1.MREService/*` API.
+**What:** Migrate jmdn's gRPC client from MRE's legacy `/proto.RoutingService/*` to the current `/jmdt.proto.mre.v1.MREService/*`, then use the migration as the foundation to close a set of API-capability gaps found during the audit.
 
-**Why:** The legacy service is a backward-compat shim kept alive for jmdn. Migrating lets MRE eventually retire it, gives jmdn the richer v1 responses (fetch metadata, per-node stats, node version), and removes a fragile hack: `txpool_content` today calls the v1 endpoint via a raw `conn.Invoke` and decodes the reply into a legacy type, surviving only on accidental wire compatibility.
+**Why now:** Three drivers.
 
-**Scope:** jmdn client-side only. No MRE changes. No config, port, or TLS changes — both services are served on the same MRE port with identical transport. The orchestrator (also a legacy caller) is an explicit follow-on, out of scope here.
+1. **Debt.** The legacy service exists only for jmdn. jmdn's one v1-path call today is a raw `conn.Invoke` hack that decodes v1 bytes into a legacy type and survives on accidental wire compatibility.
+2. **Underuse.** The audit showed jmdn uses a fraction of what the API offers — it discards most response fields it receives (fee tiers, routing/replica info, fetch metadata), ignores the `pending` block tag, and several standard Ethereum surfaces are missing or synthetic (`txpool_status`, `eth_maxPriorityFeePerGas`; `eth_feeHistory` returns constants).
+3. **Correctness findings.** The implementation-level audit surfaced issues that matter beyond the migration: `txpool_content` is **disabled in production** (handler commented out — the RPC returns "method not found" while the implementation sits wired underneath); `eth_getTransactionCount` silently maps `pending`→`latest` (the exact gap class behind the recent nonce-ordering incident); and MRE's `GetFeeStatistics` — the source for `eth_gasPrice` — is a **stub** (all statistics derived from one average; 4 of 9 response fields permanently empty; the real percentile fee engine in the mempool nodes is bypassed).
 
-**Size of the change:** Small. The entire legacy surface lives in 2 files (`Block/gRPCclient.go`, `Block/Singleton_RoutingClient.go`) with 3 downstream consumers (`gETH/Facade/Service/Service.go`, `CLI/CLI.go`, `Block/Server.go`). jmdn uses 4 RPCs in production.
+**Shape of the work — three stages, independently shippable:**
 
-**Compatibility picture (verified at proto field level):**
+| Stage | Content | Effort | Risk |
+|---|---|---|---|
+| **S1 · Parity migration (PoC → GA)** | Swap client to v1, byte-equivalent behavior, tests + canary. One breaking RPC (`GetMempoolStats`) with a verified field remap. | 2–3 days + soak | Low — client-only, same port/TLS, per-node rollback |
+| **S2 · Correctness fixes** | Re-enable `txpool_content`; honor `pending` in `getTransactionCount` (chain nonce + pool lookahead); surface submit failures better | 2–3 days | Low-medium — user-visible RPC behavior changes, gated + canaried |
+| **S3 · Capability wave (opt-in)** | Pending-tx visibility in `eth_getTransactionByHash` (PeekTransactionByHash), `txpool_status`, `eth_maxPriorityFeePerGas`, mempool health in readiness, MRE version in ops CLI | ~1 week, priority-ranked | Low — additive |
 
-| RPC | Verdict |
-|---|---|
-| SubmitTransaction | Drop-in — request/response wire-identical |
-| PeekPendingTransactions | Drop-in + removes the raw-invoke hack |
-| GetFeeStatistics | Drop-in — wire-identical, mapper parity confirmed |
-| GetMempoolStats | **Breaking** — response restructured; exact field remap known |
+**Explicitly out of scope, filed upstream:** MRE-side defects found by the audit (fee-statistics stub, `from_replica` ignored on by-hash RPCs, no not-found signal on lookups, `limit<=0` → wrong status code, missing latency metrics on read paths, destructive all-shard fallback). These are tracked as upstream items in the tracker — S1–S3 do not depend on them, but S3's fee work is bounded by the stub until MRE fixes it.
 
-The `Transaction` message itself is byte-for-byte identical between legacy and v1 (all 17 fields, same numbers and types).
+**Orchestrator:** also a legacy caller; explicitly a follow-on with the same mapping table. MRE legacy retirement only after both migrate.
 
-**Risk:** Low. One breaking RPC with a documented mapping; everything else is a package swap. Client-only change → canary a single node, roll back by redeploying the previous build.
+**Compatibility (field-level verified):** `Transaction` message byte-identical legacy↔v1; Submit and FeeStatistics wire-identical; Pending responses compatible on field 1 with new metadata fields; `GetMempoolStats` breaking with a documented remap sourced from MRE's own legacy shim.
 
-**Effort:** 2–3 engineering days + canary soak.
-
-**Plan & status:** See `MRE-V1-MIGRATION-TRACKER.md` (single source of truth — phases, per-file checklist, open items).
+**Governance:** `MRE-V1-MIGRATION-TRACKER.md` is the single source of truth — phase gates with acceptance criteria, per-file checklists, risk register, observability/canary plan, rollback per phase, and the open-items ledger. No other documents will be created for this feature.
