@@ -1,0 +1,323 @@
+// Vendored from Mempool-Routing-Engine @ e808b96 (proto/common/v1/types.proto).
+// Regenerate with: make generate-proto. Do not edit by hand beyond go_package/import rewrites.
+syntax = "proto3";
+
+package jmdt.proto.common.v1;
+
+option go_package = "gossipnode/proto/v1/common;commonv1";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Core Transaction Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Transaction represents an Ethereum transaction
+message Transaction {
+  string hash = 1;
+  string from = 2;
+  string to = 3;
+  string value = 4;
+  uint32 type = 5;
+  uint64 timestamp = 6;
+  string chain_id = 7;
+  uint64 nonce = 8;
+  string gas_limit = 9;
+  string gas_price = 10;
+  string max_fee = 11;
+  string max_priority_fee = 12;
+  bytes data = 13;
+  repeated AccessTuple access_list = 14;
+  string v = 15;
+  string r = 16;
+  string s = 17;
+}
+
+// AccessTuple is the element type of an access list
+message AccessTuple {
+  string address = 1;
+  repeated string storage_keys = 2;
+}
+
+// TransactionBatch represents a batch of transactions
+message TransactionBatch {
+  repeated Transaction transactions = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Metadata Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Metadata contains routing information for mempool transactions
+message Metadata {
+  bool primary_node = 1;
+  bool replica_node = 2;
+  int32 total_replicas = 3;
+  string created_at = 4;
+}
+
+// MempoolTxn wraps a transaction with its routing metadata
+message MempoolTxn {
+  Transaction transaction = 1;
+  Metadata metadata = 2;
+}
+
+// MempoolTxnBatch represents a batch of mempool transactions
+message MempoolTxnBatch {
+  repeated MempoolTxn transactions = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Request/Response Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+// SubmitResponse is the response for submitting a transaction
+message SubmitResponse {
+  bool success = 1;
+  string hash = 2;
+  string error = 3;
+}
+
+// SubmitTxResponse is the response for submitting a transaction via MRE routing
+message SubmitTxResponse {
+  bool success = 1;
+  string hash = 2;
+  string error = 3;
+  string mempool_node = 4;
+  repeated string replica_mempools = 5;
+  int32 total_replicas = 6;
+}
+
+// BatchSubmitResponse is the response for batch submissions
+message BatchSubmitResponse {
+  bool success = 1;
+  int32 count = 2;
+  repeated string hashes = 3;
+  string error = 4;
+}
+
+// GetTransactionRequest is used to request a specific transaction
+message GetTransactionRequest {
+  string hash = 1;
+}
+
+// GetTransactionByHashRequest is used to request a transaction by hash
+message GetTransactionByHashRequest {
+  string hash = 1;
+  bool from_replica = 2;
+}
+
+// GetPendingRequest is used to request pending transactions
+message GetPendingRequest {
+  int32 limit = 1;
+  bool from_replica = 2;
+}
+
+// GetPendingResponse is used to respond to a GetPendingRequest
+message GetPendingResponse {
+  repeated Transaction transactions = 1;
+  int32 total_fetched = 2;
+  int32 rounds_used = 3;
+  int64 duration_ms = 4;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stats Types (Mempool)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// CacheStats contains hot cache statistics
+message CacheStats {
+  int32 cache_size = 1;
+  uint64 hits = 2;
+  uint64 misses = 3;
+  uint64 evictions = 4;
+  uint64 average_fee = 5;
+  string last_eviction = 6;
+  string last_update = 7;
+}
+
+// DatabaseStats contains persistent database statistics
+message DatabaseStats {
+  uint64 transactions = 1;
+  int64 size = 2;
+  int64 lsm_size = 3;
+  int64 vlog_size = 4;
+  string last_update = 5;
+  uint64 gc_runs = 6;
+  string last_gc = 7;
+  uint64 total_gc_cycles = 8;
+  uint64 last_gc_cycles = 9;
+  uint64 last_gc_duration_ms = 10;
+  uint64 total_gc_duration_ms = 11;
+  int64 freed_space_bytes = 12;
+  int64 total_freed_space_bytes = 13;
+  float gc_threshold = 14;
+}
+
+// PrimaryDBStats contains statistics for the primary database
+message PrimaryDBStats {
+  DatabaseStats database_stats = 1;
+}
+
+// ReplicaDBStats contains statistics for the replica database
+message ReplicaDBStats {
+  DatabaseStats database_stats = 1;
+}
+
+// RoutingStats contains statistics about transaction routing decisions
+message RoutingStats {
+  uint64 primary_routed = 1;
+  uint64 replica_routed = 2;
+  uint64 default_routed = 3;
+  string last_update = 4;
+}
+
+// MempoolStats contains comprehensive statistics for dual database mempool
+message MempoolStats {
+  CacheStats cache = 1;
+  PrimaryDBStats primary = 2;
+  ReplicaDBStats replica = 3;
+  RoutingStats routing = 4;
+  string last_update = 5;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enhanced Stats Response (GetMempoolStats)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// AggregatedStats contains totals across all mempool nodes
+message AggregatedStats {
+  // Transaction counts
+  int64 total_cache_size = 1;
+  int64 total_primary_txns = 2;
+  int64 total_replica_txns = 3;
+  
+  // Cache performance
+  uint64 total_cache_hits = 4;
+  uint64 total_cache_misses = 5;
+  uint64 total_cache_evictions = 6;
+  
+  // Storage sizes (bytes)
+  int64 total_primary_size = 7;
+  int64 total_replica_size = 8;
+}
+
+// NodeStats contains stats for a single mempool node
+message NodeStats {
+  string node_id = 1;
+  int32 shard_id = 2;
+  bool healthy = 3;
+  MempoolStats stats = 4;
+}
+
+// GetMempoolStatsResponse contains aggregated and per-node stats
+message GetMempoolStatsResponse {
+  AggregatedStats aggregated = 1;
+  repeated NodeStats nodes = 2;
+  int32 node_count = 3;
+  int32 healthy_nodes = 4;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fee Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+// FeeSnapshot contains the latest observable state of the fee analyzer
+message FeeSnapshot {
+  string timestamp = 1;
+  string base_energy_wei = 2;
+  string base_storage_wei = 3;
+  string base_bandwidth_wei = 4;
+  double last_utilization = 5;
+  string last_fee_wei = 6;
+}
+
+// FeeStatistics contains comprehensive fee analysis data
+message FeeStatistics {
+  uint64 min_fee = 1;
+  uint64 max_fee = 2;
+  uint64 median_fee = 3;
+  uint64 mean_fee = 4;
+  map<string, int32> fee_distribution = 5;
+  double priority_fee_ratio = 6;
+  map<string, FeeByType> fee_by_tx_type = 7;
+  repeated FeeTimepoint historical_trend = 8;
+  RecommendedFees recommended_fees = 9;
+}
+
+// FeeByType contains fee statistics for a specific transaction type
+message FeeByType {
+  int32 count = 1;
+  uint64 mean = 2;
+  uint64 max = 3;
+}
+
+// FeeTimepoint represents a point in fee history
+message FeeTimepoint {
+  string timestamp = 1;
+  uint64 mean_fee = 2;
+  int32 count = 3;
+}
+
+// RecommendedFees contains recommended fee levels
+message RecommendedFees {
+  uint64 slow = 1;
+  uint64 standard = 2;
+  uint64 fast = 3;
+  uint64 instant = 4;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Merkle Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+// MerkleRootResponse contains a single Merkle root with metadata
+message MerkleRootResponse {
+  string merkle_root = 1;
+  int32 transaction_count = 2;
+}
+
+// MerkleRoots contains individual Merkle roots for each component
+message MerkleRoots {
+  string cache_root = 1;
+  string primary_root = 2;
+  string replica_root = 3;
+  int32 cache_count = 5;
+  int32 primary_count = 6;
+  int32 replica_count = 7;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lookup Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TransactionLookupResponse contains transaction lookup information
+message TransactionLookupResponse {
+  bool success = 1;
+  string tx_hash = 2;
+  string mempool_node = 3;
+  string timestamp = 4;
+  string status = 5;
+  string error = 6;
+}
+
+// TransactionLookupBatch contains multiple transaction lookups
+message TransactionLookupBatch {
+  bool success = 1;
+  repeated TransactionLookupResponse lookups = 2;
+  int32 count = 3;
+  string error = 4;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Version Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+// VersionInfo contains build information about the node
+message VersionInfo {
+  string git_tag = 1;
+  string git_branch = 2;
+  string git_commit = 3;
+  string build_time = 4;
+  string go_version = 5;
+}

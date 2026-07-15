@@ -15,7 +15,7 @@ BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 # Linker flags
 LDFLAGS=-ldflags "-X 'gossipnode/config/version.gitCommit=${GIT_COMMIT}' -X 'gossipnode/config/version.gitBranch=${GIT_BRANCH}' -X 'gossipnode/config/version.gitTag=${GIT_TAG}' -X 'gossipnode/config/version.buildTime=${BUILD_TIME}' -linkmode=external -w -s"
 
-.PHONY: all build clean run test fmt lint lint-fix version deploy
+.PHONY: all build clean run test fmt lint lint-fix version deploy generate-proto
 
 all: build
 
@@ -43,6 +43,20 @@ deploy: build
 	@mkdir -p ${INSTALL_PATH}
 	@mv ./${BINARY_NAME} ${INSTALL_PATH}/${BINARY_NAME}
 	@echo "Deployment complete: ${INSTALL_PATH}/${BINARY_NAME}"
+
+# ── Protobuf codegen ──────────────────────────────────────────────────────────
+# Layout convention: proto/<version>/<service-or-types>/ — all protos live under
+# the top-level proto/ root (future: proto/v1/{mempool,seednode,orchestrator}).
+# proto/v1/{common,mre} are vendored from Mempool-Routing-Engine @ e808b96.
+# Toolchain pinned to match MRE's generated headers. Install:
+#   go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+#   go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.0
+#   protoc v33.1 (reports "libprotoc 33.1") from protobuf releases
+generate-proto:
+	protoc --proto_path=. \
+		--go_out=. --go_opt=module=gossipnode \
+		--go-grpc_out=. --go-grpc_opt=module=gossipnode \
+		proto/v1/common/types.proto proto/v1/mre/mre.proto
 
 # ── Developer Quality Targets ─────────────────────────────────────────────────
 # These mirror exactly what CI runs. Use before pushing.
