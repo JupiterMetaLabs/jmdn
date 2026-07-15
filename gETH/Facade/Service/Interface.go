@@ -47,6 +47,10 @@ type Service interface {
 	// Solidity Compiler
 	CompileSolidity(ctx context.Context, source string, optimize bool, runs uint32) (*SolcCompileResult, error)
 
+	// TxPoolContent returns all pending transactions grouped by sender and nonce,
+	// in the standard txpool_content JSON-RPC format.
+	TxPoolContent(ctx context.Context) (map[string]any, error)
+
 	// debug_traceTransaction — re-executes the transaction with a StructLogger.
 	// Returns the raw JSON payload from StructLogger.GetResult() so it can be
 	// forwarded verbatim to the caller in the standard Geth debug format.

@@ -7,6 +7,54 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-07-14
+
+### Fixed
+
+**RPC**
+
+- **Spec-compliant transaction marshaling** (`gETH/Facade/rpc/handlers.go`).
+  Transaction objects returned by `eth_getBlockByNumber(full=true)` now carry
+  `blockHash`/`blockNumber`/`transactionIndex` from the parent block (injected
+  at marshal time without mutating shared tx objects); pending transactions
+  return these fields as JSON `null`. `v`/`r`/`s` are always emitted (`0x0`
+  when zero — a zero `v` is valid for EIP-1559), `chainId` is always present,
+  and type-2 transactions additionally carry `yParity`, `accessList`, and
+  always-present `maxFeePerGas`/`maxPriorityFeePerGas`, with `gasPrice`
+  reported as the effective gas price (`min(maxFeePerGas, baseFee + tip)`).
+  `accessList`/`yParity` are correctly omitted for legacy (type 0)
+  transactions. Locked down by golden-shape tests
+  (`gETH/Facade/rpc/marshal_test.go`), including a signer-level proof that
+  type-2 `V` is the raw parity bit, keeping the `yParity` mapping valid. (#75)
+
+**Security / Accounts**
+
+- **Fail-closed account loading** (`Security/security_cache.go`,
+  `Security/Security.go`). `LoadAccounts` now propagates database errors
+  instead of swallowing them; both submission validation (`AllChecks`) and
+  block validation (`CheckZKBlockValidation`) reject on load failure rather
+  than treating a transient DB error as "account not found".
+
+- **Zero-balance overwrite guard** (`DB_OPs/account_immuclient.go`).
+  `storeAccount`'s existence pre-check now distinguishes "key not found"
+  from transient errors (timeout, connection drop) and aborts on the
+  latter — previously a failed read fell through to writing a fresh
+  `Balance: "0"` document over a potentially funded account.
+
+- **Unknown receivers auto-registered safely on submit**
+  (`Security/Security.go`). A transaction to a not-yet-registered address
+  no longer fails validation: the receiver is simulated with an in-cache
+  placeholder during checks and persisted to the accounts DB only after
+  the transaction passes every check — rejected transactions never create
+  database entries. The cached copy is re-read from the DB after creation
+  so it always matches the stored document.
+
+- **Submit-time balance precheck uses the consensus gas formula**
+  (`Security/security_cache.go`). `CheckBalanceWithCache` now computes
+  gas cost via `config.GasFee` (EIP-1559 aware, identical to what block
+  execution charges) instead of an ad-hoc `gasPrice → maxFee → 0`
+  fallback.
+
 ## [1.2.1] - 2026-07-08
 
 ### Added
@@ -755,6 +803,7 @@ adhering to [Semantic Versioning](https://semver.org/).
 ### Added
 - Initial open source release
 
+[1.2.2]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.1.0...v1.1.1

@@ -28,21 +28,18 @@ func NewSecurityCache() *SecurityCache {
 	}
 }
 
-func (s *SecurityCache) LoadAccounts(ctx context.Context, PooledConnection *config.PooledConnection, accounts *DB_OPs.AccountsSet) *SecurityCache {
+func (s *SecurityCache) LoadAccounts(ctx context.Context, PooledConnection *config.PooledConnection, accounts *DB_OPs.AccountsSet) error {
 	if len(accounts.Accounts) == 0 {
-		return s
+		return nil
 	}
 
-	// 2. Batch get accounts
-	// We pass nil for connection to let GetMultipleAccounts handle pooling internally.
-	// If we wanted to share an external connection, we'd pass it here.
-	// Since this is the entry point, passing nil is appropriate.
 	fetchedAccounts, err := DB_OPs.GetMultipleAccounts(PooledConnection, accounts)
 	if err != nil {
-		return s
+		// Propagate — callers must fail-closed. Swallowing this turns a transient DB
+		// error into "account not found", which can trigger zero-balance overwrites.
+		return err
 	}
 
-	// 3. Update cache
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -52,7 +49,7 @@ func (s *SecurityCache) LoadAccounts(ctx context.Context, PooledConnection *conf
 		}
 	}
 
-	return s
+	return nil
 }
 
 func (s *SecurityCache) Close() {
@@ -108,6 +105,15 @@ func (s *SecurityCache) GetAccount(address common.Address) *DB_OPs.Account {
 	return s.accounts[address.Hex()]
 }
 
+// RegisterAccount inserts an account directly into the cache.
+// Used by the submit-tx path to register a newly created receiver account
+// without an extra DB round-trip.
+func (s *SecurityCache) RegisterAccount(address common.Address, account *DB_OPs.Account) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accounts[address.Hex()] = account
+}
+
 // CheckAddressExistWithCache checks if sender (and receiver, if not a contract deployment) exist in the cache.
 // tx.To == nil is valid for contract deployments — only the sender is required to exist.
 func (s *SecurityCache) CheckAddressExistWithCache(tx *config.Transaction, traceCtx context.Context) (bool, error) {
@@ -150,17 +156,9 @@ func (s *SecurityCache) CheckBalanceWithCache(tx *config.Transaction, traceCtx c
 		return false, fmt.Errorf("invalid balance format for account %s", tx.From.Hex())
 	}
 
-	// Calculate Total Cost (Value + Gas).
-	// For EIP-1559 (Type 2) transactions GasPrice is nil; use MaxFee as the effective cap.
-	effectiveGasPrice := tx.GasPrice
-	if effectiveGasPrice == nil {
-		effectiveGasPrice = tx.MaxFee // may still be nil for legacy txs without MaxFee
-	}
-	if effectiveGasPrice == nil {
-		effectiveGasPrice = new(big.Int) // zero gas price — no gas cost deducted
-	}
+	// Calculate Total Cost (Value + Gas) using consensus formula (EIP-1559 aware).
 	cost := new(big.Int).Set(tx.Value) // Value to transfer
-	gasCost := new(big.Int).Mul(new(big.Int).SetUint64(tx.GasLimit), effectiveGasPrice)
+	gasCost := config.GasFee(tx.Type, tx.GasLimit, tx.GasPrice, tx.MaxFee, tx.MaxPriorityFee)
 	totalCost := new(big.Int).Add(cost, gasCost)
 
 	// Check sufficiency

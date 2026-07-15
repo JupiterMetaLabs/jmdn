@@ -3,6 +3,7 @@ package Block
 import (
 	"context"
 	"fmt"
+	"time"
 	pb "gossipnode/Mempool/proto"
 	"gossipnode/logging"
 
@@ -67,4 +68,22 @@ func (r *RoutingClient) GetFeeStatistics(ctx context.Context) (*pb.FeeStatistics
 
 func (r *RoutingClient) GetMempoolStats(ctx context.Context) (*pb.MREStats, error) {
 	return r.client.GetMempoolStats(ctx, &empty.Empty{})
+}
+
+// PeekPendingTransactions calls the MRE v1 service (non-destructive read).
+// It uses the /jmdt.proto.mre.v1.MREService/PeekPendingTransactions path which
+// is registered alongside the legacy RoutingService on the same gRPC server.
+// The response is decoded into TransactionBatch — wire-compatible with MRE v1's
+// GetPendingResponse because both carry repeated Transaction at field 1.
+func (r *RoutingClient) PeekPendingTransactions(logger_ctx context.Context, limit int32) (*pb.TransactionBatch, error) {
+	ctx, cancel := context.WithTimeout(logger_ctx, 5*time.Second)
+	defer cancel()
+
+	req := &pb.GetPendingRequest{Limit: limit}
+	out := &pb.TransactionBatch{}
+	err := r.conn.Invoke(ctx, "/jmdt.proto.mre.v1.MREService/PeekPendingTransactions", req, out, grpc.StaticMethod())
+	if err != nil {
+		return nil, fmt.Errorf("PeekPendingTransactions: %w", err)
+	}
+	return out, nil
 }
