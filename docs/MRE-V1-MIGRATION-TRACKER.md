@@ -80,6 +80,7 @@ Implementation traced handler → service → component → downstream mempool n
 | U-8 | `nodes[].stats.routing` never populated | `mempool.go:616` | Populate or drop from proto |
 | U-9 | Async destructive deletes race concurrent peeks (dup delivery) | `mempool.go:290-294,428-447` | Ack protocol (see TX-ordering proposal P1-B) |
 | U-10 | SubmitTransactions = unbounded goroutine fan-out | `transaction.go:185-203` | Bounded worker pool or true downstream batch |
+| U-11 | Node-level merkle roots (`GetPrimaryMerkleRoot`/`GetAllMerkleRoots`, mempool `mempool.go:717-764`) never surfaced through MREService; legacy stats hardcode `""` | MRE `mapper.go:177` | If pool-integrity monitoring is wanted: per-node roots in `NodeStats`. Cross-shard deterministic aggregate REJECTED by operator (separate effort, not optimal) |
 
 ---
 
@@ -88,21 +89,27 @@ Implementation traced handler → service → component → downstream mempool n
 ### Stage S1 — Parity migration `[status: pending]`
 Goal: v1 client, behavior byte-equivalent. No user-visible change.
 
-**Phase 0 · Tooling** — entry: this doc approved.
-- [ ] Vendor `types.proto` + `mre.proto` (MRE @ `e808b96`) into `Mempool/proto/v1/`; rewrite `go_package` (`MRE/...` → `gossipnode/...`) and the internal `import "proto/common/v1/types.proto"` path
-- [ ] `make generate-proto` — pinned protoc-gen-go/protoc-gen-go-grpc (note MRE uses v1.36.11/v6.33.1 vs jmdn legacy v1.36.10/v5.29.3)
-- [ ] Exit gate: `go build ./...` green; generated code committed
+**Phase 0 · Tooling** — entry: this doc approved. **[DONE 2026-07-15 — awaiting operator review]**
+- [x] Vendor `types.proto` + `mre.proto` (MRE @ `e808b96`) into **`proto/v1/{common,mre}/`** (operator decision 2026-07-15: all protos under top-level `proto/<version>/<service>` — future services `proto/v1/{mempool,seednode,orchestrator}`; legacy `Mempool/proto/` migrates there at cleanup); `go_package` → `gossipnode/proto/v1/...`; provenance headers added
+- [x] `make generate-proto` added (Makefile); generated with protoc 33.1 + protoc-gen-go v1.36.11 + protoc-gen-go-grpc v1.6.0 (exact MRE toolchain match)
+- [x] Exit gate: `go build ./Mempool/...` + `go vet` green; **go.mod/go.sum unchanged** (repo already pins protobuf v1.36.11 / grpc v1.79.3)
+- [ ] Operator code review + commit consent
 
-**Phase 1 · Client swap** — entry: Phase 0 gate.
-- [ ] `Singleton_RoutingClient.go`: retype to `mrev1.MREServiceClient`; typed Peek replaces raw invoke (**atomic with retype — same PR**, risk R-2); GetMempoolStats remap (`QueueCount←aggregated.total_cache_size`, `DbCount←aggregated.total_primary_txns` — source MRE `mapper.go:174-178`); `emptypb` standardization
-- [ ] `gRPCclient.go`: package-swap converters + SubmitTransaction; OP-7 structured submit-result logging; drop vestigial `MempoolServiceClient` field; execute O-1 wrapper decision; de-leak `GasFeeStats`
-- [ ] `CLI/CLI.go:500-507` stats remap; O-2 MerkleRoot line decision
-- [ ] Exit gate: compile green; all unit tests green
+**Phase 1 · Client swap** — entry: Phase 0 gate. **[DONE 2026-07-15 — awaiting operator review]**
+- [x] NEW `Block/routing_port.go`: `MempoolRouter` port + plain domain types (`SubmitResult`, `PendingBatch`, `MempoolStatsSummary`, `FeeStats`); `PendingTx` read-only view interface (generated type satisfies it structurally — zero copy, zero proto leak); explicit error contract (transport err vs `Accepted=false` rejection)
+- [x] `Singleton_RoutingClient.go`: rewritten as `mreRouter` adapter over `mrev1.MREServiceClient`; compile-time conformance (`var _ MempoolRouter`); typed Peek replaced raw invoke atomically (risk R-2 closed); GetMempoolStats remap per plan; `emptypb`; `CloseRoutingClient` added; OP-7 structured submit-result logging (primary node, total nodes)
+- [x] `gRPCclient.go`: slimmed to converters (retargeted `commonv1`) + `SubmitToMempool`/`GetFeeStatisticsFromRouting` facades; O-1 executed — deleted `MempoolClient`, `NewMempoolClient`, `SubmitTransactions`, `GetTransaction`, `GetPendingTransactions`, per-client fee/stats methods, `WrapperGetFeeStatistics`, `InitMempoolClient`/`CloseMempoolClient`/`ReturnMempoolObject`; `GasFeeStats` proto leak removed (plain `FeeStats`)
+- [x] `main.go`: single client init (`NewRoutingServiceClient` + `defer CloseRoutingClient`)
+- [x] `Service.go`: `Recommended.Standard`; `TxPoolContent` consumes `PendingBatch`; `mempoolTxToRPCObject` takes `block.PendingTx` (anonymous interface removed)
+- [x] `CLI.go`: O-2 executed — MerkleRoot → `Healthy Nodes: N/M`; dead `PriorityFeeRatio` → `Recommended (standard)`; rationale inline
+- [x] `gETH_Middleware.go`: dead `_EstimateGas` block removed
+- [x] Exit gate (partial): `go build`+`go vet` green for `./Block/... ./CLI/... ./gETH/... ./proto/...`; full `make build` (CGO link) deferred to operator review (sandbox disk/FD limits)
+- [ ] Operator code review + commit consent
 
-**Phase 2 · Verification** — entry: Phase 1 gate.
-- [ ] Unit: converter round-trip, all 17 fields, type-2 fees + GasPrice→MaxFee fallback (`gRPCclient.go:806`); mocked client via `SetRoutingClient`
-- [ ] Integration (dev stack): submit e2e; peek returns it; CLI stats sane; gasPrice = Standard
-- [ ] Parity: legacy vs v1 `GetFeeStatistics` byte-compare on live dev MRE; stats remap vs shard counts
+**Phase 2 · Verification** — entry: Phase 1 gate. **[unit half DONE 2026-07-15; live half BLOCKED on staging MRE]**
+- [x] Unit: converter round-trip (17 fields, type-2), GasPrice→MaxFee fallback both directions, nil-safety; fakeRouter via `SetRoutingClient` seam pinning facade error contract. 7/8 green first run; 8th exposed a real defect — `GetRoutingClient` nil path initialized the global logger → `settings.Get()` panic in any pre-`Load` context (would have been a prod crash). Fixed: accessor no longer logs.
+- [ ] **BLOCKED (staging MRE available ~1 day, operator 2026-07-15):** Integration on staging — submit e2e; peek returns it; CLI stats sane; gasPrice = Standard
+- [ ] **BLOCKED (same):** Parity — legacy vs v1 `GetFeeStatistics` byte-compare; stats remap spot-check vs shard counts; O-5 timeout budget measurement (limit-5000 peek latency vs 5s client timeout)
 - [ ] Exit gate (**GA criteria**): canary node 48h — submit success rate unchanged (±0.1%), zero new error-log signatures, gasPrice values identical, CLI output correct
 
 **Rollback:** redeploy previous build (client-only). No data migration, no coordination.
@@ -134,11 +141,16 @@ Watch on canary: jmdn submit success/error log signatures (`gRPCclient.go:194-23
 **Deferred:** D-1 orchestrator migration (legacy `GetPendingTransactions`+`GetMempoolStats`; same map; MRE legacy retires after). D-2 CI proto-drift check / buf registry. D-3 MRE legacy handler removal. D-4 upstream ledger §4 → file as MRE/mempool issues (owner: Naman to triage which are pre-GA).
 
 **Open questions:**
-- O-1 unused wrappers: delete vs deprecate one release? (Recommend delete; confirm no out-of-tree tooling)
-- O-2 CLI MerkleRoot line: drop vs replace with `healthy_nodes/node_count`?
+- O-1 ~~unused wrappers~~ → **RESOLVED (operator 2026-07-15): DELETE** — zero in-tree callers verified twice. Scope: `MempoolClient.GetTransaction`, `.GetPendingTransactions`, `.SubmitTransactions`, `.GetFeeStatistics`, `WrapperGetFeeStatistics`, commented `_EstimateGas` block; one fee path survives behind the new port.
+- O-2 ~~CLI MerkleRoot line~~ → **RESOLVED (operator 2026-07-15): OMIT cleanly.** The value was never real: mempool nodes compute genuine per-store merkle roots (`mempool.go:717-764`) but MRE never calls those RPCs — legacy shim hardcodes `""` (`mapper.go:177`). CLI line replaced with `healthy: N/M nodes`. Aggregated/deterministic MRE merkle explicitly rejected as a separate non-optimal effort → tracked as U-11 only.
 - O-3 ~~GetNodeVersion wiring~~ → resolved: ACCEPTED as OP-6 (S3)
-- O-4 `txpool_content` re-enable: was it disabled deliberately (load? correctness?) — **need history/context from team before S2** (`git log` the comment-out)
+- O-4 ~~`txpool_content` disabled — deliberate?~~ → **RESOLVED by operator (2026-07-15):** it was never wired properly / not prod-ready — the raw v1 `conn.Invoke` existed only because the legacy proto has no Peek RPC. The handler stayed disabled on purpose. **Mandate: build it properly in this migration** — clean implementation per design principles below.
 - O-5 timeout budget: 5s client timeout vs worst-case multi-round fetch — raise client timeout for peek or cap limit?
+
+**Design mandate (operator, 2026-07-15) — applies to all new/refactored code in S1–S3:**
+clean system design; interface-driven (consumers depend on a routing-client port, not the concrete singleton); SRP (transport client / domain conversion / RPC-facade formatting as separate concerns); no proto types leaking into public package APIs; testable via injected interfaces, not global state.
+
+**Working agreement:** every verifiable/testable checkpoint pauses for operator code review; **no commit or push without explicit operator consent**; all findings recorded in this tracker — nothing dropped.
 
 ---
 

@@ -722,7 +722,7 @@ func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
 	}
 
 	// Get standard recommended fee (wei)
-	gasPrice := big.NewInt(int64(feeStats.RecommendedFees.Standard))
+	gasPrice := big.NewInt(int64(feeStats.Recommended.Standard))
 
 	// Enforce minimum gas price: use BaseFeeWei (35 gwei) as the floor.
 	twentyGwei := big.NewInt(20_000_000_000)
@@ -856,7 +856,7 @@ func (s *ServiceImpl) TxPoolContent(ctx context.Context) (map[string]any, error)
 
 	// Group by sender → nonce → tx object (standard txpool_content shape).
 	pending := make(map[string]map[string]any)
-	for _, tx := range batch.GetTransactions() {
+	for _, tx := range batch.Transactions {
 		from := strings.ToLower(tx.GetFrom())
 		if from == "" {
 			continue
@@ -874,23 +874,9 @@ func (s *ServiceImpl) TxPoolContent(ctx context.Context) (map[string]any, error)
 	}, nil
 }
 
-// mempoolTxToRPCObject converts a proto Transaction to the Ethereum JSON-RPC tx object shape.
-func mempoolTxToRPCObject(tx interface {
-	GetHash() string
-	GetFrom() string
-	GetTo() string
-	GetValue() string
-	GetNonce() uint64
-	GetGasLimit() string
-	GetGasPrice() string
-	GetMaxFee() string
-	GetMaxPriorityFee() string
-	GetData() []byte
-	GetType() uint32
-	GetV() string
-	GetR() string
-	GetS() string
-}) map[string]any {
+// mempoolTxToRPCObject converts a pending mempool transaction (block.PendingTx
+// port view) to the Ethereum JSON-RPC tx object shape.
+func mempoolTxToRPCObject(tx block.PendingTx) map[string]any {
 	decToHex := func(dec string) string {
 		if dec == "" {
 			return "0x0"
@@ -920,7 +906,7 @@ func mempoolTxToRPCObject(tx interface {
 		"value":            decToHex(tx.GetValue()),
 		"input":            "0x" + hex.EncodeToString(tx.GetData()),
 		"type":             fmt.Sprintf("0x%x", tx.GetType()),
-		"v":                tx.GetV(), // already "0x…" hex — see getSignatureString, gRPCclient.go:756
+		"v":                tx.GetV(), // already "0x…" hex — see getSignatureString in Block/gRPCclient.go
 		"r":                tx.GetR(),
 		"s":                tx.GetS(),
 	}

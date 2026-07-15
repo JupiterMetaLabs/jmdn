@@ -484,8 +484,8 @@ func (h *CommandHandler) handleMempoolStats(parts []string) {
 		fmt.Printf("❌ Mempool client not available: %v\n", err)
 		return
 	}
-	// Get mempool statistics
-	// Get fee statistics
+	// Fee statistics (MRE v1). PriorityFeeRatio was dropped: the wire field
+	// was never populated upstream (always 0 — see tracker U-1).
 	feeStats, err := routingClient.GetFeeStatistics(logger_ctx)
 	if err != nil {
 		fmt.Printf("❌ Failed to get fee statistics: %v\n", err)
@@ -495,8 +495,11 @@ func (h *CommandHandler) handleMempoolStats(parts []string) {
 	fmt.Printf("  Max Fee: %d Wei\n", feeStats.MaxFee)
 	fmt.Printf("  Median Fee: %d Wei\n", feeStats.MedianFee)
 	fmt.Printf("  Mean Fee: %d Wei\n", feeStats.MeanFee)
-	fmt.Printf("  Priority Fee Ratio: %.2f\n", feeStats.PriorityFeeRatio)
+	fmt.Printf("  Recommended (standard): %d Wei\n", feeStats.Recommended.Standard)
 
+	// Mempool statistics (MRE v1). The legacy "Merkle Root" line was dropped:
+	// the field was hardcoded "" upstream and never carried a real root
+	// (see tracker O-2/U-11). Node health replaces it.
 	mempoolStats, err := routingClient.GetMempoolStats(logger_ctx)
 	if err != nil {
 		fmt.Printf("❌ Failed to get mempool stats: %v\n", err)
@@ -504,7 +507,7 @@ func (h *CommandHandler) handleMempoolStats(parts []string) {
 	}
 	fmt.Printf("  Queue Count: %d\n", mempoolStats.QueueCount)
 	fmt.Printf("  DB Count: %d\n", mempoolStats.DbCount)
-	fmt.Printf("  Merkle Root: %s\n", mempoolStats.MerkleRoot)
+	fmt.Printf("  Healthy Nodes: %d/%d\n", mempoolStats.HealthyNodes, mempoolStats.NodeCount)
 	printDashes()
 }
 
