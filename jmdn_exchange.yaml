@@ -123,7 +123,7 @@ features:
 
 # ── 8. FastSync ──────────────────────────────────────────────────────────────
 fastsync:
-  enabled: true
+  enabled: false            # DISABLED pending ThebeDB FastSync redesign — re-enable when the new engine ships
   enable_pulling: true     # This node pulls state from peers on sync.
   enable_catchup: true     # SyncMonitor auto-reconciles when seednode reports divergence.
   sync_timeout: "100m"     # Allow long syncs — exchange nodes may start from a cold snapshot.

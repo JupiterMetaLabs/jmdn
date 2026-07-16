@@ -99,7 +99,11 @@ func DefaultConfig() NodeConfig {
 			GROTrack:     false,
 		},
 		FastSync: FastSyncSettings{
-			Enabled:           true,
+			// DISABLED pending the ThebeDB FastSync redesign (log-shipping model).
+			// The current ImmuDB-era protocol is turned off fleet-wide; flip back
+			// to true when the new engine lands. Serving + syncing + SyncMonitor
+			// are all gated by this one flag.
+			Enabled:           false,
 			EnablePulling:     true,
 			EnableCatchup:     false,
 			SyncTimeout:       10 * time.Minute,

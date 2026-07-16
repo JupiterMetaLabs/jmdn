@@ -108,7 +108,7 @@ features:
 
 # ── FastSync V2 ─────────────────────────────────────────
 fastsync:
-  enabled: true           # Register protocol handlers and serve data to peers
+  enabled: false            # DISABLED pending ThebeDB FastSync redesign — re-enable when the new engine ships
   enable_pulling: true    # Allow this node to pull data from peers and write to its DB.
                           # Set false on sequencers — they are authoritative and must
                           # never overwrite their own state (they still serve data).
