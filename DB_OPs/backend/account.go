@@ -179,8 +179,11 @@ func toAccountRecord(a *store.Account) *thebegateway.AccountRecord {
 		TxCountSent: a.TxCountSent,
 		AccountType: accountType,
 		Metadata:    a.Metadata,
-		CreatedAt:   time.Unix(0, a.CreatedAt),
-		UpdatedAt:   time.Unix(0, a.UpdatedAt),
+		// Mixed-unit safe: a.CreatedAt/UpdatedAt may be seconds (live executor)
+		// or nanos (sync). Normalize so the projector LWW guard compares like
+		// units (RCA §3a). Mirrors DB_OPs.normalizeUpdatedAtNanos.
+		CreatedAt:   store.NormalizedUnixTime(a.CreatedAt),
+		UpdatedAt:   store.NormalizedUnixTime(a.UpdatedAt),
 	}
 }
 
