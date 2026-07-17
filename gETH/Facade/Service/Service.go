@@ -12,6 +12,7 @@ import (
 	block "gossipnode/Block"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/config/settings"
 	"gossipnode/config/version"
 	"gossipnode/gETH/Facade/Service/Types"
 	Utils "gossipnode/gETH/Facade/Service/utils"
@@ -103,13 +104,28 @@ func (s *ServiceImpl) GetTransactionCount(ctx context.Context, addr string, bloc
 	account, err := DB_OPs.GetAccount(nil, convertedAddr)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
-			// Address has no transactions yet — nonce is 0
+			// Address has no confirmed transactions — confirmed nonce is 0.
+			// A pending query must still see queued/submitted txs (a brand-new
+			// account's first txs live only in the pool/tracker).
+			if settings.Get().Features.PendingNonce && strings.EqualFold(strings.TrimSpace(block), "pending") {
+				return s.pendingNonce(opCtx, convertedAddr.Hex(), 0), nil
+			}
 			return big.NewInt(0), nil
 		}
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetTransactionCount failed: %v", err), "GetTransactionCount", -1); logErr != nil {
 			fmt.Printf("Failed to log GetTransactionCount error: %v\n", logErr)
 		}
 		return nil, err
+	}
+
+	// "pending" block tag (feature-gated): layer in this node's submission
+	// tracker and the mempool's contiguous run — see pending_nonce.go.
+	if settings.Get().Features.PendingNonce && strings.EqualFold(strings.TrimSpace(block), "pending") {
+		pending := s.pendingNonce(opCtx, convertedAddr.Hex(), account.TxNonce)
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetTransactionCount(pending) returned nonce %s for %s (confirmed %d)", pending.String(), addr, account.TxNonce), "GetTransactionCount", 1); logErr != nil {
+			fmt.Printf("Failed to log GetTransactionCount: %v\n", logErr)
+		}
+		return pending, nil
 	}
 
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetTransactionCount returned nonce %d for %s", account.TxNonce, addr), "GetTransactionCount", 1); logErr != nil {

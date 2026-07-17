@@ -108,19 +108,26 @@ Goal: v1 client, behavior byte-equivalent. No user-visible change.
 
 **Phase 2 · Verification** — entry: Phase 1 gate. **[unit half DONE 2026-07-15; live half BLOCKED on staging MRE]**
 - [x] Unit: converter round-trip (17 fields, type-2), GasPrice→MaxFee fallback both directions, nil-safety; fakeRouter via `SetRoutingClient` seam pinning facade error contract. 7/8 green first run; 8th exposed a real defect — `GetRoutingClient` nil path initialized the global logger → `settings.Get()` panic in any pre-`Load` context (would have been a prod crash). Fixed: accessor no longer logs.
+- [x] Bufconn adapter tests (`c58058b`): real `mreRouter` vs fake MREService over in-memory gRPC — submit mapping, rejection-not-error, peek metadata, stats remap, fee mapping, nil-submessage tolerance. Found + fixed a wire-semantics bug: nil elements in repeated proto fields arrive as EMPTY messages, so the peek path now drops hashless entries (legit txs can never be hashless — validation rejects empty hash at MRE and mempool). All Block tests green.
 - [ ] **BLOCKED (staging MRE available ~1 day, operator 2026-07-15):** Integration on staging — submit e2e; peek returns it; CLI stats sane; gasPrice = Standard
 - [ ] **BLOCKED (same):** Parity — legacy vs v1 `GetFeeStatistics` byte-compare; stats remap spot-check vs shard counts; O-5 timeout budget measurement (limit-5000 peek latency vs 5s client timeout)
 - [ ] Exit gate (**GA criteria**): canary node 48h — submit success rate unchanged (±0.1%), zero new error-log signatures, gasPrice values identical, CLI output correct
 
 **Rollback:** redeploy previous build (client-only). No data migration, no coordination.
 
-### Stage S2 — Correctness fixes `[status: pending]` — entry: S1 GA
-- [ ] Re-enable `txpool_content` handler (`handlers.go:510-524`) using typed v1 Peek; add OP-8 metadata; decide `queued` semantics (still `{}` — document why)
-- [ ] `eth_getTransactionCount("pending")`: chain nonce + max(pool nonces for sender)+1 lookahead via Peek filtered by `from`; honor block tag through `Service.GetTransactionCount`
-- [ ] `eth_sendRawTransaction`: define submit-failure surfacing policy (keep async return, add structured rejection metric + log; document eventual-submit semantics)
-- [ ] Exit gate: RPC-conformance tests vs geth behavior for the touched methods; canary 48h; explicit release-note entries
+### Stage S2 — Correctness fixes `[code DONE 2026-07-15 — awaiting operator review; live gates behind staging]`
+Design approved (P-3). **Implementation discovery:** the Security `security_cache` is per-request scoped (`Security.go:81-82` — created + Closed inside each AllChecks call), so no durable submission-nonce view existed; built a purpose-built `Block.PendingNonceTracker` instead (same approved semantics). The `LoadAccounts` regression fix became moot (nothing lives long enough to regress).
+- [x] Flags: `features.txpool_content` / `features.pending_nonce` (config.go, loader defaults, both yaml examples documented) — default OFF
+- [x] `txpool_content` re-enabled behind flag (`handlers.go`); disabled == `-32601` exactly as today; rationale comment inline
+- [x] `Block/nonce_tracker.go`: PendingNonceTracker — highest routed nonce per sender, 30min TTL (covers sequencing worst case), confirmed-state-wins-upward, lower-resubmit cannot regress or extend TTL, injectable clock
+- [x] Tracker feed timing (operator-approved design discussion): **record synchronously at validation success** in `SubmitRawTransaction` (before the hash returns, before the async submit spawns) → read-your-own-writes for sequential senders — the async-window race would have hit the exact exchange flow the feature exists for. Accept-path Record in `SubmitToMempool` kept as idempotent belt. Rejected/never-queued txs never inflate (validation-fail = no record; MRE-unreachable = TTL-bounded, correlated with an outage where submits fail anyway). Rollback-on-rejection (option C) explicitly rejected as complexity without payoff
+- [x] `Service/pending_nonce.go`: layered pending = max(confirmed, tracker, contiguous pool run); pool unavailability degrades gracefully (query never fails on MRE blip); pure `nextAfterContiguousRun` (geth-exact); wired into `GetTransactionCount` incl. the account-not-found path (new accounts with queued txs)
+- [x] Tests: tracker (record/highest-only/TTL/no-TTL-extension), contiguous-run table (9 cases + mixed senders); vet+fmt clean
+- [x] Submit-failure surfacing: docs-only per approved design (async contract documented here; rejection metric → S3)
+- [ ] Operator review + commit consent
+- [ ] Exit gate (behind staging): conformance vs geth for touched methods; canary 48h; release notes
 
-**Rollback:** per-method feature flags (env) — disable pending-nonce lookahead / txpool_content independently.
+**Rollback:** flip `features.*` flags per node — no redeploy. **`eth_sendRawTransaction` contract (documented):** returns the locally-computed hash immediately; MRE routing is async; rejections are logged structured (reason, primary node) but not returned to the caller — unchanged since v1.2.x, now explicit.
 
 ### Stage S3 — Capability wave (priority order) `[status: pending]` — entry: S2 GA; each item independently shippable
 - [ ] OP-2 pending-tx visibility in `eth_getTransactionByHash` (flagged)
@@ -136,9 +143,17 @@ Watch on canary: jmdn submit success/error log signatures (`gRPCclient.go:194-23
 
 ## 6. Pending / Deferred / Open
 
-**Pending:** P-1 O-1 decision blocks part of Phase 1.
+**Pending (live blockers only):**
+- P-2 **Staging MRE availability** (operator, ETA ~1 day from 2026-07-15) — gates Phase 2 live half + S1 GA canary.
+- ~~P-3 S2 design sign-off~~ → **APPROVED (operator 2026-07-15):** (1) `txpool_content` behind `features.txpool_content`, default OFF — geth-parity namespace opt-in + shared-MRE DoS surface control (one call = up to 5000-tx scatter-gather on public 8545). (2) Pending nonce = **layered best-effort**: `max(confirmed TxNonce, submission-cache nonce, contiguous pool run)`, behind `features.pending_nonce` default OFF; includes the `SecurityCache.LoadAccounts` regression fix (DB reload must not clobber the optimistic nonce — keep max). Documented residual gap: tx submitted via a different node while in the sequencing in-flight window is invisible to all three views; **full correctness = mempool ack protocol (U-9/P1-B), explicitly DEFERRED (operator)** — tracked here as D-5 and in MRE `docs/UPSTREAM-ISSUES-AUDIT-202607.md` (U-9). (3) Submit-failure surfacing: docs only in S2; rejection metric revisited in S3.
+- P-4 Upstream issues U-1..U-11 drafted → `Mempool-Routing-Engine/docs/UPSTREAM-ISSUES-AUDIT-202607.md` — operator to file on GitHub (U-3 gates S3/OP-2; U-9/U-6 are P0 tx-loss vectors).
+- ~~P-1 O-1 decision~~ resolved (delete; executed in `d4f0091`).
 
 **Deferred:** D-1 orchestrator migration (legacy `GetPendingTransactions`+`GetMempoolStats`; same map; MRE legacy retires after). D-2 CI proto-drift check / buf registry. D-3 MRE legacy handler removal. D-4 upstream ledger §4 → file as MRE/mempool issues (owner: Naman to triage which are pre-GA).
+
+**D-5 (operator, 2026-07-15): mempool ack protocol deferred.** Peek→build→ack (U-9 / TX-ordering P1-B) is the systemic fix for the sequencing in-flight window (txs invisible between destructive pull and block apply). Deferred as a separate MRE/mempool effort; jmdn's S2 pending-nonce ships best-effort with the gap documented. Keep U-9 in the MRE handover doc in sync with this tracker.
+
+**FLEET CONSTRAINT (operator, 2026-07-15):** external nodes run **jmdn v1.2.2**, which speaks the **legacy** RoutingService. Therefore: (1) MRE's legacy surface is **frozen** — D-3 retirement blocked until the external fleet upgrades to a v1-client release; (2) any upstream fix (U-1..U-11) must preserve legacy wire behavior exactly; (3) legacy and v1 must remain a **single source of truth** — this holds by construction today (both handlers delegate to the same `service.RoutingService`, `grpc_v1.go:63`, verified §1) and every upstream PR must keep it that way; (4) S1/S2/S3 are jmdn-client-side only and cannot affect v1.2.2 nodes — they see changes only when they upgrade jmdn, and S2 features default OFF even then.
 
 **Open questions:**
 - O-1 ~~unused wrappers~~ → **RESOLVED (operator 2026-07-15): DELETE** — zero in-tree callers verified twice. Scope: `MempoolClient.GetTransaction`, `.GetPendingTransactions`, `.SubmitTransactions`, `.GetFeeStatistics`, `WrapperGetFeeStatistics`, commented `_EstimateGas` block; one fee path survives behind the new port.
@@ -174,3 +189,5 @@ Full audit after S1-P0/P1/P2-unit landed (`7a28064`, `d4f0091`, `5cb0db3`). Find
 | 2026-07-15 | **RPC truth audit, all 9 v1 RPCs** (handler→service→node) | §1 table; 3 MISLEADING/PARTIAL verdicts; fee stub confirmed vs `FEE_ARCHITECTURE.md:98` |
 | 2026-07-15 | **jmdn surface map, 15 surfaces** | §2 table; txpool_content disabled at `handlers.go:510-524`; `pending` tag ignored at `handlers.go:537-539`; zero destructive-pending callers |
 | 2026-07-15 | Fee mapper parity legacy vs v1 (empty fields identical) | Confirmed — no parity regression in S1 |
+| 2026-07-15 | S1 commits landed: `7a28064` (P0), `d4f0091` (P1), `5cb0db3` (P2 unit), `c58058b` (bufconn + hashless fix) | Tree clean; `go test ./Block/` all green; `make build` (CGO) green operator-side |
+| 2026-07-15 | Wire semantics: nil in repeated proto field → EMPTY message client-side | Verified via bufconn test failure; adapter drops hashless entries |

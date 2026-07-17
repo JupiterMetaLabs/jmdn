@@ -94,6 +94,8 @@ logging:
 features:
   use_legacy_bft: false
   grotrack: false            # Requires ports.metrics > 0
+  txpool_content: false      # txpool_content RPC (heavy: 5000-tx MRE peek per call)
+  pending_nonce: false       # honor "pending" tag in eth_getTransactionCount (best-effort)
 
 # ── FastSync V2 ─────────────────────────────────────────
 fastsync:

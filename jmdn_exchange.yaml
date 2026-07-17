@@ -118,6 +118,16 @@ features:
   use_legacy_bft: false
   grotrack: false
 
+  # txpool_content JSON-RPC method (geth-style namespace opt-in).
+  # Each call fetches up to 5000 pending txs from shared infrastructure --
+  # enable on monitoring nodes only if you need mempool visibility.
+  txpool_content: false
+
+  # eth_getTransactionCount "pending" tag support: returns the next usable
+  # nonce including queued/submitted transactions (best-effort; see release
+  # notes). When false, "pending" returns the confirmed nonce (legacy behavior).
+  pending_nonce: false
+
 # ── 8. FastSync ──────────────────────────────────────────────────────────────
 fastsync:
   enabled: true

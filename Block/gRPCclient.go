@@ -50,6 +50,13 @@ func SubmitToMempool(loggerCtx context.Context, tx *config.Transaction, txHash s
 	if !result.Accepted {
 		return fmt.Errorf("mempool rejected transaction: %s", result.RejectReason)
 	}
+
+	// Feed the pending-nonce tracker: this node has routed the tx, so its
+	// nonce is committed-or-in-flight from this node's perspective even once
+	// the sequencer pulls it out of the observable mempool (tracker D-5).
+	if tx.From != nil {
+		pendingNonceTracker.Record(tx.From.Hex(), tx.Nonce)
+	}
 	return nil
 }
 
