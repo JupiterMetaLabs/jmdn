@@ -154,6 +154,15 @@ clean system design; interface-driven (consumers depend on a routing-client port
 
 ---
 
+## 6a. S1 milestone audit (2026-07-15, post-commit)
+
+Full audit after S1-P0/P1/P2-unit landed (`7a28064`, `d4f0091`, `5cb0db3`). Findings:
+
+- **Fixed during audit:** `routing_port.go` failed gofmt → would have failed CI (`golangci-lint fmt --diff`). Struct-alignment only; committed as a style fix.
+- **Verified:** commits match intent; zero references to legacy proto/deleted symbols outside `Mempool/proto/` (now fully orphaned — Phase 3 cleanup); timeout parity (submit 10s, reads 5s); rejection log-signature preserved verbatim (`"mempool rejected transaction: %s"` — dashboards keep matching); deleted constants had zero users (proven by green build); routing conn leak fixed (`CloseRoutingClient` now deferred).
+- **Known weaknesses (accepted):** (a) `mreRouter` adapter has no unit tests — response mapping verified by source-reading MRE's mapper; real proof = staging byte-compare (optional bufconn test if staging slips); (b) **Peek path has zero production traffic in S1** — its only consumer (`txpool_content`) stays disabled until S2, so the S1 canary validates submit/stats/fees only; peek's first real exercise is the staging integration test; (c) full `golangci-lint run` executed operator-side only.
+- Confidence: submit/stats/fees HIGH (tested + source-level parity, pending live confirm); peek MEDIUM until staging.
+
 ## 7. Verification log
 
 | Date | Check | Result |

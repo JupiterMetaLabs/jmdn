@@ -190,9 +190,13 @@ func (r *mreRouter) PeekPendingTransactions(loggerCtx context.Context, limit int
 		return nil, fmt.Errorf("PeekPendingTransactions: %w", err)
 	}
 
+	// Skip unusable entries. Note: nil elements in a repeated proto field do
+	// not survive the wire — the marshaller encodes them as EMPTY messages —
+	// so the effective server-bug guard is the empty-hash check, not the nil
+	// check (which only covers direct in-process use).
 	txs := make([]PendingTx, 0, len(resp.GetTransactions()))
 	for _, tx := range resp.GetTransactions() {
-		if tx != nil {
+		if tx != nil && tx.GetHash() != "" {
 			txs = append(txs, tx)
 		}
 	}

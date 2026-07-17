@@ -96,10 +96,10 @@ type MempoolStatsSummary struct {
 // FeeByTxType and HistoricalTrend exist on the wire but are never populated
 // upstream (tracker U-1) and are deliberately not exposed here.
 type FeeStats struct {
-	MinFee    uint64
-	MaxFee    uint64
-	MedianFee uint64
-	MeanFee   uint64
+	MinFee      uint64
+	MaxFee      uint64
+	MedianFee   uint64
+	MeanFee     uint64
 	Recommended RecommendedFees
 }
 
