@@ -78,15 +78,14 @@ func InitDIDPropagation(existingClient *config.PooledConnection) error {
 	return initErr
 }
 
-// deriveMessageID builds a stable, content-derived dedup key from the transport
-// peer ID and the account address. Deriving the key from message content (rather
-// than a caller-supplied ID) keeps the bloom-filter dedup consistent across
-// re-announcements of the same account.
-func deriveMessageID(transportPeer string, addr common.Address) string {
-	hasher := sha256.New()
-	hasher.Write([]byte(transportPeer))
-	hasher.Write([]byte(addr.Hex()))
-	return base64.URLEncoding.EncodeToString(hasher.Sum(nil))[:24]
+// deriveMessageID builds the bloom-filter dedup key from the account address
+// alone. The key is therefore identical on every node and at every hop, so a
+// given account is deduped consistently network-wide, and it cannot be varied
+// by a peer to defeat dedup. An account address maps to a single creation
+// event, so keying on the address is sufficient for this channel.
+func deriveMessageID(addr common.Address) string {
+	sum := sha256.Sum256([]byte(addr.Hex()))
+	return base64.URLEncoding.EncodeToString(sum[:])[:24]
 }
 
 // isAccountMessageProcessed checks if this message has already been processed
@@ -244,9 +243,9 @@ func HandleDIDStream(stream network.Stream) {
 	// routing, and logging rather than the field carried in the message.
 	msg.Sender = remotePeer
 
-	// Derive the dedup key from message content so re-announcements of the same
-	// account map to a stable key.
-	msg.ID = deriveMessageID(remotePeer, msg.Account.Address)
+	// Derive the dedup key from the account address so re-announcements of the
+	// same account map to a stable, network-wide key.
+	msg.ID = deriveMessageID(msg.Account.Address)
 
 	// Normalize the volatile ledger fields synchronously here, before both
 	// storage and re-forwarding. StorePropagatedAccount applies the same policy,
@@ -428,8 +427,8 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 		Hops:      0,
 	}
 
-	// Derive ID from local peer ID + address (same scheme as HandleDIDStream).
-	msg.ID = deriveMessageID(msg.Sender, doc.Address)
+	// Derive the dedup key from the account address (same scheme as HandleDIDStream).
+	msg.ID = deriveMessageID(doc.Address)
 
 	// First, add/update the DID in our own database
 	storeAccountInDB(msg)
