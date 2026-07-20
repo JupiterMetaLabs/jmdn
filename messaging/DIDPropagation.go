@@ -78,12 +78,15 @@ func InitDIDPropagation(existingClient *config.PooledConnection) error {
 	return initErr
 }
 
-// generateAccountMessageID creates a unique ID for a Account message
-func generateAccountMessageID(sender string, Account common.Address) string {
+// deriveMessageID builds a stable, content-derived dedup key from the transport
+// peer ID and the account address. Deriving the key from message content (rather
+// than a caller-supplied ID) keeps the bloom-filter dedup consistent across
+// re-announcements of the same account.
+func deriveMessageID(transportPeer string, addr common.Address) string {
 	hasher := sha256.New()
-	hasher.Write([]byte(fmt.Sprintf("%s-%s", sender, Account.Hex())))
-	hash := base64.URLEncoding.EncodeToString(hasher.Sum(nil))
-	return hash[:16] // Return first 16 chars for brevity
+	hasher.Write([]byte(transportPeer))
+	hasher.Write([]byte(addr.Hex()))
+	return base64.URLEncoding.EncodeToString(hasher.Sum(nil))[:24]
 }
 
 // isAccountMessageProcessed checks if this message has already been processed
@@ -190,6 +193,11 @@ func updateDIDSet(client *config.PooledConnection, did string) error {
 }
 */
 
+// maxDIDFrameBytes caps the JSON frame size for a single DID message. Account
+// documents are well under this bound; the cap keeps reads bounded and memory
+// use predictable.
+const maxDIDFrameBytes = 64 * 1024 // 64 KB
+
 // HandleDIDStream processes incoming DID propagation messages
 func HandleDIDStream(stream network.Stream) {
 	if DIDLocalGRO == nil {
@@ -202,14 +210,14 @@ func HandleDIDStream(stream network.Stream) {
 	}
 	defer stream.Close()
 
-	// Get the remote peer
+	// Transport peer — used to derive a content ID and override msg.Sender.
 	remotePeer := stream.Conn().RemotePeer().String()
 
 	// Record metrics
 	metrics.MessagesReceivedCounter.WithLabelValues("did", remotePeer).Inc()
 
-	// Read the incoming message
-	reader := bufio.NewReader(stream)
+	// Read the incoming message with a bounded frame size.
+	reader := bufio.NewReader(io.LimitReader(stream, maxDIDFrameBytes))
 	messageBytes, err := reader.ReadBytes('\n')
 	if err != nil {
 		if err != io.EOF {
@@ -226,9 +234,37 @@ func HandleDIDStream(stream network.Stream) {
 		return
 	}
 
+	// Drop messages with no usable account data early.
+	if msg.Account == nil || msg.Account.Address == (common.Address{}) {
+		log.Warn().Str("peer", remotePeer).Msg("DID message missing valid account, dropping")
+		return
+	}
+
+	// Use the transport peer identity as the authoritative origin for dedup,
+	// routing, and logging rather than the field carried in the message.
+	msg.Sender = remotePeer
+
+	// Derive the dedup key from message content so re-announcements of the same
+	// account map to a stable key.
+	msg.ID = deriveMessageID(remotePeer, msg.Account.Address)
+
+	// Normalize the volatile ledger fields synchronously here, before both
+	// storage and re-forwarding. StorePropagatedAccount applies the same policy,
+	// but it runs in a goroutine (storeAccountInDB) and mutates the shared
+	// msg.Account pointer concurrently with the forward below; normalizing once
+	// on this object keeps the stored and forwarded copies consistent and
+	// deterministic.
+	if DB_OPs.NormalizePropagatedAccountState(msg.Account) {
+		log.Debug().
+			Str("msg_id", msg.ID).
+			Str("peer", remotePeer).
+			Str("account", msg.Account.Address.Hex()).
+			Msg("Normalized propagated account ledger fields at ingress")
+	}
+
 	// Check if we've already processed this message
 	if isAccountMessageProcessed(msg.ID) {
-		log.Debug().Str("message_id", msg.ID).Msg("Duplicate Account message received")
+		log.Debug().Str("message_id", msg.ID).Msg("Duplicate Account message received, dropping")
 		return
 	}
 
@@ -392,8 +428,8 @@ func PropagateDID(h host.Host, doc *DB_OPs.Account) error {
 		Hops:      0,
 	}
 
-	// Generate a unique ID based on sender, DID and timestamp
-	msg.ID = generateAccountMessageID(msg.Sender, doc.Address)
+	// Derive ID from local peer ID + address (same scheme as HandleDIDStream).
+	msg.ID = deriveMessageID(msg.Sender, doc.Address)
 
 	// First, add/update the DID in our own database
 	storeAccountInDB(msg)

@@ -9,9 +9,13 @@ import (
 	"time"
 
 	pb "gossipnode/CLI/proto"
+	"gossipnode/DB_OPs"
 	"gossipnode/config/settings"
 	"gossipnode/config/version"
+	"gossipnode/messaging"
 	"gossipnode/pkg/gatekeeper"
+
+	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/codenotary/immudb/pkg/api/schema"
@@ -211,6 +215,32 @@ func (s *CLIServer) GetDID(ctx context.Context, req *pb.DIDRequest) (*pb.DIDDocu
 		CreatedAt: timestamppb.New(time.Unix(0, doc.CreatedAt)),
 		UpdatedAt: timestamppb.New(time.Unix(0, doc.UpdatedAt)),
 	}, nil
+}
+
+func (s *CLIServer) PropagateDID(ctx context.Context, req *pb.DIDPropagationRequest) (*pb.OperationResponse, error) {
+	if req.Did == "" || req.PublicKey == "" {
+		return &pb.OperationResponse{Success: false, Message: "did and public_key are required"}, nil
+	}
+
+	addr := common.HexToAddress(req.PublicKey)
+
+	if err := DB_OPs.CreateAccount(nil, req.Did, addr, nil); err != nil {
+		return &pb.OperationResponse{Success: false, Message: fmt.Sprintf("failed to create account: %v", err)}, nil
+	}
+
+	doc, err := DB_OPs.GetAccount(nil, addr)
+	if err != nil {
+		return &pb.OperationResponse{Success: false, Message: fmt.Sprintf("failed to get account: %v", err)}, nil
+	}
+
+	// Balance is not taken from the request: it is owned by block processing
+	// and reconciliation, so a newly created account starts at zero.
+
+	if err := messaging.PropagateDID(s.handler.Node.Host, doc); err != nil {
+		return &pb.OperationResponse{Success: false, Message: fmt.Sprintf("failed to propagate DID: %v", err)}, nil
+	}
+
+	return &pb.OperationResponse{Success: true, Message: "DID propagated successfully"}, nil
 }
 
 // Database Operations
