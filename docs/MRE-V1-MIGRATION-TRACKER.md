@@ -4,6 +4,8 @@ Living document — single source of truth. Update statuses/checkboxes in place;
 
 **Branch:** `feat/mre-v1-proto-migration` (off main) · **MRE proto pin:** `e808b96` · **Evidence standard:** every claim file:line-verified; anything else marked ASSUMED.
 
+**STATUS (2026-07-17): S1+S2 code-complete → PR stage.** Commits: `7a28064` (P0 protos) · `d4f0091` (P1 port+client) · `5cb0db3` (P2 unit tests) · `c58058b` (bufconn + hashless fix) · `490b6fe` (S2 features). All tests green, CGO build green, lint 0 issues. Remaining gates (staging MRE): S1 parity byte-compare, peek first live traffic, S2 conformance, O-5 timeout budget, 48h canary → GA. Non-breaking by construction: wire-compatible RPCs, S2 features default OFF, external v1.2.2 fleet unaffected.
+
 ---
 
 ## 1. API truth audit — v1 RPC name vs implementation (VERIFIED)
@@ -115,7 +117,7 @@ Goal: v1 client, behavior byte-equivalent. No user-visible change.
 
 **Rollback:** redeploy previous build (client-only). No data migration, no coordination.
 
-### Stage S2 — Correctness fixes `[code DONE 2026-07-15 — awaiting operator review; live gates behind staging]`
+### Stage S2 — Correctness fixes `[code DONE — committed 490b6fe 2026-07-17; live gates behind staging]`
 Design approved (P-3). **Implementation discovery:** the Security `security_cache` is per-request scoped (`Security.go:81-82` — created + Closed inside each AllChecks call), so no durable submission-nonce view existed; built a purpose-built `Block.PendingNonceTracker` instead (same approved semantics). The `LoadAccounts` regression fix became moot (nothing lives long enough to regress).
 - [x] Flags: `features.txpool_content` / `features.pending_nonce` (config.go, loader defaults, both yaml examples documented) — default OFF
 - [x] `txpool_content` re-enabled behind flag (`handlers.go`); disabled == `-32601` exactly as today; rationale comment inline
