@@ -16,6 +16,7 @@ import (
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/bits-and-blooms/bloom/v3"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/rs/zerolog/log"
@@ -24,6 +25,7 @@ import (
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/txindex"
+	"gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/helper"
 	"gossipnode/messaging/BlockProcessing"
@@ -241,7 +243,12 @@ func HandleBlockStream(stream network.Stream) {
 	// Mark as processed to prevent duplicate processing
 	markMessageProcessed(messageID)
 
-	// For ZK blocks, prioritize forwarding over processing
+	// For ZK blocks: FAIL CLOSED. A remotely received block must be validated
+	// BEFORE it is forwarded, processed, or persisted (JMDN-001). Previously the
+	// handler forwarded first and treated the committee certificate as optional,
+	// so any peer could inject a block that mutated state and propagated
+	// network-wide. Nothing about an unvalidated remote block may now cross into
+	// forwarding or state mutation.
 	if msg.Type == "zkblock" && msg.Block != nil {
 		log.Info().
 			Str("block_hash", msg.Block.BlockHash.Hex()).
@@ -249,7 +256,32 @@ func HandleBlockStream(stream network.Stream) {
 			Int("txn_count", len(msg.Block.Transactions)).
 			Msg("Received ZK block from peer")
 
-		// STEP 1: FORWARD BLOCK FIRST - increment hops and forward to other peers
+		// A consensus REJECTION notice carries no block to apply. Discard it
+		// without processing (and without forwarding an unauthenticated
+		// rejection, which would otherwise be a cheap censorship/DoS vector).
+		if status, ok := msg.Data["status"]; ok && status == "rejected" {
+			log.Info().
+				Str("block_hash", msg.Block.BlockHash.Hex()).
+				Msg("Received consensus REJECTION for block - discarding")
+			helper.NotifyBroadcast(msg)
+			return
+		}
+
+		// FAIL-CLOSED GATE — runs synchronously before any side effect.
+		if rej := validateRemoteBlock(context.Background(), msg); rej != nil {
+			log.Warn().
+				Err(rej.err).
+				Str("reason", rej.reason).
+				Str("peer", remotePeer).
+				Str("block_hash", msg.Block.BlockHash.Hex()).
+				Uint64("block_number", msg.Block.BlockNumber).
+				Msg("Rejecting invalid remote block before forward/process/persist")
+			metrics.BlocksRejectedCounter.WithLabelValues(rej.reason, remotePeer).Inc()
+			timeoutPeer(remotePeer, 30*time.Second)
+			return // no forward, no mutation, no persistence
+		}
+
+		// Block validated → forwarding is now safe.
 		if msg.Hops < config.MaxHops {
 			msg.Hops++
 			if globalHost != nil {
@@ -257,9 +289,8 @@ func HandleBlockStream(stream network.Stream) {
 					Str("block_hash", msg.Block.BlockHash.Hex()).
 					Uint64("block_number", msg.Block.BlockNumber).
 					Int("hops", msg.Hops).
-					Msg("Forwarding ZK block to peers")
+					Msg("Forwarding validated ZK block to peers")
 
-				// Don't wait for forwarding to complete
 				BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
 					forwardBlock(globalHost, msg)
 					return nil
@@ -269,61 +300,8 @@ func HandleBlockStream(stream network.Stream) {
 			}
 		}
 
-		// STEP 2: PROCESS AND VALIDATE BLOCK AFTERWARD
+		// PROCESS AND PERSIST — only reachable after the gate has passed.
 		BlockPropagationLocalGRO.Go(GRO.BlockPropagationProcessAndValidateThread, func(ctx context.Context) error {
-			// Check if block is explicitly rejected
-			if status, ok := msg.Data["status"]; ok && status == "rejected" {
-				log.Info().
-					Str("block_hash", msg.Block.BlockHash.Hex()).
-					Msg("Received consensus REJECTION for block - discarding")
-				return nil
-			}
-
-			// Verify buddy BLS signatures if provided; require majority to continue
-			if blsJSON, ok := msg.Data["bls_results"]; ok && len(blsJSON) > 0 {
-				var blsResponses []BLS_Signer.BLSresponse
-				if err := json.Unmarshal([]byte(blsJSON), &blsResponses); err != nil {
-					log.Error().Err(err).Msg("Failed to unmarshal bls_results; skipping verification")
-				} else if len(blsResponses) > 0 {
-					// Count how many verified signatures explicitly favor (+1)
-					validYes := 0
-					validTotal := 0
-					for _, r := range blsResponses {
-						// verify signature for stated vote (+1 if Agree else -1)
-						vote := int8(-1)
-						if r.Agree {
-							vote = 1
-						}
-						if err := BLS_Verifier.Verify(r, vote); err != nil {
-							log.Warn().Err(err).Str("peer", r.PeerID).Msg("BLS verification failed for buddy response")
-							continue
-						}
-						validTotal++
-						if vote == 1 {
-							validYes++
-						}
-					}
-					if validTotal == 0 {
-						log.Error().Msg("No valid BLS signatures - skipping block processing (irrelevant block)")
-						return fmt.Errorf("no valid BLS signatures - skipping block processing (irrelevant block)")
-					}
-					needed := (validTotal / 2) + 1
-					if validYes < needed {
-						log.Error().
-							Int("valid_yes", validYes).
-							Int("needed", needed).
-							Int("valid_total", validTotal).
-							Msg("BLS majority not in favor (+1) - skipping block processing (irrelevant block)")
-						return fmt.Errorf("BLS majority not in favor (+1) - skipping block processing (irrelevant block)")
-					}
-					log.Info().
-						Int("valid_yes", validYes).
-						Int("needed", needed).
-						Int("valid_total", validTotal).
-						Msg("BLS majority in favor verified - continuing block processing")
-				}
-			}
-
 			// Create DB clients for processing
 			mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 			if err != nil {
@@ -412,6 +390,129 @@ func HandleBlockStream(stream network.Stream) {
 
 	// Notify explorer or other UI components
 	helper.NotifyBroadcast(msg)
+}
+
+// blockRejection carries a machine-readable reason label (for the
+// BlocksRejectedCounter metric) alongside the human-readable error.
+type blockRejection struct {
+	reason string
+	err    error
+}
+
+// reject builds a *blockRejection with a metric reason and a formatted error.
+func reject(reason, format string, args ...interface{}) *blockRejection {
+	return &blockRejection{reason: reason, err: fmt.Errorf(format, args...)}
+}
+
+// certQuorum is the number of distinct, verified committee +1 votes required to
+// accept a block. It mirrors the sequencer's threshold in
+// Sequencer/Consensus.go (strict majority of the fixed committee).
+func certQuorum() int { return (config.MaxMainPeers / 2) + 1 }
+
+// validateRemoteBlock is the fail-closed gate for every remotely received
+// zkblock (JMDN-001). It MUST pass before the block is forwarded, processed, or
+// persisted. It deliberately performs only authenticity / internal-consistency
+// checks that do NOT depend on mutable DB state (balances, live nonces), so it
+// cannot false-reject an honest block due to the tx-application race that makes
+// strict DB-nonce checks unsafe on this path. Deeper checks (state re-execution,
+// STARK-proof verification, canonical block-hash recompute) are tracked
+// separately — see audits/JMDN-001-remediation-plan.md.
+func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRejection {
+	b := msg.Block
+	if b == nil {
+		return reject("nil_block", "block is nil")
+	}
+	if len(b.Transactions) == 0 {
+		return reject("empty_block", "block %s has no transactions", b.BlockHash.Hex())
+	}
+
+	// (Signature/chain-ID authenticity) Every transaction must carry a valid
+	// signature for the configured chain. CheckSignature recovers the sender via
+	// the chain-bound signer and compares it against tx.From; it reads no
+	// balances or live nonces, so it is race-free. This is what prevents an
+	// injected block from transferring other users' assets: the attacker cannot
+	// forge sender ECDSA signatures.
+	for i := range b.Transactions {
+		tx := b.Transactions[i]
+		if tx.From == nil {
+			return reject("bad_signature", "tx %d has nil sender", i)
+		}
+		ok, err := Security.CheckSignature(&tx, ctx)
+		if err != nil || !ok {
+			return reject("bad_signature", "tx %d (%s) signature invalid: %v", i, tx.Hash.Hex(), err)
+		}
+	}
+
+	// (In-block nonce consistency) Each sender's nonces must be strictly
+	// ascending with no duplicates within the block. Catches replayed / reordered
+	// / duplicated transactions without depending on DB state.
+	lastNonce := make(map[common.Address]uint64, len(b.Transactions))
+	for i := range b.Transactions {
+		tx := b.Transactions[i]
+		from := *tx.From
+		if prev, seen := lastNonce[from]; seen && tx.Nonce <= prev {
+			return reject("bad_nonce",
+				"tx %d sender %s nonce %d not strictly ascending (prev %d)",
+				i, from.Hex(), tx.Nonce, prev)
+		}
+		lastNonce[from] = tx.Nonce
+	}
+
+	// (Committee certificate) MANDATORY and must reach quorum. Absent/empty is a
+	// rejection, not a pass — this closes the "omit bls_results" bypass.
+	return verifyBlockCertificate(msg)
+}
+
+// verifyBlockCertificate enforces a mandatory committee certificate that reaches
+// quorum. Votes are de-duplicated by signer PeerID so a single signer cannot be
+// replayed to fake a majority.
+//
+// SECURITY LIMITATION (tracked, not yet closed): BLS_Verifier.Verify still
+// trusts the public key carried in-band in each response, and the signed message
+// is the unbound constant "vote:<v>" (see AVC/.../BLS_Signer/Signer.go). This
+// gate therefore does NOT yet stop an adversary who self-generates keys and
+// signs "vote:1" under quorum-many distinct PeerIDs. Fully closing that requires
+// (a) binding the vote to chainID+number+blockHash and (b) checking each key
+// against an out-of-band authorized committee registry — both are
+// consensus-breaking protocol changes requiring coordinated rollout. See
+// audits/JMDN-001-remediation-plan.md (D3/D4). Combined with the mandatory tx
+// signature checks above, the current gate still removes the unauthorized-
+// asset-transfer impact of forged blocks.
+func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
+	raw, ok := msg.Data["bls_results"]
+	if !ok || len(raw) == 0 {
+		return reject("no_certificate", "block %s has no committee certificate", msg.Block.BlockHash.Hex())
+	}
+
+	var responses []BLS_Signer.BLSresponse
+	if err := json.Unmarshal([]byte(raw), &responses); err != nil {
+		return reject("malformed_certificate", "malformed bls_results: %v", err)
+	}
+	if len(responses) == 0 {
+		return reject("no_certificate", "empty committee certificate")
+	}
+
+	countedYes := make(map[string]bool)
+	for _, r := range responses {
+		vote := int8(-1)
+		if r.Agree {
+			vote = 1
+		}
+		if err := BLS_Verifier.Verify(r, vote); err != nil {
+			log.Warn().Err(err).Str("peer", r.PeerID).Msg("BLS verification failed for committee response")
+			continue
+		}
+		if vote == 1 {
+			countedYes[r.PeerID] = true // dedup by signer identity
+		}
+	}
+
+	if needed := certQuorum(); len(countedYes) < needed {
+		return reject("quorum_not_met",
+			"committee quorum not met: %d distinct verified +1 votes, need %d",
+			len(countedYes), needed)
+	}
+	return nil
 }
 
 // forwardBlock sends the block message to all connected peers

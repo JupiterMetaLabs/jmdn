@@ -99,6 +99,19 @@ var (
 		[]string{"protocol", "direction"},
 	)
 
+	// BlocksRejectedCounter counts remotely-received blocks dropped by the
+	// fail-closed validation gate before any forwarding, mutation, or
+	// persistence (JMDN-001). The "reason" label identifies which check failed
+	// (e.g. no_certificate, quorum_not_met, bad_signature, bad_nonce) and is a
+	// key signal for detecting block-injection attempts.
+	BlocksRejectedCounter = factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "p2p_blocks_rejected_total",
+			Help: "The total number of remote blocks rejected by validation before processing",
+		},
+		[]string{"reason", "peer_id"},
+	)
+
 	// File transfer metrics
 	FileTransferBytesCounter = factory.NewCounterVec(
 		prometheus.CounterOpts{
