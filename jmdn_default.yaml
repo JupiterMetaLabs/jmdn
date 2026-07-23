@@ -230,5 +230,5 @@ alerts:
 # Prefer env vars for secrets:
 #   JMDN_NODE_SELECTION_MNEMONIC, JMDN_NETWORK_SALT
 selection:
-  mnemonic: ""               # Prefer env: JMDN_NODE_SELECTION_MNEMONIC
-  salt: ""                   # Prefer env: JMDN_NETWORK_SALT
+  mnemonic: ""                        # REQUIRED on the sequencer. Secret, no default. Prefer env: JMDN_NODE_SELECTION_MNEMONIC
+  salt: "jmdt-node-selection-v1"      # Not secret; must match network-wide. Built-in default. Prefer env: JMDN_NETWORK_SALT

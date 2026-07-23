@@ -24,7 +24,7 @@ func TestSelectionEnvBinding(t *testing.T) {
 	}
 }
 
-func TestSelectionDefaultsEmpty(t *testing.T) {
+func TestSelectionDefaults(t *testing.T) {
 	os.Unsetenv("JMDN_NODE_SELECTION_MNEMONIC")
 	os.Unsetenv("JMDN_NETWORK_SALT")
 
@@ -32,8 +32,12 @@ func TestSelectionDefaultsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Selection.Mnemonic != "" || cfg.Selection.Salt != "" {
-		t.Fatalf("expected empty selection defaults (fail-closed), got %q / %q",
-			cfg.Selection.Mnemonic, cfg.Selection.Salt)
+	// Mnemonic is secret and fail-closed → no default.
+	if cfg.Selection.Mnemonic != "" {
+		t.Fatalf("expected empty mnemonic default (fail-closed), got %q", cfg.Selection.Mnemonic)
+	}
+	// Salt is not secret → carries a built-in network-wide default.
+	if cfg.Selection.Salt != DefaultSelectionSalt {
+		t.Fatalf("expected default salt %q, got %q", DefaultSelectionSalt, cfg.Selection.Salt)
 	}
 }
