@@ -94,11 +94,15 @@ Basic node startup (requires configuration file):
 
 ### Configuration
 
-We recommend using the configuration generation script:
+**Manual Configuration (Recommended):**
+Copy the default template and manually inject your Node Alias and secrets:
 
 ```bash
-./Scripts/setup_config.sh
+sudo cp jmdn_default.yaml /etc/jmdn/jmdn.yaml
+sudo nano /etc/jmdn/jmdn.yaml
 ```
+
+*(Note: The legacy `setup_config.sh` tool is deprecated as it lacks automated secrets injection).*
 
 Alternatively, you can configure via flags (see `jmdn --help`):
 
