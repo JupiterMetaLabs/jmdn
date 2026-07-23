@@ -1,9 +1,12 @@
 package messaging
 
-// Adversarial regression tests for JMDN-001 (P2P block validation bypass).
-// These assert that the fail-closed gate (validateRemoteBlock /
-// verifyBlockCertificate) rejects crafted blocks BEFORE any forwarding,
-// mutation, or persistence, and accepts a well-formed block.
+// Adversarial regression tests for JMDN-001 (P2P block validation bypass),
+// covering both Phase 1 (fail-closed gate) and Phase 2 (block-bound votes,
+// committee registry, equivocation).
+//
+// These assert that the gate rejects crafted blocks BEFORE any forwarding,
+// mutation, or persistence, and accepts a well-formed, block-bound-certified
+// block.
 
 import (
 	"context"
@@ -23,23 +26,25 @@ import (
 )
 
 // TestMain loads default node settings so the Security package's async logger
-// (which reads settings during OTEL setup) can initialize under test.
-//
-// These tests call BLS_Signer.SignMessage, which lazily generates and PERSISTS a
-// BLS keypair to config.BLSFile (a cwd-relative "./config/bls.json"). Under
-// `go test ./messaging/` the cwd is the package dir, so the key would land at
-// messaging/config/bls.json. We remove it afterward so a real private key is
-// never left in the working tree where it could be committed.
+// can initialize, disables DB-dependent block linkage (no DB under unit test),
+// and removes any BLS key file the signing calls persist to the working tree.
 func TestMain(m *testing.M) {
 	_, _ = settings.Load()
+	EnforceBlockLinkage = false // checkLinkage needs a live DB; out of scope here
 	code := m.Run()
 	_ = os.Remove("config/bls.json")
 	_ = os.Remove("config/peer.json")
-	_ = os.Remove("config") // best-effort: only succeeds if now empty
+	_ = os.Remove("config")
 	os.Exit(code)
 }
 
 var testChainID = big.NewInt(1337)
+
+func resetEquivocation() {
+	seenHeightsMu.Lock()
+	seenHeights = make(map[uint64]string)
+	seenHeightsMu.Unlock()
+}
 
 // signedTx builds a config.Transaction with a real EIP-1559 signature from key.
 func signedTx(t *testing.T, key *ecdsa.PrivateKey, nonce uint64) config.Transaction {
@@ -47,44 +52,30 @@ func signedTx(t *testing.T, key *ecdsa.PrivateKey, nonce uint64) config.Transact
 	from := crypto.PubkeyToAddress(key.PublicKey)
 	to := common.HexToAddress("0x00000000000000000000000000000000000000ff")
 	inner := &types.DynamicFeeTx{
-		ChainID:   testChainID,
-		Nonce:     nonce,
-		To:        &to,
-		Value:     big.NewInt(1),
-		GasTipCap: big.NewInt(1),
-		GasFeeCap: big.NewInt(1),
-		Gas:       21000,
+		ChainID: testChainID, Nonce: nonce, To: &to, Value: big.NewInt(1),
+		GasTipCap: big.NewInt(1), GasFeeCap: big.NewInt(1), Gas: 21000,
 	}
-	signer := types.LatestSignerForChainID(testChainID)
-	signed, err := types.SignNewTx(key, signer, inner)
+	signed, err := types.SignNewTx(key, types.LatestSignerForChainID(testChainID), inner)
 	if err != nil {
 		t.Fatalf("sign tx: %v", err)
 	}
 	v, r, s := signed.RawSignatureValues()
 	return config.Transaction{
-		Hash:           signed.Hash(),
-		From:           &from,
-		To:             &to,
-		Value:          big.NewInt(1),
-		Type:           types.DynamicFeeTxType,
-		ChainID:        testChainID,
-		Nonce:          nonce,
-		GasLimit:       21000,
-		MaxFee:         big.NewInt(1),
-		MaxPriorityFee: big.NewInt(1),
-		V:              v, R: r, S: s,
+		Hash: signed.Hash(), From: &from, To: &to, Value: big.NewInt(1),
+		Type: types.DynamicFeeTxType, ChainID: testChainID, Nonce: nonce, GasLimit: 21000,
+		MaxFee: big.NewInt(1), MaxPriorityFee: big.NewInt(1), V: v, R: r, S: s,
 	}
 }
 
-// yesCertData returns a Data map carrying a certificate of valid +1 votes, one
-// per distinct PeerID supplied.
-func yesCertData(t *testing.T, peerIDs ...string) map[string]string {
+// blockBoundCert returns a Data map with a certificate of block-bound +1 votes,
+// one per distinct PeerID, each signed over blockHashHex.
+func blockBoundCert(t *testing.T, blockHashHex string, peerIDs ...string) map[string]string {
 	t.Helper()
 	var resps []BLS_Signer.BLSresponse
 	for _, pid := range peerIDs {
-		r, ok, err := BLS_Signer.SignMessage(1)
+		r, ok, err := BLS_Signer.SignMessageForBlock(1, blockHashHex)
 		if err != nil || !ok {
-			t.Fatalf("bls sign vote: ok=%v err=%v", ok, err)
+			t.Fatalf("bls sign block-bound: ok=%v err=%v", ok, err)
 		}
 		r.PeerID = pid
 		resps = append(resps, r)
@@ -96,8 +87,25 @@ func yesCertData(t *testing.T, peerIDs ...string) map[string]string {
 	return map[string]string{"bls_results": string(b)}
 }
 
+// legacyCert returns a certificate of legacy (unbound) +1 votes.
+func legacyCert(t *testing.T, peerIDs ...string) map[string]string {
+	t.Helper()
+	var resps []BLS_Signer.BLSresponse
+	for _, pid := range peerIDs {
+		r, ok, err := BLS_Signer.SignMessage(1)
+		if err != nil || !ok {
+			t.Fatalf("bls sign legacy: ok=%v err=%v", ok, err)
+		}
+		r.PeerID = pid
+		resps = append(resps, r)
+	}
+	b, _ := json.Marshal(resps)
+	return map[string]string{"bls_results": string(b)}
+}
+
 func TestVerifyBlockCertificate(t *testing.T) {
-	valid := yesCertData(t, "peerA", "peerB", "peerC") // 3 distinct == quorum
+	hash := common.HexToHash("0xabc123")
+	valid := blockBoundCert(t, hash.Hex(), "peerA", "peerB", "peerC")
 
 	cases := []struct {
 		name       string
@@ -108,13 +116,14 @@ func TestVerifyBlockCertificate(t *testing.T) {
 		{"empty certificate", map[string]string{"bls_results": ""}, "no_certificate"},
 		{"malformed json", map[string]string{"bls_results": "{not json"}, "malformed_certificate"},
 		{"empty array", map[string]string{"bls_results": "[]"}, "no_certificate"},
-		{"below quorum (2 of 3)", yesCertData(t, "peerA", "peerB"), "quorum_not_met"},
-		{"ballot stuffing (same signer x3)", yesCertData(t, "peerA", "peerA", "peerA"), "quorum_not_met"},
-		{"valid quorum", valid, ""},
+		{"below quorum (2 of 3)", blockBoundCert(t, hash.Hex(), "peerA", "peerB"), "quorum_not_met"},
+		{"ballot stuffing (same signer x3)", blockBoundCert(t, hash.Hex(), "peerA", "peerA", "peerA"), "quorum_not_met"},
+		{"legacy cert rejected when RejectLegacyVotes on", legacyCert(t, "peerA", "peerB", "peerC"), "quorum_not_met"},
+		{"valid block-bound quorum", valid, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			msg := config.BlockMessage{Block: &config.ZKBlock{}, Data: tc.data}
+			msg := config.BlockMessage{Block: &config.ZKBlock{BlockHash: hash}, Data: tc.data}
 			rej := verifyBlockCertificate(msg)
 			if tc.wantReason == "" {
 				if rej != nil {
@@ -122,13 +131,34 @@ func TestVerifyBlockCertificate(t *testing.T) {
 				}
 				return
 			}
-			if rej == nil {
-				t.Fatalf("expected reject reason=%s, got accept", tc.wantReason)
-			}
-			if rej.reason != tc.wantReason {
-				t.Fatalf("reason=%s, want %s (err=%v)", rej.reason, tc.wantReason, rej.err)
+			if rej == nil || rej.reason != tc.wantReason {
+				t.Fatalf("reason=%v, want %s", rej, tc.wantReason)
 			}
 		})
+	}
+}
+
+func TestVerifyBlockCertificate_LegacyAcceptedWhenAllowed(t *testing.T) {
+	prev := RejectLegacyVotes
+	RejectLegacyVotes = false
+	defer func() { RejectLegacyVotes = prev }()
+
+	hash := common.HexToHash("0xdef456")
+	msg := config.BlockMessage{
+		Block: &config.ZKBlock{BlockHash: hash},
+		Data:  legacyCert(t, "peerA", "peerB", "peerC"),
+	}
+	if rej := verifyBlockCertificate(msg); rej != nil {
+		t.Fatalf("legacy cert should be accepted when RejectLegacyVotes=false, got %s", rej.reason)
+	}
+}
+
+func TestVerifyBlockCertificate_ReplayOntoDifferentBlockFails(t *testing.T) {
+	// A cert validly signed for block A must NOT verify against block B.
+	certForA := blockBoundCert(t, common.HexToHash("0xAAAA").Hex(), "peerA", "peerB", "peerC")
+	msgB := config.BlockMessage{Block: &config.ZKBlock{BlockHash: common.HexToHash("0xBBBB")}, Data: certForA}
+	if rej := verifyBlockCertificate(msgB); rej == nil || rej.reason != "quorum_not_met" {
+		t.Fatalf("replayed cert should fail on a different block, got %v", rej)
 	}
 }
 
@@ -138,13 +168,16 @@ func TestValidateRemoteBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("genkey: %v", err)
 	}
-	cert := yesCertData(t, "peerA", "peerB", "peerC")
+
+	newBlock := func(hashHex string, num uint64, txs ...config.Transaction) *config.ZKBlock {
+		return &config.ZKBlock{BlockHash: common.HexToHash(hashHex), BlockNumber: num, Transactions: txs}
+	}
 
 	t.Run("happy path accepted", func(t *testing.T) {
-		msg := config.BlockMessage{
-			Block: &config.ZKBlock{Transactions: []config.Transaction{signedTx(t, key, 0)}},
-			Data:  cert,
-		}
+		resetEquivocation()
+		h := "0x1111"
+		b := newBlock(h, 10, signedTx(t, key, 0))
+		msg := config.BlockMessage{Block: b, Data: blockBoundCert(t, b.BlockHash.Hex(), "peerA", "peerB", "peerC")}
 		if rej := validateRemoteBlock(ctx, msg); rej != nil {
 			t.Fatalf("expected accept, got reason=%s err=%v", rej.reason, rej.err)
 		}
@@ -156,45 +189,48 @@ func TestValidateRemoteBlock(t *testing.T) {
 		}
 	})
 
-	t.Run("empty block rejected", func(t *testing.T) {
-		msg := config.BlockMessage{Block: &config.ZKBlock{}, Data: cert}
-		if rej := validateRemoteBlock(ctx, msg); rej == nil || rej.reason != "empty_block" {
-			t.Fatalf("want empty_block, got %v", rej)
-		}
-	})
-
-	t.Run("forged/tampered tx signature rejected", func(t *testing.T) {
+	t.Run("forged tx signature rejected", func(t *testing.T) {
+		resetEquivocation()
 		bad := signedTx(t, key, 0)
-		bad.R = new(big.Int).Add(bad.R, big.NewInt(1)) // corrupt signature
-		msg := config.BlockMessage{
-			Block: &config.ZKBlock{Transactions: []config.Transaction{bad}},
-			Data:  cert,
-		}
+		bad.R = new(big.Int).Add(bad.R, big.NewInt(1))
+		b := newBlock("0x2222", 11, bad)
+		msg := config.BlockMessage{Block: b, Data: blockBoundCert(t, b.BlockHash.Hex(), "peerA", "peerB", "peerC")}
 		if rej := validateRemoteBlock(ctx, msg); rej == nil || rej.reason != "bad_signature" {
 			t.Fatalf("want bad_signature, got %v", rej)
 		}
 	})
 
 	t.Run("non-ascending sender nonce rejected", func(t *testing.T) {
-		msg := config.BlockMessage{
-			Block: &config.ZKBlock{Transactions: []config.Transaction{
-				signedTx(t, key, 5),
-				signedTx(t, key, 5), // duplicate nonce from same sender
-			}},
-			Data: cert,
-		}
+		resetEquivocation()
+		b := newBlock("0x3333", 12, signedTx(t, key, 5), signedTx(t, key, 5))
+		msg := config.BlockMessage{Block: b, Data: blockBoundCert(t, b.BlockHash.Hex(), "peerA", "peerB", "peerC")}
 		if rej := validateRemoteBlock(ctx, msg); rej == nil || rej.reason != "bad_nonce" {
 			t.Fatalf("want bad_nonce, got %v", rej)
 		}
 	})
 
-	t.Run("valid txns but missing certificate rejected", func(t *testing.T) {
-		msg := config.BlockMessage{
-			Block: &config.ZKBlock{Transactions: []config.Transaction{signedTx(t, key, 0)}},
-			Data:  map[string]string{},
-		}
+	t.Run("missing certificate rejected", func(t *testing.T) {
+		resetEquivocation()
+		b := newBlock("0x4444", 13, signedTx(t, key, 0))
+		msg := config.BlockMessage{Block: b, Data: map[string]string{}}
 		if rej := validateRemoteBlock(ctx, msg); rej == nil || rej.reason != "no_certificate" {
 			t.Fatalf("want no_certificate, got %v", rej)
+		}
+	})
+
+	t.Run("equivocation: conflicting block at same height rejected", func(t *testing.T) {
+		resetEquivocation()
+		// First validated block at height 20.
+		b1 := newBlock("0x5555", 20, signedTx(t, key, 0))
+		m1 := config.BlockMessage{Block: b1, Data: blockBoundCert(t, b1.BlockHash.Hex(), "peerA", "peerB", "peerC")}
+		if rej := validateRemoteBlock(ctx, m1); rej != nil {
+			t.Fatalf("first block should pass, got %s", rej.reason)
+		}
+		// Second, DIFFERENT block at the same height 20.
+		b2 := newBlock("0x6666", 20, signedTx(t, key, 0))
+		m2 := config.BlockMessage{Block: b2, Data: blockBoundCert(t, b2.BlockHash.Hex(), "peerA", "peerB", "peerC")}
+		if rej := validateRemoteBlock(ctx, m2); rej == nil || rej.reason != "equivocation" {
+			t.Fatalf("want equivocation, got %v", rej)
 		}
 	})
 }

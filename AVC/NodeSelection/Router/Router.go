@@ -3,6 +3,8 @@ package Router
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"gossipnode/AVC/NodeSelection/pkg/selection"
@@ -16,8 +18,31 @@ import (
 
 type NodeselectionRouter struct{}
 
-const mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-const networkSalt = "test-salt"
+// SECURITY (JMDN-001): the VRF key material for node/committee selection MUST be
+// secret and per-network. It was previously hardcoded to the public BIP39 test
+// mnemonic ("abandon abandon ... about") with salt "test-salt" — a value known
+// to the entire world, which makes every VRF output predictable AND forgeable
+// (any attacker can derive the same key, reproduce the proofs, and bias which
+// nodes are selected). We now REQUIRE operator-provided secret material via
+// environment and refuse to run selection with an insecure default.
+//
+//	JMDN_NODE_SELECTION_MNEMONIC — the network's secret BIP39 mnemonic
+//	JMDN_NETWORK_SALT            — the network's VRF domain-separation salt
+//
+// TODO(JMDN-001): derive the selection key from this node's own libp2p private
+// key (peer.json) instead of a shared mnemonic, so no secret is shared across
+// nodes at all.
+func selectionKeyMaterial() (mnemonic string, salt string, err error) {
+	mnemonic = strings.TrimSpace(os.Getenv("JMDN_NODE_SELECTION_MNEMONIC"))
+	salt = strings.TrimSpace(os.Getenv("JMDN_NETWORK_SALT"))
+	if mnemonic == "" {
+		return "", "", fmt.Errorf("JMDN_NODE_SELECTION_MNEMONIC is not set: refusing to use the public BIP39 test mnemonic for VRF selection (predictable and forgeable)")
+	}
+	if salt == "" {
+		return "", "", fmt.Errorf("JMDN_NETWORK_SALT is not set: refusing to use a default VRF salt")
+	}
+	return mnemonic, salt, nil
+}
 
 func NewNodeselectionRouter() *NodeselectionRouter {
 	return &NodeselectionRouter{}
@@ -27,6 +52,10 @@ func (r *NodeselectionRouter) GetBuddyNodes(number int) ([]*selection.BuddyNode,
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	mnemonic, networkSalt, err := selectionKeyMaterial()
+	if err != nil {
+		return nil, err
+	}
 	_, privateKey, err := selection.GenerateKeysFromMnemonic(mnemonic)
 	if err != nil {
 		return nil, err

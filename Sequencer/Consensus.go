@@ -1900,20 +1900,72 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		}
 	}
 
+	// Block hash this round's votes must be bound to (JMDN-001 / D3).
+	blockHashHex := ""
+	if consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
+		blockHashHex = consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
+	}
+
 	for _, r := range blsResults {
 		vote := int8(-1)
 		if r.Agree {
 			vote = 1
 		}
-		if err := BLS_Verifier.Verify(r, vote); err != nil {
-			span.RecordError(err)
+
+		// Prefer block-bound verification. A legacy (unbound) "vote:<v>"
+		// signature is detected separately so we can alert on it.
+		blockBoundOK := blockHashHex != "" && BLS_Verifier.VerifyForBlock(r, blockHashHex, vote) == nil
+		legacyOK := false
+		if !blockBoundOK {
+			legacyOK = BLS_Verifier.Verify(r, vote) == nil
+		}
+
+		if !blockBoundOK && !legacyOK {
+			span.RecordError(fmt.Errorf("bls verify failed for peer %s", r.PeerID))
 			logger().NamedLogger.Warn(trace_ctx, "BLS verification failed for peer",
-				ion.String("error", err.Error()),
 				ion.String("peer_id", r.PeerID),
 				ion.Int64("vote", int64(vote)),
 				ion.String("function", "Consensus.VerifyConsensusWithBLS"))
 			continue
 		}
+
+		if legacyOK {
+			// Legacy unbound vote — replayable across blocks (D3). Alert to
+			// Telegram with the offending peer ID.
+			logger().NamedLogger.Warn(trace_ctx, "SECURITY: legacy (unbound) BLS vote received",
+				ion.String("peer_id", r.PeerID),
+				ion.String("block_hash", blockHashHex),
+				ion.String("function", "Consensus.VerifyConsensusWithBLS"))
+			Alerts.NewAlertBuilder(alert_ctx).
+				AlertName(helper.Alert_Consensus_LegacyVoteReceived).
+				Status(Alerts.AlertStatusError).
+				Severity(Alerts.SeverityError).
+				Label("peer_id", r.PeerID).
+				Label("block_hash", blockHashHex).
+				Description(fmt.Sprintf("Legacy (unbound) BLS vote from peer %s for block %s", r.PeerID, blockHashHex)).
+				Send()
+			if messaging.RejectLegacyVotes {
+				continue // do not count legacy votes toward quorum
+			}
+		}
+
+		// Committee membership (D4): a vote from a key not in the authorized
+		// registry is dropped and alerted with the offending peer ID.
+		if messaging.EnforceCommitteeRegistry && !messaging.CommitteeKeyAuthorized(r.PeerID, r.PubKey) {
+			logger().NamedLogger.Warn(trace_ctx, "SECURITY: vote from unauthorized committee key",
+				ion.String("peer_id", r.PeerID),
+				ion.String("function", "Consensus.VerifyConsensusWithBLS"))
+			Alerts.NewAlertBuilder(alert_ctx).
+				AlertName(helper.Alert_Consensus_UnauthorizedVoteKey).
+				Status(Alerts.AlertStatusError).
+				Severity(Alerts.SeverityError).
+				Label("peer_id", r.PeerID).
+				Label("block_hash", blockHashHex).
+				Description(fmt.Sprintf("Vote from unauthorized committee key: peer %s (block %s)", r.PeerID, blockHashHex)).
+				Send()
+			continue
+		}
+
 		validTotal++
 		peerLine := fmt.Sprintf("  - %s (vote: %d)", r.PeerID, vote)
 		if vote == 1 {

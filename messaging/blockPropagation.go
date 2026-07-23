@@ -22,7 +22,6 @@ import (
 	"github.com/rs/zerolog/log"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
-	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/txindex"
 	"gossipnode/Security"
@@ -458,26 +457,34 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 		lastNonce[from] = tx.Nonce
 	}
 
+	// (Chain linkage) parent-hash + height, catchup-safe (see checkLinkage).
+	if EnforceBlockLinkage {
+		if rej := checkLinkage(ctx, b); rej != nil {
+			return rej
+		}
+	}
+
 	// (Committee certificate) MANDATORY and must reach quorum. Absent/empty is a
-	// rejection, not a pass — this closes the "omit bls_results" bypass.
-	return verifyBlockCertificate(msg)
+	// rejection, not a pass — this closes the "omit bls_results" bypass (D2).
+	if rej := verifyBlockCertificate(msg); rej != nil {
+		return rej
+	}
+
+	// (Equivocation) Recorded LAST — only after the block is fully validated —
+	// so an attacker cannot poison the height->hash map with an unvalidated
+	// block and cause the genuine block to be rejected. A second, DIFFERENT
+	// validated block at a height already seen is a signed fork → rejected.
+	return checkEquivocation(b.BlockNumber, b.BlockHash.Hex())
 }
 
 // verifyBlockCertificate enforces a mandatory committee certificate that reaches
-// quorum. Votes are de-duplicated by signer PeerID so a single signer cannot be
-// replayed to fake a majority.
-//
-// SECURITY LIMITATION (tracked, not yet closed): BLS_Verifier.Verify still
-// trusts the public key carried in-band in each response, and the signed message
-// is the unbound constant "vote:<v>" (see AVC/.../BLS_Signer/Signer.go). This
-// gate therefore does NOT yet stop an adversary who self-generates keys and
-// signs "vote:1" under quorum-many distinct PeerIDs. Fully closing that requires
-// (a) binding the vote to chainID+number+blockHash and (b) checking each key
-// against an out-of-band authorized committee registry — both are
-// consensus-breaking protocol changes requiring coordinated rollout. See
-// audits/JMDN-001-remediation-plan.md (D3/D4). Combined with the mandatory tx
-// signature checks above, the current gate still removes the unauthorized-
-// asset-transfer impact of forged blocks.
+// quorum. Verification is delegated to countCertQuorum, which:
+//   - verifies each vote as BLOCK-BOUND (D3) — a signature over this block's
+//     hash, so a vote cannot be replayed onto another block; legacy "vote:<v>"
+//     signatures are accepted only while RejectLegacyVotes is false;
+//   - counts only signers whose key is in the authorized committee registry
+//     when EnforceCommitteeRegistry is on and a registry is configured (D4);
+//   - de-duplicates by PeerID so one signer cannot fake a majority.
 func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
 	raw, ok := msg.Data["bls_results"]
 	if !ok || len(raw) == 0 {
@@ -492,25 +499,10 @@ func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
 		return reject("no_certificate", "empty committee certificate")
 	}
 
-	countedYes := make(map[string]bool)
-	for _, r := range responses {
-		vote := int8(-1)
-		if r.Agree {
-			vote = 1
-		}
-		if err := BLS_Verifier.Verify(r, vote); err != nil {
-			log.Warn().Err(err).Str("peer", r.PeerID).Msg("BLS verification failed for committee response")
-			continue
-		}
-		if vote == 1 {
-			countedYes[r.PeerID] = true // dedup by signer identity
-		}
-	}
-
-	if needed := certQuorum(); len(countedYes) < needed {
+	yes := countCertQuorum(responses, msg.Block.BlockHash.Hex())
+	if needed := certQuorum(); yes < needed {
 		return reject("quorum_not_met",
-			"committee quorum not met: %d distinct verified +1 votes, need %d",
-			len(countedYes), needed)
+			"committee quorum not met: %d authorized verified +1 votes, need %d", yes, needed)
 	}
 	return nil
 }

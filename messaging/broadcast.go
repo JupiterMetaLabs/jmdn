@@ -705,14 +705,26 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 	if len(blsResults) > 0 {
 		validYes := 0
 		validTotal := 0
+		blockHashHex := block.BlockHash.Hex()
 		for _, r := range blsResults {
 			// Verify signature for stated vote (+1 if Agree else -1)
 			vote := int8(-1)
 			if r.Agree {
 				vote = 1
 			}
-			if err := BLS_Verifier.Verify(r, vote); err != nil {
-				log.Warn().Err(err).Str("peer", r.PeerID).Msg("BLS verification failed for buddy response")
+			// Prefer block-bound verification (JMDN-001 / D3); accept legacy only
+			// while RejectLegacyVotes is off.
+			verified := BLS_Verifier.VerifyForBlock(r, blockHashHex, vote) == nil
+			if !verified && !RejectLegacyVotes {
+				verified = BLS_Verifier.Verify(r, vote) == nil
+			}
+			if !verified {
+				log.Warn().Str("peer", r.PeerID).Msg("BLS verification failed for buddy response")
+				continue
+			}
+			// Committee membership (D4): drop votes from unregistered keys when enforced.
+			if EnforceCommitteeRegistry && !CommitteeKeyAuthorized(r.PeerID, r.PubKey) {
+				log.Warn().Str("peer", r.PeerID).Msg("vote from unauthorized committee key")
 				continue
 			}
 			validTotal++

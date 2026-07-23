@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"strings"
 
 	blssign "gossipnode/AVC/BLS/bls-sign"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
@@ -15,6 +16,45 @@ func messageForVote(vote int8) ([]byte, error) {
 		return nil, fmt.Errorf("invalid vote: %d", vote)
 	}
 	return []byte("vote:" + strconv.Itoa(int(vote))), nil
+}
+
+// CanonicalBlockVoteMessage returns the canonical bytes for a vote bound to a
+// specific block. `bindings` must uniquely identify the block (the caller uses
+// the block hash hex). It MUST match BLS_Signer.SignMessageForBlock exactly.
+func CanonicalBlockVoteMessage(bindings string, vote int8) ([]byte, error) {
+	if vote != -1 && vote != 1 {
+		return nil, fmt.Errorf("invalid vote: %d", vote)
+	}
+	// Normalization MUST match BLS_Signer.normalizeBindings (lowercase + trim).
+	bindings = strings.ToLower(strings.TrimSpace(bindings))
+	if bindings == "" {
+		return nil, fmt.Errorf("empty block bindings")
+	}
+	// Prefix kept in sync with BLS_Signer.BlockBoundVotePrefix ("zkvote:").
+	return []byte("zkvote:" + bindings + ":" + strconv.Itoa(int(vote))), nil
+}
+
+// VerifyForBlock verifies a response's signature against a block-bound vote
+// message. Unlike Verify (which checks the unbound "vote:<v>"), a signature that
+// passes here is provably an attestation for THIS block and cannot be replayed
+// onto another block (JMDN-001 / D3).
+func VerifyForBlock(resp BLS_Signer.BLSresponse, bindings string, vote int8) error {
+	msg, err := CanonicalBlockVoteMessage(bindings, vote)
+	if err != nil {
+		return err
+	}
+	pubBytes, err := hex.DecodeString(resp.PubKey)
+	if err != nil {
+		return fmt.Errorf("invalid pubkey hex: %w", err)
+	}
+	sigBytes, err := hex.DecodeString(resp.Signature)
+	if err != nil {
+		return fmt.Errorf("invalid signature hex: %w", err)
+	}
+	if err := blssign.BLSVerify(pubBytes, msg, sigBytes); err != nil {
+		return fmt.Errorf("bls verify (block-bound) failed for peer %s: %w", resp.PeerID, err)
+	}
+	return nil
 }
 
 // Verify checks a single BLS response against the provided vote value.

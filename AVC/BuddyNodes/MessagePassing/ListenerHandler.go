@@ -1588,7 +1588,16 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		attribute.String("target_block_hash", targetBlockHash),
 	)
 
-	blsResp, status, err := BLS_Signer.SignMessage(result)
+	// Sign the vote BOUND to this block (JMDN-001 / D3) so it cannot be replayed
+	// onto another block. Falls back to legacy unbound signing only when
+	// block-bound emission is disabled or the block hash is unavailable.
+	var blsResp BLS_Signer.BLSresponse
+	var status bool
+	if BLS_Signer.EmitBlockBoundVotes && targetBlockHash != "" {
+		blsResp, status, err = BLS_Signer.SignMessageForBlock(result, targetBlockHash)
+	} else {
+		blsResp, status, err = BLS_Signer.SignMessage(result)
+	}
 	if err != nil || !status {
 		voteResultSpan.RecordError(err)
 		voteResultSpan.SetAttributes(attribute.String("bls_signature_status", "failed"))
