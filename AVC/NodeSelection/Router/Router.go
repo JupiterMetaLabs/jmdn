@@ -33,13 +33,26 @@ type NodeselectionRouter struct{}
 // key (peer.json) instead of a shared mnemonic, so no secret is shared across
 // nodes at all.
 func selectionKeyMaterial() (mnemonic string, salt string, err error) {
-	mnemonic = strings.TrimSpace(os.Getenv("JMDN_NODE_SELECTION_MNEMONIC"))
-	salt = strings.TrimSpace(os.Getenv("JMDN_NETWORK_SALT"))
+	// Primary source: YAML/Viper config (settings.selection.*). Viper also binds
+	// JMDN_NODE_SELECTION_MNEMONIC / JMDN_NETWORK_SALT, so env overrides YAML.
+	sel := settings.Get().Selection
+	mnemonic = strings.TrimSpace(sel.Mnemonic)
+	salt = strings.TrimSpace(sel.Salt)
+
+	// Direct env fallback (defensive: covers callers that build config without
+	// going through Viper's BindEnv).
 	if mnemonic == "" {
-		return "", "", fmt.Errorf("JMDN_NODE_SELECTION_MNEMONIC is not set: refusing to use the public BIP39 test mnemonic for VRF selection (predictable and forgeable)")
+		mnemonic = strings.TrimSpace(os.Getenv("JMDN_NODE_SELECTION_MNEMONIC"))
 	}
 	if salt == "" {
-		return "", "", fmt.Errorf("JMDN_NETWORK_SALT is not set: refusing to use a default VRF salt")
+		salt = strings.TrimSpace(os.Getenv("JMDN_NETWORK_SALT"))
+	}
+
+	if mnemonic == "" {
+		return "", "", fmt.Errorf("selection.mnemonic (JMDN_NODE_SELECTION_MNEMONIC) is not set: refusing to use the public BIP39 test mnemonic for VRF selection (predictable and forgeable)")
+	}
+	if salt == "" {
+		return "", "", fmt.Errorf("selection.salt (JMDN_NETWORK_SALT) is not set: refusing to use a default VRF salt")
 	}
 	return mnemonic, salt, nil
 }

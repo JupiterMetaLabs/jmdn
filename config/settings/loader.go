@@ -43,6 +43,12 @@ func Load() (*NodeConfig, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	v.AutomaticEnv()
 
+	// Bind the selection secrets to their explicit, documented env var names
+	// (these differ from the auto-derived JMDN_SELECTION_* names, so bind them
+	// directly). BindEnv with explicit names bypasses the prefix.
+	_ = v.BindEnv("selection.mnemonic", "JMDN_NODE_SELECTION_MNEMONIC")
+	_ = v.BindEnv("selection.salt", "JMDN_NETWORK_SALT")
+
 	// 6. Unmarshal into struct
 	cfg := DefaultConfig()
 	if err := v.Unmarshal(&cfg); err != nil {
@@ -199,6 +205,10 @@ func setDefaults(v *viper.Viper) {
 		v.SetDefault(prefix+"key_file", policy.KeyFile)
 		v.SetDefault(prefix+"ca_file", policy.CAFile)
 	}
+
+	// Selection (VRF key material — no safe default; empty is rejected at use)
+	v.SetDefault("selection.mnemonic", d.Selection.Mnemonic)
+	v.SetDefault("selection.salt", d.Selection.Salt)
 
 	// Alerts
 	v.SetDefault("alerts.url", d.Alerts.URL)

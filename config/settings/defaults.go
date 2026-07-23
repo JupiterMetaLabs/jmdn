@@ -94,5 +94,9 @@ func DefaultConfig() NodeConfig {
 		},
 		Security: DefaultSecurityConfig(),
 		Alerts:   DefaultAlertsConfig(),
+		// Selection: intentionally empty. There is NO safe default for VRF key
+		// material — an empty value is rejected at use time (fail-closed) so the
+		// insecure public test mnemonic can never be used implicitly.
+		Selection: SelectionSettings{Mnemonic: "", Salt: ""},
 	}
 }

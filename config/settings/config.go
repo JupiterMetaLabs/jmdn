@@ -10,16 +10,35 @@ import (
 // NodeConfig is the top-level configuration for a JMDN node.
 // Each section maps to a YAML key in jmdn.yaml.
 type NodeConfig struct {
-	Node     NodeSettings     `mapstructure:"node"`
-	Network  NetworkSettings  `mapstructure:"network"`
-	Ports    PortSettings     `mapstructure:"ports"`
-	Binds    BindSettings     `mapstructure:"binds"`
-	Database DatabaseSettings `mapstructure:"database"`
-	Logging  LoggingSettings  `mapstructure:"logging"`
-	Features FeatureSettings  `mapstructure:"features"`
-	Security SecurityConfig   `mapstructure:"security"`
-	Alerts   AlertsConfig     `mapstructure:"alerts"`
-	FastSync FastSyncSettings `mapstructure:"fastsync"`
+	Node      NodeSettings      `mapstructure:"node"`
+	Network   NetworkSettings   `mapstructure:"network"`
+	Ports     PortSettings      `mapstructure:"ports"`
+	Binds     BindSettings      `mapstructure:"binds"`
+	Database  DatabaseSettings  `mapstructure:"database"`
+	Logging   LoggingSettings   `mapstructure:"logging"`
+	Features  FeatureSettings   `mapstructure:"features"`
+	Security  SecurityConfig    `mapstructure:"security"`
+	Alerts    AlertsConfig      `mapstructure:"alerts"`
+	FastSync  FastSyncSettings  `mapstructure:"fastsync"`
+	Selection SelectionSettings `mapstructure:"selection"`
+}
+
+// SelectionSettings holds the SECRET VRF key material used for node / committee
+// selection (JMDN-001). These MUST be unique per network and kept secret: the
+// derived VRF key was previously hardcoded to the public BIP39 test mnemonic,
+// making selection predictable and forgeable. Empty values are rejected at use
+// time (fail-closed) rather than falling back to an insecure default.
+//
+// YAML:
+//
+//	selection:
+//	  mnemonic: "<network secret BIP39 mnemonic>"
+//	  salt: "<network VRF salt>"
+//
+// Env (highest priority): JMDN_NODE_SELECTION_MNEMONIC, JMDN_NETWORK_SALT.
+type SelectionSettings struct {
+	Mnemonic string `mapstructure:"mnemonic" yaml:"mnemonic"`
+	Salt     string `mapstructure:"salt"     yaml:"salt"`
 }
 
 // NodeSettings defines the identity of this node.
