@@ -59,7 +59,7 @@ cd jmdn
 To run a specific release:
 
 ```bash
-git checkout v1.2.0  # replace with target version
+git checkout v1.2.2  # replace with target version
 ```
 
 ---
@@ -105,13 +105,16 @@ To verify the build:
 
 ## Step 5 — Configure Your Node
 
-Generate your node configuration interactively. This creates `/etc/jmdn/config.env`:
+Copy the default template and manually inject your Node Alias and secrets:
 
 ```bash
-sudo ./Scripts/setup_config.sh
+sudo cp jmdn_default.yaml /etc/jmdn/jmdn.yaml
+sudo nano /etc/jmdn/jmdn.yaml
 ```
 
-Follow the prompts to set your **Node Alias** and configure ports. For all available options, see `config/config.go` or run:
+*(Note: The legacy `setup_config.sh` tool is deprecated as it lacks automated secrets injection).*
+
+For all available options, see `config/config.go` or run:
 
 ```bash
 ./jmdn --help

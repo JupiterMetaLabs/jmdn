@@ -26,6 +26,13 @@ TARGET_FILE="${TARGET_DIR}/jmdn.yaml"
 
 echo -e "${COLOR_GREEN}=== JMDN Configuration Setup ===${COLOR_NC}"
 
+echo -e "\n${COLOR_RED}========================================================================${COLOR_NC}"
+echo -e "${COLOR_RED}WARNING: This script is deprecated and maintained for legacy purposes.${COLOR_NC}"
+echo -e "${COLOR_RED}It is highly recommended to copy jmdn_default.yaml to /etc/jmdn/jmdn.yaml${COLOR_NC}"
+echo -e "${COLOR_RED}and configure it manually to properly inject all secrets and tuning parameters.${COLOR_NC}"
+echo -e "${COLOR_RED}========================================================================\n${COLOR_NC}"
+
+sleep 2
 # Require root privileges
 require_root
 

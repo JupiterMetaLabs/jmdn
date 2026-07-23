@@ -77,6 +77,17 @@ fi
 install_systemd_services() {
     log_info "Installing systemd services..."
 
+    # Configure Journald Limits to prevent disk exhaustion
+    log_info "Configuring journald log limits..."
+    mkdir -p /etc/systemd/journald.conf.d
+    cat > /etc/systemd/journald.conf.d/jmdn-limits.conf <<EOF
+[Journal]
+SystemMaxUse=${JMDN_JOURNALD_MAX_USE:-5G}
+MaxRetentionSec=${JMDN_JOURNALD_MAX_RETENTION:-30d}
+EOF
+    systemctl restart systemd-journald
+    log_ok "Applied journald limits (Max: ${JMDN_JOURNALD_MAX_USE:-5G}, Retention: ${JMDN_JOURNALD_MAX_RETENTION:-30d})"
+
     # ImmuDB systemd service
     log_info "Creating immudb.service..."
     cat > /etc/systemd/system/immudb.service <<EOF
