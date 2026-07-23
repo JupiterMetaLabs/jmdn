@@ -16,6 +16,7 @@ import (
 	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/codenotary/immudb/pkg/client"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -207,15 +208,14 @@ func storeAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 
 	_, err = PooledConnection.Client.Client.Get(ctx, accKey)
 	if err == nil {
-		// Account already exists - do not overwrite
-		// This prevents "Fake Balance Attack" where a peer propagates a high balance
-		// returning nil treats it as "success" (idempotent)
+		// Account already exists — treat as an idempotent no-op and keep the
+		// stored record authoritative rather than overwriting it here.
 		return nil
 	}
 	if err != ErrNotFound && !strings.Contains(err.Error(), "key not found") && !strings.Contains(err.Error(), "tbtree: key not found") {
-		// Get failed for a reason other than "key not found" (e.g. timeout, connection
-		// drop). Fall-through would write Balance:"0" on top of a funded account —
-		// abort instead.
+		// Get failed for a reason other than "key not found" (e.g. timeout,
+		// connection drop). Falling through would overwrite an existing funded
+		// record with a fresh zero-balance one, so abort instead.
 		return fmt.Errorf("storeAccount: pre-check Get failed: %w", err)
 	}
 
@@ -2179,6 +2179,34 @@ func CheckNonceAndGetLatest(PooledConnection *config.PooledConnection, fromAddr 
 // [AUDIT OK]: Read-modify-write pattern verified safe; GetAccount validates existence; 3 call sites in BlockProcessing.
 // [AUDIT OK]: State transition logic (TxCountSent++, Nonce update) and blockTimestamp propagation verified safe; 1 call site in BlockProcessing.
 // [AUDIT OK]: Nil checks on account/address, connection pooling handling, and direct storage verified safe; 1 call site in DIDPropagation.
+// NormalizePropagatedAccountState resets the volatile ledger fields of an
+// account received via DID propagation to their canonical initial values.
+// Balance, TxNonce, and TxCountSent are owned by block processing and
+// reconciliation, so an identity-propagation event always initializes them to
+// zero. This is the single source of truth for that policy, shared by the store
+// path (StorePropagatedAccount) and the forward path (HandleDIDStream) so both
+// the stored and the re-broadcast copy stay consistent.
+//
+// Left untouched: the ART identity Nonce (preserved for Fastsync ART routing)
+// and CreatedAt/UpdatedAt (timestamp policy is owned by the caller — the store
+// path stamps them locally; the forward path keeps them so downstream LWW
+// ordering is not affected). Pure and unit-tested.
+//
+// Returns true if any reset field carried a non-canonical value on input, so
+// callers can record it for observability.
+func NormalizePropagatedAccountState(acc *Account) bool {
+	if acc == nil {
+		return false
+	}
+	adjusted := (acc.Balance != "" && acc.Balance != "0") ||
+		acc.TxNonce != 0 ||
+		acc.TxCountSent != 0
+	acc.Balance = "0"
+	acc.TxNonce = 0
+	acc.TxCountSent = 0
+	return adjusted
+}
+
 // StorePropagatedAccount securely stores an account received from the P2P network,
 // perfectly preserving its ART Nonce and other properties to ensure Fastsync consensus.
 func StorePropagatedAccount(PooledConnection *config.PooledConnection, account *Account) error {
@@ -2203,6 +2231,20 @@ func StorePropagatedAccount(PooledConnection *config.PooledConnection, account *
 	if shouldReturnConnection {
 		defer PutAccountsConnection(PooledConnection)
 	}
+
+	// Initialize volatile ledger fields (balance, tx counters) to their
+	// canonical values via the shared policy. A true return means the incoming
+	// copy carried non-canonical values; log it for observability.
+	if NormalizePropagatedAccountState(account) {
+		log.Debug().
+			Str("address", account.Address.Hex()).
+			Str("did", account.DIDAddress).
+			Msg("Normalized propagated account ledger fields before store")
+	}
+	// Timestamps are stamped locally on receipt (identity-creation event).
+	now := time.Now().UTC().UnixNano()
+	account.CreatedAt = now
+	account.UpdatedAt = now
 
 	return storeAccount(PooledConnection, account)
 }

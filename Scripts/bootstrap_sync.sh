@@ -62,6 +62,15 @@ fi
 
 log "First run detected — starting bootstrap sync."
 
+# ── Ensure services are stopped ───────────────────────────
+# If running on a live system, immudb will hold file locks on the data directory.
+# We must stop it (and jmdn which depends on it) before manipulating data.
+if command -v systemctl >/dev/null 2>&1; then
+    log "Stopping jmdn and immudb services (if they exist)..."
+    systemctl stop jmdn 2>/dev/null || true
+    systemctl stop immudb 2>/dev/null || true
+fi
+
 # ── Ensure required tools ─────────────────────────────────
 for tool in curl wget awk md5sum tar python3; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool is required but not found."
@@ -127,6 +136,10 @@ if [ -d "$DATA_DIR" ] && [ "$(ls -A "$DATA_DIR" 2>/dev/null)" ]; then
     # DATA_DIR may be a Docker volume mount point — cannot mv the directory
     # itself (Device or resource busy). Move contents instead.
     find "$DATA_DIR" -mindepth 1 -maxdepth 1 -exec mv {} "$BACKUP_DIR/" \;
+    
+    # Prune old backups (keep only the 1 most recent) to prevent disk bloat
+    log "Pruning old backups (keeping 1)..."
+    ls -1dt "${BACKUP_BASE}"/data_* 2>/dev/null | tail -n +2 | xargs -r rm -rf
 fi
 
 # ── Clear immudb identity/state files ────────────────────
