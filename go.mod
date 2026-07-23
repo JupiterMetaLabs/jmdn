@@ -19,7 +19,7 @@ require (
 	github.com/holiman/uint256 v1.3.2
 	github.com/libp2p/go-libp2p v0.47.0
 	github.com/libp2p/go-libp2p-pubsub v0.15.0
-	github.com/mattn/go-sqlite3 v1.14.33
+	github.com/mattn/go-sqlite3 v1.14.48
 	github.com/multiformats/go-multiaddr v0.16.1
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/prometheus/client_golang v1.23.2
