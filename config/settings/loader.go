@@ -166,6 +166,8 @@ func setDefaults(v *viper.Viper) {
 	// Features
 	v.SetDefault("features.use_legacy_bft", d.Features.UseLegacyBFT)
 	v.SetDefault("features.grotrack", d.Features.GROTrack)
+	v.SetDefault("features.txpool_content", d.Features.TxpoolContent)
+	v.SetDefault("features.pending_nonce", d.Features.PendingNonce)
 
 	// FastSync
 	v.SetDefault("fastsync.enabled", d.FastSync.Enabled)

@@ -12,6 +12,7 @@ import (
 	block "gossipnode/Block"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/config/settings"
 	"gossipnode/config/version"
 	"gossipnode/gETH/Facade/Service/Types"
 	Utils "gossipnode/gETH/Facade/Service/utils"
@@ -103,13 +104,28 @@ func (s *ServiceImpl) GetTransactionCount(ctx context.Context, addr string, bloc
 	account, err := DB_OPs.GetAccount(nil, convertedAddr)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
-			// Address has no transactions yet — nonce is 0
+			// Address has no confirmed transactions — confirmed nonce is 0.
+			// A pending query must still see queued/submitted txs (a brand-new
+			// account's first txs live only in the pool/tracker).
+			if settings.Get().Features.PendingNonce && strings.EqualFold(strings.TrimSpace(block), "pending") {
+				return s.pendingNonce(opCtx, convertedAddr.Hex(), 0), nil
+			}
 			return big.NewInt(0), nil
 		}
 		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetTransactionCount failed: %v", err), "GetTransactionCount", -1); logErr != nil {
 			fmt.Printf("Failed to log GetTransactionCount error: %v\n", logErr)
 		}
 		return nil, err
+	}
+
+	// "pending" block tag (feature-gated): layer in this node's submission
+	// tracker and the mempool's contiguous run — see pending_nonce.go.
+	if settings.Get().Features.PendingNonce && strings.EqualFold(strings.TrimSpace(block), "pending") {
+		pending := s.pendingNonce(opCtx, convertedAddr.Hex(), account.TxNonce)
+		if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetTransactionCount(pending) returned nonce %s for %s (confirmed %d)", pending.String(), addr, account.TxNonce), "GetTransactionCount", 1); logErr != nil {
+			fmt.Printf("Failed to log GetTransactionCount: %v\n", logErr)
+		}
+		return pending, nil
 	}
 
 	if logErr := Logger.LogData(opCtx, fmt.Sprintf("GetTransactionCount returned nonce %d for %s", account.TxNonce, addr), "GetTransactionCount", 1); logErr != nil {
@@ -722,7 +738,7 @@ func (s *ServiceImpl) GasPrice(ctx context.Context) (*big.Int, error) {
 	}
 
 	// Get standard recommended fee (wei)
-	gasPrice := big.NewInt(int64(feeStats.RecommendedFees.Standard))
+	gasPrice := big.NewInt(int64(feeStats.Recommended.Standard))
 
 	// Enforce minimum gas price: use BaseFeeWei (35 gwei) as the floor.
 	twentyGwei := big.NewInt(20_000_000_000)
@@ -856,7 +872,7 @@ func (s *ServiceImpl) TxPoolContent(ctx context.Context) (map[string]any, error)
 
 	// Group by sender → nonce → tx object (standard txpool_content shape).
 	pending := make(map[string]map[string]any)
-	for _, tx := range batch.GetTransactions() {
+	for _, tx := range batch.Transactions {
 		from := strings.ToLower(tx.GetFrom())
 		if from == "" {
 			continue
@@ -874,23 +890,9 @@ func (s *ServiceImpl) TxPoolContent(ctx context.Context) (map[string]any, error)
 	}, nil
 }
 
-// mempoolTxToRPCObject converts a proto Transaction to the Ethereum JSON-RPC tx object shape.
-func mempoolTxToRPCObject(tx interface {
-	GetHash() string
-	GetFrom() string
-	GetTo() string
-	GetValue() string
-	GetNonce() uint64
-	GetGasLimit() string
-	GetGasPrice() string
-	GetMaxFee() string
-	GetMaxPriorityFee() string
-	GetData() []byte
-	GetType() uint32
-	GetV() string
-	GetR() string
-	GetS() string
-}) map[string]any {
+// mempoolTxToRPCObject converts a pending mempool transaction (block.PendingTx
+// port view) to the Ethereum JSON-RPC tx object shape.
+func mempoolTxToRPCObject(tx block.PendingTx) map[string]any {
 	decToHex := func(dec string) string {
 		if dec == "" {
 			return "0x0"
@@ -920,7 +922,7 @@ func mempoolTxToRPCObject(tx interface {
 		"value":            decToHex(tx.GetValue()),
 		"input":            "0x" + hex.EncodeToString(tx.GetData()),
 		"type":             fmt.Sprintf("0x%x", tx.GetType()),
-		"v":                tx.GetV(), // already "0x…" hex — see getSignatureString, gRPCclient.go:756
+		"v":                tx.GetV(), // already "0x…" hex — see getSignatureString in Block/gRPCclient.go
 		"r":                tx.GetR(),
 		"s":                tx.GetS(),
 	}

@@ -144,6 +144,18 @@ type LogTracingSettings struct {
 type FeatureSettings struct {
 	UseLegacyBFT bool `mapstructure:"use_legacy_bft" yaml:"use_legacy_bft"`
 	GROTrack     bool `mapstructure:"grotrack"        yaml:"grotrack"`
+
+	// TxpoolContent serves the txpool_content JSON-RPC method (geth-style
+	// namespace opt-in). Default off: one call peeks up to 5000 pending txs
+	// from the shared MRE — enable on monitoring nodes, not fleet-wide.
+	TxpoolContent bool `mapstructure:"txpool_content" yaml:"txpool_content"`
+
+	// PendingNonce makes eth_getTransactionCount honor the "pending" block
+	// tag: max(confirmed nonce, this node's submission tracker, contiguous
+	// mempool run). Best-effort — a tx submitted via another node that is
+	// mid-sequencing is invisible until the mempool ack protocol lands
+	// (docs/MRE-V1-MIGRATION-TRACKER.md D-5). Default off.
+	PendingNonce bool `mapstructure:"pending_nonce" yaml:"pending_nonce"`
 }
 
 // FastSyncSettings controls FastSync V2 behaviour for this node.

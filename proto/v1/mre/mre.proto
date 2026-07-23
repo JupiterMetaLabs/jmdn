@@ -1,0 +1,45 @@
+// Vendored from Mempool-Routing-Engine @ e808b96 (proto/mre/v1/mre.proto).
+// Regenerate with: make generate-proto. Do not edit by hand beyond go_package/import rewrites.
+syntax = "proto3";
+
+package jmdt.proto.mre.v1;
+
+option go_package = "gossipnode/proto/v1/mre;mrev1";
+
+import "google/protobuf/empty.proto";
+import "proto/v1/common/types.proto";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MREService - MRE public API
+// ─────────────────────────────────────────────────────────────────────────────
+// This service is exposed by MRE and called by external clients (e.g., JMDT).
+// It provides transaction routing, lookup, and statistics.
+
+service MREService {
+  // Submit a single transaction to be routed to appropriate mempools
+  rpc SubmitTransaction(jmdt.proto.common.v1.Transaction) returns (jmdt.proto.common.v1.SubmitTxResponse);
+  
+  // Submit multiple transactions in a batch
+  rpc SubmitTransactions(jmdt.proto.common.v1.TransactionBatch) returns (jmdt.proto.common.v1.BatchSubmitResponse);
+  
+  // Get a specific transaction by hash (destructive)
+  rpc GetTransactionByHash(jmdt.proto.common.v1.GetTransactionByHashRequest) returns (jmdt.proto.common.v1.Transaction);
+
+  // Peek a specific transaction by hash (non-destructive)
+  rpc PeekTransactionByHash(jmdt.proto.common.v1.GetTransactionByHashRequest) returns (jmdt.proto.common.v1.Transaction);
+  
+  // Get pending transactions from all mempools (destructive read)
+  rpc GetPendingTransactions(jmdt.proto.common.v1.GetPendingRequest) returns (jmdt.proto.common.v1.GetPendingResponse);
+
+  // Peek pending transactions from all mempools (non-destructive read)
+  rpc PeekPendingTransactions(jmdt.proto.common.v1.GetPendingRequest) returns (jmdt.proto.common.v1.GetPendingResponse);
+
+  // Get mempool stats aggregated across all nodes (with per-node breakdown)
+  rpc GetMempoolStats(google.protobuf.Empty) returns (jmdt.proto.common.v1.GetMempoolStatsResponse);
+  
+  // Get detailed fee statistics
+  rpc GetFeeStatistics(google.protobuf.Empty) returns (jmdt.proto.common.v1.FeeStatistics);
+
+  // Get node version information
+  rpc GetNodeVersion(google.protobuf.Empty) returns (jmdt.proto.common.v1.VersionInfo);
+}

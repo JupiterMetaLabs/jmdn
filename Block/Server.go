@@ -246,6 +246,15 @@ func SubmitRawTransaction(logger_ctx context.Context, tx *config.Transaction) (s
 		ion.String("topic", TOPIC),
 		ion.String("function", "BlockServer.SubmitRawTransaction"))
 
+	// Record in the pending-nonce tracker SYNCHRONOUSLY — before the hash is
+	// returned and before the async submit spawns. This gives sequential
+	// senders read-your-own-writes: an eth_getTransactionCount("pending")
+	// immediately after this RPC returns must already see this tx. The rare
+	// tx that later fails to reach the pool (MRE unreachable) inflates the
+	// tracker only until its TTL; the accept-path Record in SubmitToMempool
+	// remains as an idempotent belt. (S2 design decision, tracker §S2.)
+	pendingNonceTracker.Record(tx.From.Hex(), tx.Nonce)
+
 	// Asynchronously submit to mempool with context
 	// Create a link to the current span to preserve the trace chain
 	link := ion.LinkFromContext(spanCtx)

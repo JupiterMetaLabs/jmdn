@@ -158,27 +158,6 @@ func _SubmitRawTransaction(ctx context.Context, req *proto.SendRawTxReq) (*proto
 	return &proto.SendRawTxResp{TxHash: common.HexToHash(hash).Bytes()}, nil
 }
 
-/* UNUSED
-func _EstimateGas(req *proto.CallReq) (*proto.EstimateResp, error) {
-	// Get the Mempool Client
-	RoutingClient, err := block.ReturnMempoolObject()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get mempool client: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	// Get the Fee Stats
-	feeStats, err := RoutingClient.WrapperGetFeeStatistics(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &proto.EstimateResp{
-		GasEstimate: feeStats.RecommendedFees.Standard,
-	}, nil
-}
-*/
-
 func _GetChainID(ctx context.Context, req *proto.Empty, chainID int) (*proto.Quantity, error) {
 	return &proto.Quantity{Value: uint64(chainID)}, nil
 }

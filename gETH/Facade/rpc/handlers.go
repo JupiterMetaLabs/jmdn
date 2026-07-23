@@ -14,6 +14,7 @@ import (
 
 	"gossipnode/DB_OPs/txindex"
 	"gossipnode/config"
+	"gossipnode/config/settings"
 	"gossipnode/gETH/Facade/Service"
 	"gossipnode/gETH/Facade/Service/Types"
 
@@ -507,21 +508,30 @@ func (handler *Handlers) Handle(ctx context.Context, req Request) (Response, err
 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
 		return resp, nil
 
-	// txpool_content disabled for now — will be revisited in a future release.
-	// case "txpool_content":
-	// 	content, err := handler.service.TxPoolContent(ctx)
-	// 	if err != nil {
-	// 		resp, _ := finish(req, nil, err)
-	// 		log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
-	// 		return resp, err
-	// 	}
-	// 	resp, _ := finish(req, content, nil)
-	// 	var pendingCount int
-	// 	if p, ok := content["pending"].(map[string]map[string]any); ok {
-	// 		pendingCount = len(p)
-	// 	}
-	// 	log.Printf("📤 RPC Response: %s -> [%d pending senders]", req.Method, pendingCount)
-	// 	return resp, nil
+	// txpool_content is a geth-style opt-in namespace (features.txpool_content,
+	// default off): one call peeks up to 5000 pending txs from the shared MRE,
+	// so operators enable it deliberately (monitoring nodes) rather than
+	// exposing it fleet-wide on the public RPC port. When disabled it behaves
+	// exactly like an unknown method (-32601), matching nodes without it.
+	case "txpool_content":
+		if !settings.Get().Features.TxpoolContent {
+			resp := RespErr(req.ID, -32601, "Method not found")
+			log.Printf("📤 RPC Response: %s -> disabled (features.txpool_content=false)", req.Method)
+			return resp, nil
+		}
+		content, err := handler.service.TxPoolContent(ctx)
+		if err != nil {
+			resp, _ := finish(req, nil, err)
+			log.Printf("📤 RPC Response: %s -> %+v", req.Method, resp)
+			return resp, err
+		}
+		resp, _ := finish(req, content, nil)
+		var pendingCount int
+		if p, ok := content["pending"].(map[string]map[string]any); ok {
+			pendingCount = len(p)
+		}
+		log.Printf("📤 RPC Response: %s -> [%d pending senders]", req.Method, pendingCount)
+		return resp, nil
 
 	default:
 		resp := RespErr(req.ID, -32601, "Method not found")

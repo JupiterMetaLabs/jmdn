@@ -1208,19 +1208,16 @@ func main() {
 		return
 	}
 
+	// Initialize the MRE routing client (v1 API). Single client for all
+	// mempool interaction — submit, peek, stats, fees.
 	address := cfg.Network.Mempool
-	if err := Block.InitMempoolClient(logger_ctx, address); err != nil {
-		log.Printf("Failed to connect to mempool: %v", err)
-	}
-	defer Block.CloseMempoolClient()
-
-	// Initialize routing client to the same address as mempool
 	_, err = Block.NewRoutingServiceClient(logger_ctx, address)
 	if err != nil {
 		log.Printf("Failed to connect to routing service: %v", err)
 	} else {
-		log.Printf("Routing client initialized successfully")
+		log.Printf("Routing client initialized successfully (MRE v1)")
 	}
+	defer Block.CloseRoutingClient()
 
 	// Initialize node manager
 	nodeManager, err = node.NewNodeManagerWithLogger(n)
