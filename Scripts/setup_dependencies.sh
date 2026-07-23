@@ -552,6 +552,63 @@ _generate_redis_password() {
 	fi
 }
 
+# Safely apply persistence (AOF) to a running Redis without restart to avoid data loss.
+# If we simply edited redis.conf and restarted, Redis 7+ would start empty.
+# By setting CONFIG live, we trigger a BGREWRITEAOF, creating the AOF from memory.
+_live_migrate_redis_persistence() {
+	if ! check_command redis-cli; then
+		return 0
+	fi
+
+	local svc="$(_redis_service_name)"
+	if ! svc_status "${svc}" >/dev/null 2>&1; then
+		return 0
+	fi
+
+	local rcli="redis-cli --no-auth-warning"
+	if [[ -f "${REDIS_CRED_FILE}" ]]; then
+		# shellcheck disable=SC1090
+		source "${REDIS_CRED_FILE}"
+		if [[ -n "${REDIS_PASSWORD:-}" ]]; then
+			rcli="redis-cli -a ${REDIS_PASSWORD} --no-auth-warning"
+		fi
+	fi
+
+	if ! ${rcli} PING >/dev/null 2>&1; then
+		log_warn "Redis is running but unreachable via redis-cli (auth mismatch?). Skipping live migration."
+		return 0
+	fi
+
+	local needs_rewrite=0
+	local val
+
+	val=$(${rcli} CONFIG GET appendonly | tail -1 | tr -d '\r')
+	if [[ "${val}" != "yes" ]]; then
+		log_info "Live migration: CONFIG SET appendonly yes"
+		${rcli} CONFIG SET appendonly yes >/dev/null 2>&1 || true
+		needs_rewrite=1
+	fi
+
+	val=$(${rcli} CONFIG GET appendfsync | tail -1 | tr -d '\r')
+	if [[ "${val}" != "everysec" ]]; then
+		log_info "Live migration: CONFIG SET appendfsync everysec"
+		${rcli} CONFIG SET appendfsync everysec >/dev/null 2>&1 || true
+		needs_rewrite=1
+	fi
+
+	val=$(${rcli} CONFIG GET maxmemory-policy | tail -1 | tr -d '\r')
+	if [[ "${val}" != "noeviction" ]]; then
+		log_info "Live migration: CONFIG SET maxmemory-policy noeviction"
+		${rcli} CONFIG SET maxmemory-policy noeviction >/dev/null 2>&1 || true
+		needs_rewrite=1
+	fi
+
+	if [[ "${needs_rewrite}" -eq 1 ]]; then
+		log_info "Live migration: CONFIG REWRITE"
+		${rcli} CONFIG REWRITE >/dev/null 2>&1 || true
+	fi
+}
+
 # Configure Redis persistence to match docker-compose CLI flags:
 #   appendonly yes, appendfsync everysec, maxmemory-policy noeviction.
 # Without these, distro-default redis.conf uses RDB-only persistence
@@ -747,6 +804,7 @@ install_redis() {
 		fi
 	fi
 
+	_live_migrate_redis_persistence
 	_configure_redis_persistence || log_error "Redis persistence NOT configured — REQUIRED for jmdn account-sync durability. Fix before running the node."
 	_configure_redis_password || log_warn "Redis password setup incomplete — review manually before relying on it."
 	_start_redis_service || log_warn "Redis service could not be confirmed running — check manually."
