@@ -11,10 +11,10 @@ import (
 // propagation to their canonical initial values.
 func TestNormalizePropagatedAccountState_ResetsVolatileFields(t *testing.T) {
 	cases := []struct {
-		name        string
-		balance     string
-		txNonce     uint64
-		txCountSent uint64
+		name         string
+		balance      string
+		txNonce      uint64
+		txCountSent  uint64
 		wantAdjusted bool
 	}{
 		{"canonical zero-string balance", "0", 0, 0, false},
