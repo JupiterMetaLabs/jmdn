@@ -546,8 +546,14 @@ func (c *Client) RegisterPeerWithAlias(h host.Host, alias string) error {
 	if aliasErr == nil {
 		// ALIAS EXISTS. Check if it belongs to US.
 		if existingAliasRecord.PeerId == peerID {
-			fmt.Printf("✅ Alias '%s' already registered to this Node (%s). Continuing...\n", alias, peerID)
-			return nil
+			fmt.Printf("✅ Alias '%s' already registered to this Node (%s).\n", alias, peerID)
+			// Previously this returned nil immediately, which skipped
+			// AttachCommitteeBLS entirely: a peer registered BEFORE the
+			// committee-source rollout could never emit its bls_pub and so could
+			// never join the committee snapshot (observed as 0/40 keys). Refresh
+			// the existing record so the committee key is attached and persisted.
+			// No-op when emission is off, so it cannot churn or wipe keys.
+			return c.refreshExistingPeerBLS(h, existingAliasRecord)
 		}
 
 		// Alias exists and belongs to SOMEONE ELSE.
@@ -572,6 +578,56 @@ func (c *Client) RegisterPeerWithAlias(h host.Host, alias string) error {
 	fmt.Printf("❌ Cannot register existing peer with new alias '%s'\n", alias)
 	os.Exit(1)
 	return fmt.Errorf("peer already exists") // This line will never be reached
+}
+
+// refreshExistingPeerBLS re-submits an already-registered aliased peer's record
+// so it carries the committee bls_pub (+ proof-of-possession).
+//
+// WHY: RegisterPeerWithAlias short-circuits with `return nil` when the alias is
+// already owned by this node — the common case on every reboot of a long-lived
+// peer. That path never ran AttachCommitteeBLS (the only live emitters are
+// registerNewPeerWithAlias, for brand-new peers, and RegisterPeer, aliasless),
+// so a peer that first registered before the committee-source rollout could
+// never advertise its BLS key. This refresh closes that gap.
+//
+// It reuses the already-accepted multiaddrs/labels (no getPublicIP round-trip),
+// bumps Seq, attaches the SAME persistent committee key (idempotent — the seed
+// accepts an unchanged key and rejects a changed one), re-signs so the identity
+// signature covers bls_pub, and calls UpdatePeer. The alias is already owned by
+// this peer, so it is not re-created.
+//
+// No-op when emission is disabled: it must not send an empty bls_pub, which
+// could blank a previously stored key (see the seed-side overwrite guard).
+func (c *Client) refreshExistingPeerBLS(h host.Host, existing *peerpb.SignedPeerRecord) error {
+	if !EmitCommitteeBLS {
+		fmt.Printf("🔑 committee bls: emission off — not refreshing bls_pub for %s\n", existing.PeerId)
+		return nil
+	}
+	if len(existing.Multiaddrs) == 0 {
+		return fmt.Errorf("refresh bls: existing record for %s has no multiaddrs", existing.PeerId)
+	}
+
+	updated := &peerpb.SignedPeerRecord{
+		PeerId:        existing.PeerId,
+		Multiaddrs:    existing.Multiaddrs,
+		Seq:           existing.Seq + 1,
+		CurrentStatus: peerpb.PeerStatus_PEER_STATUS_ACTIVE,
+		Region:        existing.Region,
+		Labels:        existing.Labels,
+	}
+
+	// Attach BEFORE signing so the identity signature covers bls_pub (S2b).
+	if err := AttachCommitteeBLS(updated); err != nil {
+		return fmt.Errorf("refresh bls: attach committee key: %w", err)
+	}
+	if err := SignPeerRecord(updated, h); err != nil {
+		return fmt.Errorf("refresh bls: sign peer record: %w", err)
+	}
+	if err := c.UpdatePeer(updated); err != nil {
+		return fmt.Errorf("refresh bls: update peer: %w", err)
+	}
+	fmt.Printf("🔁 refreshed existing peer %s with committee bls_pub (seq %d)\n", existing.PeerId, updated.Seq)
+	return nil
 }
 
 // registerNewPeerWithAlias registers a completely new peer with an alias
