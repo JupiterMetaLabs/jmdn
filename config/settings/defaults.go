@@ -116,7 +116,7 @@ func DefaultConfig() NodeConfig {
 			BlockBuddy:            nil,
 			SeedAuthorityBLSPub:   "",
 			CommitteeEpochSeconds: 3600,
-			MaxValidators:         7, // must match config.MaxMainPeers (the voting committee size); never 0
+			MaxValidators:         5, // must match config.MaxMainPeers (the voting committee size); never 0
 		},
 	}
 }
