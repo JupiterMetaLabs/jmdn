@@ -85,23 +85,48 @@ What it does:
 func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	responseHandler := NewResponseHandler()
 
+	// Build the consensus instance first so the eligibility source can read this
+	// round's ACTUAL voting committee (the main peers) at call time.
+	c := &Consensus{
+		PeerList:        peerList,
+		Host:            host,
+		Channel:         config.PubSub_ConsensusChannel,
+		ResponseHandler: responseHandler,
+		mu:              &sync.RWMutex{},
+	}
+
 	// Wire the committee eligibility source (P1). The messaging verifier
 	// subtracts the operator block_buddy blocklist and fails closed if this
 	// source is absent or errors.
 	//
-	// Legacy source: the live seedNode buddy set (getBuddy/ListBuddy). Used when
-	// no seed authority key is pinned (pre-committee-source deployments).
+	// Legacy source: the round's MAIN peers (the peers that actually vote), NOT
+	// main+backup. This is critical for the 2f+1 threshold: with MaxMainPeers=5
+	// main + MaxBackupPeers=5 backup, sourcing all 10 makes VerifyCertificate
+	// require 2f+1 over 10 = 7, but only the 5 main peers vote — so quorum can
+	// never be reached (incident 2026-07: "yes 5 / needed 7"). Read the live
+	// MainPeers at call time (populated during Consensus.Start). Fall back to a
+	// main-sized getBuddy query only if MainPeers isn't populated yet.
 	// Legacy source carries NO peer_id↔bls_pub binding (empty values), so the
 	// verifier enforces peer_id membership only — the M1 key binding is available
 	// only via the authenticated snapshot below.
 	legacyBuddySource := func() (map[string]string, error) {
+		if main := c.PeerList.MainPeers; len(main) > 0 {
+			set := make(map[string]string, len(main))
+			for _, pid := range main {
+				set[pid.String()] = ""
+			}
+			return set, nil
+		}
 		buddies, err := helper.QueryBuddyNodes()
 		if err != nil {
 			return nil, err
 		}
 		unique := helper.GetUniqueBuddyPeers(buddies)
-		set := make(map[string]string, len(unique))
-		for _, b := range unique {
+		set := make(map[string]string)
+		for i, b := range unique {
+			if i >= config.MaxMainPeers { // scope to the voting-committee size
+				break
+			}
 			set[b.PeerID.String()] = ""
 		}
 		return set, nil
@@ -139,13 +164,7 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 		messaging.SetCommitteeEligibilitySource(legacyBuddySource)
 	}
 
-	return &Consensus{
-		PeerList:        peerList,
-		Host:            host,
-		Channel:         config.PubSub_ConsensusChannel,
-		ResponseHandler: responseHandler,
-		mu:              &sync.RWMutex{},
-	}
+	return c
 }
 
 /*
