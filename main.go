@@ -1170,6 +1170,20 @@ func main() {
 						}
 						return fmt.Errorf("[ReconcileFunc] all %d seednode peers failed catchup", len(peers))
 					})
+
+					// P7: when the block-propagation linkage check detects a height
+					// gap, nudge the monitor to run an immediate authenticated
+					// reconcile (seednode-vetted peers) instead of waiting for the
+					// next periodic tick. Best-effort; the gap block is rejected
+					// regardless.
+					localMonitor := syncMonitor
+					messaging.SetCatchUpRequester(func(fromBlock uint64) {
+						if localMonitor == nil {
+							return
+						}
+						log.Info().Uint64("from_block", fromBlock).Msg("[P7] height gap detected — triggering authenticated catch-up")
+						go localMonitor.TriggerCheck(context.Background())
+					})
 				}
 
 				if err := syncMonitor.Start(ctx); err != nil {

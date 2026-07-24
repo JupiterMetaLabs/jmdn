@@ -541,31 +541,101 @@ func (DBEquivocationStore) RecordFirstSeen(height uint64, hashHex string) error 
 //   - number  > localTip+1          → tolerated (we may be catching up); skipped
 //
 // Genesis / empty DB (localTip == 0 with no stored block) is tolerated.
+// Injectable local-state readers (default: DB_OPs). checkLinkage reads the
+// authenticated local tip and the stored parent through these so the pure
+// linkage policy can be exercised in tests without a live DB.
+var (
+	readLocalTip      = func(ctx context.Context) (uint64, error) { return DB_OPs.GetLatestBlockNumber(ctx, nil) }
+	readBlockByNumber = func(n uint64) (*config.ZKBlock, error) { return DB_OPs.GetZKBlockByNumber(nil, n) }
+)
+
+// catchUpRequester, when set, is nudged the moment a height gap is detected so
+// the node begins AUTHENTICATED catch-up immediately (via the sync monitor)
+// instead of waiting for the next periodic reconcile. Best-effort and nil-safe:
+// rejecting the out-of-band gap block is the correctness guarantee; this only
+// accelerates recovery. Deliberately does NOT catch up from the gossip sender
+// (which may be the attacker that sent the gap block) — the monitor selects
+// seednode-vetted peers.
+var catchUpRequester func(fromBlock uint64)
+
+// SetCatchUpRequester wires the authenticated catch-up trigger (P7). Call once
+// at node startup (see main.go, gated on FastSync.EnableCatchup). Unset => the
+// node still rejects gaps and relies on the periodic sync monitor.
+func SetCatchUpRequester(fn func(fromBlock uint64)) { catchUpRequester = fn }
+
+func requestCatchUp(fromBlock uint64) {
+	if catchUpRequester != nil {
+		catchUpRequester(fromBlock)
+	}
+}
+
+// checkLinkage enforces chain linkage for the immediate next block, FAIL-CLOSED
+// (P7). It reads the authenticated local tip/parent and delegates the decision
+// to the pure linkageDecision. On a detected height gap it triggers authenticated
+// catch-up rather than silently accepting an out-of-band block.
 func checkLinkage(ctx context.Context, b *config.ZKBlock) *blockRejection {
-	localTip, err := DB_OPs.GetLatestBlockNumber(ctx, nil)
-	if err != nil {
-		// Can't read tip — do not reject (fail open on linkage only; the cert +
-		// signature checks still gate acceptance). Log for visibility.
-		log.Warn().Err(err).Msg("linkage: failed to read local tip; skipping linkage check")
-		return nil
+	localTip, tipErr := readLocalTip(ctx)
+
+	var parent *config.ZKBlock
+	var parentErr error
+	if tipErr == nil && localTip > 0 && b.BlockNumber == localTip+1 {
+		parent, parentErr = readBlockByNumber(localTip)
+	}
+
+	rej := linkageDecision(b, localTip, tipErr, parent, parentErr)
+	if rej != nil && rej.reason == "height_gap" {
+		// We are missing everything from our next-needed height up to this block.
+		requestCatchUp(localTip + 1)
+	}
+	return rej
+}
+
+// linkageDecision is the pure, fail-closed linkage policy (P7). Given the
+// authenticated local state it returns a rejection or nil:
+//
+//   - tipErr != nil                 → tip_unreadable (FAIL CLOSED; was fail-open)
+//   - localTip == 0, number == 1    → accept (bootstrap: first block, no stored
+//     parent to link against)
+//   - localTip == 0, number > 1     → height_gap (fresh node must catch up, not
+//     accept an out-of-band block)
+//   - number <= localTip            → stale_height
+//   - number  > localTip+1          → height_gap (was silently ACCEPTED — an
+//     out-of-band future block that would break contiguity)
+//   - number == localTip+1, parent unreadable/absent → parent_unavailable
+//     (FAIL CLOSED; was fail-open)
+//   - parent hash / state-root chain mismatch → bad_parent / bad_stateroot
+//   - otherwise                     → accept
+func linkageDecision(b *config.ZKBlock, localTip uint64, tipErr error, parent *config.ZKBlock, parentErr error) *blockRejection {
+	if tipErr != nil {
+		// Cannot authenticate our own tip → cannot safely link. FAIL CLOSED.
+		return reject("tip_unreadable",
+			"linkage: cannot read local tip to authenticate block %d: %v", b.BlockNumber, tipErr)
 	}
 
 	if localTip == 0 {
-		return nil // genesis / fresh node: nothing to link against yet
+		if b.BlockNumber == 1 {
+			return nil // bootstrap: the first block has no stored parent yet
+		}
+		return reject("height_gap",
+			"fresh node (tip 0) received block %d out of band; requires authenticated catch-up", b.BlockNumber)
 	}
+
 	if b.BlockNumber <= localTip {
 		return reject("stale_height",
 			"block %d not ahead of local tip %d", b.BlockNumber, localTip)
 	}
 	if b.BlockNumber > localTip+1 {
-		return nil // gap — likely behind / catching up; tolerate
+		return reject("height_gap",
+			"block %d is beyond next-expected %d (gap from tip %d); requires authenticated catch-up",
+			b.BlockNumber, localTip+1, localTip)
 	}
 
-	// b.BlockNumber == localTip+1 → verify parent linkage.
-	parent, err := DB_OPs.GetZKBlockByNumber(nil, localTip)
-	if err != nil || parent == nil {
-		log.Warn().Err(err).Uint64("tip", localTip).Msg("linkage: failed to load parent; skipping parent check")
-		return nil
+	// b.BlockNumber == localTip+1 → verify parent linkage. FAIL CLOSED if the
+	// parent cannot be authenticated.
+	if parentErr != nil || parent == nil {
+		return reject("parent_unavailable",
+			"linkage: cannot load parent at tip %d to authenticate block %d: %v",
+			localTip, b.BlockNumber, parentErr)
 	}
 	if b.PrevHash != parent.BlockHash {
 		return reject("bad_parent",
