@@ -1202,6 +1202,22 @@ func main() {
 		}
 	}
 
+	// (P7 vote sync-gate) Wire the consensus vote gate on every node: a node with
+	// no local chain (tip 0) never votes, and a node running a sync monitor must
+	// be synced before it votes. On a DB read error tip is 0 → abstain
+	// (fail-closed). The sequencer has no monitor and a non-empty chain, so it is
+	// unaffected. Captured syncMonitor may be nil (no fastsync/seednode).
+	gateMonitor := syncMonitor
+	MessagePassing.SetConsensusSyncGate(func() bool {
+		tip, err := DB_OPs.GetLatestBlockNumber(context.Background(), nil)
+		if err != nil {
+			return false // cannot confirm local chain state → abstain
+		}
+		present := gateMonitor != nil
+		synced := present && gateMonitor.GetStatus().IsSynced
+		return MessagePassing.ConsensusVoteEligible(tip, present, synced)
+	})
+
 	// Initialize Yggdrasil messaging if enabled
 	if cfg.Network.Yggdrasil {
 		initYggdrasilMessaging(ctx)

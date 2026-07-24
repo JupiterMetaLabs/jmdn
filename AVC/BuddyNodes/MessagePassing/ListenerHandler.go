@@ -1495,6 +1495,28 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		return
 	}
 
+	// (P7 vote sync-gate) An unsynced node MUST NOT participate in consensus. A
+	// node with no local chain, or one still catching up, has not authenticated
+	// the block it would vote on — so it abstains instead of signing a vote over
+	// unverified state. Wired at startup (SetConsensusSyncGate); when unset the
+	// node is permitted (sequencer / tests).
+	if !consensusVoteReady() {
+		voteResultSpan.SetAttributes(attribute.String("status", "abstain_not_synced"))
+		logger().NamedLogger.Warn(voteResultSpanCtx, "Abstaining from consensus vote: node not synced",
+			ion.String("remote_peer_id", remotePeer.String()),
+			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+			ion.String("function", "MessagePassing.handleVoteResultRequest"))
+		ackMessage := AVCStruct.NewACKBuilder().False_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
+		response := AVCStruct.NewMessageBuilder(nil).
+			SetSender(listenerNode.PeerID).
+			SetMessage(`{"error":"node not synced; abstaining from consensus"}`).
+			SetTimestamp(time.Now().UTC().Unix()).
+			SetACK(ackMessage)
+		responseBytes, _ := json.Marshal(response)
+		_, _ = s.Write([]byte(string(responseBytes) + string(rune(config.Delimiter))))
+		return
+	}
+
 	// Parse optional request payload (e.g., block hash scoping)
 	var targetBlockHash string
 	var voteResultReq struct {
