@@ -13,11 +13,28 @@ import (
 
 // @static function
 
+// buddyCandidatePoolRequest is the candidate count requested from VRF selection.
+// It is deliberately far larger than any realistic eligible-peer count: VRF caps
+// the request to the actual pool size and returns the whole eligible set, so the
+// pinned committee-source filter in Consensus.Start always sees every authorized
+// peer rather than a random subset.
+const buddyCandidatePoolRequest = 4096
+
 // Attach the metadata to the block before it is propagated.
 // QUERY BUDDY NODES FUNCTIONALITY (we would need this to get the buddy nodes prompted)
 func QueryBuddyNodes() ([]PubSubMessages.Buddy_PeerMultiaddr, error) {
 	router := Router.NewNodeselectionRouter()
-	buddies, err := router.GetBuddyNodes(config.MaxMainPeers + config.MaxBackupPeers)
+	// Request the FULL eligible candidate pool. VRF selection caps the requested
+	// count to the number of eligible peers and returns all of them when asked for
+	// >= the pool size, so this yields every eligible peer (still VRF-ordered).
+	//
+	// This is required when the committee is pinned: Consensus.Start filters
+	// candidates to the authenticated (signed) committee set, so selection must
+	// surface ALL authorized peers as candidates. Requesting only
+	// MaxMainPeers+MaxBackupPeers returned a random subset that usually missed most
+	// of the authorized set, starving the committee. Unpinned selection is
+	// unaffected other than having more backup candidates to choose from.
+	buddies, err := router.GetBuddyNodes(buddyCandidatePoolRequest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get buddy nodes: %v", err)
 	}
