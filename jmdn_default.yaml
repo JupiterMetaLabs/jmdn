@@ -14,21 +14,6 @@ network:
   yggdrasil: true
   heartbeat_interval: 10  # seconds
 
-# ── Consensus / committee-source (P1) ────────────────────
-consensus:
-  # Operator blocklist of committee peer IDs (never selected as validators).
-  block_buddy: []
-
-  # PINNED seed committee-authority public key: dela/bls (BN256), lowercase hex,
-  # produced by the seed operator's `go run ./cmd/genauthority` (public half; the
-  # seed keeps the private key and signs each epoch's committee snapshot).
-  # When set, the sequencer uses the seed-authenticated snapshot (verified against
-  # this key) as the eligible set — FAIL-CLOSED. Empty => legacy getBuddy.
-  seed_authority_bls_pub: "28008cfde91dc8021bfdf6da30253fba9dbbe69237cc0cf15c5ee4615b08730a6915ab77202754084a26bc00a3fba5213d7fb7669dd055e1c88b000e9e53db0e556b52c07ba0a902e17b17b974329f15681113e446b1c2d2f6c3e317cd92d6d93ac1377bbddd46455aaf09a414d5145edbc990b095abcfd6b6b14be430e6a58a"
-
-  # Shared epoch clock (seconds); MUST equal the seed's COMMITTEE_EPOCH_SECONDS.
-  committee_epoch_seconds: 3600
-
 # ── Ports ────────────────────────────────────────────────
 ports:
   api: 0           # Disabled by default (use -api 8090 to enable)
@@ -236,14 +221,3 @@ alerts:
   api_key: ""                # Prefer env: JMDN_ALERTS_API_KEY
   chat_id: ""                # Prefer env: JMDN_ALERTS_CHAT_ID
   http_timeout: 10s
-
-# ── Node / committee selection (VRF) ───────────────────
-# SECRET VRF key material for node/committee selection (JMDN-001).
-# MUST be unique per network and kept secret. Empty values are REJECTED at
-# runtime (fail-closed) — the node refuses to fall back to the public BIP39
-# test mnemonic, which would make selection predictable and forgeable.
-# Prefer env vars for secrets:
-#   JMDN_NODE_SELECTION_MNEMONIC, JMDN_NETWORK_SALT
-selection:
-  mnemonic: ""                        # REQUIRED on the sequencer. Secret, no default. Prefer env: JMDN_NODE_SELECTION_MNEMONIC
-  salt: "jmdt-node-selection-v1"      # Not secret; must match network-wide. Built-in default. Prefer env: JMDN_NETWORK_SALT
