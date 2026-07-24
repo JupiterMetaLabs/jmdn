@@ -29,9 +29,6 @@ consensus:
   # Shared epoch clock (seconds); MUST equal the seed's COMMITTEE_EPOCH_SECONDS.
   committee_epoch_seconds: 3600
 
-  # Authoritative sequencer libp2p PeerID (the matching node signs ListBuddy).
-  sequencer_peer_id: ""
-
 # ── Ports ────────────────────────────────────────────────
 ports:
   api: 0           # Disabled by default (use -api 8090 to enable)

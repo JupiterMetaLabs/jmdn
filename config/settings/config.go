@@ -53,10 +53,6 @@ type ConsensusSettings struct {
 	// CommitteeEpochSeconds is the shared epoch clock divisor (unix/seconds).
 	// MUST equal the seed's COMMITTEE_EPOCH_SECONDS (default 3600).
 	CommitteeEpochSeconds int64 `mapstructure:"committee_epoch_seconds" yaml:"committee_epoch_seconds"`
-	// SequencerPeerID is the authoritative sequencer's registered libp2p PeerID.
-	// The sequencer signs ListBuddy requests with the matching identity key; the
-	// seed serves selection only to this peer. Empty on non-sequencer nodes.
-	SequencerPeerID string `mapstructure:"sequencer_peer_id" yaml:"sequencer_peer_id"`
 }
 
 // SelectionSettings holds the SECRET VRF key material used for node / committee

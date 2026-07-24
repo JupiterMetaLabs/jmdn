@@ -87,18 +87,13 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	cfg := settings.Get()
 
 	// S4: register this node's libp2p identity key to sign committee-selection
-	// (ListBuddy) requests, but ONLY on the actual sequencer. When
-	// consensus.sequencer_peer_id is configured, require an exact match so that
-	// if NewConsensus ever runs on a non-sequencer it will NOT sign selection
-	// requests (the seed would refuse them anyway, but we avoid presenting a
-	// signature at all). When unset, fall back to the historical assumption that
-	// NewConsensus runs on the sequencer.
+	// (ListBuddy) requests. NewConsensus is only invoked on the sequencer (the
+	// Block server paths), so this node is the sequencer; the seed serves
+	// selection only to the sequencer PeerID it has configured and refuses all
+	// other callers.
 	if host != nil {
-		selfID := host.ID().String()
-		if seqID := cfg.Consensus.SequencerPeerID; seqID == "" || seqID == selfID {
-			if sk := host.Peerstore().PrivKey(host.ID()); sk != nil {
-				seednode.SetSequencerSignKey(sk)
-			}
+		if sk := host.Peerstore().PrivKey(host.ID()); sk != nil {
+			seednode.SetSequencerSignKey(sk)
 		}
 	}
 

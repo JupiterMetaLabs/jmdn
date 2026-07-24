@@ -116,7 +116,6 @@ func DefaultConfig() NodeConfig {
 			BlockBuddy:            nil,
 			SeedAuthorityBLSPub:   "",
 			CommitteeEpochSeconds: 3600,
-			SequencerPeerID:       "",
 		},
 	}
 }
