@@ -42,7 +42,7 @@ type NodeConfig struct {
 type ConsensusSettings struct {
 	BlockBuddy []string `mapstructure:"block_buddy" yaml:"block_buddy"`
 
-	// Committee-source (P1) integration with the seedNodes authenticated
+	// Committee-source integration with the seedNodes authenticated
 	// committee. All three must align with the seed deployment.
 	//
 	// SeedAuthorityBLSPub is the PINNED dela/bls authority public key (lowercase
@@ -58,17 +58,15 @@ type ConsensusSettings struct {
 	// consensus. The certificate verifier trims the eligible committee to this many
 	// peers (deterministically, by sorted peer_id) BEFORE computing the 2f+1
 	// threshold, so the threshold can never be sized over more validators than
-	// actually vote. Defaults to 7 (must match config.MaxMainPeers, the voting
+	// actually vote. Defaults to 5 (must match config.MaxMainPeers, the voting
 	// committee size) and is always active — never 0 by default. An explicit 0
 	// disables the cap, but that is not the shipped behavior.
 	MaxValidators int `mapstructure:"max_validators" yaml:"max_validators"`
 }
 
 // SelectionSettings holds the SECRET VRF key material used for node / committee
-// selection (JMDN-001). These MUST be unique per network and kept secret: the
-// derived VRF key was previously hardcoded to the public BIP39 test mnemonic,
-// making selection predictable and forgeable. Empty values are rejected at use
-// time (fail-closed) rather than falling back to an insecure default.
+// selection. These MUST be unique per network and kept secret. Empty values are
+// rejected at use time (fail-closed) rather than falling back to a default.
 //
 // YAML:
 //
