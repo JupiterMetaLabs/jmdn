@@ -130,11 +130,26 @@ type Transaction struct {
 ### Protocol IDs
 ```go
 MessageProtocol           = "/custom/message/1.0.0"
-FileProtocol             = "/custom/file/1.0.0"
-BroadcastProtocol        = "/custom/broadcast/1.0.0"
-BlockPropagationProtocol = "/custom/block/1.0.0"
-DIDPropagationProtocol    = "/custom/did/1.0.0"
-BuddyNodesMessageProtocol = "/custom/buddy-nodes/1.0.0"
+SeedProtocol              = "/custom/seed/1.0.0"
+PeerDiscoveryProtocol     = "/custom/peer/discovery/1.0.0"
+HeartbeatProtocol         = "/heartbeat/1.0.0"
+RegisterProtocol          = "/seednode/register/1.0.0"
+BroadcastProtocol         = "/broadcast/1.0.0"
+BlockPropagationProtocol  = "/broadcast/block/2.0.0"   // v2 (consensus hardening)
+SyncProtocol              = "/p2p/sync/1.0.0"
+BuddyNodesMessageProtocol = "/p2p/buddy/message/2.0.0"  // v2 (consensus hardening)
+SubmitMessageProtocol     = "/p2p/submit/message/2.0.0" // v2 (consensus hardening)
+BFTConsensusProtocol      = "/p2p/bft/consensus/2.0.0"  // v2 (consensus hardening)
+DIDPropagationProtocol    = "/gossipnode/did/2.0.0"     // v2 (consensus hardening)
+```
+
+### PubSub Topics
+```go
+PubSub_ConsensusChannel = "pubsub-consensus/2.0.0"     // v2 (consensus hardening)
+PubSub_BFTConsensus     = "pubsub-bft-consensus/2.0.0" // v2 (consensus hardening)
+PubSub_L1CommitChannel  = "pubsub-l1-commit"
+Pubsub_MessageBuffer    = "pubsub-buffer"
+Pubsub_CRDTSync         = "pubsub-crdt-sync"
 ```
 
 ### Peer Configuration

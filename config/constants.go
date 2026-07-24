@@ -47,17 +47,17 @@ const (
 	HeartbeatProtocol         protocol.ID = "/heartbeat/1.0.0"
 	RegisterProtocol          protocol.ID = "/seednode/register/1.0.0" // For peer registration
 	BroadcastProtocol         protocol.ID = "/broadcast/1.0.0"
-	BlockPropagationProtocol  protocol.ID = "/broadcast/block/1.0.0"
+	BlockPropagationProtocol  protocol.ID = "/broadcast/block/2.0.0" // v2: consensus hardening P3/P5/P6/P7 (body binding, cache-after-validate, equivocation persist, linkage fail-closed)
 	SyncProtocol              protocol.ID = "/p2p/sync/1.0.0"
-	BuddyNodesMessageProtocol protocol.ID = "/p2p/buddy/message/1.0.0"
-	SubmitMessageProtocol     protocol.ID = "/p2p/submit/message/1.0.0"
-	BFTConsensusProtocol      protocol.ID = "/p2p/bft/consensus/1.0.0"
+	BuddyNodesMessageProtocol protocol.ID = "/p2p/buddy/message/2.0.0"  // v2: P1/P2/P4/P7 vote path (eligibility, 2f+1, chain-id domain, sync-gate)
+	SubmitMessageProtocol     protocol.ID = "/p2p/submit/message/2.0.0" // v2: P1/P2/P4/P7 vote path
+	BFTConsensusProtocol      protocol.ID = "/p2p/bft/consensus/2.0.0"  // v2: P9 signed PREPARE/COMMIT
 )
 
 const (
 	Delimiter               = 0x1E
-	PubSub_ConsensusChannel = "pubsub-consensus"
-	PubSub_BFTConsensus     = "pubsub-bft-consensus"
+	PubSub_ConsensusChannel = "pubsub-consensus/2.0.0"     // v2: chain-id-bound votes (P4) + vote sync-gate (P7)
+	PubSub_BFTConsensus     = "pubsub-bft-consensus/2.0.0" // v2: signed BFT messages (P9)
 	// PubSub_L1CommitChannel is a persistent topic for L1 finality broadcasts.
 	// It is deliberately separate from PubSub_ConsensusChannel, whose
 	// subscriptions are round-scoped (unsubscribed on END_PUBSUB).
@@ -121,7 +121,7 @@ const (
 )
 
 const (
-	DIDPropagationProtocol protocol.ID = "/gossipnode/did/1.0.0"
+	DIDPropagationProtocol protocol.ID = "/gossipnode/did/2.0.0" // v2: bumped with the consensus-hardening network upgrade
 	MaxAccountHops         int         = 7
 )
 
