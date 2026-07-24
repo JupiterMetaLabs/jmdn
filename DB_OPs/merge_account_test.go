@@ -106,8 +106,8 @@ func TestMergeAccountForWrite_MonotonicCounterGuards(t *testing.T) {
 func TestMergeAccountForWrite_ForgedDIDStripped(t *testing.T) {
 	existing := storedAccount()
 	upd := sparseUpdate(time.Now().UTC().UnixNano())
-	// Legacy forged DID: lowercase hex address (Address.Hex() is checksummed,
-	// so a case-sensitive compare misses it — the original mitigation bug).
+	// Legacy hex-address DID: lowercase hex address (Address.Hex() is checksummed,
+	// so a case-sensitive compare misses it).
 	upd.DIDAddress = "0x1111111111111111111111111111111111111111"
 	upd.AccountType = "user" // legacy hardcoded placeholder
 

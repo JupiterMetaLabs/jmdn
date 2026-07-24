@@ -9,9 +9,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// C-03 (execution defense-in-depth): parseTransaction must refuse to produce a
-// parsed transaction with a negative value, so a tx that somehow bypassed the
-// ingress/remote value gates still cannot reach the balance arithmetic.
+// Execution defense-in-depth: parseTransaction must refuse to produce a
+// parsed transaction with a negative value, so a tx that reaches execution
+// without passing the ingress/remote value gates still cannot reach the
+// balance arithmetic.
 func TestParseTransaction_RejectsNegativeValue(t *testing.T) {
 	addr := common.HexToAddress("0x1111111111111111111111111111111111111111")
 	tx := config.Transaction{

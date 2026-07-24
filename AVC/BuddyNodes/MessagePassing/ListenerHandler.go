@@ -1495,13 +1495,12 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		return
 	}
 
-	// (C-04 requester auth) The vote-result request asks this node to BLS-sign an
+	// Requester auth: the vote-result request asks this node to BLS-sign an
 	// aggregated vote. Only the authenticated sequencer — always a member of this
 	// node's authenticated buddy set — may request it. Reject every other peer so
-	// an outsider cannot harvest a genuine committee signature for a hash of its
-	// choosing (the signing-oracle hole). The stream's remote peer ID is
-	// transport-authenticated, so this membership check is sound. Fail closed:
-	// an unknown buddy set authorizes no one.
+	// no peer can obtain a genuine committee signature for a caller-supplied hash.
+	// The stream's remote peer ID is transport-authenticated, so this membership
+	// check is sound. Fail closed: an unknown buddy set authorizes no one.
 	if !voteRequesterAuthorized(remotePeer) {
 		voteResultSpan.SetAttributes(attribute.String("status", "unauthorized_vote_requester"))
 		logger().NamedLogger.Warn(voteResultSpanCtx, "Rejecting vote result request: requester is not an authorized committee member",
@@ -1519,9 +1518,9 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		return
 	}
 
-	// (P7 vote sync-gate) An unsynced node MUST NOT participate in consensus. A
-	// node with no local chain, or one still catching up, has not authenticated
-	// the block it would vote on — so it abstains instead of signing a vote over
+	// Vote sync-gate: an unsynced node MUST NOT participate in consensus. A node
+	// with no local chain, or one still catching up, has not authenticated the
+	// block it would vote on — so it abstains instead of signing a vote over
 	// unverified state. Wired at startup (SetConsensusSyncGate); when unset the
 	// node is permitted (sequencer / tests).
 	if !consensusVoteReady() {
@@ -1541,12 +1540,12 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		return
 	}
 
-	// Parse optional request payload (block hash scoping + A2 block height)
+	// Parse optional request payload (block hash scoping + block height)
 	var targetBlockHash string
 	var targetBlockNumber uint64
 	var voteResultReq struct {
 		BlockHash   string `json:"block_hash"`
-		BlockNumber uint64 `json:"block_number"` // A2: bind the vote to this height (v3). JSON number — sequencer emits it as a number.
+		BlockNumber uint64 `json:"block_number"` // bind the vote to this height (v3). JSON number — sequencer emits it as a number.
 	}
 	// functions which retuning the response should return the same format
 	if err := json.Unmarshal([]byte(message.Message), &voteResultReq); err == nil {
@@ -1637,9 +1636,9 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		attribute.String("target_block_hash", targetBlockHash),
 	)
 
-	// Sign the vote BOUND to this block (JMDN-001 / D3) so it cannot be replayed
-	// onto another block. Falls back to legacy unbound signing only when
-	// block-bound emission is disabled or the block hash is unavailable.
+	// Sign the vote BOUND to this block so it cannot be reused on another block.
+	// Falls back to legacy unbound signing only when block-bound emission is
+	// disabled or the block hash is unavailable.
 	var blsResp BLS_Signer.BLSresponse
 	var status bool
 	if BLS_Signer.EmitBlockBoundVotes && targetBlockHash != "" {

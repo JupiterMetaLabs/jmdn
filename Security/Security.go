@@ -290,8 +290,8 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 		)
 	}
 
-	// C-03: reject negative numeric fields before any DB work. Cheap, and it
-	// closes the balance-inversion vector at the RPC ingress boundary.
+	// Reject negative numeric fields before any DB work. Cheap, and it
+	// prevents balance inversion at the RPC ingress boundary.
 	if ok, err := CheckTransactionValues(tx); !ok {
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("status", "negative_value_rejected"))
@@ -868,18 +868,18 @@ func toGethAccessList(accessList config.AccessList) types.AccessList {
 // CheckTransactionHash verifies that tx.Hash equals the hash recomputed from the
 // transaction's CONTENTS (ethTx.Hash()). It is the exported entry point for the
 // block-receive path (messaging.validateRemoteBlock), where tx.Hash is an
-// attacker-influenceable wire field and must not be trusted: canonical body
-// binding (P3) hashes over tx.Hash, so an unverified tx.Hash lets a forged body
-// reproduce a captured BlockHash and replay a real certificate (FINDING A).
+// untrusted wire field: canonical body binding hashes over tx.Hash, so an
+// unverified tx.Hash would let a mismatched body reproduce a captured BlockHash
+// and re-present a valid certificate.
 // Returns (true,nil) only when the wire hash matches the content hash.
 func CheckTransactionHash(tx *config.Transaction, traceCtx context.Context) (bool, error) {
 	return checkTransactionHash(tx, traceCtx)
 }
 
-// CheckTransactionValues rejects transactions carrying negative numeric fields
-// (C-03). Canonical Ethereum RLP cannot encode a negative big.Int, but JMDN's
+// CheckTransactionValues rejects transactions carrying negative numeric fields.
+// Canonical Ethereum RLP cannot encode a negative big.Int, but JMDN's
 // internal config.Transaction is a plain struct that a JSON ingress path or a
-// crafted wire message can populate directly with a negative *big.Int. If such a
+// wire message can populate directly with a negative *big.Int. If such a
 // value reaches execution, the balance arithmetic inverts:
 //
 //	sender:   balance - (-v) == balance + v   (sender is CREDITED)
@@ -950,7 +950,7 @@ func ethTxFromConfig(tx *config.Transaction) *types.Transaction {
 // (ethTx.Hash()), matching the block generator's
 // generateBlockHashFromTransactions. Unlike a recompute over the wire tx.Hash
 // field, this binds the block hash to what the transactions actually ARE, so it
-// cannot be fooled by an attacker-supplied tx.Hash (FINDING A, block level).
+// cannot be fooled by a mismatched wire tx.Hash.
 func RecomputeBlockHashFromContents(txs []config.Transaction) common.Hash {
 	if len(txs) == 0 {
 		return common.Hash{}
@@ -966,8 +966,8 @@ func RecomputeBlockHashFromContents(txs []config.Transaction) common.Hash {
 // CheckBlockHash recomputes the block hash from transaction CONTENTS and compares
 // it to block.BlockHash. Returns (true,nil) only on match. Call on the block
 // receive path so a block cannot claim a BlockHash that does not correspond to
-// the transactions it actually carries — closing FINDING A at the block level,
-// independent of whether the per-transaction tx.Hash fields were pre-verified.
+// the transactions it actually carries, independent of whether the
+// per-transaction tx.Hash fields were pre-verified.
 func CheckBlockHash(block *config.ZKBlock) (bool, error) {
 	if block == nil {
 		return false, errors.New("block is nil")

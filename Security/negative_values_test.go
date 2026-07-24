@@ -9,8 +9,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// C-03: CheckTransactionValues is the fail-closed value gate that stops a
-// negative Value/gas field from reaching the balance arithmetic (where a
+// CheckTransactionValues is the fail-closed value gate that rejects negative
+// numeric fields before they reach the balance arithmetic (where a
 // negative amount inverts sender/receiver updates). These tests pin the exact
 // accept/reject boundary the ingress (AllChecks) and remote-admission
 // (validateRemoteBlock) paths rely on.

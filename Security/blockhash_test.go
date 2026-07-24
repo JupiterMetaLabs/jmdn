@@ -26,7 +26,7 @@ func legacyTx(nonce uint64, val int64) config.Transaction {
 
 // RecomputeBlockHashFromContents/CheckBlockHash must bind the block hash to the
 // transaction CONTENTS: a block can only claim a hash that its transactions
-// actually produce, and changing any tx content invalidates it (FINDING A).
+// actually produce, and changing any tx content invalidates it.
 func TestCheckBlockHash_BindsToContents(t *testing.T) {
 	txs := []config.Transaction{legacyTx(0, 1), legacyTx(1, 2)}
 	want := RecomputeBlockHashFromContents(txs)
@@ -47,7 +47,7 @@ func TestCheckBlockHash_BindsToContents(t *testing.T) {
 	}
 
 	// A block claiming an unrelated hash (e.g. copied from another block) is
-	// rejected — the FINDING A replay shape at the block level.
+	// rejected — a borrowed hash cannot pass at the block level.
 	forged := &config.ZKBlock{BlockHash: common.HexToHash("0xdeadbeef"), Transactions: txs}
 	if ok, _ := CheckBlockHash(forged); ok {
 		t.Fatal("block claiming a hash not derived from its contents must be rejected")

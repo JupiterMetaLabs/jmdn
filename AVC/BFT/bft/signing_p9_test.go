@@ -1,6 +1,6 @@
 package bft
 
-// P9: the BFT engine must sign its outgoing PREPARE/COMMIT messages so that,
+// The BFT engine must sign its outgoing PREPARE/COMMIT messages so that,
 // under the secure-default RequireSignatures, peers accept them — and reject
 // unsigned or tampered ones.
 

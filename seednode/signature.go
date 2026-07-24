@@ -78,7 +78,7 @@ func SignPeerRecord(peerRecord *peerpb.SignedPeerRecord, h host.Host) error {
 }
 
 // EmitCommitteeBLS gates whether this node advertises a committee BLS key at
-// registration (S1/S2b). Default ON now that the seed committee-source
+// registration. Default ON now that the seed committee-source
 // enforcement is live: the node registers with bls_pub + proof-of-possession so
 // the seed can admit it to the epoch snapshot. Set JMDN_EMIT_COMMITTEE_BLS=0 to
 // opt a node out (registers as before, not committee-eligible).

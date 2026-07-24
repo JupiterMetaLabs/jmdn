@@ -19,7 +19,7 @@ import (
 const seqAuthMethod = "ListBuddy"
 
 // sequencerSignKey is the OPTIONAL sequencer identity key used to auto-sign
-// ListBuddy (committee-selection) requests (S4). It is registered once, only on
+// ListBuddy (committee-selection) requests. It is registered once, only on
 // the sequencer node (SetSequencerSignKey), so ListBuddy calls made through the
 // NodeSelection router are authenticated without threading the key through every
 // layer. Non-sequencer nodes never set it, send unsigned selection requests, and
@@ -30,7 +30,7 @@ var (
 )
 
 // SetSequencerSignKey registers this node's libp2p identity key as the sequencer
-// signer for committee-selection requests (S4). Call once at sequencer startup.
+// signer for committee-selection requests. Call once at sequencer startup.
 func SetSequencerSignKey(priv ic.PrivKey) {
 	seqKeyMu.Lock()
 	sequencerSignKey = priv
@@ -44,7 +44,7 @@ func currentSequencerSignKey() ic.PrivKey {
 	return sequencerSignKey
 }
 
-// sequencerAuthContext returns ctx augmented with the S4 sequencer-auth gRPC
+// sequencerAuthContext returns ctx augmented with the sequencer-auth gRPC
 // metadata (x-seed-auth-timestamp + x-seed-auth-signature) for a ListBuddy call.
 // The signature is over committee.SequencerAuthChallenge(ListBuddy, <peer_id>,
 // <unix_ts>) by seqPriv (the sequencer's libp2p identity key). Split out from the
@@ -60,7 +60,7 @@ func sequencerAuthContext(ctx context.Context, seqPriv ic.PrivKey) (context.Cont
 	), nil
 }
 
-// ListBuddySigned calls ListBuddy with sequencer authentication (S4). Only the
+// ListBuddySigned calls ListBuddy with sequencer authentication. Only the
 // authoritative sequencer (whose PeerID the seed has configured as
 // SEQUENCER_PEER_ID) can produce a signature the seed accepts; every other
 // caller — and any stale request — is refused by the seed (fail closed). Use

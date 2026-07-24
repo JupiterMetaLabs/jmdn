@@ -13,7 +13,7 @@ import (
 
 // @static function
 
-// With the block you will attack the metadata to it before the propagation of the block
+// Attach the metadata to the block before it is propagated.
 // QUERY BUDDY NODES FUNCTIONALITY (we would need this to get the buddy nodes prompted)
 func QueryBuddyNodes() ([]PubSubMessages.Buddy_PeerMultiaddr, error) {
 	router := Router.NewNodeselectionRouter()

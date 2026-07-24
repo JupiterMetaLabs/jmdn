@@ -702,12 +702,11 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 	// Validate BLS/consensus if results are provided
 	// This ensures we only process blocks that have reached consensus
 	if len(blsResults) > 0 {
-		// SINGLE VERIFIER (P2): route through the one shared certificate verifier
+		// Single verifier: route through the one shared certificate verifier
 		// — no local quorum math. It fails closed on a missing/failing committee
-		// source (P1), de-duplicates by peer_id AND bls_pub (invariant 4), and
-		// requires 2f+1 over the authenticated committee size (never a simple
-		// majority of whoever responded — the old (validTotal/2)+1 let an
-		// attacker who suppressed honest votes lower the bar).
+		// source, de-duplicates by peer_id AND bls_pub, and requires 2f+1 over the
+		// authenticated committee size (never a simple majority of whoever
+		// responded).
 		res, err := VerifyCertificate(blsResults, block.BlockHash.Hex(), block.BlockNumber)
 		if err != nil {
 			log.Error().Err(err).Str("block_hash", block.BlockHash.Hex()).

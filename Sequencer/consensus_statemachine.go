@@ -95,7 +95,7 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 		mu:              &sync.RWMutex{},
 	}
 
-	// Wire the committee eligibility source (P1). The messaging verifier
+	// Wire the committee eligibility source. The messaging verifier
 	// subtracts the operator block_buddy blocklist and fails closed if this
 	// source is absent or errors.
 	//
@@ -103,11 +103,11 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	// main+backup. This is critical for the 2f+1 threshold: with MaxMainPeers=5
 	// main + MaxBackupPeers=5 backup, sourcing all 10 makes VerifyCertificate
 	// require 2f+1 over 10 = 7, but only the 5 main peers vote — so quorum can
-	// never be reached (incident 2026-07: "yes 5 / needed 7"). Read the live
+	// never be reached. Read the live
 	// MainPeers at call time (populated during Consensus.Start). Fall back to a
 	// main-sized getBuddy query only if MainPeers isn't populated yet.
 	// Legacy source carries NO peer_id↔bls_pub binding (empty values), so the
-	// verifier enforces peer_id membership only — the M1 key binding is available
+	// verifier enforces peer_id membership only — the key binding is available
 	// only via the authenticated snapshot below.
 	legacyBuddySource := func() (map[string]string, error) {
 		if main := c.PeerList.MainPeers; len(main) > 0 {
@@ -132,7 +132,7 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 		return set, nil
 	}
 
-	// Committee-source (O4): when the operator pins the seed authority key, the
+	// Committee-source: when the operator pins the seed authority key, the
 	// eligible set is the seed-AUTHENTICATED epoch snapshot (verified against the
 	// pinned authority), not the raw getBuddy list. Because eligibility IS the
 	// committee, VerifyCertificate then enforces committee ⊆ snapshot at the
@@ -140,7 +140,7 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	// fall back to an unauthenticated list.
 	cfg := settings.Get()
 
-	// S4: register this node's libp2p identity key to sign committee-selection
+	// Register this node's libp2p identity key to sign committee-selection
 	// (ListBuddy) requests. NewConsensus is only invoked on the sequencer (the
 	// Block server paths), so this node is the sequencer; the seed serves
 	// selection only to the sequencer PeerID it has configured and refuses all

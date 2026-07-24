@@ -20,7 +20,7 @@ type engine struct {
 	round      uint64
 	blockHash  string
 
-	// signer signs this node's outgoing PREPARE/COMMIT messages (P9). When
+	// signer signs this node's outgoing PREPARE/COMMIT messages. When
 	// RequireSignatures is set, peers reject any message with an absent or
 	// invalid signature, so an unsigned engine cannot participate.
 	signer Signer
@@ -53,7 +53,7 @@ func (e *engine) runPrepare(ctx context.Context, messenger Messenger) (*PhaseRes
 		Timestamp: time.Now().UTC().Unix(),
 	}
 
-	// (P9) Sign the PREPARE over the same digest peers verify (DigestPrepare,
+	// Sign the PREPARE over the same digest peers verify (DigestPrepare,
 	// which excludes Signature). Without this, peers running the secure-default
 	// RequireSignatures reject our message as "missing signature".
 	if err := e.signPrepare(myPrepare); err != nil {
@@ -394,7 +394,7 @@ func (e *engine) createCommit(decision Decision) (*CommitMessage, error) {
 		Timestamp:    time.Now().UTC().Unix(),
 	}
 
-	// (P9) Sign the COMMIT over DigestCommit (excludes Signature), matching the
+	// Sign the COMMIT over DigestCommit (excludes Signature), matching the
 	// peer verification path.
 	if err := e.signCommit(msg); err != nil {
 		return nil, err
@@ -403,7 +403,7 @@ func (e *engine) createCommit(decision Decision) (*CommitMessage, error) {
 	return msg, nil
 }
 
-// signPrepare signs p in place over DigestPrepare(p) (P9). RequireSignatures
+// signPrepare signs p in place over DigestPrepare(p). RequireSignatures
 // makes a signature mandatory; when it is off, an absent signer is tolerated so
 // non-secure test configs still run.
 func (e *engine) signPrepare(p *PrepareMessage) error {
@@ -421,7 +421,7 @@ func (e *engine) signPrepare(p *PrepareMessage) error {
 	return nil
 }
 
-// signCommit signs c in place over DigestCommit(c) (P9).
+// signCommit signs c in place over DigestCommit(c).
 func (e *engine) signCommit(c *CommitMessage) error {
 	if e.signer == nil {
 		if e.config.RequireSignatures {

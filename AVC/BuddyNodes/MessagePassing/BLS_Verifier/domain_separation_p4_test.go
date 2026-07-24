@@ -10,13 +10,13 @@ import (
 )
 
 // Tests sign with an ephemeral keypair (no provisioned config/bls.json);
-// production loads-only and fails closed (getBLSKeypair / E1).
+// production loads-only and fails closed (getBLSKeypair).
 func init() { os.Setenv("JMDN_BLS_AUTOGEN", "1") }
 
-// P4: votes are domain-separated by network chain id. These tests pin the core
+// Votes are domain-separated by network chain id. These tests pin the core
 // property — a committee vote signed for chain A must NOT verify as a valid vote
-// on chain B (fork / testnet↔mainnet replay) — and document the exact residual
-// exposure of the staged v1→v2 rollout.
+// on chain B (fork / testnet↔mainnet) — and document the behavior of the staged
+// v1→v2 rollout.
 
 const (
 	chainA = uint64(8000800)
@@ -25,13 +25,13 @@ const (
 	blkHash = "0x1111111111111111111111111111111111111111111111111111111111111111"
 )
 
-// TestVoteDomain_CrossChainReplayRejected is the P4 hot spot: a v2 signature
-// captured on chain A cannot be replayed as a valid vote on chain B, and this
-// holds even while legacy v1 acceptance is ON (the rollout flag must not open a
-// cross-chain hole).
+// TestVoteDomain_CrossChainReplayRejected checks that a v2 signature
+// captured on chain A does not verify as a valid vote on chain B, and this
+// holds even while legacy v1 acceptance is ON (the rollout flag must not accept
+// a chain A vote on chain B).
 func TestVoteDomain_CrossChainReplayRejected(t *testing.T) {
 	defer restoreV1Flag(AcceptV1BlockBoundVotes)
-	AcceptV1BlockBoundVotes = true // worst case for the attacker's benefit
+	AcceptV1BlockBoundVotes = true // worst case for the v1 acceptance path
 
 	respA, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 0, blkHash)
 	if err != nil || !ok {
@@ -43,14 +43,14 @@ func TestVoteDomain_CrossChainReplayRejected(t *testing.T) {
 		t.Fatalf("v2 vote should verify on its own chain A: %v", err)
 	}
 
-	// Different chain → MUST be rejected (this is the whole point of P4).
+	// Different chain → MUST be rejected (this is the whole point of domain separation).
 	if err := VerifyForBlock(respA, chainB, 0, blkHash, 1); err == nil {
 		t.Fatalf("SECURITY: chainA vote verified on chainB — cross-chain replay not closed")
 	}
 }
 
 // TestVoteDomain_V2RoundTripAndFieldBinding confirms the v2 domain also still
-// binds the block hash and the vote value (regression guard for D3 properties).
+// binds the block hash and the vote value (regression guard for those properties).
 func TestVoteDomain_V2RoundTripAndFieldBinding(t *testing.T) {
 	defer restoreV1Flag(AcceptV1BlockBoundVotes)
 	AcceptV1BlockBoundVotes = false // pure v2
@@ -74,11 +74,11 @@ func TestVoteDomain_V2RoundTripAndFieldBinding(t *testing.T) {
 	}
 }
 
-// TestVoteDomain_V1RolloutGap documents the ONLY cross-chain exposure that
-// exists during rollout: a genuine legacy v1 signature (block-bound but
-// chain-agnostic) is accepted on any chain while AcceptV1BlockBoundVotes is on,
-// and is rejected on every chain once the flag is turned off. This is the
-// operator's lever to close the migration window.
+// TestVoteDomain_V1RolloutGap documents the behavior during rollout: a genuine
+// legacy v1 signature (block-bound but chain-agnostic) is accepted on any chain
+// while AcceptV1BlockBoundVotes is on, and is rejected on every chain once the
+// flag is turned off. This is the operator's lever to close the migration
+// window.
 func TestVoteDomain_V1RolloutGap(t *testing.T) {
 	defer restoreV1Flag(AcceptV1BlockBoundVotes)
 
@@ -101,7 +101,7 @@ func TestVoteDomain_V1RolloutGap(t *testing.T) {
 		SetPubKey(hex.EncodeToString(pub)).
 		Build()
 
-	// Flag ON: v1 accepted regardless of chain id (documents the rollout gap).
+	// Flag ON: v1 accepted regardless of chain id (documents rollout behavior).
 	AcceptV1BlockBoundVotes = true
 	if err := VerifyForBlock(resp, chainA, 0, blkHash, 1); err != nil {
 		t.Fatalf("v1 vote should be accepted on chainA during rollout: %v", err)
@@ -110,7 +110,7 @@ func TestVoteDomain_V1RolloutGap(t *testing.T) {
 		t.Fatalf("v1 vote should be accepted on chainB during rollout: %v", err)
 	}
 
-	// Flag OFF: v1 rejected everywhere — rollout complete, hole closed.
+	// Flag OFF: v1 rejected everywhere — rollout complete.
 	AcceptV1BlockBoundVotes = false
 	if err := VerifyForBlock(resp, chainA, 0, blkHash, 1); err == nil {
 		t.Fatalf("SECURITY: v1 vote still accepted after AcceptV1BlockBoundVotes disabled")
@@ -147,10 +147,10 @@ func TestVoteDomain_InvalidInputsRejected(t *testing.T) {
 
 func restoreV1Flag(v bool) { AcceptV1BlockBoundVotes = v }
 
-// TestVoteDomain_V3HeightBinding (A2): a v3 vote signed for one height must NOT
+// TestVoteDomain_V3HeightBinding: a v3 vote signed for one height must NOT
 // verify at another height, even with v2 acceptance on (a v3 signature never
-// matches v2 bytes). This is what stops a captured certificate being replayed at
-// a different height.
+// matches v2 bytes). This is what binds a certificate to the exact height its
+// signers intended.
 func TestVoteDomain_V3HeightBinding(t *testing.T) {
 	// height > 0 => v3 domain (chain + height + block + vote).
 	resp, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 100, blkHash)
@@ -161,7 +161,7 @@ func TestVoteDomain_V3HeightBinding(t *testing.T) {
 	if err := VerifyForBlock(resp, chainA, 100, blkHash, 1); err != nil {
 		t.Fatalf("v3 vote should verify at its own height: %v", err)
 	}
-	// A DIFFERENT height must be rejected (the A2 property).
+	// A DIFFERENT height must be rejected (the height-binding property).
 	if err := VerifyForBlock(resp, chainA, 200, blkHash, 1); err == nil {
 		t.Fatalf("SECURITY (A2): v3 vote for height 100 verified at height 200 — height not bound")
 	}

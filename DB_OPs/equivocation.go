@@ -1,13 +1,14 @@
 // MODULE: DB_OPs/equivocation
 // PURPOSE: Durable per-height "first-seen block hash" marker backing the
-//          consensus equivocation detector (P6). Persisting the record lets a
+//          consensus equivocation detector. Persisting the record lets a
 //          node reject a conflicting block at a height it first saw BEFORE a
 //          process restart — the in-memory detector alone loses that record on
-//          restart, reopening a pre-commit double-sign window.
+//          restart, so the durable marker keeps equivocation detection working
+//          across restarts.
 //
 // SAFETY DIRECTION: only FULLY VALIDATED blocks are recorded (the caller,
-// messaging.checkEquivocation, runs last in validateRemoteBlock), so an
-// attacker cannot poison this map with unvalidated (height, hash) pairs.
+// messaging.checkEquivocation, runs last in validateRemoteBlock), so only
+// fully-validated (height, hash) pairs are recorded.
 //
 // STORAGE: accountsdb, mirroring sync_anchor's small-marker pattern (same DB
 // selection plumbing, same not-found handling). Key format is frozen.

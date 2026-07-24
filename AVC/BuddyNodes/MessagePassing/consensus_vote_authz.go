@@ -8,37 +8,34 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// enforceVoteRequesterAuth gates the C-04 requester check. It is OPT-IN and
-// DEFAULT-OFF after an incident (2026-07): fail-closing on the buddy set here
-// halted consensus, because at request time the authoritative committee set for
-// this node can be empty/not-yet-populated on the receive path AND does not
-// reliably contain the sequencer's peer_id (the set excludes self and is built
-// from cached consensus messages). Until the gate is anchored on a source that
-// is guaranteed to include the authorized sequencer, keep it off by default so
-// consensus liveness matches pre-C-04 behavior. Set
-// JMDN_ENFORCE_VOTE_REQUESTER_AUTH=1 to enable (and even then it fails OPEN on an
-// empty/unknown set rather than bricking).
+// enforceVoteRequesterAuth gates the vote-result requester check. It is opt-in
+// and default-off: fail-closing on the buddy set here can stall consensus,
+// because at request time the authoritative committee set for this node can be
+// empty/not-yet-populated on the receive path AND does not reliably contain the
+// sequencer's peer_id (the set excludes self and is built from cached consensus
+// messages). Until the gate is anchored on a source that is guaranteed to
+// include the authorized sequencer, keep it off by default so consensus liveness
+// is preserved. Set JMDN_ENFORCE_VOTE_REQUESTER_AUTH=1 to enable (and even then
+// it fails open on an empty/unknown set rather than blocking).
 var enforceVoteRequesterAuth = os.Getenv("JMDN_ENFORCE_VOTE_REQUESTER_AUTH") == "1"
 
-// Vote-result requester authorization (C-04).
+// Vote-result requester authorization.
 //
 // A vote-result request is the sequencer asking a committee member to return —
-// and BLS-sign — this node's aggregated vote for a specific block. Before this
-// gate, handleVoteResultRequest signed for ANY peer that opened the stream, over
-// a caller-supplied block hash. That is a signing oracle: an outsider (or a
-// merely seed-weighted peer) could harvest genuine committee signatures for a
-// hash of its choosing and assemble a certificate.
+// and BLS-sign — this node's aggregated vote for a specific block. This gate
+// restricts WHO may request that signature so the node does not BLS-sign a
+// caller-supplied block hash for an arbitrary peer.
 //
 // The libp2p stream's remote peer ID is cryptographically authenticated by the
 // transport handshake, so restricting WHO may request a signature is sound. The
-// legitimate sequencer is always a member of this node's authenticated buddy
-// set — that is exactly how the buddy itself resolves the sequencer when it
-// sends results back (sendVoteResultToSequencer picks the sequencer from
-// BuddyNodes.Buddies_Nodes). So the gate is: the requester MUST be in the
-// authenticated committee/buddy set; every other peer is rejected.
+// sequencer is always a member of this node's authenticated buddy set — that is
+// exactly how the buddy itself resolves the sequencer when it sends results back
+// (sendVoteResultToSequencer picks the sequencer from BuddyNodes.Buddies_Nodes).
+// So the gate is: the requester MUST be in the authenticated committee/buddy
+// set; every other peer is rejected.
 //
-// This closes the oracle to outsiders. It does NOT by itself stop a committee
-// member from requesting (the aggregate-over-partial-view and
+// This restricts signing to committee members. It does NOT by itself constrain a
+// committee member from requesting (the aggregate-over-partial-view and
 // caller-supplied-hash concerns are a separate, larger consensus change); see
 // the residual noted on handleVoteResultRequest.
 
@@ -85,8 +82,8 @@ func currentBuddySet() []peer.ID {
 // does not yet know its committee simply declines to sign rather than signing
 // for an unauthenticated caller.
 func voteRequesterAuthorized(remote peer.ID) bool {
-	// Default-off after the 2026-07 halt: when the gate is disabled, preserve the
-	// pre-C-04 behavior (accept the request; signing/verification still apply).
+	// Default-off: when the gate is disabled, accept the request (signing and
+	// verification still apply).
 	if !enforceVoteRequesterAuth {
 		return true
 	}
@@ -98,9 +95,10 @@ func voteRequesterAuthorized(remote peer.ID) bool {
 	}
 	set := currentBuddySet()
 	if len(set) == 0 {
-		// FAIL OPEN on an unknown/unpopulated committee set. Fail-closing here is
-		// what halted consensus: the set can legitimately be empty at request time.
-		// Better to sign than to brick; the signature/certificate checks still run.
+		// Fail open on an unknown/unpopulated committee set: the set can
+		// legitimately be empty at request time, so fail-closing here would stall
+		// consensus. Sign rather than block; the signature/certificate checks still
+		// run.
 		return true
 	}
 	for _, p := range set {

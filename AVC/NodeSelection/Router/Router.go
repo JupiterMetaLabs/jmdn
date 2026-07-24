@@ -18,20 +18,17 @@ import (
 
 type NodeselectionRouter struct{}
 
-// SECURITY (JMDN-001): the VRF key material for node/committee selection MUST be
-// secret and per-network. It was previously hardcoded to the public BIP39 test
-// mnemonic ("abandon abandon ... about") with salt "test-salt" — a value known
-// to the entire world, which makes every VRF output predictable AND forgeable
-// (any attacker can derive the same key, reproduce the proofs, and bias which
-// nodes are selected). We now REQUIRE operator-provided secret material via
-// environment and refuse to run selection with an insecure default.
+// The VRF key material for node/committee selection MUST be secret and
+// per-network. Selection requires operator-provided secret material via
+// environment; an empty value is rejected at use rather than falling back to a
+// default.
 //
 //	JMDN_NODE_SELECTION_MNEMONIC — the network's secret BIP39 mnemonic
 //	JMDN_NETWORK_SALT            — the network's VRF domain-separation salt
 //
-// TODO(JMDN-001): derive the selection key from this node's own libp2p private
-// key (peer.json) instead of a shared mnemonic, so no secret is shared across
-// nodes at all.
+// TODO: derive the selection key from this node's own libp2p private key
+// (peer.json) instead of a shared mnemonic, so no secret is shared across nodes
+// at all.
 func selectionKeyMaterial() (mnemonic string, salt string, err error) {
 	// Primary source: YAML/Viper config (settings.selection.*). Viper also binds
 	// JMDN_NODE_SELECTION_MNEMONIC / JMDN_NETWORK_SALT, so env overrides YAML.

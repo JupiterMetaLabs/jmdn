@@ -1,19 +1,19 @@
 package messaging
 
-// P1 adversarial tests — committee eligibility is dynamic (live getBuddy set
-// minus the operator block_buddy blocklist) and MUST fail closed.
+// Committee eligibility is dynamic (live getBuddy set minus the operator
+// block_buddy blocklist) and MUST fail closed.
 //
 // Design: membership authenticates peer_id, and when the authenticated seed
 // snapshot binds a bls_pub to that peer_id the vote's key must match it. A
 // legacy source with no snapshot carries no bound key and falls back to
 // peer_id-only authentication (logged).
 //
-// Invariants under test:
-//   1. Fail closed: no eligibility source wired, a source error, or an empty
-//      buddy set ⇒ no vote is authorized and consensus is refused.
-//   4. Unique identity: the same key under two PeerIDs, or one PeerID voting
-//      twice, counts once.
-//   + block_buddy: a blocklisted peer never counts even if getBuddy returns it.
+// Properties under test:
+//   - Fail closed: no eligibility source wired, a source error, or an empty
+//     buddy set ⇒ no vote is authorized and consensus is refused.
+//   - Unique identity: the same key under two PeerIDs, or one PeerID voting
+//     twice, counts once.
+//   - block_buddy: a blocklisted peer never counts even if getBuddy returns it.
 
 import (
 	"encoding/hex"
@@ -29,7 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// ---- shared BLS test-member helpers (also used by the JMDN-001 harness) ------
+// ---- shared BLS test-member helpers (also used by the block harness) ---------
 
 type blsMember struct {
 	peerID string
@@ -114,7 +114,7 @@ func blockMsg(hash common.Hash, data map[string]string) config.BlockMessage {
 // and clears it on cleanup so tests do not leak state into one another.
 // useEligible declares peer_ids eligible with NO bound bls_pub (empty value), so
 // only membership is enforced — used by tests that exercise membership/quorum/
-// dedup independent of the M1 key binding.
+// dedup independent of the key binding.
 func useEligible(t *testing.T, peerIDs ...string) {
 	t.Helper()
 	SetCommitteeEligibilitySource(func() (map[string]string, error) {
@@ -128,7 +128,7 @@ func useEligible(t *testing.T, peerIDs ...string) {
 }
 
 // useEligibleBound declares an authenticated committee binding each member's
-// peer_id to its bls_pub (as the seed snapshot does), so the M1 binding is
+// peer_id to its bls_pub (as the seed snapshot does), so the key binding is
 // enforced: a vote's pubkey must match the bound key.
 func useEligibleBound(t *testing.T, members ...blsMember) {
 	t.Helper()
@@ -158,7 +158,7 @@ func useNoSource(t *testing.T) {
 }
 
 // attackerCert returns a quorum-sized certificate of block-bound +1 votes from
-// three attacker-generated keys under attacker-chosen PeerIDs. Signatures are
+// three independently generated keys under caller-chosen PeerIDs. Signatures are
 // VALID BLS signatures over the correct block-bound message — only eligibility
 // can stop them.
 func attackerCert(t *testing.T, blockHashHex string, peerIDs ...string) map[string]string {
@@ -176,7 +176,7 @@ func attackerCert(t *testing.T, blockHashHex string, peerIDs ...string) map[stri
 
 // ---- fail-closed: no/failed/empty eligibility source ⇒ refuse -----------------
 
-// A forged certificate (3 attacker keys under fake PeerIDs, valid signatures)
+// A certificate with three keys under ineligible PeerIDs (valid signatures)
 // must be REJECTED when the eligibility source is absent, errors, or is empty.
 func TestP1_EligibilityDefect_ForgedCertRejected(t *testing.T) {
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000051")
@@ -272,7 +272,7 @@ func indexOf(s, sub string) int {
 
 // ---- eligibility gating with a valid source -----------------------------------
 
-// Attacker keys under PeerIDs that are NOT in the buddy set never reach quorum.
+// Keys under PeerIDs that are NOT in the buddy set never reach quorum.
 func TestP1_ValidSource_AttackerPeerIDsRejected(t *testing.T) {
 	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, threshold 3
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000055")

@@ -822,8 +822,8 @@ func main() {
 	fmt.Printf("ImmuDB target: %s:%d\n", config.DBAddress, config.DBPort)
 
 	// Chain ID global initialization — must happen before any Security validation.
-	// Previously this was only set inside Block/Server.go (gated behind BlockGen > 0),
-	// which left expectedChainID nil on non-sequencer nodes. All nodes need it because
+	// Setting this globally here (rather than only inside Block/Server.go, gated behind
+	// BlockGen > 0) keeps expectedChainID set on non-sequencer nodes. All nodes need it because
 	// Security.allChecksWithConn validates chain ID on both direct tx submission
 	// (Block/Server.go:188 → AllChecks) and broadcast vote triggers
 	// (node/node.go:199 → messaging.HandleBroadcastStream → Vote.SubmitVote → CheckZKBlockValidation).
@@ -899,7 +899,7 @@ func main() {
 
 	// shutdownSequenceBudget bounds steps 1-4 below as a whole. Each step is
 	// already individually bounded (profiler: 5s; shutdown.Shutdown()'s GRO
-	// window: ~10s + ~0.4s of flush sleeps), but nothing previously capped
+	// window: ~10s + ~0.4s of flush sleeps), but no single bound otherwise caps
 	// the SEQUENCE — a stall anywhere in it could still run past Docker's
 	// `stop_grace_period: 30s` (docker-compose.yml) and get SIGKILLed with
 	// no log line explaining why. Kept comfortably under that 30s so this
@@ -1149,7 +1149,7 @@ func main() {
 						return fmt.Errorf("[ReconcileFunc] all %d seednode peers failed catchup", len(peers))
 					})
 
-					// P7: when the block-propagation linkage check detects a height
+					// When the block-propagation linkage check detects a height
 					// gap, nudge the monitor to run an immediate authenticated
 					// reconcile (seednode-vetted peers) instead of waiting for the
 					// next periodic tick. Best-effort; the gap block is rejected
@@ -1180,7 +1180,7 @@ func main() {
 		}
 	}
 
-	// (P7 vote sync-gate) Wire the consensus vote gate on every node: a node with
+	// Wire the consensus vote gate on every node: a node with
 	// no local chain (tip 0) never votes, and a node running a sync monitor must
 	// be synced before it votes. On a DB read error tip is 0 → abstain
 	// (fail-closed). The sequencer has no monitor and a non-empty chain, so it is

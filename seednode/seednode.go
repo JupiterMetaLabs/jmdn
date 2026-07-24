@@ -547,12 +547,12 @@ func (c *Client) RegisterPeerWithAlias(h host.Host, alias string) error {
 		// ALIAS EXISTS. Check if it belongs to US.
 		if existingAliasRecord.PeerId == peerID {
 			fmt.Printf("✅ Alias '%s' already registered to this Node (%s).\n", alias, peerID)
-			// Previously this returned nil immediately, which skipped
-			// AttachCommitteeBLS entirely: a peer registered BEFORE the
-			// committee-source rollout could never emit its bls_pub and so could
-			// never join the committee snapshot (observed as 0/40 keys). Refresh
-			// the existing record so the committee key is attached and persisted.
-			// No-op when emission is off, so it cannot churn or wipe keys.
+			// Refreshing here (rather than returning nil immediately) runs
+			// AttachCommitteeBLS: a peer registered before the committee-source
+			// rollout would otherwise never emit its bls_pub and so never join the
+			// committee snapshot. Refresh the existing record so the committee key
+			// is attached and persisted. No-op when emission is off, so it cannot
+			// churn or wipe keys.
 			return c.refreshExistingPeerBLS(h, existingAliasRecord)
 		}
 
@@ -603,8 +603,8 @@ func (c *Client) RegisterPeerWithAlias(h host.Host, alias string) error {
 // SignedPeerRecord, runs PoP + uniqueness, and upserts via a full-row Save that
 // persists bls_pub.
 //
-// No-op when emission is disabled: it must not send an empty bls_pub, which
-// could blank a previously stored key (see the seed-side overwrite guard).
+// No-op when emission is disabled: it must not send an empty bls_pub, so it
+// avoids blanking an already-stored key (see the seed-side overwrite guard).
 func (c *Client) refreshExistingPeerBLS(h host.Host, existing *peerpb.SignedPeerRecord) error {
 	if !EmitCommitteeBLS {
 		fmt.Printf("🔑 committee bls: emission off — not refreshing bls_pub for %s\n", existing.PeerId)
@@ -1231,7 +1231,7 @@ func convertBuddyPeerRecordToNode(peer *peerpb.BuddyPeerRecord) selection.Node {
 
 // ListBuddyPeers lists buddy peers from the seed node (lists all candidates for buddy selection)
 func (c *Client) ListBuddy(ctx context.Context, request *peerpb.ListBuddyRequest) (*peerpb.ListBuddyResponse, error) {
-	// S4: committee selection is sequencer-gated. If this node registered its
+	// Committee selection is sequencer-gated. If this node registered its
 	// sequencer identity key (SetSequencerSignKey), auto-attach the sequencer-auth
 	// metadata so the seed serves selection. Non-sequencer callers send unsigned
 	// and are refused by the seed (fail closed) — as intended.

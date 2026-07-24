@@ -54,7 +54,7 @@ func (b *BFT) RunConsensus(
 
 	threshold := b.calculateThreshold(len(allBuddies))
 
-	// (P9) Resolve the outgoing-message signer. Prefer an explicitly supplied
+	// Resolve the outgoing-message signer. Prefer an explicitly supplied
 	// signer; otherwise fall back to the local buddy's ed25519 private key
 	// (validateInputs guarantees it is present). Under the secure-default
 	// RequireSignatures, a usable signer is mandatory — fail closed rather than
