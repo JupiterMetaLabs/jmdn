@@ -583,8 +583,9 @@ func checkLinkage(ctx context.Context, b *config.ZKBlock) *blockRejection {
 	}
 
 	rej := linkageDecision(b, localTip, tipErr, parent, parentErr)
-	if rej != nil && rej.reason == "height_gap" {
-		// We are missing everything from our next-needed height up to this block.
+	if rej != nil && (rej.reason == "height_gap" || rej.reason == "not_bootstrapped") {
+		// We are missing everything from our next-needed height up to this block
+		// (fresh node: from block 1). Trigger authenticated catch-up.
 		requestCatchUp(localTip + 1)
 	}
 	return rej
@@ -594,10 +595,10 @@ func checkLinkage(ctx context.Context, b *config.ZKBlock) *blockRejection {
 // authenticated local state it returns a rejection or nil:
 //
 //   - tipErr != nil                 → tip_unreadable (FAIL CLOSED; was fail-open)
-//   - localTip == 0, number == 1    → accept (bootstrap: first block, no stored
-//     parent to link against)
-//   - localTip == 0, number > 1     → height_gap (fresh node must catch up, not
-//     accept an out-of-band block)
+//   - localTip == 0 (fresh node)    → not_bootstrapped for ANY block, including
+//     block 1: a node with no local chain must bootstrap via authenticated
+//     catch-up, never by ingesting an out-of-band gossip block onto an
+//     unverified chain (so it cannot join consensus/state unsynced)
 //   - number <= localTip            → stale_height
 //   - number  > localTip+1          → height_gap (was silently ACCEPTED — an
 //     out-of-band future block that would break contiguity)
@@ -613,11 +614,16 @@ func linkageDecision(b *config.ZKBlock, localTip uint64, tipErr error, parent *c
 	}
 
 	if localTip == 0 {
-		if b.BlockNumber == 1 {
-			return nil // bootstrap: the first block has no stored parent yet
-		}
-		return reject("height_gap",
-			"fresh node (tip 0) received block %d out of band; requires authenticated catch-up", b.BlockNumber)
+		// A fresh node (empty chain) must NOT ingest ANY block off the gossip
+		// path — including block 1. With no locally-authenticated parent to link
+		// against, accepting an out-of-band block would let an unsynced node join
+		// consensus/state on an unverified chain. A fresh node bootstraps ONLY
+		// through authenticated catch-up (FastSync), which applies blocks via its
+		// own path (not this one) and does not use checkLinkage. The sequencer
+		// produces blocks on a separate path (validateRemoteBlock is remote-only),
+		// so it is unaffected.
+		return reject("not_bootstrapped",
+			"node has no local chain (tip 0); block %d must arrive via authenticated catch-up, not gossip", b.BlockNumber)
 	}
 
 	if b.BlockNumber <= localTip {

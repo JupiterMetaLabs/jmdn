@@ -41,8 +41,8 @@ func TestP7_LinkageDecision(t *testing.T) {
 		wantReason string // "" == accept
 	}{
 		{"tip unreadable → fail closed", blkAt(11, tipHash), 0, errors.New("db down"), nil, nil, "tip_unreadable"},
-		{"fresh node accepts block 1", blkAt(1, common.Hash{}), 0, nil, nil, nil, ""},
-		{"fresh node rejects out-of-band block 5", blkAt(5, common.Hash{}), 0, nil, nil, nil, "height_gap"},
+		{"fresh node rejects block 1 (bootstrap via catch-up only)", blkAt(1, common.Hash{}), 0, nil, nil, nil, "not_bootstrapped"},
+		{"fresh node rejects out-of-band block 5", blkAt(5, common.Hash{}), 0, nil, nil, nil, "not_bootstrapped"},
 		{"stale height rejected", blkAt(8, tipHash), 10, nil, nil, nil, "stale_height"},
 		{"equal height rejected", blkAt(10, tipHash), 10, nil, nil, nil, "stale_height"},
 		{"gap beyond tip+1 rejected", blkAt(15, tipHash), 10, nil, nil, nil, "height_gap"},
@@ -111,6 +111,33 @@ func TestP7_HeightGapTriggersCatchUp(t *testing.T) {
 	}
 	if gotFrom != 11 { // next-needed height = tip+1
 		t.Fatalf("catch-up fromBlock = %d, want 11", gotFrom)
+	}
+}
+
+// TestP7_FreshNodeRejectsGossipAndCatchesUp verifies a fresh node (tip 0)
+// refuses to ingest a gossip block (even block 1) and instead triggers
+// authenticated catch-up from block 1 — it must not join consensus/state
+// unsynced.
+func TestP7_FreshNodeRejectsGossipAndCatchesUp(t *testing.T) {
+	origTip, origBlk, origReq := readLocalTip, readBlockByNumber, catchUpRequester
+	t.Cleanup(func() { readLocalTip, readBlockByNumber, catchUpRequester = origTip, origBlk, origReq })
+
+	readLocalTip = func(context.Context) (uint64, error) { return 0, nil } // fresh node
+	readBlockByNumber = func(uint64) (*config.ZKBlock, error) { return nil, nil }
+
+	var gotFrom uint64
+	var fired bool
+	SetCatchUpRequester(func(from uint64) { fired = true; gotFrom = from })
+
+	// Even block 1 off the gossip path must be rejected.
+	if rej := checkLinkage(context.Background(), blkAt(1, common.Hash{})); rej == nil || rej.reason != "not_bootstrapped" {
+		t.Fatalf("fresh node must reject gossip block 1 as not_bootstrapped, got %v", rej)
+	}
+	if !fired {
+		t.Fatalf("SECURITY (P7): fresh node must trigger authenticated catch-up")
+	}
+	if gotFrom != 1 { // catch up from genesis+1
+		t.Fatalf("catch-up fromBlock = %d, want 1", gotFrom)
 	}
 }
 
