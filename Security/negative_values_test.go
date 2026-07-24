@@ -26,9 +26,9 @@ func TestCheckTransactionValues(t *testing.T) {
 	neg := big.NewInt(-100)
 
 	cases := []struct {
-		name    string
-		tx      *config.Transaction
-		wantOK  bool
+		name   string
+		tx     *config.Transaction
+		wantOK bool
 	}{
 		{"nil tx rejected", nil, false},
 		{"positive value + gas ok", mk(pos, pos, nil, nil, 0), true},

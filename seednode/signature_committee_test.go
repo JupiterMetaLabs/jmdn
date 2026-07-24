@@ -8,7 +8,9 @@ import (
 
 // The identity-signed peer-record message must match seedNodes
 // ValidatePeerRecordSignature (pkg/peer/vrsSigner.go) byte-for-byte:
-//   peer_id | multiaddrs… | seq | status [ | bls_pub(lowercase) ]
+//
+//	peer_id | multiaddrs… | seq | status [ | bls_pub(lowercase) ]
+//
 // with bls_pub appended ONLY when set.
 func TestPeerRecordCanonicalMessage_BLSAppend(t *testing.T) {
 	base := &peerpb.SignedPeerRecord{
