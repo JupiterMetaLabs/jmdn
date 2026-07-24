@@ -35,7 +35,7 @@ const (
 	defaultMaxInterval                = 30 * time.Minute
 	defaultBlockPropagationWindow     = 30 * time.Second
 	defaultOutOfSyncThreshold         = 2
-	defaultPropagationToleranceBlocks = uint64(3)
+	defaultPropagationToleranceBlocks = uint64(1) // only a single in-flight block is excused as propagation lag; a persistent gap of >=2 triggers catch-up
 	defaultSeednodeGracePeriod        = 3
 )
 
