@@ -29,6 +29,7 @@ import (
 	"gossipnode/config"
 
 	"github.com/JupiterMetaLabs/JMDN-FastSync/common/types"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // computeAccountDeltas iterates all blocks in [fromBlock..toBlock] and returns a map
@@ -148,10 +149,16 @@ func applyBlockDeltas(blk *types.ZKBlock, deltas map[string]*types.AccountDelta,
 
 		gasFee := config.GasFee(tx.Type, tx.GasLimit, tx.GasPrice, tx.MaxFee, tx.MaxPriorityFee)
 
-		halfGas := new(big.Int).Div(gasFee, big.NewInt(2))
-		remainder := new(big.Int).Mod(gasFee, big.NewInt(2))
-		coinbaseGas := new(big.Int).Add(halfGas, remainder)
-		zkvmGas := new(big.Int).Set(halfGas)
+		// Distribute the fee via the shared config.SplitFee so this reconciliation
+		// path can never diverge from live execution by a single wei. Recipients
+		// are passed empty here: the external block type carried by this path does
+		// not yet surface FeeRecipients, and empty reproduces the single-coinbase
+		// split exactly. When that field is threaded through, pass it here.
+		var cbAddr common.Address
+		if blk.CoinbaseAddr != nil {
+			cbAddr = *blk.CoinbaseAddr
+		}
+		zkvmGas, coinbaseCredits := config.SplitFee(gasFee, cbAddr, nil)
 
 		// Sender: deduct value + gasFee; advance nonce; increment TxCountSent
 		if fromAddr != "" {
@@ -174,10 +181,13 @@ func applyBlockDeltas(blk *types.ZKBlock, deltas map[string]*types.AccountDelta,
 			d.BalanceDelta.Add(d.BalanceDelta, tx.Value)
 		}
 
-		// Coinbase: credit half + remainder of gasFee
+		// Coinbase side: credit each resolved recipient (a single credit to the
+		// coinbase address when FeeRecipients is empty).
 		if coinbaseAddr != "" {
-			d := getDelta(deltas, coinbaseAddr)
-			d.BalanceDelta.Add(d.BalanceDelta, coinbaseGas)
+			for _, c := range coinbaseCredits {
+				d := getDelta(deltas, strings.ToLower(c.Addr.Hex()))
+				d.BalanceDelta.Add(d.BalanceDelta, c.Amount)
+			}
 		}
 
 		// ZKVM: credit exact half of gasFee
