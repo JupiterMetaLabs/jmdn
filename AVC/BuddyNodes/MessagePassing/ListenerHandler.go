@@ -1545,13 +1545,13 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	var targetBlockHash string
 	var targetBlockNumber uint64
 	var voteResultReq struct {
-		BlockHash   string `json:"block_hash"`
-		BlockNumber uint64 `json:"block_number"` // A2: bind the vote to this height (v3)
+		BlockHash   string     `json:"block_hash"`
+		BlockNumber flexUint64 `json:"block_number"` // A2: bind the vote to this height (v3); tolerate number OR string
 	}
 	// functions which retuning the response should return the same format
 	if err := json.Unmarshal([]byte(message.Message), &voteResultReq); err == nil {
 		targetBlockHash = voteResultReq.BlockHash
-		targetBlockNumber = voteResultReq.BlockNumber
+		targetBlockNumber = uint64(voteResultReq.BlockNumber)
 		if targetBlockHash != "" {
 			fmt.Printf("🎯 Target block hash from request: %s\n", targetBlockHash)
 		}

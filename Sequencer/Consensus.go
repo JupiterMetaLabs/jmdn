@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1580,12 +1579,17 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 
 	// Build request message
 	reqAck := PubSubMessages.NewACKBuilder().True_ACK_Message(consensus.Host.ID(), config.Type_VoteResult)
-	requestPayload := map[string]string{
+	// NOTE: use interface{} values so block_number is emitted as a JSON NUMBER.
+	// The buddy unmarshals it into `BlockNumber uint64`; sending it as a string
+	// (the earlier map[string]string form) makes the buddy's json.Unmarshal fail
+	// ("cannot unmarshal string into uint64"), so it rejects the whole request and
+	// never signs — which halts consensus. (Incident 2026-07 / A2 regression.)
+	requestPayload := map[string]interface{}{
 		"block_hash": blockHash,
 		// A2: the block height the buddy must bind its vote to (v3 domain). A buddy
 		// that receives it signs v3; an older one that ignores it signs v2 (still
 		// accepted during rollout).
-		"block_number": strconv.FormatUint(consensus.ZKBlockData.GetZKBlock().BlockNumber, 10),
+		"block_number": consensus.ZKBlockData.GetZKBlock().BlockNumber,
 	}
 	requestPayloadBytes, err := json.Marshal(requestPayload)
 	if err != nil {
