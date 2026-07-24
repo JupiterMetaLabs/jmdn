@@ -180,26 +180,23 @@ func eligibleMembers() (map[string]string, error) {
 func keyAuthorized(peerID, pubHex string) bool {
 	eligible, err := eligibleMembers()
 	if err != nil {
-		log.Warn().Str("peer", peerID).Err(err).Msg("committee: authorization denied — eligibility source error/empty")
+		// fmt.Printf (not zerolog) so it reliably reaches journald during the incident.
+		fmt.Printf("🚫 committee auth denied: peer=%s reason=eligibility_source_error err=%v\n", peerID, err)
 		return false
 	}
 	boundKey, ok := eligible[peerID]
 	if !ok {
-		log.Warn().Str("peer", peerID).Int("eligible_count", len(eligible)).
-			Msg("committee: authorization denied — peer_id not in eligible committee set")
+		fmt.Printf("🚫 committee auth denied: peer=%s reason=not_in_eligible_set eligible_count=%d\n", peerID, len(eligible))
 		return false
 	}
 	if boundKey == "" {
 		// Legacy/unpinned source carries no bls_pub — peer_id-only authentication.
 		// NOT production-safe; a pinned committee snapshot always carries the key.
-		log.Warn().Str("peer", peerID).Msg("committee: key binding unavailable (legacy source); authenticating peer_id only")
+		fmt.Printf("committee auth: peer=%s legacy peer_id-only (no bls_pub bound)\n", peerID)
 		return true
 	}
 	if normalizeBLSPub(pubHex) != boundKey {
-		log.Warn().Str("peer", peerID).
-			Str("bound_bls_pub", boundKey).
-			Str("vote_bls_pub", normalizeBLSPub(pubHex)).
-			Msg("committee: authorization denied — vote pubkey does not match snapshot-bound bls_pub")
+		fmt.Printf("🚫 committee auth denied: peer=%s reason=pubkey_mismatch bound=%s got=%s\n", peerID, boundKey, normalizeBLSPub(pubHex))
 		return false
 	}
 	return true
