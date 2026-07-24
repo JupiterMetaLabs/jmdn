@@ -78,10 +78,17 @@ func SignPeerRecord(peerRecord *peerpb.SignedPeerRecord, h host.Host) error {
 }
 
 // EmitCommitteeBLS gates whether this node advertises a committee BLS key at
-// registration (S1/S2b). Default OFF — a node registers exactly as before and is
-// simply not committee-eligible. Set JMDN_EMIT_COMMITTEE_BLS=1 to join the
-// committee, in lockstep with the seed's committee-source enforcement (O3).
-var EmitCommitteeBLS = os.Getenv("JMDN_EMIT_COMMITTEE_BLS") == "1"
+// registration (S1/S2b). Default ON now that the seed committee-source
+// enforcement is live: the node registers with bls_pub + proof-of-possession so
+// the seed can admit it to the epoch snapshot. Set JMDN_EMIT_COMMITTEE_BLS=0 to
+// opt a node out (registers as before, not committee-eligible).
+//
+// Safe as a mixed-fleet flip: the live seed verifies bls_pub+PoP for records
+// that carry them and still accepts records without (backward-compatible). Note
+// emission is INDEPENDENT of consumption — jmdn only uses the snapshot for
+// consensus once consensus.seed_authority_bls_pub is pinned; until then
+// eligibility stays on the legacy getBuddy set.
+var EmitCommitteeBLS = os.Getenv("JMDN_EMIT_COMMITTEE_BLS") != "0"
 
 // AttachCommitteeBLS populates bls_pub (lowercase hex) and bls_pop (hex proof of
 // possession) on the record from the node's persistent dela/bls key, so the seed
