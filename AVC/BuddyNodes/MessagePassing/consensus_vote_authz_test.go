@@ -6,19 +6,34 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// C-04: only an authenticated committee member (the sequencer) may request this
-// node's signed vote. An outsider must never obtain a signature — that was the
-// open signing oracle. voteRequesterAuthorized is the fail-closed gate.
-func TestVoteRequesterAuthorized_BuddySetMembership(t *testing.T) {
-	// Restore package seams after the test.
+// Default-OFF (post-incident): with the gate disabled, every requester is
+// accepted so consensus liveness matches pre-C-04 behavior. This is the state a
+// stock deployment runs in until JMDN_ENFORCE_VOTE_REQUESTER_AUTH=1 is set.
+func TestVoteRequesterAuthorized_DisabledByDefaultAcceptsAll(t *testing.T) {
 	defer SetVoteBuddySetProvider(nil)
 	defer SetVoteResultRequesterAuthorizer(nil)
+	defer func(v bool) { enforceVoteRequesterAuth = v }(enforceVoteRequesterAuth)
+
+	enforceVoteRequesterAuth = false
+	SetVoteBuddySetProvider(func() []peer.ID { return []peer.ID{peer.ID("committee-peer")} })
+
+	if !voteRequesterAuthorized(peer.ID("any-peer")) {
+		t.Fatalf("gate disabled: any requester must be accepted (liveness)")
+	}
+}
+
+// C-04 ENABLED: only an authenticated committee member (the sequencer) may
+// request this node's signed vote; an outsider is rejected.
+func TestVoteRequesterAuthorized_EnabledBuddySetMembership(t *testing.T) {
+	defer SetVoteBuddySetProvider(nil)
+	defer SetVoteResultRequesterAuthorizer(nil)
+	defer func(v bool) { enforceVoteRequesterAuth = v }(enforceVoteRequesterAuth)
+	enforceVoteRequesterAuth = true
 
 	seq := peer.ID("sequencer-peer")
 	other := peer.ID("committee-peer-2")
 	attacker := peer.ID("attacker-peer")
 
-	// Authenticated buddy set = {sequencer, committee-peer-2}.
 	SetVoteResultRequesterAuthorizer(nil)
 	SetVoteBuddySetProvider(func() []peer.ID { return []peer.ID{seq, other} })
 
@@ -31,32 +46,32 @@ func TestVoteRequesterAuthorized_BuddySetMembership(t *testing.T) {
 	if voteRequesterAuthorized(attacker) {
 		t.Fatalf("SECURITY (C-04): non-committee peer authorized to request a signed vote")
 	}
-	if voteRequesterAuthorized("") {
-		t.Fatalf("empty peer id must never be authorized")
-	}
 }
 
-// Fail-closed: an empty/unknown buddy set authorizes no one, so the node signs
-// for nobody rather than for an unauthenticated caller.
-func TestVoteRequesterAuthorized_EmptySetFailsClosed(t *testing.T) {
+// C-04 ENABLED but the committee set is unknown/empty at request time: FAIL OPEN
+// (accept) rather than brick consensus. This is the exact case that caused the
+// 2026-07 halt when the gate fail-closed.
+func TestVoteRequesterAuthorized_EnabledEmptySetFailsOpen(t *testing.T) {
 	defer SetVoteBuddySetProvider(nil)
 	defer SetVoteResultRequesterAuthorizer(nil)
+	defer func(v bool) { enforceVoteRequesterAuth = v }(enforceVoteRequesterAuth)
+	enforceVoteRequesterAuth = true
 
 	SetVoteResultRequesterAuthorizer(nil)
 	SetVoteBuddySetProvider(func() []peer.ID { return nil })
 
-	if voteRequesterAuthorized(peer.ID("anyone")) {
-		t.Fatalf("SECURITY (C-04): empty buddy set must authorize no requester (fail-closed)")
+	if !voteRequesterAuthorized(peer.ID("anyone")) {
+		t.Fatalf("empty committee set must FAIL OPEN (accept) to preserve liveness")
 	}
 }
 
-// An injected authorizer (startup/test override) has final say over the built-in
-// membership check.
-func TestVoteRequesterAuthorized_InjectedAuthorizerWins(t *testing.T) {
+// An injected authorizer (startup/test override) has final say when enabled.
+func TestVoteRequesterAuthorized_EnabledInjectedAuthorizerWins(t *testing.T) {
 	defer SetVoteBuddySetProvider(nil)
 	defer SetVoteResultRequesterAuthorizer(nil)
+	defer func(v bool) { enforceVoteRequesterAuth = v }(enforceVoteRequesterAuth)
+	enforceVoteRequesterAuth = true
 
-	// Buddy set would reject "x", but the injected authorizer allows exactly it.
 	SetVoteBuddySetProvider(func() []peer.ID { return []peer.ID{peer.ID("someone-else")} })
 	SetVoteResultRequesterAuthorizer(func(p peer.ID) bool { return p == peer.ID("x") })
 

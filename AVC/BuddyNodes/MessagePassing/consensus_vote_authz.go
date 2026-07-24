@@ -1,10 +1,24 @@
 package MessagePassing
 
 import (
+	"os"
+
 	AVCStruct "gossipnode/config/PubSubMessages"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )
+
+// enforceVoteRequesterAuth gates the C-04 requester check. It is OPT-IN and
+// DEFAULT-OFF after an incident (2026-07): fail-closing on the buddy set here
+// halted consensus, because at request time the authoritative committee set for
+// this node can be empty/not-yet-populated on the receive path AND does not
+// reliably contain the sequencer's peer_id (the set excludes self and is built
+// from cached consensus messages). Until the gate is anchored on a source that
+// is guaranteed to include the authorized sequencer, keep it off by default so
+// consensus liveness matches pre-C-04 behavior. Set
+// JMDN_ENFORCE_VOTE_REQUESTER_AUTH=1 to enable (and even then it fails OPEN on an
+// empty/unknown set rather than bricking).
+var enforceVoteRequesterAuth = os.Getenv("JMDN_ENFORCE_VOTE_REQUESTER_AUTH") == "1"
 
 // Vote-result requester authorization (C-04).
 //
@@ -71,13 +85,25 @@ func currentBuddySet() []peer.ID {
 // does not yet know its committee simply declines to sign rather than signing
 // for an unauthenticated caller.
 func voteRequesterAuthorized(remote peer.ID) bool {
+	// Default-off after the 2026-07 halt: when the gate is disabled, preserve the
+	// pre-C-04 behavior (accept the request; signing/verification still apply).
+	if !enforceVoteRequesterAuth {
+		return true
+	}
 	if voteRequesterAuthorizer != nil {
 		return voteRequesterAuthorizer(remote)
 	}
 	if remote == "" {
 		return false
 	}
-	for _, p := range currentBuddySet() {
+	set := currentBuddySet()
+	if len(set) == 0 {
+		// FAIL OPEN on an unknown/unpopulated committee set. Fail-closing here is
+		// what halted consensus: the set can legitimately be empty at request time.
+		// Better to sign than to brick; the signature/certificate checks still run.
+		return true
+	}
+	for _, p := range set {
 		if p == remote {
 			return true
 		}
