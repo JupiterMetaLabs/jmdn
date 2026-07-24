@@ -98,6 +98,7 @@ var EmitCommitteeBLS = os.Getenv("JMDN_EMIT_COMMITTEE_BLS") != "0"
 // config/bls.json), so committee membership and vote authentication agree.
 func AttachCommitteeBLS(peerRecord *peerpb.SignedPeerRecord) error {
 	if !EmitCommitteeBLS {
+		fmt.Printf("🔑 committee bls: emission DISABLED (JMDN_EMIT_COMMITTEE_BLS off) — registering WITHOUT bls_pub\n")
 		return nil
 	}
 	priv, pub, err := blssign.GenerateBLSKeyPair() // persistent: loads/creates config/bls.json
@@ -110,6 +111,7 @@ func AttachCommitteeBLS(peerRecord *peerpb.SignedPeerRecord) error {
 	}
 	peerRecord.BlsPub = pubHex
 	peerRecord.BlsPop = popHex
+	fmt.Printf("🔑 committee bls: attached bls_pub len=%d pop len=%d (emit=on)\n", len(pubHex), len(popHex))
 	return nil
 }
 
