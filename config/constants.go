@@ -27,8 +27,8 @@ const (
 )
 
 const (
-	MaxMainPeers     = 5 // Production size for buddy node committees
-	MaxBackupPeers   = 5 // Backup peers to handle failures of main nodes
+	MaxMainPeers     = 7 // Production size for buddy node committees (voting set; keep == consensus.max_validators)
+	MaxBackupPeers   = 7 // Backup peers to handle failures of main nodes
 	ConsensusTimeout = 90 * time.Second
 )
 
