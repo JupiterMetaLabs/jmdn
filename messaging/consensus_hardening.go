@@ -205,6 +205,27 @@ func eligibleMembers() (map[string]string, error) {
 	return eligible, nil
 }
 
+// EligibleCommitteePeerIDs returns the set of peer_ids authorized to vote this
+// round — exactly the set keyAuthorized checks against (authenticated source,
+// with the block_buddy blocklist and the max_validators cap already applied).
+// The sequencer's committee SELECTION uses this so it only picks peers that will
+// also be AUTHORIZED to vote (selection ⊆ authorization); otherwise a peer that
+// is keyed live but absent from the epoch-frozen/capped authorized set gets
+// selected and then rejected as "unauthorized", silently dropping quorum.
+// FAIL CLOSED: propagates the eligibleMembers error (source unset/failed/empty),
+// which callers MUST treat as "no one eligible".
+func EligibleCommitteePeerIDs() (map[string]struct{}, error) {
+	members, err := eligibleMembers()
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]struct{}, len(members))
+	for pid := range members {
+		set[pid] = struct{}{}
+	}
+	return set, nil
+}
+
 // keyAuthorized reports whether a vote from (peerID,pubHex) counts toward
 // quorum. FAIL CLOSED (P1): a defective/absent eligibility source authorizes
 // NOBODY.
