@@ -240,17 +240,32 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 
 	weights, err := client.ListWeightsofPeers()
 	if err != nil {
-		logger().NamedLogger.Error(logger_ctx, "Failed to get peer weights", err,
+		// The seed enforces sequencer-only auth on the peer-list read (S4). A
+		// buddy is NOT the sequencer, so it cannot fetch weights — but it still
+		// must aggregate and sign, or consensus halts (incident 2026-07:
+		// "PermissionDenied: caller is not the authenticated sequencer"). Fall
+		// back to EQUAL weights (1.0 per voting peer) instead of aborting. The
+		// authoritative committee membership / 2f+1 check still runs on the
+		// sequencer's VerifyCertificate. Proper fix: allow committee members to
+		// read the peer list on the seed.
+		logger().NamedLogger.Warn(logger_ctx, "Peer weights unavailable from seed; falling back to EQUAL weights for aggregation",
+			ion.String("error", err.Error()),
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
-		return 0, nil, errors.New("failed to get peer weights: " + err.Error())
+		weights = nil
 	}
 
-	// Filter weights to only include peers that voted; collect rejection reasons
+	// Filter weights to only include peers that voted; collect rejection reasons.
+	// When weights are unavailable (seed denied the read), use equal weight 1.0.
 	filteredWeights := make(map[string]float64)
 	filteredVoteData := make(map[string]int8)
 	rejectionReasons := make(map[string]string)
 	for peerID, vote := range voteData {
-		if weight, exists := weights[peerID]; exists {
+		weight := 1.0
+		exists := true
+		if weights != nil {
+			weight, exists = weights[peerID]
+		}
+		if exists {
 			filteredVoteData[peerID] = vote.vote
 			filteredWeights[peerID] = weight
 			if vote.vote == -1 && vote.rejectionReason != "" {
