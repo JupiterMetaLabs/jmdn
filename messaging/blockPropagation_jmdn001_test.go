@@ -32,10 +32,21 @@ import (
 // vote with the key whose PeerID is eligible.
 var testMembers map[string]blsMember
 
+// defaultCommitteePeerIDs is the default test committee: 5 members (the
+// production MaxMainPeers size). With the Byzantine threshold 2f+1 and
+// f=floor((n-1)/3), n=5 => threshold 3, so a 3-of-5 quorum is required — this
+// matches the old fixed strict-majority (3) the JMDN-001 tests were written
+// against, keeping those assertions meaningful under P2.
+var defaultCommitteePeerIDs = []string{"peerA", "peerB", "peerC", "peerD", "peerE"}
+
 // defaultTestEligibility is the eligibility source used by the harness and
-// restored by per-test cleanups: peerA/peerB/peerC.
+// restored by per-test cleanups.
 func defaultTestEligibility() (map[string]struct{}, error) {
-	return map[string]struct{}{"peerA": {}, "peerB": {}, "peerC": {}}, nil
+	set := make(map[string]struct{}, len(defaultCommitteePeerIDs))
+	for _, p := range defaultCommitteePeerIDs {
+		set[p] = struct{}{}
+	}
+	return set, nil
 }
 
 // withBlockBuddy sets the operator block_buddy blocklist on the loaded config
@@ -59,7 +70,7 @@ func TestMain(m *testing.M) {
 	EnforceBlockLinkage = false // checkLinkage needs a live DB; out of scope here
 
 	testMembers = make(map[string]blsMember)
-	for i, pid := range []string{"peerA", "peerB", "peerC"} {
+	for i, pid := range defaultCommitteePeerIDs {
 		testMembers[pid] = mustMintMember(pid, byte(0x10+i))
 	}
 	SetCommitteeEligibilitySource(defaultTestEligibility)

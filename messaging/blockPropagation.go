@@ -403,11 +403,6 @@ func reject(reason, format string, args ...interface{}) *blockRejection {
 	return &blockRejection{reason: reason, err: fmt.Errorf(format, args...)}
 }
 
-// certQuorum is the number of distinct, verified committee +1 votes required to
-// accept a block. It mirrors the sequencer's threshold in
-// Sequencer/Consensus.go (strict majority of the fixed committee).
-func certQuorum() int { return (config.MaxMainPeers / 2) + 1 }
-
 // validateRemoteBlock is the fail-closed gate for every remotely received
 // zkblock (JMDN-001). It MUST pass before the block is forwarded, processed, or
 // persisted. It deliberately performs only authenticity / internal-consistency
@@ -478,26 +473,18 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 }
 
 // verifyBlockCertificate enforces a mandatory committee certificate that reaches
-// quorum. Verification is delegated to countCertQuorum, which:
+// the Byzantine 2f+1 threshold. Verification is delegated to the SINGLE shared
+// verifier VerifyCertificate (P2), which:
+//   - FAILS CLOSED via the P1 eligibility source (no source / error / empty set
+//     => rejection naming the defect);
 //   - verifies each vote as BLOCK-BOUND (D3) — a signature over this block's
 //     hash, so a vote cannot be replayed onto another block; legacy "vote:<v>"
 //     signatures are accepted only while RejectLegacyVotes is false;
-//   - counts only signers whose key is in the authorized committee registry
-//     when EnforceCommitteeRegistry is on and a registry is configured (D4);
-//   - de-duplicates by PeerID so one signer cannot fake a majority.
+//   - counts only eligible signers (peer_id ∈ live buddy set minus block_buddy);
+//   - de-duplicates by peer_id AND bls_pub so one signer cannot fake a quorum;
+//   - requires 2f+1 over the authenticated committee size (never a simple
+//     majority, never the vote count). A single supplied vote cannot finalize.
 func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
-	// FAIL CLOSED (P1): with committee enforcement on, an absent/failing
-	// eligibility source (or a set emptied by the block_buddy blocklist) means
-	// NO vote can be authorized — refuse consensus participation loudly, naming
-	// the defect, instead of reporting a misleading quorum failure (or, pre-P1,
-	// failing open and authorizing everyone).
-	if EnforceCommitteeRegistry {
-		if err := ValidateCommitteeSource(); err != nil {
-			return reject("committee_source_invalid",
-				"refusing consensus participation (fail closed): %v", err)
-		}
-	}
-
 	raw, ok := msg.Data["bls_results"]
 	if !ok || len(raw) == 0 {
 		return reject("no_certificate", "block %s has no committee certificate", msg.Block.BlockHash.Hex())
@@ -511,10 +498,16 @@ func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
 		return reject("no_certificate", "empty committee certificate")
 	}
 
-	yes := countCertQuorum(responses, msg.Block.BlockHash.Hex())
-	if needed := certQuorum(); yes < needed {
+	res, err := VerifyCertificate(responses, msg.Block.BlockHash.Hex())
+	if err != nil {
+		// FAIL CLOSED (P1): no authenticated committee => cannot verify.
+		return reject("committee_source_invalid",
+			"refusing consensus participation (fail closed): %v", err)
+	}
+	if !res.Reached {
 		return reject("quorum_not_met",
-			"committee quorum not met: %d authorized verified +1 votes, need %d", yes, needed)
+			"committee quorum not met: %d eligible verified +1 votes, need %d (2f+1 over committee size %d)",
+			res.YesVotes, res.Threshold, res.CommitteeSize)
 	}
 	return nil
 }

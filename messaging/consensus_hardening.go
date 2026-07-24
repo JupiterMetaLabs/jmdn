@@ -208,16 +208,70 @@ func RegistryConfigured() bool { return ValidateCommitteeSource() == nil }
 
 // ---- Certificate verification (D2/D3/D4) -------------------------------------
 
-// countCertQuorum verifies the certificate and returns the number of distinct,
-// eligible committee members that signed a valid +1 vote for this block.
-// Votes are de-duplicated by BOTH PeerID and BLS public key (invariant 4): the
-// same key under two PeerIDs, or two keys claimed by one PeerID, counts once.
-// A vote counts only if:
-//   - its signature verifies (block-bound; legacy also accepted unless
-//     RejectLegacyVotes), AND
-//   - EnforceCommitteeRegistry is off, or the signer's peer_id is eligible
-//     (peer_id ∈ live buddy set minus block_buddy). See keyAuthorized.
-func countCertQuorum(responses []BLS_Signer.BLSresponse, blockHashHex string) int {
+// ByzantineQuorum returns the Byzantine fault-tolerant threshold 2f+1 for a
+// committee of size n, where f = floor((n-1)/3). This is THE threshold for the
+// whole node (P2): never a simple majority, never derived from the number of
+// votes received. n MUST be the authenticated committee size for the block's
+// epoch.
+//
+// Worked sizes (asserted by tests): n=4→3, 5→3, 7→5, 10→7, 13→9.
+func ByzantineQuorum(n int) int {
+	if n < 1 {
+		// No committee => an unmeetable-by-a-lone-vote threshold. Callers reach
+		// this only via the fail-closed error path, but keep it safe.
+		return 1
+	}
+	f := (n - 1) / 3
+	return 2*f + 1
+}
+
+// CertificateResult reports the outcome of the single certificate verifier.
+type CertificateResult struct {
+	CommitteeSize int  // n — authenticated committee size for the epoch
+	Threshold     int  // 2f+1 required
+	YesVotes      int  // distinct eligible +1 votes (deduped by peer_id AND bls_pub)
+	Reached       bool // YesVotes >= Threshold
+}
+
+// VerifyCertificate is THE single authenticated committee-certificate verifier
+// (P2). Every consensus path MUST route through it; no path computes its own
+// quorum. It:
+//   - FAILS CLOSED via the P1 eligibility source: with enforcement on, a
+//     missing/failing source (or a set emptied by block_buddy) returns an error
+//     and Reached=false;
+//   - counts distinct eligible +1 votes, de-duplicated by BOTH peer_id and
+//     bls_pub (invariant 4);
+//   - requires a Byzantine 2f+1 majority over the authenticated committee size
+//     n = len(committee) (never the vote count, never a simple majority).
+//
+// The committee size is ALWAYS taken from the authenticated eligible set;
+// EnforceCommitteeRegistry only controls whether votes from non-members are
+// filtered out. Turning enforcement off does NOT remove the 2f+1 requirement,
+// so a node with no committee source fails closed regardless.
+func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex string) (CertificateResult, error) {
+	var res CertificateResult
+
+	committee, err := eligibleMembers()
+	if err != nil {
+		// No authenticated committee => cannot compute a Byzantine threshold.
+		return res, err
+	}
+	n := len(committee)
+
+	res.YesVotes = countEligibleYes(responses, blockHashHex, committee, EnforceCommitteeRegistry)
+	res.CommitteeSize = n
+	res.Threshold = ByzantineQuorum(n)
+	res.Reached = res.YesVotes >= res.Threshold
+	return res, nil
+}
+
+// countEligibleYes returns the number of distinct +1 voters that (a) produced a
+// verifying signature (block-bound; legacy only when RejectLegacyVotes is off)
+// and (b) — when filterByMembership is true — are in the eligible committee.
+// De-duplicated by BOTH peer_id and bls_pub so one signer cannot inflate quorum
+// by presenting the same key under several peer_ids, or several keys for one
+// peer_id (invariant 4).
+func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, committee map[string]struct{}, filterByMembership bool) int {
 	countedPeers := make(map[string]bool)
 	countedKeys := make(map[string]bool)
 	yes := 0
@@ -239,17 +293,16 @@ func countCertQuorum(responses []BLS_Signer.BLSresponse, blockHashHex string) in
 		}
 
 		// (D4) committee eligibility (peer_id ∈ live buddy set minus block_buddy).
-		if EnforceCommitteeRegistry && !keyAuthorized(r.PeerID, r.PubKey) {
-			log.Warn().Str("peer", r.PeerID).Msg("committee vote from ineligible peer (not in buddy set / blocklisted)")
-			continue
+		if filterByMembership {
+			if _, ok := committee[r.PeerID]; !ok {
+				log.Warn().Str("peer", r.PeerID).Msg("committee vote from ineligible peer (not in buddy set / blocklisted)")
+				continue
+			}
 		}
 
 		if vote != 1 {
 			continue
 		}
-		// Dedup by BOTH identity axes so one signer cannot inflate quorum by
-		// presenting the same key under several peer_ids, or by claiming several
-		// keys for one peer_id (invariant 4).
 		pubKey := normalizeBLSPub(r.PubKey)
 		if countedPeers[r.PeerID] || (pubKey != "" && countedKeys[pubKey]) {
 			continue

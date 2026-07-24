@@ -2007,18 +2007,43 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		return false
 	}
 
-	// Enforce quorum based on the fixed committee size (MaxMainPeers = 5)
-	// We need a majority of the EXPECTED committee, regardless of how many responded.
-	// For 5 peers, strict majority is 3.
-	needed := (config.MaxMainPeers / 2) + 1
+	// SINGLE VERIFIER (P2): the authoritative yes-count and threshold come from
+	// the one shared verifier — no local quorum math. It fails closed on a
+	// missing/failing committee source (P1), de-duplicates by peer_id AND
+	// bls_pub (invariant 4), and requires a Byzantine 2f+1 over the
+	// authenticated committee size (never the old strict majority of the fixed
+	// MaxMainPeers, and never a majority of whoever responded). The loop above
+	// is retained only for per-vote alerting/observability.
+	certRes, certErr := messaging.VerifyCertificate(blsResults, blockHashHex)
+	if certErr != nil {
+		duration := time.Since(startTime).Seconds()
+		span.SetAttributes(
+			attribute.Float64("duration", duration),
+			attribute.String("status", "committee_source_invalid"),
+			attribute.Bool("consensus_reached", false),
+		)
+		logger().NamedLogger.Error(trace_ctx, "refusing consensus (fail closed): committee source invalid",
+			certErr,
+			ion.String("function", "Consensus.VerifyConsensusWithBLS"))
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_BFT_Consensus_Failed).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(fmt.Sprintf("Refusing consensus (fail closed): committee source invalid: %v", certErr)).
+			Send()
+		return false
+	}
+	validYes = certRes.YesVotes
+	needed := certRes.Threshold
 	peerVotesStr := strings.Join(votedPeers, "\n")
 
 	span.SetAttributes(
 		attribute.Int("needed_votes", needed),
+		attribute.Int("committee_size", certRes.CommitteeSize),
 		attribute.String("peer_votes", peerVotesStr),
 	)
 
-	if validYes >= needed {
+	if certRes.Reached {
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(
 			attribute.Float64("duration", duration),

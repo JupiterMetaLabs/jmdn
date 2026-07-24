@@ -257,7 +257,7 @@ func indexOf(s, sub string) int {
 
 // Attacker keys under PeerIDs that are NOT in the buddy set never reach quorum.
 func TestP1_ValidSource_AttackerPeerIDsRejected(t *testing.T) {
-	useEligible(t, "peerA", "peerB", "peerC")
+	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, threshold 3
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000055")
 	rej := verifyBlockCertificate(blockMsg(hash, attackerCert(t, hash.Hex(), "evil-1", "evil-2", "evil-3")))
 	if rej == nil || rej.reason != "quorum_not_met" {
@@ -268,7 +268,7 @@ func TestP1_ValidSource_AttackerPeerIDsRejected(t *testing.T) {
 // One key presented under three eligible PeerIDs counts at most once (dedup by
 // BLS key), so it cannot alone satisfy a 3-of-N quorum.
 func TestP1_ValidSource_SameKeyUnderMultiplePeerIDs_CountsOnce(t *testing.T) {
-	useEligible(t, "peerA", "peerB", "peerC")
+	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, threshold 3
 	a := mustMintMember("peerA", 0x51)
 	asB := blsMember{peerID: "peerB", priv: a.priv, pubHex: a.pubHex}
 	asC := blsMember{peerID: "peerC", priv: a.priv, pubHex: a.pubHex}
@@ -287,7 +287,7 @@ func TestP1_ValidSource_SameKeyUnderMultiplePeerIDs_CountsOnce(t *testing.T) {
 // A legitimate quorum from eligible members is accepted (fail-closed must not
 // brick the honest path).
 func TestP1_ValidSource_LegitimateQuorumAccepted(t *testing.T) {
-	useEligible(t, "peerA", "peerB", "peerC")
+	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, threshold 3
 	a := mustMintMember("peerA", 0x51)
 	b := mustMintMember("peerB", 0x52)
 	c := mustMintMember("peerC", 0x53)
@@ -308,8 +308,8 @@ func TestP1_ValidSource_LegitimateQuorumAccepted(t *testing.T) {
 // returns it: with one of three members blocked, the honest cert drops below
 // quorum.
 func TestP1_BlockBuddy_ExcludesEvenIfReturnedByGetBuddy(t *testing.T) {
-	// getBuddy returns A, B, C; operator blocks C.
-	useEligible(t, "peerA", "peerB", "peerC")
+	// getBuddy returns A..E (n=5, threshold 3); operator blocks C.
+	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE")
 	withBlockBuddy(t, "peerC")
 
 	a := mustMintMember("peerA", 0x71)
@@ -317,7 +317,7 @@ func TestP1_BlockBuddy_ExcludesEvenIfReturnedByGetBuddy(t *testing.T) {
 	c := mustMintMember("peerC", 0x73)
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000058")
 
-	// C is blocked → only A and B count → 2 < quorum(3).
+	// C is blocked → only A and B count → 2 < threshold 3.
 	cert := certData(t,
 		a.blockVote(t, hash.Hex(), 1),
 		b.blockVote(t, hash.Hex(), 1),
@@ -353,7 +353,7 @@ func TestP1_BlockBuddy_EmptiesCommittee_FailsClosed(t *testing.T) {
 // binding lands, flip the expectation to a rejection (and this test documents
 // exactly where).
 func TestP1_ForgeryWindow_AttackerKeyUnderEligiblePeerID_CurrentlyCounts(t *testing.T) {
-	useEligible(t, "peerA", "peerB", "peerC")
+	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, threshold 3
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000059")
 
 	// Attacker owns none of the real keys, but knows the eligible peer_ids.
