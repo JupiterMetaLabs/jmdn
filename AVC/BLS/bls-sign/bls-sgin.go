@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"gossipnode/config"
@@ -101,22 +102,38 @@ type blsKeyFile struct {
 // committee membership binds peer_id→bls_pub, a node that silently minted a
 // fresh key would self-exclude from the committee. Provision the key explicitly
 // (or set JMDN_BLS_AUTOGEN=1 for dev/first-boot) instead.
+// BLSKeyFilePath resolves the BLS key file location. It honors the
+// JMDN_BLS_KEY_FILE environment variable (an absolute path) so the location does
+// NOT depend on the process working directory. This matters because the default
+// config.BLSFile is the RELATIVE path "./config/bls.json", and nodes run as a
+// systemd service default their working directory to "/", where "./config/bls.json"
+// resolves to "/config/bls.json" — not the provisioned key at, e.g.,
+// /opt/jmdn/config/bls.json. Set JMDN_BLS_KEY_FILE=/opt/jmdn/config/bls.json (or
+// WorkingDirectory=/opt/jmdn in the unit) to point at the real key.
+func BLSKeyFilePath() string {
+	if p := strings.TrimSpace(os.Getenv("JMDN_BLS_KEY_FILE")); p != "" {
+		return p
+	}
+	return config.BLSFile
+}
+
 func LoadBLSKeyPair() ([]byte, []byte, error) {
-	data, err := os.ReadFile(config.BLSFile)
+	path := BLSKeyFilePath()
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("bls key not provisioned: cannot read %s: %w", config.BLSFile, err)
+		return nil, nil, fmt.Errorf("bls key not provisioned: cannot read %s: %w", path, err)
 	}
 	var bf blsKeyFile
 	if err := json.Unmarshal(data, &bf); err != nil || bf.PrivKey == "" || bf.PubKey == "" {
-		return nil, nil, fmt.Errorf("bls key file %s is invalid or incomplete", config.BLSFile)
+		return nil, nil, fmt.Errorf("bls key file %s is invalid or incomplete", path)
 	}
 	priv, err := base64.StdEncoding.DecodeString(bf.PrivKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("bls key file %s: bad private key: %w", config.BLSFile, err)
+		return nil, nil, fmt.Errorf("bls key file %s: bad private key: %w", path, err)
 	}
 	pub, err := base64.StdEncoding.DecodeString(bf.PubKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("bls key file %s: bad public key: %w", config.BLSFile, err)
+		return nil, nil, fmt.Errorf("bls key file %s: bad public key: %w", path, err)
 	}
 	return priv, pub, nil
 }
@@ -141,8 +158,9 @@ func GenerateBLSKeyPair() ([]byte, []byte, error) {
 		return nil, nil, err
 	}
 
-	// 3) Persist to config/bls.json (best-effort)
-	_ = os.MkdirAll(filepath.Dir(config.BLSFile), 0o750)
+	// 3) Persist to the resolved key path (best-effort)
+	keyPath := BLSKeyFilePath()
+	_ = os.MkdirAll(filepath.Dir(keyPath), 0o750)
 	// Try to read peer_id from peer.json (optional)
 	type peerFile struct {
 		PeerID string `json:"peer_id"`
@@ -158,7 +176,7 @@ func GenerateBLSKeyPair() ([]byte, []byte, error) {
 		PubKey:  base64.StdEncoding.EncodeToString(pubBytes),
 	}
 	if out, err := json.MarshalIndent(bf, "", "  "); err == nil {
-		_ = os.WriteFile(config.BLSFile, out, 0o600)
+		_ = os.WriteFile(keyPath, out, 0o600)
 	}
 
 	return privBytes, pubBytes, nil
