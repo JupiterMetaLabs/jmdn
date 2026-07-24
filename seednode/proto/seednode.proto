@@ -28,6 +28,8 @@ message SignedPeerRecord {
   int64 last_updated = 11;               // Last update timestamp (Unix epoch)
   int64 active_from = 12;                // When this record became active (Unix epoch)
   float weights = 13;                    // Peer weight value (auto-generated, only in responses)
+  string bls_pub = 14;                   // BLS public key (lowercase hex) for consensus committee membership (S1)
+  string bls_pop = 15;                   // BLS proof-of-possession (hex) over the canonical PoP challenge; verified at registration, not persisted (S2b)
 }
 
 // Peer record update message
@@ -372,8 +374,28 @@ message BlockStateResponse {
   string message        = 5;  // Human-readable status
 }
 
+// --- Committee snapshot (S3) — must match seedNodes api/peer/peer.proto ---
+message CommitteeSnapshotEntry {
+  string peer_id = 1;
+  string bls_pub = 2;                     // lowercase hex
+}
+message CommitteeSnapshot {
+  uint64 epoch = 1;
+  repeated CommitteeSnapshotEntry entries = 2;  // ALL eligible validators, sorted by peer_id
+  string seed = 3;                        // per-epoch beacon, if any
+  string authority_pubkey = 4;            // dela/bls authority pubkey (hex)
+  string signature = 5;                   // dela/bls signature (hex) over canonical bytes
+}
+message GetCommitteeSnapshotRequest {
+  uint64 epoch = 1;                       // 0 = current epoch
+}
+message GetCommitteeSnapshotResponse {
+  CommitteeSnapshot snapshot = 1;
+}
+
 // Peer Directory Service
 service PeerDirectory {
+  rpc GetCommitteeSnapshot(GetCommitteeSnapshotRequest) returns (GetCommitteeSnapshotResponse);
   rpc RegisterPeer(RegisterPeerRequest) returns (RegisterPeerResponse);
   rpc RegisterPeerWithAlias(RegisterPeerWithAliasRequest) returns (RegisterPeerWithAliasResponse);
   rpc UpdatePeer(UpdatePeerRequest) returns (UpdatePeerResponse);
