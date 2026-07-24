@@ -84,17 +84,24 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	// committee, VerifyCertificate then enforces committee ⊆ snapshot at the
 	// tally. Fail-closed: if the seed client can't be built we refuse rather than
 	// fall back to an unauthenticated list.
-	// S4: this node runs the sequencer consensus, so register its libp2p
-	// identity key to sign committee-selection (ListBuddy) requests to the seed.
-	// Only the seed-configured SEQUENCER_PEER_ID is served; other callers are
-	// refused. Done here so every ListBuddy through the selection router is signed.
+	cfg := settings.Get()
+
+	// S4: register this node's libp2p identity key to sign committee-selection
+	// (ListBuddy) requests, but ONLY on the actual sequencer. When
+	// consensus.sequencer_peer_id is configured, require an exact match so that
+	// if NewConsensus ever runs on a non-sequencer it will NOT sign selection
+	// requests (the seed would refuse them anyway, but we avoid presenting a
+	// signature at all). When unset, fall back to the historical assumption that
+	// NewConsensus runs on the sequencer.
 	if host != nil {
-		if sk := host.Peerstore().PrivKey(host.ID()); sk != nil {
-			seednode.SetSequencerSignKey(sk)
+		selfID := host.ID().String()
+		if seqID := cfg.Consensus.SequencerPeerID; seqID == "" || seqID == selfID {
+			if sk := host.Peerstore().PrivKey(host.ID()); sk != nil {
+				seednode.SetSequencerSignKey(sk)
+			}
 		}
 	}
 
-	cfg := settings.Get()
 	if pinned := cfg.Consensus.SeedAuthorityBLSPub; pinned != "" && cfg.Network.SeedNode != "" {
 		if sc, err := seednode.NewClient(cfg.Network.SeedNode); err == nil {
 			messaging.SetCommitteeEligibilitySource(sc.CommitteeEligibility(pinned))
