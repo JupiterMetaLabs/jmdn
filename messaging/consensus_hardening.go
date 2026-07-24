@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
@@ -129,6 +130,20 @@ func blockedBuddies() map[string]struct{} {
 	return blocked
 }
 
+// committeeSizeLimit returns the operator hard cap on the number of validators
+// (buddy nodes) counted toward consensus, from consensus.max_validators. 0 = no
+// cap. Reads settings only if loaded (robust to init order), mirroring
+// blockedBuddies.
+func committeeSizeLimit() int {
+	if !settings.IsLoaded() {
+		return 0
+	}
+	if n := settings.Get().Consensus.MaxValidators; n > 0 {
+		return n
+	}
+	return 0
+}
+
 // eligibleMembers returns the authenticated eligible committee: the live buddy
 // set from the configured source, MINUS the block_buddy blocklist. FAIL CLOSED:
 // no source wired, a source error, or an empty result yields an error naming
@@ -166,6 +181,26 @@ func eligibleMembers() (map[string]string, error) {
 	}
 	if len(eligible) == 0 {
 		return nil, fmt.Errorf("committee empty after applying block_buddy blocklist")
+	}
+
+	// Hard cap on the number of validators (buddy nodes) counted toward
+	// consensus. Trim deterministically by sorted peer_id so every node computes
+	// the SAME capped committee (and therefore the SAME 2f+1 threshold). 0 = no
+	// cap. This bounds the threshold so it can never be sized over more validators
+	// than intended (e.g. main+backup=10 requiring 7 while only 5 main vote).
+	if lim := committeeSizeLimit(); lim > 0 && len(eligible) > lim {
+		ids := make([]string, 0, len(eligible))
+		for pid := range eligible {
+			ids = append(ids, pid)
+		}
+		sort.Strings(ids)
+		capped := make(map[string]string, lim)
+		for _, pid := range ids[:lim] {
+			capped[pid] = eligible[pid]
+		}
+		log.Warn().Int("eligible", len(eligible)).Int("cap", lim).
+			Msg("committee: hard-capped validator set to consensus.max_validators")
+		eligible = capped
 	}
 	return eligible, nil
 }

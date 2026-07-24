@@ -219,6 +219,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("consensus.block_buddy", d.Consensus.BlockBuddy)
 	v.SetDefault("consensus.seed_authority_bls_pub", d.Consensus.SeedAuthorityBLSPub)
 	v.SetDefault("consensus.committee_epoch_seconds", d.Consensus.CommitteeEpochSeconds)
+	v.SetDefault("consensus.max_validators", d.Consensus.MaxValidators)
 
 	// Alerts
 	v.SetDefault("alerts.url", d.Alerts.URL)

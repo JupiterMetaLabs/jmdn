@@ -53,6 +53,14 @@ type ConsensusSettings struct {
 	// CommitteeEpochSeconds is the shared epoch clock divisor (unix/seconds).
 	// MUST equal the seed's COMMITTEE_EPOCH_SECONDS (default 3600).
 	CommitteeEpochSeconds int64 `mapstructure:"committee_epoch_seconds" yaml:"committee_epoch_seconds"`
+
+	// MaxValidators HARD-CAPS the number of buddy (validator) nodes counted toward
+	// consensus. The certificate verifier trims the eligible committee to this many
+	// peers (deterministically, by sorted peer_id) BEFORE computing the 2f+1
+	// threshold, so the threshold can never be sized over more validators than
+	// actually vote. 0 = no cap (use the full eligible set). Set this to your
+	// intended committee size (e.g. 5) as a safety bound.
+	MaxValidators int `mapstructure:"max_validators" yaml:"max_validators"`
 }
 
 // SelectionSettings holds the SECRET VRF key material used for node / committee
