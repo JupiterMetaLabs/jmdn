@@ -239,8 +239,13 @@ func HandleBlockStream(stream network.Stream) {
 		return
 	}
 
-	// Mark as processed to prevent duplicate processing
-	markMessageProcessed(messageID)
+	// NOTE (P5 / invariant 6): do NOT mark processed here. The dedup store is a
+	// Bloom filter whose entries can never be removed, so a hash added before
+	// validation can never be cleared — an invalid block claiming a genuine
+	// hash would permanently censor the real block (dropped later as a
+	// "duplicate"). Caching now happens ONLY after a block validates: zkblocks
+	// via admitZKBlock (post-gate, below); other message types in the else
+	// branch.
 
 	// For ZK blocks: FAIL CLOSED. A remotely received block must be validated
 	// BEFORE it is forwarded, processed, or persisted (JMDN-001). Previously the
@@ -266,8 +271,10 @@ func HandleBlockStream(stream network.Stream) {
 			return
 		}
 
-		// FAIL-CLOSED GATE — runs synchronously before any side effect.
-		if rej := validateRemoteBlock(context.Background(), msg); rej != nil {
+		// FAIL-CLOSED GATE — runs synchronously before any side effect. On
+		// success admitZKBlock marks the block processed (validate-before-cache,
+		// P5); on failure the hash never enters the dedup cache.
+		if rej := admitZKBlock(context.Background(), msg, messageID); rej != nil {
 			log.Warn().
 				Err(rej.err).
 				Str("reason", rej.reason).
@@ -277,10 +284,10 @@ func HandleBlockStream(stream network.Stream) {
 				Msg("Rejecting invalid remote block before forward/process/persist")
 			metrics.BlocksRejectedCounter.WithLabelValues(rej.reason, remotePeer).Inc()
 			timeoutPeer(remotePeer, 30*time.Second)
-			return // no forward, no mutation, no persistence
+			return // no forward, no mutation, no persistence, NOT cached
 		}
 
-		// Block validated → forwarding is now safe.
+		// Block validated and marked processed → forwarding is now safe.
 		if msg.Hops < config.MaxHops {
 			msg.Hops++
 			if globalHost != nil {
@@ -377,6 +384,11 @@ func HandleBlockStream(stream network.Stream) {
 			msg.Sender, msg.Block.BlockNumber, msg.Block.BlockHash.Hex(),
 			len(msg.Block.Transactions))
 	} else {
+		// Non-consensus message types have no validation gate here, so mark
+		// processed on receipt to preserve duplicate/loop suppression (unchanged
+		// behavior; only the zkblock caching moved behind validation for P5).
+		markMessageProcessed(messageID)
+
 		// Handle other message types (not our focus)
 		if msg.Hops < config.MaxHops {
 			msg.Hops++
@@ -401,6 +413,22 @@ type blockRejection struct {
 // reject builds a *blockRejection with a metric reason and a formatted error.
 func reject(reason, format string, args ...interface{}) *blockRejection {
 	return &blockRejection{reason: reason, err: fmt.Errorf(format, args...)}
+}
+
+// admitZKBlock is the P5 validate-before-cache gate (invariant 6). It runs the
+// fail-closed validation (validateRemoteBlock) for a received zkblock and marks
+// the block's messageID processed in the dedup cache ONLY if validation
+// succeeds. Because the dedup cache is a Bloom filter whose entries cannot be
+// deleted, a block hash must never enter it before the block is proven valid:
+// otherwise an attacker who sends an invalid block carrying a genuine block's
+// hash would permanently mark that hash "seen", censoring the real block when
+// it later arrives. Returns the rejection (nil == admitted and cached).
+func admitZKBlock(ctx context.Context, msg config.BlockMessage, messageID string) *blockRejection {
+	if rej := validateRemoteBlock(ctx, msg); rej != nil {
+		return rej // rejected block does NOT occupy the dedup cache
+	}
+	markMessageProcessed(messageID)
+	return nil
 }
 
 // validateRemoteBlock is the fail-closed gate for every remotely received
