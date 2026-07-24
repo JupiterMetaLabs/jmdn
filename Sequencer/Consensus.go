@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1885,6 +1886,29 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 
 // VerifyConsensusWithBLS verifies BLS signatures and determines if consensus was reached
 // Returns true if consensus reached (majority agree), false otherwise
+// compactRejectionReasons renders per-buddy rejection reasons as a single short
+// line: "…<peer6>: reason; …<peer6>: reason" (peer id shortened to its last 6
+// chars), so alerts stay readable instead of dumping a multi-line block.
+func compactRejectionReasons(m map[string]string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(m))
+	for peerID, reason := range m {
+		short := peerID
+		if len(short) > 6 {
+			short = "…" + short[len(short)-6:]
+		}
+		parts = append(parts, short+": "+reason)
+	}
+	sort.Strings(parts)
+	out := strings.Join(parts, "; ")
+	if len(out) > 300 {
+		out = out[:297] + "…"
+	}
+	return out
+}
+
 func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSresponse) bool {
 	logger_ctx := context.Background()
 	tracer := logger().NamedLogger.Tracer("Consensus")
@@ -1907,7 +1931,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		span.SetAttributes(attribute.String("status", "no_results"))
 		logger().NamedLogger.Warn(trace_ctx, "No BLS results collected, skipping block processing",
 			ion.String("function", "Consensus.VerifyConsensusWithBLS"))
-		consensus.setRejectSummary("no BLS votes collected from any committee member — buddies returned no signature (request rejected / parse error / abstain / signing failure). Check buddy logs.")
+		consensus.setRejectSummary("no BLS votes collected from committee (buddies returned no signature)", "check buddy logs: request rejected / parse error / abstain / signing failure")
 		return false
 	}
 
@@ -2031,11 +2055,9 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 			Severity(Alerts.SeverityError).
 			Description(msg).
 			Send()
-		reason := "no valid BLS signatures: every collected vote failed verification (bad signature / wrong domain / unauthorized key)"
-		if len(mergedRejectionReasons) > 0 {
-			reason += "; buddy rejection reasons: " + strings.Join(votedPeers, " ")
-		}
-		consensus.setRejectSummary(reason)
+		consensus.setRejectSummary(
+			"every collected vote failed verification (bad signature / wrong domain / unauthorized committee key)",
+			compactRejectionReasons(mergedRejectionReasons))
 		return false
 	}
 
@@ -2063,6 +2085,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 			Severity(Alerts.SeverityError).
 			Description(fmt.Sprintf("Refusing consensus (fail closed): committee source invalid: %v", certErr)).
 			Send()
+		consensus.setRejectSummary(fmt.Sprintf("committee source invalid (fail-closed): %v", certErr), "")
 		return false
 	}
 	validYes = certRes.YesVotes
@@ -2106,7 +2129,9 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		attribute.Bool("consensus_reached", false),
 	)
 	msg := fmt.Sprintf("Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
-	consensus.setRejectSummary(fmt.Sprintf("insufficient votes: %d yes of %d valid, need %d (committee size %d)", validYes, validTotal, needed, certRes.CommitteeSize))
+	consensus.setRejectSummary(
+		fmt.Sprintf("insufficient yes votes: %d of %d valid, need %d (committee size %d)", validYes, validTotal, needed, certRes.CommitteeSize),
+		compactRejectionReasons(mergedRejectionReasons))
 	logger().NamedLogger.Warn(trace_ctx, "Consensus failed",
 		ion.Int("yes_votes", validYes),
 		ion.Int("total_votes", validTotal),

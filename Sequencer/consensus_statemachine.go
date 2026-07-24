@@ -48,27 +48,31 @@ type Consensus struct {
 	isProcessingVotes  bool
 	processedBlockHash string
 
-	// lastRejectSummary carries the concrete reason the most recent round failed
-	// consensus (set by VerifyConsensusWithBLS), so the "block rejected" alert can
-	// report WHY instead of a generic message. Guarded by rejectMu.
+	// lastRejectSummary is a SHORT one-line reason the most recent round failed
+	// consensus; lastRejectDetail is an optional compact secondary line (e.g.
+	// per-buddy rejection reasons). Both are set by VerifyConsensusWithBLS and
+	// surfaced in the "block rejected" alert. Guarded by rejectMu.
 	rejectMu          sync.Mutex
 	lastRejectSummary string
+	lastRejectDetail  string
 }
 
-// setRejectSummary records why the current round failed consensus.
-func (c *Consensus) setRejectSummary(s string) {
+// setRejectSummary records a short one-line reason (and optional compact detail)
+// for why the current round failed consensus.
+func (c *Consensus) setRejectSummary(summary, detail string) {
 	c.rejectMu.Lock()
-	c.lastRejectSummary = s
+	c.lastRejectSummary = summary
+	c.lastRejectDetail = detail
 	c.rejectMu.Unlock()
 }
 
-// takeRejectSummary returns and clears the last recorded rejection reason.
-func (c *Consensus) takeRejectSummary() string {
+// takeRejectSummary returns and clears the last recorded reason + detail.
+func (c *Consensus) takeRejectSummary() (summary, detail string) {
 	c.rejectMu.Lock()
 	defer c.rejectMu.Unlock()
-	s := c.lastRejectSummary
-	c.lastRejectSummary = ""
-	return s
+	summary, detail = c.lastRejectSummary, c.lastRejectDetail
+	c.lastRejectSummary, c.lastRejectDetail = "", ""
+	return
 }
 
 // @constructor function
@@ -348,21 +352,26 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 			ion.Int64("block_number", int64(block.BlockNumber)),
 			ion.String("function", "Consensus.BroadcastAndProcessBlock"))
 
-		reason := consensus.takeRejectSummary()
+		reason, detail := consensus.takeRejectSummary()
 		if reason == "" {
 			reason = "consensus not reached (no reason captured)"
 		}
-		Alerts.NewAlertBuilder(alert_ctx).
+		// Consensus failure halts block production — this is an ERROR, not a
+		// warning. Keep the Description a short headline and put the specifics in
+		// labels (no Description+Msg concatenation, no duplicated reason).
+		ab := Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_BlockRejectedByConsensus).
-			Status(Alerts.AlertStatusWarning).
-			Severity(Alerts.SeverityWarning).
-			Description("Block rejected by consensus: "+reason).
-			Msg(reason).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description("Consensus failed — block rejected (quorum not reached)").
 			Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
 			Label("block_hash", block.BlockHash.Hex()).
 			Label("bls_results", fmt.Sprintf("%d", len(blsResults))).
-			Label("reason", reason).
-			Send()
+			Label("reason", reason)
+		if detail != "" {
+			ab = ab.Label("buddy_rejections", detail)
+		}
+		ab.Send()
 	}
 
 	return nil
