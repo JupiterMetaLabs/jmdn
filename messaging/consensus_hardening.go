@@ -449,19 +449,88 @@ var (
 	seenHeights   = make(map[uint64]string) // height -> first-seen block hash hex
 )
 
+// EquivocationStore persists the first-seen block hash per height so
+// equivocation detection survives a process restart (P6). checkEquivocation
+// calls these under seenHeightsMu, so implementations need not be internally
+// locked. Errors are treated as non-fatal by the caller.
+type EquivocationStore interface {
+	// FirstSeenHash returns the durably recorded first-seen hash for height,
+	// found=false when none is stored yet.
+	FirstSeenHash(height uint64) (hashHex string, found bool, err error)
+	// RecordFirstSeen durably stores hashHex as the first-seen hash for height.
+	RecordFirstSeen(height uint64, hashHex string) error
+}
+
+// equivocationStore is the durable backing for equivocation records (P6). When
+// nil, detection is best-effort in-memory only and does NOT survive restart.
+var equivocationStore EquivocationStore
+
+// SetEquivocationStore wires the durable equivocation store (P6). Call once at
+// node startup (see Sequencer/consensus_statemachine.go). Passing nil reverts
+// to in-memory-only detection (used by tests that opt out).
+func SetEquivocationStore(s EquivocationStore) { equivocationStore = s }
+
 // checkEquivocation records the (height, hash) pair and returns a rejection if a
 // DIFFERENT block hash was already seen at this height (a signed fork / double
-// proposal). Best-effort, in-memory (resets on restart) — catches live
-// equivocation on the gossip path.
+// proposal). It consults the durable store (P6) in addition to the in-memory
+// map, so a conflicting block at a height first seen BEFORE a restart is still
+// caught. Durable-store errors are non-fatal: it falls back to in-memory
+// (degraded) rather than stalling consensus, matching the linkage
+// fail-open-on-infra posture. Only fully-validated blocks reach here (called
+// last in validateRemoteBlock), so the map cannot be poisoned by junk blocks.
 func checkEquivocation(number uint64, hashHex string) *blockRejection {
 	seenHeightsMu.Lock()
 	defer seenHeightsMu.Unlock()
-	if prev, ok := seenHeights[number]; ok && prev != hashHex {
-		return reject("equivocation",
-			"conflicting block at height %d: already saw %s, now %s", number, prev, hashHex)
+
+	// Fast path: already recorded in this session.
+	if prev, ok := seenHeights[number]; ok {
+		if prev != hashHex {
+			return reject("equivocation",
+				"conflicting block at height %d: already saw %s, now %s", number, prev, hashHex)
+		}
+		return nil
 	}
+
+	// Durable path (P6): a height first seen before a restart still has a record.
+	if equivocationStore != nil {
+		prev, found, err := equivocationStore.FirstSeenHash(number)
+		switch {
+		case err != nil:
+			log.Warn().Err(err).Uint64("height", number).
+				Msg("equivocation: durable read failed; using in-memory only")
+		case found:
+			seenHeights[number] = prev // warm the in-memory cache
+			if prev != hashHex {
+				return reject("equivocation",
+					"conflicting block at height %d: already saw %s (durable), now %s", number, prev, hashHex)
+			}
+			return nil
+		}
+	}
+
+	// First sighting of this height (this session and durably). Record both.
 	seenHeights[number] = hashHex
+	if equivocationStore != nil {
+		if err := equivocationStore.RecordFirstSeen(number, hashHex); err != nil {
+			log.Warn().Err(err).Uint64("height", number).
+				Msg("equivocation: durable write failed; recorded in-memory only")
+		}
+	}
 	return nil
+}
+
+// DBEquivocationStore is the production EquivocationStore backed by the durable
+// accountsdb marker (DB_OPs.Get/RecordEquivocationHash). Zero value is usable.
+type DBEquivocationStore struct{}
+
+// FirstSeenHash implements EquivocationStore.
+func (DBEquivocationStore) FirstSeenHash(height uint64) (string, bool, error) {
+	return DB_OPs.GetEquivocationHash(nil, height)
+}
+
+// RecordFirstSeen implements EquivocationStore.
+func (DBEquivocationStore) RecordFirstSeen(height uint64, hashHex string) error {
+	return DB_OPs.RecordEquivocationHash(nil, height, hashHex)
 }
 
 // ---- Parent-hash + height linkage (catchup-safe) -----------------------------

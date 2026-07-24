@@ -70,6 +70,15 @@ func InitBlockPropagation(h host.Host) error {
 		fmt.Println("Block propagation system initialized - connections will be obtained on-demand")
 		log.Info().Msg("Block propagation system initialized")
 	})
+
+	// Wire the durable equivocation store (P6) on EVERY node — equivocation
+	// detection runs in validateRemoteBlock on every block-receiving node, not
+	// just the sequencer. The DB-backed store acquires its accountsdb connection
+	// on demand (first checkEquivocation), so this is safe at init. If unset the
+	// detector is in-memory only and does not survive restart.
+	if equivocationStore == nil {
+		SetEquivocationStore(DBEquivocationStore{})
+	}
 	return initErr
 }
 
