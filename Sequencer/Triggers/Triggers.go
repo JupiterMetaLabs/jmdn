@@ -502,11 +502,27 @@ func StartBFTConsensus(blockhash string) error {
 			}
 		}
 
-		allBuddies[i] = bft.BuddyInput{
+		bi := bft.BuddyInput{
 			ID:        peerID.String(),
 			Decision:  decision,
 			PublicKey: pubKeyBytes,
 		}
+
+		// (P9) For the LOCAL buddy, attach the raw ed25519 private key so the BFT
+		// engine can sign its own PREPARE/COMMIT messages. Peers verify against
+		// PublicKey (the peer's raw ed25519 key), so the matching raw private key
+		// from the host keystore is what produces valid signatures. Without this
+		// the engine has no signer and, under the secure-default
+		// RequireSignatures, cannot participate.
+		if peerID == buddyNode.PeerID && buddyNode.Host != nil {
+			if sk := buddyNode.Host.Peerstore().PrivKey(peerID); sk != nil {
+				if raw, err := sk.Raw(); err == nil {
+					bi.PrivateKey = raw
+				}
+			}
+		}
+
+		allBuddies[i] = bi
 	}
 	buddyNode.Mutex.RUnlock()
 

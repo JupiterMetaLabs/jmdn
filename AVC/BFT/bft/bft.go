@@ -54,6 +54,19 @@ func (b *BFT) RunConsensus(
 
 	threshold := b.calculateThreshold(len(allBuddies))
 
+	// (P9) Resolve the outgoing-message signer. Prefer an explicitly supplied
+	// signer; otherwise fall back to the local buddy's ed25519 private key
+	// (validateInputs guarantees it is present). Under the secure-default
+	// RequireSignatures, a usable signer is mandatory — fail closed rather than
+	// silently emit unsigned messages that peers will reject.
+	sgn := signer
+	if sgn == nil && len(myBuddy.PrivateKey) > 0 {
+		sgn = NewLocalSigner(myBuddy.PrivateKey)
+	}
+	if sgn == nil && b.config.RequireSignatures {
+		return nil, fmt.Errorf("RequireSignatures set but no signer and no local private key available")
+	}
+
 	engine := &engine{
 		config:      b.config,
 		myBuddyID:   myBuddyID,
@@ -62,6 +75,7 @@ func (b *BFT) RunConsensus(
 		threshold:   threshold,
 		round:       round,
 		blockHash:   blockHash,
+		signer:      sgn,
 		byzantine:   newByzantineDetector(),
 		prepareMsgs: make(map[string]*PrepareMessage),
 		commitMsgs:  make(map[string]*CommitMessage),
