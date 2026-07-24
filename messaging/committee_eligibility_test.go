@@ -61,7 +61,7 @@ func mustMintMember(peerID string, seed byte) blsMember {
 // (canonical message identical to BLS_Signer.SignMessageForBlock).
 func (m blsMember) blockVote(t *testing.T, blockHashHex string, vote int8) BLS_Signer.BLSresponse {
 	t.Helper()
-	msg, err := BLS_Verifier.CanonicalBlockVoteMessage(blockHashHex, vote)
+	msg, err := BLS_Verifier.CanonicalBlockVoteMessage(BLS_Signer.DomainChainID(), blockHashHex, vote)
 	if err != nil {
 		t.Fatalf("canonical vote message: %v", err)
 	}

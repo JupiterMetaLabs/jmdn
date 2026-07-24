@@ -1594,7 +1594,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	var blsResp BLS_Signer.BLSresponse
 	var status bool
 	if BLS_Signer.EmitBlockBoundVotes && targetBlockHash != "" {
-		blsResp, status, err = BLS_Signer.SignMessageForBlock(result, targetBlockHash)
+		blsResp, status, err = BLS_Signer.SignMessageForBlock(result, BLS_Signer.DomainChainID(), targetBlockHash)
 	} else {
 		blsResp, status, err = BLS_Signer.SignMessage(result)
 	}

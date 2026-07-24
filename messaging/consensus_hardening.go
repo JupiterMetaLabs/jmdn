@@ -296,7 +296,7 @@ func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, c
 
 		// Prefer block-bound verification (D3). Fall back to legacy only when
 		// legacy is still permitted.
-		verified := BLS_Verifier.VerifyForBlock(r, blockHashHex, vote) == nil
+		verified := BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), blockHashHex, vote) == nil
 		if !verified && !RejectLegacyVotes {
 			verified = BLS_Verifier.Verify(r, vote) == nil
 		}

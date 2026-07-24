@@ -1914,7 +1914,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 
 		// Prefer block-bound verification. A legacy (unbound) "vote:<v>"
 		// signature is detected separately so we can alert on it.
-		blockBoundOK := blockHashHex != "" && BLS_Verifier.VerifyForBlock(r, blockHashHex, vote) == nil
+		blockBoundOK := blockHashHex != "" && BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), blockHashHex, vote) == nil
 		legacyOK := false
 		if !blockBoundOK {
 			legacyOK = BLS_Verifier.Verify(r, vote) == nil

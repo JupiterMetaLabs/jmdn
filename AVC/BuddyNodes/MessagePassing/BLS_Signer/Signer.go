@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	blssign "gossipnode/AVC/BLS/bls-sign"
+	settings "gossipnode/config/settings"
 )
 
 // EmitBlockBoundVotes controls whether buddies sign block-bound votes
@@ -78,17 +79,65 @@ func SignMessage(vote int8) (BLSresponse, bool, error) {
 // (BLS_Verifier.CanonicalBlockVoteMessage) MUST build the identical message.
 const BlockBoundVotePrefix = "zkvote:"
 
-// SignMessageForBlock signs a vote that is bound to a specific block. `bindings`
-// must uniquely identify the block (the receiver uses the block hash hex). This
-// closes the replay gap where a signature over the unbound constant "vote:1"
-// could be reused to authorize any block (JMDN-001 / D3).
-func SignMessageForBlock(vote int8, bindings string) (BLSresponse, bool, error) {
+// VoteDomainVersion tags the canonical block-bound vote-message FORMAT. It is
+// part of the signed bytes, so bumping it invalidates every prior signature and
+// MUST be done only as a coordinated network upgrade (P4).
+//
+//   - v1 (legacy): "zkvote:<blockhash>:<vote>"        — block-bound only.
+//   - v2 (current): "zkvote:v2:chain=<id>:<blockhash>:<vote>" — adds chain-id
+//     domain separation so a signature captured on chain A cannot be replayed
+//     as a valid committee vote on chain B (fork / testnet↔mainnet).
+//
+// The chain id is the authenticated network id (settings.Network.ChainID); it
+// is a per-node config constant, identical across honest nodes on a network,
+// and is NOT taken from any attacker-supplied per-request field.
+const VoteDomainVersion = "v2"
+
+// CanonicalVoteMessage builds the EXACT bytes signed and verified for a v2
+// block-bound vote. This is the single definition of the format: both
+// SignMessageForBlock and BLS_Verifier.VerifyForBlock derive their bytes from
+// here, so signer and verifier cannot drift. `bindings` uniquely identifies the
+// block (block hash hex); it is normalized (lowercase + trim) to match the
+// verifier regardless of case/whitespace.
+func CanonicalVoteMessage(chainID uint64, bindings string, vote int8) ([]byte, error) {
 	if vote != -1 && vote != 1 {
-		return *NewBLSresponseBuilder(nil), false, fmt.Errorf("invalid vote")
+		return nil, fmt.Errorf("invalid vote: %d", vote)
 	}
 	bindings = normalizeBindings(bindings)
 	if bindings == "" {
-		return *NewBLSresponseBuilder(nil), false, fmt.Errorf("empty block bindings")
+		return nil, fmt.Errorf("empty block bindings")
+	}
+	msg := BlockBoundVotePrefix + VoteDomainVersion + ":chain=" +
+		strconv.FormatUint(chainID, 10) + ":" + bindings + ":" + strconv.Itoa(int(vote))
+	return []byte(msg), nil
+}
+
+// DefaultDomainChainID is the fallback chain id used ONLY when settings have not
+// been Load()ed yet (early init, or unit tests that never call Load()). It
+// mirrors the compiled network default so signer and verifier agree even on the
+// fallback path within a single process. Production always calls Load() before
+// consensus, so the configured chain id is used there.
+var DefaultDomainChainID = uint64(settings.DefaultConfig().Network.ChainID)
+
+// DomainChainID returns the authenticated network chain id used for vote domain
+// separation. Reading it through this single accessor guarantees the signer and
+// every verifier in the process derive the identical value.
+func DomainChainID() uint64 {
+	if settings.IsLoaded() {
+		return uint64(settings.Get().Network.ChainID)
+	}
+	return DefaultDomainChainID
+}
+
+// SignMessageForBlock signs a vote that is bound to a specific block AND to the
+// network chain id (P4 / v2). `bindings` must uniquely identify the block (the
+// receiver uses the block hash hex). This closes two replay gaps: the unbound
+// constant "vote:1" could authorize any block (JMDN-001 / D3), and a v1
+// block-bound signature could be replayed onto another chain/fork (P4).
+func SignMessageForBlock(vote int8, chainID uint64, bindings string) (BLSresponse, bool, error) {
+	msg, err := CanonicalVoteMessage(chainID, bindings, vote)
+	if err != nil {
+		return *NewBLSresponseBuilder(nil), false, err
 	}
 
 	priv, pub, err := getBLSKeypair()
@@ -96,7 +145,6 @@ func SignMessageForBlock(vote int8, bindings string) (BLSresponse, bool, error) 
 		return *NewBLSresponseBuilder(nil), false, err
 	}
 
-	msg := []byte(BlockBoundVotePrefix + bindings + ":" + strconv.Itoa(int(vote)))
 	sig, err := blssign.BLSSign(priv, msg)
 	if err != nil {
 		return *NewBLSresponseBuilder(nil), false, err

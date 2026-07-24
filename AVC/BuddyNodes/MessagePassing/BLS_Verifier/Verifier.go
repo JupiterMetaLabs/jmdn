@@ -3,12 +3,35 @@ package BLS_Verifier
 import (
 	"encoding/hex"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
 	blssign "gossipnode/AVC/BLS/bls-sign"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 )
+
+// AcceptV1BlockBoundVotes controls whether the verifier still accepts legacy v1
+// (block-bound but NOT chain-id-bound) vote signatures during the P4 staged
+// rollout. Default ON so a mixed fleet keeps reaching quorum while emitters
+// migrate to v2. Set JMDN_ACCEPT_V1_VOTES=0 once every emitter signs v2 to
+// close the cross-chain replay window that v1 leaves open.
+var AcceptV1BlockBoundVotes = os.Getenv("JMDN_ACCEPT_V1_VOTES") != "0"
+
+// canonicalVoteMessageV1 rebuilds the LEGACY (pre-P4) block-bound message
+// "zkvote:<blockhash>:<vote>" — block-bound but with no chain-id domain
+// separation. Retained only so VerifyForBlock can accept in-flight v1
+// signatures during rollout; gated by AcceptV1BlockBoundVotes.
+func canonicalVoteMessageV1(bindings string, vote int8) ([]byte, error) {
+	if vote != -1 && vote != 1 {
+		return nil, fmt.Errorf("invalid vote: %d", vote)
+	}
+	bindings = strings.ToLower(strings.TrimSpace(bindings))
+	if bindings == "" {
+		return nil, fmt.Errorf("empty block bindings")
+	}
+	return []byte(BLS_Signer.BlockBoundVotePrefix + bindings + ":" + strconv.Itoa(int(vote))), nil
+}
 
 // messageForVote returns the canonical message bytes used for signing a vote
 func messageForVote(vote int8) ([]byte, error) {
@@ -18,31 +41,22 @@ func messageForVote(vote int8) ([]byte, error) {
 	return []byte("vote:" + strconv.Itoa(int(vote))), nil
 }
 
-// CanonicalBlockVoteMessage returns the canonical bytes for a vote bound to a
-// specific block. `bindings` must uniquely identify the block (the caller uses
-// the block hash hex). It MUST match BLS_Signer.SignMessageForBlock exactly.
-func CanonicalBlockVoteMessage(bindings string, vote int8) ([]byte, error) {
-	if vote != -1 && vote != 1 {
-		return nil, fmt.Errorf("invalid vote: %d", vote)
-	}
-	// Normalization MUST match BLS_Signer.normalizeBindings (lowercase + trim).
-	bindings = strings.ToLower(strings.TrimSpace(bindings))
-	if bindings == "" {
-		return nil, fmt.Errorf("empty block bindings")
-	}
-	// Prefix kept in sync with BLS_Signer.BlockBoundVotePrefix ("zkvote:").
-	return []byte("zkvote:" + bindings + ":" + strconv.Itoa(int(vote))), nil
+// CanonicalBlockVoteMessage returns the canonical bytes for a v2 vote bound to a
+// specific block AND chain id. It delegates to BLS_Signer.CanonicalVoteMessage
+// so there is exactly one definition of the format shared by signer and
+// verifier (no drift). `bindings` must uniquely identify the block (block hash
+// hex).
+func CanonicalBlockVoteMessage(chainID uint64, bindings string, vote int8) ([]byte, error) {
+	return BLS_Signer.CanonicalVoteMessage(chainID, bindings, vote)
 }
 
 // VerifyForBlock verifies a response's signature against a block-bound vote
-// message. Unlike Verify (which checks the unbound "vote:<v>"), a signature that
-// passes here is provably an attestation for THIS block and cannot be replayed
-// onto another block (JMDN-001 / D3).
-func VerifyForBlock(resp BLS_Signer.BLSresponse, bindings string, vote int8) error {
-	msg, err := CanonicalBlockVoteMessage(bindings, vote)
-	if err != nil {
-		return err
-	}
+// message. A signature that passes here is provably an attestation for THIS
+// block on THIS chain and cannot be replayed onto another block (JMDN-001 / D3)
+// or another chain/fork (P4). It accepts the current v2 (chain-id-bound) format
+// first; during rollout it also accepts legacy v1 (block-bound only) when
+// AcceptV1BlockBoundVotes is set, so a mixed fleet still reaches quorum.
+func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID uint64, bindings string, vote int8) error {
 	pubBytes, err := hex.DecodeString(resp.PubKey)
 	if err != nil {
 		return fmt.Errorf("invalid pubkey hex: %w", err)
@@ -51,10 +65,28 @@ func VerifyForBlock(resp BLS_Signer.BLSresponse, bindings string, vote int8) err
 	if err != nil {
 		return fmt.Errorf("invalid signature hex: %w", err)
 	}
-	if err := blssign.BLSVerify(pubBytes, msg, sigBytes); err != nil {
-		return fmt.Errorf("bls verify (block-bound) failed for peer %s: %w", resp.PeerID, err)
+
+	// v2: chain-id-bound (current).
+	msgV2, err := CanonicalBlockVoteMessage(chainID, bindings, vote)
+	if err != nil {
+		return err
 	}
-	return nil
+	if blssign.BLSVerify(pubBytes, msgV2, sigBytes) == nil {
+		return nil
+	}
+
+	// v1: legacy block-bound-only, accepted only during staged rollout.
+	if AcceptV1BlockBoundVotes {
+		msgV1, err := canonicalVoteMessageV1(bindings, vote)
+		if err != nil {
+			return err
+		}
+		if blssign.BLSVerify(pubBytes, msgV1, sigBytes) == nil {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("bls verify (block-bound) failed for peer %s", resp.PeerID)
 }
 
 // Verify checks a single BLS response against the provided vote value.
