@@ -1159,6 +1159,15 @@ func convertBuddyPeerRecordToNode(peer *peerpb.BuddyPeerRecord) selection.Node {
 
 // ListBuddyPeers lists buddy peers from the seed node (lists all candidates for buddy selection)
 func (c *Client) ListBuddy(ctx context.Context, request *peerpb.ListBuddyRequest) (*peerpb.ListBuddyResponse, error) {
+	// S4: committee selection is sequencer-gated. If this node registered its
+	// sequencer identity key (SetSequencerSignKey), auto-attach the sequencer-auth
+	// metadata so the seed serves selection. Non-sequencer callers send unsigned
+	// and are refused by the seed (fail closed) — as intended.
+	if k := currentSequencerSignKey(); k != nil {
+		if signedCtx, err := sequencerAuthContext(ctx, k); err == nil {
+			ctx = signedCtx
+		}
+	}
 	return c.client.ListBuddy(ctx, request)
 }
 

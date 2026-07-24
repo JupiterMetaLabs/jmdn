@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"gossipnode/seednode/committee"
@@ -16,6 +17,32 @@ import (
 // seqAuthMethod is the RPC method name bound into the sequencer auth challenge.
 // MUST match the seed's SequencerAuthenticator.Verify(method=...) for ListBuddy.
 const seqAuthMethod = "ListBuddy"
+
+// sequencerSignKey is the OPTIONAL sequencer identity key used to auto-sign
+// ListBuddy (committee-selection) requests (S4). It is registered once, only on
+// the sequencer node (SetSequencerSignKey), so ListBuddy calls made through the
+// NodeSelection router are authenticated without threading the key through every
+// layer. Non-sequencer nodes never set it, send unsigned selection requests, and
+// are refused by the seed (fail closed).
+var (
+	seqKeyMu         sync.RWMutex
+	sequencerSignKey ic.PrivKey
+)
+
+// SetSequencerSignKey registers this node's libp2p identity key as the sequencer
+// signer for committee-selection requests (S4). Call once at sequencer startup.
+func SetSequencerSignKey(priv ic.PrivKey) {
+	seqKeyMu.Lock()
+	sequencerSignKey = priv
+	seqKeyMu.Unlock()
+}
+
+// currentSequencerSignKey returns the registered sequencer signer, or nil.
+func currentSequencerSignKey() ic.PrivKey {
+	seqKeyMu.RLock()
+	defer seqKeyMu.RUnlock()
+	return sequencerSignKey
+}
 
 // sequencerAuthContext returns ctx augmented with the S4 sequencer-auth gRPC
 // metadata (x-seed-auth-timestamp + x-seed-auth-signature) for a ListBuddy call.
