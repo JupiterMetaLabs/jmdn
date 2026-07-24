@@ -508,7 +508,7 @@ func StartBFTConsensus(blockhash string) error {
 			PublicKey: pubKeyBytes,
 		}
 
-		// (P9) For the LOCAL buddy, attach the raw ed25519 private key so the BFT
+		// For the LOCAL buddy, attach the raw ed25519 private key so the BFT
 		// engine can sign its own PREPARE/COMMIT messages. Peers verify against
 		// PublicKey (the peer's raw ed25519 key), so the matching raw private key
 		// from the host keystore is what produces valid signatures. Without this

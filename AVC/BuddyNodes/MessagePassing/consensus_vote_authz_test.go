@@ -6,9 +6,9 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// Default-OFF (post-incident): with the gate disabled, every requester is
-// accepted so consensus liveness matches pre-C-04 behavior. This is the state a
-// stock deployment runs in until JMDN_ENFORCE_VOTE_REQUESTER_AUTH=1 is set.
+// Default-off: with the gate disabled, every requester is accepted so consensus
+// liveness is preserved. This is the state a stock deployment runs in until
+// JMDN_ENFORCE_VOTE_REQUESTER_AUTH=1 is set.
 func TestVoteRequesterAuthorized_DisabledByDefaultAcceptsAll(t *testing.T) {
 	defer SetVoteBuddySetProvider(nil)
 	defer SetVoteResultRequesterAuthorizer(nil)
@@ -22,8 +22,8 @@ func TestVoteRequesterAuthorized_DisabledByDefaultAcceptsAll(t *testing.T) {
 	}
 }
 
-// C-04 ENABLED: only an authenticated committee member (the sequencer) may
-// request this node's signed vote; an outsider is rejected.
+// Enabled: only an authenticated committee member (the sequencer) may request
+// this node's signed vote; every other peer is rejected.
 func TestVoteRequesterAuthorized_EnabledBuddySetMembership(t *testing.T) {
 	defer SetVoteBuddySetProvider(nil)
 	defer SetVoteResultRequesterAuthorizer(nil)
@@ -48,9 +48,9 @@ func TestVoteRequesterAuthorized_EnabledBuddySetMembership(t *testing.T) {
 	}
 }
 
-// C-04 ENABLED but the committee set is unknown/empty at request time: FAIL OPEN
-// (accept) rather than brick consensus. This is the exact case that caused the
-// 2026-07 halt when the gate fail-closed.
+// Enabled but the committee set is unknown/empty at request time: fail open
+// (accept) rather than stall consensus. This is the case where fail-closing
+// would block liveness.
 func TestVoteRequesterAuthorized_EnabledEmptySetFailsOpen(t *testing.T) {
 	defer SetVoteBuddySetProvider(nil)
 	defer SetVoteResultRequesterAuthorizer(nil)

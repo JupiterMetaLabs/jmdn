@@ -36,7 +36,7 @@ func (c *Client) FetchCommitteeSnapshot(ctx context.Context, epoch uint64) (*com
 }
 
 // CommitteeEligibility returns a fail-closed eligibility source for
-// messaging.SetCommitteeEligibilitySource (P1). Each call fetches the current
+// messaging.SetCommitteeEligibilitySource. Each call fetches the current
 // epoch's committee snapshot, verifies its authority signature against the
 // PINNED authority key, and returns the eligible peer_id set. Because the
 // returned set IS the committee, VerifyCertificate then counts only snapshot
@@ -59,14 +59,14 @@ func (c *Client) CommitteeEligibility(pinnedAuthorityHex string, epochSeconds in
 		if err := committee.VerifyCommitteeSnapshot(snap, pinnedAuthorityHex); err != nil {
 			return nil, fmt.Errorf("committee snapshot rejected: %w", err)
 		}
-		// (FINDING C) Freshness: a valid signature is not enough — reject a stale
-		// but authority-signed snapshot (an old, pre-rotation/revocation
-		// committee) that a MITM could replay over the unauthenticated read.
+		// Freshness: a valid signature is not enough — reject a stale but
+		// authority-signed snapshot (an old, pre-rotation/revocation committee)
+		// that could be re-presented over the unauthenticated read.
 		if err := committee.CheckSnapshotEpochFresh(snap.Epoch, time.Now().Unix(), epochSeconds); err != nil {
 			return nil, fmt.Errorf("committee snapshot rejected: %w", err)
 		}
 		// peer_id -> authenticated bls_pub, so the verifier can enforce the
-		// peer_id↔bls_pub binding (M1), not just membership.
+		// peer_id↔bls_pub binding, not just membership.
 		return snap.BLSPubByPeer(), nil
 	}
 }

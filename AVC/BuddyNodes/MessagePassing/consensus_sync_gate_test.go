@@ -2,7 +2,7 @@ package MessagePassing
 
 import "testing"
 
-// P7 vote-gate policy: fresh node never votes; a monitored node must be synced.
+// Vote-gate policy: fresh node never votes; a monitored node must be synced.
 func TestConsensusVoteEligible(t *testing.T) {
 	cases := []struct {
 		name            string
@@ -31,8 +31,8 @@ func TestConsensusVoteReady_GateWiring(t *testing.T) {
 	origEnforce := enforceConsensusSyncGate
 	t.Cleanup(func() { consensusSyncGate = orig; enforceConsensusSyncGate = origEnforce })
 
-	// Default-off (post-incident): even a gate that says "not synced" must NOT
-	// block voting, so a buddy that can't self-assess never silently halts.
+	// Default-off: even a gate that says "not synced" must NOT block voting, so
+	// a buddy that can't self-assess never silently stalls.
 	enforceConsensusSyncGate = false
 	SetConsensusSyncGate(func() bool { return false })
 	if !consensusVoteReady() {

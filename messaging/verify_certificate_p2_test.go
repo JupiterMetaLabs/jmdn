@@ -1,10 +1,10 @@
 package messaging
 
-// P2 adversarial tests — ONE authenticated verifier, ONE threshold: Byzantine
-// 2f+1 over the authenticated committee size (f = floor((n-1)/3)), NEVER a
-// simple majority and NEVER derived from the number of votes received.
+// ONE authenticated verifier, ONE threshold: Byzantine 2f+1 over the
+// authenticated committee size (f = floor((n-1)/3)), NEVER a simple majority and
+// NEVER derived from the number of votes received.
 //
-// These fail on the pre-P2 code (which used (validTotal/2)+1 in
+// These fail on the earlier code (which used (validTotal/2)+1 in
 // ProcessBlockLocally and (MaxMainPeers/2)+1 elsewhere) and pass once every
 // path routes through VerifyCertificate.
 
@@ -92,7 +92,7 @@ func hex2(n int) string {
 }
 
 // TestP2_SingleVoteCannotFinalize: a single supplied vote must never finalize a
-// block, on ANY committee size ≥ 4 (the pre-P2 (validTotal/2)+1 would accept it
+// block, on ANY committee size ≥ 4 (the earlier (validTotal/2)+1 would accept it
 // because validTotal=1 → needed=1).
 func TestP2_SingleVoteCannotFinalize(t *testing.T) {
 	for _, n := range []int{4, 5, 7, 10, 13} {

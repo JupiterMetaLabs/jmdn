@@ -392,7 +392,7 @@ func mergeAccountForWrite(existing *Account, incoming Account) (Account, bool) {
 	// 1. Preserve DIDAddress if incoming DID is empty or mistakenly set to the
 	// hex address. EqualFold: legacy update entries carried the address in
 	// lowercase while Address.Hex() is EIP-55 checksummed — a case-sensitive
-	// compare never matched, letting the forged DID overwrite the real one.
+	// compare never matched, so the hex-address value could overwrite the real DID.
 	if incoming.DIDAddress == "" || strings.EqualFold(incoming.DIDAddress, incoming.Address.Hex()) {
 		incoming.DIDAddress = existing.DIDAddress
 	}

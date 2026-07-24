@@ -1667,10 +1667,10 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 	// The buddy unmarshals it into `BlockNumber uint64`; sending it as a string
 	// (the earlier map[string]string form) makes the buddy's json.Unmarshal fail
 	// ("cannot unmarshal string into uint64"), so it rejects the whole request and
-	// never signs — which halts consensus. (Incident 2026-07 / A2 regression.)
+	// never signs — which halts consensus.
 	requestPayload := map[string]interface{}{
 		"block_hash": blockHash,
-		// A2: the block height the buddy must bind its vote to (v3 domain). A buddy
+		// The block height the buddy must bind its vote to (v3 domain). A buddy
 		// that receives it signs v3; an older one that ignores it signs v2 (still
 		// accepted during rollout).
 		"block_number": consensus.ZKBlockData.GetZKBlock().BlockNumber,
@@ -1945,7 +1945,7 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 		attribute.Float64("duration", duration),
 		attribute.String("status", "no_bls_data"),
 	)
-	// DIAGNOSTIC (incident 2026-07): dump exactly what the buddy sent so we can
+	// DIAGNOSTIC: dump exactly what the buddy sent so we can
 	// see WHY there is no usable "bls" object — the inner message, the outer
 	// envelope, and the top-level keys actually present.
 	keys := make([]string, 0, len(resultData))
@@ -2032,7 +2032,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		}
 	}
 
-	// Block hash + height this round's votes must be bound to (D3 / A2).
+	// Block hash + height this round's votes must be bound to.
 	blockHashHex := ""
 	var blockHeight uint64
 	if consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
@@ -2064,7 +2064,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		}
 
 		if legacyOK {
-			// Legacy unbound vote — replayable across blocks (D3). Alert to
+			// Legacy unbound vote — not bound to a specific block. Alert to
 			// Telegram with the offending peer ID.
 			logger().NamedLogger.Warn(trace_ctx, "SECURITY: legacy (unbound) BLS vote received",
 				ion.String("peer_id", r.PeerID),
@@ -2083,7 +2083,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 			}
 		}
 
-		// Committee membership (D4): a vote from a key not in the authorized
+		// Committee membership: a vote from a key not in the authorized
 		// registry is dropped and alerted with the offending peer ID.
 		if messaging.EnforceCommitteeRegistry && !messaging.CommitteeKeyAuthorized(r.PeerID, r.PubKey) {
 			logger().NamedLogger.Warn(trace_ctx, "SECURITY: vote from unauthorized committee key",
@@ -2144,10 +2144,10 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		return false
 	}
 
-	// SINGLE VERIFIER (P2): the authoritative yes-count and threshold come from
+	// Single verifier: the authoritative yes-count and threshold come from
 	// the one shared verifier — no local quorum math. It fails closed on a
-	// missing/failing committee source (P1), de-duplicates by peer_id AND
-	// bls_pub (invariant 4), and requires a Byzantine 2f+1 over the
+	// missing/failing committee source, de-duplicates by peer_id AND
+	// bls_pub, and requires a Byzantine 2f+1 over the
 	// authenticated committee size (never the old strict majority of the fixed
 	// MaxMainPeers, and never a majority of whoever responded). The loop above
 	// is retained only for per-vote alerting/observability.

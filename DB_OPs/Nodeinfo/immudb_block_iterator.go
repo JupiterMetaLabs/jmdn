@@ -13,8 +13,7 @@ import (
 // configToFastsyncBlock converts a config.ZKBlock to a fastsync_types.ZKBlock
 // via direct field assignment. Both structs are field-identical; this replaces
 // the previous JSON marshal/unmarshal round-trip which silently zeroed any field
-// whose JSON tag or type didn't survive the cycle (Medium finding M2 in the
-// security audit — commit: fix(iterator): replace JSON round-trip with direct conversion).
+// whose JSON tag or type did not survive the round-trip.
 func configToFastsyncBlock(b *config.ZKBlock) *fastsync_types.ZKBlock {
 	out := &fastsync_types.ZKBlock{
 		StarkProof:   b.StarkProof,

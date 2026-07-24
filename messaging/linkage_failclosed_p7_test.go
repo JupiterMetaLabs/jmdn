@@ -1,10 +1,10 @@
 package messaging
 
-// P7 / invariant 7: linkage is FAIL-CLOSED. When the local tip or parent cannot
-// be authenticated, or the block is beyond the next-expected height, the block
-// is rejected (never silently accepted out of band), and a height gap triggers
-// authenticated catch-up. These tests exercise the pure linkageDecision (no DB)
-// and the checkLinkage catch-up nudge (via injected readers).
+// Linkage is FAIL-CLOSED. When the local tip or parent cannot be authenticated,
+// or the block is beyond the next-expected height, the block is rejected (never
+// silently accepted out of band), and a height gap triggers authenticated
+// catch-up. These tests exercise the pure linkageDecision (no DB) and the
+// checkLinkage catch-up nudge (via injected readers).
 
 import (
 	"context"

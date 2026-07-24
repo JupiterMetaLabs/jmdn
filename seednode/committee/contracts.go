@@ -45,7 +45,7 @@ const (
 	SeqAuthTimestampHeader = "x-seed-auth-timestamp"
 	SeqAuthSignatureHeader = "x-seed-auth-signature"
 
-	// DefaultSeqAuthMaxSkew bounds sequencer-request replay (seed default ±30s).
+	// DefaultSeqAuthMaxSkew bounds how stale a sequencer request may be (seed default ±30s).
 	DefaultSeqAuthMaxSkew = 30 * time.Second
 	// DefaultCommitteeEpochSeconds is the shared epoch clock divisor (seed default).
 	DefaultCommitteeEpochSeconds int64 = 3600
@@ -169,7 +169,7 @@ func VerifyCommitteeSnapshot(snap *CommitteeSnapshot, expectedAuthorityPubHex st
 	return nil
 }
 
-// PeerIDSet returns the snapshot's eligible peer_id set — the value the P1
+// PeerIDSet returns the snapshot's eligible peer_id set — the value the
 // eligibility source (messaging.SetCommitteeEligibilitySource) consumes.
 // Call only on a snapshot that VerifyCommitteeSnapshot accepted.
 func (snap *CommitteeSnapshot) PeerIDSet() map[string]struct{} {
@@ -211,11 +211,10 @@ const EpochFreshnessWindow = 1
 
 // CheckSnapshotEpochFresh rejects a validly-signed but STALE committee snapshot:
 // its epoch must be within EpochFreshnessWindow of the current epoch
-// (unix/epochSeconds). Without this, a MITM/relay can replay an old but
-// authority-signed snapshot — an epoch with a pre-revocation or attacker-
-// favorable committee — defeating rotation/revocation (FINDING C). The
-// GetCommitteeSnapshot read is unauthenticated, so freshness must be enforced by
-// the consumer.
+// (unix/epochSeconds). Without this, an old but authority-signed snapshot — an
+// epoch with a pre-rotation/pre-revocation committee — could be re-presented,
+// defeating rotation/revocation. The GetCommitteeSnapshot read is
+// unauthenticated, so freshness must be enforced by the consumer.
 func CheckSnapshotEpochFresh(snapEpoch uint64, nowUnix, epochSeconds int64) error {
 	cur := EpochForTime(nowUnix, epochSeconds)
 	d := int64(snapEpoch) - int64(cur)

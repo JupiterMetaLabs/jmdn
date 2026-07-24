@@ -22,7 +22,7 @@ const (
 	Alert_Consensus_ProcessBlockFailed_ConsensusNotReached         = "Process Block Failed: Consensus not reached"
 	// Consensus-not-reached is a valid BFT outcome; this alert name reflects that it's not an error
 	Alert_Consensus_BlockRejectedByConsensus = "Consensus: Block rejected by vote quorum"
-	// Security alerts (JMDN-001 Phase 2): raised during vote aggregation when a
+	// Security alerts: raised during vote aggregation when a
 	// committee response is either a legacy (unbound) vote or signed by a key that
 	// is not in the authorized committee registry. Both include the offending
 	// peer ID in the alert labels/description.

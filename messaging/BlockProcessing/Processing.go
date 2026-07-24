@@ -40,9 +40,9 @@ type AccountSnapshot struct {
 
 // txStage accumulates one transaction's account mutations in memory so they can
 // commit in a SINGLE accountsdb ExecAll together with the tx_processed marker.
-// Previously, each mutation was an independent DB commit — a crash
-// mid-transaction left partially-applied balances with no marker, and the
-// replay re-applied the applied prefix (double-count).
+// Keeping balances and the marker in one commit means either the whole tx
+// lands or none of it does, so a crash mid-transaction cannot leave
+// partially-applied balances without a marker.
 //
 // get is READ-THROUGH: an account already staged by an earlier step of the SAME
 // tx (self-transfer, sender==coinbase, recipient==zkvm, ...) returns the staged
@@ -357,14 +357,13 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	}
 
 	// tx_processed markers are committed atomically with each tx's
-	// balances inside the loop — the old block-end marker batch is gone. That
-	// batch wrote 2×txs+1 entries in ONE ExecAll, exceeding immudb's 1024-entry
-	// transaction cap on any block with >511 transactions: the commit failed,
-	// the block rolled back, and the chain halted on that block permanently.
+	// balances inside the loop rather than in a single block-end batch. A
+	// block-end batch would write 2×txs+1 entries in ONE ExecAll, exceeding
+	// immudb's 1024-entry transaction cap on any block with >511 transactions.
 	// Per-tx commits are ≤5 entries each — the cap is
 	// unreachable by construction.
 	//
-	// The block marker is now a fast-path replay hint only (the per-tx markers
+	// The block marker is a fast-path replay hint only (the per-tx markers
 	// carry the exactly-once guarantee), so its failure must NOT roll back the
 	// block's already-committed, already-marked transactions.
 	if len(successfullyProcessedTxs) > 0 {
@@ -776,7 +775,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// All account mutations for this tx are STAGED in memory and then
 	// committed in ONE accountsdb ExecAll together with the tx_processed marker
 	// (ApplyTxAtomic below). Either the whole tx lands — balances AND marker —
-	// or none of it does; a crash can no longer leave partially-applied
+	// or none of it does, so a crash cannot leave partially-applied
 	// balances that a replay would double-apply.
 	stage := newTxStage(accountsClient)
 
@@ -841,14 +840,12 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	txSpan.SetAttributes(attribute.String("zkvm_gas_fee_step", "completed"))
 
 	// Commit the whole tx atomically — every staged account document
-	// plus the tx_processed marker in ONE accountsdb ExecAll. This replaces the
-	// old flow of ≤4 independent account commits followed by a separate marker
-	// Create (which went to defaultdb, and whose failure was tolerated — leaving
-	// applied-but-unmarked balances for replays to double-apply).
+	// plus the tx_processed marker in ONE accountsdb ExecAll. Balances and
+	// marker land together, so there are no applied-but-unmarked balances that
+	// a replay could double-apply.
 	//
-	// Failure here means NOTHING was applied for this tx — returning an error is
-	// mandatory (the old "still continue" tolerance is no longer sound because
-	// the balances did not land either).
+	// Failure here means NOTHING was applied for this tx, so returning an error
+	// is mandatory (the balances did not land either).
 	if err := DB_OPs.ApplyTxAtomic(accountsClient, stage.staged(), tx.Hash.String(), time.Now().UTC().Unix()); err != nil {
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "atomic_commit_failed"))
@@ -950,12 +947,12 @@ func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error
 		parsed.MaxFeeBig = nil
 	}
 
-	// C-03 execution-level assertion (defense in depth). The ingress and
+	// Execution-level assertion (defense in depth). The ingress and
 	// remote-admission gates (Security.CheckTransactionValues) already reject
 	// negative fields, but execution must never apply a negative amount: a
 	// negative ValueBig or EffectiveGasFee would invert the balance arithmetic
-	// (sender credited, receiver debited). Fail closed here so a tx that somehow
-	// bypassed the earlier gates cannot mutate balances.
+	// (sender credited, receiver debited). Fail closed here so a tx that reaches
+	// execution with a negative field cannot mutate balances.
 	if parsed.ValueBig != nil && parsed.ValueBig.Sign() < 0 {
 		return nil, fmt.Errorf("negative transaction value in execution: %s", parsed.ValueBig.String())
 	}
@@ -983,7 +980,7 @@ func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount s
 		return fmt.Errorf("invalid balance format for DID %s: %s", fromDID, didDoc.Balance)
 	}
 
-	// Foolproof execution-time nonce check (prevents same-block replay attacks).
+	// Foolproof execution-time nonce check (prevents same-block replay).
 	// Returns ErrStaleNonce so the caller can skip this tx rather than rolling
 	// back the entire block — the tx was valid at security-check time but the
 	// account nonce advanced before ProcessBlockLocally ran.
@@ -996,7 +993,7 @@ func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount s
 	if !ok {
 		return fmt.Errorf("invalid deduction amount: %s", amount)
 	}
-	// C-03: a negative deduction would ADD to the sender (balance - (-x)). Reject.
+	// A negative deduction would ADD to the sender (balance - (-x)). Reject.
 	if deductAmount.Sign() < 0 {
 		return fmt.Errorf("negative deduction amount for DID %s: %s", fromDID, amount)
 	}
@@ -1060,7 +1057,7 @@ func addToRecipient(span_ctx context.Context, ToAddress common.Address, amount s
 	if !ok {
 		return fmt.Errorf("invalid addition amount: %s", amount)
 	}
-	// C-03: a negative credit would DEBIT the receiver (balance + (-x)). Reject.
+	// A negative credit would DEBIT the receiver (balance + (-x)). Reject.
 	if addAmount.Sign() < 0 {
 		return fmt.Errorf("negative credit amount for DID %s: %s", ToAddress, amount)
 	}

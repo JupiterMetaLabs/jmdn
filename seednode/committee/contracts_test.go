@@ -151,7 +151,7 @@ func TestEpochForTime(t *testing.T) {
 	}
 }
 
-// FINDING C: a validly-signed but STALE snapshot must be rejected on freshness.
+// A validly-signed but STALE snapshot must be rejected on freshness.
 func TestCheckSnapshotEpochFresh(t *testing.T) {
 	const es = int64(3600)
 	now := int64(6 * 3600) // current epoch = 6

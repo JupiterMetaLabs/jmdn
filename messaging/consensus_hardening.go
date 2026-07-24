@@ -1,11 +1,11 @@
 package messaging
 
-// Phase-2 consensus hardening for JMDN-001. This file adds, on top of the
-// Phase-1 fail-closed receive gate:
+// Consensus verification helpers layered on top of the fail-closed receive
+// gate:
 //
-//   - block-bound committee-certificate verification (D3)
-//   - an authorized committee-key registry (D4)
-//   - equivocation detection + parent/height linkage (D7-adjacent)
+//   - block-bound committee-certificate verification
+//   - an authorized committee-key registry
+//   - equivocation detection + parent/height linkage
 //
 // Rollout note: the flags below default ON per operator decision. The one that
 // can fork a mixed-version network — RejectLegacyVotes — must only be true once
@@ -58,8 +58,8 @@ var (
 	RejectLegacyVotes = envOn("JMDN_REJECT_LEGACY_VOTES", true)
 
 	// EnforceCommitteeRegistry: when true, only votes from ELIGIBLE committee
-	// members count, and an eligibility source MUST be configured. FAIL CLOSED
-	// (P1): no source wired, a source error, or an empty eligible set means the
+	// members count, and an eligibility source MUST be configured. FAIL CLOSED:
+	// no source wired, a source error, or an empty eligible set means the
 	// node refuses consensus participation with a loud error. Absence of a
 	// source is never "allow". Default ON; turning it off is an explicit
 	// operator decision, not a silent fallback.
@@ -72,17 +72,17 @@ var (
 	// tolerated (we may be behind). Default ON.
 	EnforceBlockLinkage = envOn("JMDN_ENFORCE_BLOCK_LINKAGE", true)
 
-	// EnforceBodyBinding (P3): recompute the canonical BlockHash and TxnsRoot
+	// EnforceBodyBinding: recompute the canonical BlockHash and TxnsRoot
 	// from the received transactions and reject any mismatch BEFORE verifying
-	// the committee certificate, so a certified hash cannot be reused over a
-	// substituted body. The recompute mirrors the block generator
+	// the committee certificate, so a certified hash stays bound to this
+	// transaction set. The recompute mirrors the block generator
 	// (JMDT-Sequencer-Orchestrator internal/block/generator.go), so honest
 	// blocks already satisfy it — enabling this is NOT a wire/consensus change.
 	// Default ON.
 	EnforceBodyBinding = envOn("JMDN_ENFORCE_BODY_BINDING", true)
 )
 
-// ---- Committee eligibility (D4) ----------------------------------------------
+// ---- Committee eligibility ---------------------------------------------------
 //
 // Membership is sourced from the live seedNode buddy selection
 // (getBuddy/ListBuddy). The eligible set is the buddy peer_id set MINUS the
@@ -91,7 +91,7 @@ var (
 // committeeEligibilityFn returns the set of peer_id strings currently eligible
 // to vote — the live buddy set from getBuddy/ListBuddy (BEFORE the block_buddy
 // blocklist is applied; the blocklist is subtracted centrally in
-// eligibleMembers so it cannot be bypassed by a source that forgets it).
+// eligibleMembers so a source that omits it still has it applied).
 //
 // Wired at node startup via SetCommitteeEligibilitySource (only the sequencer
 // can legitimately call getBuddy). nil => FAIL CLOSED.
@@ -105,7 +105,7 @@ var (
 // vote; the VALUE is the committee BLS key bound to that peer_id in the
 // authenticated seed snapshot. An empty value means "eligible but no bound key"
 // (legacy getBuddy source with no committee snapshot) — the peer_id↔bls_pub
-// binding is only ENFORCED when the value is non-empty (M1). Pass nil to clear
+// binding is only ENFORCED when the value is non-empty. Pass nil to clear
 // (forces fail-closed). Safe to call concurrently.
 func SetCommitteeEligibilitySource(fn func() (map[string]string, error)) {
 	committeeEligibilityMu.Lock()
@@ -227,7 +227,7 @@ func EligibleCommitteePeerIDs() (map[string]struct{}, error) {
 }
 
 // keyAuthorized reports whether a vote from (peerID,pubHex) counts toward
-// quorum. FAIL CLOSED (P1): a defective/absent eligibility source authorizes
+// quorum. FAIL CLOSED: a defective/absent eligibility source authorizes
 // NOBODY.
 //
 // When the eligibility source carries a bls_pub for peerID (the seed snapshot),
@@ -236,7 +236,7 @@ func EligibleCommitteePeerIDs() (map[string]struct{}, error) {
 func keyAuthorized(peerID, pubHex string) bool {
 	eligible, err := eligibleMembers()
 	if err != nil {
-		// fmt.Printf (not zerolog) so it reliably reaches journald during the incident.
+		// fmt.Printf (not zerolog) so this denial reliably reaches journald.
 		fmt.Printf("🚫 committee auth denied: peer=%s reason=eligibility_source_error err=%v\n", peerID, err)
 		return false
 	}
@@ -282,11 +282,11 @@ func CommitteeKeyAuthorized(peerID, pubHex string) bool { return keyAuthorized(p
 // available. Retained for callers outside this package.
 func RegistryConfigured() bool { return ValidateCommitteeSource() == nil }
 
-// ---- Certificate verification (D2/D3/D4) -------------------------------------
+// ---- Certificate verification ------------------------------------------------
 
 // ByzantineQuorum returns the Byzantine fault-tolerant threshold 2f+1 for a
 // committee of size n, where f = floor((n-1)/3). This is THE threshold for the
-// whole node (P2): never a simple majority, never derived from the number of
+// whole node: never a simple majority, never derived from the number of
 // votes received. n MUST be the authenticated committee size for the block's
 // epoch.
 //
@@ -309,14 +309,14 @@ type CertificateResult struct {
 	Reached       bool // YesVotes >= Threshold
 }
 
-// VerifyCertificate is THE single authenticated committee-certificate verifier
-// (P2). Every consensus path MUST route through it; no path computes its own
+// VerifyCertificate is THE single authenticated committee-certificate verifier.
+// Every consensus path MUST route through it; no path computes its own
 // quorum. It:
-//   - FAILS CLOSED via the P1 eligibility source: with enforcement on, a
+//   - FAILS CLOSED via the eligibility source: with enforcement on, a
 //     missing/failing source (or a set emptied by block_buddy) returns an error
 //     and Reached=false;
 //   - counts distinct eligible +1 votes, de-duplicated by BOTH peer_id and
-//     bls_pub (invariant 4);
+//     bls_pub;
 //   - requires a Byzantine 2f+1 majority over the authenticated committee size
 //     n = len(committee) (never the vote count, never a simple majority).
 //
@@ -346,7 +346,7 @@ func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex string, 
 // and (b) — when filterByMembership is true — are in the eligible committee.
 // De-duplicated by BOTH peer_id and bls_pub so one signer cannot inflate quorum
 // by presenting the same key under several peer_ids, or several keys for one
-// peer_id (invariant 4).
+// peer_id.
 func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, height uint64, committee map[string]string, filterByMembership bool) int {
 	countedPeers := make(map[string]bool)
 	countedKeys := make(map[string]bool)
@@ -357,7 +357,7 @@ func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, h
 			vote = 1
 		}
 
-		// Prefer block-bound verification (D3). Fall back to legacy only when
+		// Prefer block-bound verification. Fall back to legacy only when
 		// legacy is still permitted.
 		verified := BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), height, blockHashHex, vote) == nil
 		if !verified && !RejectLegacyVotes {
@@ -368,10 +368,10 @@ func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, h
 			continue
 		}
 
-		// (D4) committee eligibility (peer_id ∈ live buddy set minus block_buddy)
-		// AND (M1) peer_id↔bls_pub binding: when the authenticated snapshot binds
+		// committee eligibility (peer_id ∈ live buddy set minus block_buddy)
+		// AND peer_id↔bls_pub binding: when the authenticated snapshot binds
 		// a bls_pub to this peer_id, the vote's pubkey MUST match it, so a known
-		// eligible peer_id voting with an attacker key does not count. An empty
+		// eligible peer_id voting with a non-matching key does not count. An empty
 		// bound key (legacy getBuddy source, no snapshot) skips the binding check.
 		if filterByMembership {
 			boundKey, ok := committee[r.PeerID]
@@ -407,7 +407,7 @@ func normalizeBLSPub(s string) string {
 	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), "0x")
 }
 
-// ---- Canonical body binding (P3) ---------------------------------------------
+// ---- Canonical body binding --------------------------------------------------
 //
 // The block generator (JMDT-Sequencer-Orchestrator internal/block/generator.go)
 // derives:
@@ -472,9 +472,9 @@ func RecomputeTxnsRoot(txs []config.Transaction) string {
 }
 
 // checkBodyBinding recomputes the canonical BlockHash and TxnsRoot from the
-// received transactions and rejects any mismatch (P3). This runs BEFORE
-// certificate verification so a certified hash cannot authorize a substituted
-// body.
+// received transactions and rejects any mismatch. This runs BEFORE
+// certificate verification so a certified hash cannot authorize a different
+// transaction set.
 func checkBodyBinding(b *config.ZKBlock) *blockRejection {
 	wantHash := RecomputeBlockHashFromTxs(b.Transactions)
 	if b.BlockHash != wantHash {
@@ -508,7 +508,7 @@ var (
 )
 
 // EquivocationStore persists the first-seen block hash per height so
-// equivocation detection survives a process restart (P6). checkEquivocation
+// equivocation detection survives a process restart. checkEquivocation
 // calls these under seenHeightsMu, so implementations need not be internally
 // locked. Errors are treated as non-fatal by the caller.
 type EquivocationStore interface {
@@ -519,23 +519,23 @@ type EquivocationStore interface {
 	RecordFirstSeen(height uint64, hashHex string) error
 }
 
-// equivocationStore is the durable backing for equivocation records (P6). When
+// equivocationStore is the durable backing for equivocation records. When
 // nil, detection is best-effort in-memory only and does NOT survive restart.
 var equivocationStore EquivocationStore
 
-// SetEquivocationStore wires the durable equivocation store (P6). Call once at
+// SetEquivocationStore wires the durable equivocation store. Call once at
 // node startup (see Sequencer/consensus_statemachine.go). Passing nil reverts
 // to in-memory-only detection (used by tests that opt out).
 func SetEquivocationStore(s EquivocationStore) { equivocationStore = s }
 
 // checkEquivocation records the (height, hash) pair and returns a rejection if a
 // DIFFERENT block hash was already seen at this height (a signed fork / double
-// proposal). It consults the durable store (P6) in addition to the in-memory
+// proposal). It consults the durable store in addition to the in-memory
 // map, so a conflicting block at a height first seen BEFORE a restart is still
 // caught. Durable-store errors are non-fatal: it falls back to in-memory
 // (degraded) rather than stalling consensus, matching the linkage
 // fail-open-on-infra posture. Only fully-validated blocks reach here (called
-// last in validateRemoteBlock), so the map cannot be poisoned by junk blocks.
+// last in validateRemoteBlock), so the map is populated only by validated blocks.
 func checkEquivocation(number uint64, hashHex string) *blockRejection {
 	seenHeightsMu.Lock()
 	defer seenHeightsMu.Unlock()
@@ -549,7 +549,7 @@ func checkEquivocation(number uint64, hashHex string) *blockRejection {
 		return nil
 	}
 
-	// Durable path (P6): a height first seen before a restart still has a record.
+	// Durable path: a height first seen before a restart still has a record.
 	if equivocationStore != nil {
 		prev, found, err := equivocationStore.FirstSeenHash(number)
 		switch {
@@ -612,11 +612,11 @@ var (
 // instead of waiting for the next periodic reconcile. Best-effort and nil-safe:
 // rejecting the out-of-band gap block is the correctness guarantee; this only
 // accelerates recovery. Deliberately does NOT catch up from the gossip sender
-// (which may be the attacker that sent the gap block) — the monitor selects
+// (which sent the gap block) — the monitor selects
 // seednode-vetted peers.
 var catchUpRequester func(fromBlock uint64)
 
-// SetCatchUpRequester wires the authenticated catch-up trigger (P7). Call once
+// SetCatchUpRequester wires the authenticated catch-up trigger. Call once
 // at node startup (see main.go, gated on FastSync.EnableCatchup). Unset => the
 // node still rejects gaps and relies on the periodic sync monitor.
 func SetCatchUpRequester(fn func(fromBlock uint64)) { catchUpRequester = fn }
@@ -627,8 +627,8 @@ func requestCatchUp(fromBlock uint64) {
 	}
 }
 
-// checkLinkage enforces chain linkage for the immediate next block, FAIL-CLOSED
-// (P7). It reads the authenticated local tip/parent and delegates the decision
+// checkLinkage enforces chain linkage for the immediate next block, FAIL-CLOSED.
+// It reads the authenticated local tip/parent and delegates the decision
 // to the pure linkageDecision. On a detected height gap it triggers authenticated
 // catch-up rather than silently accepting an out-of-band block.
 func checkLinkage(ctx context.Context, b *config.ZKBlock) *blockRejection {
@@ -649,19 +649,19 @@ func checkLinkage(ctx context.Context, b *config.ZKBlock) *blockRejection {
 	return rej
 }
 
-// linkageDecision is the pure, fail-closed linkage policy (P7). Given the
+// linkageDecision is the pure, fail-closed linkage policy. Given the
 // authenticated local state it returns a rejection or nil:
 //
-//   - tipErr != nil                 → tip_unreadable (FAIL CLOSED; was fail-open)
+//   - tipErr != nil                 → tip_unreadable (fail closed)
 //   - localTip == 0 (fresh node)    → not_bootstrapped for ANY block, including
 //     block 1: a node with no local chain must bootstrap via authenticated
 //     catch-up, never by ingesting an out-of-band gossip block onto an
 //     unverified chain (so it cannot join consensus/state unsynced)
 //   - number <= localTip            → stale_height
-//   - number  > localTip+1          → height_gap (was silently ACCEPTED — an
-//     out-of-band future block that would break contiguity)
+//   - number  > localTip+1          → height_gap (an out-of-band future block
+//     that would break contiguity)
 //   - number == localTip+1, parent unreadable/absent → parent_unavailable
-//     (FAIL CLOSED; was fail-open)
+//     (fail closed)
 //   - parent hash / state-root chain mismatch → bad_parent / bad_stateroot
 //   - otherwise                     → accept
 func linkageDecision(b *config.ZKBlock, localTip uint64, tipErr error, parent *config.ZKBlock, parentErr error) *blockRejection {
@@ -707,7 +707,7 @@ func linkageDecision(b *config.ZKBlock, localTip uint64, tipErr error, parent *c
 			b.BlockNumber, b.PrevHash.Hex(), localTip, parent.BlockHash.Hex())
 	}
 
-	// (State-root chain, P3) The generator computes
+	// (State-root chain) The generator computes
 	// StateRoot = Keccak256(parentStateRoot || BlockHash). With the parent in
 	// hand, verify the resulting state root chains from the parent's, so a block
 	// cannot claim an inconsistent post-state while keeping a valid parent link.

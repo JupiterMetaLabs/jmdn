@@ -1,6 +1,6 @@
 package messaging
 
-// P3 — independent cross-checks that the receiver's canonical recompute matches
+// Independent cross-checks that the receiver's canonical recompute matches
 // the block generator (JMDT-Sequencer-Orchestrator internal/block/generator.go).
 // These reproduce the generator's algorithm inline (a second, independent path)
 // so a drift in RecomputeBlockHashFromTxs / RecomputeTxnsRoot is caught.

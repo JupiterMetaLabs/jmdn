@@ -1,11 +1,10 @@
 package messaging
 
-// P6 / invariant 7: equivocation records survive a process restart. The
-// in-memory seenHeights map is lost on restart; a durable EquivocationStore
-// lets a node still reject a conflicting block at a height it first saw before
-// the restart. These tests inject an in-memory fake store and simulate a
-// restart by clearing seenHeights while keeping the store — the durable path is
-// what must catch the conflict.
+// Equivocation records survive a process restart. The in-memory seenHeights map
+// is lost on restart; a durable EquivocationStore lets a node still reject a
+// conflicting block at a height it first saw before the restart. These tests
+// inject an in-memory fake store and simulate a restart by clearing seenHeights
+// while keeping the store — the durable path is what must catch the conflict.
 
 import (
 	"context"
@@ -36,7 +35,7 @@ func (f *fakeEquivStore) RecordFirstSeen(height uint64, hashHex string) error {
 }
 
 // p6Block builds a block whose BlockHash is the canonical hash of its txs (body
-// binding is on by default), mirroring the jmdn001 harness's newBlock helper.
+// binding is on by default), mirroring the shared newBlock helper.
 func p6Block(num uint64, txs ...config.Transaction) *config.ZKBlock {
 	return &config.ZKBlock{
 		BlockHash:    RecomputeBlockHashFromTxs(txs),
@@ -46,9 +45,9 @@ func p6Block(num uint64, txs ...config.Transaction) *config.ZKBlock {
 	}
 }
 
-// TestP6_EquivocationSurvivesRestart is the "node restart then same-height
-// conflicting block" adversarial case. With the durable store wired, a
-// different block at a height first seen before the restart is rejected.
+// TestP6_EquivocationSurvivesRestart covers the "node restart then same-height
+// conflicting block" case. With the durable store wired, a different block at a
+// height first seen before the restart is rejected.
 func TestP6_EquivocationSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
 
@@ -99,7 +98,7 @@ func TestP6_EquivocationSurvivesRestart(t *testing.T) {
 
 // TestP6_WithoutStore_RestartLosesRecord documents WHY the durable store is
 // required: with no store wired (in-memory only), a restart wipes the record
-// and the conflicting block is no longer caught. This pins the pre-P6 gap so a
+// and the conflicting block is no longer caught. This pins that gap so a
 // regression that silently drops the store is visible.
 func TestP6_WithoutStore_RestartLosesRecord(t *testing.T) {
 	ctx := context.Background()
@@ -127,8 +126,8 @@ func TestP6_WithoutStore_RestartLosesRecord(t *testing.T) {
 	b2 := p6Block(60, signedTx(t, key2, 0))
 	m2 := config.BlockMessage{Block: b2, Data: blockBoundCert(t, b2.BlockHash.Hex(), "peerA", "peerB", "peerC")}
 	// Without a durable store the conflict is NOT caught — demonstrates the gap
-	// P6 closes. (If this ever rejects, the store is being set globally and the
-	// test's premise changed.)
+	// the durable store closes. (If this ever rejects, the store is being set
+	// globally and the test's premise changed.)
 	if rej := validateRemoteBlock(ctx, m2); rej != nil && rej.reason == "equivocation" {
 		t.Fatalf("without a store, restart should lose the record (in-memory only); got equivocation — store leaked in?")
 	}

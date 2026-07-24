@@ -12,20 +12,20 @@ import (
 )
 
 // AcceptV1BlockBoundVotes controls whether the verifier still accepts legacy v1
-// (block-bound but NOT chain-id-bound) vote signatures during the P4 staged
+// (block-bound but NOT chain-id-bound) vote signatures during the staged
 // rollout. Default ON so a mixed fleet keeps reaching quorum while emitters
-// migrate to v2. Set JMDN_ACCEPT_V1_VOTES=0 once every emitter signs v2 to
-// close the cross-chain replay window that v1 leaves open.
+// migrate to v2. Set JMDN_ACCEPT_V1_VOTES=0 once every emitter signs v2 so that
+// v1 signatures, which are not bound to a chain id, are no longer accepted.
 var AcceptV1BlockBoundVotes = os.Getenv("JMDN_ACCEPT_V1_VOTES") != "0"
 
 // AcceptV2BlockBoundVotes controls whether the verifier still accepts v2
-// (chain-id-bound but NOT height-bound) vote signatures during the A2 staged
+// (chain-id-bound but NOT height-bound) vote signatures during the staged
 // rollout. Default ON so a mixed fleet reaches quorum while emitters migrate to
-// v3. Set JMDN_ACCEPT_V2_VOTES=0 once every emitter signs v3 to close the
-// same-body-replay-at-another-height window that v2 leaves open.
+// v3. Set JMDN_ACCEPT_V2_VOTES=0 once every emitter signs v3 so that v2
+// signatures, which are not bound to a height, are no longer accepted.
 var AcceptV2BlockBoundVotes = os.Getenv("JMDN_ACCEPT_V2_VOTES") != "0"
 
-// canonicalVoteMessageV1 rebuilds the LEGACY (pre-P4) block-bound message
+// canonicalVoteMessageV1 rebuilds the LEGACY block-bound message
 // "zkvote:<blockhash>:<vote>" — block-bound but with no chain-id domain
 // separation. Retained only so VerifyForBlock can accept in-flight v1
 // signatures during rollout; gated by AcceptV1BlockBoundVotes.
@@ -58,9 +58,9 @@ func CanonicalBlockVoteMessage(chainID uint64, bindings string, vote int8) ([]by
 }
 
 // VerifyForBlock verifies a response's signature against a block-bound vote
-// message. A signature that passes here is provably an attestation for THIS
-// block, on THIS chain, at THIS height, and cannot be replayed onto another
-// block (JMDN-001 / D3), chain/fork (P4), or height (A2). Version precedence
+// message. A signature that passes here is an attestation for THIS block, on
+// THIS chain, at THIS height, and is bound to that block, chain/fork, and
+// height. Version precedence
 // (accept newest-bound first, older only during staged rollout):
 //   - v3: chain + HEIGHT + block + vote (tried when height > 0)
 //   - v2: chain + block + vote        (accepted when AcceptV2BlockBoundVotes)
@@ -84,7 +84,7 @@ func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, binding
 		}
 	}
 
-	// v2: chain-id-bound (no height), accepted during the A2 rollout.
+	// v2: chain-id-bound (no height), accepted during the staged rollout.
 	if AcceptV2BlockBoundVotes {
 		if msgV2, err := CanonicalBlockVoteMessage(chainID, bindings, vote); err == nil {
 			if blssign.BLSVerify(pubBytes, msgV2, sigBytes) == nil {

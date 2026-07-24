@@ -14,7 +14,7 @@ import (
 
 // EmitBlockBoundVotes controls whether buddies sign block-bound votes
 // (SignMessageForBlock) rather than legacy unbound votes (SignMessage).
-// Default ON (JMDN-001 / D3). Set JMDN_EMIT_BLOCK_BOUND_VOTES=0 to fall back to
+// Default ON. Set JMDN_EMIT_BLOCK_BOUND_VOTES=0 to fall back to
 // legacy emission during a staged rollout.
 var EmitBlockBoundVotes = os.Getenv("JMDN_EMIT_BLOCK_BOUND_VOTES") != "0"
 
@@ -41,7 +41,7 @@ var (
 // getBLSKeypair returns the node's persistent committee BLS keypair for signing
 // votes. By default it LOADS the provisioned key and fails if absent — never
 // auto-mints, because a freshly-minted key would not be in the committee
-// snapshot and the node would silently self-exclude (E1). Set JMDN_BLS_AUTOGEN=1
+// snapshot and the node would silently self-exclude. Set JMDN_BLS_AUTOGEN=1
 // for dev/first-boot to generate+persist one.
 func getBLSKeypair() ([]byte, []byte, error) {
 	blsOnce.Do(func() {
@@ -90,23 +90,23 @@ const BlockBoundVotePrefix = "zkvote:"
 
 // VoteDomainVersion tags the canonical block-bound vote-message FORMAT. It is
 // part of the signed bytes, so bumping it invalidates every prior signature and
-// MUST be done only as a coordinated network upgrade (P4).
+// MUST be done only as a coordinated network upgrade.
 //
 //   - v1 (legacy): "zkvote:<blockhash>:<vote>"        — block-bound only.
 //   - v2 (current): "zkvote:v2:chain=<id>:<blockhash>:<vote>" — adds chain-id
-//     domain separation so a signature captured on chain A cannot be replayed
-//     as a valid committee vote on chain B (fork / testnet↔mainnet).
+//     domain separation so a signature bound to chain A is not valid as a
+//     committee vote on chain B (fork / testnet↔mainnet).
 //
 // The chain id is the authenticated network id (settings.Network.ChainID); it
 // is a per-node config constant, identical across honest nodes on a network,
-// and is NOT taken from any attacker-supplied per-request field.
+// and is NOT taken from any per-request field.
 const VoteDomainVersion = "v2"
 
-// VoteDomainVersionV3 additionally binds the block HEIGHT (A2):
+// VoteDomainVersionV3 additionally binds the block HEIGHT:
 // "zkvote:v3:chain=<id>:h=<height>:<blockhash>:<vote>". Because the generator's
-// BlockHash does not commit to the block number, a v2 certificate can be
-// replayed at a different height; binding height makes a certificate usable only
-// at the exact height its signers intended. Emitted when the height is known
+// BlockHash does not commit to the block number, a v2 certificate is not tied to
+// a specific height; binding the height makes a certificate valid only at the
+// exact height its signers intended. Emitted when the height is known
 // (block_number threaded to the signer); falls back to v2 otherwise for a staged
 // rollout.
 const VoteDomainVersionV3 = "v3"
@@ -165,13 +165,12 @@ func DomainChainID() uint64 {
 }
 
 // SignMessageForBlock signs a vote that is bound to a specific block AND to the
-// network chain id (P4 / v2). `bindings` must uniquely identify the block (the
-// receiver uses the block hash hex). This closes two replay gaps: the unbound
-// constant "vote:1" could authorize any block (JMDN-001 / D3), and a v1
-// block-bound signature could be replayed onto another chain/fork (P4).
-// height is the block number to bind (A2). When height > 0 the vote is signed in
-// the v3 domain (chain + height + block + vote); when height == 0 (the signer
-// does not know the height — e.g. a pre-A2 sequencer that sends no block_number)
+// network chain id. `bindings` must uniquely identify the block (the receiver
+// uses the block hash hex). Binding the block and chain ties a vote to a single
+// block on a single chain/fork, unlike the unbound constant "vote:1" used by
+// SignMessage. height is the block number to bind. When height > 0 the vote is
+// signed in the v3 domain (chain + height + block + vote); when height == 0 (the
+// signer does not know the height — e.g. a sequencer that sends no block_number)
 // it falls back to the v2 domain, so a mixed fleet still interoperates during
 // rollout.
 func SignMessageForBlock(vote int8, chainID, height uint64, bindings string) (BLSresponse, bool, error) {

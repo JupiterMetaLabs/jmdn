@@ -1,8 +1,7 @@
 package messaging
 
-// Adversarial regression tests for JMDN-001 (P2P block validation bypass),
-// covering both Phase 1 (fail-closed gate) and Phase 2 (block-bound votes,
-// committee registry, equivocation).
+// Regression tests for peer-to-peer block validation, covering the fail-closed
+// gate as well as block-bound votes, committee registry, and equivocation.
 //
 // These assert that the gate rejects crafted blocks BEFORE any forwarding,
 // mutation, or persistence, and accepts a well-formed, block-bound-certified
@@ -28,7 +27,7 @@ import (
 
 // testMembers is the default test committee: three distinct BLS keypairs whose
 // PeerIDs (peerA/peerB/peerC) form the default eligible buddy set. Committee
-// membership is dynamic (P1) — sourced from an injected eligibility function,
+// membership is dynamic — sourced from an injected eligibility function,
 // not a file — so the harness installs defaultTestEligibility and signs each
 // vote with the key whose PeerID is eligible.
 var testMembers map[string]blsMember
@@ -36,15 +35,15 @@ var testMembers map[string]blsMember
 // defaultCommitteePeerIDs is the default test committee: 5 members (the
 // production MaxMainPeers size). With the Byzantine threshold 2f+1 and
 // f=floor((n-1)/3), n=5 => threshold 3, so a 3-of-5 quorum is required — this
-// matches the old fixed strict-majority (3) the JMDN-001 tests were written
-// against, keeping those assertions meaningful under P2.
+// matches the old fixed strict-majority (3) the earlier tests were written
+// against, keeping those assertions meaningful under the Byzantine threshold.
 var defaultCommitteePeerIDs = []string{"peerA", "peerB", "peerC", "peerD", "peerE"}
 
 // defaultTestEligibility is the eligibility source used by the harness and
 // restored by per-test cleanups.
 func defaultTestEligibility() (map[string]string, error) {
 	// Bind each default committee peer_id to its minted member key, so the
-	// harness exercises the M1 binding (votes are signed with these same keys).
+	// harness exercises the key binding (votes are signed with these same keys).
 	set := make(map[string]string, len(defaultCommitteePeerIDs))
 	for _, p := range defaultCommitteePeerIDs {
 		if m, ok := testMembers[p]; ok {
@@ -221,7 +220,7 @@ func TestValidateRemoteBlock(t *testing.T) {
 	}
 
 	// newBlock builds a block whose BlockHash is the canonical hash of its txs
-	// (P3 body binding is on by default, so an arbitrary hash would be rejected
+	// (body binding is on by default, so an arbitrary hash would be rejected
 	// as body_mismatch). The hashHint arg is ignored, kept for readability.
 	newBlock := func(_ string, num uint64, txs ...config.Transaction) *config.ZKBlock {
 		return &config.ZKBlock{
@@ -303,9 +302,9 @@ func TestValidateRemoteBlock(t *testing.T) {
 		}
 	})
 
-	// P3: a certified hash reused over a SUBSTITUTED body (a different, validly
+	// A certified hash reused over a SUBSTITUTED body (a different, validly
 	// signed tx set) must be rejected by body binding BEFORE the certificate is
-	// honored. This is the core P3 attack.
+	// honored. This is the core body-binding case.
 	t.Run("body substitution under certified hash rejected", func(t *testing.T) {
 		resetEquivocation()
 		key2, err := crypto.GenerateKey()
@@ -315,7 +314,7 @@ func TestValidateRemoteBlock(t *testing.T) {
 		// Honest block + certificate over its canonical hash.
 		honest := newBlock("", 30, signedTx(t, key, 0))
 		certHash := honest.BlockHash
-		// Attacker keeps the certified hash but swaps in a different, validly
+		// The block keeps the certified hash but swaps in a different, validly
 		// signed body.
 		swapped := &config.ZKBlock{
 			BlockHash:    certHash, // reused certified hash
@@ -328,19 +327,18 @@ func TestValidateRemoteBlock(t *testing.T) {
 		}
 	})
 
-	// FINDING A: tx.Hash is an attacker-influenceable wire field and body binding
-	// hashes OVER it. An attacker authors their OWN transaction but copies a
-	// certified block's tx.Hash value so RecomputeBlockHashFromTxs reproduces the
-	// certified BlockHash — then replays that block's real certificate. The
+	// tx.Hash is a remote-supplied wire field and body binding hashes OVER it. A
+	// crafted transaction can set tx.Hash so RecomputeBlockHashFromTxs reproduces
+	// a certified BlockHash and then reuse that block's real certificate. The
 	// receive path MUST verify tx.Hash against contents and reject the mismatch
-	// BEFORE body binding (which would otherwise be fooled by the forged hash).
+	// BEFORE body binding.
 	t.Run("forged tx.Hash not matching contents rejected (FINDING A)", func(t *testing.T) {
 		resetEquivocation()
-		attackerTx := signedTx(t, key, 0) // attacker's own valid contents+signature
+		attackerTx := signedTx(t, key, 0) // valid contents and signature
 		attackerTx.Hash = common.HexToHash("0x00000000000000000000000000000000000000000000000000000000deadbeef")
 		txs := []config.Transaction{attackerTx}
-		// Body hashes computed over the FORGED tx.Hash (as the generator formula
-		// does), so body binding alone would pass.
+		// Body hashes computed over the mismatched tx.Hash (as the generator
+		// formula does), so body binding alone would pass.
 		b := &config.ZKBlock{
 			BlockHash:    RecomputeBlockHashFromTxs(txs),
 			TxnsRoot:     RecomputeTxnsRoot(txs),
@@ -353,7 +351,7 @@ func TestValidateRemoteBlock(t *testing.T) {
 		}
 	})
 
-	// P3: tampering with TxnsRoot alone (body binding second axis) is rejected.
+	// A mismatched TxnsRoot alone (body binding second axis) is rejected.
 	t.Run("txnsroot mismatch rejected", func(t *testing.T) {
 		resetEquivocation()
 		b := newBlock("", 31, signedTx(t, key, 0))
@@ -364,7 +362,7 @@ func TestValidateRemoteBlock(t *testing.T) {
 		}
 	})
 
-	// P3 KNOWN GAP (pinned): the generator's BlockHash does NOT cover
+	// KNOWN GAP (pinned): the generator's BlockHash does NOT cover
 	// StarkProof/Commitment, so swapping the proof field while keeping the
 	// certified hash is NOT detected by body binding today. This test PINS that
 	// accepted limitation so it is visible. Closing it requires a generator

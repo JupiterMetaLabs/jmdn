@@ -240,14 +240,13 @@ func ProcessVotesFromCRDT(logger_ctx context.Context, listenerNode *PubSubMessag
 
 	weights, err := client.ListWeightsofPeers()
 	if err != nil {
-		// The seed enforces sequencer-only auth on the peer-list read (S4). A
-		// buddy is NOT the sequencer, so it cannot fetch weights — but it still
-		// must aggregate and sign, or consensus halts (incident 2026-07:
-		// "PermissionDenied: caller is not the authenticated sequencer"). Fall
-		// back to EQUAL weights (1.0 per voting peer) instead of aborting. The
-		// authoritative committee membership / 2f+1 check still runs on the
-		// sequencer's VerifyCertificate. Proper fix: allow committee members to
-		// read the peer list on the seed.
+		// The seed enforces sequencer-only auth on the peer-list read. A buddy is
+		// NOT the sequencer, so it cannot fetch weights — but it still must
+		// aggregate and sign, or consensus stalls. Fall back to EQUAL weights (1.0
+		// per voting peer) instead of aborting. The authoritative committee
+		// membership / 2f+1 check still runs on the sequencer's VerifyCertificate.
+		// A follow-up would allow committee members to read the peer list on the
+		// seed.
 		logger().NamedLogger.Warn(logger_ctx, "Peer weights unavailable from seed; falling back to EQUAL weights for aggregation",
 			ion.String("error", err.Error()),
 			ion.String("function", "Structs.ProcessVotesFromCRDT"))
