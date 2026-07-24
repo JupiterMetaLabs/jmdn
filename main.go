@@ -47,10 +47,8 @@ import (
 	"gossipnode/node"
 	"gossipnode/profiler"
 	"gossipnode/seednode"
-	"gossipnode/transfer"
 
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
@@ -560,18 +558,6 @@ func runCommand(command string, args []string, grpcPort int) {
 			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
 		}
 
-	case "sendfile":
-		if len(args) < 3 {
-			fmt.Println("Usage: jmdn -cmd sendfile <peer> <filepath> <remote_filename>")
-			os.Exit(1)
-		}
-		resp, err := client.SendFile(args[0], args[1], args[2])
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Result: %s\n", resp.Message)
-
 	case "ygg":
 		if len(args) < 2 {
 			fmt.Println("Usage: jmdn -cmd ygg <target> <message>")
@@ -597,7 +583,6 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  cleanpeers          - Clean offline peers")
 		fmt.Println("  sendmsg <tgt> <msg>  - Send message via libp2p")
 		fmt.Println("  ygg <tgt> <msg>      - Send message via Yggdrasil")
-		fmt.Println("  sendfile <peer> <filepath> <remote> - Send file")
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
@@ -1080,13 +1065,6 @@ func main() {
 			}
 		}()
 	}
-
-	// Set the stream handler for receiving files for fastsync. This is crucial
-	// for the final phase of the sync process.
-	n.Host.SetStreamHandler(config.FileProtocol, func(s network.Stream) {
-		// Use an empty string for outputPath to use the default path in HandleFileStream
-		transfer.HandleFileStream(s, "")
-	})
 
 	// Initialize database clients using the pools
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())

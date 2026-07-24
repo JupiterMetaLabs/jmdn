@@ -42,7 +42,6 @@ const (
 // Protocol IDs for message and file sharing
 const (
 	MessageProtocol           protocol.ID = "/custom/message/1.0.0"
-	FileProtocol              protocol.ID = "/custom/file/1.0.0"
 	SeedProtocol              protocol.ID = "/custom/seed/1.0.0"           // Protocol for seed node operations
 	PeerDiscoveryProtocol     protocol.ID = "/custom/peer/discovery/1.0.0" // For finding peers
 	HeartbeatProtocol         protocol.ID = "/heartbeat/1.0.0"

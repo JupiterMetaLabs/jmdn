@@ -106,17 +106,6 @@ func (c *Client) SendYggdrasilMessage(target, message string) (*pb.OperationResp
 	})
 }
 
-// SendFile sends a file to a peer
-func (c *Client) SendFile(peer, filepath, remoteFilename string) (*pb.OperationResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	return c.conn.SendFile(ctx, &pb.FileRequest{
-		Peer:           peer,
-		Filepath:       filepath,
-		RemoteFilename: remoteFilename,
-	})
-}
-
 // BroadcastMessage broadcasts a message to all connected peers
 func (c *Client) BroadcastMessage(message string) (*pb.OperationResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

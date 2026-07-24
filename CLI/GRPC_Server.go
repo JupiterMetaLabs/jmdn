@@ -159,20 +159,6 @@ func (s *CLIServer) SendYggdrasilMessage(ctx context.Context, req *pb.MessageReq
 	}, nil
 }
 
-func (s *CLIServer) SendFile(ctx context.Context, req *pb.FileRequest) (*pb.OperationResponse, error) {
-	success, err := s.handler.HandleSendFile(req.Peer, req.Filepath, req.RemoteFilename)
-	if err != nil {
-		return &pb.OperationResponse{
-			Success: false,
-			Message: err.Error(),
-		}, nil
-	}
-	return &pb.OperationResponse{
-		Success: success,
-		Message: "File sent successfully",
-	}, nil
-}
-
 func (s *CLIServer) BroadcastMessage(ctx context.Context, req *pb.MessageRequest) (*pb.OperationResponse, error) {
 	success, err := s.handler.HandleBroadcast(req.Message)
 	if err != nil {
