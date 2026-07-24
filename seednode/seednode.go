@@ -593,8 +593,15 @@ func (c *Client) RegisterPeerWithAlias(h host.Host, alias string) error {
 // It reuses the already-accepted multiaddrs/labels (no getPublicIP round-trip),
 // bumps Seq, attaches the SAME persistent committee key (idempotent — the seed
 // accepts an unchanged key and rejects a changed one), re-signs so the identity
-// signature covers bls_pub, and calls UpdatePeer. The alias is already owned by
-// this peer, so it is not re-created.
+// signature covers bls_pub, and re-submits via the REGISTER RPC. The alias is
+// already owned by this peer, so it is not re-created.
+//
+// It deliberately does NOT use UpdatePeer: that path drops bls_pub at every
+// layer (the PeerRecordUpdate proto/struct has no BLS fields, and the seed's
+// UpdatePeer neither validates PoP nor writes the column), so an update returns
+// success while silently discarding the key. RegisterPeer carries the full
+// SignedPeerRecord, runs PoP + uniqueness, and upserts via a full-row Save that
+// persists bls_pub.
 //
 // No-op when emission is disabled: it must not send an empty bls_pub, which
 // could blank a previously stored key (see the seed-side overwrite guard).
@@ -623,10 +630,19 @@ func (c *Client) refreshExistingPeerBLS(h host.Host, existing *peerpb.SignedPeer
 	if err := SignPeerRecord(updated, h); err != nil {
 		return fmt.Errorf("refresh bls: sign peer record: %w", err)
 	}
-	if err := c.UpdatePeer(updated); err != nil {
-		return fmt.Errorf("refresh bls: update peer: %w", err)
+	// Re-submit through the REGISTER RPC (not UpdatePeer — see doc above): it
+	// carries bls_pub, runs PoP + uniqueness on the seed, and upserts via a
+	// full-row Save that persists the key.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := c.client.RegisterPeer(ctx, &peerpb.RegisterPeerRequest{PeerRecord: updated, Neighbors: []string{}})
+	if err != nil {
+		return fmt.Errorf("refresh bls: register: %w", err)
 	}
-	fmt.Printf("🔁 refreshed existing peer %s with committee bls_pub (seq %d)\n", existing.PeerId, updated.Seq)
+	if !resp.Accepted {
+		return fmt.Errorf("refresh bls: seed rejected: %s", resp.Message)
+	}
+	fmt.Printf("🔁 refreshed existing peer %s with committee bls_pub via register (seq %d)\n", existing.PeerId, updated.Seq)
 	return nil
 }
 
