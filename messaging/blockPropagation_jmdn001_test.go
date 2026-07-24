@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"math/big"
 	"os"
-	"path/filepath"
 	"testing"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
@@ -26,46 +25,46 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-// testMembers is the default test committee: three distinct BLS keypairs
-// registered as peerA/peerB/peerC in a temp committee registry. P1 made the
-// registry fail-closed, so the harness must configure a VALID registry and
-// sign each vote with the key registered for that PeerID (previously all
-// votes were signed with one process-global key, which a unique-key registry
-// correctly forbids).
+// testMembers is the default test committee: three distinct BLS keypairs whose
+// PeerIDs (peerA/peerB/peerC) form the default eligible buddy set. Committee
+// membership is dynamic (P1) — sourced from an injected eligibility function,
+// not a file — so the harness installs defaultTestEligibility and signs each
+// vote with the key whose PeerID is eligible.
 var testMembers map[string]blsMember
+
+// defaultTestEligibility is the eligibility source used by the harness and
+// restored by per-test cleanups: peerA/peerB/peerC.
+func defaultTestEligibility() (map[string]struct{}, error) {
+	return map[string]struct{}{"peerA": {}, "peerB": {}, "peerC": {}}, nil
+}
+
+// withBlockBuddy sets the operator block_buddy blocklist on the loaded config
+// for the duration of a test, restoring the previous value on cleanup.
+func withBlockBuddy(t *testing.T, ids ...string) {
+	t.Helper()
+	cfg := settings.Get()
+	prev := cfg.Consensus.BlockBuddy
+	cfg.Consensus.BlockBuddy = ids
+	t.Cleanup(func() { cfg.Consensus.BlockBuddy = prev })
+}
 
 // TestMain loads default node settings so the Security package's async logger
 // can initialize, disables DB-dependent block linkage (no DB under unit test),
-// installs the default test committee registry, and removes any BLS key file
-// the signing calls persist to the working tree.
+// installs the default eligibility source, and removes any BLS key file the
+// signing calls persist to the working tree.
 func TestMain(m *testing.M) {
-	_, _ = settings.Load()
+	if _, err := settings.Load(); err != nil {
+		panic("load settings: " + err.Error())
+	}
 	EnforceBlockLinkage = false // checkLinkage needs a live DB; out of scope here
 
-	dir, err := os.MkdirTemp("", "jmdn-committee-*")
-	if err != nil {
-		panic("test registry tempdir: " + err.Error())
-	}
 	testMembers = make(map[string]blsMember)
-	var entries []committeeEntry
 	for i, pid := range []string{"peerA", "peerB", "peerC"} {
-		mem := mustMintMember(pid, byte(0x10+i))
-		testMembers[pid] = mem
-		entries = append(entries, committeeEntry{PeerID: pid, BLSPub: mem.pubHex})
+		testMembers[pid] = mustMintMember(pid, byte(0x10+i))
 	}
-	b, err := json.Marshal(entries)
-	if err != nil {
-		panic("marshal test registry: " + err.Error())
-	}
-	regPath := filepath.Join(dir, "committee_keys.json")
-	if err := os.WriteFile(regPath, b, 0o600); err != nil {
-		panic("write test registry: " + err.Error())
-	}
-	committeeKeysFile = regPath
-	resetCommitteeRegistryForTest()
+	SetCommitteeEligibilitySource(defaultTestEligibility)
 
 	code := m.Run()
-	_ = os.RemoveAll(dir)
 	_ = os.Remove("config/bls.json")
 	_ = os.Remove("config/peer.json")
 	_ = os.Remove("config")

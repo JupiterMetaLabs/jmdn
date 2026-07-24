@@ -56,6 +56,25 @@ What it does:
 */
 func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	responseHandler := NewResponseHandler()
+
+	// Wire the committee eligibility source (P1): membership is the live
+	// seedNode buddy set from getBuddy/ListBuddy, NOT a hand-authored file. The
+	// messaging verifier subtracts the operator block_buddy blocklist and fails
+	// closed if this source is absent or errors. Only the sequencer can call
+	// getBuddy, so we register it here where QueryBuddyNodes is reachable.
+	messaging.SetCommitteeEligibilitySource(func() (map[string]struct{}, error) {
+		buddies, err := helper.QueryBuddyNodes()
+		if err != nil {
+			return nil, err
+		}
+		unique := helper.GetUniqueBuddyPeers(buddies)
+		set := make(map[string]struct{}, len(unique))
+		for _, b := range unique {
+			set[b.PeerID.String()] = struct{}{}
+		}
+		return set, nil
+	})
+
 	return &Consensus{
 		PeerList:        peerList,
 		Host:            host,

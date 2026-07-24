@@ -79,6 +79,11 @@ func Load() (*NodeConfig, error) {
 	return &cfg, nil
 }
 
+// IsLoaded reports whether Load() has populated the global config. Lets hot
+// paths read optional settings without risking the Get() panic when config has
+// not been loaded yet (e.g. early init, or tools that never call Load()).
+func IsLoaded() bool { return globalCfg != nil }
+
 // Get returns the loaded NodeConfig. Must be called after Load().
 // Panics if Load() has not been called — this is intentional to catch
 // initialization order bugs at startup, not in production traffic.
@@ -209,6 +214,9 @@ func setDefaults(v *viper.Viper) {
 	// Selection (VRF key material — no safe default; empty is rejected at use)
 	v.SetDefault("selection.mnemonic", d.Selection.Mnemonic)
 	v.SetDefault("selection.salt", d.Selection.Salt)
+
+	// Consensus
+	v.SetDefault("consensus.block_buddy", d.Consensus.BlockBuddy)
 
 	// Alerts
 	v.SetDefault("alerts.url", d.Alerts.URL)

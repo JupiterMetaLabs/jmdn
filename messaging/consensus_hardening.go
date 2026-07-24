@@ -17,8 +17,6 @@ package messaging
 
 import (
 	"context"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -28,6 +26,7 @@ import (
 	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/DB_OPs"
 	"gossipnode/config"
+	"gossipnode/config/settings"
 
 	"github.com/rs/zerolog/log"
 )
@@ -53,157 +52,175 @@ var (
 	// decision. MUST NOT be true until the whole network emits block-bound votes.
 	RejectLegacyVotes = envOn("JMDN_REJECT_LEGACY_VOTES", true)
 
-	// EnforceCommitteeRegistry: when true, only votes from registered committee
-	// keys count — and the registry MUST be valid. FAIL CLOSED (P1): a missing,
-	// empty, unreadable, or malformed registry means the node refuses consensus
-	// participation with a loud error naming the defect. Absence of
-	// configuration is never "allow". Default ON; turning it off is an explicit
+	// EnforceCommitteeRegistry: when true, only votes from ELIGIBLE committee
+	// members count, and an eligibility source MUST be configured. FAIL CLOSED
+	// (P1): no source wired, a source error, or an empty eligible set means the
+	// node refuses consensus participation with a loud error. Absence of a
+	// source is never "allow". Default ON; turning it off is an explicit
 	// operator decision, not a silent fallback.
+	//
+	// (Name kept for env/back-compat: JMDN_ENFORCE_COMMITTEE_REGISTRY.)
 	EnforceCommitteeRegistry = envOn("JMDN_ENFORCE_COMMITTEE_REGISTRY", true)
 
 	// EnforceBlockLinkage: parent-hash + height checks. Catchup-safe: only the
 	// immediate next block (tip+1) is parent-checked; future/gap blocks are
 	// tolerated (we may be behind). Default ON.
 	EnforceBlockLinkage = envOn("JMDN_ENFORCE_BLOCK_LINKAGE", true)
-
-	// committeeKeysFile is the on-disk authorized committee registry:
-	// a JSON array of {"peer_id","bls_pub"} (bls_pub = hex, as in BLSresponse).
-	committeeKeysFile = "./config/committee_keys.json"
 )
 
-// ---- Authorized committee-key registry (D4) ----------------------------------
+// ---- Committee eligibility (D4) ----------------------------------------------
+//
+// Membership is DYNAMIC and sourced from the live seedNode buddy selection
+// (getBuddy/ListBuddy), NOT from a hand-authored file. The eligible set is the
+// buddy peer_id set MINUS the operator's block_buddy blocklist.
+//
+// Interim scope (per operator decision): only the peer_id is authenticated —
+// eligibility is "peer_id ∈ buddy set". The BLS public key a vote carries is
+// self-reported and NOT yet bound to the peer_id, because ListBuddy does not
+// return bls_pub today. When seedNode adds bls_pub to ListBuddy, bind it in
+// eligibleMembers (see the seam marked BLS-BINDING-SEAM) and enforce
+// peer_id ↔ bls_pub in keyAuthorized — no consensus-logic change required.
+//
+// SECURITY NOTE (accepted interim risk): until bls_pub binding lands, an
+// attacker who knows an eligible buddy's peer_id can craft a vote under that
+// peer_id with their OWN BLS key and it will count. This is a temporary,
+// NOT-production-safe control. Tracked by TestP1_ForgeryWindow_*.
 
-type committeeEntry struct {
-	PeerID string `json:"peer_id"`
-	BLSPub string `json:"bls_pub"`
-}
-
+// committeeEligibilityFn returns the set of peer_id strings currently eligible
+// to vote — the live buddy set from getBuddy/ListBuddy (BEFORE the block_buddy
+// blocklist is applied; the blocklist is subtracted centrally in
+// eligibleMembers so it cannot be bypassed by a source that forgets it).
+//
+// Wired at node startup via SetCommitteeEligibilitySource (only the sequencer
+// can legitimately call getBuddy). nil => FAIL CLOSED.
 var (
-	committeeOnce sync.Once
-	committeeKeys map[string]string // peerID -> lowercased bls pubkey hex
-	committeeErr  error
+	committeeEligibilityMu sync.RWMutex
+	committeeEligibilityFn func() (map[string]struct{}, error)
 )
 
-// normalizeBLSPub canonicalizes a BLS public key hex string for comparison and
-// duplicate detection: trim, lowercase, strip an optional "0x" prefix.
-func normalizeBLSPub(s string) string {
-	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), "0x")
+// SetCommitteeEligibilitySource wires the live committee-eligibility source
+// (typically a closure over the sequencer's QueryBuddyNodes). Pass nil to clear
+// it (which forces fail-closed). Safe to call concurrently.
+func SetCommitteeEligibilitySource(fn func() (map[string]struct{}, error)) {
+	committeeEligibilityMu.Lock()
+	committeeEligibilityFn = fn
+	committeeEligibilityMu.Unlock()
 }
 
-// loadCommitteeKeys reads and validates the registry once. FAIL CLOSED (P1):
-// ANY defect — missing file, unreadable file, malformed JSON, empty set, an
-// entry with a missing field or non-hex key, a duplicate peer_id, or a
-// duplicate bls_pub — yields (nil, error naming the defect). Callers MUST treat
-// an error or an empty map as "no one is authorized".
-func loadCommitteeKeys() (map[string]string, error) {
-	committeeOnce.Do(func() {
-		committeeKeys, committeeErr = readCommitteeKeys(committeeKeysFile)
-		if committeeErr != nil {
-			log.Error().Err(committeeErr).Str("file", committeeKeysFile).
-				Msg("committee registry invalid — refusing consensus participation (fail closed)")
+// blockedBuddies returns the operator block_buddy blocklist as a set. Reads
+// settings only if they have been loaded; before Load() it returns an empty set
+// (no blocklist) rather than panicking, so the hot path is robust to init order.
+func blockedBuddies() map[string]struct{} {
+	blocked := make(map[string]struct{})
+	if !settings.IsLoaded() {
+		return blocked
+	}
+	for _, id := range settings.Get().Consensus.BlockBuddy {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			blocked[id] = struct{}{}
 		}
-	})
-	return committeeKeys, committeeErr
+	}
+	return blocked
 }
 
-// readCommitteeKeys parses and validates a committee registry file. It never
-// returns an empty or partially-valid map without an error: uniqueness is
-// enforced in BOTH directions (peer_id AND bls_pub) so one BLS key can never
-// hold two committee identities, and one identity can never have two keys.
-func readCommitteeKeys(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
+// eligibleMembers returns the authenticated eligible committee: the live buddy
+// set from the configured source, MINUS the block_buddy blocklist. FAIL CLOSED:
+// no source wired, a source error, or an empty result yields an error naming
+// the defect. Callers MUST treat an error as "no one is eligible".
+func eligibleMembers() (map[string]struct{}, error) {
+	committeeEligibilityMu.RLock()
+	fn := committeeEligibilityFn
+	committeeEligibilityMu.RUnlock()
+
+	if fn == nil {
+		return nil, fmt.Errorf("committee eligibility source not configured (fail closed): call messaging.SetCommitteeEligibilitySource at startup")
+	}
+	buddies, err := fn()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("committee registry not configured: %s does not exist", path)
-		}
-		return nil, fmt.Errorf("committee registry unreadable: %w", err)
+		return nil, fmt.Errorf("committee eligibility source failed: %w", err)
 	}
-	var entries []committeeEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return nil, fmt.Errorf("committee registry malformed: %w", err)
+	if len(buddies) == 0 {
+		return nil, fmt.Errorf("committee eligibility source returned an empty buddy set")
 	}
-	if len(entries) == 0 {
-		return nil, fmt.Errorf("committee registry empty: %s contains no entries", path)
+
+	blocked := blockedBuddies()
+	eligible := make(map[string]struct{}, len(buddies))
+	for pid := range buddies {
+		pid = strings.TrimSpace(pid)
+		if pid == "" {
+			continue
+		}
+		if _, isBlocked := blocked[pid]; isBlocked {
+			log.Warn().Str("peer", pid).Msg("committee: buddy excluded by block_buddy blocklist")
+			continue
+		}
+		// BLS-BINDING-SEAM: when ListBuddy returns bls_pub, store
+		// peer_id -> bls_pub here (change the value type) so keyAuthorized can
+		// enforce the binding.
+		eligible[pid] = struct{}{}
 	}
-	m := make(map[string]string, len(entries))
-	pubOwner := make(map[string]string, len(entries)) // bls_pub -> peer_id
-	for i, e := range entries {
-		if e.PeerID == "" || e.BLSPub == "" {
-			return nil, fmt.Errorf("committee registry entry %d incomplete: peer_id and bls_pub are both required", i)
-		}
-		pub := normalizeBLSPub(e.BLSPub)
-		if pub == "" {
-			return nil, fmt.Errorf("committee registry entry %d: empty bls_pub for peer %s", i, e.PeerID)
-		}
-		if _, err := hex.DecodeString(pub); err != nil {
-			return nil, fmt.Errorf("committee registry entry %d: bls_pub for peer %s is not valid hex", i, e.PeerID)
-		}
-		if _, dup := m[e.PeerID]; dup {
-			return nil, fmt.Errorf("committee registry: duplicate peer_id %s", e.PeerID)
-		}
-		if prev, dup := pubOwner[pub]; dup {
-			return nil, fmt.Errorf("committee registry: duplicate bls_pub shared by peers %s and %s", prev, e.PeerID)
-		}
-		m[e.PeerID] = pub
-		pubOwner[pub] = e.PeerID
+	if len(eligible) == 0 {
+		return nil, fmt.Errorf("committee empty after applying block_buddy blocklist")
 	}
-	return m, nil
+	return eligible, nil
 }
 
-// keyAuthorized reports whether (peerID,pubHex) matches a registry entry.
-// FAIL CLOSED (P1): a defective (missing/empty/unreadable/malformed/duplicate)
-// registry authorizes NOBODY. The defect is logged loudly at load time.
+// keyAuthorized reports whether a vote from (peerID,pubHex) counts toward
+// quorum. FAIL CLOSED (P1): a defective/absent eligibility source authorizes
+// NOBODY.
+//
+// Interim: authenticates peer_id membership only; pubHex is accepted as
+// self-reported (see BLS-BINDING-SEAM / SECURITY NOTE above).
 func keyAuthorized(peerID, pubHex string) bool {
-	keys, err := loadCommitteeKeys()
-	if err != nil || len(keys) == 0 {
+	_ = pubHex // not yet bound to peer_id — see BLS-BINDING-SEAM
+	eligible, err := eligibleMembers()
+	if err != nil {
 		return false
 	}
-	want, ok := keys[peerID]
-	return ok && want == normalizeBLSPub(pubHex)
+	_, ok := eligible[peerID]
+	return ok
 }
 
-// registryConfigured reports whether a valid, non-empty registry is loaded.
-func registryConfigured() bool {
-	keys, err := loadCommitteeKeys()
-	return err == nil && len(keys) > 0
+// ValidateCommitteeSource returns nil when a valid, non-empty eligible committee
+// is available (source wired, no error, non-empty after the blocklist);
+// otherwise the error naming the defect. Call this on every consensus path (and
+// at boot) so a node with no/failed eligibility source refuses consensus
+// participation loudly instead of failing open.
+func ValidateCommitteeSource() error {
+	_, err := eligibleMembers()
+	return err
 }
 
-// ValidateCommitteeRegistry returns nil when a valid, non-empty committee
-// registry is loaded; otherwise the error naming the exact defect. Call this
-// on every consensus path (and at boot) so a node with a defective registry
-// refuses consensus participation loudly instead of failing open.
-func ValidateCommitteeRegistry() error {
-	keys, err := loadCommitteeKeys()
-	if err != nil {
-		return err
-	}
-	if len(keys) == 0 {
-		return fmt.Errorf("committee registry empty: no authorized committee keys")
-	}
-	return nil
-}
+// ValidateCommitteeRegistry is retained as a back-compat alias for callers and
+// now validates the dynamic eligibility source.
+func ValidateCommitteeRegistry() error { return ValidateCommitteeSource() }
 
-// CommitteeKeyAuthorized reports whether (peerID,pubHex) is an authorized
-// committee key per the registry. Exported for the sequencer's vote-aggregation
-// path (Sequencer/Consensus.go). FAIL CLOSED: returns false when the registry
-// is missing or defective.
+// CommitteeKeyAuthorized reports whether a vote from (peerID,pubHex) is from an
+// eligible committee member. Exported for the sequencer's vote-aggregation path
+// (Sequencer/Consensus.go). FAIL CLOSED: returns false when the eligibility
+// source is missing or failing.
 func CommitteeKeyAuthorized(peerID, pubHex string) bool { return keyAuthorized(peerID, pubHex) }
 
-// RegistryConfigured is the exported form of registryConfigured for callers
-// outside this package.
-func RegistryConfigured() bool { return registryConfigured() }
+// RegistryConfigured reports whether a valid, non-empty eligible committee is
+// available. Retained for callers outside this package.
+func RegistryConfigured() bool { return ValidateCommitteeSource() == nil }
 
 // ---- Certificate verification (D2/D3/D4) -------------------------------------
 
 // countCertQuorum verifies the certificate and returns the number of distinct,
-// authorized committee members that signed a valid +1 vote for this block.
-// Votes are de-duplicated by PeerID. A vote counts only if:
+// eligible committee members that signed a valid +1 vote for this block.
+// Votes are de-duplicated by BOTH PeerID and BLS public key (invariant 4): the
+// same key under two PeerIDs, or two keys claimed by one PeerID, counts once.
+// A vote counts only if:
 //   - its signature verifies (block-bound; legacy also accepted unless
 //     RejectLegacyVotes), AND
-//   - EnforceCommitteeRegistry is off / unconfigured, or the signer's key is in
-//     the registry.
+//   - EnforceCommitteeRegistry is off, or the signer's peer_id is eligible
+//     (peer_id ∈ live buddy set minus block_buddy). See keyAuthorized.
 func countCertQuorum(responses []BLS_Signer.BLSresponse, blockHashHex string) int {
-	countedYes := make(map[string]bool)
+	countedPeers := make(map[string]bool)
+	countedKeys := make(map[string]bool)
+	yes := 0
 	for _, r := range responses {
 		vote := int8(-1)
 		if r.Agree {
@@ -221,17 +238,35 @@ func countCertQuorum(responses []BLS_Signer.BLSresponse, blockHashHex string) in
 			continue
 		}
 
-		// (D4) committee membership.
+		// (D4) committee eligibility (peer_id ∈ live buddy set minus block_buddy).
 		if EnforceCommitteeRegistry && !keyAuthorized(r.PeerID, r.PubKey) {
-			log.Warn().Str("peer", r.PeerID).Msg("committee vote from unauthorized key (not in registry)")
+			log.Warn().Str("peer", r.PeerID).Msg("committee vote from ineligible peer (not in buddy set / blocklisted)")
 			continue
 		}
 
-		if vote == 1 {
-			countedYes[r.PeerID] = true
+		if vote != 1 {
+			continue
 		}
+		// Dedup by BOTH identity axes so one signer cannot inflate quorum by
+		// presenting the same key under several peer_ids, or by claiming several
+		// keys for one peer_id (invariant 4).
+		pubKey := normalizeBLSPub(r.PubKey)
+		if countedPeers[r.PeerID] || (pubKey != "" && countedKeys[pubKey]) {
+			continue
+		}
+		countedPeers[r.PeerID] = true
+		if pubKey != "" {
+			countedKeys[pubKey] = true
+		}
+		yes++
 	}
-	return len(countedYes)
+	return yes
+}
+
+// normalizeBLSPub canonicalizes a BLS public key hex string for comparison and
+// de-duplication: trim, lowercase, strip an optional "0x" prefix.
+func normalizeBLSPub(s string) string {
+	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), "0x")
 }
 
 // ---- Equivocation detection --------------------------------------------------

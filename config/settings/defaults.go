@@ -107,5 +107,8 @@ func DefaultConfig() NodeConfig {
 		//     identical network-wide, so it carries a stable default. Override
 		//     per-network via config/env if you want isolation between networks.
 		Selection: SelectionSettings{Mnemonic: "", Salt: DefaultSelectionSalt},
+		// Consensus policy: empty block_buddy blocklist by default (no peer is
+		// manually excluded). Populate via jmdn.yaml or JMDN_CONSENSUS_BLOCK_BUDDY.
+		Consensus: ConsensusSettings{BlockBuddy: nil},
 	}
 }

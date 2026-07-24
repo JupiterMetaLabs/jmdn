@@ -703,13 +703,14 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 	// Validate BLS/consensus if results are provided
 	// This ensures we only process blocks that have reached consensus
 	if len(blsResults) > 0 {
-		// FAIL CLOSED (P1): a defective committee registry authorizes nobody;
-		// refuse loudly with the defect named rather than tallying to zero.
+		// FAIL CLOSED (P1): an absent/failing committee eligibility source (or a
+		// set emptied by block_buddy) authorizes nobody; refuse loudly with the
+		// defect named rather than tallying to zero.
 		if EnforceCommitteeRegistry {
-			if err := ValidateCommitteeRegistry(); err != nil {
+			if err := ValidateCommitteeSource(); err != nil {
 				log.Error().Err(err).Str("block_hash", block.BlockHash.Hex()).
-					Msg("refusing consensus participation (fail closed): committee registry invalid")
-				return fmt.Errorf("committee registry invalid (fail closed): %w", err)
+					Msg("refusing consensus participation (fail closed): committee eligibility source invalid")
+				return fmt.Errorf("committee eligibility source invalid (fail closed): %w", err)
 			}
 		}
 		validYes := 0

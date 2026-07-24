@@ -21,6 +21,26 @@ type NodeConfig struct {
 	Alerts    AlertsConfig      `mapstructure:"alerts"`
 	FastSync  FastSyncSettings  `mapstructure:"fastsync"`
 	Selection SelectionSettings `mapstructure:"selection"`
+	Consensus ConsensusSettings `mapstructure:"consensus"`
+}
+
+// ConsensusSettings holds operator-controlled consensus policy.
+//
+// BlockBuddy is an operator blocklist of committee peer IDs. Any peer_id listed
+// here is EXCLUDED from the eligible committee even if the seedNode buddy
+// selection (getBuddy/ListBuddy) returns it — a manual kill-switch for a peer
+// the operator no longer trusts, without waiting for seedNode to drop it.
+//
+// YAML:
+//
+//	consensus:
+//	  block_buddy:
+//	    - "12D3KooW...badpeer1"
+//	    - "12D3KooW...badpeer2"
+//
+// Env (highest priority): JMDN_CONSENSUS_BLOCK_BUDDY (space-separated list).
+type ConsensusSettings struct {
+	BlockBuddy []string `mapstructure:"block_buddy" yaml:"block_buddy"`
 }
 
 // SelectionSettings holds the SECRET VRF key material used for node / committee
