@@ -486,6 +486,18 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 //     when EnforceCommitteeRegistry is on and a registry is configured (D4);
 //   - de-duplicates by PeerID so one signer cannot fake a majority.
 func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
+	// FAIL CLOSED (P1): with registry enforcement on, a missing/empty/
+	// unreadable/malformed/duplicate-key registry means NO vote can be
+	// authorized — refuse consensus participation loudly, naming the defect,
+	// instead of reporting a misleading quorum failure (or, pre-P1, failing
+	// open and authorizing everyone).
+	if EnforceCommitteeRegistry {
+		if err := ValidateCommitteeRegistry(); err != nil {
+			return reject("committee_registry_invalid",
+				"refusing consensus participation (fail closed): %v", err)
+		}
+	}
+
 	raw, ok := msg.Data["bls_results"]
 	if !ok || len(raw) == 0 {
 		return reject("no_certificate", "block %s has no committee certificate", msg.Block.BlockHash.Hex())

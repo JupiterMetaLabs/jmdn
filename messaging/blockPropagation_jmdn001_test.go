@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"os"
+	"path/filepath"
 	"testing"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
@@ -25,13 +26,46 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
+// testMembers is the default test committee: three distinct BLS keypairs
+// registered as peerA/peerB/peerC in a temp committee registry. P1 made the
+// registry fail-closed, so the harness must configure a VALID registry and
+// sign each vote with the key registered for that PeerID (previously all
+// votes were signed with one process-global key, which a unique-key registry
+// correctly forbids).
+var testMembers map[string]blsMember
+
 // TestMain loads default node settings so the Security package's async logger
 // can initialize, disables DB-dependent block linkage (no DB under unit test),
-// and removes any BLS key file the signing calls persist to the working tree.
+// installs the default test committee registry, and removes any BLS key file
+// the signing calls persist to the working tree.
 func TestMain(m *testing.M) {
 	_, _ = settings.Load()
 	EnforceBlockLinkage = false // checkLinkage needs a live DB; out of scope here
+
+	dir, err := os.MkdirTemp("", "jmdn-committee-*")
+	if err != nil {
+		panic("test registry tempdir: " + err.Error())
+	}
+	testMembers = make(map[string]blsMember)
+	var entries []committeeEntry
+	for i, pid := range []string{"peerA", "peerB", "peerC"} {
+		mem := mustMintMember(pid, byte(0x10+i))
+		testMembers[pid] = mem
+		entries = append(entries, committeeEntry{PeerID: pid, BLSPub: mem.pubHex})
+	}
+	b, err := json.Marshal(entries)
+	if err != nil {
+		panic("marshal test registry: " + err.Error())
+	}
+	regPath := filepath.Join(dir, "committee_keys.json")
+	if err := os.WriteFile(regPath, b, 0o600); err != nil {
+		panic("write test registry: " + err.Error())
+	}
+	committeeKeysFile = regPath
+	resetCommitteeRegistryForTest()
+
 	code := m.Run()
+	_ = os.RemoveAll(dir)
 	_ = os.Remove("config/bls.json")
 	_ = os.Remove("config/peer.json")
 	_ = os.Remove("config")
@@ -68,17 +102,17 @@ func signedTx(t *testing.T, key *ecdsa.PrivateKey, nonce uint64) config.Transact
 }
 
 // blockBoundCert returns a Data map with a certificate of block-bound +1 votes,
-// one per distinct PeerID, each signed over blockHashHex.
+// one per PeerID, each signed over blockHashHex with the key REGISTERED for
+// that PeerID in the default test committee registry.
 func blockBoundCert(t *testing.T, blockHashHex string, peerIDs ...string) map[string]string {
 	t.Helper()
 	var resps []BLS_Signer.BLSresponse
 	for _, pid := range peerIDs {
-		r, ok, err := BLS_Signer.SignMessageForBlock(1, blockHashHex)
-		if err != nil || !ok {
-			t.Fatalf("bls sign block-bound: ok=%v err=%v", ok, err)
+		mem, ok := testMembers[pid]
+		if !ok {
+			t.Fatalf("blockBoundCert: %q is not in the default test committee (peerA/peerB/peerC)", pid)
 		}
-		r.PeerID = pid
-		resps = append(resps, r)
+		resps = append(resps, mem.blockVote(t, blockHashHex, 1))
 	}
 	b, err := json.Marshal(resps)
 	if err != nil {
@@ -87,17 +121,17 @@ func blockBoundCert(t *testing.T, blockHashHex string, peerIDs ...string) map[st
 	return map[string]string{"bls_results": string(b)}
 }
 
-// legacyCert returns a certificate of legacy (unbound) +1 votes.
+// legacyCert returns a certificate of legacy (unbound) +1 votes from registered
+// test-committee members.
 func legacyCert(t *testing.T, peerIDs ...string) map[string]string {
 	t.Helper()
 	var resps []BLS_Signer.BLSresponse
 	for _, pid := range peerIDs {
-		r, ok, err := BLS_Signer.SignMessage(1)
-		if err != nil || !ok {
-			t.Fatalf("bls sign legacy: ok=%v err=%v", ok, err)
+		mem, ok := testMembers[pid]
+		if !ok {
+			t.Fatalf("legacyCert: %q is not in the default test committee (peerA/peerB/peerC)", pid)
 		}
-		r.PeerID = pid
-		resps = append(resps, r)
+		resps = append(resps, mem.legacyVote(t, 1))
 	}
 	b, _ := json.Marshal(resps)
 	return map[string]string{"bls_results": string(b)}

@@ -17,7 +17,9 @@ package messaging
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -51,10 +53,12 @@ var (
 	// decision. MUST NOT be true until the whole network emits block-bound votes.
 	RejectLegacyVotes = envOn("JMDN_REJECT_LEGACY_VOTES", true)
 
-	// EnforceCommitteeRegistry: when true AND a registry is loaded, only votes
-	// from registered committee keys count. If no registry file is present, the
-	// check is skipped with a loud warning (so a missing file cannot silently
-	// brick a node). Default ON.
+	// EnforceCommitteeRegistry: when true, only votes from registered committee
+	// keys count — and the registry MUST be valid. FAIL CLOSED (P1): a missing,
+	// empty, unreadable, or malformed registry means the node refuses consensus
+	// participation with a loud error naming the defect. Absence of
+	// configuration is never "allow". Default ON; turning it off is an explicit
+	// operator decision, not a silent fallback.
 	EnforceCommitteeRegistry = envOn("JMDN_ENFORCE_COMMITTEE_REGISTRY", true)
 
 	// EnforceBlockLinkage: parent-hash + height checks. Catchup-safe: only the
@@ -80,61 +84,109 @@ var (
 	committeeErr  error
 )
 
-// loadCommitteeKeys reads the registry once. Returns (nil,nil) when no file
-// exists — callers treat that as "registry not configured".
+// normalizeBLSPub canonicalizes a BLS public key hex string for comparison and
+// duplicate detection: trim, lowercase, strip an optional "0x" prefix.
+func normalizeBLSPub(s string) string {
+	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), "0x")
+}
+
+// loadCommitteeKeys reads and validates the registry once. FAIL CLOSED (P1):
+// ANY defect — missing file, unreadable file, malformed JSON, empty set, an
+// entry with a missing field or non-hex key, a duplicate peer_id, or a
+// duplicate bls_pub — yields (nil, error naming the defect). Callers MUST treat
+// an error or an empty map as "no one is authorized".
 func loadCommitteeKeys() (map[string]string, error) {
 	committeeOnce.Do(func() {
-		data, err := os.ReadFile(committeeKeysFile)
-		if err != nil {
-			if os.IsNotExist(err) {
-				committeeKeys = nil // not configured
-				return
-			}
-			committeeErr = err
-			return
+		committeeKeys, committeeErr = readCommitteeKeys(committeeKeysFile)
+		if committeeErr != nil {
+			log.Error().Err(committeeErr).Str("file", committeeKeysFile).
+				Msg("committee registry invalid — refusing consensus participation (fail closed)")
 		}
-		var entries []committeeEntry
-		if err := json.Unmarshal(data, &entries); err != nil {
-			committeeErr = err
-			return
-		}
-		m := make(map[string]string, len(entries))
-		for _, e := range entries {
-			if e.PeerID == "" || e.BLSPub == "" {
-				continue
-			}
-			m[e.PeerID] = strings.ToLower(e.BLSPub)
-		}
-		committeeKeys = m
 	})
 	return committeeKeys, committeeErr
 }
 
-// keyAuthorized reports whether (peerID,pubHex) matches a registry entry. When
-// the registry is not configured it returns true (membership not enforced) so a
-// missing file does not brick the node.
-func keyAuthorized(peerID, pubHex string) bool {
-	keys, err := loadCommitteeKeys()
+// readCommitteeKeys parses and validates a committee registry file. It never
+// returns an empty or partially-valid map without an error: uniqueness is
+// enforced in BOTH directions (peer_id AND bls_pub) so one BLS key can never
+// hold two committee identities, and one identity can never have two keys.
+func readCommitteeKeys(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		log.Error().Err(err).Msg("committee registry load failed; skipping membership check")
-		return true
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("committee registry not configured: %s does not exist", path)
+		}
+		return nil, fmt.Errorf("committee registry unreadable: %w", err)
 	}
-	if len(keys) == 0 {
-		return true // not configured
+	var entries []committeeEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, fmt.Errorf("committee registry malformed: %w", err)
 	}
-	want, ok := keys[peerID]
-	return ok && want == strings.ToLower(pubHex)
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("committee registry empty: %s contains no entries", path)
+	}
+	m := make(map[string]string, len(entries))
+	pubOwner := make(map[string]string, len(entries)) // bls_pub -> peer_id
+	for i, e := range entries {
+		if e.PeerID == "" || e.BLSPub == "" {
+			return nil, fmt.Errorf("committee registry entry %d incomplete: peer_id and bls_pub are both required", i)
+		}
+		pub := normalizeBLSPub(e.BLSPub)
+		if pub == "" {
+			return nil, fmt.Errorf("committee registry entry %d: empty bls_pub for peer %s", i, e.PeerID)
+		}
+		if _, err := hex.DecodeString(pub); err != nil {
+			return nil, fmt.Errorf("committee registry entry %d: bls_pub for peer %s is not valid hex", i, e.PeerID)
+		}
+		if _, dup := m[e.PeerID]; dup {
+			return nil, fmt.Errorf("committee registry: duplicate peer_id %s", e.PeerID)
+		}
+		if prev, dup := pubOwner[pub]; dup {
+			return nil, fmt.Errorf("committee registry: duplicate bls_pub shared by peers %s and %s", prev, e.PeerID)
+		}
+		m[e.PeerID] = pub
+		pubOwner[pub] = e.PeerID
+	}
+	return m, nil
 }
 
-// registryConfigured reports whether a non-empty registry is loaded.
+// keyAuthorized reports whether (peerID,pubHex) matches a registry entry.
+// FAIL CLOSED (P1): a defective (missing/empty/unreadable/malformed/duplicate)
+// registry authorizes NOBODY. The defect is logged loudly at load time.
+func keyAuthorized(peerID, pubHex string) bool {
+	keys, err := loadCommitteeKeys()
+	if err != nil || len(keys) == 0 {
+		return false
+	}
+	want, ok := keys[peerID]
+	return ok && want == normalizeBLSPub(pubHex)
+}
+
+// registryConfigured reports whether a valid, non-empty registry is loaded.
 func registryConfigured() bool {
 	keys, err := loadCommitteeKeys()
 	return err == nil && len(keys) > 0
 }
 
+// ValidateCommitteeRegistry returns nil when a valid, non-empty committee
+// registry is loaded; otherwise the error naming the exact defect. Call this
+// on every consensus path (and at boot) so a node with a defective registry
+// refuses consensus participation loudly instead of failing open.
+func ValidateCommitteeRegistry() error {
+	keys, err := loadCommitteeKeys()
+	if err != nil {
+		return err
+	}
+	if len(keys) == 0 {
+		return fmt.Errorf("committee registry empty: no authorized committee keys")
+	}
+	return nil
+}
+
 // CommitteeKeyAuthorized reports whether (peerID,pubHex) is an authorized
 // committee key per the registry. Exported for the sequencer's vote-aggregation
-// path (Sequencer/Consensus.go). Returns true when the registry is unconfigured.
+// path (Sequencer/Consensus.go). FAIL CLOSED: returns false when the registry
+// is missing or defective.
 func CommitteeKeyAuthorized(peerID, pubHex string) bool { return keyAuthorized(peerID, pubHex) }
 
 // RegistryConfigured is the exported form of registryConfigured for callers
