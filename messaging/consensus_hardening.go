@@ -200,7 +200,13 @@ func keyAuthorized(peerID, pubHex string) bool {
 	if !ok {
 		return false
 	}
-	if boundKey != "" && normalizeBLSPub(pubHex) != boundKey {
+	if boundKey == "" {
+		// Legacy/unpinned source carries no bls_pub — peer_id-only authentication.
+		// NOT production-safe; a pinned committee snapshot always carries the key.
+		log.Warn().Str("peer", peerID).Msg("committee: key binding unavailable (legacy source); authenticating peer_id only")
+		return true
+	}
+	if normalizeBLSPub(pubHex) != boundKey {
 		return false
 	}
 	return true

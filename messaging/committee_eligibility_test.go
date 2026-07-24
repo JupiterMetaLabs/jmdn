@@ -3,11 +3,11 @@ package messaging
 // P1 adversarial tests — committee eligibility is DYNAMIC (live getBuddy set
 // minus the operator block_buddy blocklist) and MUST fail closed.
 //
-// Design (per operator decision): membership authenticates peer_id only; the
-// BLS public key a vote carries is self-reported and not yet bound to the
-// peer_id (seedNode ListBuddy does not return bls_pub yet). The accepted,
-// temporary forgery window this creates is pinned by TestP1_ForgeryWindow_* so
-// it is visible and will flip to a rejection once bls_pub binding lands.
+// Design: membership authenticates peer_id, AND (M1) when the authenticated seed
+// snapshot binds a bls_pub to that peer_id the vote's key MUST match it — a known
+// eligible peer_id voting with an attacker key is rejected (TestP1_Binding_*).
+// A legacy source with no snapshot carries no bound key and falls back to
+// peer_id-only authentication (not production-safe; logged).
 //
 // Invariants under test:
 //   1. Fail closed: no eligibility source wired, a source error, or an empty
