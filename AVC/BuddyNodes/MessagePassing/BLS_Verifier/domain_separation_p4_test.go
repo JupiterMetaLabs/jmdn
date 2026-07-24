@@ -2,11 +2,16 @@ package BLS_Verifier
 
 import (
 	"encoding/hex"
+	"os"
 	"testing"
 
 	blssign "gossipnode/AVC/BLS/bls-sign"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 )
+
+// Tests sign with an ephemeral keypair (no provisioned config/bls.json);
+// production loads-only and fails closed (getBLSKeypair / E1).
+func init() { os.Setenv("JMDN_BLS_AUTOGEN", "1") }
 
 // P4: votes are domain-separated by network chain id. These tests pin the core
 // property — a committee vote signed for chain A must NOT verify as a valid vote

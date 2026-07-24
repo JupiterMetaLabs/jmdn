@@ -88,25 +88,46 @@ func BLSFastAggregateVerify(pubKeys [][]byte, message, aggSig []byte) (bool, err
 }
 
 // GenerateBLSKeyPair generates and returns a private and public key (as byte slices) for BLS.
-func GenerateBLSKeyPair() ([]byte, []byte, error) {
-	// 1) Try to load from config/bls.json
-	type blsFile struct {
-		PeerID  string `json:"peer_id,omitempty"`
-		PrivKey string `json:"bls_priv"`
-		PubKey  string `json:"bls_pub"`
-	}
+// blsKeyFile is the on-disk committee BLS keypair (config/bls.json).
+type blsKeyFile struct {
+	PeerID  string `json:"peer_id,omitempty"`
+	PrivKey string `json:"bls_priv"`
+	PubKey  string `json:"bls_pub"`
+}
 
-	if data, err := os.ReadFile(config.BLSFile); err == nil {
-		var bf blsFile
-		if err := json.Unmarshal(data, &bf); err == nil && bf.PrivKey != "" && bf.PubKey != "" {
-			if priv, err := base64.StdEncoding.DecodeString(bf.PrivKey); err == nil {
-				if pub, err := base64.StdEncoding.DecodeString(bf.PubKey); err == nil {
-					return priv, pub, nil
-				}
-			}
-		}
-		// If file exists but invalid, continue to regenerate below
+// LoadBLSKeyPair loads the persistent committee BLS keypair from config/bls.json
+// WITHOUT generating one. It returns an error when the file is absent or
+// invalid. The consensus vote-signing path uses this (never auto-mint): once
+// committee membership binds peer_id→bls_pub, a node that silently minted a
+// fresh key would self-exclude from the committee. Provision the key explicitly
+// (or set JMDN_BLS_AUTOGEN=1 for dev/first-boot) instead.
+func LoadBLSKeyPair() ([]byte, []byte, error) {
+	data, err := os.ReadFile(config.BLSFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bls key not provisioned: cannot read %s: %w", config.BLSFile, err)
 	}
+	var bf blsKeyFile
+	if err := json.Unmarshal(data, &bf); err != nil || bf.PrivKey == "" || bf.PubKey == "" {
+		return nil, nil, fmt.Errorf("bls key file %s is invalid or incomplete", config.BLSFile)
+	}
+	priv, err := base64.StdEncoding.DecodeString(bf.PrivKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bls key file %s: bad private key: %w", config.BLSFile, err)
+	}
+	pub, err := base64.StdEncoding.DecodeString(bf.PubKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bls key file %s: bad public key: %w", config.BLSFile, err)
+	}
+	return priv, pub, nil
+}
+
+func GenerateBLSKeyPair() ([]byte, []byte, error) {
+	// 1) Try to load the persisted key (no mint).
+	if priv, pub, err := LoadBLSKeyPair(); err == nil {
+		return priv, pub, nil
+	}
+	// If file exists but invalid, continue to regenerate below
+	type blsFile = blsKeyFile
 
 	// 2) Not found or invalid → generate new keypair
 	signer := bls.Generate().(bls.Signer)

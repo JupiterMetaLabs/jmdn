@@ -38,9 +38,18 @@ var (
 	blsErr  error
 )
 
+// getBLSKeypair returns the node's persistent committee BLS keypair for signing
+// votes. By default it LOADS the provisioned key and fails if absent — never
+// auto-mints, because a freshly-minted key would not be in the committee
+// snapshot and the node would silently self-exclude (E1). Set JMDN_BLS_AUTOGEN=1
+// for dev/first-boot to generate+persist one.
 func getBLSKeypair() ([]byte, []byte, error) {
 	blsOnce.Do(func() {
-		blsPriv, blsPub, blsErr = blssign.GenerateBLSKeyPair()
+		if os.Getenv("JMDN_BLS_AUTOGEN") == "1" {
+			blsPriv, blsPub, blsErr = blssign.GenerateBLSKeyPair()
+		} else {
+			blsPriv, blsPub, blsErr = blssign.LoadBLSKeyPair()
+		}
 	})
 	return blsPriv, blsPub, blsErr
 }
