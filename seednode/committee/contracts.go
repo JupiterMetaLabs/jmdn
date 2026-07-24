@@ -204,6 +204,30 @@ func EpochForTime(unix int64, epochSeconds int64) uint64 {
 	return uint64(unix / epochSeconds)
 }
 
+// EpochFreshnessWindow is how many epochs of lag/skew are tolerated (an epoch
+// boundary where the seed still serves the previous snapshot, plus clock skew)
+// before a validly-signed snapshot is treated as stale.
+const EpochFreshnessWindow = 1
+
+// CheckSnapshotEpochFresh rejects a validly-signed but STALE committee snapshot:
+// its epoch must be within EpochFreshnessWindow of the current epoch
+// (unix/epochSeconds). Without this, a MITM/relay can replay an old but
+// authority-signed snapshot — an epoch with a pre-revocation or attacker-
+// favorable committee — defeating rotation/revocation (FINDING C). The
+// GetCommitteeSnapshot read is unauthenticated, so freshness must be enforced by
+// the consumer.
+func CheckSnapshotEpochFresh(snapEpoch uint64, nowUnix, epochSeconds int64) error {
+	cur := EpochForTime(nowUnix, epochSeconds)
+	d := int64(snapEpoch) - int64(cur)
+	if d < 0 {
+		d = -d
+	}
+	if d > EpochFreshnessWindow {
+		return fmt.Errorf("stale committee snapshot: epoch %d not within ±%d of current epoch %d", snapEpoch, EpochFreshnessWindow, cur)
+	}
+	return nil
+}
+
 // ---- Sequencer-gated selection auth (sequencer_auth.go) ----------------------
 
 // SequencerAuthChallenge is the canonical string the sequencer signs and the

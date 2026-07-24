@@ -45,7 +45,7 @@ func (c *Client) FetchCommitteeSnapshot(ctx context.Context, epoch uint64) (*com
 // Fail-closed: an unset pin, a fetch error, a signature/pin-mismatch, or an
 // empty snapshot all return an error (never "allow all"), so a node with no
 // authenticated committee refuses consensus participation.
-func (c *Client) CommitteeEligibility(pinnedAuthorityHex string) func() (map[string]string, error) {
+func (c *Client) CommitteeEligibility(pinnedAuthorityHex string, epochSeconds int64) func() (map[string]string, error) {
 	return func() (map[string]string, error) {
 		if pinnedAuthorityHex == "" {
 			return nil, fmt.Errorf("committee source disabled: no pinned seed authority key (fail closed)")
@@ -57,6 +57,12 @@ func (c *Client) CommitteeEligibility(pinnedAuthorityHex string) func() (map[str
 			return nil, err
 		}
 		if err := committee.VerifyCommitteeSnapshot(snap, pinnedAuthorityHex); err != nil {
+			return nil, fmt.Errorf("committee snapshot rejected: %w", err)
+		}
+		// (FINDING C) Freshness: a valid signature is not enough — reject a stale
+		// but authority-signed snapshot (an old, pre-rotation/revocation
+		// committee) that a MITM could replay over the unauthenticated read.
+		if err := committee.CheckSnapshotEpochFresh(snap.Epoch, time.Now().Unix(), epochSeconds); err != nil {
 			return nil, fmt.Errorf("committee snapshot rejected: %w", err)
 		}
 		// peer_id -> authenticated bls_pub, so the verifier can enforce the

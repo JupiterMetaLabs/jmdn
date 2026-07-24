@@ -150,3 +150,24 @@ func TestEpochForTime(t *testing.T) {
 		t.Fatal("default epoch seconds")
 	}
 }
+
+// FINDING C: a validly-signed but STALE snapshot must be rejected on freshness.
+func TestCheckSnapshotEpochFresh(t *testing.T) {
+	const es = int64(3600)
+	now := int64(6 * 3600) // current epoch = 6
+	cur := EpochForTime(now, es)
+
+	// Within ±EpochFreshnessWindow (=1) → fresh.
+	for _, e := range []uint64{cur, cur - 1, cur + 1} {
+		if err := CheckSnapshotEpochFresh(e, now, es); err != nil {
+			t.Fatalf("epoch %d should be fresh (cur=%d): %v", e, cur, err)
+		}
+	}
+	// Two or more epochs stale/ahead → rejected.
+	if err := CheckSnapshotEpochFresh(cur-2, now, es); err == nil {
+		t.Fatalf("stale epoch %d (cur=%d) must be rejected", cur-2, cur)
+	}
+	if err := CheckSnapshotEpochFresh(cur+2, now, es); err == nil {
+		t.Fatalf("future epoch %d (cur=%d) must be rejected", cur+2, cur)
+	}
+}

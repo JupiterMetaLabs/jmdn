@@ -102,7 +102,7 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 
 	if pinned := cfg.Consensus.SeedAuthorityBLSPub; pinned != "" && cfg.Network.SeedNode != "" {
 		if sc, err := seednode.NewClient(cfg.Network.SeedNode); err == nil {
-			messaging.SetCommitteeEligibilitySource(sc.CommitteeEligibility(pinned))
+			messaging.SetCommitteeEligibilitySource(sc.CommitteeEligibility(pinned, cfg.Consensus.CommitteeEpochSeconds))
 		} else {
 			initErr := err
 			messaging.SetCommitteeEligibilitySource(func() (map[string]string, error) {

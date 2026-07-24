@@ -472,6 +472,15 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 		if err != nil || !ok {
 			return reject("bad_signature", "tx %d (%s) signature invalid: %v", i, tx.Hash.Hex(), err)
 		}
+		// (FINDING A) tx.Hash is an attacker-influenceable wire field, and
+		// canonical body binding (checkBodyBinding) hashes OVER tx.Hash. If it is
+		// not verified against the transaction contents, an attacker can author
+		// their own body while copying a certified block's tx.Hash values to
+		// reproduce its BlockHash and replay that block's real committee
+		// certificate. Require tx.Hash == hash(contents); reject a mismatch.
+		if hok, herr := Security.CheckTransactionHash(&tx, ctx); herr != nil || !hok {
+			return reject("tx_hash_mismatch", "tx %d hash does not match its contents: %v", i, herr)
+		}
 	}
 
 	// (In-block nonce consistency) Each sender's nonces must be strictly
@@ -497,6 +506,14 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 	if EnforceBodyBinding {
 		if rej := checkBodyBinding(b); rej != nil {
 			return rej
+		}
+		// (FINDING A, block level) Bind BlockHash to transaction CONTENTS, not the
+		// wire tx.Hash: recompute the block hash from ethTx.Hash() of each tx and
+		// reject a mismatch. checkBodyBinding hashes over tx.Hash (now verified per
+		// tx above); this is the authoritative contents-based gate and holds even
+		// if the per-tx check is ever bypassed.
+		if ok, err := Security.CheckBlockHash(b); err != nil || !ok {
+			return reject("block_hash_mismatch", "block %s hash does not match tx contents: %v", b.BlockHash.Hex(), err)
 		}
 	}
 

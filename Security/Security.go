@@ -857,6 +857,78 @@ func toGethAccessList(accessList config.AccessList) types.AccessList {
 // ------------------------------------------------------------
 // 2. Transaction hash validation
 // 2.1. Recompute transaction hash and verify it matches the provided hash
+// CheckTransactionHash verifies that tx.Hash equals the hash recomputed from the
+// transaction's CONTENTS (ethTx.Hash()). It is the exported entry point for the
+// block-receive path (messaging.validateRemoteBlock), where tx.Hash is an
+// attacker-influenceable wire field and must not be trusted: canonical body
+// binding (P3) hashes over tx.Hash, so an unverified tx.Hash lets a forged body
+// reproduce a captured BlockHash and replay a real certificate (FINDING A).
+// Returns (true,nil) only when the wire hash matches the content hash.
+func CheckTransactionHash(tx *config.Transaction, traceCtx context.Context) (bool, error) {
+	return checkTransactionHash(tx, traceCtx)
+}
+
+// ethTxFromConfig reconstructs the go-ethereum transaction from a
+// config.Transaction using tx.Type (same construction as CheckSignature /
+// checkTransactionHash), so its content hash can be recomputed.
+func ethTxFromConfig(tx *config.Transaction) *types.Transaction {
+	switch tx.Type {
+	case types.DynamicFeeTxType: // 2 — EIP-1559
+		return types.NewTx(&types.DynamicFeeTx{
+			ChainID: tx.ChainID, Nonce: tx.Nonce, To: tx.To, Value: tx.Value,
+			GasTipCap: tx.MaxPriorityFee, GasFeeCap: tx.MaxFee, Gas: tx.GasLimit,
+			Data: tx.Data, AccessList: toGethAccessList(tx.AccessList),
+			V: tx.V, R: tx.R, S: tx.S,
+		})
+	case types.AccessListTxType: // 1 — EIP-2930
+		return types.NewTx(&types.AccessListTx{
+			ChainID: tx.ChainID, Nonce: tx.Nonce, To: tx.To, Value: tx.Value,
+			GasPrice: tx.GasPrice, Gas: tx.GasLimit, Data: tx.Data,
+			AccessList: toGethAccessList(tx.AccessList), V: tx.V, R: tx.R, S: tx.S,
+		})
+	default: // 0 — Legacy
+		return types.NewTx(&types.LegacyTx{
+			Nonce: tx.Nonce, To: tx.To, Value: tx.Value, GasPrice: tx.GasPrice,
+			Gas: tx.GasLimit, Data: tx.Data, V: tx.V, R: tx.R, S: tx.S,
+		})
+	}
+}
+
+// RecomputeBlockHashFromContents recomputes the block hash from transaction
+// CONTENTS — Keccak256 over the concatenation of each transaction's content hash
+// (ethTx.Hash()), matching the block generator's
+// generateBlockHashFromTransactions. Unlike a recompute over the wire tx.Hash
+// field, this binds the block hash to what the transactions actually ARE, so it
+// cannot be fooled by an attacker-supplied tx.Hash (FINDING A, block level).
+func RecomputeBlockHashFromContents(txs []config.Transaction) common.Hash {
+	if len(txs) == 0 {
+		return common.Hash{}
+	}
+	buf := make([]byte, 0, len(txs)*32)
+	for i := range txs {
+		h := ethTxFromConfig(&txs[i]).Hash()
+		buf = append(buf, h.Bytes()...)
+	}
+	return common.BytesToHash(crypto.Keccak256(buf))
+}
+
+// CheckBlockHash recomputes the block hash from transaction CONTENTS and compares
+// it to block.BlockHash. Returns (true,nil) only on match. Call on the block
+// receive path so a block cannot claim a BlockHash that does not correspond to
+// the transactions it actually carries — closing FINDING A at the block level,
+// independent of whether the per-transaction tx.Hash fields were pre-verified.
+func CheckBlockHash(block *config.ZKBlock) (bool, error) {
+	if block == nil {
+		return false, errors.New("block is nil")
+	}
+	want := RecomputeBlockHashFromContents(block.Transactions)
+	if block.BlockHash != want {
+		return false, fmt.Errorf("block hash mismatch: recomputed %s from tx contents, block claims %s",
+			want.Hex(), block.BlockHash.Hex())
+	}
+	return true, nil
+}
+
 func checkTransactionHash(tx *config.Transaction, traceCtx context.Context) (bool, error) {
 	loggerCtx, cancel := context.WithCancel(traceCtx)
 	defer cancel()

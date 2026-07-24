@@ -328,6 +328,31 @@ func TestValidateRemoteBlock(t *testing.T) {
 		}
 	})
 
+	// FINDING A: tx.Hash is an attacker-influenceable wire field and body binding
+	// hashes OVER it. An attacker authors their OWN transaction but copies a
+	// certified block's tx.Hash value so RecomputeBlockHashFromTxs reproduces the
+	// certified BlockHash — then replays that block's real certificate. The
+	// receive path MUST verify tx.Hash against contents and reject the mismatch
+	// BEFORE body binding (which would otherwise be fooled by the forged hash).
+	t.Run("forged tx.Hash not matching contents rejected (FINDING A)", func(t *testing.T) {
+		resetEquivocation()
+		attackerTx := signedTx(t, key, 0) // attacker's own valid contents+signature
+		attackerTx.Hash = common.HexToHash("0x00000000000000000000000000000000000000000000000000000000deadbeef")
+		txs := []config.Transaction{attackerTx}
+		// Body hashes computed over the FORGED tx.Hash (as the generator formula
+		// does), so body binding alone would pass.
+		b := &config.ZKBlock{
+			BlockHash:    RecomputeBlockHashFromTxs(txs),
+			TxnsRoot:     RecomputeTxnsRoot(txs),
+			BlockNumber:  33,
+			Transactions: txs,
+		}
+		msg := config.BlockMessage{Block: b, Data: blockBoundCert(t, b.BlockHash.Hex(), "peerA", "peerB", "peerC")}
+		if rej := validateRemoteBlock(ctx, msg); rej == nil || rej.reason != "tx_hash_mismatch" {
+			t.Fatalf("want tx_hash_mismatch for forged tx.Hash, got %v", rej)
+		}
+	})
+
 	// P3: tampering with TxnsRoot alone (body binding second axis) is rejected.
 	t.Run("txnsroot mismatch rejected", func(t *testing.T) {
 		resetEquivocation()
