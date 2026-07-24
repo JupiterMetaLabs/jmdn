@@ -1,5 +1,16 @@
 package MessagePassing
 
+import "os"
+
+// enforceConsensusSyncGate gates the P7 sync-gate. OPT-IN and DEFAULT-OFF after
+// the 2026-07 halt: the gate abstained on every buddy (its tip read as 0 / the
+// DB read errored on the validator role), so no buddy signed and consensus
+// halted. Like the C-04 requester gate, it had no runtime off-switch. Keep it
+// off by default so a buddy that cannot self-assess sync state still votes
+// (pre-P7 behavior); set JMDN_ENFORCE_SYNC_GATE=1 to re-enable once the gate's
+// tip source is validated on the validator role.
+var enforceConsensusSyncGate = os.Getenv("JMDN_ENFORCE_SYNC_GATE") == "1"
+
 // Consensus vote sync-gate (P7).
 //
 // An unsynced node MUST NOT participate in consensus. A node with no local
@@ -20,6 +31,12 @@ func SetConsensusSyncGate(fn func() bool) { consensusSyncGate = fn }
 
 // consensusVoteReady reports whether this node may cast a consensus vote now.
 func consensusVoteReady() bool {
+	// Default-off after the 2026-07 halt: when the gate is not explicitly
+	// enforced, always permit voting (pre-P7 behavior) so a buddy that cannot
+	// self-assess sync state does not silently abstain and halt consensus.
+	if !enforceConsensusSyncGate {
+		return true
+	}
 	if consensusSyncGate == nil {
 		return true
 	}

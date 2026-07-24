@@ -28,18 +28,29 @@ func TestConsensusVoteEligible(t *testing.T) {
 
 func TestConsensusVoteReady_GateWiring(t *testing.T) {
 	orig := consensusSyncGate
-	t.Cleanup(func() { consensusSyncGate = orig })
+	origEnforce := enforceConsensusSyncGate
+	t.Cleanup(func() { consensusSyncGate = orig; enforceConsensusSyncGate = origEnforce })
 
+	// Default-off (post-incident): even a gate that says "not synced" must NOT
+	// block voting, so a buddy that can't self-assess never silently halts.
+	enforceConsensusSyncGate = false
+	SetConsensusSyncGate(func() bool { return false })
+	if !consensusVoteReady() {
+		t.Fatal("gate disabled: voting must be permitted regardless of the wired gate")
+	}
+
+	// Enabled: the wired gate decides.
+	enforceConsensusSyncGate = true
 	consensusSyncGate = nil
 	if !consensusVoteReady() {
-		t.Fatal("nil gate must permit voting (sequencer / tests)")
+		t.Fatal("enabled + nil gate must permit voting (sequencer / tests)")
 	}
 	SetConsensusSyncGate(func() bool { return false })
 	if consensusVoteReady() {
-		t.Fatal("a gate returning false must block voting")
+		t.Fatal("enabled: a gate returning false must block voting")
 	}
 	SetConsensusSyncGate(func() bool { return true })
 	if !consensusVoteReady() {
-		t.Fatal("a gate returning true must permit voting")
+		t.Fatal("enabled: a gate returning true must permit voting")
 	}
 }
