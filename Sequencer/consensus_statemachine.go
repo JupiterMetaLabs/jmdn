@@ -47,6 +47,28 @@ type Consensus struct {
 	// Guards to prevent infinite loops
 	isProcessingVotes  bool
 	processedBlockHash string
+
+	// lastRejectSummary carries the concrete reason the most recent round failed
+	// consensus (set by VerifyConsensusWithBLS), so the "block rejected" alert can
+	// report WHY instead of a generic message. Guarded by rejectMu.
+	rejectMu          sync.Mutex
+	lastRejectSummary string
+}
+
+// setRejectSummary records why the current round failed consensus.
+func (c *Consensus) setRejectSummary(s string) {
+	c.rejectMu.Lock()
+	c.lastRejectSummary = s
+	c.rejectMu.Unlock()
+}
+
+// takeRejectSummary returns and clears the last recorded rejection reason.
+func (c *Consensus) takeRejectSummary() string {
+	c.rejectMu.Lock()
+	defer c.rejectMu.Unlock()
+	s := c.lastRejectSummary
+	c.lastRejectSummary = ""
+	return s
 }
 
 // @constructor function
@@ -326,13 +348,20 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 			ion.Int64("block_number", int64(block.BlockNumber)),
 			ion.String("function", "Consensus.BroadcastAndProcessBlock"))
 
+		reason := consensus.takeRejectSummary()
+		if reason == "" {
+			reason = "consensus not reached (no reason captured)"
+		}
 		Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_BlockRejectedByConsensus).
 			Status(Alerts.AlertStatusWarning).
 			Severity(Alerts.SeverityWarning).
-			Description("Block rejected by consensus - broadcast with rejected status").
+			Description("Block rejected by consensus: "+reason).
+			Msg(reason).
 			Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
 			Label("block_hash", block.BlockHash.Hex()).
+			Label("bls_results", fmt.Sprintf("%d", len(blsResults))).
+			Label("reason", reason).
 			Send()
 	}
 

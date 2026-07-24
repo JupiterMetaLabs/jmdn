@@ -1907,6 +1907,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		span.SetAttributes(attribute.String("status", "no_results"))
 		logger().NamedLogger.Warn(trace_ctx, "No BLS results collected, skipping block processing",
 			ion.String("function", "Consensus.VerifyConsensusWithBLS"))
+		consensus.setRejectSummary("no BLS votes collected from any committee member — buddies returned no signature (request rejected / parse error / abstain / signing failure). Check buddy logs.")
 		return false
 	}
 
@@ -2030,6 +2031,11 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 			Severity(Alerts.SeverityError).
 			Description(msg).
 			Send()
+		reason := "no valid BLS signatures: every collected vote failed verification (bad signature / wrong domain / unauthorized key)"
+		if len(mergedRejectionReasons) > 0 {
+			reason += "; buddy rejection reasons: " + strings.Join(votedPeers, " ")
+		}
+		consensus.setRejectSummary(reason)
 		return false
 	}
 
@@ -2100,6 +2106,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		attribute.Bool("consensus_reached", false),
 	)
 	msg := fmt.Sprintf("Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
+	consensus.setRejectSummary(fmt.Sprintf("insufficient votes: %d yes of %d valid, need %d (committee size %d)", validYes, validTotal, needed, certRes.CommitteeSize))
 	logger().NamedLogger.Warn(trace_ctx, "Consensus failed",
 		ion.Int("yes_votes", validYes),
 		ion.Int("total_votes", validTotal),
