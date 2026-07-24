@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"os"
+	"strings"
 	"testing"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
@@ -213,8 +214,16 @@ func TestValidateRemoteBlock(t *testing.T) {
 		t.Fatalf("genkey: %v", err)
 	}
 
-	newBlock := func(hashHex string, num uint64, txs ...config.Transaction) *config.ZKBlock {
-		return &config.ZKBlock{BlockHash: common.HexToHash(hashHex), BlockNumber: num, Transactions: txs}
+	// newBlock builds a block whose BlockHash is the canonical hash of its txs
+	// (P3 body binding is on by default, so an arbitrary hash would be rejected
+	// as body_mismatch). The hashHint arg is ignored, kept for readability.
+	newBlock := func(_ string, num uint64, txs ...config.Transaction) *config.ZKBlock {
+		return &config.ZKBlock{
+			BlockHash:    RecomputeBlockHashFromTxs(txs),
+			TxnsRoot:     RecomputeTxnsRoot(txs),
+			BlockNumber:  num,
+			Transactions: txs,
+		}
 	}
 
 	t.Run("happy path accepted", func(t *testing.T) {
@@ -264,17 +273,79 @@ func TestValidateRemoteBlock(t *testing.T) {
 
 	t.Run("equivocation: conflicting block at same height rejected", func(t *testing.T) {
 		resetEquivocation()
+		// A second signer so the two blocks have genuinely different bodies
+		// (hence different canonical hashes) — otherwise body binding, not
+		// equivocation, is what differs.
+		key2, err := crypto.GenerateKey()
+		if err != nil {
+			t.Fatalf("genkey2: %v", err)
+		}
 		// First validated block at height 20.
-		b1 := newBlock("0x5555", 20, signedTx(t, key, 0))
+		b1 := newBlock("", 20, signedTx(t, key, 0))
 		m1 := config.BlockMessage{Block: b1, Data: blockBoundCert(t, b1.BlockHash.Hex(), "peerA", "peerB", "peerC")}
 		if rej := validateRemoteBlock(ctx, m1); rej != nil {
 			t.Fatalf("first block should pass, got %s", rej.reason)
 		}
-		// Second, DIFFERENT block at the same height 20.
-		b2 := newBlock("0x6666", 20, signedTx(t, key, 0))
+		// Second, DIFFERENT block (different tx set) at the same height 20.
+		b2 := newBlock("", 20, signedTx(t, key2, 0))
+		if b2.BlockHash == b1.BlockHash {
+			t.Fatal("test setup: b1 and b2 must have different hashes")
+		}
 		m2 := config.BlockMessage{Block: b2, Data: blockBoundCert(t, b2.BlockHash.Hex(), "peerA", "peerB", "peerC")}
 		if rej := validateRemoteBlock(ctx, m2); rej == nil || rej.reason != "equivocation" {
 			t.Fatalf("want equivocation, got %v", rej)
+		}
+	})
+
+	// P3: a certified hash reused over a SUBSTITUTED body (a different, validly
+	// signed tx set) must be rejected by body binding BEFORE the certificate is
+	// honored. This is the core P3 attack.
+	t.Run("body substitution under certified hash rejected", func(t *testing.T) {
+		resetEquivocation()
+		key2, err := crypto.GenerateKey()
+		if err != nil {
+			t.Fatalf("genkey2: %v", err)
+		}
+		// Honest block + certificate over its canonical hash.
+		honest := newBlock("", 30, signedTx(t, key, 0))
+		certHash := honest.BlockHash
+		// Attacker keeps the certified hash but swaps in a different, validly
+		// signed body.
+		swapped := &config.ZKBlock{
+			BlockHash:    certHash, // reused certified hash
+			BlockNumber:  30,
+			Transactions: []config.Transaction{signedTx(t, key2, 0)},
+		}
+		msg := config.BlockMessage{Block: swapped, Data: blockBoundCert(t, certHash.Hex(), "peerA", "peerB", "peerC")}
+		if rej := validateRemoteBlock(ctx, msg); rej == nil || rej.reason != "body_mismatch" {
+			t.Fatalf("want body_mismatch for substituted body, got %v", rej)
+		}
+	})
+
+	// P3: tampering with TxnsRoot alone (body binding second axis) is rejected.
+	t.Run("txnsroot mismatch rejected", func(t *testing.T) {
+		resetEquivocation()
+		b := newBlock("", 31, signedTx(t, key, 0))
+		b.TxnsRoot = "0x" + strings.Repeat("c", 64) // wrong root
+		msg := config.BlockMessage{Block: b, Data: blockBoundCert(t, b.BlockHash.Hex(), "peerA", "peerB", "peerC")}
+		if rej := validateRemoteBlock(ctx, msg); rej == nil || rej.reason != "txnsroot_mismatch" {
+			t.Fatalf("want txnsroot_mismatch, got %v", rej)
+		}
+	})
+
+	// P3 KNOWN GAP (pinned): the generator's BlockHash does NOT cover
+	// StarkProof/Commitment, so swapping the proof field while keeping the
+	// certified hash is NOT detected by body binding today. This test PINS that
+	// accepted limitation so it is visible. Closing it requires a generator
+	// hash-scheme change; when that lands, flip this to expect a rejection.
+	t.Run("PROOF GAP: swapped StarkProof under same hash currently accepted", func(t *testing.T) {
+		resetEquivocation()
+		b := newBlock("", 32, signedTx(t, key, 0))
+		b.StarkProof = []byte("attacker-swapped-proof")
+		b.Commitment = []uint32{1, 2, 3}
+		msg := config.BlockMessage{Block: b, Data: blockBoundCert(t, b.BlockHash.Hex(), "peerA", "peerB", "peerC")}
+		if rej := validateRemoteBlock(ctx, msg); rej != nil {
+			t.Fatalf("proof fields are not in BlockHash today, so a swap is expected to PASS body binding until the generator hashes them; got reject %s. If proof binding was added, update this test to expect rejection.", rej.reason)
 		}
 	})
 }

@@ -17,6 +17,8 @@ package messaging
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -28,6 +30,8 @@ import (
 	"gossipnode/config"
 	"gossipnode/config/settings"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/rs/zerolog/log"
 )
 
@@ -66,6 +70,15 @@ var (
 	// immediate next block (tip+1) is parent-checked; future/gap blocks are
 	// tolerated (we may be behind). Default ON.
 	EnforceBlockLinkage = envOn("JMDN_ENFORCE_BLOCK_LINKAGE", true)
+
+	// EnforceBodyBinding (P3): recompute the canonical BlockHash and TxnsRoot
+	// from the received transactions and reject any mismatch BEFORE verifying
+	// the committee certificate, so a certified hash cannot be reused over a
+	// substituted body. The recompute mirrors the block generator
+	// (JMDT-Sequencer-Orchestrator internal/block/generator.go), so honest
+	// blocks already satisfy it — enabling this is NOT a wire/consensus change.
+	// Default ON.
+	EnforceBodyBinding = envOn("JMDN_ENFORCE_BODY_BINDING", true)
 )
 
 // ---- Committee eligibility (D4) ----------------------------------------------
@@ -322,6 +335,113 @@ func normalizeBLSPub(s string) string {
 	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), "0x")
 }
 
+// ---- Canonical body binding (P3) ---------------------------------------------
+//
+// The block generator (JMDT-Sequencer-Orchestrator internal/block/generator.go)
+// derives:
+//   - BlockHash = Keccak256( concat of each tx's 32-byte hash, in block order )
+//   - TxnsRoot  = SHA256 binary Merkle root over the same tx hashes
+//     (single tx: sha256(h||h); otherwise pair-hash bottom-up, duplicating the
+//     last leaf when a level has an odd count)
+//   - StateRoot = Keccak256( parentStateRoot || BlockHash )
+//
+// The committee's block-bound votes are signed over BlockHash, so recomputing
+// BlockHash from the received transactions and rejecting a mismatch binds the
+// certificate to THIS transaction set: an attacker cannot reuse a certified
+// hash over a substituted body (even one made of otherwise-valid signed txs).
+//
+// IMPORTANT (proof-field gap): the generator's BlockHash does NOT cover
+// StarkProof or Commitment, so body binding here canNOT detect a swapped proof
+// field. Closing that requires a generator hash-scheme change (consensus-
+// breaking) and is deferred while the prover is placeholder-grade — see
+// verifyBlockProof and the PR notes.
+
+// RecomputeBlockHashFromTxs mirrors the generator's
+// generateBlockHashFromTransactions: Keccak256 over the concatenation of each
+// transaction's 32-byte hash, in order. Matches the generator's empty-block
+// value (the zero hash) so callers that already reject empty blocks are safe.
+func RecomputeBlockHashFromTxs(txs []config.Transaction) common.Hash {
+	if len(txs) == 0 {
+		return common.Hash{}
+	}
+	buf := make([]byte, 0, len(txs)*32)
+	for i := range txs {
+		buf = append(buf, txs[i].Hash.Bytes()...)
+	}
+	return common.BytesToHash(crypto.Keccak256(buf))
+}
+
+// RecomputeTxnsRoot mirrors the generator's generateMerkleRoot (SHA256 binary
+// Merkle tree over the per-tx 32-byte hashes). Returns the "0x"-prefixed hex
+// root, matching the generator's string form.
+func RecomputeTxnsRoot(txs []config.Transaction) string {
+	if len(txs) == 0 {
+		return "0x" + strings.Repeat("0", 64)
+	}
+	level := make([][]byte, len(txs))
+	for i := range txs {
+		level[i] = txs[i].Hash.Bytes()
+	}
+	if len(level) == 1 {
+		combined := make([]byte, 0, 64)
+		combined = append(combined, level[0]...)
+		combined = append(combined, level[0]...)
+		s := sha256.Sum256(combined)
+		return "0x" + hex.EncodeToString(s[:])
+	}
+	for len(level) > 1 {
+		if len(level)%2 == 1 {
+			level = append(level, level[len(level)-1])
+		}
+		next := make([][]byte, 0, len(level)/2)
+		for i := 0; i < len(level); i += 2 {
+			combined := make([]byte, 0, 64)
+			combined = append(combined, level[i]...)
+			combined = append(combined, level[i+1]...)
+			s := sha256.Sum256(combined)
+			next = append(next, s[:])
+		}
+		level = next
+	}
+	return "0x" + hex.EncodeToString(level[0])
+}
+
+// checkBodyBinding recomputes the canonical BlockHash and TxnsRoot from the
+// received transactions and rejects any mismatch (P3). This runs BEFORE
+// certificate verification so a certified hash cannot authorize a substituted
+// body.
+func checkBodyBinding(b *config.ZKBlock) *blockRejection {
+	wantHash := RecomputeBlockHashFromTxs(b.Transactions)
+	if b.BlockHash != wantHash {
+		return reject("body_mismatch",
+			"block %s: recomputed hash %s does not match transactions (body substituted?)",
+			b.BlockHash.Hex(), wantHash.Hex())
+	}
+	// TxnsRoot: only enforce when the block carries one (the generator always
+	// sets it; a block without it predates the field and is not body-bindable
+	// on this axis).
+	if strings.TrimSpace(b.TxnsRoot) != "" {
+		want := RecomputeTxnsRoot(b.Transactions)
+		if !strings.EqualFold(strings.TrimPrefix(b.TxnsRoot, "0x"), strings.TrimPrefix(want, "0x")) {
+			return reject("txnsroot_mismatch",
+				"block %s: TxnsRoot %s does not match transactions (want %s)",
+				b.BlockHash.Hex(), b.TxnsRoot, want)
+		}
+	}
+	return nil
+}
+
+// verifyBlockProof is the single, clearly-labelled seam for real ZK/STARK proof
+// verification. It returns nil today because the prover is placeholder-grade
+// (the RISC0 guest re-commits hashed inputs and does not prove the state
+// transition), so a check here would be false assurance.
+//
+// TODO: real proof verification blocked on prover. When a sound prover exists,
+// implement verification HERE without touching the binding logic above. Note
+// that binding the proof field into BlockHash additionally requires a generator
+// hash-scheme change (see checkBodyBinding's proof-field gap note).
+func verifyBlockProof(_ *config.ZKBlock) error { return nil }
+
 // ---- Equivocation detection --------------------------------------------------
 
 var (
@@ -383,5 +503,29 @@ func checkLinkage(ctx context.Context, b *config.ZKBlock) *blockRejection {
 			"block %d prevHash %s != local tip %d hash %s",
 			b.BlockNumber, b.PrevHash.Hex(), localTip, parent.BlockHash.Hex())
 	}
+
+	// (State-root chain, P3) The generator computes
+	// StateRoot = Keccak256(parentStateRoot || BlockHash). With the parent in
+	// hand, verify the resulting state root chains from the parent's, so a block
+	// cannot claim an inconsistent post-state while keeping a valid parent link.
+	if wantStateRoot, ok := stateRootChain(parent.StateRoot, b.BlockHash); ok && b.StateRoot != wantStateRoot {
+		return reject("bad_stateroot",
+			"block %d stateRoot %s does not chain from parent %s (want %s)",
+			b.BlockNumber, b.StateRoot.Hex(), parent.StateRoot.Hex(), wantStateRoot.Hex())
+	}
 	return nil
+}
+
+// stateRootChain mirrors the generator's generateStateRoot:
+// Keccak256(parentStateRootBytes || blockHashBytes). Returns ok=false if the
+// parent state root is unset (zero), so a fresh/legacy parent does not trigger a
+// false rejection.
+func stateRootChain(parentStateRoot, blockHash common.Hash) (common.Hash, bool) {
+	if parentStateRoot == (common.Hash{}) {
+		return common.Hash{}, false
+	}
+	buf := make([]byte, 0, 64)
+	buf = append(buf, parentStateRoot.Bytes()...)
+	buf = append(buf, blockHash.Bytes()...)
+	return common.BytesToHash(crypto.Keccak256(buf)), true
 }

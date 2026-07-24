@@ -452,7 +452,26 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 		lastNonce[from] = tx.Nonce
 	}
 
-	// (Chain linkage) parent-hash + height, catchup-safe (see checkLinkage).
+	// (Canonical body binding, P3) Recompute BlockHash + TxnsRoot from the
+	// received transactions and reject a mismatch. The certificate's votes are
+	// signed over BlockHash, so this binds the certificate to THIS body: a
+	// certified hash cannot be reused over a substituted (even validly-signed)
+	// transaction set. Runs BEFORE certificate verification.
+	if EnforceBodyBinding {
+		if rej := checkBodyBinding(b); rej != nil {
+			return rej
+		}
+	}
+
+	// (Proof seam, P3) Single labelled hook for real ZK/STARK verification.
+	// Returns nil today (placeholder prover); wired here so the ordering is
+	// correct when a sound prover lands. See verifyBlockProof.
+	if err := verifyBlockProof(b); err != nil {
+		return reject("invalid_proof", "block %s proof verification failed: %v", b.BlockHash.Hex(), err)
+	}
+
+	// (Chain linkage) parent-hash + height + state-root chain, catchup-safe
+	// (see checkLinkage).
 	if EnforceBlockLinkage {
 		if rej := checkLinkage(ctx, b); rej != nil {
 			return rej
