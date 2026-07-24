@@ -109,6 +109,14 @@ func DefaultConfig() NodeConfig {
 		Selection: SelectionSettings{Mnemonic: "", Salt: DefaultSelectionSalt},
 		// Consensus policy: empty block_buddy blocklist by default (no peer is
 		// manually excluded). Populate via jmdn.yaml or JMDN_CONSENSUS_BLOCK_BUDDY.
-		Consensus: ConsensusSettings{BlockBuddy: nil},
+		// Committee-source (P1): no pinned authority by default (consumer disabled
+		// / fail-closed until an operator pins the seed authority key); epoch clock
+		// defaults to the seed's 3600s.
+		Consensus: ConsensusSettings{
+			BlockBuddy:            nil,
+			SeedAuthorityBLSPub:   "",
+			CommitteeEpochSeconds: 3600,
+			SequencerPeerID:       "",
+		},
 	}
 }

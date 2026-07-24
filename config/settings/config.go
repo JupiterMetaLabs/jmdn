@@ -41,6 +41,22 @@ type NodeConfig struct {
 // Env (highest priority): JMDN_CONSENSUS_BLOCK_BUDDY (space-separated list).
 type ConsensusSettings struct {
 	BlockBuddy []string `mapstructure:"block_buddy" yaml:"block_buddy"`
+
+	// Committee-source (P1) integration with the seedNodes authenticated
+	// committee. All three must align with the seed deployment.
+	//
+	// SeedAuthorityBLSPub is the PINNED dela/bls authority public key (lowercase
+	// hex) distributed out-of-band (genesis/config). A committee snapshot signed
+	// by any other key is rejected. Empty => snapshot verification cannot pin and
+	// the consumer stays disabled (fail-closed; no committee source).
+	SeedAuthorityBLSPub string `mapstructure:"seed_authority_bls_pub" yaml:"seed_authority_bls_pub"`
+	// CommitteeEpochSeconds is the shared epoch clock divisor (unix/seconds).
+	// MUST equal the seed's COMMITTEE_EPOCH_SECONDS (default 3600).
+	CommitteeEpochSeconds int64 `mapstructure:"committee_epoch_seconds" yaml:"committee_epoch_seconds"`
+	// SequencerPeerID is the authoritative sequencer's registered libp2p PeerID.
+	// The sequencer signs ListBuddy requests with the matching identity key; the
+	// seed serves selection only to this peer. Empty on non-sequencer nodes.
+	SequencerPeerID string `mapstructure:"sequencer_peer_id" yaml:"sequencer_peer_id"`
 }
 
 // SelectionSettings holds the SECRET VRF key material used for node / committee
