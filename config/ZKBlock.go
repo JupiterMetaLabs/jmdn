@@ -49,11 +49,16 @@ type ZKBlock struct {
 	LogsBloom    []byte          `json:"logsbloom"`
 	CoinbaseAddr *common.Address `json:"coinbaseaddr"`
 	ZKVMAddr     *common.Address `json:"zkvmaddr"`
-	PrevHash     common.Hash     `json:"prevhash"`
-	BlockHash    common.Hash     `json:"blockhash"`
-	GasLimit     uint64          `json:"gaslimit"`
-	GasUsed      uint64          `json:"gasused"`
-	BlockNumber  uint64          `json:"blocknumber"`
+	// FeeRecipients, when non-empty, distributes the coinbase-side gas-fee share
+	// across these weighted addresses instead of the single CoinbaseAddr (which
+	// remains the L1-paying wallet). Empty/omitted preserves the single-coinbase
+	// behavior. Distribution is computed by config.SplitFee.
+	FeeRecipients []FeeRecipient `json:"feerecipients,omitempty"`
+	PrevHash      common.Hash    `json:"prevhash"`
+	BlockHash     common.Hash    `json:"blockhash"`
+	GasLimit      uint64         `json:"gaslimit"`
+	GasUsed       uint64         `json:"gasused"`
+	BlockNumber   uint64         `json:"blocknumber"`
 
 	// L1 finality — set after commitRollup is mined on Ethereum
 	L1TxHash      string `json:"l1_tx_hash,omitempty"`

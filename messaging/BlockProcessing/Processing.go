@@ -259,7 +259,7 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		}
 
 		// Process the transaction with span context
-		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient, block.Timestamp)
+		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, block.FeeRecipients, accountsClient, block.Timestamp)
 		if Process_err != nil {
 			// Stale nonce: security check passed at vote time but the account nonce
 			// advanced before execution (race with PoTS / concurrent block processing).
@@ -516,7 +516,7 @@ func rollbackState(span_ctx context.Context, snapshots map[common.Address]Accoun
 }
 
 // ProcessTransaction handles a single transaction's balance updates
-func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection, blockTimestamp int64) error {
+func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, feeRecipients []config.FeeRecipient, accountsClient *config.PooledConnection, blockTimestamp int64) error {
 	// Record trace span and close it
 	txSpanCtx, txSpan := logger().NamedLogger.Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.processTransaction")
 	defer txSpan.End()
@@ -702,13 +702,16 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	// Calculate total amount to deduct from sender (amount + gas fee)
 	totalDeduction := new(big.Int).Add(parsedTx.ValueBig, gasFeeToDeduct)
-	// Split the gas fee between coinbase and ZKVM
-	// Calculate half and remainder to avoid losing 1 wei in corner cases
-	halfGasFee := new(big.Int).Div(gasFeeToDeduct, big.NewInt(2))
-	remainder := new(big.Int).Mod(gasFeeToDeduct, big.NewInt(2))
-	// coinbase gets halfGasFee, ZKVM gets halfGasFee + remainder (to account for odd wei)
-	zkvmGasFee := new(big.Int).Set(halfGasFee)
-	coinbaseGasFee := new(big.Int).Add(halfGasFee, remainder)
+	// Split the gas fee: floor(half) to the ZKVM, the coinbase-side share
+	// distributed by config.SplitFee — a single credit to the coinbase address
+	// when feeRecipients is empty (unchanged behavior), or weighted across the
+	// recipients when set. coinbaseGasFee is the summed coinbase-side total, kept
+	// for the trace attribute below.
+	zkvmGasFee, coinbaseCredits := config.SplitFee(gasFeeToDeduct, coinbaseAddr, feeRecipients)
+	coinbaseGasFee := new(big.Int)
+	for _, c := range coinbaseCredits {
+		coinbaseGasFee.Add(coinbaseGasFee, c.Amount)
+	}
 
 	txSpan.SetAttributes(
 		attribute.String("value", parsedTx.ValueBig.String()),
@@ -814,15 +817,18 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	txSpan.SetAttributes(attribute.String("recipient_add_step", "completed"))
 
-	// 3. Split gas fee between coinbase and ZKVM
-	if err := addToRecipient(txSpanCtx, coinbaseAddr, coinbaseGasFee.String(), stage, blockTimestamp); err != nil {
-		// Remove nested rollback logic: parent loop will handle full block rollback via rollbackState
-		txSpan.RecordError(err)
-		txSpan.SetAttributes(attribute.String("status", "coinbase_gas_fee_failed"), attribute.String("failed_step", "add_to_coinbase"))
-		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
-		duration := time.Since(txStartTime).Seconds()
-		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		return fmt.Errorf("failed to add gas fee to coinbase: %w", err)
+	// 3. Credit the coinbase-side gas fee (one recipient by default, or the
+	// weighted set when the block carries FeeRecipients), then the ZKVM.
+	for _, c := range coinbaseCredits {
+		if err := addToRecipient(txSpanCtx, c.Addr, c.Amount.String(), stage, blockTimestamp); err != nil {
+			// Parent loop handles full block rollback via rollbackState.
+			txSpan.RecordError(err)
+			txSpan.SetAttributes(attribute.String("status", "coinbase_gas_fee_failed"), attribute.String("failed_step", "add_to_coinbase"))
+			cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
+			duration := time.Since(txStartTime).Seconds()
+			txSpan.SetAttributes(attribute.Float64("duration", duration))
+			return fmt.Errorf("failed to add gas fee to coinbase recipient %s: %w", c.Addr.Hex(), err)
+		}
 	}
 
 	txSpan.SetAttributes(attribute.String("coinbase_gas_fee_step", "completed"))
