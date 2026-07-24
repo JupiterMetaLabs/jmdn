@@ -45,8 +45,8 @@ func (c *Client) FetchCommitteeSnapshot(ctx context.Context, epoch uint64) (*com
 // Fail-closed: an unset pin, a fetch error, a signature/pin-mismatch, or an
 // empty snapshot all return an error (never "allow all"), so a node with no
 // authenticated committee refuses consensus participation.
-func (c *Client) CommitteeEligibility(pinnedAuthorityHex string) func() (map[string]struct{}, error) {
-	return func() (map[string]struct{}, error) {
+func (c *Client) CommitteeEligibility(pinnedAuthorityHex string) func() (map[string]string, error) {
+	return func() (map[string]string, error) {
 		if pinnedAuthorityHex == "" {
 			return nil, fmt.Errorf("committee source disabled: no pinned seed authority key (fail closed)")
 		}
@@ -59,6 +59,8 @@ func (c *Client) CommitteeEligibility(pinnedAuthorityHex string) func() (map[str
 		if err := committee.VerifyCommitteeSnapshot(snap, pinnedAuthorityHex); err != nil {
 			return nil, fmt.Errorf("committee snapshot rejected: %w", err)
 		}
-		return snap.PeerIDSet(), nil
+		// peer_id -> authenticated bls_pub, so the verifier can enforce the
+		// peer_id↔bls_pub binding (M1), not just membership.
+		return snap.BLSPubByPeer(), nil
 	}
 }

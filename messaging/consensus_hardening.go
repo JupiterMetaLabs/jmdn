@@ -108,13 +108,17 @@ var (
 // can legitimately call getBuddy). nil => FAIL CLOSED.
 var (
 	committeeEligibilityMu sync.RWMutex
-	committeeEligibilityFn func() (map[string]struct{}, error)
+	committeeEligibilityFn func() (map[string]string, error)
 )
 
-// SetCommitteeEligibilitySource wires the live committee-eligibility source
-// (typically a closure over the sequencer's QueryBuddyNodes). Pass nil to clear
-// it (which forces fail-closed). Safe to call concurrently.
-func SetCommitteeEligibilitySource(fn func() (map[string]struct{}, error)) {
+// SetCommitteeEligibilitySource wires the live committee-eligibility source. The
+// map is peer_id -> authenticated bls_pub (lowercase hex): the KEY set is who may
+// vote; the VALUE is the committee BLS key bound to that peer_id in the
+// authenticated seed snapshot. An empty value means "eligible but no bound key"
+// (legacy getBuddy source with no committee snapshot) — the peer_id↔bls_pub
+// binding is only ENFORCED when the value is non-empty (M1). Pass nil to clear
+// (forces fail-closed). Safe to call concurrently.
+func SetCommitteeEligibilitySource(fn func() (map[string]string, error)) {
 	committeeEligibilityMu.Lock()
 	committeeEligibilityFn = fn
 	committeeEligibilityMu.Unlock()
@@ -141,7 +145,7 @@ func blockedBuddies() map[string]struct{} {
 // set from the configured source, MINUS the block_buddy blocklist. FAIL CLOSED:
 // no source wired, a source error, or an empty result yields an error naming
 // the defect. Callers MUST treat an error as "no one is eligible".
-func eligibleMembers() (map[string]struct{}, error) {
+func eligibleMembers() (map[string]string, error) {
 	committeeEligibilityMu.RLock()
 	fn := committeeEligibilityFn
 	committeeEligibilityMu.RUnlock()
@@ -158,8 +162,8 @@ func eligibleMembers() (map[string]struct{}, error) {
 	}
 
 	blocked := blockedBuddies()
-	eligible := make(map[string]struct{}, len(buddies))
-	for pid := range buddies {
+	eligible := make(map[string]string, len(buddies))
+	for pid, blsPub := range buddies {
 		pid = strings.TrimSpace(pid)
 		if pid == "" {
 			continue
@@ -168,10 +172,9 @@ func eligibleMembers() (map[string]struct{}, error) {
 			log.Warn().Str("peer", pid).Msg("committee: buddy excluded by block_buddy blocklist")
 			continue
 		}
-		// BLS-BINDING-SEAM: when ListBuddy returns bls_pub, store
-		// peer_id -> bls_pub here (change the value type) so keyAuthorized can
-		// enforce the binding.
-		eligible[pid] = struct{}{}
+		// Store the authenticated peer_id -> bls_pub binding (normalized) so the
+		// verifier can require a vote's pubkey to match the snapshot-bound key.
+		eligible[pid] = normalizeBLSPub(blsPub)
 	}
 	if len(eligible) == 0 {
 		return nil, fmt.Errorf("committee empty after applying block_buddy blocklist")
@@ -183,16 +186,24 @@ func eligibleMembers() (map[string]struct{}, error) {
 // quorum. FAIL CLOSED (P1): a defective/absent eligibility source authorizes
 // NOBODY.
 //
-// Interim: authenticates peer_id membership only; pubHex is accepted as
-// self-reported (see BLS-BINDING-SEAM / SECURITY NOTE above).
+// M1: when the eligibility source carries an authenticated bls_pub for peerID
+// (the seed snapshot), the vote's pubHex MUST equal it — an attacker who knows
+// an eligible peer_id but votes with their own key is rejected. When the bound
+// key is empty (legacy getBuddy source with no snapshot), only peer_id
+// membership is checked (no binding available to enforce).
 func keyAuthorized(peerID, pubHex string) bool {
-	_ = pubHex // not yet bound to peer_id — see BLS-BINDING-SEAM
 	eligible, err := eligibleMembers()
 	if err != nil {
 		return false
 	}
-	_, ok := eligible[peerID]
-	return ok
+	boundKey, ok := eligible[peerID]
+	if !ok {
+		return false
+	}
+	if boundKey != "" && normalizeBLSPub(pubHex) != boundKey {
+		return false
+	}
+	return true
 }
 
 // ValidateCommitteeSource returns nil when a valid, non-empty eligible committee
@@ -284,7 +295,7 @@ func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex string) 
 // De-duplicated by BOTH peer_id and bls_pub so one signer cannot inflate quorum
 // by presenting the same key under several peer_ids, or several keys for one
 // peer_id (invariant 4).
-func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, committee map[string]struct{}, filterByMembership bool) int {
+func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, committee map[string]string, filterByMembership bool) int {
 	countedPeers := make(map[string]bool)
 	countedKeys := make(map[string]bool)
 	yes := 0
@@ -305,10 +316,19 @@ func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, c
 			continue
 		}
 
-		// (D4) committee eligibility (peer_id ∈ live buddy set minus block_buddy).
+		// (D4) committee eligibility (peer_id ∈ live buddy set minus block_buddy)
+		// AND (M1) peer_id↔bls_pub binding: when the authenticated snapshot binds
+		// a bls_pub to this peer_id, the vote's pubkey MUST match it, so a known
+		// eligible peer_id voting with an attacker key does not count. An empty
+		// bound key (legacy getBuddy source, no snapshot) skips the binding check.
 		if filterByMembership {
-			if _, ok := committee[r.PeerID]; !ok {
+			boundKey, ok := committee[r.PeerID]
+			if !ok {
 				log.Warn().Str("peer", r.PeerID).Msg("committee vote from ineligible peer (not in buddy set / blocklisted)")
+				continue
+			}
+			if boundKey != "" && normalizeBLSPub(r.PubKey) != boundKey {
+				log.Warn().Str("peer", r.PeerID).Msg("committee vote pubkey does not match the snapshot-bound bls_pub (rejected)")
 				continue
 			}
 		}

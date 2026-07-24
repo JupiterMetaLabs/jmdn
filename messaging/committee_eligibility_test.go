@@ -113,14 +113,32 @@ func blockMsg(hash common.Hash, data map[string]string) config.BlockMessage {
 
 // useEligible installs an eligibility source returning exactly these peer_ids,
 // and clears it on cleanup so tests do not leak state into one another.
+// useEligible declares peer_ids eligible with NO bound bls_pub (empty value), so
+// only membership is enforced — used by tests that exercise membership/quorum/
+// dedup independent of the M1 key binding.
 func useEligible(t *testing.T, peerIDs ...string) {
 	t.Helper()
-	SetCommitteeEligibilitySource(func() (map[string]struct{}, error) {
-		set := make(map[string]struct{}, len(peerIDs))
+	SetCommitteeEligibilitySource(func() (map[string]string, error) {
+		set := make(map[string]string, len(peerIDs))
 		for _, p := range peerIDs {
-			set[p] = struct{}{}
+			set[p] = ""
 		}
 		return set, nil
+	})
+	t.Cleanup(func() { SetCommitteeEligibilitySource(defaultTestEligibility) })
+}
+
+// useEligibleBound declares an authenticated committee binding each member's
+// peer_id to its bls_pub (as the seed snapshot does), so the M1 binding is
+// enforced: a vote's pubkey must match the bound key.
+func useEligibleBound(t *testing.T, members ...blsMember) {
+	t.Helper()
+	SetCommitteeEligibilitySource(func() (map[string]string, error) {
+		m := make(map[string]string, len(members))
+		for _, mem := range members {
+			m[mem.peerID] = mem.pubHex
+		}
+		return m, nil
 	})
 	t.Cleanup(func() { SetCommitteeEligibilitySource(defaultTestEligibility) })
 }
@@ -129,7 +147,7 @@ func useEligible(t *testing.T, peerIDs ...string) {
 // default on cleanup.
 func useEligibleErr(t *testing.T, err error) {
 	t.Helper()
-	SetCommitteeEligibilitySource(func() (map[string]struct{}, error) { return nil, err })
+	SetCommitteeEligibilitySource(func() (map[string]string, error) { return nil, err })
 	t.Cleanup(func() { SetCommitteeEligibilitySource(defaultTestEligibility) })
 }
 
@@ -347,16 +365,23 @@ func TestP1_BlockBuddy_EmptiesCommittee_FailsClosed(t *testing.T) {
 
 // ---- accepted interim forgery window (pinned so it is visible) ----------------
 
-// SECURITY NOTE: until seedNode returns bls_pub, an attacker who knows an
-// eligible buddy's peer_id can vote under that peer_id with their OWN BLS key
-// and it counts. This test PINS that accepted interim behavior. When bls_pub
-// binding lands, flip the expectation to a rejection (and this test documents
-// exactly where).
-func TestP1_ForgeryWindow_AttackerKeyUnderEligiblePeerID_CurrentlyCounts(t *testing.T) {
-	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, threshold 3
+// M1: with the authenticated snapshot binding peer_id↔bls_pub, an attacker who
+// knows an eligible peer_id but votes with their OWN BLS key is REJECTED — the
+// vote's pubkey does not match the snapshot-bound key. (This replaces the former
+// accepted-interim forgery window, which existed only because the source carried
+// no bls_pub binding.)
+func TestP1_Binding_AttackerKeyUnderEligiblePeerID_Rejected(t *testing.T) {
+	// Authenticated committee: peer_ids bound to the LEGIT members' keys.
+	legitA := mustMintMember("peerA", 0x91)
+	legitB := mustMintMember("peerB", 0x92)
+	legitC := mustMintMember("peerC", 0x93)
+	legitD := mustMintMember("peerD", 0x94)
+	legitE := mustMintMember("peerE", 0x95)
+	useEligibleBound(t, legitA, legitB, legitC, legitD, legitE) // n=5, threshold 3
+
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000059")
 
-	// Attacker owns none of the real keys, but knows the eligible peer_ids.
+	// Attacker knows the eligible peer_ids but holds different keys.
 	fakeA := mustMintMember("peerA", 0xE1)
 	fakeB := mustMintMember("peerB", 0xE2)
 	fakeC := mustMintMember("peerC", 0xE3)
@@ -365,8 +390,36 @@ func TestP1_ForgeryWindow_AttackerKeyUnderEligiblePeerID_CurrentlyCounts(t *test
 		fakeB.blockVote(t, hash.Hex(), 1),
 		fakeC.blockVote(t, hash.Hex(), 1),
 	)
-	rej := verifyBlockCertificate(blockMsg(hash, cert))
-	if rej != nil {
-		t.Fatalf("interim model authenticates peer_id only; forged-key cert under eligible peer_ids is expected to COUNT until bls_pub binding lands, but got reject %s. If bls_pub binding was added, update this test to expect rejection.", rej.reason)
+	if rej := verifyBlockCertificate(blockMsg(hash, cert)); rej == nil || rej.reason != "quorum_not_met" {
+		t.Fatalf("forged-key votes under eligible peer_ids must be rejected by the bls_pub binding, got %v", rej)
+	}
+
+	// Direct: keyAuthorized rejects the attacker key, accepts the bound key.
+	if keyAuthorized("peerA", fakeA.pubHex) {
+		t.Fatal("attacker key under an eligible peer_id must not be authorized")
+	}
+	if !keyAuthorized("peerA", legitA.pubHex) {
+		t.Fatal("the snapshot-bound key must be authorized")
+	}
+}
+
+// M1: a legitimate quorum whose vote keys match the snapshot-bound keys is
+// accepted (binding must not brick the honest path).
+func TestP1_Binding_LegitBoundQuorumAccepted(t *testing.T) {
+	a := mustMintMember("peerA", 0x91)
+	b := mustMintMember("peerB", 0x92)
+	c := mustMintMember("peerC", 0x93)
+	d := mustMintMember("peerD", 0x94)
+	e := mustMintMember("peerE", 0x95)
+	useEligibleBound(t, a, b, c, d, e) // n=5, threshold 3
+
+	hash := common.HexToHash("0x000000000000000000000000000000000000000000000000000000000000005a")
+	cert := certData(t,
+		a.blockVote(t, hash.Hex(), 1),
+		b.blockVote(t, hash.Hex(), 1),
+		c.blockVote(t, hash.Hex(), 1),
+	)
+	if rej := verifyBlockCertificate(blockMsg(hash, cert)); rej != nil {
+		t.Fatalf("bound-key legitimate quorum must be accepted, got %s: %v", rej.reason, rej.err)
 	}
 }

@@ -65,15 +65,18 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	//
 	// Legacy source: the live seedNode buddy set (getBuddy/ListBuddy). Used when
 	// no seed authority key is pinned (pre-committee-source deployments).
-	legacyBuddySource := func() (map[string]struct{}, error) {
+	// Legacy source carries NO peer_id↔bls_pub binding (empty values), so the
+	// verifier enforces peer_id membership only — the M1 key binding is available
+	// only via the authenticated snapshot below.
+	legacyBuddySource := func() (map[string]string, error) {
 		buddies, err := helper.QueryBuddyNodes()
 		if err != nil {
 			return nil, err
 		}
 		unique := helper.GetUniqueBuddyPeers(buddies)
-		set := make(map[string]struct{}, len(unique))
+		set := make(map[string]string, len(unique))
 		for _, b := range unique {
-			set[b.PeerID.String()] = struct{}{}
+			set[b.PeerID.String()] = ""
 		}
 		return set, nil
 	}
@@ -102,7 +105,7 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 			messaging.SetCommitteeEligibilitySource(sc.CommitteeEligibility(pinned))
 		} else {
 			initErr := err
-			messaging.SetCommitteeEligibilitySource(func() (map[string]struct{}, error) {
+			messaging.SetCommitteeEligibilitySource(func() (map[string]string, error) {
 				return nil, fmt.Errorf("committee source: seed client init failed (fail closed): %w", initErr)
 			})
 		}
