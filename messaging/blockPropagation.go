@@ -482,6 +482,15 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 		if hok, herr := Security.CheckTransactionHash(&tx, ctx); herr != nil || !hok {
 			return reject("tx_hash_mismatch", "tx %d hash does not match its contents: %v", i, herr)
 		}
+
+		// (C-03) Reject negative numeric fields on the remote path too. A negative
+		// Value/gas field would invert the sender/receiver balance arithmetic in
+		// execution, letting a block debit an arbitrary account. The ingress gate
+		// (Security.AllChecks) does not cover blocks arriving from peers, so the
+		// value gate must be enforced here independently.
+		if vok, verr := Security.CheckTransactionValues(&tx); !vok {
+			return reject("negative_tx_value", "tx %d has a negative numeric field: %v", i, verr)
+		}
 	}
 
 	// (In-block nonce consistency) Each sender's nonces must be strictly

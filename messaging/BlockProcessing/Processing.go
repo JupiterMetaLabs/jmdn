@@ -950,6 +950,19 @@ func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error
 		parsed.MaxFeeBig = nil
 	}
 
+	// C-03 execution-level assertion (defense in depth). The ingress and
+	// remote-admission gates (Security.CheckTransactionValues) already reject
+	// negative fields, but execution must never apply a negative amount: a
+	// negative ValueBig or EffectiveGasFee would invert the balance arithmetic
+	// (sender credited, receiver debited). Fail closed here so a tx that somehow
+	// bypassed the earlier gates cannot mutate balances.
+	if parsed.ValueBig != nil && parsed.ValueBig.Sign() < 0 {
+		return nil, fmt.Errorf("negative transaction value in execution: %s", parsed.ValueBig.String())
+	}
+	if parsed.EffectiveGasFee != nil && parsed.EffectiveGasFee.Sign() < 0 {
+		return nil, fmt.Errorf("negative effective gas fee in execution: %s", parsed.EffectiveGasFee.String())
+	}
+
 	return parsed, nil
 }
 
@@ -982,6 +995,10 @@ func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount s
 	deductAmount, ok := new(big.Int).SetString(amount, 10)
 	if !ok {
 		return fmt.Errorf("invalid deduction amount: %s", amount)
+	}
+	// C-03: a negative deduction would ADD to the sender (balance - (-x)). Reject.
+	if deductAmount.Sign() < 0 {
+		return fmt.Errorf("negative deduction amount for DID %s: %s", fromDID, amount)
 	}
 
 	// Check if sufficient balance
@@ -1042,6 +1059,10 @@ func addToRecipient(span_ctx context.Context, ToAddress common.Address, amount s
 	addAmount, ok := new(big.Int).SetString(amount, 10)
 	if !ok {
 		return fmt.Errorf("invalid addition amount: %s", amount)
+	}
+	// C-03: a negative credit would DEBIT the receiver (balance + (-x)). Reject.
+	if addAmount.Sign() < 0 {
+		return fmt.Errorf("negative credit amount for DID %s: %s", ToAddress, amount)
 	}
 
 	// Calculate new balance

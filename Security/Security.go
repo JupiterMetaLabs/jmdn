@@ -290,6 +290,14 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 		)
 	}
 
+	// C-03: reject negative numeric fields before any DB work. Cheap, and it
+	// closes the balance-inversion vector at the RPC ingress boundary.
+	if ok, err := CheckTransactionValues(tx); !ok {
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("status", "negative_value_rejected"))
+		return false, err
+	}
+
 	ctx, cancelConn := context.WithTimeout(traceCtx, 30*time.Second)
 	defer cancelConn()
 
@@ -866,6 +874,49 @@ func toGethAccessList(accessList config.AccessList) types.AccessList {
 // Returns (true,nil) only when the wire hash matches the content hash.
 func CheckTransactionHash(tx *config.Transaction, traceCtx context.Context) (bool, error) {
 	return checkTransactionHash(tx, traceCtx)
+}
+
+// CheckTransactionValues rejects transactions carrying negative numeric fields
+// (C-03). Canonical Ethereum RLP cannot encode a negative big.Int, but JMDN's
+// internal config.Transaction is a plain struct that a JSON ingress path or a
+// crafted wire message can populate directly with a negative *big.Int. If such a
+// value reaches execution, the balance arithmetic inverts:
+//
+//	sender:   balance - (-v) == balance + v   (sender is CREDITED)
+//	receiver: balance + (-v) == balance - v   (receiver is DEBITED)
+//
+// letting a sender debit an arbitrary receiver without that receiver's
+// signature. Negative gas fields similarly invert fee deductions. This is the
+// fail-closed value gate applied at every trust boundary (RPC ingress via
+// AllChecks, and remote-block admission via validateRemoteBlock); parseTransaction
+// enforces it again at execution as defense in depth.
+//
+// Returns (true,nil) only when every present numeric field is non-negative and
+// (for present EIP-1559 fields) MaxPriorityFee <= MaxFee.
+func CheckTransactionValues(tx *config.Transaction) (bool, error) {
+	if tx == nil {
+		return false, fmt.Errorf("nil transaction")
+	}
+	// Value: nil is treated as zero elsewhere (parseTransaction); a present value
+	// must be non-negative.
+	if tx.Value != nil && tx.Value.Sign() < 0 {
+		return false, fmt.Errorf("negative transaction value: %s", tx.Value.String())
+	}
+	if tx.GasPrice != nil && tx.GasPrice.Sign() < 0 {
+		return false, fmt.Errorf("negative gas_price: %s", tx.GasPrice.String())
+	}
+	if tx.MaxFee != nil && tx.MaxFee.Sign() < 0 {
+		return false, fmt.Errorf("negative max_fee: %s", tx.MaxFee.String())
+	}
+	if tx.MaxPriorityFee != nil && tx.MaxPriorityFee.Sign() < 0 {
+		return false, fmt.Errorf("negative max_priority_fee: %s", tx.MaxPriorityFee.String())
+	}
+	// EIP-1559 invariant: the priority (tip) fee may never exceed the max fee.
+	if tx.MaxFee != nil && tx.MaxPriorityFee != nil && tx.MaxPriorityFee.Cmp(tx.MaxFee) > 0 {
+		return false, fmt.Errorf("max_priority_fee %s exceeds max_fee %s",
+			tx.MaxPriorityFee.String(), tx.MaxFee.String())
+	}
+	return true, nil
 }
 
 // ethTxFromConfig reconstructs the go-ethereum transaction from a
