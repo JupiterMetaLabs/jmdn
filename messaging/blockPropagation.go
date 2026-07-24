@@ -445,9 +445,10 @@ func admitZKBlock(ctx context.Context, msg config.BlockMessage, messageID string
 // persisted. It deliberately performs only authenticity / internal-consistency
 // checks that do NOT depend on mutable DB state (balances, live nonces), so it
 // cannot false-reject an honest block due to the tx-application race that makes
-// strict DB-nonce checks unsafe on this path. Deeper checks (state re-execution,
-// STARK-proof verification, canonical block-hash recompute) are tracked
-// separately — see audits/JMDN-001-remediation-plan.md.
+// strict DB-nonce checks unsafe on this path. It now recomputes the canonical
+// block hash from transaction CONTENTS and binds tx.Hash to contents (P3 /
+// FINDING A). The remaining deferred check is real STARK-proof verification
+// (verifyBlockProof is a placeholder while the prover is placeholder-grade).
 func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRejection {
 	b := msg.Block
 	if b == nil {
