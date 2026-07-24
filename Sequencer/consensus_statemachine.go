@@ -16,7 +16,9 @@ import (
 	"gossipnode/config"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/PubSubMessages/Cache"
+	"gossipnode/config/settings"
 	"gossipnode/messaging"
+	"gossipnode/seednode"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -57,12 +59,13 @@ What it does:
 func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	responseHandler := NewResponseHandler()
 
-	// Wire the committee eligibility source (P1): membership is the live
-	// seedNode buddy set from getBuddy/ListBuddy, NOT a hand-authored file. The
-	// messaging verifier subtracts the operator block_buddy blocklist and fails
-	// closed if this source is absent or errors. Only the sequencer can call
-	// getBuddy, so we register it here where QueryBuddyNodes is reachable.
-	messaging.SetCommitteeEligibilitySource(func() (map[string]struct{}, error) {
+	// Wire the committee eligibility source (P1). The messaging verifier
+	// subtracts the operator block_buddy blocklist and fails closed if this
+	// source is absent or errors.
+	//
+	// Legacy source: the live seedNode buddy set (getBuddy/ListBuddy). Used when
+	// no seed authority key is pinned (pre-committee-source deployments).
+	legacyBuddySource := func() (map[string]struct{}, error) {
 		buddies, err := helper.QueryBuddyNodes()
 		if err != nil {
 			return nil, err
@@ -73,7 +76,27 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 			set[b.PeerID.String()] = struct{}{}
 		}
 		return set, nil
-	})
+	}
+
+	// Committee-source (O4): when the operator pins the seed authority key, the
+	// eligible set is the seed-AUTHENTICATED epoch snapshot (verified against the
+	// pinned authority), not the raw getBuddy list. Because eligibility IS the
+	// committee, VerifyCertificate then enforces committee ⊆ snapshot at the
+	// tally. Fail-closed: if the seed client can't be built we refuse rather than
+	// fall back to an unauthenticated list.
+	cfg := settings.Get()
+	if pinned := cfg.Consensus.SeedAuthorityBLSPub; pinned != "" && cfg.Network.SeedNode != "" {
+		if sc, err := seednode.NewClient(cfg.Network.SeedNode); err == nil {
+			messaging.SetCommitteeEligibilitySource(sc.CommitteeEligibility(pinned))
+		} else {
+			initErr := err
+			messaging.SetCommitteeEligibilitySource(func() (map[string]struct{}, error) {
+				return nil, fmt.Errorf("committee source: seed client init failed (fail closed): %w", initErr)
+			})
+		}
+	} else {
+		messaging.SetCommitteeEligibilitySource(legacyBuddySource)
+	}
 
 	return &Consensus{
 		PeerList:        peerList,
