@@ -22,6 +22,8 @@ import (
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
+	"gossipnode/config/settings"
+	"gossipnode/internal/reputation"
 	"gossipnode/messaging"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
@@ -166,6 +168,34 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		ion.Float64("duration", warmupDuration),
 		ion.String("function", "Consensus.Start.warmup"))
 	warmupSpan.End()
+
+	// (Committee-source) When the seed authority key is pinned, votes are
+	// authorized against the seed-signed committee snapshot (keyAuthorized →
+	// eligibleMembers). Selection MUST draw from that SAME eligible set, or a peer
+	// that is keyed live but absent from the epoch-frozen / blocklist- and cap-
+	// trimmed authorized set gets selected and then rejected as "unauthorized",
+	// silently dropping quorum (observed halt). Filtering here makes selection ⊆
+	// authorization: the sequencer only picks signed, authorized peers. FAIL
+	// CLOSED — if the eligible set is unavailable while pinned, abort the round
+	// rather than select unsigned peers. Unpinned (legacy) selection is unchanged.
+	if settings.IsLoaded() && strings.TrimSpace(settings.Get().Consensus.SeedAuthorityBLSPub) != "" {
+		eligible, eligErr := messaging.EligibleCommitteePeerIDs()
+		if eligErr != nil {
+			return fmt.Errorf("CONSENSUSERROR.WARMUP: pinned committee eligibility unavailable (fail-closed): %w", eligErr)
+		}
+		kept := make([]PubSubMessages.Buddy_PeerMultiaddr, 0, len(candidates))
+		for _, cand := range candidates {
+			if _, ok := eligible[cand.PeerID.String()]; ok {
+				kept = append(kept, cand)
+			}
+		}
+		logger().NamedLogger.Info(trace_ctx, "Committee-source: filtered buddy candidates to pinned eligible (signed) set",
+			ion.Int("candidates_before", len(candidates)),
+			ion.Int("candidates_after", len(kept)),
+			ion.Int("eligible_set_size", len(eligible)),
+			ion.String("function", "Consensus.Start.committeeFilter"))
+		candidates = kept
+	}
 
 	// Connect to the candidates first via AddPeerCache
 	addPeersCtx, addPeersSpan := tracer.Start(trace_ctx, "Consensus.Start.addPeersToCache")
@@ -1428,6 +1458,59 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 			ion.Float64("duration", verifyDuration),
 			ion.String("function", "Consensus.ProcessVoteCollection.verifyConsensus"))
 		verifySpan.End()
+
+		// (Reputation, OBSERVE-ONLY) Classify each committee member's behavior
+		// this round and log the score deltas. This is a future-SELECTION
+		// signal only: it never feeds the 2f+1 tally, never blocks a vote, and
+		// never touches the seed. A MainPeer with no collected response is
+		// classified Absent; dissent against the outcome carries zero delta by
+		// design (see internal/reputation). Kill switch:
+		// JMDN_REPUTATION_OBSERVE=0.
+		if reputation.Enabled {
+			votes := make(map[string]bool, len(blsResults))
+			for _, r := range blsResults {
+				votes[r.PeerID] = r.Agree
+			}
+			committee := make([]string, 0, len(consensus.PeerList.MainPeers))
+			for _, p := range consensus.PeerList.MainPeers {
+				committee = append(committee, p.String())
+			}
+			events := reputation.ObserveRound(
+				consensus.ZKBlockData.GetZKBlock().BlockNumber,
+				consensus.ZKBlockData.GetZKBlock().BlockHash.Hex(),
+				committee, votes, consensusReached)
+
+			// Surface reputation to Telegram. Only OBJECTIVE faults alert: a
+			// selected committee member that returned no vote (Absent), a bad
+			// signature, or a provable equivocation — each with the peer's new
+			// score. Dissent is never a fault (zero delta) so it never alerts,
+			// and a clean round sends nothing (keeps the channel quiet). This is
+			// observe-only reporting: it changes no consensus or selection state.
+			var repFaults []string
+			repSeverity := Alerts.SeverityWarning
+			for _, id := range committee {
+				switch events[id] {
+				case reputation.Absent, reputation.BadSignature, reputation.Equivocation:
+					repFaults = append(repFaults, fmt.Sprintf("%s: %s (score %.3f)", id, events[id], reputation.Default.Score(id)))
+					if events[id] == reputation.Equivocation {
+						repSeverity = Alerts.SeverityError
+					}
+				}
+			}
+			if len(repFaults) > 0 {
+				blkNum := consensus.ZKBlockData.GetZKBlock().BlockNumber
+				blkHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
+				Alerts.NewAlertBuilder(processCtx).
+					AlertName("Consensus: Validator Reputation Fault").
+					Status(repSeverity).
+					Severity(repSeverity).
+					Description(fmt.Sprintf("Committee reputation fault(s) at block %d: %s", blkNum, strings.Join(repFaults, "; "))).
+					Label("block_number", fmt.Sprintf("%d", blkNum)).
+					Label("block_hash", blkHash).
+					Label("committee_size", fmt.Sprintf("%d", len(committee))).
+					Send()
+			}
+		}
 
 		// Step 3: Broadcast and process block (state-changing operation)
 		broadcastCtx, broadcastSpan := tracer.Start(processCtx, "Consensus.ProcessVoteCollection.broadcastAndProcess")
