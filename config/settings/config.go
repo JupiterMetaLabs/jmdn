@@ -58,7 +58,7 @@ type ConsensusSettings struct {
 	// consensus. The certificate verifier trims the eligible committee to this many
 	// peers (deterministically, by sorted peer_id) BEFORE computing the 2f+1
 	// threshold, so the threshold can never be sized over more validators than
-	// actually vote. Defaults to 7 (must match config.MaxMainPeers, the voting
+	// actually vote. Defaults to 5 (must match config.MaxMainPeers, the voting
 	// committee size) and is always active — never 0 by default. An explicit 0
 	// disables the cap, but that is not the shipped behavior.
 	MaxValidators int `mapstructure:"max_validators" yaml:"max_validators"`
