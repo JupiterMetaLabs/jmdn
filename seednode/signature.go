@@ -5,8 +5,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"os"
 	"strings"
 
+	blssign "gossipnode/AVC/BLS/bls-sign"
+	"gossipnode/seednode/committee"
 	peerpb "gossipnode/seednode/proto"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -21,6 +24,23 @@ func calculateVFromSignature(r, s *big.Int, hash []byte) byte {
 	return byte(sum.Bit(0)) // Use the least significant bit
 }
 
+// peerRecordCanonicalMessage builds the exact identity-signed message for a peer
+// record: peer_id | multiaddrs… | seq | status [ | bls_pub ]. bls_pub (lowercase,
+// trimmed) is appended ONLY when set, so non-committee peers stay byte-for-byte
+// backward-compatible. MUST match seedNodes ValidatePeerRecordSignature
+// (pkg/peer/vrsSigner.go) exactly — a divergence silently breaks registration.
+func peerRecordCanonicalMessage(peerRecord *peerpb.SignedPeerRecord) string {
+	var messageParts []string
+	messageParts = append(messageParts, peerRecord.PeerId)
+	messageParts = append(messageParts, peerRecord.Multiaddrs...)
+	messageParts = append(messageParts, fmt.Sprintf("%d", peerRecord.Seq))
+	messageParts = append(messageParts, peerRecord.CurrentStatus.String())
+	if peerRecord.BlsPub != "" {
+		messageParts = append(messageParts, strings.ToLower(strings.TrimSpace(peerRecord.BlsPub)))
+	}
+	return strings.Join(messageParts, "|")
+}
+
 // SignPeerRecord signs a peer record using the host's private key
 func SignPeerRecord(peerRecord *peerpb.SignedPeerRecord, h host.Host) error {
 	// Get the host's private key
@@ -29,14 +49,8 @@ func SignPeerRecord(peerRecord *peerpb.SignedPeerRecord, h host.Host) error {
 		return fmt.Errorf("no private key found for host")
 	}
 
-	// Create a message to sign (concatenate peer_id, multiaddrs, seq, status)
-	var messageParts []string
-	messageParts = append(messageParts, peerRecord.PeerId)
-	messageParts = append(messageParts, peerRecord.Multiaddrs...)
-	messageParts = append(messageParts, fmt.Sprintf("%d", peerRecord.Seq))
-	messageParts = append(messageParts, peerRecord.CurrentStatus.String())
-
-	message := strings.Join(messageParts, "|")
+	// Create a message to sign (concatenate peer_id, multiaddrs, seq, status[, bls_pub])
+	message := peerRecordCanonicalMessage(peerRecord)
 
 	// Hash the message
 	hash := sha256.Sum256([]byte(message))
@@ -60,6 +74,35 @@ func SignPeerRecord(peerRecord *peerpb.SignedPeerRecord, h host.Host) error {
 	peerRecord.S = hex.EncodeToString(s.Bytes())
 	peerRecord.V = hex.EncodeToString([]byte{v})
 
+	return nil
+}
+
+// EmitCommitteeBLS gates whether this node advertises a committee BLS key at
+// registration (S1/S2b). Default OFF — a node registers exactly as before and is
+// simply not committee-eligible. Set JMDN_EMIT_COMMITTEE_BLS=1 to join the
+// committee, in lockstep with the seed's committee-source enforcement (O3).
+var EmitCommitteeBLS = os.Getenv("JMDN_EMIT_COMMITTEE_BLS") == "1"
+
+// AttachCommitteeBLS populates bls_pub (lowercase hex) and bls_pop (hex proof of
+// possession) on the record from the node's persistent dela/bls key, so the seed
+// can admit it to the epoch committee snapshot. No-op when EmitCommitteeBLS is
+// off. MUST be called BEFORE SignPeerRecord so the identity signature covers
+// bls_pub. The bls_pub is the SAME key used to sign consensus votes (loaded from
+// config/bls.json), so committee membership and vote authentication agree.
+func AttachCommitteeBLS(peerRecord *peerpb.SignedPeerRecord) error {
+	if !EmitCommitteeBLS {
+		return nil
+	}
+	priv, pub, err := blssign.GenerateBLSKeyPair() // persistent: loads/creates config/bls.json
+	if err != nil {
+		return fmt.Errorf("committee bls key: %w", err)
+	}
+	pubHex, popHex, err := committee.ProveBLSPossession(peerRecord.PeerId, priv, pub)
+	if err != nil {
+		return fmt.Errorf("committee bls proof-of-possession: %w", err)
+	}
+	peerRecord.BlsPub = pubHex
+	peerRecord.BlsPop = popHex
 	return nil
 }
 
