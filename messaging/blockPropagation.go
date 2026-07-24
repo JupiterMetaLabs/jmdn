@@ -571,7 +571,7 @@ func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
 		return reject("no_certificate", "empty committee certificate")
 	}
 
-	res, err := VerifyCertificate(responses, msg.Block.BlockHash.Hex())
+	res, err := VerifyCertificate(responses, msg.Block.BlockHash.Hex(), msg.Block.BlockNumber)
 	if err != nil {
 		// FAIL CLOSED (P1): no authenticated committee => cannot verify.
 		return reject("committee_source_invalid",

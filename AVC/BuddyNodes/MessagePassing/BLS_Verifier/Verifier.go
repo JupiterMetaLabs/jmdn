@@ -18,6 +18,13 @@ import (
 // close the cross-chain replay window that v1 leaves open.
 var AcceptV1BlockBoundVotes = os.Getenv("JMDN_ACCEPT_V1_VOTES") != "0"
 
+// AcceptV2BlockBoundVotes controls whether the verifier still accepts v2
+// (chain-id-bound but NOT height-bound) vote signatures during the A2 staged
+// rollout. Default ON so a mixed fleet reaches quorum while emitters migrate to
+// v3. Set JMDN_ACCEPT_V2_VOTES=0 once every emitter signs v3 to close the
+// same-body-replay-at-another-height window that v2 leaves open.
+var AcceptV2BlockBoundVotes = os.Getenv("JMDN_ACCEPT_V2_VOTES") != "0"
+
 // canonicalVoteMessageV1 rebuilds the LEGACY (pre-P4) block-bound message
 // "zkvote:<blockhash>:<vote>" — block-bound but with no chain-id domain
 // separation. Retained only so VerifyForBlock can accept in-flight v1
@@ -52,11 +59,13 @@ func CanonicalBlockVoteMessage(chainID uint64, bindings string, vote int8) ([]by
 
 // VerifyForBlock verifies a response's signature against a block-bound vote
 // message. A signature that passes here is provably an attestation for THIS
-// block on THIS chain and cannot be replayed onto another block (JMDN-001 / D3)
-// or another chain/fork (P4). It accepts the current v2 (chain-id-bound) format
-// first; during rollout it also accepts legacy v1 (block-bound only) when
-// AcceptV1BlockBoundVotes is set, so a mixed fleet still reaches quorum.
-func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID uint64, bindings string, vote int8) error {
+// block, on THIS chain, at THIS height, and cannot be replayed onto another
+// block (JMDN-001 / D3), chain/fork (P4), or height (A2). Version precedence
+// (accept newest-bound first, older only during staged rollout):
+//   - v3: chain + HEIGHT + block + vote (tried when height > 0)
+//   - v2: chain + block + vote        (accepted when AcceptV2BlockBoundVotes)
+//   - v1: block + vote                (accepted when AcceptV1BlockBoundVotes)
+func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, bindings string, vote int8) error {
 	pubBytes, err := hex.DecodeString(resp.PubKey)
 	if err != nil {
 		return fmt.Errorf("invalid pubkey hex: %w", err)
@@ -66,23 +75,30 @@ func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID uint64, bindings string
 		return fmt.Errorf("invalid signature hex: %w", err)
 	}
 
-	// v2: chain-id-bound (current).
-	msgV2, err := CanonicalBlockVoteMessage(chainID, bindings, vote)
-	if err != nil {
-		return err
+	// v3: chain-id + height-bound (current). Only when a height is known.
+	if height > 0 {
+		if msgV3, err := BLS_Signer.CanonicalVoteMessageV3(chainID, height, bindings, vote); err == nil {
+			if blssign.BLSVerify(pubBytes, msgV3, sigBytes) == nil {
+				return nil
+			}
+		}
 	}
-	if blssign.BLSVerify(pubBytes, msgV2, sigBytes) == nil {
-		return nil
+
+	// v2: chain-id-bound (no height), accepted during the A2 rollout.
+	if AcceptV2BlockBoundVotes {
+		if msgV2, err := CanonicalBlockVoteMessage(chainID, bindings, vote); err == nil {
+			if blssign.BLSVerify(pubBytes, msgV2, sigBytes) == nil {
+				return nil
+			}
+		}
 	}
 
 	// v1: legacy block-bound-only, accepted only during staged rollout.
 	if AcceptV1BlockBoundVotes {
-		msgV1, err := canonicalVoteMessageV1(bindings, vote)
-		if err != nil {
-			return err
-		}
-		if blssign.BLSVerify(pubBytes, msgV1, sigBytes) == nil {
-			return nil
+		if msgV1, err := canonicalVoteMessageV1(bindings, vote); err == nil {
+			if blssign.BLSVerify(pubBytes, msgV1, sigBytes) == nil {
+				return nil
+			}
 		}
 	}
 

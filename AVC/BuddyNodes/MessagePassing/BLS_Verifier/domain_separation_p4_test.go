@@ -28,18 +28,18 @@ func TestVoteDomain_CrossChainReplayRejected(t *testing.T) {
 	defer restoreV1Flag(AcceptV1BlockBoundVotes)
 	AcceptV1BlockBoundVotes = true // worst case for the attacker's benefit
 
-	respA, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, blkHash)
+	respA, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 0, blkHash)
 	if err != nil || !ok {
 		t.Fatalf("sign v2 on chainA: ok=%v err=%v", ok, err)
 	}
 
 	// Same chain → verifies.
-	if err := VerifyForBlock(respA, chainA, blkHash, 1); err != nil {
+	if err := VerifyForBlock(respA, chainA, 0, blkHash, 1); err != nil {
 		t.Fatalf("v2 vote should verify on its own chain A: %v", err)
 	}
 
 	// Different chain → MUST be rejected (this is the whole point of P4).
-	if err := VerifyForBlock(respA, chainB, blkHash, 1); err == nil {
+	if err := VerifyForBlock(respA, chainB, 0, blkHash, 1); err == nil {
 		t.Fatalf("SECURITY: chainA vote verified on chainB — cross-chain replay not closed")
 	}
 }
@@ -50,21 +50,21 @@ func TestVoteDomain_V2RoundTripAndFieldBinding(t *testing.T) {
 	defer restoreV1Flag(AcceptV1BlockBoundVotes)
 	AcceptV1BlockBoundVotes = false // pure v2
 
-	resp, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, blkHash)
+	resp, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 0, blkHash)
 	if err != nil || !ok {
 		t.Fatalf("sign v2: ok=%v err=%v", ok, err)
 	}
 
-	if err := VerifyForBlock(resp, chainA, blkHash, 1); err != nil {
+	if err := VerifyForBlock(resp, chainA, 0, blkHash, 1); err != nil {
 		t.Fatalf("v2 round-trip should pass: %v", err)
 	}
 	// Wrong block hash → reject.
 	otherHash := "0x2222222222222222222222222222222222222222222222222222222222222222"
-	if err := VerifyForBlock(resp, chainA, otherHash, 1); err == nil {
+	if err := VerifyForBlock(resp, chainA, 0, otherHash, 1); err == nil {
 		t.Fatalf("SECURITY: vote for %s verified against %s (block hash not bound)", blkHash, otherHash)
 	}
 	// Wrong vote value → reject.
-	if err := VerifyForBlock(resp, chainA, blkHash, -1); err == nil {
+	if err := VerifyForBlock(resp, chainA, 0, blkHash, -1); err == nil {
 		t.Fatalf("SECURITY: +1 signature verified as -1 (vote value not bound)")
 	}
 }
@@ -98,16 +98,16 @@ func TestVoteDomain_V1RolloutGap(t *testing.T) {
 
 	// Flag ON: v1 accepted regardless of chain id (documents the rollout gap).
 	AcceptV1BlockBoundVotes = true
-	if err := VerifyForBlock(resp, chainA, blkHash, 1); err != nil {
+	if err := VerifyForBlock(resp, chainA, 0, blkHash, 1); err != nil {
 		t.Fatalf("v1 vote should be accepted on chainA during rollout: %v", err)
 	}
-	if err := VerifyForBlock(resp, chainB, blkHash, 1); err != nil {
+	if err := VerifyForBlock(resp, chainB, 0, blkHash, 1); err != nil {
 		t.Fatalf("v1 vote should be accepted on chainB during rollout: %v", err)
 	}
 
 	// Flag OFF: v1 rejected everywhere — rollout complete, hole closed.
 	AcceptV1BlockBoundVotes = false
-	if err := VerifyForBlock(resp, chainA, blkHash, 1); err == nil {
+	if err := VerifyForBlock(resp, chainA, 0, blkHash, 1); err == nil {
 		t.Fatalf("SECURITY: v1 vote still accepted after AcceptV1BlockBoundVotes disabled")
 	}
 }
@@ -141,3 +141,27 @@ func TestVoteDomain_InvalidInputsRejected(t *testing.T) {
 }
 
 func restoreV1Flag(v bool) { AcceptV1BlockBoundVotes = v }
+
+// TestVoteDomain_V3HeightBinding (A2): a v3 vote signed for one height must NOT
+// verify at another height, even with v2 acceptance on (a v3 signature never
+// matches v2 bytes). This is what stops a captured certificate being replayed at
+// a different height.
+func TestVoteDomain_V3HeightBinding(t *testing.T) {
+	// height > 0 => v3 domain (chain + height + block + vote).
+	resp, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 100, blkHash)
+	if err != nil || !ok {
+		t.Fatalf("sign v3: ok=%v err=%v", ok, err)
+	}
+	// Its own height verifies.
+	if err := VerifyForBlock(resp, chainA, 100, blkHash, 1); err != nil {
+		t.Fatalf("v3 vote should verify at its own height: %v", err)
+	}
+	// A DIFFERENT height must be rejected (the A2 property).
+	if err := VerifyForBlock(resp, chainA, 200, blkHash, 1); err == nil {
+		t.Fatalf("SECURITY (A2): v3 vote for height 100 verified at height 200 — height not bound")
+	}
+	// A different chain is still rejected.
+	if err := VerifyForBlock(resp, chainB, 100, blkHash, 1); err == nil {
+		t.Fatalf("SECURITY: v3 vote verified on a different chain")
+	}
+}

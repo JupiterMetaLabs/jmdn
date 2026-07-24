@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1581,6 +1582,10 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 	reqAck := PubSubMessages.NewACKBuilder().True_ACK_Message(consensus.Host.ID(), config.Type_VoteResult)
 	requestPayload := map[string]string{
 		"block_hash": blockHash,
+		// A2: the block height the buddy must bind its vote to (v3 domain). A buddy
+		// that receives it signs v3; an older one that ignores it signs v2 (still
+		// accepted during rollout).
+		"block_number": strconv.FormatUint(consensus.ZKBlockData.GetZKBlock().BlockNumber, 10),
 	}
 	requestPayloadBytes, err := json.Marshal(requestPayload)
 	if err != nil {
@@ -1900,10 +1905,12 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		}
 	}
 
-	// Block hash this round's votes must be bound to (JMDN-001 / D3).
+	// Block hash + height this round's votes must be bound to (D3 / A2).
 	blockHashHex := ""
+	var blockHeight uint64
 	if consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
 		blockHashHex = consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
+		blockHeight = consensus.ZKBlockData.GetZKBlock().BlockNumber
 	}
 
 	for _, r := range blsResults {
@@ -1914,7 +1921,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 
 		// Prefer block-bound verification. A legacy (unbound) "vote:<v>"
 		// signature is detected separately so we can alert on it.
-		blockBoundOK := blockHashHex != "" && BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), blockHashHex, vote) == nil
+		blockBoundOK := blockHashHex != "" && BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), blockHeight, blockHashHex, vote) == nil
 		legacyOK := false
 		if !blockBoundOK {
 			legacyOK = BLS_Verifier.Verify(r, vote) == nil
@@ -2014,7 +2021,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 	// authenticated committee size (never the old strict majority of the fixed
 	// MaxMainPeers, and never a majority of whoever responded). The loop above
 	// is retained only for per-vote alerting/observability.
-	certRes, certErr := messaging.VerifyCertificate(blsResults, blockHashHex)
+	certRes, certErr := messaging.VerifyCertificate(blsResults, blockHashHex, blockHeight)
 	if certErr != nil {
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(

@@ -278,7 +278,7 @@ type CertificateResult struct {
 // EnforceCommitteeRegistry only controls whether votes from non-members are
 // filtered out. Turning enforcement off does NOT remove the 2f+1 requirement,
 // so a node with no committee source fails closed regardless.
-func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex string) (CertificateResult, error) {
+func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex string, height uint64) (CertificateResult, error) {
 	var res CertificateResult
 
 	committee, err := eligibleMembers()
@@ -288,7 +288,7 @@ func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex string) 
 	}
 	n := len(committee)
 
-	res.YesVotes = countEligibleYes(responses, blockHashHex, committee, EnforceCommitteeRegistry)
+	res.YesVotes = countEligibleYes(responses, blockHashHex, height, committee, EnforceCommitteeRegistry)
 	res.CommitteeSize = n
 	res.Threshold = ByzantineQuorum(n)
 	res.Reached = res.YesVotes >= res.Threshold
@@ -301,7 +301,7 @@ func VerifyCertificate(responses []BLS_Signer.BLSresponse, blockHashHex string) 
 // De-duplicated by BOTH peer_id and bls_pub so one signer cannot inflate quorum
 // by presenting the same key under several peer_ids, or several keys for one
 // peer_id (invariant 4).
-func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, committee map[string]string, filterByMembership bool) int {
+func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, height uint64, committee map[string]string, filterByMembership bool) int {
 	countedPeers := make(map[string]bool)
 	countedKeys := make(map[string]bool)
 	yes := 0
@@ -313,7 +313,7 @@ func countEligibleYes(responses []BLS_Signer.BLSresponse, blockHashHex string, c
 
 		// Prefer block-bound verification (D3). Fall back to legacy only when
 		// legacy is still permitted.
-		verified := BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), blockHashHex, vote) == nil
+		verified := BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), height, blockHashHex, vote) == nil
 		if !verified && !RejectLegacyVotes {
 			verified = BLS_Verifier.Verify(r, vote) == nil
 		}

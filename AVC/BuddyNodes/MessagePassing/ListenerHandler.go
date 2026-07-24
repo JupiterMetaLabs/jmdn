@@ -1517,14 +1517,17 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		return
 	}
 
-	// Parse optional request payload (e.g., block hash scoping)
+	// Parse optional request payload (block hash scoping + A2 block height)
 	var targetBlockHash string
+	var targetBlockNumber uint64
 	var voteResultReq struct {
-		BlockHash string `json:"block_hash"`
+		BlockHash   string `json:"block_hash"`
+		BlockNumber uint64 `json:"block_number"` // A2: bind the vote to this height (v3)
 	}
 	// functions which retuning the response should return the same format
 	if err := json.Unmarshal([]byte(message.Message), &voteResultReq); err == nil {
 		targetBlockHash = voteResultReq.BlockHash
+		targetBlockNumber = voteResultReq.BlockNumber
 		if targetBlockHash != "" {
 			fmt.Printf("🎯 Target block hash from request: %s\n", targetBlockHash)
 		}
@@ -1616,7 +1619,7 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 	var blsResp BLS_Signer.BLSresponse
 	var status bool
 	if BLS_Signer.EmitBlockBoundVotes && targetBlockHash != "" {
-		blsResp, status, err = BLS_Signer.SignMessageForBlock(result, BLS_Signer.DomainChainID(), targetBlockHash)
+		blsResp, status, err = BLS_Signer.SignMessageForBlock(result, BLS_Signer.DomainChainID(), targetBlockNumber, targetBlockHash)
 	} else {
 		blsResp, status, err = BLS_Signer.SignMessage(result)
 	}

@@ -93,6 +93,32 @@ const BlockBoundVotePrefix = "zkvote:"
 // and is NOT taken from any attacker-supplied per-request field.
 const VoteDomainVersion = "v2"
 
+// VoteDomainVersionV3 additionally binds the block HEIGHT (A2):
+// "zkvote:v3:chain=<id>:h=<height>:<blockhash>:<vote>". Because the generator's
+// BlockHash does not commit to the block number, a v2 certificate can be
+// replayed at a different height; binding height makes a certificate usable only
+// at the exact height its signers intended. Emitted when the height is known
+// (block_number threaded to the signer); falls back to v2 otherwise for a staged
+// rollout.
+const VoteDomainVersionV3 = "v3"
+
+// CanonicalVoteMessageV3 builds the EXACT bytes signed and verified for a v3
+// height-bound vote. Both SignMessageForBlock and BLS_Verifier.VerifyForBlock
+// derive their bytes from here so signer and verifier cannot drift.
+func CanonicalVoteMessageV3(chainID, height uint64, bindings string, vote int8) ([]byte, error) {
+	if vote != -1 && vote != 1 {
+		return nil, fmt.Errorf("invalid vote: %d", vote)
+	}
+	bindings = normalizeBindings(bindings)
+	if bindings == "" {
+		return nil, fmt.Errorf("empty block bindings")
+	}
+	msg := BlockBoundVotePrefix + VoteDomainVersionV3 + ":chain=" +
+		strconv.FormatUint(chainID, 10) + ":h=" + strconv.FormatUint(height, 10) +
+		":" + bindings + ":" + strconv.Itoa(int(vote))
+	return []byte(msg), nil
+}
+
 // CanonicalVoteMessage builds the EXACT bytes signed and verified for a v2
 // block-bound vote. This is the single definition of the format: both
 // SignMessageForBlock and BLS_Verifier.VerifyForBlock derive their bytes from
@@ -134,8 +160,19 @@ func DomainChainID() uint64 {
 // receiver uses the block hash hex). This closes two replay gaps: the unbound
 // constant "vote:1" could authorize any block (JMDN-001 / D3), and a v1
 // block-bound signature could be replayed onto another chain/fork (P4).
-func SignMessageForBlock(vote int8, chainID uint64, bindings string) (BLSresponse, bool, error) {
-	msg, err := CanonicalVoteMessage(chainID, bindings, vote)
+// height is the block number to bind (A2). When height > 0 the vote is signed in
+// the v3 domain (chain + height + block + vote); when height == 0 (the signer
+// does not know the height — e.g. a pre-A2 sequencer that sends no block_number)
+// it falls back to the v2 domain, so a mixed fleet still interoperates during
+// rollout.
+func SignMessageForBlock(vote int8, chainID, height uint64, bindings string) (BLSresponse, bool, error) {
+	var msg []byte
+	var err error
+	if height > 0 {
+		msg, err = CanonicalVoteMessageV3(chainID, height, bindings, vote)
+	} else {
+		msg, err = CanonicalVoteMessage(chainID, bindings, vote)
+	}
 	if err != nil {
 		return *NewBLSresponseBuilder(nil), false, err
 	}
