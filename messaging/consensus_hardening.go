@@ -180,10 +180,13 @@ func eligibleMembers() (map[string]string, error) {
 func keyAuthorized(peerID, pubHex string) bool {
 	eligible, err := eligibleMembers()
 	if err != nil {
+		log.Warn().Str("peer", peerID).Err(err).Msg("committee: authorization denied — eligibility source error/empty")
 		return false
 	}
 	boundKey, ok := eligible[peerID]
 	if !ok {
+		log.Warn().Str("peer", peerID).Int("eligible_count", len(eligible)).
+			Msg("committee: authorization denied — peer_id not in eligible committee set")
 		return false
 	}
 	if boundKey == "" {
@@ -193,6 +196,10 @@ func keyAuthorized(peerID, pubHex string) bool {
 		return true
 	}
 	if normalizeBLSPub(pubHex) != boundKey {
+		log.Warn().Str("peer", peerID).
+			Str("bound_bls_pub", boundKey).
+			Str("vote_bls_pub", normalizeBLSPub(pubHex)).
+			Msg("committee: authorization denied — vote pubkey does not match snapshot-bound bls_pub")
 		return false
 	}
 	return true
