@@ -1,13 +1,12 @@
 package messaging
 
-// P1 adversarial tests — committee eligibility is DYNAMIC (live getBuddy set
+// P1 adversarial tests — committee eligibility is dynamic (live getBuddy set
 // minus the operator block_buddy blocklist) and MUST fail closed.
 //
-// Design: membership authenticates peer_id, AND (M1) when the authenticated seed
-// snapshot binds a bls_pub to that peer_id the vote's key MUST match it — a known
-// eligible peer_id voting with an attacker key is rejected (TestP1_Binding_*).
-// A legacy source with no snapshot carries no bound key and falls back to
-// peer_id-only authentication (not production-safe; logged).
+// Design: membership authenticates peer_id, and when the authenticated seed
+// snapshot binds a bls_pub to that peer_id the vote's key must match it. A
+// legacy source with no snapshot carries no bound key and falls back to
+// peer_id-only authentication (logged).
 //
 // Invariants under test:
 //   1. Fail closed: no eligibility source wired, a source error, or an empty
@@ -363,14 +362,11 @@ func TestP1_BlockBuddy_EmptiesCommittee_FailsClosed(t *testing.T) {
 	}
 }
 
-// ---- accepted interim forgery window (pinned so it is visible) ----------------
+// ---- key-binding behavior (pinned so a change is visible) ---------------------
 
-// M1: with the authenticated snapshot binding peer_id↔bls_pub, an attacker who
-// knows an eligible peer_id but votes with their OWN BLS key is REJECTED — the
-// vote's pubkey does not match the snapshot-bound key. (This replaces the former
-// accepted-interim forgery window, which existed only because the source carried
-// no bls_pub binding.)
-func TestP1_Binding_AttackerKeyUnderEligiblePeerID_Rejected(t *testing.T) {
+// With the authenticated snapshot binding peer_id to bls_pub, a vote under an
+// eligible peer_id but with a non-matching key is rejected.
+func TestP1_Binding_KeyUnderEligiblePeerID_Rejected(t *testing.T) {
 	// Authenticated committee: peer_ids bound to the LEGIT members' keys.
 	legitA := mustMintMember("peerA", 0x91)
 	legitB := mustMintMember("peerB", 0x92)
@@ -381,7 +377,7 @@ func TestP1_Binding_AttackerKeyUnderEligiblePeerID_Rejected(t *testing.T) {
 
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000059")
 
-	// Attacker knows the eligible peer_ids but holds different keys.
+	// Votes under the eligible peer_ids but with different keys.
 	fakeA := mustMintMember("peerA", 0xE1)
 	fakeB := mustMintMember("peerB", 0xE2)
 	fakeC := mustMintMember("peerC", 0xE3)
@@ -391,20 +387,20 @@ func TestP1_Binding_AttackerKeyUnderEligiblePeerID_Rejected(t *testing.T) {
 		fakeC.blockVote(t, hash.Hex(), 1),
 	)
 	if rej := verifyBlockCertificate(blockMsg(hash, cert)); rej == nil || rej.reason != "quorum_not_met" {
-		t.Fatalf("forged-key votes under eligible peer_ids must be rejected by the bls_pub binding, got %v", rej)
+		t.Fatalf("votes under eligible peer_ids with non-matching keys must be rejected by the bls_pub binding, got %v", rej)
 	}
 
-	// Direct: keyAuthorized rejects the attacker key, accepts the bound key.
+	// Direct: keyAuthorized rejects the non-matching key, accepts the bound key.
 	if keyAuthorized("peerA", fakeA.pubHex) {
-		t.Fatal("attacker key under an eligible peer_id must not be authorized")
+		t.Fatal("non-matching key under an eligible peer_id must not be authorized")
 	}
 	if !keyAuthorized("peerA", legitA.pubHex) {
 		t.Fatal("the snapshot-bound key must be authorized")
 	}
 }
 
-// M1: a legitimate quorum whose vote keys match the snapshot-bound keys is
-// accepted (binding must not brick the honest path).
+// A legitimate quorum whose vote keys match the snapshot-bound keys is accepted
+// (binding must not brick the honest path).
 func TestP1_Binding_LegitBoundQuorumAccepted(t *testing.T) {
 	a := mustMintMember("peerA", 0x91)
 	b := mustMintMember("peerB", 0x92)

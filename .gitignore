@@ -4,11 +4,6 @@ gossipnode.exe
 gossipnode
 gossipnode.exe.sig
 logs/*.log
-# Node identity & BLS signing keys — NEVER commit. Patterns are unanchored so a
-# key file generated from ANY working directory (e.g. a test running in a
-# subpackage, or a node started from a non-root cwd) is ignored everywhere, not
-# just at the repo root. config.BLSFile/PeerFile are relative paths, so their
-# on-disk location depends on the process cwd.
 config/peer.json
 config/bls.json
 **/bls.json

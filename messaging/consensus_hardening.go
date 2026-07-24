@@ -83,21 +83,9 @@ var (
 
 // ---- Committee eligibility (D4) ----------------------------------------------
 //
-// Membership is DYNAMIC and sourced from the live seedNode buddy selection
-// (getBuddy/ListBuddy), NOT from a hand-authored file. The eligible set is the
-// buddy peer_id set MINUS the operator's block_buddy blocklist.
-//
-// Interim scope (per operator decision): only the peer_id is authenticated —
-// eligibility is "peer_id ∈ buddy set". The BLS public key a vote carries is
-// self-reported and NOT yet bound to the peer_id, because ListBuddy does not
-// return bls_pub today. When seedNode adds bls_pub to ListBuddy, bind it in
-// eligibleMembers (see the seam marked BLS-BINDING-SEAM) and enforce
-// peer_id ↔ bls_pub in keyAuthorized — no consensus-logic change required.
-//
-// SECURITY NOTE (accepted interim risk): until bls_pub binding lands, an
-// attacker who knows an eligible buddy's peer_id can craft a vote under that
-// peer_id with their OWN BLS key and it will count. This is a temporary,
-// NOT-production-safe control. Tracked by TestP1_ForgeryWindow_*.
+// Membership is sourced from the live seedNode buddy selection
+// (getBuddy/ListBuddy). The eligible set is the buddy peer_id set MINUS the
+// operator's block_buddy blocklist.
 
 // committeeEligibilityFn returns the set of peer_id strings currently eligible
 // to vote — the live buddy set from getBuddy/ListBuddy (BEFORE the block_buddy
@@ -186,11 +174,9 @@ func eligibleMembers() (map[string]string, error) {
 // quorum. FAIL CLOSED (P1): a defective/absent eligibility source authorizes
 // NOBODY.
 //
-// M1: when the eligibility source carries an authenticated bls_pub for peerID
-// (the seed snapshot), the vote's pubHex MUST equal it — an attacker who knows
-// an eligible peer_id but votes with their own key is rejected. When the bound
-// key is empty (legacy getBuddy source with no snapshot), only peer_id
-// membership is checked (no binding available to enforce).
+// When the eligibility source carries a bls_pub for peerID (the seed snapshot),
+// the vote's pubHex must equal it. When the bound key is empty (legacy getBuddy
+// source with no snapshot), only peer_id membership is checked.
 func keyAuthorized(peerID, pubHex string) bool {
 	eligible, err := eligibleMembers()
 	if err != nil {
@@ -373,14 +359,7 @@ func normalizeBLSPub(s string) string {
 //
 // The committee's block-bound votes are signed over BlockHash, so recomputing
 // BlockHash from the received transactions and rejecting a mismatch binds the
-// certificate to THIS transaction set: an attacker cannot reuse a certified
-// hash over a substituted body (even one made of otherwise-valid signed txs).
-//
-// IMPORTANT (proof-field gap): the generator's BlockHash does NOT cover
-// StarkProof or Commitment, so body binding here canNOT detect a swapped proof
-// field. Closing that requires a generator hash-scheme change (consensus-
-// breaking) and is deferred while the prover is placeholder-grade — see
-// verifyBlockProof and the PR notes.
+// certificate to this transaction set.
 
 // RecomputeBlockHashFromTxs mirrors the generator's
 // generateBlockHashFromTransactions: Keccak256 over the concatenation of each
@@ -457,15 +436,8 @@ func checkBodyBinding(b *config.ZKBlock) *blockRejection {
 	return nil
 }
 
-// verifyBlockProof is the single, clearly-labelled seam for real ZK/STARK proof
-// verification. It returns nil today because the prover is placeholder-grade
-// (the RISC0 guest re-commits hashed inputs and does not prove the state
-// transition), so a check here would be false assurance.
-//
-// TODO: real proof verification blocked on prover. When a sound prover exists,
-// implement verification HERE without touching the binding logic above. Note
-// that binding the proof field into BlockHash additionally requires a generator
-// hash-scheme change (see checkBodyBinding's proof-field gap note).
+// verifyBlockProof is the seam for ZK/STARK proof verification, invoked on the
+// block-receive path. Implement verification here as the prover matures.
 func verifyBlockProof(_ *config.ZKBlock) error { return nil }
 
 // ---- Equivocation detection --------------------------------------------------

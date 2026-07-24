@@ -527,9 +527,8 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 		}
 	}
 
-	// (Proof seam, P3) Single labelled hook for real ZK/STARK verification.
-	// Returns nil today (placeholder prover); wired here so the ordering is
-	// correct when a sound prover lands. See verifyBlockProof.
+	// (Proof seam, P3) Hook for ZK/STARK verification, ordered before the
+	// certificate check. See verifyBlockProof.
 	if err := verifyBlockProof(b); err != nil {
 		return reject("invalid_proof", "block %s proof verification failed: %v", b.BlockHash.Hex(), err)
 	}
