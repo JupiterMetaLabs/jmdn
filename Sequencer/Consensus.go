@@ -1857,9 +1857,24 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 		attribute.Float64("duration", duration),
 		attribute.String("status", "no_bls_data"),
 	)
+	// DIAGNOSTIC (incident 2026-07): dump exactly what the buddy sent so we can
+	// see WHY there is no usable "bls" object — the inner message, the outer
+	// envelope, and the top-level keys actually present.
+	keys := make([]string, 0, len(resultData))
+	for k := range resultData {
+		keys = append(keys, k)
+	}
+	blsType := "absent"
+	if v, ok := resultData["bls"]; ok {
+		blsType = fmt.Sprintf("%T", v)
+	}
 	logger().NamedLogger.Warn(trace_ctx, "No BLS data in response",
 		ion.String("peer_id", peerID.String()),
 		ion.Float64("duration", duration),
+		ion.String("result_keys", strings.Join(keys, ",")),
+		ion.String("bls_field_type", blsType),
+		ion.String("raw_inner_message", responseMsg.Message),
+		ion.String("raw_envelope", response),
 		ion.String("function", "Consensus.parseVoteResultResponse"))
 	return nil
 }
