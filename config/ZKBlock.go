@@ -69,7 +69,6 @@ type ZKBlock struct {
 type ParsedZKTransaction struct {
 	Original        *Transaction
 	ValueBig        *big.Int
-	MaxFeeBig       *big.Int
 	EffectiveGasFee *big.Int
 }
 

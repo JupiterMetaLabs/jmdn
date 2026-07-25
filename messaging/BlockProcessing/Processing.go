@@ -950,17 +950,6 @@ func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error
 	// shared with FastsyncV2 delta reconciliation. Do NOT inline fee logic here.
 	parsed.EffectiveGasFee = config.EffectiveGasPrice(tx.Type, tx.GasPrice, tx.MaxFee, tx.MaxPriorityFee)
 
-	if tx.Type == 2 {
-		maxFee := tx.MaxFee
-		if maxFee == nil {
-			maxFee = big.NewInt(config.BaseFeeWei) // safe fallback
-		}
-		parsed.MaxFeeBig = new(big.Int).Set(maxFee)
-	} else {
-		// For non-EIP-1559 transactions, MaxFeeBig is not applicable
-		parsed.MaxFeeBig = nil
-	}
-
 	// Execution-level assertion (defense in depth). The ingress and
 	// remote-admission gates (Security.CheckTransactionValues) already reject
 	// negative fields, but execution must never apply a negative amount: a
