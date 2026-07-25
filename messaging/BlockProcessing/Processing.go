@@ -261,12 +261,21 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		// Process the transaction with span context
 		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, block.FeeRecipients, accountsClient, block.Timestamp)
 		if Process_err != nil {
-			// Stale nonce: security check passed at vote time but the account nonce
-			// advanced before execution (race with PoTS / concurrent block processing).
-			// Skip this tx — do NOT roll back other txs or fail the block.
+			// DETERMINISM ON FINALIZED BLOCKS: a 2f+1 block is a canonical, agreed
+			// transaction sequence — every node MUST apply every tx or state
+			// diverges SILENTLY. The node's sync fingerprint is a Merkle root over
+			// BLOCK HASHES, not account balances (internal/merkle), so a tx skipped
+			// here is invisible to the sync monitor and never self-heals. Therefore
+			// NO per-tx skip is permitted: ANY failure — INCLUDING a stale nonce
+			// (a race with PoTS / concurrent block processing) — rolls back and
+			// fails the WHOLE block. Nothing partial is stored, the head does not
+			// advance, the node lags, and catch-up (FastsyncV2, which applies all
+			// txs unconditionally) re-applies the block deterministically. Failing
+			// loud and self-healing is correct; the previous "skip the stale-nonce
+			// tx and keep the block" behaviour is exactly what produced fleet-wide
+			// balance divergence at matching block heights.
 			if errors.Is(Process_err, ErrStaleNonce) {
-				cleanupProcessingMarkers(span_ctx, accountsClient, tx.Hash.Hex())
-				logger().NamedLogger.Warn(span_ctx, "Skipping tx with stale nonce — account nonce advanced between security check and execution",
+				logger().NamedLogger.Warn(span_ctx, "Stale nonce on finalized-block tx — failing the WHOLE block for determinism (catch-up re-applies)",
 					ion.String("tx_hash", tx.Hash.Hex()),
 					ion.Int("tx_index", i),
 					ion.String("error", Process_err.Error()),
@@ -274,10 +283,9 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 					ion.String("topic", TOPIC),
 					ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 				)
-				continue
 			}
 
-			// ATOMICITY: If any non-stale transaction fails, roll back ALL affected accounts
+			// ATOMICITY: If any transaction fails, roll back ALL affected accounts
 			span.RecordError(Process_err)
 			span.SetAttributes(attribute.String("status", "failed"), attribute.String("failed_tx_hash", tx.Hash.Hex()), attribute.Int("failed_tx_index", i))
 
