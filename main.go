@@ -1196,6 +1196,31 @@ func main() {
 		return MessagePassing.ConsensusVoteEligible(tip, present, synced)
 	})
 
+	// Committee-eligibility source on validator nodes (cfg.Ports.BlockGen == 0).
+	// The sequencer (BlockGen > 0) wires its own pinned source in
+	// Sequencer.NewConsensus and is deliberately left untouched here. Every other
+	// node needs a source too: the mandatory block-certificate check in
+	// admitZKBlock calls messaging.VerifyCertificate, which fails CLOSED without
+	// one — so a receiver with no source drops (and stops forwarding) every block.
+	// Authority key: the operator pin if set, else trust-on-first-use of the
+	// seed-served key (persisted to config/seedAuth.json). The verified snapshot is
+	// cached, so the seed is queried about once per refresh window, not per block.
+	if cfg.Ports.BlockGen == 0 && cfg.Network.SeedNode != "" {
+		if elCli, err := seednode.NewClient(cfg.Network.SeedNode); err != nil {
+			log.Error().Err(err).
+				Msg("[Committee] seed client init failed — certificate verification stays fail-closed until a source is available")
+		} else {
+			messaging.SetCommitteeEligibilitySource(elCli.CommitteeEligibilityAuto(
+				cfg.Consensus.SeedAuthorityBLSPub,
+				cfg.Consensus.CommitteeEpochSeconds,
+				seednode.SeedAuthPinPath(),
+				cfg.Network.SeedNode,
+				60*time.Second,
+			))
+			log.Info().Msg("[Committee] eligibility source wired on non-sequencer node (pin-or-TOFU committee snapshot)")
+		}
+	}
+
 	// Initialize Yggdrasil messaging if enabled
 	if cfg.Network.Yggdrasil {
 		initYggdrasilMessaging(ctx)

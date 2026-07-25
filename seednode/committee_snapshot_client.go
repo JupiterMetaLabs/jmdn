@@ -2,11 +2,18 @@ package seednode
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"gossipnode/seednode/committee"
 	peerpb "gossipnode/seednode/proto"
+
+	"github.com/rs/zerolog/log"
 )
 
 // FetchCommitteeSnapshot calls GetCommitteeSnapshot(epoch) on the seed
@@ -69,4 +76,197 @@ func (c *Client) CommitteeEligibility(pinnedAuthorityHex string, epochSeconds in
 		// peer_id↔bls_pub binding, not just membership.
 		return snap.BLSPubByPeer(), nil
 	}
+}
+
+// ---- Auto (pin-or-TOFU) committee source with caching ------------------------
+//
+// CommitteeEligibility above requires an operator to PIN the authority key. On
+// nodes that are not operated by the network owner (open-source validators) we
+// resolve the authority key without a manual pin, using trust-on-first-use:
+// adopt the key the seed's first snapshot carries, persist it, and enforce it on
+// every later snapshot. A configured pin always overrides TOFU. The verified
+// snapshot is cached with a short TTL so the seed is queried roughly once per
+// refresh window (not once per certificate check), and a still-fresh cached
+// snapshot is served if the seed is briefly unreachable — otherwise fail closed.
+
+// defaultSeedAuthFile is the relative TOFU pin path, mirroring the relative
+// config/bls.json convention (env-overridable for systemd working-dir setups).
+const defaultSeedAuthFile = "./config/seedAuth.json"
+
+// SeedAuthPinPath returns the TOFU authority pin file path: $JMDN_SEED_AUTH_FILE
+// if set, else ./config/seedAuth.json.
+func SeedAuthPinPath() string {
+	if p := strings.TrimSpace(os.Getenv("JMDN_SEED_AUTH_FILE")); p != "" {
+		return p
+	}
+	return defaultSeedAuthFile
+}
+
+// persistedAuthority is the on-disk TOFU record. Only a PUBLIC key is stored;
+// it is not a secret. `seed` and `adopted_at` are informational.
+type persistedAuthority struct {
+	AuthorityPubHex string `json:"authority_pubkey"`
+	Seed            string `json:"seed,omitempty"`
+	AdoptedAt       int64  `json:"adopted_at"`
+}
+
+func normAuthorityHex(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+
+func loadPersistedAuthority(path string) (persistedAuthority, error) {
+	var rec persistedAuthority
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return rec, err
+	}
+	if err := json.Unmarshal(b, &rec); err != nil {
+		return rec, err
+	}
+	return rec, nil
+}
+
+func savePersistedAuthority(path string, rec persistedAuthority) error {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	b, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o600)
+}
+
+// committeeSource holds the resolver + cache state for one auto eligibility
+// source. Its eligible method is what SetCommitteeEligibilitySource receives.
+type committeeSource struct {
+	fetch        func(ctx context.Context, epoch uint64) (*committee.CommitteeSnapshot, error)
+	configPin    string // operator pin; overrides TOFU when non-empty
+	epochSeconds int64
+	pinFile      string // TOFU persistence path ("" disables persistence)
+	seedURL      string // informational, recorded in the pin file
+	ttl          time.Duration
+
+	mu         sync.Mutex
+	authority  string                       // resolved authority pubkey (lowercased)
+	cachedSnap *committee.CommitteeSnapshot // last authenticated + fresh snapshot
+	cachedAt   time.Time
+}
+
+// CommitteeEligibilityAuto returns a fail-closed eligibility source that resolves
+// the authority key by pin-or-TOFU (see the block comment above) and caches the
+// verified snapshot for ttl. Use on non-sequencer nodes so the mandatory block
+// certificate check has a committee source instead of failing closed.
+func (c *Client) CommitteeEligibilityAuto(configPin string, epochSeconds int64, pinFile, seedURL string, ttl time.Duration) func() (map[string]string, error) {
+	if ttl <= 0 {
+		ttl = 60 * time.Second
+	}
+	s := &committeeSource{
+		fetch:        c.FetchCommitteeSnapshot,
+		configPin:    configPin,
+		epochSeconds: epochSeconds,
+		pinFile:      pinFile,
+		seedURL:      seedURL,
+		ttl:          ttl,
+	}
+	return s.eligible
+}
+
+// resolveAuthority resolves the authority pubkey once (config pin, else persisted
+// TOFU pin, else adopt-and-persist the seed's first snapshot key). Caller holds
+// s.mu.
+func (s *committeeSource) resolveAuthority(ctx context.Context) (string, error) {
+	if s.authority != "" {
+		return s.authority, nil
+	}
+	// 1) operator pin always wins (strongest; protects first boot too).
+	if p := normAuthorityHex(s.configPin); p != "" {
+		s.authority = p
+		return p, nil
+	}
+	// 2) previously-adopted TOFU key from disk.
+	if s.pinFile != "" {
+		if rec, err := loadPersistedAuthority(s.pinFile); err == nil {
+			if k := normAuthorityHex(rec.AuthorityPubHex); k != "" {
+				s.authority = k
+				return k, nil
+			}
+		}
+	}
+	// 3) first use — adopt the key the seed's snapshot carries. Self-verify the
+	// snapshot signs against its own claimed key, then persist that key.
+	snap, err := s.fetch(ctx, 0)
+	if err != nil {
+		return "", fmt.Errorf("TOFU: first committee snapshot fetch failed: %w", err)
+	}
+	if err := committee.VerifyCommitteeSnapshot(snap, ""); err != nil {
+		return "", fmt.Errorf("TOFU: first committee snapshot self-verify failed: %w", err)
+	}
+	adopted := normAuthorityHex(snap.AuthorityPubHex)
+	if adopted == "" {
+		return "", fmt.Errorf("TOFU: committee snapshot carries no authority key")
+	}
+	if s.pinFile != "" {
+		if err := savePersistedAuthority(s.pinFile, persistedAuthority{
+			AuthorityPubHex: adopted, Seed: s.seedURL, AdoptedAt: time.Now().Unix(),
+		}); err != nil {
+			// Non-fatal: adopt in-memory this run, re-adopt next start.
+			log.Warn().Err(err).Str("file", s.pinFile).
+				Msg("committee TOFU: failed to persist adopted authority key (will re-adopt on restart)")
+		} else {
+			log.Warn().Str("authority", adopted).Str("file", s.pinFile).
+				Msg("committee TOFU: adopted seed authority key on first use and persisted it")
+		}
+	}
+	s.authority = adopted
+	return adopted, nil
+}
+
+// eligible fetches (or serves cached) the authenticated, epoch-fresh committee as
+// a peer_id -> bls_pub map. FAIL CLOSED: a fetch/verify/freshness failure returns
+// an error unless a still-epoch-fresh cached snapshot can bridge a transient seed
+// outage.
+func (s *committeeSource) eligible() (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Fast path: a recently-verified snapshot within the TTL.
+	if s.cachedSnap != nil && time.Since(s.cachedAt) < s.ttl {
+		return s.cachedSnap.BLSPubByPeer(), nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	authority, err := s.resolveAuthority(ctx)
+	if err != nil {
+		return s.serveLastGoodOr(err)
+	}
+	snap, err := s.fetch(ctx, 0) // 0 = current epoch
+	if err != nil {
+		return s.serveLastGoodOr(err)
+	}
+	if err := committee.VerifyCommitteeSnapshot(snap, authority); err != nil {
+		return s.serveLastGoodOr(fmt.Errorf("committee snapshot rejected: %w", err))
+	}
+	if err := committee.CheckSnapshotEpochFresh(snap.Epoch, time.Now().Unix(), s.epochSeconds); err != nil {
+		return s.serveLastGoodOr(fmt.Errorf("committee snapshot rejected: %w", err))
+	}
+	s.cachedSnap = snap
+	s.cachedAt = time.Now()
+	return snap.BLSPubByPeer(), nil
+}
+
+// serveLastGoodOr returns the last cached snapshot if it is still epoch-fresh,
+// else err. Lets a brief seed outage not drop blocks while the previously
+// authenticated committee remains valid; fails closed once it goes stale. Caller
+// holds s.mu.
+func (s *committeeSource) serveLastGoodOr(err error) (map[string]string, error) {
+	if s.cachedSnap != nil &&
+		committee.CheckSnapshotEpochFresh(s.cachedSnap.Epoch, time.Now().Unix(), s.epochSeconds) == nil {
+		log.Warn().Err(err).
+			Msg("committee source: serving last-good epoch-fresh snapshot (seed unreachable/invalid)")
+		return s.cachedSnap.BLSPubByPeer(), nil
+	}
+	return nil, err
 }
