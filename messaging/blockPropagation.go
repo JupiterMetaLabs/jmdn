@@ -240,6 +240,17 @@ func HandleBlockStream(stream network.Stream) {
 		return
 	}
 
+	HandleReceivedBlockMessage(msg, remotePeer, true)
+}
+
+// HandleReceivedBlockMessage is the single validate-and-apply path for a received
+// block message, shared by both transports: the direct block stream
+// (HandleBlockStream, forward=true) and the gossip mesh (forward=false, since the
+// pubsub layer re-propagates). It runs dedup, the fail-closed admitZKBlock
+// certificate gate, then processes and stores. `forward` gates ONLY the
+// direct-stream re-flood; the fail-closed security gate is identical regardless
+// of transport.
+func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forward bool) {
 	// Check for duplicates
 	messageID := getMessageIDForBloomFilter(msg)
 	if isMessageProcessed(messageID) {
@@ -294,8 +305,10 @@ func HandleBlockStream(stream network.Stream) {
 			return // no forward, no mutation, no persistence, NOT cached
 		}
 
-		// Block validated and marked processed → forwarding is now safe.
-		if msg.Hops < config.MaxHops {
+		// Block validated and marked processed → forwarding is now safe. Gossip-
+		// delivered blocks skip this direct re-flood (forward=false): the pubsub
+		// mesh already re-propagates them, and dedup makes any overlap harmless.
+		if forward && msg.Hops < config.MaxHops {
 			msg.Hops++
 			if globalHost != nil {
 				log.Info().
@@ -397,7 +410,7 @@ func HandleBlockStream(stream network.Stream) {
 		markMessageProcessed(messageID)
 
 		// Handle other message types (not our focus)
-		if msg.Hops < config.MaxHops {
+		if forward && msg.Hops < config.MaxHops {
 			msg.Hops++
 			BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
 				forwardBlock(globalHost, msg)

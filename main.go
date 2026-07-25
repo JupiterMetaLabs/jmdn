@@ -1052,6 +1052,12 @@ func main() {
 		// Give Block server access to GPS so /api/l1-commit can broadcast to peers.
 		Block.SetGossipPubSubInstance(globalPubSub.GetGossipPubSub())
 
+		// Wire additive finalized-block gossip fan-out. Publish is used only by the
+		// sequencer's finalize path; subscribe+apply runs on every node so finalized
+		// blocks reach the whole fleet (not just the sequencer's connected committee),
+		// each verified through the same fail-closed admitZKBlock gate.
+		startBlockGossip(ctx, globalPubSub.GetGossipPubSub())
+
 		// Subscribe to the dedicated L1 commit channel at startup so this node
 		// receives L1Commit/L1CommitRange broadcasts from the sequencer. This
 		// topic is persistent — unlike the consensus channel, it is never

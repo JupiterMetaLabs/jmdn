@@ -64,6 +64,12 @@ const (
 	PubSub_L1CommitChannel = "pubsub-l1-commit"
 	Pubsub_MessageBuffer   = "pubsub-buffer"
 	Pubsub_CRDTSync        = "pubsub-crdt-sync"
+	// PubSub_BlockPropagation is a persistent topic for fanning finalized,
+	// committee-certified blocks to the whole fleet (not just directly-connected
+	// peers). Receivers run the same fail-closed admitZKBlock gate as the direct
+	// stream path, so signed-block propagation is preserved. Versioned to 2.0.0 to
+	// match the block/vote wire protocols.
+	PubSub_BlockPropagation = "pubsub-block-propagation/2.0.0"
 )
 
 const (
@@ -105,6 +111,9 @@ const (
 	// L1 finality broadcast — sent by the node that received the commit confirmation
 	Type_L1Commit      = "L1_COMMIT"
 	Type_L1CommitRange = "L1_COMMIT_RANGE"
+
+	// Finalized-block gossip fan-out (PubSub_BlockPropagation)
+	Type_BlockPropagation = "BLOCK_PROPAGATION"
 )
 
 // Increase buffer sizes

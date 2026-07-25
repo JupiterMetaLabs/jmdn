@@ -639,6 +639,13 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 	msg.ID = generateBlockMessageID(msg.Sender, nonce, now)
 	markMessageProcessed(getMessageIDForBloomFilter(msg))
 
+	// Additively fan the finalized, certified block out over the gossip mesh so it
+	// reaches the whole fleet, not only directly-connected peers. Receivers run the
+	// same fail-closed admitZKBlock gate. No-op when disabled/unwired; the
+	// direct-stream broadcast below is unchanged. The sender already marked this
+	// message processed above, so it will not re-ingest its own gossiped copy.
+	PublishBlockGossip(msg)
+
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal block message: %w", err)
