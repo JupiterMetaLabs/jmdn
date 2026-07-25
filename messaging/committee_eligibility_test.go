@@ -23,7 +23,6 @@ import (
 
 	blssign "gossipnode/AVC/BLS/bls-sign"
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
-	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/config"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -60,7 +59,9 @@ func mustMintMember(peerID string, seed byte) blsMember {
 // (canonical message identical to BLS_Signer.SignMessageForBlock).
 func (m blsMember) blockVote(t *testing.T, blockHashHex string, vote int8) BLS_Signer.BLSresponse {
 	t.Helper()
-	msg, err := BLS_Verifier.CanonicalBlockVoteMessage(BLS_Signer.DomainChainID(), blockHashHex, vote)
+	// v3 domain: chain + height + block. height 0 matches blockMsg's ZKBlock with
+	// an unset BlockNumber, which is what verifyBlockCertificate passes as height.
+	msg, err := BLS_Signer.CanonicalVoteMessageV3(BLS_Signer.DomainChainID(), 0, blockHashHex, vote)
 	if err != nil {
 		t.Fatalf("canonical vote message: %v", err)
 	}

@@ -84,25 +84,11 @@ func SignMessage(vote int8) (BLSresponse, bool, error) {
 // BlockBoundVotePrefix is the domain-separation prefix for a vote that is
 // cryptographically bound to a specific block. It differs from the legacy
 // "vote:" prefix so a legacy signature can never be reinterpreted as a
-// block-bound one (or vice-versa). The verifier
-// (BLS_Verifier.CanonicalBlockVoteMessage) MUST build the identical message.
+// block-bound one (or vice-versa). Signer and verifier both derive the message
+// from CanonicalVoteMessageV3, so they cannot drift.
 const BlockBoundVotePrefix = "zkvote:"
 
-// VoteDomainVersion tags the canonical block-bound vote-message FORMAT. It is
-// part of the signed bytes, so bumping it invalidates every prior signature and
-// MUST be done only as a coordinated network upgrade.
-//
-//   - v1 (legacy): "zkvote:<blockhash>:<vote>"        — block-bound only.
-//   - v2 (current): "zkvote:v2:chain=<id>:<blockhash>:<vote>" — adds chain-id
-//     domain separation so a signature bound to chain A is not valid as a
-//     committee vote on chain B (fork / testnet↔mainnet).
-//
-// The chain id is the authenticated network id (settings.Network.ChainID); it
-// is a per-node config constant, identical across honest nodes on a network,
-// and is NOT taken from any per-request field.
-const VoteDomainVersion = "v2"
-
-// VoteDomainVersionV3 additionally binds the block HEIGHT:
+// VoteDomainVersionV3 binds chain id, block HEIGHT and block hash:
 // "zkvote:v3:chain=<id>:h=<height>:<blockhash>:<vote>". Because the generator's
 // BlockHash does not commit to the block number, a v2 certificate is not tied to
 // a specific height; binding the height makes a certificate valid only at the
@@ -128,25 +114,6 @@ func CanonicalVoteMessageV3(chainID, height uint64, bindings string, vote int8) 
 	return []byte(msg), nil
 }
 
-// CanonicalVoteMessage builds the EXACT bytes signed and verified for a v2
-// block-bound vote. This is the single definition of the format: both
-// SignMessageForBlock and BLS_Verifier.VerifyForBlock derive their bytes from
-// here, so signer and verifier cannot drift. `bindings` uniquely identifies the
-// block (block hash hex); it is normalized (lowercase + trim) to match the
-// verifier regardless of case/whitespace.
-func CanonicalVoteMessage(chainID uint64, bindings string, vote int8) ([]byte, error) {
-	if vote != -1 && vote != 1 {
-		return nil, fmt.Errorf("invalid vote: %d", vote)
-	}
-	bindings = normalizeBindings(bindings)
-	if bindings == "" {
-		return nil, fmt.Errorf("empty block bindings")
-	}
-	msg := BlockBoundVotePrefix + VoteDomainVersion + ":chain=" +
-		strconv.FormatUint(chainID, 10) + ":" + bindings + ":" + strconv.Itoa(int(vote))
-	return []byte(msg), nil
-}
-
 // DefaultDomainChainID is the fallback chain id used ONLY when settings have not
 // been Load()ed yet (early init, or unit tests that never call Load()). It
 // mirrors the compiled network default so signer and verifier agree even on the
@@ -164,23 +131,14 @@ func DomainChainID() uint64 {
 	return DefaultDomainChainID
 }
 
-// SignMessageForBlock signs a vote that is bound to a specific block AND to the
-// network chain id. `bindings` must uniquely identify the block (the receiver
-// uses the block hash hex). Binding the block and chain ties a vote to a single
-// block on a single chain/fork, unlike the unbound constant "vote:1" used by
-// SignMessage. height is the block number to bind. When height > 0 the vote is
-// signed in the v3 domain (chain + height + block + vote); when height == 0 (the
-// signer does not know the height — e.g. a sequencer that sends no block_number)
-// it falls back to the v2 domain, so a mixed fleet still interoperates during
-// rollout.
+// SignMessageForBlock signs a vote in the v3 domain: bound to the network chain
+// id, the block HEIGHT, and the block hash. `bindings` must uniquely identify the
+// block (the receiver uses the block hash hex). This ties a vote to a single
+// block on a single chain/fork at a single height, unlike the unbound constant
+// "vote:1" used by SignMessage. v2 (chain, no height) is no longer emitted — the
+// fleet is fully migrated to v3 (security review CH-001).
 func SignMessageForBlock(vote int8, chainID, height uint64, bindings string) (BLSresponse, bool, error) {
-	var msg []byte
-	var err error
-	if height > 0 {
-		msg, err = CanonicalVoteMessageV3(chainID, height, bindings, vote)
-	} else {
-		msg, err = CanonicalVoteMessage(chainID, bindings, vote)
-	}
+	msg, err := CanonicalVoteMessageV3(chainID, height, bindings, vote)
 	if err != nil {
 		return *NewBLSresponseBuilder(nil), false, err
 	}

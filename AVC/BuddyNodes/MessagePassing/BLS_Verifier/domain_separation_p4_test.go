@@ -13,10 +13,10 @@ import (
 // production loads-only and fails closed (getBLSKeypair).
 func init() { os.Setenv("JMDN_BLS_AUTOGEN", "1") }
 
-// Votes are domain-separated by network chain id. These tests pin the core
-// property — a committee vote signed for chain A must NOT verify as a valid vote
-// on chain B (fork / testnet↔mainnet) — and document the behavior of the staged
-// v1→v2 rollout.
+// Committee votes are v3-only: the signed bytes bind the network chain id, the
+// block HEIGHT and the block hash. v1 (block-only) and v2 (chain, no height) are
+// no longer accepted (security review CH-001). These tests pin cross-chain,
+// cross-height, field-binding and downgrade-rejection.
 
 const (
 	chainA = uint64(8000800)
@@ -25,148 +25,94 @@ const (
 	blkHash = "0x1111111111111111111111111111111111111111111111111111111111111111"
 )
 
-// TestVoteDomain_CrossChainReplayRejected checks that a v2 signature
-// captured on chain A does not verify as a valid vote on chain B, and this
-// holds even while legacy v1 acceptance is ON (the rollout flag must not accept
-// a chain A vote on chain B).
+// TestVoteDomain_CrossChainReplayRejected: a v3 vote signed on chain A must NOT
+// verify on chain B (fork / testnet↔mainnet domain separation).
 func TestVoteDomain_CrossChainReplayRejected(t *testing.T) {
-	defer restoreV1Flag(AcceptV1BlockBoundVotes)
-	AcceptV1BlockBoundVotes = true // worst case for the v1 acceptance path
-
-	respA, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 0, blkHash)
+	respA, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 100, blkHash)
 	if err != nil || !ok {
-		t.Fatalf("sign v2 on chainA: ok=%v err=%v", ok, err)
+		t.Fatalf("sign v3 on chainA: ok=%v err=%v", ok, err)
 	}
-
-	// Same chain → verifies.
-	if err := VerifyForBlock(respA, chainA, 0, blkHash, 1); err != nil {
-		t.Fatalf("v2 vote should verify on its own chain A: %v", err)
+	if err := VerifyForBlock(respA, chainA, 100, blkHash, 1); err != nil {
+		t.Fatalf("v3 vote should verify on its own chain A: %v", err)
 	}
-
-	// Different chain → MUST be rejected (this is the whole point of domain separation).
-	if err := VerifyForBlock(respA, chainB, 0, blkHash, 1); err == nil {
+	if err := VerifyForBlock(respA, chainB, 100, blkHash, 1); err == nil {
 		t.Fatalf("SECURITY: chainA vote verified on chainB — cross-chain replay not closed")
 	}
 }
 
-// TestVoteDomain_V2RoundTripAndFieldBinding confirms the v2 domain also still
-// binds the block hash and the vote value (regression guard for those properties).
-func TestVoteDomain_V2RoundTripAndFieldBinding(t *testing.T) {
-	defer restoreV1Flag(AcceptV1BlockBoundVotes)
-	AcceptV1BlockBoundVotes = false // pure v2
-
-	resp, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 0, blkHash)
-	if err != nil || !ok {
-		t.Fatalf("sign v2: ok=%v err=%v", ok, err)
-	}
-
-	if err := VerifyForBlock(resp, chainA, 0, blkHash, 1); err != nil {
-		t.Fatalf("v2 round-trip should pass: %v", err)
-	}
-	// Wrong block hash → reject.
-	otherHash := "0x2222222222222222222222222222222222222222222222222222222222222222"
-	if err := VerifyForBlock(resp, chainA, 0, otherHash, 1); err == nil {
-		t.Fatalf("SECURITY: vote for %s verified against %s (block hash not bound)", blkHash, otherHash)
-	}
-	// Wrong vote value → reject.
-	if err := VerifyForBlock(resp, chainA, 0, blkHash, -1); err == nil {
-		t.Fatalf("SECURITY: +1 signature verified as -1 (vote value not bound)")
-	}
-}
-
-// TestVoteDomain_V1RolloutGap documents the behavior during rollout: a genuine
-// legacy v1 signature (block-bound but chain-agnostic) is accepted on any chain
-// while AcceptV1BlockBoundVotes is on, and is rejected on every chain once the
-// flag is turned off. This is the operator's lever to close the migration
-// window.
-func TestVoteDomain_V1RolloutGap(t *testing.T) {
-	defer restoreV1Flag(AcceptV1BlockBoundVotes)
-
-	// Build a real v1 signature with a fresh keypair.
-	priv, pub, err := blssign.GenerateBLSKeyPair()
-	if err != nil {
-		t.Fatalf("keygen: %v", err)
-	}
-	v1msg, err := canonicalVoteMessageV1(blkHash, 1)
-	if err != nil {
-		t.Fatalf("v1 canonical: %v", err)
-	}
-	sig, err := blssign.BLSSign(priv, v1msg)
-	if err != nil {
-		t.Fatalf("v1 sign: %v", err)
-	}
-	resp := *BLS_Signer.NewBLSresponseBuilder(nil).
-		SetSignature(hex.EncodeToString(sig)).
-		SetAgree(true).
-		SetPubKey(hex.EncodeToString(pub)).
-		Build()
-
-	// Flag ON: v1 accepted regardless of chain id (documents rollout behavior).
-	AcceptV1BlockBoundVotes = true
-	if err := VerifyForBlock(resp, chainA, 0, blkHash, 1); err != nil {
-		t.Fatalf("v1 vote should be accepted on chainA during rollout: %v", err)
-	}
-	if err := VerifyForBlock(resp, chainB, 0, blkHash, 1); err != nil {
-		t.Fatalf("v1 vote should be accepted on chainB during rollout: %v", err)
-	}
-
-	// Flag OFF: v1 rejected everywhere — rollout complete.
-	AcceptV1BlockBoundVotes = false
-	if err := VerifyForBlock(resp, chainA, 0, blkHash, 1); err == nil {
-		t.Fatalf("SECURITY: v1 vote still accepted after AcceptV1BlockBoundVotes disabled")
-	}
-}
-
-// TestVoteDomain_SignerVerifierShareOneFormat guards against drift: the bytes
-// the verifier builds MUST equal what the signer signs, since both derive from
-// BLS_Signer.CanonicalVoteMessage.
-func TestVoteDomain_SignerVerifierShareOneFormat(t *testing.T) {
-	signerBytes, err := BLS_Signer.CanonicalVoteMessage(chainA, blkHash, 1)
-	if err != nil {
-		t.Fatalf("signer canonical: %v", err)
-	}
-	verifierBytes, err := CanonicalBlockVoteMessage(chainA, blkHash, 1)
-	if err != nil {
-		t.Fatalf("verifier canonical: %v", err)
-	}
-	if string(signerBytes) != string(verifierBytes) {
-		t.Fatalf("signer/verifier format drift:\n signer=%q\n verifier=%q", signerBytes, verifierBytes)
-	}
-}
-
-// TestVoteDomain_InvalidInputsRejected: empty bindings and invalid vote values
-// are rejected by the canonical builder.
-func TestVoteDomain_InvalidInputsRejected(t *testing.T) {
-	if _, err := BLS_Signer.CanonicalVoteMessage(chainA, "  ", 1); err == nil {
-		t.Fatalf("empty bindings should be rejected")
-	}
-	if _, err := BLS_Signer.CanonicalVoteMessage(chainA, blkHash, 0); err == nil {
-		t.Fatalf("vote value 0 should be rejected")
-	}
-}
-
-func restoreV1Flag(v bool) { AcceptV1BlockBoundVotes = v }
-
-// TestVoteDomain_V3HeightBinding: a v3 vote signed for one height must NOT
-// verify at another height, even with v2 acceptance on (a v3 signature never
-// matches v2 bytes). This is what binds a certificate to the exact height its
-// signers intended.
+// TestVoteDomain_V3HeightBinding: a v3 vote for one height must NOT verify at
+// another height, and a different chain is still rejected.
 func TestVoteDomain_V3HeightBinding(t *testing.T) {
-	// height > 0 => v3 domain (chain + height + block + vote).
 	resp, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 100, blkHash)
 	if err != nil || !ok {
 		t.Fatalf("sign v3: ok=%v err=%v", ok, err)
 	}
-	// Its own height verifies.
 	if err := VerifyForBlock(resp, chainA, 100, blkHash, 1); err != nil {
 		t.Fatalf("v3 vote should verify at its own height: %v", err)
 	}
-	// A DIFFERENT height must be rejected (the height-binding property).
 	if err := VerifyForBlock(resp, chainA, 200, blkHash, 1); err == nil {
 		t.Fatalf("SECURITY (A2): v3 vote for height 100 verified at height 200 — height not bound")
 	}
-	// A different chain is still rejected.
 	if err := VerifyForBlock(resp, chainB, 100, blkHash, 1); err == nil {
 		t.Fatalf("SECURITY: v3 vote verified on a different chain")
+	}
+}
+
+// TestVoteDomain_V3FieldBinding: the v3 domain binds the block hash and the vote
+// value.
+func TestVoteDomain_V3FieldBinding(t *testing.T) {
+	resp, ok, err := BLS_Signer.SignMessageForBlock(1, chainA, 100, blkHash)
+	if err != nil || !ok {
+		t.Fatalf("sign v3: ok=%v err=%v", ok, err)
+	}
+	otherHash := "0x2222222222222222222222222222222222222222222222222222222222222222"
+	if err := VerifyForBlock(resp, chainA, 100, otherHash, 1); err == nil {
+		t.Fatalf("SECURITY: vote for %s verified against %s (block hash not bound)", blkHash, otherHash)
+	}
+	if err := VerifyForBlock(resp, chainA, 100, blkHash, -1); err == nil {
+		t.Fatalf("SECURITY: +1 signature verified as -1 (vote value not bound)")
+	}
+}
+
+// TestVoteDomain_DowngradeRejected: a genuine BLS signature over the OLD v1
+// (block-only) or v2 (chain, no height) canonical bytes MUST NOT verify under
+// v3-only. The verifier now builds only v3 bytes, so any non-v3 signature fails.
+func TestVoteDomain_DowngradeRejected(t *testing.T) {
+	priv, pub, err := blssign.GenerateBLSKeyPair()
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	build := func(msg string) BLS_Signer.BLSresponse {
+		sig, err := blssign.BLSSign(priv, []byte(msg))
+		if err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		return *BLS_Signer.NewBLSresponseBuilder(nil).
+			SetSignature(hex.EncodeToString(sig)).
+			SetAgree(true).
+			SetPubKey(hex.EncodeToString(pub)).
+			Build()
+	}
+
+	// v1: "zkvote:<blockhash>:<vote>" (block-only, no chain, no height).
+	v1 := build(BLS_Signer.BlockBoundVotePrefix + blkHash + ":1")
+	if err := VerifyForBlock(v1, chainA, 100, blkHash, 1); err == nil {
+		t.Fatalf("SECURITY (CH-001): a v1 signature was accepted under v3-only")
+	}
+	// v2: "zkvote:v2:chain=8000800:<blockhash>:<vote>" (chain, no height).
+	v2 := build(BLS_Signer.BlockBoundVotePrefix + "v2:chain=8000800:" + blkHash + ":1")
+	if err := VerifyForBlock(v2, chainA, 100, blkHash, 1); err == nil {
+		t.Fatalf("SECURITY (CH-001): a v2 signature was accepted under v3-only")
+	}
+}
+
+// TestVoteDomain_InvalidInputsRejected: empty bindings and invalid vote values
+// are rejected by the v3 canonical builder.
+func TestVoteDomain_InvalidInputsRejected(t *testing.T) {
+	if _, err := BLS_Signer.CanonicalVoteMessageV3(chainA, 100, "  ", 1); err == nil {
+		t.Fatalf("empty bindings should be rejected")
+	}
+	if _, err := BLS_Signer.CanonicalVoteMessageV3(chainA, 100, blkHash, 0); err == nil {
+		t.Fatalf("vote value 0 should be rejected")
 	}
 }
