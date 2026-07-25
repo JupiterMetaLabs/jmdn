@@ -1196,16 +1196,24 @@ func main() {
 		return MessagePassing.ConsensusVoteEligible(tip, present, synced)
 	})
 
-	// Committee-eligibility source on validator nodes (cfg.Ports.BlockGen == 0).
-	// The sequencer (BlockGen > 0) wires its own pinned source in
-	// Sequencer.NewConsensus and is deliberately left untouched here. Every other
-	// node needs a source too: the mandatory block-certificate check in
+	// Committee-eligibility source on validator (non-sequencer) nodes. "Validator"
+	// is keyed off enable_catchup — validators catch up from peers (true); the
+	// sequencer is the authoritative producer and sets it false. This is the SAME
+	// discriminator the sync monitor uses above. It is deliberately NOT keyed off
+	// the block-generator port, which is set on validators too (fleet-wide), not
+	// only on the sequencer — keying off BlockGen silently skipped every validator
+	// that runs the block-gen API.
+	//
+	// The sequencer wires its own pinned source in Sequencer.NewConsensus (called
+	// only from the block-production path) and is left untouched here. Every
+	// validator needs a source too: the mandatory block-certificate check in
 	// admitZKBlock calls messaging.VerifyCertificate, which fails CLOSED without
 	// one — so a receiver with no source drops (and stops forwarding) every block.
 	// Authority key: the operator pin if set, else trust-on-first-use of the
-	// seed-served key (persisted to config/seedAuth.json). The verified snapshot is
-	// cached, so the seed is queried about once per refresh window, not per block.
-	if cfg.Ports.BlockGen == 0 && cfg.Network.SeedNode != "" {
+	// seed-served key (persisted to config/seedAuth.json; override with
+	// JMDN_SEED_AUTH_FILE). The verified snapshot is cached, so the seed is queried
+	// about once per refresh window, not per block.
+	if cfg.FastSync.EnableCatchup && cfg.Network.SeedNode != "" {
 		if elCli, err := seednode.NewClient(cfg.Network.SeedNode); err != nil {
 			log.Error().Err(err).
 				Msg("[Committee] seed client init failed — certificate verification stays fail-closed until a source is available")
