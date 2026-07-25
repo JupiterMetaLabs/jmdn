@@ -13,6 +13,7 @@ import (
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
 	"gossipnode/config"
+	"gossipnode/config/settings"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -21,6 +22,16 @@ import (
 // installs them as the eligible committee for the test.
 func committeeOfSize(t *testing.T, n int) []blsMember {
 	t.Helper()
+	// These scenarios verify 2f+1 over the FULL committee of size n. If settings
+	// happen to be loaded (by another test) with the production max_validators cap
+	// (default 5), eligibleMembers would trim n>5 committees and break the
+	// threshold math. Disable the cap for the test's duration; restore after.
+	if settings.IsLoaded() {
+		c := settings.Get()
+		prev := c.Consensus.MaxValidators
+		c.Consensus.MaxValidators = 0
+		t.Cleanup(func() { c.Consensus.MaxValidators = prev })
+	}
 	members := make([]blsMember, n)
 	ids := make([]string, n)
 	for i := 0; i < n; i++ {
