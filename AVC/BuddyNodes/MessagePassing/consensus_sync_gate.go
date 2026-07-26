@@ -2,14 +2,21 @@ package MessagePassing
 
 import "os"
 
-// enforceConsensusSyncGate gates the consensus sync-gate. It is opt-in and
-// default-off: when enforced, the gate can abstain on a buddy that cannot
-// self-assess its sync state (its tip reads as 0, or the DB read errors on the
-// validator role), so no buddy signs and consensus stalls. Keep it off by
-// default so a buddy that cannot self-assess sync state still votes; set
-// JMDN_ENFORCE_SYNC_GATE=1 to enable once the gate's tip source is validated on
-// the validator role.
-var enforceConsensusSyncGate = os.Getenv("JMDN_ENFORCE_SYNC_GATE") == "1"
+// MaxConsensusLagBlocks is how far behind the sequencer head a node may be and
+// still participate in consensus. A node must hold the latest block or be at most
+// this many blocks behind (head, head-1, head-2 when =2); a node 3+ behind — or
+// with no chain at all — must not be a buddy or cast a vote. Policy set with Doc:
+// "nodes without the latest block or latest-2 must not be a buddy node or
+// participate in consensus."
+const MaxConsensusLagBlocks uint64 = 2
+
+// enforceConsensusSyncGate gates the consensus sync-gate. Default-ON: a node that
+// is behind by more than MaxConsensusLagBlocks (a KNOWN gap) abstains, so a stale
+// node cannot vote on state it has not caught up to. It fails OPEN only when the
+// head is genuinely unknown (the sequencer, which runs no monitor, and a seednode
+// outage) so a transient loss of the head reference does not stall consensus. Set
+// JMDN_ENFORCE_SYNC_GATE=0 to disable (revert to always-permit) during rollout.
+var enforceConsensusSyncGate = os.Getenv("JMDN_ENFORCE_SYNC_GATE") != "0"
 
 // Consensus vote sync-gate.
 //
@@ -43,20 +50,27 @@ func consensusVoteReady() bool {
 	return consensusSyncGate()
 }
 
-// ConsensusVoteEligible is the pure policy the production gate applies:
-//   - a node with no local chain (tip 0) NEVER votes — a fresh node must not
-//     participate in consensus at all;
-//   - a node that runs a sync monitor must be reported synced;
-//   - otherwise (e.g. the monitor-less sequencer with a non-empty chain) it may
-//     vote.
+// ConsensusVoteEligible is the pure policy the production gate applies, keyed on
+// how far this node's local head trails the sequencer head:
+//   - a node with no local chain (localHead 0) NEVER votes — a fresh node must
+//     not participate in consensus at all;
+//   - when the sequencer head is unknown (headKnown=false: the monitor-less
+//     sequencer, or a seednode outage) a node with a non-empty chain MAY vote —
+//     there is no reference to judge against, so fail open for liveness;
+//   - a node at or ahead of the reported head MAY vote;
+//   - otherwise the node may vote only if it trails by at most
+//     MaxConsensusLagBlocks; a larger, KNOWN gap abstains.
 //
 // Exposed for the startup wiring and for unit tests.
-func ConsensusVoteEligible(localTip uint64, monitorPresent, monitorSynced bool) bool {
-	if localTip == 0 {
+func ConsensusVoteEligible(localHead, sequencerHead uint64, headKnown bool) bool {
+	if localHead == 0 {
 		return false
 	}
-	if monitorPresent && !monitorSynced {
-		return false
+	if !headKnown {
+		return true
 	}
-	return true
+	if sequencerHead <= localHead {
+		return true
+	}
+	return sequencerHead-localHead <= MaxConsensusLagBlocks
 }

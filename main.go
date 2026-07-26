@@ -1186,20 +1186,27 @@ func main() {
 		}
 	}
 
-	// Wire the consensus vote gate on every node: a node with
-	// no local chain (tip 0) never votes, and a node running a sync monitor must
-	// be synced before it votes. On a DB read error tip is 0 → abstain
-	// (fail-closed). The sequencer has no monitor and a non-empty chain, so it is
-	// unaffected. Captured syncMonitor may be nil (no fastsync/seednode).
+	// Wire the consensus vote gate on every node: a node may be a buddy / cast a
+	// vote only if it holds the latest block or trails the sequencer head by at
+	// most MessagePassing.MaxConsensusLagBlocks (2); a fresh node (tip 0) or one
+	// 3+ blocks behind must not. On a DB read error tip is unknown → abstain
+	// (fail-closed). The sequencer runs no monitor, so its head is "unknown" here
+	// and it votes on the strength of its non-empty chain (it IS the head).
+	// headKnown is false during a seednode outage (SeednodeUnreachable) so a
+	// transient loss of the head reference does not stall consensus — only a
+	// KNOWN gap > 2 abstains. Captured syncMonitor may be nil (no fastsync/seednode).
 	gateMonitor := syncMonitor
 	MessagePassing.SetConsensusSyncGate(func() bool {
 		tip, err := DB_OPs.GetLatestBlockNumber(context.Background(), nil)
 		if err != nil {
 			return false // cannot confirm local chain state → abstain
 		}
-		present := gateMonitor != nil
-		synced := present && gateMonitor.GetStatus().IsSynced
-		return MessagePassing.ConsensusVoteEligible(tip, present, synced)
+		if gateMonitor == nil {
+			return MessagePassing.ConsensusVoteEligible(tip, 0, false)
+		}
+		st := gateMonitor.GetStatus()
+		headKnown := st.SequencerHead > 0 && !st.SeednodeUnreachable
+		return MessagePassing.ConsensusVoteEligible(tip, st.SequencerHead, headKnown)
 	})
 
 	// Committee-eligibility source on validator (non-sequencer) nodes. "Validator"

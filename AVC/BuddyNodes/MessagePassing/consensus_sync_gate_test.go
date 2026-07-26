@@ -2,25 +2,34 @@ package MessagePassing
 
 import "testing"
 
-// Vote-gate policy: fresh node never votes; a monitored node must be synced.
+// Vote-gate policy: a node may vote only if it holds the latest block or trails
+// the sequencer head by at most MaxConsensusLagBlocks (2). A fresh node never
+// votes; an unknown head permits (sequencer / seednode outage).
 func TestConsensusVoteEligible(t *testing.T) {
+	if MaxConsensusLagBlocks != 2 {
+		t.Fatalf("policy expects a 2-block lag budget, got %d", MaxConsensusLagBlocks)
+	}
 	cases := []struct {
-		name            string
-		tip             uint64
-		present, synced bool
-		want            bool
+		name               string
+		localHead, seqHead uint64
+		headKnown          bool
+		want               bool
 	}{
-		{"fresh node never votes (no monitor)", 0, false, false, false},
-		{"fresh node never votes (even if monitor synced)", 0, true, true, false},
-		{"catching up abstains", 5, true, false, false},
-		{"synced monitored node votes", 5, true, true, true},
-		{"monitorless non-empty node votes (sequencer)", 5, false, false, true},
+		{"fresh node never votes (head known)", 0, 5, true, false},
+		{"fresh node never votes (head unknown)", 0, 0, false, false},
+		{"at head votes", 5, 5, true, true},
+		{"one behind votes", 4, 5, true, true},
+		{"two behind votes (boundary)", 3, 5, true, true},
+		{"three behind abstains", 2, 5, true, false},
+		{"far behind abstains", 1, 50, true, false},
+		{"ahead of reported head votes", 6, 5, true, true},
+		{"head unknown permits (seed outage / sequencer)", 5, 0, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ConsensusVoteEligible(tc.tip, tc.present, tc.synced); got != tc.want {
-				t.Fatalf("ConsensusVoteEligible(%d,%v,%v)=%v, want %v",
-					tc.tip, tc.present, tc.synced, got, tc.want)
+			if got := ConsensusVoteEligible(tc.localHead, tc.seqHead, tc.headKnown); got != tc.want {
+				t.Fatalf("ConsensusVoteEligible(local=%d seq=%d known=%v)=%v, want %v",
+					tc.localHead, tc.seqHead, tc.headKnown, got, tc.want)
 			}
 		})
 	}
