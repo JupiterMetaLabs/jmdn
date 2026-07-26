@@ -362,6 +362,17 @@ func createSchema(db *sql.DB) error {
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		);
+
+		-- Maintained account/DID count for the explorer stats API. Seeded ONCE
+		-- from immudb (DB_OPs.CountAccounts) and thereafter incremented as new
+		-- accounts are persisted, so the stats endpoint never runs the O(n)
+		-- immudb prefix scan per request. Kept in a SEPARATE table so
+		-- RebuildIndex (which clears address_txns + index_meta) does NOT wipe the
+		-- one-time-seeded counter. Single row: key='account_count'.
+		CREATE TABLE IF NOT EXISTS account_meta (
+			key   TEXT PRIMARY KEY,
+			value INTEGER NOT NULL
+		);
 	`)
 	return err
 }
@@ -517,6 +528,59 @@ func setMetaMonotonicMax(tx *sql.Tx, key string, value uint64) error {
 	return err
 }
 
+// ── account/DID counter ──────────────────────────────────────────────────────
+// The explorer "TotalDIDs" figure is the number of accounts (address: keys) in
+// immudb. Counting it per request is an O(n) server-side scan, so it is
+// maintained here: seeded once from DB_OPs.CountAccounts and incremented as new
+// accounts are persisted. Stored in account_meta (key='account_count'), which
+// RebuildIndex does not touch.
+
+const accountCountKey = "account_count"
+
+// SetAccountCount overwrites the stored account count. Used by the one-time
+// startup seed.
+func (idx *DB) SetAccountCount(ctx context.Context, n int64) error {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	_, err := idx.writeDB.ExecContext(ctx,
+		`INSERT INTO account_meta (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		accountCountKey, n)
+	return err
+}
+
+// IncrAccountCount adds delta to the stored account count. If the row is absent
+// (counter not yet seeded) the increment is a no-op — increments only apply once
+// the one-time seed has established the baseline, so a pre-seed create can't
+// leave the counter at a bogus partial value.
+func (idx *DB) IncrAccountCount(ctx context.Context, delta int64) error {
+	if delta == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	_, err := idx.writeDB.ExecContext(ctx,
+		`UPDATE account_meta SET value = value + ? WHERE key = ?`,
+		delta, accountCountKey)
+	return err
+}
+
+// GetAccountCount returns the stored count and whether it has been seeded.
+func (idx *DB) GetAccountCount(ctx context.Context) (int64, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	var n int64
+	err := idx.readDB.QueryRowContext(ctx,
+		`SELECT value FROM account_meta WHERE key = ?`, accountCountKey).Scan(&n)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return n, true, nil
+}
+
 // ── singleton ────────────────────────────────────────────────────────────────
 // A process-level singleton so callers (broadcast.go, RPC handlers) can reach
 // the index without threading *DB through every call site.
@@ -597,6 +661,41 @@ func CountTransactions(ctx context.Context) (uint64, error) {
 		return 0, fmt.Errorf("txindex not ready (rebuild or gap catchup in progress)")
 	}
 	return idx.CountTransactions(ctx)
+}
+
+// SetAccountCount seeds the singleton account/DID counter (one-time startup
+// seed). Errors when the index is not initialised.
+func SetAccountCount(ctx context.Context, n int64) error {
+	idx := getIdx()
+	if idx == nil {
+		return fmt.Errorf("txindex not initialised")
+	}
+	return idx.SetAccountCount(ctx, n)
+}
+
+// IncrAccountCount adds delta to the singleton account/DID counter. No-op (nil
+// error) when the index is not initialised, so the account-write path never
+// fails just because the index isn't up. Also a no-op until the counter has been
+// seeded (see DB.IncrAccountCount).
+func IncrAccountCount(ctx context.Context, delta int64) error {
+	idx := getIdx()
+	if idx == nil {
+		return nil
+	}
+	return idx.IncrAccountCount(ctx, delta)
+}
+
+// GetAccountCount returns the maintained account/DID count and whether it has
+// been seeded yet. Unlike CountTransactions it does NOT gate on IsReady(): the
+// counter is seeded directly from immudb and is independent of the tx-index gap
+// catchup. Callers use the "seeded" bool to decide whether to run the one-time
+// seed (or, in the stats API, to fall back to the immudb count).
+func GetAccountCount(ctx context.Context) (int64, bool, error) {
+	idx := getIdx()
+	if idx == nil {
+		return 0, false, fmt.Errorf("txindex not initialised")
+	}
+	return idx.GetAccountCount(ctx)
 }
 
 // Init opens the SQLite index and starts the background worker synchronously

@@ -2,7 +2,6 @@ package explorer
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"math"
 	"net/http"
@@ -20,7 +19,6 @@ import (
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/interfaces"
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/JupiterMetaLabs/ion"
-	"github.com/codenotary/immudb/pkg/api/schema"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/attribute"
@@ -29,8 +27,6 @@ import (
 var BlockOpsLocalGRO interfaces.LocalGoroutineManagerInterface
 
 type stats struct {
-	DBState           *schema.ImmutableState
-	MerkleRoot        string
 	LatestBlockNumber uint64
 	TotalBlocks       uint64
 	TotalDIDs         int64
@@ -565,33 +561,6 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 		}
 	}
 
-	// Get database status in a goroutine
-	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
-		tempClient := s.defaultdb.Client
-		status, err := DB_OPs.GetDatabaseState(tempClient)
-		if err != nil {
-			handleErr(fmt.Errorf("failed to get database state: %w", err))
-			return nil
-		}
-		mu.Lock()
-		stats.DBState = status
-		mu.Unlock()
-		return nil
-	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))
-
-	// Get merkle root in a goroutine
-	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
-		merkleroot, err := DB_OPs.GetMerkleRoot(&s.defaultdb)
-		if err != nil {
-			handleErr(fmt.Errorf("failed to get merkle root: %w", err))
-			return fmt.Errorf("failed to get merkle root: %w", err)
-		}
-		mu.Lock()
-		stats.MerkleRoot = hex.EncodeToString(merkleroot)
-		mu.Unlock()
-		return nil
-	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))
-
 	// Get latest block number and total blocks in a goroutine
 	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
 		latestBlockNumber, err := DB_OPs.GetLatestBlockNumber(c.Request.Context(), &s.defaultdb)
@@ -626,12 +595,20 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 		return nil
 	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))
 
-	// Get total DIDs in a goroutine
+	// Get total DIDs/accounts in a goroutine. Prefer the maintained sqlite
+	// counter (O(1)); fall back to the immudb prefix count only when the counter
+	// has not been seeded yet (first boot before the one-time seed completes).
 	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
+		if n, seeded, err := txindex.GetAccountCount(ctx); err == nil && seeded {
+			mu.Lock()
+			stats.TotalDIDs = n
+			mu.Unlock()
+			return nil
+		}
 		totalDIDs, err := DB_OPs.CountAccounts(&s.accountsdb)
 		if err != nil {
-			handleErr(fmt.Errorf("failed to list DIDs: %w", err))
-			return fmt.Errorf("failed to list DIDs: %w", err)
+			handleErr(fmt.Errorf("failed to count DIDs: %w", err))
+			return fmt.Errorf("failed to count DIDs: %w", err)
 		}
 		mu.Lock()
 		stats.TotalDIDs = int64(totalDIDs)
@@ -679,7 +656,6 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 		attribute.Int64("total_blocks", int64(stats.TotalBlocks)),
 		attribute.Int64("total_transactions", stats.TotalTransactions),
 		attribute.Int64("total_dids", stats.TotalDIDs),
-		attribute.String("merkle_root", stats.MerkleRoot),
 	)
 	duration := time.Since(startTime).Seconds()
 	span.SetAttributes(attribute.Float64("duration", duration))

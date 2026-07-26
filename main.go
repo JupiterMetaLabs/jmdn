@@ -994,6 +994,42 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
 	}
 
+	// Explorer stats account/DID counter. The stats API used to scan immudb
+	// (CountAccounts, O(n)) on every request; instead the count is maintained in
+	// the txindex sqlite. Increments are applied asynchronously so the
+	// account-write path never blocks on the sqlite counter.
+	DB_OPs.SetAccountCreatedHook(func(delta int) {
+		go func() {
+			if err := txindex.IncrAccountCount(context.Background(), int64(delta)); err != nil {
+				log.Debug().Err(err).Int("delta", delta).Msg("[stats] account counter increment failed")
+			}
+		}()
+	})
+	// One-time seed: indexing the existing DIDs/accounts is a one-shot activity.
+	// Only run the expensive immudb CountAccounts if the counter has never been
+	// seeded; once present it is maintained by the increments above. Runs in a
+	// goroutine so a first-boot seed never delays startup.
+	go func() {
+		_, seeded, err := txindex.GetAccountCount(context.Background())
+		if err != nil {
+			log.Debug().Err(err).Msg("[stats] account counter unavailable; skipping one-time seed")
+			return
+		}
+		if seeded {
+			return // already indexed once — keep incrementing
+		}
+		n, err := DB_OPs.CountAccounts(nil)
+		if err != nil {
+			log.Warn().Err(err).Msg("[stats] one-time account/DID count seed failed; will retry next boot")
+			return
+		}
+		if err := txindex.SetAccountCount(context.Background(), int64(n)); err != nil {
+			log.Warn().Err(err).Msg("[stats] failed to persist seeded account/DID count")
+			return
+		}
+		log.Info().Int("count", n).Msg("[stats] account/DID counter seeded (one-time)")
+	}()
+
 	// ── Account Sync Worker (Redis Stream) ───────────────────────────────────
 	// WriteAccounts and BatchUpdateAccounts enqueue to a Redis Stream and return
 	// immediately, decoupling callers from the ~15 s ImmuDB commit latency.
