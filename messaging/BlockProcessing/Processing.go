@@ -124,9 +124,66 @@ func cleanupTransactionLock(txHash string) {
 	delete(txProcessingLocks, txHash)
 }
 
+// ─── Per-block-hash apply lock ────────────────────────────────────────────────
+//
+// blockApplyLock serializes ProcessBlockTransactions per block hash so a block
+// delivered more than once — direct stream + gossip near-simultaneously, a
+// re-flood, or live delivery racing catch-up — is applied EXACTLY ONCE. Without
+// it, two goroutines run the full apply for the same block and each credits the
+// balances; the double-credit is timing-dependent, so nodes diverge. The lock is
+// held across the whole apply (the already-processed check + balance writes +
+// marker commit), making that sequence atomic per block hash. Different block
+// hashes take different locks and still process in parallel.
+//
+// Reference-counted so an entry is removed once no goroutine holds or waits on
+// it (no unbounded growth). refs is guarded by blockApplyLocksMu, so a concurrent
+// acquirer always shares the same *blockApplyLock and a release cannot delete a
+// lock another goroutine is about to use.
+type blockApplyLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+var (
+	blockApplyLocks   = make(map[string]*blockApplyLock)
+	blockApplyLocksMu sync.Mutex
+)
+
+// acquireBlockApplyLock locks the per-hash apply lock and returns its release func.
+func acquireBlockApplyLock(blockHash string) func() {
+	blockApplyLocksMu.Lock()
+	l, ok := blockApplyLocks[blockHash]
+	if !ok {
+		l = &blockApplyLock{}
+		blockApplyLocks[blockHash] = l
+	}
+	l.refs++
+	blockApplyLocksMu.Unlock()
+
+	l.mu.Lock()
+
+	return func() {
+		l.mu.Unlock()
+		blockApplyLocksMu.Lock()
+		l.refs--
+		if l.refs == 0 {
+			delete(blockApplyLocks, blockHash)
+		}
+		blockApplyLocksMu.Unlock()
+	}
+}
+
 // ProcessBlockTransactions processes all transactions in a block atomically
 // If any transaction fails, all are rolled back
 func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock, accountsClient *config.PooledConnection) error {
+	// Serialize concurrent applies of the SAME block so it is applied exactly
+	// once no matter how many copies arrive (multi-transport delivery, re-flood,
+	// or live delivery racing catch-up). Held across the already-processed check
+	// and the full apply below, so a second caller blocks here and then observes
+	// the committed block marker and returns without re-crediting balances.
+	releaseBlockLock := acquireBlockApplyLock(block.BlockHash.Hex())
+	defer releaseBlockLock()
+
 	// Record trace span and close it
 	span_ctx, span := logger().NamedLogger.Tracer("BlockProcessing").Start(logger_ctx, "BlockProcessing.ProcessBlockTransactions")
 	defer span.End()
