@@ -103,11 +103,11 @@ func TestMergeAccountForWrite_MonotonicCounterGuards(t *testing.T) {
 	}
 }
 
-func TestMergeAccountForWrite_ForgedDIDStripped(t *testing.T) {
+func TestMergeAccountForWrite_InvalidDIDStripped(t *testing.T) {
 	existing := storedAccount()
 	upd := sparseUpdate(time.Now().UTC().UnixNano())
-	// Legacy forged DID: lowercase hex address (Address.Hex() is checksummed,
-	// so a case-sensitive compare misses it — the original mitigation bug).
+	// Legacy hex-address DID: lowercase hex address (Address.Hex() is checksummed,
+	// so a case-sensitive compare misses it).
 	upd.DIDAddress = "0x1111111111111111111111111111111111111111"
 	upd.AccountType = "user" // legacy hardcoded placeholder
 
@@ -116,7 +116,7 @@ func TestMergeAccountForWrite_ForgedDIDStripped(t *testing.T) {
 		t.Fatal("newer incoming must be written")
 	}
 	if merged.DIDAddress != "did:jmdn:realdid" {
-		t.Errorf("forged hex DID not stripped: %q", merged.DIDAddress)
+		t.Errorf("hex DID not stripped: %q", merged.DIDAddress)
 	}
 	if merged.AccountType != "validator" {
 		t.Errorf("legacy 'user' placeholder must not clobber real type: %q", merged.AccountType)

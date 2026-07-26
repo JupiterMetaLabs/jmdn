@@ -113,8 +113,8 @@ func (l *TLSLoader) LoadServerTLS(serviceName string) (*tls.Config, error) {
 //  3. OS / system CA pool               — public services (Let's Encrypt, etc.)
 //
 // Using the system pool (case 3) is correct and intentional for internet-facing endpoints
-// such as mre.jmdt.io or seednode.jmdt.io: their Let's Encrypt ISRG Root X1 cert is
-// already trusted by the OS on every modern Linux host. No local cert provisioning needed.
+// their Let's Encrypt ISRG Root X1 cert is already trusted by the OS on every modern Linux host.
+// No local cert provisioning needed.
 //
 // clientIdentity is optional. When provided, a client certificate is loaded from
 // <cert_dir>/<clientIdentity>.crt/.key for mTLS.

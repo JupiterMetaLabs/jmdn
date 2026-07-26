@@ -3,6 +3,8 @@ package Router
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"gossipnode/AVC/NodeSelection/pkg/selection"
@@ -16,8 +18,41 @@ import (
 
 type NodeselectionRouter struct{}
 
-const mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-const networkSalt = "test-salt"
+// The VRF key material for node/committee selection MUST be secret and
+// per-network. Selection requires operator-provided secret material via
+// environment; an empty value is rejected at use rather than falling back to a
+// default.
+//
+//	JMDN_NODE_SELECTION_MNEMONIC — the network's secret BIP39 mnemonic
+//	JMDN_NETWORK_SALT            — the network's VRF domain-separation salt
+//
+// TODO: derive the selection key from this node's own libp2p private key
+// (peer.json) instead of a shared mnemonic, so no secret is shared across nodes
+// at all.
+func selectionKeyMaterial() (mnemonic string, salt string, err error) {
+	// Primary source: YAML/Viper config (settings.selection.*). Viper also binds
+	// JMDN_NODE_SELECTION_MNEMONIC / JMDN_NETWORK_SALT, so env overrides YAML.
+	sel := settings.Get().Selection
+	mnemonic = strings.TrimSpace(sel.Mnemonic)
+	salt = strings.TrimSpace(sel.Salt)
+
+	// Direct env fallback (defensive: covers callers that build config without
+	// going through Viper's BindEnv).
+	if mnemonic == "" {
+		mnemonic = strings.TrimSpace(os.Getenv("JMDN_NODE_SELECTION_MNEMONIC"))
+	}
+	if salt == "" {
+		salt = strings.TrimSpace(os.Getenv("JMDN_NETWORK_SALT"))
+	}
+
+	if mnemonic == "" {
+		return "", "", fmt.Errorf("selection.mnemonic (JMDN_NODE_SELECTION_MNEMONIC) is not set: refusing to use the public BIP39 test mnemonic for VRF selection (predictable and reproducible)")
+	}
+	if salt == "" {
+		return "", "", fmt.Errorf("selection.salt (JMDN_NETWORK_SALT) is not set: refusing to use a default VRF salt")
+	}
+	return mnemonic, salt, nil
+}
 
 func NewNodeselectionRouter() *NodeselectionRouter {
 	return &NodeselectionRouter{}
@@ -27,6 +62,10 @@ func (r *NodeselectionRouter) GetBuddyNodes(number int) ([]*selection.BuddyNode,
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	mnemonic, networkSalt, err := selectionKeyMaterial()
+	if err != nil {
+		return nil, err
+	}
 	_, privateKey, err := selection.GenerateKeysFromMnemonic(mnemonic)
 	if err != nil {
 		return nil, err

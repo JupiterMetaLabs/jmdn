@@ -1,6 +1,6 @@
 name: Docker
 
-# Triggers on version tags (v1.0.0, v1.2.3-rc1, etc.)
+# Triggers on version tags (v2.0.0, v2.0.1-rc1, etc.)
 # Also allows manual dispatch for testing
 on:
   push:
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Image tag (e.g. v1.1.0)"
+        description: "Image tag (e.g. v2.0.0)"
         required: true
         default: "dev"
 

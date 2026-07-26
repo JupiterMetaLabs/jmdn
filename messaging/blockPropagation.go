@@ -16,14 +16,15 @@ import (
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/bits-and-blooms/bloom/v3"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/rs/zerolog/log"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
-	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/txindex"
+	"gossipnode/Security"
 	"gossipnode/config"
 	"gossipnode/helper"
 	"gossipnode/messaging/BlockProcessing"
@@ -38,6 +39,19 @@ var (
 	// immuClient       *config.PooledConnection // unused: declared but never assigned or read
 	immuClientOnce sync.Once
 	globalHost     host.Host // Add this line
+)
+
+// maxBlockStreamBytes caps a single direct block-propagation stream read so a
+// peer that opens the stream and streams an endless body (no newline) cannot
+// force unbounded allocation → remote OOM. Sized just above the 7 MB gossip
+// cap (Pubsub.MaxMessageSize) so any block that fits the gossip path also fits
+// the direct stream. blockStreamReadTimeout bounds how long a slow/idle peer may
+// hold the read open.
+const (
+	// maxBlockStreamBytes shares config.MaxBlockMessageBytes with the gossip topic
+	// cap so the two transports can never silently diverge on block size.
+	maxBlockStreamBytes    = config.MaxBlockMessageBytes
+	blockStreamReadTimeout = 30 * time.Second
 )
 
 // StartBlockPropagationCleanup initializes the GRO and starts the cleanup thread.
@@ -69,6 +83,15 @@ func InitBlockPropagation(h host.Host) error {
 		fmt.Println("Block propagation system initialized - connections will be obtained on-demand")
 		log.Info().Msg("Block propagation system initialized")
 	})
+
+	// Wire the durable equivocation store on EVERY node — equivocation
+	// detection runs in validateRemoteBlock on every block-receiving node, not
+	// just the sequencer. The DB-backed store acquires its accountsdb connection
+	// on demand (first checkEquivocation), so this is safe at init. If unset the
+	// detector is in-memory only and does not survive restart.
+	if equivocationStore == nil {
+		SetEquivocationStore(DBEquivocationStore{})
+	}
 	return initErr
 }
 
@@ -193,8 +216,8 @@ func getMessageIDForBloomFilter(msg config.BlockMessage) string {
 	return msg.Nonce
 }
 
-// [UNUSED]
-// HandleBlockStream processes incoming block propagation messages
+// HandleBlockStream is the registered direct block-propagation stream handler; it
+// feeds HandleReceivedBlockMessage (the shared receive path).
 // Priority: FORWARD FIRST, then PROCESS/VALIDATE before STORING
 func HandleBlockStream(stream network.Stream) {
 	if BlockPropagationLocalGRO == nil {
@@ -215,8 +238,10 @@ func HandleBlockStream(stream network.Stream) {
 
 	metrics.MessagesReceivedCounter.WithLabelValues("block", remotePeer).Inc()
 
-	// Read the message
-	reader := bufio.NewReader(stream)
+	// Bound the read: cap the size (remote-OOM guard, mirrors the 7 MB gossip cap)
+	// and set a deadline so a slow/idle peer cannot hold the stream open forever.
+	_ = stream.SetReadDeadline(time.Now().Add(blockStreamReadTimeout))
+	reader := bufio.NewReader(io.LimitReader(stream, maxBlockStreamBytes))
 	messageBytes, err := reader.ReadBytes('\n')
 	if err != nil && err != io.EOF {
 		log.Error().Err(err).Msg("Failed to read message bytes")
@@ -230,6 +255,17 @@ func HandleBlockStream(stream network.Stream) {
 		return
 	}
 
+	HandleReceivedBlockMessage(msg, remotePeer, true)
+}
+
+// HandleReceivedBlockMessage is the single validate-and-apply path for a received
+// block message, shared by both transports: the direct block stream
+// (HandleBlockStream, forward=true) and the gossip mesh (forward=false, since the
+// pubsub layer re-propagates). It runs dedup, the fail-closed admitZKBlock
+// certificate gate, then processes and stores. `forward` gates ONLY the
+// direct-stream re-flood; the fail-closed security gate is identical regardless
+// of transport.
+func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forward bool) {
 	// Check for duplicates
 	messageID := getMessageIDForBloomFilter(msg)
 	if isMessageProcessed(messageID) {
@@ -238,10 +274,18 @@ func HandleBlockStream(stream network.Stream) {
 		return
 	}
 
-	// Mark as processed to prevent duplicate processing
-	markMessageProcessed(messageID)
+	// NOTE: do NOT mark processed here. The dedup store is a
+	// Bloom filter whose entries can never be removed, so a hash added before
+	// validation can never be cleared — an invalid block claiming a genuine
+	// hash would permanently mark that hash as seen, so the genuine block is
+	// later dropped as a "duplicate". Caching happens ONLY after a block
+	// validates: zkblocks via admitZKBlock (post-gate, below); other message
+	// types in the else branch.
 
-	// For ZK blocks, prioritize forwarding over processing
+	// For ZK blocks: fail-closed. A remotely received block must be validated
+	// BEFORE it is forwarded, processed, or persisted, and the committee
+	// certificate is mandatory. Nothing about an unvalidated remote block may
+	// cross into forwarding or state mutation.
 	if msg.Type == "zkblock" && msg.Block != nil {
 		log.Info().
 			Str("block_hash", msg.Block.BlockHash.Hex()).
@@ -249,17 +293,47 @@ func HandleBlockStream(stream network.Stream) {
 			Int("txn_count", len(msg.Block.Transactions)).
 			Msg("Received ZK block from peer")
 
-		// STEP 1: FORWARD BLOCK FIRST - increment hops and forward to other peers
-		if msg.Hops < config.MaxHops {
+		// A consensus REJECTION notice carries no block to apply. Discard it
+		// without processing, and without forwarding an unauthenticated
+		// rejection.
+		if status, ok := msg.Data["status"]; ok && status == "rejected" {
+			log.Info().
+				Str("block_hash", msg.Block.BlockHash.Hex()).
+				Msg("Received consensus REJECTION for block - discarding")
+			helper.NotifyBroadcast(msg)
+			return
+		}
+
+		// Fail-closed gate — runs synchronously before any side effect. On
+		// success admitZKBlock marks the block processed (validate-before-cache);
+		// on failure the hash never enters the dedup cache.
+		if rej := admitZKBlock(context.Background(), msg, messageID); rej != nil {
+			log.Warn().
+				Err(rej.err).
+				Str("reason", rej.reason).
+				Str("peer", remotePeer).
+				Str("block_hash", msg.Block.BlockHash.Hex()).
+				Uint64("block_number", msg.Block.BlockNumber).
+				Msg("Rejecting invalid remote block before forward/process/persist")
+			metrics.BlocksRejectedCounter.WithLabelValues(rej.reason, remotePeer).Inc()
+			timeoutPeer(remotePeer, 30*time.Second)
+			return // no forward, no mutation, no persistence, NOT cached
+		}
+
+		// Block validated and marked processed → forwarding is now safe. The direct
+		// re-flood is OFF by default (gossip-only): the pubsub mesh re-propagates,
+		// and gossip-delivered blocks already pass forward=false. It only runs when
+		// direct propagation is explicitly re-enabled (consensus.p2p >= 1), so a
+		// gossip-only node never re-floods a block it received over a direct stream.
+		if forward && directBlockPropagationEnabled() && msg.Hops < config.MaxHops {
 			msg.Hops++
 			if globalHost != nil {
 				log.Info().
 					Str("block_hash", msg.Block.BlockHash.Hex()).
 					Uint64("block_number", msg.Block.BlockNumber).
 					Int("hops", msg.Hops).
-					Msg("Forwarding ZK block to peers")
+					Msg("Forwarding validated ZK block to peers")
 
-				// Don't wait for forwarding to complete
 				BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
 					forwardBlock(globalHost, msg)
 					return nil
@@ -269,61 +343,8 @@ func HandleBlockStream(stream network.Stream) {
 			}
 		}
 
-		// STEP 2: PROCESS AND VALIDATE BLOCK AFTERWARD
+		// PROCESS AND PERSIST — only reachable after the gate has passed.
 		BlockPropagationLocalGRO.Go(GRO.BlockPropagationProcessAndValidateThread, func(ctx context.Context) error {
-			// Check if block is explicitly rejected
-			if status, ok := msg.Data["status"]; ok && status == "rejected" {
-				log.Info().
-					Str("block_hash", msg.Block.BlockHash.Hex()).
-					Msg("Received consensus REJECTION for block - discarding")
-				return nil
-			}
-
-			// Verify buddy BLS signatures if provided; require majority to continue
-			if blsJSON, ok := msg.Data["bls_results"]; ok && len(blsJSON) > 0 {
-				var blsResponses []BLS_Signer.BLSresponse
-				if err := json.Unmarshal([]byte(blsJSON), &blsResponses); err != nil {
-					log.Error().Err(err).Msg("Failed to unmarshal bls_results; skipping verification")
-				} else if len(blsResponses) > 0 {
-					// Count how many verified signatures explicitly favor (+1)
-					validYes := 0
-					validTotal := 0
-					for _, r := range blsResponses {
-						// verify signature for stated vote (+1 if Agree else -1)
-						vote := int8(-1)
-						if r.Agree {
-							vote = 1
-						}
-						if err := BLS_Verifier.Verify(r, vote); err != nil {
-							log.Warn().Err(err).Str("peer", r.PeerID).Msg("BLS verification failed for buddy response")
-							continue
-						}
-						validTotal++
-						if vote == 1 {
-							validYes++
-						}
-					}
-					if validTotal == 0 {
-						log.Error().Msg("No valid BLS signatures - skipping block processing (irrelevant block)")
-						return fmt.Errorf("no valid BLS signatures - skipping block processing (irrelevant block)")
-					}
-					needed := (validTotal / 2) + 1
-					if validYes < needed {
-						log.Error().
-							Int("valid_yes", validYes).
-							Int("needed", needed).
-							Int("valid_total", validTotal).
-							Msg("BLS majority not in favor (+1) - skipping block processing (irrelevant block)")
-						return fmt.Errorf("BLS majority not in favor (+1) - skipping block processing (irrelevant block)")
-					}
-					log.Info().
-						Int("valid_yes", validYes).
-						Int("needed", needed).
-						Int("valid_total", validTotal).
-						Msg("BLS majority in favor verified - continuing block processing")
-				}
-			}
-
 			// Create DB clients for processing
 			mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(ctx)
 			if err != nil {
@@ -376,11 +397,11 @@ func HandleBlockStream(stream network.Stream) {
 					Msg("latest_block monotonic update failed (non-fatal: ReconcileBlockNumber heals forward)")
 			}
 
-			// Index the block's txs into the SQLite address index. Previously only
-			// the sequencer path (broadcast.go) indexed live — pubsub-received
-			// blocks on non-sequencer nodes were never indexed between catchups,
-			// so eth_getTransactionsByAddress drifted stale with IsReady still
-			// true. Async + drop-on-overflow; drops heal via the next gap scan.
+			// Index the block's txs into the SQLite address index. Non-sequencer
+			// nodes receive blocks via pubsub; indexing them here keeps
+			// eth_getTransactionsByAddress current between catchups instead of
+			// drifting stale while IsReady stays true. Async + drop-on-overflow;
+			// drops heal via the next gap scan.
 			txindex.IndexBlockAsync(msg.Block)
 
 			// Store block message metadata
@@ -400,8 +421,13 @@ func HandleBlockStream(stream network.Stream) {
 			msg.Sender, msg.Block.BlockNumber, msg.Block.BlockHash.Hex(),
 			len(msg.Block.Transactions))
 	} else {
+		// Non-consensus message types have no validation gate here, so mark
+		// processed on receipt to preserve duplicate/loop suppression. Only
+		// zkblock caching is deferred behind validation.
+		markMessageProcessed(messageID)
+
 		// Handle other message types (not our focus)
-		if msg.Hops < config.MaxHops {
+		if forward && msg.Hops < config.MaxHops {
 			msg.Hops++
 			BlockPropagationLocalGRO.Go(GRO.BlockPropagationForwardThread, func(ctx context.Context) error {
 				forwardBlock(globalHost, msg)
@@ -412,6 +438,201 @@ func HandleBlockStream(stream network.Stream) {
 
 	// Notify explorer or other UI components
 	helper.NotifyBroadcast(msg)
+}
+
+// blockRejection carries a machine-readable reason label (for the
+// BlocksRejectedCounter metric) alongside the human-readable error.
+type blockRejection struct {
+	reason string
+	err    error
+}
+
+// reject builds a *blockRejection with a metric reason and a formatted error.
+func reject(reason, format string, args ...interface{}) *blockRejection {
+	return &blockRejection{reason: reason, err: fmt.Errorf(format, args...)}
+}
+
+// admitZKBlock is the validate-before-cache gate: a zkblock hash only enters the
+// dedup cache after the block passes fail-closed validation (validateRemoteBlock).
+// It marks the block's messageID processed ONLY if validation succeeds. Because
+// the dedup cache is a Bloom filter whose entries cannot be deleted, a block hash
+// must never enter it before the block is proven valid: otherwise an invalid
+// block carrying a genuine block's hash would permanently mark that hash "seen",
+// so the genuine block is dropped when it later arrives. Returns the rejection
+// (nil == admitted and cached).
+func admitZKBlock(ctx context.Context, msg config.BlockMessage, messageID string) *blockRejection {
+	if rej := validateRemoteBlock(ctx, msg); rej != nil {
+		return rej // rejected block does NOT occupy the dedup cache
+	}
+	markMessageProcessed(messageID)
+	return nil
+}
+
+// validateRemoteBlock is the fail-closed gate for every remotely received
+// zkblock. It MUST pass before the block is forwarded, processed, or
+// persisted. It deliberately performs only authenticity / internal-consistency
+// checks that do NOT depend on mutable DB state (balances, live nonces), so it
+// cannot false-reject an honest block due to the tx-application race that makes
+// strict DB-nonce checks unsafe on this path. It recomputes the canonical
+// block hash from transaction CONTENTS and binds tx.Hash to contents. The
+// remaining deferred check is STARK-proof verification (verifyBlockProof is a
+// placeholder while the prover is placeholder-grade).
+func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRejection {
+	b := msg.Block
+	if b == nil {
+		return reject("nil_block", "block is nil")
+	}
+	if len(b.Transactions) == 0 {
+		return reject("empty_block", "block %s has no transactions", b.BlockHash.Hex())
+	}
+
+	// FeeRecipients is NOT bound into the canonical block hash and
+	// the catch-up (FastsyncV2) apply path does not credit it (passes nil), so a
+	// block carrying FeeRecipients would apply differently on live-vs-catch-up
+	// nodes — a silent, non-healing balance divergence (the merkle fingerprint
+	// omits it too). Until it is hash-bound AND threaded through catch-up, refuse
+	// to admit such a block so an accidental enable fails LOUD (rejected) rather
+	// than silently diverging balances.
+	if len(b.FeeRecipients) > 0 {
+		return reject("feerecipients_unsupported",
+			"block %s carries FeeRecipients, which is not yet hash-bound or catch-up-threaded; refusing to admit", b.BlockHash.Hex())
+	}
+
+	// (Signature/chain-ID authenticity) Every transaction must carry a valid
+	// signature for the configured chain. CheckSignature recovers the sender via
+	// the chain-bound signer and compares it against tx.From; it reads no
+	// balances or live nonces, so it is race-free. Because sender ECDSA
+	// signatures cannot be produced without the sender's key, a block cannot
+	// move another account's assets.
+	for i := range b.Transactions {
+		tx := b.Transactions[i]
+		if tx.From == nil {
+			return reject("bad_signature", "tx %d has nil sender", i)
+		}
+		ok, err := Security.CheckSignature(&tx, ctx)
+		if err != nil || !ok {
+			return reject("bad_signature", "tx %d (%s) signature invalid: %v", i, tx.Hash.Hex(), err)
+		}
+		// tx.Hash is a remote-supplied wire field, and canonical body binding
+		// (checkBodyBinding) hashes OVER tx.Hash. If it is not verified against the
+		// transaction contents, a crafted transaction could carry its own body
+		// while copying a certified block's tx.Hash values to reproduce that
+		// block's BlockHash and re-present its committee certificate. Require
+		// tx.Hash == hash(contents); reject a mismatch.
+		if hok, herr := Security.CheckTransactionHash(&tx, ctx); herr != nil || !hok {
+			return reject("tx_hash_mismatch", "tx %d hash does not match its contents: %v", i, herr)
+		}
+
+		// Reject negative numeric fields on the remote path too. A negative
+		// Value/gas field would invert the sender/receiver balance arithmetic in
+		// execution, allowing a block to debit an account it should not. The
+		// ingress gate (Security.AllChecks) does not cover blocks arriving from
+		// peers, so the value gate must be enforced here independently.
+		if vok, verr := Security.CheckTransactionValues(&tx); !vok {
+			return reject("negative_tx_value", "tx %d has a negative numeric field: %v", i, verr)
+		}
+	}
+
+	// (In-block nonce consistency) Each sender's nonces must be strictly
+	// ascending with no duplicates within the block. Catches replayed / reordered
+	// / duplicated transactions without depending on DB state.
+	lastNonce := make(map[common.Address]uint64, len(b.Transactions))
+	for i := range b.Transactions {
+		tx := b.Transactions[i]
+		from := *tx.From
+		if prev, seen := lastNonce[from]; seen && tx.Nonce <= prev {
+			return reject("bad_nonce",
+				"tx %d sender %s nonce %d not strictly ascending (prev %d)",
+				i, from.Hex(), tx.Nonce, prev)
+		}
+		lastNonce[from] = tx.Nonce
+	}
+
+	// (Canonical body binding) Recompute BlockHash + TxnsRoot from the
+	// received transactions and reject a mismatch. The certificate's votes are
+	// signed over BlockHash, so this binds the certificate to THIS body: a
+	// certified hash cannot be reused over a substituted (even validly-signed)
+	// transaction set. Runs BEFORE certificate verification.
+	if EnforceBodyBinding {
+		if rej := checkBodyBinding(b); rej != nil {
+			return rej
+		}
+		// Bind BlockHash to transaction CONTENTS, not the wire tx.Hash: recompute
+		// the block hash from ethTx.Hash() of each tx and reject a mismatch.
+		// checkBodyBinding hashes over tx.Hash (now verified per tx above); this
+		// is the authoritative contents-based gate and holds even if the per-tx
+		// check is ever bypassed.
+		if ok, err := Security.CheckBlockHash(b); err != nil || !ok {
+			return reject("block_hash_mismatch", "block %s hash does not match tx contents: %v", b.BlockHash.Hex(), err)
+		}
+	}
+
+	// (Proof seam) Hook for ZK/STARK verification, ordered before the
+	// certificate check. See verifyBlockProof.
+	if err := verifyBlockProof(b); err != nil {
+		return reject("invalid_proof", "block %s proof verification failed: %v", b.BlockHash.Hex(), err)
+	}
+
+	// (Chain linkage) parent-hash + height + state-root chain, catchup-safe
+	// (see checkLinkage).
+	if EnforceBlockLinkage {
+		if rej := checkLinkage(ctx, b); rej != nil {
+			return rej
+		}
+	}
+
+	// (Committee certificate) MANDATORY and must reach quorum. Absent or empty
+	// bls_results is a rejection, not a pass.
+	if rej := verifyBlockCertificate(msg); rej != nil {
+		return rej
+	}
+
+	// (Equivocation) Recorded LAST — only after the block is fully validated —
+	// so an unvalidated block cannot enter the height->hash map and cause the
+	// genuine block to be rejected. A second, DIFFERENT validated block at a
+	// height already seen is a signed fork → rejected.
+	return checkEquivocation(b.BlockNumber, b.BlockHash.Hex())
+}
+
+// verifyBlockCertificate enforces a mandatory committee certificate that reaches
+// the Byzantine 2f+1 threshold. Verification is delegated to the SINGLE shared
+// verifier VerifyCertificate, which:
+//   - fails closed via the eligibility source (no source / error / empty set
+//     => rejection naming the defect);
+//   - verifies each vote as BLOCK-BOUND — a signature over this block's
+//     hash, so a vote cannot be reused on another block; legacy "vote:<v>"
+//     signatures are accepted only while RejectLegacyVotes is false;
+//   - counts only eligible signers (peer_id ∈ live buddy set minus block_buddy);
+//   - de-duplicates by peer_id AND bls_pub so one signer cannot be counted more
+//     than once toward quorum;
+//   - requires 2f+1 over the authenticated committee size (never a simple
+//     majority, never the vote count). A single supplied vote cannot finalize.
+func verifyBlockCertificate(msg config.BlockMessage) *blockRejection {
+	raw, ok := msg.Data["bls_results"]
+	if !ok || len(raw) == 0 {
+		return reject("no_certificate", "block %s has no committee certificate", msg.Block.BlockHash.Hex())
+	}
+
+	var responses []BLS_Signer.BLSresponse
+	if err := json.Unmarshal([]byte(raw), &responses); err != nil {
+		return reject("malformed_certificate", "malformed bls_results: %v", err)
+	}
+	if len(responses) == 0 {
+		return reject("no_certificate", "empty committee certificate")
+	}
+
+	res, err := VerifyCertificate(responses, msg.Block.BlockHash.Hex(), msg.Block.BlockNumber)
+	if err != nil {
+		// Fail closed: no authenticated committee => cannot verify.
+		return reject("committee_source_invalid",
+			"refusing consensus participation (fail closed): %v", err)
+	}
+	if !res.Reached {
+		return reject("quorum_not_met",
+			"committee quorum not met: %d eligible verified +1 votes, need %d (2f+1 over committee size %d)",
+			res.YesVotes, res.Threshold, res.CommitteeSize)
+	}
+	return nil
 }
 
 // forwardBlock sends the block message to all connected peers

@@ -16,7 +16,9 @@ import (
 	"gossipnode/config"
 	PubSubMessages "gossipnode/config/PubSubMessages"
 	"gossipnode/config/PubSubMessages/Cache"
+	"gossipnode/config/settings"
 	"gossipnode/messaging"
+	"gossipnode/seednode"
 
 	"github.com/JupiterMetaLabs/ion"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -45,6 +47,32 @@ type Consensus struct {
 	// Guards to prevent infinite loops
 	isProcessingVotes  bool
 	processedBlockHash string
+
+	// lastRejectSummary is a SHORT one-line reason the most recent round failed
+	// consensus; lastRejectDetail is an optional compact secondary line (e.g.
+	// per-buddy rejection reasons). Both are set by VerifyConsensusWithBLS and
+	// surfaced in the "block rejected" alert. Guarded by rejectMu.
+	rejectMu          sync.Mutex
+	lastRejectSummary string
+	lastRejectDetail  string
+}
+
+// setRejectSummary records a short one-line reason (and optional compact detail)
+// for why the current round failed consensus.
+func (c *Consensus) setRejectSummary(summary, detail string) {
+	c.rejectMu.Lock()
+	c.lastRejectSummary = summary
+	c.lastRejectDetail = detail
+	c.rejectMu.Unlock()
+}
+
+// takeRejectSummary returns and clears the last recorded reason + detail.
+func (c *Consensus) takeRejectSummary() (summary, detail string) {
+	c.rejectMu.Lock()
+	defer c.rejectMu.Unlock()
+	summary, detail = c.lastRejectSummary, c.lastRejectDetail
+	c.lastRejectSummary, c.lastRejectDetail = "", ""
+	return
 }
 
 // @constructor function
@@ -56,13 +84,87 @@ What it does:
 */
 func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	responseHandler := NewResponseHandler()
-	return &Consensus{
+
+	// Build the consensus instance first so the eligibility source can read this
+	// round's ACTUAL voting committee (the main peers) at call time.
+	c := &Consensus{
 		PeerList:        peerList,
 		Host:            host,
 		Channel:         config.PubSub_ConsensusChannel,
 		ResponseHandler: responseHandler,
 		mu:              &sync.RWMutex{},
 	}
+
+	// Wire the committee eligibility source. The messaging verifier
+	// subtracts the operator block_buddy blocklist and fails closed if this
+	// source is absent or errors.
+	//
+	// Legacy source: the round's MAIN peers (the peers that actually vote), NOT
+	// main+backup. This is critical for the 2f+1 threshold: with MaxMainPeers=7
+	// main + MaxBackupPeers=5 backup, sourcing all 12 makes VerifyCertificate
+	// require 2f+1 over 12 = 7, but only the 7 main peers vote — so any missing
+	// main vote could never reach quorum. Read the live
+	// MainPeers at call time (populated during Consensus.Start). Fall back to a
+	// main-sized getBuddy query only if MainPeers isn't populated yet.
+	// Legacy source carries NO peer_id↔bls_pub binding (empty values), so the
+	// verifier enforces peer_id membership only — the key binding is available
+	// only via the authenticated snapshot below.
+	legacyBuddySource := func() (map[string]string, error) {
+		if main := c.PeerList.MainPeers; len(main) > 0 {
+			set := make(map[string]string, len(main))
+			for _, pid := range main {
+				set[pid.String()] = ""
+			}
+			return set, nil
+		}
+		buddies, err := helper.QueryBuddyNodes()
+		if err != nil {
+			return nil, err
+		}
+		unique := helper.GetUniqueBuddyPeers(buddies)
+		set := make(map[string]string)
+		for i, b := range unique {
+			if i >= config.MaxMainPeers { // scope to the voting-committee size
+				break
+			}
+			set[b.PeerID.String()] = ""
+		}
+		return set, nil
+	}
+
+	// Committee-source: when the operator pins the seed authority key, the
+	// eligible set is the seed-AUTHENTICATED epoch snapshot (verified against the
+	// pinned authority), not the raw getBuddy list. Because eligibility IS the
+	// committee, VerifyCertificate then enforces committee ⊆ snapshot at the
+	// tally. Fail-closed: if the seed client can't be built we refuse rather than
+	// fall back to an unauthenticated list.
+	cfg := settings.Get()
+
+	// Register this node's libp2p identity key to sign committee-selection
+	// (ListBuddy) requests. NewConsensus is only invoked on the sequencer (the
+	// Block server paths), so this node is the sequencer; the seed serves
+	// selection only to the sequencer PeerID it has configured and refuses all
+	// other callers.
+	if host != nil {
+		if sk := host.Peerstore().PrivKey(host.ID()); sk != nil {
+			seednode.SetSequencerSignKey(sk)
+		}
+	}
+
+	if pinned := cfg.Consensus.SeedAuthorityBLSPub; pinned != "" && cfg.Network.SeedNode != "" {
+		if sc, err := seednode.NewClient(cfg.Network.SeedNode); err == nil {
+			messaging.SetCommitteeEligibilitySource(sc.CommitteeEligibility(pinned, cfg.Consensus.CommitteeEpochSeconds))
+		} else {
+			initErr := err
+			messaging.SetCommitteeEligibilitySource(func() (map[string]string, error) {
+				return nil, fmt.Errorf("committee source: seed client init failed (fail closed): %w", initErr)
+			})
+		}
+	} else {
+		messaging.SetCommitteeEligibilitySource(legacyBuddySource)
+	}
+
+	return c
 }
 
 /*
@@ -269,14 +371,26 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 			ion.Int64("block_number", int64(block.BlockNumber)),
 			ion.String("function", "Consensus.BroadcastAndProcessBlock"))
 
-		Alerts.NewAlertBuilder(alert_ctx).
+		reason, detail := consensus.takeRejectSummary()
+		if reason == "" {
+			reason = "consensus not reached (no reason captured)"
+		}
+		// Consensus failure halts block production — this is an ERROR, not a
+		// warning. Keep the Description a short headline and put the specifics in
+		// labels (no Description+Msg concatenation, no duplicated reason).
+		ab := Alerts.NewAlertBuilder(alert_ctx).
 			AlertName(helper.Alert_Consensus_BlockRejectedByConsensus).
-			Status(Alerts.AlertStatusWarning).
-			Severity(Alerts.SeverityWarning).
-			Description("Block rejected by consensus - broadcast with rejected status").
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description("Consensus failed — block rejected (quorum not reached)").
 			Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
 			Label("block_hash", block.BlockHash.Hex()).
-			Send()
+			Label("bls_results", fmt.Sprintf("%d", len(blsResults))).
+			Label("reason", reason)
+		if detail != "" {
+			ab = ab.Label("buddy_rejections", detail)
+		}
+		ab.Send()
 	}
 
 	return nil

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 
+	"gossipnode/config"
+
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -39,6 +41,10 @@ func (gps *GossipPubSub) InitGossipSub() error {
 		gossipSub, err = pubsub.NewGossipSub(context.Background(), gps.Host,
 			pubsub.WithFloodPublish(true),
 			pubsub.WithPeerExchange(true),
+			// match the direct-stream cap or blocks >1 MiB (libp2p gossip
+			// default) silently skip gossip → fan-out degrades to direct+catch-up.
+			// Fleet-wide identical value required (peers reject mismatched sizes).
+			pubsub.WithMaxMessageSize(config.MaxBlockMessageBytes),
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create GossipSub: %w", err)

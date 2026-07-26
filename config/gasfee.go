@@ -13,7 +13,95 @@
 // account state on every catchup. Do not fork this logic again.
 package config
 
-import "math/big"
+import (
+	"bytes"
+	"math/big"
+	"sort"
+
+	"github.com/ethereum/go-ethereum/common"
+)
+
+// FeeRecipient is one destination for a share of the coinbase-side gas fee,
+// weighted relative to the other recipients. It is carried on the block. An
+// empty recipient list means the whole coinbase share goes to the single
+// coinbase address (the historical behavior).
+type FeeRecipient struct {
+	Addr   common.Address `json:"addr"`
+	Weight uint64         `json:"weight"`
+}
+
+// FeeCredit is a resolved (address, amount) crediting instruction produced by
+// SplitFee: the caller adds Amount to Addr's balance.
+type FeeCredit struct {
+	Addr   common.Address
+	Amount *big.Int
+}
+
+// SplitFee divides a transaction's total gasFee into the ZKVM share and the
+// coinbase-side distribution, deterministically and to the exact wei. This is
+// the SINGLE source of truth for fee distribution: every balance-mutation path
+// (live execution and catch-up reconciliation) MUST call it so they can never
+// disagree on a single wei.
+//
+//	zkvmShare     = floor(gasFee / 2)               -> credited to the ZKVM address
+//	coinbaseShare = gasFee - zkvmShare (= ceil/2)   -> distributed as below
+//
+// Distribution of coinbaseShare:
+//   - recipients empty (or total weight 0) -> one credit of coinbaseShare to
+//     `coinbase` (byte-identical to the historical single-coinbase split, where
+//     the odd-wei remainder stayed with the coinbase).
+//   - recipients set -> split by integer weight, credit_i =
+//     coinbaseShare*weight_i/totalWeight, with the leftover remainder added to
+//     the FIRST recipient in canonical order (sorted by address bytes) so the
+//     total is exact and identical on every node regardless of input ordering.
+//
+// INVARIANT (guaranteed): zkvmShare + Σ(returned amounts) == gasFee.
+func SplitFee(gasFee *big.Int, coinbase common.Address, recipients []FeeRecipient) (zkvmShare *big.Int, coinbaseCredits []FeeCredit) {
+	g := gasFee
+	if g == nil {
+		g = new(big.Int)
+	}
+	two := big.NewInt(2)
+	zkvmShare = new(big.Int).Div(g, two)            // floor(gasFee/2)
+	coinbaseShare := new(big.Int).Sub(g, zkvmShare) // ceil(gasFee/2) = half + odd-wei remainder
+
+	total := new(big.Int)
+	for _, r := range recipients {
+		if r.Weight > 0 {
+			total.Add(total, new(big.Int).SetUint64(r.Weight))
+		}
+	}
+	// Empty / all-zero-weight -> single coinbase credit (historical behavior).
+	if len(recipients) == 0 || total.Sign() == 0 {
+		return zkvmShare, []FeeCredit{{Addr: coinbase, Amount: coinbaseShare}}
+	}
+
+	// Canonical order: sort a copy by address bytes so distribution is identical
+	// regardless of the block's recipient ordering.
+	ordered := make([]FeeRecipient, len(recipients))
+	copy(ordered, recipients)
+	sort.Slice(ordered, func(i, j int) bool {
+		return bytes.Compare(ordered[i].Addr.Bytes(), ordered[j].Addr.Bytes()) < 0
+	})
+
+	credits := make([]FeeCredit, 0, len(ordered))
+	distributed := new(big.Int)
+	for _, r := range ordered {
+		if r.Weight == 0 {
+			continue
+		}
+		amt := new(big.Int).Mul(coinbaseShare, new(big.Int).SetUint64(r.Weight))
+		amt.Div(amt, total)
+		credits = append(credits, FeeCredit{Addr: r.Addr, Amount: amt})
+		distributed.Add(distributed, amt)
+	}
+	// Assign the leftover remainder to the first (canonical) recipient so the sum
+	// is exact.
+	if rem := new(big.Int).Sub(coinbaseShare, distributed); rem.Sign() != 0 && len(credits) > 0 {
+		credits[0].Amount.Add(credits[0].Amount, rem)
+	}
+	return zkvmShare, credits
+}
 
 const (
 	// BaseFeeWei is JMDN's flat protocol base fee (35 gwei).

@@ -76,7 +76,7 @@ func markerValueApplied(raw []byte) bool {
 // accountsConn may be the caller's accounts connection (it is used as-is);
 // the defaultdb read acquires its own pooled connection.
 // Fail direction: (false, err) — callers decide; the live guard sites keep
-// their historical fail-open shape (err → process) and log.
+// their existing behavior: err → process, and log.
 func IsMarkerApplied(accountsConn *config.PooledConnection, key string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

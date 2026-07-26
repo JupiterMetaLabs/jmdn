@@ -15,7 +15,7 @@ BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 # Linker flags
 LDFLAGS=-ldflags "-X 'gossipnode/config/version.gitCommit=${GIT_COMMIT}' -X 'gossipnode/config/version.gitBranch=${GIT_BRANCH}' -X 'gossipnode/config/version.gitTag=${GIT_TAG}' -X 'gossipnode/config/version.buildTime=${BUILD_TIME}' -linkmode=external -w -s"
 
-.PHONY: all build clean run test fmt lint lint-fix version deploy
+.PHONY: all build clean run test test-unit fmt lint lint-fix version deploy
 
 all: build
 
@@ -50,6 +50,10 @@ deploy: build
 # Run all unit tests (requires live ImmuDB + seed node for integration tests)
 test:
 	go test ./...
+
+# Fast unit gate for CI / auto-release — skips integration tests (ImmuDB/seed) via testing.Short().
+test-unit:
+	go test -short ./...
 
 # Check formatting — exits non-zero if any file needs formatting.
 # Fix: run 'make fmt' then commit.

@@ -369,7 +369,7 @@ func TestFix4_BlockDeltaFilterPropagationLag(t *testing.T) {
 	bi := &stubBlockInfo{head: 5, hashes: [][]byte{{1}, {2}, {3}, {4}, {5}, {6}}}
 	sc := &stubSeedClient{
 		isSynced:      false,
-		sequencerHead: 7, // delta = 2, within default tolerance of 3
+		sequencerHead: 6, // delta = 1, within propagation tolerance of 1
 		goodPeers:     []syncmonitor.PeerInfo{goodPeer()},
 	}
 	mon := syncmonitor.New(bi, sc, 0)

@@ -10,16 +10,86 @@ import (
 // NodeConfig is the top-level configuration for a JMDN node.
 // Each section maps to a YAML key in jmdn.yaml.
 type NodeConfig struct {
-	Node     NodeSettings     `mapstructure:"node"`
-	Network  NetworkSettings  `mapstructure:"network"`
-	Ports    PortSettings     `mapstructure:"ports"`
-	Binds    BindSettings     `mapstructure:"binds"`
-	Database DatabaseSettings `mapstructure:"database"`
-	Logging  LoggingSettings  `mapstructure:"logging"`
-	Features FeatureSettings  `mapstructure:"features"`
-	Security SecurityConfig   `mapstructure:"security"`
-	Alerts   AlertsConfig     `mapstructure:"alerts"`
-	FastSync FastSyncSettings `mapstructure:"fastsync"`
+	Node      NodeSettings      `mapstructure:"node"`
+	Network   NetworkSettings   `mapstructure:"network"`
+	Ports     PortSettings      `mapstructure:"ports"`
+	Binds     BindSettings      `mapstructure:"binds"`
+	Database  DatabaseSettings  `mapstructure:"database"`
+	Logging   LoggingSettings   `mapstructure:"logging"`
+	Features  FeatureSettings   `mapstructure:"features"`
+	Security  SecurityConfig    `mapstructure:"security"`
+	Alerts    AlertsConfig      `mapstructure:"alerts"`
+	FastSync  FastSyncSettings  `mapstructure:"fastsync"`
+	Selection SelectionSettings `mapstructure:"selection"`
+	Consensus ConsensusSettings `mapstructure:"consensus"`
+}
+
+// ConsensusSettings holds operator-controlled consensus policy.
+//
+// BlockBuddy is an operator blocklist of committee peer IDs. Any peer_id listed
+// here is EXCLUDED from the eligible committee even if the seedNode buddy
+// selection (getBuddy/ListBuddy) returns it — a manual kill-switch for a peer
+// the operator no longer trusts, without waiting for seedNode to drop it.
+//
+// YAML:
+//
+//	consensus:
+//	  block_buddy:
+//	    - "12D3KooW...badpeer1"
+//	    - "12D3KooW...badpeer2"
+//
+// Env (highest priority): JMDN_CONSENSUS_BLOCK_BUDDY (space-separated list).
+type ConsensusSettings struct {
+	BlockBuddy []string `mapstructure:"block_buddy" yaml:"block_buddy"`
+
+	// Committee-source integration with the seedNodes authenticated
+	// committee. All three must align with the seed deployment.
+	//
+	// SeedAuthorityBLSPub is the PINNED dela/bls authority public key (lowercase
+	// hex) distributed out-of-band (genesis/config). A committee snapshot signed
+	// by any other key is rejected. Empty => snapshot verification cannot pin and
+	// the consumer stays disabled (fail-closed; no committee source).
+	SeedAuthorityBLSPub string `mapstructure:"seed_authority_bls_pub" yaml:"seed_authority_bls_pub"`
+	// CommitteeEpochSeconds is the shared epoch clock divisor (unix/seconds).
+	// MUST equal the seed's COMMITTEE_EPOCH_SECONDS (default 3600).
+	CommitteeEpochSeconds int64 `mapstructure:"committee_epoch_seconds" yaml:"committee_epoch_seconds"`
+
+	// MaxValidators HARD-CAPS the number of buddy (validator) nodes counted toward
+	// consensus. The certificate verifier trims the eligible committee to this many
+	// peers (deterministically, by sorted peer_id) BEFORE computing the 2f+1
+	// threshold, so the threshold can never be sized over more validators than
+	// actually vote. Defaults to 5 (must match config.MaxMainPeers, the voting
+	// committee size) and is always active — never 0 by default. An explicit 0
+	// disables the cap, but that is not the shipped behavior.
+	MaxValidators int `mapstructure:"max_validators" yaml:"max_validators"`
+
+	// P2P enables direct per-peer (one-to-one) block propagation IN ADDITION to
+	// the gossip mesh. Default 0 = gossip-only (the mesh + FloodPublish reach the
+	// whole fleet). Set to 1 to ALSO fan finalized blocks out over direct libp2p
+	// streams (e.g. during a mixed-version rollout, or if gossip reachability is
+	// degraded). Overridable via JMDN_DIRECT_BLOCK_PROPAGATION=1.
+	//
+	// YAML:
+	//
+	//	consensus:
+	//	  p2p: 1
+	P2P int `mapstructure:"p2p" yaml:"p2p"`
+}
+
+// SelectionSettings holds the SECRET VRF key material used for node / committee
+// selection. These MUST be unique per network and kept secret. Empty values are
+// rejected at use time (fail-closed) rather than falling back to a default.
+//
+// YAML:
+//
+//	selection:
+//	  mnemonic: "<network secret BIP39 mnemonic>"
+//	  salt: "<network VRF salt>"
+//
+// Env (highest priority): JMDN_NODE_SELECTION_MNEMONIC, JMDN_NETWORK_SALT.
+type SelectionSettings struct {
+	Mnemonic string `mapstructure:"mnemonic" yaml:"mnemonic"`
+	Salt     string `mapstructure:"salt"     yaml:"salt"`
 }
 
 // NodeSettings defines the identity of this node.

@@ -27,10 +27,19 @@ const (
 )
 
 const (
-	MaxMainPeers     = 5 // Production size for buddy node committees
+	MaxMainPeers     = 7 // Production committee size (voting set; keep == consensus.max_validators). n=7 → BFT quorum 2f+1=5 with f=2; n=5 was unsafe (quorum 3, intersection 2q-n=1 < f+1=2).
 	MaxBackupPeers   = 5 // Backup peers to handle failures of main nodes
 	ConsensusTimeout = 90 * time.Second
 )
+
+// MaxBlockMessageBytes is the single source of truth for the maximum size of a
+// propagated block message. BOTH transports MUST use it or they silently diverge:
+// the direct libp2p stream (messaging.HandleBlockStream, io.LimitReader) and the
+// gossip topic (pubsub.WithMaxMessageSize). If the gossip cap is lower than the
+// direct cap, blocks between the two sizes publish over direct but silently skip
+// gossip (fan-out degrades to catch-up); every node must compile the SAME value
+// or peers reject each other's gossip. Sized for large many-tx blocks (8 MiB).
+const MaxBlockMessageBytes = 8 * 1024 * 1024
 
 // Time-bounded message handling constants
 const (
@@ -42,29 +51,34 @@ const (
 // Protocol IDs for message and file sharing
 const (
 	MessageProtocol           protocol.ID = "/custom/message/1.0.0"
-	FileProtocol              protocol.ID = "/custom/file/1.0.0"
 	SeedProtocol              protocol.ID = "/custom/seed/1.0.0"           // Protocol for seed node operations
 	PeerDiscoveryProtocol     protocol.ID = "/custom/peer/discovery/1.0.0" // For finding peers
 	HeartbeatProtocol         protocol.ID = "/heartbeat/1.0.0"
 	RegisterProtocol          protocol.ID = "/seednode/register/1.0.0" // For peer registration
 	BroadcastProtocol         protocol.ID = "/broadcast/1.0.0"
-	BlockPropagationProtocol  protocol.ID = "/broadcast/block/1.0.0"
+	BlockPropagationProtocol  protocol.ID = "/broadcast/block/2.0.0" // v2 protocol: body binding, cache-after-validate, equivocation persistence, linkage fail-closed
 	SyncProtocol              protocol.ID = "/p2p/sync/1.0.0"
-	BuddyNodesMessageProtocol protocol.ID = "/p2p/buddy/message/1.0.0"
-	SubmitMessageProtocol     protocol.ID = "/p2p/submit/message/1.0.0"
-	BFTConsensusProtocol      protocol.ID = "/p2p/bft/consensus/1.0.0"
+	BuddyNodesMessageProtocol protocol.ID = "/p2p/buddy/message/2.0.0"  // v2 protocol: vote path (eligibility, 2f+1, chain-id domain, sync-gate)
+	SubmitMessageProtocol     protocol.ID = "/p2p/submit/message/2.0.0" // v2 protocol: vote path
+	BFTConsensusProtocol      protocol.ID = "/p2p/bft/consensus/2.0.0"  // v2 protocol: signed PREPARE/COMMIT
 )
 
 const (
 	Delimiter               = 0x1E
-	PubSub_ConsensusChannel = "pubsub-consensus"
-	PubSub_BFTConsensus     = "pubsub-bft-consensus"
+	PubSub_ConsensusChannel = "pubsub-consensus/2.0.0"     // v2 protocol: chain-id-bound votes + vote sync-gate
+	PubSub_BFTConsensus     = "pubsub-bft-consensus/2.0.0" // v2 protocol: signed BFT messages
 	// PubSub_L1CommitChannel is a persistent topic for L1 finality broadcasts.
 	// It is deliberately separate from PubSub_ConsensusChannel, whose
 	// subscriptions are round-scoped (unsubscribed on END_PUBSUB).
 	PubSub_L1CommitChannel = "pubsub-l1-commit"
 	Pubsub_MessageBuffer   = "pubsub-buffer"
 	Pubsub_CRDTSync        = "pubsub-crdt-sync"
+	// PubSub_BlockPropagation is a persistent topic for fanning finalized,
+	// committee-certified blocks to the whole fleet (not just directly-connected
+	// peers). Receivers run the same fail-closed admitZKBlock gate as the direct
+	// stream path, so signed-block propagation is preserved. Versioned to 2.0.0 to
+	// match the block/vote wire protocols.
+	PubSub_BlockPropagation = "pubsub-block-propagation/2.0.0"
 )
 
 const (
@@ -106,6 +120,9 @@ const (
 	// L1 finality broadcast — sent by the node that received the commit confirmation
 	Type_L1Commit      = "L1_COMMIT"
 	Type_L1CommitRange = "L1_COMMIT_RANGE"
+
+	// Finalized-block gossip fan-out (PubSub_BlockPropagation)
+	Type_BlockPropagation = "BLOCK_PROPAGATION"
 )
 
 // Increase buffer sizes
@@ -122,7 +139,7 @@ const (
 )
 
 const (
-	DIDPropagationProtocol protocol.ID = "/gossipnode/did/1.0.0"
+	DIDPropagationProtocol protocol.ID = "/gossipnode/did/2.0.0" // v2 protocol: bumped with the network upgrade
 	MaxAccountHops         int         = 7
 )
 

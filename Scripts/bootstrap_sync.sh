@@ -16,7 +16,8 @@
 #
 # Env overrides:
 #   GCS_BUCKET     GCS bucket name          (default: jmdn-bootstrap)
-#   GCS_PREFIX     Path prefix in bucket    (default: staging/bootstrap-20260709_180202)
+#   GCS_PREFIX     Path prefix in bucket    (default: bootstrap-26072026)
+#                  (world-readable; fetched over public HTTP)
 #   PARTS_PREFIX   Part filename prefix     (default: data-patched.part)
 #   CHECKSUM_FILE  Checksum filename        (default: checksums.md5)
 #
@@ -27,12 +28,11 @@
 set -euo pipefail
 
 # ── Config ───────────────────────────────────────────────
-# Defaults point at the 2026-07-09 snapshot (chain tip 12172). This is the
-# pre-promotion `staging/` location — repoint GCS_PREFIX to the promoted public
-# prefix before fleet rollout. The prefix must be world-readable: this script
-# fetches over public HTTP (storage.googleapis.com), not authenticated gsutil.
+# Defaults point at the 2026-07-26 snapshot (chain tip 13449). The prefix must
+# be world-readable: this script fetches over public HTTP
+# (storage.googleapis.com), not authenticated gsutil.
 GCS_BUCKET="${GCS_BUCKET:-jmdn-bootstrap}"
-GCS_PREFIX="${GCS_PREFIX:-staging/bootstrap-20260709_180202}"
+GCS_PREFIX="${GCS_PREFIX:-bootstrap-26072026}"
 PARTS_PREFIX="${PARTS_PREFIX:-data-patched.part}"
 CHECKSUM_FILE="${CHECKSUM_FILE:-checksums.md5}"
 # UID:GID the immudb container runs as. Override if your immudb image differs.

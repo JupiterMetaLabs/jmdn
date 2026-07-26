@@ -43,6 +43,12 @@ func Load() (*NodeConfig, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	v.AutomaticEnv()
 
+	// Bind the selection secrets to their explicit, documented env var names
+	// (these differ from the auto-derived JMDN_SELECTION_* names, so bind them
+	// directly). BindEnv with explicit names bypasses the prefix.
+	_ = v.BindEnv("selection.mnemonic", "JMDN_NODE_SELECTION_MNEMONIC")
+	_ = v.BindEnv("selection.salt", "JMDN_NETWORK_SALT")
+
 	// 6. Unmarshal into struct
 	cfg := DefaultConfig()
 	if err := v.Unmarshal(&cfg); err != nil {
@@ -72,6 +78,11 @@ func Load() (*NodeConfig, error) {
 	globalCfg = &cfg
 	return &cfg, nil
 }
+
+// IsLoaded reports whether Load() has populated the global config. Lets hot
+// paths read optional settings without risking the Get() panic when config has
+// not been loaded yet (e.g. early init, or tools that never call Load()).
+func IsLoaded() bool { return globalCfg != nil }
 
 // Get returns the loaded NodeConfig. Must be called after Load().
 // Panics if Load() has not been called — this is intentional to catch
@@ -199,6 +210,17 @@ func setDefaults(v *viper.Viper) {
 		v.SetDefault(prefix+"key_file", policy.KeyFile)
 		v.SetDefault(prefix+"ca_file", policy.CAFile)
 	}
+
+	// Selection (VRF key material — no safe default; empty is rejected at use)
+	v.SetDefault("selection.mnemonic", d.Selection.Mnemonic)
+	v.SetDefault("selection.salt", d.Selection.Salt)
+
+	// Consensus
+	v.SetDefault("consensus.block_buddy", d.Consensus.BlockBuddy)
+	v.SetDefault("consensus.seed_authority_bls_pub", d.Consensus.SeedAuthorityBLSPub)
+	v.SetDefault("consensus.committee_epoch_seconds", d.Consensus.CommitteeEpochSeconds)
+	v.SetDefault("consensus.max_validators", d.Consensus.MaxValidators)
+	v.SetDefault("consensus.p2p", d.Consensus.P2P)
 
 	// Alerts
 	v.SetDefault("alerts.url", d.Alerts.URL)
