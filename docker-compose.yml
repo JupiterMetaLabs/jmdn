@@ -175,15 +175,13 @@ services:
     volumes:
       - immudb-data:/opt/jmdn/data
     environment:
-      # Snapshot location. Defaults point at the 2026-07-09 snapshot
-      # (chain tip 12172). PARTS_PREFIX/CHECKSUM_FILE MUST match how the
+      # Snapshot location. Defaults point at the 2026-07-26 snapshot
+      # (chain tip 13449). PARTS_PREFIX/CHECKSUM_FILE MUST match how the
       # snapshot was split — this one used `split … data-patched.part`.
       # NOTE: bootstrap_sync.sh fetches over public HTTP
       # (storage.googleapis.com), so this prefix must be world-readable.
-      # `staging/…` is the pre-promotion location; repoint to the promoted
-      # public prefix before fleet rollout.
       GCS_BUCKET: "${GCS_BUCKET:-jmdn-bootstrap}"
-      GCS_PREFIX: "${GCS_PREFIX:-staging/bootstrap-20260709_180202}"
+      GCS_PREFIX: "${GCS_PREFIX:-bootstrap-26072026}"
       PARTS_PREFIX: "${PARTS_PREFIX:-data-patched.part}"
       CHECKSUM_FILE: "${CHECKSUM_FILE:-checksums.md5}"
 
@@ -212,7 +210,7 @@ services:
   # WorkingDirectory = /opt/jmdn (matches bare-metal ${JMDN_DATA}).
   # DB/gossipnode.db resolves as ./DB/gossipnode.db relative to WorkingDirectory.
   jmdn:
-    # Version comes from .env (JMDN_VERSION=v1.2.1) — never edit this line to
+    # Version comes from .env (JMDN_VERSION=v2.0.0) — never edit this line to
     # pin a release. Keeping the tag out of this tracked file means upgrades
     # don't dirty the git checkout, so `git pull` never merge-conflicts on
     # compose changes shipped with a release. See DOCKER.md §13.

@@ -59,7 +59,7 @@ cd jmdn
 To run a specific release:
 
 ```bash
-git checkout v1.2.2  # replace with target version
+git checkout v2.0.0  # replace with target version
 ```
 
 ---

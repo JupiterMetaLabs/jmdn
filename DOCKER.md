@@ -302,7 +302,7 @@ COMPOSE_PROJECT_NAME=jmdn
 
 # JMDN release to run. Set to a release tag (recommended for production);
 # upgrade by changing this line — never by editing docker-compose.yml.
-JMDN_VERSION=v1.2.1
+JMDN_VERSION=v2.0.0
 
 # ImmuDB password — used by the immudb container.
 # Must match database.password in jmdn.yaml.
@@ -373,7 +373,7 @@ JupiterMeta publishes a signed, multi-arch image to GitHub Container Registry on
 docker pull ghcr.io/jupitermetalabs/jmdn:latest
 
 # Or pin to a specific version
-docker pull ghcr.io/jupitermetalabs/jmdn:v1.2.0
+docker pull ghcr.io/jupitermetalabs/jmdn:v2.0.0
 ```
 
 Compose reads the version from `JMDN_VERSION` in `.env` (Step 2) — you
@@ -411,7 +411,7 @@ Expected output:
 
 ```
 [bootstrap] First run detected — starting bootstrap sync.
-[bootstrap] Listing parts from GCS: gs://jmdn-bootstrap/staging/bootstrap-20260709_180202/...
+[bootstrap] Listing parts from GCS: gs://jmdn-bootstrap/bootstrap-26072026/...
 [bootstrap] Downloading parts to /opt/jmdn/bootstrap_tmp...
 [bootstrap] Checksums OK.
 [bootstrap] Extracting parts into sandbox: /opt/jmdn/data_tmp/sandbox
@@ -467,7 +467,7 @@ Use these commands when you want to run a single JMDN node without Docker Compos
 docker pull ghcr.io/jupitermetalabs/jmdn:latest
 
 # Specific version
-docker pull ghcr.io/jupitermetalabs/jmdn:v1.0.0
+docker pull ghcr.io/jupitermetalabs/jmdn:v2.0.0
 ```
 
 > Images are published for **linux/amd64**, **linux/arm64**, and **linux/arm/v7**. Docker pulls the right variant automatically based on your machine's architecture.
@@ -529,7 +529,7 @@ Expected output on first run:
 
 ```
 [entrypoint] First run detected — starting bootstrap sync.
-[bootstrap] Listing parts from GCS: gs://jmdn-bootstrap/staging/bootstrap-20260709_180202/...
+[bootstrap] Listing parts from GCS: gs://jmdn-bootstrap/bootstrap-26072026/...
 [bootstrap] Downloading parts to /opt/jmdn/bootstrap_tmp...
 [bootstrap] Checksums OK.
 [bootstrap] Extracting parts into sandbox: /opt/jmdn/data_tmp/sandbox
@@ -586,7 +586,7 @@ Pass `-e KEY=value` to `docker run` to override defaults:
 | `JMDN_PORTS_API` | `0` (disabled) | Set `8090` to enable Explorer API |
 | `JMDN_DATABASE_PASSWORD` | `immudb` | ImmuDB admin password |
 | `GCS_BUCKET` | `jmdn-bootstrap` | Bootstrap snapshot bucket |
-| `GCS_PREFIX` | `staging/bootstrap-20260709_180202` | Snapshot path prefix in bucket (repoint to promoted public prefix before fleet rollout) |
+| `GCS_PREFIX` | `bootstrap-26072026` | Snapshot path prefix in bucket |
 | `PARTS_PREFIX` | `data-patched.part` | Part filename prefix |
 | `CHECKSUM_FILE` | `checksums.md5` | Checksum manifest filename |
 | `IMMUDB_EXTERNAL` | `false` | Set `true` only with docker-compose (separate immudb container) |
@@ -673,7 +673,7 @@ Most configuration belongs in `jmdn.yaml` — set it there. The environment vari
 | `IMMUDB_PASSWORD` | *(from .env)* | immudb container startup password — must match `database.password` in jmdn.yaml |
 | `REDIS_PASSWORD` | *(from .env)* | Redis container `--requirepass` — must match `database.redis.password` in jmdn.yaml |
 | `GCS_BUCKET` | `jmdn-bootstrap` | Bootstrap snapshot GCS bucket (bootstrap container only) |
-| `GCS_PREFIX` | `staging/bootstrap-20260709_180202` | Snapshot path prefix (bootstrap container only; repoint to promoted public prefix before rollout) |
+| `GCS_PREFIX` | `bootstrap-26072026` | Snapshot path prefix (bootstrap container only) |
 | `PARTS_PREFIX` | `data-patched.part` | Snapshot part filename prefix (bootstrap container only) |
 | `CHECKSUM_FILE` | `checksums.md5` | Checksum manifest filename (bootstrap container only) |
 | `IMMUDB_USER` | `jmdn` | OS user the immudb files are owned by (entrypoint chown) |
@@ -758,8 +758,8 @@ The pre-built image (see Step 4, Option A) is sufficient for most operators. Bui
 
 ### How CI publishes images
 
-Every push of a `v*` tag to GitHub (e.g. `v1.2.0`) automatically builds and publishes:
-- `ghcr.io/jupitermetalabs/jmdn:v1.2.0` — pinnable version tag
+Every push of a `v*` tag to GitHub (e.g. `v2.0.0`) automatically builds and publishes:
+- `ghcr.io/jupitermetalabs/jmdn:v2.0.0` — pinnable version tag
 - `ghcr.io/jupitermetalabs/jmdn:latest` — updated on every release
 
 Builds cover linux/amd64, linux/arm64, linux/arm/v7 — Docker pulls the right variant automatically.
@@ -776,12 +776,12 @@ docker build \
   .
 
 # Build a specific release tag
-git checkout v1.2.0
+git checkout v2.0.0
 docker build \
   --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
-  --build-arg GIT_BRANCH=v1.2.0 \
-  --build-arg GIT_TAG=v1.2.0 \
-  -t ghcr.io/jupitermetalabs/jmdn:v1.2.0 \
+  --build-arg GIT_BRANCH=v2.0.0 \
+  --build-arg GIT_TAG=v2.0.0 \
+  -t ghcr.io/jupitermetalabs/jmdn:v2.0.0 \
   .
 
 # Multi-platform build (push to registry)
@@ -1297,7 +1297,7 @@ git pull
 git stash drop
 
 # 4. Pin your version in .env (REQUIRED — without it the tag defaults to :latest)
-echo "JMDN_VERSION=v1.2.1" >> .env
+echo "JMDN_VERSION=v2.0.0" >> .env
 
 # 5. Pull + restart as usual
 docker compose pull jmdn && docker compose up -d jmdn
@@ -1322,7 +1322,7 @@ version bump needs; it never touches your chain data or config.
 ```bash
 # 1. Set the new version in .env — adds the line if missing, portable (no sed -i,
 #    so it works the same on Linux and macOS)
-grep -v '^JMDN_VERSION=' .env > .env.tmp && echo 'JMDN_VERSION=v1.2.1' >> .env.tmp && mv .env.tmp .env
+grep -v '^JMDN_VERSION=' .env > .env.tmp && echo 'JMDN_VERSION=v2.0.0' >> .env.tmp && mv .env.tmp .env
 
 # 2. (Recommended) refresh compose + docs — clean, nothing local is tracked
 git pull
@@ -1355,7 +1355,7 @@ curl -s http://localhost:8545 \
 
 ```bash
 git fetch --tags
-git checkout v1.2.0   # or the branch/commit you want
+git checkout v2.0.0   # or the branch/commit you want
 
 # The built tag must match what docker-compose.yml will request — that's
 # JMDN_VERSION from .env, or "latest" if it's unset. Get this wrong and
@@ -1429,10 +1429,10 @@ git pull           # brings the compose + bootstrap config for the new snapshot
 git stash drop     # the old pinned edit is obsolete — version lives in .env now
 
 # 3. Pin the release version in .env (use the version JupiterMeta provides).
-echo "JMDN_VERSION=v1.2.1" >> .env
+echo "JMDN_VERSION=v2.0.0" >> .env
 
 # 4. Set the catch-up block in jmdn.yaml, under `fastsync:`
-#      catch_up_from_block: 12173      # = snapshot tip 12172 + 1
+#      catch_up_from_block: 13450      # = snapshot tip 13449 + 1
 #    (JupiterMeta provides the exact value with the snapshot.)
 
 # 5. Pull the image, WIPE old chain data + sync queue, re-bootstrap, start.

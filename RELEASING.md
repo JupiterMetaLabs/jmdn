@@ -27,34 +27,34 @@ release/1.2.x    next release line, branched from main when ready
 
 ## Creating a Minor Release
 
-Example: releasing `v1.2.0`.
+Example: releasing `v2.0.0`.
 
 ```bash
 git checkout main
 git pull --ff-only origin main
 
-git checkout -b release/1.2.x
-git push -u origin release/1.2.x
+git checkout -b release/2.0.x
+git push -u origin release/2.0.x
 
-git tag -a v1.2.0 -m "Release v1.2.0"
-git push origin v1.2.0
+git tag -a v2.0.0 -m "Release v2.0.0"
+git push origin v2.0.0
 ```
 
 Create the GitHub Release from the tag with release notes.
 
 ## Creating a Patch Release
 
-Example: releasing `v1.1.1`. The fix must already be merged into `main`.
+Example: releasing `v2.0.1`. The fix must already be merged into `main`.
 
 ```bash
-git checkout release/1.1.x
-git pull --ff-only origin release/1.1.x
+git checkout release/2.0.x
+git pull --ff-only origin release/2.0.x
 
 git cherry-pick <commit-sha>
 
-git tag -a v1.1.1 -m "Release v1.1.1"
-git push origin release/1.1.x
-git push origin v1.1.1
+git tag -a v2.0.1 -m "Release v2.0.1"
+git push origin release/2.0.x
+git push origin v2.0.1
 ```
 
 Create the GitHub Release from the tag.
@@ -64,9 +64,9 @@ Create the GitHub Release from the tag.
 For releases that require verifiable archives (e.g., external audits or certification):
 
 ```bash
-git archive v1.1.0 --format=zip -o jmdn-v1.1.0-source.zip
-md5sum jmdn-v1.1.0-source.zip > jmdn-v1.1.0-source.zip.md5
-sha256sum jmdn-v1.1.0-source.zip > jmdn-v1.1.0-source.zip.sha256
+git archive v2.0.0 --format=zip -o jmdn-v2.0.0-source.zip
+md5sum jmdn-v2.0.0-source.zip > jmdn-v2.0.0-source.zip.md5
+sha256sum jmdn-v2.0.0-source.zip > jmdn-v2.0.0-source.zip.sha256
 ```
 
 Upload the archive and checksum files to the GitHub Release. Not required for every release — only when external parties need to verify the source against a known hash.
@@ -75,10 +75,10 @@ Upload the archive and checksum files to the GitHub Release. Not required for ev
 
 ```bash
 # Verify archive integrity
-sha256sum -c jmdn-v1.1.0-source.zip.sha256
+sha256sum -c jmdn-v2.0.0-source.zip.sha256
 
 # Or verify exact code from tag
-git checkout v1.1.0
+git checkout v2.0.0
 ```
 
 ## Checklist

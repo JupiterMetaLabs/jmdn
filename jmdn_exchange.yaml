@@ -131,8 +131,8 @@ fastsync:
   # JupiterMeta will provide the exact value for the current snapshot alongside
   # the bootstrap download. Setting to 0 is safe but causes a full genesis scan
   # on every catchup (very slow on a bootstrapped node).
-  # 2026-07-09 snapshot: tip = 12172, so catch_up_from_block = 12173.
-  catch_up_from_block: 12173
+  # 2026-07-26 snapshot: tip = 13449, so catch_up_from_block = 13450.
+  catch_up_from_block: 13450
 
 # ── 9. Security ──────────────────────────────────────────────────────────────
 security:
