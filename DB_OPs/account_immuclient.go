@@ -1365,6 +1365,14 @@ func CountAccounts(PooledConnection *config.PooledConnection) (int, error) {
 	return count, nil
 }
 
+// CountAccountsWithTimeout is CountAccounts with a caller-chosen deadline for the
+// underlying immudb Count. The one-time explorer-stats seed uses this: it runs
+// off the request path and can allow minutes on a large accounts DB instead of
+// failing at the default 30s.
+func CountAccountsWithTimeout(countTimeout time.Duration) (int, error) {
+	return CountBuilder{}.GetAccountsDBCountWithTimeout(Prefix, countTimeout)
+}
+
 // GetTransactionsByDID retrieves all transactions associated with a given DID
 // This implementation iterates through all blocks to find matching transactions,
 // which is more efficient than fetching each transaction individually.
