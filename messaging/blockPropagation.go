@@ -269,7 +269,10 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 	// Check for duplicates
 	messageID := getMessageIDForBloomFilter(msg)
 	if isMessageProcessed(messageID) {
-		log.Debug().Str("message_id", messageID).Msg("Duplicate message received")
+		// remotePeer is the transport tag: "gossip:<peer>" for a gossip copy,
+		// a bare peer id for a direct-stream copy. This is the dropped (second)
+		// copy of a block delivered over both transports.
+		log.Debug().Str("message_id", messageID).Str("from", remotePeer).Msg("Duplicate message received")
 		timeoutPeer(remotePeer, 20*time.Second)
 		return
 	}
@@ -291,6 +294,7 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			Str("block_hash", msg.Block.BlockHash.Hex()).
 			Uint64("block_number", msg.Block.BlockNumber).
 			Int("txn_count", len(msg.Block.Transactions)).
+			Str("from", remotePeer). // transport tag: "gossip:<peer>" = gossip, bare id = direct
 			Msg("Received ZK block from peer")
 
 		// A consensus REJECTION notice carries no block to apply. Discard it
