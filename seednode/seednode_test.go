@@ -6,6 +6,9 @@ import (
 )
 
 func Test_GetPeer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration: requires a reachable seed node (SEED_NODE_URL)")
+	}
 	PeerID := "12D3KooWSH54xa9zzgwbbpJTMtXWVEAQj518TshqTi84FMGCMT2C"
 	seedNodeURL := os.Getenv("SEED_NODE_URL")
 	client, err := NewClient(seedNodeURL)

@@ -6,6 +6,9 @@ import (
 )
 
 func TestGetBuddyNodes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("excluded from -short: requires full node settings / VRF material")
+	}
 	router := NewNodeselectionRouter()
 	buddies, err := router.GetBuddyNodes(1)
 	if err != nil {
