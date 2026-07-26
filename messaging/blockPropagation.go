@@ -482,6 +482,18 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 		return reject("empty_block", "block %s has no transactions", b.BlockHash.Hex())
 	}
 
+	// (H2 / JMDN-003) FeeRecipients is NOT bound into the canonical block hash and
+	// the catch-up (FastsyncV2) apply path does not credit it (passes nil), so a
+	// block carrying FeeRecipients would apply differently on live-vs-catch-up
+	// nodes — a silent, non-healing balance divergence (the merkle fingerprint
+	// omits it too). Until it is hash-bound AND threaded through catch-up, refuse
+	// to admit such a block so an accidental enable fails LOUD (rejected) rather
+	// than silently diverging balances.
+	if len(b.FeeRecipients) > 0 {
+		return reject("feerecipients_unsupported",
+			"block %s carries FeeRecipients, which is not yet hash-bound or catch-up-threaded (JMDN-003); refusing to admit", b.BlockHash.Hex())
+	}
+
 	// (Signature/chain-ID authenticity) Every transaction must carry a valid
 	// signature for the configured chain. CheckSignature recovers the sender via
 	// the chain-bound signer and compares it against tx.From; it reads no
