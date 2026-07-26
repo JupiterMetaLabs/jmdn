@@ -74,3 +74,18 @@ func ConsensusVoteEligible(localHead, sequencerHead uint64, headKnown bool) bool
 	}
 	return sequencerHead-localHead <= MaxConsensusLagBlocks
 }
+
+// GateDecision is the full vote-gate policy, testable independent of the DB and
+// the sync monitor. localTipKnown=false means this node could NOT read its own
+// local tip — a transient DB read error, NOT a confirmed empty chain. In that
+// case it PERMITS (fails open), consistent with an unknown sequencer head: a read
+// hiccup must never pull a validator out of consensus and stall quorum (that was
+// the July-halt trigger, now that the gate is default-ON). When the tip is known,
+// ConsensusVoteEligible applies — so a CONFIRMED empty chain (localHead 0) still
+// abstains, as does a known gap > MaxConsensusLagBlocks.
+func GateDecision(localTipKnown bool, localHead, sequencerHead uint64, headKnown bool) bool {
+	if !localTipKnown {
+		return true
+	}
+	return ConsensusVoteEligible(localHead, sequencerHead, headKnown)
+}

@@ -35,6 +35,32 @@ func TestConsensusVoteEligible(t *testing.T) {
 	}
 }
 
+// GateDecision fails OPEN on an unknown local tip (a transient read error), and
+// defers to ConsensusVoteEligible when the tip is known — so a read hiccup cannot
+// stall quorum (M1-edge) while a CONFIRMED empty chain / known lag still abstains.
+func TestGateDecision_ReadErrorFailsOpen(t *testing.T) {
+	// Unknown local tip (localTipKnown=false) → permit, regardless of head/gap.
+	if !GateDecision(false, 0, 100, true) {
+		t.Fatal("read error (unknown local tip) must fail OPEN (permit), not abstain")
+	}
+	if !GateDecision(false, 5, 100, true) {
+		t.Fatal("read error must permit even against a large known head")
+	}
+	// Known tip → identical to ConsensusVoteEligible.
+	if GateDecision(true, 0, 5, true) {
+		t.Fatal("confirmed empty chain (tip 0) must still abstain")
+	}
+	if GateDecision(true, 2, 5, true) { // gap 3 > MaxConsensusLagBlocks(2)
+		t.Fatal("known gap > MaxConsensusLagBlocks must abstain")
+	}
+	if !GateDecision(true, 3, 5, true) { // gap 2
+		t.Fatal("known gap == MaxConsensusLagBlocks must permit")
+	}
+	if !GateDecision(true, 5, 0, false) { // head unknown, non-empty chain
+		t.Fatal("unknown head with a non-empty chain must permit")
+	}
+}
+
 func TestConsensusVoteReady_GateWiring(t *testing.T) {
 	orig := consensusSyncGate
 	origEnforce := enforceConsensusSyncGate

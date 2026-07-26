@@ -1188,25 +1188,28 @@ func main() {
 
 	// Wire the consensus vote gate on every node: a node may be a buddy / cast a
 	// vote only if it holds the latest block or trails the sequencer head by at
-	// most MessagePassing.MaxConsensusLagBlocks (2); a fresh node (tip 0) or one
-	// 3+ blocks behind must not. On a DB read error tip is unknown → abstain
-	// (fail-closed). The sequencer runs no monitor, so its head is "unknown" here
-	// and it votes on the strength of its non-empty chain (it IS the head).
-	// headKnown is false during a seednode outage (SeednodeUnreachable) so a
-	// transient loss of the head reference does not stall consensus — only a
+	// most MessagePassing.MaxConsensusLagBlocks (2); a fresh node (confirmed tip 0)
+	// or one 3+ blocks behind must not. On a DB read ERROR the local tip is UNKNOWN
+	// (not confirmed-behind) → PERMIT (fail-open, M1-edge): now that the gate is
+	// default-ON, a transient read hiccup must not pull a validator out of consensus
+	// and stall quorum (the July-halt trigger). The sequencer runs no monitor, so its
+	// head is "unknown" here and it votes on the strength of its non-empty chain (it
+	// IS the head). headKnown is false during a seednode outage (SeednodeUnreachable)
+	// so a transient loss of the head reference does not stall consensus — only a
 	// KNOWN gap > 2 abstains. Captured syncMonitor may be nil (no fastsync/seednode).
 	gateMonitor := syncMonitor
 	MessagePassing.SetConsensusSyncGate(func() bool {
 		tip, err := DB_OPs.GetLatestBlockNumber(context.Background(), nil)
+		localTipKnown := err == nil
 		if err != nil {
-			return false // cannot confirm local chain state → abstain
+			log.Warn().Err(err).Msg("[consensus gate] local tip read failed — permitting vote (fail-open on UNKNOWN local state; confirmed-empty tip 0 still abstains)")
 		}
 		if gateMonitor == nil {
-			return MessagePassing.ConsensusVoteEligible(tip, 0, false)
+			return MessagePassing.GateDecision(localTipKnown, tip, 0, false)
 		}
 		st := gateMonitor.GetStatus()
 		headKnown := st.SequencerHead > 0 && !st.SeednodeUnreachable
-		return MessagePassing.ConsensusVoteEligible(tip, st.SequencerHead, headKnown)
+		return MessagePassing.GateDecision(localTipKnown, tip, st.SequencerHead, headKnown)
 	})
 
 	// Committee-eligibility source on validator (non-sequencer) nodes. "Validator"
