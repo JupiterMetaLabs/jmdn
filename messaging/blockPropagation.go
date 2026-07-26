@@ -216,8 +216,9 @@ func getMessageIDForBloomFilter(msg config.BlockMessage) string {
 	return msg.Nonce
 }
 
-// [UNUSED]
-// HandleBlockStream processes incoming block propagation messages
+// HandleBlockStream is the registered direct block-propagation stream handler; it
+// feeds HandleReceivedBlockMessage (the shared receive path). (L3: removed a stale
+// "[UNUSED]" marker — this is live.)
 // Priority: FORWARD FIRST, then PROCESS/VALIDATE before STORING
 func HandleBlockStream(stream network.Stream) {
 	if BlockPropagationLocalGRO == nil {
