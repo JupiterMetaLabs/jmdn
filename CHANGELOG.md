@@ -7,6 +7,8 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-07-26
+
 Consensus and block-propagation hardening. This release introduces coordinated
 **breaking** protocol changes and must be deployed network-wide (see
 _Upgrade notes_).
@@ -459,7 +461,7 @@ _Upgrade notes_).
   (`explorer/addressOps.go`, `gETH/Facade/rpc/handlers.go`) — up to 10
   concurrent point-fetches per page instead of a sequential loop. (#55)
 
-## [1.2.0] — 2026-06-29
+## [1.2.0] - 2026-06-29
 
 ### Added
 
@@ -937,6 +939,7 @@ _Upgrade notes_).
 ### Added
 - Initial open source release
 
+[2.0.0]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.2.2...v2.0.0
 [1.2.2]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.1.1...v1.2.0
