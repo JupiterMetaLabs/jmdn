@@ -1006,28 +1006,47 @@ func main() {
 		}()
 	})
 	// One-time seed: indexing the existing DIDs/accounts is a one-shot activity.
-	// Only run the expensive immudb CountAccounts if the counter has never been
-	// seeded; once present it is maintained by the increments above. Runs in a
-	// goroutine so a first-boot seed never delays startup.
+	// Only run the expensive immudb Count if the counter has never been seeded;
+	// once present it is maintained by the increments above. Runs in a goroutine
+	// so a first-boot seed never delays startup, and retries with backoff: the
+	// immudb Count over the accounts prefix can exceed the default 30s on a large
+	// DB or under load, so the seed uses a long per-attempt deadline and keeps
+	// retrying until it succeeds (or the node shuts down).
 	go func() {
-		_, seeded, err := txindex.GetAccountCount(context.Background())
-		if err != nil {
+		if _, seeded, err := txindex.GetAccountCount(context.Background()); err != nil {
 			log.Debug().Err(err).Msg("[stats] account counter unavailable; skipping one-time seed")
 			return
-		}
-		if seeded {
+		} else if seeded {
 			return // already indexed once — keep incrementing
 		}
-		n, err := DB_OPs.CountAccounts(nil)
-		if err != nil {
-			log.Warn().Err(err).Msg("[stats] one-time account/DID count seed failed; will retry next boot")
-			return
+		backoff := 30 * time.Second
+		for attempt := 1; ; attempt++ {
+			// Re-check: another path (e.g. a manual reseed) may have seeded it.
+			if _, seeded, _ := txindex.GetAccountCount(context.Background()); seeded {
+				return
+			}
+			// Long per-attempt deadline — this runs off the request path.
+			n, err := DB_OPs.CountAccountsWithTimeout(5 * time.Minute)
+			if err == nil {
+				if serr := txindex.SetAccountCount(context.Background(), int64(n)); serr != nil {
+					log.Warn().Err(serr).Msg("[stats] failed to persist seeded account/DID count")
+				} else {
+					log.Info().Int("count", n).Int("attempt", attempt).Msg("[stats] account/DID counter seeded (one-time)")
+					return
+				}
+			} else {
+				log.Warn().Err(err).Int("attempt", attempt).Dur("retry_in", backoff).
+					Msg("[stats] one-time account/DID count seed failed; retrying")
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < 10*time.Minute {
+				backoff *= 2
+			}
 		}
-		if err := txindex.SetAccountCount(context.Background(), int64(n)); err != nil {
-			log.Warn().Err(err).Msg("[stats] failed to persist seeded account/DID count")
-			return
-		}
-		log.Info().Int("count", n).Msg("[stats] account/DID counter seeded (one-time)")
 	}()
 
 	// ── Account Sync Worker (Redis Stream) ───────────────────────────────────
