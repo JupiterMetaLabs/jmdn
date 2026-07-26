@@ -100,10 +100,10 @@ func NewConsensus(peerList PeerList, host host.Host) *Consensus {
 	// source is absent or errors.
 	//
 	// Legacy source: the round's MAIN peers (the peers that actually vote), NOT
-	// main+backup. This is critical for the 2f+1 threshold: with MaxMainPeers=5
-	// main + MaxBackupPeers=5 backup, sourcing all 10 makes VerifyCertificate
-	// require 2f+1 over 10 = 7, but only the 5 main peers vote — so quorum can
-	// never be reached. Read the live
+	// main+backup. This is critical for the 2f+1 threshold: with MaxMainPeers=7
+	// main + MaxBackupPeers=5 backup, sourcing all 12 makes VerifyCertificate
+	// require 2f+1 over 12 = 7, but only the 7 main peers vote — so any missing
+	// main vote could never reach quorum. Read the live
 	// MainPeers at call time (populated during Consensus.Start). Fall back to a
 	// main-sized getBuddy query only if MainPeers isn't populated yet.
 	// Legacy source carries NO peer_id↔bls_pub binding (empty values), so the

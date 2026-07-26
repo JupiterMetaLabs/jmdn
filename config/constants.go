@@ -27,7 +27,7 @@ const (
 )
 
 const (
-	MaxMainPeers     = 5 // Production size for buddy node committees (voting set; keep == consensus.max_validators)
+	MaxMainPeers     = 7 // Production committee size (voting set; keep == consensus.max_validators). n=7 → BFT quorum 2f+1=5 with f=2; n=5 was unsafe (quorum 3, intersection 2q-n=1 < f+1=2).
 	MaxBackupPeers   = 5 // Backup peers to handle failures of main nodes
 	ConsensusTimeout = 90 * time.Second
 )
