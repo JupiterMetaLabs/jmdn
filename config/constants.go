@@ -32,6 +32,15 @@ const (
 	ConsensusTimeout = 90 * time.Second
 )
 
+// MaxBlockMessageBytes is the single source of truth for the maximum size of a
+// propagated block message. BOTH transports MUST use it or they silently diverge:
+// the direct libp2p stream (messaging.HandleBlockStream, io.LimitReader) and the
+// gossip topic (pubsub.WithMaxMessageSize). If the gossip cap is lower than the
+// direct cap, blocks between the two sizes publish over direct but silently skip
+// gossip (fan-out degrades to catch-up); every node must compile the SAME value
+// or peers reject each other's gossip. Sized for large many-tx blocks (8 MiB).
+const MaxBlockMessageBytes = 8 * 1024 * 1024
+
 // Time-bounded message handling constants
 const (
 	MessageListeningWindow = 15 * time.Second // Nodes listen for 15 seconds

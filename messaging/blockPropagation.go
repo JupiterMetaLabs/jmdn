@@ -48,7 +48,9 @@ var (
 // the direct stream. blockStreamReadTimeout bounds how long a slow/idle peer may
 // hold the read open.
 const (
-	maxBlockStreamBytes    = 8 * 1024 * 1024
+	// maxBlockStreamBytes shares config.MaxBlockMessageBytes with the gossip topic
+	// cap (LC6) so the two transports can never silently diverge on block size.
+	maxBlockStreamBytes    = config.MaxBlockMessageBytes
 	blockStreamReadTimeout = 30 * time.Second
 )
 
