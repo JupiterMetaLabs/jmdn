@@ -595,23 +595,18 @@ func (s *ImmuDBServer) getStats(c *gin.Context) {
 		return nil
 	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))
 
-	// Get total DIDs/accounts in a goroutine. Prefer the maintained sqlite
-	// counter (O(1)); fall back to the immudb prefix count only when the counter
-	// has not been seeded yet (first boot before the one-time seed completes).
+	// Get total DIDs/accounts from the maintained sqlite counter only (O(1)).
+	// Deliberately does NOT fall back to the immudb prefix Count on the request
+	// path: that Count is O(n) and can exceed its deadline on a large accounts DB,
+	// which would fail the whole stats response. Until the one-time background
+	// seed populates the counter, report 0 (transient) rather than erroring.
 	BlockOpsLocalGRO.Go(GRO.ExplorerBlockOpsThread, func(ctx context.Context) error {
-		if n, seeded, err := txindex.GetAccountCount(ctx); err == nil && seeded {
-			mu.Lock()
-			stats.TotalDIDs = n
-			mu.Unlock()
-			return nil
-		}
-		totalDIDs, err := DB_OPs.CountAccounts(&s.accountsdb)
+		n, _, err := txindex.GetAccountCount(ctx)
 		if err != nil {
-			handleErr(fmt.Errorf("failed to count DIDs: %w", err))
-			return fmt.Errorf("failed to count DIDs: %w", err)
+			n = 0 // counter unavailable/unseeded — never block the endpoint on a scan
 		}
 		mu.Lock()
-		stats.TotalDIDs = int64(totalDIDs)
+		stats.TotalDIDs = n
 		mu.Unlock()
 		return nil
 	}, local.AddToWaitGroup(GRO.ExplorerBlockOpsWaitGroup))

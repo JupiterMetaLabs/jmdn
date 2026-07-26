@@ -89,7 +89,11 @@ func CloseAccountsImmuClient(PooledConnection *config.PooledConnection) error {
 
 // Adapter function to get the count of records using the Native ImmuDB API
 // Get the count of accounts uisng immudb native apis
-func GetCountofRecords(PooledConnection *config.PooledConnection, ConnType int, prefix string) (int, error) {
+// GetCountofRecords counts keys with the given prefix via immudb's Count API.
+// countTimeout bounds the Count RPC; pass <= 0 for the default 30s. Large
+// prefixes (e.g. all accounts) can exceed 30s, so off-request-path callers (the
+// one-time stats seed) pass a longer budget.
+func GetCountofRecords(PooledConnection *config.PooledConnection, ConnType int, prefix string, countTimeout time.Duration) (int, error) {
 	var err error
 	var shouldReturnConnection = false
 
@@ -154,7 +158,10 @@ func GetCountofRecords(PooledConnection *config.PooledConnection, ConnType int, 
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if countTimeout <= 0 {
+		countTimeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), countTimeout)
 	defer cancel()
 
 	// Use immudb Count API — much faster and simpler
@@ -201,9 +208,16 @@ func (cb CountBuilder) Build() (*CountBuilder, error) {
 }
 
 func (cb CountBuilder) GetMainDBCount(prefix string) (int, error) {
-	return GetCountofRecords(nil, MainImmuConn, prefix)
+	return GetCountofRecords(nil, MainImmuConn, prefix, 30*time.Second)
 }
 
 func (cb CountBuilder) GetAccountsDBCount(prefix string) (int, error) {
-	return GetCountofRecords(nil, AccountsImmuConn, prefix)
+	return GetCountofRecords(nil, AccountsImmuConn, prefix, 30*time.Second)
+}
+
+// GetAccountsDBCountWithTimeout is GetAccountsDBCount with a caller-chosen
+// deadline for the immudb Count — used by the one-time stats seed, which runs
+// off the request path and can allow minutes on a large accounts DB.
+func (cb CountBuilder) GetAccountsDBCountWithTimeout(prefix string, countTimeout time.Duration) (int, error) {
+	return GetCountofRecords(nil, AccountsImmuConn, prefix, countTimeout)
 }
