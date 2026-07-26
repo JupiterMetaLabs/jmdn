@@ -390,12 +390,25 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// round — it is a single short-timeout lookup once per round (not per-peer),
 	// and on any error the heights render as "?".
 	buddyHeads := map[string]uint64{}
-	if base := seedHTTPBase(); base != "" {
+	base := seedHTTPBase()
+	if base == "" {
+		// No resolvable seed HTTP base → all buddies render "?". Log so the cause
+		// (unset JMDN_SEED_HTTP_URL and empty network.seednode) is visible.
+		logger().NamedLogger.Info(trace_ctx, "buddy head enrichment: no seed HTTP base resolved (set JMDN_SEED_HTTP_URL, or network.seednode + JMDN_SEED_HTTP_PORT)",
+			ion.String("function", "Consensus.Start.buddyHeads"))
+	} else {
 		headCtx, headCancel := context.WithTimeout(trace_ctx, 800*time.Millisecond)
 		if heads, herr := fetchPeerHeads(headCtx, base); herr == nil {
 			buddyHeads = heads
+			logger().NamedLogger.Info(trace_ctx, "buddy head enrichment: fetched peer heads from seed",
+				ion.String("base", base+seedPeerHeadsPath),
+				ion.Int("peers_returned", len(heads)),
+				ion.String("function", "Consensus.Start.buddyHeads"))
 		} else {
-			logger().NamedLogger.Info(trace_ctx, "buddy head enrichment skipped (best-effort)",
+			// Best-effort: log the resolved URL AND the error so the failure
+			// (connection refused / timeout / non-200) is diagnosable from the log.
+			logger().NamedLogger.Info(trace_ctx, "buddy head enrichment failed (best-effort) — buddies will render '?'",
+				ion.String("base", base+seedPeerHeadsPath),
 				ion.String("error", herr.Error()),
 				ion.String("function", "Consensus.Start.buddyHeads"))
 		}
