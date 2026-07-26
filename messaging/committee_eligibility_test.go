@@ -171,7 +171,7 @@ func useNoSource(t *testing.T) {
 func nonMemberCert(t *testing.T, blockHashHex string, peerIDs ...string) map[string]string {
 	t.Helper()
 	if len(peerIDs) == 0 {
-		peerIDs = []string{"attacker-1", "attacker-2", "attacker-3"}
+		peerIDs = []string{"nonmember-1", "nonmember-2", "nonmember-3"}
 	}
 	var votes []BLS_Signer.BLSresponse
 	for i, pid := range peerIDs {
@@ -283,7 +283,7 @@ func indexOf(s, sub string) int {
 func TestValidSource_IneligiblePeerIDsRejected(t *testing.T) {
 	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, quorum 4
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000055")
-	rej := verifyBlockCertificate(blockMsg(hash, nonMemberCert(t, hash.Hex(), "evil-1", "evil-2", "evil-3")))
+	rej := verifyBlockCertificate(blockMsg(hash, nonMemberCert(t, hash.Hex(), "outsider-1", "outsider-2", "outsider-3")))
 	if rej == nil || rej.reason != "quorum_not_met" {
 		t.Fatalf("peer_ids not in buddy set must not reach quorum, got %v", rej)
 	}

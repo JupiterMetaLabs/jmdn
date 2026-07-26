@@ -32,7 +32,7 @@ func TestVoteRequesterAuthorized_EnabledBuddySetMembership(t *testing.T) {
 
 	seq := peer.ID("sequencer-peer")
 	other := peer.ID("committee-peer-2")
-	attacker := peer.ID("attacker-peer")
+	nonMember := peer.ID("nonmember-peer")
 
 	SetVoteResultRequesterAuthorizer(nil)
 	SetVoteBuddySetProvider(func() []peer.ID { return []peer.ID{seq, other} })
@@ -43,7 +43,7 @@ func TestVoteRequesterAuthorized_EnabledBuddySetMembership(t *testing.T) {
 	if !voteRequesterAuthorized(other) {
 		t.Fatalf("committee member (in buddy set) must be authorized")
 	}
-	if voteRequesterAuthorized(attacker) {
+	if voteRequesterAuthorized(nonMember) {
 		t.Fatalf("non-committee peer authorized to request a signed vote")
 	}
 }

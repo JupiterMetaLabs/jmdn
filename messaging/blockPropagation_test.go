@@ -343,9 +343,9 @@ func TestValidateRemoteBlock(t *testing.T) {
 	// BEFORE body binding.
 	t.Run("tx.Hash not matching contents rejected", func(t *testing.T) {
 		resetEquivocation()
-		attackerTx := signedTx(t, key, 0) // valid contents and signature
-		attackerTx.Hash = common.HexToHash("0x00000000000000000000000000000000000000000000000000000000deadbeef")
-		txs := []config.Transaction{attackerTx}
+		otherTx := signedTx(t, key, 0) // valid contents and signature
+		otherTx.Hash = common.HexToHash("0x00000000000000000000000000000000000000000000000000000000deadbeef")
+		txs := []config.Transaction{otherTx}
 		// Body hashes computed over the mismatched tx.Hash (as the generator
 		// formula does), so body binding alone would pass.
 		b := &config.ZKBlock{
@@ -379,7 +379,7 @@ func TestValidateRemoteBlock(t *testing.T) {
 	t.Run("PROOF GAP: swapped StarkProof under same hash currently accepted", func(t *testing.T) {
 		resetEquivocation()
 		b := newBlock("", 32, signedTx(t, key, 0))
-		b.StarkProof = []byte("attacker-swapped-proof")
+		b.StarkProof = []byte("swapped-proof")
 		b.Commitment = []uint32{1, 2, 3}
 		msg := config.BlockMessage{Block: b, Data: blockBoundCert(t, b, "peerA", "peerB", "peerC")}
 		if rej := validateRemoteBlock(ctx, msg); rej != nil {

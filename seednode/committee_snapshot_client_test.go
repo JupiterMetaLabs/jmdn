@@ -94,8 +94,8 @@ func TestCommitteeSourceAuto_KeySwapNotHonored(t *testing.T) {
 		t.Fatal("test keys collided")
 	}
 	snapA := signSnapshot(t, privA, pubA, curEpoch(), twoEntries())
-	evil := []committee.CommitteeEntry{{PeerID: "QmEvil", BLSPub: "ee"}}
-	snapB := signSnapshot(t, privB, pubB, curEpoch(), evil)
+	otherSet := []committee.CommitteeEntry{{PeerID: "QmOther", BLSPub: "ee"}}
+	snapB := signSnapshot(t, privB, pubB, curEpoch(), otherSet)
 
 	cur := snapA
 	s := &committeeSource{
@@ -115,7 +115,7 @@ func TestCommitteeSourceAuto_KeySwapNotHonored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected last-good serve, got error: %v", err)
 	}
-	if _, bad := m["QmEvil"]; bad {
+	if _, bad := m["QmOther"]; bad {
 		t.Fatal("key-swapped committee must NOT be honored")
 	}
 	if m["QmA"] != "aa" {

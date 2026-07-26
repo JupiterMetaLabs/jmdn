@@ -48,8 +48,8 @@ func TestCheckBlockHash_BindsToContents(t *testing.T) {
 
 	// A block claiming an unrelated hash (e.g. copied from another block) is
 	// rejected — a borrowed hash cannot pass at the block level.
-	forged := &config.ZKBlock{BlockHash: common.HexToHash("0xdeadbeef"), Transactions: txs}
-	if ok, _ := CheckBlockHash(forged); ok {
+	mismatched := &config.ZKBlock{BlockHash: common.HexToHash("0xdeadbeef"), Transactions: txs}
+	if ok, _ := CheckBlockHash(mismatched); ok {
 		t.Fatal("block claiming a hash not derived from its contents must be rejected")
 	}
 
