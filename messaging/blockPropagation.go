@@ -320,10 +320,12 @@ func HandleReceivedBlockMessage(msg config.BlockMessage, remotePeer string, forw
 			return // no forward, no mutation, no persistence, NOT cached
 		}
 
-		// Block validated and marked processed → forwarding is now safe. Gossip-
-		// delivered blocks skip this direct re-flood (forward=false): the pubsub
-		// mesh already re-propagates them, and dedup makes any overlap harmless.
-		if forward && msg.Hops < config.MaxHops {
+		// Block validated and marked processed → forwarding is now safe. The direct
+		// re-flood is OFF by default (gossip-only): the pubsub mesh re-propagates,
+		// and gossip-delivered blocks already pass forward=false. It only runs when
+		// direct propagation is explicitly re-enabled (DirectBlockPropagation), so a
+		// gossip-only node never re-floods a block it received over a direct stream.
+		if forward && DirectBlockPropagation && msg.Hops < config.MaxHops {
 			msg.Hops++
 			if globalHost != nil {
 				log.Info().

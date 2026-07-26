@@ -646,6 +646,15 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 	// message processed above, so it will not re-ingest its own gossiped copy.
 	PublishBlockGossip(msg)
 
+	// Gossip-only by default: the gossip mesh + FloodPublish reach the whole fleet,
+	// so the direct per-peer stream fan-out below is redundant — and sending over
+	// both transports delivered every block twice, which was then applied
+	// concurrently. Skip the direct fan-out unless it is explicitly re-enabled. If
+	// gossip is OFF, keep direct as the only path so a block is never un-propagated.
+	if EnableBlockGossip && !DirectBlockPropagation {
+		return nil
+	}
+
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal block message: %w", err)

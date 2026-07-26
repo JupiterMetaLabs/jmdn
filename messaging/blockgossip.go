@@ -21,6 +21,16 @@ import "gossipnode/config"
 // runs, so disabling is safe).
 var EnableBlockGossip = envOn("JMDN_BLOCK_GOSSIP", true)
 
+// DirectBlockPropagation controls whether finalized blocks are ALSO sent over
+// direct per-peer libp2p streams IN ADDITION to the gossip mesh. Default OFF
+// (gossip-only): the gossip topic + FloodPublish already reach the whole fleet,
+// so the direct fan-out is redundant — and delivering the same block over both
+// transports produced two near-simultaneous copies. Set
+// JMDN_DIRECT_BLOCK_PROPAGATION=1 to re-enable direct fan-out (e.g. a mixed-
+// version rollout or degraded gossip reachability). If gossip is disabled, direct
+// runs regardless, so a block is never left with no propagation path.
+var DirectBlockPropagation = envOn("JMDN_DIRECT_BLOCK_PROPAGATION", false)
+
 // blockGossipPublish is the injected publisher (wired in package main). nil => a
 // no-op, so a node that never wires it simply does not gossip.
 var blockGossipPublish func(config.BlockMessage)
