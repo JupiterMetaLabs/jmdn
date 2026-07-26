@@ -385,10 +385,31 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		ion.String("function", "Consensus.Start.populatePeerList"))
 	populateSpan.End()
 
-	// add apeer ids, to message
+	// Best-effort: annotate each buddy with its latest reported block head from
+	// the seednode (populated by ReportBlockState). This NEVER blocks or fails the
+	// round — it is a single short-timeout lookup once per round (not per-peer),
+	// and on any error the heights render as "?".
+	buddyHeads := map[string]uint64{}
+	if base := seedHTTPBase(); base != "" {
+		headCtx, headCancel := context.WithTimeout(trace_ctx, 800*time.Millisecond)
+		if heads, herr := fetchPeerHeads(headCtx, base); herr == nil {
+			buddyHeads = heads
+		} else {
+			logger().NamedLogger.Info(trace_ctx, "buddy head enrichment skipped (best-effort)",
+				ion.String("error", herr.Error()),
+				ion.String("function", "Consensus.Start.buddyHeads"))
+		}
+		headCancel()
+	}
+
+	// add peer ids (+ latest block) to message
 	peerIDs := make([]string, 0, len(consensus.PeerList.MainPeers))
 	for _, peerID := range consensus.PeerList.MainPeers {
-		peerIDs = append(peerIDs, fmt.Sprintf("  - %s", peerID.String()))
+		if h, ok := buddyHeads[peerID.String()]; ok {
+			peerIDs = append(peerIDs, fmt.Sprintf("  - %s (latest block %d)", peerID.String(), h))
+		} else {
+			peerIDs = append(peerIDs, fmt.Sprintf("  - %s (latest block ?)", peerID.String()))
+		}
 	}
 	msg := fmt.Sprintf("Final buddy nodes: %d MaxMainPeers actually connected peers with peerids:\n%s",
 		len(consensus.PeerList.MainPeers), strings.Join(peerIDs, "\n"))
