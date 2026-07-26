@@ -651,7 +651,7 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 	// both transports delivered every block twice, which was then applied
 	// concurrently. Skip the direct fan-out unless it is explicitly re-enabled. If
 	// gossip is OFF, keep direct as the only path so a block is never un-propagated.
-	if EnableBlockGossip && !DirectBlockPropagation {
+	if EnableBlockGossip && !directBlockPropagationEnabled() {
 		return nil
 	}
 

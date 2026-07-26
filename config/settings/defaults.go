@@ -117,6 +117,7 @@ func DefaultConfig() NodeConfig {
 			SeedAuthorityBLSPub:   "",
 			CommitteeEpochSeconds: 3600,
 			MaxValidators:         7, // must match config.MaxMainPeers (the voting committee size); never 0
+			P2P:                   0, // 0 = gossip-only block propagation (default); 1 also enables direct p2p
 		},
 	}
 }

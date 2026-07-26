@@ -62,6 +62,18 @@ type ConsensusSettings struct {
 	// committee size) and is always active — never 0 by default. An explicit 0
 	// disables the cap, but that is not the shipped behavior.
 	MaxValidators int `mapstructure:"max_validators" yaml:"max_validators"`
+
+	// P2P enables direct per-peer (one-to-one) block propagation IN ADDITION to
+	// the gossip mesh. Default 0 = gossip-only (the mesh + FloodPublish reach the
+	// whole fleet). Set to 1 to ALSO fan finalized blocks out over direct libp2p
+	// streams (e.g. during a mixed-version rollout, or if gossip reachability is
+	// degraded). Overridable via JMDN_DIRECT_BLOCK_PROPAGATION=1.
+	//
+	// YAML:
+	//
+	//	consensus:
+	//	  p2p: 1
+	P2P int `mapstructure:"p2p" yaml:"p2p"`
 }
 
 // SelectionSettings holds the SECRET VRF key material used for node / committee

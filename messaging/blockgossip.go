@@ -1,6 +1,9 @@
 package messaging
 
-import "gossipnode/config"
+import (
+	"gossipnode/config"
+	"gossipnode/config/settings"
+)
 
 // Gossip fan-out of finalized blocks.
 //
@@ -21,15 +24,24 @@ import "gossipnode/config"
 // runs, so disabling is safe).
 var EnableBlockGossip = envOn("JMDN_BLOCK_GOSSIP", true)
 
-// DirectBlockPropagation controls whether finalized blocks are ALSO sent over
-// direct per-peer libp2p streams IN ADDITION to the gossip mesh. Default OFF
-// (gossip-only): the gossip topic + FloodPublish already reach the whole fleet,
-// so the direct fan-out is redundant — and delivering the same block over both
-// transports produced two near-simultaneous copies. Set
-// JMDN_DIRECT_BLOCK_PROPAGATION=1 to re-enable direct fan-out (e.g. a mixed-
-// version rollout or degraded gossip reachability). If gossip is disabled, direct
-// runs regardless, so a block is never left with no propagation path.
-var DirectBlockPropagation = envOn("JMDN_DIRECT_BLOCK_PROPAGATION", false)
+// directBlockPropagationEnv is the env override for direct (p2p) block
+// propagation, evaluated at init for tooling/tests that never Load() settings.
+var directBlockPropagationEnv = envOn("JMDN_DIRECT_BLOCK_PROPAGATION", false)
+
+// directBlockPropagationEnabled reports whether finalized blocks are ALSO sent
+// over direct per-peer libp2p streams IN ADDITION to the gossip mesh. Default is
+// gossip-only: the gossip topic + FloodPublish reach the whole fleet, so the
+// direct fan-out is redundant — and delivering the same block over both
+// transports produced two near-simultaneous copies. It is enabled when
+// consensus.p2p >= 1 in config (once settings are loaded) OR the
+// JMDN_DIRECT_BLOCK_PROPAGATION=1 env override is set. When gossip is disabled the
+// caller runs direct regardless, so a block is never left with no path.
+func directBlockPropagationEnabled() bool {
+	if settings.IsLoaded() && settings.Get().Consensus.P2P >= 1 {
+		return true
+	}
+	return directBlockPropagationEnv
+}
 
 // blockGossipPublish is the injected publisher (wired in package main). nil => a
 // no-op, so a node that never wires it simply does not gossip.
