@@ -23,10 +23,10 @@ func mkPrepare(seq uint64, d Decision) *PrepareMessage {
 	}
 }
 
-// TestP9_EngineSignsVerifiably proves signPrepare/signCommit produce signatures
+// TestEngineSignsVerifiably proves signPrepare/signCommit produce signatures
 // that verify against the corresponding ed25519 public key over the SAME digest
 // peers use.
-func TestP9_EngineSignsVerifiably(t *testing.T) {
+func TestEngineSignsVerifiably(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("keygen: %v", err)
@@ -56,9 +56,9 @@ func TestP9_EngineSignsVerifiably(t *testing.T) {
 	}
 }
 
-// TestP9_ValidatePrepareAcceptsSignedRejectsRest exercises the verify path with
+// TestValidatePrepareAcceptsSignedRejectsRest exercises the verify path with
 // RequireSignatures on.
-func TestP9_ValidatePrepareAcceptsSignedRejectsRest(t *testing.T) {
+func TestValidatePrepareAcceptsSignedRejectsRest(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("keygen: %v", err)
@@ -109,9 +109,9 @@ func TestP9_ValidatePrepareAcceptsSignedRejectsRest(t *testing.T) {
 	}
 }
 
-// TestP9_NoSignerFailsClosed: with RequireSignatures set and no signer, the
+// TestNoSignerFailsClosed: with RequireSignatures set and no signer, the
 // engine refuses to emit an (unsigned) message rather than one peers will drop.
-func TestP9_NoSignerFailsClosed(t *testing.T) {
+func TestNoSignerFailsClosed(t *testing.T) {
 	e := &engine{config: DefaultConfig()} // RequireSignatures true, signer nil
 	if err := e.signPrepare(mkPrepare(1, Accept)); err == nil {
 		t.Fatal("RequireSignatures with no signer must error")

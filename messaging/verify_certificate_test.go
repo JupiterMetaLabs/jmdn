@@ -55,10 +55,10 @@ func itoa(i int) string {
 	return string(b)
 }
 
-// TestP2_ByzantineQuorum_ExactThresholds pins the exact ceil(2n/3) supermajority
+// TestByzantineQuorum_ExactThresholds pins the exact ceil(2n/3) supermajority
 // for a spread of committee sizes — including the non-3f+1 sizes (5,6,8,101) the
 // old 2f+1 got wrong, and large sizes to confirm it scales.
-func TestP2_ByzantineQuorum_ExactThresholds(t *testing.T) {
+func TestByzantineQuorum_ExactThresholds(t *testing.T) {
 	want := map[int]int{4: 3, 5: 4, 6: 4, 7: 5, 8: 6, 10: 7, 13: 9, 100: 67, 101: 68}
 	for n, exp := range want {
 		if got := ByzantineQuorum(n); got != exp {
@@ -67,10 +67,10 @@ func TestP2_ByzantineQuorum_ExactThresholds(t *testing.T) {
 	}
 }
 
-// TestP2_VerifyCertificate_ThresholdPerCommitteeSize proves, for each mandated
+// TestVerifyCertificate_ThresholdPerCommitteeSize proves, for each mandated
 // size, that exactly threshold-1 eligible +1 votes is NOT enough and exactly
 // threshold IS enough.
-func TestP2_VerifyCertificate_ThresholdPerCommitteeSize(t *testing.T) {
+func TestVerifyCertificate_ThresholdPerCommitteeSize(t *testing.T) {
 	for _, n := range []int{4, 5, 7, 10, 13} {
 		n := n
 		t.Run("n="+itoa(n), func(t *testing.T) {
@@ -103,10 +103,10 @@ func hex2(n int) string {
 	return string([]byte{d[(n>>4)&0xf], d[n&0xf]})
 }
 
-// TestP2_SingleVoteCannotFinalize: a single supplied vote must never finalize a
+// TestSingleVoteCannotFinalize: a single supplied vote must never finalize a
 // block, on ANY committee size ≥ 4 (the earlier (validTotal/2)+1 would accept it
 // because validTotal=1 → needed=1).
-func TestP2_SingleVoteCannotFinalize(t *testing.T) {
+func TestSingleVoteCannotFinalize(t *testing.T) {
 	for _, n := range []int{4, 5, 7, 10, 13} {
 		members := committeeOfSize(t, n)
 		hash := common.HexToHash("0x00000000000000000000000000000000000000000000000000000000000001" + hex2(n))
@@ -117,9 +117,9 @@ func TestP2_SingleVoteCannotFinalize(t *testing.T) {
 	}
 }
 
-// TestP2_SimpleMajorityInsufficient: a simple majority of the committee that is
+// TestSimpleMajorityInsufficient: a simple majority of the committee that is
 // below 2f+1 must NOT finalize. For n=7, simple majority = 4 but 2f+1 = 5.
-func TestP2_SimpleMajorityInsufficient(t *testing.T) {
+func TestSimpleMajorityInsufficient(t *testing.T) {
 	members := committeeOfSize(t, 7)
 	hash := common.HexToHash("0x00000000000000000000000000000000000000000000000000000000000000f7")
 	var v []BLS_Signer.BLSresponse
@@ -131,9 +131,9 @@ func TestP2_SimpleMajorityInsufficient(t *testing.T) {
 	}
 }
 
-// TestP2_ProcessBlockLocally_SingleVoteRejected exercises the OTHER path that
+// TestProcessBlockLocally_SingleVoteRejected exercises the OTHER path that
 // used to compute (validTotal/2)+1. It must also refuse a single vote.
-func TestP2_ProcessBlockLocally_SingleVoteRejected(t *testing.T) {
+func TestProcessBlockLocally_SingleVoteRejected(t *testing.T) {
 	members := committeeOfSize(t, 5)
 	hash := common.HexToHash("0x00000000000000000000000000000000000000000000000000000000000000a5")
 	single := []BLS_Signer.BLSresponse{members[0].blockVote(t, hash.Hex(), 1)}

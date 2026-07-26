@@ -26,11 +26,11 @@ func ensureMessageFilter() {
 	}
 }
 
-// TestP5_InvalidBlockBeforeGenuine_NotCensored covers the "invalid certificate
+// TestInvalidBlockBeforeGenuine_NotCensored covers the "invalid certificate
 // arriving before the legitimate block" case. It drives admitZKBlock (the
 // validate-before-cache seam the handler delegates to) directly, since the
 // stream handler itself is not unit-testable.
-func TestP5_InvalidBlockBeforeGenuine_NotCensored(t *testing.T) {
+func TestInvalidBlockBeforeGenuine_NotCensored(t *testing.T) {
 	resetEquivocation()
 	ensureMessageFilter()
 
@@ -83,11 +83,11 @@ func TestP5_InvalidBlockBeforeGenuine_NotCensored(t *testing.T) {
 	}
 }
 
-// TestP5_ValidBlockIsCachedOnce confirms the positive path: a first valid block
+// TestValidBlockIsCachedOnce confirms the positive path: a first valid block
 // is admitted and cached; a second identical delivery is still admitted by the
 // gate (idempotent) and remains cached — i.e. caching is a post-validation
 // effect, not a pre-validation guard.
-func TestP5_ValidBlockIsCachedOnce(t *testing.T) {
+func TestValidBlockIsCachedOnce(t *testing.T) {
 	resetEquivocation()
 	ensureMessageFilter()
 

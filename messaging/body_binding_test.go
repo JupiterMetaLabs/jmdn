@@ -55,7 +55,7 @@ func generatorTxnsRoot(txs []config.Transaction) string {
 	return "0x" + hex.EncodeToString(level[0])
 }
 
-func TestP3_RecomputeMatchesGenerator(t *testing.T) {
+func TestRecomputeMatchesGenerator(t *testing.T) {
 	mk := func(b byte) common.Hash {
 		var h common.Hash
 		for i := range h {
@@ -80,7 +80,7 @@ func TestP3_RecomputeMatchesGenerator(t *testing.T) {
 }
 
 // stateRootChain must match generateStateRoot: Keccak256(parentStateRoot||blockHash).
-func TestP3_StateRootChainMatchesGenerator(t *testing.T) {
+func TestStateRootChainMatchesGenerator(t *testing.T) {
 	parent := common.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
 	blockHash := common.HexToHash("0xfedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321")
 

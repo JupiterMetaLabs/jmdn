@@ -45,10 +45,10 @@ func p6Block(num uint64, txs ...config.Transaction) *config.ZKBlock {
 	}
 }
 
-// TestP6_EquivocationSurvivesRestart covers the "node restart then same-height
+// TestEquivocationSurvivesRestart covers the "node restart then same-height
 // conflicting block" case. With the durable store wired, a different block at a
 // height first seen before the restart is rejected.
-func TestP6_EquivocationSurvivesRestart(t *testing.T) {
+func TestEquivocationSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
 
 	store := newFakeEquivStore()
@@ -96,11 +96,11 @@ func TestP6_EquivocationSurvivesRestart(t *testing.T) {
 	}
 }
 
-// TestP6_WithoutStore_RestartLosesRecord documents WHY the durable store is
+// TestWithoutStore_RestartLosesRecord documents WHY the durable store is
 // required: with no store wired (in-memory only), a restart wipes the record
 // and the conflicting block is no longer caught. This pins that gap so a
 // regression that silently drops the store is visible.
-func TestP6_WithoutStore_RestartLosesRecord(t *testing.T) {
+func TestWithoutStore_RestartLosesRecord(t *testing.T) {
 	ctx := context.Background()
 
 	SetEquivocationStore(nil) // explicit: in-memory only

@@ -27,7 +27,7 @@ var (
 	hashWrong = common.BytesToHash([]byte{0xbb})
 )
 
-func TestP7_LinkageDecision(t *testing.T) {
+func TestLinkageDecision(t *testing.T) {
 	tipHash := hashTip
 	parent := &config.ZKBlock{BlockNumber: 10, BlockHash: tipHash}
 
@@ -67,9 +67,9 @@ func TestP7_LinkageDecision(t *testing.T) {
 	}
 }
 
-// TestP7_BadStateRootRejected covers the state-root chain axis (needs a parent
+// TestBadStateRootRejected covers the state-root chain axis (needs a parent
 // with a non-zero state root so stateRootChain engages).
-func TestP7_BadStateRootRejected(t *testing.T) {
+func TestBadStateRootRejected(t *testing.T) {
 	parent := &config.ZKBlock{
 		BlockNumber: 20,
 		BlockHash:   common.HexToHash("0xparent"),
@@ -87,9 +87,9 @@ func TestP7_BadStateRootRejected(t *testing.T) {
 	}
 }
 
-// TestP7_HeightGapTriggersCatchUp verifies checkLinkage nudges the authenticated
+// TestHeightGapTriggersCatchUp verifies checkLinkage nudges the authenticated
 // catch-up requester on a gap, using injected readers so no DB is required.
-func TestP7_HeightGapTriggersCatchUp(t *testing.T) {
+func TestHeightGapTriggersCatchUp(t *testing.T) {
 	// Save & restore the injectable seams.
 	origTip, origBlk, origReq := readLocalTip, readBlockByNumber, catchUpRequester
 	t.Cleanup(func() { readLocalTip, readBlockByNumber, catchUpRequester = origTip, origBlk, origReq })
@@ -114,11 +114,11 @@ func TestP7_HeightGapTriggersCatchUp(t *testing.T) {
 	}
 }
 
-// TestP7_FreshNodeRejectsGossipAndCatchesUp verifies a fresh node (tip 0)
+// TestFreshNodeRejectsGossipAndCatchesUp verifies a fresh node (tip 0)
 // refuses to ingest a gossip block (even block 1) and instead triggers
 // authenticated catch-up from block 1 — it must not join consensus/state
 // unsynced.
-func TestP7_FreshNodeRejectsGossipAndCatchesUp(t *testing.T) {
+func TestFreshNodeRejectsGossipAndCatchesUp(t *testing.T) {
 	origTip, origBlk, origReq := readLocalTip, readBlockByNumber, catchUpRequester
 	t.Cleanup(func() { readLocalTip, readBlockByNumber, catchUpRequester = origTip, origBlk, origReq })
 
@@ -141,9 +141,9 @@ func TestP7_FreshNodeRejectsGossipAndCatchesUp(t *testing.T) {
 	}
 }
 
-// TestP7_NoCatchUpOnCleanAccept confirms an in-order block does not trigger
+// TestNoCatchUpOnCleanAccept confirms an in-order block does not trigger
 // catch-up (no false reconciles on the happy path).
-func TestP7_NoCatchUpOnCleanAccept(t *testing.T) {
+func TestNoCatchUpOnCleanAccept(t *testing.T) {
 	origTip, origBlk, origReq := readLocalTip, readBlockByNumber, catchUpRequester
 	t.Cleanup(func() { readLocalTip, readBlockByNumber, catchUpRequester = origTip, origBlk, origReq })
 

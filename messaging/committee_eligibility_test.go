@@ -164,11 +164,11 @@ func useNoSource(t *testing.T) {
 	t.Cleanup(func() { SetCommitteeEligibilitySource(defaultTestEligibility) })
 }
 
-// attackerCert returns a quorum-sized certificate of block-bound +1 votes from
+// nonMemberCert returns a quorum-sized certificate of block-bound +1 votes from
 // three independently generated keys under caller-chosen PeerIDs. Signatures are
 // VALID BLS signatures over the correct block-bound message — only eligibility
 // can stop them.
-func attackerCert(t *testing.T, blockHashHex string, peerIDs ...string) map[string]string {
+func nonMemberCert(t *testing.T, blockHashHex string, peerIDs ...string) map[string]string {
 	t.Helper()
 	if len(peerIDs) == 0 {
 		peerIDs = []string{"attacker-1", "attacker-2", "attacker-3"}
@@ -185,7 +185,7 @@ func attackerCert(t *testing.T, blockHashHex string, peerIDs ...string) map[stri
 
 // A certificate with three keys under ineligible PeerIDs (valid signatures)
 // must be REJECTED when the eligibility source is absent, errors, or is empty.
-func TestP1_EligibilityDefect_ForgedCertRejected(t *testing.T) {
+func TestEligibilityDefect_InvalidCertRejected(t *testing.T) {
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000051")
 
 	cases := []struct {
@@ -199,7 +199,7 @@ func TestP1_EligibilityDefect_ForgedCertRejected(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.setup(t)
-			rej := verifyBlockCertificate(blockMsg(hash, attackerCert(t, hash.Hex())))
+			rej := verifyBlockCertificate(blockMsg(hash, nonMemberCert(t, hash.Hex())))
 			if rej == nil {
 				t.Fatalf("FAIL-OPEN: invalid certificate accepted with defective eligibility source (%s)", tc.name)
 			}
@@ -212,7 +212,7 @@ func TestP1_EligibilityDefect_ForgedCertRejected(t *testing.T) {
 
 // keyAuthorized itself must fail closed: no source, source error, empty set each
 // authorize NOBODY.
-func TestP1_KeyAuthorized_FailsClosed(t *testing.T) {
+func TestKeyAuthorized_FailsClosed(t *testing.T) {
 	m := mustMintMember("peerX", 0x31)
 
 	t.Run("no source", func(t *testing.T) {
@@ -236,7 +236,7 @@ func TestP1_KeyAuthorized_FailsClosed(t *testing.T) {
 }
 
 // ValidateCommitteeSource must name the defect.
-func TestP1_ValidateCommitteeSource_NamesDefect(t *testing.T) {
+func TestValidateCommitteeSource_NamesDefect(t *testing.T) {
 	cases := []struct {
 		name, wantSub string
 		setup         func(t *testing.T)
@@ -280,10 +280,10 @@ func indexOf(s, sub string) int {
 // ---- eligibility gating with a valid source -----------------------------------
 
 // Keys under PeerIDs that are NOT in the buddy set never reach quorum.
-func TestP1_ValidSource_AttackerPeerIDsRejected(t *testing.T) {
+func TestValidSource_IneligiblePeerIDsRejected(t *testing.T) {
 	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, quorum 4
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000055")
-	rej := verifyBlockCertificate(blockMsg(hash, attackerCert(t, hash.Hex(), "evil-1", "evil-2", "evil-3")))
+	rej := verifyBlockCertificate(blockMsg(hash, nonMemberCert(t, hash.Hex(), "evil-1", "evil-2", "evil-3")))
 	if rej == nil || rej.reason != "quorum_not_met" {
 		t.Fatalf("peer_ids not in buddy set must not reach quorum, got %v", rej)
 	}
@@ -291,7 +291,7 @@ func TestP1_ValidSource_AttackerPeerIDsRejected(t *testing.T) {
 
 // One key presented under three eligible PeerIDs counts at most once (dedup by
 // BLS key), so it cannot alone satisfy a 3-of-N quorum.
-func TestP1_ValidSource_SameKeyUnderMultiplePeerIDs_CountsOnce(t *testing.T) {
+func TestValidSource_SameKeyUnderMultiplePeerIDs_CountsOnce(t *testing.T) {
 	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, quorum 4
 	a := mustMintMember("peerA", 0x51)
 	asB := blsMember{peerID: "peerB", priv: a.priv, pubHex: a.pubHex}
@@ -310,7 +310,7 @@ func TestP1_ValidSource_SameKeyUnderMultiplePeerIDs_CountsOnce(t *testing.T) {
 
 // A legitimate quorum from eligible members is accepted (fail-closed must not
 // brick the honest path).
-func TestP1_ValidSource_LegitimateQuorumAccepted(t *testing.T) {
+func TestValidSource_LegitimateQuorumAccepted(t *testing.T) {
 	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, quorum ceil(2*5/3)=4
 	a := mustMintMember("peerA", 0x51)
 	b := mustMintMember("peerB", 0x52)
@@ -333,7 +333,7 @@ func TestP1_ValidSource_LegitimateQuorumAccepted(t *testing.T) {
 // A blocklisted buddy is excluded even though the eligibility source (getBuddy)
 // returns it: with one of three members blocked, the honest cert drops below
 // quorum.
-func TestP1_BlockBuddy_ExcludesEvenIfReturnedByGetBuddy(t *testing.T) {
+func TestBlockBuddy_ExcludesEvenIfReturnedByGetBuddy(t *testing.T) {
 	// getBuddy returns A..E (n=5, quorum 4); operator blocks C.
 	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE")
 	withBlockBuddy(t, "peerC")
@@ -363,7 +363,7 @@ func TestP1_BlockBuddy_ExcludesEvenIfReturnedByGetBuddy(t *testing.T) {
 }
 
 // If the blocklist empties the committee entirely, the node fails closed.
-func TestP1_BlockBuddy_EmptiesCommittee_FailsClosed(t *testing.T) {
+func TestBlockBuddy_EmptiesCommittee_FailsClosed(t *testing.T) {
 	useEligible(t, "peerA", "peerB")
 	withBlockBuddy(t, "peerA", "peerB")
 	if err := ValidateCommitteeSource(); err == nil {
@@ -375,7 +375,7 @@ func TestP1_BlockBuddy_EmptiesCommittee_FailsClosed(t *testing.T) {
 
 // With the authenticated snapshot binding peer_id to bls_pub, a vote under an
 // eligible peer_id but with a non-matching key is rejected.
-func TestP1_Binding_KeyUnderEligiblePeerID_Rejected(t *testing.T) {
+func TestBinding_KeyUnderEligiblePeerID_Rejected(t *testing.T) {
 	// Authenticated committee: peer_ids bound to the LEGIT members' keys.
 	legitA := mustMintMember("peerA", 0x91)
 	legitB := mustMintMember("peerB", 0x92)
@@ -410,7 +410,7 @@ func TestP1_Binding_KeyUnderEligiblePeerID_Rejected(t *testing.T) {
 
 // A legitimate quorum whose vote keys match the snapshot-bound keys is accepted
 // (binding must not brick the honest path).
-func TestP1_Binding_LegitBoundQuorumAccepted(t *testing.T) {
+func TestBinding_LegitBoundQuorumAccepted(t *testing.T) {
 	a := mustMintMember("peerA", 0x91)
 	b := mustMintMember("peerB", 0x92)
 	c := mustMintMember("peerC", 0x93)

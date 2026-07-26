@@ -103,7 +103,7 @@ func TestMergeAccountForWrite_MonotonicCounterGuards(t *testing.T) {
 	}
 }
 
-func TestMergeAccountForWrite_ForgedDIDStripped(t *testing.T) {
+func TestMergeAccountForWrite_InvalidDIDStripped(t *testing.T) {
 	existing := storedAccount()
 	upd := sparseUpdate(time.Now().UTC().UnixNano())
 	// Legacy hex-address DID: lowercase hex address (Address.Hex() is checksummed,
