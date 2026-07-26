@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
+	"gossipnode/Pubsub"
 	"gossipnode/config"
 	"gossipnode/config/PubSubMessages"
 	"gossipnode/messaging"
@@ -29,6 +31,20 @@ import (
 func startBlockGossip(ctx context.Context, gps *PubSubMessages.GossipPubSub) {
 	if !messaging.EnableBlockGossip || gps == nil {
 		return
+	}
+
+	// Register the block-propagation channel in this node's access map BEFORE
+	// subscribing. Pubsub access control (CanSubscribe) denies any channel absent
+	// from gps.ChannelAccess, and nothing else registers this topic — so without
+	// this every node's subscribe is rejected ("access denied: not authorized to
+	// subscribe") and gossip delivers nothing, leaving the direct stream as the
+	// only path. Public: the whole fleet must receive finalized blocks; admission
+	// stays fail-closed at admitZKBlock regardless of transport. Idempotent —
+	// "already exists" is expected on restart/re-entry and is not an error.
+	if err := Pubsub.CreateChannel(gps, config.PubSub_BlockPropagation, true, nil); err != nil &&
+		!strings.Contains(err.Error(), "already exists") {
+		log.Warn().Err(err).Str("topic", config.PubSub_BlockPropagation).
+			Msg("[BlockGossip] could not register block-propagation channel; subscribe will be denied")
 	}
 
 	// Publisher — invoked from messaging.BroadcastBlockToEveryNodeWithExtraData,
