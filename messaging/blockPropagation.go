@@ -41,6 +41,17 @@ var (
 	globalHost     host.Host // Add this line
 )
 
+// maxBlockStreamBytes caps a single direct block-propagation stream read so a
+// peer that opens the stream and streams an endless body (no newline) cannot
+// force unbounded allocation → remote OOM (LC1). Sized just above the 7 MB gossip
+// cap (Pubsub.MaxMessageSize) so any block that fits the gossip path also fits
+// the direct stream. blockStreamReadTimeout bounds how long a slow/idle peer may
+// hold the read open.
+const (
+	maxBlockStreamBytes    = 8 * 1024 * 1024
+	blockStreamReadTimeout = 30 * time.Second
+)
+
 // StartBlockPropagationCleanup initializes the GRO and starts the cleanup thread.
 func StartBlockPropagationCleanup() {
 	if BlockPropagationLocalGRO == nil {
@@ -225,8 +236,10 @@ func HandleBlockStream(stream network.Stream) {
 
 	metrics.MessagesReceivedCounter.WithLabelValues("block", remotePeer).Inc()
 
-	// Read the message
-	reader := bufio.NewReader(stream)
+	// Bound the read: cap the size (remote-OOM guard, mirrors the 7 MB gossip cap)
+	// and set a deadline so a slow/idle peer cannot hold the stream open forever.
+	_ = stream.SetReadDeadline(time.Now().Add(blockStreamReadTimeout))
+	reader := bufio.NewReader(io.LimitReader(stream, maxBlockStreamBytes))
 	messageBytes, err := reader.ReadBytes('\n')
 	if err != nil && err != io.EOF {
 		log.Error().Err(err).Msg("Failed to read message bytes")
