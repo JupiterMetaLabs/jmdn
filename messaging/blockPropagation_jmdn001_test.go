@@ -387,3 +387,31 @@ func TestValidateRemoteBlock(t *testing.T) {
 		}
 	})
 }
+
+// FeeRecipients is not committed to by the canonical block hash and is not
+// credited by the catch-up (FastsyncV2) apply path, so a block carrying it would
+// diverge silently between live and catch-up nodes. validateRemoteBlock must
+// refuse such a block fail-closed until it is hash-bound and catch-up-threaded
+// (H2/JMDN-003). The block is otherwise well-formed (canonical hash + quorum
+// cert), so the ONLY reason to reject is the FeeRecipients guard — proving it
+// fires ahead of the passing signature/certificate checks.
+func TestValidateRemoteBlock_FeeRecipientsRejected(t *testing.T) {
+	resetEquivocation()
+	ctx := context.Background()
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("genkey: %v", err)
+	}
+	txs := []config.Transaction{signedTx(t, key, 0)}
+	b := &config.ZKBlock{
+		BlockHash:     RecomputeBlockHashFromTxs(txs),
+		TxnsRoot:      RecomputeTxnsRoot(txs),
+		BlockNumber:   70,
+		Transactions:  txs,
+		FeeRecipients: []config.FeeRecipient{{Addr: common.HexToAddress("0x01"), Weight: 1}},
+	}
+	msg := config.BlockMessage{Block: b, Data: blockBoundCert(t, b, "peerA", "peerB", "peerC")}
+	if rej := validateRemoteBlock(ctx, msg); rej == nil || rej.reason != "feerecipients_unsupported" {
+		t.Fatalf("want feerecipients_unsupported, got %v", rej)
+	}
+}
