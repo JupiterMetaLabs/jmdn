@@ -317,6 +317,10 @@ message BuddyPeerRecord {
   int64 last_updated = 6;
   int64 active_from = 7;
   float weights = 8;
+  // Mirror of the seedNodes master proto (api/peer/peer.proto) — keep field
+  // numbers identical across both repos so ListBuddy stays wire-compatible.
+  string bls_pub = 9;     // BLS public key (lowercase hex) for consensus committee membership (S1)
+  uint64 block_head = 10; // Latest block height this peer reported via ReportBlockState (0 if none/unknown)
 }
 
 message ListBuddyResponse {

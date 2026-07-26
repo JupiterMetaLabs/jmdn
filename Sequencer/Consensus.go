@@ -25,6 +25,7 @@ import (
 	"gossipnode/config/settings"
 	"gossipnode/internal/reputation"
 	"gossipnode/messaging"
+	"gossipnode/seednode"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/JupiterMetaLabs/ion"
@@ -389,30 +390,30 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 	// the seednode (populated by ReportBlockState). This NEVER blocks or fails the
 	// round — it is a single short-timeout lookup once per round (not per-peer),
 	// and on any error the heights render as "?".
+	// Best-effort: annotate each buddy with its latest reported block head from the
+	// seednode's signed ListBuddy (authenticated gRPC — reuses the sequencer key
+	// registered via SetSequencerSignKey; no HTTP, no extra credentials). NEVER
+	// blocks or fails the round — one short-timeout call once per round, and on any
+	// error the heights render as "?".
 	buddyHeads := map[string]uint64{}
-	base := seedHTTPBase()
-	if base == "" {
-		// No resolvable seed HTTP base → all buddies render "?". Log so the cause
-		// (unset JMDN_SEED_HTTP_URL and empty network.seednode) is visible.
-		logger().NamedLogger.Info(trace_ctx, "buddy head enrichment: no seed HTTP base resolved (set JMDN_SEED_HTTP_URL, or network.seednode + JMDN_SEED_HTTP_PORT)",
+	if sc, err := seednode.NewClient(settings.Get().Network.SeedNode); err != nil {
+		logger().NamedLogger.Info(trace_ctx, "buddy head enrichment skipped: seed client init failed (best-effort)",
+			ion.String("error", err.Error()),
 			ion.String("function", "Consensus.Start.buddyHeads"))
 	} else {
 		headCtx, headCancel := context.WithTimeout(trace_ctx, 800*time.Millisecond)
-		if heads, herr := fetchPeerHeads(headCtx, base); herr == nil {
+		if heads, herr := sc.ListBuddyHeads(headCtx); herr == nil {
 			buddyHeads = heads
-			logger().NamedLogger.Info(trace_ctx, "buddy head enrichment: fetched peer heads from seed",
-				ion.String("base", base+seedPeerHeadsPath),
+			logger().NamedLogger.Info(trace_ctx, "buddy head enrichment: fetched peer heads via signed ListBuddy",
 				ion.Int("peers_returned", len(heads)),
 				ion.String("function", "Consensus.Start.buddyHeads"))
 		} else {
-			// Best-effort: log the resolved URL AND the error so the failure
-			// (connection refused / timeout / non-200) is diagnosable from the log.
 			logger().NamedLogger.Info(trace_ctx, "buddy head enrichment failed (best-effort) — buddies will render '?'",
-				ion.String("base", base+seedPeerHeadsPath),
 				ion.String("error", herr.Error()),
 				ion.String("function", "Consensus.Start.buddyHeads"))
 		}
 		headCancel()
+		_ = sc.Close()
 	}
 
 	// add peer ids (+ latest block) to message

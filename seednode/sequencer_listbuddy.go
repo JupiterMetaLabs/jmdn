@@ -73,3 +73,26 @@ func (c *Client) ListBuddySigned(ctx context.Context, request *peerpb.ListBuddyR
 	}
 	return c.client.ListBuddy(signedCtx, request)
 }
+
+// ListBuddyHeads returns peer_id -> latest reported block head from a signed
+// ListBuddy call, using the registered sequencer sign key (SetSequencerSignKey).
+// It is a best-effort observability helper (the "Built Final Buddies List" alert)
+// that reuses the authenticated gRPC channel — no HTTP, no extra credentials.
+// Returns an error when no sign key is registered (non-sequencer) or the RPC fails.
+func (c *Client) ListBuddyHeads(ctx context.Context) (map[string]uint64, error) {
+	seqPriv := currentSequencerSignKey()
+	if seqPriv == nil {
+		return nil, fmt.Errorf("no sequencer sign key registered (SetSequencerSignKey not called)")
+	}
+	resp, err := c.ListBuddySigned(ctx, &peerpb.ListBuddyRequest{}, seqPriv)
+	if err != nil {
+		return nil, err
+	}
+	heads := make(map[string]uint64, len(resp.GetPeers()))
+	for _, p := range resp.GetPeers() {
+		if p.GetPeerId() != "" {
+			heads[p.GetPeerId()] = p.GetBlockHead()
+		}
+	}
+	return heads, nil
+}
