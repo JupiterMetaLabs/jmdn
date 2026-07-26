@@ -1181,6 +1181,17 @@ func main() {
 						Bool("catchup", cfg.FastSync.EnableCatchup).
 						Dur("interval", cfg.FastSync.SyncCheckInterval).
 						Msg("[SyncMonitor] started")
+
+					// Event-driven seed reporting: push this node's head to the
+					// seednode immediately after a block's state is committed,
+					// instead of waiting for the periodic monitor tick. The hook
+					// only signals a debounced, async pusher (never blocks the
+					// apply path); the periodic timer remains the backstop.
+					localMon := syncMonitor
+					DB_OPs.SetLatestBlockAdvanceHook(startSeedBlockHeadPusher(ctx, func(c context.Context) {
+						localMon.TriggerCheck(c)
+					}))
+					log.Info().Msg("[SeedPush] event-driven block-head reporting wired")
 				}
 			}
 		}
