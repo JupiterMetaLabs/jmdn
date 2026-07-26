@@ -1165,7 +1165,7 @@ func main() {
 						if localMonitor == nil {
 							return
 						}
-						log.Info().Uint64("from_block", fromBlock).Msg("[P7] height gap detected — triggering authenticated catch-up")
+						log.Info().Uint64("from_block", fromBlock).Msg("height gap detected — triggering authenticated catch-up")
 						go localMonitor.TriggerCheck(context.Background())
 					})
 				}
@@ -1190,9 +1190,9 @@ func main() {
 	// vote only if it holds the latest block or trails the sequencer head by at
 	// most MessagePassing.MaxConsensusLagBlocks (2); a fresh node (confirmed tip 0)
 	// or one 3+ blocks behind must not. On a DB read ERROR the local tip is UNKNOWN
-	// (not confirmed-behind) → PERMIT (fail-open, M1-edge): now that the gate is
+	// (not confirmed-behind) → PERMIT (fail-open): now that the gate is
 	// default-ON, a transient read hiccup must not pull a validator out of consensus
-	// and stall quorum (the July-halt trigger). The sequencer runs no monitor, so its
+	// and stall quorum. The sequencer runs no monitor, so its
 	// head is "unknown" here and it votes on the strength of its non-empty chain (it
 	// IS the head). headKnown is false during a seednode outage (SeednodeUnreachable)
 	// so a transient loss of the head reference does not stall consensus — only a

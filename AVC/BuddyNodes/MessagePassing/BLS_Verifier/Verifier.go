@@ -23,7 +23,7 @@ func messageForVote(vote int8) ([]byte, error) {
 //
 // v1 (block-only) and v2 (chain but not height-bound) formats are NO LONGER
 // accepted: the whole fleet emits v3, and accepting older formats reopens the
-// cross-chain / cross-height replay window (security review CH-001). There is
+// cross-chain / cross-height replay window. There is
 // exactly one accepted format now, so there is no downgrade path to disable.
 func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, bindings string, vote int8) error {
 	pubBytes, err := hex.DecodeString(resp.PubKey)

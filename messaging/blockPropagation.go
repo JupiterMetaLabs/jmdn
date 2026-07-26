@@ -43,13 +43,13 @@ var (
 
 // maxBlockStreamBytes caps a single direct block-propagation stream read so a
 // peer that opens the stream and streams an endless body (no newline) cannot
-// force unbounded allocation → remote OOM (LC1). Sized just above the 7 MB gossip
+// force unbounded allocation → remote OOM. Sized just above the 7 MB gossip
 // cap (Pubsub.MaxMessageSize) so any block that fits the gossip path also fits
 // the direct stream. blockStreamReadTimeout bounds how long a slow/idle peer may
 // hold the read open.
 const (
 	// maxBlockStreamBytes shares config.MaxBlockMessageBytes with the gossip topic
-	// cap (LC6) so the two transports can never silently diverge on block size.
+	// cap so the two transports can never silently diverge on block size.
 	maxBlockStreamBytes    = config.MaxBlockMessageBytes
 	blockStreamReadTimeout = 30 * time.Second
 )
@@ -217,8 +217,7 @@ func getMessageIDForBloomFilter(msg config.BlockMessage) string {
 }
 
 // HandleBlockStream is the registered direct block-propagation stream handler; it
-// feeds HandleReceivedBlockMessage (the shared receive path). (L3: removed a stale
-// "[UNUSED]" marker — this is live.)
+// feeds HandleReceivedBlockMessage (the shared receive path).
 // Priority: FORWARD FIRST, then PROCESS/VALIDATE before STORING
 func HandleBlockStream(stream network.Stream) {
 	if BlockPropagationLocalGRO == nil {
@@ -485,7 +484,7 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 		return reject("empty_block", "block %s has no transactions", b.BlockHash.Hex())
 	}
 
-	// (H2 / JMDN-003) FeeRecipients is NOT bound into the canonical block hash and
+	// FeeRecipients is NOT bound into the canonical block hash and
 	// the catch-up (FastsyncV2) apply path does not credit it (passes nil), so a
 	// block carrying FeeRecipients would apply differently on live-vs-catch-up
 	// nodes — a silent, non-healing balance divergence (the merkle fingerprint
@@ -494,7 +493,7 @@ func validateRemoteBlock(ctx context.Context, msg config.BlockMessage) *blockRej
 	// than silently diverging balances.
 	if len(b.FeeRecipients) > 0 {
 		return reject("feerecipients_unsupported",
-			"block %s carries FeeRecipients, which is not yet hash-bound or catch-up-threaded (JMDN-003); refusing to admit", b.BlockHash.Hex())
+			"block %s carries FeeRecipients, which is not yet hash-bound or catch-up-threaded; refusing to admit", b.BlockHash.Hex())
 	}
 
 	// (Signature/chain-ID authenticity) Every transaction must carry a valid

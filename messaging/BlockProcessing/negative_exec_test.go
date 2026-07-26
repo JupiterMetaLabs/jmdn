@@ -22,7 +22,7 @@ func TestParseTransaction_RejectsNegativeValue(t *testing.T) {
 		Value: big.NewInt(-100),
 	}
 	if _, err := parseTransaction(tx); err == nil {
-		t.Fatalf("SECURITY (C-03): parseTransaction accepted a negative value")
+		t.Fatalf("parseTransaction accepted a negative value")
 	}
 }
 

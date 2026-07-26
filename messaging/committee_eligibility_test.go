@@ -201,7 +201,7 @@ func TestP1_EligibilityDefect_ForgedCertRejected(t *testing.T) {
 			tc.setup(t)
 			rej := verifyBlockCertificate(blockMsg(hash, attackerCert(t, hash.Hex())))
 			if rej == nil {
-				t.Fatalf("FAIL-OPEN: forged certificate accepted with defective eligibility source (%s)", tc.name)
+				t.Fatalf("FAIL-OPEN: invalid certificate accepted with defective eligibility source (%s)", tc.name)
 			}
 			if rej.reason != "committee_source_invalid" {
 				t.Fatalf("want reason committee_source_invalid naming the defect, got %q (%v)", rej.reason, rej.err)
@@ -285,7 +285,7 @@ func TestP1_ValidSource_AttackerPeerIDsRejected(t *testing.T) {
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000055")
 	rej := verifyBlockCertificate(blockMsg(hash, attackerCert(t, hash.Hex(), "evil-1", "evil-2", "evil-3")))
 	if rej == nil || rej.reason != "quorum_not_met" {
-		t.Fatalf("attacker peer_ids not in buddy set must not reach quorum, got %v", rej)
+		t.Fatalf("peer_ids not in buddy set must not reach quorum, got %v", rej)
 	}
 }
 

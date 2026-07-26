@@ -86,7 +86,7 @@ func TestP6_EquivocationSurvivesRestart(t *testing.T) {
 	}
 	m2 := config.BlockMessage{Block: b2, Data: blockBoundCert(t, b2, "peerA", "peerB", "peerC")}
 	if rej := validateRemoteBlock(ctx, m2); rej == nil || rej.reason != "equivocation" {
-		t.Fatalf("SECURITY (P6): post-restart conflicting block should be rejected as equivocation, got %v", rej)
+		t.Fatalf("post-restart conflicting block should be rejected as equivocation, got %v", rej)
 	}
 
 	// The SAME block re-delivered after restart is NOT equivocation (same hash).

@@ -28,8 +28,8 @@ message SignedPeerRecord {
   int64 last_updated = 11;               // Last update timestamp (Unix epoch)
   int64 active_from = 12;                // When this record became active (Unix epoch)
   float weights = 13;                    // Peer weight value (auto-generated, only in responses)
-  string bls_pub = 14;                   // BLS public key (lowercase hex) for consensus committee membership (S1)
-  string bls_pop = 15;                   // BLS proof-of-possession (hex) over the canonical PoP challenge; verified at registration, not persisted (S2b)
+  string bls_pub = 14;                   // BLS public key (lowercase hex) for consensus committee membership
+  string bls_pop = 15;                   // BLS proof-of-possession (hex) over the canonical PoP challenge; verified at registration, not persisted
 }
 
 // Peer record update message
@@ -319,7 +319,7 @@ message BuddyPeerRecord {
   float weights = 8;
   // Mirror of the seedNodes master proto (api/peer/peer.proto) — keep field
   // numbers identical across both repos so ListBuddy stays wire-compatible.
-  string bls_pub = 9;     // BLS public key (lowercase hex) for consensus committee membership (S1)
+  string bls_pub = 9;     // BLS public key (lowercase hex) for consensus committee membership
   uint64 block_head = 10; // Latest block height this peer reported via ReportBlockState (0 if none/unknown)
 }
 
@@ -378,7 +378,7 @@ message BlockStateResponse {
   string message        = 5;  // Human-readable status
 }
 
-// --- Committee snapshot (S3) — must match seedNodes api/peer/peer.proto ---
+// --- Committee snapshot — must match seedNodes api/peer/peer.proto ---
 message CommitteeSnapshotEntry {
   string peer_id = 1;
   string bls_pub = 2;                     // lowercase hex

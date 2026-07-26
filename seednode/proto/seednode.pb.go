@@ -86,8 +86,8 @@ type SignedPeerRecord struct {
 	LastUpdated   int64   `protobuf:"varint,11,opt,name=last_updated,json=lastUpdated,proto3" json:"last_updated,omitempty"`    // Last update timestamp (Unix epoch)
 	ActiveFrom    int64   `protobuf:"varint,12,opt,name=active_from,json=activeFrom,proto3" json:"active_from,omitempty"`       // When this record became active (Unix epoch)
 	Weights       float32 `protobuf:"fixed32,13,opt,name=weights,proto3" json:"weights,omitempty"`                              // Peer weight value (auto-generated, only in responses)
-	BlsPub        string  `protobuf:"bytes,14,opt,name=bls_pub,json=blsPub,proto3" json:"bls_pub,omitempty"`                    // BLS public key (lowercase hex) for consensus committee membership (S1)
-	BlsPop        string  `protobuf:"bytes,15,opt,name=bls_pop,json=blsPop,proto3" json:"bls_pop,omitempty"`                    // BLS proof-of-possession (hex) over the canonical PoP challenge; verified at registration, not persisted (S2b)
+	BlsPub        string  `protobuf:"bytes,14,opt,name=bls_pub,json=blsPub,proto3" json:"bls_pub,omitempty"`                    // BLS public key (lowercase hex) for consensus committee membership
+	BlsPop        string  `protobuf:"bytes,15,opt,name=bls_pop,json=blsPop,proto3" json:"bls_pop,omitempty"`                    // BLS proof-of-possession (hex) over the canonical PoP challenge; verified at registration, not persisted
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2894,7 +2894,7 @@ type BuddyPeerRecord struct {
 	Weights      float32                `protobuf:"fixed32,8,opt,name=weights,proto3" json:"weights,omitempty"`
 	// Mirror of the seedNodes master proto (api/peer/peer.proto) — keep field
 	// numbers identical across both repos so ListBuddy stays wire-compatible.
-	BlsPub        string `protobuf:"bytes,9,opt,name=bls_pub,json=blsPub,proto3" json:"bls_pub,omitempty"`            // BLS public key (lowercase hex) for consensus committee membership (S1)
+	BlsPub        string `protobuf:"bytes,9,opt,name=bls_pub,json=blsPub,proto3" json:"bls_pub,omitempty"`            // BLS public key (lowercase hex) for consensus committee membership
 	BlockHead     uint64 `protobuf:"varint,10,opt,name=block_head,json=blockHead,proto3" json:"block_head,omitempty"` // Latest block height this peer reported via ReportBlockState (0 if none/unknown)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3518,7 +3518,7 @@ func (x *BlockStateResponse) GetMessage() string {
 	return ""
 }
 
-// --- Committee snapshot (S3) — must match seedNodes api/peer/peer.proto ---
+// --- Committee snapshot — must match seedNodes api/peer/peer.proto ---
 type CommitteeSnapshotEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PeerId        string                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`

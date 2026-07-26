@@ -116,7 +116,7 @@ func TestMergeAccountForWrite_ForgedDIDStripped(t *testing.T) {
 		t.Fatal("newer incoming must be written")
 	}
 	if merged.DIDAddress != "did:jmdn:realdid" {
-		t.Errorf("forged hex DID not stripped: %q", merged.DIDAddress)
+		t.Errorf("hex DID not stripped: %q", merged.DIDAddress)
 	}
 	if merged.AccountType != "validator" {
 		t.Errorf("legacy 'user' placeholder must not clobber real type: %q", merged.AccountType)

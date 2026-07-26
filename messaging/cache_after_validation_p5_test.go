@@ -60,12 +60,12 @@ func TestP5_InvalidBlockBeforeGenuine_NotCensored(t *testing.T) {
 		Data:  blockBoundCert(t, genuine, "peerA"),
 	}
 	if rej := admitZKBlock(context.Background(), attack, messageID); rej == nil {
-		t.Fatalf("attacker block with sub-quorum certificate should be rejected")
+		t.Fatalf("block with sub-quorum certificate should be rejected")
 	}
 
 	// The rejected block must NOT occupy the dedup cache.
 	if isMessageProcessed(messageID) {
-		t.Fatalf("SECURITY (P5): rejected block occupied the dedup cache — genuine block %s would be permanently censored", H.Hex())
+		t.Fatalf("rejected block occupied the dedup cache — genuine block %s would be permanently censored", H.Hex())
 	}
 
 	// The genuine block (valid quorum certificate, same hash H) now arrives and

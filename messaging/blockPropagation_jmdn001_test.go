@@ -256,7 +256,7 @@ func TestValidateRemoteBlock(t *testing.T) {
 		}
 	})
 
-	t.Run("forged tx signature rejected", func(t *testing.T) {
+	t.Run("invalid tx signature rejected", func(t *testing.T) {
 		resetEquivocation()
 		bad := signedTx(t, key, 0)
 		bad.R = new(big.Int).Add(bad.R, big.NewInt(1))
@@ -341,7 +341,7 @@ func TestValidateRemoteBlock(t *testing.T) {
 	// a certified BlockHash and then reuse that block's real certificate. The
 	// receive path MUST verify tx.Hash against contents and reject the mismatch
 	// BEFORE body binding.
-	t.Run("forged tx.Hash not matching contents rejected (FINDING A)", func(t *testing.T) {
+	t.Run("tx.Hash not matching contents rejected", func(t *testing.T) {
 		resetEquivocation()
 		attackerTx := signedTx(t, key, 0) // valid contents and signature
 		attackerTx.Hash = common.HexToHash("0x00000000000000000000000000000000000000000000000000000000deadbeef")
@@ -356,7 +356,7 @@ func TestValidateRemoteBlock(t *testing.T) {
 		}
 		msg := config.BlockMessage{Block: b, Data: blockBoundCert(t, b, "peerA", "peerB", "peerC")}
 		if rej := validateRemoteBlock(ctx, msg); rej == nil || rej.reason != "tx_hash_mismatch" {
-			t.Fatalf("want tx_hash_mismatch for forged tx.Hash, got %v", rej)
+			t.Fatalf("want tx_hash_mismatch for mismatched tx.Hash, got %v", rej)
 		}
 	})
 
@@ -391,8 +391,8 @@ func TestValidateRemoteBlock(t *testing.T) {
 // FeeRecipients is not committed to by the canonical block hash and is not
 // credited by the catch-up (FastsyncV2) apply path, so a block carrying it would
 // diverge silently between live and catch-up nodes. validateRemoteBlock must
-// refuse such a block fail-closed until it is hash-bound and catch-up-threaded
-// (H2/JMDN-003). The block is otherwise well-formed (canonical hash + quorum
+// refuse such a block fail-closed until it is hash-bound and catch-up-threaded.
+// The block is otherwise well-formed (canonical hash + quorum
 // cert), so the ONLY reason to reject is the FeeRecipients guard — proving it
 // fires ahead of the passing signature/certificate checks.
 func TestValidateRemoteBlock_FeeRecipientsRejected(t *testing.T) {

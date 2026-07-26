@@ -136,7 +136,7 @@ func DomainChainID() uint64 {
 // block (the receiver uses the block hash hex). This ties a vote to a single
 // block on a single chain/fork at a single height, unlike the unbound constant
 // "vote:1" used by SignMessage. v2 (chain, no height) is no longer emitted — the
-// fleet is fully migrated to v3 (security review CH-001).
+// fleet is fully migrated to v3.
 func SignMessageForBlock(vote int8, chainID, height uint64, bindings string) (BLSresponse, bool, error) {
 	msg, err := CanonicalVoteMessageV3(chainID, height, bindings, vote)
 	if err != nil {

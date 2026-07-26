@@ -15,7 +15,7 @@ func init() { os.Setenv("JMDN_BLS_AUTOGEN", "1") }
 
 // Committee votes are v3-only: the signed bytes bind the network chain id, the
 // block HEIGHT and the block hash. v1 (block-only) and v2 (chain, no height) are
-// no longer accepted (security review CH-001). These tests pin cross-chain,
+// no longer accepted. These tests pin cross-chain,
 // cross-height, field-binding and downgrade-rejection.
 
 const (
@@ -51,7 +51,7 @@ func TestVoteDomain_V3HeightBinding(t *testing.T) {
 		t.Fatalf("v3 vote should verify at its own height: %v", err)
 	}
 	if err := VerifyForBlock(resp, chainA, 200, blkHash, 1); err == nil {
-		t.Fatalf("SECURITY (A2): v3 vote for height 100 verified at height 200 — height not bound")
+		t.Fatalf("v3 vote for height 100 verified at height 200 — height not bound")
 	}
 	if err := VerifyForBlock(resp, chainB, 100, blkHash, 1); err == nil {
 		t.Fatalf("SECURITY: v3 vote verified on a different chain")
@@ -97,12 +97,12 @@ func TestVoteDomain_DowngradeRejected(t *testing.T) {
 	// v1: "zkvote:<blockhash>:<vote>" (block-only, no chain, no height).
 	v1 := build(BLS_Signer.BlockBoundVotePrefix + blkHash + ":1")
 	if err := VerifyForBlock(v1, chainA, 100, blkHash, 1); err == nil {
-		t.Fatalf("SECURITY (CH-001): a v1 signature was accepted under v3-only")
+		t.Fatalf("a v1 signature was accepted under v3-only")
 	}
 	// v2: "zkvote:v2:chain=8000800:<blockhash>:<vote>" (chain, no height).
 	v2 := build(BLS_Signer.BlockBoundVotePrefix + "v2:chain=8000800:" + blkHash + ":1")
 	if err := VerifyForBlock(v2, chainA, 100, blkHash, 1); err == nil {
-		t.Fatalf("SECURITY (CH-001): a v2 signature was accepted under v3-only")
+		t.Fatalf("a v2 signature was accepted under v3-only")
 	}
 }
 

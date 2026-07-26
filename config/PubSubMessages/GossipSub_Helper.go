@@ -41,7 +41,7 @@ func (gps *GossipPubSub) InitGossipSub() error {
 		gossipSub, err = pubsub.NewGossipSub(context.Background(), gps.Host,
 			pubsub.WithFloodPublish(true),
 			pubsub.WithPeerExchange(true),
-			// LC6: match the direct-stream cap or blocks >1 MiB (libp2p gossip
+			// match the direct-stream cap or blocks >1 MiB (libp2p gossip
 			// default) silently skip gossip → fan-out degrades to direct+catch-up.
 			// Fleet-wide identical value required (peers reject mismatched sizes).
 			pubsub.WithMaxMessageSize(config.MaxBlockMessageBytes),

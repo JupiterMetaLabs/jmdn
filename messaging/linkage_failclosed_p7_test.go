@@ -107,7 +107,7 @@ func TestP7_HeightGapTriggersCatchUp(t *testing.T) {
 		t.Fatalf("want height_gap, got %v", rej)
 	}
 	if !fired {
-		t.Fatalf("SECURITY (P7): height gap must trigger authenticated catch-up")
+		t.Fatalf("height gap must trigger authenticated catch-up")
 	}
 	if gotFrom != 11 { // next-needed height = tip+1
 		t.Fatalf("catch-up fromBlock = %d, want 11", gotFrom)
@@ -134,7 +134,7 @@ func TestP7_FreshNodeRejectsGossipAndCatchesUp(t *testing.T) {
 		t.Fatalf("fresh node must reject gossip block 1 as not_bootstrapped, got %v", rej)
 	}
 	if !fired {
-		t.Fatalf("SECURITY (P7): fresh node must trigger authenticated catch-up")
+		t.Fatalf("fresh node must trigger authenticated catch-up")
 	}
 	if gotFrom != 1 { // catch up from genesis+1
 		t.Fatalf("catch-up fromBlock = %d, want 1", gotFrom)

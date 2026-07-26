@@ -1,4 +1,4 @@
-// Adversarial tests for the observe-only reputation model. The properties
+// Tests for the observe-only reputation model. The properties
 // under test are the SAFETY properties of the design, not just arithmetic:
 //
 //  1. Dissent is NEVER penalized (no rubber-stamp incentive).

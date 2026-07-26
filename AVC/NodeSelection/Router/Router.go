@@ -46,7 +46,7 @@ func selectionKeyMaterial() (mnemonic string, salt string, err error) {
 	}
 
 	if mnemonic == "" {
-		return "", "", fmt.Errorf("selection.mnemonic (JMDN_NODE_SELECTION_MNEMONIC) is not set: refusing to use the public BIP39 test mnemonic for VRF selection (predictable and forgeable)")
+		return "", "", fmt.Errorf("selection.mnemonic (JMDN_NODE_SELECTION_MNEMONIC) is not set: refusing to use the public BIP39 test mnemonic for VRF selection (predictable and reproducible)")
 	}
 	if salt == "" {
 		return "", "", fmt.Errorf("selection.salt (JMDN_NETWORK_SALT) is not set: refusing to use a default VRF salt")

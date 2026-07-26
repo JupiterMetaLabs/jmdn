@@ -68,6 +68,6 @@ func TestCheckTransactionValues_InversionWitness(t *testing.T) {
 	addr := common.HexToAddress("0x2222222222222222222222222222222222222222")
 	tx := &config.Transaction{From: &addr, To: &addr, Value: v}
 	if ok, _ := CheckTransactionValues(tx); ok {
-		t.Fatalf("SECURITY (C-03): negative-value tx accepted by the value gate")
+		t.Fatalf("negative-value tx accepted by the value gate")
 	}
 }

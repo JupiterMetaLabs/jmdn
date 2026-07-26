@@ -37,7 +37,7 @@ func TestConsensusVoteEligible(t *testing.T) {
 
 // GateDecision fails OPEN on an unknown local tip (a transient read error), and
 // defers to ConsensusVoteEligible when the tip is known — so a read hiccup cannot
-// stall quorum (M1-edge) while a CONFIRMED empty chain / known lag still abstains.
+// stall quorum while a CONFIRMED empty chain / known lag still abstains.
 func TestGateDecision_ReadErrorFailsOpen(t *testing.T) {
 	// Unknown local tip (localTipKnown=false) → permit, regardless of head/gap.
 	if !GateDecision(false, 0, 100, true) {

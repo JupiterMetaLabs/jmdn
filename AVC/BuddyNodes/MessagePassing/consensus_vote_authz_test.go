@@ -44,7 +44,7 @@ func TestVoteRequesterAuthorized_EnabledBuddySetMembership(t *testing.T) {
 		t.Fatalf("committee member (in buddy set) must be authorized")
 	}
 	if voteRequesterAuthorized(attacker) {
-		t.Fatalf("SECURITY (C-04): non-committee peer authorized to request a signed vote")
+		t.Fatalf("non-committee peer authorized to request a signed vote")
 	}
 }
 

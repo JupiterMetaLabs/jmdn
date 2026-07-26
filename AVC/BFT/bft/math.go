@@ -39,7 +39,7 @@ func QuorumThreshold(total int) int {
 // can still form it (availability) — at ANY committee size, not only n=3f+1.
 //
 // It previously used 2f+1, which is correct ONLY at n=3f+1 and too LOW elsewhere
-// (n=5 gave 3 < the safe 4 — the M2 hole). It now matches messaging.ByzantineQuorum
+// (n=5 gave 3 < the safe 4). It now matches messaging.ByzantineQuorum
 // so the BFT engine and the block-certificate verifier apply the SAME threshold.
 //
 // Examples:
