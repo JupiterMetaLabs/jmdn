@@ -32,26 +32,24 @@ func QuorumThreshold(total int) int {
 	return (total*QuorumNumerator + QuorumDenominator - 1) / QuorumDenominator
 }
 
-// BFTThreshold calculates the BFT consensus threshold using the 2f+1 rule,
-// where f = (buddyCount - 1) / 3 (maximum Byzantine faults tolerated). 2f+1 is
-// always <= buddyCount for buddyCount >= 1, so there is never a majority
-// fallback (never a simple majority substituting for 2f+1).
+// BFTThreshold calculates the BFT consensus threshold: the general supermajority
+// ceil(2n/3) (identical to QuorumThreshold). This is the smallest quorum that,
+// for the maximal tolerated f = floor((n-1)/3) Byzantine members, guarantees any
+// two quorums intersect in >= 1 honest node (safety) while the n-f honest members
+// can still form it (availability) — at ANY committee size, not only n=3f+1.
+//
+// It previously used 2f+1, which is correct ONLY at n=3f+1 and too LOW elsewhere
+// (n=5 gave 3 < the safe 4 — the M2 hole). It now matches messaging.ByzantineQuorum
+// so the BFT engine and the block-certificate verifier apply the SAME threshold.
 //
 // Examples:
-//   - BFTThreshold(13) = 9  (f=4, 2*4+1=9)
-//   - BFTThreshold(10) = 7  (f=3, 2*3+1=7)
-//   - BFTThreshold(4)  = 3  (f=1, 2*1+1=3, 3 <= 4)
+//   - BFTThreshold(13) = 9, BFTThreshold(10) = 7, BFTThreshold(7) = 5
+//   - BFTThreshold(5)  = 4 (was 3), BFTThreshold(6) = 4, BFTThreshold(4) = 3
 func BFTThreshold(buddyCount int) int {
 	if buddyCount <= 0 {
 		return 0
 	}
-
-	f := (buddyCount - 1) / ByzantineFactor
-	// 2f+1 is always <= buddyCount for buddyCount >= 1 (2*floor((n-1)/3)+1 <=
-	// (2n+1)/3 <= n), so no majority fallback is ever needed. The former
-	// "if threshold > buddyCount => (n/2)+1" branch was unreachable and is
-	// removed so a simple majority can never silently replace the 2f+1 threshold.
-	return QuorumMultiplier*f + QuorumOffset
+	return QuorumThreshold(buddyCount)
 }
 
 // ByzantineTolerance calculates the maximum number of Byzantine faults that can be tolerated.

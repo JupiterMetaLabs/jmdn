@@ -281,7 +281,7 @@ func indexOf(s, sub string) int {
 
 // Keys under PeerIDs that are NOT in the buddy set never reach quorum.
 func TestP1_ValidSource_AttackerPeerIDsRejected(t *testing.T) {
-	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, threshold 3
+	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, quorum 4
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000055")
 	rej := verifyBlockCertificate(blockMsg(hash, attackerCert(t, hash.Hex(), "evil-1", "evil-2", "evil-3")))
 	if rej == nil || rej.reason != "quorum_not_met" {
@@ -292,7 +292,7 @@ func TestP1_ValidSource_AttackerPeerIDsRejected(t *testing.T) {
 // One key presented under three eligible PeerIDs counts at most once (dedup by
 // BLS key), so it cannot alone satisfy a 3-of-N quorum.
 func TestP1_ValidSource_SameKeyUnderMultiplePeerIDs_CountsOnce(t *testing.T) {
-	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, threshold 3
+	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, quorum 4
 	a := mustMintMember("peerA", 0x51)
 	asB := blsMember{peerID: "peerB", priv: a.priv, pubHex: a.pubHex}
 	asC := blsMember{peerID: "peerC", priv: a.priv, pubHex: a.pubHex}
@@ -311,15 +311,17 @@ func TestP1_ValidSource_SameKeyUnderMultiplePeerIDs_CountsOnce(t *testing.T) {
 // A legitimate quorum from eligible members is accepted (fail-closed must not
 // brick the honest path).
 func TestP1_ValidSource_LegitimateQuorumAccepted(t *testing.T) {
-	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, threshold 3
+	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE") // n=5, quorum ceil(2*5/3)=4
 	a := mustMintMember("peerA", 0x51)
 	b := mustMintMember("peerB", 0x52)
 	c := mustMintMember("peerC", 0x53)
+	d := mustMintMember("peerD", 0x54)
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000057")
 	cert := certData(t,
 		a.blockVote(t, hash.Hex(), 1),
 		b.blockVote(t, hash.Hex(), 1),
 		c.blockVote(t, hash.Hex(), 1),
+		d.blockVote(t, hash.Hex(), 1),
 	)
 	if rej := verifyBlockCertificate(blockMsg(hash, cert)); rej != nil {
 		t.Fatalf("legitimate eligible quorum must be accepted, got %s: %v", rej.reason, rej.err)
@@ -332,7 +334,7 @@ func TestP1_ValidSource_LegitimateQuorumAccepted(t *testing.T) {
 // returns it: with one of three members blocked, the honest cert drops below
 // quorum.
 func TestP1_BlockBuddy_ExcludesEvenIfReturnedByGetBuddy(t *testing.T) {
-	// getBuddy returns A..E (n=5, threshold 3); operator blocks C.
+	// getBuddy returns A..E (n=5, quorum 4); operator blocks C.
 	useEligible(t, "peerA", "peerB", "peerC", "peerD", "peerE")
 	withBlockBuddy(t, "peerC")
 
@@ -341,7 +343,7 @@ func TestP1_BlockBuddy_ExcludesEvenIfReturnedByGetBuddy(t *testing.T) {
 	c := mustMintMember("peerC", 0x73)
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000058")
 
-	// C is blocked → only A and B count → 2 < threshold 3.
+	// C is blocked → only A and B count → 2 < quorum 4.
 	cert := certData(t,
 		a.blockVote(t, hash.Hex(), 1),
 		b.blockVote(t, hash.Hex(), 1),
@@ -380,7 +382,7 @@ func TestP1_Binding_KeyUnderEligiblePeerID_Rejected(t *testing.T) {
 	legitC := mustMintMember("peerC", 0x93)
 	legitD := mustMintMember("peerD", 0x94)
 	legitE := mustMintMember("peerE", 0x95)
-	useEligibleBound(t, legitA, legitB, legitC, legitD, legitE) // n=5, threshold 3
+	useEligibleBound(t, legitA, legitB, legitC, legitD, legitE) // n=5, quorum 4
 
 	hash := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000059")
 
@@ -414,13 +416,14 @@ func TestP1_Binding_LegitBoundQuorumAccepted(t *testing.T) {
 	c := mustMintMember("peerC", 0x93)
 	d := mustMintMember("peerD", 0x94)
 	e := mustMintMember("peerE", 0x95)
-	useEligibleBound(t, a, b, c, d, e) // n=5, threshold 3
+	useEligibleBound(t, a, b, c, d, e) // n=5, quorum ceil(2*5/3)=4
 
 	hash := common.HexToHash("0x000000000000000000000000000000000000000000000000000000000000005a")
 	cert := certData(t,
 		a.blockVote(t, hash.Hex(), 1),
 		b.blockVote(t, hash.Hex(), 1),
 		c.blockVote(t, hash.Hex(), 1),
+		d.blockVote(t, hash.Hex(), 1),
 	)
 	if rej := verifyBlockCertificate(blockMsg(hash, cert)); rej != nil {
 		t.Fatalf("bound-key legitimate quorum must be accepted, got %s: %v", rej.reason, rej.err)

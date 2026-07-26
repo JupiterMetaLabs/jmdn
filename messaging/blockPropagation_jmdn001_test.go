@@ -32,12 +32,12 @@ import (
 // vote with the key whose PeerID is eligible.
 var testMembers map[string]blsMember
 
-// defaultCommitteePeerIDs is the default test committee: a fixed 5-member set
-// (NOT tied to production MaxMainPeers, which is 7). With the Byzantine threshold
-// 2f+1 and f=floor((n-1)/3), n=5 => threshold 3, so these tests need a 3-of-5
-// quorum — the size the existing 3-vote assertions were written against. The
-// production max_validators cap (7) does not bind here (7 >= 5).
-var defaultCommitteePeerIDs = []string{"peerA", "peerB", "peerC", "peerD", "peerE"}
+// defaultCommitteePeerIDs is the default test committee: a fixed 4-member set
+// (NOT tied to production MaxMainPeers, which is 7). The Byzantine quorum is
+// ceil(2n/3): for n=4 that is 3, so the existing 3-vote assertions (peerA/B/C)
+// remain exactly a quorum while a 2-vote cert stays below it. Tests that need a
+// different committee size set their own source (useEligible/useEligibleBound).
+var defaultCommitteePeerIDs = []string{"peerA", "peerB", "peerC", "peerD"}
 
 // defaultTestEligibility is the eligibility source used by the harness and
 // restored by per-test cleanups.

@@ -55,10 +55,11 @@ func itoa(i int) string {
 	return string(b)
 }
 
-// TestP2_ByzantineQuorum_ExactThresholds pins the exact 2f+1 values for the
-// mandated committee sizes.
+// TestP2_ByzantineQuorum_ExactThresholds pins the exact ceil(2n/3) supermajority
+// for a spread of committee sizes — including the non-3f+1 sizes (5,6,8,101) the
+// old 2f+1 got wrong, and large sizes to confirm it scales.
 func TestP2_ByzantineQuorum_ExactThresholds(t *testing.T) {
-	want := map[int]int{4: 3, 5: 3, 7: 5, 10: 7, 13: 9}
+	want := map[int]int{4: 3, 5: 4, 6: 4, 7: 5, 8: 6, 10: 7, 13: 9, 100: 67, 101: 68}
 	for n, exp := range want {
 		if got := ByzantineQuorum(n); got != exp {
 			t.Errorf("ByzantineQuorum(%d) = %d, want %d", n, got, exp)

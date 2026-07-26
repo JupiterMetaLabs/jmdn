@@ -284,21 +284,32 @@ func RegistryConfigured() bool { return ValidateCommitteeSource() == nil }
 
 // ---- Certificate verification ------------------------------------------------
 
-// ByzantineQuorum returns the Byzantine fault-tolerant threshold 2f+1 for a
-// committee of size n, where f = floor((n-1)/3). This is THE threshold for the
-// whole node: never a simple majority, never derived from the number of
-// votes received. n MUST be the authenticated committee size for the block's
-// epoch.
+// ByzantineQuorum returns the Byzantine fault-tolerant quorum for a committee of
+// size n: the general supermajority ceil(2n/3). This is THE threshold for the
+// whole node — never a simple majority, never derived from the number of votes
+// received. n MUST be the authenticated committee size for the block's epoch.
 //
-// Worked sizes (asserted by tests): n=4→3, 5→3, 7→5, 10→7, 13→9.
+// ceil(2n/3) is the smallest quorum that, for the maximal tolerated
+// f = floor((n-1)/3) Byzantine members, guarantees BOTH:
+//   - safety: any two quorums intersect in >= f+1 nodes (>= 1 honest), so two
+//     conflicting blocks can never both be certified; and
+//   - availability: the n-f honest members can always form it.
+//
+// It is correct at ANY committee size, not only the "nice" n=3f+1 sizes — so the
+// committee can scale freely (7, 101, ...) with no hardcoded size. The previous
+// 2f+1 was correct ONLY at n=3f+1 and too LOW elsewhere (n=5 gave 3, quorum
+// intersection 2q-n=1 < f+1=2 — unsafe). ceil(2n/3) fixes those (5->4, 6->4,
+// 8->6, 101->68) and is identical at 3f+1 (4->3, 7->5, 10->7, 100->67).
+//
+// Worked sizes (asserted by tests): n=4->3, 5->4, 6->4, 7->5, 10->7, 100->67, 101->68.
 func ByzantineQuorum(n int) int {
 	if n < 1 {
 		// No committee => an unmeetable-by-a-lone-vote threshold. Callers reach
 		// this only via the fail-closed error path, but keep it safe.
 		return 1
 	}
-	f := (n - 1) / 3
-	return 2*f + 1
+	// ceil(2n/3) via integer arithmetic.
+	return (2*n + 2) / 3
 }
 
 // CertificateResult reports the outcome of the single certificate verifier.
