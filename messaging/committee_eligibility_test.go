@@ -57,11 +57,17 @@ func mustMintMember(peerID string, seed byte) blsMember {
 
 // blockVote returns a block-bound BLSresponse signed with THIS member's key
 // (canonical message identical to BLS_Signer.SignMessageForBlock).
+// blockVote signs a v3 block-bound vote at height 0 — the default for tests whose
+// block carries an unset BlockNumber. Use blockVoteAt when the block has a height,
+// so the signature verifies at that block's BlockNumber.
 func (m blsMember) blockVote(t *testing.T, blockHashHex string, vote int8) BLS_Signer.BLSresponse {
+	return m.blockVoteAt(t, blockHashHex, vote, 0)
+}
+
+// blockVoteAt signs a v3 block-bound vote at an explicit height.
+func (m blsMember) blockVoteAt(t *testing.T, blockHashHex string, vote int8, height uint64) BLS_Signer.BLSresponse {
 	t.Helper()
-	// v3 domain: chain + height + block. height 0 matches blockMsg's ZKBlock with
-	// an unset BlockNumber, which is what verifyBlockCertificate passes as height.
-	msg, err := BLS_Signer.CanonicalVoteMessageV3(BLS_Signer.DomainChainID(), 0, blockHashHex, vote)
+	msg, err := BLS_Signer.CanonicalVoteMessageV3(BLS_Signer.DomainChainID(), height, blockHashHex, vote)
 	if err != nil {
 		t.Fatalf("canonical vote message: %v", err)
 	}

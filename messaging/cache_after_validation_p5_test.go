@@ -57,7 +57,7 @@ func TestP5_InvalidBlockBeforeGenuine_NotCensored(t *testing.T) {
 	attack := config.BlockMessage{
 		Type:  "zkblock",
 		Block: genuine,
-		Data:  blockBoundCert(t, H.Hex(), "peerA"),
+		Data:  blockBoundCert(t, genuine, "peerA"),
 	}
 	if rej := admitZKBlock(context.Background(), attack, messageID); rej == nil {
 		t.Fatalf("attacker block with sub-quorum certificate should be rejected")
@@ -73,7 +73,7 @@ func TestP5_InvalidBlockBeforeGenuine_NotCensored(t *testing.T) {
 	good := config.BlockMessage{
 		Type:  "zkblock",
 		Block: genuine,
-		Data:  blockBoundCert(t, H.Hex(), "peerA", "peerB", "peerC"),
+		Data:  blockBoundCert(t, genuine, "peerA", "peerB", "peerC"),
 	}
 	if rej := admitZKBlock(context.Background(), good, messageID); rej != nil {
 		t.Fatalf("genuine block should be admitted after the invalid one, got reason=%s", rej.reason)
@@ -104,7 +104,7 @@ func TestP5_ValidBlockIsCachedOnce(t *testing.T) {
 		Transactions: txs,
 	}
 	messageID := getMessageIDForBloomFilter(config.BlockMessage{Type: "zkblock", Block: b})
-	msg := config.BlockMessage{Type: "zkblock", Block: b, Data: blockBoundCert(t, b.BlockHash.Hex(), "peerA", "peerB", "peerC")}
+	msg := config.BlockMessage{Type: "zkblock", Block: b, Data: blockBoundCert(t, b, "peerA", "peerB", "peerC")}
 
 	if isMessageProcessed(messageID) {
 		t.Fatalf("precondition: hash should not be cached before admission")

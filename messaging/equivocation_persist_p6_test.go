@@ -67,7 +67,7 @@ func TestP6_EquivocationSurvivesRestart(t *testing.T) {
 
 	// First validated block at height 50 — records its hash durably.
 	b1 := p6Block(50, signedTx(t, key, 0))
-	m1 := config.BlockMessage{Block: b1, Data: blockBoundCert(t, b1.BlockHash.Hex(), "peerA", "peerB", "peerC")}
+	m1 := config.BlockMessage{Block: b1, Data: blockBoundCert(t, b1, "peerA", "peerB", "peerC")}
 	if rej := validateRemoteBlock(ctx, m1); rej != nil {
 		t.Fatalf("first block should pass, got %s", rej.reason)
 	}
@@ -84,7 +84,7 @@ func TestP6_EquivocationSurvivesRestart(t *testing.T) {
 	if b2.BlockHash == b1.BlockHash {
 		t.Fatal("test setup: b1 and b2 must differ")
 	}
-	m2 := config.BlockMessage{Block: b2, Data: blockBoundCert(t, b2.BlockHash.Hex(), "peerA", "peerB", "peerC")}
+	m2 := config.BlockMessage{Block: b2, Data: blockBoundCert(t, b2, "peerA", "peerB", "peerC")}
 	if rej := validateRemoteBlock(ctx, m2); rej == nil || rej.reason != "equivocation" {
 		t.Fatalf("SECURITY (P6): post-restart conflicting block should be rejected as equivocation, got %v", rej)
 	}
@@ -116,7 +116,7 @@ func TestP6_WithoutStore_RestartLosesRecord(t *testing.T) {
 	}
 
 	b1 := p6Block(60, signedTx(t, key, 0))
-	m1 := config.BlockMessage{Block: b1, Data: blockBoundCert(t, b1.BlockHash.Hex(), "peerA", "peerB", "peerC")}
+	m1 := config.BlockMessage{Block: b1, Data: blockBoundCert(t, b1, "peerA", "peerB", "peerC")}
 	if rej := validateRemoteBlock(ctx, m1); rej != nil {
 		t.Fatalf("first block should pass, got %s", rej.reason)
 	}
@@ -124,7 +124,7 @@ func TestP6_WithoutStore_RestartLosesRecord(t *testing.T) {
 	resetEquivocation() // simulate restart; no durable store to recover from
 
 	b2 := p6Block(60, signedTx(t, key2, 0))
-	m2 := config.BlockMessage{Block: b2, Data: blockBoundCert(t, b2.BlockHash.Hex(), "peerA", "peerB", "peerC")}
+	m2 := config.BlockMessage{Block: b2, Data: blockBoundCert(t, b2, "peerA", "peerB", "peerC")}
 	// Without a durable store the conflict is NOT caught — demonstrates the gap
 	// the durable store closes. (If this ever rejects, the store is being set
 	// globally and the test's premise changed.)
