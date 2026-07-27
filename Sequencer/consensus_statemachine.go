@@ -326,28 +326,42 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 		extraData["status"] = "accepted"
 	}
 
-	// Broadcast block with BLS results (if any)
-	// If consensusReached is false, we send "rejected" status so nodes can discard the block
-	if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, block, consensusReached, extraData, blsResults); err != nil {
-		return fmt.Errorf("failed to broadcast block with BLS results: %w", err)
-	}
-
 	if consensusReached {
-		// Only process block locally if consensus was reached
+		// Apply the block LOCALLY FIRST, and broadcast to peers only AFTER the
+		// sequencer has durably committed it. Broadcasting before a successful
+		// local apply let the fleet advance past the producer when the local
+		// write failed (e.g. an immudb ExecAll timeout): the sequencer fell
+		// behind its own chain and would build the next block on a stale parent,
+		// diverging its state from the fleet. Withholding the block from peers on
+		// local failure keeps producer and fleet consistent — the round is simply
+		// retried at the same height.
 		if err := messaging.ProcessBlockLocally(block, blsResults); err != nil {
 			Alerts.NewAlertBuilder(alert_ctx).
 				AlertName(helper.Alert_Consensus_ProcessBlockFailed_FailedToProcessBlockLocally).
 				Status(Alerts.AlertStatusError).
 				Severity(Alerts.SeverityError).
-				Description("Failed to process block locally after successful broadcast").
+				Description("Failed to process block locally — block withheld from peers (not broadcast)").
 				Msg(err.Error()).
 				Label("block_number", fmt.Sprintf("%d", block.BlockNumber)).
 				Label("block_hash", block.BlockHash.Hex()).
 				Send()
-			return fmt.Errorf("failed to process block locally after broadcast: %w", err)
+			return fmt.Errorf("failed to process block locally; withheld from peers: %w", err)
 		}
 
-		logger().NamedLogger.Info(ctx, "Broadcasted block",
+		// Local apply succeeded → propagate to peers. A broadcast failure here is
+		// NOT fatal: the block is already committed and finalized on the producer,
+		// and peers reconcile via gossip / sync catch-up. This is the safe
+		// direction (producer ahead, fleet catches up), unlike the old order that
+		// could leave the producer behind.
+		if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, block, consensusReached, extraData, blsResults); err != nil {
+			logger().NamedLogger.Warn(ctx, "Block applied locally but broadcast to peers failed; peers will reconcile via catch-up",
+				ion.String("error", err.Error()),
+				ion.String("block_hash", block.BlockHash.Hex()),
+				ion.Int64("block_number", int64(block.BlockNumber)),
+				ion.String("function", "Consensus.BroadcastAndProcessBlock"))
+		}
+
+		logger().NamedLogger.Info(ctx, "Applied block locally and broadcast to peers",
 			ion.Int("bls_results", len(blsResults)),
 			ion.String("block_hash", block.BlockHash.Hex()),
 			ion.Int64("block_number", int64(block.BlockNumber)),
@@ -363,8 +377,16 @@ func (consensus *Consensus) BroadcastAndProcessBlock(ctx context.Context, blsRes
 			Send()
 	} else {
 		// Consensus not reached is a valid BFT outcome, not an infrastructure error.
-		// The alert from VerifyConsensusWithBLS already notifies about the failed vote.
-		// We broadcast with "rejected" status so nodes discard — no error to propagate.
+		// Broadcast the "rejected" status so nodes discard the block; it is never
+		// applied locally. The alert from VerifyConsensusWithBLS already notifies
+		// about the failed vote, so a broadcast error here is not propagated.
+		if err := messaging.BroadcastBlockToEveryNodeWithExtraData(consensus.Host, block, consensusReached, extraData, blsResults); err != nil {
+			logger().NamedLogger.Warn(ctx, "Failed to broadcast rejected-block notice to peers",
+				ion.String("error", err.Error()),
+				ion.String("block_hash", block.BlockHash.Hex()),
+				ion.Int64("block_number", int64(block.BlockNumber)),
+				ion.String("function", "Consensus.BroadcastAndProcessBlock"))
+		}
 		logger().NamedLogger.Info(ctx, "Broadcasted rejected block",
 			ion.Int("bls_results", len(blsResults)),
 			ion.String("block_hash", block.BlockHash.Hex()),
