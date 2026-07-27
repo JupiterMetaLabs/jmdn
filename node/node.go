@@ -15,7 +15,6 @@ import (
 	AVCStruct "gossipnode/config/PubSubMessages"
 	"gossipnode/messaging"
 	"gossipnode/metrics"
-	"gossipnode/transfer"
 
 	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -193,9 +192,6 @@ func NewNode(logger_ctx context.Context) (*config.Node, error) {
 	messaging.SetHostInstance(h)
 	// Set up stream handlers for messages (TCP) and files (QUIC)
 	h.SetStreamHandler(config.MessageProtocol, messaging.HandleMessageStream)
-	h.SetStreamHandler(config.FileProtocol, func(s network.Stream) {
-		transfer.HandleFileStream(s, "") // Empty string will use default path in HandleFileStream
-	})
 	h.SetStreamHandler(config.BroadcastProtocol, messaging.HandleBroadcastStream)
 	h.SetStreamHandler(config.BlockPropagationProtocol, messaging.HandleBlockStream)
 	h.SetStreamHandler(config.BuddyNodesMessageProtocol, func(s network.Stream) {
@@ -279,22 +275,6 @@ func SendMessage(n *config.Node, target string, message string) error {
 	}
 
 	return messaging.SendMessage(n, maddr.String(), message)
-}
-
-// SendFile sends a file to a peer (uses QUIC)
-func SendFile(n *config.Node, target string, filepath string, destination string) error {
-	_, peerInfo, isConnected, err := getPeerInfo(target, n.Host)
-	if err != nil {
-		return err
-	}
-
-	fmt.Println("Connected to peer:", isConnected)
-	// Connect to the peer
-	if err := n.Host.Connect(context.Background(), *peerInfo); err != nil {
-		return fmt.Errorf("connection failed: %v", err)
-	}
-
-	return transfer.SendFile(n.Host, peerInfo.ID, filepath, destination)
 }
 
 // getPeerInfo extracts peer information from a multiaddress

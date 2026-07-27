@@ -17,6 +17,34 @@ func messageForVote(vote int8) ([]byte, error) {
 	return []byte("vote:" + strconv.Itoa(int(vote))), nil
 }
 
+// VerifyForBlock verifies a response's signature against the v3 block-bound vote
+// message: chain id + HEIGHT + block hash + vote. A signature that passes is an
+// attestation for THIS block, on THIS chain, at THIS height.
+//
+// v1 (block-only) and v2 (chain but not height-bound) formats are NO LONGER
+// accepted: the whole fleet emits v3, and accepting older formats reopens the
+// cross-chain / cross-height replay window. There is
+// exactly one accepted format now, so there is no downgrade path to disable.
+func VerifyForBlock(resp BLS_Signer.BLSresponse, chainID, height uint64, bindings string, vote int8) error {
+	pubBytes, err := hex.DecodeString(resp.PubKey)
+	if err != nil {
+		return fmt.Errorf("invalid pubkey hex: %w", err)
+	}
+	sigBytes, err := hex.DecodeString(resp.Signature)
+	if err != nil {
+		return fmt.Errorf("invalid signature hex: %w", err)
+	}
+
+	msgV3, err := BLS_Signer.CanonicalVoteMessageV3(chainID, height, bindings, vote)
+	if err != nil {
+		return fmt.Errorf("build v3 vote message: %w", err)
+	}
+	if blssign.BLSVerify(pubBytes, msgV3, sigBytes) == nil {
+		return nil
+	}
+	return fmt.Errorf("bls verify (v3 block-bound) failed for peer %s", resp.PeerID)
+}
+
 // Verify checks a single BLS response against the provided vote value.
 // Returns nil if signature is valid for that vote; error otherwise.
 func Verify(resp BLS_Signer.BLSresponse, vote int8) error {

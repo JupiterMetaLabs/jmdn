@@ -32,7 +32,7 @@ type PeerResponse struct {
 }
 
 // ── Per-peer registration rate limiter ───────────────────────────────────────
-// Prevents Sybil attacks: each peer ID is allowed at most 5 registrations per
+// Registration rate limit: each peer ID is allowed at most 5 registrations per
 // hour. The limiter map is cleaned up lazily on access (entries older than 2h
 // are evicted). This is an in-memory guard; it resets on process restart.
 //
@@ -142,7 +142,7 @@ func handleSeedRequest(stream network.Stream, node *config.Node) {
 	}
 
 	// Log at Debug level only — message is peer-supplied and must not be logged at Info
-	// to avoid inadvertently recording attacker-controlled data in structured logs.
+	// to avoid recording untrusted remote-supplied data in structured logs.
 	log.Printf("[seed] seed request received (peer=%s, len=%d)", stream.Conn().RemotePeer(), len(message))
 
 	_, err = stream.Write([]byte("Seed node received request\n"))
@@ -241,7 +241,7 @@ func handlePeerDiscoveryRequest(stream network.Stream, node *config.Node) {
 }
 
 // handleRegisterRequest handles peer registration with per-peer rate limiting
-// and a registry size cap to prevent Sybil attacks.
+// and a registry size cap that bounds total registrations.
 func handleRegisterRequest(stream network.Stream, node *config.Node) {
 	defer stream.Close()
 

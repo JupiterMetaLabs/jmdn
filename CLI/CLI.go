@@ -97,7 +97,6 @@ func PrintFuncs() {
 	fmt.Println("  addrs                            - Current Peer Addresses")
 	fmt.Println("  msg <peer_multiaddr> <message>   - Send a message to a peer via libp2p")
 	fmt.Println("  ygg <peer_multiaddr|ygg_ipv6> <message> - Send a message using Yggdrasil")
-	fmt.Println("  file <peer_multiaddr> <filepath> <remote-filename> - Send a file to a peer")
 	fmt.Println("  addpeer <peer_multiaddr>         - Add a peer to managed nodes")
 	fmt.Println("  removepeer <peer_id>             - Remove a peer from managed nodes")
 	fmt.Println("  listpeers                         - Show all managed peers")
@@ -248,8 +247,6 @@ func (h *CommandHandler) handleCommand(parts []string) {
 		h.handleSendMessage(parts)
 	case "ygg":
 		h.handleYggdrasilMessage(parts)
-	case "file":
-		h.handleSendFile(parts)
 	case "seednodeStats":
 		h.handleSeedNodeStats(parts)
 	case "mempoolStats":
@@ -339,28 +336,6 @@ func (h *CommandHandler) handleYggdrasilMessage(parts []string) {
 	if err != nil {
 		fmt.Println("Error sending via Yggdrasil:", err)
 	}
-}
-
-func (h *CommandHandler) handleSendFile(parts []string) {
-	// Debugging the parts
-	fmt.Println("Parts:", parts)
-	if len(parts) < 3 {
-		fmt.Println("Usage: file <peer_multiaddr> <filepath> [remote_filename]")
-		return
-	}
-
-	// Set default remote filename if not provided
-	remoteFilename := ""
-	if len(parts) >= 4 {
-		remoteFilename = parts[3]
-	}
-
-	err := node.SendFile(h.Node, parts[1], parts[2], remoteFilename)
-	if err != nil {
-		fmt.Println("Error:", err)
-		return
-	}
-	fmt.Println("File sent successfully")
 }
 
 func (h *CommandHandler) handleSeedNodeStats(parts []string) {

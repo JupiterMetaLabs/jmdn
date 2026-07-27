@@ -228,8 +228,14 @@ func (es *EnhancedSubscriber) validateMessage(msg *pubsub.Message) error {
 		return fmt.Errorf("received empty message")
 	}
 
-	if len(msg.Data) > 1024*1024 { // 1MB limit
-		return fmt.Errorf("message too large: %d bytes", len(msg.Data))
+	// Align with the block-message cap and the GossipSub WithMaxMessageSize
+	// (config.MaxBlockMessageBytes) set at pubsub construction. The old hard-coded
+	// 1 MB cap silently dropped any gossip message above 1 MB — including a
+	// finalized block over that size — while the direct block-propagation stream
+	// accepts up to the same bound, which would recreate a one-transport-only
+	// divergence for large blocks.
+	if len(msg.Data) > config.MaxBlockMessageBytes {
+		return fmt.Errorf("message too large: %d bytes (max %d)", len(msg.Data), config.MaxBlockMessageBytes)
 	}
 
 	// Validate peer ID

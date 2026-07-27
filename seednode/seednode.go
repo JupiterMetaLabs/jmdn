@@ -546,8 +546,14 @@ func (c *Client) RegisterPeerWithAlias(h host.Host, alias string) error {
 	if aliasErr == nil {
 		// ALIAS EXISTS. Check if it belongs to US.
 		if existingAliasRecord.PeerId == peerID {
-			fmt.Printf("✅ Alias '%s' already registered to this Node (%s). Continuing...\n", alias, peerID)
-			return nil
+			fmt.Printf("✅ Alias '%s' already registered to this Node (%s).\n", alias, peerID)
+			// Refreshing here (rather than returning nil immediately) runs
+			// AttachCommitteeBLS: a peer registered before the committee-source
+			// rollout would otherwise never emit its bls_pub and so never join the
+			// committee snapshot. Refresh the existing record so the committee key
+			// is attached and persisted. No-op when emission is off, so it cannot
+			// churn or wipe keys.
+			return c.refreshExistingPeerBLS(h, existingAliasRecord)
 		}
 
 		// Alias exists and belongs to SOMEONE ELSE.
@@ -572,6 +578,72 @@ func (c *Client) RegisterPeerWithAlias(h host.Host, alias string) error {
 	fmt.Printf("❌ Cannot register existing peer with new alias '%s'\n", alias)
 	os.Exit(1)
 	return fmt.Errorf("peer already exists") // This line will never be reached
+}
+
+// refreshExistingPeerBLS re-submits an already-registered aliased peer's record
+// so it carries the committee bls_pub (+ proof-of-possession).
+//
+// WHY: RegisterPeerWithAlias short-circuits with `return nil` when the alias is
+// already owned by this node — the common case on every reboot of a long-lived
+// peer. That path never ran AttachCommitteeBLS (the only live emitters are
+// registerNewPeerWithAlias, for brand-new peers, and RegisterPeer, aliasless),
+// so a peer that first registered before the committee-source rollout could
+// never advertise its BLS key. This refresh closes that gap.
+//
+// It reuses the already-accepted multiaddrs/labels (no getPublicIP round-trip),
+// bumps Seq, attaches the SAME persistent committee key (idempotent — the seed
+// accepts an unchanged key and rejects a changed one), re-signs so the identity
+// signature covers bls_pub, and re-submits via the REGISTER RPC. The alias is
+// already owned by this peer, so it is not re-created.
+//
+// It deliberately does NOT use UpdatePeer: that path drops bls_pub at every
+// layer (the PeerRecordUpdate proto/struct has no BLS fields, and the seed's
+// UpdatePeer neither validates PoP nor writes the column), so an update returns
+// success while silently discarding the key. RegisterPeer carries the full
+// SignedPeerRecord, runs PoP + uniqueness, and upserts via a full-row Save that
+// persists bls_pub.
+//
+// No-op when emission is disabled: it must not send an empty bls_pub, so it
+// avoids blanking an already-stored key (see the seed-side overwrite guard).
+func (c *Client) refreshExistingPeerBLS(h host.Host, existing *peerpb.SignedPeerRecord) error {
+	if !EmitCommitteeBLS {
+		fmt.Printf("🔑 committee bls: emission off — not refreshing bls_pub for %s\n", existing.PeerId)
+		return nil
+	}
+	if len(existing.Multiaddrs) == 0 {
+		return fmt.Errorf("refresh bls: existing record for %s has no multiaddrs", existing.PeerId)
+	}
+
+	updated := &peerpb.SignedPeerRecord{
+		PeerId:        existing.PeerId,
+		Multiaddrs:    existing.Multiaddrs,
+		Seq:           existing.Seq + 1,
+		CurrentStatus: peerpb.PeerStatus_PEER_STATUS_ACTIVE,
+		Region:        existing.Region,
+		Labels:        existing.Labels,
+	}
+
+	// Attach BEFORE signing so the identity signature covers bls_pub.
+	if err := AttachCommitteeBLS(updated); err != nil {
+		return fmt.Errorf("refresh bls: attach committee key: %w", err)
+	}
+	if err := SignPeerRecord(updated, h); err != nil {
+		return fmt.Errorf("refresh bls: sign peer record: %w", err)
+	}
+	// Re-submit through the REGISTER RPC (not UpdatePeer — see doc above): it
+	// carries bls_pub, runs PoP + uniqueness on the seed, and upserts via a
+	// full-row Save that persists the key.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := c.client.RegisterPeer(ctx, &peerpb.RegisterPeerRequest{PeerRecord: updated, Neighbors: []string{}})
+	if err != nil {
+		return fmt.Errorf("refresh bls: register: %w", err)
+	}
+	if !resp.Accepted {
+		return fmt.Errorf("refresh bls: seed rejected: %s", resp.Message)
+	}
+	fmt.Printf("🔁 refreshed existing peer %s with committee bls_pub via register (seq %d)\n", existing.PeerId, updated.Seq)
+	return nil
 }
 
 // registerNewPeerWithAlias registers a completely new peer with an alias
@@ -648,6 +720,13 @@ func (c *Client) registerNewPeerWithAlias(h host.Host, alias string) error {
 		V: "",
 		R: "",
 		S: "",
+	}
+
+	// Attach the committee BLS key (bls_pub + proof-of-possession) BEFORE signing
+	// so the identity signature covers bls_pub. No-op unless
+	// JMDN_EMIT_COMMITTEE_BLS=1.
+	if err = AttachCommitteeBLS(peerRecord); err != nil {
+		return fmt.Errorf("failed to attach committee bls key: %w", err)
 	}
 
 	// Sign the peer record
@@ -768,6 +847,13 @@ func (c *Client) updateExistingPeerWithAlias(h host.Host, alias string, existing
 		S: "",
 	}
 
+	// Attach the committee BLS key (bls_pub + proof-of-possession) BEFORE signing
+	// so the identity signature covers bls_pub. No-op unless
+	// JMDN_EMIT_COMMITTEE_BLS=1.
+	if err = AttachCommitteeBLS(updatedPeerRecord); err != nil {
+		return fmt.Errorf("failed to attach committee bls key: %w", err)
+	}
+
 	// Sign the updated peer record
 	err = SignPeerRecord(updatedPeerRecord, h)
 	if err != nil {
@@ -881,6 +967,13 @@ func (c *Client) RegisterPeer(h host.Host) error {
 		V: "",
 		R: "",
 		S: "",
+	}
+
+	// Attach the committee BLS key (bls_pub + proof-of-possession) BEFORE signing
+	// so the identity signature covers bls_pub. No-op unless
+	// JMDN_EMIT_COMMITTEE_BLS=1.
+	if err = AttachCommitteeBLS(peerRecord); err != nil {
+		return fmt.Errorf("failed to attach committee bls key: %w", err)
 	}
 
 	// Sign the peer record
@@ -1138,6 +1231,15 @@ func convertBuddyPeerRecordToNode(peer *peerpb.BuddyPeerRecord) selection.Node {
 
 // ListBuddyPeers lists buddy peers from the seed node (lists all candidates for buddy selection)
 func (c *Client) ListBuddy(ctx context.Context, request *peerpb.ListBuddyRequest) (*peerpb.ListBuddyResponse, error) {
+	// Committee selection is sequencer-gated. If this node registered its
+	// sequencer identity key (SetSequencerSignKey), auto-attach the sequencer-auth
+	// metadata so the seed serves selection. Non-sequencer callers send unsigned
+	// and are refused by the seed (fail closed) — as intended.
+	if k := currentSequencerSignKey(); k != nil {
+		if signedCtx, err := sequencerAuthContext(ctx, k); err == nil {
+			ctx = signedCtx
+		}
+	}
 	return c.client.ListBuddy(ctx, request)
 }
 

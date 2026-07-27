@@ -22,6 +22,9 @@ import (
 // TestStreamLeak verifies that streams are properly closed when read errors occur
 // This simulates the scenario where a peer hangs and causes a read timeout
 func TestStreamLeak(t *testing.T) {
+	if testing.Short() {
+		t.Skip("excluded from -short: brings up libp2p hosts and needs full node settings")
+	}
 	// 1. Setup two libp2p hosts
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

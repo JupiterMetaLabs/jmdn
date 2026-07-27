@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +22,10 @@ import (
 	"gossipnode/config"
 	GRO "gossipnode/config/GRO"
 	PubSubMessages "gossipnode/config/PubSubMessages"
+	"gossipnode/config/settings"
+	"gossipnode/internal/reputation"
 	"gossipnode/messaging"
+	"gossipnode/seednode"
 
 	"github.com/JupiterMetaLabs/goroutine-orchestrator/manager/local"
 	"github.com/JupiterMetaLabs/ion"
@@ -165,6 +169,34 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		ion.Float64("duration", warmupDuration),
 		ion.String("function", "Consensus.Start.warmup"))
 	warmupSpan.End()
+
+	// (Committee-source) When the seed authority key is pinned, votes are
+	// authorized against the seed-signed committee snapshot (keyAuthorized →
+	// eligibleMembers). Selection MUST draw from that SAME eligible set, or a peer
+	// that is keyed live but absent from the epoch-frozen / blocklist- and cap-
+	// trimmed authorized set gets selected and then rejected as "unauthorized",
+	// silently dropping quorum (observed halt). Filtering here makes selection ⊆
+	// authorization: the sequencer only picks signed, authorized peers. FAIL
+	// CLOSED — if the eligible set is unavailable while pinned, abort the round
+	// rather than select unsigned peers. Unpinned (legacy) selection is unchanged.
+	if settings.IsLoaded() && strings.TrimSpace(settings.Get().Consensus.SeedAuthorityBLSPub) != "" {
+		eligible, eligErr := messaging.EligibleCommitteePeerIDs()
+		if eligErr != nil {
+			return fmt.Errorf("CONSENSUSERROR.WARMUP: pinned committee eligibility unavailable (fail-closed): %w", eligErr)
+		}
+		kept := make([]PubSubMessages.Buddy_PeerMultiaddr, 0, len(candidates))
+		for _, cand := range candidates {
+			if _, ok := eligible[cand.PeerID.String()]; ok {
+				kept = append(kept, cand)
+			}
+		}
+		logger().NamedLogger.Info(trace_ctx, "Committee-source: filtered buddy candidates to pinned eligible (signed) set",
+			ion.Int("candidates_before", len(candidates)),
+			ion.Int("candidates_after", len(kept)),
+			ion.Int("eligible_set_size", len(eligible)),
+			ion.String("function", "Consensus.Start.committeeFilter"))
+		candidates = kept
+	}
 
 	// Connect to the candidates first via AddPeerCache
 	addPeersCtx, addPeersSpan := tracer.Start(trace_ctx, "Consensus.Start.addPeersToCache")
@@ -354,10 +386,44 @@ func (consensus *Consensus) Start(zkblock *config.ZKBlock) error {
 		ion.String("function", "Consensus.Start.populatePeerList"))
 	populateSpan.End()
 
-	// add apeer ids, to message
+	// Best-effort: annotate each buddy with its latest reported block head from
+	// the seednode (populated by ReportBlockState). This NEVER blocks or fails the
+	// round — it is a single short-timeout lookup once per round (not per-peer),
+	// and on any error the heights render as "?".
+	// Best-effort: annotate each buddy with its latest reported block head from the
+	// seednode's signed ListBuddy (authenticated gRPC — reuses the sequencer key
+	// registered via SetSequencerSignKey; no HTTP, no extra credentials). NEVER
+	// blocks or fails the round — one short-timeout call once per round, and on any
+	// error the heights render as "?".
+	buddyHeads := map[string]uint64{}
+	if sc, err := seednode.NewClient(settings.Get().Network.SeedNode); err != nil {
+		logger().NamedLogger.Info(trace_ctx, "buddy head enrichment skipped: seed client init failed (best-effort)",
+			ion.String("error", err.Error()),
+			ion.String("function", "Consensus.Start.buddyHeads"))
+	} else {
+		headCtx, headCancel := context.WithTimeout(trace_ctx, 800*time.Millisecond)
+		if heads, herr := sc.ListBuddyHeads(headCtx); herr == nil {
+			buddyHeads = heads
+			logger().NamedLogger.Info(trace_ctx, "buddy head enrichment: fetched peer heads via signed ListBuddy",
+				ion.Int("peers_returned", len(heads)),
+				ion.String("function", "Consensus.Start.buddyHeads"))
+		} else {
+			logger().NamedLogger.Info(trace_ctx, "buddy head enrichment failed (best-effort) — buddies will render '?'",
+				ion.String("error", herr.Error()),
+				ion.String("function", "Consensus.Start.buddyHeads"))
+		}
+		headCancel()
+		_ = sc.Close()
+	}
+
+	// add peer ids (+ latest block) to message
 	peerIDs := make([]string, 0, len(consensus.PeerList.MainPeers))
 	for _, peerID := range consensus.PeerList.MainPeers {
-		peerIDs = append(peerIDs, fmt.Sprintf("  - %s", peerID.String()))
+		if h, ok := buddyHeads[peerID.String()]; ok {
+			peerIDs = append(peerIDs, fmt.Sprintf("  - %s (latest block %d)", peerID.String(), h))
+		} else {
+			peerIDs = append(peerIDs, fmt.Sprintf("  - %s (latest block ?)", peerID.String()))
+		}
 	}
 	msg := fmt.Sprintf("Final buddy nodes: %d MaxMainPeers actually connected peers with peerids:\n%s",
 		len(consensus.PeerList.MainPeers), strings.Join(peerIDs, "\n"))
@@ -1428,6 +1494,59 @@ func (consensus *Consensus) ProcessVoteCollection() error {
 			ion.String("function", "Consensus.ProcessVoteCollection.verifyConsensus"))
 		verifySpan.End()
 
+		// (Reputation, OBSERVE-ONLY) Classify each committee member's behavior
+		// this round and log the score deltas. This is a future-SELECTION
+		// signal only: it never feeds the 2f+1 tally, never blocks a vote, and
+		// never touches the seed. A MainPeer with no collected response is
+		// classified Absent; dissent against the outcome carries zero delta by
+		// design (see internal/reputation). Kill switch:
+		// JMDN_REPUTATION_OBSERVE=0.
+		if reputation.Enabled {
+			votes := make(map[string]bool, len(blsResults))
+			for _, r := range blsResults {
+				votes[r.PeerID] = r.Agree
+			}
+			committee := make([]string, 0, len(consensus.PeerList.MainPeers))
+			for _, p := range consensus.PeerList.MainPeers {
+				committee = append(committee, p.String())
+			}
+			events := reputation.ObserveRound(
+				consensus.ZKBlockData.GetZKBlock().BlockNumber,
+				consensus.ZKBlockData.GetZKBlock().BlockHash.Hex(),
+				committee, votes, consensusReached)
+
+			// Surface reputation to Telegram. Only OBJECTIVE faults alert: a
+			// selected committee member that returned no vote (Absent), a bad
+			// signature, or a provable equivocation — each with the peer's new
+			// score. Dissent is never a fault (zero delta) so it never alerts,
+			// and a clean round sends nothing (keeps the channel quiet). This is
+			// observe-only reporting: it changes no consensus or selection state.
+			var repFaults []string
+			repSeverity := Alerts.SeverityWarning
+			for _, id := range committee {
+				switch events[id] {
+				case reputation.Absent, reputation.BadSignature, reputation.Equivocation:
+					repFaults = append(repFaults, fmt.Sprintf("%s: %s (score %.3f)", id, events[id], reputation.Default.Score(id)))
+					if events[id] == reputation.Equivocation {
+						repSeverity = Alerts.SeverityError
+					}
+				}
+			}
+			if len(repFaults) > 0 {
+				blkNum := consensus.ZKBlockData.GetZKBlock().BlockNumber
+				blkHash := consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
+				Alerts.NewAlertBuilder(processCtx).
+					AlertName("Consensus: Validator Reputation Fault").
+					Status(repSeverity).
+					Severity(repSeverity).
+					Description(fmt.Sprintf("Committee reputation fault(s) at block %d: %s", blkNum, strings.Join(repFaults, "; "))).
+					Label("block_number", fmt.Sprintf("%d", blkNum)).
+					Label("block_hash", blkHash).
+					Label("committee_size", fmt.Sprintf("%d", len(committee))).
+					Send()
+			}
+		}
+
 		// Step 3: Broadcast and process block (state-changing operation)
 		broadcastCtx, broadcastSpan := tracer.Start(processCtx, "Consensus.ProcessVoteCollection.broadcastAndProcess")
 		broadcastStartTime := time.Now().UTC()
@@ -1579,8 +1698,17 @@ func (consensus *Consensus) requestVoteResultFromBuddy(peerID peer.ID) *BLS_Sign
 
 	// Build request message
 	reqAck := PubSubMessages.NewACKBuilder().True_ACK_Message(consensus.Host.ID(), config.Type_VoteResult)
-	requestPayload := map[string]string{
+	// NOTE: use interface{} values so block_number is emitted as a JSON NUMBER.
+	// The buddy unmarshals it into `BlockNumber uint64`; sending it as a string
+	// (the earlier map[string]string form) makes the buddy's json.Unmarshal fail
+	// ("cannot unmarshal string into uint64"), so it rejects the whole request and
+	// never signs — which halts consensus.
+	requestPayload := map[string]interface{}{
 		"block_hash": blockHash,
+		// The block height the buddy must bind its vote to (v3 domain). A buddy
+		// that receives it signs v3; an older one that ignores it signs v2 (still
+		// accepted during rollout).
+		"block_number": consensus.ZKBlockData.GetZKBlock().BlockNumber,
 	}
 	requestPayloadBytes, err := json.Marshal(requestPayload)
 	if err != nil {
@@ -1852,15 +1980,53 @@ func (consensus *Consensus) parseVoteResultResponse(response string, peerID peer
 		attribute.Float64("duration", duration),
 		attribute.String("status", "no_bls_data"),
 	)
+	// DIAGNOSTIC: dump exactly what the buddy sent so we can
+	// see WHY there is no usable "bls" object — the inner message, the outer
+	// envelope, and the top-level keys actually present.
+	keys := make([]string, 0, len(resultData))
+	for k := range resultData {
+		keys = append(keys, k)
+	}
+	blsType := "absent"
+	if v, ok := resultData["bls"]; ok {
+		blsType = fmt.Sprintf("%T", v)
+	}
 	logger().NamedLogger.Warn(trace_ctx, "No BLS data in response",
 		ion.String("peer_id", peerID.String()),
 		ion.Float64("duration", duration),
+		ion.String("result_keys", strings.Join(keys, ",")),
+		ion.String("bls_field_type", blsType),
+		ion.String("raw_inner_message", responseMsg.Message),
+		ion.String("raw_envelope", response),
 		ion.String("function", "Consensus.parseVoteResultResponse"))
 	return nil
 }
 
 // VerifyConsensusWithBLS verifies BLS signatures and determines if consensus was reached
 // Returns true if consensus reached (majority agree), false otherwise
+// compactRejectionReasons renders per-buddy rejection reasons as a single short
+// line: "…<peer6>: reason; …<peer6>: reason" (peer id shortened to its last 6
+// chars), so alerts stay readable instead of dumping a multi-line block.
+func compactRejectionReasons(m map[string]string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(m))
+	for peerID, reason := range m {
+		short := peerID
+		if len(short) > 6 {
+			short = "…" + short[len(short)-6:]
+		}
+		parts = append(parts, short+": "+reason)
+	}
+	sort.Strings(parts)
+	out := strings.Join(parts, "; ")
+	if len(out) > 300 {
+		out = out[:297] + "…"
+	}
+	return out
+}
+
 func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSresponse) bool {
 	logger_ctx := context.Background()
 	tracer := logger().NamedLogger.Tracer("Consensus")
@@ -1883,6 +2049,7 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		span.SetAttributes(attribute.String("status", "no_results"))
 		logger().NamedLogger.Warn(trace_ctx, "No BLS results collected, skipping block processing",
 			ion.String("function", "Consensus.VerifyConsensusWithBLS"))
+		consensus.setRejectSummary("no BLS votes collected from committee (buddies returned no signature)", "check buddy logs: request rejected / parse error / abstain / signing failure")
 		return false
 	}
 
@@ -1900,20 +2067,74 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		}
 	}
 
+	// Block hash + height this round's votes must be bound to.
+	blockHashHex := ""
+	var blockHeight uint64
+	if consensus.ZKBlockData != nil && consensus.ZKBlockData.GetZKBlock() != nil {
+		blockHashHex = consensus.ZKBlockData.GetZKBlock().BlockHash.Hex()
+		blockHeight = consensus.ZKBlockData.GetZKBlock().BlockNumber
+	}
+
 	for _, r := range blsResults {
 		vote := int8(-1)
 		if r.Agree {
 			vote = 1
 		}
-		if err := BLS_Verifier.Verify(r, vote); err != nil {
-			span.RecordError(err)
+
+		// Prefer block-bound verification. A legacy (unbound) "vote:<v>"
+		// signature is detected separately so we can alert on it.
+		blockBoundOK := blockHashHex != "" && BLS_Verifier.VerifyForBlock(r, BLS_Signer.DomainChainID(), blockHeight, blockHashHex, vote) == nil
+		legacyOK := false
+		if !blockBoundOK {
+			legacyOK = BLS_Verifier.Verify(r, vote) == nil
+		}
+
+		if !blockBoundOK && !legacyOK {
+			span.RecordError(fmt.Errorf("bls verify failed for peer %s", r.PeerID))
 			logger().NamedLogger.Warn(trace_ctx, "BLS verification failed for peer",
-				ion.String("error", err.Error()),
 				ion.String("peer_id", r.PeerID),
 				ion.Int64("vote", int64(vote)),
 				ion.String("function", "Consensus.VerifyConsensusWithBLS"))
 			continue
 		}
+
+		if legacyOK {
+			// Legacy unbound vote — not bound to a specific block. Alert to
+			// Telegram with the offending peer ID.
+			logger().NamedLogger.Warn(trace_ctx, "SECURITY: legacy (unbound) BLS vote received",
+				ion.String("peer_id", r.PeerID),
+				ion.String("block_hash", blockHashHex),
+				ion.String("function", "Consensus.VerifyConsensusWithBLS"))
+			Alerts.NewAlertBuilder(alert_ctx).
+				AlertName(helper.Alert_Consensus_LegacyVoteReceived).
+				Status(Alerts.AlertStatusError).
+				Severity(Alerts.SeverityError).
+				Label("peer_id", r.PeerID).
+				Label("block_hash", blockHashHex).
+				Description(fmt.Sprintf("Legacy (unbound) BLS vote from peer %s for block %s", r.PeerID, blockHashHex)).
+				Send()
+			if messaging.RejectLegacyVotes {
+				continue // do not count legacy votes toward quorum
+			}
+		}
+
+		// Committee membership: a vote from a key not in the authorized
+		// registry is dropped and alerted with the offending peer ID.
+		if messaging.EnforceCommitteeRegistry && !messaging.CommitteeKeyAuthorized(r.PeerID, r.PubKey) {
+			logger().NamedLogger.Warn(trace_ctx, "SECURITY: vote from unauthorized committee key",
+				ion.String("peer_id", r.PeerID),
+				ion.String("function", "Consensus.VerifyConsensusWithBLS"))
+			Alerts.NewAlertBuilder(alert_ctx).
+				AlertName(helper.Alert_Consensus_UnauthorizedVoteKey).
+				Status(Alerts.AlertStatusError).
+				Severity(Alerts.SeverityError).
+				Label("peer_id", r.PeerID).
+				Label("block_hash", blockHashHex).
+				Description(fmt.Sprintf("Vote from unauthorized committee key: peer %s (block %s)", r.PeerID, blockHashHex)).
+				Send()
+			continue
+		}
+
 		validTotal++
 		peerLine := fmt.Sprintf("  - %s (vote: %d)", r.PeerID, vote)
 		if vote == 1 {
@@ -1952,21 +2173,50 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 			Severity(Alerts.SeverityError).
 			Description(msg).
 			Send()
+		consensus.setRejectSummary(
+			"every collected vote failed verification (bad signature / wrong domain / unauthorized committee key)",
+			compactRejectionReasons(mergedRejectionReasons))
 		return false
 	}
 
-	// Enforce quorum based on the fixed committee size (MaxMainPeers = 5)
-	// We need a majority of the EXPECTED committee, regardless of how many responded.
-	// For 5 peers, strict majority is 3.
-	needed := (config.MaxMainPeers / 2) + 1
+	// Single verifier: the authoritative yes-count and threshold come from
+	// the one shared verifier — no local quorum math. It fails closed on a
+	// missing/failing committee source, de-duplicates by peer_id AND
+	// bls_pub, and requires a Byzantine 2f+1 over the
+	// authenticated committee size (never the old strict majority of the fixed
+	// MaxMainPeers, and never a majority of whoever responded). The loop above
+	// is retained only for per-vote alerting/observability.
+	certRes, certErr := messaging.VerifyCertificate(blsResults, blockHashHex, blockHeight)
+	if certErr != nil {
+		duration := time.Since(startTime).Seconds()
+		span.SetAttributes(
+			attribute.Float64("duration", duration),
+			attribute.String("status", "committee_source_invalid"),
+			attribute.Bool("consensus_reached", false),
+		)
+		logger().NamedLogger.Error(trace_ctx, "refusing consensus (fail closed): committee source invalid",
+			certErr,
+			ion.String("function", "Consensus.VerifyConsensusWithBLS"))
+		Alerts.NewAlertBuilder(alert_ctx).
+			AlertName(helper.Alert_BFT_Consensus_Failed).
+			Status(Alerts.AlertStatusError).
+			Severity(Alerts.SeverityError).
+			Description(fmt.Sprintf("Refusing consensus (fail closed): committee source invalid: %v", certErr)).
+			Send()
+		consensus.setRejectSummary(fmt.Sprintf("committee source invalid (fail-closed): %v", certErr), "")
+		return false
+	}
+	validYes = certRes.YesVotes
+	needed := certRes.Threshold
 	peerVotesStr := strings.Join(votedPeers, "\n")
 
 	span.SetAttributes(
 		attribute.Int("needed_votes", needed),
+		attribute.Int("committee_size", certRes.CommitteeSize),
 		attribute.String("peer_votes", peerVotesStr),
 	)
 
-	if validYes >= needed {
+	if certRes.Reached {
 		duration := time.Since(startTime).Seconds()
 		span.SetAttributes(
 			attribute.Float64("duration", duration),
@@ -1997,6 +2247,9 @@ func (consensus *Consensus) VerifyConsensusWithBLS(blsResults []BLS_Signer.BLSre
 		attribute.Bool("consensus_reached", false),
 	)
 	msg := fmt.Sprintf("Consensus failed: %d/%d votes in favor (needed: %d) - skipping block processing\nPeer votes:\n%s", validYes, validTotal, needed, peerVotesStr)
+	consensus.setRejectSummary(
+		fmt.Sprintf("insufficient yes votes: %d of %d valid, need %d (committee size %d)", validYes, validTotal, needed, certRes.CommitteeSize),
+		compactRejectionReasons(mergedRejectionReasons))
 	logger().NamedLogger.Warn(trace_ctx, "Consensus failed",
 		ion.Int("yes_votes", validYes),
 		ion.Int("total_votes", validTotal),

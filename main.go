@@ -47,10 +47,8 @@ import (
 	"gossipnode/node"
 	"gossipnode/profiler"
 	"gossipnode/seednode"
-	"gossipnode/transfer"
 
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
@@ -560,18 +558,6 @@ func runCommand(command string, args []string, grpcPort int) {
 			fmt.Printf("  Accounts DB TxID: %d\n", stats.AccountsState.TxId)
 		}
 
-	case "sendfile":
-		if len(args) < 3 {
-			fmt.Println("Usage: jmdn -cmd sendfile <peer> <filepath> <remote_filename>")
-			os.Exit(1)
-		}
-		resp, err := client.SendFile(args[0], args[1], args[2])
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Result: %s\n", resp.Message)
-
 	case "ygg":
 		if len(args) < 2 {
 			fmt.Println("Usage: jmdn -cmd ygg <target> <message>")
@@ -597,7 +583,6 @@ func runCommand(command string, args []string, grpcPort int) {
 		fmt.Println("  cleanpeers          - Clean offline peers")
 		fmt.Println("  sendmsg <tgt> <msg>  - Send message via libp2p")
 		fmt.Println("  ygg <tgt> <msg>      - Send message via Yggdrasil")
-		fmt.Println("  sendfile <peer> <filepath> <remote> - Send file")
 		fmt.Println("  broadcast <msg>      - Broadcast message")
 		fmt.Println("  getdid <did>         - Get DID document")
 		fmt.Println("  fastsync <peer>                   - Fast sync with peer (V2 Engine)")
@@ -837,8 +822,8 @@ func main() {
 	fmt.Printf("ImmuDB target: %s:%d\n", config.DBAddress, config.DBPort)
 
 	// Chain ID global initialization — must happen before any Security validation.
-	// Previously this was only set inside Block/Server.go (gated behind BlockGen > 0),
-	// which left expectedChainID nil on non-sequencer nodes. All nodes need it because
+	// Setting this globally here (rather than only inside Block/Server.go, gated behind
+	// BlockGen > 0) keeps expectedChainID set on non-sequencer nodes. All nodes need it because
 	// Security.allChecksWithConn validates chain ID on both direct tx submission
 	// (Block/Server.go:188 → AllChecks) and broadcast vote triggers
 	// (node/node.go:199 → messaging.HandleBroadcastStream → Vote.SubmitVote → CheckZKBlockValidation).
@@ -914,7 +899,7 @@ func main() {
 
 	// shutdownSequenceBudget bounds steps 1-4 below as a whole. Each step is
 	// already individually bounded (profiler: 5s; shutdown.Shutdown()'s GRO
-	// window: ~10s + ~0.4s of flush sleeps), but nothing previously capped
+	// window: ~10s + ~0.4s of flush sleeps), but no single bound otherwise caps
 	// the SEQUENCE — a stall anywhere in it could still run past Docker's
 	// `stop_grace_period: 30s` (docker-compose.yml) and get SIGKILLed with
 	// no log line explaining why. Kept comfortably under that 30s so this
@@ -1009,6 +994,61 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to initialize accounts database pool")
 	}
 
+	// Explorer stats account/DID counter. The stats API used to scan immudb
+	// (CountAccounts, O(n)) on every request; instead the count is maintained in
+	// the txindex sqlite. Increments are applied asynchronously so the
+	// account-write path never blocks on the sqlite counter.
+	DB_OPs.SetAccountCreatedHook(func(delta int) {
+		go func() {
+			if err := txindex.IncrAccountCount(context.Background(), int64(delta)); err != nil {
+				log.Debug().Err(err).Int("delta", delta).Msg("[stats] account counter increment failed")
+			}
+		}()
+	})
+	// One-time seed: indexing the existing DIDs/accounts is a one-shot activity.
+	// Only run the expensive immudb Count if the counter has never been seeded;
+	// once present it is maintained by the increments above. Runs in a goroutine
+	// so a first-boot seed never delays startup, and retries with backoff: the
+	// immudb Count over the accounts prefix can exceed the default 30s on a large
+	// DB or under load, so the seed uses a long per-attempt deadline and keeps
+	// retrying until it succeeds (or the node shuts down).
+	go func() {
+		if _, seeded, err := txindex.GetAccountCount(context.Background()); err != nil {
+			log.Debug().Err(err).Msg("[stats] account counter unavailable; skipping one-time seed")
+			return
+		} else if seeded {
+			return // already indexed once — keep incrementing
+		}
+		backoff := 30 * time.Second
+		for attempt := 1; ; attempt++ {
+			// Re-check: another path (e.g. a manual reseed) may have seeded it.
+			if _, seeded, _ := txindex.GetAccountCount(context.Background()); seeded {
+				return
+			}
+			// Long per-attempt deadline — this runs off the request path.
+			n, err := DB_OPs.CountAccountsWithTimeout(5 * time.Minute)
+			if err == nil {
+				if serr := txindex.SetAccountCount(context.Background(), int64(n)); serr != nil {
+					log.Warn().Err(serr).Msg("[stats] failed to persist seeded account/DID count")
+				} else {
+					log.Info().Int("count", n).Int("attempt", attempt).Msg("[stats] account/DID counter seeded (one-time)")
+					return
+				}
+			} else {
+				log.Warn().Err(err).Int("attempt", attempt).Dur("retry_in", backoff).
+					Msg("[stats] one-time account/DID count seed failed; retrying")
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < 10*time.Minute {
+				backoff *= 2
+			}
+		}
+	}()
+
 	// ── Account Sync Worker (Redis Stream) ───────────────────────────────────
 	// WriteAccounts and BatchUpdateAccounts enqueue to a Redis Stream and return
 	// immediately, decoupling callers from the ~15 s ImmuDB commit latency.
@@ -1067,6 +1107,12 @@ func main() {
 		// Give Block server access to GPS so /api/l1-commit can broadcast to peers.
 		Block.SetGossipPubSubInstance(globalPubSub.GetGossipPubSub())
 
+		// Wire additive finalized-block gossip fan-out. Publish is used only by the
+		// sequencer's finalize path; subscribe+apply runs on every node so finalized
+		// blocks reach the whole fleet (not just the sequencer's connected committee),
+		// each verified through the same fail-closed admitZKBlock gate.
+		startBlockGossip(ctx, globalPubSub.GetGossipPubSub())
+
 		// Subscribe to the dedicated L1 commit channel at startup so this node
 		// receives L1Commit/L1CommitRange broadcasts from the sequencer. This
 		// topic is persistent — unlike the consensus channel, it is never
@@ -1080,13 +1126,6 @@ func main() {
 			}
 		}()
 	}
-
-	// Set the stream handler for receiving files for fastsync. This is crucial
-	// for the final phase of the sync process.
-	n.Host.SetStreamHandler(config.FileProtocol, func(s network.Stream) {
-		// Use an empty string for outputPath to use the default path in HandleFileStream
-		transfer.HandleFileStream(s, "")
-	})
 
 	// Initialize database clients using the pools
 	mainDBClient, err := DB_OPs.GetMainDBConnectionandPutBack(context.Background())
@@ -1170,6 +1209,20 @@ func main() {
 						}
 						return fmt.Errorf("[ReconcileFunc] all %d seednode peers failed catchup", len(peers))
 					})
+
+					// When the block-propagation linkage check detects a height
+					// gap, nudge the monitor to run an immediate authenticated
+					// reconcile (seednode-vetted peers) instead of waiting for the
+					// next periodic tick. Best-effort; the gap block is rejected
+					// regardless.
+					localMonitor := syncMonitor
+					messaging.SetCatchUpRequester(func(fromBlock uint64) {
+						if localMonitor == nil {
+							return
+						}
+						log.Info().Uint64("from_block", fromBlock).Msg("height gap detected — triggering authenticated catch-up")
+						go localMonitor.TriggerCheck(context.Background())
+					})
 				}
 
 				if err := syncMonitor.Start(ctx); err != nil {
@@ -1183,8 +1236,78 @@ func main() {
 						Bool("catchup", cfg.FastSync.EnableCatchup).
 						Dur("interval", cfg.FastSync.SyncCheckInterval).
 						Msg("[SyncMonitor] started")
+
+					// Event-driven seed reporting: push this node's head to the
+					// seednode immediately after a block's state is committed,
+					// instead of waiting for the periodic monitor tick. The hook
+					// only signals a debounced, async pusher (never blocks the
+					// apply path); the periodic timer remains the backstop.
+					localMon := syncMonitor
+					DB_OPs.SetLatestBlockAdvanceHook(startSeedBlockHeadPusher(ctx, func(c context.Context) {
+						localMon.TriggerCheck(c)
+					}))
+					log.Info().Msg("[SeedPush] event-driven block-head reporting wired")
 				}
 			}
+		}
+	}
+
+	// Wire the consensus vote gate on every node: a node may be a buddy / cast a
+	// vote only if it holds the latest block or trails the sequencer head by at
+	// most MessagePassing.MaxConsensusLagBlocks (2); a fresh node (confirmed tip 0)
+	// or one 3+ blocks behind must not. On a DB read ERROR the local tip is UNKNOWN
+	// (not confirmed-behind) → PERMIT (fail-open): now that the gate is
+	// default-ON, a transient read hiccup must not pull a validator out of consensus
+	// and stall quorum. The sequencer runs no monitor, so its
+	// head is "unknown" here and it votes on the strength of its non-empty chain (it
+	// IS the head). headKnown is false during a seednode outage (SeednodeUnreachable)
+	// so a transient loss of the head reference does not stall consensus — only a
+	// KNOWN gap > 2 abstains. Captured syncMonitor may be nil (no fastsync/seednode).
+	gateMonitor := syncMonitor
+	MessagePassing.SetConsensusSyncGate(func() bool {
+		tip, err := DB_OPs.GetLatestBlockNumber(context.Background(), nil)
+		localTipKnown := err == nil
+		if err != nil {
+			log.Warn().Err(err).Msg("[consensus gate] local tip read failed — permitting vote (fail-open on UNKNOWN local state; confirmed-empty tip 0 still abstains)")
+		}
+		if gateMonitor == nil {
+			return MessagePassing.GateDecision(localTipKnown, tip, 0, false)
+		}
+		st := gateMonitor.GetStatus()
+		headKnown := st.SequencerHead > 0 && !st.SeednodeUnreachable
+		return MessagePassing.GateDecision(localTipKnown, tip, st.SequencerHead, headKnown)
+	})
+
+	// Committee-eligibility source on validator (non-sequencer) nodes. "Validator"
+	// is keyed off enable_catchup — validators catch up from peers (true); the
+	// sequencer is the authoritative producer and sets it false. This is the SAME
+	// discriminator the sync monitor uses above. It is deliberately NOT keyed off
+	// the block-generator port, which is set on validators too (fleet-wide), not
+	// only on the sequencer — keying off BlockGen silently skipped every validator
+	// that runs the block-gen API.
+	//
+	// The sequencer wires its own pinned source in Sequencer.NewConsensus (called
+	// only from the block-production path) and is left untouched here. Every
+	// validator needs a source too: the mandatory block-certificate check in
+	// admitZKBlock calls messaging.VerifyCertificate, which fails CLOSED without
+	// one — so a receiver with no source drops (and stops forwarding) every block.
+	// Authority key: the operator pin if set, else trust-on-first-use of the
+	// seed-served key (persisted to config/seedAuth.json; override with
+	// JMDN_SEED_AUTH_FILE). The verified snapshot is cached, so the seed is queried
+	// about once per refresh window, not per block.
+	if cfg.FastSync.EnableCatchup && cfg.Network.SeedNode != "" {
+		if elCli, err := seednode.NewClient(cfg.Network.SeedNode); err != nil {
+			log.Error().Err(err).
+				Msg("[Committee] seed client init failed — certificate verification stays fail-closed until a source is available")
+		} else {
+			messaging.SetCommitteeEligibilitySource(elCli.CommitteeEligibilityAuto(
+				cfg.Consensus.SeedAuthorityBLSPub,
+				cfg.Consensus.CommitteeEpochSeconds,
+				seednode.SeedAuthPinPath(),
+				cfg.Network.SeedNode,
+				60*time.Second,
+			))
+			log.Info().Msg("[Committee] eligibility source wired on non-sequencer node (pin-or-TOFU committee snapshot)")
 		}
 	}
 

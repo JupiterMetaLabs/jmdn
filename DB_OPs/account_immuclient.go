@@ -286,6 +286,11 @@ func storeAccount(PooledConnection *config.PooledConnection, KeyDoc *Account) er
 		ion.String("topic", TOPIC),
 		ion.String("function", "DB_OPs.StoreAccount"))
 
+	// A brand-new address: key was just written (the not-found pre-check above
+	// guarantees this path only runs for a genuinely new account). Notify the
+	// maintained account/DID counter.
+	fireAccountCreated(1)
+
 	return nil
 }
 
@@ -392,7 +397,7 @@ func mergeAccountForWrite(existing *Account, incoming Account) (Account, bool) {
 	// 1. Preserve DIDAddress if incoming DID is empty or mistakenly set to the
 	// hex address. EqualFold: legacy update entries carried the address in
 	// lowercase while Address.Hex() is EIP-55 checksummed — a case-sensitive
-	// compare never matched, letting the forged DID overwrite the real one.
+	// compare never matched, so the hex-address value could overwrite the real DID.
 	if incoming.DIDAddress == "" || strings.EqualFold(incoming.DIDAddress, incoming.Address.Hex()) {
 		incoming.DIDAddress = existing.DIDAddress
 	}
@@ -593,6 +598,10 @@ func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledCo
 
 	ops := make([]*schema.Op, 0, len(entries))
 
+	// Count brand-new address: keys written in this batch (existing == nil), to
+	// advance the maintained account/DID counter after the batch commits.
+	newAccounts := 0
+
 	// Process address: keys first (with LWW logic)
 	for _, e := range addressEntries {
 		var shouldWrite = true
@@ -605,6 +614,10 @@ func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledCo
 
 			merged, write := mergeAccountForWrite(existing, incoming)
 			shouldWrite = write
+			if existing == nil && write {
+				// New account (no stored object) that will be written.
+				newAccounts++
+			}
 			if !write {
 				delete(addressKeysInBatch, e.Key)
 			} else {
@@ -742,6 +755,11 @@ func BatchRestoreAccounts(ctx context.Context, PooledConnection *config.PooledCo
 		ion.String("log_file", LOG_FILE),
 		ion.String("topic", TOPIC),
 		ion.String("function", "DB_OPs.BatchRestoreAccounts"))
+
+	// All chunks committed: advance the maintained account/DID counter by the
+	// number of brand-new accounts in this batch (sync/catchup creation path).
+	fireAccountCreated(newAccounts)
+
 	return nil
 }
 
@@ -1345,6 +1363,14 @@ func CountAccounts(PooledConnection *config.PooledConnection) (int, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+// CountAccountsWithTimeout is CountAccounts with a caller-chosen deadline for the
+// underlying immudb Count. The one-time explorer-stats seed uses this: it runs
+// off the request path and can allow minutes on a large accounts DB instead of
+// failing at the default 30s.
+func CountAccountsWithTimeout(countTimeout time.Duration) (int, error) {
+	return CountBuilder{}.GetAccountsDBCountWithTimeout(Prefix, countTimeout)
 }
 
 // GetTransactionsByDID retrieves all transactions associated with a given DID

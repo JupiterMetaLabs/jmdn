@@ -2,6 +2,11 @@ package settings
 
 import "time"
 
+// DefaultSelectionSalt is the built-in VRF domain-separation salt for node /
+// committee selection. It is NOT secret — it only needs to be identical across
+// all nodes on the same network. Replaces the old insecure "test-salt".
+const DefaultSelectionSalt = "jmdt-node-selection-v1"
+
 // DefaultConfig returns a NodeConfig populated with production-safe defaults.
 // These match the current CLI flag defaults in main.go and Ion's Default() config.
 func DefaultConfig() NodeConfig {
@@ -94,5 +99,25 @@ func DefaultConfig() NodeConfig {
 		},
 		Security: DefaultSecurityConfig(),
 		Alerts:   DefaultAlertsConfig(),
+		// Selection VRF material:
+		//   - Mnemonic is SECRET and has NO default — empty is rejected at use
+		//     time (fail-closed) so the insecure public test mnemonic can never
+		//     be used implicitly.
+		//   - Salt is NOT secret (VRF domain separation) and only needs to be
+		//     identical network-wide, so it carries a stable default. Override
+		//     per-network via config/env if you want isolation between networks.
+		Selection: SelectionSettings{Mnemonic: "", Salt: DefaultSelectionSalt},
+		// Consensus policy: empty block_buddy blocklist by default (no peer is
+		// manually excluded). Populate via jmdn.yaml or JMDN_CONSENSUS_BLOCK_BUDDY.
+		// Committee-source: no pinned authority by default (consumer disabled
+		// / fail-closed until an operator pins the seed authority key); epoch clock
+		// defaults to the seed's 3600s.
+		Consensus: ConsensusSettings{
+			BlockBuddy:            nil,
+			SeedAuthorityBLSPub:   "",
+			CommitteeEpochSeconds: 3600,
+			MaxValidators:         7, // must match config.MaxMainPeers (the voting committee size); never 0
+			P2P:                   0, // 0 = gossip-only block propagation (default); 1 also enables direct p2p
+		},
 	}
 }

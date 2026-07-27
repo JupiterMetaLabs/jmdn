@@ -98,17 +98,6 @@ func (h *CommandHandler) HandleYggdrasilMessage(peer string, message string) (bo
 	return true, nil
 }
 
-func (h *CommandHandler) HandleSendFile(peer string, filepath string, remote_filename string) (bool, error) {
-	if peer == "" || filepath == "" || remote_filename == "" {
-		return false, fmt.Errorf("usage: file <peer_multiaddr> <filepath>")
-	}
-	err := node.SendFile(h.Node, peer, filepath, remote_filename)
-	if err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
 func (h *CommandHandler) HandleRequestPeers_fromSeeds(seedNode string) (bool, []config.PeerInfo, error) {
 	if seedNode == "" {
 		return false, nil, fmt.Errorf("no seed node specified. Use -connect flag to specify a seed node")

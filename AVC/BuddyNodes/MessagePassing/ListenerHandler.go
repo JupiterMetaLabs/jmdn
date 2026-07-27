@@ -1495,14 +1495,62 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		return
 	}
 
-	// Parse optional request payload (e.g., block hash scoping)
+	// Requester auth: the vote-result request asks this node to BLS-sign an
+	// aggregated vote. Only the authenticated sequencer — always a member of this
+	// node's authenticated buddy set — may request it. Reject every other peer so
+	// no peer can obtain a genuine committee signature for a caller-supplied hash.
+	// The stream's remote peer ID is transport-authenticated, so this membership
+	// check is sound. Fail closed: an unknown buddy set authorizes no one.
+	if !voteRequesterAuthorized(remotePeer) {
+		voteResultSpan.SetAttributes(attribute.String("status", "unauthorized_vote_requester"))
+		logger().NamedLogger.Warn(voteResultSpanCtx, "Rejecting vote result request: requester is not an authorized committee member",
+			ion.String("remote_peer_id", remotePeer.String()),
+			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+			ion.String("function", "MessagePassing.handleVoteResultRequest"))
+		ackMessage := AVCStruct.NewACKBuilder().False_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
+		response := AVCStruct.NewMessageBuilder(nil).
+			SetSender(listenerNode.PeerID).
+			SetMessage(`{"error":"unauthorized: vote result requests are accepted only from the committee sequencer"}`).
+			SetTimestamp(time.Now().UTC().Unix()).
+			SetACK(ackMessage)
+		responseBytes, _ := json.Marshal(response)
+		_, _ = s.Write([]byte(string(responseBytes) + string(rune(config.Delimiter))))
+		return
+	}
+
+	// Vote sync-gate: an unsynced node MUST NOT participate in consensus. A node
+	// with no local chain, or one still catching up, has not authenticated the
+	// block it would vote on — so it abstains instead of signing a vote over
+	// unverified state. Wired at startup (SetConsensusSyncGate); when unset the
+	// node is permitted (sequencer / tests).
+	if !consensusVoteReady() {
+		voteResultSpan.SetAttributes(attribute.String("status", "abstain_not_synced"))
+		logger().NamedLogger.Warn(voteResultSpanCtx, "Abstaining from consensus vote: node not synced",
+			ion.String("remote_peer_id", remotePeer.String()),
+			ion.String("created_at", time.Now().UTC().Format(time.RFC3339)),
+			ion.String("function", "MessagePassing.handleVoteResultRequest"))
+		ackMessage := AVCStruct.NewACKBuilder().False_ACK_Message(listenerNode.PeerID, config.Type_VoteResult)
+		response := AVCStruct.NewMessageBuilder(nil).
+			SetSender(listenerNode.PeerID).
+			SetMessage(`{"error":"node not synced; abstaining from consensus"}`).
+			SetTimestamp(time.Now().UTC().Unix()).
+			SetACK(ackMessage)
+		responseBytes, _ := json.Marshal(response)
+		_, _ = s.Write([]byte(string(responseBytes) + string(rune(config.Delimiter))))
+		return
+	}
+
+	// Parse optional request payload (block hash scoping + block height)
 	var targetBlockHash string
+	var targetBlockNumber uint64
 	var voteResultReq struct {
-		BlockHash string `json:"block_hash"`
+		BlockHash   string `json:"block_hash"`
+		BlockNumber uint64 `json:"block_number"` // bind the vote to this height (v3). JSON number — sequencer emits it as a number.
 	}
 	// functions which retuning the response should return the same format
 	if err := json.Unmarshal([]byte(message.Message), &voteResultReq); err == nil {
 		targetBlockHash = voteResultReq.BlockHash
+		targetBlockNumber = voteResultReq.BlockNumber
 		if targetBlockHash != "" {
 			fmt.Printf("🎯 Target block hash from request: %s\n", targetBlockHash)
 		}
@@ -1588,7 +1636,16 @@ func (lh *ListenerHandler) handleVoteResultRequest(logger_ctx context.Context, s
 		attribute.String("target_block_hash", targetBlockHash),
 	)
 
-	blsResp, status, err := BLS_Signer.SignMessage(result)
+	// Sign the vote BOUND to this block so it cannot be reused on another block.
+	// Falls back to legacy unbound signing only when block-bound emission is
+	// disabled or the block hash is unavailable.
+	var blsResp BLS_Signer.BLSresponse
+	var status bool
+	if BLS_Signer.EmitBlockBoundVotes && targetBlockHash != "" {
+		blsResp, status, err = BLS_Signer.SignMessageForBlock(result, BLS_Signer.DomainChainID(), targetBlockNumber, targetBlockHash)
+	} else {
+		blsResp, status, err = BLS_Signer.SignMessage(result)
+	}
 	if err != nil || !status {
 		voteResultSpan.RecordError(err)
 		voteResultSpan.SetAttributes(attribute.String("bls_signature_status", "failed"))

@@ -164,6 +164,12 @@ func (s *SecurityCache) CheckBalanceWithCache(tx *config.Transaction, traceCtx c
 
 	// Check sufficiency
 	if balance.Cmp(totalCost) < 0 {
+		// Diagnostic: identify exactly which tx/sender fails and by how much, and
+		// the balance THIS node sees — so an underfunded tx can be told apart from
+		// a stale local balance (node behind the block producer). fmt.Printf so it
+		// reliably reaches journald.
+		fmt.Printf("🚫 insufficient funds: tx=%s sender=%s balance=%s needed=%s (value=%s gas=%s)\n",
+			tx.Hash.Hex(), tx.From.Hex(), balance.String(), totalCost.String(), cost.String(), gasCost.String())
 		return false, nil // Insufficient funds
 	}
 

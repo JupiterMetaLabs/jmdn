@@ -99,32 +99,20 @@ var (
 		[]string{"protocol", "direction"},
 	)
 
-	// File transfer metrics
-	FileTransferBytesCounter = factory.NewCounterVec(
+	// BlocksRejectedCounter counts remotely-received blocks dropped by the
+	// fail-closed validation gate before any forwarding, mutation, or
+	// persistence. The "reason" label identifies which check failed
+	// (e.g. no_certificate, quorum_not_met, bad_signature, bad_nonce) and is a
+	// key signal for monitoring rejected blocks.
+	BlocksRejectedCounter = factory.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "p2p_file_transfer_bytes_total",
-			Help: "The total number of bytes transferred for files",
+			Name: "p2p_blocks_rejected_total",
+			Help: "The total number of remote blocks rejected by validation before processing",
 		},
-		[]string{"direction", "peer_id"},
+		[]string{"reason", "peer_id"},
 	)
 
-	FileTransferDuration = factory.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "p2p_file_transfer_duration_seconds",
-			Help:    "Duration of file transfers in seconds",
-			Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300},
-		},
-		[]string{"direction", "peer_id"},
-	)
-
-	FileTransferSpeedMBPS = factory.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "file_transfer_speed_mbps",
-			Help:    "File transfer speed in MB/s",
-			Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300},
-		},
-		[]string{"direction", "peer_id"},
-	)
+	// (File transfer metrics are not registered.)
 
 	// Database metrics
 	DatabaseOperations = factory.NewCounterVec(

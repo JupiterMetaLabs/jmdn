@@ -6,6 +6,10 @@ gossipnode.exe.sig
 logs/*.log
 config/peer.json
 config/bls.json
+**/bls.json
+**/peer.json
+bls.json
+peer.json
 DB/*.db
 yggdrasil
 Account.json
@@ -66,3 +70,7 @@ dlq/DLQ.log
 jmdn2
 *.db-wal
 *.db-shm
+DB_OPs/sqlops/test.db
+DB_OPs/sqlops/sqlops_test.log
+*.db
+DB_OPs/sqlops/test.db

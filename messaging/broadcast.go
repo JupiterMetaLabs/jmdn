@@ -12,7 +12,6 @@ import (
 	"time"
 
 	BLS_Signer "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Signer"
-	BLS_Verifier "gossipnode/AVC/BuddyNodes/MessagePassing/BLS_Verifier"
 	"gossipnode/DB_OPs"
 	"gossipnode/DB_OPs/txindex"
 	"gossipnode/Vote"
@@ -640,6 +639,22 @@ func BroadcastBlockToEveryNodeWithExtraData(h host.Host, block *config.ZKBlock, 
 	msg.ID = generateBlockMessageID(msg.Sender, nonce, now)
 	markMessageProcessed(getMessageIDForBloomFilter(msg))
 
+	// Additively fan the finalized, certified block out over the gossip mesh so it
+	// reaches the whole fleet, not only directly-connected peers. Receivers run the
+	// same fail-closed admitZKBlock gate. No-op when disabled/unwired; the
+	// direct-stream broadcast below is unchanged. The sender already marked this
+	// message processed above, so it will not re-ingest its own gossiped copy.
+	PublishBlockGossip(msg)
+
+	// Gossip-only by default: the gossip mesh + FloodPublish reach the whole fleet,
+	// so the direct per-peer stream fan-out below is redundant — and sending over
+	// both transports delivered every block twice, which was then applied
+	// concurrently. Skip the direct fan-out unless it is explicitly re-enabled. If
+	// gossip is OFF, keep direct as the only path so a block is never un-propagated.
+	if EnableBlockGossip && !directBlockPropagationEnabled() {
+		return nil
+	}
+
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal block message: %w", err)
@@ -703,49 +718,34 @@ func ProcessBlockLocally(block *config.ZKBlock, blsResults []BLS_Signer.BLSrespo
 	// Validate BLS/consensus if results are provided
 	// This ensures we only process blocks that have reached consensus
 	if len(blsResults) > 0 {
-		validYes := 0
-		validTotal := 0
-		for _, r := range blsResults {
-			// Verify signature for stated vote (+1 if Agree else -1)
-			vote := int8(-1)
-			if r.Agree {
-				vote = 1
-			}
-			if err := BLS_Verifier.Verify(r, vote); err != nil {
-				log.Warn().Err(err).Str("peer", r.PeerID).Msg("BLS verification failed for buddy response")
-				continue
-			}
-			validTotal++
-			if vote == 1 {
-				validYes++
-			}
+		// Single verifier: route through the one shared certificate verifier
+		// — no local quorum math. It fails closed on a missing/failing committee
+		// source, de-duplicates by peer_id AND bls_pub, and requires 2f+1 over the
+		// authenticated committee size (never a simple majority of whoever
+		// responded).
+		res, err := VerifyCertificate(blsResults, block.BlockHash.Hex(), block.BlockNumber)
+		if err != nil {
+			log.Error().Err(err).Str("block_hash", block.BlockHash.Hex()).
+				Msg("refusing consensus participation (fail closed): committee eligibility source invalid")
+			return fmt.Errorf("committee eligibility source invalid (fail closed): %w", err)
 		}
-
-		if validTotal == 0 {
+		if !res.Reached {
 			log.Error().
 				Str("block_hash", block.BlockHash.Hex()).
-				Msg("No valid BLS signatures - skipping block processing (invalid consensus)")
-			return fmt.Errorf("no valid BLS signatures for block %s", block.BlockHash.Hex())
-		}
-
-		needed := (validTotal / 2) + 1
-		if validYes < needed {
-			log.Error().
-				Str("block_hash", block.BlockHash.Hex()).
-				Int("valid_yes", validYes).
-				Int("needed", needed).
-				Int("valid_total", validTotal).
-				Msg("BLS majority not in favor (+1) - skipping block processing (consensus not reached)")
-			return fmt.Errorf("consensus not reached for block %s: %d/%d votes in favor (needed: %d)",
-				block.BlockHash.Hex(), validYes, validTotal, needed)
+				Int("valid_yes", res.YesVotes).
+				Int("needed", res.Threshold).
+				Int("committee_size", res.CommitteeSize).
+				Msg("BFT 2f+1 not reached - skipping block processing (consensus not reached)")
+			return fmt.Errorf("consensus not reached for block %s: %d eligible +1 votes, need %d (2f+1 over committee size %d)",
+				block.BlockHash.Hex(), res.YesVotes, res.Threshold, res.CommitteeSize)
 		}
 
 		log.Info().
 			Str("block_hash", block.BlockHash.Hex()).
-			Int("valid_yes", validYes).
-			Int("needed", needed).
-			Int("valid_total", validTotal).
-			Msg("BLS majority in favor verified - consensus reached")
+			Int("valid_yes", res.YesVotes).
+			Int("needed", res.Threshold).
+			Int("committee_size", res.CommitteeSize).
+			Msg("BFT 2f+1 verified - consensus reached")
 	} else {
 		// BLS results are required to ensure consensus was reached
 		// If no BLS results are provided, we cannot verify consensus and should not process

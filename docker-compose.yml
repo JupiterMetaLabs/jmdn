@@ -53,10 +53,34 @@ services:
   # existing database. Bootstrap snapshots come pre-initialized with a baked-in
   # password — without this flag, immudb ignores IMMUDB_ADMIN_PASSWORD on restart
   # and jmdn cannot connect on first deploy.
+  # ── ImmuDB volume permissions (one-shot init) ───────────────────────────────
+  # immudb below runs as UID 3322 in a distroless image with no-new-privileges,
+  # so it has no shell and cannot chown its own data. If the immudb-data volume
+  # is ever populated with files owned by another UID — a snapshot copied in as
+  # root, or a bootstrap that skipped its chown — immudb crash-loops with
+  # "permission denied: open .../systemdb/tx/00000000.tx" and the node never
+  # serves RPC (empty :8545). This one-shot runs as root, fixes ownership to
+  # 3322:3322, then exits; immudb waits for it to complete. Idempotent, safe on
+  # every `up`. Reuses the jmdn image so no extra image is pulled.
+  immudb-perms:
+    image: ghcr.io/jupitermetalabs/jmdn:${JMDN_VERSION:-latest}
+    container_name: jmdn-immudb-perms
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['chown -R 3322:3322 /opt/jmdn/data && echo "[immudb-perms] ownership set to 3322:3322 on /opt/jmdn/data"']
+    volumes:
+      - immudb-data:/opt/jmdn/data
+    restart: "no"
+
   immudb:
     image: codenotary/immudb:1.10.0
     container_name: jmdn-immudb
     restart: unless-stopped
+    # Wait for the one-shot perms init to fix volume ownership before starting —
+    # immudb (UID 3322, distroless, no-new-privileges) cannot chown itself.
+    depends_on:
+      immudb-perms:
+        condition: service_completed_successfully
     # Docker's default stop grace is 10s, then SIGKILL. systemd's default is
     # 90s. An append-only ledger flushing large tx logs must never be
     # SIGKILLed mid-write — give it the room a bare-metal install gets.
@@ -175,15 +199,13 @@ services:
     volumes:
       - immudb-data:/opt/jmdn/data
     environment:
-      # Snapshot location. Defaults point at the 2026-07-09 snapshot
-      # (chain tip 12172). PARTS_PREFIX/CHECKSUM_FILE MUST match how the
+      # Snapshot location. Defaults point at the 2026-07-26 snapshot
+      # (chain tip 13449). PARTS_PREFIX/CHECKSUM_FILE MUST match how the
       # snapshot was split — this one used `split … data-patched.part`.
       # NOTE: bootstrap_sync.sh fetches over public HTTP
       # (storage.googleapis.com), so this prefix must be world-readable.
-      # `staging/…` is the pre-promotion location; repoint to the promoted
-      # public prefix before fleet rollout.
       GCS_BUCKET: "${GCS_BUCKET:-jmdn-bootstrap}"
-      GCS_PREFIX: "${GCS_PREFIX:-staging/bootstrap-20260709_180202}"
+      GCS_PREFIX: "${GCS_PREFIX:-bootstrap-26072026}"
       PARTS_PREFIX: "${PARTS_PREFIX:-data-patched.part}"
       CHECKSUM_FILE: "${CHECKSUM_FILE:-checksums.md5}"
 
@@ -212,7 +234,7 @@ services:
   # WorkingDirectory = /opt/jmdn (matches bare-metal ${JMDN_DATA}).
   # DB/gossipnode.db resolves as ./DB/gossipnode.db relative to WorkingDirectory.
   jmdn:
-    # Version comes from .env (JMDN_VERSION=v1.2.1) — never edit this line to
+    # Version comes from .env (JMDN_VERSION=v2.0.0) — never edit this line to
     # pin a release. Keeping the tag out of this tracked file means upgrades
     # don't dirty the git checkout, so `git pull` never merge-conflicts on
     # compose changes shipped with a release. See DOCKER.md §13.

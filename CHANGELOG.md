@@ -7,6 +7,142 @@ adhering to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-07-26
+
+Consensus and block-propagation hardening. This release introduces coordinated
+**breaking** protocol changes and must be deployed network-wide (see
+_Upgrade notes_).
+
+### ⚠ Breaking
+
+- **P2P protocol and topic versions bumped to `2.0.0`.** Consensus and
+  block-propagation topics are incompatible with earlier versions.
+- **Vote domain v3 only.** A consensus vote is signed over a versioned domain
+  binding the network chain id, the block height, and the canonical block hash.
+  Earlier domain versions are no longer accepted.
+- **Committee size 7, quorum `ceil(2n/3)`.** The voting committee is sized by
+  `consensus.max_validators` (default 7) and the Byzantine threshold is derived
+  from the authenticated committee size at any `n`.
+- **Peer records carry a committee BLS key.** Registration advertises `bls_pub`
+  with a proof of possession, and the identity signature covers `bls_pub`
+  (`JMDN_EMIT_COMMITTEE_BLS`, default on).
+- **New `consensus.*` settings** — `committee_epoch_seconds`,
+  `max_validators`, `block_buddy`, and the pinned committee authority key. These
+  are operator settings and are not shipped in `jmdn_default.yaml`.
+- **File-transfer protocol removed** — the P2P file protocol, its handler, and
+  the CLI `SendFile` surface.
+
+### Added
+
+- **Authenticated committee snapshots.** An epoch-pinned committee snapshot is
+  verified against a pinned authority public key before it defines the eligible
+  validator set, with golden-vector tests covering the canonical encoding.
+- **BLS proof of possession** binding a committee key to a peer identity.
+- **Authenticated committee-selection requests**, signed with the node's libp2p
+  identity key and carried in request metadata.
+- **Committee eligibility resolution on validator nodes**, with a short-lived
+  cache of the last verified snapshot to ride out transient unavailability.
+- **Finalized-block gossip propagation.** Blocks are additionally published to a
+  gossip topic that every node subscribes to, so delivery does not depend on a
+  direct connection to the producing node. Gossiped blocks run the same
+  fail-closed admission gate as direct-stream blocks (`JMDN_BLOCK_GOSSIP`).
+- **Observe-only validator reputation model** with alert wiring.
+- **Fee-recipient groundwork** — a `FeeRecipients` block field and a shared,
+  deterministic `SplitFee` helper (exact, order-independent distribution; an
+  empty set reproduces existing behaviour). The field is not yet part of the
+  canonical block hash, so blocks carrying it are not admitted until that
+  binding lands.
+- **Durable equivocation records** that survive a process restart.
+- **`genmnemonic`** utility; VRF selection material is sourced from config/env.
+- **Richer operational signal** — block-rejection alerts carry the concrete
+  reason, buddy-list alerts report each peer's latest block, and committee
+  authorization and registration paths log actionable diagnostics.
+
+### Changed
+
+- **Sync monitoring** tightens the propagation-lag tolerance so a node that
+  stops advancing triggers catch-up promptly.
+- **`block_number` is a plain `uint64`** across the vote-request path.
+- **Documentation consolidated** — stale per-folder `README` files removed in
+  favour of the top-level docs; internal code comments tidied.
+- **Dead code removed** — an unused fallback path, file-transfer metrics, and
+  `ParsedZKTransaction.MaxFeeBig`.
+
+### Security
+
+- **Block-bound voting.** Each vote is scoped to exactly one block, on one
+  chain, at one height.
+- **Single authenticated certificate verifier.** One shared verifier enforces
+  the Byzantine quorum over the authenticated committee size, counting one vote
+  per validator (de-duplicated by both peer identity and committee key). Every
+  consensus path routes through it, so the threshold is computed identically
+  everywhere.
+- **Authenticated committee membership.** Eligibility comes from the signed
+  epoch snapshot with the peer-identity-to-committee-key binding enforced at the
+  tally; a node requires a valid, current committee source to take part in
+  consensus and declines to participate when one is unavailable.
+- **Canonical body binding.** A received block must recompute to its claimed
+  block hash and transaction root, and each transaction hash is verified against
+  its contents, binding a certificate to the exact transaction set it attests.
+- **Committee snapshot freshness.** Snapshots outside the current epoch window
+  are declined.
+- **Fail-closed block admission.** Remote blocks are fully validated before they
+  are forwarded, processed, or persisted, and a block is recorded in the
+  duplicate filter only after it validates.
+- **Chain linkage with authenticated catch-up.** Parent hash, height, and state
+  root are checked against local state; height gaps route to authenticated
+  catch-up. Nodes trailing the head beyond a configurable bound abstain from
+  voting.
+- **Bounded network reads** — the block-propagation stream enforces a maximum
+  message size and a read deadline.
+- **Signed BFT engine messages** — PREPARE/COMMIT are signed and verified.
+- **Authenticated vote-result requests** at the stream boundary (opt-in).
+- **Provisioned signing keys.** Vote signing uses the node's provisioned BLS
+  key; `JMDN_BLS_KEY_FILE` overrides the default path.
+- **Stricter transaction field validation** — negative numeric fields are
+  declined at ingress, on remote admission, and at execution.
+- **Operator-supplied VRF selection material** is required for node and
+  committee selection.
+
+### Fixed
+
+- **Consensus vote requests** carry `block_number` as a numeric value on both
+  sides, so vote collection is unaffected by JSON type coercion.
+- **Vote aggregation** continues through a peer-weights authorization denial
+  instead of aborting the round.
+- **Quorum is computed over the main voting committee** — the peers that
+  actually vote — so the threshold matches the voting set.
+- **Deterministic block application.** A finalized block is applied
+  all-or-nothing: any transaction error, including a stale nonce, rolls the
+  block back so every node applies the identical transaction sequence, with
+  catch-up re-applying the block.
+- **Committee selection** requests the full eligible pool and is pinned to the
+  signed committee.
+- **Peer registration** refreshes the committee BLS key for existing aliases.
+- Normalize propagated account state on receipt (#76).
+- `eth_*` transaction marshaling/handler corrections (#75).
+
+### Dependencies
+
+- Bump `golang.org/x/crypto` 0.49.0 → 0.52.0 (#77).
+- Upgrade `mattn/go-sqlite3` to v1.14.48 (#79).
+
+### Upgrade notes
+
+- **Deploy network-wide.** The protocol version, vote domain, and registration
+  payload changes are not backward compatible; nodes on earlier versions will
+  not interoperate.
+- **Align across the network:** identical `chain_id` and
+  `committee_epoch_seconds`, NTP-synced clocks, and a persistent
+  `config/bls.json` provisioned on each node before registration.
+- **Committee sizing:** ensure at least the quorum count of the `n = 7` voting
+  committee is reachable, or lower `consensus.max_validators` to match the
+  deployment.
+- **Set the production committee authority key** before going live.
+- **Rollback levers:** clear the pinned authority key to return to the previous
+  eligibility source; `JMDN_ENFORCE_SYNC_GATE=0` and `JMDN_BLOCK_GOSSIP=0`
+  disable the vote sync-gate and the gossip fan-out respectively.
+
 ## [1.2.2] - 2026-07-14
 
 ### Fixed
@@ -325,7 +461,7 @@ adhering to [Semantic Versioning](https://semver.org/).
   (`explorer/addressOps.go`, `gETH/Facade/rpc/handlers.go`) — up to 10
   concurrent point-fetches per page instead of a sequential loop. (#55)
 
-## [1.2.0] — 2026-06-29
+## [1.2.0] - 2026-06-29
 
 ### Added
 
@@ -803,6 +939,7 @@ adhering to [Semantic Versioning](https://semver.org/).
 ### Added
 - Initial open source release
 
+[2.0.0]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.2.2...v2.0.0
 [1.2.2]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/JupiterMetaLabs/jmdn/compare/v1.1.1...v1.2.0

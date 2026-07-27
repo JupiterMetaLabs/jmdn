@@ -40,9 +40,9 @@ type AccountSnapshot struct {
 
 // txStage accumulates one transaction's account mutations in memory so they can
 // commit in a SINGLE accountsdb ExecAll together with the tx_processed marker.
-// Previously, each mutation was an independent DB commit — a crash
-// mid-transaction left partially-applied balances with no marker, and the
-// replay re-applied the applied prefix (double-count).
+// Keeping balances and the marker in one commit means either the whole tx
+// lands or none of it does, so a crash mid-transaction cannot leave
+// partially-applied balances without a marker.
 //
 // get is READ-THROUGH: an account already staged by an earlier step of the SAME
 // tx (self-transfer, sender==coinbase, recipient==zkvm, ...) returns the staged
@@ -124,9 +124,66 @@ func cleanupTransactionLock(txHash string) {
 	delete(txProcessingLocks, txHash)
 }
 
+// ─── Per-block-hash apply lock ────────────────────────────────────────────────
+//
+// blockApplyLock serializes ProcessBlockTransactions per block hash so a block
+// delivered more than once — direct stream + gossip near-simultaneously, a
+// re-flood, or live delivery racing catch-up — is applied EXACTLY ONCE. Without
+// it, two goroutines run the full apply for the same block and each credits the
+// balances; the double-credit is timing-dependent, so nodes diverge. The lock is
+// held across the whole apply (the already-processed check + balance writes +
+// marker commit), making that sequence atomic per block hash. Different block
+// hashes take different locks and still process in parallel.
+//
+// Reference-counted so an entry is removed once no goroutine holds or waits on
+// it (no unbounded growth). refs is guarded by blockApplyLocksMu, so a concurrent
+// acquirer always shares the same *blockApplyLock and a release cannot delete a
+// lock another goroutine is about to use.
+type blockApplyLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+var (
+	blockApplyLocks   = make(map[string]*blockApplyLock)
+	blockApplyLocksMu sync.Mutex
+)
+
+// acquireBlockApplyLock locks the per-hash apply lock and returns its release func.
+func acquireBlockApplyLock(blockHash string) func() {
+	blockApplyLocksMu.Lock()
+	l, ok := blockApplyLocks[blockHash]
+	if !ok {
+		l = &blockApplyLock{}
+		blockApplyLocks[blockHash] = l
+	}
+	l.refs++
+	blockApplyLocksMu.Unlock()
+
+	l.mu.Lock()
+
+	return func() {
+		l.mu.Unlock()
+		blockApplyLocksMu.Lock()
+		l.refs--
+		if l.refs == 0 {
+			delete(blockApplyLocks, blockHash)
+		}
+		blockApplyLocksMu.Unlock()
+	}
+}
+
 // ProcessBlockTransactions processes all transactions in a block atomically
 // If any transaction fails, all are rolled back
 func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock, accountsClient *config.PooledConnection) error {
+	// Serialize concurrent applies of the SAME block so it is applied exactly
+	// once no matter how many copies arrive (multi-transport delivery, re-flood,
+	// or live delivery racing catch-up). Held across the already-processed check
+	// and the full apply below, so a second caller blocks here and then observes
+	// the committed block marker and returns without re-crediting balances.
+	releaseBlockLock := acquireBlockApplyLock(block.BlockHash.Hex())
+	defer releaseBlockLock()
+
 	// Record trace span and close it
 	span_ctx, span := logger().NamedLogger.Tracer("BlockProcessing").Start(logger_ctx, "BlockProcessing.ProcessBlockTransactions")
 	defer span.End()
@@ -259,14 +316,23 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 		}
 
 		// Process the transaction with span context
-		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, accountsClient, block.Timestamp)
+		Process_err := processTransaction(span_ctx, tx, *block.CoinbaseAddr, *block.ZKVMAddr, block.FeeRecipients, accountsClient, block.Timestamp)
 		if Process_err != nil {
-			// Stale nonce: security check passed at vote time but the account nonce
-			// advanced before execution (race with PoTS / concurrent block processing).
-			// Skip this tx — do NOT roll back other txs or fail the block.
+			// DETERMINISM ON FINALIZED BLOCKS: a 2f+1 block is a canonical, agreed
+			// transaction sequence — every node MUST apply every tx or state
+			// diverges SILENTLY. The node's sync fingerprint is a Merkle root over
+			// BLOCK HASHES, not account balances (internal/merkle), so a tx skipped
+			// here is invisible to the sync monitor and never self-heals. Therefore
+			// NO per-tx skip is permitted: ANY failure — INCLUDING a stale nonce
+			// (a race with PoTS / concurrent block processing) — rolls back and
+			// fails the WHOLE block. Nothing partial is stored, the head does not
+			// advance, the node lags, and catch-up (FastsyncV2, which applies all
+			// txs unconditionally) re-applies the block deterministically. Failing
+			// loud and self-healing is correct; the previous "skip the stale-nonce
+			// tx and keep the block" behaviour is exactly what produced fleet-wide
+			// balance divergence at matching block heights.
 			if errors.Is(Process_err, ErrStaleNonce) {
-				cleanupProcessingMarkers(span_ctx, accountsClient, tx.Hash.Hex())
-				logger().NamedLogger.Warn(span_ctx, "Skipping tx with stale nonce — account nonce advanced between security check and execution",
+				logger().NamedLogger.Warn(span_ctx, "Stale nonce on finalized-block tx — failing the WHOLE block for determinism (catch-up re-applies)",
 					ion.String("tx_hash", tx.Hash.Hex()),
 					ion.Int("tx_index", i),
 					ion.String("error", Process_err.Error()),
@@ -274,10 +340,9 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 					ion.String("topic", TOPIC),
 					ion.String("function", "BlockProcessing.ProcessBlockTransactions"),
 				)
-				continue
 			}
 
-			// ATOMICITY: If any non-stale transaction fails, roll back ALL affected accounts
+			// ATOMICITY: If any transaction fails, roll back ALL affected accounts
 			span.RecordError(Process_err)
 			span.SetAttributes(attribute.String("status", "failed"), attribute.String("failed_tx_hash", tx.Hash.Hex()), attribute.Int("failed_tx_index", i))
 
@@ -357,14 +422,13 @@ func ProcessBlockTransactions(logger_ctx context.Context, block *config.ZKBlock,
 	}
 
 	// tx_processed markers are committed atomically with each tx's
-	// balances inside the loop — the old block-end marker batch is gone. That
-	// batch wrote 2×txs+1 entries in ONE ExecAll, exceeding immudb's 1024-entry
-	// transaction cap on any block with >511 transactions: the commit failed,
-	// the block rolled back, and the chain halted on that block permanently.
+	// balances inside the loop rather than in a single block-end batch. A
+	// block-end batch would write 2×txs+1 entries in ONE ExecAll, exceeding
+	// immudb's 1024-entry transaction cap on any block with >511 transactions.
 	// Per-tx commits are ≤5 entries each — the cap is
 	// unreachable by construction.
 	//
-	// The block marker is now a fast-path replay hint only (the per-tx markers
+	// The block marker is a fast-path replay hint only (the per-tx markers
 	// carry the exactly-once guarantee), so its failure must NOT roll back the
 	// block's already-committed, already-marked transactions.
 	if len(successfullyProcessedTxs) > 0 {
@@ -517,7 +581,7 @@ func rollbackState(span_ctx context.Context, snapshots map[common.Address]Accoun
 }
 
 // ProcessTransaction handles a single transaction's balance updates
-func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, accountsClient *config.PooledConnection, blockTimestamp int64) error {
+func processTransaction(span_ctx context.Context, tx config.Transaction, coinbaseAddr common.Address, zkvmAddr common.Address, feeRecipients []config.FeeRecipient, accountsClient *config.PooledConnection, blockTimestamp int64) error {
 	// Record trace span and close it
 	txSpanCtx, txSpan := logger().NamedLogger.Tracer("BlockProcessing").Start(span_ctx, "BlockProcessing.processTransaction")
 	defer txSpan.End()
@@ -703,13 +767,16 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	// Calculate total amount to deduct from sender (amount + gas fee)
 	totalDeduction := new(big.Int).Add(parsedTx.ValueBig, gasFeeToDeduct)
-	// Split the gas fee between coinbase and ZKVM
-	// Calculate half and remainder to avoid losing 1 wei in corner cases
-	halfGasFee := new(big.Int).Div(gasFeeToDeduct, big.NewInt(2))
-	remainder := new(big.Int).Mod(gasFeeToDeduct, big.NewInt(2))
-	// coinbase gets halfGasFee, ZKVM gets halfGasFee + remainder (to account for odd wei)
-	zkvmGasFee := new(big.Int).Set(halfGasFee)
-	coinbaseGasFee := new(big.Int).Add(halfGasFee, remainder)
+	// Split the gas fee: floor(half) to the ZKVM, the coinbase-side share
+	// distributed by config.SplitFee — a single credit to the coinbase address
+	// when feeRecipients is empty (unchanged behavior), or weighted across the
+	// recipients when set. coinbaseGasFee is the summed coinbase-side total, kept
+	// for the trace attribute below.
+	zkvmGasFee, coinbaseCredits := config.SplitFee(gasFeeToDeduct, coinbaseAddr, feeRecipients)
+	coinbaseGasFee := new(big.Int)
+	for _, c := range coinbaseCredits {
+		coinbaseGasFee.Add(coinbaseGasFee, c.Amount)
+	}
 
 	txSpan.SetAttributes(
 		attribute.String("value", parsedTx.ValueBig.String()),
@@ -776,7 +843,7 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	// All account mutations for this tx are STAGED in memory and then
 	// committed in ONE accountsdb ExecAll together with the tx_processed marker
 	// (ApplyTxAtomic below). Either the whole tx lands — balances AND marker —
-	// or none of it does; a crash can no longer leave partially-applied
+	// or none of it does, so a crash cannot leave partially-applied
 	// balances that a replay would double-apply.
 	stage := newTxStage(accountsClient)
 
@@ -815,15 +882,18 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 
 	txSpan.SetAttributes(attribute.String("recipient_add_step", "completed"))
 
-	// 3. Split gas fee between coinbase and ZKVM
-	if err := addToRecipient(txSpanCtx, coinbaseAddr, coinbaseGasFee.String(), stage, blockTimestamp); err != nil {
-		// Remove nested rollback logic: parent loop will handle full block rollback via rollbackState
-		txSpan.RecordError(err)
-		txSpan.SetAttributes(attribute.String("status", "coinbase_gas_fee_failed"), attribute.String("failed_step", "add_to_coinbase"))
-		cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
-		duration := time.Since(txStartTime).Seconds()
-		txSpan.SetAttributes(attribute.Float64("duration", duration))
-		return fmt.Errorf("failed to add gas fee to coinbase: %w", err)
+	// 3. Credit the coinbase-side gas fee (one recipient by default, or the
+	// weighted set when the block carries FeeRecipients), then the ZKVM.
+	for _, c := range coinbaseCredits {
+		if err := addToRecipient(txSpanCtx, c.Addr, c.Amount.String(), stage, blockTimestamp); err != nil {
+			// Parent loop handles full block rollback via rollbackState.
+			txSpan.RecordError(err)
+			txSpan.SetAttributes(attribute.String("status", "coinbase_gas_fee_failed"), attribute.String("failed_step", "add_to_coinbase"))
+			cleanupProcessingMarkers(txSpanCtx, accountsClient, tx.Hash.String())
+			duration := time.Since(txStartTime).Seconds()
+			txSpan.SetAttributes(attribute.Float64("duration", duration))
+			return fmt.Errorf("failed to add gas fee to coinbase recipient %s: %w", c.Addr.Hex(), err)
+		}
 	}
 
 	txSpan.SetAttributes(attribute.String("coinbase_gas_fee_step", "completed"))
@@ -841,14 +911,12 @@ func processTransaction(span_ctx context.Context, tx config.Transaction, coinbas
 	txSpan.SetAttributes(attribute.String("zkvm_gas_fee_step", "completed"))
 
 	// Commit the whole tx atomically — every staged account document
-	// plus the tx_processed marker in ONE accountsdb ExecAll. This replaces the
-	// old flow of ≤4 independent account commits followed by a separate marker
-	// Create (which went to defaultdb, and whose failure was tolerated — leaving
-	// applied-but-unmarked balances for replays to double-apply).
+	// plus the tx_processed marker in ONE accountsdb ExecAll. Balances and
+	// marker land together, so there are no applied-but-unmarked balances that
+	// a replay could double-apply.
 	//
-	// Failure here means NOTHING was applied for this tx — returning an error is
-	// mandatory (the old "still continue" tolerance is no longer sound because
-	// the balances did not land either).
+	// Failure here means NOTHING was applied for this tx, so returning an error
+	// is mandatory (the balances did not land either).
 	if err := DB_OPs.ApplyTxAtomic(accountsClient, stage.staged(), tx.Hash.String(), time.Now().UTC().Unix()); err != nil {
 		txSpan.RecordError(err)
 		txSpan.SetAttributes(attribute.String("status", "atomic_commit_failed"))
@@ -939,15 +1007,17 @@ func parseTransaction(tx config.Transaction) (*config.ParsedZKTransaction, error
 	// shared with FastsyncV2 delta reconciliation. Do NOT inline fee logic here.
 	parsed.EffectiveGasFee = config.EffectiveGasPrice(tx.Type, tx.GasPrice, tx.MaxFee, tx.MaxPriorityFee)
 
-	if tx.Type == 2 {
-		maxFee := tx.MaxFee
-		if maxFee == nil {
-			maxFee = big.NewInt(config.BaseFeeWei) // safe fallback
-		}
-		parsed.MaxFeeBig = new(big.Int).Set(maxFee)
-	} else {
-		// For non-EIP-1559 transactions, MaxFeeBig is not applicable
-		parsed.MaxFeeBig = nil
+	// Execution-level assertion (defense in depth). The ingress and
+	// remote-admission gates (Security.CheckTransactionValues) already reject
+	// negative fields, but execution must never apply a negative amount: a
+	// negative ValueBig or EffectiveGasFee would invert the balance arithmetic
+	// (sender credited, receiver debited). Fail closed here so a tx that reaches
+	// execution with a negative field cannot mutate balances.
+	if parsed.ValueBig != nil && parsed.ValueBig.Sign() < 0 {
+		return nil, fmt.Errorf("negative transaction value in execution: %s", parsed.ValueBig.String())
+	}
+	if parsed.EffectiveGasFee != nil && parsed.EffectiveGasFee.Sign() < 0 {
+		return nil, fmt.Errorf("negative effective gas fee in execution: %s", parsed.EffectiveGasFee.String())
 	}
 
 	return parsed, nil
@@ -970,7 +1040,7 @@ func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount s
 		return fmt.Errorf("invalid balance format for DID %s: %s", fromDID, didDoc.Balance)
 	}
 
-	// Foolproof execution-time nonce check (prevents same-block replay attacks).
+	// Foolproof execution-time nonce check (prevents same-block replay).
 	// Returns ErrStaleNonce so the caller can skip this tx rather than rolling
 	// back the entire block — the tx was valid at security-check time but the
 	// account nonce advanced before ProcessBlockLocally ran.
@@ -982,6 +1052,10 @@ func deductFromSender(span_ctx context.Context, tx *config.Transaction, amount s
 	deductAmount, ok := new(big.Int).SetString(amount, 10)
 	if !ok {
 		return fmt.Errorf("invalid deduction amount: %s", amount)
+	}
+	// A negative deduction would ADD to the sender (balance - (-x)). Reject.
+	if deductAmount.Sign() < 0 {
+		return fmt.Errorf("negative deduction amount for DID %s: %s", fromDID, amount)
 	}
 
 	// Check if sufficient balance
@@ -1042,6 +1116,10 @@ func addToRecipient(span_ctx context.Context, ToAddress common.Address, amount s
 	addAmount, ok := new(big.Int).SetString(amount, 10)
 	if !ok {
 		return fmt.Errorf("invalid addition amount: %s", amount)
+	}
+	// A negative credit would DEBIT the receiver (balance + (-x)). Reject.
+	if addAmount.Sign() < 0 {
+		return fmt.Errorf("negative credit amount for DID %s: %s", ToAddress, amount)
 	}
 
 	// Calculate new balance

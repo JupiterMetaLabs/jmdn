@@ -290,6 +290,14 @@ func AllChecks(tx *config.Transaction) (bool, error) {
 		)
 	}
 
+	// Reject negative numeric fields before any DB work. Cheap, and it
+	// prevents balance inversion at the RPC ingress boundary.
+	if ok, err := CheckTransactionValues(tx); !ok {
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("status", "negative_value_rejected"))
+		return false, err
+	}
+
 	ctx, cancelConn := context.WithTimeout(traceCtx, 30*time.Second)
 	defer cancelConn()
 
@@ -857,6 +865,121 @@ func toGethAccessList(accessList config.AccessList) types.AccessList {
 // ------------------------------------------------------------
 // 2. Transaction hash validation
 // 2.1. Recompute transaction hash and verify it matches the provided hash
+// CheckTransactionHash verifies that tx.Hash equals the hash recomputed from the
+// transaction's CONTENTS (ethTx.Hash()). It is the exported entry point for the
+// block-receive path (messaging.validateRemoteBlock), where tx.Hash is an
+// untrusted wire field: canonical body binding hashes over tx.Hash, so an
+// unverified tx.Hash would let a mismatched body reproduce a captured BlockHash
+// and re-present a valid certificate.
+// Returns (true,nil) only when the wire hash matches the content hash.
+func CheckTransactionHash(tx *config.Transaction, traceCtx context.Context) (bool, error) {
+	return checkTransactionHash(tx, traceCtx)
+}
+
+// CheckTransactionValues rejects transactions carrying negative numeric fields.
+// Canonical Ethereum RLP cannot encode a negative big.Int, but JMDN's
+// internal config.Transaction is a plain struct that a JSON ingress path or a
+// wire message can populate directly with a negative *big.Int. If such a
+// value reaches execution, the balance arithmetic inverts:
+//
+//	sender:   balance - (-v) == balance + v   (sender is CREDITED)
+//	receiver: balance + (-v) == balance - v   (receiver is DEBITED)
+//
+// letting a sender debit an arbitrary receiver without that receiver's
+// signature. Negative gas fields similarly invert fee deductions. This is the
+// fail-closed value gate applied at every trust boundary (RPC ingress via
+// AllChecks, and remote-block admission via validateRemoteBlock); parseTransaction
+// enforces it again at execution as defense in depth.
+//
+// Returns (true,nil) only when every present numeric field is non-negative and
+// (for present EIP-1559 fields) MaxPriorityFee <= MaxFee.
+func CheckTransactionValues(tx *config.Transaction) (bool, error) {
+	if tx == nil {
+		return false, fmt.Errorf("nil transaction")
+	}
+	// Value: nil is treated as zero elsewhere (parseTransaction); a present value
+	// must be non-negative.
+	if tx.Value != nil && tx.Value.Sign() < 0 {
+		return false, fmt.Errorf("negative transaction value: %s", tx.Value.String())
+	}
+	if tx.GasPrice != nil && tx.GasPrice.Sign() < 0 {
+		return false, fmt.Errorf("negative gas_price: %s", tx.GasPrice.String())
+	}
+	if tx.MaxFee != nil && tx.MaxFee.Sign() < 0 {
+		return false, fmt.Errorf("negative max_fee: %s", tx.MaxFee.String())
+	}
+	if tx.MaxPriorityFee != nil && tx.MaxPriorityFee.Sign() < 0 {
+		return false, fmt.Errorf("negative max_priority_fee: %s", tx.MaxPriorityFee.String())
+	}
+	// EIP-1559 invariant: the priority (tip) fee may never exceed the max fee.
+	if tx.MaxFee != nil && tx.MaxPriorityFee != nil && tx.MaxPriorityFee.Cmp(tx.MaxFee) > 0 {
+		return false, fmt.Errorf("max_priority_fee %s exceeds max_fee %s",
+			tx.MaxPriorityFee.String(), tx.MaxFee.String())
+	}
+	return true, nil
+}
+
+// ethTxFromConfig reconstructs the go-ethereum transaction from a
+// config.Transaction using tx.Type (same construction as CheckSignature /
+// checkTransactionHash), so its content hash can be recomputed.
+func ethTxFromConfig(tx *config.Transaction) *types.Transaction {
+	switch tx.Type {
+	case types.DynamicFeeTxType: // 2 — EIP-1559
+		return types.NewTx(&types.DynamicFeeTx{
+			ChainID: tx.ChainID, Nonce: tx.Nonce, To: tx.To, Value: tx.Value,
+			GasTipCap: tx.MaxPriorityFee, GasFeeCap: tx.MaxFee, Gas: tx.GasLimit,
+			Data: tx.Data, AccessList: toGethAccessList(tx.AccessList),
+			V: tx.V, R: tx.R, S: tx.S,
+		})
+	case types.AccessListTxType: // 1 — EIP-2930
+		return types.NewTx(&types.AccessListTx{
+			ChainID: tx.ChainID, Nonce: tx.Nonce, To: tx.To, Value: tx.Value,
+			GasPrice: tx.GasPrice, Gas: tx.GasLimit, Data: tx.Data,
+			AccessList: toGethAccessList(tx.AccessList), V: tx.V, R: tx.R, S: tx.S,
+		})
+	default: // 0 — Legacy
+		return types.NewTx(&types.LegacyTx{
+			Nonce: tx.Nonce, To: tx.To, Value: tx.Value, GasPrice: tx.GasPrice,
+			Gas: tx.GasLimit, Data: tx.Data, V: tx.V, R: tx.R, S: tx.S,
+		})
+	}
+}
+
+// RecomputeBlockHashFromContents recomputes the block hash from transaction
+// CONTENTS — Keccak256 over the concatenation of each transaction's content hash
+// (ethTx.Hash()), matching the block generator's
+// generateBlockHashFromTransactions. Unlike a recompute over the wire tx.Hash
+// field, this binds the block hash to what the transactions actually ARE, so it
+// cannot be fooled by a mismatched wire tx.Hash.
+func RecomputeBlockHashFromContents(txs []config.Transaction) common.Hash {
+	if len(txs) == 0 {
+		return common.Hash{}
+	}
+	buf := make([]byte, 0, len(txs)*32)
+	for i := range txs {
+		h := ethTxFromConfig(&txs[i]).Hash()
+		buf = append(buf, h.Bytes()...)
+	}
+	return common.BytesToHash(crypto.Keccak256(buf))
+}
+
+// CheckBlockHash recomputes the block hash from transaction CONTENTS and compares
+// it to block.BlockHash. Returns (true,nil) only on match. Call on the block
+// receive path so a block cannot claim a BlockHash that does not correspond to
+// the transactions it actually carries, independent of whether the
+// per-transaction tx.Hash fields were pre-verified.
+func CheckBlockHash(block *config.ZKBlock) (bool, error) {
+	if block == nil {
+		return false, errors.New("block is nil")
+	}
+	want := RecomputeBlockHashFromContents(block.Transactions)
+	if block.BlockHash != want {
+		return false, fmt.Errorf("block hash mismatch: recomputed %s from tx contents, block claims %s",
+			want.Hex(), block.BlockHash.Hex())
+	}
+	return true, nil
+}
+
 func checkTransactionHash(tx *config.Transaction, traceCtx context.Context) (bool, error) {
 	loggerCtx, cancel := context.WithCancel(traceCtx)
 	defer cancel()
