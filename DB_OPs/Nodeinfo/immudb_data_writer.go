@@ -200,6 +200,16 @@ func (dw *DataWriter) WriteData(data []*blockpb.NonHeaders) error {
 	// monotonic-from-0 means a genesis-only write is a no-op when the marker is
 	// already 0, which is the correct value.
 	if didWriteBlock {
+		// While a FastSync session is active, latest_block is NOT advanced
+		// here. checkLinkage admits live blocks at marker+1, so the marker
+		// must trail the session until its reconciliation effects are
+		// committed and confirmed. The session records the high-water mark
+		// and advances the marker itself at session end (see sync_session.go
+		// and FastsyncV2.endSyncSession).
+		if DeferLatestBlockAdvance(highestWritten) {
+			notifyBlockReceived()
+			return nil
+		}
 		if _, _, err2 := DB_OPs.UpdateLatestBlockMonotonic(highestWritten); err2 != nil {
 			return fmt.Errorf("update latest_block to %d failed: %w", highestWritten, err2)
 		}

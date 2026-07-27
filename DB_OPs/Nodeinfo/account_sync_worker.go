@@ -96,6 +96,19 @@ type txMarkerWire struct {
 	AppliedAt int64 `json:"applied_at"`
 }
 
+// blockReconWire references one block whose outstanding balance effects the
+// drain worker must apply via DB_OPs.ApplyBlockRecon. No balances travel on
+// the wire — the worker recomputes deltas from the stored block at apply time
+// so the write is commutative with live execution and immune to stale bases.
+type blockReconWire struct {
+	BlockNumber uint64 `json:"block_number"`
+	// BlockHash pins the enqueued block's identity; ApplyBlockRecon rejects a
+	// stored-hash mismatch (block replaced between enqueue and drain).
+	BlockHash string `json:"block_hash"`
+	// EnqueuedAt is diagnostic only (Unix seconds).
+	EnqueuedAt int64 `json:"enqueued_at,omitempty"`
+}
+
 // ─── Configuration ────────────────────────────────────────────────────────────
 
 // AccountSyncWorkerConfig holds tuning parameters for the account sync worker.
@@ -330,6 +343,15 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 		txMarkers    map[string]int64 // recon-applied tx markers — committed LAST
 		goodIDs      []string         // stream IDs to ACK+XDEL after successful DB write
 		poisonIDs    []string         // stream IDs to ACK+XDEL immediately (unrecoverable)
+
+		// blockRecons are processed per entry AFTER the LWW writes above so a
+		// restore enqueued earlier (FIFO) lands before the deltas that read it.
+		// Each entry is its own retry unit: replaying an applied block is a
+		// no-op (its tx markers are already set).
+		blockRecons []struct {
+			entryID string
+			blocks  []blockReconWire
+		}
 	)
 
 	for _, entry := range entries {
@@ -378,6 +400,20 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 			}
 			goodIDs = append(goodIDs, entry.ID)
 
+		case payloadTypeBlockRecon:
+			parsed, err := parseBlockReconPayload(dataStr)
+			if err != nil {
+				log.Printf("[accountqueue] WARN: poison pill — undecodable block_recon entry %s: %v", entry.ID, err)
+				poisonIDs = append(poisonIDs, entry.ID)
+				continue
+			}
+			// NOT added to goodIDs here: block entries ACK individually after
+			// their blocks apply (see the block-recon section below).
+			blockRecons = append(blockRecons, struct {
+				entryID string
+				blocks  []blockReconWire
+			}{entryID: entry.ID, blocks: parsed})
+
 		default:
 			log.Printf("[accountqueue] WARN: poison pill — unknown payload type %q in entry %s", payloadType, entry.ID)
 			poisonIDs = append(poisonIDs, entry.ID)
@@ -395,7 +431,7 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 		cancel()
 	}
 
-	if len(writeEntries) == 0 && len(txMarkers) == 0 {
+	if len(writeEntries) == 0 && len(txMarkers) == 0 && len(blockRecons) == 0 {
 		return nil
 	}
 
@@ -438,12 +474,36 @@ func processBatch(s RedisStreamer, entries []StreamEntry, cfg AccountSyncWorkerC
 			return fmt.Errorf("write %d recon tx markers (after %d account entries): %w", len(txMarkers), len(writeEntries), err)
 		}
 	}
+
+	// Block-recon entries apply AFTER the LWW writes above (stream FIFO put
+	// any account restores ahead of the block references that read them).
+	// Each entry succeeds or fails independently: a failed entry stays in the
+	// PEL and is replayed — ApplyBlockRecon is idempotent (a block whose txs
+	// are all marked is a no-op), so replays are safe.
+	for _, br := range blockRecons {
+		entryOK := true
+		for _, b := range br.blocks {
+			if _, err := DB_OPs.ApplyBlockRecon(conn, b.BlockNumber, b.BlockHash); err != nil {
+				log.Printf("[accountqueue] block recon %d (%s) failed: %v — entry %s stays pending for retry",
+					b.BlockNumber, b.BlockHash, err, br.entryID)
+				entryOK = false
+				break
+			}
+		}
+		if entryOK {
+			goodIDs = append(goodIDs, br.entryID)
+		}
+	}
 	commitDur := time.Since(start)
 
 	// All sub-batches succeeded — ACK + XDEL in one pipeline round-trip.
 	// XACK removes entries from the PEL; XDEL removes the payload from the stream body.
 	// Without XDEL, ACKed entries accumulate in the stream indefinitely.
-	// Replay safety: BatchRestoreAccounts is LWW-idempotent if ACK fails and entries replay.
+	// Replay safety: BatchRestoreAccounts is LWW-idempotent and ApplyBlockRecon
+	// is marker-idempotent if ACK fails and entries replay.
+	if len(goodIDs) == 0 {
+		return nil
+	}
 	ackCtx, ackCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer ackCancel()
 	if err := s.Ack(ackCtx, accountSyncStream, accountSyncGroup, goodIDs...); err != nil {
@@ -533,6 +593,22 @@ func parseUpdatesPayload(dataStr string) ([]accountUpdateWire, error) {
 	for _, w := range wires {
 		if _, ok := new(big.Int).SetString(w.NewBalance, 10); !ok {
 			return nil, fmt.Errorf("invalid decimal balance %q for address %s", w.NewBalance, w.Address)
+		}
+	}
+	return wires, nil
+}
+
+// parseBlockReconPayload deserializes and validates a payloadTypeBlockRecon
+// blob. Pure parse — the exactly-once apply happens in processBatch via
+// DB_OPs.ApplyBlockRecon.
+func parseBlockReconPayload(dataStr string) ([]blockReconWire, error) {
+	var wires []blockReconWire
+	if err := json.Unmarshal([]byte(dataStr), &wires); err != nil {
+		return nil, fmt.Errorf("unmarshal []blockReconWire: %w", err)
+	}
+	for _, w := range wires {
+		if w.BlockHash == "" {
+			return nil, fmt.Errorf("block recon %d with empty hash", w.BlockNumber)
 		}
 	}
 	return wires, nil
