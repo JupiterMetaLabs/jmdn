@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"gossipnode/DB_OPs"
+	NodeInfo "gossipnode/DB_OPs/Nodeinfo"
 	"gossipnode/DB_OPs/txindex"
 
 	ackpb "github.com/JupiterMetaLabs/JMDN-FastSync/common/proto/ack"
@@ -81,6 +82,14 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 	// Parent cancellation (node shutdown, monitor cancel) takes priority.
 	ctx, cancel := context.WithTimeout(ctx, fs.syncTimeout)
 	defer cancel()
+
+	// Hold latest_block for the duration of this sync: live application at the
+	// range tip must not begin until this run's reconciliation effects are
+	// committed and confirmed. Phase 8 advances the marker explicitly on the
+	// proven path; endSyncSession advances it to the proven-applied head on
+	// every other exit (see sync_session.go).
+	NodeInfo.BeginSyncSession()
+	defer fs.endSyncSession()
 
 	// ── Parse and connect ─────────────────────────────────────────────────
 	maddr, err := multiaddr.NewMultiaddr(targetPeer)
@@ -257,6 +266,11 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 				log.Printf("[CatchUpSync] phase 3.5 warning: FetchAccounts failed: %v", err)
 			} else if resp != nil && len(resp.GetAccounts()) > 0 {
 				accounts := protoAccountsToTypes(resp.GetAccounts())
+				// Tagged accounts carry identity only: their balances are
+				// derived locally by applying the range's blocks, so the
+				// peer's current values (which already include the range)
+				// must not seed the local base.
+				normalizeFetchedTaggedAccounts(accounts)
 				if writeErr := accountMgr.WriteAccounts(accounts); writeErr != nil {
 					log.Printf("[CatchUpSync] phase 3.5 warning: WriteAccounts failed: %v", writeErr)
 				} else {
@@ -297,25 +311,18 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 		if reconFrom > fromBlock {
 			log.Printf("[CatchUpSync] phase 5: advancing fromBlock %d → %d (already applied)", fromBlock, reconFrom)
 		}
-		deltas, appliedHashes, deltaErr := fs.computeAccountDeltas(reconFrom, remoteTip)
-		if deltaErr != nil {
-			// Fail closed: partial deltas (or deltas without marker exclusion)
-			// risk double-apply. Anchor stays; next run retries the range.
-			log.Printf("[CatchUpSync] phase 5 skipped: delta computation failed (fail closed): %v", deltaErr)
-		} else {
-			log.Printf("[CatchUpSync] phase 5: computed deltas for %d accounts", len(deltas))
-			reconCount, failedAccounts, err := fs.ReconRouter.ReconcileWithDeltas(deltas, availResp)
-			if err != nil {
-				log.Printf("[CatchUpSync] phase 5 warning: %v", err)
-			}
-			log.Printf("[CatchUpSync] phase 5 complete: %d committed, %d failed, took %s",
-				reconCount, len(failedAccounts), time.Since(reconStart).Round(time.Millisecond))
-			reconClean = err == nil && len(failedAccounts) == 0
-			// Markers follow the balance enqueue for a clean recon.
-			if reconClean {
-				fs.enqueueReconTxMarkers(appliedHashes, "CatchUpSync phase 5")
-			}
+		// Hand each outstanding block to the exactly-once apply path
+		// (DB_OPs.ApplyBlockRecon via the account sync queue). Deltas are
+		// recomputed from the stored block at apply time and each block's
+		// balances + tx markers commit atomically, so retries and live
+		// interleavings cannot double- or skip-apply.
+		handedOff, failedBlocks, reconErr := fs.reconcileBlocksLocally(reconFrom, remoteTip)
+		if reconErr != nil {
+			log.Printf("[CatchUpSync] phase 5 warning: %v", reconErr)
 		}
+		log.Printf("[CatchUpSync] phase 5 complete: %d block(s) handed off, %d failed, took %s",
+			handedOff, len(failedBlocks), time.Since(reconStart).Round(time.Millisecond))
+		reconClean = reconErr == nil && len(failedBlocks) == 0
 	}
 
 	// ── Phase 6: Re-auth before PoTS (disabled — AUTH_TTL is now 48h) ─────
@@ -351,25 +358,27 @@ func (fs *FastsyncV2) HandleCatchUpSync(ctx context.Context, fromBlock uint64, t
 		log.Printf("[CatchUpSync] phase 8 warning: verification scan failed: %v", verifyErr)
 	} else if len(verifyTag.Range) == 0 && len(verifyTag.BlockNumber) == 0 {
 		log.Printf("[CatchUpSync] phase 8: PASS — all blocks in [%d..%d] have data", fromBlock, remoteTip)
-		// Advance latest_block to remoteTip. This is the authoritative write:
-		// phases 2/3 may have been skipped (data already present), so WriteData
-		// never ran and the DB key was never updated on this run.
-		// Monotonic — a catchup against a lagging peer must never move the
-		// marker backwards past blocks live processing already committed.
-		if marker, advanced, updateErr := DB_OPs.UpdateLatestBlockMonotonic(remoteTip); updateErr != nil {
-			log.Printf("[CatchUpSync] phase 8 warning: failed to update latest_block to %d: %v", remoteTip, updateErr)
-		} else if advanced {
-			log.Printf("[CatchUpSync] phase 8: latest_block advanced to %d", marker)
-		} else {
-			log.Printf("[CatchUpSync] phase 8: latest_block already at %d (>= %d) — not regressed", marker, remoteTip)
-		}
-		// The applied anchor advances HERE — the only point where both proofs
-		// exist: phase 5 applied everything (reconClean) AND this scan proved the
-		// range data-complete. markReconComplete caps at local tip + monotonic.
+		// ORDER: anchor first, marker second. latest_block gates live
+		// application at the tip (checkLinkage), so it may only reach
+		// remoteTip once this run's balance effects are proven applied:
+		// phase 5 clean AND markReconComplete confirms the queue drained and
+		// the applied anchor covers the range. Until then the marker stays
+		// back, tip blocks keep being rejected as height_gap, and the next
+		// run retries — the self-healing direction.
 		if reconClean {
-			fs.markReconComplete(remoteTip)
+			if fs.markReconComplete(remoteTip) {
+				if marker, advanced, updateErr := DB_OPs.UpdateLatestBlockMonotonic(remoteTip); updateErr != nil {
+					log.Printf("[CatchUpSync] phase 8 warning: failed to update latest_block to %d: %v", remoteTip, updateErr)
+				} else if advanced {
+					log.Printf("[CatchUpSync] phase 8: latest_block advanced to %d", marker)
+				} else {
+					log.Printf("[CatchUpSync] phase 8: latest_block already at %d (>= %d) — not regressed", marker, remoteTip)
+				}
+			} else {
+				log.Printf("[CatchUpSync] phase 8: latest_block NOT advanced — recon effects not yet confirmed applied; next run retries")
+			}
 		} else {
-			log.Printf("[CatchUpSync] phase 8: applied anchor NOT advanced — phase 5 was not clean; range retries next run")
+			log.Printf("[CatchUpSync] phase 8: applied anchor and latest_block NOT advanced — phase 5 was not clean; range retries next run")
 		}
 	} else {
 		log.Printf("[CatchUpSync] phase 8: INCOMPLETE — %d range(s) still missing data:", len(verifyTag.Range))
