@@ -30,12 +30,13 @@ var directBlockPropagationEnv = envOn("JMDN_DIRECT_BLOCK_PROPAGATION", false)
 
 // directBlockPropagationEnabled reports whether finalized blocks are ALSO sent
 // over direct per-peer libp2p streams IN ADDITION to the gossip mesh. Default is
-// gossip-only: the gossip topic + FloodPublish reach the whole fleet, so the
-// direct fan-out is redundant — and delivering the same block over both
-// transports produced two near-simultaneous copies. It is enabled when
-// consensus.p2p >= 1 in config (once settings are loaded) OR the
-// JMDN_DIRECT_BLOCK_PROPAGATION=1 env override is set. When gossip is disabled the
-// caller runs direct regardless, so a block is never left with no path.
+// ENABLED (consensus.p2p defaults to 1) — direct + gossip both run, which is the
+// resilient choice since it does not depend solely on gossip-mesh reachability;
+// dedup + the per-block-hash apply lock make the double delivery safe. It is
+// disabled (gossip-only) only when consensus.p2p is explicitly set to 0. Also
+// forced on by the JMDN_DIRECT_BLOCK_PROPAGATION=1 env override (which cannot be
+// used to turn it off — use consensus.p2p: 0 for that). When gossip is disabled
+// the caller runs direct regardless, so a block is never left with no path.
 func directBlockPropagationEnabled() bool {
 	if settings.IsLoaded() && settings.Get().Consensus.P2P >= 1 {
 		return true

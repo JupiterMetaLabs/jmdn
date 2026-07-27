@@ -1,4 +1,12 @@
-package main
+// Package blockgossip wires the additive finalized-block gossip fan-out on a
+// node: it injects the publisher used by the sequencer's finalized-block
+// broadcast (messaging.PublishBlockGossip) and subscribes to
+// config.PubSub_BlockPropagation so every node applies gossiped blocks through
+// the same fail-closed admitZKBlock gate as the direct stream.
+//
+// Previously this lived as blockgossip.go in the repo root (package main); it
+// was moved into its own package so the root stays limited to main.go.
+package blockgossip
 
 import (
 	"context"
@@ -16,7 +24,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// startBlockGossip wires the additive finalized-block gossip fan-out on this node.
+// Start wires the additive finalized-block gossip fan-out on this node.
 //
 // It (1) injects the publisher used by the sequencer's finalized-block broadcast
 // (messaging.PublishBlockGossip) and (2) subscribes to PubSub_BlockPropagation so
@@ -28,7 +36,7 @@ import (
 // unchanged, dedup collapses any overlap, and non-sequencer nodes never finalize
 // a block so they never publish. No-op when disabled (JMDN_BLOCK_GOSSIP=0) or when
 // pubsub is unavailable.
-func startBlockGossip(ctx context.Context, gps *PubSubMessages.GossipPubSub) {
+func Start(ctx context.Context, gps *PubSubMessages.GossipPubSub) {
 	if !messaging.EnableBlockGossip || gps == nil {
 		return
 	}
