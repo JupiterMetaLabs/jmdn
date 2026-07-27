@@ -121,8 +121,24 @@ _shutdown() {
 trap _shutdown TERM INT
 
 if [ "${IMMUDB_EXTERNAL}" = "true" ]; then
+    # External mode: immudb runs in its own container against the immudb-data
+    # volume (ownership fixed there by the immudb-perms one-shot in
+    # docker-compose.yml). /opt/jmdn/data is mounted read-only here — do NOT
+    # chown it from this container.
     log "External ImmuDB mode — waiting for ${IMMUDB_HOST}:${IMMUDB_PORT}..."
 else
+    # Embedded mode: this entrypoint runs as root and starts immudb as
+    # ${JMDN_USER} (3322). Ensure immudb's data dir is owned by that UID/GID
+    # FIRST — immudb crash-loops with "permission denied" on its tx log if the
+    # dir holds files owned by another UID (a snapshot restored out-of-band as
+    # root, or a re-provision after the bootstrap sentinel was already set, so
+    # bootstrap_sync.sh skipped its own chown). Idempotent; guarded so a missing
+    # dir (immudb creates it) or a chown error never aborts startup.
+    if [ -d "${IMMUDB_DIR}" ]; then
+        log "Ensuring ${IMMUDB_DIR} ownership is ${JMDN_USER}:${JMDN_USER}..."
+        chown -R "${JMDN_USER}:${JMDN_USER}" "${IMMUDB_DIR}" || \
+            log "WARN: chown ${IMMUDB_DIR} failed — immudb may fail to open if ownership is wrong"
+    fi
     log "Starting embedded ImmuDB as ${JMDN_USER} (dir: ${IMMUDB_DIR})..."
     gosu "${JMDN_USER}" immudb --dir "${IMMUDB_DIR}" &
     IMMUDB_PID=$!
