@@ -186,4 +186,4 @@ security:
 
     # Mempool — TLS-only, no auth required.
     mempool_service:
-      tls: true
+      tls: false
